@@ -27,6 +27,27 @@ async function main() {
     const greeting = await ziguri.invoke("greet", { name: "IPC" });
     results.push({ module: "ipc", ok: greeting.startsWith("Hello, IPC!"), detail: `invoke("greet") → ${greeting}` });
 
+    // Async IPC: sleep 500ms while sync_ping answers immediately in parallel
+    const asyncStart = performance.now();
+    const sleepPromise = ziguri.invoke("async_sleep", { ms: 500 });
+    const syncRes = await ziguri.invoke("sync_ping");
+    const syncElapsed = performance.now() - asyncStart;
+    const sleepRes = await sleepPromise;
+    const totalElapsed = performance.now() - asyncStart;
+    const asyncOk = syncRes === "pong" && syncElapsed < 250 && sleepRes === "slept" && totalElapsed >= 400;
+    results.push({
+      module: "async ipc",
+      ok: asyncOk,
+      detail: `sync returned in ${Math.round(syncElapsed)}ms; total ${Math.round(totalElapsed)}ms`
+    });
+
+    try {
+      const winCheck = await ziguri.invoke("test_windows_and_menu");
+      results.push({ module: "windows+menu", ok: winCheck.ok, detail: winCheck.detail });
+    } catch (e) {
+      results.push({ module: "windows+menu", ok: false, detail: String(e) });
+    }
+
     results.push(...(await securityChecks()));
 
     try {

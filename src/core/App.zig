@@ -17,8 +17,12 @@ const jsc = @import("jsc");
 const soup = @import("soup");
 const ipc = @import("ipc.zig");
 const security = @import("security.zig");
+const ThreadPool = @import("ThreadPool.zig").ThreadPool;
 
 const log = std.log.scoped(.ziguri);
+
+pub var io: ?std.Io = null;
+var worker_pool: ?*ThreadPool = null;
 
 pub const Asset = struct {
     path: []const u8,
@@ -39,6 +43,15 @@ pub const Config = struct {
     title: [:0]const u8,
     width: c_int = 960,
     height: c_int = 720,
+    min_width: ?c_int = null,
+    min_height: ?c_int = null,
+    max_width: ?c_int = null,
+    max_height: ?c_int = null,
+    resizable: bool = true,
+    decorations: bool = true,
+    fullscreen: bool = false,
+    maximized: bool = false,
+    remember_geometry: bool = false,
     assets: []const Asset,
     /// Path + query loaded at startup, relative to `app://app/`.
     start: [:0]const u8 = "index.html",
@@ -55,6 +68,133 @@ pub const Config = struct {
     /// Development mode: load the frontend from a dev server (e.g. Vite with
     /// hot reload) instead of the embedded assets.
     dev: ?Dev = null,
+};
+
+pub const WindowOptions = struct {
+    label: [:0]const u8 = "main",
+    title: [:0]const u8 = "",
+    url: ?[:0]const u8 = null,
+    width: c_int = 800,
+    height: c_int = 600,
+    min_width: ?c_int = null,
+    min_height: ?c_int = null,
+    max_width: ?c_int = null,
+    max_height: ?c_int = null,
+    resizable: bool = true,
+    decorations: bool = true,
+    fullscreen: bool = false,
+    maximized: bool = false,
+    remember_geometry: bool = false,
+};
+
+pub const Window = struct {
+    label: [:0]const u8,
+    app_window: *gtk.ApplicationWindow,
+    gtk_window: *gtk.Window,
+    web_view: *webkit.WebView,
+    options: WindowOptions,
+    app_id: [:0]const u8,
+
+    pub fn show(self: *Window) void {
+        self.gtk_window.present();
+    }
+
+    pub fn hide(self: *Window) void {
+        self.gtk_window.as(gtk.Widget).setVisible(0);
+    }
+
+    pub fn toggle(self: *Window) void {
+        if (self.gtk_window.as(gtk.Widget).getVisible() != 0 and self.gtk_window.isActive() != 0) {
+            self.hide();
+        } else {
+            self.show();
+        }
+    }
+
+    pub fn close(self: *Window) void {
+        self.gtk_window.close();
+    }
+
+    pub fn setTitle(self: *Window, title: [:0]const u8) void {
+        self.gtk_window.setTitle(title);
+    }
+
+    pub fn setFullscreen(self: *Window, fullscreen: bool) void {
+        if (fullscreen) self.gtk_window.fullscreen() else self.gtk_window.unfullscreen();
+    }
+
+    pub fn isFullscreen(self: *Window) bool {
+        return self.gtk_window.isFullscreen() != 0;
+    }
+
+    pub fn setMaximized(self: *Window, maximized: bool) void {
+        if (maximized) self.gtk_window.maximize() else self.gtk_window.unmaximize();
+    }
+
+    pub fn isMaximized(self: *Window) bool {
+        return self.gtk_window.isMaximized() != 0;
+    }
+
+    pub fn setSize(self: *Window, width: c_int, height: c_int) void {
+        self.gtk_window.setDefaultSize(width, height);
+    }
+
+    pub fn getSize(self: *Window) struct { width: c_int, height: c_int } {
+        var w: c_int = 0;
+        var h: c_int = 0;
+        self.gtk_window.getDefaultSize(&w, &h);
+        return .{ .width = w, .height = h };
+    }
+
+    /// Send event only to this window's webview.
+    pub fn emit(self: *Window, name: []const u8, payload: anytype) void {
+        emitJson(self.web_view, name, payload) catch |err| log.err("window emit {s}: {s}", .{ name, @errorName(err) });
+    }
+
+    pub fn saveGeometry(self: *Window) void {
+        if (!self.options.remember_geometry) return;
+        const size = self.getSize();
+        const store_mod = @import("../modules/store.zig");
+        var store = store_mod.Store.open(std.heap.smp_allocator, self.app_id, "window_geometry") catch return;
+        defer store.deinit();
+
+        var key_w_buf: [128]u8 = undefined;
+        const key_w = std.fmt.bufPrint(&key_w_buf, "{s}_width", .{self.label}) catch return;
+        store.set(key_w, size.width) catch {};
+
+        var key_h_buf: [128]u8 = undefined;
+        const key_h = std.fmt.bufPrint(&key_h_buf, "{s}_height", .{self.label}) catch return;
+        store.set(key_h, size.height) catch {};
+
+        var key_m_buf: [128]u8 = undefined;
+        const key_m = std.fmt.bufPrint(&key_m_buf, "{s}_maximized", .{self.label}) catch return;
+        store.set(key_m, self.isMaximized()) catch {};
+    }
+
+    pub fn restoreGeometry(self: *Window) void {
+        if (!self.options.remember_geometry) return;
+        const store_mod = @import("../modules/store.zig");
+        var store = store_mod.Store.open(std.heap.smp_allocator, self.app_id, "window_geometry") catch return;
+        defer store.deinit();
+
+        var key_w_buf: [128]u8 = undefined;
+        const key_w = std.fmt.bufPrint(&key_w_buf, "{s}_width", .{self.label}) catch return;
+        const saved_w = store.getInt(key_w, c_int);
+
+        var key_h_buf: [128]u8 = undefined;
+        const key_h = std.fmt.bufPrint(&key_h_buf, "{s}_height", .{self.label}) catch return;
+        const saved_h = store.getInt(key_h, c_int);
+
+        if (saved_w != null and saved_h != null and saved_w.? > 0 and saved_h.? > 0) {
+            self.setSize(saved_w.?, saved_h.?);
+        }
+
+        var key_m_buf: [128]u8 = undefined;
+        const key_m = std.fmt.bufPrint(&key_m_buf, "{s}_maximized", .{self.label}) catch return;
+        if (store.getBool(key_m)) |max| {
+            if (max) self.setMaximized(true);
+        }
+    }
 };
 
 pub const Dev = struct {
@@ -96,11 +236,70 @@ const bridge_js =
     \\})();
 ;
 
-var gtk_app: ?*gtk.Application = null;
-var main_window: ?*gtk.Window = null;
+pub var gtk_app: ?*gtk.Application = null;
+pub var main_window: ?*gtk.Window = null;
 var main_view: ?*webkit.WebView = null;
 var exit_code: u8 = 0;
 var dev_retries_left: u32 = 0;
+
+pub var windows_list: std.ArrayList(*Window) = .empty;
+var windows_mutex: glib.Mutex = undefined;
+var windows_mutex_initialized: bool = false;
+
+pub fn ensureWindowsMutex() void {
+    if (!windows_mutex_initialized) {
+        windows_mutex.init();
+        windows_mutex_initialized = true;
+    }
+}
+
+pub fn getWindow(label: []const u8) ?*Window {
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    defer windows_mutex.unlock();
+    for (windows_list.items) |w| {
+        if (std.mem.eql(u8, w.label, label)) return w;
+    }
+    return null;
+}
+
+pub fn getWindowByView(view: *webkit.WebView) ?*Window {
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    defer windows_mutex.unlock();
+    for (windows_list.items) |w| {
+        if (w.web_view == view) return w;
+    }
+    return null;
+}
+
+pub fn closeWindow(label: []const u8) void {
+    if (getWindow(label)) |w| {
+        w.close();
+    }
+}
+
+pub fn getWindows() []*Window {
+    return windows_list.items;
+}
+
+pub var open_window_fn: ?*const fn (options: WindowOptions) anyerror!*Window = null;
+
+pub fn openWindow(options: WindowOptions) !*Window {
+    if (open_window_fn) |f| return f(options) else return error.AppNotRunning;
+}
+
+pub fn setMenu(items: []const @import("../modules/menu.zig").MenuItem, on_action: @import("../modules/menu.zig").ActionCallback) !void {
+    const app = gtk_app orelse return error.AppNotRunning;
+    const menu_mod = @import("../modules/menu.zig");
+    try menu_mod.set(app, items, on_action);
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    defer windows_mutex.unlock();
+    for (windows_list.items) |win| {
+        win.app_window.setShowMenubar(1);
+    }
+}
 
 /// Quit the running application with `code` as the process exit status.
 pub fn quit(code: u8) void {
@@ -123,9 +322,9 @@ pub fn toggleWindow() void {
 }
 
 /// Send `payload` (any JSON-serializable value) to `ziguri.listen(name, …)`
-/// listeners in the page. Safe to call from any thread.
+/// listeners in all pages. Safe to call from any thread.
 pub fn emit(name: []const u8, payload: anytype) void {
-    emitJson(name, payload) catch |err| log.err("emit {s}: {s}", .{ name, @errorName(err) });
+    emitJson(null, name, payload) catch |err| log.err("emit {s}: {s}", .{ name, @errorName(err) });
 }
 
 /// Typed events: `App.events(Events).emit(.note_added, note)` only compiles
@@ -133,26 +332,51 @@ pub fn emit(name: []const u8, payload: anytype) void {
 pub fn events(comptime Events: type) type {
     return struct {
         pub fn emit(comptime name: std.meta.FieldEnum(Events), payload: @FieldType(Events, @tagName(name))) void {
-            emitJson(@tagName(name), payload) catch |err| log.err("emit {s}: {s}", .{ @tagName(name), @errorName(err) });
+            emitJson(null, @tagName(name), payload) catch |err| log.err("emit {s}: {s}", .{ @tagName(name), @errorName(err) });
         }
     };
 }
 
-fn emitJson(name: []const u8, payload: anytype) !void {
+fn emitJson(target_view: ?*webkit.WebView, name: []const u8, payload: anytype) !void {
     const gpa = std.heap.smp_allocator;
     const payload_json = try std.json.Stringify.valueAlloc(gpa, payload, .{});
     defer gpa.free(payload_json);
     const name_json = try std.json.Stringify.valueAlloc(gpa, name, .{});
     defer gpa.free(name_json);
     const script = try std.fmt.allocPrintSentinel(gpa, "window.ziguri?.__emit({s}, {s});", .{ name_json, payload_json }, 0);
-    // Evaluate on the main thread; the idle callback frees `script`.
-    _ = glib.idleAdd(&evalScript, script.ptr);
+
+    if (target_view) |tv| {
+        _ = gobject.Object.ref(tv.as(gobject.Object));
+    }
+
+    const Task = struct {
+        target: ?*webkit.WebView,
+        script: [:0]u8,
+    };
+    const task = try gpa.create(Task);
+    task.* = .{ .target = target_view, .script = script };
+    _ = glib.idleAdd(&evalScriptTask, task);
 }
 
-fn evalScript(data: ?*anyopaque) callconv(.c) c_int {
-    const script: [*:0]u8 = @ptrCast(data);
-    defer std.heap.smp_allocator.free(std.mem.span(script));
-    if (main_view) |view| view.evaluateJavascript(script, -1, null, null, null, null, null);
+fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
+    const task: *struct { target: ?*webkit.WebView, script: [:0]u8 } = @ptrCast(@alignCast(data));
+    defer {
+        std.heap.smp_allocator.free(task.script);
+        std.heap.smp_allocator.destroy(task);
+    }
+    if (task.target) |v| {
+        defer v.as(gobject.Object).unref();
+        if (getWindowByView(v) != null) {
+            v.evaluateJavascript(task.script, -1, null, null, null, null, null);
+        }
+    } else {
+        ensureWindowsMutex();
+        windows_mutex.lock();
+        defer windows_mutex.unlock();
+        for (windows_list.items) |win| {
+            win.web_view.evaluateJavascript(task.script, -1, null, null, null, null, null);
+        }
+    }
     return 0; // one-shot
 }
 
@@ -173,6 +397,21 @@ pub fn openExternal(uri: [*:0]const u8) void {
 
 /// Run the application until it quits. Returns the exit code.
 pub fn run(comptime api: Api, comptime config: Config) u8 {
+    const app_log = @import("log.zig");
+    app_log.init(config.id);
+    defer app_log.deinit();
+
+    const app_io = io orelse @panic("App.io must be set before App.run; ziguri.main sets this automatically");
+    const pool = ThreadPool.init(std.heap.smp_allocator, app_io, null) catch |err| {
+        log.err("failed to initialize worker thread pool: {s}", .{@errorName(err)});
+        return 1;
+    };
+    worker_pool = pool;
+    defer {
+        pool.deinit();
+        worker_pool = null;
+    }
+
     const S = Shell(api, config);
     // GTK apps are single-instance per ID: a dev build gets its own ID so it
     // can run next to the installed production app instead of handing off to it.
@@ -206,6 +445,10 @@ fn onQuitSignal(_: ?*anyopaque) callconv(.c) c_int {
 }
 
 fn startDevServer(comptime dev: Dev) ?*gio.Subprocess {
+    if (glib.getenv("ZIGURI_DEV_EXTERNAL") != null) {
+        log.info("dev server managed externally; skipping local spawn", .{});
+        return null;
+    }
     const command = dev.command orelse return null;
     const argv = comptime blk: {
         var a: [command.len:null]?[*:0]const u8 = undefined;
@@ -257,28 +500,76 @@ fn Shell(comptime api: Api, comptime config: Config) type {
     const csp_z: ?[:0]const u8 = if (config.security.csp) |c| (c ++ "\x00")[0..c.len :0] else null;
 
     return struct {
+        var scheme_registered: bool = false;
+
         fn activate(app: *gtk.Application, _: ?*anyopaque) callconv(.c) void {
             if (main_window) |w| {
                 // Second launch of a single-instance app: bring the window back.
                 w.present();
                 return;
             }
-            const window = gtk.ApplicationWindow.new(app).as(gtk.Window);
-            window.setTitle(config.title);
-            window.setDefaultSize(config.width, config.height);
+            open_window_fn = &doOpenWindow;
+
+            const main_win = doOpenWindow(.{
+                .label = "main",
+                .title = config.title,
+                .width = config.width,
+                .height = config.height,
+                .min_width = config.min_width,
+                .min_height = config.min_height,
+                .max_width = config.max_width,
+                .max_height = config.max_height,
+                .resizable = config.resizable,
+                .decorations = config.decorations,
+                .fullscreen = config.fullscreen,
+                .maximized = config.maximized,
+                .remember_geometry = config.remember_geometry,
+            }) catch |err| {
+                log.err("failed to open main window: {s}", .{@errorName(err)});
+                return;
+            };
+
+            main_window = main_win.gtk_window;
+            main_view = main_win.web_view;
+
             if (config.on_close == .hide) {
-                _ = gtk.Window.signals.close_request.connect(window, ?*anyopaque, &onCloseRequest, null, .{});
-                // A hidden window doesn't keep the application alive on its own.
                 gio.Application.hold(app.as(gio.Application));
             }
 
+            if (config.setup) |setup| setup() catch |err| log.err("setup failed: {s}", .{@errorName(err)});
+        }
+
+        fn doOpenWindow(options: WindowOptions) anyerror!*Window {
+            const app = gtk_app orelse return error.AppNotRunning;
+            const gpa = std.heap.smp_allocator;
+
+            if (getWindow(options.label)) |existing| {
+                existing.show();
+                return existing;
+            }
+
+            const app_window = gtk.ApplicationWindow.new(app);
+            const window = app_window.as(gtk.Window);
+            window.setTitle(options.title);
+            window.setDefaultSize(options.width, options.height);
+            window.setResizable(@intFromBool(options.resizable));
+            window.setDecorated(@intFromBool(options.decorations));
+
+            if (options.min_width != null or options.min_height != null) {
+                window.as(gtk.Widget).setSizeRequest(options.min_width orelse -1, options.min_height orelse -1);
+            }
+
             const view = webkit.WebView.new();
-            const context = view.getContext();
-            context.registerUriScheme(scheme, &serveAsset, null, null);
-            context.getSecurityManager().registerUriSchemeAsSecure(scheme);
+            if (!scheme_registered) {
+                const context = view.getContext();
+                context.registerUriScheme(scheme, &serveAsset, null, null);
+                context.getSecurityManager().registerUriSchemeAsSecure(scheme);
+                scheme_registered = true;
+            }
 
             const settings = view.getSettings();
             settings.setEnableDeveloperExtras(@intFromBool(config.devtools));
+            settings.setEnableWriteConsoleMessagesToStdout(@intFromBool(config.devtools));
             settings.setJavascriptCanOpenWindowsAutomatically(0);
             settings.setAllowFileAccessFromFileUrls(0);
             settings.setAllowUniversalAccessFromFileUrls(0);
@@ -298,25 +589,87 @@ fn Shell(comptime api: Api, comptime config: Config) type {
             _ = webkit.WebView.signals.decide_policy.connect(view, ?*anyopaque, &onDecidePolicy, null, .{});
 
             window.setChild(view.as(gtk.Widget));
-            main_window = window;
-            main_view = view;
 
-            if (config.dev) |dev| {
-                // The dev server may still be starting: retry failed loads.
+            const win_inst = try gpa.create(Window);
+            const label_z = try gpa.dupeZ(u8, options.label);
+            const title_z = try gpa.dupeZ(u8, options.title);
+            var opt_copy = options;
+            opt_copy.label = label_z;
+            opt_copy.title = title_z;
+
+            win_inst.* = .{
+                .label = label_z,
+                .app_window = app_window,
+                .gtk_window = window,
+                .web_view = view,
+                .options = opt_copy,
+                .app_id = config.id,
+            };
+
+            _ = gtk.Window.signals.close_request.connect(window, *Window, &onWindowCloseRequest, win_inst, .{});
+
+            ensureWindowsMutex();
+            windows_mutex.lock();
+            try windows_list.append(gpa, win_inst);
+            windows_mutex.unlock();
+
+            if (options.remember_geometry) {
+                win_inst.restoreGeometry();
+            }
+            if (options.fullscreen) {
+                win_inst.setFullscreen(true);
+            } else if (options.maximized) {
+                win_inst.setMaximized(true);
+            }
+
+            if (options.url) |u| {
+                if (std.mem.startsWith(u8, u, "http://") or std.mem.startsWith(u8, u, "https://")) {
+                    view.loadUri(u);
+                } else {
+                    const trimmed = std.mem.trimStart(u8, u, "/");
+                    const full_uri = try std.fmt.allocPrintSentinel(gpa, "{s}://app/{s}", .{ scheme, trimmed }, 0);
+                    defer gpa.free(full_uri);
+                    view.loadUri(full_uri);
+                }
+            } else if (config.dev) |dev| {
                 dev_retries_left = dev.timeout_ms / retry_interval_ms;
                 _ = webkit.WebView.signals.load_failed.connect(view, ?*anyopaque, &onLoadFailed, null, .{});
                 view.loadUri(devUrl());
             } else {
                 view.loadUri(scheme ++ "://app/" ++ config.start);
             }
-            window.present();
 
-            if (config.setup) |setup| setup() catch |err| log.err("setup failed: {s}", .{@errorName(err)});
+            window.present();
+            return win_inst;
         }
 
-        fn onCloseRequest(window: *gtk.Window, _: ?*anyopaque) callconv(.c) c_int {
-            window.as(gtk.Widget).setVisible(0);
-            return 1; // handled: keep the window, only hide it
+        fn onWindowCloseRequest(window: *gtk.Window, win: *Window) callconv(.c) c_int {
+            if (std.mem.eql(u8, win.label, "main") and config.on_close == .hide) {
+                window.as(gtk.Widget).setVisible(0);
+                return 1;
+            }
+
+            win.saveGeometry();
+
+            ensureWindowsMutex();
+            windows_mutex.lock();
+            for (windows_list.items, 0..) |w, i| {
+                if (w == win) {
+                    _ = windows_list.swapRemove(i);
+                    break;
+                }
+            }
+            const remaining = windows_list.items.len;
+            windows_mutex.unlock();
+
+            std.heap.smp_allocator.free(win.label);
+            std.heap.smp_allocator.free(win.options.title);
+            std.heap.smp_allocator.destroy(win);
+
+            if (remaining == 0) {
+                quit(0);
+            }
+            return 0;
         }
 
         // --- Navigation policy -------------------------------------------
@@ -418,36 +771,110 @@ fn Shell(comptime api: Api, comptime config: Config) type {
             reply: *webkit.ScriptMessageReply,
             view: *webkit.WebView,
         ) callconv(.c) c_int {
-            var arena_state = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
-            defer arena_state.deinit();
-            const arena = arena_state.allocator();
-
             const request_ptr = value.toString();
             defer glib.free(request_ptr);
-            const request = ipc.parseRequest(arena, std.mem.span(request_ptr)) catch |err| {
+            const req_slice = std.mem.span(request_ptr);
+
+            var parse_arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+            defer parse_arena.deinit();
+            const temp_alloc = parse_arena.allocator();
+
+            const request = ipc.parseRequest(temp_alloc, req_slice) catch |err| {
                 reply.returnErrorMessage(@errorName(err));
                 return 1;
             };
 
             // The page currently shown decides the IPC scope.
             const page_url: []const u8 = if (webkit_web_view_get_uri(view)) |u| std.mem.span(u) else "";
-            if (!security.commandAllowed(config.security, local, page_url, request.cmd)) {
-                log.warn("blocked command '{s}' from {s}", .{ request.cmd, page_url });
+            const caller_win = getWindowByView(view);
+            const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
+            if (!security.commandAllowedForWindow(config.security, local, page_url, request.cmd, win_label)) {
+                log.warn("blocked command '{s}' from {s} (window: {?s})", .{ request.cmd, page_url, win_label });
                 reply.returnErrorMessage("Forbidden");
                 return 1;
             }
 
-            const result = ipc.dispatchRequest(api.commands, arena, request) catch |err| {
-                reply.returnErrorMessage(@errorName(err));
+            if (!ipc.isAsync(api.commands, request.cmd)) {
+                const result = ipc.dispatchRequest(api.commands, temp_alloc, request, io) catch |err| {
+                    reply.returnErrorMessage(@errorName(err));
+                    return 1;
+                };
+                const result_z = temp_alloc.dupeZ(u8, result) catch {
+                    reply.returnErrorMessage("OutOfMemory");
+                    return 1;
+                };
+                const js_value = jsc.Value.newFromJson(value.getContext(), result_z);
+                defer js_value.unref();
+                reply.returnValue(js_value);
+                return 1;
+            }
+
+            // Async command: execute on worker pool and reply on GTK main thread.
+            const pool = worker_pool orelse {
+                reply.returnErrorMessage("WorkerPoolNotRunning");
                 return 1;
             };
-            const result_z = arena.dupeZ(u8, result) catch {
+
+            _ = reply.ref();
+            const context = value.getContext();
+            _ = context.ref();
+
+            const GtkReply = struct {
+                reply: *webkit.ScriptMessageReply,
+                context: *jsc.Context,
+                arena_state: std.heap.ArenaAllocator,
+                result: ?[:0]const u8,
+                err_name: ?[:0]const u8,
+
+                fn onWorkerDone(self: *@This(), arena_state: std.heap.ArenaAllocator, res: ?[:0]const u8, err_name: ?[:0]const u8) void {
+                    self.arena_state = arena_state;
+                    self.result = res;
+                    self.err_name = err_name;
+                    _ = glib.idleAdd(&idleReply, self);
+                }
+
+                fn idleReply(data: ?*anyopaque) callconv(.c) c_int {
+                    const self: *@This() = @ptrCast(@alignCast(data));
+                    defer {
+                        self.reply.unref();
+                        self.context.unref();
+                        var a = self.arena_state;
+                        a.deinit();
+                        std.heap.smp_allocator.destroy(self);
+                    }
+                    if (self.err_name) |err| {
+                        self.reply.returnErrorMessage(err);
+                    } else if (self.result) |res_z| {
+                        const js_value = jsc.Value.newFromJson(self.context, res_z);
+                        defer js_value.unref();
+                        self.reply.returnValue(js_value);
+                    }
+                    return 0; // one-shot idle callback
+                }
+            };
+
+            const gtk_reply = std.heap.smp_allocator.create(GtkReply) catch {
+                reply.unref();
+                context.unref();
                 reply.returnErrorMessage("OutOfMemory");
                 return 1;
             };
-            const js_value = jsc.Value.newFromJson(value.getContext(), result_z);
-            defer js_value.unref();
-            reply.returnValue(js_value);
+            gtk_reply.* = .{
+                .reply = reply,
+                .context = context,
+                .arena_state = undefined,
+                .result = null,
+                .err_name = null,
+            };
+
+            ipc.dispatchAsync(api.commands, pool, std.heap.smp_allocator, req_slice, io, gtk_reply, GtkReply.onWorkerDone) catch |err| {
+                reply.unref();
+                context.unref();
+                std.heap.smp_allocator.destroy(gtk_reply);
+                reply.returnErrorMessage(@errorName(err));
+                return 1;
+            };
+
             return 1;
         }
     };

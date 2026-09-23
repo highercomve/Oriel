@@ -13,6 +13,8 @@ export function App() {
   const [greeting, setGreeting] = useState("");
   const [error, setError] = useState("");
   const [dnd, setDnd] = useState(false);
+  const [exported, setExported] = useState("");
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     invoke("app_info").then(setInfo);
@@ -22,6 +24,15 @@ export function App() {
     const unlisten = [listen("notes_changed", setNotes), listen("do_not_disturb", setDnd)];
     return () => unlisten.forEach((off) => off());
   }, []);
+
+  const exportNotes = () => {
+    setExporting(true);
+    run(async () => {
+      const res = await invoke("export_notes");
+      setExported(res);
+      setExporting(false);
+    });
+  };
 
   const run = async (action: () => Promise<void>) => {
     setError("");
@@ -80,6 +91,13 @@ export function App() {
         <input value={name} onChange={(e) => setName(e.target.value)} />
         <button onClick={() => run(async () => setGreeting(await invoke("greet", { name })))}>Greet</button>
         <span>{greeting}</span>
+      </section>
+
+      <section className="row export">
+        <button onClick={exportNotes} disabled={exporting}>
+          {exporting ? "Exporting (async)…" : "Export notes (async)"}
+        </button>
+        {exported && <pre className="exported-preview">{exported}</pre>}
       </section>
     </main>
   );

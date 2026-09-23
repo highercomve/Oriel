@@ -80,6 +80,27 @@ pub const Commands = struct {
         return if (tray) |t| t.isChecked("dnd") orelse false else false;
     }
 
+    pub const async_commands = .{ "export_notes" };
+
+    pub fn export_notes(gpa: std.mem.Allocator, local_io: std.Io) ![]const u8 {
+        // Simulate a slow async export off the main thread.
+        const timeout: std.Io.Timeout = .{
+            .duration = .{
+                .raw = .{ .nanoseconds = 300 * std.time.ns_per_ms },
+                .clock = .awake,
+            },
+        };
+        try timeout.sleep(local_io);
+
+        const notes = try list_notes(gpa);
+        var out: std.ArrayList(u8) = .empty;
+        for (notes) |note| {
+            const line = try std.fmt.allocPrint(gpa, "- [{s}] {s}\n", .{ note.created_at, note.text });
+            try out.appendSlice(gpa, line);
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
     pub fn delete_note(gpa: std.mem.Allocator, args: struct { id: i64 }) ![]Note {
         const stmt = try (try database()).prepare("DELETE FROM notes WHERE id = ?1");
         defer stmt.finalize();

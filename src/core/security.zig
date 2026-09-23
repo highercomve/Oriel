@@ -33,6 +33,8 @@ pub const Capability = struct {
     origin: []const u8,
     /// Commands this origin may call; null = all of them.
     commands: ?[]const []const u8 = null,
+    /// Windows allowed to use this capability; null = all windows.
+    windows: ?[]const []const u8 = null,
 };
 
 pub const ExternalLinks = enum {
@@ -113,17 +115,33 @@ pub fn navigation(sec: Security, local: Local, url: []const u8, user_gesture: bo
     return .block;
 }
 
-/// Whether a page at `page_url` may call `command`.
-pub fn commandAllowed(sec: Security, local: Local, page_url: []const u8, command: []const u8) bool {
+/// Whether a page at `page_url` may call `command`, optionally scoping by window label.
+pub fn commandAllowedForWindow(sec: Security, local: Local, page_url: []const u8, command: []const u8, window_label: ?[]const u8) bool {
     var buf: [512]u8 = undefined;
     const o = origin(&buf, page_url) orelse return false;
     if (local.contains(o)) return true;
     for (sec.capabilities) |c| {
         if (!originMatches(c.origin, o)) continue;
+        if (c.windows) |allowed_windows| {
+            const w = window_label orelse return false;
+            var win_match = false;
+            for (allowed_windows) |aw| {
+                if (std.mem.eql(u8, aw, w)) {
+                    win_match = true;
+                    break;
+                }
+            }
+            if (!win_match) continue;
+        }
         const cmds = c.commands orelse return true;
         for (cmds) |allowed| if (std.mem.eql(u8, allowed, command)) return true;
     }
     return false;
+}
+
+/// Whether a page at `page_url` may call `command`.
+pub fn commandAllowed(sec: Security, local: Local, page_url: []const u8, command: []const u8) bool {
+    return commandAllowedForWindow(sec, local, page_url, command, null);
 }
 
 fn isExternalScheme(url: []const u8) bool {
@@ -214,6 +232,15 @@ test commandAllowed {
     try std.testing.expect(!commandAllowed(sec, local, "https://docs.example.com/", "greet")); // navigable, no IPC
     try std.testing.expect(!commandAllowed(sec, local, "http://localhost:5173/", "greet")); // not a dev build
     try std.testing.expect(!commandAllowed(sec, local, "about:blank", "greet"));
+
+    const sec_win: Security = .{
+        .capabilities = &.{
+            .{ .origin = "https://partner.example", .commands = &.{"greet"}, .windows = &.{"main"} },
+        },
+    };
+    try std.testing.expect(commandAllowedForWindow(sec_win, local, "https://partner.example/page", "greet", "main"));
+    try std.testing.expect(!commandAllowedForWindow(sec_win, local, "https://partner.example/page", "greet", "settings"));
+    try std.testing.expect(!commandAllowedForWindow(sec_win, local, "https://partner.example/page", "greet", null));
 }
 
 test bridgePatterns {

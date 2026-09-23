@@ -10,6 +10,7 @@ pub const options = @import("build_options");
 pub const App = @import("core/App.zig");
 pub const ipc = @import("core/ipc.zig");
 pub const security = @import("core/security.zig");
+pub const log = @import("core/log.zig");
 
 // Built-in modules.
 pub const tray = if (options.tray) @import("modules/tray.zig") else struct {};
@@ -17,11 +18,19 @@ pub const updater = if (options.updater) @import("modules/updater.zig") else str
 pub const media_server = if (options.media_server) @import("modules/media_server.zig") else struct {};
 pub const sql = if (options.sql) @import("modules/sql.zig") else struct {};
 pub const fs_watch = if (options.fs_watch) @import("modules/fs_watch.zig") else struct {};
+pub const dialog = if (options.dialog) @import("modules/dialog.zig") else struct {};
+pub const notification = if (options.notification) @import("modules/notification.zig") else struct {};
+pub const store = if (options.store) @import("modules/store.zig") else struct {};
+pub const menu = if (options.menu) @import("modules/menu.zig") else struct {};
 
 // App-specific plugins.
 pub const global_shortcut = if (options.global_shortcut) @import("plugins/global_shortcut.zig") else struct {};
 pub const input = if (options.input) @import("plugins/input.zig") else struct {};
 pub const clipboard = if (options.clipboard) @import("plugins/clipboard.zig") else struct {};
+
+pub const ThreadPool = @import("core/ThreadPool.zig").ThreadPool;
+
+pub var io: ?std.Io = null;
 
 /// Standard entry point for a ziguri app:
 ///
@@ -34,6 +43,8 @@ pub const clipboard = if (options.clipboard) @import("plugins/clipboard.zig") el
 /// Besides running the app, it handles `--emit-types <path>`, used by the
 /// build to write the frontend's TypeScript bindings for the API.
 pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.Config) !u8 {
+    io = init.io;
+    App.io = init.io;
     const argv = init.minimal.args.vector;
     if (argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[1]), "--emit-types")) {
         try writeTypes(init.io, init.gpa, api, std.mem.span(argv[2]));
@@ -44,15 +55,15 @@ pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.
 
 /// Write the TypeScript bindings for `api` to `path`, leaving the file
 /// untouched when nothing changed (so dev servers don't reload needlessly).
-pub fn writeTypes(io: std.Io, gpa: std.mem.Allocator, comptime api: App.Api, path: []const u8) !void {
+pub fn writeTypes(write_io: std.Io, gpa: std.mem.Allocator, comptime api: App.Api, path: []const u8) !void {
     const source = comptime ipc.typescript(api.commands, api.events);
     const cwd = std.Io.Dir.cwd();
-    if (cwd.readFileAlloc(io, path, gpa, .limited(1 << 20))) |existing| {
+    if (cwd.readFileAlloc(write_io, path, gpa, .limited(1 << 20))) |existing| {
         defer gpa.free(existing);
         if (std.mem.eql(u8, existing, source)) return;
     } else |_| {}
-    if (std.fs.path.dirname(path)) |dir| try cwd.createDirPath(io, dir);
-    try cwd.writeFile(io, .{ .sub_path = path, .data = source });
+    if (std.fs.path.dirname(path)) |dir| try cwd.createDirPath(write_io, dir);
+    try cwd.writeFile(write_io, .{ .sub_path = path, .data = source });
 }
 
 /// Result of a module smoke check, serialized to the frontend as JSON.
@@ -80,6 +91,10 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
         .{ .name = "media_server", .enabled = options.media_server },
         .{ .name = "sql", .enabled = options.sql },
         .{ .name = "fs_watch", .enabled = options.fs_watch },
+        .{ .name = "dialog", .enabled = options.dialog },
+        .{ .name = "notification", .enabled = options.notification },
+        .{ .name = "store", .enabled = options.store },
+        .{ .name = "menu", .enabled = options.menu },
         .{ .name = "global_shortcut", .enabled = options.global_shortcut },
         .{ .name = "input", .enabled = options.input },
         .{ .name = "clipboard", .enabled = options.clipboard },
@@ -101,5 +116,14 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
 test {
     std.testing.refAllDecls(ipc);
     std.testing.refAllDecls(security);
+    std.testing.refAllDecls(log);
+    std.testing.refAllDecls(@import("core/ThreadPool.zig"));
     if (options.tray) _ = tray;
+    if (options.dialog) std.testing.refAllDecls(dialog);
+    if (options.notification) std.testing.refAllDecls(notification);
+    if (options.store) std.testing.refAllDecls(store);
+    if (options.menu) std.testing.refAllDecls(menu);
+    if (options.global_shortcut) std.testing.refAllDecls(global_shortcut);
+    if (options.input) std.testing.refAllDecls(input);
+    if (options.clipboard) std.testing.refAllDecls(clipboard);
 }

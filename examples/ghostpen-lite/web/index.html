@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>GhostPen Lite</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <span class="pen-icon">✍️</span>
+        <h1>GhostPen Lite</h1>
+      </div>
+      <div class="badge" id="status-badge">Ready</div>
+    </header>
+
+    <section class="hotkey-card">
+      <div class="hotkey-label">Active Global Hotkey</div>
+      <div class="hotkey-combo"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>G</kbd></div>
+      <p class="hotkey-desc">Highlight text in any application and press the hotkey to rewrite and paste back.</p>
+    </section>
+
+    <section class="actions">
+      <button id="btn-trigger" class="btn primary">⚡ Trigger Pipeline</button>
+      <button id="btn-read" class="btn secondary">📋 Read Clipboard</button>
+      <button id="btn-notify" class="btn secondary">🔔 Test Notification</button>
+    </section>
+
+    <section class="log-section">
+      <div class="log-header">
+        <h2>Activity Log</h2>
+        <button id="btn-clear" class="btn-small">Clear</button>
+      </div>
+      <div id="log-list" class="log-list">
+        <div class="log-entry system">GhostPen Lite initialized. Ready for hotkey triggers.</div>
+      </div>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

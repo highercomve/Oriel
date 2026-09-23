@@ -30,9 +30,78 @@ const Commands = struct {
         };
     }
 
+    pub const async_commands = .{ "async_sleep" };
+
+    pub fn async_sleep(_: std.mem.Allocator, local_io: std.Io, args: struct { ms: u32 }) ![]const u8 {
+        const timeout: std.Io.Timeout = .{
+            .duration = .{
+                .raw = .{ .nanoseconds = @as(i96, args.ms) * std.time.ns_per_ms },
+                .clock = .awake,
+            },
+        };
+        try timeout.sleep(local_io);
+        return "slept";
+    }
+
+    pub fn sync_ping(_: std.mem.Allocator) []const u8 {
+        return "pong";
+    }
+
     /// Round-trip for the events check: Zig -> JS `ping` event.
     pub fn emit_ping(_: std.mem.Allocator, args: struct { n: i64 }) void {
         ziguri.App.emit("ping", .{ .n = args.n });
+    }
+
+    pub fn test_windows_and_menu(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {
+        if (ziguri.options.menu) {
+            const menu_items = [_]ziguri.menu.MenuItem{
+                .{
+                    .submenu = .{
+                        .label = "File",
+                        .items = &.{
+                            .{ .item = .{ .id = "new", .label = "New", .shortcut = "<Control>n" } },
+                            .{ .separator = {} },
+                            .{ .item = .{ .id = "quit", .label = "Quit", .shortcut = "<Control>q" } },
+                        },
+                    },
+                },
+            };
+            const Handler = struct {
+                fn onAction(_: []const u8, _: ?bool) void {}
+            };
+            try ziguri.App.setMenu(&menu_items, Handler.onAction);
+        }
+
+        const win = try ziguri.App.openWindow(.{
+            .label = "test-sec",
+            .title = "Test Secondary Window",
+            .width = 400,
+            .height = 300,
+            .resizable = false,
+        });
+
+        const found = ziguri.App.getWindow("test-sec");
+        if (found == null or found.? != win) {
+            return .{ .ok = false, .detail = "failed to get window by label" };
+        }
+
+        win.setTitle("Updated Title");
+        const geom = win.getSize();
+        if (geom.width != 400 or geom.height != 300) {
+            return .{ .ok = false, .detail = "window size mismatch" };
+        }
+
+        win.emit("test_event", .{ .ok = true });
+
+        ziguri.App.closeWindow("test-sec");
+        if (ziguri.App.getWindow("test-sec") != null) {
+            return .{ .ok = false, .detail = "window still exists after close" };
+        }
+
+        return .{
+            .ok = true,
+            .detail = try std.fmt.allocPrint(gpa, "menu bar set, secondary window opened, verified, and closed", .{}),
+        };
     }
 
     /// Called by the page in --auto-quit mode once everything has rendered.
@@ -52,6 +121,8 @@ fn context() ziguri.CheckContext {
 
 pub fn main(init: std.process.Init) !u8 {
     io = init.io;
+    ziguri.io = init.io;
+    ziguri.App.io = init.io;
     var headless = false;
     var auto_quit = false;
     for (init.minimal.args.vector[1..]) |arg_z| {

@@ -23,6 +23,10 @@ const Features = struct {
     media_server: bool,
     sql: bool,
     fs_watch: bool,
+    dialog: bool,
+    notification: bool,
+    store: bool,
+    menu: bool,
     // App-specific plugins
     global_shortcut: bool,
     input: bool,
@@ -54,6 +58,17 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(embed_assets);
+
+    // Host tool used by `addApp` for dev mode watch + reload.
+    const dev_runner = b.addExecutable(.{
+        .name = "dev_runner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/dev_runner.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    b.installArtifact(dev_runner);
 
     const tests = b.addTest(.{
         .root_module = ziguri,
@@ -87,6 +102,7 @@ fn addZiguriModule(
             .{ .name = "glib", .module = gobject.module("glib2") },
             .{ .name = "gobject", .module = gobject.module("gobject2") },
             .{ .name = "gio", .module = gobject.module("gio2") },
+            .{ .name = "gdk", .module = gobject.module("gdk4") },
             .{ .name = "gtk", .module = gobject.module("gtk4") },
             .{ .name = "webkit", .module = gobject.module("webkit6") },
             .{ .name = "jsc", .module = gobject.module("javascriptcore6") },
@@ -188,6 +204,9 @@ pub fn addApp(b: *std.Build, ziguri_dep: *std.Build.Dependency, options: AppOpti
     const ziguri = ziguri_dep.module("ziguri");
     const target = ziguri.resolved_target.?;
     const optimize = ziguri.optimize.?;
+    // When optimize was not explicitly given on the command-line, default production to ReleaseSafe
+    const prod_optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe;
+    const dev_optimize = if (b.user_input_options.contains("optimize")) optimize else .Debug;
     const fe = options.frontend;
     const fe_dir = b.pathFromRoot(fe.dir);
 
@@ -209,7 +228,7 @@ pub fn addApp(b: *std.Build, ziguri_dep: *std.Build.Dependency, options: AppOpti
         cfg.addOption([]const u8, "dev_url", dev.url);
         cfg.addOption([]const []const u8, "dev_command", dev.command);
         cfg.addOption([]const u8, "frontend_dir", fe_dir);
-        break :blk addExe(b, ziguri, target, optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, ziguri, cfg, null));
+        break :blk addExe(b, ziguri, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, ziguri, cfg, null));
     } else null;
 
     // Generated TypeScript types, written by the dev build (no frontend needed).
@@ -241,7 +260,7 @@ pub fn addApp(b: *std.Build, ziguri_dep: *std.Build.Dependency, options: AppOpti
     prod_cfg.addOption([]const u8, "dev_url", "");
     prod_cfg.addOption([]const []const u8, "dev_command", &.{});
     prod_cfg.addOption([]const u8, "frontend_dir", fe_dir);
-    const exe = addExe(b, ziguri, target, optimize, options.name, options.root_source_file, appConfigModule(b, ziguri, prod_cfg, assets_dir.path(b, "assets.zig")));
+    const exe = addExe(b, ziguri, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, ziguri, prod_cfg, assets_dir.path(b, "assets.zig")));
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
@@ -250,11 +269,36 @@ pub fn addApp(b: *std.Build, ziguri_dep: *std.Build.Dependency, options: AppOpti
     b.step("run", "Run the production build").dependOn(&run.step);
 
     if (dev_exe) |d| {
-        const run_dev = b.addRunArtifact(d);
-        if (install_step) |s| run_dev.step.dependOn(s);
-        if (types_step) |s| run_dev.step.dependOn(s);
-        if (b.args) |args| run_dev.addArgs(args);
-        b.step("dev", "Run against the frontend dev server (hot reload)").dependOn(&run_dev.step);
+        const install_dev = b.addInstallArtifact(d, .{});
+        b.step("build-dev", "Build development executable").dependOn(&install_dev.step);
+
+        const runner = b.addRunArtifact(ziguri_dep.artifact("dev_runner"));
+        runner.addArgs(&.{
+            b.fmt("--zig={s}", .{b.graph.zig_exe}),
+            b.fmt("--project-dir={s}", .{b.build_root.path orelse "."}),
+            b.fmt("--watch-dir={s}", .{b.pathJoin(&.{ b.build_root.path orelse ".", "src" })}),
+            b.fmt("--frontend-dir={s}", .{fe_dir}),
+            b.fmt("--app-bin={s}", .{b.getInstallPath(.bin, d.name)}),
+        });
+
+        if (fe.dev) |dev| {
+            if (dev.command.len > 0) {
+                runner.addArg("--dev-cmd");
+                for (dev.command) |c| runner.addArg(c);
+                runner.addArg("--dev-cmd-end");
+            }
+        }
+
+        if (b.args) |args| {
+            runner.addArg("--app-args");
+            runner.addArgs(args);
+        }
+
+        runner.step.dependOn(&install_dev.step);
+        if (install_step) |s| runner.step.dependOn(s);
+        if (types_step) |s| runner.step.dependOn(s);
+
+        b.step("dev", "Run against the frontend dev server (hot reload & Zig reload)").dependOn(&runner.step);
     }
 
     return .{ .exe = exe, .dev_exe = dev_exe };
