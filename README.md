@@ -23,6 +23,28 @@ from plain Zig structs. Linux (GTK4 + WebKitGTK 6.0) first.
 > See [PLAN.md](PLAN.md) for the roadmap, [IDEA.md](IDEA.md) for the background
 > and [LIBRARIES.md](LIBRARIES.md) for the dependencies.
 
+## Examples
+
+Each example is its own Zig package in [`examples/`](examples), built on Oriel
+like any app would be.
+
+<table>
+  <tr>
+    <td width="55%"><img src="assets/screenshots/react-notes.png" alt="React notes example: notes stored in SQLite on the Zig side, with a do-not-disturb badge set from the tray menu"></td>
+    <td width="45%"><img src="assets/screenshots/ghostpen-lite.png" alt="GhostPen Lite example: global hotkey, clipboard pipeline and activity log"></td>
+  </tr>
+  <tr>
+    <td><b><a href="examples/react">React notes</a></b>: React + Vite frontend, notes in SQLite on the Zig side, tray menu, typed events, async commands, <code>zig build dev</code> with hot reload, and deb/rpm/AppImage packages.</td>
+    <td><b><a href="examples/ghostpen-lite">GhostPen Lite</a></b>: global hotkey → read clipboard → rewrite → paste back, with notifications and an activity log.</td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="assets/screenshots/smoke.png" alt="Smoke test example: every module and security check passing inside the webview"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><b><a href="examples/smoke">Smoke test</a></b>: runs every module's check and the security checks (CSP, navigation, IPC) inside the real webview.</td>
+  </tr>
+</table>
+
 ## Repository layout
 
 The framework and the apps built with it are separate Zig packages:

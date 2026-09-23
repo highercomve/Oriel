@@ -168,7 +168,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     const config_gui: oriel.App.Config = .{
         .id = app_id,
-        .title = "oriel smoke test",
+        .title = "Oriel smoke test",
         .assets = app.assets,
         // The security checks navigate to remote URLs: never hand them to a browser.
         .security = .{ .external_links = .deny },
