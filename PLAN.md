@@ -55,10 +55,22 @@ decisions), `IDEA.md` (motivation, architecture), then the code:
 7. Update `README.md` (feature docs + the "Compared with Tauri" table) and
    `LIBRARIES.md` when adding a dependency.
 
+8. **Zig 0.16 APIs:** read `docs/zig-0.16.md` before searching
+   `~/.zvm/0.16.0/lib/std`; it lists the forms that compile in this repo.
+9. **Review checklist (memory safety):** every change is reviewed for leaks
+   (`defer`/`errdefer` on all paths; tests use `std.testing.allocator`),
+   clear ownership of returned memory, structs never copied after something
+   holds a pointer to them, no `.?` on values that can really be null
+   (C/GObject returns checked against the GIR), GObject/GVariant refcounts,
+   no reads of `undefined`, justified pointer casts, thread-safe shared state,
+   and nothing touching GTK off the main thread. Tests must stay silent (no
+   stderr output).
+
 ## Build and test commands
 
 ```sh
 scripts/gen-bindings.sh                  # once: GTK/WebKit bindings -> deps/gobject (needs xsltproc)
+zig build check                          # type-check only, ~1 s: use this while iterating
 zig build test                           # framework unit tests (repo root)
 
 cd examples/smoke

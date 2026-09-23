@@ -133,6 +133,13 @@ pub fn build(b: *std.Build) void {
         .use_lld = true,
     });
     test_step.dependOn(&b.addRunArtifact(tool_tests).step);
+
+    // Type-check only: nothing requests these binaries, so Zig skips codegen
+    // and linking. The fast inner loop for editors and coding agents.
+    const check_step = b.step("check", "Type-check the framework, tests and tools (no binaries)");
+    for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module }) |m| {
+        check_step.dependOn(&b.addTest(.{ .root_module = m }).step);
+    }
 }
 
 fn addOrielModule(

@@ -1,11 +1,27 @@
 <p align="center"><img src="assets/brand/oriel-banner.png" alt="Oriel: desktop apps with Zig and the web" width="720"></p>
 
+<p align="center">
+  <a href="#license"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-F7A41D?style=flat-square"></a>
+  <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-F7A41D?style=flat-square&logo=zig&logoColor=white">
+  <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux%20(GTK4%20%2B%20WebKitGTK)-1B1F2A?style=flat-square">
+  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-1B1F2A?style=flat-square">
+</p>
+
 # Oriel
 
-A Tauri-like desktop framework in Zig 0.16: a native window with the OS
-webview, the frontend embedded in the binary, and typed JS ↔ Zig calls.
-Linux (GTK4 + WebKitGTK 6.0) first. See [IDEA.md](IDEA.md) and
-[LIBRARIES.md](LIBRARIES.md).
+**Desktop apps with Zig and the web.** Oriel is a Tauri-like framework in
+Zig 0.16: a native window with the system webview, your frontend (React, Vite,
+plain HTML…) embedded in a small binary, and typed JS ↔ Zig calls generated
+from plain Zig structs. Linux (GTK4 + WebKitGTK 6.0) first.
+
+- **Small:** a release app is a few MB; the build cache is hundreds of MB, not gigabytes.
+- **Typed both ways:** `invoke` and `listen` in TypeScript are generated from your Zig `Commands` and `Events`.
+- **Secure by default:** navigation limits, per-origin command capabilities, a strict CSP.
+- **Batteries included, opt-in:** tray, updater, SQLite, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage).
+
+> **Status:** experimental. APIs will change; only Linux is supported so far.
+> See [PLAN.md](PLAN.md) for the roadmap, [IDEA.md](IDEA.md) for the background
+> and [LIBRARIES.md](LIBRARIES.md) for the dependencies.
 
 ## Repository layout
 
@@ -554,7 +570,7 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 
 ## Compared with Tauri
 
-| Tauri | oriel (Linux) |
+| Tauri | Oriel (Linux) |
 |---|---|
 | Custom protocol for assets | ✅ `app://`, embedded at build time, SPA fallback |
 | `invoke` / commands | ✅ plain Zig struct; TypeScript generated; sync & async worker pool |
@@ -571,7 +587,7 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Dev server + hot reload / production build | ✅ `zig build dev` (Vite + Zig file watcher & reload) / `zig build` (defaults to `ReleaseSafe`) |
 | Dialogs (open/save file) | ✅ `GtkFileDialog` |
 | System notifications | ✅ `GNotification` |
-| Clipboard (background & focused) | ✅ `GdkClipboard` (X11) + ext-data-control reads (Wayland) |
+| Clipboard | ◐ read/write via `GdkClipboard`; background reads on Wayland via ext-data-control; background writes on Wayland not yet |
 | Global shortcuts | ✅ `XGrabKey` (X11) + `GlobalShortcuts` portal (Wayland) |
 | Input injection | ✅ `XTest` (X11) + virtual keyboard protocol (Wayland) |
 | Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
@@ -584,3 +600,16 @@ Running `zig build desktop-entry` installs desktop integration files for local d
   `.sframe` sections in GCC 16 / recent glibc `crt1.o`.
 - Dev builds use the app ID plus `.Dev`, so they can run next to the
   production app.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
