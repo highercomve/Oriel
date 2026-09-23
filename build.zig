@@ -283,6 +283,7 @@ pub fn addUpdaterSteps(b: *std.Build, update_tool: *std.Build.Step.Compile) void
 ///   zig build run      run the production build
 ///   zig build dev      run against the dev server (hot reload)
 ///   zig build types    regenerate the frontend's TypeScript command types
+///   zig build check    type-check the app without building binaries
 /// plus the packaging steps (`package`, `package-<format>`, `desktop-entry`).
 /// Calling it more than once is allowed: top-level steps are shared, so
 /// e.g. `zig build run` or `zig build package` acts on every app added.
@@ -390,6 +391,21 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
 
         @import("build/package.zig").getOrCreateStep(b, "dev", "Run against the frontend dev server (hot reload & Zig reload)").dependOn(&runner.step);
     }
+
+    // Type-check only (`zig build check`, `oriel check`): built with a dev
+    // configuration so no frontend build or embedded assets are needed, and
+    // nothing requests the binary, so Zig skips codegen and linking. Apps
+    // without dev mode get the default dev settings (the URL is checked at
+    // comptime, so it must be a real one).
+    const check_dev = fe.dev orelse Frontend.Dev{};
+    const check_cfg = b.addOptions();
+    check_cfg.addOption(bool, "is_dev", true);
+    check_cfg.addOption([]const u8, "dev_url", check_dev.url);
+    check_cfg.addOption([]const []const u8, "dev_command", check_dev.command);
+    check_cfg.addOption([]const u8, "frontend_dir", fe_dir);
+    check_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
+    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null));
+    @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_exe.step);
 
     @import("build/package.zig").addPackageSteps(b, oriel_dep, options, exe, dev_exe);
 
