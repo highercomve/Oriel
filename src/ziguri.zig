@@ -30,8 +30,6 @@ pub const clipboard = if (options.clipboard) @import("plugins/clipboard.zig") el
 
 pub const ThreadPool = @import("core/ThreadPool.zig").ThreadPool;
 
-pub var io: ?std.Io = null;
-
 /// Standard entry point for a ziguri app:
 ///
 ///     pub fn main(init: std.process.Init) !u8 {
@@ -43,14 +41,12 @@ pub var io: ?std.Io = null;
 /// Besides running the app, it handles `--emit-types <path>`, used by the
 /// build to write the frontend's TypeScript bindings for the API.
 pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.Config) !u8 {
-    io = init.io;
-    App.io = init.io;
     const argv = init.minimal.args.vector;
     if (argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[1]), "--emit-types")) {
         try writeTypes(init.io, init.gpa, api, std.mem.span(argv[2]));
         return 0;
     }
-    return App.run(api, config);
+    return App.run(init.io, api, config);
 }
 
 /// Write the TypeScript bindings for `api` to `path`, leaving the file

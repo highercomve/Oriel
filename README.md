@@ -91,6 +91,10 @@ pub fn main(init: std.process.Init) !u8 {
 }
 ```
 
+Apps that parse their own arguments can call
+`ziguri.App.run(init.io, api, config)` directly instead of `ziguri.main`;
+the `std.Io` is passed in explicitly (there is no global to set).
+
 ```ts
 // frontend: generated from the Zig structs (zig build types)
 import { invoke, listen } from "./ziguri";

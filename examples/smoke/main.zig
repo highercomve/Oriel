@@ -121,8 +121,6 @@ fn context() ziguri.CheckContext {
 
 pub fn main(init: std.process.Init) !u8 {
     io = init.io;
-    ziguri.io = init.io;
-    ziguri.App.io = init.io;
     var headless = false;
     var auto_quit = false;
     for (init.minimal.args.vector[1..]) |arg_z| {
@@ -162,5 +160,5 @@ pub fn main(init: std.process.Init) !u8 {
     comptime var config_auto = config_gui;
     config_auto.start = "index.html?auto-quit";
     const api: ziguri.App.Api = .{ .commands = Commands };
-    return if (auto_quit) ziguri.App.run(api, config_auto) else ziguri.App.run(api, config_gui);
+    return if (auto_quit) ziguri.App.run(init.io, api, config_auto) else ziguri.App.run(init.io, api, config_gui);
 }

@@ -21,7 +21,8 @@ const ThreadPool = @import("ThreadPool.zig").ThreadPool;
 
 const log = std.log.scoped(.ziguri);
 
-pub var io: ?std.Io = null;
+/// Worker pool for async commands; owned by `run`. It also carries the
+/// `std.Io` passed to `run`, which the IPC handlers hand to commands.
 var worker_pool: ?*ThreadPool = null;
 
 pub const Asset = struct {
@@ -396,13 +397,14 @@ pub fn openExternal(uri: [*:0]const u8) void {
 }
 
 /// Run the application until it quits. Returns the exit code.
-pub fn run(comptime api: Api, comptime config: Config) u8 {
+/// `io` is handed to commands that ask for a `std.Io` (usually `init.io`
+/// from `main`; `ziguri.main` passes it for you).
+pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     const app_log = @import("log.zig");
     app_log.init(config.id);
     defer app_log.deinit();
 
-    const app_io = io orelse @panic("App.io must be set before App.run; ziguri.main sets this automatically");
-    const pool = ThreadPool.init(std.heap.smp_allocator, app_io, null) catch |err| {
+    const pool = ThreadPool.init(std.heap.smp_allocator, io, null) catch |err| {
         log.err("failed to initialize worker thread pool: {s}", .{@errorName(err)});
         return 1;
     };
@@ -795,7 +797,7 @@ fn Shell(comptime api: Api, comptime config: Config) type {
             }
 
             if (!ipc.isAsync(api.commands, request.cmd)) {
-                const result = ipc.dispatchRequest(api.commands, temp_alloc, request, io) catch |err| {
+                const result = ipc.dispatchRequest(api.commands, temp_alloc, request, if (worker_pool) |p| p.io else null) catch |err| {
                     reply.returnErrorMessage(@errorName(err));
                     return 1;
                 };
@@ -867,7 +869,7 @@ fn Shell(comptime api: Api, comptime config: Config) type {
                 .err_name = null,
             };
 
-            ipc.dispatchAsync(api.commands, pool, std.heap.smp_allocator, req_slice, io, gtk_reply, GtkReply.onWorkerDone) catch |err| {
+            ipc.dispatchAsync(api.commands, pool, std.heap.smp_allocator, req_slice, pool.io, gtk_reply, GtkReply.onWorkerDone) catch |err| {
                 reply.unref();
                 context.unref();
                 std.heap.smp_allocator.destroy(gtk_reply);
