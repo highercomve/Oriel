@@ -19,5 +19,13 @@ pub fn build(b: *std.Build) void {
             .dev = null,
             .types_path = null,
         },
+        .package = .{
+            .id = "dev.oriel.Smoke",
+            .name = "Oriel Smoke",
+            .summary = "Oriel framework smoke test",
+            .description = "Smoke-test app checking modules and security inside a webview.",
+            .categories = "Utility;Development;",
+            .version = "0.1.0",
+        },
     });
 }

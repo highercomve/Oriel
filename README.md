@@ -360,6 +360,84 @@ const theme = store.getString("theme");
 
 Automatic thread-safe routing of `std.log` to stderr and `$XDG_DATA_HOME/<app_id>/app.log`. In debug/dev builds, WebKit console messages are forwarded directly to stdout.
 
+## Packaging
+
+Oriel provides integrated packaging for Linux distributions and portable AppImages with an extensible format architecture. Apps configure packaging metadata in `build.zig` via `.package` inside `oriel.addApp`.
+
+### Packaging metadata
+
+Metadata is configured once in `build.zig` and shared across all target package formats:
+
+```zig
+.package = .{
+    .id = "dev.oriel.ReactNotes",          // Reverse-DNS application ID (matches GTK app ID)
+    .name = "Oriel React Notes",           // Display name (defaults to executable name)
+    .summary = "Desktop notes app",        // Short comment / summary
+    .description = "A desktop notes...",   // Multi-line description for package managers
+    .publisher = "Acme Corp <dev@acme.com>", // Maintainer / Vendor / Publisher (set this; defaults to display name)
+    .license = "MIT",                      // Optional SPDX license identifier (omitted if null)
+    .homepage = "https://example.com",     // Optional project URL (omitted if null)
+    .categories = "Utility;TextEditor;",   // Semicolon-delimited XDG desktop categories
+    .version = "0.1.0",                    // Version string (defaults to "0.1.0")
+    .icon = b.path("path/to/icon.png"),    // Optional PNG icon (defaults to Oriel brand icon)
+    .formats = null,                       // Optional override list of formats (defaults to per-OS list)
+    .extra_deb_depends = &.{},             // Extra deb runtime dependencies
+    .extra_rpm_depends = &.{},             // Extra rpm runtime dependencies
+},
+```
+
+> **Note on publisher**: Always set `.publisher` to your organization or maintainer contact info; if omitted, it defaults to the display name.
+
+### Building packages
+
+Running `zig build package` or format-specific package steps in an application directory builds production packages into `zig-out/package/`. All intermediate build files (`nfpm.yaml`, `AppDir`, SquashFS) are isolated in Zig's cache directory:
+
+- **All formats for target OS**: `zig build package`
+- **Debian package (`.deb`)**: `zig build package-deb` → `zig-out/package/<name>_<version>_<arch>.deb`
+- **RPM package (`.rpm`)**: `zig build package-rpm` → `zig-out/package/<name>-<version>-1.<arch>.rpm`
+- **AppImage (`.AppImage`)**: `zig build package-appimage` → `zig-out/package/<name>-<version>-<arch>.AppImage`
+
+#### Requirements and tools
+
+- **`nfpm`**: Used to generate `.deb` and `.rpm` packages. Looked up in `$PATH`, then `$HOME/go/bin/nfpm`.
+- **`mksquashfs`**: Used to assemble AppImage SquashFS images.
+- **`desktop-file-validate`**: Used to validate desktop entry files before packaging and installation.
+- **AppImage Runtime**: Uses standard type-2 AppImage runtime (`runtime-<arch>`), automatically downloaded and cached in the local cache dir (overridable via `-Dappimage-runtime=<path>` or env `ORIEL_APPIMAGE_RUNTIME`). Verified for ELF header magic before use.
+
+#### The AppImage caveat (system GTK4 & WebKitGTK 6.0)
+
+The AppImage does not bundle GTK4 or WebKitGTK: it relies on the host's GTK4 and WebKitGTK 6.0 (install `gtk4` / `webkitgtk-6.0` or your distro's equivalent). WebKitGTK spawns helper processes (`WebKitWebProcess`, `WebKitNetworkProcess`) from fixed install paths and loads GPU, GStreamer and font stacks that must match the host, so relocating it into an AppImage needs patched paths and a much larger bundle; that is not done yet. The AppImage is therefore small (a few MB) and portable across distros that ship WebKitGTK 6.0, but not to systems without it.
+
+#### Automatic dependency derivation
+
+Runtime package dependencies for Debian and RPM packages are automatically derived from the Oriel features enabled in `build.zig`:
+- Base: `libgtk-4-1` / `gtk4`, `libwebkitgtk-6.0-4` / `webkitgtk6.0`
+- `global_shortcut`: `libx11-6` / `libX11`
+- `input`: `libxkbcommon0` / `libxkbcommon`, `libxtst6` / `libXtst`
+- `input` or `clipboard`: `libwayland-client0` / `libwayland-client`
+
+### Adding formats
+
+The packaging system is built around a pluggable `Format` enum and per-format dispatch in `build/package.zig`. To support new packaging formats (such as Windows `nsis` via `makensis` or `msi` via WiX):
+1. Add the enum value to `Format` (e.g. `nsis`, `msi`).
+2. Add a corresponding `fn addNsis(ctx: *const Context) *std.Build.Step` function.
+3. Add a branch to the `switch (format)` dispatcher in `addFormat`.
+4. Include the format in `defaultFormats(.windows)`.
+
+When an unsupported OS target is packaged (or no formats are configured), `zig build package` fails gracefully at build time with a clear message (`"no package formats for <os> yet"`) via `b.addFail`.
+
+### Development desktop entry (`zig build desktop-entry`)
+
+Running `zig build desktop-entry` installs desktop integration files for local development into `$XDG_DATA_HOME` (`~/.local/share` fallback):
+
+- **Desktop Entry**: `$XDG_DATA_HOME/applications/<id>.desktop` (validated with `desktop-file-validate`)
+- **Icons**: `$XDG_DATA_HOME/icons/hicolor/<size>x<size>/apps/<id>.png` (sizes: 16, 32, 48, 64, 128, 256, 512)
+
+#### Why install a development desktop entry?
+
+1. **Wayland Global Shortcuts**: The `org.freedesktop.portal.GlobalShortcuts` portal requires an installed desktop entry matching the application ID to register system-wide hotkeys.
+2. **Dev vs. Prod Isolation**: When a dev executable exists, the entry ID is suffixed with `.Dev` (e.g. `dev.oriel.ReactNotes.Dev`), `Name` is suffixed with `(Dev)`, and `Exec` points to the absolute path of the local dev binary in `zig-out/bin/`, preventing collisions with installed production applications.
+
 ## Compared with Tauri
 
 | Tauri | oriel (Linux) |
@@ -383,7 +461,7 @@ Automatic thread-safe routing of `std.log` to stderr and `$XDG_DATA_HOME/<app_id
 | Global shortcuts | ✅ `XGrabKey` (X11) + `GlobalShortcuts` portal (Wayland) |
 | Input injection | ✅ `XTest` (X11) + virtual keyboard protocol (Wayland) |
 | Updater | ◐ signed manifests + unpacking; no download/install flow |
-| Bundling (AppImage/deb/rpm), signing | ❌ |
+| Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `zig build package`; signing not yet implemented |
 | macOS, Windows, mobile | ❌ |
 
 ## Notes

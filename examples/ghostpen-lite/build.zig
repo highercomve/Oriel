@@ -26,5 +26,14 @@ pub fn build(b: *std.Build) void {
             .dev = null,
             .types_path = null,
         },
+        .package = .{
+            .id = "com.ghostpen.lite",
+            .name = "GhostPen Lite",
+            .summary = "Global hotkey text rewrite tool",
+            .description = "GhostPen Lite is a lightweight desktop utility for rewriting text via global hotkey.",
+            .categories = "Utility;",
+            .version = "0.1.0",
+            .license = "MIT OR Apache-2.0",
+        },
     });
 }

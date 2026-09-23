@@ -27,5 +27,14 @@ pub fn build(b: *std.Build) void {
         .name = "oriel-react-notes",
         .root_source_file = b.path("src/main.zig"),
         .frontend = .{ .dir = "frontend" },
+        .package = .{
+            .id = "dev.oriel.ReactNotes",
+            .name = "Oriel React Notes",
+            .summary = "Desktop notes app built with Oriel and React",
+            .description = "A desktop notes application built with Oriel, React, Vite, and SQLite.",
+            .categories = "Utility;TextEditor;",
+            .version = "0.1.0",
+            .license = "MIT OR Apache-2.0",
+        },
     });
 }

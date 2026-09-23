@@ -70,6 +70,22 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(dev_runner);
 
+    // Host tool used by `addApp` for packaging (deb, rpm, AppImage, desktop-entry).
+    const zigimg_dep = b.dependency("zigimg", .{ .target = b.graph.host, .optimize = .ReleaseSafe });
+    const package_tool_mod = b.createModule(.{
+        .root_source_file = b.path("tools/package/main.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+        .imports = &.{
+            .{ .name = "zigimg", .module = zigimg_dep.module("zigimg") },
+        },
+    });
+    const package_tool = b.addExecutable(.{
+        .name = "package_tool",
+        .root_module = package_tool_mod,
+    });
+    b.installArtifact(package_tool);
+
     const tests = b.addTest(.{
         .root_module = oriel,
         // Zig's self-hosted linker can't handle the .sframe sections in
@@ -77,7 +93,14 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
         .use_lld = true,
     });
-    b.step("test", "Run unit tests").dependOn(&b.addRunArtifact(tests).step);
+    const package_tests = b.addTest(.{
+        .root_module = package_tool_mod,
+        .use_llvm = true,
+        .use_lld = true,
+    });
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&b.addRunArtifact(tests).step);
+    test_step.dependOn(&b.addRunArtifact(package_tests).step);
 }
 
 fn addOrielModule(
@@ -157,6 +180,8 @@ fn addOrielModule(
 // App build helper (called from an app's build.zig)
 // ---------------------------------------------------------------------------
 
+pub const PackageOptions = @import("build/package.zig").PackageOptions;
+
 pub const AppOptions = struct {
     /// Executable name.
     name: []const u8,
@@ -164,6 +189,8 @@ pub const AppOptions = struct {
     /// (build-time config: `assets`, `dev`, `types_path`).
     root_source_file: std.Build.LazyPath,
     frontend: Frontend,
+    /// Application packaging metadata (for deb, rpm, AppImage, desktop-entry).
+    package: ?PackageOptions = null,
 };
 
 pub const Frontend = struct {
@@ -300,6 +327,8 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
 
         b.step("dev", "Run against the frontend dev server (hot reload & Zig reload)").dependOn(&runner.step);
     }
+
+    @import("build/package.zig").addPackageSteps(b, oriel_dep, options, exe, dev_exe);
 
     return .{ .exe = exe, .dev_exe = dev_exe };
 }

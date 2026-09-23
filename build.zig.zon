@@ -23,5 +23,5 @@
             .hash = "N-V-__8AAGVtrgCcOcmjrOJnagmnRyMrcKaOo09KbU-vu8w8",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "tools", "protocols" },
+    .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand" },
 }

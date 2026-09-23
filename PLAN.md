@@ -112,7 +112,8 @@ gdbus call --session --dest org.kde.StatusNotifierItem-$PID-1 --object-path /Men
   before the first portal call on the connection, and `<app_id>.desktop`
   must be installed or it is refused ("App info not found"). So the smoke
   `--check` global_shortcut line fails on a real Wayland session until
-  `dev.oriel.Smoke.desktop` is installed.
+  `dev.oriel.Smoke.desktop` is installed (`zig build desktop-entry` in the
+  app installs it; only run it on purpose, it writes to `~/.local/share`).
 - **Hyprland here uses a Lua config**: `hyprctl dispatch` needs
   `hl.dsp.*` syntax (only relevant for manual checks).
 
