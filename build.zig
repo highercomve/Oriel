@@ -86,6 +86,24 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(package_tool);
 
+    // Host tool used for update management (keygen and sign-update).
+    const update_manifest_mod = b.createModule(.{
+        .root_source_file = b.path("src/modules/update_manifest.zig"),
+    });
+    const update_tool = b.addExecutable(.{
+        .name = "update_tool",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/update_tool.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+            .imports = &.{
+                .{ .name = "update_manifest", .module = update_manifest_mod },
+            },
+        }),
+    });
+    b.installArtifact(update_tool);
+    addUpdaterSteps(b, update_tool);
+
     const tests = b.addTest(.{
         .root_module = oriel,
         // Zig's self-hosted linker can't handle the .sframe sections in
@@ -101,6 +119,20 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
     test_step.dependOn(&b.addRunArtifact(package_tests).step);
+
+    const tool_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/update_tool.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "update_manifest", .module = update_manifest_mod },
+            },
+        }),
+        .use_llvm = true,
+        .use_lld = true,
+    });
+    test_step.dependOn(&b.addRunArtifact(tool_tests).step);
 }
 
 fn addOrielModule(
@@ -191,6 +223,8 @@ pub const AppOptions = struct {
     frontend: Frontend,
     /// Application packaging metadata (for deb, rpm, AppImage, desktop-entry).
     package: ?PackageOptions = null,
+    /// Optional base64-encoded Ed25519 public key for the updater.
+    update_public_key: ?[]const u8 = null,
 };
 
 pub const Frontend = struct {
@@ -222,12 +256,27 @@ pub const App = struct {
     dev_exe: ?*std.Build.Step.Compile,
 };
 
+/// Add `keygen` and `sign-update` build steps to `b`.
+pub fn addUpdaterSteps(b: *std.Build, update_tool: *std.Build.Step.Compile) void {
+    const run_keygen = b.addRunArtifact(update_tool);
+    run_keygen.addArg("keygen");
+    if (b.args) |args| run_keygen.addArgs(args);
+    b.step("keygen", "Generate an Ed25519 keypair for update signing").dependOn(&run_keygen.step);
+
+    const run_sign = b.addRunArtifact(update_tool);
+    run_sign.addArg("sign-update");
+    if (b.args) |args| run_sign.addArgs(args);
+    b.step("sign-update", "Sign an update artifact and generate manifest JSON").dependOn(&run_sign.step);
+}
+
 /// Add a oriel app to `b` with these steps:
 ///   zig build          build the frontend, embed it, install the app
 ///   zig build run      run the production build
 ///   zig build dev      run against the dev server (hot reload)
 ///   zig build types    regenerate the frontend's TypeScript command types
 pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) App {
+    addUpdaterSteps(b, oriel_dep.artifact("update_tool"));
+
     const oriel = oriel_dep.module("oriel");
     const target = oriel.resolved_target.?;
     const optimize = oriel.optimize.?;
@@ -255,6 +304,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         cfg.addOption([]const u8, "dev_url", dev.url);
         cfg.addOption([]const []const u8, "dev_command", dev.command);
         cfg.addOption([]const u8, "frontend_dir", fe_dir);
+        cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
         break :blk addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null));
     } else null;
 
@@ -287,6 +337,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     prod_cfg.addOption([]const u8, "dev_url", "");
     prod_cfg.addOption([]const []const u8, "dev_command", &.{});
     prod_cfg.addOption([]const u8, "frontend_dir", fe_dir);
+    prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig")));
     b.installArtifact(exe);
 
@@ -354,6 +405,9 @@ fn appConfigModule(
         \\    .command = cfg.dev_command,
         \\    .cwd = cfg.frontend_dir,
         \\} else null;
+        \\
+        \\/// Base64-encoded Ed25519 public key for verifying updates.
+        \\pub const update_public_key: ?[]const u8 = cfg.update_public_key;
         \\
     );
     const mod = b.createModule(.{ .root_source_file = root });

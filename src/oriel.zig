@@ -119,6 +119,10 @@ test {
     std.testing.refAllDecls(log);
     std.testing.refAllDecls(@import("core/ThreadPool.zig"));
     if (options.tray) _ = tray;
+    if (options.updater) {
+        std.testing.refAllDecls(updater);
+        std.testing.refAllDecls(@import("modules/update_manifest.zig"));
+    }
     if (options.dialog) std.testing.refAllDecls(dialog);
     if (options.notification) std.testing.refAllDecls(notification);
     if (options.store) std.testing.refAllDecls(store);

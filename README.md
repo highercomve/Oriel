@@ -360,6 +360,120 @@ const theme = store.getString("theme");
 
 Automatic thread-safe routing of `std.log` to stderr and `$XDG_DATA_HOME/<app_id>/app.log`. In debug/dev builds, WebKit console messages are forwarded directly to stdout.
 
+### Updater (`oriel.updater`)
+
+Built-in self-updater featuring Ed25519 signature verification, atomic file replacement, throttled download progress streaming, and in-place restart.
+
+#### 1. Key generation
+
+Generate a new Ed25519 keypair using the framework or app build step:
+
+```sh
+zig build keygen -- --name myapp --out-dir ~/.config/myapp/keys
+```
+
+- Private key written to `$XDG_CONFIG_HOME/oriel/keys/<name>.key` (default) with file mode `0600` (refuses to overwrite existing files without `--force`).
+- Public key written to `<name>.pub` (standard base64) and printed to stdout.
+
+#### 2. Signing release artifacts
+
+Sign an update artifact (raw binary, AppImage, or `.gz` archive) and produce a manifest JSON:
+
+```sh
+zig build sign-update -- zig-out/bin/my-app \
+  --version 1.2.0 \
+  --url https://releases.example.com/my-app-1.2.0 \
+  --key ~/.config/myapp/keys/myapp.key \
+  --out manifest.json
+```
+
+**Signed manifest format:**
+```json
+{
+  "version": "1.2.0",
+  "url": "https://releases.example.com/my-app-1.2.0",
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "signature": "base64-encoded-ed25519-signature"
+}
+```
+
+The signature is computed over domain-separated canonical bytes:
+`"oriel-update-v1\n" ++ version ++ "\n" ++ url ++ "\n" ++ sha256 ++ "\n"`
+
+#### 3. Embedding public key in the app
+
+Configure `update_public_key` in `build.zig`:
+
+```zig
+_ = oriel.addApp(b, dep, .{
+    .name = "my-app",
+    .root_source_file = b.path("src/main.zig"),
+    .frontend = .{ .dir = "frontend" },
+    .update_public_key = "base64-public-key-string",
+});
+```
+
+The public key is exposed at compile time via `@import("oriel_app").update_public_key`.
+
+#### 4. JS IPC and runtime API
+
+In `src/main.zig`, register the comptime-configured updater commands:
+
+```zig
+const app = @import("oriel_app");
+
+const Updater = oriel.updater.Commands(.{
+    .manifest_url = "https://releases.example.com/manifest.json",
+    .current_version = "1.0.0",
+    .public_key_b64 = app.update_public_key orelse @panic("missing update key"),
+});
+
+pub const Commands = struct {
+    pub const updater_check = Updater.updater_check;
+    pub const updater_install = Updater.updater_install;
+    pub const updater_restart = Updater.updater_restart;
+
+    pub const async_commands = .{ "updater_check", "updater_install", "updater_restart" };
+};
+```
+
+For typed `listen` in the generated TypeScript, declare the progress event in your `Events` struct:
+`@"updater://progress": struct { downloaded: u64, total: ?u64 }`.
+
+From frontend TypeScript / JavaScript:
+
+```ts
+import { invoke, listen } from "./oriel";
+
+// 1. Check for update
+const update = await invoke("updater_check");
+if (update?.available) {
+    console.log(`Update ${update.version} available!`);
+
+    // Listen to download progress events (throttled to ~10/s)
+    const unlisten = listen("updater://progress", ({ downloaded, total }) => {
+        console.log(`Downloaded ${downloaded} of ${total} bytes`);
+    });
+
+    // 2. Download and atomically install update
+    await invoke("updater_install");
+    unlisten();
+
+    // 3. Restart running application
+    await invoke("updater_restart");
+}
+```
+
+#### 5. AppImage behavior
+
+When running inside an AppImage (`$APPIMAGE` environment variable is set), `oriel.updater` automatically targets the outer AppImage executable for replacement and re-exec, keeping desktop launcher integrations seamless.
+
+#### 6. Security notes
+
+- **JS cannot choose URLs, keys, or paths**: The manifest URL, public key, and target path are configured strictly in native Zig code; frontend code cannot redirect downloads or bypass signature verification.
+- **Private keys**: Never commit private keys to version control or bundle them into client applications. Use `keygen` with secure out-of-repo storage (`mode 0600`).
+- **Transport**: Production manifest and payload URLs should always use HTTPS.
+
 ## Packaging
 
 Oriel provides integrated packaging for Linux distributions and portable AppImages with an extensible format architecture. Apps configure packaging metadata in `build.zig` via `.package` inside `oriel.addApp`.
@@ -460,7 +574,7 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Clipboard (background & focused) | ✅ `GdkClipboard` (X11) + ext-data-control reads (Wayland) |
 | Global shortcuts | ✅ `XGrabKey` (X11) + `GlobalShortcuts` portal (Wayland) |
 | Input injection | ✅ `XTest` (X11) + virtual keyboard protocol (Wayland) |
-| Updater | ◐ signed manifests + unpacking; no download/install flow |
+| Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
 | Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `zig build package`; signing not yet implemented |
 | macOS, Windows, mobile | ❌ |
 
