@@ -53,6 +53,8 @@ pub const KeygenOptions = struct {
     pub_path: ?[]const u8 = null,
     out_dir: ?[]const u8 = null,
     force: bool = false,
+    /// Don't print where the keys went (library/test use).
+    quiet: bool = false,
 };
 
 pub fn runKeygen(
@@ -143,7 +145,7 @@ pub fn runKeygen(
     try pub_writer.interface.flush();
     try pub_file.sync(io);
 
-    std.debug.print(
+    if (!opts.quiet) std.debug.print(
         \\Private key written to: {s} (mode 0600)
         \\Public key written to:  {s}
         \\Public key (base64): {s}
@@ -405,6 +407,7 @@ test "keygen writes 0600 key and refuses to overwrite" {
 
     // 1. Initial keygen succeeds
     try runKeygen(io, allocator, null, .{
+        .quiet = true,
         .name = "testapp",
         .out_dir = keys_dir,
     });
@@ -436,6 +439,7 @@ test "keygen writes 0600 key and refuses to overwrite" {
 
     // 2. Running keygen again without force is refused
     const res = runKeygen(io, allocator, null, .{
+        .quiet = true,
         .name = "testapp",
         .out_dir = keys_dir,
     });
@@ -457,6 +461,7 @@ test "sign-update output verifies with update_manifest.verify" {
     defer allocator.free(keys_dir);
 
     try runKeygen(io, allocator, null, .{
+        .quiet = true,
         .name = "sign_test",
         .out_dir = keys_dir,
     });
