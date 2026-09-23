@@ -71,9 +71,10 @@ zig build types                          # regenerate frontend/src/ziguri.ts
 SHOT=/tmp/shot.png ../../scripts/headless.sh ./zig-out/bin/ziguri-react-notes
 ```
 
-Expected today: 9/9 unit tests; smoke `--check` 8/8 on the real session;
-smoke `--auto-quit` under headless.sh 16 ok + `clipboard` FAIL (Xvfb has no
-Wayland, expected).
+Expected today: 27/27 unit tests; smoke `--check` all ok on the real session
+except `global_shortcut` until `dev.ziguri.Smoke.desktop` is installed (see
+pitfalls); smoke `--auto-quit` under headless.sh 24/24 ok (X11 paths:
+XGrabKey, XTest, GdkClipboard incl. the in-process `clipboard r/w` check).
 
 ### Testing a tray headlessly
 

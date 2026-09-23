@@ -3,7 +3,8 @@
 //! Run options:
 //!   ghostpen-lite                  GUI window + tray icon + global hotkey
 //!   ghostpen-lite --auto-quit      Headless/webview check
-//!   ghostpen-lite --test-pipeline  Headless CLI pipeline test (X11 XTest + clipboard)
+//!   ghostpen-lite --test-pipeline  Headless pipeline test: hotkey -> clipboard -> rewrite
+//!                                  -> clipboard, run on a worker inside the app (exit 0 = ok)
 
 const std = @import("std");
 const ziguri = @import("ziguri");
@@ -12,10 +13,14 @@ const app = @import("ziguri_app");
 const icon_png = @embedFile("icon.png");
 
 var global_io: std.Io = undefined;
+/// Pipelines finished (tests wait on it).
+var pipelines_done: std.atomic.Value(u32) = .init(0);
 var tray_instance: ?*ziguri.tray.Tray = null;
 
 const Commands = struct {
-    pub const async_commands = .{ "rewrite", "trigger_pipeline" };
+    // Clipboard reads block (the selection owner may be another app, or
+    // our own main loop), so they run on the worker pool.
+    pub const async_commands = .{ "rewrite", "trigger_pipeline", "read_clipboard" };
 
     /// Mock LLM text rewriter.
     pub fn rewrite(gpa: std.mem.Allocator, _: std.Io, args: struct { text: []const u8 }) ![]const u8 {
@@ -66,11 +71,19 @@ const Commands = struct {
     }
 };
 
+/// Runs on the main thread: hand the (blocking) pipeline to a worker.
 fn onHotkey(id: []const u8) void {
     ziguri.App.emit("hotkey_pressed", .{ .id = id });
+    ziguri.App.spawn(hotkeyPipeline, .{}) catch |err| {
+        std.log.err("hotkey pipeline: {s}", .{@errorName(err)});
+    };
+}
+
+fn hotkeyPipeline() !void {
+    defer _ = pipelines_done.fetchAdd(1, .release);
     var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
-    _ = Commands.trigger_pipeline(arena.allocator(), global_io) catch {};
+    _ = try Commands.trigger_pipeline(arena.allocator(), global_io);
 }
 
 fn onTrayMenu(id: []const u8, _: ?bool) void {
@@ -111,10 +124,11 @@ pub fn main(init: std.process.Init) !u8 {
     global_io = init.io;
 
     var auto_quit = false;
+    var test_pipeline = false;
     for (init.minimal.args.vector[1..]) |arg_z| {
         const arg = std.mem.span(arg_z);
         if (std.mem.eql(u8, arg, "--test-pipeline")) {
-            return testPipelineHeadless(init.gpa);
+            test_pipeline = true;
         } else if (std.mem.eql(u8, arg, "--auto-quit")) {
             auto_quit = true;
         }
@@ -131,51 +145,60 @@ pub fn main(init: std.process.Init) !u8 {
     };
     comptime var config_auto = config_gui;
     config_auto.start = "index.html?auto-quit";
+    comptime var config_test = config_gui;
+    config_test.setup = &testSetup;
 
     const api: ziguri.App.Api = .{ .commands = Commands };
+    if (test_pipeline) return ziguri.App.run(init.io, api, config_test);
     return if (auto_quit) ziguri.App.run(init.io, api, config_auto) else ziguri.App.run(init.io, api, config_gui);
 }
 
-fn testPipelineHeadless(gpa: std.mem.Allocator) u8 {
+/// `--test-pipeline`: register the hotkey on the main thread, then drive
+/// the pipeline from a worker like a real hotkey press would.
+fn testSetup() anyerror!void {
     std.debug.print("Testing GhostPen Lite pipeline headlessly...\n", .{});
-
-    // 1. Register shortcut
-    ziguri.global_shortcut.register(gpa, .{
+    ziguri.global_shortcut.register(std.heap.smp_allocator, .{
         .id = "test_hotkey",
         .trigger = "ctrl+alt+g",
     }, &onHotkey) catch |err| {
         std.debug.print("[FAIL] global_shortcut.register: {s}\n", .{@errorName(err)});
-        return 1;
+        return quitFromWorker(1);
     };
-    defer ziguri.global_shortcut.deinit(gpa);
+    try ziguri.App.spawn(testPipelineWorker, .{});
+}
 
-    // 2. Set clipboard
+fn testPipelineWorker() void {
+    quitFromWorker(if (testPipeline(std.heap.smp_allocator)) 0 else |err| blk: {
+        std.debug.print("[FAIL] pipeline: {s}\n", .{@errorName(err)});
+        break :blk 1;
+    });
+}
+
+fn testPipeline(gpa: std.mem.Allocator) !void {
+    // 1. Set the clipboard (handed to the main loop).
     const initial_text = "clean architecture in zig";
-    ziguri.clipboard.writeText(initial_text) catch |err| {
-        std.debug.print("[FAIL] clipboard.writeText: {s}\n", .{@errorName(err)});
-        return 1;
-    };
+    try ziguri.clipboard.writeText(initial_text);
 
-    // 3. Trigger shortcut
-    const ok = ziguri.global_shortcut.trigger("test_hotkey");
-    if (!ok) {
-        std.debug.print("[FAIL] global_shortcut.trigger failed\n", .{});
-        return 1;
+    // 2. Press the hotkey: the callback spawns the pipeline on another worker.
+    const before = pipelines_done.load(.acquire);
+    if (!ziguri.global_shortcut.trigger("test_hotkey")) return error.TriggerFailed;
+    var waited_ms: u32 = 0;
+    while (pipelines_done.load(.acquire) == before) : (waited_ms += 10) {
+        if (waited_ms > 10_000) return error.PipelineTimeout;
+        global_io.sleep(.fromMilliseconds(10), .awake) catch {};
     }
 
-    // 4. Read clipboard back
-    const result = ziguri.clipboard.readText(gpa) catch |err| {
-        std.debug.print("[FAIL] clipboard.readText: {s}\n", .{@errorName(err)});
-        return 1;
-    };
+    // 3. Read the clipboard back.
+    const result = try ziguri.clipboard.readText(gpa);
     defer gpa.free(result);
-
     const expected = "[✨ Rewritten: clean architecture in zig]";
     if (!std.mem.eql(u8, result, expected)) {
         std.debug.print("[FAIL] Expected clipboard '{s}', got '{s}'\n", .{ expected, result });
-        return 1;
+        return error.UnexpectedClipboard;
     }
+    std.debug.print("[ok] GhostPen Lite pipeline verified: hotkey -> clipboard read -> rewrite -> clipboard write -> paste\n", .{});
+}
 
-    std.debug.print("[ok] GhostPen Lite pipeline verified: clipboard read -> rewrite -> clipboard write -> paste\n", .{});
-    return 0;
+fn quitFromWorker(code: u8) void {
+    ziguri.App.quit(code);
 }

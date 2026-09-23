@@ -108,6 +108,10 @@ Command errors reject the promise with the Zig error name.
 
 By default, commands run on the GTK main thread. To avoid freezing the UI during slow operations (I/O, database queries, network requests), declare `pub const async_commands = .{ "cmd1", ... };` in `Commands`. Async commands run on a worker thread pool, receive `std.Io` if requested, and their reply is returned on the main thread without blocking the UI. Each async invocation gets its own arena allocator, freed after the reply is sent. (Cancellation is currently out of scope).
 
+Blocking work started outside a command (a hotkey or tray callback, which run on the main
+thread) goes to the same pool with `try ziguri.App.spawn(func, .{args...})`; an error it
+returns is logged. `App.quit` and `App.emit` are safe from any thread.
+
 ```zig
 pub const Commands = struct {
     pub const async_commands = .{ "export_notes" };
@@ -233,15 +237,25 @@ try ziguri.input.paste();
 
 ### Clipboard (`ziguri.clipboard`)
 
-Background and focused clipboard read/write for text and PNG images:
+Background and focused clipboard read/write for text and PNG images. Reads may wait
+for another app (or for our own main loop, when we own the selection), so the blocking
+reads belong on a worker thread and the main thread gets a callback API:
 
 ```zig
-const text = try ziguri.clipboard.readText(gpa);
-try ziguri.clipboard.writeText("New content");
+// Worker thread: an async command, or App.spawn from a hotkey/tray callback.
+const text = try ziguri.clipboard.readText(gpa);   // readImage -> ?PNG bytes
+try ziguri.clipboard.writeText("New content");      // any thread; writeImage(png)
+
+// Main thread: never blocks, callback runs on the main thread.
+ziguri.clipboard.readTextAsync(onText, null);        // readImageAsync
 ```
 
-- **Wayland:** Background clipboard via `ext_data_control_v1` (with `zwlr_data_control_v1` fallback).
-- **X11 / Focused:** `GdkClipboard` (`setText`, `readTextAsync`, `setTexture`, `readTextureAsync`).
+- `readText`/`readImage` on the main thread return `error.WouldBlockMainThread`.
+- **Wayland:** background reads (no window focus needed) via `ext_data_control_v1` on a
+  private Wayland connection. Writes go through `GdkClipboard`.
+- **X11 / no data-control:** `GdkClipboard`; worker reads are handed to the main loop.
+- When this process owns the selection (it offers a per-process marker MIME type), reads
+  return the data we last wrote without a round-trip.
 
 ### Dialogs (`ziguri.dialog`)
 
@@ -363,7 +377,7 @@ Automatic thread-safe routing of `std.log` to stderr and `$XDG_DATA_HOME/<app_id
 | Dev server + hot reload / production build | ✅ `zig build dev` (Vite + Zig file watcher & reload) / `zig build` (defaults to `ReleaseSafe`) |
 | Dialogs (open/save file) | ✅ `GtkFileDialog` |
 | System notifications | ✅ `GNotification` |
-| Clipboard (background & focused) | ✅ `GdkClipboard` (X11) + Data Control protocol (Wayland) |
+| Clipboard (background & focused) | ✅ `GdkClipboard` (X11) + ext-data-control reads (Wayland) |
 | Global shortcuts | ✅ `XGrabKey` (X11) + `GlobalShortcuts` portal (Wayland) |
 | Input injection | ✅ `XTest` (X11) + virtual keyboard protocol (Wayland) |
 | Updater | ◐ signed manifests + unpacking; no download/install flow |

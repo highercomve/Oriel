@@ -48,6 +48,13 @@ async function main() {
       results.push({ module: "windows+menu", ok: false, detail: String(e) });
     }
 
+    try {
+      const clip = await ziguri.invoke("clipboard_roundtrip");
+      results.push({ module: "clipboard r/w", ok: clip.ok, detail: clip.detail });
+    } catch (e) {
+      results.push({ module: "clipboard r/w", ok: false, detail: String(e) });
+    }
+
     results.push(...(await securityChecks()));
 
     try {

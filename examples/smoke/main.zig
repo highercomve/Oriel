@@ -31,7 +31,21 @@ const Commands = struct {
         };
     }
 
-    pub const async_commands = .{ "async_sleep" };
+    pub const async_commands = .{ "async_sleep", "clipboard_roundtrip" };
+
+    /// Write then read back the clipboard in-process, from a worker thread
+    /// (the path async commands and hotkey handlers use). Must not hang:
+    /// this process owns the selection it reads.
+    pub fn clipboard_roundtrip(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {
+        if (!ziguri.options.clipboard) return .{ .ok = true, .detail = "clipboard plugin disabled" };
+        const text = try std.fmt.allocPrint(gpa, "ziguri smoke clipboard {d}", .{std.c.getpid()});
+        try ziguri.clipboard.writeText(text);
+        const back = try ziguri.clipboard.readText(gpa);
+        return .{
+            .ok = std.mem.eql(u8, back, text),
+            .detail = try std.fmt.allocPrint(gpa, "wrote \"{s}\", read back \"{s}\" from a worker thread", .{ text, back }),
+        };
+    }
 
     pub fn async_sleep(_: std.mem.Allocator, local_io: std.Io, args: struct { ms: u32 }) ![]const u8 {
         const timeout: std.Io.Timeout = .{

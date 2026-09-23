@@ -303,9 +303,24 @@ pub fn setMenu(items: []const @import("../modules/menu.zig").MenuItem, on_action
 }
 
 /// Quit the running application with `code` as the process exit status.
+/// Safe to call from any thread.
 pub fn quit(code: u8) void {
     exit_code = code;
+    // GApplication is not thread-safe: from a worker, quit via the main loop.
+    if (glib.MainContext.default().isOwner() != 0) {
+        quitNow();
+    } else {
+        _ = glib.idleAdd(&quitIdle, null);
+    }
+}
+
+fn quitNow() void {
     if (gtk_app) |app| gio.Application.quit(app.as(gio.Application));
+}
+
+fn quitIdle(_: ?*anyopaque) callconv(.c) c_int {
+    quitNow();
+    return 0; // one-shot
 }
 
 pub fn showWindow() void {
@@ -320,6 +335,29 @@ pub fn hideWindow() void {
 pub fn toggleWindow() void {
     const w = main_window orelse return;
     if (w.as(gtk.Widget).getVisible() != 0 and w.isActive() != 0) hideWindow() else showWindow();
+}
+
+/// Run `func(args...)` on the worker pool: blocking work started from the
+/// main thread outside a command, e.g. a hotkey or tray callback that reads
+/// the clipboard. An error returned by `func` is logged.
+pub fn spawn(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !void {
+    const pool = worker_pool orelse return error.AppNotRunning;
+    const Job = struct {
+        task: ThreadPool.Task,
+        args: @TypeOf(args),
+
+        fn run(task: *ThreadPool.Task) void {
+            const self: *@This() = @fieldParentPtr("task", task);
+            defer std.heap.smp_allocator.destroy(self);
+            const result = @call(.auto, func, self.args);
+            if (@typeInfo(@TypeOf(result)) == .error_union) {
+                _ = result catch |err| log.err("background task failed: {s}", .{@errorName(err)});
+            }
+        }
+    };
+    const job = try std.heap.smp_allocator.create(Job);
+    job.* = .{ .task = .{ .run_fn = &Job.run }, .args = args };
+    pool.post(&job.task);
 }
 
 /// Send `payload` (any JSON-serializable value) to `ziguri.listen(name, …)`
