@@ -180,19 +180,21 @@ pub const WaylandInput = struct {
     seat: *wl.Seat,
     vk: *zwp.VirtualKeyboardV1,
 
-    pub fn init(gpa: std.mem.Allocator) !WaylandInput {
-        var globals: Globals = undefined;
-        try globals.init(gpa);
-        errdefer globals.deinit();
+    /// Initialize in place: `Globals.init` registers a registry listener
+    /// that points at `self.globals`, so the struct must not be moved (or
+    /// returned by value) afterwards.
+    pub fn init(self: *WaylandInput, gpa: std.mem.Allocator) !void {
+        try self.globals.init(gpa);
+        errdefer self.globals.deinit();
 
-        const manager = (try globals.bind(zwp.VirtualKeyboardManagerV1, 1)) orelse return error.NoVirtualKeyboardManager;
-        errdefer manager.destroy();
+        self.manager = (try self.globals.bind(zwp.VirtualKeyboardManagerV1, 1)) orelse return error.NoVirtualKeyboardManager;
+        errdefer self.manager.destroy();
 
-        const seat = (try globals.bind(wl.Seat, 7)) orelse return error.NoSeat;
-        errdefer seat.destroy();
+        self.seat = (try self.globals.bind(wl.Seat, 7)) orelse return error.NoSeat;
+        errdefer self.seat.destroy();
 
-        const vk = try manager.createVirtualKeyboard(seat);
-        errdefer vk.destroy();
+        self.vk = try self.manager.createVirtualKeyboard(self.seat);
+        errdefer self.vk.destroy();
 
         const keymap_str = try defaultKeymap(gpa);
         defer gpa.free(keymap_str);
@@ -202,15 +204,8 @@ pub const WaylandInput = struct {
         const written = std.c.write(fd, keymap_str.ptr, keymap_str.len);
         if (written < 0) return error.KeymapWriteFailed;
 
-        vk.keymap(.xkb_v1, fd, @intCast(keymap_str.len));
-        if (globals.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
-
-        return .{
-            .globals = globals,
-            .manager = manager,
-            .seat = seat,
-            .vk = vk,
-        };
+        self.vk.keymap(.xkb_v1, fd, @intCast(keymap_str.len));
+        if (self.globals.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
     }
 
     pub fn deinit(self: *WaylandInput) void {
@@ -225,7 +220,8 @@ pub const WaylandInput = struct {
 pub fn keyCombo(combo: []const u8) !void {
     const is_wayland = std.c.getenv("WAYLAND_DISPLAY") != null;
     if (is_wayland) {
-        var wl_input = WaylandInput.init(std.heap.c_allocator) catch |err| {
+        var wl_input: WaylandInput = undefined;
+        wl_input.init(std.heap.c_allocator) catch |err| {
             if (xtestAvailable()) return keyComboX11(combo);
             return err;
         };
@@ -296,7 +292,8 @@ pub fn keyComboX11(combo: []const u8) !void {
 pub fn typeText(text: []const u8) !void {
     const is_wayland = std.c.getenv("WAYLAND_DISPLAY") != null;
     if (is_wayland) {
-        var wl_input = WaylandInput.init(std.heap.c_allocator) catch |err| {
+        var wl_input: WaylandInput = undefined;
+        wl_input.init(std.heap.c_allocator) catch |err| {
             if (xtestAvailable()) return typeTextX11(text);
             return err;
         };

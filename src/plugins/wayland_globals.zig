@@ -17,6 +17,8 @@ pub const Globals = struct {
     gpa: std.mem.Allocator,
 
     /// Connect and do one roundtrip so every global has been announced.
+    /// The registry listener keeps a pointer to `self`: initialize the
+    /// `Globals` where it will live and never copy or move it afterwards.
     pub fn init(self: *Globals, gpa: std.mem.Allocator) !void {
         self.* = .{ .display = try wl.Display.connect(null), .registry = undefined, .gpa = gpa };
         errdefer self.display.disconnect();
