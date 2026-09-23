@@ -69,7 +69,7 @@ decisions), `IDEA.md` (motivation, architecture), then the code:
 ## Build and test commands
 
 ```sh
-scripts/gen-bindings.sh                  # once: GTK/WebKit bindings -> deps/gobject (needs xsltproc)
+# (optional) scripts/gen-bindings.sh + --fork=deps/gobject/bindings: bindings from this machine's GIR files
 zig build check                          # type-check only, ~1 s: use this while iterating
 zig build test                           # framework unit tests (repo root)
 

@@ -61,24 +61,37 @@ The framework and the apps built with it are separate Zig packages:
 | `examples/smoke/` | **App:** checks every module (own package) |
 | `examples/ghostpen-lite/` | **App:** hotkey -> read clipboard -> rewrite -> paste pipeline (own package) |
 
-## Setup
+## Working on Oriel itself
 
 ```sh
-scripts/gen-bindings.sh      # once: GTK/WebKit bindings from /usr/share/gir-1.0
+zig build check              # type-check (~1 s)
 zig build test               # framework unit tests
 ```
 
-`scripts/gen-bindings.sh` uses `zig` from `PATH` (or `$ZIG`) and needs `xsltproc`.
+Dependencies, including prebuilt GTK/WebKit bindings (zig-gobject, GNOME 50),
+come from the Zig package manager. To use bindings generated from your own
+system's GIR files instead (newer GTK/WebKit APIs), run
+`scripts/gen-bindings.sh` (needs `xsltproc`) and build with
+`--fork=deps/gobject/bindings`.
 
 ## Building an app
 
-An app depends on oriel and calls `addApp` (see `examples/react`):
+An app is a normal Zig package that depends on Oriel through the Zig package
+manager and calls `addApp` (see `examples/react`). Add the dependency with:
+
+```sh
+zig fetch --save git+https://github.com/highercomve/Oriel
+```
+
+That records Oriel's URL and hash in your `build.zig.zon`; `zig build`
+downloads it and its dependencies (GTK/WebKit bindings, zigimg, http.zig,
+zig-wayland, SQLite) into Zig's global cache. Pin a commit or tag by appending
+`#<ref>` to the URL. You need the system libraries installed: GTK 4 and
+WebKitGTK 6.0 (development packages), plus Node.js for Vite frontends.
 
 ```zig
-// build.zig.zon
-.dependencies = .{ .oriel = .{ .path = "../.." } },
-
 // build.zig
+const std = @import("std");
 const oriel = @import("oriel");
 pub fn build(b: *std.Build) void {
     const dep = b.dependency("oriel", .{ .target = target, .optimize = optimize, .tray = false });
@@ -89,6 +102,9 @@ pub fn build(b: *std.Build) void {
     });
 }
 ```
+
+The examples in this repository use `.path = "../.."` instead, so they build
+against the working tree while developing Oriel itself.
 
 That gives the app these steps:
 

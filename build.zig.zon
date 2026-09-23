@@ -4,8 +4,13 @@
     .fingerprint = 0x7fe3da8e54e532b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        // Generated locally by scripts/gen-bindings.sh (zig-gobject v0.3.2).
-        .gobject = .{ .path = "deps/gobject/bindings" },
+        // zig-gobject v0.3.2 prebuilt bindings (GNOME 50: GTK 4, WebKit 6, JSC 6, Soup 3).
+        // For bindings generated from this machine's GIR files instead, run
+        // scripts/gen-bindings.sh and build with --fork=deps/gobject/bindings.
+        .gobject = .{
+            .url = "https://github.com/ianprime0509/zig-gobject/releases/download/v0.3.2/bindings-gnome50.tar.zst",
+            .hash = "gobject-0.3.2-Skun7LD1fwF1wmLVmZnH0Qx_Bhkmfau25skjhPLoljHj",
+        },
         .zigimg = .{
             .url = "git+https://github.com/zigimg/zigimg#b99b9d48899e90ef330f143b096e31cc245ea70a",
             .hash = "zigimg-0.1.0-8_eo2qgrGADPGfefrNQ9fHU7Xy_5oXEHC7tv3eXDZtc_",
@@ -23,5 +28,5 @@
             .hash = "N-V-__8AAGVtrgCcOcmjrOJnagmnRyMrcKaOo09KbU-vu8w8",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand" },
+    .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand", "LICENSE-MIT", "LICENSE-APACHE", "README.md" },
 }
