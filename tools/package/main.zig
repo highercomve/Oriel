@@ -222,6 +222,20 @@ fn resizeIconsCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !
         return 1;
     };
 
+    resizeIcons(gpa, io, src_png, dest_dir, brand_dir) catch |err| {
+        std.debug.print("error: resize-icons failed: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    return 0;
+}
+
+pub fn resizeIcons(
+    gpa: std.mem.Allocator,
+    io: Io,
+    src_png: []const u8,
+    dest_dir: []const u8,
+    brand_dir: ?[]const u8,
+) !void {
     try Dir.cwd().createDirPath(io, dest_dir);
 
     // Check if input is from the default oriel brand icons
@@ -255,15 +269,12 @@ fn resizeIconsCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !
                 defer gpa.free(data);
                 try Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = data });
             }
-            return 0;
+            return;
         }
     }
 
     // Custom PNG: resize using zigimg (pure Zig) with fallback to convert/magick
-    const src_data = Dir.cwd().readFileAlloc(io, src_png, gpa, .limited(50 * 1024 * 1024)) catch |err| {
-        std.debug.print("error: resize-icons: cannot read {s}: {s}\n", .{ src_png, @errorName(err) });
-        return 1;
-    };
+    const src_data = try Dir.cwd().readFileAlloc(io, src_png, gpa, .limited(50 * 1024 * 1024));
     defer gpa.free(src_data);
 
     var zigimg_success = false;
@@ -281,7 +292,8 @@ fn resizeIconsCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !
 
                 icons.downsampleRgba32(img.pixels.rgba32, img.width, img.height, dst_img.pixels.rgba32, size, size);
 
-                const write_buf = try gpa.alloc(u8, size * size * 8 + 4096);
+                const sz: usize = size;
+                const write_buf = try gpa.alloc(u8, sz * sz * 8 + 4096);
                 defer gpa.free(write_buf);
 
                 const encoded = dst_img.writeToMemory(gpa, write_buf, .{ .png = .{} }) catch {
@@ -307,18 +319,16 @@ fn resizeIconsCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !
                 .argv = &.{ "convert", src_png, "-resize", size_str, out_path },
             }) catch |err| {
                 std.debug.print("error: resize-icons: failed to run convert/magick: {s}\n", .{@errorName(err)});
-                return 1;
+                return err;
             };
             defer gpa.free(res.stdout);
             defer gpa.free(res.stderr);
             if (res.term != .exited or res.term.exited != 0) {
                 std.debug.print("error: resize-icons: resizer failed for size {d}: {s}\n", .{ size, res.stderr });
-                return 1;
+                return error.ResizeFailed;
             }
         }
     }
-
-    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -442,11 +452,19 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8, p
         return 1;
     };
     const target_name = name orelse "app";
+    metadata.validateExeName(target_name) catch |err| {
+        std.debug.print("error: package-nfpm: invalid package name '{s}': {s}\n", .{ target_name, @errorName(err) });
+        return 1;
+    };
     const target_bin_src = binary_src orelse {
         std.debug.print("error: missing --bin\n", .{});
         return 1;
     };
     const target_bin_name = binary_name orelse target_name;
+    metadata.validateExeName(target_bin_name) catch |err| {
+        std.debug.print("error: package-nfpm: invalid binary name '{s}': {s}\n", .{ target_bin_name, @errorName(err) });
+        return 1;
+    };
     const target_desktop_src = desktop_src orelse {
         std.debug.print("error: missing --desktop\n", .{});
         return 1;
@@ -517,6 +535,130 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8, p
 // package-appimage
 // ---------------------------------------------------------------------------
 
+pub fn streamCopyFile(io: Io, src_dir: Dir, src_path: []const u8, dest_file: std.Io.File) !void {
+    var src_file = try src_dir.openFile(io, src_path, .{});
+    defer src_file.close(io);
+
+    var buf: [64 * 1024]u8 = undefined;
+    var bufs = [_][]u8{&buf};
+    while (true) {
+        const n = src_file.readStreaming(io, &bufs) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        if (n == 0) break;
+        try dest_file.writeStreamingAll(io, buf[0..n]);
+    }
+}
+
+fn resolveAppImageRuntime(
+    gpa: std.mem.Allocator,
+    io: Io,
+    cache_dir: []const u8,
+    arch: []const u8,
+    runtime_override: ?[]const u8,
+) ![]const u8 {
+    // 1. User-supplied override CLI argument:
+    // A user-supplied override (--runtime-override / ORIEL_APPIMAGE_RUNTIME) is trusted as given
+    // (the user chose it); keep only the ELF check for it and bypass sha256 verification.
+    if (runtime_override) |ro| {
+        if (ro.len > 0 and pathExists(io, ro)) {
+            const rt = try gpa.dupe(u8, ro);
+            errdefer gpa.free(rt);
+            if (!try verifyElfFile(io, rt)) {
+                std.debug.print("error: runtime override file '{s}' is not a valid ELF binary\n", .{rt});
+                return error.InvalidElfBinary;
+            }
+            return rt;
+        } else {
+            std.debug.print("error: runtime override file not found: {s}\n", .{ro});
+            return error.FileNotFound;
+        }
+    }
+
+    // 2. User-supplied environment override (ORIEL_APPIMAGE_RUNTIME):
+    // A user-supplied override is trusted as given; only check ELF.
+    if (getEnv("ORIEL_APPIMAGE_RUNTIME")) |env_rt| {
+        if (env_rt.len > 0 and pathExists(io, env_rt)) {
+            const rt = try gpa.dupe(u8, env_rt);
+            errdefer gpa.free(rt);
+            if (!try verifyElfFile(io, rt)) {
+                std.debug.print("error: ORIEL_APPIMAGE_RUNTIME '{s}' is not a valid ELF binary\n", .{rt});
+                return error.InvalidElfBinary;
+            }
+            return rt;
+        } else {
+            std.debug.print("error: ORIEL_APPIMAGE_RUNTIME file not found: {s}\n", .{env_rt});
+            return error.FileNotFound;
+        }
+    }
+
+    // 3. Pinned release tag (20251108) and SHA-256 constant per arch
+    const expected_hash = appimage.getPinnedRuntimeHash(arch) orelse {
+        std.debug.print("error: unknown or unsupported architecture '{s}' for AppImage runtime\n", .{arch});
+        return error.UnsupportedArchitecture;
+    };
+
+    // Pinned cache filename includes tag: runtime-20251108-<arch>
+    const cached_rt = try std.fmt.allocPrint(gpa, "{s}/runtime-{s}-{s}", .{ cache_dir, appimage.APPIMAGE_RUNTIME_TAG, arch });
+    errdefer gpa.free(cached_rt);
+
+    // Verify existing cached file every time it is used
+    if (pathExists(io, cached_rt)) {
+        if (try appimage.verifyFileSha256(io, cached_rt, expected_hash)) {
+            if (try verifyElfFile(io, cached_rt)) {
+                return cached_rt;
+            }
+        }
+        // Hash mismatch or invalid cached file: delete it and re-download
+        _ = Dir.cwd().deleteFile(io, cached_rt) catch {};
+    }
+
+    // Download pinned runtime
+    try Dir.cwd().createDirPath(io, cache_dir);
+    const url = try std.fmt.allocPrint(gpa, appimage.APPIMAGE_RUNTIME_URL_TEMPLATE, .{arch});
+    defer gpa.free(url);
+
+    const temp_rt = try std.fmt.allocPrint(gpa, "{s}.tmp.{d}", .{ cached_rt, Io.Timestamp.now(io, .real).nanoseconds });
+    defer {
+        _ = Dir.cwd().deleteFile(io, temp_rt) catch {};
+        gpa.free(temp_rt);
+    }
+
+    const dl_res = std.process.run(gpa, io, .{
+        .argv = &.{ "curl", "-fsSL", "-o", temp_rt, url },
+    }) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("error: 'curl' is required to download AppImage runtime but was not found in PATH\n", .{});
+        } else {
+            std.debug.print("error: failed to execute curl: {s}\n", .{@errorName(err)});
+        }
+        return err;
+    };
+    defer gpa.free(dl_res.stdout);
+    defer gpa.free(dl_res.stderr);
+    if (dl_res.term != .exited or dl_res.term.exited != 0) {
+        std.debug.print("error: curl download failed from {s}:\n{s}\n", .{ url, dl_res.stderr });
+        return error.DownloadFailed;
+    }
+
+    // Verify SHA-256 of downloaded temp file BEFORE renaming into cache
+    if (!try appimage.verifyFileSha256(io, temp_rt, expected_hash)) {
+        std.debug.print("error: SHA-256 mismatch for downloaded AppImage runtime from {s}\n", .{url});
+        return error.HashMismatch;
+    }
+
+    if (!try verifyElfFile(io, temp_rt)) {
+        std.debug.print("error: downloaded file from {s} is not a valid ELF binary\n", .{url});
+        return error.InvalidElfBinary;
+    }
+
+    try Dir.cwd().setFilePermissions(io, temp_rt, @enumFromInt(0o755), .{});
+    try Dir.cwd().rename(temp_rt, Dir.cwd(), cached_rt, io);
+
+    return cached_rt;
+}
+
 fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !u8 {
     var out_dir: ?[]const u8 = null;
     var filename: ?[]const u8 = null;
@@ -563,6 +705,8 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u
         } else if (std.mem.eql(u8, arg, "--cache-dir") and i + 1 < args.len) {
             i += 1;
             cache_dir = std.mem.span(args[i]);
+        } else if (std.mem.startsWith(u8, arg, "--runtime-override=")) {
+            runtime_override = arg["--runtime-override=".len..];
         } else if (std.mem.eql(u8, arg, "--runtime-override") and i + 1 < args.len) {
             i += 1;
             runtime_override = std.mem.span(args[i]);
@@ -592,76 +736,19 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u
     const target_app_id = app_id orelse "app";
     const target_exe_name = exe_name orelse target_app_id;
 
+    metadata.validateExeName(target_exe_name) catch |err| {
+        std.debug.print("error: package-appimage: invalid --exe-name '{s}': {s}\n", .{ target_exe_name, @errorName(err) });
+        return 1;
+    };
+
     try Dir.cwd().createDirPath(io, dest_dir);
 
-    // 1. Locate or download AppImage type-2 runtime
-    var runtime_file: ?[]const u8 = null;
-    defer if (runtime_file) |rf| gpa.free(rf);
-
-    if (runtime_override) |ro| {
-        if (ro.len > 0 and pathExists(io, ro)) {
-            runtime_file = try gpa.dupe(u8, ro);
-        } else {
-            std.debug.print("error: runtime override file not found: {s}\n", .{ro});
-            return 1;
-        }
-    }
-    if (runtime_file == null) {
-        if (getEnv("ORIEL_APPIMAGE_RUNTIME")) |env_rt| {
-            if (env_rt.len > 0 and pathExists(io, env_rt)) {
-                runtime_file = try gpa.dupe(u8, env_rt);
-            } else {
-                std.debug.print("error: ORIEL_APPIMAGE_RUNTIME file not found: {s}\n", .{env_rt});
-                return 1;
-            }
-        }
-    }
-    if (runtime_file == null) {
-        const cached_rt = try std.fmt.allocPrint(gpa, "{s}/runtime-{s}", .{ cache_dir, arch });
-        if (!pathExists(io, cached_rt)) {
-            try Dir.cwd().createDirPath(io, cache_dir);
-            const url = try std.fmt.allocPrint(gpa, appimage.APPIMAGE_RUNTIME_URL_TEMPLATE, .{arch});
-            defer gpa.free(url);
-
-            const temp_rt = try std.fmt.allocPrint(gpa, "{s}.tmp.{d}", .{ cached_rt, Io.Timestamp.now(io, .real).nanoseconds });
-            defer {
-                _ = Dir.cwd().deleteFile(io, temp_rt) catch {};
-                gpa.free(temp_rt);
-            }
-
-            const dl_res = std.process.run(gpa, io, .{
-                .argv = &.{ "curl", "-fsSL", "-o", temp_rt, url },
-            }) catch |err| {
-                if (err == error.FileNotFound) {
-                    std.debug.print("error: 'curl' is required to download AppImage runtime but was not found in PATH\n", .{});
-                } else {
-                    std.debug.print("error: failed to execute curl: {s}\n", .{@errorName(err)});
-                }
-                return 1;
-            };
-            defer gpa.free(dl_res.stdout);
-            defer gpa.free(dl_res.stderr);
-            if (dl_res.term != .exited or dl_res.term.exited != 0) {
-                std.debug.print("error: curl download failed from {s}:\n{s}\n", .{ url, dl_res.stderr });
-                return 1;
-            }
-
-            if (!try verifyElfFile(io, temp_rt)) {
-                std.debug.print("error: downloaded file from {s} is not a valid ELF binary\n", .{url});
-                return 1;
-            }
-
-            try Dir.cwd().setFilePermissions(io, temp_rt, @enumFromInt(0o755), .{});
-            try Dir.cwd().rename(temp_rt, Dir.cwd(), cached_rt, io);
-        }
-        runtime_file = cached_rt;
-    }
-
-    // Verify ELF magic before use
-    if (!try verifyElfFile(io, runtime_file.?)) {
-        std.debug.print("error: runtime file '{s}' is not a valid ELF binary\n", .{runtime_file.?});
+    // 1. Locate or download AppImage type-2 runtime (single owned allocation, freed by defer)
+    const runtime_file = resolveAppImageRuntime(gpa, io, cache_dir, arch, runtime_override) catch |err| {
+        std.debug.print("error: package-appimage: AppImage runtime: {s}\n", .{@errorName(err)});
         return 1;
-    }
+    };
+    defer gpa.free(runtime_file);
 
     // 2. Assemble AppDir inside dest_dir
     const app_dir = try std.fmt.allocPrint(gpa, "{s}/AppDir", .{dest_dir});
@@ -730,13 +817,9 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u
 
     const usr_bin_dest = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ usr_bin_dir, target_exe_name });
     defer gpa.free(usr_bin_dest);
-    const bin_data = try Dir.cwd().readFileAlloc(io, target_bin, gpa, .limited(100 * 1024 * 1024));
-    defer gpa.free(bin_data);
-    {
-        var bin_file = try Dir.cwd().createFile(io, usr_bin_dest, .{ .permissions = @enumFromInt(0o755) });
-        defer bin_file.close(io);
-        try bin_file.writeStreamingAll(io, bin_data);
-    }
+    try Dir.cwd().copyFile(target_bin, Dir.cwd(), usr_bin_dest, io, .{
+        .permissions = @enumFromInt(0o755),
+    });
 
     // 3. Create squashfs image with mksquashfs
     const squashfs_path = try std.fmt.allocPrint(gpa, "{s}/app.squashfs", .{dest_dir});
@@ -756,26 +839,20 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u
         return 1;
     }
 
-    // 4. Prepend runtime to create AppImage
+    // 4. Prepend runtime to create AppImage (streaming copies)
     const appimage_out = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dest_dir, target_filename });
     defer gpa.free(appimage_out);
-
-    const rt_data = try Dir.cwd().readFileAlloc(io, runtime_file.?, gpa, .limited(10 * 1024 * 1024));
-    defer gpa.free(rt_data);
-    const sq_data = try Dir.cwd().readFileAlloc(io, squashfs_path, gpa, .limited(100 * 1024 * 1024));
-    defer gpa.free(sq_data);
 
     {
         var appimage_file = try Dir.cwd().createFile(io, appimage_out, .{ .permissions = @enumFromInt(0o755) });
         defer appimage_file.close(io);
-        try appimage_file.writeStreamingAll(io, rt_data);
-        try appimage_file.writeStreamingAll(io, sq_data);
+        try streamCopyFile(io, Dir.cwd(), runtime_file, appimage_file);
+        try streamCopyFile(io, Dir.cwd(), squashfs_path, appimage_file);
     }
 
     // Clean up temporary AppDir and squashfs image
     _ = Dir.cwd().deleteTree(io, app_dir) catch {};
     _ = Dir.cwd().deleteFile(io, squashfs_path) catch {};
-
 
     return 0;
 }
@@ -814,20 +891,13 @@ fn installDesktopEntryCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]con
     };
     const target_id = app_id orelse "app";
 
-    // Determine target data home
-    var data_home_allocated: ?[]const u8 = null;
-    defer if (data_home_allocated) |dh| gpa.free(dh);
-
-    const data_home = if (getEnv("XDG_DATA_HOME")) |xdg|
-        xdg
-    else if (getEnv("HOME")) |home| blk: {
-        const allocated = try std.fmt.allocPrint(gpa, "{s}/.local/share", .{home});
-        data_home_allocated = allocated;
-        break :blk allocated;
-    } else {
-        std.debug.print("error: install-desktop-entry: neither XDG_DATA_HOME nor HOME is set\n", .{});
+    // Determine target data home per XDG Base Directory specification:
+    // Relative paths and empty values are invalid and treated as unset -> fall back to $HOME/.local/share
+    const data_home = resolveDataHome(gpa, global_environ_map) catch {
+        std.debug.print("error: install-desktop-entry: neither XDG_DATA_HOME nor HOME is set to a valid absolute path\n", .{});
         return 1;
     };
+    defer gpa.free(data_home);
 
     // Install .desktop file
     const apps_dir = try std.fmt.allocPrint(gpa, "{s}/applications", .{data_home});
@@ -881,10 +951,171 @@ fn installDesktopEntryCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]con
     return 0;
 }
 
+pub fn resolveDataHome(gpa: std.mem.Allocator, env_map: *const std.process.Environ.Map) ![]const u8 {
+    if (env_map.get("XDG_DATA_HOME")) |xdg| {
+        if (xdg.len > 0 and std.fs.path.isAbsolute(xdg)) {
+            return try gpa.dupe(u8, xdg);
+        }
+    }
+    if (env_map.get("HOME")) |home| {
+        if (home.len > 0 and std.fs.path.isAbsolute(home)) {
+            return try std.fmt.allocPrint(gpa, "{s}/.local/share", .{home});
+        }
+    }
+    return error.NoValidDataHome;
+}
+
 test {
     std.testing.refAllDecls(metadata);
     std.testing.refAllDecls(desktop);
     std.testing.refAllDecls(nfpm);
     std.testing.refAllDecls(appimage);
     std.testing.refAllDecls(icons);
+}
+
+test "resizeIcons custom png no overflow on large sizes" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    // Create a 300x300 solid color PNG image
+    const src_png_path = try std.fs.path.join(allocator, &.{ tmp_path, "custom-icon.png" });
+    defer allocator.free(src_png_path);
+
+    var img = try zigimg.Image.create(allocator, 300, 300, .rgba32);
+    defer img.deinit(allocator);
+    @memset(img.pixels.rgba32, .{ .r = 42, .g = 84, .b = 168, .a = 255 });
+
+    const png_buf = try allocator.alloc(u8, 300 * 300 * 8 + 4096);
+    defer allocator.free(png_buf);
+    const encoded = try img.writeToMemory(allocator, png_buf, .{ .png = .{} });
+    try Dir.cwd().writeFile(io, .{ .sub_path = src_png_path, .data = encoded });
+
+    // Output dir for resized icons
+    const out_dir = try std.fs.path.join(allocator, &.{ tmp_path, "icons" });
+    defer allocator.free(out_dir);
+
+    try resizeIcons(allocator, io, src_png_path, out_dir, null);
+
+    // Verify all icon sizes were generated, especially 128, 256, 512
+    for (icons.icon_sizes) |size| {
+        const out_icon = try std.fmt.allocPrint(allocator, "{s}/{d}x{d}.png", .{ out_dir, size, size });
+        defer allocator.free(out_icon);
+        const data = try Dir.cwd().readFileAlloc(io, out_icon, allocator, .limited(10 * 1024 * 1024));
+        defer allocator.free(data);
+        try std.testing.expect(data.len > 0);
+
+        var read_img = try zigimg.Image.fromMemory(allocator, data);
+        defer read_img.deinit(allocator);
+        try std.testing.expectEqual(@as(usize, size), read_img.width);
+        try std.testing.expectEqual(@as(usize, size), read_img.height);
+    }
+}
+
+test "resolveDataHome pure path resolution" {
+    const allocator = std.testing.allocator;
+
+    // 1. Valid absolute XDG_DATA_HOME
+    {
+        var env = std.process.Environ.Map.init(allocator);
+        defer env.deinit();
+        try env.put("XDG_DATA_HOME", "/custom/data/home");
+        try env.put("HOME", "/home/user");
+
+        const res = try resolveDataHome(allocator, &env);
+        defer allocator.free(res);
+        try std.testing.expectEqualStrings("/custom/data/home", res);
+    }
+
+    // 2. Empty XDG_DATA_HOME -> fallback to $HOME/.local/share
+    {
+        var env = std.process.Environ.Map.init(allocator);
+        defer env.deinit();
+        try env.put("XDG_DATA_HOME", "");
+        try env.put("HOME", "/home/user");
+
+        const res = try resolveDataHome(allocator, &env);
+        defer allocator.free(res);
+        try std.testing.expectEqualStrings("/home/user/.local/share", res);
+    }
+
+    // 3. Relative XDG_DATA_HOME -> invalid and ignored per XDG spec -> fallback to $HOME/.local/share
+    {
+        var env = std.process.Environ.Map.init(allocator);
+        defer env.deinit();
+        try env.put("XDG_DATA_HOME", "relative/path");
+        try env.put("HOME", "/home/user");
+
+        const res = try resolveDataHome(allocator, &env);
+        defer allocator.free(res);
+        try std.testing.expectEqualStrings("/home/user/.local/share", res);
+    }
+
+    // 4. Dot XDG_DATA_HOME -> invalid and ignored
+    {
+        var env = std.process.Environ.Map.init(allocator);
+        defer env.deinit();
+        try env.put("XDG_DATA_HOME", ".");
+        try env.put("HOME", "/home/user");
+
+        const res = try resolveDataHome(allocator, &env);
+        defer allocator.free(res);
+        try std.testing.expectEqualStrings("/home/user/.local/share", res);
+    }
+
+    // 5. Unset XDG_DATA_HOME -> fallback to $HOME/.local/share
+    {
+        var env = std.process.Environ.Map.init(allocator);
+        defer env.deinit();
+        try env.put("HOME", "/home/alice");
+
+        const res = try resolveDataHome(allocator, &env);
+        defer allocator.free(res);
+        try std.testing.expectEqualStrings("/home/alice/.local/share", res);
+    }
+
+    // 6. Both unset -> error
+    {
+        var env = std.process.Environ.Map.init(allocator);
+        defer env.deinit();
+
+        try std.testing.expectError(error.NoValidDataHome, resolveDataHome(allocator, &env));
+    }
+}
+
+test "streamCopyFile creates exact byte copy" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const src_path = try std.fs.path.join(allocator, &.{ tmp_path, "src.bin" });
+    defer allocator.free(src_path);
+    const dest_path = try std.fs.path.join(allocator, &.{ tmp_path, "dest.bin" });
+    defer allocator.free(dest_path);
+
+    // Create 128 KiB of test data
+    const test_data = try allocator.alloc(u8, 128 * 1024);
+    defer allocator.free(test_data);
+    for (test_data, 0..) |*b, idx| {
+        b.* = @truncate(idx * 31 + 7);
+    }
+    try Dir.cwd().writeFile(io, .{ .sub_path = src_path, .data = test_data });
+
+    var dest_file = try Dir.cwd().createFile(io, dest_path, .{ .permissions = @enumFromInt(0o644) });
+    defer dest_file.close(io);
+    try streamCopyFile(io, Dir.cwd(), src_path, dest_file);
+
+    const copied_data = try Dir.cwd().readFileAlloc(io, dest_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(copied_data);
+    try std.testing.expectEqualSlices(u8, test_data, copied_data);
 }
