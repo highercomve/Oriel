@@ -4,7 +4,7 @@
 //! supporting the same `MenuItem` shape as the system tray.
 //!
 //! Example:
-//!     try ziguri.menu.set(app, &.{
+//!     try oriel.menu.set(app, &.{
 //!         .{ .submenu = .{
 //!             .label = "File",
 //!             .items = &.{
@@ -135,7 +135,7 @@ pub fn set(app: *gtk.Application, items: []const MenuItem, on_action: ActionCall
     gtk.Application.setMenubar(app, root_menu.as(gio.MenuModel));
 }
 
-pub fn check(_: std.mem.Allocator, _: anytype) !@import("../ziguri.zig").Check {
+pub fn check(_: std.mem.Allocator, _: anytype) !@import("../oriel.zig").Check {
     return .{
         .module = "menu",
         .ok = true,

@@ -5,7 +5,7 @@
 //! StatusNotifierItem host: KDE, GNOME with the AppIndicator extension,
 //! waybar, Quickshell, …
 //!
-//!     const tray = try ziguri.tray.Tray.create(gpa, .{
+//!     const tray = try oriel.tray.Tray.create(gpa, .{
 //!         .id = "com.example.App",
 //!         .title = "My App",
 //!         .icon = .{ .png = @embedFile("icon.png") },
@@ -27,7 +27,7 @@ const std = @import("std");
 const glib = @import("glib");
 const gio = @import("gio");
 const zigimg = @import("zigimg");
-const ziguri = @import("../ziguri.zig");
+const oriel = @import("../oriel.zig");
 
 const log = std.log.scoped(.tray);
 
@@ -395,7 +395,7 @@ pub const Tray = struct {
 
         if (std.mem.eql(u8, iface, item_iface)) {
             if (std.mem.eql(u8, method, "Activate") or std.mem.eql(u8, method, "SecondaryActivate")) {
-                if (self.on_activate) |f| f() else ziguri.App.toggleWindow();
+                if (self.on_activate) |f| f() else oriel.App.toggleWindow();
             }
             invocation.returnValue(null); // ContextMenu/Scroll: nothing to do
             return;
@@ -679,7 +679,7 @@ fn printVariant(gpa: std.mem.Allocator, v: *glib.Variant) ![]u8 {
     return gpa.dupe(u8, std.mem.span(text));
 }
 
-pub fn check(gpa: std.mem.Allocator, ctx: ziguri.CheckContext) !ziguri.Check {
+pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check {
     const pixmap = try pixmapFromImage(gpa, ctx.icon_png);
     defer pixmap.deinit(gpa);
     var menu: Menu = .init(gpa);

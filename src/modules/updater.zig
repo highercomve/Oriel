@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const Ed25519 = std.crypto.sign.Ed25519;
-const ziguri = @import("../ziguri.zig");
+const oriel = @import("../oriel.zig");
 
 pub const Manifest = struct {
     version: []const u8,
@@ -40,15 +40,15 @@ pub fn unpack(gpa: std.mem.Allocator, manifest: Manifest, payload_gz: []const u8
     return decompress.reader.allocRemaining(gpa, .unlimited);
 }
 
-/// 'ziguri update payload v0.0.1\n' x 8, gzip'd.
+/// 'oriel update payload v0.0.1\n' x 8, gzip'd.
 const test_payload_gz = [_]u8{
-    0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xab, 0xca, 0x4c, 0x2f, 0x2d, 0xca,
-    0x54, 0x28, 0x2d, 0x48, 0x49, 0x2c, 0x49, 0x55, 0x28, 0x48, 0xac, 0xcc, 0xc9, 0x4f, 0x4c, 0x51,
-    0x28, 0x33, 0xd0, 0x33, 0xd0, 0x33, 0xe4, 0xaa, 0x1a, 0x3e, 0x92, 0x00, 0xce, 0x45, 0xe5, 0x30,
-    0xe8, 0x00, 0x00, 0x00,
+    0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xcb, 0x2f, 0xca, 0x4c, 0xcd, 0x51,
+    0x28, 0x2d, 0x48, 0x49, 0x2c, 0x49, 0x55, 0x28, 0x48, 0xac, 0xcc, 0xc9, 0x4f, 0x4c, 0x51, 0x28,
+    0x33, 0xd0, 0x33, 0xd0, 0x33, 0xe4, 0xca, 0x1f, 0x06, 0x72, 0x00, 0x2d, 0x20, 0xe4, 0xcb, 0xe0,
+    0x00, 0x00, 0x00,
 };
 
-pub fn check(gpa: std.mem.Allocator, _: ziguri.CheckContext) !ziguri.Check {
+pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     // Release side: hash the payload, write and sign the manifest.
     const key_pair = try Ed25519.KeyPair.generateDeterministic([_]u8{42} ** Ed25519.KeyPair.seed_length);
     var digest: [32]u8 = undefined;
@@ -72,7 +72,7 @@ pub fn check(gpa: std.mem.Allocator, _: ziguri.CheckContext) !ziguri.Check {
 
     return .{
         .module = "updater",
-        .ok = rejected and std.mem.startsWith(u8, payload, "ziguri update payload"),
+        .ok = rejected and std.mem.startsWith(u8, payload, "oriel update payload"),
         .detail = try std.fmt.allocPrint(gpa, "manifest v{s} Ed25519-verified, tampered copy {s}; payload {d} B gz -> {d} B", .{
             manifest.version,
             if (rejected) "rejected" else "ACCEPTED (bug)",

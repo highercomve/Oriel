@@ -1,30 +1,30 @@
-//! Smoke-test app: opens a ziguri window whose page calls into Zig to run the
+//! Smoke-test app: opens a oriel window whose page calls into Zig to run the
 //! check of every enabled module and shows the results.
 //!
-//!   ziguri-smoke              GUI
-//!   ziguri-smoke --auto-quit  GUI, quits once the page reports (exit 1 on failure)
-//!   ziguri-smoke --check      headless: run the checks, print them, exit
+//!   oriel-smoke              GUI
+//!   oriel-smoke --auto-quit  GUI, quits once the page reports (exit 1 on failure)
+//!   oriel-smoke --check      headless: run the checks, print them, exit
 
 const std = @import("std");
-const ziguri = @import("ziguri");
-const app = @import("ziguri_app");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
 
 const media_port: u16 = 17893;
-const app_id = "dev.ziguri.Smoke";
+const app_id = "dev.oriel.Smoke";
 const icon_png = @embedFile("web/icon.png");
 
 var io: std.Io = undefined;
-var media: if (ziguri.options.media_server) ziguri.media_server.Server else void = undefined;
+var media: if (oriel.options.media_server) oriel.media_server.Server else void = undefined;
 
 const Commands = struct {
     pub fn greet(gpa: std.mem.Allocator, args: struct { name: []const u8 }) ![]const u8 {
         return std.fmt.allocPrint(gpa, "Hello, {s}! (from Zig {s})", .{ args.name, @import("builtin").zig_version_string });
     }
 
-    pub fn status(gpa: std.mem.Allocator) !struct { checks: []ziguri.Check, media_url: ?[]const u8 } {
+    pub fn status(gpa: std.mem.Allocator) !struct { checks: []oriel.Check, media_url: ?[]const u8 } {
         return .{
-            .checks = try ziguri.checkAll(gpa, context()),
-            .media_url = if (ziguri.options.media_server)
+            .checks = try oriel.checkAll(gpa, context()),
+            .media_url = if (oriel.options.media_server)
                 try std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}/ping", .{media_port})
             else
                 null,
@@ -37,10 +37,10 @@ const Commands = struct {
     /// (the path async commands and hotkey handlers use). Must not hang:
     /// this process owns the selection it reads.
     pub fn clipboard_roundtrip(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {
-        if (!ziguri.options.clipboard) return .{ .ok = true, .detail = "clipboard plugin disabled" };
-        const text = try std.fmt.allocPrint(gpa, "ziguri smoke clipboard {d}", .{std.c.getpid()});
-        try ziguri.clipboard.writeText(text);
-        const back = try ziguri.clipboard.readText(gpa);
+        if (!oriel.options.clipboard) return .{ .ok = true, .detail = "clipboard plugin disabled" };
+        const text = try std.fmt.allocPrint(gpa, "oriel smoke clipboard {d}", .{std.c.getpid()});
+        try oriel.clipboard.writeText(text);
+        const back = try oriel.clipboard.readText(gpa);
         return .{
             .ok = std.mem.eql(u8, back, text),
             .detail = try std.fmt.allocPrint(gpa, "wrote \"{s}\", read back \"{s}\" from a worker thread", .{ text, back }),
@@ -64,12 +64,12 @@ const Commands = struct {
 
     /// Round-trip for the events check: Zig -> JS `ping` event.
     pub fn emit_ping(_: std.mem.Allocator, args: struct { n: i64 }) void {
-        ziguri.App.emit("ping", .{ .n = args.n });
+        oriel.App.emit("ping", .{ .n = args.n });
     }
 
     pub fn test_windows_and_menu(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {
-        if (ziguri.options.menu) {
-            const menu_items = [_]ziguri.menu.MenuItem{
+        if (oriel.options.menu) {
+            const menu_items = [_]oriel.menu.MenuItem{
                 .{
                     .submenu = .{
                         .label = "File",
@@ -84,10 +84,10 @@ const Commands = struct {
             const Handler = struct {
                 fn onAction(_: []const u8, _: ?bool) void {}
             };
-            try ziguri.App.setMenu(&menu_items, Handler.onAction);
+            try oriel.App.setMenu(&menu_items, Handler.onAction);
         }
 
-        const win = try ziguri.App.openWindow(.{
+        const win = try oriel.App.openWindow(.{
             .label = "test-sec",
             .title = "Test Secondary Window",
             .width = 400,
@@ -95,7 +95,7 @@ const Commands = struct {
             .resizable = false,
         });
 
-        const found = ziguri.App.getWindow("test-sec");
+        const found = oriel.App.getWindow("test-sec");
         if (found == null or found.? != win) {
             return .{ .ok = false, .detail = "failed to get window by label" };
         }
@@ -108,8 +108,8 @@ const Commands = struct {
 
         win.emit("test_event", .{ .ok = true });
 
-        ziguri.App.closeWindow("test-sec");
-        if (ziguri.App.getWindow("test-sec") != null) {
+        oriel.App.closeWindow("test-sec");
+        if (oriel.App.getWindow("test-sec") != null) {
             return .{ .ok = false, .detail = "window still exists after close" };
         }
 
@@ -122,15 +122,15 @@ const Commands = struct {
     /// Called by the page in --auto-quit mode once everything has rendered.
     pub fn done(_: std.mem.Allocator, args: struct { failed: u32, report: []const u8 }) void {
         std.debug.print("{s}\n", .{args.report});
-        ziguri.App.quit(if (args.failed == 0) 0 else 1);
+        oriel.App.quit(if (args.failed == 0) 0 else 1);
     }
 };
 
-fn context() ziguri.CheckContext {
+fn context() oriel.CheckContext {
     return .{
         .io = io,
         .icon_png = icon_png,
-        .media_port = if (ziguri.options.media_server) media_port else null,
+        .media_port = if (oriel.options.media_server) media_port else null,
         .app_id = app_id,
     };
 }
@@ -146,18 +146,18 @@ pub fn main(init: std.process.Init) !u8 {
         } else if (std.mem.eql(u8, arg, "--auto-quit")) {
             auto_quit = true;
         } else {
-            std.debug.print("usage: ziguri-smoke [--check | --auto-quit]\n", .{});
+            std.debug.print("usage: oriel-smoke [--check | --auto-quit]\n", .{});
             return 2;
         }
     }
 
-    if (ziguri.options.media_server) try media.start(io, init.gpa, media_port);
-    defer if (ziguri.options.media_server) media.stop();
+    if (oriel.options.media_server) try media.start(io, init.gpa, media_port);
+    defer if (oriel.options.media_server) media.stop();
 
     if (headless) {
         var arena_state = std.heap.ArenaAllocator.init(init.gpa);
         defer arena_state.deinit();
-        const checks = try ziguri.checkAll(arena_state.allocator(), context());
+        const checks = try oriel.checkAll(arena_state.allocator(), context());
         var failed: usize = 0;
         for (checks) |c| {
             if (!c.ok) failed += 1;
@@ -166,15 +166,15 @@ pub fn main(init: std.process.Init) !u8 {
         return if (failed == 0) 0 else 1;
     }
 
-    const config_gui: ziguri.App.Config = .{
+    const config_gui: oriel.App.Config = .{
         .id = app_id,
-        .title = "ziguri smoke test",
+        .title = "oriel smoke test",
         .assets = app.assets,
         // The security checks navigate to remote URLs: never hand them to a browser.
         .security = .{ .external_links = .deny },
     };
     comptime var config_auto = config_gui;
     config_auto.start = "index.html?auto-quit";
-    const api: ziguri.App.Api = .{ .commands = Commands };
-    return if (auto_quit) ziguri.App.run(init.io, api, config_auto) else ziguri.App.run(init.io, api, config_gui);
+    const api: oriel.App.Api = .{ .commands = Commands };
+    return if (auto_quit) oriel.App.run(init.io, api, config_auto) else oriel.App.run(init.io, api, config_gui);
 }

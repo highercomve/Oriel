@@ -24,10 +24,10 @@ const glib = @import("glib");
 const gobject = @import("gobject");
 const gio = @import("gio");
 const Globals = @import("wayland_globals.zig").Globals;
-const ziguri = @import("../ziguri.zig");
+const oriel = @import("../oriel.zig");
 
 const ext = wayland.client.ext;
-const log = std.log.scoped(.ziguri);
+const log = std.log.scoped(.oriel);
 
 /// How long a worker waits for the main thread (a GdkClipboard transfer
 /// from another app, or the main loop not running at all).
@@ -48,7 +48,7 @@ const Kind = enum { text, image };
 
 /// Per-process marker MIME type offered next to our clipboard content.
 fn markerMime(buf: []u8) [:0]const u8 {
-    return std.fmt.bufPrintZ(buf, "application/x-ziguri-owner-{d}", .{std.c.getpid()}) catch unreachable;
+    return std.fmt.bufPrintZ(buf, "application/x-oriel-owner-{d}", .{std.c.getpid()}) catch unreachable;
 }
 
 fn isWayland() bool {
@@ -493,7 +493,7 @@ pub fn writeImage(png_bytes: []const u8) !void {
     _ = try MainCall.run(std.heap.smp_allocator, .write_image, png_bytes);
 }
 
-pub fn check(gpa: std.mem.Allocator, _: ziguri.CheckContext) !ziguri.Check {
+pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     var globals: Globals = undefined;
     const wayland_ok = if (globals.init(gpa)) |_| true else |_| false;
     defer if (wayland_ok) globals.deinit();
@@ -528,7 +528,7 @@ pub fn check(gpa: std.mem.Allocator, _: ziguri.CheckContext) !ziguri.Check {
 test "markerMime is per process" {
     var buf: [64]u8 = undefined;
     const m = markerMime(&buf);
-    try std.testing.expect(std.mem.startsWith(u8, m, "application/x-ziguri-owner-"));
+    try std.testing.expect(std.mem.startsWith(u8, m, "application/x-oriel-owner-"));
     var pid_buf: [16]u8 = undefined;
     try std.testing.expect(std.mem.endsWith(u8, m, try std.fmt.bufPrint(&pid_buf, "-{d}", .{std.c.getpid()})));
 }
@@ -551,7 +551,7 @@ test "remember keeps one kind" {
 
 test "clipboard roundtrip from a worker under xvfb" {
     // Needs a display: only inside scripts/headless.sh (X11).
-    if (std.c.getenv("ZIGURI_HEADLESS_INNER") == null) return;
+    if (std.c.getenv("ORIEL_HEADLESS_INNER") == null) return;
     // The test plays the app: it initializes GTK and runs the main loop.
     const gtk = @import("gtk");
     if (gtk.initCheck() == 0) return error.SkipZigTest;
@@ -560,7 +560,7 @@ test "clipboard roundtrip from a worker under xvfb" {
         var result: ?anyerror![]u8 = null;
         var finished: std.atomic.Value(bool) = .init(false);
         fn run() void {
-            result = if (writeText("ziguri clipboard test 12345")) readText(std.testing.allocator) else |e| e;
+            result = if (writeText("oriel clipboard test 12345")) readText(std.testing.allocator) else |e| e;
             finished.store(true, .release);
             glib.MainContext.default().wakeup();
         }
@@ -576,5 +576,5 @@ test "clipboard roundtrip from a worker under xvfb" {
 
     const text = try W.result.?;
     defer std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings("ziguri clipboard test 12345", text);
+    try std.testing.expectEqualStrings("oriel clipboard test 12345", text);
 }

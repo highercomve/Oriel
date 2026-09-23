@@ -3,13 +3,13 @@ const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt
 const autoQuit = location.search.includes("auto-quit");
 
 $("greet").onclick = async () => {
-  $("greet-out").textContent = await ziguri.invoke("greet", { name: $("name").value });
+  $("greet-out").textContent = await oriel.invoke("greet", { name: $("name").value });
 };
 
 async function main() {
   const results = [];
   try {
-    const status = await ziguri.invoke("status");
+    const status = await oriel.invoke("status");
     results.push(...status.checks);
 
     if (status.media_url) {
@@ -24,13 +24,13 @@ async function main() {
       }
     }
 
-    const greeting = await ziguri.invoke("greet", { name: "IPC" });
+    const greeting = await oriel.invoke("greet", { name: "IPC" });
     results.push({ module: "ipc", ok: greeting.startsWith("Hello, IPC!"), detail: `invoke("greet") → ${greeting}` });
 
     // Async IPC: sleep 500ms while sync_ping answers immediately in parallel
     const asyncStart = performance.now();
-    const sleepPromise = ziguri.invoke("async_sleep", { ms: 500 });
-    const syncRes = await ziguri.invoke("sync_ping");
+    const sleepPromise = oriel.invoke("async_sleep", { ms: 500 });
+    const syncRes = await oriel.invoke("sync_ping");
     const syncElapsed = performance.now() - asyncStart;
     const sleepRes = await sleepPromise;
     const totalElapsed = performance.now() - asyncStart;
@@ -42,14 +42,14 @@ async function main() {
     });
 
     try {
-      const winCheck = await ziguri.invoke("test_windows_and_menu");
+      const winCheck = await oriel.invoke("test_windows_and_menu");
       results.push({ module: "windows+menu", ok: winCheck.ok, detail: winCheck.detail });
     } catch (e) {
       results.push({ module: "windows+menu", ok: false, detail: String(e) });
     }
 
     try {
-      const clip = await ziguri.invoke("clipboard_roundtrip");
+      const clip = await oriel.invoke("clipboard_roundtrip");
       results.push({ module: "clipboard r/w", ok: clip.ok, detail: clip.detail });
     } catch (e) {
       results.push({ module: "clipboard r/w", ok: false, detail: String(e) });
@@ -58,7 +58,7 @@ async function main() {
     results.push(...(await securityChecks()));
 
     try {
-      await ziguri.invoke("no_such_command");
+      await oriel.invoke("no_such_command");
       results.push({ module: "ipc errors", ok: false, detail: "unknown command resolved" });
     } catch (e) {
       results.push({ module: "ipc errors", ok: String(e).includes("UnknownCommand"), detail: `unknown command rejected: ${e}` });
@@ -73,7 +73,7 @@ async function main() {
 
   if (autoQuit) {
     const report = results.map((c) => `[${c.ok ? "ok" : "FAIL"}] ${c.module.padEnd(16)} ${c.detail}`).join("\n");
-    await ziguri.invoke("done", { failed: results.filter((c) => !c.ok).length, report });
+    await oriel.invoke("done", { failed: results.filter((c) => !c.ok).length, report });
   }
 }
 main();
@@ -118,8 +118,8 @@ async function securityChecks() {
 
   // Zig -> JS events.
   const got = await new Promise((resolve) => {
-    const off = ziguri.listen("ping", (p) => { off(); resolve(p); });
-    ziguri.invoke("emit_ping", { n: 42 });
+    const off = oriel.listen("ping", (p) => { off(); resolve(p); });
+    oriel.invoke("emit_ping", { n: 42 });
     setTimeout(() => resolve(null), 1000);
   });
   check("events", got?.n === 42, got ? `listen("ping") received ${JSON.stringify(got)}` : "no event received");

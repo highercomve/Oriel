@@ -1,10 +1,10 @@
 const std = @import("std");
-const ziguri = @import("ziguri");
+const oriel = @import("oriel");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const dep = b.dependency("ziguri", .{
+    const dep = b.dependency("oriel", .{
         .target = target,
         .optimize = optimize,
         .global_shortcut = true,
@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
         .notification = true,
     });
 
-    _ = ziguri.addApp(b, dep, .{
+    _ = oriel.addApp(b, dep, .{
         .name = "ghostpen-lite",
         .root_source_file = b.path("src/main.zig"),
         .frontend = .{

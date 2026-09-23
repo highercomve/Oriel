@@ -4,7 +4,7 @@
 //! and a lightweight thread-safe JSON settings store (`Store`, Tauri `plugin-store` equivalent).
 //!
 //! Example:
-//!     const store = try ziguri.store.Store.open(gpa, "com.example.App", "settings");
+//!     const store = try oriel.store.Store.open(gpa, "com.example.App", "settings");
 //!     defer store.deinit();
 //!
 //!     try store.set("theme", "dark");
@@ -266,8 +266,8 @@ pub const Store = struct {
     }
 };
 
-pub fn check(gpa: std.mem.Allocator, _: anytype) !@import("../ziguri.zig").Check {
-    const test_path = "/tmp/ziguri_check_store.json";
+pub fn check(gpa: std.mem.Allocator, _: anytype) !@import("../oriel.zig").Check {
+    const test_path = "/tmp/oriel_check_store.json";
     _ = glib.unlink(test_path);
     defer _ = glib.unlink(test_path);
 
@@ -297,18 +297,18 @@ pub fn check(gpa: std.mem.Allocator, _: anytype) !@import("../ziguri.zig").Check
 
 test "Store operations and persistence" {
     const gpa = std.testing.allocator;
-    const test_path = "/tmp/ziguri_test_store.json";
+    const test_path = "/tmp/oriel_test_store.json";
 
     // Clean up before test
     _ = glib.unlink(test_path);
 
     var store = try Store.openPath(gpa, test_path);
-    try store.set("name", "ziguri");
+    try store.set("name", "oriel");
     try store.set("version", 1);
     try store.set("active", true);
     try store.set("pi", 3.14);
 
-    try std.testing.expectEqualStrings("ziguri", store.getString("name").?);
+    try std.testing.expectEqualStrings("oriel", store.getString("name").?);
     try std.testing.expectEqual(@as(i64, 1), store.getInt("version", i64).?);
     try std.testing.expectEqual(true, store.getBool("active").?);
     try std.testing.expect(store.has("pi"));
@@ -322,7 +322,7 @@ test "Store operations and persistence" {
         _ = glib.unlink(test_path);
     }
 
-    try std.testing.expectEqualStrings("ziguri", reopened.getString("name").?);
+    try std.testing.expectEqualStrings("oriel", reopened.getString("name").?);
     try std.testing.expectEqual(@as(i64, 1), reopened.getInt("version", i64).?);
     try std.testing.expectEqual(true, reopened.getBool("active").?);
 

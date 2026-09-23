@@ -1,10 +1,10 @@
 .{
-    .name = .ziguri_smoke,
+    .name = .oriel_smoke,
     .version = "0.0.0",
-    .fingerprint = 0x95d9a54ac2aa6099,
+    .fingerprint = 0xc769d43aaa61741,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .ziguri = .{ .path = "../.." },
+        .oriel = .{ .path = "../.." },
     },
     .paths = .{ "build.zig", "build.zig.zon", "main.zig", "web" },
 }

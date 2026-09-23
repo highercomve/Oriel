@@ -8,7 +8,7 @@
 //! - **IPC scope** (Tauri "capabilities"): the app's own pages may call every
 //!   command. A remote origin may call commands only if a capability lists
 //!   it, and only the commands that capability names.
-//! - **Bridge injection**: `window.ziguri` only exists on pages allowed to
+//! - **Bridge injection**: `window.oriel` only exists on pages allowed to
 //!   use IPC.
 //! - **CSP**: a Content-Security-Policy header on every `app://` response.
 //!
@@ -152,7 +152,7 @@ fn isExternalScheme(url: []const u8) bool {
 }
 
 /// WebKit user-script URL patterns (`scheme://host/*`) for the pages that
-/// get the `window.ziguri` bridge. Match patterns can't express ports, so a
+/// get the `window.oriel` bridge. Match patterns can't express ports, so a
 /// port is dropped here; `commandAllowed` still checks the exact origin on
 /// every call.
 pub fn bridgePatterns(comptime sec: Security, comptime dev_url: ?[]const u8) []const [:0]const u8 {

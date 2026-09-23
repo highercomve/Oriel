@@ -5,7 +5,7 @@ const gtk = @import("gtk");
 const gio = @import("gio");
 const glib = @import("glib");
 const gobject = @import("gobject");
-const ziguri = @import("../ziguri.zig");
+const oriel = @import("../oriel.zig");
 
 pub const OpenOptions = struct {
     title: []const u8 = "Open File",
@@ -27,7 +27,7 @@ pub fn openFile(gpa: std.mem.Allocator, options: OpenOptions) !?[]u8 {
     dialog.setTitle(title_z.ptr);
     dialog.setModal(@intFromBool(options.modal));
 
-    const parent = if (ziguri.App.main_window) |w| @as(?*gtk.Window, @ptrCast(w)) else null;
+    const parent = if (oriel.App.main_window) |w| @as(?*gtk.Window, @ptrCast(w)) else null;
 
     const State = struct {
         loop: *glib.MainLoop,
@@ -73,7 +73,7 @@ pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
     dialog.setTitle(title_z.ptr);
     dialog.setModal(@intFromBool(options.modal));
 
-    const parent = if (ziguri.App.main_window) |w| @as(?*gtk.Window, @ptrCast(w)) else null;
+    const parent = if (oriel.App.main_window) |w| @as(?*gtk.Window, @ptrCast(w)) else null;
 
     const State = struct {
         loop: *glib.MainLoop,
@@ -109,10 +109,10 @@ pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
     return state.result;
 }
 
-pub fn check(gpa: std.mem.Allocator, _: ziguri.CheckContext) !ziguri.Check {
+pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     const dialog = gtk.FileDialog.new();
     defer dialog.unref();
-    dialog.setTitle("ziguri check");
+    dialog.setTitle("oriel check");
     return .{
         .module = "dialog",
         .ok = true,

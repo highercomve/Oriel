@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 // Generated from the Zig `Commands` struct (zig build types / zig build dev).
-import { invoke, listen, type Commands } from "./ziguri";
+import { invoke, listen, type Commands } from "./oriel";
 
 type Note = Commands["list_notes"]["result"][number];
 type AppInfo = Commands["app_info"]["result"];

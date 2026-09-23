@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const linux = std.os.linux;
-const ziguri = @import("../ziguri.zig");
+const oriel = @import("../oriel.zig");
 
 pub const Event = struct {
     kind: enum { created, modified, deleted, other },
@@ -52,9 +52,9 @@ pub const Watcher = struct {
     }
 };
 
-pub fn check(gpa: std.mem.Allocator, _: ziguri.CheckContext) !ziguri.Check {
+pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     var dir_buf: [64]u8 = undefined;
-    const dir = try std.fmt.bufPrintZ(&dir_buf, "/tmp/ziguri-fswatch-{d}", .{linux.getpid()});
+    const dir = try std.fmt.bufPrintZ(&dir_buf, "/tmp/oriel-fswatch-{d}", .{linux.getpid()});
     _ = linux.mkdir(dir, 0o700);
     defer _ = linux.rmdir(dir);
 

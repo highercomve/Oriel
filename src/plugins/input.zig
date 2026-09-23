@@ -10,7 +10,7 @@ const wayland = @import("wayland");
 const zwp = wayland.client.zwp;
 const wl = wayland.client.wl;
 const Globals = @import("wayland_globals.zig").Globals;
-const ziguri = @import("../ziguri.zig");
+const oriel = @import("../oriel.zig");
 const global_shortcut = @import("global_shortcut.zig");
 
 pub const xkb = @cImport(@cInclude("xkbcommon/xkbcommon.h"));
@@ -199,7 +199,7 @@ pub const WaylandInput = struct {
         const keymap_str = try defaultKeymap(gpa);
         defer gpa.free(keymap_str);
 
-        const fd = try std.posix.memfd_create("ziguri-keymap", 0);
+        const fd = try std.posix.memfd_create("oriel-keymap", 0);
         defer _ = std.c.close(fd);
         const written = std.c.write(fd, keymap_str.ptr, keymap_str.len);
         if (written < 0) return error.KeymapWriteFailed;
@@ -392,7 +392,7 @@ pub fn paste() !void {
     try keyCombo("ctrl+v");
 }
 
-pub fn check(gpa: std.mem.Allocator, _: ziguri.CheckContext) !ziguri.Check {
+pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     const keymap = try defaultKeymap(gpa);
     defer gpa.free(keymap);
 
@@ -430,7 +430,7 @@ test "evdev key mapping" {
 
 test "headless x11 xtest input synthesis" {
     // Only run when headlessly running in Xvfb
-    if (std.c.getenv("ZIGURI_HEADLESS_INNER") == null) return;
+    if (std.c.getenv("ORIEL_HEADLESS_INNER") == null) return;
     if (!xtestAvailable()) return;
 
     const disp = x11.XOpenDisplay(null) orelse return;

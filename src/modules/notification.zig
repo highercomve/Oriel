@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const gio = @import("gio");
-const ziguri = @import("../ziguri.zig");
+const oriel = @import("../oriel.zig");
 
 pub const NotificationOptions = struct {
     id: ?[]const u8 = null,
@@ -11,7 +11,7 @@ pub const NotificationOptions = struct {
 };
 
 pub fn notify(options: NotificationOptions) !void {
-    const app = ziguri.App.gtk_app orelse return error.NoApp;
+    const app = oriel.App.gtk_app orelse return error.NoApp;
     var title_buf: [256]u8 = undefined;
     const title_z = try std.fmt.bufPrintSentinel(&title_buf, "{s}", .{options.title}, 0);
     const notif = gio.Notification.new(title_z.ptr);
@@ -33,8 +33,8 @@ pub fn notify(options: NotificationOptions) !void {
     app_gapp.sendNotification(if (id_z) |p| p.ptr else null, notif);
 }
 
-pub fn check(gpa: std.mem.Allocator, _: ziguri.CheckContext) !ziguri.Check {
-    const notif = gio.Notification.new("ziguri check");
+pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
+    const notif = gio.Notification.new("oriel check");
     defer notif.unref();
     notif.setBody("notification smoke check");
     return .{

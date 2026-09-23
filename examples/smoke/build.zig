@@ -1,14 +1,14 @@
 const std = @import("std");
-const ziguri = @import("ziguri");
+const oriel = @import("oriel");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     // Every module and plugin is enabled by default; the smoke test checks them all.
-    const dep = b.dependency("ziguri", .{ .target = target, .optimize = optimize });
+    const dep = b.dependency("oriel", .{ .target = target, .optimize = optimize });
 
-    _ = ziguri.addApp(b, dep, .{
-        .name = "ziguri-smoke",
+    _ = oriel.addApp(b, dep, .{
+        .name = "oriel-smoke",
         .root_source_file = b.path("main.zig"),
         // A static page: no npm, no dev server, embedded as-is.
         .frontend = .{

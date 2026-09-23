@@ -1,4 +1,4 @@
-# ziguri — library investigation
+# Oriel — library investigation
 
 Researched 2026-09-23 for **Zig 0.16.0**. Companion to [IDEA.md](./IDEA.md).
 Driven by what ghostpen and ghostreel actually use.
@@ -20,7 +20,7 @@ Driven by what ghostpen and ghostreel actually use.
      built on GTK3, and GTK3 and GTK4 cannot be loaded into the same process.
      We must implement the tray ourselves as StatusNotifierItem + DBusMenu over
      GDBus. Tauri avoids the problem by staying on GTK3 and WebKit2GTK-4.1.
-  2. **ziguri can beat Tauri on Wayland.** Ghostpen currently gives up global
+  2. **oriel can beat Tauri on Wayland.** Ghostpen currently gives up global
      hotkeys and synthetic paste on Wayland. Both are reachable today through
      the GlobalShortcuts portal (available on this Hyprland box) plus Wayland's
      virtual-keyboard protocol, or libei.
@@ -82,11 +82,11 @@ They are still switched on per app in `build.zig`, so an app that doesn't use
 | Directory walking | `std.fs.Dir.walk` | walkdir |
 | Build-time asset embedding | `@embedFile` + `build.zig` | tauri codegen |
 | Command → TypeScript declarations | `comptime` + `@typeInfo` | tauri macros + specta |
-| CLI parsing (the `ziguri` tool) | own ~350-line `comptime` parser over `std.process.Args` | clap |
+| CLI parsing (the `oriel` tool) | own ~350-line `comptime` parser over `std.process.Args` | clap |
 
 **CLI parser:** a small `comptime` framework (~350 lines). Subcommands are a `union`, options are `struct` fields,
 a `run()` method dispatches, and help text is generated with `comptime`. It's
-the same idea as ziguri's command → TypeScript bindings, so the two can share
+the same idea as oriel's command → TypeScript bindings, so the two can share
 reflection helpers.
 
 Not in `std`: **file watching** (write it ourselves: inotify on Linux via
@@ -158,7 +158,7 @@ runtime itself is preinstalled on Windows 10/11.
 | quick-xml (FCP XML export) | hand-written writer | Low |
 | image (jpeg) | zigimg | Low |
 
-## Packaging / tooling (external tools, driven from `build.zig` or a `ziguri` CLI)
+## Packaging / tooling (external tools, driven from `build.zig` or a `oriel` CLI)
 
 | Target | Tool |
 |---|---|

@@ -1,4 +1,4 @@
-# ziguri — a Tauri-like framework in Zig
+# Oriel — a Tauri-like framework in Zig
 
 Status: **scaffolded** (2026-09-23): core + all modules build and pass smoke checks on Linux. See README.md.
 See [LIBRARIES.md](./LIBRARIES.md) for the dependency investigation.
@@ -16,7 +16,7 @@ See [LIBRARIES.md](./LIBRARIES.md) for the dependency investigation.
 ## Architecture inspiration: libghostty
 
 Ghostty keeps all real logic in a Zig core exposed via a **C ABI**, with thin
-**native shells per OS** (Swift/AppKit on macOS, GTK on Linux). ziguri would follow
+**native shells per OS** (Swift/AppKit on macOS, GTK on Linux). oriel would follow
 the same split:
 
 - **Core (Zig, C ABI):** IPC/command dispatch, asset serving, security policy,
@@ -26,7 +26,7 @@ the same split:
 
 ## What Tauri is, and the Zig equivalent
 
-| Layer | Tauri (Rust) | ziguri |
+| Layer | Tauri (Rust) | oriel |
 |---|---|---|
 | Windowing / event loop | `tao` | GTK4 / Cocoa / Win32 |
 | Webview | `wry` | WebKitGTK 6.0 / WKWebView / WebView2 (COM) |
@@ -82,6 +82,8 @@ pub const commands = struct {
   injection, no single-instance, weaker Windows webview story.
 - **Verve** — solo pure-Zig Tauri/Wails alternative, young.
   https://dev.to/sirhco/why-i-built-verve-crafting-a-pure-zig-full-stack-alternative-to-tauri-and-wails-4e3c
+- **Ziew** — Zig framework on system webviews (WebKit, WebView2), "desktop apps in
+  kilobytes" (220 KB hello world). https://github.com/ziews/ziew
 - **Electrobun 2.0** — TS-first, but the native side can be Zig. https://electrobun.dev/
 - **Bindings:** `happystraw/zig-webview`, `thechampagne/webview-zig`
   (webview/webview), `webui-dev/zig-webui`.
@@ -91,7 +93,7 @@ pub const commands = struct {
 - **ghostpen** needs: tray, global hotkey, input injection (enigo), clipboard
   incl. images, single-instance, HTTP to OpenAI-compatible endpoints. Tray,
   hotkey, input injection and single-instance on Linux are exactly what Native
-  SDK lacks — ziguri's differentiator.
+  SDK lacks — oriel's differentiator.
 - **ghostreel** needs: Windows + Linux, dialogs, updater, local HTTP server with
   video range requests, and a large Rust backend (whisper.cpp, llama.cpp,
   SQLite + sqlite-vec — all C, easy from Zig; reqwest/tokio/axum/notify/blake3/

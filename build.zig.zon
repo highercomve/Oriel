@@ -1,7 +1,7 @@
 .{
-    .name = .ziguri,
+    .name = .oriel,
     .version = "0.0.0",
-    .fingerprint = 0x52f53db1c9fc133c,
+    .fingerprint = 0x7fe3da8e54e532b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // Generated locally by scripts/gen-bindings.sh (zig-gobject v0.3.2).

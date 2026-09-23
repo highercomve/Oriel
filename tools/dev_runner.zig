@@ -1,4 +1,4 @@
-//! Dev runner for ziguri apps.
+//! Dev runner for oriel apps.
 //! Runs the frontend dev server (e.g. Vite) and keeps it alive while watching
 //! `src/` for Zig file changes, rebuilding the app, and restarting it.
 
@@ -97,12 +97,12 @@ pub fn main(init: std.process.Init) !u8 {
     };
     const zig = zig_exe orelse "zig";
 
-    // Set ZIGURI_DEV_EXTERNAL=1 so the app knows Vite is managed by us
-    try init.environ_map.put("ZIGURI_DEV_EXTERNAL", "1");
+    // Set ORIEL_DEV_EXTERNAL=1 so the app knows Vite is managed by us
+    try init.environ_map.put("ORIEL_DEV_EXTERNAL", "1");
 
     // Start frontend dev server if specified
     if (dev_cmd.items.len > 0 and frontend_dir != null) {
-        std.debug.print("\x1b[36m[ziguri dev]\x1b[0m Starting frontend dev server: {s}...\n", .{dev_cmd.items[0]});
+        std.debug.print("\x1b[36m[oriel dev]\x1b[0m Starting frontend dev server: {s}...\n", .{dev_cmd.items[0]});
         const child = try std.process.spawn(io, .{
             .argv = dev_cmd.items,
             .cwd = .{ .path = frontend_dir.? },
@@ -126,7 +126,7 @@ pub fn main(init: std.process.Init) !u8 {
     try addWatchesRecursively(gpa, io, inotify_fd, project_dir);
 
     // Initial app launch
-    std.debug.print("\x1b[36m[ziguri dev]\x1b[0m Launching application: {s}\n", .{bin_path});
+    std.debug.print("\x1b[36m[oriel dev]\x1b[0m Launching application: {s}\n", .{bin_path});
     var full_app_argv: std.ArrayList([]const u8) = .empty;
     try full_app_argv.append(gpa, bin_path);
     try full_app_argv.appendSlice(gpa, app_args.items);
@@ -138,7 +138,7 @@ pub fn main(init: std.process.Init) !u8 {
     });
     global_app_child = app_child;
 
-    std.debug.print("\x1b[36m[ziguri dev]\x1b[0m Watching for changes in {s}...\n", .{watch_dir});
+    std.debug.print("\x1b[36m[oriel dev]\x1b[0m Watching for changes in {s}...\n", .{watch_dir});
 
     var event_buf: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
 
@@ -159,10 +159,10 @@ pub fn main(init: std.process.Init) !u8 {
                 if (checkChildExit(pid)) |exit_code| {
                     ac.id = null;
                     if (exit_code == 0) {
-                        std.debug.print("\x1b[36m[ziguri dev]\x1b[0m App closed. Exiting dev mode.\n", .{});
+                        std.debug.print("\x1b[36m[oriel dev]\x1b[0m App closed. Exiting dev mode.\n", .{});
                         return 0;
                     } else {
-                        std.debug.print("\x1b[33m[ziguri dev]\x1b[0m App exited with code {d}. Waiting for changes to restart...\n", .{exit_code});
+                        std.debug.print("\x1b[33m[oriel dev]\x1b[0m App exited with code {d}. Waiting for changes to restart...\n", .{exit_code});
                     }
                 }
             }
@@ -200,7 +200,7 @@ pub fn main(init: std.process.Init) !u8 {
         sleep_to.sleep(io) catch {};
         _ = linux.read(inotify_fd, &event_buf, event_buf.len);
 
-        std.debug.print("\x1b[36m[ziguri dev]\x1b[0m Change detected ({s}). Recompiling...\n", .{changed_name});
+        std.debug.print("\x1b[36m[oriel dev]\x1b[0m Change detected ({s}). Recompiling...\n", .{changed_name});
 
         // Kill currently running app
         if (app_child) |*ac| {
@@ -237,34 +237,34 @@ pub fn main(init: std.process.Init) !u8 {
             .cwd = .{ .path = project_dir },
             .environ_map = init.environ_map,
         }) catch |err| {
-            std.debug.print("\x1b[31m[ziguri dev]\x1b[0m Failed to spawn rebuild: {s}\n", .{@errorName(err)});
+            std.debug.print("\x1b[31m[oriel dev]\x1b[0m Failed to spawn rebuild: {s}\n", .{@errorName(err)});
             continue;
         };
 
         const term = build_child.wait(io) catch |err| {
-            std.debug.print("\x1b[31m[ziguri dev]\x1b[0m Rebuild wait error: {s}\n", .{@errorName(err)});
+            std.debug.print("\x1b[31m[oriel dev]\x1b[0m Rebuild wait error: {s}\n", .{@errorName(err)});
             continue;
         };
 
         switch (term) {
             .exited => |code| {
                 if (code == 0) {
-                    std.debug.print("\x1b[32m[ziguri dev]\x1b[0m Rebuilt successfully. Restarting app...\n", .{});
+                    std.debug.print("\x1b[32m[oriel dev]\x1b[0m Rebuilt successfully. Restarting app...\n", .{});
                     app_child = std.process.spawn(io, .{
                         .argv = full_app_argv.items,
                         .cwd = .{ .path = project_dir },
                         .environ_map = init.environ_map,
                     }) catch |err| blk: {
-                        std.debug.print("\x1b[31m[ziguri dev]\x1b[0m Failed to restart app: {s}\n", .{@errorName(err)});
+                        std.debug.print("\x1b[31m[oriel dev]\x1b[0m Failed to restart app: {s}\n", .{@errorName(err)});
                         break :blk null;
                     };
                     global_app_child = app_child;
                 } else {
-                    std.debug.print("\x1b[31m[ziguri dev]\x1b[0m Rebuild failed with code {d}. Waiting for code changes...\n", .{code});
+                    std.debug.print("\x1b[31m[oriel dev]\x1b[0m Rebuild failed with code {d}. Waiting for code changes...\n", .{code});
                 }
             },
             else => {
-                std.debug.print("\x1b[31m[ziguri dev]\x1b[0m Rebuild terminated abnormally.\n", .{});
+                std.debug.print("\x1b[31m[oriel dev]\x1b[0m Rebuild terminated abnormally.\n", .{});
             },
         }
     }
@@ -281,7 +281,7 @@ fn cleanupChildren(io: Io) void {
     }
     if (global_dev_child) |*dc| {
         if (dc.id) |pid| {
-            std.debug.print("\x1b[36m[ziguri dev]\x1b[0m Stopping frontend dev server...\n", .{});
+            std.debug.print("\x1b[36m[oriel dev]\x1b[0m Stopping frontend dev server...\n", .{});
             _ = posix.kill(pid, posix.SIG.TERM) catch {};
             dc.kill(io);
         }

@@ -7,15 +7,15 @@
 //!                                  -> clipboard, run on a worker inside the app (exit 0 = ok)
 
 const std = @import("std");
-const ziguri = @import("ziguri");
-const app = @import("ziguri_app");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
 
 const icon_png = @embedFile("icon.png");
 
 var global_io: std.Io = undefined;
 /// Pipelines finished (tests wait on it).
 var pipelines_done: std.atomic.Value(u32) = .init(0);
-var tray_instance: ?*ziguri.tray.Tray = null;
+var tray_instance: ?*oriel.tray.Tray = null;
 
 const Commands = struct {
     // Clipboard reads block (the selection owner may be another app, or
@@ -33,13 +33,13 @@ const Commands = struct {
 
     /// Full pipeline: read clipboard -> rewrite -> write back to clipboard -> paste.
     pub fn trigger_pipeline(gpa: std.mem.Allocator, local_io: std.Io) !struct { original: []const u8, rewritten: []const u8 } {
-        const original = try ziguri.clipboard.readText(gpa);
+        const original = try oriel.clipboard.readText(gpa);
         const transformed = try rewrite(gpa, local_io, .{ .text = original });
 
-        try ziguri.clipboard.writeText(transformed);
-        ziguri.input.paste() catch {};
+        try oriel.clipboard.writeText(transformed);
+        oriel.input.paste() catch {};
 
-        ziguri.App.emit("pipeline_completed", .{
+        oriel.App.emit("pipeline_completed", .{
             .original = original,
             .rewritten = transformed,
         });
@@ -51,15 +51,15 @@ const Commands = struct {
     }
 
     pub fn read_clipboard(gpa: std.mem.Allocator) ![]const u8 {
-        return try ziguri.clipboard.readText(gpa);
+        return try oriel.clipboard.readText(gpa);
     }
 
     pub fn write_clipboard(_: std.mem.Allocator, args: struct { text: []const u8 }) !void {
-        try ziguri.clipboard.writeText(args.text);
+        try oriel.clipboard.writeText(args.text);
     }
 
     pub fn send_notification(_: std.mem.Allocator, args: struct { title: []const u8, body: []const u8 }) !void {
-        try ziguri.notification.notify(.{
+        try oriel.notification.notify(.{
             .title = args.title,
             .body = args.body,
         });
@@ -67,14 +67,14 @@ const Commands = struct {
 
     pub fn done(_: std.mem.Allocator, args: struct { failed: u32, report: []const u8 }) void {
         std.debug.print("{s}\n", .{args.report});
-        ziguri.App.quit(if (args.failed == 0) 0 else 1);
+        oriel.App.quit(if (args.failed == 0) 0 else 1);
     }
 };
 
 /// Runs on the main thread: hand the (blocking) pipeline to a worker.
 fn onHotkey(id: []const u8) void {
-    ziguri.App.emit("hotkey_pressed", .{ .id = id });
-    ziguri.App.spawn(hotkeyPipeline, .{}) catch |err| {
+    oriel.App.emit("hotkey_pressed", .{ .id = id });
+    oriel.App.spawn(hotkeyPipeline, .{}) catch |err| {
         std.log.err("hotkey pipeline: {s}", .{@errorName(err)});
     };
 }
@@ -88,17 +88,17 @@ fn hotkeyPipeline() !void {
 
 fn onTrayMenu(id: []const u8, _: ?bool) void {
     if (std.mem.eql(u8, id, "toggle")) {
-        ziguri.App.toggleWindow();
+        oriel.App.toggleWindow();
     } else if (std.mem.eql(u8, id, "rewrite")) {
         onHotkey("tray_action");
     } else if (std.mem.eql(u8, id, "quit")) {
-        ziguri.App.quit(0);
+        oriel.App.quit(0);
     }
 }
 
 fn setup() anyerror!void {
     // 1. Register global shortcut CTRL+ALT+G
-    ziguri.global_shortcut.register(std.heap.smp_allocator, .{
+    oriel.global_shortcut.register(std.heap.smp_allocator, .{
         .id = "ghostpen_rewrite",
         .description = "GhostPen text rewrite hotkey",
         .trigger = "CTRL+ALT+G",
@@ -107,7 +107,7 @@ fn setup() anyerror!void {
     };
 
     // 2. Setup Tray icon
-    tray_instance = ziguri.tray.Tray.create(std.heap.smp_allocator, .{
+    tray_instance = oriel.tray.Tray.create(std.heap.smp_allocator, .{
         .id = "ghostpen-lite",
         .title = "GhostPen Lite",
         .icon = .{ .png = icon_png },
@@ -134,7 +134,7 @@ pub fn main(init: std.process.Init) !u8 {
         }
     }
 
-    const config_gui: ziguri.App.Config = .{
+    const config_gui: oriel.App.Config = .{
         .id = "com.ghostpen.lite",
         .title = "GhostPen Lite",
         .width = 680,
@@ -148,23 +148,23 @@ pub fn main(init: std.process.Init) !u8 {
     comptime var config_test = config_gui;
     config_test.setup = &testSetup;
 
-    const api: ziguri.App.Api = .{ .commands = Commands };
-    if (test_pipeline) return ziguri.App.run(init.io, api, config_test);
-    return if (auto_quit) ziguri.App.run(init.io, api, config_auto) else ziguri.App.run(init.io, api, config_gui);
+    const api: oriel.App.Api = .{ .commands = Commands };
+    if (test_pipeline) return oriel.App.run(init.io, api, config_test);
+    return if (auto_quit) oriel.App.run(init.io, api, config_auto) else oriel.App.run(init.io, api, config_gui);
 }
 
 /// `--test-pipeline`: register the hotkey on the main thread, then drive
 /// the pipeline from a worker like a real hotkey press would.
 fn testSetup() anyerror!void {
     std.debug.print("Testing GhostPen Lite pipeline headlessly...\n", .{});
-    ziguri.global_shortcut.register(std.heap.smp_allocator, .{
+    oriel.global_shortcut.register(std.heap.smp_allocator, .{
         .id = "test_hotkey",
         .trigger = "ctrl+alt+g",
     }, &onHotkey) catch |err| {
         std.debug.print("[FAIL] global_shortcut.register: {s}\n", .{@errorName(err)});
         return quitFromWorker(1);
     };
-    try ziguri.App.spawn(testPipelineWorker, .{});
+    try oriel.App.spawn(testPipelineWorker, .{});
 }
 
 fn testPipelineWorker() void {
@@ -177,11 +177,11 @@ fn testPipelineWorker() void {
 fn testPipeline(gpa: std.mem.Allocator) !void {
     // 1. Set the clipboard (handed to the main loop).
     const initial_text = "clean architecture in zig";
-    try ziguri.clipboard.writeText(initial_text);
+    try oriel.clipboard.writeText(initial_text);
 
     // 2. Press the hotkey: the callback spawns the pipeline on another worker.
     const before = pipelines_done.load(.acquire);
-    if (!ziguri.global_shortcut.trigger("test_hotkey")) return error.TriggerFailed;
+    if (!oriel.global_shortcut.trigger("test_hotkey")) return error.TriggerFailed;
     var waited_ms: u32 = 0;
     while (pipelines_done.load(.acquire) == before) : (waited_ms += 10) {
         if (waited_ms > 10_000) return error.PipelineTimeout;
@@ -189,7 +189,7 @@ fn testPipeline(gpa: std.mem.Allocator) !void {
     }
 
     // 3. Read the clipboard back.
-    const result = try ziguri.clipboard.readText(gpa);
+    const result = try oriel.clipboard.readText(gpa);
     defer gpa.free(result);
     const expected = "[✨ Rewritten: clean architecture in zig]";
     if (!std.mem.eql(u8, result, expected)) {
@@ -200,5 +200,5 @@ fn testPipeline(gpa: std.mem.Allocator) !void {
 }
 
 fn quitFromWorker(code: u8) void {
-    ziguri.App.quit(code);
+    oriel.App.quit(code);
 }

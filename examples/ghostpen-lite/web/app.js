@@ -17,7 +17,7 @@ document.getElementById("btn-trigger").addEventListener("click", async () => {
     statusBadge.textContent = "Processing...";
     statusBadge.style.color = "#f59e0b";
     addLog("Manually triggered rewrite pipeline...");
-    const res = await window.ziguri.invoke("trigger_pipeline", {});
+    const res = await window.oriel.invoke("trigger_pipeline", {});
     addLog(`Pipeline result: "${res.rewritten}" (original: "${res.original}")`, "success");
   } catch (err) {
     addLog(`Pipeline error: ${err}`, "system");
@@ -29,7 +29,7 @@ document.getElementById("btn-trigger").addEventListener("click", async () => {
 
 document.getElementById("btn-read").addEventListener("click", async () => {
   try {
-    const text = await window.ziguri.invoke("read_clipboard", {});
+    const text = await window.oriel.invoke("read_clipboard", {});
     addLog(`Clipboard content: "${text}"`, "system");
   } catch (err) {
     addLog(`Read error: ${err}`, "system");
@@ -38,7 +38,7 @@ document.getElementById("btn-read").addEventListener("click", async () => {
 
 document.getElementById("btn-notify").addEventListener("click", async () => {
   try {
-    await window.ziguri.invoke("send_notification", {
+    await window.oriel.invoke("send_notification", {
       title: "GhostPen Lite",
       body: "Hotkey Ctrl+Alt+G is registered and active!",
     });
@@ -49,11 +49,11 @@ document.getElementById("btn-notify").addEventListener("click", async () => {
 });
 
 // Listen for global hotkey / pipeline completion events from Zig
-window.ziguri.listen("pipeline_completed", (ev) => {
+window.oriel.listen("pipeline_completed", (ev) => {
   addLog(`Hotkey triggered pipeline: "${ev.rewritten}" (from "${ev.original}")`, "success");
 });
 
-window.ziguri.listen("hotkey_pressed", (ev) => {
+window.oriel.listen("hotkey_pressed", (ev) => {
   addLog(`Hotkey detected: ${ev.id}`, "system");
 });
 
@@ -63,22 +63,22 @@ if (location.search.includes("auto-quit")) {
     try {
       addLog("Running auto-quit test pipeline...");
       // 1. Write text to clipboard
-      await window.ziguri.invoke("write_clipboard", { text: "ghostpen webview test input" });
+      await window.oriel.invoke("write_clipboard", { text: "ghostpen webview test input" });
       // 2. Trigger pipeline
-      const res = await window.ziguri.invoke("trigger_pipeline", {});
+      const res = await window.oriel.invoke("trigger_pipeline", {});
       if (!res.rewritten.includes("ghostpen webview test input")) {
         throw new Error("Pipeline output did not include original text");
       }
       // 3. Read back clipboard
-      const clip = await window.ziguri.invoke("read_clipboard", {});
+      const clip = await window.oriel.invoke("read_clipboard", {});
       if (!clip.includes("Rewritten:")) {
         throw new Error("Clipboard was not updated with rewritten text");
       }
       addLog("Auto-quit checks passed!", "success");
-      await window.ziguri.invoke("done", { failed: 0, report: "[ok] ghostpen-lite webview pipeline test passed" });
+      await window.oriel.invoke("done", { failed: 0, report: "[ok] ghostpen-lite webview pipeline test passed" });
     } catch (err) {
       addLog(`Auto-quit failed: ${err.message}`, "system");
-      await window.ziguri.invoke("done", { failed: 1, report: `[FAIL] ghostpen-lite webview: ${err.message}` });
+      await window.oriel.invoke("done", { failed: 1, report: `[FAIL] ghostpen-lite webview: ${err.message}` });
     }
   })();
 }

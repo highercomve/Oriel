@@ -2,8 +2,8 @@
 //!
 //! - Frontend assets are embedded in the binary and served from `app://app/`
 //!   with a Content-Security-Policy header.
-//! - `window.ziguri.invoke(cmd, args)` in JS returns a Promise resolved by
-//!   `ipc.dispatch` on the Zig side; `window.ziguri.listen(event, cb)`
+//! - `window.oriel.invoke(cmd, args)` in JS returns a Promise resolved by
+//!   `ipc.dispatch` on the Zig side; `window.oriel.listen(event, cb)`
 //!   receives events sent with `emit`.
 //! - Navigation, IPC and bridge injection follow `security.Security`.
 
@@ -19,7 +19,7 @@ const ipc = @import("ipc.zig");
 const security = @import("security.zig");
 const ThreadPool = @import("ThreadPool.zig").ThreadPool;
 
-const log = std.log.scoped(.ziguri);
+const log = std.log.scoped(.oriel);
 
 /// Worker pool for async commands; owned by `run`. It also carries the
 /// `std.Io` passed to `run`, which the IPC handlers hand to commands.
@@ -209,7 +209,7 @@ pub const Dev = struct {
 };
 
 const scheme = "app";
-const handler_name = "ziguri";
+const handler_name = "oriel";
 
 /// Injected into allowed pages before their own scripts run.
 const bridge_js =
@@ -218,7 +218,7 @@ const bridge_js =
     \\  const handler = window.webkit.messageHandlers.
 ++ handler_name ++
     \\;
-    \\  Object.defineProperty(window, "ziguri", { value: Object.freeze({
+    \\  Object.defineProperty(window, "oriel", { value: Object.freeze({
     \\    invoke(cmd, args) {
     \\      return handler.postMessage(JSON.stringify({ cmd, args: args ?? null }));
     \\    },
@@ -360,7 +360,7 @@ pub fn spawn(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !v
     pool.post(&job.task);
 }
 
-/// Send `payload` (any JSON-serializable value) to `ziguri.listen(name, …)`
+/// Send `payload` (any JSON-serializable value) to `oriel.listen(name, …)`
 /// listeners in all pages. Safe to call from any thread.
 pub fn emit(name: []const u8, payload: anytype) void {
     emitJson(null, name, payload) catch |err| log.err("emit {s}: {s}", .{ name, @errorName(err) });
@@ -382,7 +382,7 @@ fn emitJson(target_view: ?*webkit.WebView, name: []const u8, payload: anytype) !
     defer gpa.free(payload_json);
     const name_json = try std.json.Stringify.valueAlloc(gpa, name, .{});
     defer gpa.free(name_json);
-    const script = try std.fmt.allocPrintSentinel(gpa, "window.ziguri?.__emit({s}, {s});", .{ name_json, payload_json }, 0);
+    const script = try std.fmt.allocPrintSentinel(gpa, "window.oriel?.__emit({s}, {s});", .{ name_json, payload_json }, 0);
 
     if (target_view) |tv| {
         _ = gobject.Object.ref(tv.as(gobject.Object));
@@ -436,7 +436,7 @@ pub fn openExternal(uri: [*:0]const u8) void {
 
 /// Run the application until it quits. Returns the exit code.
 /// `io` is handed to commands that ask for a `std.Io` (usually `init.io`
-/// from `main`; `ziguri.main` passes it for you).
+/// from `main`; `oriel.main` passes it for you).
 pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     const app_log = @import("log.zig");
     app_log.init(config.id);
@@ -485,7 +485,7 @@ fn onQuitSignal(_: ?*anyopaque) callconv(.c) c_int {
 }
 
 fn startDevServer(comptime dev: Dev) ?*gio.Subprocess {
-    if (glib.getenv("ZIGURI_DEV_EXTERNAL") != null) {
+    if (glib.getenv("ORIEL_DEV_EXTERNAL") != null) {
         log.info("dev server managed externally; skipping local spawn", .{});
         return null;
     }
@@ -791,7 +791,7 @@ fn Shell(comptime api: Api, comptime config: Config) type {
                 request.finishWithResponse(response);
                 return;
             }
-            const err = glib.Error.newLiteral(glib.quarkFromStaticString("ziguri-asset"), 404, "asset not found");
+            const err = glib.Error.newLiteral(glib.quarkFromStaticString("oriel-asset"), 404, "asset not found");
             defer err.free();
             request.finishError(err);
         }

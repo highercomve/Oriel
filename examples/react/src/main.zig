@@ -1,16 +1,16 @@
-//! Notes: a small ziguri app with a React + Vite frontend.
+//! Notes: a small oriel app with a React + Vite frontend.
 //!
-//! The Zig side owns the data (SQLite via ziguri's `sql` module); the React
+//! The Zig side owns the data (SQLite via oriel's `sql` module); the React
 //! side calls these commands through the generated, typed `invoke()` and
 //! gets live updates through `listen()`. A tray icon keeps the app running
 //! when the window is closed.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const ziguri = @import("ziguri");
-const app = @import("ziguri_app");
-const sql = ziguri.sql;
-const Tray = ziguri.tray.Tray;
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+const sql = oriel.sql;
+const Tray = oriel.tray.Tray;
 
 pub const Note = struct {
     id: i64,
@@ -23,7 +23,7 @@ pub const Events = struct {
     notes_changed: []const Note,
     do_not_disturb: bool,
 };
-const events = ziguri.App.events(Events);
+const events = oriel.App.events(Events);
 
 var db: ?sql.Db = null;
 var tray: ?*Tray = null;
@@ -110,12 +110,12 @@ pub const Commands = struct {
     }
 };
 
-const app_id = "dev.ziguri.ReactNotes";
+const app_id = "dev.oriel.ReactNotes";
 
 fn setup() !void {
     tray = try Tray.create(std.heap.smp_allocator, .{
         .id = app_id,
-        .title = "ziguri notes",
+        .title = "oriel notes",
         .tooltip = "Notes are kept while the window is closed",
         .icon = .{ .png = @embedFile("icon.png") },
         .menu = &.{
@@ -135,15 +135,15 @@ fn setup() !void {
 fn onTrayMenu(id: []const u8, checked: ?bool) void {
     const eql = std.mem.eql;
     if (eql(u8, id, "show")) {
-        ziguri.App.showWindow();
+        oriel.App.showWindow();
     } else if (eql(u8, id, "quick_note")) {
         addQuickNote() catch |err| std.log.err("quick note: {s}", .{@errorName(err)});
     } else if (eql(u8, id, "dnd")) {
         events.emit(.do_not_disturb, checked.?);
     } else if (eql(u8, id, "website")) {
-        ziguri.App.openExternal("https://ziglang.org");
+        oriel.App.openExternal("https://ziglang.org");
     } else if (eql(u8, id, "quit")) {
-        ziguri.App.quit(0);
+        oriel.App.quit(0);
     }
 }
 
@@ -157,9 +157,9 @@ fn addQuickNote() !void {
 pub fn main(init: std.process.Init) !u8 {
     defer if (db) |d| d.close();
     defer if (tray) |t| t.deinit();
-    return ziguri.main(init, .{ .commands = Commands, .events = Events }, .{
+    return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
         .id = app_id,
-        .title = "ziguri · React notes",
+        .title = "oriel · React notes",
         .width = 820,
         .height = 640,
         .assets = app.assets,

@@ -1,4 +1,4 @@
-# ziguri — development plan
+# Oriel — development plan
 
 Written 2026-09-23. For anyone (human or agent) picking up the work: read
 **Context** and **Rules** first. The milestones are ordered; the workstreams
@@ -6,7 +6,7 @@ inside a milestone are independent and can run in parallel.
 
 ## Context
 
-ziguri is a Tauri-like desktop framework in **Zig 0.16** (Linux first:
+oriel is a Tauri-like desktop framework in **Zig 0.16** (Linux first:
 GTK4 + WebKitGTK 6.0). The goal is to port two Tauri apps to it:
 **ghostpen** (`~/Code/ghostpen`: global hotkey → rewrite selected text with
 an LLM → paste back; tray app) and **ghostreel** (`~/Code/ghostreel`: local
@@ -19,7 +19,7 @@ decisions), `IDEA.md` (motivation, architecture), then the code:
 | Path | What |
 |---|---|
 | `build.zig` | Framework build + `addApp()` helper used by apps |
-| `src/ziguri.zig` | Module root, `main()`, `writeTypes()`, module checks |
+| `src/oriel.zig` | Module root, `main()`, `writeTypes()`, module checks |
 | `src/core/App.zig` | Window, webview, `app://` assets, IPC, events, dev mode, lifecycle |
 | `src/core/ipc.zig` | Command dispatch + TypeScript generation |
 | `src/core/security.zig` | Navigation / IPC / CSP policy (unit-tested) |
@@ -32,8 +32,8 @@ decisions), `IDEA.md` (motivation, architecture), then the code:
 
 1. **Framework and apps stay separate.** Framework code lives in `src/`,
    `tools/`, `build.zig`. Apps are separate packages in `examples/` that
-   depend on ziguri through `build.zig.zon` (`.path = "../.."`) and
-   `ziguri.addApp()`. Never add app targets to the framework build.
+   depend on oriel through `build.zig.zon` (`.path = "../.."`) and
+   `oriel.addApp()`. Never add app targets to the framework build.
 2. **Zig 0.16.0.** `~/.zvm/0.16.0/zig` (or `zig` after `cd` into the repo;
    a zvm hook switches versions per project). Zig 0.16 moved I/O to
    `std.Io`: check `~/.zvm/0.16.0/lib/std` before assuming an older API.
@@ -62,17 +62,17 @@ scripts/gen-bindings.sh                  # once: GTK/WebKit bindings -> deps/gob
 zig build test                           # framework unit tests (repo root)
 
 cd examples/smoke
-zig build && ./zig-out/bin/ziguri-smoke --check                        # module checks, no GUI
-../../scripts/headless.sh ./zig-out/bin/ziguri-smoke --auto-quit       # + in-webview checks
+zig build && ./zig-out/bin/oriel-smoke --check                        # module checks, no GUI
+../../scripts/headless.sh ./zig-out/bin/oriel-smoke --auto-quit       # + in-webview checks
 
 cd examples/react
 zig build                                # vite build + embed + install
-zig build types                          # regenerate frontend/src/ziguri.ts
-SHOT=/tmp/shot.png ../../scripts/headless.sh ./zig-out/bin/ziguri-react-notes
+zig build types                          # regenerate frontend/src/oriel.ts
+SHOT=/tmp/shot.png ../../scripts/headless.sh ./zig-out/bin/oriel-react-notes
 ```
 
 Expected today: 27/27 unit tests; smoke `--check` all ok on the real session
-except `global_shortcut` until `dev.ziguri.Smoke.desktop` is installed (see
+except `global_shortcut` until `dev.oriel.Smoke.desktop` is installed (see
 pitfalls); smoke `--auto-quit` under headless.sh 24/24 ok (X11 paths:
 XGrabKey, XTest, GdkClipboard incl. the in-process `clipboard r/w` check).
 
@@ -112,7 +112,7 @@ gdbus call --session --dest org.kde.StatusNotifierItem-$PID-1 --object-path /Men
   before the first portal call on the connection, and `<app_id>.desktop`
   must be installed or it is refused ("App info not found"). So the smoke
   `--check` global_shortcut line fails on a real Wayland session until
-  `dev.ziguri.Smoke.desktop` is installed.
+  `dev.oriel.Smoke.desktop` is installed.
 - **Hyprland here uses a Lua config**: `hyprctl dispatch` needs
   `hl.dsp.*` syntax (only relevant for manual checks).
 
@@ -132,7 +132,7 @@ request, DB scan) freezes the UI. Everything below builds on this.
   in `Commands`, or a wrapper type. Pick the simplest design that keeps the
   TypeScript generation unchanged (JS already gets a Promise).
 - Each async command gets its own arena, freed after the reply.
-- Provide the command an `std.Io` (store `init.io` in `ziguri.main`) so it
+- Provide the command an `std.Io` (store `init.io` in `oriel.main`) so it
   can use `std.http.Client` etc.
 - Cancellation: out of scope; document it.
 

@@ -1,7 +1,7 @@
 //! SQLite, compiled from the amalgamation in build.zig.
 
 const std = @import("std");
-const ziguri = @import("../ziguri.zig");
+const oriel = @import("../oriel.zig");
 pub const c = @cImport(@cInclude("sqlite3.h"));
 
 pub const Db = struct {
@@ -87,7 +87,7 @@ pub const Stmt = struct {
     }
 };
 
-pub fn check(gpa: std.mem.Allocator, _: ziguri.CheckContext) !ziguri.Check {
+pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     const db = try Db.open(":memory:");
     defer db.close();
     try db.exec("CREATE TABLE clips (id INTEGER PRIMARY KEY, name TEXT);" ++

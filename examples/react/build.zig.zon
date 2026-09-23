@@ -1,10 +1,10 @@
 .{
-    .name = .ziguri_react_notes,
+    .name = .oriel_react_notes,
     .version = "0.0.0",
-    .fingerprint = 0x3574379d78a8da50,
+    .fingerprint = 0x64e01f3edc645c4b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .ziguri = .{ .path = "../.." },
+        .oriel = .{ .path = "../.." },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "frontend" },
 }

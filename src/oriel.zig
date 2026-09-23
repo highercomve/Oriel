@@ -1,4 +1,4 @@
-//! ziguri: a Tauri-like desktop framework for Zig.
+//! oriel: a Tauri-like desktop framework for Zig.
 //!
 //! Core (always on): GTK4 window + WebKitGTK 6.0 webview, `app://` asset
 //! scheme, JS <-> Zig IPC. Built-in modules and plugins are opt-in via
@@ -30,10 +30,10 @@ pub const clipboard = if (options.clipboard) @import("plugins/clipboard.zig") el
 
 pub const ThreadPool = @import("core/ThreadPool.zig").ThreadPool;
 
-/// Standard entry point for a ziguri app:
+/// Standard entry point for a oriel app:
 ///
 ///     pub fn main(init: std.process.Init) !u8 {
-///         return ziguri.main(init, .{ .commands = Commands, .events = Events }, .{
+///         return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
 ///             .id = "com.example.App", .title = "App", .assets = app.assets, .dev = app.dev,
 ///         });
 ///     }

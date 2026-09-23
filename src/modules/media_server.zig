@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const httpz = @import("httpz");
-const ziguri = @import("../ziguri.zig");
+const oriel = @import("../oriel.zig");
 
 pub const Server = struct {
     inner: httpz.Server(void),
@@ -46,7 +46,7 @@ pub fn selfTest(io: std.Io, gpa: std.mem.Allocator, port: u16) ![]u8 {
     return body.toOwnedSlice();
 }
 
-pub fn check(gpa: std.mem.Allocator, ctx: ziguri.CheckContext) !ziguri.Check {
+pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check {
     const port = ctx.media_port orelse return error.MediaServerNotStarted;
     const body = try selfTest(ctx.io, gpa, port);
     return .{

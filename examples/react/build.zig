@@ -1,12 +1,12 @@
 const std = @import("std");
-const ziguri = @import("ziguri");
+const oriel = @import("oriel");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     // Only the modules this app uses; the rest aren't compiled or linked.
-    const dep = b.dependency("ziguri", .{
+    const dep = b.dependency("oriel", .{
         .target = target,
         .optimize = optimize,
         .sql = true,
@@ -22,9 +22,9 @@ pub fn build(b: *std.Build) void {
     // zig build        production build (vite build, embedded)
     // zig build run    run it
     // zig build dev    Vite dev server + hot reload
-    // zig build types  regenerate frontend/src/ziguri.ts
-    _ = ziguri.addApp(b, dep, .{
-        .name = "ziguri-react-notes",
+    // zig build types  regenerate frontend/src/oriel.ts
+    _ = oriel.addApp(b, dep, .{
+        .name = "oriel-react-notes",
         .root_source_file = b.path("src/main.zig"),
         .frontend = .{ .dir = "frontend" },
     });

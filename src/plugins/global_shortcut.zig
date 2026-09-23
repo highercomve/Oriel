@@ -11,9 +11,9 @@ const std = @import("std");
 const glib = @import("glib");
 const gio = @import("gio");
 const gobject = @import("gobject");
-const ziguri = @import("../ziguri.zig");
+const oriel = @import("../oriel.zig");
 
-const log = std.log.scoped(.ziguri);
+const log = std.log.scoped(.oriel);
 
 pub const x11 = @cImport({
     @cInclude("X11/Xlib.h");
@@ -189,7 +189,7 @@ var token_counter: std.atomic.Value(u32) = .init(0);
 /// A fresh handle token; tokens must be valid object path elements
 /// (`[A-Za-z0-9_]`) and unique for this connection.
 fn nextToken(buf: []u8) ![:0]const u8 {
-    return std.fmt.bufPrintZ(buf, "ziguri_{d}_{d}", .{ std.c.getpid(), token_counter.fetchAdd(1, .monotonic) });
+    return std.fmt.bufPrintZ(buf, "oriel_{d}_{d}", .{ std.c.getpid(), token_counter.fetchAdd(1, .monotonic) });
 }
 
 /// `G_VARIANT_TYPE(s)`: a GVariantType is its own type string.
@@ -721,7 +721,7 @@ pub fn deinit(gpa: std.mem.Allocator) void {
 /// On Wayland: the portal creates a session for `ctx.app_id` (then it is
 /// closed again; no BindShortcuts, which could prompt the user). On X11: a
 /// key grab works.
-pub fn check(gpa: std.mem.Allocator, ctx: ziguri.CheckContext) !ziguri.Check {
+pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check {
     if (isWayland()) {
         const version = (portalVersion() catch null) orelse return .{
             .module = "global_shortcut",
@@ -801,8 +801,8 @@ test "triggerToPortal converts to the XDG shortcuts format" {
 test "handlePath derives portal request and session paths" {
     var buf: [256]u8 = undefined;
     try std.testing.expectEqualStrings(
-        "/org/freedesktop/portal/desktop/request/1_42/ziguri_7_0",
-        try handlePath(&buf, .request, ":1.42", "ziguri_7_0"),
+        "/org/freedesktop/portal/desktop/request/1_42/oriel_7_0",
+        try handlePath(&buf, .request, ":1.42", "oriel_7_0"),
     );
     try std.testing.expectEqualStrings(
         "/org/freedesktop/portal/desktop/session/1_2345/tok",

@@ -5,7 +5,7 @@
 //!
 //! To use in an app's `main.zig`:
 //!     pub const std_options: std.Options = .{
-//!         .logFn = ziguri.log.logFn,
+//!         .logFn = oriel.log.logFn,
 //!     };
 
 const std = @import("std");
@@ -151,7 +151,7 @@ extern fn g_dir_make_tmp(tmpl: ?[*:0]const u8, err: ?*?*glib.Error) ?[*:0]u8;
 test "log initialization and formatting" {
     // A private temp dir, so the test never writes into the user's real
     // $XDG_DATA_HOME.
-    const dir_c = g_dir_make_tmp("ziguri-log-XXXXXX", null) orelse return error.TmpDir;
+    const dir_c = g_dir_make_tmp("oriel-log-XXXXXX", null) orelse return error.TmpDir;
     defer glib.free(dir_c);
     const dir = std.mem.span(dir_c);
     defer _ = std.c.rmdir(dir_c);

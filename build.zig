@@ -1,14 +1,14 @@
-//! ziguri framework build.
+//! oriel framework build.
 //!
-//! This builds only the framework: the `ziguri` module, the `embed_assets`
+//! This builds only the framework: the `oriel` module, the `embed_assets`
 //! build tool and the unit tests. Apps are separate packages that depend on
-//! ziguri and call `addApp` from their own build.zig:
+//! oriel and call `addApp` from their own build.zig:
 //!
-//!     // build.zig.zon: .ziguri = .{ .path = "../ziguri" }
-//!     const ziguri = @import("ziguri");
+//!     // build.zig.zon: .oriel = .{ .path = "../oriel" }
+//!     const oriel = @import("oriel");
 //!     pub fn build(b: *std.Build) void {
-//!         const dep = b.dependency("ziguri", .{ .target = target, .optimize = optimize, .sql = false });
-//!         _ = ziguri.addApp(b, dep, .{ .name = "my-app", .root_source_file = b.path("src/main.zig"), ... });
+//!         const dep = b.dependency("oriel", .{ .target = target, .optimize = optimize, .sql = false });
+//!         _ = oriel.addApp(b, dep, .{ .name = "my-app", .root_source_file = b.path("src/main.zig"), ... });
 //!     }
 
 const std = @import("std");
@@ -46,7 +46,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const features = Features.fromOptions(b);
 
-    const ziguri = addZiguriModule(b, target, optimize, features);
+    const oriel = addOrielModule(b, target, optimize, features);
 
     // Host tool used by `addApp` to embed built frontends.
     const embed_assets = b.addExecutable(.{
@@ -71,7 +71,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(dev_runner);
 
     const tests = b.addTest(.{
-        .root_module = ziguri,
+        .root_module = oriel,
         // Zig's self-hosted linker can't handle the .sframe sections in
         // crt1.o from GCC 16 / recent glibc, so link with LLVM + LLD.
         .use_llvm = true,
@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
     b.step("test", "Run unit tests").dependOn(&b.addRunArtifact(tests).step);
 }
 
-fn addZiguriModule(
+fn addOrielModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
@@ -93,8 +93,8 @@ fn addZiguriModule(
 
     const gobject = b.dependency("gobject", .{ .target = target, .optimize = optimize });
 
-    const ziguri = b.addModule("ziguri", .{
-        .root_source_file = b.path("src/ziguri.zig"),
+    const oriel = b.addModule("oriel", .{
+        .root_source_file = b.path("src/oriel.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -109,20 +109,20 @@ fn addZiguriModule(
             .{ .name = "soup", .module = gobject.module("soup3") },
         },
     });
-    ziguri.addOptions("build_options", options);
+    oriel.addOptions("build_options", options);
 
     if (features.tray) {
         const zigimg = b.dependency("zigimg", .{ .target = target, .optimize = optimize });
-        ziguri.addImport("zigimg", zigimg.module("zigimg"));
+        oriel.addImport("zigimg", zigimg.module("zigimg"));
     }
     if (features.media_server) {
         const httpz = b.dependency("httpz", .{ .target = target, .optimize = optimize });
-        ziguri.addImport("httpz", httpz.module("httpz"));
+        oriel.addImport("httpz", httpz.module("httpz"));
     }
     if (features.sql) {
         const sqlite = b.dependency("sqlite", .{});
-        ziguri.addIncludePath(sqlite.path("."));
-        ziguri.addCSourceFile(.{
+        oriel.addIncludePath(sqlite.path("."));
+        oriel.addCSourceFile(.{
             .file = sqlite.path("sqlite3.c"),
             .flags = &.{ "-DSQLITE_THREADSAFE=1", "-DSQLITE_DQS=0", "-DSQLITE_OMIT_DEPRECATED" },
         });
@@ -136,21 +136,21 @@ fn addZiguriModule(
         scanner.generate("ext_data_control_manager_v1", 1);
         scanner.generate("zwlr_data_control_manager_v1", 2);
         scanner.generate("zwp_virtual_keyboard_manager_v1", 1);
-        ziguri.addImport("wayland", b.createModule(.{
+        oriel.addImport("wayland", b.createModule(.{
             .root_source_file = scanner.result,
             .target = target,
             .optimize = optimize,
         }));
-        ziguri.linkSystemLibrary("wayland-client", .{});
+        oriel.linkSystemLibrary("wayland-client", .{});
     }
     if (features.input) {
-        ziguri.linkSystemLibrary("xkbcommon", .{});
-        ziguri.linkSystemLibrary("xtst", .{});
+        oriel.linkSystemLibrary("xkbcommon", .{});
+        oriel.linkSystemLibrary("xtst", .{});
     }
     if (features.global_shortcut or features.input) {
-        ziguri.linkSystemLibrary("x11", .{});
+        oriel.linkSystemLibrary("x11", .{});
     }
-    return ziguri;
+    return oriel;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ fn addZiguriModule(
 pub const AppOptions = struct {
     /// Executable name.
     name: []const u8,
-    /// The app's main.zig. It can `@import("ziguri")` and `@import("ziguri_app")`
+    /// The app's main.zig. It can `@import("oriel")` and `@import("oriel_app")`
     /// (build-time config: `assets`, `dev`, `types_path`).
     root_source_file: std.Build.LazyPath,
     frontend: Frontend,
@@ -180,7 +180,7 @@ pub const Frontend = struct {
     dev: ?Dev = .{},
     /// Where the generated TypeScript for the Zig commands is written,
     /// relative to `dir`. Null to skip type generation.
-    types_path: ?[]const u8 = "src/ziguri.ts",
+    types_path: ?[]const u8 = "src/oriel.ts",
 
     pub const Dev = struct {
         url: []const u8 = "http://localhost:5173/",
@@ -195,15 +195,15 @@ pub const App = struct {
     dev_exe: ?*std.Build.Step.Compile,
 };
 
-/// Add a ziguri app to `b` with these steps:
+/// Add a oriel app to `b` with these steps:
 ///   zig build          build the frontend, embed it, install the app
 ///   zig build run      run the production build
 ///   zig build dev      run against the dev server (hot reload)
 ///   zig build types    regenerate the frontend's TypeScript command types
-pub fn addApp(b: *std.Build, ziguri_dep: *std.Build.Dependency, options: AppOptions) App {
-    const ziguri = ziguri_dep.module("ziguri");
-    const target = ziguri.resolved_target.?;
-    const optimize = ziguri.optimize.?;
+pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) App {
+    const oriel = oriel_dep.module("oriel");
+    const target = oriel.resolved_target.?;
+    const optimize = oriel.optimize.?;
     // When optimize was not explicitly given on the command-line, default production to ReleaseSafe
     const prod_optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe;
     const dev_optimize = if (b.user_input_options.contains("optimize")) optimize else .Debug;
@@ -228,7 +228,7 @@ pub fn addApp(b: *std.Build, ziguri_dep: *std.Build.Dependency, options: AppOpti
         cfg.addOption([]const u8, "dev_url", dev.url);
         cfg.addOption([]const []const u8, "dev_command", dev.command);
         cfg.addOption([]const u8, "frontend_dir", fe_dir);
-        break :blk addExe(b, ziguri, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, ziguri, cfg, null));
+        break :blk addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null));
     } else null;
 
     // Generated TypeScript types, written by the dev build (no frontend needed).
@@ -243,7 +243,7 @@ pub fn addApp(b: *std.Build, ziguri_dep: *std.Build.Dependency, options: AppOpti
     }
 
     // Production: build the frontend, embed dist/, compile.
-    const embed = b.addRunArtifact(ziguri_dep.artifact("embed_assets"));
+    const embed = b.addRunArtifact(oriel_dep.artifact("embed_assets"));
     embed.has_side_effects = true; // dist/ is produced outside the build graph
     embed.addArg(b.pathJoin(&.{ fe_dir, fe.dist }));
     const assets_dir = embed.addOutputDirectoryArg("assets");
@@ -260,7 +260,7 @@ pub fn addApp(b: *std.Build, ziguri_dep: *std.Build.Dependency, options: AppOpti
     prod_cfg.addOption([]const u8, "dev_url", "");
     prod_cfg.addOption([]const []const u8, "dev_command", &.{});
     prod_cfg.addOption([]const u8, "frontend_dir", fe_dir);
-    const exe = addExe(b, ziguri, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, ziguri, prod_cfg, assets_dir.path(b, "assets.zig")));
+    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig")));
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
@@ -272,7 +272,7 @@ pub fn addApp(b: *std.Build, ziguri_dep: *std.Build.Dependency, options: AppOpti
         const install_dev = b.addInstallArtifact(d, .{});
         b.step("build-dev", "Build development executable").dependOn(&install_dev.step);
 
-        const runner = b.addRunArtifact(ziguri_dep.artifact("dev_runner"));
+        const runner = b.addRunArtifact(oriel_dep.artifact("dev_runner"));
         runner.addArgs(&.{
             b.fmt("--zig={s}", .{b.graph.zig_exe}),
             b.fmt("--project-dir={s}", .{b.build_root.path orelse "."}),
@@ -304,23 +304,23 @@ pub fn addApp(b: *std.Build, ziguri_dep: *std.Build.Dependency, options: AppOpti
     return .{ .exe = exe, .dev_exe = dev_exe };
 }
 
-/// The `ziguri_app` module: build-time config for the app's main.zig.
+/// The `oriel_app` module: build-time config for the app's main.zig.
 fn appConfigModule(
     b: *std.Build,
-    ziguri: *std.Build.Module,
+    oriel: *std.Build.Module,
     cfg: *std.Build.Step.Options,
     assets: ?std.Build.LazyPath,
 ) *std.Build.Module {
     const files = b.addWriteFiles();
-    const root = files.add("ziguri_app.zig",
-        \\const ziguri = @import("ziguri");
+    const root = files.add("oriel_app.zig",
+        \\const oriel = @import("oriel");
         \\const cfg = @import("cfg");
         \\
         \\/// Embedded frontend files (empty in dev builds).
-        \\pub const assets: []const ziguri.App.Asset = if (cfg.is_dev) &.{} else @import("assets").files;
+        \\pub const assets: []const oriel.App.Asset = if (cfg.is_dev) &.{} else @import("assets").files;
         \\
         \\/// Dev-server settings (null in production builds).
-        \\pub const dev: ?ziguri.App.Dev = if (cfg.is_dev) .{
+        \\pub const dev: ?oriel.App.Dev = if (cfg.is_dev) .{
         \\    .url = cfg.dev_url,
         \\    .command = cfg.dev_command,
         \\    .cwd = cfg.frontend_dir,
@@ -328,11 +328,11 @@ fn appConfigModule(
         \\
     );
     const mod = b.createModule(.{ .root_source_file = root });
-    mod.addImport("ziguri", ziguri);
+    mod.addImport("oriel", oriel);
     mod.addOptions("cfg", cfg);
     if (assets) |a| {
         const assets_mod = b.createModule(.{ .root_source_file = a });
-        assets_mod.addImport("ziguri", ziguri);
+        assets_mod.addImport("oriel", oriel);
         mod.addImport("assets", assets_mod);
     }
     return mod;
@@ -340,7 +340,7 @@ fn appConfigModule(
 
 fn addExe(
     b: *std.Build,
-    ziguri: *std.Build.Module,
+    oriel: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     name: []const u8,
@@ -354,8 +354,8 @@ fn addExe(
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "ziguri", .module = ziguri },
-                .{ .name = "ziguri_app", .module = app_config },
+                .{ .name = "oriel", .module = oriel },
+                .{ .name = "oriel_app", .module = app_config },
             },
         }),
         // See the note on the test step: LLD is required on GCC 16 systems.
