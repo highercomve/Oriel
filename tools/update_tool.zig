@@ -3,9 +3,12 @@
 //! - sign-update: Hash an artifact, sign domain-separated bytes, and produce a manifest JSON.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Ed25519 = std.crypto.sign.Ed25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const manifest_mod = @import("update_manifest");
+
+pub const DEFAULT_TARGET = @tagName(builtin.cpu.arch) ++ "-" ++ @tagName(builtin.os.tag);
 
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
@@ -63,13 +66,16 @@ pub fn runKeygen(
     env_map: ?*const std.process.Environ.Map,
     opts: KeygenOptions,
 ) !void {
+    const cwd = std.Io.Dir.cwd();
+
     // Determine target directory and key paths
-    const key_dir = if (opts.out_dir) |dir|
-        dir
-    else if (opts.key_path) |kp|
-        std.fs.path.dirname(kp) orelse "."
+    const allocated_key_dir: ?[]const u8 = if (opts.out_dir == null and opts.key_path == null)
+        try defaultKeysDir(gpa, env_map)
     else
-        try defaultKeysDir(gpa, env_map);
+        null;
+    defer if (allocated_key_dir) |d| gpa.free(d);
+
+    const key_dir = opts.out_dir orelse (if (opts.key_path) |kp| std.fs.path.dirname(kp) orelse "." else allocated_key_dir.?);
 
     const key_name = try std.fmt.allocPrint(gpa, "{s}.key", .{opts.name});
     defer gpa.free(key_name);
@@ -87,63 +93,112 @@ pub fn runKeygen(
         try std.fs.path.join(gpa, &.{ key_dir, pub_name });
     defer gpa.free(pub_path);
 
-    // Refuse to overwrite private key without force
-    if (!opts.force and pathExists(io, key_path)) {
-        return error.KeyAlreadyExists;
+    // Detect and report half-written/corrupt existing key vs valid key
+    if (pathExists(io, key_path)) {
+        var is_corrupt = false;
+        if (cwd.readFileAlloc(io, key_path, gpa, .limited(4096))) |bytes| {
+            defer {
+                std.crypto.secureZero(u8, bytes);
+                gpa.free(bytes);
+            }
+            _ = manifest_mod.keyPairFromSeedB64(bytes) catch {
+                is_corrupt = true;
+            };
+        } else |_| {
+            is_corrupt = true;
+        }
+
+        if (!opts.force) {
+            if (is_corrupt) {
+                return error.CorruptExistingKey;
+            } else {
+                return error.KeyAlreadyExists;
+            }
+        }
     }
 
-    // Ensure directory exists
-    const cwd = std.Io.Dir.cwd();
+    // Ensure directory exists with mode 0700
     try cwd.createDirPath(io, key_dir);
+    try cwd.setFilePermissions(io, key_dir, .fromMode(0o700), .{});
 
     // Generate random 32-byte seed for Ed25519
     var seed: [Ed25519.KeyPair.seed_length]u8 = undefined;
+    defer std.crypto.secureZero(u8, &seed);
     io.random(&seed);
-    const key_pair = try Ed25519.KeyPair.generateDeterministic(seed);
+
+    var key_pair = try Ed25519.KeyPair.generateDeterministic(seed);
+    defer std.crypto.secureZero(u8, &key_pair.secret_key.bytes);
 
     // Encode seed to base64
     var sk_b64: [manifest_mod.PRIVATE_KEY_SEED_B64_LEN]u8 = undefined;
+    defer std.crypto.secureZero(u8, &sk_b64);
     _ = manifest_mod.encodePrivateKeySeed(seed, &sk_b64);
 
-    // Write private key file (mode 0600). With --force the old file is
-    // removed first, so the new one is always created with mode 0600
-    // (the mode only applies at creation); `exclusive` closes the race
-    // between the existence check above and this create.
-    if (opts.force) cwd.deleteFile(io, key_path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
-    };
-    const key_file = cwd.createFile(io, key_path, .{
+    // Write private key file to temporary file, then rename atomically over destination
+    var rand_val: u64 = undefined;
+    io.random(std.mem.asBytes(&rand_val));
+    const temp_key_path = try std.fmt.allocPrint(gpa, "{s}.tmp.{d}.{x}", .{ key_path, std.os.linux.getpid(), rand_val });
+    defer gpa.free(temp_key_path);
+
+    var temp_key_file = try cwd.createFile(io, temp_key_path, .{
         .permissions = std.Io.File.Permissions.fromMode(0o600),
         .exclusive = true,
-    }) catch |err| switch (err) {
-        error.PathAlreadyExists => return error.KeyAlreadyExists,
-        else => return err,
-    };
-    defer key_file.close(io);
+    });
+    try temp_key_file.setPermissions(io, .fromMode(0o600));
+
+    var temp_key_open = true;
+    var temp_key_exists = true;
+    defer {
+        if (temp_key_open) temp_key_file.close(io);
+        if (temp_key_exists) cwd.deleteFile(io, temp_key_path) catch {};
+    }
 
     var key_writer_buf: [256]u8 = undefined;
-    var key_writer = key_file.writerStreaming(io, &key_writer_buf);
+    var key_writer = temp_key_file.writerStreaming(io, &key_writer_buf);
     try key_writer.interface.writeAll(&sk_b64);
     try key_writer.interface.writeAll("\n");
     try key_writer.interface.flush();
-    try key_file.sync(io);
+    try temp_key_file.sync(io);
 
-    // Write public key file (mode 0644)
+    temp_key_file.close(io);
+    temp_key_open = false;
+
+    // Atomically rename over target key_path
+    try cwd.rename(temp_key_path, cwd, key_path, io);
+    temp_key_exists = false;
+
+    // Write public key file (mode 0644) via temp file + rename
     var pk_b64: [manifest_mod.PUBLIC_KEY_B64_LEN]u8 = undefined;
     _ = manifest_mod.encodePublicKey(key_pair.public_key.toBytes(), &pk_b64);
 
-    const pub_file = try cwd.createFile(io, pub_path, .{
+    const temp_pub_path = try std.fmt.allocPrint(gpa, "{s}.tmp.{d}.{x}", .{ pub_path, std.os.linux.getpid(), rand_val });
+    defer gpa.free(temp_pub_path);
+
+    var temp_pub_file = try cwd.createFile(io, temp_pub_path, .{
         .permissions = std.Io.File.Permissions.fromMode(0o644),
+        .exclusive = true,
     });
-    defer pub_file.close(io);
+    try temp_pub_file.setPermissions(io, .fromMode(0o644));
+
+    var temp_pub_open = true;
+    var temp_pub_exists = true;
+    defer {
+        if (temp_pub_open) temp_pub_file.close(io);
+        if (temp_pub_exists) cwd.deleteFile(io, temp_pub_path) catch {};
+    }
 
     var pub_writer_buf: [256]u8 = undefined;
-    var pub_writer = pub_file.writerStreaming(io, &pub_writer_buf);
+    var pub_writer = temp_pub_file.writerStreaming(io, &pub_writer_buf);
     try pub_writer.interface.writeAll(&pk_b64);
     try pub_writer.interface.writeAll("\n");
     try pub_writer.interface.flush();
-    try pub_file.sync(io);
+    try temp_pub_file.sync(io);
+
+    temp_pub_file.close(io);
+    temp_pub_open = false;
+
+    try cwd.rename(temp_pub_path, cwd, pub_path, io);
+    temp_pub_exists = false;
 
     if (!opts.quiet) std.debug.print(
         \\Private key written to: {s} (mode 0600)
@@ -213,6 +268,10 @@ fn handleKeygen(io: std.Io, gpa: std.mem.Allocator, env_map: *std.process.Enviro
             std.debug.print("error: private key file already exists. Use --force to overwrite.\n", .{});
             return 1;
         },
+        error.CorruptExistingKey => {
+            std.debug.print("error: existing private key file is corrupt or incomplete. Use --force to replace it.\n", .{});
+            return 1;
+        },
         else => |e| {
             std.debug.print("error: keygen failed: {s}\n", .{@errorName(e)});
             return 1;
@@ -223,10 +282,16 @@ fn handleKeygen(io: std.Io, gpa: std.mem.Allocator, env_map: *std.process.Enviro
 
 pub const SignOptions = struct {
     artifact_path: []const u8,
+    app_id: []const u8,
     version: []const u8,
     url: []const u8,
     key_path: []const u8,
+    target: ?[]const u8 = null,
+    format: ?[]const u8 = null,
+    size: ?u64 = null,
+    expires: ?u64 = null,
     out_path: ?[]const u8 = null,
+    allow_test_http: bool = false,
 };
 
 pub fn runSignUpdate(
@@ -236,7 +301,7 @@ pub fn runSignUpdate(
 ) ![]u8 {
     const cwd = std.Io.Dir.cwd();
 
-    // Read artifact and compute SHA-256
+    // Read artifact, count size, and compute SHA-256
     const art_file = try cwd.openFile(io, opts.artifact_path, .{});
     defer art_file.close(io);
 
@@ -244,20 +309,40 @@ pub fn runSignUpdate(
     var read_buf: [65536]u8 = undefined;
     var art_reader = art_file.readerStreaming(io, &read_buf);
     var chunk: [32768]u8 = undefined;
+    var computed_size: u64 = 0;
     while (true) {
         const n = try art_reader.interface.readSliceShort(&chunk);
         if (n == 0) break;
         sha.update(chunk[0..n]);
+        computed_size += n;
     }
     var digest: [32]u8 = undefined;
     sha.final(&digest);
     const sha256_hex = std.fmt.bytesToHex(digest, .lower);
 
-    // Read and parse private key (base64-encoded 32-byte seed)
-    const key_bytes = try cwd.readFileAlloc(io, opts.key_path, gpa, .limited(4096));
-    defer gpa.free(key_bytes);
+    // The signed size must be the artifact's real size, or no client could verify it.
+    if (opts.size) |s| if (s != computed_size) return error.SizeMismatch;
+    const final_size = computed_size;
+    const final_target = opts.target orelse DEFAULT_TARGET;
+    const final_format = opts.format orelse blk: {
+        if (std.mem.endsWith(u8, opts.artifact_path, ".AppImage") or std.mem.endsWith(u8, opts.artifact_path, ".appimage")) {
+            break :blk "appimage";
+        }
+        if (std.mem.endsWith(u8, opts.artifact_path, ".gz")) {
+            break :blk "raw.gz";
+        }
+        break :blk "raw";
+    };
 
-    const kp = try manifest_mod.keyPairFromSeedB64(key_bytes);
+    // Read and parse private key (base64-encoded 32-byte seed) with secure wipe
+    const key_bytes = try cwd.readFileAlloc(io, opts.key_path, gpa, .limited(4096));
+    defer {
+        std.crypto.secureZero(u8, key_bytes);
+        gpa.free(key_bytes);
+    }
+
+    var kp = try manifest_mod.keyPairFromSeedB64(key_bytes);
+    defer std.crypto.secureZero(u8, &kp.secret_key.bytes);
 
     // Normalize version: strip leading 'v' or 'V' if present
     var clean_ver = opts.version;
@@ -265,11 +350,23 @@ pub fn runSignUpdate(
         clean_ver = clean_ver[1..];
     }
 
-    // Sign canonical domain-separated data using update_manifest
-    const sig_b64 = try manifest_mod.sign(gpa, kp, clean_ver, opts.url, &sha256_hex);
+    const sign_params = manifest_mod.SignParameters{
+        .app_id = opts.app_id,
+        .version = clean_ver,
+        .target = final_target,
+        .format = final_format,
+        .size = final_size,
+        .sha256 = &sha256_hex,
+        .url = opts.url,
+        .expires = opts.expires,
+        .allow_test_http = opts.allow_test_http,
+    };
+
+    const sig_b64 = try manifest_mod.sign(gpa, kp, sign_params);
     defer gpa.free(sig_b64);
 
-    const manifest_json = try manifest_mod.formatManifest(gpa, clean_ver, opts.url, &sha256_hex, sig_b64);
+    const manifest_json = try manifest_mod.formatManifest(gpa, sign_params, sig_b64);
+    errdefer gpa.free(manifest_json);
 
     if (opts.out_path) |out| {
         try cwd.writeFile(io, .{ .sub_path = out, .data = manifest_json });
@@ -280,9 +377,14 @@ pub fn runSignUpdate(
 
 fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const u8) !u8 {
     var artifact: ?[]const u8 = null;
+    var app_id: ?[]const u8 = null;
     var version: ?[]const u8 = null;
     var url: ?[]const u8 = null;
     var key_path: ?[]const u8 = null;
+    var target: ?[]const u8 = null;
+    var format: ?[]const u8 = null;
+    var size: ?u64 = null;
+    var expires: ?u64 = null;
     var out_path: ?[]const u8 = null;
 
     var i: usize = 0;
@@ -290,17 +392,31 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
         const arg = std.mem.span(args[i]);
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             std.debug.print(
-                \\Usage: update_tool sign-update <artifact> --version <X.Y.Z> --url <url> --key <private-key-file> [options]
+                \\Usage: update_tool sign-update <artifact> --app-id <id> --version <X.Y.Z> --url <url> --key <key-file> [options]
+                \\
+                \\Required:
+                \\  --app-id <id>      Application identifier (e.g. com.example.app)
+                \\  --version <ver>    Release semver (e.g. 1.0.0 or v1.0.0)
+                \\  --url <url>        Download URL (must start with https://)
+                \\  --key <file>       Path to private key file (.key)
                 \\
                 \\Options:
-                \\  --version <ver>    Release semver (e.g. 1.0.0 or v1.0.0)
-                \\  --url <url>        Download URL for the artifact
-                \\  --key <file>       Path to private key file (.key)
+                \\  --target <target>  Target architecture + OS (default: host target)
+                \\  --format <fmt>     Update payload format (raw, raw.gz, appimage, appimage.gz)
+                \\  --size <bytes>     Payload size in bytes (default: computed from artifact)
+                \\  --expires <sec>    Expiration timestamp in unix seconds
                 \\  --artifact <file>  Path to artifact (if not provided positionally)
                 \\  --out <file>       Output path for manifest JSON (optional)
                 \\
             , .{});
             return 0;
+        } else if (std.mem.eql(u8, arg, "--app-id")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --app-id requires a value\n", .{});
+                return 1;
+            }
+            app_id = std.mem.span(args[i]);
         } else if (std.mem.eql(u8, arg, "--version")) {
             i += 1;
             if (i >= args.len) {
@@ -322,6 +438,40 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
                 return 1;
             }
             key_path = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--target")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --target requires a value\n", .{});
+                return 1;
+            }
+            target = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --format requires a value\n", .{});
+                return 1;
+            }
+            format = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--size")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --size requires a value\n", .{});
+                return 1;
+            }
+            size = std.fmt.parseInt(u64, std.mem.span(args[i]), 10) catch {
+                std.debug.print("error: invalid integer for --size\n", .{});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "--expires")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: --expires requires a value\n", .{});
+                return 1;
+            }
+            expires = std.fmt.parseInt(u64, std.mem.span(args[i]), 10) catch {
+                std.debug.print("error: invalid integer for --expires\n", .{});
+                return 1;
+            };
         } else if (std.mem.eql(u8, arg, "--artifact")) {
             i += 1;
             if (i >= args.len) {
@@ -344,16 +494,21 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
         }
     }
 
-    if (artifact == null or version == null or url == null or key_path == null) {
-        std.debug.print("error: missing required arguments\nUsage: update_tool sign-update <artifact> --version <X.Y.Z> --url <url> --key <key-file>\n", .{});
+    if (artifact == null or app_id == null or version == null or url == null or key_path == null) {
+        std.debug.print("error: missing required arguments\nUsage: update_tool sign-update <artifact> --app-id <id> --version <X.Y.Z> --url <url> --key <key-file>\n", .{});
         return 1;
     }
 
     const manifest_json = runSignUpdate(io, gpa, .{
         .artifact_path = artifact.?,
+        .app_id = app_id.?,
         .version = version.?,
         .url = url.?,
         .key_path = key_path.?,
+        .target = target,
+        .format = format,
+        .size = size,
+        .expires = expires,
         .out_path = out_path,
     }) catch |err| {
         std.debug.print("error: sign-update failed: {s}\n", .{@errorName(err)});
@@ -374,10 +529,11 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
 fn defaultKeysDir(gpa: std.mem.Allocator, env_map: ?*const std.process.Environ.Map) ![]const u8 {
     if (env_map) |m| {
         if (m.get("XDG_CONFIG_HOME")) |xdg| {
-            if (xdg.len > 0) return std.fs.path.join(gpa, &.{ xdg, "oriel", "keys" });
+            // XDG spec: empty or relative values are ignored.
+            if (std.fs.path.isAbsolute(xdg)) return std.fs.path.join(gpa, &.{ xdg, "oriel", "keys" });
         }
         if (m.get("HOME")) |home| {
-            if (home.len > 0) return std.fs.path.join(gpa, &.{ home, ".config", "oriel", "keys" });
+            if (std.fs.path.isAbsolute(home)) return std.fs.path.join(gpa, &.{ home, ".config", "oriel", "keys" });
         }
     }
     return std.fs.path.join(gpa, &.{ ".oriel", "keys" });
@@ -392,7 +548,7 @@ fn pathExists(io: std.Io, path: []const u8) bool {
 // Unit Tests for update_tool
 // ---------------------------------------------------------------------------
 
-test "keygen writes 0600 key and refuses to overwrite" {
+test "keygen writes 0600 key, 0700 dir, and refuses to overwrite" {
     const io = std.testing.io;
     const allocator = std.testing.allocator;
 
@@ -417,12 +573,20 @@ test "keygen writes 0600 key and refuses to overwrite" {
     const pub_path = try std.fs.path.join(allocator, &.{ keys_dir, "testapp.pub" });
     defer allocator.free(pub_path);
 
-    // Check mode is 0600
+    // Check key mode is 0600
     {
         const f = try std.Io.Dir.cwd().openFile(io, key_path, .{});
         defer f.close(io);
         const st = try f.stat(io);
         try std.testing.expectEqual(@as(u32, 0o600), st.permissions.toMode() & 0o777);
+    }
+
+    // Check directory mode is 0700
+    {
+        const d = try std.Io.Dir.cwd().openDir(io, keys_dir, .{});
+        defer d.close(io);
+        const st = try d.stat(io);
+        try std.testing.expectEqual(@as(u32, 0o700), st.permissions.toMode() & 0o777);
     }
 
     // Check private key contents can be parsed as base64 seed
@@ -444,6 +608,76 @@ test "keygen writes 0600 key and refuses to overwrite" {
         .out_dir = keys_dir,
     });
     try std.testing.expectError(error.KeyAlreadyExists, res);
+
+    // 3. Running keygen with --force overwrites without deleting first
+    try runKeygen(io, allocator, null, .{
+        .quiet = true,
+        .name = "testapp",
+        .out_dir = keys_dir,
+        .force = true,
+    });
+}
+
+test "keygen detects corrupt existing key and requires --force" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const keys_dir = try std.fs.path.join(allocator, &.{ tmp_path, "corrupt_keys" });
+    defer allocator.free(keys_dir);
+    try std.Io.Dir.cwd().createDirPath(io, keys_dir);
+
+    const corrupt_key_path = try std.fs.path.join(allocator, &.{ keys_dir, "bad.key" });
+    defer allocator.free(corrupt_key_path);
+
+    // Write a half-written / corrupt key file
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = corrupt_key_path, .data = "half-written-bad-seed\n" });
+
+    // Refuses without force, detecting corruption
+    const err = runKeygen(io, allocator, null, .{
+        .quiet = true,
+        .name = "bad",
+        .out_dir = keys_dir,
+    });
+    try std.testing.expectError(error.CorruptExistingKey, err);
+
+    // With --force, succeeds and replaces it
+    try runKeygen(io, allocator, null, .{
+        .quiet = true,
+        .name = "bad",
+        .out_dir = keys_dir,
+        .force = true,
+    });
+}
+
+test "keygen with fake env map HOME frees defaultKeysDir with std.testing.allocator" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("HOME", tmp_path);
+
+    // Run keygen without explicit out_dir or key_path to exercise defaultKeysDir
+    try runKeygen(io, allocator, &env_map, .{
+        .quiet = true,
+        .name = "envtest",
+    });
+
+    const expected_key = try std.fs.path.join(allocator, &.{ tmp_path, ".config", "oriel", "keys", "envtest.key" });
+    defer allocator.free(expected_key);
+    try std.testing.expect(pathExists(io, expected_key));
 }
 
 test "sign-update output verifies with update_manifest.verify" {
@@ -484,9 +718,11 @@ test "sign-update output verifies with update_manifest.verify" {
     // Run sign-update
     const manifest_json = try runSignUpdate(io, allocator, .{
         .artifact_path = artifact_path,
+        .app_id = "dev.oriel.signtest",
         .version = "v1.2.3",
         .url = "https://example.com/downloads/app.bin",
         .key_path = key_path,
+        .format = "raw",
         .out_path = manifest_path,
     });
     defer allocator.free(manifest_json);
@@ -500,8 +736,11 @@ test "sign-update output verifies with update_manifest.verify" {
     defer arena.deinit();
 
     const verified = try manifest_mod.verify(arena.allocator(), manifest_json, pub_content);
+    try std.testing.expectEqualStrings("dev.oriel.signtest", verified.app_id);
     try std.testing.expectEqualStrings("1.2.3", verified.version); // stripped 'v'
     try std.testing.expectEqualStrings("https://example.com/downloads/app.bin", verified.url);
+    try std.testing.expectEqualStrings("raw", verified.format);
+    try std.testing.expectEqual(@as(u64, artifact_content.len), verified.size);
 
     // Verify sha256 matches actual hash of artifact
     var sha = Sha256.init(.{});
@@ -509,10 +748,51 @@ test "sign-update output verifies with update_manifest.verify" {
     var digest: [32]u8 = undefined;
     sha.final(&digest);
     const expected_sha256 = std.fmt.bytesToHex(digest, .lower);
-    try std.testing.expectEqualStrings(&expected_sha256, verified.sha256);
+    try std.testing.expect(manifest_mod.eqlSha256Hex(&expected_sha256, verified.sha256));
 
     // Verify the file written to disk matches returned JSON
     const written_manifest = try std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, .limited(4096));
     defer allocator.free(written_manifest);
     try std.testing.expectEqualStrings(manifest_json, written_manifest);
+}
+
+test "sign-update writeFile failure frees manifest_json without leak" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const keys_dir = try std.fs.path.join(allocator, &.{ tmp_path, "keys" });
+    defer allocator.free(keys_dir);
+
+    try runKeygen(io, allocator, null, .{
+        .quiet = true,
+        .name = "sign_fail",
+        .out_dir = keys_dir,
+    });
+
+    const key_path = try std.fs.path.join(allocator, &.{ keys_dir, "sign_fail.key" });
+    defer allocator.free(key_path);
+
+    const artifact_path = try std.fs.path.join(allocator, &.{ tmp_path, "app.bin" });
+    defer allocator.free(artifact_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = artifact_path, .data = "payload" });
+
+    // Try to write to a non-existent directory path which causes writeFile to fail
+    const impossible_out = try std.fs.path.join(allocator, &.{ tmp_path, "no_such_dir", "manifest.json" });
+    defer allocator.free(impossible_out);
+
+    const err = runSignUpdate(io, allocator, .{
+        .artifact_path = artifact_path,
+        .app_id = "dev.oriel.fail",
+        .version = "1.0.0",
+        .url = "https://example.com/app",
+        .key_path = key_path,
+        .out_path = impossible_out,
+    });
+    try std.testing.expectError(error.FileNotFound, err);
 }

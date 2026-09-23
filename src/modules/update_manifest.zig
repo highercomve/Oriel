@@ -1,11 +1,12 @@
 //! Pure-std data structures and cryptographic verification for Oriel update manifests.
 //! Defines:
 //! - Semver 2.0.0 parsing and precedence rules ('v' prefix tolerated).
-//! - Domain-separated update manifest format: "oriel-update-v1\n{version}\n{url}\n{sha256}\n".
+//! - Domain-separated update manifest format: "oriel-update-v2\n{app_id}\n{version}\n{target}\n{format}\n{size}\n{sha256}\n{url}\n{expires}\n".
 //! - Base64 Ed25519 signing and verification.
 //! Pure std: does NOT depend on GTK, WebKit, or any Oriel runtime code.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Ed25519 = std.crypto.sign.Ed25519;
 
 // ---------------------------------------------------------------------------
@@ -39,18 +40,39 @@ pub const Semver = struct {
 // Manifest & Crypto Constants
 // ---------------------------------------------------------------------------
 
-pub const DOMAIN_PREFIX = "oriel-update-v1\n";
+pub const DOMAIN_PREFIX = "oriel-update-v2\n";
 pub const PUBLIC_KEY_B64_LEN = 44;
 pub const SIGNATURE_B64_LEN = 88;
 pub const PRIVATE_KEY_SEED_B64_LEN = 44;
 
 pub const Manifest = struct {
+    app_id: []const u8,
     version: []const u8,
-    url: []const u8,
+    target: []const u8,
+    format: []const u8,
+    size: u64,
     /// Hex-encoded SHA-256 of the payload artifact.
     sha256: []const u8,
+    url: []const u8,
+    expires: ?u64 = null,
     /// Standard base64-encoded Ed25519 signature.
     signature: []const u8,
+};
+
+pub const SignParameters = struct {
+    app_id: []const u8,
+    version: []const u8,
+    target: []const u8,
+    format: []const u8,
+    size: u64,
+    sha256: []const u8,
+    url: []const u8,
+    expires: ?u64 = null,
+    allow_test_http: bool = false,
+};
+
+pub const VerifyOptions = struct {
+    allow_test_http: bool = false,
 };
 
 // ---------------------------------------------------------------------------
@@ -106,22 +128,123 @@ pub fn keyPairFromSeedB64(b64: []const u8) !Ed25519.KeyPair {
 }
 
 // ---------------------------------------------------------------------------
+// Format & Validation Helpers
+// ---------------------------------------------------------------------------
+
+/// Consistent case-insensitive SHA-256 hex comparison helper.
+pub fn eqlSha256Hex(a: []const u8, b: []const u8) bool {
+    if (a.len != 64 or b.len != 64) return false;
+    return std.ascii.eqlIgnoreCase(a, b);
+}
+
+/// Recognized update formats.
+pub fn isValidFormat(format: []const u8) bool {
+    const valid = [_][]const u8{
+        "raw",
+        "raw.gz",
+        "appimage",
+        "appimage.gz",
+        "gzip",
+    };
+    for (valid) |v| {
+        if (std.mem.eql(u8, format, v)) return true;
+    }
+    return false;
+}
+
+/// Returns true if the signed format is an AppImage (`appimage`, `appimage.gz`).
+pub fn isAppImageFormat(format: []const u8) bool {
+    return std.mem.startsWith(u8, format, "appimage");
+}
+
+/// Returns true if the signed format specifies gzip decompression.
+pub fn isGzipFormat(format: []const u8) bool {
+    return std.mem.endsWith(u8, format, ".gz") or std.mem.eql(u8, format, "gzip");
+}
+
+pub fn validateNoControlChars(val: []const u8) !void {
+    if (val.len == 0) return error.EmptyField;
+    for (val) |c| {
+        if (c < 32 or c == 127) return error.ControlCharactersInField;
+    }
+}
+
+pub fn validateSha256(hex: []const u8) !void {
+    if (hex.len != 64) return error.InvalidSha256Length;
+    for (hex) |c| {
+        if (!std.ascii.isHex(c)) return error.InvalidSha256Hex;
+    }
+}
+
+/// Require an `https://` URL. `allow_test_http` (loopback `http://`) only takes
+/// effect in test builds, so production code can never opt out of TLS.
+pub fn validateUrl(url: []const u8, allow_test_http: bool) !void {
+    try validateNoControlChars(url);
+    if (std.mem.startsWith(u8, url, "https://")) return;
+    if (builtin.is_test and allow_test_http) {
+        if (std.mem.startsWith(u8, url, "http://127.0.0.1:") or
+            std.mem.startsWith(u8, url, "http://127.0.0.1/") or
+            std.mem.startsWith(u8, url, "http://localhost:") or
+            std.mem.startsWith(u8, url, "http://localhost/"))
+        {
+            return;
+        }
+    }
+    return error.InsecureUrl;
+}
+
+pub fn validateManifestFields(
+    app_id: []const u8,
+    version: []const u8,
+    target: []const u8,
+    format: []const u8,
+    size: u64,
+    sha256: []const u8,
+    url: []const u8,
+    expires: ?u64,
+    allow_test_http: bool,
+) !void {
+    try validateNoControlChars(app_id);
+    _ = Semver.parse(version) catch return error.InvalidSemver;
+    try validateNoControlChars(version);
+    try validateNoControlChars(target);
+    try validateNoControlChars(format);
+    if (!isValidFormat(format)) return error.InvalidFormat;
+    if (size == 0) return error.InvalidSize;
+    try validateSha256(sha256);
+    try validateUrl(url, allow_test_http);
+    if (expires) |exp| {
+        if (exp == 0) return error.InvalidExpiration;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Canonical Signed Data, Signing & Verification
 // ---------------------------------------------------------------------------
 
 /// Allocate the domain-separated canonical bytes to be signed/verified:
-/// `"oriel-update-v1\n" ++ version ++ "\n" ++ url ++ "\n" ++ sha256 ++ "\n"`
+/// `"oriel-update-v2\n" ++ app_id ++ "\n" ++ version ++ "\n" ++ target ++ "\n" ++ format ++ "\n" ++ size ++ "\n" ++ sha256 ++ "\n" ++ url ++ "\n" ++ expires ++ "\n"`
 pub fn formatSignedData(
     allocator: std.mem.Allocator,
+    app_id: []const u8,
     version: []const u8,
-    url: []const u8,
+    target: []const u8,
+    format: []const u8,
+    size: u64,
     sha256: []const u8,
+    url: []const u8,
+    expires: ?u64,
 ) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}{s}\n{s}\n{s}\n", .{
+    return std.fmt.allocPrint(allocator, "{s}{s}\n{s}\n{s}\n{s}\n{d}\n{s}\n{s}\n{d}\n", .{
         DOMAIN_PREFIX,
+        app_id,
         version,
-        url,
+        target,
+        format,
+        size,
         sha256,
+        url,
+        expires orelse 0,
     });
 }
 
@@ -129,11 +252,31 @@ pub fn formatSignedData(
 pub fn sign(
     allocator: std.mem.Allocator,
     key_pair: Ed25519.KeyPair,
-    version: []const u8,
-    url: []const u8,
-    sha256: []const u8,
+    params: SignParameters,
 ) ![]u8 {
-    const signed_data = try formatSignedData(allocator, version, url, sha256);
+    try validateManifestFields(
+        params.app_id,
+        params.version,
+        params.target,
+        params.format,
+        params.size,
+        params.sha256,
+        params.url,
+        params.expires,
+        params.allow_test_http,
+    );
+
+    const signed_data = try formatSignedData(
+        allocator,
+        params.app_id,
+        params.version,
+        params.target,
+        params.format,
+        params.size,
+        params.sha256,
+        params.url,
+        params.expires,
+    );
     defer allocator.free(signed_data);
 
     const sig = try key_pair.sign(signed_data, null);
@@ -144,34 +287,41 @@ pub fn sign(
 }
 
 /// Format the signed manifest JSON:
-/// {
-///   "version": "...",
-///   "url": "...",
-///   "sha256": "...",
-///   "signature": "..."
-/// }
 pub fn formatManifest(
     allocator: std.mem.Allocator,
-    version: []const u8,
-    url: []const u8,
-    sha256: []const u8,
+    params: SignParameters,
     signature_b64: []const u8,
 ) ![]u8 {
     const manifest = Manifest{
-        .version = version,
-        .url = url,
-        .sha256 = sha256,
+        .app_id = params.app_id,
+        .version = params.version,
+        .target = params.target,
+        .format = params.format,
+        .size = params.size,
+        .sha256 = params.sha256,
+        .url = params.url,
+        .expires = params.expires,
         .signature = signature_b64,
     };
     return std.json.Stringify.valueAlloc(allocator, manifest, .{ .whitespace = .indent_2 });
 }
 
 /// Verify signature over the manifest JSON using base64-encoded `public_key_b64`.
-/// Returns the parsed `Manifest` allocated in `arena`.
+/// Strictly requires https:// URLs.
 pub fn verify(
     arena: std.mem.Allocator,
     manifest_json: []const u8,
     public_key_b64: []const u8,
+) !Manifest {
+    return verifyWithOptions(arena, manifest_json, public_key_b64, .{});
+}
+
+/// Verify signature over manifest JSON with explicit options (e.g. allow_test_http).
+pub fn verifyWithOptions(
+    arena: std.mem.Allocator,
+    manifest_json: []const u8,
+    public_key_b64: []const u8,
+    options: VerifyOptions,
 ) !Manifest {
     const pk_bytes = try parsePublicKey(public_key_b64);
     const pk = try Ed25519.PublicKey.fromBytes(pk_bytes);
@@ -180,10 +330,32 @@ pub fn verify(
         .ignore_unknown_fields = true,
     });
 
+    try validateManifestFields(
+        manifest.app_id,
+        manifest.version,
+        manifest.target,
+        manifest.format,
+        manifest.size,
+        manifest.sha256,
+        manifest.url,
+        manifest.expires,
+        options.allow_test_http,
+    );
+
     const sig_bytes = try parseSignature(manifest.signature);
     const sig = Ed25519.Signature.fromBytes(sig_bytes);
 
-    const signed_data = try formatSignedData(arena, manifest.version, manifest.url, manifest.sha256);
+    const signed_data = try formatSignedData(
+        arena,
+        manifest.app_id,
+        manifest.version,
+        manifest.target,
+        manifest.format,
+        manifest.size,
+        manifest.sha256,
+        manifest.url,
+        manifest.expires,
+    );
     try sig.verify(signed_data, pk);
 
     return manifest;
@@ -231,7 +403,7 @@ test "Semver parsing, ordering, and prefix handling" {
     try std.testing.expect(rel.isNewerThan(p7));
 }
 
-test "Manifest sign and verify" {
+test "Manifest v2 sign, format, and verify with all fields" {
     const allocator = std.testing.allocator;
 
     const seed: [32]u8 = [_]u8{42} ** 32;
@@ -244,14 +416,21 @@ test "Manifest sign and verify" {
     var other_pk_b64: [PUBLIC_KEY_B64_LEN]u8 = undefined;
     _ = encodePublicKey(other_kp.public_key.toBytes(), &other_pk_b64);
 
-    const version = "1.2.3";
-    const url = "https://example.com/app";
-    const sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const params = SignParameters{
+        .app_id = "dev.oriel.demo",
+        .version = "1.2.3",
+        .target = "x86_64-linux",
+        .format = "appimage",
+        .size = 1048576,
+        .sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        .url = "https://example.com/app",
+        .expires = 1900000000,
+    };
 
-    const sig_b64 = try sign(allocator, kp, version, url, sha256);
+    const sig_b64 = try sign(allocator, kp, params);
     defer allocator.free(sig_b64);
 
-    const manifest_json = try formatManifest(allocator, version, url, sha256, sig_b64);
+    const manifest_json = try formatManifest(allocator, params, sig_b64);
     defer allocator.free(manifest_json);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -259,29 +438,136 @@ test "Manifest sign and verify" {
 
     // 1. Valid manifest
     const m = try verify(arena.allocator(), manifest_json, &pk_b64);
-    try std.testing.expectEqualStrings(version, m.version);
-    try std.testing.expectEqualStrings(url, m.url);
-    try std.testing.expectEqualStrings(sha256, m.sha256);
+    try std.testing.expectEqualStrings(params.app_id, m.app_id);
+    try std.testing.expectEqualStrings(params.version, m.version);
+    try std.testing.expectEqualStrings(params.target, m.target);
+    try std.testing.expectEqualStrings(params.format, m.format);
+    try std.testing.expectEqual(params.size, m.size);
+    try std.testing.expectEqualStrings(params.sha256, m.sha256);
+    try std.testing.expectEqualStrings(params.url, m.url);
+    try std.testing.expectEqual(params.expires, m.expires);
     try std.testing.expectEqualStrings(sig_b64, m.signature);
 
     // 2. Tampered version rejected
-    const tampered_ver = try std.fmt.allocPrint(allocator, "{{\"version\":\"9.9.9\",\"url\":\"{s}\",\"sha256\":\"{s}\",\"signature\":\"{s}\"}}", .{ url, sha256, sig_b64 });
+    const tampered_ver = try std.fmt.allocPrint(allocator,
+        \\{{"app_id":"{s}","version":"9.9.9","target":"{s}","format":"{s}","size":{d},"sha256":"{s}","url":"{s}","expires":{d},"signature":"{s}"}}
+    , .{ params.app_id, params.target, params.format, params.size, params.sha256, params.url, params.expires.?, sig_b64 });
     defer allocator.free(tampered_ver);
     try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_ver, &pk_b64));
 
-    // 3. Tampered url rejected
-    const tampered_url = try std.fmt.allocPrint(allocator, "{{\"version\":\"{s}\",\"url\":\"https://evil.com/app\",\"sha256\":\"{s}\",\"signature\":\"{s}\"}}", .{ version, sha256, sig_b64 });
+    // 3. Tampered app_id rejected
+    const tampered_app = try std.fmt.allocPrint(allocator,
+        \\{{"app_id":"evil.app","version":"{s}","target":"{s}","format":"{s}","size":{d},"sha256":"{s}","url":"{s}","expires":{d},"signature":"{s}"}}
+    , .{ params.version, params.target, params.format, params.size, params.sha256, params.url, params.expires.?, sig_b64 });
+    defer allocator.free(tampered_app);
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_app, &pk_b64));
+
+    // 4. Tampered target rejected
+    const tampered_target = try std.fmt.allocPrint(allocator,
+        \\{{"app_id":"{s}","version":"{s}","target":"aarch64-linux","format":"{s}","size":{d},"sha256":"{s}","url":"{s}","expires":{d},"signature":"{s}"}}
+    , .{ params.app_id, params.version, params.format, params.size, params.sha256, params.url, params.expires.?, sig_b64 });
+    defer allocator.free(tampered_target);
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_target, &pk_b64));
+
+    // 5. Tampered format rejected
+    const tampered_format = try std.fmt.allocPrint(allocator,
+        \\{{"app_id":"{s}","version":"{s}","target":"{s}","format":"raw","size":{d},"sha256":"{s}","url":"{s}","expires":{d},"signature":"{s}"}}
+    , .{ params.app_id, params.version, params.target, params.size, params.sha256, params.url, params.expires.?, sig_b64 });
+    defer allocator.free(tampered_format);
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_format, &pk_b64));
+
+    // 6. Tampered size rejected
+    const tampered_size = try std.fmt.allocPrint(allocator,
+        \\{{"app_id":"{s}","version":"{s}","target":"{s}","format":"{s}","size":9999,"sha256":"{s}","url":"{s}","expires":{d},"signature":"{s}"}}
+    , .{ params.app_id, params.version, params.target, params.format, params.sha256, params.url, params.expires.?, sig_b64 });
+    defer allocator.free(tampered_size);
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_size, &pk_b64));
+
+    // 7. Tampered url rejected
+    const tampered_url = try std.fmt.allocPrint(allocator,
+        \\{{"app_id":"{s}","version":"{s}","target":"{s}","format":"{s}","size":{d},"sha256":"{s}","url":"https://evil.com/app","expires":{d},"signature":"{s}"}}
+    , .{ params.app_id, params.version, params.target, params.format, params.size, params.sha256, params.expires.?, sig_b64 });
     defer allocator.free(tampered_url);
     try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_url, &pk_b64));
 
-    // 4. Tampered sha256 rejected
-    const tampered_hash = try std.fmt.allocPrint(allocator, "{{\"version\":\"{s}\",\"url\":\"{s}\",\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"signature\":\"{s}\"}}", .{ version, url, sig_b64 });
+    // 8. Tampered sha256 rejected
+    const tampered_hash = try std.fmt.allocPrint(allocator,
+        \\{{"app_id":"{s}","version":"{s}","target":"{s}","format":"{s}","size":{d},"sha256":"0000000000000000000000000000000000000000000000000000000000000000","url":"{s}","expires":{d},"signature":"{s}"}}
+    , .{ params.app_id, params.version, params.target, params.format, params.size, params.url, params.expires.?, sig_b64 });
     defer allocator.free(tampered_hash);
     try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_hash, &pk_b64));
 
-    // 5. Wrong public key rejected
+    // 9. Tampered expires rejected
+    const tampered_exp = try std.fmt.allocPrint(allocator,
+        \\{{"app_id":"{s}","version":"{s}","target":"{s}","format":"{s}","size":{d},"sha256":"{s}","url":"{s}","expires":2000000000,"signature":"{s}"}}
+    , .{ params.app_id, params.version, params.target, params.format, params.size, params.sha256, params.url, sig_b64 });
+    defer allocator.free(tampered_exp);
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_exp, &pk_b64));
+
+    // 10. Wrong public key rejected
     try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), manifest_json, &other_pk_b64));
 
-    // 6. Bad base64 rejected
+    // 11. Bad public key base64 rejected
     try std.testing.expectError(error.InvalidPublicKeyLength, verify(arena.allocator(), manifest_json, "invalid"));
+}
+
+test "Field validation: control chars, sha256, urls, format" {
+    const allocator = std.testing.allocator;
+    const kp = try Ed25519.KeyPair.generateDeterministic([_]u8{11} ** 32);
+
+    // Control characters in fields rejected
+    var bad_params = SignParameters{
+        .app_id = "app\nid",
+        .version = "1.0.0",
+        .target = "x86_64-linux",
+        .format = "raw",
+        .size = 100,
+        .sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        .url = "https://example.com/app",
+    };
+    try std.testing.expectError(error.ControlCharactersInField, sign(allocator, kp, bad_params));
+
+    bad_params.app_id = "good_app";
+    bad_params.target = "x86_64\rlinux";
+    try std.testing.expectError(error.ControlCharactersInField, sign(allocator, kp, bad_params));
+
+    // Invalid SHA-256 (length != 64)
+    bad_params.target = "x86_64-linux";
+    bad_params.sha256 = "abc";
+    try std.testing.expectError(error.InvalidSha256Length, sign(allocator, kp, bad_params));
+
+    // Invalid SHA-256 (non-hex chars)
+    bad_params.sha256 = "g3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    try std.testing.expectError(error.InvalidSha256Hex, sign(allocator, kp, bad_params));
+
+    // Insecure URL (http:// without allow_test_http)
+    bad_params.sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    bad_params.url = "http://example.com/app";
+    try std.testing.expectError(error.InsecureUrl, sign(allocator, kp, bad_params));
+
+    // Insecure test URL rejected when allow_test_http = false
+    bad_params.url = "http://127.0.0.1:8080/app";
+    bad_params.allow_test_http = false;
+    try std.testing.expectError(error.InsecureUrl, sign(allocator, kp, bad_params));
+
+    // Insecure test URL accepted when allow_test_http = true
+    bad_params.allow_test_http = true;
+    const test_sig = try sign(allocator, kp, bad_params);
+    allocator.free(test_sig);
+
+    // Invalid format
+    bad_params.format = "unknown_format";
+    try std.testing.expectError(error.InvalidFormat, sign(allocator, kp, bad_params));
+
+    // Zero size rejected
+    bad_params.format = "raw";
+    bad_params.size = 0;
+    try std.testing.expectError(error.InvalidSize, sign(allocator, kp, bad_params));
+
+    // Case-insensitive sha256 compare helper
+    const hash_lower = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const hash_upper = "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855";
+    try std.testing.expect(eqlSha256Hex(hash_lower, hash_upper));
+    try std.testing.expect(!eqlSha256Hex(hash_lower, "0000c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+    try std.testing.expect(!eqlSha256Hex(hash_lower, "short"));
 }

@@ -397,24 +397,29 @@ Sign an update artifact (raw binary, AppImage, or `.gz` archive) and produce a m
 
 ```sh
 zig build sign-update -- zig-out/bin/my-app \
+  --app-id com.example.App \
   --version 1.2.0 \
   --url https://releases.example.com/my-app-1.2.0 \
   --key ~/.config/myapp/keys/myapp.key \
   --out manifest.json
 ```
 
-**Signed manifest format:**
+**Signed manifest format (`oriel-update-v2`):**
 ```json
 {
+  "app_id": "com.example.App",
   "version": "1.2.0",
-  "url": "https://releases.example.com/my-app-1.2.0",
+  "target": "x86_64-linux",
+  "format": "raw",
+  "size": 1048576,
   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "url": "https://releases.example.com/my-app-1.2.0",
   "signature": "base64-encoded-ed25519-signature"
 }
 ```
 
 The signature is computed over domain-separated canonical bytes:
-`"oriel-update-v1\n" ++ version ++ "\n" ++ url ++ "\n" ++ sha256 ++ "\n"`
+`"oriel-update-v2\n" ++ app_id ++ "\n" ++ version ++ "\n" ++ target ++ "\n" ++ format ++ "\n" ++ size ++ "\n" ++ sha256 ++ "\n" ++ url ++ "\n"` (plus optional `expires\n`).
 
 #### 3. Embedding public key in the app
 
@@ -439,6 +444,7 @@ In `src/main.zig`, register the comptime-configured updater commands:
 const app = @import("oriel_app");
 
 const Updater = oriel.updater.Commands(.{
+    .app_id = "com.example.App",
     .manifest_url = "https://releases.example.com/manifest.json",
     .current_version = "1.0.0",
     .public_key_b64 = app.update_public_key orelse @panic("missing update key"),

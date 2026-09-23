@@ -41,6 +41,11 @@ pub const ThreadPool = @import("core/ThreadPool.zig").ThreadPool;
 /// Besides running the app, it handles `--emit-types <path>`, used by the
 /// build to write the frontend's TypeScript bindings for the API.
 pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.Config) !u8 {
+    if (options.updater) {
+        try updater.init(init.io, init.gpa, init.environ_map);
+    }
+    defer if (options.updater) updater.deinit(init.io);
+
     const argv = init.minimal.args.vector;
     if (argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[1]), "--emit-types")) {
         try writeTypes(init.io, init.gpa, api, std.mem.span(argv[2]));
