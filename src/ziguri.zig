@@ -75,6 +75,10 @@ pub const CheckContext = struct {
     icon_png: []const u8,
     /// Port of a running media server, if one was started.
     media_port: ?u16 = null,
+    /// App id for checks that talk to xdg-desktop-portal (it must have an
+    /// installed `<app_id>.desktop`); defaults to the running GApplication's
+    /// id or the program name.
+    app_id: ?[:0]const u8 = null,
 };
 
 /// Run the smoke check of every enabled module and plugin.

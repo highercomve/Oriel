@@ -10,6 +10,7 @@ const ziguri = @import("ziguri");
 const app = @import("ziguri_app");
 
 const media_port: u16 = 17893;
+const app_id = "dev.ziguri.Smoke";
 const icon_png = @embedFile("web/icon.png");
 
 var io: std.Io = undefined;
@@ -116,6 +117,7 @@ fn context() ziguri.CheckContext {
         .io = io,
         .icon_png = icon_png,
         .media_port = if (ziguri.options.media_server) media_port else null,
+        .app_id = app_id,
     };
 }
 
@@ -151,7 +153,7 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     const config_gui: ziguri.App.Config = .{
-        .id = "dev.ziguri.Smoke",
+        .id = app_id,
         .title = "ziguri smoke test",
         .assets = app.assets,
         // The security checks navigate to remote URLs: never hand them to a browser.

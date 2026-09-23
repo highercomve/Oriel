@@ -205,7 +205,16 @@ try ziguri.global_shortcut.register(gpa, .{
 }, &onHotkey);
 ```
 
-- **Wayland:** Uses `org.freedesktop.portal.GlobalShortcuts` via D-Bus session.
+- **Wayland:** `org.freedesktop.portal.GlobalShortcuts`: the plugin registers the app id
+  with the portal (`org.freedesktop.host.portal.Registry`), creates a session, binds the
+  shortcuts (`BindShortcuts`, with `description` and `preferred_trigger`; the compositor may
+  ask the user to confirm or pick other keys) and dispatches the session's `Activated`
+  signals. Call `register` on the main thread (e.g. in `setup`); bind failures are logged.
+  **The app id (`Config.id`) needs an installed `<id>.desktop` file**
+  (e.g. `~/.local/share/applications/com.example.App.desktop`): xdg-desktop-portal refuses
+  GlobalShortcuts to host apps without one. There is no X11 fallback on Wayland (XGrabKey only
+  fires while an XWayland window has focus); without the portal `register` returns
+  `error.PortalUnavailable`.
 - **X11:** Uses `XGrabKey` with a GLib main loop watch on the X connection file descriptor.
 
 ### Input injection (`ziguri.input`)

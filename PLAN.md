@@ -106,6 +106,12 @@ gdbus call --session --dest org.kde.StatusNotifierItem-$PID-1 --object-path /Men
 - **GVariant floating refs:** `g_variant_new_*` results are floating and
   consumed by containers / `g_dbus_method_invocation_return_value`; only
   unref what you `ref_sink`ed or got from `get_child_value`.
+- **GlobalShortcuts portal needs a registered app id** for host apps
+  (xdg-desktop-portal ≥ 1.19): `org.freedesktop.host.portal.Registry.Register`
+  before the first portal call on the connection, and `<app_id>.desktop`
+  must be installed or it is refused ("App info not found"). So the smoke
+  `--check` global_shortcut line fails on a real Wayland session until
+  `dev.ziguri.Smoke.desktop` is installed.
 - **Hyprland here uses a Lua config**: `hyprctl dispatch` needs
   `hl.dsp.*` syntax (only relevant for manual checks).
 
