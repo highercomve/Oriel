@@ -1,6 +1,7 @@
 //! Desktop entry generation according to XDG Desktop Entry Specification.
 
 const std = @import("std");
+const metadata = @import("metadata.zig");
 
 pub const DesktopOptions = struct {
     app_id: []const u8,
@@ -28,31 +29,49 @@ pub fn formatCategories(allocator: std.mem.Allocator, raw: ?[]const u8) ![]const
 
 /// Generate a valid .desktop file content according to XDG Desktop Entry Specification.
 pub fn generateDesktop(allocator: std.mem.Allocator, opts: DesktopOptions) ![]const u8 {
+    try metadata.validateNoControlOrNewline(opts.app_id);
+
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     const w = &out.writer;
 
     try w.writeAll("[Desktop Entry]\n");
     try w.writeAll("Type=Application\n");
-    try w.print("Name={s}\n", .{opts.name});
+
+    const escaped_name = try metadata.escapeDesktopString(allocator, opts.name);
+    defer allocator.free(escaped_name);
+    try w.print("Name={s}\n", .{escaped_name});
+
     if (opts.comment) |c| {
         const trimmed = std.mem.trim(u8, c, " \t\r\n");
         if (trimmed.len > 0) {
-            try w.print("Comment={s}\n", .{trimmed});
+            const escaped_comment = try metadata.escapeDesktopString(allocator, trimmed);
+            defer allocator.free(escaped_comment);
+            try w.print("Comment={s}\n", .{escaped_comment});
         }
     }
-    try w.print("Exec={s}\n", .{opts.exec});
-    try w.print("Icon={s}\n", .{opts.icon});
+
+    const escaped_exec = try metadata.escapeDesktopExec(allocator, opts.exec);
+    defer allocator.free(escaped_exec);
+    try w.print("Exec={s}\n", .{escaped_exec});
+
+    const escaped_icon = try metadata.escapeDesktopString(allocator, opts.icon);
+    defer allocator.free(escaped_icon);
+    try w.print("Icon={s}\n", .{escaped_icon});
 
     const cat = try formatCategories(allocator, opts.categories);
     defer allocator.free(cat);
-    try w.print("Categories={s}\n", .{cat});
+    const escaped_cat = try metadata.escapeDesktopString(allocator, cat);
+    defer allocator.free(escaped_cat);
+    try w.print("Categories={s}\n", .{escaped_cat});
 
     try w.print("Terminal={s}\n", .{if (opts.terminal) "true" else "false"});
     try w.print("StartupNotify={s}\n", .{if (opts.startup_notify) "true" else "false"});
 
     const wm_class = opts.startup_wm_class orelse opts.app_id;
-    try w.print("StartupWMClass={s}\n", .{wm_class});
+    const escaped_wm_class = try metadata.escapeDesktopString(allocator, wm_class);
+    defer allocator.free(escaped_wm_class);
+    try w.print("StartupWMClass={s}\n", .{escaped_wm_class});
 
     return try allocator.dupe(u8, out.written());
 }
@@ -98,4 +117,22 @@ test "formatCategories" {
     const cat3 = try formatCategories(gpa, null);
     defer gpa.free(cat3);
     try testing.expectEqualStrings("Utility;", cat3);
+}
+
+test "generateDesktop escaping and validation" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+
+    const desktop = try generateDesktop(gpa, .{
+        .app_id = "dev.oriel.SpecialApp",
+        .name = "Special \\ Name with \"Quotes\"",
+        .exec = "/usr/local/bin/my special app$1",
+        .icon = "dev.oriel.SpecialApp",
+        .comment = "Multi-line\ncomment with\ttabs",
+    });
+    defer gpa.free(desktop);
+
+    try testing.expect(std.mem.indexOf(u8, desktop, "Name=Special \\\\ Name with \"Quotes\"\n") != null);
+    try testing.expect(std.mem.indexOf(u8, desktop, "Comment=Multi-line\\ncomment with\\ttabs\n") != null);
+    try testing.expect(std.mem.indexOf(u8, desktop, "Exec=\"/usr/local/bin/my special app\\\\$1\"\n") != null);
 }
