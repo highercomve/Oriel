@@ -216,7 +216,7 @@ pub fn addPackageSteps(
         "--startup-wm-class", metadata.id,
     });
 
-    const appimage_runtime_override = b.option([]const u8, "appimage-runtime", "Override path to AppImage type-2 runtime");
+    const appimage_runtime_override = getOrDeclareAppImageRuntimeOption(b);
 
     const ctx = Context{
         .b = b,
@@ -237,7 +237,7 @@ pub fn addPackageSteps(
 
     // Aggregate `package` step plus one `package-<format>` step per selected
     // format; each format's build graph is created once and shared by both.
-    const package_step = b.step("package", "Build distribution packages");
+    const package_step = getOrCreateStep(b, "package", "Build distribution packages");
     if (target_formats.len == 0) {
         const fail = b.addFail(b.fmt("no package formats for {s} yet", .{@tagName(os_tag)}));
         package_step.dependOn(&fail.step);
@@ -245,7 +245,7 @@ pub fn addPackageSteps(
     for (target_formats) |fmt| {
         const step = addFormat(&ctx, fmt);
         package_step.dependOn(step);
-        b.step(b.fmt("package-{s}", .{@tagName(fmt)}), b.fmt("Build only the {s} package", .{@tagName(fmt)})).dependOn(step);
+        getOrCreateStep(b, b.fmt("package-{s}", .{@tagName(fmt)}), b.fmt("Build only the {s} package", .{@tagName(fmt)})).dependOn(step);
     }
 
     // Desktop-entry step (for local development)
@@ -282,7 +282,7 @@ pub fn addPackageSteps(
     run_install_desktop.addArg(effective_app_id);
     run_install_desktop.has_side_effects = true;
 
-    const desktop_entry_step = b.step("desktop-entry", "Install desktop entry and icons for development to $XDG_DATA_HOME");
+    const desktop_entry_step = getOrCreateStep(b, "desktop-entry", "Install desktop entry and icons for development to $XDG_DATA_HOME");
     desktop_entry_step.dependOn(&b.addInstallArtifact(target_compile, .{}).step);
     desktop_entry_step.dependOn(&run_install_desktop.step);
 }
@@ -401,7 +401,12 @@ fn addAppImage(ctx: *const Context) *std.Build.Step {
     run.addArg("--cache-dir");
     run.addArg(ctx.b.cache_root.path orelse ".zig-cache");
     if (ctx.appimage_runtime_override) |ro| {
-        run.addArgs(&.{ "--runtime-override", ro });
+        const lazy_ro: std.Build.LazyPath = if (std.fs.path.isAbsolute(ro))
+            .{ .cwd_relative = ro }
+        else
+            ctx.b.path(ro);
+        run.addArg("--runtime-override");
+        run.addFileArg(lazy_ro);
     }
 
     const install = ctx.b.addInstallFileWithDir(
@@ -421,4 +426,27 @@ fn isFeatureEnabled(dep: *std.Build.Dependency, comptime name: []const u8) bool 
         }
     }
     return true; // default enabled
+}
+
+/// Return the top-level step `name`, creating it on first use, so the
+/// build helpers can run more than once per `b` without `b.step` panicking.
+pub fn getOrCreateStep(b: *std.Build, name: []const u8, description: []const u8) *std.Build.Step {
+    if (b.top_level_steps.get(name)) |tls| {
+        return &tls.step;
+    }
+    return b.step(name, description);
+}
+
+/// `-Dappimage-runtime`, declared once: `b.option` panics on a second
+/// declaration, so later calls read the already-declared value.
+fn getOrDeclareAppImageRuntimeOption(b: *std.Build) ?[]const u8 {
+    if (b.available_options_map.get("appimage-runtime") != null) {
+        const option_ptr = b.user_input_options.getPtr("appimage-runtime") orelse return null;
+        option_ptr.used = true;
+        return switch (option_ptr.value) {
+            .scalar => |s| s,
+            else => null,
+        };
+    }
+    return b.option([]const u8, "appimage-runtime", "Override path to AppImage type-2 runtime");
 }

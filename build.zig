@@ -264,7 +264,9 @@ pub const App = struct {
 };
 
 /// Add `keygen` and `sign-update` build steps to `b`.
+/// Idempotent: a second call (e.g. from a second `addApp`) is a no-op.
 pub fn addUpdaterSteps(b: *std.Build, update_tool: *std.Build.Step.Compile) void {
+    if (b.top_level_steps.get("keygen") != null) return;
     const run_keygen = b.addRunArtifact(update_tool);
     run_keygen.addArg("keygen");
     if (b.args) |args| run_keygen.addArgs(args);
@@ -281,6 +283,9 @@ pub fn addUpdaterSteps(b: *std.Build, update_tool: *std.Build.Step.Compile) void
 ///   zig build run      run the production build
 ///   zig build dev      run against the dev server (hot reload)
 ///   zig build types    regenerate the frontend's TypeScript command types
+/// plus the packaging steps (`package`, `package-<format>`, `desktop-entry`).
+/// Calling it more than once is allowed: top-level steps are shared, so
+/// e.g. `zig build run` or `zig build package` acts on every app added.
 pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) App {
     addUpdaterSteps(b, oriel_dep.artifact("update_tool"));
 
@@ -323,7 +328,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         gen.addArgs(&.{ "--emit-types", b.pathJoin(&.{ fe_dir, types_path }) });
         gen.has_side_effects = true;
         types_step = &gen.step;
-        b.step("types", "Generate TypeScript types for the Zig commands").dependOn(&gen.step);
+        @import("build/package.zig").getOrCreateStep(b, "types", "Generate TypeScript types for the Zig commands").dependOn(&gen.step);
     }
 
     // Production: build the frontend, embed dist/, compile.
@@ -351,11 +356,11 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
     if (b.args) |args| run.addArgs(args);
-    b.step("run", "Run the production build").dependOn(&run.step);
+    @import("build/package.zig").getOrCreateStep(b, "run", "Run the production build").dependOn(&run.step);
 
     if (dev_exe) |d| {
         const install_dev = b.addInstallArtifact(d, .{});
-        b.step("build-dev", "Build development executable").dependOn(&install_dev.step);
+        @import("build/package.zig").getOrCreateStep(b, "build-dev", "Build development executable").dependOn(&install_dev.step);
 
         const runner = b.addRunArtifact(oriel_dep.artifact("dev_runner"));
         runner.addArgs(&.{
@@ -383,7 +388,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         if (install_step) |s| runner.step.dependOn(s);
         if (types_step) |s| runner.step.dependOn(s);
 
-        b.step("dev", "Run against the frontend dev server (hot reload & Zig reload)").dependOn(&runner.step);
+        @import("build/package.zig").getOrCreateStep(b, "dev", "Run against the frontend dev server (hot reload & Zig reload)").dependOn(&runner.step);
     }
 
     @import("build/package.zig").addPackageSteps(b, oriel_dep, options, exe, dev_exe);
