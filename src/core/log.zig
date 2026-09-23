@@ -29,19 +29,24 @@ fn ensureMutex() void {
 /// Creates `$XDG_DATA_HOME/<app_id>/app.log` and directs future log entries
 /// to it in addition to stderr.
 pub fn init(app_id: []const u8) void {
+    const base = std.mem.span(glib.getUserDataDir());
+    var path_buf: [1024]u8 = undefined;
+    const dir = std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{ base, app_id }) catch return;
+    initInDir(dir);
+}
+
+/// Open `<dir>/app.log` (creating `dir`) as the log file.
+fn initInDir(dir: [:0]const u8) void {
     ensureMutex();
     log_mutex.lock();
     defer log_mutex.unlock();
 
     if (log_fd >= 0) return; // already initialized
 
-    const base = std.mem.span(glib.getUserDataDir());
-    var path_buf: [1024]u8 = undefined;
-    const dir = std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{ base, app_id }) catch return;
     _ = glib.mkdirWithParents(dir.ptr, 0o755);
 
     var file_buf: [1024]u8 = undefined;
-    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/{s}/app.log", .{ base, app_id }) catch return;
+    const file_path = std.fmt.bufPrintZ(&file_buf, "{s}/app.log", .{dir}) catch return;
 
     const fd = std.c.open(file_path.ptr, .{
         .ACCMODE = .WRONLY,
@@ -85,6 +90,19 @@ pub fn logFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
+    writeEntry(level, scope, format, args, true);
+}
+
+/// Format one entry and write it to the log file and, if `to_stderr`, to
+/// stderr. Tests pass `false`: `zig build test` reports any stderr output
+/// of a passing test run as a "failed command".
+fn writeEntry(
+    comptime level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+    to_stderr: bool,
+) void {
     ensureMutex();
     log_mutex.lock();
     defer log_mutex.unlock();
@@ -105,8 +123,7 @@ pub fn logFn(
         break :blk std.fmt.allocPrint(alloc, "{s} [{s}] ({s}): [log truncated]\n", .{ now_str, level_str, scope_str }) catch return;
     };
 
-    // Write to stderr
-    _ = std.c.write(2, formatted.ptr, formatted.len);
+    if (to_stderr) _ = std.c.write(2, formatted.ptr, formatted.len);
 
     // Write to log file if open
     if (log_fd >= 0) {
@@ -128,25 +145,31 @@ fn getTimestamp(buf: []u8) []const u8 {
     return "0000-00-00 00:00:00";
 }
 
+// From glib (no usable GIR binding): returns a newly allocated path.
+extern fn g_dir_make_tmp(tmpl: ?[*:0]const u8, err: ?*?*glib.Error) ?[*:0]u8;
+
 test "log initialization and formatting" {
-    init("ziguri_test_app");
+    // A private temp dir, so the test never writes into the user's real
+    // $XDG_DATA_HOME.
+    const dir_c = g_dir_make_tmp("ziguri-log-XXXXXX", null) orelse return error.TmpDir;
+    defer glib.free(dir_c);
+    const dir = std.mem.span(dir_c);
+    defer _ = std.c.rmdir(dir_c);
+
+    initInDir(dir);
     defer deinit();
 
-    logFn(.info, .test_scope, "hello logging {d}", .{42});
+    writeEntry(.info, .test_scope, "hello logging {d}", .{42}, false);
 
-    const path = getPath();
-    try std.testing.expect(path != null);
+    const path = getPath() orelse return error.NoLogPath;
+    const path_z = try std.testing.allocator.dupeZ(u8, path);
+    defer std.testing.allocator.free(path_z);
+    defer _ = std.c.unlink(path_z);
 
-    // Verify file exists and has content
     var file_bytes: [*]u8 = undefined;
     var file_len: usize = 0;
-    const path_z = try std.testing.allocator.dupeZ(u8, path.?);
-    defer std.testing.allocator.free(path_z);
-
-    if (glib.fileGetContents(path_z, &file_bytes, &file_len, null) != 0) {
-        defer glib.free(file_bytes);
-        const content = file_bytes[0..file_len];
-        try std.testing.expect(std.mem.indexOf(u8, content, "hello logging 42") != null);
-    }
-    _ = glib.unlink(path_z);
+    try std.testing.expect(glib.fileGetContents(path_z, &file_bytes, &file_len, null) != 0);
+    defer glib.free(file_bytes);
+    const content = file_bytes[0..file_len];
+    try std.testing.expect(std.mem.indexOf(u8, content, "[info] (test_scope): hello logging 42") != null);
 }
