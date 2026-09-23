@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ziguri smoke test</title>
+<style>
+  :root { color-scheme: light dark; --ok: #2e9e5b; --fail: #d64545; --muted: #8a8f98; }
+  body { font: 15px/1.45 system-ui, sans-serif; margin: 0; padding: 28px 32px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  header img { width: 32px; height: 32px; }
+  h1 { font-size: 20px; margin: 0; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { text-align: left; padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 13px; }
+  td.state { width: 56px; font-weight: 700; }
+  .ok { color: var(--ok); } .fail { color: var(--fail); }
+  code { font: 13px ui-monospace, monospace; }
+  section { margin-top: 24px; }
+  #greet-out, #fetch-out { margin-left: 8px; }
+</style>
+</head>
+<body>
+<header><img src="icon.png" alt=""><h1>ziguri smoke test</h1></header>
+
+<table>
+  <thead><tr><th>State</th><th>Module</th><th>Detail</th></tr></thead>
+  <tbody id="checks"><tr><td colspan="3">Running checks…</td></tr></tbody>
+</table>
+
+<section>
+  <strong>IPC:</strong>
+  <input id="name" value="Sergio"> <button id="greet">greet</button><span id="greet-out"></span>
+</section>
+<section>
+  <strong>Webview → media server:</strong><span id="fetch-out">…</span>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

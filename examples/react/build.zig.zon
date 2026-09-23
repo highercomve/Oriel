@@ -1,0 +1,10 @@
+.{
+    .name = .ziguri_react_notes,
+    .version = "0.0.0",
+    .fingerprint = 0x3574379d78a8da50,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .ziguri = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "frontend" },
+}

@@ -1,0 +1,101 @@
+//! SQLite, compiled from the amalgamation in build.zig.
+
+const std = @import("std");
+const ziguri = @import("../ziguri.zig");
+pub const c = @cImport(@cInclude("sqlite3.h"));
+
+pub const Db = struct {
+    handle: *c.sqlite3,
+
+    pub fn open(path: [:0]const u8) !Db {
+        var handle: ?*c.sqlite3 = null;
+        if (c.sqlite3_open(path.ptr, &handle) != c.SQLITE_OK) {
+            if (handle) |h| _ = c.sqlite3_close(h);
+            return error.SqliteOpen;
+        }
+        return .{ .handle = handle.? };
+    }
+
+    pub fn close(self: Db) void {
+        _ = c.sqlite3_close(self.handle);
+    }
+
+    pub fn exec(self: Db, sql: [:0]const u8) !void {
+        if (c.sqlite3_exec(self.handle, sql.ptr, null, null, null) != c.SQLITE_OK) {
+            return error.SqliteExec;
+        }
+    }
+
+    pub fn prepare(self: Db, sql: [:0]const u8) !Stmt {
+        var stmt: ?*c.sqlite3_stmt = null;
+        if (c.sqlite3_prepare_v2(self.handle, sql.ptr, -1, &stmt, null) != c.SQLITE_OK) return error.SqlitePrepare;
+        return .{ .handle = stmt.? };
+    }
+
+    pub fn lastInsertRowId(self: Db) i64 {
+        return c.sqlite3_last_insert_rowid(self.handle);
+    }
+
+    /// Run a query returning a single integer.
+    pub fn scalarInt(self: Db, sql: [:0]const u8) !i64 {
+        var stmt: ?*c.sqlite3_stmt = null;
+        if (c.sqlite3_prepare_v2(self.handle, sql.ptr, -1, &stmt, null) != c.SQLITE_OK) return error.SqlitePrepare;
+        defer _ = c.sqlite3_finalize(stmt);
+        if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return error.SqliteNoRow;
+        return c.sqlite3_column_int64(stmt, 0);
+    }
+};
+
+/// SQLITE_TRANSIENT: SQLite copies bound data. (The C macro is a cast of -1,
+/// which translate-c can't express.)
+const sqlite_transient: c.sqlite3_destructor_type = @ptrFromInt(std.math.maxInt(usize));
+
+/// A prepared statement. Bind indexes are 1-based, column indexes 0-based.
+pub const Stmt = struct {
+    handle: *c.sqlite3_stmt,
+
+    pub fn finalize(self: Stmt) void {
+        _ = c.sqlite3_finalize(self.handle);
+    }
+
+    pub fn bindText(self: Stmt, index: c_int, value: []const u8) !void {
+        if (c.sqlite3_bind_text(self.handle, index, value.ptr, @intCast(value.len), sqlite_transient) != c.SQLITE_OK) return error.SqliteBind;
+    }
+
+    pub fn bindInt(self: Stmt, index: c_int, value: i64) !void {
+        if (c.sqlite3_bind_int64(self.handle, index, value) != c.SQLITE_OK) return error.SqliteBind;
+    }
+
+    /// Advance to the next row; false when done.
+    pub fn step(self: Stmt) !bool {
+        return switch (c.sqlite3_step(self.handle)) {
+            c.SQLITE_ROW => true,
+            c.SQLITE_DONE => false,
+            else => error.SqliteStep,
+        };
+    }
+
+    pub fn int(self: Stmt, col: c_int) i64 {
+        return c.sqlite3_column_int64(self.handle, col);
+    }
+
+    /// Column text, copied into `gpa` (SQLite's buffer dies on the next step).
+    pub fn text(self: Stmt, gpa: std.mem.Allocator, col: c_int) ![]u8 {
+        const ptr = c.sqlite3_column_text(self.handle, col) orelse return gpa.dupe(u8, "");
+        const len: usize = @intCast(c.sqlite3_column_bytes(self.handle, col));
+        return gpa.dupe(u8, ptr[0..len]);
+    }
+};
+
+pub fn check(gpa: std.mem.Allocator, _: ziguri.CheckContext) !ziguri.Check {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.exec("CREATE TABLE clips (id INTEGER PRIMARY KEY, name TEXT);" ++
+        "INSERT INTO clips (name) VALUES ('intro'), ('demo'), ('outro');");
+    const rows = try db.scalarInt("SELECT count(*) FROM clips");
+    return .{
+        .module = "sql",
+        .ok = rows == 3,
+        .detail = try std.fmt.allocPrint(gpa, "SQLite {s} in-memory: {d} rows", .{ c.sqlite3_libversion(), rows }),
+    };
+}

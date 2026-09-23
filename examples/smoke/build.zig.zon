@@ -1,0 +1,10 @@
+.{
+    .name = .ziguri_smoke,
+    .version = "0.0.0",
+    .fingerprint = 0x95d9a54ac2aa6099,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .ziguri = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "main.zig", "web" },
+}

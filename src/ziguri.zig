@@ -1,0 +1,105 @@
+//! ziguri: a Tauri-like desktop framework for Zig.
+//!
+//! Core (always on): GTK4 window + WebKitGTK 6.0 webview, `app://` asset
+//! scheme, JS <-> Zig IPC. Built-in modules and plugins are opt-in via
+//! `-D<name>=false|true` build options; disabled ones are not even compiled.
+
+const std = @import("std");
+pub const options = @import("build_options");
+
+pub const App = @import("core/App.zig");
+pub const ipc = @import("core/ipc.zig");
+pub const security = @import("core/security.zig");
+
+// Built-in modules.
+pub const tray = if (options.tray) @import("modules/tray.zig") else struct {};
+pub const updater = if (options.updater) @import("modules/updater.zig") else struct {};
+pub const media_server = if (options.media_server) @import("modules/media_server.zig") else struct {};
+pub const sql = if (options.sql) @import("modules/sql.zig") else struct {};
+pub const fs_watch = if (options.fs_watch) @import("modules/fs_watch.zig") else struct {};
+
+// App-specific plugins.
+pub const global_shortcut = if (options.global_shortcut) @import("plugins/global_shortcut.zig") else struct {};
+pub const input = if (options.input) @import("plugins/input.zig") else struct {};
+pub const clipboard = if (options.clipboard) @import("plugins/clipboard.zig") else struct {};
+
+/// Standard entry point for a ziguri app:
+///
+///     pub fn main(init: std.process.Init) !u8 {
+///         return ziguri.main(init, .{ .commands = Commands, .events = Events }, .{
+///             .id = "com.example.App", .title = "App", .assets = app.assets, .dev = app.dev,
+///         });
+///     }
+///
+/// Besides running the app, it handles `--emit-types <path>`, used by the
+/// build to write the frontend's TypeScript bindings for the API.
+pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.Config) !u8 {
+    const argv = init.minimal.args.vector;
+    if (argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[1]), "--emit-types")) {
+        try writeTypes(init.io, init.gpa, api, std.mem.span(argv[2]));
+        return 0;
+    }
+    return App.run(api, config);
+}
+
+/// Write the TypeScript bindings for `api` to `path`, leaving the file
+/// untouched when nothing changed (so dev servers don't reload needlessly).
+pub fn writeTypes(io: std.Io, gpa: std.mem.Allocator, comptime api: App.Api, path: []const u8) !void {
+    const source = comptime ipc.typescript(api.commands, api.events);
+    const cwd = std.Io.Dir.cwd();
+    if (cwd.readFileAlloc(io, path, gpa, .limited(1 << 20))) |existing| {
+        defer gpa.free(existing);
+        if (std.mem.eql(u8, existing, source)) return;
+    } else |_| {}
+    if (std.fs.path.dirname(path)) |dir| try cwd.createDirPath(io, dir);
+    try cwd.writeFile(io, .{ .sub_path = path, .data = source });
+}
+
+/// Result of a module smoke check, serialized to the frontend as JSON.
+pub const Check = struct {
+    module: []const u8,
+    ok: bool,
+    detail: []const u8,
+};
+
+pub const CheckContext = struct {
+    io: std.Io,
+    /// PNG used for the tray icon check.
+    icon_png: []const u8,
+    /// Port of a running media server, if one was started.
+    media_port: ?u16 = null,
+};
+
+/// Run the smoke check of every enabled module and plugin.
+pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
+    var checks: std.ArrayList(Check) = .empty;
+    const Entry = struct { name: []const u8, enabled: bool };
+    const entries = [_]Entry{
+        .{ .name = "tray", .enabled = options.tray },
+        .{ .name = "updater", .enabled = options.updater },
+        .{ .name = "media_server", .enabled = options.media_server },
+        .{ .name = "sql", .enabled = options.sql },
+        .{ .name = "fs_watch", .enabled = options.fs_watch },
+        .{ .name = "global_shortcut", .enabled = options.global_shortcut },
+        .{ .name = "input", .enabled = options.input },
+        .{ .name = "clipboard", .enabled = options.clipboard },
+    };
+    inline for (entries) |e| {
+        if (e.enabled) {
+            const module = @field(@This(), e.name);
+            const check: Check = module.check(gpa, ctx) catch |err| .{
+                .module = e.name,
+                .ok = false,
+                .detail = @errorName(err),
+            };
+            try checks.append(gpa, check);
+        }
+    }
+    return checks.toOwnedSlice(gpa);
+}
+
+test {
+    std.testing.refAllDecls(ipc);
+    std.testing.refAllDecls(security);
+    if (options.tray) _ = tray;
+}

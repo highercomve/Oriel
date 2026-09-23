@@ -1,0 +1,27 @@
+.{
+    .name = .ziguri,
+    .version = "0.0.0",
+    .fingerprint = 0x52f53db1c9fc133c,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Generated locally by scripts/gen-bindings.sh (zig-gobject v0.3.2).
+        .gobject = .{ .path = "deps/gobject/bindings" },
+        .zigimg = .{
+            .url = "git+https://github.com/zigimg/zigimg#b99b9d48899e90ef330f143b096e31cc245ea70a",
+            .hash = "zigimg-0.1.0-8_eo2qgrGADPGfefrNQ9fHU7Xy_5oXEHC7tv3eXDZtc_",
+        },
+        .httpz = .{
+            .url = "git+https://github.com/karlseguin/http.zig?ref=master#9b14af98fde5e98abb9a8376fe02b42003e835bf",
+            .hash = "httpz-0.0.0-PNVzrMgTCQDhzfBLRRebTx9LU056Ph2erdN9-42rFbhj",
+        },
+        .wayland = .{
+            .url = "git+https://codeberg.org/ifreund/zig-wayland#23839e41161de025d71ce082561ecba1c5331281",
+            .hash = "wayland-0.7.0-dev-lQa1kl38AQC-kQolS5D4jV1GJ2rH2jv1VWHr14YLVnyn",
+        },
+        .sqlite = .{
+            .url = "https://sqlite.org/2026/sqlite-amalgamation-3530400.zip",
+            .hash = "N-V-__8AAGVtrgCcOcmjrOJnagmnRyMrcKaOo09KbU-vu8w8",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "tools", "protocols" },
+}
