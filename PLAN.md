@@ -232,6 +232,65 @@ paste. Test the pipeline headlessly on X11.
   replace the binary/AppImage atomically, restart. Keys: `zig build keygen`.
 - **Signing** of packages (later).
 
+## Milestone 4.5 — `oriel` CLI (Tauri-style tooling)
+
+**Why:** starting an app today means hand-writing build.zig/.zon, finding the
+fingerprint, `zig fetch`, a frontend and main.zig. Tauri has
+`create-tauri-app` and `tauri dev/build`; Oriel should have the same.
+
+**Shape:** a standalone Zig program in `cli/` (no GTK; builds fully static,
+e.g. `x86_64-linux-musl`), built by the framework's build.zig as `oriel`
+(`zig build cli`). Argument parsing uses the comptime CLI pattern from
+LIBRARIES.md (subcommands = `union`, options = `struct` fields, generated help).
+
+**Commands:**
+- `oriel init <name> [--template react|vue|svelte|vanilla] [--id com.example.App] [--oriel-ref <tag|commit>] [--oriel-path <dir>] [--no-install]`
+  - Templates are embedded in the binary (`@embedFile`), so scaffolding works
+    offline: build.zig, build.zig.zon (valid `.fingerprint` computed the same way
+    Zig does, or obtained by running zig), src/main.zig with sample `Commands` and
+    `Events`, the frontend (Vite for react/vue/svelte, static for vanilla),
+    .gitignore, a short README.
+  - Adds Oriel with `zig fetch --save git+https://github.com/highercomve/Oriel#<ref>`
+    (ref defaults to the version the CLI was built for; `--oriel-path` writes a
+    `.path` dependency instead, for developing Oriel itself).
+  - Downloads everything up front: `zig build --fetch` (all Zig deps into the
+    global cache) and `npm install` (unless `--no-install` or vanilla), so the
+    project then builds offline.
+  - Validates the name/id (Zig identifier for the package name, reverse-DNS app
+    id) and refuses to overwrite a non-empty directory.
+- `oriel doctor`: checks and reports, with a non-zero exit when something
+  required is missing: Zig 0.16.x on PATH (or `$ORIEL_ZIG`), pkg-config +
+  `gtk4` and `webkitgtk-6.0` dev packages, Node.js/npm (for Vite templates),
+  packaging tools (`nfpm`, `mksquashfs`, `desktop-file-validate`; optional),
+  a StatusNotifierWatcher and the GlobalShortcuts portal (optional, informative).
+  Prints the exact install command for the detected distro (pacman / apt / dnf
+  / zypper) for anything missing.
+- `oriel dev | build | run | package | types | check` (in an app directory):
+  thin wrappers around the matching `zig build <step>`, forwarding extra args;
+  they find the project root by walking up to build.zig.zon.
+- `oriel --version`: CLI version and the Oriel ref it scaffolds.
+
+**Distribution:**
+- `install.sh` at the repo root: detects arch, downloads the matching release
+  binary from GitHub Releases, verifies its sha256, installs to `~/.local/bin`
+  (or `$ORIEL_INSTALL_DIR`); never uses sudo.
+- A GitHub Actions workflow that, on a `v*` tag, builds the static CLI for
+  x86_64 and aarch64 Linux, runs `zig build test` and the headless smoke checks
+  where possible, and attaches the binaries + `SHA256SUMS` to the release.
+- Later: `npm create oriel@latest` wrapping the same binary.
+
+**Acceptance:**
+- Unit tests: argument parsing, name/id validation, template rendering,
+  fingerprint generation.
+- Integration (headless, temp dirs, `--oriel-path` pointing at this checkout so
+  no network is needed for Oriel itself): `oriel init` with each template, then
+  `oriel build` succeeds; the vanilla and react apps start under
+  `scripts/headless.sh` (SHOT screenshot shows the page calling a Zig command).
+- `oriel doctor` passes on this machine and reports missing tools correctly when
+  PATH is restricted.
+- `install.sh` tested against a local file:// or temp HTTP server, not the
+  real release.
+
 ## Milestone 5 — ghostreel enablers
 
 - **Media server:** serve files from a root directory with HTTP range
