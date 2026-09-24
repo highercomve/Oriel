@@ -1,5 +1,6 @@
 //! `oriel`: the Oriel command-line tool.
 //!
+//!     oriel doctor
 //!     oriel dev | build | run | package | types | check [zig build args...]
 //!
 //! A standalone static program (no GTK), built with `zig build cli`.
@@ -8,11 +9,13 @@ const std = @import("std");
 const build_options = @import("build_options");
 const args = @import("args.zig");
 const Context = @import("Context.zig");
+const doctor = @import("doctor.zig");
 const project = @import("project.zig");
 
 const program = "oriel";
 
 pub const Commands = union(enum) {
+    doctor: doctor.Command,
     dev: project.Wrapper("dev", "Run the app against the frontend dev server, with hot reload"),
     build: project.Wrapper(null, "Build the app (frontend embedded) into zig-out/bin"),
     run: project.Wrapper("run", "Build and run the app"),
@@ -68,6 +71,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
             return 0;
         },
         .command => |cmd| switch (cmd) {
+            .doctor => return doctor.run(ctx),
             inline else => |c| return project.exec(ctx, @TypeOf(c).zig_step, c.args),
         },
     }
@@ -76,6 +80,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
 test {
     _ = args;
     _ = Context;
+    _ = doctor;
     _ = project;
 }
 
@@ -89,7 +94,7 @@ test "command table" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try args.writeHelp(Commands, program, &out.writer);
-    for ([_][]const u8{ "dev", "build", "run", "package", "types", "check" }) |name| {
+    for ([_][]const u8{ "doctor", "dev", "build", "run", "package", "types", "check" }) |name| {
         const line = try std.fmt.allocPrint(std.testing.allocator, "\n  {s} ", .{name});
         defer std.testing.allocator.free(line);
         try std.testing.expect(std.mem.indexOf(u8, out.written(), line) != null);
