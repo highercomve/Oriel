@@ -6,6 +6,7 @@
 //!   oriel-smoke --check      headless: run the checks, print them, exit
 
 const std = @import("std");
+const builtin = @import("builtin");
 const oriel = @import("oriel");
 const app = @import("oriel_app");
 
@@ -110,7 +111,11 @@ const Commands = struct {
     /// this process owns the selection it reads.
     pub fn clipboard_roundtrip(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {
         if (!oriel.options.clipboard) return .{ .ok = true, .detail = "clipboard plugin disabled" };
-        const text = try std.fmt.allocPrint(gpa, "oriel smoke clipboard {d}", .{std.c.getpid()});
+        const pid = if (builtin.os.tag == .windows)
+            std.os.windows.kernel32.GetCurrentProcessId()
+        else
+            std.c.getpid();
+        const text = try std.fmt.allocPrint(gpa, "oriel smoke clipboard {d}", .{pid});
         try oriel.clipboard.writeText(text);
         const back = try oriel.clipboard.readText(gpa);
         return .{
@@ -211,8 +216,10 @@ pub fn main(init: std.process.Init) !u8 {
     io = init.io;
     var headless = false;
     var auto_quit = false;
-    for (init.minimal.args.vector[1..]) |arg_z| {
-        const arg = std.mem.span(arg_z);
+    var it = try init.minimal.args.iterateAllocator(init.gpa);
+    defer it.deinit();
+    _ = it.next();
+    while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--check")) {
             headless = true;
         } else if (std.mem.eql(u8, arg, "--auto-quit")) {

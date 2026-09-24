@@ -59,10 +59,12 @@ const Commands = struct {
     }
 
     pub fn send_notification(_: std.mem.Allocator, args: struct { title: []const u8, body: []const u8 }) !void {
-        try oriel.notification.notify(.{
-            .title = args.title,
-            .body = args.body,
-        });
+        if (oriel.options.notification) {
+            try oriel.notification.notify(.{
+                .title = args.title,
+                .body = args.body,
+            });
+        }
     }
 
     pub fn done(_: std.mem.Allocator, args: struct { failed: u32, report: []const u8 }) void {
@@ -125,8 +127,10 @@ pub fn main(init: std.process.Init) !u8 {
 
     var auto_quit = false;
     var test_pipeline = false;
-    for (init.minimal.args.vector[1..]) |arg_z| {
-        const arg = std.mem.span(arg_z);
+    var it = try init.minimal.args.iterateAllocator(init.gpa);
+    defer it.deinit();
+    _ = it.next();
+    while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--test-pipeline")) {
             test_pipeline = true;
         } else if (std.mem.eql(u8, arg, "--auto-quit")) {
