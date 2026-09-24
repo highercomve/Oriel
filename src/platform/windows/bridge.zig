@@ -77,8 +77,10 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
             defer std.heap.smp_allocator.free(script_w);
 
             if (self.target) |v| {
-                if (App.getWindowByHandle(v) != null) {
-                    _ = v.webview.executeScript(script_w.ptr, null);
+                // Handles match by HWND only: use the live window's webview,
+                // not the (possibly stale) copy queued with the task.
+                if (App.getWindowByHandle(v)) |win| {
+                    _ = win.handle.webview.executeScript(script_w.ptr, null);
                 }
             } else {
                 App.ensureWindowsMutex();
