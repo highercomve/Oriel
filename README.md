@@ -89,7 +89,7 @@ Oriel separates platform-neutral application and window logic (`src/core/App.zig
 Oriel supports cross-compiling and packaging for Windows (`x86_64-windows`) directly from Linux hosts using Zig and `makensis`.
 
 > [!WARNING]
-> **Runtime Status**: verified on real Windows (2026-09-24, the `examples/react` NSIS installer on a Windows PC): installer, Win32 window + WebView2 with embedded assets, routes, sync and async IPC, SQLite, a second window via `oriel.window.open()`, `oriel.openExternal`, and the tray icon and menu. Modules marked "runtime untested on Windows" below have only been run under Wine (`scripts/wine.sh`).
+> **Runtime Status**: verified on real Windows (2026-09-24, the `examples/react` NSIS installer on a Windows PC): installer, Win32 window + WebView2 with embedded assets, routes, sync and async IPC, SQLite (persisting across restarts), a second window via `oriel.window.open()`, `oriel.openExternal`, and the tray icon and menu. Modules marked "runtime untested on Windows" below have only been run under Wine (`scripts/wine.sh`).
 
 #### Support Matrix
 
