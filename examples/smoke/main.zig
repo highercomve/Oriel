@@ -198,26 +198,6 @@ const Commands = struct {
 
     /// Called by the page in --auto-quit mode once everything has rendered.
     pub fn done(_: std.mem.Allocator, args: struct { failed: u32, report: []const u8 }) void {
-        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = "smoke-result.txt", .data = args.report }) catch {};
-        if (builtin.os.tag == .windows) {
-            const kernel32 = struct {
-                const HANDLE = *anyopaque;
-                const DWORD = u32;
-                const BOOL = c_int;
-                extern "kernel32" fn GetStdHandle(nStdHandle: DWORD) callconv(.winapi) ?HANDLE;
-                extern "kernel32" fn WriteFile(hFile: HANDLE, lpBuffer: [*]const u8, nNumberOfBytesToWrite: DWORD, lpNumberOfBytesWritten: ?*DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) BOOL;
-            };
-            const STD_OUTPUT_HANDLE: u32 = 0xFFFFFFF5;
-            const STD_ERROR_HANDLE: u32 = 0xFFFFFFF4;
-            if (kernel32.GetStdHandle(STD_OUTPUT_HANDLE)) |h| {
-                _ = kernel32.WriteFile(h, args.report.ptr, @intCast(args.report.len), null, null);
-                _ = kernel32.WriteFile(h, "\n", 1, null, null);
-            }
-            if (kernel32.GetStdHandle(STD_ERROR_HANDLE)) |h| {
-                _ = kernel32.WriteFile(h, args.report.ptr, @intCast(args.report.len), null, null);
-                _ = kernel32.WriteFile(h, "\n", 1, null, null);
-            }
-        }
         std.debug.print("{s}\n", .{args.report});
         oriel.App.quit(if (args.failed == 0) 0 else 1);
     }
