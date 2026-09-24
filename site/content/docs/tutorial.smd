@@ -52,10 +52,11 @@ oriel types
 
 Call it from the frontend. Edit `frontend/src/App.tsx`:
 
-```ts
+```tsx
+import { useState } from "react";
 import { invoke } from "./oriel";
 
-export default function App() {
+export function App() {
   const [text, setText] = useState("");
   const [result, setResult] = useState("");
 
@@ -135,10 +136,14 @@ pub fn main(init: std.process.Init) !u8 {
 
 Update the frontend:
 
-```ts
-import { invoke, listen } from "./oriel";
+```tsx
+import { useEffect, useState } from "react";
+// Types generated from the Zig structs by `oriel types`.
+import { invoke, listen, type Commands } from "./oriel";
 
-export default function App() {
+type Note = Commands["list_notes"]["result"][number];
+
+export function App() {
   const [text, setText] = useState("");
   const [notes, setNotes] = useState<Note[]>([]);
 
@@ -172,7 +177,13 @@ export default function App() {
 
 # Step 4: Store in SQLite
 
-In-memory data is lost when the app restarts. Use the `sql` module to persist notes. Update `src/main.zig`:
+In-memory data is lost when the app restarts. Use the `sql` module to keep notes in a SQLite file. Modules are opt-in, so first enable it in `build.zig`, in the options passed to the `oriel` dependency:
+
+```zig
+.sql = true,
+```
+
+Then update `src/main.zig` (the database is `notes.db` in the working directory; a real app would put it in its data directory, see the `store` module):
 
 ```zig
 const std = @import("std");
@@ -190,18 +201,19 @@ pub const Events = struct {
 };
 const events = oriel.App.events(Events);
 
-var db: sql.Db = undefined;
+var db: ?sql.Db = null;
 
 fn database() !sql.Db {
-    if (db.conn != null) return db;
-    db = try sql.Db.open(":memory:");
-    try db.exec(
+    if (db) |d| return d;
+    const d = try sql.Db.open("notes.db");
+    try d.exec(
         \\CREATE TABLE notes (
         \\  id INTEGER PRIMARY KEY,
         \\  text TEXT NOT NULL
         \\);
     );
-    return db;
+    db = d;
+    return d;
 }
 
 pub const Commands = struct {
@@ -233,7 +245,7 @@ pub const Commands = struct {
 };
 
 pub fn main(init: std.process.Init) !u8 {
-    defer if (db.conn != null) db.close();
+    defer if (db) |d| d.close();
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
         .id = "dev.example.Notes",
         .title = "Notes",
@@ -247,7 +259,13 @@ Run `oriel dev` again. Notes now persist across app restarts (within the same se
 
 # Step 5: Add a tray icon
 
-The app should keep running in the tray when the window closes. Create `src/icon.png` (or download one) and update `src/main.zig`:
+The app should keep running in the tray when the window closes. Enable the module in `build.zig` next to `.sql`:
+
+```zig
+.tray = true,
+```
+
+Put a 32×32 PNG at `src/icon.png` (it is embedded into the binary) and update `src/main.zig`:
 
 ```zig
 const std = @import("std");
@@ -266,19 +284,20 @@ pub const Events = struct {
 };
 const events = oriel.App.events(Events);
 
-var db: sql.Db = undefined;
+var db: ?sql.Db = null;
 var tray: ?*Tray = null;
 
 fn database() !sql.Db {
-    if (db.conn != null) return db;
-    db = try sql.Db.open(":memory:");
-    try db.exec(
+    if (db) |d| return d;
+    const d = try sql.Db.open("notes.db");
+    try d.exec(
         \\CREATE TABLE notes (
         \\  id INTEGER PRIMARY KEY,
         \\  text TEXT NOT NULL
         \\);
     );
-    return db;
+    db = d;
+    return d;
 }
 
 pub const Commands = struct {
@@ -334,7 +353,7 @@ fn onTrayMenu(id: []const u8, _: ?bool) void {
 }
 
 pub fn main(init: std.process.Init) !u8 {
-    defer if (db.conn != null) db.close();
+    defer if (db) |d| d.close();
     defer if (tray) |t| t.deinit();
 
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
