@@ -85,9 +85,9 @@ zig build types                          # regenerate frontend/src/oriel.ts
 SHOT=/tmp/shot.png ../../scripts/headless.sh ./zig-out/bin/oriel-react-notes
 ```
 
-Expected today: 27/27 unit tests; smoke `--check` all ok on the real session
+Expected today: 98/98 unit tests; smoke `--check` all ok on the real session
 except `global_shortcut` until `dev.oriel.Smoke.desktop` is installed (see
-pitfalls); smoke `--auto-quit` under headless.sh 24/24 ok (X11 paths:
+pitfalls); smoke `--auto-quit` under headless.sh 27/27 ok (X11 paths:
 XGrabKey, XTest, GdkClipboard incl. the in-process `clipboard r/w` check).
 
 ### Testing a tray headlessly
@@ -303,9 +303,10 @@ LIBRARIES.md (subcommands = `union`, options = `struct` fields, generated help).
 
 ## Milestone 5 — ghostreel enablers
 
-- **Media server:** serve files from a root directory with HTTP range
-  requests (seeking large videos) in `modules/media_server.zig`; consider
-  serving through the `app://` scheme instead of a TCP port.
+- ✅ **Media server:** files from a root directory with HTTP range requests
+  (`modules/media_server.zig`, `modules/media/`), `openat2(RESOLVE_BENEATH)`,
+  plus `app://app/media/` for fetch. `<video src="app://...">` can't work:
+  WebKitGTK's GStreamer player only accepts http(s)/blob/data/file.
 - **Windows shell** (large): Win32 window + WebView2 (COM vtables from
   `WebView2.h`), tray (`Shell_NotifyIconW`), `RegisterHotKey`, `SendInput`,
   clipboard. Keep the shell interface in `App.zig` platform-neutral first

@@ -481,6 +481,46 @@ try store.save();
 const theme = store.getString("theme");
 ```
 
+### Media server (`oriel.media_server`)
+
+Streams large local video/audio to the webview with HTTP range requests
+(RFC 9110 §14), so `<video>` can seek in multi-GB files without loading them.
+Two transports share the same Range parser and path checks
+(`src/modules/media/range.zig`, `src/modules/media/open.zig`):
+
+```zig
+var media: oriel.media_server.Server = undefined; // fixed address until stop()
+try media.start(io, gpa, .{
+    .root_dir = "/home/me/Videos", // `/<path>` maps to files below it
+    .port = 17893,                 // 127.0.0.1 only
+    .allowed_origin = "app://app", // Access-Control-Allow-Origin on file routes
+    .symlink_policy = .inside_root, // or .refuse_all
+});
+defer media.stop();
+// Optional: the same files at app://app/media/<path> (fetch/XHR/<img> only)
+try oriel.media_server.scheme.setRoot("/home/me/Videos", .inside_root);
+```
+
+- **Ranges:** `bytes=a-b`, `bytes=a-`, `bytes=-n` → `206` with `Content-Range`;
+  unsatisfiable → `416` with `Content-Range: bytes */size`; a malformed header
+  is ignored (`200`, full body); for several ranges only the first is served
+  (one `206`, allowed by the RFC). `HEAD` is supported. Files are streamed in
+  64 KiB chunks with u64 offsets (files over 4 GiB work).
+- **Paths:** percent-decoded; NUL, backslashes, absolute paths and `..`
+  segments get `403`. Files are opened with `openat2(RESOLVE_BENEATH)` relative
+  to the root's fd, so the kernel refuses anything that resolves outside the
+  root at open time (no check-then-open race). Symlinks: `.inside_root`
+  (default) follows links that stay inside the root; `.refuse_all` refuses
+  every symlink. Missing files and directories get `404`.
+- **TCP vs `app://`:** the TCP server works with every client, `<video>`
+  included, but any local process can connect to the port and the page needs
+  CORS (`media-src` in the default CSP allows `http://127.0.0.1:*`). The
+  `app://app/media/` route needs no port and no CORS, and its handler runs on
+  the main thread (the file is read by GIO on a worker thread), but WebKitGTK's
+  GStreamer media player only accepts http(s)/blob/data/file URLs, so
+  `<video src="app://...">` fails with `MEDIA_ERR_SRC_NOT_SUPPORTED`. Use the
+  TCP URL for `<video>`/`<audio>`.
+
 ### Logging (`oriel.log`)
 
 Automatic thread-safe routing of `std.log` to stderr and `$XDG_DATA_HOME/<app_id>/app.log`. In debug/dev builds, WebKit console messages are forwarded directly to stdout.
@@ -705,6 +745,7 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Clipboard | ◐ read/write via `GdkClipboard`; background reads on Wayland via ext-data-control; background writes on Wayland not yet |
 | Global shortcuts | ✅ `XGrabKey` (X11) + `GlobalShortcuts` portal (Wayland) |
 | Input injection | ✅ `XTest` (X11) + virtual keyboard protocol (Wayland) |
+| Asset protocol for local files (streaming, ranges) | ✅ `media_server`: 127.0.0.1 server with ranges for `<video>`; `app://app/media/` for fetch |
 | Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
 | Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `zig build package`; signing not yet implemented |
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |

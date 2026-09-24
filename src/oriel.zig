@@ -126,6 +126,12 @@ test {
     std.testing.refAllDecls(platform);
     std.testing.refAllDecls(@import("core/ThreadPool.zig"));
     if (options.tray) _ = tray;
+    if (options.media_server) {
+        std.testing.refAllDecls(media_server);
+        std.testing.refAllDecls(@import("modules/media/range.zig"));
+        std.testing.refAllDecls(@import("modules/media/open.zig"));
+        std.testing.refAllDecls(@import("modules/media_scheme.zig"));
+    }
     if (options.updater) {
         std.testing.refAllDecls(updater);
         std.testing.refAllDecls(@import("modules/update_manifest.zig"));

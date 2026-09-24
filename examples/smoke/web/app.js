@@ -12,16 +12,79 @@ async function main() {
     const status = await oriel.invoke("status");
     results.push(...status.checks);
 
-    if (status.media_url) {
+    if (status.ping_url) {
       try {
-        const res = await fetch(status.media_url);
+        const res = await fetch(status.ping_url);
         const body = await res.json();
-        $("fetch-out").textContent = ` fetch(${status.media_url}) → ${JSON.stringify(body)}`;
+        $("fetch-out").textContent = ` fetch(${status.ping_url}) → ${JSON.stringify(body)}`;
         results.push({ module: "webview→media", ok: body.pong === true, detail: `fetch from app:// page: ${JSON.stringify(body)}` });
       } catch (e) {
         $("fetch-out").textContent = ` failed: ${e}`;
         results.push({ module: "webview→media", ok: false, detail: String(e) });
       }
+    }
+
+    if (status.media_url && status.expected_sample_hex) {
+      try {
+        const res = await fetch(status.media_url, {
+          headers: { Range: "bytes=100-199" }
+        });
+        const cr = res.headers.get("content-range");
+        const buf = await res.arrayBuffer();
+        const hex = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+        const expectedCr = `bytes 100-199/${status.total_file_size}`;
+        const ok = res.status === 206 && cr === expectedCr && hex === status.expected_sample_hex;
+        results.push({
+          module: "media range tcp",
+          ok: ok,
+          detail: `status ${res.status}, Content-Range: ${cr}, 100 B ${ok ? "matched" : "mismatched"}`
+        });
+      } catch (e) {
+        results.push({ module: "media range tcp", ok: false, detail: String(e) });
+      }
+    }
+
+    if (status.media_app_url && status.expected_sample_hex) {
+      try {
+        const res = await fetch(status.media_app_url, {
+          headers: { Range: "bytes=100-199" }
+        });
+        const cr = res.headers.get("content-range");
+        const buf = await res.arrayBuffer();
+        const hex = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+        const expectedCr = `bytes 100-199/${status.total_file_size}`;
+        const ok = res.status === 206 && cr === expectedCr && hex === status.expected_sample_hex;
+        results.push({
+          module: "media range app://",
+          ok: ok,
+          detail: `status ${res.status}, Content-Range: ${cr}, 100 B ${ok ? "matched" : "mismatched"}`
+        });
+      } catch (e) {
+        results.push({ module: "media range app://", ok: false, detail: String(e) });
+      }
+    }
+
+    if (status.media_url) {
+      // Load the WAV from the TCP media server into <audio> and seek: the
+      // GStreamer player issues its own Range requests. (WebKitGTK's player
+      // refuses custom schemes, so <audio src="app://..."> cannot work.)
+      const seek = await new Promise((resolve) => {
+        const audio = document.createElement("audio");
+        audio.preload = "auto";
+        const tid = setTimeout(() => resolve({ ok: false, detail: `no seeked event within 5 s (readyState ${audio.readyState})` }), 5000);
+        audio.addEventListener("loadedmetadata", () => { audio.currentTime = 5; });
+        audio.addEventListener("seeked", () => {
+          clearTimeout(tid);
+          resolve({ ok: Math.abs(audio.currentTime - 5) < 0.1 && Math.abs(audio.duration - status.total_file_size / 88200) < 0.1,
+                    detail: `duration ${audio.duration.toFixed(2)} s, seeked to ${audio.currentTime.toFixed(2)} s` });
+        });
+        audio.addEventListener("error", () => {
+          clearTimeout(tid);
+          resolve({ ok: false, detail: `media error ${audio.error && audio.error.code}: ${audio.error && audio.error.message}` });
+        });
+        audio.src = status.media_url;
+      });
+      results.push({ module: "media audio seek", ...seek });
     }
 
     const greeting = await oriel.invoke("greet", { name: "IPC" });

@@ -27,6 +27,9 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
 
         fn serveAsset(request: *webkit.URISchemeRequest, _: ?*anyopaque) callconv(.c) void {
             const path = std.mem.span(request.getPath());
+            if (@import("../../oriel.zig").options.media_server and std.mem.startsWith(u8, path, "/media/")) {
+                return @import("../../modules/media_scheme.zig").handle(request, path["/media/".len..]);
+            }
             const asset = App.findAsset(config.assets, path, config.spa_fallback);
             if (asset) |a| {
                 const stream = gio.MemoryInputStream.newFromData(@constCast(a.data.ptr), @intCast(a.data.len), null);
