@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Oriel</title>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#12151C"/>
+  <g transform="translate(64 60) scale(3)">
+  <defs>
+    <linearGradient id="i-glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFC857"/><stop offset="1" stop-color="#F7A41D"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="#F4EFE6" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M42 30 L16 64 L42 98"/>
+    <path d="M86 30 L112 64 L86 98"/>
+  </g>
+  <rect x="50" y="24" width="28" height="80" rx="6" fill="url(#i-glass)"/>
+  <path d="M50 64 H78" stroke="#F4EFE6" stroke-width="5"/>
+  </g>
+</svg>

@@ -1,0 +1,10 @@
+.zine_version = "0.14.0",
+.site = .simple(.{
+    .title = "Oriel",
+    .host_url = "https://highercomve.github.io",
+    .content_dir_path = "site/content",
+    .layouts_dir_path = "site/layouts",
+    .assets_dir_path = "site/assets",
+    .url_path_prefix = "Oriel/",
+    .static_assets = [],
+}),

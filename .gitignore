@@ -5,3 +5,8 @@ zig-pkg/
 deps/gobject/
 deps/.zig-gobject-src/
 .wine-test/
+# Zine build outputs
+/public/
+/.zine-cache/
+.zine.ziggy-schema
+site/content/.smd.ziggy-schema
