@@ -17,6 +17,12 @@ const Ed25519 = std.crypto.sign.Ed25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const oriel = @import("../oriel.zig");
 
+pub const backend = switch (builtin.os.tag) {
+    .linux => @import("updater/linux.zig"),
+    .windows => @import("updater/windows.zig"),
+    else => @compileError("updater is not supported on " ++ @tagName(builtin.os.tag)),
+};
+
 // Pure-std manifest parsing and verification module
 pub const update_manifest = @import("update_manifest.zig");
 pub const Semver = update_manifest.Semver;
@@ -81,6 +87,8 @@ pub fn init(io: std.Io, allocator: std.mem.Allocator, env_map: ?*const std.proce
             }
         }
     }
+
+    backend.cleanupStale(io, allocator);
 }
 
 pub fn deinit(io: std.Io) void {
@@ -159,12 +167,7 @@ pub fn runningAsAppImage(io: std.Io, gpa: std.mem.Allocator) !bool {
     const has_ai = captured_appimage != null;
     const ad = captured_appdir;
     state_mutex.unlock(io);
-    const dir = ad orelse return false;
-    if (!has_ai) return false;
-
-    const exe_path = try std.process.executablePathAlloc(io, gpa);
-    defer gpa.free(exe_path);
-    return isUnderDir(exe_path, dir);
+    return backend.runningAsAppImage(io, gpa, has_ai, ad);
 }
 
 /// Determine the target binary path without calling getenv off the main thread.
@@ -426,7 +429,7 @@ fn downloadInternal(
         try gpa.dupeZ(u8, target_path);
     defer gpa.free(real_dest_path);
 
-    const parent_dir_path = std.fs.path.dirname(real_dest_path) orelse "/";
+    const parent_dir_path = std.fs.path.dirname(real_dest_path) orelse if (builtin.os.tag == .windows) "." else "/";
     const target_file_name = std.fs.path.basename(real_dest_path);
 
     // `.iterate` opens a real (non-O_PATH) descriptor, which fsync needs below.
@@ -457,15 +460,17 @@ fn downloadInternal(
     // Create temporary download file inside parent dir with exclusive create
     var rand_val: u64 = undefined;
     io.random(std.mem.asBytes(&rand_val));
-    const temp_dl_name = try std.fmt.allocPrint(gpa, "{s}.tmp_dl.{d}.{x}", .{ target_file_name, std.os.linux.getpid(), rand_val });
+    const temp_dl_name = try std.fmt.allocPrint(gpa, "{s}.tmp_dl.{d}.{x}", .{ target_file_name, backend.processId(), rand_val });
     defer gpa.free(temp_dl_name);
 
     const temp_file = try parent_dir.createFile(io, temp_dl_name, .{
-        .permissions = std.Io.File.Permissions.fromMode(0o755),
+        .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o755),
         .exclusive = true,
     });
     // Explicit mode, independent of the umask.
-    try temp_file.setPermissions(io, .fromMode(0o755));
+    if (builtin.os.tag != .windows) {
+        try temp_file.setPermissions(io, .fromMode(0o755));
+    }
 
     var temp_open: bool = true;
     var temp_exists: bool = true;
@@ -525,17 +530,19 @@ fn downloadInternal(
     // Decompression decided strictly by signed format field
     const is_gzip = update_manifest.isGzipFormat(update.format);
     if (is_gzip) {
-        const temp_decomp_name = try std.fmt.allocPrint(gpa, "{s}.tmp_decomp.{d}.{x}", .{ target_file_name, std.os.linux.getpid(), rand_val });
+        const temp_decomp_name = try std.fmt.allocPrint(gpa, "{s}.tmp_decomp.{d}.{x}", .{ target_file_name, backend.processId(), rand_val });
         defer gpa.free(temp_decomp_name);
 
         const gz_file = try parent_dir.openFile(io, temp_dl_name, .{});
         defer gz_file.close(io);
 
         const decomp_file = try parent_dir.createFile(io, temp_decomp_name, .{
-            .permissions = std.Io.File.Permissions.fromMode(0o755),
+            .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o755),
             .exclusive = true,
         });
-        try decomp_file.setPermissions(io, .fromMode(0o755));
+        if (builtin.os.tag != .windows) {
+            try decomp_file.setPermissions(io, .fromMode(0o755));
+        }
 
         var decomp_open: bool = true;
         var decomp_exists: bool = true;
@@ -569,20 +576,16 @@ fn downloadInternal(
         parent_dir.deleteFile(io, temp_dl_name) catch {};
         temp_exists = false;
 
-        // Atomically rename decompressed binary over target
-        try parent_dir.rename(temp_decomp_name, parent_dir, target_file_name, io);
+        // Atomically install decompressed binary over target
+        try backend.installFile(io, gpa, parent_dir, temp_decomp_name, real_dest_path);
         decomp_exists = false;
     } else {
-        // Atomically rename download file over target
-        try parent_dir.rename(temp_dl_name, parent_dir, target_file_name, io);
+        // Atomically install download file over target
+        try backend.installFile(io, gpa, parent_dir, temp_dl_name, real_dest_path);
         temp_exists = false;
     }
 
-    // Fsync the parent directory so the rename itself is durable.
-    switch (std.posix.errno(std.posix.system.fsync(parent_dir.handle))) {
-        .SUCCESS => {},
-        else => return error.DirSyncFailed,
-    }
+    try backend.syncDir(parent_dir);
 
     return try gpa.dupe(u8, real_dest_path);
 }
@@ -633,23 +636,7 @@ pub fn restart(io: std.Io, exe_path: []const u8) !noreturn {
     if (builtin.is_test) {
         if (mock_exec_fn) |f| return f(io, exe_path);
     }
-
-    const cwd = std.Io.Dir.cwd();
-    const cmdline_file = cwd.openFile(io, "/proc/self/cmdline", .{}) catch return error.CannotReadCmdline;
-    defer cmdline_file.close(io);
-
-    // Read up to MAX_CMDLINE_LEN + 1 bytes to detect truncation
-    var cmdline_buf: [MAX_CMDLINE_LEN + 1]u8 = undefined;
-    var reader_buf: [2048]u8 = undefined;
-    var stream_reader = cmdline_file.readerStreaming(io, &reader_buf);
-    const bytes_read = stream_reader.interface.readSliceShort(&cmdline_buf) catch return error.CannotReadCmdline;
-    if (bytes_read == 0) return error.CannotReadCmdline;
-    if (bytes_read > MAX_CMDLINE_LEN) return error.CmdlineTooLarge;
-
-    var argv_storage: [MAX_ARGV_COUNT][]const u8 = undefined;
-    const argv = try splitCmdline(cmdline_buf[0..bytes_read], exe_path, &argv_storage);
-
-    return std.process.replace(io, .{ .argv = argv });
+    return backend.restart(io, exe_path);
 }
 
 /// Helper progress callback that emits an `updater://progress` event to JS via `oriel.App.emit`.
@@ -1146,6 +1133,7 @@ const MockServer = struct {
 };
 
 test "end-to-end update flow" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
     const io = std.testing.io;
     const allocator = std.testing.allocator;
 
@@ -1346,6 +1334,7 @@ test "end-to-end update flow" {
 }
 
 test "Commands check -> install -> restart state transitions against MockServer with std.testing.allocator" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
     const io = std.testing.io;
     const allocator = std.testing.allocator;
 
@@ -1466,4 +1455,9 @@ test "Commands check -> install -> restart state transitions against MockServer 
     const restart_err = TestUpdater.updater_restart(arena.allocator(), io);
     try std.testing.expectError(error.MockRestartExecuted, restart_err);
     try std.testing.expectEqualStrings(dummy_app_path, MockState.called_target_buf[0..MockState.called_target_len]);
+}
+
+test {
+    std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(backend);
 }

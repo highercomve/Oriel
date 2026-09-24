@@ -571,3 +571,37 @@ test "Field validation: control chars, sha256, urls, format" {
     try std.testing.expect(!eqlSha256Hex(hash_lower, "0000c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
     try std.testing.expect(!eqlSha256Hex(hash_lower, "short"));
 }
+
+test "manifest target accepts x86_64-windows" {
+    const allocator = std.testing.allocator;
+    const kp = try Ed25519.KeyPair.generateDeterministic([_]u8{99} ** 32);
+
+    const win_params = SignParameters{
+        .app_id = "com.example.winapp",
+        .version = "1.2.3",
+        .target = "x86_64-windows",
+        .format = "raw",
+        .size = 1048576,
+        .sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        .url = "https://example.com/downloads/app.exe",
+    };
+
+    const sig = try sign(allocator, kp, win_params);
+    defer allocator.free(sig);
+
+    const manifest_json = try formatManifest(allocator, win_params, sig);
+    defer allocator.free(manifest_json);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var pk_b64: [PUBLIC_KEY_B64_LEN]u8 = undefined;
+    _ = encodePublicKey(kp.public_key.toBytes(), &pk_b64);
+
+    const verified = try verify(arena.allocator(), manifest_json, &pk_b64);
+    try std.testing.expectEqualStrings("com.example.winapp", verified.app_id);
+    try std.testing.expectEqualStrings("1.2.3", verified.version);
+    try std.testing.expectEqualStrings("x86_64-windows", verified.target);
+    try std.testing.expectEqualStrings("raw", verified.format);
+    try std.testing.expectEqual(1048576, verified.size);
+}
