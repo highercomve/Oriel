@@ -1,36 +1,68 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 	<head id="head">
 		<meta charset="utf-8">
-		<meta name="viewport" content="initial-scale=1">
-		<title :text="$site.title"></title>
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta name="description" content="Oriel: desktop apps with Zig and the web platform. A native window, the system webview, your frontend, and typed Zig commands.">
+		<meta property="og:title" content="Oriel: desktop apps with Zig and the web">
+		<meta property="og:description" content="A Tauri-like framework in Zig 0.16. Small binaries, typed IPC, secure by default.">
+		<meta property="og:image" content="$site.asset('brand/oriel-banner.png').link()">
+		<meta name="theme-color" content="#12151C">
+		<link rel="icon" type="image/png" href="$site.asset('brand/oriel-icon-32.png').link()">
+		<link rel="preconnect" href="https://fonts.googleapis.com">
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
 		<link type="text/css" rel="stylesheet" href="$site.asset('style.css').link()">
 		<link type="text/css" rel="stylesheet" href="$site.asset('highlight.css').link()">
-		<!-- mathtex -->
-		<link type="text/css" rel="stylesheet" href="$site.asset('Temml-Local.css').link()">
-		<script defer src="$site.asset('temml.min.js').link()"></script>
-		<script defer src="$site.asset('render-mathtex.js').link()"></script>
-		<!-- /mathtex -->
 		<super>
 	</head>
 	<body id="body">
-		<h1 class="site-title" :text="$site.title"></h1>
-		<nav>
-			<a href="$site.page('').link()">Home</a>
-			&nbsp; • &nbsp;
-			<a href="$site.page('about').link()">About</a>
-			&nbsp; • &nbsp;
-			<a href="$site.page('blog').link()">Blog</a>
-			<ctx :if="$site.page('devlog').subpages().first?()">
-				&nbsp; • &nbsp;
-				<a href="$if.link()">Devlog</a>
-			</ctx>
-		</nav>
+		<header class="topbar">
+			<div class="topbar-inner">
+				<a class="brand" href="$site.page('').link()" aria-label="Oriel home">
+					<img class="brand-mark" src="$site.asset('brand/oriel-icon.svg').link()" alt="" width="28" height="28">
+					<span class="brand-name">oriel</span>
+				</a>
+				<button class="menu-toggle" type="button" aria-label="Menu" aria-expanded="false">
+					<span></span><span></span><span></span>
+				</button>
+				<nav class="topnav">
+					<a href="$site.page('docs/getting-started').link()">Docs</a>
+					<a href="$site.page('docs/tutorial').link()">Tutorial</a>
+					<a href="$site.page('docs/modules').link()">Modules</a>
+					<a href="$site.page('docs/roadmap').link()">Roadmap</a>
+					<a class="topnav-gh" href="https://github.com/highercomve/Oriel">GitHub</a>
+					<span class="version-badge">v0.1.0</span>
+				</nav>
+			</div>
+		</header>
 		<super>
-		<footer>
-			<hr>
-			<h5>SITE UNDER CONSTRUCTION</h5>
-			<img src="$site.asset('under-construction.gif').link()" width=90>
+		<footer class="site-footer">
+			<div class="footer-inner">
+				<div class="footer-brand">
+					<img class="brand-mark" src="$site.asset('brand/oriel-icon.svg').link()" alt="" width="22" height="22">
+					<span>oriel</span>
+					<p>Desktop apps with Zig and the web platform.</p>
+				</div>
+				<div class="footer-cols">
+					<div>
+						<h4>Docs</h4>
+						<a href="$site.page('docs/getting-started').link()">Getting started</a>
+						<a href="$site.page('docs/tutorial').link()">Tutorial</a>
+						<a href="$site.page('docs/building').link()">Building &amp; packaging</a>
+						<a href="$site.page('docs/signing').link()">Code signing</a>
+					</div>
+					<div>
+						<h4>Project</h4>
+						<a href="https://github.com/highercomve/Oriel">GitHub</a>
+						<a href="https://github.com/highercomve/Oriel/releases">Releases</a>
+						<a href="$site.page('docs/roadmap').link()">Roadmap</a>
+						<a href="https://github.com/highercomve/Oriel/issues">Issues</a>
+					</div>
+				</div>
+			</div>
+			<p class="footer-legal">MIT OR Apache-2.0 · Built with Zig and <a href="https://zine-ssg.io">Zine</a></p>
 		</footer>
+		<script src="$site.asset('site.js').link()" defer></script>
 	</body>
 </html>

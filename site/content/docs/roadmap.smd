@@ -1,0 +1,9 @@
+---
+.title = "Roadmap",
+.description = "What is done, what is next.",
+.date = .date("2026-09-24T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+> This page is being written.

@@ -10,3 +10,5 @@ deps/.zig-gobject-src/
 /.zine-cache/
 .zine.ziggy-schema
 site/content/.smd.ziggy-schema
+public/
+.zig-cache/

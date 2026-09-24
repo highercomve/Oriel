@@ -1,0 +1,9 @@
+---
+.title = "Concepts",
+.description = "How Oriel is put together: IPC, security, windows and routes.",
+.date = .date("2026-09-24T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+> This page is being written.

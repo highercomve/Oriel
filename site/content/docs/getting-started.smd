@@ -1,0 +1,97 @@
+---
+.title = "Getting started",
+.description = "Install the CLI, create an app and run it with hot reload.",
+.date = .date("2026-09-24T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+# Requirements
+
+Oriel apps are built with **Zig 0.16** and run on the system webview:
+
+- **Zig 0.16.0**: from [ziglang.org](https://ziglang.org/download/) or a version manager such as zvm.
+- **Linux:** GTK 4 and WebKitGTK 6.0 development packages (`gtk4` and `webkitgtk-6.0` on Arch; `libgtk-4-dev` and `libwebkitgtk-6.0-dev` on Debian and Ubuntu).
+- **Node.js and npm** for the React, Vue and Svelte templates (Vite). The `vanilla` template needs no Node at all.
+
+Windows builds cross-compile from Linux; see [Building & packaging]($link.page('docs/building')).
+
+# Install the CLI
+
+The `oriel` CLI is a single static binary. It scaffolds apps and wraps their build steps, like `create-tauri-app` and `tauri dev` / `tauri build`.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
+```
+
+It installs to `~/.local/bin/oriel`, verifies the download against the release's `SHA256SUMS`, and never uses sudo. Two environment variables change that:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ORIEL_VERSION` | newest release | Tag to install, e.g. `v0.1.0` |
+| `ORIEL_INSTALL_DIR` | `~/.local/bin` | Where to put the binary |
+
+Then check that this machine can build Oriel apps:
+
+```sh
+oriel doctor
+```
+
+`doctor` looks for Zig 0.16, the GTK 4 and WebKitGTK 6.0 libraries, `pkg-config` and Node.js, and tells you what is missing.
+
+# Create an app
+
+```sh
+oriel init my-app
+cd my-app
+```
+
+`init` creates `./my-app` with a React + Vite frontend, fetches the Zig dependencies and runs `npm install`. The options:
+
+| Option | Meaning |
+|---|---|
+| `--template <react\|vue\|svelte\|vanilla>` | Frontend template (default: `react`) |
+| `--id <app-id>` | Application id in reverse-DNS form (default: `com.example.<Name>`) |
+| `--oriel-ref <ref>` | Oriel tag or commit to depend on |
+| `--oriel-path <dir>` | Depend on a local Oriel checkout instead |
+| `--no-install` | Only write the files: skip `zig build --fetch` and `npm install` |
+
+The new project looks like this:
+
+| Path | What |
+|---|---|
+| `src/main.zig` | The Zig side: `Commands` the page can call and `Events` pushed to it |
+| `frontend/` | The page (Vite project, or a static page for `vanilla`) |
+| `build.zig` | Which Oriel modules are compiled in, packaging metadata |
+| `build.zig.zon` | Package manifest; Oriel is a dependency |
+
+# Run it
+
+```sh
+oriel dev
+```
+
+`dev` starts the Vite dev server and opens the app against it, with hot reload for the frontend. Zig changes rebuild and restart the app. Dev builds use the app id with a `.Dev` suffix, so they run next to an installed copy.
+
+To build the real thing, with the frontend embedded in the executable:
+
+```sh
+oriel build            # zig-out/bin/my-app (ReleaseSafe by default)
+oriel run              # build and run
+```
+
+# The other commands
+
+| Command | What it does |
+|---|---|
+| `oriel types` | Regenerate the frontend's TypeScript types for the Zig commands |
+| `oriel check` | Type-check the app's Zig code without building (about a second) |
+| `oriel package` | Build deb, rpm and AppImage packages into `zig-out/package` |
+
+Every command is a thin wrapper around `zig build <step>`, run from anywhere inside the project, and extra arguments are passed on: `oriel build -Doptimize=ReleaseFast` works, and so does plain `zig build`.
+
+> Using Oriel without the CLI? Add it with the Zig package manager, `zig fetch --save git+https://github.com/highercomve/Oriel`, and call `oriel.addApp()` from your `build.zig`. The generated project shows the exact wiring.
+
+# Next
+
+Build a complete app in the [tutorial]($link.page('docs/tutorial')): a Zig command called from the page, an event, SQLite storage and a tray icon.
