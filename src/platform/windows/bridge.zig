@@ -172,18 +172,27 @@ pub fn Bridge(
             const pool = App.getWorkerPool();
 
             if (!ipc.isAsync(api.commands, req.cmd)) {
-                const request = ipc.Request{ .cmd = req.cmd, .args = req.args };
-                const result = ipc.dispatchRequest(api.commands, temp_alloc, request, if (pool) |p| p.io else null) catch |err| {
-                    sendErrorReply(view, req.id, @errorName(err));
-                    return;
-                };
-                sendSuccessReply(view, req.id, result);
+                // Run sync commands from the message loop, not inside this
+                // WebView2 event handler: a command that pumps messages (e.g.
+                // openWindow waiting for a new WebView2 controller, or a modal
+                // file dialog) would otherwise nest a message loop inside the
+                // handler, which WebView2 doesn't support (it hangs). Tasks run
+                // in order, so replies keep the order of the requests.
+                SyncCall.queue(view, req.id, req.cmd, req.args, if (pool) |p| p.io else null);
                 return;
             }
 
             // Async command: execute on worker pool and reply on main thread.
             const worker_pool = pool orelse {
                 sendErrorReply(view, req.id, "WorkerPoolNotRunning");
+                return;
+            };
+
+            // The Windows bridge message also carries the reply `id`, which
+            // ipc.Request (and its strict parser) doesn't know: hand the
+            // worker just `{cmd, args}`.
+            const request_json = std.json.Stringify.valueAlloc(temp_alloc, ipc.Request{ .cmd = req.cmd, .args = req.args }, .{}) catch |err| {
+                sendErrorReply(view, req.id, @errorName(err));
                 return;
             };
 
@@ -221,8 +230,8 @@ pub fn Bridge(
             };
 
             const async_ctx = std.heap.smp_allocator.create(AsyncReplyContext) catch {
-                _ = view.lpVtbl.Release(view);
                 sendErrorReply(view, req.id, "OutOfMemory");
+                _ = view.lpVtbl.Release(view);
                 return;
             };
             async_ctx.* = .{
@@ -233,13 +242,73 @@ pub fn Bridge(
                 .err_name = null,
             };
 
-            ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, msg_u8, worker_pool.io, async_ctx, AsyncReplyContext.onWorkerDone) catch |err| {
-                _ = view.lpVtbl.Release(view);
+            ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, request_json, worker_pool.io, async_ctx, AsyncReplyContext.onWorkerDone) catch |err| {
                 std.heap.smp_allocator.destroy(async_ctx);
                 sendErrorReply(view, req.id, @errorName(err));
+                _ = view.lpVtbl.Release(view);
                 return;
             };
         }
+
+        /// A sync command deferred to the main thread's message loop. Owns a
+        /// reference on the webview and an arena with the request.
+        const SyncCall = struct {
+            view: *webview2.ICoreWebView2,
+            id: ?u64,
+            arena_state: std.heap.ArenaAllocator,
+            request: ipc.Request,
+            io: ?std.Io,
+
+            fn queue(view: *webview2.ICoreWebView2, id: ?u64, cmd: []const u8, args: std.json.Value, io: ?std.Io) void {
+                const gpa = std.heap.smp_allocator;
+                const self = gpa.create(SyncCall) catch {
+                    sendErrorReply(view, id, "OutOfMemory");
+                    return;
+                };
+                self.* = .{ .view = view, .id = id, .arena_state = .init(gpa), .request = undefined, .io = io };
+                // Deep-copy the request out of the caller's parse arena.
+                const arena = self.arena_state.allocator();
+                const request_json = std.json.Stringify.valueAlloc(arena, ipc.Request{ .cmd = cmd, .args = args }, .{}) catch {
+                    self.fail("OutOfMemory");
+                    return;
+                };
+                self.request = ipc.parseRequest(arena, request_json) catch |err| {
+                    self.fail(@errorName(err));
+                    return;
+                };
+                _ = view.lpVtbl.AddRef(view);
+                // `run` or `discard` releases the reference and frees the task.
+                ShellMod.dispatchWithCleanup(&run, self, &discard);
+            }
+
+            fn fail(self: *SyncCall, err_name: []const u8) void {
+                sendErrorReply(self.view, self.id, err_name);
+                self.arena_state.deinit();
+                std.heap.smp_allocator.destroy(self);
+            }
+
+            fn run(ctx: ?*anyopaque) void {
+                const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
+                defer finish(self);
+                const result = ipc.dispatchRequest(api.commands, self.arena_state.allocator(), self.request, self.io) catch |err| {
+                    sendErrorReply(self.view, self.id, @errorName(err));
+                    return;
+                };
+                sendSuccessReply(self.view, self.id, result);
+            }
+
+            /// Queue failure (on the calling thread, which is the main thread
+            /// here) or shutdown: no reply, just release.
+            fn discard(ctx: ?*anyopaque) void {
+                finish(@ptrCast(@alignCast(ctx.?)));
+            }
+
+            fn finish(self: *SyncCall) void {
+                _ = self.view.lpVtbl.Release(self.view);
+                self.arena_state.deinit();
+                std.heap.smp_allocator.destroy(self);
+            }
+        };
 
         fn sendSuccessReply(view: *webview2.ICoreWebView2, id: ?u64, result_json: []const u8) void {
             if (id == null) return;
