@@ -177,6 +177,19 @@ pub fn getWindowByView(view: *webview2.ICoreWebView2) ?*App.Window {
     return null;
 }
 
+/// The window stored in our own window class's GWLP_USERDATA (set by
+/// createWindow, cleared on destroy). For wndProc only: it runs synchronously
+/// inside CreateWindowExW/DestroyWindow, possibly while this thread holds
+/// windows_mutex (not re-entrant), and before the window is in windows_list.
+fn windowFromUserData(hwnd: win32.HWND) ?*App.Window {
+    const ptr = win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA);
+    if (ptr == 0) return null;
+    return @ptrFromInt(@as(usize, @bitCast(ptr)));
+}
+
+/// Like `windowFromUserData`, but only returns windows still in
+/// App.windows_list: for HWNDs that come from elsewhere (bridge handlers).
+/// Takes windows_mutex; never call it from wndProc.
 pub fn getWindowByHwnd(hwnd: win32.HWND) ?*App.Window {
     const ptr = win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA);
     if (ptr == 0) return null;
@@ -955,7 +968,7 @@ pub fn WindowCreator(
         }
 
         fn wndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam: win32.LPARAM) callconv(.winapi) win32.LRESULT {
-            const win = getWindowByHwnd(hwnd);
+            const win = windowFromUserData(hwnd);
 
             switch (uMsg) {
                 win32.WM_SIZE => {
