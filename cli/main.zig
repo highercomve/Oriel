@@ -1,0 +1,97 @@
+//! `oriel`: the Oriel command-line tool.
+//!
+//!     oriel dev | build | run | package | types | check [zig build args...]
+//!
+//! A standalone static program (no GTK), built with `zig build cli`.
+
+const std = @import("std");
+const build_options = @import("build_options");
+const args = @import("args.zig");
+const Context = @import("Context.zig");
+const project = @import("project.zig");
+
+const program = "oriel";
+
+pub const Commands = union(enum) {
+    dev: project.Wrapper("dev", "Run the app against the frontend dev server, with hot reload"),
+    build: project.Wrapper(null, "Build the app (frontend embedded) into zig-out/bin"),
+    run: project.Wrapper("run", "Build and run the app"),
+    package: project.Wrapper("package", "Build deb, rpm and AppImage packages into zig-out/package"),
+    types: project.Wrapper("types", "Regenerate the frontend's TypeScript types for the Zig commands"),
+    check: project.Wrapper("check", "Type-check the app's Zig code without building"),
+};
+
+pub fn main(init: std.process.Init) !u8 {
+    const io = init.io;
+    const arena = init.arena.allocator();
+
+    var out_buf: [4096]u8 = undefined;
+    var out = std.Io.File.stdout().writerStreaming(io, &out_buf);
+    var err_buf: [1024]u8 = undefined;
+    var err = std.Io.File.stderr().writerStreaming(io, &err_buf);
+    const ctx: Context = .{
+        .gpa = init.gpa,
+        .io = io,
+        .environ = init.environ_map,
+        .out = &out.interface,
+        .err = &err.interface,
+    };
+    defer ctx.flush();
+
+    const vector = init.minimal.args.vector;
+    const argv = try arena.alloc([]const u8, vector.len -| 1);
+    for (argv, 1..) |*a, i| a.* = std.mem.span(vector[i]);
+
+    return dispatch(ctx, argv) catch |e| {
+        ctx.err.print("error: {s}\n", .{@errorName(e)}) catch {};
+        return 1;
+    };
+}
+
+fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
+    var diag: args.Diagnostic = .{};
+    const parsed = args.parse(Commands, argv, &diag) catch {
+        try ctx.err.print("error: {s}\n", .{diag.message()});
+        if (diag.command) |c|
+            try ctx.err.print("Run '" ++ program ++ " {s} --help' for usage.\n", .{c})
+        else
+            try ctx.err.writeAll("Run '" ++ program ++ " --help' for usage.\n");
+        return 2;
+    };
+    switch (parsed) {
+        .version => {
+            try ctx.out.print(program ++ " {s}\n", .{build_options.version});
+            return 0;
+        },
+        .help => |tag| {
+            if (tag) |t| try args.writeCommandHelp(Commands, program, t, ctx.out) else try args.writeHelp(Commands, program, ctx.out);
+            return 0;
+        },
+        .command => |cmd| switch (cmd) {
+            inline else => |c| return project.exec(ctx, @TypeOf(c).zig_step, c.args),
+        },
+    }
+}
+
+test {
+    _ = args;
+    _ = Context;
+    _ = project;
+}
+
+test "command table" {
+    var diag: args.Diagnostic = .{};
+    const r = try args.parse(Commands, &.{ "run", "--", "--verbose" }, &diag);
+    try std.testing.expectEqual(2, r.command.run.args.len);
+    try std.testing.expectEqualStrings("run", @TypeOf(r.command.run).zig_step.?);
+    try std.testing.expectEqual(null, @TypeOf(r.command.build).zig_step);
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try args.writeHelp(Commands, program, &out.writer);
+    for ([_][]const u8{ "dev", "build", "run", "package", "types", "check" }) |name| {
+        const line = try std.fmt.allocPrint(std.testing.allocator, "\n  {s} ", .{name});
+        defer std.testing.allocator.free(line);
+        try std.testing.expect(std.mem.indexOf(u8, out.written(), line) != null);
+    }
+}

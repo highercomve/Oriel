@@ -140,6 +140,72 @@ pub fn build(b: *std.Build) void {
     for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module }) |m| {
         check_step.dependOn(&b.addTest(.{ .root_module = m }).step);
     }
+
+    // The CLI is part of Oriel's own build only: apps that depend on Oriel
+    // never build it (and don't pay for the `git` call below).
+    if (b.pkg_hash.len == 0) addCli(b, target, optimize, test_step, check_step);
+}
+
+/// `zig build cli`: the `oriel` command-line tool (cli/), a static binary
+/// with no GTK dependency. `-Dtarget=aarch64-linux-musl` cross-compiles it.
+fn addCli(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    test_step: *std.Build.Step,
+    check_step: *std.Build.Step,
+) void {
+    const zon = @import("build.zig.zon");
+    const version = b.option([]const u8, "cli-version", "Version reported by `oriel --version` (default: build.zig.zon)") orelse zon.version;
+    const oriel_ref = b.option([]const u8, "oriel-ref", "Git ref of Oriel that `oriel init` pins (default: this checkout's tag or commit)") orelse
+        gitRef(b) orelse "main";
+
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", version);
+    options.addOption([]const u8, "oriel_ref", oriel_ref);
+
+    // Linux builds use musl so the binary is fully static and runs on any
+    // distro (the CLI needs no libc anyway).
+    var query = target.query;
+    if (target.result.os.tag == .linux) query.abi = .musl;
+    const cli_mod = b.createModule(.{
+        .root_source_file = b.path("cli/main.zig"),
+        .target = b.resolveTargetQuery(query),
+        .optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe,
+    });
+    cli_mod.addOptions("build_options", options);
+    // Release builds are stripped: the binary is what install.sh downloads.
+    cli_mod.strip = cli_mod.optimize != .Debug;
+    const cli = b.addExecutable(.{ .name = "oriel", .root_module = cli_mod });
+    b.step("cli", "Build the oriel CLI (zig-out/bin/oriel)").dependOn(&b.addInstallArtifact(cli, .{}).step);
+
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("cli/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_mod.addOptions("build_options", options);
+    const cli_tests = b.addTest(.{ .root_module = test_mod, .use_llvm = true, .use_lld = true });
+    test_step.dependOn(&b.addRunArtifact(cli_tests).step);
+    check_step.dependOn(&b.addTest(.{ .root_module = test_mod }).step);
+    // Also `main` and everything it reaches (not referenced by the tests).
+    check_step.dependOn(&b.addExecutable(.{ .name = "oriel-check", .root_module = cli_mod }).step);
+}
+
+/// The tag at HEAD if there is one, else the commit; null outside a git checkout.
+fn gitRef(b: *std.Build) ?[]const u8 {
+    const root = b.build_root.path orelse ".";
+    var code: u8 = undefined;
+    const argvs = [_][]const []const u8{
+        &.{ "git", "-C", root, "describe", "--tags", "--exact-match", "HEAD" },
+        &.{ "git", "-C", root, "rev-parse", "HEAD" },
+    };
+    for (argvs) |argv| {
+        const out = b.runAllowFail(argv, &code, .ignore) catch continue;
+        const ref = std.mem.trim(u8, out, " \t\r\n");
+        if (ref.len > 0) return ref;
+    }
+    return null;
 }
 
 fn addOrielModule(
