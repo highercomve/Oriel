@@ -345,8 +345,19 @@ LIBRARIES.md (subcommands = `union`, options = `struct` fields, generated help).
   HKCU uninstall entry, WebView2 runtime check/bootstrapper, optional
   `WebView2Loader.dll`). MSI (WiX) is not planned until someone needs it.
 - ✅ **Native deps:** opt-in `-Dsqlite_vec`, `-Dllama`, `-Dwhisper` (lazy
-  tarball deps, one shared ggml in `build/ggml.zig`, CPU only). Next:
-  CUDA/Vulkan backends and `libmtmd` (both fail with a build error today).
+  tarball deps, one shared ggml in `build/ggml.zig`). ✅ CUDA on Linux:
+  `-Dggml_cuda` → `libggml-cuda.so` loaded at runtime (`ggml_gpu.load`).
+  Next: Vulkan, CUDA on Windows, CUDA in packages (deb/AppImage: ship the
+  library, cuBLAS stays a system dependency), `libmtmd`.
+- ✅ **Audio capture + live captions:** `audio_capture` module (opt-in;
+  Linux libpulse, mics and system-audio monitors, 16 kHz mono f32);
+  ghostpen-lite has live captions (capture → whisper on CUDA → `caption`
+  events; test hook `GHOSTPEN_CAPTIONS_WAV`, `--captions-demo`,
+  `--transcribe file.wav`). Next: WASAPI loopback on Windows, a
+  transparent click-through overlay window (needs Milestone 6 window
+  options), a smoke check that captures a short read. Known limit: stopping
+  waits for the current 100 ms read; a source that never delivers data
+  (suspended sink monitor) would block stop.
 
 ## Milestone 6 — Windows from JavaScript (multi-window apps)
 

@@ -41,11 +41,9 @@ const Features = struct {
     sqlite_vec: bool,
     llama: bool,
     whisper: bool,
+    audio_capture: bool,
 
     fn fromOptions(b: *std.Build) Features {
-        if (b.option(bool, "ggml_cuda", "Enable CUDA backend (not supported)") orelse false) {
-            fatal("CUDA is not supported yet, see README.md", .{});
-        }
         if (b.option(bool, "ggml_vulkan", "Enable Vulkan backend (not supported)") orelse false) {
             fatal("Vulkan is not supported yet, see README.md", .{});
         }
@@ -59,7 +57,8 @@ const Features = struct {
         inline for (@typeInfo(Features).@"struct".fields) |field| {
             const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
                 std.mem.eql(u8, field.name, "llama") or
-                std.mem.eql(u8, field.name, "whisper"));
+                std.mem.eql(u8, field.name, "whisper") or
+                std.mem.eql(u8, field.name, "audio_capture"));
             const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
             @field(f, field.name) = opt orelse !is_native;
         }
@@ -276,6 +275,21 @@ fn gitRef(b: *std.Build) ?[]const u8 {
     return null;
 }
 
+/// `-Dggml_cuda`: build the CUDA backend for llama/whisper (Linux, needs the
+/// CUDA toolkit). `-Dcuda_path` defaults to $CUDA_PATH or /opt/cuda,
+/// `-Dcuda_arch` to "native" (the GPUs of the build machine).
+fn cudaOptions(b: *std.Build, target: std.Build.ResolvedTarget) ?ggml.CudaOptions {
+    const enabled = b.option(bool, "ggml_cuda", "Build the CUDA backend for llama/whisper as libggml-cuda.so (Linux; needs the CUDA toolkit)") orelse false;
+    const path = b.option([]const u8, "cuda_path", "CUDA toolkit root (default: $CUDA_PATH or /opt/cuda)");
+    const arch = b.option([]const u8, "cuda_arch", "nvcc -arch value (default: native)");
+    if (!enabled) return null;
+    if (target.result.os.tag != .linux) fatal("-Dggml_cuda is only supported on Linux targets for now", .{});
+    return .{
+        .path = path orelse b.graph.environ_map.get("CUDA_PATH") orelse "/opt/cuda",
+        .arch = arch orelse "native",
+    };
+}
+
 fn addOrielModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -345,8 +359,10 @@ fn addOrielModule(
             });
         }
     }
+    const cuda = cudaOptions(b, target);
+    if (cuda != null and !features.llama and !features.whisper) fatal("-Dggml_cuda needs -Dllama or -Dwhisper", .{});
     if (features.llama or features.whisper) {
-        ggml.addGgml(b, oriel, features);
+        ggml.addGgml(b, oriel, features, cuda);
     }
     if (is_linux and (features.input or features.clipboard)) {
         const scanner = Scanner.create(b, .{});
@@ -363,6 +379,10 @@ fn addOrielModule(
             .optimize = optimize,
         }));
         oriel.linkSystemLibrary("wayland-client", .{});
+    }
+    if (is_linux and features.audio_capture) {
+        oriel.linkSystemLibrary("libpulse", .{});
+        oriel.linkSystemLibrary("libpulse-simple", .{});
     }
     if (is_linux and features.input) {
         oriel.linkSystemLibrary("xkbcommon", .{});
@@ -557,6 +577,14 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig")));
     b.installArtifact(exe);
+
+    // -Dggml_cuda: ship libggml-cuda.so next to the executable. It resolves
+    // ggml's symbols from the executable, so those must be exported.
+    if (oriel_dep.builder.named_lazy_paths.get("libggml-cuda")) |cuda_lib| {
+        b.getInstallStep().dependOn(&b.addInstallFileWithDir(cuda_lib, .bin, "libggml-cuda.so").step);
+        exe.rdynamic = true;
+        if (dev_exe) |d| d.rdynamic = true;
+    }
 
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());

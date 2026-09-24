@@ -814,9 +814,23 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
 
 #### GPU backends (CUDA & Vulkan)
 
-- GPU acceleration is **not currently supported**; inference runs on CPU only.
-- Passing `-Dggml_cuda` or `-Dggml_vulkan` halts at build time with a clear, clean error message.
-- *Why?* Compiling CUDA requires NVIDIA's external toolchain (`nvcc`, CUDA Toolkit headers and libraries). Compiling Vulkan shaders requires `glslc` or SPIR-V toolchains and dynamic runtime loader linking. Both add external system dependencies that break pure Zig portable builds without specialized host configuration.
+- **CUDA (Linux):** `-Dggml_cuda` (plus `-Dwhisper` and/or `-Dllama`) builds
+  ggml's CUDA backend with `nvcc` into `libggml-cuda.so`; `addApp` installs it
+  next to the executable. At runtime call `oriel.ggml_gpu.load(io)` before
+  loading a model: it loads the backend from the executable's directory only
+  and returns the number of GPUs (0 = CPU fallback, the app still works
+  without an NVIDIA GPU or the library).
+  - Needs the CUDA toolkit: `-Dcuda_path` (default `$CUDA_PATH` or
+    `/opt/cuda`), `-Dcuda_arch` (nvcc `-arch`, default `native` = the GPUs
+    of the build machine; use e.g. `all-major` for distribution).
+  - First build compiles ~140 CUDA files (~3–4 min on 16 cores), cached after.
+  - Why a separate library: nvcc's host code uses GCC's libstdc++ while Zig
+    builds C++ against libc++; the ggml backend interface between them is
+    plain C. The executable is linked with `rdynamic` so the library
+    resolves ggml's symbols from it.
+  - Measured (examples/ghostpen-lite, RTX 4070, 11 s clip, incl. model load):
+    small 3.2 s on CPU → 0.8 s on CUDA; large-v3-turbo q8 1.1 s on CUDA.
+- **Vulkan:** not supported yet (`-Dggml_vulkan` stops the build).
 
 #### Multimodal (`mtmd`) status
 

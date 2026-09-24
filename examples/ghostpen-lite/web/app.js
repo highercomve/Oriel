@@ -82,3 +82,77 @@ if (location.search.includes("auto-quit")) {
     }
   })();
 }
+
+// ---- Live captions ---------------------------------------------------------
+const sourceSel = document.getElementById("caption-source");
+const langSel = document.getElementById("caption-lang");
+const captionsBtn = document.getElementById("btn-captions");
+const captionsBox = document.getElementById("captions");
+const backendBadge = document.getElementById("backend-badge");
+let captionsOn = false;
+let partialEl = null;
+
+async function loadCaptionSources() {
+  try {
+    const status = await window.oriel.invoke("captions_status", {});
+    backendBadge.textContent = status.gpu ? `GPU · ${status.gpu}` : "CPU";
+    backendBadge.classList.toggle("gpu", !!status.gpu);
+    const sources = await window.oriel.invoke("audio_sources", {});
+    sourceSel.innerHTML = "";
+    for (const s of sources) {
+      const opt = document.createElement("option");
+      opt.value = s.name;
+      opt.textContent = (s.monitor ? "🔊 System audio: " : "🎤 ") + s.description;
+      sourceSel.append(opt);
+    }
+  } catch (err) {
+    addLog(`Captions unavailable: ${err}`, "system");
+  }
+}
+
+function showCaption(text, final) {
+  captionsBox.querySelector(".caption-hint")?.remove();
+  if (!partialEl) {
+    partialEl = document.createElement("div");
+    captionsBox.append(partialEl);
+  }
+  partialEl.textContent = text;
+  partialEl.className = final ? "caption final" : "caption partial";
+  if (final) partialEl = null;
+  while (captionsBox.children.length > 50) captionsBox.firstChild.remove();
+  captionsBox.scrollTop = captionsBox.scrollHeight;
+}
+
+captionsBtn.addEventListener("click", async () => {
+  captionsBtn.disabled = true;
+  try {
+    if (captionsOn) {
+      await window.oriel.invoke("captions_stop", {});
+      captionsOn = false;
+    } else {
+      await window.oriel.invoke("captions_start", { source: sourceSel.value || null, language: langSel.value });
+      captionsOn = true;
+      addLog(`Captions started: ${sourceSel.selectedOptions[0]?.textContent ?? "default input"}`, "success");
+    }
+  } catch (err) {
+    addLog(`Captions error: ${err}`, "system");
+  } finally {
+    captionsBtn.disabled = false;
+    captionsBtn.textContent = captionsOn ? "⏹ Stop" : "🎙 Start";
+  }
+});
+
+window.oriel.listen("caption", (ev) => {
+  showCaption(ev.text, ev.final);
+  if (ev.final) backendBadge.title = `last: ${ev.audio_ms} ms of audio in ${ev.whisper_ms} ms`;
+});
+
+window.oriel.listen("captions_error", (ev) => {
+  addLog(`Captions: ${ev.message} (${ev.error_name})`, "system");
+  captionsOn = false;
+  captionsBtn.textContent = "🎙 Start";
+});
+
+loadCaptionSources().then(() => {
+  if (location.search.includes("captions-demo")) captionsBtn.click();
+});

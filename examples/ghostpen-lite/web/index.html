@@ -27,6 +27,23 @@
       <button id="btn-notify" class="btn secondary">🔔 Test Notification</button>
     </section>
 
+    <section class="captions-card">
+      <div class="captions-header">
+        <h2>Live Captions</h2>
+        <span class="badge" id="backend-badge">…</span>
+      </div>
+      <div class="captions-controls">
+        <select id="caption-source" title="Audio source"></select>
+        <select id="caption-lang" title="Language">
+          <option value="en">English</option>
+          <option value="es">Español</option>
+          <option value="auto">Auto</option>
+        </select>
+        <button id="btn-captions" class="btn primary">🎙 Start</button>
+      </div>
+      <div id="captions" class="captions"><div class="caption-hint">Pick a source and press Start. “System audio” captions what your speakers play.</div></div>
+    </section>
+
     <section class="log-section">
       <div class="log-header">
         <h2>Activity Log</h2>

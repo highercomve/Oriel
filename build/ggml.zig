@@ -2,13 +2,28 @@
 //!
 //! Compiles ggml base and ggml-cpu (single shared ggml library), plus
 //! llama.cpp and/or whisper.cpp when their corresponding feature is enabled.
+//!
+//! With `ggml_cuda`, the CUDA backend is built separately by nvcc into
+//! `libggml-cuda.so`, which the app loads at runtime (`whisper.loadGpuBackends`,
+//! `llama.loadGpuBackends`). It stays a separate library because nvcc's host
+//! code uses GCC's libstdc++ while Zig builds C++ against libc++; the ggml
+//! backend interface between them is plain C. The library resolves ggml's
+//! own symbols from the executable (`rdynamic`, set by `addApp`).
 
 const std = @import("std");
+
+pub const CudaOptions = struct {
+    /// CUDA toolkit root (contains bin/nvcc and lib64).
+    path: []const u8,
+    /// nvcc `-arch` value: "native" (the GPUs in this machine), "sm_89", "all-major", ...
+    arch: []const u8,
+};
 
 pub fn addGgml(
     b: *std.Build,
     oriel: *std.Build.Module,
     features: anytype,
+    cuda: ?CudaOptions,
 ) void {
     if (!features.llama and !features.whisper) return;
 
@@ -48,8 +63,11 @@ pub fn addGgml(
     oriel.addIncludePath(ggml_root.path(b, "src/ggml-cpu"));
     oriel.addIncludePath(ggml_root.path(b, "src/ggml-cpu/amx"));
 
-    const c_flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU" };
-    const cpp_flags = &.{ "-std=c++17", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU" };
+    // Zig's Debug builds trap on C undefined behaviour; ggml does pointer
+    // arithmetic on NULL on purpose (ggml_graph_nbytes sizes a graph that
+    // way), so its sanitizer checks are off.
+    const c_flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" };
+    const cpp_flags = &.{ "-std=c++17", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" };
 
     // GGML base sources
     oriel.addCSourceFiles(.{
@@ -129,6 +147,8 @@ pub fn addGgml(
         });
     }
 
+    if (cuda) |opts| b.addNamedLazyPath("libggml-cuda", addCudaBackend(b, ggml_root, opts));
+
     // llama.cpp sources
     if (features.llama) {
         const l = llama_dep.?;
@@ -154,6 +174,7 @@ pub fn addGgml(
             "-D_GNU_SOURCE",
             "-D_XOPEN_SOURCE=600",
             "-DGGML_USE_CPU",
+            "-fno-sanitize=undefined",
             "-DWHISPER_VERSION=\"1.9.4\"",
             "-DWHISPER_BUILD_COMMIT=\"v1.9.4\"",
         };
@@ -165,6 +186,182 @@ pub fn addGgml(
         });
     }
 }
+
+/// Compile ggml-cuda with nvcc (one cached step per source) and link it into
+/// a loadable backend module. Returns the path of `libggml-cuda.so`.
+fn addCudaBackend(b: *std.Build, ggml_root: std.Build.LazyPath, opts: CudaOptions) std.Build.LazyPath {
+    const nvcc = b.pathJoin(&.{ opts.path, "bin", "nvcc" });
+    const link = b.addSystemCommand(&.{ nvcc, "-shared", "-o" });
+    const lib = link.addOutputFileArg("libggml-cuda.so");
+    for (cuda_sources) |src| {
+        const cc = b.addSystemCommand(&.{
+            nvcc,                  "-std=c++17",           "-O3",
+            b.fmt("-arch={s}", .{opts.arch}),
+            "-use_fast_math",      "-extended-lambda",     "-compress-mode=size",
+            "-Xcompiler",          "-fPIC -Wno-pedantic",  "-DNDEBUG",
+            // Build as a dynamically loaded backend (exports ggml_backend_init).
+            "-DGGML_BACKEND_DL",   "-DGGML_BACKEND_BUILD", "-DGGML_BACKEND_SHARED",
+            "-DGGML_SHARED",       "-DGGML_CUDA_USE_GRAPHS", "-DGGML_SCHED_MAX_COPIES=4",
+        });
+        cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "include"));
+        cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "src"));
+        cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "src/ggml-cuda"));
+        cc.addArg("-c");
+        cc.addFileArg(ggml_root.path(b, b.fmt("src/ggml-cuda/{s}", .{src})));
+        cc.addArg("-o");
+        const obj = cc.addOutputFileArg(b.fmt("{s}.o", .{std.fs.path.stem(src)}));
+        link.addFileArg(obj);
+    }
+    // cudart is linked statically by nvcc; cuBLAS and the driver stay dynamic.
+    link.addArgs(&.{ "-lcublas", "-lcublasLt", "-lcuda" });
+    return lib;
+}
+
+const cuda_sources = [_][]const u8{
+    "acc.cu",
+    "add-id.cu",
+    "allreduce.cu",
+    "arange.cu",
+    "argmax.cu",
+    "argsort.cu",
+    "binbcast.cu",
+    "clamp.cu",
+    "col2im-1d.cu",
+    "concat.cu",
+    "conv2d.cu",
+    "conv2d-dw.cu",
+    "conv2d-transpose.cu",
+    "convert.cu",
+    "conv-transpose-1d.cu",
+    "count-equal.cu",
+    "cpy.cu",
+    "cross-entropy-loss.cu",
+    "cumsum.cu",
+    "diag.cu",
+    "diagmask.cu",
+    "dsv4-hc.cu",
+    "fattn.cu",
+    "fattn-tile.cu",
+    "fill.cu",
+    "fwht.cu",
+    "gated_delta_net.cu",
+    "getrows.cu",
+    "ggml-cuda.cu",
+    "gla.cu",
+    "im2col.cu",
+    "lightning-indexer.cu",
+    "mean.cu",
+    "mmf.cu",
+    "mmid.cu",
+    "mmq.cu",
+    "mmvf.cu",
+    "mmvq.cu",
+    "moe-weighted-reduction.cu",
+    "norm.cu",
+    "opt-step-adamw.cu",
+    "opt-step-sgd.cu",
+    "out-prod.cu",
+    "pad.cu",
+    "pad_reflect_1d.cu",
+    "pool1d.cu",
+    "pool2d.cu",
+    "quantize.cu",
+    "roll.cu",
+    "rope.cu",
+    "scale.cu",
+    "set.cu",
+    "set-rows.cu",
+    "snake.cu",
+    "softcap.cu",
+    "softmax.cu",
+    "solve_tri.cu",
+    "ssm-conv.cu",
+    "ssm-scan.cu",
+    "sum.cu",
+    "sumrows.cu",
+    "top-k.cu",
+    "topk-moe.cu",
+    "tri.cu",
+    "tsembd.cu",
+    "unary.cu",
+    "upscale.cu",
+    "wkv.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_16-ncols2_1.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_16-ncols2_2.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_16-ncols2_4.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_16.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_32.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_1-ncols2_8.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_16.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_32.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_4.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_2-ncols2_8.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_32-ncols2_1.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_32-ncols2_2.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_16.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_2.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_4.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_4-ncols2_8.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_64-ncols2_1.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_1.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_2.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_4.cu",
+    "template-instances/fattn-mma-f16-instance-ncols1_8-ncols2_8.cu",
+    "template-instances/fattn-tile-instance-dkq112-dv112.cu",
+    "template-instances/fattn-tile-instance-dkq128-dv128.cu",
+    "template-instances/fattn-tile-instance-dkq192-dv128.cu",
+    "template-instances/fattn-tile-instance-dkq256-dv256.cu",
+    "template-instances/fattn-tile-instance-dkq320-dv256.cu",
+    "template-instances/fattn-tile-instance-dkq40-dv40.cu",
+    "template-instances/fattn-tile-instance-dkq512-dv512.cu",
+    "template-instances/fattn-tile-instance-dkq576-dv512.cu",
+    "template-instances/fattn-tile-instance-dkq64-dv64.cu",
+    "template-instances/fattn-tile-instance-dkq72-dv72.cu",
+    "template-instances/fattn-tile-instance-dkq80-dv80.cu",
+    "template-instances/fattn-tile-instance-dkq96-dv96.cu",
+    "template-instances/mmf-instance-ncols_10.cu",
+    "template-instances/mmf-instance-ncols_11.cu",
+    "template-instances/mmf-instance-ncols_12.cu",
+    "template-instances/mmf-instance-ncols_13.cu",
+    "template-instances/mmf-instance-ncols_14.cu",
+    "template-instances/mmf-instance-ncols_15.cu",
+    "template-instances/mmf-instance-ncols_16.cu",
+    "template-instances/mmf-instance-ncols_1.cu",
+    "template-instances/mmf-instance-ncols_2.cu",
+    "template-instances/mmf-instance-ncols_3.cu",
+    "template-instances/mmf-instance-ncols_4.cu",
+    "template-instances/mmf-instance-ncols_5.cu",
+    "template-instances/mmf-instance-ncols_6.cu",
+    "template-instances/mmf-instance-ncols_7.cu",
+    "template-instances/mmf-instance-ncols_8.cu",
+    "template-instances/mmf-instance-ncols_9.cu",
+    "template-instances/mmq-instance-iq1_s.cu",
+    "template-instances/mmq-instance-iq2_s.cu",
+    "template-instances/mmq-instance-iq2_xs.cu",
+    "template-instances/mmq-instance-iq2_xxs.cu",
+    "template-instances/mmq-instance-iq3_s.cu",
+    "template-instances/mmq-instance-iq3_xxs.cu",
+    "template-instances/mmq-instance-iq4_nl.cu",
+    "template-instances/mmq-instance-iq4_xs.cu",
+    "template-instances/mmq-instance-mxfp4.cu",
+    "template-instances/mmq-instance-nvfp4.cu",
+    "template-instances/mmq-instance-q1_0.cu",
+    "template-instances/mmq-instance-q2_0.cu",
+    "template-instances/mmq-instance-q2_k.cu",
+    "template-instances/mmq-instance-q3_k.cu",
+    "template-instances/mmq-instance-q4_0.cu",
+    "template-instances/mmq-instance-q4_1.cu",
+    "template-instances/mmq-instance-q4_k.cu",
+    "template-instances/mmq-instance-q5_0.cu",
+    "template-instances/mmq-instance-q5_1.cu",
+    "template-instances/mmq-instance-q5_k.cu",
+    "template-instances/mmq-instance-q6_k.cu",
+    "template-instances/mmq-instance-q8_0.cu",
+    "template-instances/fattn-vec-instance-f16-f16.cu",
+    "template-instances/fattn-vec-instance-q4_0-q4_0.cu",
+    "template-instances/fattn-vec-instance-q8_0-q8_0.cu",
+    "template-instances/fattn-vec-instance-bf16-bf16.cu",
+};
 
 const llama_core_sources = [_][]const u8{
     "llama.cpp",

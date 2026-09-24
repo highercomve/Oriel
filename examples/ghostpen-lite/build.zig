@@ -13,6 +13,10 @@ pub fn build(b: *std.Build) void {
         .tray = true,
         .dialog = true,
         .notification = true,
+        .whisper = true,
+        .audio_capture = true,
+        // Live captions on the GPU: zig build -Dcuda (needs the CUDA toolkit).
+        .ggml_cuda = b.option(bool, "cuda", "Run whisper on the GPU (builds libggml-cuda.so)") orelse false,
     });
 
     _ = oriel.addApp(b, dep, .{

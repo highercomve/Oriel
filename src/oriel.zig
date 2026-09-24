@@ -26,6 +26,9 @@ pub const menu = if (options.menu) @import("modules/menu.zig") else struct {};
 pub const sqlite_vec = if (options.sqlite_vec) @import("modules/sqlite_vec.zig") else struct {};
 pub const llama = if (options.llama) @import("modules/llama.zig") else struct {};
 pub const whisper = if (options.whisper) @import("modules/whisper.zig") else struct {};
+pub const audio_capture = if (options.audio_capture) @import("modules/audio_capture.zig") else struct {};
+/// GPU backends (libggml-cuda.so) for llama and whisper: `ggml_gpu.load(io)` before loading a model.
+pub const ggml_gpu = if (options.llama or options.whisper) @import("modules/ggml_gpu.zig") else struct {};
 
 // App-specific plugins.
 pub const global_shortcut = if (options.global_shortcut) @import("plugins/global_shortcut.zig") else struct {};
@@ -116,6 +119,7 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
         .{ .name = "sqlite_vec", .enabled = options.sqlite_vec },
         .{ .name = "llama", .enabled = options.llama },
         .{ .name = "whisper", .enabled = options.whisper },
+        .{ .name = "audio_capture", .enabled = options.audio_capture },
     };
     inline for (entries) |e| {
         if (e.enabled) {
@@ -159,4 +163,6 @@ test {
     if (options.sqlite_vec) std.testing.refAllDecls(sqlite_vec);
     if (options.llama) std.testing.refAllDecls(llama);
     if (options.whisper) std.testing.refAllDecls(whisper);
+    if (options.llama or options.whisper) std.testing.refAllDecls(ggml_gpu);
+    if (options.audio_capture) std.testing.refAllDecls(audio_capture);
 }

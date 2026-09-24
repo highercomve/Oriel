@@ -10,6 +10,8 @@ const std = @import("std");
 const oriel = @import("oriel");
 const app = @import("oriel_app");
 
+const captions = @import("captions.zig");
+
 const icon_png = @embedFile("icon.png");
 
 var global_io: std.Io = undefined;
@@ -20,7 +22,26 @@ var tray_instance: ?*oriel.tray.Tray = null;
 const Commands = struct {
     // Clipboard reads block (the selection owner may be another app, or
     // our own main loop), so they run on the worker pool.
-    pub const async_commands = .{ "rewrite", "trigger_pipeline", "read_clipboard" };
+    // Captions start/stop load the model and join threads: also workers.
+    pub const async_commands = .{ "rewrite", "trigger_pipeline", "read_clipboard", "audio_sources", "captions_start", "captions_stop" };
+
+    pub fn audio_sources(gpa: std.mem.Allocator) ![]oriel.audio_capture.Source {
+        return oriel.audio_capture.listSources(gpa);
+    }
+
+    pub fn captions_status(_: std.mem.Allocator) captions.Status {
+        return captions.status();
+    }
+
+    /// `source`: a name from audio_sources (null = default input);
+    /// `language`: "auto", "en", "es", ...
+    pub fn captions_start(_: std.mem.Allocator, args: struct { source: ?[]const u8 = null, language: []const u8 = "en" }) !void {
+        try captions.start(args.source, args.language);
+    }
+
+    pub fn captions_stop(_: std.mem.Allocator) void {
+        captions.stop();
+    }
 
     /// Mock LLM text rewriter.
     pub fn rewrite(gpa: std.mem.Allocator, _: std.Io, args: struct { text: []const u8 }) ![]const u8 {
@@ -127,6 +148,8 @@ pub fn main(init: std.process.Init) !u8 {
 
     var auto_quit = false;
     var test_pipeline = false;
+    var transcribe_path: ?[]const u8 = null;
+    var captions_demo = false;
     var it = try init.minimal.args.iterateAllocator(init.gpa);
     defer it.deinit();
     _ = it.next();
@@ -135,8 +158,33 @@ pub fn main(init: std.process.Init) !u8 {
             test_pipeline = true;
         } else if (std.mem.eql(u8, arg, "--auto-quit")) {
             auto_quit = true;
+        } else if (std.mem.eql(u8, arg, "--captions-demo")) {
+            captions_demo = true;
+        } else if (std.mem.eql(u8, arg, "--transcribe")) {
+            transcribe_path = it.next() orelse return error.MissingWavPath;
         }
     }
+
+    // Model: $GHOSTPEN_WHISPER_MODEL, else the one the Rust GhostPen downloads.
+    const default_model = try std.fmt.allocPrint(init.gpa, "{s}/.local/share/GhostPen/models/ggml-small.bin", .{init.environ_map.get("HOME") orelse "."});
+    defer init.gpa.free(default_model);
+
+    // Test hook: $GHOSTPEN_CAPTIONS_WAV replaces the sound server.
+    var test_samples: []f32 = &.{};
+    defer init.gpa.free(test_samples);
+    if (init.environ_map.get("GHOSTPEN_CAPTIONS_WAV")) |wav| {
+        const data = try std.Io.Dir.cwd().readFileAlloc(init.io, wav, init.gpa, .limited(256 << 20));
+        defer init.gpa.free(data);
+        test_samples = try captions.decodeWav(init.gpa, data);
+    }
+
+    // Declared after the buffers above so it runs first: sessions stop
+    // before the model path and test audio they use are freed.
+    captions.init(init.io, init.environ_map.get("GHOSTPEN_WHISPER_MODEL") orelse default_model);
+    defer captions.deinit();
+    if (test_samples.len > 0) captions.useWavForTests(test_samples);
+
+    if (transcribe_path) |path| return transcribeFile(init, path);
 
     const config_gui: oriel.App.Config = .{
         .id = "com.ghostpen.lite",
@@ -149,12 +197,32 @@ pub fn main(init: std.process.Init) !u8 {
     };
     comptime var config_auto = config_gui;
     config_auto.start = "index.html?auto-quit";
+    comptime var config_demo = config_gui;
+    config_demo.start = "index.html?captions-demo";
     comptime var config_test = config_gui;
     config_test.setup = &testSetup;
 
     const api: oriel.App.Api = .{ .commands = Commands };
     if (test_pipeline) return oriel.App.run(init.io, api, config_test);
+    if (captions_demo) return oriel.App.run(init.io, api, config_demo);
     return if (auto_quit) oriel.App.run(init.io, api, config_auto) else oriel.App.run(init.io, api, config_gui);
+}
+
+/// `--transcribe file.wav` (16 kHz mono PCM16): print the text and timing.
+fn transcribeFile(init: std.process.Init, path: []const u8) !u8 {
+    const gpa = init.gpa;
+    const data = try std.Io.Dir.cwd().readFileAlloc(init.io, path, gpa, .limited(256 << 20));
+    defer gpa.free(data);
+    const samples = try captions.decodeWav(gpa, data);
+    defer gpa.free(samples);
+    const t0 = std.Io.Timestamp.now(init.io, .awake);
+    const text = try captions.transcribeOnce(gpa, samples, "en");
+    defer gpa.free(text);
+    const ms = @divTrunc(t0.durationTo(std.Io.Timestamp.now(init.io, .awake)).nanoseconds, std.time.ns_per_ms);
+    std.debug.print("backend: {s}\naudio: {d} ms, load+transcribe: {d} ms\ntext:{s}\n", .{
+        captions.gpu() orelse "CPU", samples.len * 1000 / oriel.whisper.sample_rate, ms, text,
+    });
+    return 0;
 }
 
 /// `--test-pipeline`: register the hotkey on the main thread, then drive
