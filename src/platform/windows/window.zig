@@ -419,6 +419,8 @@ pub fn WindowCreator(
 
             nav_handler: NavHandler,
             nav_token: webview2.EventRegistrationToken = .{},
+            /// iframes: NavigationStarting only covers the top-level document.
+            frame_nav_token: webview2.EventRegistrationToken = .{},
 
             nw_handler: NewWinHandler,
             nw_token: webview2.EventRegistrationToken = .{},
@@ -430,6 +432,7 @@ pub fn WindowCreator(
                 _ = self.webview.lpVtbl.remove_WebResourceRequested(self.webview, self.res_token);
                 _ = self.webview.lpVtbl.remove_WebMessageReceived(self.webview, self.msg_token);
                 _ = self.webview.lpVtbl.remove_NavigationStarting(self.webview, self.nav_token);
+                _ = self.webview.lpVtbl.remove_FrameNavigationStarting(self.webview, self.frame_nav_token);
                 _ = self.webview.lpVtbl.remove_NewWindowRequested(self.webview, self.nw_token);
                 _ = self.webview.lpVtbl.remove_WindowCloseRequested(self.webview, self.cl_token);
 
@@ -804,6 +807,14 @@ pub fn WindowCreator(
                 return error.WebView2AddEventHandlerFailed;
             }
             errdefer _ = view.lpVtbl.remove_NavigationStarting(view, data.nav_token);
+
+            // Same policy for iframes as for the page (WebKitGTK's
+            // decide-policy covers both); FrameNavigationStarting passes the
+            // same args type, so the same handler serves both events.
+            if (view.lpVtbl.add_FrameNavigationStarting(view, &data.nav_handler.handler, &data.frame_nav_token) < 0) {
+                return error.WebView2AddEventHandlerFailed;
+            }
+            errdefer _ = view.lpVtbl.remove_FrameNavigationStarting(view, data.frame_nav_token);
 
             if (view.addNewWindowRequested(&data.nw_handler.handler, &data.nw_token) < 0) {
                 return error.WebView2AddEventHandlerFailed;
