@@ -6,6 +6,7 @@
 //! Usage: embed_assets <src_dir> <out_dir>
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Dir = std.Io.Dir;
 
 pub fn main(init: std.process.Init) !void {
@@ -38,8 +39,13 @@ pub fn main(init: std.process.Init) !void {
     defer walker.deinit();
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
-        if (std.mem.indexOfAny(u8, entry.path, "\"\\\n") != null) return error.UnsupportedFileName;
-        try paths.append(gpa, try gpa.dupe(u8, entry.path));
+        // Asset keys and @embedFile paths use '/'; the walker returns the
+        // native separator ('\\' on Windows).
+        const rel = try gpa.dupe(u8, entry.path);
+        errdefer gpa.free(rel);
+        if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, rel, '\\', '/');
+        if (std.mem.indexOfAny(u8, rel, "\"\\\n") != null) return error.UnsupportedFileName;
+        try paths.append(gpa, rel);
     }
     std.mem.sort([]const u8, paths.items, {}, lessThan);
 
