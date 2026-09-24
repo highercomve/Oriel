@@ -120,6 +120,20 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             _ = g_unix_signal_add(@intFromEnum(std.posix.SIG.TERM), &onQuitSignal, null);
             _ = g_unix_signal_add(@intFromEnum(std.posix.SIG.INT), &onQuitSignal, null);
 
+            // Under dev_runner (`zig build dev`), exit when dev_runner dies, even by
+            // SIGKILL: it can't clean up then. dev_runner exports its pid, so a parent
+            // that already died before prctl (we were reparented) is detected too.
+            if (glib.getenv("ORIEL_DEV_RUNNER_PID")) |runner_pid| {
+                const linux = std.os.linux;
+                const rc = linux.prctl(@intFromEnum(linux.PR.SET_PDEATHSIG), @intFromEnum(std.posix.SIG.TERM), 0, 0, 0);
+                if (linux.errno(rc) != .SUCCESS) log.err("prctl(PR_SET_PDEATHSIG): {s}", .{@tagName(linux.errno(rc))});
+                const expected = std.fmt.parseInt(linux.pid_t, std.mem.span(runner_pid), 10) catch 0;
+                if (linux.getppid() != expected) {
+                    log.err("dev_runner (pid {s}) is gone; exiting", .{runner_pid});
+                    return 1;
+                }
+            }
+
             active_create_window_fn = &Creator.createWindow;
             defer active_create_window_fn = null;
 

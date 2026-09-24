@@ -174,7 +174,7 @@ That gives the app these steps:
 
 | Command | What it does |
 |---|---|
-| `zig build dev` | Starts Vite and opens the app on `http://localhost:5173` with hot reload; closing the window stops Vite |
+| `zig build dev` | Starts Vite and opens the app on `http://localhost:5173` with hot reload; closing the window, Ctrl-C or a SIGTERM/SIGKILL to the `zig` process stops Vite and the app too |
 | `zig build` | `npm install` (if needed) → generate types → `npm run build` → embed `dist/` → install the app |
 | `zig build run` | Runs the production build |
 | `zig build types` | Regenerates `frontend/src/oriel.ts` from the Zig `Commands` |
@@ -307,7 +307,13 @@ tray host restarts, the icon registers again.
 `openExternal(url)`. `on_close = .hide` keeps the app running when the window
 is closed. Apps are single-instance: launching again brings the window back.
 SIGINT and SIGTERM shut down cleanly. The dev server stops with the app, even
-when the app is killed.
+when the app is killed. Under `oriel dev` / `zig build dev`, stopping only the
+`zig` process (SIGTERM or SIGKILL, e.g. from a script) also stops everything:
+`dev_runner` watches the `zig` process through a pidfd (the build runner in
+between survives a signal sent to `zig` alone), dev_runner and the app get
+`PR_SET_PDEATHSIG`, and `dev_runner` starts Vite
+and the app in their own process groups and kills each whole group (SIGTERM,
+then SIGKILL after 0.5 s) on exit. `zig build test-dev-cleanup` checks this.
 
 ## Testing without a desktop
 

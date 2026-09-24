@@ -134,10 +134,25 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(tool_tests).step);
 
+    const dev_runner_tests = b.addTest(.{
+        .root_module = dev_runner.root_module,
+        .use_llvm = true,
+        .use_lld = true,
+    });
+    test_step.dependOn(&b.addRunArtifact(dev_runner_tests).step);
+
+    // Kills a stand-in for `zig build dev` (SIGTERM, then SIGKILL) and checks
+    // that dev_runner, the dev server's process group and the app are gone.
+    const test_dev_cleanup_step = b.step("test-dev-cleanup", "Check that dev_runner and its children exit with their parent");
+    const run_dev_cleanup = b.addSystemCommand(&.{"bash"});
+    run_dev_cleanup.addFileArg(b.path("scripts/test-dev-cleanup.sh"));
+    run_dev_cleanup.addArtifactArg(dev_runner);
+    test_dev_cleanup_step.dependOn(&run_dev_cleanup.step);
+
     // Type-check only: nothing requests these binaries, so Zig skips codegen
     // and linking. The fast inner loop for editors and coding agents.
     const check_step = b.step("check", "Type-check the framework, tests and tools (no binaries)");
-    for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module }) |m| {
+    for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module, dev_runner.root_module }) |m| {
         check_step.dependOn(&b.addTest(.{ .root_module = m }).step);
     }
 
@@ -439,6 +454,12 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
             b.fmt("--frontend-dir={s}", .{fe_dir}),
             b.fmt("--app-bin={s}", .{b.getInstallPath(.bin, d.name)}),
         });
+        // This script runs in the build runner, a child of the `zig` process.
+        // A SIGTERM/SIGKILL to `zig` alone leaves the build runner (and so
+        // dev_runner's direct parent) alive, so dev_runner watches `zig` itself.
+        if (@import("builtin").os.tag == .linux) {
+            runner.addArg(b.fmt("--watch-pid={d}", .{std.os.linux.getppid()}));
+        }
 
         if (fe.dev) |dev| {
             if (dev.command.len > 0) {
