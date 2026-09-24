@@ -93,7 +93,7 @@ const Commands = struct {
             else
                 null,
             .media_app_url = if (oriel.options.media_server)
-                "app://app/media/test.wav"
+                oriel.security.app_origin ++ "/media/test.wav"
             else
                 null,
             .expected_sample_hex = if (oriel.options.media_server)

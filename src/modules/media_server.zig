@@ -19,8 +19,9 @@ pub const Options = struct {
     /// TCP port on 127.0.0.1.
     port: u16,
     /// Value of `Access-Control-Allow-Origin` on file responses: the page
-    /// origin (`app://app` for embedded assets) or the dev server origin.
-    allowed_origin: []const u8 = "app://app",
+    /// origin (`app://app` on Linux, `https://app.localhost` on Windows, for
+    /// embedded assets) or the dev server origin.
+    allowed_origin: []const u8 = oriel.security.app_origin,
     symlink_policy: SymlinkPolicy = .inside_root,
 };
 
