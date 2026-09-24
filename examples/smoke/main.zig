@@ -112,7 +112,7 @@ const Commands = struct {
     pub fn clipboard_roundtrip(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {
         if (!oriel.options.clipboard) return .{ .ok = true, .detail = "clipboard plugin disabled" };
         const pid = if (builtin.os.tag == .windows)
-            std.os.windows.kernel32.GetCurrentProcessId()
+            std.os.windows.GetCurrentProcessId()
         else
             std.c.getpid();
         const text = try std.fmt.allocPrint(gpa, "oriel smoke clipboard {d}", .{pid});
