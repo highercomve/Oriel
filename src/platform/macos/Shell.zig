@@ -7,6 +7,7 @@ const cocoa = @import("cocoa.zig");
 const objc = cocoa.objc;
 const Object = cocoa.Object;
 const window = @import("window.zig");
+const dev_server = @import("dev_server.zig");
 const WindowHandle = window.WindowHandle;
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
@@ -313,6 +314,47 @@ fn installDefaultMenu(app: Object, app_name: []const u8) void {
 }
 
 // ---------------------------------------------------------------------------
+// SIGTERM / SIGINT: quit through the run loop, so `run` still cleans up
+// (e.g. stops the dev server), like g_unix_signal_add on Linux.
+// ---------------------------------------------------------------------------
+
+const QuitSignals = struct {
+    const signals = [_]std.posix.SIG{ .TERM, .INT };
+    sources: [signals.len]?*anyopaque = @splat(null),
+    previous: [signals.len]std.posix.Sigaction = undefined,
+
+    fn install() QuitSignals {
+        var self: QuitSignals = .{};
+        const ignore: std.posix.Sigaction = .{
+            .handler = .{ .handler = std.posix.SIG.IGN },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        for (signals, 0..) |sig, i| {
+            self.sources[i] = cocoa.signalSource(sig, &onQuitSignal);
+            if (self.sources[i] == null) {
+                log.err("could not watch signal {s}", .{@tagName(sig)});
+                continue;
+            }
+            std.posix.sigaction(sig, &ignore, &self.previous[i]);
+        }
+        return self;
+    }
+
+    fn uninstall(self: *QuitSignals) void {
+        for (signals, 0..) |sig, i| {
+            const source = self.sources[i] orelse continue;
+            std.posix.sigaction(sig, &self.previous[i], null);
+            cocoa.cancelSource(source);
+        }
+    }
+
+    fn onQuitSignal(_: ?*anyopaque) callconv(.c) void {
+        quit(0);
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
 
@@ -332,7 +374,6 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
     return struct {
         pub fn run(io: std.Io) u8 {
-            _ = io;
             const pool = objc.AutoreleasePool.init();
             defer pool.deinit();
 
@@ -356,6 +397,12 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             }
             app.msgSend(void, "setDelegate:", .{delegate});
             installDefaultMenu(app, config.title);
+
+            var quit_signals = QuitSignals.install();
+            defer quit_signals.uninstall();
+
+            var dev_server_proc: ?std.process.Child = if (config.dev) |dev| dev_server.startDevServer(io, dev) else null;
+            defer if (dev_server_proc) |*p| dev_server.stopDevServer(io, p);
 
             Creator.init();
             defer Creator.deinit();

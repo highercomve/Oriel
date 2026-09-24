@@ -412,6 +412,7 @@ pub fn WindowCreator(
                 .{ "webViewWebContentProcessDidTerminate:", webContentProcessDidTerminate },
                 .{ "webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:", createWebView },
                 .{ "webViewDidClose:", webViewDidClose },
+                .{ "webView:didFinishNavigation:", didFinishNavigation },
             }));
             message_handler = cocoa.new(BridgeImpl.handlerClass());
             scheme_handler = cocoa.new(SchemeImpl.handlerClass());
@@ -588,6 +589,56 @@ pub fn WindowCreator(
         fn webContentProcessDidTerminate(_: cocoa.id, _: cocoa.c.SEL, view: cocoa.id) callconv(.c) void {
             log.err("web content process terminated; reloading", .{});
             _ = (Object{ .value = view }).msgSend(Object, "reload", .{});
+        }
+
+        /// Debugging aid for machines where screen capture needs a Screen
+        /// Recording grant: `ORIEL_SNAPSHOT=/path/shot.png` saves the main
+        /// window's page once, a second after its first load finished (like
+        /// `SHOT=` under scripts/headless.sh on Linux).
+        fn didFinishNavigation(_: cocoa.id, _: cocoa.c.SEL, view: cocoa.id, _: cocoa.id) callconv(.c) void {
+            if (snapshot_taken) return;
+            if (std.c.getenv("ORIEL_SNAPSHOT") == null) return;
+            const w = getWindowByView(view) orelse return;
+            if (!std.mem.eql(u8, w.label, "main")) return;
+            snapshot_taken = true;
+            _ = (Object{ .value = view }).retain(); // until the snapshot ran
+            cocoa.afterMain(1000, view, &takeSnapshot);
+        }
+
+        var snapshot_taken = false;
+
+        const SnapshotBlock = objc.Block(struct {}, .{ cocoa.id, cocoa.id }, void);
+
+        fn takeSnapshot(ctx: ?*anyopaque) callconv(.c) void {
+            const view: Object = .{ .value = @ptrCast(@alignCast(ctx)) };
+            defer view.release();
+            const pool = objc.AutoreleasePool.init();
+            defer pool.deinit();
+            // WebKit copies the (stack) block before this call returns.
+            var block = SnapshotBlock.init(.{}, &snapshotDone);
+            view.msgSend(void, "takeSnapshotWithConfiguration:completionHandler:", .{ cocoa.nil, @as(cocoa.id, @ptrCast(&block)) });
+        }
+
+        fn snapshotDone(_: *const SnapshotBlock.Context, image_id: cocoa.id, _: cocoa.id) callconv(.c) void {
+            const path = std.c.getenv("ORIEL_SNAPSHOT") orelse return;
+            const image: Object = .{ .value = image_id };
+            if (image.value == null) {
+                log.err("ORIEL_SNAPSHOT: WebKit returned no image", .{});
+                return;
+            }
+            const tiff = image.msgSend(Object, "TIFFRepresentation", .{});
+            const rep = cocoa.class("NSBitmapImageRep").msgSend(Object, "imageRepWithData:", .{tiff});
+            const NSBitmapImageFileTypePNG: c_ulong = 4;
+            const png = if (rep.value != null) rep.msgSend(Object, "representationUsingType:properties:", .{
+                NSBitmapImageFileTypePNG, cocoa.class("NSDictionary").msgSend(Object, "dictionary", .{}),
+            }) else cocoa.nil;
+            const path_ns = cocoa.nsString(std.mem.span(path)) orelse return;
+            defer path_ns.release();
+            if (png.value == null or !cocoa.isTrue(png.msgSend(cocoa.c.BOOL, "writeToFile:atomically:", .{ path_ns, cocoa.boolean(true) }))) {
+                log.err("ORIEL_SNAPSHOT: could not write {s}", .{path});
+                return;
+            }
+            log.info("ORIEL_SNAPSHOT: wrote {s}", .{path});
         }
 
         // Dev mode: the dev server may still be starting; retry the dev URL

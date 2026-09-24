@@ -136,6 +136,27 @@ pub fn afterMain(ms: u32, ctx: ?*anyopaque, work: DispatchFn) void {
     dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, @as(i64, ms) * std.time.ns_per_ms), mainQueue(), ctx, work);
 }
 
+extern var _dispatch_source_type_signal: u8;
+extern "c" fn dispatch_source_create(kind: *const anyopaque, handle: usize, mask: usize, queue: ?*anyopaque) ?*anyopaque;
+extern "c" fn dispatch_source_set_event_handler_f(source: *anyopaque, handler: ?DispatchFn) void;
+extern "c" fn dispatch_source_cancel(source: *anyopaque) void;
+extern "c" fn dispatch_resume(object: *anyopaque) void;
+
+/// Run `handler(null)` on the main queue each time signal `sig` arrives.
+/// The signal's default action must be disabled separately (SIG_IGN), or it
+/// still runs. Null if the source can't be created; `cancelSource` it.
+pub fn signalSource(sig: std.posix.SIG, handler: DispatchFn) ?*anyopaque {
+    const source = dispatch_source_create(@ptrCast(&_dispatch_source_type_signal), @intFromEnum(sig), 0, mainQueue()) orelse return null;
+    dispatch_source_set_event_handler_f(source, handler);
+    dispatch_resume(source);
+    return source;
+}
+
+pub fn cancelSource(source: *anyopaque) void {
+    dispatch_source_cancel(source);
+    dispatch_release(source);
+}
+
 pub const Semaphore = struct {
     handle: *anyopaque,
 
