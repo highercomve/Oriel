@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
 // Generated from the Zig `Commands` struct (zig build types / zig build dev).
-import { invoke, listen, openExternal, type Commands } from "./oriel";
+import { invoke, listen, openExternal, orielWindow, type Commands } from "./oriel";
 
 type Note = Commands["list_notes"]["result"][number];
 type AppInfo = Commands["app_info"]["result"];
@@ -151,7 +151,22 @@ function SettingsPage() {
   );
 }
 
+/** Open the Settings route in its own window (or focus it if already open). */
+function openSettingsWindow() {
+  orielWindow
+    .open({ label: "settings", url: "/settings", title: "Settings", width: 520, height: 560 })
+    .catch((err) => console.error("open settings window:", err));
+}
+
 export function App() {
+  // The Settings window shows just its page, without the main navigation.
+  if (orielWindow?.current().label === "settings") {
+    return (
+      <main>
+        <SettingsPage />
+      </main>
+    );
+  }
   return (
     <main>
       <nav className="nav-bar">
@@ -161,6 +176,9 @@ export function App() {
         <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>
           Settings
         </NavLink>
+        <button className="nav-window" onClick={openSettingsWindow} title="Open Settings in a new window">
+          ⧉ Settings window
+        </button>
       </nav>
       <Routes>
         <Route path="/" element={<NotesPage />} />
