@@ -1,7 +1,7 @@
 //! Linux-specific operations for self-updater backend.
 
 const std = @import("std");
-const updater = @import("../updater.zig");
+const updater = @import("../../updater_core.zig");
 
 pub fn processId() u32 {
     return @intCast(std.os.linux.getpid());

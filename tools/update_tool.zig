@@ -386,6 +386,7 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
     var size: ?u64 = null;
     var expires: ?u64 = null;
     var out_path: ?[]const u8 = null;
+    var allow_test_http: bool = false;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -479,6 +480,8 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
                 return 1;
             }
             artifact = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--allow-test-http")) {
+            allow_test_http = true;
         } else if (std.mem.eql(u8, arg, "--out")) {
             i += 1;
             if (i >= args.len) {
@@ -510,6 +513,7 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
         .size = size,
         .expires = expires,
         .out_path = out_path,
+        .allow_test_http = allow_test_http,
     }) catch |err| {
         std.debug.print("error: sign-update failed: {s}\n", .{@errorName(err)});
         return 1;
