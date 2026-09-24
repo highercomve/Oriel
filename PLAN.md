@@ -348,6 +348,46 @@ LIBRARIES.md (subcommands = `union`, options = `struct` fields, generated help).
   tarball deps, one shared ggml in `build/ggml.zig`, CPU only). Next:
   CUDA/Vulkan backends and `libmtmd` (both fail with a build error today).
 
+## Milestone 6 — Windows from JavaScript (multi-window apps)
+
+Today windows can only be opened from Zig (`App.openWindow`); `window.open`
+and `target="_blank"` load allowed URLs into the main window. Add a
+Tauri-`WebviewWindow`-style API, on Linux and Windows:
+
+- **JS API** (in the injected bridge and the generated `oriel.ts`):
+  `oriel.window.open({ label, url, title, width, height, min/max sizes,
+  resizable, decorations, … })` → a handle; `oriel.window.current()`,
+  `get(label)`, `all()`; handle methods `close`, `show`, `hide`, `focus`,
+  `setTitle`, `setSize`, `maximize`, `fullscreen`; `emitTo(label, event,
+  payload)` and events `window:created` / `window:closed` (with the label).
+  Implemented as built-in IPC commands mapping onto `App.openWindow` and
+  `Window` methods, run on the main thread.
+- **Routes:** `url: "/settings"` must load the same route the app's
+  router handles: the embedded assets in production and the **Vite dev
+  server** in dev (today a relative `url` always loads `app://app/…`, see
+  `platform/linux/window.zig` `options.url`). Same on Windows.
+- **Security:** opt-in and scoped. A `windows` capability (or a
+  `Security.window_api` setting) lists who may call it; remote origins get
+  nothing by default. Only app-local URLs by default; a remote URL must
+  pass `allowed_origins`. Labels are validated (length, charset); cap the
+  number of windows. A window can only close/modify itself unless the
+  capability allows others.
+- **`window.open`:** when the navigation policy allows the target and it
+  is app-local, open a real Oriel window instead of navigating the main
+  one (config switch; default stays "main view").
+- **Lifetimes:** closing a window from its own JS, closing the main window
+  while children stay open, `emitTo` a closed label → error, not a crash.
+  Memory-safety review of every new path (rule 9).
+- **Tests:** unit tests for label/url validation and routing resolution;
+  smoke checks: open a child from JS, round-trip `emitTo`, close from JS,
+  check `window:closed`; run them headless on Linux and under Wine
+  (rule 10).
+- **Example:** `examples/react` gets react-router (`BrowserRouter`) and a
+  Settings window opened with `oriel.window.open({ url: "/settings" })`,
+  so routing + multi-window are shown together. Also document the
+  SPA-fallback caveat: a last path segment with a dot (`/u/john.doe`) is
+  treated as a file, not a route.
+
 ## Later
 
 - macOS shell (AppKit + WKWebView via zig-objc).
