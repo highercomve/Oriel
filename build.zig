@@ -171,6 +171,16 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(tool_tests).step);
     }
 
+    const patch_httpz_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/patch_httpz.zig"),
+            .target = b.graph.host,
+        }),
+        .use_llvm = true,
+        .use_lld = true,
+    });
+    if (is_linux) test_step.dependOn(&b.addRunArtifact(patch_httpz_tests).step);
+
     const dev_runner_tests = b.addTest(.{
         .root_module = dev_runner.root_module,
         .use_llvm = true,
@@ -192,7 +202,7 @@ pub fn build(b: *std.Build) void {
     // and linking. The fast inner loop for editors and coding agents.
     const check_step = b.step("check", "Type-check the framework, tests and tools (no binaries)");
     if (is_linux) {
-        for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module, dev_runner.root_module }) |m| {
+        for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module, dev_runner.root_module, patch_httpz_tests.root_module }) |m| {
             check_step.dependOn(&b.addTest(.{ .root_module = m }).step);
         }
     } else {
@@ -313,7 +323,10 @@ fn addOrielModule(
     }
     if (features.media_server) {
         const httpz = b.dependency("httpz", .{ .target = target, .optimize = optimize });
-        oriel.addImport("httpz", httpz.module("httpz"));
+        oriel.addImport("httpz", if (target.result.os.tag == .windows)
+            patchedHttpz(b, httpz, target, optimize)
+        else
+            httpz.module("httpz"));
     }
     if (features.sql) {
         const sqlite = b.dependency("sqlite", .{});
@@ -359,6 +372,44 @@ fn addOrielModule(
         oriel.linkSystemLibrary("x11", .{});
     }
     return oriel;
+}
+
+/// http.zig for Windows targets: the same sources with the Winsock shutdown
+/// fixes of tools/patch_httpz.zig applied, wired like http.zig's own
+/// build.zig wires its module (metrics, websocket, `build` options).
+fn patchedHttpz(
+    b: *std.Build,
+    httpz: *std.Build.Dependency,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const tool = b.addExecutable(.{
+        .name = "patch_httpz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/patch_httpz.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    const run = b.addRunArtifact(tool);
+    run.addDirectoryArg(httpz.path("src"));
+    const src = run.addOutputDirectoryArg("httpz-src");
+
+    const dep_opts = .{ .target = target, .optimize = optimize };
+    const module = b.createModule(.{
+        .root_source_file = src.path(b, "httpz.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "metrics", .module = httpz.builder.dependency("metrics", dep_opts).module("metrics") },
+            .{ .name = "websocket", .module = httpz.builder.dependency("websocket", dep_opts).module("websocket") },
+        },
+    });
+    const options = b.addOptions();
+    options.addOption(bool, "httpz_blocking", false);
+    module.addOptions("build", options);
+    return module;
 }
 
 // ---------------------------------------------------------------------------
