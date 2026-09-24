@@ -257,19 +257,51 @@ pub fn getWindowByHandle(handle: platform.WindowHandle) ?*Window {
 }
 
 pub fn closeWindow(label: []const u8) void {
-    if (getWindow(label)) |w| {
-        w.close();
-    }
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    const handle = for (windows_list.items) |w| {
+        if (std.mem.eql(u8, w.label, label)) break w.handle;
+    } else {
+        windows_mutex.unlock();
+        return;
+    };
+    windows_mutex.unlock();
+    platform.closeWindow(handle);
 }
 
 pub fn postCloseWindow(label: []const u8) !void {
-    const win = getWindow(label) orelse return error.WindowNotFound;
-    platform.postCloseWindow(win.handle);
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    const handle = for (windows_list.items) |w| {
+        if (std.mem.eql(u8, w.label, label)) break w.handle;
+    } else {
+        windows_mutex.unlock();
+        return error.WindowNotFound;
+    };
+    windows_mutex.unlock();
+    platform.postCloseWindow(handle);
 }
 
 pub fn emitTo(label: []const u8, name: []const u8, payload: anytype) !void {
-    const win = getWindow(label) orelse return error.WindowNotFound;
-    try emitJson(win.handle, name, payload);
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    const exists = for (windows_list.items) |w| {
+        if (std.mem.eql(u8, w.label, label)) break true;
+    } else false;
+    windows_mutex.unlock();
+    if (!exists) return error.WindowNotFound;
+
+    const gpa = std.heap.smp_allocator;
+    const payload_json = try std.json.Stringify.valueAlloc(gpa, payload, .{});
+    defer gpa.free(payload_json);
+    const name_json = try std.json.Stringify.valueAlloc(gpa, name, .{});
+    defer gpa.free(name_json);
+    const script = try std.fmt.allocPrintSentinel(gpa, "window.oriel?.__emit({s}, {s});", .{ name_json, payload_json }, 0);
+    defer gpa.free(script);
+    const label_z = try gpa.dupeZ(u8, label);
+    defer gpa.free(label_z);
+
+    platform.evalJsByLabel(label_z, script);
 }
 
 
@@ -385,15 +417,42 @@ pub fn quit(code: u8) void {
 }
 
 pub fn showWindow() void {
-    if (getWindow("main")) |w| w.show();
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    const handle = for (windows_list.items) |w| {
+        if (std.mem.eql(u8, w.label, "main")) break w.handle;
+    } else {
+        windows_mutex.unlock();
+        return;
+    };
+    windows_mutex.unlock();
+    platform.showWindow(handle);
 }
 
 pub fn hideWindow() void {
-    if (getWindow("main")) |w| w.hide();
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    const handle = for (windows_list.items) |w| {
+        if (std.mem.eql(u8, w.label, "main")) break w.handle;
+    } else {
+        windows_mutex.unlock();
+        return;
+    };
+    windows_mutex.unlock();
+    platform.hideWindow(handle);
 }
 
 pub fn toggleWindow() void {
-    if (getWindow("main")) |w| w.toggle();
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    const handle = for (windows_list.items) |w| {
+        if (std.mem.eql(u8, w.label, "main")) break w.handle;
+    } else {
+        windows_mutex.unlock();
+        return;
+    };
+    windows_mutex.unlock();
+    platform.toggleWindow(handle);
 }
 
 pub fn spawn(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !void {

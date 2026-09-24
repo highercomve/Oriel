@@ -46,12 +46,41 @@ pub fn closeWindow(handle: WindowHandle) void {
 }
 
 pub fn postCloseWindow(handle: WindowHandle) void {
-    _ = glib.idleAdd(&idleCloseWindow, handle.gtk_window);
+    App.ensureWindowsMutex();
+    App.windows_mutex.lock();
+    const label_copy = for (App.windows_list.items) |w| {
+        if (w.handle.eql(handle)) {
+            break std.heap.smp_allocator.dupeZ(u8, w.label) catch {
+                App.windows_mutex.unlock();
+                return;
+            };
+        }
+    } else {
+        App.windows_mutex.unlock();
+        return;
+    };
+    App.windows_mutex.unlock();
+
+    if (glib.idleAdd(&idleCloseWindow, label_copy.ptr) == 0) {
+        std.heap.smp_allocator.free(label_copy);
+    }
 }
 
 fn idleCloseWindow(data: ?*anyopaque) callconv(.c) c_int {
-    const gtk_win: *gtk.Window = @ptrCast(@alignCast(data));
-    gtk_win.close();
+    const label_ptr: [*:0]const u8 = @ptrCast(@alignCast(data orelse return 0));
+    const label = std.mem.span(label_ptr);
+    defer std.heap.smp_allocator.free(label_ptr[0 .. label.len + 1]);
+
+    App.ensureWindowsMutex();
+    App.windows_mutex.lock();
+    const gtk_win = for (App.windows_list.items) |w| {
+        if (std.mem.eql(u8, w.label, label)) break w.handle.gtk_window;
+    } else null;
+    App.windows_mutex.unlock();
+
+    if (gtk_win) |win| {
+        win.close();
+    }
     return 0;
 }
 

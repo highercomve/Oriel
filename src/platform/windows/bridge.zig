@@ -146,8 +146,15 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
             if (self.target) |v| {
                 // Handles match by HWND only: use the live window's webview,
                 // not the (possibly stale) copy queued with the task.
-                if (App.getWindowByHandle(v)) |win| {
-                    _ = win.handle.webview.executeScript(script_w.ptr, null);
+                App.ensureWindowsMutex();
+                App.windows_mutex.lock();
+                const webview = for (App.windows_list.items) |win| {
+                    if (win.handle.eql(v)) break win.handle.webview;
+                } else null;
+                App.windows_mutex.unlock();
+
+                if (webview) |view| {
+                    _ = view.executeScript(script_w.ptr, null);
                 }
             } else {
                 App.ensureWindowsMutex();
@@ -165,6 +172,57 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
         return;
     };
     task.* = .{ .target = target, .script = script_copy };
+    ShellMod.dispatchWithCleanup(&Task.run, task, &Task.cleanup);
+}
+
+pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
+    const gpa = std.heap.smp_allocator;
+    const label_copy = gpa.dupeZ(u8, label) catch return;
+    const script_copy = gpa.dupeZ(u8, script) catch {
+        gpa.free(label_copy);
+        return;
+    };
+
+    const Task = struct {
+        label: [:0]u8,
+        script: [:0]u8,
+
+        fn discard(self: *@This()) void {
+            std.heap.smp_allocator.free(self.label);
+            std.heap.smp_allocator.free(self.script);
+            std.heap.smp_allocator.destroy(self);
+        }
+
+        fn cleanup(ctx: ?*anyopaque) void {
+            discard(@ptrCast(@alignCast(ctx)));
+        }
+
+        fn run(ctx: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            defer discard(self);
+
+            const script_w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.smp_allocator, self.script) catch return;
+            defer std.heap.smp_allocator.free(script_w);
+
+            App.ensureWindowsMutex();
+            App.windows_mutex.lock();
+            const webview = for (App.windows_list.items) |win| {
+                if (std.mem.eql(u8, win.label, self.label)) break win.handle.webview;
+            } else null;
+            App.windows_mutex.unlock();
+
+            if (webview) |view| {
+                _ = view.executeScript(script_w.ptr, null);
+            }
+        }
+    };
+
+    const task = gpa.create(Task) catch {
+        gpa.free(label_copy);
+        gpa.free(script_copy);
+        return;
+    };
+    task.* = .{ .label = label_copy, .script = script_copy };
     ShellMod.dispatchWithCleanup(&Task.run, task, &Task.cleanup);
 }
 
