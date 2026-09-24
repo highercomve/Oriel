@@ -155,6 +155,7 @@ test {
     if (options.global_shortcut) std.testing.refAllDecls(global_shortcut);
     if (options.input) std.testing.refAllDecls(input);
     if (options.clipboard) std.testing.refAllDecls(clipboard);
+    if (options.fs_watch) std.testing.refAllDecls(fs_watch);
     if (options.sqlite_vec) std.testing.refAllDecls(sqlite_vec);
     if (options.llama) std.testing.refAllDecls(llama);
     if (options.whisper) std.testing.refAllDecls(whisper);
