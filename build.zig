@@ -226,32 +226,47 @@ fn addCli(
     const version = b.option([]const u8, "cli-version", "Version reported by `oriel --version` (default: build.zig.zon)") orelse zon.version;
     const oriel_ref = b.option([]const u8, "oriel-ref", "Git ref of Oriel that `oriel init` pins (default: this checkout's tag or commit)") orelse
         gitRef(b) orelse "main";
+    const update_public_key = b.option([]const u8, "update-public-key", "Base64 Ed25519 public key for `oriel update` (default: null)");
 
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
     options.addOption([]const u8, "oriel_ref", oriel_ref);
+    options.addOption(?[]const u8, "update_public_key", update_public_key);
 
     // Linux builds use musl so the binary is fully static and runs on any
     // distro (the CLI needs no libc anyway).
     var query = target.query;
     if (target.result.os.tag == .linux) query.abi = .musl;
+    const cli_target = b.resolveTargetQuery(query);
+    const updater_core_cli = b.createModule(.{
+        .root_source_file = b.path("src/updater_core.zig"),
+        .target = cli_target,
+        .optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe,
+    });
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("cli/main.zig"),
-        .target = b.resolveTargetQuery(query),
+        .target = cli_target,
         .optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe,
     });
     cli_mod.addOptions("build_options", options);
+    cli_mod.addImport("updater_core", updater_core_cli);
     // Release builds are stripped: the binary is what install.sh downloads.
     cli_mod.strip = cli_mod.optimize != .Debug;
     const cli = b.addExecutable(.{ .name = "oriel", .root_module = cli_mod });
     b.step("cli", "Build the oriel CLI (zig-out/bin/oriel)").dependOn(&b.addInstallArtifact(cli, .{}).step);
 
+    const updater_core_test = b.createModule(.{
+        .root_source_file = b.path("src/updater_core.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const test_mod = b.createModule(.{
         .root_source_file = b.path("cli/main.zig"),
         .target = target,
         .optimize = optimize,
     });
     test_mod.addOptions("build_options", options);
+    test_mod.addImport("updater_core", updater_core_test);
     const cli_tests = b.addTest(.{ .root_module = test_mod, .use_llvm = true, .use_lld = true });
     test_step.dependOn(&b.addRunArtifact(cli_tests).step);
     check_step.dependOn(&b.addTest(.{ .root_module = test_mod }).step);

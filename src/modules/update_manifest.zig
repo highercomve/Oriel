@@ -181,7 +181,7 @@ pub fn validateSha256(hex: []const u8) !void {
 pub fn validateUrl(url: []const u8, allow_test_http: bool) !void {
     try validateNoControlChars(url);
     if (std.mem.startsWith(u8, url, "https://")) return;
-    if (builtin.is_test and allow_test_http) {
+    if (allow_test_http) {
         if (std.mem.startsWith(u8, url, "http://127.0.0.1:") or
             std.mem.startsWith(u8, url, "http://127.0.0.1/") or
             std.mem.startsWith(u8, url, "http://localhost:") or

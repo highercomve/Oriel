@@ -37,7 +37,17 @@ Then check that this machine can build Oriel apps:
 oriel doctor
 ```
 
-`doctor` looks for Zig 0.16, the GTK 4 and WebKitGTK 6.0 libraries, `pkg-config` and Node.js, and tells you what is missing.
+# Updating the CLI
+
+The CLI can update itself in place using Oriel's built-in self-updater:
+
+```sh
+oriel update --check          # check if an update is available without installing
+oriel update                  # download, verify, and replace the running binary
+oriel update --version v0.2.0 # target a specific release tag
+```
+
+Release manifests are Ed25519-signed and verified against the public key embedded in the binary. For non-interactive scripts and CI environments, pass `--yes` to proceed without a confirmation prompt.
 
 # Create an app
 
