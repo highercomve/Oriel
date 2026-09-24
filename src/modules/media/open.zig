@@ -64,7 +64,10 @@ pub fn openRoot(path: []const u8) OpenError!linux.fd_t {
 pub fn openInRoot(root_fd: linux.fd_t, rel: []const u8, policy: SymlinkPolicy) OpenError!Opened {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const rel_z = std.fmt.bufPrintZ(&buf, "{s}", .{rel}) catch return error.NotFound;
-    const flags: linux.O = .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .NOCTTY = true };
+    // NONBLOCK: opening a FIFO for reading would otherwise block until a
+    // writer appears (freezing the GTK main thread for app:// requests); it
+    // is then rejected as not a regular file. No effect on regular files.
+    const flags: linux.O = .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .NOCTTY = true, .NONBLOCK = true };
     var how: OpenHow = .{
         .flags = @as(u32, @bitCast(flags)),
         .mode = 0,
@@ -126,4 +129,10 @@ test "openInRoot: files, traversal and symlink policies" {
     try std.testing.expectError(error.Forbidden, openInRoot(root, "/etc/passwd", .inside_root));
     try std.testing.expectError(error.NotFound, openInRoot(root, "missing.wav", .inside_root));
     try std.testing.expectError(error.NotAFile, openInRoot(root, "sub", .inside_root));
+
+    // A FIFO with no writer must be rejected, not block the caller forever.
+    const fifo_path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/pipe", .{root_path}, 0);
+    defer std.testing.allocator.free(fifo_path);
+    try std.testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.mknodat(linux.AT.FDCWD, fifo_path, linux.S.IFIFO | 0o600, 0)));
+    try std.testing.expectError(error.NotAFile, openInRoot(root, "pipe", .inside_root));
 }
