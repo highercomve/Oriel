@@ -1,11 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { Routes, Route, NavLink, Navigate } from "react-router-dom";
 // Generated from the Zig `Commands` struct (zig build types / zig build dev).
-import { invoke, listen, type Commands } from "./oriel";
+import { invoke, listen, openExternal, type Commands } from "./oriel";
 
 type Note = Commands["list_notes"]["result"][number];
 type AppInfo = Commands["app_info"]["result"];
 
-export function App() {
+function NotesPage() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
   const [draft, setDraft] = useState("");
@@ -52,7 +53,7 @@ export function App() {
   };
 
   return (
-    <main>
+    <div>
       <header>
         <h1>Notes</h1>
         {dnd && <span className="badge dnd">do not disturb</span>}
@@ -84,7 +85,16 @@ export function App() {
 
       <p className="hint">
         Close the window to keep notes in the tray. External links such as{" "}
-        <a href="https://ziglang.org">ziglang.org</a> open in your browser.
+        <a
+          href="https://ziglang.org"
+          onClick={(e) => {
+            e.preventDefault();
+            openExternal("https://ziglang.org");
+          }}
+        >
+          ziglang.org
+        </a>{" "}
+        open in your browser.
       </p>
 
       <section className="row greet">
@@ -99,6 +109,64 @@ export function App() {
         </button>
         {exported && <pre className="exported-preview">{exported}</pre>}
       </section>
+    </div>
+  );
+}
+
+function SettingsPage() {
+  const [info, setInfo] = useState<AppInfo | null>(null);
+
+  useEffect(() => {
+    invoke("app_info").then(setInfo);
+  }, []);
+
+  return (
+    <div className="settings-page">
+      <header>
+        <h1>Settings</h1>
+      </header>
+      <div className="settings-section">
+        <p>Manage application preferences and system integration.</p>
+        {info && (
+          <div className="settings-card">
+            <h3>Environment</h3>
+            <p>Mode: <strong>{info.mode}</strong> ({info.dev ? "Development with Vite" : "Production embedded assets"})</p>
+            <p>Zig version: <strong>{info.zig}</strong></p>
+          </div>
+        )}
+        <div className="settings-card">
+          <h3>External Links</h3>
+          <p>
+            System browser integration via <code>oriel.openExternal()</code>:
+          </p>
+          <button
+            type="button"
+            onClick={() => openExternal("https://ziglang.org")}
+          >
+            Visit ziglang.org
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function App() {
+  return (
+    <main>
+      <nav className="nav-bar">
+        <NavLink to="/" end className={({ isActive }) => (isActive ? "active" : "")}>
+          Notes
+        </NavLink>
+        <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>
+          Settings
+        </NavLink>
+      </nav>
+      <Routes>
+        <Route path="/" element={<NotesPage />} />
+        <Route path="/index.html" element={<Navigate to="/" replace />} />
+        <Route path="/settings" element={<SettingsPage />} />
+      </Routes>
     </main>
   );
 }
