@@ -27,6 +27,7 @@ decisions), `IDEA.md` (motivation, architecture), then the code:
 | `src/plugins/` | App-specific: `global_shortcut`, `input`, `clipboard` (checks only so far) |
 | `examples/react/` | React + Vite notes app (own package; tray, events, SQLite) |
 | `examples/smoke/` | Checks every module + security inside a real webview |
+| `cli/` | The `oriel` CLI (`init` + embedded templates, `doctor`, `zig build` wrappers) |
 
 ## Rules
 
@@ -71,7 +72,8 @@ decisions), `IDEA.md` (motivation, architecture), then the code:
 ```sh
 # (optional) scripts/gen-bindings.sh + --fork=deps/gobject/bindings: bindings from this machine's GIR files
 zig build check                          # type-check only, ~1 s: use this while iterating
-zig build test                           # framework unit tests (repo root)
+zig build test                           # framework, tools and CLI unit tests (repo root)
+zig build cli                            # zig-out/bin/oriel, static
 
 cd examples/smoke
 zig build && ./zig-out/bin/oriel-smoke --check                        # module checks, no GUI
@@ -233,6 +235,14 @@ paste. Test the pipeline headlessly on X11.
 - **Signing** of packages (later).
 
 ## Milestone 4.5 — `oriel` CLI (Tauri-style tooling)
+
+**Status (2026-09-23): done**, except `npm create oriel` (below, "Later").
+`cli/` (args, init + templates, doctor, wrappers), `install.sh`,
+`.github/workflows/release.yml`, and a `check` step in `addApp` for
+`oriel check`. The release workflow has not run yet (no tag pushed); it was
+replayed locally (both static builds + SHA256SUMS). A CLI built from an
+unpushed commit pins that commit by default: use `--oriel-ref` or
+`--oriel-path` until it is pushed.
 
 **Why:** starting an app today means hand-writing build.zig/.zon, finding the
 fingerprint, `zig fetch`, a frontend and main.zig. Tauri has

@@ -19,6 +19,13 @@ from plain Zig structs. Linux (GTK4 + WebKitGTK 6.0) first.
 - **Secure by default:** navigation limits, per-origin command capabilities, a strict CSP.
 - **Batteries included, opt-in:** tray, updater, SQLite, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage).
 
+```sh
+curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
+oriel doctor              # checks Zig 0.16, GTK 4 / WebKitGTK 6.0, Node.js
+oriel init my-app         # React + Vite (or --template vue|svelte|vanilla)
+cd my-app && oriel dev    # hot reload; `oriel build` for the release binary
+```
+
 > **Status:** experimental. APIs will change; only Linux is supported so far.
 > See [PLAN.md](PLAN.md) for the roadmap, [IDEA.md](IDEA.md) for the background
 > and [LIBRARIES.md](LIBRARIES.md) for the dependencies.
@@ -57,6 +64,8 @@ The framework and the apps built with it are separate Zig packages:
 | `src/plugins/` | App-specific plugins: `global_shortcut`, `input`, `clipboard` |
 | `tools/embed_assets.zig` | Embeds a built frontend directory into the binary |
 | `tools/dev_runner.zig` | Hot reload orchestrator: keeps dev server running while watching `src/` and restarting the Zig app |
+| `cli/` | The `oriel` command-line tool (`init`, `doctor`, build wrappers) and its embedded app templates |
+| `install.sh` | Installs the `oriel` CLI from GitHub Releases |
 | `examples/react/` | **App:** React + Vite notes app (own package) |
 | `examples/smoke/` | **App:** checks every module (own package) |
 | `examples/ghostpen-lite/` | **App:** hotkey -> read clipboard -> rewrite -> paste pipeline (own package) |
@@ -65,8 +74,14 @@ The framework and the apps built with it are separate Zig packages:
 
 ```sh
 zig build check              # type-check (~1 s)
-zig build test               # framework unit tests
+zig build test               # framework, tools and CLI unit tests
+zig build cli                # the oriel CLI: zig-out/bin/oriel (static)
 ```
+
+Releases are cut by pushing a `v*` tag: `.github/workflows/release.yml`
+runs the tests, builds the CLI for x86_64 and aarch64 Linux and attaches
+the binaries and `SHA256SUMS` to the GitHub release (`install.sh`
+verifies against them).
 
 Dependencies, including prebuilt GTK/WebKit bindings (zig-gobject, GNOME 50),
 come from the Zig package manager. To use bindings generated from your own
@@ -74,10 +89,45 @@ system's GIR files instead (newer GTK/WebKit APIs), run
 `scripts/gen-bindings.sh` (needs `xsltproc`) and build with
 `--fork=deps/gobject/bindings`.
 
+## The `oriel` CLI
+
+A single static binary (no GTK needed to run it) that scaffolds apps and
+wraps their build steps, like `create-tauri-app` and `tauri dev/build`.
+
+```sh
+# Install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.1.0.
+curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
+# Or from a checkout: zig build cli && cp zig-out/bin/oriel ~/.local/bin/
+```
+
+| Command | What it does |
+|---|---|
+| `oriel init <name>` | New app in `./<name>`: build.zig, build.zig.zon, `src/main.zig` with sample `Commands`/`Events`, the frontend, README. Then adds Oriel (`zig fetch --save`), runs `zig build --fetch` and `npm install`, so the first build works offline |
+| `oriel doctor` | Checks Zig 0.16.x, pkg-config + GTK 4 / WebKitGTK 6.0 development files, Node.js + npm, packaging tools, tray host and GlobalShortcuts portal; prints the install command for your distro (pacman, apt, dnf, zypper); exits non-zero if something required is missing |
+| `oriel dev` / `build` / `run` / `package` / `types` / `check` | `zig build <step>` (plain `zig build` for `build`) from the project root, found by walking up to `build.zig.zon`; extra arguments are passed on, e.g. `oriel build -Doptimize=ReleaseFast`, `oriel run -- --flag` |
+| `oriel --version` | CLI version and the Oriel ref `init` pins |
+
+`oriel init` options:
+
+- `--template react|vue|svelte|vanilla`: React (default), Vue and Svelte are
+  Vite projects with typed `invoke`/`listen`; vanilla is a static page with
+  no build step and no Node.js.
+- `--id com.example.App`: the application id (default `com.example.<Name>`).
+- `--oriel-ref <tag|commit>`: the Oriel version to depend on (default: the
+  one the CLI was built for).
+- `--oriel-path <dir>`: depend on a local Oriel checkout (`.path`), for
+  working on Oriel itself.
+- `--no-install`: only record the dependency; skip `zig build --fetch` and
+  `npm install`.
+
+The CLI runs `zig` from PATH, or `$ORIEL_ZIG` if set (useful when the
+default `zig` is not 0.16).
+
 ## Building an app
 
 An app is a normal Zig package that depends on Oriel through the Zig package
-manager and calls `addApp` (see `examples/react`). Add the dependency with:
+manager and calls `addApp` (see `examples/react`); `oriel init` sets this
+up. To do it by hand, add the dependency with:
 
 ```sh
 zig fetch --save git+https://github.com/highercomve/Oriel
@@ -114,6 +164,7 @@ That gives the app these steps:
 | `zig build` | `npm install` (if needed) → generate types → `npm run build` → embed `dist/` → install the app |
 | `zig build run` | Runs the production build |
 | `zig build types` | Regenerates `frontend/src/oriel.ts` from the Zig `Commands` |
+| `zig build check` | Type-checks the app's Zig code without building binaries |
 
 Every module and plugin is on by default. Pass `.<name> = false` to
 `b.dependency("oriel", ...)` to leave one out: it is then neither compiled
@@ -636,6 +687,7 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Input injection | ✅ `XTest` (X11) + virtual keyboard protocol (Wayland) |
 | Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
 | Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `zig build package`; signing not yet implemented |
+| `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
 | macOS, Windows, mobile | ❌ |
 
 ## Notes
