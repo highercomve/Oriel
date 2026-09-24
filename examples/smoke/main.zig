@@ -212,7 +212,10 @@ fn context() oriel.CheckContext {
     };
 }
 
+fn testOpenExternalHook(_: [*:0]const u8) void {}
+
 pub fn main(init: std.process.Init) !u8 {
+    oriel.App.open_external_hook = &testOpenExternalHook;
     io = init.io;
     var headless = false;
     var auto_quit = false;

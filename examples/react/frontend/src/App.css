@@ -26,3 +26,10 @@ button.ghost { background: transparent; color: var(--muted); padding: 4px 8px; }
 .badge.dnd { border-color: #d64545; color: #d64545; }
 .hint { color: var(--muted); font-size: 13px; }
 .hint a { color: var(--accent); }
+nav.nav-bar { display: flex; gap: 16px; margin-bottom: 24px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+nav.nav-bar a { color: var(--muted); text-decoration: none; font-weight: 500; }
+nav.nav-bar a.active, nav.nav-bar a:hover { color: var(--accent); }
+.settings-section { margin-top: 16px; display: flex; flex-direction: column; gap: 16px; }
+.settings-card { border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+.settings-card h3 { margin: 0 0 8px 0; font-size: 16px; }
+.settings-card p { margin: 4px 0; color: var(--muted); }

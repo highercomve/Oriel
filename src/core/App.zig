@@ -414,9 +414,18 @@ fn emitJson(target_handle: ?platform.WindowHandle, name: []const u8, payload: an
     platform.evalJs(target_handle, script);
 }
 
+pub var open_external_hook: ?*const fn (uri: [*:0]const u8) void = null;
+
 pub fn openExternal(uri: [*:0]const u8) void {
+    if (open_external_hook) |hook| {
+        hook(uri);
+        return;
+    }
     platform.openExternal(uri);
 }
+
+pub const resolveWindowUrl = security.resolveWindowUrl;
+pub const validateExternalUrl = security.validateExternalUrl;
 
 pub fn findAsset(assets: []const Asset, path: []const u8, spa_fallback: bool) ?Asset {
     const rel = std.mem.trimStart(u8, path, "/");
