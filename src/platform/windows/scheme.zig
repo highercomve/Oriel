@@ -2,6 +2,9 @@
 //!
 //! Serves embedded frontend assets through `SHCreateMemStream` and
 //! `CreateWebResourceResponse`, adding proper MIME type and Content-Security-Policy headers.
+//!
+//! COM handler lifetime note: scheme.zig implements no COM event/completion handlers directly.
+//! Resource requests are handled by ResourceHandler in window.zig, which forwards to Scheme.handleRequest.
 
 const std = @import("std");
 const win32 = @import("win32.zig");

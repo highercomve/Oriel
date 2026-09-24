@@ -3,6 +3,10 @@
 //! Injects `window.oriel` JS API into permitted origins and routes commands
 //! through `ipc.dispatchRequest` and `ipc.dispatchAsync`. Handles synchronous
 //! and asynchronous replies via `PostWebMessageAsJson`.
+//!
+//! COM handler lifetime note: bridge.zig implements no COM event/completion handlers directly.
+//! Web message reception is handled by MessageHandler in window.zig, and script execution
+//! passes null completion handlers (no callbacks registered).
 
 const std = @import("std");
 const win32 = @import("win32.zig");

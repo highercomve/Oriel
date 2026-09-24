@@ -157,6 +157,8 @@ pub fn WindowCreator(
 
     return struct {
         // WebResourceRequested event handler
+        /// Lifetime: owned by WindowData, which outlives the registration.
+        /// Removed via webview.remove_WebResourceRequested in WindowData.deinit before freeing.
         const ResourceHandler = struct {
             handler: webview2.ICoreWebView2WebResourceRequestedEventHandler,
             env_ptr: *webview2.ICoreWebView2Environment,
@@ -168,7 +170,12 @@ pub fn WindowCreator(
                 .Invoke = &invokeRes,
             };
 
-            fn qiRes(_: *webview2.ICoreWebView2WebResourceRequestedEventHandler, _: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+            fn qiRes(this: *webview2.ICoreWebView2WebResourceRequestedEventHandler, riid: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+                if (win32.isEqualGUID(riid, &webview2.IID_IUnknown) or win32.isEqualGUID(riid, &webview2.IID_ICoreWebView2WebResourceRequestedEventHandler)) {
+                    ppv.* = this;
+                    _ = addRefRes(this);
+                    return win32.S_OK;
+                }
                 ppv.* = null;
                 return win32.E_NOINTERFACE;
             }
@@ -188,6 +195,8 @@ pub fn WindowCreator(
         };
 
         // WebMessageReceived event handler
+        /// Lifetime: owned by WindowData, which outlives the registration.
+        /// Removed via webview.remove_WebMessageReceived in WindowData.deinit before freeing.
         const MessageHandler = struct {
             handler: webview2.ICoreWebView2WebMessageReceivedEventHandler,
 
@@ -198,7 +207,12 @@ pub fn WindowCreator(
                 .Invoke = &invokeMsg,
             };
 
-            fn qiMsg(_: *webview2.ICoreWebView2WebMessageReceivedEventHandler, _: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+            fn qiMsg(this: *webview2.ICoreWebView2WebMessageReceivedEventHandler, riid: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+                if (win32.isEqualGUID(riid, &webview2.IID_IUnknown) or win32.isEqualGUID(riid, &webview2.IID_ICoreWebView2WebMessageReceivedEventHandler)) {
+                    ppv.* = this;
+                    _ = addRefMsg(this);
+                    return win32.S_OK;
+                }
                 ppv.* = null;
                 return win32.E_NOINTERFACE;
             }
@@ -219,6 +233,8 @@ pub fn WindowCreator(
         };
 
         // NavigationStarting event handler
+        /// Lifetime: owned by WindowData, which outlives the registration.
+        /// Removed via webview.remove_NavigationStarting in WindowData.deinit before freeing.
         const NavHandler = struct {
             handler: webview2.ICoreWebView2NavigationStartingEventHandler,
 
@@ -229,7 +245,12 @@ pub fn WindowCreator(
                 .Invoke = &invokeNav,
             };
 
-            fn qiNav(_: *webview2.ICoreWebView2NavigationStartingEventHandler, _: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+            fn qiNav(this: *webview2.ICoreWebView2NavigationStartingEventHandler, riid: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+                if (win32.isEqualGUID(riid, &webview2.IID_IUnknown) or win32.isEqualGUID(riid, &webview2.IID_ICoreWebView2NavigationStartingEventHandler)) {
+                    ppv.* = this;
+                    _ = addRefNav(this);
+                    return win32.S_OK;
+                }
                 ppv.* = null;
                 return win32.E_NOINTERFACE;
             }
@@ -280,6 +301,8 @@ pub fn WindowCreator(
         };
 
         // NewWindowRequested event handler
+        /// Lifetime: owned by WindowData, which outlives the registration.
+        /// Removed via webview.remove_NewWindowRequested in WindowData.deinit before freeing.
         const NewWinHandler = struct {
             handler: webview2.ICoreWebView2NewWindowRequestedEventHandler,
             main_view: *webview2.ICoreWebView2,
@@ -291,7 +314,12 @@ pub fn WindowCreator(
                 .Invoke = &invokeNW,
             };
 
-            fn qiNW(_: *webview2.ICoreWebView2NewWindowRequestedEventHandler, _: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+            fn qiNW(this: *webview2.ICoreWebView2NewWindowRequestedEventHandler, riid: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+                if (win32.isEqualGUID(riid, &webview2.IID_IUnknown) or win32.isEqualGUID(riid, &webview2.IID_ICoreWebView2NewWindowRequestedEventHandler)) {
+                    ppv.* = this;
+                    _ = addRefNW(this);
+                    return win32.S_OK;
+                }
                 ppv.* = null;
                 return win32.E_NOINTERFACE;
             }
@@ -336,6 +364,8 @@ pub fn WindowCreator(
         };
 
         // WindowCloseRequested event handler
+        /// Lifetime: owned by WindowData, which outlives the registration.
+        /// Removed via webview.remove_WindowCloseRequested in WindowData.deinit before freeing.
         const CloseHandler = struct {
             handler: webview2.ICoreWebView2WindowCloseRequestedEventHandler,
             target_hwnd: win32.HWND,
@@ -347,7 +377,12 @@ pub fn WindowCreator(
                 .Invoke = &invokeClose,
             };
 
-            fn qiClose(_: *webview2.ICoreWebView2WindowCloseRequestedEventHandler, _: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+            fn qiClose(this: *webview2.ICoreWebView2WindowCloseRequestedEventHandler, riid: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+                if (win32.isEqualGUID(riid, &webview2.IID_IUnknown) or win32.isEqualGUID(riid, &webview2.IID_ICoreWebView2WindowCloseRequestedEventHandler)) {
+                    ppv.* = this;
+                    _ = addRefClose(this);
+                    return win32.S_OK;
+                }
                 ppv.* = null;
                 return win32.E_NOINTERFACE;
             }
@@ -405,16 +440,35 @@ pub fn WindowCreator(
             }
         };
 
+        /// Shared initialization state between createWindow and the async completion handlers.
+        /// Lifetime: heap-allocated with atomic refcount. The creator holds one reference
+        /// and each active completion handler (EnvHandler, CtrlHandler) holds one; freed at zero.
         const InitState = struct {
+            ref_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
+            abandoned: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+            completed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
             env: ?*webview2.ICoreWebView2Environment = null,
             controller: ?*webview2.ICoreWebView2Controller = null,
             err: ?win32.HRESULT = null,
-            completed: bool = false,
-            ctrl_handler: CtrlHandler = undefined,
+
+            fn ref(self: *InitState) void {
+                _ = self.ref_count.fetchAdd(1, .monotonic);
+            }
+
+            fn unref(self: *InitState) void {
+                if (self.ref_count.fetchSub(1, .acq_rel) == 1) {
+                    if (self.controller) |c| _ = c.lpVtbl.Release(c);
+                    if (self.env) |e| _ = e.lpVtbl.Release(e);
+                    std.heap.smp_allocator.destroy(self);
+                }
+            }
         };
 
+        /// Lifetime: heap-allocated with atomic refcount. The creator holds one reference
+        /// and WebView2 holds its own; freed at zero. Unrefs InitState on destruction.
         const CtrlHandler = struct {
             handler: webview2.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,
+            ref_count: std.atomic.Value(u32),
             ctrl_state: *InitState,
 
             const ctrl_vtable = webview2.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler.VTable{
@@ -424,18 +478,35 @@ pub fn WindowCreator(
                 .Invoke = &invokeCtrl,
             };
 
-            fn qiCtrl(_: *webview2.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, _: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+            fn qiCtrl(c_this: *webview2.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, riid: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+                if (win32.isEqualGUID(riid, &webview2.IID_IUnknown) or win32.isEqualGUID(riid, &webview2.IID_ICoreWebView2CreateCoreWebView2ControllerCompletedHandler)) {
+                    ppv.* = c_this;
+                    _ = addRefCtrl(c_this);
+                    return win32.S_OK;
+                }
                 ppv.* = null;
                 return win32.E_NOINTERFACE;
             }
-            fn addRefCtrl(_: *webview2.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler) callconv(.winapi) win32.ULONG {
-                return 1;
+            fn addRefCtrl(c_this: *webview2.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler) callconv(.winapi) win32.ULONG {
+                const c_self: *@This() = @fieldParentPtr("handler", c_this);
+                return c_self.ref_count.fetchAdd(1, .monotonic) + 1;
             }
-            fn releaseCtrl(_: *webview2.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler) callconv(.winapi) win32.ULONG {
-                return 1;
+            fn releaseCtrl(c_this: *webview2.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler) callconv(.winapi) win32.ULONG {
+                const c_self: *@This() = @fieldParentPtr("handler", c_this);
+                const prev = c_self.ref_count.fetchSub(1, .acq_rel);
+                if (prev == 1) {
+                    c_self.ctrl_state.unref();
+                    std.heap.smp_allocator.destroy(c_self);
+                    return 0;
+                }
+                return prev - 1;
             }
             fn invokeCtrl(c_this: *webview2.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, c_err: win32.HRESULT, c_result: ?*webview2.ICoreWebView2Controller) callconv(.winapi) win32.HRESULT {
                 const c_self: *@This() = @fieldParentPtr("handler", c_this);
+                if (c_self.ctrl_state.abandoned.load(.acquire)) {
+                    c_self.ctrl_state.completed.store(true, .release);
+                    return win32.S_OK;
+                }
                 if (c_err < 0 or c_result == null) {
                     c_self.ctrl_state.err = c_err;
                 } else {
@@ -443,13 +514,16 @@ pub fn WindowCreator(
                     _ = ctrl.lpVtbl.AddRef(ctrl);
                     c_self.ctrl_state.controller = ctrl;
                 }
-                c_self.ctrl_state.completed = true;
+                c_self.ctrl_state.completed.store(true, .release);
                 return win32.S_OK;
             }
         };
 
+        /// Lifetime: heap-allocated with atomic refcount. The creator holds one reference
+        /// and WebView2 holds its own; freed at zero. Unrefs InitState on destruction.
         const EnvHandler = struct {
             handler: webview2.ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,
+            ref_count: std.atomic.Value(u32),
             target_hwnd: win32.HWND,
             init_state: *InitState,
 
@@ -460,36 +534,62 @@ pub fn WindowCreator(
                 .Invoke = &invoke,
             };
 
-            fn qi(_: *webview2.ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler, _: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+            fn qi(this: *webview2.ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler, riid: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+                if (win32.isEqualGUID(riid, &webview2.IID_IUnknown) or win32.isEqualGUID(riid, &webview2.IID_ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler)) {
+                    ppv.* = this;
+                    _ = addRef(this);
+                    return win32.S_OK;
+                }
                 ppv.* = null;
                 return win32.E_NOINTERFACE;
             }
-            fn addRef(_: *webview2.ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler) callconv(.winapi) win32.ULONG {
-                return 1;
+            fn addRef(this: *webview2.ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler) callconv(.winapi) win32.ULONG {
+                const self: *@This() = @fieldParentPtr("handler", this);
+                return self.ref_count.fetchAdd(1, .monotonic) + 1;
             }
-            fn release(_: *webview2.ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler) callconv(.winapi) win32.ULONG {
-                return 1;
+            fn release(this: *webview2.ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler) callconv(.winapi) win32.ULONG {
+                const self: *@This() = @fieldParentPtr("handler", this);
+                const prev = self.ref_count.fetchSub(1, .acq_rel);
+                if (prev == 1) {
+                    self.init_state.unref();
+                    std.heap.smp_allocator.destroy(self);
+                    return 0;
+                }
+                return prev - 1;
             }
             fn invoke(this: *webview2.ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler, err: win32.HRESULT, result: ?*webview2.ICoreWebView2Environment) callconv(.winapi) win32.HRESULT {
                 const self: *@This() = @fieldParentPtr("handler", this);
+                if (self.init_state.abandoned.load(.acquire)) {
+                    self.init_state.completed.store(true, .release);
+                    return win32.S_OK;
+                }
                 if (err < 0 or result == null) {
                     self.init_state.err = err;
-                    self.init_state.completed = true;
+                    self.init_state.completed.store(true, .release);
                     return win32.S_OK;
                 }
                 const env = result.?;
                 _ = env.lpVtbl.AddRef(env);
                 self.init_state.env = env;
 
-                self.init_state.ctrl_handler = .{
+                const gpa = std.heap.smp_allocator;
+                const ctrl_handler = gpa.create(CtrlHandler) catch {
+                    self.init_state.err = win32.E_FAIL;
+                    self.init_state.completed.store(true, .release);
+                    return win32.S_OK;
+                };
+                self.init_state.ref();
+                ctrl_handler.* = .{
                     .handler = .{ .lpVtbl = &CtrlHandler.ctrl_vtable },
+                    .ref_count = std.atomic.Value(u32).init(1),
                     .ctrl_state = self.init_state,
                 };
 
-                const hr = env.createCoreWebView2Controller(self.target_hwnd, &self.init_state.ctrl_handler.handler);
+                const hr = env.createCoreWebView2Controller(self.target_hwnd, &ctrl_handler.handler);
+                _ = ctrl_handler.handler.lpVtbl.Release(&ctrl_handler.handler);
                 if (hr < 0) {
                     self.init_state.err = hr;
-                    self.init_state.completed = true;
+                    self.init_state.completed.store(true, .release);
                 }
                 return win32.S_OK;
             }
@@ -575,44 +675,64 @@ pub fn WindowCreator(
             defer if (user_data_folder_w) |ud| gpa.free(ud);
 
             // Initialize WebView2
-            var state = InitState{};
-            var env_handler_obj = EnvHandler{
+            const state = try gpa.create(InitState);
+            state.* = .{};
+
+            const env_handler = gpa.create(EnvHandler) catch |err| {
+                state.unref();
+                return err;
+            };
+            state.ref();
+            env_handler.* = .{
                 .handler = .{ .lpVtbl = &EnvHandler.vtable },
+                .ref_count = std.atomic.Value(u32).init(1),
                 .target_hwnd = hwnd,
-                .init_state = &state,
+                .init_state = state,
             };
 
             const user_data_ptr: ?win32.LPCWSTR = if (user_data_folder_w) |ud| ud.ptr else null;
-            try webview2.createEnvironmentWithOptions(user_data_ptr, &env_handler_obj.handler);
+            const env_hr = webview2.createEnvironmentWithOptions(user_data_ptr, &env_handler.handler);
+            _ = env_handler.handler.lpVtbl.Release(&env_handler.handler);
+            if (env_hr) |_| {} else |err| {
+                state.abandoned.store(true, .release);
+                state.unref();
+                return err;
+            }
 
             // Pump modal messages until WebView2 environment and controller are initialized
             var msg: win32.MSG = undefined;
-            while (!state.completed) {
+            var early_exit = false;
+            while (!state.completed.load(.acquire)) {
                 const res = win32.GetMessageW(&msg, null, 0, 0);
                 if (@intFromEnum(res) == 0) {
                     win32.PostQuitMessage(@intCast(msg.wParam));
+                    early_exit = true;
                     break;
                 } else if (@intFromEnum(res) < 0) {
+                    early_exit = true;
                     break;
                 }
                 _ = win32.TranslateMessage(&msg);
                 _ = win32.DispatchMessageW(&msg);
             }
 
-            if (state.err != null or state.controller == null or state.env == null) {
-                if (state.controller) |c| _ = c.lpVtbl.Release(c);
-                if (state.env) |e| _ = e.lpVtbl.Release(e);
+            if (early_exit or state.err != null or state.controller == null or state.env == null) {
+                state.abandoned.store(true, .release);
+                state.unref();
                 return error.WebView2InitFailed;
             }
 
             const env = state.env.?;
+            state.env = null;
             errdefer _ = env.lpVtbl.Release(env);
 
             const controller = state.controller.?;
+            state.controller = null;
             errdefer {
                 _ = controller.lpVtbl.Close(controller);
                 _ = controller.lpVtbl.Release(controller);
             }
+            state.unref();
 
             var view_opt: ?*webview2.ICoreWebView2 = null;
             if (controller.getCoreWebView2(&view_opt) < 0 or view_opt == null) {

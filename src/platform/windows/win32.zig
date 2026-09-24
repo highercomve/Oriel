@@ -17,6 +17,9 @@ pub const WCHAR = windows.WCHAR;
 pub const LPCWSTR = windows.LPCWSTR;
 pub const LPWSTR = windows.LPWSTR;
 pub const GUID = windows.GUID;
+pub fn isEqualGUID(a: *const GUID, b: *const GUID) bool {
+    return std.mem.eql(u8, std.mem.asBytes(a), std.mem.asBytes(b));
+}
 pub const MAX_PATH: DWORD = 260;
 
 pub const RECT = extern struct {
