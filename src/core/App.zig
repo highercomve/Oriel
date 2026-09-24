@@ -5,6 +5,7 @@
 //! to `src/platform/platform.zig`.
 
 const std = @import("std");
+const build_opts = @import("build_options");
 const platform = @import("../platform/platform.zig");
 const ipc = @import("ipc.zig");
 const security = @import("security.zig");
@@ -141,6 +142,7 @@ pub const Window = struct {
     }
 
     pub fn saveGeometry(self: *Window) void {
+        if (!build_opts.store) return;
         if (!self.options.remember_geometry) return;
         const size = self.getSize();
         const store_mod = @import("../modules/store.zig");
@@ -161,6 +163,7 @@ pub const Window = struct {
     }
 
     pub fn restoreGeometry(self: *Window) void {
+        if (!build_opts.store) return;
         if (!self.options.remember_geometry) return;
         const store_mod = @import("../modules/store.zig");
         var store = store_mod.Store.open(std.heap.smp_allocator, self.app_id, "window_geometry") catch return;
@@ -291,9 +294,19 @@ pub fn openWindow(options: WindowOptions) !*Window {
     return win_inst;
 }
 
-pub fn setMenu(items: []const @import("../modules/menu.zig").MenuItem, on_action: @import("../modules/menu.zig").ActionCallback) !void {
-    try platform.setMenu(items, on_action);
-}
+const menu = if (build_opts.menu) @import("../modules/menu.zig") else struct {};
+
+pub const setMenu = if (build_opts.menu) struct {
+    fn setMenuTyped(items: []const menu.MenuItem, on_action: menu.ActionCallback) !void {
+        try platform.setMenu(items, on_action);
+    }
+}.setMenuTyped else struct {
+    fn setMenuStub(items: anytype, on_action: anytype) !void {
+        _ = items;
+        _ = on_action;
+        return error.NotImplemented;
+    }
+}.setMenuStub;
 
 pub fn quit(code: u8) void {
     platform.quit(code);

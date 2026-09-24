@@ -15,6 +15,7 @@
 //! Origins are `scheme://host[:port]`; a host may start with `*.` to match
 //! any subdomain (`https://*.example.com`).
 
+const builtin = @import("builtin");
 const std = @import("std");
 
 pub const Security = struct {
@@ -56,7 +57,7 @@ pub const default_csp = "default-src 'self'; " ++
     "connect-src 'self' http://127.0.0.1:*; " ++
     "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
-pub const app_origin = "app://app";
+pub const app_origin = if (builtin.os.tag == .windows) "https://app.localhost" else "app://app";
 
 /// `scheme://host[:port]` of `url`, lowercased scheme/host, default ports
 /// dropped. Returns null for URLs without an authority (about:, data:, …).

@@ -82,7 +82,54 @@ Oriel separates platform-neutral application and window logic (`src/core/App.zig
   - `scheme.zig`: `app://` custom URI scheme handler serving embedded assets with CSP headers.
   - `bridge.zig`: WebKit script message handlers, JS IPC transport (`window.oriel.invoke` / `listen` / `emit`), and async command dispatch.
   - `dev_server.zig`: External dev server process management (`gio.SubprocessLauncher`, `PDEATHSIG`) and reload retries.
-- **Windows** (Milestone 5): Win32 window + WebView2 implementation (`src/platform/windows/`) to follow behind the same interface.
+- **Windows** (`src/platform/windows/`): Win32 window + Microsoft Edge WebView2 implementation behind the same platform interface.
+
+### Windows
+
+Oriel supports cross-compiling and packaging for Windows (`x86_64-windows`) directly from Linux hosts using Zig and `makensis`.
+
+> [!WARNING]
+> **Runtime Status**: Code has been written against official Win32 and Microsoft Edge WebView2 specifications and cross-compiles/packages cleanly; however, **runtime execution is UNTESTED on real Windows hardware**.
+
+#### Support Matrix
+
+| Feature / Module | Status | Implementation Details |
+|---|---|---|
+| **Core Shell & Lifecycle** | ✅ Implemented | Win32 message loop (`GetMessageW`), `CreateWindowExW`, thread-safe main thread dispatch |
+| **Window Operations** | ✅ Implemented | Size, maximize, fullscreen, show/hide/toggle, close, title; controller bounds follow `WM_SIZE`/`WM_DPICHANGED` (no per-monitor DPI manifest yet) |
+| **WebView Engine** | ✅ Implemented | Microsoft Edge WebView2 (Evergreen) via hand-declared COM vtables matching `WebView2.h` |
+| **Embedded Assets** | ✅ Implemented | `https://app.localhost/*` intercept via `AddWebResourceRequestedFilter` + `SHCreateMemStream` |
+| **JS ↔ Zig IPC** | ✅ Implemented | `window.chrome.webview.postMessage` + `add_WebMessageReceived`, sync and async worker commands |
+| **System Tray (`tray`)** | ✅ Implemented | `Shell_NotifyIconW` + `TrackPopupMenu` context menu; icons decoded via `zigimg` |
+| **Database (`sql`)** | ✅ Implemented | Embedded SQLite3 C amalgamation linked with Windows threading |
+| **Vector Search (`sqlite_vec`)** | ✅ Implemented | Embedded `sqlite-vec` C amalgamation |
+| **Packaging (`package-nsis`)** | ✅ Implemented | Per-user NSIS installer (`setup.exe`) generated via `makensis` with WebView2 bootstrapper detection |
+| **Menu bar (`menu`)** | ❌ Not Implemented | GTK `GMenuModel` only; returns `error.NotImplemented` on Windows |
+| **Settings Store (`store`)** | ❌ Not Implemented | Linux GLib/GKeyFile; disabled by default on Windows |
+| **File Dialogs (`dialog`)** | ❌ Not Implemented | GTK4 `GtkFileDialog` only |
+| **Notifications (`notification`)** | ❌ Not Implemented | GIO `GNotification` only |
+| **File Watching (`fs_watch`)** | ❌ Not Implemented | Linux `inotify` only |
+| **Media Server (`media_server`)** | ❌ Not Implemented | Linux `openat2` only |
+| **Updater (`updater`)** | ❌ Not Implemented | Linux `inotify` / POSIX restart only |
+| **Global Shortcuts (`global_shortcut`)** | ❌ Not Implemented | X11 / Wayland portals only |
+| **Input Injection (`input`)** | ❌ Not Implemented | XTest / Wayland virtual keyboard only |
+| **Clipboard (`clipboard`)** | ❌ Not Implemented | GdkClipboard / Wayland data-control only |
+
+*Note*: Modules not implemented for Windows default to disabled when targeting Windows. Explicitly enabling an unimplemented module on a Windows build will halt immediately with an informative build error (`fatal(...)`).
+
+#### Cross-Building for Windows
+
+From any Oriel application directory (e.g. `examples/react`):
+
+```sh
+# Cross-compile production Windows binary (zig-out/bin/<app>.exe)
+zig build -Dtarget=x86_64-windows
+
+# Build Windows NSIS installer (zig-out/package/<app>-<version>-setup.exe)
+zig build package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+```
+
+The resulting `setup.exe` bundles the application executable, `WebView2Loader.dll`, Start Menu shortcuts, and an uninstaller, and automatically detects if the Microsoft Edge WebView2 runtime is present. At runtime, `WebView2Loader.dll` is loaded strictly from the application executable's directory to avoid DLL search-order hijacking, and user data is stored at `%LOCALAPPDATA%\<app_id>\WebView2`.
 
 ## Working on Oriel itself
 
@@ -857,7 +904,7 @@ The generated NSIS installer provides:
 - **Uninstaller**: Full uninstaller at `$INSTDIR\Uninstall.exe` registered in Windows Add/Remove Programs (`Software\Microsoft\Windows\CurrentVersion\Uninstall\<id>` under `HKCU`).
 - **Multi-resolution ICO**: Automatically converts your PNG application icon into a multi-resolution Windows `.ico` (16, 32, 48, 64, 128, 256 px).
 - **WebView2 Runtime Detection**: Checks the Windows Registry (HKCU and HKLM in both 64-bit and 32-bit views) for the Evergreen WebView2 Runtime (`{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`). If missing, prompts the user to download and run the Microsoft Evergreen Bootstrapper (`https://go.microsoft.com/fwlink/p/?LinkId=2124703`) or opens the download page.
-- **`WebView2Loader.dll`**: If your Windows build requires `WebView2Loader.dll` next to the executable, specify it via `.webview2_loader` in `build.zig` or via CLI option `-Dwebview2-loader=<path>` (can be obtained from the `Microsoft.Web.WebView2` NuGet package runtimes).
+- **`WebView2Loader.dll`**: Required next to the executable on Windows. Specify it via `.webview2_loader` in `build.zig` or via CLI option `-Dwebview2-loader=<path>` (e.g. from the `Microsoft.Web.WebView2` NuGet package runtimes). Oriel loads it exclusively from the application's executable directory to prevent DLL search-order hijacking. User data is isolated per application in `%LOCALAPPDATA%\<app_id>\WebView2`.
 - *Note*: Packaging a Windows application requires the target app executable to be compiled for Windows (which requires the Windows shell in `src/platform/windows`).
 
 #### The AppImage caveat (system GTK4 & WebKitGTK 6.0)
@@ -920,7 +967,8 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
 | Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `zig build package`; signing not yet implemented |
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
-| macOS, Windows, mobile | ❌ |
+| Windows | ◐ Win32 + WebView2 shell, tray, sql, NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
+| macOS, mobile | ❌ |
 
 ## Notes
 

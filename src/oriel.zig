@@ -50,10 +50,16 @@ pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.
     }
     defer if (options.updater) updater.deinit(init.io);
 
-    const argv = init.minimal.args.vector;
-    if (argv.len == 3 and std.mem.eql(u8, std.mem.span(argv[1]), "--emit-types")) {
-        try writeTypes(init.io, init.gpa, api, std.mem.span(argv[2]));
-        return 0;
+    var it = try init.minimal.args.iterateAllocator(init.gpa);
+    defer it.deinit();
+    _ = it.next();
+    if (it.next()) |arg1| {
+        if (std.mem.eql(u8, arg1, "--emit-types")) {
+            if (it.next()) |arg2| {
+                try writeTypes(init.io, init.gpa, api, arg2);
+                return 0;
+            }
+        }
     }
     return App.run(init.io, api, config);
 }

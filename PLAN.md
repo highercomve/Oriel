@@ -85,7 +85,7 @@ zig build types                          # regenerate frontend/src/oriel.ts
 SHOT=/tmp/shot.png ../../scripts/headless.sh ./zig-out/bin/oriel-react-notes
 ```
 
-Expected today: 98/98 unit tests; smoke `--check` all ok on the real session
+Expected today: 110/110 unit tests (115 with -Dsqlite_vec -Dllama -Dwhisper); smoke `--check` all ok on the real session
 except `global_shortcut` until `dev.oriel.Smoke.desktop` is installed (see
 pitfalls); smoke `--auto-quit` under headless.sh 27/27 ok (X11 paths:
 XGrabKey, XTest, GdkClipboard incl. the in-process `clipboard r/w` check).
@@ -307,11 +307,11 @@ LIBRARIES.md (subcommands = `union`, options = `struct` fields, generated help).
   (`modules/media_server.zig`, `modules/media/`), `openat2(RESOLVE_BENEATH)`,
   plus `app://app/media/` for fetch. `<video src="app://...">` can't work:
   WebKitGTK's GStreamer player only accepts http(s)/blob/data/file.
-- **Windows shell** (large): Win32 window + WebView2 (COM vtables from
-  `WebView2.h`), tray (`Shell_NotifyIconW`), `RegisterHotKey`, `SendInput`,
-  clipboard. Keep the shell interface in `App.zig` platform-neutral first
-  (split Linux code into `src/platform/linux/`), then add
-  `src/platform/windows/`.
+- ◐ **Windows shell:** `src/platform/windows/` (Win32 + WebView2 via
+  hand-declared COM vtables, `https://app.localhost` assets, IPC, tray).
+  Cross-compiles and packages from Linux; runtime NOT tested on Windows yet.
+  Next: run it on Windows, then RegisterHotKey, SendInput, clipboard,
+  dialogs/notifications/menu/store/updater/media_server for Windows.
 - ✅ **Windows installer:** `nsis` package format (default for Windows
   targets): `makensis` cross-builds a per-user `setup.exe` (Start menu,
   HKCU uninstall entry, WebView2 runtime check/bootstrapper, optional

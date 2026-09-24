@@ -75,6 +75,7 @@ They are still switched on per app in `build.zig`, so an app that doesn't use
 | [asg017/sqlite-vec](https://github.com/asg017/sqlite-vec) | SQLite vector search extension (`v0.1.9` amalgamation) | ✅ C99 amalgamation | Opt-in (`-Dsqlite_vec`). Static extension (`vec0`). License: MIT OR Apache-2.0. |
 | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) | LLM inference engine (`b10809` tarball) | ✅ Built with Zig package manager + clang | Opt-in (`-Dllama`). CPU backend with shared GGML. License: MIT. |
 | [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) | Automatic speech recognition engine (`v1.9.4` tarball) | ✅ Built with Zig package manager + clang | Opt-in (`-Dwhisper`). CPU backend with shared GGML. License: MIT. |
+| [Microsoft.Web.WebView2](https://www.nuget.org/packages/Microsoft.Web.WebView2) | Windows webview runtime (COM interfaces) | ✅ BSD-3-Clause | Hand-declared COM vtables matching `WebView2.h` in `src/platform/windows/webview2.zig`; loads `WebView2Loader.dll` from the exe's directory (the NSIS installer ships it) |
 
 ## Standard library coverage (no dependency needed)
 

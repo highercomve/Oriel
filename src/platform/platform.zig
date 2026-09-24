@@ -36,7 +36,8 @@ const std = @import("std");
 
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("linux/linux.zig"),
-    else => @compileError("Unsupported operating system: " ++ @tagName(builtin.os.tag) ++ ". Only Linux is supported currently."),
+    .windows => @import("windows/windows.zig"),
+    else => @compileError("Unsupported operating system: " ++ @tagName(builtin.os.tag) ++ ". Supported platforms are Linux and Windows."),
 };
 
 // Comptime check that the selected implementation exports all required declarations.

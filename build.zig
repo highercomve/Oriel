@@ -42,7 +42,7 @@ const Features = struct {
     llama: bool,
     whisper: bool,
 
-    fn fromOptions(b: *std.Build) Features {
+    fn fromOptions(b: *std.Build, target: std.Build.ResolvedTarget) Features {
         if (b.option(bool, "ggml_cuda", "Enable CUDA backend (not supported)") orelse false) {
             fatal("CUDA is not supported yet, see README.md", .{});
         }
@@ -53,13 +53,46 @@ const Features = struct {
             fatal("llama_mtmd is not supported yet (libmtmd is not built; its API is experimental upstream), see README.md", .{});
         }
 
+        const is_windows = target.result.os.tag == .windows;
+        const unimplemented_on_windows = comptime [_][]const u8{
+            "updater",
+            "media_server",
+            "fs_watch",
+            "dialog",
+            "notification",
+            "store",
+            "menu",
+            "global_shortcut",
+            "input",
+            "clipboard",
+            "llama",
+            "whisper",
+        };
+
         var f: Features = undefined;
         inline for (@typeInfo(Features).@"struct".fields) |field| {
-            const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
-                std.mem.eql(u8, field.name, "llama") or
-                std.mem.eql(u8, field.name, "whisper"));
-            const default_val = !is_native;
-            @field(f, field.name) = b.option(bool, field.name, "Enable the " ++ field.name ++ " module") orelse default_val;
+            const is_unimplemented_windows = comptime blk: {
+                for (unimplemented_on_windows) |unimpl| {
+                    if (std.mem.eql(u8, field.name, unimpl)) break :blk true;
+                }
+                break :blk false;
+            };
+
+            const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
+            if (is_windows and is_unimplemented_windows and (opt orelse false)) {
+                fatal("{s} is not supported on Windows yet", .{field.name});
+            }
+
+            const default_val = if (is_windows)
+                (std.mem.eql(u8, field.name, "sql") or std.mem.eql(u8, field.name, "tray"))
+            else blk: {
+                const is_native = (std.mem.eql(u8, field.name, "sqlite_vec") or
+                    std.mem.eql(u8, field.name, "llama") or
+                    std.mem.eql(u8, field.name, "whisper"));
+                break :blk !is_native;
+            };
+
+            @field(f, field.name) = opt orelse default_val;
         }
 
         if (f.sqlite_vec and !f.sql) {
@@ -73,7 +106,7 @@ const Features = struct {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const features = Features.fromOptions(b);
+    const features = Features.fromOptions(b, target);
 
     const oriel = addOrielModule(b, target, optimize, features);
 
@@ -133,6 +166,8 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(update_tool);
     addUpdaterSteps(b, update_tool);
 
+    const is_linux = target.result.os.tag == .linux;
+
     const tests = b.addTest(.{
         .root_module = oriel,
         // Zig's self-hosted linker can't handle the .sframe sections in
@@ -146,13 +181,15 @@ pub fn build(b: *std.Build) void {
         .use_lld = true,
     });
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&b.addRunArtifact(tests).step);
-    test_step.dependOn(&b.addRunArtifact(package_tests).step);
+    if (is_linux) {
+        test_step.dependOn(&b.addRunArtifact(tests).step);
+        test_step.dependOn(&b.addRunArtifact(package_tests).step);
+    }
 
     const tool_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/update_tool.zig"),
-            .target = target,
+            .target = if (is_linux) target else b.graph.host,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "update_manifest", .module = update_manifest_mod },
@@ -161,33 +198,41 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
         .use_lld = true,
     });
-    test_step.dependOn(&b.addRunArtifact(tool_tests).step);
+    if (is_linux) {
+        test_step.dependOn(&b.addRunArtifact(tool_tests).step);
+    }
 
     const dev_runner_tests = b.addTest(.{
         .root_module = dev_runner.root_module,
         .use_llvm = true,
         .use_lld = true,
     });
-    test_step.dependOn(&b.addRunArtifact(dev_runner_tests).step);
+    if (is_linux) {
+        test_step.dependOn(&b.addRunArtifact(dev_runner_tests).step);
 
-    // Kills a stand-in for `zig build dev` (SIGTERM, then SIGKILL) and checks
-    // that dev_runner, the dev server's process group and the app are gone.
-    const test_dev_cleanup_step = b.step("test-dev-cleanup", "Check that dev_runner and its children exit with their parent");
-    const run_dev_cleanup = b.addSystemCommand(&.{"bash"});
-    run_dev_cleanup.addFileArg(b.path("scripts/test-dev-cleanup.sh"));
-    run_dev_cleanup.addArtifactArg(dev_runner);
-    test_dev_cleanup_step.dependOn(&run_dev_cleanup.step);
+        // Kills a stand-in for `zig build dev` (SIGTERM, then SIGKILL) and checks
+        // that dev_runner, the dev server's process group and the app are gone.
+        const test_dev_cleanup_step = b.step("test-dev-cleanup", "Check that dev_runner and its children exit with their parent");
+        const run_dev_cleanup = b.addSystemCommand(&.{"bash"});
+        run_dev_cleanup.addFileArg(b.path("scripts/test-dev-cleanup.sh"));
+        run_dev_cleanup.addArtifactArg(dev_runner);
+        test_dev_cleanup_step.dependOn(&run_dev_cleanup.step);
+    }
 
     // Type-check only: nothing requests these binaries, so Zig skips codegen
     // and linking. The fast inner loop for editors and coding agents.
     const check_step = b.step("check", "Type-check the framework, tests and tools (no binaries)");
-    for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module, dev_runner.root_module }) |m| {
-        check_step.dependOn(&b.addTest(.{ .root_module = m }).step);
+    if (is_linux) {
+        for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module, dev_runner.root_module }) |m| {
+            check_step.dependOn(&b.addTest(.{ .root_module = m }).step);
+        }
+    } else {
+        check_step.dependOn(&b.addTest(.{ .root_module = oriel }).step);
     }
 
     // The CLI is part of Oriel's own build only: apps that depend on Oriel
     // never build it (and don't pay for the `git` call below).
-    if (b.pkg_hash.len == 0) addCli(b, target, optimize, test_step, check_step);
+    if (is_linux and b.pkg_hash.len == 0) addCli(b, target, optimize, test_step, check_step);
 }
 
 /// `zig build cli`: the `oriel` command-line tool (cli/), a static binary
@@ -283,6 +328,13 @@ fn addOrielModule(
         oriel.addImport("webkit", gobject.module("webkit6"));
         oriel.addImport("jsc", gobject.module("javascriptcore6"));
         oriel.addImport("soup", gobject.module("soup3"));
+    } else if (target.result.os.tag == .windows) {
+        oriel.linkSystemLibrary("user32", .{});
+        oriel.linkSystemLibrary("gdi32", .{});
+        oriel.linkSystemLibrary("ole32", .{});
+        oriel.linkSystemLibrary("shell32", .{});
+        oriel.linkSystemLibrary("advapi32", .{});
+        oriel.linkSystemLibrary("shlwapi", .{});
     }
 
     if (features.tray) {
@@ -448,12 +500,19 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     // Generated TypeScript types, written by the dev build (no frontend needed).
     var types_step: ?*std.Build.Step = null;
     if (fe.types_path) |types_path| {
-        const gen_exe = dev_exe orelse @panic("TypeScript generation needs a dev build (frontend.dev)");
-        const gen = b.addRunArtifact(gen_exe);
-        gen.addArgs(&.{ "--emit-types", b.pathJoin(&.{ fe_dir, types_path }) });
-        gen.has_side_effects = true;
-        types_step = &gen.step;
-        @import("build/package.zig").getOrCreateStep(b, "types", "Generate TypeScript types for the Zig commands").dependOn(&gen.step);
+        const can_run = target.result.os.tag == b.graph.host.result.os.tag and target.result.cpu.arch == b.graph.host.result.cpu.arch;
+        if (can_run) {
+            const gen_exe = dev_exe orelse @panic("TypeScript generation needs a dev build (frontend.dev)");
+            const gen = b.addRunArtifact(gen_exe);
+            gen.addArgs(&.{ "--emit-types", b.pathJoin(&.{ fe_dir, types_path }) });
+            gen.has_side_effects = true;
+            types_step = &gen.step;
+            @import("build/package.zig").getOrCreateStep(b, "types", "Generate TypeScript types for the Zig commands").dependOn(&gen.step);
+        } else {
+            const types_step_named = @import("build/package.zig").getOrCreateStep(b, "types", "Generate TypeScript types for the Zig commands");
+            const fail = b.addFail("Cannot generate TypeScript types when cross-compiling; run `zig build types` natively on the host.");
+            types_step_named.dependOn(&fail.step);
+        }
     }
 
     // Production: build the frontend, embed dist/, compile.
@@ -588,7 +647,7 @@ fn addExe(
     root_source_file: std.Build.LazyPath,
     app_config: *std.Build.Module,
 ) *std.Build.Step.Compile {
-    return b.addExecutable(.{
+    const exe = b.addExecutable(.{
         .name = name,
         .root_module = b.createModule(.{
             .root_source_file = root_source_file,
@@ -603,6 +662,10 @@ fn addExe(
         .use_llvm = true,
         .use_lld = true,
     });
+    if (target.result.os.tag == .windows) {
+        exe.subsystem = .Windows;
+    }
+    return exe;
 }
 
 fn pathExists(b: *std.Build, path: []const u8) bool {
