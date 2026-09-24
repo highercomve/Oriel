@@ -97,6 +97,7 @@ Oriel supports cross-compiling and packaging for Windows (`x86_64-windows`) dire
 |---|---|---|
 | **Core Shell & Lifecycle** | ✅ Implemented | Win32 message loop (`GetMessageW`), `CreateWindowExW`, thread-safe main thread dispatch |
 | **Window Operations** | ✅ Implemented | Size, maximize, fullscreen, show/hide/toggle, close, title; controller bounds follow `WM_SIZE`/`WM_DPICHANGED` (no per-monitor DPI manifest yet) |
+| **Multi-Window & JS API** | ✅ Implemented | `oriel.window` JS API, `App.openWindow`, multi-window COM message dispatch, child window communication |
 | **WebView Engine** | ✅ Implemented | Microsoft Edge WebView2 (Evergreen) via hand-declared COM vtables matching `WebView2.h` |
 | **Embedded Assets** | ✅ Implemented | `https://app.localhost/*` intercept via `AddWebResourceRequestedFilter` + `SHCreateMemStream` |
 | **JS ↔ Zig IPC** | ✅ Implemented | `window.chrome.webview.postMessage` + `add_WebMessageReceived`, sync and async worker commands |
@@ -295,6 +296,62 @@ pub const Commands = struct {
         ...
     }
 };
+```
+
+### Windows from JavaScript (`oriel.window`)
+
+JavaScript running in the webview can manage windows and open child windows via `oriel.window` (also exported from `frontend/src/oriel.ts`):
+
+```ts
+import { window } from "./oriel";
+
+// Open a new child window
+const child = await window.open({
+  label: "child-win",
+  url: "index.html?child=1",
+  title: "Child Window",
+  width: 600,
+  height: 400,
+  resizable: true,
+});
+
+// Window handle methods
+await child.setTitle("New Title");
+await child.setSize(800, 600);
+await child.maximize();
+await child.focus();
+await child.emit("custom_event", { data: 123 });
+await child.close();
+
+// Query windows
+const currentWin = window.current(); // WindowHandle for current window
+const allWins = await window.all();  // WindowHandle[]
+const win = await window.get("child-win");
+
+// Targeted events
+await window.emitTo("child-win", "ping", { data: 42 });
+
+// Lifecycle events
+import { listen } from "./oriel";
+listen("window:created", (p) => console.log("Window created:", p.label));
+listen("window:closed", (p) => console.log("Window closed:", p.label));
+```
+
+#### Window Security & Policy
+
+Window creation and control are governed by `Config.security.window_api`:
+- **Opt-in:** enabled by default for app-local origins (`app://app` and dev server). Remote origins are blocked by default unless granted by capability (`.window_api = true`) or `.allow_remote = true`.
+- **URL validation:** only app-local URLs are allowed by default (`allow_remote_urls = false`). Dangerous schemes (`javascript:`, `file:`, `data:`) are rejected.
+- **Label validation:** labels must be 1–64 characters containing only alphanumeric characters, underscores (`_`), and dashes (`-`).
+- **Window modification:** windows can only modify and close themselves by default (`allow_modify_other_windows = false`).
+- **Max window cap:** defaults to a maximum of 16 concurrent windows (`max_windows = 16`).
+
+#### Config `window_open`
+
+Configure the behavior of `window.open()` and links with `target="_blank"` navigating to allowed app-local URLs:
+
+```zig
+.window_open = .new_window, // .main_view (default: load in main view) or .new_window (open a new Oriel window)
 ```
 
 ## Security
