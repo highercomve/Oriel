@@ -24,10 +24,63 @@ pub const bridge_js =
     \\  const handler = window.webkit.messageHandlers.
 ++ handler_name ++
     \\;
-    \\  Object.defineProperty(window, "oriel", { value: Object.freeze({
-    \\    invoke(cmd, args) {
-    \\      return handler.postMessage(JSON.stringify({ cmd, args: args ?? null }));
+    \\  function invoke(cmd, args) {
+    \\    return handler.postMessage(JSON.stringify({ cmd, args: args ?? null }));
+    \\  }
+    \\  class WindowHandle {
+    \\    constructor(label) {
+    \\      this.label = label;
+    \\    }
+    \\    close() {
+    \\      return invoke("oriel:window:close", { label: this.label });
+    \\    }
+    \\    show() {
+    \\      return invoke("oriel:window:show", { label: this.label });
+    \\    }
+    \\    hide() {
+    \\      return invoke("oriel:window:hide", { label: this.label });
+    \\    }
+    \\    focus() {
+    \\      return invoke("oriel:window:focus", { label: this.label });
+    \\    }
+    \\    setTitle(title) {
+    \\      return invoke("oriel:window:setTitle", { label: this.label, title });
+    \\    }
+    \\    setSize(width, height) {
+    \\      return invoke("oriel:window:setSize", { label: this.label, width, height });
+    \\    }
+    \\    maximize(maximized = true) {
+    \\      return invoke("oriel:window:maximize", { label: this.label, maximized });
+    \\    }
+    \\    fullscreen(fullscreen = true) {
+    \\      return invoke("oriel:window:fullscreen", { label: this.label, fullscreen });
+    \\    }
+    \\    emit(event, payload) {
+    \\      return windowApi.emitTo(this.label, event, payload);
+    \\    }
+    \\  }
+    \\  const windowApi = {
+    \\    async open(options) {
+    \\      const res = await invoke("oriel:window:open", options);
+    \\      return new WindowHandle(res.label);
     \\    },
+    \\    current() {
+    \\      return new WindowHandle(window.__oriel_window_label || "main");
+    \\    },
+    \\    async get(label) {
+    \\      const res = await invoke("oriel:window:get", { label });
+    \\      return res ? new WindowHandle(res.label) : null;
+    \\    },
+    \\    async all() {
+    \\      const list = await invoke("oriel:window:all", {});
+    \\      return (list || []).map(w => new WindowHandle(w.label));
+    \\    },
+    \\    emitTo(label, event, payload) {
+    \\      return invoke("oriel:window:emitTo", { label, event, payload: payload ?? null });
+    \\    }
+    \\  };
+    \\  Object.defineProperty(window, "oriel", { value: Object.freeze({
+    \\    invoke,
     \\    listen(event, callback) {
     \\      let set = listeners.get(event);
     \\      if (!set) listeners.set(event, (set = new Set()));
@@ -39,6 +92,7 @@ pub const bridge_js =
     \\        try { cb(payload); } catch (e) { console.error(e); }
     \\      }
     \\    },
+    \\    window: Object.freeze(windowApi),
     \\  }) });
     \\})();
 ;
@@ -95,12 +149,20 @@ pub fn Bridge(
     comptime local: security.Local,
     comptime bridge_patterns: anytype,
 ) type {
+    const window_commands = @import("../../core/window_commands.zig");
     return struct {
-        pub fn setupUserContent(view: *webkit.WebView) void {
+        pub fn setupUserContent(view: *webkit.WebView, label: [:0]const u8) void {
+            const gpa = std.heap.smp_allocator;
             const content = view.getUserContentManager();
-            const script = webkit.UserScript.new(bridge_js, .top_frame, .start, @ptrCast(&bridge_patterns), null);
+
+            const label_json = std.json.Stringify.valueAlloc(gpa, label, .{}) catch return;
+            defer gpa.free(label_json);
+            const label_script_src = std.fmt.allocPrintSentinel(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, bridge_js }, 0) catch return;
+            defer gpa.free(label_script_src);
+            const script = webkit.UserScript.new(label_script_src, .top_frame, .start, @ptrCast(&bridge_patterns), null);
             content.addScript(script);
             script.unref();
+
             _ = content.registerScriptMessageHandlerWithReply(handler_name, null);
             _ = webkit.UserContentManager.signals.script_message_with_reply_received.connect(
                 content,
@@ -134,6 +196,22 @@ pub fn Bridge(
             const page_url: []const u8 = if (webkit_web_view_get_uri(view)) |u| std.mem.span(u) else "";
             const caller_win = @import("window.zig").getWindowByView(view);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
+
+            if (window_commands.isWindowCommand(request.cmd)) {
+                const result = window_commands.dispatch(config.security, local, temp_alloc, page_url, win_label, request.cmd, request.args) catch |err| {
+                    reply.returnErrorMessage(@errorName(err));
+                    return 1;
+                };
+                const result_z = temp_alloc.dupeZ(u8, result) catch {
+                    reply.returnErrorMessage("OutOfMemory");
+                    return 1;
+                };
+                const js_value = jsc.Value.newFromJson(value.getContext(), result_z);
+                defer js_value.unref();
+                reply.returnValue(js_value);
+                return 1;
+            }
+
             if (!security.commandAllowedForWindow(config.security, local, page_url, request.cmd, win_label)) {
                 log.warn("blocked command '{s}' from {s} (window: {?s})", .{ request.cmd, page_url, win_label });
                 reply.returnErrorMessage("Forbidden");

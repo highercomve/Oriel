@@ -59,6 +59,8 @@ comptime {
         "isWindowMaximized",
         "setWindowSize",
         "getWindowSize",
+        "focusWindow",
+        "postCloseWindow",
         "createWindow",
         "destroyWindow",
         "run",
@@ -82,6 +84,8 @@ pub const showWindow = impl.showWindow;
 pub const hideWindow = impl.hideWindow;
 pub const toggleWindow = impl.toggleWindow;
 pub const closeWindow = impl.closeWindow;
+pub const postCloseWindow = impl.postCloseWindow;
+pub const focusWindow = impl.focusWindow;
 pub const setWindowTitle = impl.setWindowTitle;
 pub const setWindowFullscreen = impl.setWindowFullscreen;
 pub const isWindowFullscreen = impl.isWindowFullscreen;
