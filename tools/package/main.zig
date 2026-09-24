@@ -6,6 +6,7 @@
 //! - installs dev/prod desktop entries and icons into $XDG_DATA_HOME
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zigimg = @import("zigimg");
 
 pub const metadata = @import("metadata.zig");
@@ -907,30 +908,33 @@ fn ensureAbsolutePath(gpa: std.mem.Allocator, io: Io, path: []const u8) ![]const
 }
 
 pub fn findMakensis(gpa: std.mem.Allocator, io: Io) ![]const u8 {
+    const is_windows = builtin.os.tag == .windows;
+    const exe_name = if (is_windows) "makensis.exe" else "makensis";
+
     // 1. Search PATH entries from the environment
     if (getEnv("PATH")) |path_var| {
-        var it = std.mem.splitScalar(u8, path_var, ':');
+        var it = std.mem.splitScalar(u8, path_var, std.fs.path.delimiter);
         while (it.next()) |dir| {
             if (dir.len == 0) continue;
-            const candidate = try std.fs.path.join(gpa, &.{ dir, "makensis" });
-            errdefer gpa.free(candidate);
-            if (Dir.cwd().access(io, candidate, .{})) |_| {
-                return candidate;
-            } else |_| {
-                gpa.free(candidate);
-            }
+            const candidate = try std.fs.path.join(gpa, &.{ dir, exe_name });
+            if (pathExists(io, candidate)) return candidate;
+            gpa.free(candidate);
         }
     }
 
-    // 2. Check standard system locations
-    const common_locations = [_][]const u8{
-        "/usr/bin/makensis",
-        "/usr/local/bin/makensis",
-    };
-    for (common_locations) |loc| {
-        if (Dir.cwd().access(io, loc, .{})) |_| {
-            return try gpa.dupe(u8, loc);
-        } else |_| {}
+    // 2. Standard install locations (the NSIS installer does not add itself
+    // to PATH on Windows).
+    if (is_windows) {
+        for ([_][]const u8{ "ProgramFiles(x86)", "ProgramFiles" }) |env| {
+            const base = getEnv(env) orelse continue;
+            const candidate = try std.fs.path.join(gpa, &.{ base, "NSIS", exe_name });
+            if (pathExists(io, candidate)) return candidate;
+            gpa.free(candidate);
+        }
+    } else {
+        for ([_][]const u8{ "/usr/bin/makensis", "/usr/local/bin/makensis" }) |loc| {
+            if (pathExists(io, loc)) return try gpa.dupe(u8, loc);
+        }
     }
 
     return error.MakensisNotFound;
