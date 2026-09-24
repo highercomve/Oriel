@@ -6,4 +6,364 @@
 .layout = "docs.shtml",
 ---
 
-> This page is being written.
+# Step 1: Create the project
+
+```sh
+oriel init notes
+cd notes
+```
+
+This scaffolds a React + Vite frontend, a Zig application, and the build files. The Zig side is empty; let's add a command to save notes.
+
+# Step 2: Add a command
+
+Edit `src/main.zig`. The app needs a place to store notes and a command to add them. Start with a simple in-memory list:
+
+```zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+
+pub const Commands = struct {
+    pub fn add_note(gpa: std.mem.Allocator, args: struct { text: []const u8 }) ![]const u8 {
+        const text = std.mem.trim(u8, args.text, " \t\r\n");
+        if (text.len == 0) return error.EmptyNote;
+        return std.fmt.allocPrint(gpa, "Note added: {s}", .{text});
+    }
+};
+
+pub const Events = struct {};
+
+pub fn main(init: std.process.Init) !u8 {
+    return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
+        .id = "dev.example.Notes",
+        .title = "Notes",
+        .assets = app.assets,
+        .dev = app.dev,
+    });
+}
+```
+
+Regenerate TypeScript types:
+
+```sh
+oriel types
+```
+
+Call it from the frontend. Edit `frontend/src/App.tsx`:
+
+```ts
+import { invoke } from "./oriel";
+
+export default function App() {
+  const [text, setText] = useState("");
+  const [result, setResult] = useState("");
+
+  const handleAdd = async () => {
+    const msg = await invoke("add_note", { text });
+    setResult(msg);
+    setText("");
+  };
+
+  return (
+    <div>
+      <input value={text} onChange={(e) => setText(e.target.value)} />
+      <button onClick={handleAdd}>Add</button>
+      {result && <p>{result}</p>}
+    </div>
+  );
+}
+```
+
+Test it:
+
+```sh
+oriel dev
+```
+
+The dev server starts on `localhost:5173` and auto-reloads. In the Zig terminal, type a note and click Add.
+
+# Step 3: Add list command and events
+
+Commands can return data; let's track notes in memory and emit an event when they change. Update `src/main.zig`:
+
+```zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+
+pub const Note = struct {
+    id: u32,
+    text: []const u8,
+};
+
+pub const Events = struct {
+    notes_changed: []const Note,
+};
+const events = oriel.App.events(Events);
+
+var note_id: u32 = 0;
+var notes: std.ArrayList(Note) = undefined;
+
+pub const Commands = struct {
+    pub fn add_note(gpa: std.mem.Allocator, args: struct { text: []const u8 }) !void {
+        const text = std.mem.trim(u8, args.text, " \t\r\n");
+        if (text.len == 0) return error.EmptyNote;
+        try notes.append(.{ .id = note_id, .text = try gpa.dupe(u8, text) });
+        note_id += 1;
+        events.emit(.notes_changed, notes.items);
+    }
+
+    pub fn list_notes(_: std.mem.Allocator) ![]Note {
+        return notes.items;
+    }
+};
+
+pub fn main(init: std.process.Init) !u8 {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    notes = std.ArrayList(Note).init(gpa.allocator());
+
+    return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
+        .id = "dev.example.Notes",
+        .title = "Notes",
+        .assets = app.assets,
+        .dev = app.dev,
+    });
+}
+```
+
+Update the frontend:
+
+```ts
+import { invoke, listen } from "./oriel";
+
+export default function App() {
+  const [text, setText] = useState("");
+  const [notes, setNotes] = useState<Note[]>([]);
+
+  useEffect(() => {
+    // Load notes on startup
+    invoke("list_notes").then(setNotes);
+
+    // Listen to note changes
+    const off = listen("notes_changed", setNotes);
+    return off;
+  }, []);
+
+  const handleAdd = async () => {
+    await invoke("add_note", { text });
+    setText("");
+  };
+
+  return (
+    <div>
+      <input value={text} onChange={(e) => setText(e.target.value)} />
+      <button onClick={handleAdd}>Add</button>
+      <ul>
+        {notes.map((n) => (
+          <li key={n.id}>{n.text}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+# Step 4: Store in SQLite
+
+In-memory data is lost when the app restarts. Use the `sql` module to persist notes. Update `src/main.zig`:
+
+```zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+const sql = oriel.sql;
+
+pub const Note = struct {
+    id: i64,
+    text: []const u8,
+};
+
+pub const Events = struct {
+    notes_changed: []const Note,
+};
+const events = oriel.App.events(Events);
+
+var db: sql.Db = undefined;
+
+fn database() !sql.Db {
+    if (db.conn != null) return db;
+    db = try sql.Db.open(":memory:");
+    try db.exec(
+        \\CREATE TABLE notes (
+        \\  id INTEGER PRIMARY KEY,
+        \\  text TEXT NOT NULL
+        \\);
+    );
+    return db;
+}
+
+pub const Commands = struct {
+    pub fn add_note(gpa: std.mem.Allocator, args: struct { text: []const u8 }) !void {
+        const text = std.mem.trim(u8, args.text, " \t\r\n");
+        if (text.len == 0) return error.EmptyNote;
+
+        const stmt = try (try database()).prepare("INSERT INTO notes (text) VALUES (?1)");
+        defer stmt.finalize();
+        try stmt.bindText(1, text);
+        _ = try stmt.step();
+
+        const notes = try list_notes(gpa);
+        events.emit(.notes_changed, notes);
+    }
+
+    pub fn list_notes(gpa: std.mem.Allocator) ![]Note {
+        const stmt = try (try database()).prepare("SELECT id, text FROM notes ORDER BY id DESC");
+        defer stmt.finalize();
+        var result: std.ArrayList(Note) = .empty;
+        while (try stmt.step()) {
+            try result.append(gpa, .{
+                .id = stmt.int(0),
+                .text = try stmt.text(gpa, 1),
+            });
+        }
+        return result.toOwnedSlice(gpa);
+    }
+};
+
+pub fn main(init: std.process.Init) !u8 {
+    defer if (db.conn != null) db.close();
+    return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
+        .id = "dev.example.Notes",
+        .title = "Notes",
+        .assets = app.assets,
+        .dev = app.dev,
+    });
+}
+```
+
+Run `oriel dev` again. Notes now persist across app restarts (within the same session; using `:memory:` means they are lost when the process exits; use a file path like `~/.local/share/notes/data.db` for persistent storage).
+
+# Step 5: Add a tray icon
+
+The app should keep running in the tray when the window closes. Create `src/icon.png` (or download one) and update `src/main.zig`:
+
+```zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+const sql = oriel.sql;
+const Tray = oriel.tray.Tray;
+
+pub const Note = struct {
+    id: i64,
+    text: []const u8,
+};
+
+pub const Events = struct {
+    notes_changed: []const Note,
+};
+const events = oriel.App.events(Events);
+
+var db: sql.Db = undefined;
+var tray: ?*Tray = null;
+
+fn database() !sql.Db {
+    if (db.conn != null) return db;
+    db = try sql.Db.open(":memory:");
+    try db.exec(
+        \\CREATE TABLE notes (
+        \\  id INTEGER PRIMARY KEY,
+        \\  text TEXT NOT NULL
+        \\);
+    );
+    return db;
+}
+
+pub const Commands = struct {
+    pub fn add_note(gpa: std.mem.Allocator, args: struct { text: []const u8 }) !void {
+        const text = std.mem.trim(u8, args.text, " \t\r\n");
+        if (text.len == 0) return error.EmptyNote;
+
+        const stmt = try (try database()).prepare("INSERT INTO notes (text) VALUES (?1)");
+        defer stmt.finalize();
+        try stmt.bindText(1, text);
+        _ = try stmt.step();
+
+        const notes = try list_notes(gpa);
+        events.emit(.notes_changed, notes);
+    }
+
+    pub fn list_notes(gpa: std.mem.Allocator) ![]Note {
+        const stmt = try (try database()).prepare("SELECT id, text FROM notes ORDER BY id DESC");
+        defer stmt.finalize();
+        var result: std.ArrayList(Note) = .empty;
+        while (try stmt.step()) {
+            try result.append(gpa, .{
+                .id = stmt.int(0),
+                .text = try stmt.text(gpa, 1),
+            });
+        }
+        return result.toOwnedSlice(gpa);
+    }
+};
+
+const app_id = "dev.example.Notes";
+
+fn setup() !void {
+    tray = try Tray.create(std.heap.smp_allocator, .{
+        .id = app_id,
+        .title = "Notes",
+        .icon = .{ .png = @embedFile("icon.png") },
+        .menu = &.{
+            .{ .item = .{ .id = "show", .label = "Show" } },
+            .separator,
+            .{ .item = .{ .id = "quit", .label = "Quit" } },
+        },
+        .on_menu = onTrayMenu,
+    });
+}
+
+fn onTrayMenu(id: []const u8, _: ?bool) void {
+    if (std.mem.eql(u8, id, "show")) {
+        oriel.App.showWindow();
+    } else if (std.mem.eql(u8, id, "quit")) {
+        oriel.App.quit(0);
+    }
+}
+
+pub fn main(init: std.process.Init) !u8 {
+    defer if (db.conn != null) db.close();
+    defer if (tray) |t| t.deinit();
+
+    return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
+        .id = app_id,
+        .title = "Notes",
+        .assets = app.assets,
+        .dev = app.dev,
+        .setup = setup,
+        .on_close = .hide,
+    });
+}
+```
+
+Now closing the window hides it, and the tray icon remains. Click the icon to show the window again.
+
+# Build the release app
+
+When you are happy, build the production binary:
+
+```sh
+oriel build
+```
+
+This runs `npm run build`, embeds the frontend into the Zig binary, and outputs `zig-out/bin/notes`. The app is fully self-contained.
+
+To package it for distribution:
+
+```sh
+oriel package
+```
+
+This creates `.deb`, `.rpm` and `.AppImage` packages in `zig-out/package/`.

@@ -6,4 +6,130 @@
 .layout = "docs.shtml",
 ---
 
-> This page is being written.
+# Dev mode
+
+```sh
+oriel dev
+```
+
+This starts the Vite dev server on `http://localhost:5173`, opens the app against it, and watches your Zig source files. When you edit `src/main.zig`, the app rebuilds and restarts automatically. The frontend hot-reloads. Dev builds use the app id with a `.Dev` suffix, so they run next to a production install without conflicts.
+
+Press Ctrl-C to stop everything: the `dev_runner` manages Vite and the Zig app in a process group, so stopping the Zig build also stops the dev server.
+
+# Type generation and `oriel types`
+
+The Zig side defines `Commands` and `Events` as structs. The `oriel types` command regenerates the TypeScript types automatically:
+
+```sh
+oriel types
+```
+
+This reads your `Commands` and `Events` in `src/main.zig` and writes `frontend/src/oriel.ts`, which exports typed `invoke` and `listen`:
+
+```ts
+import { invoke, listen } from "./oriel";
+
+const msg = await invoke("greet", { name: "Ada" });   // type-checked
+const off = listen("notes_changed", (notes) => ...);  // type-checked
+```
+
+If you add a new command `pub fn export_data(...)` to `Commands`, run `oriel types` and the TypeScript import gains the new function.
+
+# Type checking with `oriel check`
+
+Without building the full app:
+
+```sh
+oriel check
+```
+
+This type-checks your Zig code in about a second, using `zig build check`. Handy while iterating.
+
+# Logging
+
+The app logs to stderr and to a file in the data directory:
+
+```sh
+$ cat ~/.local/share/<app_id>/app.log
+```
+
+In `src/main.zig`, use standard Zig logging:
+
+```zig
+std.log.info("Note added: {s}", .{text});
+std.log.err("Database error: {s}", .{@errorName(err)});
+```
+
+Scoped logging by module:
+
+```zig
+const log = std.log.scoped(.notes);
+log.debug("Loading notes", .{});
+```
+
+In debug and dev builds, JavaScript `console.log()`, `console.error()`, etc. are forwarded to stdout, so you can monitor them alongside the Zig logs.
+
+# Testing GUI apps headlessly
+
+For CI or automated testing, run the app without a real display:
+
+```sh
+scripts/headless.sh ./zig-out/bin/my-app --auto-quit
+```
+
+This launches a virtual X11 display (Xvfb) and a private D-Bus session, runs your app, and exits when the app quits. The webview and tray work normally; use `--auto-quit` if your app can't close itself (pass it to your app).
+
+Take a screenshot after a delay:
+
+```sh
+SHOT=/tmp/shot.png scripts/headless.sh ./zig-out/bin/my-app
+# app runs for ~4 s, screenshot saved to /tmp/shot.png
+```
+
+This is how the [examples/smoke]($link.page('docs/modules')) test runs on every push.
+
+# Debugging tips
+
+## Zig panics and backtraces
+
+In a debug or dev build, panics print a stack trace. Set the environment variable to get more detail:
+
+```sh
+ZIG_BACKTRACE=1 oriel dev
+```
+
+## WebView debug mode
+
+In debug builds, the WebKit inspector is enabled. On Linux (X11), press F12 to open it (Wayland: check your desktop environment's keybindings).
+
+## GTK debug output
+
+For GTK-specific issues:
+
+```sh
+G_MESSAGES_DEBUG=all oriel dev 2>&1 | grep -i gtk
+```
+
+## Tray menu introspection
+
+Inside a headless session, query the tray menu structure via D-Bus:
+
+```sh
+gdbus call --session --dest org.kde.StatusNotifierItem-$PID-1 --object-path /MenuBar \
+  --method com.canonical.dbusmenu.GetLayout 0 -- -1 '[]'
+```
+
+Replace `$PID` with the app's process ID.
+
+## Memory and threads
+
+Oriel's platform layer is designed for memory safety. The framework uses:
+- `defer` and `errdefer` for cleanup on all error paths.
+- Thread-safe command dispatch (async commands run on a worker pool, replies go back on the main thread).
+- No manual pointer casting except where justified (see PLAN.md rules).
+
+If you see unexpected crashes or memory issues, check:
+1. All SQL prepared statements are finalized.
+2. All allocated memory is freed or returned to the caller (document ownership).
+3. Events and commands receive allocated data (not stack or temporary allocations).
+4. The app doesn't block the main thread (use async commands for I/O or slow operations).
