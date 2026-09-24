@@ -24,8 +24,10 @@
             .hash = "wayland-0.7.0-dev-lQa1kl38AQC-kQolS5D4jV1GJ2rH2jv1VWHr14YLVnyn",
         },
         .sqlite = .{
-            .url = "https://sqlite.org/2026/sqlite-amalgamation-3530400.zip",
-            .hash = "N-V-__8AAGVtrgCcOcmjrOJnagmnRyMrcKaOo09KbU-vu8w8",
+            // The autoconf tarball has the same amalgamation (sqlite3.c/.h) at its
+            // root; a .zip fails in Zig 0.16 with an empty global cache.
+            .url = "https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz",
+            .hash = "N-V-__8AAKJCwwDXnRHqzy_PjrI_Ss94kfSd-T7vNxQ-b3xA",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand", "LICENSE-MIT", "LICENSE-APACHE", "README.md" },
