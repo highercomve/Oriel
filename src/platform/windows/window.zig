@@ -56,8 +56,15 @@ pub fn toggleWindow(handle: WindowHandle) void {
     }
 }
 
+/// Close like the user clicked X. On the main thread this is synchronous (as
+/// GTK's close is): the window is gone when it returns. From other threads the
+/// request is posted to the window's thread.
 pub fn closeWindow(handle: WindowHandle) void {
-    _ = win32.PostMessageW(handle.hwnd, win32.WM_CLOSE, 0, 0);
+    if (win32.GetCurrentThreadId() == ShellMod.main_thread_id) {
+        _ = win32.SendMessageW(handle.hwnd, win32.WM_CLOSE, 0, 0); // the handler's result carries no information
+    } else if (win32.PostMessageW(handle.hwnd, win32.WM_CLOSE, 0, 0) == win32.FALSE) {
+        log.err("closeWindow: PostMessageW failed ({d})", .{win32.GetLastError()});
+    }
 }
 
 pub fn destroyWindow(handle: WindowHandle) void {
@@ -113,7 +120,9 @@ pub fn setWindowSize(handle: WindowHandle, width: c_int, height: c_int) void {
     var rect = win32.RECT{ .left = 0, .top = 0, .right = width, .bottom = height };
     const style = windowLong(handle.hwnd, win32.GWL_STYLE);
     const ex_style = windowLong(handle.hwnd, win32.GWL_EXSTYLE);
-    _ = win32.AdjustWindowRectEx(&rect, style, win32.FALSE, ex_style);
+    // `width`/`height` are the client (webview) size: account for a menu bar.
+    const has_menu: win32.BOOL = if (win32.GetMenu(handle.hwnd) != null) win32.TRUE else win32.FALSE;
+    _ = win32.AdjustWindowRectEx(&rect, style, has_menu, ex_style);
     const w = rect.right - rect.left;
     const h = rect.bottom - rect.top;
     _ = win32.SetWindowPos(handle.hwnd, null, 0, 0, w, h, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
@@ -863,11 +872,19 @@ pub fn WindowCreator(
 
             if (ShellMod.on_window_created_fn) |hook| {
                 hook(hwnd);
-                // A menu bar shrinks the client area; the WM_SIZE it causes is
-                // ignored until the window is registered, so resize here.
-                var menu_rect: win32.RECT = undefined;
-                if (win32.GetClientRect(hwnd, &menu_rect) != win32.FALSE) {
-                    _ = controller.putBounds(menu_rect);
+                // A menu bar takes its height from the client area: grow the
+                // window so the client area keeps the requested size (as on
+                // GTK), then size the webview (the WM_SIZE this causes is
+                // ignored until the window is registered).
+                if (win32.GetMenu(hwnd) != null) {
+                    var outer = win32.RECT{ .left = 0, .top = 0, .right = options.width, .bottom = options.height };
+                    if (win32.AdjustWindowRectEx(&outer, style, win32.TRUE, win32.WS_EX_APPWINDOW) != win32.FALSE) {
+                        _ = win32.SetWindowPos(hwnd, null, 0, 0, outer.right - outer.left, outer.bottom - outer.top, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
+                    }
+                }
+                var client: win32.RECT = undefined;
+                if (win32.GetClientRect(hwnd, &client) != win32.FALSE) {
+                    _ = controller.putBounds(client);
                 }
             }
 
