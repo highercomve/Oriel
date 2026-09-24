@@ -217,7 +217,10 @@ fn writeEntry(
         } else if (is_windows) {
             const h = win32.GetStdHandle(win32.STD_ERROR_HANDLE);
             if (h != null and h != win32.INVALID_HANDLE_VALUE) {
-                _ = win32.WriteFile(h.?, formatted.ptr, @intCast(formatted.len), null, null);
+                // lpNumberOfBytesWritten may only be NULL with an OVERLAPPED.
+                // A failed log write has nowhere to be reported, so it is dropped.
+                var written: win32.DWORD = 0;
+                _ = win32.WriteFile(h.?, formatted.ptr, @intCast(formatted.len), &written, null);
             }
         }
     }
@@ -228,7 +231,8 @@ fn writeEntry(
         }
     } else if (is_windows) {
         if (log_handle) |h| {
-            _ = win32.WriteFile(h, formatted.ptr, @intCast(formatted.len), null, null);
+            var written: win32.DWORD = 0;
+            _ = win32.WriteFile(h, formatted.ptr, @intCast(formatted.len), &written, null);
         }
     }
 }
