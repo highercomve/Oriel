@@ -271,12 +271,21 @@ the `std.Io` is passed in explicitly (there is no global to set).
 
 ```ts
 // frontend: generated from the Zig structs (zig build types)
-import { invoke, listen } from "./oriel";
+import { invoke, listen, openExternal } from "./oriel";
 const msg = await invoke("greet", { name: "Ada" });   // msg: string
 const off = listen("notes_changed", (notes) => …);    // notes: Note[]
+await openExternal("https://ziglang.org");            // opens in default browser
 ```
 
 Command errors reject the promise with the Zig error name.
+
+### System browser (`openExternal`)
+
+To open links in the user's default browser instead of navigating the webview, use `openExternal(url)` (available as an export from `./oriel` and on `window.oriel.openExternal(url)`):
+- On Linux, opens via the XDG desktop portal / `xdg-open`; on Windows, opens via `ShellExecuteW`.
+- Only `http:`, `https:` and `mailto:` schemes are allowed by default (configurable in `Security.open_external_schemes`).
+- Dangerous schemes (`file:`, `javascript:`, `data:`, `blob:`, `about:`) and control characters are always rejected.
+- Gated by the capability model: remote origins must be granted the `open_external` command capability to call it.
 
 ### Async commands
 
@@ -306,9 +315,10 @@ Modeled on Tauri. Configure it with `Config.security`:
     .csp = oriel.security.default_csp,               // null disables it
     .allowed_origins = &.{"https://docs.example.com"}, // may be shown, no IPC
     .capabilities = &.{                                // remote origins with IPC
-        .{ .origin = "https://*.example.com", .commands = &.{"greet"} },
+        .{ .origin = "https://*.example.com", .commands = &.{"greet", "open_external"} },
     },
     .external_links = .open_in_browser,                // or .deny
+    .open_external_schemes = &.{ "http", "https", "mailto" }, // allowed schemes for openExternal
 },
 ```
 
@@ -367,6 +377,16 @@ between survives a signal sent to `zig` alone), dev_runner and the app get
 `PR_SET_PDEATHSIG`, and `dev_runner` starts Vite
 and the app in their own process groups and kills each whole group (SIGTERM,
 then SIGKILL after 0.5 s) on exit. `zig build test-dev-cleanup` checks this.
+
+### Routes and Single-Page Apps (SPA)
+
+`WindowOptions.url` supports relative route paths such as `"/settings"`:
+- In **development** (`config.dev`), the route resolves to the local dev server (e.g. `http://localhost:5173/settings`).
+- In **production**, it resolves to the local embedded asset origin (`app://app/settings` on Linux, `https://app.localhost/settings` on Windows).
+- Absolute URLs with schemes are checked against `allowed_origins` and `capabilities`, and dangerous schemes (`file:`, `javascript:`, `data:`, `blob:`, `about:`) are rejected.
+
+**SPA Fallback caveat**:
+With `config.spa_fallback = true` (default), deep links reload and serve `index.html` for client-side routers (such as React Router's `BrowserRouter`). However, paths whose last segment contains a dot (e.g. `/u/john.doe` or `/report.pdf`) are treated as asset files rather than routes and will return 404 if not found in embedded assets.
 
 ## Testing without a desktop
 

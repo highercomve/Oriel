@@ -18,6 +18,8 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
+pub const default_open_external_schemes: []const []const u8 = &.{ "http", "https", "mailto" };
+
 pub const Security = struct {
     /// Content-Security-Policy for `app://` responses; null disables it.
     csp: ?[]const u8 = default_csp,
@@ -28,6 +30,8 @@ pub const Security = struct {
     capabilities: []const Capability = &.{},
     /// What happens to links pointing outside the allowed origins.
     external_links: ExternalLinks = .open_in_browser,
+    /// Allowed URL schemes for openExternal (e.g. "http", "https", "mailto").
+    open_external_schemes: []const []const u8 = default_open_external_schemes,
 };
 
 pub const Capability = struct {
@@ -180,6 +184,168 @@ fn toZ(comptime s: []const u8) [:0]const u8 {
     return (s ++ "\x00")[0..s.len :0];
 }
 
+pub const ValidationError = error{
+    DisallowedScheme,
+    InvalidUrl,
+    ControlCharactersNotAllowed,
+};
+
+/// Validate a URL intended to be opened in the default browser via openExternal.
+/// Only allowed schemes (by default http:, https:, mailto:) are permitted.
+/// Dangerous schemes (file:, javascript:, data:, etc.) are never allowed.
+/// URL is validated for control characters, whitespace, and non-empty hosts on HTTP/HTTPS.
+pub fn validateExternalUrl(sec: Security, url: []const u8) ValidationError!void {
+    if (url.len == 0) return error.InvalidUrl;
+
+    for (url) |c| {
+        if (c < 0x20 or c == 0x7f or c == ' ') return error.ControlCharactersNotAllowed;
+    }
+
+    const uri = std.Uri.parse(url) catch return error.InvalidUrl;
+    if (uri.scheme.len == 0) return error.InvalidUrl;
+
+    // Dangerous schemes that must never be opened externally
+    inline for (.{ "file", "javascript", "data", "blob", "about" }) |forbidden| {
+        if (std.ascii.eqlIgnoreCase(uri.scheme, forbidden)) {
+            return error.DisallowedScheme;
+        }
+    }
+
+    var scheme_allowed = false;
+    for (sec.open_external_schemes) |allowed| {
+        var is_forbidden = false;
+        inline for (.{ "file", "javascript", "data", "blob", "about" }) |forbidden| {
+            if (std.ascii.eqlIgnoreCase(allowed, forbidden)) is_forbidden = true;
+        }
+        if (is_forbidden) continue;
+
+        if (std.ascii.eqlIgnoreCase(uri.scheme, allowed)) {
+            scheme_allowed = true;
+            break;
+        }
+    }
+    if (!scheme_allowed) return error.DisallowedScheme;
+
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https")) {
+        const host = uri.host orelse return error.InvalidUrl;
+        if (host.percent_encoded.len == 0) return error.InvalidUrl;
+    }
+}
+
+fn hasScheme(url: []const u8) bool {
+    const colon = std.mem.indexOfScalar(u8, url, ':') orelse return false;
+    if (colon == 0) return false;
+    for (url[0..colon]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '+' and c != '-' and c != '.') {
+            return false;
+        }
+    }
+    return true;
+}
+
+pub const ResolveUrlError = error{
+    DisallowedOrigin,
+    DisallowedScheme,
+    InvalidUrl,
+    ControlCharactersNotAllowed,
+    OutOfMemory,
+};
+
+/// Resolve a window's target URL for a given local origin ("app://app" on Linux,
+/// "https://app.localhost" on Windows).
+/// - Relative paths ("/settings", "settings") resolve to dev_url in dev mode, or to local_origin in production.
+/// - Absolute URLs with schemes are verified against local_origin, dev_origin, allowed_origins, and capabilities.
+/// - Dangerous schemes (file:, javascript:, data:) and disallowed origins are rejected.
+/// The returned slice is null-terminated and owned by `allocator`.
+pub fn resolveWindowUrlWithOrigin(
+    allocator: std.mem.Allocator,
+    local_origin: []const u8,
+    sec: Security,
+    local: Local,
+    dev_url: ?[]const u8,
+    target_url: ?[]const u8,
+    start_path: []const u8,
+) ResolveUrlError![:0]const u8 {
+    if (target_url) |u| {
+        if (u.len == 0) {
+            if (dev_url) |d| {
+                return try allocator.dupeZ(u8, d);
+            } else {
+                return try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ local_origin, start_path }, 0);
+            }
+        }
+
+        for (u) |c| {
+            if (c < 0x20 or c == 0x7f) return error.ControlCharactersNotAllowed;
+        }
+
+        // Protocol-relative URLs are not local app paths
+        if (std.mem.startsWith(u8, u, "//")) return error.InvalidUrl;
+
+        // Path traversal rejection
+        if (std.mem.indexOf(u8, u, "..") != null) return error.InvalidUrl;
+
+        if (hasScheme(u)) {
+            const uri = std.Uri.parse(u) catch return error.InvalidUrl;
+
+            // Dangerous schemes rejected
+            inline for (.{ "file", "javascript", "data", "blob", "about" }) |forbidden| {
+                if (std.ascii.eqlIgnoreCase(uri.scheme, forbidden)) return error.DisallowedScheme;
+            }
+
+            var buf: [512]u8 = undefined;
+            const o = origin(&buf, u) orelse return error.DisallowedOrigin;
+
+            if (local.contains(o) or std.mem.eql(u8, o, local_origin)) {
+                return try allocator.dupeZ(u8, u);
+            }
+            for (sec.allowed_origins) |p| {
+                if (originMatches(p, o)) return try allocator.dupeZ(u8, u);
+            }
+            for (sec.capabilities) |c| {
+                if (originMatches(c.origin, o)) return try allocator.dupeZ(u8, u);
+            }
+            return error.DisallowedOrigin;
+        } else {
+            // Relative app path
+            const trimmed = std.mem.trimStart(u8, u, "/");
+            if (trimmed.len == 0) {
+                if (dev_url) |d| {
+                    return try allocator.dupeZ(u8, d);
+                } else {
+                    return try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ local_origin, start_path }, 0);
+                }
+            }
+
+            if (dev_url) |d| {
+                const base = std.mem.trimEnd(u8, d, "/");
+                return try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ base, trimmed }, 0);
+            } else {
+                return try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ local_origin, trimmed }, 0);
+            }
+        }
+    } else {
+        if (dev_url) |d| {
+            return try allocator.dupeZ(u8, d);
+        } else {
+            return try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ local_origin, start_path }, 0);
+        }
+    }
+}
+
+/// Resolve a window's target URL using the platform's default app_origin.
+/// The returned slice is null-terminated and owned by `allocator`.
+pub fn resolveWindowUrl(
+    allocator: std.mem.Allocator,
+    sec: Security,
+    local: Local,
+    dev_url: ?[]const u8,
+    target_url: ?[]const u8,
+    start_path: []const u8,
+) ResolveUrlError![:0]const u8 {
+    return resolveWindowUrlWithOrigin(allocator, app_origin, sec, local, dev_url, target_url, start_path);
+}
+
 test origin {
     var buf: [256]u8 = undefined;
     try std.testing.expectEqualStrings("app://app", origin(&buf, "app://app/index.html?x=1").?);
@@ -250,4 +416,156 @@ test bridgePatterns {
     try std.testing.expectEqualStrings("app://app/*", patterns[0]);
     try std.testing.expectEqualStrings("http://localhost/*", patterns[1]);
     try std.testing.expectEqualStrings("https://partner.example/*", patterns[2]);
+}
+
+test validateExternalUrl {
+    const default_sec: Security = .{};
+
+    // Valid URLs
+    try validateExternalUrl(default_sec, "https://ziglang.org");
+    try validateExternalUrl(default_sec, "http://localhost:8080/path");
+    try validateExternalUrl(default_sec, "https://example.com/a/b?c=d#hash");
+    try validateExternalUrl(default_sec, "mailto:user@example.com");
+
+    // Case-insensitivity in scheme
+    try validateExternalUrl(default_sec, "HTTPS://Example.COM/test");
+    try validateExternalUrl(default_sec, "Mailto:User@Example.Com");
+
+    // Dangerous schemes always rejected
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(default_sec, "file:///etc/passwd"));
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(default_sec, "javascript:alert(1)"));
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(default_sec, "data:text/html,<h1>hi</h1>"));
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(default_sec, "blob:http://example.com/123"));
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(default_sec, "about:blank"));
+
+    // Custom unallowed schemes rejected
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(default_sec, "slack://channel?id=123"));
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(default_sec, "custom:do_something"));
+
+    // Dangerous schemes cannot be allowed even if listed in config
+    const bypass_attempt_sec: Security = .{
+        .open_external_schemes = &.{ "file", "javascript", "data", "https" },
+    };
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(bypass_attempt_sec, "file:///etc/shadow"));
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(bypass_attempt_sec, "javascript:evil()"));
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(bypass_attempt_sec, "data:text/plain,bad"));
+    try validateExternalUrl(bypass_attempt_sec, "https://safe.example.com");
+
+    // Control characters and whitespace rejected
+    try std.testing.expectError(error.ControlCharactersNotAllowed, validateExternalUrl(default_sec, "https://example.com/foo\nbar"));
+    try std.testing.expectError(error.ControlCharactersNotAllowed, validateExternalUrl(default_sec, "https://example.com/foo\rbar"));
+    try std.testing.expectError(error.ControlCharactersNotAllowed, validateExternalUrl(default_sec, "https://example.com/foo bar"));
+
+    // Invalid formatting rejected
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, ""));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "not_a_url"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "http://"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://"));
+
+    // Custom scheme allowlist
+    const custom_sec: Security = .{
+        .open_external_schemes = &.{"https"},
+    };
+    try validateExternalUrl(custom_sec, "https://example.com");
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(custom_sec, "http://example.com"));
+    try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(custom_sec, "mailto:user@example.com"));
+}
+
+test resolveWindowUrlWithOrigin {
+    const sec: Security = .{
+        .allowed_origins = &.{"https://docs.example.com"},
+        .capabilities = &.{.{ .origin = "https://*.trusted.dev" }},
+    };
+    const local_linux: Local = .{ .dev_origin = null };
+    const local_dev: Local = .{ .dev_origin = "http://localhost:5173" };
+
+    const gpa = std.testing.allocator;
+
+    // Production: null url -> local_origin + "/" + start_path
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, null, "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("app://app/index.html", resolved);
+    }
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "https://app.localhost", sec, local_linux, null, null, "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("https://app.localhost/index.html", resolved);
+    }
+
+    // Dev mode: null url -> dev_url
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_dev, "http://localhost:5173/", null, "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("http://localhost:5173/", resolved);
+    }
+
+    // Relative path in production: Linux
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/settings", "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("app://app/settings", resolved);
+    }
+    // Relative path without leading slash in production
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "settings", "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("app://app/settings", resolved);
+    }
+
+    // Relative path in production: Windows
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "https://app.localhost", sec, local_linux, null, "/settings", "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("https://app.localhost/settings", resolved);
+    }
+
+    // Relative path in dev mode: proper slash joining
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_dev, "http://localhost:5173", "/settings", "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("http://localhost:5173/settings", resolved);
+    }
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_dev, "http://localhost:5173/", "settings", "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("http://localhost:5173/settings", resolved);
+    }
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_dev, "http://localhost:5173/", "/notes/42?edit=true#title", "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("http://localhost:5173/notes/42?edit=true#title", resolved);
+    }
+
+    // Allowed external origins
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "https://docs.example.com/guide", "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("https://docs.example.com/guide", resolved);
+    }
+    {
+        const resolved = try resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "https://sub.trusted.dev/api", "index.html");
+        defer gpa.free(resolved);
+        try std.testing.expectEqualStrings("https://sub.trusted.dev/api", resolved);
+    }
+
+    // Disallowed external origins rejected
+    try std.testing.expectError(error.DisallowedOrigin, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "https://evil.example.com/", "index.html"));
+    try std.testing.expectError(error.DisallowedOrigin, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "http://localhost:9999/", "index.html"));
+
+    // Dangerous schemes rejected
+    try std.testing.expectError(error.DisallowedScheme, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "file:///etc/passwd", "index.html"));
+    try std.testing.expectError(error.DisallowedScheme, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "javascript:alert(1)", "index.html"));
+    try std.testing.expectError(error.DisallowedScheme, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "data:text/html,bad", "index.html"));
+
+    // Protocol-relative URLs rejected
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "//evil.com/settings", "index.html"));
+
+    // Path traversal rejected
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/../settings", "index.html"));
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "../secret", "index.html"));
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "foo/../../bar", "index.html"));
+
+    // Control characters rejected
+    try std.testing.expectError(error.ControlCharactersNotAllowed, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/settings\x00bad", "index.html"));
 }

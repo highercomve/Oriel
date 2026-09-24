@@ -155,24 +155,22 @@ pub fn WindowCreator(
             _ = gtk.Window.signals.close_request.connect(window, *App.Window, &onWindowCloseRequest, win_inst, .{});
 
             const gpa = std.heap.smp_allocator;
-            const scheme = @import("scheme.zig").scheme_name;
 
-            if (options.url) |u| {
-                if (std.mem.startsWith(u8, u, "http://") or std.mem.startsWith(u8, u, "https://")) {
-                    view.loadUri(u);
-                } else {
-                    const trimmed = std.mem.trimStart(u8, u, "/");
-                    const full_uri = try std.fmt.allocPrintSentinel(gpa, "{s}://app/{s}", .{ scheme, trimmed }, 0);
-                    defer gpa.free(full_uri);
-                    view.loadUri(full_uri);
-                }
-            } else if (config.dev) |dev| {
+            if (config.dev) |dev| {
                 DevRetry.initRetries(dev.timeout_ms);
                 _ = webkit.WebView.signals.load_failed.connect(view, ?*anyopaque, &DevRetry.onLoadFailed, null, .{});
-                view.loadUri(devUrl());
-            } else {
-                view.loadUri(scheme ++ "://app/" ++ config.start);
             }
+
+            const target_uri = try security.resolveWindowUrl(
+                gpa,
+                config.security,
+                local,
+                if (config.dev) |d| d.url else null,
+                options.url,
+                config.start,
+            );
+            defer gpa.free(target_uri);
+            view.loadUri(target_uri);
 
             window.present();
 
@@ -236,7 +234,7 @@ pub fn WindowCreator(
                 } else decision.use(),
                 .open_external => {
                     decision.ignore();
-                    openExternal(uri);
+                    App.openExternal(uri);
                 },
                 .block => {
                     decision.ignore();

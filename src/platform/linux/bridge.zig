@@ -34,6 +34,9 @@ pub const bridge_js =
     \\      set.add(callback);
     \\      return () => set.delete(callback);
     \\    },
+    \\    openExternal(url) {
+    \\      return handler.postMessage(JSON.stringify({ cmd: "open_external", args: { url } }));
+    \\    },
     \\    __emit(event, payload) {
     \\      for (const cb of listeners.get(event) ?? []) {
     \\        try { cb(payload); } catch (e) { console.error(e); }
@@ -141,6 +144,21 @@ pub fn Bridge(
             }
 
             const pool = App.getWorkerPool();
+
+            if (ipc.isBuiltinCommand(request.cmd)) {
+                const result = ipc.dispatchBuiltin(config.security, temp_alloc, request) catch |err| {
+                    reply.returnErrorMessage(@errorName(err));
+                    return 1;
+                };
+                const result_z = temp_alloc.dupeZ(u8, result) catch {
+                    reply.returnErrorMessage("OutOfMemory");
+                    return 1;
+                };
+                const js_value = jsc.Value.newFromJson(value.getContext(), result_z);
+                defer js_value.unref();
+                reply.returnValue(js_value);
+                return 1;
+            }
 
             if (!ipc.isAsync(api.commands, request.cmd)) {
                 const result = ipc.dispatchRequest(api.commands, temp_alloc, request, if (pool) |p| p.io else null) catch |err| {

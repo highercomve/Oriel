@@ -18,6 +18,8 @@
 
 const std = @import("std");
 pub const ThreadPool = @import("ThreadPool.zig").ThreadPool;
+const security = @import("security.zig");
+const App = @import("App.zig");
 
 pub const Request = struct {
     cmd: []const u8,
@@ -32,6 +34,28 @@ pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
         if (std.mem.eql(u8, item, cmd)) return true;
     }
     return false;
+}
+
+/// Check if `cmd` is a framework built-in command.
+pub fn isBuiltinCommand(cmd: []const u8) bool {
+    return std.mem.eql(u8, cmd, "open_external");
+}
+
+/// Dispatch a built-in framework command.
+pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request: Request) ![]u8 {
+    if (std.mem.eql(u8, request.cmd, "open_external")) {
+        const OpenExternalArgs = struct {
+            url: []const u8,
+        };
+        const args = try std.json.parseFromValueLeaky(OpenExternalArgs, arena, request.args, .{
+            .ignore_unknown_fields = true,
+        });
+        try security.validateExternalUrl(sec, args.url);
+        const url_z = try arena.dupeZ(u8, args.url);
+        App.openExternal(url_z);
+        return arena.dupe(u8, "null");
+    }
+    return error.UnknownCommand;
 }
 
 /// Dispatch one JSON request (`{"cmd": ..., "args": ...}`) to `Commands` and
@@ -185,6 +209,7 @@ pub fn typescript(comptime Commands: type, comptime Events: type) []const u8 {
             \\    oriel: {
             \\      invoke(cmd: string, args: unknown): Promise<unknown>;
             \\      listen(event: string, callback: (payload: unknown) => void): () => void;
+            \\      openExternal(url: string): Promise<void>;
             \\    };
             \\  }
             \\}
@@ -200,6 +225,11 @@ pub fn typescript(comptime Commands: type, comptime Events: type) []const u8 {
             \\/** Subscribe to an event emitted from Zig. Returns an unsubscribe function. */
             \\export function listen<K extends keyof Events>(event: K, callback: (payload: Events[K]) => void): () => void {
             \\  return window.oriel.listen(event, callback as (payload: unknown) => void);
+            \\}
+            \\
+            \\/** Open a URL in the system's default browser. */
+            \\export function openExternal(url: string): Promise<void> {
+            \\  return window.oriel.openExternal(url);
             \\}
             \\
         ;
@@ -358,4 +388,50 @@ test "typescript generation" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "  add: { args: { a: number; label?: string | null; }; result: { sum: number; tags: (string)[]; } };\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  slow_task: { args: null; result: null };\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  note_added: { id: number; };\n  quit: null;\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "openExternal(url: string): Promise<void>;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "export function openExternal(url: string): Promise<void>") != null);
+}
+
+test "builtin open_external dispatch and validation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const HookHelper = struct {
+        var last_uri: ?[]const u8 = null;
+        fn hook(uri: [*:0]const u8) void {
+            last_uri = std.mem.span(uri);
+        }
+    };
+    App.open_external_hook = &HookHelper.hook;
+    defer {
+        App.open_external_hook = null;
+    }
+
+    const sec: security.Security = .{};
+
+    // Valid url
+    const req_ok = try parseRequest(alloc, "{\"cmd\":\"open_external\",\"args\":{\"url\":\"https://example.com/test\"}}");
+    const res = try dispatchBuiltin(sec, alloc, req_ok);
+    try std.testing.expectEqualStrings("null", res);
+    try std.testing.expectEqualStrings("https://example.com/test", HookHelper.last_uri.?);
+
+    // Disallowed scheme: file
+    const req_file = try parseRequest(alloc, "{\"cmd\":\"open_external\",\"args\":{\"url\":\"file:///etc/passwd\"}}");
+    try std.testing.expectError(error.DisallowedScheme, dispatchBuiltin(sec, alloc, req_file));
+
+    // Disallowed scheme: javascript
+    const req_js = try parseRequest(alloc, "{\"cmd\":\"open_external\",\"args\":{\"url\":\"javascript:alert(1)\"}}");
+    try std.testing.expectError(error.DisallowedScheme, dispatchBuiltin(sec, alloc, req_js));
+
+    // Disallowed scheme: data
+    const req_data = try parseRequest(alloc, "{\"cmd\":\"open_external\",\"args\":{\"url\":\"data:text/html,test\"}}");
+    try std.testing.expectError(error.DisallowedScheme, dispatchBuiltin(sec, alloc, req_data));
+
+    // Unknown builtin command
+    const req_unknown = try parseRequest(alloc, "{\"cmd\":\"something_else\",\"args\":null}");
+    try std.testing.expectError(error.UnknownCommand, dispatchBuiltin(sec, alloc, req_unknown));
+
+    try std.testing.expect(isBuiltinCommand("open_external"));
+    try std.testing.expect(!isBuiltinCommand("greet"));
 }

@@ -53,6 +53,9 @@ pub const bridge_js =
     \\      set.add(callback);
     \\      return () => set.delete(callback);
     \\    },
+    \\    openExternal(url) {
+    \\      return this.invoke("open_external", { url });
+    \\    },
     \\    __emit(event, payload) {
     \\      for (const cb of listeners.get(event) ?? []) {
     \\        try { cb(payload); } catch (e) { console.error(e); }
@@ -309,7 +312,10 @@ pub fn Bridge(
             fn run(ctx: ?*anyopaque) void {
                 const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
                 defer finish(self);
-                const result = ipc.dispatchRequest(api.commands, self.arena_state.allocator(), self.request, self.io) catch |err| {
+                const result = (if (ipc.isBuiltinCommand(self.request.cmd))
+                    ipc.dispatchBuiltin(config.security, self.arena_state.allocator(), self.request)
+                else
+                    ipc.dispatchRequest(api.commands, self.arena_state.allocator(), self.request, self.io)) catch |err| {
                     sendErrorReply(self.view, self.id, @errorName(err));
                     return;
                 };

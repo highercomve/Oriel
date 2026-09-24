@@ -304,7 +304,7 @@ pub fn WindowCreator(
                             _ = a.lpVtbl.put_Cancel(a, win32.TRUE);
                             const uri_z = std.heap.smp_allocator.dupeZ(u8, uri_u8) catch return win32.S_OK;
                             defer std.heap.smp_allocator.free(uri_z);
-                            openExternal(uri_z);
+                            App.openExternal(uri_z);
                         },
                         .block => {
                             _ = a.lpVtbl.put_Cancel(a, win32.TRUE);
@@ -367,7 +367,7 @@ pub fn WindowCreator(
                             .open_external => {
                                 const uri_z = std.heap.smp_allocator.dupeZ(u8, uri_u8) catch return win32.S_OK;
                                 defer std.heap.smp_allocator.free(uri_z);
-                                openExternal(uri_z);
+                                App.openExternal(uri_z);
                             },
                             .block => {
                                 log.warn("blocked new window to {s}", .{uri_u8});
@@ -845,30 +845,18 @@ pub fn WindowCreator(
             _ = controller.putIsVisible(win32.TRUE);
 
             // Load initial URI
-            if (options.url) |u| {
-                if (std.mem.startsWith(u8, u, "http://") or std.mem.startsWith(u8, u, "https://")) {
-                    const u_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, u);
-                    defer gpa.free(u_w);
-                    _ = view.navigate(u_w.ptr);
-                } else {
-                    const trimmed = std.mem.trimStart(u8, u, "/");
-                    const full_uri = try std.fmt.allocPrint(gpa, "https://app.localhost/{s}", .{trimmed});
-                    defer gpa.free(full_uri);
-                    const full_uri_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, full_uri);
-                    defer gpa.free(full_uri_w);
-                    _ = view.navigate(full_uri_w.ptr);
-                }
-            } else if (config.dev) |dev| {
-                const dev_url_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, dev.url);
-                defer gpa.free(dev_url_w);
-                _ = view.navigate(dev_url_w.ptr);
-            } else {
-                const start_uri = try std.fmt.allocPrint(gpa, "https://app.localhost/{s}", .{config.start});
-                defer gpa.free(start_uri);
-                const start_uri_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, start_uri);
-                defer gpa.free(start_uri_w);
-                _ = view.navigate(start_uri_w.ptr);
-            }
+            const target_uri = try security.resolveWindowUrl(
+                gpa,
+                config.security,
+                local,
+                if (config.dev) |d| d.url else null,
+                options.url,
+                config.start,
+            );
+            defer gpa.free(target_uri);
+            const target_uri_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, target_uri);
+            defer gpa.free(target_uri_w);
+            _ = view.navigate(target_uri_w.ptr);
 
             if (ShellMod.on_window_created_fn) |hook| {
                 hook(hwnd);
