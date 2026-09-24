@@ -1,51 +1,24 @@
-//! Desktop notifications via GNotification.
+//! Desktop notifications.
+//!
+//! Linux backend: GIO GNotification.
+//! Windows backend: Win32 Shell_NotifyIconW balloon.
 
-const std = @import("std");
-const gio = @import("gio");
-const oriel = @import("../oriel.zig");
+const builtin = @import("builtin");
+pub const common = @import("notification/common.zig");
 
-pub const NotificationOptions = struct {
-    id: ?[]const u8 = null,
-    title: []const u8,
-    body: ?[]const u8 = null,
+pub const NotificationOptions = common.NotificationOptions;
+pub const notify = impl.notify;
+pub const check = impl.check;
+
+pub const impl = switch (builtin.os.tag) {
+    .linux => @import("notification/linux.zig"),
+    .windows => @import("notification/windows.zig"),
+    else => @compileError("notification is not supported on " ++ @tagName(builtin.os.tag)),
 };
 
-pub fn notify(options: NotificationOptions) !void {
-    const app = oriel.App.gtk_app orelse return error.NoApp;
-    var title_buf: [256]u8 = undefined;
-    const title_z = try std.fmt.bufPrintSentinel(&title_buf, "{s}", .{options.title}, 0);
-    const notif = gio.Notification.new(title_z.ptr);
-    defer notif.unref();
-
-    if (options.body) |body| {
-        var body_buf: [1024]u8 = undefined;
-        const body_z = try std.fmt.bufPrintSentinel(&body_buf, "{s}", .{body}, 0);
-        notif.setBody(body_z.ptr);
-    }
-
-    var id_buf: [128]u8 = undefined;
-    const id_z = if (options.id) |id|
-        try std.fmt.bufPrintSentinel(&id_buf, "{s}", .{id}, 0)
-    else
-        null;
-
-    const app_gapp: *gio.Application = @ptrCast(app);
-    app_gapp.sendNotification(if (id_z) |p| p.ptr else null, notif);
-}
-
-pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
-    const notif = gio.Notification.new("oriel check");
-    defer notif.unref();
-    notif.setBody("notification smoke check");
-    return .{
-        .module = "notification",
-        .ok = true,
-        .detail = try std.fmt.allocPrint(gpa, "GNotification available", .{}),
-    };
-}
-
-test "notification creation" {
-    const notif = gio.Notification.new("test title");
-    defer notif.unref();
-    notif.setBody("test body");
+test {
+    const std = @import("std");
+    std.testing.refAllDecls(common);
+    std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(impl);
 }
