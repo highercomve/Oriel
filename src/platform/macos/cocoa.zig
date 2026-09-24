@@ -186,10 +186,10 @@ pub fn callBlock(block: id, comptime Args: type, args: Args) void {
     @call(.auto, f, .{lit} ++ args);
 }
 
-/// Keep a block received as an argument past the call (+1; `releaseBlock` it).
-pub fn copyBlock(block: id) ?id {
-    const copied = _Block_copy(block) orelse return null;
-    return @ptrCast(@alignCast(copied));
+/// Keep a block received as an argument past the call (+1; `releaseBlock`
+/// it). Null only when out of memory.
+pub fn copyBlock(block: id) id {
+    return @ptrCast(@alignCast(_Block_copy(block)));
 }
 
 pub fn releaseBlock(block: id) void {

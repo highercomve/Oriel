@@ -311,15 +311,16 @@ pub fn Bridge(
                 return;
             };
             async_ctx.* = .{
-                .reply = cocoa.copyBlock(reply) orelse {
-                    std.heap.smp_allocator.destroy(async_ctx);
-                    replyError(reply, "OutOfMemory");
-                    return;
-                },
+                .reply = cocoa.copyBlock(reply),
                 .arena_state = undefined,
                 .result = null,
                 .err_name = null,
             };
+            if (async_ctx.reply == null) {
+                std.heap.smp_allocator.destroy(async_ctx);
+                replyError(reply, "OutOfMemory");
+                return;
+            }
             ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, req_slice, worker_pool.io, async_ctx, AsyncReply.onWorkerDone) catch |err| {
                 cocoa.releaseBlock(async_ctx.reply);
                 std.heap.smp_allocator.destroy(async_ctx);
@@ -406,7 +407,9 @@ pub fn Bridge(
                 // Deep-copy the request out of the caller's parse arena.
                 const request_json = std.json.Stringify.valueAlloc(arena, request, .{}) catch return self.fail("OutOfMemory");
                 self.request = ipc.parseRequest(arena, request_json) catch |err| return self.fail(@errorName(err));
-                self.reply = cocoa.copyBlock(reply) orelse return self.fail("OutOfMemory");
+                const copied = cocoa.copyBlock(reply);
+                if (copied == null) return self.fail("OutOfMemory");
+                self.reply = copied;
                 // `run` or `discard` releases the block and frees the task.
                 ShellMod.dispatchWithCleanup(&run, self, &discard);
             }
