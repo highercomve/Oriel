@@ -42,7 +42,7 @@ const Features = struct {
     llama: bool,
     whisper: bool,
 
-    fn fromOptions(b: *std.Build, target: std.Build.ResolvedTarget) Features {
+    fn fromOptions(b: *std.Build) Features {
         if (b.option(bool, "ggml_cuda", "Enable CUDA backend (not supported)") orelse false) {
             fatal("CUDA is not supported yet, see README.md", .{});
         }
@@ -53,36 +53,15 @@ const Features = struct {
             fatal("llama_mtmd is not supported yet (libmtmd is not built; its API is experimental upstream), see README.md", .{});
         }
 
-        const is_windows = target.result.os.tag == .windows;
-        const unimplemented_on_windows = comptime [_][]const u8{
-            "llama",
-            "whisper",
-        };
-
+        // Every module and plugin builds for Linux and Windows; the native
+        // dependencies are opt-in on both.
         var f: Features = undefined;
         inline for (@typeInfo(Features).@"struct".fields) |field| {
-            const is_unimplemented_windows = comptime blk: {
-                for (unimplemented_on_windows) |unimpl| {
-                    if (std.mem.eql(u8, field.name, unimpl)) break :blk true;
-                }
-                break :blk false;
-            };
-
-            const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
-            if (is_windows and is_unimplemented_windows and (opt orelse false)) {
-                fatal("{s} is not supported on Windows yet", .{field.name});
-            }
-
             const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
                 std.mem.eql(u8, field.name, "llama") or
                 std.mem.eql(u8, field.name, "whisper"));
-
-            const default_val = if (is_windows)
-                (!is_unimplemented_windows and !is_native)
-            else
-                !is_native;
-
-            @field(f, field.name) = opt orelse default_val;
+            const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
+            @field(f, field.name) = opt orelse !is_native;
         }
 
         if (f.sqlite_vec and !f.sql) {
@@ -96,7 +75,7 @@ const Features = struct {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const features = Features.fromOptions(b, target);
+    const features = Features.fromOptions(b);
 
     const oriel = addOrielModule(b, target, optimize, features);
 
