@@ -1,0 +1,213 @@
+---
+.title = "Code signing",
+.description = "Sign Windows and macOS builds, and sign your own updates.",
+.date = .date("2026-09-24T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+Oriel has no built-in code-signing step in the build process. Signing is a separate operation you perform after packaging. These are the manual steps to sign Windows Authenticode and self-update manifests.
+
+# Windows Authenticode signing
+
+Sign both the main app executable and the installer to build user trust and comply with SmartScreen reputation systems.
+
+## Prerequisites
+
+- A code-signing certificate (`.pfx` file with private key and certificate chain)
+- The certificate password
+- `osslsigncode` (for signing on Linux) or `signtool` (on Windows)
+
+## Signing on Linux
+
+Install `osslsigncode`:
+
+```sh
+# Arch
+pacman -S osslsigncode
+
+# Debian / Ubuntu
+apt install osslsigncode
+```
+
+Sign the app executable:
+
+```sh
+osslsigncode sign -pkcs12 cert.pfx -pass "$CERT_PASS" \
+  -n "My App Name" \
+  -i https://example.com \
+  -t http://timestamp.digicert.com \
+  -in zig-out/bin/my-app.exe \
+  -out zig-out/bin/my-app-signed.exe
+```
+
+Then sign the installer:
+
+```sh
+osslsigncode sign -pkcs12 cert.pfx -pass "$CERT_PASS" \
+  -n "My App Name" \
+  -i https://example.com \
+  -t http://timestamp.digicert.com \
+  -in zig-out/package/my-app-setup.exe \
+  -out zig-out/package/my-app-setup-signed.exe
+```
+
+Verify the signature:
+
+```sh
+osslsigncode verify zig-out/bin/my-app-signed.exe
+osslsigncode verify zig-out/package/my-app-setup-signed.exe
+```
+
+## Signing on Windows
+
+Use `signtool` (part of the Windows SDK):
+
+```sh
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f cert.pfx /p %CERT_PASS% zig-out\bin\my-app.exe
+
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f cert.pfx /p %CERT_PASS% zig-out\package\my-app-setup.exe
+```
+
+Verify:
+
+```sh
+signtool verify /pa zig-out\bin\my-app.exe
+```
+
+## Certificate types
+
+- **OV (Organization Validated):** Standard code-signing certificate. SmartScreen reputation builds over time.
+- **EV (Extended Validation):** Premium certificate with stricter validation. SmartScreen recognizes it immediately upon first run, avoiding reputation warnings. Requires a hardware token or cloud HSM for the private key.
+
+For maximum compatibility, sign the executable *before* building the installer, then sign the installer separately.
+
+# macOS code signing and notarization
+
+**Planned** for Milestone 7.
+
+When macOS support ships, signing will involve:
+
+1. **Code signing:** sign the `.app` bundle with your Developer ID Application certificate:
+
+```sh
+codesign --force --options runtime --timestamp --entitlements App.entitlements \
+  -s "Developer ID Application: Your Name (TEAMID)" App.app
+```
+
+2. **Notarization:** submit the `.dmg` to Apple for notarization (required on macOS 10.15+):
+
+```sh
+xcrun notarytool submit App.dmg --keychain-profile notary --wait
+xcrun stapler staple App.dmg
+```
+
+3. **Verification:**
+
+```sh
+spctl -a -vv App.app
+```
+
+# Self-update signing with Ed25519
+
+Oriel's built-in updater uses Ed25519 to verify update manifests. Generate a signing key, sign your release artifacts, and embed the public key in your app.
+
+## 1. Generate a keypair
+
+```sh
+zig build keygen -- --name myapp --out-dir ~/.config/myapp/keys
+```
+
+This creates:
+- `~/.config/myapp/keys/myapp.key` (private key, mode 0600, never commit this)
+- `~/.config/myapp/keys/myapp.pub` (public key, base64-encoded)
+
+Keep the private key secure; the public key goes into your app.
+
+## 2. Sign an update artifact
+
+After building a release binary or AppImage:
+
+```sh
+zig build sign-update -- zig-out/bin/my-app \
+  --app-id com.example.App \
+  --version 1.2.0 \
+  --url https://releases.example.com/my-app-1.2.0 \
+  --key ~/.config/myapp/keys/myapp.key \
+  --out manifest.json
+```
+
+This produces a manifest:
+
+```json
+{
+  "app_id": "com.example.App",
+  "version": "1.2.0",
+  "target": "x86_64-linux",
+  "format": "raw",
+  "size": 5242880,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "url": "https://releases.example.com/my-app-1.2.0",
+  "signature": "base64-ed25519-signature"
+}
+```
+
+## 3. Embed the public key in your app
+
+In `build.zig`, pass the public key to `addApp`:
+
+```zig
+_ = oriel.addApp(b, dep, .{
+    .name = "my-app",
+    .root_source_file = b.path("src/main.zig"),
+    .frontend = .{ .dir = "frontend" },
+    .update_public_key = "base64-public-key-from-myapp.pub",
+});
+```
+
+## 4. Implement updater commands
+
+In `src/main.zig`:
+
+```zig
+const app = @import("oriel_app");
+
+const Updater = oriel.updater.Commands(.{
+    .app_id = "com.example.App",
+    .manifest_url = "https://releases.example.com/manifest.json",
+    .current_version = "1.0.0",
+    .public_key_b64 = app.update_public_key orelse @panic("missing update key"),
+});
+
+pub const Commands = struct {
+    pub const updater_check = Updater.updater_check;
+    pub const updater_install = Updater.updater_install;
+    pub const updater_restart = Updater.updater_restart;
+
+    pub const async_commands = .{ "updater_check", "updater_install", "updater_restart" };
+};
+```
+
+## 5. Call from the frontend
+
+```ts
+import { invoke, listen } from "./oriel";
+
+const update = await invoke("updater_check");
+if (update?.available) {
+    listen("updater://progress", ({ downloaded, total }) => {
+        console.log(`Downloaded ${downloaded} of ${total} bytes`);
+    });
+    await invoke("updater_install");
+    await invoke("updater_restart");
+}
+```
+
+The updater downloads the new binary, verifies the Ed25519 signature, replaces the running executable atomically, and restarts the app.
+
+# Security notes
+
+- **Never commit private keys** to version control. Store them securely outside the repo (e.g. `~/.config/`).
+- **Use HTTPS** for manifest and payload URLs in production.
+- **Private keys on CI:** if you sign releases in CI, use a GitHub secret or a cloud HSM to store the private key.
+- **JavaScript cannot override** the manifest URL, public key, or target path; these are baked into native code at compile time.

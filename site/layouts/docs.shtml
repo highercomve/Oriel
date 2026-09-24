@@ -1,0 +1,36 @@
+<extend template="base.shtml">
+<head id="head">
+	<title :text="$page.title.suffix(' · Oriel docs')"></title>
+</head>
+<body id="body">
+	<div class="docs">
+		<aside class="sidebar">
+			<nav>
+				<h4>Guide</h4>
+				<a href="$site.page('docs/getting-started').link()">Getting started</a>
+				<a href="$site.page('docs/tutorial').link()">Tutorial: a notes app</a>
+				<a href="$site.page('docs/development').link()">Development</a>
+				<a href="$site.page('docs/building').link()">Building &amp; packaging</a>
+				<a href="$site.page('docs/signing').link()">Code signing</a>
+				<h4>Reference</h4>
+				<a href="$site.page('docs/concepts').link()">Concepts</a>
+				<a href="$site.page('docs/modules').link()">Modules</a>
+				<a href="$site.page('docs/roadmap').link()">Roadmap</a>
+			</nav>
+		</aside>
+		<main class="doc">
+			<article class="prose">
+				<h1 :text="$page.title"></h1>
+				<p class="doc-lead" :if="$page.description.len().gt(0)" :text="$page.description"></p>
+				<div class="content" :html="$page.content()"></div>
+			</article>
+			<div class="doc-foot">
+				<a class="edit-link" href="https://github.com/highercomve/Oriel/tree/main/site/content/docs">Improve these docs on GitHub</a>
+			</div>
+		</main>
+		<aside class="toc">
+			<h4>On this page</h4>
+			<div :html="$page.toc()"></div>
+		</aside>
+	</div>
+</body>

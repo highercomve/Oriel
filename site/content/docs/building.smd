@@ -1,0 +1,182 @@
+---
+.title = "Building & packaging",
+.description = "Build release binaries and packages for Linux and Windows.",
+.date = .date("2026-09-24T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+# Linux
+
+## Build a binary
+
+The simplest way is to use the `oriel` CLI:
+
+```sh
+oriel build
+```
+
+This runs npm to build the frontend, embeds it into the Zig binary, and outputs `zig-out/bin/<app-name>`.
+
+Optimization modes (all are valid; `ReleaseSafe` is the default):
+
+```sh
+oriel build -Doptimize=ReleaseFast    # faster app, slower build
+oriel build -Doptimize=ReleaseSmall   # smallest binary
+oriel build -Doptimize=Debug          # debug symbols, slower app
+```
+
+Run directly:
+
+```sh
+oriel run   # build and run
+```
+
+## Package for distribution
+
+Create `.deb`, `.rpm` and `.AppImage` packages:
+
+```sh
+oriel package
+```
+
+All packages are written to `zig-out/package/`.
+
+### Debian and RPM
+
+These are built with `nfpm` and use the metadata from `build.zig`:
+
+```zig
+.package = .{
+    .id = "dev.oriel.Notes",
+    .name = "Oriel Notes",
+    .summary = "A simple notes app",
+    .version = "0.1.0",
+    .license = "MIT",
+    .homepage = "https://example.com",
+    .categories = "Utility;",
+}
+```
+
+Packages include:
+- The binary in `/usr/local/bin/`
+- A `.desktop` entry and icons in standard locations
+- An uninstall entry for the package manager
+- Auto-derived runtime dependencies based on enabled modules
+
+### AppImage
+
+An AppImage is a self-contained, relocatable package. It does **not** bundle GTK4 or WebKitGTK; it relies on the system having them installed. This keeps AppImages small (~10 MB) but means they only run on distros with WebKitGTK 6.0.
+
+To run the AppImage on another machine, the system must have:
+- GTK4 and WebKitGTK 6.0 development packages installed (or runtime packages if available)
+
+# Windows
+
+Oriel supports cross-compiling Windows binaries from Linux. Windows builds use Microsoft Edge WebView2 and Win32 APIs.
+
+## Requirements
+
+To build Windows binaries on Linux, you need:
+- The `makensis` tool (NSIS v3+) for the installer
+- `WebView2Loader.dll` from the Microsoft Edge WebView2 Evergreen distribution
+
+## Download WebView2Loader.dll
+
+Get it from the [Microsoft.Web.WebView2 NuGet package](https://www.nuget.org/packages/Microsoft.Web.WebView2/):
+1. Download the `.nupkg` file (it is a ZIP archive)
+2. Extract it: `unzip Microsoft.Web.WebView2.VERSION.nupkg`
+3. Find `runtimes/win-x64/native/WebView2Loader.dll` or `runtimes/win-x86/native/WebView2Loader.dll`
+
+## Cross-compile a binary
+
+```sh
+zig build -Dtarget=x86_64-windows
+```
+
+This produces `zig-out/bin/<app-name>.exe`.
+
+## Build a Windows installer
+
+```sh
+zig build package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+```
+
+This generates a per-user NSIS installer at `zig-out/package/<app-name>-<version>-setup.exe`. The installer:
+- Installs to `%LOCALAPPDATA%\Programs\<name>` without requiring administrator privilege
+- Adds Start Menu shortcuts
+- Checks if the Microsoft Edge WebView2 runtime is installed; if not, prompts the user to download it
+- Registers an uninstall entry in Windows Add/Remove Programs
+
+## Test under Wine
+
+For testing the Windows build on Linux before releasing, use Wine or Proton:
+
+```sh
+scripts/wine.sh setup    # one-time setup: creates .wine-test/ and installs WebView2
+cd examples/smoke
+zig build -Dtarget=x86_64-windows -Dwebview2-loader=$(../../scripts/wine.sh loader)
+timeout 180 ../../scripts/wine.sh run .wine-test/smoke/bin/oriel-smoke.exe --auto-quit
+```
+
+This runs the app in a headless Wine environment. See `docs/windows-testing.md` for full instructions and known limitations.
+
+# macOS
+
+**Planned** for Milestone 7. macOS support includes `.app` bundle creation and `.dmg` packaging, with optional code signing and notarization. This requires development on a Mac.
+
+# Native dependencies
+
+Some features require native C libraries, opt-in behind build flags.
+
+## SQLite vector search (`-Dsqlite_vec`)
+
+Enable vector search in SQLite:
+
+```sh
+zig build -Dsqlite_vec
+```
+
+Default: off. Requires `sql` to be enabled.
+
+## Local AI (`-Dllama` and `-Dwhisper`)
+
+```sh
+zig build -Dllama -Dwhisper
+```
+
+Default: both off. Build time is about 45 seconds cold; cached rebuilds are fast. CPU features are auto-detected; for distributable packages, specify a baseline:
+
+```sh
+zig build -Dllama -Dwhisper -Dcpu=x86_64_v2
+```
+
+Use `-Dcpu=baseline` for maximum portability.
+
+## GPU acceleration
+
+### CUDA (Linux only)
+
+Compile with CUDA support for whisper and llama:
+
+```sh
+zig build -Dllama -Dwhisper -Dggml_cuda
+```
+
+This requires:
+- The CUDA toolkit (set `CUDA_PATH` or pass `-Dcuda_path=/opt/cuda`)
+- An NVIDIA GPU at runtime (CPU fallback works if the library can't find a GPU)
+
+The CUDA backend is compiled as `libggml-cuda.so` and loaded at runtime from the app's directory.
+
+First build takes a few minutes; cached builds are fast. For distributable builds, specify a target architecture:
+
+```sh
+zig build -Dggml_cuda -Dcuda_arch=all-major
+```
+
+Measured speedup (11 s audio clip on RTX 4070): 3.2 s on CPU → 0.8 s on CUDA.
+
+### Vulkan
+
+**Not supported yet.**

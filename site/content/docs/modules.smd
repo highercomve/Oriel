@@ -1,0 +1,296 @@
+---
+.title = "Modules",
+.description = "Every built-in module and plugin, its build flag and platform support.",
+.date = .date("2026-09-24T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+# Module overview
+
+| Module | Flag | Default | Linux | Windows |
+|---|---|---|---|---|
+| Tray | `tray` | on | ✓ | ✓ |
+| Updater | `updater` | on | ✓ | ✓ |
+| Media server | `media_server` | on | ✓ | ✓ |
+| SQL | `sql` | on | ✓ | ✓ |
+| File watching | `fs_watch` | on | ✓ | ✓ |
+| Dialogs | `dialog` | on | ✓ | ✓ |
+| Notifications | `notification` | on | ✓ | ✓ |
+| Settings store | `store` | on | ✓ | ✓ |
+| App menu | `menu` | on | ✓ | ✓ |
+| Global shortcuts | `global_shortcut` | on | ✓ | ✓ |
+| Input injection | `input` | on | ✓ | ✓ |
+| Clipboard | `clipboard` | on | ✓ | ✓ |
+| Vector search | `sqlite_vec` | **off** | ✓ | ✓ |
+| LLM inference | `llama` | **off** | ✓ | ✓ |
+| Speech-to-text | `whisper` | **off** | ✓ | ✓ |
+| Audio capture | `audio_capture` | **off** | ✓ (Linux only) | — |
+
+All modules build for Linux and Windows. Native dependencies (`sqlite_vec`, `llama`, `whisper`, `audio_capture`) are **off by default** and opt-in via `-D` flags. To disable a default-on module, pass `-D<name>=false`.
+
+# Tray icon
+
+System tray icon with a clickable menu. Left-click toggles the app window visibility.
+
+```zig
+tray = try oriel.tray.Tray.create(gpa, .{
+    .id = "com.example.App",
+    .title = "My App",
+    .icon = .{ .png = @embedFile("icon.png") },
+    .menu = &.{
+        .{ .item = .{ .id = "show", .label = "Show" } },
+        .{ .check = .{ .id = "dnd", .label = "Do not disturb" } },
+        .{ .separator = {} },
+        .{ .item = .{ .id = "quit", .label = "Quit" } },
+    },
+    .on_menu = onTrayMenu,
+});
+```
+
+**Platform support:** Linux (StatusNotifierItem + DBusMenu) · Windows (Shell_NotifyIconW) · macOS planned.
+
+# Updater
+
+Built-in self-updater with Ed25519 signature verification and atomic binary replacement. Emits progress events and restarts the app.
+
+```zig
+const Updater = oriel.updater.Commands(.{
+    .app_id = "com.example.App",
+    .manifest_url = "https://releases.example.com/manifest.json",
+    .current_version = "1.0.0",
+    .public_key_b64 = app.update_public_key orelse @panic("missing key"),
+});
+
+pub const Commands = struct {
+    pub const updater_check = Updater.updater_check;
+    pub const updater_install = Updater.updater_install;
+    pub const async_commands = .{ "updater_check", "updater_install" };
+};
+```
+
+See [Code signing]($link.page('docs/signing')) for key generation and signing updates.
+
+**Platform support:** Linux · Windows (tested under Wine) · macOS planned.
+
+# Media server
+
+HTTP server streaming large video and audio files with range-request support (RFC 9110). No need to load multi-GB files into memory.
+
+```zig
+var media: oriel.media_server.Server = undefined;
+try media.start(io, gpa, .{
+    .root_dir = "/home/me/Videos",
+    .port = 17893,
+    .allowed_origin = "app://app",
+});
+defer media.stop();
+```
+
+Also available at `app://app/media/<path>` for fetch requests (WebKitGTK's media player requires http(s), so use the TCP server for `<video>` tags).
+
+**Platform support:** Linux · Windows (tested under Wine) · macOS planned.
+
+# SQL and SQLite
+
+Embedded SQLite database with optional vector search (`sqlite_vec`). Thread-safe, persistent storage.
+
+```zig
+const db = try oriel.sql.Db.open("data.db");
+defer db.close();
+
+const stmt = try db.prepare("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);");
+defer stmt.finalize();
+_ = try stmt.step();
+```
+
+**Platform support:** Linux · Windows · macOS planned.
+
+## Vector search (`-Dsqlite_vec`)
+
+Adds the `sqlite-vec` extension for k-nearest-neighbor (KNN) vector search:
+
+```zig
+try db.exec("CREATE VIRTUAL TABLE embeddings USING vec0(data float[384]);");
+
+var insert = try db.prepare("INSERT INTO embeddings (rowid, data) VALUES (?, ?);");
+defer insert.finalize();
+try insert.bindBlob(1, oriel.sqlite_vec.asBytes(&vector));
+_ = try insert.step();
+```
+
+**Status:** Opt-in with `-Dsqlite_vec` (requires `-Dsql`). Default: off.
+
+# File watching
+
+Monitor directories for file changes and receive events:
+
+```zig
+try oriel.fs_watch.watch(gpa, "/home/me/Documents", onFileChange);
+```
+
+**Platform support:** Linux · Windows · macOS planned.
+
+# Dialogs
+
+Native file open/save dialogs:
+
+```zig
+const file = try oriel.dialog.openFile(gpa, .{
+    .title = "Select a file",
+    .filters = &.{ .{ .name = "Text", .patterns = &.{ "*.txt" } } },
+});
+```
+
+**Platform support:** Linux (`GtkFileDialog`) · Windows (`IFileOpenDialog`) · macOS planned.
+
+# Notifications
+
+System desktop notifications:
+
+```zig
+try oriel.notification.notify(.{
+    .title = "Processing complete",
+    .body = "Your export is ready.",
+});
+```
+
+**Platform support:** Linux (`GNotification`) · Windows (balloon tooltips) · macOS planned.
+
+# Settings store
+
+Thread-safe JSON key-value store with atomic writes. Standard directories per OS (XDG on Linux, Known Folders on Windows):
+
+```zig
+var store = try oriel.store.Store.open(gpa, "dev.example.App", "settings");
+defer store.deinit();
+try store.set("theme", "dark");
+try store.save();
+
+const theme = store.getString("theme");
+```
+
+Also provides `configDir`, `dataDir`, `cacheDir` helpers.
+
+**Platform support:** Linux · Windows · macOS planned.
+
+# App menu bar
+
+Native application menu bar:
+
+```zig
+try oriel.App.setMenu(&.{
+    .{ .submenu = .{ .label = "File", .items = &.{
+        .{ .item = .{ .id = "new", .label = "New", .shortcut = "<Control>n" } },
+        .{ .separator = {} },
+        .{ .item = .{ .id = "quit", .label = "Quit", .shortcut = "<Control>q" } },
+    } } },
+}, onMenuAction);
+```
+
+**Platform support:** Linux (`GMenuModel`) · Windows (Win32 menus; tested under Wine) · macOS planned.
+
+# Global shortcuts
+
+Register system-wide keyboard shortcuts that trigger even when the app is unfocused:
+
+```zig
+try oriel.global_shortcut.register(gpa, .{
+    .id = "rewrite_hotkey",
+    .description = "Rewrite selected text",
+    .trigger = "CTRL+ALT+G",
+}, &onHotkey);
+```
+
+**Platform support:** Linux (Wayland GlobalShortcuts portal + X11 XGrabKey) · Windows (`RegisterHotKey`; tested under Wine) · macOS planned.
+
+# Input injection
+
+Simulate keyboard input and clipboard operations:
+
+```zig
+try oriel.input.typeText("Hello from Zig!");
+try oriel.input.keyCombo("ctrl+v");
+```
+
+**Platform support:** Linux (Wayland virtual-keyboard + X11 XTest) · Windows (`SendInput`; tested under Wine) · macOS planned.
+
+# Clipboard
+
+Background clipboard read/write for text and PNG images:
+
+```zig
+const text = try oriel.clipboard.readText(gpa);
+try oriel.clipboard.writeText("New content");
+```
+
+**Platform support:** Linux (Wayland data-control + X11 GdkClipboard) · Windows · macOS planned.
+
+# Local AI inference
+
+## LLM text generation (`-Dllama`)
+
+Embedded llama.cpp for local text generation. Use quantized models (GGUF format):
+
+```zig
+oriel.llama.initBackend();
+defer oriel.llama.deinitBackend();
+
+const model = try oriel.llama.loadModel("path/to/model.gguf", params);
+defer model.deinit();
+```
+
+Build time: ~45 seconds cold; cached builds are fast. CPU features auto-detected; for distribution, use `-Dcpu=x86_64_v2` or `-Dcpu=baseline`.
+
+**Status:** Opt-in with `-Dllama`. Default: off.
+
+**GPU:** CUDA on Linux with `-Dggml_cuda`.
+
+## Speech recognition (`-Dwhisper`)
+
+Embedded whisper.cpp for speech-to-text:
+
+```zig
+oriel.whisper.initBackend();
+defer oriel.whisper.deinitBackend();
+
+const ctx = try oriel.whisper.loadModel("path/to/ggml-model.bin", params);
+defer ctx.deinit();
+```
+
+Same build-time and distribution considerations as llama.
+
+**Status:** Opt-in with `-Dwhisper`. Default: off.
+
+**GPU:** CUDA on Linux with `-Dggml_cuda`.
+
+## CUDA acceleration
+
+Compile with `-Dggml_cuda` (Linux only) to offload to NVIDIA GPUs:
+
+```sh
+zig build -Dllama -Dwhisper -Dggml_cuda -Dcuda_path=/opt/cuda
+```
+
+Measured speedup on RTX 4070 (11 s audio): 3.2 s on CPU → 0.8 s on CUDA.
+
+Requires the CUDA toolkit and an NVIDIA GPU at runtime; CPU fallback works.
+
+# Audio capture
+
+Record system audio and microphone input for real-time processing.
+
+```zig
+var capture = try oriel.audio_capture.Capture.start(gpa, .{
+    .sample_rate = 16000,
+    .format = .f32,
+    .channels = 1,
+});
+defer capture.stop();
+
+const samples = try capture.read(gpa);  // f32 samples
+```
+
+**Platform support:** Linux (PulseAudio) only. Windows stub available; real WASAPI loopback planned.
+
+**Status:** Opt-in with `-Daudio_capture`. Default: off.

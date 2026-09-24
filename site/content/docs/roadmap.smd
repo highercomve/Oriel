@@ -1,0 +1,70 @@
+---
+.title = "Roadmap",
+.description = "What is done, what is next.",
+.date = .date("2026-09-24T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+# Done (Milestones 1–6)
+
+## Milestone 1: Async commands
+
+Worker thread pool for commands that would block the UI (database queries, network I/O, slow computations). Async commands receive their own arena allocator and run in parallel while the UI stays responsive.
+
+## Milestone 2: ghostpen plugins
+
+Global keyboard shortcuts (Wayland GlobalShortcuts portal + X11 XGrabKey), input injection (Wayland virtual-keyboard + X11 XTest, Windows SendInput), background clipboard access (Wayland data-control, X11 GdkClipboard, Windows), notifications and file dialogs.
+
+## Milestone 3: Framework basics
+
+Multiple windows with per-window security, window options (min/max size, fullscreen, geometry persistence), app menu bar, settings store with XDG/Known Folders support, logging to file and stderr, dev mode with Zig rebuild + restart, ReleaseSafe as the production default.
+
+## Milestone 4: Shipping
+
+Packaging for Linux (deb, rpm, AppImage) and development desktop entries with `.desktop` files and icon installation. Complete updater with manifest fetch, Ed25519 verification, atomic binary replacement, and in-place restart.
+
+## Milestone 4.5: oriel CLI
+
+The `oriel` command-line tool: `init` with React/Vue/Svelte/vanilla templates, `doctor` for environment checks, `dev`/`build`/`run`/`package`/`types`/`check` wrappers around `zig build` steps. Also `install.sh` for distribution.
+
+## Milestone 5: ghostreel enablers
+
+HTTP media server with range-request streaming for large video/audio files. Windows shell (`src/platform/windows/`, Win32 + WebView2 COM), all modules with Windows backends, NSIS installer with WebView2 runtime detection. Opt-in native deps: `-Dsqlite_vec` for vector search, `-Dllama` and `-Dwhisper` for local AI. CUDA GPU acceleration for llama and whisper on Linux (`-Dggml_cuda`). Audio capture (PulseAudio on Linux, live captions in ghostpen).
+
+## Milestone 6: Windows from JavaScript
+
+Open and manage windows from JavaScript with `oriel.window.open()`, `close()`, `setTitle()`, etc. Targeted and broadcast events. System browser via `openExternal()`. SPA fallback for client-side routers with the dot-in-last-segment caveat.
+
+# Next: Milestone 6.5
+
+**`oriel update` self-update:** The Oriel CLI tool uses the same updater as apps built with Oriel. Split the updater module into a GTK-free core and app layer. CLI gets `oriel update [--check] [--version X]` with Oriel's public key baked in and manifest from GitHub Releases.
+
+# Later: Milestone 7 — macOS
+
+**Planned:** built and tested on a Mac.
+
+- NSApplication + NSWindow + WKWebView via Objective-C runtime (zig-objc)
+- All modules with macOS backends: tray (NSStatusItem + NSMenu), menu, dialog (NSOpenPanel/NSSavePanel), store (~/Library/Application Support), clipboard (NSPasteboard), fs_watch (FSEvents), global_shortcut (Carbon RegisterEventHotKey), input (CGEvent), updater (.app bundle replacement), audio (CoreAudio)
+- `.app` bundle and `.dmg` packaging
+- Metal backend for llama/whisper GPU acceleration
+- Code signing and notarization (optional; requires Apple developer account)
+
+# Even later
+
+- Tauri's isolation pattern (sandbox for frontend code)
+- CI: automated `zig build test` and headless smoke checks on every push
+- Windows WASAPI loopback for audio capture
+- Vulkan GPU support (in addition to CUDA and Metal)
+- Per-monitor DPI scaling on Windows
+- Multimodal LLM support via libmtmd
+
+# How to contribute
+
+Oriel is open source on [GitHub](https://github.com/highercomve/Oriel). File issues, open pull requests, or discuss ideas there. Some guidance:
+
+1. **Read PLAN.md** first for architecture and coding rules (memory safety, testing, platform coverage).
+2. **Check open issues** to see what work is needed or in progress.
+3. **Test Windows builds** under Wine before committing (see `docs/windows-testing.md`).
+4. **Run headless checks:** `scripts/headless.sh ./zig-out/bin/oriel-smoke --auto-quit` verifies every module.
+5. **Memory safety:** every PR is reviewed for leaks, null-safety, and thread safety (see `docs/memory-safety-review.md`).

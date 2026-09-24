@@ -1,0 +1,11 @@
+/* Code colours (on the Ink code background in both themes). Zine's
+   highlighter classes plus the tk-* spans used on the home page. */
+.keyword, .keyword_modifier, .keyword_return, .keyword_function, .keyword_type, .keyword_import, .keyword_conditional, .keyword_repeat, .keyword_exception, .keyword_operator, .tk-kw { color: #f7a41d; }
+.string, .string_special, .character, .tk-str { color: #a8d88f; }
+.comment, .comment_documentation, .tk-com { color: #7d8496; font-style: italic; }
+.function, .function_call, .function_method, .function_builtin, .method, .tk-fn { color: #82b8ff; }
+.type, .type_builtin, .type_definition, .tk-ty { color: #ffc857; }
+.number, .float, .boolean, .constant, .constant_builtin, .tk-num { color: #f78c6c; }
+.attribute, .label, .tag { color: #c792ea; }
+.punctuation, .punctuation_bracket, .punctuation_delimiter, .operator { color: #c9c3b8; }
+.variable_builtin, .variable_parameter { color: #f4efe6; }

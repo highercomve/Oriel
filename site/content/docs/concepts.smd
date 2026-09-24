@@ -1,0 +1,214 @@
+---
+.title = "Concepts",
+.description = "How Oriel is put together: IPC, security, windows and routes.",
+.date = .date("2026-09-24T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+# Architecture
+
+Oriel separates platform-neutral application logic from operating-system-specific implementations.
+
+| Layer | Purpose |
+|---|---|
+| `src/core/App.zig` | Cross-platform window, webview, asset serving, IPC dispatch, events, dev mode |
+| `src/core/ipc.zig` | Command and event marshaling, TypeScript type generation |
+| `src/core/security.zig` | Navigation policy, IPC capabilities, CSP enforcement |
+| `src/platform/platform.zig` | Compile-time platform selection (Linux, Windows, macOS) |
+| `src/platform/<os>/` | OS-specific shell: window creation, webview engine, IPC transport, dev server |
+| `src/modules/` | Built-in: tray, updater, SQL, media server, notifications, etc. (default on, opt-out) |
+| `src/plugins/` | App-specific: global shortcuts, input injection, clipboard (opt-in) |
+
+Each module and plugin can have platform-specific backends (e.g. `clipboard.zig` facade + `clipboard/{linux,windows}.zig` implementations).
+
+# Commands and IPC
+
+The Zig side defines a `Commands` struct with public functions. Each function becomes an IPC endpoint:
+
+```zig
+pub const Commands = struct {
+    pub fn greet(gpa: std.mem.Allocator, args: struct { name: []const u8 }) ![]const u8 {
+        return std.fmt.allocPrint(gpa, "Hello, {s}!", .{args.name});
+    }
+};
+```
+
+The TypeScript side gets a typed `invoke` function:
+
+```ts
+const msg = await invoke("greet", { name: "Ada" });
+```
+
+## Synchronous vs. asynchronous
+
+By default, commands run on the main thread. To avoid blocking the UI:
+
+```zig
+pub const Commands = struct {
+    pub const async_commands = .{ "slow_command" };
+
+    pub fn slow_command(gpa: std.mem.Allocator, io: std.Io) ![]const u8 {
+        // Runs on worker thread pool; UI remains responsive
+        // (optional: receive std.Io for network, file I/O, etc.)
+        return "done";
+    }
+};
+```
+
+Async commands receive their own arena allocator (freed after the reply). Each command invocation gets a worker thread from the pool; replies are sent back on the main thread.
+
+# Events
+
+Events flow from Zig to JavaScript. Declare them in `Events`:
+
+```zig
+pub const Events = struct {
+    notes_changed: []const Note,
+    status_updated: struct { message: []const u8, progress: u32 },
+};
+const events = oriel.App.events(Events);
+```
+
+Emit from anywhere (any thread):
+
+```zig
+events.emit(.notes_changed, notes);
+events.emit(.status_updated, .{ .message = "Saving...", .progress = 50 });
+```
+
+Listen in TypeScript:
+
+```ts
+listen("notes_changed", (notes) => setNotes(notes));
+```
+
+Events are type-checked on both sides. Targeted events can be sent to specific windows with `window.emitTo(label, event, data)`.
+
+# Security model
+
+Oriel follows Tauri's security architecture.
+
+## Navigation policy
+
+The webview is confined to:
+- `app://app` (embedded assets, only in production)
+- The Vite dev server (`http://localhost:5173`, only in dev builds)
+- Origins listed in `Config.security.allowed_origins` (read-only, no IPC)
+
+All other navigation (iframes, redirects, popups, links) is blocked. External http(s)/mailto/tel links open in the system browser via `openExternal`.
+
+## Command capabilities
+
+Apps own all commands by default. Remote origins (e.g. a page from `https://docs.example.com`) must be granted specific commands via capabilities:
+
+```zig
+.security = .{
+    .capabilities = &.{
+        .{ .origin = "https://docs.example.com", .commands = &.{ "greet" } },
+    },
+}
+```
+
+Capabilities are matched against the exact origin of the currently-loaded page. Wildcards are supported in the origin (`https://*.example.com`).
+
+## Content Security Policy
+
+Every `app://` response includes a strict CSP header:
+
+```
+default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
+```
+
+No inline scripts, no `eval`. Dev builds (from the Vite server) set no CSP.
+
+## Bridge injection
+
+The `window.oriel` object is only injected on pages allowed to use IPC. Remote origins without the `oriel` command capability cannot call anything.
+
+# Windows and multi-window apps
+
+Open windows from Zig:
+
+```zig
+const win = try oriel.App.openWindow(.{
+    .label = "settings",
+    .title = "Settings",
+    .url = "/settings",
+    .width = 600,
+    .height = 400,
+});
+```
+
+Or from JavaScript (requires the `window` capability):
+
+```ts
+import { window } from "./oriel";
+
+const child = await window.open({
+    label: "child",
+    url: "/child",
+    title: "Child Window",
+    width: 400,
+    height: 300,
+});
+
+await child.setTitle("Updated");
+await child.close();
+```
+
+Access the current window and query others:
+
+```ts
+const current = window.current();     // WindowHandle for this window
+const all = await window.all();       // all open windows
+const specific = await window.get("settings");  // by label
+
+// Targeted events
+await window.emitTo("settings", "config_update", { theme: "dark" });
+```
+
+Windows can emit events to all windows:
+
+```ts
+import { emit } from "./oriel";
+emit("global_update", { version: "1.2.0" });
+```
+
+## Window security
+
+Window creation is opt-in and scoped:
+- App-local origins can open windows by default
+- Remote origins are blocked unless granted the `window` capability
+- Only app-local URLs are allowed by default; remote URLs must pass `allowed_origins`
+- Dangerous schemes (`javascript:`, `file:`, `data:`) are always rejected
+- Labels are validated (alphanumeric, underscores, dashes; max 64 chars)
+- Windows can only modify themselves by default; `allow_modify_other_windows` allows otherwise
+- Cap the concurrent window count with `max_windows` (default 16)
+
+# Routes and Single-Page Apps
+
+In `WindowOptions.url`, relative paths like `"/settings"` are resolved to:
+- **Dev mode:** the Vite server (e.g. `http://localhost:5173/settings`)
+- **Production:** embedded assets (`app://app/settings` on Linux, `https://app.localhost/settings` on Windows)
+
+Absolute URLs with schemes are checked against `allowed_origins` and `capabilities`.
+
+## SPA Fallback caveat
+
+With `config.spa_fallback = true` (default), deep links and 404s serve `index.html` for client-side routers. However, paths whose last segment contains a dot (e.g. `/users/john.doe` or `/report.pdf`) are treated as asset files and will return 404 if not found.
+
+This is intentional: it prevents `/api/data.json` from loading `index.html` when the API endpoint doesn't exist.
+
+# External links
+
+The `openExternal(url)` function opens a URL in the user's default application:
+
+```ts
+import { openExternal } from "./oriel";
+await openExternal("https://ziglang.org");
+```
+
+Only `http:`, `https:` and `mailto:` schemes are allowed by default (configurable). Dangerous schemes (`file:`, `javascript:`, `data:`, `blob:`, `about:`) and control characters are always rejected.
+
+On Linux, it uses the XDG desktop portal or `xdg-open`. On Windows, it uses `ShellExecuteW`.

@@ -1,0 +1,173 @@
+<extend template="base.shtml">
+<head id="head">
+	<title>Oriel · Desktop apps with Zig and the web</title>
+</head>
+<body id="body">
+	<main class="home">
+		<section class="hero">
+			<div class="hero-glow" aria-hidden="true"></div>
+			<div class="hero-inner">
+				<img class="hero-mark" src="$site.asset('brand/oriel-icon.svg').link()" alt="Oriel logo" width="96" height="96">
+				<p class="eyebrow">Zig 0.16 · GTK4 + WebKitGTK · Win32 + WebView2</p>
+				<h1 class="hero-title">Desktop apps in Zig.<br><span class="accent">UI with the web.</span></h1>
+				<p class="hero-lead">Oriel gives your React, Vue, Svelte or plain HTML frontend a native window and the system webview, and lets it call typed Zig commands. Small binaries, a small build cache, secure by default.</p>
+				<div class="hero-actions">
+					<a class="btn btn-primary" href="$site.page('docs/getting-started').link()">Get started</a>
+					<a class="btn btn-ghost" href="https://github.com/highercomve/Oriel">View on GitHub</a>
+				</div>
+				<div class="install">
+					<span class="install-prompt">$</span>
+					<code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh</code>
+					<button class="copy-btn" type="button" data-copy="install-cmd" aria-label="Copy install command">Copy</button>
+				</div>
+			</div>
+		</section>
+
+		<section class="section">
+			<div class="section-head">
+				<h2>Why Oriel</h2>
+				<p>Everything a desktop app needs, compiled in only when you ask for it.</p>
+			</div>
+			<div class="feature-grid">
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg></div>
+					<h3>Small and fast to build</h3>
+					<p>A release app is a few MB. The build cache is hundreds of MB, not gigabytes, and Zig rebuilds incrementally.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h13l-4-4M17 17H4l4 4"/></svg></div>
+					<h3>Typed both ways</h3>
+					<p>Write <code>Commands</code> and <code>Events</code> as plain Zig structs. <code>invoke</code> and <code>listen</code> are generated for TypeScript at compile time.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v6c0 4.4 3 7.6 7 9 4-1.4 7-4.6 7-9V6l-7-3z"/><path d="m9 12 2 2 4-4"/></svg></div>
+					<h3>Secure by default</h3>
+					<p>Navigation limits, per-origin command capabilities, a strict CSP, and a bridge injected only into your own pages.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
+					<h3>Batteries, opt-in</h3>
+					<p>Tray, updater, SQLite and sqlite-vec, dialogs, notifications, global shortcuts, clipboard, file watching, media server.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><rect x="10" y="10" width="4" height="4"/></svg></div>
+					<h3>Local AI built in</h3>
+					<p>llama.cpp and whisper.cpp as modules, with a CUDA backend on Linux. Live captions run on the GPU in the ghostpen-lite example.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
+					<h3>Ship it</h3>
+					<p><code>oriel package</code> builds deb, rpm and AppImage. Windows <code>setup.exe</code> installers cross-compile from Linux.</p>
+				</article>
+			</div>
+		</section>
+
+		<section class="section showcase">
+			<div class="section-head">
+				<h2>One struct, both sides</h2>
+				<p>A <code>pub fn</code> in <code>Commands</code> is callable from the page. Its arguments and return type become the TypeScript types.</p>
+			</div>
+			<div class="code-pair">
+				<figure class="code-card">
+					<figcaption><span class="dot"></span>src/main.zig</figcaption>
+<pre><code><span class="tk-kw">pub const</span> Commands = <span class="tk-kw">struct</span> {
+    <span class="tk-com">/// invoke("greet", { name })</span>
+    <span class="tk-kw">pub fn</span> <span class="tk-fn">greet</span>(gpa: std.mem.Allocator, args: <span class="tk-kw">struct</span> {
+        name: []<span class="tk-kw">const</span> <span class="tk-ty">u8</span>,
+    }) ![]<span class="tk-kw">const</span> <span class="tk-ty">u8</span> {
+        events.<span class="tk-fn">emit</span>(.greeted, .{ .count = <span class="tk-num">1</span> });
+        <span class="tk-kw">return</span> std.fmt.<span class="tk-fn">allocPrint</span>(gpa,
+            <span class="tk-str">"Hello, {s}!"</span>, .{args.name});
+    }
+};</code></pre>
+				</figure>
+				<figure class="code-card">
+					<figcaption><span class="dot"></span>frontend/src/App.tsx</figcaption>
+<pre><code><span class="tk-kw">import</span> { invoke, listen } <span class="tk-kw">from</span> <span class="tk-str">"./oriel"</span>;
+
+<span class="tk-com">// Typed from the Zig structs: name is a string,</span>
+<span class="tk-com">// the result is Promise&lt;string&gt;.</span>
+<span class="tk-kw">const</span> text = <span class="tk-kw">await</span> <span class="tk-fn">invoke</span>(<span class="tk-str">"greet"</span>, { name: <span class="tk-str">"Ada"</span> });
+
+<span class="tk-fn">listen</span>(<span class="tk-str">"greeted"</span>, ({ count }) =&gt; {
+  console.<span class="tk-fn">log</span>(<span class="tk-str">`greeted ${count} times`</span>);
+});</code></pre>
+				</figure>
+			</div>
+		</section>
+
+		<section class="section">
+			<div class="section-head">
+				<h2>Built with Oriel</h2>
+				<p>The examples in the repository, running on Linux.</p>
+			</div>
+			<div class="shots">
+				<figure>
+					<img src="$site.asset('screenshots/react-notes.png').link()" alt="React notes example" loading="lazy">
+					<figcaption><strong>React notes</strong> · Vite, SQLite, tray, events, routes and a second window</figcaption>
+				</figure>
+				<figure>
+					<img src="$site.asset('screenshots/ghostpen-lite.png').link()" alt="ghostpen-lite example" loading="lazy">
+					<figcaption><strong>ghostpen-lite</strong> · global hotkey rewrite, live captions with whisper on CUDA</figcaption>
+				</figure>
+				<figure>
+					<img src="$site.asset('screenshots/smoke.png').link()" alt="Smoke test app" loading="lazy">
+					<figcaption><strong>smoke</strong> · every module checked inside a real webview</figcaption>
+				</figure>
+			</div>
+		</section>
+
+		<section class="section">
+			<div class="section-head">
+				<h2>Platforms</h2>
+			</div>
+			<div class="platforms">
+				<div class="platform">
+					<h3>Linux</h3>
+					<p>GTK4 + WebKitGTK 6.0. Complete: every module, deb / rpm / AppImage.</p>
+					<span class="status status-ok">Stable</span>
+				</div>
+				<div class="platform">
+					<h3>Windows</h3>
+					<p>Win32 + WebView2. Every module ported, NSIS installer, cross-compiled from Linux and tested under Wine.</p>
+					<span class="status status-beta">Preview</span>
+				</div>
+				<div class="platform">
+					<h3>macOS</h3>
+					<p>AppKit + WKWebView, <code>.app</code> and <code>.dmg</code>. Next on the roadmap.</p>
+					<span class="status status-planned">Planned</span>
+				</div>
+			</div>
+		</section>
+
+		<section class="section">
+			<div class="section-head">
+				<h2>Coming from Tauri?</h2>
+				<p>The same model: a web frontend, a native backend, typed calls between them.</p>
+			</div>
+			<div class="table-wrap">
+				<table class="compare">
+					<thead><tr><th>Tauri</th><th>Oriel</th></tr></thead>
+					<tbody>
+						<tr><td><code>invoke</code> / commands</td><td>Plain Zig struct; TypeScript generated; sync and async worker pool</td></tr>
+						<tr><td>Events (<code>emit</code> / <code>listen</code>)</td><td>Zig → JS, type-checked on both sides; targeted and broadcast</td></tr>
+						<tr><td>Capabilities</td><td>Per origin, per command, per window</td></tr>
+						<tr><td>Multiple windows</td><td><code>oriel.window.open()</code> from JS, routes, targeted events</td></tr>
+						<tr><td>Updater</td><td>Ed25519-signed manifests, atomic replace, progress events</td></tr>
+						<tr><td><code>create-tauri-app</code>, <code>tauri dev/build</code></td><td><code>oriel init</code> (React, Vue, Svelte, vanilla), <code>oriel dev/build/package</code>, <code>oriel doctor</code></td></tr>
+						<tr><td>Rust + Cargo</td><td>Zig 0.16 and its build system: no multi-GB target directories</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<section class="cta">
+			<h2>Build your first Oriel app</h2>
+			<p>Install the CLI, run <code>oriel init my-app</code>, and you have a window with hot reload in a minute.</p>
+			<div class="hero-actions">
+				<a class="btn btn-primary" href="$site.page('docs/getting-started').link()">Read the guide</a>
+				<a class="btn btn-ghost" href="$site.page('docs/tutorial').link()">Follow the tutorial</a>
+			</div>
+		</section>
+	</main>
+</body>
