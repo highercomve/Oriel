@@ -68,7 +68,7 @@ They are still switched on per app in `build.zig`, so an app that doesn't use
 | [mitchellh/zig-objc](https://github.com/mitchellh/zig-objc) | Objective-C runtime (AppKit, WKWebView) | ✅ "Add Zig 0.16 compatibility" (2026-04) | Used by Ghostty. |
 | [ifreund/zig-wayland](https://github.com/ifreund/zig-wayland) (canonical home is Codeberg) | libwayland bindings + protocol scanner | ✅ "Zig 0.16 bindings" | For the virtual-keyboard and data-control protocols. Used by Ghostty. |
 | [marlersoft/zigwin32](https://github.com/marlersoft/zigwin32) | Win32 API bindings | ⚠️ min 0.14.0, active (2026-07) | Needs a test on 0.16. Alternative: hand-written `extern` declarations for the ~50 functions we need. |
-| [karlseguin/http.zig](https://github.com/karlseguin/http.zig) | HTTP server | ✅ master = 0.16 ("experimental") | Only for ghostreel-style local media serving with HTTP range requests. |
+| [karlseguin/http.zig](https://github.com/karlseguin/http.zig) | HTTP server | ✅ master = 0.16 ("experimental") | Only for ghostreel-style local media serving with HTTP range requests. Windows builds apply `tools/patch_httpz.zig` (Winsock shutdown errors it treats as `unreachable`; upstream candidate). |
 | [vrischmann/zig-sqlite](https://github.com/vrischmann/zig-sqlite) | SQLite wrapper | ⚠️ master tracks Zig master; branch `update-zig-0.16.0` | Or compile the SQLite C amalgamation directly. sqlite-vec is also a C amalgamation. |
 | [sam701/zig-toml](https://github.com/sam701/zig-toml) | TOML | ✅ branch `zig-0.16` | Config files. |
 | [zigimg/zigimg](https://github.com/zigimg/zigimg) | PNG/JPEG decode and encode | ✅ `minimum_zig_version = 0.16.0` | Clipboard images, thumbnails. |
