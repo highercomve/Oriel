@@ -67,6 +67,13 @@ pub fn setWindowTitle(handle: WindowHandle, title: [:0]const u8) void {
     _ = win32.SetWindowTextW(handle.hwnd, title_w.ptr);
 }
 
+/// Read a 32-bit window long (style bits). GetWindowLongPtrW returns a
+/// sign-extended LONG_PTR, so WS_POPUP (bit 31) comes back negative and
+/// `@intCast` to DWORD would panic: keep the low 32 bits instead.
+fn windowLong(hwnd: win32.HWND, index: c_int) win32.DWORD {
+    return @truncate(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, index))));
+}
+
 pub fn setWindowFullscreen(handle: WindowHandle, fullscreen: bool) void {
     const hwnd = handle.hwnd;
     const style = win32.GetWindowLongPtrW(hwnd, win32.GWL_STYLE);
@@ -83,7 +90,7 @@ pub fn setWindowFullscreen(handle: WindowHandle, fullscreen: bool) void {
 }
 
 pub fn isWindowFullscreen(handle: WindowHandle) bool {
-    const style: win32.DWORD = @intCast(win32.GetWindowLongPtrW(handle.hwnd, win32.GWL_STYLE));
+    const style = windowLong(handle.hwnd, win32.GWL_STYLE);
     return (style & win32.WS_OVERLAPPEDWINDOW) == 0;
 }
 
@@ -97,8 +104,8 @@ pub fn isWindowMaximized(handle: WindowHandle) bool {
 
 pub fn setWindowSize(handle: WindowHandle, width: c_int, height: c_int) void {
     var rect = win32.RECT{ .left = 0, .top = 0, .right = width, .bottom = height };
-    const style: win32.DWORD = @intCast(win32.GetWindowLongPtrW(handle.hwnd, win32.GWL_STYLE));
-    const ex_style: win32.DWORD = @intCast(win32.GetWindowLongPtrW(handle.hwnd, win32.GWL_EXSTYLE));
+    const style = windowLong(handle.hwnd, win32.GWL_STYLE);
+    const ex_style = windowLong(handle.hwnd, win32.GWL_EXSTYLE);
     _ = win32.AdjustWindowRectEx(&rect, style, win32.FALSE, ex_style);
     const w = rect.right - rect.left;
     const h = rect.bottom - rect.top;
