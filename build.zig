@@ -13,6 +13,12 @@
 
 const std = @import("std");
 const Scanner = @import("wayland").Scanner;
+const ggml = @import("build/ggml.zig");
+
+fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
+    std.log.err(fmt, args);
+    std.process.exit(1);
+}
 
 /// Built-in modules and plugins an app can switch on. Anything left off is
 /// neither compiled nor linked, so apps only pay for what they use.
@@ -31,12 +37,35 @@ const Features = struct {
     global_shortcut: bool,
     input: bool,
     clipboard: bool,
+    // Native dependencies (DEFAULT OFF)
+    sqlite_vec: bool,
+    llama: bool,
+    whisper: bool,
 
     fn fromOptions(b: *std.Build) Features {
+        if (b.option(bool, "ggml_cuda", "Enable CUDA backend (not supported)") orelse false) {
+            fatal("CUDA is not supported yet, see README.md", .{});
+        }
+        if (b.option(bool, "ggml_vulkan", "Enable Vulkan backend (not supported)") orelse false) {
+            fatal("Vulkan is not supported yet, see README.md", .{});
+        }
+        if (b.option(bool, "llama_mtmd", "Enable multimodal mtmd support (not supported)") orelse false) {
+            fatal("llama_mtmd is not supported yet (libmtmd is not built; its API is experimental upstream), see README.md", .{});
+        }
+
         var f: Features = undefined;
         inline for (@typeInfo(Features).@"struct".fields) |field| {
-            @field(f, field.name) = b.option(bool, field.name, "Enable the " ++ field.name ++ " module") orelse true;
+            const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
+                std.mem.eql(u8, field.name, "llama") or
+                std.mem.eql(u8, field.name, "whisper"));
+            const default_val = !is_native;
+            @field(f, field.name) = b.option(bool, field.name, "Enable the " ++ field.name ++ " module") orelse default_val;
         }
+
+        if (f.sqlite_vec and !f.sql) {
+            fatal("sqlite_vec requires sql to be enabled (cannot use -Dsqlite_vec with -Dsql=false)", .{});
+        }
+
         return f;
     }
 };
@@ -271,6 +300,18 @@ fn addOrielModule(
             .file = sqlite.path("sqlite3.c"),
             .flags = &.{ "-DSQLITE_THREADSAFE=1", "-DSQLITE_DQS=0", "-DSQLITE_OMIT_DEPRECATED" },
         });
+    }
+    if (features.sqlite_vec) {
+        if (b.lazyDependency("sqlite_vec", .{})) |sqlite_vec| {
+            oriel.addIncludePath(sqlite_vec.path("."));
+            oriel.addCSourceFile(.{
+                .file = sqlite_vec.path("sqlite-vec.c"),
+                .flags = &.{ "-DSQLITE_CORE", "-DSQLITE_VEC_STATIC" },
+            });
+        }
+    }
+    if (features.llama or features.whisper) {
+        ggml.addGgml(b, oriel, features);
     }
     if (is_linux and (features.input or features.clipboard)) {
         const scanner = Scanner.create(b, .{});

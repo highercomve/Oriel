@@ -47,6 +47,9 @@ They are still switched on per app in `build.zig`, so an app that doesn't use
 | `updater` | `std.http`, `std.compress`, `std.tar`, Ed25519 (`std.crypto`) | Signed update manifests, same model as Tauri's updater |
 | `media-server` | http.zig, or range handling inside the custom scheme | Streams large local files (video/audio) with HTTP range requests |
 | `sql` | SQLite amalgamation (+ optional sqlite-vec) | Compiled from C in `build.zig`; zig-sqlite optional |
+| `sqlite_vec` | sqlite-vec amalgamation (`v0.1.9`) | Opt-in (default OFF: `-Dsqlite_vec`). Requires `sql`. Vector search extension (`vec0`) |
+| `llama` | llama.cpp (`b10809`) via Zig package manager | Opt-in (default OFF: `-Dllama`). Native C/C++ CPU inference backend linked against shared GGML |
+| `whisper` | whisper.cpp (`v1.9.4`) via Zig package manager | Opt-in (default OFF: `-Dwhisper`). Native C/C++ speech-to-text inference linked against shared GGML |
 | `fs-watch` | inotify (`std.os.linux`) / FSEvents / ReadDirectoryChangesW | Own implementation; nothing outside `std` on Linux |
 
 **3. Plugins (app-specific, outside the core):**
@@ -69,6 +72,9 @@ They are still switched on per app in `build.zig`, so an app that doesn't use
 | [vrischmann/zig-sqlite](https://github.com/vrischmann/zig-sqlite) | SQLite wrapper | ⚠️ master tracks Zig master; branch `update-zig-0.16.0` | Or compile the SQLite C amalgamation directly. sqlite-vec is also a C amalgamation. |
 | [sam701/zig-toml](https://github.com/sam701/zig-toml) | TOML | ✅ branch `zig-0.16` | Config files. |
 | [zigimg/zigimg](https://github.com/zigimg/zigimg) | PNG/JPEG decode and encode | ✅ `minimum_zig_version = 0.16.0` | Clipboard images, thumbnails. |
+| [asg017/sqlite-vec](https://github.com/asg017/sqlite-vec) | SQLite vector search extension (`v0.1.9` amalgamation) | ✅ C99 amalgamation | Opt-in (`-Dsqlite_vec`). Static extension (`vec0`). License: MIT OR Apache-2.0. |
+| [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) | LLM inference engine (`b10809` tarball) | ✅ Built with Zig package manager + clang | Opt-in (`-Dllama`). CPU backend with shared GGML. License: MIT. |
+| [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) | Automatic speech recognition engine (`v1.9.4` tarball) | ✅ Built with Zig package manager + clang | Opt-in (`-Dwhisper`). CPU backend with shared GGML. License: MIT. |
 
 ## Standard library coverage (no dependency needed)
 

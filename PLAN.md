@@ -316,8 +316,9 @@ LIBRARIES.md (subcommands = `union`, options = `struct` fields, generated help).
   targets): `makensis` cross-builds a per-user `setup.exe` (Start menu,
   HKCU uninstall entry, WebView2 runtime check/bootstrapper, optional
   `WebView2Loader.dll`). MSI (WiX) is not planned until someone needs it.
-- **Native deps:** whisper.cpp / llama.cpp / sqlite-vec built from
-  `build.zig` (CPU first; CUDA/Vulkan as options).
+- ✅ **Native deps:** opt-in `-Dsqlite_vec`, `-Dllama`, `-Dwhisper` (lazy
+  tarball deps, one shared ggml in `build/ggml.zig`, CPU only). Next:
+  CUDA/Vulkan backends and `libmtmd` (both fail with a build error today).
 
 ## Later
 

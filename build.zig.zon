@@ -29,6 +29,21 @@
             .url = "https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz",
             .hash = "N-V-__8AAKJCwwDXnRHqzy_PjrI_Ss94kfSd-T7vNxQ-b3xA",
         },
+        .sqlite_vec = .{
+            .url = "https://github.com/asg017/sqlite-vec/releases/download/v0.1.9/sqlite-vec-0.1.9-amalgamation.tar.gz",
+            .hash = "N-V-__8AAFjlBACTHqSZPx-m0Y-NHDBK6_c28UfnIp9rxqgX",
+            .lazy = true,
+        },
+        .llama = .{
+            .url = "https://github.com/ggml-org/llama.cpp/archive/refs/tags/b10809.tar.gz",
+            .hash = "N-V-__8AAHbwMgr4KA1H9C3zP4kZGa5UKAO1qdRATS2di4OY",
+            .lazy = true,
+        },
+        .whisper = .{
+            .url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.4.tar.gz",
+            .hash = "N-V-__8AAA3uSwK9mB79KfGlAs0n70EoYdSvFYRb8782-6Ce",
+            .lazy = true,
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand", "LICENSE-MIT", "LICENSE-APACHE", "README.md" },
 }

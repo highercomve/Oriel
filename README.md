@@ -17,7 +17,7 @@ from plain Zig structs. Linux (GTK4 + WebKitGTK 6.0) first.
 - **Small:** a release app is a few MB; the build cache is hundreds of MB, not gigabytes.
 - **Typed both ways:** `invoke` and `listen` in TypeScript are generated from your Zig `Commands` and `Events`.
 - **Secure by default:** navigation limits, per-origin command capabilities, a strict CSP.
-- **Batteries included, opt-in:** tray, updater, SQLite, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage).
+- **Batteries included, opt-in:** tray, updater, SQLite & sqlite-vec, llama.cpp & whisper.cpp, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
@@ -61,7 +61,7 @@ The framework and the apps built with it are separate Zig packages:
 | `build.zig` | Framework build: the `oriel` module, `embed_assets`, `dev_runner`, `addApp()` for apps, unit tests |
 | `src/core/` | `App.zig` (platform-neutral windowing, IPC, events, asset lookup, dev mode), `ipc.zig` (command dispatch + TypeScript generation), `log.zig` (file + stderr logging) |
 | `src/platform/` | Platform abstraction: `platform.zig` (OS selection & comptime check), `platform/linux/` (GTK4 + WebKitGTK 6.0 shell: `Shell.zig`, `window.zig`, `scheme.zig`, `bridge.zig`, `dev_server.zig`) |
-| `src/modules/` | Built-in modules: `tray`, `menu`, `store`, `dialog`, `notification`, `updater`, `media_server`, `sql`, `fs_watch` |
+| `src/modules/` | Built-in modules: `tray`, `menu`, `store`, `dialog`, `notification`, `updater`, `media_server`, `sql`, `sqlite_vec`, `llama`, `whisper`, `fs_watch` |
 | `src/plugins/` | App-specific plugins: `global_shortcut`, `input`, `clipboard` |
 | `tools/embed_assets.zig` | Embeds a built frontend directory into the binary |
 | `tools/dev_runner.zig` | Hot reload orchestrator: keeps dev server running while watching `src/` and restarting the Zig app |
@@ -644,6 +644,163 @@ When running inside an AppImage (`$APPIMAGE` environment variable is set), `orie
 - **JS cannot choose URLs, keys, or paths**: The manifest URL, public key, and target path are configured strictly in native Zig code; frontend code cannot redirect downloads or bypass signature verification.
 - **Private keys**: Never commit private keys to version control or bundle them into client applications. Use `keygen` with secure out-of-repo storage (`mode 0600`).
 - **Transport**: Production manifest and payload URLs should always use HTTPS.
+
+### SQLite and vector search (`oriel.sql`, `oriel.sqlite_vec`)
+
+Oriel provides embedded SQLite database support and opt-in vector search via the `sqlite-vec` extension (`vec0` virtual tables).
+
+#### Enabling sqlite-vec
+
+- **Command-line flag:** `-Dsqlite_vec` (requires `sql`, which defaults to enabled).
+- **In an app's `build.zig`:** pass `.sqlite_vec = true` in `b.dependency("oriel", ...)`:
+  ```zig
+  const oriel_dep = b.dependency("oriel", .{
+      .target = target,
+      .optimize = optimize,
+      .sqlite_vec = true,
+  });
+  ```
+- **Build time:** Amalgamation C compilation adds negligible overhead (~1–2 seconds cold).
+- **License:** Dual-licensed MIT OR Apache-2.0.
+
+#### Usage
+
+When `sqlite_vec` is enabled, the extension is registered automatically into every database connection opened with `oriel.sql.Db.open`:
+
+```zig
+const oriel = @import("oriel");
+
+// Open SQLite in-memory or on disk
+const db = try oriel.sql.Db.open("data.db");
+defer db.close();
+
+// Create a vector table with 4-dimensional embeddings
+try db.exec("CREATE VIRTUAL TABLE items USING vec0(embedding float[4]);");
+
+// Insert vector embeddings (using oriel.sqlite_vec.asBytes helper)
+var insert_stmt = try db.prepare("INSERT INTO items(rowid, embedding) VALUES (?, ?);");
+defer insert_stmt.finalize();
+const vec = [_]f32{ 1.0, 0.0, 0.0, 0.0 };
+try insert_stmt.bindInt(1, 42);
+try insert_stmt.bindBlob(2, oriel.sqlite_vec.asBytes(&vec));
+_ = try insert_stmt.step();
+
+// KNN vector search query
+var query_stmt = try db.prepare(
+    "SELECT rowid, distance FROM items WHERE embedding MATCH ? ORDER BY distance LIMIT 5;"
+);
+defer query_stmt.finalize();
+const query_vec = [_]f32{ 0.9, 0.1, 0.0, 0.0 };
+try query_stmt.bindBlob(1, oriel.sqlite_vec.asBytes(&query_vec));
+
+while (try query_stmt.step()) {
+    const id = query_stmt.int(0);
+    const dist = query_stmt.float(1);
+    std.log.info("Match id={d}, distance={d}", .{ id, dist });
+}
+```
+
+### Local AI inference (`oriel.llama` and `oriel.whisper`)
+
+Oriel provides opt-in native C/C++ inference bindings for [llama.cpp](https://github.com/ggml-org/llama.cpp) (text LLMs) and [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (speech recognition).
+
+#### Enabling llama and whisper
+
+- **Command-line flags:** `-Dllama` for llama.cpp, `-Dwhisper` for whisper.cpp, or both `-Dllama -Dwhisper`.
+- **In an app's `build.zig`:** pass `.llama = true` and/or `.whisper = true` in `b.dependency("oriel", ...)`:
+  ```zig
+  const oriel_dep = b.dependency("oriel", .{
+      .target = target,
+      .optimize = optimize,
+      .llama = true,
+      .whisper = true,
+  });
+  ```
+- **Licenses:** MIT (both llama.cpp and whisper.cpp).
+
+#### Shared GGML architecture
+
+Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicate symbol collisions and ODR violations when both modules are enabled simultaneously, Oriel compiles a single unified instance of `ggml` and `ggml-cpu` (`build/ggml.zig`) and compiles both `llama` and `whisper` source files against that common instance.
+
+#### Build times
+
+- **sqlite-vec:** one C file, a second or two.
+- **llama.cpp + whisper.cpp:** about 45 s cold (`zig build test -Dllama -Dwhisper`
+  with an empty cache, 16 threads); cached rebuilds don't recompile them.
+- **Default build overhead:** When omitted, nothing is downloaded, compiled or linked.
+
+#### CPU architecture flags & distributable builds
+
+`ggml-cpu` compiles architecture-optimized SIMD routines (e.g. AVX, AVX2, FMA, F16C on x86_64, NEON/ARMv8 on aarch64).
+- By default, Zig targets the host machine CPU, compiling with full host CPU instructions.
+- **For distributable release builds** (e.g. creating deb, rpm, or AppImage packages for distribution to end-user machines), specify a baseline CPU target to avoid illegal instruction crashes (`SIGILL`) on older hardware:
+  ```sh
+  zig build -Doptimize=ReleaseSafe -Dcpu=x86_64_v2 -Dllama -Dwhisper
+  ```
+  Or `-Dcpu=baseline` for maximum portability across 64-bit systems.
+
+#### GPU backends (CUDA & Vulkan)
+
+- GPU acceleration is **not currently supported**; inference runs on CPU only.
+- Passing `-Dggml_cuda` or `-Dggml_vulkan` halts at build time with a clear, clean error message.
+- *Why?* Compiling CUDA requires NVIDIA's external toolchain (`nvcc`, CUDA Toolkit headers and libraries). Compiling Vulkan shaders requires `glslc` or SPIR-V toolchains and dynamic runtime loader linking. Both add external system dependencies that break pure Zig portable builds without specialized host configuration.
+
+#### Multimodal (`mtmd`) status
+
+- `libmtmd` (llama.cpp `tools/mtmd`: image/audio input for vision and audio
+  models) is **not built yet**. It is buildable the same way (C++ sources plus
+  header-only vendored `stb_image`, `miniaudio`, `subprocess.h`), but upstream
+  marks the API experimental ("subject to many BREAKING CHANGES", `mtmd.h`)
+  and no Oriel app uses it yet. `-Dllama_mtmd` fails with a build error until
+  it is added.
+
+#### Runtime API
+
+##### llama.cpp (`oriel.llama`)
+
+```zig
+const oriel = @import("oriel");
+
+// Optional: silence internal ggml/llama stderr logging
+oriel.llama.silenceLogs();
+
+// Initialize backend
+oriel.llama.initBackend();
+defer oriel.llama.deinitBackend();
+
+// Inspect system CPU features detected by backend
+const sys_info = oriel.llama.systemInfo();
+std.log.info("Llama system info: {s}", .{sys_info});
+
+// Load GGUF model with default params
+const params = oriel.llama.modelDefaultParams();
+const model = oriel.llama.loadModel("path/to/model.gguf", params) catch |err| {
+    std.log.err("Failed to load model: {s}", .{@errorName(err)});
+    return err;
+};
+defer model.deinit();
+```
+
+##### whisper.cpp (`oriel.whisper`)
+
+```zig
+const oriel = @import("oriel");
+
+// Optional: silence internal ggml/whisper stderr logging
+oriel.whisper.silenceLogs();
+
+// Inspect whisper backend info
+const sys_info = oriel.whisper.systemInfo();
+std.log.info("Whisper system info: {s}", .{sys_info});
+
+// Load GGML speech model with default context params
+const params = oriel.whisper.contextDefaultParams();
+const ctx = oriel.whisper.loadModel("path/to/whisper-base.bin", params) catch |err| {
+    std.log.err("Failed to load whisper context: {s}", .{@errorName(err)});
+    return err;
+};
+defer ctx.deinit();
+```
 
 ## Packaging
 

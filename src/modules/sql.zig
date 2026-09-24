@@ -4,6 +4,8 @@ const std = @import("std");
 const oriel = @import("../oriel.zig");
 pub const c = @cImport(@cInclude("sqlite3.h"));
 
+extern fn sqlite3_vec_init(db: ?*c.sqlite3, pzErrMsg: ?*[*c]u8, pApi: ?*const anyopaque) c_int;
+
 pub const Db = struct {
     handle: *c.sqlite3,
 
@@ -12,6 +14,12 @@ pub const Db = struct {
         if (c.sqlite3_open(path.ptr, &handle) != c.SQLITE_OK) {
             if (handle) |h| _ = c.sqlite3_close(h);
             return error.SqliteOpen;
+        }
+        if (oriel.options.sqlite_vec) {
+            if (sqlite3_vec_init(handle.?, null, null) != c.SQLITE_OK) {
+                _ = c.sqlite3_close(handle.?);
+                return error.SqliteVecInit;
+            }
         }
         return .{ .handle = handle.? };
     }
@@ -66,6 +74,10 @@ pub const Stmt = struct {
         if (c.sqlite3_bind_int64(self.handle, index, value) != c.SQLITE_OK) return error.SqliteBind;
     }
 
+    pub fn bindBlob(self: Stmt, index: c_int, value: []const u8) !void {
+        if (c.sqlite3_bind_blob(self.handle, index, value.ptr, @intCast(value.len), sqlite_transient) != c.SQLITE_OK) return error.SqliteBind;
+    }
+
     /// Advance to the next row; false when done.
     pub fn step(self: Stmt) !bool {
         return switch (c.sqlite3_step(self.handle)) {
@@ -77,6 +89,10 @@ pub const Stmt = struct {
 
     pub fn int(self: Stmt, col: c_int) i64 {
         return c.sqlite3_column_int64(self.handle, col);
+    }
+
+    pub fn float(self: Stmt, col: c_int) f64 {
+        return c.sqlite3_column_double(self.handle, col);
     }
 
     /// Column text, copied into `gpa` (SQLite's buffer dies on the next step).

@@ -23,6 +23,9 @@ pub const dialog = if (options.dialog) @import("modules/dialog.zig") else struct
 pub const notification = if (options.notification) @import("modules/notification.zig") else struct {};
 pub const store = if (options.store) @import("modules/store.zig") else struct {};
 pub const menu = if (options.menu) @import("modules/menu.zig") else struct {};
+pub const sqlite_vec = if (options.sqlite_vec) @import("modules/sqlite_vec.zig") else struct {};
+pub const llama = if (options.llama) @import("modules/llama.zig") else struct {};
+pub const whisper = if (options.whisper) @import("modules/whisper.zig") else struct {};
 
 // App-specific plugins.
 pub const global_shortcut = if (options.global_shortcut) @import("plugins/global_shortcut.zig") else struct {};
@@ -104,16 +107,19 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
         .{ .name = "global_shortcut", .enabled = options.global_shortcut },
         .{ .name = "input", .enabled = options.input },
         .{ .name = "clipboard", .enabled = options.clipboard },
+        .{ .name = "sqlite_vec", .enabled = options.sqlite_vec },
+        .{ .name = "llama", .enabled = options.llama },
+        .{ .name = "whisper", .enabled = options.whisper },
     };
     inline for (entries) |e| {
         if (e.enabled) {
             const module = @field(@This(), e.name);
-            const check: Check = module.check(gpa, ctx) catch |err| .{
+            const check_res: Check = module.check(gpa, ctx) catch |err| .{
                 .module = e.name,
                 .ok = false,
                 .detail = @errorName(err),
             };
-            try checks.append(gpa, check);
+            try checks.append(gpa, check_res);
         }
     }
     return checks.toOwnedSlice(gpa);
@@ -143,4 +149,7 @@ test {
     if (options.global_shortcut) std.testing.refAllDecls(global_shortcut);
     if (options.input) std.testing.refAllDecls(input);
     if (options.clipboard) std.testing.refAllDecls(clipboard);
+    if (options.sqlite_vec) std.testing.refAllDecls(sqlite_vec);
+    if (options.llama) std.testing.refAllDecls(llama);
+    if (options.whisper) std.testing.refAllDecls(whisper);
 }
