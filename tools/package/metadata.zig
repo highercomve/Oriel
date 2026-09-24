@@ -175,6 +175,30 @@ pub fn escapeDesktopExec(allocator: std.mem.Allocator, exec: []const u8) ![]cons
     return try allocator.dupe(u8, out.written());
 }
 
+/// Escape string literal for NSIS scripts within double quotes ("..."):
+/// - '$' -> '$$'
+/// - '"' -> '$\"'
+/// - '\r' -> '$\r'
+/// - '\n' -> '$\n'
+/// - '\t' -> '$\t'
+/// Backslashes are preserved as-is for Windows filesystem paths.
+pub fn escapeNsisString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+
+    for (s) |c| {
+        switch (c) {
+            '$' => try out.writer.writeAll("$$"),
+            '"' => try out.writer.writeAll("$\\\""),
+            '\r' => try out.writer.writeAll("$\\r"),
+            '\n' => try out.writer.writeAll("$\\n"),
+            '\t' => try out.writer.writeAll("$\\t"),
+            else => try out.writer.writeByte(c),
+        }
+    }
+    return try allocator.dupe(u8, out.written());
+}
+
 test "targetToArch mappings" {
     const testing = std.testing;
 
@@ -320,4 +344,37 @@ test "escapeDesktopExec quoting and escaping" {
     // Rejects control characters and newlines
     try testing.expectError(error.ContainsNewline, escapeDesktopExec(allocator, "app\n--bad"));
     try testing.expectError(error.ContainsControlChar, escapeDesktopExec(allocator, "app\x07bell"));
+}
+
+test "escapeNsisString handles quotes, dollar signs, whitespace, and paths" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Plain text
+    {
+        const res = try escapeNsisString(allocator, "Oriel React Notes");
+        defer allocator.free(res);
+        try testing.expectEqualStrings("Oriel React Notes", res);
+    }
+
+    // Quotes and dollar signs (NSIS $$ and $\")
+    {
+        const res = try escapeNsisString(allocator, "My \"Cool\" App $100");
+        defer allocator.free(res);
+        try testing.expectEqualStrings("My $\\\"Cool$\\\" App $$100", res);
+    }
+
+    // Windows paths with backslashes (must NOT be escaped in NSIS)
+    {
+        const res = try escapeNsisString(allocator, "C:\\Program Files\\App\\app.exe");
+        defer allocator.free(res);
+        try testing.expectEqualStrings("C:\\Program Files\\App\\app.exe", res);
+    }
+
+    // Newlines, carriage returns, and tabs
+    {
+        const res = try escapeNsisString(allocator, "Line 1\r\nLine 2\tTab");
+        defer allocator.free(res);
+        try testing.expectEqualStrings("Line 1$\\r$\\nLine 2$\\tTab", res);
+    }
 }

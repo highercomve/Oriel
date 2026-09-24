@@ -647,7 +647,7 @@ When running inside an AppImage (`$APPIMAGE` environment variable is set), `orie
 
 ## Packaging
 
-Oriel provides integrated packaging for Linux distributions and portable AppImages with an extensible format architecture. Apps configure packaging metadata in `build.zig` via `.package` inside `oriel.addApp`.
+Oriel provides integrated packaging for Linux distributions, portable AppImages, and Windows installer executables (`setup.exe`) with an extensible format architecture. Apps configure packaging metadata in `build.zig` via `.package` inside `oriel.addApp`.
 
 ### Packaging metadata
 
@@ -655,7 +655,7 @@ Metadata is configured once in `build.zig` and shared across all target package 
 
 ```zig
 .package = .{
-    .id = "dev.oriel.ReactNotes",          // Reverse-DNS application ID (matches GTK app ID)
+    .id = "dev.oriel.ReactNotes",          // Reverse-DNS application ID (matches desktop entry / registry uninstall key)
     .name = "Oriel React Notes",           // Display name (defaults to executable name)
     .summary = "Desktop notes app",        // Short comment / summary
     .description = "A desktop notes...",   // Multi-line description for package managers
@@ -664,10 +664,11 @@ Metadata is configured once in `build.zig` and shared across all target package 
     .homepage = "https://example.com",     // Optional project URL (omitted if null)
     .categories = "Utility;TextEditor;",   // Semicolon-delimited XDG desktop categories
     .version = "0.1.0",                    // Version string (defaults to "0.1.0")
-    .icon = b.path("path/to/icon.png"),    // Optional PNG icon (defaults to Oriel brand icon)
+    .icon = b.path("path/to/icon.png"),    // Optional PNG icon (defaults to Oriel brand icon; converted to .ico for Windows)
     .formats = null,                       // Optional override list of formats (defaults to per-OS list)
     .extra_deb_depends = &.{},             // Extra deb runtime dependencies
     .extra_rpm_depends = &.{},             // Extra rpm runtime dependencies
+    .webview2_loader = null,               // Optional path to WebView2Loader.dll for Windows (or via -Dwebview2-loader)
 },
 ```
 
@@ -675,19 +676,32 @@ Metadata is configured once in `build.zig` and shared across all target package 
 
 ### Building packages
 
-Running `zig build package` or format-specific package steps in an application directory builds production packages into `zig-out/package/`. All intermediate build files (`nfpm.yaml`, `AppDir`, SquashFS) are isolated in Zig's cache directory:
+Running `zig build package` or format-specific package steps in an application directory builds production packages into `zig-out/package/`. All intermediate build files (`nfpm.yaml`, `AppDir`, SquashFS, `installer.nsi`) are isolated in Zig's cache directory:
 
-- **All formats for target OS**: `zig build package`
+- **All formats for target OS**: `zig build package` (defaults to `.deb`, `.rpm`, `.AppImage` on Linux; `.nsis` on Windows)
 - **Debian package (`.deb`)**: `zig build package-deb` → `zig-out/package/<name>_<version>_<arch>.deb`
 - **RPM package (`.rpm`)**: `zig build package-rpm` → `zig-out/package/<name>-<version>-1.<arch>.rpm`
 - **AppImage (`.AppImage`)**: `zig build package-appimage` → `zig-out/package/<name>-<version>-<arch>.AppImage`
+- **Windows Installer (`setup.exe`)**: `zig build package-nsis` (or `zig build package -Dtarget=x86_64-windows`) → `zig-out/package/<name>-<version>-setup.exe`
 
 #### Requirements and tools
 
+- **`makensis` (NSIS v3+)**: Used to compile the Windows installer executable (`setup.exe`). Looked up in `$PATH`, `/usr/bin/makensis`, and `/usr/local/bin/makensis` (the `nsis` package on Arch, Debian and Ubuntu). Cross-builds Windows installers directly from Linux hosts.
 - **`nfpm`**: Used to generate `.deb` and `.rpm` packages. Looked up in `$PATH`, then `$HOME/go/bin/nfpm`.
 - **`mksquashfs`**: Used to assemble AppImage SquashFS images.
 - **`desktop-file-validate`**: Used to validate desktop entry files before packaging and installation.
 - **AppImage Runtime**: Uses standard type-2 AppImage runtime (`runtime-<arch>`), automatically downloaded and cached in the local cache dir (overridable via `-Dappimage-runtime=<path>` or env `ORIEL_APPIMAGE_RUNTIME`). Verified for ELF header magic before use.
+
+#### Windows NSIS installer details
+
+The generated NSIS installer provides:
+- **Per-user installation**: Installed to `$LOCALAPPDATA\Programs\<name>` without requiring administrator elevation (`RequestExecutionLevel user`).
+- **Start Menu integration**: Shortcuts for launching the application and the uninstaller under `$SMPROGRAMS\<name>`.
+- **Uninstaller**: Full uninstaller at `$INSTDIR\Uninstall.exe` registered in Windows Add/Remove Programs (`Software\Microsoft\Windows\CurrentVersion\Uninstall\<id>` under `HKCU`).
+- **Multi-resolution ICO**: Automatically converts your PNG application icon into a multi-resolution Windows `.ico` (16, 32, 48, 64, 128, 256 px).
+- **WebView2 Runtime Detection**: Checks the Windows Registry (HKCU and HKLM in both 64-bit and 32-bit views) for the Evergreen WebView2 Runtime (`{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`). If missing, prompts the user to download and run the Microsoft Evergreen Bootstrapper (`https://go.microsoft.com/fwlink/p/?LinkId=2124703`) or opens the download page.
+- **`WebView2Loader.dll`**: If your Windows build requires `WebView2Loader.dll` next to the executable, specify it via `.webview2_loader` in `build.zig` or via CLI option `-Dwebview2-loader=<path>` (can be obtained from the `Microsoft.Web.WebView2` NuGet package runtimes).
+- *Note*: Packaging a Windows application requires the target app executable to be compiled for Windows (which requires the Windows shell in `src/platform/windows`).
 
 #### The AppImage caveat (system GTK4 & WebKitGTK 6.0)
 
@@ -703,11 +717,11 @@ Runtime package dependencies for Debian and RPM packages are automatically deriv
 
 ### Adding formats
 
-The packaging system is built around a pluggable `Format` enum and per-format dispatch in `build/package.zig`. To support new packaging formats (such as Windows `nsis` via `makensis` or `msi` via WiX):
-1. Add the enum value to `Format` (e.g. `nsis`, `msi`).
-2. Add a corresponding `fn addNsis(ctx: *const Context) *std.Build.Step` function.
+The packaging system is built around a pluggable `Format` enum and per-format dispatch in `build/package.zig`. To support additional packaging formats (such as Windows `msi` via WiX):
+1. Add the enum value to `Format` (e.g. `msi`).
+2. Add a corresponding `fn addMsi(ctx: *const Context) *std.Build.Step` function.
 3. Add a branch to the `switch (format)` dispatcher in `addFormat`.
-4. Include the format in `defaultFormats(.windows)`.
+4. Include the format in `defaultFormats(os_tag)`.
 
 When an unsupported OS target is packaged (or no formats are configured), `zig build package` fails gracefully at build time with a clear message (`"no package formats for <os> yet"`) via `b.addFail`.
 

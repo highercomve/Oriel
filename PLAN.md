@@ -312,6 +312,10 @@ LIBRARIES.md (subcommands = `union`, options = `struct` fields, generated help).
   clipboard. Keep the shell interface in `App.zig` platform-neutral first
   (split Linux code into `src/platform/linux/`), then add
   `src/platform/windows/`.
+- ✅ **Windows installer:** `nsis` package format (default for Windows
+  targets): `makensis` cross-builds a per-user `setup.exe` (Start menu,
+  HKCU uninstall entry, WebView2 runtime check/bootstrapper, optional
+  `WebView2Loader.dll`). MSI (WiX) is not planned until someone needs it.
 - **Native deps:** whisper.cpp / llama.cpp / sqlite-vec built from
   `build.zig` (CPU first; CUDA/Vulkan as options).
 

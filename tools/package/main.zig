@@ -13,14 +13,19 @@ pub const desktop = @import("desktop.zig");
 pub const nfpm = @import("nfpm.zig");
 pub const appimage = @import("appimage.zig");
 pub const icons = @import("icons.zig");
+pub const ico = @import("ico.zig");
+pub const nsis = @import("nsis.zig");
 
 const Dir = std.Io.Dir;
 const Io = std.Io;
 
-var global_environ_map: *std.process.Environ.Map = undefined;
+var global_environ_map: ?*const std.process.Environ.Map = null;
 
 fn getEnv(key: []const u8) ?[]const u8 {
-    return global_environ_map.get(key);
+    if (global_environ_map) |m| {
+        return m.get(key);
+    }
+    return null;
 }
 
 fn pathExists(io: Io, path: []const u8) bool {
@@ -62,6 +67,8 @@ pub fn main(init: std.process.Init) !u8 {
         return packageNfpmCmd(gpa, io, args, .rpm);
     } else if (std.mem.eql(u8, command, "package-appimage")) {
         return packageAppImageCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "package-nsis")) {
+        return packageNsisCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "install-desktop-entry")) {
         return installDesktopEntryCmd(gpa, io, args);
     } else {
@@ -80,6 +87,7 @@ fn printUsage() void {
         \\  package-deb           Generate nfpm.yaml and build Debian (.deb) package
         \\  package-rpm           Generate nfpm.yaml and build RPM (.rpm) package
         \\  package-appimage      Assemble AppDir, run mksquashfs, prepend runtime
+        \\  package-nsis          Generate installer.nsi and build Windows setup.exe via makensis
         \\  install-desktop-entry Install desktop file and icons to $XDG_DATA_HOME
         \\
     , .{});
@@ -269,6 +277,7 @@ pub fn resizeIcons(
                 defer gpa.free(data);
                 try Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = data });
             }
+            try writeDestinationIco(gpa, io, dest_dir);
             return;
         }
     }
@@ -329,6 +338,32 @@ pub fn resizeIcons(
             }
         }
     }
+
+    try writeDestinationIco(gpa, io, dest_dir);
+}
+
+/// Pack the resized PNGs in `dest_dir` into `dest_dir/icon.ico` (used by the
+/// NSIS installer and its shortcuts).
+fn writeDestinationIco(gpa: std.mem.Allocator, io: Io, dest_dir: []const u8) !void {
+    var png_entries: std.ArrayList(ico.PngIconEntry) = .empty;
+    defer {
+        for (png_entries.items) |entry| gpa.free(entry.png_data);
+        png_entries.deinit(gpa);
+    }
+
+    for (ico.default_ico_sizes) |size| {
+        const png_file = try std.fmt.allocPrint(gpa, "{s}/{d}x{d}.png", .{ dest_dir, size, size });
+        defer gpa.free(png_file);
+        const png_data = try Dir.cwd().readFileAlloc(io, png_file, gpa, .limited(10 * 1024 * 1024));
+        errdefer gpa.free(png_data);
+        try png_entries.append(gpa, .{ .width = size, .height = size, .png_data = png_data });
+    }
+
+    const ico_bytes = try ico.writeIcoFromPngs(gpa, png_entries.items);
+    defer gpa.free(ico_bytes);
+    const ico_path = try std.fmt.allocPrint(gpa, "{s}/icon.ico", .{dest_dir});
+    defer gpa.free(ico_path);
+    try Dir.cwd().writeFile(io, .{ .sub_path = ico_path, .data = ico_bytes });
 }
 
 // ---------------------------------------------------------------------------
@@ -858,6 +893,231 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u
 }
 
 // ---------------------------------------------------------------------------
+// package-nsis
+// ---------------------------------------------------------------------------
+
+fn ensureAbsolutePath(gpa: std.mem.Allocator, io: Io, path: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(path)) {
+        return try gpa.dupe(u8, path);
+    }
+    const cwd_path = try Dir.cwd().realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(cwd_path);
+    return try std.fs.path.join(gpa, &.{ cwd_path, path });
+}
+
+pub fn findMakensis(gpa: std.mem.Allocator, io: Io) ![]const u8 {
+    // 1. Search PATH entries from the environment
+    if (getEnv("PATH")) |path_var| {
+        var it = std.mem.splitScalar(u8, path_var, ':');
+        while (it.next()) |dir| {
+            if (dir.len == 0) continue;
+            const candidate = try std.fs.path.join(gpa, &.{ dir, "makensis" });
+            errdefer gpa.free(candidate);
+            if (Dir.cwd().access(io, candidate, .{})) |_| {
+                return candidate;
+            } else |_| {
+                gpa.free(candidate);
+            }
+        }
+    }
+
+    // 2. Check standard system locations
+    const common_locations = [_][]const u8{
+        "/usr/bin/makensis",
+        "/usr/local/bin/makensis",
+    };
+    for (common_locations) |loc| {
+        if (Dir.cwd().access(io, loc, .{})) |_| {
+            return try gpa.dupe(u8, loc);
+        } else |_| {}
+    }
+
+    return error.MakensisNotFound;
+}
+
+fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !u8 {
+    var out_dir: ?[]const u8 = null;
+    var filename: ?[]const u8 = null;
+    var bin_path: ?[]const u8 = null;
+    var icons_dir: ?[]const u8 = null;
+    var icon_path_arg: ?[]const u8 = null;
+    var webview2_loader: ?[]const u8 = null;
+    var app_id: ?[]const u8 = null;
+    var name: ?[]const u8 = null;
+    var exe_name: ?[]const u8 = null;
+    var version: []const u8 = "0.1.0";
+    var publisher: ?[]const u8 = null;
+    var homepage: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = std.mem.span(args[i]);
+        if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
+            i += 1;
+            out_dir = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--filename") and i + 1 < args.len) {
+            i += 1;
+            filename = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--bin") and i + 1 < args.len) {
+            i += 1;
+            bin_path = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--icons-dir") and i + 1 < args.len) {
+            i += 1;
+            icons_dir = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--icon") and i + 1 < args.len) {
+            i += 1;
+            icon_path_arg = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--webview2-loader") and i + 1 < args.len) {
+            i += 1;
+            webview2_loader = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--app-id") and i + 1 < args.len) {
+            i += 1;
+            app_id = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--name") and i + 1 < args.len) {
+            i += 1;
+            name = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--exe-name") and i + 1 < args.len) {
+            i += 1;
+            exe_name = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--version") and i + 1 < args.len) {
+            i += 1;
+            version = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--publisher") and i + 1 < args.len) {
+            i += 1;
+            publisher = std.mem.span(args[i]);
+        } else if (std.mem.eql(u8, arg, "--homepage") and i + 1 < args.len) {
+            i += 1;
+            homepage = std.mem.span(args[i]);
+        }
+    }
+
+    const target_out_dir = out_dir orelse {
+        std.debug.print("error: package-nsis: missing --out-dir\n", .{});
+        return 1;
+    };
+    const target_filename = filename orelse {
+        std.debug.print("error: package-nsis: missing --filename\n", .{});
+        return 1;
+    };
+    const target_bin = bin_path orelse {
+        std.debug.print("error: package-nsis: missing --bin\n", .{});
+        return 1;
+    };
+    const target_name = name orelse "app";
+    const target_exe_name = exe_name orelse target_name;
+    const target_app_id = app_id orelse target_name;
+    const target_publisher = publisher orelse target_name;
+
+    const clean_exe_name = if (std.mem.endsWith(u8, target_exe_name, ".exe"))
+        target_exe_name[0 .. target_exe_name.len - 4]
+    else
+        target_exe_name;
+
+    metadata.validateExeName(clean_exe_name) catch |err| {
+        std.debug.print("error: package-nsis: invalid --exe-name '{s}': {s}\n", .{ target_exe_name, @errorName(err) });
+        return 1;
+    };
+
+    if (!pathExists(io, target_bin)) {
+        std.debug.print("error: package-nsis: binary file not found: {s}\n", .{target_bin});
+        return 1;
+    }
+
+    // Locate makensis
+    const makensis_bin = findMakensis(gpa, io) catch |err| {
+        switch (err) {
+            error.MakensisNotFound => std.debug.print("error: package-nsis: 'makensis' not found in PATH, /usr/bin or /usr/local/bin.\nInstall NSIS 3 (the `nsis` package on Arch, Debian and Ubuntu) to build Windows installers.\n", .{}),
+            else => std.debug.print("error: package-nsis: looking for makensis: {s}\n", .{@errorName(err)}),
+        }
+        return 1;
+    };
+    defer gpa.free(makensis_bin);
+
+    // Ensure target out_dir exists
+    try Dir.cwd().createDirPath(io, target_out_dir);
+
+    const abs_out_dir = try ensureAbsolutePath(gpa, io, target_out_dir);
+    defer gpa.free(abs_out_dir);
+
+    const abs_bin = try ensureAbsolutePath(gpa, io, target_bin);
+    defer gpa.free(abs_bin);
+
+    const abs_out_file = try std.fs.path.join(gpa, &.{ abs_out_dir, target_filename });
+    defer gpa.free(abs_out_file);
+
+    // Resolve the .ico: `--icon` wins, else `<icons-dir>/icon.ico` written by resize-icons.
+    var final_icon_path: ?[]const u8 = null;
+    defer if (final_icon_path) |p| gpa.free(p);
+    if (icon_path_arg) |arg_ico| {
+        if (!std.mem.endsWith(u8, arg_ico, ".ico")) {
+            std.debug.print("error: package-nsis: --icon must be a .ico file: {s}\n", .{arg_ico});
+            return 1;
+        }
+        final_icon_path = try ensureAbsolutePath(gpa, io, arg_ico);
+    } else if (icons_dir) |idir| {
+        const candidate_ico = try std.fs.path.join(gpa, &.{ idir, "icon.ico" });
+        defer gpa.free(candidate_ico);
+        if (!pathExists(io, candidate_ico)) {
+            std.debug.print("error: package-nsis: {s} not found (run resize-icons first)\n", .{candidate_ico});
+            return 1;
+        }
+        final_icon_path = try ensureAbsolutePath(gpa, io, candidate_ico);
+    }
+
+    // Resolve webview2_loader
+    var abs_wv2_loader: ?[]const u8 = null;
+    defer if (abs_wv2_loader) |wl| gpa.free(wl);
+    if (webview2_loader) |wl| {
+        if (!pathExists(io, wl)) {
+            std.debug.print("error: package-nsis: webview2-loader file not found: {s}\n", .{wl});
+            return 1;
+        }
+        abs_wv2_loader = try ensureAbsolutePath(gpa, io, wl);
+    }
+
+    // Generate installer.nsi
+    const nsi_path = try std.fs.path.join(gpa, &.{ abs_out_dir, "installer.nsi" });
+    defer gpa.free(nsi_path);
+
+    const script_content = try nsis.generateNsisScript(gpa, .{
+        .name = target_name,
+        .exe_name = clean_exe_name,
+        .version = version,
+        .publisher = target_publisher,
+        .id = target_app_id,
+        .binary_src = abs_bin,
+        .out_file = abs_out_file,
+        .icon_path = final_icon_path,
+        .webview2_loader = abs_wv2_loader,
+        .homepage = homepage,
+    });
+    defer gpa.free(script_content);
+    try Dir.cwd().writeFile(io, .{ .sub_path = nsi_path, .data = script_content });
+
+    // Run makensis
+    const res = std.process.run(gpa, io, .{
+        .argv = &.{ makensis_bin, "-NOCD", "-WX", nsi_path },
+    }) catch |err| {
+        std.debug.print("error: package-nsis: failed to execute makensis: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print("error: package-nsis: makensis failed:\n{s}{s}\n", .{ res.stdout, res.stderr });
+        return 1;
+    }
+
+    if (!pathExists(io, abs_out_file)) {
+        std.debug.print("error: package-nsis: output file '{s}' was not generated by makensis\n", .{abs_out_file});
+        return 1;
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // install-desktop-entry
 // ---------------------------------------------------------------------------
 
@@ -893,7 +1153,11 @@ fn installDesktopEntryCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]con
 
     // Determine target data home per XDG Base Directory specification:
     // Relative paths and empty values are invalid and treated as unset -> fall back to $HOME/.local/share
-    const data_home = resolveDataHome(gpa, global_environ_map) catch {
+    const env_map = global_environ_map orelse {
+        std.debug.print("error: install-desktop-entry: environment not available\n", .{});
+        return 1;
+    };
+    const data_home = resolveDataHome(gpa, env_map) catch {
         std.debug.print("error: install-desktop-entry: neither XDG_DATA_HOME nor HOME is set to a valid absolute path\n", .{});
         return 1;
     };
@@ -971,6 +1235,8 @@ test {
     std.testing.refAllDecls(nfpm);
     std.testing.refAllDecls(appimage);
     std.testing.refAllDecls(icons);
+    std.testing.refAllDecls(ico);
+    std.testing.refAllDecls(nsis);
 }
 
 test "resizeIcons custom png no overflow on large sizes" {
@@ -1015,6 +1281,14 @@ test "resizeIcons custom png no overflow on large sizes" {
         try std.testing.expectEqual(@as(usize, size), read_img.width);
         try std.testing.expectEqual(@as(usize, size), read_img.height);
     }
+
+    // Verify icon.ico was generated
+    const out_ico = try std.fs.path.join(allocator, &.{ out_dir, "icon.ico" });
+    defer allocator.free(out_ico);
+    const ico_data = try Dir.cwd().readFileAlloc(io, out_ico, allocator, .limited(10 * 1024 * 1024));
+    defer allocator.free(ico_data);
+    try std.testing.expect(ico_data.len > 6);
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, ico_data[2..4], .little));
 }
 
 test "resolveDataHome pure path resolution" {
@@ -1118,4 +1392,103 @@ test "streamCopyFile creates exact byte copy" {
     const copied_data = try Dir.cwd().readFileAlloc(io, dest_path, allocator, .limited(1024 * 1024));
     defer allocator.free(copied_data);
     try std.testing.expectEqualSlices(u8, test_data, copied_data);
+}
+
+test "findMakensis locates makensis binary" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("PATH", "/usr/bin:/usr/local/bin");
+    global_environ_map = &env;
+    defer global_environ_map = null;
+
+    // NSIS is optional on build hosts.
+    const bin = findMakensis(allocator, io) catch |err| switch (err) {
+        error.MakensisNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer allocator.free(bin);
+
+    try std.testing.expect(std.mem.endsWith(u8, bin, "makensis"));
+}
+
+test "packageNsisCmd builds Windows installer with makensis" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("PATH", "/usr/bin:/usr/local/bin");
+    global_environ_map = &env;
+    defer global_environ_map = null;
+
+    // NSIS is optional on build hosts.
+    const makensis = findMakensis(allocator, io) catch |err| switch (err) {
+        error.MakensisNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    allocator.free(makensis);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    // Create a dummy binary
+    const bin_path = try std.fs.path.join(allocator, &.{ tmp_path, "sample-app.exe" });
+    defer allocator.free(bin_path);
+    try tmp.dir.writeFile(io, .{ .sub_path = "sample-app.exe", .data = "MZdummy-binary-content" });
+
+    // Create a dummy icon
+    const ico_path = try std.fs.path.join(allocator, &.{ tmp_path, "sample.ico" });
+    defer allocator.free(ico_path);
+    const dummy_entry = [_]ico.PngIconEntry{.{ .width = 16, .height = 16, .png_data = &[_]u8{ 0x89, 'P', 'N', 'G', 0, 0, 0, 0 } }};
+    const ico_bytes = try ico.writeIcoFromPngs(allocator, &dummy_entry);
+    defer allocator.free(ico_bytes);
+    try tmp.dir.writeFile(io, .{ .sub_path = "sample.ico", .data = ico_bytes });
+
+    const out_dir = try std.fs.path.join(allocator, &.{ tmp_path, "out" });
+    defer allocator.free(out_dir);
+
+    const out_dir_z = try allocator.dupeZ(u8, out_dir);
+    defer allocator.free(out_dir_z);
+    const bin_path_z = try allocator.dupeZ(u8, bin_path);
+    defer allocator.free(bin_path_z);
+    const ico_path_z = try allocator.dupeZ(u8, ico_path);
+    defer allocator.free(ico_path_z);
+
+    const args = [_][*:0]const u8{
+        "--out-dir",
+        out_dir_z.ptr,
+        "--filename",
+        "sample-1.0.0-setup.exe",
+        "--name",
+        "Sample App $1",
+        "--exe-name",
+        "sample-app",
+        "--version",
+        "1.0.0",
+        "--publisher",
+        "Sample \"Publisher\"",
+        "--app-id",
+        "dev.oriel.SampleApp",
+        "--bin",
+        bin_path_z.ptr,
+        "--icon",
+        ico_path_z.ptr,
+    };
+
+    const status = try packageNsisCmd(allocator, io, &args);
+    try std.testing.expectEqual(@as(u8, 0), status);
+
+    // Verify output installer exists
+    const setup_exe_path = try std.fs.path.join(allocator, &.{ out_dir, "sample-1.0.0-setup.exe" });
+    defer allocator.free(setup_exe_path);
+
+    const setup_data = try Dir.cwd().readFileAlloc(io, setup_exe_path, allocator, .limited(10 * 1024 * 1024));
+    defer allocator.free(setup_data);
+    try std.testing.expect(setup_data.len > 1000);
 }

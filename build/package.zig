@@ -1,7 +1,7 @@
 //! Packaging step builder for Oriel applications.
 //!
 //! Provides pluggable package format dispatch per target OS.
-//! Supported formats: .deb, .rpm, .AppImage on Linux.
+//! Supported formats: .deb, .rpm, .AppImage on Linux, NSIS setup.exe on Windows.
 
 const std = @import("std");
 const metadata_mod = @import("../tools/package/metadata.zig");
@@ -12,19 +12,26 @@ pub const targetToAppImageArch = metadata_mod.targetToAppImageArch;
 
 /// Target package formats supported by Oriel.
 ///
-/// Future formats:
+/// Supported formats:
+/// - `deb`: Debian package (.deb) generated via nfpm.
+/// - `rpm`: Red Hat package (.rpm) generated via nfpm.
+/// - `appimage`: AppImage bundle (.AppImage).
 /// - `nsis`: Windows installer (`setup.exe`) generated via `makensis` (cross-builds from Linux).
+///
+/// Future formats:
 /// - `msi`: Windows installer MSI generated via WiX toolset.
 pub const Format = enum {
     deb,
     rpm,
     appimage,
+    nsis,
 };
 
 /// Return default package formats for a given operating system.
 pub fn defaultFormats(os_tag: std.Target.Os.Tag) []const Format {
     return switch (os_tag) {
         .linux => &.{ .deb, .rpm, .appimage },
+        .windows => &.{ .nsis },
         else => &.{},
     };
 }
@@ -96,6 +103,12 @@ pub const PackageOptions = struct {
 
     /// Extra runtime dependencies for RPM packages.
     extra_rpm_depends: []const []const u8 = &.{},
+
+    /// Optional path to WebView2Loader.dll for Windows packages.
+    /// If null, can also be provided via `-Dwebview2-loader=<path>` build option.
+    /// When provided, the DLL is copied next to the Windows executable in the installer.
+    /// Available from the Microsoft.Web.WebView2 NuGet package (runtimes/win-x64/native/WebView2Loader.dll).
+    webview2_loader: ?std.Build.LazyPath = null,
 };
 
 /// Format packaging context passed to each format builder function.
@@ -111,6 +124,7 @@ pub const Context = struct {
     deb_deps: []const []const u8,
     rpm_deps: []const []const u8,
     appimage_runtime_override: ?[]const u8,
+    webview2_loader: ?std.Build.LazyPath,
 };
 
 pub fn addPackageSteps(
@@ -218,6 +232,20 @@ pub fn addPackageSteps(
 
     const appimage_runtime_override = getOrDeclareAppImageRuntimeOption(b);
 
+    var webview2_loader = pkg_opts.webview2_loader;
+    if (webview2_loader == null) {
+        if (getOrDeclareWebView2LoaderOption(b)) |wl| {
+            webview2_loader = if (std.fs.path.isAbsolute(wl))
+                .{ .cwd_relative = wl }
+            else
+                b.path(wl);
+        }
+    }
+
+    if (os_tag == .windows and webview2_loader != null) {
+        b.getInstallStep().dependOn(&b.addInstallFileWithDir(webview2_loader.?, .bin, "WebView2Loader.dll").step);
+    }
+
     const ctx = Context{
         .b = b,
         .oriel_dep = oriel_dep,
@@ -230,6 +258,7 @@ pub fn addPackageSteps(
         .deb_deps = deb_deps.items,
         .rpm_deps = rpm_deps.items,
         .appimage_runtime_override = appimage_runtime_override,
+        .webview2_loader = webview2_loader,
     };
 
     // Determine target formats
@@ -293,6 +322,7 @@ fn addFormat(ctx: *const Context, format: Format) *std.Build.Step {
         .deb => addDeb(ctx),
         .rpm => addRpm(ctx),
         .appimage => addAppImage(ctx),
+        .nsis => addNsis(ctx),
     };
 }
 
@@ -417,6 +447,40 @@ fn addAppImage(ctx: *const Context) *std.Build.Step {
     return &install.step;
 }
 
+/// Build Windows NSIS installer (`<name>-<version>-setup.exe`).
+fn addNsis(ctx: *const Context) *std.Build.Step {
+    const setup_filename = ctx.b.fmt("{s}-{s}-setup.exe", .{ ctx.metadata.exe_name, ctx.metadata.version });
+
+    const run = ctx.b.addRunArtifact(ctx.package_tool);
+    run.addArg("package-nsis");
+    run.addArg("--out-dir");
+    const out_dir = run.addOutputDirectoryArg("nsis");
+    run.addArgs(&.{ "--filename", setup_filename });
+    run.addArgs(&.{ "--name", ctx.metadata.name });
+    run.addArgs(&.{ "--exe-name", ctx.metadata.exe_name });
+    run.addArgs(&.{ "--version", ctx.metadata.version });
+    run.addArgs(&.{ "--publisher", ctx.metadata.publisher });
+    run.addArgs(&.{ "--app-id", ctx.metadata.id });
+    if (ctx.metadata.homepage) |hp| {
+        run.addArgs(&.{ "--homepage", hp });
+    }
+    run.addArg("--bin");
+    run.addFileArg(ctx.exe);
+    run.addArg("--icons-dir");
+    run.addDirectoryArg(ctx.icons_dir);
+    if (ctx.webview2_loader) |loader| {
+        run.addArg("--webview2-loader");
+        run.addFileArg(loader);
+    }
+
+    const install = ctx.b.addInstallFileWithDir(
+        out_dir.path(ctx.b, setup_filename),
+        .prefix,
+        ctx.b.fmt("package/{s}", .{setup_filename}),
+    );
+    return &install.step;
+}
+
 fn isFeatureEnabled(dep: *std.Build.Dependency, comptime name: []const u8) bool {
     if (dep.builder.user_input_options.get(name)) |opt| {
         switch (opt.value) {
@@ -449,4 +513,18 @@ fn getOrDeclareAppImageRuntimeOption(b: *std.Build) ?[]const u8 {
         };
     }
     return b.option([]const u8, "appimage-runtime", "Override path to AppImage type-2 runtime");
+}
+
+/// `-Dwebview2-loader`, declared once: `b.option` panics on a second
+/// declaration, so later calls read the already-declared value.
+fn getOrDeclareWebView2LoaderOption(b: *std.Build) ?[]const u8 {
+    if (b.available_options_map.get("webview2-loader") != null) {
+        const option_ptr = b.user_input_options.getPtr("webview2-loader") orelse return null;
+        option_ptr.used = true;
+        return switch (option_ptr.value) {
+            .scalar => |s| s,
+            else => null,
+        };
+    }
+    return b.option([]const u8, "webview2-loader", "Path to WebView2Loader.dll for Windows packaging");
 }

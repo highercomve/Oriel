@@ -70,7 +70,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(dev_runner);
 
-    // Host tool used by `addApp` for packaging (deb, rpm, AppImage, desktop-entry).
+    // Host tool used by `addApp` for packaging (deb, rpm, AppImage, NSIS, desktop-entry).
     const zigimg_dep = b.dependency("zigimg", .{ .target = b.graph.host, .optimize = .ReleaseSafe });
     const package_tool_mod = b.createModule(.{
         .root_source_file = b.path("tools/package/main.zig"),
@@ -311,7 +311,7 @@ pub const AppOptions = struct {
     /// (build-time config: `assets`, `dev`, `types_path`).
     root_source_file: std.Build.LazyPath,
     frontend: Frontend,
-    /// Application packaging metadata (for deb, rpm, AppImage, desktop-entry).
+    /// Application packaging metadata (for deb, rpm, AppImage, NSIS setup.exe, desktop-entry).
     package: ?PackageOptions = null,
     /// Optional base64-encoded Ed25519 public key for the updater.
     update_public_key: ?[]const u8 = null,
