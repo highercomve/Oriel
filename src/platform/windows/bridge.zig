@@ -70,12 +70,18 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
         target: ?window_mod.WindowHandle,
         script: [:0]u8,
 
+        fn discard(self: *@This()) void {
+            std.heap.smp_allocator.free(self.script);
+            std.heap.smp_allocator.destroy(self);
+        }
+
+        fn cleanup(ctx: ?*anyopaque) void {
+            discard(@ptrCast(@alignCast(ctx)));
+        }
+
         fn run(ctx: ?*anyopaque) void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
-            defer {
-                std.heap.smp_allocator.free(self.script);
-                std.heap.smp_allocator.destroy(self);
-            }
+            defer discard(self);
 
             const script_w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.smp_allocator, self.script) catch return;
             defer std.heap.smp_allocator.free(script_w);
@@ -102,7 +108,7 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
         return;
     };
     task.* = .{ .target = target, .script = script_copy };
-    ShellMod.dispatchToMainThread(&Task.run, task);
+    ShellMod.dispatchWithCleanup(&Task.run, task, &Task.cleanup);
 }
 
 pub fn Bridge(
@@ -209,7 +215,20 @@ pub fn Bridge(
                     self.arena_state = arena_state;
                     self.result = res;
                     self.err_name = err_name;
-                    ShellMod.dispatchToMainThread(&idleReply, self);
+                    ShellMod.dispatchWithCleanup(&idleReply, self, &discardReply);
+                }
+
+                /// The reply couldn't be queued, or the app shut down first.
+                fn discardReply(ctx: ?*anyopaque) void {
+                    const self: *@This() = @ptrCast(@alignCast(ctx));
+                    // COM objects may only be released on their own (main)
+                    // thread; from a worker, leak the one reference instead.
+                    if (win32.GetCurrentThreadId() == ShellMod.main_thread_id) {
+                        _ = self.view.lpVtbl.Release(self.view);
+                    }
+                    var a = self.arena_state;
+                    a.deinit();
+                    std.heap.smp_allocator.destroy(self);
                 }
 
                 fn idleReply(ctx: ?*anyopaque) void {

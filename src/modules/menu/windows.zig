@@ -280,7 +280,11 @@ pub fn check(_: std.mem.Allocator, _: @import("../../oriel.zig").CheckContext) !
     const hmenu = win32.CreateMenu() orelse return error.CreateMenuFailed;
     defer _ = win32.DestroyMenu(hmenu);
     const hsub = win32.CreatePopupMenu() orelse return error.CreatePopupMenuFailed;
-    _ = win32.AppendMenuW(hmenu, win32.MF_POPUP, @intFromPtr(hsub), std.unicode.utf8ToUtf16LeStringLiteral("Test"));
+    // Once attached, hsub is destroyed with hmenu; until then it is ours.
+    if (win32.AppendMenuW(hmenu, win32.MF_POPUP, @intFromPtr(hsub), std.unicode.utf8ToUtf16LeStringLiteral("Test")) == win32.FALSE) {
+        _ = win32.DestroyMenu(hsub);
+        return error.AppendMenuFailed;
+    }
     var accels = [_]win32.ACCEL{
         .{ .fVirt = win32.FVIRTKEY | win32.FCONTROL, .key = 'N', .cmd = 1 },
     };

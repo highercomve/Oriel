@@ -174,6 +174,8 @@ pub const FileWindowStream = struct {
 
         var bytes_read: win32.DWORD = 0;
         if (win32.ReadFile(self.handle, pv, to_read, &bytes_read, @ptrCast(&ov)) == win32.FALSE) {
+            // Nothing was read: undo the advance reserved above.
+            _ = self.current_offset.fetchSub(to_read, .release);
             const err = win32.GetLastError();
             if (err == 38) { // ERROR_HANDLE_EOF
                 if (pcbRead) |pr| pr.* = 0;

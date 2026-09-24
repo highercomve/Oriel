@@ -53,6 +53,10 @@ const Task = struct {
 
 var task_queue: std.ArrayList(Task) = .empty;
 var task_mutex: win32.SRWLOCK = win32.SRWLOCK_INIT;
+/// Set under `task_mutex` when `run` stops, before its last drain: a task
+/// queued after that would never run (and a `runOnMainThread` caller
+/// would wait forever), so it is cleaned up at once instead.
+var shutting_down = false;
 
 /// Dispatches a task to execute on the main Win32 UI thread.
 ///
@@ -66,15 +70,22 @@ pub fn dispatchToMainThread(func: *const fn (ctx: ?*anyopaque) void, ctx: ?*anyo
 }
 
 /// Like `dispatchToMainThread`, but `cleanup(ctx)` runs instead of `func` when
-/// the task can't be queued (out of memory; then on the calling thread, so it
-/// must only free memory, not touch COM objects or windows) or when it is
-/// still queued at shutdown (then on the main thread, after the message loop).
+/// the task can't be queued (out of memory, or queued after shutdown; then on
+/// the calling thread, so it must only free memory, not touch COM objects or
+/// windows) or when it is still queued at shutdown (then on the main thread,
+/// after the message loop).
 pub fn dispatchWithCleanup(
     func: *const fn (ctx: ?*anyopaque) void,
     ctx: ?*anyopaque,
     cleanup: ?*const fn (ctx: ?*anyopaque) void,
 ) void {
     win32.AcquireSRWLockExclusive(&task_mutex);
+    // The main thread may still queue while it drains (drainAtShutdown loops).
+    if (shutting_down and win32.GetCurrentThreadId() != main_thread_id) {
+        win32.ReleaseSRWLockExclusive(&task_mutex);
+        if (cleanup) |c| c(ctx) else log.warn("dispatchToMainThread: dropped a task queued after shutdown", .{});
+        return;
+    }
     task_queue.append(std.heap.smp_allocator, .{ .run_fn = func, .ctx = ctx, .cleanup_fn = cleanup }) catch {
         win32.ReleaseSRWLockExclusive(&task_mutex);
         log.err("dispatchToMainThread failed: out of memory", .{});
@@ -298,11 +309,15 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 log.err("failed to create the host window: {s}", .{@errorName(err)});
                 return 1;
             };
+            win32.AcquireSRWLockExclusive(&task_mutex);
             host_hwnd = host;
+            shutting_down = false;
+            win32.ReleaseSRWLockExclusive(&task_mutex);
             defer {
                 if (on_shutdown_fn) |f| f();
                 win32.AcquireSRWLockExclusive(&task_mutex);
                 host_hwnd = null;
+                shutting_down = true; // later tasks are cleaned up, not queued
                 win32.ReleaseSRWLockExclusive(&task_mutex);
                 if (win32.DestroyWindow(host) == win32.FALSE) {
                     log.err("DestroyWindow(host) failed ({d})", .{win32.GetLastError()});
