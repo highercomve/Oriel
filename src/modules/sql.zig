@@ -67,7 +67,7 @@ pub const Stmt = struct {
     }
 
     pub fn bindText(self: Stmt, index: c_int, value: []const u8) !void {
-        if (c.sqlite3_bind_text(self.handle, index, value.ptr, @intCast(value.len), sqlite_transient) != c.SQLITE_OK) return error.SqliteBind;
+        if (c.sqlite3_bind_text64(self.handle, index, value.ptr, value.len, sqlite_transient, c.SQLITE_UTF8) != c.SQLITE_OK) return error.SqliteBind;
     }
 
     pub fn bindInt(self: Stmt, index: c_int, value: i64) !void {
@@ -75,7 +75,7 @@ pub const Stmt = struct {
     }
 
     pub fn bindBlob(self: Stmt, index: c_int, value: []const u8) !void {
-        if (c.sqlite3_bind_blob(self.handle, index, value.ptr, @intCast(value.len), sqlite_transient) != c.SQLITE_OK) return error.SqliteBind;
+        if (c.sqlite3_bind_blob64(self.handle, index, value.ptr, value.len, sqlite_transient) != c.SQLITE_OK) return error.SqliteBind;
     }
 
     /// Advance to the next row; false when done.
