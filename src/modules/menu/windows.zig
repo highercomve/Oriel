@@ -276,7 +276,7 @@ pub fn set(items: []const MenuItem, on_action: ActionCallback) !void {
     return setMenu(items, on_action);
 }
 
-pub fn check(_: std.mem.Allocator, _: anytype) !@import("../../oriel.zig").Check {
+pub fn check(_: std.mem.Allocator, _: @import("../../oriel.zig").CheckContext) !@import("../../oriel.zig").Check {
     const hmenu = win32.CreateMenu() orelse return error.CreateMenuFailed;
     defer _ = win32.DestroyMenu(hmenu);
     const hsub = win32.CreatePopupMenu() orelse return error.CreatePopupMenuFailed;
