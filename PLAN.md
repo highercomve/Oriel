@@ -58,7 +58,7 @@ decisions), `IDEA.md` (motivation, architecture), then the code:
 
 8. **Zig 0.16 APIs:** read `docs/zig-0.16.md` before searching
    `~/.zvm/0.16.0/lib/std`; it lists the forms that compile in this repo.
-9. **Review checklist (memory safety):** every change is reviewed for leaks
+9. **Review checklist (memory safety; full procedure in `docs/memory-safety-review.md`):** every change is reviewed for leaks
    (`defer`/`errdefer` on all paths; tests use `std.testing.allocator`),
    clear ownership of returned memory, structs never copied after something
    holds a pointer to them, no `.?` on values that can really be null
