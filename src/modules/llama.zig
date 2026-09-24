@@ -10,10 +10,11 @@ pub const c = @cImport({
     @cInclude("llama.h");
 });
 
-/// Return the backend system info string (e.g. CPU features).
-pub fn systemInfo() []const u8 {
-    const ptr = c.llama_print_system_info();
-    return std.mem.span(ptr);
+/// Return a copy of the backend system info string (CPU features); the
+/// caller frees it with `gpa`. The C function returns a pointer into a static
+/// string it rebuilds on every call, so handing that out would dangle.
+pub fn systemInfo(gpa: std.mem.Allocator) ![]u8 {
+    return gpa.dupe(u8, std.mem.span(c.llama_print_system_info()));
 }
 
 /// Initialize the llama backend.
@@ -61,7 +62,8 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     initBackend();
     defer deinitBackend();
 
-    const info = systemInfo();
+    const info = try systemInfo(gpa);
+    defer gpa.free(info);
     const has_cpu = std.mem.indexOf(u8, info, "CPU") != null;
     const trimmed = std.mem.trim(u8, info, " \t\r\n");
     return .{
@@ -88,7 +90,8 @@ test "llama backend init, system info, default params, and missing file error" {
     initBackend();
     defer deinitBackend();
 
-    const info = systemInfo();
+    const info = try systemInfo(std.testing.allocator);
+    defer std.testing.allocator.free(info);
     try std.testing.expect(info.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, info, "CPU") != null);
 

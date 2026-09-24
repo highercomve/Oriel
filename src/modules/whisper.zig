@@ -10,10 +10,11 @@ pub const c = @cImport({
     @cInclude("whisper.h");
 });
 
-/// Return the backend system info string.
-pub fn systemInfo() []const u8 {
-    const ptr = c.whisper_print_system_info();
-    return std.mem.span(ptr);
+/// Return a copy of the backend system info string (CPU features); the
+/// caller frees it with `gpa`. The C function returns a pointer into a static
+/// string it rebuilds on every call, so handing that out would dangle.
+pub fn systemInfo(gpa: std.mem.Allocator) ![]u8 {
+    return gpa.dupe(u8, std.mem.span(c.whisper_print_system_info()));
 }
 
 /// Return default context parameters.
@@ -48,7 +49,8 @@ pub fn silenceLogs() void {
 
 /// Smoke check for oriel checkAll: verifies whisper system info reporting.
 pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
-    const info = systemInfo();
+    const info = try systemInfo(gpa);
+    defer gpa.free(info);
     const trimmed = std.mem.trim(u8, info, " \t\r\n");
     return .{
         .module = "whisper",
@@ -71,7 +73,8 @@ test "whisper check" {
 
 test "whisper system info, default params, and missing file error" {
     silenceLogs();
-    const info = systemInfo();
+    const info = try systemInfo(std.testing.allocator);
+    defer std.testing.allocator.free(info);
     try std.testing.expect(info.len > 0);
 
     const params = contextDefaultParams();

@@ -816,7 +816,8 @@ oriel.llama.initBackend();
 defer oriel.llama.deinitBackend();
 
 // Inspect system CPU features detected by backend
-const sys_info = oriel.llama.systemInfo();
+const sys_info = try oriel.llama.systemInfo(gpa); // owned copy
+defer gpa.free(sys_info);
 std.log.info("Llama system info: {s}", .{sys_info});
 
 // Load GGUF model with default params
@@ -837,7 +838,8 @@ const oriel = @import("oriel");
 oriel.whisper.silenceLogs();
 
 // Inspect whisper backend info
-const sys_info = oriel.whisper.systemInfo();
+const sys_info = try oriel.whisper.systemInfo(gpa); // owned copy
+defer gpa.free(sys_info);
 std.log.info("Whisper system info: {s}", .{sys_info});
 
 // Load GGML speech model with default context params
