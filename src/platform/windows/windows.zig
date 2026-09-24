@@ -33,6 +33,7 @@ pub const quit = ShellMod.quit;
 pub const setMenu = ShellMod.setMenu;
 pub const createWindow = ShellMod.createWindow;
 pub const dispatchToMainThread = ShellMod.dispatchToMainThread;
+pub const runOnMainThread = ShellMod.runOnMainThread;
 
 pub fn run(io: std.Io, comptime api: anytype, comptime config: anytype) u8 {
     const S = ShellMod.Shell(api, config);

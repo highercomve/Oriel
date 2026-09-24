@@ -850,6 +850,16 @@ pub fn WindowCreator(
                 _ = view.navigate(start_uri_w.ptr);
             }
 
+            if (ShellMod.on_window_created_fn) |hook| {
+                hook(hwnd);
+                // A menu bar shrinks the client area; the WM_SIZE it causes is
+                // ignored until the window is registered, so resize here.
+                var menu_rect: win32.RECT = undefined;
+                if (win32.GetClientRect(hwnd, &menu_rect) != win32.FALSE) {
+                    _ = controller.putBounds(menu_rect);
+                }
+            }
+
             _ = win32.ShowWindow(hwnd, win32.SW_SHOW);
             _ = win32.SetForegroundWindow(hwnd);
 

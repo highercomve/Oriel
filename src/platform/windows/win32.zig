@@ -20,6 +20,8 @@ pub const GUID = windows.GUID;
 pub fn isEqualGUID(a: *const GUID, b: *const GUID) bool {
     return std.mem.eql(u8, std.mem.asBytes(a), std.mem.asBytes(b));
 }
+pub const LARGE_INTEGER = windows.LARGE_INTEGER;
+pub const ULARGE_INTEGER = windows.ULARGE_INTEGER;
 pub const MAX_PATH: DWORD = 260;
 
 pub const RECT = extern struct {
@@ -65,6 +67,7 @@ pub const HBITMAP = *opaque {};
 pub const HDC = *opaque {};
 pub const HGLOBAL = *opaque {};
 pub const HKEY = *opaque {};
+pub const HACCEL = *opaque {};
 
 pub const TRUE: BOOL = .TRUE;
 pub const FALSE: BOOL = .FALSE;
@@ -99,6 +102,10 @@ pub const WM_USER: UINT = 0x0400;
 pub const WM_APP: UINT = 0x8000;
 pub const NIN_SELECT: UINT = WM_USER + 0;
 pub const NIN_KEYSELECT: UINT = WM_USER + 1;
+pub const NIN_BALLOONSHOW: UINT = WM_USER + 2;
+pub const NIN_BALLOONHIDE: UINT = WM_USER + 3;
+pub const NIN_BALLOONTIMEOUT: UINT = WM_USER + 4;
+pub const NIN_BALLOONUSERCLICK: UINT = WM_USER + 5;
 
 // Window Styles
 pub const WS_OVERLAPPED: DWORD = 0x00000000;
@@ -307,6 +314,22 @@ pub const MF_DISABLED: UINT = 0x00000002;
 pub const MF_CHECKED: UINT = 0x00000008;
 pub const MF_POPUP: UINT = 0x00000010;
 pub const MF_SEPARATOR: UINT = 0x00000800;
+
+// Accelerator Flags
+pub const FVIRTKEY: BYTE = 0x01;
+pub const FNOINVERT: BYTE = 0x02;
+pub const FSHIFT: BYTE = 0x04;
+pub const FCONTROL: BYTE = 0x08;
+pub const FALT: BYTE = 0x10;
+
+pub const ACCEL = extern struct {
+    fVirt: BYTE,
+    key: WORD,
+    cmd: WORD,
+};
+
+// GetAncestor Flags
+pub const GA_ROOT: UINT = 2;
 
 // TrackPopupMenu Flags
 pub const TPM_LEFTBUTTON: UINT = 0x0000;
@@ -566,7 +589,11 @@ pub extern "user32" fn IsIconic(hWnd: HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn AdjustWindowRectEx(lpRect: *RECT, dwStyle: DWORD, bMenu: BOOL, dwExStyle: DWORD) callconv(.winapi) BOOL;
 pub extern "user32" fn SetWindowLongPtrW(hWnd: HWND, nIndex: c_int, dwNewLong: LONG_PTR) callconv(.winapi) LONG_PTR;
 pub extern "user32" fn GetWindowLongPtrW(hWnd: HWND, nIndex: c_int) callconv(.winapi) LONG_PTR;
+pub const GCLP_HICONSM: c_int = -34;
+pub extern "user32" fn GetClassLongPtrW(hWnd: HWND, nIndex: c_int) callconv(.winapi) ULONG_PTR;
+pub const IDI_APPLICATION: LPCWSTR = @ptrFromInt(32512);
 pub extern "user32" fn LoadCursorW(hInstance: ?HINSTANCE, lpCursorName: LPCWSTR) callconv(.winapi) ?HCURSOR;
+pub extern "user32" fn LoadIconW(hInstance: ?HINSTANCE, lpIconName: [*:0]align(1) const u16) callconv(.winapi) ?HICON;
 pub extern "user32" fn OpenClipboard(hWndNewOwner: ?HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn CloseClipboard() callconv(.winapi) BOOL;
 pub extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;
@@ -583,7 +610,13 @@ pub extern "user32" fn DestroyMenu(hMenu: HMENU) callconv(.winapi) BOOL;
 pub extern "user32" fn AppendMenuW(hMenu: HMENU, uFlags: UINT, uIDNewItem: UINT_PTR, lpNewItem: ?LPCWSTR) callconv(.winapi) BOOL;
 pub extern "user32" fn TrackPopupMenu(hMenu: HMENU, uFlags: UINT, x: c_int, y: c_int, nReserved: c_int, hWnd: HWND, prcRect: ?*const RECT) callconv(.winapi) c_int;
 pub extern "user32" fn SetMenu(hWnd: HWND, hMenu: ?HMENU) callconv(.winapi) BOOL;
+pub extern "user32" fn GetMenu(hWnd: HWND) callconv(.winapi) ?HMENU;
 pub extern "user32" fn DrawMenuBar(hWnd: HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn CheckMenuItem(hMenu: HMENU, uIDCheckItem: UINT, uCheck: UINT) callconv(.winapi) DWORD;
+pub extern "user32" fn CreateAcceleratorTableW(pactbl: [*]const ACCEL, cAccel: c_int) callconv(.winapi) ?HACCEL;
+pub extern "user32" fn DestroyAcceleratorTable(hAccel: HACCEL) callconv(.winapi) BOOL;
+pub extern "user32" fn TranslateAcceleratorW(hWnd: HWND, hAccTable: HACCEL, lpMsg: *MSG) callconv(.winapi) c_int;
+pub extern "user32" fn GetAncestor(hwnd: HWND, gaFlags: UINT) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetCursorPos(lpPoint: *POINT) callconv(.winapi) BOOL;
 pub extern "user32" fn CreateIconIndirect(piconinfo: *const ICONINFO) callconv(.winapi) ?HICON;
 pub extern "user32" fn CreateIconFromResourceEx(
@@ -636,6 +669,7 @@ pub const FILE_ATTRIBUTE_NORMAL: DWORD = 0x00000080;
 pub const FILE_SHARE_READ: DWORD = 0x00000001;
 pub const FILE_SHARE_WRITE: DWORD = 0x00000002;
 pub const FILE_SHARE_DELETE: DWORD = 0x00000004;
+pub const CREATE_ALWAYS: DWORD = 2;
 pub const OPEN_EXISTING: DWORD = 3;
 pub const OPEN_ALWAYS: DWORD = 4;
 pub const FILE_BEGIN: DWORD = 0;
@@ -660,27 +694,104 @@ pub const FILE_ACTION_RENAMED_NEW_NAME: DWORD = 0x00000005;
 pub const ERROR_IO_INCOMPLETE: DWORD = 996;
 pub const ERROR_IO_PENDING: DWORD = 997;
 pub const ERROR_HOTKEY_ALREADY_REGISTERED: DWORD = 1418;
+pub const ERROR_ALREADY_EXISTS: DWORD = 183;
+pub const RPC_E_CHANGED_MODE: HRESULT = @bitCast(@as(u32, 0x80010106));
 
 pub const INFINITE: DWORD = 0xFFFFFFFF;
 pub const WAIT_OBJECT_0: DWORD = 0;
 pub const INVALID_HANDLE_VALUE: HANDLE = @ptrFromInt(std.math.maxInt(usize));
 
+pub const MOVEFILE_REPLACE_EXISTING: DWORD = 0x00000001;
+pub const MOVEFILE_WRITE_THROUGH: DWORD = 0x00000008;
+
+
+pub extern "kernel32" fn CreateEventW(lpEventAttributes: ?*anyopaque, bManualReset: BOOL, bInitialState: BOOL, lpName: ?LPCWSTR) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+pub extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn LeaveCriticalSection(lpCriticalSection: *CRITICAL_SECTION) callconv(.winapi) void;
 pub extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
 pub extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) DWORD;
 pub extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
 pub extern "kernel32" fn SetLastError(dwErrCode: DWORD) callconv(.winapi) void;
 pub extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
-pub extern "kernel32" fn CreateEventW(lpEventAttributes: ?*anyopaque, bManualReset: BOOL, bInitialState: BOOL, lpName: ?LPCWSTR) callconv(.winapi) ?HANDLE;
-pub extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
-pub extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
+pub const DUPLICATE_CLOSE_SOURCE: DWORD = 0x00000001;
+pub const DUPLICATE_SAME_ACCESS: DWORD = 0x00000002;
+pub extern "kernel32" fn GetCurrentProcess() callconv(.winapi) HANDLE;
+pub extern "kernel32" fn DuplicateHandle(
+    hSourceProcessHandle: HANDLE,
+    hSourceHandle: HANDLE,
+    hTargetProcessHandle: HANDLE,
+    lpTargetHandle: *HANDLE,
+    dwDesiredAccess: DWORD,
+    bInheritHandle: BOOL,
+    dwOptions: DWORD,
+) callconv(.winapi) BOOL;
 pub extern "kernel32" fn FlushFileBuffers(hFile: HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CreateDirectoryW(lpPathName: LPCWSTR, lpSecurityAttributes: ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GetLocalTime(lpSystemTime: *SYSTEMTIME) callconv(.winapi) void;
 pub extern "kernel32" fn GetStdHandle(nStdHandle: DWORD) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn ReadFile(hFile: HANDLE, lpBuffer: [*]u8, nNumberOfBytesToRead: DWORD, lpNumberOfBytesRead: ?*DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn WriteFile(hFile: HANDLE, lpBuffer: [*]const u8, nNumberOfBytesToWrite: DWORD, lpNumberOfBytesWritten: ?*DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CreateFileW(lpFileName: LPCWSTR, dwDesiredAccess: DWORD, dwShareMode: DWORD, lpSecurityAttributes: ?*anyopaque, dwCreationDisposition: DWORD, dwFlagsAndAttributes: DWORD, hTemplateFile: ?HANDLE) callconv(.winapi) HANDLE;
+pub extern "kernel32" fn MoveFileExW(lpExistingFileName: LPCWSTR, lpNewFileName: LPCWSTR, dwFlags: DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn DeleteFileW(lpFileName: LPCWSTR) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetFileSizeEx(hFile: HANDLE, lpFileSize: *LARGE_INTEGER) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetTempPathW(nBufferLength: DWORD, lpBuffer: [*]WCHAR) callconv(.winapi) DWORD;
 pub extern "kernel32" fn SetFilePointer(hFile: HANDLE, lDistanceToMove: LONG, lpDistanceToMoveHigh: ?*LONG, dwMoveMethod: DWORD) callconv(.winapi) DWORD;
+pub const FILE_ATTRIBUTE_DIRECTORY: DWORD = 0x00000010;
+pub const FILE_ATTRIBUTE_REPARSE_POINT: DWORD = 0x00000400;
+pub const FILE_FLAG_OPEN_REPARSE_POINT: DWORD = 0x00200000;
+pub const FILE_TYPE_DISK: DWORD = 0x0001;
+pub const FILE_NAME_NORMALIZED: DWORD = 0x0;
+pub const VOLUME_NAME_DOS: DWORD = 0x0;
+
+pub const ERROR_FILE_NOT_FOUND: DWORD = 2;
+pub const ERROR_PATH_NOT_FOUND: DWORD = 3;
+pub const ERROR_ACCESS_DENIED: DWORD = 5;
+
+pub const FILETIME = std.os.windows.FILETIME;
+
+pub const BY_HANDLE_FILE_INFORMATION = extern struct {
+    dwFileAttributes: DWORD,
+    ftCreationTime: FILETIME,
+    ftLastAccessTime: FILETIME,
+    ftLastWriteTime: FILETIME,
+    dwVolumeSerialNumber: DWORD,
+    nFileSizeHigh: DWORD,
+    nFileSizeLow: DWORD,
+    nNumberOfLinks: DWORD,
+    nFileIndexHigh: DWORD,
+    nFileIndexLow: DWORD,
+};
+
+pub const STARTUPINFOW = extern struct {
+    cb: DWORD,
+    lpReserved: ?LPWSTR,
+    lpDesktop: ?LPWSTR,
+    lpTitle: ?LPWSTR,
+    dwX: DWORD,
+    dwY: DWORD,
+    dwXSize: DWORD,
+    dwYSize: DWORD,
+    dwXCountChars: DWORD,
+    dwYCountChars: DWORD,
+    dwFillAttribute: DWORD,
+    dwFlags: DWORD,
+    wShowWindow: WORD,
+    cbReserved2: WORD,
+    lpReserved2: ?*u8,
+    hStdInput: ?HANDLE,
+    hStdOutput: ?HANDLE,
+    hStdError: ?HANDLE,
+};
+
+pub const PROCESS_INFORMATION = extern struct {
+    hProcess: HANDLE,
+    hThread: HANDLE,
+    dwProcessId: DWORD,
+    dwThreadId: DWORD,
+};
+
 pub extern "kernel32" fn AcquireSRWLockExclusive(SRWLock: *SRWLOCK) callconv(.winapi) void;
 pub extern "kernel32" fn ReleaseSRWLockExclusive(SRWLock: *SRWLOCK) callconv(.winapi) void;
 pub extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: ?[*]u16, nSize: DWORD) callconv(.winapi) DWORD;
@@ -699,13 +810,145 @@ pub extern "kernel32" fn ReadDirectoryChangesW(
     lpOverlapped: ?*OVERLAPPED,
     lpCompletionRoutine: ?*anyopaque,
 ) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetCommandLineW() callconv(.winapi) [*:0]const u16;
+pub extern "kernel32" fn CreateProcessW(
+    lpApplicationName: ?LPCWSTR,
+    lpCommandLine: ?LPWSTR,
+    lpProcessAttributes: ?*anyopaque,
+    lpThreadAttributes: ?*anyopaque,
+    bInheritHandles: BOOL,
+    dwCreationFlags: DWORD,
+    lpEnvironment: ?*anyopaque,
+    lpCurrentDirectory: ?LPCWSTR,
+    lpStartupInfo: *STARTUPINFOW,
+    lpProcessInformation: *PROCESS_INFORMATION,
+) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetFinalPathNameByHandleW(hFile: HANDLE, lpszFilePath: [*]WCHAR, cchFilePath: DWORD, dwFlags: DWORD) callconv(.winapi) DWORD;
+pub extern "kernel32" fn GetFileType(hFile: HANDLE) callconv(.winapi) DWORD;
+pub extern "kernel32" fn GetFileInformationByHandle(hFile: HANDLE, lpFileInformation: *BY_HANDLE_FILE_INFORMATION) callconv(.winapi) BOOL;
 
 // ole32
+pub const CLSCTX_INPROC_SERVER: DWORD = 1;
+pub const HRESULT_ERROR_CANCELLED: HRESULT = @bitCast(@as(u32, 0x800704C7)); // HRESULT_FROM_WIN32(ERROR_CANCELLED)
+
+pub const CLSID_FileOpenDialog = GUID{
+    .Data1 = 0xdc1c5a9c,
+    .Data2 = 0xe88a,
+    .Data3 = 0x4dde,
+    .Data4 = .{ 0xa5, 0xa1, 0x60, 0xf8, 0x2a, 0x20, 0xae, 0xf7 },
+};
+pub const CLSID_FileSaveDialog = GUID{
+    .Data1 = 0xc0b4e2f3,
+    .Data2 = 0xba21,
+    .Data3 = 0x4773,
+    .Data4 = .{ 0x8d, 0xba, 0x33, 0x5e, 0xc9, 0x46, 0xeb, 0x8b },
+};
+pub const IID_IFileOpenDialog = GUID{
+    .Data1 = 0xd57c7288,
+    .Data2 = 0xd4ad,
+    .Data3 = 0x4768,
+    .Data4 = .{ 0xbe, 0x02, 0x9d, 0x96, 0x95, 0x32, 0xd9, 0x60 },
+};
+pub const IID_IFileSaveDialog = GUID{
+    .Data1 = 0x84bccd23,
+    .Data2 = 0x5fde,
+    .Data3 = 0x4cdb,
+    .Data4 = .{ 0xae, 0xa4, 0xaf, 0x64, 0xb8, 0x3d, 0x78, 0xab },
+};
+
+pub const FOS_OVERWRITEPROMPT: DWORD = 0x00000002;
+pub const FOS_FORCEFILESYSTEM: DWORD = 0x00000040;
+pub const FOS_PATHMUSTEXIST: DWORD = 0x00000800;
+pub const FOS_FILEMUSTEXIST: DWORD = 0x00001000;
+pub const SIGDN_FILESYSPATH: UINT = 0x80058000;
+
+pub const COMDLG_FILTERSPEC = extern struct {
+    pszName: LPCWSTR,
+    pszSpec: LPCWSTR,
+};
+
+// mingw-w64 shobjidl.h:9040-9084
+pub const IShellItem = extern struct {
+    lpVtbl: *const IShellItemVtbl,
+
+    pub const IShellItemVtbl = extern struct {
+        // IUnknown (shobjidl.h:9043-9053)
+        QueryInterface: *const fn (This: *IShellItem, riid: *const GUID, ppvObject: *?*anyopaque) callconv(.winapi) HRESULT,
+        AddRef: *const fn (This: *IShellItem) callconv(.winapi) ULONG,
+        Release: *const fn (This: *IShellItem) callconv(.winapi) ULONG,
+
+        // IShellItem (shobjidl.h:9055-9071)
+        BindToHandler: *const fn (This: *IShellItem, pbc: ?*anyopaque, bhid: *const GUID, riid: *const GUID, ppv: *?*anyopaque) callconv(.winapi) HRESULT,
+        GetParent: *const fn (This: *IShellItem, ppsi: *?*IShellItem) callconv(.winapi) HRESULT,
+        GetDisplayName: *const fn (This: *IShellItem, sigdnName: UINT, ppszName: *?LPWSTR) callconv(.winapi) HRESULT,
+    };
+};
+
+// mingw-w64 shobjidl.h:21618-21734
+pub const IFileDialog = extern struct {
+    lpVtbl: *const IFileDialogVtbl,
+
+    pub const IFileDialogVtbl = extern struct {
+        // IUnknown (shobjidl.h:21621-21631)
+        QueryInterface: *const fn (This: *IFileDialog, riid: *const GUID, ppvObject: *?*anyopaque) callconv(.winapi) HRESULT,
+        AddRef: *const fn (This: *IFileDialog) callconv(.winapi) ULONG,
+        Release: *const fn (This: *IFileDialog) callconv(.winapi) ULONG,
+
+        // IModalWindow (shobjidl.h:21634-21638)
+        Show: *const fn (This: *IFileDialog, hwndOwner: ?HWND) callconv(.winapi) HRESULT,
+
+        // IFileDialog (shobjidl.h:21641-21718)
+        SetFileTypes: *const fn (This: *IFileDialog, cFileTypes: UINT, rgFilterSpec: ?*const COMDLG_FILTERSPEC) callconv(.winapi) HRESULT,
+        SetFileTypeIndex: *const fn (This: *IFileDialog, iFileType: UINT) callconv(.winapi) HRESULT,
+        GetFileTypeIndex: *const fn (This: *IFileDialog, piFileType: *UINT) callconv(.winapi) HRESULT,
+        Advise: *const fn (This: *IFileDialog, pfde: ?*anyopaque, pdwCookie: *DWORD) callconv(.winapi) HRESULT,
+        Unadvise: *const fn (This: *IFileDialog, dwCookie: DWORD) callconv(.winapi) HRESULT,
+        SetOptions: *const fn (This: *IFileDialog, fos: DWORD) callconv(.winapi) HRESULT,
+        GetOptions: *const fn (This: *IFileDialog, pfos: *DWORD) callconv(.winapi) HRESULT,
+        SetDefaultFolder: *const fn (This: *IFileDialog, psi: ?*IShellItem) callconv(.winapi) HRESULT,
+        SetFolder: *const fn (This: *IFileDialog, psi: ?*IShellItem) callconv(.winapi) HRESULT,
+        GetFolder: *const fn (This: *IFileDialog, ppsi: *?*IShellItem) callconv(.winapi) HRESULT,
+        GetCurrentSelection: *const fn (This: *IFileDialog, ppsi: *?*IShellItem) callconv(.winapi) HRESULT,
+        SetFileName: *const fn (This: *IFileDialog, pszName: LPCWSTR) callconv(.winapi) HRESULT,
+        GetFileName: *const fn (This: *IFileDialog, pszName: *LPWSTR) callconv(.winapi) HRESULT,
+        SetTitle: *const fn (This: *IFileDialog, pszTitle: LPCWSTR) callconv(.winapi) HRESULT,
+        SetOkButtonLabel: *const fn (This: *IFileDialog, pszText: LPCWSTR) callconv(.winapi) HRESULT,
+        SetFileNameLabel: *const fn (This: *IFileDialog, pszLabel: LPCWSTR) callconv(.winapi) HRESULT,
+        GetResult: *const fn (This: *IFileDialog, ppsi: *?*IShellItem) callconv(.winapi) HRESULT,
+    };
+};
+
+pub extern "ole32" fn CoCreateInstance(
+    rclsid: *const GUID,
+    pUnkOuter: ?*anyopaque,
+    dwClsContext: DWORD,
+    riid: *const GUID,
+    ppv: *?*anyopaque,
+) callconv(.winapi) HRESULT;
 pub extern "ole32" fn CoInitializeEx(pvReserved: ?*anyopaque, dwCoInit: DWORD) callconv(.winapi) HRESULT;
 pub extern "ole32" fn CoUninitialize() callconv(.winapi) void;
 pub extern "ole32" fn CoTaskMemFree(pv: ?*anyopaque) callconv(.winapi) void;
 
 // shell32
+pub const FOLDERID_RoamingAppData = GUID{
+    .Data1 = 0x3eb685db,
+    .Data2 = 0x65f9,
+    .Data3 = 0x4cf6,
+    .Data4 = .{ 0xa0, 0x3a, 0xe3, 0xef, 0x65, 0x72, 0x9f, 0x3d },
+};
+pub const FOLDERID_LocalAppData = GUID{
+    .Data1 = 0xf1b32785,
+    .Data2 = 0x6fba,
+    .Data3 = 0x4fcf,
+    .Data4 = .{ 0x9d, 0x55, 0x7b, 0x8e, 0x7f, 0x15, 0x70, 0x91 },
+};
+
+pub extern "shell32" fn SHGetKnownFolderPath(
+    rfid: *const GUID,
+    dwFlags: DWORD,
+    hToken: ?HANDLE,
+    ppszPath: *?LPWSTR,
+) callconv(.winapi) HRESULT;
 pub extern "shell32" fn ShellExecuteW(
     hwnd: ?HWND,
     lpOperation: ?LPCWSTR,
@@ -716,7 +959,65 @@ pub extern "shell32" fn ShellExecuteW(
 ) callconv(.winapi) ?HINSTANCE;
 pub extern "shell32" fn Shell_NotifyIconW(dwMessage: DWORD, lpData: *NOTIFYICONDATAW) callconv(.winapi) BOOL;
 
-// shlwapi
+pub const STREAM_SEEK_SET: DWORD = 0;
+pub const STREAM_SEEK_CUR: DWORD = 1;
+pub const STREAM_SEEK_END: DWORD = 2;
+
+pub const STGTY_STORAGE: DWORD = 1;
+pub const STGTY_STREAM: DWORD = 2;
+pub const STGTY_LOCKBYTES: DWORD = 3;
+pub const STGTY_PROPERTY: DWORD = 4;
+
+pub const STATFLAG_DEFAULT: DWORD = 0;
+pub const STATFLAG_NONAME: DWORD = 1;
+pub const STATFLAG_NOOPEN: DWORD = 2;
+
+pub const STATSTG = extern struct {
+    pwcsName: ?LPWSTR = null,
+    type: DWORD = 0,
+    cbSize: ULARGE_INTEGER = 0,
+    mtime: FILETIME = .{ .dwLowDateTime = 0, .dwHighDateTime = 0 },
+    ctime: FILETIME = .{ .dwLowDateTime = 0, .dwHighDateTime = 0 },
+    atime: FILETIME = .{ .dwLowDateTime = 0, .dwHighDateTime = 0 },
+    grfMode: DWORD = 0,
+    grfLocksSupported: DWORD = 0,
+    clsid: GUID = std.mem.zeroes(GUID),
+    grfStateBits: DWORD = 0,
+    reserved: DWORD = 0,
+};
+
+pub const IID_ISequentialStream = GUID{
+    .Data1 = 0x0c733a30,
+    .Data2 = 0x2a1c,
+    .Data3 = 0x11ce,
+    .Data4 = [_]u8{ 0xad, 0xe5, 0x00, 0xaa, 0x00, 0x44, 0x77, 0x3d },
+};
+
+pub const IID_IStream = GUID{
+    .Data1 = 0x0000000c,
+    .Data2 = 0x0000,
+    .Data3 = 0x0000,
+    .Data4 = [_]u8{ 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 },
+};
+
+// ISequentialStream: objidl.h:2259-2288
+pub const ISequentialStream = extern struct {
+    lpVtbl: *const ISequentialStreamVtbl,
+
+    pub const ISequentialStreamVtbl = extern struct {
+        QueryInterface: *const fn (This: *ISequentialStream, riid: *const GUID, ppvObject: *?*anyopaque) callconv(.winapi) HRESULT,
+        AddRef: *const fn (This: *ISequentialStream) callconv(.winapi) ULONG,
+        Release: *const fn (This: *ISequentialStream) callconv(.winapi) ULONG,
+        Read: *const fn (This: *ISequentialStream, pv: [*]u8, cb: ULONG, pcbRead: ?*ULONG) callconv(.winapi) HRESULT,
+        Write: *const fn (This: *ISequentialStream, pv: [*]const u8, cb: ULONG, pcbWritten: ?*ULONG) callconv(.winapi) HRESULT,
+    };
+
+    pub fn release(self: *ISequentialStream) void {
+        _ = self.lpVtbl.Release(self);
+    }
+};
+
+// IStream: objidl.h:2458-2533
 pub const IStream = extern struct {
     lpVtbl: *const IStreamVtbl,
 
@@ -724,6 +1025,17 @@ pub const IStream = extern struct {
         QueryInterface: *const fn (This: *IStream, riid: *const GUID, ppvObject: *?*anyopaque) callconv(.winapi) HRESULT,
         AddRef: *const fn (This: *IStream) callconv(.winapi) ULONG,
         Release: *const fn (This: *IStream) callconv(.winapi) ULONG,
+        Read: *const fn (This: *IStream, pv: [*]u8, cb: ULONG, pcbRead: ?*ULONG) callconv(.winapi) HRESULT,
+        Write: *const fn (This: *IStream, pv: [*]const u8, cb: ULONG, pcbWritten: ?*ULONG) callconv(.winapi) HRESULT,
+        Seek: *const fn (This: *IStream, dlibMove: LARGE_INTEGER, dwOrigin: DWORD, plibNewPosition: ?*ULARGE_INTEGER) callconv(.winapi) HRESULT,
+        SetSize: *const fn (This: *IStream, libNewSize: ULARGE_INTEGER) callconv(.winapi) HRESULT,
+        CopyTo: *const fn (This: *IStream, pstm: *IStream, cb: ULARGE_INTEGER, pcbRead: ?*ULARGE_INTEGER, pcbWritten: ?*ULARGE_INTEGER) callconv(.winapi) HRESULT,
+        Commit: *const fn (This: *IStream, grfCommitFlags: DWORD) callconv(.winapi) HRESULT,
+        Revert: *const fn (This: *IStream) callconv(.winapi) HRESULT,
+        LockRegion: *const fn (This: *IStream, libOffset: ULARGE_INTEGER, cb: ULARGE_INTEGER, dwLockType: DWORD) callconv(.winapi) HRESULT,
+        UnlockRegion: *const fn (This: *IStream, libOffset: ULARGE_INTEGER, cb: ULARGE_INTEGER, dwLockType: DWORD) callconv(.winapi) HRESULT,
+        Stat: *const fn (This: *IStream, pstatstg: *STATSTG, grfStatFlag: DWORD) callconv(.winapi) HRESULT,
+        Clone: *const fn (This: *IStream, ppstm: *?*IStream) callconv(.winapi) HRESULT,
     };
 
     pub fn release(self: *IStream) void {

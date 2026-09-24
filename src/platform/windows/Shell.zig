@@ -15,6 +15,7 @@ const log = std.log.scoped(.oriel);
 
 pub const WM_DISPATCH: win32.UINT = win32.WM_APP + 1;
 pub const WM_TRAY_CALLBACK: win32.UINT = win32.WM_APP + 2;
+pub const WM_NOTIFY_CALLBACK: win32.UINT = win32.WM_APP + 3;
 
 var exit_code: u8 = 0;
 /// The "main" app window, or null once it has been destroyed. Use it as a
@@ -201,8 +202,10 @@ pub fn handleHotKey(id: win32.WPARAM) void {
 
 // Menu hook
 pub var on_menu_command_fn: ?*const fn (id: usize) void = null;
+pub var current_haccel: ?win32.HACCEL = null;
+pub var on_window_created_fn: ?*const fn (hwnd: win32.HWND) void = null;
 pub fn handleMenuCommand(id: win32.WPARAM) void {
-    if (on_menu_command_fn) |f| f(id);
+    if (on_menu_command_fn) |f| f(id & 0xFFFF);
 }
 
 // Tray callback hook
@@ -210,6 +213,15 @@ pub var on_tray_message_fn: ?*const fn (wParam: win32.WPARAM, lParam: win32.LPAR
 pub fn handleTrayMessage(wParam: win32.WPARAM, lParam: win32.LPARAM) void {
     if (on_tray_message_fn) |f| f(wParam, lParam);
 }
+
+// Notification callback hook
+pub var on_notify_message_fn: ?*const fn (wParam: win32.WPARAM, lParam: win32.LPARAM) void = null;
+pub fn handleNotifyMessage(wParam: win32.WPARAM, lParam: win32.LPARAM) void {
+    if (on_notify_message_fn) |f| f(wParam, lParam);
+}
+
+// Shell shutdown hook
+pub var on_shutdown_fn: ?*const fn () void = null;
 
 fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam: win32.LPARAM) callconv(.winapi) win32.LRESULT {
     switch (uMsg) {
@@ -223,6 +235,10 @@ fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam:
         },
         WM_TRAY_CALLBACK => {
             handleTrayMessage(wParam, lParam);
+            return 0;
+        },
+        WM_NOTIFY_CALLBACK => {
+            handleNotifyMessage(wParam, lParam);
             return 0;
         },
         else => return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam),
@@ -246,9 +262,8 @@ fn createHostWindow() !win32.HWND {
 }
 
 pub fn setMenu(items: anytype, on_action: anytype) !void {
-    _ = items;
-    _ = on_action;
-    return error.NotImplemented;
+    const menu_mod = @import("../../modules/menu.zig");
+    try menu_mod.set(items, on_action);
 }
 
 pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
@@ -285,6 +300,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             };
             host_hwnd = host;
             defer {
+                if (on_shutdown_fn) |f| f();
                 win32.AcquireSRWLockExclusive(&task_mutex);
                 host_hwnd = null;
                 win32.ReleaseSRWLockExclusive(&task_mutex);
@@ -327,6 +343,14 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                     break;
                 } else if (@intFromEnum(res) < 0) {
                     break;
+                }
+                if (current_haccel) |haccel| {
+                    const top_wnd = if (msg.hwnd) |h| (win32.GetAncestor(h, win32.GA_ROOT) orelse h) else main_hwnd;
+                    if (top_wnd) |wnd| {
+                        if (win32.TranslateAcceleratorW(wnd, haccel, &msg) != 0) {
+                            continue;
+                        }
+                    }
                 }
                 _ = win32.TranslateMessage(&msg);
                 _ = win32.DispatchMessageW(&msg);

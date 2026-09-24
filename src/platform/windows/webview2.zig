@@ -140,6 +140,30 @@ pub const ICoreWebView2Settings = extern struct {
     };
 };
 
+/// ICoreWebView2HttpRequestHeaders
+/// IID: {e86cac0e-5523-465c-b536-8fb9fc8c8c60}
+/// Source: WebView2.h lines 54117-54173
+pub const IID_ICoreWebView2HttpRequestHeaders = GUID{ .Data1 = 0xe86cac0e, .Data2 = 0x5523, .Data3 = 0x465c, .Data4 = [_]u8{ 0xb5, 0x36, 0x8f, 0xb9, 0xfc, 0x8c, 0x8c, 0x60 } };
+
+pub const ICoreWebView2HttpRequestHeaders = extern struct {
+    lpVtbl: *const VTable,
+
+    pub const VTable = extern struct {
+        // IUnknown (0..2)
+        QueryInterface: *const fn (This: *ICoreWebView2HttpRequestHeaders, riid: *const GUID, ppvObject: *?*anyopaque) callconv(.winapi) HRESULT,
+        AddRef: *const fn (This: *ICoreWebView2HttpRequestHeaders) callconv(.winapi) ULONG,
+        Release: *const fn (This: *ICoreWebView2HttpRequestHeaders) callconv(.winapi) ULONG,
+
+        // ICoreWebView2HttpRequestHeaders (3..8)
+        GetHeader: *const fn (This: *ICoreWebView2HttpRequestHeaders, name: LPCWSTR, value: *?LPWSTR) callconv(.winapi) HRESULT,
+        GetHeaders: *const fn (This: *ICoreWebView2HttpRequestHeaders, name: LPCWSTR, iterator: *?*anyopaque) callconv(.winapi) HRESULT,
+        Contains: *const fn (This: *ICoreWebView2HttpRequestHeaders, name: LPCWSTR, contains: *BOOL) callconv(.winapi) HRESULT,
+        SetHeader: *const fn (This: *ICoreWebView2HttpRequestHeaders, name: LPCWSTR, value: LPCWSTR) callconv(.winapi) HRESULT,
+        RemoveHeader: *const fn (This: *ICoreWebView2HttpRequestHeaders, name: LPCWSTR) callconv(.winapi) HRESULT,
+        GetIterator: *const fn (This: *ICoreWebView2HttpRequestHeaders, iterator: *?*anyopaque) callconv(.winapi) HRESULT,
+    };
+};
+
 /// ICoreWebView2HttpResponseHeaders
 /// IID: {03c5ff5a-9b45-4a88-881c-89a9f328619c}
 /// Source: WebView2.h lines 54231-54310
@@ -184,7 +208,7 @@ pub const ICoreWebView2WebResourceRequest = extern struct {
         put_Method: *const fn (This: *ICoreWebView2WebResourceRequest, method: LPCWSTR) callconv(.winapi) HRESULT,
         get_Content: *const fn (This: *ICoreWebView2WebResourceRequest, content: *?*IStream) callconv(.winapi) HRESULT,
         put_Content: *const fn (This: *ICoreWebView2WebResourceRequest, content: ?*IStream) callconv(.winapi) HRESULT,
-        get_Headers: *const fn (This: *ICoreWebView2WebResourceRequest, headers: *?*anyopaque) callconv(.winapi) HRESULT,
+        get_Headers: *const fn (This: *ICoreWebView2WebResourceRequest, headers: *?*ICoreWebView2HttpRequestHeaders) callconv(.winapi) HRESULT,
     };
 };
 
