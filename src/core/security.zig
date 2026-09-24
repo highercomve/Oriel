@@ -178,6 +178,16 @@ pub fn validateLabel(label: []const u8) !void {
     }
 }
 
+fn containsPercentEncodedDot(u: []const u8) bool {
+    var i: usize = 0;
+    while (i + 2 < u.len) : (i += 1) {
+        if (u[i] == '%' and u[i + 1] == '2' and (u[i + 2] == 'e' or u[i + 2] == 'E')) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Validate a target URL for a window.
 /// App-local URLs (relative paths, or URLs matching local origin) are allowed by default.
 /// Remote URLs are only allowed if `sec.window_api.allow_remote_urls` is true and the origin
@@ -187,16 +197,29 @@ pub fn validateWindowUrl(sec: Security, local: Local, url: ?[]const u8) !void {
     const u = url orelse return;
     if (u.len == 0) return;
 
+    // Reject backslashes anywhere
+    if (std.mem.indexOfScalar(u8, u, '\\') != null) return error.InvalidUrl;
+
+    // Reject leading //, \\, /\, \/
+    if (std.mem.startsWith(u8, u, "//") or
+        std.mem.startsWith(u8, u, "\\\\") or
+        std.mem.startsWith(u8, u, "/\\") or
+        std.mem.startsWith(u8, u, "\\/"))
+    {
+        return error.InvalidUrl;
+    }
+
+    // Reject '..' segments and percent-encoded dots (%2e / %2E)
+    if (std.mem.indexOf(u8, u, "..") != null) return error.InvalidUrl;
+    if (containsPercentEncodedDot(u)) return error.InvalidUrl;
+
     // Check for dangerous schemes
     inline for (.{ "javascript:", "file:", "data:" }) |scheme| {
         if (std.ascii.startsWithIgnoreCase(u, scheme)) return error.BlockedScheme;
     }
 
-    // Relative URLs (no scheme/authority) are app-local
-    const colon_idx = std.mem.indexOfScalar(u8, u, ':');
-    const slash_idx = std.mem.indexOfScalar(u8, u, '/');
-    const is_relative = if (colon_idx) |c| (slash_idx != null and slash_idx.? < c) else true;
-    if (is_relative) return;
+    // Relative URLs (no valid scheme) are app-local
+    if (!hasScheme(u)) return;
 
     var buf: [512]u8 = undefined;
     const o = origin(&buf, u) orelse return error.InvalidUrl;
@@ -310,7 +333,7 @@ pub fn validateExternalUrl(sec: Security, url: []const u8) ValidationError!void 
     if (url.len == 0) return error.InvalidUrl;
 
     for (url) |c| {
-        if (c < 0x20 or c == 0x7f or c == ' ') return error.ControlCharactersNotAllowed;
+        if (c <= 0x20 or c == 0x7f) return error.ControlCharactersNotAllowed;
     }
 
     const uri = std.Uri.parse(url) catch return error.InvalidUrl;
@@ -342,7 +365,31 @@ pub fn validateExternalUrl(sec: Security, url: []const u8) ValidationError!void 
         const host = uri.host orelse return error.InvalidUrl;
         if (host.percent_encoded.len == 0) return error.InvalidUrl;
     }
+
+    var i: usize = 0;
+    while (i < url.len) {
+        const c = url[i];
+        if (c > 0x7f) return error.InvalidUrl;
+
+        switch (c) {
+            'a'...'z', 'A'...'Z', '0'...'9',
+            '-', '.', '_', '~',
+            ':', '/', '?', '#', '[', ']', '@',
+            '!', '$', '&', '(', ')', '*', '+', ',', ';', '=' => {
+                i += 1;
+            },
+            '%' => {
+                if (i + 2 >= url.len) return error.InvalidUrl;
+                if (!std.ascii.isHex(url[i + 1]) or !std.ascii.isHex(url[i + 2])) {
+                    return error.InvalidUrl;
+                }
+                i += 3;
+            },
+            else => return error.InvalidUrl, // Rejects quotes (' "), backslash, ^, backtick, <, >, {, }, |, etc.
+        }
+    }
 }
+
 
 fn hasScheme(url: []const u8) bool {
     const colon = std.mem.indexOfScalar(u8, url, ':') orelse return false;
@@ -391,11 +438,21 @@ pub fn resolveWindowUrlWithOrigin(
             if (c < 0x20 or c == 0x7f) return error.ControlCharactersNotAllowed;
         }
 
-        // Protocol-relative URLs are not local app paths
-        if (std.mem.startsWith(u8, u, "//")) return error.InvalidUrl;
+        // Reject backslashes anywhere
+        if (std.mem.indexOfScalar(u8, u, '\\') != null) return error.InvalidUrl;
 
-        // Path traversal rejection
+        // Protocol-relative URLs are not local app paths
+        if (std.mem.startsWith(u8, u, "//") or
+            std.mem.startsWith(u8, u, "\\\\") or
+            std.mem.startsWith(u8, u, "/\\") or
+            std.mem.startsWith(u8, u, "\\/"))
+        {
+            return error.InvalidUrl;
+        }
+
+        // Path traversal rejection ('..' and percent-encoded dots %2e / %2E)
         if (std.mem.indexOf(u8, u, "..") != null) return error.InvalidUrl;
+        if (containsPercentEncodedDot(u)) return error.InvalidUrl;
 
         if (hasScheme(u)) {
             const uri = std.Uri.parse(u) catch return error.InvalidUrl;
@@ -578,6 +635,24 @@ test validateWindowUrl {
     try validateWindowUrl(sec_remote, local, "https://docs.example.com/guide");
     try validateWindowUrl(sec_remote, local, "https://partner.example/");
     try std.testing.expectError(error.DisallowedOrigin, validateWindowUrl(sec_remote, local, "https://evil.example/"));
+
+    // Backslashes anywhere rejected
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "sub\\page.html"));
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "/settings\\foo"));
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "\\\\evil.com"));
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "/\\evil.com"));
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "\\/evil.com"));
+
+    // Leading // rejected
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "//evil.com/page"));
+
+    // Traversal (.. and percent-encoded dots) rejected
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "/../settings"));
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "../secret"));
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "/%2e%2e/settings"));
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "/%2E%2E/settings"));
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "/%2e/settings"));
+    try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "/%2E/settings"));
 }
 
 test validateWindowModification {
@@ -693,6 +768,23 @@ test validateExternalUrl {
     try validateExternalUrl(custom_sec, "https://example.com");
     try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(custom_sec, "http://example.com"));
     try std.testing.expectError(error.DisallowedScheme, validateExternalUrl(custom_sec, "mailto:user@example.com"));
+
+    // RFC 3986 enforcement: reject quotes, backslash, ^, backtick, <, >, {, }, |, non-hex percent
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x\"--flag"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x\'--flag"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x\\flag"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x^flag"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x`flag"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x<flag>"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x{flag}"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x|flag"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x%"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x%2"));
+    try std.testing.expectError(error.InvalidUrl, validateExternalUrl(default_sec, "https://a.com/x%2z"));
+
+    // Valid percent-encoded URLs and sub-delims accepted
+    try validateExternalUrl(default_sec, "https://a.com/x%20flag");
+    try validateExternalUrl(default_sec, "https://a.com/x%2Fflag?a=1&b=2+3!$()*,-.;=@~#");
 }
 
 test resolveWindowUrlWithOrigin {
@@ -784,11 +876,22 @@ test resolveWindowUrlWithOrigin {
 
     // Protocol-relative URLs rejected
     try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "//evil.com/settings", "index.html"));
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "\\\\evil.com/settings", "index.html"));
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/\\evil.com/settings", "index.html"));
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "\\/evil.com/settings", "index.html"));
+
+    // Backslashes anywhere rejected
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "sub\\page.html", "index.html"));
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/settings\\foo", "index.html"));
 
     // Path traversal rejected
     try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/../settings", "index.html"));
     try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "../secret", "index.html"));
     try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "foo/../../bar", "index.html"));
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/%2e%2e/settings", "index.html"));
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/%2E%2E/settings", "index.html"));
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/%2e/settings", "index.html"));
+    try std.testing.expectError(error.InvalidUrl, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/%2E/settings", "index.html"));
 
     // Control characters rejected
     try std.testing.expectError(error.ControlCharactersNotAllowed, resolveWindowUrlWithOrigin(gpa, "app://app", sec, local_linux, null, "/settings\x00bad", "index.html"));
