@@ -17,7 +17,16 @@ pub const WM_DISPATCH: win32.UINT = win32.WM_APP + 1;
 pub const WM_TRAY_CALLBACK: win32.UINT = win32.WM_APP + 2;
 
 var exit_code: u8 = 0;
+/// The "main" app window, or null once it has been destroyed. Use it as a
+/// parent for dialogs; never as a message target (see `host_hwnd`).
 pub var main_hwnd: ?win32.HWND = null;
+/// Hidden top-level window owned by the shell for the whole run. Main-thread
+/// dispatch, hotkeys, tray callbacks and clipboard ownership target it, so
+/// they keep working when the main window is closed while others stay open.
+/// (Not a message-only HWND_MESSAGE window: those miss broadcasts such as
+/// "TaskbarCreated" and can't become foreground for tray popup menus.)
+pub var host_hwnd: ?win32.HWND = null;
+const HOST_CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("OrielHostWindow");
 
 pub const Mutex = struct {
     inner: win32.SRWLOCK = win32.SRWLOCK_INIT,
@@ -56,8 +65,12 @@ pub fn dispatchToMainThread(func: *const fn (ctx: ?*anyopaque) void, ctx: ?*anyo
     };
     win32.ReleaseSRWLockExclusive(&task_mutex);
 
-    if (main_hwnd) |hwnd| {
-        _ = win32.PostMessageW(hwnd, WM_DISPATCH, 0, 0);
+    // Before `run` creates the host window, tasks wait in the queue; `run`
+    // drains it once the window exists.
+    if (host_hwnd) |hwnd| {
+        if (win32.PostMessageW(hwnd, WM_DISPATCH, 0, 0) == win32.FALSE) {
+            log.err("dispatchToMainThread: PostMessageW failed ({d})", .{win32.GetLastError()});
+        }
     }
 }
 
@@ -119,6 +132,40 @@ pub fn handleTrayMessage(wParam: win32.WPARAM, lParam: win32.LPARAM) void {
     if (on_tray_message_fn) |f| f(wParam, lParam);
 }
 
+fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam: win32.LPARAM) callconv(.winapi) win32.LRESULT {
+    switch (uMsg) {
+        WM_DISPATCH => {
+            processDispatchQueue();
+            return 0;
+        },
+        win32.WM_HOTKEY => {
+            handleHotKey(wParam);
+            return 0;
+        },
+        WM_TRAY_CALLBACK => {
+            handleTrayMessage(wParam, lParam);
+            return 0;
+        },
+        else => return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam),
+    }
+}
+
+/// Create the hidden host window (never shown; WS_EX_TOOLWINDOW keeps it off
+/// the taskbar and Alt+Tab).
+fn createHostWindow() !win32.HWND {
+    const hInst: win32.HINSTANCE = @ptrCast(win32.GetModuleHandleW(null) orelse return error.NoModuleHandle);
+    const wc = win32.WNDCLASSEXW{
+        .lpfnWndProc = &hostWndProc,
+        .hInstance = hInst,
+        .lpszClassName = HOST_CLASS_NAME,
+    };
+    if (win32.RegisterClassExW(&wc) == 0 and win32.GetLastError() != 1410) { // ERROR_CLASS_ALREADY_EXISTS
+        return error.RegisterClassFailed;
+    }
+    return win32.CreateWindowExW(win32.WS_EX_TOOLWINDOW, HOST_CLASS_NAME, null, win32.WS_POPUP, 0, 0, 0, 0, null, null, hInst, null) orelse
+        error.CreateWindowFailed;
+}
+
 pub fn setMenu(items: anytype, on_action: anytype) !void {
     _ = items;
     _ = on_action;
@@ -152,6 +199,20 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
             active_create_window_fn = &Creator.createWindow;
             defer active_create_window_fn = null;
+
+            const host = createHostWindow() catch |err| {
+                log.err("failed to create the host window: {s}", .{@errorName(err)});
+                return 1;
+            };
+            host_hwnd = host;
+            defer {
+                host_hwnd = null;
+                if (win32.DestroyWindow(host) == win32.FALSE) {
+                    log.err("DestroyWindow(host) failed ({d})", .{win32.GetLastError()});
+                }
+            }
+            // Tasks queued before the host window existed.
+            processDispatchQueue();
 
             const main_win = App.openWindow(.{
                 .label = "main",

@@ -64,7 +64,9 @@ pub const Tray = struct {
 
         try self.menu.set(options.menu);
 
-        const target_hwnd = ShellMod.main_hwnd orelse return error.NoMainWindow;
+        // The shell's host window outlives every app window, so the icon (which
+        // Windows removes with its owner window) survives closing the main window.
+        const target_hwnd = ShellMod.host_hwnd orelse return error.AppNotRunning;
 
         self.nid.cbSize = @sizeOf(win32.NOTIFYICONDATAW);
         self.nid.hWnd = target_hwnd;
@@ -153,7 +155,7 @@ pub const Tray = struct {
     }
 
     fn showContextMenu(self: *Tray, x: i16, y: i16) void {
-        const hwnd = self.nid.hWnd orelse ShellMod.main_hwnd orelse return;
+        const hwnd = self.nid.hWnd orelse return;
         const hmenu = win32.CreatePopupMenu() orelse return;
         defer _ = win32.DestroyMenu(hmenu);
 

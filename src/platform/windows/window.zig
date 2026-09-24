@@ -774,6 +774,7 @@ pub fn WindowCreator(
                         std.heap.smp_allocator.destroy(w);
 
                         _ = win32.DestroyWindow(hwnd);
+                        if (ShellMod.main_hwnd == hwnd) ShellMod.main_hwnd = null;
 
                         if (remaining == 0) {
                             App.quit(0);
@@ -782,20 +783,8 @@ pub fn WindowCreator(
                     }
                     return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
                 },
-                win32.WM_HOTKEY => {
-                    ShellMod.handleHotKey(wParam);
-                    return 0;
-                },
                 win32.WM_COMMAND => {
                     ShellMod.handleMenuCommand(wParam);
-                    return 0;
-                },
-                ShellMod.WM_DISPATCH => {
-                    ShellMod.processDispatchQueue();
-                    return 0;
-                },
-                ShellMod.WM_TRAY_CALLBACK => {
-                    ShellMod.handleTrayMessage(wParam, lParam);
                     return 0;
                 },
                 win32.WM_DESTROY => {

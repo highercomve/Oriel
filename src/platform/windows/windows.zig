@@ -39,6 +39,11 @@ pub fn run(io: std.Io, comptime api: anytype, comptime config: anytype) u8 {
 }
 
 test {
+    // Instantiate the generic shell so `zig build check -Dtarget=x86_64-windows`
+    // compiles the message loop, window creation and WebView2 wiring too.
+    _ = &run;
+    const S = ShellMod.Shell(.{ .commands = struct {} }, .{ .id = "dev.oriel.Check", .title = "check", .assets = &.{} });
+    _ = &S.run;
     std.testing.refAllDecls(win32);
     std.testing.refAllDecls(webview2);
     std.testing.refAllDecls(window);
