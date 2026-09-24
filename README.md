@@ -86,10 +86,21 @@ Oriel separates platform-neutral application and window logic (`src/core/App.zig
 
 ### Windows
 
-Oriel supports cross-compiling and packaging for Windows (`x86_64-windows`) directly from Linux hosts using Zig and `makensis`.
+Oriel builds Windows apps (`x86_64-windows`) two ways, both verified: natively on Windows, or cross-compiled from Linux. Both need `WebView2Loader.dll` (from the `Microsoft.Web.WebView2` NuGet package) for `-Dwebview2-loader`, and NSIS (`makensis`) for the installer.
 
-> [!WARNING]
-> **Runtime Status**: verified on real Windows (2026-09-24). The `examples/react` NSIS installer: installer, window + WebView2 with embedded assets, routes, sync and async IPC, SQLite (persisting across restarts), a second window via `oriel.window.open()`, `oriel.openExternal`, tray icon and menu. `examples/smoke` on the same PC: 37/38 checks ok (every module: tray, updater, media_server with byte ranges, sql, fs_watch, dialog, notification, store, menu, global_shortcut, input, clipboard incl. worker-thread r/w, window API, CSP, navigation, openExternal). The one failure, `nav iframe`, is the check, not the policy: the navigation is blocked, but WebView2 leaves a cross-origin error page in the frame. Module checks that only create the native object (dialog, hotkey, input) do not prove user-visible behaviour; the "runtime untested" notes in the table below refer to that.
+```sh
+# On Windows (PowerShell): Zig 0.16, Node.js for Vite templates, NSIS 3 (found in Program Files, no PATH needed)
+zig build -Dwebview2-loader=C:\path\to\WebView2Loader.dll
+zig build package -Dwebview2-loader=C:\path\to\WebView2Loader.dll   # zig-out\package\<app>-<version>-setup.exe
+
+# On Linux: cross-compile (and test under Wine with scripts/wine.sh, see docs/windows-testing.md)
+zig build package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+```
+
+The installer is per-user (`%LOCALAPPDATA%\Programs\<name>`, no admin), adds Start Menu shortcuts and an uninstall entry, checks for the WebView2 runtime, and supports silent `setup.exe /S` / `Uninstall.exe /S`.
+
+> [!NOTE]
+> **Runtime Status**: verified on real Windows 11 (2026-09-24), both as a native Windows build (check, smoke checks, React app, `zig build package`, silent install / launch / uninstall) and with installers cross-built from Linux. The `examples/react` NSIS installer: installer, window + WebView2 with embedded assets, routes, sync and async IPC, SQLite (persisting across restarts), a second window via `oriel.window.open()`, `oriel.openExternal`, tray icon and menu. `examples/smoke` on the same PC: 37/38 checks ok (every module: tray, updater, media_server with byte ranges, sql, fs_watch, dialog, notification, store, menu, global_shortcut, input, clipboard incl. worker-thread r/w, window API, CSP, navigation, openExternal). The one failure, `nav iframe`, is the check, not the policy: the navigation is blocked, but WebView2 leaves a cross-origin error page in the frame. Module checks that only create the native object (dialog, hotkey, input) do not prove user-visible behaviour; the "runtime untested" notes in the table below refer to that.
 
 #### Support Matrix
 

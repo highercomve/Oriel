@@ -57,7 +57,7 @@
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
 					<h3>Ship it</h3>
-					<p><code>oriel package</code> builds deb, rpm and AppImage. Windows <code>setup.exe</code> installers cross-compile from Linux.</p>
+					<p><code>oriel package</code> builds deb, rpm and AppImage. Windows <code>setup.exe</code> installers build on Windows or cross-compile from Linux.</p>
 				</article>
 			</div>
 		</section>
@@ -129,8 +129,8 @@
 				</div>
 				<div class="platform">
 					<h3>Windows</h3>
-					<p>Win32 + WebView2. Every module ported, NSIS installer, cross-compiled from Linux and tested under Wine.</p>
-					<span class="status status-beta">Preview</span>
+					<p>Win32 + WebView2. Every module ported, verified on real Windows 11. Build natively or cross-compile from Linux; per-user NSIS installer.</p>
+					<span class="status status-ok">Verified</span>
 				</div>
 				<div class="platform">
 					<h3>macOS</h3>

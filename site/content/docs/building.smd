@@ -73,40 +73,42 @@ To run the AppImage on another machine, the system must have:
 
 # Windows
 
-Oriel supports cross-compiling Windows binaries from Linux. Windows builds use Microsoft Edge WebView2 and Win32 APIs.
+Oriel apps use Win32 and Microsoft Edge WebView2 on Windows. You can build them **natively on Windows** or **cross-compile from Linux**; both are verified on real Windows 11, including the installer.
 
 ## Requirements
 
-To build Windows binaries on Linux, you need:
-- The `makensis` tool (NSIS v3+) for the installer
-- `WebView2Loader.dll` from the Microsoft Edge WebView2 Evergreen distribution
+- **Zig 0.16.0**, and **Node.js** for the React, Vue and Svelte templates.
+- **`WebView2Loader.dll`**, passed with `-Dwebview2-loader`. Get it from the [Microsoft.Web.WebView2 NuGet package](https://www.nuget.org/packages/Microsoft.Web.WebView2/): the `.nupkg` is a ZIP archive, and the DLL is at `runtimes/win-x64/native/WebView2Loader.dll`.
+- **NSIS 3** (`makensis`) for the installer. On Windows it is found in `Program Files\NSIS` even when it is not on `PATH`; on Linux install your distribution's `nsis` package.
 
-## Download WebView2Loader.dll
+The WebView2 runtime itself ships with Windows 11 and current Windows 10; the installer checks for it.
 
-Get it from the [Microsoft.Web.WebView2 NuGet package](https://www.nuget.org/packages/Microsoft.Web.WebView2/):
-1. Download the `.nupkg` file (it is a ZIP archive)
-2. Extract it: `unzip Microsoft.Web.WebView2.VERSION.nupkg`
-3. Find `runtimes/win-x64/native/WebView2Loader.dll` or `runtimes/win-x86/native/WebView2Loader.dll`
-
-## Cross-compile a binary
+## Build on Windows
 
 ```sh
-zig build -Dtarget=x86_64-windows
+zig build -Dwebview2-loader=C:\path\to\WebView2Loader.dll
+zig build package -Dwebview2-loader=C:\path\to\WebView2Loader.dll
 ```
 
-This produces `zig-out/bin/<app-name>.exe`.
+`zig-out\bin` gets the app with `WebView2Loader.dll` next to it; `zig-out\package` gets the installer.
 
-## Build a Windows installer
+## Cross-compile from Linux
 
 ```sh
+zig build -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
 zig build package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
 ```
 
-This generates a per-user NSIS installer at `zig-out/package/<app-name>-<version>-setup.exe`. The installer:
-- Installs to `%LOCALAPPDATA%\Programs\<name>` without requiring administrator privilege
-- Adds Start Menu shortcuts
-- Checks if the Microsoft Edge WebView2 runtime is installed; if not, prompts the user to download it
-- Registers an uninstall entry in Windows Add/Remove Programs
+## The installer
+
+`zig build package` produces a per-user NSIS installer, `<app-name>-<version>-setup.exe`. It:
+
+- installs to `%LOCALAPPDATA%\Programs\<name>` without administrator rights,
+- adds Start Menu shortcuts and an entry in Settings → Apps,
+- checks that the WebView2 runtime is installed,
+- supports silent installs: `setup.exe /S`, and `Uninstall.exe /S` to remove it.
+
+It is not code-signed, so Windows SmartScreen warns on first run; see [Code signing]($link.page('docs/signing')).
 
 ## Test under Wine
 
