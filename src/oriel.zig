@@ -11,6 +11,7 @@ pub const App = @import("core/App.zig");
 pub const ipc = @import("core/ipc.zig");
 pub const security = @import("core/security.zig");
 pub const log = @import("core/log.zig");
+pub const platform = @import("platform/platform.zig");
 
 // Built-in modules.
 pub const tray = if (options.tray) @import("modules/tray.zig") else struct {};
@@ -122,6 +123,7 @@ test {
     std.testing.refAllDecls(ipc);
     std.testing.refAllDecls(security);
     std.testing.refAllDecls(log);
+    std.testing.refAllDecls(platform);
     std.testing.refAllDecls(@import("core/ThreadPool.zig"));
     if (options.tray) _ = tray;
     if (options.updater) {

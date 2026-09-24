@@ -219,25 +219,27 @@ fn addOrielModule(
         options.addOption(bool, field.name, @field(features, field.name));
     }
 
-    const gobject = b.dependency("gobject", .{ .target = target, .optimize = optimize });
+    const is_linux = target.result.os.tag == .linux;
 
     const oriel = b.addModule("oriel", .{
         .root_source_file = b.path("src/oriel.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{
-            .{ .name = "glib", .module = gobject.module("glib2") },
-            .{ .name = "gobject", .module = gobject.module("gobject2") },
-            .{ .name = "gio", .module = gobject.module("gio2") },
-            .{ .name = "gdk", .module = gobject.module("gdk4") },
-            .{ .name = "gtk", .module = gobject.module("gtk4") },
-            .{ .name = "webkit", .module = gobject.module("webkit6") },
-            .{ .name = "jsc", .module = gobject.module("javascriptcore6") },
-            .{ .name = "soup", .module = gobject.module("soup3") },
-        },
     });
     oriel.addOptions("build_options", options);
+
+    if (is_linux) {
+        const gobject = b.dependency("gobject", .{ .target = target, .optimize = optimize });
+        oriel.addImport("glib", gobject.module("glib2"));
+        oriel.addImport("gobject", gobject.module("gobject2"));
+        oriel.addImport("gio", gobject.module("gio2"));
+        oriel.addImport("gdk", gobject.module("gdk4"));
+        oriel.addImport("gtk", gobject.module("gtk4"));
+        oriel.addImport("webkit", gobject.module("webkit6"));
+        oriel.addImport("jsc", gobject.module("javascriptcore6"));
+        oriel.addImport("soup", gobject.module("soup3"));
+    }
 
     if (features.tray) {
         const zigimg = b.dependency("zigimg", .{ .target = target, .optimize = optimize });
@@ -255,7 +257,7 @@ fn addOrielModule(
             .flags = &.{ "-DSQLITE_THREADSAFE=1", "-DSQLITE_DQS=0", "-DSQLITE_OMIT_DEPRECATED" },
         });
     }
-    if (features.input or features.clipboard) {
+    if (is_linux and (features.input or features.clipboard)) {
         const scanner = Scanner.create(b, .{});
         scanner.addSystemProtocol("staging/ext-data-control/ext-data-control-v1.xml");
         scanner.addCustomProtocol(b.path("protocols/wlr-data-control-unstable-v1.xml"));
@@ -271,11 +273,11 @@ fn addOrielModule(
         }));
         oriel.linkSystemLibrary("wayland-client", .{});
     }
-    if (features.input) {
+    if (is_linux and features.input) {
         oriel.linkSystemLibrary("xkbcommon", .{});
         oriel.linkSystemLibrary("xtst", .{});
     }
-    if (features.global_shortcut or features.input) {
+    if (is_linux and (features.global_shortcut or features.input)) {
         oriel.linkSystemLibrary("x11", .{});
     }
     return oriel;

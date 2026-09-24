@@ -59,7 +59,8 @@ The framework and the apps built with it are separate Zig packages:
 | Path | What |
 |---|---|
 | `build.zig` | Framework build: the `oriel` module, `embed_assets`, `dev_runner`, `addApp()` for apps, unit tests |
-| `src/core/` | `App.zig` (windows, webview, menu, `app://` assets, dev mode), `ipc.zig` (command dispatch + TypeScript generation), `log.zig` (file + stderr logging) |
+| `src/core/` | `App.zig` (platform-neutral windowing, IPC, events, asset lookup, dev mode), `ipc.zig` (command dispatch + TypeScript generation), `log.zig` (file + stderr logging) |
+| `src/platform/` | Platform abstraction: `platform.zig` (OS selection & comptime check), `platform/linux/` (GTK4 + WebKitGTK 6.0 shell: `Shell.zig`, `window.zig`, `scheme.zig`, `bridge.zig`, `dev_server.zig`) |
 | `src/modules/` | Built-in modules: `tray`, `menu`, `store`, `dialog`, `notification`, `updater`, `media_server`, `sql`, `fs_watch` |
 | `src/plugins/` | App-specific plugins: `global_shortcut`, `input`, `clipboard` |
 | `tools/embed_assets.zig` | Embeds a built frontend directory into the binary |
@@ -69,6 +70,19 @@ The framework and the apps built with it are separate Zig packages:
 | `examples/react/` | **App:** React + Vite notes app (own package) |
 | `examples/smoke/` | **App:** checks every module (own package) |
 | `examples/ghostpen-lite/` | **App:** hotkey -> read clipboard -> rewrite -> paste pipeline (own package) |
+
+## Platforms
+
+Oriel separates platform-neutral application and window logic (`src/core/App.zig`, `ipc.zig`, `security.zig`) from operating system shell implementations (`src/platform/`).
+
+- **`src/platform/platform.zig`**: Compile-time platform selection and interface contract. Inspects `@import("builtin").os.tag` and validates via comptime assertions that the selected implementation exports all required types and functions.
+- **`src/platform/linux/`**: Linux backend (GTK4 + WebKitGTK 6.0):
+  - `Shell.zig`: `GtkApplication` lifecycle, signal handling (SIGTERM/SIGINT), event loop, application menubar, and thread-safe quit.
+  - `window.zig`: `GtkApplicationWindow` and `WebKitWebView` instantiation, window sizing, fullscreen, maximization, and navigation policy.
+  - `scheme.zig`: `app://` custom URI scheme handler serving embedded assets with CSP headers.
+  - `bridge.zig`: WebKit script message handlers, JS IPC transport (`window.oriel.invoke` / `listen` / `emit`), and async command dispatch.
+  - `dev_server.zig`: External dev server process management (`gio.SubprocessLauncher`, `PDEATHSIG`) and reload retries.
+- **Windows** (Milestone 5): Win32 window + WebView2 implementation (`src/platform/windows/`) to follow behind the same interface.
 
 ## Working on Oriel itself
 
