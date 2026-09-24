@@ -89,6 +89,8 @@ pub const Window = struct {
     handle: platform.WindowHandle,
     options: WindowOptions,
     app_id: [:0]const u8,
+    ready: bool = false,
+    pending_close: bool = false,
 
     pub fn show(self: *Window) void {
         platform.showWindow(self.handle);
@@ -271,15 +273,22 @@ pub fn openWindow(options: WindowOptions) !*Window {
         .handle = undefined,
         .options = opt_copy,
         .app_id = current_app_id orelse "",
+        .ready = false,
+        .pending_close = false,
     };
 
     const handle = try platform.createWindow(opt_copy, win_inst);
+    errdefer platform.destroyWindow(handle);
     win_inst.handle = handle;
 
-    ensureWindowsMutex();
-    windows_mutex.lock();
-    try windows_list.append(gpa, win_inst);
-    windows_mutex.unlock();
+    {
+        ensureWindowsMutex();
+        windows_mutex.lock();
+        defer windows_mutex.unlock();
+        try windows_list.append(gpa, win_inst);
+    }
+
+    win_inst.ready = true;
 
     if (options.remember_geometry) {
         win_inst.restoreGeometry();
@@ -291,6 +300,9 @@ pub fn openWindow(options: WindowOptions) !*Window {
     }
 
     win_inst.show();
+    if (win_inst.pending_close) {
+        platform.closeWindow(win_inst.handle);
+    }
     return win_inst;
 }
 

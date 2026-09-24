@@ -45,6 +45,10 @@ pub fn closeWindow(handle: WindowHandle) void {
     handle.gtk_window.close();
 }
 
+pub fn destroyWindow(handle: WindowHandle) void {
+    handle.gtk_window.destroy();
+}
+
 pub fn setWindowTitle(handle: WindowHandle, title: [:0]const u8) void {
     handle.gtk_window.setTitle(title);
 }

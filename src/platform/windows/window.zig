@@ -60,6 +60,13 @@ pub fn closeWindow(handle: WindowHandle) void {
     _ = win32.PostMessageW(handle.hwnd, win32.WM_CLOSE, 0, 0);
 }
 
+pub fn destroyWindow(handle: WindowHandle) void {
+    _ = win32.SetWindowLongPtrW(handle.hwnd, win32.GWLP_USERDATA, 0);
+    handle.deinit();
+    _ = win32.DestroyWindow(handle.hwnd);
+    if (ShellMod.main_hwnd == handle.hwnd) ShellMod.main_hwnd = null;
+}
+
 pub fn setWindowTitle(handle: WindowHandle, title: [:0]const u8) void {
     const gpa = std.heap.smp_allocator;
     const title_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, title) catch return;
@@ -653,9 +660,6 @@ pub fn WindowCreator(
             ) orelse return error.CreateWindowFailed;
             errdefer _ = win32.DestroyWindow(hwnd);
 
-            _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @bitCast(@intFromPtr(win_inst)));
-            errdefer _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, 0);
-
             // Compute userDataFolder: %LOCALAPPDATA%\<app_id>\WebView2
             const user_data_folder_w = blk: {
                 var buf: [win32.MAX_PATH]u16 = undefined;
@@ -849,13 +853,17 @@ pub fn WindowCreator(
             _ = win32.ShowWindow(hwnd, win32.SW_SHOW);
             _ = win32.SetForegroundWindow(hwnd);
 
-            return WindowHandle{
+            const handle = WindowHandle{
                 .hwnd = hwnd,
                 .controller = controller,
                 .webview = view,
                 .data = data,
                 .deinit_fn = &WindowData.deinitTypeErased,
             };
+            win_inst.handle = handle;
+            _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @bitCast(@intFromPtr(win_inst)));
+
+            return handle;
         }
 
         fn wndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam: win32.LPARAM) callconv(.winapi) win32.LRESULT {
@@ -864,6 +872,7 @@ pub fn WindowCreator(
             switch (uMsg) {
                 win32.WM_SIZE => {
                     if (win) |w| {
+                        if (!w.ready) return 0;
                         var bounds: win32.RECT = undefined;
                         _ = win32.GetClientRect(hwnd, &bounds);
                         _ = w.handle.controller.putBounds(bounds);
@@ -872,6 +881,7 @@ pub fn WindowCreator(
                 },
                 win32.WM_DPICHANGED => {
                     if (win) |w| {
+                        if (!w.ready) return 0;
                         _ = w.handle.controller.notifyParentWindowPositionChanged();
                         var bounds: win32.RECT = undefined;
                         _ = win32.GetClientRect(hwnd, &bounds);
@@ -881,6 +891,10 @@ pub fn WindowCreator(
                 },
                 win32.WM_CLOSE => {
                     if (win) |w| {
+                        if (!w.ready) {
+                            w.pending_close = true;
+                            return 0;
+                        }
                         if (std.mem.eql(u8, w.label, "main") and config.on_close == .hide) {
                             _ = win32.ShowWindow(hwnd, win32.SW_HIDE);
                             return 0;
@@ -916,7 +930,7 @@ pub fn WindowCreator(
                         }
                         return 0;
                     }
-                    return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
+                    return 0;
                 },
                 win32.WM_COMMAND => {
                     ShellMod.handleMenuCommand(wParam);

@@ -17,6 +17,7 @@ pub const showWindow = window.showWindow;
 pub const hideWindow = window.hideWindow;
 pub const toggleWindow = window.toggleWindow;
 pub const closeWindow = window.closeWindow;
+pub const destroyWindow = window.destroyWindow;
 pub const setWindowTitle = window.setWindowTitle;
 pub const setWindowFullscreen = window.setWindowFullscreen;
 pub const isWindowFullscreen = window.isWindowFullscreen;

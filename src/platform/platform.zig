@@ -23,6 +23,7 @@
 //!   - `setWindowSize(handle: WindowHandle, width: c_int, height: c_int) void`: Set window default/current size.
 //!   - `getWindowSize(handle: WindowHandle) struct { width: c_int, height: c_int }`: Query current window size.
 //!   - `createWindow(options: anytype, win_inst: anytype) anyerror!WindowHandle`: Create a native window.
+//!   - `destroyWindow(handle: WindowHandle) void`: Destroy a native window and its associated platform resources.
 //!
 //! Lifecycle and Application Operations:
 //!   - `run(io: std.Io, comptime api: anytype, comptime config: anytype) u8`: Run the platform event loop.
@@ -58,6 +59,7 @@ comptime {
         "setWindowSize",
         "getWindowSize",
         "createWindow",
+        "destroyWindow",
         "run",
         "quit",
         "openExternal",
@@ -87,6 +89,7 @@ pub const isWindowMaximized = impl.isWindowMaximized;
 pub const setWindowSize = impl.setWindowSize;
 pub const getWindowSize = impl.getWindowSize;
 pub const createWindow = impl.createWindow;
+pub const destroyWindow = impl.destroyWindow;
 pub const run = impl.run;
 pub const quit = impl.quit;
 pub const openExternal = impl.openExternal;
