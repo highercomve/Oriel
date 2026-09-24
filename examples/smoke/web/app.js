@@ -186,5 +186,32 @@ async function securityChecks() {
     setTimeout(() => resolve(null), 1000);
   });
   check("events", got?.n === 42, got ? `listen("ping") received ${JSON.stringify(got)}` : "no event received");
+
+  // openExternal: rejects dangerous schemes (file:, javascript:), allows http(s):
+  let fileRejected = false;
+  try {
+    await oriel.openExternal("file:///etc/passwd");
+  } catch (e) {
+    fileRejected = true;
+  }
+  check("openExt file:", fileRejected, fileRejected ? "file: URL rejected" : "file: URL was not rejected");
+
+  let jsRejected = false;
+  try {
+    await oriel.openExternal("javascript:alert(1)");
+  } catch (e) {
+    jsRejected = true;
+  }
+  check("openExt js:", jsRejected, jsRejected ? "javascript: URL rejected" : "javascript: URL was not rejected");
+
+  let httpsAllowed = false;
+  try {
+    await oriel.openExternal("https://example.com");
+    httpsAllowed = true;
+  } catch (e) {
+    httpsAllowed = false;
+  }
+  check("openExt https:", httpsAllowed, httpsAllowed ? "https: URL allowed and dispatched to hook" : "https: URL was rejected");
+
   return out;
 }
