@@ -634,9 +634,17 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     if (b.args) |args| run.addArgs(args);
     @import("build/package.zig").getOrCreateStep(b, "run", "Run the production build").dependOn(&run.step);
 
-    if (dev_exe) |d| {
+    if (dev_exe) |d| dev: {
         const install_dev = b.addInstallArtifact(d, .{});
         @import("build/package.zig").getOrCreateStep(b, "build-dev", "Build development executable").dependOn(&install_dev.step);
+
+        // dev_runner (watch + Zig reload) is Linux-only for now. The macOS dev
+        // executable starts the dev server itself (Vite hot reload still works).
+        if (@import("builtin").os.tag == .macos) {
+            const dev_step = @import("build/package.zig").getOrCreateStep(b, "dev", "Run against the frontend dev server (hot reload & Zig reload)");
+            dev_step.dependOn(&b.addFail(b.fmt("`zig build dev` isn't supported on macOS yet (tools/dev_runner.zig is Linux-only): run `zig build build-dev` and then zig-out/bin/{s}, which starts the dev server itself.", .{d.name})).step);
+            break :dev;
+        }
 
         const runner = b.addRunArtifact(oriel_dep.artifact("dev_runner"));
         runner.addArgs(&.{

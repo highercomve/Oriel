@@ -150,6 +150,15 @@ gdbus call --session --dest org.kde.StatusNotifierItem-$PID-1 --object-path /Men
   workers go through `Shell.runOnMainThread` (returns AppNotRunning instead
   of waiting forever). Check COM vtable order against the mingw-w64 headers
   / WebView2.h slot by slot.
+- **macOS (Objective-C from Zig):** LLD can't link Mach-O: `addApp` only
+  uses it for ELF/COFF. Raw `std.os.linux` syscalls compile for macOS but
+  die with SIGSYS at runtime: use `std.c`. On arm64 a function pointer must
+  be 4-byte aligned, so casts of sentinel ints (`SQLITE_TRANSIENT`) fail to
+  compile there. zig-objc's `c.id` is already a nullable C pointer: don't
+  wrap it in `?`. Objects from `alloc`/`new`/`copy` are +1 (release once);
+  other returns are autoreleased and need a pool outside the AppKit loop.
+  Blocks WebKit passes in (decision/reply handlers) must be called exactly
+  once; keep them with `_Block_copy`/`_Block_release`.
 - **Hyprland here uses a Lua config**: `hyprctl dispatch` needs
   `hl.dsp.*` syntax (only relevant for manual checks).
 
@@ -457,7 +466,11 @@ from Linux needs Apple's SDK frameworks).
    (arm64/x86_64), Xcode command-line tools (`xcode-select -p`), Zig 0.16.0
    (install it next to any other Zig; don't replace a system one),
    `zig build test` on the unchanged repo.
-1. **Shell** `src/platform/macos/`: NSApplication + NSWindow + WKWebView via
+1. ✅ **Shell** (branch `macos/shell`, 2026-09-25; see README "macOS"):
+   smoke `--auto-quit` 23/23 and examples/react (embedded and Vite dev)
+   on macOS 15.2 arm64. Unported modules are off on macOS (tray is a
+   stub); `zig build dev` is Linux-only (run the `-dev` executable).
+   Original brief: `src/platform/macos/`: NSApplication + NSWindow + WKWebView via
    the Objective-C runtime (zig-objc, as Ghostty does; add it as a
    dependency). Behind the same platform interface as linux/windows:
    window ops, main-thread dispatch (`dispatch_async` on the main queue),
