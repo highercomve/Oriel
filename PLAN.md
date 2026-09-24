@@ -95,7 +95,7 @@ scripts/wine.sh setup                    # once: .wine-test/ prefix + WebView2
 timeout 180 scripts/wine.sh run .wine-test/smoke/bin/oriel-smoke.exe --auto-quit
 ```
 
-Expected today: 166/166 unit tests (175 with -Dsqlite_vec -Dllama -Dwhisper); smoke `--check` all ok on the real session
+Expected today: 167/167 unit tests (176 with -Dsqlite_vec -Dllama -Dwhisper); smoke `--check` all ok on the real session
 except `global_shortcut` until `dev.oriel.Smoke.desktop` is installed (see
 pitfalls); smoke `--auto-quit` under headless.sh 27/27 ok (X11 paths:
 XGrabKey, XTest, GdkClipboard incl. the in-process `clipboard r/w` check).
