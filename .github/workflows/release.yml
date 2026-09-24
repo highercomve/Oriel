@@ -62,14 +62,46 @@ jobs:
       - name: Build the CLI
         env:
           TAG: ${{ github.ref_name }}
+          PUBLIC_KEY: ${{ vars.ORIEL_UPDATE_PUBLIC_KEY }}
         run: |
           mkdir -p dist
+          KEY_FLAG=()
+          if [ -n "$PUBLIC_KEY" ]; then
+            KEY_FLAG=("-Dupdate-public-key=$PUBLIC_KEY")
+          fi
           for arch in x86_64 aarch64; do
             zig build cli -Dtarget=$arch-linux-musl -Doptimize=ReleaseSafe \
-              -Dcli-version="${TAG#v}" -Doriel-ref="$TAG" --prefix "out/$arch"
+              -Dcli-version="${TAG#v}" -Doriel-ref="$TAG" "${KEY_FLAG[@]}" --prefix "out/$arch"
             cp "out/$arch/bin/oriel" "dist/oriel-$arch-linux"
           done
           ./dist/oriel-x86_64-linux --version
+      - name: Sign release manifests
+        env:
+          UPDATE_KEY: ${{ secrets.ORIEL_UPDATE_KEY }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$UPDATE_KEY" ]; then
+            echo "::notice::ORIEL_UPDATE_KEY secret not set; skipping signed update manifests."
+            exit 0
+          fi
+          KEY_FILE="$(mktemp)"
+          trap 'rm -f "$KEY_FILE"' EXIT
+          printf '%s' "$UPDATE_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          for arch in x86_64 aarch64; do
+            zig build sign-update -- \
+              "dist/oriel-$arch-linux" \
+              --app-id "dev.oriel.cli" \
+              --version "${TAG#v}" \
+              --target "$arch-linux" \
+              --url "https://github.com/highercomve/Oriel/releases/download/$TAG/oriel-$arch-linux" \
+              --key "$KEY_FILE" \
+              --format raw \
+              --out "dist/oriel-update-$arch-linux.json"
+          done
+      - name: Checksums
+        run: |
           cd dist && sha256sum oriel-* > SHA256SUMS && cat SHA256SUMS
       - name: Publish the release
         uses: softprops/action-gh-release@v2

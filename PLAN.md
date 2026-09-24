@@ -409,22 +409,24 @@ Tauri-`WebviewWindow`-style API, on Linux and Windows:
   SPA-fallback caveat: a last path segment with a dot (`/u/john.doe`) is
   treated as a file, not a route.
 
-## Milestone 6.5 — `oriel update`: the CLI updates itself with Oriel's updater
+## Milestone 6.5 — `oriel update`: the CLI updates itself with Oriel's updater (done)
 
-The CLI must use the same updater as apps built with Oriel (dogfooding).
-- Split `src/modules/updater.zig` into a GTK-free core (check, download,
-  verify Ed25519 signature + hash, unpack, replace the binary, restart;
-  imports only std + `update_manifest.zig`) and the app layer (JS progress
-  events, IPC `Commands`, module check) built on it. Apps keep their API.
-- `oriel update [--check] [--version vX]`: Oriel's public key embedded in
-  the CLI; manifest from GitHub Releases (pre-release aware like
-  install.sh); same replace/restart path as apps.
-- `release.yml`: sign the manifest with `update_tool sign-update` using the
-  `ORIEL_UPDATE_KEY` secret; attach it to the release. install.sh unchanged.
-- Tests: core unit tests; an end-to-end update against a local manifest
-  server with a test key (no network).
-- Open: generating the release signing key and storing it as a GitHub
-  secret (user decision).
+The CLI uses the same updater as apps built with Oriel (dogfooding).
+- Split `src/modules/updater.zig` into a GTK-free core (`src/updater_core.zig`:
+  check, download, verify Ed25519 signature + hash, unpack, atomic binary
+  replacement, restart; imports only std, builtin, and update_manifest) and the
+  app layer (JS progress events, IPC `Commands`, module check) built on it. Apps
+  keep their API.
+- `oriel update [--check] [--version <tag>] [--yes]`: Oriel's public key embedded
+  via `-Dupdate-public-key`; manifest from GitHub Releases (pre-release aware like
+  install.sh); atomic replace via the updater core.
+- `release.yml`: passes `-Dupdate-public-key` from `vars.ORIEL_UPDATE_PUBLIC_KEY`
+  and signs the release manifests using `zig build sign-update` with the
+  `secrets.ORIEL_UPDATE_KEY` secret.
+- Tests: core unit tests; CLI end-to-end update flow and tampered manifest rejection
+  tested against a local mock HTTP server.
+- Manual step remaining: generate the release keypair with `zig build keygen`
+  and set the `ORIEL_UPDATE_KEY` secret + `ORIEL_UPDATE_PUBLIC_KEY` repo variable.
 
 ## Milestone 7 — macOS (built and tested on a Mac)
 

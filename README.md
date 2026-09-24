@@ -172,6 +172,7 @@ curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh |
 |---|---|
 | `oriel init <name>` | New app in `./<name>`: build.zig, build.zig.zon, `src/main.zig` with sample `Commands`/`Events`, the frontend, README. Then adds Oriel (`zig fetch --save`), runs `zig build --fetch` and `npm install`, so the first build works offline |
 | `oriel doctor` | Checks Zig 0.16.x, pkg-config + GTK 4 / WebKitGTK 6.0 development files, Node.js + npm, packaging tools, tray host and GlobalShortcuts portal; prints the install command for your distro (pacman, apt, dnf, zypper); exits non-zero if something required is missing |
+| `oriel update` | Updates the CLI binary in place using Oriel's self-updater (`--check`, `--version <tag>`, `--yes`) |
 | `oriel dev` / `build` / `run` / `package` / `types` / `check` | `zig build <step>` (plain `zig build` for `build`) from the project root, found by walking up to `build.zig.zon`; extra arguments are passed on, e.g. `oriel build -Doptimize=ReleaseFast`, `oriel run -- --flag` |
 | `oriel --version` | CLI version and the Oriel ref `init` pins |
 
@@ -190,6 +191,32 @@ curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh |
 
 The CLI runs `zig` from PATH, or `$ORIEL_ZIG` if set (useful when the
 default `zig` is not 0.16).
+
+### Updating the CLI
+
+`oriel update` updates the running binary in place using Oriel's built-in self-updater engine:
+
+```sh
+oriel update --check          # Check whether a newer version is available without installing
+oriel update                  # Update to the latest release (prompts for confirmation on a TTY)
+oriel update --yes            # Update without prompting (required in non-interactive/CI environments)
+oriel update --version v0.2.0 # Update or downgrade to a specific release tag
+```
+
+The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the signed manifest for the current architecture (`oriel-update-<arch>-linux.json`), verifies the Ed25519 signature against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary. The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
+
+#### Maintainer key setup
+
+Release builds embed Oriel's Ed25519 public key via `-Dupdate-public-key=<base64>`. To configure the signing keys for releases:
+
+1. Generate a keypair:
+   ```sh
+   zig build keygen -- --name oriel-release
+   ```
+2. In GitHub repository settings:
+   - Add the private key seed (base64 string in `oriel-release.key`) as secret `ORIEL_UPDATE_KEY`.
+   - Add the public key (base64 string in `oriel-release.pub`) as variable `ORIEL_UPDATE_PUBLIC_KEY`.
+3. The release workflow passes `-Dupdate-public-key` to `zig build cli` and runs `zig build sign-update` to attach signed manifests (`oriel-update-x86_64-linux.json` and `oriel-update-aarch64-linux.json`) to the GitHub release.
 
 ## Building an app
 
