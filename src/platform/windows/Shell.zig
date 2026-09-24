@@ -47,6 +47,7 @@ pub const Mutex = struct {
 const Task = struct {
     run_fn: *const fn (ctx: ?*anyopaque) void,
     ctx: ?*anyopaque,
+    cleanup_fn: ?*const fn (ctx: ?*anyopaque) void,
 };
 
 var task_queue: std.ArrayList(Task) = .empty;
@@ -54,42 +55,70 @@ var task_mutex: win32.SRWLOCK = win32.SRWLOCK_INIT;
 
 /// Dispatches a task to execute on the main Win32 UI thread.
 ///
-/// Thread-safe: can be called from any thread.
-/// If task allocation fails due to out-of-memory, an error is logged and the task is dropped.
+/// Thread-safe: can be called from any thread. Tasks queued before `run`
+/// creates the host window run once it exists; tasks still queued when the
+/// message loop ends run during shutdown (see `drainAtShutdown`). If the task
+/// can't be queued (out of memory) it is logged and dropped: use
+/// `dispatchWithCleanup` when `ctx` owns memory or references.
 pub fn dispatchToMainThread(func: *const fn (ctx: ?*anyopaque) void, ctx: ?*anyopaque) void {
+    dispatchWithCleanup(func, ctx, null);
+}
+
+/// Like `dispatchToMainThread`, but `cleanup(ctx)` runs instead of `func` when
+/// the task can't be queued (out of memory; then on the calling thread, so it
+/// must only free memory, not touch COM objects or windows) or when it is
+/// still queued at shutdown (then on the main thread, after the message loop).
+pub fn dispatchWithCleanup(
+    func: *const fn (ctx: ?*anyopaque) void,
+    ctx: ?*anyopaque,
+    cleanup: ?*const fn (ctx: ?*anyopaque) void,
+) void {
     win32.AcquireSRWLockExclusive(&task_mutex);
-    task_queue.append(std.heap.smp_allocator, .{ .run_fn = func, .ctx = ctx }) catch {
+    task_queue.append(std.heap.smp_allocator, .{ .run_fn = func, .ctx = ctx, .cleanup_fn = cleanup }) catch {
         win32.ReleaseSRWLockExclusive(&task_mutex);
         log.err("dispatchToMainThread failed: out of memory", .{});
+        if (cleanup) |c| c(ctx);
         return;
     };
+    // Read under the lock: `run` clears host_hwnd under it at shutdown.
+    const target = host_hwnd;
     win32.ReleaseSRWLockExclusive(&task_mutex);
 
     // Before `run` creates the host window, tasks wait in the queue; `run`
     // drains it once the window exists.
-    if (host_hwnd) |hwnd| {
+    if (target) |hwnd| {
         if (win32.PostMessageW(hwnd, WM_DISPATCH, 0, 0) == win32.FALSE) {
             log.err("dispatchToMainThread: PostMessageW failed ({d})", .{win32.GetLastError()});
         }
     }
 }
 
-pub fn processDispatchQueue() void {
+fn takeTasks() ?[]Task {
     win32.AcquireSRWLockExclusive(&task_mutex);
-    if (task_queue.items.len == 0) {
-        win32.ReleaseSRWLockExclusive(&task_mutex);
-        return;
-    }
-    const tasks = task_queue.toOwnedSlice(std.heap.smp_allocator) catch {
-        win32.ReleaseSRWLockExclusive(&task_mutex);
+    defer win32.ReleaseSRWLockExclusive(&task_mutex);
+    if (task_queue.items.len == 0) return null;
+    return task_queue.toOwnedSlice(std.heap.smp_allocator) catch {
         log.err("processDispatchQueue failed: out of memory", .{});
-        return;
+        return null;
     };
-    win32.ReleaseSRWLockExclusive(&task_mutex);
-    defer std.heap.smp_allocator.free(tasks);
+}
 
-    for (tasks) |t| {
-        t.run_fn(t.ctx);
+pub fn processDispatchQueue() void {
+    const tasks = takeTasks() orelse return;
+    defer std.heap.smp_allocator.free(tasks);
+    for (tasks) |t| t.run_fn(t.ctx);
+}
+
+/// Called on the main thread after the message loop ended: tasks with a
+/// cleanup are cleaned up, the others still run once (so their memory is
+/// freed and any thread waiting on them is released). Loops because a task
+/// may queue another one.
+fn drainAtShutdown() void {
+    while (takeTasks()) |tasks| {
+        defer std.heap.smp_allocator.free(tasks);
+        for (tasks) |t| {
+            if (t.cleanup_fn) |c| c(t.ctx) else t.run_fn(t.ctx);
+        }
     }
 }
 
@@ -206,10 +235,13 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             };
             host_hwnd = host;
             defer {
+                win32.AcquireSRWLockExclusive(&task_mutex);
                 host_hwnd = null;
+                win32.ReleaseSRWLockExclusive(&task_mutex);
                 if (win32.DestroyWindow(host) == win32.FALSE) {
                     log.err("DestroyWindow(host) failed ({d})", .{win32.GetLastError()});
                 }
+                drainAtShutdown();
             }
             // Tasks queued before the host window existed.
             processDispatchQueue();
