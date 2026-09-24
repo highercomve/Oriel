@@ -242,29 +242,37 @@ pub fn WindowCreator(
             fn invokeNav(_: *webview2.ICoreWebView2NavigationStartingEventHandler, _: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2NavigationStartingEventArgs) callconv(.winapi) win32.HRESULT {
                 if (args) |a| {
                     var uri_w: ?win32.LPWSTR = null;
-                    if (a.lpVtbl.get_Uri(a, @ptrCast(&uri_w)) >= 0 and uri_w != null) {
-                        defer win32.CoTaskMemFree(uri_w);
-                        const slen = std.mem.indexOfScalar(u16, std.mem.span(uri_w.?), 0) orelse std.mem.span(uri_w.?).len;
-                        const uri_u8 = std.unicode.utf16LeToUtf8Alloc(std.heap.smp_allocator, uri_w.?[0..slen]) catch return win32.S_OK;
-                        defer std.heap.smp_allocator.free(uri_u8);
+                    const uri_hr = a.lpVtbl.get_Uri(a, @ptrCast(&uri_w));
+                    defer if (uri_w != null) win32.CoTaskMemFree(uri_w);
 
-                        var user_init: win32.BOOL = .FALSE;
-                        _ = a.lpVtbl.get_IsUserInitiated(a, &user_init);
+                    if (uri_hr < 0 or uri_w == null) {
+                        _ = a.lpVtbl.put_Cancel(a, win32.TRUE);
+                        return win32.S_OK;
+                    }
 
-                        const verdict = security.navigation(config.security, local, uri_u8, user_init != .FALSE);
-                        switch (verdict) {
-                            .allow => {},
-                            .open_external => {
-                                _ = a.lpVtbl.put_Cancel(a, win32.TRUE);
-                                const uri_z = std.heap.smp_allocator.dupeZ(u8, uri_u8) catch return win32.S_OK;
-                                defer std.heap.smp_allocator.free(uri_z);
-                                openExternal(uri_z);
-                            },
-                            .block => {
-                                _ = a.lpVtbl.put_Cancel(a, win32.TRUE);
-                                log.warn("blocked navigation to {s}", .{uri_u8});
-                            },
-                        }
+                    const slen = std.mem.indexOfScalar(u16, std.mem.span(uri_w.?), 0) orelse std.mem.span(uri_w.?).len;
+                    const uri_u8 = std.unicode.utf16LeToUtf8Alloc(std.heap.smp_allocator, uri_w.?[0..slen]) catch {
+                        _ = a.lpVtbl.put_Cancel(a, win32.TRUE);
+                        return win32.S_OK;
+                    };
+                    defer std.heap.smp_allocator.free(uri_u8);
+
+                    var user_init: win32.BOOL = .FALSE;
+                    _ = a.lpVtbl.get_IsUserInitiated(a, &user_init);
+
+                    const verdict = security.navigation(config.security, local, uri_u8, user_init != .FALSE);
+                    switch (verdict) {
+                        .allow => {},
+                        .open_external => {
+                            _ = a.lpVtbl.put_Cancel(a, win32.TRUE);
+                            const uri_z = std.heap.smp_allocator.dupeZ(u8, uri_u8) catch return win32.S_OK;
+                            defer std.heap.smp_allocator.free(uri_z);
+                            openExternal(uri_z);
+                        },
+                        .block => {
+                            _ = a.lpVtbl.put_Cancel(a, win32.TRUE);
+                            log.warn("blocked navigation to {s}", .{uri_u8});
+                        },
                     }
                 }
                 return win32.S_OK;
