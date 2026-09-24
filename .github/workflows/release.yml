@@ -1,0 +1,80 @@
+# On a v* tag: run the tests, build the static oriel CLI for x86_64 and
+# aarch64 Linux, and attach the binaries + SHA256SUMS (what install.sh
+# downloads and verifies) to the GitHub release.
+#
+# Both jobs run in an Arch Linux container: the prebuilt GTK/WebKit bindings
+# target GNOME 50, which Arch ships (Ubuntu LTS runners are too old), and
+# configuring Oriel's build already needs pkg-config data from
+# wayland/wayland-protocols, even for `zig build cli`.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.16.0
+  ARCH_PACKAGES: >-
+    git pkgconf gtk4 webkitgtk-6.0 wayland wayland-protocols libxkbcommon
+    libxtst libx11 xorg-server-xvfb xorg-xauth dbus ttf-dejavu
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: System packages
+        run: pacman -Syu --noconfirm --needed $ARCH_PACKAGES
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Unit tests (framework, tools, CLI)
+        run: zig build test --summary all
+      - name: Smoke app, module checks (no GUI)
+        working-directory: examples/smoke
+        run: zig build && ./zig-out/bin/oriel-smoke --check
+        # Portal- and tray-related checks depend on the session (no
+        # xdg-desktop-portal or tray host in the container): informative.
+        continue-on-error: true
+      - name: Smoke app, in-webview checks (Xvfb + private D-Bus)
+        working-directory: examples/smoke
+        run: ../../scripts/headless.sh ./zig-out/bin/oriel-smoke --auto-quit
+        # WebKitGTK's sandbox may not start inside a container: informative.
+        continue-on-error: true
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    permissions:
+      contents: write
+    steps:
+      - name: System packages
+        run: pacman -Syu --noconfirm --needed $ARCH_PACKAGES
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build the CLI
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          for arch in x86_64 aarch64; do
+            zig build cli -Dtarget=$arch-linux-musl -Doptimize=ReleaseSafe \
+              -Dcli-version="${TAG#v}" -Doriel-ref="$TAG" --prefix "out/$arch"
+            cp "out/$arch/bin/oriel" "dist/oriel-$arch-linux"
+          done
+          ./dist/oriel-x86_64-linux --version
+          cd dist && sha256sum oriel-* > SHA256SUMS && cat SHA256SUMS
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          # 0.x releases are pre-releases.
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          generate_release_notes: true
