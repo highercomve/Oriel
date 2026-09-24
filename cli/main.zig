@@ -1,5 +1,6 @@
 //! `oriel`: the Oriel command-line tool.
 //!
+//!     oriel init <name> [--template react|vue|svelte|vanilla] ...
 //!     oriel doctor
 //!     oriel dev | build | run | package | types | check [zig build args...]
 //!
@@ -9,12 +10,14 @@ const std = @import("std");
 const build_options = @import("build_options");
 const args = @import("args.zig");
 const Context = @import("Context.zig");
+const init_cmd = @import("init.zig");
 const doctor = @import("doctor.zig");
 const project = @import("project.zig");
 
 const program = "oriel";
 
 pub const Commands = union(enum) {
+    init: init_cmd.Command,
     doctor: doctor.Command,
     dev: project.Wrapper("dev", "Run the app against the frontend dev server, with hot reload"),
     build: project.Wrapper(null, "Build the app (frontend embedded) into zig-out/bin"),
@@ -63,7 +66,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
     };
     switch (parsed) {
         .version => {
-            try ctx.out.print(program ++ " {s}\n", .{build_options.version});
+            try ctx.out.print(program ++ " {s}\nscaffolds Oriel {s}#{s}\n", .{ build_options.version, init_cmd.repo_url, build_options.oriel_ref });
             return 0;
         },
         .help => |tag| {
@@ -71,6 +74,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
             return 0;
         },
         .command => |cmd| switch (cmd) {
+            .init => |c| return init_cmd.run(ctx, c),
             .doctor => return doctor.run(ctx),
             inline else => |c| return project.exec(ctx, @TypeOf(c).zig_step, c.args),
         },
@@ -80,8 +84,10 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
 test {
     _ = args;
     _ = Context;
+    _ = init_cmd;
     _ = doctor;
     _ = project;
+    _ = @import("template.zig");
 }
 
 test "command table" {
@@ -94,9 +100,12 @@ test "command table" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try args.writeHelp(Commands, program, &out.writer);
-    for ([_][]const u8{ "doctor", "dev", "build", "run", "package", "types", "check" }) |name| {
+    for ([_][]const u8{ "init", "doctor", "dev", "build", "run", "package", "types", "check" }) |name| {
         const line = try std.fmt.allocPrint(std.testing.allocator, "\n  {s} ", .{name});
         defer std.testing.allocator.free(line);
         try std.testing.expect(std.mem.indexOf(u8, out.written(), line) != null);
     }
+    out.clearRetainingCapacity();
+    try args.writeCommandHelp(Commands, program, .init, &out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "--template <react|vue|svelte|vanilla>") != null);
 }

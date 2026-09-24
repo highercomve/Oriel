@@ -1,0 +1,10 @@
+.{
+    .name = .@@pkg_name@@,
+    .version = "0.1.0",
+    // Derived from the package name; changing it has security and trust implications.
+    .fingerprint = @@fingerprint@@,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+@@dependencies@@    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "frontend", "README.md" },
+}
