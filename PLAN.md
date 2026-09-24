@@ -362,6 +362,14 @@ Tauri-`WebviewWindow`-style API, on Linux and Windows:
   payload)` and events `window:created` / `window:closed` (with the label).
   Implemented as built-in IPC commands mapping onto `App.openWindow` and
   `Window` methods, run on the main thread.
+- **System browser:** `oriel.window.open({ url, target: "browser" })`
+  (default `target: "window"`) opens the URL in the user's default browser
+  through the existing `openExternal` (xdg-open / portal on Linux,
+  `ShellExecuteW` on Windows); also exposed as `oriel.openExternal(url)`.
+  Resolves when handed off, no handle. Only `http:`, `https:` and `mailto:`
+  by default (configurable allowlist); never `file:`, `javascript:` or
+  custom schemes, the URL is validated and passed as one argument (no
+  shell). Needs the same capability as opening windows.
 - **Routes:** `url: "/settings"` must load the same route the app's
   router handles: the embedded assets in production and the **Vite dev
   server** in dev (today a relative `url` always loads `app://app/…`, see
@@ -374,12 +382,15 @@ Tauri-`WebviewWindow`-style API, on Linux and Windows:
   capability allows others.
 - **`window.open`:** when the navigation policy allows the target and it
   is app-local, open a real Oriel window instead of navigating the main
-  one (config switch; default stays "main view").
+  one (config switch; default stays "main view"). External targets keep
+  going to the system browser, as today.
 - **Lifetimes:** closing a window from its own JS, closing the main window
   while children stay open, `emitTo` a closed label → error, not a crash.
   Memory-safety review of every new path (rule 9).
 - **Tests:** unit tests for label/url validation and routing resolution;
   smoke checks: open a child from JS, round-trip `emitTo`, close from JS,
+  `target: "browser"` rejects `file:`/`javascript:` URLs (don't launch a
+  real browser in tests: stub `openExternal`),
   check `window:closed`; run them headless on Linux and under Wine
   (rule 10).
 - **Example:** `examples/react` gets react-router (`BrowserRouter`) and a
