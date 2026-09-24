@@ -38,15 +38,15 @@ pub const SRWLOCK_INIT = SRWLOCK{ .Ptr = null };
 
 pub const UINT = c_uint;
 pub const INT = c_int;
-pub const ULONG = c_ulong;
+pub const ULONG = u32;
 pub const USHORT = c_ushort;
 pub const UCHAR = u8;
-pub const LONG = c_long;
+pub const LONG = i32;
 pub const SHORT = c_short;
 pub const CHAR = u8;
 pub const BYTE = u8;
 pub const WORD = u16;
-pub const HRESULT = c_long;
+pub const HRESULT = i32;
 pub const ULONG_PTR = usize;
 pub const LONG_PTR = isize;
 pub const WPARAM = usize;
@@ -182,8 +182,13 @@ pub const IDC_ARROW: LPCWSTR = @ptrFromInt(32512);
 // Clipboard Formats
 pub const CF_TEXT: UINT = 1;
 pub const CF_BITMAP: UINT = 2;
-pub const CF_UNICODETEXT: UINT = 13;
 pub const CF_DIB: UINT = 8;
+pub const CF_UNICODETEXT: UINT = 13;
+pub const CF_DIBV5: UINT = 17;
+
+// DIB Compression
+pub const BI_RGB: DWORD = 0;
+pub const BI_BITFIELDS: DWORD = 3;
 
 // Global Memory Flags
 pub const GMEM_FIXED: UINT = 0x0000;
@@ -248,6 +253,22 @@ pub const VK_F9: c_int = 0x78;
 pub const VK_F10: c_int = 0x79;
 pub const VK_F11: c_int = 0x7A;
 pub const VK_F12: c_int = 0x7B;
+pub const VK_F24: c_int = 0x87;
+
+pub const VK_RCONTROL: c_int = 0xA3;
+pub const VK_RMENU: c_int = 0xA5;
+
+pub const VK_OEM_1: c_int = 0xBA;
+pub const VK_OEM_PLUS: c_int = 0xBB;
+pub const VK_OEM_COMMA: c_int = 0xBC;
+pub const VK_OEM_MINUS: c_int = 0xBD;
+pub const VK_OEM_PERIOD: c_int = 0xBE;
+pub const VK_OEM_2: c_int = 0xBF;
+pub const VK_OEM_3: c_int = 0xC0;
+pub const VK_OEM_4: c_int = 0xDB;
+pub const VK_OEM_5: c_int = 0xDC;
+pub const VK_OEM_6: c_int = 0xDD;
+pub const VK_OEM_7: c_int = 0xDE;
 
 // Shell_NotifyIcon Constants
 pub const NIM_ADD: DWORD = 0x00000000;
@@ -480,6 +501,21 @@ pub const WINDOWPLACEMENT = extern struct {
     rcNormalPosition: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
 };
 
+pub const OVERLAPPED = extern struct {
+    Internal: ULONG_PTR = 0,
+    InternalHigh: ULONG_PTR = 0,
+    Offset: DWORD = 0,
+    OffsetHigh: DWORD = 0,
+    hEvent: ?HANDLE = null,
+};
+
+pub const FILE_NOTIFY_INFORMATION = extern struct {
+    NextEntryOffset: DWORD,
+    Action: DWORD,
+    FileNameLength: DWORD,
+    FileName: [1]WCHAR,
+};
+
 // ---------------------------------------------------------------------------
 // External Functions
 // ---------------------------------------------------------------------------
@@ -534,6 +570,7 @@ pub extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;
 pub extern "user32" fn GetClipboardData(uFormat: UINT) callconv(.winapi) ?HANDLE;
 pub extern "user32" fn SetClipboardData(uFormat: UINT, hMem: ?HANDLE) callconv(.winapi) ?HANDLE;
 pub extern "user32" fn IsClipboardFormatAvailable(format: UINT) callconv(.winapi) BOOL;
+pub extern "user32" fn RegisterClipboardFormatW(lpszFormat: LPCWSTR) callconv(.winapi) UINT;
 pub extern "user32" fn RegisterHotKey(hWnd: ?HWND, id: c_int, fsModifiers: UINT, vk: UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn UnregisterHotKey(hWnd: ?HWND, id: c_int) callconv(.winapi) BOOL;
 pub extern "user32" fn SendInput(cInputs: UINT, pInputs: [*]const INPUT, cbSize: c_int) callconv(.winapi) UINT;
@@ -569,6 +606,7 @@ pub extern "kernel32" fn GlobalAlloc(uFlags: UINT, dwBytes: usize) callconv(.win
 pub extern "kernel32" fn GlobalFree(hMem: HGLOBAL) callconv(.winapi) ?HGLOBAL;
 pub extern "kernel32" fn GlobalLock(hMem: HGLOBAL) callconv(.winapi) ?*anyopaque;
 pub extern "kernel32" fn GlobalUnlock(hMem: HGLOBAL) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GlobalSize(hMem: HGLOBAL) callconv(.winapi) usize;
 pub extern "kernel32" fn InitializeCriticalSection(lpCriticalSection: *CRITICAL_SECTION) callconv(.winapi) void;
 pub extern "kernel32" fn DeleteCriticalSection(lpCriticalSection: *CRITICAL_SECTION) callconv(.winapi) void;
 pub extern "kernel32" fn EnterCriticalSection(lpCriticalSection: *CRITICAL_SECTION) callconv(.winapi) void;
@@ -594,10 +632,34 @@ pub const GENERIC_ALL: DWORD = 0x10000000;
 pub const FILE_ATTRIBUTE_NORMAL: DWORD = 0x00000080;
 pub const FILE_SHARE_READ: DWORD = 0x00000001;
 pub const FILE_SHARE_WRITE: DWORD = 0x00000002;
+pub const FILE_SHARE_DELETE: DWORD = 0x00000004;
+pub const OPEN_EXISTING: DWORD = 3;
 pub const OPEN_ALWAYS: DWORD = 4;
 pub const FILE_BEGIN: DWORD = 0;
 pub const FILE_CURRENT: DWORD = 1;
 pub const FILE_END: DWORD = 2;
+pub const FILE_LIST_DIRECTORY: DWORD = 0x0001;
+pub const FILE_FLAG_BACKUP_SEMANTICS: DWORD = 0x02000000;
+pub const FILE_FLAG_OVERLAPPED: DWORD = 0x40000000;
+
+pub const FILE_NOTIFY_CHANGE_FILE_NAME: DWORD = 0x00000001;
+pub const FILE_NOTIFY_CHANGE_DIR_NAME: DWORD = 0x00000002;
+pub const FILE_NOTIFY_CHANGE_SIZE: DWORD = 0x00000008;
+pub const FILE_NOTIFY_CHANGE_LAST_WRITE: DWORD = 0x00000010;
+pub const FILE_NOTIFY_CHANGE_CREATION: DWORD = 0x00000040;
+
+pub const FILE_ACTION_ADDED: DWORD = 0x00000001;
+pub const FILE_ACTION_REMOVED: DWORD = 0x00000002;
+pub const FILE_ACTION_MODIFIED: DWORD = 0x00000003;
+pub const FILE_ACTION_RENAMED_OLD_NAME: DWORD = 0x00000004;
+pub const FILE_ACTION_RENAMED_NEW_NAME: DWORD = 0x00000005;
+
+pub const ERROR_IO_INCOMPLETE: DWORD = 996;
+pub const ERROR_IO_PENDING: DWORD = 997;
+pub const ERROR_HOTKEY_ALREADY_REGISTERED: DWORD = 1418;
+
+pub const INFINITE: DWORD = 0xFFFFFFFF;
+pub const WAIT_OBJECT_0: DWORD = 0;
 pub const INVALID_HANDLE_VALUE: HANDLE = @ptrFromInt(std.math.maxInt(usize));
 
 pub extern "kernel32" fn LeaveCriticalSection(lpCriticalSection: *CRITICAL_SECTION) callconv(.winapi) void;
@@ -609,8 +671,6 @@ pub extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CreateEventW(lpEventAttributes: ?*anyopaque, bManualReset: BOOL, bInitialState: BOOL, lpName: ?LPCWSTR) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
-pub const INFINITE: DWORD = 0xFFFFFFFF;
-pub const WAIT_OBJECT_0: DWORD = 0;
 pub extern "kernel32" fn FlushFileBuffers(hFile: HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CreateDirectoryW(lpPathName: LPCWSTR, lpSecurityAttributes: ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GetLocalTime(lpSystemTime: *SYSTEMTIME) callconv(.winapi) void;
@@ -622,6 +682,20 @@ pub extern "kernel32" fn AcquireSRWLockExclusive(SRWLock: *SRWLOCK) callconv(.wi
 pub extern "kernel32" fn ReleaseSRWLockExclusive(SRWLock: *SRWLOCK) callconv(.winapi) void;
 pub extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: ?[*]u16, nSize: DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn GetModuleFileNameW(hModule: ?HMODULE, lpFilename: [*]WCHAR, nSize: DWORD) callconv(.winapi) DWORD;
+pub extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.winapi) void;
+pub extern "kernel32" fn ResetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CancelIoEx(hFile: HANDLE, lpOverlapped: ?*OVERLAPPED) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetOverlappedResult(hFile: HANDLE, lpOverlapped: *OVERLAPPED, lpNumberOfBytesTransferred: *DWORD, bWait: BOOL) callconv(.winapi) BOOL;
+pub extern "kernel32" fn ReadDirectoryChangesW(
+    hDirectory: HANDLE,
+    lpBuffer: ?*anyopaque,
+    nBufferLength: DWORD,
+    bWatchSubtree: BOOL,
+    dwNotifyFilter: DWORD,
+    lpBytesReturned: ?*DWORD,
+    lpOverlapped: ?*OVERLAPPED,
+    lpCompletionRoutine: ?*anyopaque,
+) callconv(.winapi) BOOL;
 
 // ole32
 pub extern "ole32" fn CoInitializeEx(pvReserved: ?*anyopaque, dwCoInit: DWORD) callconv(.winapi) HRESULT;
@@ -693,6 +767,35 @@ pub extern "gdi32" fn CreateDIBSection(
     offset: DWORD,
 ) callconv(.winapi) ?HBITMAP;
 
+comptime {
+    if (@import("builtin").cpu.arch == .x86_64) {
+        std.debug.assert(@sizeOf(INPUT) == 40);
+        std.debug.assert(@sizeOf(KEYBDINPUT) == 24);
+        std.debug.assert(@sizeOf(MOUSEINPUT) == 32);
+        std.debug.assert(@sizeOf(OVERLAPPED) == 32);
+    }
+    std.debug.assert(@sizeOf(BITMAPINFOHEADER) == 40);
+    std.debug.assert(@sizeOf(FILE_NOTIFY_INFORMATION) == 16);
+}
+
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "win32 struct layouts and sizes" {
+    if (@import("builtin").cpu.arch == .x86_64) {
+        try std.testing.expectEqual(@as(usize, 40), @sizeOf(INPUT));
+        try std.testing.expectEqual(@as(usize, 24), @sizeOf(KEYBDINPUT));
+        try std.testing.expectEqual(@as(usize, 32), @sizeOf(MOUSEINPUT));
+        try std.testing.expectEqual(@as(usize, 8), @offsetOf(INPUT, "u"));
+        try std.testing.expectEqual(@as(usize, 4), @offsetOf(KEYBDINPUT, "dwFlags"));
+        try std.testing.expectEqual(@as(usize, 16), @offsetOf(KEYBDINPUT, "dwExtraInfo"));
+        try std.testing.expectEqual(@as(usize, 32), @sizeOf(OVERLAPPED));
+    }
+    try std.testing.expectEqual(@as(usize, 40), @sizeOf(BITMAPINFOHEADER));
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(FILE_NOTIFY_INFORMATION));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(FILE_NOTIFY_INFORMATION, "NextEntryOffset"));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(FILE_NOTIFY_INFORMATION, "Action"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(FILE_NOTIFY_INFORMATION, "FileNameLength"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(FILE_NOTIFY_INFORMATION, "FileName"));
 }
