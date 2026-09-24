@@ -166,8 +166,15 @@ pub const Tray = struct {
             _ = win32.GetCursorPos(&pt);
         }
         _ = win32.SetForegroundWindow(hwnd);
+        const uid = self.uid;
         const cmd = win32.TrackPopupMenu(hmenu, win32.TPM_RIGHTBUTTON | win32.TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, null);
         _ = win32.PostMessageW(hwnd, win32.WM_NULL, 0, 0);
+
+        // TrackPopupMenu runs a modal message loop: a dispatched task may have
+        // deinit()ed this tray meanwhile. uids are never reused, so only touch
+        // `self` if it is still the live tray.
+        const live = global_tray orelse return;
+        if (live != self or live.uid != uid) return;
 
         if (cmd > 0) {
             const child_id: i32 = @intCast(cmd);
@@ -177,9 +184,9 @@ pub const Tray = struct {
                     self.menu.revision +%= 1;
                 }
                 if (self.on_menu) |f| {
+                    // `n.key` lives in the menu arena: copy it in case on_menu calls setMenu.
                     var key_buf: [256]u8 = undefined;
-                    const key_copy = std.fmt.bufPrint(&key_buf, "{s}", .{n.key}) catch n.key;
-                    f(key_copy, if (n.kind == .check) n.checked else null);
+                    f(common.copyKey(&key_buf, n.key), if (n.kind == .check) n.checked else null);
                 }
             }
         }
@@ -195,13 +202,17 @@ pub const Tray = struct {
                     _ = win32.AppendMenuW(hmenu, win32.MF_SEPARATOR, 0, null);
                 },
                 .submenu => {
-                    const hsub = win32.CreatePopupMenu() orelse continue;
-                    self.populateMenu(hsub, child_id);
                     const label_w = std.unicode.utf8ToUtf16LeAllocZ(a, child.label) catch continue;
                     defer a.free(label_w);
+                    const hsub = win32.CreatePopupMenu() orelse continue;
+                    self.populateMenu(hsub, child_id);
                     var flags: win32.UINT = win32.MF_POPUP;
                     if (!child.enabled) flags |= win32.MF_GRAYED | win32.MF_DISABLED;
-                    _ = win32.AppendMenuW(hmenu, flags, @intFromPtr(hsub), label_w.ptr);
+                    // Once appended, hsub is destroyed with its parent menu;
+                    // otherwise it is ours to destroy.
+                    if (win32.AppendMenuW(hmenu, flags, @intFromPtr(hsub), label_w.ptr) == win32.FALSE) {
+                        _ = win32.DestroyMenu(hsub);
+                    }
                 },
                 .check => {
                     var flags: win32.UINT = win32.MF_STRING;

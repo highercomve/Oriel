@@ -29,6 +29,23 @@ pub const Options = struct {
     on_activate: ?*const fn () void = null,
 };
 
+/// Copy a menu item key into `buf` (truncated to its size) so the callback
+/// gets a slice that survives a `setMenu` from inside the callback.
+pub fn copyKey(buf: []u8, key: []const u8) []const u8 {
+    const n = @min(key.len, buf.len);
+    @memcpy(buf[0..n], key[0..n]);
+    return buf[0..n];
+}
+
+test "copyKey copies and truncates" {
+    var buf: [4]u8 = undefined;
+    const short = "ab";
+    const got = copyKey(&buf, short);
+    try std.testing.expectEqualStrings("ab", got);
+    try std.testing.expect(got.ptr != short.ptr);
+    try std.testing.expectEqualStrings("abcd", copyKey(&buf, "abcdef"));
+}
+
 // ---------------------------------------------------------------------------
 // Menu model (independent of platform, unit-tested)
 // ---------------------------------------------------------------------------
