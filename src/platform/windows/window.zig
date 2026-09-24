@@ -67,6 +67,18 @@ pub fn closeWindow(handle: WindowHandle) void {
     }
 }
 
+pub fn postCloseWindow(handle: WindowHandle) void {
+    if (win32.PostMessageW(handle.hwnd, win32.WM_CLOSE, 0, 0) == win32.FALSE) {
+        log.err("postCloseWindow: PostMessageW failed ({d})", .{win32.GetLastError()});
+    }
+}
+
+pub fn focusWindow(handle: WindowHandle) void {
+    _ = win32.ShowWindow(handle.hwnd, win32.SW_SHOW);
+    _ = win32.SetForegroundWindow(handle.hwnd);
+    _ = win32.SetFocus(handle.hwnd);
+}
+
 pub fn destroyWindow(handle: WindowHandle) void {
     _ = win32.SetWindowLongPtrW(handle.hwnd, win32.GWLP_USERDATA, 0);
     handle.deinit();
@@ -147,11 +159,20 @@ pub fn openExternal(uri: [*:0]const u8) void {
 }
 
 pub fn getWindowByView(view: *webview2.ICoreWebView2) ?*App.Window {
+    var unk_a: ?*anyopaque = null;
+    if (view.lpVtbl.QueryInterface(view, &webview2.IID_IUnknown, &unk_a) < 0 or unk_a == null) return null;
+    const unk_a_ptr: *webview2.IUnknown = @ptrCast(@alignCast(unk_a.?));
+    defer _ = unk_a_ptr.lpVtbl.Release(unk_a_ptr);
+
     App.ensureWindowsMutex();
     App.windows_mutex.lock();
     defer App.windows_mutex.unlock();
     for (App.windows_list.items) |w| {
-        if (w.handle.webview == view) return w;
+        var unk_b: ?*anyopaque = null;
+        if (w.handle.webview.lpVtbl.QueryInterface(w.handle.webview, &webview2.IID_IUnknown, &unk_b) < 0 or unk_b == null) continue;
+        const unk_b_ptr: *webview2.IUnknown = @ptrCast(@alignCast(unk_b.?));
+        defer _ = unk_b_ptr.lpVtbl.Release(unk_b_ptr);
+        if (unk_a_ptr == unk_b_ptr) return w;
     }
     return null;
 }
@@ -215,6 +236,7 @@ pub fn WindowCreator(
         /// Removed via webview.remove_WebMessageReceived in WindowData.deinit before freeing.
         const MessageHandler = struct {
             handler: webview2.ICoreWebView2WebMessageReceivedEventHandler,
+            target_hwnd: win32.HWND,
 
             const msg_vtable = webview2.ICoreWebView2WebMessageReceivedEventHandler.VTable{
                 .QueryInterface = &qiMsg,
@@ -238,10 +260,11 @@ pub fn WindowCreator(
             fn releaseMsg(_: *webview2.ICoreWebView2WebMessageReceivedEventHandler) callconv(.winapi) win32.ULONG {
                 return 1;
             }
-            fn invokeMsg(_: *webview2.ICoreWebView2WebMessageReceivedEventHandler, sender: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2WebMessageReceivedEventArgs) callconv(.winapi) win32.HRESULT {
+            fn invokeMsg(m_this: *webview2.ICoreWebView2WebMessageReceivedEventHandler, sender: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2WebMessageReceivedEventArgs) callconv(.winapi) win32.HRESULT {
+                const self: *@This() = @fieldParentPtr("handler", m_this);
                 if (sender) |s| {
                     if (args) |a| {
-                        BridgeImpl.onMessage(s, a);
+                        BridgeImpl.onMessage(s, a, self.target_hwnd);
                     }
                 }
                 return win32.S_OK;
@@ -316,6 +339,8 @@ pub fn WindowCreator(
             }
         };
 
+        var window_open_counter = std.atomic.Value(u32).init(1);
+
         // NewWindowRequested event handler
         /// Lifetime: owned by WindowData, which outlives the registration.
         /// Removed via webview.remove_NewWindowRequested in WindowData.deinit before freeing.
@@ -362,7 +387,23 @@ pub fn WindowCreator(
                         const verdict = security.navigation(config.security, local, uri_u8, user_init != .FALSE);
                         switch (verdict) {
                             .allow => {
-                                _ = nw_self.main_view.navigate(uri_w.?);
+                                var obuf: [512]u8 = undefined;
+                                const o = security.origin(&obuf, uri_u8);
+                                if (config.window_open == .new_window and o != null and local.contains(o.?)) {
+                                    const id = window_open_counter.fetchAdd(1, .monotonic);
+                                    var label_buf: [32]u8 = undefined;
+                                    const label = std.fmt.bufPrint(&label_buf, "win-{d}", .{id}) catch return win32.S_OK;
+                                    const label_z = std.heap.smp_allocator.dupeZ(u8, label) catch return win32.S_OK;
+                                    defer std.heap.smp_allocator.free(label_z);
+                                    const uri_z = std.heap.smp_allocator.dupeZ(u8, uri_u8) catch return win32.S_OK;
+                                    defer std.heap.smp_allocator.free(uri_z);
+                                    _ = App.openWindow(.{
+                                        .label = label_z,
+                                        .url = uri_z,
+                                    }) catch |err| log.err("window.open failed: {s}", .{@errorName(err)});
+                                } else {
+                                    _ = nw_self.main_view.navigate(uri_w.?);
+                                }
                             },
                             .open_external => {
                                 const uri_z = std.heap.smp_allocator.dupeZ(u8, uri_u8) catch return win32.S_OK;
@@ -787,6 +828,7 @@ pub fn WindowCreator(
                 },
                 .msg_handler = .{
                     .handler = .{ .lpVtbl = &MessageHandler.msg_vtable },
+                    .target_hwnd = hwnd,
                 },
                 .nav_handler = .{
                     .handler = .{ .lpVtbl = &NavHandler.nav_vtable },
@@ -836,7 +878,7 @@ pub fn WindowCreator(
             errdefer _ = view.lpVtbl.remove_WindowCloseRequested(view, data.cl_token);
 
             // Inject bridge JS
-            BridgeImpl.setupUserContent(view);
+            BridgeImpl.setupUserContent(view, options.label);
 
             // Size controller to client area
             var client_rect: win32.RECT = undefined;
@@ -850,6 +892,20 @@ pub fn WindowCreator(
                     const u_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, u);
                     defer gpa.free(u_w);
                     _ = view.navigate(u_w.ptr);
+                } else if (std.mem.startsWith(u8, u, "app://app/")) {
+                    const sub = u["app://app/".len..];
+                    const full_uri = try std.fmt.allocPrint(gpa, "https://app.localhost/{s}", .{sub});
+                    defer gpa.free(full_uri);
+                    const full_uri_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, full_uri);
+                    defer gpa.free(full_uri_w);
+                    _ = view.navigate(full_uri_w.ptr);
+                } else if (std.mem.startsWith(u8, u, "app://")) {
+                    const sub = u["app://".len..];
+                    const full_uri = try std.fmt.allocPrint(gpa, "https://app.localhost/{s}", .{sub});
+                    defer gpa.free(full_uri);
+                    const full_uri_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, full_uri);
+                    defer gpa.free(full_uri_w);
+                    _ = view.navigate(full_uri_w.ptr);
                 } else {
                     const trimmed = std.mem.trimStart(u8, u, "/");
                     const full_uri = try std.fmt.allocPrint(gpa, "https://app.localhost/{s}", .{trimmed});
@@ -940,6 +996,8 @@ pub fn WindowCreator(
 
                         w.saveGeometry();
 
+                        App.emit("window:closed", .{ .label = w.label });
+
                         App.ensureWindowsMutex();
                         App.windows_mutex.lock();
                         for (App.windows_list.items, 0..) |item, i| {
@@ -958,6 +1016,7 @@ pub fn WindowCreator(
 
                         std.heap.smp_allocator.free(w.label);
                         std.heap.smp_allocator.free(w.options.title);
+                        if (w.options.url) |u| std.heap.smp_allocator.free(u);
                         std.heap.smp_allocator.destroy(w);
 
                         _ = win32.DestroyWindow(hwnd);

@@ -39,14 +39,67 @@ pub const bridge_js =
     \\      }
     \\    }
     \\  });
-    \\  Object.defineProperty(window, "oriel", { value: Object.freeze({
-    \\    invoke(cmd, args) {
-    \\      return new Promise((resolve, reject) => {
-    \\        const id = nextId++;
-    \\        pending.set(id, { resolve, reject });
-    \\        window.chrome.webview.postMessage(JSON.stringify({ id, cmd, args: args ?? null }));
-    \\      });
+    \\  function invoke(cmd, args) {
+    \\    return new Promise((resolve, reject) => {
+    \\      const id = nextId++;
+    \\      pending.set(id, { resolve, reject });
+    \\      window.chrome.webview.postMessage(JSON.stringify({ id, cmd, args: args ?? null }));
+    \\    });
+    \\  }
+    \\  class WindowHandle {
+    \\    constructor(label) {
+    \\      this.label = label;
+    \\    }
+    \\    close() {
+    \\      return invoke("oriel:window:close", { label: this.label });
+    \\    }
+    \\    show() {
+    \\      return invoke("oriel:window:show", { label: this.label });
+    \\    }
+    \\    hide() {
+    \\      return invoke("oriel:window:hide", { label: this.label });
+    \\    }
+    \\    focus() {
+    \\      return invoke("oriel:window:focus", { label: this.label });
+    \\    }
+    \\    setTitle(title) {
+    \\      return invoke("oriel:window:setTitle", { label: this.label, title });
+    \\    }
+    \\    setSize(width, height) {
+    \\      return invoke("oriel:window:setSize", { label: this.label, width, height });
+    \\    }
+    \\    maximize(maximized = true) {
+    \\      return invoke("oriel:window:maximize", { label: this.label, maximized });
+    \\    }
+    \\    fullscreen(fullscreen = true) {
+    \\      return invoke("oriel:window:fullscreen", { label: this.label, fullscreen });
+    \\    }
+    \\    emit(event, payload) {
+    \\      return windowApi.emitTo(this.label, event, payload);
+    \\    }
+    \\  }
+    \\  const windowApi = {
+    \\    async open(options) {
+    \\      const res = await invoke("oriel:window:open", options);
+    \\      return new WindowHandle(res.label);
     \\    },
+    \\    current() {
+    \\      return new WindowHandle(window.__oriel_window_label || "main");
+    \\    },
+    \\    async get(label) {
+    \\      const res = await invoke("oriel:window:get", { label });
+    \\      return res ? new WindowHandle(res.label) : null;
+    \\    },
+    \\    async all() {
+    \\      const list = await invoke("oriel:window:all", {});
+    \\      return (list || []).map(w => new WindowHandle(w.label));
+    \\    },
+    \\    emitTo(label, event, payload) {
+    \\      return invoke("oriel:window:emitTo", { label, event, payload: payload ?? null });
+    \\    }
+    \\  };
+    \\  Object.defineProperty(window, "oriel", { value: Object.freeze({
+    \\    invoke,
     \\    listen(event, callback) {
     \\      let set = listeners.get(event);
     \\      if (!set) listeners.set(event, (set = new Set()));
@@ -58,6 +111,7 @@ pub const bridge_js =
     \\        try { cb(payload); } catch (e) { console.error(e); }
     \\      }
     \\    },
+    \\    window: Object.freeze(windowApi),
     \\  }) });
     \\})();
 ;
@@ -116,12 +170,17 @@ pub fn Bridge(
     comptime config: App.Config,
     comptime local: security.Local,
 ) type {
+    const window_commands = @import("../../core/window_commands.zig");
     return struct {
         const Self = @This();
 
-        pub fn setupUserContent(view: *webview2.ICoreWebView2) void {
+        pub fn setupUserContent(view: *webview2.ICoreWebView2, label: [:0]const u8) void {
             const gpa = std.heap.smp_allocator;
-            const script_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, bridge_js) catch return;
+            const label_json = std.json.Stringify.valueAlloc(gpa, label, .{}) catch return;
+            defer gpa.free(label_json);
+            const script = std.fmt.allocPrintSentinel(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, bridge_js }, 0) catch return;
+            defer gpa.free(script);
+            const script_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, script) catch return;
             defer gpa.free(script_w);
 
             _ = view.addScriptToExecuteOnDocumentCreated(script_w.ptr, null);
@@ -130,6 +189,7 @@ pub fn Bridge(
         pub fn onMessage(
             view: *webview2.ICoreWebView2,
             args: *webview2.ICoreWebView2WebMessageReceivedEventArgs,
+            hwnd: win32.HWND,
         ) void {
             var msg_w: ?win32.LPWSTR = null;
             if (args.lpVtbl.TryGetWebMessageAsString(args, @ptrCast(&msg_w)) < 0 or msg_w == null) return;
@@ -166,8 +226,13 @@ pub fn Bridge(
                 break :blk std.unicode.utf16LeToUtf8Alloc(temp_alloc, src_w.?[0..slen]) catch "";
             } else "";
 
-            const caller_win = window_mod.getWindowByView(view);
+            const caller_win = window_mod.getWindowByHwnd(hwnd) orelse window_mod.getWindowByView(view);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
+
+            if (window_commands.isWindowCommand(req.cmd)) {
+                SyncCall.queue(view, req.id, req.cmd, req.args, page_url, win_label, null);
+                return;
+            }
 
             if (!security.commandAllowedForWindow(config.security, local, page_url, req.cmd, win_label)) {
                 log.warn("blocked command '{s}' from {s} (window: {?s})", .{ req.cmd, page_url, win_label });
@@ -184,7 +249,7 @@ pub fn Bridge(
                 // file dialog) would otherwise nest a message loop inside the
                 // handler, which WebView2 doesn't support (it hangs). Tasks run
                 // in order, so replies keep the order of the requests.
-                SyncCall.queue(view, req.id, req.cmd, req.args, if (pool) |p| p.io else null);
+                SyncCall.queue(view, req.id, req.cmd, req.args, page_url, win_label, if (pool) |p| p.io else null);
                 return;
             }
 
@@ -276,17 +341,45 @@ pub fn Bridge(
             id: ?u64,
             arena_state: std.heap.ArenaAllocator,
             request: ipc.Request,
+            page_url: []const u8,
+            win_label: ?[]const u8,
             io: ?std.Io,
 
-            fn queue(view: *webview2.ICoreWebView2, id: ?u64, cmd: []const u8, args: std.json.Value, io: ?std.Io) void {
+            fn queue(
+                view: *webview2.ICoreWebView2,
+                id: ?u64,
+                cmd: []const u8,
+                args: std.json.Value,
+                page_url: []const u8,
+                win_label: ?[]const u8,
+                io: ?std.Io,
+            ) void {
                 const gpa = std.heap.smp_allocator;
                 const self = gpa.create(SyncCall) catch {
                     sendErrorReply(view, id, "OutOfMemory");
                     return;
                 };
-                self.* = .{ .view = view, .id = id, .arena_state = .init(gpa), .request = undefined, .io = io };
-                // Deep-copy the request out of the caller's parse arena.
+                self.* = .{
+                    .view = view,
+                    .id = id,
+                    .arena_state = .init(gpa),
+                    .request = undefined,
+                    .page_url = "",
+                    .win_label = null,
+                    .io = io,
+                };
                 const arena = self.arena_state.allocator();
+                self.page_url = arena.dupe(u8, page_url) catch {
+                    self.fail("OutOfMemory");
+                    return;
+                };
+                if (win_label) |wl| {
+                    self.win_label = arena.dupe(u8, wl) catch {
+                        self.fail("OutOfMemory");
+                        return;
+                    };
+                }
+                // Deep-copy the request out of the caller's parse arena.
                 const request_json = std.json.Stringify.valueAlloc(arena, ipc.Request{ .cmd = cmd, .args = args }, .{}) catch {
                     self.fail("OutOfMemory");
                     return;
@@ -309,6 +402,22 @@ pub fn Bridge(
             fn run(ctx: ?*anyopaque) void {
                 const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
                 defer finish(self);
+                if (window_commands.isWindowCommand(self.request.cmd)) {
+                    const result = window_commands.dispatch(
+                        config.security,
+                        local,
+                        self.arena_state.allocator(),
+                        self.page_url,
+                        self.win_label,
+                        self.request.cmd,
+                        self.request.args,
+                    ) catch |err| {
+                        sendErrorReply(self.view, self.id, @errorName(err));
+                        return;
+                    };
+                    sendSuccessReply(self.view, self.id, result);
+                    return;
+                }
                 const result = ipc.dispatchRequest(api.commands, self.arena_state.allocator(), self.request, self.io) catch |err| {
                     sendErrorReply(self.view, self.id, @errorName(err));
                     return;

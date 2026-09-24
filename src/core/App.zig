@@ -59,12 +59,20 @@ pub const Config = struct {
     /// Closing the window quits the app, or only hides it (e.g. when a tray
     /// icon can bring it back).
     on_close: enum { quit, hide } = .quit,
+    /// What happens when `window.open()` or `target="_blank"` navigates to an allowed app-local URL.
+    /// Defaults to `.main_view` (load in main view). When `.new_window`, opens a new Oriel window.
+    window_open: WindowOpenMode = .main_view,
     /// Called once the window exists, on the main thread: create the tray,
     /// register shortcuts, start background work.
     setup: ?*const fn () anyerror!void = null,
     /// Development mode: load the frontend from a dev server (e.g. Vite with
     /// hot reload) instead of the embedded assets.
     dev: ?Dev = null,
+};
+
+pub const WindowOpenMode = enum {
+    main_view,
+    new_window,
 };
 
 pub const WindowOptions = struct {
@@ -106,6 +114,10 @@ pub const Window = struct {
 
     pub fn close(self: *Window) void {
         platform.closeWindow(self.handle);
+    }
+
+    pub fn focus(self: *Window) void {
+        platform.focusWindow(self.handle);
     }
 
     pub fn setTitle(self: *Window, title: [:0]const u8) void {
@@ -244,8 +256,25 @@ pub fn closeWindow(label: []const u8) void {
     }
 }
 
+pub fn postCloseWindow(label: []const u8) !void {
+    const win = getWindow(label) orelse return error.WindowNotFound;
+    platform.postCloseWindow(win.handle);
+}
+
+pub fn emitTo(label: []const u8, name: []const u8, payload: anytype) !void {
+    const win = getWindow(label) orelse return error.WindowNotFound;
+    try emitJson(win.handle, name, payload);
+}
+
 pub fn getWindows() []*Window {
     return windows_list.items;
+}
+
+pub fn getWindowCount() usize {
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    defer windows_mutex.unlock();
+    return windows_list.items.len;
 }
 
 pub fn openWindow(options: WindowOptions) !*Window {
@@ -264,9 +293,13 @@ pub fn openWindow(options: WindowOptions) !*Window {
     const title_z = try gpa.dupeZ(u8, options.title);
     errdefer gpa.free(title_z);
 
+    const url_z = if (options.url) |u| try gpa.dupeZ(u8, u) else null;
+    errdefer if (url_z) |u| gpa.free(u);
+
     var opt_copy = options;
     opt_copy.label = label_z;
     opt_copy.title = title_z;
+    opt_copy.url = url_z;
 
     win_inst.* = .{
         .label = label_z,
@@ -303,6 +336,7 @@ pub fn openWindow(options: WindowOptions) !*Window {
     if (win_inst.pending_close) {
         platform.closeWindow(win_inst.handle);
     }
+    emit("window:created", .{ .label = win_inst.label });
     return win_inst;
 }
 

@@ -180,13 +180,52 @@ pub fn typescript(comptime Commands: type, comptime Events: type) []const u8 {
             \\
             \\type Args<K extends keyof Commands> = Commands[K]["args"];
             \\
+            \\export interface WindowOptions {
+            \\  label: string;
+            \\  url?: string;
+            \\  title?: string;
+            \\  width?: number;
+            \\  height?: number;
+            \\  min_width?: number;
+            \\  min_height?: number;
+            \\  max_width?: number;
+            \\  max_height?: number;
+            \\  resizable?: boolean;
+            \\  decorations?: boolean;
+            \\  fullscreen?: boolean;
+            \\  maximized?: boolean;
+            \\}
+            \\
+            \\export interface WindowHandle {
+            \\  readonly label: string;
+            \\  close(): Promise<void>;
+            \\  show(): Promise<void>;
+            \\  hide(): Promise<void>;
+            \\  focus(): Promise<void>;
+            \\  setTitle(title: string): Promise<void>;
+            \\  setSize(width: number, height: number): Promise<void>;
+            \\  maximize(maximized?: boolean): Promise<void>;
+            \\  fullscreen(fullscreen?: boolean): Promise<void>;
+            \\  emit(event: string, payload?: unknown): Promise<void>;
+            \\}
+            \\
+            \\export interface WindowApi {
+            \\  open(options: WindowOptions): Promise<WindowHandle>;
+            \\  current(): WindowHandle;
+            \\  get(label: string): Promise<WindowHandle | null>;
+            \\  all(): Promise<WindowHandle[]>;
+            \\  emitTo(label: string, event: string, payload?: unknown): Promise<void>;
+            \\}
+            \\
             \\declare global {
             \\  interface Window {
             \\    oriel: {
             \\      invoke(cmd: string, args: unknown): Promise<unknown>;
             \\      listen(event: string, callback: (payload: unknown) => void): () => void;
+            \\      window: WindowApi;
             \\    };
             \\  }
+            \\  const oriel: Window["oriel"];
             \\}
             \\
             \\/** Call a Zig command. Rejects with the Zig error name on failure. */
@@ -201,6 +240,10 @@ pub fn typescript(comptime Commands: type, comptime Events: type) []const u8 {
             \\export function listen<K extends keyof Events>(event: K, callback: (payload: Events[K]) => void): () => void {
             \\  return window.oriel.listen(event, callback as (payload: unknown) => void);
             \\}
+            \\
+            \\/** Built-in window management API. */
+            \\export const window: WindowApi = typeof globalThis !== "undefined" && (globalThis as any).window ? (globalThis as any).window.oriel.window : (undefined as unknown as WindowApi);
+            \\export { window as orielWindow };
             \\
         ;
     }
@@ -358,4 +401,9 @@ test "typescript generation" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "  add: { args: { a: number; label?: string | null; }; result: { sum: number; tags: (string)[]; } };\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  slow_task: { args: null; result: null };\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  note_added: { id: number; };\n  quit: null;\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "export interface WindowOptions") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "export interface WindowHandle") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "export interface WindowApi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "window: WindowApi;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "export const window: WindowApi") != null);
 }

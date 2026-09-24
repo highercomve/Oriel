@@ -138,6 +138,7 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
 test {
     std.testing.refAllDecls(ipc);
     std.testing.refAllDecls(security);
+    std.testing.refAllDecls(@import("core/window_commands.zig"));
     std.testing.refAllDecls(log);
     std.testing.refAllDecls(platform);
     std.testing.refAllDecls(@import("core/ThreadPool.zig"));

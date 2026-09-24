@@ -45,6 +45,20 @@ pub fn closeWindow(handle: WindowHandle) void {
     handle.gtk_window.close();
 }
 
+pub fn postCloseWindow(handle: WindowHandle) void {
+    _ = glib.idleAdd(&idleCloseWindow, handle.gtk_window);
+}
+
+fn idleCloseWindow(data: ?*anyopaque) callconv(.c) c_int {
+    const gtk_win: *gtk.Window = @ptrCast(@alignCast(data));
+    gtk_win.close();
+    return 0;
+}
+
+pub fn focusWindow(handle: WindowHandle) void {
+    handle.gtk_window.present();
+}
+
 pub fn destroyWindow(handle: WindowHandle) void {
     handle.gtk_window.destroy();
 }
@@ -147,7 +161,7 @@ pub fn WindowCreator(
             settings.setAllowFileAccessFromFileUrls(0);
             settings.setAllowUniversalAccessFromFileUrls(0);
 
-            BridgeImpl.setupUserContent(view);
+            BridgeImpl.setupUserContent(view, options.label);
 
             _ = webkit.WebView.signals.decide_policy.connect(view, ?*anyopaque, &onDecidePolicy, null, .{});
             window.setChild(view.as(gtk.Widget));
@@ -158,7 +172,7 @@ pub fn WindowCreator(
             const scheme = @import("scheme.zig").scheme_name;
 
             if (options.url) |u| {
-                if (std.mem.startsWith(u8, u, "http://") or std.mem.startsWith(u8, u, "https://")) {
+                if (std.mem.startsWith(u8, u, "http://") or std.mem.startsWith(u8, u, "https://") or std.mem.startsWith(u8, u, "app://")) {
                     view.loadUri(u);
                 } else {
                     const trimmed = std.mem.trimStart(u8, u, "/");
@@ -191,6 +205,8 @@ pub fn WindowCreator(
 
             win.saveGeometry();
 
+            App.emit("window:closed", .{ .label = win.label });
+
             App.ensureWindowsMutex();
             App.windows_mutex.lock();
             for (App.windows_list.items, 0..) |w, i| {
@@ -202,8 +218,13 @@ pub fn WindowCreator(
             const remaining = App.windows_list.items.len;
             App.windows_mutex.unlock();
 
+            if (App.main_window == window) {
+                App.main_window = null;
+            }
+
             std.heap.smp_allocator.free(win.label);
             std.heap.smp_allocator.free(win.options.title);
+            if (win.options.url) |u| std.heap.smp_allocator.free(u);
             std.heap.smp_allocator.destroy(win);
 
             if (remaining == 0) {
@@ -211,6 +232,8 @@ pub fn WindowCreator(
             }
             return 0;
         }
+
+        var window_open_counter = std.atomic.Value(u32).init(1);
 
         fn onDecidePolicy(
             _: *webkit.WebView,
@@ -228,9 +251,23 @@ pub fn WindowCreator(
             const verdict = security.navigation(config.security, local, std.mem.span(uri), action.isUserGesture() != 0);
             switch (verdict) {
                 .allow => if (decision_type == .new_window_action) {
-                    // No popups: open allowed targets in the main view.
                     decision.ignore();
-                    if (App.getWindow("main")) |mw| {
+                    var obuf: [512]u8 = undefined;
+                    const o = security.origin(&obuf, std.mem.span(uri));
+                    if (config.window_open == .new_window and o != null and local.contains(o.?)) {
+                        const id = window_open_counter.fetchAdd(1, .monotonic);
+                        var label_buf: [32]u8 = undefined;
+                        const label = std.fmt.bufPrint(&label_buf, "win-{d}", .{id}) catch return 1;
+                        const uri_span = std.mem.span(uri);
+                        const label_z = std.heap.smp_allocator.dupeZ(u8, label) catch return 1;
+                        defer std.heap.smp_allocator.free(label_z);
+                        const uri_z = std.heap.smp_allocator.dupeZ(u8, uri_span) catch return 1;
+                        defer std.heap.smp_allocator.free(uri_z);
+                        _ = App.openWindow(.{
+                            .label = label_z,
+                            .url = uri_z,
+                        }) catch |err| log.err("window.open failed: {s}", .{@errorName(err)});
+                    } else if (App.getWindow("main")) |mw| {
                         mw.handle.web_view.loadUri(uri);
                     }
                 } else decision.use(),

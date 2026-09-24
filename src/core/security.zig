@@ -18,6 +18,21 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
+pub const WindowApiPolicy = struct {
+    /// Whether app-local pages may use the window API.
+    enabled: bool = true,
+    /// Whether remote origins may use the window API. Default: false.
+    allow_remote: bool = false,
+    /// Whether windows can load remote URLs (must also be in allowed_origins).
+    /// Default: false (only app-local URLs can be opened in new windows).
+    allow_remote_urls: bool = false,
+    /// Maximum number of concurrently open windows.
+    max_windows: usize = 16,
+    /// Whether a window may modify/close other windows.
+    /// Default: false (a window can only modify/close itself).
+    allow_modify_other_windows: bool = false,
+};
+
 pub const Security = struct {
     /// Content-Security-Policy for `app://` responses; null disables it.
     csp: ?[]const u8 = default_csp,
@@ -28,6 +43,8 @@ pub const Security = struct {
     capabilities: []const Capability = &.{},
     /// What happens to links pointing outside the allowed origins.
     external_links: ExternalLinks = .open_in_browser,
+    /// Policy for the window API (`oriel.window`).
+    window_api: WindowApiPolicy = .{},
 };
 
 pub const Capability = struct {
@@ -36,6 +53,8 @@ pub const Capability = struct {
     commands: ?[]const []const u8 = null,
     /// Windows allowed to use this capability; null = all windows.
     windows: ?[]const []const u8 = null,
+    /// Whether this remote origin may use the window API. Default: false.
+    window_api: bool = false,
 };
 
 pub const ExternalLinks = enum {
@@ -145,6 +164,100 @@ pub fn commandAllowed(sec: Security, local: Local, page_url: []const u8, command
     return commandAllowedForWindow(sec, local, page_url, command, null);
 }
 
+/// Validate a window label. Labels must be 1..64 characters long and contain
+/// only ASCII alphanumeric characters, hyphens ('-'), or underscores ('_').
+pub fn validateLabel(label: []const u8) !void {
+    if (label.len == 0 or label.len > 64) return error.InvalidLabel;
+    for (label) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') {
+            return error.InvalidLabel;
+        }
+    }
+}
+
+/// Validate a target URL for a window.
+/// App-local URLs (relative paths, or URLs matching local origin) are allowed by default.
+/// Remote URLs are only allowed if `sec.window_api.allow_remote_urls` is true and the origin
+/// matches `sec.allowed_origins` or `sec.capabilities`.
+/// Dangerous schemes (javascript:, file:, data:) are always blocked.
+pub fn validateWindowUrl(sec: Security, local: Local, url: ?[]const u8) !void {
+    const u = url orelse return;
+    if (u.len == 0) return;
+
+    // Check for dangerous schemes
+    inline for (.{ "javascript:", "file:", "data:" }) |scheme| {
+        if (std.ascii.startsWithIgnoreCase(u, scheme)) return error.BlockedScheme;
+    }
+
+    // Relative URLs (no scheme/authority) are app-local
+    const colon_idx = std.mem.indexOfScalar(u8, u, ':');
+    const slash_idx = std.mem.indexOfScalar(u8, u, '/');
+    const is_relative = if (colon_idx) |c| (slash_idx != null and slash_idx.? < c) else true;
+    if (is_relative) return;
+
+    var buf: [512]u8 = undefined;
+    const o = origin(&buf, u) orelse return error.InvalidUrl;
+    if (local.contains(o)) return;
+
+    // Remote URL
+    if (!sec.window_api.allow_remote_urls) return error.RemoteUrlsNotAllowed;
+
+    for (sec.allowed_origins) |p| {
+        if (originMatches(p, o)) return;
+    }
+    for (sec.capabilities) |c| {
+        if (originMatches(c.origin, o)) return;
+    }
+
+    return error.DisallowedOrigin;
+}
+
+/// Validate whether a caller window is permitted to modify/close a target window.
+/// A window can always modify itself. Modifying another window requires
+/// `sec.window_api.allow_modify_other_windows`.
+pub fn validateWindowModification(sec: Security, caller_label: ?[]const u8, target_label: []const u8) !void {
+    if (sec.window_api.allow_modify_other_windows) return;
+    if (caller_label) |cl| {
+        if (std.mem.eql(u8, cl, target_label)) return;
+    }
+    return error.PermissionDenied;
+}
+
+/// Validate whether opening a new window would exceed the maximum windows cap.
+pub fn validateWindowCount(sec: Security, current_count: usize) !void {
+    if (current_count >= sec.window_api.max_windows) {
+        return error.MaxWindowsExceeded;
+    }
+}
+
+/// Whether the window API is permitted for a page at `page_url`.
+pub fn isWindowApiAllowed(sec: Security, local: Local, page_url: []const u8, window_label: ?[]const u8) bool {
+    var buf: [512]u8 = undefined;
+    const o = origin(&buf, page_url) orelse return false;
+    if (local.contains(o)) {
+        return sec.window_api.enabled;
+    }
+    // Remote origin
+    if (sec.window_api.allow_remote) return true;
+    for (sec.capabilities) |c| {
+        if (!c.window_api) continue;
+        if (!originMatches(c.origin, o)) continue;
+        if (c.windows) |allowed_windows| {
+            const w = window_label orelse return false;
+            var win_match = false;
+            for (allowed_windows) |aw| {
+                if (std.mem.eql(u8, aw, w)) {
+                    win_match = true;
+                    break;
+                }
+            }
+            if (!win_match) continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 fn isExternalScheme(url: []const u8) bool {
     inline for (.{ "http://", "https://", "mailto:", "tel:" }) |s| {
         if (std.ascii.startsWithIgnoreCase(url, s)) return true;
@@ -250,4 +363,116 @@ test bridgePatterns {
     try std.testing.expectEqualStrings("app://app/*", patterns[0]);
     try std.testing.expectEqualStrings("http://localhost/*", patterns[1]);
     try std.testing.expectEqualStrings("https://partner.example/*", patterns[2]);
+}
+
+test validateLabel {
+    try validateLabel("main");
+    try validateLabel("test-sec");
+    try validateLabel("smoke_child_1");
+    try validateLabel("a");
+    try validateLabel("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"); // 64 chars
+
+    try std.testing.expectError(error.InvalidLabel, validateLabel(""));
+    try std.testing.expectError(error.InvalidLabel, validateLabel("has space"));
+    try std.testing.expectError(error.InvalidLabel, validateLabel("bad/slash"));
+    try std.testing.expectError(error.InvalidLabel, validateLabel("bad\\backslash"));
+    try std.testing.expectError(error.InvalidLabel, validateLabel("bad:colon"));
+    try std.testing.expectError(error.InvalidLabel, validateLabel("bad.dot"));
+    try std.testing.expectError(error.InvalidLabel, validateLabel("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0")); // 65 chars
+}
+
+test validateWindowUrl {
+    const sec: Security = .{
+        .allowed_origins = &.{"https://docs.example.com"},
+        .capabilities = &.{.{ .origin = "https://partner.example" }},
+    };
+    const local: Local = .{ .dev_origin = "http://localhost:5173" };
+
+    // null / empty / relative paths
+    try validateWindowUrl(sec, local, null);
+    try validateWindowUrl(sec, local, "");
+    try validateWindowUrl(sec, local, "/settings");
+    try validateWindowUrl(sec, local, "sub/page.html");
+
+    // Blocked schemes
+    try std.testing.expectError(error.BlockedScheme, validateWindowUrl(sec, local, "javascript:alert(1)"));
+    try std.testing.expectError(error.BlockedScheme, validateWindowUrl(sec, local, "file:///etc/passwd"));
+    try std.testing.expectError(error.BlockedScheme, validateWindowUrl(sec, local, "data:text/html,bad"));
+
+    // App-local absolute URLs
+    try validateWindowUrl(sec, local, "app://app/settings");
+    try validateWindowUrl(sec, local, "http://localhost:5173/page");
+
+    // Remote URLs with allow_remote_urls = false (default)
+    try std.testing.expectError(error.RemoteUrlsNotAllowed, validateWindowUrl(sec, local, "https://docs.example.com/guide"));
+    try std.testing.expectError(error.RemoteUrlsNotAllowed, validateWindowUrl(sec, local, "https://evil.example/"));
+
+    // Remote URLs with allow_remote_urls = true
+    var sec_remote = sec;
+    sec_remote.window_api.allow_remote_urls = true;
+    try validateWindowUrl(sec_remote, local, "https://docs.example.com/guide");
+    try validateWindowUrl(sec_remote, local, "https://partner.example/");
+    try std.testing.expectError(error.DisallowedOrigin, validateWindowUrl(sec_remote, local, "https://evil.example/"));
+}
+
+test validateWindowModification {
+    const sec_default: Security = .{};
+    // Window can modify itself
+    try validateWindowModification(sec_default, "main", "main");
+    try validateWindowModification(sec_default, "child", "child");
+
+    // Window cannot modify other windows by default
+    try std.testing.expectError(error.PermissionDenied, validateWindowModification(sec_default, "child", "main"));
+    try std.testing.expectError(error.PermissionDenied, validateWindowModification(sec_default, "main", "child"));
+    try std.testing.expectError(error.PermissionDenied, validateWindowModification(sec_default, null, "child"));
+
+    // When allow_modify_other_windows = true
+    var sec_allowed = sec_default;
+    sec_allowed.window_api.allow_modify_other_windows = true;
+    try validateWindowModification(sec_allowed, "main", "child");
+    try validateWindowModification(sec_allowed, "child", "main");
+    try validateWindowModification(sec_allowed, null, "child");
+}
+
+test validateWindowCount {
+    var sec: Security = .{};
+    sec.window_api.max_windows = 3;
+
+    try validateWindowCount(sec, 0);
+    try validateWindowCount(sec, 1);
+    try validateWindowCount(sec, 2);
+    try std.testing.expectError(error.MaxWindowsExceeded, validateWindowCount(sec, 3));
+    try std.testing.expectError(error.MaxWindowsExceeded, validateWindowCount(sec, 4));
+}
+
+test isWindowApiAllowed {
+    const sec: Security = .{
+        .capabilities = &.{
+            .{ .origin = "https://partner.example", .window_api = true },
+            .{ .origin = "https://scoped.example", .window_api = true, .windows = &.{"main"} },
+            .{ .origin = "https://no-win.example", .window_api = false },
+        },
+    };
+    const local: Local = .{ .dev_origin = "http://localhost:5173" };
+
+    // Local origins allowed by default
+    try std.testing.expect(isWindowApiAllowed(sec, local, "app://app/page", null));
+    try std.testing.expect(isWindowApiAllowed(sec, local, "http://localhost:5173/page", null));
+
+    // When window_api.enabled = false
+    var sec_disabled = sec;
+    sec_disabled.window_api.enabled = false;
+    try std.testing.expect(!isWindowApiAllowed(sec_disabled, local, "app://app/page", null));
+
+    // Remote origins off by default unless capability grants window_api
+    try std.testing.expect(!isWindowApiAllowed(sec, local, "https://no-win.example/page", null));
+    try std.testing.expect(!isWindowApiAllowed(sec, local, "https://unknown.example/page", null));
+    try std.testing.expect(isWindowApiAllowed(sec, local, "https://partner.example/page", null));
+    try std.testing.expect(isWindowApiAllowed(sec, local, "https://scoped.example/page", "main"));
+    try std.testing.expect(!isWindowApiAllowed(sec, local, "https://scoped.example/page", "child"));
+
+    // Global allow_remote
+    var sec_remote = sec;
+    sec_remote.window_api.allow_remote = true;
+    try std.testing.expect(isWindowApiAllowed(sec_remote, local, "https://unknown.example/page", null));
 }
