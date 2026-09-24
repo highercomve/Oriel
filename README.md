@@ -108,12 +108,12 @@ Oriel supports cross-compiling and packaging for Windows (`x86_64-windows`) dire
 | **Settings Store (`store`)** | ❌ Not Implemented | Linux GLib/GKeyFile; disabled by default on Windows |
 | **File Dialogs (`dialog`)** | ❌ Not Implemented | GTK4 `GtkFileDialog` only |
 | **Notifications (`notification`)** | ❌ Not Implemented | GIO `GNotification` only |
-| **File Watching (`fs_watch`)** | ❌ Not Implemented | Linux `inotify` only |
+| **File Watching (`fs_watch`)** | ✅ Implemented | Win32 `ReadDirectoryChangesW` (overlapped I/O, non-blocking poll); runtime untested on Windows |
 | **Media Server (`media_server`)** | ❌ Not Implemented | Linux `openat2` only |
 | **Updater (`updater`)** | ❌ Not Implemented | Linux `inotify` / POSIX restart only |
-| **Global Shortcuts (`global_shortcut`)** | ❌ Not Implemented | X11 / Wayland portals only |
-| **Input Injection (`input`)** | ❌ Not Implemented | XTest / Wayland virtual keyboard only |
-| **Clipboard (`clipboard`)** | ❌ Not Implemented | GdkClipboard / Wayland data-control only |
+| **Global Shortcuts (`global_shortcut`)** | ✅ Implemented | Win32 `RegisterHotKey` / `WM_HOTKEY` routed via hidden host window; runtime untested on Windows |
+| **Input Injection (`input`)** | ✅ Implemented | Win32 `SendInput` (UTF-16 Unicode down/up pairs, VK combo mapping); runtime untested on Windows |
+| **Clipboard (`clipboard`)** | ✅ Implemented | Win32 `OpenClipboard` (CF_UNICODETEXT, CF_DIB, registered PNG via `zigimg`); runtime untested on Windows |
 
 *Note*: Modules not implemented for Windows default to disabled when targeting Windows. Explicitly enabling an unimplemented module on a Windows build will halt immediately with an informative build error (`fatal(...)`).
 
@@ -394,6 +394,7 @@ try oriel.global_shortcut.register(gpa, .{
   fires while an XWayland window has focus); without the portal `register` returns
   `error.PortalUnavailable`.
 - **X11:** Uses `XGrabKey` with a GLib main loop watch on the X connection file descriptor.
+- **Windows:** Uses Win32 `RegisterHotKey` / `WM_HOTKEY` routed through the hidden host window. Unregisters on `unregister` and `deinit`. Same trigger string syntax ("CTRL+ALT+G", etc.). Marshalling via `Shell.runOnMainThread`. Runtime untested on Windows.
 
 ### Input injection (`oriel.input`)
 
@@ -408,6 +409,7 @@ try oriel.input.paste();
 
 - **Wayland:** Uses `zwp_virtual_keyboard_v1` with memfd XKB keymap upload.
 - **X11:** Uses XTest extension (`XTestFakeKeyEvent`).
+- **Windows:** Uses Win32 `SendInput` (UTF-16 Unicode pairs for text, virtual key combos for shortcuts). Extended keys set `KEYEVENTF_EXTENDEDKEY`. Runtime untested on Windows.
 
 ### Clipboard (`oriel.clipboard`)
 
@@ -424,10 +426,11 @@ try oriel.clipboard.writeText("New content");      // any thread; writeImage(png
 oriel.clipboard.readTextAsync(onText, null);        // readImageAsync
 ```
 
-- `readText`/`readImage` on the main thread return `error.WouldBlockMainThread`.
+- `readText`/`readImage` on the main thread return `error.WouldBlockMainThread` on Linux.
 - **Wayland:** background reads (no window focus needed) via `ext_data_control_v1` on a
   private Wayland connection. Writes go through `GdkClipboard`.
 - **X11 / no data-control:** `GdkClipboard`; worker reads are handed to the main loop.
+- **Windows:** Uses Win32 `OpenClipboard` with retry loop. Text uses `CF_UNICODETEXT`. Images use registered `PNG` format (with IEND trimming) and standard `CF_DIB` (bottom-up DIB via `zigimg`). Worker threads marshal calls to the main thread via `Shell.runOnMainThread`. Async reads use `Shell.dispatchWithCleanup`. Runtime untested on Windows.
 - When this process owns the selection (it offers a per-process marker MIME type), reads
   return the data we last wrote without a round-trip.
 
@@ -962,14 +965,14 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Dev server + hot reload / production build | ✅ `zig build dev` (Vite + Zig file watcher & reload) / `zig build` (defaults to `ReleaseSafe`) |
 | Dialogs (open/save file) | ✅ `GtkFileDialog` |
 | System notifications | ✅ `GNotification` |
-| Clipboard | ◐ read/write via `GdkClipboard`; background reads on Wayland via ext-data-control; background writes on Wayland not yet |
-| Global shortcuts | ✅ `XGrabKey` (X11) + `GlobalShortcuts` portal (Wayland) |
-| Input injection | ✅ `XTest` (X11) + virtual keyboard protocol (Wayland) |
+| Clipboard | ✅ Linux (GdkClipboard + Wayland ext-data-control) + Windows (CF_UNICODETEXT / CF_DIB / PNG); runtime untested on Windows |
+| Global shortcuts | ✅ Linux (X11 XGrabKey + Wayland portal) + Windows (`RegisterHotKey`); runtime untested on Windows |
+| Input injection | ✅ Linux (X11 XTest + Wayland virtual-keyboard) + Windows (`SendInput`); runtime untested on Windows |
 | Asset protocol for local files (streaming, ranges) | ✅ `media_server`: 127.0.0.1 server with ranges for `<video>`; `app://app/media/` for fetch |
 | Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
 | Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `zig build package`; signing not yet implemented |
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
-| Windows | ◐ Win32 + WebView2 shell, tray, sql, NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
+| Windows | ◐ Win32 + WebView2 shell, tray, sql, global_shortcut, input, clipboard, fs_watch, NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
 | macOS, mobile | ❌ |
 
 ## Notes

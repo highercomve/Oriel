@@ -57,14 +57,10 @@ const Features = struct {
         const unimplemented_on_windows = comptime [_][]const u8{
             "updater",
             "media_server",
-            "fs_watch",
             "dialog",
             "notification",
             "store",
             "menu",
-            "global_shortcut",
-            "input",
-            "clipboard",
             "llama",
             "whisper",
         };
@@ -337,7 +333,7 @@ fn addOrielModule(
         oriel.linkSystemLibrary("shlwapi", .{});
     }
 
-    if (features.tray) {
+    if (features.tray or (target.result.os.tag == .windows and features.clipboard)) {
         const zigimg = b.dependency("zigimg", .{ .target = target, .optimize = optimize });
         oriel.addImport("zigimg", zigimg.module("zigimg"));
     }
