@@ -41,6 +41,16 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
             // Strip query string and fragment if any
             const clean_path = if (std.mem.indexOfAny(u8, path, "?#")) |idx| path[0..idx] else path;
 
+            // Route /media/... requests to media_scheme
+            if (comptime @import("../../oriel.zig").options.media_server) {
+                if (std.mem.startsWith(u8, clean_path, "media/")) {
+                    const media_scheme = @import("../../modules/media_scheme.zig");
+                    if (media_scheme.handle(env, args, req, clean_path["media/".len..])) {
+                        return;
+                    }
+                }
+            }
+
             const asset = App.findAsset(config.assets, clean_path, config.spa_fallback);
 
             if (asset) |a| {

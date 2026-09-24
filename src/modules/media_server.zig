@@ -26,8 +26,8 @@ pub const Options = struct {
 
 pub const Handler = struct {
     options: Options,
-    /// `O_PATH` fd of `options.root_dir`; files are opened beneath it.
-    root_fd: std.os.linux.fd_t,
+    /// Root directory handle; files are opened beneath it.
+    root: open.Root,
     io: std.Io,
 
     pub fn ping(_: *Handler, _: *httpz.Request, res: *httpz.Response) !void {
@@ -73,7 +73,7 @@ pub const Handler = struct {
             },
         };
 
-        const opened = open.openInRoot(self.root_fd, sanitized, self.options.symlink_policy) catch |err| {
+        const opened = open.openInRoot(self.root, sanitized, self.options.symlink_policy) catch |err| {
             res.status = switch (err) {
                 error.Forbidden => 403,
                 error.NotFound, error.NotAFile => 404,
@@ -82,7 +82,7 @@ pub const Handler = struct {
             res.body = @errorName(err);
             return;
         };
-        var file: std.Io.File = .{ .handle = opened.fd, .flags = .{ .nonblocking = false } };
+        var file: std.Io.File = opened.toFile();
         defer file.close(self.io);
         const file_size = opened.size;
 
@@ -157,9 +157,9 @@ pub const Server = struct {
         self.io = io;
         self.port = options.port;
 
-        const root_fd = try open.openRoot(options.root_dir);
-        errdefer _ = std.os.linux.close(root_fd);
-        self.handler = .{ .options = options, .root_fd = root_fd, .io = io };
+        const root = try open.openRoot(options.root_dir);
+        errdefer open.closeRoot(root);
+        self.handler = .{ .options = options, .root = root, .io = io };
 
         self.inner = try httpz.Server(*Handler).init(io, gpa, .{ .address = .localhost(self.port) }, &self.handler);
         errdefer self.inner.deinit();
@@ -177,7 +177,7 @@ pub const Server = struct {
         self.inner.stop();
         self.thread.join();
         self.inner.deinit();
-        _ = std.os.linux.close(self.handler.root_fd); // O_PATH fd: nothing to flush
+        open.closeRoot(self.handler.root);
     }
 };
 
