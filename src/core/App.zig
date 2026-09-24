@@ -218,15 +218,21 @@ pub var gtk_app: if (@hasDecl(platform, "GtkApp") and platform.GtkApp != void) ?
 pub var main_window: if (@hasDecl(platform, "GtkWindow") and platform.GtkWindow != void) ?*platform.GtkWindow else ?*anyopaque = null;
 
 pub var current_app_id: ?[:0]const u8 = null;
+pub var current_security: security.Security = .{};
 
 pub var windows_list: std.ArrayList(*Window) = .empty;
 pub var windows_mutex: platform.Mutex = undefined;
-var windows_mutex_initialized: bool = false;
+var mutex_init_state: std.atomic.Value(u8) = .init(0); // 0 = uninit, 1 = initializing, 2 = initialized
 
 pub fn ensureWindowsMutex() void {
-    if (!windows_mutex_initialized) {
+    if (mutex_init_state.load(.acquire) == 2) return;
+    if (mutex_init_state.cmpxchgStrong(0, 1, .acq_rel, .acquire) == null) {
         windows_mutex = platform.Mutex.init();
-        windows_mutex_initialized = true;
+        mutex_init_state.store(2, .release);
+    } else {
+        while (mutex_init_state.load(.acquire) != 2) {
+            std.atomic.spinLoopHint();
+        }
     }
 }
 
@@ -266,9 +272,6 @@ pub fn emitTo(label: []const u8, name: []const u8, payload: anytype) !void {
     try emitJson(win.handle, name, payload);
 }
 
-pub fn getWindows() []*Window {
-    return windows_list.items;
-}
 
 pub fn getWindowCount() usize {
     ensureWindowsMutex();
@@ -279,9 +282,18 @@ pub fn getWindowCount() usize {
 
 pub fn openWindow(options: WindowOptions) !*Window {
     if (getWindow(options.label)) |existing| {
+        if (std.mem.eql(u8, options.label, "main")) {
+            if (comptime @hasDecl(platform, "GtkWindow") and platform.GtkWindow != void) {
+                main_window = existing.handle.gtk_window;
+            } else if (comptime platform.ShellMod != void and @hasDecl(platform.ShellMod, "main_hwnd")) {
+                platform.ShellMod.main_hwnd = existing.handle.hwnd;
+            }
+        }
         existing.show();
         return existing;
     }
+
+    try security.validateWindowCount(current_security, getWindowCount());
 
     const gpa = std.heap.smp_allocator;
     const win_inst = try gpa.create(Window);
@@ -310,15 +322,29 @@ pub fn openWindow(options: WindowOptions) !*Window {
         .pending_close = false,
     };
 
+    {
+        ensureWindowsMutex();
+        windows_mutex.lock();
+        defer windows_mutex.unlock();
+        try windows_list.ensureUnusedCapacity(gpa, 1);
+    }
+
     const handle = try platform.createWindow(opt_copy, win_inst);
     errdefer platform.destroyWindow(handle);
     win_inst.handle = handle;
 
     {
-        ensureWindowsMutex();
         windows_mutex.lock();
         defer windows_mutex.unlock();
-        try windows_list.append(gpa, win_inst);
+        windows_list.appendAssumeCapacity(win_inst);
+    }
+
+    if (std.mem.eql(u8, options.label, "main")) {
+        if (comptime @hasDecl(platform, "GtkWindow") and platform.GtkWindow != void) {
+            main_window = win_inst.handle.gtk_window;
+        } else if (comptime platform.ShellMod != void and @hasDecl(platform.ShellMod, "main_hwnd")) {
+            platform.ShellMod.main_hwnd = win_inst.handle.hwnd;
+        }
     }
 
     win_inst.ready = true;
@@ -443,9 +469,20 @@ fn lookupAsset(assets: []const Asset, path: []const u8) ?Asset {
 }
 
 pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
+    ensureWindowsMutex();
+    current_security = config.security;
+
     const app_log = @import("log.zig");
     app_log.init(config.id);
     defer app_log.deinit();
+
+    defer {
+        ensureWindowsMutex();
+        windows_mutex.lock();
+        windows_list.deinit(std.heap.smp_allocator);
+        windows_list = .empty;
+        windows_mutex.unlock();
+    }
 
     const pool = ThreadPool.init(std.heap.smp_allocator, io, null) catch |err| {
         log.err("failed to initialize worker thread pool: {s}", .{@errorName(err)});

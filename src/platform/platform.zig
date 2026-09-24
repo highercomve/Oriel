@@ -104,6 +104,7 @@ pub const setMenu = impl.setMenu;
 // Platform-specific declarations (e.g. for Linux backward compatibility)
 pub const GtkApp = if (@hasDecl(impl, "GtkApp")) impl.GtkApp else void;
 pub const GtkWindow = if (@hasDecl(impl, "GtkWindow")) impl.GtkWindow else void;
+pub const ShellMod = if (@hasDecl(impl, "ShellMod")) impl.ShellMod else void;
 
 test {
     std.testing.refAllDecls(@This());
