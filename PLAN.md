@@ -409,8 +409,42 @@ Tauri-`WebviewWindow`-style API, on Linux and Windows:
   SPA-fallback caveat: a last path segment with a dot (`/u/john.doe`) is
   treated as a file, not a route.
 
+## Milestone 7 — macOS (built and tested on a Mac)
+
+Worked on from a Mac session: clone with `gh repo clone highercomve/Oriel`,
+work on a branch (`macos/<topic>`), push the branch, never `main`.
+Everything is built and tested on the Mac itself (cross-compiling GUI code
+from Linux needs Apple's SDK frameworks).
+
+0. **Environment check** (report before coding): macOS version, arch
+   (arm64/x86_64), Xcode command-line tools (`xcode-select -p`), Zig 0.16.0
+   (install it next to any other Zig; don't replace a system one),
+   `zig build test` on the unchanged repo.
+1. **Shell** `src/platform/macos/`: NSApplication + NSWindow + WKWebView via
+   the Objective-C runtime (zig-objc, as Ghostty does; add it as a
+   dependency). Behind the same platform interface as linux/windows:
+   window ops, main-thread dispatch (`dispatch_async` on the main queue),
+   assets through a `WKURLSchemeHandler` (`app://`), IPC through a
+   `WKScriptMessageHandler`, the bridge user script, navigation policy
+   (`WKNavigationDelegate`), CSP, dev mode (Vite URL). Goal: examples/react
+   runs, and examples/smoke `--auto-quit` passes its core checks.
+2. **Modules**, each with a `macos.zig` backend: tray (NSStatusItem +
+   NSMenu), menu (main menu bar), dialog (NSOpenPanel/NSSavePanel),
+   notification (UNUserNotificationCenter; needs a bundle), store
+   (~/Library/Application Support), clipboard (NSPasteboard), fs_watch
+   (FSEvents or kqueue), global_shortcut (Carbon RegisterEventHotKey),
+   input (CGEvent; needs Accessibility permission), updater (replace the
+   .app bundle), media_server, audio_capture (CoreAudio; system audio needs
+   a virtual device such as BlackHole). ggml: Metal backend for
+   whisper/llama.
+3. **Packaging:** `.app` bundle (Info.plist, icon .icns) and `.dmg`;
+   signing/notarization documented as optional (needs an Apple developer
+   account).
+4. **Tests:** unit tests run on macOS; smoke checks where they don't need
+   permissions; the memory-safety review (rule 9) covers Objective-C
+   refcounts (retain/release, autorelease pools) like COM and GObject.
+
 ## Later
 
-- macOS shell (AppKit + WKWebView via zig-objc).
 - Tauri's isolation pattern.
 - CI: run `zig build test` and the headless smoke checks on every push.
