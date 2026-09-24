@@ -47,14 +47,15 @@ pub fn main(init: std.process.Init) !u8 {
     global_environ_map = init.environ_map;
     const io = init.io;
     const gpa = init.gpa;
-    const argv = init.minimal.args.vector;
+    // Portable argv (WTF-16 on Windows, so not `args.vector`).
+    const argv = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (argv.len < 2) {
         printUsage();
         return 1;
     }
 
-    const command = std.mem.span(argv[1]);
+    const command = argv[1];
     const args = argv[2..];
 
     if (std.mem.eql(u8, command, "generate-desktop")) {
@@ -97,7 +98,7 @@ fn printUsage() void {
 // generate-desktop
 // ---------------------------------------------------------------------------
 
-fn generateDesktopCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !u8 {
+fn generateDesktopCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
     var out_path: ?[]const u8 = null;
     var app_id: ?[]const u8 = null;
     var name: ?[]const u8 = null;
@@ -111,37 +112,37 @@ fn generateDesktopCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        const arg = std.mem.span(args[i]);
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--out") and i + 1 < args.len) {
             i += 1;
-            out_path = std.mem.span(args[i]);
+            out_path = args[i];
         } else if (std.mem.eql(u8, arg, "--id") and i + 1 < args.len) {
             i += 1;
-            app_id = std.mem.span(args[i]);
+            app_id = args[i];
         } else if (std.mem.eql(u8, arg, "--name") and i + 1 < args.len) {
             i += 1;
-            name = std.mem.span(args[i]);
+            name = args[i];
         } else if (std.mem.eql(u8, arg, "--exec") and i + 1 < args.len) {
             i += 1;
-            exec = std.mem.span(args[i]);
+            exec = args[i];
         } else if (std.mem.eql(u8, arg, "--icon") and i + 1 < args.len) {
             i += 1;
-            icon = std.mem.span(args[i]);
+            icon = args[i];
         } else if (std.mem.eql(u8, arg, "--comment") and i + 1 < args.len) {
             i += 1;
-            comment = std.mem.span(args[i]);
+            comment = args[i];
         } else if (std.mem.eql(u8, arg, "--categories") and i + 1 < args.len) {
             i += 1;
-            categories = std.mem.span(args[i]);
+            categories = args[i];
         } else if (std.mem.eql(u8, arg, "--terminal") and i + 1 < args.len) {
             i += 1;
-            terminal = std.mem.eql(u8, std.mem.span(args[i]), "true");
+            terminal = std.mem.eql(u8, args[i], "true");
         } else if (std.mem.eql(u8, arg, "--startup-notify") and i + 1 < args.len) {
             i += 1;
-            startup_notify = std.mem.eql(u8, std.mem.span(args[i]), "true");
+            startup_notify = std.mem.eql(u8, args[i], "true");
         } else if (std.mem.eql(u8, arg, "--startup-wm-class") and i + 1 < args.len) {
             i += 1;
-            startup_wm_class = std.mem.span(args[i]);
+            startup_wm_class = args[i];
         }
     }
 
@@ -201,23 +202,23 @@ fn generateDesktopCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u
 // resize-icons
 // ---------------------------------------------------------------------------
 
-fn resizeIconsCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !u8 {
+fn resizeIconsCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
     var input_path: ?[]const u8 = null;
     var out_dir: ?[]const u8 = null;
     var brand_dir: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        const arg = std.mem.span(args[i]);
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--input") and i + 1 < args.len) {
             i += 1;
-            input_path = std.mem.span(args[i]);
+            input_path = args[i];
         } else if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
             i += 1;
-            out_dir = std.mem.span(args[i]);
+            out_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--brand-dir") and i + 1 < args.len) {
             i += 1;
-            brand_dir = std.mem.span(args[i]);
+            brand_dir = args[i];
         }
     }
 
@@ -403,7 +404,7 @@ fn findNfpm(gpa: std.mem.Allocator, io: Io) ![]const u8 {
 
 const PackagerType = enum { deb, rpm };
 
-fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8, packager: PackagerType) !u8 {
+fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8, packager: PackagerType) !u8 {
     var out_dir: ?[]const u8 = null;
     var filename: ?[]const u8 = null;
     var name: ?[]const u8 = null;
@@ -426,55 +427,55 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8, p
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        const arg = std.mem.span(args[i]);
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
             i += 1;
-            out_dir = std.mem.span(args[i]);
+            out_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--filename") and i + 1 < args.len) {
             i += 1;
-            filename = std.mem.span(args[i]);
+            filename = args[i];
         } else if (std.mem.eql(u8, arg, "--name") and i + 1 < args.len) {
             i += 1;
-            name = std.mem.span(args[i]);
+            name = args[i];
         } else if (std.mem.eql(u8, arg, "--version") and i + 1 < args.len) {
             i += 1;
-            version = std.mem.span(args[i]);
+            version = args[i];
         } else if (std.mem.eql(u8, arg, "--arch") and i + 1 < args.len) {
             i += 1;
-            arch = std.mem.span(args[i]);
+            arch = args[i];
         } else if (std.mem.eql(u8, arg, "--maintainer") and i + 1 < args.len) {
             i += 1;
-            maintainer = std.mem.span(args[i]);
+            maintainer = args[i];
         } else if (std.mem.eql(u8, arg, "--description") and i + 1 < args.len) {
             i += 1;
-            description = std.mem.span(args[i]);
+            description = args[i];
         } else if (std.mem.eql(u8, arg, "--homepage") and i + 1 < args.len) {
             i += 1;
-            homepage = std.mem.span(args[i]);
+            homepage = args[i];
         } else if (std.mem.eql(u8, arg, "--license") and i + 1 < args.len) {
             i += 1;
-            license = std.mem.span(args[i]);
+            license = args[i];
         } else if (std.mem.eql(u8, arg, "--bin") and i + 1 < args.len) {
             i += 1;
-            binary_src = std.mem.span(args[i]);
+            binary_src = args[i];
         } else if (std.mem.eql(u8, arg, "--binary-name") and i + 1 < args.len) {
             i += 1;
-            binary_name = std.mem.span(args[i]);
+            binary_name = args[i];
         } else if (std.mem.eql(u8, arg, "--desktop") and i + 1 < args.len) {
             i += 1;
-            desktop_src = std.mem.span(args[i]);
+            desktop_src = args[i];
         } else if (std.mem.eql(u8, arg, "--icons-dir") and i + 1 < args.len) {
             i += 1;
-            icons_dir = std.mem.span(args[i]);
+            icons_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--app-id") and i + 1 < args.len) {
             i += 1;
-            app_id = std.mem.span(args[i]);
+            app_id = args[i];
         } else if (std.mem.eql(u8, arg, "--deb-dep") and i + 1 < args.len) {
             i += 1;
-            try deb_deps.append(gpa, std.mem.span(args[i]));
+            try deb_deps.append(gpa, args[i]);
         } else if (std.mem.eql(u8, arg, "--rpm-dep") and i + 1 < args.len) {
             i += 1;
-            try rpm_deps.append(gpa, std.mem.span(args[i]));
+            try rpm_deps.append(gpa, args[i]);
         }
     }
 
@@ -694,7 +695,7 @@ fn resolveAppImageRuntime(
     return cached_rt;
 }
 
-fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !u8 {
+fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
     var out_dir: ?[]const u8 = null;
     var filename: ?[]const u8 = null;
     var bin_path: ?[]const u8 = null;
@@ -709,42 +710,42 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        const arg = std.mem.span(args[i]);
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
             i += 1;
-            out_dir = std.mem.span(args[i]);
+            out_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--filename") and i + 1 < args.len) {
             i += 1;
-            filename = std.mem.span(args[i]);
+            filename = args[i];
         } else if (std.mem.eql(u8, arg, "--bin") and i + 1 < args.len) {
             i += 1;
-            bin_path = std.mem.span(args[i]);
+            bin_path = args[i];
         } else if (std.mem.eql(u8, arg, "--desktop") and i + 1 < args.len) {
             i += 1;
-            desktop_path = std.mem.span(args[i]);
+            desktop_path = args[i];
         } else if (std.mem.eql(u8, arg, "--icons-dir") and i + 1 < args.len) {
             i += 1;
-            icons_dir = std.mem.span(args[i]);
+            icons_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--app-id") and i + 1 < args.len) {
             i += 1;
-            app_id = std.mem.span(args[i]);
+            app_id = args[i];
         } else if (std.mem.eql(u8, arg, "--exe-name") and i + 1 < args.len) {
             i += 1;
-            exe_name = std.mem.span(args[i]);
+            exe_name = args[i];
         } else if (std.mem.eql(u8, arg, "--version") and i + 1 < args.len) {
             i += 1;
-            version = std.mem.span(args[i]);
+            version = args[i];
         } else if (std.mem.eql(u8, arg, "--arch") and i + 1 < args.len) {
             i += 1;
-            arch = std.mem.span(args[i]);
+            arch = args[i];
         } else if (std.mem.eql(u8, arg, "--cache-dir") and i + 1 < args.len) {
             i += 1;
-            cache_dir = std.mem.span(args[i]);
+            cache_dir = args[i];
         } else if (std.mem.startsWith(u8, arg, "--runtime-override=")) {
             runtime_override = arg["--runtime-override=".len..];
         } else if (std.mem.eql(u8, arg, "--runtime-override") and i + 1 < args.len) {
             i += 1;
-            runtime_override = std.mem.span(args[i]);
+            runtime_override = args[i];
         }
     }
 
@@ -935,7 +936,7 @@ pub fn findMakensis(gpa: std.mem.Allocator, io: Io) ![]const u8 {
     return error.MakensisNotFound;
 }
 
-fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !u8 {
+fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
     var out_dir: ?[]const u8 = null;
     var filename: ?[]const u8 = null;
     var bin_path: ?[]const u8 = null;
@@ -951,43 +952,43 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        const arg = std.mem.span(args[i]);
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
             i += 1;
-            out_dir = std.mem.span(args[i]);
+            out_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--filename") and i + 1 < args.len) {
             i += 1;
-            filename = std.mem.span(args[i]);
+            filename = args[i];
         } else if (std.mem.eql(u8, arg, "--bin") and i + 1 < args.len) {
             i += 1;
-            bin_path = std.mem.span(args[i]);
+            bin_path = args[i];
         } else if (std.mem.eql(u8, arg, "--icons-dir") and i + 1 < args.len) {
             i += 1;
-            icons_dir = std.mem.span(args[i]);
+            icons_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--icon") and i + 1 < args.len) {
             i += 1;
-            icon_path_arg = std.mem.span(args[i]);
+            icon_path_arg = args[i];
         } else if (std.mem.eql(u8, arg, "--webview2-loader") and i + 1 < args.len) {
             i += 1;
-            webview2_loader = std.mem.span(args[i]);
+            webview2_loader = args[i];
         } else if (std.mem.eql(u8, arg, "--app-id") and i + 1 < args.len) {
             i += 1;
-            app_id = std.mem.span(args[i]);
+            app_id = args[i];
         } else if (std.mem.eql(u8, arg, "--name") and i + 1 < args.len) {
             i += 1;
-            name = std.mem.span(args[i]);
+            name = args[i];
         } else if (std.mem.eql(u8, arg, "--exe-name") and i + 1 < args.len) {
             i += 1;
-            exe_name = std.mem.span(args[i]);
+            exe_name = args[i];
         } else if (std.mem.eql(u8, arg, "--version") and i + 1 < args.len) {
             i += 1;
-            version = std.mem.span(args[i]);
+            version = args[i];
         } else if (std.mem.eql(u8, arg, "--publisher") and i + 1 < args.len) {
             i += 1;
-            publisher = std.mem.span(args[i]);
+            publisher = args[i];
         } else if (std.mem.eql(u8, arg, "--homepage") and i + 1 < args.len) {
             i += 1;
-            homepage = std.mem.span(args[i]);
+            homepage = args[i];
         }
     }
 
@@ -1121,23 +1122,23 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !
 // install-desktop-entry
 // ---------------------------------------------------------------------------
 
-fn installDesktopEntryCmd(gpa: std.mem.Allocator, io: Io, args: []const [*:0]const u8) !u8 {
+fn installDesktopEntryCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
     var desktop_src: ?[]const u8 = null;
     var icons_dir: ?[]const u8 = null;
     var app_id: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        const arg = std.mem.span(args[i]);
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--desktop") and i + 1 < args.len) {
             i += 1;
-            desktop_src = std.mem.span(args[i]);
+            desktop_src = args[i];
         } else if (std.mem.eql(u8, arg, "--icons-dir") and i + 1 < args.len) {
             i += 1;
-            icons_dir = std.mem.span(args[i]);
+            icons_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--app-id") and i + 1 < args.len) {
             i += 1;
-            app_id = std.mem.span(args[i]);
+            app_id = args[i];
         }
     }
 
@@ -1460,9 +1461,9 @@ test "packageNsisCmd builds Windows installer with makensis" {
     const ico_path_z = try allocator.dupeZ(u8, ico_path);
     defer allocator.free(ico_path_z);
 
-    const args = [_][*:0]const u8{
+    const args = [_][:0]const u8{
         "--out-dir",
-        out_dir_z.ptr,
+        out_dir_z,
         "--filename",
         "sample-1.0.0-setup.exe",
         "--name",
@@ -1476,9 +1477,9 @@ test "packageNsisCmd builds Windows installer with makensis" {
         "--app-id",
         "dev.oriel.SampleApp",
         "--bin",
-        bin_path_z.ptr,
+        bin_path_z,
         "--icon",
-        ico_path_z.ptr,
+        ico_path_z,
     };
 
     const status = try packageNsisCmd(allocator, io, &args);

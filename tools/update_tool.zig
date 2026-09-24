@@ -13,14 +13,15 @@ pub const DEFAULT_TARGET = @tagName(builtin.cpu.arch) ++ "-" ++ @tagName(builtin
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
     const gpa = init.gpa;
-    const argv = init.minimal.args.vector;
+    // Portable argv (WTF-16 on Windows, so not `args.vector`).
+    const argv = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (argv.len < 2) {
         printUsage();
         return 1;
     }
 
-    const command = std.mem.span(argv[1]);
+    const command = argv[1];
     const args = argv[2..];
 
     if (std.mem.eql(u8, command, "keygen")) {
@@ -208,12 +209,12 @@ pub fn runKeygen(
     , .{ key_path, pub_path, pk_b64 });
 }
 
-fn handleKeygen(io: std.Io, gpa: std.mem.Allocator, env_map: *std.process.Environ.Map, args: []const [*:0]const u8) !u8 {
+fn handleKeygen(io: std.Io, gpa: std.mem.Allocator, env_map: *std.process.Environ.Map, args: []const [:0]const u8) !u8 {
     var opts = KeygenOptions{};
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        const arg = std.mem.span(args[i]);
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             std.debug.print(
                 \\Usage: update_tool keygen [options]
@@ -233,28 +234,28 @@ fn handleKeygen(io: std.Io, gpa: std.mem.Allocator, env_map: *std.process.Enviro
                 std.debug.print("error: --name requires a value\n", .{});
                 return 1;
             }
-            opts.name = std.mem.span(args[i]);
+            opts.name = args[i];
         } else if (std.mem.eql(u8, arg, "--key")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("error: --key requires a path\n", .{});
                 return 1;
             }
-            opts.key_path = std.mem.span(args[i]);
+            opts.key_path = args[i];
         } else if (std.mem.eql(u8, arg, "--pub")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("error: --pub requires a path\n", .{});
                 return 1;
             }
-            opts.pub_path = std.mem.span(args[i]);
+            opts.pub_path = args[i];
         } else if (std.mem.eql(u8, arg, "--out-dir")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("error: --out-dir requires a path\n", .{});
                 return 1;
             }
-            opts.out_dir = std.mem.span(args[i]);
+            opts.out_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--force")) {
             opts.force = true;
         } else {
@@ -375,7 +376,7 @@ pub fn runSignUpdate(
     return manifest_json;
 }
 
-fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const u8) !u8 {
+fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [:0]const u8) !u8 {
     var artifact: ?[]const u8 = null;
     var app_id: ?[]const u8 = null;
     var version: ?[]const u8 = null;
@@ -390,7 +391,7 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        const arg = std.mem.span(args[i]);
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             std.debug.print(
                 \\Usage: update_tool sign-update <artifact> --app-id <id> --version <X.Y.Z> --url <url> --key <key-file> [options]
@@ -417,49 +418,49 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
                 std.debug.print("error: --app-id requires a value\n", .{});
                 return 1;
             }
-            app_id = std.mem.span(args[i]);
+            app_id = args[i];
         } else if (std.mem.eql(u8, arg, "--version")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("error: --version requires a value\n", .{});
                 return 1;
             }
-            version = std.mem.span(args[i]);
+            version = args[i];
         } else if (std.mem.eql(u8, arg, "--url")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("error: --url requires a value\n", .{});
                 return 1;
             }
-            url = std.mem.span(args[i]);
+            url = args[i];
         } else if (std.mem.eql(u8, arg, "--key")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("error: --key requires a path\n", .{});
                 return 1;
             }
-            key_path = std.mem.span(args[i]);
+            key_path = args[i];
         } else if (std.mem.eql(u8, arg, "--target")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("error: --target requires a value\n", .{});
                 return 1;
             }
-            target = std.mem.span(args[i]);
+            target = args[i];
         } else if (std.mem.eql(u8, arg, "--format")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("error: --format requires a value\n", .{});
                 return 1;
             }
-            format = std.mem.span(args[i]);
+            format = args[i];
         } else if (std.mem.eql(u8, arg, "--size")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("error: --size requires a value\n", .{});
                 return 1;
             }
-            size = std.fmt.parseInt(u64, std.mem.span(args[i]), 10) catch {
+            size = std.fmt.parseInt(u64, args[i], 10) catch {
                 std.debug.print("error: invalid integer for --size\n", .{});
                 return 1;
             };
@@ -469,7 +470,7 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
                 std.debug.print("error: --expires requires a value\n", .{});
                 return 1;
             }
-            expires = std.fmt.parseInt(u64, std.mem.span(args[i]), 10) catch {
+            expires = std.fmt.parseInt(u64, args[i], 10) catch {
                 std.debug.print("error: invalid integer for --expires\n", .{});
                 return 1;
             };
@@ -479,7 +480,7 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
                 std.debug.print("error: --artifact requires a path\n", .{});
                 return 1;
             }
-            artifact = std.mem.span(args[i]);
+            artifact = args[i];
         } else if (std.mem.eql(u8, arg, "--allow-test-http")) {
             allow_test_http = true;
         } else if (std.mem.eql(u8, arg, "--out")) {
@@ -488,7 +489,7 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [*:0]const
                 std.debug.print("error: --out requires a path\n", .{});
                 return 1;
             }
-            out_path = std.mem.span(args[i]);
+            out_path = args[i];
         } else if (!std.mem.startsWith(u8, arg, "--") and artifact == null) {
             artifact = arg;
         } else {

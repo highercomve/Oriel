@@ -11,13 +11,14 @@ const Dir = std.Io.Dir;
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
-    const argv = init.minimal.args.vector;
+    // Portable argv (WTF-16 on Windows, so not `args.vector`).
+    const argv = try init.minimal.args.toSlice(init.arena.allocator());
     if (argv.len != 3) {
         std.debug.print("usage: embed_assets <src_dir> <out_dir>\n", .{});
         std.process.exit(2);
     }
-    const src_path = std.mem.span(argv[1]);
-    const out_path = std.mem.span(argv[2]);
+    const src_path = argv[1];
+    const out_path = argv[2];
 
     var src = Dir.cwd().openDir(io, src_path, .{ .iterate = true }) catch |err| {
         std.debug.print("embed_assets: cannot open {s}: {s} (was the frontend built?)\n", .{ src_path, @errorName(err) });
