@@ -55,12 +55,6 @@ const Features = struct {
 
         const is_windows = target.result.os.tag == .windows;
         const unimplemented_on_windows = comptime [_][]const u8{
-            "updater",
-            "media_server",
-            "dialog",
-            "notification",
-            "store",
-            "menu",
             "llama",
             "whisper",
         };
@@ -79,14 +73,14 @@ const Features = struct {
                 fatal("{s} is not supported on Windows yet", .{field.name});
             }
 
+            const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
+                std.mem.eql(u8, field.name, "llama") or
+                std.mem.eql(u8, field.name, "whisper"));
+
             const default_val = if (is_windows)
-                (std.mem.eql(u8, field.name, "sql") or std.mem.eql(u8, field.name, "tray"))
-            else blk: {
-                const is_native = (std.mem.eql(u8, field.name, "sqlite_vec") or
-                    std.mem.eql(u8, field.name, "llama") or
-                    std.mem.eql(u8, field.name, "whisper"));
-                break :blk !is_native;
-            };
+                (!is_unimplemented_windows and !is_native)
+            else
+                !is_native;
 
             @field(f, field.name) = opt orelse default_val;
         }
@@ -331,6 +325,7 @@ fn addOrielModule(
         oriel.linkSystemLibrary("shell32", .{});
         oriel.linkSystemLibrary("advapi32", .{});
         oriel.linkSystemLibrary("shlwapi", .{});
+        oriel.linkSystemLibrary("ws2_32", .{});
     }
 
     if (features.tray or (target.result.os.tag == .windows and features.clipboard)) {

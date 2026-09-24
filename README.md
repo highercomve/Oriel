@@ -104,13 +104,13 @@ Oriel supports cross-compiling and packaging for Windows (`x86_64-windows`) dire
 | **Database (`sql`)** | ✅ Implemented | Embedded SQLite3 C amalgamation linked with Windows threading |
 | **Vector Search (`sqlite_vec`)** | ✅ Implemented | Embedded `sqlite-vec` C amalgamation |
 | **Packaging (`package-nsis`)** | ✅ Implemented | Per-user NSIS installer (`setup.exe`) generated via `makensis` with WebView2 bootstrapper detection |
-| **Menu bar (`menu`)** | ❌ Not Implemented | GTK `GMenuModel` only; returns `error.NotImplemented` on Windows |
-| **Settings Store (`store`)** | ❌ Not Implemented | Linux GLib/GKeyFile; disabled by default on Windows |
-| **File Dialogs (`dialog`)** | ❌ Not Implemented | GTK4 `GtkFileDialog` only |
-| **Notifications (`notification`)** | ❌ Not Implemented | GIO `GNotification` only |
+| **Menu bar (`menu`)** | ✅ Implemented | Win32 menu bar (`CreateMenu`/`AppendMenuW`) + accelerator table; runtime untested on Windows |
+| **Settings Store (`store`)** | ✅ Implemented | `%APPDATA%` / `%LOCALAPPDATA%` via `SHGetKnownFolderPath`, same JSON store; runtime untested on Windows |
+| **File Dialogs (`dialog`)** | ✅ Implemented | COM `IFileOpenDialog` / `IFileSaveDialog`; runtime untested on Windows |
+| **Notifications (`notification`)** | ✅ Implemented | `Shell_NotifyIconW` balloon (no WinRT toasts); runtime untested on Windows |
 | **File Watching (`fs_watch`)** | ✅ Implemented | Win32 `ReadDirectoryChangesW` (overlapped I/O, non-blocking poll); runtime untested on Windows |
-| **Media Server (`media_server`)** | ❌ Not Implemented | Linux `openat2` only |
-| **Updater (`updater`)** | ❌ Not Implemented | Linux `inotify` / POSIX restart only |
+| **Media Server (`media_server`)** | ✅ Implemented | http.zig server + range streaming + `https://app.localhost/media/` via WebView2 `WebResourceRequested`; runtime untested on Windows |
+| **Updater (`updater`)** | ✅ Implemented | Ed25519-signed manifests; rename-the-running-exe replace (`MoveFileExW`), `CreateProcessW` restart; runtime untested on Windows |
 | **Global Shortcuts (`global_shortcut`)** | ✅ Implemented | Win32 `RegisterHotKey` / `WM_HOTKEY` routed via hidden host window; runtime untested on Windows |
 | **Input Injection (`input`)** | ✅ Implemented | Win32 `SendInput` (UTF-16 Unicode down/up pairs, VK combo mapping); runtime untested on Windows |
 | **Clipboard (`clipboard`)** | ✅ Implemented | Win32 `OpenClipboard` (CF_UNICODETEXT, CF_DIB, registered PNG via `zigimg`); runtime untested on Windows |
@@ -436,7 +436,7 @@ oriel.clipboard.readTextAsync(onText, null);        // readImageAsync
 
 ### Dialogs (`oriel.dialog`)
 
-File picker dialogs using `GtkFileDialog`:
+File picker dialogs using `GtkFileDialog` on Linux and `IFileOpenDialog` / `IFileSaveDialog` on Windows:
 
 ```zig
 const file = try oriel.dialog.openFile(gpa, .{
@@ -445,9 +445,12 @@ const file = try oriel.dialog.openFile(gpa, .{
 });
 ```
 
+- **Linux:** Uses `GtkFileDialog`.
+- **Windows:** Uses COM `IFileOpenDialog` / `IFileSaveDialog` (with `FOS_PICKFOLDERS` for folder pickers, `FOS_ALLOWMULTISELECT` for multiple files) marshaled to the main thread via `Shell.runOnMainThread`. Runtime untested on Windows.
+
 ### Notifications (`oriel.notification`)
 
-Desktop notifications via GIO `GNotification` (`GApplication.send_notification`):
+Desktop notifications via GIO `GNotification` (`GApplication.send_notification`) on Linux and `Shell_NotifyIconW` balloon tooltips on Windows:
 
 ```zig
 try oriel.notification.notify(.{
@@ -455,6 +458,9 @@ try oriel.notification.notify(.{
     .body = "Your notes have been exported successfully.",
 });
 ```
+
+- **Linux:** Uses GIO `GNotification`.
+- **Windows:** Uses `Shell_NotifyIconW` with balloon notifications (`NOTIFYICON_VERSION_4`). Callbacks route via `Shell.WM_NOTIFY_CALLBACK` and remove the balloon on dismiss/timeout/shutdown. Runtime untested on Windows.
 
 ### Multiple windows and window options
 
@@ -489,7 +495,7 @@ Per-window command scoping is supported via `.windows = &.{"main"}` in `Security
 
 ### App menu bar (`oriel.menu`)
 
-Native GTK4 `GMenuModel` application menu bar:
+Native application menu bar: `GMenuModel` on Linux, Win32 `HMENU` + `HACCEL` on Windows:
 
 ```zig
 const menu_items = [_]oriel.menu.MenuItem{
@@ -512,9 +518,12 @@ fn onMenuAction(id: []const u8, checked: ?bool) void {
 try oriel.App.setMenu(&menu_items, onMenuAction);
 ```
 
+- **Linux:** Uses GTK4 `GMenuModel` + `GtkApplication` actions.
+- **Windows:** Uses Win32 window menus (`CreateMenu`, `AppendMenuW`) and accelerator tables (`CreateAcceleratorTableW`). Commands and hotkeys marshal through `Shell.runOnMainThread`. Runtime untested on Windows.
+
 ### Settings store (`oriel.store`)
 
-Thread-safe JSON settings store with atomic writes, plus standard XDG directory helpers:
+Thread-safe JSON settings store with atomic writes, plus standard directory helpers (XDG on Linux, Known Folders Roaming/Local AppData on Windows):
 
 ```zig
 const config_dir = try oriel.store.configDir(gpa, "dev.oriel.Notes");
@@ -530,6 +539,9 @@ try store.save();
 
 const theme = store.getString("theme");
 ```
+
+- **Linux:** XDG directory specifications with glib atomic file utilities.
+- **Windows:** Win32 Known Folders (`FOLDERID_RoamingAppData`, `FOLDERID_LocalAppData`) with `SRWLOCK` and `CreateFileW` / `FlushFileBuffers` / `MoveFileExW` atomic file replacement. Runtime untested on Windows.
 
 ### Media server (`oriel.media_server`)
 
@@ -570,6 +582,7 @@ try oriel.media_server.scheme.setRoot("/home/me/Videos", .inside_root);
   GStreamer media player only accepts http(s)/blob/data/file URLs, so
   `<video src="app://...">` fails with `MEDIA_ERR_SRC_NOT_SUPPORTED`. Use the
   TCP URL for `<video>`/`<audio>`.
+- **Windows support:** on Windows, the media root is opened safely beneath the root directory via `CreateFileW` with heap-allocated UTF-16 path conversions, intermediate symlink/reparse point traversal rejection (`GetFinalPathNameByHandleW` lexical path comparison under `SymlinkPolicy.refuse_all`), and non-blocking traversal checks. WebView2 intercepts `https://app.localhost/media/*` requests and serves ranged media streams via a custom read-only COM `IStream` (`FileWindowStream`) over a duplicated handle using `OVERLAPPED` reads (no shared file pointer, no 16 MiB truncation cap, RFC-compliant 200/206 status codes, and checked COM calls). Runtime untested on Windows.
 
 ### Logging (`oriel.log`)
 
@@ -689,7 +702,11 @@ if (update?.available) {
 
 When running inside an AppImage (`$APPIMAGE` environment variable is set), `oriel.updater` automatically targets the outer AppImage executable for replacement and re-exec, keeping desktop launcher integrations seamless.
 
-#### 6. Security notes
+#### 6. Windows behavior
+
+On Windows, running executables cannot be directly overwritten. `oriel.updater` downloads and verifies payloads next to the executable as `<exe>.new`, renames the running binary to `<exe>.old` using `MoveFileExW` (`MOVEFILE_REPLACE_EXISTING`), and promotes `<exe>.new` to `<exe>` (with automatic rollback on failure). Stale `.old` files are cleaned up on subsequent startup (`updater.init`). Application restart is performed via `CreateProcessW` using the original command line (`GetCommandLineW`). Runtime untested on Windows.
+
+#### 7. Security notes
 
 - **JS cannot choose URLs, keys, or paths**: The manifest URL, public key, and target path are configured strictly in native Zig code; frontend code cannot redirect downloads or bypass signature verification.
 - **Private keys**: Never commit private keys to version control or bundle them into client applications. Use `keygen` with secure out-of-repo storage (`mode 0600`).
@@ -958,13 +975,13 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Isolation pattern | ❌ |
 | Tray icon + menu | ✅ items, checkboxes, separators, submenus, runtime updates |
 | Multiple windows | ✅ open/close, targeted events, geometry persistence, window options |
-| App menu bar | ✅ `GMenuModel` + `GtkApplication` actions with shortcuts |
-| Settings store | ✅ XDG paths + atomic thread-safe JSON store (`oriel.store`) |
+| App menu bar | ✅ Linux (`GMenuModel` + `GtkApplication` actions with shortcuts) + Windows (`HMENU` + `HACCEL`); runtime untested on Windows |
+| Settings store | ✅ Linux (XDG paths + atomic thread-safe JSON store) + Windows (Known Folders + atomic JSON store); runtime untested on Windows |
 | Logging | ✅ file + stderr logging + WebKit console forwarding |
 | Close to tray, show/hide, single instance | ✅ |
 | Dev server + hot reload / production build | ✅ `zig build dev` (Vite + Zig file watcher & reload) / `zig build` (defaults to `ReleaseSafe`) |
-| Dialogs (open/save file) | ✅ `GtkFileDialog` |
-| System notifications | ✅ `GNotification` |
+| Dialogs (open/save file) | ✅ Linux (`GtkFileDialog`) + Windows (`IFileOpenDialog` / `IFileSaveDialog`); runtime untested on Windows |
+| System notifications | ✅ Linux (`GNotification`) + Windows (`Shell_NotifyIconW` balloon); runtime untested on Windows |
 | Clipboard | ✅ Linux (GdkClipboard + Wayland ext-data-control) + Windows (CF_UNICODETEXT / CF_DIB / PNG); runtime untested on Windows |
 | Global shortcuts | ✅ Linux (X11 XGrabKey + Wayland portal) + Windows (`RegisterHotKey`); runtime untested on Windows |
 | Input injection | ✅ Linux (X11 XTest + Wayland virtual-keyboard) + Windows (`SendInput`); runtime untested on Windows |
@@ -972,7 +989,7 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
 | Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `zig build package`; signing not yet implemented |
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
-| Windows | ◐ Win32 + WebView2 shell, tray, sql, global_shortcut, input, clipboard, fs_watch, NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
+| Windows | ◐ Win32 + WebView2 shell and every module/plugin (tray, sql, store, dialog, notification, menu, updater, media_server, fs_watch, global_shortcut, input, clipboard), NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
 | macOS, mobile | ❌ |
 
 ## Notes
