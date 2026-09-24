@@ -141,6 +141,10 @@ zig build test               # framework, tools and CLI unit tests
 zig build cli                # the oriel CLI: zig-out/bin/oriel (static)
 ```
 
+Windows builds cross-compile from Linux and can be tested there under Wine
+or Steam's Proton, headlessly: see [docs/windows-testing.md](docs/windows-testing.md)
+(`scripts/wine.sh`).
+
 Releases are cut by pushing a `v*` tag: `.github/workflows/release.yml`
 runs the tests, builds the CLI for x86_64 and aarch64 Linux and attaches
 the binaries and `SHA256SUMS` to the GitHub release (`install.sh`
