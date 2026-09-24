@@ -15,7 +15,8 @@
 #                       <url>/latest/download/<file> or <url>/download/<tag>/<file>
 set -eu
 
-releases_url="${ORIEL_RELEASES_URL:-https://github.com/highercomve/Oriel/releases}"
+github_releases="https://github.com/highercomve/Oriel/releases"
+releases_url="${ORIEL_RELEASES_URL:-$github_releases}"
 version="${ORIEL_VERSION:-latest}"
 install_dir="${ORIEL_INSTALL_DIR:-${HOME:?HOME is not set}/.local/bin}"
 
@@ -33,12 +34,6 @@ case "$(uname -m)" in
     *) fail "unsupported architecture '$(uname -m)' (x86_64 and aarch64 are available)" ;;
 esac
 asset="oriel-${arch}-linux"
-
-if [ "$version" = latest ]; then
-    base="${releases_url%/}/latest/download"
-else
-    base="${releases_url%/}/download/${version}"
-fi
 
 if command -v curl >/dev/null 2>&1; then
     download() { curl -fsSL --retry 2 -o "$2" "$1"; }
@@ -58,6 +53,21 @@ fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
+
+if [ "$version" = latest ] && [ "$releases_url" = "$github_releases" ]; then
+    # GitHub's releases/latest skips pre-releases (every 0.x release is one),
+    # so ask the API for the newest release of any kind.
+    download "https://api.github.com/repos/highercomve/Oriel/releases?per_page=1" "$tmp/releases.json" ||
+        fail "could not look up the latest release"
+    version="$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$tmp/releases.json" | head -n 1)"
+    [ -n "$version" ] || fail "no releases found at $github_releases"
+fi
+
+if [ "$version" = latest ]; then
+    base="${releases_url%/}/latest/download"
+else
+    base="${releases_url%/}/download/${version}"
+fi
 
 say "Downloading ${asset} (${version})..."
 download "${base}/${asset}" "$tmp/$asset" || fail "download failed: ${base}/${asset}"
