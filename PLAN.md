@@ -66,6 +66,11 @@ decisions), `IDEA.md` (motivation, architecture), then the code:
    no reads of `undefined`, justified pointer casts, thread-safe shared state,
    and nothing touching GTK off the main thread. Tests must stay silent (no
    stderr output).
+10. **Test Windows code under Wine**, not just by cross-compiling:
+   `scripts/wine.sh setup` once, then run the smoke `--auto-quit` checks
+   (and any app you changed) with `scripts/wine.sh run`. Full procedure and
+   known Wine gaps in `docs/windows-testing.md`. Wine is not Windows: say
+   what was only verified under Wine.
 
 ## Build and test commands
 
@@ -83,9 +88,14 @@ cd examples/react
 zig build                                # vite build + embed + install
 zig build types                          # regenerate frontend/src/oriel.ts
 SHOT=/tmp/shot.png ../../scripts/headless.sh ./zig-out/bin/oriel-react-notes
+
+# Windows, under Wine/Proton (docs/windows-testing.md), from the repo root:
+scripts/wine.sh setup                    # once: .wine-test/ prefix + WebView2
+(cd examples/smoke && zig build -Dtarget=x86_64-windows -Dwebview2-loader=$(../../scripts/wine.sh loader) -p ../../.wine-test/smoke)
+timeout 180 scripts/wine.sh run .wine-test/smoke/bin/oriel-smoke.exe --auto-quit
 ```
 
-Expected today: 110/110 unit tests (115 with -Dsqlite_vec -Dllama -Dwhisper); smoke `--check` all ok on the real session
+Expected today: 166/166 unit tests (175 with -Dsqlite_vec -Dllama -Dwhisper); smoke `--check` all ok on the real session
 except `global_shortcut` until `dev.oriel.Smoke.desktop` is installed (see
 pitfalls); smoke `--auto-quit` under headless.sh 27/27 ok (X11 paths:
 XGrabKey, XTest, GdkClipboard incl. the in-process `clipboard r/w` check).
@@ -128,6 +138,18 @@ gdbus call --session --dest org.kde.StatusNotifierItem-$PID-1 --object-path /Men
   `--check` global_shortcut line fails on a real Wayland session until
   `dev.oriel.Smoke.desktop` is installed (`zig build desktop-entry` in the
   app installs it; only run it on purpose, it writes to `~/.local/share`).
+- **Zig only compiles what is referenced**, per target: `zig build check
+  -Dtarget=x86_64-windows` skips generic/`anytype` functions nobody
+  instantiates (the Windows `check` test instantiates the shell; module
+  `check` functions take a concrete `CheckContext`). Prove new Windows code
+  is compiled with a deliberate type error before trusting a green check.
+- **Win32 from Zig:** `GetWindowLongPtrW` sign-extends styles (WS_POPUP is
+  bit 31: `@truncate`, never `@intCast`); COM objects we implement need real
+  atomic refcounts when WebView2 can outlive the caller's frame, and
+  `QueryInterface` must answer IID_IUnknown; blocking main-thread calls from
+  workers go through `Shell.runOnMainThread` (returns AppNotRunning instead
+  of waiting forever). Check COM vtable order against the mingw-w64 headers
+  / WebView2.h slot by slot.
 - **Hyprland here uses a Lua config**: `hyprctl dispatch` needs
   `hl.dsp.*` syntax (only relevant for manual checks).
 
@@ -308,10 +330,16 @@ LIBRARIES.md (subcommands = `union`, options = `struct` fields, generated help).
   plus `app://app/media/` for fetch. `<video src="app://...">` can't work:
   WebKitGTK's GStreamer player only accepts http(s)/blob/data/file.
 - ◐ **Windows shell:** `src/platform/windows/` (Win32 + WebView2 via
-  hand-declared COM vtables, `https://app.localhost` assets, IPC, tray).
-  Cross-compiles and packages from Linux; runtime NOT tested on Windows yet.
-  Next: run it on Windows, then RegisterHotKey, SendInput, clipboard,
-  dialogs/notifications/menu/store/updater/media_server for Windows.
+  hand-declared COM vtables, `https://app.localhost` assets, IPC, a hidden
+  host window for main-thread dispatch / hotkeys / tray / clipboard).
+  Every module and plugin has a Windows backend following the tray split
+  (`<name>.zig` facade + `<name>/{common,linux,windows}.zig`): store,
+  dialog, notification, menu, updater, media_server, fs_watch,
+  global_shortcut, input, clipboard; llama/whisper/sqlite_vec cross-build.
+  All of it cross-compiles, links and packages from Linux and the pure
+  logic is unit-tested; the runtime is NOT tested on Windows yet.
+  Next: run the smoke app on a real Windows machine (or CI runner) and fix
+  what breaks; per-monitor DPI manifest; WinRT toasts if needed.
 - ✅ **Windows installer:** `nsis` package format (default for Windows
   targets): `makensis` cross-builds a per-user `setup.exe` (Start menu,
   HKCU uninstall entry, WebView2 runtime check/bootstrapper, optional

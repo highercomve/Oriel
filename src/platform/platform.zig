@@ -3,6 +3,7 @@
 //! Selects the OS-specific shell implementation at compile time.
 //! Currently supported:
 //!   - Linux: GTK4 + WebKitGTK 6.0 (`src/platform/linux/`)
+//!   - Windows: Win32 + WebView2 (`src/platform/windows/`)
 //!
 //! Any platform backend must export the following declarations:
 //!
