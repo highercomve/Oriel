@@ -100,20 +100,16 @@ pub const Handler = struct {
         switch (range_res) {
             .unsatisfiable => {
                 res.status = 416;
-                var cr_buf: [32]u8 = undefined; // "bytes */" + at most 20 digits
-                const cr = std.fmt.bufPrint(&cr_buf, "bytes */{d}", .{file_size}) catch unreachable;
-                res.header("Content-Range", cr);
+                try res.headerOpts("Content-Range", try std.fmt.allocPrint(res.arena, "bytes */{d}", .{file_size}), .{});
                 res.header("Content-Length", "0");
-                try res.writeHeader();
+                try sendHeaders(res);
                 res.written = true;
                 return;
             },
             .full => {
                 res.status = 200;
-                var cl_buf: [20]u8 = undefined; // a u64 has at most 20 digits
-                const cl = std.fmt.bufPrint(&cl_buf, "{d}", .{file_size}) catch unreachable;
-                res.header("Content-Length", cl);
-                try res.writeHeader();
+                try res.headerOpts("Content-Length", try std.fmt.allocPrint(res.arena, "{d}", .{file_size}), .{});
+                try sendHeaders(res);
                 if (req.method == .HEAD) {
                     res.written = true;
                     return;
@@ -122,13 +118,9 @@ pub const Handler = struct {
             },
             .range => |r| {
                 res.status = 206;
-                var cl_buf: [20]u8 = undefined; // a u64 has at most 20 digits
-                const cl = std.fmt.bufPrint(&cl_buf, "{d}", .{r.length()}) catch unreachable;
-                res.header("Content-Length", cl);
-                var cr_buf: [80]u8 = undefined; // "bytes " + 3 x 20 digits + "-" + "/"
-                const cr = std.fmt.bufPrint(&cr_buf, "bytes {d}-{d}/{d}", .{ r.start, r.end, file_size }) catch unreachable;
-                res.header("Content-Range", cr);
-                try res.writeHeader();
+                try res.headerOpts("Content-Length", try std.fmt.allocPrint(res.arena, "{d}", .{r.length()}), .{});
+                try res.headerOpts("Content-Range", try std.fmt.allocPrint(res.arena, "bytes {d}-{d}/{d}", .{ r.start, r.end, file_size }), .{});
+                try sendHeaders(res);
                 if (req.method == .HEAD) {
                     res.written = true;
                     return;
@@ -138,6 +130,19 @@ pub const Handler = struct {
         }
     }
 };
+
+/// Send the response headers. Header values must outlive the handler (httpz
+/// may serialize them again, e.g. for an error response), so they are
+/// allocated in `res.arena`. On failure the connection state is unknown:
+/// mark the response written and drop the connection instead of letting
+/// httpz write a second response on it.
+fn sendHeaders(res: *httpz.Response) !void {
+    res.writeHeader() catch |err| {
+        res.written = true;
+        res.keepalive = false;
+        return err;
+    };
+}
 
 pub const Server = struct {
     handler: Handler,
