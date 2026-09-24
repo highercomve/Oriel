@@ -44,6 +44,13 @@ test {
     _ = &run;
     const S = ShellMod.Shell(.{ .commands = struct {} }, .{ .id = "dev.oriel.Check", .title = "check", .assets = &.{} });
     _ = &S.run;
+    const Probe = struct {
+        fn touch(_: *u8) void {}
+        fn call(x: *u8) !void {
+            return ShellMod.runOnMainThread(u8, x, touch);
+        }
+    };
+    _ = &Probe.call;
     std.testing.refAllDecls(win32);
     std.testing.refAllDecls(webview2);
     std.testing.refAllDecls(window);

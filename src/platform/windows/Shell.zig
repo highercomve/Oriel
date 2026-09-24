@@ -122,6 +122,56 @@ fn drainAtShutdown() void {
     }
 }
 
+/// Run `func(ctx)` on the main (UI) thread and wait for it to finish.
+///
+/// Runs directly when already on the main thread. From another thread the
+/// call is queued and the caller blocks until it ran. Returns
+/// error.AppNotRunning when the shell isn't running, or when the task was
+/// dropped (out of memory) or discarded at shutdown instead of running.
+pub fn runOnMainThread(comptime Ctx: type, ctx: *Ctx, comptime func: fn (*Ctx) void) error{ AppNotRunning, CreateEventFailed }!void {
+    const main_id = main_thread_id;
+    if (main_id == 0) return error.AppNotRunning;
+    if (win32.GetCurrentThreadId() == main_id) {
+        func(ctx);
+        return;
+    }
+
+    const Call = struct {
+        ctx: *Ctx,
+        event: win32.HANDLE,
+        ran: bool = false,
+
+        fn run(p: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(p.?));
+            func(self.ctx);
+            self.ran = true;
+            signal(self.event);
+        }
+
+        fn cleanup(p: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(p.?));
+            signal(self.event);
+        }
+
+        fn signal(event: win32.HANDLE) void {
+            // The waiter owns this stack frame: failing to wake it is unrecoverable.
+            if (win32.SetEvent(event) == win32.FALSE) std.debug.panic("SetEvent failed ({d})", .{win32.GetLastError()});
+        }
+    };
+
+    const event = win32.CreateEventW(null, win32.FALSE, win32.FALSE, null) orelse return error.CreateEventFailed;
+    defer _ = win32.CloseHandle(event); // nothing to undo if closing fails
+    var call: Call = .{ .ctx = ctx, .event = event };
+    dispatchWithCleanup(&Call.run, &call, &Call.cleanup);
+    // `call` lives on this stack until the task has signalled, so returning
+    // early on a wait failure would leave the main thread writing into a dead
+    // frame: treat it as fatal.
+    if (win32.WaitForSingleObject(event, win32.INFINITE) != win32.WAIT_OBJECT_0) {
+        std.debug.panic("WaitForSingleObject failed ({d})", .{win32.GetLastError()});
+    }
+    if (!call.ran) return error.AppNotRunning;
+}
+
 pub var active_create_window_fn: ?*const fn (options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle = null;
 
 pub fn createWindow(options: App.WindowOptions, win_inst: *App.Window) !WindowHandle {
