@@ -43,7 +43,14 @@ const Features = struct {
     whisper: bool,
     audio_capture: bool,
 
-    fn fromOptions(b: *std.Build) Features {
+    /// Modules and plugins without a macOS backend yet (PLAN.md Milestone 7,
+    /// step 2). On macOS they default to off and can't be switched on.
+    const unported_on_macos = [_][]const u8{
+        "updater", "media_server", "fs_watch",  "dialog",        "notification",    "store",
+        "menu",    "input",        "clipboard", "audio_capture", "global_shortcut",
+    };
+
+    fn fromOptions(b: *std.Build, target: std.Build.ResolvedTarget) Features {
         if (b.option(bool, "ggml_vulkan", "Enable Vulkan backend (not supported)") orelse false) {
             fatal("Vulkan is not supported yet, see README.md", .{});
         }
@@ -52,15 +59,25 @@ const Features = struct {
         }
 
         // Every module and plugin builds for Linux and Windows; the native
-        // dependencies are opt-in on both.
+        // dependencies are opt-in on both. On macOS, only the ported ones.
+        const is_macos = target.result.os.tag == .macos;
         var f: Features = undefined;
         inline for (@typeInfo(Features).@"struct".fields) |field| {
             const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
                 std.mem.eql(u8, field.name, "llama") or
                 std.mem.eql(u8, field.name, "whisper") or
                 std.mem.eql(u8, field.name, "audio_capture"));
+            const unported = comptime for (unported_on_macos) |name| {
+                if (std.mem.eql(u8, name, field.name)) break true;
+            } else false;
             const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
-            @field(f, field.name) = opt orelse !is_native;
+            if (is_macos and unported and (opt orelse false)) {
+                fatal("-D" ++ field.name ++ " is not supported on macOS yet (PLAN.md Milestone 7)", .{});
+            }
+            // The tray builds on macOS as a stub whose `create` fails with
+            // error.NotSupported, so apps using it still run; it is off unless asked for.
+            const default_on = !is_native and !(is_macos and (unported or std.mem.eql(u8, field.name, "tray")));
+            @field(f, field.name) = opt orelse default_on;
         }
 
         if (f.sqlite_vec and !f.sql) {
@@ -74,7 +91,7 @@ const Features = struct {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const features = Features.fromOptions(b);
+    const features = Features.fromOptions(b, target);
 
     const oriel = addOrielModule(b, target, optimize, features);
 
@@ -135,21 +152,23 @@ pub fn build(b: *std.Build) void {
     addUpdaterSteps(b, update_tool);
 
     const is_linux = target.result.os.tag == .linux;
+    // Unit tests run natively on Linux and macOS (Windows: see PLAN.md).
+    const runs_tests = is_linux or target.result.os.tag == .macos;
 
     const tests = b.addTest(.{
         .root_module = oriel,
         // Zig's self-hosted linker can't handle the .sframe sections in
         // crt1.o from GCC 16 / recent glibc, so link with LLVM + LLD.
         .use_llvm = true,
-        .use_lld = true,
+        .use_lld = useLld(target),
     });
     const package_tests = b.addTest(.{
         .root_module = package_tool_mod,
         .use_llvm = true,
-        .use_lld = true,
+        .use_lld = useLld(b.graph.host),
     });
     const test_step = b.step("test", "Run unit tests");
-    if (is_linux) {
+    if (runs_tests) {
         test_step.dependOn(&b.addRunArtifact(tests).step);
         test_step.dependOn(&b.addRunArtifact(package_tests).step);
     }
@@ -157,16 +176,16 @@ pub fn build(b: *std.Build) void {
     const tool_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/update_tool.zig"),
-            .target = if (is_linux) target else b.graph.host,
+            .target = if (runs_tests) target else b.graph.host,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "update_manifest", .module = update_manifest_mod },
             },
         }),
         .use_llvm = true,
-        .use_lld = true,
+        .use_lld = useLld(if (runs_tests) target else b.graph.host),
     });
-    if (is_linux) {
+    if (runs_tests) {
         test_step.dependOn(&b.addRunArtifact(tool_tests).step);
     }
 
@@ -176,14 +195,14 @@ pub fn build(b: *std.Build) void {
             .target = b.graph.host,
         }),
         .use_llvm = true,
-        .use_lld = true,
+        .use_lld = useLld(b.graph.host),
     });
-    if (is_linux) test_step.dependOn(&b.addRunArtifact(patch_httpz_tests).step);
+    if (runs_tests) test_step.dependOn(&b.addRunArtifact(patch_httpz_tests).step);
 
     const dev_runner_tests = b.addTest(.{
         .root_module = dev_runner.root_module,
         .use_llvm = true,
-        .use_lld = true,
+        .use_lld = useLld(b.graph.host),
     });
     if (is_linux) {
         test_step.dependOn(&b.addRunArtifact(dev_runner_tests).step);
@@ -200,10 +219,12 @@ pub fn build(b: *std.Build) void {
     // Type-check only: nothing requests these binaries, so Zig skips codegen
     // and linking. The fast inner loop for editors and coding agents.
     const check_step = b.step("check", "Type-check the framework, tests and tools (no binaries)");
-    if (is_linux) {
-        for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module, dev_runner.root_module, patch_httpz_tests.root_module }) |m| {
+    if (runs_tests) {
+        for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module, patch_httpz_tests.root_module }) |m| {
             check_step.dependOn(&b.addTest(.{ .root_module = m }).step);
         }
+        // dev_runner is Linux-only (inotify, prctl, pidfd).
+        if (is_linux) check_step.dependOn(&b.addTest(.{ .root_module = dev_runner.root_module }).step);
     } else {
         check_step.dependOn(&b.addTest(.{ .root_module = oriel }).step);
     }
@@ -267,7 +288,7 @@ fn addCli(
     });
     test_mod.addOptions("build_options", options);
     test_mod.addImport("updater_core", updater_core_test);
-    const cli_tests = b.addTest(.{ .root_module = test_mod, .use_llvm = true, .use_lld = true });
+    const cli_tests = b.addTest(.{ .root_module = test_mod, .use_llvm = true, .use_lld = useLld(target) });
     test_step.dependOn(&b.addRunArtifact(cli_tests).step);
     check_step.dependOn(&b.addTest(.{ .root_module = test_mod }).step);
     // Also `main` and everything it reaches (not referenced by the tests).
@@ -344,6 +365,13 @@ fn addOrielModule(
         oriel.linkSystemLibrary("advapi32", .{});
         oriel.linkSystemLibrary("shlwapi", .{});
         oriel.linkSystemLibrary("ws2_32", .{});
+    } else if (target.result.os.tag == .macos) {
+        // AppKit + WebKit through the Objective-C runtime (zig-objc).
+        if (b.lazyDependency("objc", .{ .target = target, .optimize = optimize })) |objc| {
+            oriel.addImport("objc", objc.module("objc"));
+        }
+        oriel.linkFramework("AppKit", .{});
+        oriel.linkFramework("WebKit", .{});
     }
 
     if (features.tray or (target.result.os.tag == .windows and features.clipboard)) {
@@ -724,12 +752,18 @@ fn addExe(
         }),
         // See the note on the test step: LLD is required on GCC 16 systems.
         .use_llvm = true,
-        .use_lld = true,
+        .use_lld = useLld(target),
     });
     if (target.result.os.tag == .windows) {
         exe.subsystem = .Windows;
     }
     return exe;
+}
+
+/// LLD for ELF and COFF (see the note on the test step); LLD has no Mach-O
+/// support in Zig, so macOS uses Zig's own linker.
+fn useLld(target: std.Build.ResolvedTarget) bool {
+    return target.result.ofmt != .macho;
 }
 
 fn pathExists(b: *std.Build, path: []const u8) bool {

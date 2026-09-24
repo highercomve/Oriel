@@ -4,6 +4,7 @@
 //! Currently supported:
 //!   - Linux: GTK4 + WebKitGTK 6.0 (`src/platform/linux/`)
 //!   - Windows: Win32 + WebView2 (`src/platform/windows/`)
+//!   - macOS: AppKit + WKWebView via the Objective-C runtime (`src/platform/macos/`)
 //!
 //! Any platform backend must export the following declarations:
 //!
@@ -39,7 +40,8 @@ const std = @import("std");
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("linux/linux.zig"),
     .windows => @import("windows/windows.zig"),
-    else => @compileError("Unsupported operating system: " ++ @tagName(builtin.os.tag) ++ ". Supported platforms are Linux and Windows."),
+    .macos => @import("macos/macos.zig"),
+    else => @compileError("Unsupported operating system: " ++ @tagName(builtin.os.tag) ++ ". Supported platforms are Linux, Windows and macOS."),
 };
 
 // Comptime check that the selected implementation exports all required declarations.

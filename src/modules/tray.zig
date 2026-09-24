@@ -2,6 +2,7 @@
 //!
 //! Linux backend: StatusNotifierItem + com.canonical.dbusmenu over GDBus.
 //! Windows backend: Win32 Shell_NotifyIconW + TrackPopupMenu.
+//! macOS backend: not implemented yet (`Tray.create` returns error.NotSupported).
 
 const builtin = @import("builtin");
 pub const common = @import("tray/common.zig");
@@ -16,6 +17,7 @@ pub const check = impl.check;
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("tray/linux.zig"),
     .windows => @import("tray/windows.zig"),
+    .macos => @import("tray/macos.zig"),
     else => @compileError("tray is not supported on " ++ @tagName(builtin.os.tag)),
 };
 

@@ -44,6 +44,11 @@
             .hash = "N-V-__8AAA3uSwK9mB79KfGlAs0n70EoYdSvFYRb8782-6Ce",
             .lazy = true,
         },
+        .objc = .{
+            .url = "git+https://github.com/mitchellh/zig-objc#c8de82ff80281215ad92900866dab7103a8efa8b",
+            .hash = "zig_objc-0.0.0-Ir_Sp9gsAQCPAJc0oF5xoWePHWP6Y6tCphDeyNUThJoi",
+            .lazy = true,
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand", "LICENSE-MIT", "LICENSE-APACHE", "README.md" },
 }
