@@ -107,16 +107,12 @@ extern fn webkit_web_view_get_uri(view: *webkit.WebView) ?[*:0]const u8;
 pub fn evalJs(target: ?@import("window.zig").WindowHandle, script: [:0]const u8) void {
     const gpa = std.heap.smp_allocator;
     const script_copy = gpa.dupeZ(u8, script) catch return;
-    if (target) |tv| {
-        _ = gobject.Object.ref(tv.web_view.as(gobject.Object));
-    }
 
     const Task = struct {
         target: ?@import("window.zig").WindowHandle,
         script: [:0]u8,
     };
     const task = gpa.create(Task) catch {
-        if (target) |tv| tv.web_view.as(gobject.Object).unref();
         gpa.free(script_copy);
         return;
     };
@@ -131,9 +127,14 @@ fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
         std.heap.smp_allocator.destroy(task);
     }
     if (task.target) |v| {
-        defer v.web_view.as(gobject.Object).unref();
-        if (App.getWindowByHandle(v) != null) {
-            v.web_view.evaluateJavascript(task.script, -1, null, null, null, null, null);
+        App.ensureWindowsMutex();
+        App.windows_mutex.lock();
+        const web_view = for (App.windows_list.items) |win| {
+            if (win.handle.eql(v)) break win.handle.web_view;
+        } else null;
+        App.windows_mutex.unlock();
+        if (web_view) |view| {
+            view.evaluateJavascript(task.script, -1, null, null, null, null, null);
         }
     } else {
         App.ensureWindowsMutex();
@@ -142,6 +143,47 @@ fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
         for (App.windows_list.items) |win| {
             win.handle.web_view.evaluateJavascript(task.script, -1, null, null, null, null, null);
         }
+    }
+    return 0; // one-shot
+}
+
+pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
+    const gpa = std.heap.smp_allocator;
+    const label_copy = gpa.dupeZ(u8, label) catch return;
+    const script_copy = gpa.dupeZ(u8, script) catch {
+        gpa.free(label_copy);
+        return;
+    };
+
+    const Task = struct {
+        label: [:0]u8,
+        script: [:0]u8,
+    };
+    const task = gpa.create(Task) catch {
+        gpa.free(label_copy);
+        gpa.free(script_copy);
+        return;
+    };
+    task.* = .{ .label = label_copy, .script = script_copy };
+    _ = glib.idleAdd(&evalScriptByLabelTask, task);
+}
+
+fn evalScriptByLabelTask(data: ?*anyopaque) callconv(.c) c_int {
+    const task: *struct { label: [:0]u8, script: [:0]u8 } = @ptrCast(@alignCast(data));
+    defer {
+        std.heap.smp_allocator.free(task.label);
+        std.heap.smp_allocator.free(task.script);
+        std.heap.smp_allocator.destroy(task);
+    }
+    App.ensureWindowsMutex();
+    App.windows_mutex.lock();
+    const web_view = for (App.windows_list.items) |win| {
+        if (std.mem.eql(u8, win.label, task.label)) break win.handle.web_view;
+    } else null;
+    App.windows_mutex.unlock();
+
+    if (web_view) |view| {
+        view.evaluateJavascript(task.script, -1, null, null, null, null, null);
     }
     return 0; // one-shot
 }

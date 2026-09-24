@@ -170,12 +170,15 @@ pub fn dispatch(
             .ignore_unknown_fields = true,
         });
         try security.validateLabel(args.label);
-        const win = App.getWindow(args.label);
-        if (win) |w| {
-            return std.json.Stringify.valueAlloc(arena, WindowInfo{ .label = w.label, .title = w.options.title }, .{});
-        } else {
-            return arena.dupe(u8, "null");
+        App.ensureWindowsMutex();
+        App.windows_mutex.lock();
+        defer App.windows_mutex.unlock();
+        for (App.windows_list.items) |w| {
+            if (std.mem.eql(u8, w.label, args.label)) {
+                return std.json.Stringify.valueAlloc(arena, WindowInfo{ .label = w.label, .title = w.options.title }, .{});
+            }
         }
+        return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, action, "all")) {
         App.ensureWindowsMutex();
         App.windows_mutex.lock();
@@ -187,9 +190,15 @@ pub fn dispatch(
         return std.json.Stringify.valueAlloc(arena, list.items, .{});
     } else if (std.mem.eql(u8, action, "current")) {
         const label = caller_win_label orelse "main";
-        const win = App.getWindow(label);
-        const title = if (win) |w| w.options.title else "";
-        return std.json.Stringify.valueAlloc(arena, WindowInfo{ .label = label, .title = title }, .{});
+        App.ensureWindowsMutex();
+        App.windows_mutex.lock();
+        defer App.windows_mutex.unlock();
+        for (App.windows_list.items) |w| {
+            if (std.mem.eql(u8, w.label, label)) {
+                return std.json.Stringify.valueAlloc(arena, WindowInfo{ .label = w.label, .title = w.options.title }, .{});
+            }
+        }
+        return std.json.Stringify.valueAlloc(arena, WindowInfo{ .label = label, .title = "" }, .{});
     } else if (std.mem.eql(u8, action, "emitTo")) {
         const args = try std.json.parseFromValueLeaky(struct { label: []const u8, event: []const u8, payload: std.json.Value = .null }, arena, args_val, .{
             .ignore_unknown_fields = true,

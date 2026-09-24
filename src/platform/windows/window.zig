@@ -177,10 +177,30 @@ pub fn getWindowByView(view: *webview2.ICoreWebView2) ?*App.Window {
     return null;
 }
 
-pub fn getWindowByHwnd(hwnd: win32.HWND) ?*App.Window {
+/// The window stored in our own window class's GWLP_USERDATA (set by
+/// createWindow, cleared on destroy). For wndProc only: it runs synchronously
+/// inside CreateWindowExW/DestroyWindow, possibly while this thread holds
+/// windows_mutex (not re-entrant), and before the window is in windows_list.
+fn windowFromUserData(hwnd: win32.HWND) ?*App.Window {
     const ptr = win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA);
     if (ptr == 0) return null;
     return @ptrFromInt(@as(usize, @bitCast(ptr)));
+}
+
+/// Like `windowFromUserData`, but only returns windows still in
+/// App.windows_list: for HWNDs that come from elsewhere (bridge handlers).
+/// Takes windows_mutex; never call it from wndProc.
+pub fn getWindowByHwnd(hwnd: win32.HWND) ?*App.Window {
+    const ptr = win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA);
+    if (ptr == 0) return null;
+    const candidate: *App.Window = @ptrFromInt(@as(usize, @bitCast(ptr)));
+    App.ensureWindowsMutex();
+    App.windows_mutex.lock();
+    defer App.windows_mutex.unlock();
+    for (App.windows_list.items) |w| {
+        if (w == candidate) return candidate;
+    }
+    return null;
 }
 
 pub fn WindowCreator(
@@ -262,9 +282,12 @@ pub fn WindowCreator(
             }
             fn invokeMsg(m_this: *webview2.ICoreWebView2WebMessageReceivedEventHandler, sender: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2WebMessageReceivedEventArgs) callconv(.winapi) win32.HRESULT {
                 const self: *@This() = @fieldParentPtr("handler", m_this);
+                // Copy target_hwnd before BridgeImpl.onMessage.
+                // onMessage might trigger window close / teardown, so self must not be read after onMessage.
+                const target_hwnd = self.target_hwnd;
                 if (sender) |s| {
                     if (args) |a| {
-                        BridgeImpl.onMessage(s, a, self.target_hwnd);
+                        BridgeImpl.onMessage(s, a, target_hwnd);
                     }
                 }
                 return win32.S_OK;
@@ -372,6 +395,7 @@ pub fn WindowCreator(
             }
             fn invokeNW(nw_this: *webview2.ICoreWebView2NewWindowRequestedEventHandler, _: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2NewWindowRequestedEventArgs) callconv(.winapi) win32.HRESULT {
                 const nw_self: *@This() = @fieldParentPtr("handler", nw_this);
+                const main_view = nw_self.main_view;
                 if (args) |a| {
                     _ = a.lpVtbl.put_Handled(a, win32.TRUE);
                     var uri_w: ?win32.LPWSTR = null;
@@ -402,7 +426,7 @@ pub fn WindowCreator(
                                         .url = uri_z,
                                     }) catch |err| log.err("window.open failed: {s}", .{@errorName(err)});
                                 } else {
-                                    _ = nw_self.main_view.navigate(uri_w.?);
+                                    _ = main_view.navigate(uri_w.?);
                                 }
                             },
                             .open_external => {
@@ -451,7 +475,8 @@ pub fn WindowCreator(
             }
             fn invokeClose(cl_this: *webview2.ICoreWebView2WindowCloseRequestedEventHandler, _: ?*webview2.ICoreWebView2, _: ?*anyopaque) callconv(.winapi) win32.HRESULT {
                 const cl_self: *@This() = @fieldParentPtr("handler", cl_this);
-                _ = win32.PostMessageW(cl_self.target_hwnd, win32.WM_CLOSE, 0, 0);
+                const target_hwnd = cl_self.target_hwnd;
+                _ = win32.PostMessageW(target_hwnd, win32.WM_CLOSE, 0, 0);
                 return win32.S_OK;
             }
         };
@@ -479,6 +504,14 @@ pub fn WindowCreator(
             cl_token: webview2.EventRegistrationToken = .{},
 
             pub fn deinit(self: *WindowData) void {
+                // Ordered teardown sequence for WindowData and WebView2 COM objects (Finding 2):
+                // 1. Remove all event registrations first so WebView2 will not dispatch further
+                //    events to our embedded handlers.
+                // 2. Call controller.Close() to terminate the WebView2 controller and stop all
+                //    renderer/browser process interaction. Once Close() returns, WebView2 guarantees
+                //    no further event callbacks will be invoked on the handlers.
+                // 3. Release references to webview, controller, and environment COM interfaces.
+                // 4. Finally, free WindowData memory now that no callbacks can run on it.
                 _ = self.webview.lpVtbl.remove_WebResourceRequested(self.webview, self.res_token);
                 _ = self.webview.lpVtbl.remove_WebMessageReceived(self.webview, self.msg_token);
                 _ = self.webview.lpVtbl.remove_NavigationStarting(self.webview, self.nav_token);
@@ -486,10 +519,10 @@ pub fn WindowCreator(
                 _ = self.webview.lpVtbl.remove_NewWindowRequested(self.webview, self.nw_token);
                 _ = self.webview.lpVtbl.remove_WindowCloseRequested(self.webview, self.cl_token);
 
-                _ = self.env.lpVtbl.Release(self.env);
                 _ = self.controller.lpVtbl.Close(self.controller);
-                _ = self.controller.lpVtbl.Release(self.controller);
                 _ = self.webview.lpVtbl.Release(self.webview);
+                _ = self.controller.lpVtbl.Release(self.controller);
+                _ = self.env.lpVtbl.Release(self.env);
 
                 std.heap.smp_allocator.destroy(self);
             }
@@ -935,7 +968,7 @@ pub fn WindowCreator(
         }
 
         fn wndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam: win32.LPARAM) callconv(.winapi) win32.LRESULT {
-            const win = getWindowByHwnd(hwnd);
+            const win = windowFromUserData(hwnd);
 
             switch (uMsg) {
                 win32.WM_SIZE => {

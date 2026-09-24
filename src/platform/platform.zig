@@ -67,6 +67,7 @@ comptime {
         "quit",
         "openExternal",
         "evalJs",
+        "evalJsByLabel",
         "setMenu",
     };
     for (required_decls) |decl_name| {
@@ -99,11 +100,13 @@ pub const run = impl.run;
 pub const quit = impl.quit;
 pub const openExternal = impl.openExternal;
 pub const evalJs = impl.evalJs;
+pub const evalJsByLabel = impl.evalJsByLabel;
 pub const setMenu = impl.setMenu;
 
 // Platform-specific declarations (e.g. for Linux backward compatibility)
 pub const GtkApp = if (@hasDecl(impl, "GtkApp")) impl.GtkApp else void;
 pub const GtkWindow = if (@hasDecl(impl, "GtkWindow")) impl.GtkWindow else void;
+pub const ShellMod = if (@hasDecl(impl, "ShellMod")) impl.ShellMod else void;
 
 test {
     std.testing.refAllDecls(@This());
