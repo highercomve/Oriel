@@ -89,7 +89,7 @@ Oriel separates platform-neutral application and window logic (`src/core/App.zig
 Oriel supports cross-compiling and packaging for Windows (`x86_64-windows`) directly from Linux hosts using Zig and `makensis`.
 
 > [!WARNING]
-> **Runtime Status**: verified on real Windows (2026-09-24, the `examples/react` NSIS installer on a Windows PC): installer, Win32 window + WebView2 with embedded assets, routes, sync and async IPC, SQLite (persisting across restarts), a second window via `oriel.window.open()`, `oriel.openExternal`, and the tray icon and menu. Modules marked "runtime untested on Windows" below have only been run under Wine (`scripts/wine.sh`).
+> **Runtime Status**: verified on real Windows (2026-09-24). The `examples/react` NSIS installer: installer, window + WebView2 with embedded assets, routes, sync and async IPC, SQLite (persisting across restarts), a second window via `oriel.window.open()`, `oriel.openExternal`, tray icon and menu. `examples/smoke` on the same PC: 37/38 checks ok (every module: tray, updater, media_server with byte ranges, sql, fs_watch, dialog, notification, store, menu, global_shortcut, input, clipboard incl. worker-thread r/w, window API, CSP, navigation, openExternal). The one failure, `nav iframe`, is the check, not the policy: the navigation is blocked, but WebView2 leaves a cross-origin error page in the frame. Module checks that only create the native object (dialog, hotkey, input) do not prove user-visible behaviour; the "runtime untested" notes in the table below refer to that.
 
 #### Support Matrix
 
