@@ -428,6 +428,24 @@ The CLI uses the same updater as apps built with Oriel (dogfooding).
 - Manual step remaining: generate the release keypair with `zig build keygen`
   and set the `ORIEL_UPDATE_KEY` secret + `ORIEL_UPDATE_PUBLIC_KEY` repo variable.
 
+## Windows-native builds (status 2026-09-24)
+
+Verified on a real Windows 11 PC (Remote Control session "windows"):
+native `zig build check`, smoke `--check` 12/12 and `--auto-quit` 37/38,
+examples/react build + run, `zig build package` → NSIS `setup.exe` (makensis
+found in Program Files), silent install / launch / uninstall all exit 0.
+Fixed on the way: portable argv in the host tools, '\\' separators in
+embed_assets, makensis lookup on Windows. Follow-ups:
+- `addApp` should fetch `WebView2Loader.dll` itself (Microsoft.Web.WebView2
+  NuGet package, pinned hash) so native Windows builds need no
+  `-Dwebview2-loader`.
+- `zig build test` is gated to Linux in build.zig; enable the portable unit
+  tests on Windows.
+- smoke `nav iframe` check: use Oriel's navigation-blocked signal instead of
+  reading the frame URL (false FAIL on WebView2; the navigation is blocked).
+- Interactive Windows checks the smoke app cannot prove: a hotkey firing, a
+  visible dialog and notification, updater replace + restart.
+
 ## Milestone 7 — macOS (built and tested on a Mac)
 
 Worked on from a Mac session: clone with `gh repo clone highercomve/Oriel`,
