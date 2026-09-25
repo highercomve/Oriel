@@ -970,6 +970,148 @@ test "core end-to-end update flow" {
     try std.testing.expect(std.mem.startsWith(u8, gz_decompressed_content, "oriel update payload"));
 }
 
+test "core end-to-end update flow on Windows: replace the running exe" {
+    // Windows' own path: the installed exe is running, so its image is locked
+    // against replacement and installFile renames it to <exe>.old first.
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    try init(io, allocator, null);
+    defer deinit(io);
+
+    // Two real executables: PING.EXE as the installed app (it keeps running),
+    // HOSTNAME.EXE as the update (it prints the host name and exits 0).
+    const system_root = try std.testing.environ.getAlloc(allocator, "SystemRoot");
+    defer allocator.free(system_root);
+    const ping_path = try std.fs.path.join(allocator, &.{ system_root, "System32", "PING.EXE" });
+    defer allocator.free(ping_path);
+    const hostname_path = try std.fs.path.join(allocator, &.{ system_root, "System32", "HOSTNAME.EXE" });
+    defer allocator.free(hostname_path);
+
+    const new_payload = try std.Io.Dir.cwd().readFileAlloc(io, hostname_path, allocator, .limited(1 << 20));
+    defer allocator.free(new_payload);
+    var digest: [32]u8 = undefined;
+    Sha256.hash(new_payload, &digest, .{});
+    const payload_sha256 = std.fmt.bytesToHex(digest, .lower);
+
+    const kp = try Ed25519.KeyPair.generateDeterministic([_]u8{77} ** 32);
+    var pk_b64: [update_manifest.PUBLIC_KEY_B64_LEN]u8 = undefined;
+    _ = update_manifest.encodePublicKey(kp.public_key.toBytes(), &pk_b64);
+    const wrong_kp = try Ed25519.KeyPair.generateDeterministic([_]u8{88} ** 32);
+    var wrong_pk_b64: [update_manifest.PUBLIC_KEY_B64_LEN]u8 = undefined;
+    _ = update_manifest.encodePublicKey(wrong_kp.public_key.toBytes(), &wrong_pk_b64);
+
+    var server = try MockServer.start(io, 0, "", new_payload, null);
+    defer server.stop();
+
+    const payload_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/payload", .{server.port});
+    defer allocator.free(payload_url);
+    const sign_params = update_manifest.SignParameters{
+        .app_id = "dev.oriel.test",
+        .version = "2.0.0",
+        .target = DEFAULT_TARGET,
+        .format = "raw",
+        .size = new_payload.len,
+        .sha256 = &payload_sha256,
+        .url = payload_url,
+        .allow_test_http = true,
+    };
+    const sig_b64 = try update_manifest.sign(allocator, kp, sign_params);
+    defer allocator.free(sig_b64);
+    const manifest_json = try update_manifest.formatManifest(allocator, sign_params, sig_b64);
+    defer allocator.free(manifest_json);
+    server.setManifest(io, manifest_json);
+
+    const manifest_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/manifest.json", .{server.port});
+    defer allocator.free(manifest_url);
+    const cfg = Config{
+        .app_id = "dev.oriel.test",
+        .manifest_url = manifest_url,
+        .current_version = "1.0.0",
+        .public_key_b64 = &pk_b64,
+        .target = DEFAULT_TARGET,
+        .allow_http_for_test = true,
+    };
+
+    // A manifest signed with another key is rejected.
+    var wrong_key_cfg = cfg;
+    wrong_key_cfg.public_key_b64 = &wrong_pk_b64;
+    try std.testing.expectError(error.SignatureVerificationFailed, checkForUpdate(io, allocator, wrong_key_cfg));
+
+    var update = (try checkForUpdate(io, allocator, cfg)).?;
+    defer update.deinit();
+
+    // The installed app, staged in a temp dir and running.
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(dir_path);
+    const app_path = try std.fs.path.join(allocator, &.{ dir_path, "app.exe" });
+    defer allocator.free(app_path);
+    const old_path = try backend.buildOldPath(allocator, app_path);
+    defer allocator.free(old_path);
+    try std.Io.Dir.cwd().copyFile(ping_path, std.Io.Dir.cwd(), app_path, io, .{});
+    const original = try std.Io.Dir.cwd().readFileAlloc(io, app_path, allocator, .limited(1 << 20));
+    defer allocator.free(original);
+
+    var app = try std.process.spawn(io, .{
+        .argv = &.{ app_path, "-n", "60", "127.0.0.1" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    var app_running = true;
+    defer if (app_running) app.kill(io);
+
+    // Tampered payloads (hash or size not what the manifest signed) are
+    // rejected before install: the running app stays, with no .old and no
+    // temp files next to it.
+    var bad_hash = update;
+    bad_hash.sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+    try std.testing.expectError(error.PayloadHashMismatch, download(io, allocator, bad_hash, app_path, null));
+    var bad_size = update;
+    bad_size.size = update.size - 1;
+    try std.testing.expectError(error.PayloadSizeExceeded, download(io, allocator, bad_size, app_path, null));
+    {
+        const content = try std.Io.Dir.cwd().readFileAlloc(io, app_path, allocator, .limited(1 << 20));
+        defer allocator.free(content);
+        try std.testing.expectEqualSlices(u8, original, content);
+        try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, old_path, .{}));
+        var entries: usize = 0;
+        var it = tmp.dir.iterate();
+        while (try it.next(io)) |_| entries += 1;
+        try std.testing.expectEqual(1, entries);
+    }
+
+    // The verified update replaces the running exe, which moves to <exe>.old.
+    const returned_path = try download(io, allocator, update, app_path, null);
+    defer allocator.free(returned_path);
+    try std.testing.expectEqualStrings(app_path, returned_path);
+    {
+        const content = try std.Io.Dir.cwd().readFileAlloc(io, app_path, allocator, .limited(1 << 20));
+        defer allocator.free(content);
+        try std.testing.expectEqualSlices(u8, new_payload, content);
+        const old_content = try std.Io.Dir.cwd().readFileAlloc(io, old_path, allocator, .limited(1 << 20));
+        defer allocator.free(old_content);
+        try std.testing.expectEqualSlices(u8, original, old_content);
+    }
+
+    // What `restart` launches: the new exe starts and runs (restart itself
+    // ends the calling process, so it can't run inside the test runner).
+    const result = try std.process.run(allocator, io, .{ .argv = &.{app_path} });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    try std.testing.expect(std.mem.trim(u8, result.stdout, " \r\n").len > 0);
+
+    // Once the old process is gone its image is free: what cleanupStale
+    // deletes on the next start.
+    app.kill(io);
+    app_running = false;
+    try std.Io.Dir.cwd().deleteFile(io, old_path);
+}
+
 test "pure decideDestPath logic" {
     // 1. Explicit dest_path always wins
     const custom = decideDestPath("/opt/app/my_bin", "/tmp/app.AppImage", "/tmp/mount", "/tmp/mount/usr/bin/app");
