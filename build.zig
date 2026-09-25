@@ -372,9 +372,14 @@ fn addOrielModule(
         oriel.linkSystemLibrary("shlwapi", .{});
         oriel.linkSystemLibrary("ws2_32", .{});
     } else if (target.result.os.tag == .macos) {
-        // AppKit + WebKit through the Objective-C runtime (zig-objc).
-        if (b.lazyDependency("objc", .{ .target = target, .optimize = optimize })) |objc| {
-            oriel.addImport("objc", objc.module("objc"));
+        // AppKit + WebKit through the Objective-C runtime (zig-objc). Its build
+        // needs the Apple SDK, so only on a Mac: cross-building the framework for
+        // macOS from elsewhere is not supported, but configuring a macOS target
+        // must still work (the release cross-builds the macOS CLI on Linux).
+        if (b.graph.host.result.os.tag == .macos) {
+            if (b.lazyDependency("objc", .{ .target = target, .optimize = optimize })) |objc| {
+                oriel.addImport("objc", objc.module("objc"));
+            }
         }
         oriel.linkFramework("AppKit", .{});
         oriel.linkFramework("WebKit", .{});
