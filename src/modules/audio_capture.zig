@@ -2,9 +2,10 @@
 //! float samples at a fixed rate (16 kHz for whisper).
 //!
 //! Linux backend: libpulse (works on PipeWire through pipewire-pulse); the
-//! sound server resamples and downmixes. Windows backend: not implemented yet
-//! (WASAPI loopback is the plan). macOS backend: CoreAudio + AudioQueue
-//! (system audio through a loopback device such as BlackHole).
+//! sound server resamples and downmixes. Windows backend: WASAPI shared mode,
+//! system audio through loopback on each output device; downmixed and
+//! resampled here. macOS backend: CoreAudio + AudioQueue (system audio through
+//! a loopback device such as BlackHole).
 
 const builtin = @import("builtin");
 pub const common = @import("audio_capture/common.zig");
