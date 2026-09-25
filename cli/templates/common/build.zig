@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     // zig build          production build
     // zig build run      run it
 @@dev_steps@@    // zig build check    type-check src/ without building
-    // zig build package  deb, rpm and AppImage packages
+    // zig build package  installers: deb/rpm/AppImage (Linux), setup.exe (Windows), .app/.dmg (macOS)
     _ = oriel.addApp(b, dep, .{
         .name = "@@name@@",
         .root_source_file = b.path("src/main.zig"),

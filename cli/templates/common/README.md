@@ -1,7 +1,7 @@
 # @@title@@
 
 A desktop app built with [Oriel](https://github.com/highercomve/Oriel): Zig
-and the system webview (GTK4 + WebKitGTK 6.0), with a @@frontend_desc@@
+and the system webview (WebKitGTK on Linux, WebView2 on Windows, WKWebView on macOS), with a @@frontend_desc@@
 frontend.
 
 ## Develop

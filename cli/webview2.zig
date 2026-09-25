@@ -572,7 +572,7 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
         const dll_data = try extracted_dir.readFileAlloc(io, "runtimes/win-x64/native/WebView2Loader.dll", arena, .limited(10 * 1024 * 1024));
         const target_cache_dir = try getCacheDir(arena, ctx.environ, version, "x64");
         const cache_path = try atomicInstall(io, arena, target_cache_dir, "WebView2Loader.dll", dll_data);
-        try ctx.out.print("WebView2Loader.dll (x64) {s}: {s}\n", .{ version, cache_path });
+        try ctx.out.print("WebView2Loader.dll (x64) {s} (SHA-512 verified against NuGet): {s}\n", .{ version, cache_path });
 
         if (out_dir) |od| {
             const out_x64_dir = if (arch == .all) try std.fs.path.join(arena, &.{ od, "x64" }) else od;
@@ -589,7 +589,7 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
         const dll_data = try extracted_dir.readFileAlloc(io, "runtimes/win-arm64/native/WebView2Loader.dll", arena, .limited(10 * 1024 * 1024));
         const target_cache_dir = try getCacheDir(arena, ctx.environ, version, "arm64");
         const cache_path = try atomicInstall(io, arena, target_cache_dir, "WebView2Loader.dll", dll_data);
-        try ctx.out.print("WebView2Loader.dll (arm64) {s}: {s}\n", .{ version, cache_path });
+        try ctx.out.print("WebView2Loader.dll (arm64) {s} (SHA-512 verified against NuGet): {s}\n", .{ version, cache_path });
 
         if (out_dir) |od| {
             const out_arm64_dir = if (arch == .all) try std.fs.path.join(arena, &.{ od, "arm64" }) else od;

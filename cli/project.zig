@@ -56,6 +56,18 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
         }
     }
 
+    // Apps without a frontend dev server (the vanilla template) have no
+    // `dev` step: say what to use instead of zig's "no step named 'dev'".
+    if (step != null and std.mem.eql(u8, step.?, "dev")) {
+        if (ctx.capture(&.{ zig, "build", "-l" }, 300_000)) |l| {
+            defer l.deinit(ctx.gpa);
+            if (l.code == 0 and !hasStep(l.text(), "dev")) {
+                try ctx.err.print("error: this app has no frontend dev server (frontend.dev is null, e.g. the vanilla template), so there is no `dev` step.\nUse `oriel run` to build and run it, and rerun after editing.\n", .{});
+                return 1;
+            }
+        }
+    }
+
     // Check if we need to auto-inject -Dwebview2-loader
     var effective_args = args;
     var injected_args_buf: ?[]const []const u8 = null;
@@ -260,3 +272,25 @@ test "injectLoaderArg" {
     try std.testing.expectEqualStrings("-Dwebview2-loader=/cache/WebView2Loader.dll", injected[2]);
 }
 
+
+/// Whether `zig build -l` output lists a step named `name`.
+fn hasStep(list: []const u8, name: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, list, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trimStart(u8, line, " \t");
+        if (std.mem.startsWith(u8, t, name) and (t.len == name.len or t[name.len] == ' ')) return true;
+    }
+    return false;
+}
+
+test hasStep {
+    const out =
+        \\  install (default)            Copy build artifacts to prefix path
+        \\  dev                          Run with the frontend dev server
+        \\  devtools                     Something else
+    ;
+    try std.testing.expect(hasStep(out, "dev"));
+    try std.testing.expect(hasStep(out, "install"));
+    try std.testing.expect(!hasStep(out, "run"));
+    try std.testing.expect(!hasStep("  devtools  x", "dev"));
+}
