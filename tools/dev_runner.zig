@@ -236,7 +236,7 @@ const PollWatcher = struct {
 
     fn fingerprint(self: *const PollWatcher, gpa: std.mem.Allocator, io: Io, record: ?*PollWatcher) u64 {
         var hasher = std.hash.Wyhash.init(0);
-        var newest: i96 = std.math.minInt(i96);
+        var newest: i128 = std.math.minInt(i128);
         for (self.dirs) |dir_path| {
             var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch continue;
             defer dir.close(io);
@@ -252,7 +252,9 @@ const PollWatcher = struct {
                 hasher.update(dir_path);
                 hasher.update(entry.path);
                 hasher.update(std.mem.asBytes(&st.size));
-                const mtime = st.mtime.nanoseconds;
+                // i96 has 4 undefined padding bytes in memory: hash a fully
+                // defined i128, or the fingerprint changes on its own.
+                const mtime: i128 = st.mtime.nanoseconds;
                 hasher.update(std.mem.asBytes(&mtime));
                 if (record) |r| if (mtime > newest) {
                     newest = mtime;
