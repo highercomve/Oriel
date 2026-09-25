@@ -95,6 +95,7 @@ pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_QUIT: UINT = 0x0012;
 pub const WM_COMMAND: UINT = 0x0111;
 pub const WM_HOTKEY: UINT = 0x0312;
+pub const WM_TIMER: UINT = 0x0113;
 pub const WM_DPICHANGED: UINT = 0x02E0;
 pub const WM_RBUTTONUP: UINT = 0x0205;
 pub const WM_LBUTTONUP: UINT = 0x0202;
@@ -572,6 +573,8 @@ pub extern "user32" fn GetWindowTextLengthW(hWnd: HWND) callconv(.winapi) c_int;
 pub extern "user32" fn SetForegroundWindow(hWnd: HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn AllowSetForegroundWindow(dwProcessId: DWORD) callconv(.winapi) BOOL;
 pub extern "user32" fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: ?*DWORD) callconv(.winapi) DWORD;
+pub extern "user32" fn SetTimer(hWnd: ?HWND, nIDEvent: UINT_PTR, uElapse: UINT, lpTimerFunc: ?*const anyopaque) callconv(.winapi) UINT_PTR;
+pub extern "user32" fn KillTimer(hWnd: ?HWND, uIDEvent: UINT_PTR) callconv(.winapi) BOOL;
 pub extern "user32" fn SetFocus(hWnd: ?HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetForegroundWindow() callconv(.winapi) ?HWND;
 pub extern "user32" fn IsWindowVisible(hWnd: HWND) callconv(.winapi) BOOL;
@@ -785,6 +788,35 @@ pub const PROCESS_INFORMATION = extern struct {
 pub extern "kernel32" fn AcquireSRWLockExclusive(SRWLock: *SRWLOCK) callconv(.winapi) void;
 pub extern "kernel32" fn ReleaseSRWLockExclusive(SRWLock: *SRWLOCK) callconv(.winapi) void;
 pub extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: ?[*]u16, nSize: DWORD) callconv(.winapi) DWORD;
+pub extern "kernel32" fn ResumeThread(hThread: HANDLE) callconv(.winapi) DWORD;
+pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+
+// Job objects
+pub extern "kernel32" fn CreateJobObjectW(lpJobAttributes: ?*anyopaque, lpName: ?LPCWSTR) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn SetInformationJobObject(hJob: HANDLE, JobObjectInformationClass: c_int, lpJobObjectInformation: *const anyopaque, cbJobObjectInformationLength: DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn AssignProcessToJobObject(hJob: HANDLE, hProcess: HANDLE) callconv(.winapi) BOOL;
+pub extern "kernel32" fn TerminateJobObject(hJob: HANDLE, uExitCode: UINT) callconv(.winapi) BOOL;
+pub const JobObjectExtendedLimitInformation: c_int = 9;
+pub const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: DWORD = 0x2000;
+pub const JOBOBJECT_EXTENDED_LIMIT_INFORMATION = extern struct {
+    PerProcessUserTimeLimit: i64 = 0,
+    PerJobUserTimeLimit: i64 = 0,
+    LimitFlags: DWORD = 0,
+    MinimumWorkingSetSize: usize = 0,
+    MaximumWorkingSetSize: usize = 0,
+    ActiveProcessLimit: DWORD = 0,
+    Affinity: ULONG_PTR = 0,
+    PriorityClass: DWORD = 0,
+    SchedulingClass: DWORD = 0,
+    IoInfo: [6]u64 = @splat(0), // IO_COUNTERS
+    ProcessMemoryLimit: usize = 0,
+    JobMemoryLimit: usize = 0,
+    PeakProcessMemoryUsed: usize = 0,
+    PeakJobMemoryUsed: usize = 0,
+};
+comptime {
+    if (@sizeOf(usize) == 8) std.debug.assert(@sizeOf(JOBOBJECT_EXTENDED_LIMIT_INFORMATION) == 144);
+}
 pub extern "kernel32" fn GetModuleFileNameW(hModule: ?HMODULE, lpFilename: [*]WCHAR, nSize: DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.winapi) void;
 pub extern "kernel32" fn ResetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
