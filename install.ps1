@@ -4,14 +4,15 @@
 #
 # Downloads oriel-<arch>-windows.exe (x86_64 or aarch64), verifies it against
 # the release's SHA256SUMS and installs it as oriel.exe. Per user: no
-# administrator rights, and PATH is not changed (it prints how to add it).
+# administrator rights. Adds to User PATH unless ORIEL_NO_MODIFY_PATH=1.
 #
 # Environment:
-#   ORIEL_VERSION       release tag to install, e.g. v0.1.0 (default: latest)
-#   ORIEL_INSTALL_DIR   where to put oriel.exe (default: %LOCALAPPDATA%\Programs\oriel)
-#   ORIEL_RELEASES_URL  releases base URL (default: the GitHub releases of
-#                       highercomve/Oriel); files are fetched from
-#                       <url>/latest/download/<file> or <url>/download/<tag>/<file>
+#   ORIEL_VERSION         release tag to install, e.g. v0.1.0 (default: latest)
+#   ORIEL_INSTALL_DIR     where to put oriel.exe (default: %LOCALAPPDATA%\Programs\oriel)
+#   ORIEL_NO_MODIFY_PATH  set to 1 to skip adding to User PATH
+#   ORIEL_RELEASES_URL    releases base URL (default: the GitHub releases of
+#                         highercomve/Oriel); files are fetched from
+#                         <url>/latest/download/<file> or <url>/download/<tag>/<file>
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue' # Invoke-WebRequest is much faster without it
@@ -85,10 +86,38 @@ try {
 
     $installed = (& $target --version | Select-Object -First 1)
     Write-Host "Installed $installed to $target"
+    $modifyPath = $env:ORIEL_NO_MODIFY_PATH -ne '1'
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not (($env:Path -split ';') -contains $installDir) -and -not (($userPath -split ';') -contains $installDir)) {
-        Write-Host "Note: $installDir is not on your PATH; add it for your user, e.g.:"
-        Write-Host "  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';$installDir', 'User')"
+    $pathEntries = if ($userPath) { $userPath -split ';' } else { @() }
+    $alreadyInUserPath = $pathEntries -contains $installDir
+
+    if ($modifyPath) {
+        if (-not $alreadyInUserPath) {
+            $newUserPath = if ([string]::IsNullOrEmpty($userPath)) {
+                $installDir
+            } else {
+                $userPath.TrimEnd(';') + ';' + $installDir
+            }
+            [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+            Write-Host "Added $installDir to User PATH."
+        } else {
+            Write-Host "$installDir is already in User PATH."
+        }
+        $envEntries = if ($env:Path) { $env:Path -split ';' } else { @() }
+        if (-not ($envEntries -contains $installDir)) {
+            $env:Path = if ([string]::IsNullOrEmpty($env:Path)) {
+                $installDir
+            } else {
+                $env:Path.TrimEnd(';') + ';' + $installDir
+            }
+            Write-Host "Updated PATH for current session."
+        }
+    } else {
+        Write-Host "ORIEL_NO_MODIFY_PATH=1: skipped modifying PATH."
+        if (-not $alreadyInUserPath) {
+            Write-Host "Note: $installDir is not on your PATH; add it for your user, e.g.:"
+            Write-Host "  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';$installDir', 'User')"
+        }
     }
     Write-Host 'Next: oriel doctor, then oriel init my-app'
 } finally {
