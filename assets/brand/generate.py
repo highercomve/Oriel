@@ -132,7 +132,7 @@ def main() -> None:
         f'\n  <path d="{text_path(regular, tag, tag_size, (1280 - tag_w) / 2, 480)}" fill="{AMBER}"/>'))
 
     # PNG renders.
-    for px in (16, 32, 48, 64, 128, 256, 512, 1024):
+    for px in (16, 24, 32, 48, 64, 128, 256, 512, 1024):
         render(icon, f"oriel-icon-{px}.png", px)
     render(mark_light, "oriel-mark-512.png", 512)
     render(mark_dark, "oriel-mark-dark-512.png", 512)
