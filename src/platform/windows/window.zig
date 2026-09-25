@@ -152,6 +152,34 @@ pub fn windowDpi(hwnd: win32.HWND) u32 {
     return if (dpi == 0) 96 else dpi;
 }
 
+pub const TrackLimits = struct { min_w: ?c_int = null, min_h: ?c_int = null, max_w: ?c_int = null, max_h: ?c_int = null };
+
+/// Outer (physical) track sizes for the client-area limits in `options`
+/// (logical pixels) at `dpi`, given the frame's extra width and height.
+pub fn trackLimits(options: App.WindowOptions, frame_w: c_int, frame_h: c_int, dpi: u32) TrackLimits {
+    const S = struct {
+        fn outer(v: ?c_int, frame: c_int, d: u32) ?c_int {
+            return if (v) |x| toPhysical(x, d) + frame else null;
+        }
+    };
+    return .{
+        .min_w = S.outer(options.min_width, frame_w, dpi),
+        .min_h = S.outer(options.min_height, frame_h, dpi),
+        .max_w = S.outer(options.max_width, frame_w, dpi),
+        .max_h = S.outer(options.max_height, frame_h, dpi),
+    };
+}
+
+test trackLimits {
+    const none = trackLimits(.{}, 16, 39, 96);
+    try std.testing.expect(none.min_w == null and none.max_h == null);
+    const l = trackLimits(.{ .min_width = 400, .min_height = 300, .max_width = 1000 }, 16, 39, 144);
+    try std.testing.expectEqual(@as(?c_int, 616), l.min_w);
+    try std.testing.expectEqual(@as(?c_int, 489), l.min_h);
+    try std.testing.expectEqual(@as(?c_int, 1516), l.max_w);
+    try std.testing.expect(l.max_h == null);
+}
+
 test "logical and physical pixels" {
     try std.testing.expectEqual(@as(c_int, 800), toPhysical(800, 96));
     try std.testing.expectEqual(@as(c_int, 1200), toPhysical(800, 144));
@@ -1271,6 +1299,29 @@ pub fn WindowCreator(
                         var bounds: win32.RECT = undefined;
                         _ = win32.GetClientRect(hwnd, &bounds);
                         _ = w.handle.controller.putBounds(bounds);
+                    }
+                    return 0;
+                },
+                win32.WM_GETMINMAXINFO => {
+                    // min/max_width/height: limits of the client (webview)
+                    // area in logical pixels, as on the other platforms.
+                    const w = win orelse return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
+                    if (lParam == 0) return 0;
+                    const info: *win32.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lParam)));
+                    const dpi = windowDpi(hwnd);
+                    var frame = win32.RECT{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+                    const has_menu: win32.BOOL = if (win32.GetMenu(hwnd) != null) win32.TRUE else win32.FALSE;
+                    _ = win32.AdjustWindowRectExForDpi(&frame, windowLong(hwnd, win32.GWL_STYLE), has_menu, windowLong(hwnd, win32.GWL_EXSTYLE), dpi);
+                    const lim = trackLimits(w.options, frame.right - frame.left, frame.bottom - frame.top, dpi);
+                    if (lim.min_w) |v| info.ptMinTrackSize.x = v;
+                    if (lim.min_h) |v| info.ptMinTrackSize.y = v;
+                    if (lim.max_w) |v| {
+                        info.ptMaxTrackSize.x = v;
+                        info.ptMaxSize.x = @min(info.ptMaxSize.x, v);
+                    }
+                    if (lim.max_h) |v| {
+                        info.ptMaxTrackSize.y = v;
+                        info.ptMaxSize.y = @min(info.ptMaxSize.y, v);
                     }
                     return 0;
                 },

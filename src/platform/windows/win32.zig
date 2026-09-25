@@ -1225,3 +1225,13 @@ pub const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: HANDLE = @ptrFromInt(@as(u
 pub extern "user32" fn SetProcessDpiAwarenessContext(value: HANDLE) callconv(.winapi) BOOL;
 pub extern "user32" fn GetDpiForSystem() callconv(.winapi) UINT;
 pub extern "user32" fn AdjustWindowRectExForDpi(lpRect: *RECT, dwStyle: DWORD, bMenu: BOOL, dwExStyle: DWORD, dpi: UINT) callconv(.winapi) BOOL;
+
+// Minimum and maximum window sizes.
+pub const WM_GETMINMAXINFO: UINT = 0x0024;
+pub const MINMAXINFO = extern struct {
+    ptReserved: POINT,
+    ptMaxSize: POINT,
+    ptMaxPosition: POINT,
+    ptMinTrackSize: POINT,
+    ptMaxTrackSize: POINT,
+};
