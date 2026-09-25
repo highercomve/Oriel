@@ -4,6 +4,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Context = @import("Context.zig");
+const webview2 = @import("webview2.zig");
 
 pub const Command = struct {
     pub const summary = "Check that this system can build Oriel apps";
@@ -80,6 +81,7 @@ pub fn run(ctx: Context) !u8 {
             try items.append(arena, try checkXcode(c));
             try items.append(arena, try checkNode(c));
             try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
+            try items.append(arena, try checkCachedWebView2Loader(c));
             return report(arena, ctx.out, items.items, .brew);
         },
         .windows => {
@@ -87,6 +89,7 @@ pub fn run(ctx: Context) !u8 {
             try items.append(arena, try checkNode(c));
             try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
             try items.append(arena, try checkMakensis(c));
+            try items.append(arena, try checkCachedWebView2Loader(c));
             return report(arena, ctx.out, items.items, .winget);
         },
         else => {},
@@ -114,6 +117,7 @@ pub fn run(ctx: Context) !u8 {
 
     try items.append(arena, try checkBusName(c));
     try items.append(arena, try checkPortal(c));
+    try items.append(arena, try checkCachedWebView2Loader(c));
 
     const os_release = std.Io.Dir.cwd().readFileAlloc(ctx.io, "/etc/os-release", arena, .limited(64 * 1024)) catch "";
     return report(arena, ctx.out, items.items, distroFromOsRelease(os_release));
@@ -397,6 +401,43 @@ fn checkPortal(c: Context) !Item {
     };
 }
 
+pub fn checkCachedWebView2Loader(c: Context) !Item {
+    const label = "WebView2 loader";
+    const maybe_x64 = try webview2.findNewestCached(c.gpa, c.io, c.environ, "x64");
+    defer if (maybe_x64) |x| x.deinit(c.gpa);
+    const maybe_arm64 = try webview2.findNewestCached(c.gpa, c.io, c.environ, "arm64");
+    defer if (maybe_arm64) |a| a.deinit(c.gpa);
+
+    if (maybe_x64 != null and maybe_arm64 != null) {
+        return .{
+            .label = label,
+            .level = .info,
+            .ok = true,
+            .detail = try std.fmt.allocPrint(c.gpa, "{s} (x64: {s})", .{ maybe_x64.?.version, maybe_x64.?.path }),
+        };
+    } else if (maybe_x64) |x64| {
+        return .{
+            .label = label,
+            .level = .info,
+            .ok = true,
+            .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s})", .{ x64.version, x64.path }),
+        };
+    } else if (maybe_arm64) |arm64| {
+        return .{
+            .label = label,
+            .level = .info,
+            .ok = true,
+            .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s})", .{ arm64.version, arm64.path }),
+        };
+    }
+    return .{
+        .label = label,
+        .level = .info,
+        .ok = false,
+        .detail = "none cached (run: oriel webview2)",
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -465,4 +506,57 @@ test "report: exit code and install commands" {
     // Only optional/informative things missing: success.
     out.clearRetainingCapacity();
     try testing.expectEqual(0, try report(testing.allocator, &out.writer, items[3..], .pacman));
+}
+
+test "checkCachedWebView2Loader empty and populated" {
+    var env_map = std.process.Environ.Map.init(testing.allocator);
+    defer env_map.deinit();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_path);
+
+    try env_map.put("XDG_CACHE_HOME", tmp_path);
+    try env_map.put("LOCALAPPDATA", tmp_path);
+
+    var dummy_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer dummy_out.deinit();
+    var dummy_err: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer dummy_err.deinit();
+
+    const c: Context = .{
+        .gpa = testing.allocator,
+        .io = std.testing.io,
+        .environ = &env_map,
+        .out = &dummy_out.writer,
+        .err = &dummy_err.writer,
+    };
+
+    // 1. Empty cache
+    const item_empty = try checkCachedWebView2Loader(c);
+    try testing.expectEqual(.info, item_empty.level);
+    try testing.expect(!item_empty.ok);
+    try testing.expectEqualStrings("none cached (run: oriel webview2)", item_empty.detail);
+
+    // 2. Populated cache
+    const dll_dir = if (builtin.os.tag == .windows)
+        try std.fs.path.join(testing.allocator, &.{ tmp_path, "oriel", "cache", "webview2", "1.0.3856.46", "x64" })
+    else
+        try std.fs.path.join(testing.allocator, &.{ tmp_path, "oriel", "webview2", "1.0.3856.46", "x64" });
+    defer testing.allocator.free(dll_dir);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, dll_dir);
+    var target_d = try std.Io.Dir.cwd().openDir(std.testing.io, dll_dir, .{});
+    defer target_d.close(std.testing.io);
+
+    const f = try target_d.createFile(std.testing.io, "WebView2Loader.dll", .{});
+    f.close(std.testing.io);
+
+    const item_cached = try checkCachedWebView2Loader(c);
+    defer testing.allocator.free(item_cached.detail);
+    try testing.expectEqual(.info, item_cached.level);
+    try testing.expect(item_cached.ok);
+    try testing.expect(std.mem.indexOf(u8, item_cached.detail, "1.0.3856.46") != null);
 }

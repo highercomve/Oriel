@@ -78,7 +78,7 @@ Oriel apps use Win32 and Microsoft Edge WebView2 on Windows. You can build them 
 ## Requirements
 
 - **Zig 0.16.0**, and **Node.js** for the React, Vue and Svelte templates.
-- **`WebView2Loader.dll`**, passed with `-Dwebview2-loader`. Get it from the [Microsoft.Web.WebView2 NuGet package](https://www.nuget.org/packages/Microsoft.Web.WebView2/): the `.nupkg` is a ZIP archive, and the DLL is at `runtimes/win-x64/native/WebView2Loader.dll`.
+- **`WebView2Loader.dll`**: Downloaded and cached automatically by the CLI (`oriel init`, `oriel webview2`, or during `oriel build` / `oriel package`).
 - **NSIS 3** (`makensis`) for the installer. On Windows it is found in `Program Files\NSIS` even when it is not on `PATH`; on Linux install your distribution's `nsis` package.
 
 The WebView2 runtime itself ships with Windows 11 and current Windows 10; the installer checks for it.
@@ -86,18 +86,42 @@ The WebView2 runtime itself ships with Windows 11 and current Windows 10; the in
 ## Build on Windows
 
 ```sh
-oriel build -Dwebview2-loader=C:\path\to\WebView2Loader.dll
-oriel package -Dwebview2-loader=C:\path\to\WebView2Loader.dll
+oriel build
+oriel package
 ```
 
-`zig-out\bin` gets the app with `WebView2Loader.dll` next to it; `zig-out\package` gets the installer.
+The CLI automatically passes `-Dwebview2-loader=<cached path>`. `zig-out\bin` gets the app with `WebView2Loader.dll` next to it; `zig-out\package` gets the installer.
 
 ## Cross-compile from Linux
 
 ```sh
-oriel build -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
-oriel package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+oriel build -Dtarget=x86_64-windows
+oriel package -Dtarget=x86_64-windows
 ```
+
+The CLI detects the Windows target and supplies the cached `WebView2Loader.dll` automatically.
+
+## Managing WebView2Loader.dll
+
+Use `oriel webview2` to download, verify, and cache the loader:
+
+```sh
+oriel webview2                                # fetch latest stable for all architectures
+oriel webview2 --arch x64                     # fetch x64 only
+oriel webview2 --version 1.0.2903.40          # pin specific NuGet package version
+oriel webview2 --out ./libs                   # copy extracted DLL(s) to a folder
+```
+
+The download is verified by computing the package SHA-512 digest and matching it against the official NuGet registration catalog hash.
+
+To disable automatic network fetching in CI or air-gapped environments, set `ORIEL_NO_WEBVIEW2_FETCH=1` or use `--no-webview2` during `oriel init`.
+
+### Manual download
+
+If you prefer to supply the loader manually:
+1. Download the [Microsoft.Web.WebView2 NuGet package](https://www.nuget.org/packages/Microsoft.Web.WebView2/) (the `.nupkg` is a ZIP archive).
+2. Extract `runtimes/win-x64/native/WebView2Loader.dll` (or `win-arm64`).
+3. Pass `-Dwebview2-loader=/path/to/WebView2Loader.dll` to `oriel build` or `oriel package` (a user-passed option always wins).
 
 ## The installer
 
