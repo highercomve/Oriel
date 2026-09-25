@@ -102,6 +102,13 @@ Known Wine gaps, not Oriel bugs:
   Explorer shell).
 - The first start after `setup` is slow (~20 s) while Wine and WebView2
   initialise; later starts are faster.
+- Wine has no `ProcessPrng`, Zig's secure random source on Windows; Oriel
+  falls back to `RtlGenRandom` for the IPC token (without any secure source it
+  would disable IPC).
+- Smoke baseline (2026-09-25): 47/50. The known failures are `media_server`,
+  `nav iframe` and `ipc frame`: the last two load pages from local HTTP
+  servers, which Wine's networking doesn't serve here. All three pass on real
+  Windows.
 
 Results the first time this ran (2026-09-24, Proton 11.0, WebView2
 153.0.4234.48, smoke `--auto-quit` from main):

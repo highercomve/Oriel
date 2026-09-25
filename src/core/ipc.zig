@@ -17,6 +17,7 @@
 //! Note on cancellation: command cancellation is currently out of scope.
 
 const std = @import("std");
+const builtin = @import("builtin");
 pub const ThreadPool = @import("ThreadPool.zig").ThreadPool;
 const security = @import("security.zig");
 const App = @import("App.zig");
@@ -55,10 +56,24 @@ const token_len = 64; // hex of HMAC-SHA256
 pub fn initToken(io: std.Io) void {
     if (token_ready) return;
     io.randomSecure(&token_key) catch |err| {
+        // Windows: Zig uses ProcessPrng (bcryptprimitives.dll), which Wine
+        // lacks; RtlGenRandom is the documented CSPRNG behind it. Still no
+        // weak fallback: without a secure source IPC stays disabled.
+        if (builtin.os.tag == .windows and rtlGenRandom(&token_key)) {
+            token_ready = true;
+            return;
+        }
         std.log.scoped(.oriel).err("no secure random source ({s}): IPC is disabled", .{@errorName(err)});
         return;
     };
     token_ready = true;
+}
+
+extern "advapi32" fn SystemFunction036(buffer: [*]u8, len: u32) callconv(.winapi) u8;
+
+fn rtlGenRandom(buf: []u8) bool {
+    if (builtin.os.tag != .windows) return false;
+    return SystemFunction036(buf.ptr, @intCast(buf.len)) != 0;
 }
 
 /// The token of an IPC scope ("local" or a capability's origin pattern).
