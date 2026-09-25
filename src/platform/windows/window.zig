@@ -12,6 +12,7 @@ const ShellMod = @import("Shell.zig");
 const dev_server = @import("dev_server.zig");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
+const permissions = @import("../../core/permissions.zig");
 
 const log = std.log.scoped(.oriel);
 
@@ -157,6 +158,27 @@ pub fn openExternal(uri: [*:0]const u8) void {
     defer gpa.free(uri_w);
     const open_w = std.unicode.utf8ToUtf16LeStringLiteral("open");
     _ = win32.ShellExecuteW(null, open_w, uri_w.ptr, null, null, win32.SW_SHOWNORMAL);
+}
+
+/// The Oriel permission behind a WebView2 permission request (null: a kind
+/// Oriel doesn't model, left to WebView2's default).
+pub fn permissionKind(kind: webview2.COREWEBVIEW2_PERMISSION_KIND) ?permissions.Kind {
+    return switch (kind) {
+        .MICROPHONE => .microphone,
+        .CAMERA => .camera,
+        .GEOLOCATION => .location,
+        .NOTIFICATIONS => .notifications,
+        else => null,
+    };
+}
+
+test permissionKind {
+    try std.testing.expectEqual(permissions.Kind.microphone, permissionKind(.MICROPHONE).?);
+    try std.testing.expectEqual(permissions.Kind.camera, permissionKind(.CAMERA).?);
+    try std.testing.expectEqual(permissions.Kind.location, permissionKind(.GEOLOCATION).?);
+    try std.testing.expectEqual(permissions.Kind.notifications, permissionKind(.NOTIFICATIONS).?);
+    try std.testing.expect(permissionKind(.UNKNOWN_PERMISSION) == null);
+    try std.testing.expect(permissionKind(@enumFromInt(6)) == null); // CLIPBOARD_READ
 }
 
 pub fn getWindowByView(view: *webview2.ICoreWebView2) ?*App.Window {
@@ -364,6 +386,63 @@ pub fn WindowCreator(
         };
 
         var window_open_counter = std.atomic.Value(u32).init(1);
+
+        // PermissionRequested event handler
+        /// The page (or an iframe) asks for the microphone, camera, location
+        /// or notifications: allowed only if the app declares it and the
+        /// requesting origin is trusted (permissions.allowForPage). Setting
+        /// ALLOW or DENY keeps WebView2 from showing its own prompt; kinds
+        /// Oriel doesn't model keep WebView2's default.
+        /// Lifetime: owned by WindowData; removed in WindowData.deinit.
+        const PermHandler = struct {
+            handler: webview2.ICoreWebView2PermissionRequestedEventHandler,
+
+            const perm_vtable = webview2.ICoreWebView2PermissionRequestedEventHandler.VTable{
+                .QueryInterface = &qiPerm,
+                .AddRef = &addRefPerm,
+                .Release = &releasePerm,
+                .Invoke = &invokePerm,
+            };
+
+            fn qiPerm(this: *webview2.ICoreWebView2PermissionRequestedEventHandler, riid: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+                if (win32.isEqualGUID(riid, &webview2.IID_IUnknown) or win32.isEqualGUID(riid, &webview2.IID_ICoreWebView2PermissionRequestedEventHandler)) {
+                    ppv.* = this;
+                    _ = addRefPerm(this);
+                    return win32.S_OK;
+                }
+                ppv.* = null;
+                return win32.E_NOINTERFACE;
+            }
+            fn addRefPerm(_: *webview2.ICoreWebView2PermissionRequestedEventHandler) callconv(.winapi) win32.ULONG {
+                return 1;
+            }
+            fn releasePerm(_: *webview2.ICoreWebView2PermissionRequestedEventHandler) callconv(.winapi) win32.ULONG {
+                return 1;
+            }
+            fn invokePerm(_: *webview2.ICoreWebView2PermissionRequestedEventHandler, _: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2PermissionRequestedEventArgs) callconv(.winapi) win32.HRESULT {
+                const a = args orelse return win32.S_OK;
+                var raw: webview2.COREWEBVIEW2_PERMISSION_KIND = .UNKNOWN_PERMISSION;
+                if (a.lpVtbl.get_PermissionKind(a, &raw) < 0) return win32.S_OK;
+                const kind = permissionKind(raw) orelse return win32.S_OK;
+
+                var uri_w: ?win32.LPWSTR = null;
+                if (a.lpVtbl.get_Uri(a, @ptrCast(&uri_w)) < 0 or uri_w == null) {
+                    _ = a.lpVtbl.put_State(a, .DENY);
+                    return win32.S_OK;
+                }
+                defer win32.CoTaskMemFree(uri_w);
+                const slen = std.mem.indexOfScalar(u16, std.mem.span(uri_w.?), 0) orelse std.mem.span(uri_w.?).len;
+                const uri_u8 = std.unicode.utf16LeToUtf8Alloc(std.heap.smp_allocator, uri_w.?[0..slen]) catch {
+                    _ = a.lpVtbl.put_State(a, .DENY);
+                    return win32.S_OK;
+                };
+                defer std.heap.smp_allocator.free(uri_u8);
+
+                const allow = permissions.allowForPage(kind, local, uri_u8);
+                _ = a.lpVtbl.put_State(a, if (allow) .ALLOW else .DENY);
+                return win32.S_OK;
+            }
+        };
 
         // NewWindowRequested event handler
         /// Lifetime: owned by WindowData, which outlives the registration.
@@ -597,6 +676,9 @@ pub fn WindowCreator(
             nw_handler: NewWinHandler,
             nw_token: webview2.EventRegistrationToken = .{},
 
+            perm_handler: PermHandler,
+            perm_token: webview2.EventRegistrationToken = .{},
+
             cl_handler: CloseHandler,
             cl_token: webview2.EventRegistrationToken = .{},
 
@@ -617,6 +699,7 @@ pub fn WindowCreator(
                 _ = self.webview.lpVtbl.remove_NavigationStarting(self.webview, self.nav_token);
                 _ = self.webview.lpVtbl.remove_FrameNavigationStarting(self.webview, self.frame_nav_token);
                 _ = self.webview.lpVtbl.remove_NewWindowRequested(self.webview, self.nw_token);
+                _ = self.webview.lpVtbl.remove_PermissionRequested(self.webview, self.perm_token);
                 _ = self.webview.lpVtbl.remove_WindowCloseRequested(self.webview, self.cl_token);
                 if (has_dev) _ = self.webview.lpVtbl.remove_NavigationCompleted(self.webview, self.dev_token);
 
@@ -1015,6 +1098,9 @@ pub fn WindowCreator(
                     .handler = .{ .lpVtbl = &NewWinHandler.new_win_vtable },
                     .main_view = view,
                 },
+                .perm_handler = .{
+                    .handler = .{ .lpVtbl = &PermHandler.perm_vtable },
+                },
                 .cl_handler = .{
                     .handler = .{ .lpVtbl = &CloseHandler.close_vtable },
                     .target_hwnd = hwnd,
@@ -1053,6 +1139,11 @@ pub fn WindowCreator(
                 return error.WebView2AddEventHandlerFailed;
             }
             errdefer _ = view.lpVtbl.remove_NewWindowRequested(view, data.nw_token);
+
+            if (view.lpVtbl.add_PermissionRequested(view, &data.perm_handler.handler, &data.perm_token) < 0) {
+                return error.WebView2AddEventHandlerFailed;
+            }
+            errdefer _ = view.lpVtbl.remove_PermissionRequested(view, data.perm_token);
 
             if (view.addWindowCloseRequested(&data.cl_handler.handler, &data.cl_token) < 0) {
                 return error.WebView2AddEventHandlerFailed;

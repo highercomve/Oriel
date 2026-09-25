@@ -134,8 +134,8 @@ test allowForPage {
     defer App.current_security = saved;
     App.current_security = .{ .capabilities = &.{.{ .origin = "https://partner.example" }} };
     const local: security.Local = .{};
-    try std.testing.expect(allowForPage(.microphone, local, "app://app/index.html"));
+    try std.testing.expect(allowForPage(.microphone, local, security.app_origin ++ "/index.html"));
     try std.testing.expect(allowForPage(.microphone, local, "https://partner.example/call"));
     try std.testing.expect(!allowForPage(.microphone, local, "https://evil.example/"));
-    try std.testing.expect(!allowForPage(.camera, local, "app://app/index.html"));
+    try std.testing.expect(!allowForPage(.camera, local, security.app_origin ++ "/index.html"));
 }
