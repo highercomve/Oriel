@@ -31,6 +31,16 @@ cd my-app && oriel dev    # hot reload; `oriel build` for the release binary
 > See [PLAN.md](PLAN.md) for the roadmap, [IDEA.md](IDEA.md) for the background
 > and [LIBRARIES.md](LIBRARIES.md) for the dependencies.
 
+## Why "Oriel"?
+
+An **oriel** is a bay window: a small window that juts out from a wall so you
+can look outside. That is what the framework is: a native window, set into
+the operating system, with the web platform showing through it.
+
+The logo is that window seen from above. Its angled side walls read as `<`
+and `>`, like code, around a lit amber pane, a nod to Zig's orange. The
+project started as "ziguri"; it became Oriel before its first release.
+
 ## Examples
 
 Each example is its own Zig package in [`examples/`](examples), built on Oriel
