@@ -18,8 +18,9 @@
 //! minisign signature verifies against the Zig Software Foundation's public
 //! key, the trusted comment's global signature verifies, and the signed
 //! `file:` name is the requested tarball (no downgrade by substitution).
-//! Extraction rejects absolute paths, `..`, and symlinks that leave the
-//! tree; the result is renamed into place under a lock file.
+//! Extraction rejects absolute paths, `..`, drive letters, backslashes and
+//! symlinks (Zig releases have none); the result is renamed into place
+//! under a lock file.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -246,15 +247,18 @@ pub fn resolve(ctx: Context, want: []const u8) !Resolved {
             try ctx.err.print("error: ORIEL_ZIG={s} is not Zig {s} (this project's minimum_zig_version); unset it to let oriel use or install {s}\n", .{ z, want, want });
             return err;
         },
-        else => return err,
+        else => {
+            try ctx.err.print("error: finding Zig {s}: {s}\n", .{ want, @errorName(err) });
+            return err;
+        },
     };
     defer p.deinit(ctx.gpa);
     switch (p.choice.source) {
-        .env => return .{ .path = try ctx.gpa.dupe(u8, p.env_zig.?), .version = try ctx.gpa.dupe(u8, p.env_version.?), .source = .env },
-        .path => return .{ .path = try ctx.gpa.dupe(u8, p.path_zig.?), .version = try ctx.gpa.dupe(u8, p.path_version.?), .source = .path },
+        .env => return owned(ctx, try ctx.gpa.dupe(u8, p.env_zig.?), p.env_version.?, .env),
+        .path => return owned(ctx, try ctx.gpa.dupe(u8, p.path_zig.?), p.path_version.?, .path),
         .managed => {
             const v = p.choice.managed_version.?;
-            return .{ .path = try managedZigPath(ctx, v), .version = try ctx.gpa.dupe(u8, v), .source = .managed };
+            return owned(ctx, try managedZigPath(ctx, v), v, .managed);
         },
         .install => {
             if (p.path_version) |pv| try ctx.err.print("info: zig on PATH is {s}; this project needs Zig {s}\n", .{ pv, want });
@@ -262,10 +266,15 @@ pub fn resolve(ctx: Context, want: []const u8) !Resolved {
                 try ctx.err.print("error: Zig {s} is not installed and ORIEL_NO_ZIG_INSTALL=1; run `oriel zig install {s}` or set ORIEL_ZIG\n", .{ want, want });
                 return error.ZigNotInstalled;
             }
-            const path = try install(ctx, want);
-            return .{ .path = path, .version = try ctx.gpa.dupe(u8, want), .source = .managed };
+            return owned(ctx, try install(ctx, want), want, .managed);
         },
     }
+}
+
+/// A Resolved taking ownership of `path` (freed if copying `version` fails).
+fn owned(ctx: Context, path: []u8, version: []const u8, source: Source) !Resolved {
+    errdefer ctx.gpa.free(path);
+    return .{ .path = path, .version = try ctx.gpa.dupe(u8, version), .source = source };
 }
 
 fn envFlag(ctx: Context, name: []const u8) bool {
@@ -434,12 +443,11 @@ fn hashFile(io: std.Io, path: []const u8) ![64]u8 {
 // Archive extraction
 // ---------------------------------------------------------------------------
 
-/// Rejects entries a Zig tarball never has: absolute or `..` paths, and
-/// symlinks that point outside the tree or that later entries would be
-/// written through.
+/// Rejects entry paths a Zig release never has: absolute, `..`, drive
+/// letters, backslashes. (Symlink entries are rejected by the extractors:
+/// Zig releases have none, and a lexical check can't follow link chains.)
 const PathGuard = struct {
     arena: std.heap.ArenaAllocator,
-    links: std.StringHashMapUnmanaged(void) = .empty,
 
     fn init(gpa: std.mem.Allocator) PathGuard {
         return .{ .arena = .init(gpa) };
@@ -450,33 +458,17 @@ const PathGuard = struct {
     }
 
     /// The entry's path, normalized (no "." parts, no trailing '/').
-    fn check(g: *PathGuard, name: []const u8, link_target: ?[]const u8) ![]const u8 {
+    fn check(g: *PathGuard, name: []const u8) ![]const u8 {
         if (webview2.isBadPath(name) or std.mem.indexOfScalar(u8, name, '\\') != null) return error.UnsafeArchivePath;
         const a = g.arena.allocator();
         var out: std.ArrayList(u8) = .empty;
         var parts = std.mem.tokenizeScalar(u8, name, '/');
         while (parts.next()) |part| {
             if (std.mem.eql(u8, part, ".")) continue;
-            if (out.items.len > 0) {
-                if (g.links.contains(out.items)) return error.UnsafeArchivePath; // below a symlink
-                try out.append(a, '/');
-            }
+            if (out.items.len > 0) try out.append(a, '/');
             try out.appendSlice(a, part);
         }
         if (out.items.len == 0) return error.UnsafeArchivePath;
-        if (link_target) |target| {
-            if (target.len == 0 or target[0] == '/' or std.mem.indexOfScalar(u8, target, '\\') != null) return error.UnsafeArchivePath;
-            var depth: usize = std.mem.count(u8, out.items, "/");
-            var t = std.mem.tokenizeScalar(u8, target, '/');
-            while (t.next()) |part| {
-                if (std.mem.eql(u8, part, ".")) continue;
-                if (std.mem.eql(u8, part, "..")) {
-                    if (depth == 0) return error.UnsafeArchivePath;
-                    depth -= 1;
-                } else depth += 1;
-            }
-            try g.links.put(a, out.items, {});
-        }
         return out.items;
     }
 };
@@ -488,7 +480,12 @@ fn extractTarXz(ctx: Context, archive: []const u8, dest: Dir) !void {
     defer file.close(io);
     var read_buf: [64 * 1024]u8 = undefined;
     var reader = file.readerStreaming(io, &read_buf);
-    var xz = try std.compress.xz.Decompress.init(&reader.interface, ctx.gpa, try ctx.gpa.alloc(u8, 1 << 16));
+    const xz_buf = try ctx.gpa.alloc(u8, 1 << 16);
+    // Owned by the decompressor once init succeeds (freed by deinit).
+    var xz = std.compress.xz.Decompress.init(&reader.interface, ctx.gpa, xz_buf) catch |err| {
+        ctx.gpa.free(xz_buf);
+        return err;
+    };
     defer xz.deinit();
 
     var name_buf: [Dir.max_path_bytes]u8 = undefined;
@@ -500,11 +497,11 @@ fn extractTarXz(ctx: Context, archive: []const u8, dest: Dir) !void {
     var write_buf: [64 * 1024]u8 = undefined;
     while (try it.next()) |entry| {
         switch (entry.kind) {
-            .directory => try dest.createDirPath(io, try guard.check(entry.name, null)),
+            .directory => try dest.createDirPath(io, try guard.check(entry.name)),
             .file => {
-                const path = try guard.check(entry.name, null);
+                const path = try guard.check(entry.name);
+                if (entry.size > max_extracted - total) return error.ArchiveTooLarge;
                 total += entry.size;
-                if (total > max_extracted) return error.ArchiveTooLarge;
                 if (std.fs.path.dirname(path)) |parent| try dest.createDirPath(io, parent);
                 const exec = builtin.os.tag != .windows and entry.mode & 0o100 != 0;
                 const out = try dest.createFile(io, path, .{
@@ -516,11 +513,7 @@ fn extractTarXz(ctx: Context, archive: []const u8, dest: Dir) !void {
                 try it.streamRemaining(entry, &w.interface);
                 try w.interface.flush();
             },
-            .sym_link => {
-                const path = try guard.check(entry.name, entry.link_name);
-                if (std.fs.path.dirname(path)) |parent| try dest.createDirPath(io, parent);
-                try dest.symLink(io, entry.link_name, path, .{});
-            },
+            .sym_link => return error.UnsafeArchivePath,
         }
     }
 }
@@ -541,9 +534,9 @@ fn extractZip(ctx: Context, archive: []const u8, dest: Dir) !void {
         if (entry.filename_len == 0 or entry.filename_len > name_buf.len) return error.UnsafeArchivePath;
         try reader.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
         try reader.interface.readSliceAll(name_buf[0..entry.filename_len]);
-        _ = try guard.check(name_buf[0..entry.filename_len], null);
+        _ = try guard.check(name_buf[0..entry.filename_len]);
+        if (entry.uncompressed_size > max_extracted - total) return error.ArchiveTooLarge;
         total += entry.uncompressed_size;
-        if (total > max_extracted) return error.ArchiveTooLarge;
         try entry.extract(&reader, .{}, &name_buf, dest);
     }
 }
@@ -623,22 +616,83 @@ const Watchdog = struct {
     }
 };
 
+/// Where a redirect from `current` to `next` (absolute or relative) goes,
+/// written to `out`, which must not overlap the memory `current` points into.
+/// Only https targets are allowed.
+fn redirectTarget(current: std.Uri, next: []const u8, out: *[2048]u8) ![]const u8 {
+    if (next.len > out.len) return error.BadHttpStatus;
+    const target = if (std.mem.startsWith(u8, next, "https://")) blk: {
+        @memcpy(out[0..next.len], next);
+        break :blk out[0..next.len];
+    } else blk: {
+        var aux: [2048]u8 = undefined;
+        @memcpy(aux[0..next.len], next);
+        var aux_slice: []u8 = &aux;
+        const r = current.resolveInPlace(next.len, &aux_slice) catch return error.BadHttpStatus;
+        // `r` points into `current`'s buffer and `aux`, never into `out`.
+        break :blk std.fmt.bufPrint(out, "{f}", .{r}) catch return error.BadHttpStatus;
+    };
+    if (!std.mem.startsWith(u8, target, "https://")) return error.InsecureRedirect;
+    return target;
+}
+
+/// `client.request` (DNS, TCP connect, TLS handshake) has no timeout and
+/// can't be interrupted: when it takes longer than `limit_s`, report the
+/// host and exit, rather than hang (no lock is held while downloading, so
+/// other oriel processes are unaffected; a rerun tries other mirrors).
+const ConnectDeadline = struct {
+    io: std.Io,
+    err: *std.Io.Writer,
+    host: []const u8,
+    done: std.atomic.Value(bool) = .init(false),
+
+    const limit_s = 60;
+
+    fn run(d: *ConnectDeadline) void {
+        var ms: u64 = 0;
+        while (!d.done.load(.acquire)) : (ms += 250) {
+            if (ms >= limit_s * 1000) {
+                d.err.print("\nerror: no response from {s} within {d} s; run the command again to try another mirror\n", .{ d.host, limit_s }) catch {};
+                d.err.flush() catch {};
+                std.process.exit(1);
+            }
+            d.io.sleep(.fromMilliseconds(250), .awake) catch {};
+        }
+    }
+};
+
 /// GET `url` into `out` (at most `limit` bytes), following up to 5
 /// redirects, under a watchdog (see `Watchdog`; `min_rate` null: only
 /// stalls abort).
 fn download(ctx: Context, client: *std.http.Client, url: []const u8, out: *std.Io.Writer, limit: usize, min_rate: ?u64) !void {
-    var location: []const u8 = url;
+    // `location_buf` holds the next URL; `current_buf` the one being
+    // requested (the parsed Uri points into it, so resolving a relative
+    // redirect never writes over its own input).
     var location_buf: [2048]u8 = undefined;
+    var current_buf: [2048]u8 = undefined;
+    if (url.len > location_buf.len) return error.UrlTooLong;
+    @memcpy(location_buf[0..url.len], url);
+    var location_len = url.len;
     var redirects: usize = 0;
     while (true) : (redirects += 1) {
         if (redirects > 5) return error.TooManyRedirects;
-        const uri = try std.Uri.parse(location);
-        var req = try client.request(.GET, uri, .{
-            .redirect_behavior = .unhandled,
-            // Plain bodies only: tarballs are compressed already, and the
-            // signature and mirror list are small.
-            .headers = .{ .user_agent = .{ .override = "oriel-cli" }, .accept_encoding = .{ .override = "identity" } },
-        });
+        @memcpy(current_buf[0..location_len], location_buf[0..location_len]);
+        const uri = try std.Uri.parse(current_buf[0..location_len]);
+        var req = blk: {
+            // DNS, connect and the TLS handshake can't be interrupted.
+            var deadline: ConnectDeadline = .{ .io = ctx.io, .err = ctx.err, .host = current_buf[0..location_len] };
+            const deadline_thread = try std.Thread.spawn(.{}, ConnectDeadline.run, .{&deadline});
+            defer {
+                deadline.done.store(true, .release);
+                deadline_thread.join();
+            }
+            break :blk try client.request(.GET, uri, .{
+                .redirect_behavior = .unhandled,
+                // Plain bodies only: tarballs are compressed already, and the
+                // signature and mirror list are small.
+                .headers = .{ .user_agent = .{ .override = "oriel-cli" }, .accept_encoding = .{ .override = "identity" } },
+            });
+        };
         defer req.deinit();
 
         var dw_buf: [16 * 1024]u8 = undefined;
@@ -648,6 +702,10 @@ fn download(ctx: Context, client: *std.http.Client, url: []const u8, out: *std.I
         defer {
             wd.stop.store(true, .release);
             thread.join();
+            // A socket the watchdog shut down must not go back to the pool.
+            if (wd.aborted.load(.acquire)) if (req.connection) |conn| {
+                conn.closing = true;
+            };
         }
 
         req.sendBodiless() catch |err| return if (wd.aborted.load(.acquire)) error.MirrorTooSlow else err;
@@ -656,20 +714,7 @@ fn download(ctx: Context, client: *std.http.Client, url: []const u8, out: *std.I
         if (status.class() == .redirect) {
             const next = response.head.location orelse return error.BadHttpStatus;
             // Relative locations resolve against the current URL.
-            const resolved = if (std.mem.startsWith(u8, next, "https://")) next else blk: {
-                var aux: [2048]u8 = undefined;
-                if (next.len > aux.len) return error.BadHttpStatus;
-                @memcpy(aux[0..next.len], next);
-                var aux_slice: []u8 = &aux;
-                const r = uri.resolveInPlace(next.len, &aux_slice) catch return error.BadHttpStatus;
-                break :blk try std.fmt.bufPrint(&location_buf, "{f}", .{r});
-            };
-            if (!std.mem.startsWith(u8, resolved, "https://")) return error.InsecureRedirect;
-            if (resolved.ptr != &location_buf) {
-                if (resolved.len > location_buf.len) return error.BadHttpStatus;
-                @memcpy(location_buf[0..resolved.len], resolved);
-            }
-            location = location_buf[0..resolved.len];
+            location_len = (try redirectTarget(uri, next, &location_buf)).len;
             continue;
         }
         if (status != .ok) return error.BadHttpStatus;
@@ -745,9 +790,23 @@ fn mirrorList(ctx: Context, client: *std.http.Client, root: []const u8) ![]u8 {
 }
 
 /// Install Zig `version` into `<zig root>/<version>` and return the path of
-/// its binary (gpa-owned). Safe to run concurrently: installs are
-/// serialized by a lock file, and an existing install is reused.
+/// its binary (gpa-owned). Safe to run concurrently: each installer
+/// downloads into its own staging directory, and the final check and rename
+/// happen under a lock file (not held during the network phase, so a hung
+/// mirror never blocks other oriel processes); an existing install wins.
+/// Errors are reported on stderr.
 pub fn install(ctx: Context, version: []const u8) ![]u8 {
+    return installInner(ctx, version) catch |err| {
+        switch (err) {
+            // Already explained where they happen.
+            error.InvalidVersion, error.DownloadFailed => {},
+            else => ctx.err.print("error: installing Zig {s}: {s}\n", .{ version, @errorName(err) }) catch {},
+        }
+        return err;
+    };
+}
+
+fn installInner(ctx: Context, version: []const u8) ![]u8 {
     const io = ctx.io;
     const gpa = ctx.gpa;
     if (!isValidVersion(version)) {
@@ -760,11 +819,6 @@ pub fn install(ctx: Context, version: []const u8) ![]u8 {
     const zig_path = try managedZigPath(ctx, version);
     errdefer gpa.free(zig_path);
 
-    // One installer at a time; the others wait, then find it installed.
-    const lock_path = try std.fs.path.join(gpa, &.{ root, ".install.lock" });
-    defer gpa.free(lock_path);
-    const lock = try Dir.cwd().createFile(io, lock_path, .{ .truncate = false, .lock = .exclusive });
-    defer lock.close(io);
     if (Dir.cwd().access(io, zig_path, .{})) |_| return zig_path else |_| {}
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -817,7 +871,10 @@ pub fn install(ctx: Context, version: []const u8) ![]u8 {
             continue;
         };
         defer gpa.free(sig);
-        const digest = try hashFile(io, archive);
+        const digest = hashFile(io, archive) catch |err| {
+            try ctx.err.print("  {s}: reading the download: {s}, trying the next source\n", .{ base, @errorName(err) });
+            continue;
+        };
         // Never skipped: a tarball is only trusted once this passes.
         verifyMinisign(&digest, sig, zsf_public_key, name) catch |err| {
             try ctx.err.print("  {s}: minisign verification failed ({s}), trying the next source\n", .{ base, @errorName(err) });
@@ -856,7 +913,25 @@ pub fn install(ctx: Context, version: []const u8) ![]u8 {
     const platform_exe = if (std.mem.endsWith(u8, platform, "-windows")) "zig.exe" else "zig";
     const top_exe = try std.fs.path.join(arena, &.{ top_dir, platform_exe });
     Dir.cwd().access(io, top_exe, .{}) catch return error.UnexpectedArchiveLayout;
-    try Dir.cwd().rename(top_dir, Dir.cwd(), final_dir, io);
+
+    // The final step, one installer at a time: another one may have
+    // finished meanwhile (then its install is used), and a directory left
+    // without a zig binary (an interrupted install) is replaced.
+    const lock_path = try std.fs.path.join(arena, &.{ root, ".install.lock" });
+    const lock = try Dir.cwd().createFile(io, lock_path, .{ .truncate = false, .lock = .exclusive });
+    defer lock.close(io);
+    if (Dir.cwd().access(io, zig_path, .{})) |_| return zig_path else |_| {}
+    Dir.cwd().deleteTree(io, final_dir) catch {};
+    // Windows: a scanner may still hold the new files open for a moment.
+    var attempt: usize = 0;
+    while (true) : (attempt += 1) {
+        Dir.cwd().rename(top_dir, Dir.cwd(), final_dir, io) catch |err| {
+            if (builtin.os.tag != .windows or attempt >= 5) return err;
+            io.sleep(.fromMilliseconds(200), .awake) catch {};
+            continue;
+        };
+        break;
+    }
     try ctx.err.print("Installed Zig {s}: {s}\n", .{ version, zig_path });
     ctx.flush();
     return zig_path;
@@ -926,7 +1001,10 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
             const want = if (cmd.version) |v| try ctx.gpa.dupe(u8, v) else try requiredHere(ctx);
             defer ctx.gpa.free(want);
             const p = plan(ctx, want) catch |err| {
-                try ctx.err.print("error: {s}: ORIEL_ZIG is not Zig {s}\n", .{ @errorName(err), want });
+                switch (err) {
+                    error.OrielZigMismatch => try ctx.err.print("error: ORIEL_ZIG={s} is not Zig {s}\n", .{ ctx.environ.get("ORIEL_ZIG") orelse "", want }),
+                    else => try ctx.err.print("error: {s}\n", .{@errorName(err)}),
+                }
                 return 1;
             };
             defer p.deinit(ctx.gpa);
@@ -1085,18 +1163,31 @@ test verifyMinisign {
     try std.testing.expectError(error.MalformedSignature, verifyMinisign(&digest, "garbage", &pk, name));
 }
 
+test redirectTarget {
+    // The reviewer's case: an absolute redirect, then a relative one.
+    var current_buf: [2048]u8 = undefined;
+    var out: [2048]u8 = undefined;
+    const first = try redirectTarget(try std.Uri.parse("https://mirror.example/zig/zig-a.tar.xz"), "https://cdn.example/a/b.tar.xz", &out);
+    @memcpy(current_buf[0..first.len], first);
+    const second = try redirectTarget(try std.Uri.parse(current_buf[0..first.len]), "c.tar.xz", &out);
+    try std.testing.expectEqualStrings("https://cdn.example/a/c.tar.xz", second);
+    @memcpy(current_buf[0..second.len], second);
+    try std.testing.expectEqualStrings("https://cdn.example/x/y", try redirectTarget(try std.Uri.parse(current_buf[0..second.len]), "/x/y", &out));
+    try std.testing.expectError(error.InsecureRedirect, redirectTarget(try std.Uri.parse("https://a.example/x"), "http://b.example/y", &out));
+    // Scheme-relative: stays https.
+    try std.testing.expectEqualStrings("https://b.example/y", try redirectTarget(try std.Uri.parse("https://a.example/x"), "//b.example/y", &out));
+}
+
 test "PathGuard rejects unsafe archive entries" {
     var g: PathGuard = .init(std.testing.allocator);
     defer g.deinit();
-    try std.testing.expectEqualStrings("zig-x/lib/std", try g.check("./zig-x/lib/std/", null));
-    _ = try g.check("zig-x/doc/link", "../lib/std");
-    try std.testing.expectError(error.UnsafeArchivePath, g.check("/etc/passwd", null));
-    try std.testing.expectError(error.UnsafeArchivePath, g.check("zig-x/../../x", null));
-    try std.testing.expectError(error.UnsafeArchivePath, g.check("zig-x\\..\\x", null));
-    try std.testing.expectError(error.UnsafeArchivePath, g.check("C:/x", null));
-    try std.testing.expectError(error.UnsafeArchivePath, g.check("zig-x/esc", "../../.."));
-    try std.testing.expectError(error.UnsafeArchivePath, g.check("zig-x/abs", "/usr"));
-    try std.testing.expectError(error.UnsafeArchivePath, g.check("zig-x/doc/link/evil", null)); // through a symlink
+    try std.testing.expectEqualStrings("zig-x/lib/std", try g.check("./zig-x/lib/std/"));
+    try std.testing.expectError(error.UnsafeArchivePath, g.check("/etc/passwd"));
+    try std.testing.expectError(error.UnsafeArchivePath, g.check("zig-x/../../x"));
+    try std.testing.expectError(error.UnsafeArchivePath, g.check("zig-x\\..\\x"));
+    try std.testing.expectError(error.UnsafeArchivePath, g.check("C:/x"));
+    try std.testing.expectError(error.UnsafeArchivePath, g.check("\\\\server\\share\\x"));
+    try std.testing.expectError(error.UnsafeArchivePath, g.check("./"));
 }
 
 test "orielHome honors ORIEL_HOME" {

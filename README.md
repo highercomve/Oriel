@@ -130,8 +130,8 @@ ziglang.org as the last fallback, and a slow or stalled mirror is skipped. A
 tarball is used only if its minisign signature verifies against the Zig
 Software Foundation's key (from ziglang.org/download), including the trusted
 comment, whose `file:` name must be the requested tarball. It is extracted
-with path checks (no absolute paths, `..` or escaping symlinks) and moved into
-place atomically; a lock file makes concurrent installs wait for each other.
+with path checks (no absolute paths, `..`, drive letters or symlinks) and moved
+into place atomically under a lock file, so concurrent installs don't clash.
 
 | Variable | Effect |
 |---|---|
