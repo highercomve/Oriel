@@ -1,6 +1,6 @@
 ---
 .title = "Building & packaging",
-.description = "Build release binaries and packages for Linux and Windows.",
+.description = "Build release binaries and packages for Linux, Windows and macOS.",
 .date = .date("2026-09-24T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
@@ -34,7 +34,7 @@ oriel run   # build and run
 
 ## Package for distribution
 
-Create `.deb`, `.rpm` and `.AppImage` packages:
+Create the packages for the target OS: `.deb`, `.rpm` and `.AppImage` on Linux, `setup.exe` on Windows, `.app` and `.dmg` on macOS:
 
 ```sh
 oriel package
@@ -160,7 +160,18 @@ What works today, verified on macOS 15 (arm64): windows and multiple windows, th
 
 **Permissions:** input injection needs Accessibility, audio capture needs the Microphone permission (or System Audio Recording for system audio). macOS grants them per app bundle; an unbundled binary is attributed to the app that started it, so test these from an `.app`.
 
-**In progress** (Milestone 7): `.app` and `.dmg` packaging.
+## App bundle and disk image
+
+`oriel build` also writes `zig-out/<Name>.app`, and `oriel package` writes `zig-out/package/<Name>.app` and `zig-out/package/<exe>-<version>.dmg` (the app and an `Applications` link to drag it to). The bundle's `Info.plist` comes from the `.package` metadata:
+
+- identifier, name, version and icon (`.icns`, made from the PNG icon);
+- `LSMinimumSystemVersion`: the target's minimum macOS. A native build targets the Mac it's built on; to support older versions, build with e.g. `oriel package -Dtarget=aarch64-macos.13.0`;
+- `CFBundleURLTypes` for `.url_schemes` (deep links);
+- the Microphone and System Audio Recording usage strings when `audio_capture` is enabled.
+
+Start the bundle with `open zig-out/<Name>.app`: notifications then go through Notification Center, permission prompts show the app's name, and Launch Services delivers deep links to it.
+
+The bundle is ad-hoc signed, enough for the Mac that built it. To distribute it, sign it with a Developer ID and notarize it: see [Code signing]($link.page('docs/signing')).
 
 # Native dependencies
 

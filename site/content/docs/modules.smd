@@ -22,7 +22,7 @@
 | Global shortcuts | `global_shortcut` | on | ✓ | ✓ | ✓ |
 | Input injection | `input` | on | ✓ | ✓ | ✓ |
 | Clipboard | `clipboard` | on | ✓ | ✓ | ✓ |
-| Deep links | `deep_link` | **off** | ✓ | ✓ | pending (needs `.app` bundles) |
+| Deep links | `deep_link` | **off** | ✓ | ✓ | ✓ |
 | Vector search | `sqlite_vec` | **off** | ✓ | ✓ | ✓ |
 | LLM inference | `llama` | **off** | ✓ | ✓ | ✓ |
 | Speech-to-text | `whisper` | **off** | ✓ | ✓ | ✓ |
@@ -262,7 +262,7 @@ Configure schemes in `build.zig` via `.package = .{ .url_schemes = &.{"myapp"} }
 oriel deep-link add myapp
 ```
 
-**Platform support:** Linux (GApplication single-instance + XDG desktop handler) · Windows (Named mutex + `WM_COPYDATA` forwarding + HKCU registry) · macOS stub (compiles, pending `.app` bundles).
+**Platform support:** Linux (GApplication single-instance + XDG desktop handler) · Windows (Named mutex + `WM_COPYDATA` forwarding + HKCU registry) · macOS (Info.plist `CFBundleURLTypes` in the `.app`; Launch Services delivers links as `kAEGetURL` Apple Events, to the running instance if there is one; `oriel deep-link register` runs `lsregister` on `zig-out/<Name>.app`).
 
 **Status:** Opt-in with `-Ddeep_link`. Default: off.
 

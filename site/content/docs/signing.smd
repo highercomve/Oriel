@@ -84,9 +84,7 @@ For maximum compatibility, sign the executable *before* building the installer, 
 
 # macOS code signing and notarization
 
-**Planned** for Milestone 7.
-
-When macOS support ships, signing will involve:
+`oriel package` ad-hoc signs the `.app` (`codesign --sign -`), which runs on the Mac that built it. For other Macs, sign it with a Developer ID and notarize it (needs an Apple developer account); this is manual for now:
 
 1. **Code signing:** sign the `.app` bundle with your Developer ID Application certificate:
 
