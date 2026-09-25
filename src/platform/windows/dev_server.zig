@@ -95,7 +95,7 @@ pub fn stopDevServer(io: std.Io, server: *DevServer) void {
             log.err("stopping the dev server: TerminateJobObject failed ({d})", .{win32.GetLastError()});
             server.child.kill(io); // at least the direct child
         } else {
-            _ = server.child.wait(io) catch |err| log.err("waiting for the dev server: {s}", .{@errorName(err)});
+            _ = server.child.wait(io) catch server.child.kill(io);
         }
         _ = win32.CloseHandle(j);
         server.job = null;
