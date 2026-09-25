@@ -43,6 +43,8 @@ const Features = struct {
     llama: bool,
     whisper: bool,
     audio_capture: bool,
+    /// Linux/Wayland: overlay windows as layer surfaces (gtk4-layer-shell).
+    layer_shell: bool,
 
     fn fromOptions(b: *std.Build) Features {
         if (b.option(bool, "ggml_vulkan", "Enable Vulkan backend (not supported)") orelse false) {
@@ -59,7 +61,8 @@ const Features = struct {
             const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
                 std.mem.eql(u8, field.name, "llama") or
                 std.mem.eql(u8, field.name, "whisper") or
-                std.mem.eql(u8, field.name, "audio_capture"));
+                std.mem.eql(u8, field.name, "audio_capture") or
+                std.mem.eql(u8, field.name, "layer_shell"));
             // deep_link is opt-in (default off), like the native dependencies.
             const is_deep_link = comptime std.mem.eql(u8, field.name, "deep_link");
             const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
@@ -377,6 +380,10 @@ fn addOrielModule(
     });
     oriel.addOptions("build_options", options);
 
+    if (is_linux and features.layer_shell) {
+        // Before GTK: gtk4-layer-shell must be linked ahead of libwayland-client.
+        oriel.linkSystemLibrary("gtk4-layer-shell-0", .{});
+    }
     if (is_linux) {
         const gobject = b.dependency("gobject", .{ .target = target, .optimize = optimize });
         oriel.addImport("glib", gobject.module("glib2"));

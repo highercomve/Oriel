@@ -547,6 +547,11 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 .fullscreen = config.fullscreen,
                 .maximized = config.maximized,
                 .remember_geometry = config.remember_geometry,
+                .visible = config.show_main_window,
+                .transparent = config.transparent,
+                .always_on_top = config.always_on_top,
+                .skip_taskbar = config.skip_taskbar,
+                .placement = config.placement,
             }) catch |err| {
                 log.err("failed to open main window: {s}", .{@errorName(err)});
                 return 1;

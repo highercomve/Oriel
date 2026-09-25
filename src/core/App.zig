@@ -75,6 +75,18 @@ pub const Config = struct {
     /// OS permissions the app declares (`app.permissions`, from `.permissions`
     /// in build.zig): only these can be requested, by Zig or by the page.
     permissions: @import("permissions.zig").Declared = .{},
+    /// Show the main window at startup. False for background apps (tray,
+    /// global shortcut): the main window is created hidden; `show()` it later.
+    show_main_window: bool = true,
+    /// Main-window options for overlay-style apps (see WindowOptions).
+    transparent: bool = false,
+    always_on_top: bool = false,
+    skip_taskbar: bool = false,
+    placement: ?Placement = null,
+    /// Single instance: a second launch of the app forwards its arguments
+    /// (without argv[0]) here, on the main thread of the running instance,
+    /// and exits. Null keeps the platform default.
+    on_second_instance: ?*const fn (args: []const []const u8) void = null,
 };
 
 pub var process_args: []const []const u8 = &.{};
@@ -102,7 +114,69 @@ pub const WindowOptions = struct {
     fullscreen: bool = false,
     maximized: bool = false,
     remember_geometry: bool = false,
+    /// Show the window once created; false creates it hidden (`show()` later).
+    visible: bool = true,
+    /// Transparent window background: only what the page paints shows
+    /// (give `html, body` a transparent background).
+    transparent: bool = false,
+    /// Keep above other windows (overlays, floating menus).
+    always_on_top: bool = false,
+    /// Leave the window out of the taskbar / dock / alt-tab.
+    skip_taskbar: bool = false,
+    /// Where to put the window when it's shown; null = the window manager decides.
+    placement: ?Placement = null,
+    /// Closing the window hides it instead (reopen with `show()`).
+    hide_on_close: bool = false,
+    /// Take keyboard focus when shown. False for overlays that must not steal
+    /// typing from the app underneath (live captions).
+    focus_on_show: bool = true,
 };
+
+/// A position relative to the work area of the window's monitor. Portable
+/// where absolute coordinates are not (Wayland: layer-shell anchors).
+pub const Placement = struct {
+    anchor: Anchor = .center,
+    /// Distance from the anchored edges, in logical pixels.
+    margin: c_int = 0,
+
+    pub const Anchor = enum { center, top, bottom, left, right, top_left, top_right, bottom_left, bottom_right };
+
+    /// Top-left corner of a `w`×`h` window placed in `area`.
+    pub fn origin(self: Placement, area: Rect, w: c_int, h: c_int) struct { x: c_int, y: c_int } {
+        const cx = area.x + @divTrunc(area.width - w, 2);
+        const cy = area.y + @divTrunc(area.height - h, 2);
+        const left = area.x + self.margin;
+        const right = area.x + area.width - w - self.margin;
+        const top = area.y + self.margin;
+        const bottom = area.y + area.height - h - self.margin;
+        return switch (self.anchor) {
+            .center => .{ .x = cx, .y = cy },
+            .top => .{ .x = cx, .y = top },
+            .bottom => .{ .x = cx, .y = bottom },
+            .left => .{ .x = left, .y = cy },
+            .right => .{ .x = right, .y = cy },
+            .top_left => .{ .x = left, .y = top },
+            .top_right => .{ .x = right, .y = top },
+            .bottom_left => .{ .x = left, .y = bottom },
+            .bottom_right => .{ .x = right, .y = bottom },
+        };
+    }
+};
+
+pub const Rect = struct { x: c_int, y: c_int, width: c_int, height: c_int };
+
+test "Placement.origin" {
+    const area: Rect = .{ .x = 0, .y = 0, .width = 1000, .height = 800 };
+    const c = (Placement{}).origin(area, 200, 100);
+    try std.testing.expectEqual(@as(c_int, 400), c.x);
+    try std.testing.expectEqual(@as(c_int, 350), c.y);
+    const b = (Placement{ .anchor = .bottom, .margin = 48 }).origin(area, 200, 100);
+    try std.testing.expectEqual(@as(c_int, 400), b.x);
+    try std.testing.expectEqual(@as(c_int, 652), b.y);
+    const tr = (Placement{ .anchor = .top_right, .margin = 10 }).origin(.{ .x = 100, .y = 50, .width = 1000, .height = 800 }, 200, 100);
+    try std.testing.expectEqual(@as(c_int, 890), tr.x);
+    try std.testing.expectEqual(@as(c_int, 60), tr.y);
+}
 
 pub const Window = struct {
     label: [:0]const u8,
@@ -157,6 +231,33 @@ pub const Window = struct {
     }
 
     pub const WindowSize = platform.WindowSize;
+
+    /// Move the window to `placement` on its monitor's work area.
+    pub fn place(self: *Window, placement: Placement) void {
+        self.options.placement = placement;
+        platform.setWindowPlacement(self.handle, placement);
+    }
+
+    /// Center the window on its monitor.
+    pub fn center(self: *Window) void {
+        self.place(.{});
+    }
+
+    /// Let mouse input pass through the window to what's below it.
+    pub fn setClickThrough(self: *Window, enabled: bool) void {
+        platform.setWindowClickThrough(self.handle, enabled);
+    }
+
+    pub fn setAlwaysOnTop(self: *Window, enabled: bool) void {
+        self.options.always_on_top = enabled;
+        platform.setWindowAlwaysOnTop(self.handle, enabled);
+    }
+
+    /// The usable area of the window's monitor (without panels/docks where
+    /// the OS reports them), or null when unknown.
+    pub fn workArea(self: *Window) ?Rect {
+        return platform.getWindowWorkArea(self.handle);
+    }
 
     pub fn getSize(self: *Window) WindowSize {
         return platform.getWindowSize(self.handle);
@@ -402,7 +503,7 @@ pub fn openWindow(options: WindowOptions) !*Window {
         win_inst.setMaximized(true);
     }
 
-    win_inst.show();
+    if (options.visible) win_inst.show();
     if (win_inst.pending_close) {
         platform.closeWindow(win_inst.handle);
     }

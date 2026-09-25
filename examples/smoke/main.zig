@@ -203,6 +203,43 @@ const Commands = struct {
         };
     }
 
+    /// Overlay window (Milestone 10): created hidden with overlay options,
+    /// then shown, placed, made click-through, and hidden on close.
+    pub fn test_overlay_window(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {
+        const win = try oriel.App.openWindow(.{
+            .label = "test-overlay",
+            .title = "Overlay",
+            .width = 300,
+            .height = 120,
+            .decorations = false,
+            .visible = false,
+            .transparent = true,
+            .always_on_top = true,
+            .skip_taskbar = true,
+            .placement = .{ .anchor = .bottom, .margin = 40 },
+            .hide_on_close = true,
+            .focus_on_show = false,
+        });
+        win.show();
+        const area = win.workArea();
+        win.place(.{ .anchor = .top_right, .margin = 10 });
+        win.center();
+        win.setClickThrough(true);
+        win.setClickThrough(false);
+        win.setAlwaysOnTop(false);
+        win.setAlwaysOnTop(true);
+        oriel.App.closeWindow("test-overlay");
+        if (oriel.App.getWindow("test-overlay") == null) return .{ .ok = false, .detail = "hide_on_close window was destroyed" };
+        win.hide();
+        return .{
+            .ok = true,
+            .detail = if (area) |a|
+                try std.fmt.allocPrint(gpa, "hidden → shown → placed → click-through; work area {d}x{d}; hidden on close", .{ a.width, a.height })
+            else
+                try std.fmt.allocPrint(gpa, "hidden → shown → placed → click-through (no work area here); hidden on close", .{}),
+        };
+    }
+
     /// Called by the page in --auto-quit mode once everything has rendered.
     pub fn done(_: std.mem.Allocator, args: struct { failed: u32, report: []const u8 }) void {
         std.debug.print("{s}\n", .{args.report});

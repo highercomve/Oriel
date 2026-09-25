@@ -109,10 +109,14 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     const Creator = window.WindowCreator(api, config, local, bridge_patterns, csp_z);
 
     return struct {
+        /// GApplication hands the running instance the command line of later
+        /// launches (deep links, `on_second_instance`).
+        const uses_command_line = build_opts.deep_link or config.on_second_instance != null;
+
         pub fn run(io: std.Io) u8 {
             _ = io;
             const id = if (config.dev != null) config.id ++ ".Dev" else config.id;
-            const app_flags = if (build_opts.deep_link)
+            const app_flags = if (uses_command_line)
                 gio.ApplicationFlags{ .handles_command_line = true }
             else
                 gio.ApplicationFlags{};
@@ -167,7 +171,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 } else |_| {}
             }
 
-            if (build_opts.deep_link) {
+            if (uses_command_line) {
                 _ = gio.Application.signals.command_line.connect(app, ?*anyopaque, &onCommandLine, null, .{});
             } else {
                 _ = gio.Application.signals.activate.connect(app, ?*anyopaque, &activate, null, .{});
@@ -191,11 +195,11 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             var argc: c_int = 0;
             const argv = gio.ApplicationCommandLine.getArguments(cmdline, &argc);
             defer glib.strfreev(@ptrCast(argv));
+            const n: usize = @intCast(@max(argc, 0));
 
             var maybe_url: ?[]const u8 = null;
-            if (argc > 1) {
-                var idx: usize = 1;
-                while (idx < @as(usize, @intCast(argc))) : (idx += 1) {
+            if (build_opts.deep_link) {
+                for (1..n) |idx| {
                     const arg_slice = std.mem.span(argv[idx]);
                     if (deep_link.validate(arg_slice, config.deep_link_schemes)) |_| {
                         maybe_url = arg_slice;
@@ -205,24 +209,32 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             }
 
             if (App.main_window) |w| {
-                w.present();
-                if (maybe_url) |url| {
-                    deep_link.deliver(url);
+                // A later launch: the running instance handles it.
+                if (config.on_second_instance) |handler| {
+                    forwardArgs(handler, argv, n);
+                } else {
+                    w.present();
                 }
+                if (build_opts.deep_link) if (maybe_url) |url| deep_link.deliver(url);
                 return 0;
             }
 
-            if (maybe_url) |url| {
-                deep_link.setColdStartUrl(url);
-            }
+            if (build_opts.deep_link) if (maybe_url) |url| deep_link.setColdStartUrl(url);
 
             activate(app, null);
 
-            if (maybe_url) |url| {
-                deep_link.deliver(url);
-            }
+            if (build_opts.deep_link) if (maybe_url) |url| deep_link.deliver(url);
 
             return 0;
+        }
+
+        /// Call `handler` with the launch's arguments (without argv[0]).
+        fn forwardArgs(handler: *const fn ([]const []const u8) void, argv: [*][*:0]u8, n: usize) void {
+            const gpa = std.heap.smp_allocator;
+            const args = gpa.alloc([]const u8, n -| 1) catch return;
+            defer gpa.free(args);
+            for (args, 1..) |*a, idx| a.* = std.mem.span(argv[idx]);
+            handler(args);
         }
 
         fn activate(app: *gtk.Application, _: ?*anyopaque) callconv(.c) void {
@@ -247,6 +259,11 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 .fullscreen = config.fullscreen,
                 .maximized = config.maximized,
                 .remember_geometry = config.remember_geometry,
+                .visible = config.show_main_window,
+                .transparent = config.transparent,
+                .always_on_top = config.always_on_top,
+                .skip_taskbar = config.skip_taskbar,
+                .placement = config.placement,
             }) catch |err| {
                 log.err("failed to open main window: {s}", .{@errorName(err)});
                 return;
@@ -254,7 +271,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
             App.main_window = main_win.handle.gtk_window;
 
-            if (config.on_close == .hide) {
+            if (config.on_close == .hide or !config.show_main_window) {
                 holdApp();
             }
 

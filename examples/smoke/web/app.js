@@ -138,6 +138,13 @@ if (location.search.includes("child=1")) {
       }
 
       try {
+        const ov = await oriel.invoke("test_overlay_window");
+        results.push({ module: "overlay window", ok: ov.ok, detail: ov.detail });
+      } catch (e) {
+        results.push({ module: "overlay window", ok: false, detail: String(e) });
+      }
+
+      try {
         const clip = await oriel.invoke("clipboard_roundtrip");
         results.push({ module: "clipboard r/w", ok: clip.ok, detail: clip.detail });
       } catch (e) {

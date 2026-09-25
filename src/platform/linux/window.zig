@@ -13,6 +13,7 @@ const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const dev_server = @import("dev_server.zig");
 const permissions = @import("../../core/permissions.zig");
+const overlay = @import("overlay.zig");
 
 extern fn g_type_check_instance_is_a(instance: *anyopaque, iface_type: usize) c_int;
 extern fn webkit_user_media_permission_is_for_audio_device(req: *webkit.UserMediaPermissionRequest) c_int;
@@ -260,7 +261,8 @@ pub fn WindowCreator(
             defer gpa.free(target_uri);
             view.loadUri(target_uri);
 
-            window.present();
+            overlay.setup(window, view, options, (config.id ++ "\x00")[0..config.id.len :0]);
+            if (options.visible) window.present();
 
             return WindowHandle{
                 .gtk_window = window,
@@ -270,10 +272,11 @@ pub fn WindowCreator(
         }
 
         fn onWindowCloseRequest(window: *gtk.Window, win: *App.Window) callconv(.c) c_int {
-            if (std.mem.eql(u8, win.label, "main") and config.on_close == .hide) {
+            if ((std.mem.eql(u8, win.label, "main") and config.on_close == .hide) or win.options.hide_on_close) {
                 window.as(gtk.Widget).setVisible(0);
                 return 1;
             }
+            overlay.forget(window);
 
             win.saveGeometry();
 

@@ -24,7 +24,12 @@
 //!   - `isWindowMaximized(handle: WindowHandle) bool`: Query maximized state.
 //!   - `setWindowSize(handle: WindowHandle, width: c_int, height: c_int) void`: Set window default/current size.
 //!   - `getWindowSize(handle: WindowHandle) struct { width: c_int, height: c_int }`: Query current window size.
-//!   - `createWindow(options: anytype, win_inst: anytype) anyerror!WindowHandle`: Create a native window.
+//!   - `createWindow(options: anytype, win_inst: anytype) anyerror!WindowHandle`: Create a native window
+//!     (honouring `visible`, `transparent`, `always_on_top`, `skip_taskbar`, `placement`, `hide_on_close`).
+//!   - `setWindowPlacement(handle, placement: App.Placement) void`: Move to an anchor of the monitor's work area.
+//!   - `setWindowClickThrough(handle, enabled: bool) void`: Let the mouse pass through the window.
+//!   - `setWindowAlwaysOnTop(handle, enabled: bool) void`: Keep above other windows.
+//!   - `getWindowWorkArea(handle) ?App.Rect`: The usable area of the window's monitor.
 //!   - `destroyWindow(handle: WindowHandle) void`: Destroy a native window and its associated platform resources.
 //!
 //! Lifecycle and Application Operations:
@@ -71,6 +76,10 @@ comptime {
         "evalJs",
         "evalJsByLabel",
         "setMenu",
+        "setWindowPlacement",
+        "setWindowClickThrough",
+        "setWindowAlwaysOnTop",
+        "getWindowWorkArea",
     };
     for (required_decls) |decl_name| {
         if (!@hasDecl(impl, decl_name)) {
@@ -96,6 +105,10 @@ pub const setWindowMaximized = impl.setWindowMaximized;
 pub const isWindowMaximized = impl.isWindowMaximized;
 pub const setWindowSize = impl.setWindowSize;
 pub const getWindowSize = impl.getWindowSize;
+pub const setWindowPlacement = impl.setWindowPlacement;
+pub const setWindowClickThrough = impl.setWindowClickThrough;
+pub const setWindowAlwaysOnTop = impl.setWindowAlwaysOnTop;
+pub const getWindowWorkArea = impl.getWindowWorkArea;
 pub const createWindow = impl.createWindow;
 pub const destroyWindow = impl.destroyWindow;
 pub const run = impl.run;

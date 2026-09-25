@@ -29,6 +29,11 @@ pub const setWindowMaximized = window.setWindowMaximized;
 pub const isWindowMaximized = window.isWindowMaximized;
 pub const setWindowSize = window.setWindowSize;
 pub const getWindowSize = window.getWindowSize;
+pub const overlay = @import("overlay.zig");
+pub const setWindowPlacement = overlay.setWindowPlacement;
+pub const setWindowClickThrough = overlay.setWindowClickThrough;
+pub const setWindowAlwaysOnTop = overlay.setWindowAlwaysOnTop;
+pub const getWindowWorkArea = overlay.getWindowWorkArea;
 pub const openExternal = window.openExternal;
 
 pub const evalJs = bridge.evalJs;
