@@ -83,6 +83,7 @@ Oriel separates platform-neutral application and window logic (`src/core/App.zig
   - `bridge.zig`: WebKit script message handlers, JS IPC transport (`window.oriel.invoke` / `listen` / `emit`), and async command dispatch.
   - `dev_server.zig`: External dev server process management (`gio.SubprocessLauncher`, `PDEATHSIG`) and reload retries.
 - **Windows** (`src/platform/windows/`): Win32 window + Microsoft Edge WebView2 implementation behind the same platform interface.
+- **macOS** (`src/platform/macos/`): AppKit `NSWindow` + `WKWebView`, driven through the Objective-C runtime with [zig-objc](https://github.com/mitchellh/zig-objc), behind the same interface (see [macOS](#macos) below).
 
 ### Windows
 
@@ -144,6 +145,23 @@ zig build package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loa
 ```
 
 The resulting `setup.exe` bundles the application executable, `WebView2Loader.dll`, Start Menu shortcuts, and an uninstaller, and automatically detects if the Microsoft Edge WebView2 runtime is present. At runtime, `WebView2Loader.dll` is loaded strictly from the application executable's directory to avoid DLL search-order hijacking, and user data is stored at `%LOCALAPPDATA%\<app_id>\WebView2`.
+
+### macOS
+
+The macOS shell (PLAN.md Milestone 7, step 1) builds and runs natively on the Mac (Apple Silicon and Intel; needs Xcode or the command-line tools for the SDK):
+
+```sh
+zig build check && zig build test         # framework (repo root)
+cd examples/smoke && zig build && ./zig-out/bin/oriel-smoke --auto-quit
+cd examples/react && zig build && ./zig-out/bin/oriel-react-notes
+```
+
+- `src/platform/macos/`: `Shell.zig` (NSApplication run loop, main-thread tasks on the GCD main queue, default app/Edit/Window menu bar, SIGTERM/SIGINT → clean quit, Dock-icon click reopens a hidden main window), `window.zig` (windows, `WKNavigationDelegate` / `WKUIDelegate` navigation policy), `scheme.zig` (`app://` through a `WKURLSchemeHandler`, same headers and CSP as Linux), `bridge.zig` (the Linux bridge script over a `WKScriptMessageHandlerWithReply`: sync commands from the main loop, async ones on the worker pool), `dev_server.zig`.
+- **Verified** on macOS 15.2 (arm64), 2026-09-25: `examples/smoke --auto-quit` 23/23 (IPC, async IPC, events, window API incl. child windows, CSP, navigation, openExternal); `examples/react` production (embedded) and dev (Vite) builds show the notes UI.
+- **Modules:** none has a macOS backend yet (step 2). On macOS they default to off and `-D<name>=true` is refused, except `sql` (works) and `tray`, which builds as a stub whose `Tray.create` returns `error.NotSupported` so apps with a tray still run (without one). `App.setMenu` returns `error.NotSupported`.
+- **Dev mode:** `zig build dev` needs `tools/dev_runner.zig` (Linux-only). Run `zig build build-dev` and then `zig-out/bin/<app>-dev`: it starts the Vite dev server itself, retries until it answers, and stops it on exit (Vite hot reload works; no Zig rebuild on save).
+- **Not yet:** `.app` bundle and `.dmg` packaging (step 3); JS `alert()`/`confirm()` dialogs (no `WKUIDelegate` panels yet); windows without decorations can't become key.
+- `ORIEL_SNAPSHOT=/tmp/shot.png` saves the main window's page (WebKit's snapshot API) a second after it loaded: screen capture of other apps needs a Screen Recording grant on macOS.
 
 ## Working on Oriel itself
 
@@ -321,7 +339,7 @@ Command errors reject the promise with the Zig error name.
 ### System browser (`openExternal`)
 
 To open links in the user's default browser instead of navigating the webview, use `openExternal(url)` (available as an export from `./oriel` and on `window.oriel.openExternal(url)`):
-- On Linux, opens via the XDG desktop portal / `xdg-open`; on Windows, opens via `ShellExecuteW`.
+- On Linux, opens via the XDG desktop portal / `xdg-open`; on Windows, opens via `ShellExecuteW`; on macOS, via `NSWorkspace openURL:`.
 - Only `http:`, `https:` and `mailto:` schemes are allowed by default (configurable in `Security.open_external_schemes`).
 - Dangerous schemes (`file:`, `javascript:`, `data:`, `blob:`, `about:`) and control characters are always rejected.
 - Gated by the capability model: remote origins must be granted the `open_external` command capability to call it.
@@ -477,7 +495,7 @@ then SIGKILL after 0.5 s) on exit. `zig build test-dev-cleanup` checks this.
 
 `WindowOptions.url` supports relative route paths such as `"/settings"`:
 - In **development** (`config.dev`), the route resolves to the local dev server (e.g. `http://localhost:5173/settings`).
-- In **production**, it resolves to the local embedded asset origin (`app://app/settings` on Linux, `https://app.localhost/settings` on Windows).
+- In **production**, it resolves to the local embedded asset origin (`app://app/settings` on Linux and macOS, `https://app.localhost/settings` on Windows).
 - Absolute URLs with schemes are checked against `allowed_origins` and `capabilities`, and dangerous schemes (`file:`, `javascript:`, `data:`, `blob:`, `about:`) are rejected.
 
 **SPA Fallback caveat**:
@@ -488,6 +506,7 @@ With `config.spa_fallback = true` (default), deep links reload and serve `index.
 ```sh
 scripts/headless.sh ./zig-out/bin/oriel-smoke --auto-quit      # Xvfb + private D-Bus
 SHOT=shot.png scripts/headless.sh ./zig-out/bin/my-app            # screenshot after 4 s
+ORIEL_SNAPSHOT=shot.png ./zig-out/bin/my-app                       # macOS: page snapshot, no screen capture
 ```
 
 ## Plugins and system modules
@@ -1125,12 +1144,14 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `zig build package`; signing not yet implemented |
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
 | Windows | ◐ Win32 + WebView2 shell and every module/plugin (tray, sql, store, dialog, notification, menu, updater, media_server, fs_watch, global_shortcut, input, clipboard), NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
-| macOS, mobile | ❌ |
+| macOS | ◐ AppKit + WKWebView shell: windows, `app://`, IPC (sync/async), events, window API, CSP, navigation policy, dev server; modules not ported yet (tray is a stub), no `.app` bundle yet |
+| Mobile | ❌ |
 
 ## Notes
 
-- Executables link with LLVM + LLD: Zig 0.16's own linker rejects the
-  `.sframe` sections in GCC 16 / recent glibc `crt1.o`.
+- Linux and Windows executables link with LLVM + LLD: Zig 0.16's own
+  linker rejects the `.sframe` sections in GCC 16 / recent glibc `crt1.o`.
+  macOS uses Zig's own Mach-O linker (LLD has no Mach-O support in Zig).
 - Dev builds use the app ID plus `.Dev`, so they can run next to the
   production app.
 

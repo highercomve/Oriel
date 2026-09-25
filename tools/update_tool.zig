@@ -10,6 +10,15 @@ const manifest_mod = @import("update_manifest");
 
 pub const DEFAULT_TARGET = @tagName(builtin.cpu.arch) ++ "-" ++ @tagName(builtin.os.tag);
 
+/// This process's id, to make temp file names unique.
+fn processId() u64 {
+    return switch (builtin.os.tag) {
+        .windows => std.os.windows.GetCurrentProcessId(),
+        .linux => @intCast(std.os.linux.getpid()),
+        else => @intCast(std.c.getpid()), // raw Linux syscalls are SIGSYS on macOS
+    };
+}
+
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
     const gpa = init.gpa;
@@ -138,7 +147,7 @@ pub fn runKeygen(
     // Write private key file to temporary file, then rename atomically over destination
     var rand_val: u64 = undefined;
     io.random(std.mem.asBytes(&rand_val));
-    const temp_key_path = try std.fmt.allocPrint(gpa, "{s}.tmp.{d}.{x}", .{ key_path, std.os.linux.getpid(), rand_val });
+    const temp_key_path = try std.fmt.allocPrint(gpa, "{s}.tmp.{d}.{x}", .{ key_path, processId(), rand_val });
     defer gpa.free(temp_key_path);
 
     var temp_key_file = try cwd.createFile(io, temp_key_path, .{
@@ -172,7 +181,7 @@ pub fn runKeygen(
     var pk_b64: [manifest_mod.PUBLIC_KEY_B64_LEN]u8 = undefined;
     _ = manifest_mod.encodePublicKey(key_pair.public_key.toBytes(), &pk_b64);
 
-    const temp_pub_path = try std.fmt.allocPrint(gpa, "{s}.tmp.{d}.{x}", .{ pub_path, std.os.linux.getpid(), rand_val });
+    const temp_pub_path = try std.fmt.allocPrint(gpa, "{s}.tmp.{d}.{x}", .{ pub_path, processId(), rand_val });
     defer gpa.free(temp_pub_path);
 
     var temp_pub_file = try cwd.createFile(io, temp_pub_path, .{

@@ -55,8 +55,14 @@ pub const Db = struct {
 };
 
 /// SQLITE_TRANSIENT: SQLite copies bound data. (The C macro is a cast of -1,
-/// which translate-c can't express.)
-const sqlite_transient: c.sqlite3_destructor_type = @ptrFromInt(std.math.maxInt(usize));
+/// which translate-c can't express.) All-ones isn't an aligned function
+/// address on arm64, where `@ptrFromInt` refuses it, so the bits go through
+/// an extern union instead; SQLite only compares the value, never calls it.
+fn sqliteTransient() c.sqlite3_destructor_type {
+    const Bits = extern union { int: usize, ptr: c.sqlite3_destructor_type };
+    var bits: Bits = .{ .int = std.math.maxInt(usize) };
+    return (&bits).ptr;
+}
 
 /// A prepared statement. Bind indexes are 1-based, column indexes 0-based.
 pub const Stmt = struct {
@@ -67,7 +73,7 @@ pub const Stmt = struct {
     }
 
     pub fn bindText(self: Stmt, index: c_int, value: []const u8) !void {
-        if (c.sqlite3_bind_text64(self.handle, index, value.ptr, value.len, sqlite_transient, c.SQLITE_UTF8) != c.SQLITE_OK) return error.SqliteBind;
+        if (c.sqlite3_bind_text64(self.handle, index, value.ptr, value.len, sqliteTransient(), c.SQLITE_UTF8) != c.SQLITE_OK) return error.SqliteBind;
     }
 
     pub fn bindInt(self: Stmt, index: c_int, value: i64) !void {
@@ -75,7 +81,7 @@ pub const Stmt = struct {
     }
 
     pub fn bindBlob(self: Stmt, index: c_int, value: []const u8) !void {
-        if (c.sqlite3_bind_blob64(self.handle, index, value.ptr, value.len, sqlite_transient) != c.SQLITE_OK) return error.SqliteBind;
+        if (c.sqlite3_bind_blob64(self.handle, index, value.ptr, value.len, sqliteTransient()) != c.SQLITE_OK) return error.SqliteBind;
     }
 
     /// Advance to the next row; false when done.
@@ -114,4 +120,32 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
         .ok = rows == 3,
         .detail = try std.fmt.allocPrint(gpa, "SQLite {s} in-memory: {d} rows", .{ c.sqlite3_libversion(), rows }),
     };
+}
+
+test "bound text and blobs are copied (SQLITE_TRANSIENT)" {
+    const gpa = std.testing.allocator;
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try db.exec("CREATE TABLE t (s TEXT, b BLOB)");
+
+    const insert = try db.prepare("INSERT INTO t (s, b) VALUES (?1, ?2)");
+    defer insert.finalize();
+    var text_buf = "hello".*;
+    var blob_buf = [_]u8{ 1, 2, 3 };
+    try insert.bindText(1, &text_buf);
+    try insert.bindBlob(2, &blob_buf);
+    // SQLite must have its own copies: overwrite ours before the insert runs.
+    @memset(&text_buf, 'x');
+    @memset(&blob_buf, 0);
+    _ = try insert.step();
+
+    const select = try db.prepare("SELECT s, hex(b) FROM t");
+    defer select.finalize();
+    try std.testing.expect(try select.step());
+    const s = try select.text(gpa, 0);
+    defer gpa.free(s);
+    const b = try select.text(gpa, 1);
+    defer gpa.free(b);
+    try std.testing.expectEqualStrings("hello", s);
+    try std.testing.expectEqualStrings("010203", b);
 }
