@@ -571,6 +571,10 @@ pub const AppOptions = struct {
     /// the app as `app.permissions` (give it to `App.Config.permissions`).
     /// Modules that need one (audio_capture) declare it themselves.
     permissions: Permissions = .{},
+    /// Extra modules for the app's code (third-party packages), added to every
+    /// executable addApp builds (production, dev, `zig build check`):
+    /// `.imports = &.{.{ .name = "zigimg", .module = zigimg_dep.module("zigimg") }}`.
+    imports: []const std.Build.Module.Import = &.{},
 };
 
 /// See `AppOptions.permissions`.
@@ -699,7 +703,9 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
         cfg.addOption([]const []const u8, "url_schemes", url_schemes);
         addPermissionOptions(cfg, permissions);
-        break :blk addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon));
+        const d = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon));
+        for (options.imports) |imp| d.root_module.addImport(imp.name, imp.module);
+        break :blk d;
     } else null;
 
     // Generated TypeScript types, written by the dev build (no frontend needed).
@@ -742,6 +748,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(prod_cfg, permissions);
     const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon));
+    for (options.imports) |imp| exe.root_module.addImport(imp.name, imp.module);
     b.installArtifact(exe);
 
     // Windows: embed multi-resolution .ico into executable via .rc resource.
@@ -827,6 +834,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     check_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(check_cfg, permissions);
     const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null, app_icon));
+    for (options.imports) |imp| check_exe.root_module.addImport(imp.name, imp.module);
     @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_exe.step);
 
     @import("build/package.zig").addPackageSteps(b, oriel_dep, options, exe, dev_exe, icons_dir, app_icon, permissions);
