@@ -71,6 +71,13 @@ decisions), `IDEA.md` (motivation, architecture), then the code:
    (and any app you changed) with `scripts/wine.sh run`. Full procedure and
    known Wine gaps in `docs/windows-testing.md`. Wine is not Windows: say
    what was only verified under Wine.
+11. **Linux, Windows and macOS, always.** Every feature, the `oriel` CLI
+   (including `oriel dev` and `oriel update`) and the installers must work
+   on all three. OS-specific code goes behind comptime switches with a
+   backend (or a clear build-time error) for each OS. Type-check the OSes
+   you can't run (`zig build check -Dtarget=x86_64-windows`, or `zig test
+   -target x86_64-linux-musl <file> -fno-emit-bin` for host tools on a
+   Mac) and say what was not run.
 
 ## Build and test commands
 

@@ -49,7 +49,7 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
     const os_str = switch (builtin.os.tag) {
         .linux => "linux",
         .windows => "windows",
-        .macos => "darwin",
+        .macos => "macos",
         else => @tagName(builtin.os.tag),
     };
 

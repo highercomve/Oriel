@@ -3,7 +3,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
 #
-# Downloads the static binary for this machine (x86_64 or aarch64 Linux),
+# Downloads the binary for this machine (x86_64 or aarch64; Linux or macOS;
+# on Windows use install.ps1),
 # verifies it against the release's SHA256SUMS and installs it as `oriel`.
 # Never uses sudo.
 #
@@ -26,14 +27,18 @@ fail() {
     exit 1
 }
 
-os="$(uname -s)"
-[ "$os" = Linux ] || fail "unsupported OS '$os': oriel releases are Linux-only for now"
+case "$(uname -s)" in
+    Linux) os=linux ;;
+    Darwin) os=macos ;;
+    MINGW* | MSYS* | CYGWIN*) fail "on Windows, use install.ps1 (PowerShell)" ;;
+    *) fail "unsupported OS '$(uname -s)' (Linux and macOS; install.ps1 for Windows)" ;;
+esac
 case "$(uname -m)" in
     x86_64 | amd64) arch=x86_64 ;;
     aarch64 | arm64) arch=aarch64 ;;
     *) fail "unsupported architecture '$(uname -m)' (x86_64 and aarch64 are available)" ;;
 esac
-asset="oriel-${arch}-linux"
+asset="oriel-${arch}-${os}"
 
 if command -v curl >/dev/null 2>&1; then
     download() { curl -fsSL --retry 2 -o "$2" "$1"; }

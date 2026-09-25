@@ -17,6 +17,8 @@ const Io = std.Io;
 const native_os = builtin.os.tag;
 const is_linux = native_os == .linux;
 const is_windows = native_os == .windows;
+/// A POSIX pid (unused placeholder on Windows).
+const Pid = if (is_windows) i32 else posix.pid_t;
 
 var global_dev_child: ?std.process.Child = null;
 var global_app_child: ?std.process.Child = null;
@@ -38,94 +40,105 @@ fn sleepMs(io: Io, ms: u32) void {
 // POSIX process groups (Linux: raw syscalls, no libc; macOS: libc)
 // ---------------------------------------------------------------------------
 
-fn isProcessGroupAlive(pgid: posix.pid_t) bool {
-    if (pgid <= 0) return false;
-    if (is_linux) {
-        const rc = linux.syscall2(.kill, @as(usize, @bitCast(@as(isize, -pgid))), 0);
-        return linux.errno(rc) != .SRCH;
-    }
-    posix.kill(-pgid, @enumFromInt(0)) catch |err| return err != error.ProcessNotFound;
-    return true;
-}
-
-/// `waitpid(pid, WNOHANG or 0)`: the reaped pid and its raw status, or null.
-fn waitPid(pid: posix.pid_t, block: bool) ?struct { pid: posix.pid_t, status: u32 } {
-    if (is_linux) {
-        var status: u32 = 0;
-        const res = linux.waitpid(pid, &status, if (block) 0 else linux.W.NOHANG);
-        if (linux.errno(res) != .SUCCESS or @as(isize, @bitCast(res)) <= 0) return null;
-        return .{ .pid = @intCast(res), .status = status };
-    }
-    var status: c_int = 0;
-    const res = std.c.waitpid(pid, &status, if (block) 0 else std.c.W.NOHANG);
-    if (res <= 0) return null;
-    return .{ .pid = res, .status = @bitCast(status) };
-}
-
-fn reapZombies() void {
-    while (waitPid(-1, false) != null) {}
-}
-
-fn checkChildExit(pid: posix.pid_t) ?u8 {
-    const r = waitPid(pid, false) orelse return null;
-    if (r.pid != pid) return null;
-    return if ((r.status & 0x7f) == 0) @truncate((r.status >> 8) & 0xff) else 1;
-}
-
-fn signalPid(pid: posix.pid_t, sig: posix.SIG) error{ProcessNotFound}!void {
-    if (is_linux) {
-        if (linux.errno(linux.kill(pid, sig)) == .SRCH) return error.ProcessNotFound;
-        return;
-    }
-    posix.kill(pid, sig) catch |err| if (err == error.ProcessNotFound) return error.ProcessNotFound;
-}
-
-fn killProcessGroup(io: Io, pgid: posix.pid_t, direct_pid: ?posix.pid_t) void {
-    if (pgid <= 0) return;
-
-    // Send SIGTERM to the entire process group.
-    // Using a negative pgid signals every process in that process group.
-    signalPid(-pgid, posix.SIG.TERM) catch {
-        if (direct_pid) |p| _ = checkChildExit(p);
-        reapZombies();
-        return;
-    };
-
-    if (direct_pid) |p| {
-        if (p > 0 and p != pgid) signalPid(p, posix.SIG.TERM) catch {};
-    }
-
-    // Grace period: wait up to ~500ms (10 * 50ms) for graceful exit
-    var still_alive = true;
-    for (0..10) |_| {
-        reapZombies();
-        if (direct_pid) |p| _ = checkChildExit(p);
-
-        if (!isProcessGroupAlive(pgid)) {
-            still_alive = false;
-            break;
+/// POSIX only (on Windows `pid_t` is a HANDLE and there are no process
+/// groups): empty there, and only referenced behind `!is_windows`.
+const pgroup = if (is_windows) struct {} else struct {
+    pub fn isProcessGroupAlive(pgid: posix.pid_t) bool {
+        if (pgid <= 0) return false;
+        if (is_linux) {
+            const rc = linux.syscall2(.kill, @as(usize, @bitCast(@as(isize, -pgid))), 0);
+            return linux.errno(rc) != .SRCH;
         }
-        sleepMs(io, 50);
+        posix.kill(-pgid, @enumFromInt(0)) catch |err| return err != error.ProcessNotFound;
+        return true;
     }
 
-    // Escalate to SIGKILL if processes remain alive
-    if (still_alive) {
-        signalPid(-pgid, posix.SIG.KILL) catch {};
+    /// `waitpid(pid, WNOHANG or 0)`: the reaped pid and its raw status, or null.
+    pub fn waitPid(pid: posix.pid_t, block: bool) ?struct { pid: posix.pid_t, status: u32 } {
+        if (is_linux) {
+            var status: u32 = 0;
+            const res = linux.waitpid(pid, &status, if (block) 0 else linux.W.NOHANG);
+            if (linux.errno(res) != .SUCCESS or @as(isize, @bitCast(res)) <= 0) return null;
+            return .{ .pid = @intCast(res), .status = status };
+        }
+        var status: c_int = 0;
+        const res = std.c.waitpid(pid, &status, if (block) 0 else std.c.W.NOHANG);
+        if (res <= 0) return null;
+        return .{ .pid = res, .status = @bitCast(status) };
+    }
+
+    pub fn reapZombies() void {
+        while (waitPid(-1, false) != null) {}
+    }
+
+    pub fn checkChildExit(pid: posix.pid_t) ?u8 {
+        const r = waitPid(pid, false) orelse return null;
+        if (r.pid != pid) return null;
+        return if ((r.status & 0x7f) == 0) @truncate((r.status >> 8) & 0xff) else 1;
+    }
+
+    pub fn signalPid(pid: posix.pid_t, sig: posix.SIG) error{ProcessNotFound}!void {
+        if (is_linux) {
+            if (linux.errno(linux.kill(pid, sig)) == .SRCH) return error.ProcessNotFound;
+            return;
+        }
+        posix.kill(pid, sig) catch |err| if (err == error.ProcessNotFound) return error.ProcessNotFound;
+    }
+
+    pub fn killProcessGroup(io: Io, pgid: posix.pid_t, direct_pid: ?posix.pid_t) void {
+        if (pgid <= 0) return;
+
+        // Send SIGTERM to the entire process group.
+        // Using a negative pgid signals every process in that process group.
+        signalPid(-pgid, posix.SIG.TERM) catch {
+            if (direct_pid) |p| _ = checkChildExit(p);
+            reapZombies();
+            return;
+        };
+
         if (direct_pid) |p| {
-            if (p > 0 and p != pgid) signalPid(p, posix.SIG.KILL) catch {};
+            if (p > 0 and p != pgid) signalPid(p, posix.SIG.TERM) catch {};
         }
 
+        // Grace period: wait up to ~500ms (10 * 50ms) for graceful exit
+        var still_alive = true;
         for (0..10) |_| {
             reapZombies();
             if (direct_pid) |p| _ = checkChildExit(p);
-            if (!isProcessGroupAlive(pgid)) break;
-            sleepMs(io, 20);
+
+            if (!isProcessGroupAlive(pgid)) {
+                still_alive = false;
+                break;
+            }
+            sleepMs(io, 50);
         }
+
+        // Escalate to SIGKILL if processes remain alive
+        if (still_alive) {
+            signalPid(-pgid, posix.SIG.KILL) catch {};
+            if (direct_pid) |p| {
+                if (p > 0 and p != pgid) signalPid(p, posix.SIG.KILL) catch {};
+            }
+
+            for (0..10) |_| {
+                reapZombies();
+                if (direct_pid) |p| _ = checkChildExit(p);
+                if (!isProcessGroupAlive(pgid)) break;
+                sleepMs(io, 20);
+            }
+        }
+
+        if (direct_pid) |p| _ = checkChildExit(p);
+        reapZombies();
     }
 
-    if (direct_pid) |p| _ = checkChildExit(p);
-    reapZombies();
-}
+    /// Whether the process `pid` (the `zig` that runs `zig build dev`) is gone.
+    /// macOS: kill(pid, 0). (Linux uses a pidfd; Windows doesn't pass one.)
+    pub fn processGone(pid: posix.pid_t) bool {
+        posix.kill(pid, @enumFromInt(0)) catch |err| return err == error.ProcessNotFound;
+        return false;
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Children, per OS
@@ -148,7 +161,7 @@ fn childExited(io: Io, child: *std.process.Child) ?u8 {
             else => 1,
         };
     }
-    const code = checkChildExit(id) orelse return null;
+    const code = pgroup.checkChildExit(id) orelse return null;
     child.id = null;
     return code;
 }
@@ -160,7 +173,7 @@ fn stopChild(io: Io, child: *std.process.Child) void {
         child.kill(io); // TerminateProcess + wait
         return;
     }
-    killProcessGroup(io, id, id); // spawned with .pgid = 0: its pgid is its pid
+    pgroup.killProcessGroup(io, id, id); // spawned with .pgid = 0: its pgid is its pid
     child.id = null;
 }
 
@@ -252,18 +265,11 @@ const PollWatcher = struct {
     }
 };
 
-/// Whether the process `pid` (the `zig` that runs `zig build dev`) is gone.
-/// macOS: kill(pid, 0). (Linux uses a pidfd; Windows doesn't pass one.)
-fn processGone(pid: posix.pid_t) bool {
-    posix.kill(pid, @enumFromInt(0)) catch |err| return err == error.ProcessNotFound;
-    return false;
-}
-
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
     const gpa = init.gpa;
     // macOS: no PDEATHSIG; the loop exits when we are re-parented instead.
-    const initial_parent: posix.pid_t = if (is_windows) 0 else posix.getppid();
+    const initial_parent: Pid = if (is_windows) 0 else posix.getppid();
 
     if (is_linux) {
         // Capture parent pid before setting PDEATHSIG to close the race where the
@@ -320,7 +326,7 @@ pub fn main(init: std.process.Init) !u8 {
     var watch_dir: []const u8 = "src";
     var frontend_dir: ?[]const u8 = null;
     var app_bin: ?[]const u8 = null;
-    var watch_pid: ?posix.pid_t = null;
+    var watch_pid: ?Pid = null;
     var dev_cmd: std.ArrayList([]const u8) = .empty;
     var app_args: std.ArrayList([]const u8) = .empty;
 
@@ -359,7 +365,7 @@ pub fn main(init: std.process.Init) !u8 {
             frontend_dir = arg["--frontend-dir=".len..];
         } else if (std.mem.startsWith(u8, arg, "--watch-pid=")) {
             if (is_windows) continue; // not passed on Windows
-            watch_pid = std.fmt.parseInt(posix.pid_t, arg["--watch-pid=".len..], 10) catch {
+            watch_pid = std.fmt.parseInt(Pid, arg["--watch-pid=".len..], 10) catch {
                 std.debug.print("dev_runner: error: invalid {s}\n", .{arg});
                 return 1;
             };
@@ -478,7 +484,7 @@ pub fn main(init: std.process.Init) !u8 {
             sleepMs(io, 300);
             if (global_should_exit.load(.acquire)) break;
             if (!is_windows) {
-                if (watch_pid) |pid| if (processGone(pid)) {
+                if (watch_pid) |pid| if (pgroup.processGone(pid)) {
                     std.debug.print("\x1b[36m[oriel dev]\x1b[0m zig exited. Stopping.\n", .{});
                     break;
                 };
@@ -491,7 +497,7 @@ pub fn main(init: std.process.Init) !u8 {
             const app_id = ac.id; // cleared by childExited
             if (childExited(io, ac)) |exit_code| {
                 // Its helpers (same process group; pgid == its pid) go too.
-                if (!is_windows) if (app_id) |pgid| killProcessGroup(io, pgid, null);
+                if (!is_windows) if (app_id) |pgid| pgroup.killProcessGroup(io, pgid, null);
                 global_app_child = null;
                 if (exit_code == 0) {
                     std.debug.print("\x1b[36m[oriel dev]\x1b[0m App closed. Exiting dev mode.\n", .{});
@@ -627,8 +633,8 @@ test {
 
 test "isProcessGroupAlive invalid pgid" {
     if (is_windows) return error.SkipZigTest;
-    try std.testing.expect(!isProcessGroupAlive(0));
-    try std.testing.expect(!isProcessGroupAlive(-1));
+    try std.testing.expect(!pgroup.isProcessGroupAlive(0));
+    try std.testing.expect(!pgroup.isProcessGroupAlive(-1));
 }
 
 test "PollWatcher sees a .zig change and ignores other files" {

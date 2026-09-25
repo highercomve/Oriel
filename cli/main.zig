@@ -45,6 +45,9 @@ pub fn main(init: std.process.Init) !u8 {
         .err = &err.interface,
     };
     defer ctx.flush();
+    // Windows: an update renames the running oriel.exe to oriel.exe.old;
+    // remove it now that it isn't running. (No-op on Linux and macOS.)
+    @import("updater_core").backend.cleanupStale(io, init.gpa);
 
     // Portable argv (WTF-16 on Windows, so not `args.vector`).
     const all_args = try init.minimal.args.toSlice(arena);
