@@ -79,9 +79,10 @@ curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh |
 irm https://raw.githubusercontent.com/highercomve/Oriel/main/install.ps1 | iex
 ```
 
-The CLI requires Zig 0.16.x installed on the system (verified by `oriel doctor`).
-It runs `zig` from PATH, or `$ORIEL_ZIG` if set (useful when the default `zig` is
-not 0.16).
+The CLI brings its own Zig when needed: it uses the project's Zig version
+(`build.zig.zon` `.minimum_zig_version`) from `$ORIEL_ZIG`, else `zig` on PATH
+when that is the right version, else `~/.oriel/zig/<version>`, which it
+downloads (minisign-verified) on first use. See [Zig versions](#zig-versions-oriel-zig).
 
 | Command | What it does |
 |---|---|
@@ -90,11 +91,12 @@ not 0.16).
 | `oriel dev` | Runs the frontend dev server (Vite) and rebuilds + restarts the app when a `.zig` file changes (hot reload; inotify on Linux, polling on macOS and Windows) |
 | `oriel build` | Builds the production app (frontend embedded) into `zig-out/bin/` (`ReleaseSafe` by default) |
 | `oriel run` | Builds and runs the production app |
-| `oriel package` | Builds distribution packages into `zig-out/package/` (deb, rpm, AppImage on Linux; NSIS `setup.exe` on Windows) |
+| `oriel package` | Builds distribution packages into `zig-out/package/` (deb, rpm, AppImage on Linux; NSIS `setup.exe` on Windows; `.app` and `.dmg` on macOS) |
 | `oriel types` | Regenerates the frontend's TypeScript types (`frontend/src/oriel.ts`) from the Zig `Commands` |
 | `oriel check` | Type-check the app's Zig code without building binaries (~1 s) |
 | `oriel webview2` | Downloads, verifies (SHA-512 against NuGet registration catalog), and caches Microsoft Edge `WebView2Loader.dll` for Windows (`--version <ver>`, `--arch x64|arm64|all`, `--out <dir>`) |
 | `oriel deep-link` | Configure and register custom URL schemes (`add <scheme>`, `register`, `unregister`) |
+| `oriel zig` | Manages the Zig versions the CLI uses in `~/.oriel/zig` (`install [version]`, `uninstall <version>`, `list`, `which`) |
 | `oriel update` | Updates the CLI binary in place using Oriel's self-updater (`--check`, `--version <tag>`, `--yes`) |
 | `oriel --version` | CLI version and the Oriel ref `init` pins |
 
@@ -103,6 +105,40 @@ works from anywhere inside the project, found by walking up to `build.zig.zon`.
 Extra arguments are passed through to the underlying build step, e.g.
 `oriel build -Doptimize=ReleaseFast`, `oriel package -Dtarget=x86_64-windows` (which automatically supplies the cached `WebView2Loader.dll`),
 `oriel run -- --flag`.
+
+### Zig versions (`oriel zig`)
+
+Every command that runs Zig (`dev`, `build`, `run`, `package`, `types`,
+`check`, `init`) picks the project's Zig, the `.minimum_zig_version` in
+`build.zig.zon` (a matching Zig has the same major.minor and is not older):
+
+1. `$ORIEL_ZIG`, if set (it must be a matching version).
+2. `zig` on PATH, if it matches (a different version is skipped).
+3. `~/.oriel/zig/<version>/zig` (Windows: `%USERPROFILE%\.oriel\zig\<version>\zig.exe`).
+4. Otherwise that version is installed there on first use.
+
+```sh
+oriel zig which              # the zig this project uses, and where it comes from
+oriel zig install            # the project's version (or: oriel zig install 0.16.0)
+oriel zig list               # installed versions, and the zig on PATH
+oriel zig uninstall 0.16.0
+```
+
+Downloads follow Zig's [community mirror guidance](https://ziglang.org/download/community-mirrors/): the
+tarball and its `.minisig` come from the mirrors in random order, with
+ziglang.org as the last fallback, and a slow or stalled mirror is skipped. A
+tarball is used only if its minisign signature verifies against the Zig
+Software Foundation's key (from ziglang.org/download), including the trusted
+comment, whose `file:` name must be the requested tarball. It is extracted
+with path checks (no absolute paths, `..` or escaping symlinks) and moved into
+place atomically; a lock file makes concurrent installs wait for each other.
+
+| Variable | Effect |
+|---|---|
+| `ORIEL_ZIG` | Use this Zig binary (must be the project's version) |
+| `ORIEL_HOME` | Where Oriel keeps its data instead of `~/.oriel` (Zig installs go in `$ORIEL_HOME/zig`) |
+| `ORIEL_NO_ZIG_INSTALL=1` | Never download Zig: fail with a hint instead |
+| `ORIEL_ZIG_MIRRORS` | Use these mirrors (whitespace- or comma-separated https URLs) instead of the community list, e.g. a company mirror; still verified, ziglang.org stays the fallback |
 
 ### `oriel init` options
 

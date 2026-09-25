@@ -7,6 +7,7 @@ const Context = @import("Context.zig");
 const template = @import("template.zig");
 const Template = template.Template;
 const webview2 = @import("webview2.zig");
+const zig_manager = @import("zig_manager.zig");
 
 /// Where `oriel init` fetches Oriel from (plus `#<ref>`).
 pub const repo_url = "git+https://github.com/highercomve/Oriel";
@@ -27,7 +28,8 @@ pub const Command = struct {
     pub const details =
         \\Templates: react, vue and svelte use Vite (Node.js + npm); vanilla is a
         \\static page with no build step. The target directory must not exist or
-        \\be empty. Set ORIEL_ZIG to choose the zig binary (default: zig on PATH).
+        \\be empty. Zig: $ORIEL_ZIG, else zig on PATH when it is the templates'
+        \\version, else ~/.oriel/zig (installed on first use; see `oriel zig`).
     ;
 
     name: []const u8,
@@ -312,7 +314,15 @@ pub fn runWithFetch(ctx: Context, cmd: Command, fetch_loader: ?FetchLoaderFn) !u
     };
     try ctx.out.print("Created {s}/ ({t} template, app id {s})\n", .{ cmd.name, cmd.template, app_id });
 
-    const zig = ctx.zig();
+    // The new project's Zig: $ORIEL_ZIG, PATH, ~/.oriel/zig, or installed now.
+    const want = try zig_manager.requiredForRoot(ctx, project_abs);
+    defer ctx.gpa.free(want);
+    const resolved = zig_manager.resolve(ctx, want) catch {
+        try err.print("Then run: cd {s} && oriel zig install && zig build --fetch\n", .{cmd.name});
+        return 1;
+    };
+    defer resolved.deinit(ctx.gpa);
+    const zig = resolved.path;
     if (cmd.oriel_path == null) {
         const ref = cmd.oriel_ref orelse build_options.oriel_ref;
         const url = try std.fmt.allocPrint(arena, "{s}#{s}", .{ repo_url, ref });
@@ -552,7 +562,8 @@ test "init integration with stubbed fetch_loader" {
     try tmp.dir.createDirPath(io, "bin");
     try tmp.dir.writeFile(io, .{
         .sub_path = mock_zig_file,
-        .data = if (@import("builtin").os.tag == .windows) "@exit /b 0\r\n" else "#!/bin/sh\nexit 0\n",
+        // `zig version` must report the templates' Zig (zig_manager checks it).
+        .data = if (@import("builtin").os.tag == .windows) "@if \"%1\"==\"version\" echo 0.16.0\r\n@exit /b 0\r\n" else "#!/bin/sh\n[ \"$1\" = version ] && echo 0.16.0\nexit 0\n",
         .flags = .{ .permissions = .executable_file },
     });
     const mock_zig = try tmp.dir.realPathFileAlloc(io, mock_zig_file, gpa);
@@ -645,4 +656,3 @@ test "init integration with stubbed fetch_loader" {
     try testing.expectEqual(@as(u8, 0), code4);
     try testing.expect(!test_fetch_state.called);
 }
-

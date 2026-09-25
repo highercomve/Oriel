@@ -5,6 +5,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Context = @import("Context.zig");
 const webview2 = @import("webview2.zig");
+const zig_manager = @import("zig_manager.zig");
 
 pub const Command = struct {
     pub const summary = "Check that this system can build Oriel apps";
@@ -60,7 +61,7 @@ const Item = struct {
     hint: ?[]const u8 = null,
 };
 
-const zig_hint = "Zig 0.16.x: https://ziglang.org/download/ (put it on PATH or set ORIEL_ZIG=/path/to/zig)";
+const zig_hint = "`oriel zig install` (into ~/.oriel/zig), or Zig from https://ziglang.org/download/ on PATH or in ORIEL_ZIG";
 const xcode_hint = "Xcode command-line tools: xcode-select --install (or install Xcode)";
 const webview2_hint = "WebView2 runtime: https://developer.microsoft.com/microsoft-edge/webview2/ (preinstalled on Windows 11)";
 const node_packages: Packages = .{ .pacman = "nodejs", .apt = "nodejs", .dnf = "nodejs", .zypper = "nodejs-default", .brew = "node", .winget = "OpenJS.NodeJS.LTS" };
@@ -236,21 +237,32 @@ pub fn nodeVersionOk(version: []const u8) bool {
     };
 }
 
+/// The Zig the current project (or a new one) uses: where it comes from
+/// (ORIEL_ZIG, PATH, managed in ~/.oriel/zig) or that it would be installed.
 fn checkZig(c: Context) !Item {
-    const name = c.zig();
-    const source = if (c.environ.get("ORIEL_ZIG")) |z| (if (z.len > 0) "$ORIEL_ZIG" else "PATH") else "PATH";
-    const path = try c.findExecutable(name) orelse
-        return .{ .label = "zig 0.16", .level = .required, .ok = false, .detail = try std.fmt.allocPrint(c.gpa, "not found ({s})", .{source}), .hint = zig_hint };
-    const out = c.capture(&.{ path, "version" }, 30_000) orelse
-        return .{ .label = "zig 0.16", .level = .required, .ok = false, .detail = try std.fmt.allocPrint(c.gpa, "{s} did not run", .{path}), .hint = zig_hint };
-    const ok = out.code == 0 and Context.zigVersionOk(out.text());
-    return .{
-        .label = "zig 0.16",
-        .level = .required,
-        .ok = ok,
-        .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}){s}", .{ out.text(), path, if (ok) "" else ": need 0.16.x" }),
-        .hint = zig_hint,
+    const want = try zig_manager.requiredHere(c);
+    const label = try std.fmt.allocPrint(c.gpa, "zig {s}", .{want});
+    const p = zig_manager.plan(c, want) catch |err| switch (err) {
+        error.OrielZigMismatch => return .{ .label = label, .level = .required, .ok = false, .detail = try std.fmt.allocPrint(c.gpa, "ORIEL_ZIG={s} is not Zig {s}", .{ c.environ.get("ORIEL_ZIG") orelse "", want }), .hint = zig_hint },
+        else => return err,
     };
+    const source = p.choice.source.label();
+    return switch (p.choice.source) {
+        .env => .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}, {s})", .{ p.env_version.?, p.env_zig.?, source }) },
+        .path => .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}, {s})", .{ p.path_version.?, p.path_zig.?, source }) },
+        .managed => .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}, {s})", .{ p.choice.managed_version.?, try zig_manager.managedZigPath(c, p.choice.managed_version.?), source }) },
+        // Not a failure: the first build installs it (unless disabled).
+        .install => .{ .label = label, .level = .required, .ok = !zigInstallDisabled(c), .detail = try std.fmt.allocPrint(c.gpa, "{s}: {s} on first build{s}", .{
+            source,
+            try zig_manager.managedZigPath(c, want),
+            if (p.path_version) |v| try std.fmt.allocPrint(c.gpa, " (zig on PATH is {s})", .{v}) else "",
+        }), .hint = zig_hint },
+    };
+}
+
+fn zigInstallDisabled(c: Context) bool {
+    const v = c.environ.get("ORIEL_NO_ZIG_INSTALL") orelse return false;
+    return v.len > 0 and !std.mem.eql(u8, v, "0");
 }
 
 fn checkNode(c: Context) !Item {

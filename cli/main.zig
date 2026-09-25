@@ -3,6 +3,7 @@
 //!     oriel init <name> [--template react|vue|svelte|vanilla] ...
 //!     oriel doctor
 //!     oriel dev | build | run | package | types | check [zig build args...]
+//!     oriel zig install | uninstall | list | which [version]
 //!
 //! A standalone static program (no GTK), built with `zig build cli`.
 
@@ -16,6 +17,7 @@ const project = @import("project.zig");
 const update_cmd = @import("update.zig");
 const webview2_cmd = @import("webview2.zig");
 const deep_link_cmd = @import("deep_link.zig");
+const zig_cmd = @import("zig_manager.zig");
 
 const program = "oriel";
 
@@ -25,6 +27,7 @@ pub const Commands = union(enum) {
     update: update_cmd.Command,
     webview2: webview2_cmd.Command,
     deep_link: deep_link_cmd.Command,
+    zig: zig_cmd.Command,
     dev: project.Wrapper("dev", "Run the app against the frontend dev server, with hot reload"),
     build: project.Wrapper(null, "Build the app (frontend embedded) into zig-out/bin"),
     run: project.Wrapper("run", "Build and run the app"),
@@ -89,6 +92,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
             .update => |c| return update_cmd.run(ctx, c),
             .webview2 => |c| return webview2_cmd.run(ctx, c),
             .deep_link => |c| return deep_link_cmd.run(ctx, c),
+            .zig => |c| return zig_cmd.run(ctx, c),
             inline else => |c| return project.exec(ctx, @TypeOf(c).zig_step, c.args),
         },
     }
@@ -102,6 +106,7 @@ test {
     _ = update_cmd;
     _ = webview2_cmd;
     _ = deep_link_cmd;
+    _ = zig_cmd;
     _ = project;
     _ = @import("template.zig");
 }
@@ -116,7 +121,7 @@ test "command table" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try args.writeHelp(Commands, program, &out.writer);
-    for ([_][]const u8{ "init", "doctor", "update", "webview2", "deep-link", "dev", "build", "run", "package", "types", "check" }) |name| {
+    for ([_][]const u8{ "init", "doctor", "update", "webview2", "deep-link", "zig", "dev", "build", "run", "package", "types", "check" }) |name| {
         const line = try std.fmt.allocPrint(std.testing.allocator, "\n  {s} ", .{name});
         defer std.testing.allocator.free(line);
         try std.testing.expect(std.mem.indexOf(u8, out.written(), line) != null);
