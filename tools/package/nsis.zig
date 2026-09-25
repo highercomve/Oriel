@@ -369,4 +369,3 @@ test "generateNsisScript with url_schemes" {
     try testing.expect(std.mem.indexOf(u8, script, "DeleteRegKey HKCU \"Software\\Classes\\myapp\"") != null);
     try testing.expect(std.mem.indexOf(u8, script, "DeleteRegKey HKCU \"Software\\Classes\\custom-scheme\"") != null);
 }
-

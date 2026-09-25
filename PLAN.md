@@ -513,9 +513,16 @@ from Linux needs Apple's SDK frameworks).
    .app bundle), media_server, audio_capture (CoreAudio; system audio needs
    a virtual device such as BlackHole). ggml: Metal backend for
    whisper/llama.
-3. **Packaging:** `.app` bundle (Info.plist, icon .icns) and `.dmg`;
-   signing/notarization documented as optional (needs an Apple developer
-   account).
+3. ✅ **Packaging** (branch `macos/bundle-deeplinks`, 2026-09-25):
+   `package_tool package-app` / `package-dmg`; formats `app` and `dmg`
+   (macOS defaults); `zig build` also installs `zig-out/<Name>.app`.
+   Info.plist from the package metadata (CFBundleURLTypes, audio usage
+   strings, LSMinimumSystemVersion = the target's minimum macOS), `.icns`
+   written in Zig from the resized PNGs, ad-hoc signed; `.dmg` via hdiutil
+   with an Applications link. Verified: codesign --verify --deep --strict,
+   hdiutil verify, the app runs from the bundle (smoke 41/41 via `open`),
+   UNUserNotificationCenter banner shown once allowed. Developer ID signing
+   and notarization documented, manual (needs an Apple developer account).
 4. **Tests:** unit tests run on macOS; smoke checks where they don't need
    permissions; the memory-safety review (rule 9) covers Objective-C
    refcounts (retain/release, autorelease pools) like COM and GObject.
@@ -532,7 +539,7 @@ code plus the CLI; all three OSes (rule 11).
   that launched the app, if any). Typed in the generated TS.
 - **CLI:** `oriel deep-link add <scheme>` edits build.zig (enable module +
   scheme); `oriel deep-link register` registers the dev build locally
-  (Linux .desktop + xdg-mime, Windows HKCU, macOS: n/a without a bundle);
+  (Linux .desktop + xdg-mime, Windows HKCU, macOS lsregister of zig-out/<Name>.app);
   `oriel package` registers the scheme in every installer automatically.
 - **Linux:** .desktop `MimeType=x-scheme-handler/<scheme>` in deb/rpm/AppImage,
   `xdg-mime default`; URL arrives in argv; GTK single-instance forwards it to
@@ -548,7 +555,7 @@ code plus the CLI; all three OSes (rule 11).
 - **Tests:** URL validation unit tests; Linux headless `xdg-open myapp://…`
   reaching a running and a cold-started app; Windows PC via the browser;
   macOS once bundles exist. Smoke checks where possible.
-- **Status:** Linux + Windows implemented and verified (unit tests, headless smoke, React example e2e single-instance handoff, and Windows cold-start + WM_COPYDATA handoff under Wine). macOS compiling stub implemented (`error.NotSupported`); pending Milestone 7 step 3 `.app` bundles.
+- **Status:** Linux + Windows implemented and verified (unit tests, headless smoke, React example e2e single-instance handoff, and Windows cold-start + WM_COPYDATA handoff under Wine). macOS implemented (branch `macos/bundle-deeplinks`): the shared backend, kAEGetURL in Shell.zig (plus argv like Linux/Windows); verified with `open oriel-notes://note/…` cold start and to the running instance (React example), and smoke `deep_link js` current() = the launch URL via Launch Services and via argv.
 - **Order:** after `oriel webview2`; Linux + Windows first, macOS after M7
   step 3.
 

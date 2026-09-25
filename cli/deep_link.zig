@@ -2,7 +2,8 @@
 //!
 //! Subcommands:
 //! - `add <scheme>`: enable deep_link in build.zig and register scheme in package url_schemes
-//! - `register`: register local dev build in OS (XDG desktop on Linux, HKCU on Windows)
+//! - `register`: register local dev build in OS (XDG desktop on Linux, HKCU on Windows,
+//!   Launch Services for the `zig-out/<Name>.app` bundle on macOS)
 //! - `unregister`: remove local dev registration
 
 const std = @import("std");
@@ -199,7 +200,7 @@ pub fn editBuildZig(allocator: std.mem.Allocator, source: []const u8, scheme: []
             }
 
             // Insert into .url_schemes = &.{ ... }
-            try result.appendSlice(allocator, stage1[0 .. array_brace_close]);
+            try result.appendSlice(allocator, stage1[0..array_brace_close]);
             if (array_brace_close > array_brace_open + 1 and stage1[array_brace_close - 1] != '{' and stage1[array_brace_close - 1] != ' ' and stage1[array_brace_close - 1] != '\n') {
                 try result.appendSlice(allocator, ", ");
             } else if (array_brace_close > array_brace_open + 1 and stage1[array_brace_close - 1] == ' ') {
@@ -263,6 +264,13 @@ pub fn parseAppIdFromBuildZig(allocator: std.mem.Allocator, build_zig_text: []co
         }
     }
     return null;
+}
+
+/// The app id from build.zig, else addApp's default `dev.oriel.<exe_name>`.
+/// Always allocated: the caller frees it.
+fn appIdOrDefault(allocator: std.mem.Allocator, build_zig_text: []const u8, exe_name: []const u8) ![]const u8 {
+    return parseAppIdFromBuildZig(allocator, build_zig_text) orelse
+        try std.fmt.allocPrint(allocator, "dev.oriel.{s}", .{exe_name});
 }
 
 /// Parse executable name from build.zig
@@ -373,12 +381,41 @@ fn runAdd(ctx: Context, args: []const []const u8) !u8 {
     return 0;
 }
 
-fn runRegister(ctx: Context) !u8 {
-    if (builtin.os.tag == .macos) {
-        try ctx.out.writeAll("needs an .app bundle\n");
-        return 0;
-    }
+const lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
+/// The `.app` in `<root>/zig-out` whose Info.plist has `app_id` as its
+/// CFBundleIdentifier (as written by `zig build`), or null. Caller frees.
+fn findAppBundle(ctx: Context, root: []const u8, app_id: []const u8) !?[]u8 {
+    const out_path = try std.fs.path.join(ctx.gpa, &.{ root, "zig-out" });
+    defer ctx.gpa.free(out_path);
+    var dir = std.Io.Dir.cwd().openDir(ctx.io, out_path, .{ .iterate = true }) catch return null;
+    defer dir.close(ctx.io);
+    // The id as package_tool writes it (XML-escaped).
+    var needle_w: std.Io.Writer.Allocating = .init(ctx.gpa);
+    defer needle_w.deinit();
+    try needle_w.writer.writeAll("<key>CFBundleIdentifier</key>\n\t<string>");
+    for (app_id) |ch| try needle_w.writer.writeAll(switch (ch) {
+        '&' => "&amp;",
+        '<' => "&lt;",
+        '>' => "&gt;",
+        '"' => "&quot;",
+        else => &.{ch},
+    });
+    try needle_w.writer.writeAll("</string>");
+    const needle = needle_w.written();
+    var it = dir.iterate();
+    while (try it.next(ctx.io)) |e| {
+        if (e.kind != .directory or !std.mem.endsWith(u8, e.name, ".app")) continue;
+        const plist_path = try std.fs.path.join(ctx.gpa, &.{ e.name, "Contents", "Info.plist" });
+        defer ctx.gpa.free(plist_path);
+        const plist = dir.readFileAlloc(ctx.io, plist_path, ctx.gpa, .limited(1 << 20)) catch continue;
+        defer ctx.gpa.free(plist);
+        if (std.mem.indexOf(u8, plist, needle) != null) return try std.fs.path.join(ctx.gpa, &.{ out_path, e.name });
+    }
+    return null;
+}
+
+fn runRegister(ctx: Context) !u8 {
     const cwd = try std.process.currentPathAlloc(ctx.io, ctx.gpa);
     defer ctx.gpa.free(cwd);
 
@@ -408,11 +445,11 @@ fn runRegister(ctx: Context) !u8 {
         return 1;
     }
 
-    const app_id = parseAppIdFromBuildZig(ctx.gpa, build_zig_content) orelse "dev.oriel.App";
-    defer ctx.gpa.free(app_id);
-
-    const exe_name = parseExeNameFromBuildZig(ctx.gpa, build_zig_content) orelse "app";
+    const exe_name = parseExeNameFromBuildZig(ctx.gpa, build_zig_content) orelse try ctx.gpa.dupe(u8, "app");
     defer ctx.gpa.free(exe_name);
+
+    const app_id = try appIdOrDefault(ctx.gpa, build_zig_content, exe_name);
+    defer ctx.gpa.free(app_id);
 
     if (builtin.os.tag == .linux) {
         const bin_path = try builtExe(ctx, root, exe_name) orelse {
@@ -503,17 +540,24 @@ fn runRegister(ctx: Context) !u8 {
 
         try ctx.out.print("Registered Windows HKCU classes for schemes\n", .{});
         return 0;
+    } else if (builtin.os.tag == .macos) {
+        const bundle = try findAppBundle(ctx, root, app_id) orelse {
+            try ctx.err.print("error: no .app bundle for {s} in zig-out; run `oriel build` first\n", .{app_id});
+            return 1;
+        };
+        defer ctx.gpa.free(bundle);
+        if (ctx.run(&.{ lsregister, "-f", bundle }, null) != 0) {
+            try ctx.err.print("error: lsregister failed for {s}\n", .{bundle});
+            return 1;
+        }
+        try ctx.out.print("Registered {s} with Launch Services (Info.plist CFBundleURLTypes)\n", .{bundle});
+        return 0;
     }
 
     return 0;
 }
 
 fn runUnregister(ctx: Context) !u8 {
-    if (builtin.os.tag == .macos) {
-        try ctx.out.writeAll("needs an .app bundle\n");
-        return 0;
-    }
-
     const cwd = try std.process.currentPathAlloc(ctx.io, ctx.gpa);
     defer ctx.gpa.free(cwd);
 
@@ -532,7 +576,10 @@ fn runUnregister(ctx: Context) !u8 {
     };
     defer ctx.gpa.free(build_zig_content);
 
-    const app_id = parseAppIdFromBuildZig(ctx.gpa, build_zig_content) orelse "dev.oriel.App";
+    const exe_name = parseExeNameFromBuildZig(ctx.gpa, build_zig_content) orelse try ctx.gpa.dupe(u8, "app");
+    defer ctx.gpa.free(exe_name);
+
+    const app_id = try appIdOrDefault(ctx.gpa, build_zig_content, exe_name);
     defer ctx.gpa.free(app_id);
 
     const schemes = try parseSchemesFromBuildZig(ctx.gpa, build_zig_content);
@@ -572,6 +619,20 @@ fn runUnregister(ctx: Context) !u8 {
             if (ctx.capture(&.{ "reg", "delete", root_key, "/f" }, 30_000)) |r| r.deinit(ctx.gpa);
         }
         try ctx.out.print("Unregistered Windows HKCU classes for schemes\n", .{});
+        return 0;
+    } else if (builtin.os.tag == .macos) {
+        const bundle = try findAppBundle(ctx, root, app_id) orelse {
+            try ctx.err.print("error: no .app bundle for {s} in zig-out\n", .{app_id});
+            return 1;
+        };
+        defer ctx.gpa.free(bundle);
+        if (ctx.run(&.{ lsregister, "-u", bundle }, null) != 0) {
+            try ctx.err.print("error: lsregister -u failed for {s}\n", .{bundle});
+            return 1;
+        }
+        // Other copies with the same bundle id (zig-out/package, /Applications)
+        // stay registered with Launch Services.
+        try ctx.out.print("Unregistered {s} from Launch Services\n", .{bundle});
         return 0;
     }
 

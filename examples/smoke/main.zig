@@ -21,8 +21,15 @@ var expected_sample_hex: [200]u8 = undefined;
 const test_total_file_size: u64 = 44 + 1024 * 1024;
 
 fn createTestMediaFile(local_io: std.Io, gpa: std.mem.Allocator) ![]const u8 {
-    const tmp_path = ".zig-cache/tmp/smoke-media";
-    try std.Io.Dir.cwd().createDirPath(local_io, tmp_path);
+    var tmp_path: []const u8 = ".zig-cache/tmp/smoke-media";
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    std.Io.Dir.cwd().createDirPath(local_io, tmp_path) catch |err| {
+        // A macOS .app started by Launch Services runs in "/" (read-only).
+        const tmpdir = if (@import("builtin").os.tag == .windows) null else std.c.getenv("TMPDIR");
+        const base = if (tmpdir) |t| std.mem.span(t) else return err;
+        tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}/oriel-smoke-media", .{std.mem.trimEnd(u8, base, "/")});
+        try std.Io.Dir.cwd().createDirPath(local_io, tmp_path);
+    };
     var tmp_dir = try std.Io.Dir.cwd().openDir(local_io, tmp_path, .{});
     defer tmp_dir.close(local_io);
 
@@ -227,8 +234,11 @@ pub fn main(init: std.process.Init) !u8 {
             headless = true;
         } else if (std.mem.eql(u8, arg, "--auto-quit")) {
             auto_quit = true;
+        } else if (std.mem.indexOf(u8, arg, "://") != null) {
+            // A deep link (smoke-scheme://...): the platform shell reads it
+            // from argv; `deep_link js` then reports it as current().
         } else {
-            std.debug.print("usage: oriel-smoke [--check | --auto-quit]\n", .{});
+            std.debug.print("usage: oriel-smoke [--check | --auto-quit] [smoke-scheme://...]\n", .{});
             return 2;
         }
     }

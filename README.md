@@ -133,7 +133,7 @@ oriel deep-link unregister     # Removes the development registration
 
 - **Linux:** `register` creates `$XDG_DATA_HOME/applications/<app_id>.desktop` pointing to the built binary with `%u` and associates it via `xdg-mime default`.
 - **Windows:** `register` writes `HKCU\Software\Classes\<scheme>` pointing to the built binary.
-- **macOS:** prints that custom scheme registration requires an `.app` bundle (pending Milestone 7 step 3).
+- **macOS:** `register` registers the `zig-out/<Name>.app` bundle that `oriel build` writes (its Info.plist declares the schemes) with Launch Services (`lsregister -f`); `unregister` runs `lsregister -u`.
 
 ## Building an app
 
@@ -1008,7 +1008,7 @@ const launchUrl = await window.oriel.deepLink.current();
 
 - **Linux:** GApplication single-instance command-line handling (`G_APPLICATION_HANDLES_COMMAND_LINE`). When a second instance is launched with a URL, the URL is forwarded over D-Bus to the primary instance, which restores/presents its window and delivers the URL; the second instance exits 0. On cold start, the URL is preserved in `current()` and delivered after the window is ready. Desktop packaging creates a `.desktop` file with `Exec=... %u` and `MimeType=x-scheme-handler/<s>;`.
 - **Windows:** Single-instance named mutex (`Local\OrielApp_<sanitized_id>`). When a secondary instance starts, it detects the mutex, locates the primary instance's hidden host window (`FindWindowW`), forwards the validated URL via Win32 `WM_COPYDATA` (magic `0x44454550`), restores/focuses the main window, and exits 0. On cold start, the URL is parsed from `GetCommandLineW()`. NSIS installer registers keys under `HKCU\Software\Classes\<s>` and cleans them up on uninstall.
-- **macOS:** Compiling stub returning `error.NotSupported` (pending Milestone 7 step 3 `.app` bundles).
+- **macOS:** The `.app` bundle declares the schemes in Info.plist `CFBundleURLTypes` (written by `oriel build` and `oriel package`). Launch Services delivers a link as a `kAEGetURL` Apple Event: to the running instance if there is one (single instance comes from Launch Services), otherwise it launches the app and the launch URL is kept for `current()` and delivered once the window is ready. A URL in argv (an unbundled executable started as `app myapp://...`) is handled like on Linux and Windows.
 
 #### 5. Security & Validation
 
@@ -1021,7 +1021,7 @@ All incoming URLs are validated before delivery:
 
 ## Packaging
 
-Oriel provides integrated packaging for Linux distributions, portable AppImages, and Windows installer executables (`setup.exe`) with an extensible format architecture. Apps configure packaging metadata in `build.zig` via `.package` inside `oriel.addApp`.
+Oriel provides integrated packaging for Linux distributions, portable AppImages, Windows installer executables (`setup.exe`) and macOS `.app` bundles and `.dmg` images, with an extensible format architecture. Apps configure packaging metadata in `build.zig` via `.package` inside `oriel.addApp`.
 
 ### Packaging metadata
 
@@ -1038,7 +1038,7 @@ Metadata is configured once in `build.zig` and shared across all target package 
     .homepage = "https://example.com",     // Optional project URL (omitted if null)
     .categories = "Utility;TextEditor;",   // Semicolon-delimited XDG desktop categories
     .version = "0.1.0",                    // Version string (defaults to "0.1.0")
-    .icon = b.path("path/to/icon.png"),    // Optional PNG icon (defaults to Oriel brand icon; converted to .ico for Windows)
+    .icon = b.path("path/to/icon.png"),    // Optional PNG icon (defaults to Oriel brand icon; converted to .ico for Windows, .icns for macOS)
     .formats = null,                       // Optional override list of formats (defaults to per-OS list)
     .extra_deb_depends = &.{},             // Extra deb runtime dependencies
     .extra_rpm_depends = &.{},             // Extra rpm runtime dependencies
@@ -1060,9 +1060,10 @@ oriel package
 oriel package -Dtarget=x86_64-windows
 ```
 
-- **All formats for target OS**: `oriel package` (defaults to `.deb`, `.rpm`, `.AppImage` on Linux; NSIS `setup.exe` on Windows).
+- **All formats for target OS**: `oriel package` (defaults to `.deb`, `.rpm`, `.AppImage` on Linux; NSIS `setup.exe` on Windows; `.app` and `.dmg` on macOS).
+- **macOS (`.app`, `.dmg`)**: `oriel package` on a Mac → `zig-out/package/<Name>.app` and `zig-out/package/<exe>-<version>.dmg` (the `.app` plus an `Applications` link to drag it to). `oriel build` also installs `zig-out/<Name>.app`. See [macOS bundles](#macos-bundles-app-dmg).
 - **Windows Installer (`setup.exe`)**: `oriel package` on Windows, or cross-compiled with `-Dtarget=x86_64-windows` → `zig-out/package/<name>-<version>-setup.exe` (WebView2Loader.dll is resolved from cache automatically, or pass `-Dwebview2-loader=...` manually).
-- **Individual formats**: inside the app project, `oriel.addApp` also registers granular app build steps if you need to build only a single format: `zig build package-deb`, `zig build package-rpm`, `zig build package-appimage`, `zig build package-nsis`.
+- **Individual formats**: inside the app project, `oriel.addApp` also registers granular app build steps if you need to build only a single format: `zig build package-deb`, `zig build package-rpm`, `zig build package-appimage`, `zig build package-nsis`, `zig build package-app`, `zig build package-dmg`.
 
 #### Requirements and tools
 
@@ -1070,6 +1071,7 @@ oriel package -Dtarget=x86_64-windows
 - **`nfpm`**: Used to generate `.deb` and `.rpm` packages. Looked up in `$PATH`, then `$HOME/go/bin/nfpm`.
 - **`mksquashfs`**: Used to assemble AppImage SquashFS images.
 - **`desktop-file-validate`**: Used to validate desktop entry files before packaging and installation.
+- **`codesign`, `ditto`, `hdiutil`** (macOS, part of the OS): ad-hoc signing of the `.app` and building the `.dmg`. The `.app` itself can be assembled on any host (unsigned when not built on a Mac); the `.dmg` needs a Mac.
 - **AppImage Runtime**: Uses standard type-2 AppImage runtime (`runtime-<arch>`), automatically downloaded and cached in the local cache dir (overridable via `-Dappimage-runtime=<path>` or env `ORIEL_APPIMAGE_RUNTIME`). Verified for ELF header magic before use.
 
 #### Windows NSIS installer details
@@ -1082,6 +1084,16 @@ The generated NSIS installer provides:
 - **WebView2 Runtime Detection**: Checks the Windows Registry (HKCU and HKLM in both 64-bit and 32-bit views) for the Evergreen WebView2 Runtime (`{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`). If missing, prompts the user to download and run the Microsoft Evergreen Bootstrapper (`https://go.microsoft.com/fwlink/p/?LinkId=2124703`) or opens the download page.
 - **`WebView2Loader.dll`**: Required next to the executable on Windows. Specify it via `.webview2_loader` in `build.zig` or via CLI option `-Dwebview2-loader=<path>` (e.g. from the `Microsoft.Web.WebView2` NuGet package runtimes). Oriel loads it exclusively from the application's executable directory to prevent DLL search-order hijacking. User data is isolated per application in `%LOCALAPPDATA%\<app_id>\WebView2`.
 - *Note*: Packaging a Windows application requires the target app executable to be compiled for Windows (which requires the Windows shell in `src/platform/windows`).
+
+#### macOS bundles (.app, .dmg)
+
+`<Name>.app/Contents` holds `MacOS/<exe>`, `Resources/icon.icns` (made from the PNG icon, no `iconutil` needed), `PkgInfo` and an `Info.plist` with:
+- `CFBundleIdentifier` = `.package.id`, `CFBundleName`/`CFBundleDisplayName` = `.name`, `CFBundleShortVersionString`/`CFBundleVersion` = `.version`.
+- `LSMinimumSystemVersion` = the target's minimum macOS. A native build targets the Mac it is built on; to ship to older macOS, build with e.g. `oriel package -Dtarget=aarch64-macos.13.0`.
+- `CFBundleURLTypes` for `.url_schemes` (deep links).
+- `NSMicrophoneUsageDescription` and `NSAudioCaptureUsageDescription` when `audio_capture` is enabled (macOS refuses the permission without them).
+
+The bundle is **ad-hoc signed** (`codesign --sign -`), which is enough to run it on the Mac that built it and for macOS to attribute notifications and permission prompts to the app. Distribution to other Macs needs a Developer ID signature and notarization (optional, needs an Apple developer account; not automated yet): `codesign --deep --options runtime --sign "Developer ID Application: …" <Name>.app`, then `xcrun notarytool submit` and `xcrun stapler staple`.
 
 #### The AppImage caveat (system GTK4 & WebKitGTK 6.0)
 
@@ -1217,7 +1229,8 @@ oriel dev              # run against Vite dev server with hot reload
 - **Modules:** every module and plugin has a macOS backend (see each module's section): tray (`NSStatusItem`), menu (`NSMenu`), dialog (`NSOpenPanel`/`NSSavePanel`), notification (UserNotifications / osascript), store (`~/Library`), clipboard (`NSPasteboard`), fs_watch (FSEvents), global_shortcut (Carbon), input (CGEvent), updater (`.app` bundles), media_server, audio_capture (CoreAudio; system audio through a process tap), llama/whisper on Metal.
 - **Permissions:** input injection needs Accessibility; audio capture needs the Microphone permission (or, for the "System audio" source, System Audio Recording). macOS grants these per app bundle: an unbundled binary is attributed to the app that started it (Terminal, an IDE), and some of those apps can't be granted them, so test these from an `.app`.
 - **Dev mode:** `oriel dev` works as on Linux: Vite hot reload, and the app is rebuilt and restarted when a `.zig` file changes (the watcher polls modification times). Running the `-dev` executable directly also works: it starts the dev server itself.
-- **Not yet:** `.app` bundle and `.dmg` packaging (step 3); windows without decorations can't become key.
+- **Bundles:** `oriel build` also writes `zig-out/<Name>.app`, and `oriel package` builds `.app` and `.dmg` (see [macOS bundles](#macos-bundles-app-dmg)). Start the bundle with `open zig-out/<Name>.app` to get notifications through Notification Center, permission prompts under the app's name and deep links.
+- **Not yet:** Developer ID signing and notarization; windows without decorations can't become key.
 - `ORIEL_SNAPSHOT=/tmp/shot.png` saves the main window's page (WebKit's snapshot API) a second after it loaded: screen capture of other apps needs a Screen Recording grant on macOS.
 
 ## Compared with Tauri
@@ -1244,10 +1257,10 @@ oriel dev              # run against Vite dev server with hot reload
 | Input injection | ✅ Linux (X11 XTest + Wayland virtual-keyboard) + Windows (`SendInput`); runtime untested on Windows |
 | Asset protocol for local files (streaming, ranges) | ✅ `media_server`: 127.0.0.1 server with ranges for `<video>`; `app://app/media/` for fetch |
 | Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
-| Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `oriel package`; signing not yet implemented |
+| Bundling (AppImage/deb/rpm/app/dmg), signing | ◐ AppImage, deb, rpm, NSIS setup.exe, macOS .app/.dmg via `oriel package`; macOS bundles ad-hoc signed, Developer ID signing not yet implemented |
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
 | Windows | ◐ Win32 + WebView2 shell and every module/plugin (tray, sql, store, dialog, notification, menu, updater, media_server, fs_watch, global_shortcut, input, clipboard), NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
-| macOS | ◐ AppKit + WKWebView shell and every module/plugin (tray, menu, dialog, notification, store, clipboard, fs_watch, global_shortcut, input, updater, media_server, audio_capture incl. system audio), whisper/llama on Metal; no `.app`/`.dmg` packaging yet |
+| macOS | ◐ AppKit + WKWebView shell and every module/plugin (tray, menu, dialog, notification, store, clipboard, fs_watch, global_shortcut, input, updater, media_server, audio_capture incl. system audio), whisper/llama on Metal, deep links, `.app`/`.dmg` packaging |
 | Mobile | ❌ |
 
 ## Building Oriel itself

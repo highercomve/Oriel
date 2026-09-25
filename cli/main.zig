@@ -28,7 +28,7 @@ pub const Commands = union(enum) {
     dev: project.Wrapper("dev", "Run the app against the frontend dev server, with hot reload"),
     build: project.Wrapper(null, "Build the app (frontend embedded) into zig-out/bin"),
     run: project.Wrapper("run", "Build and run the app"),
-    package: project.Wrapper("package", "Build deb, rpm and AppImage packages into zig-out/package"),
+    package: project.Wrapper("package", "Build packages into zig-out/package (deb, rpm, AppImage; setup.exe; .app, .dmg)"),
     types: project.Wrapper("types", "Regenerate the frontend's TypeScript types for the Zig commands"),
     check: project.Wrapper("check", "Type-check the app's Zig code without building"),
 };

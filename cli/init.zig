@@ -171,12 +171,12 @@ pub fn vars(arena: std.mem.Allocator, p: Project) ![]const template.Var {
         \\oriel run        # build and run it
         \\oriel types      # regenerate frontend/src/oriel.ts from the Zig structs
         \\oriel check      # type-check the Zig code (fast)
-        \\oriel package    # installers for this OS in zig-out/package/
+        \\oriel package    # deb/rpm/AppImage, setup.exe or .app/.dmg in zig-out/package/
     , .{p.name}) else try std.fmt.allocPrint(arena,
         \\oriel build      # build zig-out/bin/{s} with frontend/ embedded
         \\oriel run        # build and run it (rerun after editing frontend/)
         \\oriel check      # type-check the Zig code (fast)
-        \\oriel package    # installers for this OS in zig-out/package/
+        \\oriel package    # deb/rpm/AppImage, setup.exe or .app/.dmg in zig-out/package/
     , .{p.name});
 
     const calling = if (vite)

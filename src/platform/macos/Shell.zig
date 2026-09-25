@@ -11,6 +11,8 @@ const dev_server = @import("dev_server.zig");
 const WindowHandle = window.WindowHandle;
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
+const build_opts = @import("build_options");
+const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
 
@@ -236,6 +238,24 @@ fn applicationShouldTerminate(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv
     return NSTerminateCancel;
 }
 
+/// Set by applicationDidFinishLaunching. Launch Services sends the URL that
+/// launched the app before that; later URLs are for the running app.
+var finished_launching = false;
+
+fn applicationDidFinishLaunching(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv(.c) void {
+    finished_launching = true;
+}
+
+// Deep links: Launch Services sends `open myapp://...` (browser links,
+// `open`) to the app that declares the scheme in Info.plist as a kAEGetURL
+// Apple Event; to the running instance if there is one.
+const kInternetEventClass: u32 = 0x4755_524C; // 'GURL'
+const kAEGetURL: u32 = 0x4755_524C; // 'GURL'
+const keyDirectObject: u32 = 0x2D2D_2D2D; // '----'
+
+extern "c" fn _NSGetArgc() *c_int;
+extern "c" fn _NSGetArgv() *[*][*:0]u8;
+
 /// Clicking the Dock icon while every window is hidden (`on_close = .hide`)
 /// brings the main window back.
 fn applicationShouldHandleReopen(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, has_visible_windows: cocoa.c.BOOL) callconv(.c) cocoa.c.BOOL {
@@ -403,6 +423,37 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     const Creator = window.WindowCreator(api, config, local, csp_z);
 
     return struct {
+        /// NSAppleEventManager handler for kAEGetURL (main thread).
+        fn handleGetURL(_: cocoa.id, _: cocoa.c.SEL, event: cocoa.id, _: cocoa.id) callconv(.c) void {
+            if (!build_opts.deep_link) return;
+            const desc = (Object{ .value = event }).msgSend(Object, "paramDescriptorForKeyword:", .{keyDirectObject});
+            if (desc.value == null) return;
+            const url = cocoa.utf8(desc.msgSend(Object, "stringValue", .{})) orelse return;
+            _ = deep_link.validate(url, config.deep_link_schemes) catch |err| {
+                log.warn("deep link rejected: {s}", .{@errorName(err)});
+                return;
+            };
+            if (!finished_launching) {
+                deep_link.setColdStartUrl(url);
+            } else {
+                App.showWindow();
+            }
+            deep_link.deliver(url);
+        }
+
+        /// A URL among the arguments (an unbundled executable started as
+        /// `app myapp://...`, as on Linux and Windows), or null.
+        fn urlFromArgv() ?[]const u8 {
+            const argc: usize = @intCast(@max(_NSGetArgc().*, 0));
+            if (argc < 2) return null; // argv may even be empty (execve with no arguments)
+            const argv = _NSGetArgv().*;
+            for (1..argc) |i| {
+                const arg = std.mem.span(argv[i]);
+                if (deep_link.validate(arg, config.deep_link_schemes)) |_| return arg else |_| {}
+            }
+            return null;
+        }
+
         pub fn run(io: std.Io) u8 {
             const pool = objc.AutoreleasePool.init();
             defer pool.deinit();
@@ -418,6 +469,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             const delegate_class = cocoa.defineClass("OrielAppDelegate", &.{"NSApplicationDelegate"}, .{
                 .{ "applicationShouldTerminate:", applicationShouldTerminate },
                 .{ "applicationShouldHandleReopen:hasVisibleWindows:", applicationShouldHandleReopen },
+                .{ "applicationDidFinishLaunching:", applicationDidFinishLaunching },
+                .{ "handleGetURLEvent:withReplyEvent:", handleGetURL },
             });
             // NSApp's delegate is a weak reference: keep ours for the whole run.
             const delegate = cocoa.new(delegate_class);
@@ -427,6 +480,18 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             }
             app.msgSend(void, "setDelegate:", .{delegate});
             installDefaultMenu(app, config.title);
+
+            // Before `run`: the launch URL arrives while it finishes launching.
+            finished_launching = false;
+            const ae_manager = cocoa.class("NSAppleEventManager").msgSend(Object, "sharedAppleEventManager", .{});
+            if (build_opts.deep_link) {
+                ae_manager.msgSend(void, "setEventHandler:andSelector:forEventClass:andEventID:", .{ delegate, objc.sel("handleGetURLEvent:withReplyEvent:").value, kInternetEventClass, kAEGetURL });
+            }
+            defer if (build_opts.deep_link) {
+                ae_manager.msgSend(void, "removeEventHandlerForEventClass:andEventID:", .{ kInternetEventClass, kAEGetURL });
+            };
+            const argv_url: ?[]const u8 = if (build_opts.deep_link) urlFromArgv() else null;
+            if (argv_url) |url| deep_link.setColdStartUrl(url);
 
             // Before QuitSignals: children inherit ignored signals across exec,
             // and a dev server ignoring SIGTERM couldn't be stopped.
@@ -474,6 +539,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             };
 
             if (config.setup) |setup| setup() catch |err| log.err("setup failed: {s}", .{@errorName(err)});
+            if (argv_url) |url| deep_link.deliver(url);
 
             app.msgSend(void, "activateIgnoringOtherApps:", .{cocoa.boolean(true)});
             if (!quit_requested) app.msgSend(void, "run", .{});
