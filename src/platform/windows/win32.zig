@@ -1218,3 +1218,10 @@ pub const DWM_BLURBEHIND = extern struct {
     fTransitionOnMaximized: BOOL,
 };
 pub extern "dwmapi" fn DwmEnableBlurBehindWindow(hWnd: HWND, pBlurBehind: *const DWM_BLURBEHIND) callconv(.winapi) HRESULT;
+
+// Per-monitor DPI awareness (PerMonitorV2): window sizes are physical pixels,
+// scaled from logical ones by the window's DPI.
+pub const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: HANDLE = @ptrFromInt(@as(usize, @bitCast(@as(isize, -4))));
+pub extern "user32" fn SetProcessDpiAwarenessContext(value: HANDLE) callconv(.winapi) BOOL;
+pub extern "user32" fn GetDpiForSystem() callconv(.winapi) UINT;
+pub extern "user32" fn AdjustWindowRectExForDpi(lpRect: *RECT, dwStyle: DWORD, bMenu: BOOL, dwExStyle: DWORD, dpi: UINT) callconv(.winapi) BOOL;

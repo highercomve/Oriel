@@ -137,24 +137,53 @@ pub fn isWindowMaximized(handle: WindowHandle) bool {
     return win32.IsZoomed(handle.hwnd) != .FALSE;
 }
 
+/// The app is per-monitor DPI aware (Shell.run): Win32 sizes are physical
+/// pixels, Oriel's are logical (96 DPI). These convert at a window's DPI.
+pub fn toPhysical(v: c_int, dpi: u32) c_int {
+    return @intCast(@divTrunc(@as(i64, v) * dpi + 48, 96));
+}
+
+pub fn toLogical(v: c_int, dpi: u32) c_int {
+    return @intCast(@divTrunc(@as(i64, v) * 96 + dpi / 2, dpi));
+}
+
+pub fn windowDpi(hwnd: win32.HWND) u32 {
+    const dpi = win32.GetDpiForWindow(hwnd);
+    return if (dpi == 0) 96 else dpi;
+}
+
+test "logical and physical pixels" {
+    try std.testing.expectEqual(@as(c_int, 800), toPhysical(800, 96));
+    try std.testing.expectEqual(@as(c_int, 1200), toPhysical(800, 144));
+    try std.testing.expectEqual(@as(c_int, 1000), toPhysical(800, 120));
+    try std.testing.expectEqual(@as(c_int, 800), toLogical(1200, 144));
+    try std.testing.expectEqual(@as(c_int, 800), toLogical(toPhysical(800, 168), 168));
+}
+
+/// The outer size of a window whose client area is `width`×`height` logical
+/// pixels at `dpi`.
+fn outerSize(width: c_int, height: c_int, style: win32.DWORD, has_menu: bool, ex_style: win32.DWORD, dpi: u32) struct { w: c_int, h: c_int } {
+    var rect = win32.RECT{ .left = 0, .top = 0, .right = toPhysical(width, dpi), .bottom = toPhysical(height, dpi) };
+    _ = win32.AdjustWindowRectExForDpi(&rect, style, if (has_menu) win32.TRUE else win32.FALSE, ex_style, dpi);
+    return .{ .w = rect.right - rect.left, .h = rect.bottom - rect.top };
+}
+
 pub fn setWindowSize(handle: WindowHandle, width: c_int, height: c_int) void {
-    var rect = win32.RECT{ .left = 0, .top = 0, .right = width, .bottom = height };
     const style = windowLong(handle.hwnd, win32.GWL_STYLE);
     const ex_style = windowLong(handle.hwnd, win32.GWL_EXSTYLE);
     // `width`/`height` are the client (webview) size: account for a menu bar.
-    const has_menu: win32.BOOL = if (win32.GetMenu(handle.hwnd) != null) win32.TRUE else win32.FALSE;
-    _ = win32.AdjustWindowRectEx(&rect, style, has_menu, ex_style);
-    const w = rect.right - rect.left;
-    const h = rect.bottom - rect.top;
-    _ = win32.SetWindowPos(handle.hwnd, null, 0, 0, w, h, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
+    const size = outerSize(width, height, style, win32.GetMenu(handle.hwnd) != null, ex_style, windowDpi(handle.hwnd));
+    _ = win32.SetWindowPos(handle.hwnd, null, 0, 0, size.w, size.h, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
 }
 
+/// The client (webview) size in logical pixels.
 pub fn getWindowSize(handle: WindowHandle) WindowSize {
     var rect: win32.RECT = undefined;
     _ = win32.GetClientRect(handle.hwnd, &rect);
+    const dpi = windowDpi(handle.hwnd);
     return .{
-        .width = rect.right - rect.left,
-        .height = rect.bottom - rect.top,
+        .width = toLogical(rect.right - rect.left, dpi),
+        .height = toLogical(rect.bottom - rect.top, dpi),
     };
 }
 
@@ -933,15 +962,9 @@ pub fn WindowCreator(
             }
 
             const ex_style = overlay.exStyle(options);
-            var rect = win32.RECT{
-                .left = 0,
-                .top = 0,
-                .right = options.width,
-                .bottom = options.height,
-            };
-            _ = win32.AdjustWindowRectEx(&rect, style, win32.FALSE, ex_style);
-            const w = rect.right - rect.left;
-            const h = rect.bottom - rect.top;
+            // Logical size at the system DPI; corrected below if the window
+            // lands on a monitor with another DPI.
+            const initial = outerSize(options.width, options.height, style, false, ex_style, win32.GetDpiForSystem());
 
             const hwnd = win32.CreateWindowExW(
                 ex_style,
@@ -950,14 +973,18 @@ pub fn WindowCreator(
                 style,
                 win32.CW_USEDEFAULT,
                 win32.CW_USEDEFAULT,
-                w,
-                h,
+                initial.w,
+                initial.h,
                 null,
                 null,
                 hInst,
                 null,
             ) orelse return error.CreateWindowFailed;
             errdefer _ = win32.DestroyWindow(hwnd);
+            if (windowDpi(hwnd) != win32.GetDpiForSystem()) {
+                const size = outerSize(options.width, options.height, style, false, ex_style, windowDpi(hwnd));
+                _ = win32.SetWindowPos(hwnd, null, 0, 0, size.w, size.h, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
+            }
 
             // Set window icons (big and small) from embedded resource 1
             const icon_res: [*:0]align(1) const u16 = @ptrFromInt(1);
@@ -1197,10 +1224,8 @@ pub fn WindowCreator(
                 // GTK), then size the webview (the WM_SIZE this causes is
                 // ignored until the window is registered).
                 if (win32.GetMenu(hwnd) != null) {
-                    var outer = win32.RECT{ .left = 0, .top = 0, .right = options.width, .bottom = options.height };
-                    if (win32.AdjustWindowRectEx(&outer, style, win32.TRUE, ex_style) != win32.FALSE) {
-                        _ = win32.SetWindowPos(hwnd, null, 0, 0, outer.right - outer.left, outer.bottom - outer.top, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
-                    }
+                    const outer = outerSize(options.width, options.height, style, true, ex_style, windowDpi(hwnd));
+                    _ = win32.SetWindowPos(hwnd, null, 0, 0, outer.w, outer.h, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
                 }
                 var client: win32.RECT = undefined;
                 if (win32.GetClientRect(hwnd, &client) != win32.FALSE) {
@@ -1256,6 +1281,13 @@ pub fn WindowCreator(
                     return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
                 },
                 win32.WM_DPICHANGED => {
+                    // Moved to a monitor with another DPI: take the size and
+                    // position Windows suggests (same logical size), then fit
+                    // the webview; WebView2 rescales its content itself.
+                    if (lParam != 0) {
+                        const r: *const win32.RECT = @ptrFromInt(@as(usize, @bitCast(lParam)));
+                        _ = win32.SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
+                    }
                     if (win) |w| {
                         if (!w.ready) return 0;
                         _ = w.handle.controller.notifyParentWindowPositionChanged();
