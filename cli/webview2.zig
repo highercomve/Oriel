@@ -205,9 +205,14 @@ pub fn findNewestCached(
         root_dir.access(io, dll_subpath, .{}) catch continue;
 
         if (best_ver == null or Version.order(v, best_ver.?) == .gt) {
+            // Copy first: freeing the previous copy before a failed dupe would
+            // leave best_ver_str dangling (double free in the defer).
+            const copy = try gpa.dupe(u8, entry.name);
             if (best_ver_str) |prev| gpa.free(prev);
-            best_ver_str = try gpa.dupe(u8, entry.name);
-            best_ver = v;
+            best_ver_str = copy;
+            // Parse from our copy: `v` slices entry.name, which the iterator
+            // reuses for the next entry.
+            best_ver = Version.parse(copy).?;
         }
     }
 
