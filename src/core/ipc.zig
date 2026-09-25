@@ -24,7 +24,175 @@ const App = @import("App.zig");
 pub const Request = struct {
     cmd: []const u8,
     args: std.json.Value = .null,
+    /// The bridge's IPC token (see `token`); bridges reject calls without it.
+    token: ?[]const u8 = null,
 };
+
+// --- IPC token ------------------------------------------------------------------
+//
+// Only the top frame gets the bridge script, but on some webviews (WebKitGTK)
+// the native message handler is reachable from every frame, and calls are
+// judged by the top-level page's URL. A cross-origin frame the navigation
+// policy admits could then call commands with the app's privileges.
+//
+// So every call carries tokens bound to the page's origin: HMAC-SHA256 of a
+// per-process random key over each IPC scope that covers the page ("local"
+// for the app's own origins; otherwise each capability origin pattern that
+// matches it). The bridge script embeds every scope's token and keeps, in a
+// closure, only those for `location.origin` (comma-separated); the native
+// side requires, for the calling origin, the "local" token (app origins) or
+// a valid token for EVERY matching capability. A frame never gets the
+// script, and tokens a remote page captures (it could patch
+// `JSON.stringify`) are worthless under any origin that another scope also
+// covers, such as the app's own pages or a more privileged subdomain.
+
+var token_key: [32]u8 = undefined;
+var token_ready = false;
+const token_len = 64; // hex of HMAC-SHA256
+
+/// Make the key (once, before any window exists: App.run). Without secure
+/// randomness there is no key, and every call is refused.
+pub fn initToken(io: std.Io) void {
+    if (token_ready) return;
+    io.randomSecure(&token_key) catch |err| {
+        std.log.scoped(.oriel).err("no secure random source ({s}): IPC is disabled", .{@errorName(err)});
+        return;
+    };
+    token_ready = true;
+}
+
+/// The token of an IPC scope ("local" or a capability's origin pattern).
+fn scopeToken(scope: []const u8) [token_len]u8 {
+    var mac: [std.crypto.auth.hmac.sha2.HmacSha256.mac_length]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, scope, &token_key);
+    return std.fmt.bytesToHex(mac, .lower);
+}
+
+/// Whether a call from `page_url` carries that page's tokens (constant-time
+/// compares): "local" for the app's own origins (capability tokens are never
+/// accepted there), otherwise one for every capability matching the origin.
+/// False before `initToken` or for a page with no IPC scope.
+pub fn tokenValid(got: ?[]const u8, sec: security.Security, local: security.Local, page_url: []const u8) bool {
+    if (!token_ready) return false;
+    const sent = got orelse return false;
+    var buf: [512]u8 = undefined;
+    const o = security.origin(&buf, page_url) orelse return false;
+    if (local.contains(o)) return hasToken(sent, scopeToken("local"));
+    var matched = false;
+    for (sec.capabilities) |c| {
+        if (!security.originMatches(c.origin, o)) continue;
+        matched = true;
+        if (!hasToken(sent, scopeToken(c.origin))) return false;
+    }
+    return matched;
+}
+
+/// Whether the comma-separated `sent` contains `want` (constant-time per entry).
+fn hasToken(sent: []const u8, want: [token_len]u8) bool {
+    var found = false;
+    var it = std.mem.splitScalar(u8, sent, ',');
+    while (it.next()) |t| {
+        if (t.len != token_len) continue;
+        found = std.crypto.timing_safe.eql([token_len]u8, t[0..token_len].*, want) or found;
+    }
+    return found;
+}
+
+/// JavaScript defining `const ipcToken` for a bridge script: "local"'s token
+/// on the app's origins, else the tokens of every capability matching
+/// `location.origin` (comma-separated), else "" (no IPC). Matching mirrors
+/// `security.Local.contains` and `security.originMatches`. Caller frees.
+pub fn tokenScript(gpa: std.mem.Allocator, sec: security.Security, local: security.Local) ![]u8 {
+    if (!token_ready) return gpa.dupe(u8, "const ipcToken = \"\";\n");
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    const w = &out.writer;
+    const local_token = scopeToken("local");
+    try w.writeAll("const ipcToken = ((o) => {\n  const local = [");
+    try std.json.Stringify.value(security.app_origin, .{}, w);
+    if (local.dev_origin) |d| {
+        try w.writeAll(", ");
+        try std.json.Stringify.value(d, .{}, w);
+    }
+    try w.print("];\n  if (local.includes(o)) return \"{s}\";\n  const caps = [", .{&local_token});
+    for (sec.capabilities, 0..) |c, i| {
+        var buf: [512]u8 = undefined;
+        const pattern = security.origin(&buf, c.origin) orelse c.origin;
+        const t = scopeToken(c.origin);
+        if (i > 0) try w.writeAll(", ");
+        try w.writeByte('[');
+        try std.json.Stringify.value(pattern, .{}, w);
+        try w.print(", \"{s}\"]", .{&t});
+    }
+    try w.writeAll(
+        \\];
+        \\  const lo = o.toLowerCase();
+        \\  const mine = [];
+        \\  for (const [p, t] of caps) {
+        \\    const i = p.indexOf("://*.");
+        \\    if (i < 0) {
+        \\      if (p.toLowerCase() === lo) mine.push(t);
+        \\      continue;
+        \\    }
+        \\    const scheme = p.slice(0, i + 3).toLowerCase();
+        \\    const suffix = p.slice(i + 5).toLowerCase();
+        \\    if (!lo.startsWith(scheme)) continue;
+        \\    const host = lo.slice(scheme.length);
+        \\    if (host === suffix || host.endsWith("." + suffix)) mine.push(t);
+        \\  }
+        \\  return mine.join(",");
+        \\})(location.origin);
+        \\
+    );
+    return out.toOwnedSlice();
+}
+
+test tokenValid {
+    const sec: security.Security = .{ .capabilities = &.{.{ .origin = "https://*.partner.example" }} };
+    const local: security.Local = .{};
+    // Before initToken nothing is valid.
+    try std.testing.expect(!tokenValid(null, sec, local, "app://app/"));
+    initToken(std.testing.io);
+    const lt = scopeToken("local");
+    const ct = scopeToken("https://*.partner.example");
+    try std.testing.expect(tokenValid(&lt, sec, local, security.app_origin ++ "/index.html"));
+    try std.testing.expect(tokenValid(&ct, sec, local, "https://a.partner.example/x"));
+    // A remote page's token is worthless under the app's own origin, and back.
+    try std.testing.expect(!tokenValid(&ct, sec, local, security.app_origin ++ "/index.html"));
+    try std.testing.expect(!tokenValid(&lt, sec, local, "https://a.partner.example/x"));
+    // No scope, wrong length, none.
+    try std.testing.expect(!tokenValid(&lt, sec, local, "https://evil.example/"));
+
+    // Overlapping scopes: a read-only wildcard's token is not enough where a
+    // more privileged capability also matches; both tokens are.
+    const overlap: security.Security = .{ .capabilities = &.{
+        .{ .origin = "https://*.partner.example", .commands = &.{"read"} },
+        .{ .origin = "https://admin.partner.example" },
+    } };
+    const at = scopeToken("https://admin.partner.example");
+    try std.testing.expect(tokenValid(&ct, overlap, local, "https://evil.partner.example/"));
+    try std.testing.expect(!tokenValid(&ct, overlap, local, "https://admin.partner.example/"));
+    const both = ct ++ "," ++ at;
+    try std.testing.expect(tokenValid(both, overlap, local, "https://admin.partner.example/"));
+    // A capability that also covers the app's origin never stands in for "local".
+    const over_local: security.Security = .{ .capabilities = &.{.{ .origin = security.app_origin }} };
+    const app_cap = scopeToken(security.app_origin);
+    try std.testing.expect(!tokenValid(&app_cap, over_local, local, security.app_origin ++ "/"));
+    try std.testing.expect(tokenValid(&lt, over_local, local, security.app_origin ++ "/"));
+    try std.testing.expect(!tokenValid("abc", sec, local, security.app_origin ++ "/"));
+    try std.testing.expect(!tokenValid(null, sec, local, security.app_origin ++ "/"));
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const req = try parseRequest(arena.allocator(), "{\"cmd\":\"x\",\"token\":\"abc\"}");
+    try std.testing.expectEqualStrings("abc", req.token.?);
+
+    const js = try tokenScript(std.testing.allocator, sec, local);
+    defer std.testing.allocator.free(js);
+    try std.testing.expect(std.mem.indexOf(u8, js, &lt) != null);
+    try std.testing.expect(std.mem.indexOf(u8, js, &ct) != null);
+    try std.testing.expect(std.mem.indexOf(u8, js, "\"https://*.partner.example\"") != null);
+}
 
 /// Check if `cmd` is configured to run asynchronously on the worker pool.
 pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
@@ -287,7 +455,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
         for (std.enums.values(@import("permissions/common.zig").Kind), 0..) |k, i| {
             permission_names = permission_names ++ (if (i == 0) "" else " | ") ++ "\"" ++ @tagName(k) ++ "\"";
         }
-        return 
+        return
         \\// Generated by oriel from the Zig API. Do not edit.
         \\
         \\export interface Commands {

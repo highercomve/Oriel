@@ -24,6 +24,14 @@ const log = std.log.scoped(.oriel);
 
 pub const handler_name = "oriel";
 
+/// Replaced by `ipc.tokenScript` (which defines `const ipcToken`) in each
+/// window's copy of `bridge_js`.
+const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
+
+comptime {
+    std.debug.assert(std.mem.count(u8, bridge_js, token_placeholder) == 1);
+}
+
 /// Injected into every top-level document before its own scripts run;
 /// `commandAllowedForWindow` checks the page's origin on every call.
 pub const bridge_js =
@@ -33,8 +41,11 @@ pub const bridge_js =
     \\  const handler = window.webkit.messageHandlers.
 ++ handler_name ++
     \\;
+    \\
+++ token_placeholder ++
+    \\
     \\  function invoke(cmd, args) {
-    \\    return handler.postMessage(JSON.stringify({ cmd, args: args ?? null }));
+    \\    return handler.postMessage(JSON.stringify({ cmd, args: args ?? null, token: ipcToken }));
     \\  }
     \\  class WindowHandle {
     \\    constructor(label) {
@@ -107,7 +118,7 @@ pub const bridge_js =
     \\      return () => set.delete(callback);
     \\    },
     \\    openExternal(url) {
-    \\      return handler.postMessage(JSON.stringify({ cmd: "open_external", args: { url } }));
+    \\      return handler.postMessage(JSON.stringify({ cmd: "open_external", args: { url }, token: ipcToken }));
     \\    },
     \\    permissions: Object.freeze({
     \\      query(name) {
@@ -280,7 +291,12 @@ pub fn Bridge(
             const gpa = std.heap.smp_allocator;
             const label_json = try std.json.Stringify.valueAlloc(gpa, label, .{});
             defer gpa.free(label_json);
-            const source = try std.fmt.allocPrint(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, bridge_js });
+            // The page's IPC token lives only in the bridge's closure (ipc.tokenScript).
+            const token_js = try ipc.tokenScript(gpa, config.security, local);
+            defer gpa.free(token_js);
+            const with_token = try std.mem.replaceOwned(u8, gpa, bridge_js, token_placeholder, token_js);
+            defer gpa.free(with_token);
+            const source = try std.fmt.allocPrint(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, with_token });
             defer gpa.free(source);
             const source_ns = cocoa.nsString(source) orelse return error.OutOfMemory;
             defer source_ns.release();
@@ -296,6 +312,21 @@ pub fn Bridge(
             defer name.release();
             const world = cocoa.class("WKContentWorld").msgSend(Object, "pageWorld", .{});
             content.msgSend(void, "addScriptMessageHandlerWithReply:contentWorld:name:", .{ handler, world, name });
+        }
+
+        /// `scheme://host[:port]/` of the frame's WKSecurityOrigin, or "" (no
+        /// scope). Borrowed strings are copied into `buf`.
+        fn senderOriginUrl(buf: []u8, frame: Object) []const u8 {
+            const origin = frame.msgSend(Object, "securityOrigin", .{});
+            if (origin.value == null) return "";
+            const scheme = cocoa.utf8(origin.msgSend(Object, "protocol", .{})) orelse return "";
+            const host = cocoa.utf8(origin.msgSend(Object, "host", .{})) orelse return "";
+            if (scheme.len == 0 or host.len == 0) return "";
+            const port = origin.msgSend(isize, "port", .{});
+            return (if (port > 0)
+                std.fmt.bufPrint(buf, "{s}://{s}:{d}/", .{ scheme, host, port })
+            else
+                std.fmt.bufPrint(buf, "{s}://{s}/", .{ scheme, host })) catch "";
         }
 
         fn onMessage(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, message_id: cocoa.id, reply: cocoa.id) callconv(.c) void {
@@ -325,17 +356,29 @@ pub fn Bridge(
                 replyError(reply, ipc.errorText(err));
                 return;
             };
-
-            // The page currently shown decides the IPC scope.
+            // The sending document's origin decides the IPC scope (not
+            // webView.URL, which already shows a provisional navigation's URL
+            // while the old document still runs).
             const view = message.msgSend(Object, "webView", .{});
-            const page_url: []const u8 = if (view.value != null) cocoa.urlString(view.msgSend(Object, "URL", .{})) orelse "" else "";
+            var origin_buf: [512]u8 = undefined;
+            const page_url = senderOriginUrl(&origin_buf, frame);
             const caller_win = window_mod.getWindowByView(view.value);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
+            // Page-controlled: escaped and capped in logs.
+            const cmd_log = std.zig.fmtString(request.cmd[0..@min(request.cmd.len, 64)]);
+
+            // Only the bridge script has the token for this page's origin
+            // (ipc.tokenScript / ipc.tokenValid).
+            if (!ipc.tokenValid(request.token, config.security, local, page_url)) {
+                log.warn("refused an IPC call without this page's token (\"{f}\")", .{cmd_log});
+                replyError(reply, "Forbidden");
+                return;
+            }
 
             if (!window_commands.isWindowCommand(request.cmd) and
                 !security.commandAllowedForWindow(config.security, local, page_url, request.cmd, win_label))
             {
-                log.warn("blocked command '{s}' from {s} (window: {?s})", .{ request.cmd, page_url, win_label });
+                log.warn("blocked command \"{f}\" from {s} (window: {?s})", .{ cmd_log, page_url, win_label });
                 replyError(reply, "Forbidden");
                 return;
             }
