@@ -186,15 +186,20 @@ fn finish(ctx: ?*anyopaque) void {
     destroy(stream);
 }
 
-/// Queued after shutdown (from the worker): free what doesn't need AppKit;
-/// the task reference is leaked rather than released off the main thread.
+/// Queued after shutdown (from the worker). On the main thread: free it.
+/// Elsewhere only the file is closed: the stream stays in `active`, which
+/// the main thread may still walk (WebKit calls stopURLSchemeTask while the
+/// windows close), so the struct and the task reference are leaked; the
+/// process is exiting.
 fn abandonFinish(ctx: ?*anyopaque) void {
     const stream: *Stream = @ptrCast(@alignCast(ctx.?));
     if (cocoa.isMainThread()) {
         _ = unregister(stream);
         (Object{ .value = stream.task }).release();
+        destroy(stream);
+    } else {
+        _ = c.close(stream.fd);
     }
-    destroy(stream);
 }
 
 fn unregister(stream: *Stream) bool {

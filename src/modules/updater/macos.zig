@@ -72,6 +72,26 @@ pub fn installBundle(io: std.Io, gpa: std.mem.Allocator, payload_dir: std.Io.Dir
     var staging = try parent.openDir(io, staging_name, .{ .iterate = true });
     defer staging.close(io);
 
+    // First pass: std.tar.extract writes symlinks as they are and later
+    // entries through them, so check the links before extracting.
+    {
+        const payload = try payload_dir.openFile(io, payload_name, .{});
+        defer payload.close(io);
+        var read_buf: [65536]u8 = undefined;
+        var file_reader = payload.readerStreaming(io, &read_buf);
+        var window: [std.compress.flate.max_window_len]u8 = undefined;
+        var gz: std.compress.flate.Decompress = .init(&file_reader.interface, .gzip, &window);
+        var file_name_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var link_name_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var tar_it: std.tar.Iterator = .init(&gz.reader, .{
+            .file_name_buffer = &file_name_buffer,
+            .link_name_buffer = &link_name_buffer,
+        });
+        var guard: LinkGuard = .init(gpa);
+        defer guard.deinit();
+        while (try tar_it.next()) |file| try guard.entry(file.kind, file.name, file.link_name);
+    }
+
     {
         const payload = try payload_dir.openFile(io, payload_name, .{});
         defer payload.close(io);
@@ -144,6 +164,74 @@ pub fn restart(io: std.Io, exe_path: []const u8) !noreturn {
     argv_storage[0] = exe_path;
     for (1..argc) |i| argv_storage[i] = std.mem.span(raw[i]);
     return std.process.replace(io, .{ .argv = argv_storage[0..argc] });
+}
+
+/// Checks the entries of a bundle archive, in order: every symlink target is
+/// relative and stays inside the archive tree (resolved from the link's
+/// directory), and no entry is written through a symlink (a path below an
+/// earlier link). Links such as `Versions/Current -> A` in frameworks pass.
+const LinkGuard = struct {
+    arena: std.heap.ArenaAllocator,
+    links: std.StringHashMapUnmanaged(void) = .empty,
+
+    fn init(gpa: std.mem.Allocator) LinkGuard {
+        return .{ .arena = .init(gpa) };
+    }
+
+    fn deinit(g: *LinkGuard) void {
+        g.arena.deinit();
+    }
+
+    /// `name` without empty and "." components, e.g. "./A.app//x/" -> "A.app/x".
+    fn normalize(a: std.mem.Allocator, name: []const u8) ![]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        var parts = std.mem.tokenizeScalar(u8, name, '/');
+        while (parts.next()) |part| {
+            if (std.mem.eql(u8, part, ".")) continue;
+            if (std.mem.eql(u8, part, "..")) return error.InvalidAppBundle;
+            if (out.items.len > 0) try out.append(a, '/');
+            try out.appendSlice(a, part);
+        }
+        return out.items;
+    }
+
+    fn entry(g: *LinkGuard, kind: std.tar.FileKind, name: []const u8, link_name: []const u8) !void {
+        const a = g.arena.allocator();
+        const path = try normalize(a, name);
+        // No earlier link may be a directory component of this path.
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, path, i, '/')) |slash| : (i = slash + 1) {
+            if (g.links.contains(path[0..slash])) return error.InvalidAppBundle;
+        }
+        if (kind != .sym_link) return;
+        if (link_name.len == 0 or link_name[0] == '/') return error.InvalidAppBundle;
+        var depth: usize = std.mem.count(u8, path, "/"); // components of the link's directory
+        var parts = std.mem.tokenizeScalar(u8, link_name, '/');
+        while (parts.next()) |part| {
+            if (std.mem.eql(u8, part, ".")) continue;
+            if (std.mem.eql(u8, part, "..")) {
+                if (depth == 0) return error.InvalidAppBundle;
+                depth -= 1;
+            } else depth += 1;
+        }
+        try g.links.put(a, path, {});
+    }
+};
+
+test LinkGuard {
+    var g: LinkGuard = .init(std.testing.allocator);
+    defer g.deinit();
+    try g.entry(.directory, "./A.app/", "");
+    try g.entry(.directory, "A.app/Contents/Frameworks/F.framework/Versions/A", "");
+    try g.entry(.sym_link, "A.app/Contents/Frameworks/F.framework/Versions/Current", "A");
+    try g.entry(.sym_link, "A.app/Contents/Frameworks/F.framework/F", "Versions/Current/F");
+    try g.entry(.sym_link, "A.app/up", "../A.app/Contents");
+    try g.entry(.file, "A.app/Contents/Frameworks/F.framework/Versions/A/F", "");
+    // Out of the tree, absolute, or written through a link.
+    try std.testing.expectError(error.InvalidAppBundle, g.entry(.sym_link, "A.app/x", "../.."));
+    try std.testing.expectError(error.InvalidAppBundle, g.entry(.sym_link, "A.app/x", "/Users"));
+    try std.testing.expectError(error.InvalidAppBundle, g.entry(.file, "A.app/up/evil", ""));
+    try std.testing.expectError(error.InvalidAppBundle, g.entry(.directory, "A.app/Contents/Frameworks/F.framework/Versions/Current/x", ""));
 }
 
 test enclosingBundle {

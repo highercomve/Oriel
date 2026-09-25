@@ -197,7 +197,17 @@ pub fn trigger(id: []const u8) bool {
     return false;
 }
 
+/// Carbon calls go to the main thread while the app runs, like
+/// register/unregister; before it starts or after it stopped they run here.
 pub fn deinit(gpa: std.mem.Allocator) void {
+    var ctx: DeinitCtx = .{ .gpa = gpa };
+    ShellMod.runOnMainThread(DeinitCtx, &ctx, deinitMain) catch deinitMain(&ctx);
+}
+
+const DeinitCtx = struct { gpa: std.mem.Allocator };
+
+fn deinitMain(ctx: *DeinitCtx) void {
+    const gpa = ctx.gpa;
     lock();
     defer unlock();
     for (shortcuts.items) |entry| if (entry.ref) |r| {

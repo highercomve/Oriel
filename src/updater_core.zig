@@ -520,7 +520,9 @@ fn downloadInternal(
         if (comptime !@hasDecl(backend, "installBundle")) return error.UnsupportedFormat;
         const bundle = backend.enclosingBundle(real_dest_path) orelse return error.NotInAppBundle;
         try backend.installBundle(io, gpa, parent_dir, temp_dl_name, bundle);
-        return try gpa.dupe(u8, bundle);
+        // The executable's path (now inside the new bundle): `restart`
+        // finds the bundle from it and relaunches that.
+        return try gpa.dupe(u8, real_dest_path);
     }
 
     // Decompression decided strictly by signed format field

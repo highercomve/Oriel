@@ -122,6 +122,9 @@ fn notifyViaOsascript(options: NotificationOptions) !void {
         "display notification (item 2 of argv) with title (item 1 of argv)",
         "-e",
         "end run",
+        // End of options: a title starting with '-' would otherwise be
+        // parsed as another option (e.g. `-e <script>`).
+        "--",
         title.ptr,
         body.ptr,
     };

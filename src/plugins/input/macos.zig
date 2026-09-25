@@ -80,6 +80,7 @@ pub fn typeText(text: []const u8) !void {
         // Convert in slices that end on a code point boundary.
         var end = @min(rest.len, 2048);
         while (end < rest.len and end > 0 and (rest[end] & 0xC0) == 0x80) end -= 1;
+        if (end == 0) return error.InvalidUtf8; // no code point starts in this slice
         const n = std.unicode.utf8ToUtf16Le(&buf, rest[0..end]) catch return error.InvalidUtf8;
         rest = rest[end..];
         var i: usize = 0;

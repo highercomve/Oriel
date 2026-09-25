@@ -157,9 +157,13 @@ pub fn listSources(gpa: std.mem.Allocator) ![]common.Source {
         if (try inputChannels(gpa, id) == 0) continue;
         const uid = try stringProperty(gpa, id, sel_uid) orelse continue;
         errdefer gpa.free(uid);
-        const name = try stringProperty(gpa, id, sel_name) orelse try gpa.dupeZ(u8, uid);
-        errdefer gpa.free(name);
-        try list.append(gpa, .{ .name = uid, .description = name[0..name.len], .monitor = isLoopback(name) });
+        // `description` is a plain slice: copy the name without its 0 so
+        // freeSources frees exactly what was allocated.
+        const name_z = try stringProperty(gpa, id, sel_name);
+        defer if (name_z) |z| gpa.free(z);
+        const desc = try gpa.dupe(u8, if (name_z) |z| z else uid);
+        errdefer gpa.free(desc);
+        try list.append(gpa, .{ .name = uid, .description = desc, .monitor = isLoopback(desc) });
     }
     return list.toOwnedSlice(gpa);
 }
@@ -243,6 +247,8 @@ pub const Stream = struct {
     /// Open `source` (a `Source.name`, i.e. a CoreAudio device UID; null =
     /// the default input). `app_name` is unused on macOS.
     pub fn open(source: ?[:0]const u8, app_name: [:0]const u8, rate: u32) !Stream {
+        // The ring and buffer sizes are computed from the rate.
+        if (rate < 8000 or rate > 192000) return error.UnsupportedSampleRate;
         _ = app_name;
         if (source) |s| if (std.mem.eql(u8, s, tap_mod.source_name)) return openTap(rate);
         if (source == null and !hasDefaultInput()) return error.NoInputDevice; // e.g. a VM without audio input

@@ -65,6 +65,10 @@ const latency_s = 0.05;
 
 // ---------------------------------------------------------------------------
 
+extern "c" fn dispatch_sync_f(queue: *anyopaque, ctx: ?*anyopaque, work: *const fn (?*anyopaque) callconv(.c) void) void;
+
+fn noop(_: ?*anyopaque) callconv(.c) void {}
+
 const Pending = struct { kind: Event.Kind, name: []u8 };
 
 const State = struct {
@@ -89,6 +93,9 @@ const State = struct {
         const s = self.stream orelse return;
         FSEventStreamStop(s);
         FSEventStreamInvalidate(s);
+        // A callback already running (or queued) on our serial queue ends
+        // before this returns, so the caller may free the state after it.
+        dispatch_sync_f(self.queue, null, &noop);
         FSEventStreamRelease(s);
         self.stream = null;
     }
@@ -194,7 +201,8 @@ pub const Watcher = struct {
     }
 
     /// Return pending events without blocking. Names point into `buf`;
-    /// events whose name doesn't fit wait for the next call.
+    /// events whose name doesn't fit wait for the next call (a name longer
+    /// than all of `buf` is dropped, so it can't block the rest).
     pub fn poll(self: Watcher, buf: []align(buffer_align) u8, out: []Event) !usize {
         const s = self.state;
         s.lock();
@@ -203,6 +211,11 @@ pub const Watcher = struct {
         var used: usize = 0;
         var taken: usize = 0;
         for (s.pending.items) |p| {
+            if (p.name.len > buf.len) {
+                taken += 1;
+                gpa.free(p.name);
+                continue;
+            }
             if (n == out.len or used + p.name.len > buf.len) break;
             @memcpy(buf[used..][0..p.name.len], p.name);
             out[n] = .{ .kind = p.kind, .name = buf[used..][0..p.name.len] };

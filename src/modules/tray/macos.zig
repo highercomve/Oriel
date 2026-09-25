@@ -8,6 +8,8 @@
 //!
 //! AppKit calls happen on the main thread: `create` and the setters are
 //! marshalled there with `Shell.runOnMainThread` when called elsewhere.
+//! So are the menu model changes (`setMenu`, `setChecked`, `setTitle`),
+//! which the main thread reads while building the menu and on clicks.
 
 const std = @import("std");
 const cocoa = @import("../../platform/macos/cocoa.zig");
@@ -41,7 +43,7 @@ pub const Tray = struct {
     menu: Menu,
     strings: std.heap.ArenaAllocator,
     id: []const u8,
-    title: []const u8,
+    title: []const u8, // owned (gpa); replaced on the main thread
     status_item: Object = cocoa.nil, // retained
     on_menu: ?*const fn (id: []const u8, checked: ?bool) void,
     on_activate: ?*const fn () void,
@@ -62,7 +64,8 @@ pub const Tray = struct {
         errdefer self.strings.deinit();
         const a = self.strings.allocator();
         self.id = try a.dupe(u8, options.id);
-        self.title = try a.dupe(u8, options.title);
+        self.title = try gpa.dupe(u8, options.title);
+        errdefer gpa.free(self.title);
         try self.menu.set(options.menu);
 
         var params: CreateParams = .{ .tray = self, .options = options };
@@ -80,17 +83,19 @@ pub const Tray = struct {
         };
         self.menu.deinit();
         self.strings.deinit();
+        self.gpa.free(self.title);
         self.gpa.destroy(self);
     }
 
     pub fn setMenu(self: *Tray, items: []const MenuItem) !void {
-        try self.menu.set(items);
+        var params: MenuParams = .{ .tray = self, .items = items };
+        onMain(MenuParams, &params, setMenuOnMain);
+        if (params.err) |err| return err;
     }
 
     pub fn setChecked(self: *Tray, id: []const u8, checked: bool) void {
-        const n = self.menu.find(id) orelse return;
-        n.checked = checked;
-        self.menu.revision +%= 1;
+        var params: CheckedParams = .{ .tray = self, .id = id, .checked = checked };
+        onMain(CheckedParams, &params, setCheckedOnMain);
     }
 
     pub fn isChecked(self: *Tray, id: []const u8) ?bool {
@@ -107,10 +112,8 @@ pub const Tray = struct {
     /// The title isn't shown in the menu bar (only the icon); it names the
     /// item for accessibility.
     pub fn setTitle(self: *Tray, title: []const u8) !void {
-        self.title = try self.strings.allocator().dupe(u8, title);
-        var params: TextParams = .{ .tray = self, .text = self.title };
-        try ShellMod.runOnMainThread(TextParams, &params, setTitleOnMain);
-        if (params.err) |err| return err;
+        var params: TextParams = .{ .tray = self, .text = try self.gpa.dupe(u8, title) };
+        onMain(TextParams, &params, setTitleOnMain);
     }
 
     pub fn setIcon(self: *Tray, icon: Icon) !void {
@@ -129,6 +132,8 @@ pub const Tray = struct {
 const CreateParams = struct { tray: *Tray, options: Options, err: ?anyerror = null };
 const DeinitParams = struct { tray: *Tray };
 const TextParams = struct { tray: *Tray, text: []const u8, err: ?anyerror = null };
+const MenuParams = struct { tray: *Tray, items: []const MenuItem, err: ?anyerror = null };
+const CheckedParams = struct { tray: *Tray, id: []const u8, checked: bool };
 const IconParams = struct { tray: *Tray, icon: Icon, err: ?anyerror = null };
 
 fn ensureTarget() void {
@@ -184,9 +189,30 @@ fn setTooltipOnMain(p: *TextParams) void {
     setText(p.tray.button(), "setToolTip:", p.text);
 }
 
+/// Takes ownership of `p.text`.
 fn setTitleOnMain(p: *TextParams) void {
+    p.tray.gpa.free(p.tray.title);
+    p.tray.title = p.text;
     if (p.tray.status_item.value == null) return;
     setText(p.tray.button(), "setAccessibilityTitle:", p.text);
+}
+
+fn setMenuOnMain(p: *MenuParams) void {
+    p.tray.menu.set(p.items) catch |err| {
+        p.err = err;
+    };
+}
+
+fn setCheckedOnMain(p: *CheckedParams) void {
+    const n = p.tray.menu.find(p.id) orelse return;
+    n.checked = p.checked;
+    p.tray.menu.revision +%= 1;
+}
+
+/// Model changes: on the main thread while the app runs; directly before
+/// it starts or after it stopped (nothing reads the model then).
+fn onMain(comptime Ctx: type, ctx: *Ctx, comptime func: fn (*Ctx) void) void {
+    ShellMod.runOnMainThread(Ctx, ctx, func) catch func(ctx);
 }
 
 fn setIconOnMain(p: *IconParams) void {
