@@ -497,7 +497,7 @@ pub fn installNode(ctx: Context, requested_version: ?[]const u8) ![]u8 {
         try ctx.err.print("Resolving latest Node.js LTS from {s}/index.json...\n", .{node_dist_base});
         ctx.flush();
         const index_url = try std.fmt.allocPrint(arena, "{s}/index.json", .{node_dist_base});
-        const index_bytes = try zig_manager.downloadSmall(ctx, &client, index_url);
+        const index_bytes = try zig_manager.downloadMemory(ctx, &client, index_url, 4 * 1024 * 1024);
         defer gpa.free(index_bytes);
         const lts_ver = try selectLatestLtsVersion(index_bytes, arena);
         break :blk lts_ver;
@@ -525,7 +525,7 @@ pub fn installNode(ctx: Context, requested_version: ?[]const u8) ![]u8 {
     const shasums_url = try std.fmt.allocPrint(arena, "{s}/{s}/SHASUMS256.txt", .{ node_dist_base, version });
     try ctx.err.print("Fetching checksums: {s}\n", .{shasums_url});
     ctx.flush();
-    const shasums_bytes = try zig_manager.downloadSmall(ctx, &client, shasums_url);
+    const shasums_bytes = try zig_manager.downloadMemory(ctx, &client, shasums_url, 512 * 1024);
     defer gpa.free(shasums_bytes);
 
     const expected_digest = parseShasums256(shasums_bytes, archive_name) orelse {

@@ -745,12 +745,17 @@ pub fn downloadToFile(ctx: Context, client: *std.http.Client, url: []const u8, d
     try fw.end();
 }
 
-/// GET `url` into memory (at most `max_small_download` bytes). Caller frees.
-pub fn downloadSmall(ctx: Context, client: *std.http.Client, url: []const u8) ![]u8 {
+/// GET `url` into memory (at most `limit` bytes). Caller frees.
+pub fn downloadMemory(ctx: Context, client: *std.http.Client, url: []const u8, limit: usize) ![]u8 {
     var body: std.Io.Writer.Allocating = .init(ctx.gpa);
     defer body.deinit();
-    try download(ctx, client, url, &body.writer, max_small_download, null);
+    try download(ctx, client, url, &body.writer, limit, null);
     return body.toOwnedSlice();
+}
+
+/// GET `url` into memory (at most `max_small_download` bytes). Caller frees.
+pub fn downloadSmall(ctx: Context, client: *std.http.Client, url: []const u8) ![]u8 {
+    return downloadMemory(ctx, client, url, max_small_download);
 }
 
 /// Mirror base URLs from community-mirrors.txt text (https only).
