@@ -238,8 +238,6 @@ fn applicationShouldTerminate(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv
     return NSTerminateCancel;
 }
 
-/// Clicking the Dock icon while every window is hidden (`on_close = .hide`)
-/// brings the main window back.
 /// Set by applicationDidFinishLaunching. Launch Services sends the URL that
 /// launched the app before that; later URLs are for the running app.
 var finished_launching = false;
@@ -258,6 +256,8 @@ const keyDirectObject: u32 = 0x2D2D_2D2D; // '----'
 extern "c" fn _NSGetArgc() *c_int;
 extern "c" fn _NSGetArgv() *[*][*:0]u8;
 
+/// Clicking the Dock icon while every window is hidden (`on_close = .hide`)
+/// brings the main window back.
 fn applicationShouldHandleReopen(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, has_visible_windows: cocoa.c.BOOL) callconv(.c) cocoa.c.BOOL {
     if (!cocoa.isTrue(has_visible_windows)) App.showWindow();
     return cocoa.boolean(true);
@@ -444,7 +444,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         /// A URL among the arguments (an unbundled executable started as
         /// `app myapp://...`, as on Linux and Windows), or null.
         fn urlFromArgv() ?[]const u8 {
-            const argc: usize = @intCast(_NSGetArgc().*);
+            const argc: usize = @intCast(@max(_NSGetArgc().*, 0));
+            if (argc < 2) return null; // argv may even be empty (execve with no arguments)
             const argv = _NSGetArgv().*;
             for (1..argc) |i| {
                 const arg = std.mem.span(argv[i]);

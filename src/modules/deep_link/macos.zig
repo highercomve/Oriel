@@ -43,16 +43,8 @@ pub fn setColdStartUrl(url: []const u8) void {
 /// Validate and deliver a deep link URL on the main thread.
 /// Invokes the registered `onOpen` handler and broadcasts `deep-link` event to webview windows.
 pub fn deliver(url: []const u8) void {
-    const valid_url = if (declared_schemes.len > 0)
-        common.validateUrl(url, declared_schemes) catch return
-    else blk: {
-        if (url.len > common.max_url_len) return;
-        for (url) |c| {
-            if (c < 0x20 or c == 0x7F) return;
-        }
-        _ = std.Uri.parse(url) catch return;
-        break :blk url;
-    };
+    // Only declared schemes (none declared: nothing is delivered).
+    const valid_url = common.validateUrl(url, declared_schemes) catch return;
 
     if (on_open_handler) |handler| {
         handler(valid_url);

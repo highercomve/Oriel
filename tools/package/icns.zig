@@ -60,6 +60,13 @@ pub fn writeIcnsFromPngs(allocator: std.mem.Allocator, entries: []const PngIconE
     return buf;
 }
 
+/// Width and height from a PNG's IHDR chunk, or null if `data` isn't a PNG.
+pub fn pngSize(data: []const u8) ?[2]u32 {
+    const signature = "\x89PNG\r\n\x1a\n";
+    if (data.len < 24 or !std.mem.eql(u8, data[0..8], signature) or !std.mem.eql(u8, data[12..16], "IHDR")) return null;
+    return .{ std.mem.readInt(u32, data[16..20], .big), std.mem.readInt(u32, data[20..24], .big) };
+}
+
 fn find(entries: []const PngIconEntry, size: u16) ?PngIconEntry {
     for (entries) |e| if (e.size == size) return e;
     return null;
@@ -83,4 +90,10 @@ test writeIcnsFromPngs {
     try std.testing.expectEqualStrings("icp5", out[20..24]);
     try std.testing.expectEqualStrings("ic11", out[30..34]);
     try std.testing.expectError(error.NoImages, writeIcnsFromPngs(a, &.{.{ .size = 48, .png_data = "x" }}));
+}
+
+test pngSize {
+    const header = "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x04\x00\x00\x00\x02\x00";
+    try std.testing.expectEqual([2]u32{ 1024, 512 }, pngSize(header).?);
+    try std.testing.expectEqual(@as(?[2]u32, null), pngSize("GIF89a-not-a-png-at-all!"));
 }

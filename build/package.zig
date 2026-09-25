@@ -303,7 +303,7 @@ pub fn addPackageSteps(
     var app_bundle: ?AppBundle = null;
     if (os_tag == .macos) {
         const bundle = addAppBundle(b, package_tool, metadata, target, exe, icons_dir, audio_usage);
-        b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = bundle.dir, .install_dir = .prefix, .install_subdir = bundle.name }).step);
+        b.getInstallStep().dependOn(installAppBundle(b, package_tool, bundle, bundle.name));
         app_bundle = bundle;
     }
 
@@ -554,12 +554,19 @@ fn addNsis(ctx: *const Context) *std.Build.Step {
 /// `zig-out/package/<Name>.app`.
 fn addApp(ctx: *const Context) *std.Build.Step {
     const bundle = ctx.app_bundle orelse return &ctx.b.addFail(".app bundles are built for macOS targets only").step;
-    const install = ctx.b.addInstallDirectory(.{
-        .source_dir = bundle.dir,
-        .install_dir = .prefix,
-        .install_subdir = ctx.b.fmt("package/{s}", .{bundle.name}),
-    });
-    return &install.step;
+    return installAppBundle(ctx.b, ctx.package_tool, bundle, ctx.b.fmt("package/{s}", .{bundle.name}));
+}
+
+/// Install `bundle` at `<prefix>/<sub_path>`, replacing what was there (an
+/// install directory step would keep stale files, breaking the signature).
+fn installAppBundle(b: *std.Build, package_tool: *std.Build.Step.Compile, bundle: AppBundle, sub_path: []const u8) *std.Build.Step {
+    const run = b.addRunArtifact(package_tool);
+    run.addArg("install-app");
+    run.addArg("--from");
+    run.addDirectoryArg(bundle.dir);
+    run.addArgs(&.{ "--to", b.getInstallPath(.prefix, sub_path) });
+    run.has_side_effects = true;
+    return &run.step;
 }
 
 /// `zig-out/package/<exe>-<version>.dmg`.

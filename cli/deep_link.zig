@@ -266,6 +266,13 @@ pub fn parseAppIdFromBuildZig(allocator: std.mem.Allocator, build_zig_text: []co
     return null;
 }
 
+/// The app id from build.zig, else addApp's default `dev.oriel.<exe_name>`.
+/// Always allocated: the caller frees it.
+fn appIdOrDefault(allocator: std.mem.Allocator, build_zig_text: []const u8, exe_name: []const u8) ![]const u8 {
+    return parseAppIdFromBuildZig(allocator, build_zig_text) orelse
+        try std.fmt.allocPrint(allocator, "dev.oriel.{s}", .{exe_name});
+}
+
 /// Parse executable name from build.zig
 pub fn parseExeNameFromBuildZig(allocator: std.mem.Allocator, build_zig_text: []const u8) ?[]const u8 {
     const anchor = ".name =";
@@ -383,8 +390,19 @@ fn findAppBundle(ctx: Context, root: []const u8, app_id: []const u8) !?[]u8 {
     defer ctx.gpa.free(out_path);
     var dir = std.Io.Dir.cwd().openDir(ctx.io, out_path, .{ .iterate = true }) catch return null;
     defer dir.close(ctx.io);
-    const needle = try std.fmt.allocPrint(ctx.gpa, "<key>CFBundleIdentifier</key>\n\t<string>{s}</string>", .{app_id});
-    defer ctx.gpa.free(needle);
+    // The id as package_tool writes it (XML-escaped).
+    var needle_w: std.Io.Writer.Allocating = .init(ctx.gpa);
+    defer needle_w.deinit();
+    try needle_w.writer.writeAll("<key>CFBundleIdentifier</key>\n\t<string>");
+    for (app_id) |ch| try needle_w.writer.writeAll(switch (ch) {
+        '&' => "&amp;",
+        '<' => "&lt;",
+        '>' => "&gt;",
+        '"' => "&quot;",
+        else => &.{ch},
+    });
+    try needle_w.writer.writeAll("</string>");
+    const needle = needle_w.written();
     var it = dir.iterate();
     while (try it.next(ctx.io)) |e| {
         if (e.kind != .directory or !std.mem.endsWith(u8, e.name, ".app")) continue;
@@ -427,11 +445,11 @@ fn runRegister(ctx: Context) !u8 {
         return 1;
     }
 
-    const app_id = parseAppIdFromBuildZig(ctx.gpa, build_zig_content) orelse "dev.oriel.App";
-    defer ctx.gpa.free(app_id);
-
-    const exe_name = parseExeNameFromBuildZig(ctx.gpa, build_zig_content) orelse "app";
+    const exe_name = parseExeNameFromBuildZig(ctx.gpa, build_zig_content) orelse try ctx.gpa.dupe(u8, "app");
     defer ctx.gpa.free(exe_name);
+
+    const app_id = try appIdOrDefault(ctx.gpa, build_zig_content, exe_name);
+    defer ctx.gpa.free(app_id);
 
     if (builtin.os.tag == .linux) {
         // Find executable in zig-out/bin
@@ -555,7 +573,10 @@ fn runUnregister(ctx: Context) !u8 {
     };
     defer ctx.gpa.free(build_zig_content);
 
-    const app_id = parseAppIdFromBuildZig(ctx.gpa, build_zig_content) orelse "dev.oriel.App";
+    const exe_name = parseExeNameFromBuildZig(ctx.gpa, build_zig_content) orelse try ctx.gpa.dupe(u8, "app");
+    defer ctx.gpa.free(exe_name);
+
+    const app_id = try appIdOrDefault(ctx.gpa, build_zig_content, exe_name);
     defer ctx.gpa.free(app_id);
 
     const schemes = try parseSchemesFromBuildZig(ctx.gpa, build_zig_content);
@@ -602,7 +623,12 @@ fn runUnregister(ctx: Context) !u8 {
             return 1;
         };
         defer ctx.gpa.free(bundle);
-        _ = ctx.run(&.{ lsregister, "-u", bundle }, null);
+        if (ctx.run(&.{ lsregister, "-u", bundle }, null) != 0) {
+            try ctx.err.print("error: lsregister -u failed for {s}\n", .{bundle});
+            return 1;
+        }
+        // Other copies with the same bundle id (zig-out/package, /Applications)
+        // stay registered with Launch Services.
         try ctx.out.print("Unregistered {s} from Launch Services\n", .{bundle});
         return 0;
     }

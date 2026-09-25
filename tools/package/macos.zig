@@ -28,8 +28,12 @@ pub const PlistOptions = struct {
     audio_usage: bool = false,
 };
 
-/// Info.plist XML; the caller owns the result.
+/// Info.plist XML; the caller owns the result. Values that XML 1.0 can't
+/// carry (control characters, invalid UTF-8) and malformed schemes are
+/// rejected rather than written into a plist Launch Services would ignore.
 pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
+    for ([_][]const u8{ o.id, o.name, o.exe_name, o.version, o.min_os }) |v| try checkText(v);
+    for (o.url_schemes) |scheme| if (!isValidSchemeFormat(scheme)) return error.InvalidUrlScheme;
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     const w = &out.writer;
@@ -96,14 +100,29 @@ fn escape(w: *std.Io.Writer, s: []const u8) !void {
     };
 }
 
-/// Bundle directory name for a display name ("Notes" -> "Notes.app"); '/'
-/// and ':' can't be in a file name.
+/// A plist string value: valid UTF-8, no control characters.
+fn checkText(v: []const u8) !void {
+    if (v.len == 0 or !std.unicode.utf8ValidateSlice(v)) return error.InvalidPlistValue;
+    for (v) |ch| if (ch < 0x20 or ch == 0x7F) return error.InvalidPlistValue;
+}
+
+/// RFC 3986 scheme syntax (the check in src/modules/deep_link/common.zig,
+/// which this host tool can't import).
+pub fn isValidSchemeFormat(scheme: []const u8) bool {
+    if (scheme.len == 0 or !std.ascii.isAlphabetic(scheme[0])) return false;
+    for (scheme[1..]) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and ch != '+' and ch != '-' and ch != '.') return false;
+    }
+    return true;
+}
+
+/// Bundle directory name for a display name ("Notes" -> "Notes.app"). The
+/// name must be usable as one file name as is (the build graph expects
+/// `<name>.app`): no path separators or ':', not empty, not starting with '.'.
 pub fn bundleDirName(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
-    const out = try std.fmt.allocPrint(gpa, "{s}.app", .{name});
-    for (out[0..name.len]) |*ch| if (ch.* == '/' or ch.* == ':') {
-        ch.* = '-';
-    };
-    return out;
+    try checkText(name);
+    if (name[0] == '.' or std.mem.indexOfAny(u8, name, "/\\:") != null) return error.InvalidBundleName;
+    return std.fmt.allocPrint(gpa, "{s}.app", .{name});
 }
 
 test generateInfoPlist {
@@ -133,7 +152,26 @@ test generateInfoPlist {
 
 test bundleDirName {
     const a = std.testing.allocator;
-    const n = try bundleDirName(a, "A/B: C");
+    const n = try bundleDirName(a, "Oriel Notes (Beta)");
     defer a.free(n);
-    try std.testing.expectEqualStrings("A-B- C.app", n);
+    try std.testing.expectEqualStrings("Oriel Notes (Beta).app", n);
+    for ([_][]const u8{ "A/B", "..\\x", "a:b", ".hidden", "", "tab\there" }) |bad| {
+        try std.testing.expect(std.meta.isError(bundleDirName(a, bad)));
+    }
+}
+
+test "generateInfoPlist rejects values XML can't carry" {
+    const a = std.testing.allocator;
+    const base: PlistOptions = .{ .id = "x.y", .name = "Y", .exe_name = "y", .version = "1", .min_os = "13.0" };
+    var o = base;
+    o.name = "bad\x01name";
+    try std.testing.expectError(error.InvalidPlistValue, generateInfoPlist(a, o));
+    o = base;
+    o.id = "\xff\xfe";
+    try std.testing.expectError(error.InvalidPlistValue, generateInfoPlist(a, o));
+    o = base;
+    o.url_schemes = &.{"my app"};
+    try std.testing.expectError(error.InvalidUrlScheme, generateInfoPlist(a, o));
+    try std.testing.expect(isValidSchemeFormat("oriel-notes+x.y"));
+    try std.testing.expect(!isValidSchemeFormat("1abc"));
 }
