@@ -40,6 +40,7 @@ extern fn gtk_style_context_add_provider_for_display(display: *anyopaque, provid
 extern fn gtk_widget_get_width(widget: *anyopaque) c_int;
 extern fn gtk_widget_get_height(widget: *anyopaque) c_int;
 extern fn gtk_widget_get_mapped(widget: *anyopaque) c_int;
+extern fn gtk_window_get_default_size(window: *anyopaque, width: *c_int, height: *c_int) void;
 
 // gtk4-layer-shell (linked with -Dlayer_shell).
 const layer = if (build_options.layer_shell) struct {
@@ -249,7 +250,11 @@ pub fn getWindowWorkArea(handle: anytype) ?App.Rect {
 fn placeX11(window: *gtk.Window, surface: *anyopaque, placement: App.Placement) void {
     const x11 = X11.get() orelse return;
     const area = getWindowWorkArea(.{ .gtk_window = window }) orelse return;
-    const o = placement.origin(area, gtk_widget_get_width(window), gtk_widget_get_height(window));
+    // At map time GTK may not have allocated the window yet (0x0): use its default size.
+    var w = gtk_widget_get_width(window);
+    var h = gtk_widget_get_height(window);
+    if (w <= 0 or h <= 0) gtk_window_get_default_size(window, &w, &h);
+    const o = placement.origin(area, w, h);
     x11.move(surface, o.x, o.y);
 }
 
