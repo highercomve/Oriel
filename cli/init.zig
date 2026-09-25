@@ -343,7 +343,7 @@ pub fn runWithFetch(ctx: Context, cmd: Command, fetch_loader: ?FetchLoaderFn) !u
             return 1;
         }
         if (cmd.template.usesVite()) {
-            const has_system_node = (try ctx.findExecutable("node")) != null and (try ctx.findExecutable("npm")) != null;
+            const has_system_node = (try ctx.hasExecutable("node")) and (try ctx.hasExecutable("npm"));
             var managed_node = try setup.findNewestManagedNode(ctx);
             defer if (managed_node) |m| m.deinit(ctx.gpa);
 

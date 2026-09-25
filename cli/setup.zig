@@ -773,7 +773,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
             }
 
             // 2. Node.js
-            const has_system_node = (try ctx.findExecutable("node")) != null;
+            const has_system_node = try ctx.hasExecutable("node");
             var managed_node = try findNewestManagedNode(ctx);
             defer if (managed_node) |*mn| mn.deinit(ctx.gpa);
 
@@ -802,7 +802,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
                 }
 
                 // NSIS
-                const has_makensis = (try ctx.findExecutable("makensis")) != null;
+                const has_makensis = try ctx.hasExecutable("makensis");
                 const managed_nsis = try findNewestManagedNsis(ctx);
                 defer if (managed_nsis) |m| ctx.gpa.free(m);
                 if (!has_makensis and managed_nsis == null) {

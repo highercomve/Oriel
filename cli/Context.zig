@@ -48,6 +48,13 @@ pub fn findExecutable(ctx: Context, name: []const u8) std.mem.Allocator.Error!?[
     return null;
 }
 
+/// Whether `name` is on PATH (see `findExecutable`).
+pub fn hasExecutable(ctx: Context, name: []const u8) std.mem.Allocator.Error!bool {
+    const found = try ctx.findExecutable(name) orelse return false;
+    ctx.gpa.free(found);
+    return true;
+}
+
 /// Check whether `target_dir` is already present in `path_env`.
 /// Handles platform delimiters (`;` on Windows, `:` on POSIX), ignores trailing
 /// directory separators, and performs case-insensitive comparisons on Windows.
