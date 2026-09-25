@@ -269,7 +269,7 @@ Same build-time and distribution considerations as llama.
 Compile with `-Dggml_cuda` (Linux only) to offload to NVIDIA GPUs:
 
 ```sh
-zig build -Dllama -Dwhisper -Dggml_cuda -Dcuda_path=/opt/cuda
+oriel build -Dllama -Dwhisper -Dggml_cuda -Dcuda_path=/opt/cuda
 ```
 
 Measured speedup on RTX 4070 (11 s audio): 3.2 s on CPU → 0.8 s on CUDA.

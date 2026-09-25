@@ -86,8 +86,8 @@ The WebView2 runtime itself ships with Windows 11 and current Windows 10; the in
 ## Build on Windows
 
 ```sh
-zig build -Dwebview2-loader=C:\path\to\WebView2Loader.dll
-zig build package -Dwebview2-loader=C:\path\to\WebView2Loader.dll
+oriel build -Dwebview2-loader=C:\path\to\WebView2Loader.dll
+oriel package -Dwebview2-loader=C:\path\to\WebView2Loader.dll
 ```
 
 `zig-out\bin` gets the app with `WebView2Loader.dll` next to it; `zig-out\package` gets the installer.
@@ -95,13 +95,13 @@ zig build package -Dwebview2-loader=C:\path\to\WebView2Loader.dll
 ## Cross-compile from Linux
 
 ```sh
-zig build -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
-zig build package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+oriel build -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+oriel package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
 ```
 
 ## The installer
 
-`zig build package` produces a per-user NSIS installer, `<app-name>-<version>-setup.exe`. It:
+`oriel package` produces a per-user NSIS installer, `<app-name>-<version>-setup.exe`. It:
 
 - installs to `%LOCALAPPDATA%\Programs\<name>` without administrator rights,
 - adds Start Menu shortcuts and an entry in Settings → Apps,
@@ -128,7 +128,7 @@ This runs the app in a headless Wine environment. See `docs/windows-testing.md` 
 Oriel runs on macOS with AppKit and `WKWebView`, through the Objective-C runtime ([zig-objc](https://github.com/mitchellh/zig-objc)). Build on the Mac itself (Apple Silicon or Intel) with Xcode or the command-line tools installed:
 
 ```sh
-oriel build            # or: zig build
+oriel build
 oriel dev              # Vite hot reload, and Zig rebuild + restart
 ```
 
@@ -145,7 +145,7 @@ Some features require native C libraries, opt-in behind build flags.
 Enable vector search in SQLite:
 
 ```sh
-zig build -Dsqlite_vec
+oriel build -Dsqlite_vec
 ```
 
 Default: off. Requires `sql` to be enabled.
@@ -153,13 +153,13 @@ Default: off. Requires `sql` to be enabled.
 ## Local AI (`-Dllama` and `-Dwhisper`)
 
 ```sh
-zig build -Dllama -Dwhisper
+oriel build -Dllama -Dwhisper
 ```
 
 Default: both off. Build time is about 45 seconds cold; cached rebuilds are fast. CPU features are auto-detected; for distributable packages, specify a baseline:
 
 ```sh
-zig build -Dllama -Dwhisper -Dcpu=x86_64_v2
+oriel build -Dllama -Dwhisper -Dcpu=x86_64_v2
 ```
 
 Use `-Dcpu=baseline` for maximum portability.
@@ -171,7 +171,7 @@ Use `-Dcpu=baseline` for maximum portability.
 Compile with CUDA support for whisper and llama:
 
 ```sh
-zig build -Dllama -Dwhisper -Dggml_cuda
+oriel build -Dllama -Dwhisper -Dggml_cuda
 ```
 
 This requires:
@@ -183,7 +183,7 @@ The CUDA backend is compiled as `libggml-cuda.so` and loaded at runtime from the
 First build takes a few minutes; cached builds are fast. For distributable builds, specify a target architecture:
 
 ```sh
-zig build -Dggml_cuda -Dcuda_arch=all-major
+oriel build -Dggml_cuda -Dcuda_arch=all-major
 ```
 
 Measured speedup (11 s audio clip on RTX 4070): 3.2 s on CPU → 0.8 s on CUDA.

@@ -43,7 +43,7 @@ Without building the full app:
 oriel check
 ```
 
-This type-checks your Zig code in about a second, using `zig build check`. Handy while iterating.
+This type-checks your Zig code in about a second without building binaries. Handy while iterating.
 
 # Logging
 
