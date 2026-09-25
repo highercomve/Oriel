@@ -490,6 +490,9 @@ fn runRegister(ctx: Context) !u8 {
     const exe_name = parseExeNameFromBuildZig(ctx.gpa, build_zig_content) orelse try ctx.gpa.dupe(u8, "app");
     defer ctx.gpa.free(exe_name);
 
+    const schemes_str = try std.mem.join(ctx.gpa, ", ", schemes);
+    defer ctx.gpa.free(schemes_str);
+
     const app_id = appIdOrDefault(ctx.gpa, build_zig_content, exe_name) catch |err| {
         if (err == error.InvalidAppId) {
             try ctx.err.writeAll("error: invalid app_id (must be at least two dot-separated alphanumeric segments)\n");
@@ -579,7 +582,7 @@ fn runRegister(ctx: Context) !u8 {
             _ = ctx.run(&.{ "xdg-mime", "default", desktop_file_name, mime }, null);
         }
 
-        try ctx.out.print("Registered dev desktop handler: {s}\n", .{desktop_file_path});
+        try ctx.out.print("Registered scheme(s) [{s}] for '{s}' ({s})\n", .{ schemes_str, bin_path, desktop_file_path });
         return 0;
     } else if (builtin.os.tag == .windows) {
         const bin_path = try builtExe(ctx, root, exe_name) orelse {
@@ -607,7 +610,7 @@ fn runRegister(ctx: Context) !u8 {
             if (ctx.capture(&.{ "reg", "add", cmd_key, "/ve", "/d", cmd_val, "/f" }, 30_000)) |r| r.deinit(ctx.gpa);
         }
 
-        try ctx.out.print("Registered Windows HKCU classes for schemes\n", .{});
+        try ctx.out.print("Registered Windows HKCU classes for scheme(s) [{s}] -> '{s}'\n", .{ schemes_str, bin_path });
         return 0;
     } else if (builtin.os.tag == .macos) {
         const bundle = try findAppBundle(ctx, root, app_id) orelse {
@@ -619,7 +622,7 @@ fn runRegister(ctx: Context) !u8 {
             try ctx.err.print("error: lsregister failed for {s}\n", .{bundle});
             return 1;
         }
-        try ctx.out.print("Registered {s} with Launch Services (Info.plist CFBundleURLTypes)\n", .{bundle});
+        try ctx.out.print("Registered scheme(s) [{s}] for '{s}' with Launch Services (Info.plist CFBundleURLTypes)\n", .{ schemes_str, bundle });
         return 0;
     }
 
@@ -668,6 +671,13 @@ fn runUnregister(ctx: Context) !u8 {
         ctx.gpa.free(schemes);
     }
 
+    const schemes_str = try std.mem.join(ctx.gpa, ", ", schemes);
+    defer ctx.gpa.free(schemes_str);
+
+    const maybe_bin = try builtExe(ctx, root, exe_name);
+    defer if (maybe_bin) |b| ctx.gpa.free(b);
+    const target_path = maybe_bin orelse exe_name;
+
     if (builtin.os.tag == .linux) {
         const data_home = blk: {
             if (ctx.environ.get("XDG_DATA_HOME")) |xdg| {
@@ -693,7 +703,7 @@ fn runUnregister(ctx: Context) !u8 {
             }
         };
 
-        try ctx.out.print("Unregistered dev desktop handler: {s}\n", .{desktop_file_path});
+        try ctx.out.print("Unregistered scheme(s) [{s}] for '{s}' ({s})\n", .{ schemes_str, target_path, desktop_file_path });
         return 0;
     } else if (builtin.os.tag == .windows) {
         for (schemes) |s| {
@@ -701,7 +711,7 @@ fn runUnregister(ctx: Context) !u8 {
             defer ctx.gpa.free(root_key);
             if (ctx.capture(&.{ "reg", "delete", root_key, "/f" }, 30_000)) |r| r.deinit(ctx.gpa);
         }
-        try ctx.out.print("Unregistered Windows HKCU classes for schemes\n", .{});
+        try ctx.out.print("Unregistered Windows HKCU classes for scheme(s) [{s}] for '{s}'\n", .{ schemes_str, target_path });
         return 0;
     } else if (builtin.os.tag == .macos) {
         const bundle = try findAppBundle(ctx, root, app_id) orelse {
@@ -715,7 +725,7 @@ fn runUnregister(ctx: Context) !u8 {
         }
         // Other copies with the same bundle id (zig-out/package, /Applications)
         // stay registered with Launch Services.
-        try ctx.out.print("Unregistered {s} from Launch Services\n", .{bundle});
+        try ctx.out.print("Unregistered scheme(s) [{s}] for '{s}' from Launch Services\n", .{ schemes_str, bundle });
         return 0;
     }
 

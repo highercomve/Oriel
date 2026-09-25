@@ -11,6 +11,7 @@
 # Environment:
 #   ORIEL_VERSION       release tag to install, e.g. v0.1.0 (default: latest)
 #   ORIEL_INSTALL_DIR   where to put the binary (default: ~/.local/bin)
+#   ORIEL_MODIFY_PATH   set to 1 to append the PATH export to your shell rc
 #   ORIEL_RELEASES_URL  releases base URL (default: the GitHub releases of
 #                       highercomve/Oriel); files are fetched from
 #                       <url>/latest/download/<file> or <url>/download/<tag>/<file>
@@ -94,6 +95,36 @@ mv -f "$install_dir/.oriel.new" "$install_dir/oriel"
 say "Installed $("$install_dir/oriel" --version | head -n 1) to ${install_dir}/oriel"
 case ":${PATH}:" in
     *":${install_dir}:"*) ;;
-    *) say "Note: ${install_dir} is not on your PATH; add it, e.g.: export PATH=\"${install_dir}:\$PATH\"" ;;
+    *)
+        shell_name="$(basename "${SHELL:-sh}")"
+        case "$shell_name" in
+            fish)
+                rc_file="${HOME}/.config/fish/config.fish"
+                add_line="fish_add_path \"${install_dir}\""
+                ;;
+            zsh)
+                rc_file="${HOME}/.zshrc"
+                add_line="export PATH=\"${install_dir}:\$PATH\""
+                ;;
+            bash)
+                rc_file="${HOME}/.bashrc"
+                add_line="export PATH=\"${install_dir}:\$PATH\""
+                ;;
+            *)
+                rc_file="${HOME}/.profile"
+                add_line="export PATH=\"${install_dir}:\$PATH\""
+                ;;
+        esac
+
+        if [ "${ORIEL_MODIFY_PATH:-0}" = "1" ]; then
+            mkdir -p "$(dirname "$rc_file")"
+            printf '\n# Oriel CLI\n%s\n' "$add_line" >> "$rc_file"
+            say "Added ${install_dir} to PATH in ${rc_file}."
+        else
+            say "Note: ${install_dir} is not on your PATH."
+            say "To add it to ${rc_file}, run:"
+            say "  ${add_line}"
+        fi
+        ;;
 esac
 say "Next: oriel doctor, then oriel init my-app"

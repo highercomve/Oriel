@@ -48,6 +48,28 @@ pub fn findExecutable(ctx: Context, name: []const u8) std.mem.Allocator.Error!?[
     return null;
 }
 
+/// Check whether `target_dir` is already present in `path_env`.
+/// Handles platform delimiters (`;` on Windows, `:` on POSIX), ignores trailing
+/// directory separators, and performs case-insensitive comparisons on Windows.
+pub fn isPathPresent(path_env: []const u8, target_dir: []const u8) bool {
+    return isPathPresentWithDelimiter(path_env, target_dir, std.fs.path.delimiter, builtin.os.tag != .windows);
+}
+
+pub fn isPathPresentWithDelimiter(path_env: []const u8, target_dir: []const u8, delimiter: u8, case_sensitive: bool) bool {
+    const trimmed_target = std.mem.trimEnd(u8, target_dir, "/\\");
+    if (trimmed_target.len == 0) return false;
+    var it = std.mem.tokenizeScalar(u8, path_env, delimiter);
+    while (it.next()) |entry| {
+        const trimmed_entry = std.mem.trimEnd(u8, entry, "/\\");
+        if (case_sensitive) {
+            if (std.mem.eql(u8, trimmed_entry, trimmed_target)) return true;
+        } else {
+            if (std.ascii.eqlIgnoreCase(trimmed_entry, trimmed_target)) return true;
+        }
+    }
+    return false;
+}
+
 /// `path` if it is executable, else (Windows) `path` + the first PATHEXT
 /// extension that is. On Windows a file only runs with a PATHEXT extension,
 /// so an extensionless `npm` (the POSIX shell script next to `npm.cmd`) is
@@ -211,4 +233,23 @@ test "findExecutable searches PATH" {
     try std.testing.expectEqualStrings("zig", ctx.zig());
     try env.put("ORIEL_ZIG", "/opt/zig/zig");
     try std.testing.expectEqualStrings("/opt/zig/zig", ctx.zig());
+}
+
+test "PATH-already-present detection logic" {
+    // Delimiter tests (POSIX ':' and Windows ';')
+    const posix_path = "/usr/bin:/usr/local/bin:/home/user/.local/bin";
+    try std.testing.expect(isPathPresentWithDelimiter(posix_path, "/usr/bin", ':', true));
+    try std.testing.expect(isPathPresentWithDelimiter(posix_path, "/home/user/.local/bin", ':', true));
+    try std.testing.expect(isPathPresentWithDelimiter(posix_path, "/home/user/.local/bin/", ':', true)); // trailing slash in target
+    try std.testing.expect(!isPathPresentWithDelimiter(posix_path, "/usr", ':', true)); // prefix substring should not match
+    try std.testing.expect(!isPathPresentWithDelimiter(posix_path, "/usr/local", ':', true));
+    try std.testing.expect(!isPathPresentWithDelimiter(posix_path, "/home/user", ':', true));
+
+    const win_path = "C:\\Windows\\System32;C:\\Users\\User\\.oriel\\bin;C:\\Program Files\\nodejs\\";
+    try std.testing.expect(isPathPresentWithDelimiter(win_path, "c:\\windows\\system32", ';', false)); // case-insensitive
+    try std.testing.expect(isPathPresentWithDelimiter(win_path, "C:\\Users\\User\\.oriel\\bin\\", ';', false)); // trailing slash in target
+    try std.testing.expect(isPathPresentWithDelimiter(win_path, "C:\\Program Files\\nodejs", ';', false)); // trailing slash in entry
+    try std.testing.expect(!isPathPresentWithDelimiter(win_path, "C:\\Users\\User", ';', false));
+    try std.testing.expect(!isPathPresentWithDelimiter("", "C:\\anything", ';', false));
+    try std.testing.expect(!isPathPresentWithDelimiter(win_path, "", ';', false));
 }

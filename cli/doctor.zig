@@ -4,6 +4,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Context = @import("Context.zig");
+const project = @import("project.zig");
 const webview2 = @import("webview2.zig");
 const zig_manager = @import("zig_manager.zig");
 const setup = @import("setup.zig");
@@ -119,19 +120,21 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
     const zig_check = try checkZig(c, want_zig);
     try items.append(arena, zig_check.item);
 
+    const node_req = detectNodeRequirement(arena, ctx.io, null);
+
     switch (builtin.os.tag) {
         .macos => {
             try items.append(arena, try checkXcode(c));
-            try items.append(arena, try checkNode(c));
-            try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
-            try items.append(arena, try checkCachedWebView2Loader(c));
+            try items.append(arena, try checkNode(c, node_req));
+            try items.append(arena, try checkToolNamed(c, node_req.npm_label, "npm", node_req.level, &.{"--version"}, npm_packages));
+            try items.append(arena, try checkCachedWebView2Loader(c, false));
         },
         .windows => {
             try items.append(arena, try checkWebView2(c));
-            try items.append(arena, try checkNode(c));
-            try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
+            try items.append(arena, try checkNode(c, node_req));
+            try items.append(arena, try checkToolNamed(c, node_req.npm_label, "npm", node_req.level, &.{"--version"}, npm_packages));
             try items.append(arena, try checkMakensis(c));
-            try items.append(arena, try checkCachedWebView2Loader(c));
+            try items.append(arena, try checkCachedWebView2Loader(c, true));
         },
         else => {
             const pkg_config = try c.findExecutable("pkg-config");
@@ -154,8 +157,8 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
                 .dnf = "webkitgtk6.0-devel",
                 .zypper = "webkitgtk-6_0-devel",
             }));
-            try items.append(arena, try checkNode(c));
-            try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
+            try items.append(arena, try checkNode(c, node_req));
+            try items.append(arena, try checkToolNamed(c, node_req.npm_label, "npm", node_req.level, &.{"--version"}, npm_packages));
 
             try items.append(arena, try checkNfpm(c));
             try items.append(arena, try checkTool(c, "mksquashfs", .optional, null, .{ .pacman = "squashfs-tools", .apt = "squashfs-tools", .dnf = "squashfs-tools", .zypper = "squashfs" }));
@@ -167,7 +170,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
 
             try items.append(arena, try checkBusName(c));
             try items.append(arena, try checkPortal(c));
-            try items.append(arena, try checkCachedWebView2Loader(c));
+            try items.append(arena, try checkCachedWebView2Loader(c, false));
         },
     }
 
@@ -228,6 +231,7 @@ fn report(gpa: std.mem.Allocator, w: *std.Io.Writer, items: []const Item, distro
             if (d == .winget) {
                 // winget installs one id per command.
                 for (pkgs.items) |p| try w.print("  {s} {s}\n", .{ installPrefix(d), p });
+                try w.writeAll("  Open a new terminal so PATH updates\n");
             } else {
                 try w.print("  {s}", .{installPrefix(d)});
                 for (pkgs.items) |p| try w.print(" {s}", .{p});
@@ -236,6 +240,19 @@ fn report(gpa: std.mem.Allocator, w: *std.Io.Writer, items: []const Item, distro
         }
         for (items) |item| {
             if (!item.ok and item.level == level) if (item.hint) |h| try w.print("  {s}\n", .{h});
+        }
+        var has_managed_hint = false;
+        for (items) |item| {
+            if (!item.ok and item.level == level) {
+                if (item.hint) |h| {
+                    if (std.mem.indexOf(u8, h, "~/.oriel") != null or std.mem.indexOf(u8, h, "oriel setup") != null) {
+                        has_managed_hint = true;
+                    }
+                }
+            }
+        }
+        if (has_managed_hint) {
+            try w.writeAll("  (managed tools under ~/.oriel are used automatically by oriel; no PATH change needed)\n");
         }
     }
     if (missing_required) {
@@ -291,30 +308,41 @@ fn runFix(ctx: Context, cmd: Command, items: []const Item, plan: FixPlan, want_z
             }
         }
 
+        var installed_any_managed = false;
         if (plan.install_zig) {
             try ctx.out.writeAll("Installing zig...\n");
             ctx.flush();
             _ = try zig_manager.run(ctx, .{ .action = .install, .version = null });
+            installed_any_managed = true;
         }
         if (plan.install_node) {
             try ctx.out.writeAll("Installing node...\n");
             ctx.flush();
             const node_path = try setup.installNode(ctx, null);
             ctx.gpa.free(node_path);
+            installed_any_managed = true;
         }
         if (plan.install_webview2) {
             try ctx.out.writeAll("Downloading WebView2 loader...\n");
             ctx.flush();
             _ = try webview2.run(ctx, .{});
+            installed_any_managed = true;
         }
         if (plan.install_nsis) {
             try ctx.out.writeAll("Installing nsis...\n");
             ctx.flush();
             const res = try setup.installNsis(ctx);
             switch (res) {
-                .installed => |p| ctx.gpa.free(p),
+                .installed => |p| {
+                    ctx.gpa.free(p);
+                    installed_any_managed = true;
+                },
                 .printed_package_command => {},
             }
+        }
+        if (installed_any_managed) {
+            try ctx.out.writeAll("Open a new terminal so PATH updates\n");
+            try ctx.out.writeAll("Managed tools under ~/.oriel are used automatically by oriel (no PATH change needed).\n");
         }
     }
 
@@ -329,8 +357,9 @@ fn runFix(ctx: Context, cmd: Command, items: []const Item, plan: FixPlan, want_z
     for (items) |item| {
         if (!item.ok and item.level == .required) {
             if (std.mem.startsWith(u8, item.label, "node") and plan.install_node) continue;
-            if (std.mem.eql(u8, item.label, "npm") and plan.install_node) continue;
+            if (std.mem.startsWith(u8, item.label, "npm") and plan.install_node) continue;
             if (std.mem.startsWith(u8, item.label, "zig") and plan.install_zig) continue;
+            if (std.mem.eql(u8, item.label, "WebView2 loader") and plan.install_webview2) continue;
             return 1;
         }
     }
@@ -387,7 +416,7 @@ pub fn generateDistroAdminCommand(allocator: std.mem.Allocator, distro: Distro, 
     for (items) |item| {
         if (item.ok or item.level != .required) continue;
         if (std.mem.startsWith(u8, item.label, "node") or
-            std.mem.eql(u8, item.label, "npm") or
+            std.mem.startsWith(u8, item.label, "npm") or
             std.mem.startsWith(u8, item.label, "zig")) continue;
 
         const p = item.packages.get(distro) orelse continue;
@@ -431,7 +460,7 @@ pub fn calculateFixPlan(
     }
 
     for (items) |item| {
-        if (!item.ok and (std.mem.startsWith(u8, item.label, "node") or std.mem.eql(u8, item.label, "npm"))) {
+        if (!item.ok and (std.mem.startsWith(u8, item.label, "node") or std.mem.startsWith(u8, item.label, "npm"))) {
             plan.install_node = true;
         }
         if (!item.ok and std.mem.eql(u8, item.label, "WebView2 loader")) {
@@ -546,7 +575,59 @@ fn zigInstallDisabled(c: Context) bool {
     return v.len > 0 and !std.mem.eql(u8, v, "0");
 }
 
-fn checkNode(c: Context) !Item {
+pub const NodeRequirement = struct {
+    level: Level,
+    node_label: []const u8,
+    npm_label: []const u8,
+};
+
+pub fn detectNodeRequirement(gpa: std.mem.Allocator, io: std.Io, cwd: ?[]const u8) NodeRequirement {
+    const cwd_path = cwd orelse (std.process.currentPathAlloc(io, gpa) catch return .{
+        .level = .optional,
+        .node_label = "node (needed for React/Vue/Svelte templates)",
+        .npm_label = "npm (needed for React/Vue/Svelte templates)",
+    });
+    defer if (cwd == null) gpa.free(cwd_path);
+
+    const root = (project.findRoot(gpa, io, cwd_path) catch null) orelse return .{
+        .level = .optional,
+        .node_label = "node (needed for React/Vue/Svelte templates)",
+        .npm_label = "npm (needed for React/Vue/Svelte templates)",
+    };
+    defer gpa.free(root);
+
+    // Check build.zig to see if frontend.build_command or frontend.dev is explicitly disabled (.build_command = null)
+    var build_zig_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bz_path = std.fmt.bufPrint(&build_zig_buf, "{s}/build.zig", .{root}) catch null;
+    if (bz_path) |p| {
+        if (std.Io.Dir.cwd().readFileAlloc(io, p, gpa, .limited(256 * 1024))) |bz_content| {
+            defer gpa.free(bz_content);
+            if (std.mem.indexOf(u8, bz_content, ".build_command = null") != null) {
+                return .{
+                    .level = .optional,
+                    .node_label = "node (needed for React/Vue/Svelte templates)",
+                    .npm_label = "npm (needed for React/Vue/Svelte templates)",
+                };
+            }
+        } else |_| {}
+    }
+
+    if (project.projectNeedsNode(io, root)) {
+        return .{
+            .level = .required,
+            .node_label = "node (Vite templates)",
+            .npm_label = "npm",
+        };
+    }
+
+    return .{
+        .level = .optional,
+        .node_label = "node (needed for React/Vue/Svelte templates)",
+        .npm_label = "npm (needed for React/Vue/Svelte templates)",
+    };
+}
+
+fn checkNode(c: Context, req: NodeRequirement) !Item {
     const packages = node_packages;
     var node_path: ?[]const u8 = try c.findExecutable("node");
     var is_managed = false;
@@ -560,8 +641,8 @@ fn checkNode(c: Context) !Item {
 
     const path = node_path orelse
         return .{
-            .label = "node (Vite templates)",
-            .level = .required,
+            .label = req.node_label,
+            .level = req.level,
             .ok = false,
             .detail = "not found",
             .packages = packages,
@@ -570,8 +651,8 @@ fn checkNode(c: Context) !Item {
 
     const out = c.capture(&.{ path, "--version" }, 30_000) orelse
         return .{
-            .label = "node (Vite templates)",
-            .level = .required,
+            .label = req.node_label,
+            .level = req.level,
             .ok = false,
             .detail = "did not run",
             .packages = packages,
@@ -580,8 +661,8 @@ fn checkNode(c: Context) !Item {
 
     const ok = out.code == 0 and nodeVersionOk(out.text());
     return .{
-        .label = "node (Vite templates)",
-        .level = .required,
+        .label = req.node_label,
+        .level = req.level,
         .ok = ok,
         .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}{s}){s}", .{
             out.text(),
@@ -594,14 +675,13 @@ fn checkNode(c: Context) !Item {
     };
 }
 
-/// A program on PATH, with its version if `version_args` is given.
-fn checkTool(c: Context, name: []const u8, level: Level, version_args: ?[]const []const u8, packages: Packages) !Item {
-    var path = try c.findExecutable(name);
+pub fn checkToolNamed(c: Context, label: []const u8, exe_name: []const u8, level: Level, version_args: ?[]const []const u8, packages: Packages) !Item {
+    var path = try c.findExecutable(exe_name);
     var is_managed = false;
     var maybe_managed: ?setup.ManagedNode = null;
     defer if (maybe_managed) |m| m.deinit(c.gpa);
 
-    if (path == null and std.mem.eql(u8, name, "npm")) {
+    if (path == null and std.mem.eql(u8, exe_name, "npm")) {
         maybe_managed = try setup.findNewestManagedNode(c);
         if (maybe_managed) |m| {
             path = m.npm_path;
@@ -610,7 +690,7 @@ fn checkTool(c: Context, name: []const u8, level: Level, version_args: ?[]const 
     }
 
     if (path == null)
-        return .{ .label = name, .level = level, .ok = false, .detail = "not found", .packages = packages };
+        return .{ .label = label, .level = level, .ok = false, .detail = "not found", .packages = packages };
 
     var detail: []const u8 = if (is_managed)
         try std.fmt.allocPrint(c.gpa, "{s} (managed)", .{path.?})
@@ -627,7 +707,12 @@ fn checkTool(c: Context, name: []const u8, level: Level, version_args: ?[]const 
             });
         }
     }
-    return .{ .label = name, .level = level, .ok = true, .detail = detail, .packages = packages };
+    return .{ .label = label, .level = level, .ok = true, .detail = detail, .packages = packages };
+}
+
+/// A program on PATH, with its version if `version_args` is given.
+fn checkTool(c: Context, name: []const u8, level: Level, version_args: ?[]const []const u8, packages: Packages) !Item {
+    return checkToolNamed(c, name, name, level, version_args, packages);
 }
 
 /// nfpm is also found in ~/go/bin, like the packaging step does.
@@ -673,25 +758,113 @@ fn checkXcode(c: Context) !Item {
     };
 }
 
+pub const DottedVersion = struct {
+    parts: [4]u32 = .{ 0, 0, 0, 0 },
+    raw: []const u8,
+
+    pub fn parse(s: []const u8) ?DottedVersion {
+        const trimmed = std.mem.trim(u8, s, " \t\r\n\"");
+        if (trimmed.len == 0) return null;
+        var parts: [4]u32 = .{ 0, 0, 0, 0 };
+        var it = std.mem.splitScalar(u8, trimmed, '.');
+        var count: usize = 0;
+        while (it.next()) |part| {
+            if (count >= 4) return null;
+            if (part.len == 0) return null;
+            const num = std.fmt.parseInt(u32, part, 10) catch return null;
+            parts[count] = num;
+            count += 1;
+        }
+        if (count == 0) return null;
+        return .{ .parts = parts, .raw = trimmed };
+    }
+
+    pub fn order(a: DottedVersion, b: DottedVersion) std.math.Order {
+        for (a.parts, b.parts) |p_a, p_b| {
+            if (p_a < p_b) return .lt;
+            if (p_a > p_b) return .gt;
+        }
+        return .eq;
+    }
+};
+
+pub fn parseRegPv(output: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.indexOf(u8, trimmed, "pv") != null and std.mem.indexOf(u8, trimmed, "REG_SZ") != null) {
+            const reg_sz_idx = std.mem.indexOf(u8, trimmed, "REG_SZ") orelse continue;
+            const val = std.mem.trim(u8, trimmed[reg_sz_idx + "REG_SZ".len ..], " \t\r");
+            if (DottedVersion.parse(val) != null) return val;
+        }
+    }
+    return null;
+}
+
 /// Windows: the Evergreen WebView2 runtime installs a versioned
 /// `msedgewebview2.exe` under `EdgeWebView\Application` (per machine or
-/// per user).
+/// per user). Reports the highest version found across directory candidates
+/// and the EdgeUpdate registry `pv`.
 fn checkWebView2(c: Context) !Item {
     const label = "WebView2 runtime";
+    var best_version: ?DottedVersion = null;
+    var best_detail: ?[]const u8 = null;
+
+    // 1. Filesystem scan across all roots
     const roots = [_][]const u8{ "ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA" };
     for (roots) |root_var| {
         const root = c.environ.get(root_var) orelse continue;
-        const app_dir = try std.fs.path.join(c.gpa, &.{ root, "Microsoft", "EdgeWebView", "Application" });
+        const app_dir = std.fs.path.join(c.gpa, &.{ root, "Microsoft", "EdgeWebView", "Application" }) catch continue;
+        defer c.gpa.free(app_dir);
         var dir = std.Io.Dir.cwd().openDir(c.io, app_dir, .{ .iterate = true }) catch continue;
         defer dir.close(c.io);
         var it = dir.iterate();
         while (it.next(c.io) catch null) |entry| {
             if (entry.kind != .directory) continue;
-            const exe = try std.fs.path.join(c.gpa, &.{ app_dir, entry.name, "msedgewebview2.exe" });
+            const ver = DottedVersion.parse(entry.name) orelse continue;
+            const exe = std.fs.path.join(c.gpa, &.{ app_dir, entry.name, "msedgewebview2.exe" }) catch continue;
+            defer c.gpa.free(exe);
             std.Io.Dir.cwd().access(c.io, exe, .{}) catch continue;
-            return .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s})", .{ entry.name, app_dir }) };
+
+            if (best_version == null or ver.order(best_version.?) == .gt) {
+                if (best_detail) |d| c.gpa.free(d);
+                best_version = ver;
+                best_detail = try std.fmt.allocPrint(c.gpa, "{s} ({s})", .{ entry.name, app_dir });
+            }
         }
     }
+
+    // 2. Registry query (EdgeUpdate pv key in HKLM and HKCU)
+    const reg_keys = [_][]const u8{
+        "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-4D2A-4265-8C0E-95AC9ACFC007}",
+        "HKCU\\Software\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-4D2A-4265-8C0E-95AC9ACFC007}",
+        "HKLM\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-4D2A-4265-8C0E-95AC9ACFC007}",
+    };
+    for (reg_keys) |key| {
+        if (c.capture(&.{ "reg", "query", key, "/v", "pv" }, 5_000)) |out| {
+            if (out.code == 0) {
+                if (parseRegPv(out.stdout)) |reg_ver_str| {
+                    if (DottedVersion.parse(reg_ver_str)) |reg_ver| {
+                        if (best_version == null or reg_ver.order(best_version.?) == .gt) {
+                            if (best_detail) |d| c.gpa.free(d);
+                            best_version = reg_ver;
+                            best_detail = try std.fmt.allocPrint(c.gpa, "{s} (registry)", .{reg_ver_str});
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (best_detail) |detail| {
+        return .{
+            .label = label,
+            .level = .required,
+            .ok = true,
+            .detail = detail,
+        };
+    }
+
     return .{ .label = label, .level = .required, .ok = false, .detail = "not found", .packages = .{ .winget = "Microsoft.EdgeWebView2Runtime" }, .hint = webview2_hint };
 }
 
@@ -772,40 +945,47 @@ fn checkPortal(c: Context) !Item {
     };
 }
 
-pub fn checkCachedWebView2Loader(c: Context) !Item {
+pub fn checkCachedWebView2Loader(c: Context, is_windows: bool) !Item {
     const label = "WebView2 loader";
     const maybe_x64 = try webview2.findNewestCached(c.gpa, c.io, c.environ, "x64");
     defer if (maybe_x64) |x| x.deinit(c.gpa);
     const maybe_arm64 = try webview2.findNewestCached(c.gpa, c.io, c.environ, "arm64");
     defer if (maybe_arm64) |a| a.deinit(c.gpa);
 
+    const level: Level = if (is_windows) .required else .info;
+    const fix_hint = "oriel webview2";
+
     if (maybe_x64 != null and maybe_arm64 != null) {
         return .{
             .label = label,
-            .level = .info,
+            .level = level,
             .ok = true,
             .detail = try std.fmt.allocPrint(c.gpa, "{s} (x64: {s})", .{ maybe_x64.?.version, maybe_x64.?.path }),
+            .hint = fix_hint,
         };
     } else if (maybe_x64) |x64| {
         return .{
             .label = label,
-            .level = .info,
+            .level = level,
             .ok = true,
             .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s})", .{ x64.version, x64.path }),
+            .hint = fix_hint,
         };
     } else if (maybe_arm64) |arm64| {
         return .{
             .label = label,
-            .level = .info,
+            .level = level,
             .ok = true,
             .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s})", .{ arm64.version, arm64.path }),
+            .hint = fix_hint,
         };
     }
     return .{
         .label = label,
-        .level = .info,
+        .level = level,
         .ok = false,
-        .detail = "none cached (run: oriel setup webview2)",
+        .detail = if (is_windows) "none cached" else "none cached (run: oriel webview2)",
+        .hint = fix_hint,
     };
 }
 
@@ -999,11 +1179,18 @@ test "checkCachedWebView2Loader empty and populated" {
         .err = &dummy_err.writer,
     };
 
-    // 1. Empty cache
-    const item_empty = try checkCachedWebView2Loader(c);
-    try testing.expectEqual(.info, item_empty.level);
-    try testing.expect(!item_empty.ok);
-    try testing.expectEqualStrings("none cached (run: oriel setup webview2)", item_empty.detail);
+    // 1. Empty cache - non-windows (.info)
+    const item_empty_nonwin = try checkCachedWebView2Loader(c, false);
+    try testing.expectEqual(.info, item_empty_nonwin.level);
+    try testing.expect(!item_empty_nonwin.ok);
+    try testing.expectEqualStrings("none cached (run: oriel webview2)", item_empty_nonwin.detail);
+
+    // 1b. Empty cache - windows (.required)
+    const item_empty_win = try checkCachedWebView2Loader(c, true);
+    try testing.expectEqual(.required, item_empty_win.level);
+    try testing.expect(!item_empty_win.ok);
+    try testing.expectEqualStrings("none cached", item_empty_win.detail);
+    try testing.expectEqualStrings("oriel webview2", item_empty_win.hint.?);
 
     // 2. Populated cache
     const dll_dir = if (builtin.os.tag == .windows)
@@ -1019,9 +1206,141 @@ test "checkCachedWebView2Loader empty and populated" {
     const f = try target_d.createFile(std.testing.io, "WebView2Loader.dll", .{});
     f.close(std.testing.io);
 
-    const item_cached = try checkCachedWebView2Loader(c);
+    const item_cached = try checkCachedWebView2Loader(c, true);
     defer testing.allocator.free(item_cached.detail);
-    try testing.expectEqual(.info, item_cached.level);
+    try testing.expectEqual(.required, item_cached.level);
     try testing.expect(item_cached.ok);
     try testing.expect(std.mem.indexOf(u8, item_cached.detail, "1.0.3856.46") != null);
+}
+
+test "DottedVersion parsing and ordering" {
+    const v1 = DottedVersion.parse("120.0.2210.144").?;
+    const v2 = DottedVersion.parse("134.0.3124.51").?;
+    const v3 = DottedVersion.parse("134.0.3124.51").?;
+    const v4 = DottedVersion.parse("134.0.3124.52").?;
+    const v5 = DottedVersion.parse("1.2").?;
+
+    try testing.expectEqual(.lt, v1.order(v2));
+    try testing.expectEqual(.gt, v2.order(v1));
+    try testing.expectEqual(.eq, v2.order(v3));
+    try testing.expectEqual(.lt, v3.order(v4));
+    try testing.expectEqual(.gt, v4.order(v5));
+
+    try testing.expect(DottedVersion.parse("") == null);
+    try testing.expect(DottedVersion.parse("invalid") == null);
+    try testing.expect(DottedVersion.parse("1.2.3.4.5") == null);
+}
+
+test "parseRegPv output parsing" {
+    const sample =
+        \\HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-4D2A-4265-8C0E-95AC9ACFC007}
+        \\    pv    REG_SZ    134.0.3124.51
+        \\
+    ;
+    const pv = parseRegPv(sample);
+    try testing.expect(pv != null);
+    try testing.expectEqualStrings("134.0.3124.51", pv.?);
+
+    try testing.expect(parseRegPv("nothing here") == null);
+}
+
+test "checkWebView2 selects highest installed version" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_path);
+
+    const app_dir = try std.fs.path.join(testing.allocator, &.{ tmp_path, "Microsoft", "EdgeWebView", "Application" });
+    defer testing.allocator.free(app_dir);
+
+    const v1_dir = try std.fs.path.join(testing.allocator, &.{ app_dir, "120.0.2210.144" });
+    defer testing.allocator.free(v1_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, v1_dir);
+    const exe1_path = try std.fs.path.join(testing.allocator, &.{ v1_dir, "msedgewebview2.exe" });
+    defer testing.allocator.free(exe1_path);
+    const f1 = try std.Io.Dir.cwd().createFile(std.testing.io, exe1_path, .{});
+    f1.close(std.testing.io);
+
+    const v2_dir = try std.fs.path.join(testing.allocator, &.{ app_dir, "134.0.3124.51" });
+    defer testing.allocator.free(v2_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, v2_dir);
+    const exe2_path = try std.fs.path.join(testing.allocator, &.{ v2_dir, "msedgewebview2.exe" });
+    defer testing.allocator.free(exe2_path);
+    const f2 = try std.Io.Dir.cwd().createFile(std.testing.io, exe2_path, .{});
+    f2.close(std.testing.io);
+
+    var env_map = std.process.Environ.Map.init(testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("ProgramFiles", tmp_path);
+
+    var dummy_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer dummy_out.deinit();
+    var dummy_err: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer dummy_err.deinit();
+
+    const c: Context = .{
+        .gpa = testing.allocator,
+        .io = std.testing.io,
+        .environ = &env_map,
+        .out = &dummy_out.writer,
+        .err = &dummy_err.writer,
+    };
+
+    const item = try checkWebView2(c);
+    defer testing.allocator.free(item.detail);
+
+    try testing.expect(item.ok);
+    try testing.expectEqual(.required, item.level);
+    try testing.expect(std.mem.indexOf(u8, item.detail, "134.0.3124.51") != null);
+    try testing.expect(std.mem.indexOf(u8, item.detail, "120.0.2210.144") == null);
+}
+
+test "detectNodeRequirement: outside, vanilla, and vite projects" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_path);
+
+    // 1. Outside any project
+    const outside_req = detectNodeRequirement(testing.allocator, std.testing.io, tmp_path);
+    try testing.expectEqual(.optional, outside_req.level);
+    try testing.expectEqualStrings("node (needed for React/Vue/Svelte templates)", outside_req.node_label);
+
+    // 2. Vanilla project: has build.zig.zon and build.zig with .build_command = null
+    const vanilla_dir = try std.fs.path.join(testing.allocator, &.{ tmp_path, "vanilla" });
+    defer testing.allocator.free(vanilla_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, vanilla_dir);
+    const zon_path = try std.fs.path.join(testing.allocator, &.{ vanilla_dir, "build.zig.zon" });
+    defer testing.allocator.free(zon_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = zon_path, .data = ".{ .name = .vanilla, .version = \"0.1.0\", .fingerprint = 0x123 }" });
+
+    const bz_path = try std.fs.path.join(testing.allocator, &.{ vanilla_dir, "build.zig" });
+    defer testing.allocator.free(bz_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = bz_path, .data = "const std = @import(\"std\");\npub fn build(b: *std.Build) void { _ = b; // .build_command = null\n }" });
+
+    const vanilla_req = detectNodeRequirement(testing.allocator, std.testing.io, vanilla_dir);
+    try testing.expectEqual(.optional, vanilla_req.level);
+    try testing.expectEqualStrings("node (needed for React/Vue/Svelte templates)", vanilla_req.node_label);
+
+    // 3. Vite project: has frontend/package.json
+    const vite_dir = try std.fs.path.join(testing.allocator, &.{ tmp_path, "vite" });
+    defer testing.allocator.free(vite_dir);
+    const vite_fe = try std.fs.path.join(testing.allocator, &.{ vite_dir, "frontend" });
+    defer testing.allocator.free(vite_fe);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, vite_fe);
+
+    const vite_zon = try std.fs.path.join(testing.allocator, &.{ vite_dir, "build.zig.zon" });
+    defer testing.allocator.free(vite_zon);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = vite_zon, .data = ".{ .name = .vite, .version = \"0.1.0\", .fingerprint = 0x456 }" });
+
+    const pkg_json = try std.fs.path.join(testing.allocator, &.{ vite_fe, "package.json" });
+    defer testing.allocator.free(pkg_json);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = pkg_json, .data = "{\"name\": \"vite-app\"}" });
+
+    const vite_req = detectNodeRequirement(testing.allocator, std.testing.io, vite_dir);
+    try testing.expectEqual(.required, vite_req.level);
+    try testing.expectEqualStrings("node (Vite templates)", vite_req.node_label);
+    try testing.expectEqualStrings("npm", vite_req.npm_label);
 }
