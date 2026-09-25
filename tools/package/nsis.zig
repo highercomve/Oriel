@@ -31,6 +31,8 @@ pub const WEBVIEW2_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId
 /// Generate the complete NSIS script (.nsi) from application metadata and options.
 pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]const u8 {
     try metadata.validateExeName(opts.exe_name);
+    try metadata.validateNoControlOrNewline(opts.id);
+    if (!metadata.validAppId(opts.id)) return error.InvalidAppId;
 
     // Strip trailing .exe if present in exe_name
     const clean_exe_name = if (std.mem.endsWith(u8, opts.exe_name, ".exe"))
@@ -225,6 +227,8 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
     );
 
     for (opts.url_schemes) |s| {
+        try metadata.validateNoControlOrNewline(s);
+        if (!metadata.isValidSchemeFormat(s)) return error.InvalidUrlScheme;
         const esc_s = try metadata.escapeNsisString(allocator, s);
         defer allocator.free(esc_s);
         try w.print("  ; URL Protocol handler for {s}\n", .{esc_s});
@@ -252,6 +256,8 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
     );
 
     for (opts.url_schemes) |s| {
+        try metadata.validateNoControlOrNewline(s);
+        if (!metadata.isValidSchemeFormat(s)) return error.InvalidUrlScheme;
         const esc_s = try metadata.escapeNsisString(allocator, s);
         defer allocator.free(esc_s);
         try w.print("  DeleteRegKey HKCU \"Software\\Classes\\{s}\"\n", .{esc_s});
@@ -368,4 +374,56 @@ test "generateNsisScript with url_schemes" {
     // Verify uninstallation deletion
     try testing.expect(std.mem.indexOf(u8, script, "DeleteRegKey HKCU \"Software\\Classes\\myapp\"") != null);
     try testing.expect(std.mem.indexOf(u8, script, "DeleteRegKey HKCU \"Software\\Classes\\custom-scheme\"") != null);
+}
+
+test "generateNsisScript rejects invalid url_schemes and invalid id" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Scheme with newline injection
+    try testing.expectError(error.ContainsNewline, generateNsisScript(allocator, .{
+        .name = "My App",
+        .version = "1.0.0",
+        .publisher = "Publisher",
+        .id = "com.example.App",
+        .exe_name = "myapp",
+        .binary_src = "bin/myapp.exe",
+        .out_file = "dist/setup.exe",
+        .url_schemes = &.{"myapp\nWriteRegStr HKCU \"evil\""},
+    }));
+
+    // Scheme starting with digit
+    try testing.expectError(error.InvalidUrlScheme, generateNsisScript(allocator, .{
+        .name = "My App",
+        .version = "1.0.0",
+        .publisher = "Publisher",
+        .id = "com.example.App",
+        .exe_name = "myapp",
+        .binary_src = "bin/myapp.exe",
+        .out_file = "dist/setup.exe",
+        .url_schemes = &.{"1badscheme"},
+    }));
+
+    // Scheme with path traversal backslashes
+    try testing.expectError(error.InvalidUrlScheme, generateNsisScript(allocator, .{
+        .name = "My App",
+        .version = "1.0.0",
+        .publisher = "Publisher",
+        .id = "com.example.App",
+        .exe_name = "myapp",
+        .binary_src = "bin/myapp.exe",
+        .out_file = "dist/setup.exe",
+        .url_schemes = &.{"..\\evil"},
+    }));
+
+    // Invalid id (path traversal)
+    try testing.expectError(error.InvalidAppId, generateNsisScript(allocator, .{
+        .name = "My App",
+        .version = "1.0.0",
+        .publisher = "Publisher",
+        .id = "../../evil",
+        .exe_name = "myapp",
+        .binary_src = "bin/myapp.exe",
+        .out_file = "dist/setup.exe",
+    }));
 }
