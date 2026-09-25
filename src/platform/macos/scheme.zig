@@ -11,6 +11,9 @@ const App = @import("../../core/App.zig");
 
 pub const scheme_name = "app";
 
+const media_enabled = @import("../../oriel.zig").options.media_server;
+const media_scheme = if (media_enabled) @import("../../modules/media_scheme.zig") else struct {};
+
 pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
     return struct {
         /// The handler class (one shared instance serves every webview).
@@ -26,6 +29,12 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
         fn startTask(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, task_id: cocoa.id) callconv(.c) void {
             const task: Object = .{ .value = task_id };
             const url = task.msgSend(Object, "request", .{}).msgSend(Object, "URL", .{});
+            if (comptime media_enabled) {
+                // Still percent-encoded: media_scheme decodes (and checks) it itself.
+                const comps = cocoa.class("NSURLComponents").msgSend(Object, "componentsWithURL:resolvingAgainstBaseURL:", .{ url, cocoa.boolean(false) });
+                const raw = if (comps.value != null) cocoa.utf8(comps.msgSend(Object, "percentEncodedPath", .{})) orelse "" else "";
+                if (std.mem.startsWith(u8, raw, "/media/")) return media_scheme.handle(task, url, raw["/media/".len..]);
+            }
             // `path` is percent-decoded and excludes the query and fragment.
             const path = cocoa.utf8(url.msgSend(Object, "path", .{})) orelse "";
             if (App.findAsset(config.assets, path, config.spa_fallback)) |asset| {
@@ -35,7 +44,10 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
             }
         }
 
-        fn stopTask(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, _: cocoa.id) callconv(.c) void {}
+        /// Only media streams outlive `startTask`.
+        fn stopTask(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, task_id: cocoa.id) callconv(.c) void {
+            if (comptime media_enabled) media_scheme.impl.stop(.{ .value = task_id });
+        }
 
         fn respond(task: Object, url: Object, status: isize, mime: []const u8, body: []const u8, with_csp: bool) void {
             const headers = cocoa.new(cocoa.class("NSMutableDictionary"));
