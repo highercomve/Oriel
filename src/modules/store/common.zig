@@ -92,7 +92,11 @@ pub fn GenericStore(comptime Backend: type) type {
                 defer gpa.free(content);
                 if (std.mem.trim(u8, content, " \t\r\n").len > 0) {
                     var parsed = std.json.parseFromSlice(std.json.Value, self.arena.allocator(), content, .{}) catch |parse_err| {
-                        std.log.warn("failed to parse store file {s}: {s}", .{ path, @errorName(parse_err) });
+                        // Keep the user's data: the next save would replace it.
+                        const backup = try std.fmt.allocPrintSentinel(gpa, "{s}.corrupt", .{path}, 0);
+                        defer gpa.free(backup);
+                        Backend.writeFileAtomic(backup, content) catch {};
+                        std.log.warn("failed to parse store file {s} ({s}); kept a copy at {s}", .{ path, @errorName(parse_err), backup });
                         return self;
                     };
                     if (parsed.value == .object) {
