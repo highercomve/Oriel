@@ -273,17 +273,29 @@ pub fn isCached(
     arch: []const u8,
     gpa: std.mem.Allocator,
 ) bool {
+    const path = cachedDllPath(io, environ, version, arch, gpa) orelse return false;
+    gpa.free(path);
+    return true;
+}
+
+/// Where the loader for `version`/`arch` is cached: the primary cache, else
+/// the legacy one. Null when neither has it. Caller owns the result.
+pub fn cachedDllPath(
+    io: std.Io,
+    environ: *const std.process.Environ.Map,
+    version: []const u8,
+    arch: []const u8,
+    gpa: std.mem.Allocator,
+) ?[]u8 {
     if (getCacheDllPath(gpa, environ, version, arch)) |dll_path| {
-        defer gpa.free(dll_path);
-        if (std.Io.Dir.cwd().access(io, dll_path, .{})) |_| return true else |_| {}
+        if (std.Io.Dir.cwd().access(io, dll_path, .{})) |_| return dll_path else |_| gpa.free(dll_path);
     } else |_| {}
 
     if (getLegacyCacheDllPath(gpa, environ, version, arch)) |legacy_path| {
-        defer gpa.free(legacy_path);
-        if (std.Io.Dir.cwd().access(io, legacy_path, .{})) |_| return true else |_| {}
+        if (std.Io.Dir.cwd().access(io, legacy_path, .{})) |_| return legacy_path else |_| gpa.free(legacy_path);
     } else |_| {}
 
-    return false;
+    return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,7 +563,8 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
 
     if (all_cached) {
         if (want_x64) {
-            const p = try getCacheDllPath(arena, ctx.environ, version, "x64");
+            // The path that has it: the legacy cache counts as cached too.
+            const p = cachedDllPath(io, ctx.environ, version, "x64", arena).?;
             try ctx.out.print("WebView2Loader.dll (x64) {s} is already cached at {s}\n", .{ version, p });
             if (out_dir) |od| {
                 const data = try std.Io.Dir.cwd().readFileAlloc(io, p, arena, .limited(10 * 1024 * 1024));
@@ -565,7 +578,7 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
             }
         }
         if (want_arm64) {
-            const p = try getCacheDllPath(arena, ctx.environ, version, "arm64");
+            const p = cachedDllPath(io, ctx.environ, version, "arm64", arena).?;
             try ctx.out.print("WebView2Loader.dll (arm64) {s} is already cached at {s}\n", .{ version, p });
             if (out_dir) |od| {
                 const data = try std.Io.Dir.cwd().readFileAlloc(io, p, arena, .limited(10 * 1024 * 1024));
