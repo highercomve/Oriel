@@ -46,7 +46,7 @@ const Features = struct {
     /// Modules and plugins without a macOS backend yet (PLAN.md Milestone 7,
     /// step 2). On macOS they default to off and can't be switched on.
     const unported_on_macos = [_][]const u8{
-        "updater", "input", "audio_capture",
+        "updater", "audio_capture",
     };
 
     fn fromOptions(b: *std.Build, target: std.Build.ResolvedTarget) Features {
@@ -383,6 +383,7 @@ fn addOrielModule(
         if (features.fs_watch) oriel.linkFramework("CoreServices", .{}); // FSEvents
         if (features.notification) oriel.linkFramework("UserNotifications", .{});
         if (features.global_shortcut) oriel.linkFramework("Carbon", .{}); // RegisterEventHotKey
+        if (features.input) oriel.linkFramework("ApplicationServices", .{}); // CGEvent, AXIsProcessTrusted
     }
 
     if (features.tray or (target.result.os.tag == .windows and features.clipboard)) {
