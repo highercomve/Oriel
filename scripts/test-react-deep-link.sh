@@ -76,6 +76,13 @@ else
     exit 1
 fi
 
+if grep -q "JS deep link received (event): 'oriel-notes://note/Hello%20From%20Deep%20Link'" "$LOG_FILE"; then
+    echo "SUCCESS: JS listener fired for secondary instance deep link!"
+else
+    echo "ERROR: JS listener did not fire for secondary instance deep link!"
+    exit 1
+fi
+
 echo "=== 3. Testing Cold Start Deep Link Delivery ==="
 COLD_LOG="/tmp/react-cold.log"
 rm -f "$COLD_LOG"
@@ -98,6 +105,13 @@ if grep -q "deep link added note: 'Cold Start Note'" "$COLD_LOG"; then
     echo "SUCCESS: Cold start note 'Cold Start Note' was added via deep link!"
 else
     echo "ERROR: Cold start note was not added!"
+    exit 1
+fi
+
+if grep -q "JS deep link received (.*): 'oriel-notes://note/Cold%20Start%20Note'" "$COLD_LOG"; then
+    echo "SUCCESS: JS listener/current received cold start deep link!"
+else
+    echo "ERROR: JS listener did not receive cold start deep link!"
     exit 1
 fi
 

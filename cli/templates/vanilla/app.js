@@ -20,6 +20,16 @@ listen("greeted", ({ count }) => {
   $("count").textContent = `Greeted ${count} ${count === 1 ? "time" : "times"} (event from Zig)`;
 });
 
+const showLink = (url) => {
+  const el = $("opened-link");
+  if (el && url) {
+    el.textContent = `Opened via link: ${url}`;
+    el.style.display = "";
+  }
+};
+listen("deep-link", ({ url }) => showLink(url));
+window.oriel.deepLink?.current?.().then((url) => showLink(url));
+
 $("greet-form").addEventListener("submit", (e) => {
   e.preventDefault();
   greet();

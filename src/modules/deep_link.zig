@@ -10,6 +10,9 @@
 const builtin = @import("builtin");
 pub const common = @import("deep_link/common.zig");
 
+pub const queue = @import("deep_link/queue.zig");
+pub const Queue = queue.Queue;
+
 pub const validateUrl = common.validateUrl;
 pub const validate = common.validateUrl;
 pub const ValidationError = common.ValidationError;
@@ -20,6 +23,8 @@ pub const current = impl.current;
 pub const setColdStartUrl = impl.setColdStartUrl;
 pub const deliver = impl.deliver;
 pub const setDeclaredSchemes = impl.setDeclaredSchemes;
+pub const setReady = impl.setReady;
+pub const isReady = impl.isReady;
 pub const check = impl.check;
 
 pub const impl = switch (builtin.os.tag) {
@@ -34,4 +39,5 @@ test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(impl);
     std.testing.refAllDecls(common);
+    std.testing.refAllDecls(queue);
 }

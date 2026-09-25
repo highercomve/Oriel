@@ -7,11 +7,11 @@ const std = @import("std");
 const oriel = @import("../../oriel.zig");
 const App = @import("../../core/App.zig");
 pub const common = @import("common.zig");
+pub const queue = @import("queue.zig");
 
+var queue_state: queue.Queue = .{};
 var declared_schemes: []const []const u8 = &.{};
 var on_open_handler: ?*const fn (url: []const u8) void = null;
-var cold_start_buf: [common.max_url_len]u8 = undefined;
-var cold_start_len: ?usize = null;
 
 /// Configure declared URL schemes for the application.
 pub fn setDeclaredSchemes(schemes: []const []const u8) void {
@@ -25,25 +25,46 @@ pub fn onOpen(handler: *const fn (url: []const u8) void) void {
 
 /// Return the URL that launched the application (cold start), if any.
 pub fn current() ?[]const u8 {
-    if (cold_start_len) |len| {
-        return cold_start_buf[0..len];
-    }
-    return null;
+    return queue_state.current();
 }
 
 /// Record the cold-start launch URL.
 pub fn setColdStartUrl(url: []const u8) void {
-    if (url.len > cold_start_buf.len) return;
-    @memcpy(cold_start_buf[0..url.len], url);
-    cold_start_len = url.len;
+    const valid = common.validateUrl(url, declared_schemes) catch return;
+    queue_state.setColdStartUrl(valid);
+}
+
+/// Query page readiness state.
+pub fn isReady() bool {
+    return queue_state.is_ready;
+}
+
+/// Set page readiness and flush any queued URLs.
+pub fn setReady(ready: bool) void {
+    queue_state.setReady(ready);
+    if (ready) {
+        while (queue_state.pop()) |u| {
+            emitDirect(u);
+        }
+    }
 }
 
 /// Validate and deliver a deep link URL on the main thread.
-/// Invokes the registered `onOpen` handler and broadcasts `deep-link` event to webview windows.
+/// If the page is not yet ready, the URL is queued until `setReady(true)` is called.
+/// When ready, invokes the registered `onOpen` handler and broadcasts `deep-link` event to webview windows.
 pub fn deliver(url: []const u8) void {
     // Only declared schemes (none declared: nothing is delivered).
     const valid_url = common.validateUrl(url, declared_schemes) catch return;
 
+    const queued = queue_state.push(valid_url) catch false;
+    if (queued) {
+        return;
+    }
+
+    emitDirect(valid_url);
+}
+
+fn emitDirect(valid_url: []const u8) void {
     if (on_open_handler) |handler| {
         handler(valid_url);
     }
@@ -70,12 +91,15 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     // 2. Exercise in-process dispatch
     const prev_schemes = declared_schemes;
     const prev_handler = on_open_handler;
+    const prev_ready = isReady();
     defer {
         declared_schemes = prev_schemes;
         on_open_handler = prev_handler;
+        setReady(prev_ready);
     }
 
     declared_schemes = &test_schemes;
+    setReady(true);
 
     const State = struct {
         var received: ?[]const u8 = null;

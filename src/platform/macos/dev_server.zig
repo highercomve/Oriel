@@ -12,7 +12,7 @@ const log = std.log.scoped(.oriel);
 
 pub fn startDevServer(io: std.Io, dev: anytype) ?std.process.Child {
     if (std.c.getenv("ORIEL_DEV_EXTERNAL") != null) {
-        log.info("dev server managed externally; skipping local spawn", .{});
+        log.debug("dev server managed externally; skipping local spawn", .{});
         return null;
     }
     const command = dev.command orelse return null;

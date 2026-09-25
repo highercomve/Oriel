@@ -33,6 +33,7 @@ pub fn build(b: *std.Build) void {
             .url_schemes = &.{"oriel-notes"},
             .id = "dev.oriel.ReactNotes",
             .name = "Oriel React Notes",
+            .publisher = "Oriel",
             .summary = "Desktop notes app built with Oriel and React",
             .description = "A desktop notes application built with Oriel, React, Vite, and SQLite.",
             .categories = "Utility;TextEditor;",

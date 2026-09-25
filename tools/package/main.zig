@@ -1109,7 +1109,7 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
     const target_name = name orelse "app";
     const target_exe_name = exe_name orelse target_name;
     const target_app_id = app_id orelse target_name;
-    const target_publisher = publisher orelse target_name;
+    const target_publisher = publisher orelse metadata.organizationFromAppId(target_app_id);
 
     const clean_exe_name = if (std.mem.endsWith(u8, target_exe_name, ".exe"))
         target_exe_name[0 .. target_exe_name.len - 4]
@@ -1183,6 +1183,18 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         abs_wv2_loader = try ensureAbsolutePath(gpa, io, wl);
     }
 
+    // Calculate estimated installed size in KiB
+    var total_size_bytes: u64 = 0;
+    if (Dir.cwd().statFile(io, abs_bin, .{})) |st| {
+        total_size_bytes += st.size;
+    } else |_| {}
+    if (abs_wv2_loader) |wl| {
+        if (Dir.cwd().statFile(io, wl, .{})) |st| {
+            total_size_bytes += st.size;
+        } else |_| {}
+    }
+    const estimated_size_kb: u64 = if (total_size_bytes > 0) (total_size_bytes + 1023) / 1024 else 0;
+
     // Generate installer.nsi
     const nsi_path = try std.fs.path.join(gpa, &.{ abs_out_dir, "installer.nsi" });
     defer gpa.free(nsi_path);
@@ -1199,6 +1211,7 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         .webview2_loader = abs_wv2_loader,
         .homepage = homepage,
         .url_schemes = url_schemes.items,
+        .estimated_size_kb = estimated_size_kb,
     });
     defer gpa.free(script_content);
     try Dir.cwd().writeFile(io, .{ .sub_path = nsi_path, .data = script_content });

@@ -1,6 +1,6 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 // Generated from the Zig `Commands` and `Events` (zig build types).
-import { invoke, listen, type Commands } from "./oriel";
+import { invoke, listen, deepLink, type Commands } from "./oriel";
 
 type AppInfo = Commands["app_info"]["result"];
 
@@ -10,6 +10,8 @@ export function App() {
   const [count, setCount] = useState(0);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [error, setError] = useState("");
+  const [openedLink, setOpenedLink] = useState<string | null>(null);
+  const greetedRef = useRef(false);
 
   const greet = (who: string) =>
     invoke("greet", { name: who })
@@ -22,9 +24,17 @@ export function App() {
   useEffect(() => {
     // Pushed from Zig by `events.emit(.greeted, ...)`.
     const off = listen("greeted", (e) => setCount(e.count));
+    const offLink = listen("deep-link", (e) => setOpenedLink(e.url));
+    deepLink?.current().then((url) => { if (url) setOpenedLink(url); });
     invoke("app_info").then(setInfo);
-    greet(name);
-    return off;
+    if (!greetedRef.current) {
+      greetedRef.current = true;
+      greet(name);
+    }
+    return () => {
+      off();
+      offLink();
+    };
   }, []);
 
   const submit = (e: FormEvent) => {
@@ -42,6 +52,7 @@ export function App() {
       </form>
       <p className={error ? "greeting error" : "greeting"}>{error || greeting}</p>
       <p className="count">Greeted {count} {count === 1 ? "time" : "times"} (event from Zig)</p>
+      {openedLink && <p className="opened-link">Opened via link: {openedLink}</p>}
       {info && (
         <footer>
           Zig {info.zig} · {info.mode}

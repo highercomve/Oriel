@@ -63,6 +63,27 @@ pub fn validAppId(id: []const u8) bool {
     return elements >= 2;
 }
 
+/// Extract the organization component from an application ID:
+/// - If reverse-DNS format with >= 3 segments (e.g. "dev.oriel.ReactNotes"), returns segment 1 ("oriel").
+/// - If 2 segments (e.g. "oriel.ReactNotes"), returns segment 0 ("oriel").
+/// - Otherwise returns the full ID as fallback.
+pub fn organizationFromAppId(id: []const u8) []const u8 {
+    var count: usize = 0;
+    var it = std.mem.splitScalar(u8, id, '.');
+    while (it.next()) |_| {
+        count += 1;
+    }
+    if (count >= 3) {
+        var it2 = std.mem.splitScalar(u8, id, '.');
+        _ = it2.next();
+        return it2.next() orelse id;
+    } else if (count == 2) {
+        var it2 = std.mem.splitScalar(u8, id, '.');
+        return it2.next() orelse id;
+    }
+    return id;
+}
+
 /// Validate that a scheme string is valid per RFC 3986 §3.1:
 /// ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
 pub fn isValidSchemeFormat(scheme: []const u8) bool {
@@ -405,4 +426,14 @@ test "escapeNsisString handles quotes, dollar signs, whitespace, and paths" {
         defer allocator.free(res);
         try testing.expectEqualStrings("Line 1$\\r$\\nLine 2$\\tTab", res);
     }
+}
+
+test "organizationFromAppId extracts organization correctly" {
+    const testing = std.testing;
+
+    try testing.expectEqualStrings("oriel", organizationFromAppId("dev.oriel.ReactNotes"));
+    try testing.expectEqualStrings("example", organizationFromAppId("com.example.AwesomeApp"));
+    try testing.expectEqualStrings("acme", organizationFromAppId("org.acme.tools.Editor"));
+    try testing.expectEqualStrings("oriel", organizationFromAppId("oriel.ReactNotes"));
+    try testing.expectEqualStrings("MyApp", organizationFromAppId("MyApp"));
 }

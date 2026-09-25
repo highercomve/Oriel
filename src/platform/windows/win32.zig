@@ -803,6 +803,7 @@ pub const PROCESS_INFORMATION = extern struct {
 pub extern "kernel32" fn AcquireSRWLockExclusive(SRWLock: *SRWLOCK) callconv(.winapi) void;
 pub extern "kernel32" fn ReleaseSRWLockExclusive(SRWLock: *SRWLOCK) callconv(.winapi) void;
 pub extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: ?[*]u16, nSize: DWORD) callconv(.winapi) DWORD;
+pub extern "kernel32" fn SetEnvironmentVariableW(lpName: [*:0]const u16, lpValue: ?[*:0]const u16) callconv(.winapi) BOOL;
 pub extern "kernel32" fn ResumeThread(hThread: HANDLE) callconv(.winapi) DWORD;
 pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 
