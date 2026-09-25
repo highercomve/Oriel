@@ -24,6 +24,9 @@ const log = std.log.scoped(.oriel);
 
 pub const handler_name = "oriel";
 
+/// Replaced by `ipc.token()` in each window's copy of `bridge_js`.
+const token_placeholder = "__ORIEL_IPC_TOKEN__";
+
 /// Injected into every top-level document before its own scripts run;
 /// `commandAllowedForWindow` checks the page's origin on every call.
 pub const bridge_js =
@@ -33,8 +36,9 @@ pub const bridge_js =
     \\  const handler = window.webkit.messageHandlers.
 ++ handler_name ++
     \\;
+    \\  const ipcToken = "__ORIEL_IPC_TOKEN__";
     \\  function invoke(cmd, args) {
-    \\    return handler.postMessage(JSON.stringify({ cmd, args: args ?? null }));
+    \\    return handler.postMessage(JSON.stringify({ cmd, args: args ?? null, token: ipcToken }));
     \\  }
     \\  class WindowHandle {
     \\    constructor(label) {
@@ -107,7 +111,7 @@ pub const bridge_js =
     \\      return () => set.delete(callback);
     \\    },
     \\    openExternal(url) {
-    \\      return handler.postMessage(JSON.stringify({ cmd: "open_external", args: { url } }));
+    \\      return handler.postMessage(JSON.stringify({ cmd: "open_external", args: { url }, token: ipcToken }));
     \\    },
     \\    permissions: Object.freeze({
     \\      query(name) {
@@ -280,7 +284,10 @@ pub fn Bridge(
             const gpa = std.heap.smp_allocator;
             const label_json = try std.json.Stringify.valueAlloc(gpa, label, .{});
             defer gpa.free(label_json);
-            const source = try std.fmt.allocPrint(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, bridge_js });
+            // The IPC token lives only in the bridge's closure (ipc.token).
+            const with_token = try std.mem.replaceOwned(u8, gpa, bridge_js, token_placeholder, ipc.token());
+            defer gpa.free(with_token);
+            const source = try std.fmt.allocPrint(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, with_token });
             defer gpa.free(source);
             const source_ns = cocoa.nsString(source) orelse return error.OutOfMemory;
             defer source_ns.release();
@@ -325,6 +332,12 @@ pub fn Bridge(
                 replyError(reply, @errorName(err));
                 return;
             };
+            // Only the bridge script knows the token (see ipc.token).
+            if (!ipc.tokenValid(request.token)) {
+                log.warn("refused an IPC call without the bridge's token ('{s}')", .{request.cmd});
+                replyError(reply, "Forbidden");
+                return;
+            }
 
             // The page currently shown decides the IPC scope.
             const view = message.msgSend(Object, "webView", .{});

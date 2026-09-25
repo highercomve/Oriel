@@ -543,6 +543,7 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     ensureWindowsMutex();
     current_security = config.security;
     @import("permissions.zig").setDeclared(config.permissions);
+    ipc.initToken(io); // before any window (and bridge script) exists
 
     const app_log = @import("log.zig");
     app_log.init(config.id);

@@ -24,7 +24,59 @@ const App = @import("App.zig");
 pub const Request = struct {
     cmd: []const u8,
     args: std.json.Value = .null,
+    /// The bridge's IPC token (see `token`); bridges reject calls without it.
+    token: ?[]const u8 = null,
 };
+
+// --- IPC token ------------------------------------------------------------------
+//
+// Only the top frame gets the bridge script, but on some webviews (WebKitGTK)
+// the native message handler is reachable from every frame, and calls are
+// judged by the top-level page's URL. A cross-origin frame the navigation
+// policy admits could then call commands with the app's privileges. So each
+// bridge bakes a per-process random token into its top-frame script, which
+// keeps it in a closure (never a global) and sends it with every call; a
+// frame posting to the handler directly can't produce it.
+
+var token_hex: [64]u8 = @splat('0');
+var token_ready = false;
+
+/// Make the token (once, before any window exists: App.run).
+pub fn initToken(io: std.Io) void {
+    if (token_ready) return;
+    var bytes: [32]u8 = undefined;
+    io.randomSecure(&bytes) catch io.random(&bytes);
+    token_hex = std.fmt.bytesToHex(bytes, .lower);
+    token_ready = true;
+}
+
+/// The token as 64 lowercase hex characters (for the bridge script).
+pub fn token() []const u8 {
+    return &token_hex;
+}
+
+/// Whether a call carries the token (constant time). False before `initToken`.
+pub fn tokenValid(got: ?[]const u8) bool {
+    if (!token_ready) return false;
+    const t = got orelse return false;
+    if (t.len != token_hex.len) return false;
+    return std.crypto.timing_safe.eql([64]u8, t[0..64].*, token_hex);
+}
+
+test tokenValid {
+    try std.testing.expect(!tokenValid(null)); // before initToken
+    initToken(std.testing.io);
+    try std.testing.expect(tokenValid(token()));
+    try std.testing.expect(!tokenValid(null));
+    try std.testing.expect(!tokenValid(""));
+    var wrong: [64]u8 = token()[0..64].*;
+    wrong[0] = if (wrong[0] == 'a') 'b' else 'a';
+    try std.testing.expect(!tokenValid(&wrong));
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const req = try parseRequest(arena.allocator(), "{\"cmd\":\"x\",\"token\":\"abc\"}");
+    try std.testing.expectEqualStrings("abc", req.token.?);
+}
 
 /// Check if `cmd` is configured to run asynchronously on the worker pool.
 pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {

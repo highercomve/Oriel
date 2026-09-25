@@ -186,6 +186,40 @@ async function securityChecks() {
   const out = [];
   const check = (module, ok, detail) => out.push({ module, ok, detail });
 
+  // IPC token: a raw call to the native handler without the bridge's token
+  // is refused, even from this (trusted) page.
+  const raw = window.webkit?.messageHandlers?.oriel;
+  if (raw) {
+    let rawResult;
+    try {
+      rawResult = "reached IPC: " + (await raw.postMessage(JSON.stringify({ cmd: "sync_ping", args: null })));
+    } catch (e) {
+      rawResult = "refused: " + (e?.message ?? e);
+    }
+    check("ipc token", rawResult.startsWith("refused"), `raw call without the token: ${rawResult}`);
+  }
+
+  // A cross-origin frame the navigation policy admits (the probe origin)
+  // must not reach IPC: it never gets the bridge script or its token.
+  const { probe_url } = await oriel.invoke("status");
+  const probe = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve("no answer from the probe frame"), 5000);
+    const onMessage = (e) => {
+      if (e.data?.ipcProbe === undefined) return;
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      resolve(e.data.ipcProbe);
+    };
+    window.addEventListener("message", onMessage);
+    const f = document.createElement("iframe");
+    f.src = probe_url;
+    f.style.display = "none";
+    document.body.append(f);
+  });
+  // WebView2 has no reply channel for a frame; "posted" is checked by the
+  // Windows bridge (it logs and drops the call).
+  check("ipc frame", probe.startsWith("refused") || probe === "no handler" || probe === "posted", `iframe from ${probe_url}: ${probe}`);
+
   // CSP: script-src 'self' forbids eval and inline scripts.
   let evalBlocked = false;
   try { eval("1"); } catch (e) { evalBlocked = true; }

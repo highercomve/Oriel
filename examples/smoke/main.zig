@@ -11,6 +11,58 @@ const oriel = @import("oriel");
 const app = @import("oriel_app");
 
 const media_port: u16 = 17893;
+/// A second origin for the `ipc frame` check (the navigation policy admits it).
+const probe_port: u16 = 17894;
+const probe_origin = std.fmt.comptimePrint("http://127.0.0.1:{d}", .{probe_port});
+
+/// Loaded in an iframe by the page: tries to call IPC straight through the
+/// native handler (the frame never gets the bridge script) and reports the
+/// outcome to the parent. Refused on every OS thanks to the IPC token.
+const probe_html =
+    \\<!doctype html><meta charset="utf-8"><script>
+    \\(async () => {
+    \\  let result;
+    \\  try {
+    \\    const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.oriel;
+    \\    if (h) {
+    \\      result = "reached IPC: " + (await h.postMessage(JSON.stringify({ cmd: "sync_ping", args: null })));
+    \\    } else if (window.chrome && window.chrome.webview) {
+    \\      window.chrome.webview.postMessage(JSON.stringify({ id: 999999, cmd: "sync_ping", args: null }));
+    \\      result = "posted";
+    \\    } else {
+    \\      result = "no handler";
+    \\    }
+    \\  } catch (e) {
+    \\    result = "refused: " + ((e && e.message) || e);
+    \\  }
+    \\  parent.postMessage({ ipcProbe: result }, "*");
+    \\})();
+    \\</script>
+;
+
+/// Serves `probe_html` on 127.0.0.1:probe_port for the app's lifetime.
+fn probeServer(local_io: std.Io) void {
+    const addr = std.Io.net.IpAddress.parseIp4("127.0.0.1", probe_port) catch return;
+    var server = addr.listen(local_io, .{ .reuse_address = true }) catch |err| {
+        std.log.warn("ipc probe server: {s}", .{@errorName(err)});
+        return;
+    };
+    defer server.deinit(local_io);
+    while (true) {
+        const stream = server.accept(local_io) catch return;
+        defer stream.close(local_io);
+        var rbuf: [4096]u8 = undefined;
+        var r = stream.reader(local_io, &rbuf);
+        // Skip the request head: this server has one page.
+        while (r.interface.takeDelimiterInclusive('\n')) |line| {
+            if (std.mem.eql(u8, line, "\r\n") or std.mem.eql(u8, line, "\n")) break;
+        } else |_| continue;
+        var wbuf: [1024]u8 = undefined;
+        var w = stream.writer(local_io, &wbuf);
+        w.interface.print("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ probe_html.len, probe_html }) catch continue;
+        w.interface.flush() catch {};
+    }
+}
 const app_id = "dev.oriel.Smoke";
 const icon_png = @embedFile("web/icon.png");
 
@@ -84,6 +136,7 @@ const Commands = struct {
     pub fn status(gpa: std.mem.Allocator) !struct {
         checks: []oriel.Check,
         ping_url: ?[]const u8,
+        probe_url: []const u8,
         media_url: ?[]const u8,
         media_app_url: ?[]const u8,
         expected_sample_hex: ?[]const u8,
@@ -91,6 +144,7 @@ const Commands = struct {
     } {
         return .{
             .checks = try oriel.checkAll(gpa, context()),
+            .probe_url = probe_origin ++ "/probe.html",
             .ping_url = if (oriel.options.media_server)
                 try std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}/ping", .{media_port})
             else
@@ -272,6 +326,8 @@ pub fn main(init: std.process.Init) !u8 {
         return if (failed == 0) 0 else 1;
     }
 
+    if (std.Thread.spawn(.{}, probeServer, .{io})) |t| t.detach() else |err| std.log.warn("ipc probe server: {s}", .{@errorName(err)});
+
     if (oriel.options.deep_link) {
         const DLHandler = struct {
             fn handle(_: []const u8) void {}
@@ -285,7 +341,12 @@ pub fn main(init: std.process.Init) !u8 {
         .icon = app.icon_bytes,
         .assets = app.assets,
         // The security checks navigate to remote URLs: never hand them to a browser.
-        .security = .{ .external_links = .deny },
+        // The probe origin may be framed (the `ipc frame` check).
+        .security = .{
+            .external_links = .deny,
+            .allowed_origins = &.{probe_origin},
+            .csp = oriel.security.default_csp ++ "; frame-src " ++ probe_origin,
+        },
         .deep_link_schemes = app.url_schemes,
         .permissions = app.permissions,
     };
