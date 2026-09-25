@@ -4,6 +4,7 @@
 //! - generates nfpm.yaml and invokes nfpm for .deb and .rpm
 //! - builds AppDir, runs mksquashfs, prepends type-2 runtime for .AppImage
 //! - installs dev/prod desktop entries and icons into $XDG_DATA_HOME
+//! - assembles macOS .app bundles and .dmg disk images
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -16,6 +17,8 @@ pub const appimage = @import("appimage.zig");
 pub const icons = @import("icons.zig");
 pub const ico = @import("ico.zig");
 pub const nsis = @import("nsis.zig");
+pub const icns = @import("icns.zig");
+pub const macos = @import("macos.zig");
 
 const Dir = std.Io.Dir;
 const Io = std.Io;
@@ -71,6 +74,10 @@ pub fn main(init: std.process.Init) !u8 {
         return packageAppImageCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "package-nsis")) {
         return packageNsisCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "package-app")) {
+        return packageAppCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "package-dmg")) {
+        return packageDmgCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "install-desktop-entry")) {
         return installDesktopEntryCmd(gpa, io, args);
     } else {
@@ -90,6 +97,8 @@ fn printUsage() void {
         \\  package-rpm           Generate nfpm.yaml and build RPM (.rpm) package
         \\  package-appimage      Assemble AppDir, run mksquashfs, prepend runtime
         \\  package-nsis          Generate installer.nsi and build Windows setup.exe via makensis
+        \\  package-app           Assemble a macOS .app bundle (Info.plist, icon.icns, ad-hoc signed)
+        \\  package-dmg           Build a macOS .dmg with the .app and an Applications link (hdiutil)
         \\  install-desktop-entry Install desktop file and icons to $XDG_DATA_HOME
         \\
     , .{});
@@ -286,6 +295,7 @@ pub fn resizeIcons(
                 try Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = data });
             }
             try writeDestinationIco(gpa, io, dest_dir);
+            try writeDestinationIcns(gpa, io, dest_dir);
             return;
         }
     }
@@ -348,6 +358,7 @@ pub fn resizeIcons(
     }
 
     try writeDestinationIco(gpa, io, dest_dir);
+    try writeDestinationIcns(gpa, io, dest_dir);
 }
 
 /// Pack the resized PNGs in `dest_dir` into `dest_dir/icon.ico` (used by the
@@ -372,6 +383,27 @@ fn writeDestinationIco(gpa: std.mem.Allocator, io: Io, dest_dir: []const u8) !vo
     const ico_path = try std.fmt.allocPrint(gpa, "{s}/icon.ico", .{dest_dir});
     defer gpa.free(ico_path);
     try Dir.cwd().writeFile(io, .{ .sub_path = ico_path, .data = ico_bytes });
+}
+
+/// `<dest_dir>/icon.icns` from the resized PNGs (for macOS bundles).
+fn writeDestinationIcns(gpa: std.mem.Allocator, io: Io, dest_dir: []const u8) !void {
+    var entries: std.ArrayList(icns.PngIconEntry) = .empty;
+    defer {
+        for (entries.items) |entry| gpa.free(entry.png_data);
+        entries.deinit(gpa);
+    }
+    for (icons.icon_sizes) |size| {
+        const png_file = try std.fmt.allocPrint(gpa, "{s}/{d}x{d}.png", .{ dest_dir, size, size });
+        defer gpa.free(png_file);
+        const png_data = try Dir.cwd().readFileAlloc(io, png_file, gpa, .limited(10 * 1024 * 1024));
+        errdefer gpa.free(png_data);
+        try entries.append(gpa, .{ .size = size, .png_data = png_data });
+    }
+    const bytes = try icns.writeIcnsFromPngs(gpa, entries.items);
+    defer gpa.free(bytes);
+    const path = try std.fmt.allocPrint(gpa, "{s}/icon.icns", .{dest_dir});
+    defer gpa.free(path);
+    try Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes });
 }
 
 // ---------------------------------------------------------------------------
@@ -1135,6 +1167,198 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
 }
 
 // ---------------------------------------------------------------------------
+// package-app / package-dmg (macOS)
+// ---------------------------------------------------------------------------
+
+/// Run a command; print its output and fail when it doesn't exit 0.
+fn runTool(gpa: std.mem.Allocator, io: Io, what: []const u8, argv: []const []const u8) !void {
+    const res = std.process.run(gpa, io, .{ .argv = argv }) catch |err| {
+        std.debug.print("error: {s}: failed to execute {s}: {s}\n", .{ what, argv[0], @errorName(err) });
+        return error.ToolFailed;
+    };
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+    if (res.term != .exited or res.term.exited != 0) {
+        std.debug.print("error: {s}: {s} failed:\n{s}{s}\n", .{ what, argv[0], res.stdout, res.stderr });
+        return error.ToolFailed;
+    }
+}
+
+/// Assemble `<out-dir>/<Name>.app` (see macos.zig for the layout). On a
+/// macOS host the bundle is ad-hoc signed (`codesign --sign -`), which binds
+/// Info.plist to it: permission prompts and notifications then name the app.
+fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
+    var out_dir: ?[]const u8 = null;
+    var bin_path: ?[]const u8 = null;
+    var icons_dir: ?[]const u8 = null;
+    var app_id: ?[]const u8 = null;
+    var name: ?[]const u8 = null;
+    var exe_name: ?[]const u8 = null;
+    var version: []const u8 = "0.1.0";
+    var min_os: []const u8 = "13.0";
+    var audio_usage = false;
+    var sign = true;
+    var url_schemes: std.ArrayList([]const u8) = .empty;
+    defer url_schemes.deinit(gpa);
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        const has_value = i + 1 < args.len;
+        if (std.mem.eql(u8, arg, "--out-dir") and has_value) {
+            i += 1;
+            out_dir = args[i];
+        } else if (std.mem.eql(u8, arg, "--bin") and has_value) {
+            i += 1;
+            bin_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--icons-dir") and has_value) {
+            i += 1;
+            icons_dir = args[i];
+        } else if (std.mem.eql(u8, arg, "--app-id") and has_value) {
+            i += 1;
+            app_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--name") and has_value) {
+            i += 1;
+            name = args[i];
+        } else if (std.mem.eql(u8, arg, "--exe-name") and has_value) {
+            i += 1;
+            exe_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--version") and has_value) {
+            i += 1;
+            version = args[i];
+        } else if (std.mem.eql(u8, arg, "--min-os") and has_value) {
+            i += 1;
+            min_os = args[i];
+        } else if (std.mem.eql(u8, arg, "--url-scheme") and has_value) {
+            i += 1;
+            try url_schemes.append(gpa, args[i]);
+        } else if (std.mem.eql(u8, arg, "--audio-usage")) {
+            audio_usage = true;
+        } else if (std.mem.eql(u8, arg, "--no-sign")) {
+            sign = false;
+        } else {
+            std.debug.print("error: package-app: unknown argument {s}\n", .{arg});
+            return 1;
+        }
+    }
+    const missing: ?[]const u8 = if (out_dir == null) "--out-dir" else if (bin_path == null) "--bin" else if (app_id == null) "--app-id" else if (name == null) "--name" else if (exe_name == null) "--exe-name" else null;
+    if (missing) |m| {
+        std.debug.print("error: package-app: missing {s}\n", .{m});
+        return 1;
+    }
+
+    const bundle_name = try macos.bundleDirName(gpa, name.?);
+    defer gpa.free(bundle_name);
+    const bundle = try std.fs.path.join(gpa, &.{ out_dir.?, bundle_name });
+    defer gpa.free(bundle);
+    // A clean bundle every time (the output directory is a cache entry).
+    Dir.cwd().deleteTree(io, bundle) catch {};
+    const macos_dir = try std.fs.path.join(gpa, &.{ bundle, "Contents", "MacOS" });
+    defer gpa.free(macos_dir);
+    const res_dir = try std.fs.path.join(gpa, &.{ bundle, "Contents", "Resources" });
+    defer gpa.free(res_dir);
+    try Dir.cwd().createDirPath(io, macos_dir);
+    try Dir.cwd().createDirPath(io, res_dir);
+
+    const exe_dest = try std.fs.path.join(gpa, &.{ macos_dir, exe_name.? });
+    defer gpa.free(exe_dest);
+    try Dir.cwd().copyFile(bin_path.?, Dir.cwd(), exe_dest, io, .{ .permissions = .fromMode(0o755) });
+
+    var has_icon = false;
+    if (icons_dir) |idir| {
+        const src_icns = try std.fs.path.join(gpa, &.{ idir, "icon.icns" });
+        defer gpa.free(src_icns);
+        const dest_icns = try std.fs.path.join(gpa, &.{ res_dir, "icon.icns" });
+        defer gpa.free(dest_icns);
+        if (pathExists(io, src_icns)) {
+            try Dir.cwd().copyFile(src_icns, Dir.cwd(), dest_icns, io, .{});
+            has_icon = true;
+        } else {
+            std.debug.print("warning: package-app: {s} not found (run resize-icons first); no icon\n", .{src_icns});
+        }
+    }
+
+    const plist = try macos.generateInfoPlist(gpa, .{
+        .id = app_id.?,
+        .name = name.?,
+        .exe_name = exe_name.?,
+        .version = version,
+        .min_os = min_os,
+        .icon_name = if (has_icon) "icon" else null,
+        .url_schemes = url_schemes.items,
+        .audio_usage = audio_usage,
+    });
+    defer gpa.free(plist);
+    const plist_path = try std.fs.path.join(gpa, &.{ bundle, "Contents", "Info.plist" });
+    defer gpa.free(plist_path);
+    try Dir.cwd().writeFile(io, .{ .sub_path = plist_path, .data = plist });
+    const pkginfo_path = try std.fs.path.join(gpa, &.{ bundle, "Contents", "PkgInfo" });
+    defer gpa.free(pkginfo_path);
+    try Dir.cwd().writeFile(io, .{ .sub_path = pkginfo_path, .data = "APPL????" });
+
+    if (sign and builtin.os.tag == .macos) {
+        runTool(gpa, io, "package-app", &.{ "/usr/bin/codesign", "--force", "--sign", "-", bundle }) catch return 1;
+    }
+    return 0;
+}
+
+/// `<out-dir>/<filename>`: a compressed disk image holding the .app and a
+/// link to /Applications (drag to install). Needs `hdiutil` (macOS hosts).
+fn packageDmgCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
+    var out_dir: ?[]const u8 = null;
+    var filename: ?[]const u8 = null;
+    var volname: ?[]const u8 = null;
+    var app_path: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        const has_value = i + 1 < args.len;
+        if (std.mem.eql(u8, arg, "--out-dir") and has_value) {
+            i += 1;
+            out_dir = args[i];
+        } else if (std.mem.eql(u8, arg, "--filename") and has_value) {
+            i += 1;
+            filename = args[i];
+        } else if (std.mem.eql(u8, arg, "--volname") and has_value) {
+            i += 1;
+            volname = args[i];
+        } else if (std.mem.eql(u8, arg, "--app") and has_value) {
+            i += 1;
+            app_path = args[i];
+        } else {
+            std.debug.print("error: package-dmg: unknown argument {s}\n", .{arg});
+            return 1;
+        }
+    }
+    if (out_dir == null or filename == null or volname == null or app_path == null) {
+        std.debug.print("error: package-dmg: needs --out-dir, --filename, --volname and --app\n", .{});
+        return 1;
+    }
+    if (builtin.os.tag != .macos) {
+        std.debug.print("error: package-dmg: .dmg images are built with hdiutil, on a macOS host (the .app bundle itself builds anywhere: `zig build package-app`)\n", .{});
+        return 1;
+    }
+
+    const stage = try std.fs.path.join(gpa, &.{ out_dir.?, "dmg-root" });
+    defer gpa.free(stage);
+    Dir.cwd().deleteTree(io, stage) catch {};
+    try Dir.cwd().createDirPath(io, stage);
+    defer Dir.cwd().deleteTree(io, stage) catch {};
+    const staged_app = try std.fs.path.join(gpa, &.{ stage, std.fs.path.basename(app_path.?) });
+    defer gpa.free(staged_app);
+    // ditto keeps the bundle's symlinks, modes and code signature.
+    runTool(gpa, io, "package-dmg", &.{ "/usr/bin/ditto", app_path.?, staged_app }) catch return 1;
+    var stage_dir = try Dir.cwd().openDir(io, stage, .{});
+    defer stage_dir.close(io);
+    try stage_dir.symLink(io, "/Applications", "Applications", .{});
+
+    const dmg = try std.fs.path.join(gpa, &.{ out_dir.?, filename.? });
+    defer gpa.free(dmg);
+    runTool(gpa, io, "package-dmg", &.{ "/usr/bin/hdiutil", "create", "-quiet", "-volname", volname.?, "-srcfolder", stage, "-ov", "-format", "UDZO", dmg }) catch return 1;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // install-desktop-entry
 // ---------------------------------------------------------------------------
 
@@ -1254,6 +1478,8 @@ test {
     std.testing.refAllDecls(icons);
     std.testing.refAllDecls(ico);
     std.testing.refAllDecls(nsis);
+    std.testing.refAllDecls(icns);
+    std.testing.refAllDecls(macos);
 }
 
 test "resizeIcons custom png no overflow on large sizes" {
@@ -1513,6 +1739,8 @@ test "packageNsisCmd builds Windows installer with makensis" {
 }
 
 test "generateDesktopCmd with --url-scheme" {
+    // .desktop files are validated with desktop-file-validate (Linux).
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
     const io = std.testing.io;
     const allocator = std.testing.allocator;
 

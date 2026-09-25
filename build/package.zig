@@ -1,7 +1,8 @@
 //! Packaging step builder for Oriel applications.
 //!
 //! Provides pluggable package format dispatch per target OS.
-//! Supported formats: .deb, .rpm, .AppImage on Linux, NSIS setup.exe on Windows.
+//! Supported formats: .deb, .rpm, .AppImage on Linux, NSIS setup.exe on
+//! Windows, .app bundle and .dmg on macOS.
 
 const std = @import("std");
 const metadata_mod = @import("../tools/package/metadata.zig");
@@ -17,6 +18,8 @@ pub const targetToAppImageArch = metadata_mod.targetToAppImageArch;
 /// - `rpm`: Red Hat package (.rpm) generated via nfpm.
 /// - `appimage`: AppImage bundle (.AppImage).
 /// - `nsis`: Windows installer (`setup.exe`) generated via `makensis` (cross-builds from Linux).
+/// - `app`: macOS application bundle (`<Name>.app`: Info.plist, icon.icns; ad-hoc signed on a Mac).
+/// - `dmg`: macOS disk image with the .app and an Applications link (`hdiutil`, macOS hosts).
 ///
 /// Future formats:
 /// - `msi`: Windows installer MSI generated via WiX toolset.
@@ -25,13 +28,16 @@ pub const Format = enum {
     rpm,
     appimage,
     nsis,
+    app,
+    dmg,
 };
 
 /// Return default package formats for a given operating system.
 pub fn defaultFormats(os_tag: std.Target.Os.Tag) []const Format {
     return switch (os_tag) {
         .linux => &.{ .deb, .rpm, .appimage },
-        .windows => &.{ .nsis },
+        .windows => &.{.nsis},
+        .macos => &.{ .app, .dmg },
         else => &.{},
     };
 }
@@ -129,7 +135,44 @@ pub const Context = struct {
     rpm_deps: []const []const u8,
     appimage_runtime_override: ?[]const u8,
     webview2_loader: ?std.Build.LazyPath,
+    /// macOS targets: the `.app` bundle of `exe` (a directory) and its name.
+    app_bundle: ?AppBundle,
 };
+
+pub const AppBundle = struct {
+    dir: std.Build.LazyPath,
+    name: []const u8,
+};
+
+/// Assemble the macOS `.app` bundle of `exe` with `package_tool package-app`.
+fn addAppBundle(
+    b: *std.Build,
+    package_tool: *std.Build.Step.Compile,
+    metadata: Metadata,
+    target: std.Build.ResolvedTarget,
+    exe: *std.Build.Step.Compile,
+    icons_dir: std.Build.LazyPath,
+    audio_usage: bool,
+) AppBundle {
+    const min = target.result.os.version_range.semver.min;
+    const run = b.addRunArtifact(package_tool);
+    run.addArg("package-app");
+    run.addArg("--out-dir");
+    const out_dir = run.addOutputDirectoryArg("app");
+    run.addArgs(&.{ "--app-id", metadata.id });
+    run.addArgs(&.{ "--name", metadata.name });
+    run.addArgs(&.{ "--exe-name", exe.name });
+    run.addArgs(&.{ "--version", metadata.version });
+    run.addArgs(&.{ "--min-os", b.fmt("{d}.{d}", .{ min.major, min.minor }) });
+    for (metadata.url_schemes) |s| run.addArgs(&.{ "--url-scheme", s });
+    if (audio_usage) run.addArg("--audio-usage");
+    run.addArg("--bin");
+    run.addFileArg(exe.getEmittedBin());
+    run.addArg("--icons-dir");
+    run.addDirectoryArg(icons_dir);
+    const name = b.fmt("{s}.app", .{metadata.name});
+    return .{ .dir = out_dir.path(b, name), .name = name };
+}
 
 pub fn addPackageSteps(
     b: *std.Build,
@@ -254,6 +297,16 @@ pub fn addPackageSteps(
         b.getInstallStep().dependOn(&b.addInstallFileWithDir(webview2_loader.?, .bin, "WebView2Loader.dll").step);
     }
 
+    // macOS: `zig build` also installs `zig-out/<Name>.app`: Launch Services
+    // (deep links), notifications and permission prompts need a bundle.
+    const audio_usage = isFeatureEnabledDefault(oriel_dep, "audio_capture", false);
+    var app_bundle: ?AppBundle = null;
+    if (os_tag == .macos) {
+        const bundle = addAppBundle(b, package_tool, metadata, target, exe, icons_dir, audio_usage);
+        b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = bundle.dir, .install_dir = .prefix, .install_subdir = bundle.name }).step);
+        app_bundle = bundle;
+    }
+
     const ctx = Context{
         .b = b,
         .oriel_dep = oriel_dep,
@@ -267,6 +320,7 @@ pub fn addPackageSteps(
         .rpm_deps = rpm_deps.items,
         .appimage_runtime_override = appimage_runtime_override,
         .webview2_loader = webview2_loader,
+        .app_bundle = app_bundle,
     };
 
     // Determine target formats
@@ -334,6 +388,8 @@ fn addFormat(ctx: *const Context, format: Format) *std.Build.Step {
         .rpm => addRpm(ctx),
         .appimage => addAppImage(ctx),
         .nsis => addNsis(ctx),
+        .app => addApp(ctx),
+        .dmg => addDmg(ctx),
     };
 }
 
@@ -493,6 +549,43 @@ fn addNsis(ctx: *const Context) *std.Build.Step {
         ctx.b.fmt("package/{s}", .{setup_filename}),
     );
     return &install.step;
+}
+
+/// `zig-out/package/<Name>.app`.
+fn addApp(ctx: *const Context) *std.Build.Step {
+    const bundle = ctx.app_bundle orelse return &ctx.b.addFail(".app bundles are built for macOS targets only").step;
+    const install = ctx.b.addInstallDirectory(.{
+        .source_dir = bundle.dir,
+        .install_dir = .prefix,
+        .install_subdir = ctx.b.fmt("package/{s}", .{bundle.name}),
+    });
+    return &install.step;
+}
+
+/// `zig-out/package/<exe>-<version>.dmg`.
+fn addDmg(ctx: *const Context) *std.Build.Step {
+    const bundle = ctx.app_bundle orelse return &ctx.b.addFail(".dmg images are built for macOS targets only").step;
+    const dmg_filename = ctx.b.fmt("{s}-{s}.dmg", .{ ctx.metadata.exe_name, ctx.metadata.version });
+    const run = ctx.b.addRunArtifact(ctx.package_tool);
+    run.addArg("package-dmg");
+    run.addArg("--out-dir");
+    const out_dir = run.addOutputDirectoryArg("dmg");
+    run.addArgs(&.{ "--filename", dmg_filename });
+    run.addArgs(&.{ "--volname", ctx.metadata.name });
+    run.addArg("--app");
+    run.addDirectoryArg(bundle.dir);
+    const install = ctx.b.addInstallFileWithDir(
+        out_dir.path(ctx.b, dmg_filename),
+        .prefix,
+        ctx.b.fmt("package/{s}", .{dmg_filename}),
+    );
+    return &install.step;
+}
+
+/// Like `isFeatureEnabled`, for features whose default is not "on".
+fn isFeatureEnabledDefault(dep: *std.Build.Dependency, comptime name: []const u8, default: bool) bool {
+    if (dep.builder.user_input_options.get(name) == null) return default;
+    return isFeatureEnabled(dep, name);
 }
 
 fn isFeatureEnabled(dep: *std.Build.Dependency, comptime name: []const u8) bool {

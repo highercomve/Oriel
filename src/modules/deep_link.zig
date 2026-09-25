@@ -5,7 +5,7 @@
 //!
 //! Linux backend: GApplication command-line handling + XDG MIME handler.
 //! Windows backend: Named mutex single-instance + WM_COPYDATA message forwarding.
-//! macOS backend: Compiling stub (pending Milestone 7 step 3 .app bundles).
+//! macOS backend: Launch Services `kAEGetURL` Apple Events; schemes declared in Info.plist.
 
 const builtin = @import("builtin");
 pub const common = @import("deep_link/common.zig");
