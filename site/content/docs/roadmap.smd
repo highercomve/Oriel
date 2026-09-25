@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Done (Milestones 1–9)
+# Done (Milestones 1–10)
 
 ## Milestone 1: Async commands
 
@@ -52,11 +52,19 @@ Opt-in `deep_link` module: custom URL schemes open the app, or forward the link 
 
 One way to declare and request OS permissions (microphone, camera, screen capture, accessibility, location, notifications, system audio) on Linux, Windows and macOS: declared once in `build.zig` (`oriel permission add`), written into each platform's package, queried and requested from Zig and JavaScript, and enforced for the webview's own requests. See [Permissions]($link.page('docs/permissions')).
 
+## Milestone 10: Overlay windows and background apps
+
+Driven by the GhostPen port: transparent, always-on-top, click-through windows placed on the monitor's work area (Wayland layer-shell overlays, X11, Windows, macOS), apps that start with only a tray icon, single instance with argument forwarding, `App.runOnMain`, readable command errors (`oriel.ipc.fail`), and WASAPI audio capture on Windows.
+
+## Security hardening, part 1
+
+Origin-bound IPC tokens (other-origin frames can't call commands), `security.freeze_prototype`, and `security.headers` (COOP, COEP, Permissions-Policy, …).
+
 # Next
 
-- The GhostPen port: the first full application built on Oriel.
+- GhostPen on Oriel: the first full application built on Oriel.
+- Security hardening, part 2: command scopes, local capabilities, the isolation pattern, CSP hashes, signing in the bundler.
 - Platform escape hatch: extra Info.plist keys, entitlements, Windows manifest and NSIS additions.
-- Security hardening towards Tauri 2 (command scopes, the isolation pattern).
 
 # Even later
 
