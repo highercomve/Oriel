@@ -529,6 +529,10 @@ pub const AppOptions = struct {
     /// The app's main.zig. It can `@import("oriel")` and `@import("oriel_app")`
     /// (build-time config: `assets`, `dev`, `types_path`).
     root_source_file: std.Build.LazyPath,
+    /// Application icon (PNG format, 1024x1024 recommended).
+    /// Used for window icon, Windows taskbar/exe/installer, Linux desktop entry, macOS dock/bundle.
+    /// Defaults to Oriel's brand icon (`assets/brand/oriel-icon-1024.png`).
+    icon: ?std.Build.LazyPath = null,
     frontend: Frontend,
     /// Application packaging metadata (for deb, rpm, AppImage, NSIS setup.exe, desktop-entry).
     package: ?PackageOptions = null,
@@ -605,6 +609,18 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     const fe_dir = b.pathFromRoot(fe.dir);
     const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
 
+    const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
+
+    const package_tool = oriel_dep.artifact("package_tool");
+    const run_icons = b.addRunArtifact(package_tool);
+    run_icons.addArg("resize-icons");
+    run_icons.addArg("--input");
+    run_icons.addFileArg(app_icon);
+    run_icons.addArg("--out-dir");
+    const icons_dir = run_icons.addOutputDirectoryArg("icons");
+    run_icons.addArg("--brand-dir");
+    run_icons.addDirectoryArg(oriel_dep.path("assets/brand"));
+
     // `npm install` once, when node_modules is missing.
     var install_step: ?*std.Build.Step = null;
     if (fe.install_command) |cmd| {
@@ -625,7 +641,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         cfg.addOption([]const u8, "frontend_dir", fe_dir);
         cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
         cfg.addOption([]const []const u8, "url_schemes", url_schemes);
-        break :blk addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null));
+        break :blk addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon));
     } else null;
 
     // Generated TypeScript types, written by the dev build (no frontend needed).
@@ -666,8 +682,23 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     prod_cfg.addOption([]const u8, "frontend_dir", fe_dir);
     prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
-    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig")));
+    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon));
     b.installArtifact(exe);
+
+    // Windows: embed multi-resolution .ico into executable via .rc resource.
+    if (target.result.os.tag == .windows) {
+        const rc_file = icons_dir.path(b, "app.rc");
+        exe.root_module.addWin32ResourceFile(.{
+            .file = rc_file,
+            .include_paths = &.{icons_dir},
+        });
+        if (dev_exe) |d| {
+            d.root_module.addWin32ResourceFile(.{
+                .file = rc_file,
+                .include_paths = &.{icons_dir},
+            });
+        }
+    }
 
     // -Dggml_cuda: ship libggml-cuda.so next to the executable. It resolves
     // ggml's symbols from the executable, so those must be exported.
@@ -735,10 +766,10 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     check_cfg.addOption([]const u8, "frontend_dir", fe_dir);
     check_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     check_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
-    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null));
+    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null, app_icon));
     @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_exe.step);
 
-    @import("build/package.zig").addPackageSteps(b, oriel_dep, options, exe, dev_exe);
+    @import("build/package.zig").addPackageSteps(b, oriel_dep, options, exe, dev_exe, icons_dir, app_icon);
 
     return .{ .exe = exe, .dev_exe = dev_exe };
 }
@@ -749,8 +780,10 @@ fn appConfigModule(
     oriel: *std.Build.Module,
     cfg: *std.Build.Step.Options,
     assets: ?std.Build.LazyPath,
+    icon: std.Build.LazyPath,
 ) *std.Build.Module {
     const files = b.addWriteFiles();
+    _ = files.addCopyFile(icon, "icon.png");
     const root = files.add("oriel_app.zig",
         \\const oriel = @import("oriel");
         \\const cfg = @import("cfg");
@@ -764,6 +797,9 @@ fn appConfigModule(
         \\    .command = cfg.dev_command,
         \\    .cwd = cfg.frontend_dir,
         \\} else null;
+        \\
+        \\/// Embedded application icon (PNG bytes).
+        \\pub const icon_bytes: []const u8 = @embedFile("icon.png");
         \\
         \\/// Base64-encoded Ed25519 public key for verifying updates.
         \\pub const update_public_key: ?[]const u8 = cfg.update_public_key;
