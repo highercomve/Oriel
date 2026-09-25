@@ -1,11 +1,11 @@
 //! macOS audio capture: CoreAudio devices + AudioQueue input.
 //!
 //! `listSources` returns every device with input channels: `name` is its
-//! CoreAudio UID, `description` its display name. macOS has no built-in
-//! way to capture what the speakers play; a virtual loopback device
-//! (BlackHole, Soundflower, Rogue Amoeba Loopback) does, and is listed with
-//! `monitor = true` when installed (route the output to it, e.g. with a
-//! Multi-Output Device in Audio MIDI Setup).
+//! CoreAudio UID, `description` its display name. On macOS 14.2+ it also
+//! lists "System audio (all apps)" (`monitor = true`): a Core Audio process
+//! tap, no driver needed (macOS asks once for System Audio Recording; see
+//! macos_tap.zig). Virtual loopback devices (BlackHole, Soundflower,
+//! Loopback) are listed as monitors too when installed.
 //!
 //! `Stream` asks AudioQueue for mono float32 at the requested rate (it
 //! resamples); its callback fills a ring buffer that `read` drains,
@@ -21,6 +21,7 @@ const std = @import("std");
 const cocoa = @import("../../platform/macos/cocoa.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const tap_mod = @import("macos_tap.zig");
 
 const Object = cocoa.Object;
 const c = std.c;
@@ -145,6 +146,13 @@ pub fn listSources(gpa: std.mem.Allocator) ![]common.Source {
         }
         list.deinit(gpa);
     }
+    if (tap_mod.available()) {
+        const name = try gpa.dupeZ(u8, tap_mod.source_name);
+        errdefer gpa.free(name);
+        const desc = try gpa.dupe(u8, "System audio (all apps)");
+        errdefer gpa.free(desc);
+        try list.append(gpa, .{ .name = name, .description = desc, .monitor = true });
+    }
     for (ids[0 .. size / @sizeOf(AudioObjectID)]) |id| {
         if (try inputChannels(gpa, id) == 0) continue;
         const uid = try stringProperty(gpa, id, sel_uid) orelse continue;
@@ -192,6 +200,11 @@ const State = struct {
     len: usize = 0, // samples available
     running: bool = true,
 
+    fn pushFromTap(ctx: *anyopaque, samples: []const f32) void {
+        const self: *State = @ptrCast(@alignCast(ctx));
+        self.push(samples);
+    }
+
     fn push(self: *State, samples: []const f32) void {
         _ = c.pthread_mutex_lock(&self.mutex);
         defer _ = c.pthread_mutex_unlock(&self.mutex);
@@ -221,13 +234,17 @@ fn onInput(user: ?*anyopaque, queue: AudioQueueRef, buffer: *AudioQueueBuffer, _
 /// `read` blocks until the buffer is full; `read` and `close` must be
 /// called from the same thread.
 pub const Stream = struct {
-    queue: AudioQueueRef,
+    /// Microphone and loopback devices; null for the system-audio tap.
+    queue: ?AudioQueueRef,
+    /// The system-audio tap (heap: Core Audio keeps a pointer to it).
+    tap: ?*tap_mod.Tap = null,
     state: *State,
 
     /// Open `source` (a `Source.name`, i.e. a CoreAudio device UID; null =
     /// the default input). `app_name` is unused on macOS.
     pub fn open(source: ?[:0]const u8, app_name: [:0]const u8, rate: u32) !Stream {
         _ = app_name;
+        if (source) |s| if (std.mem.eql(u8, s, tap_mod.source_name)) return openTap(rate);
         if (source == null and !hasDefaultInput()) return error.NoInputDevice; // e.g. a VM without audio input
         switch (microphonePermission()) {
             .denied, .restricted => return error.MicrophonePermissionDenied,
@@ -273,6 +290,19 @@ pub const Stream = struct {
         return .{ .queue = queue, .state = state };
     }
 
+    fn openTap(rate: u32) !Stream {
+        const gpa = std.heap.smp_allocator;
+        const state = try gpa.create(State);
+        errdefer gpa.destroy(state);
+        state.* = .{ .ring = try gpa.alloc(f32, rate * 2) };
+        errdefer gpa.free(state.ring);
+        const tap = try gpa.create(tap_mod.Tap);
+        errdefer gpa.destroy(tap);
+        tap.* = .{ .decimator = undefined, .sink = &State.pushFromTap, .sink_ctx = state };
+        try tap.start(rate);
+        return .{ .queue = null, .tap = tap, .state = state };
+    }
+
     /// Fill `samples` completely (blocks).
     pub fn read(self: *Stream, samples: []f32) !void {
         const st = self.state;
@@ -297,10 +327,16 @@ pub const Stream = struct {
         self.state.running = false;
         _ = c.pthread_cond_broadcast(&self.state.cond);
         _ = c.pthread_mutex_unlock(&self.state.mutex);
-        // Synchronous: no callback runs after these return.
-        _ = AudioQueueStop(self.queue, 1);
-        _ = AudioQueueDispose(self.queue, 1);
         const gpa = std.heap.smp_allocator;
+        // Synchronous: no callback runs after these return.
+        if (self.queue) |q| {
+            _ = AudioQueueStop(q, 1);
+            _ = AudioQueueDispose(q, 1);
+        }
+        if (self.tap) |t| {
+            t.stop();
+            gpa.destroy(t);
+        }
         gpa.free(self.state.ring);
         gpa.destroy(self.state);
     }
@@ -326,6 +362,10 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
             @tagName(microphonePermission()),
         }),
     };
+}
+
+test {
+    _ = tap_mod;
 }
 
 test isLoopback {
