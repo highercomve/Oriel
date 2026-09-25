@@ -190,7 +190,7 @@ pub fn addPackageSteps(
     const app_id = pkg_opts.id orelse b.fmt("dev.oriel.{s}", .{exe_name});
     const summary = pkg_opts.summary orelse b.fmt("{s} application", .{display_name});
     const description = pkg_opts.description orelse summary;
-    const publisher = pkg_opts.publisher orelse display_name;
+    const publisher = pkg_opts.publisher orelse metadata_mod.organizationFromAppId(app_id);
     const version = pkg_opts.version orelse "0.1.0";
     const categories = pkg_opts.categories orelse "Utility;";
     const icon = pkg_opts.icon orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");

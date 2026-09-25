@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
 // Generated from the Zig `Commands` struct (zig build types / zig build dev).
-import { invoke, listen, openExternal, orielWindow, type Commands } from "./oriel";
+import { invoke, listen, openExternal, orielWindow, deepLink, type Commands } from "./oriel";
 
 type Note = Commands["list_notes"]["result"][number];
 type AppInfo = Commands["app_info"]["result"];
@@ -16,13 +16,27 @@ function NotesPage() {
   const [dnd, setDnd] = useState(false);
   const [exported, setExported] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [openedLink, setOpenedLink] = useState<string | null>(null);
 
   useEffect(() => {
     invoke("app_info").then(setInfo);
     invoke("list_notes").then(setNotes);
     invoke("do_not_disturb").then(setDnd);
-    // Pushed from Zig, e.g. by the tray menu.
-    const unlisten = [listen("notes_changed", setNotes), listen("do_not_disturb", setDnd)];
+    deepLink?.current().then((url) => {
+      if (url) {
+        setOpenedLink(url);
+        invoke("log_js_deep_link", { url, source: "current" }).catch(() => {});
+      }
+    });
+    // Pushed from Zig, e.g. by the tray menu or deep links.
+    const unlisten = [
+      listen("notes_changed", setNotes),
+      listen("do_not_disturb", setDnd),
+      listen("deep-link", (e) => {
+        setOpenedLink(e.url);
+        invoke("log_js_deep_link", { url: e.url, source: "event" }).catch(() => {});
+      }),
+    ];
     return () => unlisten.forEach((off) => off());
   }, []);
 
@@ -63,6 +77,7 @@ function NotesPage() {
           </span>
         )}
       </header>
+      {openedLink && <p className="opened-link">Opened via link: {openedLink}</p>}
 
       <form onSubmit={addNote} className="row">
         <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Write a note…" autoFocus />

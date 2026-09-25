@@ -49,9 +49,112 @@ fn createKillOnCloseJob() ?win32.HANDLE {
     return job;
 }
 
+fn getEnvAlloc(gpa: std.mem.Allocator, name_u8: []const u8) ?[:0]u16 {
+    const name_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, name_u8) catch return null;
+    defer gpa.free(name_w);
+    // The first call returns the size including the terminator; allocate
+    // exactly `len - 1` characters (+ sentinel) and return that same slice,
+    // so the caller's `gpa.free` frees the allocated size.
+    const len = win32.GetEnvironmentVariableW(name_w.ptr, null, 0);
+    if (len <= 1) return null;
+    const buf = gpa.allocSentinel(u16, len - 1, 0) catch return null;
+    const written = win32.GetEnvironmentVariableW(name_w.ptr, buf.ptr, len);
+    if (written != len - 1) { // changed between the calls
+        gpa.free(buf);
+        return null;
+    }
+    return buf;
+}
+
+fn utf16ToUtf8Alloc(gpa: std.mem.Allocator, s: []const u16) ?[]u8 {
+    return std.unicode.utf16LeToUtf8Alloc(gpa, s) catch null;
+}
+
+fn findNodeDir(io: std.Io, gpa: std.mem.Allocator) ?[]const u8 {
+    // 1. Check ~/.oriel/node/<v>
+    const userprofile_w = getEnvAlloc(gpa, "USERPROFILE") orelse getEnvAlloc(gpa, "HOME");
+    if (userprofile_w) |up_w| {
+        defer gpa.free(up_w);
+        if (utf16ToUtf8Alloc(gpa, up_w)) |up_u8| {
+            defer gpa.free(up_u8);
+            const oriel_node = std.fs.path.join(gpa, &.{ up_u8, ".oriel", "node" }) catch null;
+            if (oriel_node) |node_root| {
+                defer gpa.free(node_root);
+                if (std.Io.Dir.cwd().openDir(io, node_root, .{ .iterate = true })) |dir| {
+                    var d = dir;
+                    defer d.close(io);
+                    var it = d.iterate();
+                    while (it.next(io) catch null) |entry| {
+                        if (entry.kind != .directory) continue;
+                        const sub = std.fs.path.join(gpa, &.{ node_root, entry.name }) catch continue;
+                        const node_exe = std.fs.path.join(gpa, &.{ sub, "node.exe" }) catch {
+                            gpa.free(sub);
+                            continue;
+                        };
+                        defer gpa.free(node_exe);
+                        if (std.Io.Dir.cwd().access(io, node_exe, .{})) |_| {
+                            return sub;
+                        } else |_| {
+                            gpa.free(sub);
+                        }
+                    }
+                } else |_| {}
+            }
+        }
+    }
+
+    // 2. Common install dirs
+    const candidates = [_]struct { env: []const u8, sub: []const u8 }{
+        .{ .env = "ProgramFiles", .sub = "nodejs" },
+        .{ .env = "ProgramFiles(x86)", .sub = "nodejs" },
+        .{ .env = "LOCALAPPDATA", .sub = "Programs\\nodejs" },
+    };
+    for (candidates) |c| {
+        if (getEnvAlloc(gpa, c.env)) |env_w| {
+            defer gpa.free(env_w);
+            if (utf16ToUtf8Alloc(gpa, env_w)) |env_u8| {
+                defer gpa.free(env_u8);
+                const full = std.fs.path.join(gpa, &.{ env_u8, c.sub }) catch continue;
+                const node_exe = std.fs.path.join(gpa, &.{ full, "node.exe" }) catch {
+                    gpa.free(full);
+                    continue;
+                };
+                defer gpa.free(node_exe);
+                if (std.Io.Dir.cwd().access(io, node_exe, .{})) |_| {
+                    return full;
+                } else |_| {
+                    gpa.free(full);
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+fn prependToPath(gpa: std.mem.Allocator, dir: []const u8) bool {
+    const path_name = std.unicode.utf8ToUtf16LeStringLiteral("PATH");
+    const old_path_w = getEnvAlloc(gpa, "PATH");
+    defer if (old_path_w) |p| gpa.free(p);
+
+    const old_path_u8 = if (old_path_w) |p| utf16ToUtf8Alloc(gpa, p) else null;
+    defer if (old_path_u8) |p| gpa.free(p);
+
+    const new_path_u8 = if (old_path_u8) |old|
+        std.fmt.allocPrint(gpa, "{s};{s}", .{ dir, old }) catch return false
+    else
+        gpa.dupe(u8, dir) catch return false;
+    defer gpa.free(new_path_u8);
+
+    const new_path_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, new_path_u8) catch return false;
+    defer gpa.free(new_path_w);
+
+    return win32.SetEnvironmentVariableW(path_name.ptr, new_path_w.ptr) != win32.FALSE;
+}
+
 pub fn startDevServer(io: std.Io, dev: anytype) ?DevServer {
     if (managedExternally()) {
-        log.info("dev server managed externally; skipping local spawn", .{});
+        log.debug("dev server managed externally; skipping local spawn", .{});
         return null;
     }
     const command = dev.command orelse return null;
@@ -59,14 +162,26 @@ pub fn startDevServer(io: std.Io, dev: anytype) ?DevServer {
 
     var job = createKillOnCloseJob();
     const suspended = job != null;
-    const child = std.process.spawn(io, .{
+    const spawn_cfg: std.process.SpawnOptions = .{
         .argv = command,
         .cwd = if (dev.cwd) |cwd| .{ .path = cwd } else .inherit,
         .start_suspended = suspended,
         // The app is a GUI program: no console window for vite.cmd / node.
         .create_no_window = true,
-    }) catch |err| {
-        log.err("failed to start dev server {s}: {s}", .{ command[0], @errorName(err) });
+    };
+
+    const child = std.process.spawn(io, spawn_cfg) catch |first_err| blk: {
+        const gpa = std.heap.smp_allocator;
+        if (findNodeDir(io, gpa)) |node_dir| {
+            defer gpa.free(node_dir);
+            if (prependToPath(gpa, node_dir)) {
+                log.debug("augmented PATH with Node directory: {s}", .{node_dir});
+                if (std.process.spawn(io, spawn_cfg)) |c| {
+                    break :blk c;
+                } else |_| {}
+            }
+        }
+        log.err("failed to start dev server '{s}': {s} (dev command not found in PATH; ensure Node.js is installed or run 'oriel setup node')", .{ command[0], @errorName(first_err) });
         if (job) |j| _ = win32.CloseHandle(j);
         return null;
     };

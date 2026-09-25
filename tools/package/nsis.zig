@@ -23,6 +23,7 @@ pub const NsisOptions = struct {
     webview2_loader: ?[]const u8 = null,
     homepage: ?[]const u8 = null,
     url_schemes: []const []const u8 = &.{},
+    estimated_size_kb: ?u64 = null,
 };
 
 /// Evergreen WebView2 Runtime bootstrapper download URL (Microsoft official fwlink).
@@ -109,6 +110,9 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
     if (esc_homepage) |hp| {
         try w.print("!define HOMEPAGE \"{s}\"\n", .{hp});
     }
+    if (opts.estimated_size_kb) |kb| {
+        try w.print("!define ESTIMATED_SIZE {d}\n", .{kb});
+    }
 
     try w.writeAll(
         \\
@@ -124,6 +128,9 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\
         \\!include "MUI2.nsh"
         \\!include "LogicLib.nsh"
+        \\!include "FileFunc.nsh"
+        \\!insertmacro un.GetParameters
+        \\!insertmacro un.GetOptions
         \\
         \\!define MUI_ABORTWARNING
         \\!ifdef ICON_PATH
@@ -216,6 +223,9 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "DisplayName" "${NAME}"
         \\  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "DisplayVersion" "${VERSION}"
         \\  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "Publisher" "${PUBLISHER}"
+        \\  !ifdef ESTIMATED_SIZE
+        \\  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "EstimatedSize" ${ESTIMATED_SIZE}
+        \\  !endif
         \\  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
         \\  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "QuietUninstallString" "$\"$INSTDIR\Uninstall.exe$\" /S"
         \\  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "DisplayIcon" "$\"$INSTDIR\${EXE_NAME}.exe$\""
@@ -241,6 +251,22 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\SectionEnd
         \\
         \\Section "Uninstall"
+        \\  Var /GLOBAL uninst_remove_data
+        \\  StrCpy $uninst_remove_data "0"
+        \\
+        \\  ${If} ${Silent}
+        \\    ${un.GetParameters} $R0
+        \\    ${un.GetOptions} $R0 "/REMOVEDATA" $R1
+        \\    ${IfNot} ${Errors}
+        \\      StrCpy $uninst_remove_data "1"
+        \\    ${EndIf}
+        \\  ${Else}
+        \\    MessageBox MB_YESNO|MB_DEFBUTTON2|MB_ICONQUESTION "Do you want to remove application data for ${NAME} (including WebView2 profile and logs)?" IDYES uninst_do_remove IDNO uninst_skip_remove
+        \\    uninst_do_remove:
+        \\      StrCpy $uninst_remove_data "1"
+        \\    uninst_skip_remove:
+        \\  ${EndIf}
+        \\
         \\  Delete "$INSTDIR\${EXE_NAME}.exe"
         \\  !ifdef WEBVIEW2_LOADER
         \\  Delete "$INSTDIR\WebView2Loader.dll"
@@ -265,6 +291,10 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
 
     try w.writeAll(
         \\  RMDir "$INSTDIR"
+        \\
+        \\  ${If} $uninst_remove_data == "1"
+        \\    RMDir /r "$LOCALAPPDATA\${APP_ID}"
+        \\  ${EndIf}
         \\SectionEnd
         \\
     );
@@ -295,6 +325,7 @@ test "generateNsisScript produces valid script with all options and escaping" {
         .icon_path = "/path/to/icon.ico",
         .webview2_loader = "/path/to/WebView2Loader.dll",
         .homepage = "https://oriel.dev",
+        .estimated_size_kb = 2048,
     };
 
     const script = try generateNsisScript(allocator, opts);
@@ -309,15 +340,25 @@ test "generateNsisScript produces valid script with all options and escaping" {
     try testing.expect(std.mem.indexOf(u8, script, "!define ICON_PATH \"/path/to/icon.ico\"") != null);
     try testing.expect(std.mem.indexOf(u8, script, "!define WEBVIEW2_LOADER \"/path/to/WebView2Loader.dll\"") != null);
     try testing.expect(std.mem.indexOf(u8, script, "!define HOMEPAGE \"https://oriel.dev\"") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "!define ESTIMATED_SIZE 2048") != null);
 
     // Verify per-user and MUI2 settings
     try testing.expect(std.mem.indexOf(u8, script, "RequestExecutionLevel user") != null);
     try testing.expect(std.mem.indexOf(u8, script, "InstallDir \"$LOCALAPPDATA\\Programs\\${NAME}\"") != null);
     try testing.expect(std.mem.indexOf(u8, script, "!include \"MUI2.nsh\"") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "!include \"FileFunc.nsh\"") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "!insertmacro un.GetParameters") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "!insertmacro un.GetOptions") != null);
 
-    // Verify registry uninstall key
-    try testing.expect(std.mem.indexOf(u8, script, "WriteRegStr HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_ID}\"") != null);
+    // Verify registry uninstall key including Publisher and EstimatedSize
+    try testing.expect(std.mem.indexOf(u8, script, "WriteRegStr HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_ID}\" \"Publisher\" \"${PUBLISHER}\"") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "WriteRegDWORD HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_ID}\" \"EstimatedSize\" ${ESTIMATED_SIZE}") != null);
     try testing.expect(std.mem.indexOf(u8, script, "DeleteRegKey HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_ID}\"") != null);
+
+    // Verify uninstall data prompt and /REMOVEDATA handling
+    try testing.expect(std.mem.indexOf(u8, script, "MessageBox MB_YESNO|MB_DEFBUTTON2|MB_ICONQUESTION") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "${un.GetOptions} $R0 \"/REMOVEDATA\" $R1") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "RMDir /r \"$LOCALAPPDATA\\${APP_ID}\"") != null);
 
     // Verify WebView2 detection
     try testing.expect(std.mem.indexOf(u8, script, "Function CheckWebView2") != null);

@@ -36,6 +36,7 @@ pub fn build(b: *std.Build) void {
         .package = .{
             .id = "@@app_id@@",
             .name = "@@title@@",
+            .publisher = "Oriel",
             .summary = "@@title@@, built with Oriel",
             .version = "0.1.0",
         },

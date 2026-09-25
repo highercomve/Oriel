@@ -24,6 +24,7 @@ pub const bridge_js =
     \\(() => {
     \\  const listeners = new Map();
     \\  const pending = new Map();
+    \\  const pendingEvents = new Map();
     \\  let nextId = 1;
     \\  window.chrome.webview.addEventListener('message', (event) => {
     \\    const data = event.data;
@@ -104,6 +105,16 @@ pub const bridge_js =
     \\      let set = listeners.get(event);
     \\      if (!set) listeners.set(event, (set = new Set()));
     \\      set.add(callback);
+    \\      const queued = pendingEvents.get(event);
+    \\      if (queued && queued.length > 0) {
+    \\        pendingEvents.delete(event);
+    \\        for (const payload of queued) {
+    \\          try { callback(payload); } catch (e) { console.error(e); }
+    \\        }
+    \\      }
+    \\      if (event === "deep-link") {
+    \\        try { Promise.resolve(invoke("deep_link:ready", {})).catch(() => {}); } catch (_) {}
+    \\      }
     \\      return () => set.delete(callback);
     \\    },
     \\    openExternal(url) {
@@ -115,8 +126,15 @@ pub const bridge_js =
     \\      },
     \\    }),
     \\    __emit(event, payload) {
-    \\      for (const cb of listeners.get(event) ?? []) {
-    \\        try { cb(payload); } catch (e) { console.error(e); }
+    \\      const set = listeners.get(event);
+    \\      if (set && set.size > 0) {
+    \\        for (const cb of set) {
+    \\          try { cb(payload); } catch (e) { console.error(e); }
+    \\        }
+    \\      } else {
+    \\        let queued = pendingEvents.get(event);
+    \\        if (!queued) pendingEvents.set(event, (queued = []));
+    \\        queued.push(payload);
     \\      }
     \\    },
     \\    window: Object.freeze(windowApi),

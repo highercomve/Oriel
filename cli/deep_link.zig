@@ -510,6 +510,9 @@ fn runRegister(ctx: Context) !u8 {
             return 1;
         };
         defer ctx.gpa.free(bin_path);
+        if (std.mem.endsWith(u8, bin_path, "-dev")) {
+            try ctx.err.writeAll("warning: links will start the dev build; run oriel build and re-register for the release exe\n");
+        }
 
         // Resolve data home
         const data_home = blk: {
@@ -584,6 +587,9 @@ fn runRegister(ctx: Context) !u8 {
             return 1;
         };
         defer ctx.gpa.free(bin_path);
+        if (std.mem.endsWith(u8, bin_path, "-dev.exe") or std.mem.endsWith(u8, bin_path, "-dev")) {
+            try ctx.err.writeAll("warning: links will start the dev build; run oriel build and re-register for the release exe\n");
+        }
 
         for (schemes) |s| {
             const root_key = try std.fmt.allocPrint(ctx.gpa, "HKCU\\Software\\Classes\\{s}", .{s});

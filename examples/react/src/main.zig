@@ -122,6 +122,10 @@ pub const Commands = struct {
         _ = try stmt.step();
         return list_notes(gpa);
     }
+
+    pub fn log_js_deep_link(_: std.mem.Allocator, args: struct { url: []const u8, source: []const u8 }) void {
+        std.log.info("JS deep link received ({s}): '{s}'", .{ args.source, args.url });
+    }
 };
 
 const app_id = "dev.oriel.ReactNotes";
