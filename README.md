@@ -192,6 +192,11 @@ oriel update --version v0.3.1 # Update or downgrade to a specific release tag
 
 The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the release's `latest.json` (one signed entry per platform; releases before v0.3.1 only have `oriel-update-<arch>-<os>.json`, used as a fallback), verifies the Ed25519 signature of the entry for its own platform against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary (on Windows, where a running exe can't be overwritten, it is renamed to `oriel.exe.old` first and removed on the next run). The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
 
+### Permission commands
+
+`oriel permission add <kind> ["reason"]`, `remove <kind>` and `list` edit
+`.permissions` in the app's `build.zig` (see [OS permissions](#os-permissions-orielpermissions)).
+
 ### Deep link commands
 
 `oriel deep-link` configures and registers custom URL schemes for local development:
@@ -424,6 +429,35 @@ Modeled on Tauri. Configure it with `Config.security`:
   cross-access; devtools only in Debug builds.
 
 `examples/smoke` runs these checks inside the real webview (`--auto-quit`).
+
+### OS permissions (`oriel.permissions`)
+
+Declare what the app needs once; Oriel writes it into the packages (macOS
+`Info.plist` usage texts and entitlements), lets you check and request it, and
+denies anything undeclared, including the webview's `getUserMedia`,
+geolocation and notification requests:
+
+```sh
+oriel permission add microphone "Dictation turns your speech into text"
+oriel permission add accessibility          # default reason text
+oriel permission list
+```
+
+```zig
+// build.zig (what `oriel permission add` writes)
+.permissions = .{ .microphone = "Dictation turns your speech into text", .accessibility = "" },
+// main.zig
+.permissions = app.permissions,
+```
+
+```ts
+import { permissions } from "./oriel";
+if ((await permissions.request("microphone")) === "denied") await permissions.openSettings("microphone");
+```
+
+Kinds: `microphone`, `camera`, `screen_capture`, `accessibility`, `location`,
+`notifications`, `system_audio`. Statuses: `granted`, `denied`, `prompt`,
+`unknown`. See the [Permissions guide](https://highercomve.github.io/Oriel/docs/permissions/).
 
 ## Tray
 

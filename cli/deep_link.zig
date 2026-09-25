@@ -44,7 +44,7 @@ pub fn validateScheme(scheme: []const u8) bool {
 }
 
 /// Find matching closing bracket/parenthesis/brace taking nested pairs into account.
-fn findMatchingClose(source: []const u8, open_idx: usize, open_char: u8, close_char: u8) ?usize {
+pub fn findMatchingClose(source: []const u8, open_idx: usize, open_char: u8, close_char: u8) ?usize {
     if (open_idx >= source.len or source[open_idx] != open_char) return null;
     var depth: usize = 0;
     var i: usize = open_idx;

@@ -12,6 +12,7 @@
 				<a href="$site.page('docs/development').link()">Development</a>
 				<a href="$site.page('docs/building').link()">Building &amp; packaging</a>
 				<a href="$site.page('docs/signing').link()">Code signing</a>
+				<a href="$site.page('docs/permissions').link()">Permissions</a>
 				<h4>Reference</h4>
 				<a href="$site.page('docs/concepts').link()">Concepts</a>
 				<a href="$site.page('docs/modules').link()">Modules</a>

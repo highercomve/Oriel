@@ -561,6 +561,14 @@ code plus the CLI; all three OSes (rule 11).
 
 ## Milestone 9 — Permissions (one declaration, every OS)
 
+Status (2026-09-25): part 1 on main: declaration (`AppOptions.permissions`,
+`app.permissions` → `App.Config.permissions`), Info.plist keys + entitlements,
+`oriel.permissions` status/request/openSettings, JS API + `permission-changed`,
+`oriel permission add|remove|list`, Linux backend and WebKitGTK gating, smoke
+checks, docs. In progress elsewhere: the macOS backend + WKWebView gating (Mac
+session, mac/permissions) and the Windows backend + WebView2 gating (laptop,
+win/permissions). Not done: the `.platform` escape hatch (item 5).
+
 Apps need different OS permissions (microphone, camera, screen capture,
 accessibility, location, notifications). Today each module handles its own
 (audio_capture adds the macOS usage strings, input checks AXIsProcessTrusted),

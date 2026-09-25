@@ -52,6 +52,7 @@
 						<a href="$site.page('docs/tutorial').link()">Tutorial</a>
 						<a href="$site.page('docs/building').link()">Building &amp; packaging</a>
 						<a href="$site.page('docs/signing').link()">Code signing</a>
+						<a href="$site.page('docs/permissions').link()">Permissions</a>
 					</div>
 					<div>
 						<h4>Project</h4>

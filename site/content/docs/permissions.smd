@@ -1,0 +1,129 @@
+---
+.title = "Permissions",
+.description = "Declare, request and check OS permissions: microphone, camera, screen, accessibility and more.",
+.date = .date("2026-09-25T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+# Permissions
+
+Apps need different things from the operating system: a dictation app needs the microphone, a screen recorder needs screen capture, a text tool that types into other apps needs accessibility. Oriel gives you one way to handle them on Linux, Windows and macOS:
+
+1. **Declare** what the app needs, once, in `build.zig`.
+2. Oriel writes it into each platform's package (the macOS `Info.plist` usage texts and entitlements).
+3. **Request and check** at runtime, from Zig or JavaScript.
+4. The webview's own requests (`getUserMedia`, geolocation, notifications) are **allowed only for declared permissions**, and only for your app's pages.
+
+## Kinds
+
+| Kind | What it covers |
+| --- | --- |
+| `microphone` | Recording from a microphone |
+| `camera` | The camera |
+| `screen_capture` | Recording the screen |
+| `accessibility` | Controlling other apps: synthetic input, copy and paste into them |
+| `location` | The user's location |
+| `notifications` | Showing notifications |
+| `system_audio` | Recording the audio other apps play |
+
+## 1. Declare
+
+```sh
+oriel permission add microphone "Dictation turns your speech into text"
+oriel permission add accessibility
+oriel permission list
+```
+
+This edits the `addApp` options in `build.zig`:
+
+```zig
+_ = oriel.addApp(b, dep, .{
+    .name = "my-app",
+    // ...
+    .permissions = .{
+        .microphone = "Dictation turns your speech into text",
+        .accessibility = "", // "" = a default text
+    },
+});
+```
+
+The text is what the OS shows the user when it asks. Modules that need a permission declare it themselves: `audio_capture` adds `microphone` and `system_audio`.
+
+Pass the declaration to the app (the `oriel init` templates already do):
+
+```zig
+return oriel.main(init, api, .{
+    .id = "com.example.App",
+    // ...
+    .permissions = app.permissions,
+});
+```
+
+A permission that is **not declared** is always `denied`, and is never requested. On macOS, using a protected resource without its `Info.plist` key terminates the app, so this also keeps you from shipping that crash.
+
+## 2. Request and check
+
+From JavaScript:
+
+```ts
+import { permissions, listen } from "./oriel";
+
+const status = await permissions.query("microphone");  // "granted" | "denied" | "prompt" | "unknown"
+if (status !== "granted") {
+  const result = await permissions.request("microphone"); // shows the OS prompt where there is one
+  if (result === "denied") await permissions.openSettings("microphone");
+}
+
+listen("permission-changed", ({ name, status }) => console.log(name, status));
+```
+
+From Zig:
+
+```zig
+const permissions = oriel.permissions;
+
+switch (permissions.status(.accessibility)) {
+    .granted => {},
+    .denied => _ = permissions.openSettings(.accessibility),
+    .prompt, .unknown => _ = permissions.request(.accessibility), // outcome via onChange
+}
+permissions.onChange(struct {
+    fn changed(kind: permissions.Kind, s: permissions.Status) void {
+        std.log.info("{s}: {s}", .{ @tagName(kind), @tagName(s) });
+    }
+}.changed);
+```
+
+`request` returns at once (`prompt` while the OS dialog is open); the outcome arrives through `onChange` and the `permission-changed` event. In JavaScript, `permissions.request()` resolves with that outcome.
+
+## What each OS does
+
+| | Linux | Windows | macOS |
+| --- | --- | --- | --- |
+| microphone, camera | not gated (camera via portal) | Privacy settings (on/off per user) | TCC prompt |
+| screen_capture | portal asks on use | not gated | TCC (Screen Recording) |
+| accessibility | not gated | not gated | TCC (Accessibility) |
+| location | portal asks on use | Privacy settings | Info.plist key + prompt |
+| notifications | not gated | not gated | prompt |
+| Settings page | none | `ms-settings:` page | System Settings pane |
+
+"Not gated" means the status is `granted`. On macOS, run the app as a bundle (`zig-out/<Name>.app`, which `zig build` creates) so macOS knows which app is asking.
+
+## Webview requests
+
+When a page calls `navigator.mediaDevices.getUserMedia()`, the Geolocation API or `Notification.requestPermission()`, Oriel allows it only when:
+
+- the app declares the matching permission, and
+- the page is the app's own (`app://`, or the dev server), or its origin has a capability allowing the `permissions:webview` command.
+
+Everything else is denied without a prompt, and logged with the permission to add.
+
+## macOS signing
+
+`oriel package` writes `<Name>.entitlements` next to the `.app`, with the hardened-runtime entitlements for the declared permissions (`com.apple.security.device.audio-input`, `...camera`, `...location`). Pass it when signing with a Developer ID:
+
+```sh
+codesign --force --options runtime --entitlements "zig-out/package/My App.entitlements" \
+  --sign "Developer ID Application: ..." "zig-out/package/My App.app"
+```
