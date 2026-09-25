@@ -27,7 +27,7 @@ oriel init my-app         # React + Vite (or --template vue|svelte|vanilla)
 cd my-app && oriel dev    # hot reload; `oriel build` for the release binary
 ```
 
-> **Status:** experimental; APIs will change. Linux: complete. Windows: every module, verified on Windows 11 (native and cross-compiled builds). macOS: the shell and every module work (verified on macOS 15, Apple Silicon), incl. Metal for whisper/llama; `.app`/`.dmg` packaging is in progress.
+> **Status:** experimental; APIs will change. Linux: complete. Windows: every module, verified on Windows 11 (native and cross-compiled builds). macOS: the shell and every module work (verified on macOS 15, Apple Silicon), incl. Metal for whisper/llama, `.app`/`.dmg` packaging and deep links.
 > See [PLAN.md](PLAN.md) for the roadmap, [IDEA.md](IDEA.md) for the background
 > and [LIBRARIES.md](LIBRARIES.md) for the dependencies.
 
