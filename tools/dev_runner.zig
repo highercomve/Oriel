@@ -658,7 +658,9 @@ test "PollWatcher sees a .zig change and ignores other files" {
 
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sub/new.zig", .data = "b" });
     try std.testing.expect(w.changed(gpa, io));
-    try std.testing.expectEqualStrings("new.zig", w.changedName());
+    // The name is only for the log: with coarse file timestamps (Linux ticks,
+    // ~ms) main.zig and new.zig can share an mtime, so either may be reported.
+    try std.testing.expect(std.mem.endsWith(u8, w.changedName(), ".zig"));
     try std.testing.expect(!w.changed(gpa, io));
 
     try tmp.dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = "longer" }); // size changes too
