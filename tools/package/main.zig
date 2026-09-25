@@ -1784,13 +1784,26 @@ test "streamCopyFile creates exact byte copy" {
     try std.testing.expectEqualSlices(u8, test_data, copied_data);
 }
 
+/// The environment the makensis tests give findMakensis: the usual POSIX
+/// PATH, plus on Windows the real Program Files dirs, where the NSIS
+/// installer puts makensis without adding it to PATH.
+fn putMakensisTestEnv(allocator: std.mem.Allocator, env: *std.process.Environ.Map) !void {
+    try env.put("PATH", "/usr/bin:/usr/local/bin");
+    if (builtin.os.tag != .windows) return;
+    for ([_][]const u8{ "ProgramFiles(x86)", "ProgramFiles" }) |key| {
+        const value = std.testing.environ.getAlloc(allocator, key) catch continue;
+        defer allocator.free(value);
+        try env.put(key, value);
+    }
+}
+
 test "findMakensis locates makensis binary" {
     const io = std.testing.io;
     const allocator = std.testing.allocator;
 
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
-    try env.put("PATH", "/usr/bin:/usr/local/bin");
+    try putMakensisTestEnv(allocator, &env);
     global_environ_map = &env;
     defer global_environ_map = null;
 
@@ -1801,7 +1814,7 @@ test "findMakensis locates makensis binary" {
     };
     defer allocator.free(bin);
 
-    try std.testing.expect(std.mem.endsWith(u8, bin, "makensis"));
+    try std.testing.expect(std.mem.endsWith(u8, bin, if (builtin.os.tag == .windows) "makensis.exe" else "makensis"));
 }
 
 test "packageNsisCmd builds Windows installer with makensis" {
@@ -1810,7 +1823,7 @@ test "packageNsisCmd builds Windows installer with makensis" {
 
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
-    try env.put("PATH", "/usr/bin:/usr/local/bin");
+    try putMakensisTestEnv(allocator, &env);
     global_environ_map = &env;
     defer global_environ_map = null;
 
