@@ -80,6 +80,7 @@ const sel_devices = fourCC("dev#");
 const sel_stream_config = fourCC("slay");
 const sel_name = fourCC("lnam");
 const sel_uid = fourCC("uid ");
+const sel_default_input = fourCC("dIn ");
 const scope_global = fourCC("glob");
 const scope_input = fourCC("inpt");
 const kAudioFormatLinearPCM = fourCC("lpcm");
@@ -155,6 +156,14 @@ pub fn listSources(gpa: std.mem.Allocator) ![]common.Source {
     return list.toOwnedSlice(gpa);
 }
 
+fn hasDefaultInput() bool {
+    var id: AudioObjectID = 0;
+    var size: u32 = @sizeOf(AudioObjectID);
+    const addr = property(sel_default_input, scope_global);
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, null, &size, &id) != 0) return false;
+    return id != 0; // kAudioObjectUnknown
+}
+
 // --- Permission -------------------------------------------------------------------------
 
 pub const Permission = enum { not_determined, restricted, denied, authorized };
@@ -219,6 +228,7 @@ pub const Stream = struct {
     /// the default input). `app_name` is unused on macOS.
     pub fn open(source: ?[:0]const u8, app_name: [:0]const u8, rate: u32) !Stream {
         _ = app_name;
+        if (source == null and !hasDefaultInput()) return error.NoInputDevice; // e.g. a VM without audio input
         switch (microphonePermission()) {
             .denied, .restricted => return error.MicrophonePermissionDenied,
             .not_determined, .authorized => {},

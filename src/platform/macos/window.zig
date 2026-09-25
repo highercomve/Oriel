@@ -599,7 +599,8 @@ pub fn WindowCreator(
 
         /// Debugging aid for machines where screen capture needs a Screen
         /// Recording grant: `ORIEL_SNAPSHOT=/path/shot.png` saves the main
-        /// window's page once, a second after its first load finished (like
+        /// window's page once, a second (`ORIEL_SNAPSHOT_DELAY_MS`) after its
+        /// first load finished (like
         /// `SHOT=` under scripts/headless.sh on Linux).
         fn didFinishNavigation(_: cocoa.id, _: cocoa.c.SEL, view: cocoa.id, _: cocoa.id) callconv(.c) void {
             if (snapshot_taken) return;
@@ -609,7 +610,8 @@ pub fn WindowCreator(
             snapshot_taken = true;
             // Until the snapshot ran; leaked if the app quits first (debug-only path).
             _ = (Object{ .value = view }).retain();
-            cocoa.afterMain(1000, view, &takeSnapshot);
+            const delay_ms = if (std.c.getenv("ORIEL_SNAPSHOT_DELAY_MS")) |d| std.fmt.parseInt(u32, std.mem.span(d), 10) catch 1000 else 1000;
+            cocoa.afterMain(delay_ms, view, &takeSnapshot);
         }
 
         var snapshot_taken = false;
