@@ -10,6 +10,8 @@ pub const ShellMod = @import("Shell.zig");
 pub const bridge = @import("bridge.zig");
 pub const scheme = @import("scheme.zig");
 pub const dev_server = @import("dev_server.zig");
+pub const keycodes = @import("keycodes.zig");
+pub const js_dialogs = @import("js_dialogs.zig");
 
 pub const WindowHandle = window.WindowHandle;
 pub const WindowSize = window.WindowSize;
@@ -63,4 +65,6 @@ test {
     std.testing.refAllDecls(bridge);
     std.testing.refAllDecls(scheme);
     std.testing.refAllDecls(dev_server);
+    std.testing.refAllDecls(keycodes);
+    std.testing.refAllDecls(js_dialogs);
 }

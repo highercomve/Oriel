@@ -1,4 +1,5 @@
-//! File-system watching: Linux (inotify), Windows (ReadDirectoryChangesW).
+//! File-system watching: Linux (inotify), Windows (ReadDirectoryChangesW),
+//! macOS (FSEvents).
 
 const builtin = @import("builtin");
 const std = @import("std");
@@ -13,6 +14,7 @@ pub const check = impl.check;
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("fs_watch/linux.zig"),
     .windows => @import("fs_watch/windows.zig"),
+    .macos => @import("fs_watch/macos.zig"),
     else => @compileError("fs_watch is not supported on " ++ @tagName(builtin.os.tag)),
 };
 

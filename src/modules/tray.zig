@@ -2,7 +2,7 @@
 //!
 //! Linux backend: StatusNotifierItem + com.canonical.dbusmenu over GDBus.
 //! Windows backend: Win32 Shell_NotifyIconW + TrackPopupMenu.
-//! macOS backend: not implemented yet (`Tray.create` returns error.NotSupported).
+//! macOS backend: NSStatusItem + NSMenu.
 
 const builtin = @import("builtin");
 pub const common = @import("tray/common.zig");

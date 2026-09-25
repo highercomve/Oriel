@@ -43,14 +43,7 @@ const Features = struct {
     whisper: bool,
     audio_capture: bool,
 
-    /// Modules and plugins without a macOS backend yet (PLAN.md Milestone 7,
-    /// step 2). On macOS they default to off and can't be switched on.
-    const unported_on_macos = [_][]const u8{
-        "updater", "media_server", "fs_watch",  "dialog",        "notification",    "store",
-        "menu",    "input",        "clipboard", "audio_capture", "global_shortcut",
-    };
-
-    fn fromOptions(b: *std.Build, target: std.Build.ResolvedTarget) Features {
+    fn fromOptions(b: *std.Build) Features {
         if (b.option(bool, "ggml_vulkan", "Enable Vulkan backend (not supported)") orelse false) {
             fatal("Vulkan is not supported yet, see README.md", .{});
         }
@@ -58,26 +51,16 @@ const Features = struct {
             fatal("llama_mtmd is not supported yet (libmtmd is not built; its API is experimental upstream), see README.md", .{});
         }
 
-        // Every module and plugin builds for Linux and Windows; the native
-        // dependencies are opt-in on both. On macOS, only the ported ones.
-        const is_macos = target.result.os.tag == .macos;
+        // Every module and plugin builds for Linux, Windows and macOS; the
+        // native dependencies are opt-in everywhere.
         var f: Features = undefined;
         inline for (@typeInfo(Features).@"struct".fields) |field| {
             const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
                 std.mem.eql(u8, field.name, "llama") or
                 std.mem.eql(u8, field.name, "whisper") or
                 std.mem.eql(u8, field.name, "audio_capture"));
-            const unported = comptime for (unported_on_macos) |name| {
-                if (std.mem.eql(u8, name, field.name)) break true;
-            } else false;
             const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
-            if (is_macos and unported and (opt orelse false)) {
-                fatal("-D" ++ field.name ++ " is not supported on macOS yet (PLAN.md Milestone 7)", .{});
-            }
-            // The tray builds on macOS as a stub whose `create` fails with
-            // error.NotSupported, so apps using it still run; it is off unless asked for.
-            const default_on = !is_native and !(is_macos and (unported or std.mem.eql(u8, field.name, "tray")));
-            @field(f, field.name) = opt orelse default_on;
+            @field(f, field.name) = opt orelse !is_native;
         }
 
         if (f.sqlite_vec and !f.sql) {
@@ -91,7 +74,7 @@ const Features = struct {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const features = Features.fromOptions(b, target);
+    const features = Features.fromOptions(b);
 
     const oriel = addOrielModule(b, target, optimize, features);
 
@@ -383,6 +366,15 @@ fn addOrielModule(
         }
         oriel.linkFramework("AppKit", .{});
         oriel.linkFramework("WebKit", .{});
+        if (features.fs_watch) oriel.linkFramework("CoreServices", .{}); // FSEvents
+        if (features.notification) oriel.linkFramework("UserNotifications", .{});
+        if (features.global_shortcut) oriel.linkFramework("Carbon", .{}); // RegisterEventHotKey
+        if (features.input) oriel.linkFramework("ApplicationServices", .{}); // CGEvent, AXIsProcessTrusted
+        if (features.audio_capture) {
+            oriel.linkFramework("CoreAudio", .{});
+            oriel.linkFramework("AudioToolbox", .{});
+            oriel.linkFramework("AVFoundation", .{}); // microphone permission status
+        }
     }
 
     if (features.tray or (target.result.os.tag == .windows and features.clipboard)) {
@@ -398,7 +390,13 @@ fn addOrielModule(
     }
     if (features.sql) {
         const sqlite = b.dependency("sqlite", .{});
-        oriel.addIncludePath(sqlite.path("."));
+        // Only the headers on the include path: the tarball root also has a
+        // `VERSION` file, which on case-insensitive file systems (macOS)
+        // shadows C++'s <version> for every C++ source in the module (ggml).
+        const sqlite_headers = b.addWriteFiles();
+        _ = sqlite_headers.addCopyFile(sqlite.path("sqlite3.h"), "sqlite3.h");
+        _ = sqlite_headers.addCopyFile(sqlite.path("sqlite3ext.h"), "sqlite3ext.h");
+        oriel.addIncludePath(sqlite_headers.getDirectory());
         oriel.addCSourceFile(.{
             .file = sqlite.path("sqlite3.c"),
             .flags = &.{ "-DSQLITE_THREADSAFE=1", "-DSQLITE_DQS=0", "-DSQLITE_OMIT_DEPRECATED" },
@@ -416,7 +414,12 @@ fn addOrielModule(
     const cuda = cudaOptions(b, target);
     if (cuda != null and !features.llama and !features.whisper) fatal("-Dggml_cuda needs -Dllama or -Dwhisper", .{});
     if (features.llama or features.whisper) {
-        ggml.addGgml(b, oriel, features, cuda);
+        // Metal: on by default for macOS (Apple GPUs; the shader sources are
+        // embedded and compiled by ggml at startup).
+        const metal = b.option(bool, "ggml_metal", "Build ggml's Metal backend for llama/whisper (macOS; default on)") orelse
+            (target.result.os.tag == .macos);
+        if (metal and target.result.os.tag != .macos) fatal("-Dggml_metal needs a macOS target", .{});
+        ggml.addGgml(b, oriel, features, cuda, metal);
     }
     if (is_linux and (features.input or features.clipboard)) {
         const scanner = Scanner.create(b, .{});

@@ -2,6 +2,7 @@
 //!
 //! Linux backend: zwp_virtual_keyboard_v1 (Wayland) + XTest (X11).
 //! Windows backend: Win32 SendInput.
+//! macOS backend: CGEvent (needs the Accessibility permission).
 
 const builtin = @import("builtin");
 pub const common = @import("input/common.zig");
@@ -9,6 +10,7 @@ pub const common = @import("input/common.zig");
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("input/linux.zig"),
     .windows => @import("input/windows.zig"),
+    .macos => @import("input/macos.zig"),
     else => @compileError("input is not supported on " ++ @tagName(builtin.os.tag)),
 };
 

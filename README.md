@@ -27,7 +27,7 @@ oriel init my-app         # React + Vite (or --template vue|svelte|vanilla)
 cd my-app && oriel dev    # hot reload; `oriel build` for the release binary
 ```
 
-> **Status:** experimental; APIs will change. Linux: complete. Windows: every module, verified on Windows 11 (native and cross-compiled builds). macOS: the shell works (window, webview, IPC, security, windows API); modules and `.app` packaging are in progress.
+> **Status:** experimental; APIs will change. Linux: complete. Windows: every module, verified on Windows 11 (native and cross-compiled builds). macOS: the shell and every module work (verified on macOS 15, Apple Silicon), incl. Metal for whisper/llama; `.app`/`.dmg` packaging is in progress.
 > See [PLAN.md](PLAN.md) for the roadmap, [IDEA.md](IDEA.md) for the background
 > and [LIBRARIES.md](LIBRARIES.md) for the dependencies.
 
@@ -340,7 +340,9 @@ fn setup() !void {
 ```
 
 Linux uses StatusNotifierItem + DBusMenu over D-Bus, and works with KDE,
-GNOME (AppIndicator extension), waybar, Quickshell and other hosts.
+GNOME (AppIndicator extension), waybar, Quickshell and other hosts. macOS
+uses an `NSStatusItem` in the menu bar (right-click or Control-click opens
+the menu; the PNG is shown at 18 pt).
 Left-clicking the icon toggles the window. `setMenu`, `setChecked`,
 `setTooltip`, `setTitle` and `setIcon` update the tray at runtime. If the
 tray host restarts, the icon registers again.
@@ -394,6 +396,7 @@ try oriel.global_shortcut.register(gpa, .{
   `error.PortalUnavailable`.
 - **X11:** Uses `XGrabKey` with a GLib main loop watch on the X connection file descriptor.
 - **Windows:** Uses Win32 `RegisterHotKey` / `WM_HOTKEY` routed through the hidden host window. Unregisters on `unregister` and `deinit`. Same trigger string syntax ("CTRL+ALT+G", etc.). Marshalling via `Shell.runOnMainThread`. Runtime untested on Windows.
+- **macOS:** Carbon `RegisterEventHotKey` (no permission needed); callbacks on the main thread. Modifiers map literally: `ctrl` = Control, `alt` = Option, `shift`, `super`/`cmd`/`meta`/`win` = Command. Registration fails with `error.HotkeyAlreadyRegistered` when another app holds the combination.
 
 ### Input injection (`oriel.input`)
 
@@ -409,6 +412,7 @@ try oriel.input.paste();
 - **Wayland:** Uses `zwp_virtual_keyboard_v1` with memfd XKB keymap upload.
 - **X11:** Uses XTest extension (`XTestFakeKeyEvent`).
 - **Windows:** Uses Win32 `SendInput` (UTF-16 Unicode pairs for text, virtual key combos for shortcuts). Extended keys set `KEYEVENTF_EXTENDEDKEY`. Runtime untested on Windows.
+- **macOS:** `CGEvent` keyboard events (text as Unicode strings, layout independent); `copy`/`paste` send ⌘C/⌘V. Needs the **Accessibility** permission (System Settings → Privacy & Security → Accessibility; for an unbundled binary, the app that started it): without it every call returns `error.AccessibilityNotGranted` instead of posting events macOS would drop.
 
 ### Clipboard (`oriel.clipboard`)
 
@@ -430,6 +434,7 @@ oriel.clipboard.readTextAsync(onText, null);        // readImageAsync
   private Wayland connection. Writes go through `GdkClipboard`.
 - **X11 / no data-control:** `GdkClipboard`; worker reads are handed to the main loop.
 - **Windows:** Uses Win32 `OpenClipboard` with retry loop. Text uses `CF_UNICODETEXT`. Images use registered `PNG` format (with IEND trimming) and standard `CF_DIB` (bottom-up DIB via `zigimg`). Worker threads marshal calls to the main thread via `Shell.runOnMainThread`. Async reads use `Shell.dispatchWithCleanup`. Runtime untested on Windows.
+- **macOS:** `NSPasteboard` on the main thread (workers marshal there): text, and images written as PNG + TIFF (TIFF converted to PNG on read).
 - When this process owns the selection (it offers a per-process marker MIME type), reads
   return the data we last wrote without a round-trip.
 
@@ -446,6 +451,7 @@ const file = try oriel.dialog.openFile(gpa, .{
 
 - **Linux:** Uses `GtkFileDialog`.
 - **Windows:** Uses COM `IFileOpenDialog` / `IFileSaveDialog` (with `FOS_PICKFOLDERS` for folder pickers, `FOS_ALLOWMULTISELECT` for multiple files) marshaled to the main thread via `Shell.runOnMainThread`. Runtime untested on Windows.
+- **macOS:** `NSOpenPanel` / `NSSavePanel`, run modally on the main thread (the save panel confirms overwrites).
 
 ### Notifications (`oriel.notification`)
 
@@ -460,6 +466,7 @@ try oriel.notification.notify(.{
 
 - **Linux:** Uses GIO `GNotification`.
 - **Windows:** Uses `Shell_NotifyIconW` with balloon notifications (`NOTIFYICON_VERSION_4`). Callbacks route via `Shell.WM_NOTIFY_CALLBACK` and remove the balloon on dismiss/timeout/shutdown. Runtime untested on Windows.
+- **macOS:** `UNUserNotificationCenter` in an `.app` bundle (macOS asks for permission on the first notification). An unbundled executable has no bundle id, which UserNotifications requires, so it falls back to `osascript` ("display notification", shown as Script Editor).
 
 ### Multiple windows and window options
 
@@ -519,6 +526,7 @@ try oriel.App.setMenu(&menu_items, onMenuAction);
 
 - **Linux:** Uses GTK4 `GMenuModel` + `GtkApplication` actions.
 - **Windows:** Uses Win32 window menus (`CreateMenu`, `AppendMenuW`) and accelerator tables (`CreateAcceleratorTableW`). Commands and hotkeys marshal through `Shell.runOnMainThread`. Runtime untested on Windows.
+- **macOS:** the app's menus go into the main menu between the default App menu (Hide, Quit) and the default Edit / Window menus (kept unless the app defines menus with those names). `<Ctrl>` / `<Primary>` shortcuts become ⌘, `<Alt>` ⌥.
 
 ### Settings store (`oriel.store`)
 
@@ -541,6 +549,7 @@ const theme = store.getString("theme");
 
 - **Linux:** XDG directory specifications with glib atomic file utilities.
 - **Windows:** Win32 Known Folders (`FOLDERID_RoamingAppData`, `FOLDERID_LocalAppData`) with `SRWLOCK` and `CreateFileW` / `FlushFileBuffers` / `MoveFileExW` atomic file replacement. Runtime untested on Windows.
+- **macOS:** `~/Library/Application Support/<app_id>` (config and data) and `~/Library/Caches/<app_id>`; temp file (O_EXCL, 0600) + fsync + rename + directory fsync.
 
 ### Media server (`oriel.media_server`)
 
@@ -582,6 +591,7 @@ try oriel.media_server.scheme.setRoot("/home/me/Videos", .inside_root);
   `<video src="app://...">` fails with `MEDIA_ERR_SRC_NOT_SUPPORTED`. Use the
   TCP URL for `<video>`/`<audio>`.
 - **Windows support:** on Windows, the media root is opened safely beneath the root directory via `CreateFileW` with heap-allocated UTF-16 path conversions, intermediate symlink/reparse point traversal rejection (`GetFinalPathNameByHandleW` lexical path comparison under `SymlinkPolicy.refuse_all`), and non-blocking traversal checks. WebView2 intercepts `https://app.localhost/media/*` requests and serves ranged media streams via a custom read-only COM `IStream` (`FileWindowStream`) over a duplicated handle using `OVERLAPPED` reads (no shared file pointer, no 16 MiB truncation cap, RFC-compliant 200/206 status codes, and checked COM calls). Runtime untested on Windows.
+- **macOS support:** files are opened relative to the root's fd and the kernel's path of the opened file (`F_GETPATH`) must lie below the root (macOS 15 accepts `O_RESOLVE_BENEATH` but doesn't enforce it); `refuse_all` adds `O_NOFOLLOW_ANY`. `app://app/media/` streams through the `WKURLSchemeHandler`: a worker reads 256 KiB chunks, one in flight, delivered on the main thread; `<audio>`/`<video>` from the TCP server seek normally.
 
 ### Logging (`oriel.log`)
 
@@ -705,7 +715,16 @@ When running inside an AppImage (`$APPIMAGE` environment variable is set), `orie
 
 On Windows, running executables cannot be directly overwritten. `oriel.updater` downloads and verifies payloads next to the executable as `<exe>.new`, renames the running binary to `<exe>.old` using `MoveFileExW` (`MOVEFILE_REPLACE_EXISTING`), and promotes `<exe>.new` to `<exe>` (with automatic rollback on failure). Stale `.old` files are cleaned up on subsequent startup (`updater.init`). Application restart is performed via `CreateProcessW` using the original command line (`GetCommandLineW`). Runtime untested on Windows.
 
-#### 7. Security notes
+#### 7. macOS behavior
+
+A plain executable is replaced like on Linux (`raw` / `raw.gz`). An app in a
+`.app` bundle is updated as a whole with the format `app.tar.gz` (a gzip'd tar
+of one `<Name>.app`; build it with `COPYFILE_DISABLE=1 tar -czf ... Name.app`):
+it is unpacked next to the running bundle, swapped with it atomically
+(`renameatx_np` `RENAME_SWAP`) and the old bundle is deleted; `restart`
+relaunches the bundle with `open -n`. Other OSes refuse `app.tar.gz`.
+
+#### 8. Security notes
 
 - **JS cannot choose URLs, keys, or paths**: The manifest URL, public key, and target path are configured strictly in native Zig code; frontend code cannot redirect downloads or bypass signature verification.
 - **Private keys**: Never commit private keys to version control or bundle them into client applications. Use `keygen` with secure out-of-repo storage (`mode 0600`).
@@ -804,7 +823,7 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
   ```
   Or `-Dcpu=baseline` for maximum portability across 64-bit systems.
 
-#### GPU backends (CUDA & Vulkan)
+#### GPU backends (CUDA, Metal & Vulkan)
 
 - **CUDA (Linux):** `-Dggml_cuda` (plus `-Dwhisper` and/or `-Dllama`) builds
   ggml's CUDA backend with `nvcc` into `libggml-cuda.so`; `addApp` installs it
@@ -828,6 +847,14 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
     resolves ggml's symbols from it.
   - Measured (examples/ghostpen-lite, RTX 4070, 11 s clip, incl. model load):
     small 3.2 s on CPU → 0.8 s on CUDA; large-v3-turbo q8 1.1 s on CUDA.
+- **Metal (macOS):** on by default for macOS targets (`-Dggml_metal=false`
+  to turn it off). ggml's Metal backend is compiled into the executable and
+  its kernel sources are embedded (`tools/metal_embed.zig`, like
+  `GGML_METAL_EMBED_LIBRARY`), so no Xcode `metal` compiler step is needed;
+  ggml compiles them for the GPU when the model loads. `ggml_gpu.load` /
+  `gpuName` report it (e.g. "Apple M1").
+  - Measured (examples/ghostpen-lite, Apple M1 in a VM, 5.9 s clip, tiny.en,
+    incl. model load): 7.3 s on CPU → 0.95–1.4 s on Metal.
 - **Vulkan:** not supported yet (`-Dggml_vulkan` stops the build).
 
 #### Multimodal (`mtmd`) status
@@ -1083,10 +1110,11 @@ oriel dev              # run against Vite dev server with hot reload
 ```
 
 - `src/platform/macos/`: `Shell.zig` (NSApplication run loop, main-thread tasks on the GCD main queue, default app/Edit/Window menu bar, SIGTERM/SIGINT → clean quit, Dock-icon click reopens a hidden main window), `window.zig` (windows, `WKNavigationDelegate` / `WKUIDelegate` navigation policy), `scheme.zig` (`app://` through a `WKURLSchemeHandler`, same headers and CSP as Linux), `bridge.zig` (the Linux bridge script over a `WKScriptMessageHandlerWithReply`: sync commands from the main loop, async ones on the worker pool), `dev_server.zig`.
-- **Verified** on macOS 15.2 (arm64), 2026-09-25: IPC, async IPC, events, window API incl. child windows, CSP, navigation, openExternal; `examples/react` production (embedded) and dev (Vite) builds show the notes UI.
-- **Modules:** none has a macOS backend yet (PLAN.md Milestone 7, step 2). On macOS they default to off and `-D<name>=true` is refused, except `sql` (works) and `tray`, which builds as a stub whose `Tray.create` returns `error.NotSupported` so apps with a tray still run (without one). `App.setMenu` returns `error.NotSupported`.
+- **Verified** on macOS 15.2 (arm64), 2026-09-25: IPC, async IPC, events, window API incl. child windows, CSP, navigation, openExternal, JS `alert`/`confirm`/`prompt` (NSAlert sheets); `examples/react` production (embedded) and dev (Vite) builds show the notes UI; `examples/smoke --auto-quit` passes every check.
+- **Modules:** every module and plugin has a macOS backend (see each module's section): tray (`NSStatusItem`), menu (`NSMenu`), dialog (`NSOpenPanel`/`NSSavePanel`), notification (UserNotifications / osascript), store (`~/Library`), clipboard (`NSPasteboard`), fs_watch (FSEvents), global_shortcut (Carbon), input (CGEvent), updater (`.app` bundles), media_server, audio_capture (CoreAudio; system audio through a process tap), llama/whisper on Metal.
+- **Permissions:** input injection needs Accessibility; audio capture needs the Microphone permission (or, for the "System audio" source, System Audio Recording). macOS grants these per app bundle: an unbundled binary is attributed to the app that started it (Terminal, an IDE), and some of those apps can't be granted them, so test these from an `.app`.
 - **Dev mode:** `oriel dev` works as on Linux: Vite hot reload, and the app is rebuilt and restarted when a `.zig` file changes (the watcher polls modification times). Running the `-dev` executable directly also works: it starts the dev server itself.
-- **Not yet:** `.app` bundle and `.dmg` packaging (step 3); JS `alert()`/`confirm()` dialogs (no `WKUIDelegate` panels yet); windows without decorations can't become key.
+- **Not yet:** `.app` bundle and `.dmg` packaging (step 3); windows without decorations can't become key.
 - `ORIEL_SNAPSHOT=/tmp/shot.png` saves the main window's page (WebKit's snapshot API) a second after it loaded: screen capture of other apps needs a Screen Recording grant on macOS.
 
 ## Compared with Tauri
@@ -1116,7 +1144,7 @@ oriel dev              # run against Vite dev server with hot reload
 | Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `oriel package`; signing not yet implemented |
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
 | Windows | ◐ Win32 + WebView2 shell and every module/plugin (tray, sql, store, dialog, notification, menu, updater, media_server, fs_watch, global_shortcut, input, clipboard), NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
-| macOS | ◐ AppKit + WKWebView shell: windows, `app://`, IPC (sync/async), events, window API, CSP, navigation policy, dev server; modules not ported yet (tray is a stub), no `.app` bundle yet |
+| macOS | ◐ AppKit + WKWebView shell and every module/plugin (tray, menu, dialog, notification, store, clipboard, fs_watch, global_shortcut, input, updater, media_server, audio_capture incl. system audio), whisper/llama on Metal; no `.app`/`.dmg` packaging yet |
 | Mobile | ❌ |
 
 ## Building Oriel itself

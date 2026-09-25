@@ -4,6 +4,7 @@
 //! Calling conventions: `.winapi` (stdcall on x86, ms_abi on x64).
 
 const std = @import("std");
+const keys = @import("keys.zig");
 const windows = std.os.windows;
 
 // Core types reused from std.os.windows where available
@@ -208,12 +209,12 @@ pub const GHND: UINT = GMEM_MOVEABLE | GMEM_ZEROINIT;
 
 // SendInput Types & Flags
 pub const INPUT_MOUSE: DWORD = 0;
-pub const INPUT_KEYBOARD: DWORD = 1;
+pub const INPUT_KEYBOARD = keys.INPUT_KEYBOARD;
 pub const INPUT_HARDWARE: DWORD = 2;
 
-pub const KEYEVENTF_EXTENDEDKEY: DWORD = 0x0001;
-pub const KEYEVENTF_KEYUP: DWORD = 0x0002;
-pub const KEYEVENTF_UNICODE: DWORD = 0x0004;
+pub const KEYEVENTF_EXTENDEDKEY = keys.KEYEVENTF_EXTENDEDKEY;
+pub const KEYEVENTF_KEYUP = keys.KEYEVENTF_KEYUP;
+pub const KEYEVENTF_UNICODE = keys.KEYEVENTF_UNICODE;
 pub const KEYEVENTF_SCANCODE: DWORD = 0x0008;
 
 // HotKey Modifiers
@@ -228,30 +229,30 @@ pub const VK_LBUTTON: c_int = 0x01;
 pub const VK_RBUTTON: c_int = 0x02;
 pub const VK_CANCEL: c_int = 0x03;
 pub const VK_MBUTTON: c_int = 0x04;
-pub const VK_BACK: c_int = 0x08;
-pub const VK_TAB: c_int = 0x09;
+pub const VK_BACK = keys.VK_BACK;
+pub const VK_TAB = keys.VK_TAB;
 pub const VK_CLEAR: c_int = 0x0C;
-pub const VK_RETURN: c_int = 0x0D;
-pub const VK_SHIFT: c_int = 0x10;
-pub const VK_CONTROL: c_int = 0x11;
-pub const VK_MENU: c_int = 0x12; // Alt
+pub const VK_RETURN = keys.VK_RETURN;
+pub const VK_SHIFT = keys.VK_SHIFT;
+pub const VK_CONTROL = keys.VK_CONTROL;
+pub const VK_MENU = keys.VK_MENU;
 pub const VK_PAUSE: c_int = 0x13;
 pub const VK_CAPITAL: c_int = 0x14;
-pub const VK_ESCAPE: c_int = 0x1B;
-pub const VK_SPACE: c_int = 0x20;
-pub const VK_PRIOR: c_int = 0x21; // Page Up
-pub const VK_NEXT: c_int = 0x22; // Page Down
-pub const VK_END: c_int = 0x23;
-pub const VK_HOME: c_int = 0x24;
-pub const VK_LEFT: c_int = 0x25;
-pub const VK_UP: c_int = 0x26;
-pub const VK_RIGHT: c_int = 0x27;
-pub const VK_DOWN: c_int = 0x28;
-pub const VK_INSERT: c_int = 0x2D;
-pub const VK_DELETE: c_int = 0x2E;
-pub const VK_LWIN: c_int = 0x5B;
+pub const VK_ESCAPE = keys.VK_ESCAPE;
+pub const VK_SPACE = keys.VK_SPACE;
+pub const VK_PRIOR = keys.VK_PRIOR;
+pub const VK_NEXT = keys.VK_NEXT;
+pub const VK_END = keys.VK_END;
+pub const VK_HOME = keys.VK_HOME;
+pub const VK_LEFT = keys.VK_LEFT;
+pub const VK_UP = keys.VK_UP;
+pub const VK_RIGHT = keys.VK_RIGHT;
+pub const VK_DOWN = keys.VK_DOWN;
+pub const VK_INSERT = keys.VK_INSERT;
+pub const VK_DELETE = keys.VK_DELETE;
+pub const VK_LWIN = keys.VK_LWIN;
 pub const VK_RWIN: c_int = 0x5C;
-pub const VK_F1: c_int = 0x70;
+pub const VK_F1 = keys.VK_F1;
 pub const VK_F2: c_int = 0x71;
 pub const VK_F3: c_int = 0x72;
 pub const VK_F4: c_int = 0x73;
@@ -262,23 +263,23 @@ pub const VK_F8: c_int = 0x77;
 pub const VK_F9: c_int = 0x78;
 pub const VK_F10: c_int = 0x79;
 pub const VK_F11: c_int = 0x7A;
-pub const VK_F12: c_int = 0x7B;
-pub const VK_F24: c_int = 0x87;
+pub const VK_F12 = keys.VK_F12;
+pub const VK_F24 = keys.VK_F24;
 
-pub const VK_RCONTROL: c_int = 0xA3;
-pub const VK_RMENU: c_int = 0xA5;
+pub const VK_RCONTROL = keys.VK_RCONTROL;
+pub const VK_RMENU = keys.VK_RMENU;
 
-pub const VK_OEM_1: c_int = 0xBA;
-pub const VK_OEM_PLUS: c_int = 0xBB;
-pub const VK_OEM_COMMA: c_int = 0xBC;
-pub const VK_OEM_MINUS: c_int = 0xBD;
-pub const VK_OEM_PERIOD: c_int = 0xBE;
-pub const VK_OEM_2: c_int = 0xBF;
-pub const VK_OEM_3: c_int = 0xC0;
-pub const VK_OEM_4: c_int = 0xDB;
-pub const VK_OEM_5: c_int = 0xDC;
-pub const VK_OEM_6: c_int = 0xDD;
-pub const VK_OEM_7: c_int = 0xDE;
+pub const VK_OEM_1 = keys.VK_OEM_1;
+pub const VK_OEM_PLUS = keys.VK_OEM_PLUS;
+pub const VK_OEM_COMMA = keys.VK_OEM_COMMA;
+pub const VK_OEM_MINUS = keys.VK_OEM_MINUS;
+pub const VK_OEM_PERIOD = keys.VK_OEM_PERIOD;
+pub const VK_OEM_2 = keys.VK_OEM_2;
+pub const VK_OEM_3 = keys.VK_OEM_3;
+pub const VK_OEM_4 = keys.VK_OEM_4;
+pub const VK_OEM_5 = keys.VK_OEM_5;
+pub const VK_OEM_6 = keys.VK_OEM_6;
+pub const VK_OEM_7 = keys.VK_OEM_7;
 
 // Shell_NotifyIcon Constants
 pub const NIM_ADD: DWORD = 0x00000000;
@@ -417,37 +418,13 @@ pub const NOTIFYICONDATAW = extern struct {
     hBalloonIcon: ?HICON = null,
 };
 
-pub const MOUSEINPUT = extern struct {
-    dx: LONG,
-    dy: LONG,
-    mouseData: DWORD,
-    dwFlags: DWORD,
-    time: DWORD,
-    dwExtraInfo: ULONG_PTR,
-};
+pub const MOUSEINPUT = keys.MOUSEINPUT;
 
-pub const KEYBDINPUT = extern struct {
-    wVk: WORD,
-    wScan: WORD,
-    dwFlags: DWORD,
-    time: DWORD,
-    dwExtraInfo: ULONG_PTR,
-};
+pub const KEYBDINPUT = keys.KEYBDINPUT;
 
-pub const HARDWAREINPUT = extern struct {
-    uMsg: DWORD,
-    wParamL: WORD,
-    wParamH: WORD,
-};
+pub const HARDWAREINPUT = keys.HARDWAREINPUT;
 
-pub const INPUT = extern struct {
-    type: DWORD,
-    u: extern union {
-        mi: MOUSEINPUT,
-        ki: KEYBDINPUT,
-        hi: HARDWAREINPUT,
-    },
-};
+pub const INPUT = keys.INPUT;
 
 pub const OPENFILENAMEW = extern struct {
     lStructSize: DWORD = @sizeOf(OPENFILENAMEW),
@@ -705,7 +682,6 @@ pub const INVALID_HANDLE_VALUE: HANDLE = @ptrFromInt(std.math.maxInt(usize));
 
 pub const MOVEFILE_REPLACE_EXISTING: DWORD = 0x00000001;
 pub const MOVEFILE_WRITE_THROUGH: DWORD = 0x00000008;
-
 
 pub extern "kernel32" fn CreateEventW(lpEventAttributes: ?*anyopaque, bManualReset: BOOL, bInitialState: BOOL, lpName: ?LPCWSTR) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;

@@ -485,7 +485,26 @@ from Linux needs Apple's SDK frameworks).
    `WKScriptMessageHandler`, the bridge user script, navigation policy
    (`WKNavigationDelegate`), CSP, dev mode (Vite URL). Goal: examples/react
    runs, and examples/smoke `--auto-quit` passes its core checks.
-2. **Modules**, each with a `macos.zig` backend: tray (NSStatusItem +
+2. ✅ **Modules** (branch `macos/modules`, 2026-09-25; see README
+   "macOS"): every module has a `macos.zig` backend, plus JS
+   alert/confirm/prompt (NSAlert sheets). Smoke `--auto-quit` 39 ok,
+   framework tests 199/201 with `-Dllama -Dwhisper -Dsqlite_vec`, Windows
+   cross-check ok, examples/react notes persist, ghostpen-lite captions
+   work from a WAV and from system audio. ggml Metal is built in by default
+   (`-Dggml_metal`, kernels embedded; whisper tiny.en ~1 s vs 7.3 s CPU on
+   an M1 VM). System audio needs no driver: a Core Audio process tap
+   (macOS 14.2+, source `oriel:system-audio`). Lessons:
+   - TCC charges permissions (mic, System Audio Recording, Accessibility)
+     to the *responsible* app: an unbundled binary started from a
+     terminal or agent asks for the terminal. Test these from a `.app`
+     (Info.plist with the usage strings) started with `open`.
+   - UNUserNotificationCenter needs a bundle; unbundled apps fall back to
+     `osascript`.
+   - The case-insensitive filesystem: sqlite's `VERSION` file shadowed
+     `<version>`, so only its headers are put on the include path.
+   Not verified by hand: a real hotkey press, input with Accessibility
+   granted, a UN notification from a bundle, a user clicking the tray menu.
+   Original brief: tray (NSStatusItem +
    NSMenu), menu (main menu bar), dialog (NSOpenPanel/NSSavePanel),
    notification (UNUserNotificationCenter; needs a bundle), store
    (~/Library/Application Support), clipboard (NSPasteboard), fs_watch

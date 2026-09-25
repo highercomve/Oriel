@@ -399,9 +399,8 @@ test "app merges updater Commands pattern" {
 
 pub const MockServer = core.MockServer;
 
-
 test "Commands check -> install -> restart state transitions against MockServer with std.testing.allocator" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
     const io = std.testing.io;
     const allocator = std.testing.allocator;
 

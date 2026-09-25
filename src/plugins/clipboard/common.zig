@@ -5,7 +5,13 @@
 //! (or top-down) BGR/BGRA rows padded to 4-byte boundaries.
 
 const std = @import("std");
-const win32 = @import("../../platform/windows/win32.zig");
+/// BITMAPINFOHEADER compressions (wingdi.h). Declared here rather than
+/// imported from win32.zig: this code is unit-tested on every OS, and
+/// win32.zig doesn't compile for arm64 non-Windows targets.
+const win32 = struct {
+    const BI_RGB: u32 = 0;
+    const BI_BITFIELDS: u32 = 3;
+};
 
 pub const RgbaImage = struct {
     width: u32,
@@ -281,12 +287,12 @@ test "rgbaToDib roundtrip 32 bpp bottom-up" {
     const h = 2;
     // 3x2 image with distinct colors
     const src_rgba = [_]u8{
-        255, 0,   0,   255, // (0,0) Red
-        0,   255, 0,   255, // (1,0) Green
-        0,   0,   255, 255, // (2,0) Blue
-        255, 255, 0,   200, // (0,1) Yellow
-        255, 0,   255, 150, // (1,1) Magenta
-        0,   255, 255, 100, // (2,1) Cyan
+        255, 0, 0, 255, // (0,0) Red
+        0, 255, 0, 255, // (1,0) Green
+        0, 0, 255, 255, // (2,0) Blue
+        255, 255, 0, 200, // (0,1) Yellow
+        255, 0, 255, 150, // (1,1) Magenta
+        0, 255, 255, 100, // (2,1) Cyan
     };
 
     const dib = try rgbaToDib(gpa, w, h, &src_rgba);
@@ -398,9 +404,9 @@ test "dibToRgba top-down 32 bpp" {
     defer img.deinit(gpa);
 
     const expected = [_]u8{
-        255, 0,   0,   255, // top-left Red
-        0,   0,   255, 255, // top-right Blue
-        0,   255, 0,   255, // bottom-left Green
+        255, 0, 0, 255, // top-left Red
+        0, 0, 255, 255, // top-right Blue
+        0, 255, 0, 255, // bottom-left Green
         255, 255, 255, 255, // bottom-right White
     };
     try std.testing.expectEqualSlices(u8, &expected, img.pixels);

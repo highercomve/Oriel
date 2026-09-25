@@ -413,7 +413,7 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [:0]const 
                 \\
                 \\Options:
                 \\  --target <target>  Target architecture + OS (default: host target)
-                \\  --format <fmt>     Update payload format (raw, raw.gz, appimage, appimage.gz)
+                \\  --format <fmt>     Update payload format (raw, raw.gz, appimage, appimage.gz, app.tar.gz)
                 \\  --size <bytes>     Payload size in bytes (default: computed from artifact)
                 \\  --expires <sec>    Expiration timestamp in unix seconds
                 \\  --artifact <file>  Path to artifact (if not provided positionally)

@@ -121,7 +121,7 @@ test "media: lexical path validation on Windows security rules" {
     try validateWindowsPath("images/photo.png");
     try validateWindowsPath("sub/dir/deep/file.wav");
     try validateWindowsPath("constant.mp3"); // "con" prefix in longer word is OK
-    try validateWindowsPath("complex.json");  // "com" prefix in longer word is OK
+    try validateWindowsPath("complex.json"); // "com" prefix in longer word is OK
 }
 
 // Pure UTF-16 path comparisons used by the Windows backend (open/windows.zig);

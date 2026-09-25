@@ -1,7 +1,7 @@
 //! Platform-neutral data models and parsers for global shortcuts.
 
 const std = @import("std");
-const win32 = @import("../../platform/windows/win32.zig");
+const win32 = @import("../../platform/windows/keys.zig"); // constants only: builds on every OS
 
 pub const Modifiers = struct {
     ctrl: bool = false,

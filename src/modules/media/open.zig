@@ -1,4 +1,4 @@
-//! Media file opening facade selecting Linux or Windows backend.
+//! Media file opening facade selecting the Linux, Windows or macOS backend.
 
 const builtin = @import("builtin");
 pub const common = @import("common.zig");
@@ -15,6 +15,7 @@ pub const openInRoot = impl.openInRoot;
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("open/linux.zig"),
     .windows => @import("open/windows.zig"),
+    .macos => @import("open/macos.zig"),
     else => @compileError("media open is not supported on " ++ @tagName(builtin.os.tag)),
 };
 

@@ -19,11 +19,47 @@ pub const CudaOptions = struct {
     arch: []const u8,
 };
 
+/// ggml's Metal backend, compiled into the executable. The kernel sources
+/// are embedded by tools/metal_embed.zig (GGML_METAL_EMBED_LIBRARY, as
+/// ggml's CMake does), so neither Xcode's `metal` compiler nor a .metallib
+/// is needed: ggml compiles them for the GPU at startup.
+fn addMetalBackend(b: *std.Build, oriel: *std.Build.Module, ggml_root: std.Build.LazyPath, cpp_flags: []const []const u8, metal_defs: []const []const u8) void {
+    const metal_dir = ggml_root.path(b, "src/ggml-metal");
+    oriel.addIncludePath(metal_dir);
+    oriel.addCSourceFiles(.{
+        .root = metal_dir,
+        .files = &.{ "ggml-metal.cpp", "ggml-metal-device.cpp", "ggml-metal-common.cpp", "ggml-metal-ops.cpp", "ggml-metal-tuning.cpp" },
+        .flags = cpp_flags,
+    });
+    // Objective-C with manual retain/release, like upstream (no ARC).
+    const objc_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{ "-fno-objc-arc", "-D_DARWIN_C_SOURCE", "-fno-sanitize=undefined" }, metal_defs }) catch @panic("OOM");
+    oriel.addCSourceFiles(.{
+        .root = metal_dir,
+        .files = &.{ "ggml-metal-device.m", "ggml-metal-context.m" },
+        .flags = objc_flags,
+    });
+    const embed_tool = b.addExecutable(.{
+        .name = "metal_embed",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/metal_embed.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    const run = b.addRunArtifact(embed_tool);
+    run.addDirectoryArg(ggml_root.path(b, "src"));
+    oriel.addAssemblyFile(run.addOutputFileArg("ggml-metal-embed.s"));
+    oriel.linkFramework("Foundation", .{});
+    oriel.linkFramework("Metal", .{});
+    oriel.linkFramework("MetalKit", .{});
+}
+
 pub fn addGgml(
     b: *std.Build,
     oriel: *std.Build.Module,
     features: anytype,
     cuda: ?CudaOptions,
+    metal: bool,
 ) void {
     if (!features.llama and !features.whisper) return;
 
@@ -66,8 +102,13 @@ pub fn addGgml(
     // Zig's Debug builds trap on C undefined behaviour; ggml does pointer
     // arithmetic on NULL on purpose (ggml_graph_nbytes sizes a graph that
     // way), so its sanitizer checks are off.
-    const c_flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" };
-    const cpp_flags = &.{ "-std=c++17", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" };
+    // _XOPEN_SOURCE hides the BSD types (u_int, ...) that <sys/sysctl.h>
+    // needs on macOS unless _DARWIN_C_SOURCE is set too (as ggml's CMake does).
+    const darwin: []const []const u8 = if (oriel.resolved_target.?.result.os.tag.isDarwin()) &.{"-D_DARWIN_C_SOURCE"} else &.{};
+    // GGML_USE_METAL makes ggml-backend-reg.cpp register the Metal device.
+    const metal_defs: []const []const u8 = if (metal) &.{ "-DGGML_USE_METAL", "-DGGML_METAL_EMBED_LIBRARY" } else &.{};
+    const c_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{ "-std=c11", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" }, darwin, metal_defs }) catch @panic("OOM");
+    const cpp_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{ "-std=c++17", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" }, darwin, metal_defs }) catch @panic("OOM");
 
     // GGML base sources
     oriel.addCSourceFiles(.{
@@ -148,6 +189,7 @@ pub fn addGgml(
     }
 
     if (cuda) |opts| b.addNamedLazyPath("libggml-cuda", addCudaBackend(b, ggml_root, opts));
+    if (metal) addMetalBackend(b, oriel, ggml_root, cpp_flags, metal_defs);
 
     // llama.cpp sources
     if (features.llama) {
@@ -169,7 +211,7 @@ pub fn addGgml(
         oriel.addIncludePath(w.path("include"));
         oriel.addIncludePath(w.path("src"));
 
-        const whisper_flags = &.{
+        const whisper_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{
             "-std=c++17",
             "-D_GNU_SOURCE",
             "-D_XOPEN_SOURCE=600",
@@ -177,7 +219,7 @@ pub fn addGgml(
             "-fno-sanitize=undefined",
             "-DWHISPER_VERSION=\"1.9.4\"",
             "-DWHISPER_BUILD_COMMIT=\"v1.9.4\"",
-        };
+        }, darwin }) catch @panic("OOM");
 
         oriel.addCSourceFiles(.{
             .root = w.path("src"),
@@ -195,13 +237,14 @@ fn addCudaBackend(b: *std.Build, ggml_root: std.Build.LazyPath, opts: CudaOption
     const lib = link.addOutputFileArg("libggml-cuda.so");
     for (cuda_sources) |src| {
         const cc = b.addSystemCommand(&.{
-            nvcc,                  "-std=c++17",           "-O3",
-            b.fmt("-arch={s}", .{opts.arch}),
-            "-use_fast_math",      "-extended-lambda",     "-compress-mode=size",
-            "-Xcompiler",          "-fPIC -Wno-pedantic",  "-DNDEBUG",
+            nvcc,                             "-std=c++17",        "-O3",
+            b.fmt("-arch={s}", .{opts.arch}), "-use_fast_math",    "-extended-lambda",
+            "-compress-mode=size",            "-Xcompiler",        "-fPIC -Wno-pedantic",
+            "-DNDEBUG",
             // Build as a dynamically loaded backend (exports ggml_backend_init).
-            "-DGGML_BACKEND_DL",   "-DGGML_BACKEND_BUILD", "-DGGML_BACKEND_SHARED",
-            "-DGGML_SHARED",       "-DGGML_CUDA_USE_GRAPHS", "-DGGML_SCHED_MAX_COPIES=4",
+                                  "-DGGML_BACKEND_DL", "-DGGML_BACKEND_BUILD",
+            "-DGGML_BACKEND_SHARED",          "-DGGML_SHARED",     "-DGGML_CUDA_USE_GRAPHS",
+            "-DGGML_SCHED_MAX_COPIES=4",
         });
         cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "include"));
         cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "src"));

@@ -1,7 +1,7 @@
 //! Platform-neutral data models and pure functions for input injection.
 
 const std = @import("std");
-const win32 = @import("../../platform/windows/win32.zig");
+const win32 = @import("../../platform/windows/keys.zig"); // constants only: builds on every OS
 const gs_common = @import("../global_shortcut/common.zig");
 
 pub const parseTrigger = gs_common.parseTrigger;

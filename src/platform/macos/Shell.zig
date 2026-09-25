@@ -128,7 +128,7 @@ fn drainAtShutdown() void {
     }
 }
 
-fn isRunning() bool {
+pub fn isRunning() bool {
     task_mutex.lock();
     defer task_mutex.unlock();
     return running;
@@ -219,9 +219,8 @@ pub fn sharedApplication() Object {
 pub var on_shutdown_fn: ?*const fn () void = null;
 
 pub fn setMenu(items: anytype, on_action: anytype) !void {
-    _ = items;
-    _ = on_action;
-    return error.NotSupported; // the menu module has no macOS backend yet
+    const menu_mod = @import("../../modules/menu.zig");
+    try menu_mod.set(items, on_action);
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +260,13 @@ fn menuItem(title: []const u8, action: ?[:0]const u8, key: []const u8) Object {
 
 /// Build a submenu `title` from `items` (`.{ title, action, key }`, or null
 /// for a separator) and add it to `bar`. Returns the (borrowed) submenu.
-fn addSubmenu(bar: Object, title: []const u8, items: []const ?struct { []const u8, [:0]const u8, []const u8 }) Object {
+/// Tags of the default top-level menus, so the menu module can keep them
+/// when an app installs its own menu bar.
+pub const app_menu_tag: isize = -100;
+pub const edit_menu_tag: isize = -101;
+pub const window_menu_tag: isize = -102;
+
+fn addSubmenu(bar: Object, title: []const u8, tag: isize, items: []const ?struct { []const u8, [:0]const u8, []const u8 }) Object {
     const title_ns = cocoa.nsString(title) orelse cocoa.nil;
     defer if (title_ns.value != null) title_ns.release();
     const menu = cocoa.class("NSMenu").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithTitle:", .{title_ns});
@@ -276,6 +281,7 @@ fn addSubmenu(bar: Object, title: []const u8, items: []const ?struct { []const u
         }
     }
     const holder = menuItem(title, null, "");
+    holder.msgSend(void, "setTag:", .{tag});
     holder.msgSend(void, "setSubmenu:", .{menu});
     bar.msgSend(void, "addItem:", .{holder});
     holder.release();
@@ -291,13 +297,13 @@ fn installDefaultMenu(app: Object, app_name: []const u8) void {
     var quit_buf: [256]u8 = undefined;
     const quit_title = std.fmt.bufPrint(&quit_buf, "Quit {s}", .{app_name}) catch "Quit";
 
-    _ = addSubmenu(bar, app_name, &.{
+    _ = addSubmenu(bar, app_name, app_menu_tag, &.{
         .{ hide, "hide:", "h" },
         .{ "Show All", "unhideAllApplications:", "" },
         null,
         .{ quit_title, "terminate:", "q" },
     });
-    _ = addSubmenu(bar, "Edit", &.{
+    _ = addSubmenu(bar, "Edit", edit_menu_tag, &.{
         .{ "Undo", "undo:", "z" },
         .{ "Redo", "redo:", "Z" },
         null,
@@ -306,7 +312,7 @@ fn installDefaultMenu(app: Object, app_name: []const u8) void {
         .{ "Paste", "paste:", "v" },
         .{ "Select All", "selectAll:", "a" },
     });
-    const window_menu = addSubmenu(bar, "Window", &.{
+    const window_menu = addSubmenu(bar, "Window", window_menu_tag, &.{
         .{ "Minimize", "performMiniaturize:", "m" },
         .{ "Zoom", "performZoom:", "" },
         .{ "Close", "performClose:", "w" },

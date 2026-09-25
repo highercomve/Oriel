@@ -64,7 +64,6 @@ const Portal = struct {
 };
 var portal: ?Portal = null;
 
-
 /// Resolve a key name from a trigger to an X keysym. Accepts keysym names
 /// in any case ("space", "Space", "F12", "g", "G") and a few aliases
 /// ("enter", "esc", "del"). Letters resolve to their lowercase keysym, which
@@ -542,7 +541,7 @@ fn initX11() !*x11.Display {
     const fd = x11.ConnectionNumber(d);
     const channel = glib.IOChannel.unixNew(fd);
     defer channel.unref();
-    x11_source_id = glib.ioAddWatch(channel, .{ .@"in" = true }, &onX11Data, null);
+    x11_source_id = glib.ioAddWatch(channel, .{ .in = true }, &onX11Data, null);
     return d;
 }
 
@@ -722,7 +721,6 @@ pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check {
         .detail = try std.fmt.allocPrint(gpa, "X11 XGrabKey {s}", .{if (x11_ok) "available" else "unavailable"}),
     };
 }
-
 
 test "triggerToPortal converts to the XDG shortcuts format" {
     var buf: [128]u8 = undefined;

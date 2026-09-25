@@ -2,6 +2,7 @@
 //!
 //! Linux backend: XDG base directories via GLib + JSON store.
 //! Windows backend: Known folders (Roaming/Local AppData) + Win32 JSON store.
+//! macOS backend: ~/Library/Application Support and Caches + libc JSON store.
 
 const builtin = @import("builtin");
 pub const common = @import("store/common.zig");
@@ -15,6 +16,7 @@ pub const check = impl.check;
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("store/linux.zig"),
     .windows => @import("store/windows.zig"),
+    .macos => @import("store/macos.zig"),
     else => @compileError("store is not supported on " ++ @tagName(builtin.os.tag)),
 };
 

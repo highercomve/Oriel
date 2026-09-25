@@ -2,6 +2,7 @@
 //!
 //! Linux backend: GTK4 GtkFileDialog.
 //! Windows backend: Win32 COM IFileOpenDialog / IFileSaveDialog.
+//! macOS backend: NSOpenPanel / NSSavePanel.
 
 const builtin = @import("builtin");
 pub const common = @import("dialog/common.zig");
@@ -15,6 +16,7 @@ pub const check = impl.check;
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("dialog/linux.zig"),
     .windows => @import("dialog/windows.zig"),
+    .macos => @import("dialog/macos.zig"),
     else => @compileError("dialog is not supported on " ++ @tagName(builtin.os.tag)),
 };
 

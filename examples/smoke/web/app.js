@@ -74,6 +74,20 @@ if (location.search.includes("child=1")) {
         } catch (e) {
           results.push({ module: "media range app://", ok: false, detail: String(e) });
         }
+
+        // The whole file (1 MiB): streamed in chunks by the scheme handler.
+        try {
+          const res = await fetch(status.media_app_url);
+          const buf = await res.arrayBuffer();
+          const ok = res.status === 200 && buf.byteLength === status.total_file_size;
+          results.push({
+            module: "media full app://",
+            ok: ok,
+            detail: `status ${res.status}, ${buf.byteLength} of ${status.total_file_size} B`
+          });
+        } catch (e) {
+          results.push({ module: "media full app://", ok: false, detail: String(e) });
+        }
       }
 
       if (status.media_url) {
