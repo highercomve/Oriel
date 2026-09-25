@@ -46,7 +46,7 @@ const Features = struct {
     /// Modules and plugins without a macOS backend yet (PLAN.md Milestone 7,
     /// step 2). On macOS they default to off and can't be switched on.
     const unported_on_macos = [_][]const u8{
-        "updater", "media_server", "fs_watch",  "dialog",        "notification",    "store",
+        "updater", "media_server", "fs_watch",  "dialog",        "notification",
         "menu",    "input",        "clipboard", "audio_capture", "global_shortcut",
     };
 
