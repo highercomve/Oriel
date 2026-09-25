@@ -594,6 +594,11 @@ check verifies the plist and entitlements; a Windows check covers the webview gr
 
 ## Milestone 10 — Overlay windows, background apps, single instance (driven by the GhostPen port)
 
+Status (2026-09-25): done on Linux (X11 + Wayland layer-shell), Windows and
+macOS, plus WASAPI capture (microphones + loopback). Also added for the port:
+`App.runOnMain`, `oriel.ipc.fail` (error messages to the page),
+`AppOptions.imports`, TS quoting of any non-identifier event name.
+
 GhostPen (the first full app on Oriel, `~/Code/ghostpen-oriel`) needs these; each
 works on Linux (X11 + Wayland), Windows and macOS (rule 11):
 
