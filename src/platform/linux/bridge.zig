@@ -17,6 +17,14 @@ const log = std.log.scoped(.oriel);
 
 pub const handler_name = "oriel";
 
+/// Replaced by `ipc.tokenScript` (which defines `const ipcToken`) in each
+/// window's copy of `bridge_js`.
+const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
+
+comptime {
+    std.debug.assert(std.mem.count(u8, bridge_js, token_placeholder) == 1);
+}
+
 /// Injected into allowed pages before their own scripts run.
 pub const bridge_js =
     \\(() => {
@@ -25,8 +33,11 @@ pub const bridge_js =
     \\  const handler = window.webkit.messageHandlers.
 ++ handler_name ++
     \\;
+    \\
+++ token_placeholder ++
+    \\
     \\  function invoke(cmd, args) {
-    \\    return handler.postMessage(JSON.stringify({ cmd, args: args ?? null }));
+    \\    return handler.postMessage(JSON.stringify({ cmd, args: args ?? null, token: ipcToken }));
     \\  }
     \\  class WindowHandle {
     \\    constructor(label) {
@@ -99,7 +110,7 @@ pub const bridge_js =
     \\      return () => set.delete(callback);
     \\    },
     \\    openExternal(url) {
-    \\      return handler.postMessage(JSON.stringify({ cmd: "open_external", args: { url } }));
+    \\      return handler.postMessage(JSON.stringify({ cmd: "open_external", args: { url }, token: ipcToken }));
     \\    },
     \\    permissions: Object.freeze({
     \\      query(name) {
@@ -247,7 +258,12 @@ pub fn Bridge(
 
             const label_json = std.json.Stringify.valueAlloc(gpa, label, .{}) catch return;
             defer gpa.free(label_json);
-            const label_script_src = std.fmt.allocPrintSentinel(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, bridge_js }, 0) catch return;
+            // The page's IPC token lives only in the bridge's closure (ipc.tokenScript).
+            const token_js = ipc.tokenScript(gpa, config.security, local) catch return;
+            defer gpa.free(token_js);
+            const with_token = std.mem.replaceOwned(u8, gpa, bridge_js, token_placeholder, token_js) catch return;
+            defer gpa.free(with_token);
+            const label_script_src = std.fmt.allocPrintSentinel(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, with_token }, 0) catch return;
             defer gpa.free(label_script_src);
             const script = webkit.UserScript.new(label_script_src, .top_frame, .start, @ptrCast(&bridge_patterns), null);
             content.addScript(script);
@@ -286,6 +302,17 @@ pub fn Bridge(
             const page_url: []const u8 = if (webkit_web_view_get_uri(view)) |u| std.mem.span(u) else "";
             const caller_win = @import("window.zig").getWindowByView(view);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
+            // Page-controlled: escaped and capped in logs.
+            const cmd_log = std.zig.fmtString(request.cmd[0..@min(request.cmd.len, 64)]);
+
+            // The handler is reachable from every frame, but only the top
+            // frame's bridge has this page's token (ipc.tokenScript), so a
+            // frame from another origin can't act as the page.
+            if (!ipc.tokenValid(request.token, config.security, local, page_url)) {
+                log.warn("refused an IPC call without this page's token (\"{f}\")", .{cmd_log});
+                reply.returnErrorMessage("Forbidden");
+                return 1;
+            }
 
             if (window_commands.isWindowCommand(request.cmd)) {
                 const result = window_commands.dispatch(config.security, local, temp_alloc, page_url, win_label, request.cmd, request.args) catch |err| {
@@ -303,7 +330,7 @@ pub fn Bridge(
             }
 
             if (!security.commandAllowedForWindow(config.security, local, page_url, request.cmd, win_label)) {
-                log.warn("blocked command '{s}' from {s} (window: {?s})", .{ request.cmd, page_url, win_label });
+                log.warn("blocked command \"{f}\" from {s} (window: {?s})", .{ cmd_log, page_url, win_label });
                 reply.returnErrorMessage("Forbidden");
                 return 1;
             }
