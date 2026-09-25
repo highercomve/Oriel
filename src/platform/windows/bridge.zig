@@ -303,7 +303,7 @@ pub fn Bridge(
             defer gpa.free(token_js);
             const with_token = std.mem.replaceOwned(u8, gpa, bridge_js, token_placeholder, token_js) catch return;
             defer gpa.free(with_token);
-            const script = std.fmt.allocPrintSentinel(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, with_token }, 0) catch return;
+            const script = std.fmt.allocPrintSentinel(gpa, "{s}window.__oriel_window_label = {s};\n{s}", .{ comptime security.bridgePrelude(config.security), label_json, with_token }, 0) catch return;
             defer gpa.free(script);
             const script_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, script) catch return;
             defer gpa.free(script_w);

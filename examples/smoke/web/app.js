@@ -221,6 +221,26 @@ async function securityChecks() {
   const out = [];
   const check = (module, ok, detail) => out.push({ module, ok, detail });
 
+  // security.freeze_prototype: Object.prototype is frozen before page scripts.
+  let polluted = false;
+  try {
+    Object.prototype.__smokePolluted = true;
+    polluted = ({}).__smokePolluted === true;
+  } catch (e) {}
+  check("freeze prototype", Object.isFrozen(Object.prototype) && !polluted, `Object.prototype frozen: ${Object.isFrozen(Object.prototype)}, pollution ${polluted ? "worked" : "blocked"}`);
+
+  // security.headers: on app:// responses and on the media scheme.
+  try {
+    const page = await fetch(location.href);
+    const media = await fetch("/media/test.wav", { headers: { Range: "bytes=0-9" } });
+    const coop = page.headers.get("cross-origin-opener-policy");
+    const pp = page.headers.get("permissions-policy");
+    const mediaCoop = media.headers.get("cross-origin-opener-policy");
+    check("security headers", coop === "same-origin" && pp === "geolocation=()" && mediaCoop === "same-origin", `app:// COOP=${coop}, Permissions-Policy=${pp}; media COOP=${mediaCoop}`);
+  } catch (e) {
+    check("security headers", false, String(e));
+  }
+
   // IPC token: a raw call to the native handler without the bridge's token
   // is refused, even from this (trusted) page.
   const raw = window.webkit?.messageHandlers?.oriel;

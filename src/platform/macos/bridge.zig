@@ -296,7 +296,7 @@ pub fn Bridge(
             defer gpa.free(token_js);
             const with_token = try std.mem.replaceOwned(u8, gpa, bridge_js, token_placeholder, token_js);
             defer gpa.free(with_token);
-            const source = try std.fmt.allocPrint(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, with_token });
+            const source = try std.fmt.allocPrint(gpa, "{s}window.__oriel_window_label = {s};\n{s}", .{ comptime security.bridgePrelude(config.security), label_json, with_token });
             defer gpa.free(source);
             const source_ns = cocoa.nsString(source) orelse return error.OutOfMemory;
             defer source_ns.release();

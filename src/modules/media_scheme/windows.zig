@@ -13,6 +13,8 @@ const win32 = @import("../../platform/windows/win32.zig");
 const webview2 = @import("../../platform/windows/webview2.zig");
 const open = @import("../media/open.zig");
 const range = @import("../media/range.zig");
+const App = @import("../../core/App.zig");
+const security = @import("../../core/security.zig");
 
 var root_handle: ?open.Root = null;
 var root_policy: open.SymlinkPolicy = .inside_root;
@@ -377,18 +379,21 @@ fn serveRange(
     else
         std.unicode.utf8ToUtf16LeStringLiteral("OK");
 
+    // The app's extra headers (security.headers), as on app:// responses.
+    const extra = security.headerLines(gpa, App.current_security.headers) catch return;
+    defer gpa.free(extra);
     var hdr_str: []u8 = undefined;
     if (status_code == 206) {
         hdr_str = std.fmt.allocPrint(
             gpa,
-            "Content-Type: {s}\r\nAccept-Ranges: bytes\r\nContent-Length: {d}\r\nContent-Range: bytes {d}-{d}/{d}\r\n",
-            .{ mime, length, start, end, file_size },
+            "Content-Type: {s}\r\nAccept-Ranges: bytes\r\nContent-Length: {d}\r\nContent-Range: bytes {d}-{d}/{d}\r\n{s}",
+            .{ mime, length, start, end, file_size, extra },
         ) catch return;
     } else {
         hdr_str = std.fmt.allocPrint(
             gpa,
-            "Content-Type: {s}\r\nAccept-Ranges: bytes\r\nContent-Length: {d}\r\n",
-            .{ mime, length },
+            "Content-Type: {s}\r\nAccept-Ranges: bytes\r\nContent-Length: {d}\r\n{s}",
+            .{ mime, length, extra },
         ) catch return;
     }
     defer gpa.free(hdr_str);

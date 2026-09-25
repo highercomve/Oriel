@@ -8,6 +8,7 @@ const glib = @import("glib");
 const gio = @import("gio");
 const webkit = @import("webkit");
 const soup = @import("soup");
+const security = @import("../../core/security.zig");
 const App = @import("../../core/App.zig");
 
 pub const scheme_name = "app";
@@ -42,6 +43,11 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
                 headers.append("Content-Type", a.mime);
                 headers.append("X-Content-Type-Options", "nosniff");
                 if (csp_z) |csp| headers.append("Content-Security-Policy", csp);
+                inline for (config.security.headers) |h| {
+                    if (comptime !security.headerBuiltIn(h.name)) {
+                        headers.append((h.name ++ "\x00")[0..h.name.len :0], (h.value ++ "\x00")[0..h.value.len :0]);
+                    }
+                }
                 response.setHttpHeaders(headers);
                 request.finishWithResponse(response);
                 return;

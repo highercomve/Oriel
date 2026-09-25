@@ -48,7 +48,91 @@ pub const Security = struct {
     window_api: WindowApiPolicy = .{},
     /// Allowed URL schemes for openExternal (e.g. "http", "https", "mailto").
     open_external_schemes: []const []const u8 = default_open_external_schemes,
+    /// Run `Object.freeze(Object.prototype)` at document start, before any
+    /// page script (Tauri's `freezePrototype`): blocks prototype-pollution
+    /// gadgets. Off by default: some libraries patch Object.prototype.
+    freeze_prototype: bool = false,
+    /// Extra headers on the app's own responses (`app://` assets and the
+    /// media scheme), e.g. Cross-Origin-Opener-Policy or Permissions-Policy.
+    /// Names are limited to `allowed_header_names` (Tauri's list); CSP and
+    /// Content-Type stay Oriel's. Checked at compile time.
+    headers: []const Header = &.{},
 };
+
+pub const Header = struct { name: []const u8, value: []const u8 };
+
+/// The response headers an app may set (Tauri's `app.security.headers`).
+pub const allowed_header_names = [_][]const u8{
+    "Access-Control-Allow-Credentials",
+    "Access-Control-Allow-Headers",
+    "Access-Control-Allow-Methods",
+    "Access-Control-Expose-Headers",
+    "Access-Control-Max-Age",
+    "Cross-Origin-Embedder-Policy",
+    "Cross-Origin-Opener-Policy",
+    "Cross-Origin-Resource-Policy",
+    "Permissions-Policy",
+    "Service-Worker-Allowed",
+    "Timing-Allow-Origin",
+    "X-Content-Type-Options",
+};
+
+pub fn headerNameAllowed(name: []const u8) bool {
+    for (allowed_header_names) |n| if (std.ascii.eqlIgnoreCase(n, name)) return true;
+    return false;
+}
+
+/// A header value can't carry CR, LF or NUL (no header injection).
+pub fn headerValueValid(value: []const u8) bool {
+    return std.mem.indexOfAny(u8, value, "\r\n\x00") == null;
+}
+
+/// Compile error for a header an app may not set (App.run calls it).
+pub fn checkHeaders(comptime headers: []const Header) void {
+    inline for (headers) |h| {
+        if (comptime !headerNameAllowed(h.name)) @compileError("security.headers: '" ++ h.name ++ "' is not an allowed header (see security.allowed_header_names; CSP has its own `csp` option)");
+        if (comptime !headerValueValid(h.value)) @compileError("security.headers: the value of '" ++ h.name ++ "' contains CR, LF or NUL");
+        if (comptime std.ascii.eqlIgnoreCase(h.name, "X-Content-Type-Options") and !std.ascii.eqlIgnoreCase(h.value, "nosniff")) @compileError("security.headers: X-Content-Type-Options is always nosniff");
+    }
+}
+
+/// Whether Oriel already sends `name` (it isn't repeated from `headers`).
+pub fn headerBuiltIn(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "X-Content-Type-Options");
+}
+
+/// `Name: value\r\n` for each extra header (Windows builds header blocks
+/// as text). Caller frees.
+pub fn headerLines(gpa: std.mem.Allocator, headers: []const Header) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    for (headers) |h| {
+        if (headerBuiltIn(h.name) or !headerNameAllowed(h.name) or !headerValueValid(h.value)) continue;
+        try out.writer.print("{s}: {s}\r\n", .{ h.name, h.value });
+    }
+    return out.toOwnedSlice();
+}
+
+/// JavaScript run first in every bridged top-level document.
+pub fn bridgePrelude(comptime sec: Security) []const u8 {
+    return if (sec.freeze_prototype) "Object.freeze(Object.prototype);\n" else "";
+}
+
+test headerLines {
+    const a = std.testing.allocator;
+    const lines = try headerLines(a, &.{
+        .{ .name = "Cross-Origin-Opener-Policy", .value = "same-origin" },
+        .{ .name = "X-Content-Type-Options", .value = "nosniff" }, // built in: skipped
+        .{ .name = "Set-Cookie", .value = "x=1" }, // not allowed: skipped
+        .{ .name = "Permissions-Policy", .value = "camera=()\r\nX: y" }, // injection: skipped
+    });
+    defer a.free(lines);
+    try std.testing.expectEqualStrings("Cross-Origin-Opener-Policy: same-origin\r\n", lines);
+    try std.testing.expect(headerNameAllowed("permissions-policy"));
+    try std.testing.expect(!headerNameAllowed("Content-Security-Policy"));
+    try std.testing.expectEqualStrings("Object.freeze(Object.prototype);\n", bridgePrelude(.{ .freeze_prototype = true }));
+    try std.testing.expectEqualStrings("", bridgePrelude(.{}));
+}
 
 pub const Capability = struct {
     origin: []const u8,
@@ -372,10 +456,7 @@ pub fn validateExternalUrl(sec: Security, url: []const u8) ValidationError!void 
         if (c > 0x7f) return error.InvalidUrl;
 
         switch (c) {
-            'a'...'z', 'A'...'Z', '0'...'9',
-            '-', '.', '_', '~',
-            ':', '/', '?', '#', '[', ']', '@',
-            '!', '$', '&', '(', ')', '*', '+', ',', ';', '=' => {
+            'a'...'z', 'A'...'Z', '0'...'9', '-', '.', '_', '~', ':', '/', '?', '#', '[', ']', '@', '!', '$', '&', '(', ')', '*', '+', ',', ';', '=' => {
                 i += 1;
             },
             '%' => {
@@ -389,7 +470,6 @@ pub fn validateExternalUrl(sec: Security, url: []const u8) ValidationError!void 
         }
     }
 }
-
 
 fn hasScheme(url: []const u8) bool {
     const colon = std.mem.indexOfScalar(u8, url, ':') orelse return false;
