@@ -138,6 +138,17 @@ if (location.search.includes("child=1")) {
       }
 
       try {
+        const hop = await new Promise((resolve, reject) => {
+          const off = oriel.listen("main_hop", (p) => { off(); resolve(p); });
+          oriel.invoke("main_thread_hop", { n: 42 }).catch(reject);
+          setTimeout(() => reject(new Error("no main_hop event")), 3000);
+        });
+        results.push({ module: "runOnMain", ok: hop.n === 42 && hop.main_window === true, detail: `worker → main thread: n=${hop.n}, main window visible to it: ${hop.main_window}` });
+      } catch (e) {
+        results.push({ module: "runOnMain", ok: false, detail: String(e) });
+      }
+
+      try {
         const ov = await oriel.invoke("test_overlay_window");
         results.push({ module: "overlay window", ok: ov.ok, detail: ov.detail });
       } catch (e) {

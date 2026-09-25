@@ -43,6 +43,31 @@ pub fn createWindow(options: App.WindowOptions, win_inst: *App.Window) !WindowHa
     if (active_create_window_fn) |f| return f(options, win_inst) else return error.AppNotRunning;
 }
 
+/// Run `func(ctx)` on the GTK main thread (from any thread; always queued).
+/// `cleanup(ctx)` runs instead if the task can't be queued.
+pub fn dispatchWithCleanup(
+    func: *const fn (ctx: ?*anyopaque) void,
+    ctx: ?*anyopaque,
+    cleanup: ?*const fn (ctx: ?*anyopaque) void,
+) void {
+    const Task = struct {
+        func: *const fn (ctx: ?*anyopaque) void,
+        ctx: ?*anyopaque,
+        fn run(data: ?*anyopaque) callconv(.c) c_int {
+            const self: *@This() = @ptrCast(@alignCast(data.?));
+            defer std.heap.smp_allocator.destroy(self);
+            self.func(self.ctx);
+            return 0; // G_SOURCE_REMOVE
+        }
+    };
+    const task = std.heap.smp_allocator.create(Task) catch {
+        if (cleanup) |c| c(ctx);
+        return;
+    };
+    task.* = .{ .func = func, .ctx = ctx };
+    _ = glib.idleAdd(&Task.run, task);
+}
+
 pub fn quit(code: u8) void {
     exit_code = code;
     if (glib.MainContext.default().isOwner() != 0) {

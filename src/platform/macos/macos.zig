@@ -36,6 +36,7 @@ pub const setWindowPlacement = overlay.setWindowPlacement;
 pub const setWindowClickThrough = overlay.setWindowClickThrough;
 pub const setWindowAlwaysOnTop = overlay.setWindowAlwaysOnTop;
 pub const getWindowWorkArea = overlay.getWindowWorkArea;
+pub const dispatchWithCleanup = ShellMod.dispatchWithCleanup;
 pub const openExternal = window.openExternal;
 
 pub const evalJs = bridge.evalJs;

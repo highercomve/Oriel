@@ -166,7 +166,18 @@ const Commands = struct {
         };
     }
 
-    pub const async_commands = .{ "async_sleep", "clipboard_roundtrip" };
+    pub const async_commands = .{ "async_sleep", "clipboard_roundtrip", "main_thread_hop" };
+
+    /// Runs on a worker; hands work to the UI thread with App.runOnMain,
+    /// which touches a window and emits "main_hop" to the page.
+    pub fn main_thread_hop(_: std.mem.Allocator, args: struct { n: u32 }) void {
+        oriel.App.runOnMain(args.n, struct {
+            fn onMain(n: u32) void {
+                const has_main = oriel.App.getWindow("main") != null;
+                oriel.App.emit("main_hop", .{ .n = n, .main_window = has_main });
+            }
+        }.onMain);
+    }
 
     /// Write then read back the clipboard in-process, from a worker thread
     /// (the path async commands and hotkey handlers use). Must not hang:

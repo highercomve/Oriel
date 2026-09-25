@@ -588,6 +588,34 @@ pub fn spawn(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !v
     pool.post(&job.task);
 }
 
+/// Run `func(ctx)` on the main (UI) thread, from any thread: windows, the
+/// tray and other UI may only be touched there. Always queued (it runs after
+/// the caller returns, even on the main thread); `ctx` is copied.
+///
+///     App.runOnMain(@as(u32, 7), struct {
+///         fn f(n: u32) void { if (App.getWindow("main")) |w| w.show(); _ = n; }
+///     }.f);
+pub fn runOnMain(ctx: anytype, comptime func: fn (@TypeOf(ctx)) void) void {
+    const Ctx = @TypeOf(ctx);
+    const Task = struct {
+        ctx: Ctx,
+        fn run(p: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(p.?));
+            defer std.heap.smp_allocator.destroy(self);
+            func(self.ctx);
+        }
+        fn drop(p: ?*anyopaque) void {
+            std.heap.smp_allocator.destroy(@as(*@This(), @ptrCast(@alignCast(p.?))));
+        }
+    };
+    const task = std.heap.smp_allocator.create(Task) catch {
+        log.err("runOnMain: out of memory; task dropped", .{});
+        return;
+    };
+    task.* = .{ .ctx = ctx };
+    platform.dispatchWithCleanup(&Task.run, task, &Task.drop);
+}
+
 pub fn emit(name: []const u8, payload: anytype) void {
     emitJson(null, name, payload) catch |err| log.err("emit {s}: {s}", .{ name, @errorName(err) });
 }
