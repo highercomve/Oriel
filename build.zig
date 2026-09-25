@@ -213,13 +213,26 @@ pub fn build(b: *std.Build) void {
         check_step.dependOn(&b.addTest(.{ .root_module = oriel }).step);
     }
 
-    // dev_runner is a host tool; check it for the selected target too, so
-    // `zig build check -Dtarget=x86_64-windows` covers its Windows paths.
-    check_step.dependOn(&b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/dev_runner.zig"),
-        .target = target,
-        .optimize = optimize,
-    }) }).step);
+    // The host tools run on the machine that builds the app, which may be
+    // Windows: check them for the selected target too, so
+    // `zig build check -Dtarget=x86_64-windows` covers their Windows paths
+    // (e.g. POSIX-only file permissions in package_tool, found on a Windows host).
+    const zigimg_target = b.dependency("zigimg", .{ .target = target, .optimize = optimize });
+    const update_manifest_target = b.createModule(.{ .root_source_file = b.path("src/modules/update_manifest.zig") });
+    const host_tools = [_]struct { []const u8, []const std.Build.Module.Import }{
+        .{ "tools/dev_runner.zig", &.{} },
+        .{ "tools/embed_assets.zig", &.{} },
+        .{ "tools/package/main.zig", &.{.{ .name = "zigimg", .module = zigimg_target.module("zigimg") }} },
+        .{ "tools/update_tool.zig", &.{.{ .name = "update_manifest", .module = update_manifest_target }} },
+    };
+    for (host_tools) |tool| {
+        check_step.dependOn(&b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path(tool[0]),
+            .target = target,
+            .optimize = optimize,
+            .imports = tool[1],
+        }) }).step);
+    }
 
     // The CLI is part of Oriel's own build only: apps that depend on Oriel
     // never build it (and don't pay for the `git` call below).

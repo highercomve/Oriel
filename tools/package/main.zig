@@ -739,7 +739,7 @@ fn resolveAppImageRuntime(
         return error.InvalidElfBinary;
     }
 
-    try Dir.cwd().setFilePermissions(io, temp_rt, @enumFromInt(0o755), .{});
+    try Dir.cwd().setFilePermissions(io, temp_rt, filePerms(0o755), .{});
     try Dir.cwd().rename(temp_rt, Dir.cwd(), cached_rt, io);
 
     return cached_rt;
@@ -848,7 +848,7 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8
     const app_run_content = try appimage.generateAppRun(gpa, target_exe_name);
     defer gpa.free(app_run_content);
     {
-        var run_file = try Dir.cwd().createFile(io, app_run_path, .{ .permissions = @enumFromInt(0o755) });
+        var run_file = try Dir.cwd().createFile(io, app_run_path, .{ .permissions = filePerms(0o755) });
         defer run_file.close(io);
         try run_file.writeStreamingAll(io, app_run_content);
     }
@@ -904,7 +904,7 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8
     const usr_bin_dest = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ usr_bin_dir, target_exe_name });
     defer gpa.free(usr_bin_dest);
     try Dir.cwd().copyFile(target_bin, Dir.cwd(), usr_bin_dest, io, .{
-        .permissions = @enumFromInt(0o755),
+        .permissions = filePerms(0o755),
     });
 
     // 3. Create squashfs image with mksquashfs
@@ -930,7 +930,7 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8
     defer gpa.free(appimage_out);
 
     {
-        var appimage_file = try Dir.cwd().createFile(io, appimage_out, .{ .permissions = @enumFromInt(0o755) });
+        var appimage_file = try Dir.cwd().createFile(io, appimage_out, .{ .permissions = filePerms(0o755) });
         defer appimage_file.close(io);
         try streamCopyFile(io, Dir.cwd(), runtime_file, appimage_file);
         try streamCopyFile(io, Dir.cwd(), squashfs_path, appimage_file);
@@ -1276,7 +1276,7 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
 
     const exe_dest = try std.fs.path.join(gpa, &.{ macos_dir, exe_name.? });
     defer gpa.free(exe_dest);
-    try Dir.cwd().copyFile(bin_path.?, Dir.cwd(), exe_dest, io, .{ .permissions = .fromMode(0o755) });
+    try Dir.cwd().copyFile(bin_path.?, Dir.cwd(), exe_dest, io, .{ .permissions = filePerms(0o755) });
 
     var has_icon = false;
     if (icons_dir) |idir| {
@@ -1724,7 +1724,7 @@ test "streamCopyFile creates exact byte copy" {
     }
     try Dir.cwd().writeFile(io, .{ .sub_path = src_path, .data = test_data });
 
-    var dest_file = try Dir.cwd().createFile(io, dest_path, .{ .permissions = @enumFromInt(0o644) });
+    var dest_file = try Dir.cwd().createFile(io, dest_path, .{ .permissions = filePerms(0o644) });
     defer dest_file.close(io);
     try streamCopyFile(io, Dir.cwd(), src_path, dest_file);
 
@@ -1876,4 +1876,10 @@ test "generateDesktopCmd with --url-scheme" {
 
     try std.testing.expect(std.mem.indexOf(u8, content, "Exec=test-app %u\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "MimeType=x-scheme-handler/test-scheme;x-scheme-handler/oriel-custom;\n") != null);
+}
+
+/// POSIX mode on Linux/macOS; Windows has attributes instead of modes (and
+/// `@enumFromInt(0o755)` there would set read-only/system/... attribute bits).
+fn filePerms(mode: u32) std.Io.File.Permissions {
+    return if (builtin.os.tag == .windows) .default_file else .fromMode(@intCast(mode));
 }

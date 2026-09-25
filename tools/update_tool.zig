@@ -129,7 +129,7 @@ pub fn runKeygen(
 
     // Ensure directory exists with mode 0700
     try cwd.createDirPath(io, key_dir);
-    try cwd.setFilePermissions(io, key_dir, .fromMode(0o700), .{});
+    try cwd.setFilePermissions(io, key_dir, filePerms(0o700), .{});
 
     // Generate random 32-byte seed for Ed25519
     var seed: [Ed25519.KeyPair.seed_length]u8 = undefined;
@@ -151,10 +151,10 @@ pub fn runKeygen(
     defer gpa.free(temp_key_path);
 
     var temp_key_file = try cwd.createFile(io, temp_key_path, .{
-        .permissions = std.Io.File.Permissions.fromMode(0o600),
+        .permissions = filePerms(0o600),
         .exclusive = true,
     });
-    try temp_key_file.setPermissions(io, .fromMode(0o600));
+    try temp_key_file.setPermissions(io, filePerms(0o600));
 
     var temp_key_open = true;
     var temp_key_exists = true;
@@ -185,10 +185,10 @@ pub fn runKeygen(
     defer gpa.free(temp_pub_path);
 
     var temp_pub_file = try cwd.createFile(io, temp_pub_path, .{
-        .permissions = std.Io.File.Permissions.fromMode(0o644),
+        .permissions = filePerms(0o644),
         .exclusive = true,
     });
-    try temp_pub_file.setPermissions(io, .fromMode(0o644));
+    try temp_pub_file.setPermissions(io, filePerms(0o644));
 
     var temp_pub_open = true;
     var temp_pub_exists = true;
@@ -587,8 +587,8 @@ test "keygen writes 0600 key, 0700 dir, and refuses to overwrite" {
     const pub_path = try std.fs.path.join(allocator, &.{ keys_dir, "testapp.pub" });
     defer allocator.free(pub_path);
 
-    // Check key mode is 0600
-    {
+    // Check key mode is 0600 (POSIX only: Windows has attributes, not modes)
+    if (builtin.os.tag != .windows) {
         const f = try std.Io.Dir.cwd().openFile(io, key_path, .{});
         defer f.close(io);
         const st = try f.stat(io);
@@ -596,7 +596,7 @@ test "keygen writes 0600 key, 0700 dir, and refuses to overwrite" {
     }
 
     // Check directory mode is 0700
-    {
+    if (builtin.os.tag != .windows) {
         const d = try std.Io.Dir.cwd().openDir(io, keys_dir, .{});
         defer d.close(io);
         const st = try d.stat(io);
@@ -809,4 +809,10 @@ test "sign-update writeFile failure frees manifest_json without leak" {
         .out_path = impossible_out,
     });
     try std.testing.expectError(error.FileNotFound, err);
+}
+
+/// POSIX mode on Linux/macOS; Windows has attributes instead of modes (and
+/// `@enumFromInt(0o755)` there would set read-only/system/... attribute bits).
+fn filePerms(mode: u32) std.Io.File.Permissions {
+    return if (builtin.os.tag == .windows) .default_file else .fromMode(@intCast(mode));
 }
