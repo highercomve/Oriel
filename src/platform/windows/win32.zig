@@ -104,6 +104,9 @@ pub const WM_CONTEXTMENU: UINT = 0x007B;
 pub const WM_USER: UINT = 0x0400;
 pub const WM_APP: UINT = 0x8000;
 pub const WM_COPYDATA: UINT = 0x004A;
+pub const WM_SETICON: UINT = 0x0080;
+pub const ICON_SMALL: WPARAM = 0;
+pub const ICON_BIG: WPARAM = 1;
 pub const COPYDATASTRUCT = extern struct {
     dwData: usize,
     cbData: DWORD,
@@ -601,8 +604,26 @@ pub extern "user32" fn GetWindowLongPtrW(hWnd: HWND, nIndex: c_int) callconv(.wi
 pub const GCLP_HICONSM: c_int = -34;
 pub extern "user32" fn GetClassLongPtrW(hWnd: HWND, nIndex: c_int) callconv(.winapi) ULONG_PTR;
 pub const IDI_APPLICATION: LPCWSTR = @ptrFromInt(32512);
+pub const IMAGE_ICON: UINT = 1;
+pub const LR_DEFAULTCOLOR: UINT = 0x0000;
+pub const LR_SHARED: UINT = 0x8000;
+
+pub const SM_CXICON: c_int = 11;
+pub const SM_CYICON: c_int = 12;
+pub const SM_CXSMICON: c_int = 49;
+pub const SM_CYSMICON: c_int = 50;
+
+pub extern "user32" fn GetSystemMetrics(nIndex: c_int) callconv(.winapi) c_int;
 pub extern "user32" fn LoadCursorW(hInstance: ?HINSTANCE, lpCursorName: LPCWSTR) callconv(.winapi) ?HCURSOR;
 pub extern "user32" fn LoadIconW(hInstance: ?HINSTANCE, lpIconName: [*:0]align(1) const u16) callconv(.winapi) ?HICON;
+pub extern "user32" fn LoadImageW(
+    hInstance: ?HINSTANCE,
+    name: [*:0]align(1) const u16,
+    type: UINT,
+    cx: c_int,
+    cy: c_int,
+    fuLoad: UINT,
+) callconv(.winapi) ?HANDLE;
 pub extern "user32" fn OpenClipboard(hWndNewOwner: ?HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn CloseClipboard() callconv(.winapi) BOOL;
 pub extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;

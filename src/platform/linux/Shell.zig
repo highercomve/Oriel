@@ -121,6 +121,9 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             App.gtk_app = app;
             defer App.gtk_app = null;
 
+            const id_z = (config.id ++ "\x00")[0..config.id.len :0];
+            gtk.Window.setDefaultIconName(id_z);
+
             const dev_server_proc = if (config.dev) |dev| dev_server.startDevServer(dev) else null;
             defer if (dev_server_proc) |p| dev_server.stopDevServer(p);
 

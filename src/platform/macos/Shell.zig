@@ -466,6 +466,20 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             // default: no Dock icon, no menu bar, windows behind others.
             _ = app.msgSend(cocoa.c.BOOL, "setActivationPolicy:", .{NSApplicationActivationPolicyRegular});
 
+            if (config.icon) |icon_data| {
+                const ns_data_cls = cocoa.class("NSData");
+                const data = ns_data_cls.msgSend(Object, "dataWithBytes:length:", .{ icon_data.ptr, @as(c_ulong, icon_data.len) });
+                if (data.value != null) {
+                    const ns_image_cls = cocoa.class("NSImage");
+                    const alloc_img = ns_image_cls.msgSend(Object, "alloc", .{});
+                    const img = alloc_img.msgSend(Object, "initWithData:", .{data});
+                    if (img.value != null) {
+                        defer img.release();
+                        app.msgSend(void, "setApplicationIconImage:", .{img});
+                    }
+                }
+            }
+
             const delegate_class = cocoa.defineClass("OrielAppDelegate", &.{"NSApplicationDelegate"}, .{
                 .{ "applicationShouldTerminate:", applicationShouldTerminate },
                 .{ "applicationShouldHandleReopen:hasVisibleWindows:", applicationShouldHandleReopen },
