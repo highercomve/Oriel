@@ -28,11 +28,25 @@ const events = oriel.App.events(Events);
 var db: ?sql.Db = null;
 var tray: ?*Tray = null;
 
+/// `notes.db` in the app's data directory (XDG data dir, %LOCALAPPDATA%,
+/// ~/Library/Application Support), so notes survive restarts; in memory if
+/// that directory can't be used.
 fn database() !sql.Db {
     if (db) |d| return d;
-    const d = try sql.Db.open(":memory:");
+    const gpa = std.heap.smp_allocator;
+    const d = open: {
+        const dir = oriel.store.dataDir(gpa, app_id) catch |err| {
+            std.log.warn("no data dir ({s}): notes are kept in memory", .{@errorName(err)});
+            break :open try sql.Db.open(":memory:");
+        };
+        defer gpa.free(dir);
+        const path = try std.fs.path.joinZ(gpa, &.{ dir, "notes.db" });
+        defer gpa.free(path);
+        break :open try sql.Db.open(path);
+    };
+    errdefer d.close();
     try d.exec(
-        \\CREATE TABLE notes (
+        \\CREATE TABLE IF NOT EXISTS notes (
         \\  id INTEGER PRIMARY KEY,
         \\  text TEXT NOT NULL,
         \\  created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
@@ -80,7 +94,7 @@ pub const Commands = struct {
         return if (tray) |t| t.isChecked("dnd") orelse false else false;
     }
 
-    pub const async_commands = .{ "export_notes" };
+    pub const async_commands = .{"export_notes"};
 
     pub fn export_notes(gpa: std.mem.Allocator, local_io: std.Io) ![]const u8 {
         // Simulate a slow async export off the main thread.

@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .sql = true,
         .tray = true,
+        .store = true, // data dir for notes.db
         .updater = false,
         .media_server = false,
         .fs_watch = false,

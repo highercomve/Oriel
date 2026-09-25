@@ -73,9 +73,7 @@ const Features = struct {
             if (is_macos and unported and (opt orelse false)) {
                 fatal("-D" ++ field.name ++ " is not supported on macOS yet (PLAN.md Milestone 7)", .{});
             }
-            // The tray builds on macOS as a stub whose `create` fails with
-            // error.NotSupported, so apps using it still run; it is off unless asked for.
-            const default_on = !is_native and !(is_macos and (unported or std.mem.eql(u8, field.name, "tray")));
+            const default_on = !is_native and !(is_macos and unported);
             @field(f, field.name) = opt orelse default_on;
         }
 
