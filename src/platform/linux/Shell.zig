@@ -153,11 +153,15 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             if (App.process_args.len > 0) {
                 for (App.process_args) |arg| {
                     const arg_z = gpa.dupeZ(u8, arg) catch break;
-                    argv_ptrs.append(gpa, arg_z.ptr) catch break;
+                    argv_ptrs.append(gpa, arg_z.ptr) catch {
+                        gpa.free(arg_z);
+                        break;
+                    };
                 }
             } else {
-                const exe_z = gpa.dupeZ(u8, config.id) catch null;
-                if (exe_z) |ez| argv_ptrs.append(gpa, ez.ptr) catch {};
+                if (gpa.dupeZ(u8, config.id)) |ez| {
+                    argv_ptrs.append(gpa, ez.ptr) catch gpa.free(ez);
+                } else |_| {}
             }
 
             if (build_opts.deep_link) {
@@ -165,12 +169,19 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             } else {
                 _ = gio.Application.signals.activate.connect(app, ?*anyopaque, &activate, null, .{});
             }
-            const status = if (argv_ptrs.items.len > 0)
-                gio.Application.run(app.as(gio.Application), @intCast(argv_ptrs.items.len), @ptrCast(argv_ptrs.items.ptr))
+            var has_null = false;
+            if (argv_ptrs.items.len > 0) {
+                if (argv_ptrs.append(gpa, null)) |_| {
+                    has_null = true;
+                } else |_| {}
+            }
+            const argc: usize = if (has_null) argv_ptrs.items.len - 1 else argv_ptrs.items.len;
+            const status = if (argc > 0)
+                gio.Application.run(app.as(gio.Application), @intCast(argc), @ptrCast(argv_ptrs.items.ptr))
             else
                 gio.Application.run(app.as(gio.Application), 0, null);
             App.main_window = null;
-            return if (status != 0) @intCast(status) else exit_code;
+            return if (status != 0) @truncate(@as(u32, @bitCast(status))) else exit_code;
         }
 
         fn onCommandLine(app: *gtk.Application, cmdline: *gio.ApplicationCommandLine, _: ?*anyopaque) callconv(.c) c_int {

@@ -54,6 +54,7 @@ pub const BYTE = u8;
 pub const WORD = u16;
 pub const HRESULT = i32;
 pub const ULONG_PTR = usize;
+pub const DWORD_PTR = ULONG_PTR;
 pub const LONG_PTR = isize;
 pub const WPARAM = usize;
 pub const LPARAM = isize;
@@ -558,6 +559,20 @@ pub extern "user32" fn PeekMessageW(lpMsg: *MSG, hWnd: ?HWND, wMsgFilterMin: UIN
 pub extern "user32" fn TranslateMessage(lpMsg: *const MSG) callconv(.winapi) BOOL;
 pub extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.winapi) LRESULT;
 pub extern "user32" fn SendMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT;
+pub const SMTO_NORMAL: UINT = 0x0000;
+pub const SMTO_BLOCK: UINT = 0x0001;
+pub const SMTO_ABORTIFHUNG: UINT = 0x0002;
+pub const SMTO_NOTIMEOUTIFNOTHUNG: UINT = 0x0008;
+pub const SMTO_ERRORONEXIT: UINT = 0x0020;
+pub extern "user32" fn SendMessageTimeoutW(
+    hWnd: HWND,
+    Msg: UINT,
+    wParam: WPARAM,
+    lParam: LPARAM,
+    fuFlags: UINT,
+    uTimeout: UINT,
+    lpdwResult: ?*DWORD_PTR,
+) callconv(.winapi) LRESULT;
 pub extern "user32" fn PostMessageW(hWnd: ?HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) BOOL;
 pub extern "user32" fn PostThreadMessageW(idThread: DWORD, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) BOOL;
 pub extern "user32" fn PostQuitMessage(nExitCode: c_int) callconv(.winapi) void;

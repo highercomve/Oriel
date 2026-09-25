@@ -102,6 +102,7 @@ pub fn run(ctx: Context, argv: []const []const u8, cwd: ?[]const u8) ?u8 {
     };
     const term = child.wait(ctx.io) catch |e| {
         child.kill(ctx.io);
+        _ = child.wait(ctx.io) catch {};
         ctx.err.print("error: waiting for '{s}': {s}\n", .{ argv[0], @errorName(e) }) catch {};
         return null;
     };

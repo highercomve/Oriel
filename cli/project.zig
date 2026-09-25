@@ -150,14 +150,24 @@ pub const WindowsTarget = struct {
 /// - Resulting target is Windows (native host Windows with no -Dtarget, or -Dtarget=*-windows*), AND
 /// - User did not pass -Dwebview2-loader (or -Dwebview2-loader=...).
 /// Otherwise returns null.
+fn findDashDash(args: []const []const u8) usize {
+    for (args, 0..) |arg, idx| {
+        if (std.mem.eql(u8, arg, "--")) return idx;
+    }
+    return args.len;
+}
+
 pub fn needsLoaderInjection(
     args: []const []const u8,
     host_os: std.Target.Os.Tag,
     host_arch: std.Target.Cpu.Arch,
 ) ?WindowsTarget {
+    const dash_dash_idx = findDashDash(args);
+    const build_args = args[0..dash_dash_idx];
+
     var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    while (i < build_args.len) : (i += 1) {
+        const arg = build_args[i];
         if (std.mem.startsWith(u8, arg, "-Dwebview2-loader=") or std.mem.eql(u8, arg, "-Dwebview2-loader")) {
             return null;
         }
@@ -165,14 +175,14 @@ pub fn needsLoaderInjection(
 
     var target_opt: ?[]const u8 = null;
     i = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    while (i < build_args.len) : (i += 1) {
+        const arg = build_args[i];
         if (std.mem.startsWith(u8, arg, "-Dtarget=")) {
             target_opt = arg["-Dtarget=".len..];
         } else if (std.mem.eql(u8, arg, "-Dtarget")) {
-            if (i + 1 < args.len) {
+            if (i + 1 < build_args.len) {
                 i += 1;
-                target_opt = args[i];
+                target_opt = build_args[i];
             }
         }
     }
@@ -192,12 +202,20 @@ pub fn needsLoaderInjection(
     }
 }
 
-/// Pure function to append -Dwebview2-loader=<loader_path> to args.
+/// Pure function to insert -Dwebview2-loader=<loader_path> before "--" (or at end if no "--").
 pub fn injectLoaderArg(gpa: std.mem.Allocator, args: []const []const u8, loader_path: []const u8) ![]const []const u8 {
     const loader_arg = try std.fmt.allocPrint(gpa, "-Dwebview2-loader={s}", .{loader_path});
+    errdefer gpa.free(loader_arg);
     const new_args = try gpa.alloc([]const u8, args.len + 1);
-    for (args, 0..) |a, idx| new_args[idx] = a;
-    new_args[args.len] = loader_arg;
+
+    const dash_dash_idx = findDashDash(args);
+    for (args[0..dash_dash_idx], 0..) |a, idx| {
+        new_args[idx] = a;
+    }
+    new_args[dash_dash_idx] = loader_arg;
+    for (args[dash_dash_idx..], 0..) |a, idx| {
+        new_args[dash_dash_idx + 1 + idx] = a;
+    }
     return new_args;
 }
 
@@ -257,6 +275,11 @@ test "needsLoaderInjection logic" {
 
     // 8. Non-Windows target -> null
     try std.testing.expectEqual(null, needsLoaderInjection(&.{"-Dtarget=x86_64-linux"}, .windows, .x86_64));
+
+    // 9. Arguments after -- are ignored for loader inspection
+    const with_app_args = needsLoaderInjection(&.{ "-Dtarget=x86_64-windows", "--", "-Dwebview2-loader=ignored" }, .linux, .x86_64).?;
+    try std.testing.expectEqual(.x64, with_app_args.arch);
+    try std.testing.expectEqual(null, needsLoaderInjection(&.{ "run", "--", "-Dtarget=x86_64-windows" }, .linux, .x86_64));
 }
 
 test "injectLoaderArg" {
@@ -270,6 +293,21 @@ test "injectLoaderArg" {
     try std.testing.expectEqualStrings("-Doptimize=ReleaseFast", injected[0]);
     try std.testing.expectEqualStrings("extra", injected[1]);
     try std.testing.expectEqualStrings("-Dwebview2-loader=/cache/WebView2Loader.dll", injected[2]);
+
+    // With -- separator: loader argument is inserted before --
+    const with_sep = [_][]const u8{ "run", "-Doptimize=ReleaseFast", "--", "app_arg1", "app_arg2" };
+    const injected_sep = try injectLoaderArg(std.testing.allocator, &with_sep, "/cache/WebView2Loader.dll");
+    defer {
+        std.testing.allocator.free(injected_sep[2]);
+        std.testing.allocator.free(injected_sep);
+    }
+    try std.testing.expectEqual(6, injected_sep.len);
+    try std.testing.expectEqualStrings("run", injected_sep[0]);
+    try std.testing.expectEqualStrings("-Doptimize=ReleaseFast", injected_sep[1]);
+    try std.testing.expectEqualStrings("-Dwebview2-loader=/cache/WebView2Loader.dll", injected_sep[2]);
+    try std.testing.expectEqualStrings("--", injected_sep[3]);
+    try std.testing.expectEqualStrings("app_arg1", injected_sep[4]);
+    try std.testing.expectEqualStrings("app_arg2", injected_sep[5]);
 }
 
 

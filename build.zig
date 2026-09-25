@@ -256,6 +256,11 @@ fn addCli(
         .target = cli_target,
         .optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe,
     });
+    const package_metadata_cli = b.createModule(.{
+        .root_source_file = b.path("tools/package/metadata.zig"),
+        .target = cli_target,
+        .optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe,
+    });
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("cli/main.zig"),
         .target = cli_target,
@@ -263,6 +268,7 @@ fn addCli(
     });
     cli_mod.addOptions("build_options", options);
     cli_mod.addImport("updater_core", updater_core_cli);
+    cli_mod.addImport("package_metadata", package_metadata_cli);
     // Release builds are stripped: the binary is what install.sh downloads.
     cli_mod.strip = cli_mod.optimize != .Debug;
     const cli = b.addExecutable(.{ .name = "oriel", .root_module = cli_mod });
@@ -273,6 +279,11 @@ fn addCli(
         .target = target,
         .optimize = optimize,
     });
+    const package_metadata_test = b.createModule(.{
+        .root_source_file = b.path("tools/package/metadata.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const test_mod = b.createModule(.{
         .root_source_file = b.path("cli/main.zig"),
         .target = target,
@@ -280,6 +291,7 @@ fn addCli(
     });
     test_mod.addOptions("build_options", options);
     test_mod.addImport("updater_core", updater_core_test);
+    test_mod.addImport("package_metadata", package_metadata_test);
     const cli_tests = b.addTest(.{ .root_module = test_mod, .use_llvm = true, .use_lld = useLld(target) });
     test_step.dependOn(&b.addRunArtifact(cli_tests).step);
     check_step.dependOn(&b.addTest(.{ .root_module = test_mod }).step);

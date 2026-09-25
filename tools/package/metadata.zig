@@ -40,10 +40,38 @@ pub fn targetToAppImageArch(arch: std.Target.Cpu.Arch) []const u8 {
 
 pub const ValidationError = error{
     InvalidExeName,
+    InvalidAppId,
+    InvalidUrlScheme,
     ContainsControlChar,
     ContainsNewline,
     InvalidExec,
 };
+
+/// Validate reverse-DNS application ID (e.g. "dev.oriel.ReactNotes"):
+/// At least two dot-separated elements of [A-Za-z0-9_-], none empty or starting with a digit.
+pub fn validAppId(id: []const u8) bool {
+    if (id.len == 0 or id.len > 255) return false;
+    var elements: usize = 0;
+    var it = std.mem.splitScalar(u8, id, '.');
+    while (it.next()) |element| {
+        if (element.len == 0 or std.ascii.isDigit(element[0])) return false;
+        for (element) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return false;
+        }
+        elements += 1;
+    }
+    return elements >= 2;
+}
+
+/// Validate that a scheme string is valid per RFC 3986 §3.1:
+/// ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+pub fn isValidSchemeFormat(scheme: []const u8) bool {
+    if (scheme.len == 0 or !std.ascii.isAlphabetic(scheme[0])) return false;
+    for (scheme[1..]) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and ch != '+' and ch != '-' and ch != '.') return false;
+    }
+    return true;
+}
 
 /// Validate executable name:
 /// - Must match `[A-Za-z0-9._+-]+`

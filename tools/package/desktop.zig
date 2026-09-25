@@ -31,6 +31,7 @@ pub fn formatCategories(allocator: std.mem.Allocator, raw: ?[]const u8) ![]const
 /// Generate a valid .desktop file content according to XDG Desktop Entry Specification.
 pub fn generateDesktop(allocator: std.mem.Allocator, opts: DesktopOptions) ![]const u8 {
     try metadata.validateNoControlOrNewline(opts.app_id);
+    if (!metadata.validAppId(opts.app_id)) return error.InvalidAppId;
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -81,7 +82,11 @@ pub fn generateDesktop(allocator: std.mem.Allocator, opts: DesktopOptions) ![]co
     if (opts.url_schemes.len > 0) {
         try w.writeAll("MimeType=");
         for (opts.url_schemes) |s| {
-            try w.print("x-scheme-handler/{s};", .{s});
+            try metadata.validateNoControlOrNewline(s);
+            if (!metadata.isValidSchemeFormat(s)) return error.InvalidUrlScheme;
+            const esc_s = try metadata.escapeDesktopString(allocator, s);
+            defer allocator.free(esc_s);
+            try w.print("x-scheme-handler/{s};", .{esc_s});
         }
         try w.writeAll("\n");
     }
@@ -165,4 +170,35 @@ test "generateDesktop with url_schemes" {
 
     try testing.expect(std.mem.indexOf(u8, desktop, "Exec=oriel-react-notes %u\n") != null);
     try testing.expect(std.mem.indexOf(u8, desktop, "MimeType=x-scheme-handler/oriel-notes;x-scheme-handler/notes;\n") != null);
+}
+
+test "generateDesktop rejects invalid url_schemes and invalid app_id" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+
+    // Scheme with newline injection
+    try testing.expectError(error.ContainsNewline, generateDesktop(gpa, .{
+        .app_id = "dev.oriel.ReactNotes",
+        .name = "React Notes",
+        .exec = "oriel-react-notes",
+        .icon = "dev.oriel.ReactNotes",
+        .url_schemes = &.{"notes\nExec=malicious"},
+    }));
+
+    // Scheme starting with digit
+    try testing.expectError(error.InvalidUrlScheme, generateDesktop(gpa, .{
+        .app_id = "dev.oriel.ReactNotes",
+        .name = "React Notes",
+        .exec = "oriel-react-notes",
+        .icon = "dev.oriel.ReactNotes",
+        .url_schemes = &.{"1badscheme"},
+    }));
+
+    // Invalid app_id (path traversal)
+    try testing.expectError(error.InvalidAppId, generateDesktop(gpa, .{
+        .app_id = "../../evil",
+        .name = "React Notes",
+        .exec = "oriel-react-notes",
+        .icon = "dev.oriel.ReactNotes",
+    }));
 }

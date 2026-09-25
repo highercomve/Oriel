@@ -38,6 +38,7 @@ pub fn isValidSchemeFormat(scheme: []const u8) bool {
 /// Returns the validated URL slice on success.
 pub fn validateUrl(url: []const u8, declared_schemes: []const []const u8) ValidationError![]const u8 {
     if (url.len > max_url_len) return error.UrlTooLong;
+    if (!std.unicode.utf8ValidateSlice(url)) return error.InvalidUri;
 
     for (url) |c| {
         if (c < 0x20 or c == 0x7F) return error.ContainsControlChar;
@@ -103,4 +104,7 @@ test "validateUrl with declared schemes" {
 
     // Invalid URI format
     try std.testing.expectError(error.InvalidUri, validateUrl("oriel-notes://[invalid-ipv6", &declared));
+
+    // Invalid UTF-8
+    try std.testing.expectError(error.InvalidUri, validateUrl("oriel-notes://note/\xFF\xFE", &declared));
 }

@@ -62,7 +62,16 @@ pub const Version = struct {
         var v = Version{};
         const dash = std.mem.indexOfScalar(u8, s, '-');
         const num_part = if (dash) |d| s[0..d] else s;
-        if (dash) |d| v.prerelease = s[d + 1 ..];
+        if (dash) |d| {
+            const pre = s[d + 1 ..];
+            if (pre.len == 0) return null;
+            for (pre) |c| {
+                const ok = std.ascii.isAlphanumeric(c) or c == '.' or c == '-';
+                if (!ok) return null;
+            }
+            if (std.mem.indexOf(u8, pre, "..") != null) return null;
+            v.prerelease = pre;
+        }
 
         var it = std.mem.splitScalar(u8, num_part, '.');
         while (it.next()) |part| {
@@ -196,14 +205,20 @@ pub fn findNewestCached(
         root_dir.access(io, dll_subpath, .{}) catch continue;
 
         if (best_ver == null or Version.order(v, best_ver.?) == .gt) {
+            // Copy first: freeing the previous copy before a failed dupe would
+            // leave best_ver_str dangling (double free in the defer).
+            const copy = try gpa.dupe(u8, entry.name);
             if (best_ver_str) |prev| gpa.free(prev);
-            best_ver_str = try gpa.dupe(u8, entry.name);
-            best_ver = v;
+            best_ver_str = copy;
+            // Parse from our copy: `v` slices entry.name, which the iterator
+            // reuses for the next entry.
+            best_ver = Version.parse(copy).?;
         }
     }
 
     if (best_ver_str) |v_str| {
         const full_path = try std.fs.path.join(gpa, &.{ root, v_str, arch, "WebView2Loader.dll" });
+        errdefer gpa.free(full_path);
         const ver_dup = try gpa.dupe(u8, v_str);
         return .{ .version = ver_dup, .path = full_path };
     }
@@ -380,9 +395,11 @@ pub fn extractLoadersFromZip(
         const is_arm64_dll = std.mem.eql(u8, filename, "runtimes/win-arm64/native/WebView2Loader.dll");
 
         if (is_x64_dll and extract_x64) {
+            if (entry.uncompressed_size > 10 * 1024 * 1024) return error.PayloadSizeExceeded;
             try entry.extract(&file_reader, .{}, &name_buf, dest_dir);
             result.x64 = true;
         } else if (is_arm64_dll and extract_arm64) {
+            if (entry.uncompressed_size > 10 * 1024 * 1024) return error.PayloadSizeExceeded;
             try entry.extract(&file_reader, .{}, &name_buf, dest_dir);
             result.arm64 = true;
         }
@@ -393,6 +410,47 @@ pub fn extractLoadersFromZip(
 
     return result;
 }
+
+pub const BoundedWriter = struct {
+    out: *std.Io.Writer,
+    limit: usize,
+    written: usize = 0,
+    exceeded: bool = false,
+    writer: std.Io.Writer,
+
+    pub fn init(out: *std.Io.Writer, limit: usize, buffer: []u8) BoundedWriter {
+        return .{
+            .out = out,
+            .limit = limit,
+            .writer = .{
+                .buffer = buffer,
+                .vtable = &.{ .drain = drain },
+            },
+        };
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *BoundedWriter = @alignCast(@fieldParentPtr("writer", w));
+        const incoming = w.end + std.Io.Writer.countSplat(data, splat);
+        if (self.written + incoming > self.limit) {
+            self.exceeded = true;
+            return error.WriteFailed;
+        }
+        const aux = w.buffered();
+        const aux_n = try self.out.writeSplatHeader(aux, data, splat);
+        if (aux_n < w.end) {
+            self.written += aux_n;
+            const remaining = w.buffer[aux_n..w.end];
+            @memmove(w.buffer[0..remaining.len], remaining);
+            w.end = remaining.len;
+            return 0;
+        }
+        self.written += aux_n;
+        const n = aux_n - w.end;
+        w.end = 0;
+        return n;
+    }
+};
 
 // ---------------------------------------------------------------------------
 // High-level fetch & run
@@ -408,9 +466,14 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
     const want_arm64 = (arch == .arm64 or arch == .all);
 
     // 1. Resolve version
-    const version = if (version_opt) |v|
-        try arena.dupe(u8, std.mem.trim(u8, v, " \t\r\n"))
-    else blk: {
+    const version = if (version_opt) |v| blk: {
+        const trimmed = std.mem.trim(u8, v, " \t\r\n");
+        if (Version.parse(trimmed) == null) {
+            try ctx.err.print("error: invalid NuGet version format: '{s}'\n", .{trimmed});
+            return error.InvalidVersion;
+        }
+        break :blk try arena.dupe(u8, trimmed);
+    } else blk: {
         var client: std.http.Client = .{ .allocator = arena, .io = io };
         defer client.deinit();
 
@@ -493,6 +556,27 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
     const expected_hash = switch (cat_result) {
         .package_hash => |h| h,
         .catalog_url => |item_url| blk: {
+            const item_uri = std.Uri.parse(item_url) catch |err| {
+                try ctx.err.print("error: invalid catalog item URL '{s}': {s}\n", .{ item_url, @errorName(err) });
+                return err;
+            };
+            if (!std.mem.eql(u8, item_uri.scheme, "https")) {
+                try ctx.err.print("error: catalog item URL must use HTTPS, got '{s}'\n", .{item_url});
+                return error.InsecureProtocol;
+            }
+            const reg_uri = try std.Uri.parse(reg_base);
+            if (item_uri.host) |item_host| {
+                if (reg_uri.host) |expected_host| {
+                    if (!std.mem.eql(u8, item_host.percent_encoded, expected_host.percent_encoded)) {
+                        try ctx.err.print("error: catalog item host '{s}' does not match expected registration host '{s}'\n", .{ item_host.percent_encoded, expected_host.percent_encoded });
+                        return error.UntrustedHost;
+                    }
+                }
+            } else {
+                try ctx.err.print("error: catalog item URL is missing host: '{s}'\n", .{item_url});
+                return error.UriMissingHost;
+            }
+
             var item_body: std.Io.Writer.Allocating = .init(arena);
             defer item_body.deinit();
             const item_res = client.fetch(.{
@@ -531,6 +615,7 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
 
     var nupkg_write_buf: [32 * 1024]u8 = undefined;
     var nupkg_writer = nupkg_file.writerStreaming(io, &nupkg_write_buf);
+    var bounded_writer = BoundedWriter.init(&nupkg_writer.interface, 50 * 1024 * 1024, &.{});
 
     const flat_base = ctx.environ.get("ORIEL_WEBVIEW2_NUPKG_URL") orelse default_flatcontainer_base;
     const nupkg_url = try std.fmt.allocPrint(arena, "{s}/{s}/microsoft.web.webview2.{s}.nupkg", .{ flat_base, version, version });
@@ -538,8 +623,12 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
     const dl_res = client.fetch(.{
         .location = .{ .url = nupkg_url },
         .headers = .{ .user_agent = .{ .override = "oriel-cli" } },
-        .response_writer = &nupkg_writer.interface,
+        .response_writer = &bounded_writer.writer,
     }) catch |err| {
+        if (bounded_writer.exceeded) {
+            try ctx.err.print("error: NuGet package download exceeded 50 MiB limit\n", .{});
+            return error.PayloadSizeExceeded;
+        }
         try ctx.err.print("error: failed to download NuGet package: {s}\n", .{@errorName(err)});
         return err;
     };
@@ -800,3 +889,108 @@ test "Zip extraction of right entries and traversal rejection" {
 
     try std.testing.expectError(error.ZipPathTraversal, extractLoadersFromZip(io, bad_zip_file, true, true, out_dir));
 }
+
+test "Version.parse validates format and rejects path traversal" {
+    // Valid versions
+    try std.testing.expect(Version.parse("1.0.1234.56") != null);
+    try std.testing.expect(Version.parse("1.0.0") != null);
+    try std.testing.expect(Version.parse("1.0.1234.56-prerelease") != null);
+    try std.testing.expect(Version.parse("1.0.1234.56-preview.1") != null);
+
+    // Invalid versions (traversal, invalid chars, bad separators)
+    try std.testing.expect(Version.parse("../../evil") == null);
+    try std.testing.expect(Version.parse("1.0.0/../../evil") == null);
+    try std.testing.expect(Version.parse("1.0.0\\evil") == null);
+    try std.testing.expect(Version.parse("1.0.0-foo/bar") == null);
+    try std.testing.expect(Version.parse("1.0.0-foo..bar") == null);
+    try std.testing.expect(Version.parse("1.0.0-") == null);
+    try std.testing.expect(Version.parse("1.0.0-bad*char") == null);
+}
+
+test "BoundedWriter enforces size limit" {
+    var dest_buf: [100]u8 = undefined;
+    var fixed = std.Io.Writer.fixed(&dest_buf);
+    var bounded = BoundedWriter.init(&fixed, 10, &.{});
+
+    // Writing 5 bytes succeeds
+    try bounded.writer.writeAll("hello");
+    try std.testing.expectEqual(@as(usize, 5), bounded.written);
+    try std.testing.expect(!bounded.exceeded);
+
+    // Writing 5 more bytes succeeds (total 10 == limit)
+    try bounded.writer.writeAll("world");
+    try std.testing.expectEqual(@as(usize, 10), bounded.written);
+    try std.testing.expect(!bounded.exceeded);
+
+    // Writing 1 more byte exceeds limit
+    try std.testing.expectError(error.WriteFailed, bounded.writer.writeAll("!"));
+    try std.testing.expect(bounded.exceeded);
+}
+
+test "extractLoadersFromZip rejects oversized DLL" {
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const bad_zip = try tmp.dir.createFile(io, "oversized.zip", .{ .read = true });
+    defer bad_zip.close(io);
+
+    // Write a zip where uncompressed_size > 10 MiB
+    var w_buf: [1024]u8 = undefined;
+    var w = bad_zip.writerStreaming(io, &w_buf);
+
+    const name = "runtimes/win-x64/native/WebView2Loader.dll";
+    const oversized: u32 = 11 * 1024 * 1024; // 11 MiB > 10 MiB limit
+
+    try w.interface.writeAll(&std.zip.local_file_header_sig);
+    try w.interface.writeInt(u16, 20, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u32, 0, .little);
+    try w.interface.writeInt(u32, 0, .little);
+    try w.interface.writeInt(u32, oversized, .little);
+    try w.interface.writeInt(u16, @truncate(name.len), .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeAll(name);
+
+    const cd_start = @sizeOf(std.zip.LocalFileHeader) + @as(u32, @truncate(name.len));
+    try w.interface.writeAll(&std.zip.central_file_header_sig);
+    try w.interface.writeInt(u16, 20, .little);
+    try w.interface.writeInt(u16, 20, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u32, 0, .little);
+    try w.interface.writeInt(u32, 0, .little);
+    try w.interface.writeInt(u32, oversized, .little);
+    try w.interface.writeInt(u16, @truncate(name.len), .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u32, 0, .little);
+    try w.interface.writeInt(u32, 0, .little);
+    try w.interface.writeAll(name);
+
+    const cd_size = @sizeOf(std.zip.CentralDirectoryFileHeader) + @as(u32, @truncate(name.len));
+    try w.interface.writeAll(&std.zip.end_record_sig);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.interface.writeInt(u16, 1, .little);
+    try w.interface.writeInt(u16, 1, .little);
+    try w.interface.writeInt(u32, cd_size, .little);
+    try w.interface.writeInt(u32, cd_start, .little);
+    try w.interface.writeInt(u16, 0, .little);
+    try w.end();
+
+    try tmp.dir.createDirPath(io, "out");
+    var out_dir = try tmp.dir.openDir(io, "out", .{});
+    defer out_dir.close(io);
+
+    try std.testing.expectError(error.PayloadSizeExceeded, extractLoadersFromZip(io, bad_zip, true, false, out_dir));
+}
+

@@ -10,6 +10,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Context = @import("Context.zig");
 const project = @import("project.zig");
+const init = @import("init.zig");
+const metadata = @import("package_metadata");
 
 pub const Command = struct {
     pub const summary = "Configure and register deep link URL schemes";
@@ -234,6 +236,7 @@ pub fn editBuildZig(allocator: std.mem.Allocator, source: []const u8, scheme: []
 pub fn parseSchemesFromBuildZig(allocator: std.mem.Allocator, build_zig_text: []const u8) ![][]const u8 {
     var schemes: std.ArrayList([]const u8) = .empty;
     defer schemes.deinit(allocator);
+    errdefer for (schemes.items) |s| allocator.free(s);
 
     const anchor = ".url_schemes =";
     if (std.mem.indexOf(u8, build_zig_text, anchor)) |pos| {
@@ -245,7 +248,9 @@ pub fn parseSchemesFromBuildZig(allocator: std.mem.Allocator, build_zig_text: []
             var it = std.mem.tokenizeAny(u8, inside, " \t\r\n,\"\';");
             while (it.next()) |token| {
                 if (validateScheme(token)) {
-                    try schemes.append(allocator, try allocator.dupe(u8, token));
+                    const duped = try allocator.dupe(u8, token);
+                    errdefer allocator.free(duped);
+                    try schemes.append(allocator, duped);
                 }
             }
         }
@@ -260,6 +265,7 @@ pub fn parseAppIdFromBuildZig(allocator: std.mem.Allocator, build_zig_text: []co
         const rest = build_zig_text[pos + anchor.len ..];
         var it = std.mem.tokenizeAny(u8, rest, " \t\r\n,\";");
         if (it.next()) |token| {
+            if (!init.validAppId(token)) return null;
             return allocator.dupe(u8, token) catch null;
         }
     }
@@ -269,8 +275,21 @@ pub fn parseAppIdFromBuildZig(allocator: std.mem.Allocator, build_zig_text: []co
 /// The app id from build.zig, else addApp's default `dev.oriel.<exe_name>`.
 /// Always allocated: the caller frees it.
 fn appIdOrDefault(allocator: std.mem.Allocator, build_zig_text: []const u8, exe_name: []const u8) ![]const u8 {
-    return parseAppIdFromBuildZig(allocator, build_zig_text) orelse
-        try std.fmt.allocPrint(allocator, "dev.oriel.{s}", .{exe_name});
+    const anchor = ".id =";
+    if (std.mem.indexOf(u8, build_zig_text, anchor)) |pos| {
+        const rest = build_zig_text[pos + anchor.len ..];
+        var it = std.mem.tokenizeAny(u8, rest, " \t\r\n,\";");
+        if (it.next()) |token| {
+            if (!init.validAppId(token)) return error.InvalidAppId;
+            return try allocator.dupe(u8, token);
+        }
+    }
+    const def_id = try std.fmt.allocPrint(allocator, "dev.oriel.{s}", .{exe_name});
+    if (!init.validAppId(def_id)) {
+        allocator.free(def_id);
+        return error.InvalidAppId;
+    }
+    return def_id;
 }
 
 /// Parse executable name from build.zig
@@ -372,10 +391,33 @@ fn runAdd(ctx: Context, args: []const []const u8) !u8 {
         return 0;
     }
 
-    try std.Io.Dir.cwd().writeFile(ctx.io, .{
-        .sub_path = build_zig_path,
-        .data = updated,
-    });
+    var root_dir = try std.Io.Dir.cwd().openDir(ctx.io, root, .{});
+    defer root_dir.close(ctx.io);
+
+    var rand_val: u64 = undefined;
+    ctx.io.random(std.mem.asBytes(&rand_val));
+    const temp_name = try std.fmt.allocPrint(ctx.gpa, "build.zig.tmp.{x}", .{rand_val});
+    defer ctx.gpa.free(temp_name);
+
+    const temp_file = try root_dir.createFile(ctx.io, temp_name, .{ .exclusive = true });
+    var temp_open = true;
+    var temp_exists = true;
+    defer {
+        if (temp_open) temp_file.close(ctx.io);
+        if (temp_exists) root_dir.deleteFile(ctx.io, temp_name) catch {};
+    }
+
+    var write_buf: [16 * 1024]u8 = undefined;
+    var writer = temp_file.writerStreaming(ctx.io, &write_buf);
+    try writer.interface.writeAll(updated);
+    try writer.end();
+    try temp_file.sync(ctx.io);
+
+    temp_file.close(ctx.io);
+    temp_open = false;
+
+    try root_dir.rename(temp_name, root_dir, "build.zig", ctx.io);
+    temp_exists = false;
 
     try ctx.out.print("Added scheme '{s}' and enabled deep_link in build.zig\n", .{scheme});
     return 0;
@@ -448,8 +490,19 @@ fn runRegister(ctx: Context) !u8 {
     const exe_name = parseExeNameFromBuildZig(ctx.gpa, build_zig_content) orelse try ctx.gpa.dupe(u8, "app");
     defer ctx.gpa.free(exe_name);
 
-    const app_id = try appIdOrDefault(ctx.gpa, build_zig_content, exe_name);
+    const app_id = appIdOrDefault(ctx.gpa, build_zig_content, exe_name) catch |err| {
+        if (err == error.InvalidAppId) {
+            try ctx.err.writeAll("error: invalid app_id (must be at least two dot-separated alphanumeric segments)\n");
+            return 1;
+        }
+        return err;
+    };
     defer ctx.gpa.free(app_id);
+
+    if (!init.validAppId(app_id)) {
+        try ctx.err.print("error: invalid app_id '{s}' (must be at least two dot-separated alphanumeric segments)\n", .{app_id});
+        return 1;
+    }
 
     if (builtin.os.tag == .linux) {
         const bin_path = try builtExe(ctx, root, exe_name) orelse {
@@ -471,16 +524,29 @@ fn runRegister(ctx: Context) !u8 {
         };
         defer ctx.gpa.free(data_home);
 
-        const apps_dir = try std.fmt.allocPrint(ctx.gpa, "{s}/applications", .{data_home});
+        const apps_dir = try std.fs.path.join(ctx.gpa, &.{ data_home, "applications" });
         defer ctx.gpa.free(apps_dir);
         try std.Io.Dir.cwd().createDirPath(ctx.io, apps_dir);
 
-        const desktop_file_path = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}.desktop", .{ apps_dir, app_id });
+        const desktop_file_name = try std.fmt.allocPrint(ctx.gpa, "{s}.desktop", .{app_id});
+        defer ctx.gpa.free(desktop_file_name);
+
+        const desktop_file_path = try std.fs.path.join(ctx.gpa, &.{ apps_dir, desktop_file_name });
         defer ctx.gpa.free(desktop_file_path);
+
+        const escaped_name = try metadata.escapeDesktopString(ctx.gpa, exe_name);
+        defer ctx.gpa.free(escaped_name);
+
+        const escaped_exec = try metadata.escapeDesktopExec(ctx.gpa, bin_path);
+        defer ctx.gpa.free(escaped_exec);
+
+        const escaped_app_id = try metadata.escapeDesktopString(ctx.gpa, app_id);
+        defer ctx.gpa.free(escaped_app_id);
 
         var mimetypes: std.ArrayList(u8) = .empty;
         defer mimetypes.deinit(ctx.gpa);
         for (schemes) |s| {
+            if (!validateScheme(s)) continue;
             try mimetypes.appendSlice(ctx.gpa, "x-scheme-handler/");
             try mimetypes.appendSlice(ctx.gpa, s);
             try mimetypes.append(ctx.gpa, ';');
@@ -496,7 +562,7 @@ fn runRegister(ctx: Context) !u8 {
             \\StartupWMClass={s}
             \\MimeType={s}
             \\
-        , .{ exe_name, bin_path, app_id, mimetypes.items });
+        , .{ escaped_name, escaped_exec, escaped_app_id, mimetypes.items });
         defer ctx.gpa.free(desktop_content);
 
         try std.Io.Dir.cwd().writeFile(ctx.io, .{
@@ -504,13 +570,10 @@ fn runRegister(ctx: Context) !u8 {
             .data = desktop_content,
         });
 
-        const desktop_filename = try std.fmt.allocPrint(ctx.gpa, "{s}.desktop", .{app_id});
-        defer ctx.gpa.free(desktop_filename);
-
         for (schemes) |s| {
             const mime = try std.fmt.allocPrint(ctx.gpa, "x-scheme-handler/{s}", .{s});
             defer ctx.gpa.free(mime);
-            _ = ctx.run(&.{ "xdg-mime", "default", desktop_filename, mime }, null);
+            _ = ctx.run(&.{ "xdg-mime", "default", desktop_file_name, mime }, null);
         }
 
         try ctx.out.print("Registered dev desktop handler: {s}\n", .{desktop_file_path});
@@ -579,8 +642,19 @@ fn runUnregister(ctx: Context) !u8 {
     const exe_name = parseExeNameFromBuildZig(ctx.gpa, build_zig_content) orelse try ctx.gpa.dupe(u8, "app");
     defer ctx.gpa.free(exe_name);
 
-    const app_id = try appIdOrDefault(ctx.gpa, build_zig_content, exe_name);
+    const app_id = appIdOrDefault(ctx.gpa, build_zig_content, exe_name) catch |err| {
+        if (err == error.InvalidAppId) {
+            try ctx.err.writeAll("error: invalid app_id (must be at least two dot-separated alphanumeric segments)\n");
+            return 1;
+        }
+        return err;
+    };
     defer ctx.gpa.free(app_id);
+
+    if (!init.validAppId(app_id)) {
+        try ctx.err.print("error: invalid app_id '{s}' (must be at least two dot-separated alphanumeric segments)\n", .{app_id});
+        return 1;
+    }
 
     const schemes = try parseSchemesFromBuildZig(ctx.gpa, build_zig_content);
     defer {
@@ -601,7 +675,10 @@ fn runUnregister(ctx: Context) !u8 {
         };
         defer ctx.gpa.free(data_home);
 
-        const desktop_file_path = try std.fmt.allocPrint(ctx.gpa, "{s}/applications/{s}.desktop", .{ data_home, app_id });
+        const desktop_file_name = try std.fmt.allocPrint(ctx.gpa, "{s}.desktop", .{app_id});
+        defer ctx.gpa.free(desktop_file_name);
+
+        const desktop_file_path = try std.fs.path.join(ctx.gpa, &.{ data_home, "applications", desktop_file_name });
         defer ctx.gpa.free(desktop_file_path);
 
         std.Io.Dir.cwd().deleteFile(ctx.io, desktop_file_path) catch |err| {
@@ -730,3 +807,81 @@ fn builtExe(ctx: Context, root: []const u8, exe_name: []const u8) !?[]u8 {
     }
     return null;
 }
+
+test "parseAppIdFromBuildZig validates reverse-DNS and rejects path traversal" {
+    const allocator = std.testing.allocator;
+
+    const valid_fixture =
+        \\pub fn build(b: *std.Build) void {
+        \\    _ = oriel.addApp(b, dep, .{
+        \\        .package = .{
+        \\            .id = "com.example.MyApp",
+        \\        },
+        \\    });
+        \\}
+    ;
+    const parsed = parseAppIdFromBuildZig(allocator, valid_fixture);
+    try std.testing.expect(parsed != null);
+    defer allocator.free(parsed.?);
+    try std.testing.expectEqualStrings("com.example.MyApp", parsed.?);
+
+    const traversal_fixture =
+        \\pub fn build(b: *std.Build) void {
+        \\    _ = oriel.addApp(b, dep, .{
+        \\        .package = .{
+        \\            .id = "../../.config/autostart/evil",
+        \\        },
+        \\    });
+        \\}
+    ;
+    try std.testing.expect(parseAppIdFromBuildZig(allocator, traversal_fixture) == null);
+
+    const single_element_fixture =
+        \\pub fn build(b: *std.Build) void {
+        \\    _ = oriel.addApp(b, dep, .{
+        \\        .package = .{
+        \\            .id = "singleelement",
+        \\        },
+        \\    });
+        \\}
+    ;
+    try std.testing.expect(parseAppIdFromBuildZig(allocator, single_element_fixture) == null);
+}
+
+test "parseSchemesFromBuildZig parses valid schemes" {
+    const allocator = std.testing.allocator;
+
+    const fixture =
+        \\pub fn build(b: *std.Build) void {
+        \\    _ = oriel.addApp(b, dep, .{
+        \\        .package = .{
+        \\            .url_schemes = &.{ "myapp", "custom-scheme", "123bad", "good.one" },
+        \\        },
+        \\    });
+        \\}
+    ;
+    const schemes = try parseSchemesFromBuildZig(allocator, fixture);
+    defer {
+        for (schemes) |s| allocator.free(s);
+        allocator.free(schemes);
+    }
+    try std.testing.expectEqual(@as(usize, 3), schemes.len);
+    try std.testing.expectEqualStrings("myapp", schemes[0]);
+    try std.testing.expectEqualStrings("custom-scheme", schemes[1]);
+    try std.testing.expectEqualStrings("good.one", schemes[2]);
+}
+
+test "desktop entry escaping handles spaces and special characters" {
+    const allocator = std.testing.allocator;
+
+    const bin_with_spaces = "/home/user/My Apps/bin/app";
+    const escaped_exec = try metadata.escapeDesktopExec(allocator, bin_with_spaces);
+    defer allocator.free(escaped_exec);
+    try std.testing.expectEqualStrings("\"/home/user/My Apps/bin/app\"", escaped_exec);
+
+    const name_with_newline = "My\nApp";
+    const escaped_name = try metadata.escapeDesktopString(allocator, name_with_newline);
+    defer allocator.free(escaped_name);
+    try std.testing.expectEqualStrings("My\\nApp", escaped_name);
+}
+

@@ -372,7 +372,9 @@ pub fn main(init: std.process.Init) !u8 {
     var app_bin: ?[]const u8 = null;
     var watch_pid: ?Pid = null;
     var dev_cmd: std.ArrayList([]const u8) = .empty;
+    defer dev_cmd.deinit(gpa);
     var app_args: std.ArrayList([]const u8) = .empty;
+    defer app_args.deinit(gpa);
 
     var in_dev_cmd = false;
     var in_app_args = false;
@@ -497,6 +499,7 @@ pub fn main(init: std.process.Init) !u8 {
     // are cleanly tracked and killed when reloading or exiting.
     std.debug.print("\x1b[36m[oriel dev]\x1b[0m Launching application: {s}\n", .{bin_path});
     var full_app_argv: std.ArrayList([]const u8) = .empty;
+    defer full_app_argv.deinit(gpa);
     try full_app_argv.append(gpa, bin_path);
     try full_app_argv.appendSlice(gpa, app_args.items);
 
@@ -607,6 +610,8 @@ pub fn main(init: std.process.Init) !u8 {
         };
 
         const term = build_child.wait(io) catch |err| {
+            build_child.kill(io);
+            _ = build_child.wait(io) catch {};
             std.debug.print("\x1b[31m[oriel dev]\x1b[0m Rebuild wait error: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -661,7 +666,10 @@ fn addWatchesRecursively(gpa: std.mem.Allocator, io: Io, inotify_fd: i32, dir_pa
     while (walker.next(io) catch null) |entry| {
         if (entry.kind == .directory) {
             // Ignore hidden and build directories
-            if (skipDir(entry.basename)) continue;
+            if (skipDir(entry.basename)) {
+                walker.leave(io);
+                continue;
+            }
             const full = try std.fs.path.join(gpa, &.{ dir_path, entry.path });
             defer gpa.free(full);
             const full_z = try gpa.dupeZ(u8, full);
