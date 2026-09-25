@@ -211,11 +211,13 @@ pub fn callBlock(block: id, comptime Args: type, args: Args) void {
     const lit: *BlockLiteral = @ptrCast(@alignCast(block.?));
     const params = @typeInfo(Args).@"struct".fields;
     const Fn = switch (params.len) {
+        0 => fn (*BlockLiteral) callconv(.c) void,
         1 => fn (*BlockLiteral, params[0].type) callconv(.c) void,
         2 => fn (*BlockLiteral, params[0].type, params[1].type) callconv(.c) void,
         else => @compileError("unsupported block arity"),
     };
     const f: *const Fn = @ptrCast(@alignCast(lit.invoke));
+    if (params.len == 0) return f(lit);
     @call(.auto, f, .{lit} ++ args);
 }
 

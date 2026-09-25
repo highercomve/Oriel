@@ -18,6 +18,7 @@ const Object = cocoa.Object;
 const ShellMod = @import("Shell.zig");
 const scheme_mod = @import("scheme.zig");
 const bridge_mod = @import("bridge.zig");
+const js_dialogs = @import("js_dialogs.zig");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 
@@ -418,7 +419,7 @@ pub fn WindowCreator(
                 .{ "webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:", createWebView },
                 .{ "webViewDidClose:", webViewDidClose },
                 .{ "webView:didFinishNavigation:", didFinishNavigation },
-            }));
+            } ++ js_dialogs.methods));
             message_handler = cocoa.new(BridgeImpl.handlerClass());
             scheme_handler = cocoa.new(SchemeImpl.handlerClass());
         }

@@ -66,8 +66,11 @@ pub fn addGgml(
     // Zig's Debug builds trap on C undefined behaviour; ggml does pointer
     // arithmetic on NULL on purpose (ggml_graph_nbytes sizes a graph that
     // way), so its sanitizer checks are off.
-    const c_flags = &.{ "-std=c11", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" };
-    const cpp_flags = &.{ "-std=c++17", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" };
+    // _XOPEN_SOURCE hides the BSD types (u_int, ...) that <sys/sysctl.h>
+    // needs on macOS unless _DARWIN_C_SOURCE is set too (as ggml's CMake does).
+    const darwin: []const []const u8 = if (oriel.resolved_target.?.result.os.tag.isDarwin()) &.{"-D_DARWIN_C_SOURCE"} else &.{};
+    const c_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{ "-std=c11", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" }, darwin }) catch @panic("OOM");
+    const cpp_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{ "-std=c++17", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" }, darwin }) catch @panic("OOM");
 
     // GGML base sources
     oriel.addCSourceFiles(.{
@@ -169,7 +172,7 @@ pub fn addGgml(
         oriel.addIncludePath(w.path("include"));
         oriel.addIncludePath(w.path("src"));
 
-        const whisper_flags = &.{
+        const whisper_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{
             "-std=c++17",
             "-D_GNU_SOURCE",
             "-D_XOPEN_SOURCE=600",
@@ -177,7 +180,7 @@ pub fn addGgml(
             "-fno-sanitize=undefined",
             "-DWHISPER_VERSION=\"1.9.4\"",
             "-DWHISPER_BUILD_COMMIT=\"v1.9.4\"",
-        };
+        }, darwin }) catch @panic("OOM");
 
         oriel.addCSourceFiles(.{
             .root = w.path("src"),
@@ -195,13 +198,14 @@ fn addCudaBackend(b: *std.Build, ggml_root: std.Build.LazyPath, opts: CudaOption
     const lib = link.addOutputFileArg("libggml-cuda.so");
     for (cuda_sources) |src| {
         const cc = b.addSystemCommand(&.{
-            nvcc,                  "-std=c++17",           "-O3",
-            b.fmt("-arch={s}", .{opts.arch}),
-            "-use_fast_math",      "-extended-lambda",     "-compress-mode=size",
-            "-Xcompiler",          "-fPIC -Wno-pedantic",  "-DNDEBUG",
+            nvcc,                             "-std=c++17",        "-O3",
+            b.fmt("-arch={s}", .{opts.arch}), "-use_fast_math",    "-extended-lambda",
+            "-compress-mode=size",            "-Xcompiler",        "-fPIC -Wno-pedantic",
+            "-DNDEBUG",
             // Build as a dynamically loaded backend (exports ggml_backend_init).
-            "-DGGML_BACKEND_DL",   "-DGGML_BACKEND_BUILD", "-DGGML_BACKEND_SHARED",
-            "-DGGML_SHARED",       "-DGGML_CUDA_USE_GRAPHS", "-DGGML_SCHED_MAX_COPIES=4",
+                                  "-DGGML_BACKEND_DL", "-DGGML_BACKEND_BUILD",
+            "-DGGML_BACKEND_SHARED",          "-DGGML_SHARED",     "-DGGML_CUDA_USE_GRAPHS",
+            "-DGGML_SCHED_MAX_COPIES=4",
         });
         cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "include"));
         cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "src"));

@@ -3,7 +3,8 @@
 //!
 //! Linux backend: libpulse (works on PipeWire through pipewire-pulse); the
 //! sound server resamples and downmixes. Windows backend: not implemented yet
-//! (WASAPI loopback is the plan).
+//! (WASAPI loopback is the plan). macOS backend: CoreAudio + AudioQueue
+//! (system audio through a loopback device such as BlackHole).
 
 const builtin = @import("builtin");
 pub const common = @import("audio_capture/common.zig");
@@ -17,6 +18,7 @@ pub const check = impl.check;
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("audio_capture/linux.zig"),
     .windows => @import("audio_capture/windows.zig"),
+    .macos => @import("audio_capture/macos.zig"),
     else => @compileError("audio_capture is not supported on " ++ @tagName(builtin.os.tag)),
 };
 
