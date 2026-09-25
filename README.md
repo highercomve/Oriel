@@ -87,7 +87,8 @@ downloads (minisign-verified) on first use. See [Zig versions](#zig-versions-ori
 | Command | What it does |
 |---|---|
 | `oriel init <name>` | New app in `./<name>`: `build.zig`, `build.zig.zon`, `src/main.zig` with sample `Commands`/`Events`, the frontend, and README. Adds Oriel, fetches dependencies and runs `npm install`, so the first build works offline |
-| `oriel doctor` | Checks Zig 0.16.x and Node.js + npm everywhere, plus per OS: Linux: pkg-config + GTK 4 / WebKitGTK 6.0 development files, packaging tools, tray host and GlobalShortcuts portal; macOS: the Xcode command-line tools; Windows: the WebView2 runtime and NSIS. Exits non-zero if something required is missing |
+| `oriel doctor` | Checks requirements for building and running Oriel apps (`--fix` installs non-admin tools and prints exact system commands) |
+| `oriel setup [tool]` | Installs managed tools into `~/.oriel/<tool>` without admin rights (`node`, `nsis`, `webview2`, `zig`, `all`) |
 | `oriel dev` | Runs the frontend dev server (Vite) and rebuilds + restarts the app when a `.zig` file changes (hot reload; inotify on Linux, polling on macOS and Windows) |
 | `oriel build` | Builds the production app (frontend embedded) into `zig-out/bin/` (`ReleaseSafe` by default) |
 | `oriel run` | Builds and runs the production app |
@@ -105,6 +106,30 @@ works from anywhere inside the project, found by walking up to `build.zig.zon`.
 Extra arguments are passed through to the underlying build step, e.g.
 `oriel build -Doptimize=ReleaseFast`, `oriel package -Dtarget=x86_64-windows` (which automatically supplies the cached `WebView2Loader.dll`),
 `oriel run -- --flag`.
+
+### Managed tools and setup (`oriel setup`, `oriel doctor --fix`)
+
+Oriel can download and install developer dependencies without requiring administrator or root rights:
+
+```sh
+oriel doctor --fix          # install missing non-admin tools, print exact system commands for the rest
+oriel setup all             # install all managed tools required for this OS
+oriel setup node [version]  # download and install official Node.js LTS into ~/.oriel/node/<version>
+oriel setup nsis            # Windows hosts: download official portable NSIS into ~/.oriel/nsis/3.12
+oriel setup webview2        # download and cache Microsoft WebView2Loader.dll
+oriel setup zig [version]   # alias to `oriel zig install`
+```
+
+When building, developing, or packaging (`oriel build`, `oriel dev`, `oriel run`, `oriel package`), the CLI automatically detects and uses tools installed in `~/.oriel/` (or `$ORIEL_HOME`) if they are missing from system `PATH`:
+- If `node` / `npm` are missing from `PATH`, `~/.oriel/node/<v>/bin` (or directory on Windows) is prepended to `PATH` for build subprocesses.
+- If `makensis` is missing from `PATH` when packaging for Windows, `~/.oriel/nsis/<v>/makensis.exe` is located and passed automatically.
+
+| Variable | Effect |
+|---|---|
+| `ORIEL_HOME` | Where Oriel keeps its data instead of `~/.oriel` (tools go in `$ORIEL_HOME/<tool>`) |
+| `ORIEL_MAKENSIS` | Override path to `makensis` executable |
+| `ORIEL_NSIS_PLATFORM` | Override host OS check for NSIS (e.g. `windows` for testing) |
+| `ORIEL_NODE_PLATFORM` | Override host OS check for Node.js download |
 
 ### Zig versions (`oriel zig`)
 
@@ -136,7 +161,6 @@ into place atomically under a lock file, so concurrent installs don't clash.
 | Variable | Effect |
 |---|---|
 | `ORIEL_ZIG` | Use this Zig binary (must be the project's version) |
-| `ORIEL_HOME` | Where Oriel keeps its data instead of `~/.oriel` (Zig installs go in `$ORIEL_HOME/zig`) |
 | `ORIEL_NO_ZIG_INSTALL=1` | Never download Zig: fail with a hint instead |
 | `ORIEL_ZIG_MIRRORS` | Use these mirrors (whitespace- or comma-separated https URLs) instead of the community list, e.g. a company mirror; still verified, ziglang.org stays the fallback |
 
@@ -153,6 +177,7 @@ into place atomically under a lock file, so concurrent installs don't clash.
 - `--no-install`: only record the dependency; skip fetching dependencies and
   `npm install`.
 - `--no-webview2`: skip downloading `WebView2Loader.dll` for Windows builds.
+- `--yes`: skip confirmation prompt when installing missing Node.js for Vite templates.
 
 ### Updating the CLI
 
