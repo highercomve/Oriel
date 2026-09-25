@@ -109,6 +109,11 @@ pub const bridge_js =
     \\    openExternal(url) {
     \\      return this.invoke("open_external", { url });
     \\    },
+    \\    deepLink: Object.freeze({
+    \\      current() {
+    \\        return invoke("deep_link:current", {});
+    \\      },
+    \\    }),
     \\    __emit(event, payload) {
     \\      for (const cb of listeners.get(event) ?? []) {
     \\        try { cb(payload); } catch (e) { console.error(e); }

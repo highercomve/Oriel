@@ -87,6 +87,9 @@ pub fn setMenu(items: anytype, on_action: anytype) !void {
     }
 }
 
+const build_opts = @import("build_options");
+const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
+
 pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     const dev_url: ?[]const u8 = if (config.dev) |d| d.url else null;
     const local: security.Local = comptime .{ .dev_origin = if (dev_url) |u| blk: {
@@ -109,7 +112,11 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         pub fn run(io: std.Io) u8 {
             _ = io;
             const id = if (config.dev != null) config.id ++ ".Dev" else config.id;
-            const app = gtk.Application.new(id, .{});
+            const app_flags = if (build_opts.deep_link)
+                gio.ApplicationFlags{ .handles_command_line = true }
+            else
+                gio.ApplicationFlags{};
+            const app = gtk.Application.new(id, app_flags);
             defer app.unref();
             App.gtk_app = app;
             defer App.gtk_app = null;
@@ -137,10 +144,71 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             active_create_window_fn = &Creator.createWindow;
             defer active_create_window_fn = null;
 
-            _ = gio.Application.signals.activate.connect(app, ?*anyopaque, &activate, null, .{});
-            const status = gio.Application.run(app.as(gio.Application), 0, null);
+            const gpa = std.heap.smp_allocator;
+            var argv_ptrs: std.ArrayList(?[*:0]u8) = .empty;
+            defer {
+                for (argv_ptrs.items) |p| if (p) |ptr| gpa.free(std.mem.span(ptr));
+                argv_ptrs.deinit(gpa);
+            }
+            if (App.process_args.len > 0) {
+                for (App.process_args) |arg| {
+                    const arg_z = gpa.dupeZ(u8, arg) catch break;
+                    argv_ptrs.append(gpa, arg_z.ptr) catch break;
+                }
+            } else {
+                const exe_z = gpa.dupeZ(u8, config.id) catch null;
+                if (exe_z) |ez| argv_ptrs.append(gpa, ez.ptr) catch {};
+            }
+
+            if (build_opts.deep_link) {
+                _ = gio.Application.signals.command_line.connect(app, ?*anyopaque, &onCommandLine, null, .{});
+            } else {
+                _ = gio.Application.signals.activate.connect(app, ?*anyopaque, &activate, null, .{});
+            }
+            const status = if (argv_ptrs.items.len > 0)
+                gio.Application.run(app.as(gio.Application), @intCast(argv_ptrs.items.len), @ptrCast(argv_ptrs.items.ptr))
+            else
+                gio.Application.run(app.as(gio.Application), 0, null);
             App.main_window = null;
             return if (status != 0) @intCast(status) else exit_code;
+        }
+
+        fn onCommandLine(app: *gtk.Application, cmdline: *gio.ApplicationCommandLine, _: ?*anyopaque) callconv(.c) c_int {
+            var argc: c_int = 0;
+            const argv = gio.ApplicationCommandLine.getArguments(cmdline, &argc);
+            defer glib.strfreev(@ptrCast(argv));
+
+            var maybe_url: ?[]const u8 = null;
+            if (argc > 1) {
+                var idx: usize = 1;
+                while (idx < @as(usize, @intCast(argc))) : (idx += 1) {
+                    const arg_slice = std.mem.span(argv[idx]);
+                    if (deep_link.validate(arg_slice, config.deep_link_schemes)) |_| {
+                        maybe_url = arg_slice;
+                        break;
+                    } else |_| {}
+                }
+            }
+
+            if (App.main_window) |w| {
+                w.present();
+                if (maybe_url) |url| {
+                    deep_link.deliver(url);
+                }
+                return 0;
+            }
+
+            if (maybe_url) |url| {
+                deep_link.setColdStartUrl(url);
+            }
+
+            activate(app, null);
+
+            if (maybe_url) |url| {
+                deep_link.deliver(url);
+            }
+
+            return 0;
         }
 
         fn activate(app: *gtk.Application, _: ?*anyopaque) callconv(.c) void {

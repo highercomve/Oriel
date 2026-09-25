@@ -22,6 +22,7 @@ pub const NsisOptions = struct {
     icon_path: ?[]const u8 = null,
     webview2_loader: ?[]const u8 = null,
     homepage: ?[]const u8 = null,
+    url_schemes: []const []const u8 = &.{},
 };
 
 /// Evergreen WebView2 Runtime bootstrapper download URL (Microsoft official fwlink).
@@ -220,6 +221,19 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\  !ifdef HOMEPAGE
         \\  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "URLInfoAbout" "${HOMEPAGE}"
         \\  !endif
+        \\
+    );
+
+    for (opts.url_schemes) |s| {
+        const esc_s = try metadata.escapeNsisString(allocator, s);
+        defer allocator.free(esc_s);
+        try w.print("  ; URL Protocol handler for {s}\n", .{esc_s});
+        try w.print("  WriteRegStr HKCU \"Software\\Classes\\{s}\" \"\" \"URL:${{NAME}}\"\n", .{esc_s});
+        try w.print("  WriteRegStr HKCU \"Software\\Classes\\{s}\" \"URL Protocol\" \"\"\n", .{esc_s});
+        try w.print("  WriteRegStr HKCU \"Software\\Classes\\{s}\\shell\\open\\command\" \"\" \"$\\\"$INSTDIR\\${{EXE_NAME}}.exe$\\\" $\\\"%1$\\\"\"\n", .{esc_s});
+    }
+
+    try w.writeAll(
         \\SectionEnd
         \\
         \\Section "Uninstall"
@@ -235,6 +249,15 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\
         \\  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}"
         \\
+    );
+
+    for (opts.url_schemes) |s| {
+        const esc_s = try metadata.escapeNsisString(allocator, s);
+        defer allocator.free(esc_s);
+        try w.print("  DeleteRegKey HKCU \"Software\\Classes\\{s}\"\n", .{esc_s});
+    }
+
+    try w.writeAll(
         \\  RMDir "$INSTDIR"
         \\SectionEnd
         \\
@@ -316,3 +339,34 @@ test "generateNsisScript strips .exe suffix from exe_name" {
     try testing.expect(std.mem.indexOf(u8, script, "!define EXE_NAME \"myapp\"") != null);
     try testing.expect(std.mem.indexOf(u8, script, "!define EXE_NAME \"myapp.exe\"") == null);
 }
+
+test "generateNsisScript with url_schemes" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const opts = NsisOptions{
+        .name = "My App",
+        .version = "1.0.0",
+        .publisher = "Publisher",
+        .id = "com.example.App",
+        .exe_name = "myapp",
+        .binary_src = "bin/myapp.exe",
+        .out_file = "dist/setup.exe",
+        .url_schemes = &.{ "myapp", "custom-scheme" },
+    };
+
+    const script = try generateNsisScript(allocator, opts);
+    defer allocator.free(script);
+
+    // Verify HKCU registration
+    try testing.expect(std.mem.indexOf(u8, script, "WriteRegStr HKCU \"Software\\Classes\\myapp\" \"\" \"URL:${NAME}\"") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "WriteRegStr HKCU \"Software\\Classes\\myapp\" \"URL Protocol\" \"\"") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "WriteRegStr HKCU \"Software\\Classes\\myapp\\shell\\open\\command\" \"\" \"$\\\"$INSTDIR\\${EXE_NAME}.exe$\\\" $\\\"%1$\\\"\"") != null);
+
+    try testing.expect(std.mem.indexOf(u8, script, "WriteRegStr HKCU \"Software\\Classes\\custom-scheme\" \"\" \"URL:${NAME}\"") != null);
+
+    // Verify uninstallation deletion
+    try testing.expect(std.mem.indexOf(u8, script, "DeleteRegKey HKCU \"Software\\Classes\\myapp\"") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "DeleteRegKey HKCU \"Software\\Classes\\custom-scheme\"") != null);
+}
+

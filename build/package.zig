@@ -51,6 +51,7 @@ pub const Metadata = struct {
     icon: std.Build.LazyPath,
     extra_deb_depends: []const []const u8,
     extra_rpm_depends: []const []const u8,
+    url_schemes: []const []const u8,
 };
 
 /// Build-time options specified in an app's build.zig via `addApp(..., .{ .package = .{ ... } })`.
@@ -97,6 +98,9 @@ pub const PackageOptions = struct {
 
     /// Target package formats to build. Overrides defaultFormats(os) if specified.
     formats: ?[]const Format = null,
+
+    /// Custom URL schemes handled by the application (e.g. &.{ "oriel-notes" }).
+    url_schemes: []const []const u8 = &.{},
 
     /// Extra runtime dependencies for Debian packages.
     extra_deb_depends: []const []const u8 = &.{},
@@ -162,6 +166,7 @@ pub fn addPackageSteps(
         .icon = icon,
         .extra_deb_depends = pkg_opts.extra_deb_depends,
         .extra_rpm_depends = pkg_opts.extra_rpm_depends,
+        .url_schemes = pkg_opts.url_schemes,
     };
 
     // Derive dependencies from features
@@ -229,6 +234,9 @@ pub fn addPackageSteps(
         "--startup-notify",   "true",
         "--startup-wm-class", metadata.id,
     });
+    for (metadata.url_schemes) |s| {
+        run_desktop.addArgs(&.{ "--url-scheme", s });
+    }
 
     const appimage_runtime_override = getOrDeclareAppImageRuntimeOption(b);
 
@@ -300,6 +308,9 @@ pub fn addPackageSteps(
         "--startup-notify",   "true",
         "--startup-wm-class", effective_app_id,
     });
+    for (metadata.url_schemes) |s| {
+        run_dev_desktop.addArgs(&.{ "--url-scheme", s });
+    }
 
     const run_install_desktop = b.addRunArtifact(package_tool);
     run_install_desktop.addArg("install-desktop-entry");
@@ -463,6 +474,9 @@ fn addNsis(ctx: *const Context) *std.Build.Step {
     run.addArgs(&.{ "--app-id", ctx.metadata.id });
     if (ctx.metadata.homepage) |hp| {
         run.addArgs(&.{ "--homepage", hp });
+    }
+    for (ctx.metadata.url_schemes) |s| {
+        run.addArgs(&.{ "--url-scheme", s });
     }
     run.addArg("--bin");
     run.addFileArg(ctx.exe);

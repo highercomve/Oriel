@@ -13,6 +13,7 @@ pub const DesktopOptions = struct {
     terminal: bool = false,
     startup_notify: bool = true,
     startup_wm_class: ?[]const u8 = null,
+    url_schemes: []const []const u8 = &.{},
 };
 
 /// Format desktop categories ensuring a trailing semicolon.
@@ -53,7 +54,11 @@ pub fn generateDesktop(allocator: std.mem.Allocator, opts: DesktopOptions) ![]co
 
     const escaped_exec = try metadata.escapeDesktopExec(allocator, opts.exec);
     defer allocator.free(escaped_exec);
-    try w.print("Exec={s}\n", .{escaped_exec});
+    if (opts.url_schemes.len > 0 and std.mem.indexOf(u8, opts.exec, "%u") == null and std.mem.indexOf(u8, opts.exec, "%U") == null) {
+        try w.print("Exec={s} %u\n", .{escaped_exec});
+    } else {
+        try w.print("Exec={s}\n", .{escaped_exec});
+    }
 
     const escaped_icon = try metadata.escapeDesktopString(allocator, opts.icon);
     defer allocator.free(escaped_icon);
@@ -72,6 +77,14 @@ pub fn generateDesktop(allocator: std.mem.Allocator, opts: DesktopOptions) ![]co
     const escaped_wm_class = try metadata.escapeDesktopString(allocator, wm_class);
     defer allocator.free(escaped_wm_class);
     try w.print("StartupWMClass={s}\n", .{escaped_wm_class});
+
+    if (opts.url_schemes.len > 0) {
+        try w.writeAll("MimeType=");
+        for (opts.url_schemes) |s| {
+            try w.print("x-scheme-handler/{s};", .{s});
+        }
+        try w.writeAll("\n");
+    }
 
     return try allocator.dupe(u8, out.written());
 }
@@ -135,4 +148,21 @@ test "generateDesktop escaping and validation" {
     try testing.expect(std.mem.indexOf(u8, desktop, "Name=Special \\\\ Name with \"Quotes\"\n") != null);
     try testing.expect(std.mem.indexOf(u8, desktop, "Comment=Multi-line\\ncomment with\\ttabs\n") != null);
     try testing.expect(std.mem.indexOf(u8, desktop, "Exec=\"/usr/local/bin/my special app\\\\$1\"\n") != null);
+}
+
+test "generateDesktop with url_schemes" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+
+    const desktop = try generateDesktop(gpa, .{
+        .app_id = "dev.oriel.ReactNotes",
+        .name = "React Notes",
+        .exec = "oriel-react-notes",
+        .icon = "dev.oriel.ReactNotes",
+        .url_schemes = &.{ "oriel-notes", "notes" },
+    });
+    defer gpa.free(desktop);
+
+    try testing.expect(std.mem.indexOf(u8, desktop, "Exec=oriel-react-notes %u\n") != null);
+    try testing.expect(std.mem.indexOf(u8, desktop, "MimeType=x-scheme-handler/oriel-notes;x-scheme-handler/notes;\n") != null);
 }

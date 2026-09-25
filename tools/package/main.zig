@@ -110,6 +110,8 @@ fn generateDesktopCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8
     var terminal: bool = false;
     var startup_notify: bool = true;
     var startup_wm_class: ?[]const u8 = null;
+    var url_schemes: std.ArrayList([]const u8) = .empty;
+    defer url_schemes.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -144,6 +146,9 @@ fn generateDesktopCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8
         } else if (std.mem.eql(u8, arg, "--startup-wm-class") and i + 1 < args.len) {
             i += 1;
             startup_wm_class = args[i];
+        } else if (std.mem.eql(u8, arg, "--url-scheme") and i + 1 < args.len) {
+            i += 1;
+            try url_schemes.append(gpa, args[i]);
         }
     }
 
@@ -169,6 +174,7 @@ fn generateDesktopCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8
         .terminal = terminal,
         .startup_notify = startup_notify,
         .startup_wm_class = startup_wm_class,
+        .url_schemes = url_schemes.items,
     });
     defer gpa.free(content);
 
@@ -953,6 +959,8 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
     var version: []const u8 = "0.1.0";
     var publisher: ?[]const u8 = null;
     var homepage: ?[]const u8 = null;
+    var url_schemes: std.ArrayList([]const u8) = .empty;
+    defer url_schemes.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -993,6 +1001,9 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         } else if (std.mem.eql(u8, arg, "--homepage") and i + 1 < args.len) {
             i += 1;
             homepage = args[i];
+        } else if (std.mem.eql(u8, arg, "--url-scheme") and i + 1 < args.len) {
+            i += 1;
+            try url_schemes.append(gpa, args[i]);
         }
     }
 
@@ -1095,6 +1106,7 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         .icon_path = final_icon_path,
         .webview2_loader = abs_wv2_loader,
         .homepage = homepage,
+        .url_schemes = url_schemes.items,
     });
     defer gpa.free(script_content);
     try Dir.cwd().writeFile(io, .{ .sub_path = nsi_path, .data = script_content });
@@ -1484,6 +1496,8 @@ test "packageNsisCmd builds Windows installer with makensis" {
         bin_path_z,
         "--icon",
         ico_path_z,
+        "--url-scheme",
+        "sample-scheme",
     };
 
     const status = try packageNsisCmd(allocator, io, &args);
@@ -1496,4 +1510,46 @@ test "packageNsisCmd builds Windows installer with makensis" {
     const setup_data = try Dir.cwd().readFileAlloc(io, setup_exe_path, allocator, .limited(10 * 1024 * 1024));
     defer allocator.free(setup_data);
     try std.testing.expect(setup_data.len > 1000);
+}
+
+test "generateDesktopCmd with --url-scheme" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const out_file = try std.fs.path.join(allocator, &.{ tmp_path, "test.desktop" });
+    defer allocator.free(out_file);
+    const out_file_z = try allocator.dupeZ(u8, out_file);
+    defer allocator.free(out_file_z);
+
+    const args = [_][:0]const u8{
+        "--out",
+        out_file_z,
+        "--id",
+        "dev.oriel.TestApp",
+        "--name",
+        "Test App",
+        "--exec",
+        "test-app",
+        "--icon",
+        "test-icon",
+        "--url-scheme",
+        "test-scheme",
+        "--url-scheme",
+        "oriel-custom",
+    };
+
+    const status = try generateDesktopCmd(allocator, io, &args);
+    try std.testing.expectEqual(@as(u8, 0), status);
+
+    const content = try Dir.cwd().readFileAlloc(io, out_file, allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "Exec=test-app %u\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "MimeType=x-scheme-handler/test-scheme;x-scheme-handler/oriel-custom;\n") != null);
 }

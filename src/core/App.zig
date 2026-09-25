@@ -68,7 +68,14 @@ pub const Config = struct {
     /// Development mode: load the frontend from a dev server (e.g. Vite with
     /// hot reload) instead of the embedded assets.
     dev: ?Dev = null,
+    /// Declared URL schemes handled by the application (e.g. &.{ "oriel-notes" }).
+    deep_link_schemes: []const []const u8 = &.{},
 };
+
+pub var process_args: []const []const u8 = &.{};
+pub fn setProcessArgs(args: []const []const u8) void {
+    process_args = args;
+}
 
 pub const WindowOpenMode = enum {
     main_view,
@@ -534,6 +541,11 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     const app_log = @import("log.zig");
     app_log.init(config.id);
     defer app_log.deinit();
+
+    if (build_opts.deep_link) {
+        const deep_link = @import("../modules/deep_link.zig");
+        deep_link.setDeclaredSchemes(config.deep_link_schemes);
+    }
 
     defer {
         ensureWindowsMutex();
