@@ -241,6 +241,26 @@ Every module and plugin is on by default. Pass `.<name> = false` to
 `b.dependency("oriel", ...)` to leave one out: it is then neither compiled
 nor linked.
 
+### App icon
+
+Oriel derives all platform icons from a single source PNG (1024×1024 recommended):
+
+```zig
+_ = oriel.addApp(b, dep, .{
+    .name = "my-app",
+    .root_source_file = b.path("src/main.zig"),
+    .icon = b.path("icon.png"), // optional, defaults to Oriel brand icon
+    ...
+});
+```
+
+The embedded PNG bytes are accessible in `src/main.zig` via `app.icon_bytes` (`const app = @import("oriel_app");`) and passed to `oriel.main(..., .{ .icon = app.icon_bytes, ... })`.
+
+At build time:
+- **Windows**: The PNG is converted into a multi-resolution `.ico` (16, 24, 32, 48, 64, 256) and embedded directly into the executable via a Win32 resource (`RT_GROUP_ICON`). Windows Explorer, the taskbar, window title bar, Alt-Tab, Start-menu shortcuts, and the NSIS installer/uninstaller (`DisplayIcon`) use it automatically.
+- **Linux**: Distribution packages (`.deb`, `.rpm`, `.AppImage`) install the icon into the hicolor icon theme (`/usr/share/icons/hicolor/<size>x<size>/apps/<id>.png`). The window icon name is set to the application ID. For unpackaged dev runs, `zig build desktop-entry` installs the icon into `$XDG_DATA_HOME/icons/hicolor/`.
+- **macOS**: Converted into an Apple Icon Image (`icon.icns`) for `.app` bundles, and set dynamically on the Dock via `NSApp setApplicationIconImage:` for unbundled dev runs.
+
 > **Using Oriel without the CLI**:
 > To add Oriel to an existing Zig project manually, add the dependency with:
 > ```sh

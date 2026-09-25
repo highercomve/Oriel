@@ -238,3 +238,23 @@ Measured on an Apple M1 (5.9 s clip, whisper tiny.en, incl. model load): 7.3 s o
 ### Vulkan
 
 **Not supported yet.**
+
+# App icon
+
+Every app uses a single source PNG (1024×1024 recommended) configured in `build.zig`:
+
+```zig
+_ = oriel.addApp(b, dep, .{
+    .name = "my-app",
+    .root_source_file = b.path("src/main.zig"),
+    .icon = b.path("icon.png"), // optional; defaults to Oriel brand icon
+    ...
+});
+```
+
+If not provided, Oriel's brand icon is used as a fallback so every app has a valid icon out of the box. The icon bytes are embedded into the app module (`oriel_app.icon_bytes`) so `src/main.zig` can pass them to `oriel.main(..., .{ .icon = app.icon_bytes, ... })`.
+
+At build time:
+- **Windows**: The PNG is converted into a multi-resolution `.ico` (16, 24, 32, 48, 64, 256) and embedded directly into the executable via a Win32 resource (`RT_GROUP_ICON`). Windows Explorer, the taskbar, window title bar, Alt-Tab, Start-menu shortcuts, and the NSIS installer/uninstaller (`DisplayIcon`) use it automatically.
+- **Linux**: Distribution packages (`.deb`, `.rpm`, `.AppImage`) install the icon into the hicolor icon theme (`/usr/share/icons/hicolor/<size>x<size>/apps/<id>.png`). The window icon name is set to the application ID. For unpackaged dev runs, `zig build desktop-entry` installs the icon into `$XDG_DATA_HOME/icons/hicolor/`.
+- **macOS**: Converted into an Apple Icon Image (`icon.icns`) for `.app` bundles, and set dynamically on the Dock via `NSApp setApplicationIconImage:` for unbundled dev runs.
