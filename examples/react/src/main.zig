@@ -130,6 +130,48 @@ fn setup() !void {
         },
         .on_menu = onTrayMenu,
     });
+
+    if (oriel.options.deep_link) {
+        oriel.deep_link.onOpen(onDeepLink);
+    }
+}
+
+fn onDeepLink(url: []const u8) void {
+    handleDeepLinkUrl(url) catch |err| std.log.err("deep link error: {s}", .{@errorName(err)});
+}
+
+fn handleDeepLinkUrl(url: []const u8) !void {
+    const uri = std.Uri.parse(url) catch return error.InvalidUri;
+    if (!std.mem.eql(u8, uri.scheme, "oriel-notes")) return error.DisallowedScheme;
+
+    var path_buf: [2048]u8 = undefined;
+    const raw_path = uri.path.toRaw(&path_buf) catch return error.PathTooLong;
+
+    var raw_host_buf: [256]u8 = undefined;
+    const raw_host = if (uri.host) |h| h.toRaw(&raw_host_buf) catch return error.HostTooLong else null;
+
+    var text: []const u8 = "";
+    if (raw_host) |h| {
+        if (std.mem.eql(u8, h, "note")) {
+            text = std.mem.trimStart(u8, raw_path, "/");
+        }
+    } else if (std.mem.startsWith(u8, raw_path, "/note/")) {
+        text = raw_path[6..];
+    } else if (std.mem.startsWith(u8, raw_path, "note/")) {
+        text = raw_path[5..];
+    } else {
+        return error.InvalidPath;
+    }
+
+    text = std.mem.trim(u8, text, " \t\r\n");
+    if (text.len == 0) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+    const notes = try Commands.add_note(arena.allocator(), .{ .text = text });
+    events.emit(.notes_changed, notes);
+    std.log.info("deep link added note: '{s}'", .{text});
+    oriel.App.showWindow();
 }
 
 fn onTrayMenu(id: []const u8, checked: ?bool) void {
@@ -167,5 +209,6 @@ pub fn main(init: std.process.Init) !u8 {
         .setup = setup,
         // Closing the window keeps the app in the tray.
         .on_close = .hide,
+        .deep_link_schemes = app.url_schemes,
     });
 }

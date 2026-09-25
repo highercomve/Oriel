@@ -262,12 +262,20 @@ pub fn main(init: std.process.Init) !u8 {
         return if (failed == 0) 0 else 1;
     }
 
+    if (oriel.options.deep_link) {
+        const DLHandler = struct {
+            fn handle(_: []const u8) void {}
+        };
+        oriel.deep_link.onOpen(DLHandler.handle);
+    }
+
     const config_gui: oriel.App.Config = .{
         .id = app_id,
         .title = "Oriel smoke test",
         .assets = app.assets,
         // The security checks navigate to remote URLs: never hand them to a browser.
         .security = .{ .external_links = .deny },
+        .deep_link_schemes = app.url_schemes,
     };
     comptime var config_auto = config_gui;
     config_auto.start = "index.html?auto-quit";
