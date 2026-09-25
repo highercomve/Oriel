@@ -9,6 +9,7 @@ pub const ActionCallback = common.ActionCallback;
 const backend = switch (builtin.os.tag) {
     .linux => @import("menu/linux.zig"),
     .windows => @import("menu/windows.zig"),
+    .macos => @import("menu/macos.zig"),
     else => @compileError("Unsupported platform for menu module"),
 };
 
@@ -21,5 +22,7 @@ test {
         _ = @import("menu/linux.zig");
     } else if (builtin.os.tag == .windows) {
         _ = @import("menu/windows.zig");
+    } else if (builtin.os.tag == .macos) {
+        _ = @import("menu/macos.zig");
     }
 }
