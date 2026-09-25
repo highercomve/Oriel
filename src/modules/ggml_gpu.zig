@@ -1,8 +1,9 @@
 //! GPU backends for ggml (shared by the whisper and llama modules).
 //!
-//! GPU backends are separate libraries next to the executable (built with
-//! `-Dggml_cuda`, installed by `addApp`), loaded at runtime. Without them, or
-//! without a usable GPU, ggml keeps running on the CPU backend.
+//! CUDA is a separate library next to the executable (built with
+//! `-Dggml_cuda`, installed by `addApp`), loaded at runtime; Metal (macOS)
+//! is compiled in and registers itself. Without a usable GPU, ggml keeps
+//! running on the CPU backend.
 
 const std = @import("std");
 
@@ -47,8 +48,11 @@ pub fn gpuName() ?[:0]const u8 {
     return null;
 }
 
-test "no GPU backend is registered without loading one" {
-    // The test binary has no libggml-cuda.so next to it.
-    try std.testing.expectEqual(@as(usize, 0), gpuCount());
-    try std.testing.expect(gpuName() == null);
+test "GPU count and name agree" {
+    // Linux/Windows: the test binary has no libggml-cuda.so next to it, so
+    // nothing is registered. macOS: the built-in Metal backend (default on)
+    // registers the GPU by itself.
+    const n = gpuCount();
+    try std.testing.expectEqual(n == 0, gpuName() == null);
+    if (@import("builtin").os.tag != .macos) try std.testing.expectEqual(@as(usize, 0), n);
 }

@@ -132,9 +132,11 @@ oriel build
 oriel dev              # Vite hot reload, and Zig rebuild + restart
 ```
 
-What works today, verified on macOS 15 (arm64): windows and multiple windows, the webview with embedded assets and the SPA fallback, sync and async IPC, events, the `oriel.window` API, the security policy (CSP, navigation, capabilities), `openExternal`, dev mode, SQLite and `oriel update`.
+What works today, verified on macOS 15 (arm64): windows and multiple windows, the webview with embedded assets and the SPA fallback, sync and async IPC, events, the `oriel.window` API, JS `alert`/`confirm`/`prompt`, the security policy (CSP, navigation, capabilities), `openExternal`, dev mode, `oriel update`, and every module: tray, menu bar, dialogs, notifications, settings store, clipboard, file watching, global shortcuts, input injection, updater (incl. `.app` bundles), media server, SQLite, audio capture (incl. system audio without a driver), and whisper/llama on the GPU with Metal.
 
-**In progress** (Milestone 7): the other modules (tray, menu, dialogs, notifications, store, clipboard, file watching, shortcuts, input, media server, audio capture), `.app` and `.dmg` packaging, and Metal for llama/whisper. On macOS those modules are off by default and enabling them is a build error; the tray builds as a stub so apps that use one still run.
+**Permissions:** input injection needs Accessibility, audio capture needs the Microphone permission (or System Audio Recording for system audio). macOS grants them per app bundle; an unbundled binary is attributed to the app that started it, so test these from an `.app`.
+
+**In progress** (Milestone 7): `.app` and `.dmg` packaging.
 
 # Native dependencies
 
@@ -166,7 +168,7 @@ Use `-Dcpu=baseline` for maximum portability.
 
 ## GPU acceleration
 
-### CUDA (Linux only)
+### CUDA (Linux)
 
 Compile with CUDA support for whisper and llama:
 
@@ -187,6 +189,16 @@ oriel build -Dggml_cuda -Dcuda_arch=all-major
 ```
 
 Measured speedup (11 s audio clip on RTX 4070): 3.2 s on CPU → 0.8 s on CUDA.
+
+### Metal (macOS)
+
+Built in by default on macOS (`-Dggml_metal=false` to disable). The Metal kernel sources are embedded in the executable, so no Xcode `metal` compiler step is needed; ggml compiles them for the GPU when a model loads.
+
+```sh
+oriel build -Dwhisper
+```
+
+Measured on an Apple M1 (5.9 s clip, whisper tiny.en, incl. model load): 7.3 s on CPU → about 1 s on Metal.
 
 ### Vulkan
 

@@ -8,26 +8,26 @@
 
 # Module overview
 
-| Module | Flag | Default | Linux | Windows |
-|---|---|---|---|---|
-| Tray | `tray` | on | ✓ | ✓ |
-| Updater | `updater` | on | ✓ | ✓ |
-| Media server | `media_server` | on | ✓ | ✓ |
-| SQL | `sql` | on | ✓ | ✓ |
-| File watching | `fs_watch` | on | ✓ | ✓ |
-| Dialogs | `dialog` | on | ✓ | ✓ |
-| Notifications | `notification` | on | ✓ | ✓ |
-| Settings store | `store` | on | ✓ | ✓ |
-| App menu | `menu` | on | ✓ | ✓ |
-| Global shortcuts | `global_shortcut` | on | ✓ | ✓ |
-| Input injection | `input` | on | ✓ | ✓ |
-| Clipboard | `clipboard` | on | ✓ | ✓ |
-| Vector search | `sqlite_vec` | **off** | ✓ | ✓ |
-| LLM inference | `llama` | **off** | ✓ | ✓ |
-| Speech-to-text | `whisper` | **off** | ✓ | ✓ |
-| Audio capture | `audio_capture` | **off** | ✓ (Linux only) | — |
+| Module | Flag | Default | Linux | Windows | macOS |
+|---|---|---|---|---|---|
+| Tray | `tray` | on | ✓ | ✓ | ✓ |
+| Updater | `updater` | on | ✓ | ✓ | ✓ |
+| Media server | `media_server` | on | ✓ | ✓ | ✓ |
+| SQL | `sql` | on | ✓ | ✓ | ✓ |
+| File watching | `fs_watch` | on | ✓ | ✓ | ✓ |
+| Dialogs | `dialog` | on | ✓ | ✓ | ✓ |
+| Notifications | `notification` | on | ✓ | ✓ | ✓ |
+| Settings store | `store` | on | ✓ | ✓ | ✓ |
+| App menu | `menu` | on | ✓ | ✓ | ✓ |
+| Global shortcuts | `global_shortcut` | on | ✓ | ✓ | ✓ |
+| Input injection | `input` | on | ✓ | ✓ | ✓ |
+| Clipboard | `clipboard` | on | ✓ | ✓ | ✓ |
+| Vector search | `sqlite_vec` | **off** | ✓ | ✓ | ✓ |
+| LLM inference | `llama` | **off** | ✓ | ✓ | ✓ |
+| Speech-to-text | `whisper` | **off** | ✓ | ✓ | ✓ |
+| Audio capture | `audio_capture` | **off** | ✓ | — (stub) | ✓ |
 
-All modules build for Linux and Windows. Native dependencies (`sqlite_vec`, `llama`, `whisper`, `audio_capture`) are **off by default** and opt-in via `-D` flags. To disable a default-on module, pass `-D<name>=false`.
+All modules build for Linux, Windows and macOS. Native dependencies (`sqlite_vec`, `llama`, `whisper`, `audio_capture`) are **off by default** and opt-in via `-D` flags. To disable a default-on module, pass `-D<name>=false`.
 
 # Tray icon
 
@@ -48,7 +48,7 @@ tray = try oriel.tray.Tray.create(gpa, .{
 });
 ```
 
-**Platform support:** Linux (StatusNotifierItem + DBusMenu) · Windows (Shell_NotifyIconW) · macOS planned.
+**Platform support:** Linux (StatusNotifierItem + DBusMenu) · Windows (Shell_NotifyIconW) · macOS (`NSStatusItem`; right-click opens the menu).
 
 # Updater
 
@@ -71,7 +71,7 @@ pub const Commands = struct {
 
 See [Code signing]($link.page('docs/signing')) for key generation and signing updates.
 
-**Platform support:** Linux · Windows (tested under Wine) · macOS planned.
+**Platform support:** Linux · Windows (tested under Wine) · macOS (plain executables, and whole `.app` bundles with the `app.tar.gz` format, swapped atomically).
 
 # Media server
 
@@ -89,7 +89,7 @@ defer media.stop();
 
 Also available at `app://app/media/<path>` for fetch requests (WebKitGTK's media player requires http(s), so use the TCP server for `<video>` tags).
 
-**Platform support:** Linux · Windows (tested under Wine) · macOS planned.
+**Platform support:** Linux · Windows (tested under Wine) · macOS (`app://app/media/` streamed through `WKURLSchemeHandler`).
 
 # SQL and SQLite
 
@@ -104,7 +104,7 @@ defer stmt.finalize();
 _ = try stmt.step();
 ```
 
-**Platform support:** Linux · Windows · macOS planned.
+**Platform support:** Linux · Windows · macOS.
 
 ## Vector search (`-Dsqlite_vec`)
 
@@ -129,7 +129,7 @@ Monitor directories for file changes and receive events:
 try oriel.fs_watch.watch(gpa, "/home/me/Documents", onFileChange);
 ```
 
-**Platform support:** Linux · Windows · macOS planned.
+**Platform support:** Linux (inotify) · Windows (`ReadDirectoryChangesW`) · macOS (FSEvents).
 
 # Dialogs
 
@@ -142,7 +142,7 @@ const file = try oriel.dialog.openFile(gpa, .{
 });
 ```
 
-**Platform support:** Linux (`GtkFileDialog`) · Windows (`IFileOpenDialog`) · macOS planned.
+**Platform support:** Linux (`GtkFileDialog`) · Windows (`IFileOpenDialog`) · macOS (`NSOpenPanel` / `NSSavePanel`).
 
 # Notifications
 
@@ -155,11 +155,11 @@ try oriel.notification.notify(.{
 });
 ```
 
-**Platform support:** Linux (`GNotification`) · Windows (balloon tooltips) · macOS planned.
+**Platform support:** Linux (`GNotification`) · Windows (balloon tooltips) · macOS (`UNUserNotificationCenter` in an `.app`; `osascript` fallback when unbundled).
 
 # Settings store
 
-Thread-safe JSON key-value store with atomic writes. Standard directories per OS (XDG on Linux, Known Folders on Windows):
+Thread-safe JSON key-value store with atomic writes. Standard directories per OS (XDG on Linux, Known Folders on Windows, `~/Library/Application Support` and `~/Library/Caches` on macOS):
 
 ```zig
 var store = try oriel.store.Store.open(gpa, "dev.example.App", "settings");
@@ -172,7 +172,7 @@ const theme = store.getString("theme");
 
 Also provides `configDir`, `dataDir`, `cacheDir` helpers.
 
-**Platform support:** Linux · Windows · macOS planned.
+**Platform support:** Linux · Windows · macOS.
 
 # App menu bar
 
@@ -188,7 +188,7 @@ try oriel.App.setMenu(&.{
 }, onMenuAction);
 ```
 
-**Platform support:** Linux (`GMenuModel`) · Windows (Win32 menus; tested under Wine) · macOS planned.
+**Platform support:** Linux (`GMenuModel`) · Windows (Win32 menus; tested under Wine) · macOS (`NSMenu`, between the default App and Edit/Window menus; `<Ctrl>` becomes ⌘).
 
 # Global shortcuts
 
@@ -202,7 +202,7 @@ try oriel.global_shortcut.register(gpa, .{
 }, &onHotkey);
 ```
 
-**Platform support:** Linux (Wayland GlobalShortcuts portal + X11 XGrabKey) · Windows (`RegisterHotKey`; tested under Wine) · macOS planned.
+**Platform support:** Linux (Wayland GlobalShortcuts portal + X11 XGrabKey) · Windows (`RegisterHotKey`; tested under Wine) · macOS (Carbon `RegisterEventHotKey`, no permission needed).
 
 # Input injection
 
@@ -213,7 +213,7 @@ try oriel.input.typeText("Hello from Zig!");
 try oriel.input.keyCombo("ctrl+v");
 ```
 
-**Platform support:** Linux (Wayland virtual-keyboard + X11 XTest) · Windows (`SendInput`; tested under Wine) · macOS planned.
+**Platform support:** Linux (Wayland virtual-keyboard + X11 XTest) · Windows (`SendInput`; tested under Wine) · macOS (`CGEvent`; needs the Accessibility permission, else `error.AccessibilityNotGranted`).
 
 # Clipboard
 
@@ -224,7 +224,7 @@ const text = try oriel.clipboard.readText(gpa);
 try oriel.clipboard.writeText("New content");
 ```
 
-**Platform support:** Linux (Wayland data-control + X11 GdkClipboard) · Windows · macOS planned.
+**Platform support:** Linux (Wayland data-control + X11 GdkClipboard) · Windows · macOS (`NSPasteboard`).
 
 # Local AI inference
 
@@ -244,7 +244,7 @@ Build time: ~45 seconds cold; cached builds are fast. CPU features auto-detected
 
 **Status:** Opt-in with `-Dllama`. Default: off.
 
-**GPU:** CUDA on Linux with `-Dggml_cuda`.
+**GPU:** CUDA on Linux with `-Dggml_cuda`; Metal on macOS (on by default).
 
 ## Speech recognition (`-Dwhisper`)
 
@@ -276,21 +276,24 @@ Measured speedup on RTX 4070 (11 s audio): 3.2 s on CPU → 0.8 s on CUDA.
 
 Requires the CUDA toolkit and an NVIDIA GPU at runtime; CPU fallback works.
 
+## Metal acceleration (macOS)
+
+On macOS, ggml's Metal backend is built in by default (`-Dggml_metal=false` turns it off); the kernel sources are embedded, so no Xcode `metal` compiler is needed. Measured on an Apple M1 (5.9 s clip, tiny.en, incl. model load): 7.3 s on CPU → about 1 s on Metal.
+
 # Audio capture
 
-Record system audio and microphone input for real-time processing.
+Record microphones and system audio as mono `f32` samples (16 kHz for whisper).
 
 ```zig
-var capture = try oriel.audio_capture.Capture.start(gpa, .{
-    .sample_rate = 16000,
-    .format = .f32,
-    .channels = 1,
-});
-defer capture.stop();
+const sources = try oriel.audio_capture.listSources(gpa); // .name, .description, .monitor (system audio)
+defer oriel.audio_capture.freeSources(gpa, sources);
 
-const samples = try capture.read(gpa);  // f32 samples
+var stream = try oriel.audio_capture.Stream.open(sources[0].name, "My App", 16000);
+defer stream.close();
+var buf: [1600]f32 = undefined; // 100 ms
+try stream.read(&buf); // blocks until full
 ```
 
-**Platform support:** Linux (PulseAudio) only. Windows stub available; real WASAPI loopback planned.
+**Platform support:** Linux (PulseAudio / PipeWire; system audio through monitor sources) · macOS (CoreAudio; "System audio (all apps)" through a Core Audio process tap on macOS 14.2+, no driver; needs the Microphone or System Audio Recording permission) · Windows stub (WASAPI loopback planned).
 
 **Status:** Opt-in with `-Daudio_capture`. Default: off.
