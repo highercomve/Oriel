@@ -501,6 +501,37 @@ from Linux needs Apple's SDK frameworks).
    permissions; the memory-safety review (rule 9) covers Objective-C
    refcounts (retain/release, autorelease pools) like COM and GObject.
 
+## Milestone 8 — Deep links (opt-in)
+
+Open the app from a browser or any shared link (`myapp://path?x=1`), like
+Tauri's deep-link plugin. Opt-in module, activated by the app developer with
+code plus the CLI; all three OSes (rule 11).
+
+- **API:** `-Ddeep_link` dependency option; `package.url_schemes` in addApp;
+  `oriel.deep_link.onOpen(fn (url: []const u8) void)` (main thread);
+  JS: event `deep-link` `{ url }` and `oriel.deepLink.current()` (the URL
+  that launched the app, if any). Typed in the generated TS.
+- **CLI:** `oriel deep-link add <scheme>` edits build.zig (enable module +
+  scheme); `oriel deep-link register` registers the dev build locally
+  (Linux .desktop + xdg-mime, Windows HKCU, macOS: n/a without a bundle);
+  `oriel package` registers the scheme in every installer automatically.
+- **Linux:** .desktop `MimeType=x-scheme-handler/<scheme>` in deb/rpm/AppImage,
+  `xdg-mime default`; URL arrives in argv; GTK single-instance forwards it to
+  the running instance (`open`/command-line signal).
+- **Windows:** NSIS writes `HKCU\Software\Classes\<scheme>` (URL Protocol,
+  `shell\open\command "exe" "%1"`), removed on uninstall; single-instance
+  mutex + WM_COPYDATA forwarding to the running window.
+- **macOS:** `CFBundleURLTypes` in Info.plist (needs Milestone 7 step 3
+  `.app` bundles); Apple Events `kAEGetURL` / `application:openURLs:`.
+- **Security:** URLs are untrusted input: only declared schemes, length
+  limit, no control characters, handed to the app as data; never navigated
+  or evaluated automatically.
+- **Tests:** URL validation unit tests; Linux headless `xdg-open myapp://…`
+  reaching a running and a cold-started app; Windows PC via the browser;
+  macOS once bundles exist. Smoke checks where possible.
+- **Order:** after `oriel webview2`; Linux + Windows first, macOS after M7
+  step 3.
+
 ## Later
 
 - Tauri's isolation pattern.
