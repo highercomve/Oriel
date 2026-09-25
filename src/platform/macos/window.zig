@@ -19,6 +19,7 @@ const ShellMod = @import("Shell.zig");
 const scheme_mod = @import("scheme.zig");
 const bridge_mod = @import("bridge.zig");
 const js_dialogs = @import("js_dialogs.zig");
+const permissions = @import("../../core/permissions.zig");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 
@@ -442,6 +443,7 @@ pub fn WindowCreator(
                 .{ "webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:", createWebView },
                 .{ "webViewDidClose:", webViewDidClose },
                 .{ "webView:didFinishNavigation:", didFinishNavigation },
+                .{ "webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:", requestMediaCapture },
             } ++ js_dialogs.methods));
             message_handler = cocoa.new(BridgeImpl.handlerClass());
             scheme_handler = cocoa.new(SchemeImpl.handlerClass());
@@ -503,6 +505,16 @@ pub fn WindowCreator(
             wk_config.msgSend(void, "setURLSchemeHandler:forURLScheme:", .{ scheme_handler, scheme_name });
             const content = wk_config.msgSend(Object, "userContentController", .{});
             try BridgeImpl.setupUserContent(content, message_handler, options.label);
+            // getUserMedia: WKWebView only exposes navigator.mediaDevices with
+            // this (private, long-standing) preference on. Enabled only for
+            // apps that declare the microphone or camera; every request still
+            // goes through requestMediaCapture (allowForPage), then TCC.
+            if (comptime (config.permissions.has(.microphone) or config.permissions.has(.camera))) {
+                const prefs = wk_config.msgSend(Object, "preferences", .{});
+                if (prefs.getClass().?.respondsToSelector(objc.sel("_setMediaDevicesEnabled:"))) {
+                    prefs.msgSend(void, "_setMediaDevicesEnabled:", .{cocoa.boolean(true)});
+                }
+            }
 
             const view = cocoa.class("WKWebView").msgSend(Object, "alloc", .{})
                 .msgSend(Object, "initWithFrame:configuration:", .{ rect, wk_config });
@@ -557,6 +569,47 @@ pub fn WindowCreator(
         fn isUserGesture(action: Object) bool {
             const kind = action.msgSend(isize, "navigationType", .{});
             return kind == nav_link_activated or kind == nav_form_submitted;
+        }
+
+        /// getUserMedia (WKUIDelegate, macOS 12+): granted only when the app
+        /// declares every requested device and the page's origin is trusted
+        /// (permissions.allowForPage); TCC then asks the user on first use.
+        fn requestMediaCapture(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, origin_id: cocoa.id, frame_id: cocoa.id, capture_type: i64, handler: cocoa.id) callconv(.c) void {
+            const pool = objc.AutoreleasePool.init();
+            defer pool.deinit();
+            // WKMediaCaptureType: camera 0, microphone 1, camera and microphone 2.
+            const kinds: []const permissions.Kind = switch (capture_type) {
+                0 => &.{.camera},
+                1 => &.{.microphone},
+                2 => &.{ .camera, .microphone },
+                else => &.{},
+            };
+            var url_buf: [1024]u8 = undefined;
+            const page = frameUrl(&url_buf, frame_id, origin_id);
+            var allow = kinds.len > 0;
+            for (kinds) |k| {
+                if (!permissions.allowForPage(k, local, page)) allow = false;
+            }
+            // WKPermissionDecision: grant 1, deny 2.
+            cocoa.callBlock(handler, struct { isize }, .{if (allow) 1 else 2});
+        }
+
+        /// The requesting frame's URL, else `scheme://host[:port]` from its
+        /// WKSecurityOrigin (borrowed / in `buf`).
+        fn frameUrl(buf: []u8, frame_id: cocoa.id, origin_id: cocoa.id) []const u8 {
+            if (frame_id != null) {
+                const req = (Object{ .value = frame_id }).msgSend(Object, "request", .{});
+                if (req.value != null) if (cocoa.urlString(req.msgSend(Object, "URL", .{}))) |u| if (u.len > 0) return u;
+            }
+            if (origin_id == null) return "";
+            const origin: Object = .{ .value = origin_id };
+            const scheme = cocoa.utf8(origin.msgSend(Object, "protocol", .{})) orelse return "";
+            const host = cocoa.utf8(origin.msgSend(Object, "host", .{})) orelse return "";
+            const port = origin.msgSend(isize, "port", .{});
+            return (if (port > 0)
+                std.fmt.bufPrint(buf, "{s}://{s}:{d}/", .{ scheme, host, port })
+            else
+                std.fmt.bufPrint(buf, "{s}://{s}/", .{ scheme, host })) catch "";
         }
 
         fn decidePolicy(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, action_id: cocoa.id, handler: cocoa.id) callconv(.c) void {
