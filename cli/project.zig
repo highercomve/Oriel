@@ -67,16 +67,21 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
         }
     }
 
-    // Check if we need to auto-inject -Dwebview2-loader
+    // Check if we need to auto-inject arguments
     var effective_args = args;
-    var injected_args_buf: ?[]const []const u8 = null;
-    defer if (injected_args_buf) |ia| {
-        if (ia.len > 0) ctx.gpa.free(ia[ia.len - 1]);
-        ctx.gpa.free(ia);
-    };
+    var injected_strings: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (injected_strings.items) |s| ctx.gpa.free(s);
+        injected_strings.deinit(ctx.gpa);
+    }
+    var allocated_slices: std.ArrayList([]const []const u8) = .empty;
+    defer {
+        for (allocated_slices.items) |sl| ctx.gpa.free(sl);
+        allocated_slices.deinit(ctx.gpa);
+    }
 
     const is_build_like_step = if (step) |s|
-        (std.mem.eql(u8, s, "run") or std.mem.eql(u8, s, "package") or std.mem.eql(u8, s, "dev"))
+        (std.mem.eql(u8, s, "run") or std.mem.eql(u8, s, "package") or std.mem.eql(u8, s, "dev") or std.mem.eql(u8, s, "check"))
     else
         true;
 
@@ -86,9 +91,11 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
             const maybe_cached = try webview2.findNewestCached(ctx.gpa, ctx.io, ctx.environ, arch_name);
             if (maybe_cached) |cached| {
                 defer cached.deinit(ctx.gpa);
-                const injected = try injectLoaderArg(ctx.gpa, args, cached.path);
-                injected_args_buf = injected;
-                effective_args = injected;
+                const arg_str = try std.fmt.allocPrint(ctx.gpa, "-Dwebview2-loader={s}", .{cached.path});
+                try injected_strings.append(ctx.gpa, arg_str);
+                const new_args = try injectBuildArg(ctx.gpa, effective_args, arg_str);
+                try allocated_slices.append(ctx.gpa, new_args);
+                effective_args = new_args;
             } else {
                 const no_fetch = if (ctx.environ.get("ORIEL_NO_WEBVIEW2_FETCH")) |v|
                     std.mem.eql(u8, v, "1")
@@ -105,13 +112,30 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
                     };
                     if (try webview2.findNewestCached(ctx.gpa, ctx.io, ctx.environ, arch_name)) |newly_cached| {
                         defer newly_cached.deinit(ctx.gpa);
-                        const injected = try injectLoaderArg(ctx.gpa, args, newly_cached.path);
-                        injected_args_buf = injected;
-                        effective_args = injected;
+                        const arg_str = try std.fmt.allocPrint(ctx.gpa, "-Dwebview2-loader={s}", .{newly_cached.path});
+                        try injected_strings.append(ctx.gpa, arg_str);
+                        const new_args = try injectBuildArg(ctx.gpa, effective_args, arg_str);
+                        try allocated_slices.append(ctx.gpa, new_args);
+                        effective_args = new_args;
                     }
                 }
             }
         }
+    }
+
+    // Default production builds (build, package, run) to -Doptimize=ReleaseSafe if not specified,
+    // so build and package share the same optimize option and do not rebuild.
+    const is_prod_step = if (step) |s|
+        (std.mem.eql(u8, s, "run") or std.mem.eql(u8, s, "package"))
+    else
+        true;
+
+    if (is_prod_step and !hasOptimizeArg(effective_args)) {
+        const opt_arg = try ctx.gpa.dupe(u8, "-Doptimize=ReleaseSafe");
+        try injected_strings.append(ctx.gpa, opt_arg);
+        const new_args = try injectBuildArg(ctx.gpa, effective_args, opt_arg);
+        try allocated_slices.append(ctx.gpa, new_args);
+        effective_args = new_args;
     }
 
     // Child environment with managed tools configured
@@ -175,19 +199,34 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
         }
     }
 
+    if (is_build_like_step) {
+        if (isColdBuild(ctx.io, root)) {
+            try ctx.err.print("Building with Zig {s}… (the first build compiles dependencies and can take a few minutes)\n", .{want});
+        } else {
+            try ctx.err.print("Building with Zig {s}…\n", .{want});
+        }
+        ctx.flush();
+    }
+
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(ctx.gpa);
     try argv.appendSlice(ctx.gpa, &.{ zig, "build" });
     if (step) |s| try argv.append(ctx.gpa, s);
     try argv.appendSlice(ctx.gpa, effective_args);
 
-    // Windows can't replace a process: run zig as a child instead (Ctrl-C
-    // reaches both, as they share the console) and pass its exit code on.
-    if (!std.process.can_replace) {
-        return ctx.runWithEnv(argv.items, root, &child_env) orelse {
+    const is_package_step = step != null and std.mem.eql(u8, step.?, "package");
+    const is_build_step = step == null;
+    const should_print_outputs = is_build_step or is_package_step;
+
+    if (should_print_outputs or !std.process.can_replace) {
+        const code = ctx.runWithEnv(argv.items, root, &child_env) orelse {
             if (try ctx.findExecutable(zig)) |found| ctx.gpa.free(found) else try ctx.err.writeAll("Install Zig 0.16 or set ORIEL_ZIG; `oriel doctor` checks the setup.\n");
             return 1;
         };
+        if (code == 0 and should_print_outputs) {
+            try printBuildOutputs(ctx, root, is_package_step);
+        }
+        return code;
     }
 
     std.process.setCurrentPath(ctx.io, root) catch |e| {
@@ -262,21 +301,169 @@ pub fn needsLoaderInjection(
     }
 }
 
-/// Pure function to insert -Dwebview2-loader=<loader_path> before "--" (or at end if no "--").
-pub fn injectLoaderArg(gpa: std.mem.Allocator, args: []const []const u8, loader_path: []const u8) ![]const []const u8 {
-    const loader_arg = try std.fmt.allocPrint(gpa, "-Dwebview2-loader={s}", .{loader_path});
-    errdefer gpa.free(loader_arg);
+/// Pure function to insert an argument before "--" (or at end if no "--").
+pub fn injectBuildArg(gpa: std.mem.Allocator, args: []const []const u8, arg: []const u8) ![]const []const u8 {
     const new_args = try gpa.alloc([]const u8, args.len + 1);
-
     const dash_dash_idx = findDashDash(args);
     for (args[0..dash_dash_idx], 0..) |a, idx| {
         new_args[idx] = a;
     }
-    new_args[dash_dash_idx] = loader_arg;
+    new_args[dash_dash_idx] = arg;
     for (args[dash_dash_idx..], 0..) |a, idx| {
         new_args[dash_dash_idx + 1 + idx] = a;
     }
     return new_args;
+}
+
+/// Pure function to insert -Dwebview2-loader=<loader_path> before "--" (or at end if no "--").
+pub fn injectLoaderArg(gpa: std.mem.Allocator, args: []const []const u8, loader_path: []const u8) ![]const []const u8 {
+    const loader_arg = try std.fmt.allocPrint(gpa, "-Dwebview2-loader={s}", .{loader_path});
+    errdefer gpa.free(loader_arg);
+    return injectBuildArg(gpa, args, loader_arg);
+}
+
+pub fn hasOptimizeArg(args: []const []const u8) bool {
+    const dash_dash_idx = findDashDash(args);
+    for (args[0..dash_dash_idx]) |arg| {
+        if (std.mem.startsWith(u8, arg, "-Doptimize=") or std.mem.eql(u8, arg, "-Doptimize")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+pub fn isColdBuild(io: std.Io, root: []const u8) bool {
+    var root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return true;
+    defer root_dir.close(io);
+    var cache_dir = root_dir.openDir(io, ".zig-cache", .{ .iterate = true }) catch return true;
+    defer cache_dir.close(io);
+    var it = cache_dir.iterate();
+    if (it.next(io) catch null) |entry| {
+        _ = entry;
+        return false;
+    }
+    return true;
+}
+
+pub fn findBuiltArtifacts(gpa: std.mem.Allocator, io: std.Io, root: []const u8) ![][]const u8 {
+    var root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return try gpa.alloc([]const u8, 0);
+    defer root_dir.close(io);
+
+    var bin_dir = root_dir.openDir(io, "zig-out/bin", .{ .iterate = true }) catch return try gpa.alloc([]const u8, 0);
+    defer bin_dir.close(io);
+
+    var list: std.ArrayList([]const u8) = .empty;
+    defer list.deinit(gpa);
+    errdefer {
+        for (list.items) |item| gpa.free(item);
+    }
+
+    var it = bin_dir.iterate();
+    var has_non_dev = false;
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .directory) continue;
+        const name = entry.name;
+        if (builtin.os.tag == .windows) {
+            if (!std.ascii.endsWithIgnoreCase(name, ".exe")) continue;
+        } else {
+            if (std.mem.endsWith(u8, name, ".dll") or
+                std.mem.endsWith(u8, name, ".so") or
+                std.mem.endsWith(u8, name, ".dylib") or
+                std.mem.endsWith(u8, name, ".a") or
+                std.mem.endsWith(u8, name, ".pdb") or
+                std.mem.endsWith(u8, name, ".dbg")) continue;
+        }
+        const stem = if (builtin.os.tag == .windows and std.ascii.endsWithIgnoreCase(name, ".exe"))
+            name[0 .. name.len - 4]
+        else
+            name;
+        if (!std.mem.endsWith(u8, stem, "-dev")) {
+            has_non_dev = true;
+        }
+        const rel_path = try std.fs.path.join(gpa, &.{ "zig-out", "bin", name });
+        try list.append(gpa, rel_path);
+    }
+
+    var filtered: std.ArrayList([]const u8) = .empty;
+    defer filtered.deinit(gpa);
+    errdefer {
+        for (filtered.items) |item| gpa.free(item);
+    }
+
+    for (list.items) |p| {
+        const base = std.fs.path.basename(p);
+        const stem = if (builtin.os.tag == .windows and std.ascii.endsWithIgnoreCase(base, ".exe"))
+            base[0 .. base.len - 4]
+        else
+            base;
+        if (has_non_dev and std.mem.endsWith(u8, stem, "-dev")) {
+            gpa.free(p);
+        } else {
+            try filtered.append(gpa, p);
+        }
+    }
+
+    const items = try filtered.toOwnedSlice(gpa);
+    std.mem.sort([]const u8, items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+    return items;
+}
+
+pub fn findPackageArtifacts(gpa: std.mem.Allocator, io: std.Io, root: []const u8) ![][]const u8 {
+    var root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return try gpa.alloc([]const u8, 0);
+    defer root_dir.close(io);
+
+    var pkg_dir = root_dir.openDir(io, "zig-out/package", .{ .iterate = true }) catch return try gpa.alloc([]const u8, 0);
+    defer pkg_dir.close(io);
+
+    var list: std.ArrayList([]const u8) = .empty;
+    defer list.deinit(gpa);
+    errdefer {
+        for (list.items) |item| gpa.free(item);
+    }
+
+    var it = pkg_dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (std.mem.startsWith(u8, entry.name, ".")) continue;
+        const rel_path = try std.fs.path.join(gpa, &.{ "zig-out", "package", entry.name });
+        try list.append(gpa, rel_path);
+    }
+
+    const items = try list.toOwnedSlice(gpa);
+    std.mem.sort([]const u8, items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+    return items;
+}
+
+pub fn printBuildOutputs(ctx: Context, root: []const u8, is_package_step: bool) !void {
+    const built = try findBuiltArtifacts(ctx.gpa, ctx.io, root);
+    defer {
+        for (built) |b| ctx.gpa.free(b);
+        ctx.gpa.free(built);
+    }
+    for (built) |exe_path| {
+        try ctx.out.print("Built: {s}\n", .{exe_path});
+    }
+
+    if (is_package_step) {
+        const pkgs = try findPackageArtifacts(ctx.gpa, ctx.io, root);
+        defer {
+            for (pkgs) |p| ctx.gpa.free(p);
+            ctx.gpa.free(pkgs);
+        }
+        if (pkgs.len > 0) {
+            const formatted = try std.mem.join(ctx.gpa, ", ", pkgs);
+            defer ctx.gpa.free(formatted);
+            try ctx.out.print("Packages: {s}\n", .{formatted});
+        }
+    }
+    ctx.flush();
 }
 
 test findRoot {
@@ -448,4 +635,108 @@ test isPackagingForWindows {
     try std.testing.expect(isPackagingForWindows(&.{"-Dtarget=x86_64-windows"}, .linux));
     try std.testing.expect(isPackagingForWindows(&.{"-Dtarget=aarch64-windows"}, .macos));
     try std.testing.expect(!isPackagingForWindows(&.{"-Dtarget=x86_64-linux"}, .windows));
+}
+
+test "output-path listing" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+
+    try tmp.dir.createDirPath(io, "zig-out/bin");
+    try tmp.dir.createDirPath(io, "zig-out/package");
+
+    // Empty outputs
+    const empty_built = try findBuiltArtifacts(gpa, io, root);
+    defer {
+        for (empty_built) |b| gpa.free(b);
+        gpa.free(empty_built);
+    }
+    try std.testing.expectEqual(@as(usize, 0), empty_built.len);
+
+    const empty_pkg = try findPackageArtifacts(gpa, io, root);
+    defer {
+        for (empty_pkg) |p| gpa.free(p);
+        gpa.free(empty_pkg);
+    }
+    try std.testing.expectEqual(@as(usize, 0), empty_pkg.len);
+
+    // Populate bin files
+    if (builtin.os.tag == .windows) {
+        try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/bin/my-app.exe", .data = "exe" });
+        try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/bin/my-app-dev.exe", .data = "dev" });
+        try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/bin/WebView2Loader.dll", .data = "dll" });
+        try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/bin/my-app.pdb", .data = "pdb" });
+    } else {
+        try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/bin/my-app", .data = "exe" });
+        try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/bin/my-app-dev", .data = "dev" });
+        try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/bin/libmy-app.so", .data = "so" });
+        try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/bin/my-app.pdb", .data = "pdb" });
+    }
+
+    const built = try findBuiltArtifacts(gpa, io, root);
+    defer {
+        for (built) |b| gpa.free(b);
+        gpa.free(built);
+    }
+    try std.testing.expectEqual(@as(usize, 1), built.len);
+    const expected_exe = if (builtin.os.tag == .windows) "zig-out/bin/my-app.exe" else "zig-out/bin/my-app";
+    try std.testing.expectEqualStrings(expected_exe, built[0]);
+
+    // Populate package files
+    try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/package/my-app.deb", .data = "deb" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/package/my-app.rpm", .data = "rpm" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "zig-out/package/.hidden", .data = "hidden" });
+
+    const pkgs = try findPackageArtifacts(gpa, io, root);
+    defer {
+        for (pkgs) |p| gpa.free(p);
+        gpa.free(pkgs);
+    }
+    try std.testing.expectEqual(@as(usize, 2), pkgs.len);
+    try std.testing.expectEqualStrings("zig-out/package/my-app.deb", pkgs[0]);
+    try std.testing.expectEqualStrings("zig-out/package/my-app.rpm", pkgs[1]);
+}
+
+test "optimize argument injection" {
+    const gpa = std.testing.allocator;
+
+    try std.testing.expect(!hasOptimizeArg(&.{}));
+    try std.testing.expect(!hasOptimizeArg(&.{ "run", "--", "-Doptimize=ReleaseFast" }));
+    try std.testing.expect(hasOptimizeArg(&.{"-Doptimize=ReleaseSafe"}));
+    try std.testing.expect(hasOptimizeArg(&.{"-Doptimize=Debug"}));
+    try std.testing.expect(hasOptimizeArg(&.{"-Doptimize"}));
+
+    const args = [_][]const u8{ "run", "--", "app_arg" };
+    const injected = try injectBuildArg(gpa, &args, "-Doptimize=ReleaseSafe");
+    defer gpa.free(injected);
+    try std.testing.expectEqual(@as(usize, 4), injected.len);
+    try std.testing.expectEqualStrings("run", injected[0]);
+    try std.testing.expectEqualStrings("-Doptimize=ReleaseSafe", injected[1]);
+    try std.testing.expectEqualStrings("--", injected[2]);
+    try std.testing.expectEqualStrings("app_arg", injected[3]);
+}
+
+test "isColdBuild detection" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+
+    // No .zig-cache dir -> cold
+    try std.testing.expect(isColdBuild(io, root));
+
+    // Empty .zig-cache dir -> cold
+    try tmp.dir.createDirPath(io, ".zig-cache");
+    try std.testing.expect(isColdBuild(io, root));
+
+    // .zig-cache with entry -> not cold
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zig-cache/cache-entry", .data = "cache" });
+    try std.testing.expect(!isColdBuild(io, root));
 }
