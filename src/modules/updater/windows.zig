@@ -129,7 +129,6 @@ test "pure windows updater helpers" {
     const old_path = try buildOldPath(allocator, "C:\\Program Files\\App\\app.exe");
     defer allocator.free(old_path);
     try std.testing.expectEqualStrings("C:\\Program Files\\App\\app.exe.old", old_path);
-
 }
 
 test {

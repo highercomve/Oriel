@@ -145,6 +145,7 @@ pub fn isValidFormat(format: []const u8) bool {
         "appimage",
         "appimage.gz",
         "gzip",
+        "app.tar.gz",
     };
     for (valid) |v| {
         if (std.mem.eql(u8, format, v)) return true;
@@ -157,7 +158,15 @@ pub fn isAppImageFormat(format: []const u8) bool {
     return std.mem.startsWith(u8, format, "appimage");
 }
 
-/// Returns true if the signed format specifies gzip decompression.
+/// Returns true if the signed format is a macOS `.app` bundle: a gzip'd tar
+/// holding one `<Name>.app` directory (`app.tar.gz`), which replaces the
+/// running bundle as a whole.
+pub fn isAppBundleFormat(format: []const u8) bool {
+    return std.mem.eql(u8, format, "app.tar.gz");
+}
+
+/// Returns true if the signed format specifies gzip decompression of a
+/// single file (`app.tar.gz` is unpacked as a bundle instead).
 pub fn isGzipFormat(format: []const u8) bool {
     return std.mem.endsWith(u8, format, ".gz") or std.mem.eql(u8, format, "gzip");
 }
