@@ -661,7 +661,10 @@ fn addWatchesRecursively(gpa: std.mem.Allocator, io: Io, inotify_fd: i32, dir_pa
     while (walker.next(io) catch null) |entry| {
         if (entry.kind == .directory) {
             // Ignore hidden and build directories
-            if (skipDir(entry.basename)) continue;
+            if (skipDir(entry.basename)) {
+                walker.leave(io);
+                continue;
+            }
             const full = try std.fs.path.join(gpa, &.{ dir_path, entry.path });
             defer gpa.free(full);
             const full_z = try gpa.dupeZ(u8, full);
