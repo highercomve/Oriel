@@ -655,36 +655,21 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
     defer tmp_working_dir.close(io);
 
     // 5. Download .nupkg file
-    const nupkg_file = try tmp_working_dir.createFile(io, "package.nupkg", .{ .read = true, .exclusive = true });
-    defer nupkg_file.close(io);
-
-    var nupkg_write_buf: [32 * 1024]u8 = undefined;
-    var nupkg_writer = nupkg_file.writerStreaming(io, &nupkg_write_buf);
-    var bounded_writer = BoundedWriter.init(&nupkg_writer.interface, 50 * 1024 * 1024, &.{});
-
+    const nupkg_path = try std.fs.path.join(arena, &.{ tmp_working_path, "package.nupkg" });
     const flat_base = ctx.environ.get("ORIEL_WEBVIEW2_NUPKG_URL") orelse default_flatcontainer_base;
     const nupkg_url = try std.fmt.allocPrint(arena, "{s}/{s}/microsoft.web.webview2.{s}.nupkg", .{ flat_base, version, version });
 
-    const dl_res = client.fetch(.{
-        .location = .{ .url = nupkg_url },
-        .headers = .{ .user_agent = .{ .override = "oriel-cli" } },
-        .response_writer = &bounded_writer.writer,
-    }) catch |err| {
-        if (bounded_writer.exceeded) {
-            try ctx.err.print("error: NuGet package download exceeded 50 MiB limit\n", .{});
-            return error.PayloadSizeExceeded;
-        }
+    try ctx.err.print("Downloading Microsoft.Web.WebView2 {s}...\n", .{version});
+    ctx.flush();
+    zig_manager.downloadToFile(ctx, &client, nupkg_url, nupkg_path, 50 * 1024 * 1024, null) catch |err| {
         try ctx.err.print("error: failed to download NuGet package: {s}\n", .{@errorName(err)});
         return err;
     };
-    if (dl_res.status != .ok) {
-        try ctx.err.print("error: NuGet package download returned HTTP {d}\n", .{@intFromEnum(dl_res.status)});
-        return error.BadHttpStatus;
-    }
-    try nupkg_writer.end();
-    try nupkg_file.sync(io);
 
     // 6. Verify integrity (SHA-512 against catalog packageHash)
+    const nupkg_file = try tmp_working_dir.openFile(io, "package.nupkg", .{});
+    defer nupkg_file.close(io);
+
     const nupkg_size = try nupkg_file.length(io);
     if (nupkg_size > 50 * 1024 * 1024) return error.PayloadSizeExceeded;
 

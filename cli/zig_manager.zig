@@ -545,17 +545,92 @@ fn extractZip(ctx: Context, archive: []const u8, dest: Dir) !void {
 // Download and install
 // ---------------------------------------------------------------------------
 
+pub fn formatBytes(bytes: u64, buf: []u8) []const u8 {
+    const kib: u64 = 1024;
+    const mib: u64 = 1024 * kib;
+    const gib: u64 = 1024 * mib;
+    if (bytes >= gib) {
+        const whole = bytes / gib;
+        const frac = (bytes % gib) * 10 / gib;
+        return std.fmt.bufPrint(buf, "{d}.{d} GiB", .{ whole, frac }) catch buf[0..0];
+    } else if (bytes >= mib) {
+        const whole = bytes / mib;
+        const frac = (bytes % mib) * 10 / mib;
+        return std.fmt.bufPrint(buf, "{d}.{d} MiB", .{ whole, frac }) catch buf[0..0];
+    } else if (bytes >= kib) {
+        const whole = bytes / kib;
+        const frac = (bytes % kib) * 10 / kib;
+        return std.fmt.bufPrint(buf, "{d}.{d} KiB", .{ whole, frac }) catch buf[0..0];
+    } else {
+        return std.fmt.bufPrint(buf, "{d} B", .{bytes}) catch buf[0..0];
+    }
+}
+
+pub fn formatProgress(received: u64, total: ?u64, buf: []u8) []const u8 {
+    var rec_buf: [32]u8 = undefined;
+    const rec_str = formatBytes(received, &rec_buf);
+    if (total) |tot| {
+        if (tot > 0) {
+            var tot_buf: [32]u8 = undefined;
+            const tot_str = formatBytes(tot, &tot_buf);
+            const pct: u64 = if (received >= tot) 100 else (received * 100) / tot;
+            return std.fmt.bufPrint(buf, "{s} / {s} ({d}%)", .{ rec_str, tot_str, pct }) catch buf[0..0];
+        }
+    }
+    return std.fmt.bufPrint(buf, "{s}", .{rec_str}) catch buf[0..0];
+}
+
+pub var last_http_status: ?std.http.Status = null;
+
 /// Writer for a download: forwards to `out`, stops after `limit` bytes,
-/// and counts bytes for the watchdog (another thread).
+/// reports progress to `err` (if provided), and counts bytes for the watchdog (another thread).
 const DownloadWriter = struct {
     out: *std.Io.Writer,
     limit: usize,
+    err: ?*std.Io.Writer = null,
+    total_size: ?u64 = null,
+    is_tty: bool = false,
+    last_reported_bytes: u64 = 0,
     received: std.atomic.Value(u64) = .init(0),
     too_large: bool = false,
     writer: std.Io.Writer,
 
-    fn init(out: *std.Io.Writer, limit: usize, buffer: []u8) DownloadWriter {
-        return .{ .out = out, .limit = limit, .writer = .{ .buffer = buffer, .vtable = &.{ .drain = drain } } };
+    fn init(out: *std.Io.Writer, limit: usize, buffer: []u8, err: ?*std.Io.Writer, total_size: ?u64, is_tty: bool) DownloadWriter {
+        return .{
+            .out = out,
+            .limit = limit,
+            .err = err,
+            .total_size = total_size,
+            .is_tty = is_tty,
+            .writer = .{ .buffer = buffer, .vtable = &.{ .drain = drain } },
+        };
+    }
+
+    fn reportProgress(self: *DownloadWriter, now: u64) void {
+        const err_writer = self.err orelse return;
+        var pbuf: [64]u8 = undefined;
+        const pstr = formatProgress(now, self.total_size, &pbuf);
+        if (self.is_tty) {
+            err_writer.print("\r  downloading: {s}   ", .{pstr}) catch {};
+            err_writer.flush() catch {};
+        } else {
+            err_writer.print("  downloading: {s}\n", .{pstr}) catch {};
+            err_writer.flush() catch {};
+        }
+    }
+
+    fn finishProgress(self: *DownloadWriter) void {
+        const err_writer = self.err orelse return;
+        const final_bytes = self.received.load(.monotonic);
+        var pbuf: [64]u8 = undefined;
+        const pstr = formatProgress(final_bytes, self.total_size, &pbuf);
+        if (self.is_tty) {
+            err_writer.print("\r  downloaded: {s}   \n", .{pstr}) catch {};
+            err_writer.flush() catch {};
+        } else {
+            err_writer.print("  downloaded: {s}\n", .{pstr}) catch {};
+            err_writer.flush() catch {};
+        }
     }
 
     fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
@@ -568,6 +643,22 @@ const DownloadWriter = struct {
         }
         const n = try self.out.writeSplatHeader(w.buffered(), data, splat);
         _ = self.received.fetchAdd(n, .monotonic);
+
+        const now = self.received.load(.monotonic);
+        if (self.err != null) {
+            if (self.is_tty) {
+                if (now - self.last_reported_bytes >= 128 * 1024 or (self.total_size != null and now >= self.total_size.?)) {
+                    self.last_reported_bytes = now;
+                    self.reportProgress(now);
+                }
+            } else {
+                if (now - self.last_reported_bytes >= 5 * 1024 * 1024 or (self.total_size != null and now >= self.total_size.?)) {
+                    self.last_reported_bytes = now;
+                    self.reportProgress(now);
+                }
+            }
+        }
+
         if (n < w.end) {
             const rest = w.buffer[n..w.end];
             @memmove(w.buffer[0..rest.len], rest);
@@ -664,7 +755,7 @@ const ConnectDeadline = struct {
 /// GET `url` into `out` (at most `limit` bytes), following up to 5
 /// redirects, under a watchdog (see `Watchdog`; `min_rate` null: only
 /// stalls abort).
-fn download(ctx: Context, client: *std.http.Client, url: []const u8, out: *std.Io.Writer, limit: usize, min_rate: ?u64) !void {
+fn download(ctx: Context, client: *std.http.Client, url: []const u8, out: *std.Io.Writer, limit: usize, min_rate: ?u64, show_progress: bool) !void {
     // `location_buf` holds the next URL; `current_buf` the one being
     // requested (the parsed Uri points into it, so resolving a relative
     // redirect never writes over its own input).
@@ -695,8 +786,24 @@ fn download(ctx: Context, client: *std.http.Client, url: []const u8, out: *std.I
         };
         defer req.deinit();
 
+        req.sendBodiless() catch |err| return if (err == error.ConnectionRefused) err else err;
+        var response = req.receiveHead(&.{}) catch |err| return err;
+        const status = response.head.status;
+        last_http_status = status;
+        if (status.class() == .redirect) {
+            const next = response.head.location orelse return error.BadHttpStatus;
+            // Relative locations resolve against the current URL.
+            location_len = (try redirectTarget(uri, next, &location_buf)).len;
+            continue;
+        }
+        if (status != .ok) return error.BadHttpStatus;
+        if (response.head.content_encoding != .identity) return error.UnsupportedContentEncoding;
+
+        const is_tty = std.Io.File.stderr().isTty(ctx.io) catch false;
+        const total_size = response.head.content_length;
+
         var dw_buf: [16 * 1024]u8 = undefined;
-        var dw: DownloadWriter = .init(out, limit, &dw_buf);
+        var dw: DownloadWriter = .init(out, limit, &dw_buf, if (show_progress) ctx.err else null, total_size, is_tty);
         var wd: Watchdog = .{ .io = ctx.io, .stream = req.connection.?.stream_reader.stream, .counter = &dw.received, .min_rate = min_rate };
         const thread = try std.Thread.spawn(.{}, Watchdog.run, .{&wd});
         defer {
@@ -708,17 +815,10 @@ fn download(ctx: Context, client: *std.http.Client, url: []const u8, out: *std.I
             };
         }
 
-        req.sendBodiless() catch |err| return if (wd.aborted.load(.acquire)) error.MirrorTooSlow else err;
-        var response = req.receiveHead(&.{}) catch |err| return if (wd.aborted.load(.acquire)) error.MirrorTooSlow else err;
-        const status = response.head.status;
-        if (status.class() == .redirect) {
-            const next = response.head.location orelse return error.BadHttpStatus;
-            // Relative locations resolve against the current URL.
-            location_len = (try redirectTarget(uri, next, &location_buf)).len;
-            continue;
+        if (show_progress) {
+            dw.reportProgress(0);
         }
-        if (status != .ok) return error.BadHttpStatus;
-        if (response.head.content_encoding != .identity) return error.UnsupportedContentEncoding;
+
         var transfer_buf: [64]u8 = undefined;
         const body = response.reader(&transfer_buf);
         _ = body.streamRemaining(&dw.writer) catch |err| {
@@ -730,6 +830,9 @@ fn download(ctx: Context, client: *std.http.Client, url: []const u8, out: *std.I
             };
         };
         dw.writer.flush() catch return if (dw.too_large) error.DownloadTooLarge else error.WriteFailed;
+        if (show_progress) {
+            dw.finishProgress();
+        }
         return;
     }
 }
@@ -741,7 +844,7 @@ pub fn downloadToFile(ctx: Context, client: *std.http.Client, url: []const u8, d
     defer file.close(io);
     var file_buf: [64 * 1024]u8 = undefined;
     var fw = file.writerStreaming(io, &file_buf);
-    try download(ctx, client, url, &fw.interface, limit, min_rate);
+    try download(ctx, client, url, &fw.interface, limit, min_rate, true);
     try fw.end();
 }
 
@@ -749,7 +852,7 @@ pub fn downloadToFile(ctx: Context, client: *std.http.Client, url: []const u8, d
 pub fn downloadMemory(ctx: Context, client: *std.http.Client, url: []const u8, limit: usize) ![]u8 {
     var body: std.Io.Writer.Allocating = .init(ctx.gpa);
     defer body.deinit();
-    try download(ctx, client, url, &body.writer, limit, null);
+    try download(ctx, client, url, &body.writer, limit, null, false);
     return body.toOwnedSlice();
 }
 
@@ -867,12 +970,24 @@ fn installInner(ctx: Context, version: []const u8) ![]u8 {
         // A slow mirror is skipped (the next one is usually fast); the last
         // source, ziglang.org, is only abandoned when it stalls.
         const is_last = base.ptr == bases.items[bases.items.len - 1].ptr;
+        last_http_status = null;
         downloadToFile(ctx, &client, url, archive, max_download, if (is_last) null else min_mirror_rate) catch |err| {
-            try ctx.err.print("  {s}: {s}, trying the next source\n", .{ base, @errorName(err) });
+            if (last_http_status) |st| {
+                try ctx.err.print("  mirror {s} unavailable (HTTP {d}), trying another…\n", .{ base, @intFromEnum(st) });
+            } else if (err == error.MirrorTooSlow) {
+                try ctx.err.print("  mirror {s} too slow, trying another…\n", .{base});
+            } else {
+                try ctx.err.print("  mirror {s} unavailable ({s}), trying another…\n", .{ base, @errorName(err) });
+            }
             continue;
         };
+        last_http_status = null;
         const sig = downloadSmall(ctx, &client, sig_url) catch |err| {
-            try ctx.err.print("  {s}: signature {s}, trying the next source\n", .{ base, @errorName(err) });
+            if (last_http_status) |st| {
+                try ctx.err.print("  mirror {s} unavailable (HTTP {d}), trying another…\n", .{ base, @intFromEnum(st) });
+            } else {
+                try ctx.err.print("  mirror {s}: signature unavailable ({s}), trying another…\n", .{ base, @errorName(err) });
+            }
             continue;
         };
         defer gpa.free(sig);
@@ -1203,4 +1318,24 @@ test "orielHome honors ORIEL_HOME" {
     const h = try orielHome(a, &env);
     defer a.free(h);
     try std.testing.expectEqualStrings("/tmp/oh", h);
+}
+
+test "download progress formatting" {
+    var b: [64]u8 = undefined;
+
+    // formatBytes
+    try std.testing.expectEqualStrings("500 B", formatBytes(500, &b));
+    try std.testing.expectEqualStrings("1.0 KiB", formatBytes(1024, &b));
+    try std.testing.expectEqualStrings("2.5 KiB", formatBytes(2560, &b));
+    try std.testing.expectEqualStrings("15.0 MiB", formatBytes(15 * 1024 * 1024, &b));
+    try std.testing.expectEqualStrings("1.5 GiB", formatBytes(1536 * 1024 * 1024, &b));
+
+    // formatProgress with total
+    try std.testing.expectEqualStrings("15.0 MiB / 30.0 MiB (50%)", formatProgress(15 * 1024 * 1024, 30 * 1024 * 1024, &b));
+    try std.testing.expectEqualStrings("30.0 MiB / 30.0 MiB (100%)", formatProgress(30 * 1024 * 1024, 30 * 1024 * 1024, &b));
+    try std.testing.expectEqualStrings("10.0 KiB / 100.0 KiB (10%)", formatProgress(10 * 1024, 100 * 1024, &b));
+
+    // formatProgress without total
+    try std.testing.expectEqualStrings("1.0 KiB", formatProgress(1024, null, &b));
+    try std.testing.expectEqualStrings("20.0 MiB", formatProgress(20 * 1024 * 1024, null, &b));
 }
