@@ -6,9 +6,17 @@ const builtin = @import("builtin");
 const Context = @import("Context.zig");
 const webview2 = @import("webview2.zig");
 const zig_manager = @import("zig_manager.zig");
+const setup = @import("setup.zig");
 
 pub const Command = struct {
+    fix: bool = false,
+    yes: bool = false,
+
     pub const summary = "Check that this system can build Oriel apps";
+    pub const help = .{
+        .fix = "Install missing non-admin tools and print admin commands",
+        .yes = "Skip confirmation prompt for --fix",
+    };
     pub const details =
         \\Required everywhere: Zig 0.16.x (on PATH, or $ORIEL_ZIG), Node.js
         \\(20.19+ or 22.12+) and npm for the Vite templates.
@@ -17,6 +25,9 @@ pub const Command = struct {
         \\GlobalShortcuts portal are reported for information only.
         \\macOS: the Xcode command-line tools (Apple SDK).
         \\Windows: the WebView2 runtime; NSIS (makensis) for installers.
+        \\Options:
+        \\  --fix     Install missing non-admin tools and print admin commands
+        \\  --yes     Skip confirmation prompt for --fix
         \\Exits with 1 when something required is missing.
     ;
 };
@@ -24,10 +35,10 @@ pub const Command = struct {
 /// A package manager: the Linux distro's, Homebrew on macOS, winget on Windows.
 pub const Distro = enum { pacman, apt, dnf, zypper, brew, winget };
 
-const linux_managers = [_]Distro{ .pacman, .apt, .dnf, .zypper };
+pub const linux_managers = [_]Distro{ .pacman, .apt, .dnf, .zypper };
 
 /// Package names per package manager; null where it has no package.
-const Packages = struct {
+pub const Packages = struct {
     pacman: ?[]const u8 = null,
     apt: ?[]const u8 = null,
     dnf: ?[]const u8 = null,
@@ -35,22 +46,22 @@ const Packages = struct {
     brew: ?[]const u8 = null,
     winget: ?[]const u8 = null,
 
-    fn get(p: Packages, d: Distro) ?[]const u8 {
+    pub fn get(p: Packages, d: Distro) ?[]const u8 {
         return switch (d) {
             inline else => |tag| @field(p, @tagName(tag)),
         };
     }
 
     /// dnf and zypper install by pkg-config name, which is exact everywhere.
-    fn pkgConfig(comptime pacman: []const u8, comptime apt: []const u8, comptime module: []const u8) Packages {
+    pub fn pkgConfig(comptime pacman: []const u8, comptime apt: []const u8, comptime module: []const u8) Packages {
         const cap = "'pkgconfig(" ++ module ++ ")'";
         return .{ .pacman = pacman, .apt = apt, .dnf = cap, .zypper = cap };
     }
 };
 
-const Level = enum { required, optional, info };
+pub const Level = enum { required, optional, info };
 
-const Item = struct {
+pub const Item = struct {
     label: []const u8,
     level: Level,
     ok: bool,
@@ -64,11 +75,39 @@ const Item = struct {
 const zig_hint = "`oriel zig install` (into ~/.oriel/zig), or Zig from https://ziglang.org/download/ on PATH or in ORIEL_ZIG";
 const xcode_hint = "Xcode command-line tools: xcode-select --install (or install Xcode)";
 const webview2_hint = "WebView2 runtime: https://developer.microsoft.com/microsoft-edge/webview2/ (preinstalled on Windows 11)";
+const node_hint = "`oriel setup node` (into ~/.oriel/node), or Node.js from https://nodejs.org/";
+const nsis_hint = "`oriel setup nsis` (into ~/.oriel/nsis), or NSIS from https://nsis.sourceforge.io/";
 const node_packages: Packages = .{ .pacman = "nodejs", .apt = "nodejs", .dnf = "nodejs", .zypper = "nodejs-default", .brew = "node", .winget = "OpenJS.NodeJS.LTS" };
 const npm_packages: Packages = .{ .pacman = "npm", .apt = "npm", .dnf = "npm", .zypper = "npm-default", .brew = "node", .winget = "OpenJS.NodeJS.LTS" };
 const nfpm_hint = "nfpm: https://nfpm.goreleaser.com/install/ (or: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest)";
 
-pub fn run(ctx: Context) !u8 {
+pub const FixPlan = struct {
+    install_zig: bool = false,
+    install_node: bool = false,
+    install_webview2: bool = false,
+    install_nsis: bool = false,
+    admin_commands: []const []const u8 = &.{},
+
+    pub fn fixableCount(self: FixPlan) usize {
+        var count: usize = 0;
+        if (self.install_zig) count += 1;
+        if (self.install_node) count += 1;
+        if (self.install_webview2) count += 1;
+        if (self.install_nsis) count += 1;
+        return count;
+    }
+
+    pub fn isEmpty(self: FixPlan) bool {
+        return self.fixableCount() == 0 and self.admin_commands.len == 0;
+    }
+
+    pub fn deinit(self: FixPlan, allocator: std.mem.Allocator) void {
+        for (self.admin_commands) |cmd| allocator.free(cmd);
+        allocator.free(self.admin_commands);
+    }
+};
+
+pub fn run(ctx: Context, cmd: Command) !u8 {
     var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -76,14 +115,16 @@ pub fn run(ctx: Context) !u8 {
     const c: Context = .{ .gpa = arena, .io = ctx.io, .environ = ctx.environ, .out = ctx.out, .err = ctx.err };
 
     var items: std.ArrayList(Item) = .empty;
-    try items.append(arena, try checkZig(c));
+    const want_zig = try zig_manager.requiredHere(c);
+    const zig_check = try checkZig(c, want_zig);
+    try items.append(arena, zig_check.item);
+
     switch (builtin.os.tag) {
         .macos => {
             try items.append(arena, try checkXcode(c));
             try items.append(arena, try checkNode(c));
             try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
             try items.append(arena, try checkCachedWebView2Loader(c));
-            return report(arena, ctx.out, items.items, .brew);
         },
         .windows => {
             try items.append(arena, try checkWebView2(c));
@@ -91,40 +132,62 @@ pub fn run(ctx: Context) !u8 {
             try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
             try items.append(arena, try checkMakensis(c));
             try items.append(arena, try checkCachedWebView2Loader(c));
-            return report(arena, ctx.out, items.items, .winget);
         },
-        else => {},
+        else => {
+            const pkg_config = try c.findExecutable("pkg-config");
+            try items.append(arena, .{
+                .label = "pkg-config",
+                .level = .required,
+                .ok = pkg_config != null,
+                .detail = pkg_config orelse "not found",
+                .packages = .{ .pacman = "pkgconf", .apt = "pkg-config", .dnf = "pkgconf-pkg-config", .zypper = "pkg-config" },
+            });
+            try items.append(arena, try checkLibrary(c, pkg_config, "gtk4", .required, .{
+                .pacman = "gtk4",
+                .apt = "libgtk-4-dev",
+                .dnf = "gtk4-devel",
+                .zypper = "gtk4-devel",
+            }));
+            try items.append(arena, try checkLibrary(c, pkg_config, "webkitgtk-6.0", .required, .{
+                .pacman = "webkitgtk-6.0",
+                .apt = "libwebkitgtk-6.0-dev",
+                .dnf = "webkitgtk6.0-devel",
+                .zypper = "webkitgtk-6_0-devel",
+            }));
+            try items.append(arena, try checkNode(c));
+            try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
+
+            try items.append(arena, try checkNfpm(c));
+            try items.append(arena, try checkTool(c, "mksquashfs", .optional, null, .{ .pacman = "squashfs-tools", .apt = "squashfs-tools", .dnf = "squashfs-tools", .zypper = "squashfs" }));
+            try items.append(arena, try checkTool(c, "desktop-file-validate", .optional, null, .{ .pacman = "desktop-file-utils", .apt = "desktop-file-utils", .dnf = "desktop-file-utils", .zypper = "desktop-file-utils" }));
+            try items.append(arena, try checkLibrary(c, pkg_config, "wayland-client", .optional, Packages.pkgConfig("wayland", "libwayland-dev", "wayland-client")));
+            try items.append(arena, try checkLibrary(c, pkg_config, "xkbcommon", .optional, Packages.pkgConfig("libxkbcommon", "libxkbcommon-dev", "xkbcommon")));
+            try items.append(arena, try checkLibrary(c, pkg_config, "xtst", .optional, Packages.pkgConfig("libxtst", "libxtst-dev", "xtst")));
+            try items.append(arena, try checkLibrary(c, pkg_config, "x11", .optional, Packages.pkgConfig("libx11", "libx11-dev", "x11")));
+
+            try items.append(arena, try checkBusName(c));
+            try items.append(arena, try checkPortal(c));
+            try items.append(arena, try checkCachedWebView2Loader(c));
+        },
     }
-    const pkg_config = try c.findExecutable("pkg-config");
-    try items.append(arena, .{
-        .label = "pkg-config",
-        .level = .required,
-        .ok = pkg_config != null,
-        .detail = pkg_config orelse "not found",
-        .packages = .{ .pacman = "pkgconf", .apt = "pkg-config", .dnf = "pkgconf-pkg-config", .zypper = "pkg-config" },
-    });
-    try items.append(arena, try checkLibrary(c, pkg_config, "gtk4", .required, Packages.pkgConfig("gtk4", "libgtk-4-dev", "gtk4")));
-    try items.append(arena, try checkLibrary(c, pkg_config, "webkitgtk-6.0", .required, Packages.pkgConfig("webkitgtk-6.0", "libwebkitgtk-6.0-dev", "webkitgtk-6.0")));
-    try items.append(arena, try checkNode(c));
-    try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
-
-    try items.append(arena, try checkNfpm(c));
-    try items.append(arena, try checkTool(c, "mksquashfs", .optional, null, .{ .pacman = "squashfs-tools", .apt = "squashfs-tools", .dnf = "squashfs-tools", .zypper = "squashfs" }));
-    try items.append(arena, try checkTool(c, "desktop-file-validate", .optional, null, .{ .pacman = "desktop-file-utils", .apt = "desktop-file-utils", .dnf = "desktop-file-utils", .zypper = "desktop-file-utils" }));
-    try items.append(arena, try checkLibrary(c, pkg_config, "wayland-client", .optional, Packages.pkgConfig("wayland", "libwayland-dev", "wayland-client")));
-    try items.append(arena, try checkLibrary(c, pkg_config, "xkbcommon", .optional, Packages.pkgConfig("libxkbcommon", "libxkbcommon-dev", "xkbcommon")));
-    try items.append(arena, try checkLibrary(c, pkg_config, "xtst", .optional, Packages.pkgConfig("libxtst", "libxtst-dev", "xtst")));
-    try items.append(arena, try checkLibrary(c, pkg_config, "x11", .optional, Packages.pkgConfig("libx11", "libx11-dev", "x11")));
-
-    try items.append(arena, try checkBusName(c));
-    try items.append(arena, try checkPortal(c));
-    try items.append(arena, try checkCachedWebView2Loader(c));
 
     const os_release = std.Io.Dir.cwd().readFileAlloc(ctx.io, "/etc/os-release", arena, .limited(64 * 1024)) catch "";
-    return report(arena, ctx.out, items.items, distroFromOsRelease(os_release));
+    const distro: ?Distro = switch (builtin.os.tag) {
+        .macos => .brew,
+        .windows => .winget,
+        else => distroFromOsRelease(os_release),
+    };
+
+    const plan = try calculateFixPlan(arena, items.items, builtin.os.tag, distro, zig_check.needs_install);
+
+    if (cmd.fix) {
+        return runFix(ctx, cmd, items.items, plan, want_zig);
+    }
+
+    return report(arena, ctx.out, items.items, distro, plan.fixableCount());
 }
 
-fn report(gpa: std.mem.Allocator, w: *std.Io.Writer, items: []const Item, distro: ?Distro) !u8 {
+fn report(gpa: std.mem.Allocator, w: *std.Io.Writer, items: []const Item, distro: ?Distro, fixable_count: usize) !u8 {
     const sections = [_]struct { Level, []const u8 }{
         .{ .required, "Required" },
         .{ .optional, "Optional (packaging, plugins)" },
@@ -177,9 +240,102 @@ fn report(gpa: std.mem.Allocator, w: *std.Io.Writer, items: []const Item, distro
     }
     if (missing_required) {
         try w.writeAll("\nSomething required is missing (see above).\n");
+        if (fixable_count > 0) {
+            try w.print("Run `oriel doctor --fix` to install {d} missing tool{s}.\n", .{ fixable_count, if (fixable_count == 1) "" else "s" });
+        }
         return 1;
     }
     try w.writeAll("\nAll required tools are present.\n");
+    if (fixable_count > 0) {
+        try w.print("Run `oriel doctor --fix` to install {d} missing tool{s}.\n", .{ fixable_count, if (fixable_count == 1) "" else "s" });
+    }
+    return 0;
+}
+
+fn runFix(ctx: Context, cmd: Command, items: []const Item, plan: FixPlan, want_zig: []const u8) !u8 {
+    if (plan.isEmpty()) {
+        try ctx.out.writeAll("All required tools are already installed.\n");
+        return 0;
+    }
+
+    if (plan.fixableCount() > 0) {
+        try ctx.out.writeAll("The following tools can be installed automatically without admin rights:\n");
+        if (plan.install_zig) try ctx.out.print("  - zig {s} (into ~/.oriel/zig)\n", .{want_zig});
+        if (plan.install_node) try ctx.out.writeAll("  - node (into ~/.oriel/node)\n");
+        if (plan.install_webview2) try ctx.out.writeAll("  - WebView2 loader (into cache)\n");
+        if (plan.install_nsis) try ctx.out.writeAll("  - nsis (into ~/.oriel/nsis)\n");
+
+        const stdin_file = std.Io.File.stdin();
+        const is_tty = stdin_file.isTty(ctx.io) catch false;
+
+        if (!cmd.yes) {
+            if (!is_tty) {
+                try ctx.err.writeAll("error: non-interactive terminal requires --yes to install tools\n");
+                return 1;
+            }
+
+            try ctx.out.print("Install {d} missing tool{s}? [y/N] ", .{
+                plan.fixableCount(),
+                if (plan.fixableCount() == 1) "" else "s",
+            });
+            ctx.flush();
+
+            var line_buf: [64]u8 = undefined;
+            var line_reader = stdin_file.readerStreaming(ctx.io, &line_buf);
+            var ans_buf: [16]u8 = undefined;
+            const n = line_reader.interface.readSliceShort(&ans_buf) catch 0;
+            const trimmed = std.mem.trim(u8, ans_buf[0..n], " \t\r\n");
+            if (!std.ascii.eqlIgnoreCase(trimmed, "y") and !std.ascii.eqlIgnoreCase(trimmed, "yes")) {
+                try ctx.out.writeAll("Installation cancelled.\n");
+                return 0;
+            }
+        }
+
+        if (plan.install_zig) {
+            try ctx.out.writeAll("Installing zig...\n");
+            ctx.flush();
+            _ = try zig_manager.run(ctx, .{ .action = .install, .version = null });
+        }
+        if (plan.install_node) {
+            try ctx.out.writeAll("Installing node...\n");
+            ctx.flush();
+            const node_path = try setup.installNode(ctx, null);
+            ctx.gpa.free(node_path);
+        }
+        if (plan.install_webview2) {
+            try ctx.out.writeAll("Downloading WebView2 loader...\n");
+            ctx.flush();
+            _ = try webview2.run(ctx, .{});
+        }
+        if (plan.install_nsis) {
+            try ctx.out.writeAll("Installing nsis...\n");
+            ctx.flush();
+            const res = try setup.installNsis(ctx);
+            switch (res) {
+                .installed => |p| ctx.gpa.free(p),
+                .printed_package_command => {},
+            }
+        }
+    }
+
+    if (plan.admin_commands.len > 0) {
+        try ctx.out.writeAll("\nThe following dependencies require administrator / root rights to install:\n");
+        for (plan.admin_commands) |admin_cmd| {
+            try ctx.out.print("  {s}\n", .{admin_cmd});
+        }
+        return 1;
+    }
+
+    for (items) |item| {
+        if (!item.ok and item.level == .required) {
+            if (std.mem.startsWith(u8, item.label, "node") and plan.install_node) continue;
+            if (std.mem.eql(u8, item.label, "npm") and plan.install_node) continue;
+            if (std.mem.startsWith(u8, item.label, "zig") and plan.install_zig) continue;
+            return 1;
+        }
+    }
+
+    try ctx.out.writeAll("\nAll required tools are installed and ready.\n");
     return 0;
 }
 
@@ -223,6 +379,106 @@ pub fn distroFromOsRelease(text: []const u8) ?Distro {
     return null;
 }
 
+/// Generate distro package install command for missing required packages (excluding managed tools).
+pub fn generateDistroAdminCommand(allocator: std.mem.Allocator, distro: Distro, items: []const Item) !?[]const u8 {
+    var pkgs: std.ArrayList([]const u8) = .empty;
+    defer pkgs.deinit(allocator);
+
+    for (items) |item| {
+        if (item.ok or item.level != .required) continue;
+        if (std.mem.startsWith(u8, item.label, "node") or
+            std.mem.eql(u8, item.label, "npm") or
+            std.mem.startsWith(u8, item.label, "zig")) continue;
+
+        const p = item.packages.get(distro) orelse continue;
+        for (pkgs.items) |seen| {
+            if (std.mem.eql(u8, seen, p)) break;
+        } else try pkgs.append(allocator, p);
+    }
+
+    if (pkgs.items.len == 0) return null;
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+
+    try out.appendSlice(allocator, installPrefix(distro));
+    for (pkgs.items) |p| {
+        try out.append(allocator, ' ');
+        try out.appendSlice(allocator, p);
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+/// Pure function to calculate the doctor fix plan.
+pub fn calculateFixPlan(
+    allocator: std.mem.Allocator,
+    items: []const Item,
+    host_os: std.Target.Os.Tag,
+    distro: ?Distro,
+    zig_needs_install: bool,
+) !FixPlan {
+    var plan = FixPlan{};
+
+    if (zig_needs_install) {
+        plan.install_zig = true;
+    } else {
+        for (items) |item| {
+            if (!item.ok and std.mem.startsWith(u8, item.label, "zig")) {
+                plan.install_zig = true;
+                break;
+            }
+        }
+    }
+
+    for (items) |item| {
+        if (!item.ok and (std.mem.startsWith(u8, item.label, "node") or std.mem.eql(u8, item.label, "npm"))) {
+            plan.install_node = true;
+        }
+        if (!item.ok and std.mem.eql(u8, item.label, "WebView2 loader")) {
+            plan.install_webview2 = true;
+        }
+        if (host_os == .windows and !item.ok and std.mem.eql(u8, item.label, "makensis")) {
+            plan.install_nsis = true;
+        }
+    }
+
+    var admin_cmds: std.ArrayList([]const u8) = .empty;
+    defer admin_cmds.deinit(allocator);
+
+    switch (host_os) {
+        .macos => {
+            for (items) |item| {
+                if (!item.ok and std.mem.eql(u8, item.label, "Xcode CLI tools")) {
+                    try admin_cmds.append(allocator, try allocator.dupe(u8, "xcode-select --install"));
+                }
+            }
+        },
+        .windows => {
+            for (items) |item| {
+                if (!item.ok and std.mem.eql(u8, item.label, "WebView2 runtime")) {
+                    try admin_cmds.append(allocator, try allocator.dupe(u8, "Install WebView2 runtime: https://developer.microsoft.com/microsoft-edge/webview2/"));
+                }
+            }
+        },
+        else => {
+            if (distro) |d| {
+                if (try generateDistroAdminCommand(allocator, d, items)) |cmd_str| {
+                    try admin_cmds.append(allocator, cmd_str);
+                }
+            } else {
+                for (linux_managers) |d| {
+                    if (try generateDistroAdminCommand(allocator, d, items)) |cmd_str| {
+                        try admin_cmds.append(allocator, cmd_str);
+                    }
+                }
+            }
+        },
+    }
+
+    plan.admin_commands = try admin_cmds.toOwnedSlice(allocator);
+    return plan;
+}
+
 /// Vite 8 needs Node.js 20.19+ or 22.12+ (21.x is not supported).
 pub fn nodeVersionOk(version: []const u8) bool {
     const v = std.mem.trimStart(u8, version, "v");
@@ -237,26 +493,51 @@ pub fn nodeVersionOk(version: []const u8) bool {
     };
 }
 
+const ZigCheck = struct {
+    item: Item,
+    needs_install: bool,
+};
+
 /// The Zig the current project (or a new one) uses: where it comes from
 /// (ORIEL_ZIG, PATH, managed in ~/.oriel/zig) or that it would be installed.
-fn checkZig(c: Context) !Item {
-    const want = try zig_manager.requiredHere(c);
+fn checkZig(c: Context, want: []const u8) !ZigCheck {
     const label = try std.fmt.allocPrint(c.gpa, "zig {s}", .{want});
     const p = zig_manager.plan(c, want) catch |err| switch (err) {
-        error.OrielZigMismatch => return .{ .label = label, .level = .required, .ok = false, .detail = try std.fmt.allocPrint(c.gpa, "ORIEL_ZIG={s} is not Zig {s}", .{ c.environ.get("ORIEL_ZIG") orelse "", want }), .hint = zig_hint },
+        error.OrielZigMismatch => return .{
+            .item = .{ .label = label, .level = .required, .ok = false, .detail = try std.fmt.allocPrint(c.gpa, "ORIEL_ZIG={s} is not Zig {s}", .{ c.environ.get("ORIEL_ZIG") orelse "", want }), .hint = zig_hint },
+            .needs_install = true,
+        },
         else => return err,
     };
     const source = p.choice.source.label();
     return switch (p.choice.source) {
-        .env => .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}, {s})", .{ p.env_version.?, p.env_zig.?, source }) },
-        .path => .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}, {s})", .{ p.path_version.?, p.path_zig.?, source }) },
-        .managed => .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}, {s})", .{ p.choice.managed_version.?, try zig_manager.managedZigPath(c, p.choice.managed_version.?), source }) },
+        .env => .{
+            .item = .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}, {s})", .{ p.env_version.?, p.env_zig.?, source }) },
+            .needs_install = false,
+        },
+        .path => .{
+            .item = .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}, {s})", .{ p.path_version.?, p.path_zig.?, source }) },
+            .needs_install = false,
+        },
+        .managed => .{
+            .item = .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}, {s})", .{ p.choice.managed_version.?, try zig_manager.managedZigPath(c, p.choice.managed_version.?), source }) },
+            .needs_install = false,
+        },
         // Not a failure: the first build installs it (unless disabled).
-        .install => .{ .label = label, .level = .required, .ok = !zigInstallDisabled(c), .detail = try std.fmt.allocPrint(c.gpa, "{s}: {s} on first build{s}", .{
-            source,
-            try zig_manager.managedZigPath(c, want),
-            if (p.path_version) |v| try std.fmt.allocPrint(c.gpa, " (zig on PATH is {s})", .{v}) else "",
-        }), .hint = zig_hint },
+        .install => .{
+            .item = .{
+                .label = label,
+                .level = .required,
+                .ok = !zigInstallDisabled(c),
+                .detail = try std.fmt.allocPrint(c.gpa, "{s}: {s} on first build{s}", .{
+                    source,
+                    try zig_manager.managedZigPath(c, want),
+                    if (p.path_version) |v| try std.fmt.allocPrint(c.gpa, " (zig on PATH is {s})", .{v}) else "",
+                }),
+                .hint = zig_hint,
+            },
+            .needs_install = true,
+        },
     };
 }
 
@@ -267,29 +548,83 @@ fn zigInstallDisabled(c: Context) bool {
 
 fn checkNode(c: Context) !Item {
     const packages = node_packages;
-    const path = try c.findExecutable("node") orelse
-        return .{ .label = "node (Vite templates)", .level = .required, .ok = false, .detail = "not found", .packages = packages };
+    var node_path: ?[]const u8 = try c.findExecutable("node");
+    var is_managed = false;
+    const maybe_managed = try setup.findNewestManagedNode(c);
+    defer if (maybe_managed) |m| m.deinit(c.gpa);
+
+    if (node_path == null and maybe_managed != null) {
+        node_path = maybe_managed.?.node_path;
+        is_managed = true;
+    }
+
+    const path = node_path orelse
+        return .{
+            .label = "node (Vite templates)",
+            .level = .required,
+            .ok = false,
+            .detail = "not found",
+            .packages = packages,
+            .hint = node_hint,
+        };
+
     const out = c.capture(&.{ path, "--version" }, 30_000) orelse
-        return .{ .label = "node (Vite templates)", .level = .required, .ok = false, .detail = "did not run", .packages = packages };
+        return .{
+            .label = "node (Vite templates)",
+            .level = .required,
+            .ok = false,
+            .detail = "did not run",
+            .packages = packages,
+            .hint = node_hint,
+        };
+
     const ok = out.code == 0 and nodeVersionOk(out.text());
     return .{
         .label = "node (Vite templates)",
         .level = .required,
         .ok = ok,
-        .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}){s}", .{ out.text(), path, if (ok) "" else ": need 20.19+ or 22.12+" }),
+        .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}{s}){s}", .{
+            out.text(),
+            path,
+            if (is_managed) ", managed" else "",
+            if (ok) "" else ": need 20.19+ or 22.12+",
+        }),
         .packages = packages,
+        .hint = if (!ok) node_hint else null,
     };
 }
 
 /// A program on PATH, with its version if `version_args` is given.
 fn checkTool(c: Context, name: []const u8, level: Level, version_args: ?[]const []const u8, packages: Packages) !Item {
-    const path = try c.findExecutable(name) orelse
+    var path = try c.findExecutable(name);
+    var is_managed = false;
+    var maybe_managed: ?setup.ManagedNode = null;
+    defer if (maybe_managed) |m| m.deinit(c.gpa);
+
+    if (path == null and std.mem.eql(u8, name, "npm")) {
+        maybe_managed = try setup.findNewestManagedNode(c);
+        if (maybe_managed) |m| {
+            path = m.npm_path;
+            is_managed = true;
+        }
+    }
+
+    if (path == null)
         return .{ .label = name, .level = level, .ok = false, .detail = "not found", .packages = packages };
-    var detail: []const u8 = path;
+
+    var detail: []const u8 = if (is_managed)
+        try std.fmt.allocPrint(c.gpa, "{s} (managed)", .{path.?})
+    else
+        path.?;
+
     if (version_args) |args| {
-        const argv = try std.mem.concat(c.gpa, []const u8, &.{ &.{path}, args });
+        const argv = try std.mem.concat(c.gpa, []const u8, &.{ &.{path.?}, args });
         if (c.capture(argv, 30_000)) |out| {
-            if (out.code == 0) detail = try std.fmt.allocPrint(c.gpa, "{s} ({s})", .{ out.text(), path });
+            if (out.code == 0) detail = try std.fmt.allocPrint(c.gpa, "{s} ({s}{s})", .{
+                out.text(),
+                path.?,
+                if (is_managed) ", managed" else "",
+            });
         }
     }
     return .{ .label = name, .level = level, .ok = true, .detail = detail, .packages = packages };
@@ -363,7 +698,31 @@ fn checkWebView2(c: Context) !Item {
 /// Windows: makensis for `oriel package` (setup.exe), on PATH or where the
 /// NSIS installer puts it (the packaging step looks there too).
 fn checkMakensis(c: Context) !Item {
+    if (c.environ.get("ORIEL_MAKENSIS")) |env_path| {
+        if (std.Io.Dir.cwd().access(c.io, env_path, .{})) |_| {
+            return .{
+                .label = "makensis",
+                .level = .optional,
+                .ok = true,
+                .detail = try std.fmt.allocPrint(c.gpa, "{s} (ORIEL_MAKENSIS)", .{env_path}),
+                .packages = .{ .winget = "NSIS.NSIS" },
+                .hint = nsis_hint,
+            };
+        } else |_| {}
+    }
+    if (try setup.findNewestManagedNsis(c)) |managed_path| {
+        defer c.gpa.free(managed_path);
+        return .{
+            .label = "makensis",
+            .level = .optional,
+            .ok = true,
+            .detail = try std.fmt.allocPrint(c.gpa, "{s} (managed)", .{managed_path}),
+            .packages = .{ .winget = "NSIS.NSIS" },
+            .hint = nsis_hint,
+        };
+    }
     var item = try checkTool(c, "makensis", .optional, null, .{ .winget = "NSIS.NSIS" });
+    item.hint = nsis_hint;
     if (item.ok) return item;
     for ([_][]const u8{ "ProgramFiles(x86)", "ProgramFiles" }) |root_var| {
         const root = c.environ.get(root_var) orelse continue;
@@ -446,7 +805,7 @@ pub fn checkCachedWebView2Loader(c: Context) !Item {
         .label = label,
         .level = .info,
         .ok = false,
-        .detail = "none cached (run: oriel webview2)",
+        .detail = "none cached (run: oriel setup webview2)",
     };
 }
 
@@ -458,8 +817,14 @@ const testing = std.testing;
 
 test distroFromOsRelease {
     try testing.expectEqual(.pacman, distroFromOsRelease("NAME=\"EndeavourOS\"\nID=\"endeavouros\"\nID_LIKE=\"arch\"\n").?);
+    try testing.expectEqual(.pacman, distroFromOsRelease("ID=arch\n").?);
+    try testing.expectEqual(.pacman, distroFromOsRelease("ID=manjaro\n").?);
     try testing.expectEqual(.apt, distroFromOsRelease("ID=pop\nID_LIKE=\"ubuntu debian\"\n").?);
+    try testing.expectEqual(.apt, distroFromOsRelease("ID=ubuntu\n").?);
+    try testing.expectEqual(.apt, distroFromOsRelease("ID=debian\n").?);
     try testing.expectEqual(.dnf, distroFromOsRelease("ID=fedora\n").?);
+    try testing.expectEqual(.dnf, distroFromOsRelease("ID=rhel\n").?);
+    try testing.expectEqual(.dnf, distroFromOsRelease("ID=centos\n").?);
     try testing.expectEqual(.zypper, distroFromOsRelease("ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n").?);
     try testing.expectEqual(null, distroFromOsRelease("ID=nixos\n"));
     try testing.expectEqual(null, distroFromOsRelease(""));
@@ -475,17 +840,103 @@ test "version checks" {
     try testing.expect(!nodeVersionOk("garbage"));
 }
 
+test "generateDistroAdminCommand" {
+    const items = [_]Item{
+        .{ .label = "pkg-config", .level = .required, .ok = false, .detail = "not found", .packages = .{ .pacman = "pkgconf", .apt = "pkg-config", .dnf = "pkgconf-pkg-config", .zypper = "pkg-config" } },
+        .{ .label = "gtk4", .level = .required, .ok = false, .detail = "not found", .packages = .{ .pacman = "gtk4", .apt = "libgtk-4-dev", .dnf = "gtk4-devel", .zypper = "gtk4-devel" } },
+        .{ .label = "webkitgtk-6.0", .level = .required, .ok = false, .detail = "not found", .packages = .{ .pacman = "webkitgtk-6.0", .apt = "libwebkitgtk-6.0-dev", .dnf = "webkitgtk6.0-devel", .zypper = "webkitgtk-6_0-devel" } },
+        .{ .label = "node (Vite templates)", .level = .required, .ok = false, .detail = "not found", .packages = node_packages },
+    };
+
+    const cmd_arch = try generateDistroAdminCommand(testing.allocator, .pacman, &items);
+    defer if (cmd_arch) |c| testing.allocator.free(c);
+    try testing.expectEqualStrings("sudo pacman -S --needed pkgconf gtk4 webkitgtk-6.0", cmd_arch.?);
+
+    const cmd_deb = try generateDistroAdminCommand(testing.allocator, .apt, &items);
+    defer if (cmd_deb) |c| testing.allocator.free(c);
+    try testing.expectEqualStrings("sudo apt install pkg-config libgtk-4-dev libwebkitgtk-6.0-dev", cmd_deb.?);
+
+    const cmd_fedora = try generateDistroAdminCommand(testing.allocator, .dnf, &items);
+    defer if (cmd_fedora) |c| testing.allocator.free(c);
+    try testing.expectEqualStrings("sudo dnf install pkgconf-pkg-config gtk4-devel webkitgtk6.0-devel", cmd_fedora.?);
+
+    const cmd_suse = try generateDistroAdminCommand(testing.allocator, .zypper, &items);
+    defer if (cmd_suse) |c| testing.allocator.free(c);
+    try testing.expectEqualStrings("sudo zypper install pkg-config gtk4-devel webkitgtk-6_0-devel", cmd_suse.?);
+}
+
+test "calculateFixPlan pure function" {
+    // 1. Clean system: nothing to install or fix
+    const clean_items = [_]Item{
+        .{ .label = "zig 0.16.0", .level = .required, .ok = true, .detail = "0.16.0" },
+        .{ .label = "gtk4", .level = .required, .ok = true, .detail = "4.14.0" },
+        .{ .label = "webkitgtk-6.0", .level = .required, .ok = true, .detail = "2.44.0" },
+        .{ .label = "node (Vite templates)", .level = .required, .ok = true, .detail = "v22.12.0" },
+        .{ .label = "npm", .level = .required, .ok = true, .detail = "10.9.0" },
+        .{ .label = "WebView2 loader", .level = .info, .ok = true, .detail = "cached" },
+    };
+    const clean_plan = try calculateFixPlan(testing.allocator, &clean_items, .linux, .pacman, false);
+    defer clean_plan.deinit(testing.allocator);
+    try testing.expect(clean_plan.isEmpty());
+    try testing.expectEqual(0, clean_plan.fixableCount());
+
+    // 2. Linux with missing required tools
+    const missing_linux = [_]Item{
+        .{ .label = "zig 0.16.0", .level = .required, .ok = true, .detail = "install: ~/.oriel/zig" },
+        .{ .label = "gtk4", .level = .required, .ok = false, .detail = "not found", .packages = .{ .pacman = "gtk4", .apt = "libgtk-4-dev", .dnf = "gtk4-devel", .zypper = "gtk4-devel" } },
+        .{ .label = "node (Vite templates)", .level = .required, .ok = false, .detail = "not found", .packages = node_packages },
+        .{ .label = "WebView2 loader", .level = .info, .ok = false, .detail = "none cached" },
+    };
+    // zig needs install + node + webview2 = 3 fixable tools
+    const linux_plan = try calculateFixPlan(testing.allocator, &missing_linux, .linux, .apt, true);
+    defer linux_plan.deinit(testing.allocator);
+    try testing.expect(linux_plan.install_zig);
+    try testing.expect(linux_plan.install_node);
+    try testing.expect(linux_plan.install_webview2);
+    try testing.expect(!linux_plan.install_nsis);
+    try testing.expectEqual(3, linux_plan.fixableCount());
+    try testing.expectEqual(1, linux_plan.admin_commands.len);
+    try testing.expectEqualStrings("sudo apt install libgtk-4-dev", linux_plan.admin_commands[0]);
+
+    // 3. Unknown Linux distro -> generates commands for all 4 managers
+    const unknown_linux = try calculateFixPlan(testing.allocator, &missing_linux, .linux, null, false);
+    defer unknown_linux.deinit(testing.allocator);
+    try testing.expectEqual(4, unknown_linux.admin_commands.len);
+
+    // 4. Windows with missing makensis and webview2 runtime
+    const win_items = [_]Item{
+        .{ .label = "WebView2 runtime", .level = .required, .ok = false, .detail = "not found" },
+        .{ .label = "makensis", .level = .optional, .ok = false, .detail = "not found" },
+    };
+    const win_plan = try calculateFixPlan(testing.allocator, &win_items, .windows, .winget, false);
+    defer win_plan.deinit(testing.allocator);
+    try testing.expect(win_plan.install_nsis);
+    try testing.expectEqual(1, win_plan.fixableCount());
+    try testing.expectEqual(1, win_plan.admin_commands.len);
+    try testing.expect(std.mem.indexOf(u8, win_plan.admin_commands[0], "WebView2 runtime") != null);
+
+    // 5. macOS with missing Xcode CLI tools
+    const mac_items = [_]Item{
+        .{ .label = "Xcode CLI tools", .level = .required, .ok = false, .detail = "not found" },
+    };
+    const mac_plan = try calculateFixPlan(testing.allocator, &mac_items, .macos, .brew, false);
+    defer mac_plan.deinit(testing.allocator);
+    try testing.expectEqual(0, mac_plan.fixableCount());
+    try testing.expectEqual(1, mac_plan.admin_commands.len);
+    try testing.expectEqualStrings("xcode-select --install", mac_plan.admin_commands[0]);
+}
+
 test "report: exit code and install commands" {
     const items = [_]Item{
         .{ .label = "zig 0.16", .level = .required, .ok = true, .detail = "0.16.0" },
-        .{ .label = "gtk4", .level = .required, .ok = false, .detail = "not found", .packages = Packages.pkgConfig("gtk4", "libgtk-4-dev", "gtk4") },
-        .{ .label = "webkitgtk-6.0", .level = .required, .ok = false, .detail = "not found", .packages = Packages.pkgConfig("webkitgtk-6.0", "libwebkitgtk-6.0-dev", "webkitgtk-6.0") },
+        .{ .label = "gtk4", .level = .required, .ok = false, .detail = "not found", .packages = .{ .pacman = "gtk4", .apt = "libgtk-4-dev", .dnf = "gtk4-devel", .zypper = "gtk4-devel" } },
+        .{ .label = "webkitgtk-6.0", .level = .required, .ok = false, .detail = "not found", .packages = .{ .pacman = "webkitgtk-6.0", .apt = "libwebkitgtk-6.0-dev", .dnf = "webkitgtk6.0-devel", .zypper = "webkitgtk-6_0-devel" } },
         .{ .label = "nfpm", .level = .optional, .ok = false, .detail = "not found", .hint = nfpm_hint },
         .{ .label = "tray host", .level = .info, .ok = false, .detail = "none" },
     };
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
-    try testing.expectEqual(1, try report(testing.allocator, &out.writer, &items, .apt));
+    try testing.expectEqual(1, try report(testing.allocator, &out.writer, &items, .apt, 0));
     const text = out.written();
     try testing.expect(std.mem.indexOf(u8, text, "  MISSING  gtk4") != null);
     try testing.expect(std.mem.indexOf(u8, text, "  sudo apt install libgtk-4-dev libwebkitgtk-6.0-dev\n") != null);
@@ -494,8 +945,8 @@ test "report: exit code and install commands" {
 
     // Unknown distro: a line for every package manager.
     out.clearRetainingCapacity();
-    _ = try report(testing.allocator, &out.writer, &items, null);
-    try testing.expect(std.mem.indexOf(u8, out.written(), "sudo dnf install 'pkgconfig(gtk4)' 'pkgconfig(webkitgtk-6.0)'") != null);
+    _ = try report(testing.allocator, &out.writer, &items, null, 0);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "sudo dnf install gtk4-devel webkitgtk6.0-devel") != null);
     try testing.expect(std.mem.indexOf(u8, out.written(), "sudo pacman -S --needed gtk4 webkitgtk-6.0") != null);
 
     // An unknown Linux distro gets no brew/winget lines.
@@ -509,15 +960,17 @@ test "report: exit code and install commands" {
         .{ .label = "WebView2 runtime", .level = .required, .ok = false, .detail = "not found", .packages = .{ .winget = "Microsoft.EdgeWebView2Runtime" } },
     };
     out.clearRetainingCapacity();
-    try testing.expectEqual(1, try report(testing.allocator, &out.writer, &node_missing, .brew));
+    try testing.expectEqual(1, try report(testing.allocator, &out.writer, &node_missing, .brew, 1));
     try testing.expect(std.mem.indexOf(u8, out.written(), "  brew install node\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "Run `oriel doctor --fix` to install 1 missing tool.\n") != null);
+
     out.clearRetainingCapacity();
-    _ = try report(testing.allocator, &out.writer, &node_missing, .winget);
+    _ = try report(testing.allocator, &out.writer, &node_missing, .winget, 1);
     try testing.expect(std.mem.indexOf(u8, out.written(), "  winget install --id OpenJS.NodeJS.LTS\n  winget install --id Microsoft.EdgeWebView2Runtime\n") != null);
 
     // Only optional/informative things missing: success.
     out.clearRetainingCapacity();
-    try testing.expectEqual(0, try report(testing.allocator, &out.writer, items[3..], .pacman));
+    try testing.expectEqual(0, try report(testing.allocator, &out.writer, items[3..], .pacman, 0));
 }
 
 test "checkCachedWebView2Loader empty and populated" {
@@ -550,7 +1003,7 @@ test "checkCachedWebView2Loader empty and populated" {
     const item_empty = try checkCachedWebView2Loader(c);
     try testing.expectEqual(.info, item_empty.level);
     try testing.expect(!item_empty.ok);
-    try testing.expectEqualStrings("none cached (run: oriel webview2)", item_empty.detail);
+    try testing.expectEqualStrings("none cached (run: oriel setup webview2)", item_empty.detail);
 
     // 2. Populated cache
     const dll_dir = if (builtin.os.tag == .windows)

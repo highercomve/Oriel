@@ -90,7 +90,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
         },
         .command => |cmd| switch (cmd) {
             .init => |c| return init_cmd.run(ctx, c),
-            .doctor => return doctor.run(ctx),
+            .doctor => |c| return doctor.run(ctx, c),
             .setup => |c| return setup_cmd.run(ctx, c),
             .update => |c| return update_cmd.run(ctx, c),
             .webview2 => |c| return webview2_cmd.run(ctx, c),
