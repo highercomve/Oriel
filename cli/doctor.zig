@@ -2,21 +2,27 @@
 //! print the install commands for whatever is missing.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Context = @import("Context.zig");
 
 pub const Command = struct {
     pub const summary = "Check that this system can build Oriel apps";
     pub const details =
-        \\Required: Zig 0.16.x (on PATH, or $ORIEL_ZIG), pkg-config, the GTK 4 and
-        \\WebKitGTK 6.0 development packages, Node.js (20.19+ or 22.12+) and npm
-        \\for the Vite templates. Optional: packaging tools and the libraries of
-        \\the input/clipboard/global_shortcut plugins. The tray host and the
+        \\Required everywhere: Zig 0.16.x (on PATH, or $ORIEL_ZIG), Node.js
+        \\(20.19+ or 22.12+) and npm for the Vite templates.
+        \\Linux: pkg-config and the GTK 4 and WebKitGTK 6.0 development packages;
+        \\optional packaging tools and plugin libraries; the tray host and the
         \\GlobalShortcuts portal are reported for information only.
+        \\macOS: the Xcode command-line tools (Apple SDK).
+        \\Windows: the WebView2 runtime; NSIS (makensis) for installers.
         \\Exits with 1 when something required is missing.
     ;
 };
 
-pub const Distro = enum { pacman, apt, dnf, zypper };
+/// A package manager: the Linux distro's, Homebrew on macOS, winget on Windows.
+pub const Distro = enum { pacman, apt, dnf, zypper, brew, winget };
+
+const linux_managers = [_]Distro{ .pacman, .apt, .dnf, .zypper };
 
 /// Package names per package manager; null where it has no package.
 const Packages = struct {
@@ -24,6 +30,8 @@ const Packages = struct {
     apt: ?[]const u8 = null,
     dnf: ?[]const u8 = null,
     zypper: ?[]const u8 = null,
+    brew: ?[]const u8 = null,
+    winget: ?[]const u8 = null,
 
     fn get(p: Packages, d: Distro) ?[]const u8 {
         return switch (d) {
@@ -52,6 +60,10 @@ const Item = struct {
 };
 
 const zig_hint = "Zig 0.16.x: https://ziglang.org/download/ (put it on PATH or set ORIEL_ZIG=/path/to/zig)";
+const xcode_hint = "Xcode command-line tools: xcode-select --install (or install Xcode)";
+const webview2_hint = "WebView2 runtime: https://developer.microsoft.com/microsoft-edge/webview2/ (preinstalled on Windows 11)";
+const node_packages: Packages = .{ .pacman = "nodejs", .apt = "nodejs", .dnf = "nodejs", .zypper = "nodejs-default", .brew = "node", .winget = "OpenJS.NodeJS.LTS" };
+const npm_packages: Packages = .{ .pacman = "npm", .apt = "npm", .dnf = "npm", .zypper = "npm-default", .brew = "node", .winget = "OpenJS.NodeJS.LTS" };
 const nfpm_hint = "nfpm: https://nfpm.goreleaser.com/install/ (or: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest)";
 
 pub fn run(ctx: Context) !u8 {
@@ -63,6 +75,22 @@ pub fn run(ctx: Context) !u8 {
 
     var items: std.ArrayList(Item) = .empty;
     try items.append(arena, try checkZig(c));
+    switch (builtin.os.tag) {
+        .macos => {
+            try items.append(arena, try checkXcode(c));
+            try items.append(arena, try checkNode(c));
+            try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
+            return report(arena, ctx.out, items.items, .brew);
+        },
+        .windows => {
+            try items.append(arena, try checkWebView2(c));
+            try items.append(arena, try checkNode(c));
+            try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
+            try items.append(arena, try checkMakensis(c));
+            return report(arena, ctx.out, items.items, .winget);
+        },
+        else => {},
+    }
     const pkg_config = try c.findExecutable("pkg-config");
     try items.append(arena, .{
         .label = "pkg-config",
@@ -74,7 +102,7 @@ pub fn run(ctx: Context) !u8 {
     try items.append(arena, try checkLibrary(c, pkg_config, "gtk4", .required, Packages.pkgConfig("gtk4", "libgtk-4-dev", "gtk4")));
     try items.append(arena, try checkLibrary(c, pkg_config, "webkitgtk-6.0", .required, Packages.pkgConfig("webkitgtk-6.0", "libwebkitgtk-6.0-dev", "webkitgtk-6.0")));
     try items.append(arena, try checkNode(c));
-    try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, .{ .pacman = "npm", .apt = "npm", .dnf = "npm", .zypper = "npm-default" }));
+    try items.append(arena, try checkTool(c, "npm", .required, &.{"--version"}, npm_packages));
 
     try items.append(arena, try checkNfpm(c));
     try items.append(arena, try checkTool(c, "mksquashfs", .optional, null, .{ .pacman = "squashfs-tools", .apt = "squashfs-tools", .dnf = "squashfs-tools", .zypper = "squashfs" }));
@@ -99,6 +127,9 @@ fn report(gpa: std.mem.Allocator, w: *std.Io.Writer, items: []const Item, distro
     };
     var missing_required = false;
     for (sections) |section| {
+        for (items) |item| {
+            if (item.level == section[0]) break;
+        } else continue; // nothing to report in this section here
         try w.print("{s}:\n", .{section[1]});
         for (items) |item| {
             if (item.level != section[0]) continue;
@@ -113,15 +144,27 @@ fn report(gpa: std.mem.Allocator, w: *std.Io.Writer, items: []const Item, distro
         for (items) |item| any = any or (!item.ok and item.level == level);
         if (!any) continue;
         try w.print("\nTo install the missing {s} tools:\n", .{@tagName(level)});
-        const managers: []const Distro = if (distro) |d| &.{d} else std.enums.values(Distro);
+        const managers: []const Distro = if (distro) |d| &.{d} else &linux_managers;
         for (managers) |d| {
-            var line: std.Io.Writer.Allocating = .init(gpa);
-            defer line.deinit();
+            // Each package once (node and npm share one on brew and winget).
+            var pkgs: std.ArrayList([]const u8) = .empty;
+            defer pkgs.deinit(gpa);
             for (items) |item| {
                 if (item.ok or item.level != level) continue;
-                if (item.packages.get(d)) |pkgs| try line.writer.print(" {s}", .{pkgs});
+                const p = item.packages.get(d) orelse continue;
+                for (pkgs.items) |seen| {
+                    if (std.mem.eql(u8, seen, p)) break;
+                } else try pkgs.append(gpa, p);
             }
-            if (line.written().len > 0) try w.print("  {s}{s}\n", .{ installPrefix(d), line.written() });
+            if (pkgs.items.len == 0) continue;
+            if (d == .winget) {
+                // winget installs one id per command.
+                for (pkgs.items) |p| try w.print("  {s} {s}\n", .{ installPrefix(d), p });
+            } else {
+                try w.print("  {s}", .{installPrefix(d)});
+                for (pkgs.items) |p| try w.print(" {s}", .{p});
+                try w.writeByte('\n');
+            }
         }
         for (items) |item| {
             if (!item.ok and item.level == level) if (item.hint) |h| try w.print("  {s}\n", .{h});
@@ -141,6 +184,8 @@ pub fn installPrefix(d: Distro) []const u8 {
         .apt => "sudo apt install",
         .dnf => "sudo dnf install",
         .zypper => "sudo zypper install",
+        .brew => "brew install",
+        .winget => "winget install --id",
     };
 }
 
@@ -205,7 +250,7 @@ fn checkZig(c: Context) !Item {
 }
 
 fn checkNode(c: Context) !Item {
-    const packages: Packages = .{ .pacman = "nodejs", .apt = "nodejs", .dnf = "nodejs", .zypper = "nodejs-default" };
+    const packages = node_packages;
     const path = try c.findExecutable("node") orelse
         return .{ .label = "node (Vite templates)", .level = .required, .ok = false, .detail = "not found", .packages = packages };
     const out = c.capture(&.{ path, "--version" }, 30_000) orelse
@@ -257,6 +302,62 @@ fn checkLibrary(c: Context, pkg_config: ?[]const u8, module: []const u8, level: 
         if (out.code == 0) return .{ .label = module, .level = level, .ok = true, .detail = out.text(), .packages = packages };
     }
     return .{ .label = module, .level = level, .ok = false, .detail = "development files not found", .packages = packages };
+}
+
+/// macOS: the Apple SDK that zig-objc and the AppKit/WebKit frameworks
+/// are found through (`xcrun`, from Xcode or its command-line tools).
+fn checkXcode(c: Context) !Item {
+    const label = "Xcode CLI tools";
+    const xcrun = try c.findExecutable("xcrun") orelse
+        return .{ .label = label, .level = .required, .ok = false, .detail = "xcrun not found", .hint = xcode_hint };
+    const out = c.capture(&.{ xcrun, "--sdk", "macosx", "--show-sdk-path" }, 30_000) orelse
+        return .{ .label = label, .level = .required, .ok = false, .detail = "xcrun did not run", .hint = xcode_hint };
+    const ok = out.code == 0 and out.text().len > 0;
+    return .{
+        .label = label,
+        .level = .required,
+        .ok = ok,
+        .detail = if (ok) try c.gpa.dupe(u8, out.text()) else "no macOS SDK",
+        .hint = xcode_hint,
+    };
+}
+
+/// Windows: the Evergreen WebView2 runtime installs a versioned
+/// `msedgewebview2.exe` under `EdgeWebView\Application` (per machine or
+/// per user).
+fn checkWebView2(c: Context) !Item {
+    const label = "WebView2 runtime";
+    const roots = [_][]const u8{ "ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA" };
+    for (roots) |root_var| {
+        const root = c.environ.get(root_var) orelse continue;
+        const app_dir = try std.fs.path.join(c.gpa, &.{ root, "Microsoft", "EdgeWebView", "Application" });
+        var dir = std.Io.Dir.cwd().openDir(c.io, app_dir, .{ .iterate = true }) catch continue;
+        defer dir.close(c.io);
+        var it = dir.iterate();
+        while (it.next(c.io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            const exe = try std.fs.path.join(c.gpa, &.{ app_dir, entry.name, "msedgewebview2.exe" });
+            std.Io.Dir.cwd().access(c.io, exe, .{}) catch continue;
+            return .{ .label = label, .level = .required, .ok = true, .detail = try std.fmt.allocPrint(c.gpa, "{s} ({s})", .{ entry.name, app_dir }) };
+        }
+    }
+    return .{ .label = label, .level = .required, .ok = false, .detail = "not found", .packages = .{ .winget = "Microsoft.EdgeWebView2Runtime" }, .hint = webview2_hint };
+}
+
+/// Windows: makensis for `oriel package` (setup.exe), on PATH or where the
+/// NSIS installer puts it (the packaging step looks there too).
+fn checkMakensis(c: Context) !Item {
+    var item = try checkTool(c, "makensis", .optional, null, .{ .winget = "NSIS.NSIS" });
+    if (item.ok) return item;
+    for ([_][]const u8{ "ProgramFiles(x86)", "ProgramFiles" }) |root_var| {
+        const root = c.environ.get(root_var) orelse continue;
+        const exe = try std.fs.path.join(c.gpa, &.{ root, "NSIS", "makensis.exe" });
+        std.Io.Dir.cwd().access(c.io, exe, .{}) catch continue;
+        item.ok = true;
+        item.detail = exe;
+        break;
+    }
+    return item;
 }
 
 /// Ask the session bus with gdbus (part of GLib, so present wherever GTK is).
@@ -343,6 +444,23 @@ test "report: exit code and install commands" {
     _ = try report(testing.allocator, &out.writer, &items, null);
     try testing.expect(std.mem.indexOf(u8, out.written(), "sudo dnf install 'pkgconfig(gtk4)' 'pkgconfig(webkitgtk-6.0)'") != null);
     try testing.expect(std.mem.indexOf(u8, out.written(), "sudo pacman -S --needed gtk4 webkitgtk-6.0") != null);
+
+    // An unknown Linux distro gets no brew/winget lines.
+    try testing.expect(std.mem.indexOf(u8, out.written(), "brew install") == null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "winget install") == null);
+
+    // macOS and Windows print their package manager's command.
+    const node_missing = [_]Item{
+        .{ .label = "node", .level = .required, .ok = false, .detail = "not found", .packages = node_packages },
+        .{ .label = "npm", .level = .required, .ok = false, .detail = "not found", .packages = npm_packages },
+        .{ .label = "WebView2 runtime", .level = .required, .ok = false, .detail = "not found", .packages = .{ .winget = "Microsoft.EdgeWebView2Runtime" } },
+    };
+    out.clearRetainingCapacity();
+    try testing.expectEqual(1, try report(testing.allocator, &out.writer, &node_missing, .brew));
+    try testing.expect(std.mem.indexOf(u8, out.written(), "  brew install node\n") != null);
+    out.clearRetainingCapacity();
+    _ = try report(testing.allocator, &out.writer, &node_missing, .winget);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "  winget install --id OpenJS.NodeJS.LTS\n  winget install --id Microsoft.EdgeWebView2Runtime\n") != null);
 
     // Only optional/informative things missing: success.
     out.clearRetainingCapacity();

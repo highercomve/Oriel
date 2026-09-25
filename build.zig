@@ -204,7 +204,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
         .use_lld = useLld(b.graph.host),
     });
-    if (is_linux) {
+    if (runs_tests) {
         test_step.dependOn(&b.addRunArtifact(dev_runner_tests).step);
 
         // Kills a stand-in for `zig build dev` (SIGTERM, then SIGKILL) and checks
@@ -223,15 +223,21 @@ pub fn build(b: *std.Build) void {
         for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module, patch_httpz_tests.root_module }) |m| {
             check_step.dependOn(&b.addTest(.{ .root_module = m }).step);
         }
-        // dev_runner is Linux-only (inotify, prctl, pidfd).
-        if (is_linux) check_step.dependOn(&b.addTest(.{ .root_module = dev_runner.root_module }).step);
     } else {
         check_step.dependOn(&b.addTest(.{ .root_module = oriel }).step);
     }
 
+    // dev_runner is a host tool; check it for the selected target too, so
+    // `zig build check -Dtarget=x86_64-windows` covers its Windows paths.
+    check_step.dependOn(&b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/dev_runner.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) }).step);
+
     // The CLI is part of Oriel's own build only: apps that depend on Oriel
     // never build it (and don't pay for the `git` call below).
-    if (is_linux and b.pkg_hash.len == 0) addCli(b, target, optimize, test_step, check_step);
+    if (b.pkg_hash.len == 0) addCli(b, target, optimize, test_step, check_step);
 }
 
 /// `zig build cli`: the `oriel` command-line tool (cli/), a static binary
@@ -634,17 +640,9 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     if (b.args) |args| run.addArgs(args);
     @import("build/package.zig").getOrCreateStep(b, "run", "Run the production build").dependOn(&run.step);
 
-    if (dev_exe) |d| dev: {
+    if (dev_exe) |d| {
         const install_dev = b.addInstallArtifact(d, .{});
         @import("build/package.zig").getOrCreateStep(b, "build-dev", "Build development executable").dependOn(&install_dev.step);
-
-        // dev_runner (watch + Zig reload) is Linux-only for now. The macOS dev
-        // executable starts the dev server itself (Vite hot reload still works).
-        if (@import("builtin").os.tag == .macos) {
-            const dev_step = @import("build/package.zig").getOrCreateStep(b, "dev", "Run against the frontend dev server (hot reload & Zig reload)");
-            dev_step.dependOn(&b.addFail(b.fmt("`zig build dev` isn't supported on macOS yet (tools/dev_runner.zig is Linux-only): run `zig build build-dev` and then zig-out/bin/{s}, which starts the dev server itself.", .{d.name})).step);
-            break :dev;
-        }
 
         const runner = b.addRunArtifact(oriel_dep.artifact("dev_runner"));
         runner.addArgs(&.{
@@ -657,8 +655,9 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         // This script runs in the build runner, a child of the `zig` process.
         // A SIGTERM/SIGKILL to `zig` alone leaves the build runner (and so
         // dev_runner's direct parent) alive, so dev_runner watches `zig` itself.
-        if (@import("builtin").os.tag == .linux) {
-            runner.addArg(b.fmt("--watch-pid={d}", .{std.os.linux.getppid()}));
+        // (Windows: no parent watch; closing the console stops everything.)
+        if (@import("builtin").os.tag != .windows) {
+            runner.addArg(b.fmt("--watch-pid={d}", .{std.posix.getppid()}));
         }
 
         if (fe.dev) |dev| {

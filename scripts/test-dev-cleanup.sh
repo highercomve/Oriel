@@ -25,7 +25,8 @@ PIDS_TO_CLEANUP=()
 cleanup() {
     # Ensure no processes are left behind even if the test fails
     # (dev server and app lead their own process groups: kill the groups too).
-    for pid in "${PIDS_TO_CLEANUP[@]}"; do
+    # (`${a[@]+...}`: bash 3.2, macOS's, treats an empty array as unset.)
+    for pid in ${PIDS_TO_CLEANUP[@]+"${PIDS_TO_CLEANUP[@]}"}; do
         kill -9 -- "-$pid" 2>/dev/null || true
         kill -9 "$pid" 2>/dev/null || true
     done
@@ -84,10 +85,10 @@ run_case() {
             # Find children of dev_runner
             local runner_children
             runner_children=($(pgrep -P "$dev_runner_pid" || true))
-            for c in "${runner_children[@]}"; do
+            for c in ${runner_children[@]+"${runner_children[@]}"}; do
                 PIDS_TO_CLEANUP+=("$c")
                 local comm
-                comm="$(cat "/proc/$c/comm" 2>/dev/null || true)"
+                comm="$(ps -o comm= -p "$c" 2>/dev/null || true)"
                 if [[ "$comm" == *"sh"* ]]; then
                     dev_server_pid="$c"
                 elif [[ "$comm" == *"sleep"* ]]; then
@@ -99,7 +100,7 @@ run_case() {
             if [[ -n "$dev_server_pid" ]]; then
                 local dev_children
                 dev_children=($(pgrep -P "$dev_server_pid" || true))
-                if [[ ${#dev_children[@]} -gt 0 ]]; then
+                if [[ -n "${dev_children[0]:-}" ]]; then
                     grandchild_pid="${dev_children[0]}"
                     PIDS_TO_CLEANUP+=("$grandchild_pid")
                 fi

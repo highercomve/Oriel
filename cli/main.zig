@@ -45,10 +45,14 @@ pub fn main(init: std.process.Init) !u8 {
         .err = &err.interface,
     };
     defer ctx.flush();
+    // Windows: an update renames the running oriel.exe to oriel.exe.old;
+    // remove it now that it isn't running. (No-op on Linux and macOS.)
+    @import("updater_core").backend.cleanupStale(io, init.gpa);
 
-    const vector = init.minimal.args.vector;
-    const argv = try arena.alloc([]const u8, vector.len -| 1);
-    for (argv, 1..) |*a, i| a.* = std.mem.span(vector[i]);
+    // Portable argv (WTF-16 on Windows, so not `args.vector`).
+    const all_args = try init.minimal.args.toSlice(arena);
+    const argv = try arena.alloc([]const u8, all_args.len -| 1);
+    for (argv, 1..) |*a, i| a.* = all_args[i];
 
     return dispatch(ctx, argv) catch |e| {
         ctx.err.print("error: {s}\n", .{@errorName(e)}) catch {};

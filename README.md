@@ -159,7 +159,7 @@ cd examples/react && zig build && ./zig-out/bin/oriel-react-notes
 - `src/platform/macos/`: `Shell.zig` (NSApplication run loop, main-thread tasks on the GCD main queue, default app/Edit/Window menu bar, SIGTERM/SIGINT → clean quit, Dock-icon click reopens a hidden main window), `window.zig` (windows, `WKNavigationDelegate` / `WKUIDelegate` navigation policy), `scheme.zig` (`app://` through a `WKURLSchemeHandler`, same headers and CSP as Linux), `bridge.zig` (the Linux bridge script over a `WKScriptMessageHandlerWithReply`: sync commands from the main loop, async ones on the worker pool), `dev_server.zig`.
 - **Verified** on macOS 15.2 (arm64), 2026-09-25: `examples/smoke --auto-quit` 23/23 (IPC, async IPC, events, window API incl. child windows, CSP, navigation, openExternal); `examples/react` production (embedded) and dev (Vite) builds show the notes UI.
 - **Modules:** none has a macOS backend yet (step 2). On macOS they default to off and `-D<name>=true` is refused, except `sql` (works) and `tray`, which builds as a stub whose `Tray.create` returns `error.NotSupported` so apps with a tray still run (without one). `App.setMenu` returns `error.NotSupported`.
-- **Dev mode:** `zig build dev` needs `tools/dev_runner.zig` (Linux-only). Run `zig build build-dev` and then `zig-out/bin/<app>-dev`: it starts the Vite dev server itself, retries until it answers, and stops it on exit (Vite hot reload works; no Zig rebuild on save).
+- **Dev mode:** `zig build dev` / `oriel dev` work as on Linux: Vite hot reload, and the app is rebuilt and restarted when a `.zig` file changes (the watcher polls modification times). Running the `-dev` executable directly also works: it starts the dev server itself.
 - **Not yet:** `.app` bundle and `.dmg` packaging (step 3); JS `alert()`/`confirm()` dialogs (no `WKUIDelegate` panels yet); windows without decorations can't become key.
 - `ORIEL_SNAPSHOT=/tmp/shot.png` saves the main window's page (WebKit's snapshot API) a second after it loaded: screen capture of other apps needs a Screen Recording grant on macOS.
 
@@ -176,9 +176,10 @@ or Steam's Proton, headlessly: see [docs/windows-testing.md](docs/windows-testin
 (`scripts/wine.sh`).
 
 Releases are cut by pushing a `v*` tag: `.github/workflows/release.yml`
-runs the tests, builds the CLI for x86_64 and aarch64 Linux and attaches
-the binaries and `SHA256SUMS` to the GitHub release (`install.sh`
-verifies against them).
+runs the tests on Linux, macOS and Windows, cross-builds the CLI for x86_64
+and aarch64 Linux, macOS and Windows, signs an update manifest per target
+and attaches the binaries, manifests and `SHA256SUMS` to the GitHub release
+(`install.sh` / `install.ps1` verify against them).
 
 Dependencies, including prebuilt GTK/WebKit bindings (zig-gobject, GNOME 50),
 come from the Zig package manager. To use bindings generated from your own
@@ -188,21 +189,27 @@ system's GIR files instead (newer GTK/WebKit APIs), run
 
 ## The `oriel` CLI
 
-A single static binary (no GTK needed to run it) that scaffolds apps and
-wraps their build steps, like `create-tauri-app` and `tauri dev/build`.
+A single binary for Linux (static), macOS and Windows (x86_64 and aarch64;
+no GTK needed to run it) that scaffolds apps and wraps their build steps,
+like `create-tauri-app` and `tauri dev/build`.
 
 ```sh
-# Install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.1.0.
+# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.1.0.
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
 # Or from a checkout: zig build cli && cp zig-out/bin/oriel ~/.local/bin/
+```
+
+```powershell
+# Windows (PowerShell): installs to %LOCALAPPDATA%\Programs\oriel (or $env:ORIEL_INSTALL_DIR), no admin rights.
+irm https://raw.githubusercontent.com/highercomve/Oriel/main/install.ps1 | iex
 ```
 
 | Command | What it does |
 |---|---|
 | `oriel init <name>` | New app in `./<name>`: build.zig, build.zig.zon, `src/main.zig` with sample `Commands`/`Events`, the frontend, README. Then adds Oriel (`zig fetch --save`), runs `zig build --fetch` and `npm install`, so the first build works offline |
-| `oriel doctor` | Checks Zig 0.16.x, pkg-config + GTK 4 / WebKitGTK 6.0 development files, Node.js + npm, packaging tools, tray host and GlobalShortcuts portal; prints the install command for your distro (pacman, apt, dnf, zypper); exits non-zero if something required is missing |
+| `oriel doctor` | Checks Zig 0.16.x and Node.js + npm everywhere, plus per OS: Linux: pkg-config + GTK 4 / WebKitGTK 6.0 development files, packaging tools, tray host and GlobalShortcuts portal (install commands for pacman, apt, dnf, zypper); macOS: the Xcode command-line tools (`brew install`); Windows: the WebView2 runtime and NSIS (`winget install`). Exits non-zero if something required is missing |
 | `oriel update` | Updates the CLI binary in place using Oriel's self-updater (`--check`, `--version <tag>`, `--yes`) |
-| `oriel dev` / `build` / `run` / `package` / `types` / `check` | `zig build <step>` (plain `zig build` for `build`) from the project root, found by walking up to `build.zig.zon`; extra arguments are passed on, e.g. `oriel build -Doptimize=ReleaseFast`, `oriel run -- --flag` |
+| `oriel dev` / `build` / `run` / `package` / `types` / `check` | `zig build <step>` (plain `zig build` for `build`) from the project root, found by walking up to `build.zig.zon`; extra arguments are passed on, e.g. `oriel build -Doptimize=ReleaseFast`, `oriel run -- --flag`. `oriel dev` runs the Vite dev server and rebuilds + restarts the app when a `.zig` file changes (inotify on Linux, polling on macOS and Windows) |
 | `oriel --version` | CLI version and the Oriel ref `init` pins |
 
 `oriel init` options:
@@ -232,7 +239,7 @@ oriel update --yes            # Update without prompting (required in non-intera
 oriel update --version v0.2.0 # Update or downgrade to a specific release tag
 ```
 
-The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the signed manifest for the current architecture (`oriel-update-<arch>-linux.json`), verifies the Ed25519 signature against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary. The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
+The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the signed manifest for the current architecture and OS (`oriel-update-<arch>-<linux|macos|windows>.json`), verifies the Ed25519 signature against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary (on Windows, where a running exe can't be overwritten, it is renamed to `oriel.exe.old` first and removed on the next run). The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
 
 #### Maintainer key setup
 
@@ -245,7 +252,7 @@ Release builds embed Oriel's Ed25519 public key via `-Dupdate-public-key=<base64
 2. In GitHub repository settings:
    - Add the private key seed (base64 string in `oriel-release.key`) as secret `ORIEL_UPDATE_KEY`.
    - Add the public key (base64 string in `oriel-release.pub`) as variable `ORIEL_UPDATE_PUBLIC_KEY`.
-3. The release workflow passes `-Dupdate-public-key` to `zig build cli` and runs `zig build sign-update` to attach signed manifests (`oriel-update-x86_64-linux.json` and `oriel-update-aarch64-linux.json`) to the GitHub release.
+3. The release workflow passes `-Dupdate-public-key` to `zig build cli` and runs `zig build sign-update` to attach a signed manifest per target (`oriel-update-<x86_64|aarch64>-<linux|macos|windows>.json`) to the GitHub release.
 
 ## Building an app
 
