@@ -14,6 +14,7 @@ const init_cmd = @import("init.zig");
 const doctor = @import("doctor.zig");
 const project = @import("project.zig");
 const update_cmd = @import("update.zig");
+const webview2_cmd = @import("webview2.zig");
 
 const program = "oriel";
 
@@ -21,6 +22,7 @@ pub const Commands = union(enum) {
     init: init_cmd.Command,
     doctor: doctor.Command,
     update: update_cmd.Command,
+    webview2: webview2_cmd.Command,
     dev: project.Wrapper("dev", "Run the app against the frontend dev server, with hot reload"),
     build: project.Wrapper(null, "Build the app (frontend embedded) into zig-out/bin"),
     run: project.Wrapper("run", "Build and run the app"),
@@ -83,6 +85,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
             .init => |c| return init_cmd.run(ctx, c),
             .doctor => return doctor.run(ctx),
             .update => |c| return update_cmd.run(ctx, c),
+            .webview2 => |c| return webview2_cmd.run(ctx, c),
             inline else => |c| return project.exec(ctx, @TypeOf(c).zig_step, c.args),
         },
     }
@@ -94,6 +97,7 @@ test {
     _ = init_cmd;
     _ = doctor;
     _ = update_cmd;
+    _ = webview2_cmd;
     _ = project;
     _ = @import("template.zig");
 }
@@ -108,7 +112,7 @@ test "command table" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try args.writeHelp(Commands, program, &out.writer);
-    for ([_][]const u8{ "init", "doctor", "update", "dev", "build", "run", "package", "types", "check" }) |name| {
+    for ([_][]const u8{ "init", "doctor", "update", "webview2", "dev", "build", "run", "package", "types", "check" }) |name| {
         const line = try std.fmt.allocPrint(std.testing.allocator, "\n  {s} ", .{name});
         defer std.testing.allocator.free(line);
         try std.testing.expect(std.mem.indexOf(u8, out.written(), line) != null);
