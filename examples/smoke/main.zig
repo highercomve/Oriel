@@ -111,7 +111,9 @@ const Commands = struct {
         };
     }
 
-    pub const async_commands = .{ "async_sleep", "clipboard_roundtrip" };
+    // test_second_instance waits for a second launch that the main thread must
+    // be free to answer.
+    pub const async_commands = .{ "async_sleep", "clipboard_roundtrip", "test_second_instance" };
 
     /// Write then read back the clipboard in-process, from a worker thread
     /// (the path async commands and hotkey handlers use). Must not hang:
@@ -240,6 +242,28 @@ const Commands = struct {
         };
     }
 
+    /// Single instance (Milestone 10): launch this app again with arguments;
+    /// it must hand them to this instance's on_second_instance and exit.
+    pub fn test_second_instance(gpa: std.mem.Allocator, local_io: std.Io) !struct { ok: bool, detail: []const u8 } {
+        if (builtin.os.tag == .macos) return .{ .ok = true, .detail = "skipped: second-instance forwarding not implemented on macOS yet" };
+        second_instance_len.store(0, .release);
+        const exe = try std.process.executablePathAlloc(local_io, gpa);
+        var child = try std.process.spawn(local_io, .{
+            .argv = &.{ exe, "--probe=hello world", "--probe=ünï" },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+        const term = try child.wait(local_io);
+        const got = second_instance_buf[0..second_instance_len.load(.acquire)];
+        const want = "[\"--probe=hello world\",\"--probe=ünï\"]";
+        const exited = term == .exited and term.exited == 0;
+        return .{
+            .ok = exited and std.mem.eql(u8, got, want),
+            .detail = try std.fmt.allocPrint(gpa, "second launch {s}; on_second_instance got {s}", .{ if (exited) "exited 0" else "did not exit cleanly", if (got.len == 0) "nothing" else got }),
+        };
+    }
+
     /// Called by the page in --auto-quit mode once everything has rendered.
     pub fn done(_: std.mem.Allocator, args: struct { failed: u32, report: []const u8 }) void {
         std.debug.print("{s}\n", .{args.report});
@@ -258,11 +282,22 @@ fn context() oriel.CheckContext {
 
 fn testOpenExternalHook(_: [*:0]const u8) void {}
 
+/// The arguments of the last forwarded launch, as JSON (on_second_instance).
+var second_instance_buf: [1024]u8 = undefined;
+var second_instance_len = std.atomic.Value(usize).init(0);
+
+fn onSecondInstance(args: []const []const u8) void {
+    var w: std.Io.Writer = .fixed(&second_instance_buf);
+    std.json.Stringify.value(args, .{}, &w) catch return;
+    second_instance_len.store(w.end, .release);
+}
+
 pub fn main(init: std.process.Init) !u8 {
     oriel.App.open_external_hook = &testOpenExternalHook;
     io = init.io;
     var headless = false;
     var auto_quit = false;
+    var probe = false;
     var it = try init.minimal.args.iterateAllocator(init.gpa);
     defer it.deinit();
     _ = it.next();
@@ -271,6 +306,10 @@ pub fn main(init: std.process.Init) !u8 {
             headless = true;
         } else if (std.mem.eql(u8, arg, "--auto-quit")) {
             auto_quit = true;
+        } else if (std.mem.startsWith(u8, arg, "--probe=")) {
+            // A second launch from the "second instance" check: it only
+            // forwards its arguments to the running smoke app.
+            probe = true;
         } else if (std.mem.indexOf(u8, arg, "://") != null) {
             // A deep link (smoke-scheme://...): the platform shell reads it
             // from argv; `deep_link js` then reports it as current().
@@ -280,7 +319,9 @@ pub fn main(init: std.process.Init) !u8 {
         }
     }
 
-    if (oriel.options.media_server) {
+    // A probe launch forwards to the running instance: its media port is taken.
+    const serve_media = oriel.options.media_server and !probe;
+    if (serve_media) {
         test_media_root = try createTestMediaFile(io, init.gpa);
         errdefer init.gpa.free(test_media_root);
         try media.start(io, init.gpa, oriel.media_server.Options{
@@ -291,7 +332,7 @@ pub fn main(init: std.process.Init) !u8 {
         // The same directory at app://app/media/ (no TCP port involved).
         try oriel.media_server.scheme.setRoot(test_media_root, .inside_root);
     }
-    defer if (oriel.options.media_server) {
+    defer if (serve_media) {
         oriel.media_server.scheme.clearRoot();
         media.stop();
         init.gpa.free(test_media_root);
@@ -325,6 +366,7 @@ pub fn main(init: std.process.Init) !u8 {
         .security = .{ .external_links = .deny },
         .deep_link_schemes = app.url_schemes,
         .permissions = app.permissions,
+        .on_second_instance = &onSecondInstance,
     };
     comptime var config_auto = config_gui;
     config_auto.start = "index.html?auto-quit";

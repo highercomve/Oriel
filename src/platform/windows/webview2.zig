@@ -538,6 +538,24 @@ pub const ICoreWebView2 = extern struct {
 /// Source: WebView2.h lines 39207-39432
 pub const IID_ICoreWebView2Controller = GUID{ .Data1 = 0x4d00c0d1, .Data2 = 0x9434, .Data3 = 0x4eb6, .Data4 = [_]u8{ 0x80, 0x78, 0x86, 0x97, 0xa5, 0x60, 0x33, 0x4f } };
 
+/// COREWEBVIEW2_COLOR (passed by value).
+pub const COREWEBVIEW2_COLOR = extern struct { A: u8, R: u8, G: u8, B: u8 };
+
+/// ICoreWebView2Controller2: the controller plus the default background
+/// color (alpha 0 = transparent, what's behind the webview shows).
+/// IID: {c979903e-d4ca-4228-92eb-47ee3fa96eab}
+pub const IID_ICoreWebView2Controller2 = GUID{ .Data1 = 0xc979903e, .Data2 = 0xd4ca, .Data3 = 0x4228, .Data4 = [_]u8{ 0x92, 0xeb, 0x47, 0xee, 0x3f, 0xa9, 0x6e, 0xab } };
+
+pub const ICoreWebView2Controller2 = extern struct {
+    lpVtbl: *const VTable,
+
+    pub const VTable = extern struct {
+        base: ICoreWebView2Controller.VTable,
+        get_DefaultBackgroundColor: *const fn (This: *ICoreWebView2Controller2, value: *COREWEBVIEW2_COLOR) callconv(.winapi) HRESULT,
+        put_DefaultBackgroundColor: *const fn (This: *ICoreWebView2Controller2, value: COREWEBVIEW2_COLOR) callconv(.winapi) HRESULT,
+    };
+};
+
 pub const ICoreWebView2Controller = extern struct {
     lpVtbl: *const VTable,
 

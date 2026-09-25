@@ -1183,3 +1183,38 @@ test "win32 struct layouts and sizes" {
     try std.testing.expectEqual(@as(usize, 8), @offsetOf(FILE_NOTIFY_INFORMATION, "FileNameLength"));
     try std.testing.expectEqual(@as(usize, 12), @offsetOf(FILE_NOTIFY_INFORMATION, "FileName"));
 }
+
+// Overlay windows (Milestone 10): extended styles, z-order, monitors, DPI,
+// per-pixel transparency.
+pub const WS_EX_LAYERED: DWORD = 0x00080000;
+pub const WS_EX_NOACTIVATE: DWORD = 0x08000000;
+pub const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+pub const HWND_NOTOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
+pub const WM_ERASEBKGND: UINT = 0x0014;
+pub const LWA_ALPHA: DWORD = 0x00000002;
+pub const MONITOR_DEFAULTTONEAREST: DWORD = 0x00000002;
+pub const HMONITOR = *opaque {};
+pub const HRGN = *opaque {};
+
+pub const MONITORINFO = extern struct {
+    cbSize: DWORD = @sizeOf(MONITORINFO),
+    rcMonitor: RECT = std.mem.zeroes(RECT),
+    rcWork: RECT = std.mem.zeroes(RECT),
+    dwFlags: DWORD = 0,
+};
+
+pub extern "user32" fn MonitorFromWindow(hwnd: HWND, dwFlags: DWORD) callconv(.winapi) ?HMONITOR;
+pub extern "user32" fn GetMonitorInfoW(hMonitor: HMONITOR, lpmi: *MONITORINFO) callconv(.winapi) BOOL;
+pub extern "user32" fn GetDpiForWindow(hwnd: HWND) callconv(.winapi) UINT;
+pub extern "user32" fn SetLayeredWindowAttributes(hwnd: HWND, crKey: DWORD, bAlpha: BYTE, dwFlags: DWORD) callconv(.winapi) BOOL;
+pub extern "gdi32" fn CreateRectRgn(x1: c_int, y1: c_int, x2: c_int, y2: c_int) callconv(.winapi) ?HRGN;
+
+pub const DWM_BB_ENABLE: DWORD = 0x00000001;
+pub const DWM_BB_BLURREGION: DWORD = 0x00000002;
+pub const DWM_BLURBEHIND = extern struct {
+    dwFlags: DWORD,
+    fEnable: BOOL,
+    hRgnBlur: ?HRGN,
+    fTransitionOnMaximized: BOOL,
+};
+pub extern "dwmapi" fn DwmEnableBlurBehindWindow(hWnd: HWND, pBlurBehind: *const DWM_BLURBEHIND) callconv(.winapi) HRESULT;

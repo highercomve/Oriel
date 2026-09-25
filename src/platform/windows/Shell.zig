@@ -256,21 +256,13 @@ fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam:
         win32.WM_COPYDATA => {
             if (lParam == 0) return 0;
             const p_cds: *const win32.COPYDATASTRUCT = @ptrFromInt(@as(usize, @bitCast(lParam)));
-            if (p_cds.dwData == 0x44454550) { // 'DEEP'
-                if (p_cds.cbData > 0 and p_cds.cbData <= 65536 and p_cds.lpData != null) {
-                    const raw_bytes = @as([*]const u8, @ptrCast(p_cds.lpData.?))[0..p_cds.cbData];
-                    const url_bytes = std.mem.sliceTo(raw_bytes, 0);
-                    if (build_opts.deep_link) {
-                        deep_link.deliver(url_bytes);
-                    }
-                }
-                if (main_hwnd) |mw| {
-                    _ = win32.ShowWindow(mw, win32.SW_RESTORE);
-                    _ = win32.SetForegroundWindow(mw);
-                }
-                return 1;
-            }
-            return 0;
+            if (p_cds.dwData != COPYDATA_ARGS) return 0;
+            const bytes: []const u8 = if (p_cds.cbData > 0 and p_cds.cbData <= max_forwarded_bytes and p_cds.lpData != null)
+                @as([*]const u8, @ptrCast(p_cds.lpData.?))[0..p_cds.cbData]
+            else
+                "[]";
+            if (on_second_instance_fn) |f| f(bytes);
+            return 1;
         },
         else => return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam),
     }
@@ -278,6 +270,58 @@ fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam:
 
 const build_opts = @import("build_options");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
+
+/// WM_COPYDATA from a second launch: its arguments (without argv[0]) as a
+/// JSON array of strings.
+const COPYDATA_ARGS: win32.ULONG_PTR = 0x41524753; // 'ARGS'
+const max_forwarded_bytes = 256 * 1024;
+/// Set by Shell.run: handles a forwarded launch on the main thread.
+var on_second_instance_fn: ?*const fn (json: []const u8) void = null;
+
+/// This launch's arguments without argv[0], as UTF-8. Caller frees with `freeArgs`.
+fn launchArgs(gpa: std.mem.Allocator) ![][]u8 {
+    var list: std.ArrayList([]u8) = .empty;
+    errdefer freeArgs(gpa, list.items);
+    errdefer list.deinit(gpa);
+    var argc: c_int = 0;
+    const w_argv = win32.CommandLineToArgvW(win32.GetCommandLineW(), &argc) orelse return list.toOwnedSlice(gpa);
+    defer _ = win32.LocalFree(@ptrCast(w_argv));
+    var idx: usize = 1;
+    while (idx < @as(usize, @intCast(argc))) : (idx += 1) {
+        const arg = try std.unicode.utf16LeToUtf8Alloc(gpa, std.mem.span(w_argv[idx]));
+        errdefer gpa.free(arg);
+        try list.append(gpa, arg);
+    }
+    return list.toOwnedSlice(gpa);
+}
+
+fn freeArgs(gpa: std.mem.Allocator, args: []const []u8) void {
+    for (args) |a| gpa.free(a);
+    gpa.free(args);
+}
+
+pub fn encodeArgs(gpa: std.mem.Allocator, args: []const []const u8) ![]u8 {
+    return std.json.Stringify.valueAlloc(gpa, args, .{});
+}
+
+pub fn decodeArgs(gpa: std.mem.Allocator, json: []const u8) !std.json.Parsed([]const []const u8) {
+    return std.json.parseFromSlice([]const []const u8, gpa, json, .{});
+}
+
+test "forwarded arguments round-trip" {
+    const gpa = std.testing.allocator;
+    const args = [_][]const u8{ "--flag", "two words", "app://x?a=1&b=\"q\"", "ünïcode", "" };
+    const json = try encodeArgs(gpa, &args);
+    defer gpa.free(json);
+    const parsed = try decodeArgs(gpa, json);
+    defer parsed.deinit();
+    try std.testing.expectEqual(args.len, parsed.value.len);
+    for (args, parsed.value) |a, b| try std.testing.expectEqualStrings(a, b);
+    const empty = try decodeArgs(gpa, "[]");
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty.value.len);
+    try std.testing.expectError(error.UnexpectedToken, decodeArgs(gpa, "{\"not\":\"an array\"}"));
+}
 
 fn getAppMutexNameW(gpa: std.mem.Allocator, app_id: []const u8) ![:0]u16 {
     var sanitized: std.ArrayList(u8) = .empty;
@@ -332,7 +376,93 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     const csp_z: ?[:0]const u8 = if (config.security.csp) |c| (c ++ "\x00")[0..c.len :0] else null;
     const Creator = window.WindowCreator(api, config, local, csp_z);
 
+    const single_instance = build_opts.deep_link or config.on_second_instance != null;
+
     return struct {
+        /// A second launch: send this launch's arguments to the running
+        /// instance (found by its host window) and let it handle them.
+        fn forwardToPrimary(gpa: std.mem.Allocator, app_id: []const u8) void {
+            const host_title_w = getHostWindowTitleW(gpa, app_id) catch return;
+            defer gpa.free(host_title_w);
+
+            var primary_host: ?win32.HWND = null;
+            var retries: usize = 60; // 60 * 50ms = 3000ms (~3s)
+            while (retries > 0) : (retries -= 1) {
+                primary_host = win32.FindWindowW(HOST_CLASS_NAME, host_title_w);
+                if (primary_host != null) break;
+                win32.Sleep(50);
+            }
+            const host = primary_host orelse {
+                log.warn("primary instance mutex exists but host window was not found within 3s", .{});
+                return;
+            };
+
+            const args = launchArgs(gpa) catch return;
+            defer freeArgs(gpa, args);
+            const json = encodeArgs(gpa, args) catch return;
+            defer gpa.free(json);
+            if (json.len > max_forwarded_bytes) {
+                log.warn("second launch: arguments too long to forward ({d} bytes)", .{json.len});
+                return;
+            }
+
+            // Windows only lets the process the user just started take the
+            // foreground; pass that right on so the running instance can
+            // bring its window to the front (it doesn't when the app handles
+            // second launches itself).
+            if (config.on_second_instance == null) {
+                var primary_pid: win32.DWORD = 0;
+                _ = win32.GetWindowThreadProcessId(host, &primary_pid);
+                if (primary_pid != 0) _ = win32.AllowSetForegroundWindow(primary_pid);
+            }
+
+            var cds = win32.COPYDATASTRUCT{
+                .dwData = COPYDATA_ARGS,
+                .cbData = @intCast(json.len),
+                .lpData = @ptrCast(@constCast(json.ptr)),
+            };
+            var result: win32.DWORD_PTR = 0;
+            _ = win32.SendMessageTimeoutW(
+                host,
+                win32.WM_COPYDATA,
+                0,
+                @bitCast(@intFromPtr(&cds)),
+                win32.SMTO_ABORTIFHUNG | win32.SMTO_BLOCK,
+                3000,
+                &result,
+            );
+        }
+
+        /// In the running instance, on the main thread (host window): a
+        /// second launch's arguments. Deep links go to deep_link; the app's
+        /// `on_second_instance` gets every argument and decides what to show;
+        /// without one, the main window comes back.
+        fn onSecondInstance(json: []const u8) void {
+            const gpa = std.heap.smp_allocator;
+            const parsed = decodeArgs(gpa, json) catch |err| {
+                log.warn("second launch: bad arguments ({s})", .{@errorName(err)});
+                return;
+            };
+            defer parsed.deinit();
+            const args = parsed.value;
+
+            if (build_opts.deep_link) {
+                for (args) |a| {
+                    if (deep_link.validate(a, config.deep_link_schemes)) |_| {
+                        deep_link.deliver(a);
+                        break;
+                    } else |_| {}
+                }
+            }
+
+            if (config.on_second_instance) |handler| {
+                handler(args);
+            } else if (main_hwnd) |mw| {
+                _ = win32.ShowWindow(mw, win32.SW_RESTORE);
+                _ = win32.SetForegroundWindow(mw);
+            }
+        }
+
         pub fn run(io: std.Io) u8 {
             const gpa = std.heap.smp_allocator;
             const app_id = if (config.dev != null) config.id ++ ".Dev" else config.id;
@@ -341,88 +471,20 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 if (h_mutex) |m| _ = win32.CloseHandle(m);
             }
 
-            if (build_opts.deep_link) {
+            // Single instance: for deep links, and for apps that handle a
+            // second launch themselves (`on_second_instance`).
+            if (single_instance) {
                 const mutex_name_w = getAppMutexNameW(gpa, app_id) catch return 1;
                 defer gpa.free(mutex_name_w);
 
                 h_mutex = win32.CreateMutexW(null, win32.FALSE, mutex_name_w);
                 if (win32.GetLastError() == win32.ERROR_ALREADY_EXISTS) {
-                    const host_title_w = getHostWindowTitleW(gpa, app_id) catch return 1;
-                    defer gpa.free(host_title_w);
-
-                    var primary_host: ?win32.HWND = null;
-                    var retries: usize = 60; // 60 * 50ms = 3000ms (~3s)
-                    while (retries > 0) : (retries -= 1) {
-                        primary_host = win32.FindWindowW(HOST_CLASS_NAME, host_title_w);
-                        if (primary_host != null) break;
-                        win32.Sleep(50);
-                    }
-
-                    if (primary_host) |host| {
-                        var maybe_url: ?[]const u8 = null;
-                        var argc: c_int = 0;
-                        if (win32.CommandLineToArgvW(win32.GetCommandLineW(), &argc)) |w_argv| {
-                            defer _ = win32.LocalFree(@ptrCast(w_argv));
-                            if (argc > 1) {
-                                var idx: usize = 1;
-                                while (idx < @as(usize, @intCast(argc))) : (idx += 1) {
-                                    const w_slice = std.mem.span(w_argv[idx]);
-                                    const u8_arg = std.unicode.utf16LeToUtf8Alloc(gpa, w_slice) catch continue;
-                                    defer gpa.free(u8_arg);
-                                    if (deep_link.validate(u8_arg, config.deep_link_schemes)) |_| {
-                                        maybe_url = gpa.dupe(u8, u8_arg) catch null;
-                                        break;
-                                    } else |_| {}
-                                }
-                            }
-                        }
-
-                        // Windows only lets the process the user just started
-                        // take the foreground; pass that right on so the
-                        // running instance can bring its window to the front.
-                        var primary_pid: win32.DWORD = 0;
-                        _ = win32.GetWindowThreadProcessId(host, &primary_pid);
-                        if (primary_pid != 0) _ = win32.AllowSetForegroundWindow(primary_pid);
-
-                        var result: win32.DWORD_PTR = 0;
-                        if (maybe_url) |url| {
-                            defer gpa.free(url);
-                            var cds = win32.COPYDATASTRUCT{
-                                .dwData = 0x44454550,
-                                .cbData = @intCast(url.len),
-                                .lpData = @ptrCast(@constCast(url.ptr)),
-                            };
-                            _ = win32.SendMessageTimeoutW(
-                                host,
-                                win32.WM_COPYDATA,
-                                0,
-                                @bitCast(@intFromPtr(&cds)),
-                                win32.SMTO_ABORTIFHUNG | win32.SMTO_BLOCK,
-                                3000,
-                                &result,
-                            );
-                        } else {
-                            var cds = win32.COPYDATASTRUCT{
-                                .dwData = 0x44454550,
-                                .cbData = 0,
-                                .lpData = null,
-                            };
-                            _ = win32.SendMessageTimeoutW(
-                                host,
-                                win32.WM_COPYDATA,
-                                0,
-                                @bitCast(@intFromPtr(&cds)),
-                                win32.SMTO_ABORTIFHUNG | win32.SMTO_BLOCK,
-                                3000,
-                                &result,
-                            );
-                        }
-                    } else {
-                        log.warn("primary instance mutex exists but host window was not found within 3s", .{});
-                    }
+                    forwardToPrimary(gpa, app_id);
                     return 0;
                 }
             }
+            on_second_instance_fn = &onSecondInstance;
+            defer on_second_instance_fn = null;
 
             var cold_url: ?[]const u8 = null;
             defer {

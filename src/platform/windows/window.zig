@@ -13,6 +13,7 @@ const dev_server = @import("dev_server.zig");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const permissions = @import("../../core/permissions.zig");
+const overlay = @import("overlay.zig");
 
 const log = std.log.scoped(.oriel);
 
@@ -41,9 +42,15 @@ pub const WindowSize = struct {
     height: c_int,
 };
 
+/// Show the window: placed first when it has a `placement` and was hidden,
+/// and without taking focus when `focus_on_show` is false (overlays).
 pub fn showWindow(handle: WindowHandle) void {
-    _ = win32.ShowWindow(handle.hwnd, win32.SW_SHOW);
-    _ = win32.SetForegroundWindow(handle.hwnd);
+    const opts: ?App.WindowOptions = if (windowFromUserData(handle.hwnd)) |w| w.options else null;
+    const was_visible = win32.IsWindowVisible(handle.hwnd) != .FALSE;
+    if (opts) |o| if (o.placement) |p| if (!was_visible) overlay.setWindowPlacement(handle, p);
+    const focus = if (opts) |o| o.focus_on_show else true;
+    _ = win32.ShowWindow(handle.hwnd, if (focus) win32.SW_SHOW else win32.SW_SHOWNOACTIVATE);
+    if (focus) _ = win32.SetForegroundWindow(handle.hwnd);
 }
 
 pub fn hideWindow(handle: WindowHandle) void {
@@ -925,18 +932,19 @@ pub fn WindowCreator(
                 style &= ~@as(win32.DWORD, win32.WS_THICKFRAME | win32.WS_MAXIMIZEBOX);
             }
 
+            const ex_style = overlay.exStyle(options);
             var rect = win32.RECT{
                 .left = 0,
                 .top = 0,
                 .right = options.width,
                 .bottom = options.height,
             };
-            _ = win32.AdjustWindowRectEx(&rect, style, win32.FALSE, win32.WS_EX_APPWINDOW);
+            _ = win32.AdjustWindowRectEx(&rect, style, win32.FALSE, ex_style);
             const w = rect.right - rect.left;
             const h = rect.bottom - rect.top;
 
             const hwnd = win32.CreateWindowExW(
-                win32.WS_EX_APPWINDOW,
+                ex_style,
                 WINDOW_CLASS_NAME,
                 title_w.ptr,
                 style,
@@ -1190,7 +1198,7 @@ pub fn WindowCreator(
                 // ignored until the window is registered).
                 if (win32.GetMenu(hwnd) != null) {
                     var outer = win32.RECT{ .left = 0, .top = 0, .right = options.width, .bottom = options.height };
-                    if (win32.AdjustWindowRectEx(&outer, style, win32.TRUE, win32.WS_EX_APPWINDOW) != win32.FALSE) {
+                    if (win32.AdjustWindowRectEx(&outer, style, win32.TRUE, ex_style) != win32.FALSE) {
                         _ = win32.SetWindowPos(hwnd, null, 0, 0, outer.right - outer.left, outer.bottom - outer.top, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
                     }
                 }
@@ -1200,8 +1208,8 @@ pub fn WindowCreator(
                 }
             }
 
-            _ = win32.ShowWindow(hwnd, win32.SW_SHOW);
-            _ = win32.SetForegroundWindow(hwnd);
+            if (options.transparent) overlay.makeTransparent(hwnd, controller);
+            // Shown (placed, focused or not) by App.openWindow when `visible`.
 
             const handle = WindowHandle{
                 .hwnd = hwnd,
@@ -1241,6 +1249,12 @@ pub fn WindowCreator(
                     }
                     return 0;
                 },
+                win32.WM_ERASEBKGND => {
+                    // Transparent windows: painting the class brush would
+                    // cover what's behind them.
+                    if (win) |w| if (w.options.transparent) return 1;
+                    return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
+                },
                 win32.WM_DPICHANGED => {
                     if (win) |w| {
                         if (!w.ready) return 0;
@@ -1257,7 +1271,7 @@ pub fn WindowCreator(
                             w.pending_close = true;
                             return 0;
                         }
-                        if (std.mem.eql(u8, w.label, "main") and config.on_close == .hide) {
+                        if ((std.mem.eql(u8, w.label, "main") and config.on_close == .hide) or w.options.hide_on_close) {
                             _ = win32.ShowWindow(hwnd, win32.SW_HIDE);
                             return 0;
                         }

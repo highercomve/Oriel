@@ -145,6 +145,13 @@ if (location.search.includes("child=1")) {
       }
 
       try {
+        const si = await oriel.invoke("test_second_instance");
+        results.push({ module: "second instance", ok: si.ok, detail: si.detail });
+      } catch (e) {
+        results.push({ module: "second instance", ok: false, detail: String(e) });
+      }
+
+      try {
         const clip = await oriel.invoke("clipboard_roundtrip");
         results.push({ module: "clipboard r/w", ok: clip.ok, detail: clip.detail });
       } catch (e) {
