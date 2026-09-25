@@ -4,7 +4,10 @@ const autoQuit = location.search.includes("auto-quit");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-if (location.search.includes("child=1")) {
+if (location.search.includes("overlay=1")) {
+  // The overlay-window check's page: it stays open (hidden) and must stay idle.
+  document.body.innerHTML = "";
+} else if (location.search.includes("child=1")) {
   document.body.innerHTML = "<h1>Oriel Child Window</h1>";
   oriel.listen("ping_to_child", (payload) => {
     oriel.window.emitTo("main", "pong_from_child", { received: payload });
@@ -230,6 +233,25 @@ async function securityChecks() {
     }
     check("ipc token", rawResult.startsWith("refused"), `raw call without the token: ${rawResult}`);
   }
+  // WebView2: the raw channel is chrome.webview; the reply comes back as a
+  // message with our id (the bridge ignores ids it didn't issue).
+  const wv = window.chrome?.webview;
+  if (!raw && wv) {
+    const id = 987654321;
+    const rawResult = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve("reached IPC: no reply"), 3000);
+      const onMessage = (e) => {
+        const d = e.data;
+        if (!d || typeof d !== "object" || !("__oriel_reply" in d) || d.id !== id) return;
+        clearTimeout(timer);
+        wv.removeEventListener("message", onMessage);
+        resolve(d.error ? "refused: " + d.error : "reached IPC: " + JSON.stringify(d.result));
+      };
+      wv.addEventListener("message", onMessage);
+      wv.postMessage(JSON.stringify({ id, cmd: "sync_ping", args: null }));
+    });
+    check("ipc token", rawResult.startsWith("refused"), `raw call without the token: ${rawResult}`);
+  }
 
   // A cross-origin frame the navigation policy admits (the probe origin)
   // must not reach IPC: it never gets the bridge script or its token.
@@ -426,12 +448,15 @@ async function windowChecks() {
       closedOk ? `received window:closed for "${closedReceived.label}"` : `not received: ${JSON.stringify(closedReceived)}`
     );
 
-    // Give it a moment to ensure unregistration is finished
-    await sleep(200);
+    // window:closed can arrive before the window is unregistered: wait
+    // (up to ~1 s) until get() no longer finds it.
+    for (let i = 0; i < 20 && (await oriel.window.get("smoke-child")) !== null; i++) {
+      await sleep(50);
+    }
 
     // 6. Window query after close
     const childAfterClose = await oriel.window.get("smoke-child");
-    check("window get after close", childAfterClose === null, childAfterClose === null ? "get('smoke-child') returned null" : "window still found");
+    check("window get after close", childAfterClose === null, childAfterClose === null ? "get('smoke-child') returned null" : "window still found " + JSON.stringify(childAfterClose));
 
     // 7. emitTo on closed window rejects with WindowNotFound
     let emitClosedRejected = false;

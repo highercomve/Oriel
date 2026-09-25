@@ -19,6 +19,15 @@ const security = @import("../../core/security.zig");
 
 const log = std.log.scoped(.oriel);
 
+/// Replaced by `ipc.tokenScript` (which defines `const ipcToken`) in each
+/// window's copy of `bridge_js`.
+const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
+
+comptime {
+    @setEvalBranchQuota(100_000); // the scan covers the whole script
+    std.debug.assert(std.mem.count(u8, bridge_js, token_placeholder) == 1);
+}
+
 /// Injected into allowed pages before their own scripts run.
 pub const bridge_js =
     \\(() => {
@@ -26,6 +35,9 @@ pub const bridge_js =
     \\  const pending = new Map();
     \\  const pendingEvents = new Map();
     \\  let nextId = 1;
+    \\
+++ token_placeholder ++
+    \\
     \\  window.chrome.webview.addEventListener('message', (event) => {
     \\    const data = event.data;
     \\    if (data && typeof data === 'object' && '__oriel_reply' in data) {
@@ -44,7 +56,7 @@ pub const bridge_js =
     \\    return new Promise((resolve, reject) => {
     \\      const id = nextId++;
     \\      pending.set(id, { resolve, reject });
-    \\      window.chrome.webview.postMessage(JSON.stringify({ id, cmd, args: args ?? null }));
+    \\      window.chrome.webview.postMessage(JSON.stringify({ id, cmd, args: args ?? null, token: ipcToken }));
     \\    });
     \\  }
     \\  class WindowHandle {
@@ -284,7 +296,14 @@ pub fn Bridge(
             const gpa = std.heap.smp_allocator;
             const label_json = std.json.Stringify.valueAlloc(gpa, label, .{}) catch return;
             defer gpa.free(label_json);
-            const script = std.fmt.allocPrintSentinel(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, bridge_js }, 0) catch return;
+            // The page's IPC token lives only in the bridge's closure
+            // (ipc.tokenScript picks it by the document's own origin, so a
+            // frame from another origin, which also gets this script, has none).
+            const token_js = ipc.tokenScript(gpa, config.security, local) catch return;
+            defer gpa.free(token_js);
+            const with_token = std.mem.replaceOwned(u8, gpa, bridge_js, token_placeholder, token_js) catch return;
+            defer gpa.free(with_token);
+            const script = std.fmt.allocPrintSentinel(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, with_token }, 0) catch return;
             defer gpa.free(script);
             const script_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, script) catch return;
             defer gpa.free(script_w);
@@ -314,6 +333,7 @@ pub fn Bridge(
                 id: ?u64 = null,
                 cmd: []const u8,
                 args: std.json.Value = .null,
+                token: ?[]const u8 = null,
             };
 
             const req = std.json.parseFromSliceLeaky(WinReq, temp_alloc, msg_u8, .{
@@ -332,6 +352,18 @@ pub fn Bridge(
                 break :blk std.unicode.utf16LeToUtf8Alloc(temp_alloc, src_w.?[0..slen]) catch "";
             } else "";
 
+            // Page-controlled: escaped and capped in logs.
+            const cmd_log = std.zig.fmtString(req.cmd[0..@min(req.cmd.len, 64)]);
+
+            // Before anything else: the call must carry the token of the
+            // document that sent it (page_url is the sender's URL), which only
+            // that origin's bridge closure has.
+            if (!ipc.tokenValid(req.token, config.security, local, page_url)) {
+                log.warn("refused an IPC call without this page's token (\"{f}\")", .{cmd_log});
+                sendErrorReply(view, req.id, "Forbidden");
+                return;
+            }
+
             const caller_win = window_mod.getWindowByHwnd(hwnd) orelse window_mod.getWindowByView(view);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
 
@@ -341,7 +373,7 @@ pub fn Bridge(
             }
 
             if (!security.commandAllowedForWindow(config.security, local, page_url, req.cmd, win_label)) {
-                log.warn("blocked command '{s}' from {s} (window: {?s})", .{ req.cmd, page_url, win_label });
+                log.warn("blocked command \"{f}\" from {s} (window: {?s})", .{ cmd_log, page_url, win_label });
                 sendErrorReply(view, req.id, "Forbidden");
                 return;
             }
