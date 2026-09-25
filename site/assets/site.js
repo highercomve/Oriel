@@ -20,6 +20,18 @@
     btn.addEventListener("click", function () { copyText(btn, pre.querySelector("code").innerText.trim()); });
     pre.appendChild(btn);
   });
+  // Install command tabs: one panel per OS, preselect the visitor's OS.
+  var tabs = document.querySelectorAll(".install-tab");
+  function selectOs(os) {
+    tabs.forEach(function (t) { t.setAttribute("aria-selected", t.dataset.os === os ? "true" : "false"); });
+    document.querySelectorAll("[data-os-panel]").forEach(function (p) { p.hidden = p.dataset.osPanel !== os; });
+  }
+  tabs.forEach(function (t) { t.addEventListener("click", function () { selectOs(t.dataset.os); }); });
+  if (tabs.length) {
+    var ua = [navigator.userAgent, navigator.platform, navigator.userAgentData && navigator.userAgentData.platform].join(" ");
+    selectOs(/win/i.test(ua) ? "windows" : /mac|iphone|ipad/i.test(ua) ? "macos" : "linux");
+  }
+
   var toggle = document.querySelector(".menu-toggle");
   var nav = document.querySelector(".topnav");
   if (toggle && nav) {
