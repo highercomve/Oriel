@@ -99,8 +99,11 @@ pub const Tray = struct {
     }
 
     pub fn isChecked(self: *Tray, id: []const u8) ?bool {
-        const n = self.menu.find(id) orelse return null;
-        return if (n.kind == .check) n.checked else null;
+        // The model is changed on the main thread (setMenu resets its arena):
+        // read it there too.
+        var params: IsCheckedParams = .{ .tray = self, .id = id };
+        onMain(IsCheckedParams, &params, isCheckedOnMain);
+        return params.result;
     }
 
     pub fn setTooltip(self: *Tray, tooltip: []const u8) !void {
@@ -134,6 +137,7 @@ const DeinitParams = struct { tray: *Tray };
 const TextParams = struct { tray: *Tray, text: []const u8, err: ?anyerror = null };
 const MenuParams = struct { tray: *Tray, items: []const MenuItem, err: ?anyerror = null };
 const CheckedParams = struct { tray: *Tray, id: []const u8, checked: bool };
+const IsCheckedParams = struct { tray: *Tray, id: []const u8, result: ?bool = null };
 const IconParams = struct { tray: *Tray, icon: Icon, err: ?anyerror = null };
 
 fn ensureTarget() void {
@@ -201,6 +205,11 @@ fn setMenuOnMain(p: *MenuParams) void {
     p.tray.menu.set(p.items) catch |err| {
         p.err = err;
     };
+}
+
+fn isCheckedOnMain(p: *IsCheckedParams) void {
+    const n = p.tray.menu.find(p.id) orelse return;
+    p.result = if (n.kind == .check) n.checked else null;
 }
 
 fn setCheckedOnMain(p: *CheckedParams) void {
@@ -316,7 +325,7 @@ fn buildMenu(tray: *Tray, parent_id: i32) ?Object {
 fn menuItemClicked(_: cocoa.id, _: cocoa.c.SEL, sender: cocoa.id) callconv(.c) void {
     const tray = global_tray orelse return;
     const tag = (Object{ .value = sender }).msgSend(isize, "tag", .{});
-    const n = tray.menu.node(@intCast(tag)) orelse return;
+    const n = tray.menu.node(std.math.cast(i32, tag) orelse return) orelse return;
     if (n.kind == .check) {
         n.checked = !n.checked;
         tray.menu.revision +%= 1;

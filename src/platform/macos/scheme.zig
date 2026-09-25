@@ -59,7 +59,10 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
             setHeader(headers, "X-Content-Type-Options", "nosniff");
             if (with_csp) if (csp_z) |csp| setHeader(headers, "Content-Security-Policy", csp);
 
-            const version = cocoa.nsString("HTTP/1.1") orelse return;
+            const version = cocoa.nsString("HTTP/1.1") orelse {
+                failTask(task); // every task gets an answer
+                return;
+            };
             defer version.release();
             const response = cocoa.class("NSHTTPURLResponse").msgSend(Object, "alloc", .{})
                 .msgSend(Object, "initWithURL:statusCode:HTTPVersion:headerFields:", .{ url, status, version, headers });

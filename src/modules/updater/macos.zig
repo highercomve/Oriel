@@ -154,7 +154,7 @@ extern "c" fn _NSGetArgv() *[*][*:0]u8;
 
 pub fn restart(io: std.Io, exe_path: []const u8) !noreturn {
     if (enclosingBundle(exe_path)) |bundle| return relaunchBundle(io, bundle);
-    const argc: usize = @intCast(_NSGetArgc().*);
+    const argc: usize = std.math.cast(usize, _NSGetArgc().*) orelse return error.CannotReadCmdline;
     if (argc == 0) return error.CannotReadCmdline;
     if (argc > updater.MAX_ARGV_COUNT) return error.CmdlineTooLarge;
     const raw = _NSGetArgv().*;
