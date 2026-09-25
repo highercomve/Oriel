@@ -99,7 +99,7 @@ function NotesPage() {
       </ul>
 
       <p className="hint">
-        Close the window to keep notes in the tray. External links such as{" "}
+        Closing the window keeps the app running in the tray (on Windows, look in the ^ overflow area); use the tray's Quit to exit. External links such as{" "}
         <a
           href="https://ziglang.org"
           onClick={(e) => {

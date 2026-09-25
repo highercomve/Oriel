@@ -116,6 +116,8 @@ oriel build            # zig-out/bin/my-app (ReleaseSafe by default)
 oriel run              # build and run
 ```
 
+Arguments after `--` go to the app, not to the build: `oriel run -- --verbose`.
+
 # App icon
 
 Apps configure their icon with a single source PNG (1024×1024 recommended) in `build.zig`:

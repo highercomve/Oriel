@@ -149,6 +149,8 @@ fn setup() !void {
         .on_menu = onTrayMenu,
     });
 
+    std.log.info("closing the window hides it; quit from the tray icon's menu", .{});
+
     if (oriel.options.deep_link) {
         oriel.deep_link.onOpen(onDeepLink);
     }
