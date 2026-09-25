@@ -42,7 +42,7 @@ like any app would be.
     <td width="45%"><img src="assets/screenshots/ghostpen-lite.png" alt="GhostPen Lite example: global hotkey, clipboard pipeline and activity log"></td>
   </tr>
   <tr>
-    <td><b><a href="examples/react">React notes</a></b>: React + Vite frontend, notes in SQLite on the Zig side, tray menu, typed events, async commands, <code>zig build dev</code> with hot reload, and deb/rpm/AppImage packages.</td>
+    <td><b><a href="examples/react">React notes</a></b>: React + Vite frontend, notes in SQLite on the Zig side, tray menu, typed events, async commands, <code>oriel dev</code> with hot reload, and deb/rpm/AppImage packages.</td>
     <td><b><a href="examples/ghostpen-lite">GhostPen Lite</a></b>: global hotkey → read clipboard → rewrite → paste back, with notifications and an activity log.</td>
   </tr>
   <tr>
@@ -53,141 +53,6 @@ like any app would be.
   </tr>
 </table>
 
-## Repository layout
-
-The framework and the apps built with it are separate Zig packages:
-
-| Path | What |
-|---|---|
-| `build.zig` | Framework build: the `oriel` module, `embed_assets`, `dev_runner`, `addApp()` for apps, unit tests |
-| `src/core/` | `App.zig` (platform-neutral windowing, IPC, events, asset lookup, dev mode), `ipc.zig` (command dispatch + TypeScript generation), `log.zig` (file + stderr logging) |
-| `src/platform/` | Platform abstraction: `platform.zig` (OS selection & comptime check), `platform/linux/` (GTK4 + WebKitGTK 6.0 shell: `Shell.zig`, `window.zig`, `scheme.zig`, `bridge.zig`, `dev_server.zig`) |
-| `src/modules/` | Built-in modules: `tray`, `menu`, `store`, `dialog`, `notification`, `updater`, `media_server`, `sql`, `sqlite_vec`, `llama`, `whisper`, `fs_watch` |
-| `src/plugins/` | App-specific plugins: `global_shortcut`, `input`, `clipboard` |
-| `tools/embed_assets.zig` | Embeds a built frontend directory into the binary |
-| `tools/dev_runner.zig` | Hot reload orchestrator: keeps dev server running while watching `src/` and restarting the Zig app |
-| `cli/` | The `oriel` command-line tool (`init`, `doctor`, build wrappers) and its embedded app templates |
-| `install.sh` | Installs the `oriel` CLI from GitHub Releases |
-| `examples/react/` | **App:** React + Vite notes app (own package) |
-| `examples/smoke/` | **App:** checks every module (own package) |
-| `examples/ghostpen-lite/` | **App:** hotkey -> read clipboard -> rewrite -> paste pipeline (own package) |
-
-## Platforms
-
-Oriel separates platform-neutral application and window logic (`src/core/App.zig`, `ipc.zig`, `security.zig`) from operating system shell implementations (`src/platform/`).
-
-- **`src/platform/platform.zig`**: Compile-time platform selection and interface contract. Inspects `@import("builtin").os.tag` and validates via comptime assertions that the selected implementation exports all required types and functions.
-- **`src/platform/linux/`**: Linux backend (GTK4 + WebKitGTK 6.0):
-  - `Shell.zig`: `GtkApplication` lifecycle, signal handling (SIGTERM/SIGINT), event loop, application menubar, and thread-safe quit.
-  - `window.zig`: `GtkApplicationWindow` and `WebKitWebView` instantiation, window sizing, fullscreen, maximization, and navigation policy.
-  - `scheme.zig`: `app://` custom URI scheme handler serving embedded assets with CSP headers.
-  - `bridge.zig`: WebKit script message handlers, JS IPC transport (`window.oriel.invoke` / `listen` / `emit`), and async command dispatch.
-  - `dev_server.zig`: External dev server process management (`gio.SubprocessLauncher`, `PDEATHSIG`) and reload retries.
-- **Windows** (`src/platform/windows/`): Win32 window + Microsoft Edge WebView2 implementation behind the same platform interface.
-- **macOS** (`src/platform/macos/`): AppKit `NSWindow` + `WKWebView`, driven through the Objective-C runtime with [zig-objc](https://github.com/mitchellh/zig-objc), behind the same interface (see [macOS](#macos) below).
-
-### Windows
-
-Oriel builds Windows apps (`x86_64-windows`) two ways, both verified: natively on Windows, or cross-compiled from Linux. Both need `WebView2Loader.dll` (from the `Microsoft.Web.WebView2` NuGet package) for `-Dwebview2-loader`, and NSIS (`makensis`) for the installer.
-
-```sh
-# On Windows (PowerShell): Zig 0.16, Node.js for Vite templates, NSIS 3 (found in Program Files, no PATH needed)
-zig build -Dwebview2-loader=C:\path\to\WebView2Loader.dll
-zig build package -Dwebview2-loader=C:\path\to\WebView2Loader.dll   # zig-out\package\<app>-<version>-setup.exe
-
-# On Linux: cross-compile (and test under Wine with scripts/wine.sh, see docs/windows-testing.md)
-zig build package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
-```
-
-The installer is per-user (`%LOCALAPPDATA%\Programs\<name>`, no admin), adds Start Menu shortcuts and an uninstall entry, checks for the WebView2 runtime, and supports silent `setup.exe /S` / `Uninstall.exe /S`.
-
-> [!NOTE]
-> **Runtime Status**: verified on real Windows 11 (2026-09-24), both as a native Windows build (check, smoke checks, React app, `zig build package`, silent install / launch / uninstall) and with installers cross-built from Linux. The `examples/react` NSIS installer: installer, window + WebView2 with embedded assets, routes, sync and async IPC, SQLite (persisting across restarts), a second window via `oriel.window.open()`, `oriel.openExternal`, tray icon and menu. `examples/smoke` on the same PC: 37/38 checks ok (every module: tray, updater, media_server with byte ranges, sql, fs_watch, dialog, notification, store, menu, global_shortcut, input, clipboard incl. worker-thread r/w, window API, CSP, navigation, openExternal). The one failure, `nav iframe`, is the check, not the policy: the navigation is blocked, but WebView2 leaves a cross-origin error page in the frame. Module checks that only create the native object (dialog, hotkey, input) do not prove user-visible behaviour; the "runtime untested" notes in the table below refer to that.
-
-#### Support Matrix
-
-| Feature / Module | Status | Implementation Details |
-|---|---|---|
-| **Core Shell & Lifecycle** | ✅ Implemented | Win32 message loop (`GetMessageW`), `CreateWindowExW`, thread-safe main thread dispatch |
-| **Window Operations** | ✅ Implemented | Size, maximize, fullscreen, show/hide/toggle, close, title; controller bounds follow `WM_SIZE`/`WM_DPICHANGED` (no per-monitor DPI manifest yet) |
-| **Multi-Window & JS API** | ✅ Implemented | `oriel.window` JS API, `App.openWindow`, multi-window COM message dispatch, child window communication |
-| **WebView Engine** | ✅ Implemented | Microsoft Edge WebView2 (Evergreen) via hand-declared COM vtables matching `WebView2.h` |
-| **Embedded Assets** | ✅ Implemented | `https://app.localhost/*` intercept via `AddWebResourceRequestedFilter` + `SHCreateMemStream` |
-| **JS ↔ Zig IPC** | ✅ Implemented | `window.chrome.webview.postMessage` + `add_WebMessageReceived`, sync and async worker commands |
-| **System Tray (`tray`)** | ✅ Implemented | `Shell_NotifyIconW` + `TrackPopupMenu` context menu; icons decoded via `zigimg` |
-| **Database (`sql`)** | ✅ Implemented | Embedded SQLite3 C amalgamation linked with Windows threading |
-| **Vector Search (`sqlite_vec`)** | ✅ Implemented | Embedded `sqlite-vec` C amalgamation |
-| **Packaging (`package-nsis`)** | ✅ Implemented | Per-user NSIS installer (`setup.exe`) generated via `makensis` with WebView2 bootstrapper detection |
-| **Menu bar (`menu`)** | ✅ Implemented | Win32 menu bar (`CreateMenu`/`AppendMenuW`) + accelerator table; runtime untested on Windows |
-| **Settings Store (`store`)** | ✅ Implemented | `%APPDATA%` / `%LOCALAPPDATA%` via `SHGetKnownFolderPath`, same JSON store; runtime untested on Windows |
-| **File Dialogs (`dialog`)** | ✅ Implemented | COM `IFileOpenDialog` / `IFileSaveDialog`; runtime untested on Windows |
-| **Notifications (`notification`)** | ✅ Implemented | `Shell_NotifyIconW` balloon (no WinRT toasts); runtime untested on Windows |
-| **File Watching (`fs_watch`)** | ✅ Implemented | Win32 `ReadDirectoryChangesW` (overlapped I/O, non-blocking poll); runtime untested on Windows |
-| **Media Server (`media_server`)** | ✅ Implemented | http.zig server + range streaming + `https://app.localhost/media/` via WebView2 `WebResourceRequested`; runtime untested on Windows |
-| **Updater (`updater`)** | ✅ Implemented | Ed25519-signed manifests; rename-the-running-exe replace (`MoveFileExW`), `CreateProcessW` restart; runtime untested on Windows |
-| **Global Shortcuts (`global_shortcut`)** | ✅ Implemented | Win32 `RegisterHotKey` / `WM_HOTKEY` routed via hidden host window; runtime untested on Windows |
-| **Input Injection (`input`)** | ✅ Implemented | Win32 `SendInput` (UTF-16 Unicode down/up pairs, VK combo mapping); runtime untested on Windows |
-| **Clipboard (`clipboard`)** | ✅ Implemented | Win32 `OpenClipboard` (CF_UNICODETEXT, CF_DIB, registered PNG via `zigimg`); runtime untested on Windows |
-
-| **llama.cpp / whisper.cpp (`llama`, `whisper`)** | ✅ Builds | Same opt-in `-Dllama` / `-Dwhisper` CPU builds, cross-compiled (links; runtime untested on Windows) |
-
-*Note*: Windows builds use the same defaults as Linux: every module and plugin is on unless disabled with `-D<name>=false`; `sqlite_vec`, `llama` and `whisper` are opt-in on both. Nothing in this table has been run on Windows yet: it cross-compiles, links and packages, and the platform-neutral logic (key and accelerator parsing, DIB conversion, path validation, notify-record parsing) is unit-tested on Linux.
-
-#### Cross-Building for Windows
-
-From any Oriel application directory (e.g. `examples/react`):
-
-```sh
-# Cross-compile production Windows binary (zig-out/bin/<app>.exe)
-zig build -Dtarget=x86_64-windows
-
-# Build Windows NSIS installer (zig-out/package/<app>-<version>-setup.exe)
-zig build package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
-```
-
-The resulting `setup.exe` bundles the application executable, `WebView2Loader.dll`, Start Menu shortcuts, and an uninstaller, and automatically detects if the Microsoft Edge WebView2 runtime is present. At runtime, `WebView2Loader.dll` is loaded strictly from the application executable's directory to avoid DLL search-order hijacking, and user data is stored at `%LOCALAPPDATA%\<app_id>\WebView2`.
-
-### macOS
-
-The macOS shell (PLAN.md Milestone 7, step 1) builds and runs natively on the Mac (Apple Silicon and Intel; needs Xcode or the command-line tools for the SDK):
-
-```sh
-zig build check && zig build test         # framework (repo root)
-cd examples/smoke && zig build && ./zig-out/bin/oriel-smoke --auto-quit
-cd examples/react && zig build && ./zig-out/bin/oriel-react-notes
-```
-
-- `src/platform/macos/`: `Shell.zig` (NSApplication run loop, main-thread tasks on the GCD main queue, default app/Edit/Window menu bar, SIGTERM/SIGINT → clean quit, Dock-icon click reopens a hidden main window), `window.zig` (windows, `WKNavigationDelegate` / `WKUIDelegate` navigation policy), `scheme.zig` (`app://` through a `WKURLSchemeHandler`, same headers and CSP as Linux), `bridge.zig` (the Linux bridge script over a `WKScriptMessageHandlerWithReply`: sync commands from the main loop, async ones on the worker pool), `dev_server.zig`.
-- **Verified** on macOS 15.2 (arm64), 2026-09-25: `examples/smoke --auto-quit` 23/23 (IPC, async IPC, events, window API incl. child windows, CSP, navigation, openExternal); `examples/react` production (embedded) and dev (Vite) builds show the notes UI.
-- **Modules:** none has a macOS backend yet (step 2). On macOS they default to off and `-D<name>=true` is refused, except `sql` (works) and `tray`, which builds as a stub whose `Tray.create` returns `error.NotSupported` so apps with a tray still run (without one). `App.setMenu` returns `error.NotSupported`.
-- **Dev mode:** `zig build dev` / `oriel dev` work as on Linux: Vite hot reload, and the app is rebuilt and restarted when a `.zig` file changes (the watcher polls modification times). Running the `-dev` executable directly also works: it starts the dev server itself.
-- **Not yet:** `.app` bundle and `.dmg` packaging (step 3); JS `alert()`/`confirm()` dialogs (no `WKUIDelegate` panels yet); windows without decorations can't become key.
-- `ORIEL_SNAPSHOT=/tmp/shot.png` saves the main window's page (WebKit's snapshot API) a second after it loaded: screen capture of other apps needs a Screen Recording grant on macOS.
-
-## Working on Oriel itself
-
-```sh
-zig build check              # type-check (~1 s)
-zig build test               # framework, tools and CLI unit tests
-zig build cli                # the oriel CLI: zig-out/bin/oriel (static)
-```
-
-Windows builds cross-compile from Linux and can be tested there under Wine
-or Steam's Proton, headlessly: see [docs/windows-testing.md](docs/windows-testing.md)
-(`scripts/wine.sh`).
-
-Releases are cut by pushing a `v*` tag: `.github/workflows/release.yml`
-runs the tests on Linux, macOS and Windows, cross-builds the CLI for x86_64
-and aarch64 Linux, macOS and Windows, signs an update manifest per target
-and attaches the binaries, manifests and `SHA256SUMS` to the GitHub release
-(`install.sh` / `install.ps1` verify against them).
-
-Dependencies, including prebuilt GTK/WebKit bindings (zig-gobject, GNOME 50),
-come from the Zig package manager. To use bindings generated from your own
-system's GIR files instead (newer GTK/WebKit APIs), run
-`scripts/gen-bindings.sh` (needs `xsltproc`) and build with
-`--fork=deps/gobject/bindings`.
-
 ## The `oriel` CLI
 
 A single binary for Linux (static), macOS and Windows (x86_64 and aarch64;
@@ -195,9 +60,8 @@ no GTK needed to run it) that scaffolds apps and wraps their build steps,
 like `create-tauri-app` and `tauri dev/build`.
 
 ```sh
-# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.1.0.
+# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.2.0.
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
-# Or from a checkout: zig build cli && cp zig-out/bin/oriel ~/.local/bin/
 ```
 
 ```powershell
@@ -205,15 +69,30 @@ curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh |
 irm https://raw.githubusercontent.com/highercomve/Oriel/main/install.ps1 | iex
 ```
 
+The CLI requires Zig 0.16.x installed on the system (verified by `oriel doctor`).
+It runs `zig` from PATH, or `$ORIEL_ZIG` if set (useful when the default `zig` is
+not 0.16).
+
 | Command | What it does |
 |---|---|
-| `oriel init <name>` | New app in `./<name>`: build.zig, build.zig.zon, `src/main.zig` with sample `Commands`/`Events`, the frontend, README. Then adds Oriel (`zig fetch --save`), runs `zig build --fetch` and `npm install`, so the first build works offline |
-| `oriel doctor` | Checks Zig 0.16.x and Node.js + npm everywhere, plus per OS: Linux: pkg-config + GTK 4 / WebKitGTK 6.0 development files, packaging tools, tray host and GlobalShortcuts portal (install commands for pacman, apt, dnf, zypper); macOS: the Xcode command-line tools (`brew install`); Windows: the WebView2 runtime and NSIS (`winget install`). Exits non-zero if something required is missing |
+| `oriel init <name>` | New app in `./<name>`: `build.zig`, `build.zig.zon`, `src/main.zig` with sample `Commands`/`Events`, the frontend, and README. Adds Oriel, fetches dependencies and runs `npm install`, so the first build works offline |
+| `oriel doctor` | Checks Zig 0.16.x and Node.js + npm everywhere, plus per OS: Linux: pkg-config + GTK 4 / WebKitGTK 6.0 development files, packaging tools, tray host and GlobalShortcuts portal; macOS: the Xcode command-line tools; Windows: the WebView2 runtime and NSIS. Exits non-zero if something required is missing |
+| `oriel dev` | Runs the frontend dev server (Vite) and rebuilds + restarts the app when a `.zig` file changes (hot reload; inotify on Linux, polling on macOS and Windows) |
+| `oriel build` | Builds the production app (frontend embedded) into `zig-out/bin/` (`ReleaseSafe` by default) |
+| `oriel run` | Builds and runs the production app |
+| `oriel package` | Builds distribution packages into `zig-out/package/` (deb, rpm, AppImage on Linux; NSIS `setup.exe` on Windows) |
+| `oriel types` | Regenerates the frontend's TypeScript types (`frontend/src/oriel.ts`) from the Zig `Commands` |
+| `oriel check` | Type-checks the app's Zig code without building binaries (~1 s) |
 | `oriel update` | Updates the CLI binary in place using Oriel's self-updater (`--check`, `--version <tag>`, `--yes`) |
-| `oriel dev` / `build` / `run` / `package` / `types` / `check` | `zig build <step>` (plain `zig build` for `build`) from the project root, found by walking up to `build.zig.zon`; extra arguments are passed on, e.g. `oriel build -Doptimize=ReleaseFast`, `oriel run -- --flag`. `oriel dev` runs the Vite dev server and rebuilds + restarts the app when a `.zig` file changes (inotify on Linux, polling on macOS and Windows) |
 | `oriel --version` | CLI version and the Oriel ref `init` pins |
 
-`oriel init` options:
+Every command that acts on an app (`dev`, `build`, `run`, `package`, `types`, `check`)
+works from anywhere inside the project, found by walking up to `build.zig.zon`.
+Extra arguments are passed through to the underlying build step, e.g.
+`oriel build -Doptimize=ReleaseFast`, `oriel package -Dtarget=x86_64-windows -Dwebview2-loader=...`,
+`oriel run -- --flag`.
+
+### `oriel init` options
 
 - `--template react|vue|svelte|vanilla`: React (default), Vue and Svelte are
   Vite projects with typed `invoke`/`listen`; vanilla is a static page with
@@ -222,12 +101,9 @@ irm https://raw.githubusercontent.com/highercomve/Oriel/main/install.ps1 | iex
 - `--oriel-ref <tag|commit>`: the Oriel version to depend on (default: the
   one the CLI was built for).
 - `--oriel-path <dir>`: depend on a local Oriel checkout (`.path`), for
-  working on Oriel itself.
-- `--no-install`: only record the dependency; skip `zig build --fetch` and
+  developing against a local copy of Oriel.
+- `--no-install`: only record the dependency; skip fetching dependencies and
   `npm install`.
-
-The CLI runs `zig` from PATH, or `$ORIEL_ZIG` if set (useful when the
-default `zig` is not 0.16).
 
 ### Updating the CLI
 
@@ -242,34 +118,11 @@ oriel update --version v0.2.0 # Update or downgrade to a specific release tag
 
 The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the signed manifest for the current architecture and OS (`oriel-update-<arch>-<linux|macos|windows>.json`), verifies the Ed25519 signature against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary (on Windows, where a running exe can't be overwritten, it is renamed to `oriel.exe.old` first and removed on the next run). The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
 
-#### Maintainer key setup
-
-Release builds embed Oriel's Ed25519 public key via `-Dupdate-public-key=<base64>`. To configure the signing keys for releases:
-
-1. Generate a keypair:
-   ```sh
-   zig build keygen -- --name oriel-release
-   ```
-2. In GitHub repository settings:
-   - Add the private key seed (base64 string in `oriel-release.key`) as secret `ORIEL_UPDATE_KEY`.
-   - Add the public key (base64 string in `oriel-release.pub`) as variable `ORIEL_UPDATE_PUBLIC_KEY`.
-3. The release workflow passes `-Dupdate-public-key` to `zig build cli` and runs `zig build sign-update` to attach a signed manifest per target (`oriel-update-<x86_64|aarch64>-<linux|macos|windows>.json`) to the GitHub release.
-
 ## Building an app
 
 An app is a normal Zig package that depends on Oriel through the Zig package
 manager and calls `addApp` (see `examples/react`); `oriel init` sets this
-up. To do it by hand, add the dependency with:
-
-```sh
-zig fetch --save git+https://github.com/highercomve/Oriel
-```
-
-That records Oriel's URL and hash in your `build.zig.zon`; `zig build`
-downloads it and its dependencies (GTK/WebKit bindings, zigimg, http.zig,
-zig-wayland, SQLite) into Zig's global cache. Pin a commit or tag by appending
-`#<ref>` to the URL. You need the system libraries installed: GTK 4 and
-WebKitGTK 6.0 (development packages), plus Node.js for Vite frontends.
+up.
 
 ```zig
 // build.zig
@@ -285,22 +138,27 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-The examples in this repository use `.path = "../.."` instead, so they build
-against the working tree while developing Oriel itself.
-
-That gives the app these steps:
+That provides the app developer workflow:
 
 | Command | What it does |
 |---|---|
-| `zig build dev` | Starts Vite and opens the app on `http://localhost:5173` with hot reload; closing the window, Ctrl-C or a SIGTERM/SIGKILL to the `zig` process stops Vite and the app too |
-| `zig build` | `npm install` (if needed) → generate types → `npm run build` → embed `dist/` → install the app |
-| `zig build run` | Runs the production build |
-| `zig build types` | Regenerates `frontend/src/oriel.ts` from the Zig `Commands` |
-| `zig build check` | Type-checks the app's Zig code without building binaries |
+| `oriel dev` | Starts Vite and opens the app on `http://localhost:5173` with hot reload; closing the window, Ctrl-C or a signal stops Vite and the app too |
+| `oriel build` | `npm install` (if needed) → generate types → `npm run build` → embed `dist/` → compile production binary into `zig-out/bin/` |
+| `oriel run` | Runs the production build |
+| `oriel package` | Builds distribution packages into `zig-out/package/` (deb, rpm, AppImage on Linux; NSIS `setup.exe` on Windows) |
+| `oriel types` | Regenerates `frontend/src/oriel.ts` from the Zig `Commands` |
+| `oriel check` | Type-checks the app's Zig code without building binaries |
 
 Every module and plugin is on by default. Pass `.<name> = false` to
 `b.dependency("oriel", ...)` to leave one out: it is then neither compiled
 nor linked.
+
+> **Using Oriel without the CLI**:
+> To add Oriel to an existing Zig project manually, add the dependency with:
+> ```sh
+> zig fetch --save git+https://github.com/highercomve/Oriel
+> ```
+> This records Oriel's URL and hash in your `build.zig.zon`; `zig build` downloads it and its dependencies into Zig's global cache. Call `oriel.addApp()` in your `build.zig`. The build steps (`build`, `run`, `dev`, `package`, `types`, `check`) can then be invoked directly with `zig build <step>`.
 
 ## Commands and events
 
@@ -335,7 +193,7 @@ Apps that parse their own arguments can call
 the `std.Io` is passed in explicitly (there is no global to set).
 
 ```ts
-// frontend: generated from the Zig structs (zig build types)
+// frontend: generated from the Zig structs (oriel types)
 import { invoke, listen, openExternal } from "./oriel";
 const msg = await invoke("greet", { name: "Ada" });   // msg: string
 const off = listen("notes_changed", (notes) => …);    // notes: Note[]
@@ -491,13 +349,12 @@ tray host restarts, the icon registers again.
 `openExternal(url)`. `on_close = .hide` keeps the app running when the window
 is closed. Apps are single-instance: launching again brings the window back.
 SIGINT and SIGTERM shut down cleanly. The dev server stops with the app, even
-when the app is killed. Under `oriel dev` / `zig build dev`, stopping only the
-`zig` process (SIGTERM or SIGKILL, e.g. from a script) also stops everything:
-`dev_runner` watches the `zig` process through a pidfd (the build runner in
-between survives a signal sent to `zig` alone), dev_runner and the app get
-`PR_SET_PDEATHSIG`, and `dev_runner` starts Vite
-and the app in their own process groups and kills each whole group (SIGTERM,
-then SIGKILL after 0.5 s) on exit. `zig build test-dev-cleanup` checks this.
+when the app is killed. Under `oriel dev`, stopping the process (Ctrl-C,
+SIGTERM or SIGKILL, e.g. from a script) also stops everything: `dev_runner`
+watches the process through a pidfd, `dev_runner` and the app get
+`PR_SET_PDEATHSIG`, and `dev_runner` starts Vite and the app in their own
+process groups and kills each whole group (SIGTERM, then SIGKILL after 0.5 s)
+on exit.
 
 ### Routes and Single-Page Apps (SPA)
 
@@ -508,14 +365,6 @@ then SIGKILL after 0.5 s) on exit. `zig build test-dev-cleanup` checks this.
 
 **SPA Fallback caveat**:
 With `config.spa_fallback = true` (default), deep links reload and serve `index.html` for client-side routers (such as React Router's `BrowserRouter`). However, paths whose last segment contains a dot (e.g. `/u/john.doe` or `/report.pdf`) are treated as asset files rather than routes and will return 404 if not found in embedded assets.
-
-## Testing without a desktop
-
-```sh
-scripts/headless.sh ./zig-out/bin/oriel-smoke --auto-quit      # Xvfb + private D-Bus
-SHOT=shot.png scripts/headless.sh ./zig-out/bin/my-app            # screenshot after 4 s
-ORIEL_SNAPSHOT=shot.png ./zig-out/bin/my-app                       # macOS: page snapshot, no screen capture
-```
 
 ## Plugins and system modules
 
@@ -742,7 +591,7 @@ Built-in self-updater featuring Ed25519 signature verification, atomic file repl
 
 #### 1. Key generation
 
-Generate a new Ed25519 keypair using the framework or app build step:
+Generate a new Ed25519 keypair using the app build step registered by `oriel.addApp` (run inside your app project):
 
 ```sh
 zig build keygen -- --name myapp --out-dir ~/.config/myapp/keys
@@ -753,7 +602,7 @@ zig build keygen -- --name myapp --out-dir ~/.config/myapp/keys
 
 #### 2. Signing release artifacts
 
-Sign an update artifact (raw binary, AppImage, or `.gz` archive) and produce a manifest JSON:
+Sign an update artifact (raw binary, AppImage, or `.gz` archive) and produce a manifest JSON using the app build step (run inside your app project):
 
 ```sh
 zig build sign-update -- zig-out/bin/my-app \
@@ -866,7 +715,7 @@ Oriel provides embedded SQLite database support and opt-in vector search via the
 
 #### Enabling sqlite-vec
 
-- **Command-line flag:** `-Dsqlite_vec` (requires `sql`, which defaults to enabled).
+- **Command-line flag:** `oriel build -Dsqlite_vec` (requires `sql`, which defaults to enabled).
 - **In an app's `build.zig`:** pass `.sqlite_vec = true` in `b.dependency("oriel", ...)`:
   ```zig
   const oriel_dep = b.dependency("oriel", .{
@@ -921,7 +770,7 @@ Oriel provides opt-in native C/C++ inference bindings for [llama.cpp](https://gi
 
 #### Enabling llama and whisper
 
-- **Command-line flags:** `-Dllama` for llama.cpp, `-Dwhisper` for whisper.cpp, or both `-Dllama -Dwhisper`.
+- **Command-line flags:** `oriel build -Dllama` for llama.cpp, `oriel build -Dwhisper` for whisper.cpp, or both `oriel build -Dllama -Dwhisper`.
 - **In an app's `build.zig`:** pass `.llama = true` and/or `.whisper = true` in `b.dependency("oriel", ...)`:
   ```zig
   const oriel_dep = b.dependency("oriel", .{
@@ -940,8 +789,7 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
 #### Build times
 
 - **sqlite-vec:** one C file, a second or two.
-- **llama.cpp + whisper.cpp:** about 45 s cold (`zig build test -Dllama -Dwhisper`
-  with an empty cache, 16 threads); cached rebuilds don't recompile them.
+- **llama.cpp + whisper.cpp:** about 45 s cold on first build (empty cache, 16 threads); cached rebuilds don't recompile them.
 - **Default build overhead:** When omitted, nothing is downloaded, compiled or linked.
 
 #### CPU architecture flags & distributable builds
@@ -950,7 +798,7 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
 - By default, Zig targets the host machine CPU, compiling with full host CPU instructions.
 - **For distributable release builds** (e.g. creating deb, rpm, or AppImage packages for distribution to end-user machines), specify a baseline CPU target to avoid illegal instruction crashes (`SIGILL`) on older hardware:
   ```sh
-  zig build -Doptimize=ReleaseSafe -Dcpu=x86_64_v2 -Dllama -Dwhisper
+  oriel build -Doptimize=ReleaseSafe -Dcpu=x86_64_v2 -Dllama -Dwhisper
   ```
   Or `-Dcpu=baseline` for maximum portability across 64-bit systems.
 
@@ -958,13 +806,19 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
 
 - **CUDA (Linux):** `-Dggml_cuda` (plus `-Dwhisper` and/or `-Dllama`) builds
   ggml's CUDA backend with `nvcc` into `libggml-cuda.so`; `addApp` installs it
-  next to the executable. At runtime call `oriel.ggml_gpu.load(io)` before
-  loading a model: it loads the backend from the executable's directory only
-  and returns the number of GPUs (0 = CPU fallback, the app still works
-  without an NVIDIA GPU or the library).
+  next to the executable:
+  ```sh
+  oriel build -Dllama -Dwhisper -Dggml_cuda
+  ```
+  At runtime call `oriel.ggml_gpu.load(io)` before loading a model: it loads
+  the backend from the executable's directory only and returns the number of
+  GPUs (0 = CPU fallback, the app still works without an NVIDIA GPU or the library).
   - Needs the CUDA toolkit: `-Dcuda_path` (default `$CUDA_PATH` or
     `/opt/cuda`), `-Dcuda_arch` (nvcc `-arch`, default `native` = the GPUs
-    of the build machine; use e.g. `all-major` for distribution).
+    of the build machine; use e.g. `all-major` for distribution):
+    ```sh
+    oriel build -Dggml_cuda -Dcuda_arch=all-major
+    ```
   - First build compiles ~140 CUDA files (~3–4 min on 16 cores), cached after.
   - Why a separate library: nvcc's host code uses GCC's libstdc++ while Zig
     builds C++ against libc++; the ggml backend interface between them is
@@ -1064,13 +918,19 @@ Metadata is configured once in `build.zig` and shared across all target package 
 
 ### Building packages
 
-Running `zig build package` or format-specific package steps in an application directory builds production packages into `zig-out/package/`. All intermediate build files (`nfpm.yaml`, `AppDir`, SquashFS, `installer.nsi`) are isolated in Zig's cache directory:
+Running `oriel package` in an application directory builds production packages into `zig-out/package/`. All intermediate build files (`nfpm.yaml`, `AppDir`, SquashFS, `installer.nsi`) are isolated in Zig's cache directory:
 
-- **All formats for target OS**: `zig build package` (defaults to `.deb`, `.rpm`, `.AppImage` on Linux; `.nsis` on Windows)
-- **Debian package (`.deb`)**: `zig build package-deb` → `zig-out/package/<name>_<version>_<arch>.deb`
-- **RPM package (`.rpm`)**: `zig build package-rpm` → `zig-out/package/<name>-<version>-1.<arch>.rpm`
-- **AppImage (`.AppImage`)**: `zig build package-appimage` → `zig-out/package/<name>-<version>-<arch>.AppImage`
-- **Windows Installer (`setup.exe`)**: `zig build package-nsis` (or `zig build package -Dtarget=x86_64-windows`) → `zig-out/package/<name>-<version>-setup.exe`
+```sh
+# All formats for the current target OS:
+oriel package
+
+# Cross-compile Windows installer from Linux:
+oriel package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+```
+
+- **All formats for target OS**: `oriel package` (defaults to `.deb`, `.rpm`, `.AppImage` on Linux; NSIS `setup.exe` on Windows).
+- **Windows Installer (`setup.exe`)**: `oriel package` on Windows, or cross-compiled with `-Dtarget=x86_64-windows -Dwebview2-loader=...` → `zig-out/package/<name>-<version>-setup.exe`.
+- **Individual formats**: inside the app project, `oriel.addApp` also registers granular app build steps if you need to build only a single format: `zig build package-deb`, `zig build package-rpm`, `zig build package-appimage`, `zig build package-nsis`.
 
 #### Requirements and tools
 
@@ -1111,11 +971,11 @@ The packaging system is built around a pluggable `Format` enum and per-format di
 3. Add a branch to the `switch (format)` dispatcher in `addFormat`.
 4. Include the format in `defaultFormats(os_tag)`.
 
-When an unsupported OS target is packaged (or no formats are configured), `zig build package` fails gracefully at build time with a clear message (`"no package formats for <os> yet"`) via `b.addFail`.
+When an unsupported OS target is packaged (or no formats are configured), `oriel package` fails gracefully at build time with a clear message (`"no package formats for <os> yet"`) via `b.addFail`.
 
 ### Development desktop entry (`zig build desktop-entry`)
 
-Running `zig build desktop-entry` installs desktop integration files for local development into `$XDG_DATA_HOME` (`~/.local/share` fallback):
+Inside an app project, running the `zig build desktop-entry` app build step installs desktop integration files for local development into `$XDG_DATA_HOME` (`~/.local/share` fallback):
 
 - **Desktop Entry**: `$XDG_DATA_HOME/applications/<id>.desktop` (validated with `desktop-file-validate`)
 - **Icons**: `$XDG_DATA_HOME/icons/hicolor/<size>x<size>/apps/<id>.png` (sizes: 16, 32, 48, 64, 128, 256, 512)
@@ -1124,6 +984,96 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 
 1. **Wayland Global Shortcuts**: The `org.freedesktop.portal.GlobalShortcuts` portal requires an installed desktop entry matching the application ID to register system-wide hotkeys.
 2. **Dev vs. Prod Isolation**: When a dev executable exists, the entry ID is suffixed with `.Dev` (e.g. `dev.oriel.ReactNotes.Dev`), `Name` is suffixed with `(Dev)`, and `Exec` points to the absolute path of the local dev binary in `zig-out/bin/`, preventing collisions with installed production applications.
+
+## Platforms
+
+Oriel separates platform-neutral application and window logic (`src/core/App.zig`, `ipc.zig`, `security.zig`) from operating system shell implementations (`src/platform/`).
+
+- **`src/platform/platform.zig`**: Compile-time platform selection and interface contract. Inspects `@import("builtin").os.tag` and validates via comptime assertions that the selected implementation exports all required types and functions.
+- **`src/platform/linux/`**: Linux backend (GTK4 + WebKitGTK 6.0):
+  - `Shell.zig`: `GtkApplication` lifecycle, signal handling (SIGTERM/SIGINT), event loop, application menubar, and thread-safe quit.
+  - `window.zig`: `GtkApplicationWindow` and `WebKitWebView` instantiation, window sizing, fullscreen, maximization, and navigation policy.
+  - `scheme.zig`: `app://` custom URI scheme handler serving embedded assets with CSP headers.
+  - `bridge.zig`: WebKit script message handlers, JS IPC transport (`window.oriel.invoke` / `listen` / `emit`), and async command dispatch.
+  - `dev_server.zig`: External dev server process management (`gio.SubprocessLauncher`, `PDEATHSIG`) and reload retries.
+- **Windows** (`src/platform/windows/`): Win32 window + Microsoft Edge WebView2 implementation behind the same platform interface.
+- **macOS** (`src/platform/macos/`): AppKit `NSWindow` + `WKWebView`, driven through the Objective-C runtime with [zig-objc](https://github.com/mitchellh/zig-objc), behind the same interface (see [macOS](#macos) below).
+
+### Windows
+
+Oriel builds Windows apps (`x86_64-windows`) two ways, both verified: natively on Windows, or cross-compiled from Linux. Both need `WebView2Loader.dll` (from the `Microsoft.Web.WebView2` NuGet package) for `-Dwebview2-loader`, and NSIS (`makensis`) for the installer.
+
+```sh
+# On Windows (PowerShell): Zig 0.16, Node.js for Vite templates, NSIS 3 (found in Program Files, no PATH needed)
+oriel build -Dwebview2-loader=C:\path\to\WebView2Loader.dll
+oriel package -Dwebview2-loader=C:\path\to\WebView2Loader.dll   # zig-out\package\<app>-<version>-setup.exe
+
+# On Linux: cross-compile
+oriel package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+```
+
+The installer is per-user (`%LOCALAPPDATA%\Programs\<name>`, no admin), adds Start Menu shortcuts and an uninstall entry, checks for the WebView2 runtime, and supports silent `setup.exe /S` / `Uninstall.exe /S`.
+
+> [!NOTE]
+> **Runtime Status**: verified on real Windows 11 (2026-09-24), both as a native Windows build (check, smoke checks, React app, `oriel package`, silent install / launch / uninstall) and with installers cross-built from Linux. The `examples/react` NSIS installer: installer, window + WebView2 with embedded assets, routes, sync and async IPC, SQLite (persisting across restarts), a second window via `oriel.window.open()`, `oriel.openExternal`, tray icon and menu. `examples/smoke` on the same PC: 37/38 checks ok (every module: tray, updater, media_server with byte ranges, sql, fs_watch, dialog, notification, store, menu, global_shortcut, input, clipboard incl. worker-thread r/w, window API, CSP, navigation, openExternal). The one failure, `nav iframe`, is the check, not the policy: the navigation is blocked, but WebView2 leaves a cross-origin error page in the frame. Module checks that only create the native object (dialog, hotkey, input) do not prove user-visible behaviour; the "runtime untested" notes in the table below refer to that.
+
+#### Support Matrix
+
+| Feature / Module | Status | Implementation Details |
+|---|---|---|
+| **Core Shell & Lifecycle** | ✅ Implemented | Win32 message loop (`GetMessageW`), `CreateWindowExW`, thread-safe main thread dispatch |
+| **Window Operations** | ✅ Implemented | Size, maximize, fullscreen, show/hide/toggle, close, title; controller bounds follow `WM_SIZE`/`WM_DPICHANGED` (no per-monitor DPI manifest yet) |
+| **Multi-Window & JS API** | ✅ Implemented | `oriel.window` JS API, `App.openWindow`, multi-window COM message dispatch, child window communication |
+| **WebView Engine** | ✅ Implemented | Microsoft Edge WebView2 (Evergreen) via hand-declared COM vtables matching `WebView2.h` |
+| **Embedded Assets** | ✅ Implemented | `https://app.localhost/*` intercept via `AddWebResourceRequestedFilter` + `SHCreateMemStream` |
+| **JS ↔ Zig IPC** | ✅ Implemented | `window.chrome.webview.postMessage` + `add_WebMessageReceived`, sync and async worker commands |
+| **System Tray (`tray`)** | ✅ Implemented | `Shell_NotifyIconW` + `TrackPopupMenu` context menu; icons decoded via `zigimg` |
+| **Database (`sql`)** | ✅ Implemented | Embedded SQLite3 C amalgamation linked with Windows threading |
+| **Vector Search (`sqlite_vec`)** | ✅ Implemented | Embedded `sqlite-vec` C amalgamation |
+| **Packaging (`package-nsis`)** | ✅ Implemented | Per-user NSIS installer (`setup.exe`) generated via `makensis` with WebView2 bootstrapper detection |
+| **Menu bar (`menu`)** | ✅ Implemented | Win32 menu bar (`CreateMenu`/`AppendMenuW`) + accelerator table; runtime untested on Windows |
+| **Settings Store (`store`)** | ✅ Implemented | `%APPDATA%` / `%LOCALAPPDATA%` via `SHGetKnownFolderPath`, same JSON store; runtime untested on Windows |
+| **File Dialogs (`dialog`)** | ✅ Implemented | COM `IFileOpenDialog` / `IFileSaveDialog`; runtime untested on Windows |
+| **Notifications (`notification`)** | ✅ Implemented | `Shell_NotifyIconW` balloon (no WinRT toasts); runtime untested on Windows |
+| **File Watching (`fs_watch`)** | ✅ Implemented | Win32 `ReadDirectoryChangesW` (overlapped I/O, non-blocking poll); runtime untested on Windows |
+| **Media Server (`media_server`)** | ✅ Implemented | http.zig server + range streaming + `https://app.localhost/media/` via WebView2 `WebResourceRequested`; runtime untested on Windows |
+| **Updater (`updater`)** | ✅ Implemented | Ed25519-signed manifests; rename-the-running-exe replace (`MoveFileExW`), `CreateProcessW` restart; runtime untested on Windows |
+| **Global Shortcuts (`global_shortcut`)** | ✅ Implemented | Win32 `RegisterHotKey` / `WM_HOTKEY` routed via hidden host window; runtime untested on Windows |
+| **Input Injection (`input`)** | ✅ Implemented | Win32 `SendInput` (UTF-16 Unicode down/up pairs, VK combo mapping); runtime untested on Windows |
+| **Clipboard (`clipboard`)** | ✅ Implemented | Win32 `OpenClipboard` (CF_UNICODETEXT, CF_DIB, registered PNG via `zigimg`); runtime untested on Windows |
+| **llama.cpp / whisper.cpp (`llama`, `whisper`)** | ✅ Builds | Same opt-in `-Dllama` / `-Dwhisper` CPU builds, cross-compiled (links; runtime untested on Windows) |
+
+*Note*: Windows builds use the same defaults as Linux: every module and plugin is on unless disabled with `-D<name>=false`; `sqlite_vec`, `llama` and `whisper` are opt-in on both. Nothing in this table has been run on Windows yet: it cross-compiles, links and packages, and the platform-neutral logic (key and accelerator parsing, DIB conversion, path validation, notify-record parsing) is unit-tested on Linux.
+
+#### Cross-Building for Windows
+
+From any Oriel application directory (e.g. `examples/react`):
+
+```sh
+# Cross-compile production Windows binary (zig-out/bin/<app>.exe)
+oriel build -Dtarget=x86_64-windows
+
+# Build Windows NSIS installer (zig-out/package/<app>-<version>-setup.exe)
+oriel package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+```
+
+The resulting `setup.exe` bundles the application executable, `WebView2Loader.dll`, Start Menu shortcuts, and an uninstaller, and automatically detects if the Microsoft Edge WebView2 runtime is present. At runtime, `WebView2Loader.dll` is loaded strictly from the application executable's directory to avoid DLL search-order hijacking, and user data is stored at `%LOCALAPPDATA%\<app_id>\WebView2`.
+
+### macOS
+
+The macOS shell builds and runs natively on the Mac (Apple Silicon and Intel; needs Xcode or the command-line tools for the SDK):
+
+```sh
+oriel build            # production build with embedded frontend
+oriel dev              # run against Vite dev server with hot reload
+```
+
+- `src/platform/macos/`: `Shell.zig` (NSApplication run loop, main-thread tasks on the GCD main queue, default app/Edit/Window menu bar, SIGTERM/SIGINT → clean quit, Dock-icon click reopens a hidden main window), `window.zig` (windows, `WKNavigationDelegate` / `WKUIDelegate` navigation policy), `scheme.zig` (`app://` through a `WKURLSchemeHandler`, same headers and CSP as Linux), `bridge.zig` (the Linux bridge script over a `WKScriptMessageHandlerWithReply`: sync commands from the main loop, async ones on the worker pool), `dev_server.zig`.
+- **Verified** on macOS 15.2 (arm64), 2026-09-25: IPC, async IPC, events, window API incl. child windows, CSP, navigation, openExternal; `examples/react` production (embedded) and dev (Vite) builds show the notes UI.
+- **Modules:** none has a macOS backend yet (PLAN.md Milestone 7, step 2). On macOS they default to off and `-D<name>=true` is refused, except `sql` (works) and `tray`, which builds as a stub whose `Tray.create` returns `error.NotSupported` so apps with a tray still run (without one). `App.setMenu` returns `error.NotSupported`.
+- **Dev mode:** `oriel dev` works as on Linux: Vite hot reload, and the app is rebuilt and restarted when a `.zig` file changes (the watcher polls modification times). Running the `-dev` executable directly also works: it starts the dev server itself.
+- **Not yet:** `.app` bundle and `.dmg` packaging (step 3); JS `alert()`/`confirm()` dialogs (no `WKUIDelegate` panels yet); windows without decorations can't become key.
+- `ORIEL_SNAPSHOT=/tmp/shot.png` saves the main window's page (WebKit's snapshot API) a second after it loaded: screen capture of other apps needs a Screen Recording grant on macOS.
 
 ## Compared with Tauri
 
@@ -1141,7 +1091,7 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Settings store | ✅ Linux (XDG paths + atomic thread-safe JSON store) + Windows (Known Folders + atomic JSON store); runtime untested on Windows |
 | Logging | ✅ file + stderr logging + WebKit console forwarding |
 | Close to tray, show/hide, single instance | ✅ |
-| Dev server + hot reload / production build | ✅ `zig build dev` (Vite + Zig file watcher & reload) / `zig build` (defaults to `ReleaseSafe`) |
+| Dev server + hot reload / production build | ✅ `oriel dev` (Vite + Zig file watcher & reload) / `oriel build` (defaults to `ReleaseSafe`) |
 | Dialogs (open/save file) | ✅ Linux (`GtkFileDialog`) + Windows (`IFileOpenDialog` / `IFileSaveDialog`); runtime untested on Windows |
 | System notifications | ✅ Linux (`GNotification`) + Windows (`Shell_NotifyIconW` balloon); runtime untested on Windows |
 | Clipboard | ✅ Linux (GdkClipboard + Wayland ext-data-control) + Windows (CF_UNICODETEXT / CF_DIB / PNG); runtime untested on Windows |
@@ -1149,11 +1099,163 @@ Running `zig build desktop-entry` installs desktop integration files for local d
 | Input injection | ✅ Linux (X11 XTest + Wayland virtual-keyboard) + Windows (`SendInput`); runtime untested on Windows |
 | Asset protocol for local files (streaming, ranges) | ✅ `media_server`: 127.0.0.1 server with ranges for `<video>`; `app://app/media/` for fetch |
 | Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
-| Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `zig build package`; signing not yet implemented |
+| Bundling (AppImage/deb/rpm), signing | ◐ AppImage, deb, rpm via `oriel package`; signing not yet implemented |
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
 | Windows | ◐ Win32 + WebView2 shell and every module/plugin (tray, sql, store, dialog, notification, menu, updater, media_server, fs_watch, global_shortcut, input, clipboard), NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
 | macOS | ◐ AppKit + WKWebView shell: windows, `app://`, IPC (sync/async), events, window API, CSP, navigation policy, dev server; modules not ported yet (tray is a stub), no `.app` bundle yet |
 | Mobile | ❌ |
+
+## Building Oriel itself
+
+This section is for contributors working on the Oriel framework repository.
+
+### Repository layout
+
+The framework and the apps built with it are separate Zig packages:
+
+| Path | What |
+|---|---|
+| `build.zig` | Framework build: the `oriel` module, `embed_assets`, `dev_runner`, `addApp()` for apps, unit tests |
+| `src/core/` | `App.zig` (platform-neutral windowing, IPC, events, asset lookup, dev mode), `ipc.zig` (command dispatch + TypeScript generation), `log.zig` (file + stderr logging) |
+| `src/platform/` | Platform abstraction: `platform.zig` (OS selection & comptime check), `platform/linux/` (GTK4 + WebKitGTK 6.0 shell: `Shell.zig`, `window.zig`, `scheme.zig`, `bridge.zig`, `dev_server.zig`) |
+| `src/modules/` | Built-in modules: `tray`, `menu`, `store`, `dialog`, `notification`, `updater`, `media_server`, `sql`, `sqlite_vec`, `llama`, `whisper`, `fs_watch` |
+| `src/plugins/` | App-specific plugins: `global_shortcut`, `input`, `clipboard` |
+| `tools/embed_assets.zig` | Embeds a built frontend directory into the binary |
+| `tools/dev_runner.zig` | Hot reload orchestrator: keeps dev server running while watching `src/` and restarting the Zig app |
+| `cli/` | The `oriel` command-line tool (`init`, `doctor`, build wrappers) and its embedded app templates |
+| `install.sh` | Installs the `oriel` CLI from GitHub Releases |
+| `examples/react/` | **App:** React + Vite notes app (own package) |
+| `examples/smoke/` | **App:** checks every module (own package) |
+| `examples/ghostpen-lite/` | **App:** hotkey -> read clipboard -> rewrite -> paste pipeline (own package) |
+
+### Framework build and test commands
+
+From the repository root:
+
+```sh
+zig build check              # type-check (~1 s)
+zig build test               # framework, tools and CLI unit tests
+zig build cli                # the oriel CLI: zig-out/bin/oriel (static)
+```
+
+To build and install the `oriel` CLI from a local checkout:
+
+```sh
+zig build cli && cp zig-out/bin/oriel ~/.local/bin/
+# On Windows (PowerShell):
+# zig build cli
+# Copy-Item zig-out\bin\oriel.exe "$env:LOCALAPPDATA\Programs\oriel\oriel.exe"
+```
+
+### Building examples from the repository
+
+The example apps in `examples/` (`examples/react`, `examples/smoke`, `examples/ghostpen-lite`)
+are configured with `.path = "../.."` in their `build.zig.zon` so they build against
+the framework working tree:
+
+```sh
+# Smoke test (checks modules and security inside real webview)
+cd examples/smoke
+zig build && ./zig-out/bin/oriel-smoke --check          # non-GUI checks
+./zig-out/bin/oriel-smoke --auto-quit                  # in-webview checks
+
+# React notes example
+cd ../react
+zig build && ./zig-out/bin/oriel-react-notes
+```
+
+### Headless testing (`scripts/headless.sh`)
+
+Never test on the user's real desktop session (PLAN.md rule 3: no clicking, typing,
+window raising, or screen capture). Use `scripts/headless.sh` (Xvfb + private D-Bus session):
+
+```sh
+scripts/headless.sh ./zig-out/bin/oriel-smoke --auto-quit      # Xvfb + private D-Bus
+SHOT=shot.png scripts/headless.sh ./zig-out/bin/my-app        # screenshot after 4 s
+```
+
+To test tray menus headlessly, the app owns `org.kde.StatusNotifierItem-<pid>-1` on the private bus:
+
+```sh
+gdbus call --session --dest org.kde.StatusNotifierItem-$PID-1 --object-path /MenuBar \
+  --method com.canonical.dbusmenu.GetLayout 0 -- -1 '[]'
+gdbus call --session --dest org.kde.StatusNotifierItem-$PID-1 --object-path /MenuBar \
+  --method com.canonical.dbusmenu.Event 2 clicked '<int32 0>' 0
+```
+
+### Testing Windows builds under Wine (`scripts/wine.sh`)
+
+Windows builds cross-compile from Linux (`-Dtarget=x86_64-windows`) and run under Wine
+or Steam's Proton headlessly using `scripts/wine.sh`:
+
+```sh
+scripts/wine.sh setup                    # one-time: .wine-test/ prefix + WebView2 Evergreen
+(cd examples/smoke && zig build -Dtarget=x86_64-windows -Dwebview2-loader=$(../../scripts/wine.sh loader) -p ../../.wine-test/smoke)
+timeout 180 scripts/wine.sh run .wine-test/smoke/bin/oriel-smoke.exe --auto-quit
+```
+
+See [docs/windows-testing.md](docs/windows-testing.md) for setup details, Proton detection, and known Wine limitations.
+
+### Process cleanup verification (`test-dev-cleanup`)
+
+`zig build test-dev-cleanup` verifies process tree cleanup for `dev_runner`: when the build runner
+process is terminated (SIGTERM or SIGKILL), `dev_runner` uses a pidfd watcher and `PR_SET_PDEATHSIG`
+to terminate both Vite and the application process groups cleanly.
+
+### Generating GIR bindings (`scripts/gen-bindings.sh`)
+
+Dependencies, including prebuilt GTK/WebKit bindings (zig-gobject, GNOME 50),
+come from the Zig package manager. To use bindings generated from your own
+system's GIR files instead (newer GTK/WebKit APIs), run:
+
+```sh
+scripts/gen-bindings.sh                  # requires xsltproc
+zig build --fork=deps/gobject/bindings
+```
+
+### Memory-safety review checklist
+
+Every change must follow the read-only memory-safety review procedure detailed in
+[docs/memory-safety-review.md](docs/memory-safety-review.md):
+1. **Leaks and double frees:** verify `defer`/`errdefer` on all allocation paths; ensure tests run with `std.testing.allocator`.
+2. **Ownership and lifetimes:** explicit slice ownership; no dangling pointers into stack memory or reset arenas; structs never copied after a pointer to them is retained.
+3. **Null and optionals:** check real contracts in GIR definitions and Win32 headers rather than trusting binding signatures.
+4. **Reference counting:** balanced `ref`/`unref` and `AddRef`/`Release`; handle floating references on GVariants.
+5. **Memory hygiene:** no reads of `undefined`; justified pointer casts; thread-safe shared state; never call GTK or GUI functions off the main thread. Tests must stay silent (zero stderr output).
+
+### Cross-platform development rules (PLAN.md rule 11)
+
+Linux, Windows, and macOS, always (PLAN.md rule 11). Every feature, the `oriel` CLI
+(including `oriel dev` and `oriel update`), and the package installers must work on all three.
+OS-specific code goes behind compile-time switches (`builtin.os.tag`) with a dedicated backend
+or a clear compile-time error. When developing on an OS where a target cannot run natively,
+type-check non-host targets:
+
+```sh
+zig build check -Dtarget=x86_64-windows
+zig test -target x86_64-linux-musl <file> -fno-emit-bin  # host tools on macOS
+```
+
+Always document what has and has not been verified on real hardware.
+
+### Release process and maintainer keys
+
+Releases are triggered by pushing a `v*` tag. The GitHub Actions release workflow
+(`.github/workflows/release.yml`) runs tests on Linux, macOS, and Windows, cross-builds
+the CLI for 6 targets (`x86_64-linux-musl`, `aarch64-linux-musl`, `x86_64-macos`,
+`aarch64-macos`, `x86_64-windows`, `aarch64-windows`), signs an update manifest per target
+using `zig build sign-update`, and attaches the binaries, manifests, and `SHA256SUMS` to
+the release for consumption by `install.sh`, `install.ps1`, and `oriel update`.
+
+Maintainer key setup:
+1. Generate an Ed25519 keypair:
+   ```sh
+   zig build keygen -- --name oriel-release
+   ```
+2. In GitHub repository settings:
+   - Add the private key seed (`oriel-release.key`) as secret `ORIEL_UPDATE_KEY`.
+   - Add the public key (`oriel-release.pub`) as variable `ORIEL_UPDATE_PUBLIC_KEY`.
+3. The release workflow passes `-Dupdate-public-key` to `zig build cli` and runs `zig build sign-update` to attach signed manifests (`oriel-update-<arch>-<os>.json`).
 
 ## Notes
 
