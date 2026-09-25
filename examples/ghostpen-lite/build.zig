@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
     _ = oriel.addApp(b, dep, .{
         .name = "ghostpen-lite",
         .root_source_file = b.path("src/main.zig"),
+        .icon = b.path("icon.png"),
         .frontend = .{
             .dir = "web",
             .dist = ".",

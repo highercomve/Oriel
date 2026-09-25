@@ -216,6 +216,7 @@ pub fn main(init: std.process.Init) !u8 {
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
         .id = app_id,
         .title = "oriel · React notes",
+        .icon = app.icon_bytes,
         .width = 820,
         .height = 640,
         .assets = app.assets,

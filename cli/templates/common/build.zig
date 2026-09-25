@@ -32,6 +32,7 @@ pub fn build(b: *std.Build) void {
     _ = oriel.addApp(b, dep, .{
         .name = "@@name@@",
         .root_source_file = b.path("src/main.zig"),
+        .icon = b.path("icon.png"), // High-resolution PNG (1024x1024 recommended)
         .frontend = @@frontend@@,
         .package = .{
             .id = "@@app_id@@",

@@ -282,6 +282,7 @@ pub fn main(init: std.process.Init) !u8 {
     const config_gui: oriel.App.Config = .{
         .id = app_id,
         .title = "Oriel smoke test",
+        .icon = app.icon_bytes,
         .assets = app.assets,
         // The security checks navigate to remote URLs: never hand them to a browser.
         .security = .{ .external_links = .deny },

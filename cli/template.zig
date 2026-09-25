@@ -20,16 +20,22 @@ pub const File = struct {
     path: []const u8,
     /// Template text; `@@key@@` placeholders are filled by `render`.
     text: []const u8,
+    is_template: bool = true,
 };
 
 fn embed(comptime dest: []const u8, comptime src: []const u8) File {
     return .{ .path = dest, .text = @embedFile("templates/" ++ src) };
 }
 
+fn embedBinary(comptime dest: []const u8, comptime src: []const u8) File {
+    return .{ .path = dest, .text = @embedFile("templates/" ++ src), .is_template = false };
+}
+
 const common = [_]File{
     embed("build.zig", "common/build.zig"),
     embed("build.zig.zon", "common/build.zig.zon"),
     embed("src/main.zig", "common/src/main.zig"),
+    embedBinary("icon.png", "common/icon.png"),
     embed(".gitignore", "common/.gitignore"),
     embed("README.md", "common/README.md"),
 };
