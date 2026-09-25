@@ -1105,11 +1105,17 @@ test "core end-to-end update flow on Windows: replace the running exe" {
     try std.testing.expect(result.term == .exited and result.term.exited == 0);
     try std.testing.expect(std.mem.trim(u8, result.stdout, " \r\n").len > 0);
 
-    // Once the old process is gone its image is free: what cleanupStale
-    // deletes on the next start.
+    // cleanupStale on the next start: while the old process still runs, its
+    // image can't be deleted and <exe>.old stays for a later start...
+    backend.cleanupStaleFor(allocator, app_path);
+    try std.Io.Dir.cwd().access(io, old_path, .{});
+    // ...once it has exited, it goes.
     app.kill(io);
     app_running = false;
-    try std.Io.Dir.cwd().deleteFile(io, old_path);
+    backend.cleanupStaleFor(allocator, app_path);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, old_path, .{}));
+    // Nothing left to clean up is not an error.
+    backend.cleanupStaleFor(allocator, app_path);
 }
 
 test "pure decideDestPath logic" {
