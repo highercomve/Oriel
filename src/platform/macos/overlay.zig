@@ -50,11 +50,16 @@ pub fn setup(win: Object, view: Object, options: App.WindowOptions) void {
         const clear = cocoa.class("NSColor").msgSend(Object, "clearColor", .{});
         win.msgSend(void, "setBackgroundColor:", .{clear});
         win.msgSend(void, "setHasShadow:", .{cocoa.boolean(false)});
-        // WKWebView paints white under the page unless told not to.
-        const no = cocoa.class("NSNumber").msgSend(Object, "numberWithBool:", .{cocoa.boolean(false)});
-        const key = cocoa.nsString("drawsBackground") orelse return;
-        defer key.release();
-        view.msgSend(void, "setValue:forKey:", .{ no, key });
+        // WKWebView paints white under the page unless told not to. The key
+        // resolves through a private setter: check it exists, since an
+        // unknown key raises (and terminates the app).
+        const cls = view.getClass().?;
+        if (cls.respondsToSelector(cocoa.objc.sel("_setDrawsBackground:")) or cls.respondsToSelector(cocoa.objc.sel("setDrawsBackground:"))) {
+            const no = cocoa.class("NSNumber").msgSend(Object, "numberWithBool:", .{cocoa.boolean(false)});
+            const key = cocoa.nsString("drawsBackground") orelse return;
+            defer key.release();
+            view.msgSend(void, "setValue:forKey:", .{ no, key });
+        } else std.log.scoped(.oriel).warn("transparent window: this WKWebView can't hide its background", .{});
         if (view.getClass().?.respondsToSelector(cocoa.objc.sel("setUnderPageBackgroundColor:"))) {
             view.msgSend(void, "setUnderPageBackgroundColor:", .{clear}); // macOS 12+
         }
@@ -75,9 +80,11 @@ pub fn onShow(handle: WindowHandle, options: App.WindowOptions) void {
 // --- Runtime operations (App.Window.place / setClickThrough / ...) -----------------
 
 /// Run `func(ctx)` on the main thread: at once there, else waiting for it.
+/// From another thread before the app runs, the call is dropped.
 fn onMain(comptime Ctx: type, ctx: *Ctx, comptime func: fn (*Ctx) void) void {
     if (cocoa.isMainThread()) return func(ctx);
-    ShellMod.runOnMainThread(Ctx, ctx, func) catch {};
+    ShellMod.runOnMainThread(Ctx, ctx, func) catch |err|
+        std.log.scoped(.oriel).debug("overlay window call dropped: {s}", .{@errorName(err)});
 }
 
 fn alive(handle: WindowHandle) bool {

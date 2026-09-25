@@ -258,14 +258,11 @@ extern "c" fn _NSGetArgc() *c_int;
 extern "c" fn _NSGetArgv() *[*][*:0]u8;
 
 /// Clicking the Dock icon while every window is hidden (`on_close = .hide`)
-/// brings the main window back. With `on_second_instance`, a reopen (the
-/// app launched again through Launch Services, e.g. from Finder) goes to
-/// the handler instead, with no arguments; the app decides what to show.
+/// brings the main window back. With `on_second_instance`, a reopen (a Dock
+/// click, or the app launched again through Launch Services, e.g. from
+/// Finder) also calls the handler, with no arguments.
 fn applicationShouldHandleReopen(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, has_visible_windows: cocoa.c.BOOL) callconv(.c) cocoa.c.BOOL {
-    if (reopen_handler) |h| {
-        h(&.{});
-        return cocoa.boolean(false);
-    }
+    if (reopen_handler) |h| h(&.{});
     if (!cocoa.isTrue(has_visible_windows)) App.showWindow();
     return cocoa.boolean(true);
 }
@@ -491,9 +488,13 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 if (gpa.alloc([]const u8, argc -| 1)) |args| {
                     defer gpa.free(args);
                     for (args, 1..) |*a, i| a.* = std.mem.span(argv[i]);
-                    if (single_instance.acquire(config.id, args, &onSecondInstance) == .forwarded) {
-                        log.info("{s} is already running: this launch's arguments were handed to it", .{config.id});
-                        return 0;
+                    switch (single_instance.acquire(config.id, args, &onSecondInstance)) {
+                        .primary => {},
+                        .forwarded => {
+                            log.info("{s} is already running: this launch's arguments were handed to it", .{config.id});
+                            return 0;
+                        },
+                        .failed => return 1,
                     }
                 } else |_| log.warn("single instance: out of memory; running without it", .{});
                 reopen_handler = &onSecondInstance;
@@ -510,7 +511,9 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             // A plain executable (no .app bundle) is a background app by
             // default: no Dock icon, no menu bar, windows behind others.
             // A background app (tray, global shortcut: show_main_window =
-            // false) stays out of the Dock and the app switcher.
+            // false) stays out of the Dock and the app switcher (accessory
+            // policy): no Dock icon, no ⌘Tab, no menu bar, even once its
+            // main window is shown; showing a window still activates it.
             _ = app.msgSend(cocoa.c.BOOL, "setActivationPolicy:", .{if (config.show_main_window) NSApplicationActivationPolicyRegular else NSApplicationActivationPolicyAccessory});
 
             if (config.icon) |icon_data| {
@@ -626,4 +629,5 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
 test {
     std.testing.refAllDecls(@This());
+    _ = single_instance;
 }
