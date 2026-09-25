@@ -315,6 +315,18 @@ await openExternal("https://ziglang.org");            // opens in default browse
 
 Command errors reject the promise with the Zig error name.
 
+### Error messages (`oriel.ipc.fail`)
+
+A command that returns an error rejects the page's `invoke()` promise with the
+error's name (`"EmptyName"`). To give the page a readable message instead:
+
+```zig
+pub fn fetch_models(_: std.mem.Allocator, args: struct { baseUrl: []const u8 }) ![]const []const u8 {
+    return listModels(args.baseUrl) catch |err|
+        oriel.ipc.fail("Could not reach {s} ({s})", .{ args.baseUrl, @errorName(err) });
+}
+```
+
 ### System browser (`openExternal`)
 
 To open links in the user's default browser instead of navigating the webview, use `openExternal(url)` (available as an export from `./oriel` and on `window.oriel.openExternal(url)`):

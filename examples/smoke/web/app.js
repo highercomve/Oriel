@@ -167,6 +167,13 @@ if (location.search.includes("child=1")) {
       results.push(...(await securityChecks()));
 
       try {
+        await oriel.invoke("fail_with_message", { what: "reach the endpoint" });
+        results.push({ module: "ipc messages", ok: false, detail: "failing command resolved" });
+      } catch (e) {
+        results.push({ module: "ipc messages", ok: String(e).includes("could not reach the endpoint"), detail: `rejected with: ${e}` });
+      }
+
+      try {
         await oriel.invoke("no_such_command");
         results.push({ module: "ipc errors", ok: false, detail: "unknown command resolved" });
       } catch (e) {

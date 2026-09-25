@@ -203,6 +203,11 @@ const Commands = struct {
         };
     }
 
+    /// Rejects with a message for the page (oriel.ipc.fail).
+    pub fn fail_with_message(_: std.mem.Allocator, args: struct { what: []const u8 }) !void {
+        return oriel.ipc.fail("could not {s}", .{args.what});
+    }
+
     /// Overlay window (Milestone 10): created hidden with overlay options,
     /// then shown, placed, made click-through, and hidden on close.
     pub fn test_overlay_window(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {

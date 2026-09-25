@@ -319,7 +319,7 @@ pub fn Bridge(
             const req = std.json.parseFromSliceLeaky(WinReq, temp_alloc, msg_u8, .{
                 .ignore_unknown_fields = true,
             }) catch |err| {
-                sendErrorReply(view, null, @errorName(err));
+                sendErrorReply(view, null, ipc.errorText(err));
                 return;
             };
 
@@ -369,7 +369,7 @@ pub fn Bridge(
             // ipc.Request (and its strict parser) doesn't know: hand the
             // worker just `{cmd, args}`.
             const request_json = std.json.Stringify.valueAlloc(temp_alloc, ipc.Request{ .cmd = req.cmd, .args = req.args }, .{}) catch |err| {
-                sendErrorReply(view, req.id, @errorName(err));
+                sendErrorReply(view, req.id, ipc.errorText(err));
                 return;
             };
 
@@ -434,7 +434,7 @@ pub fn Bridge(
 
             ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, request_json, worker_pool.io, async_ctx, AsyncReplyContext.onWorkerDone) catch |err| {
                 std.heap.smp_allocator.destroy(async_ctx);
-                sendErrorReply(view, req.id, @errorName(err));
+                sendErrorReply(view, req.id, ipc.errorText(err));
                 _ = view.lpVtbl.Release(view);
                 return;
             };
@@ -491,7 +491,7 @@ pub fn Bridge(
                     return;
                 };
                 self.request = ipc.parseRequest(arena, request_json) catch |err| {
-                    self.fail(@errorName(err));
+                    self.fail(ipc.errorText(err));
                     return;
                 };
                 _ = view.lpVtbl.AddRef(view);
@@ -518,7 +518,7 @@ pub fn Bridge(
                         self.request.cmd,
                         self.request.args,
                     ) catch |err| {
-                        sendErrorReply(self.view, self.id, @errorName(err));
+                        sendErrorReply(self.view, self.id, ipc.errorText(err));
                         return;
                     };
                     sendSuccessReply(self.view, self.id, result);
@@ -528,7 +528,7 @@ pub fn Bridge(
                     ipc.dispatchBuiltin(config.security, self.arena_state.allocator(), self.request)
                 else
                     ipc.dispatchRequest(api.commands, self.arena_state.allocator(), self.request, self.io)) catch |err| {
-                    sendErrorReply(self.view, self.id, @errorName(err));
+                    sendErrorReply(self.view, self.id, ipc.errorText(err));
                     return;
                 };
                 sendSuccessReply(self.view, self.id, result);

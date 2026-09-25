@@ -36,6 +36,51 @@ pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
     return false;
 }
 
+/// A command's error message for the page (see `fail`); per thread, because
+/// a command and the conversion of its error run on the same thread.
+threadlocal var fail_buf: [2048:0]u8 = undefined;
+threadlocal var fail_len: ?usize = null;
+
+/// Fail a command with a message for the page: the `invoke()` promise
+/// rejects with this text instead of an error name.
+///
+///     return oriel.ipc.fail("Could not connect to {s}", .{url});
+pub fn fail(comptime fmt: []const u8, args: anytype) error{CommandFailed} {
+    const text = std.fmt.bufPrint(fail_buf[0 .. fail_buf.len - 1], fmt, args) catch blk: {
+        // Too long: keep what fits, marked as cut.
+        const cut = fail_buf.len - 4;
+        @memcpy(fail_buf[cut..][0..3], "...");
+        break :blk fail_buf[0 .. cut + 3];
+    };
+    fail_buf[text.len] = 0;
+    fail_len = text.len;
+    return error.CommandFailed;
+}
+
+/// What the page sees for a failed command: the `fail` message, or the error name.
+pub fn errorText(err: anyerror) [:0]const u8 {
+    if (err == error.CommandFailed) if (fail_len) |n| {
+        fail_len = null;
+        return fail_buf[0..n :0];
+    };
+    return @errorName(err);
+}
+
+test fail {
+    const Cmd = struct {
+        fn run(ok: bool) !u32 {
+            if (!ok) return fail("Could not connect to {s}", .{"http://localhost:11434"});
+            return 1;
+        }
+    };
+    const err = Cmd.run(false);
+    try std.testing.expectError(error.CommandFailed, err);
+    try std.testing.expectEqualStrings("Could not connect to http://localhost:11434", errorText(error.CommandFailed));
+    // Used once; other errors keep their names.
+    try std.testing.expectEqualStrings("CommandFailed", errorText(error.CommandFailed));
+    try std.testing.expectEqualStrings("OutOfMemory", errorText(error.OutOfMemory));
+}
+
 /// Check if `cmd` is a framework built-in command.
 pub fn isBuiltinCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "deep_link:ready") or
@@ -167,7 +212,7 @@ pub fn dispatchAsync(
                 res_z = alloc.dupeZ(u8, json) catch null;
                 if (res_z == null) err_z = "OutOfMemory";
             } else |err| {
-                err_z = @errorName(err);
+                err_z = errorText(err);
             }
 
             on_done(self.callback_context, self.arena_state, res_z, err_z);

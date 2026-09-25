@@ -322,7 +322,7 @@ pub fn Bridge(
             const temp_alloc = parse_arena.allocator();
 
             const request = ipc.parseRequest(temp_alloc, req_slice) catch |err| {
-                replyError(reply, @errorName(err));
+                replyError(reply, ipc.errorText(err));
                 return;
             };
 
@@ -369,7 +369,7 @@ pub fn Bridge(
             ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, req_slice, worker_pool.io, async_ctx, AsyncReply.onWorkerDone) catch |err| {
                 cocoa.releaseBlock(async_ctx.reply);
                 std.heap.smp_allocator.destroy(async_ctx);
-                replyError(reply, @errorName(err));
+                replyError(reply, ipc.errorText(err));
                 return;
             };
         }
@@ -451,7 +451,7 @@ pub fn Bridge(
                 if (win_label) |wl| self.win_label = arena.dupe(u8, wl) catch return self.fail("OutOfMemory");
                 // Deep-copy the request out of the caller's parse arena.
                 const request_json = std.json.Stringify.valueAlloc(arena, request, .{}) catch return self.fail("OutOfMemory");
-                self.request = ipc.parseRequest(arena, request_json) catch |err| return self.fail(@errorName(err));
+                self.request = ipc.parseRequest(arena, request_json) catch |err| return self.fail(ipc.errorText(err));
                 const copied = cocoa.copyBlock(reply);
                 if (copied == null) return self.fail("OutOfMemory");
                 self.reply = copied;
@@ -476,7 +476,7 @@ pub fn Bridge(
                     ipc.dispatchBuiltin(config.security, arena, self.request)
                 else
                     ipc.dispatchRequest(api.commands, arena, self.request, self.io)) catch |err| {
-                    replyError(self.reply, @errorName(err));
+                    replyError(self.reply, ipc.errorText(err));
                     return;
                 };
                 replySuccess(self.reply, result);

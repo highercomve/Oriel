@@ -278,7 +278,7 @@ pub fn Bridge(
             const temp_alloc = parse_arena.allocator();
 
             const request = ipc.parseRequest(temp_alloc, req_slice) catch |err| {
-                reply.returnErrorMessage(@errorName(err));
+                reply.returnErrorMessage(ipc.errorText(err));
                 return 1;
             };
 
@@ -289,7 +289,7 @@ pub fn Bridge(
 
             if (window_commands.isWindowCommand(request.cmd)) {
                 const result = window_commands.dispatch(config.security, local, temp_alloc, page_url, win_label, request.cmd, request.args) catch |err| {
-                    reply.returnErrorMessage(@errorName(err));
+                    reply.returnErrorMessage(ipc.errorText(err));
                     return 1;
                 };
                 const result_z = temp_alloc.dupeZ(u8, result) catch {
@@ -312,7 +312,7 @@ pub fn Bridge(
 
             if (ipc.isBuiltinCommand(request.cmd)) {
                 const result = ipc.dispatchBuiltin(config.security, temp_alloc, request) catch |err| {
-                    reply.returnErrorMessage(@errorName(err));
+                    reply.returnErrorMessage(ipc.errorText(err));
                     return 1;
                 };
                 const result_z = temp_alloc.dupeZ(u8, result) catch {
@@ -327,7 +327,7 @@ pub fn Bridge(
 
             if (!ipc.isAsync(api.commands, request.cmd)) {
                 const result = ipc.dispatchRequest(api.commands, temp_alloc, request, if (pool) |p| p.io else null) catch |err| {
-                    reply.returnErrorMessage(@errorName(err));
+                    reply.returnErrorMessage(ipc.errorText(err));
                     return 1;
                 };
                 const result_z = temp_alloc.dupeZ(u8, result) catch {
@@ -402,7 +402,7 @@ pub fn Bridge(
                 reply.unref();
                 context.unref();
                 std.heap.smp_allocator.destroy(gtk_reply);
-                reply.returnErrorMessage(@errorName(err));
+                reply.returnErrorMessage(ipc.errorText(err));
                 return 1;
             };
 
