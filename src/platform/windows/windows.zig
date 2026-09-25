@@ -9,6 +9,7 @@ pub const window = @import("window.zig");
 pub const ShellMod = @import("Shell.zig");
 pub const bridge = @import("bridge.zig");
 pub const scheme = @import("scheme.zig");
+pub const dev_server = @import("dev_server.zig");
 
 pub const WindowHandle = window.WindowHandle;
 pub const WindowSize = window.WindowSize;
@@ -49,6 +50,14 @@ test {
     _ = &run;
     const S = ShellMod.Shell(.{ .commands = struct {} }, .{ .id = "dev.oriel.Check", .title = "check", .assets = &.{} });
     _ = &S.run;
+    // A dev build too: the dev server and the load retry only exist there.
+    const SDev = ShellMod.Shell(.{ .commands = struct {} }, .{
+        .id = "dev.oriel.Check",
+        .title = "check",
+        .assets = &.{},
+        .dev = .{ .url = "http://localhost:5173", .command = &.{ "node_modules/.bin/vite", "--strictPort" }, .cwd = "frontend" },
+    });
+    _ = &SDev.run;
     const Probe = struct {
         fn touch(_: *u8) void {}
         fn call(x: *u8) !void {
@@ -62,4 +71,5 @@ test {
     std.testing.refAllDecls(ShellMod);
     std.testing.refAllDecls(bridge);
     std.testing.refAllDecls(scheme);
+    std.testing.refAllDecls(dev_server);
 }

@@ -6,6 +6,7 @@
 const std = @import("std");
 const win32 = @import("win32.zig");
 const webview2 = @import("webview2.zig");
+const dev_server = @import("dev_server.zig");
 const window = @import("window.zig");
 const WindowHandle = window.WindowHandle;
 const App = @import("../../core/App.zig");
@@ -333,7 +334,6 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
     return struct {
         pub fn run(io: std.Io) u8 {
-            _ = io;
             const gpa = std.heap.smp_allocator;
             const app_id = if (config.dev != null) config.id ++ ".Dev" else config.id;
             var h_mutex: ?win32.HANDLE = null;
@@ -423,6 +423,11 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                     deep_link.setColdStartUrl(url);
                 }
             }
+
+            // After the single-instance check above: an instance that only
+            // forwards a deep link must not start a second dev server.
+            var dev_server_proc: ?dev_server.DevServer = if (config.dev) |dev| dev_server.startDevServer(io, dev) else null;
+            defer if (dev_server_proc) |*p| dev_server.stopDevServer(io, p);
 
             main_thread_id = win32.GetCurrentThreadId();
             defer main_thread_id = 0;

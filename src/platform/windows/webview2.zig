@@ -310,6 +310,38 @@ pub const ICoreWebView2NavigationStartingEventArgs = extern struct {
     };
 };
 
+/// ICoreWebView2NavigationCompletedEventArgs
+/// IID: {30d68b7d-20d9-4752-a9ca-ec8448fbb5c1}
+pub const ICoreWebView2NavigationCompletedEventArgs = extern struct {
+    lpVtbl: *const VTable,
+
+    pub const VTable = extern struct {
+        // IUnknown (0..2)
+        QueryInterface: *const fn (This: *ICoreWebView2NavigationCompletedEventArgs, riid: *const GUID, ppvObject: *?*anyopaque) callconv(.winapi) HRESULT,
+        AddRef: *const fn (This: *ICoreWebView2NavigationCompletedEventArgs) callconv(.winapi) ULONG,
+        Release: *const fn (This: *ICoreWebView2NavigationCompletedEventArgs) callconv(.winapi) ULONG,
+
+        // ICoreWebView2NavigationCompletedEventArgs (3..5)
+        get_IsSuccess: *const fn (This: *ICoreWebView2NavigationCompletedEventArgs, isSuccess: *BOOL) callconv(.winapi) HRESULT,
+        get_WebErrorStatus: *const fn (This: *ICoreWebView2NavigationCompletedEventArgs, webErrorStatus: *COREWEBVIEW2_WEB_ERROR_STATUS) callconv(.winapi) HRESULT,
+        get_NavigationId: *const fn (This: *ICoreWebView2NavigationCompletedEventArgs, navigationId: *u64) callconv(.winapi) HRESULT,
+    };
+};
+
+/// COREWEBVIEW2_WEB_ERROR_STATUS (the values used here; others exist).
+pub const COREWEBVIEW2_WEB_ERROR_STATUS = enum(c_int) {
+    UNKNOWN = 0,
+    SERVER_UNREACHABLE = 6,
+    TIMEOUT = 7,
+    CONNECTION_ABORTED = 9,
+    CONNECTION_RESET = 10,
+    DISCONNECTED = 11,
+    CANNOT_CONNECT = 12,
+    HOST_NAME_NOT_RESOLVED = 13,
+    OPERATION_CANCELED = 14,
+    _,
+};
+
 /// ICoreWebView2NewWindowRequestedEventArgs
 /// IID: {34acb11c-fc37-4418-9132-f9c21d1eafb9}
 /// Source: WebView2.h lines 55287-55370
@@ -642,6 +674,21 @@ pub const ICoreWebView2NavigationStartingEventHandler = extern struct {
     };
 };
 
+/// ICoreWebView2NavigationCompletedEventHandler
+/// IID: {d33a35bf-1c49-4f98-93ab-006e0533fe1c}
+pub const IID_ICoreWebView2NavigationCompletedEventHandler = GUID{ .Data1 = 0xd33a35bf, .Data2 = 0x1c49, .Data3 = 0x4f98, .Data4 = [_]u8{ 0x93, 0xab, 0x00, 0x6e, 0x05, 0x33, 0xfe, 0x1c } };
+
+pub const ICoreWebView2NavigationCompletedEventHandler = extern struct {
+    lpVtbl: *const VTable,
+
+    pub const VTable = extern struct {
+        QueryInterface: *const fn (This: *ICoreWebView2NavigationCompletedEventHandler, riid: *const GUID, ppvObject: *?*anyopaque) callconv(.winapi) HRESULT,
+        AddRef: *const fn (This: *ICoreWebView2NavigationCompletedEventHandler) callconv(.winapi) ULONG,
+        Release: *const fn (This: *ICoreWebView2NavigationCompletedEventHandler) callconv(.winapi) ULONG,
+        Invoke: *const fn (This: *ICoreWebView2NavigationCompletedEventHandler, sender: ?*ICoreWebView2, args: ?*ICoreWebView2NavigationCompletedEventArgs) callconv(.winapi) HRESULT,
+    };
+};
+
 /// ICoreWebView2NewWindowRequestedEventHandler
 /// IID: {d4c185fe-c81c-4989-97af-2d3fa7ab5651}
 /// Source: WebView2.h lines 4284-4325
@@ -741,6 +788,8 @@ comptime {
     std.debug.assert(@offsetOf(ICoreWebView2.VTable, "get_Source") == 4 * ptr_size);
     std.debug.assert(@offsetOf(ICoreWebView2.VTable, "Navigate") == 5 * ptr_size);
     std.debug.assert(@offsetOf(ICoreWebView2.VTable, "add_NavigationStarting") == 7 * ptr_size);
+    std.debug.assert(@offsetOf(ICoreWebView2.VTable, "add_NavigationCompleted") == 15 * ptr_size);
+    std.debug.assert(@offsetOf(ICoreWebView2.VTable, "remove_NavigationCompleted") == 16 * ptr_size);
     std.debug.assert(@offsetOf(ICoreWebView2.VTable, "AddScriptToExecuteOnDocumentCreated") == 27 * ptr_size);
     std.debug.assert(@offsetOf(ICoreWebView2.VTable, "ExecuteScript") == 29 * ptr_size);
     std.debug.assert(@offsetOf(ICoreWebView2.VTable, "PostWebMessageAsJson") == 32 * ptr_size);
@@ -764,6 +813,9 @@ comptime {
     std.debug.assert(@offsetOf(ICoreWebView2WebResourceRequestedEventHandler.VTable, "Invoke") == 3 * ptr_size);
     std.debug.assert(@offsetOf(ICoreWebView2WebMessageReceivedEventHandler.VTable, "Invoke") == 3 * ptr_size);
     std.debug.assert(@offsetOf(ICoreWebView2NavigationStartingEventHandler.VTable, "Invoke") == 3 * ptr_size);
+    std.debug.assert(@offsetOf(ICoreWebView2NavigationCompletedEventHandler.VTable, "Invoke") == 3 * ptr_size);
+    std.debug.assert(@offsetOf(ICoreWebView2NavigationCompletedEventArgs.VTable, "get_IsSuccess") == 3 * ptr_size);
+    std.debug.assert(@offsetOf(ICoreWebView2NavigationCompletedEventArgs.VTable, "get_WebErrorStatus") == 4 * ptr_size);
     std.debug.assert(@offsetOf(ICoreWebView2NewWindowRequestedEventHandler.VTable, "Invoke") == 3 * ptr_size);
     std.debug.assert(@offsetOf(ICoreWebView2WindowCloseRequestedEventHandler.VTable, "Invoke") == 3 * ptr_size);
 }

@@ -9,6 +9,7 @@ const webview2 = @import("webview2.zig");
 const scheme_mod = @import("scheme.zig");
 const bridge_mod = @import("bridge.zig");
 const ShellMod = @import("Shell.zig");
+const dev_server = @import("dev_server.zig");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 
@@ -481,6 +482,102 @@ pub fn WindowCreator(
             }
         };
 
+        const has_dev = config.dev != null;
+        /// Window timer for the next attempt to load the dev server's page.
+        const DEV_RETRY_TIMER_ID: win32.UINT_PTR = 0x4F52_4456; // 'ORDV'
+
+        // NavigationCompleted event handler (dev builds only): while the dev
+        // server is still starting, a load of its page fails to connect; retry
+        // it every `retry_interval_ms` until `dev.timeout_ms` has passed since
+        // the first failure, like Linux's DevRetryContext (a wall-clock
+        // deadline: each failed load takes time too). Other failures (e.g.
+        // navigations the policy cancelled) are left alone.
+        /// Lifetime: owned by WindowData, which outlives the registration.
+        /// Removed via webview.remove_NavigationCompleted in WindowData.deinit before freeing.
+        const DevRetryHandler = struct {
+            handler: webview2.ICoreWebView2NavigationCompletedEventHandler,
+            target_hwnd: win32.HWND,
+            /// GetTickCount64() after which retrying stops; 0: no failure yet.
+            deadline_ms: u64 = 0,
+
+            const dev_vtable = webview2.ICoreWebView2NavigationCompletedEventHandler.VTable{
+                .QueryInterface = &qiDev,
+                .AddRef = &addRefDev,
+                .Release = &releaseDev,
+                .Invoke = &invokeDev,
+            };
+
+            fn qiDev(this: *webview2.ICoreWebView2NavigationCompletedEventHandler, riid: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+                if (win32.isEqualGUID(riid, &webview2.IID_IUnknown) or win32.isEqualGUID(riid, &webview2.IID_ICoreWebView2NavigationCompletedEventHandler)) {
+                    ppv.* = this;
+                    _ = addRefDev(this);
+                    return win32.S_OK;
+                }
+                ppv.* = null;
+                return win32.E_NOINTERFACE;
+            }
+            fn addRefDev(_: *webview2.ICoreWebView2NavigationCompletedEventHandler) callconv(.winapi) win32.ULONG {
+                return 1;
+            }
+            fn releaseDev(_: *webview2.ICoreWebView2NavigationCompletedEventHandler) callconv(.winapi) win32.ULONG {
+                return 1;
+            }
+
+            fn isConnectError(status: webview2.COREWEBVIEW2_WEB_ERROR_STATUS) bool {
+                return switch (status) {
+                    .SERVER_UNREACHABLE, .TIMEOUT, .CONNECTION_ABORTED, .CONNECTION_RESET, .DISCONNECTED, .CANNOT_CONNECT => true,
+                    else => false,
+                };
+            }
+
+            /// Whether the view's current page is on the dev server.
+            fn onDevOrigin(view: *webview2.ICoreWebView2) bool {
+                var src_w: ?win32.LPWSTR = null;
+                if (view.lpVtbl.get_Source(view, @ptrCast(&src_w)) < 0 or src_w == null) return false;
+                defer win32.CoTaskMemFree(src_w);
+                const src = std.unicode.utf16LeToUtf8Alloc(std.heap.smp_allocator, std.mem.span(src_w.?)) catch return false;
+                defer std.heap.smp_allocator.free(src);
+                var buf: [512]u8 = undefined;
+                const o = security.origin(&buf, src) orelse return false;
+                return std.mem.eql(u8, o, local.dev_origin.?);
+            }
+
+            fn invokeDev(dev_this: *webview2.ICoreWebView2NavigationCompletedEventHandler, sender: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2NavigationCompletedEventArgs) callconv(.winapi) win32.HRESULT {
+                const self: *@This() = @fieldParentPtr("handler", dev_this);
+                const a = args orelse return win32.S_OK;
+                const view = sender orelse return win32.S_OK;
+                var ok: win32.BOOL = .FALSE;
+                if (a.lpVtbl.get_IsSuccess(a, &ok) < 0) return win32.S_OK;
+                if (ok != .FALSE) {
+                    self.deadline_ms = 0; // the server may restart later
+                    return win32.S_OK;
+                }
+                var status: webview2.COREWEBVIEW2_WEB_ERROR_STATUS = .UNKNOWN;
+                if (a.lpVtbl.get_WebErrorStatus(a, &status) < 0 or !isConnectError(status)) return win32.S_OK;
+                if (!onDevOrigin(view)) return win32.S_OK;
+                const now = win32.GetTickCount64();
+                if (self.deadline_ms == 0) self.deadline_ms = now + config.dev.?.timeout_ms;
+                if (now >= self.deadline_ms) {
+                    log.err("the dev server at {s} did not answer within {d} ms; check that it starts (e.g. run `npm install` in the frontend directory)", .{ config.dev.?.url, config.dev.?.timeout_ms });
+                    self.deadline_ms = 0; // a later reload starts a new wait
+                    return win32.S_OK; // WebView2's error page stays
+                }
+                // WM_TIMER in wndProc reloads the page; the timer dies with the window.
+                if (win32.SetTimer(self.target_hwnd, DEV_RETRY_TIMER_ID, dev_server.retry_interval_ms, null) == 0) {
+                    log.err("dev server retry: SetTimer failed ({d})", .{win32.GetLastError()});
+                }
+                return win32.S_OK;
+            }
+
+            /// WM_TIMER: load the page that failed again.
+            fn retry(view: *webview2.ICoreWebView2) void {
+                var src_w: ?win32.LPWSTR = null;
+                if (view.lpVtbl.get_Source(view, @ptrCast(&src_w)) < 0 or src_w == null) return;
+                defer win32.CoTaskMemFree(src_w);
+                _ = view.navigate(src_w.?);
+            }
+        };
+
         pub const WindowData = struct {
             env: *webview2.ICoreWebView2Environment,
             controller: *webview2.ICoreWebView2Controller,
@@ -503,6 +600,9 @@ pub fn WindowCreator(
             cl_handler: CloseHandler,
             cl_token: webview2.EventRegistrationToken = .{},
 
+            dev_handler: if (has_dev) DevRetryHandler else void,
+            dev_token: webview2.EventRegistrationToken = .{},
+
             pub fn deinit(self: *WindowData) void {
                 // Ordered teardown sequence for WindowData and WebView2 COM objects (Finding 2):
                 // 1. Remove all event registrations first so WebView2 will not dispatch further
@@ -518,6 +618,7 @@ pub fn WindowCreator(
                 _ = self.webview.lpVtbl.remove_FrameNavigationStarting(self.webview, self.frame_nav_token);
                 _ = self.webview.lpVtbl.remove_NewWindowRequested(self.webview, self.nw_token);
                 _ = self.webview.lpVtbl.remove_WindowCloseRequested(self.webview, self.cl_token);
+                if (has_dev) _ = self.webview.lpVtbl.remove_NavigationCompleted(self.webview, self.dev_token);
 
                 _ = self.controller.lpVtbl.Close(self.controller);
                 _ = self.webview.lpVtbl.Release(self.webview);
@@ -874,6 +975,10 @@ pub fn WindowCreator(
                     .handler = .{ .lpVtbl = &CloseHandler.close_vtable },
                     .target_hwnd = hwnd,
                 },
+                .dev_handler = if (has_dev) .{
+                    .handler = .{ .lpVtbl = &DevRetryHandler.dev_vtable },
+                    .target_hwnd = hwnd,
+                } else {},
             };
 
             // Register event handlers
@@ -909,6 +1014,15 @@ pub fn WindowCreator(
                 return error.WebView2AddEventHandlerFailed;
             }
             errdefer _ = view.lpVtbl.remove_WindowCloseRequested(view, data.cl_token);
+
+            if (has_dev) {
+                if (view.lpVtbl.add_NavigationCompleted(view, @ptrCast(&data.dev_handler.handler), &data.dev_token) < 0) {
+                    return error.WebView2AddEventHandlerFailed;
+                }
+            }
+            errdefer if (has_dev) {
+                _ = view.lpVtbl.remove_NavigationCompleted(view, data.dev_token);
+            };
 
             // Inject bridge JS
             BridgeImpl.setupUserContent(view, options.label);
@@ -971,6 +1085,18 @@ pub fn WindowCreator(
             const win = windowFromUserData(hwnd);
 
             switch (uMsg) {
+                win32.WM_TIMER => {
+                    if (has_dev and wParam == DEV_RETRY_TIMER_ID) {
+                        // Before the window is registered `win` is null: the
+                        // timer stays and fires again.
+                        if (win) |w| {
+                            _ = win32.KillTimer(hwnd, DEV_RETRY_TIMER_ID);
+                            DevRetryHandler.retry(w.handle.webview);
+                        }
+                        return 0;
+                    }
+                    return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
+                },
                 win32.WM_SIZE => {
                     if (win) |w| {
                         if (!w.ready) return 0;
