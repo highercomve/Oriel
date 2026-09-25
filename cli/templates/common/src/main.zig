@@ -47,5 +47,8 @@ pub fn main(init: std.process.Init) !u8 {
         .height = 600,
         .assets = app.assets, // the embedded frontend (empty in dev builds)
         .dev = app.dev, // dev-server settings (null in production builds)
+        // URL schemes this app accepts deep links for (`oriel deep-link add`);
+        // links with any other scheme are dropped.
+        .deep_link_schemes = app.url_schemes,
     });
 }
