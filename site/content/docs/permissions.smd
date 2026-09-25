@@ -119,9 +119,11 @@ When a page calls `navigator.mediaDevices.getUserMedia()`, the Geolocation API o
 
 Everything else is denied without a prompt, and logged with the permission to add.
 
+On macOS, WKWebView hides `navigator.mediaDevices` from custom-scheme pages. When the app declares the microphone or camera, Oriel turns it on with WebKit's private `_setMediaDevicesEnabled:` preference. That's fine for apps you distribute yourself; the Mac App Store may reject private API use.
+
 ## macOS signing
 
-`oriel package` writes `<Name>.entitlements` next to the `.app`, with the hardened-runtime entitlements for the declared permissions (`com.apple.security.device.audio-input`, `...camera`, `...location`). Pass it when signing with a Developer ID:
+`zig build` and `oriel package` write `<Name>.entitlements` next to the `.app` (in `zig-out/` and `zig-out/package/`), with the hardened-runtime entitlements for the declared permissions (`com.apple.security.device.audio-input`, `...camera`, `...location`). Pass it when signing with a Developer ID:
 
 ```sh
 codesign --force --options runtime --entitlements "zig-out/package/My App.entitlements" \

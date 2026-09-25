@@ -142,6 +142,8 @@ pub const Context = struct {
 pub const AppBundle = struct {
     dir: std.Build.LazyPath,
     name: []const u8,
+    /// `<Name>.entitlements` (hardened-runtime entitlements for the declared permissions).
+    entitlements: std.Build.LazyPath,
 };
 
 /// Assemble the macOS `.app` bundle of `exe` with `package_tool package-app`.
@@ -177,7 +179,11 @@ fn addAppBundle(
     run.addArg("--icons-dir");
     run.addDirectoryArg(icons_dir);
     const name = b.fmt("{s}.app", .{metadata.name});
-    return .{ .dir = out_dir.path(b, name), .name = name };
+    return .{
+        .dir = out_dir.path(b, name),
+        .name = name,
+        .entitlements = out_dir.path(b, b.fmt("{s}.entitlements", .{metadata.name})),
+    };
 }
 
 pub fn addPackageSteps(
@@ -566,6 +572,9 @@ fn installAppBundle(b: *std.Build, package_tool: *std.Build.Step.Compile, bundle
     run.addDirectoryArg(bundle.dir);
     run.addArgs(&.{ "--to", b.getInstallPath(.prefix, sub_path) });
     run.has_side_effects = true;
+    // The entitlements go next to the bundle: `<Name>.app` -> `<Name>.entitlements`.
+    const ent_sub = b.fmt("{s}.entitlements", .{sub_path[0 .. sub_path.len - ".app".len]});
+    run.step.dependOn(&b.addInstallFileWithDir(bundle.entitlements, .prefix, ent_sub).step);
     return &run.step;
 }
 
