@@ -15,6 +15,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Context = @import("Context.zig");
+const zig_manager = @import("zig_manager.zig");
 
 pub const Arch = enum {
     x64,
@@ -136,6 +137,12 @@ pub fn selectLatestStableVersion(json_bytes: []const u8, gpa: std.mem.Allocator)
 // ---------------------------------------------------------------------------
 
 pub fn getCacheRoot(gpa: std.mem.Allocator, environ: *const std.process.Environ.Map) ![]u8 {
+    const home = try zig_manager.orielHome(gpa, environ);
+    defer gpa.free(home);
+    return try std.fs.path.join(gpa, &.{ home, "webview2" });
+}
+
+pub fn getLegacyCacheRoot(gpa: std.mem.Allocator, environ: *const std.process.Environ.Map) ![]u8 {
     if (builtin.os.tag == .windows) {
         if (environ.get("LOCALAPPDATA")) |appdata| {
             if (appdata.len > 0) return try std.fs.path.join(gpa, &.{ appdata, "oriel", "cache", "webview2" });
@@ -167,6 +174,18 @@ pub fn getCacheDllPath(gpa: std.mem.Allocator, environ: *const std.process.Envir
     return try std.fs.path.join(gpa, &.{ dir, "WebView2Loader.dll" });
 }
 
+pub fn getLegacyCacheDir(gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, version: []const u8, arch: []const u8) ![]u8 {
+    const root = try getLegacyCacheRoot(gpa, environ);
+    defer gpa.free(root);
+    return try std.fs.path.join(gpa, &.{ root, version, arch });
+}
+
+pub fn getLegacyCacheDllPath(gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, version: []const u8, arch: []const u8) ![]u8 {
+    const dir = try getLegacyCacheDir(gpa, environ, version, arch);
+    defer gpa.free(dir);
+    return try std.fs.path.join(gpa, &.{ dir, "WebView2Loader.dll" });
+}
+
 pub const CachedLoader = struct {
     version: []u8,
     path: []u8,
@@ -177,24 +196,19 @@ pub const CachedLoader = struct {
     }
 };
 
-/// Find newest cached WebView2Loader.dll for the given architecture.
-pub fn findNewestCached(
+fn scanDirForNewest(
     gpa: std.mem.Allocator,
     io: std.Io,
-    environ: *const std.process.Environ.Map,
+    root: []const u8,
     arch: []const u8,
-) !?CachedLoader {
-    const root = try getCacheRoot(gpa, environ);
-    defer gpa.free(root);
-
-    var root_dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return null;
+    best_ver: *?Version,
+    best_ver_str: *?[]u8,
+    best_root: *?[]u8,
+) !void {
+    var root_dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return;
     defer root_dir.close(io);
 
     var it = root_dir.iterate();
-    var best_ver_str: ?[]u8 = null;
-    defer if (best_ver_str) |s| gpa.free(s);
-    var best_ver: ?Version = null;
-
     while (try it.next(io)) |entry| {
         if (entry.kind != .directory) continue;
         const v = Version.parse(entry.name) orelse continue;
@@ -204,22 +218,46 @@ pub fn findNewestCached(
 
         root_dir.access(io, dll_subpath, .{}) catch continue;
 
-        if (best_ver == null or Version.order(v, best_ver.?) == .gt) {
-            // Copy first: freeing the previous copy before a failed dupe would
-            // leave best_ver_str dangling (double free in the defer).
+        if (best_ver.* == null or Version.order(v, best_ver.*.?) == .gt) {
             const copy = try gpa.dupe(u8, entry.name);
-            if (best_ver_str) |prev| gpa.free(prev);
-            best_ver_str = copy;
-            // Parse from our copy: `v` slices entry.name, which the iterator
-            // reuses for the next entry.
-            best_ver = Version.parse(copy).?;
+            if (best_ver_str.*) |prev| gpa.free(prev);
+            best_ver_str.* = copy;
+            best_ver.* = Version.parse(copy).?;
+            if (best_root.*) |prev| gpa.free(prev);
+            best_root.* = try gpa.dupe(u8, root);
         }
     }
+}
 
-    if (best_ver_str) |v_str| {
-        const full_path = try std.fs.path.join(gpa, &.{ root, v_str, arch, "WebView2Loader.dll" });
+/// Find newest cached WebView2Loader.dll for the given architecture.
+/// Checks the primary cache in ~/.oriel/webview2 (or $ORIEL_HOME), and falls
+/// back to legacy cache locations (%LOCALAPPDATA% or ~/.cache).
+pub fn findNewestCached(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    environ: *const std.process.Environ.Map,
+    arch: []const u8,
+) !?CachedLoader {
+    var best_ver: ?Version = null;
+    var best_ver_str: ?[]u8 = null;
+    defer if (best_ver_str) |s| gpa.free(s);
+    var best_root: ?[]u8 = null;
+    defer if (best_root) |r| gpa.free(r);
+
+    if (getCacheRoot(gpa, environ)) |primary_root| {
+        defer gpa.free(primary_root);
+        try scanDirForNewest(gpa, io, primary_root, arch, &best_ver, &best_ver_str, &best_root);
+    } else |_| {}
+
+    if (getLegacyCacheRoot(gpa, environ)) |legacy_root| {
+        defer gpa.free(legacy_root);
+        try scanDirForNewest(gpa, io, legacy_root, arch, &best_ver, &best_ver_str, &best_root);
+    } else |_| {}
+
+    if (best_ver_str != null and best_root != null) {
+        const full_path = try std.fs.path.join(gpa, &.{ best_root.?, best_ver_str.?, arch, "WebView2Loader.dll" });
         errdefer gpa.free(full_path);
-        const ver_dup = try gpa.dupe(u8, v_str);
+        const ver_dup = try gpa.dupe(u8, best_ver_str.?);
         return .{ .version = ver_dup, .path = full_path };
     }
     return null;
@@ -232,10 +270,17 @@ pub fn isCached(
     arch: []const u8,
     gpa: std.mem.Allocator,
 ) bool {
-    const dll_path = getCacheDllPath(gpa, environ, version, arch) catch return false;
-    defer gpa.free(dll_path);
-    std.Io.Dir.cwd().access(io, dll_path, .{}) catch return false;
-    return true;
+    if (getCacheDllPath(gpa, environ, version, arch)) |dll_path| {
+        defer gpa.free(dll_path);
+        if (std.Io.Dir.cwd().access(io, dll_path, .{})) |_| return true else |_| {}
+    } else |_| {}
+
+    if (getLegacyCacheDllPath(gpa, environ, version, arch)) |legacy_path| {
+        defer gpa.free(legacy_path);
+        if (std.Io.Dir.cwd().access(io, legacy_path, .{})) |_| return true else |_| {}
+    } else |_| {}
+
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -992,5 +1037,66 @@ test "extractLoadersFromZip rejects oversized DLL" {
     defer out_dir.close(io);
 
     try std.testing.expectError(error.PayloadSizeExceeded, extractLoadersFromZip(io, bad_zip, true, false, out_dir));
+}
+
+test "cache root and fallback discovery" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(tmp_path);
+
+    const oriel_home = try std.fs.path.join(a, &.{ tmp_path, "oriel_home" });
+    defer a.free(oriel_home);
+    try env.put("ORIEL_HOME", oriel_home);
+
+    const cache_root = try getCacheRoot(a, &env);
+    defer a.free(cache_root);
+    const expected_root = try std.fs.path.join(a, &.{ oriel_home, "webview2" });
+    defer a.free(expected_root);
+    try std.testing.expectEqualStrings(expected_root, cache_root);
+
+    // Test findNewestCached finding a loader in legacy root when new cache is empty
+    const legacy_dir = try std.fs.path.join(a, &.{ tmp_path, "legacy", "1.0.2000.0", "x64" });
+    defer a.free(legacy_dir);
+    try std.Io.Dir.cwd().createDirPath(io, legacy_dir);
+    const legacy_dll = try std.fs.path.join(a, &.{ legacy_dir, "WebView2Loader.dll" });
+    defer a.free(legacy_dll);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = legacy_dll, .data = "dummy" });
+
+    // Point HOME or LOCALAPPDATA to legacy parent
+    if (builtin.os.tag == .windows) {
+        const localappdata = try std.fs.path.join(a, &.{ tmp_path, "legacy_base" });
+        defer a.free(localappdata);
+        const legacy_full = try std.fs.path.join(a, &.{ localappdata, "oriel", "cache", "webview2", "1.0.2000.0", "x64" });
+        defer a.free(legacy_full);
+        try std.Io.Dir.cwd().createDirPath(io, legacy_full);
+        const dll = try std.fs.path.join(a, &.{ legacy_full, "WebView2Loader.dll" });
+        defer a.free(dll);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dll, .data = "dummy" });
+        try env.put("LOCALAPPDATA", localappdata);
+    } else {
+        const home_dir = try std.fs.path.join(a, &.{ tmp_path, "legacy_home" });
+        defer a.free(home_dir);
+        const legacy_full = try std.fs.path.join(a, &.{ home_dir, ".cache", "oriel", "webview2", "1.0.2000.0", "x64" });
+        defer a.free(legacy_full);
+        try std.Io.Dir.cwd().createDirPath(io, legacy_full);
+        const dll = try std.fs.path.join(a, &.{ legacy_full, "WebView2Loader.dll" });
+        defer a.free(dll);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dll, .data = "dummy" });
+        try env.put("HOME", home_dir);
+        try env.put("XDG_CACHE_HOME", "");
+    }
+
+    const found = try findNewestCached(a, io, &env, "x64");
+    try std.testing.expect(found != null);
+    defer found.?.deinit(a);
+    try std.testing.expectEqualStrings("1.0.2000.0", found.?.version);
 }
 
