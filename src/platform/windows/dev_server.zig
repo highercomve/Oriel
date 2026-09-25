@@ -83,21 +83,32 @@ fn findNodeDir(io: std.Io, gpa: std.mem.Allocator) ?[]const u8 {
                 if (std.Io.Dir.cwd().openDir(io, node_root, .{ .iterate = true })) |dir| {
                     var d = dir;
                     defer d.close(io);
+                    // The newest installed version (`oriel setup node`).
+                    var best: ?[]const u8 = null;
+                    var best_ver: std.SemanticVersion = undefined;
                     var it = d.iterate();
                     while (it.next(io) catch null) |entry| {
                         if (entry.kind != .directory) continue;
+                        _ = std.SemanticVersion.parse(std.mem.trimStart(u8, entry.name, "v")) catch continue;
                         const sub = std.fs.path.join(gpa, &.{ node_root, entry.name }) catch continue;
                         const node_exe = std.fs.path.join(gpa, &.{ sub, "node.exe" }) catch {
                             gpa.free(sub);
                             continue;
                         };
                         defer gpa.free(node_exe);
-                        if (std.Io.Dir.cwd().access(io, node_exe, .{})) |_| {
-                            return sub;
-                        } else |_| {
+                        std.Io.Dir.cwd().access(io, node_exe, .{}) catch {
                             gpa.free(sub);
-                        }
+                            continue;
+                        };
+                        // Parsed from `sub` (owned): `pre`/`build` slice into it.
+                        const ver = std.SemanticVersion.parse(std.mem.trimStart(u8, std.fs.path.basename(sub), "v")) catch unreachable;
+                        if (best == null or ver.order(best_ver) == .gt) {
+                            if (best) |prev| gpa.free(prev);
+                            best = sub;
+                            best_ver = ver;
+                        } else gpa.free(sub);
                     }
+                    if (best) |b| return b;
                 } else |_| {}
             }
         }
@@ -132,24 +143,43 @@ fn findNodeDir(io: std.Io, gpa: std.mem.Allocator) ?[]const u8 {
     return null;
 }
 
-fn prependToPath(gpa: std.mem.Allocator, dir: []const u8) bool {
-    const path_name = std.unicode.utf8ToUtf16LeStringLiteral("PATH");
-    const old_path_w = getEnvAlloc(gpa, "PATH");
-    defer if (old_path_w) |p| gpa.free(p);
-
-    const old_path_u8 = if (old_path_w) |p| utf16ToUtf8Alloc(gpa, p) else null;
-    defer if (old_path_u8) |p| gpa.free(p);
-
-    const new_path_u8 = if (old_path_u8) |old|
-        std.fmt.allocPrint(gpa, "{s};{s}", .{ dir, old }) catch return false
+/// A copy of the environment with `dir` prepended to PATH, for the child
+/// only (changing this process's PATH would race other threads' spawns).
+fn environWithPath(gpa: std.mem.Allocator, dir: []const u8) ?std.process.Environ.Map {
+    const env: std.process.Environ = .{ .block = .global };
+    var map = env.createMap(gpa) catch return null;
+    const new_path = if (map.get("PATH")) |old|
+        std.fmt.allocPrint(gpa, "{s};{s}", .{ dir, old }) catch {
+            map.deinit();
+            return null;
+        }
     else
-        gpa.dupe(u8, dir) catch return false;
-    defer gpa.free(new_path_u8);
+        gpa.dupe(u8, dir) catch {
+            map.deinit();
+            return null;
+        };
+    defer gpa.free(new_path);
+    map.put("PATH", new_path) catch {
+        map.deinit();
+        return null;
+    };
+    return map;
+}
 
-    const new_path_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, new_path_u8) catch return false;
-    defer gpa.free(new_path_w);
-
-    return win32.SetEnvironmentVariableW(path_name.ptr, new_path_w.ptr) != win32.FALSE;
+/// `<dir>\<name>` with the first of .cmd/.exe/.bat that exists, or null.
+fn resolveIn(io: std.Io, gpa: std.mem.Allocator, dir: []const u8, name: []const u8) ?[]u8 {
+    if (std.mem.indexOfAny(u8, name, "\\/:") != null) return null;
+    const has_ext = std.fs.path.extension(name).len != 0;
+    for ([_][]const u8{ "", ".cmd", ".exe", ".bat" }) |ext| {
+        if (has_ext != (ext.len == 0)) continue;
+        const full = std.fmt.allocPrint(gpa, "{s}\\{s}{s}", .{ dir, name, ext }) catch return null;
+        std.Io.Dir.cwd().access(io, full, .{}) catch {
+            gpa.free(full);
+            continue;
+        };
+        return full;
+    }
+    return null;
 }
 
 pub fn startDevServer(io: std.Io, dev: anytype) ?DevServer {
@@ -171,15 +201,27 @@ pub fn startDevServer(io: std.Io, dev: anytype) ?DevServer {
     };
 
     const child = std.process.spawn(io, spawn_cfg) catch |first_err| blk: {
-        const gpa = std.heap.smp_allocator;
-        if (findNodeDir(io, gpa)) |node_dir| {
+        // Node installed but not on PATH (e.g. by `oriel setup node`): run
+        // the command from its directory, with that directory on the child's PATH.
+        if (first_err == error.FileNotFound) retry: {
+            const gpa = std.heap.smp_allocator;
+            const node_dir = findNodeDir(io, gpa) orelse break :retry;
             defer gpa.free(node_dir);
-            if (prependToPath(gpa, node_dir)) {
-                log.debug("augmented PATH with Node directory: {s}", .{node_dir});
-                if (std.process.spawn(io, spawn_cfg)) |c| {
-                    break :blk c;
-                } else |_| {}
-            }
+            const exe = resolveIn(io, gpa, node_dir, command[0]) orelse break :retry;
+            defer gpa.free(exe);
+            const argv = gpa.alloc([]const u8, command.len) catch break :retry;
+            defer gpa.free(argv);
+            argv[0] = exe;
+            @memcpy(argv[1..], command[1..]);
+            var env = environWithPath(gpa, node_dir) orelse break :retry;
+            defer env.deinit();
+            var cfg = spawn_cfg;
+            cfg.argv = argv;
+            cfg.environ_map = &env;
+            if (std.process.spawn(io, cfg)) |c| {
+                log.debug("dev server: using Node from {s}", .{node_dir});
+                break :blk c;
+            } else |_| {}
         }
         log.err("failed to start dev server '{s}': {s} (dev command not found in PATH; ensure Node.js is installed or run 'oriel setup node')", .{ command[0], @errorName(first_err) });
         if (job) |j| _ = win32.CloseHandle(j);

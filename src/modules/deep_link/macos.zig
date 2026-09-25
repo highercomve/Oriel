@@ -52,25 +52,20 @@ pub fn setReady(ready: bool) void {
 }
 
 /// Validate and deliver a deep link URL on the main thread.
-/// If the page is not yet ready, the URL is queued until `setReady(true)` is called.
-/// When ready, invokes the registered `onOpen` handler and broadcasts `deep-link` event to webview windows.
+/// Calls the registered `onOpen` handler, then broadcasts the `deep-link` event
+/// to the webview windows, or queues it until the page listens (`setReady(true)`).
 pub fn deliver(url: []const u8) void {
     // Only declared schemes (none declared: nothing is delivered).
     const valid_url = common.validateUrl(url, declared_schemes) catch return;
 
-    const queued = queue_state.push(valid_url) catch false;
-    if (queued) {
-        return;
-    }
+    if (on_open_handler) |handler| handler(valid_url);
 
-    emitDirect(valid_url);
+    // The page's `deep-link` event waits until it listens (setReady).
+    const queued = queue_state.push(valid_url) catch false;
+    if (!queued) emitDirect(valid_url);
 }
 
 fn emitDirect(valid_url: []const u8) void {
-    if (on_open_handler) |handler| {
-        handler(valid_url);
-    }
-
     App.emit("deep-link", .{ .url = valid_url });
 }
 
@@ -93,15 +88,19 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     // 2. Exercise in-process dispatch
     const prev_schemes = declared_schemes;
     const prev_handler = on_open_handler;
-    const prev_ready = isReady();
+    // Ready without flushing: queued links stay for the page, and current()
+    // keeps the real latest URL.
+    const prev_ready = queue_state.is_ready;
+    const prev_latest = queue_state.latest;
     defer {
         declared_schemes = prev_schemes;
         on_open_handler = prev_handler;
-        setReady(prev_ready);
+        queue_state.is_ready = prev_ready;
+        queue_state.latest = prev_latest;
     }
 
     declared_schemes = &test_schemes;
-    setReady(true);
+    queue_state.is_ready = true;
 
     const State = struct {
         var received: ?[]const u8 = null;

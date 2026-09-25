@@ -87,9 +87,13 @@ try {
     $installed = (& $target --version | Select-Object -First 1)
     Write-Host "Installed $installed to $target"
     $modifyPath = $env:ORIEL_NO_MODIFY_PATH -ne '1'
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $pathEntries = if ($userPath) { $userPath -split ';' } else { @() }
-    $alreadyInUserPath = $pathEntries -contains $installDir
+    # The raw value: GetEnvironmentVariable expands %VARS%, and writing that
+    # back would turn the user's REG_EXPAND_SZ Path into fixed strings.
+    $envKey = Get-Item -Path 'HKCU:\Environment'
+    $userPath = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    $normalized = $installDir.TrimEnd('\')
+    $pathEntries = if ($userPath) { $userPath -split ';' | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') } } else { @() }
+    $alreadyInUserPath = $pathEntries -contains $normalized
 
     if ($modifyPath) {
         if (-not $alreadyInUserPath) {
@@ -98,7 +102,10 @@ try {
             } else {
                 $userPath.TrimEnd(';') + ';' + $installDir
             }
-            [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+            Set-ItemProperty -Path 'HKCU:\Environment' -Name 'Path' -Value $newUserPath -Type ExpandString
+            # Tell running programs (Explorer, new terminals) that the environment changed.
+            [Environment]::SetEnvironmentVariable('ORIEL_PATH_REFRESH', '1', 'User')
+            [Environment]::SetEnvironmentVariable('ORIEL_PATH_REFRESH', $null, 'User')
             Write-Host "Added $installDir to User PATH."
         } else {
             Write-Host "$installDir is already in User PATH."

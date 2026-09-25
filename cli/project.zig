@@ -384,12 +384,9 @@ pub fn findBuiltArtifacts(gpa: std.mem.Allocator, io: std.Io, root: []const u8) 
         try list.append(gpa, rel_path);
     }
 
-    var filtered: std.ArrayList([]const u8) = .empty;
-    defer filtered.deinit(gpa);
-    errdefer {
-        for (filtered.items) |item| gpa.free(item);
-    }
-
+    // Drop the -dev builds when a production build exists (in place, so
+    // `list` keeps owning every remaining path).
+    var kept: usize = 0;
     for (list.items) |p| {
         const base = std.fs.path.basename(p);
         const stem = if (builtin.os.tag == .windows and std.ascii.endsWithIgnoreCase(base, ".exe"))
@@ -399,11 +396,13 @@ pub fn findBuiltArtifacts(gpa: std.mem.Allocator, io: std.Io, root: []const u8) 
         if (has_non_dev and std.mem.endsWith(u8, stem, "-dev")) {
             gpa.free(p);
         } else {
-            try filtered.append(gpa, p);
+            list.items[kept] = p;
+            kept += 1;
         }
     }
+    list.shrinkRetainingCapacity(kept);
 
-    const items = try filtered.toOwnedSlice(gpa);
+    const items = try list.toOwnedSlice(gpa);
     std.mem.sort([]const u8, items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
             return std.mem.order(u8, a, b) == .lt;
@@ -684,7 +683,8 @@ test "output-path listing" {
         gpa.free(built);
     }
     try std.testing.expectEqual(@as(usize, 1), built.len);
-    const expected_exe = if (builtin.os.tag == .windows) "zig-out/bin/my-app.exe" else "zig-out/bin/my-app";
+    const sep = std.fs.path.sep_str;
+    const expected_exe = if (builtin.os.tag == .windows) "zig-out" ++ sep ++ "bin" ++ sep ++ "my-app.exe" else "zig-out/bin/my-app";
     try std.testing.expectEqualStrings(expected_exe, built[0]);
 
     // Populate package files
@@ -698,8 +698,8 @@ test "output-path listing" {
         gpa.free(pkgs);
     }
     try std.testing.expectEqual(@as(usize, 2), pkgs.len);
-    try std.testing.expectEqualStrings("zig-out/package/my-app.deb", pkgs[0]);
-    try std.testing.expectEqualStrings("zig-out/package/my-app.rpm", pkgs[1]);
+    try std.testing.expectEqualStrings("zig-out" ++ sep ++ "package" ++ sep ++ "my-app.deb", pkgs[0]);
+    try std.testing.expectEqualStrings("zig-out" ++ sep ++ "package" ++ sep ++ "my-app.rpm", pkgs[1]);
 }
 
 test "optimize argument injection" {

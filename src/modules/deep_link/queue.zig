@@ -1,9 +1,10 @@
 //! Pure queue logic for deep link URL delivery before and after page readiness.
 //!
-//! When incoming deep link URLs arrive before the application webview / page has
-//! finished loading, they are held in a FIFO queue. Once the page signals readiness
-//! (or window creation finishes), queued URLs are flushed and delivered in order.
-//! Subsequent URLs delivered while ready bypass the queue and deliver immediately.
+//! When incoming deep link URLs arrive before the page listens for `deep-link`,
+//! their webview events are held in a FIFO queue (the Zig `onOpen` handler is
+//! called right away). Once the page signals readiness, queued URLs are flushed
+//! in order. URLs delivered while ready bypass the queue. When the queue is
+//! full, the oldest URL is dropped.
 
 const std = @import("std");
 const common = @import("common.zig");
@@ -31,21 +32,19 @@ pub const Queue = struct {
     count: usize = 0,
     head: usize = 0,
     is_ready: bool = false,
-    cold_start: ?Item = null,
     latest: ?Item = null,
 
     /// Record the cold-start launch URL.
     pub fn setColdStartUrl(self: *Queue, url: []const u8) void {
         var item: Item = .{};
         if (item.set(url)) {
-            self.cold_start = item;
             self.latest = item;
         }
     }
 
-    /// Return the URL that launched the application (cold start), or latest received URL.
+    /// The most recent URL: the one that launched the application, or the
+    /// latest one received since.
     pub fn current(self: *const Queue) ?[]const u8 {
-        if (self.cold_start) |*c| return c.slice();
         if (self.latest) |*l| return l.slice();
         return null;
     }
@@ -53,20 +52,19 @@ pub const Queue = struct {
     /// Push an incoming URL.
     /// If the queue is not yet ready, the URL is stored in the FIFO buffer and `true` is returned.
     /// If the queue is already ready, `false` is returned (caller should deliver immediately).
+    /// A full queue drops its oldest URL.
     pub fn push(self: *Queue, url: []const u8) !bool {
         var item: Item = .{};
         if (!item.set(url)) return error.UrlTooLong;
         self.latest = item;
-        if (self.cold_start == null) {
-            self.cold_start = item;
-        }
 
         if (self.is_ready) {
             return false;
         }
 
         if (self.count >= max_queued) {
-            return error.QueueFull;
+            self.head = (self.head + 1) % max_queued;
+            self.count -= 1;
         }
 
         const idx = (self.head + self.count) % max_queued;
@@ -93,7 +91,6 @@ pub const Queue = struct {
     pub fn clear(self: *Queue) void {
         self.count = 0;
         self.head = 0;
-        self.cold_start = null;
         self.latest = null;
         self.is_ready = false;
     }
@@ -117,8 +114,8 @@ test "queued-before-ready delivery" {
     try std.testing.expect(queued2);
     try std.testing.expectEqual(@as(usize, 2), q.count);
 
-    // Cold-start URL remains available via current()
-    try std.testing.expectEqualStrings("myapp://start", q.current().?);
+    // current() is the latest URL
+    try std.testing.expectEqualStrings("myapp://second", q.current().?);
 
     // 3. Mark ready and drain FIFO
     q.setReady(true);
@@ -144,4 +141,18 @@ test "queued-before-ready delivery" {
     var oversized: [common.max_url_len + 1]u8 = undefined;
     @memset(&oversized, 'a');
     try std.testing.expectError(error.UrlTooLong, q.push(&oversized));
+}
+
+test "full queue drops the oldest; current is the latest" {
+    var q: Queue = .{};
+    q.setColdStartUrl("myapp://cold");
+    try std.testing.expectEqualStrings("myapp://cold", q.current().?);
+    var buf: [32]u8 = undefined;
+    for (0..Queue.max_queued + 2) |i| {
+        _ = try q.push(try std.fmt.bufPrint(&buf, "myapp://{d}", .{i}));
+    }
+    try std.testing.expectEqual(Queue.max_queued, q.count);
+    try std.testing.expectEqualStrings("myapp://17", q.current().?);
+    q.setReady(true);
+    try std.testing.expectEqualStrings("myapp://2", q.pop().?);
 }

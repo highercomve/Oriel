@@ -786,24 +786,9 @@ fn download(ctx: Context, client: *std.http.Client, url: []const u8, out: *std.I
         };
         defer req.deinit();
 
-        req.sendBodiless() catch |err| return if (err == error.ConnectionRefused) err else err;
-        var response = req.receiveHead(&.{}) catch |err| return err;
-        const status = response.head.status;
-        last_http_status = status;
-        if (status.class() == .redirect) {
-            const next = response.head.location orelse return error.BadHttpStatus;
-            // Relative locations resolve against the current URL.
-            location_len = (try redirectTarget(uri, next, &location_buf)).len;
-            continue;
-        }
-        if (status != .ok) return error.BadHttpStatus;
-        if (response.head.content_encoding != .identity) return error.UnsupportedContentEncoding;
-
-        const is_tty = std.Io.File.stderr().isTty(ctx.io) catch false;
-        const total_size = response.head.content_length;
-
+        // The watchdog also covers a server that never sends its headers.
         var dw_buf: [16 * 1024]u8 = undefined;
-        var dw: DownloadWriter = .init(out, limit, &dw_buf, if (show_progress) ctx.err else null, total_size, is_tty);
+        var dw: DownloadWriter = .init(out, limit, &dw_buf, if (show_progress) ctx.err else null, null, std.Io.File.stderr().isTty(ctx.io) catch false);
         var wd: Watchdog = .{ .io = ctx.io, .stream = req.connection.?.stream_reader.stream, .counter = &dw.received, .min_rate = min_rate };
         const thread = try std.Thread.spawn(.{}, Watchdog.run, .{&wd});
         defer {
@@ -814,6 +799,22 @@ fn download(ctx: Context, client: *std.http.Client, url: []const u8, out: *std.I
                 conn.closing = true;
             };
         }
+
+        req.sendBodiless() catch |err| return if (wd.aborted.load(.acquire)) error.MirrorTooSlow else err;
+        var response = req.receiveHead(&.{}) catch |err| return if (wd.aborted.load(.acquire)) error.MirrorTooSlow else err;
+        const status = response.head.status;
+        if (status.class() == .redirect) {
+            const next = response.head.location orelse return error.BadHttpStatus;
+            // Relative locations resolve against the current URL.
+            location_len = (try redirectTarget(uri, next, &location_buf)).len;
+            continue;
+        }
+        if (status != .ok) {
+            last_http_status = status;
+            return error.BadHttpStatus;
+        }
+        if (response.head.content_encoding != .identity) return error.UnsupportedContentEncoding;
+        dw.total_size = response.head.content_length;
 
         if (show_progress) {
             dw.reportProgress(0);

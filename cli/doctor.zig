@@ -341,7 +341,6 @@ fn runFix(ctx: Context, cmd: Command, items: []const Item, plan: FixPlan, want_z
             }
         }
         if (installed_any_managed) {
-            try ctx.out.writeAll("Open a new terminal so PATH updates\n");
             try ctx.out.writeAll("Managed tools under ~/.oriel are used automatically by oriel (no PATH change needed).\n");
         }
     }
@@ -463,7 +462,8 @@ pub fn calculateFixPlan(
         if (!item.ok and (std.mem.startsWith(u8, item.label, "node") or std.mem.startsWith(u8, item.label, "npm"))) {
             plan.install_node = true;
         }
-        if (!item.ok and std.mem.eql(u8, item.label, "WebView2 loader")) {
+        // Only a Windows host needs the loader; elsewhere it is info (cross-builds fetch it).
+        if (!item.ok and item.level == .required and std.mem.eql(u8, item.label, "WebView2 loader")) {
             plan.install_webview2 = true;
         }
         if (host_os == .windows and !item.ok and std.mem.eql(u8, item.label, "makensis")) {
@@ -806,6 +806,11 @@ pub fn parseRegPv(output: []const u8) ?[]const u8 {
 /// per user). Reports the highest version found across directory candidates
 /// and the EdgeUpdate registry `pv`.
 fn checkWebView2(c: Context) !Item {
+    return checkWebView2In(c, true);
+}
+
+/// `query_registry` false: the filesystem scan only (hermetic tests).
+fn checkWebView2In(c: Context, query_registry: bool) !Item {
     const label = "WebView2 runtime";
     var best_version: ?DottedVersion = null;
     var best_detail: ?[]const u8 = null;
@@ -841,7 +846,9 @@ fn checkWebView2(c: Context) !Item {
         "HKLM\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-4D2A-4265-8C0E-95AC9ACFC007}",
     };
     for (reg_keys) |key| {
+        if (!query_registry) break;
         if (c.capture(&.{ "reg", "query", key, "/v", "pv" }, 5_000)) |out| {
+            defer out.deinit(c.gpa);
             if (out.code == 0) {
                 if (parseRegPv(out.stdout)) |reg_ver_str| {
                     if (DottedVersion.parse(reg_ver_str)) |reg_ver| {
@@ -1067,14 +1074,14 @@ test "calculateFixPlan pure function" {
         .{ .label = "node (Vite templates)", .level = .required, .ok = false, .detail = "not found", .packages = node_packages },
         .{ .label = "WebView2 loader", .level = .info, .ok = false, .detail = "none cached" },
     };
-    // zig needs install + node + webview2 = 3 fixable tools
+    // zig + node = 2 fixable tools (the WebView2 loader is only fetched on Windows)
     const linux_plan = try calculateFixPlan(testing.allocator, &missing_linux, .linux, .apt, true);
     defer linux_plan.deinit(testing.allocator);
     try testing.expect(linux_plan.install_zig);
     try testing.expect(linux_plan.install_node);
-    try testing.expect(linux_plan.install_webview2);
+    try testing.expect(!linux_plan.install_webview2); // info only off Windows
     try testing.expect(!linux_plan.install_nsis);
-    try testing.expectEqual(3, linux_plan.fixableCount());
+    try testing.expectEqual(2, linux_plan.fixableCount());
     try testing.expectEqual(1, linux_plan.admin_commands.len);
     try testing.expectEqualStrings("sudo apt install libgtk-4-dev", linux_plan.admin_commands[0]);
 
@@ -1287,7 +1294,7 @@ test "checkWebView2 selects highest installed version" {
         .err = &dummy_err.writer,
     };
 
-    const item = try checkWebView2(c);
+    const item = try checkWebView2In(c, false);
     defer testing.allocator.free(item.detail);
 
     try testing.expect(item.ok);

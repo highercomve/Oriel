@@ -247,10 +247,12 @@ pub fn findNewestManagedNode(ctx: Context) !?ManagedNode {
         dir.access(ctx.io, check_rel, .{}) catch continue;
 
         if (best_ver == null or semver.order(best_ver.?) == .gt) {
-            best_ver = semver;
+            // Parse from the copy: `pre`/`build` slice into the name, and
+            // the iterator reuses its buffer.
             const copy = try ctx.gpa.dupe(u8, e.name);
             if (best_name) |prev| ctx.gpa.free(prev);
             best_name = copy;
+            best_ver = std.SemanticVersion.parse(std.mem.trimStart(u8, copy, "v")) catch unreachable;
         }
     }
 
@@ -610,7 +612,6 @@ pub fn installNode(ctx: Context, requested_version: ?[]const u8) ![]u8 {
     }
 
     try ctx.err.print("Installed Node.js {s}: {s}\n", .{ version, installed_exe_path });
-    try ctx.err.writeAll("Open a new terminal so PATH updates\n");
     try ctx.err.writeAll("Managed tools under ~/.oriel are used automatically by oriel (no PATH change needed).\n");
     ctx.flush();
     return installed_exe_path;
@@ -820,7 +821,6 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
             }
 
             try ctx.out.writeAll("Setup complete.\n");
-            try ctx.out.writeAll("Open a new terminal so PATH updates\n");
             try ctx.out.writeAll("Managed tools under ~/.oriel are used automatically by oriel (no PATH change needed).\n");
             return 0;
         },
@@ -828,8 +828,6 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
             const path = installNode(ctx, cmd.version) catch return 1;
             defer ctx.gpa.free(path);
             try ctx.out.print("{s}\n", .{path});
-            try ctx.out.writeAll("Open a new terminal so PATH updates\n");
-            try ctx.out.writeAll("Managed tools under ~/.oriel are used automatically by oriel (no PATH change needed).\n");
             return 0;
         },
         .nsis => {

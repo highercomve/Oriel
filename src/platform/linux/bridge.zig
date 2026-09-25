@@ -112,10 +112,13 @@ pub const bridge_js =
     \\        for (const cb of set) {
     \\          try { cb(payload); } catch (e) { console.error(e); }
     \\        }
-    \\      } else {
+    \\      } else if (event === "deep-link") {
+    \\        // Only deep links wait for a listener (e.g. across a reload); the
+    \\        // native side queues them until the first listen(). Capped.
     \\        let queued = pendingEvents.get(event);
     \\        if (!queued) pendingEvents.set(event, (queued = []));
     \\        queued.push(payload);
+    \\        if (queued.length > 16) queued.shift();
     \\      }
     \\    },
     \\    window: Object.freeze(windowApi),

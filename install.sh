@@ -118,8 +118,12 @@ case ":${PATH}:" in
 
         if [ "${ORIEL_MODIFY_PATH:-0}" = "1" ]; then
             mkdir -p "$(dirname "$rc_file")"
-            printf '\n# Oriel CLI\n%s\n' "$add_line" >> "$rc_file"
-            say "Added ${install_dir} to PATH in ${rc_file}."
+            if [ -f "$rc_file" ] && grep -qF "$add_line" "$rc_file"; then
+                say "${install_dir} is already added to PATH in ${rc_file} (open a new terminal)."
+            else
+                printf '\n# Oriel CLI\n%s\n' "$add_line" >> "$rc_file"
+                say "Added ${install_dir} to PATH in ${rc_file}."
+            fi
         else
             say "Note: ${install_dir} is not on your PATH."
             say "To add it to ${rc_file}, run:"

@@ -219,12 +219,15 @@ fn scanDirForNewest(
         root_dir.access(io, dll_subpath, .{}) catch continue;
 
         if (best_ver.* == null or Version.order(v, best_ver.*.?) == .gt) {
+            // Both copies first: an OOM leaves the previous best intact.
             const copy = try gpa.dupe(u8, entry.name);
+            errdefer gpa.free(copy);
+            const root_copy = try gpa.dupe(u8, root);
             if (best_ver_str.*) |prev| gpa.free(prev);
             best_ver_str.* = copy;
             best_ver.* = Version.parse(copy).?;
             if (best_root.*) |prev| gpa.free(prev);
-            best_root.* = try gpa.dupe(u8, root);
+            best_root.* = root_copy;
         }
     }
 }

@@ -185,6 +185,19 @@ pub fn build(b: *std.Build) void {
     });
     if (runs_tests) test_step.dependOn(&b.addRunArtifact(patch_httpz_tests).step);
 
+    // The deep-link queue and URL validation are pure: tested even when the
+    // opt-in deep_link module is off in `oriel`.
+    const deep_link_queue_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/modules/deep_link/queue.zig"),
+            .target = if (runs_tests) target else b.graph.host,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+        .use_lld = useLld(if (runs_tests) target else b.graph.host),
+    });
+    if (runs_tests) test_step.dependOn(&b.addRunArtifact(deep_link_queue_tests).step);
+
     const dev_runner_tests = b.addTest(.{
         .root_module = dev_runner.root_module,
         .use_llvm = true,
