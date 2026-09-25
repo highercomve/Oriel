@@ -59,6 +59,9 @@ const UNAuthorizationStatusProvisional: isize = 3;
 const UNAuthorizationStatusEphemeral: isize = 4;
 
 pub fn status(kind: Kind) Status {
+    // Callers may be off the run loop (tests, `oriel check`).
+    const pool = cocoa.objc.AutoreleasePool.init();
+    defer pool.deinit();
     return switch (kind) {
         .microphone => captureStatus(AVMediaTypeAudio),
         .camera => captureStatus(AVMediaTypeVideo),
@@ -70,13 +73,16 @@ pub fn status(kind: Kind) Status {
 }
 
 pub fn request(kind: Kind, done: Done) void {
+    const pool = cocoa.objc.AutoreleasePool.init();
+    defer pool.deinit();
     switch (kind) {
         .microphone => requestCapture(kind, AVMediaTypeAudio, done),
         .camera => requestCapture(kind, AVMediaTypeVideo, done),
         .screen_capture => {
-            // Shows the system alert pointing to Settings the first time; the
-            // grant takes effect after the app restarts.
-            done(kind, if (CGRequestScreenCaptureAccess()) .granted else .denied);
+            // Shows the system alert pointing to Settings the first time and
+            // returns at once; the grant takes effect after the app restarts,
+            // so a missing one is still `prompt` (as `status` says).
+            done(kind, if (CGRequestScreenCaptureAccess()) .granted else .prompt);
         },
         .accessibility => requestAccessibility(done),
         .notifications => requestNotifications(done),
@@ -87,8 +93,7 @@ pub fn request(kind: Kind, done: Done) void {
 /// The Privacy & Security pane for `kind` in System Settings.
 pub fn openSettings(kind: Kind) bool {
     const url = settingsUrl(kind) orelse return false;
-    const window = @import("../../platform/macos/window.zig");
-    window.openExternal(url);
+    @import("../App.zig").openExternal(url); // honors App.open_external_hook (tests)
     return true;
 }
 
@@ -118,21 +123,17 @@ fn captureStatus(media_type: cocoa.id) Status {
     };
 }
 
-/// `done` is the same function for every request (permissions.resolved);
-/// kept here because block captures are object- or value-typed.
-var capture_done: ?Done = null;
-
-const CaptureBlock = cocoa.objc.Block(struct { kind: u8 }, .{cocoa.c.BOOL}, void);
+/// `done` travels in the block as an address (captures are plain values).
+const CaptureBlock = cocoa.objc.Block(struct { kind: u8, done: usize }, .{cocoa.c.BOOL}, void);
 
 fn onCaptureAccess(ctx: *const CaptureBlock.Context, granted: cocoa.c.BOOL) callconv(.c) void {
-    const kind: Kind = @enumFromInt(ctx.kind);
-    if (capture_done) |d| d(kind, if (cocoa.isTrue(granted)) .granted else .denied);
+    const done: Done = @ptrFromInt(ctx.done);
+    done(@enumFromInt(ctx.kind), if (cocoa.isTrue(granted)) .granted else .denied);
 }
 
 fn requestCapture(kind: Kind, media_type: cocoa.id, done: Done) void {
-    capture_done = done;
     // Called on an arbitrary queue; AVFoundation copies the (stack) block.
-    var block = CaptureBlock.init(.{ .kind = @intFromEnum(kind) }, &onCaptureAccess);
+    var block = CaptureBlock.init(.{ .kind = @intFromEnum(kind), .done = @intFromPtr(done) }, &onCaptureAccess);
     cocoa.class("AVCaptureDevice").msgSend(void, "requestAccessForMediaType:completionHandler:", .{ media_type, @as(cocoa.id, @ptrCast(&block)) });
 }
 
@@ -156,14 +157,15 @@ fn requestAccessibility(done: Done) void {
 }
 
 fn pollAccessibility(done: Done) void {
-    defer ax_polling.store(false, .release);
     var i: usize = 0;
-    while (i < 240) : (i += 1) { // 2 minutes
+    const result: Status = while (i < 240) : (i += 1) { // 2 minutes
         var ts: std.c.timespec = .{ .sec = 0, .nsec = 500 * std.time.ns_per_ms };
         _ = std.c.nanosleep(&ts, &ts);
-        if (AXIsProcessTrusted() != 0) return done(.accessibility, .granted);
-    }
-    done(.accessibility, .prompt);
+        if (AXIsProcessTrusted() != 0) break .granted;
+    } else .prompt;
+    // Cleared first, so a request made while `done` runs starts a new poll.
+    ax_polling.store(false, .release);
+    done(.accessibility, result);
 }
 
 // --- Notifications ------------------------------------------------------------------
@@ -185,7 +187,8 @@ fn notificationCenter() ?Object {
 }
 
 /// The settings query is asynchronous; `status` waits for it (it completes
-/// on a background queue, so waiting on the main thread is safe). The state
+/// on a private UN queue, never the main one, so waiting on the main thread
+/// can't deadlock; a stalled usernotificationsd makes it `unknown` after 2 s). The state
 /// is shared with the block and freed by whichever side finishes last.
 const SettingsQuery = struct {
     sem: *anyopaque,
@@ -230,20 +233,18 @@ fn notificationStatus() Status {
     };
 }
 
-var notify_done: ?Done = null;
+const AuthBlock = cocoa.objc.Block(struct { done: usize }, .{ cocoa.c.BOOL, cocoa.id }, void);
 
-const AuthBlock = cocoa.objc.Block(struct {}, .{ cocoa.c.BOOL, cocoa.id }, void);
-
-fn onAuthorization(_: *const AuthBlock.Context, granted: cocoa.c.BOOL, _: cocoa.id) callconv(.c) void {
-    if (notify_done) |d| d(.notifications, if (cocoa.isTrue(granted)) .granted else .denied);
+fn onAuthorization(ctx: *const AuthBlock.Context, granted: cocoa.c.BOOL, _: cocoa.id) callconv(.c) void {
+    const done: Done = @ptrFromInt(ctx.done);
+    done(.notifications, if (cocoa.isTrue(granted)) .granted else .denied);
 }
 
 fn requestNotifications(done: Done) void {
     const center = notificationCenter() orelse return done(.notifications, .unknown);
-    notify_done = done;
     const UNAuthorizationOptionSound: c_ulong = 1 << 1;
     const UNAuthorizationOptionAlert: c_ulong = 1 << 2;
-    var block = AuthBlock.init(.{}, &onAuthorization);
+    var block = AuthBlock.init(.{ .done = @intFromPtr(done) }, &onAuthorization);
     center.msgSend(void, "requestAuthorizationWithOptions:completionHandler:", .{ UNAuthorizationOptionAlert | UNAuthorizationOptionSound, @as(cocoa.id, @ptrCast(&block)) });
 }
 

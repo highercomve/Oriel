@@ -599,7 +599,12 @@ pub fn WindowCreator(
         fn frameUrl(buf: []u8, frame_id: cocoa.id, origin_id: cocoa.id) []const u8 {
             if (frame_id != null) {
                 const req = (Object{ .value = frame_id }).msgSend(Object, "request", .{});
-                if (req.value != null) if (cocoa.urlString(req.msgSend(Object, "URL", .{}))) |u| if (u.len > 0) return u;
+                if (req.value != null) if (cocoa.urlString(req.msgSend(Object, "URL", .{}))) |u| {
+                    // about:blank/srcdoc, blob: and data: frames inherit their
+                    // origin: judge them by the WKSecurityOrigin instead.
+                    const inherits = std.mem.startsWith(u8, u, "about:") or std.mem.startsWith(u8, u, "blob:") or std.mem.startsWith(u8, u, "data:");
+                    if (u.len > 0 and !inherits) return u;
+                };
             }
             if (origin_id == null) return "";
             const origin: Object = .{ .value = origin_id };
