@@ -71,7 +71,9 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
     var effective_args = args;
     var injected_args_buf: ?[]const []const u8 = null;
     defer if (injected_args_buf) |ia| {
-        if (ia.len > 0) ctx.gpa.free(ia[ia.len - 1]);
+        // Only the inserted loader arg is ours: it sits before any `--`
+        // (the last element would be an app arg from argv, e.g. `run -- x`).
+        ctx.gpa.free(ia[findDashDash(args)]);
         ctx.gpa.free(ia);
     };
 
@@ -357,7 +359,8 @@ test "injectLoaderArg" {
     const with_sep = [_][]const u8{ "run", "-Doptimize=ReleaseFast", "--", "app_arg1", "app_arg2" };
     const injected_sep = try injectLoaderArg(std.testing.allocator, &with_sep, "/cache/WebView2Loader.dll");
     defer {
-        std.testing.allocator.free(injected_sep[2]);
+        // What exec's cleanup frees: the loader arg sits at the `--` index of the original args.
+        std.testing.allocator.free(injected_sep[findDashDash(&with_sep)]);
         std.testing.allocator.free(injected_sep);
     }
     try std.testing.expectEqual(6, injected_sep.len);
