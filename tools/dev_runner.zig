@@ -6,7 +6,8 @@
 //! pidfd). macOS and Windows poll the Zig files' modification times and
 //! the `zig` process instead. On POSIX every child runs in its own process
 //! group so its helpers stop with it; Windows has no process groups, so
-//! only the direct child is terminated there.
+//! dev_runner runs in a kill-on-close job object that takes every child
+//! and helper with it when it exits.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -148,6 +149,45 @@ const windows = struct {
     const HANDLE = std.os.windows.HANDLE;
     extern "kernel32" fn WaitForSingleObject(handle: HANDLE, ms: u32) callconv(.winapi) u32;
     const WAIT_OBJECT_0 = 0;
+
+    extern "kernel32" fn GetCurrentProcess() callconv(.winapi) HANDLE;
+    extern "kernel32" fn CreateJobObjectW(attributes: ?*anyopaque, name: ?[*:0]const u16) callconv(.winapi) ?HANDLE;
+    extern "kernel32" fn SetInformationJobObject(job: HANDLE, class: c_int, info: *const anyopaque, len: u32) callconv(.winapi) c_int;
+    extern "kernel32" fn AssignProcessToJobObject(job: HANDLE, process: HANDLE) callconv(.winapi) c_int;
+    const JobObjectExtendedLimitInformation = 9;
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+    const JOBOBJECT_EXTENDED_LIMIT_INFORMATION = extern struct {
+        PerProcessUserTimeLimit: i64 = 0,
+        PerJobUserTimeLimit: i64 = 0,
+        LimitFlags: u32 = 0,
+        MinimumWorkingSetSize: usize = 0,
+        MaximumWorkingSetSize: usize = 0,
+        ActiveProcessLimit: u32 = 0,
+        Affinity: usize = 0,
+        PriorityClass: u32 = 0,
+        SchedulingClass: u32 = 0,
+        IoInfo: [6]u64 = @splat(0),
+        ProcessMemoryLimit: usize = 0,
+        JobMemoryLimit: usize = 0,
+        PeakProcessMemoryUsed: usize = 0,
+        PeakJobMemoryUsed: usize = 0,
+    };
+
+    /// Put this process in a job that kills everything in it when its last
+    /// handle closes, i.e. when dev_runner exits for any reason (Ctrl-C, the
+    /// console closing, a crash). Children spawned afterwards (the dev
+    /// server, the app and their helpers) join the job, so none outlives
+    /// dev_runner. Ctrl-C alone doesn't reach the app: it is a GUI program
+    /// without a console. Best effort: on failure children are only stopped
+    /// by `cleanupChildren`.
+    fn killChildrenWithUs() void {
+        const job = CreateJobObjectW(null, null) orelse return;
+        const info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = .{ .LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE };
+        if (SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, @sizeOf(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)) == 0) return;
+        // The job handle is deliberately never closed: the OS closes it
+        // when this process ends, which is what kills the job.
+        _ = AssignProcessToJobObject(job, GetCurrentProcess());
+    }
 };
 
 /// Exit code if `child` has exited (it is reaped then), else null.
@@ -312,8 +352,10 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     // Register SIGINT / SIGTERM handler for clean shutdown of child processes.
-    // (Windows: Ctrl-C reaches every process on the console, children included.)
-    if (!is_windows) {
+    // (Windows: a kill-on-close job object takes every child down with us.)
+    if (is_windows) {
+        windows.killChildrenWithUs();
+    } else {
         const sa = posix.Sigaction{
             .handler = .{ .handler = onSignal },
             .mask = posix.sigemptyset(),

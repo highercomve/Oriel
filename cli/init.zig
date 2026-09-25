@@ -546,14 +546,16 @@ test "init integration with stubbed fetch_loader" {
     var env: std.process.Environ.Map = .init(gpa);
     defer env.deinit();
 
-    // Create dummy zig script that exits 0
+    // Create dummy zig script that exits 0 (Windows can't run a shebang
+    // script, so there it is a batch file).
+    const mock_zig_file = if (@import("builtin").os.tag == .windows) "bin/mock_zig.cmd" else "bin/mock_zig";
     try tmp.dir.createDirPath(io, "bin");
     try tmp.dir.writeFile(io, .{
-        .sub_path = "bin/mock_zig",
-        .data = "#!/bin/sh\nexit 0\n",
+        .sub_path = mock_zig_file,
+        .data = if (@import("builtin").os.tag == .windows) "@exit /b 0\r\n" else "#!/bin/sh\nexit 0\n",
         .flags = .{ .permissions = .executable_file },
     });
-    const mock_zig = try tmp.dir.realPathFileAlloc(io, "bin/mock_zig", gpa);
+    const mock_zig = try tmp.dir.realPathFileAlloc(io, mock_zig_file, gpa);
     defer gpa.free(mock_zig);
     try env.put("ORIEL_ZIG", mock_zig);
 

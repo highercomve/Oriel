@@ -251,7 +251,11 @@ pub fn addPackageSteps(
     }
 
     if (os_tag == .windows and webview2_loader != null) {
-        b.getInstallStep().dependOn(&b.addInstallFileWithDir(webview2_loader.?, .bin, "WebView2Loader.dll").step);
+        const install_loader = b.addInstallFileWithDir(webview2_loader.?, .bin, "WebView2Loader.dll");
+        b.getInstallStep().dependOn(&install_loader.step);
+        // `zig build dev` / `build-dev` install only the dev executable, not
+        // the install step, so the loader must come along with it too.
+        if (dev_exe) |d| d.step.dependOn(&install_loader.step);
     }
 
     const ctx = Context{

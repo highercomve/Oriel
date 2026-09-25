@@ -49,11 +49,15 @@ pub fn findExecutable(ctx: Context, name: []const u8) std.mem.Allocator.Error!?[
 }
 
 /// `path` if it is executable, else (Windows) `path` + the first PATHEXT
-/// extension that is. Caller owns the result.
+/// extension that is. On Windows a file only runs with a PATHEXT extension,
+/// so an extensionless `npm` (the POSIX shell script next to `npm.cmd`) is
+/// skipped. Caller owns the result.
 fn withExtension(ctx: Context, path: []const u8) std.mem.Allocator.Error!?[]u8 {
-    if (isExecutable(ctx.io, path)) return try ctx.gpa.dupe(u8, path);
-    if (builtin.os.tag != .windows) return null;
+    if (builtin.os.tag != .windows) {
+        return if (isExecutable(ctx.io, path)) try ctx.gpa.dupe(u8, path) else null;
+    }
     const exts = ctx.environ.get("PATHEXT") orelse ".COM;.EXE;.BAT;.CMD";
+    if (hasExtension(path, exts) and isExecutable(ctx.io, path)) return try ctx.gpa.dupe(u8, path);
     var it = std.mem.tokenizeScalar(u8, exts, ';');
     while (it.next()) |ext| {
         const full = try std.mem.concat(ctx.gpa, u8, &.{ path, ext });
@@ -61,6 +65,17 @@ fn withExtension(ctx: Context, path: []const u8) std.mem.Allocator.Error!?[]u8 {
         ctx.gpa.free(full);
     }
     return null;
+}
+
+/// Whether `path` ends in one of the `;`-separated extensions (any case).
+fn hasExtension(path: []const u8, exts: []const u8) bool {
+    const ext = std.fs.path.extension(path);
+    if (ext.len == 0) return false;
+    var it = std.mem.tokenizeScalar(u8, exts, ';');
+    while (it.next()) |e| {
+        if (std.ascii.eqlIgnoreCase(e, ext)) return true;
+    }
+    return false;
 }
 
 fn isExecutable(io: std.Io, path: []const u8) bool {
@@ -158,8 +173,11 @@ test "findExecutable searches PATH" {
     defer tmp.cleanup();
     const io = std.testing.io;
 
+    // On Windows a program needs a PATHEXT extension instead of an execute bit.
+    const windows = builtin.os.tag == .windows;
+    const tool_file = if (windows) "bin/tool.exe" else "bin/tool";
     try tmp.dir.createDirPath(io, "bin");
-    try tmp.dir.writeFile(io, .{ .sub_path = "bin/tool", .data = "#!/bin/sh\n", .flags = .{ .permissions = .executable_file } });
+    try tmp.dir.writeFile(io, .{ .sub_path = tool_file, .data = "#!/bin/sh\n", .flags = .{ .permissions = .executable_file } });
     try tmp.dir.writeFile(io, .{ .sub_path = "bin/data", .data = "x" });
     const bin = try tmp.dir.realPathFileAlloc(io, "bin", gpa);
     defer gpa.free(bin);
@@ -172,8 +190,17 @@ test "findExecutable searches PATH" {
     const ctx: Context = .{ .gpa = gpa, .io = io, .environ = &env, .out = &discard.writer, .err = &discard.writer };
     const found = (try ctx.findExecutable("tool")).?;
     defer gpa.free(found);
-    try std.testing.expect(std.mem.endsWith(u8, found, "/bin/tool"));
-    try std.testing.expectEqual(null, try ctx.findExecutable("data")); // not executable
+    const expected = try std.fs.path.join(gpa, &.{ bin, if (windows) "tool.exe" else "tool" });
+    defer gpa.free(expected);
+    // (Windows: the extension is PATHEXT's spelling, e.g. `tool.EXE`.)
+    if (windows) try std.testing.expect(std.ascii.eqlIgnoreCase(expected, found)) else try std.testing.expectEqualStrings(expected, found);
+    if (windows) {
+        // Given with its extension, in any case, it resolves to the same file.
+        const found_ext = (try ctx.findExecutable("TOOL.EXE")).?;
+        defer gpa.free(found_ext);
+        try std.testing.expect(std.ascii.eqlIgnoreCase(expected, found_ext));
+    }
+    try std.testing.expectEqual(null, try ctx.findExecutable("data")); // not executable (Windows: no PATHEXT extension)
     try std.testing.expectEqual(null, try ctx.findExecutable("missing"));
     try std.testing.expectEqualStrings("zig", ctx.zig());
     try env.put("ORIEL_ZIG", "/opt/zig/zig");
