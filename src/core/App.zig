@@ -89,6 +89,9 @@ pub const Config = struct {
     on_second_instance: ?*const fn (args: []const []const u8) void = null,
 };
 
+/// The process arguments, for the platform shell (deep links, second-launch
+/// forwarding). `oriel.main` sets them; an app calling `App.run` directly
+/// should call `setProcessArgs` first.
 pub var process_args: []const []const u8 = &.{};
 pub fn setProcessArgs(args: []const []const u8) void {
     process_args = args;

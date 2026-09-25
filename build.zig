@@ -402,6 +402,7 @@ fn addOrielModule(
         oriel.linkSystemLibrary("advapi32", .{});
         oriel.linkSystemLibrary("shlwapi", .{});
         oriel.linkSystemLibrary("ws2_32", .{});
+        oriel.linkSystemLibrary("dwmapi", .{});
     } else if (target.result.os.tag == .macos) {
         // AppKit + WebKit through the Objective-C runtime (zig-objc). Its build
         // needs the Apple SDK, so only on a Mac: cross-building the framework for
