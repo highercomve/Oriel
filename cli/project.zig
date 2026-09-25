@@ -5,6 +5,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Context = @import("Context.zig");
 const webview2 = @import("webview2.zig");
+const zig_manager = @import("zig_manager.zig");
 
 /// A command that runs `zig build [step] <args...>` in the project root.
 /// `step` null is plain `zig build` (the install step).
@@ -45,16 +46,13 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
     };
     defer ctx.gpa.free(root);
 
-    // A wrong Zig fails deep inside the build with confusing errors: say so
-    // up front. (If it can't run at all, `replace` below reports that.)
-    const zig = ctx.zig();
-    if (ctx.capture(&.{ zig, "version" }, 30_000)) |v| {
-        defer v.deinit(ctx.gpa);
-        if (v.code == 0 and !Context.zigVersionOk(v.text())) {
-            try ctx.err.print("error: '{s}' is Zig {s}, Oriel needs 0.16.x; set ORIEL_ZIG=/path/to/zig-0.16\n", .{ zig, v.text() });
-            return 1;
-        }
-    }
+    // The project's Zig ($ORIEL_ZIG, PATH, ~/.oriel/zig, or installed now):
+    // a wrong Zig would fail deep inside the build with confusing errors.
+    const want = try zig_manager.requiredForRoot(ctx, root);
+    defer ctx.gpa.free(want);
+    const resolved = zig_manager.resolve(ctx, want) catch return 1;
+    defer resolved.deinit(ctx.gpa);
+    const zig = resolved.path;
 
     // Apps without a frontend dev server (the vanilla template) have no
     // `dev` step: say what to use instead of zig's "no step named 'dev'".
@@ -219,7 +217,6 @@ pub fn injectLoaderArg(gpa: std.mem.Allocator, args: []const []const u8, loader_
     return new_args;
 }
 
-
 test findRoot {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
@@ -309,7 +306,6 @@ test "injectLoaderArg" {
     try std.testing.expectEqualStrings("app_arg1", injected_sep[4]);
     try std.testing.expectEqualStrings("app_arg2", injected_sep[5]);
 }
-
 
 /// Whether `zig build -l` output lists a step named `name`.
 fn hasStep(list: []const u8, name: []const u8) bool {

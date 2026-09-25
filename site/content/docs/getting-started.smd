@@ -10,7 +10,7 @@
 
 Oriel apps are built with **Zig 0.16** and run on the system webview:
 
-- **Zig 0.16.0**: from [ziglang.org](https://ziglang.org/download/) or a version manager such as zvm.
+- **Zig 0.16.0**: optional. The `oriel` CLI uses `zig` on PATH when it is the project's version, and otherwise installs it into `~/.oriel/zig` on first use (downloaded from a community mirror and minisign-verified; see `oriel zig --help`).
 - **Node.js and npm** for the React, Vue and Svelte templates (Vite). The `vanilla` template needs no Node at all.
 - **Linux:** GTK 4 and WebKitGTK 6.0 development packages (`gtk4` and `webkitgtk-6.0` on Arch; `libgtk-4-dev` and `libwebkitgtk-6.0-dev` on Debian and Ubuntu).
 - **Windows:** the WebView2 runtime (built into Windows 11 and current Windows 10), `WebView2Loader.dll`, and NSIS for installers. See [Building & packaging]($link.page('docs/building')).
@@ -114,6 +114,7 @@ oriel run              # build and run
 | `oriel types` | Regenerate the frontend's TypeScript types for the Zig commands |
 | `oriel check` | Type-check the app's Zig code without building (about a second) |
 | `oriel package` | Build packages into `zig-out/package` (deb, rpm, AppImage on Linux; setup.exe on Windows; .app and .dmg on macOS) |
+| `oriel zig` | Manage the Zig versions the CLI uses (`install`, `uninstall`, `list`, `which`) in `~/.oriel/zig` |
 | `oriel webview2` | Download and cache Microsoft Edge `WebView2Loader.dll` for Windows |
 
 Every command is a thin wrapper around `zig build <step>`, run from anywhere inside the project, and extra arguments are passed on: `oriel build -Doptimize=ReleaseFast` works, and so does plain `zig build`.
