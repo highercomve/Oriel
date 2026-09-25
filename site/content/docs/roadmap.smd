@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Done (Milestones 1–8)
+# Done (Milestones 1–9)
 
 ## Milestone 1: Async commands
 
@@ -48,9 +48,15 @@ AppKit + WKWebView through the Objective-C runtime. Every module has a macOS bac
 
 Opt-in `deep_link` module: custom URL schemes open the app, or forward the link to the running instance, on Linux, Windows and macOS. Enabled in code and managed with `oriel deep-link add|register|unregister`; installers register the schemes.
 
-# Next: Milestone 9, permissions
+## Milestone 9: Permissions
 
-One standard way to declare and request OS permissions (microphone, camera, screen capture, accessibility, location, notifications): declared once in `build.zig`, packaged into each platform's files (Info.plist usage keys, macOS entitlements), queried and requested at runtime from Zig and JavaScript, and enforced for webview requests. Plus an escape hatch for custom platform keys.
+One way to declare and request OS permissions (microphone, camera, screen capture, accessibility, location, notifications, system audio) on Linux, Windows and macOS: declared once in `build.zig` (`oriel permission add`), written into each platform's package, queried and requested from Zig and JavaScript, and enforced for the webview's own requests. See [Permissions]($link.page('docs/permissions')).
+
+# Next
+
+- The GhostPen port: the first full application built on Oriel.
+- Platform escape hatch: extra Info.plist keys, entitlements, Windows manifest and NSIS additions.
+- Security hardening towards Tauri 2 (command scopes, the isolation pattern).
 
 # Even later
 
