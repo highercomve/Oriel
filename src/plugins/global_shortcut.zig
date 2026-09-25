@@ -2,6 +2,7 @@
 //!
 //! Linux backend: XGrabKey (X11) + org.freedesktop.portal.GlobalShortcuts (Wayland).
 //! Windows backend: Win32 RegisterHotKey + WM_HOTKEY message routing.
+//! macOS backend: Carbon RegisterEventHotKey (no permission needed).
 
 const builtin = @import("builtin");
 pub const common = @import("global_shortcut/common.zig");
@@ -16,6 +17,7 @@ pub const vkFor = common.vkFor;
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("global_shortcut/linux.zig"),
     .windows => @import("global_shortcut/windows.zig"),
+    .macos => @import("global_shortcut/macos.zig"),
     else => @compileError("global_shortcut is not supported on " ++ @tagName(builtin.os.tag)),
 };
 
