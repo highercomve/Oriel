@@ -24,8 +24,13 @@ const log = std.log.scoped(.oriel);
 
 pub const handler_name = "oriel";
 
-/// Replaced by `ipc.token()` in each window's copy of `bridge_js`.
-const token_placeholder = "__ORIEL_IPC_TOKEN__";
+/// Replaced by `ipc.tokenScript` (which defines `const ipcToken`) in each
+/// window's copy of `bridge_js`.
+const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
+
+comptime {
+    std.debug.assert(std.mem.count(u8, bridge_js, token_placeholder) == 1);
+}
 
 /// Injected into every top-level document before its own scripts run;
 /// `commandAllowedForWindow` checks the page's origin on every call.
@@ -36,7 +41,9 @@ pub const bridge_js =
     \\  const handler = window.webkit.messageHandlers.
 ++ handler_name ++
     \\;
-    \\  const ipcToken = "__ORIEL_IPC_TOKEN__";
+    \\
+++ token_placeholder ++
+    \\
     \\  function invoke(cmd, args) {
     \\    return handler.postMessage(JSON.stringify({ cmd, args: args ?? null, token: ipcToken }));
     \\  }
@@ -284,8 +291,10 @@ pub fn Bridge(
             const gpa = std.heap.smp_allocator;
             const label_json = try std.json.Stringify.valueAlloc(gpa, label, .{});
             defer gpa.free(label_json);
-            // The IPC token lives only in the bridge's closure (ipc.token).
-            const with_token = try std.mem.replaceOwned(u8, gpa, bridge_js, token_placeholder, ipc.token());
+            // The page's IPC token lives only in the bridge's closure (ipc.tokenScript).
+            const token_js = try ipc.tokenScript(gpa, config.security, local);
+            defer gpa.free(token_js);
+            const with_token = try std.mem.replaceOwned(u8, gpa, bridge_js, token_placeholder, token_js);
             defer gpa.free(with_token);
             const source = try std.fmt.allocPrint(gpa, "window.__oriel_window_label = {s};\n{s}", .{ label_json, with_token });
             defer gpa.free(source);
@@ -332,23 +341,26 @@ pub fn Bridge(
                 replyError(reply, @errorName(err));
                 return;
             };
-            // Only the bridge script knows the token (see ipc.token).
-            if (!ipc.tokenValid(request.token)) {
-                log.warn("refused an IPC call without the bridge's token ('{s}')", .{request.cmd});
-                replyError(reply, "Forbidden");
-                return;
-            }
-
             // The page currently shown decides the IPC scope.
             const view = message.msgSend(Object, "webView", .{});
             const page_url: []const u8 = if (view.value != null) cocoa.urlString(view.msgSend(Object, "URL", .{})) orelse "" else "";
             const caller_win = window_mod.getWindowByView(view.value);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
+            // Page-controlled: escaped and capped in logs.
+            const cmd_log = std.zig.fmtString(request.cmd[0..@min(request.cmd.len, 64)]);
+
+            // Only the bridge script has the token for this page's origin
+            // (ipc.tokenScript / ipc.tokenValid).
+            if (!ipc.tokenValid(request.token, config.security, local, page_url)) {
+                log.warn("refused an IPC call without this page's token (\"{f}\")", .{cmd_log});
+                replyError(reply, "Forbidden");
+                return;
+            }
 
             if (!window_commands.isWindowCommand(request.cmd) and
                 !security.commandAllowedForWindow(config.security, local, page_url, request.cmd, win_label))
             {
-                log.warn("blocked command '{s}' from {s} (window: {?s})", .{ request.cmd, page_url, win_label });
+                log.warn("blocked command \"{f}\" from {s} (window: {?s})", .{ cmd_log, page_url, win_label });
                 replyError(reply, "Forbidden");
                 return;
             }

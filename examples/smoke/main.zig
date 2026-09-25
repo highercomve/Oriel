@@ -43,7 +43,8 @@ const probe_html =
 /// Serves `probe_html` on 127.0.0.1:probe_port for the app's lifetime.
 fn probeServer(local_io: std.Io) void {
     const addr = std.Io.net.IpAddress.parseIp4("127.0.0.1", probe_port) catch return;
-    var server = addr.listen(local_io, .{ .reuse_address = true }) catch |err| {
+    // SO_REUSEADDR on Windows would let another socket share the port.
+    var server = addr.listen(local_io, .{ .reuse_address = @import("builtin").os.tag != .windows }) catch |err| {
         std.log.warn("ipc probe server: {s}", .{@errorName(err)});
         return;
     };
