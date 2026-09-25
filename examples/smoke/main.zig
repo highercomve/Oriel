@@ -282,6 +282,9 @@ const Commands = struct {
         const win = try oriel.App.openWindow(.{
             .label = "test-overlay",
             .title = "Overlay",
+            // It stays open (hide_on_close): an idle page, not another run of
+            // the whole smoke suite.
+            .url = "index.html?overlay=1",
             .width = 300,
             .height = 120,
             .decorations = false,
