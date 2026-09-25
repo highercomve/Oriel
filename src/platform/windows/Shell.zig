@@ -350,7 +350,14 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                     const host_title_w = getHostWindowTitleW(gpa, app_id) catch return 1;
                     defer gpa.free(host_title_w);
 
-                    const primary_host = win32.FindWindowW(HOST_CLASS_NAME, host_title_w);
+                    var primary_host: ?win32.HWND = null;
+                    var retries: usize = 60; // 60 * 50ms = 3000ms (~3s)
+                    while (retries > 0) : (retries -= 1) {
+                        primary_host = win32.FindWindowW(HOST_CLASS_NAME, host_title_w);
+                        if (primary_host != null) break;
+                        win32.Sleep(50);
+                    }
+
                     if (primary_host) |host| {
                         var maybe_url: ?[]const u8 = null;
                         var argc: c_int = 0;
@@ -377,6 +384,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                         _ = win32.GetWindowThreadProcessId(host, &primary_pid);
                         if (primary_pid != 0) _ = win32.AllowSetForegroundWindow(primary_pid);
 
+                        var result: win32.DWORD_PTR = 0;
                         if (maybe_url) |url| {
                             defer gpa.free(url);
                             var cds = win32.COPYDATASTRUCT{
@@ -384,15 +392,33 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                                 .cbData = @intCast(url.len),
                                 .lpData = @ptrCast(@constCast(url.ptr)),
                             };
-                            _ = win32.SendMessageW(host, win32.WM_COPYDATA, 0, @bitCast(@intFromPtr(&cds)));
+                            _ = win32.SendMessageTimeoutW(
+                                host,
+                                win32.WM_COPYDATA,
+                                0,
+                                @bitCast(@intFromPtr(&cds)),
+                                win32.SMTO_ABORTIFHUNG | win32.SMTO_BLOCK,
+                                3000,
+                                &result,
+                            );
                         } else {
                             var cds = win32.COPYDATASTRUCT{
                                 .dwData = 0x44454550,
                                 .cbData = 0,
                                 .lpData = null,
                             };
-                            _ = win32.SendMessageW(host, win32.WM_COPYDATA, 0, @bitCast(@intFromPtr(&cds)));
+                            _ = win32.SendMessageTimeoutW(
+                                host,
+                                win32.WM_COPYDATA,
+                                0,
+                                @bitCast(@intFromPtr(&cds)),
+                                win32.SMTO_ABORTIFHUNG | win32.SMTO_BLOCK,
+                                3000,
+                                &result,
+                            );
                         }
+                    } else {
+                        log.warn("primary instance mutex exists but host window was not found within 3s", .{});
                     }
                     return 0;
                 }
