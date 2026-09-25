@@ -554,7 +554,34 @@ pub const AppOptions = struct {
     /// Custom URL schemes handled by the application (e.g. &.{ "oriel-notes" }).
     /// If null and package.url_schemes is set, package.url_schemes is used.
     url_schemes: ?[]const []const u8 = null,
+    /// OS permissions the app needs, each with the reason the OS shows the
+    /// user ("" for a default text), e.g.
+    /// `.permissions = .{ .microphone = "Dictation turns your speech into text", .accessibility = "" }`.
+    /// Written into the packages (Info.plist usage keys on macOS) and passed to
+    /// the app as `app.permissions` (give it to `App.Config.permissions`).
+    /// Modules that need one (audio_capture) declare it themselves.
+    permissions: Permissions = .{},
 };
+
+/// See `AppOptions.permissions`.
+pub const Permissions = @import("src/core/permissions/common.zig").Declared;
+const PermissionKind = @import("src/core/permissions/common.zig").Kind;
+
+/// The declared permissions plus the ones enabled modules need.
+fn effectivePermissions(oriel_dep: *std.Build.Dependency, declared: Permissions) Permissions {
+    var p = declared;
+    if (@import("build/package.zig").isFeatureEnabledDefault(oriel_dep, "audio_capture", false)) {
+        if (p.microphone == null) p.microphone = "";
+        if (p.system_audio == null) p.system_audio = "";
+    }
+    return p;
+}
+
+fn addPermissionOptions(cfg: *std.Build.Step.Options, p: Permissions) void {
+    inline for (@typeInfo(PermissionKind).@"enum".fields) |f| {
+        cfg.addOption(?[]const u8, "permission_" ++ f.name, @field(p, f.name));
+    }
+}
 
 pub const Frontend = struct {
     /// Frontend directory, relative to the app's build root.
@@ -627,6 +654,8 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     const fe_dir = b.pathFromRoot(fe.dir);
     const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
 
+    const permissions = effectivePermissions(oriel_dep, options.permissions);
+
     const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
 
     const package_tool = oriel_dep.artifact("package_tool");
@@ -659,6 +688,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         cfg.addOption([]const u8, "frontend_dir", fe_dir);
         cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
         cfg.addOption([]const []const u8, "url_schemes", url_schemes);
+        addPermissionOptions(cfg, permissions);
         break :blk addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon));
     } else null;
 
@@ -700,6 +730,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     prod_cfg.addOption([]const u8, "frontend_dir", fe_dir);
     prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
+    addPermissionOptions(prod_cfg, permissions);
     const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon));
     b.installArtifact(exe);
 
@@ -784,10 +815,11 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     check_cfg.addOption([]const u8, "frontend_dir", fe_dir);
     check_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     check_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
+    addPermissionOptions(check_cfg, permissions);
     const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null, app_icon));
     @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_exe.step);
 
-    @import("build/package.zig").addPackageSteps(b, oriel_dep, options, exe, dev_exe, icons_dir, app_icon);
+    @import("build/package.zig").addPackageSteps(b, oriel_dep, options, exe, dev_exe, icons_dir, app_icon, permissions);
 
     return .{ .exe = exe, .dev_exe = dev_exe };
 }
@@ -824,6 +856,18 @@ fn appConfigModule(
         \\
         \\/// Declared URL schemes handled by the application.
         \\pub const url_schemes: []const []const u8 = cfg.url_schemes;
+        \\
+        \\/// Declared OS permissions (`.permissions` in build.zig, plus the ones
+        \\/// enabled modules need): pass to `App.Config.permissions`.
+        \\pub const permissions: oriel.permissions.Declared = .{
+        \\    .microphone = cfg.permission_microphone,
+        \\    .camera = cfg.permission_camera,
+        \\    .screen_capture = cfg.permission_screen_capture,
+        \\    .accessibility = cfg.permission_accessibility,
+        \\    .location = cfg.permission_location,
+        \\    .notifications = cfg.permission_notifications,
+        \\    .system_audio = cfg.permission_system_audio,
+        \\};
         \\
     );
     const mod = b.createModule(.{ .root_source_file = root });

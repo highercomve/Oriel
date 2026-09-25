@@ -50,5 +50,7 @@ pub fn main(init: std.process.Init) !u8 {
         // URL schemes this app accepts deep links for (`oriel deep-link add`);
         // links with any other scheme are dropped.
         .deep_link_schemes = app.url_schemes,
+        // OS permissions declared in build.zig (`oriel permission add`).
+        .permissions = app.permissions,
     });
 }

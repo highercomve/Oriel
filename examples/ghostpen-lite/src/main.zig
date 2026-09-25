@@ -193,6 +193,7 @@ pub fn main(init: std.process.Init) !u8 {
         .width = 680,
         .height = 560,
         .assets = app.assets,
+        .permissions = app.permissions, // microphone + system audio, declared by audio_capture
         .start = "index.html",
         .setup = &setup,
     };

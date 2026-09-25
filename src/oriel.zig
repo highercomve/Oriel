@@ -12,6 +12,8 @@ pub const ipc = @import("core/ipc.zig");
 pub const security = @import("core/security.zig");
 pub const log = @import("core/log.zig");
 pub const platform = @import("platform/platform.zig");
+/// OS permissions: declared in build.zig, queried and requested at runtime.
+pub const permissions = @import("core/permissions.zig");
 
 // Built-in modules.
 pub const tray = if (options.tray) @import("modules/tray.zig") else struct {};
@@ -136,6 +138,7 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
         .{ .name = "whisper", .enabled = options.whisper },
         .{ .name = "audio_capture", .enabled = options.audio_capture },
     };
+    try checks.append(gpa, permissions.check(gpa) catch |err| .{ .module = "permissions", .ok = false, .detail = @errorName(err) });
     inline for (entries) |e| {
         if (e.enabled) {
             const module = @field(@This(), e.name);
@@ -153,6 +156,7 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
 test {
     std.testing.refAllDecls(ipc);
     std.testing.refAllDecls(security);
+    std.testing.refAllDecls(permissions);
     std.testing.refAllDecls(@import("core/window_commands.zig"));
     std.testing.refAllDecls(log);
     std.testing.refAllDecls(platform);

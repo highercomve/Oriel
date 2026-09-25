@@ -33,5 +33,7 @@ pub fn build(b: *std.Build) void {
             .version = "0.1.0",
             .url_schemes = &.{"smoke-scheme"},
         },
+        // The permission checks expect exactly these: the camera stays undeclared.
+        .permissions = .{ .microphone = "The smoke test checks microphone access.", .notifications = "" },
     });
 }

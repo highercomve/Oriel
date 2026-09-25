@@ -155,6 +155,7 @@ if (location.search.includes("child=1")) {
         results.push({ module: "deep_link js", ok: false, detail: String(e) });
       }
 
+      results.push(...(await permissionChecks()));
       results.push(...(await windowChecks()));
       results.push(...(await securityChecks()));
 
@@ -385,3 +386,44 @@ async function windowChecks() {
   return out;
 }
 
+
+// Permissions: the app declares the microphone and notifications, not the camera.
+async function permissionChecks() {
+  const out = [];
+  const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("no answer (an OS prompt?)")), ms))]);
+  try {
+    const cam = await oriel.permissions.query("camera");
+    const camReq = await withTimeout(oriel.permissions.request("camera"), 5000);
+    const mic = await oriel.permissions.query("microphone");
+    const settings = await oriel.permissions.openSettings("location");
+    out.push({
+      module: "permissions js",
+      ok: cam === "denied" && camReq === "denied" && ["granted", "prompt", "unknown"].includes(mic) && typeof settings === "boolean",
+      detail: `camera=${cam}/${camReq} (undeclared), microphone=${mic}`,
+    });
+  } catch (e) {
+    out.push({ module: "permissions js", ok: false, detail: String(e) });
+  }
+  // The webview refuses what the app doesn't declare (camera), and passes the
+  // rest on (the microphone may still be missing: NotFoundError is fine).
+  const media = async (constraints) => {
+    if (!navigator.mediaDevices?.getUserMedia) return "no getUserMedia";
+    try {
+      const stream = await withTimeout(navigator.mediaDevices.getUserMedia(constraints), 5000);
+      stream.getTracks().forEach((t) => t.stop());
+      return "allowed";
+    } catch (e) {
+      return e.name || String(e);
+    }
+  };
+  const video = await media({ video: true });
+  const audio = await media({ audio: true });
+  out.push({
+    module: "permissions webview",
+    // Without a camera device the request can fail before it's asked
+    // (OverconstrainedError/NotFoundError); it must never be allowed.
+    ok: ["NotAllowedError", "OverconstrainedError", "NotFoundError"].includes(video) && audio !== "NotAllowedError" && audio !== "no getUserMedia",
+    detail: `camera (undeclared): ${video}; microphone (declared): ${audio}`,
+  });
+  return out;
+}

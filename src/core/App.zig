@@ -72,6 +72,9 @@ pub const Config = struct {
     icon: ?[]const u8 = null,
     /// Declared URL schemes handled by the application (e.g. &.{ "oriel-notes" }).
     deep_link_schemes: []const []const u8 = &.{},
+    /// OS permissions the app declares (`app.permissions`, from `.permissions`
+    /// in build.zig): only these can be requested, by Zig or by the page.
+    permissions: @import("permissions.zig").Declared = .{},
 };
 
 pub var process_args: []const []const u8 = &.{};
@@ -539,6 +542,7 @@ fn lookupAsset(assets: []const Asset, path: []const u8) ?Asset {
 pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     ensureWindowsMutex();
     current_security = config.security;
+    @import("permissions.zig").setDeclared(config.permissions);
 
     const app_log = @import("log.zig");
     app_log.init(config.id);

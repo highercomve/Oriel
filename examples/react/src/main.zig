@@ -231,5 +231,7 @@ pub fn main(init: std.process.Init) !u8 {
         // Closing the window keeps the app in the tray.
         .on_close = .hide,
         .deep_link_schemes = app.url_schemes,
+        // OS permissions declared in build.zig (`oriel permission add`).
+        .permissions = app.permissions,
     });
 }

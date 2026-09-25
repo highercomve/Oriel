@@ -152,7 +152,7 @@ fn addAppBundle(
     target: std.Build.ResolvedTarget,
     exe: *std.Build.Step.Compile,
     icons_dir: std.Build.LazyPath,
-    audio_usage: bool,
+    permissions: anytype,
 ) AppBundle {
     const min = target.result.os.version_range.semver.min;
     const run = b.addRunArtifact(package_tool);
@@ -165,7 +165,13 @@ fn addAppBundle(
     run.addArgs(&.{ "--version", metadata.version });
     run.addArgs(&.{ "--min-os", b.fmt("{d}.{d}", .{ min.major, min.minor }) });
     for (metadata.url_schemes) |s| run.addArgs(&.{ "--url-scheme", s });
-    if (audio_usage) run.addArg("--audio-usage");
+    // Usage texts for Info.plist (`--permission <kind>=<reason>`).
+    inline for (@typeInfo(@TypeOf(permissions)).@"struct".fields) |f| {
+        if (@field(permissions, f.name)) |reason| {
+            const text = if (reason.len > 0) reason else b.fmt("{s} {s}", .{ metadata.name, @TypeOf(permissions).defaultReasonFor(f.name) });
+            run.addArgs(&.{ "--permission", b.fmt("{s}={s}", .{ f.name, text }) });
+        }
+    }
     run.addArg("--bin");
     run.addFileArg(exe.getEmittedBin());
     run.addArg("--icons-dir");
@@ -182,6 +188,7 @@ pub fn addPackageSteps(
     dev_exe: ?*std.Build.Step.Compile,
     icons_dir: std.Build.LazyPath,
     app_icon: std.Build.LazyPath,
+    permissions: anytype,
 ) void {
     const pkg_opts = options.package orelse PackageOptions{};
     const target = exe.root_module.resolved_target.?;
@@ -293,10 +300,9 @@ pub fn addPackageSteps(
 
     // macOS: `zig build` also installs `zig-out/<Name>.app`: Launch Services
     // (deep links), notifications and permission prompts need a bundle.
-    const audio_usage = isFeatureEnabledDefault(oriel_dep, "audio_capture", false);
     var app_bundle: ?AppBundle = null;
     if (os_tag == .macos) {
-        const bundle = addAppBundle(b, package_tool, metadata, target, exe, icons_dir, audio_usage);
+        const bundle = addAppBundle(b, package_tool, metadata, target, exe, icons_dir, permissions);
         b.getInstallStep().dependOn(installAppBundle(b, package_tool, bundle, bundle.name));
         app_bundle = bundle;
     }
@@ -584,7 +590,7 @@ fn addDmg(ctx: *const Context) *std.Build.Step {
 }
 
 /// Like `isFeatureEnabled`, for features whose default is not "on".
-fn isFeatureEnabledDefault(dep: *std.Build.Dependency, comptime name: []const u8, default: bool) bool {
+pub fn isFeatureEnabledDefault(dep: *std.Build.Dependency, comptime name: []const u8, default: bool) bool {
     if (dep.builder.user_input_options.get(name) == null) return default;
     return isFeatureEnabled(dep, name);
 }

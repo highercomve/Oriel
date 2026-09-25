@@ -287,6 +287,7 @@ pub fn main(init: std.process.Init) !u8 {
         // The security checks navigate to remote URLs: never hand them to a browser.
         .security = .{ .external_links = .deny },
         .deep_link_schemes = app.url_schemes,
+        .permissions = app.permissions,
     };
     comptime var config_auto = config_gui;
     config_auto.start = "index.html?auto-quit";

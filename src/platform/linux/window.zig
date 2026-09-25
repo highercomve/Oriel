@@ -12,6 +12,46 @@ const gio = @import("gio");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const dev_server = @import("dev_server.zig");
+const permissions = @import("../../core/permissions.zig");
+
+extern fn g_type_check_instance_is_a(instance: *anyopaque, iface_type: usize) c_int;
+extern fn webkit_user_media_permission_is_for_audio_device(req: *webkit.UserMediaPermissionRequest) c_int;
+extern fn webkit_user_media_permission_is_for_video_device(req: *webkit.UserMediaPermissionRequest) c_int;
+extern fn webkit_user_media_permission_is_for_display_device(req: *webkit.UserMediaPermissionRequest) c_int;
+extern fn webkit_permission_request_allow(req: *webkit.PermissionRequest) void;
+extern fn webkit_permission_request_deny(req: *webkit.PermissionRequest) void;
+extern fn webkit_web_view_get_uri(view: *webkit.WebView) ?[*:0]const u8;
+
+/// The permissions a WebKit permission request needs (null: a request type
+/// Oriel leaves to WebKit's default, which denies).
+fn requestKinds(req: *webkit.PermissionRequest, out: *[3]permissions.Kind) ?[]const permissions.Kind {
+    if (g_type_check_instance_is_a(req, webkit.UserMediaPermissionRequest.getGObjectType()) != 0) {
+        const um: *webkit.UserMediaPermissionRequest = @ptrCast(req);
+        var n: usize = 0;
+        if (webkit_user_media_permission_is_for_audio_device(um) != 0) {
+            out[n] = .microphone;
+            n += 1;
+        }
+        if (webkit_user_media_permission_is_for_video_device(um) != 0) {
+            out[n] = .camera;
+            n += 1;
+        }
+        if (webkit_user_media_permission_is_for_display_device(um) != 0) {
+            out[n] = .screen_capture;
+            n += 1;
+        }
+        return out[0..n];
+    }
+    if (g_type_check_instance_is_a(req, webkit.GeolocationPermissionRequest.getGObjectType()) != 0) {
+        out[0] = .location;
+        return out[0..1];
+    }
+    if (g_type_check_instance_is_a(req, webkit.NotificationPermissionRequest.getGObjectType()) != 0) {
+        out[0] = .notifications;
+        return out[0..1];
+    }
+    return null;
+}
 
 const log = std.log.scoped(.oriel);
 
@@ -191,10 +231,13 @@ pub fn WindowCreator(
             settings.setJavascriptCanOpenWindowsAutomatically(0);
             settings.setAllowFileAccessFromFileUrls(0);
             settings.setAllowUniversalAccessFromFileUrls(0);
+            // getUserMedia exists only when the app may use a microphone or camera.
+            settings.setEnableMediaStream(@intFromBool(config.permissions.has(.microphone) or config.permissions.has(.camera) or config.permissions.has(.screen_capture)));
 
             BridgeImpl.setupUserContent(view, options.label);
 
             _ = webkit.WebView.signals.decide_policy.connect(view, ?*anyopaque, &onDecidePolicy, null, .{});
+            _ = webkit.WebView.signals.permission_request.connect(view, ?*anyopaque, &onPermissionRequest, null, .{});
             window.setChild(view.as(gtk.Widget));
 
             _ = gtk.Window.signals.close_request.connect(window, *App.Window, &onWindowCloseRequest, win_inst, .{});
@@ -263,6 +306,21 @@ pub fn WindowCreator(
         }
 
         var window_open_counter = std.atomic.Value(u32).init(1);
+
+        /// The page asks for the microphone, camera, screen, location or
+        /// notifications: allowed only if the app declares it and the page's
+        /// origin is trusted (permissions.allowForPage).
+        fn onPermissionRequest(view: *webkit.WebView, req: *webkit.PermissionRequest, _: ?*anyopaque) callconv(.c) c_int {
+            var buf: [3]permissions.Kind = undefined;
+            const kinds = requestKinds(req, &buf) orelse return 0;
+            const page = if (webkit_web_view_get_uri(view)) |u| std.mem.span(u) else "";
+            var allow = kinds.len > 0;
+            for (kinds) |k| {
+                if (!permissions.allowForPage(k, local, page)) allow = false;
+            }
+            if (allow) webkit_permission_request_allow(req) else webkit_permission_request_deny(req);
+            return 1;
+        }
 
         fn onDecidePolicy(
             _: *webkit.WebView,

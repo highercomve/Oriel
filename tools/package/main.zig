@@ -1274,7 +1274,8 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     var exe_name: ?[]const u8 = null;
     var version: []const u8 = "0.1.0";
     var min_os: []const u8 = "13.0";
-    var audio_usage = false;
+    var permissions: std.ArrayList(macos.Permission) = .empty;
+    defer permissions.deinit(gpa);
     var sign = true;
     var url_schemes: std.ArrayList([]const u8) = .empty;
     defer url_schemes.deinit(gpa);
@@ -1310,8 +1311,14 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
         } else if (std.mem.eql(u8, arg, "--url-scheme") and has_value) {
             i += 1;
             try url_schemes.append(gpa, args[i]);
-        } else if (std.mem.eql(u8, arg, "--audio-usage")) {
-            audio_usage = true;
+        } else if (std.mem.eql(u8, arg, "--permission") and has_value) {
+            // `<kind>=<usage text>`
+            i += 1;
+            const eq = std.mem.indexOfScalar(u8, args[i], '=') orelse {
+                std.debug.print("error: package-app: --permission expects <kind>=<reason>, got {s}\n", .{args[i]});
+                return 1;
+            };
+            try permissions.append(gpa, .{ .kind = args[i][0..eq], .reason = args[i][eq + 1 ..] });
         } else if (std.mem.eql(u8, arg, "--no-sign")) {
             sign = false;
         } else {
@@ -1367,7 +1374,7 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
         .min_os = min_os,
         .icon_name = if (has_icon) "icon" else null,
         .url_schemes = url_schemes.items,
-        .audio_usage = audio_usage,
+        .permissions = permissions.items,
     }) catch |err| {
         std.debug.print("error: package-app: Info.plist: {s} (package metadata must be UTF-8 without control characters; URL schemes must match [A-Za-z][A-Za-z0-9+.-]*)\n", .{@errorName(err)});
         return 1;
@@ -1379,6 +1386,14 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     const pkginfo_path = try std.fs.path.join(gpa, &.{ bundle, "Contents", "PkgInfo" });
     defer gpa.free(pkginfo_path);
     try Dir.cwd().writeFile(io, .{ .sub_path = pkginfo_path, .data = "APPL????" });
+
+    // Next to the bundle, for Developer ID signing with the hardened runtime:
+    // `codesign --options runtime --entitlements <Name>.entitlements ...`.
+    const ent = try macos.generateEntitlements(gpa, permissions.items);
+    defer gpa.free(ent);
+    const ent_path = try std.fmt.allocPrint(gpa, "{s}.entitlements", .{bundle[0 .. bundle.len - ".app".len]});
+    defer gpa.free(ent_path);
+    try Dir.cwd().writeFile(io, .{ .sub_path = ent_path, .data = ent });
 
     if (sign and builtin.os.tag == .macos) {
         runTool(gpa, io, "package-app", &.{ "/usr/bin/codesign", "--force", "--sign", "-", bundle }) catch return 1;

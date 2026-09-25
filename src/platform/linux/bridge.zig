@@ -101,6 +101,25 @@ pub const bridge_js =
     \\    openExternal(url) {
     \\      return handler.postMessage(JSON.stringify({ cmd: "open_external", args: { url } }));
     \\    },
+    \\    permissions: Object.freeze({
+    \\      query(name) {
+    \\        return invoke("permissions:query", { name });
+    \\      },
+    \\      request(name) {
+    \\        return new Promise((resolve, reject) => {
+    \\          let set = listeners.get("permission-changed");
+    \\          if (!set) listeners.set("permission-changed", (set = new Set()));
+    \\          const cb = (e) => { if (e && e.name === name) { set.delete(cb); resolve(e.status); } };
+    \\          set.add(cb);
+    \\          Promise.resolve(invoke("permissions:request", { name })).then((s) => {
+    \\            if (s !== "prompt") { set.delete(cb); resolve(s); }
+    \\          }, (err) => { set.delete(cb); reject(err); });
+    \\        });
+    \\      },
+    \\      openSettings(name) {
+    \\        return invoke("permissions:open_settings", { name });
+    \\      },
+    \\    }),
     \\    deepLink: Object.freeze({
     \\      current() {
     \\        return invoke("deep_link:current", {});
