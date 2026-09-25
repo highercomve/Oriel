@@ -150,6 +150,14 @@ This produces a manifest:
 }
 ```
 
+One file for every platform (like Tauri's `latest.json`): sign each platform's artifact with its `--target`, then combine the manifests:
+
+```sh
+zig build combine-manifests -- manifest-*.json --out latest.json
+```
+
+`latest.json` has a `platforms` map (`"x86_64-linux"`, `"aarch64-macos"`, `"x86_64-windows"`, ...), each entry a complete signed manifest. Publish it at one stable URL (e.g. `https://github.com/you/app/releases/latest/download/latest.json`) and use that as `manifest_url` in every build: each app picks and verifies the entry for its own target, and an entry filed under the wrong platform is refused. A single-platform manifest still works as `manifest_url`.
+
 ## 3. Embed the public key in your app
 
 In `build.zig`, pass the public key to `addApp`:
@@ -172,7 +180,7 @@ const app = @import("oriel_app");
 
 const Updater = oriel.updater.Commands(.{
     .app_id = "com.example.App",
-    .manifest_url = "https://releases.example.com/manifest.json",
+    .manifest_url = "https://releases.example.com/latest.json",
     .current_version = "1.0.0",
     .public_key_b64 = app.update_public_key orelse @panic("missing update key"),
 });

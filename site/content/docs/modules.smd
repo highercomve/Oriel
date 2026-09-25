@@ -58,7 +58,7 @@ Built-in self-updater with Ed25519 signature verification and atomic binary repl
 ```zig
 const Updater = oriel.updater.Commands(.{
     .app_id = "com.example.App",
-    .manifest_url = "https://releases.example.com/manifest.json",
+    .manifest_url = "https://releases.example.com/latest.json",
     .current_version = "1.0.0",
     .public_key_b64 = app.update_public_key orelse @panic("missing key"),
 });

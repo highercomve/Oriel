@@ -282,7 +282,8 @@ pub fn checkForUpdate(
 
     const manifest_json = try arena.dupe(u8, manifest_buf[0..fetch_info.bytes]);
 
-    const manifest = try verifyManifestWithOptions(arena, manifest_json, config.public_key_b64, .{
+    // A combined manifest (latest.json) or a single-platform one.
+    const manifest = try update_manifest.verifyForTarget(arena, manifest_json, config.public_key_b64, config.target, .{
         .allow_test_http = config.allow_http_for_test,
     });
 
@@ -664,6 +665,8 @@ pub const MockServer = struct {
     manifest_json: []const u8,
     payload: []const u8,
     gzip_payload: ?[]const u8 = null,
+    /// Served for `.../latest.json`; null answers 404 (a release without one).
+    combined_json: ?[]const u8 = null,
     running: std.atomic.Value(bool) = .init(true),
 
     pub fn start(io: std.Io, port: u16, manifest_json: []const u8, payload: []const u8, gzip_payload: ?[]const u8) !*MockServer {
@@ -679,6 +682,7 @@ pub const MockServer = struct {
         self.manifest_json = manifest_json;
         self.payload = payload;
         self.gzip_payload = gzip_payload;
+        self.combined_json = null;
         self.mutex = .init;
         self.running = .init(true);
         self.thread = try std.Thread.spawn(.{}, run, .{self});
@@ -689,6 +693,12 @@ pub const MockServer = struct {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         self.manifest_json = json;
+    }
+
+    pub fn setCombined(self: *MockServer, io: std.Io, json: ?[]const u8) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.combined_json = json;
     }
 
     fn run(self: *MockServer) void {
@@ -720,7 +730,19 @@ pub const MockServer = struct {
             if (req_len == 0) continue;
             const req = req_buf[0..req_len];
 
-            if (std.mem.indexOf(u8, req, "GET /manifest.json") != null or std.mem.indexOf(u8, req, "oriel-update-") != null) {
+            if (std.mem.indexOf(u8, req, "/latest.json ") != null) {
+                self.mutex.lockUncancelable(self.io);
+                const combined = self.combined_json;
+                self.mutex.unlock(self.io);
+                var w_buf: [4096]u8 = undefined;
+                var writer = stream.writer(self.io, &w_buf);
+                if (combined) |body| {
+                    writer.interface.print("HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{s}", .{ body.len, body }) catch {};
+                } else {
+                    writer.interface.writeAll("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n") catch {};
+                }
+                writer.interface.flush() catch {};
+            } else if (std.mem.indexOf(u8, req, "GET /manifest.json") != null or std.mem.indexOf(u8, req, "oriel-update-") != null) {
                 self.mutex.lockUncancelable(self.io);
                 const cur_manifest = self.manifest_json;
                 self.mutex.unlock(self.io);

@@ -53,8 +53,10 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
         else => @tagName(builtin.os.tag),
     };
 
-    const manifest_asset = try std.fmt.allocPrint(ctx.gpa, "oriel-update-{s}-{s}.json", .{ arch_str, os_str });
-    defer ctx.gpa.free(manifest_asset);
+    // One combined manifest for every platform (v0.3.1+), or the per-platform
+    // one that older releases publish.
+    const legacy_asset = try std.fmt.allocPrint(ctx.gpa, "oriel-update-{s}-{s}.json", .{ arch_str, os_str });
+    defer ctx.gpa.free(legacy_asset);
 
     const releases_url = ctx.environ.get("ORIEL_RELEASES_URL") orelse default_releases_url;
     const trimmed_releases = std.mem.trimEnd(u8, releases_url, "/");
@@ -62,22 +64,22 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
     var resolved_tag: ?[]const u8 = null;
     defer if (resolved_tag) |t| ctx.gpa.free(t);
 
-    const manifest_url = if (cmd.version) |v|
-        try std.fmt.allocPrint(ctx.gpa, "{s}/download/{s}/{s}", .{ trimmed_releases, v, manifest_asset })
+    const release_base = if (cmd.version) |v|
+        try std.fmt.allocPrint(ctx.gpa, "{s}/download/{s}", .{ trimmed_releases, v })
     else if (std.mem.eql(u8, releases_url, default_releases_url)) blk: {
         const latest_tag = fetchLatestReleaseTag(ctx) catch return 1;
         resolved_tag = latest_tag;
-        break :blk try std.fmt.allocPrint(ctx.gpa, "{s}/download/{s}/{s}", .{ trimmed_releases, latest_tag, manifest_asset });
-    } else try std.fmt.allocPrint(ctx.gpa, "{s}/latest/download/{s}", .{ trimmed_releases, manifest_asset });
-    defer ctx.gpa.free(manifest_url);
+        break :blk try std.fmt.allocPrint(ctx.gpa, "{s}/download/{s}", .{ trimmed_releases, latest_tag });
+    } else try std.fmt.allocPrint(ctx.gpa, "{s}/latest/download", .{trimmed_releases});
+    defer ctx.gpa.free(release_base);
 
     const allow_test_http = std.mem.startsWith(u8, releases_url, "http://127.0.0.1") or
         std.mem.startsWith(u8, releases_url, "http://localhost");
 
     const is_forced = cmd.version != null;
-    const update_cfg = core.Config{
+    var update_cfg = core.Config{
         .app_id = "dev.oriel.cli",
-        .manifest_url = manifest_url,
+        .manifest_url = undefined,
         .current_version = build_options.version,
         .public_key_b64 = public_key,
         .target = core.DEFAULT_TARGET,
@@ -85,10 +87,19 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
         .force = is_forced,
     };
 
-    var maybe_update = core.checkForUpdate(ctx.io, ctx.gpa, update_cfg) catch |err| {
-        try ctx.err.print("error: update check failed: {s}\n", .{@errorName(err)});
-        return 1;
-    };
+    var maybe_update: ?core.Update = null;
+    for ([_][]const u8{ "latest.json", legacy_asset }, 0..) |asset, attempt| {
+        const url = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ release_base, asset });
+        defer ctx.gpa.free(url);
+        update_cfg.manifest_url = url;
+        maybe_update = core.checkForUpdate(ctx.io, ctx.gpa, update_cfg) catch |err| {
+            // A release without latest.json: try the per-platform manifest.
+            if (attempt == 0 and err == error.BadHttpStatus) continue;
+            try ctx.err.print("error: update check failed: {s}\n", .{@errorName(err)});
+            return 1;
+        };
+        break;
+    }
 
     if (cmd.check) {
         if (maybe_update) |*up| {
@@ -273,6 +284,10 @@ test "oriel update end-to-end against local HTTP server" {
     const manifest_json = try core.update_manifest.formatManifest(allocator, sign_params, sig_b64);
     defer allocator.free(manifest_json);
     server.setManifest(io, manifest_json);
+    // The release's latest.json (the primary path; the legacy file is the fallback).
+    const combined_json = try core.update_manifest.combine(allocator, &.{manifest_json}, .{ .allow_test_http = true });
+    defer allocator.free(combined_json);
+    server.setCombined(io, combined_json);
 
     // 4. Test environment setup
     var env_map = std.process.Environ.Map.init(allocator);

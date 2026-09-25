@@ -1,6 +1,7 @@
 //! Host CLI tool for Oriel update management:
 //! - keygen: Generate an Ed25519 keypair for signing updates (base64 private key seed, base64 public key).
 //! - sign-update: Hash an artifact, sign domain-separated bytes, and produce a manifest JSON.
+//! - combine-manifests: Merge per-platform manifests into one `latest.json`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -37,6 +38,8 @@ pub fn main(init: std.process.Init) !u8 {
         return handleKeygen(io, gpa, init.environ_map, args);
     } else if (std.mem.eql(u8, command, "sign-update")) {
         return handleSignUpdate(io, gpa, args);
+    } else if (std.mem.eql(u8, command, "combine-manifests")) {
+        return handleCombine(io, gpa, args);
     } else if (std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
         printUsage();
         return 0;
@@ -54,6 +57,7 @@ fn printUsage() void {
         \\Commands:
         \\  keygen       Generate an Ed25519 keypair for update signing
         \\  sign-update  Sign an update artifact and generate a manifest JSON
+        \\  combine-manifests  Merge per-platform manifests into one latest.json
         \\
         \\Run 'update_tool <command> --help' for command-specific options.
         \\
@@ -542,6 +546,95 @@ fn handleSignUpdate(io: std.Io, gpa: std.mem.Allocator, args: []const [:0]const 
     return 0;
 }
 
+pub const CombineFilesOptions = struct {
+    inputs: []const []const u8,
+    out_path: []const u8,
+    pub_date: ?[]const u8 = null,
+    notes: ?[]const u8 = null,
+    allow_test_http: bool = false,
+};
+
+/// Read the per-platform manifests and write the combined one to `out_path`.
+pub fn runCombine(io: std.Io, gpa: std.mem.Allocator, opts: CombineFilesOptions) !void {
+    const cwd = std.Io.Dir.cwd();
+    const contents = try gpa.alloc([]const u8, opts.inputs.len);
+    var read: usize = 0;
+    defer {
+        for (contents[0..read]) |c| gpa.free(c);
+        gpa.free(contents);
+    }
+    for (opts.inputs) |path| {
+        contents[read] = try cwd.readFileAlloc(io, path, gpa, .limited(64 * 1024));
+        read += 1;
+    }
+    const combined = try manifest_mod.combine(gpa, contents, .{
+        .pub_date = opts.pub_date,
+        .notes = opts.notes,
+        .allow_test_http = opts.allow_test_http,
+    });
+    defer gpa.free(combined);
+    try cwd.writeFile(io, .{ .sub_path = opts.out_path, .data = combined });
+}
+
+fn handleCombine(io: std.Io, gpa: std.mem.Allocator, args: []const [:0]const u8) !u8 {
+    var inputs: std.ArrayList([]const u8) = .empty;
+    defer inputs.deinit(gpa);
+    var out_path: ?[]const u8 = null;
+    var pub_date: ?[]const u8 = null;
+    var notes: ?[]const u8 = null;
+    var allow_test_http = false;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            std.debug.print(
+                \\Usage: update_tool combine-manifests <manifest.json>... --out <latest.json> [options]
+                \\
+                \\Merges manifests made by sign-update (same app id and version, one per
+                \\target) into one file clients on every platform can fetch.
+                \\
+                \\Options:
+                \\  --out <file>       Output path (required)
+                \\  --pub-date <date>  Publication date (RFC 3339), informational
+                \\  --notes <text>     Release notes, informational
+                \\
+            , .{});
+            return 0;
+        } else if (std.mem.eql(u8, arg, "--out") or std.mem.eql(u8, arg, "--pub-date") or std.mem.eql(u8, arg, "--notes")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("error: {s} requires a value\n", .{arg});
+                return 1;
+            }
+            if (std.mem.eql(u8, arg, "--out")) out_path = args[i] else if (std.mem.eql(u8, arg, "--pub-date")) pub_date = args[i] else notes = args[i];
+        } else if (std.mem.eql(u8, arg, "--allow-test-http")) {
+            allow_test_http = true;
+        } else if (std.mem.startsWith(u8, arg, "--")) {
+            std.debug.print("error: unrecognized option '{s}'\n", .{arg});
+            return 1;
+        } else {
+            try inputs.append(gpa, arg);
+        }
+    }
+    if (out_path == null or inputs.items.len == 0) {
+        std.debug.print("error: missing arguments\nUsage: update_tool combine-manifests <manifest.json>... --out <latest.json>\n", .{});
+        return 1;
+    }
+    runCombine(io, gpa, .{
+        .inputs = inputs.items,
+        .out_path = out_path.?,
+        .pub_date = pub_date,
+        .notes = notes,
+        .allow_test_http = allow_test_http,
+    }) catch |err| {
+        std.debug.print("error: combine-manifests failed: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    std.debug.print("Wrote {s} ({d} platforms)\n", .{ out_path.?, inputs.items.len });
+    return 0;
+}
+
 fn defaultKeysDir(gpa: std.mem.Allocator, env_map: ?*const std.process.Environ.Map) ![]const u8 {
     if (env_map) |m| {
         if (m.get("XDG_CONFIG_HOME")) |xdg| {
@@ -817,4 +910,67 @@ test "sign-update writeFile failure frees manifest_json without leak" {
 /// `@enumFromInt(0o755)` there would set read-only/system/... attribute bits).
 fn filePerms(mode: u32) std.Io.File.Permissions {
     return if (builtin.os.tag == .windows) .default_file else .fromMode(@intCast(mode));
+}
+
+test "combine-manifests writes a latest.json every target verifies" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(tmp_path);
+
+    const keys_dir = try std.fs.path.join(allocator, &.{ tmp_path, "keys" });
+    defer allocator.free(keys_dir);
+    try runKeygen(io, allocator, null, .{ .quiet = true, .name = "combine_test", .out_dir = keys_dir });
+    const key_path = try std.fs.path.join(allocator, &.{ keys_dir, "combine_test.key" });
+    defer allocator.free(key_path);
+    const pub_path = try std.fs.path.join(allocator, &.{ keys_dir, "combine_test.pub" });
+    defer allocator.free(pub_path);
+
+    const artifact_path = try std.fs.path.join(allocator, &.{ tmp_path, "app.bin" });
+    defer allocator.free(artifact_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = artifact_path, .data = "payload" });
+
+    const targets = [_][]const u8{ "x86_64-linux", "aarch64-macos", "x86_64-windows" };
+    var paths: [targets.len][]const u8 = undefined;
+    var made: usize = 0;
+    defer for (paths[0..made]) |p| allocator.free(p);
+    for (targets) |t| {
+        const name = try std.fmt.allocPrint(allocator, "m-{s}.json", .{t});
+        defer allocator.free(name);
+        paths[made] = try std.fs.path.join(allocator, &.{ tmp_path, name });
+        made += 1;
+        const url = try std.fmt.allocPrint(allocator, "https://example.com/{s}", .{t});
+        defer allocator.free(url);
+        const json = try runSignUpdate(io, allocator, .{
+            .artifact_path = artifact_path,
+            .app_id = "dev.oriel.combinetest",
+            .version = "2.0.0",
+            .url = url,
+            .key_path = key_path,
+            .target = t,
+            .format = "raw",
+            .out_path = paths[made - 1],
+        });
+        allocator.free(json);
+    }
+
+    const latest_path = try std.fs.path.join(allocator, &.{ tmp_path, "latest.json" });
+    defer allocator.free(latest_path);
+    try runCombine(io, allocator, .{ .inputs = &paths, .out_path = latest_path, .notes = "hello" });
+
+    const latest = try std.Io.Dir.cwd().readFileAlloc(io, latest_path, allocator, .limited(64 * 1024));
+    defer allocator.free(latest);
+    const pub_content = try std.Io.Dir.cwd().readFileAlloc(io, pub_path, allocator, .limited(1024));
+    defer allocator.free(pub_content);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    for (targets) |t| {
+        const m = try manifest_mod.verifyForTarget(arena.allocator(), latest, pub_content, t, .{});
+        try std.testing.expectEqualStrings(t, m.target);
+        try std.testing.expect(std.mem.endsWith(u8, m.url, t));
+    }
 }

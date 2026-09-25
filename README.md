@@ -70,7 +70,7 @@ no GTK needed to run it) that scaffolds apps and wraps their build steps,
 like `create-tauri-app` and `tauri dev/build`.
 
 ```sh
-# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.3.0.
+# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.3.1.
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
 ```
 
@@ -187,10 +187,10 @@ into place atomically under a lock file, so concurrent installs don't clash.
 oriel update --check          # Check whether a newer version is available without installing
 oriel update                  # Update to the latest release (prompts for confirmation on a TTY)
 oriel update --yes            # Update without prompting (required in non-interactive/CI environments)
-oriel update --version v0.3.0 # Update or downgrade to a specific release tag
+oriel update --version v0.3.1 # Update or downgrade to a specific release tag
 ```
 
-The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the signed manifest for the current architecture and OS (`oriel-update-<arch>-<linux|macos|windows>.json`), verifies the Ed25519 signature against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary (on Windows, where a running exe can't be overwritten, it is renamed to `oriel.exe.old` first and removed on the next run). The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
+The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the release's `latest.json` (one signed entry per platform; releases before v0.3.1 only have `oriel-update-<arch>-<os>.json`, used as a fallback), verifies the Ed25519 signature of the entry for its own platform against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary (on Windows, where a running exe can't be overwritten, it is renamed to `oriel.exe.old` first and removed on the next run). The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
 
 ### Deep link commands
 
@@ -748,6 +748,14 @@ zig build sign-update -- zig-out/bin/my-app \
 The signature is computed over domain-separated canonical bytes:
 `"oriel-update-v2\n" ++ app_id ++ "\n" ++ version ++ "\n" ++ target ++ "\n" ++ format ++ "\n" ++ size ++ "\n" ++ sha256 ++ "\n" ++ url ++ "\n"` (plus optional `expires\n`).
 
+One file for every platform (like Tauri's `latest.json`): sign each platform's artifact with its `--target`, then combine the manifests:
+
+```sh
+zig build combine-manifests -- manifest-*.json --out latest.json
+```
+
+`latest.json` has a `platforms` map (`"x86_64-linux"`, `"aarch64-macos"`, `"x86_64-windows"`, ...), each entry a complete signed manifest. Publish it at one stable URL (e.g. `https://github.com/you/app/releases/latest/download/latest.json`) and use that as `manifest_url` in every build: each app picks and verifies the entry for its own target, and an entry filed under the wrong platform is refused. A single-platform manifest still works as `manifest_url`.
+
 #### 3. Embedding public key in the app
 
 Configure `update_public_key` in `build.zig`:
@@ -772,7 +780,7 @@ const app = @import("oriel_app");
 
 const Updater = oriel.updater.Commands(.{
     .app_id = "com.example.App",
-    .manifest_url = "https://releases.example.com/manifest.json",
+    .manifest_url = "https://releases.example.com/latest.json",
     .current_version = "1.0.0",
     .public_key_b64 = app.update_public_key orelse @panic("missing update key"),
 });
@@ -1504,7 +1512,7 @@ Maintainer key setup:
 2. In GitHub repository settings:
    - Add the private key seed (`oriel-release.key`) as secret `ORIEL_UPDATE_KEY`.
    - Add the public key (`oriel-release.pub`) as variable `ORIEL_UPDATE_PUBLIC_KEY`.
-3. The release workflow passes `-Dupdate-public-key` to `zig build cli` and runs `zig build sign-update` to attach signed manifests (`oriel-update-<arch>-<os>.json`).
+3. The release workflow passes `-Dupdate-public-key` to `zig build cli` and runs `zig build sign-update` for each platform and `zig build combine-manifests` to attach `latest.json` (which `oriel update` fetches) plus the per-platform `oriel-update-<arch>-<os>.json` files older CLIs use.
 
 ## Notes
 

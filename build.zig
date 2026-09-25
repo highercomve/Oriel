@@ -598,6 +598,11 @@ pub fn addUpdaterSteps(b: *std.Build, update_tool: *std.Build.Step.Compile) void
     run_sign.addArg("sign-update");
     if (b.args) |args| run_sign.addArgs(args);
     b.step("sign-update", "Sign an update artifact and generate manifest JSON").dependOn(&run_sign.step);
+
+    const run_combine = b.addRunArtifact(update_tool);
+    run_combine.addArg("combine-manifests");
+    if (b.args) |args| run_combine.addArgs(args);
+    b.step("combine-manifests", "Merge per-platform update manifests into one latest.json").dependOn(&run_combine.step);
 }
 
 /// Add a oriel app to `b` with these steps:

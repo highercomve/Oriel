@@ -371,6 +371,101 @@ pub fn verifyWithOptions(
 }
 
 // ---------------------------------------------------------------------------
+// Combined manifests: one file (`latest.json`) for every platform
+// ---------------------------------------------------------------------------
+//
+//   {"app_id": ..., "version": ..., "pub_date": ..., "notes": ...,
+//    "platforms": {"x86_64-linux": {<signed v2 manifest>}, ...}}
+//
+// Each platform entry is a complete, individually signed v2 manifest. The
+// top-level fields are informational only: clients act on the verified entry.
+
+pub const max_platforms = 32;
+
+/// Verify the manifest for `target`. `json` is either a combined manifest
+/// (the entry under `platforms.<target>` is verified) or a single-platform one.
+pub fn verifyForTarget(
+    arena: std.mem.Allocator,
+    json: []const u8,
+    public_key_b64: []const u8,
+    target: []const u8,
+    options: VerifyOptions,
+) !Manifest {
+    const root = std.json.parseFromSliceLeaky(std.json.Value, arena, json, .{}) catch return error.InvalidManifest;
+    if (root != .object) return error.InvalidManifest;
+    const entry_json: []const u8 = if (root.object.get("platforms")) |platforms| blk: {
+        if (platforms != .object) return error.InvalidManifest;
+        const entry = platforms.object.get(target) orelse return error.TargetNotInManifest;
+        break :blk try std.json.Stringify.valueAlloc(arena, entry, .{});
+    } else json;
+    const m = try verifyWithOptions(arena, entry_json, public_key_b64, options);
+    // The signature covers `target`: an entry filed under another key is refused.
+    if (!std.mem.eql(u8, m.target, target)) return error.TargetMismatch;
+    return m;
+}
+
+pub const CombineOptions = struct {
+    /// RFC 3339 date, informational.
+    pub_date: ?[]const u8 = null,
+    /// Release notes, informational.
+    notes: ?[]const u8 = null,
+    allow_test_http: bool = false,
+};
+
+/// Combine single-platform manifests (same app_id and version, one per
+/// target) into a combined manifest. The caller owns the result. Signatures
+/// are only checked for form here; clients verify each entry.
+pub fn combine(allocator: std.mem.Allocator, manifests_json: []const []const u8, opts: CombineOptions) ![]u8 {
+    if (manifests_json.len == 0) return error.NoManifests;
+    if (manifests_json.len > max_platforms) return error.TooManyPlatforms;
+    if (opts.pub_date) |d| try validateNoControlChars(d);
+
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const entries = try arena.alloc(Manifest, manifests_json.len);
+    for (manifests_json, 0..) |j, i| {
+        const m = std.json.parseFromSliceLeaky(Manifest, arena, j, .{ .ignore_unknown_fields = true }) catch return error.InvalidManifest;
+        try validateManifestFields(m.app_id, m.version, m.target, m.format, m.size, m.sha256, m.url, m.expires, opts.allow_test_http);
+        _ = try parseSignature(m.signature);
+        if (i > 0) {
+            if (!std.mem.eql(u8, m.app_id, entries[0].app_id)) return error.AppIdMismatch;
+            if (!std.mem.eql(u8, m.version, entries[0].version)) return error.VersionMismatch;
+        }
+        for (entries[0..i]) |prev| if (std.mem.eql(u8, prev.target, m.target)) return error.DuplicateTarget;
+        entries[i] = m;
+    }
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    var jw: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .indent_2 } };
+    try jw.beginObject();
+    try jw.objectField("app_id");
+    try jw.write(entries[0].app_id);
+    try jw.objectField("version");
+    try jw.write(entries[0].version);
+    if (opts.pub_date) |d| {
+        try jw.objectField("pub_date");
+        try jw.write(d);
+    }
+    if (opts.notes) |n| {
+        try jw.objectField("notes");
+        try jw.write(n);
+    }
+    try jw.objectField("platforms");
+    try jw.beginObject();
+    for (entries) |m| {
+        try jw.objectField(m.target);
+        try jw.write(m);
+    }
+    try jw.endObject();
+    try jw.endObject();
+    try out.writer.writeByte('\n');
+    return out.toOwnedSlice();
+}
+
+// ---------------------------------------------------------------------------
 // Unit Tests
 // ---------------------------------------------------------------------------
 
@@ -613,4 +708,70 @@ test "manifest target accepts x86_64-windows" {
     try std.testing.expectEqualStrings("x86_64-windows", verified.target);
     try std.testing.expectEqualStrings("raw", verified.format);
     try std.testing.expectEqual(1048576, verified.size);
+}
+
+test "combined manifest: per-target verify, tampering, mixing" {
+    const allocator = std.testing.allocator;
+    const kp = try Ed25519.KeyPair.generateDeterministic([_]u8{7} ** 32);
+    var pk_b64: [PUBLIC_KEY_B64_LEN]u8 = undefined;
+    _ = encodePublicKey(kp.public_key.toBytes(), &pk_b64);
+
+    const base = SignParameters{
+        .app_id = "dev.oriel.demo",
+        .version = "1.2.3",
+        .target = "x86_64-linux",
+        .format = "raw",
+        .size = 10,
+        .sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        .url = "https://example.com/app-linux",
+    };
+    var win = base;
+    win.target = "x86_64-windows";
+    win.url = "https://example.com/app.exe";
+
+    var jsons: [2][]u8 = undefined;
+    for ([_]SignParameters{ base, win }, 0..) |p, i| {
+        const sig = try sign(allocator, kp, p);
+        defer allocator.free(sig);
+        jsons[i] = try formatManifest(allocator, p, sig);
+    }
+    defer for (jsons) |j| allocator.free(j);
+
+    const combined = try combine(allocator, &.{ jsons[0], jsons[1] }, .{ .pub_date = "2026-09-25T00:00:00Z", .notes = "notes" });
+    defer allocator.free(combined);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const lin = try verifyForTarget(a, combined, &pk_b64, "x86_64-linux", .{});
+    try std.testing.expectEqualStrings("https://example.com/app-linux", lin.url);
+    const w = try verifyForTarget(a, combined, &pk_b64, "x86_64-windows", .{});
+    try std.testing.expectEqualStrings("https://example.com/app.exe", w.url);
+    try std.testing.expectError(error.TargetNotInManifest, verifyForTarget(a, combined, &pk_b64, "aarch64-macos", .{}));
+
+    // A single-platform manifest still verifies, but only for its own target.
+    _ = try verifyForTarget(a, jsons[0], &pk_b64, "x86_64-linux", .{});
+    try std.testing.expectError(error.TargetMismatch, verifyForTarget(a, jsons[0], &pk_b64, "x86_64-windows", .{}));
+
+    // The Linux entry filed under the Windows key: signature ok, target refused.
+    const swapped = try std.fmt.allocPrint(allocator, "{{\"platforms\":{{\"x86_64-windows\":{s}}}}}", .{jsons[0]});
+    defer allocator.free(swapped);
+    try std.testing.expectError(error.TargetMismatch, verifyForTarget(a, swapped, &pk_b64, "x86_64-windows", .{}));
+
+    // A tampered entry fails its signature.
+    const tampered = try std.mem.replaceOwned(u8, allocator, combined, "https://example.com/app.exe", "https://example.com/evil.exe");
+    defer allocator.free(tampered);
+    try std.testing.expectError(error.SignatureVerificationFailed, verifyForTarget(a, tampered, &pk_b64, "x86_64-windows", .{}));
+
+    // combine refuses duplicates and mixed versions.
+    try std.testing.expectError(error.DuplicateTarget, combine(allocator, &.{ jsons[0], jsons[0] }, .{}));
+    var other = win;
+    other.version = "1.2.4";
+    const osig = try sign(allocator, kp, other);
+    defer allocator.free(osig);
+    const ojson = try formatManifest(allocator, other, osig);
+    defer allocator.free(ojson);
+    try std.testing.expectError(error.VersionMismatch, combine(allocator, &.{ jsons[0], ojson }, .{}));
+    try std.testing.expectError(error.NoManifests, combine(allocator, &.{}, .{}));
 }

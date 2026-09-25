@@ -173,6 +173,11 @@ jobs:
                 --out "dist/oriel-update-$arch-$os.json"
             done
           done
+          # One file for every platform (what `oriel update` fetches since
+          # v0.3.1); the per-platform files stay for older CLIs.
+          zig build combine-manifests -- dist/oriel-update-*.json \
+            --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --out dist/latest.json
       - name: Checksums
         run: |
           cd dist && sha256sum oriel-* > SHA256SUMS && cat SHA256SUMS
@@ -180,6 +185,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          # 0.x releases are pre-releases.
-          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          # Only -rc/-beta tags are pre-releases (releases/latest skips those).
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
