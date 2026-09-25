@@ -12,6 +12,7 @@ const WindowHandle = window.WindowHandle;
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const build_opts = @import("build_options");
+const single_instance = @import("single_instance.zig");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
@@ -257,11 +258,19 @@ extern "c" fn _NSGetArgc() *c_int;
 extern "c" fn _NSGetArgv() *[*][*:0]u8;
 
 /// Clicking the Dock icon while every window is hidden (`on_close = .hide`)
-/// brings the main window back.
+/// brings the main window back. With `on_second_instance`, a reopen (the
+/// app launched again through Launch Services, e.g. from Finder) goes to
+/// the handler instead, with no arguments; the app decides what to show.
 fn applicationShouldHandleReopen(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, has_visible_windows: cocoa.c.BOOL) callconv(.c) cocoa.c.BOOL {
+    if (reopen_handler) |h| {
+        h(&.{});
+        return cocoa.boolean(false);
+    }
     if (!cocoa.isTrue(has_visible_windows)) App.showWindow();
     return cocoa.boolean(true);
 }
+
+var reopen_handler: ?*const fn ([]const []const u8) void = null;
 
 // ---------------------------------------------------------------------------
 // Default menu bar: app menu (Hide, Quit), Edit (so Cmd+C/V/X/Z/A reach the
@@ -409,6 +418,7 @@ fn onDevRunnerExit(_: ?*anyopaque) callconv(.c) void {
 // ---------------------------------------------------------------------------
 
 const NSApplicationActivationPolicyRegular: isize = 0;
+const NSApplicationActivationPolicyAccessory: isize = 1;
 
 pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     const dev_url: ?[]const u8 = if (config.dev) |d| d.url else null;
@@ -454,9 +464,44 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             return null;
         }
 
+        /// A later launch's arguments (single instance): the app's handler,
+        /// then any deep link among them, as on Linux.
+        fn onSecondInstance(args: []const []const u8) void {
+            if (config.on_second_instance) |h| h(args);
+            if (build_opts.deep_link) {
+                for (args) |arg| {
+                    if (deep_link.validate(arg, config.deep_link_schemes)) |_| {
+                        deep_link.deliver(arg);
+                        break;
+                    } else |_| {}
+                }
+            }
+        }
+
         pub fn run(io: std.Io) u8 {
             const pool = objc.AutoreleasePool.init();
             defer pool.deinit();
+
+            // Single instance: a later launch hands its arguments to the
+            // running one and exits here, before any UI.
+            if (config.on_second_instance != null) {
+                const gpa = std.heap.smp_allocator;
+                const argc: usize = @intCast(@max(_NSGetArgc().*, 0));
+                const argv = _NSGetArgv().*;
+                if (gpa.alloc([]const u8, argc -| 1)) |args| {
+                    defer gpa.free(args);
+                    for (args, 1..) |*a, i| a.* = std.mem.span(argv[i]);
+                    if (single_instance.acquire(config.id, args, &onSecondInstance) == .forwarded) {
+                        log.info("{s} is already running: this launch's arguments were handed to it", .{config.id});
+                        return 0;
+                    }
+                } else |_| log.warn("single instance: out of memory; running without it", .{});
+                reopen_handler = &onSecondInstance;
+            }
+            defer if (config.on_second_instance != null) {
+                single_instance.release();
+                reopen_handler = null;
+            };
 
             exit_code.store(0, .monotonic);
             quit_requested = false;
@@ -464,7 +509,9 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             const app = sharedApplication();
             // A plain executable (no .app bundle) is a background app by
             // default: no Dock icon, no menu bar, windows behind others.
-            _ = app.msgSend(cocoa.c.BOOL, "setActivationPolicy:", .{NSApplicationActivationPolicyRegular});
+            // A background app (tray, global shortcut: show_main_window =
+            // false) stays out of the Dock and the app switcher.
+            _ = app.msgSend(cocoa.c.BOOL, "setActivationPolicy:", .{if (config.show_main_window) NSApplicationActivationPolicyRegular else NSApplicationActivationPolicyAccessory});
 
             if (config.icon) |icon_data| {
                 const ns_data_cls = cocoa.class("NSData");

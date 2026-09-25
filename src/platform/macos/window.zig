@@ -19,6 +19,7 @@ const ShellMod = @import("Shell.zig");
 const scheme_mod = @import("scheme.zig");
 const bridge_mod = @import("bridge.zig");
 const js_dialogs = @import("js_dialogs.zig");
+const overlay = @import("overlay.zig");
 const permissions = @import("../../core/permissions.zig");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
@@ -36,7 +37,7 @@ pub const WindowHandle = struct {
         return self.serial == other.serial;
     }
 
-    fn nsWindow(self: WindowHandle) Object {
+    pub fn nsWindow(self: WindowHandle) Object {
         return .{ .value = self.window };
     }
 
@@ -78,7 +79,19 @@ const Op = union(enum) {
 fn apply(handle: WindowHandle, op: Op) void {
     const win = handle.nsWindow();
     switch (op) {
-        .show, .focus => {
+        .show => {
+            const w = App.getWindowByHandle(handle);
+            if (w == null or w.?.options.focus_on_show) {
+                win.msgSend(void, "makeKeyAndOrderFront:", .{cocoa.nil});
+                ShellMod.sharedApplication().msgSend(void, "activateIgnoringOtherApps:", .{cocoa.boolean(true)});
+            } else {
+                // Overlays (captions): shown without taking the keyboard or
+                // activating the app, so typing stays where it was.
+                win.msgSend(void, "orderFrontRegardless", .{});
+            }
+            if (w) |ww| overlay.onShow(handle, ww.options);
+        },
+        .focus => {
             win.msgSend(void, "makeKeyAndOrderFront:", .{cocoa.nil});
             ShellMod.sharedApplication().msgSend(void, "activateIgnoringOtherApps:", .{cocoa.boolean(true)});
         },
@@ -86,7 +99,9 @@ fn apply(handle: WindowHandle, op: Op) void {
         .toggle => {
             const visible = cocoa.isTrue(win.msgSend(cocoa.c.BOOL, "isVisible", .{}));
             const key = cocoa.isTrue(win.msgSend(cocoa.c.BOOL, "isKeyWindow", .{}));
-            apply(handle, if (visible and key) .hide else .show);
+            // A window that never takes focus toggles on visibility alone.
+            const takes_focus = if (App.getWindowByHandle(handle)) |w| w.options.focus_on_show else true;
+            apply(handle, if (visible and (key or !takes_focus)) .hide else .show);
         },
         .close => if (App.getWindowByHandle(handle)) |w| closeNow(w),
         .title => |t| {
@@ -344,7 +359,7 @@ pub fn destroyWindow(handle: WindowHandle) void {
 
 /// The close sequence shared by the close button, `closeWindow` and JS.
 fn closeNow(win: *App.Window) void {
-    if (std.mem.eql(u8, win.label, "main") and current_on_close_hide) {
+    if (win.options.hide_on_close or (std.mem.eql(u8, win.label, "main") and current_on_close_hide)) {
         win.handle.nsWindow().msgSend(void, "orderOut:", .{cocoa.nil});
         return;
     }
@@ -527,6 +542,7 @@ pub fn WindowCreator(
             }
             win.msgSend(void, "setContentView:", .{view});
             win.msgSend(void, "setDelegate:", .{window_delegate});
+            overlay.setup(win, view, options);
 
             const target_uri = try security.resolveWindowUrl(
                 gpa,

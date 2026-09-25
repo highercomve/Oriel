@@ -40,6 +40,44 @@ const probe_html =
     \\</script>
 ;
 
+var servers_gpa: std.mem.Allocator = undefined;
+var media_running = false;
+
+/// The media server (and `app://app/media/`) and the IPC probe origin.
+fn startServers() !void {
+    if (oriel.options.media_server) {
+        test_media_root = try createTestMediaFile(io, servers_gpa);
+        errdefer servers_gpa.free(test_media_root);
+        try media.start(io, servers_gpa, oriel.media_server.Options{
+            .port = media_port,
+            .root_dir = test_media_root,
+        });
+        media_running = true;
+        errdefer stopServers();
+        // The same directory at app://app/media/ (no TCP port involved).
+        try oriel.media_server.scheme.setRoot(test_media_root, .inside_root);
+    }
+    if (std.Thread.spawn(.{}, probeServer, .{io})) |t| t.detach() else |err| std.log.warn("ipc probe server: {s}", .{@errorName(err)});
+}
+
+fn stopServers() void {
+    if (!media_running) return;
+    media_running = false;
+    oriel.media_server.scheme.clearRoot();
+    media.stop();
+    servers_gpa.free(test_media_root);
+}
+
+fn setupGui() anyerror!void {
+    try startServers();
+}
+
+/// Milestone 10: a later launch of the smoke app forwards its arguments here.
+fn onSecondInstance(args: []const []const u8) void {
+    std.log.info("second instance: {d} argument(s): {f}", .{ args.len, std.json.fmt(args, .{}) });
+    oriel.App.emit("second-instance", .{ .args = args });
+}
+
 /// Serves `probe_html` on 127.0.0.1:probe_port for the app's lifetime.
 fn probeServer(local_io: std.Io) void {
     const addr = std.Io.net.IpAddress.parseIp4("127.0.0.1", probe_port) catch return;
@@ -340,24 +378,11 @@ pub fn main(init: std.process.Init) !u8 {
         }
     }
 
-    if (oriel.options.media_server) {
-        test_media_root = try createTestMediaFile(io, init.gpa);
-        errdefer init.gpa.free(test_media_root);
-        try media.start(io, init.gpa, oriel.media_server.Options{
-            .port = media_port,
-            .root_dir = test_media_root,
-        });
-        errdefer media.stop();
-        // The same directory at app://app/media/ (no TCP port involved).
-        try oriel.media_server.scheme.setRoot(test_media_root, .inside_root);
-    }
-    defer if (oriel.options.media_server) {
-        oriel.media_server.scheme.clearRoot();
-        media.stop();
-        init.gpa.free(test_media_root);
-    };
+    servers_gpa = init.gpa;
+    defer stopServers();
 
     if (headless) {
+        try startServers();
         var arena_state = std.heap.ArenaAllocator.init(init.gpa);
         defer arena_state.deinit();
         const checks = try oriel.checkAll(arena_state.allocator(), context());
@@ -368,8 +393,6 @@ pub fn main(init: std.process.Init) !u8 {
         }
         return if (failed == 0) 0 else 1;
     }
-
-    if (std.Thread.spawn(.{}, probeServer, .{io})) |t| t.detach() else |err| std.log.warn("ipc probe server: {s}", .{@errorName(err)});
 
     if (oriel.options.deep_link) {
         const DLHandler = struct {
@@ -392,6 +415,12 @@ pub fn main(init: std.process.Init) !u8 {
         },
         .deep_link_schemes = app.url_schemes,
         .permissions = app.permissions,
+        // Servers start after App.run's single-instance check: a second
+        // launch forwards its arguments and exits before binding any port.
+        .setup = &setupGui,
+        // Single instance: a later launch's arguments land here (the
+        // Milestone 10 proof: run the app, then launch it again).
+        .on_second_instance = &onSecondInstance,
     };
     comptime var config_auto = config_gui;
     config_auto.start = "index.html?auto-quit";
