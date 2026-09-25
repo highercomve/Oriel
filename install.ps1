@@ -122,8 +122,7 @@ try {
     } else {
         Write-Host "ORIEL_NO_MODIFY_PATH=1: skipped modifying PATH."
         if (-not $alreadyInUserPath) {
-            Write-Host "Note: $installDir is not on your PATH; add it for your user, e.g.:"
-            Write-Host "  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';$installDir', 'User')"
+            Write-Host "Note: $installDir is not on your PATH. Run it by its full path, re-run this installer without ORIEL_NO_MODIFY_PATH, or add it in Settings > System > About > Advanced system settings > Environment Variables."
         }
     }
     Write-Host 'Next: oriel doctor, then oriel init my-app'

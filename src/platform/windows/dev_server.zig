@@ -184,7 +184,6 @@ fn resolveIn(io: std.Io, gpa: std.mem.Allocator, dir: []const u8, name: []const 
 
 pub fn startDevServer(io: std.Io, dev: anytype) ?DevServer {
     if (managedExternally()) {
-        log.debug("dev server managed externally; skipping local spawn", .{});
         return null;
     }
     const command = dev.command orelse return null;

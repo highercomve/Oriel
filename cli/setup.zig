@@ -612,7 +612,6 @@ pub fn installNode(ctx: Context, requested_version: ?[]const u8) ![]u8 {
     }
 
     try ctx.err.print("Installed Node.js {s}: {s}\n", .{ version, installed_exe_path });
-    try ctx.err.writeAll("Managed tools under ~/.oriel are used automatically by oriel (no PATH change needed).\n");
     ctx.flush();
     return installed_exe_path;
 }
@@ -743,7 +742,6 @@ pub fn installNsis(ctx: Context) !NsisInstallResult {
     }
 
     try ctx.err.print("Installed NSIS {s}: {s}\n", .{ nsis_pinned_version, makensis_path });
-    try ctx.err.writeAll("Managed tools under ~/.oriel are used automatically by oriel (no PATH change needed).\n");
     ctx.flush();
     return .{ .installed = makensis_path };
 }
@@ -821,7 +819,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
             }
 
             try ctx.out.writeAll("Setup complete.\n");
-            try ctx.out.writeAll("Managed tools under ~/.oriel are used automatically by oriel (no PATH change needed).\n");
+            try ctx.out.writeAll("oriel finds the tools it installs by itself (no PATH change needed).\n");
             return 0;
         },
         .node => {
@@ -836,7 +834,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
                 .installed => |path| {
                     defer ctx.gpa.free(path);
                     try ctx.out.print("{s}\n", .{path});
-                    try ctx.out.writeAll("Managed tools under ~/.oriel are used automatically by oriel (no PATH change needed).\n");
+                    try ctx.out.writeAll("oriel finds the tools it installs by itself (no PATH change needed).\n");
                 },
                 .printed_package_command => {},
             }

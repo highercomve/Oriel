@@ -252,7 +252,7 @@ fn report(gpa: std.mem.Allocator, w: *std.Io.Writer, items: []const Item, distro
             }
         }
         if (has_managed_hint) {
-            try w.writeAll("  (managed tools under ~/.oriel are used automatically by oriel; no PATH change needed)\n");
+            try w.writeAll("  (oriel finds the tools it installs by itself; no PATH change needed)\n");
         }
     }
     if (missing_required) {
@@ -341,7 +341,7 @@ fn runFix(ctx: Context, cmd: Command, items: []const Item, plan: FixPlan, want_z
             }
         }
         if (installed_any_managed) {
-            try ctx.out.writeAll("Managed tools under ~/.oriel are used automatically by oriel (no PATH change needed).\n");
+            try ctx.out.writeAll("oriel finds the tools it installs by itself (no PATH change needed).\n");
         }
     }
 
