@@ -33,6 +33,7 @@ const Features = struct {
     notification: bool,
     store: bool,
     menu: bool,
+    deep_link: bool,
     // App-specific plugins
     global_shortcut: bool,
     input: bool,
@@ -59,8 +60,10 @@ const Features = struct {
                 std.mem.eql(u8, field.name, "llama") or
                 std.mem.eql(u8, field.name, "whisper") or
                 std.mem.eql(u8, field.name, "audio_capture"));
+            // deep_link is opt-in (default off), like the native dependencies.
+            const is_deep_link = comptime std.mem.eql(u8, field.name, "deep_link");
             const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
-            @field(f, field.name) = opt orelse !is_native;
+            @field(f, field.name) = opt orelse (!is_native and !is_deep_link);
         }
 
         if (f.sqlite_vec and !f.sql) {
@@ -506,6 +509,9 @@ pub const AppOptions = struct {
     package: ?PackageOptions = null,
     /// Optional base64-encoded Ed25519 public key for the updater.
     update_public_key: ?[]const u8 = null,
+    /// Custom URL schemes handled by the application (e.g. &.{ "oriel-notes" }).
+    /// If null and package.url_schemes is set, package.url_schemes is used.
+    url_schemes: ?[]const []const u8 = null,
 };
 
 pub const Frontend = struct {
@@ -572,6 +578,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     const dev_optimize = if (b.user_input_options.contains("optimize")) optimize else .Debug;
     const fe = options.frontend;
     const fe_dir = b.pathFromRoot(fe.dir);
+    const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
 
     // `npm install` once, when node_modules is missing.
     var install_step: ?*std.Build.Step = null;
@@ -592,6 +599,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         cfg.addOption([]const []const u8, "dev_command", dev.command);
         cfg.addOption([]const u8, "frontend_dir", fe_dir);
         cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
+        cfg.addOption([]const []const u8, "url_schemes", url_schemes);
         break :blk addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null));
     } else null;
 
@@ -632,6 +640,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     prod_cfg.addOption([]const []const u8, "dev_command", &.{});
     prod_cfg.addOption([]const u8, "frontend_dir", fe_dir);
     prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
+    prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig")));
     b.installArtifact(exe);
 
@@ -700,6 +709,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     check_cfg.addOption([]const []const u8, "dev_command", check_dev.command);
     check_cfg.addOption([]const u8, "frontend_dir", fe_dir);
     check_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
+    check_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null));
     @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_exe.step);
 
@@ -732,6 +742,9 @@ fn appConfigModule(
         \\
         \\/// Base64-encoded Ed25519 public key for verifying updates.
         \\pub const update_public_key: ?[]const u8 = cfg.update_public_key;
+        \\
+        \\/// Declared URL schemes handled by the application.
+        \\pub const url_schemes: []const []const u8 = cfg.url_schemes;
         \\
     );
     const mod = b.createModule(.{ .root_source_file = root });

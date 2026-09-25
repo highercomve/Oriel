@@ -548,6 +548,7 @@ code plus the CLI; all three OSes (rule 11).
 - **Tests:** URL validation unit tests; Linux headless `xdg-open myapp://…`
   reaching a running and a cold-started app; Windows PC via the browser;
   macOS once bundles exist. Smoke checks where possible.
+- **Status:** Linux + Windows implemented and verified (unit tests, headless smoke, React example e2e single-instance handoff, and Windows cold-start + WM_COPYDATA handoff under Wine). macOS compiling stub implemented (`error.NotSupported`); pending Milestone 7 step 3 `.app` bundles.
 - **Order:** after `oriel webview2`; Linux + Windows first, macOS after M7
   step 3.
 

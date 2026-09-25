@@ -84,6 +84,7 @@ not 0.16).
 | `oriel types` | Regenerates the frontend's TypeScript types (`frontend/src/oriel.ts`) from the Zig `Commands` |
 | `oriel check` | Type-check the app's Zig code without building binaries (~1 s) |
 | `oriel webview2` | Downloads, verifies (SHA-512 against NuGet registration catalog), and caches Microsoft Edge `WebView2Loader.dll` for Windows (`--version <ver>`, `--arch x64|arm64|all`, `--out <dir>`) |
+| `oriel deep-link` | Configure and register custom URL schemes (`add <scheme>`, `register`, `unregister`) |
 | `oriel update` | Updates the CLI binary in place using Oriel's self-updater (`--check`, `--version <tag>`, `--yes`) |
 | `oriel --version` | CLI version and the Oriel ref `init` pins |
 
@@ -119,6 +120,20 @@ oriel update --version v0.2.0 # Update or downgrade to a specific release tag
 ```
 
 The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the signed manifest for the current architecture and OS (`oriel-update-<arch>-<linux|macos|windows>.json`), verifies the Ed25519 signature against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary (on Windows, where a running exe can't be overwritten, it is renamed to `oriel.exe.old` first and removed on the next run). The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
+
+### Deep link commands
+
+`oriel deep-link` configures and registers custom URL schemes for local development:
+
+```sh
+oriel deep-link add <scheme>   # Enables .deep_link = true and adds scheme to package url_schemes in build.zig
+oriel deep-link register       # Registers the built binary with the OS for development testing
+oriel deep-link unregister     # Removes the development registration
+```
+
+- **Linux:** `register` creates `$XDG_DATA_HOME/applications/<app_id>.desktop` pointing to the built binary with `%u` and associates it via `xdg-mime default`.
+- **Windows:** `register` writes `HKCU\Software\Classes\<scheme>` pointing to the built binary.
+- **macOS:** prints that custom scheme registration requires an `.app` bundle (pending Milestone 7 step 3).
 
 ## Building an app
 
@@ -915,6 +930,94 @@ const ctx = oriel.whisper.loadModel("path/to/whisper-base.bin", params) catch |e
 };
 defer ctx.deinit();
 ```
+
+### Deep links (`oriel.deep_link`)
+
+Handles custom URL schemes (e.g. `myapp://...`), delivering incoming links to cold-starting instances as well as already-running application instances.
+
+#### 1. Configuration in `build.zig`
+
+Enable the module and declare URL schemes in `build.zig`:
+
+```zig
+const dep = b.dependency("oriel", .{
+    .target = target,
+    .optimize = optimize,
+    .deep_link = true, // opt-in (default: false)
+});
+
+_ = oriel.addApp(b, dep, .{
+    .name = "my-app",
+    .root_source_file = b.path("src/main.zig"),
+    .frontend = .{ .dir = "frontend" },
+    .package = .{
+        .id = "com.example.MyApp",
+        .url_schemes = &.{ "myapp", "myapp-action" },
+    },
+});
+```
+
+Or run `oriel deep-link add <scheme>` to configure this automatically.
+
+#### 2. Native Zig API
+
+```zig
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+
+// Register a callback to receive incoming deep link URLs on the main thread:
+if (oriel.options.deep_link) {
+    oriel.deep_link.onOpen(onDeepLink);
+}
+
+fn onDeepLink(url: []const u8) void {
+    std.log.info("Received deep link URL: {s}", .{url});
+}
+
+// In main(), pass deep_link_schemes to config:
+return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
+    .id = "com.example.MyApp",
+    .title = "My App",
+    .assets = app.assets,
+    .deep_link_schemes = app.url_schemes,
+});
+```
+
+To query the URL that launched the application at startup (null if launched normally):
+```zig
+const launch_url = oriel.deep_link.current();
+```
+
+#### 3. Webview frontend JavaScript / TypeScript
+
+Every incoming link is broadcast to open webview windows as a `deep-link` event:
+
+```ts
+import { listen } from "./oriel";
+
+// Listen for deep link events
+const unlisten = listen("deep-link", ({ url }) => {
+    console.log("Deep link received:", url);
+});
+
+// Query launch URL
+const launchUrl = await window.oriel.deepLink.current();
+```
+
+#### 4. Delivery & Single-Instance Architecture
+
+- **Linux:** GApplication single-instance command-line handling (`G_APPLICATION_HANDLES_COMMAND_LINE`). When a second instance is launched with a URL, the URL is forwarded over D-Bus to the primary instance, which restores/presents its window and delivers the URL; the second instance exits 0. On cold start, the URL is preserved in `current()` and delivered after the window is ready. Desktop packaging creates a `.desktop` file with `Exec=... %u` and `MimeType=x-scheme-handler/<s>;`.
+- **Windows:** Single-instance named mutex (`Local\OrielApp_<sanitized_id>`). When a secondary instance starts, it detects the mutex, locates the primary instance's hidden host window (`FindWindowW`), forwards the validated URL via Win32 `WM_COPYDATA` (magic `0x44454550`), restores/focuses the main window, and exits 0. On cold start, the URL is parsed from `GetCommandLineW()`. NSIS installer registers keys under `HKCU\Software\Classes\<s>` and cleans them up on uninstall.
+- **macOS:** Compiling stub returning `error.NotSupported` (pending Milestone 7 step 3 `.app` bundles).
+
+#### 5. Security & Validation
+
+All incoming URLs are validated before delivery:
+- Scheme must match one of the app's declared schemes.
+- Scheme syntax must conform to RFC 3986 §3.1 (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`).
+- Maximum length is 2048 bytes (longer URLs are rejected).
+- URLs containing control characters (ASCII `< 0x20` or `0x7F`) are rejected.
+- URLs must parse successfully with `std.Uri.parse`.
 
 ## Packaging
 

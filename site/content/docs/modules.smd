@@ -22,6 +22,7 @@
 | Global shortcuts | `global_shortcut` | on | ✓ | ✓ | ✓ |
 | Input injection | `input` | on | ✓ | ✓ | ✓ |
 | Clipboard | `clipboard` | on | ✓ | ✓ | ✓ |
+| Deep links | `deep_link` | **off** | ✓ | ✓ | pending (needs `.app` bundles) |
 | Vector search | `sqlite_vec` | **off** | ✓ | ✓ | ✓ |
 | LLM inference | `llama` | **off** | ✓ | ✓ | ✓ |
 | Speech-to-text | `whisper` | **off** | ✓ | ✓ | ✓ |
@@ -225,6 +226,45 @@ try oriel.clipboard.writeText("New content");
 ```
 
 **Platform support:** Linux (Wayland data-control + X11 GdkClipboard) · Windows · macOS (`NSPasteboard`).
+
+# Deep links
+
+Handle custom URL schemes (e.g. `myapp://note/123`), delivering links to both cold-starting and already-running app instances.
+
+```zig
+if (oriel.options.deep_link) {
+    oriel.deep_link.onOpen(onDeepLink);
+}
+
+fn onDeepLink(url: []const u8) void {
+    // Validated against declared schemes, max 2048 bytes, no control chars
+    std.log.info("Received deep link: {s}", .{url});
+}
+```
+
+In the webview frontend:
+
+```ts
+import { listen } from "./oriel";
+
+// Listen for incoming deep links
+listen("deep-link", ({ url }) => {
+    console.log("Deep link received:", url);
+});
+
+// Or query the cold-start URL
+const initialUrl = await window.oriel.deepLink.current();
+```
+
+Configure schemes in `build.zig` via `.package = .{ .url_schemes = &.{"myapp"} }` or using the CLI:
+
+```sh
+oriel deep-link add myapp
+```
+
+**Platform support:** Linux (GApplication single-instance + XDG desktop handler) · Windows (Named mutex + `WM_COPYDATA` forwarding + HKCU registry) · macOS stub (compiles, pending `.app` bundles).
+
+**Status:** Opt-in with `-Ddeep_link`. Default: off.
 
 # Local AI inference
 

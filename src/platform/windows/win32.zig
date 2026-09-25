@@ -101,6 +101,12 @@ pub const WM_LBUTTONUP: UINT = 0x0202;
 pub const WM_CONTEXTMENU: UINT = 0x007B;
 pub const WM_USER: UINT = 0x0400;
 pub const WM_APP: UINT = 0x8000;
+pub const WM_COPYDATA: UINT = 0x004A;
+pub const COPYDATASTRUCT = extern struct {
+    dwData: usize,
+    cbData: DWORD,
+    lpData: ?*anyopaque,
+};
 pub const NIN_SELECT: UINT = WM_USER + 0;
 pub const NIN_KEYSELECT: UINT = WM_USER + 1;
 pub const NIN_BALLOONSHOW: UINT = WM_USER + 2;
@@ -541,6 +547,10 @@ pub extern "user32" fn CreateWindowExW(
     lpParam: ?*anyopaque,
 ) callconv(.winapi) ?HWND;
 pub extern "user32" fn DestroyWindow(hWnd: HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn FindWindowW(
+    lpClassName: ?[*:0]const WCHAR,
+    lpWindowName: ?[*:0]const WCHAR,
+) callconv(.winapi) ?HWND;
 pub extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT;
 pub extern "user32" fn GetMessageW(lpMsg: *MSG, hWnd: ?HWND, wMsgFilterMin: UINT, wMsgFilterMax: UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn PeekMessageW(lpMsg: *MSG, hWnd: ?HWND, wMsgFilterMin: UINT, wMsgFilterMax: UINT, wRemoveMsg: UINT) callconv(.winapi) BOOL;
@@ -804,6 +814,16 @@ pub extern "kernel32" fn CreateProcessW(
 pub extern "kernel32" fn GetFinalPathNameByHandleW(hFile: HANDLE, lpszFilePath: [*]WCHAR, cchFilePath: DWORD, dwFlags: DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn GetFileType(hFile: HANDLE) callconv(.winapi) DWORD;
 pub extern "kernel32" fn GetFileInformationByHandle(hFile: HANDLE, lpFileInformation: *BY_HANDLE_FILE_INFORMATION) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CreateMutexW(
+    lpMutexAttributes: ?*anyopaque,
+    bInitialOwner: BOOL,
+    lpName: ?[*:0]const WCHAR,
+) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn LocalFree(hMem: ?*anyopaque) callconv(.winapi) ?*anyopaque;
+pub extern "shell32" fn CommandLineToArgvW(
+    lpCmdLine: [*:0]const WCHAR,
+    pNumArgs: *c_int,
+) callconv(.winapi) ?[*][*:0]WCHAR;
 
 // ole32
 pub const CLSCTX_INPROC_SERVER: DWORD = 1;

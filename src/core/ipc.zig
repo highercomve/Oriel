@@ -38,7 +38,7 @@ pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
 
 /// Check if `cmd` is a framework built-in command.
 pub fn isBuiltinCommand(cmd: []const u8) bool {
-    return std.mem.eql(u8, cmd, "open_external");
+    return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current");
 }
 
 /// Dispatch a built-in framework command.
@@ -53,6 +53,15 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         try security.validateExternalUrl(sec, args.url);
         const url_z = try arena.dupeZ(u8, args.url);
         App.openExternal(url_z);
+        return arena.dupe(u8, "null");
+    } else if (std.mem.eql(u8, request.cmd, "deep_link:current")) {
+        const build_options = @import("build_options");
+        if (build_options.deep_link) {
+            const deep_link = @import("../modules/deep_link.zig");
+            if (deep_link.current()) |curr| {
+                return std.json.Stringify.valueAlloc(arena, curr, .{});
+            }
+        }
         return arena.dupe(u8, "null");
     }
     return error.UnknownCommand;
@@ -233,6 +242,10 @@ pub fn typescript(comptime Commands: type, comptime Events: type) []const u8 {
             \\  emit(event: string, payload?: unknown): Promise<void>;
             \\}
             \\
+            \\export interface DeepLinkApi {
+            \\  current(): Promise<string | null>;
+            \\}
+            \\
             \\export interface WindowApi {
             \\  open(options: WindowOptions): Promise<WindowHandle>;
             \\  current(): WindowHandle;
@@ -247,6 +260,7 @@ pub fn typescript(comptime Commands: type, comptime Events: type) []const u8 {
             \\      invoke(cmd: string, args: unknown): Promise<unknown>;
             \\      listen(event: string, callback: (payload: unknown) => void): () => void;
             \\      window: WindowApi;
+            \\      deepLink: DeepLinkApi;
             \\      openExternal(url: string): Promise<void>;
             \\    };
             \\  }
@@ -269,6 +283,8 @@ pub fn typescript(comptime Commands: type, comptime Events: type) []const u8 {
             \\/** Built-in window management API. */
             \\// Not exported as `window`: that would shadow the global inside this module.
             \\export const orielWindow: WindowApi = (globalThis as any).oriel?.window;
+            \\/** Built-in deep link API. */
+            \\export const deepLink: DeepLinkApi = (globalThis as any).oriel?.deepLink;
             \\/** Open a URL in the system's default browser. */
             \\export function openExternal(url: string): Promise<void> {
             \\  return window.oriel.openExternal(url);

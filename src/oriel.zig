@@ -23,6 +23,7 @@ pub const dialog = if (options.dialog) @import("modules/dialog.zig") else struct
 pub const notification = if (options.notification) @import("modules/notification.zig") else struct {};
 pub const store = if (options.store) @import("modules/store.zig") else struct {};
 pub const menu = if (options.menu) @import("modules/menu.zig") else struct {};
+pub const deep_link = if (options.deep_link) @import("modules/deep_link.zig") else struct {};
 pub const sqlite_vec = if (options.sqlite_vec) @import("modules/sqlite_vec.zig") else struct {};
 pub const llama = if (options.llama) @import("modules/llama.zig") else struct {};
 pub const whisper = if (options.whisper) @import("modules/whisper.zig") else struct {};
@@ -64,6 +65,19 @@ pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.
             }
         }
     }
+
+    var args_list: std.ArrayList([]const u8) = .empty;
+    defer args_list.deinit(init.gpa);
+    var it2 = try init.minimal.args.iterateAllocator(init.gpa);
+    defer it2.deinit();
+    while (it2.next()) |arg| {
+        try args_list.append(init.gpa, try init.gpa.dupe(u8, arg));
+    }
+    defer {
+        for (args_list.items) |arg| init.gpa.free(arg);
+    }
+    App.setProcessArgs(args_list.items);
+
     return App.run(init.io, api, config);
 }
 
@@ -113,6 +127,7 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
         .{ .name = "notification", .enabled = options.notification },
         .{ .name = "store", .enabled = options.store },
         .{ .name = "menu", .enabled = options.menu },
+        .{ .name = "deep_link", .enabled = options.deep_link },
         .{ .name = "global_shortcut", .enabled = options.global_shortcut },
         .{ .name = "input", .enabled = options.input },
         .{ .name = "clipboard", .enabled = options.clipboard },
@@ -157,6 +172,7 @@ test {
     if (options.notification) std.testing.refAllDecls(notification);
     if (options.store) std.testing.refAllDecls(store);
     if (options.menu) std.testing.refAllDecls(menu);
+    if (options.deep_link) std.testing.refAllDecls(deep_link);
     if (options.global_shortcut) std.testing.refAllDecls(global_shortcut);
     if (options.input) std.testing.refAllDecls(input);
     if (options.clipboard) std.testing.refAllDecls(clipboard);

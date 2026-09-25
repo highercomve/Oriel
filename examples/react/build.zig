@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
 
     // Only the modules this app uses; the rest aren't compiled or linked.
     const dep = b.dependency("oriel", .{
+        .deep_link = true,
         .target = target,
         .optimize = optimize,
         .sql = true,
@@ -29,6 +30,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .frontend = .{ .dir = "frontend" },
         .package = .{
+            .url_schemes = &.{"oriel-notes"},
             .id = "dev.oriel.ReactNotes",
             .name = "Oriel React Notes",
             .summary = "Desktop notes app built with Oriel and React",

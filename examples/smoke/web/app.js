@@ -144,6 +144,17 @@ if (location.search.includes("child=1")) {
         results.push({ module: "clipboard r/w", ok: false, detail: String(e) });
       }
 
+      try {
+        const curDl = await oriel.deepLink.current();
+        results.push({
+          module: "deep_link js",
+          ok: curDl === null || typeof curDl === "string",
+          detail: `current() returned ${JSON.stringify(curDl)}`,
+        });
+      } catch (e) {
+        results.push({ module: "deep_link js", ok: false, detail: String(e) });
+      }
+
       results.push(...(await windowChecks()));
       results.push(...(await securityChecks()));
 

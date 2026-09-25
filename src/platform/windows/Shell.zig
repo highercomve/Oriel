@@ -252,13 +252,55 @@ fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam:
             handleNotifyMessage(wParam, lParam);
             return 0;
         },
+        win32.WM_COPYDATA => {
+            if (lParam == 0) return 0;
+            const p_cds: *const win32.COPYDATASTRUCT = @ptrFromInt(@as(usize, @bitCast(lParam)));
+            if (p_cds.dwData == 0x44454550) { // 'DEEP'
+                if (p_cds.cbData > 0 and p_cds.cbData <= 65536 and p_cds.lpData != null) {
+                    const raw_bytes = @as([*]const u8, @ptrCast(p_cds.lpData.?))[0..p_cds.cbData];
+                    const url_bytes = std.mem.sliceTo(raw_bytes, 0);
+                    if (build_opts.deep_link) {
+                        deep_link.deliver(url_bytes);
+                    }
+                }
+                if (main_hwnd) |mw| {
+                    _ = win32.ShowWindow(mw, win32.SW_RESTORE);
+                    _ = win32.SetForegroundWindow(mw);
+                }
+                return 1;
+            }
+            return 0;
+        },
         else => return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam),
     }
 }
 
+const build_opts = @import("build_options");
+const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
+
+fn getAppMutexNameW(gpa: std.mem.Allocator, app_id: []const u8) ![:0]u16 {
+    var sanitized: std.ArrayList(u8) = .empty;
+    defer sanitized.deinit(gpa);
+    try sanitized.appendSlice(gpa, "Local\\OrielApp_");
+    for (app_id) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '_' or c == '-') {
+            try sanitized.append(gpa, c);
+        } else {
+            try sanitized.append(gpa, '_');
+        }
+    }
+    return try std.unicode.utf8ToUtf16LeAllocZ(gpa, sanitized.items);
+}
+
+fn getHostWindowTitleW(gpa: std.mem.Allocator, app_id: []const u8) ![:0]u16 {
+    const title_u8 = try std.fmt.allocPrint(gpa, "OrielHost_{s}", .{app_id});
+    defer gpa.free(title_u8);
+    return try std.unicode.utf8ToUtf16LeAllocZ(gpa, title_u8);
+}
+
 /// Create the hidden host window (never shown; WS_EX_TOOLWINDOW keeps it off
 /// the taskbar and Alt+Tab).
-fn createHostWindow() !win32.HWND {
+fn createHostWindow(title_w: ?[*:0]const win32.WCHAR) !win32.HWND {
     const hInst: win32.HINSTANCE = @ptrCast(win32.GetModuleHandleW(null) orelse return error.NoModuleHandle);
     const wc = win32.WNDCLASSEXW{
         .lpfnWndProc = &hostWndProc,
@@ -268,7 +310,7 @@ fn createHostWindow() !win32.HWND {
     if (win32.RegisterClassExW(&wc) == 0 and win32.GetLastError() != 1410) { // ERROR_CLASS_ALREADY_EXISTS
         return error.RegisterClassFailed;
     }
-    return win32.CreateWindowExW(win32.WS_EX_TOOLWINDOW, HOST_CLASS_NAME, null, win32.WS_POPUP, 0, 0, 0, 0, null, null, hInst, null) orelse
+    return win32.CreateWindowExW(win32.WS_EX_TOOLWINDOW, HOST_CLASS_NAME, title_w, win32.WS_POPUP, 0, 0, 0, 0, null, null, hInst, null) orelse
         error.CreateWindowFailed;
 }
 
@@ -292,6 +334,89 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     return struct {
         pub fn run(io: std.Io) u8 {
             _ = io;
+            const gpa = std.heap.smp_allocator;
+            const app_id = if (config.dev != null) config.id ++ ".Dev" else config.id;
+            var h_mutex: ?win32.HANDLE = null;
+            defer {
+                if (h_mutex) |m| _ = win32.CloseHandle(m);
+            }
+
+            if (build_opts.deep_link) {
+                const mutex_name_w = getAppMutexNameW(gpa, app_id) catch return 1;
+                defer gpa.free(mutex_name_w);
+
+                h_mutex = win32.CreateMutexW(null, win32.FALSE, mutex_name_w);
+                if (win32.GetLastError() == win32.ERROR_ALREADY_EXISTS) {
+                    const host_title_w = getHostWindowTitleW(gpa, app_id) catch return 1;
+                    defer gpa.free(host_title_w);
+
+                    const primary_host = win32.FindWindowW(HOST_CLASS_NAME, host_title_w);
+                    if (primary_host) |host| {
+                        var maybe_url: ?[]const u8 = null;
+                        var argc: c_int = 0;
+                        if (win32.CommandLineToArgvW(win32.GetCommandLineW(), &argc)) |w_argv| {
+                            defer _ = win32.LocalFree(@ptrCast(w_argv));
+                            if (argc > 1) {
+                                var idx: usize = 1;
+                                while (idx < @as(usize, @intCast(argc))) : (idx += 1) {
+                                    const w_slice = std.mem.span(w_argv[idx]);
+                                    const u8_arg = std.unicode.utf16LeToUtf8Alloc(gpa, w_slice) catch continue;
+                                    defer gpa.free(u8_arg);
+                                    if (deep_link.validate(u8_arg, config.deep_link_schemes)) |_| {
+                                        maybe_url = gpa.dupe(u8, u8_arg) catch null;
+                                        break;
+                                    } else |_| {}
+                                }
+                            }
+                        }
+
+                        if (maybe_url) |url| {
+                            defer gpa.free(url);
+                            var cds = win32.COPYDATASTRUCT{
+                                .dwData = 0x44454550,
+                                .cbData = @intCast(url.len),
+                                .lpData = @ptrCast(@constCast(url.ptr)),
+                            };
+                            _ = win32.SendMessageW(host, win32.WM_COPYDATA, 0, @bitCast(@intFromPtr(&cds)));
+                        } else {
+                            var cds = win32.COPYDATASTRUCT{
+                                .dwData = 0x44454550,
+                                .cbData = 0,
+                                .lpData = null,
+                            };
+                            _ = win32.SendMessageW(host, win32.WM_COPYDATA, 0, @bitCast(@intFromPtr(&cds)));
+                        }
+                    }
+                    return 0;
+                }
+            }
+
+            var cold_url: ?[]const u8 = null;
+            defer {
+                if (cold_url) |u| gpa.free(u);
+            }
+            if (build_opts.deep_link) {
+                var argc: c_int = 0;
+                if (win32.CommandLineToArgvW(win32.GetCommandLineW(), &argc)) |w_argv| {
+                    defer _ = win32.LocalFree(@ptrCast(w_argv));
+                    if (argc > 1) {
+                        var idx: usize = 1;
+                        while (idx < @as(usize, @intCast(argc))) : (idx += 1) {
+                            const w_slice = std.mem.span(w_argv[idx]);
+                            const u8_arg = std.unicode.utf16LeToUtf8Alloc(gpa, w_slice) catch continue;
+                            defer gpa.free(u8_arg);
+                            if (deep_link.validate(u8_arg, config.deep_link_schemes)) |_| {
+                                cold_url = gpa.dupe(u8, u8_arg) catch null;
+                                break;
+                            } else |_| {}
+                        }
+                    }
+                }
+                if (cold_url) |url| {
+                    deep_link.setColdStartUrl(url);
+                }
+            }
+
             main_thread_id = win32.GetCurrentThreadId();
             defer main_thread_id = 0;
 
@@ -305,7 +430,10 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             active_create_window_fn = &Creator.createWindow;
             defer active_create_window_fn = null;
 
-            const host = createHostWindow() catch |err| {
+            const host_title_w = getHostWindowTitleW(gpa, app_id) catch null;
+            defer if (host_title_w) |t| gpa.free(t);
+
+            const host = createHostWindow(if (host_title_w) |t| t.ptr else null) catch |err| {
                 log.err("failed to create the host window: {s}", .{@errorName(err)});
                 return 1;
             };
@@ -349,6 +477,12 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             main_hwnd = main_win.handle.hwnd;
 
             if (config.setup) |setup| setup() catch |err| log.err("setup failed: {s}", .{@errorName(err)});
+
+            if (build_opts.deep_link) {
+                if (cold_url) |url| {
+                    deep_link.deliver(url);
+                }
+            }
 
             var msg: win32.MSG = undefined;
             while (true) {

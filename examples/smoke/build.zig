@@ -5,7 +5,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     // Every module and plugin is enabled by default; the smoke test checks them all.
-    const dep = b.dependency("oriel", .{ .target = target, .optimize = optimize });
+    const dep = b.dependency("oriel", .{
+        .target = target,
+        .optimize = optimize,
+        .deep_link = true,
+    });
 
     _ = oriel.addApp(b, dep, .{
         .name = "oriel-smoke",
@@ -26,6 +30,7 @@ pub fn build(b: *std.Build) void {
             .description = "Smoke-test app checking modules and security inside a webview.",
             .categories = "Utility;Development;",
             .version = "0.1.0",
+            .url_schemes = &.{"smoke-scheme"},
         },
     });
 }
