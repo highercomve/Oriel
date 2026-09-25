@@ -18,6 +18,8 @@ const gio = @import("gio");
 const webkit = @import("webkit");
 const soup = @import("soup");
 const range = @import("../media/range.zig");
+const App = @import("../../core/App.zig");
+const security = @import("../../core/security.zig");
 const open = @import("../media/open.zig");
 
 /// Custom GFilterInputStream subclass that limits the number of bytes read
@@ -180,8 +182,24 @@ pub fn handle(request: *webkit.URISchemeRequest, rel_path: []const u8) void {
     } else {
         response.setStatus(200, null);
     }
+    appendAppHeaders(headers);
     response.setHttpHeaders(headers);
     request.finishWithResponse(response);
+}
+
+/// nosniff and the app's extra headers (security.headers), as on app://
+/// responses. soup copies the strings; the buffers fit every usable header
+/// (names are from a fixed list, values at most 2047 bytes).
+fn appendAppHeaders(headers: *soup.MessageHeaders) void {
+    headers.append("X-Content-Type-Options", "nosniff");
+    for (App.current_security.headers) |h| {
+        if (!security.headerUsable(h)) continue;
+        var name_buf: [128]u8 = undefined;
+        var value_buf: [security.max_header_value + 1]u8 = undefined;
+        const name = std.fmt.bufPrintZ(&name_buf, "{s}", .{h.name}) catch continue;
+        const value = std.fmt.bufPrintZ(&value_buf, "{s}", .{h.value}) catch continue;
+        headers.append(name, value);
+    }
 }
 
 fn finishWithError(request: *webkit.URISchemeRequest, status: c_uint, reason: [:0]const u8) void {

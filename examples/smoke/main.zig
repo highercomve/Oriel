@@ -467,6 +467,12 @@ pub fn main(init: std.process.Init) !u8 {
             .external_links = .deny,
             .allowed_origins = &.{probe_origin},
             .csp = oriel.security.default_csp ++ "; frame-src " ++ probe_origin,
+            // Security 1.3 / 1.4 (the `freeze prototype` and `security headers` checks).
+            .freeze_prototype = true,
+            .headers = &.{
+                .{ .name = "Cross-Origin-Opener-Policy", .value = "same-origin" },
+                .{ .name = "Permissions-Policy", .value = "geolocation=()" },
+            },
         },
         .deep_link_schemes = app.url_schemes,
         .permissions = app.permissions,
