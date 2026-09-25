@@ -77,9 +77,11 @@ Oriel apps use Win32 and Microsoft Edge WebView2 on Windows. You can build them 
 
 ## Requirements
 
-- **Zig 0.16.0**, and **Node.js** for the React, Vue and Svelte templates.
+- **Zig 0.16.0**, and **Node.js** for the React, Vue and Svelte templates (`vanilla` requires no Node).
 - **`WebView2Loader.dll`**: Downloaded and cached automatically by the CLI (`oriel init`, `oriel webview2`, or during `oriel build` / `oriel package`).
-- **NSIS 3** (`makensis`) for the installer. On Windows it is found in `Program Files\NSIS` even when it is not on `PATH`; on Linux install your distribution's `nsis` package.
+- **NSIS 3** (`makensis`) for the installer.
+  - **No admin required (recommended):** install via `oriel setup nsis` (and `oriel setup node`), or run `oriel doctor --fix`.
+  - **Via winget:** `winget install --id OpenJS.NodeJS.LTS` and `winget install --id NSIS.NSIS` (note: NSIS via winget requires administrator privileges / UAC elevation).
 
 The WebView2 runtime itself ships with Windows 11 and current Windows 10; the installer checks for it.
 
