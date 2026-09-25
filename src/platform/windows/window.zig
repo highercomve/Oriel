@@ -791,12 +791,33 @@ pub fn WindowCreator(
 
         pub fn registerWindowClass() !void {
             const hInst: win32.HINSTANCE = @ptrCast(win32.GetModuleHandleW(null) orelse return error.NoModuleHandle);
+            const icon_res: [*:0]align(1) const u16 = @ptrFromInt(1);
+            const icon_big: ?win32.HICON = if (win32.LoadImageW(
+                hInst,
+                icon_res,
+                win32.IMAGE_ICON,
+                win32.GetSystemMetrics(win32.SM_CXICON),
+                win32.GetSystemMetrics(win32.SM_CYICON),
+                win32.LR_SHARED,
+            )) |h| @ptrCast(h) else win32.LoadIconW(null, win32.IDI_APPLICATION);
+
+            const icon_sm: ?win32.HICON = if (win32.LoadImageW(
+                hInst,
+                icon_res,
+                win32.IMAGE_ICON,
+                win32.GetSystemMetrics(win32.SM_CXSMICON),
+                win32.GetSystemMetrics(win32.SM_CYSMICON),
+                win32.LR_SHARED,
+            )) |h| @ptrCast(h) else icon_big;
+
             const wc = win32.WNDCLASSEXW{
                 .style = win32.CS_HREDRAW | win32.CS_VREDRAW,
                 .lpfnWndProc = &wndProc,
                 .hInstance = hInst,
+                .hIcon = icon_big,
                 .hCursor = win32.LoadCursorW(null, win32.IDC_ARROW),
                 .lpszClassName = WINDOW_CLASS_NAME,
+                .hIconSm = icon_sm,
             };
             if (win32.RegisterClassExW(&wc) == 0) {
                 // Ignore if class already registered
@@ -846,6 +867,29 @@ pub fn WindowCreator(
                 null,
             ) orelse return error.CreateWindowFailed;
             errdefer _ = win32.DestroyWindow(hwnd);
+
+            // Set window icons (big and small) from embedded resource 1
+            const icon_res: [*:0]align(1) const u16 = @ptrFromInt(1);
+            if (win32.LoadImageW(
+                hInst,
+                icon_res,
+                win32.IMAGE_ICON,
+                win32.GetSystemMetrics(win32.SM_CXICON),
+                win32.GetSystemMetrics(win32.SM_CYICON),
+                win32.LR_SHARED,
+            )) |icon_handle| {
+                _ = win32.SendMessageW(hwnd, win32.WM_SETICON, win32.ICON_BIG, @bitCast(@intFromPtr(icon_handle)));
+            }
+            if (win32.LoadImageW(
+                hInst,
+                icon_res,
+                win32.IMAGE_ICON,
+                win32.GetSystemMetrics(win32.SM_CXSMICON),
+                win32.GetSystemMetrics(win32.SM_CYSMICON),
+                win32.LR_SHARED,
+            )) |icon_handle| {
+                _ = win32.SendMessageW(hwnd, win32.WM_SETICON, win32.ICON_SMALL, @bitCast(@intFromPtr(icon_handle)));
+            }
 
             // Compute userDataFolder: %LOCALAPPDATA%\<app_id>\WebView2
             const user_data_folder_w = blk: {

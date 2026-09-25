@@ -365,7 +365,8 @@ pub fn resizeIcons(
 }
 
 /// Pack the resized PNGs in `dest_dir` into `dest_dir/icon.ico` (used by the
-/// NSIS installer and its shortcuts).
+/// NSIS installer and its shortcuts), and generate `dest_dir/app.rc` for
+/// embedding the icon resource into Windows binaries.
 fn writeDestinationIco(gpa: std.mem.Allocator, io: Io, dest_dir: []const u8) !void {
     var png_entries: std.ArrayList(ico.PngIconEntry) = .empty;
     defer {
@@ -386,6 +387,10 @@ fn writeDestinationIco(gpa: std.mem.Allocator, io: Io, dest_dir: []const u8) !vo
     const ico_path = try std.fmt.allocPrint(gpa, "{s}/icon.ico", .{dest_dir});
     defer gpa.free(ico_path);
     try Dir.cwd().writeFile(io, .{ .sub_path = ico_path, .data = ico_bytes });
+
+    const rc_path = try std.fmt.allocPrint(gpa, "{s}/app.rc", .{dest_dir});
+    defer gpa.free(rc_path);
+    try Dir.cwd().writeFile(io, .{ .sub_path = rc_path, .data = "1 ICON \"icon.ico\"\n" });
 }
 
 /// `<dest_dir>/icon.icns` from the resized PNGs (for macOS bundles), plus
@@ -1692,6 +1697,13 @@ test "resizeIcons custom png no overflow on large sizes" {
     defer allocator.free(ico_data);
     try std.testing.expect(ico_data.len > 6);
     try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, ico_data[2..4], .little));
+
+    // Verify app.rc was generated
+    const out_rc = try std.fs.path.join(allocator, &.{ out_dir, "app.rc" });
+    defer allocator.free(out_rc);
+    const rc_data = try Dir.cwd().readFileAlloc(io, out_rc, allocator, .limited(1024));
+    defer allocator.free(rc_data);
+    try std.testing.expectEqualStrings("1 ICON \"icon.ico\"\n", rc_data);
 }
 
 test "resolveDataHome pure path resolution" {

@@ -3,7 +3,7 @@
 const std = @import("std");
 const zigimg = @import("zigimg");
 
-pub const icon_sizes = [_]u16{ 16, 32, 48, 64, 128, 256, 512 };
+pub const icon_sizes = [_]u16{ 16, 24, 32, 48, 64, 128, 256, 512 };
 
 /// Downsample an RGBA32 pixel buffer using box (area) averaging.
 pub fn downsampleRgba32(

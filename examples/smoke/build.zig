@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
     _ = oriel.addApp(b, dep, .{
         .name = "oriel-smoke",
         .root_source_file = b.path("main.zig"),
+        .icon = b.path("web/icon.png"),
         // A static page: no npm, no dev server, embedded as-is.
         .frontend = .{
             .dir = "web",

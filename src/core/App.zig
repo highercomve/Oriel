@@ -68,6 +68,8 @@ pub const Config = struct {
     /// Development mode: load the frontend from a dev server (e.g. Vite with
     /// hot reload) instead of the embedded assets.
     dev: ?Dev = null,
+    /// Application icon in PNG format (e.g. from `app.icon_bytes`).
+    icon: ?[]const u8 = null,
     /// Declared URL schemes handled by the application (e.g. &.{ "oriel-notes" }).
     deep_link_schemes: []const []const u8 = &.{},
 };

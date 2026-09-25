@@ -172,6 +172,8 @@ pub fn WindowCreator(
             const app_window = gtk.ApplicationWindow.new(app);
             const window = app_window.as(gtk.Window);
             window.setTitle(options.title);
+            const id_z = (config.id ++ "\x00")[0..config.id.len :0];
+            window.setIconName(id_z);
             window.setDefaultSize(options.width, options.height);
             window.setResizable(@intFromBool(options.resizable));
             window.setDecorated(@intFromBool(options.decorations));

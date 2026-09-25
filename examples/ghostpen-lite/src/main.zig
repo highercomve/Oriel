@@ -189,6 +189,7 @@ pub fn main(init: std.process.Init) !u8 {
     const config_gui: oriel.App.Config = .{
         .id = "com.ghostpen.lite",
         .title = "GhostPen Lite",
+        .icon = app.icon_bytes,
         .width = 680,
         .height = 560,
         .assets = app.assets,

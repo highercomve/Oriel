@@ -13,7 +13,7 @@ pub const PngIconEntry = struct {
 };
 
 /// Default icon resolutions included in a standard Windows application icon.
-pub const default_ico_sizes = [_]u16{ 16, 32, 48, 64, 128, 256 };
+pub const default_ico_sizes = [_]u16{ 16, 24, 32, 48, 64, 256 };
 
 /// Write an ICO file containing PNG-compressed images; the caller owns the result.
 pub fn writeIcoFromPngs(allocator: std.mem.Allocator, entries: []const PngIconEntry) ![]u8 {
@@ -100,4 +100,40 @@ test "writeIcoFromPngs creates valid ICO structure" {
     // Payloads
     try testing.expectEqualSlices(u8, &dummy_png_16, ico_bytes[38..46]);
     try testing.expectEqualSlices(u8, &dummy_png_32, ico_bytes[46..55]);
+}
+
+test "writeIcoFromPngs all default_ico_sizes (16,24,32,48,64,256)" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+
+    try testing.expectEqualSlices(u16, &.{ 16, 24, 32, 48, 64, 256 }, &default_ico_sizes);
+
+    var entries: [default_ico_sizes.len]PngIconEntry = undefined;
+    const payload = [_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    for (default_ico_sizes, 0..) |size, i| {
+        entries[i] = .{ .width = size, .height = size, .png_data = &payload };
+    }
+
+    const ico_bytes = try writeIcoFromPngs(gpa, &entries);
+    defer gpa.free(ico_bytes);
+
+    // Verify header
+    try testing.expectEqual(@as(u16, 0), std.mem.readInt(u16, ico_bytes[0..2], .little)); // reserved
+    try testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, ico_bytes[2..4], .little)); // type
+    try testing.expectEqual(@as(u16, 6), std.mem.readInt(u16, ico_bytes[4..6], .little)); // 6 entries
+
+    // Check each entry: 256x256 is encoded as 0 in ICO header
+    for (default_ico_sizes, 0..) |size, i| {
+        const entry_offset = 6 + i * 16;
+        const expected_w: u8 = if (size >= 256) 0 else @intCast(size);
+        const expected_h: u8 = if (size >= 256) 0 else @intCast(size);
+        try testing.expectEqual(expected_w, ico_bytes[entry_offset + 0]);
+        try testing.expectEqual(expected_h, ico_bytes[entry_offset + 1]);
+        try testing.expectEqual(@as(u8, 0), ico_bytes[entry_offset + 2]); // color count
+        try testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, ico_bytes[entry_offset + 4 ..][0..2], .little)); // planes
+        try testing.expectEqual(@as(u16, 32), std.mem.readInt(u16, ico_bytes[entry_offset + 6 ..][0..2], .little)); // bpp
+        try testing.expectEqual(@as(u32, payload.len), std.mem.readInt(u32, ico_bytes[entry_offset + 8 ..][0..4], .little)); // data len
+        const data_offset = std.mem.readInt(u32, ico_bytes[entry_offset + 12 ..][0..4], .little);
+        try testing.expectEqualSlices(u8, &payload, ico_bytes[data_offset .. data_offset + payload.len]);
+    }
 }

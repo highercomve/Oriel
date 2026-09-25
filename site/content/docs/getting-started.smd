@@ -93,6 +93,7 @@ The new project looks like this:
 | `frontend/` | The page (Vite project, or a static page for `vanilla`) |
 | `build.zig` | Which Oriel modules are compiled in, packaging metadata |
 | `build.zig.zon` | Package manifest; Oriel is a dependency |
+| `icon.png` | Application icon (1024×1024 PNG recommended) |
 
 # Run it
 
@@ -108,6 +109,24 @@ To build the real thing, with the frontend embedded in the executable:
 oriel build            # zig-out/bin/my-app (ReleaseSafe by default)
 oriel run              # build and run
 ```
+
+# App icon
+
+Apps configure their icon with a single source PNG (1024×1024 recommended) in `build.zig`:
+
+```zig
+_ = oriel.addApp(b, dep, .{
+    .name = "my-app",
+    .root_source_file = b.path("src/main.zig"),
+    .icon = b.path("icon.png"), // optional, defaults to Oriel brand icon
+    ...
+});
+```
+
+Projects created with `oriel init` include a default `icon.png`. At build time, Oriel automatically generates:
+- **Windows**: Multi-resolution `.ico` embedded as an executable resource (`RT_GROUP_ICON`) and used for window icons, taskbar, shortcuts, and the installer.
+- **Linux**: Hicolor theme icons and `.desktop` entry.
+- **macOS**: `.icns` for the `.app` bundle and dynamic Dock icon.
 
 # The other commands
 

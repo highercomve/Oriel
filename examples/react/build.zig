@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
     _ = oriel.addApp(b, dep, .{
         .name = "oriel-react-notes",
         .root_source_file = b.path("src/main.zig"),
+        .icon = b.path("icon.png"),
         .frontend = .{ .dir = "frontend" },
         .package = .{
             .url_schemes = &.{"oriel-notes"},

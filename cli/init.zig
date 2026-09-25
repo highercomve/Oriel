@@ -244,7 +244,7 @@ pub fn writeFiles(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, p: Projec
     defer arena_state.deinit();
     const values = try vars(arena_state.allocator(), p);
     for (template.files(p.template)) |f| {
-        const text = try template.render(gpa, f.text, values);
+        const text = if (f.is_template) try template.render(gpa, f.text, values) else try gpa.dupe(u8, f.text);
         defer gpa.free(text);
         if (std.fs.path.dirname(f.path)) |parent| try dir.createDirPath(io, parent);
         try dir.writeFile(io, .{ .sub_path = f.path, .data = text, .flags = .{ .exclusive = true } });
@@ -571,7 +571,7 @@ test "every template renders to a valid project" {
             for (template.files(t)) |f| {
                 const text = try tmp.dir.readFileAlloc(io, f.path, gpa, .limited(1 << 20));
                 defer gpa.free(text);
-                try testing.expect(std.mem.indexOf(u8, text, "@@") == null);
+                if (f.is_template) try testing.expect(std.mem.indexOf(u8, text, "@@") == null);
                 if (std.mem.endsWith(u8, f.path, ".zig")) try expectValidZig(gpa, text, .zig);
                 if (std.mem.endsWith(u8, f.path, ".json")) {
                     const parsed = try std.json.parseFromSlice(std.json.Value, gpa, text, .{});

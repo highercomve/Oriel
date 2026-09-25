@@ -99,7 +99,7 @@ pub const PackageOptions = struct {
     /// Version string (e.g. "0.1.0"). Defaults to "0.1.0".
     version: ?[]const u8 = null,
 
-    /// High-resolution icon (PNG). Defaults to Oriel brand icon (1024x1024).
+    /// High-resolution icon (PNG). Deprecated: use `AppOptions.icon` instead. Defaults to Oriel brand icon (1024x1024).
     icon: ?std.Build.LazyPath = null,
 
     /// Target package formats to build. Overrides defaultFormats(os) if specified.
@@ -180,6 +180,8 @@ pub fn addPackageSteps(
     options: anytype,
     exe: *std.Build.Step.Compile,
     dev_exe: ?*std.Build.Step.Compile,
+    icons_dir: std.Build.LazyPath,
+    app_icon: std.Build.LazyPath,
 ) void {
     const pkg_opts = options.package orelse PackageOptions{};
     const target = exe.root_module.resolved_target.?;
@@ -193,7 +195,6 @@ pub fn addPackageSteps(
     const publisher = pkg_opts.publisher orelse metadata_mod.organizationFromAppId(app_id);
     const version = pkg_opts.version orelse "0.1.0";
     const categories = pkg_opts.categories orelse "Utility;";
-    const icon = pkg_opts.icon orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
 
     const metadata = Metadata{
         .id = app_id,
@@ -206,7 +207,7 @@ pub fn addPackageSteps(
         .license = pkg_opts.license,
         .homepage = pkg_opts.homepage,
         .categories = categories,
-        .icon = icon,
+        .icon = app_icon,
         .extra_deb_depends = pkg_opts.extra_deb_depends,
         .extra_rpm_depends = pkg_opts.extra_rpm_depends,
         .url_schemes = pkg_opts.url_schemes,
@@ -249,19 +250,8 @@ pub fn addPackageSteps(
     }
 
     const package_tool = oriel_dep.artifact("package_tool");
-    const brand_dir = oriel_dep.path("assets/brand");
 
-    // 1. Shared icon resizing into cache
-    const run_icons = b.addRunArtifact(package_tool);
-    run_icons.addArg("resize-icons");
-    run_icons.addArg("--input");
-    run_icons.addFileArg(metadata.icon);
-    run_icons.addArg("--out-dir");
-    const icons_dir = run_icons.addOutputDirectoryArg("icons");
-    run_icons.addArg("--brand-dir");
-    run_icons.addDirectoryArg(brand_dir);
-
-    // 2. Shared production desktop file in cache
+    // Production desktop file in cache
     const run_desktop = b.addRunArtifact(package_tool);
     run_desktop.addArg("generate-desktop");
     run_desktop.addArg("--out");
