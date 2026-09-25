@@ -956,11 +956,55 @@ fn ensureAbsolutePath(gpa: std.mem.Allocator, io: Io, path: []const u8) ![]const
     return try std.fs.path.join(gpa, &.{ cwd_path, path });
 }
 
+fn findManagedMakensis(gpa: std.mem.Allocator, io: Io) !?[]const u8 {
+    const home_dir = if (getEnv("ORIEL_HOME")) |h|
+        if (h.len > 0) try gpa.dupe(u8, h) else null
+    else blk: {
+        const home_var = if (builtin.os.tag == .windows) "USERPROFILE" else "HOME";
+        const home = getEnv(home_var) orelse break :blk null;
+        if (home.len == 0) break :blk null;
+        break :blk try std.fs.path.join(gpa, &.{ home, ".oriel" });
+    };
+    const root = home_dir orelse return null;
+    defer gpa.free(root);
+
+    const nsis_dir = try std.fs.path.join(gpa, &.{ root, "nsis" });
+    defer gpa.free(nsis_dir);
+
+    var dir = Dir.cwd().openDir(io, nsis_dir, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+
+    var it = dir.iterate();
+    while (try it.next(io)) |e| {
+        if (e.kind != .directory) continue;
+        const candidate1 = try std.fs.path.join(gpa, &.{ nsis_dir, e.name, "makensis.exe" });
+        if (pathExists(io, candidate1)) return candidate1;
+        gpa.free(candidate1);
+
+        const candidate2 = try std.fs.path.join(gpa, &.{ nsis_dir, e.name, "Bin", "makensis.exe" });
+        if (pathExists(io, candidate2)) return candidate2;
+        gpa.free(candidate2);
+    }
+    return null;
+}
+
 pub fn findMakensis(gpa: std.mem.Allocator, io: Io) ![]const u8 {
     const is_windows = builtin.os.tag == .windows;
     const exe_name = if (is_windows) "makensis.exe" else "makensis";
 
-    // 1. Search PATH entries from the environment
+    // 1. Explicit override via ORIEL_MAKENSIS
+    if (getEnv("ORIEL_MAKENSIS")) |env_path| {
+        if (env_path.len > 0 and pathExists(io, env_path)) {
+            return try gpa.dupe(u8, env_path);
+        }
+    }
+
+    // 2. Managed NSIS: ~/.oriel/nsis/<version>/makensis.exe (or Bin/makensis.exe)
+    if (findManagedMakensis(gpa, io) catch null) |managed| {
+        return managed;
+    }
+
+    // 3. Search PATH entries from the environment
     if (getEnv("PATH")) |path_var| {
         var it = std.mem.splitScalar(u8, path_var, std.fs.path.delimiter);
         while (it.next()) |dir| {
@@ -971,7 +1015,7 @@ pub fn findMakensis(gpa: std.mem.Allocator, io: Io) ![]const u8 {
         }
     }
 
-    // 2. Standard install locations (the NSIS installer does not add itself
+    // 4. Standard install locations (the NSIS installer does not add itself
     // to PATH on Windows).
     if (is_windows) {
         for ([_][]const u8{ "ProgramFiles(x86)", "ProgramFiles" }) |env| {
@@ -1085,7 +1129,12 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
     // Locate makensis
     const makensis_bin = findMakensis(gpa, io) catch |err| {
         switch (err) {
-            error.MakensisNotFound => std.debug.print("error: package-nsis: 'makensis' not found in PATH, /usr/bin or /usr/local/bin.\nInstall NSIS 3 (the `nsis` package on Arch, Debian and Ubuntu) to build Windows installers.\n", .{}),
+            error.MakensisNotFound => {
+                std.debug.print("error: package-nsis: 'makensis' not found (run: oriel setup nsis)\n", .{});
+                if (builtin.os.tag != .windows) {
+                    std.debug.print("Install NSIS 3 to build Windows installers.\n", .{});
+                }
+            },
             else => std.debug.print("error: package-nsis: looking for makensis: {s}\n", .{@errorName(err)}),
         }
         return 1;

@@ -18,12 +18,14 @@ const update_cmd = @import("update.zig");
 const webview2_cmd = @import("webview2.zig");
 const deep_link_cmd = @import("deep_link.zig");
 const zig_cmd = @import("zig_manager.zig");
+const setup_cmd = @import("setup.zig");
 
 const program = "oriel";
 
 pub const Commands = union(enum) {
     init: init_cmd.Command,
     doctor: doctor.Command,
+    setup: setup_cmd.Command,
     update: update_cmd.Command,
     webview2: webview2_cmd.Command,
     deep_link: deep_link_cmd.Command,
@@ -88,7 +90,8 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
         },
         .command => |cmd| switch (cmd) {
             .init => |c| return init_cmd.run(ctx, c),
-            .doctor => return doctor.run(ctx),
+            .doctor => |c| return doctor.run(ctx, c),
+            .setup => |c| return setup_cmd.run(ctx, c),
             .update => |c| return update_cmd.run(ctx, c),
             .webview2 => |c| return webview2_cmd.run(ctx, c),
             .deep_link => |c| return deep_link_cmd.run(ctx, c),
@@ -103,6 +106,7 @@ test {
     _ = Context;
     _ = init_cmd;
     _ = doctor;
+    _ = setup_cmd;
     _ = update_cmd;
     _ = webview2_cmd;
     _ = deep_link_cmd;
@@ -121,7 +125,7 @@ test "command table" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try args.writeHelp(Commands, program, &out.writer);
-    for ([_][]const u8{ "init", "doctor", "update", "webview2", "deep-link", "zig", "dev", "build", "run", "package", "types", "check" }) |name| {
+    for ([_][]const u8{ "init", "doctor", "setup", "update", "webview2", "deep-link", "zig", "dev", "build", "run", "package", "types", "check" }) |name| {
         const line = try std.fmt.allocPrint(std.testing.allocator, "\n  {s} ", .{name});
         defer std.testing.allocator.free(line);
         try std.testing.expect(std.mem.indexOf(u8, out.written(), line) != null);

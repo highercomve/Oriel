@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const Context = @import("Context.zig");
 const webview2 = @import("webview2.zig");
 const zig_manager = @import("zig_manager.zig");
+const setup = @import("setup.zig");
 
 /// A command that runs `zig build [step] <args...>` in the project root.
 /// `step` null is plain `zig build` (the install step).
@@ -113,6 +114,67 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
         }
     }
 
+    // Child environment with managed tools configured
+    var child_env = try ctx.environ.clone(ctx.gpa);
+    defer child_env.deinit();
+
+    // Check Node.js & npm
+    const needs_node = projectNeedsNode(ctx.io, root);
+    const system_node = try ctx.findExecutable("node");
+    defer if (system_node) |p| ctx.gpa.free(p);
+    const system_npm = try ctx.findExecutable("npm");
+    defer if (system_npm) |p| ctx.gpa.free(p);
+
+    const has_system_node_and_npm = system_node != null and system_npm != null;
+    var maybe_managed_node = try setup.findNewestManagedNode(ctx);
+    defer if (maybe_managed_node) |*mn| mn.deinit(ctx.gpa);
+
+    if (!has_system_node_and_npm) {
+        if (maybe_managed_node) |mn| {
+            const old_path = child_env.get("PATH");
+            const new_path = try prependPath(ctx.gpa, old_path, mn.bin_dir);
+            defer ctx.gpa.free(new_path);
+            try child_env.put("PATH", new_path);
+        } else if (needs_node) {
+            try ctx.err.writeAll("error: this project requires Node.js and npm (run: oriel setup node)\n");
+            return 1;
+        }
+    }
+
+    // Check NSIS for Windows packaging
+    if (step != null and std.mem.eql(u8, step.?, "package") and isPackagingForWindows(effective_args, builtin.os.tag)) {
+        var has_nsis = child_env.get("ORIEL_MAKENSIS") != null;
+        if (!has_nsis) {
+            const managed_nsis = try setup.findNewestManagedNsis(ctx);
+            if (managed_nsis) |mn_path| {
+                defer ctx.gpa.free(mn_path);
+                try child_env.put("ORIEL_MAKENSIS", mn_path);
+                has_nsis = true;
+            }
+        }
+        if (!has_nsis) {
+            if (try ctx.findExecutable("makensis")) |p| {
+                ctx.gpa.free(p);
+                has_nsis = true;
+            }
+        }
+        if (!has_nsis and builtin.os.tag == .windows) {
+            for ([_][]const u8{ "ProgramFiles(x86)", "ProgramFiles" }) |env| {
+                const base = child_env.get(env) orelse continue;
+                const candidate = try std.fs.path.join(ctx.gpa, &.{ base, "NSIS", "makensis.exe" });
+                defer ctx.gpa.free(candidate);
+                if (std.Io.Dir.cwd().access(ctx.io, candidate, .{})) |_| {
+                    has_nsis = true;
+                    break;
+                } else |_| {}
+            }
+        }
+        if (!has_nsis) {
+            try ctx.err.writeAll("error: packaging for Windows requires NSIS (run: oriel setup nsis)\n");
+            return 1;
+        }
+    }
+
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(ctx.gpa);
     try argv.appendSlice(ctx.gpa, &.{ zig, "build" });
@@ -122,7 +184,7 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
     // Windows can't replace a process: run zig as a child instead (Ctrl-C
     // reaches both, as they share the console) and pass its exit code on.
     if (!std.process.can_replace) {
-        return ctx.run(argv.items, root) orelse {
+        return ctx.runWithEnv(argv.items, root, &child_env) orelse {
             if (try ctx.findExecutable(zig)) |found| ctx.gpa.free(found) else try ctx.err.writeAll("Install Zig 0.16 or set ORIEL_ZIG; `oriel doctor` checks the setup.\n");
             return 1;
         };
@@ -133,7 +195,7 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
         return 1;
     };
     ctx.flush();
-    const e = std.process.replace(ctx.io, .{ .argv = argv.items });
+    const e = std.process.replace(ctx.io, .{ .argv = argv.items, .environ_map = &child_env });
     try ctx.err.print("error: could not run '{s}': {s}\n", .{ argv.items[0], Context.spawnErrorText(e) });
     if (e == error.FileNotFound) try ctx.err.writeAll("Install Zig 0.16 or set ORIEL_ZIG; `oriel doctor` checks the setup.\n");
     return 1;
@@ -327,4 +389,63 @@ test hasStep {
     try std.testing.expect(hasStep(out, "install"));
     try std.testing.expect(!hasStep(out, "run"));
     try std.testing.expect(!hasStep("  devtools  x", "dev"));
+}
+
+pub fn prependPath(gpa: std.mem.Allocator, existing_path: ?[]const u8, new_entry: []const u8) ![]u8 {
+    if (existing_path) |p| {
+        if (p.len > 0) {
+            return std.fmt.allocPrint(gpa, "{s}{c}{s}", .{ new_entry, std.fs.path.delimiter, p });
+        }
+    }
+    return gpa.dupe(u8, new_entry);
+}
+
+pub fn projectNeedsNode(io: std.Io, root: []const u8) bool {
+    var p1_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const p1 = std.fmt.bufPrint(&p1_buf, "{s}/frontend/package.json", .{root}) catch return false;
+    if (std.Io.Dir.cwd().access(io, p1, .{})) |_| return true else |_| {}
+
+    var p2_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const p2 = std.fmt.bufPrint(&p2_buf, "{s}/package.json", .{root}) catch return false;
+    if (std.Io.Dir.cwd().access(io, p2, .{})) |_| return true else |_| {}
+
+    return false;
+}
+
+pub fn isPackagingForWindows(args: []const []const u8, host_os: std.Target.Os.Tag) bool {
+    var target_is_windows = host_os == .windows;
+    for (args) |arg| {
+        if (std.mem.startsWith(u8, arg, "-Dtarget=")) {
+            const val = arg["-Dtarget=".len..];
+            target_is_windows = std.mem.indexOf(u8, val, "windows") != null;
+        }
+    }
+    return target_is_windows;
+}
+
+test prependPath {
+    const a = std.testing.allocator;
+    const sep = std.fs.path.delimiter;
+
+    const p1 = try prependPath(a, null, "/extra/bin");
+    defer a.free(p1);
+    try std.testing.expectEqualStrings("/extra/bin", p1);
+
+    const p2 = try prependPath(a, "", "/extra/bin");
+    defer a.free(p2);
+    try std.testing.expectEqualStrings("/extra/bin", p2);
+
+    const p3 = try prependPath(a, "/usr/bin", "/extra/bin");
+    defer a.free(p3);
+    const expected = try std.fmt.allocPrint(a, "/extra/bin{c}/usr/bin", .{sep});
+    defer a.free(expected);
+    try std.testing.expectEqualStrings(expected, p3);
+}
+
+test isPackagingForWindows {
+    try std.testing.expect(isPackagingForWindows(&.{}, .windows));
+    try std.testing.expect(!isPackagingForWindows(&.{}, .linux));
+    try std.testing.expect(isPackagingForWindows(&.{"-Dtarget=x86_64-windows"}, .linux));
+    try std.testing.expect(isPackagingForWindows(&.{"-Dtarget=aarch64-windows"}, .macos));
+    try std.testing.expect(!isPackagingForWindows(&.{"-Dtarget=x86_64-linux"}, .windows));
 }

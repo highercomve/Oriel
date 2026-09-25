@@ -8,6 +8,8 @@ const template = @import("template.zig");
 const Template = template.Template;
 const webview2 = @import("webview2.zig");
 const zig_manager = @import("zig_manager.zig");
+const setup = @import("setup.zig");
+const project_cmd = @import("project.zig");
 
 /// Where `oriel init` fetches Oriel from (plus `#<ref>`).
 pub const repo_url = "git+https://github.com/highercomve/Oriel";
@@ -23,6 +25,7 @@ pub const Command = struct {
         .oriel_path = "Depend on a local Oriel checkout instead (.path dependency)",
         .no_install = "Only record the dependency: skip `zig build --fetch` and `npm install`",
         .no_webview2 = "Skip downloading WebView2Loader.dll for Windows builds",
+        .yes = "Skip confirmation prompt when installing missing Node.js",
     };
     pub const values = .{ .id = "app-id", .oriel_ref = "ref", .oriel_path = "dir" };
     pub const details =
@@ -39,6 +42,7 @@ pub const Command = struct {
     oriel_path: ?[]const u8 = null,
     no_install: bool = false,
     no_webview2: bool = false,
+    yes: bool = false,
 };
 
 // ---------------------------------------------------------------------------
@@ -339,11 +343,76 @@ pub fn runWithFetch(ctx: Context, cmd: Command, fetch_loader: ?FetchLoaderFn) !u
             return 1;
         }
         if (cmd.template.usesVite()) {
-            try ctx.out.writeAll("Installing frontend packages (npm install)...\n");
-            const frontend = try std.fs.path.join(arena, &.{ project_abs, "frontend" });
-            if (!step(ctx, &.{ "npm", "install", "--no-fund", "--no-audit" }, frontend)) {
-                try err.print("Retry with: cd {s}/frontend && npm install (see `oriel doctor`)\n", .{cmd.name});
-                return 1;
+            const has_system_node = (try ctx.findExecutable("node")) != null and (try ctx.findExecutable("npm")) != null;
+            var managed_node = try setup.findNewestManagedNode(ctx);
+            defer if (managed_node) |m| m.deinit(ctx.gpa);
+
+            var node_available = has_system_node or (managed_node != null);
+
+            if (!node_available) {
+                try ctx.out.writeAll("Node.js and npm are required for Vite templates (or use `--template vanilla` for zero dependencies).\n");
+
+                const stdin_file = std.Io.File.stdin();
+                const is_tty = stdin_file.isTty(ctx.io) catch false;
+
+                var should_install = cmd.yes;
+                if (!should_install) {
+                    if (!is_tty) {
+                        try err.writeAll("error: Node.js is missing; run `oriel setup node` or pass `--yes` to install it automatically\n");
+                        try err.writeAll("hint: you can also use `--template vanilla` to avoid Node.js entirely\n");
+                        return 1;
+                    }
+
+                    try ctx.out.writeAll("Install Node.js LTS now via `oriel setup node`? [y/N] ");
+                    ctx.flush();
+
+                    var line_buf: [64]u8 = undefined;
+                    var line_reader = stdin_file.readerStreaming(ctx.io, &line_buf);
+                    var ans_buf: [16]u8 = undefined;
+                    const n = line_reader.interface.readSliceShort(&ans_buf) catch 0;
+                    const trimmed = std.mem.trim(u8, ans_buf[0..n], " \t\r\n");
+                    if (std.ascii.eqlIgnoreCase(trimmed, "y") or std.ascii.eqlIgnoreCase(trimmed, "yes")) {
+                        should_install = true;
+                    } else {
+                        try ctx.out.writeAll("Skipping npm install. (Tip: you can use `--template vanilla` to avoid Node.js entirely.)\n");
+                        try ctx.out.writeAll("Run `oriel setup node` later, then `npm install` inside the project.\n");
+                    }
+                }
+
+                if (should_install) {
+                    try ctx.out.writeAll("Installing Node.js LTS...\n");
+                    ctx.flush();
+                    const node_path = try setup.installNode(ctx, null);
+                    ctx.gpa.free(node_path);
+                    if (managed_node) |m| m.deinit(ctx.gpa);
+                    managed_node = try setup.findNewestManagedNode(ctx);
+                    node_available = managed_node != null;
+                }
+            }
+
+            if (node_available) {
+                try ctx.out.writeAll("Installing frontend packages (npm install)...\n");
+                const frontend = try std.fs.path.join(arena, &.{ project_abs, "frontend" });
+
+                var child_env_map: ?std.process.Environ.Map = null;
+                defer if (child_env_map) |*m| m.deinit();
+
+                if (!has_system_node and managed_node != null) {
+                    var env_map = try ctx.environ.clone(ctx.gpa);
+                    const old_path = env_map.get("PATH") orelse "";
+                    const new_path = try project_cmd.prependPath(ctx.gpa, old_path, managed_node.?.bin_dir);
+                    defer ctx.gpa.free(new_path);
+                    try env_map.put("PATH", new_path);
+                    child_env_map = env_map;
+                }
+
+                const env_ptr: *const std.process.Environ.Map = if (child_env_map) |*m| m else ctx.environ;
+                const npm_cmd = if (!has_system_node and managed_node != null) managed_node.?.npm_path else "npm";
+
+                if (!stepWithEnv(ctx, &.{ npm_cmd, "install", "--no-fund", "--no-audit" }, frontend, env_ptr)) {
+                    try err.print("Retry with: cd {s}/frontend && npm install (see `oriel doctor`)\n", .{cmd.name});
+                    return 1;
+                }
             }
         }
     }
@@ -391,6 +460,15 @@ fn scaffold(ctx: Context, arena: std.mem.Allocator, cmd: Command, app_id: []cons
 /// Run one setup step; false (with the reason printed) if it failed.
 fn step(ctx: Context, argv: []const []const u8, cwd: []const u8) bool {
     const code = ctx.run(argv, cwd) orelse return false;
+    if (code != 0) {
+        ctx.err.print("error: '{s} {s}' failed (exit code {d})\n", .{ argv[0], argv[1], code }) catch {};
+        return false;
+    }
+    return true;
+}
+
+fn stepWithEnv(ctx: Context, argv: []const []const u8, cwd: []const u8, env: *const std.process.Environ.Map) bool {
+    const code = ctx.runWithEnv(argv, cwd, env) orelse return false;
     if (code != 0) {
         ctx.err.print("error: '{s} {s}' failed (exit code {d})\n", .{ argv[0], argv[1], code }) catch {};
         return false;

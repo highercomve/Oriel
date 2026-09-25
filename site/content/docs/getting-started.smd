@@ -11,12 +11,12 @@
 Oriel apps are built with **Zig 0.16** and run on the system webview:
 
 - **Zig 0.16.0**: optional. The `oriel` CLI uses `zig` on PATH when it is the project's version, and otherwise installs it into `~/.oriel/zig` on first use (downloaded from a community mirror and minisign-verified; see `oriel zig --help`).
-- **Node.js and npm** for the React, Vue and Svelte templates (Vite). The `vanilla` template needs no Node at all.
-- **Linux:** GTK 4 and WebKitGTK 6.0 development packages (`gtk4` and `webkitgtk-6.0` on Arch; `libgtk-4-dev` and `libwebkitgtk-6.0-dev` on Debian and Ubuntu).
-- **Windows:** the WebView2 runtime (built into Windows 11 and current Windows 10), `WebView2Loader.dll`, and NSIS for installers. See [Building & packaging]($link.page('docs/building')).
-- **macOS:** Xcode or the Xcode command-line tools (for the SDK). The macOS backend is new: the shell works, most modules are still being ported.
+- **Node.js and npm** for the React, Vue and Svelte templates (Vite). Installed automatically without admin rights via `oriel setup node` (or `oriel doctor --fix`). The `vanilla` template needs no Node at all.
+- **Linux:** GTK 4 and WebKitGTK 6.0 development packages (`gtk4` and `webkitgtk-6.0` on Arch; `libgtk-4-dev` and `libwebkitgtk-6.0-dev` on Debian and Ubuntu; `gtk4-devel` and `webkitgtk6.0-devel` on Fedora).
+- **Windows:** the WebView2 runtime (built into Windows 11 and current Windows 10), `WebView2Loader.dll` (cached via `oriel setup webview2`), and portable NSIS for installers (managed via `oriel setup nsis`). See [Building & packaging]($link.page('docs/building')).
+- **macOS:** Xcode or the Xcode command-line tools (`xcode-select --install`). The macOS backend is new: the shell works, most modules are still being ported.
 
-`oriel doctor` checks all of this for the machine you run it on.
+`oriel doctor --fix` checks all of this and installs what it can without administrator rights.
 
 # Install the CLI
 
@@ -47,11 +47,13 @@ Both installers read the same environment variables:
 
 > macOS and Windows CLI binaries ship from the first release after v0.1.0; v0.1.0 has Linux binaries only. Until then, build the CLI from a checkout with `zig build cli`.
 
-Then check that this machine can build Oriel apps:
+Then configure your environment:
 
 ```sh
-oriel doctor
+oriel doctor --fix
 ```
+
+`oriel doctor --fix` checks every dependency, automatically installs non-admin tools into `~/.oriel/` (Zig, Node.js LTS, portable NSIS on Windows, and WebView2Loader.dll), and prints the exact package manager commands for any system libraries that require administrator privileges.
 
 # Updating the CLI
 

@@ -91,11 +91,12 @@ fn isExecutable(io: std.Io, path: []const u8) bool {
 /// Run a program with our stdin/stdout/stderr and wait for it. Returns its
 /// exit code (128 + signal number if it was killed), or null if it could
 /// not be started (the reason is printed).
-pub fn run(ctx: Context, argv: []const []const u8, cwd: ?[]const u8) ?u8 {
+pub fn runWithEnv(ctx: Context, argv: []const []const u8, cwd: ?[]const u8, environ: ?*const std.process.Environ.Map) ?u8 {
     ctx.flush();
     var child = std.process.spawn(ctx.io, .{
         .argv = argv,
         .cwd = if (cwd) |c| .{ .path = c } else .inherit,
+        .environ_map = environ orelse ctx.environ,
     }) catch |e| {
         ctx.err.print("error: could not run '{s}': {s}\n", .{ argv[0], spawnErrorText(e) }) catch {};
         return null;
@@ -107,6 +108,10 @@ pub fn run(ctx: Context, argv: []const []const u8, cwd: ?[]const u8) ?u8 {
         return null;
     };
     return exitCode(term);
+}
+
+pub fn run(ctx: Context, argv: []const []const u8, cwd: ?[]const u8) ?u8 {
+    return runWithEnv(ctx, argv, cwd, null);
 }
 
 pub fn exitCode(term: std.process.Child.Term) u8 {
