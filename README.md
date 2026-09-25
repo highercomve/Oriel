@@ -82,14 +82,15 @@ not 0.16).
 | `oriel run` | Builds and runs the production app |
 | `oriel package` | Builds distribution packages into `zig-out/package/` (deb, rpm, AppImage on Linux; NSIS `setup.exe` on Windows) |
 | `oriel types` | Regenerates the frontend's TypeScript types (`frontend/src/oriel.ts`) from the Zig `Commands` |
-| `oriel check` | Type-checks the app's Zig code without building binaries (~1 s) |
+| `oriel check` | Type-check the app's Zig code without building binaries (~1 s) |
+| `oriel webview2` | Downloads, verifies (SHA-512 against NuGet registration catalog), and caches Microsoft Edge `WebView2Loader.dll` for Windows (`--version <ver>`, `--arch x64|arm64|all`, `--out <dir>`) |
 | `oriel update` | Updates the CLI binary in place using Oriel's self-updater (`--check`, `--version <tag>`, `--yes`) |
 | `oriel --version` | CLI version and the Oriel ref `init` pins |
 
 Every command that acts on an app (`dev`, `build`, `run`, `package`, `types`, `check`)
 works from anywhere inside the project, found by walking up to `build.zig.zon`.
 Extra arguments are passed through to the underlying build step, e.g.
-`oriel build -Doptimize=ReleaseFast`, `oriel package -Dtarget=x86_64-windows -Dwebview2-loader=...`,
+`oriel build -Doptimize=ReleaseFast`, `oriel package -Dtarget=x86_64-windows` (which automatically supplies the cached `WebView2Loader.dll`),
 `oriel run -- --flag`.
 
 ### `oriel init` options
@@ -104,6 +105,7 @@ Extra arguments are passed through to the underlying build step, e.g.
   developing against a local copy of Oriel.
 - `--no-install`: only record the dependency; skip fetching dependencies and
   `npm install`.
+- `--no-webview2`: skip downloading `WebView2Loader.dll` for Windows builds.
 
 ### Updating the CLI
 
@@ -924,12 +926,12 @@ Running `oriel package` in an application directory builds production packages i
 # All formats for the current target OS:
 oriel package
 
-# Cross-compile Windows installer from Linux:
-oriel package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+# Cross-compile Windows installer from Linux (WebView2 loader injected automatically):
+oriel package -Dtarget=x86_64-windows
 ```
 
 - **All formats for target OS**: `oriel package` (defaults to `.deb`, `.rpm`, `.AppImage` on Linux; NSIS `setup.exe` on Windows).
-- **Windows Installer (`setup.exe`)**: `oriel package` on Windows, or cross-compiled with `-Dtarget=x86_64-windows -Dwebview2-loader=...` → `zig-out/package/<name>-<version>-setup.exe`.
+- **Windows Installer (`setup.exe`)**: `oriel package` on Windows, or cross-compiled with `-Dtarget=x86_64-windows` → `zig-out/package/<name>-<version>-setup.exe` (WebView2Loader.dll is resolved from cache automatically, or pass `-Dwebview2-loader=...` manually).
 - **Individual formats**: inside the app project, `oriel.addApp` also registers granular app build steps if you need to build only a single format: `zig build package-deb`, `zig build package-rpm`, `zig build package-appimage`, `zig build package-nsis`.
 
 #### Requirements and tools
@@ -1001,16 +1003,28 @@ Oriel separates platform-neutral application and window logic (`src/core/App.zig
 
 ### Windows
 
-Oriel builds Windows apps (`x86_64-windows`) two ways, both verified: natively on Windows, or cross-compiled from Linux. Both need `WebView2Loader.dll` (from the `Microsoft.Web.WebView2` NuGet package) for `-Dwebview2-loader`, and NSIS (`makensis`) for the installer.
+Oriel builds Windows apps (`x86_64-windows` and `aarch64-windows`) two ways, both verified: natively on Windows, or cross-compiled from Linux. Both need `WebView2Loader.dll` and NSIS (`makensis`) for the installer.
+
+The Oriel CLI downloads, verifies (SHA-512 against the NuGet registration catalog), and caches `WebView2Loader.dll` automatically on first build/package or during `oriel init`. You can also manage or prefetch it with `oriel webview2`.
 
 ```sh
 # On Windows (PowerShell): Zig 0.16, Node.js for Vite templates, NSIS 3 (found in Program Files, no PATH needed)
-oriel build -Dwebview2-loader=C:\path\to\WebView2Loader.dll
-oriel package -Dwebview2-loader=C:\path\to\WebView2Loader.dll   # zig-out\package\<app>-<version>-setup.exe
+oriel build
+oriel package   # zig-out\package\<app>-<version>-setup.exe
 
 # On Linux: cross-compile
-oriel package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+oriel build -Dtarget=x86_64-windows
+oriel package -Dtarget=x86_64-windows
 ```
+
+The CLI automatically passes `-Dwebview2-loader=<cached dll>` when building for Windows. An explicit `-Dwebview2-loader=<path>` always overrides the cache. Automatic download can be disabled with `ORIEL_NO_WEBVIEW2_FETCH=1`.
+
+#### Manual download
+
+If you prefer to download the loader manually (e.g. in offline environments):
+1. Download `microsoft.web.webview2.<version>.nupkg` from [NuGet](https://www.nuget.org/packages/Microsoft.Web.WebView2/) (a `.nupkg` is a ZIP archive).
+2. Extract `runtimes/win-x64/native/WebView2Loader.dll` (or `win-arm64`).
+3. Pass `-Dwebview2-loader=/path/to/WebView2Loader.dll`.
 
 The installer is per-user (`%LOCALAPPDATA%\Programs\<name>`, no admin), adds Start Menu shortcuts and an uninstall entry, checks for the WebView2 runtime, and supports silent `setup.exe /S` / `Uninstall.exe /S`.
 
@@ -1054,7 +1068,7 @@ From any Oriel application directory (e.g. `examples/react`):
 oriel build -Dtarget=x86_64-windows
 
 # Build Windows NSIS installer (zig-out/package/<app>-<version>-setup.exe)
-oriel package -Dtarget=x86_64-windows -Dwebview2-loader=/path/to/WebView2Loader.dll
+oriel package -Dtarget=x86_64-windows
 ```
 
 The resulting `setup.exe` bundles the application executable, `WebView2Loader.dll`, Start Menu shortcuts, and an uninstaller, and automatically detects if the Microsoft Edge WebView2 runtime is present. At runtime, `WebView2Loader.dll` is loaded strictly from the application executable's directory to avoid DLL search-order hijacking, and user data is stored at `%LOCALAPPDATA%\<app_id>\WebView2`.
