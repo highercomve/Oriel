@@ -26,9 +26,12 @@ const log = std.log.scoped(.oriel);
 pub const WindowHandle = struct {
     window: cocoa.id,
     webview: cocoa.id,
+    /// Unique per window for the whole run: a queued handle copy must not
+    /// match a new window that reuses a closed one's address.
+    serial: u64,
 
     pub fn eql(self: WindowHandle, other: WindowHandle) bool {
-        return self.window == other.window;
+        return self.serial == other.serial;
     }
 
     fn nsWindow(self: WindowHandle) Object {
@@ -365,6 +368,8 @@ pub fn destroyAllWindows() void {
     }
 }
 
+var next_serial: std.atomic.Value(u64) = .init(1);
+
 /// `config.on_close == .hide`, captured by `WindowCreator.init` for the
 /// non-generic close path.
 var current_on_close_hide = false;
@@ -498,7 +503,7 @@ pub fn WindowCreator(
             defer gpa.free(target_uri);
             try load(view, target_uri);
 
-            return .{ .window = win.value, .webview = view.value };
+            return .{ .window = win.value, .webview = view.value, .serial = next_serial.fetchAdd(1, .monotonic) };
         }
 
         fn load(view: Object, uri: []const u8) !void {
@@ -601,7 +606,8 @@ pub fn WindowCreator(
             const w = getWindowByView(view) orelse return;
             if (!std.mem.eql(u8, w.label, "main")) return;
             snapshot_taken = true;
-            _ = (Object{ .value = view }).retain(); // until the snapshot ran
+            // Until the snapshot ran; leaked if the app quits first (debug-only path).
+            _ = (Object{ .value = view }).retain();
             cocoa.afterMain(1000, view, &takeSnapshot);
         }
 
@@ -653,7 +659,9 @@ pub fn WindowCreator(
                 return;
             }
             dev_retries_left -= 1;
-            // Keep the webview alive until the retry ran (it may be closed meanwhile).
+            // Keep the webview alive until the retry ran (it may be closed
+            // meanwhile). Leaked if the app quits within the retry interval: the
+            // main queue isn't serviced after the run loop (dev builds only).
             _ = (Object{ .value = view }).retain();
             cocoa.afterMain(dev_retry_interval_ms, view, &retryDevLoad);
         }

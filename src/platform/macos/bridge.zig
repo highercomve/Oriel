@@ -137,7 +137,7 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
             App.ensureWindowsMutex();
             App.windows_mutex.lock();
             defer App.windows_mutex.unlock();
-            // Handles match by NSWindow only: use the live window's webview,
+            // Handles match by serial: use the live window's webview,
             // not the (possibly stale) copy queued with the task.
             for (App.windows_list.items) |win| {
                 if (self.target == null or win.handle.eql(self.target.?)) evaluate(win.handle.webview, self.script);

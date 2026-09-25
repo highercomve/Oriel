@@ -30,8 +30,23 @@ pub fn startDevServer(io: std.Io, dev: anytype) ?std.process.Child {
     return child;
 }
 
+/// SIGTERM to the dev server's process group; SIGKILL if it hasn't exited
+/// after 3 s, so quitting never hangs on a server that ignores SIGTERM.
 pub fn stopDevServer(io: std.Io, child: *std.process.Child) void {
     const pid = child.id orelse return;
     std.posix.kill(-pid, .TERM) catch |err| log.err("stopping the dev server: {s}", .{@errorName(err)});
+    var waited_ms: u32 = 0;
+    while (waited_ms < 3000) : (waited_ms += 50) {
+        var status: c_int = 0;
+        const WNOHANG = 1;
+        if (std.c.waitpid(pid, &status, WNOHANG) == pid) {
+            child.id = null; // reaped here: `wait` must not wait again
+            return;
+        }
+        const ts: std.c.timespec = .{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
+        _ = std.c.nanosleep(&ts, null);
+    }
+    log.warn("dev server ignored SIGTERM; killing it", .{});
+    std.posix.kill(-pid, .KILL) catch |err| log.err("killing the dev server: {s}", .{@errorName(err)});
     _ = child.wait(io) catch |err| log.err("waiting for the dev server: {s}", .{@errorName(err)});
 }

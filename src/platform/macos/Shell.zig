@@ -92,23 +92,24 @@ fn drainFromMainQueue(_: ?*anyopaque) callconv(.c) void {
     processDispatchQueue();
 }
 
-fn takeTasks() ?[]Task {
+fn takeTasks() ?std.ArrayList(Task) {
     task_mutex.lock();
     defer task_mutex.unlock();
     drain_scheduled = false;
     if (task_queue.items.len == 0) return null;
-    return task_queue.toOwnedSlice(std.heap.smp_allocator) catch {
-        log.err("processDispatchQueue failed: out of memory", .{});
-        return null;
-    };
+    // Take the buffer as is (no shrink, so this can't fail): a task lost
+    // here could leave a runOnMainThread caller waiting forever.
+    const tasks = task_queue;
+    task_queue = .empty;
+    return tasks;
 }
 
 pub fn processDispatchQueue() void {
-    const tasks = takeTasks() orelse return;
-    defer std.heap.smp_allocator.free(tasks);
+    var tasks = takeTasks() orelse return;
+    defer tasks.deinit(std.heap.smp_allocator);
     const pool = objc.AutoreleasePool.init();
     defer pool.deinit();
-    for (tasks) |t| t.run_fn(t.ctx);
+    for (tasks.items) |t| t.run_fn(t.ctx);
 }
 
 /// Called on the main thread after the run loop ended: tasks with a cleanup
@@ -116,11 +117,12 @@ pub fn processDispatchQueue() void {
 /// any thread waiting on them is released). Loops because a task may queue
 /// another one.
 fn drainAtShutdown() void {
-    while (takeTasks()) |tasks| {
-        defer std.heap.smp_allocator.free(tasks);
+    while (takeTasks()) |taken| {
+        var tasks = taken;
+        defer tasks.deinit(std.heap.smp_allocator);
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
-        for (tasks) |t| {
+        for (tasks.items) |t| {
             if (t.cleanup_fn) |c| c(t.ctx) else t.run_fn(t.ctx);
         }
     }
@@ -398,11 +400,13 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             app.msgSend(void, "setDelegate:", .{delegate});
             installDefaultMenu(app, config.title);
 
-            var quit_signals = QuitSignals.install();
-            defer quit_signals.uninstall();
-
+            // Before QuitSignals: children inherit ignored signals across exec,
+            // and a dev server ignoring SIGTERM couldn't be stopped.
             var dev_server_proc: ?std.process.Child = if (config.dev) |dev| dev_server.startDevServer(io, dev) else null;
             defer if (dev_server_proc) |*p| dev_server.stopDevServer(io, p);
+
+            var quit_signals = QuitSignals.install();
+            defer quit_signals.uninstall();
 
             Creator.init();
             defer Creator.deinit();
