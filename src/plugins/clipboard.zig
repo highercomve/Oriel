@@ -2,6 +2,7 @@
 //!
 //! Linux backend: GdkClipboard on the main thread + Wayland ext-data-control on workers.
 //! Windows backend: Win32 OpenClipboard/CF_UNICODETEXT/CF_DIB/PNG via main thread.
+//! macOS backend: NSPasteboard (text, PNG/TIFF) via main thread.
 
 const builtin = @import("builtin");
 const std = @import("std");
@@ -22,6 +23,7 @@ pub const check = impl.check;
 pub const impl = switch (builtin.os.tag) {
     .linux => @import("clipboard/linux.zig"),
     .windows => @import("clipboard/windows.zig"),
+    .macos => @import("clipboard/macos.zig"),
     else => @compileError("clipboard is not supported on " ++ @tagName(builtin.os.tag)),
 };
 
