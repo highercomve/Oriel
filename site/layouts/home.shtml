@@ -8,7 +8,7 @@
 			<div class="hero-glow" aria-hidden="true"></div>
 			<div class="hero-inner">
 				<img class="hero-mark" src="$site.asset('brand/oriel-icon.svg').link()" alt="Oriel logo" width="96" height="96">
-				<p class="eyebrow">Zig 0.16 · GTK4 + WebKitGTK · Win32 + WebView2</p>
+				<p class="eyebrow">Zig 0.16 · Linux · Windows · macOS</p>
 				<h1 class="hero-title">Desktop apps in Zig.<br><span class="accent">UI with the web.</span></h1>
 				<p class="hero-lead">Oriel gives your React, Vue, Svelte or plain HTML frontend a native window and the system webview, and lets it call typed Zig commands. Small binaries, a small build cache, secure by default.</p>
 				<div class="hero-actions">
@@ -20,6 +20,7 @@
 					<code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh</code>
 					<button class="copy-btn" type="button" data-copy="install-cmd" aria-label="Copy install command">Copy</button>
 				</div>
+				<p class="install-alt">Linux and macOS. On Windows (PowerShell): <code>irm https://raw.githubusercontent.com/highercomve/Oriel/main/install.ps1 | iex</code></p>
 			</div>
 		</section>
 
@@ -134,8 +135,8 @@
 				</div>
 				<div class="platform">
 					<h3>macOS</h3>
-					<p>AppKit + WKWebView, <code>.app</code> and <code>.dmg</code>. Next on the roadmap.</p>
-					<span class="status status-planned">Planned</span>
+					<p>AppKit + WKWebView. The shell, IPC, windows and security work; modules and <code>.app</code> / <code>.dmg</code> packaging are being ported.</p>
+					<span class="status status-beta">In progress</span>
 				</div>
 			</div>
 		</section>

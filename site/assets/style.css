@@ -316,3 +316,5 @@ tr:last-child td { border-bottom: 0; }
   .footer-cols { gap: 40px; }
   .cta { margin: 16px 16px 64px; }
 }
+.install-alt { margin: 12px auto 0; max-width: 720px; font-size: 13.5px; color: var(--faint); }
+.install-alt code { font-size: 12.5px; }

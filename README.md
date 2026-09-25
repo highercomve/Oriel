@@ -20,13 +20,14 @@ from plain Zig structs. Linux (GTK4 + WebKitGTK 6.0) first.
 - **Batteries included, opt-in:** tray, updater, SQLite & sqlite-vec, llama.cpp & whisper.cpp, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage).
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
-oriel doctor              # checks Zig 0.16, GTK 4 / WebKitGTK 6.0, Node.js
+curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh     # Linux, macOS
+# Windows (PowerShell): irm https://raw.githubusercontent.com/highercomve/Oriel/main/install.ps1 | iex
+oriel doctor              # checks Zig 0.16, the platform webview SDK, Node.js
 oriel init my-app         # React + Vite (or --template vue|svelte|vanilla)
 cd my-app && oriel dev    # hot reload; `oriel build` for the release binary
 ```
 
-> **Status:** experimental. APIs will change; only Linux is supported so far.
+> **Status:** experimental; APIs will change. Linux: complete. Windows: every module, verified on Windows 11 (native and cross-compiled builds). macOS: the shell works (window, webview, IPC, security, windows API); modules and `.app` packaging are in progress.
 > See [PLAN.md](PLAN.md) for the roadmap, [IDEA.md](IDEA.md) for the background
 > and [LIBRARIES.md](LIBRARIES.md) for the dependencies.
 

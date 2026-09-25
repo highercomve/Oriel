@@ -125,7 +125,16 @@ This runs the app in a headless Wine environment. See `docs/windows-testing.md` 
 
 # macOS
 
-**Planned** for Milestone 7. macOS support includes `.app` bundle creation and `.dmg` packaging, with optional code signing and notarization. This requires development on a Mac.
+Oriel runs on macOS with AppKit and `WKWebView`, through the Objective-C runtime ([zig-objc](https://github.com/mitchellh/zig-objc)). Build on the Mac itself (Apple Silicon or Intel) with Xcode or the command-line tools installed:
+
+```sh
+oriel build            # or: zig build
+oriel dev              # Vite hot reload, and Zig rebuild + restart
+```
+
+What works today, verified on macOS 15 (arm64): windows and multiple windows, the webview with embedded assets and the SPA fallback, sync and async IPC, events, the `oriel.window` API, the security policy (CSP, navigation, capabilities), `openExternal`, dev mode, SQLite and `oriel update`.
+
+**In progress** (Milestone 7): the other modules (tray, menu, dialogs, notifications, store, clipboard, file watching, shortcuts, input, media server, audio capture), `.app` and `.dmg` packaging, and Metal for llama/whisper. On macOS those modules are off by default and enabling them is a build error; the tray builds as a stub so apps that use one still run.
 
 # Native dependencies
 

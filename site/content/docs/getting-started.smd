@@ -11,25 +11,41 @@
 Oriel apps are built with **Zig 0.16** and run on the system webview:
 
 - **Zig 0.16.0**: from [ziglang.org](https://ziglang.org/download/) or a version manager such as zvm.
-- **Linux:** GTK 4 and WebKitGTK 6.0 development packages (`gtk4` and `webkitgtk-6.0` on Arch; `libgtk-4-dev` and `libwebkitgtk-6.0-dev` on Debian and Ubuntu).
 - **Node.js and npm** for the React, Vue and Svelte templates (Vite). The `vanilla` template needs no Node at all.
+- **Linux:** GTK 4 and WebKitGTK 6.0 development packages (`gtk4` and `webkitgtk-6.0` on Arch; `libgtk-4-dev` and `libwebkitgtk-6.0-dev` on Debian and Ubuntu).
+- **Windows:** the WebView2 runtime (built into Windows 11 and current Windows 10), `WebView2Loader.dll`, and NSIS for installers. See [Building & packaging]($link.page('docs/building')).
+- **macOS:** Xcode or the Xcode command-line tools (for the SDK). The macOS backend is new: the shell works, most modules are still being ported.
 
-Windows builds cross-compile from Linux; see [Building & packaging]($link.page('docs/building')).
+`oriel doctor` checks all of this for the machine you run it on.
 
 # Install the CLI
 
 The `oriel` CLI is a single static binary. It scaffolds apps and wraps their build steps, like `create-tauri-app` and `tauri dev` / `tauri build`.
 
+On **Linux and macOS**:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
 ```
 
-It installs to `~/.local/bin/oriel`, verifies the download against the release's `SHA256SUMS`, and never uses sudo. Two environment variables change that:
+It installs to `~/.local/bin/oriel`, verifies the download against the release's `SHA256SUMS`, and never uses sudo.
+
+On **Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/highercomve/Oriel/main/install.ps1 | iex
+```
+
+It installs per user to `%LOCALAPPDATA%\Programs\oriel` with no administrator rights, also verified against `SHA256SUMS`.
+
+Both installers read the same environment variables:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ORIEL_VERSION` | newest release | Tag to install, e.g. `v0.1.0` |
-| `ORIEL_INSTALL_DIR` | `~/.local/bin` | Where to put the binary |
+| `ORIEL_VERSION` | newest release | Tag to install, e.g. `v0.2.0` |
+| `ORIEL_INSTALL_DIR` | `~/.local/bin` or `%LOCALAPPDATA%\Programs\oriel` | Where to put the binary |
+
+> macOS and Windows CLI binaries ship from the first release after v0.1.0; v0.1.0 has Linux binaries only. Until then, build the CLI from a checkout with `zig build cli`.
 
 Then check that this machine can build Oriel apps:
 
