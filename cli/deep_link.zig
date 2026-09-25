@@ -415,8 +415,10 @@ fn runRegister(ctx: Context) !u8 {
     defer ctx.gpa.free(exe_name);
 
     if (builtin.os.tag == .linux) {
-        // Find executable in zig-out/bin
-        const bin_path = try std.fs.path.join(ctx.gpa, &.{ root, "zig-out", "bin", exe_name });
+        const bin_path = try builtExe(ctx, root, exe_name) orelse {
+            try ctx.err.writeAll("error: no built executable in zig-out/bin; run `oriel dev` or `oriel build` first\n");
+            return 1;
+        };
         defer ctx.gpa.free(bin_path);
 
         // Resolve data home
@@ -477,9 +479,10 @@ fn runRegister(ctx: Context) !u8 {
         try ctx.out.print("Registered dev desktop handler: {s}\n", .{desktop_file_path});
         return 0;
     } else if (builtin.os.tag == .windows) {
-        const bin_exe = try std.fmt.allocPrint(ctx.gpa, "{s}.exe", .{exe_name});
-        defer ctx.gpa.free(bin_exe);
-        const bin_path = try std.fs.path.join(ctx.gpa, &.{ root, "zig-out", "bin", bin_exe });
+        const bin_path = try builtExe(ctx, root, exe_name) orelse {
+            try ctx.err.writeAll("error: no built executable in zig-out/bin; run `oriel dev` or `oriel build` first\n");
+            return 1;
+        };
         defer ctx.gpa.free(bin_path);
 
         for (schemes) |s| {
@@ -493,9 +496,9 @@ fn runRegister(ctx: Context) !u8 {
             const cmd_val = try std.fmt.allocPrint(ctx.gpa, "\"{s}\" \"%1\"", .{bin_path});
             defer ctx.gpa.free(cmd_val);
 
-            _ = ctx.run(&.{ "reg", "add", root_key, "/ve", "/d", url_desc, "/f" }, null);
-            _ = ctx.run(&.{ "reg", "add", root_key, "/v", "URL Protocol", "/d", "", "/f" }, null);
-            _ = ctx.run(&.{ "reg", "add", cmd_key, "/ve", "/d", cmd_val, "/f" }, null);
+            if (ctx.capture(&.{ "reg", "add", root_key, "/ve", "/d", url_desc, "/f" }, 30_000)) |r| r.deinit(ctx.gpa);
+            if (ctx.capture(&.{ "reg", "add", root_key, "/v", "URL Protocol", "/d", "", "/f" }, 30_000)) |r| r.deinit(ctx.gpa);
+            if (ctx.capture(&.{ "reg", "add", cmd_key, "/ve", "/d", cmd_val, "/f" }, 30_000)) |r| r.deinit(ctx.gpa);
         }
 
         try ctx.out.print("Registered Windows HKCU classes for schemes\n", .{});
@@ -566,7 +569,7 @@ fn runUnregister(ctx: Context) !u8 {
         for (schemes) |s| {
             const root_key = try std.fmt.allocPrint(ctx.gpa, "HKCU\\Software\\Classes\\{s}", .{s});
             defer ctx.gpa.free(root_key);
-            _ = ctx.run(&.{ "reg", "delete", root_key, "/f" }, null);
+            if (ctx.capture(&.{ "reg", "delete", root_key, "/f" }, 30_000)) |r| r.deinit(ctx.gpa);
         }
         try ctx.out.print("Unregistered Windows HKCU classes for schemes\n", .{});
         return 0;
@@ -651,4 +654,18 @@ test "editBuildZig error when anchors missing" {
     // Invalid scheme
     const fixture_ok = "pub fn build(b: *std.Build) void { const dep = b.dependency(\"oriel\", .{}); _ = oriel.addApp(b, dep, .{}); }";
     try std.testing.expectError(error.InvalidScheme, editBuildZig(std.testing.allocator, fixture_ok, "123invalid"));
+}
+
+/// The built executable to register: the dev build (`<name>-dev`, from
+/// `oriel dev` / `zig build build-dev`) when it exists, else the production
+/// one. Returns null when neither has been built yet.
+fn builtExe(ctx: Context, root: []const u8, exe_name: []const u8) !?[]u8 {
+    const ext = if (builtin.os.tag == .windows) ".exe" else "";
+    for ([_][]const u8{ "-dev", "" }) |suffix| {
+        const file = try std.fmt.allocPrint(ctx.gpa, "{s}{s}{s}", .{ exe_name, suffix, ext });
+        defer ctx.gpa.free(file);
+        const path = try std.fs.path.join(ctx.gpa, &.{ root, "zig-out", "bin", file });
+        if (std.Io.Dir.cwd().access(ctx.io, path, .{})) |_| return path else |_| ctx.gpa.free(path);
+    }
+    return null;
 }

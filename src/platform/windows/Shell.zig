@@ -370,6 +370,13 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                             }
                         }
 
+                        // Windows only lets the process the user just started
+                        // take the foreground; pass that right on so the
+                        // running instance can bring its window to the front.
+                        var primary_pid: win32.DWORD = 0;
+                        _ = win32.GetWindowThreadProcessId(host, &primary_pid);
+                        if (primary_pid != 0) _ = win32.AllowSetForegroundWindow(primary_pid);
+
                         if (maybe_url) |url| {
                             defer gpa.free(url);
                             var cds = win32.COPYDATASTRUCT{
