@@ -414,7 +414,12 @@ fn addOrielModule(
     const cuda = cudaOptions(b, target);
     if (cuda != null and !features.llama and !features.whisper) fatal("-Dggml_cuda needs -Dllama or -Dwhisper", .{});
     if (features.llama or features.whisper) {
-        ggml.addGgml(b, oriel, features, cuda);
+        // Metal: on by default for macOS (Apple GPUs; the shader sources are
+        // embedded and compiled by ggml at startup).
+        const metal = b.option(bool, "ggml_metal", "Build ggml's Metal backend for llama/whisper (macOS; default on)") orelse
+            (target.result.os.tag == .macos);
+        if (metal and target.result.os.tag != .macos) fatal("-Dggml_metal needs a macOS target", .{});
+        ggml.addGgml(b, oriel, features, cuda, metal);
     }
     if (is_linux and (features.input or features.clipboard)) {
         const scanner = Scanner.create(b, .{});
