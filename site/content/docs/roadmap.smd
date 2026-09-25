@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Done (Milestones 1–6)
+# Done (Milestones 1–8)
 
 ## Milestone 1: Async commands
 
@@ -36,19 +36,21 @@ HTTP media server with range-request streaming for large video/audio files. Wind
 
 Open and manage windows from JavaScript with `oriel.window.open()`, `close()`, `setTitle()`, etc. Targeted and broadcast events. System browser via `openExternal()`. SPA fallback for client-side routers with the dot-in-last-segment caveat.
 
-# Next: Milestone 6.5
+## Milestone 6.5: Oriel CLI self-update and tools
 
-**`oriel update` self-update:** The Oriel CLI tool uses the same updater as apps built with Oriel. Split the updater module into a GTK-free core and app layer. CLI gets `oriel update [--check] [--version X]` with Oriel's public key baked in and manifest from GitHub Releases.
+`oriel update` uses the same signed updater as Oriel apps. The CLI manages its own toolchain and dependencies without admin rights: `oriel zig` (a minisign-verified Zig manager), `oriel webview2`, `oriel setup node|nsis|all` and `oriel doctor --fix`.
 
-# Later: Milestone 7 — macOS
+## Milestone 7: macOS
 
-**Planned:** built and tested on a Mac.
+AppKit + WKWebView through the Objective-C runtime. Every module has a macOS backend (tray, menu, dialogs, store, clipboard, fs_watch, global shortcuts, input, updater, audio capture), Metal for whisper/llama, and `.app` / `.dmg` packaging. Verified on macOS 15, Apple Silicon.
 
-- NSApplication + NSWindow + WKWebView via Objective-C runtime (zig-objc)
-- All modules with macOS backends: tray (NSStatusItem + NSMenu), menu, dialog (NSOpenPanel/NSSavePanel), store (~/Library/Application Support), clipboard (NSPasteboard), fs_watch (FSEvents), global_shortcut (Carbon RegisterEventHotKey), input (CGEvent), updater (.app bundle replacement), audio (CoreAudio)
-- `.app` bundle and `.dmg` packaging
-- Metal backend for llama/whisper GPU acceleration
-- Code signing and notarization (optional; requires Apple developer account)
+## Milestone 8: Deep links
+
+Opt-in `deep_link` module: custom URL schemes open the app, or forward the link to the running instance, on Linux, Windows and macOS. Enabled in code and managed with `oriel deep-link add|register|unregister`; installers register the schemes.
+
+# Next: v0.3.0
+
+Release candidates are being tested on clean Linux, Windows and macOS machines, focusing on the first-run experience of a new developer.
 
 # Even later
 

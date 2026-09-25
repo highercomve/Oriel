@@ -149,8 +149,8 @@
 				</div>
 				<div class="platform">
 					<h3>macOS</h3>
-					<p>AppKit + WKWebView. The shell, IPC, windows and security work; modules and <code>.app</code> / <code>.dmg</code> packaging are being ported.</p>
-					<span class="status status-beta">In progress</span>
+					<p>AppKit + WKWebView. Every module ported, Metal for whisper / llama, deep links, <code>.app</code> / <code>.dmg</code> packaging. Verified on macOS 15, Apple Silicon.</p>
+					<span class="status status-ok">Verified</span>
 				</div>
 			</div>
 		</section>

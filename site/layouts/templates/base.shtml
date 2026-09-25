@@ -12,8 +12,8 @@
 		<link rel="preconnect" href="https://fonts.googleapis.com">
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
-		<link type="text/css" rel="stylesheet" href="$site.asset('style.css').link().suffix('?v=20260925')">
-		<link type="text/css" rel="stylesheet" href="$site.asset('highlight.css').link().suffix('?v=20260925')">
+		<link type="text/css" rel="stylesheet" href="$site.asset('style.css').link().suffix('?v=20260926')">
+		<link type="text/css" rel="stylesheet" href="$site.asset('highlight.css').link().suffix('?v=20260926')">
 		<style>[hidden] { display: none !important; }</style>
 		<super>
 	</head>
@@ -64,6 +64,6 @@
 			</div>
 			<p class="footer-legal">MIT OR Apache-2.0 · Built with Zig and <a href="https://zine-ssg.io">Zine</a></p>
 		</footer>
-		<script src="$site.asset('site.js').link().suffix('?v=20260925')" defer></script>
+		<script src="$site.asset('site.js').link().suffix('?v=20260926')" defer></script>
 	</body>
 </html>

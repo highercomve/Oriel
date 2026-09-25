@@ -14,7 +14,7 @@ Oriel apps are built with **Zig 0.16** and run on the system webview:
 - **Node.js and npm** for the React, Vue and Svelte templates (Vite). Installed automatically without admin rights via `oriel setup node` (or `oriel doctor --fix`). The `vanilla` template needs no Node at all.
 - **Linux:** GTK 4 and WebKitGTK 6.0 development packages (`gtk4` and `webkitgtk-6.0` on Arch; `libgtk-4-dev` and `libwebkitgtk-6.0-dev` on Debian and Ubuntu; `gtk4-devel` and `webkitgtk6.0-devel` on Fedora).
 - **Windows:** the WebView2 runtime (built into Windows 11 and current Windows 10), `WebView2Loader.dll` (cached via `oriel webview2`), and NSIS for installers. You can install tools without administrator rights using `oriel setup node`, `oriel setup nsis`, and `oriel webview2` (or automatically via `oriel doctor --fix`), or via winget: `winget install --id OpenJS.NodeJS.LTS` and `winget install --id NSIS.NSIS` (note: NSIS via winget requires administrator privileges / UAC elevation). See [Building & packaging]($link.page('docs/building')).
-- **macOS:** Xcode or the Xcode command-line tools (`xcode-select --install`). The macOS backend is new: the shell works, most modules are still being ported.
+- **macOS:** Xcode or the Xcode command-line tools (`xcode-select --install`).
 
 `oriel doctor --fix` checks all of this and installs what it can without administrator rights.
 
