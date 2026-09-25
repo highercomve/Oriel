@@ -50,9 +50,7 @@ fn handleNotificationCallback(wParam: win32.WPARAM, lParam: win32.LPARAM) void {
 
     if (icon_id == NOTIFICATION_UID) {
         switch (event) {
-            win32.NIN_BALLOONTIMEOUT,
-            win32.NIN_BALLOONUSERCLICK,
-            win32.NIN_BALLOONHIDE => {
+            win32.NIN_BALLOONTIMEOUT, win32.NIN_BALLOONUSERCLICK, win32.NIN_BALLOONHIDE => {
                 removeNotificationIcon();
             },
             else => {},
