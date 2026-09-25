@@ -201,9 +201,9 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
 
     if (is_build_like_step) {
         if (isColdBuild(ctx.io, root)) {
-            try ctx.err.print("Building with Zig {s}… (the first build compiles dependencies and can take a few minutes)\n", .{want});
+            try ctx.err.print("Building with Zig {s}... (the first build compiles dependencies and can take a few minutes)\n", .{want});
         } else {
-            try ctx.err.print("Building with Zig {s}…\n", .{want});
+            try ctx.err.print("Building with Zig {s}...\n", .{want});
         }
         ctx.flush();
     }

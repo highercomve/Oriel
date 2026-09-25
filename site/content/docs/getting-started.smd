@@ -109,6 +109,8 @@ oriel dev
 
 `dev` starts the Vite dev server and opens the app against it, with hot reload for the frontend. Zig changes rebuild and restart the app. Dev builds use the app id with a `.Dev` suffix, so they run next to an installed copy.
 
+On Windows, the first `oriel dev` with a Node.js installed by Oriel may show a Windows Firewall prompt for Node.js. The dev server only listens on localhost, so you can cancel it.
+
 To build the real thing, with the frontend embedded in the executable:
 
 ```sh

@@ -974,20 +974,20 @@ fn installInner(ctx: Context, version: []const u8) ![]u8 {
         last_http_status = null;
         downloadToFile(ctx, &client, url, archive, max_download, if (is_last) null else min_mirror_rate) catch |err| {
             if (last_http_status) |st| {
-                try ctx.err.print("  mirror {s} unavailable (HTTP {d}), trying another…\n", .{ base, @intFromEnum(st) });
+                try ctx.err.print("  mirror {s} unavailable (HTTP {d}), trying another...\n", .{ base, @intFromEnum(st) });
             } else if (err == error.MirrorTooSlow) {
-                try ctx.err.print("  mirror {s} too slow, trying another…\n", .{base});
+                try ctx.err.print("  mirror {s} too slow, trying another...\n", .{base});
             } else {
-                try ctx.err.print("  mirror {s} unavailable ({s}), trying another…\n", .{ base, @errorName(err) });
+                try ctx.err.print("  mirror {s} unavailable ({s}), trying another...\n", .{ base, @errorName(err) });
             }
             continue;
         };
         last_http_status = null;
         const sig = downloadSmall(ctx, &client, sig_url) catch |err| {
             if (last_http_status) |st| {
-                try ctx.err.print("  mirror {s} unavailable (HTTP {d}), trying another…\n", .{ base, @intFromEnum(st) });
+                try ctx.err.print("  mirror {s} unavailable (HTTP {d}), trying another...\n", .{ base, @intFromEnum(st) });
             } else {
-                try ctx.err.print("  mirror {s}: signature unavailable ({s}), trying another…\n", .{ base, @errorName(err) });
+                try ctx.err.print("  mirror {s}: signature unavailable ({s}), trying another...\n", .{ base, @errorName(err) });
             }
             continue;
         };

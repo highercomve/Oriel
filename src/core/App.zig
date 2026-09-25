@@ -547,6 +547,8 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     if (build_opts.deep_link) {
         const deep_link = @import("../modules/deep_link.zig");
         deep_link.setDeclaredSchemes(config.deep_link_schemes);
+        if (config.deep_link_schemes.len == 0)
+            std.log.warn("deep links are enabled but no scheme is accepted: pass `.deep_link_schemes = app.url_schemes` to App.run", .{});
     }
 
     defer {
