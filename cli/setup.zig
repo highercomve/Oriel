@@ -28,7 +28,7 @@ pub const Command = struct {
     pub const summary = "Install managed tools (~/.oriel/<tool>) without admin rights";
     pub const positionals = .{ "tool", "version" };
     pub const help = .{
-        .tool = "all | node | nsis | zig | webview2 (default: all)",
+        .tool = "all | node | nsis | zig | webview2",
         .version = "Optional tool version (node: LTS; nsis: pinned 3.12; zig: project minimum)",
         .yes = "Skip confirmation prompts",
     };
