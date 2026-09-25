@@ -440,6 +440,15 @@ Modeled on Tauri. Configure it with `Config.security`:
 - **WebView settings:** scripts can't open windows; no `file://`
   cross-access; devtools only in Debug builds.
 
+- **Hardening (opt-in):** `security.freeze_prototype = true` freezes
+  `Object.prototype` before any page script runs (prototype pollution; code
+  that assigns `Foo.prototype.toString = …` then throws in strict mode), and
+  `security.headers` adds response headers to `app://` pages and media from
+  an allowlist (COOP, COEP, CORP, Permissions-Policy, Access-Control-*, …).
+  Mind the trade-offs: COOP `same-origin` breaks opener popups (OAuth), and
+  COEP `require-corp` blocks cross-origin frames and subresources that don't
+  opt in.
+
 `examples/smoke` runs these checks inside the real webview (`--auto-quit`).
 
 ### OS permissions (`oriel.permissions`)
