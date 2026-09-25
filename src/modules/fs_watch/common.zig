@@ -4,7 +4,16 @@
 //! FILE_NOTIFY_INFORMATION structures linked by NextEntryOffset.
 
 const std = @import("std");
-const win32 = @import("../../platform/windows/win32.zig");
+/// FILE_NOTIFY_INFORMATION actions (winnt.h). Declared here rather than
+/// imported from win32.zig: this parser is unit-tested on every OS, and
+/// win32.zig doesn't compile for arm64 non-Windows targets.
+const win32 = struct {
+    const FILE_ACTION_ADDED: u32 = 1;
+    const FILE_ACTION_REMOVED: u32 = 2;
+    const FILE_ACTION_MODIFIED: u32 = 3;
+    const FILE_ACTION_RENAMED_OLD_NAME: u32 = 4;
+    const FILE_ACTION_RENAMED_NEW_NAME: u32 = 5;
+};
 
 /// Platform-neutral alignment required for the event buffer passed to `poll`.
 pub const buffer_align = @alignOf(u32);
