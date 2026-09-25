@@ -559,6 +559,31 @@ code plus the CLI; all three OSes (rule 11).
 - **Order:** after `oriel webview2`; Linux + Windows first, macOS after M7
   step 3.
 
+## Milestone 9 — Permissions (one declaration, every OS)
+
+Apps need different OS permissions (microphone, camera, screen capture,
+accessibility, location, notifications). Today each module handles its own
+(audio_capture adds the macOS usage strings, input checks AXIsProcessTrusted),
+and there is no way to add custom platform keys. Goal: one standard way.
+
+1. **Declare** in `build.zig`: `.permissions = &.{ .{ .microphone = "Why: live captions" }, .camera, .screen_capture, .accessibility, ... }`
+   (the string is the usage text the OS shows; a default is generated). Modules
+   that need a permission declare it themselves, so apps get it automatically.
+   CLI: `oriel permission add|remove|list`, like `oriel deep-link`.
+2. **Package** from the declaration:
+   - macOS: Info.plist usage keys (NSMicrophoneUsageDescription, NSCameraUsageDescription, ...) and, for hardened runtime / notarization, an entitlements file (com.apple.security.device.audio-input, .camera, ...) passed to codesign.
+   - Windows: nothing to declare for Win32 apps; the doc lists which privacy toggles apply ("Let desktop apps access your microphone").
+   - Linux: nothing for deb/rpm/AppImage; portals prompt at runtime. (Flatpak finish-args later.)
+3. **Runtime API**, Zig `oriel.permissions` and JS `oriel.permissions`: `query(name)` → granted | denied | prompt | unsupported, `request(name)`, `openSettings(name)` (the right System Settings / ms-settings: pane).
+   - macOS: AVCaptureDevice authorizationStatus/requestAccess, CGPreflight/RequestScreenCaptureAccess, AXIsProcessTrustedWithOptions (prompt), CLLocationManager, UNUserNotificationCenter.
+   - Windows: AppCapability / registry consent store for mic/camera/location, where available.
+   - Linux: XDG portals (Camera, Location, ScreenCast), or `unsupported` = no gate.
+4. **Webview permissions**: pages' getUserMedia / geolocation / notifications requests (WebKitGTK `permission-request`, WebView2 `PermissionRequested`, WKUIDelegate media capture) are granted only when the app declared the permission AND the page's origin is allowed by the security config; denied otherwise, never silently prompted.
+5. **Escape hatch** for anything not modelled: `.platform = .{ .macos = .{ .info_plist_extra = "macos/Info.extra.plist", .entitlements_extra = ... }, .windows = .{ .manifest_extra = ..., .nsis_include = ... }, .linux = .{ .desktop_extra = ... } }`, merged into the generated files (validated; generated keys win on conflict, with a warning).
+
+Tested on all three OSes (rule 11): the smoke app queries every permission; a macOS
+check verifies the plist and entitlements; a Windows check covers the webview grant.
+
 ## Later
 
 - Tauri's isolation pattern.
