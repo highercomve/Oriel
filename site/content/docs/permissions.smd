@@ -108,7 +108,7 @@ permissions.onChange(struct {
 | notifications | not gated | not gated | prompt |
 | Settings page | none | `ms-settings:` page | System Settings pane |
 
-"Not gated" means the status is `granted`. On macOS, run the app as a bundle (`zig-out/<Name>.app`, which `zig build` creates) so macOS knows which app is asking.
+"Not gated" means the status is `granted`. Windows never asks a desktop app: each permission is `granted` or `denied` from the user's Privacy settings (and policies), and `request` just reports that. When it's `denied`, send the user to `openSettings`. On macOS, run the app as a bundle (`zig-out/<Name>.app`, which `zig build` creates) so macOS knows which app is asking.
 
 ## Webview requests
 

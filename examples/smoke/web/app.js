@@ -390,17 +390,19 @@ async function windowChecks() {
 // Permissions: the app declares the microphone and notifications, not the camera.
 async function permissionChecks() {
   const out = [];
+  let micStatus = "unknown";
   const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("no answer (an OS prompt?)")), ms))]);
   try {
     const cam = await oriel.permissions.query("camera");
     const camReq = await withTimeout(oriel.permissions.request("camera"), 5000);
     const mic = await oriel.permissions.query("microphone");
-    const settings = await oriel.permissions.openSettings("location");
+    // openSettings would really open the Settings app: only check it exists.
     out.push({
       module: "permissions js",
-      ok: cam === "denied" && camReq === "denied" && ["granted", "prompt", "unknown"].includes(mic) && typeof settings === "boolean",
+      ok: cam === "denied" && camReq === "denied" && ["granted", "prompt", "unknown", "denied"].includes(mic) && typeof oriel.permissions.openSettings === "function",
       detail: `camera=${cam}/${camReq} (undeclared), microphone=${mic}`,
     });
+    micStatus = mic;
   } catch (e) {
     out.push({ module: "permissions js", ok: false, detail: String(e) });
   }
@@ -422,7 +424,8 @@ async function permissionChecks() {
     module: "permissions webview",
     // Without a camera device the request can fail before it's asked
     // (OverconstrainedError/NotFoundError); it must never be allowed.
-    ok: ["NotAllowedError", "OverconstrainedError", "NotFoundError"].includes(video) && audio !== "NotAllowedError" && audio !== "no getUserMedia",
+    // A microphone the user switched off in the OS settings may be refused too.
+    ok: ["NotAllowedError", "OverconstrainedError", "NotFoundError"].includes(video) && (audio !== "NotAllowedError" || micStatus === "denied") && audio !== "no getUserMedia",
     detail: `camera (undeclared): ${video}; microphone (declared): ${audio}`,
   });
   return out;
