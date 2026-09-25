@@ -250,7 +250,30 @@ pub fn getWindowSize(handle: WindowHandle) WindowSize {
     return query(WindowSize, handle, contentSizeNow, .{ .width = 0, .height = 0 });
 }
 
+/// Open `uri` with its default app. Callable from any thread: AppKit is
+/// used on the main thread (a copy of `uri` is queued from other threads).
 pub fn openExternal(uri: [*:0]const u8) void {
+    if (cocoa.isMainThread()) return openExternalNow(uri);
+    const copy = std.heap.smp_allocator.dupeZ(u8, std.mem.span(uri)) catch {
+        log.err("could not open {s}: out of memory", .{uri});
+        return;
+    };
+    ShellMod.dispatchWithCleanup(&openQueued, copy.ptr, &freeQueued);
+}
+
+fn openQueued(ctx: ?*anyopaque) void {
+    const uri: [*:0]const u8 = @ptrCast(ctx.?);
+    defer freeQueued(ctx);
+    openExternalNow(uri);
+}
+
+/// Frees the copy made by `openExternal` (also when the task is dropped at shutdown).
+fn freeQueued(ctx: ?*anyopaque) void {
+    const uri: [*:0]u8 = @ptrCast(ctx.?);
+    std.heap.smp_allocator.free(std.mem.span(uri));
+}
+
+fn openExternalNow(uri: [*:0]const u8) void {
     const pool = objc.AutoreleasePool.init();
     defer pool.deinit();
     const str = cocoa.nsString(std.mem.span(uri)) orelse {

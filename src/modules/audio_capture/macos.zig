@@ -344,6 +344,8 @@ pub const Stream = struct {
             gpa.destroy(t);
         }
         gpa.free(self.state.ring);
+        _ = c.pthread_cond_destroy(&self.state.cond);
+        _ = c.pthread_mutex_destroy(&self.state.mutex);
         gpa.destroy(self.state);
     }
 };

@@ -82,7 +82,14 @@ fn menuAction(_: cocoa.id, _: cocoa.c.SEL, sender_id: cocoa.id) callconv(.c) voi
         sender.msgSend(void, "setState:", .{if (now_on) NSControlStateValueOn else NSControlStateValueOff});
         checked = now_on;
     }
-    if (callback) |cb| cb(id, checked);
+    if (callback) |cb| {
+        // `id` lives in ids_arena, which a `menu.set` from the callback frees:
+        // hand the callback a copy (as the Windows backend does).
+        var id_buf: [256]u8 = undefined;
+        const n = @min(id.len, id_buf.len);
+        @memcpy(id_buf[0..n], id[0..n]);
+        cb(id_buf[0..n], checked);
+    }
 }
 
 fn ensureTarget() void {
