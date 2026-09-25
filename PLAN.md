@@ -592,6 +592,30 @@ and there is no way to add custom platform keys. Goal: one standard way.
 Tested on all three OSes (rule 11): the smoke app queries every permission; a macOS
 check verifies the plist and entitlements; a Windows check covers the webview grant.
 
+## Milestone 10 — Overlay windows, background apps, single instance (driven by the GhostPen port)
+
+GhostPen (the first full app on Oriel, `~/Code/ghostpen-oriel`) needs these; each
+works on Linux (X11 + Wayland), Windows and macOS (rule 11):
+
+1. Window options: `visible` (create hidden), `transparent`, `always_on_top`,
+   `skip_taskbar`, `focus_on_show`; runtime `center()`, `setPosition(x, y)`,
+   `setClickThrough(bool)`, `setAlwaysOnTop(bool)`, `workArea()` (the monitor
+   the window is on). Also in the JS window API.
+   - Linux X11: EWMH hints (_NET_WM_STATE_ABOVE/SKIP_TASKBAR), input region.
+   - Linux Wayland: gtk4-layer-shell when present (build option): overlay
+     layer, anchors + margins for bottom-center, keyboard-interactivity for
+     the menu; without it, the options that can't work are ignored and logged.
+   - Windows: WS_EX_TOPMOST / WS_EX_TOOLWINDOW / WS_EX_LAYERED|TRANSPARENT,
+     WebView2 transparent background, MonitorFromWindow work area.
+   - macOS: NSWindow level/collectionBehavior/ignoresMouseEvents/opaque,
+     NSScreen visibleFrame.
+2. Background apps: `App.Config.show_main_window = false` (tray/hotkey apps).
+3. Single instance on every OS: `App.Config.on_second_instance: fn(args)`;
+   a second launch forwards its argv to the running one and exits
+   (Linux GApplication command-line, Windows mutex + WM_COPYDATA, macOS
+   Launch Services / a lock + socket for unbundled runs).
+4. Windows audio capture: WASAPI microphone + loopback (captions).
+
 ## Later
 
 - Tauri's isolation pattern.
