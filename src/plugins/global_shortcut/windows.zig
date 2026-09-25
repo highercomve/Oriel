@@ -204,7 +204,11 @@ test "trigger registered shortcut windows" {
         .vk = 'W',
         .fs_modifiers = 0,
     });
-    defer _ = shortcuts.pop();
+    defer {
+        _ = shortcuts.pop();
+        // The list is global: free its buffer so the testing allocator sees no leak.
+        if (shortcuts.items.len == 0) shortcuts.clearAndFree(std.testing.allocator);
+    }
 
     try std.testing.expect(trigger("win_test_hotkey"));
     try std.testing.expect(H.triggered);
@@ -231,7 +235,10 @@ test "trigger re-entrant callback does not deadlock" {
         .vk = '1',
         .fs_modifiers = 0,
     });
-    defer _ = shortcuts.pop();
+    defer {
+        _ = shortcuts.pop();
+        if (shortcuts.items.len == 0) shortcuts.clearAndFree(std.testing.allocator);
+    }
 
     try shortcuts.append(std.testing.allocator, .{
         .id_int = 1002,

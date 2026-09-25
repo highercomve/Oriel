@@ -540,7 +540,7 @@ test navigation {
         .capabilities = &.{.{ .origin = "https://*.trusted.dev" }},
     };
     const local: Local = .{ .dev_origin = "http://localhost:5173" };
-    try std.testing.expectEqual(Navigation.allow, navigation(sec, local, "app://app/settings", false));
+    try std.testing.expectEqual(Navigation.allow, navigation(sec, local, app_origin ++ "/settings", false));
     try std.testing.expectEqual(Navigation.allow, navigation(sec, local, "http://localhost:5173/", false));
     try std.testing.expectEqual(Navigation.allow, navigation(sec, local, "https://docs.example.com/guide", false));
     try std.testing.expectEqual(Navigation.allow, navigation(sec, local, "https://x.trusted.dev/", false));
@@ -561,7 +561,7 @@ test commandAllowed {
         },
     };
     const local: Local = .{};
-    try std.testing.expect(commandAllowed(sec, local, "app://app/", "delete_all"));
+    try std.testing.expect(commandAllowed(sec, local, app_origin ++ "/", "delete_all"));
     try std.testing.expect(commandAllowed(sec, local, "https://partner.example/page", "greet"));
     try std.testing.expect(!commandAllowed(sec, local, "https://partner.example/page", "delete_all"));
     try std.testing.expect(commandAllowed(sec, local, "https://a.trusted.dev/", "delete_all"));
@@ -582,7 +582,7 @@ test commandAllowed {
 test bridgePatterns {
     const patterns = comptime bridgePatterns(.{ .capabilities = &.{.{ .origin = "https://partner.example" }} }, "http://localhost:5173/");
     try std.testing.expectEqual(3, patterns.len);
-    try std.testing.expectEqualStrings("app://app/*", patterns[0]);
+    try std.testing.expectEqualStrings(app_origin ++ "/*", patterns[0]);
     try std.testing.expectEqualStrings("http://localhost/*", patterns[1]);
     try std.testing.expectEqualStrings("https://partner.example/*", patterns[2]);
 }
@@ -622,7 +622,7 @@ test validateWindowUrl {
     try std.testing.expectError(error.BlockedScheme, validateWindowUrl(sec, local, "data:text/html,bad"));
 
     // App-local absolute URLs
-    try validateWindowUrl(sec, local, "app://app/settings");
+    try validateWindowUrl(sec, local, app_origin ++ "/settings");
     try validateWindowUrl(sec, local, "http://localhost:5173/page");
 
     // Remote URLs with allow_remote_urls = false (default)
@@ -696,13 +696,13 @@ test isWindowApiAllowed {
     const local: Local = .{ .dev_origin = "http://localhost:5173" };
 
     // Local origins allowed by default
-    try std.testing.expect(isWindowApiAllowed(sec, local, "app://app/page", null));
+    try std.testing.expect(isWindowApiAllowed(sec, local, app_origin ++ "/page", null));
     try std.testing.expect(isWindowApiAllowed(sec, local, "http://localhost:5173/page", null));
 
     // When window_api.enabled = false
     var sec_disabled = sec;
     sec_disabled.window_api.enabled = false;
-    try std.testing.expect(!isWindowApiAllowed(sec_disabled, local, "app://app/page", null));
+    try std.testing.expect(!isWindowApiAllowed(sec_disabled, local, app_origin ++ "/page", null));
 
     // Remote origins off by default unless capability grants window_api
     try std.testing.expect(!isWindowApiAllowed(sec, local, "https://no-win.example/page", null));

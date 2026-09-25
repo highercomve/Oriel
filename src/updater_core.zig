@@ -769,6 +769,7 @@ pub const MockServer = struct {
 // ---------------------------------------------------------------------------
 
 test "core end-to-end update flow" {
+    // POSIX-only: stages the fake update binary with Permissions.fromMode (exec bits).
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
     const io = std.testing.io;
     const allocator = std.testing.allocator;

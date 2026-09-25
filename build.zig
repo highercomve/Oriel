@@ -138,8 +138,8 @@ pub fn build(b: *std.Build) void {
     addUpdaterSteps(b, update_tool);
 
     const is_linux = target.result.os.tag == .linux;
-    // Unit tests run natively on Linux and macOS (Windows: see PLAN.md).
-    const runs_tests = is_linux or target.result.os.tag == .macos;
+    // Unit tests run natively on Linux, macOS and Windows.
+    const runs_tests = is_linux or target.result.os.tag == .macos or target.result.os.tag == .windows;
 
     const tests = b.addTest(.{
         .root_module = oriel,
