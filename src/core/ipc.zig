@@ -410,6 +410,16 @@ fn commandArgsType(comptime F: type) ?type {
     return found;
 }
 
+/// A name usable unquoted as a TypeScript property: [A-Za-z_$][A-Za-z0-9_$]*.
+fn isTsIdentifier(comptime name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name, 0..) |c, i| {
+        const ok = std.ascii.isAlphabetic(c) or c == '_' or c == '$' or (i > 0 and std.ascii.isDigit(c));
+        if (!ok) return false;
+    }
+    return true;
+}
+
 /// TypeScript module for the frontend: `Commands` and `Events` interfaces
 /// derived from the Zig structs, plus typed `invoke()` and `listen()`.
 pub fn typescript(comptime Commands: type, comptime Events: type) []const u8 {
@@ -434,7 +444,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
         var has_deep_link = false;
         for (@typeInfo(Events).@"struct".fields) |f| {
             if (std.mem.eql(u8, f.name, "deep-link")) has_deep_link = true;
-            const needs_quote = std.mem.indexOfScalar(u8, f.name, '-') != null or std.mem.indexOfScalar(u8, f.name, ' ') != null;
+            const needs_quote = !isTsIdentifier(f.name);
             if (needs_quote) {
                 events = events ++ "  \"" ++ f.name ++ "\": " ++ tsType(f.type) ++ ";\n";
             } else {
@@ -715,8 +725,11 @@ test "typescript generation" {
         }
         pub fn slow_task(_: std.mem.Allocator, _: std.Io) !void {}
     };
-    const Events = struct { note_added: struct { id: i64 }, quit: void };
+    const Events = struct { note_added: struct { id: i64 }, quit: void, @"app://ready": struct {}, @"2fa": bool };
     const ts = comptime typescript(Commands, Events);
+    // Names that aren't identifiers are quoted.
+    try std.testing.expect(std.mem.indexOf(u8, ts, "  \"app://ready\": { };\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "  \"2fa\": boolean;\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  ping: { args: null; result: string };\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  add: { args: { a: number; label?: string | null; }; result: { sum: number; tags: (string)[]; } };\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  slow_task: { args: null; result: null };\n") != null);
