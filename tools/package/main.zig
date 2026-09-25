@@ -1422,6 +1422,8 @@ pub fn copyTreeFresh(gpa: std.mem.Allocator, io: Io, src: []const u8, dest: []co
 }
 
 test copyTreeFresh {
+    // .app bundles are packaged on macOS; Windows symlinks need Developer Mode and read back with `\`.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

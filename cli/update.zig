@@ -219,6 +219,7 @@ test "oriel update without update_public_key prints error" {
 }
 
 test "oriel update end-to-end against local HTTP server" {
+    // POSIX-only: stages the fake update binary with Permissions.fromMode (exec bits).
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -321,6 +322,7 @@ test "oriel update end-to-end against local HTTP server" {
 }
 
 test "oriel update rejects tampered manifest and payload" {
+    // POSIX-only: stages the fake update binary with Permissions.fromMode (exec bits).
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.testing.io;

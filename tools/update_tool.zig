@@ -127,9 +127,11 @@ pub fn runKeygen(
         }
     }
 
-    // Ensure directory exists with mode 0700
+    // Ensure directory exists with mode 0700 (POSIX only: Windows has no modes,
+    // the user profile's ACLs protect it, and Zig 0.16 panics on
+    // dirSetFilePermissions there).
     try cwd.createDirPath(io, key_dir);
-    try cwd.setFilePermissions(io, key_dir, filePerms(0o700), .{});
+    if (builtin.os.tag != .windows) try cwd.setFilePermissions(io, key_dir, filePerms(0o700), .{});
 
     // Generate random 32-byte seed for Ed25519
     var seed: [Ed25519.KeyPair.seed_length]u8 = undefined;

@@ -400,6 +400,7 @@ test "app merges updater Commands pattern" {
 pub const MockServer = core.MockServer;
 
 test "Commands check -> install -> restart state transitions against MockServer with std.testing.allocator" {
+    // POSIX-only: stages the fake update binary with Permissions.fromMode (exec bits).
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
     const io = std.testing.io;
     const allocator = std.testing.allocator;
