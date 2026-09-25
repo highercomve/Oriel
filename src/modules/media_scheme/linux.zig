@@ -187,13 +187,15 @@ pub fn handle(request: *webkit.URISchemeRequest, rel_path: []const u8) void {
     request.finishWithResponse(response);
 }
 
-/// The app's extra headers (security.headers), as on app:// responses.
-/// soup copies the strings; ones too long for the buffers are skipped.
+/// nosniff and the app's extra headers (security.headers), as on app://
+/// responses. soup copies the strings; the buffers fit every usable header
+/// (names are from a fixed list, values at most 2047 bytes).
 fn appendAppHeaders(headers: *soup.MessageHeaders) void {
+    headers.append("X-Content-Type-Options", "nosniff");
     for (App.current_security.headers) |h| {
-        if (security.headerBuiltIn(h.name) or !security.headerValueValid(h.value)) continue;
+        if (!security.headerUsable(h)) continue;
         var name_buf: [128]u8 = undefined;
-        var value_buf: [2048]u8 = undefined;
+        var value_buf: [security.max_header_value + 1]u8 = undefined;
         const name = std.fmt.bufPrintZ(&name_buf, "{s}", .{h.name}) catch continue;
         const value = std.fmt.bufPrintZ(&value_buf, "{s}", .{h.value}) catch continue;
         headers.append(name, value);

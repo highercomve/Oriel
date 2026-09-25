@@ -236,7 +236,8 @@ async function securityChecks() {
     const coop = page.headers.get("cross-origin-opener-policy");
     const pp = page.headers.get("permissions-policy");
     const mediaCoop = media.headers.get("cross-origin-opener-policy");
-    check("security headers", coop === "same-origin" && pp === "geolocation=()" && mediaCoop === "same-origin", `app:// COOP=${coop}, Permissions-Policy=${pp}; media COOP=${mediaCoop}`);
+    const mediaNosniff = media.headers.get("x-content-type-options");
+    check("security headers", coop === "same-origin" && pp === "geolocation=()" && mediaCoop === "same-origin" && mediaNosniff === "nosniff", `app:// COOP=${coop}, Permissions-Policy=${pp}; media COOP=${mediaCoop}, nosniff=${mediaNosniff}`);
   } catch (e) {
     check("security headers", false, String(e));
   }

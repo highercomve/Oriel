@@ -48,14 +48,20 @@ pub const Security = struct {
     window_api: WindowApiPolicy = .{},
     /// Allowed URL schemes for openExternal (e.g. "http", "https", "mailto").
     open_external_schemes: []const []const u8 = default_open_external_schemes,
-    /// Run `Object.freeze(Object.prototype)` at document start, before any
-    /// page script (Tauri's `freezePrototype`): blocks prototype-pollution
-    /// gadgets. Off by default: some libraries patch Object.prototype.
+    /// Run `Object.freeze(Object.prototype)` at document start in the top
+    /// frame, before any page script (Tauri's `freezePrototype`): blocks
+    /// prototype-pollution gadgets. Off by default: some libraries patch
+    /// Object.prototype, and with it frozen, assigning an inherited name on
+    /// another object (`Foo.prototype.toString = ...`, `.constructor`,
+    /// `.valueOf`) throws in strict code (the "override mistake"); use
+    /// Object.defineProperty for those.
     freeze_prototype: bool = false,
-    /// Extra headers on the app's own responses (`app://` assets and the
-    /// media scheme), e.g. Cross-Origin-Opener-Policy or Permissions-Policy.
-    /// Names are limited to `allowed_header_names` (Tauri's list); CSP and
-    /// Content-Type stay Oriel's. Checked at compile time.
+    /// Extra headers on the app's own successful responses (`app://`
+    /// assets and the media scheme), e.g. Cross-Origin-Opener-Policy or
+    /// Permissions-Policy. Names are limited to `allowed_header_names`
+    /// (Tauri's list), each at most once; values are printable ASCII (and
+    /// tabs), at most 2047 bytes. CSP and Content-Type stay Oriel's.
+    /// Checked at compile time.
     headers: []const Header = &.{},
 };
 
@@ -82,17 +88,33 @@ pub fn headerNameAllowed(name: []const u8) bool {
     return false;
 }
 
-/// A header value can't carry CR, LF or NUL (no header injection).
+/// Longest header value accepted (every platform can send it).
+pub const max_header_value = 2047;
+
+/// A header value is printable ASCII or tabs, at most `max_header_value`
+/// bytes: no CR/LF/NUL (no injection), no other controls, no non-ASCII
+/// (every platform encodes it the same way).
 pub fn headerValueValid(value: []const u8) bool {
-    return std.mem.indexOfAny(u8, value, "\r\n\x00") == null;
+    if (value.len > max_header_value) return false;
+    for (value) |ch| if (ch != '\t' and (ch < 0x20 or ch > 0x7E)) return false;
+    return true;
+}
+
+/// Whether a header from `headers` is sent: allowed name, valid value, and
+/// not one Oriel always sends itself.
+pub fn headerUsable(h: Header) bool {
+    return headerNameAllowed(h.name) and headerValueValid(h.value) and !headerBuiltIn(h.name);
 }
 
 /// Compile error for a header an app may not set (App.run calls it).
 pub fn checkHeaders(comptime headers: []const Header) void {
-    inline for (headers) |h| {
+    inline for (headers, 0..) |h, i| {
         if (comptime !headerNameAllowed(h.name)) @compileError("security.headers: '" ++ h.name ++ "' is not an allowed header (see security.allowed_header_names; CSP has its own `csp` option)");
-        if (comptime !headerValueValid(h.value)) @compileError("security.headers: the value of '" ++ h.name ++ "' contains CR, LF or NUL");
+        if (comptime !headerValueValid(h.value)) @compileError("security.headers: the value of '" ++ h.name ++ "' must be printable ASCII (or tabs), at most 2047 bytes");
         if (comptime std.ascii.eqlIgnoreCase(h.name, "X-Content-Type-Options") and !std.ascii.eqlIgnoreCase(h.value, "nosniff")) @compileError("security.headers: X-Content-Type-Options is always nosniff");
+        inline for (headers[0..i]) |prev| {
+            if (comptime std.ascii.eqlIgnoreCase(prev.name, h.name)) @compileError("security.headers: '" ++ h.name ++ "' is set twice");
+        }
     }
 }
 
@@ -101,21 +123,31 @@ pub fn headerBuiltIn(name: []const u8) bool {
     return std.ascii.eqlIgnoreCase(name, "X-Content-Type-Options");
 }
 
-/// `Name: value\r\n` for each extra header (Windows builds header blocks
+/// `Name: value\r\n` for each usable header (Windows builds header blocks
 /// as text). Caller frees.
 pub fn headerLines(gpa: std.mem.Allocator, headers: []const Header) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     for (headers) |h| {
-        if (headerBuiltIn(h.name) or !headerNameAllowed(h.name) or !headerValueValid(h.value)) continue;
+        if (!headerUsable(h)) continue;
         try out.writer.print("{s}: {s}\r\n", .{ h.name, h.value });
     }
     return out.toOwnedSlice();
 }
 
-/// JavaScript run first in every bridged top-level document.
+/// `headerLines` at compile time (for the config's own headers).
+pub fn comptimeHeaderLines(comptime headers: []const Header) []const u8 {
+    comptime var out: []const u8 = "";
+    inline for (headers) |h| {
+        if (comptime headerUsable(h)) out = out ++ h.name ++ ": " ++ h.value ++ "\r\n";
+    }
+    return out;
+}
+
+/// JavaScript run first in every bridged document (top frame only: the
+/// Windows script also runs in frames).
 pub fn bridgePrelude(comptime sec: Security) []const u8 {
-    return if (sec.freeze_prototype) "Object.freeze(Object.prototype);\n" else "";
+    return if (sec.freeze_prototype) "if (window === window.top) Object.freeze(Object.prototype);\n" else "";
 }
 
 test headerLines {
@@ -125,12 +157,17 @@ test headerLines {
         .{ .name = "X-Content-Type-Options", .value = "nosniff" }, // built in: skipped
         .{ .name = "Set-Cookie", .value = "x=1" }, // not allowed: skipped
         .{ .name = "Permissions-Policy", .value = "camera=()\r\nX: y" }, // injection: skipped
+        .{ .name = "Timing-Allow-Origin", .value = "caf\xc3\xa9" }, // non-ASCII: skipped
     });
     defer a.free(lines);
     try std.testing.expectEqualStrings("Cross-Origin-Opener-Policy: same-origin\r\n", lines);
+    try std.testing.expectEqualStrings("Cross-Origin-Opener-Policy: same-origin\r\n", comptimeHeaderLines(&.{.{ .name = "Cross-Origin-Opener-Policy", .value = "same-origin" }}));
+    try std.testing.expect(headerValueValid("a\tb=()"));
+    try std.testing.expect(!headerValueValid("a\x01"));
+    try std.testing.expect(!headerValueValid("x" ** (max_header_value + 1)));
     try std.testing.expect(headerNameAllowed("permissions-policy"));
     try std.testing.expect(!headerNameAllowed("Content-Security-Policy"));
-    try std.testing.expectEqualStrings("Object.freeze(Object.prototype);\n", bridgePrelude(.{ .freeze_prototype = true }));
+    try std.testing.expectEqualStrings("if (window === window.top) Object.freeze(Object.prototype);\n", bridgePrelude(.{ .freeze_prototype = true }));
     try std.testing.expectEqualStrings("", bridgePrelude(.{}));
 }
 

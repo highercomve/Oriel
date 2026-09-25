@@ -44,7 +44,7 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
                 headers.append("X-Content-Type-Options", "nosniff");
                 if (csp_z) |csp| headers.append("Content-Security-Policy", csp);
                 inline for (config.security.headers) |h| {
-                    if (comptime !security.headerBuiltIn(h.name)) {
+                    if (comptime security.headerUsable(h)) {
                         headers.append((h.name ++ "\x00")[0..h.name.len :0], (h.value ++ "\x00")[0..h.value.len :0]);
                     }
                 }

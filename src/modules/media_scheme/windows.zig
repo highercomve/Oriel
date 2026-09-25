@@ -386,13 +386,13 @@ fn serveRange(
     if (status_code == 206) {
         hdr_str = std.fmt.allocPrint(
             gpa,
-            "Content-Type: {s}\r\nAccept-Ranges: bytes\r\nContent-Length: {d}\r\nContent-Range: bytes {d}-{d}/{d}\r\n{s}",
+            "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\nAccept-Ranges: bytes\r\nContent-Length: {d}\r\nContent-Range: bytes {d}-{d}/{d}\r\n{s}",
             .{ mime, length, start, end, file_size, extra },
         ) catch return;
     } else {
         hdr_str = std.fmt.allocPrint(
             gpa,
-            "Content-Type: {s}\r\nAccept-Ranges: bytes\r\nContent-Length: {d}\r\n{s}",
+            "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\nAccept-Ranges: bytes\r\nContent-Length: {d}\r\n{s}",
             .{ mime, length, extra },
         ) catch return;
     }

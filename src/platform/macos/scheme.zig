@@ -59,7 +59,7 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
             setHeader(headers, "Content-Length", len);
             setHeader(headers, "X-Content-Type-Options", "nosniff");
             inline for (config.security.headers) |h| {
-                if (comptime !security.headerBuiltIn(h.name)) setHeader(headers, h.name, h.value);
+                if (comptime security.headerUsable(h)) setHeader(headers, h.name, h.value);
             }
             if (with_csp) if (csp_z) |csp| setHeader(headers, "Content-Security-Policy", csp);
 

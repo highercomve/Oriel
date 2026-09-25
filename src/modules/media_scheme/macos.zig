@@ -255,9 +255,10 @@ fn sendHead(task: Object, url: Object, status: isize, mime: []const u8, length: 
     setHeader(headers, "Content-Length", std.fmt.bufPrint(&len_buf, "{d}", .{length}) catch unreachable); // 20 digits max
     setHeader(headers, "Accept-Ranges", "bytes");
     if (content_range) |cr| setHeader(headers, "Content-Range", cr);
+    setHeader(headers, "X-Content-Type-Options", "nosniff");
     // The app's extra headers (security.headers), as on app:// responses.
     for (App.current_security.headers) |h| {
-        if (!security.headerBuiltIn(h.name)) setHeader(headers, h.name, h.value);
+        if (security.headerUsable(h)) setHeader(headers, h.name, h.value);
     }
     const version = cocoa.nsString("HTTP/1.1") orelse {
         failTask(task);

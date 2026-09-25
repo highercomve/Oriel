@@ -60,8 +60,7 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
 
                 // Format HTTP response headers (matching Linux: Content-Type, nosniff, CSP)
                 // The app's extra headers (security.headers), as text lines.
-                const extra = security.headerLines(gpa, config.security.headers) catch return;
-                defer gpa.free(extra);
+                const extra = comptime security.comptimeHeaderLines(config.security.headers);
                 const hdr_str = if (csp_z) |csp|
                     std.fmt.allocPrint(gpa, "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: {s}\r\n{s}", .{ a.mime, csp, extra }) catch return
                 else
