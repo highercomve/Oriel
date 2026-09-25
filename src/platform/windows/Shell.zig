@@ -517,6 +517,14 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             var dev_server_proc: ?dev_server.DevServer = if (config.dev) |dev| dev_server.startDevServer(io, dev) else null;
             defer if (dev_server_proc) |*p| dev_server.stopDevServer(io, p);
 
+            // Sharp on every monitor: per-monitor DPI aware (V2) before any
+            // window exists. Window sizes stay logical in Oriel's API
+            // (window.zig converts); WebView2 scales its content itself.
+            if (win32.SetProcessDpiAwarenessContext(win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == win32.FALSE) {
+                // ERROR_ACCESS_DENIED: already set (e.g. by a manifest).
+                if (win32.GetLastError() != 5) log.debug("SetProcessDpiAwarenessContext failed ({d})", .{win32.GetLastError()});
+            }
+
             main_thread_id = win32.GetCurrentThreadId();
             defer main_thread_id = 0;
 
