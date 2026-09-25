@@ -6,6 +6,7 @@ const build_options = @import("build_options");
 const Context = @import("Context.zig");
 const template = @import("template.zig");
 const Template = template.Template;
+const webview2 = @import("webview2.zig");
 
 /// Where `oriel init` fetches Oriel from (plus `#<ref>`).
 pub const repo_url = "git+https://github.com/highercomve/Oriel";
@@ -20,6 +21,7 @@ pub const Command = struct {
         .oriel_ref = "Oriel git tag or commit to depend on (default: " ++ build_options.oriel_ref ++ ")",
         .oriel_path = "Depend on a local Oriel checkout instead (.path dependency)",
         .no_install = "Only record the dependency: skip `zig build --fetch` and `npm install`",
+        .no_webview2 = "Skip downloading WebView2Loader.dll for Windows builds",
     };
     pub const values = .{ .id = "app-id", .oriel_ref = "ref", .oriel_path = "dir" };
     pub const details =
@@ -34,6 +36,7 @@ pub const Command = struct {
     oriel_ref: ?[]const u8 = null,
     oriel_path: ?[]const u8 = null,
     no_install: bool = false,
+    no_webview2: bool = false,
 };
 
 // ---------------------------------------------------------------------------
@@ -246,7 +249,13 @@ pub fn writeFiles(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, p: Projec
 // The command
 // ---------------------------------------------------------------------------
 
+pub const FetchLoaderFn = *const fn (ctx: Context, arch: webview2.Arch, version: ?[]const u8, out_dir: ?[]const u8) anyerror!void;
+
 pub fn run(ctx: Context, cmd: Command) !u8 {
+    return runWithFetch(ctx, cmd, webview2.fetch);
+}
+
+pub fn runWithFetch(ctx: Context, cmd: Command, fetch_loader: ?FetchLoaderFn) !u8 {
     var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -326,6 +335,14 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
                 try err.print("Retry with: cd {s}/frontend && npm install (see `oriel doctor`)\n", .{cmd.name});
                 return 1;
             }
+        }
+    }
+    if (!cmd.no_install and !cmd.no_webview2) {
+        if (fetch_loader) |fetch_fn| {
+            try ctx.out.writeAll("Fetching WebView2Loader.dll for Windows builds...\n");
+            fetch_fn(ctx, .all, null, null) catch |e| {
+                try err.print("warning: could not download WebView2Loader.dll: {s}; run: oriel webview2 later\n", .{@errorName(e)});
+            };
         }
     }
 
@@ -505,3 +522,125 @@ test "createProjectDir refuses non-empty directories" {
     try testing.expectError(error.NotEmpty, createProjectDir(io, tmp.dir, "new"));
     try testing.expectError(error.NotDir, createProjectDir(io, tmp.dir, "new/file"));
 }
+
+const TestFetchState = struct {
+    called: bool = false,
+    should_fail: bool = false,
+
+    fn fetchStub(_: Context, arch: webview2.Arch, _: ?[]const u8, _: ?[]const u8) anyerror!void {
+        test_fetch_state.called = true;
+        try testing.expectEqual(webview2.Arch.all, arch);
+        if (test_fetch_state.should_fail) return error.NetworkOffline;
+    }
+};
+
+var test_fetch_state: TestFetchState = .{};
+
+test "init integration with stubbed fetch_loader" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+
+    // Create dummy zig script that exits 0
+    try tmp.dir.createDirPath(io, "bin");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "bin/mock_zig",
+        .data = "#!/bin/sh\nexit 0\n",
+        .flags = .{ .permissions = .executable_file },
+    });
+    const mock_zig = try tmp.dir.realPathFileAlloc(io, "bin/mock_zig", gpa);
+    defer gpa.free(mock_zig);
+    try env.put("ORIEL_ZIG", mock_zig);
+
+    // Create a dummy oriel checkout directory with build.zig.zon
+    try tmp.dir.createDirPath(io, "oriel_checkout");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "oriel_checkout/build.zig.zon",
+        .data = ".{ .name = .oriel, .version = \"0.1.0\", .fingerprint = 0x1234 }\n",
+    });
+    const oriel_path = try tmp.dir.realPathFileAlloc(io, "oriel_checkout", gpa);
+    defer gpa.free(oriel_path);
+
+    var out_buf: std.Io.Writer.Allocating = .init(gpa);
+    defer out_buf.deinit();
+    var err_buf: std.Io.Writer.Allocating = .init(gpa);
+    defer err_buf.deinit();
+
+    const ctx: Context = .{
+        .gpa = gpa,
+        .io = io,
+        .environ = &env,
+        .out = &out_buf.writer,
+        .err = &err_buf.writer,
+    };
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(tmp_path);
+
+    const orig_cwd = try std.process.currentPathAlloc(io, gpa);
+    defer gpa.free(orig_cwd);
+    try std.process.setCurrentPath(io, tmp_path);
+    defer std.process.setCurrentPath(io, orig_cwd) catch {};
+
+    // 1. Normal init (vanilla template) runs fetchStub and succeeds
+    test_fetch_state = .{ .called = false, .should_fail = false };
+    const code1 = try runWithFetch(ctx, .{
+        .name = "test_app1",
+        .template = .vanilla,
+        .no_install = false,
+        .no_webview2 = false,
+        .oriel_path = oriel_path,
+    }, TestFetchState.fetchStub);
+    try testing.expectEqual(@as(u8, 0), code1);
+    try testing.expect(test_fetch_state.called);
+    try testing.expect(std.mem.indexOf(u8, out_buf.written(), "Fetching WebView2Loader.dll") != null);
+
+    // 2. Fetch fails (offline / network error) -> warning printed, init does NOT fail
+    out_buf.clearRetainingCapacity();
+    err_buf.clearRetainingCapacity();
+    test_fetch_state = .{ .called = false, .should_fail = true };
+    const code2 = try runWithFetch(ctx, .{
+        .name = "test_app2",
+        .template = .vanilla,
+        .no_install = false,
+        .no_webview2 = false,
+        .oriel_path = oriel_path,
+    }, TestFetchState.fetchStub);
+    try testing.expectEqual(@as(u8, 0), code2);
+    try testing.expect(test_fetch_state.called);
+    try testing.expect(std.mem.indexOf(u8, err_buf.written(), "warning: could not download WebView2Loader.dll: NetworkOffline; run: oriel webview2 later") != null);
+
+    // 3. With --no-webview2: fetchStub is skipped
+    out_buf.clearRetainingCapacity();
+    err_buf.clearRetainingCapacity();
+    test_fetch_state = .{ .called = false, .should_fail = false };
+    const code3 = try runWithFetch(ctx, .{
+        .name = "test_app3",
+        .template = .vanilla,
+        .no_install = false,
+        .no_webview2 = true,
+        .oriel_path = oriel_path,
+    }, TestFetchState.fetchStub);
+    try testing.expectEqual(@as(u8, 0), code3);
+    try testing.expect(!test_fetch_state.called);
+
+    // 4. With --no-install: fetchStub is skipped
+    out_buf.clearRetainingCapacity();
+    err_buf.clearRetainingCapacity();
+    test_fetch_state = .{ .called = false, .should_fail = false };
+    const code4 = try runWithFetch(ctx, .{
+        .name = "test_app4",
+        .template = .vanilla,
+        .no_install = true,
+        .no_webview2 = false,
+        .oriel_path = oriel_path,
+    }, TestFetchState.fetchStub);
+    try testing.expectEqual(@as(u8, 0), code4);
+    try testing.expect(!test_fetch_state.called);
+}
+
