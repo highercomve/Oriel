@@ -128,7 +128,7 @@ fn drainAtShutdown() void {
     }
 }
 
-fn isRunning() bool {
+pub fn isRunning() bool {
     task_mutex.lock();
     defer task_mutex.unlock();
     return running;
