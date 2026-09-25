@@ -70,7 +70,7 @@ no GTK needed to run it) that scaffolds apps and wraps their build steps,
 like `create-tauri-app` and `tauri dev/build`.
 
 ```sh
-# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.2.0.
+# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.3.0.
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
 ```
 
@@ -187,7 +187,7 @@ into place atomically under a lock file, so concurrent installs don't clash.
 oriel update --check          # Check whether a newer version is available without installing
 oriel update                  # Update to the latest release (prompts for confirmation on a TTY)
 oriel update --yes            # Update without prompting (required in non-interactive/CI environments)
-oriel update --version v0.2.0 # Update or downgrade to a specific release tag
+oriel update --version v0.3.0 # Update or downgrade to a specific release tag
 ```
 
 The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the signed manifest for the current architecture and OS (`oriel-update-<arch>-<linux|macos|windows>.json`), verifies the Ed25519 signature against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary (on Windows, where a running exe can't be overwritten, it is renamed to `oriel.exe.old` first and removed on the next run). The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.

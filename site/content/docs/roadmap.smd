@@ -48,9 +48,9 @@ AppKit + WKWebView through the Objective-C runtime. Every module has a macOS bac
 
 Opt-in `deep_link` module: custom URL schemes open the app, or forward the link to the running instance, on Linux, Windows and macOS. Enabled in code and managed with `oriel deep-link add|register|unregister`; installers register the schemes.
 
-# Next: v0.3.0
+# Next: Milestone 9, permissions
 
-Release candidates are being tested on clean Linux, Windows and macOS machines, focusing on the first-run experience of a new developer.
+One standard way to declare and request OS permissions (microphone, camera, screen capture, accessibility, location, notifications): declared once in `build.zig`, packaged into each platform's files (Info.plist usage keys, macOS entitlements), queried and requested at runtime from Zig and JavaScript, and enforced for webview requests. Plus an escape hatch for custom platform keys.
 
 # Even later
 
