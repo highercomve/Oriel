@@ -30,9 +30,48 @@ pub fn findRoot(gpa: std.mem.Allocator, io: std.Io, start: []const u8) !?[]u8 {
         const zon = try std.fs.path.join(gpa, &.{ d, "build.zig.zon" });
         defer gpa.free(zon);
         std.Io.Dir.cwd().access(io, zon, .{}) catch continue;
+        // Windows: the long form of the path. From an 8.3 short path
+        // (C:\Users\JOHNDO~1\..., as %TEMP% is for names with spaces) Vite
+        // compares the short and long spellings and answers 403 Restricted.
+        if (builtin.os.tag == .windows) {
+            if (longPathAlloc(gpa, d)) |long| return long else |_| {}
+        }
         return try gpa.dupe(u8, d);
     }
     return null;
+}
+
+extern "kernel32" fn GetLongPathNameW(short: [*:0]const u16, long: [*]u16, len: u32) callconv(.winapi) u32;
+
+/// `path` with 8.3 short components expanded (GetLongPathNameW; Zig's
+/// realpath keeps them). Caller owns the result.
+fn longPathAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const short_w = try std.unicode.wtf8ToWtf16LeAllocZ(gpa, path);
+    defer gpa.free(short_w);
+    const buf = try gpa.alloc(u16, std.os.windows.PATH_MAX_WIDE + 1);
+    defer gpa.free(buf);
+    const n = GetLongPathNameW(short_w.ptr, buf.ptr, @intCast(buf.len));
+    if (n == 0 or n >= buf.len) return error.LongPathUnavailable;
+    return std.unicode.wtf16LeToWtf8Alloc(gpa, buf[0..n]);
+}
+
+test longPathAlloc {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "Long Name Dir");
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    const long_dir = try std.fs.path.join(gpa, &.{ root, "Long Name Dir" });
+    defer gpa.free(long_dir);
+    // An already-long path comes back unchanged (8.3 names may be disabled
+    // on the test volume, so this is what's always checkable).
+    const same = try longPathAlloc(gpa, long_dir);
+    defer gpa.free(same);
+    try std.testing.expectEqualStrings(long_dir, same);
+    try std.testing.expectError(error.LongPathUnavailable, longPathAlloc(gpa, "C:\\no\\such\\dir\\x"));
 }
 
 /// Replace this process with `zig build [step] args...` in the project
