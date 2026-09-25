@@ -74,6 +74,11 @@ pub fn cleanupStale(io: std.Io, gpa: std.mem.Allocator) void {
         return;
     };
     defer gpa.free(exe_path);
+    cleanupStaleFor(gpa, exe_path);
+}
+
+/// `cleanupStale` for the executable at `exe_path`: delete `<exe_path>.old`.
+pub fn cleanupStaleFor(gpa: std.mem.Allocator, exe_path: []const u8) void {
     const old_path = buildOldPath(gpa, exe_path) catch return;
     defer gpa.free(old_path);
     const old_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, old_path) catch return;
