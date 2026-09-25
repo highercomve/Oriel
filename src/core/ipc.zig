@@ -35,14 +35,16 @@ pub const Request = struct {
 // judged by the top-level page's URL. A cross-origin frame the navigation
 // policy admits could then call commands with the app's privileges.
 //
-// So every call carries a token bound to the page's origin: HMAC-SHA256 of
-// a per-process random key over the page's IPC scope ("local" for the app's
-// own origins, or the capability origin pattern that admits the page). The
-// bridge script embeds the token of each scope and keeps only the one for
-// `location.origin`, in a closure; the native side recomputes it from the
-// calling page's URL. A frame never gets the script, and a token a remote
-// page captures (it could patch `JSON.stringify`) is worthless under any
-// other origin, such as the app's own pages.
+// So every call carries tokens bound to the page's origin: HMAC-SHA256 of a
+// per-process random key over each IPC scope that covers the page ("local"
+// for the app's own origins; otherwise each capability origin pattern that
+// matches it). The bridge script embeds every scope's token and keeps, in a
+// closure, only those for `location.origin` (comma-separated); the native
+// side requires, for the calling origin, the "local" token (app origins) or
+// a valid token for EVERY matching capability. A frame never gets the
+// script, and tokens a remote page captures (it could patch
+// `JSON.stringify`) are worthless under any origin that another scope also
+// covers, such as the app's own pages or a more privileged subdomain.
 
 var token_key: [32]u8 = undefined;
 var token_ready = false;
@@ -66,27 +68,42 @@ fn scopeToken(scope: []const u8) [token_len]u8 {
     return std.fmt.bytesToHex(mac, .lower);
 }
 
-/// Whether a call from `page_url` carries that page's token (constant-time
-/// compares). False before `initToken` or for a page with no IPC scope.
+/// Whether a call from `page_url` carries that page's tokens (constant-time
+/// compares): "local" for the app's own origins (capability tokens are never
+/// accepted there), otherwise one for every capability matching the origin.
+/// False before `initToken` or for a page with no IPC scope.
 pub fn tokenValid(got: ?[]const u8, sec: security.Security, local: security.Local, page_url: []const u8) bool {
     if (!token_ready) return false;
-    const t = got orelse return false;
-    if (t.len != token_len) return false;
+    const sent = got orelse return false;
     var buf: [512]u8 = undefined;
     const o = security.origin(&buf, page_url) orelse return false;
-    var ok = false;
-    if (local.contains(o)) ok = std.crypto.timing_safe.eql([token_len]u8, t[0..token_len].*, scopeToken("local")) or ok;
+    if (local.contains(o)) return hasToken(sent, scopeToken("local"));
+    var matched = false;
     for (sec.capabilities) |c| {
         if (!security.originMatches(c.origin, o)) continue;
-        ok = std.crypto.timing_safe.eql([token_len]u8, t[0..token_len].*, scopeToken(c.origin)) or ok;
+        matched = true;
+        if (!hasToken(sent, scopeToken(c.origin))) return false;
     }
-    return ok;
+    return matched;
 }
 
-/// JavaScript defining `const ipcToken` for a bridge script: the token of
-/// the scope `location.origin` falls in, else "" (no IPC). Matching mirrors
+/// Whether the comma-separated `sent` contains `want` (constant-time per entry).
+fn hasToken(sent: []const u8, want: [token_len]u8) bool {
+    var found = false;
+    var it = std.mem.splitScalar(u8, sent, ',');
+    while (it.next()) |t| {
+        if (t.len != token_len) continue;
+        found = std.crypto.timing_safe.eql([token_len]u8, t[0..token_len].*, want) or found;
+    }
+    return found;
+}
+
+/// JavaScript defining `const ipcToken` for a bridge script: "local"'s token
+/// on the app's origins, else the tokens of every capability matching
+/// `location.origin` (comma-separated), else "" (no IPC). Matching mirrors
 /// `security.Local.contains` and `security.originMatches`. Caller frees.
 pub fn tokenScript(gpa: std.mem.Allocator, sec: security.Security, local: security.Local) ![]u8 {
+    if (!token_ready) return gpa.dupe(u8, "const ipcToken = \"\";\n");
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     const w = &out.writer;
@@ -110,19 +127,20 @@ pub fn tokenScript(gpa: std.mem.Allocator, sec: security.Security, local: securi
     try w.writeAll(
         \\];
         \\  const lo = o.toLowerCase();
+        \\  const mine = [];
         \\  for (const [p, t] of caps) {
         \\    const i = p.indexOf("://*.");
         \\    if (i < 0) {
-        \\      if (p.toLowerCase() === lo) return t;
+        \\      if (p.toLowerCase() === lo) mine.push(t);
         \\      continue;
         \\    }
         \\    const scheme = p.slice(0, i + 3).toLowerCase();
         \\    const suffix = p.slice(i + 5).toLowerCase();
         \\    if (!lo.startsWith(scheme)) continue;
         \\    const host = lo.slice(scheme.length);
-        \\    if (host === suffix || host.endsWith("." + suffix)) return t;
+        \\    if (host === suffix || host.endsWith("." + suffix)) mine.push(t);
         \\  }
-        \\  return "";
+        \\  return mine.join(",");
         \\})(location.origin);
         \\
     );
@@ -144,6 +162,23 @@ test tokenValid {
     try std.testing.expect(!tokenValid(&lt, sec, local, "https://a.partner.example/x"));
     // No scope, wrong length, none.
     try std.testing.expect(!tokenValid(&lt, sec, local, "https://evil.example/"));
+
+    // Overlapping scopes: a read-only wildcard's token is not enough where a
+    // more privileged capability also matches; both tokens are.
+    const overlap: security.Security = .{ .capabilities = &.{
+        .{ .origin = "https://*.partner.example", .commands = &.{"read"} },
+        .{ .origin = "https://admin.partner.example" },
+    } };
+    const at = scopeToken("https://admin.partner.example");
+    try std.testing.expect(tokenValid(&ct, overlap, local, "https://evil.partner.example/"));
+    try std.testing.expect(!tokenValid(&ct, overlap, local, "https://admin.partner.example/"));
+    const both = ct ++ "," ++ at;
+    try std.testing.expect(tokenValid(both, overlap, local, "https://admin.partner.example/"));
+    // A capability that also covers the app's origin never stands in for "local".
+    const over_local: security.Security = .{ .capabilities = &.{.{ .origin = security.app_origin }} };
+    const app_cap = scopeToken(security.app_origin);
+    try std.testing.expect(!tokenValid(&app_cap, over_local, local, security.app_origin ++ "/"));
+    try std.testing.expect(tokenValid(&lt, over_local, local, security.app_origin ++ "/"));
     try std.testing.expect(!tokenValid("abc", sec, local, security.app_origin ++ "/"));
     try std.testing.expect(!tokenValid(null, sec, local, security.app_origin ++ "/"));
 

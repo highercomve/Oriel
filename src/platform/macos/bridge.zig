@@ -314,6 +314,21 @@ pub fn Bridge(
             content.msgSend(void, "addScriptMessageHandlerWithReply:contentWorld:name:", .{ handler, world, name });
         }
 
+        /// `scheme://host[:port]/` of the frame's WKSecurityOrigin, or "" (no
+        /// scope). Borrowed strings are copied into `buf`.
+        fn senderOriginUrl(buf: []u8, frame: Object) []const u8 {
+            const origin = frame.msgSend(Object, "securityOrigin", .{});
+            if (origin.value == null) return "";
+            const scheme = cocoa.utf8(origin.msgSend(Object, "protocol", .{})) orelse return "";
+            const host = cocoa.utf8(origin.msgSend(Object, "host", .{})) orelse return "";
+            if (scheme.len == 0 or host.len == 0) return "";
+            const port = origin.msgSend(isize, "port", .{});
+            return (if (port > 0)
+                std.fmt.bufPrint(buf, "{s}://{s}:{d}/", .{ scheme, host, port })
+            else
+                std.fmt.bufPrint(buf, "{s}://{s}/", .{ scheme, host })) catch "";
+        }
+
         fn onMessage(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, message_id: cocoa.id, reply: cocoa.id) callconv(.c) void {
             const message: Object = .{ .value = message_id };
             // Only the top frame gets the bridge; a frame reaching the
@@ -341,9 +356,12 @@ pub fn Bridge(
                 replyError(reply, @errorName(err));
                 return;
             };
-            // The page currently shown decides the IPC scope.
+            // The sending document's origin decides the IPC scope (not
+            // webView.URL, which already shows a provisional navigation's URL
+            // while the old document still runs).
             const view = message.msgSend(Object, "webView", .{});
-            const page_url: []const u8 = if (view.value != null) cocoa.urlString(view.msgSend(Object, "URL", .{})) orelse "" else "";
+            var origin_buf: [512]u8 = undefined;
+            const page_url = senderOriginUrl(&origin_buf, frame);
             const caller_win = window_mod.getWindowByView(view.value);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
             // Page-controlled: escaped and capped in logs.
