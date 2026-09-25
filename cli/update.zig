@@ -68,8 +68,7 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
         const latest_tag = fetchLatestReleaseTag(ctx) catch return 1;
         resolved_tag = latest_tag;
         break :blk try std.fmt.allocPrint(ctx.gpa, "{s}/download/{s}/{s}", .{ trimmed_releases, latest_tag, manifest_asset });
-    } else
-        try std.fmt.allocPrint(ctx.gpa, "{s}/latest/download/{s}", .{ trimmed_releases, manifest_asset });
+    } else try std.fmt.allocPrint(ctx.gpa, "{s}/latest/download/{s}", .{ trimmed_releases, manifest_asset });
     defer ctx.gpa.free(manifest_url);
 
     const allow_test_http = std.mem.startsWith(u8, releases_url, "http://127.0.0.1") or
@@ -97,13 +96,13 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
             try ctx.out.print("oriel {s} is available (current: {s})\n", .{ up.version, build_options.version });
             return 0;
         } else {
-            try ctx.out.print("oriel is up to date ({s})\n", .{ build_options.version });
+            try ctx.out.print("oriel is up to date ({s})\n", .{build_options.version});
             return 0;
         }
     }
 
     if (maybe_update == null) {
-        try ctx.out.print("oriel is already up to date ({s})\n", .{ build_options.version });
+        try ctx.out.print("oriel is already up to date ({s})\n", .{build_options.version});
         return 0;
     }
     var update = maybe_update.?;
@@ -220,7 +219,7 @@ test "oriel update without update_public_key prints error" {
 }
 
 test "oriel update end-to-end against local HTTP server" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -322,7 +321,7 @@ test "oriel update end-to-end against local HTTP server" {
 }
 
 test "oriel update rejects tampered manifest and payload" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 

@@ -1,6 +1,6 @@
 //! Self-updater core: GTK/App-free module for update verification, download,
 //! atomic installation, and process replacement.
-//! Imports only std, builtin, update_manifest.zig, and platform backends (linux/windows).
+//! Imports only std, builtin, update_manifest.zig, and platform backends (linux/windows/macos).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -10,6 +10,7 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 pub const backend = switch (builtin.os.tag) {
     .linux => @import("modules/updater/linux.zig"),
     .windows => @import("modules/updater/windows.zig"),
+    .macos => @import("modules/updater/macos.zig"),
     else => @compileError("updater is not supported on " ++ @tagName(builtin.os.tag)),
 };
 
@@ -758,7 +759,7 @@ pub const MockServer = struct {
 // ---------------------------------------------------------------------------
 
 test "core end-to-end update flow" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
     const io = std.testing.io;
     const allocator = std.testing.allocator;
 

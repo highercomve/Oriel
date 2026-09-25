@@ -356,6 +356,28 @@ const QuitSignals = struct {
     }
 };
 
+/// Watch `ORIEL_DEV_RUNNER_PID` (set by tools/dev_runner.zig) and quit when
+/// it exits. Returns the dispatch source, or null outside dev_runner.
+fn watchDevRunner() ?*anyopaque {
+    const value = std.c.getenv("ORIEL_DEV_RUNNER_PID") orelse return null;
+    const pid = std.fmt.parseInt(std.c.pid_t, std.mem.span(value), 10) catch {
+        log.err("invalid ORIEL_DEV_RUNNER_PID {s}", .{value});
+        return null;
+    };
+    const source = cocoa.processExitSource(pid, &onDevRunnerExit) orelse {
+        // Already gone (the source can't watch a dead pid).
+        log.err("dev_runner (pid {d}) is gone; exiting", .{pid});
+        quit(1);
+        return null;
+    };
+    return source;
+}
+
+fn onDevRunnerExit(_: ?*anyopaque) callconv(.c) void {
+    log.info("dev_runner exited; quitting", .{});
+    quit(0);
+}
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
@@ -407,6 +429,11 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
             var quit_signals = QuitSignals.install();
             defer quit_signals.uninstall();
+
+            // Under `zig build dev`, exit with dev_runner even when it is
+            // killed outright (Linux: PR_SET_PDEATHSIG).
+            const runner_watch = watchDevRunner();
+            defer if (runner_watch) |w| cocoa.cancelSource(w);
 
             Creator.init();
             defer Creator.deinit();

@@ -152,6 +152,18 @@ pub fn signalSource(sig: std.posix.SIG, handler: DispatchFn) ?*anyopaque {
     return source;
 }
 
+extern var _dispatch_source_type_proc: u8;
+const DISPATCH_PROC_EXIT: usize = 0x80000000;
+
+/// Run `handler(null)` on the main queue when process `pid` exits. Null if
+/// the source can't be created (e.g. no such process); `cancelSource` it.
+pub fn processExitSource(pid: std.c.pid_t, handler: DispatchFn) ?*anyopaque {
+    const source = dispatch_source_create(@ptrCast(&_dispatch_source_type_proc), @intCast(pid), DISPATCH_PROC_EXIT, mainQueue()) orelse return null;
+    dispatch_source_set_event_handler_f(source, handler);
+    dispatch_resume(source);
+    return source;
+}
+
 pub fn cancelSource(source: *anyopaque) void {
     dispatch_source_cancel(source);
     dispatch_release(source);

@@ -33,7 +33,7 @@ pub fn findRoot(gpa: std.mem.Allocator, io: std.Io, start: []const u8) !?[]u8 {
 
 /// Replace this process with `zig build [step] args...` in the project
 /// root, so signals (Ctrl-C in `oriel dev`) and the exit code are zig's.
-/// Only returns on failure.
+/// Only returns on failure (on Windows: runs zig and returns its exit code).
 pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
     const cwd = try std.process.currentPathAlloc(ctx.io, ctx.gpa);
     defer ctx.gpa.free(cwd);
@@ -59,6 +59,15 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
     try argv.appendSlice(ctx.gpa, &.{ zig, "build" });
     if (step) |s| try argv.append(ctx.gpa, s);
     try argv.appendSlice(ctx.gpa, args);
+
+    // Windows can't replace a process: run zig as a child instead (Ctrl-C
+    // reaches both, as they share the console) and pass its exit code on.
+    if (!std.process.can_replace) {
+        return ctx.run(argv.items, root) orelse {
+            if (try ctx.findExecutable(zig)) |found| ctx.gpa.free(found) else try ctx.err.writeAll("Install Zig 0.16 or set ORIEL_ZIG; `oriel doctor` checks the setup.\n");
+            return 1;
+        };
+    }
 
     std.process.setCurrentPath(ctx.io, root) catch |e| {
         try ctx.err.print("error: cannot enter {s}: {s}\n", .{ root, @errorName(e) });

@@ -2,6 +2,7 @@
 //! plus helpers for finding and running other programs.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Context = @This();
 
 gpa: std.mem.Allocator,
@@ -29,17 +30,33 @@ pub fn flush(ctx: Context) void {
     ctx.err.flush() catch {};
 }
 
-/// Full path of `name` in `$PATH` (or `name` itself if it contains a
-/// slash and is executable). Caller owns the result.
+/// Full path of `name` in `$PATH` (or `name` itself if it contains a path
+/// separator and is executable). On Windows the PATHEXT extensions are
+/// tried too, so `npm` finds `npm.cmd`. Caller owns the result.
 pub fn findExecutable(ctx: Context, name: []const u8) std.mem.Allocator.Error!?[]u8 {
-    if (std.mem.indexOfScalar(u8, name, '/') != null) {
-        if (!isExecutable(ctx.io, name)) return null;
-        return try ctx.gpa.dupe(u8, name);
+    const separators = if (builtin.os.tag == .windows) "/\\" else "/";
+    if (std.mem.indexOfAny(u8, name, separators) != null) {
+        return try ctx.withExtension(name) orelse null;
     }
     const path = ctx.environ.get("PATH") orelse return null;
-    var it = std.mem.tokenizeScalar(u8, path, ':');
+    var it = std.mem.tokenizeScalar(u8, path, std.fs.path.delimiter);
     while (it.next()) |dir| {
         const full = try std.fs.path.join(ctx.gpa, &.{ dir, name });
+        defer ctx.gpa.free(full);
+        if (try ctx.withExtension(full)) |found| return found;
+    }
+    return null;
+}
+
+/// `path` if it is executable, else (Windows) `path` + the first PATHEXT
+/// extension that is. Caller owns the result.
+fn withExtension(ctx: Context, path: []const u8) std.mem.Allocator.Error!?[]u8 {
+    if (isExecutable(ctx.io, path)) return try ctx.gpa.dupe(u8, path);
+    if (builtin.os.tag != .windows) return null;
+    const exts = ctx.environ.get("PATHEXT") orelse ".COM;.EXE;.BAT;.CMD";
+    var it = std.mem.tokenizeScalar(u8, exts, ';');
+    while (it.next()) |ext| {
+        const full = try std.mem.concat(ctx.gpa, u8, &.{ path, ext });
         if (isExecutable(ctx.io, full)) return full;
         ctx.gpa.free(full);
     }
@@ -50,6 +67,8 @@ fn isExecutable(io: std.Io, path: []const u8) bool {
     const cwd = std.Io.Dir.cwd();
     const st = cwd.statFile(io, path, .{}) catch return false;
     if (st.kind == .directory) return false;
+    // Windows has no execute bit: any file found (with a PATHEXT extension) runs.
+    if (builtin.os.tag == .windows) return true;
     cwd.access(io, path, .{ .execute = true }) catch return false;
     return true;
 }
@@ -144,7 +163,8 @@ test "findExecutable searches PATH" {
     try tmp.dir.writeFile(io, .{ .sub_path = "bin/data", .data = "x" });
     const bin = try tmp.dir.realPathFileAlloc(io, "bin", gpa);
     defer gpa.free(bin);
-    const path = try std.fmt.allocPrint(gpa, "/nonexistent::{s}", .{bin});
+    const sep = std.fs.path.delimiter;
+    const path = try std.fmt.allocPrint(gpa, "/nonexistent{c}{c}{s}", .{ sep, sep, bin });
     defer gpa.free(path);
     try env.put("PATH", path);
 
