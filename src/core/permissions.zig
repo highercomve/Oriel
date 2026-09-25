@@ -75,8 +75,10 @@ pub fn request(kind: Kind) Status {
     return before;
 }
 
-/// Open the OS settings page for `kind`. False when there is none.
+/// Open the OS settings page for `kind`. False when there is none, or when
+/// the app doesn't declare `kind` (no settings entry could exist for it).
 pub fn openSettings(kind: Kind) bool {
+    if (!declared_set.has(kind)) return false;
     return impl.openSettings(kind);
 }
 

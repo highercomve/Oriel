@@ -407,14 +407,16 @@ fn addOrielModule(
         }
         oriel.linkFramework("AppKit", .{});
         oriel.linkFramework("WebKit", .{});
+        // Permissions (always built): AVCaptureDevice, AXIsProcessTrusted +
+        // CGPreflightScreenCaptureAccess, UNUserNotificationCenter.
+        oriel.linkFramework("AVFoundation", .{});
+        oriel.linkFramework("ApplicationServices", .{});
+        oriel.linkFramework("UserNotifications", .{});
         if (features.fs_watch) oriel.linkFramework("CoreServices", .{}); // FSEvents
-        if (features.notification) oriel.linkFramework("UserNotifications", .{});
         if (features.global_shortcut) oriel.linkFramework("Carbon", .{}); // RegisterEventHotKey
-        if (features.input) oriel.linkFramework("ApplicationServices", .{}); // CGEvent, AXIsProcessTrusted
         if (features.audio_capture) {
             oriel.linkFramework("CoreAudio", .{});
             oriel.linkFramework("AudioToolbox", .{});
-            oriel.linkFramework("AVFoundation", .{}); // microphone permission status
         }
     }
 
