@@ -12,6 +12,9 @@
 //! - `<Id>.locale.en-US.yaml`: the default locale (name, publisher, license,
 //!   descriptions).
 //!
+//! A `portable` package instead (a standalone exe per architecture, like the
+//! `oriel` CLI): WinGet downloads it and puts `Commands` on PATH.
+//!
 //! `wingetcreate submit <dir>` (or komac) opens the pull request.
 
 const std = @import("std");
@@ -40,6 +43,18 @@ pub const Manifest = struct {
     /// WinGet architecture: x64, arm64, x86.
     architecture: []const u8 = "x64",
     url_schemes: []const []const u8 = &.{},
+    /// Non-empty: a `portable` package with these executables instead of
+    /// the NSIS installer (installer_url, installer_sha256 and product_code
+    /// are unused).
+    portable: []const Portable = &.{},
+    /// Portable packages: the command names WinGet puts on PATH.
+    commands: []const []const u8 = &.{},
+};
+
+pub const Portable = struct {
+    architecture: []const u8,
+    url: []const u8,
+    sha256: []const u8,
 };
 
 pub const Error = error{ InvalidIdentifier, InvalidUrl, InvalidValue };
@@ -77,11 +92,18 @@ pub fn repoPath(gpa: std.mem.Allocator, id: []const u8, version: []const u8) ![]
     return out.toOwnedSlice(gpa);
 }
 
+fn checkInstaller(url: []const u8, sha256: []const u8) Error!void {
+    if (!std.mem.startsWith(u8, url, "https://")) return error.InvalidUrl;
+    if (sha256.len != 64) return error.InvalidValue;
+    for (sha256) |c| if (!std.ascii.isHex(c)) return error.InvalidValue;
+}
+
 fn check(m: Manifest) Error!void {
     if (!validIdentifier(m.id)) return error.InvalidIdentifier;
-    if (!std.mem.startsWith(u8, m.installer_url, "https://")) return error.InvalidUrl;
-    if (m.installer_sha256.len != 64) return error.InvalidValue;
-    for (m.installer_sha256) |c| if (!std.ascii.isHex(c)) return error.InvalidValue;
+    if (m.portable.len > 0) {
+        for (m.portable) |p| try checkInstaller(p.url, p.sha256);
+        if (m.commands.len == 0) return error.InvalidValue;
+    } else try checkInstaller(m.installer_url, m.installer_sha256);
     if (m.version.len == 0 or m.name.len == 0 or m.publisher.len == 0 or m.license.len == 0 or m.summary.len == 0) return error.InvalidValue;
 }
 
@@ -117,6 +139,21 @@ pub fn writeInstaller(w: *std.Io.Writer, m: Manifest) !void {
     try header(w, "installer");
     try w.print("PackageIdentifier: {s}\nPackageVersion: ", .{m.id});
     try quoted(w, m.version);
+    if (m.portable.len > 0) {
+        try w.writeAll("\nInstallerType: portable\nCommands:");
+        for (m.commands) |c| {
+            try w.writeAll("\n- ");
+            try quoted(w, c);
+        }
+        try w.writeAll("\nInstallers:");
+        for (m.portable) |p| {
+            try w.print("\n- Architecture: {s}\n  InstallerUrl: ", .{p.architecture});
+            try quoted(w, p.url);
+            try w.print("\n  InstallerSha256: {s}", .{upperHex(p.sha256)});
+        }
+        try w.print("\nManifestType: installer\nManifestVersion: {s}\n", .{manifest_version});
+        return;
+    }
     try w.writeAll(
         \\
         \\InstallerType: nullsoft
@@ -243,6 +280,20 @@ test "manifests" {
     buf.clearRetainingCapacity();
     try writeVersion(&buf.writer, m);
     try std.testing.expect(std.mem.indexOf(u8, buf.written(), "DefaultLocale: en-US\nManifestType: version") != null);
+
+    // A portable package (the oriel CLI).
+    var cli = m;
+    cli.id = "Highercomve.Oriel";
+    cli.commands = &.{"oriel"};
+    cli.portable = &.{
+        .{ .architecture = "x64", .url = "https://example.com/oriel-x86_64-windows.exe", .sha256 = m.installer_sha256 },
+        .{ .architecture = "arm64", .url = "https://example.com/oriel-aarch64-windows.exe", .sha256 = m.installer_sha256 },
+    };
+    buf.clearRetainingCapacity();
+    try writeInstaller(&buf.writer, cli);
+    try std.testing.expect(std.mem.indexOf(u8, buf.written(), "InstallerType: portable\nCommands:\n- \"oriel\"\nInstallers:\n- Architecture: x64") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.written(), "- Architecture: arm64\n  InstallerUrl: \"https://example.com/oriel-aarch64-windows.exe\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.written(), "ProductCode") == null);
 
     var bad = m;
     bad.installer_url = "http://example.com/x.exe";

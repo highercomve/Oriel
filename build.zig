@@ -119,6 +119,11 @@ pub fn build(b: *std.Build) void {
         .root_module = package_tool_mod,
     });
     b.installArtifact(package_tool);
+    // `zig build winget -- <args>`: WinGet manifests (the release's oriel CLI).
+    const run_winget = b.addRunArtifact(package_tool);
+    run_winget.addArg("package-winget");
+    if (b.args) |args| run_winget.addArgs(args);
+    b.step("winget", "Write WinGet manifests (package_tool package-winget; args after --)").dependOn(&run_winget.step);
 
     // Host tool used for update management (keygen and sign-update).
     const update_manifest_mod = b.createModule(.{

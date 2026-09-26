@@ -1416,6 +1416,12 @@ oriel package -Dwinget-url=https://github.com/acme/my-app/releases/download/v1.2
   then `winget install Acme.MyApp` works. The same command submits each new
   version.
 - Without `-Dwinget-url` (local builds) no manifests are written.
+- A standalone exe (no installer), like the `oriel` CLI itself, is a WinGet
+  `portable` package: `zig build winget -- --id Acme.Tool --version 1.2.0
+  --name Tool --publisher Acme --license MIT --summary "..." --command tool
+  --portable x64=<file>=<url> --portable arm64=<file>=<url> --out-dir <dir>`
+  (one `--portable` per architecture; WinGet puts `tool` on PATH). Oriel's own
+  release workflow does this for `Highercomve.Oriel`.
 
 #### macOS bundles (.app, .dmg)
 

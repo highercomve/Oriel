@@ -2448,6 +2448,10 @@ fn packageWingetCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) 
     var out_dir: ?[]const u8 = null;
     var tags: std.ArrayList([]const u8) = .empty;
     var schemes: std.ArrayList([]const u8) = .empty;
+    var commands: std.ArrayList([]const u8) = .empty;
+    // --portable <arch>=<file>=<url>: a portable package, one per architecture.
+    var portable: std.ArrayList(winget.Portable) = .empty;
+    var portable_files: std.ArrayList([]const u8) = .empty;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -2475,6 +2479,19 @@ fn packageWingetCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) 
         else if (std.mem.eql(u8, arg, "--arch")) m.architecture = v
         else if (std.mem.eql(u8, arg, "--tag")) try tags.append(arena, v)
         else if (std.mem.eql(u8, arg, "--url-scheme")) try schemes.append(arena, v)
+        else if (std.mem.eql(u8, arg, "--command")) try commands.append(arena, v)
+        else if (std.mem.eql(u8, arg, "--portable")) {
+            var parts = std.mem.splitScalar(u8, v, '=');
+            const arch = parts.next().?;
+            const file_path = parts.next() orelse "";
+            const url = parts.rest();
+            if (arch.len == 0 or file_path.len == 0 or url.len == 0) {
+                std.debug.print("error: package-winget: --portable wants <arch>=<file>=<url>, got {s}\n", .{v});
+                return 1;
+            }
+            try portable.append(arena, .{ .architecture = arch, .url = url, .sha256 = "" });
+            try portable_files.append(arena, file_path);
+        }
         else {
             std.debug.print("error: package-winget: unknown option {s}\n", .{arg});
             return 1;
@@ -2482,34 +2499,27 @@ fn packageWingetCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) 
     }
     m.tags = tags.items;
     m.url_schemes = schemes.items;
+    m.commands = commands.items;
     if (m.description.len == 0) m.description = m.summary;
-    const installer_path = installer orelse {
-        std.debug.print("error: package-winget: --installer is required\n", .{});
-        return 1;
-    };
+    for (portable.items, portable_files.items) |*p, file_path| {
+        const digest = try sha256File(io, file_path);
+        p.sha256 = try arena.dupe(u8, &digest);
+    }
+    m.portable = portable.items;
     const dir_path = out_dir orelse {
         std.debug.print("error: package-winget: --out-dir is required\n", .{});
         return 1;
     };
 
-    // SHA-256 of the installer, streamed.
-    var file = try Dir.cwd().openFile(io, installer_path, .{});
-    defer file.close(io);
-    var reader_buf: [64 * 1024]u8 = undefined;
-    var reader = file.readerStreaming(io, &reader_buf);
-    var hasher: std.crypto.hash.sha2.Sha256 = .init(.{});
-    while (true) {
-        const chunk = reader.interface.peekGreedy(1) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
+    var hex: [64]u8 = undefined;
+    if (portable.items.len == 0) {
+        const installer_path = installer orelse {
+            std.debug.print("error: package-winget: --installer (or --portable) is required\n", .{});
+            return 1;
         };
-        hasher.update(chunk);
-        reader.interface.toss(chunk.len);
+        hex = try sha256File(io, installer_path);
+        m.installer_sha256 = &hex;
     }
-    var digest: [32]u8 = undefined;
-    hasher.final(&digest);
-    const hex = std.fmt.bytesToHex(digest, .lower);
-    m.installer_sha256 = &hex;
 
     var dir = try Dir.cwd().createDirPathOpen(io, dir_path, .{});
     defer dir.close(io);
@@ -2539,4 +2549,24 @@ fn packageWingetCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) 
     try stdout.interface.print("WinGet manifests for {s} {s} (winget-pkgs: {s})\n", .{ m.id, m.version, repo_path });
     try stdout.interface.flush();
     return 0;
+}
+
+/// Lowercase hex SHA-256 of a file, streamed.
+fn sha256File(io: Io, path: []const u8) ![64]u8 {
+    var file = try Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var reader_buf: [64 * 1024]u8 = undefined;
+    var reader = file.readerStreaming(io, &reader_buf);
+    var hasher: std.crypto.hash.sha2.Sha256 = .init(.{});
+    while (true) {
+        const chunk = reader.interface.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        hasher.update(chunk);
+        reader.interface.toss(chunk.len);
+    }
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    return std.fmt.bytesToHex(digest, .lower);
 }
