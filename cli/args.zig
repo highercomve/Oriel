@@ -371,7 +371,7 @@ test "parse: help, version, forwarding" {
     try std.testing.expectEqual(null, (try testParse(&.{"--help"})).help);
     try std.testing.expectEqual(.init, (try testParse(&.{ "init", "x", "-h" })).help.?);
     try std.testing.expectEqual(.doctor, (try testParse(&.{ "help", "doctor" })).help.?);
-    try std.testing.expectEqual(.package, (try testParse(&.{ "package", "--help" })).help.?);
+    try std.testing.expectEqual(.build, (try testParse(&.{ "build", "--help" })).help.?);
     try std.testing.expectEqual(.version, try testParse(&.{"--version"}));
 
     const b = (try testParse(&.{ "build", "-Doptimize=ReleaseFast", "--help", "--", "x" })).command.build;
