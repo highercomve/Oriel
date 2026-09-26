@@ -12,6 +12,7 @@ const ShellMod = @import("Shell.zig");
 const dev_server = @import("dev_server.zig");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
+const isolation = @import("../../core/isolation.zig");
 const permissions = @import("../../core/permissions.zig");
 const overlay = @import("overlay.zig");
 
@@ -27,6 +28,7 @@ pub const WindowHandle = struct {
     deinit_fn: ?*const fn (ctx: *anyopaque) void = null,
 
     pub fn deinit(self: WindowHandle) void {
+        isolation.forget(@intFromPtr(self.webview));
         if (self.deinit_fn) |f| {
             if (self.data) |d| f(d);
         }
@@ -296,7 +298,7 @@ pub fn WindowCreator(
     comptime local: security.Local,
     comptime csp_z: ?[:0]const u8,
 ) type {
-    const SchemeImpl = scheme_mod.Scheme(config, csp_z);
+    const SchemeImpl = scheme_mod.Scheme(config, local, csp_z);
     const BridgeImpl = bridge_mod.Bridge(api, config, local);
 
     return struct {
@@ -329,10 +331,10 @@ pub fn WindowCreator(
             fn releaseRes(_: *webview2.ICoreWebView2WebResourceRequestedEventHandler) callconv(.winapi) win32.ULONG {
                 return 1;
             }
-            fn invokeRes(r_this: *webview2.ICoreWebView2WebResourceRequestedEventHandler, _: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2WebResourceRequestedEventArgs) callconv(.winapi) win32.HRESULT {
+            fn invokeRes(r_this: *webview2.ICoreWebView2WebResourceRequestedEventHandler, sender: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2WebResourceRequestedEventArgs) callconv(.winapi) win32.HRESULT {
                 const r_self: *@This() = @fieldParentPtr("handler", r_this);
                 if (args) |a| {
-                    SchemeImpl.handleRequest(r_self.env_ptr, a);
+                    SchemeImpl.handleRequest(r_self.env_ptr, sender, a);
                 }
                 return win32.S_OK;
             }
@@ -1137,6 +1139,10 @@ pub fn WindowCreator(
             const filter_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, scheme_mod.filter_pattern);
             defer gpa.free(filter_w);
             _ = view.addWebResourceRequestedFilter(filter_w.ptr, webview2.COREWEBVIEW2_WEB_RESOURCE_CONTEXT.ALL);
+            if (comptime config.security.isolation != null) {
+                const iso_filter_w = std.unicode.utf8ToUtf16LeStringLiteral(scheme_mod.isolation_filter_pattern);
+                _ = view.addWebResourceRequestedFilter(iso_filter_w, webview2.COREWEBVIEW2_WEB_RESOURCE_CONTEXT.ALL);
+            }
 
             // Allocate WindowData
             const data = try gpa.create(WindowData);

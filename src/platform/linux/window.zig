@@ -11,6 +11,7 @@ const glib = @import("glib");
 const gio = @import("gio");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
+const isolation = @import("../../core/isolation.zig");
 const dev_server = @import("dev_server.zig");
 const permissions = @import("../../core/permissions.zig");
 const overlay = @import("overlay.zig");
@@ -130,6 +131,7 @@ pub fn focusWindow(handle: WindowHandle) void {
 }
 
 pub fn destroyWindow(handle: WindowHandle) void {
+    isolation.forget(@intFromPtr(handle.web_view));
     handle.gtk_window.destroy();
 }
 
@@ -196,7 +198,7 @@ pub fn WindowCreator(
     comptime bridge_patterns: anytype,
     comptime csp_z: ?[:0]const u8,
 ) type {
-    const SchemeImpl = @import("scheme.zig").Scheme(config, csp_z);
+    const SchemeImpl = @import("scheme.zig").Scheme(config, local, csp_z);
     const BridgeImpl = @import("bridge.zig").Bridge(api, config, local, bridge_patterns);
 
     return struct {
@@ -277,6 +279,7 @@ pub fn WindowCreator(
                 return 1;
             }
             overlay.forget(window);
+            isolation.forget(@intFromPtr(win.handle.web_view));
 
             win.saveGeometry();
 
@@ -338,6 +341,16 @@ pub fn WindowCreator(
             const nav_decision: *webkit.NavigationPolicyDecision = @ptrCast(decision);
             const action = nav_decision.getNavigationAction();
             const uri = action.getRequest().getUri();
+            // The bridge's isolation frame. WebKitGTK doesn't say which frame
+            // navigates; a top-level isolation page is inert (it only runs
+            // as a direct child of the app's page, and gets no IPC token).
+            if (comptime config.security.isolation != null) {
+                var obuf: [512]u8 = undefined;
+                if (decision_type == .navigation_action) if (security.origin(&obuf, std.mem.span(uri))) |o| if (std.mem.eql(u8, o, isolation.origin)) {
+                    decision.use();
+                    return 1;
+                };
+            }
             const verdict = security.navigation(config.security, local, std.mem.span(uri), action.isUserGesture() != 0);
             switch (verdict) {
                 .allow => if (decision_type == .new_window_action) {

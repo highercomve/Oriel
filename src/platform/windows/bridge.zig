@@ -16,16 +16,20 @@ const ShellMod = @import("Shell.zig");
 const App = @import("../../core/App.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
+const isolation = @import("../../core/isolation.zig");
 
 const log = std.log.scoped(.oriel);
 
 /// Replaced by `ipc.tokenScript` (which defines `const ipcToken`) in each
 /// window's copy of `bridge_js`.
 const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
+/// Replaced by `isolation.bridgeScript` (which defines `invoke`).
+const isolation_placeholder = "/*__ORIEL_ISOLATION__*/";
 
 comptime {
     @setEvalBranchQuota(100_000); // the scan covers the whole script
     std.debug.assert(std.mem.count(u8, bridge_js, token_placeholder) == 1);
+    std.debug.assert(std.mem.count(u8, bridge_js, isolation_placeholder) == 1);
 }
 
 /// Injected into allowed pages before their own scripts run.
@@ -52,13 +56,22 @@ pub const bridge_js =
     \\      }
     \\    }
     \\  });
-    \\  function invoke(cmd, args) {
+    \\  function send(msg) {
     \\    return new Promise((resolve, reject) => {
     \\      const id = nextId++;
     \\      pending.set(id, { resolve, reject });
-    \\      window.chrome.webview.postMessage(JSON.stringify({ id, cmd, args: args ?? null, token: ipcToken }));
+    \\      window.chrome.webview.postMessage(JSON.stringify(Object.assign({ id, token: ipcToken }, msg)));
     \\    });
     \\  }
+    \\  function rawInvoke(cmd, args) {
+    \\    return send({ cmd, args: args ?? null });
+    \\  }
+    \\  function sendSealed(iso) {
+    \\    return send({ cmd: "oriel:isolated", iso });
+    \\  }
+    \\
+++ isolation_placeholder ++
+    \\
     \\  class WindowHandle {
     \\    constructor(label) {
     \\      this.label = label;
@@ -301,7 +314,9 @@ pub fn Bridge(
             // frame from another origin, which also gets this script, has none).
             const token_js = ipc.tokenScript(gpa, config.security, local) catch return;
             defer gpa.free(token_js);
-            const with_token = std.mem.replaceOwned(u8, gpa, bridge_js, token_placeholder, token_js) catch return;
+            const with_iso = std.mem.replaceOwned(u8, gpa, bridge_js, isolation_placeholder, comptime isolation.bridgeScript(config.security, local)) catch return;
+            defer gpa.free(with_iso);
+            const with_token = std.mem.replaceOwned(u8, gpa, with_iso, token_placeholder, token_js) catch return;
             defer gpa.free(with_token);
             const script = std.fmt.allocPrintSentinel(gpa, "{s}window.__oriel_window_label = {s};\n{s}", .{ comptime security.bridgePrelude(config.security), label_json, with_token }, 0) catch return;
             defer gpa.free(script);
@@ -334,6 +349,7 @@ pub fn Bridge(
                 cmd: []const u8,
                 args: std.json.Value = .null,
                 token: ?[]const u8 = null,
+                iso: ?isolation.Sealed = null,
             };
 
             const req = std.json.parseFromSliceLeaky(WinReq, temp_alloc, msg_u8, .{
@@ -352,27 +368,33 @@ pub fn Bridge(
                 break :blk std.unicode.utf16LeToUtf8Alloc(temp_alloc, src_w.?[0..slen]) catch "";
             } else "";
 
-            // Page-controlled: escaped and capped in logs.
-            const cmd_log = std.zig.fmtString(req.cmd[0..@min(req.cmd.len, 64)]);
-
             // Before anything else: the call must carry the token of the
             // document that sent it (page_url is the sender's URL), which only
             // that origin's bridge closure has.
             if (!ipc.tokenValid(req.token, config.security, local, page_url)) {
-                log.warn("refused an IPC call without this page's token (\"{f}\")", .{cmd_log});
+                log.warn("refused an IPC call without this page's token (\"{f}\")", .{std.zig.fmtString(req.cmd[0..@min(req.cmd.len, 64)])});
                 sendErrorReply(view, req.id, "Forbidden");
                 return;
             }
+            // With isolation on, the app's pages send only calls the
+            // isolation hook signed; `call` is the call inside.
+            const checked = isolation.check(temp_alloc, config.security, local, page_url, @intFromPtr(view), .{ .cmd = req.cmd, .args = req.args, .token = req.token, .iso = req.iso }, msg_u8) catch |err| {
+                sendErrorReply(view, req.id, if (err == error.OutOfMemory) "OutOfMemory" else "Forbidden");
+                return;
+            };
+            const call = checked.request;
+            // Page-controlled: escaped and capped in logs.
+            const cmd_log = std.zig.fmtString(call.cmd[0..@min(call.cmd.len, 64)]);
 
             const caller_win = window_mod.getWindowByHwnd(hwnd) orelse window_mod.getWindowByView(view);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
 
-            if (window_commands.isWindowCommand(req.cmd)) {
-                SyncCall.queue(view, req.id, req.cmd, req.args, page_url, win_label, null);
+            if (window_commands.isWindowCommand(call.cmd)) {
+                SyncCall.queue(view, req.id, call.cmd, call.args, page_url, win_label, null);
                 return;
             }
 
-            if (!security.commandAllowedForWindow(config.security, local, page_url, req.cmd, win_label)) {
+            if (!security.commandAllowedForWindow(config.security, local, page_url, call.cmd, win_label)) {
                 log.warn("blocked command \"{f}\" from {s} (window: {?s})", .{ cmd_log, page_url, win_label });
                 sendErrorReply(view, req.id, "Forbidden");
                 return;
@@ -380,14 +402,14 @@ pub fn Bridge(
 
             const pool = App.getWorkerPool();
 
-            if (!ipc.isAsync(api.commands, req.cmd)) {
+            if (!ipc.isAsync(api.commands, call.cmd)) {
                 // Run sync commands from the message loop, not inside this
                 // WebView2 event handler: a command that pumps messages (e.g.
                 // openWindow waiting for a new WebView2 controller, or a modal
                 // file dialog) would otherwise nest a message loop inside the
                 // handler, which WebView2 doesn't support (it hangs). Tasks run
                 // in order, so replies keep the order of the requests.
-                SyncCall.queue(view, req.id, req.cmd, req.args, page_url, win_label, if (pool) |p| p.io else null);
+                SyncCall.queue(view, req.id, call.cmd, call.args, page_url, win_label, if (pool) |p| p.io else null);
                 return;
             }
 
@@ -400,7 +422,7 @@ pub fn Bridge(
             // The Windows bridge message also carries the reply `id`, which
             // ipc.Request (and its strict parser) doesn't know: hand the
             // worker just `{cmd, args}`.
-            const request_json = std.json.Stringify.valueAlloc(temp_alloc, ipc.Request{ .cmd = req.cmd, .args = req.args }, .{}) catch |err| {
+            const request_json = std.json.Stringify.valueAlloc(temp_alloc, ipc.Request{ .cmd = call.cmd, .args = call.args }, .{}) catch |err| {
                 sendErrorReply(view, req.id, ipc.errorText(err));
                 return;
             };

@@ -35,7 +35,23 @@ const probe_html =
     \\  } catch (e) {
     \\    result = "refused: " + ((e && e.message) || e);
     \\  }
-    \\  parent.postMessage({ ipcProbe: result }, "*");
+    \\  // With `?iso=<origin>`: a remote page must not be able to frame the
+    \\  // isolation page (its frame-ancestors lists only the app's origins).
+    \\  const iso = new URLSearchParams(location.search).get("iso");
+    \\  let isoProbe = null;
+    \\  if (iso) {
+    \\    isoProbe = await new Promise((resolve) => {
+    \\      const f = document.createElement("iframe");
+    \\      f.setAttribute("sandbox", "allow-scripts");
+    \\      const timer = setTimeout(() => resolve("did not load"), 3000);
+    \\      addEventListener("message", (e) => {
+    \\        if (e.source === f.contentWindow && e.data && e.data.__oriel_iso) { clearTimeout(timer); resolve("loaded"); }
+    \\      });
+    \\      f.src = iso + "/";
+    \\      document.documentElement.append(f);
+    \\    });
+    \\  }
+    \\  parent.postMessage({ ipcProbe: result, isoProbe }, "*");
     \\})();
     \\</script>
 ;
@@ -162,6 +178,21 @@ fn createTestMediaFile(local_io: std.Io, gpa: std.mem.Allocator) ![]const u8 {
 }
 
 const Commands = struct {
+    /// The isolation checks: whether the hook is on, and its origin.
+    pub fn isolation_info() struct { enabled: bool, origin: []const u8 } {
+        return .{ .enabled = app.isolation != null, .origin = oriel.isolation.origin };
+    }
+
+    /// The isolation hook rejects this one (it succeeds without isolation).
+    pub fn isolation_blocked() []const u8 {
+        return "reached Zig";
+    }
+
+    /// The isolation hook adds `hooked: true` to the arguments.
+    pub fn isolation_echo(args: struct { value: []const u8, hooked: bool = false }) struct { value: []const u8, hooked: bool } {
+        return .{ .value = args.value, .hooked = args.hooked };
+    }
+
     pub fn greet(gpa: std.mem.Allocator, args: struct { name: []const u8 }) ![]const u8 {
         return std.fmt.allocPrint(gpa, "Hello, {s}! (from Zig {s})", .{ args.name, @import("builtin").zig_version_string });
     }
@@ -466,7 +497,10 @@ pub fn main(init: std.process.Init) !u8 {
         .security = .{
             .external_links = .deny,
             .allowed_origins = &.{probe_origin},
-            .csp = oriel.security.default_csp ++ "; frame-src " ++ probe_origin,
+            .csp = oriel.security.default_csp ++ "; frame-src " ++ probe_origin ++ (if (app.isolation != null) " " ++ oriel.isolation.origin else ""),
+            // Security 3 (the `isolation` checks): every call from the page
+            // goes through isolation/hook.js. Off with -Disolation=false.
+            .isolation = app.isolation,
             // Security 1.3 / 1.4 (the `freeze prototype` and `security headers` checks).
             .freeze_prototype = true,
             .headers = &.{

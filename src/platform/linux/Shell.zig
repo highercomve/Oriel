@@ -9,6 +9,7 @@ const gio = @import("gio");
 const gtk = @import("gtk");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
+const isolation = @import("../../core/isolation.zig");
 const dev_server = @import("dev_server.zig");
 const window = @import("window.zig");
 const WindowHandle = window.WindowHandle;
@@ -129,7 +130,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         for (list, 0..) |p, i| a[i] = p.ptr;
         break :blk a;
     };
-    const csp_z: ?[:0]const u8 = if (config.security.csp) |c| (c ++ "\x00")[0..c.len :0] else null;
+    // With isolation on, the CSP also allows the isolation frame.
+    const csp_z: ?[:0]const u8 = if (comptime isolation.appCsp(config.security)) |c| (c ++ "\x00")[0..c.len :0] else null;
 
     const Creator = window.WindowCreator(api, config, local, bridge_patterns, csp_z);
 

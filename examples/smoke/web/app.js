@@ -282,17 +282,20 @@ async function securityChecks() {
   // A cross-origin frame the navigation policy admits (the probe origin)
   // must not reach IPC: it never gets the bridge script or its token.
   const { probe_url } = await oriel.invoke("status");
+  const isoInfo = await oriel.invoke("isolation_info");
+  let isoProbe = null;
   const probe = await new Promise((resolve) => {
-    const timer = setTimeout(() => resolve("no answer from the probe frame"), 5000);
+    const timer = setTimeout(() => resolve("no answer from the probe frame"), 8000);
     const onMessage = (e) => {
       if (e.data?.ipcProbe === undefined) return;
       clearTimeout(timer);
       window.removeEventListener("message", onMessage);
+      isoProbe = e.data.isoProbe;
       resolve(e.data.ipcProbe);
     };
     window.addEventListener("message", onMessage);
     const f = document.createElement("iframe");
-    f.src = probe_url;
+    f.src = probe_url + (isoInfo.enabled ? "?iso=" + encodeURIComponent(isoInfo.origin) : "");
     f.style.display = "none";
     document.body.append(f);
   });
@@ -364,6 +367,36 @@ async function securityChecks() {
     httpsAllowed = false;
   }
   check("openExt https:", httpsAllowed, httpsAllowed ? "https: URL allowed and dispatched to hook" : "https: URL was rejected");
+
+  // Security 3: the isolation pattern. With it on (the default build), every
+  // call above already went through isolation/hook.js.
+  const iso = await oriel.invoke("isolation_info");
+  const outcome = (p) => p.then((v) => "reached Zig: " + JSON.stringify(v), (e) => "refused: " + (e?.message ?? e));
+  const isoFrame = document.querySelector(`iframe[src^="${iso.origin}"]`);
+  if (!iso.enabled) {
+    const r = await outcome(oriel.invoke("isolation_blocked"));
+    check("isolation", r.startsWith("reached Zig") && !isoFrame, `off: isolation_blocked ${r}; isolation frame: ${isoFrame ? "present" : "none"}`);
+  } else {
+    const blocked = await outcome(oriel.invoke("isolation_blocked"));
+    check("isolation hook", blocked.includes("blocked by the isolation hook"), `isolation_blocked ${blocked}`);
+    const echo = await oriel.invoke("isolation_echo", { value: "x" }).catch((e) => ({ error: String(e?.message ?? e) }));
+    check("isolation rewrite", echo?.hooked === true && echo?.value === "x", `the hook's rewrite reached Zig: ${JSON.stringify(echo)}`);
+    // The key lives only in the isolation page, cross-origin to this one.
+    let fetched;
+    try {
+      const r = await fetch(iso.origin + "/");
+      fetched = "read " + (await r.text()).length + " bytes";
+    } catch (e) {
+      fetched = "refused";
+    }
+    let doc = "no frame";
+    if (isoFrame) {
+      try { doc = isoFrame.contentWindow.document ? "readable" : "null"; } catch (e) { doc = "refused"; }
+    }
+    check("isolation key", fetched === "refused" && doc === "refused", `fetch ${iso.origin}/: ${fetched}; frame document: ${doc}`);
+    // frame-ancestors: only the app's own pages may frame the isolation page.
+    check("isolation embed", isoProbe === "did not load", `framed by ${probe_url}: ${isoProbe}`);
+  }
 
   return out;
 }

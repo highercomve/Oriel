@@ -575,6 +575,15 @@ pub const AppOptions = struct {
     /// executable addApp builds (production, dev, `zig build check`):
     /// `.imports = &.{.{ .name = "zigimg", .module = zigimg_dep.module("zigimg") }}`.
     imports: []const std.Build.Module.Import = &.{},
+    /// The isolation pattern: `.isolation = .{ .hook = b.path("isolation/hook.js") }`
+    /// embeds the hook and exposes it as `oriel_app.isolation`; pass that to
+    /// `App.Config.security.isolation` (see `security.Isolation`).
+    isolation: ?Isolation = null,
+
+    pub const Isolation = struct {
+        /// JavaScript setting `globalThis.__ORIEL_ISOLATION_HOOK__`.
+        hook: std.Build.LazyPath,
+    };
 };
 
 /// See `AppOptions.permissions`.
@@ -703,7 +712,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
         cfg.addOption([]const []const u8, "url_schemes", url_schemes);
         addPermissionOptions(cfg, permissions);
-        const d = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon));
+        const d = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon, options.isolation));
         for (options.imports) |imp| d.root_module.addImport(imp.name, imp.module);
         break :blk d;
     } else null;
@@ -747,7 +756,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(prod_cfg, permissions);
-    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon));
+    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation));
     for (options.imports) |imp| exe.root_module.addImport(imp.name, imp.module);
     b.installArtifact(exe);
 
@@ -833,7 +842,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     check_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     check_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(check_cfg, permissions);
-    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null, app_icon));
+    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null, app_icon, options.isolation));
     for (options.imports) |imp| check_exe.root_module.addImport(imp.name, imp.module);
     @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_exe.step);
 
@@ -849,10 +858,12 @@ fn appConfigModule(
     cfg: *std.Build.Step.Options,
     assets: ?std.Build.LazyPath,
     icon: std.Build.LazyPath,
+    isolation: ?AppOptions.Isolation,
 ) *std.Build.Module {
     const files = b.addWriteFiles();
     _ = files.addCopyFile(icon, "icon.png");
-    const root = files.add("oriel_app.zig",
+    if (isolation) |iso| _ = files.addCopyFile(iso.hook, "isolation_hook.js");
+    const root = files.add("oriel_app.zig", b.fmt("{s}{s}", .{
         \\const oriel = @import("oriel");
         \\const cfg = @import("cfg");
         \\
@@ -887,7 +898,15 @@ fn appConfigModule(
         \\    .system_audio = cfg.permission_system_audio,
         \\};
         \\
-    );
+        \\/// The isolation hook (`.isolation` in build.zig): pass to
+        \\/// `App.Config.security.isolation`. Null without one.
+        \\
+        ,
+        if (isolation != null)
+            "pub const isolation: ?oriel.security.Isolation = .{ .hook = @embedFile(\"isolation_hook.js\") };\n"
+        else
+            "pub const isolation: ?oriel.security.Isolation = null;\n",
+    }));
     const mod = b.createModule(.{ .root_source_file = root });
     mod.addImport("oriel", oriel);
     mod.addOptions("cfg", cfg);

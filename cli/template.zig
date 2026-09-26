@@ -38,6 +38,7 @@ const common = [_]File{
     embedBinary("icon.png", "common/icon.png"),
     embed(".gitignore", "common/.gitignore"),
     embed("README.md", "common/README.md"),
+    embedBinary("isolation/hook.js", "common/isolation/hook.js"),
 };
 
 const react = common ++ [_]File{

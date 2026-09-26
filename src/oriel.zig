@@ -10,6 +10,7 @@ pub const options = @import("build_options");
 pub const App = @import("core/App.zig");
 pub const ipc = @import("core/ipc.zig");
 pub const security = @import("core/security.zig");
+pub const isolation = @import("core/isolation.zig");
 pub const log = @import("core/log.zig");
 pub const platform = @import("platform/platform.zig");
 /// OS permissions: declared in build.zig, queried and requested at runtime.
@@ -156,6 +157,7 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
 test {
     std.testing.refAllDecls(ipc);
     std.testing.refAllDecls(security);
+    std.testing.refAllDecls(@import("core/isolation.zig"));
     std.testing.refAllDecls(permissions);
     std.testing.refAllDecls(@import("core/window_commands.zig"));
     std.testing.refAllDecls(log);
