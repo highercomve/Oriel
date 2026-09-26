@@ -79,6 +79,10 @@ pub fn parse(comptime Commands: type, argv: []const []const u8, diag: *Diagnosti
             diag.command = comptime optionName(f.name);
             const rest = argv[1..];
             if (@hasDecl(f.type, "forward")) {
+                // `oriel package --help` alone: this command's help (it works
+                // outside a project and says how to see the project's own
+                // options). With other arguments, --help goes on to `zig build`.
+                if (rest.len == 1 and isHelp(rest[0])) return .{ .help = @field(std.meta.Tag(Commands), f.name) };
                 var cmd: f.type = .{};
                 @field(cmd, f.type.forward) = rest;
                 return .{ .command = @unionInit(Commands, f.name, cmd) };
@@ -367,6 +371,7 @@ test "parse: help, version, forwarding" {
     try std.testing.expectEqual(null, (try testParse(&.{"--help"})).help);
     try std.testing.expectEqual(.init, (try testParse(&.{ "init", "x", "-h" })).help.?);
     try std.testing.expectEqual(.doctor, (try testParse(&.{ "help", "doctor" })).help.?);
+    try std.testing.expectEqual(.package, (try testParse(&.{ "package", "--help" })).help.?);
     try std.testing.expectEqual(.version, try testParse(&.{"--version"}));
 
     const b = (try testParse(&.{ "build", "-Doptimize=ReleaseFast", "--help", "--", "x" })).command.build;

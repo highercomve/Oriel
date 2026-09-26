@@ -17,7 +17,8 @@ pub fn Wrapper(comptime step: ?[]const u8, comptime what: []const u8) type {
         pub const forward = "args";
         pub const details = "Runs `zig build" ++ (if (step) |s| " " ++ s else "") ++ " [args...]` in the project root " ++
             "(the nearest directory above with a build.zig.zon);\nevery argument is passed on, " ++
-            "e.g. -Doptimize=ReleaseFast, or `-- <app args>` for run/dev.";
+            "e.g. -Doptimize=ReleaseFast, or `-- <app args>` for run/dev.\n" ++
+            "The project's own options and steps: `zig build --help` in the project.";
         args: []const []const u8 = &.{},
     };
 }
