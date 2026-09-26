@@ -52,5 +52,7 @@ pub fn main(init: std.process.Init) !u8 {
         .deep_link_schemes = app.url_schemes,
         // OS permissions declared in build.zig (`oriel permission add`).
         .permissions = app.permissions,
+        // The isolation hook (null unless `.isolation` is set in build.zig).
+        .security = .{ .isolation = app.isolation },
     });
 }

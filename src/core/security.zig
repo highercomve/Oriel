@@ -56,6 +56,12 @@ pub const Security = struct {
     /// `.valueOf`) throws in strict code (the "override mistake"); use
     /// Object.defineProperty for those.
     freeze_prototype: bool = false,
+    /// The isolation pattern (see `isolation.zig`): every IPC call from the
+    /// app's own pages (app:// and the dev server) must be approved by
+    /// `hook`, which runs in a sandboxed frame the page can't reach, and is
+    /// signed there. Remote capability origins are not covered: they keep
+    /// the token check and their capabilities. Null (default): off.
+    isolation: ?Isolation = null,
     /// Extra headers on the app's own successful responses (`app://`
     /// assets and the media scheme), e.g. Cross-Origin-Opener-Policy or
     /// Permissions-Policy. Names are limited to `allowed_header_names`
@@ -63,6 +69,18 @@ pub const Security = struct {
     /// tabs), at most 2047 bytes. CSP and Content-Type stay Oriel's.
     /// Checked at compile time.
     headers: []const Header = &.{},
+};
+
+/// `Security.isolation`. `hook` is JavaScript (e.g.
+/// `@embedFile("isolation/hook.js")`, or `oriel_app.isolation` from
+/// `addApp(.{ .isolation = .{ .hook = b.path("isolation/hook.js") } })`) that sets
+/// `globalThis.__ORIEL_ISOLATION_HOOK__ = (call) => call`: it gets
+/// `{ cmd, args }` for every call and returns it (or a modified one), or
+/// throws to reject it; it may be async. It runs in an opaque-origin frame
+/// with no network access (`default-src 'none'`) and is inlined into that
+/// page, so it must not contain "</script" or "<!--".
+pub const Isolation = struct {
+    hook: []const u8,
 };
 
 pub const Header = struct { name: []const u8, value: []const u8 };

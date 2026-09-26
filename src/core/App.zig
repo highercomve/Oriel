@@ -673,6 +673,7 @@ fn lookupAsset(assets: []const Asset, path: []const u8) ?Asset {
 pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     ensureWindowsMutex();
     comptime security.checkHeaders(config.security.headers);
+    comptime @import("isolation.zig").checkHook(config.security);
     current_security = config.security;
     @import("permissions.zig").setDeclared(config.permissions);
     ipc.initToken(io); // before any window (and bridge script) exists

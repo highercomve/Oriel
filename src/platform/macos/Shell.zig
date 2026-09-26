@@ -11,6 +11,7 @@ const dev_server = @import("dev_server.zig");
 const WindowHandle = window.WindowHandle;
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
+const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
 const single_instance = @import("single_instance.zig");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
@@ -426,7 +427,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         break :blk &copy;
     } else null };
 
-    const csp_z: ?[:0]const u8 = if (config.security.csp) |c| (c ++ "\x00")[0..c.len :0] else null;
+    // With isolation on, the CSP also allows the isolation frame.
+    const csp_z: ?[:0]const u8 = if (comptime isolation.appCsp(config.security)) |c| (c ++ "\x00")[0..c.len :0] else null;
     const Creator = window.WindowCreator(api, config, local, csp_z);
 
     return struct {

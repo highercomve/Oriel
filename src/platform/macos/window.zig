@@ -23,6 +23,7 @@ const overlay = @import("overlay.zig");
 const permissions = @import("../../core/permissions.zig");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
+const isolation = @import("../../core/isolation.zig");
 
 const log = std.log.scoped(.oriel);
 
@@ -338,6 +339,7 @@ fn getWindowByNSWindow(nswindow: cocoa.id) ?*App.Window {
 /// torn down from inside its own delegate or webview callbacks.
 fn teardown(handle: WindowHandle) void {
     const view = handle.webView();
+    if (handle.webview) |v| isolation.forget(@intFromPtr(v));
     view.msgSend(void, "setNavigationDelegate:", .{cocoa.nil});
     view.msgSend(void, "setUIDelegate:", .{cocoa.nil});
     view.msgSend(void, "stopLoading", .{});
@@ -431,7 +433,7 @@ pub fn WindowCreator(
     comptime local: security.Local,
     comptime csp_z: ?[:0]const u8,
 ) type {
-    const SchemeImpl = scheme_mod.Scheme(config, csp_z);
+    const SchemeImpl = scheme_mod.Scheme(config, local, csp_z);
     const BridgeImpl = bridge_mod.Bridge(api, config, local);
 
     return struct {
@@ -639,6 +641,12 @@ pub fn WindowCreator(
                 cocoa.callBlock(handler, struct { isize }, .{policy_cancel});
                 return;
             };
+            if (comptime config.security.isolation != null) {
+                if (isIsolationFrame(action, uri)) {
+                    cocoa.callBlock(handler, struct { isize }, .{policy_allow});
+                    return;
+                }
+            }
             const verdict = security.navigation(config.security, local, uri, isUserGesture(action));
             // No target frame: a new-window request (target="_blank"). An
             // allowed one continues to `createWebView`, which decides where it opens.
@@ -657,6 +665,16 @@ pub fn WindowCreator(
                     log.warn("blocked {s} to {s}", .{ if (new_window) "new window" else "navigation", uri });
                 },
             }
+        }
+
+        /// The bridge's isolation frame: an iframe (never the top frame or a
+        /// new window) loading the isolation origin.
+        fn isIsolationFrame(action: Object, uri: []const u8) bool {
+            const target = action.msgSend(Object, "targetFrame", .{});
+            if (target.value == null or cocoa.isTrue(target.msgSend(cocoa.c.BOOL, "isMainFrame", .{}))) return false;
+            var buf: [512]u8 = undefined;
+            const o = security.origin(&buf, uri) orelse return false;
+            return std.mem.eql(u8, o, isolation.origin);
         }
 
         /// `window.open` and allowed `target="_blank"` navigations: open an

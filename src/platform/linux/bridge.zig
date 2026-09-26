@@ -12,6 +12,7 @@ const jsc = @import("jsc");
 const App = @import("../../core/App.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
+const isolation = @import("../../core/isolation.zig");
 
 const log = std.log.scoped(.oriel);
 
@@ -20,9 +21,13 @@ pub const handler_name = "oriel";
 /// Replaced by `ipc.tokenScript` (which defines `const ipcToken`) in each
 /// window's copy of `bridge_js`.
 const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
+/// Replaced by `isolation.bridgeScript` (which defines `invoke`).
+const isolation_placeholder = "/*__ORIEL_ISOLATION__*/";
 
 comptime {
+    @setEvalBranchQuota(100_000); // the scan covers the whole script
     std.debug.assert(std.mem.count(u8, bridge_js, token_placeholder) == 1);
+    std.debug.assert(std.mem.count(u8, bridge_js, isolation_placeholder) == 1);
 }
 
 /// Injected into allowed pages before their own scripts run.
@@ -36,9 +41,15 @@ pub const bridge_js =
     \\
 ++ token_placeholder ++
     \\
-    \\  function invoke(cmd, args) {
+    \\  function rawInvoke(cmd, args) {
     \\    return handler.postMessage(JSON.stringify({ cmd, args: args ?? null, token: ipcToken }));
     \\  }
+    \\  function sendSealed(iso) {
+    \\    return handler.postMessage(JSON.stringify({ cmd: "oriel:isolated", iso, token: ipcToken }));
+    \\  }
+    \\
+++ isolation_placeholder ++
+    \\
     \\  class WindowHandle {
     \\    constructor(label) {
     \\      this.label = label;
@@ -110,7 +121,7 @@ pub const bridge_js =
     \\      return () => set.delete(callback);
     \\    },
     \\    openExternal(url) {
-    \\      return handler.postMessage(JSON.stringify({ cmd: "open_external", args: { url }, token: ipcToken }));
+    \\      return invoke("open_external", { url });
     \\    },
     \\    permissions: Object.freeze({
     \\      query(name) {
@@ -261,7 +272,9 @@ pub fn Bridge(
             // The page's IPC token lives only in the bridge's closure (ipc.tokenScript).
             const token_js = ipc.tokenScript(gpa, config.security, local) catch return;
             defer gpa.free(token_js);
-            const with_token = std.mem.replaceOwned(u8, gpa, bridge_js, token_placeholder, token_js) catch return;
+            const with_iso = std.mem.replaceOwned(u8, gpa, bridge_js, isolation_placeholder, comptime isolation.bridgeScript(config.security, local)) catch return;
+            defer gpa.free(with_iso);
+            const with_token = std.mem.replaceOwned(u8, gpa, with_iso, token_placeholder, token_js) catch return;
             defer gpa.free(with_token);
             const label_script_src = std.fmt.allocPrintSentinel(gpa, "{s}window.__oriel_window_label = {s};\n{s}", .{ comptime security.bridgePrelude(config.security), label_json, with_token }, 0) catch return;
             defer gpa.free(label_script_src);
@@ -293,7 +306,7 @@ pub fn Bridge(
             defer parse_arena.deinit();
             const temp_alloc = parse_arena.allocator();
 
-            const request = ipc.parseRequest(temp_alloc, req_slice) catch |err| {
+            const message_request = ipc.parseRequest(temp_alloc, req_slice) catch |err| {
                 reply.returnErrorMessage(ipc.errorText(err));
                 return 1;
             };
@@ -302,17 +315,23 @@ pub fn Bridge(
             const page_url: []const u8 = if (webkit_web_view_get_uri(view)) |u| std.mem.span(u) else "";
             const caller_win = @import("window.zig").getWindowByView(view);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
-            // Page-controlled: escaped and capped in logs.
-            const cmd_log = std.zig.fmtString(request.cmd[0..@min(request.cmd.len, 64)]);
-
             // The handler is reachable from every frame, but only the top
             // frame's bridge has this page's token (ipc.tokenScript), so a
             // frame from another origin can't act as the page.
-            if (!ipc.tokenValid(request.token, config.security, local, page_url)) {
-                log.warn("refused an IPC call without this page's token (\"{f}\")", .{cmd_log});
+            if (!ipc.tokenValid(message_request.token, config.security, local, page_url)) {
+                log.warn("refused an IPC call without this page's token (\"{f}\")", .{std.zig.fmtString(message_request.cmd[0..@min(message_request.cmd.len, 64)])});
                 reply.returnErrorMessage("Forbidden");
                 return 1;
             }
+            // With isolation on, the app's pages send only calls the
+            // isolation hook signed; `request` is the call inside.
+            const checked = isolation.check(temp_alloc, config.security, local, page_url, @intFromPtr(view), message_request, req_slice) catch |err| {
+                reply.returnErrorMessage(isolation.errorText(err));
+                return 1;
+            };
+            const request = checked.request;
+            // Page-controlled: escaped and capped in logs.
+            const cmd_log = std.zig.fmtString(request.cmd[0..@min(request.cmd.len, 64)]);
 
             if (window_commands.isWindowCommand(request.cmd)) {
                 const result = window_commands.dispatch(config.security, local, temp_alloc, page_url, win_label, request.cmd, request.args) catch |err| {
@@ -425,7 +444,7 @@ pub fn Bridge(
                 .err_name = null,
             };
 
-            ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, req_slice, worker_pool.io, gtk_reply, GtkReply.onWorkerDone) catch |err| {
+            ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, checked.json, worker_pool.io, gtk_reply, GtkReply.onWorkerDone) catch |err| {
                 reply.unref();
                 context.unref();
                 std.heap.smp_allocator.destroy(gtk_reply);

@@ -2,6 +2,8 @@
 //!
 //! Serves embedded frontend assets through `SHCreateMemStream` and
 //! `CreateWebResourceResponse`, adding proper MIME type and Content-Security-Policy headers.
+//! With isolation on, `https://isolation.localhost/` serves the isolation page
+//! (`isolation.servePage`, a key minted for the requesting webview).
 //!
 //! COM handler lifetime note: scheme.zig implements no COM event/completion handlers directly.
 //! Resource requests are handled by ResourceHandler in window.zig, which forwards to Scheme.handleRequest.
@@ -11,14 +13,17 @@ const win32 = @import("win32.zig");
 const webview2 = @import("webview2.zig");
 const security = @import("../../core/security.zig");
 const App = @import("../../core/App.zig");
+const isolation = @import("../../core/isolation.zig");
 
 pub const host_origin = "https://app.localhost";
 pub const filter_pattern = "https://app.localhost/*";
+pub const isolation_filter_pattern = isolation.origin ++ "/*";
 
-pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
+pub fn Scheme(comptime config: App.Config, comptime local: security.Local, comptime csp_z: ?[:0]const u8) type {
     return struct {
         pub fn handleRequest(
             env: *webview2.ICoreWebView2Environment,
+            sender: ?*webview2.ICoreWebView2,
             args: *webview2.ICoreWebView2WebResourceRequestedEventArgs,
         ) void {
             var req_opt: ?*webview2.ICoreWebView2WebResourceRequest = null;
@@ -35,6 +40,15 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
 
             const uri = std.unicode.utf16LeToUtf8Alloc(gpa, uri_w.?[0..uri_len]) catch return;
             defer gpa.free(uri);
+
+            if (comptime config.security.isolation != null) {
+                const iso_prefix = isolation.origin ++ "/";
+                if (std.ascii.startsWithIgnoreCase(uri, iso_prefix)) {
+                    const rest = uri[iso_prefix.len..];
+                    const iso_path = if (std.mem.indexOfAny(u8, rest, "?#")) |idx| rest[0..idx] else rest;
+                    return serveIsolation(env, args, iso_path, if (sender) |v| @intFromPtr(v) else 0);
+                }
+            }
 
             // Strip origin "https://app.localhost/" to get relative asset path
             const prefix = "https://app.localhost/";
@@ -89,6 +103,56 @@ pub fn Scheme(comptime config: App.Config, comptime csp_z: ?[:0]const u8) type {
                         defer resp.release();
                         _ = args.lpVtbl.put_Response(args, resp);
                     }
+                }
+            }
+        }
+
+        /// The isolation page, with a fresh key for this webview; nothing
+        /// else on that host (404).
+        fn serveIsolation(
+            env: *webview2.ICoreWebView2Environment,
+            args: *webview2.ICoreWebView2WebResourceRequestedEventArgs,
+            path: []const u8,
+            view: usize,
+        ) void {
+            const gpa = std.heap.smp_allocator;
+            const page: ?[]u8 = if (path.len == 0 or std.mem.eql(u8, path, "index.html"))
+                isolation.servePage(gpa, config.security, local, view) catch null
+            else
+                null;
+            defer if (page) |p| {
+                std.crypto.secureZero(u8, p);
+                gpa.free(p);
+            };
+            const hdr: ?[]u8 = if (page != null) blk: {
+                const csp = isolation.pageCsp(gpa, config.security, local) catch break :blk null;
+                defer gpa.free(csp);
+                break :blk std.fmt.allocPrint(gpa, "Content-Type: text/html\r\nContent-Security-Policy: {s}\r\n{s}", .{ csp, comptime isolation.pageHeaderLines(config.security) }) catch null;
+            } else null;
+            defer if (hdr) |h| gpa.free(h);
+            if (page == null or hdr == null) {
+                const not_found_w = std.unicode.utf8ToUtf16LeStringLiteral("Not Found");
+                const err_hdr_w = std.unicode.utf8ToUtf16LeStringLiteral("Content-Type: text/plain\r\n");
+                var resp_opt: ?*webview2.ICoreWebView2WebResourceResponse = null;
+                if (env.createWebResourceResponse(null, 404, not_found_w, err_hdr_w, &resp_opt) >= 0) {
+                    if (resp_opt) |resp| {
+                        defer resp.release();
+                        _ = args.lpVtbl.put_Response(args, resp);
+                    }
+                }
+                return;
+            }
+            // SHCreateMemStream copies the page.
+            const stream = win32.SHCreateMemStream(page.?.ptr, @intCast(page.?.len)) orelse return;
+            defer stream.release();
+            const hdr_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, hdr.?) catch return;
+            defer gpa.free(hdr_w);
+            const ok_w = std.unicode.utf8ToUtf16LeStringLiteral("OK");
+            var resp_opt: ?*webview2.ICoreWebView2WebResourceResponse = null;
+            if (env.createWebResourceResponse(stream, 200, ok_w, hdr_w.ptr, &resp_opt) >= 0) {
+                if (resp_opt) |resp| {
+                    defer resp.release();
+                    _ = args.lpVtbl.put_Response(args, resp);
                 }
             }
         }

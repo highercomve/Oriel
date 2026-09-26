@@ -20,6 +20,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 pub const ThreadPool = @import("ThreadPool.zig").ThreadPool;
 const security = @import("security.zig");
+const isolation = @import("isolation.zig");
 const App = @import("App.zig");
 
 pub const Request = struct {
@@ -27,6 +28,8 @@ pub const Request = struct {
     args: std.json.Value = .null,
     /// The bridge's IPC token (see `token`); bridges reject calls without it.
     token: ?[]const u8 = null,
+    /// A call signed by the isolation frame (`isolation.check`).
+    iso: ?isolation.Sealed = null,
 };
 
 // --- IPC token ------------------------------------------------------------------
@@ -61,12 +64,23 @@ pub fn initToken(io: std.Io) void {
         // weak fallback: without a secure source IPC stays disabled.
         if (builtin.os.tag == .windows and rtlGenRandom(&token_key)) {
             token_ready = true;
+            seedIsolation();
             return;
         }
         std.log.scoped(.oriel).err("no secure random source ({s}): IPC is disabled", .{@errorName(err)});
         return;
     };
     token_ready = true;
+    seedIsolation();
+}
+
+/// The isolation key generator's seed: derived from the secret token key
+/// (a separate HMAC domain, so neither reveals the other).
+fn seedIsolation() void {
+    var seed: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&seed, "isolation-seed", &token_key);
+    isolation.init(seed);
+    std.crypto.secureZero(u8, &seed);
 }
 
 extern "advapi32" fn SystemFunction036(buffer: [*]u8, len: u32) callconv(.winapi) u8;

@@ -450,7 +450,23 @@ Modeled on Tauri. Configure it with `Config.security`:
   COEP `require-corp` blocks cross-origin frames and subresources that don't
   opt in.
 
-`examples/smoke` runs these checks inside the real webview (`--auto-quit`).
+- **Isolation pattern (opt-in):** `.isolation = .{ .hook = b.path("isolation/hook.js") }`
+  in `addApp`, and `.security = .{ .isolation = app.isolation }` in the
+  config. Every call from the app's own pages (`app://` and the dev server),
+  built-ins included, is first passed to the hook, which runs in a sandboxed
+  frame the page can't reach and returns the call (or a modified one) or
+  throws to reject it. The frame signs approved calls (HMAC-SHA256 with a key
+  minted per frame load, never visible to the page, one-time sequence
+  numbers), and Zig refuses anything unsigned or replayed. An XSS or a
+  compromised dependency can then only call Zig through the hook. Remote
+  capability origins are not covered: they keep the IPC token and their
+  capabilities. Events from Zig to the page are unchanged. The hook is
+  inlined into the frame's page, so it can't contain `</script` or `<!--`,
+  and it has no network access. A custom `csp` must allow the isolation
+  frame (`frame-src oriel.isolation.origin`; Oriel adds it to the default).
+
+`examples/smoke` runs these checks inside the real webview (`--auto-quit`;
+`-Disolation=false` builds it without the isolation hook).
 
 ### OS permissions (`oriel.permissions`)
 

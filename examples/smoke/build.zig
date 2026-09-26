@@ -11,6 +11,9 @@ pub fn build(b: *std.Build) void {
         .deep_link = true,
     });
 
+    // -Disolation=false: the same checks without the isolation pattern.
+    const isolation = b.option(bool, "isolation", "Build with the isolation hook (default: true)") orelse true;
+
     _ = oriel.addApp(b, dep, .{
         .name = "oriel-smoke",
         .root_source_file = b.path("main.zig"),
@@ -35,5 +38,6 @@ pub fn build(b: *std.Build) void {
         },
         // The permission checks expect exactly these: the camera stays undeclared.
         .permissions = .{ .microphone = "The smoke test checks microphone access.", .notifications = "" },
+        .isolation = if (isolation) .{ .hook = b.path("isolation/hook.js") } else null,
     });
 }
