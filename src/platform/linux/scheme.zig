@@ -13,6 +13,7 @@ const soup = @import("soup");
 const security = @import("../../core/security.zig");
 const App = @import("../../core/App.zig");
 const isolation = @import("../../core/isolation.zig");
+const csp_mod = @import("../../core/csp.zig");
 
 pub const scheme_name = "app";
 
@@ -51,7 +52,11 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
                 const headers = soup.MessageHeaders.new(.response);
                 headers.append("Content-Type", a.mime);
                 headers.append("X-Content-Type-Options", "nosniff");
-                if (csp_z) |csp| headers.append("Content-Security-Policy", csp);
+                // The page's own inline scripts (and styles) are allowed by hash.
+                const gpa = std.heap.smp_allocator;
+                const page_csp: ?[:0]u8 = if (csp_z) |c| csp_mod.withHashes(gpa, c, a.script_hashes, a.style_hashes) catch null else null;
+                defer if (page_csp) |p| gpa.free(p);
+                if (page_csp orelse csp_z) |csp| headers.append("Content-Security-Policy", csp);
                 inline for (config.security.headers) |h| {
                     if (comptime security.headerUsable(h)) {
                         headers.append((h.name ++ "\x00")[0..h.name.len :0], (h.value ++ "\x00")[0..h.value.len :0]);

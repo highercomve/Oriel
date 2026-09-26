@@ -25,6 +25,10 @@ pub const Asset = struct {
     path: []const u8,
     data: []const u8,
     mime: [:0]const u8,
+    /// HTML: CSP hash sources of the file's inline scripts and style blocks
+    /// (space-separated, from `embed_assets`), added to its CSP when served.
+    script_hashes: []const u8 = "",
+    style_hashes: []const u8 = "",
 };
 
 /// The app's typed API: `commands` are callable from JS, `events` can be

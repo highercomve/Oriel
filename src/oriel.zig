@@ -158,6 +158,7 @@ test {
     std.testing.refAllDecls(ipc);
     std.testing.refAllDecls(security);
     std.testing.refAllDecls(@import("core/isolation.zig"));
+    std.testing.refAllDecls(@import("core/csp.zig"));
     std.testing.refAllDecls(permissions);
     std.testing.refAllDecls(@import("core/window_commands.zig"));
     std.testing.refAllDecls(log);

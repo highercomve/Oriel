@@ -14,6 +14,7 @@ const webview2 = @import("webview2.zig");
 const security = @import("../../core/security.zig");
 const App = @import("../../core/App.zig");
 const isolation = @import("../../core/isolation.zig");
+const csp_mod = @import("../../core/csp.zig");
 
 pub const host_origin = "https://app.localhost";
 pub const filter_pattern = "https://app.localhost/*";
@@ -75,7 +76,10 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
                 // Format HTTP response headers (matching Linux: Content-Type, nosniff, CSP)
                 // The app's extra headers (security.headers), as text lines.
                 const extra = comptime security.comptimeHeaderLines(config.security.headers);
-                const hdr_str = if (csp_z) |csp|
+                // The page's own inline scripts (and styles) are allowed by hash.
+                const page_csp: ?[:0]u8 = if (csp_z) |c| csp_mod.withHashes(gpa, c, a.script_hashes, a.style_hashes) catch null else null;
+                defer if (page_csp) |p| gpa.free(p);
+                const hdr_str = if (page_csp orelse csp_z) |csp|
                     std.fmt.allocPrint(gpa, "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: {s}\r\n{s}", .{ a.mime, csp, extra }) catch return
                 else
                     std.fmt.allocPrint(gpa, "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\n{s}", .{ a.mime, extra }) catch return;

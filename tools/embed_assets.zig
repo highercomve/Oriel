@@ -8,6 +8,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Dir = std.Io.Dir;
+const csp = @import("csp");
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -64,7 +65,17 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(dest);
         if (std.fs.path.dirname(dest)) |dir| try out.createDirPath(io, dir);
         try src.copyFile(path, out, dest, io, .{});
-        try w.print("    .{{ .path = \"{s}\", .data = @embedFile(\"{s}\"), .mime = \"{s}\" }},\n", .{ path, dest, mimeType(path) });
+        try w.print("    .{{ .path = \"{s}\", .data = @embedFile(\"{s}\"), .mime = \"{s}\"", .{ path, dest, mimeType(path) });
+        // HTML: the CSP hashes of its inline scripts and style blocks.
+        if (std.ascii.eqlIgnoreCase(std.fs.path.extension(path), ".html") or std.ascii.eqlIgnoreCase(std.fs.path.extension(path), ".htm")) {
+            const html = try src.readFileAlloc(io, path, gpa, .limited(64 * 1024 * 1024));
+            defer gpa.free(html);
+            const hashes = try csp.inlineHashes(gpa, html);
+            defer hashes.deinit(gpa);
+            if (hashes.scripts.len > 0) try w.print(", .script_hashes = \"{s}\"", .{hashes.scripts});
+            if (hashes.styles.len > 0) try w.print(", .style_hashes = \"{s}\"", .{hashes.styles});
+        }
+        try w.writeAll(" },\n");
     }
     try w.writeAll("};\n");
     try out.writeFile(io, .{ .sub_path = "assets.zig", .data = source.written() });

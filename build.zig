@@ -91,6 +91,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tools/embed_assets.zig"),
             .target = b.graph.host,
             .optimize = .ReleaseSafe,
+            .imports = &.{.{ .name = "csp", .module = b.createModule(.{ .root_source_file = b.path("src/core/csp.zig") }) }},
         }),
     });
     b.installArtifact(embed_assets);
@@ -237,7 +238,7 @@ pub fn build(b: *std.Build) void {
     const update_manifest_target = b.createModule(.{ .root_source_file = b.path("src/modules/update_manifest.zig") });
     const host_tools = [_]struct { []const u8, []const std.Build.Module.Import }{
         .{ "tools/dev_runner.zig", &.{} },
-        .{ "tools/embed_assets.zig", &.{} },
+        .{ "tools/embed_assets.zig", &.{.{ .name = "csp", .module = b.createModule(.{ .root_source_file = b.path("src/core/csp.zig") }) }} },
         .{ "tools/package/main.zig", &.{.{ .name = "zigimg", .module = zigimg_target.module("zigimg") }} },
         .{ "tools/update_tool.zig", &.{.{ .name = "update_manifest", .module = update_manifest_target }} },
     };
