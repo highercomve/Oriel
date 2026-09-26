@@ -183,6 +183,11 @@ if (location.search.includes("overlay=1")) {
         results.push({ module: "deep_link js", ok: false, detail: String(e) });
       }
 
+      results.push({
+        module: "secure context",
+        ok: window.isSecureContext === true && !!(window.crypto && crypto.subtle),
+        detail: `isSecureContext=${window.isSecureContext}, crypto.subtle=${!!(window.crypto && crypto.subtle)}`,
+      });
       results.push(...(await permissionChecks()));
       results.push(...(await windowChecks()));
       results.push(...(await securityChecks()));
