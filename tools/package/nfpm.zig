@@ -3,6 +3,7 @@
 const std = @import("std");
 const icons = @import("icons.zig");
 const metadata = @import("metadata.zig");
+const contents = @import("contents.zig");
 
 pub const NfpmOptions = struct {
     name: []const u8,
@@ -19,12 +20,29 @@ pub const NfpmOptions = struct {
     icons_dir: []const u8,
     deb_depends: []const []const u8 = &.{},
     rpm_depends: []const []const u8 = &.{},
+    /// Other executables, installed next to the app's (see below).
+    extra_exes: []const contents.Exe = &.{},
+    /// Files installed at their path relative to the app's executable.
+    extra_files: []const contents.File = &.{},
 };
+
+/// Where the app's executable goes. Alone it is `/usr/bin/<binary>`; with
+/// extra executables or files everything goes into `/usr/lib/<name>/` and
+/// `/usr/bin` gets symlinks to the executables: the programs find their
+/// companions next to their own (symlink-resolved) path.
+pub fn exeDir(allocator: std.mem.Allocator, opts: NfpmOptions) ![]u8 {
+    if (opts.extra_exes.len == 0 and opts.extra_files.len == 0) return allocator.dupe(u8, "/usr/bin");
+    return std.fmt.allocPrint(allocator, "/usr/lib/{s}", .{opts.name});
+}
 
 /// Generate nfpm.yaml content for building deb and rpm packages.
 pub fn generateNfpmYaml(allocator: std.mem.Allocator, opts: NfpmOptions) ![]const u8 {
     try metadata.validateExeName(opts.name);
     try metadata.validateExeName(opts.binary_name);
+    // nfpm reads every `src` as a glob.
+    for ([_][]const u8{ opts.binary_src, opts.desktop_src, opts.icons_dir }) |src| try metadata.validateNfpmSource(src);
+    for (opts.extra_exes) |e| try metadata.validateNfpmSource(e.src);
+    for (opts.extra_files) |f| try metadata.validateNfpmSource(f.src);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -81,10 +99,36 @@ pub fn generateNfpmYaml(allocator: std.mem.Allocator, opts: NfpmOptions) ![]cons
     const esc_icons_dir = try metadata.escapeYamlScalar(allocator, opts.icons_dir);
     defer allocator.free(esc_icons_dir);
 
+    // exeDir is built from validated names: nothing to escape.
+    const exe_dir = try exeDir(allocator, opts);
+    defer allocator.free(exe_dir);
+    const split = !std.mem.eql(u8, exe_dir, "/usr/bin");
+
     try w.writeAll("contents:\n");
     try w.print("  - src: \"{s}\"\n", .{esc_bin_src});
-    try w.print("    dst: \"/usr/bin/{s}\"\n", .{esc_bin_name});
+    try w.print("    dst: \"{s}/{s}\"\n", .{ exe_dir, esc_bin_name });
     try w.writeAll("    file_info:\n      mode: 0755\n");
+    if (split) try writeBinLink(w, exe_dir, esc_bin_name);
+
+    for (opts.extra_exes) |e| {
+        try metadata.validateExeName(e.name);
+        const esc_src = try metadata.escapeYamlScalar(allocator, e.src);
+        defer allocator.free(esc_src);
+        try w.print("  - src: \"{s}\"\n", .{esc_src});
+        try w.print("    dst: \"{s}/{s}\"\n", .{ exe_dir, e.name });
+        try w.writeAll("    file_info:\n      mode: 0755\n");
+        try writeBinLink(w, exe_dir, e.name);
+    }
+    for (opts.extra_files) |f| {
+        try metadata.validateRelativePath(f.rel);
+        const esc_src = try metadata.escapeYamlScalar(allocator, f.src);
+        defer allocator.free(esc_src);
+        const esc_rel = try metadata.escapeYamlScalar(allocator, f.rel);
+        defer allocator.free(esc_rel);
+        try w.print("  - src: \"{s}\"\n", .{esc_src});
+        try w.print("    dst: \"{s}/{s}\"\n", .{ exe_dir, esc_rel });
+        try w.writeAll("    file_info:\n      mode: 0644\n");
+    }
 
     try w.print("  - src: \"{s}\"\n", .{esc_desktop_src});
     try w.print("    dst: \"/usr/share/applications/{s}.desktop\"\n", .{esc_app_id});
@@ -112,6 +156,103 @@ pub fn generateNfpmYaml(allocator: std.mem.Allocator, opts: NfpmOptions) ![]cons
     }
 
     return try allocator.dupe(u8, out.written());
+}
+
+/// `/usr/bin/<name>` -> `<exe_dir>/<name>`.
+fn writeBinLink(w: *std.Io.Writer, exe_dir: []const u8, name: []const u8) !void {
+    try w.print("  - src: \"{s}/{s}\"\n", .{ exe_dir, name });
+    try w.print("    dst: \"/usr/bin/{s}\"\n", .{name});
+    try w.writeAll("    type: symlink\n");
+}
+
+test "generateNfpmYaml with extra executables and files" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+
+    const yaml = try generateNfpmYaml(gpa, .{
+        .name = "ghostpen",
+        .version = "0.1.0",
+        .arch = "amd64",
+        .maintainer = "GhostPen",
+        .description = "Notes",
+        .binary_src = "/cache/ghostpen",
+        .binary_name = "ghostpen",
+        .desktop_src = "/cache/app.desktop",
+        .app_id = "dev.ghostpen.App",
+        .icons_dir = "/cache/icons",
+        .extra_exes = &.{.{ .src = "/cache/s/ghostpen-cli", .name = "ghostpen-cli" }},
+        .extra_files = &.{
+            .{ .rel = "libggml-cuda.so", .src = "/cache/libggml-cuda.so" },
+            .{ .rel = "data/model v2.bin", .src = "/m.bin" },
+        },
+    });
+    defer gpa.free(yaml);
+
+    try testing.expect(std.mem.indexOf(u8, yaml,
+        \\  - src: "/cache/ghostpen"
+        \\    dst: "/usr/lib/ghostpen/ghostpen"
+        \\    file_info:
+        \\      mode: 0755
+        \\  - src: "/usr/lib/ghostpen/ghostpen"
+        \\    dst: "/usr/bin/ghostpen"
+        \\    type: symlink
+        \\  - src: "/cache/s/ghostpen-cli"
+        \\    dst: "/usr/lib/ghostpen/ghostpen-cli"
+        \\    file_info:
+        \\      mode: 0755
+        \\  - src: "/usr/lib/ghostpen/ghostpen-cli"
+        \\    dst: "/usr/bin/ghostpen-cli"
+        \\    type: symlink
+        \\  - src: "/cache/libggml-cuda.so"
+        \\    dst: "/usr/lib/ghostpen/libggml-cuda.so"
+        \\    file_info:
+        \\      mode: 0644
+        \\
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, yaml, "dst: \"/usr/lib/ghostpen/data/model v2.bin\"\n    file_info:\n      mode: 0644\n") != null);
+    try testing.expect(std.mem.indexOf(u8, yaml, "dst: \"/usr/bin/ghostpen\"\n    file_info") == null);
+
+    // Unsafe destinations are refused.
+    try testing.expectError(error.InvalidRelativePath, generateNfpmYaml(gpa, .{
+        .name = "ghostpen",
+        .version = "0.1.0",
+        .arch = "amd64",
+        .maintainer = "GhostPen",
+        .description = "Notes",
+        .binary_src = "/b",
+        .binary_name = "ghostpen",
+        .desktop_src = "/d",
+        .app_id = "dev.ghostpen.App",
+        .icons_dir = "/i",
+        .extra_files = &.{.{ .rel = "../../etc/cron.d/x", .src = "/x" }},
+    }));
+    try testing.expectError(error.InvalidExeName, generateNfpmYaml(gpa, .{
+        .name = "ghostpen",
+        .version = "0.1.0",
+        .arch = "amd64",
+        .maintainer = "GhostPen",
+        .description = "Notes",
+        .binary_src = "/b",
+        .binary_name = "ghostpen",
+        .desktop_src = "/d",
+        .app_id = "dev.ghostpen.App",
+        .icons_dir = "/i",
+        .extra_exes = &.{.{ .src = "/x/a b", .name = "a b" }},
+    }));
+    // Glob characters in a source are refused (nfpm would expand them).
+    try testing.expectError(error.InvalidSourcePath, generateNfpmYaml(gpa, .{
+        .name = "ghostpen",
+        .version = "0.1.0",
+        .arch = "amd64",
+        .maintainer = "GhostPen",
+        .description = "Notes",
+        .binary_src = "/b",
+        .binary_name = "ghostpen",
+        .desktop_src = "/d",
+        .app_id = "dev.ghostpen.App",
+        .icons_dir = "/i",
+        .extra_files = &.{.{ .rel = "m.bin", .src = "/models/*.bin" }},
+    }));
 }
 
 test "generateNfpmYaml with optional metadata" {
@@ -144,6 +285,9 @@ test "generateNfpmYaml with optional metadata" {
     try testing.expect(std.mem.indexOf(u8, yaml, "homepage: \"https://example.com\"\n") != null);
     try testing.expect(std.mem.indexOf(u8, yaml, "license: \"MIT\"\n") != null);
     try testing.expect(std.mem.indexOf(u8, yaml, "dst: \"/usr/bin/oriel-react-notes\"\n") != null);
+    // No extras: the historical layout, no /usr/lib directory or symlinks.
+    try testing.expect(std.mem.indexOf(u8, yaml, "/usr/lib/") == null);
+    try testing.expect(std.mem.indexOf(u8, yaml, "type: symlink") == null);
     try testing.expect(std.mem.indexOf(u8, yaml, "dst: \"/usr/share/applications/dev.oriel.ReactNotes.desktop\"\n") != null);
     try testing.expect(std.mem.indexOf(u8, yaml, "- \"libgtk-4-1\"\n") != null);
     try testing.expect(std.mem.indexOf(u8, yaml, "- \"gtk4\"\n") != null);

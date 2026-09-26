@@ -59,7 +59,7 @@ These are built with `nfpm` and use the metadata from `build.zig`:
 ```
 
 Packages include:
-- The binary in `/usr/local/bin/`
+- The binary in `/usr/bin/` (or `/usr/lib/<app-name>/` with a `/usr/bin` symlink, when the package holds more executables or files: see below)
 - A `.desktop` entry and icons in standard locations
 - An uninstall entry for the package manager
 - Auto-derived runtime dependencies based on enabled modules
@@ -70,6 +70,31 @@ An AppImage is a self-contained, relocatable package. It does **not** bundle GTK
 
 To run the AppImage on another machine, the system must have:
 - GTK4 and WebKitGTK 6.0 development packages installed (or runtime packages if available)
+
+### Package contents
+
+By default a package holds the app's executable (plus its desktop entry and icons). `.contents` adds more, to every format:
+
+```zig
+const cli = b.addExecutable(.{ .name = "notes-cli", .root_module = ... });
+_ = oriel.addApp(b, dep, .{
+    ...
+    .package = .{
+        .id = "dev.oriel.Notes",
+        .contents = .{
+            .executables = &.{cli},
+            .files = &.{.{ .path = "data/model.bin", .source = b.path("data/model.bin") }},
+        },
+    },
+});
+```
+
+- `executables`: other executables of the build, installed next to the app's executable.
+- `files`: files at a path relative to the executable's directory (`/`-separated, no `..`).
+- `runtime_libraries` (default on): Oriel's runtime libraries, i.e. `libggml-cuda.so` in a `-Dggml_cuda` build (a `files` entry with that path replaces it).
+- `strip` (default on): the Linux packages get stripped copies of the executables and libraries (no symbol table or debug info; the dynamic symbols stay). A ReleaseSafe app drops from about 70 MB to under 20 MB; `zig-out/bin` keeps the originals. The app's executable is stripped too, so crash traces from a packaged app show addresses rather than function names; `.strip = false` keeps the symbols.
+
+Where they go: next to the app's executable in each format. On Debian and RPM, a package with extras installs everything into `/usr/lib/<app-name>/` and links the executables into `/usr/bin`, so each program finds its companions next to its own path; the AppImage uses `usr/bin/`, the Windows installer `%LOCALAPPDATA%\Programs\<name>` (the uninstaller removes them), and macOS `<Name>.app/Contents/MacOS/` for executables and libraries (signed with the bundle), with other files in `Contents/Resources/` behind a symlink from `Contents/MacOS/`, since code signing allows only code in `Contents/MacOS`.
 
 # Windows
 

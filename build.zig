@@ -546,6 +546,10 @@ fn patchedHttpz(
 // ---------------------------------------------------------------------------
 
 pub const PackageOptions = @import("build/package.zig").PackageOptions;
+/// `PackageOptions.contents`: what the packages hold besides the app's executable.
+pub const PackageContents = @import("build/package.zig").Contents;
+/// A file in `PackageContents.files`.
+pub const PackageFile = @import("build/package.zig").File;
 
 pub const AppOptions = struct {
     /// Executable name.
