@@ -1409,6 +1409,17 @@ pub fn WindowCreator(
                     }
                     return 0;
                 },
+                win32.WM_SETFOCUS => {
+                    // Keyboard focus goes to the host HWND (shown, activated,
+                    // Alt+Tab back): hand it on to the webview, or the page
+                    // gets no key events (document.hasFocus() stays false)
+                    // until it's clicked.
+                    if (win) |w| if (w.ready) {
+                        _ = w.handle.controller.lpVtbl.MoveFocus(w.handle.controller, .PROGRAMMATIC);
+                        return 0;
+                    };
+                    return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
+                },
                 win32.WM_ERASEBKGND => {
                     // Transparent windows: painting the class brush would
                     // cover what's behind them.
