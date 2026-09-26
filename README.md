@@ -1108,6 +1108,25 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
   - With both `-Dggml_cuda` and `-Dggml_vulkan`, `ggml_gpu.load` loads CUDA
     first and Vulkan only if CUDA found no GPU (one card is never registered
     twice).
+- **Vulkan (Windows):** the same `-Dggml_vulkan`, compiled into the
+  executable (a DLL couldn't take ggml's symbols from it), so there is no
+  extra file to ship:
+  ```powershell
+  oriel build -Dllama -Dwhisper -Dggml_vulkan
+  ```
+  - Needs the [Vulkan SDK](https://vulkan.lunarg.com/) for `glslc` and the
+    headers (`$VULKAN_SDK`; or `-Dglslc` and `-Dvulkan_include`). The
+    shaders make the executable ~55 MB larger (the installer compresses it).
+  - The executable doesn't link `vulkan-1.lib`: it loads `vulkan-1.dll`
+    from System32 at runtime, and `ggml_gpu.load` registers Vulkan only
+    when that works, so the app starts and runs on the CPU without it.
+  - The Vulkan instance is created without implicit layers (overlays,
+    capture hooks, NVIDIA's Optimus layer, which crashed the process on an
+    Optimus laptop): ggml only computes. Setting `VK_LOADER_LAYERS_DISABLE`
+    or `VK_LOADER_LAYERS_ALLOW` yourself overrides that.
+  - Measured (GhostPen, GTX 1070 Max-Q vs i7-8750H): Qwen3.5 2B Q4_K_M
+    generates 55 tokens/s on Vulkan vs 15 on the CPU; whisper base
+    transcribes a 6 s clip in 0.35 s vs 2.7 s.
 
 #### Multimodal (`mtmd`) status
 
