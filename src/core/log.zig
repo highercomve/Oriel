@@ -66,6 +66,7 @@ fn unlock() void {
 /// Creates the log file (see the file comment) and directs future log
 /// entries to it in addition to stderr.
 pub fn init(app_id: []const u8) void {
+    if (!validAppId(app_id)) return; // becomes a directory name
     if (is_linux) {
         const base = std.mem.span(glib.getUserDataDir());
         var path_buf: [1024]u8 = undefined;
@@ -89,10 +90,17 @@ pub fn init(app_id: []const u8) void {
         }
     } else if (is_macos) {
         const home = std.c.getenv("HOME") orelse return;
+        if (home[0] != '/') return; // empty or relative: no file
         var path_buf: [1024]u8 = undefined;
         const dir = std.fmt.bufPrintZ(&path_buf, "{s}/Library/Logs/{s}", .{ std.mem.span(home), app_id }) catch return;
         initInDir(dir);
     }
+}
+
+/// A single, non-empty path component (not `.` or `..`).
+fn validAppId(id: []const u8) bool {
+    if (id.len == 0 or std.mem.eql(u8, id, ".") or std.mem.eql(u8, id, "..")) return false;
+    return std.mem.indexOfAny(u8, id, "/\\\x00") == null;
 }
 
 /// `mkdir -p` (existing directories are fine; errors surface when the file
@@ -129,6 +137,7 @@ fn initInDir(dir: [:0]const u8) void {
             .ACCMODE = .WRONLY,
             .CREAT = true,
             .APPEND = true,
+            .CLOEXEC = true, // helper processes don't inherit it
         }, @as(c_uint, 0o644));
 
         if (fd >= 0) {
@@ -341,13 +350,22 @@ test "macOS log file" {
     var dir_buf: [256]u8 = undefined;
     const dir = try std.fmt.bufPrintZ(&dir_buf, "{s}/a/b", .{std.mem.span(base)});
 
+    defer {
+        var buf: [256]u8 = undefined;
+        if (std.fmt.bufPrintZ(&buf, "{s}/a/b/app.log", .{std.mem.span(base)})) |f| _ = std.c.unlink(f.ptr) else |_| {}
+        if (std.fmt.bufPrintZ(&buf, "{s}/a/b", .{std.mem.span(base)})) |b| _ = std.c.rmdir(b.ptr) else |_| {}
+        if (std.fmt.bufPrintZ(&buf, "{s}/a", .{std.mem.span(base)})) |a| _ = std.c.rmdir(a.ptr) else |_| {}
+        _ = std.c.rmdir(base);
+    }
+
+    try std.testing.expect(getPath() == null); // nothing else opened a log
     initInDir(dir);
+    defer deinit();
     writeEntry(.warn, .test_scope, "mac logging {s}", .{"ok"}, false);
     const path = getPath() orelse return error.NoLogPath;
     var path_buf: [256]u8 = undefined;
     const path_z = try std.fmt.bufPrintZ(&path_buf, "{s}", .{path});
-    deinit();
-    try std.testing.expect(getPath() == null);
+    try std.testing.expect(std.mem.endsWith(u8, path, "/a/b/app.log"));
 
     const fd = std.c.open(path_z.ptr, .{ .ACCMODE = .RDONLY }, @as(c_uint, 0));
     try std.testing.expect(fd >= 0);
@@ -360,11 +378,12 @@ test "macOS log file" {
     // "YYYY-MM-DD HH:MM:SS " from strftime, not the fallback.
     try std.testing.expect(!std.mem.startsWith(u8, text, "0000-"));
     try std.testing.expectEqual(@as(u8, '-'), text[4]);
+}
 
-    _ = std.c.unlink(path_z.ptr);
-    const b = try std.fmt.bufPrintZ(&dir_buf, "{s}/a/b", .{std.mem.span(base)});
-    _ = std.c.rmdir(b.ptr);
-    const a = try std.fmt.bufPrintZ(&dir_buf, "{s}/a", .{std.mem.span(base)});
-    _ = std.c.rmdir(a.ptr);
-    _ = std.c.rmdir(base);
+test validAppId {
+    try std.testing.expect(validAppId("dev.oriel.Smoke"));
+    try std.testing.expect(!validAppId(""));
+    try std.testing.expect(!validAppId(".."));
+    try std.testing.expect(!validAppId("../x"));
+    try std.testing.expect(!validAppId("a\\b"));
 }
