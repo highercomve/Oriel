@@ -67,7 +67,7 @@
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><rect x="10" y="10" width="4" height="4"/></svg></div>
 					<h3>Local AI built in</h3>
-					<p>llama.cpp and whisper.cpp as modules, with a CUDA backend on Linux. Live captions run on the GPU in the ghostpen-lite example.</p>
+					<p>llama.cpp and whisper.cpp as modules, on the GPU with Vulkan or CUDA on Linux and Metal on macOS. Live captions run on the GPU in the ghostpen-lite example.</p>
 				</article>
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
@@ -114,7 +114,7 @@
 		<section class="section">
 			<div class="section-head">
 				<h2>Built with Oriel</h2>
-				<p><a href="https://highercomve.github.io/GhostPen/">GhostPen</a>: AI text editing anywhere on the desktop, ported from Tauri. Built-in models (llama.cpp), live captions and dictation (whisper.cpp), on Linux, Windows and macOS.</p>
+				<p><a href="https://highercomve.github.io/GhostPen/">GhostPen</a>: AI text editing anywhere on the desktop, ported from Tauri. Built-in models (llama.cpp), live captions and dictation (whisper.cpp) on the GPU (Vulkan, CUDA, Metal), on Linux, Windows and macOS.</p>
 			</div>
 			<a class="showcase-shot" href="https://highercomve.github.io/GhostPen/"><img src="$site.asset('screenshots/ghostpen.png').link()" alt="GhostPen: the Playground and the menu, running a built-in model" loading="lazy"></a>
 			<div class="hero-actions" style="justify-content:flex-start;margin-top:20px">

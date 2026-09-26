@@ -46,7 +46,8 @@ project started as "ziguri"; it became Oriel before its first release.
 **[GhostPen](https://github.com/highercomve/GhostPen)** ([website](https://highercomve.github.io/GhostPen/)):
 AI text editing anywhere on the desktop. Select text in any app, press a
 hotkey, pick an action; the result is pasted back. It runs AI models itself
-(llama.cpp compiled in, CUDA or Metal), captions what the computer plays and
+(llama.cpp compiled in, on the GPU with Vulkan or CUDA on Linux and Metal
+on macOS), captions what the computer plays and
 takes dictation (whisper.cpp), on Linux, Windows and macOS. Ported from
 Tauri; its README [compares the two](https://github.com/highercomve/GhostPen#compared-with-the-rust-tauri-ghostpen)
 (build time, binary size, dependencies, memory).
