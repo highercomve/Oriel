@@ -67,12 +67,17 @@ fn nestedCode(gpa: std.mem.Allocator, io: Io, bundle: []const u8) !?[]u8 {
         var magic: [4]u8 = undefined;
         const n = file.readPositionalAll(io, &magic, 0) catch continue;
         if (n < 4 or !isMachO(magic)) continue;
-        const in_macos = std.mem.startsWith(u8, entry.path, "Contents/MacOS/") and std.mem.indexOfScalarPos(u8, entry.path, "Contents/MacOS/".len, '/') == null;
+        // The walker joins with the host's separator (`\` on Windows).
+        const sep = std.fs.path.sep;
+        const macos_dir = "Contents" ++ std.fs.path.sep_str ++ "MacOS" ++ std.fs.path.sep_str;
+        const in_macos = std.mem.startsWith(u8, entry.path, macos_dir) and std.mem.indexOfScalarPos(u8, entry.path, macos_dir.len, sep) == null;
         if (in_macos and main_count == 0) {
             main_count += 1;
             continue;
         }
-        return try gpa.dupe(u8, entry.path);
+        const path = try gpa.dupe(u8, entry.path);
+        std.mem.replaceScalar(u8, path, sep, '/'); // reported with `/` on every host
+        return path;
     }
     return null;
 }
