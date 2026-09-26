@@ -366,6 +366,60 @@ pub const ICoreWebView2NewWindowRequestedEventArgs = extern struct {
     };
 };
 
+/// COREWEBVIEW2_PERMISSION_KIND (the values mapped to Oriel permissions; others exist).
+pub const COREWEBVIEW2_PERMISSION_KIND = enum(c_int) {
+    UNKNOWN_PERMISSION = 0,
+    MICROPHONE = 1,
+    CAMERA = 2,
+    GEOLOCATION = 3,
+    NOTIFICATIONS = 4,
+    _,
+};
+
+/// COREWEBVIEW2_PERMISSION_STATE: DEFAULT leaves the decision to WebView2
+/// (which may show its own prompt).
+pub const COREWEBVIEW2_PERMISSION_STATE = enum(c_int) {
+    DEFAULT = 0,
+    ALLOW = 1,
+    DENY = 2,
+};
+
+/// ICoreWebView2PermissionRequestedEventArgs
+/// IID: {973ae2ef-ff18-4894-8fb2-3c758f046810}
+pub const ICoreWebView2PermissionRequestedEventArgs = extern struct {
+    lpVtbl: *const VTable,
+
+    pub const VTable = extern struct {
+        // IUnknown (0..2)
+        QueryInterface: *const fn (This: *ICoreWebView2PermissionRequestedEventArgs, riid: *const GUID, ppvObject: *?*anyopaque) callconv(.winapi) HRESULT,
+        AddRef: *const fn (This: *ICoreWebView2PermissionRequestedEventArgs) callconv(.winapi) ULONG,
+        Release: *const fn (This: *ICoreWebView2PermissionRequestedEventArgs) callconv(.winapi) ULONG,
+
+        // ICoreWebView2PermissionRequestedEventArgs (3..8)
+        get_Uri: *const fn (This: *ICoreWebView2PermissionRequestedEventArgs, uri: *LPWSTR) callconv(.winapi) HRESULT,
+        get_PermissionKind: *const fn (This: *ICoreWebView2PermissionRequestedEventArgs, kind: *COREWEBVIEW2_PERMISSION_KIND) callconv(.winapi) HRESULT,
+        get_IsUserInitiated: *const fn (This: *ICoreWebView2PermissionRequestedEventArgs, isUserInitiated: *BOOL) callconv(.winapi) HRESULT,
+        get_State: *const fn (This: *ICoreWebView2PermissionRequestedEventArgs, state: *COREWEBVIEW2_PERMISSION_STATE) callconv(.winapi) HRESULT,
+        put_State: *const fn (This: *ICoreWebView2PermissionRequestedEventArgs, state: COREWEBVIEW2_PERMISSION_STATE) callconv(.winapi) HRESULT,
+        GetDeferral: *const fn (This: *ICoreWebView2PermissionRequestedEventArgs, deferral: *?*anyopaque) callconv(.winapi) HRESULT,
+    };
+};
+
+/// ICoreWebView2PermissionRequestedEventHandler
+/// IID: {15e1c6a3-c72a-4df3-91d7-d097fbec6bfd}
+pub const IID_ICoreWebView2PermissionRequestedEventHandler = GUID{ .Data1 = 0x15e1c6a3, .Data2 = 0xc72a, .Data3 = 0x4df3, .Data4 = [_]u8{ 0x91, 0xd7, 0xd0, 0x97, 0xfb, 0xec, 0x6b, 0xfd } };
+
+pub const ICoreWebView2PermissionRequestedEventHandler = extern struct {
+    lpVtbl: *const VTable,
+
+    pub const VTable = extern struct {
+        QueryInterface: *const fn (This: *ICoreWebView2PermissionRequestedEventHandler, riid: *const GUID, ppvObject: *?*anyopaque) callconv(.winapi) HRESULT,
+        AddRef: *const fn (This: *ICoreWebView2PermissionRequestedEventHandler) callconv(.winapi) ULONG,
+        Release: *const fn (This: *ICoreWebView2PermissionRequestedEventHandler) callconv(.winapi) ULONG,
+        Invoke: *const fn (This: *ICoreWebView2PermissionRequestedEventHandler, sender: ?*ICoreWebView2, args: ?*ICoreWebView2PermissionRequestedEventArgs) callconv(.winapi) HRESULT,
+    };
+};
+
 /// ICoreWebView2
 /// IID: {76eceacb-0462-4d94-ac83-423a6793775e}
 /// Source: WebView2.h lines 3019-3560
