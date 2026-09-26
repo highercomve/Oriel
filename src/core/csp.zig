@@ -64,23 +64,44 @@ pub fn inlineHashes(gpa: std.mem.Allocator, html: []const u8) !Hashes {
     var styles: std.ArrayList(u8) = .empty;
     errdefer styles.deinit(gpa);
 
+    // A light HTML tokenizer: comments, other tags (whose attribute values
+    // may contain "<script"), and raw-text elements whose content never runs
+    // are skipped. Anything it gets wrong fails closed: the browser's hash
+    // differs and that block is blocked, nothing extra is allowed.
     var i: usize = 0;
     while (std.mem.indexOfScalarPos(u8, html, i, '<')) |lt| {
         i = lt + 1;
         const rest = html[lt..];
         if (std.mem.startsWith(u8, rest, "<!--")) {
-            const end = std.mem.indexOfPos(u8, html, lt + 4, "-->") orelse break;
-            i = end + 3;
+            i = commentEnd(html, lt + 4) orelse break;
             continue;
         }
-        const kind: enum { script, style } = if (tagIs(rest, "script")) .script else if (tagIs(rest, "style")) .style else continue;
-        const name = if (kind == .script) "script" else "style";
-        const tag_end = tagEnd(html, lt + 1 + name.len) orelse break;
-        const attrs = html[lt + 1 + name.len .. tag_end];
+        if (rest.len < 2) break;
+        if (rest[1] == '!' or rest[1] == '?' or rest[1] == '/') {
+            // Doctype, processing instruction, end tag: up to its '>'.
+            i = (std.mem.indexOfScalarPos(u8, html, lt, '>') orelse break) + 1;
+            continue;
+        }
+        if (!std.ascii.isAlphabetic(rest[1])) continue;
+        var name_end = lt + 1;
+        while (name_end < html.len and !isTagDelimiter(html[name_end])) name_end += 1;
+        const name = html[lt + 1 .. name_end];
+        const tag_end = tagEnd(html, name_end) orelse break;
+        i = tag_end + 1;
+        const kind: enum { script, style, raw, other } = if (std.ascii.eqlIgnoreCase(name, "script"))
+            .script
+        else if (std.ascii.eqlIgnoreCase(name, "style"))
+            .style
+        else if (isOneOf(name, &.{ "textarea", "title", "xmp", "noscript", "noembed", "noframes", "iframe", "plaintext" }))
+            .raw
+        else
+            .other;
+        if (kind == .other) continue;
         const body_start = tag_end + 1;
         const close = findClose(html, body_start, name) orelse break;
         i = close;
-        if (kind == .script and hasAttr(attrs, "src")) continue;
+        if (kind == .raw) continue; // text, never run: not hashed
+        if (kind == .script and hasAttr(html[name_end..tag_end], "src")) continue;
         const list = if (kind == .script) &scripts else &styles;
         const src = hashSource(html[body_start..close]);
         if (std.mem.indexOf(u8, list.items, &src) != null) continue;
@@ -92,36 +113,54 @@ pub fn inlineHashes(gpa: std.mem.Allocator, html: []const u8) !Hashes {
     return .{ .scripts = s, .styles = try styles.toOwnedSlice(gpa) };
 }
 
-/// `rest` starts with `<name` followed by whitespace, `/` or `>`.
-fn tagIs(rest: []const u8, name: []const u8) bool {
-    if (rest.len < name.len + 2) return false;
-    if (!std.ascii.eqlIgnoreCase(rest[1 .. 1 + name.len], name)) return false;
-    return switch (rest[1 + name.len]) {
+fn isTagDelimiter(c: u8) bool {
+    return switch (c) {
         ' ', '\t', '\n', '\r', '\x0c', '/', '>' => true,
         else => false,
     };
 }
 
-/// The index of the `>` closing a start tag, skipping quoted values.
+/// Past the end of a comment whose `<!--` ends at `from`: `<!-->` and
+/// `<!--->` end at once, otherwise at `-->` or `--!>`.
+fn commentEnd(html: []const u8, from: usize) ?usize {
+    const rest = html[from..];
+    if (std.mem.startsWith(u8, rest, ">")) return from + 1;
+    if (std.mem.startsWith(u8, rest, "->")) return from + 2;
+    const a = std.mem.indexOfPos(u8, html, from, "-->");
+    const b = std.mem.indexOfPos(u8, html, from, "--!>");
+    if (a != null and (b == null or a.? < b.?)) return a.? + 3;
+    if (b) |at| return at + 4;
+    return null;
+}
+
+/// The index of the `>` closing a start tag. A quote only starts a value
+/// right after `=`.
 fn tagEnd(html: []const u8, from: usize) ?usize {
-    var quote: ?u8 = null;
-    for (html[from..], from..) |c, idx| {
-        if (quote) |q| {
-            if (c == q) quote = null;
-        } else switch (c) {
-            '"', '\'' => quote = c,
+    var after_eq = false;
+    var idx = from;
+    while (idx < html.len) : (idx += 1) {
+        const c = html[idx];
+        switch (c) {
             '>' => return idx,
-            else => {},
+            '=' => after_eq = true,
+            ' ', '\t', '\n', '\r', '\x0c' => {},
+            '"', '\'' => {
+                if (after_eq) idx = std.mem.indexOfScalarPos(u8, html, idx + 1, c) orelse return null;
+                after_eq = false;
+            },
+            else => after_eq = false,
         }
     }
     return null;
 }
 
-/// The index of `</name` (case-insensitive) at or after `from`.
+/// The index of the end tag `</name` (case-insensitive, followed by
+/// whitespace, `/` or `>`) at or after `from`.
 fn findClose(html: []const u8, from: usize, name: []const u8) ?usize {
     var i = from;
     while (std.mem.indexOfPos(u8, html, i, "</")) |at| {
-        if (at + 2 + name.len <= html.len and std.ascii.eqlIgnoreCase(html[at + 2 .. at + 2 + name.len], name)) return at;
+        const after = at + 2 + name.len;
+        if (after < html.len and std.ascii.eqlIgnoreCase(html[at + 2 .. after], name) and isTagDelimiter(html[after])) return at;
         i = at + 2;
     }
     return null;
@@ -191,14 +230,14 @@ pub fn withHashes(gpa: std.mem.Allocator, csp: []const u8, scripts: []const u8, 
             if (std.ascii.eqlIgnoreCase(name, "default-src")) default_src = value;
             break :blk "";
         };
-        if (add.len == 0 or hasSource(value, "'unsafe-inline'")) continue;
+        if (add.len == 0 or inlineAllowed(value)) continue;
         try w.writeByte(' ');
         try w.writeAll(add);
         changed = true;
     }
     if (default_src) |base| {
-        if (hasSource(base, "'unsafe-inline'")) return finish(&out, changed);
-        const none = hasSource(base, "'none'");
+        if (inlineAllowed(base)) return finish(&out, changed);
+        const none = isNone(base);
         const pairs = [_]struct { bool, []const u8, []const u8 }{ .{ seen_script, "script-src", scripts }, .{ seen_style, "style-src", styles } };
         for (pairs) |p| {
             if (p[0] or p[2].len == 0) continue;
@@ -218,6 +257,30 @@ fn finish(out: *std.Io.Writer.Allocating, changed: bool) !?[:0]u8 {
     return try out.toOwnedSliceSentinel(0);
 }
 
+/// Whether a source list allows inline code through `'unsafe-inline'`
+/// (which a hash or nonce source switches off, CSP3): adding hashes there
+/// would change its meaning, so it's left alone.
+fn inlineAllowed(value: []const u8) bool {
+    if (!hasSource(value, "'unsafe-inline'")) return false;
+    var it = std.mem.tokenizeAny(u8, value, " \t");
+    while (it.next()) |s| {
+        if (startsWithIgnoreCase(s, "'sha256-") or startsWithIgnoreCase(s, "'sha384-") or
+            startsWithIgnoreCase(s, "'sha512-") or startsWithIgnoreCase(s, "'nonce-")) return false;
+    }
+    return true;
+}
+
+/// `'none'` counts only as the sole source (browsers ignore it otherwise).
+fn isNone(value: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, value, " \t");
+    const first = it.next() orelse return false;
+    return std.ascii.eqlIgnoreCase(first, "'none'") and it.next() == null;
+}
+
+fn startsWithIgnoreCase(s: []const u8, prefix: []const u8) bool {
+    return s.len >= prefix.len and std.ascii.eqlIgnoreCase(s[0..prefix.len], prefix);
+}
+
 fn isOneOf(name: []const u8, names: []const []const u8) bool {
     for (names) |n| if (std.ascii.eqlIgnoreCase(name, n)) return true;
     return false;
@@ -230,10 +293,15 @@ fn hasSource(value: []const u8, source: []const u8) bool {
 }
 
 /// `Security.strict_styles`: `csp` without `'unsafe-inline'` in `style-src`
-/// and `style-src-elem`.
+/// and `style-src-elem`. Without a `style-src`, one is made from
+/// `default-src` minus `'unsafe-inline'` (none: styles were unrestricted,
+/// which strict_styles can't mean, so that's a compile error). An explicit
+/// `style-src-attr` is the app's choice and stays.
 pub fn strictStyles(comptime csp: []const u8) []const u8 {
     comptime {
         @setEvalBranchQuota(100_000);
+        var has_style_src = false;
+        var default_src: ?[]const u8 = null;
         var out: []const u8 = "";
         var it = std.mem.splitScalar(u8, csp, ';');
         while (it.next()) |part| {
@@ -243,15 +311,29 @@ pub fn strictStyles(comptime csp: []const u8) []const u8 {
             const name = d[0..end];
             var directive: []const u8 = name;
             if (isOneOf(name, &.{ "style-src", "style-src-elem" })) {
-                var toks = std.mem.tokenizeAny(u8, d[end..], " \t");
-                while (toks.next()) |t| {
-                    if (!std.ascii.eqlIgnoreCase(t, "'unsafe-inline'")) directive = directive ++ " " ++ t;
-                }
+                if (std.ascii.eqlIgnoreCase(name, "style-src")) has_style_src = true;
+                directive = name ++ withoutUnsafeInline(d[end..]);
             } else directive = d;
+            if (std.ascii.eqlIgnoreCase(name, "default-src")) default_src = d[end..];
             out = out ++ (if (out.len == 0) "" else "; ") ++ directive;
+        }
+        if (!has_style_src) {
+            const base = default_src orelse @compileError("security.strict_styles: the CSP has neither style-src nor default-src, so styles are unrestricted");
+            const sources = withoutUnsafeInline(base);
+            out = out ++ "; style-src" ++ (if (sources.len == 0) " 'none'" else sources);
         }
         return out;
     }
+}
+
+/// " a b" for the sources of `value` other than `'unsafe-inline'`.
+fn withoutUnsafeInline(comptime value: []const u8) []const u8 {
+    var out: []const u8 = "";
+    var toks = std.mem.tokenizeAny(u8, value, " \t");
+    while (toks.next()) |t| {
+        if (!std.ascii.eqlIgnoreCase(t, "'unsafe-inline'")) out = out ++ " " ++ t;
+    }
+    return out;
 }
 
 // --- Tests -----------------------------------------------------------------------------
@@ -311,7 +393,50 @@ test withHashes {
     try std.testing.expect(try withHashes(gpa, "script-src 'self' 'unsafe-inline'", "'sha256-A'", "") == null);
 }
 
+test "scanner edge cases (review)" {
+    const gpa = std.testing.allocator;
+    const cases = [_]struct { []const u8, []const []const u8 }{
+        // Short comment forms end at once; --!> ends a comment.
+        .{ "<!--><script>a()</script>--><script>b()</script>", &.{ "a()", "b()" } },
+        .{ "<!---><script>c()</script>", &.{"c()"} },
+        .{ "<!-- x --!><script>d()</script>", &.{"d()"} },
+        // A quote only opens a value after '='.
+        .{ "<script data-x=a'b>real()</script>", &.{"real()"} },
+        // "<script" inside another tag's attribute.
+        .{ "<div title='<script >'><script>real()</script>", &.{"real()"} },
+        // The end tag needs a delimiter.
+        .{ "<script>x='</scripty>'</script >", &.{"x='</scripty>'"} },
+        // Raw text never runs: not hashed.
+        .{ "<textarea><script>shown()</script></textarea><title><script>t()</script></title>", &.{} },
+    };
+    for (cases) |c| {
+        const h = try inlineHashes(gpa, c[0]);
+        defer h.deinit(gpa);
+        var want: std.ArrayList(u8) = .empty;
+        defer want.deinit(gpa);
+        for (c[1], 0..) |body, n| {
+            if (n > 0) try want.append(gpa, ' ');
+            try want.appendSlice(gpa, &hashSource(body));
+        }
+        try std.testing.expectEqualStrings(want.items, h.scripts);
+    }
+}
+
+test "withHashes: 'none' with other sources, unsafe-inline next to a hash" {
+    const gpa = std.testing.allocator;
+    const mixed = (try withHashes(gpa, "default-src 'none' 'self'", "'sha256-A'", "")).?;
+    defer gpa.free(mixed);
+    try std.testing.expectEqualStrings("default-src 'none' 'self'; script-src 'none' 'self' 'sha256-A'", mixed);
+    const ui = (try withHashes(gpa, "script-src 'self' 'unsafe-inline' 'nonce-x'", "'sha256-A'", "")).?;
+    defer gpa.free(ui);
+    try std.testing.expectEqualStrings("script-src 'self' 'unsafe-inline' 'nonce-x' 'sha256-A'", ui);
+}
+
 test strictStyles {
+    try std.testing.expectEqualStrings(
+        "default-src 'self' 'unsafe-inline'; style-src 'self'",
+        comptime strictStyles("default-src 'self' 'unsafe-inline'"),
+    );
     try std.testing.expectEqualStrings(
         "default-src 'self'; style-src 'self'; img-src data:",
         comptime strictStyles("default-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:"),

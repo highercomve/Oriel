@@ -89,6 +89,7 @@ fn mimeType(path: []const u8) []const u8 {
     const ext = std.fs.path.extension(path);
     const table = [_]struct { []const u8, []const u8 }{
         .{ ".html", "text/html" },
+        .{ ".htm", "text/html" },
         .{ ".js", "text/javascript" },
         .{ ".mjs", "text/javascript" },
         .{ ".css", "text/css" },
