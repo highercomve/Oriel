@@ -165,6 +165,72 @@ fn copyContents(gpa: std.mem.Allocator, io: Io, c: *const contents.Contents, des
     }
 }
 
+/// A bundle's `Contents/MacOS` may hold only code (codesign refuses other
+/// files there), so for `package-app` the extra executables and Mach-O
+/// files go to `Contents/MacOS/<rel>`, and other files to
+/// `Contents/Resources/<rel>` with a relative symlink
+/// `Contents/MacOS/<first component>` -> `../Resources/<first component>`:
+/// paths relative to the executable keep working (codesign seals symlinks).
+/// `error.BadLayout` (printed) when a top-level name would need to be both.
+fn copyContentsMac(gpa: std.mem.Allocator, io: Io, c: *const contents.Contents, bundle: []const u8) !void {
+    const macos_dir = try std.fs.path.join(gpa, &.{ bundle, "Contents", "MacOS" });
+    defer gpa.free(macos_dir);
+    const res_dir = try std.fs.path.join(gpa, &.{ bundle, "Contents", "Resources" });
+    defer gpa.free(res_dir);
+
+    var code_tops: std.ArrayList([]const u8) = .empty;
+    defer code_tops.deinit(gpa);
+    var res_tops: std.ArrayList([]const u8) = .empty;
+    defer res_tops.deinit(gpa);
+    const is_code = try gpa.alloc(bool, c.files.items.len);
+    defer gpa.free(is_code);
+    for (c.files.items, is_code) |f, *code| {
+        code.* = isMachOFile(io, f.src);
+        const top = f.rel[0 .. std.mem.indexOfScalar(u8, f.rel, '/') orelse f.rel.len];
+        try (if (code.*) &code_tops else &res_tops).append(gpa, top);
+    }
+    for (res_tops.items) |top| {
+        const clash = for (code_tops.items) |ct| {
+            if (std.ascii.eqlIgnoreCase(ct, top)) break true;
+        } else std.ascii.eqlIgnoreCase(top, "icon.icns");
+        if (clash) {
+            std.debug.print("error: package-app: '{s}' would hold both code (Contents/MacOS) and other files (Contents/Resources); put libraries and data under different top-level names\n", .{top});
+            return error.BadLayout;
+        }
+    }
+
+    for (c.exes.items) |e| {
+        const dest = try std.fs.path.join(gpa, &.{ macos_dir, e.name });
+        defer gpa.free(dest);
+        try Dir.cwd().copyFile(e.src, Dir.cwd(), dest, io, .{ .permissions = filePerms(0o755) });
+    }
+    for (c.files.items, is_code) |f, code| {
+        const dest = try std.fs.path.join(gpa, &.{ if (code) macos_dir else res_dir, f.rel });
+        defer gpa.free(dest);
+        if (std.fs.path.dirname(dest)) |parent| try Dir.cwd().createDirPath(io, parent);
+        try Dir.cwd().copyFile(f.src, Dir.cwd(), dest, io, .{ .permissions = filePerms(0o644) });
+    }
+    var macos_handle = try Dir.cwd().openDir(io, macos_dir, .{});
+    defer macos_handle.close(io);
+    for (res_tops.items, 0..) |top, i| {
+        const seen = for (res_tops.items[0..i]) |prev| {
+            if (std.mem.eql(u8, prev, top)) break true;
+        } else false;
+        if (seen) continue;
+        const target = try std.fmt.allocPrint(gpa, "../Resources/{s}", .{top});
+        defer gpa.free(target);
+        try macos_handle.symLink(io, target, top, .{});
+    }
+}
+
+fn isMachOFile(io: Io, path: []const u8) bool {
+    var file = Dir.cwd().openFile(io, path, .{}) catch return false;
+    defer file.close(io);
+    var magic: [4]u8 = undefined;
+    const n = file.readPositionalAll(io, &magic, 0) catch return false;
+    return n == 4 and sign_macos.isMachO(magic);
+}
+
 /// `strip-elf --in <file> --out <file>`: `--out` is `--in` without its
 /// symbol table and debug sections (elf_strip.zig), same mode. A file that
 /// isn't an ELF executable or library, or that can't be stripped, is copied
@@ -193,7 +259,7 @@ fn stripElfCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
         std.debug.print("error: strip-elf: {s}: {s}\n", .{ in_path.?, @errorName(err) });
         return 1;
     };
-    const data = try Dir.cwd().readFileAlloc(io, in_path.?, gpa, .limited(4 << 30));
+    const data = try Dir.cwd().readFileAlloc(io, in_path.?, gpa, .unlimited);
     defer gpa.free(data);
     const stripped: ?[]u8 = if (elf_strip.isElf(data)) elf_strip.strip(gpa, data) catch |err| blk: {
         std.debug.print("warning: strip-elf: {s} is packaged unstripped: {s}\n", .{ in_path.?, @errorName(err) });
@@ -680,7 +746,7 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8, pa
     const nfpm_yaml_path = try std.fmt.allocPrint(gpa, "{s}/nfpm.yaml", .{target_out_dir});
     defer gpa.free(nfpm_yaml_path);
 
-    const yaml_content = try nfpm.generateNfpmYaml(gpa, .{
+    const yaml_content = nfpm.generateNfpmYaml(gpa, .{
         .name = target_name,
         .version = version,
         .arch = arch,
@@ -697,7 +763,10 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8, pa
         .rpm_depends = rpm_deps.items,
         .extra_exes = extras.exes.items,
         .extra_files = extras.files.items,
-    });
+    }) catch |err| {
+        std.debug.print("error: {s}: nfpm.yaml: {s}\n", .{ what, contents.describe(err) });
+        return 1;
+    };
     defer gpa.free(yaml_content);
     try Dir.cwd().writeFile(io, .{ .sub_path = nfpm_yaml_path, .data = yaml_content });
 
@@ -1388,7 +1457,7 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         .extra_exes = abs_exes.items,
         .extra_files = abs_files.items,
     }) catch |err| {
-        std.debug.print("error: package-nsis: installer script: {s}\n", .{@errorName(err)});
+        std.debug.print("error: package-nsis: installer script: {s}\n", .{contents.describe(err)});
         return 1;
     };
     defer gpa.free(script_content);
@@ -1533,8 +1602,12 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     const exe_dest = try std.fs.path.join(gpa, &.{ macos_dir, exe_name.? });
     defer gpa.free(exe_dest);
     try Dir.cwd().copyFile(bin_path.?, Dir.cwd(), exe_dest, io, .{ .permissions = filePerms(0o755) });
-    // Extra executables and files next to the executable, in Contents/MacOS.
-    try copyContents(gpa, io, &extras, macos_dir);
+    // Extra executables and code in Contents/MacOS, other files in
+    // Contents/Resources (linked from MacOS).
+    copyContentsMac(gpa, io, &extras, bundle) catch |err| switch (err) {
+        error.BadLayout => return 1,
+        else => return err,
+    };
 
     var has_icon = false;
     if (icons_dir) |idir| {
@@ -2198,6 +2271,9 @@ test "packageAppCmd puts extra executables and files in Contents/MacOS" {
     try tmp.dir.writeFile(io, .{ .sub_path = "notes", .data = "app" });
     try tmp.dir.writeFile(io, .{ .sub_path = "notes-cli", .data = "cli" });
     try tmp.dir.writeFile(io, .{ .sub_path = "m.bin", .data = "model" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "libx.dylib", .data = &[_]u8{ 0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 0x01, 0, 0, 0, 0, 6, 0, 0, 0 } });
+    const lib_arg = try std.fmt.allocPrintSentinel(gpa, "lib/libx.dylib={s}/libx.dylib", .{root}, 0);
+    defer gpa.free(lib_arg);
     const out_z = try std.fs.path.joinZ(gpa, &.{ root, "out" });
     defer gpa.free(out_z);
     const bin_z = try std.fs.path.joinZ(gpa, &.{ root, "notes" });
@@ -2206,15 +2282,26 @@ test "packageAppCmd puts extra executables and files in Contents/MacOS" {
     defer gpa.free(cli_z);
     const file_arg = try std.fmt.allocPrintSentinel(gpa, "data/m.bin={s}/m.bin", .{root}, 0);
     defer gpa.free(file_arg);
-    const args = [_][:0]const u8{ "--out-dir", out_z, "--app-id", "dev.oriel.Notes", "--name", "Notes", "--exe-name", "notes", "--bin", bin_z, "--extra-exe", cli_z, "--extra-file", file_arg };
+    const args = [_][:0]const u8{ "--out-dir", out_z, "--app-id", "dev.oriel.Notes", "--name", "Notes", "--exe-name", "notes", "--bin", bin_z, "--extra-exe", cli_z, "--extra-file", file_arg, "--extra-file", lib_arg };
     try std.testing.expectEqual(@as(u8, 0), try packageAppCmd(gpa, io, &args));
 
     const cli = try tmp.dir.readFileAlloc(io, "out/Notes.app/Contents/MacOS/notes-cli", gpa, .limited(16));
     defer gpa.free(cli);
     try std.testing.expectEqualStrings("cli", cli);
-    const model = try tmp.dir.readFileAlloc(io, "out/Notes.app/Contents/MacOS/data/m.bin", gpa, .limited(16));
+    // Data goes to Resources, reachable through Contents/MacOS/data.
+    const model = try tmp.dir.readFileAlloc(io, "out/Notes.app/Contents/Resources/data/m.bin", gpa, .limited(16));
     defer gpa.free(model);
     try std.testing.expectEqualStrings("model", model);
+    var link_buf: [64]u8 = undefined;
+    const link_len = try tmp.dir.readLink(io, "out/Notes.app/Contents/MacOS/data", &link_buf);
+    try std.testing.expectEqualStrings("../Resources/data", link_buf[0..link_len]);
+    const via_link = try tmp.dir.readFileAlloc(io, "out/Notes.app/Contents/MacOS/data/m.bin", gpa, .limited(16));
+    defer gpa.free(via_link);
+    try std.testing.expectEqualStrings("model", via_link);
+    // A Mach-O library stays in MacOS.
+    const dylib = try tmp.dir.readFileAlloc(io, "out/Notes.app/Contents/MacOS/lib/libx.dylib", gpa, .limited(64));
+    defer gpa.free(dylib);
+    try std.testing.expectEqual(@as(u8, 0xcf), dylib[0]);
     const st = try tmp.dir.statFile(io, "out/Notes.app/Contents/MacOS/notes-cli", .{});
     try std.testing.expectEqual(@as(u32, 0o755), @as(u32, @intCast(st.permissions.toMode())) & 0o777);
 }

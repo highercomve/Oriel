@@ -125,13 +125,17 @@ pub const ParentDirIterator = struct {
     }
 };
 
+/// What `metadata.validateRelativePath` accepts, for error messages.
+pub const relative_path_rules = "a file path must be relative to the executable's directory, '/'-separated, at most 200 bytes, without '.' or '..' components, components ending in '.' or ' ', Windows device names (con, nul, com1, ...), control characters or any of \\ : * ? \" < > | =";
+
 /// A message for a `validate` or `parseArg` error.
 pub fn describe(err: anyerror) []const u8 {
     return switch (err) {
         error.MissingValue => "--extra-exe and --extra-file need a value",
         error.InvalidExtraFile => "--extra-file expects <relpath>=<source>",
         error.InvalidExeName => "an extra executable's file name must match [A-Za-z0-9._+-]+ and not start with '-' or '.'",
-        error.InvalidRelativePath => "a file path must be relative to the executable's directory, '/'-separated, without '.' or '..' components, control characters or any of \\ : * ? \" < > | =",
+        error.InvalidRelativePath => relative_path_rules,
+        error.InvalidSourcePath => "a source path contains characters the packager can't take (nfpm: * ? [ ] { } \\; NSIS: $ \"; or control characters)",
         error.DuplicateDestination => "two package entries (or an entry and the app's executable) have the same destination",
         else => @errorName(err),
     };

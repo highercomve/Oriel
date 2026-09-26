@@ -39,6 +39,10 @@ pub fn exeDir(allocator: std.mem.Allocator, opts: NfpmOptions) ![]u8 {
 pub fn generateNfpmYaml(allocator: std.mem.Allocator, opts: NfpmOptions) ![]const u8 {
     try metadata.validateExeName(opts.name);
     try metadata.validateExeName(opts.binary_name);
+    // nfpm reads every `src` as a glob.
+    for ([_][]const u8{ opts.binary_src, opts.desktop_src, opts.icons_dir }) |src| try metadata.validateNfpmSource(src);
+    for (opts.extra_exes) |e| try metadata.validateNfpmSource(e.src);
+    for (opts.extra_files) |f| try metadata.validateNfpmSource(f.src);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -234,6 +238,20 @@ test "generateNfpmYaml with extra executables and files" {
         .app_id = "dev.ghostpen.App",
         .icons_dir = "/i",
         .extra_exes = &.{.{ .src = "/x/a b", .name = "a b" }},
+    }));
+    // Glob characters in a source are refused (nfpm would expand them).
+    try testing.expectError(error.InvalidSourcePath, generateNfpmYaml(gpa, .{
+        .name = "ghostpen",
+        .version = "0.1.0",
+        .arch = "amd64",
+        .maintainer = "GhostPen",
+        .description = "Notes",
+        .binary_src = "/b",
+        .binary_name = "ghostpen",
+        .desktop_src = "/d",
+        .app_id = "dev.ghostpen.App",
+        .icons_dir = "/i",
+        .extra_files = &.{.{ .rel = "m.bin", .src = "/models/*.bin" }},
     }));
 }
 

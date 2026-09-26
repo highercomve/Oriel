@@ -133,7 +133,9 @@ pub const PackageOptions = struct {
 ///   program finds its companions next to its own, symlink-resolved, path).
 /// - AppImage: `usr/bin/` next to the app.
 /// - NSIS: `$INSTDIR` (the uninstaller removes them again).
-/// - macOS: `<Name>.app/Contents/MacOS/`, signed inside-out with the bundle.
+/// - macOS: `<Name>.app/Contents/MacOS/` for executables and Mach-O files,
+///   signed inside-out with the bundle; other files in `Contents/Resources/`
+///   behind a `Contents/MacOS/<top-level name>` symlink.
 ///
 /// ```zig
 /// .contents = .{
@@ -147,15 +149,19 @@ pub const Contents = struct {
     executables: []const *std.Build.Step.Compile = &.{},
     /// Files placed next to the app's executable: `path` is relative to the
     /// executable's directory (no absolute paths, no `..`), e.g. "data/model.bin".
-    /// Installed as-is (not stripped), mode 0644 on Linux and macOS.
+    /// Installed as-is (not stripped), mode 0644 on Linux and macOS. In a
+    /// macOS bundle, files that aren't Mach-O code go to Contents/Resources,
+    /// reached from Contents/MacOS through a symlink of their top-level name.
     files: []const File = &.{},
     /// Oriel's runtime libraries the app was built with (libggml-cuda.so with
-    /// -Dggml_cuda). Default on.
+    /// -Dggml_cuda). Default on. A `files` entry of the same path replaces it.
     runtime_libraries: bool = true,
     /// Strip debug info and symbols from ELF executables/libraries in packages
     /// (Linux): the app, `executables` and the runtime libraries (the dynamic
     /// symbol table stays, so `-rdynamic` exports still reach plugins).
-    /// `zig build`'s zig-out keeps them. Default on.
+    /// `zig build`'s zig-out keeps them. Default on. This strips the app's own
+    /// executable too, so a packaged ReleaseSafe app's crash traces show
+    /// addresses, not function names: set `.strip = false` to ship symbols.
     strip: bool = true,
 };
 
@@ -211,8 +217,10 @@ fn resolvePayload(
     }
     files.appendSlice(b.allocator, contents.files) catch @panic("OOM");
     if (contents.runtime_libraries) {
-        if (oriel_dep.builder.named_lazy_paths.get("libggml-cuda")) |cuda_lib| {
+        if (oriel_dep.builder.named_lazy_paths.get("libggml-cuda")) |cuda_lib| cuda: {
             const name = "libggml-cuda.so";
+            // The app ships its own copy: keep that one.
+            for (contents.files) |f| if (std.ascii.eqlIgnoreCase(f.path, name)) break :cuda;
             files.append(b.allocator, .{ .path = name, .source = if (strip) strippedElf(b, package_tool, cuda_lib, name) else cuda_lib }) catch @panic("OOM");
         }
     }
@@ -239,7 +247,7 @@ fn strippedElf(b: *std.Build, package_tool: *std.Build.Step.Compile, src: std.Bu
 fn checkContents(b: *std.Build, contents: Contents) ?*std.Build.Step {
     for (contents.files) |f| {
         metadata_mod.validateRelativePath(f.path) catch {
-            return &b.addFail(b.fmt("package contents: invalid file path \"{s}\": use a '/'-separated path relative to the executable's directory, without '.' or '..' components, control characters or any of \\ : * ? \" < > | =", .{f.path})).step;
+            return &b.addFail(b.fmt("package contents: invalid file path \"{s}\": {s}", .{ f.path, @import("../tools/package/contents.zig").relative_path_rules })).step;
         };
     }
     for (contents.executables) |e| {

@@ -40,6 +40,13 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
     try metadata.validateExeName(opts.exe_name);
     try metadata.validateNoControlOrNewline(opts.id);
     if (!metadata.validAppId(opts.id)) return error.InvalidAppId;
+    // Paths makensis reads at compile time (`File`, `Icon`): `$` and `"`
+    // can't be escaped there.
+    try metadata.validateNsisSource(opts.binary_src);
+    if (opts.webview2_loader) |p| try metadata.validateNsisSource(p);
+    if (opts.icon_path) |p| try metadata.validateNsisSource(p);
+    for (opts.extra_exes) |e| try metadata.validateNsisSource(e.src);
+    for (opts.extra_files) |f| try metadata.validateNsisSource(f.src);
 
     // Strip trailing .exe if present in exe_name
     const clean_exe_name = if (std.mem.endsWith(u8, opts.exe_name, ".exe"))
@@ -601,5 +608,15 @@ test "generateNsisScript installs and uninstalls extra executables and files" {
         .binary_src = "b.exe",
         .out_file = "s.exe",
         .extra_files = &.{.{ .rel = "..\\..\\evil.dll", .src = "x" }},
+    }));
+    try testing.expectError(error.InvalidSourcePath, generateNsisScript(allocator, .{
+        .name = "GhostPen",
+        .version = "0.1.0",
+        .publisher = "GhostPen",
+        .id = "dev.ghostpen.App",
+        .exe_name = "ghostpen",
+        .binary_src = "b.exe",
+        .out_file = "s.exe",
+        .extra_files = &.{.{ .rel = "m.bin", .src = "C:\\$PROGRAMFILES\\m.bin" }},
     }));
 }

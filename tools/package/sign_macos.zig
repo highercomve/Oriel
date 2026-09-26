@@ -10,8 +10,9 @@
 //!   (`codesign --verify --strict`); `package-dmg` signs the disk image too.
 //!   Nested code (the package's extra executables and libraries in
 //!   Contents/MacOS) is signed first, inside-out, with the same identity and
-//!   the hardened runtime (executables with the entitlements too), then the
-//!   bundle.
+//!   the hardened runtime, then the bundle. Nested executables get the app's
+//!   entitlements (libraries none); with a sandbox entitlement a helper
+//!   would also need `com.apple.security.inherit`, which isn't generated.
 //!   `-` signs ad-hoc with the hardened runtime (to try the runtime and the
 //!   entitlements locally; not distributable).
 //! - `-Dmacos-notarize-profile=<profile>` (or `ORIEL_MACOS_NOTARIZE_PROFILE`):
@@ -77,7 +78,8 @@ pub const Nested = struct {
     /// Relative to the bundle, with the host's separator.
     path: []u8,
     /// An executable (MH_EXECUTE), signed with the app's entitlements; a
-    /// library or plugin gets none.
+    /// library or plugin gets none. (A sandboxed app's helpers would need
+    /// `com.apple.security.inherit` instead; Oriel doesn't sandbox.)
     executable: bool,
 };
 
@@ -132,13 +134,15 @@ fn machOKind(io: Io, file: std.Io.File) ?MachOKind {
     const magic = head[0..4].*;
     if (!isMachO(magic)) return null;
     const m = std.mem.readInt(u32, &magic, .little);
-    if (m == 0xbebafeca or m == 0xcafebabe) {
+    if (m == 0xbebafeca or m == 0xcafebabe or m == 0xbfbafeca or m == 0xcafebabf) {
         // fat_header (big-endian): nfat_arch, then fat_arch { cputype,
-        // cpusubtype, offset, size, align }. 0xcafebabe is also Java's
-        // class-file magic: require a plausible architecture count.
+        // cpusubtype, offset, size, align } with a u32 offset, or fat_arch_64
+        // with a u64 one (FAT_MAGIC_64). 0xcafebabe is also Java's class-file
+        // magic: require a plausible architecture count.
         const nfat = std.mem.readInt(u32, head[4..8], .big);
-        if (nfat == 0 or nfat > 32 or n < 20) return null;
-        const off = std.mem.readInt(u32, head[16..20], .big);
+        const fat64 = head[3] == 0xbf;
+        if (nfat == 0 or nfat > 32 or n < (if (fat64) @as(usize, 24) else 20)) return null;
+        const off: u64 = if (fat64) std.mem.readInt(u64, head[16..24], .big) else std.mem.readInt(u32, head[16..20], .big);
         var slice: [16]u8 = undefined;
         const got = file.readPositionalAll(io, &slice, off) catch return null;
         if (got < 16 or !isMachO(slice[0..4].*)) return null;
@@ -155,10 +159,11 @@ fn thinKind(h: [16]u8) MachOKind {
     return if (std.mem.readInt(u32, h[12..16], endian) == 2) .executable else .other;
 }
 
-fn isMachO(magic: [4]u8) bool {
+/// Mach-O or universal (fat, 32- or 64-bit offsets) file magic.
+pub fn isMachO(magic: [4]u8) bool {
     const m = std.mem.readInt(u32, &magic, .little);
     return switch (m) {
-        0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca => true,
+        0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca => true,
         else => false,
     };
 }
@@ -475,6 +480,27 @@ test nestedCode {
     try std.testing.expectEqualStrings("Contents" ++ sep ++ "MacOS" ++ sep ++ "a-cli", found[1].path);
     try std.testing.expect(found[1].executable);
     try std.testing.expect(validPath("/abs/A.app") and validPath(".zig-cache/x") and !validPath("-x.app") and !validPath(""));
+}
+
+test "nestedCode reads universal binaries with 64-bit offsets" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "B.app/Contents/MacOS");
+    // FAT_MAGIC_64, one arch whose slice (an executable) starts at 64.
+    var fat = [_]u8{0} ** 80;
+    fat[0..8].* = .{ 0xca, 0xfe, 0xba, 0xbf, 0, 0, 0, 1 };
+    std.mem.writeInt(u64, fat[16..24], 64, .big);
+    fat[64..80].* = .{ 0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 0x01, 0, 0, 0, 0, 2, 0, 0, 0 };
+    try tmp.dir.writeFile(io, .{ .sub_path = "B.app/Contents/MacOS/b", .data = "main" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "B.app/Contents/MacOS/helper", .data = &fat });
+    const bundle = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/B.app", .{tmp.sub_path});
+    defer gpa.free(bundle);
+    const found = try nestedCode(gpa, io, bundle, "b");
+    defer freeNested(gpa, found);
+    try std.testing.expectEqual(@as(usize, 1), found.len);
+    try std.testing.expect(found[0].executable);
 }
 
 test codesignArgv {

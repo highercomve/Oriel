@@ -1255,9 +1255,9 @@ _ = oriel.addApp(b, dep, .{
 ```
 
 - **`executables`**: installed next to the app's executable under their file names (e.g. `notes-cli`, `notes-cli.exe`).
-- **`files`**: `path` is relative to the executable's directory, `/`-separated, with no `.` or `..` components (e.g. `data/model.bin`); files are installed as they are (mode 0644, not stripped).
-- **`runtime_libraries`**: with `-Dggml_cuda`, `libggml-cuda.so` goes next to the executable, where the app loads it from.
-- **`strip`**: Linux packages get copies of the app, `executables` and the runtime libraries without the symbol table and debug info (like `strip --strip-all`: the dynamic symbol table stays, so a `-Dggml_cuda` app still exports ggml to `libggml-cuda.so`). A ReleaseSafe app drops from about 70 MB to under 20 MB. `zig-out` keeps the unstripped binaries.
+- **`files`**: `path` is relative to the executable's directory, `/`-separated, with no `.` or `..` components (e.g. `data/model.bin`; at most 200 bytes, and no names Windows can't hold: components ending in `.` or a space, `con`, `nul`, `com1`, ...); files are installed as they are (mode 0644, not stripped).
+- **`runtime_libraries`**: with `-Dggml_cuda`, `libggml-cuda.so` goes next to the executable, where the app loads it from. A `files` entry with the path `libggml-cuda.so` replaces it.
+- **`strip`**: Linux packages get copies of the app, `executables` and the runtime libraries without the symbol table and debug info (like `strip --strip-all`: the dynamic symbol table stays, so a `-Dggml_cuda` app still exports ggml to `libggml-cuda.so`). A ReleaseSafe app drops from about 70 MB to under 20 MB. `zig-out` keeps the unstripped binaries. The app's own executable is stripped too, so a packaged ReleaseSafe app's crash traces show addresses instead of function names: set `.strip = false` to ship the symbols.
 
 Where they go:
 
@@ -1267,7 +1267,7 @@ Where they go:
 | deb / rpm, with extras | `/usr/lib/<exe>/<exe>` | `/usr/lib/<exe>/`, plus `/usr/bin/<name>` symlinks for every executable |
 | AppImage | `usr/bin/<exe>` | `usr/bin/` |
 | NSIS | `$INSTDIR\<exe>.exe` | `$INSTDIR\` (removed again by the uninstaller, and emptied subdirectories with them) |
-| macOS `.app` | `Contents/MacOS/<exe>` | `Contents/MacOS/` (signed inside-out with the bundle) |
+| macOS `.app` | `Contents/MacOS/<exe>` | executables and Mach-O files in `Contents/MacOS/` (signed inside-out with the bundle); other files in `Contents/Resources/`, with a symlink `Contents/MacOS/<top-level name>` → `../Resources/<top-level name>` so paths relative to the executable still work |
 
 With extras, deb and rpm keep everything in `/usr/lib/<exe>/` so each program finds its companions next to its own path (the `/usr/bin` symlinks resolve there): the app loads `libggml-cuda.so` from its executable's directory, and a CLI can start the app next to it. The package tools refuse destinations that collide (two entries, or an entry and the app's executable) and paths that would leave the install directory.
 
@@ -1331,7 +1331,7 @@ oriel package -Dmacos-sign-identity="Developer ID Application: Your Name (AB12CD
 - `-Dmacos-sign-identity` (or `ORIEL_MACOS_SIGN_IDENTITY`): the `.app` in `zig-out/package` is signed with the hardened runtime, the generated `<Name>.entitlements` (usage entitlements for the declared permissions, e.g. `com.apple.security.device.audio-input`) and a secure timestamp, then checked with `codesign --verify --strict`; the `.dmg` is signed too. `security find-identity -v -p codesigning` lists the identities. `-` signs ad-hoc with the hardened runtime, to try the runtime and entitlements locally.
 - `-Dmacos-notarize-profile` (or `ORIEL_MACOS_NOTARIZE_PROFILE`): the signed `.dmg` goes to `xcrun notarytool submit --wait`; when Apple accepts it, the ticket is stapled (`xcrun stapler staple`) and `spctl` checks it. A rejection prints the `xcrun notarytool log` command with the submission id. Credentials stay in the keychain: the build only passes the profile name.
 - The two bundles have different code signatures, so macOS keeps separate permission grants (Accessibility, Microphone, …) for `zig-out/<Name>.app` and the signed package.
-- Nested code (`.contents` executables and libraries in `Contents/MacOS`) is signed first, inside-out, with the same identity, the hardened runtime and a secure timestamp (executables with the app's entitlements, libraries without), then the bundle; no `--deep`.
+- Nested code (`.contents` executables and libraries in `Contents/MacOS`) is signed first, inside-out, with the same identity, the hardened runtime and a secure timestamp (executables with the app's entitlements, libraries without), then the bundle; no `--deep`. Data files live in `Contents/Resources` (codesign refuses non-code files in `Contents/MacOS`); the symlinks to them are sealed with the bundle. A sandboxed app's helper executables would need `com.apple.security.inherit` instead of the app's entitlements; Oriel doesn't generate a sandbox entitlement.
 - `-Dmacos-sign-dry-run`: print the `codesign`/`notarytool`/`stapler`/`spctl` commands without running them (no identity or profile needed), and sign the package ad-hoc with the hardened runtime and the entitlements, so it runs as the signed app would.
 
 #### The AppImage caveat (system GTK4 & WebKitGTK 6.0)

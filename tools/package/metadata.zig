@@ -46,15 +46,18 @@ pub const ValidationError = error{
     ContainsNewline,
     InvalidExec,
     InvalidRelativePath,
+    InvalidSourcePath,
 };
 
 /// Validate the destination of a file packaged next to the app's executable
 /// (`PackageOptions.contents.files[].path`), relative to the executable's
-/// directory: `/`-separated, not absolute, no empty, `.` or `..` component,
-/// no control characters, and none of `\ : * ? " < > | =` (not portable to
-/// Windows, or ambiguous in `--extra-file <path>=<src>`).
+/// directory: `/`-separated, not absolute, at most 200 bytes, no empty, `.`
+/// or `..` component, no control characters, none of `\ : * ? " < > | =`,
+/// and (for Windows) no component ending in `.` or a space and no reserved
+/// device name (`con`, `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`,
+/// with or without an extension).
 pub fn validateRelativePath(path: []const u8) ValidationError!void {
-    if (path.len == 0 or path.len > 1024) return error.InvalidRelativePath;
+    if (path.len == 0 or path.len > 200) return error.InvalidRelativePath;
     for (path) |c| {
         if (c < 0x20 or c == 0x7F) return error.InvalidRelativePath;
         if (std.mem.indexOfScalar(u8, "\\:*?\"<>|=", c) != null) return error.InvalidRelativePath;
@@ -63,16 +66,59 @@ pub fn validateRelativePath(path: []const u8) ValidationError!void {
     while (it.next()) |component| {
         if (component.len == 0) return error.InvalidRelativePath; // absolute, `//` or trailing `/`
         if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.InvalidRelativePath;
+        const last = component[component.len - 1];
+        if (last == '.' or last == ' ') return error.InvalidRelativePath;
+        if (isWindowsReservedName(component)) return error.InvalidRelativePath;
+    }
+}
+
+/// `con`, `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`, alone or with an
+/// extension (`nul.txt`), in any case.
+fn isWindowsReservedName(component: []const u8) bool {
+    const stem = component[0 .. std.mem.indexOfScalar(u8, component, '.') orelse component.len];
+    for ([_][]const u8{ "con", "prn", "aux", "nul" }) |r| {
+        if (std.ascii.eqlIgnoreCase(stem, r)) return true;
+    }
+    if (stem.len == 4 and stem[3] >= '1' and stem[3] <= '9') {
+        if (std.ascii.eqlIgnoreCase(stem[0..3], "com") or std.ascii.eqlIgnoreCase(stem[0..3], "lpt")) return true;
+    }
+    return false;
+}
+
+/// A source path handed to nfpm, which reads `src` as a glob: none of
+/// `* ? [ ] { }` or `\`, no control characters.
+pub fn validateNfpmSource(path: []const u8) ValidationError!void {
+    if (path.len == 0) return error.InvalidSourcePath;
+    for (path) |c| {
+        if (c < 0x20 or c == 0x7F) return error.InvalidSourcePath;
+        if (std.mem.indexOfScalar(u8, "*?[]{}\\", c) != null) return error.InvalidSourcePath;
+    }
+}
+
+/// A source path in an NSIS `File` instruction (read by makensis at compile
+/// time, where `$` and `"` can't be escaped): none of `$ "`, no control
+/// characters or newlines.
+pub fn validateNsisSource(path: []const u8) ValidationError!void {
+    if (path.len == 0) return error.InvalidSourcePath;
+    for (path) |c| {
+        if (c < 0x20 or c == 0x7F or c == '$' or c == '"') return error.InvalidSourcePath;
     }
 }
 
 test validateRelativePath {
-    for ([_][]const u8{ "libggml-cuda.so", "data/model.bin", "a b/c.d", "share/x+y_z" }) |ok| {
+    for ([_][]const u8{ "libggml-cuda.so", "data/model.bin", "a b/c.d", "share/x+y_z", "console.txt", "com0", "lpt10", "nullable/x" }) |ok| {
         try validateRelativePath(ok);
     }
-    for ([_][]const u8{ "", "/etc/passwd", "../x", "a/../b", "a/./b", "./a", "a//b", "a/", "a\\b", "C:x", "a=b", "a\nb", "a\x00b", "a\x7fb" }) |bad| {
+    for ([_][]const u8{ "", "/etc/passwd", "../x", "a/../b", "a/./b", "./a", "a//b", "a/", "a\\b", "C:x", "a=b", "a\nb", "a\x00b", "a\x7fb", "a./b", "a /b", "b.", "CON", "nul.txt", "dir/Aux.dll", "com3", "LPT9.log", "x" ** 201 }) |bad| {
         try std.testing.expectError(error.InvalidRelativePath, validateRelativePath(bad));
     }
+}
+
+test "validateNfpmSource and validateNsisSource" {
+    try validateNfpmSource("/home/u/.zig-cache/o/abc/app");
+    try validateNsisSource("C:\\build\\app.exe");
+    for ([_][]const u8{ "/a/*.so", "/a/b?", "/a/[x]", "/a/{x}", "C:\\a", "" }) |bad| try std.testing.expectError(error.InvalidSourcePath, validateNfpmSource(bad));
+    for ([_][]const u8{ "/a/$x", "/a/\"b", "/a/\nb", "" }) |bad| try std.testing.expectError(error.InvalidSourcePath, validateNsisSource(bad));
 }
 
 /// Validate reverse-DNS application ID (e.g. "dev.oriel.ReactNotes"):
