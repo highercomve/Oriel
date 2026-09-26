@@ -1,6 +1,6 @@
 .{
     .name = .oriel,
-    .version = "0.6.7",
+    .version = "0.6.8",
     .fingerprint = 0x7fe3da8e54e532b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
