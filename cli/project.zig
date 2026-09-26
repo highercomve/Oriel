@@ -178,6 +178,19 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
         effective_args = new_args;
     }
 
+    // Production builds run on other people's machines: without -Dtarget or
+    // -Dcpu, `zig build` targets this machine's CPU, and a binary built on a
+    // newer CPU (a CI runner) dies with "illegal instruction" on older ones.
+    if (is_prod_step and !hasTargetOrCpuArg(effective_args)) {
+        if (defaultCpu(builtin.cpu.arch, builtin.os.tag)) |cpu| {
+            const cpu_arg = try std.fmt.allocPrint(ctx.gpa, "-Dcpu={s}", .{cpu});
+            try injected_strings.append(ctx.gpa, cpu_arg);
+            const new_args = try injectBuildArg(ctx.gpa, effective_args, cpu_arg);
+            try allocated_slices.append(ctx.gpa, new_args);
+            effective_args = new_args;
+        }
+    }
+
     // Child environment with managed tools configured
     var child_env = try ctx.environ.clone(ctx.gpa);
     defer child_env.deinit();
@@ -360,6 +373,40 @@ pub fn injectLoaderArg(gpa: std.mem.Allocator, args: []const []const u8, loader_
     const loader_arg = try std.fmt.allocPrint(gpa, "-Dwebview2-loader={s}", .{loader_path});
     errdefer gpa.free(loader_arg);
     return injectBuildArg(gpa, args, loader_arg);
+}
+
+/// The CPU a production build targets by default, for a host of this arch
+/// and OS: x86-64 with AVX2/FMA (Intel Haswell 2013+, AMD 2015+; keeps
+/// ggml's vector code fast), any Apple Silicon, generic ARM64. `-Dcpu=...`
+/// overrides it (e.g. `x86_64_v2` for pre-AVX2 CPUs).
+pub fn defaultCpu(arch: std.Target.Cpu.Arch, os: std.Target.Os.Tag) ?[]const u8 {
+    return switch (arch) {
+        .x86_64 => "x86_64_v3",
+        .aarch64 => if (os == .macos) "apple_m1" else "baseline",
+        else => null,
+    };
+}
+
+/// `-Dtarget` or `-Dcpu` given (before `--`).
+pub fn hasTargetOrCpuArg(args: []const []const u8) bool {
+    const dash_dash_idx = findDashDash(args);
+    for (args[0..dash_dash_idx]) |arg| {
+        for ([_][]const u8{ "-Dtarget", "-Dcpu" }) |opt| {
+            if (std.mem.eql(u8, arg, opt)) return true;
+            if (std.mem.startsWith(u8, arg, opt) and arg.len > opt.len and arg[opt.len] == '=') return true;
+        }
+    }
+    return false;
+}
+
+test defaultCpu {
+    try std.testing.expectEqualStrings("x86_64_v3", defaultCpu(.x86_64, .windows).?);
+    try std.testing.expectEqualStrings("apple_m1", defaultCpu(.aarch64, .macos).?);
+    try std.testing.expectEqualStrings("baseline", defaultCpu(.aarch64, .linux).?);
+    try std.testing.expect(hasTargetOrCpuArg(&.{"-Dcpu=baseline"}));
+    try std.testing.expect(hasTargetOrCpuArg(&.{ "-Dtarget", "x86_64-windows" }));
+    try std.testing.expect(!hasTargetOrCpuArg(&.{ "-Doptimize=ReleaseFast", "--", "-Dcpu=x" }));
+    try std.testing.expect(!hasTargetOrCpuArg(&.{"-Dcpux=1"}));
 }
 
 pub fn hasOptimizeArg(args: []const []const u8) bool {
