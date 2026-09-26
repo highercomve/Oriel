@@ -64,6 +64,9 @@ fn isComputeCapability(s: []const u8) bool {
 pub const VulkanOptions = struct {
     /// The `glslc` shader compiler (shaderc).
     glslc: []const u8,
+    /// Directory with vulkan/vulkan.hpp and spirv/ headers, when they aren't
+    /// in the compiler's default paths (Windows: the Vulkan SDK's Include).
+    include: ?[]const u8 = null,
 };
 
 /// Which optional shader extensions `glslc` supports, as ggml's CMake finds
@@ -261,7 +264,12 @@ pub fn addGgml(
     }
 
     if (cuda) |opts| b.addNamedLazyPath("libggml-cuda", if (opts.prebuilt) |p| .{ .cwd_relative = p } else addCudaBackend(b, ggml_root, opts));
-    if (vulkan) |opts| b.addNamedLazyPath("libggml-vulkan", addVulkanBackend(b, oriel, ggml_root, write_files.getDirectory(), opts));
+    if (vulkan) |opts| {
+        if (oriel.resolved_target.?.result.os.tag == .windows)
+            addVulkanStatic(b, oriel, ggml_root, cpp_flags, opts)
+        else
+            b.addNamedLazyPath("libggml-vulkan", addVulkanBackend(b, oriel, ggml_root, write_files.getDirectory(), opts));
+    }
     if (metal) addMetalBackend(b, oriel, ggml_root, cpp_flags, metal_defs);
 
     // llama.cpp sources
@@ -338,21 +346,11 @@ fn addCudaBackend(b: *std.Build, ggml_root: std.Build.LazyPath, opts: CudaOption
     return lib;
 }
 
-/// Generate the Vulkan shaders (one cached step per .comp source, as ggml's
-/// CMake does) and build `libggml-vulkan.so` from them and ggml-vulkan.cpp.
-/// Returns the library's path.
-fn addVulkanBackend(
-    b: *std.Build,
-    oriel: *std.Build.Module,
-    ggml_root: std.Build.LazyPath,
-    version_headers: std.Build.LazyPath,
-    opts: VulkanOptions,
-) std.Build.LazyPath {
-    const vk_dir = ggml_root.path(b, "src/ggml-vulkan");
-    const shaders_dir = vk_dir.path(b, "vulkan-shaders");
-    var defines: std.ArrayList([]const u8) = .empty;
-    for (vulkanFeatures(b, ggml_root, opts.glslc)) |f| defines.append(b.allocator, b.fmt("-D{s}", .{f})) catch @panic("OOM");
-
+/// Build vulkan-shaders-gen for the host, with the shader features `glslc`
+/// supports, and run it once for the header every shader source includes.
+fn vulkanShadersGen(b: *std.Build, ggml_root: std.Build.LazyPath, glslc: []const u8, defines: *std.ArrayList([]const u8)) struct { gen: *std.Build.Step.Compile, header: *std.Build.Step.Run, header_file: std.Build.LazyPath } {
+    const shaders_dir = ggml_root.path(b, "src/ggml-vulkan/vulkan-shaders");
+    for (vulkanFeatures(b, ggml_root, glslc)) |f| defines.append(b.allocator, b.fmt("-D{s}", .{f})) catch @panic("OOM");
     const gen = b.addExecutable(.{
         .name = "vulkan-shaders-gen",
         .root_module = b.createModule(.{
@@ -365,13 +363,65 @@ fn addVulkanBackend(
         .file = shaders_dir.path(b, "vulkan-shaders-gen.cpp"),
         .flags = std.mem.concat(b.allocator, []const u8, &.{ &.{"-std=c++17"}, defines.items }) catch @panic("OOM"),
     });
-
-    const header_name = "ggml-vulkan-shaders.hpp";
     const header = b.addRunArtifact(gen);
     header.addArg("--output-dir");
     _ = header.addOutputDirectoryArg("spv");
     header.addArg("--target-hpp");
-    const header_file = header.addOutputFileArg(header_name);
+    const header_file = header.addOutputFileArg(vulkan_shaders_header);
+    return .{ .gen = gen, .header = header, .header_file = header_file };
+}
+
+const vulkan_shaders_header = "ggml-vulkan-shaders.hpp";
+
+/// One generated .cpp per shader source (cached, parallel steps).
+fn addVulkanShaders(b: *std.Build, m: *std.Build.Module, ggml_root: std.Build.LazyPath, gen: *std.Build.Step.Compile, glslc: []const u8, flags: []const []const u8) void {
+    const shaders_dir = ggml_root.path(b, "src/ggml-vulkan/vulkan-shaders");
+    for (vulkan_shader_sources) |src| {
+        const run = b.addRunArtifact(gen);
+        run.addArgs(&.{ "--glslc", glslc, "--source" });
+        run.addFileArg(shaders_dir.path(b, src));
+        run.addArg("--output-dir");
+        _ = run.addOutputDirectoryArg("spv");
+        // Only its basename is used (the #include in the generated source).
+        run.addArgs(&.{ "--target-hpp", vulkan_shaders_header, "--target-cpp" });
+        const cpp = run.addOutputFileArg(b.fmt("{s}.cpp", .{src}));
+        // Shaders #include the .glsl files next to them.
+        for (vulkan_shader_includes) |inc| run.addFileInput(shaders_dir.path(b, inc));
+        m.addCSourceFile(.{ .file = cpp, .flags = flags });
+    }
+}
+
+/// Windows: ggml-vulkan compiled into the executable. A DLL couldn't take
+/// ggml's symbols from the executable (no rdynamic), and linking vulkan-1.lib
+/// would keep the app from starting without a Vulkan loader: instead
+/// src/modules/ggml_vulkan_loader.c provides vkGetInstanceProcAddr from
+/// vulkan-1.dll when present, and ggml_gpu.load() registers the backend
+/// only then (GGML_USE_VULKAN stays off, so ggml doesn't register it itself).
+fn addVulkanStatic(b: *std.Build, oriel: *std.Build.Module, ggml_root: std.Build.LazyPath, cpp_flags: []const []const u8, opts: VulkanOptions) void {
+    var defines: std.ArrayList([]const u8) = .empty;
+    const sg = vulkanShadersGen(b, ggml_root, opts.glslc, &defines);
+    if (opts.include) |inc| oriel.addIncludePath(.{ .cwd_relative = inc });
+    oriel.addIncludePath(sg.header_file.dirname());
+    oriel.addIncludePath(ggml_root.path(b, "src/ggml-vulkan"));
+    const flags = std.mem.concat(b.allocator, []const u8, &.{ cpp_flags, defines.items }) catch @panic("OOM");
+    oriel.addCSourceFile(.{ .file = ggml_root.path(b, "src/ggml-vulkan/ggml-vulkan.cpp"), .flags = flags });
+    addVulkanShaders(b, oriel, ggml_root, sg.gen, opts.glslc, flags);
+    oriel.addCSourceFile(.{ .file = b.path("src/modules/ggml_vulkan_loader.c"), .flags = &.{"-std=c11"} });
+}
+
+/// Generate the Vulkan shaders (one cached step per .comp source, as ggml's
+/// CMake does) and build `libggml-vulkan.so` from them and ggml-vulkan.cpp.
+/// Returns the library's path.
+fn addVulkanBackend(
+    b: *std.Build,
+    oriel: *std.Build.Module,
+    ggml_root: std.Build.LazyPath,
+    version_headers: std.Build.LazyPath,
+    opts: VulkanOptions,
+) std.Build.LazyPath {
+    const vk_dir = ggml_root.path(b, "src/ggml-vulkan");
+    var defines: std.ArrayList([]const u8) = .empty;
+    const sg = vulkanShadersGen(b, ggml_root, opts.glslc, &defines);
 
     const lib = b.addLibrary(.{
         .name = "ggml-vulkan",
@@ -387,7 +437,8 @@ fn addVulkanBackend(
     lib.linker_allow_shlib_undefined = true;
     const m = lib.root_module;
     m.linkSystemLibrary("vulkan", .{});
-    m.addIncludePath(header_file.dirname());
+    if (opts.include) |inc| m.addIncludePath(.{ .cwd_relative = inc });
+    m.addIncludePath(sg.header_file.dirname());
     m.addIncludePath(version_headers);
     m.addIncludePath(ggml_root.path(b, "include"));
     m.addIncludePath(ggml_root.path(b, "src"));
@@ -401,21 +452,8 @@ fn addVulkanBackend(
     }, defines.items }) catch @panic("OOM");
     m.addCSourceFile(.{ .file = vk_dir.path(b, "ggml-vulkan.cpp"), .flags = flags });
     // The header must exist before any source that includes it compiles.
-    lib.step.dependOn(&header.step);
-
-    for (vulkan_shader_sources) |src| {
-        const run = b.addRunArtifact(gen);
-        run.addArgs(&.{ "--glslc", opts.glslc, "--source" });
-        run.addFileArg(shaders_dir.path(b, src));
-        run.addArg("--output-dir");
-        _ = run.addOutputDirectoryArg("spv");
-        // Only its basename is used (the #include in the generated source).
-        run.addArgs(&.{ "--target-hpp", header_name, "--target-cpp" });
-        const cpp = run.addOutputFileArg(b.fmt("{s}.cpp", .{src}));
-        // Shaders #include the .glsl files next to them.
-        for (vulkan_shader_includes) |inc| run.addFileInput(shaders_dir.path(b, inc));
-        m.addCSourceFile(.{ .file = cpp, .flags = flags });
-    }
+    lib.step.dependOn(&sg.header.step);
+    addVulkanShaders(b, m, ggml_root, sg.gen, opts.glslc, flags);
     return lib.getEmittedBin();
 }
 

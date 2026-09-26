@@ -367,15 +367,30 @@ fn cudaOptions(b: *std.Build, target: std.Build.ResolvedTarget) ?ggml.CudaOption
     };
 }
 
-/// `-Dggml_vulkan`: build the Vulkan backend for llama/whisper (Linux; any
-/// GPU vendor). Needs the Vulkan headers and loader, SPIRV-Headers, and
-/// `glslc` (shaderc), found on PATH or given with `-Dglslc`.
+/// `-Dggml_vulkan`: build the Vulkan backend for llama/whisper (any GPU
+/// vendor). Linux: libggml-vulkan.so; needs the Vulkan headers and loader,
+/// SPIRV-Headers, and `glslc` (shaderc), found on PATH or given with
+/// `-Dglslc`. Windows: compiled into the executable (vulkan-1.dll is loaded
+/// at runtime, CPU otherwise); glslc and the headers default to the Vulkan
+/// SDK's ($VULKAN_SDK), or `-Dglslc` / `-Dvulkan_include`.
 fn vulkanOptions(b: *std.Build, target: std.Build.ResolvedTarget) ?ggml.VulkanOptions {
-    const enabled = b.option(bool, "ggml_vulkan", "Build the Vulkan backend for llama/whisper as libggml-vulkan.so (Linux; needs Vulkan headers and glslc)") orelse false;
-    const glslc = b.option([]const u8, "glslc", "glslc shader compiler for -Dggml_vulkan (default: glslc on PATH)");
+    const enabled = b.option(bool, "ggml_vulkan", "Build the Vulkan backend for llama/whisper (Linux: libggml-vulkan.so; Windows: in the executable; needs Vulkan headers and glslc)") orelse false;
+    const glslc = b.option([]const u8, "glslc", "glslc shader compiler for -Dggml_vulkan (default: glslc on PATH; Windows: $VULKAN_SDK\\Bin\\glslc.exe)");
+    const include = b.option([]const u8, "vulkan_include", "Vulkan and SPIR-V headers for -Dggml_vulkan (default: system paths; Windows: $VULKAN_SDK\\Include)");
     if (!enabled) return null;
-    if (target.result.os.tag != .linux) fatal("-Dggml_vulkan is only supported on Linux targets for now", .{});
-    return .{ .glslc = glslc orelse "glslc" };
+    switch (target.result.os.tag) {
+        .linux => return .{ .glslc = glslc orelse "glslc", .include = include },
+        .windows => {
+            const sdk = b.graph.environ_map.get("VULKAN_SDK");
+            if (sdk == null and (glslc == null or include == null))
+                fatal("-Dggml_vulkan on Windows needs the Vulkan SDK ($VULKAN_SDK), or -Dglslc and -Dvulkan_include", .{});
+            return .{
+                .glslc = glslc orelse b.pathJoin(&.{ sdk.?, "Bin", "glslc.exe" }),
+                .include = include orelse b.pathJoin(&.{ sdk.?, "Include" }),
+            };
+        },
+        else => fatal("-Dggml_vulkan is only supported on Linux and Windows targets for now", .{}),
+    }
 }
 
 fn addOrielModule(
@@ -485,6 +500,8 @@ fn addOrielModule(
     if (cuda != null and !features.llama and !features.whisper) fatal("-Dggml_cuda needs -Dllama or -Dwhisper", .{});
     const vulkan = vulkanOptions(b, target);
     if (vulkan != null and !features.llama and !features.whisper) fatal("-Dggml_vulkan needs -Dllama or -Dwhisper", .{});
+    // Windows compiles Vulkan in; ggml_gpu.load() registers it at runtime.
+    options.addOption(bool, "ggml_vulkan_static", vulkan != null and target.result.os.tag == .windows);
     if (features.llama or features.whisper) {
         // Metal: on by default for macOS (Apple GPUs; the shader sources are
         // embedded and compiled by ggml at startup).
