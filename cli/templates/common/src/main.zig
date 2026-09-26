@@ -10,6 +10,12 @@ const builtin = @import("builtin");
 const oriel = @import("oriel");
 const app = @import("oriel_app");
 
+/// Logs go to stderr and to a file: `~/.local/share/<id>/app.log` (Linux),
+/// `%LOCALAPPDATA%\<id>\app.log` (Windows), `~/Library/Logs/<id>/app.log`
+/// (macOS). An app started from the desktop has no terminal: this is where
+/// its logs are.
+pub const std_options: std.Options = .{ .logFn = oriel.log.logFn };
+
 /// Events pushed from Zig to the page.
 pub const Events = struct {
     greeted: struct { count: u32 },
