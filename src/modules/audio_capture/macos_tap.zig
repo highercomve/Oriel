@@ -36,8 +36,10 @@ const AudioStreamBasicDescription = extern struct {
 };
 const IOProc = *const fn (device: AudioObjectID, now: ?*const anyopaque, input: ?*const AudioBufferList, input_time: ?*const anyopaque, output: ?*AudioBufferList, output_time: ?*const anyopaque, user: ?*anyopaque) callconv(.c) OSStatus;
 
-extern "c" fn AudioHardwareCreateProcessTap(description: cocoa.id, out: *AudioObjectID) OSStatus;
-extern "c" fn AudioHardwareDestroyProcessTap(tap: AudioObjectID) OSStatus;
+// macOS 14.2+: weak, so an app built for an older macOS still launches there
+// (null when the running macOS has no process taps).
+const AudioHardwareCreateProcessTap = @extern(?*const fn (description: cocoa.id, out: *AudioObjectID) callconv(.c) OSStatus, .{ .name = "AudioHardwareCreateProcessTap", .linkage = .weak });
+const AudioHardwareDestroyProcessTap = @extern(?*const fn (tap: AudioObjectID) callconv(.c) OSStatus, .{ .name = "AudioHardwareDestroyProcessTap", .linkage = .weak });
 extern "c" fn AudioHardwareCreateAggregateDevice(description: cocoa.id, out: *AudioObjectID) OSStatus; // CFDictionaryRef, toll-free bridged
 extern "c" fn AudioHardwareDestroyAggregateDevice(device: AudioObjectID) OSStatus;
 extern "c" fn AudioDeviceCreateIOProcID(device: AudioObjectID, proc: IOProc, user: ?*anyopaque, out: *?AudioDeviceIOProcID) OSStatus;
@@ -55,7 +57,8 @@ const scope_global = fourCC("glob");
 
 /// Whether this macOS has process taps (14.2+).
 pub fn available() bool {
-    return cocoa.objc.getClass("CATapDescription") != null;
+    return cocoa.objc.getClass("CATapDescription") != null and
+        AudioHardwareCreateProcessTap != null and AudioHardwareDestroyProcessTap != null;
 }
 
 /// The `Source.name` of the system-audio tap in `listSources`.
@@ -116,8 +119,10 @@ pub const Tap = struct {
             defer name.release();
             desc.msgSend(void, "setName:", .{name});
         }
-        if (AudioHardwareCreateProcessTap(desc.value, &self.tap_id) != 0) return error.TapCreateFailed;
-        errdefer _ = AudioHardwareDestroyProcessTap(self.tap_id);
+        const create_tap = AudioHardwareCreateProcessTap orelse return error.SystemAudioUnsupported;
+        const destroy_tap = AudioHardwareDestroyProcessTap orelse return error.SystemAudioUnsupported;
+        if (create_tap(desc.value, &self.tap_id) != 0) return error.TapCreateFailed;
+        errdefer _ = destroy_tap(self.tap_id);
 
         var format: AudioStreamBasicDescription = undefined;
         var size: u32 = @sizeOf(AudioStreamBasicDescription);
@@ -164,7 +169,7 @@ pub const Tap = struct {
         _ = AudioDeviceStop(self.aggregate, self.proc);
         _ = AudioDeviceDestroyIOProcID(self.aggregate, self.proc.?);
         _ = AudioHardwareDestroyAggregateDevice(self.aggregate);
-        _ = AudioHardwareDestroyProcessTap(self.tap_id);
+        if (AudioHardwareDestroyProcessTap) |destroy_tap| _ = destroy_tap(self.tap_id);
     }
 };
 

@@ -232,3 +232,111 @@ test "generateInfoPlist rejects values XML can't carry" {
     try std.testing.expect(isValidSchemeFormat("oriel-notes+x.y"));
     try std.testing.expect(!isValidSchemeFormat("1abc"));
 }
+
+// --- Deployment target (Mach-O LC_BUILD_VERSION) -------------------------------------
+
+/// A macOS version from a Mach-O load command (`xxxx.yy.zz` nibbles).
+pub const OsVersion = struct {
+    major: u16,
+    minor: u8,
+    patch: u8,
+
+    fn fromPacked(v: u32) OsVersion {
+        return .{ .major = @intCast(v >> 16), .minor = @truncate(v >> 8), .patch = @truncate(v) };
+    }
+
+    pub fn order(a: OsVersion, b: OsVersion) std.math.Order {
+        if (a.major != b.major) return std.math.order(a.major, b.major);
+        if (a.minor != b.minor) return std.math.order(a.minor, b.minor);
+        return std.math.order(a.patch, b.patch);
+    }
+
+    /// "13.0", or "13.0.1" when there is a patch level.
+    pub fn format(self: OsVersion, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        try w.print("{d}.{d}", .{ self.major, self.minor });
+        if (self.patch != 0) try w.print(".{d}", .{self.patch});
+    }
+};
+
+const lc_build_version = 0x32;
+const lc_version_min_macosx = 0x24;
+const platform_macos = 1;
+
+/// The minimum macOS a Mach-O file declares (LC_BUILD_VERSION, or the older
+/// LC_VERSION_MIN_MACOSX), from the start of the file (`head`: the header and
+/// load commands). A universal file: its first slice. Null when `head` isn't
+/// a Mach-O file or declares none.
+pub fn machoMinOs(head: []const u8) ?OsVersion {
+    if (head.len < 8) return null;
+    const fat_magic = std.mem.readInt(u32, head[0..4], .big);
+    if (fat_magic == 0xcafebabe or fat_magic == 0xcafebabf) {
+        // fat_header, then fat_arch (32-bit offsets) / fat_arch_64.
+        if (std.mem.readInt(u32, head[4..8], .big) == 0) return null;
+        const off: usize = if (fat_magic == 0xcafebabe) blk: {
+            if (head.len < 8 + 20) return null;
+            break :blk std.mem.readInt(u32, head[16..20], .big);
+        } else blk: {
+            if (head.len < 8 + 32) return null;
+            break :blk std.math.cast(usize, std.mem.readInt(u64, head[16..24], .big)) orelse return null;
+        };
+        // A slice starts past the fat header, and isn't itself fat.
+        if (off < 8 or off >= head.len) return null;
+        const slice = head[off..];
+        if (slice.len >= 4 and (std.mem.readInt(u32, slice[0..4], .big) & 0xfffffffe) == 0xcafebabe) return null;
+        return machoMinOs(slice);
+    }
+    const magic = std.mem.readInt(u32, head[0..4], .little);
+    const header_size: usize = switch (magic) {
+        0xfeedfacf => 32, // 64-bit
+        0xfeedface => 28,
+        else => return null,
+    };
+    if (head.len < header_size) return null;
+    const ncmds = std.mem.readInt(u32, head[16..20], .little);
+    var off = header_size;
+    var i: u32 = 0;
+    while (i < ncmds) : (i += 1) {
+        if (off + 8 > head.len) return null;
+        const cmd = std.mem.readInt(u32, head[off..][0..4], .little);
+        const size = std.mem.readInt(u32, head[off + 4 ..][0..4], .little);
+        if (size < 8 or size > head.len - off) return null;
+        if (cmd == lc_build_version and size >= 16) {
+            if (std.mem.readInt(u32, head[off + 8 ..][0..4], .little) == platform_macos)
+                return .fromPacked(std.mem.readInt(u32, head[off + 12 ..][0..4], .little));
+        } else if (cmd == lc_version_min_macosx and size >= 16) {
+            return .fromPacked(std.mem.readInt(u32, head[off + 8 ..][0..4], .little));
+        }
+        off += size;
+    }
+    return null;
+}
+
+test machoMinOs {
+    // mach_header_64 + LC_SEGMENT-ish filler + LC_BUILD_VERSION(macOS, 13.0).
+    var buf: [32 + 16 + 24]u8 = @splat(0);
+    std.mem.writeInt(u32, buf[0..4], 0xfeedfacf, .little);
+    std.mem.writeInt(u32, buf[16..20], 2, .little); // ncmds
+    std.mem.writeInt(u32, buf[32..36], 0x19, .little); // some other command
+    std.mem.writeInt(u32, buf[36..40], 16, .little);
+    std.mem.writeInt(u32, buf[48..52], lc_build_version, .little);
+    std.mem.writeInt(u32, buf[52..56], 24, .little);
+    std.mem.writeInt(u32, buf[56..60], platform_macos, .little);
+    std.mem.writeInt(u32, buf[60..64], 0x000d0000, .little); // 13.0
+    const v = machoMinOs(&buf).?;
+    try std.testing.expectEqual(@as(u16, 13), v.major);
+    try std.testing.expectEqual(@as(u8, 0), v.minor);
+    var out: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("13.0", try std.fmt.bufPrint(&out, "{f}", .{v}));
+    std.mem.writeInt(u32, buf[60..64], 0x001a0602, .little); // 26.6.2
+    try std.testing.expectEqualStrings("26.6.2", try std.fmt.bufPrint(&out, "{f}", .{machoMinOs(&buf).?}));
+    try std.testing.expect(machoMinOs(&buf).?.order(v) == .gt);
+    // A fat header whose slice points at itself (or at another fat header).
+    var fat: [48]u8 = @splat(0);
+    std.mem.writeInt(u32, fat[0..4], 0xcafebabe, .big);
+    std.mem.writeInt(u32, fat[4..8], 1, .big);
+    std.mem.writeInt(u32, fat[16..20], 0, .big);
+    try std.testing.expect(machoMinOs(&fat) == null);
+    // Not Mach-O / truncated.
+    try std.testing.expect(machoMinOs("#!/bin/sh\n") == null);
+    try std.testing.expect(machoMinOs(buf[0..40]) == null);
+}

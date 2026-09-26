@@ -2,7 +2,7 @@ const std = @import("std");
 const oriel = @import("oriel");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const target = oriel.resolveTarget(b, b.standardTargetOptions(.{}));
     const optimize = b.standardOptimizeOption(.{});
     // Every module and plugin is enabled by default; the smoke test checks them all.
     const dep = b.dependency("oriel", .{

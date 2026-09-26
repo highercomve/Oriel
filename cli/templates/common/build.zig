@@ -2,7 +2,9 @@ const std = @import("std");
 const oriel = @import("oriel");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    // On macOS, a target without a version builds for macOS 13+ (not just
+    // the Mac building it); pass this target to every executable you add.
+    const target = oriel.resolveTarget(b, b.standardTargetOptions(.{}));
     const optimize = b.standardOptimizeOption(.{});
 
     // Oriel's built-in modules and plugins. Switch on what the app uses:

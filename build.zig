@@ -280,7 +280,8 @@ fn addCli(
     // distro (the CLI needs no libc anyway).
     var query = target.query;
     if (target.result.os.tag == .linux) query.abi = .musl;
-    const cli_target = b.resolveTargetQuery(query);
+    // macOS: runs on macOS 13+ and any Mac CPU, not just the building one.
+    const cli_target = resolveTarget(b, b.resolveTargetQuery(query));
     const updater_core_cli = b.createModule(.{
         .root_source_file = b.path("src/updater_core.zig"),
         .target = cli_target,
@@ -541,6 +542,44 @@ fn patchedHttpz(
     return module;
 }
 
+/// The deployment target macOS builds get when the target doesn't name a
+/// macOS version (native, or `-Dtarget=aarch64-macos`): an app built on a
+/// newer Mac must still run on older ones. Same as package-app's default.
+pub const default_macos_min: std.SemanticVersion = .{ .major = 13, .minor = 0, .patch = 0 };
+
+/// `target` made portable across Macs, for macOS targets only:
+/// - no macOS version given: `default_macos_min` (an explicit
+///   `-Dtarget=aarch64-macos.14.0` wins);
+/// - a native CPU (`-mcpu native`, the default): the baseline for the
+///   architecture (Apple M1 for arm64, x86-64 for Intel), so code built on a
+///   newer Mac or CI runner doesn't use instructions older Macs lack
+///   (an explicit `-Dcpu` wins).
+/// `addApp` applies it to the executables it builds (Oriel's own module keeps
+/// the target the app passed, so dependencies the app shares with Oriel
+/// stay one module). Use it for an app's other executables too (e.g. a CLI
+/// bundled in the `.app`):
+///     const target = oriel.resolveTarget(b, b.standardTargetOptions(.{}));
+/// An executable that links Apple frameworks without importing `oriel`
+/// needs the SDK's framework path added itself: Zig only adds it for
+/// native targets, and Oriel gets it through zig-objc.
+pub fn resolveTarget(b: *std.Build, target: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
+    if (target.result.os.tag != .macos) return target;
+    var query = target.query;
+    var changed = false;
+    if (query.os_version_min == null) {
+        query.os_version_min = .{ .semver = default_macos_min };
+        changed = true;
+    }
+    if (query.cpu_model == .native) {
+        query.cpu_model = if (target.result.cpu.arch == .aarch64)
+            .{ .explicit = &std.Target.aarch64.cpu.apple_m1 }
+        else
+            .baseline;
+        changed = true;
+    }
+    return if (changed) b.resolveTargetQuery(query) else target;
+}
+
 // ---------------------------------------------------------------------------
 // App build helper (called from an app's build.zig)
 // ---------------------------------------------------------------------------
@@ -673,7 +712,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     addUpdaterSteps(b, oriel_dep.artifact("update_tool"));
 
     const oriel = oriel_dep.module("oriel");
-    const target = oriel.resolved_target.?;
+    const target = resolveTarget(b, oriel.resolved_target.?);
     const optimize = oriel.optimize.?;
     // When optimize was not explicitly given on the command-line, default production to ReleaseSafe
     const prod_optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe;
