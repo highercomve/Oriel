@@ -84,27 +84,31 @@ For maximum compatibility, sign the executable *before* building the installer, 
 
 # macOS code signing and notarization
 
-`oriel package` ad-hoc signs the `.app` (`codesign --sign -`), which runs on the Mac that built it. For other Macs, sign it with a Developer ID and notarize it (needs an Apple developer account); this is manual for now:
+`oriel package` ad-hoc signs the `.app` (`codesign --sign -`), which runs on the Mac that built it. Two better options:
 
-1. **Code signing:** sign the `.app` bundle with your Developer ID Application certificate:
+## A self-signed certificate (free)
 
-```sh
-codesign --force --options runtime --timestamp --entitlements App.entitlements \
-  -s "Developer ID Application: Your Name (TEAMID)" App.app
-```
-
-2. **Notarization:** submit the `.dmg` to Apple for notarization (required on macOS 10.15+):
+Ad-hoc signed, macOS identifies the app by the hash of that exact build: after every update the user's permission grants (Accessibility, Microphone, Screen Recording) stop applying. Signed with the same certificate every release, even a self-signed one, the app keeps its identity and the grants survive updates. Gatekeeper still asks once on first launch (**Privacy & Security → Open Anyway**).
 
 ```sh
-xcrun notarytool submit App.dmg --keychain-profile notary --wait
-xcrun stapler staple App.dmg
+oriel signing create --name "My App"     # a .p12 and its password in ~/.config/oriel/keys (0600); prints the SHA-1
+oriel signing import ~/.config/oriel/keys/my-app-codesign.p12   # on the Mac (CI: a new unlocked keychain)
+oriel package -Dmacos-sign-identity=<SHA-1>
 ```
 
-3. **Verification:**
+Keep the certificate and reuse it for every release: a new certificate is a new identity to macOS. In CI, store the `.p12` (base64) and its password as secrets and run `oriel signing import <file> --password-env MACOS_CERT_PASSWORD` before `oriel package`.
+
+## Developer ID and notarization
+
+For no Gatekeeper prompt at all, sign with a Developer ID and notarize (needs an Apple developer account). `oriel package` does both:
 
 ```sh
-spctl -a -vv App.app
+xcrun notarytool store-credentials oriel-notary --apple-id you@example.com --team-id AB12CD34EF
+oriel package -Dmacos-sign-identity="Developer ID Application: Your Name (AB12CD34EF)" \
+              -Dmacos-notarize-profile=oriel-notary
 ```
+
+Check the result with `spctl -a -vv App.app`.
 
 # Self-update signing with Ed25519
 

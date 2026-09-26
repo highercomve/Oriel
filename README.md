@@ -211,6 +211,13 @@ The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the release's `l
 `oriel permission add <kind> ["reason"]`, `remove <kind>` and `list` edit
 `.permissions` in the app's `build.zig` (see [OS permissions](#os-permissions-orielpermissions)).
 
+### Signing commands
+
+`oriel signing create`, `import <file.p12>` and `show` make and install a
+self-signed macOS code-signing certificate, so an app without a Developer ID
+keeps its permission grants across updates (see
+[macOS packaging](#without-a-developer-id-a-self-signed-certificate) below).
+
 ### Deep link commands
 
 `oriel deep-link` configures and registers custom URL schemes for local development:
@@ -1369,6 +1376,19 @@ The bundle is **ad-hoc signed** (`codesign --sign -`), which is enough to run it
 
 **Unnotarized downloads and Gatekeeper.** An ad-hoc signed `.app` downloaded from the web (a GitHub release, say) is quarantined, and Gatekeeper refuses it: "Apple could not verify “<Name>” is free of malware…". Since macOS 15 the old right-click → Open shortcut no longer opens it. Users can allow it once in **System Settings → Privacy & Security → Open Anyway** (after the first attempt, with their password), or clear the quarantine flag from a terminal: `xattr -dr com.apple.quarantine /Applications/<Name>.app`. Notarizing the release (below) removes the prompt.
 
+**Without a Developer ID: a self-signed certificate.** Ad-hoc signed, macOS identifies the app by the hash of that exact build, so every update looks like a new app: the user's grants (Accessibility, Microphone, Screen Recording) stop applying and are asked again. Signed with the same certificate every release, even a self-signed one, the app's designated requirement names the certificate (`identifier "<id>" and certificate leaf = H"<sha1>"`) and the grants survive updates. Gatekeeper still asks once on first launch (only notarization removes that). `oriel signing` makes and installs such a certificate:
+
+```sh
+oriel signing create --name "My App"     # ~/.config/oriel/keys/my-app-codesign.p12 + .password (0600); prints the SHA-1
+oriel signing import ~/.config/oriel/keys/my-app-codesign.p12   # macOS: into a new unlocked keychain (CI); --keychain login for yours
+oriel package -Dmacos-sign-identity=<SHA-1>
+```
+
+- `create` needs `openssl`; the `.p12` uses SHA1-3DES encryption and a SHA-1 MAC, which `security import` reads (OpenSSL 3's default AES `.p12` fails with "MAC verification failed"). The private key is never printed. Keep the files and reuse them: a new certificate is a new identity.
+- `import` creates `oriel-signing.keychain-db` with a random throwaway password, unlocks it without a timeout, lets `codesign` use the key without prompts (`set-key-partition-list`) and puts it first in the user's keychain search list (codesign only finds identities there). `security delete-keychain oriel-signing.keychain-db` removes it. The password comes from `<file>.password` or `--password-env VAR`.
+- The certificate is untrusted: `security find-identity -v` doesn't list it (without `-v` it shows `CSSMERR_TP_NOT_TRUSTED`), but `codesign` signs with it, by SHA-1 or name, and Apple's timestamp server accepts it. `oriel signing show` prints the SHA-1.
+- In CI: store the `.p12` (base64) and its password as secrets, write the file, `oriel signing import <file> --password-env MACOS_CERT_PASSWORD`, then `oriel package -Dmacos-sign-identity=<SHA-1>`.
+
 **Distribution (Developer ID + notarization).** Other Macs need a Developer ID signature and notarization (an Apple developer account). `oriel package` does both when told which keychain identity and notarytool profile to use; `oriel build`'s `zig-out/<Name>.app` stays ad-hoc (fast, offline):
 
 ```sh
@@ -1555,7 +1575,7 @@ oriel dev              # run against Vite dev server with hot reload
 | Input injection | ✅ Linux (X11 XTest + Wayland virtual-keyboard) + Windows (`SendInput`); runtime untested on Windows |
 | Asset protocol for local files (streaming, ranges) | ✅ `media_server`: 127.0.0.1 server with ranges for `<video>`; `app://app/media/` for fetch |
 | Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
-| Bundling (AppImage/deb/rpm/app/dmg), signing | ◐ AppImage, deb, rpm, NSIS setup.exe, macOS .app/.dmg via `oriel package`; macOS Developer ID signing and notarization (`-Dmacos-sign-identity`, `-Dmacos-notarize-profile`); Authenticode not yet |
+| Bundling (AppImage/deb/rpm/app/dmg), signing | ◐ AppImage, deb, rpm, NSIS setup.exe, macOS .app/.dmg via `oriel package`; macOS Developer ID signing and notarization (`-Dmacos-sign-identity`, `-Dmacos-notarize-profile`) or a self-signed certificate (`oriel signing`); Authenticode not yet |
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
 | Windows | ◐ Win32 + WebView2 shell and every module/plugin (tray, sql, store, dialog, notification, menu, updater, media_server, fs_watch, global_shortcut, input, clipboard), NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
 | macOS | ◐ AppKit + WKWebView shell and every module/plugin (tray, menu, dialog, notification, store, clipboard, fs_watch, global_shortcut, input, updater, media_server, audio_capture incl. system audio), whisper/llama on Metal, deep links, `.app`/`.dmg` packaging |
