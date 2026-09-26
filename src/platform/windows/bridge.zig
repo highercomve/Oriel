@@ -305,25 +305,35 @@ pub fn Bridge(
     return struct {
         const Self = @This();
 
-        pub fn setupUserContent(view: *webview2.ICoreWebView2, label: [:0]const u8) void {
+        /// Register the bridge script for every document of `view`. The
+        /// registration is asynchronous: `done` is invoked once it applies,
+        /// and only then may the first page load (else it can miss the
+        /// bridge). False when registration couldn't start (`done` is not
+        /// kept or called).
+        pub fn setupUserContent(view: *webview2.ICoreWebView2, label: [:0]const u8, done: *webview2.ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler) bool {
             const gpa = std.heap.smp_allocator;
-            const label_json = std.json.Stringify.valueAlloc(gpa, label, .{}) catch return;
+            const label_json = std.json.Stringify.valueAlloc(gpa, label, .{}) catch return false;
             defer gpa.free(label_json);
             // The page's IPC token lives only in the bridge's closure
             // (ipc.tokenScript picks it by the document's own origin, so a
             // frame from another origin, which also gets this script, has none).
-            const token_js = ipc.tokenScript(gpa, config.security, local) catch return;
+            const token_js = ipc.tokenScript(gpa, config.security, local) catch return false;
             defer gpa.free(token_js);
-            const with_iso = std.mem.replaceOwned(u8, gpa, bridge_js, isolation_placeholder, comptime isolation.bridgeScript(config.security, local)) catch return;
+            const with_iso = std.mem.replaceOwned(u8, gpa, bridge_js, isolation_placeholder, comptime isolation.bridgeScript(config.security, local)) catch return false;
             defer gpa.free(with_iso);
-            const with_token = std.mem.replaceOwned(u8, gpa, with_iso, token_placeholder, token_js) catch return;
+            const with_token = std.mem.replaceOwned(u8, gpa, with_iso, token_placeholder, token_js) catch return false;
             defer gpa.free(with_token);
-            const script = std.fmt.allocPrintSentinel(gpa, "{s}window.__oriel_window_label = {s};\n{s}", .{ comptime security.bridgePrelude(config.security), label_json, with_token }, 0) catch return;
+            const script = std.fmt.allocPrintSentinel(gpa, "{s}window.__oriel_window_label = {s};\n{s}", .{ comptime security.bridgePrelude(config.security), label_json, with_token }, 0) catch return false;
             defer gpa.free(script);
-            const script_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, script) catch return;
+            const script_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, script) catch return false;
             defer gpa.free(script_w);
 
-            _ = view.addScriptToExecuteOnDocumentCreated(script_w.ptr, null);
+            const hr = view.addScriptToExecuteOnDocumentCreated(script_w.ptr, done);
+            if (hr < 0) {
+                log.err("the bridge script could not be registered (0x{X}): pages get no window.oriel", .{@as(u32, @bitCast(hr))});
+                return false;
+            }
+            return true;
         }
 
         pub fn onMessage(
