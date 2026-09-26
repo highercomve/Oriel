@@ -290,11 +290,13 @@ pub fn writeCommandHelp(comptime Commands: type, comptime program: []const u8, t
                 break :blk s;
             };
             const width = comptime blk: {
+                @setEvalBranchQuota(10_000);
                 var n: usize = "-h, --help".len;
                 for (fields) |f| n = @max(n, commandLeft(T, f).len);
                 break :blk n + 3;
             };
             const body = comptime blk: {
+                @setEvalBranchQuota(20_000);
                 var args: []const u8 = "";
                 var opts: []const u8 = "";
                 for (fields) |f| {
