@@ -135,9 +135,86 @@ pub const Context = struct {
     rpm_deps: []const []const u8,
     appimage_runtime_override: ?[]const u8,
     webview2_loader: ?std.Build.LazyPath,
-    /// macOS targets: the `.app` bundle of `exe` (a directory) and its name.
+    /// macOS targets: the `.app` bundle of `exe` (a directory) and its name
+    /// (for the package steps: signed for distribution when asked to).
     app_bundle: ?AppBundle,
+    mac_signing: MacSigning = .{},
 };
+
+/// macOS distribution signing (see tools/package/sign_macos.zig).
+pub const MacSigning = struct {
+    identity: ?[]const u8 = null,
+    notarize_profile: ?[]const u8 = null,
+    dry_run: bool = false,
+
+    fn active(self: MacSigning) bool {
+        return self.identity != null or self.notarize_profile != null or self.dry_run;
+    }
+};
+
+/// `-Dmacos-sign-identity`, `-Dmacos-notarize-profile` (or the
+/// `ORIEL_MACOS_SIGN_IDENTITY` / `ORIEL_MACOS_NOTARIZE_PROFILE` environment
+/// variables) and `-Dmacos-sign-dry-run`, declared once.
+fn macSigningOptions(b: *std.Build) MacSigning {
+    const env = &b.graph.environ_map;
+    const nonEmpty = struct {
+        fn f(v: ?[]const u8) ?[]const u8 {
+            const s = v orelse return null;
+            return if (s.len == 0) null else s;
+        }
+    }.f;
+    return .{
+        .identity = nonEmpty(getOrDeclareStringOption(b, "macos-sign-identity", "macOS packages: codesign identity (\"Developer ID Application: ...\", a SHA-1, or - for ad-hoc with the hardened runtime); default $ORIEL_MACOS_SIGN_IDENTITY") orelse env.get("ORIEL_MACOS_SIGN_IDENTITY")),
+        .notarize_profile = nonEmpty(getOrDeclareStringOption(b, "macos-notarize-profile", "macOS packages: notarize the .dmg with this `xcrun notarytool store-credentials` profile; default $ORIEL_MACOS_NOTARIZE_PROFILE") orelse env.get("ORIEL_MACOS_NOTARIZE_PROFILE")),
+        .dry_run = getOrDeclareBoolOption(b, "macos-sign-dry-run", "macOS packages: print the signing/notarization commands; sign ad-hoc with the hardened runtime") orelse false,
+    };
+}
+
+fn getOrDeclareStringOption(b: *std.Build, comptime name: []const u8, comptime description: []const u8) ?[]const u8 {
+    if (b.available_options_map.get(name) != null) {
+        const option_ptr = b.user_input_options.getPtr(name) orelse return null;
+        option_ptr.used = true;
+        return switch (option_ptr.value) {
+            .scalar => |s| s,
+            else => null,
+        };
+    }
+    return b.option([]const u8, name, description);
+}
+
+fn getOrDeclareBoolOption(b: *std.Build, comptime name: []const u8, comptime description: []const u8) ?bool {
+    if (b.available_options_map.get(name) != null) {
+        const option_ptr = b.user_input_options.getPtr(name) orelse return null;
+        option_ptr.used = true;
+        return switch (option_ptr.value) {
+            .flag => true,
+            .scalar => |s| !std.mem.eql(u8, s, "false"),
+            else => null,
+        };
+    }
+    return b.option(bool, name, description);
+}
+
+/// A copy of `bundle` signed for distribution (`package_tool sign-app`).
+fn addSignedBundle(b: *std.Build, package_tool: *std.Build.Step.Compile, bundle: AppBundle, signing: MacSigning) AppBundle {
+    const run = b.addRunArtifact(package_tool);
+    run.addArg("sign-app");
+    run.addArg("--app");
+    run.addDirectoryArg(bundle.dir);
+    run.addArg("--entitlements");
+    run.addFileArg(bundle.entitlements);
+    run.addArg("--out-dir");
+    const out_dir = run.addOutputDirectoryArg("signed");
+    if (signing.identity) |id| run.addArgs(&.{ "--identity", id });
+    if (signing.dry_run) run.addArg("--dry-run");
+    // The keychain isn't an input the cache can see: sign on every package build.
+    run.has_side_effects = true;
+    const real_identity = signing.identity != null and !std.mem.eql(u8, signing.identity.?, "-");
+    if (signing.notarize_profile != null and !real_identity and !signing.dry_run) {
+        run.step.dependOn(&b.addFail("-Dmacos-notarize-profile needs -Dmacos-sign-identity=\"Developer ID Application: ...\" (notarization takes a Developer ID signature; add -Dmacos-sign-dry-run to see the commands)").step);
+    }
+    return .{ .dir = out_dir.path(b, bundle.name), .name = bundle.name, .entitlements = bundle.entitlements };
+}
 
 pub const AppBundle = struct {
     dir: std.Build.LazyPath,
@@ -307,6 +384,9 @@ pub fn addPackageSteps(
     // macOS: `zig build` also installs `zig-out/<Name>.app`: Launch Services
     // (deep links), notifications and permission prompts need a bundle.
     var app_bundle: ?AppBundle = null;
+    // Declared for every target (a CI script may pass them to all), used on macOS.
+    const mac_signing_opts = macSigningOptions(b);
+    const mac_signing: MacSigning = if (os_tag == .macos) mac_signing_opts else .{};
     if (os_tag == .macos) {
         const bundle = addAppBundle(b, package_tool, metadata, target, exe, icons_dir, permissions);
         b.getInstallStep().dependOn(installAppBundle(b, package_tool, bundle, bundle.name));
@@ -326,7 +406,8 @@ pub fn addPackageSteps(
         .rpm_deps = rpm_deps.items,
         .appimage_runtime_override = appimage_runtime_override,
         .webview2_loader = webview2_loader,
-        .app_bundle = app_bundle,
+        .app_bundle = if (app_bundle) |bundle| (if (mac_signing.active()) addSignedBundle(b, package_tool, bundle, mac_signing) else bundle) else null,
+        .mac_signing = mac_signing,
     };
 
     // Determine target formats
@@ -619,6 +700,11 @@ fn addDmg(ctx: *const Context) *std.Build.Step {
     run.addArgs(&.{ "--volname", ctx.metadata.name });
     run.addArg("--app");
     run.addDirectoryArg(bundle.dir);
+    const signing = ctx.mac_signing;
+    if (signing.identity) |id| run.addArgs(&.{ "--identity", id });
+    if (signing.notarize_profile) |p| run.addArgs(&.{ "--notarize-profile", p });
+    if (signing.dry_run) run.addArg("--dry-run");
+    if (signing.active()) run.has_side_effects = true;
     const install = ctx.b.addInstallFileWithDir(
         out_dir.path(ctx.b, dmg_filename),
         .prefix,

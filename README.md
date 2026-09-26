@@ -917,7 +917,10 @@ A plain executable is replaced like on Linux (`raw` / `raw.gz`). An app in a
 of one `<Name>.app`; build it with `COPYFILE_DISABLE=1 tar -czf ... Name.app`):
 it is unpacked next to the running bundle, swapped with it atomically
 (`renameatx_np` `RENAME_SWAP`) and the old bundle is deleted; `restart`
-relaunches the bundle with `open -n`. Other OSes refuse `app.tar.gz`.
+relaunches the bundle with `open -n`. Other OSes refuse `app.tar.gz`. For
+distribution, tar the signed and notarized `zig-out/package/<Name>.app` (see
+[macOS bundles](#macos-bundles-app-dmg)), not `oriel build`'s ad-hoc
+`zig-out/<Name>.app`.
 
 #### 8. Security notes
 
@@ -1251,7 +1254,7 @@ oriel package -Dtarget=x86_64-windows
 - **`nfpm`**: Used to generate `.deb` and `.rpm` packages. Looked up in `$PATH`, then `$HOME/go/bin/nfpm`.
 - **`mksquashfs`**: Used to assemble AppImage SquashFS images.
 - **`desktop-file-validate`**: Used to validate desktop entry files before packaging and installation.
-- **`codesign`, `ditto`, `hdiutil`** (macOS, part of the OS): ad-hoc signing of the `.app` and building the `.dmg`. The `.app` itself can be assembled on any host (unsigned when not built on a Mac); the `.dmg` needs a Mac.
+- **`codesign`, `ditto`, `hdiutil`** (macOS, part of the OS; `xcrun notarytool`/`stapler` from the Xcode command line tools for notarization): signing the `.app` and building the `.dmg`. The `.app` itself can be assembled on any host (unsigned when not built on a Mac); the `.dmg` needs a Mac.
 - **AppImage Runtime**: Uses standard type-2 AppImage runtime (`runtime-<arch>`), automatically downloaded and cached in the local cache dir (overridable via `-Dappimage-runtime=<path>` or env `ORIEL_APPIMAGE_RUNTIME`). Verified for ELF header magic before use.
 
 #### Windows NSIS installer details
@@ -1273,7 +1276,23 @@ The generated NSIS installer provides:
 - `CFBundleURLTypes` for `.url_schemes` (deep links).
 - `NSMicrophoneUsageDescription` and `NSAudioCaptureUsageDescription` when `audio_capture` is enabled (macOS refuses the permission without them).
 
-The bundle is **ad-hoc signed** (`codesign --sign -`), which is enough to run it on the Mac that built it and for macOS to attribute notifications and permission prompts to the app. Distribution to other Macs needs a Developer ID signature and notarization (optional, needs an Apple developer account; not automated yet): `codesign --deep --options runtime --sign "Developer ID Application: …" <Name>.app`, then `xcrun notarytool submit` and `xcrun stapler staple`.
+The bundle is **ad-hoc signed** (`codesign --sign -`), which is enough to run it on the Mac that built it and for macOS to attribute notifications and permission prompts to the app.
+
+**Distribution (Developer ID + notarization).** Other Macs need a Developer ID signature and notarization (an Apple developer account). `oriel package` does both when told which keychain identity and notarytool profile to use; `oriel build`'s `zig-out/<Name>.app` stays ad-hoc (fast, offline):
+
+```sh
+# once: store notarization credentials in the keychain (Apple ID + app-specific password, or an API key)
+xcrun notarytool store-credentials oriel-notary --apple-id you@example.com --team-id AB12CD34EF
+
+oriel package -Dmacos-sign-identity="Developer ID Application: Your Name (AB12CD34EF)" \
+              -Dmacos-notarize-profile=oriel-notary
+```
+
+- `-Dmacos-sign-identity` (or `ORIEL_MACOS_SIGN_IDENTITY`): the `.app` in `zig-out/package` is signed with the hardened runtime, the generated `<Name>.entitlements` (usage entitlements for the declared permissions, e.g. `com.apple.security.device.audio-input`) and a secure timestamp, then checked with `codesign --verify --strict`; the `.dmg` is signed too. `security find-identity -v -p codesigning` lists the identities. `-` signs ad-hoc with the hardened runtime, to try the runtime and entitlements locally.
+- `-Dmacos-notarize-profile` (or `ORIEL_MACOS_NOTARIZE_PROFILE`): the signed `.dmg` goes to `xcrun notarytool submit --wait`; when Apple accepts it, the ticket is stapled (`xcrun stapler staple`) and `spctl` checks it. A rejection prints the `xcrun notarytool log` command with the submission id. Credentials stay in the keychain: the build only passes the profile name.
+- The two bundles have different code signatures, so macOS keeps separate permission grants (Accessibility, Microphone, …) for `zig-out/<Name>.app` and the signed package.
+- Only the main executable is signed: a bundle holding other code (helpers, dylibs) is refused rather than shipped half-signed.
+- `-Dmacos-sign-dry-run`: print the `codesign`/`notarytool`/`stapler`/`spctl` commands without running them (no identity or profile needed), and sign the package ad-hoc with the hardened runtime and the entitlements, so it runs as the signed app would.
 
 #### The AppImage caveat (system GTK4 & WebKitGTK 6.0)
 
@@ -1445,7 +1464,7 @@ oriel dev              # run against Vite dev server with hot reload
 | Input injection | ✅ Linux (X11 XTest + Wayland virtual-keyboard) + Windows (`SendInput`); runtime untested on Windows |
 | Asset protocol for local files (streaming, ranges) | ✅ `media_server`: 127.0.0.1 server with ranges for `<video>`; `app://app/media/` for fetch |
 | Updater | ✅ Ed25519-signed manifests, atomic download & replace, progress events, in-place restart |
-| Bundling (AppImage/deb/rpm/app/dmg), signing | ◐ AppImage, deb, rpm, NSIS setup.exe, macOS .app/.dmg via `oriel package`; macOS bundles ad-hoc signed, Developer ID signing not yet implemented |
+| Bundling (AppImage/deb/rpm/app/dmg), signing | ◐ AppImage, deb, rpm, NSIS setup.exe, macOS .app/.dmg via `oriel package`; macOS Developer ID signing and notarization (`-Dmacos-sign-identity`, `-Dmacos-notarize-profile`); Authenticode not yet |
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
 | Windows | ◐ Win32 + WebView2 shell and every module/plugin (tray, sql, store, dialog, notification, menu, updater, media_server, fs_watch, global_shortcut, input, clipboard), NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
 | macOS | ◐ AppKit + WKWebView shell and every module/plugin (tray, menu, dialog, notification, store, clipboard, fs_watch, global_shortcut, input, updater, media_server, audio_capture incl. system audio), whisper/llama on Metal, deep links, `.app`/`.dmg` packaging |
