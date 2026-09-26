@@ -44,7 +44,13 @@ const builtin = @import("builtin");
 const security = @import("security.zig");
 const ipc = @import("ipc.zig");
 
-const log = std.log.scoped(.oriel);
+const log_scoped = std.log.scoped(.oriel);
+/// Refusals are expected in tests; the test runner fails on logged warnings.
+const log = struct {
+    fn warn(comptime fmt: []const u8, args: anytype) void {
+        if (!@import("builtin").is_test) log_scoped.warn(fmt, args);
+    }
+};
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 
 /// The isolation page's origin (a second host of the app scheme).
