@@ -133,3 +133,15 @@ If you see unexpected crashes or memory issues, check:
 2. All allocated memory is freed or returned to the caller (document ownership).
 3. Events and commands receive allocated data (not stack or temporary allocations).
 4. The app doesn't block the main thread (use async commands for I/O or slow operations).
+
+# Global hotkeys and the app menu on Linux
+
+A build running from `zig-out` isn't installed, so the desktop doesn't know it: on Wayland the GlobalShortcuts portal refuses to register its hotkeys, and it isn't in the app menu. Install a desktop entry for it:
+
+```sh
+oriel desktop-entry            # for `oriel dev`
+oriel desktop-entry --release  # for `oriel build` / `oriel run`
+oriel desktop-entry --remove
+```
+
+Installed packages (deb, rpm, AppImage) ship their own.

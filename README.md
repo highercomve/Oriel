@@ -97,6 +97,7 @@ downloads (minisign-verified) on first use. See [Zig versions](#zig-versions-ori
 | `oriel check` | Type-check the app's Zig code without building binaries (~1 s) |
 | `oriel webview2` | Downloads, verifies (SHA-512 against NuGet registration catalog), and caches Microsoft Edge `WebView2Loader.dll` for Windows (`--version <ver>`, `--arch x64|arm64|all`, `--out <dir>`) |
 | `oriel deep-link` | Configure and register custom URL schemes (`add <scheme>`, `register`, `unregister`) |
+| `oriel desktop-entry` | Linux: installs the app's `.desktop` file and icons for the build in `zig-out` (global hotkeys need it on Wayland); `--release`, `--remove` |
 | `oriel zig` | Manages the Zig versions the CLI uses in `~/.oriel/zig` (`install [version]`, `uninstall <version>`, `list`, `which`) |
 | `oriel update` | Updates the CLI binary in place using Oriel's self-updater (`--check`, `--version <tag>`, `--yes`) |
 | `oriel --version` | CLI version and the Oriel ref `init` pins |
@@ -1271,9 +1272,17 @@ The packaging system is built around a pluggable `Format` enum and per-format di
 
 When an unsupported OS target is packaged (or no formats are configured), `oriel package` fails gracefully at build time with a clear message (`"no package formats for <os> yet"`) via `b.addFail`.
 
-### Development desktop entry (`zig build desktop-entry`)
+### Desktop entry for local runs (`oriel desktop-entry`)
 
-Inside an app project, running the `zig build desktop-entry` app build step installs desktop integration files for local development into `$XDG_DATA_HOME` (`~/.local/share` fallback):
+Installed packages ship a `.desktop` file; a build running from `zig-out` has none. On Linux, `oriel desktop-entry` installs one for the local build into `$XDG_DATA_HOME` (`~/.local/share` fallback), so global hotkeys (the GlobalShortcuts portal), the app menu and notifications know the app:
+
+```sh
+oriel desktop-entry            # the dev build (<id>.Dev, `oriel dev`), or the production build without a dev mode
+oriel desktop-entry --release  # the production build (<id>, `oriel build` / `oriel run`)
+oriel desktop-entry --remove   # remove both
+```
+
+(`zig build desktop-entry` / `desktop-entry-release` are the underlying steps.) It installs:
 
 - **Desktop Entry**: `$XDG_DATA_HOME/applications/<id>.desktop` (validated with `desktop-file-validate`)
 - **Icons**: `$XDG_DATA_HOME/icons/hicolor/<size>x<size>/apps/<id>.png` (sizes: 16, 32, 48, 64, 128, 256, 512)

@@ -385,7 +385,7 @@ fn registerAppId(conn: *gio.DBusConnection, app_id: [*:0]const u8) !void {
         if (std.mem.eql(u8, n, "org.freedesktop.DBus.Error.UnknownMethod") or
             std.mem.eql(u8, n, "org.freedesktop.DBus.Error.UnknownInterface")) return;
     }
-    log.err("GlobalShortcuts: registering app id '{s}' with the portal: {s} (is {s}.desktop installed?)", .{ app_id, e.f_message orelse "unknown error", app_id });
+    log.err("GlobalShortcuts: registering app id '{s}' with the portal: {s} (no {s}.desktop is installed: `oriel desktop-entry` installs one for a dev build, `oriel desktop-entry --release` for `oriel build`)", .{ app_id, e.f_message orelse "unknown error", app_id });
     return error.AppIdNotRegistered;
 }
 

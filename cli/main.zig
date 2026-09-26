@@ -18,6 +18,7 @@ const update_cmd = @import("update.zig");
 const webview2_cmd = @import("webview2.zig");
 const deep_link_cmd = @import("deep_link.zig");
 const permission_cmd = @import("permission.zig");
+const desktop_entry_cmd = @import("desktop_entry.zig");
 const zig_cmd = @import("zig_manager.zig");
 const setup_cmd = @import("setup.zig");
 
@@ -31,6 +32,7 @@ pub const Commands = union(enum) {
     webview2: webview2_cmd.Command,
     deep_link: deep_link_cmd.Command,
     permission: permission_cmd.Command,
+    desktop_entry: desktop_entry_cmd.Command,
     zig: zig_cmd.Command,
     dev: project.Wrapper("dev", "Run the app against the frontend dev server, with hot reload"),
     build: project.Wrapper(null, "Build the app (frontend embedded) into zig-out/bin"),
@@ -98,6 +100,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
             .webview2 => |c| return webview2_cmd.run(ctx, c),
             .deep_link => |c| return deep_link_cmd.run(ctx, c),
             .permission => |c| return permission_cmd.run(ctx, c),
+            .desktop_entry => |c| return desktop_entry_cmd.run(ctx, c),
             .zig => |c| return zig_cmd.run(ctx, c),
             inline else => |c| return project.exec(ctx, @TypeOf(c).zig_step, c.args),
         },
@@ -114,6 +117,7 @@ test {
     _ = webview2_cmd;
     _ = deep_link_cmd;
     _ = permission_cmd;
+    _ = desktop_entry_cmd;
     _ = zig_cmd;
     _ = project;
     _ = @import("template.zig");
@@ -129,7 +133,7 @@ test "command table" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try args.writeHelp(Commands, program, &out.writer);
-    for ([_][]const u8{ "init", "doctor", "setup", "update", "webview2", "deep-link", "permission", "zig", "dev", "build", "run", "package", "types", "check" }) |name| {
+    for ([_][]const u8{ "init", "doctor", "setup", "update", "webview2", "deep-link", "permission", "desktop-entry", "zig", "dev", "build", "run", "package", "types", "check" }) |name| {
         const line = try std.fmt.allocPrint(std.testing.allocator, "\n  {s} ", .{name});
         defer std.testing.allocator.free(line);
         try std.testing.expect(std.mem.indexOf(u8, out.written(), line) != null);

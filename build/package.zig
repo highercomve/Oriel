@@ -345,28 +345,57 @@ pub fn addPackageSteps(
         getOrCreateStep(b, b.fmt("package-{s}", .{@tagName(fmt)}), b.fmt("Build only the {s} package", .{@tagName(fmt)})).dependOn(step);
     }
 
-    // Desktop-entry step (for local development)
+    // Desktop entries for local runs (Linux): the GlobalShortcuts portal (and
+    // the desktop's app list) only know apps with an installed .desktop file.
+    // `desktop-entry`: the dev build (`<id>.Dev`, `oriel dev`) when there is
+    // one, else the production build; `desktop-entry-release`: the production
+    // build (`<id>`, `oriel build` / `oriel run`).
     const has_dev = dev_exe != null;
-    const effective_app_id = if (has_dev) b.fmt("{s}.Dev", .{metadata.id}) else metadata.id;
-    const effective_name = if (has_dev) b.fmt("{s} (Dev)", .{metadata.name}) else metadata.name;
-    const target_bin_name = if (has_dev) b.fmt("{s}-dev", .{metadata.exe_name}) else metadata.exe_name;
-    const target_compile = if (has_dev) dev_exe.? else exe;
+    addDesktopEntryStep(b, package_tool, metadata, icons_dir, "desktop-entry", "Install the desktop entry and icons of the dev build (or the production build) into $XDG_DATA_HOME", if (has_dev) .{
+        .id = b.fmt("{s}.Dev", .{metadata.id}),
+        .name = b.fmt("{s} (Dev)", .{metadata.name}),
+        .bin_name = b.fmt("{s}-dev", .{metadata.exe_name}),
+        .compile = dev_exe.?,
+    } else .{ .id = metadata.id, .name = metadata.name, .bin_name = metadata.exe_name, .compile = exe });
+    addDesktopEntryStep(b, package_tool, metadata, icons_dir, "desktop-entry-release", "Install the desktop entry and icons of the production build into $XDG_DATA_HOME", .{
+        .id = metadata.id,
+        .name = metadata.name,
+        .bin_name = metadata.exe_name,
+        .compile = exe,
+    });
+}
 
+const DesktopTarget = struct {
+    id: []const u8,
+    name: []const u8,
+    bin_name: []const u8,
+    compile: *std.Build.Step.Compile,
+};
+
+fn addDesktopEntryStep(
+    b: *std.Build,
+    package_tool: *std.Build.Step.Compile,
+    metadata: Metadata,
+    icons_dir: std.Build.LazyPath,
+    step_name: []const u8,
+    description: []const u8,
+    t: DesktopTarget,
+) void {
     const run_dev_desktop = b.addRunArtifact(package_tool);
     run_dev_desktop.addArg("generate-desktop");
     run_dev_desktop.addArg("--out");
-    const dev_desktop_file = run_dev_desktop.addOutputFileArg(b.fmt("{s}.desktop", .{effective_app_id}));
-    const abs_bin = b.pathFromRoot(b.getInstallPath(.bin, target_bin_name));
+    const dev_desktop_file = run_dev_desktop.addOutputFileArg(b.fmt("{s}.desktop", .{t.id}));
+    const abs_bin = b.pathFromRoot(b.getInstallPath(.bin, t.bin_name));
     run_dev_desktop.addArgs(&.{
-        "--id",               effective_app_id,
-        "--name",             effective_name,
+        "--id",               t.id,
+        "--name",             t.name,
         "--exec",             abs_bin,
-        "--icon",             effective_app_id,
+        "--icon",             t.id,
         "--comment",          metadata.summary,
         "--categories",       metadata.categories,
         "--terminal",         "false",
         "--startup-notify",   "true",
-        "--startup-wm-class", effective_app_id,
+        "--startup-wm-class", t.id,
     });
     for (metadata.url_schemes) |s| {
         run_dev_desktop.addArgs(&.{ "--url-scheme", s });
@@ -379,12 +408,12 @@ pub fn addPackageSteps(
     run_install_desktop.addArg("--icons-dir");
     run_install_desktop.addDirectoryArg(icons_dir);
     run_install_desktop.addArg("--app-id");
-    run_install_desktop.addArg(effective_app_id);
+    run_install_desktop.addArg(t.id);
     run_install_desktop.has_side_effects = true;
 
-    const desktop_entry_step = getOrCreateStep(b, "desktop-entry", "Install desktop entry and icons for development to $XDG_DATA_HOME");
-    desktop_entry_step.dependOn(&b.addInstallArtifact(target_compile, .{}).step);
-    desktop_entry_step.dependOn(&run_install_desktop.step);
+    const step = getOrCreateStep(b, step_name, description);
+    step.dependOn(&b.addInstallArtifact(t.compile, .{}).step);
+    step.dependOn(&run_install_desktop.step);
 }
 
 /// Dispatch format builder based on Format enum.
