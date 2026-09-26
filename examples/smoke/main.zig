@@ -403,6 +403,7 @@ const Commands = struct {
 
     /// Called by the page in --auto-quit mode once everything has rendered.
     pub fn done(_: std.mem.Allocator, args: struct { failed: u32, report: []const u8 }) void {
+        reported.store(true, .release);
         std.debug.print("{s}\n", .{args.report});
         oriel.App.quit(if (args.failed == 0) 0 else 1);
     }
@@ -418,6 +419,24 @@ fn context() oriel.CheckContext {
 }
 
 fn testOpenExternalHook(_: [*:0]const u8) void {}
+
+/// Set by `done`: the page reported its results.
+var reported = std.atomic.Value(bool).init(false);
+
+/// --auto-quit: fail loudly when the page hasn't reported after 5 minutes.
+const Watchdog = struct {
+    const limit_s = 300;
+
+    fn run() void {
+        var waited: u32 = 0;
+        while (waited < limit_s) : (waited += 1) {
+            io.sleep(.fromSeconds(1), .awake) catch {};
+            if (reported.load(.acquire)) return;
+        }
+        std.debug.print("[FAIL] page report     no report from the page after {d} s (is window.oriel defined? the bridge may not have loaded)\n", .{limit_s});
+        std.process.exit(1);
+    }
+};
 
 /// The arguments of the last forwarded launch, as JSON (on_second_instance).
 var second_instance_buf: [1024]u8 = undefined;
@@ -523,5 +542,11 @@ pub fn main(init: std.process.Init) !u8 {
     comptime var config_auto = config_gui;
     config_auto.start = "index.html?auto-quit";
     const api: oriel.App.Api = .{ .commands = Commands };
+    if (auto_quit) {
+        // A page that never reports (e.g. no window.oriel: the bridge didn't
+        // load) must fail the run, not hang it.
+        const watchdog = try std.Thread.spawn(.{}, Watchdog.run, .{});
+        watchdog.detach();
+    }
     return if (auto_quit) oriel.App.run(init.io, api, config_auto) else oriel.App.run(init.io, api, config_gui);
 }

@@ -247,6 +247,69 @@ test permissionKind {
     try std.testing.expect(permissionKind(@enumFromInt(6)) == null); // CLIPBOARD_READ
 }
 
+/// Loads a window's first page once its bridge script is registered:
+/// AddScriptToExecuteOnDocumentCreated completes asynchronously, and a
+/// navigation started before that can run without `window.oriel`.
+/// Refcounted (WebView2 holds a reference until it has called Invoke).
+const NavigateWhenReady = struct {
+    handler: webview2.ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler = .{ .lpVtbl = &vtable },
+    refs: std.atomic.Value(u32) = .init(1),
+    view: *webview2.ICoreWebView2,
+    uri_w: [:0]u16,
+
+    const Handler = webview2.ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler;
+    const vtable: Handler.VTable = .{ .QueryInterface = &qi, .AddRef = &addRef, .Release = &release, .Invoke = &invoke };
+
+    fn create(view: *webview2.ICoreWebView2, uri_w: []const u16) !*NavigateWhenReady {
+        const gpa = std.heap.smp_allocator;
+        const self = try gpa.create(NavigateWhenReady);
+        errdefer gpa.destroy(self);
+        self.* = .{ .view = view, .uri_w = try gpa.dupeZ(u16, uri_w) };
+        _ = view.lpVtbl.AddRef(view);
+        return self;
+    }
+
+    fn fromHandler(h: *Handler) *NavigateWhenReady {
+        return @fieldParentPtr("handler", h);
+    }
+
+    fn qi(h: *Handler, riid: *const win32.GUID, ppv: *?*anyopaque) callconv(.winapi) win32.HRESULT {
+        if (win32.isEqualGUID(riid, &webview2.IID_IUnknown) or win32.isEqualGUID(riid, &webview2.IID_ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler)) {
+            ppv.* = h;
+            _ = addRef(h);
+            return win32.S_OK;
+        }
+        ppv.* = null;
+        return win32.E_NOINTERFACE;
+    }
+
+    fn addRef(h: *Handler) callconv(.winapi) win32.ULONG {
+        return fromHandler(h).refs.fetchAdd(1, .monotonic) + 1;
+    }
+
+    fn release(h: *Handler) callconv(.winapi) win32.ULONG {
+        const self = fromHandler(h);
+        const left = self.refs.fetchSub(1, .acq_rel) - 1;
+        if (left == 0) {
+            self.view.release();
+            std.heap.smp_allocator.free(self.uri_w);
+            std.heap.smp_allocator.destroy(self);
+        }
+        return left;
+    }
+
+    fn invoke(h: *Handler, error_code: win32.HRESULT, _: ?[*:0]const u16) callconv(.winapi) win32.HRESULT {
+        const self = fromHandler(h);
+        if (error_code < 0) log.err("the bridge script was not registered (0x{X}): the page gets no window.oriel", .{@as(u32, @bitCast(error_code))});
+        self.navigate();
+        return win32.S_OK;
+    }
+
+    fn navigate(self: *NavigateWhenReady) void {
+        _ = self.view.navigate(self.uri_w.ptr);
+    }
+};
+
 pub fn getWindowByView(view: *webview2.ICoreWebView2) ?*App.Window {
     var unk_a: ?*anyopaque = null;
     if (view.lpVtbl.QueryInterface(view, &webview2.IID_IUnknown, &unk_a) < 0 or unk_a == null) return null;
@@ -1244,16 +1307,13 @@ pub fn WindowCreator(
                 _ = view.lpVtbl.remove_NavigationCompleted(view, data.dev_token);
             };
 
-            // Inject bridge JS
-            BridgeImpl.setupUserContent(view, options.label);
-
             // Size controller to client area
             var client_rect: win32.RECT = undefined;
             _ = win32.GetClientRect(hwnd, &client_rect);
             _ = controller.putBounds(client_rect);
             _ = controller.putIsVisible(win32.TRUE);
 
-            // Load initial URI
+            // Inject the bridge, then load the first page once it applies.
             const target_uri = try security.resolveWindowUrl(
                 gpa,
                 config.security,
@@ -1265,7 +1325,9 @@ pub fn WindowCreator(
             defer gpa.free(target_uri);
             const target_uri_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, target_uri);
             defer gpa.free(target_uri_w);
-            _ = view.navigate(target_uri_w.ptr);
+            const nav = try NavigateWhenReady.create(view, target_uri_w);
+            defer _ = NavigateWhenReady.release(&nav.handler);
+            if (!BridgeImpl.setupUserContent(view, options.label, &nav.handler)) nav.navigate();
 
             if (ShellMod.on_window_created_fn) |hook| {
                 hook(hwnd);
