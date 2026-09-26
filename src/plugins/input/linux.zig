@@ -230,19 +230,42 @@ pub fn keyCombo(combo: []const u8) !void {
         const parsed = try global_shortcut.parseTrigger(combo);
         const ev_key = evdevForKey(parsed.key) orelse return error.UnknownKey;
 
-        if (parsed.modifiers.ctrl) wl_input.vk.key(0, EVDEV.KEY_LEFTCTRL, 1);
-        if (parsed.modifiers.alt) wl_input.vk.key(0, EVDEV.KEY_LEFTALT, 1);
-        if (parsed.modifiers.shift) wl_input.vk.key(0, EVDEV.KEY_LEFTSHIFT, 1);
-        if (parsed.modifiers.super) wl_input.vk.key(0, EVDEV.KEY_LEFTMETA, 1);
+        // zwp_virtual_keyboard_v1: modifier *keys* don't set modifier state;
+        // the client sends it with `modifiers` (standard xkb masks: Shift 1,
+        // Control 4, Mod1/Alt 8, Mod4/Super 64). Without it the app sees a
+        // bare "c" instead of Ctrl+C.
+        var mods: u32 = 0;
+        if (parsed.modifiers.shift) mods |= 1;
+        if (parsed.modifiers.ctrl) mods |= 4;
+        if (parsed.modifiers.alt) mods |= 8;
+        if (parsed.modifiers.super) mods |= 64;
+        var t: u32 = 1;
 
-        wl_input.vk.key(0, ev_key, 1);
-        wl_input.vk.key(0, ev_key, 0);
+        if (parsed.modifiers.ctrl) wl_input.vk.key(t, EVDEV.KEY_LEFTCTRL, 1);
+        if (parsed.modifiers.alt) wl_input.vk.key(t, EVDEV.KEY_LEFTALT, 1);
+        if (parsed.modifiers.shift) wl_input.vk.key(t, EVDEV.KEY_LEFTSHIFT, 1);
+        if (parsed.modifiers.super) wl_input.vk.key(t, EVDEV.KEY_LEFTMETA, 1);
+        if (mods != 0) wl_input.vk.modifiers(mods, 0, 0, 0);
+        _ = wl_input.globals.display.flush();
+        sleepMs(10);
 
-        if (parsed.modifiers.super) wl_input.vk.key(0, EVDEV.KEY_LEFTMETA, 0);
-        if (parsed.modifiers.shift) wl_input.vk.key(0, EVDEV.KEY_LEFTSHIFT, 0);
-        if (parsed.modifiers.alt) wl_input.vk.key(0, EVDEV.KEY_LEFTALT, 0);
-        if (parsed.modifiers.ctrl) wl_input.vk.key(0, EVDEV.KEY_LEFTCTRL, 0);
+        t += 10;
+        wl_input.vk.key(t, ev_key, 1);
+        _ = wl_input.globals.display.flush();
+        sleepMs(10);
+        t += 10;
+        wl_input.vk.key(t, ev_key, 0);
+        _ = wl_input.globals.display.flush();
+        sleepMs(10);
 
+        t += 10;
+        if (parsed.modifiers.super) wl_input.vk.key(t, EVDEV.KEY_LEFTMETA, 0);
+        if (parsed.modifiers.shift) wl_input.vk.key(t, EVDEV.KEY_LEFTSHIFT, 0);
+        if (parsed.modifiers.alt) wl_input.vk.key(t, EVDEV.KEY_LEFTALT, 0);
+        if (parsed.modifiers.ctrl) wl_input.vk.key(t, EVDEV.KEY_LEFTCTRL, 0);
+        if (mods != 0) wl_input.vk.modifiers(0, 0, 0, 0);
+        // Delivered before the keyboard is destroyed.
+        _ = wl_input.globals.display.roundtrip();
         _ = wl_input.globals.display.flush();
         return;
     }
@@ -319,11 +342,19 @@ pub fn typeText(text: []const u8) !void {
                 continue;
             }
 
-            if (need_shift) wl_input.vk.key(0, EVDEV.KEY_LEFTSHIFT, 1);
+            // Shift as modifier state too (see keyCombo).
+            if (need_shift) {
+                wl_input.vk.key(0, EVDEV.KEY_LEFTSHIFT, 1);
+                wl_input.vk.modifiers(1, 0, 0, 0);
+            }
             wl_input.vk.key(0, ev_key, 1);
             wl_input.vk.key(0, ev_key, 0);
-            if (need_shift) wl_input.vk.key(0, EVDEV.KEY_LEFTSHIFT, 0);
+            if (need_shift) {
+                wl_input.vk.key(0, EVDEV.KEY_LEFTSHIFT, 0);
+                wl_input.vk.modifiers(0, 0, 0, 0);
+            }
         }
+        _ = wl_input.globals.display.roundtrip();
         _ = wl_input.globals.display.flush();
         return;
     }
