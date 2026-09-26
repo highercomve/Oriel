@@ -47,11 +47,19 @@ This type-checks your Zig code in about a second without building binaries. Hand
 
 # Logging
 
-The app logs to stderr and to a file in the data directory:
+The app logs to stderr, and also to a file once `src/main.zig` routes `std.log` through Oriel:
+
+```zig
+pub const std_options: std.Options = .{ .logFn = oriel.log.logFn };
+```
 
 ```sh
-$ cat ~/.local/share/<app_id>/app.log
+$ cat ~/.local/share/<app_id>/app.log            # Linux
+$ cat ~/Library/Logs/<app_id>/app.log            # macOS (also in Console.app)
+> type %LOCALAPPDATA%\<app_id>\app.log           # Windows
 ```
+
+The file is appended to, never rotated. On macOS an app started from Finder or the Dock has no terminal, so the file is where its messages go.
 
 In `src/main.zig`, use standard Zig logging:
 

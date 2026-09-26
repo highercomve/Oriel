@@ -782,7 +782,15 @@ try oriel.media_server.scheme.setRoot("/home/me/Videos", .inside_root);
 
 ### Logging (`oriel.log`)
 
-Automatic thread-safe routing of `std.log` to stderr and `$XDG_DATA_HOME/<app_id>/app.log`. In debug/dev builds, WebKit console messages are forwarded directly to stdout.
+Thread-safe routing of `std.log` to stderr and a log file, once the app sets `pub const std_options: std.Options = .{ .logFn = oriel.log.logFn };` in its `main.zig`:
+
+| OS | Log file |
+| --- | --- |
+| Linux | `$XDG_DATA_HOME/<app_id>/app.log` (`~/.local/share/<app_id>/app.log`) |
+| Windows | `%LOCALAPPDATA%\<app_id>\app.log` |
+| macOS | `~/Library/Logs/<app_id>/app.log` (also listed in Console.app) |
+
+The file is appended to and never rotated. On macOS it matters most: an app started from Finder or the Dock has no terminal, so stderr goes nowhere. In debug/dev builds, WebKit console messages are forwarded directly to stdout.
 
 ### Updater (`oriel.updater`)
 
