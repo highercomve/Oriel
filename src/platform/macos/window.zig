@@ -77,14 +77,102 @@ const Op = union(enum) {
     size: WindowSize,
 };
 
+/// The app that was frontmost before one of our windows took the focus
+/// (+1), so hiding or closing that window can hand the focus back, as on
+/// Linux and Windows. macOS leaves an app active after its key window goes
+/// away (an accessory app then holds the focus with nothing on screen).
+/// Kept current by `appActivated` (every other app's activation), and set
+/// when our window takes the focus.
+var previous_app: ?Object = null;
+
+fn rememberFrontmost() void {
+    const ws = cocoa.class("NSWorkspace").msgSend(Object, "sharedWorkspace", .{});
+    rememberApp(ws.msgSend(Object, "frontmostApplication", .{}));
+}
+
+fn rememberApp(app: Object) void {
+    if (app.value == null) return;
+    const mine = cocoa.class("NSRunningApplication").msgSend(Object, "currentApplication", .{});
+    if (app.msgSend(i32, "processIdentifier", .{}) == mine.msgSend(i32, "processIdentifier", .{})) return;
+    if (previous_app) |p| p.release();
+    previous_app = app.msgSend(Object, "retain", .{});
+}
+
+/// NSWorkspaceDidActivateApplicationNotification: the last other app the
+/// user was in (clicking or Cmd-Tabbing away and back keeps it current).
+fn appActivated(_: cocoa.id, _: cocoa.c.SEL, notification: cocoa.id) callconv(.c) void {
+    const info = (Object{ .value = notification }).msgSend(Object, "userInfo", .{});
+    if (info.value == null) return;
+    const key = cocoa.nsString("NSWorkspaceApplicationKey") orelse return;
+    defer key.release();
+    rememberApp(info.msgSend(Object, "objectForKey:", .{key}));
+}
+
+/// Overlays (`focus_on_show = false`) can't become key, so AppKit never
+/// hands them the keyboard when another window goes away or on a click;
+/// `focus()` lets one take it until it loses it again (or is hidden).
+/// Main thread only.
+var focusable_overlays: [16]usize = @splat(0);
+
+fn allowOverlayKey(window: cocoa.id, allow: bool) void {
+    const key = @intFromPtr(window orelse return);
+    for (&focusable_overlays) |*slot| {
+        if (slot.* == key) {
+            if (!allow) slot.* = 0;
+            return;
+        }
+    }
+    if (!allow) return;
+    for (&focusable_overlays) |*slot| {
+        if (slot.* == 0) {
+            slot.* = key;
+            return;
+        }
+    }
+}
+
+/// An overlay that lost the keyboard can't get it back on its own.
+fn windowDidResignKey(_: cocoa.id, _: cocoa.c.SEL, notification: cocoa.id) callconv(.c) void {
+    allowOverlayKey((Object{ .value = notification }).msgSend(Object, "object", .{}).value, false);
+}
+
+fn overlayCanBecome(self: cocoa.id, _: cocoa.c.SEL) callconv(.c) cocoa.c.BOOL {
+    const key = @intFromPtr(self orelse return cocoa.boolean(false));
+    for (focusable_overlays) |w| if (w == key) return cocoa.boolean(true);
+    return cocoa.boolean(false);
+}
+
+/// After our key window went away: when no other window of ours took the
+/// keyboard, activate the app that had it before.
+fn returnFocus() void {
+    const app = ShellMod.sharedApplication();
+    if (!cocoa.isTrue(app.msgSend(cocoa.c.BOOL, "isActive", .{}))) return;
+    if (app.msgSend(Object, "keyWindow", .{}).value != null) return;
+    const prev = previous_app orelse return;
+    if (cocoa.isTrue(prev.msgSend(cocoa.c.BOOL, "isTerminated", .{}))) return;
+    _ = prev.msgSend(cocoa.c.BOOL, "activateWithOptions:", .{@as(c_ulong, 0)});
+}
+
+/// Give the web view the keyboard when the window itself holds it (a
+/// control the page focused inside the web view keeps it).
+fn focusPage(handle: WindowHandle) void {
+    const win = handle.nsWindow();
+    const responder = win.msgSend(Object, "firstResponder", .{});
+    if (responder.value == null or responder.value == handle.window) {
+        _ = win.msgSend(cocoa.c.BOOL, "makeFirstResponder:", .{handle.webView()});
+    }
+}
+
 fn apply(handle: WindowHandle, op: Op) void {
     const win = handle.nsWindow();
     switch (op) {
         .show => {
             const w = App.getWindowByHandle(handle);
             if (w == null or w.?.options.focus_on_show) {
+                rememberFrontmost();
                 win.msgSend(void, "makeKeyAndOrderFront:", .{cocoa.nil});
                 ShellMod.sharedApplication().msgSend(void, "activateIgnoringOtherApps:", .{cocoa.boolean(true)});
+                focusPage(handle);
             } else {
                 // Overlays (captions): shown without taking the keyboard or
                 // activating the app, so typing stays where it was.
@@ -93,10 +181,20 @@ fn apply(handle: WindowHandle, op: Op) void {
             if (w) |ww| overlay.onShow(handle, ww.options);
         },
         .focus => {
+            rememberFrontmost();
+            if (App.getWindowByHandle(handle)) |w| {
+                if (!w.options.focus_on_show) allowOverlayKey(handle.window, true);
+            }
             win.msgSend(void, "makeKeyAndOrderFront:", .{cocoa.nil});
             ShellMod.sharedApplication().msgSend(void, "activateIgnoringOtherApps:", .{cocoa.boolean(true)});
+            focusPage(handle);
         },
-        .hide => win.msgSend(void, "orderOut:", .{cocoa.nil}),
+        .hide => {
+            const was_key = cocoa.isTrue(win.msgSend(cocoa.c.BOOL, "isKeyWindow", .{}));
+            allowOverlayKey(handle.window, false);
+            win.msgSend(void, "orderOut:", .{cocoa.nil});
+            if (was_key) returnFocus();
+        },
         .toggle => {
             const visible = cocoa.isTrue(win.msgSend(cocoa.c.BOOL, "isVisible", .{}));
             const key = cocoa.isTrue(win.msgSend(cocoa.c.BOOL, "isKeyWindow", .{}));
@@ -338,6 +436,7 @@ fn getWindowByNSWindow(nswindow: cocoa.id) ?*App.Window {
 /// release is deferred to the enclosing autorelease pool so a window can be
 /// torn down from inside its own delegate or webview callbacks.
 fn teardown(handle: WindowHandle) void {
+    allowOverlayKey(handle.window, false);
     const view = handle.webView();
     if (handle.webview) |v| isolation.forget(@intFromPtr(v));
     view.msgSend(void, "setNavigationDelegate:", .{cocoa.nil});
@@ -361,8 +460,10 @@ pub fn destroyWindow(handle: WindowHandle) void {
 
 /// The close sequence shared by the close button, `closeWindow` and JS.
 fn closeNow(win: *App.Window) void {
+    const was_key = cocoa.isTrue(win.handle.nsWindow().msgSend(cocoa.c.BOOL, "isKeyWindow", .{}));
     if (win.options.hide_on_close or (std.mem.eql(u8, win.label, "main") and current_on_close_hide)) {
         win.handle.nsWindow().msgSend(void, "orderOut:", .{cocoa.nil});
+        if (was_key) returnFocus();
         return;
     }
 
@@ -383,7 +484,8 @@ fn closeNow(win: *App.Window) void {
     teardown(win.handle);
     freeWindow(win);
 
-    if (remaining == 0) App.quit(0);
+    if (remaining == 0) return App.quit(0);
+    if (was_key) returnFocus();
 }
 
 fn freeWindow(win: *App.Window) void {
@@ -442,6 +544,13 @@ pub fn WindowCreator(
         var nav_delegate: Object = cocoa.nil;
         var message_handler: Object = cocoa.nil;
         var scheme_handler: Object = cocoa.nil;
+        /// NSWindow subclass: a borderless window (`decorations = false`)
+        /// can still become key and main, so it takes keyboard input (plain
+        /// NSWindow refuses for borderless windows). Overlays get
+        /// `overlay_class` (see `focusable_overlays`).
+        var window_class: ?cocoa.Class = null;
+        var overlay_class: ?cocoa.Class = null;
+        var workspace_observer: Object = cocoa.nil;
 
         var window_open_counter = std.atomic.Value(u32).init(1);
         var dev_retries_left: u32 = 0;
@@ -452,6 +561,7 @@ pub fn WindowCreator(
 
             window_delegate = cocoa.new(cocoa.defineClass("OrielWindowDelegate", &.{"NSWindowDelegate"}, .{
                 .{ "windowShouldClose:", windowShouldClose },
+                .{ "windowDidResignKey:", windowDidResignKey },
             }));
             nav_delegate = cocoa.new(cocoa.defineClass("OrielNavigationDelegate", &.{ "WKNavigationDelegate", "WKUIDelegate" }, .{
                 .{ "webView:decidePolicyForNavigationAction:decisionHandler:", decidePolicy },
@@ -464,10 +574,34 @@ pub fn WindowCreator(
             } ++ js_dialogs.methods));
             message_handler = cocoa.new(BridgeImpl.handlerClass());
             scheme_handler = cocoa.new(SchemeImpl.handlerClass());
+            window_class = cocoa.defineSubclass("OrielWindow", "NSWindow", &.{}, .{
+                .{ "canBecomeKeyWindow", canBecome },
+                .{ "canBecomeMainWindow", canBecome },
+            });
+            overlay_class = cocoa.defineSubclass("OrielOverlayWindow", "NSWindow", &.{}, .{
+                .{ "canBecomeKeyWindow", overlayCanBecome },
+                .{ "canBecomeMainWindow", overlayCanBecome },
+            });
+            workspace_observer = cocoa.new(cocoa.defineClass("OrielWorkspaceObserver", &.{}, .{
+                .{ "appActivated:", appActivated },
+            }));
+            const center = cocoa.class("NSWorkspace").msgSend(Object, "sharedWorkspace", .{}).msgSend(Object, "notificationCenter", .{});
+            if (cocoa.nsString("NSWorkspaceDidActivateApplicationNotification")) |name| {
+                defer name.release();
+                center.msgSend(void, "addObserver:selector:name:object:", .{ workspace_observer, objc.sel("appActivated:"), name, cocoa.nil });
+            }
+        }
+
+        fn canBecome(_: cocoa.id, _: cocoa.c.SEL) callconv(.c) cocoa.c.BOOL {
+            return cocoa.boolean(true);
         }
 
         pub fn deinit() void {
-            inline for (.{ &window_delegate, &nav_delegate, &message_handler, &scheme_handler }) |obj| {
+            if (workspace_observer.value != null) {
+                const center = cocoa.class("NSWorkspace").msgSend(Object, "sharedWorkspace", .{}).msgSend(Object, "notificationCenter", .{});
+                center.msgSend(void, "removeObserver:", .{workspace_observer});
+            }
+            inline for (.{ &window_delegate, &nav_delegate, &message_handler, &scheme_handler, &workspace_observer }) |obj| {
                 obj.*.release();
                 obj.* = cocoa.nil;
             }
@@ -489,7 +623,8 @@ pub fn WindowCreator(
                 .origin = .{ .x = 0, .y = 0 },
                 .size = .{ .width = @floatFromInt(options.width), .height = @floatFromInt(options.height) },
             };
-            const win = cocoa.class("NSWindow").msgSend(Object, "alloc", .{})
+            const cls = (if (options.focus_on_show) window_class else overlay_class) orelse cocoa.class("NSWindow");
+            const win = cls.msgSend(Object, "alloc", .{})
                 .msgSend(Object, "initWithContentRect:styleMask:backing:defer:", .{ rect, style, NSBackingStoreBuffered, cocoa.boolean(false) });
             if (win.value == null) return error.CreateWindowFailed;
             errdefer win.release();
@@ -543,6 +678,10 @@ pub fn WindowCreator(
                 view.msgSend(void, "setInspectable:", .{cocoa.boolean(true)}); // macOS 13.3+
             }
             win.msgSend(void, "setContentView:", .{view});
+            // Keys go to the page (a borderless window doesn't pick its
+            // content view on its own).
+            win.msgSend(void, "setInitialFirstResponder:", .{view});
+            _ = win.msgSend(cocoa.c.BOOL, "makeFirstResponder:", .{view});
             win.msgSend(void, "setDelegate:", .{window_delegate});
             overlay.setup(win, view, options);
 
