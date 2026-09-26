@@ -355,6 +355,16 @@ async function securityChecks() {
   });
   check("events", got?.n === 42, got ? `listen("ping") received ${JSON.stringify(got)}` : "no event received");
 
+  // A command's events arrive before its reply (a listener removed when the
+  // call resolves, as streaming UIs do, must have seen them all).
+  const seen = [];
+  const offOrder = oriel.listen("order", (p) => seen.push(p.i));
+  const returned = await oriel.invoke("emit_then_return", { count: 5 });
+  const atResolve = seen.slice();
+  offOrder();
+  check("event order", returned === 5 && atResolve.join(",") === "0,1,2,3,4",
+    `events seen when the call resolved: [${atResolve.join(",")}] of 5`);
+
   // openExternal: rejects dangerous schemes (file:, javascript:), allows http(s):
   let fileRejected = false;
   try {

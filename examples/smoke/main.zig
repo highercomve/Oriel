@@ -282,6 +282,13 @@ const Commands = struct {
         oriel.App.emit("ping", .{ .n = args.n });
     }
 
+    /// Event order: a (sync) command's events must reach the page before its
+    /// reply, so a listener removed when the call resolves still sees them.
+    pub fn emit_then_return(_: std.mem.Allocator, args: struct { count: u32 }) u32 {
+        for (0..args.count) |i| oriel.App.emit("order", .{ .i = i });
+        return args.count;
+    }
+
     pub fn test_windows_and_menu(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {
         if (oriel.options.menu) {
             const menu_items = [_]oriel.menu.MenuItem{

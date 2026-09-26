@@ -119,6 +119,11 @@ pub const quit = impl.quit;
 pub const openExternal = impl.openExternal;
 pub const evalJs = impl.evalJs;
 pub const evalJsByLabel = impl.evalJsByLabel;
+/// Optional: deliver an event to the page(s) in order with IPC replies
+/// (`emitEvent(handle: ?WindowHandle, label: ?[]const u8, name_json, payload_json)`).
+/// Without it, App emits through evalJs.
+pub const has_emit_event = @hasDecl(impl, "emitEvent");
+pub const emitEvent = if (has_emit_event) impl.emitEvent else void;
 pub const setMenu = impl.setMenu;
 
 // Platform-specific declarations (e.g. for Linux backward compatibility)

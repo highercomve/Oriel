@@ -44,6 +44,12 @@ pub const bridge_js =
     \\
     \\  window.chrome.webview.addEventListener('message', (event) => {
     \\    const data = event.data;
+    \\    // Events come on the same channel as replies, so a command's
+    \\    // events arrive before its reply.
+    \\    if (data && typeof data === 'object' && '__oriel_event' in data) {
+    \\      window.oriel?.__emit(data.__oriel_event, data.payload);
+    \\      return;
+    \\    }
     \\    if (data && typeof data === 'object' && '__oriel_reply' in data) {
     \\      const p = pending.get(data.id);
     \\      if (p) {
@@ -243,6 +249,65 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
     };
     task.* = .{ .target = target, .script = script_copy };
     ShellMod.dispatchWithCleanup(&Task.run, task, &Task.cleanup);
+}
+
+/// Deliver an event as a web message, the channel IPC replies use, so a
+/// command's events reach the page before its reply (ExecuteScript runs
+/// later, and out of order with web messages). On the main thread (where
+/// sync commands run) it posts at once; from other threads through the
+/// dispatch queue, which the command's reply also goes through, later.
+/// `target` or `label` picks one window; neither = every window.
+pub fn emitEvent(target: ?window_mod.WindowHandle, label: ?[]const u8, name_json: []const u8, payload_json: []const u8) void {
+    const gpa = std.heap.smp_allocator;
+    const msg = std.fmt.allocPrint(gpa, "{{\"__oriel_event\":{s},\"payload\":{s}}}", .{ name_json, payload_json }) catch return;
+    defer gpa.free(msg);
+    const msg_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, msg) catch return;
+
+    const Task = struct {
+        target: ?window_mod.WindowHandle,
+        label: ?[]u8,
+        msg_w: [:0]u16,
+
+        fn discard(self: *@This()) void {
+            const a = std.heap.smp_allocator;
+            if (self.label) |l| a.free(l);
+            a.free(self.msg_w);
+            a.destroy(self);
+        }
+
+        fn cleanup(ctx: ?*anyopaque) void {
+            discard(@ptrCast(@alignCast(ctx)));
+        }
+
+        fn run(ctx: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            defer discard(self);
+            App.ensureWindowsMutex();
+            App.windows_mutex.lock();
+            defer App.windows_mutex.unlock();
+            for (App.windows_list.items) |win| {
+                // Handles match by HWND: the live window's webview, not a stale copy.
+                if (self.target) |t| if (!win.handle.eql(t)) continue;
+                if (self.label) |l| if (!std.mem.eql(u8, win.label, l)) continue;
+                _ = win.handle.webview.postWebMessageAsJson(self.msg_w.ptr);
+            }
+        }
+    };
+
+    const task = gpa.create(Task) catch {
+        gpa.free(msg_w);
+        return;
+    };
+    task.* = .{ .target = target, .label = null, .msg_w = msg_w };
+    if (label) |l| task.label = gpa.dupe(u8, l) catch {
+        Task.discard(task);
+        return;
+    };
+    if (win32.GetCurrentThreadId() == ShellMod.main_thread_id) {
+        Task.run(task);
+    } else {
+        ShellMod.dispatchWithCleanup(&Task.run, task, &Task.cleanup);
+    }
 }
 
 pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
