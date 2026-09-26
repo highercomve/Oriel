@@ -236,6 +236,30 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\FunctionEnd
         \\
         \\Section "Install"
+        \\  ; Upgrade: the installed version removes its own files first (their names
+        \\  ; may differ from ours), in place and keeping the user's data.
+        \\  ReadRegStr $R8 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "UninstallString"
+        \\  ${If} $R8 != ""
+        \\  ${AndIf} ${FileExists} "$INSTDIR\Uninstall.exe"
+        \\  oriel_upgrade_uninstall:
+        \\    DetailPrint "Removing the installed version of ${NAME}..."
+        \\    ClearErrors
+        \\    ExecWait '"$INSTDIR\Uninstall.exe" /S _?=$INSTDIR' $R7
+        \\    ${If} ${Errors}
+        \\      DetailPrint "Could not run the previous uninstaller: continuing."
+        \\    ${ElseIf} $R7 == 2
+        \\      IfSilent oriel_upgrade_abort
+        \\      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${NAME} is running. Close it (it may be in the notification area), then click Retry." IDRETRY oriel_upgrade_uninstall
+        \\    oriel_upgrade_abort:
+        \\      SetErrorLevel 2
+        \\      DetailPrint "${NAME} is running: close it and try again."
+        \\      Abort
+        \\    ${ElseIf} $R7 != 0
+        \\      DetailPrint "The previous uninstaller exited with $R7: continuing."
+        \\    ${EndIf}
+        \\    ; Run in place, it can't delete itself.
+        \\    Delete "$INSTDIR\Uninstall.exe"
+        \\  ${EndIf}
         \\  !insertmacro ORIEL_REQUIRE_NOT_RUNNING
         \\  Call CheckWebView2
         \\
@@ -469,8 +493,18 @@ test "generateNsisScript produces valid script with all options and escaping" {
 
     // Verify both sections refuse to run while the app does
     try testing.expect(std.mem.indexOf(u8, script, "!macro ORIEL_REQUIRE_NOT_RUNNING") != null);
-    try testing.expect(std.mem.indexOf(u8, script, "Section \"Install\"\n  !insertmacro ORIEL_REQUIRE_NOT_RUNNING") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "  !insertmacro ORIEL_REQUIRE_NOT_RUNNING\n  Call CheckWebView2") != null);
     try testing.expect(std.mem.indexOf(u8, script, "Section \"Uninstall\"\n  !insertmacro ORIEL_REQUIRE_NOT_RUNNING") != null);
+
+    // Verify an upgrade first runs the installed version's uninstaller in place,
+    // before the running check, without /REMOVEDATA, and gates on its exit code 2
+    const install = script[std.mem.indexOf(u8, script, "Section \"Install\"").?..];
+    const upgrade_at = std.mem.indexOf(u8, install, "ExecWait '\"$INSTDIR\\Uninstall.exe\" /S _?=$INSTDIR' $R7").?;
+    try testing.expect(upgrade_at < std.mem.indexOf(u8, install, "!insertmacro ORIEL_REQUIRE_NOT_RUNNING").?);
+    try testing.expect(std.mem.indexOf(u8, install, "ReadRegStr $R8 HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_ID}\" \"UninstallString\"").? < upgrade_at);
+    try testing.expect(std.mem.indexOf(u8, install[0..upgrade_at + 80], "/REMOVEDATA") == null);
+    try testing.expect(std.mem.indexOf(u8, install, "${ElseIf} $R7 == 2\n      IfSilent oriel_upgrade_abort") != null);
+    try testing.expect(std.mem.indexOf(u8, install, "Delete \"$INSTDIR\\Uninstall.exe\"\n  ${EndIf}") != null);
 
     // Verify WebView2 detection
     try testing.expect(std.mem.indexOf(u8, script, "Function CheckWebView2") != null);
