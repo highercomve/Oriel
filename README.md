@@ -1,7 +1,7 @@
 <p align="center"><img src="assets/brand/oriel-banner.png" alt="Oriel: desktop apps with Zig and the web" width="720"></p>
 
 <p align="center">
-  <a href="#license"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-F7A41D?style=flat-square"></a>
+  <a href="#license"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-F7A41D?style=flat-square"></a>
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-F7A41D?style=flat-square&logo=zig&logoColor=white">
   <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux%20(GTK4%20%2B%20WebKitGTK)-1B1F2A?style=flat-square">
   <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-1B1F2A?style=flat-square">
@@ -1387,6 +1387,36 @@ The generated NSIS installer provides:
 - **`WebView2Loader.dll`**: Required next to the executable on Windows. Specify it via `.webview2_loader` in `build.zig` or via CLI option `-Dwebview2-loader=<path>` (e.g. from the `Microsoft.Web.WebView2` NuGet package runtimes). Oriel loads it exclusively from the application's executable directory to prevent DLL search-order hijacking. User data is isolated per application in `%LOCALAPPDATA%\<app_id>\WebView2`.
 - *Note*: Packaging a Windows application requires the target app executable to be compiled for Windows (which requires the Windows shell in `src/platform/windows`).
 
+#### WinGet (`winget install`)
+
+WinGet installs from a public URL (a GitHub release asset) described by three
+YAML manifests in microsoft/winget-pkgs. Give the app an identifier and a
+license, and `oriel package` writes the manifests next to the `setup.exe`:
+
+```zig
+.package = .{
+    .license = "MIT", // required by WinGet
+    .homepage = "https://example.com/my-app",
+    .winget = .{ .id = "Acme.MyApp", .moniker = "myapp", .tags = &.{ "notes" } },
+},
+```
+
+```sh
+oriel package -Dwinget-url=https://github.com/acme/my-app/releases/download/v1.2.0   # or $ORIEL_WINGET_URL
+# zig-out/package/winget/Acme.MyApp.yaml, .installer.yaml, .locale.en-US.yaml
+```
+
+- The installer manifest is `nullsoft`, per-user (`Scope: user`), silent with
+  `/S`, and its `ProductCode` is the app id: the key the installer writes under
+  `HKCU\...\Uninstall`, so `winget upgrade` recognizes an installed copy. The
+  SHA-256 is that of the `setup.exe` just built: publish that exact file.
+- Submit them once the release is public: `wingetcreate submit --token <PAT>
+  zig-out/package/winget` opens the pull request (a GitHub token with
+  `public_repo`). Microsoft's bots install it in a sandbox and merge it, and
+  then `winget install Acme.MyApp` works. The same command submits each new
+  version.
+- Without `-Dwinget-url` (local builds) no manifests are written.
+
 #### macOS bundles (.app, .dmg)
 
 `<Name>.app/Contents` holds `MacOS/<exe>`, `Resources/icon.icns` (made from the PNG icon, no `iconutil` needed), `PkgInfo` and an `Info.plist` with:
@@ -1766,13 +1796,4 @@ Maintainer key setup:
 
 ## License
 
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual licensed as above, without any additional terms or conditions.
+MIT: see [LICENSE](LICENSE). Contributions are accepted under the same license.

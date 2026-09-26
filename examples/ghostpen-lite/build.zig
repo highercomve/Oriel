@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) void {
             .description = "GhostPen Lite is a lightweight desktop utility for rewriting text via global hotkey.",
             .categories = "Utility;",
             .version = "0.1.0",
-            .license = "MIT OR Apache-2.0",
+            .license = "MIT",
         },
     });
 }

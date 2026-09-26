@@ -63,7 +63,7 @@
 					</div>
 				</div>
 			</div>
-			<p class="footer-legal">MIT OR Apache-2.0 · Built with Zig and <a href="https://zine-ssg.io">Zine</a></p>
+			<p class="footer-legal">MIT license · Built with Zig and <a href="https://zine-ssg.io">Zine</a></p>
 		</footer>
 		<script src="$site.asset('site.js').link().suffix('?v=20260926')" defer></script>
 	</body>

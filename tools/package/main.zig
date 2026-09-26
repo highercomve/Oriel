@@ -27,6 +27,7 @@ pub const macos = @import("macos.zig");
 pub const sign_macos = @import("sign_macos.zig");
 pub const contents = @import("contents.zig");
 pub const elf_strip = @import("elf_strip.zig");
+pub const winget = @import("winget.zig");
 
 const Dir = std.Io.Dir;
 const Io = std.Io;
@@ -94,6 +95,8 @@ pub fn main(init: std.process.Init) !u8 {
         return installDesktopEntryCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "strip-elf")) {
         return stripElfCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "package-winget")) {
+        return packageWingetCmd(gpa, io, args);
     } else {
         std.debug.print("unknown command: {s}\n", .{command});
         printUsage();
@@ -117,6 +120,7 @@ fn printUsage() void {
         \\  sign-app              Copy a .app and sign it for distribution (hardened runtime, timestamp)
         \\  install-app           Replace a directory with a copy of a .app bundle (no stale files)
         \\  install-desktop-entry Install desktop file and icons to $XDG_DATA_HOME
+        \\  package-winget        WinGet manifests for a setup.exe (--installer, --url, --out-dir, --id, metadata)
         \\  strip-elf             Copy an ELF file without its symbol table and debug info (--in, --out)
         \\
         \\package-* commands also take --extra-exe <path> and --extra-file <relpath>=<src>
@@ -1995,6 +1999,7 @@ test {
     std.testing.refAllDecls(macos);
     std.testing.refAllDecls(contents);
     std.testing.refAllDecls(elf_strip);
+    std.testing.refAllDecls(winget);
 }
 
 test "resizeIcons custom png no overflow on large sizes" {
@@ -2416,4 +2421,122 @@ test "generateDesktopCmd with --url-scheme" {
 /// `@enumFromInt(0o755)` there would set read-only/system/... attribute bits).
 fn filePerms(mode: u32) std.Io.File.Permissions {
     return if (builtin.os.tag == .windows) .default_file else .fromMode(@intCast(mode));
+}
+
+// ---------------------------------------------------------------------------
+// package-winget
+// ---------------------------------------------------------------------------
+
+fn packageWingetCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var m: winget.Manifest = .{
+        .id = "",
+        .version = "",
+        .name = "",
+        .publisher = "",
+        .license = "",
+        .summary = "",
+        .description = "",
+        .product_code = "",
+        .installer_url = "",
+        .installer_sha256 = "",
+    };
+    var installer: ?[]const u8 = null;
+    var out_dir: ?[]const u8 = null;
+    var tags: std.ArrayList([]const u8) = .empty;
+    var schemes: std.ArrayList([]const u8) = .empty;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (i + 1 >= args.len) {
+            std.debug.print("error: package-winget: {s} needs a value\n", .{arg});
+            return 1;
+        }
+        const v: []const u8 = args[i + 1];
+        i += 1;
+        if (std.mem.eql(u8, arg, "--installer")) installer = v
+        else if (std.mem.eql(u8, arg, "--out-dir")) out_dir = v
+        else if (std.mem.eql(u8, arg, "--url")) m.installer_url = v
+        else if (std.mem.eql(u8, arg, "--id")) m.id = v
+        else if (std.mem.eql(u8, arg, "--version")) m.version = v
+        else if (std.mem.eql(u8, arg, "--name")) m.name = v
+        else if (std.mem.eql(u8, arg, "--publisher")) m.publisher = v
+        else if (std.mem.eql(u8, arg, "--license")) m.license = v
+        else if (std.mem.eql(u8, arg, "--license-url")) m.license_url = v
+        else if (std.mem.eql(u8, arg, "--summary")) m.summary = v
+        else if (std.mem.eql(u8, arg, "--description")) m.description = v
+        else if (std.mem.eql(u8, arg, "--homepage")) m.homepage = v
+        else if (std.mem.eql(u8, arg, "--release-notes-url")) m.release_notes_url = v
+        else if (std.mem.eql(u8, arg, "--moniker")) m.moniker = v
+        else if (std.mem.eql(u8, arg, "--app-id")) m.product_code = v
+        else if (std.mem.eql(u8, arg, "--arch")) m.architecture = v
+        else if (std.mem.eql(u8, arg, "--tag")) try tags.append(arena, v)
+        else if (std.mem.eql(u8, arg, "--url-scheme")) try schemes.append(arena, v)
+        else {
+            std.debug.print("error: package-winget: unknown option {s}\n", .{arg});
+            return 1;
+        }
+    }
+    m.tags = tags.items;
+    m.url_schemes = schemes.items;
+    if (m.description.len == 0) m.description = m.summary;
+    const installer_path = installer orelse {
+        std.debug.print("error: package-winget: --installer is required\n", .{});
+        return 1;
+    };
+    const dir_path = out_dir orelse {
+        std.debug.print("error: package-winget: --out-dir is required\n", .{});
+        return 1;
+    };
+
+    // SHA-256 of the installer, streamed.
+    var file = try Dir.cwd().openFile(io, installer_path, .{});
+    defer file.close(io);
+    var reader_buf: [64 * 1024]u8 = undefined;
+    var reader = file.readerStreaming(io, &reader_buf);
+    var hasher: std.crypto.hash.sha2.Sha256 = .init(.{});
+    while (true) {
+        const chunk = reader.interface.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        hasher.update(chunk);
+        reader.interface.toss(chunk.len);
+    }
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    m.installer_sha256 = &hex;
+
+    var dir = try Dir.cwd().createDirPathOpen(io, dir_path, .{});
+    defer dir.close(io);
+    const files = [_]struct { suffix: []const u8, write: *const fn (*std.Io.Writer, winget.Manifest) anyerror!void }{
+        .{ .suffix = ".yaml", .write = winget.writeVersion },
+        .{ .suffix = ".installer.yaml", .write = winget.writeInstaller },
+        .{ .suffix = ".locale.en-US.yaml", .write = winget.writeLocale },
+    };
+    for (files) |f| {
+        var out: std.Io.Writer.Allocating = .init(arena);
+        f.write(&out.writer, m) catch |err| {
+            std.debug.print("error: package-winget: {s} ({s})\n", .{ @errorName(err), switch (err) {
+                error.InvalidIdentifier => "the id must look like Publisher.App",
+                error.InvalidUrl => "the installer URL must be https://",
+                error.InvalidValue => "version, name, publisher, license and summary are required",
+                else => "",
+            } });
+            return 1;
+        };
+        const name = try std.fmt.allocPrint(arena, "{s}{s}", .{ m.id, f.suffix });
+        try dir.writeFile(io, .{ .sub_path = name, .data = out.written() });
+    }
+    const repo_path = try winget.repoPath(arena, m.id, m.version);
+    // stdout: a build step treats output on stderr as a failure.
+    var out_buf: [512]u8 = undefined;
+    var stdout = std.Io.File.stdout().writerStreaming(io, &out_buf);
+    try stdout.interface.print("WinGet manifests for {s} {s} (winget-pkgs: {s})\n", .{ m.id, m.version, repo_path });
+    try stdout.interface.flush();
+    return 0;
 }

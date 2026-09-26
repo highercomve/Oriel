@@ -60,6 +60,7 @@ pub const Metadata = struct {
     url_schemes: []const []const u8,
     replaces: []const []const u8 = &.{},
     conflicts: []const []const u8 = &.{},
+    winget: ?Winget = null,
 };
 
 /// Build-time options specified in an app's build.zig via `addApp(..., .{ .package = .{ ... } })`.
@@ -131,6 +132,23 @@ pub const PackageOptions = struct {
 
     /// What the packages contain besides the app's executable (all formats).
     contents: Contents = .{},
+
+    /// Windows: WinGet manifests for the NSIS installer. `oriel package
+    /// -Dwinget-url=<base URL the setup.exe is published under>` writes them
+    /// to `zig-out/package/winget/` (the three files `wingetcreate submit`
+    /// takes). Needs `license`.
+    winget: ?Winget = null,
+};
+
+/// See `PackageOptions.winget` and tools/package/winget.zig.
+pub const Winget = struct {
+    /// PackageIdentifier, `Publisher.App` (e.g. "Acme.MyApp").
+    id: []const u8,
+    /// The short name for `winget install <moniker>` (e.g. "myapp").
+    moniker: ?[]const u8 = null,
+    tags: []const []const u8 = &.{},
+    license_url: ?[]const u8 = null,
+    release_notes_url: ?[]const u8 = null,
 };
 
 /// The package's contents besides the app's executable
@@ -456,6 +474,7 @@ pub fn addPackageSteps(
         .url_schemes = pkg_opts.url_schemes,
         .replaces = pkg_opts.replaces,
         .conflicts = pkg_opts.conflicts,
+        .winget = pkg_opts.winget,
     };
 
     // Derive dependencies from features
@@ -833,7 +852,47 @@ fn addNsis(ctx: *const Context) *std.Build.Step {
         .prefix,
         ctx.b.fmt("package/{s}", .{setup_filename}),
     );
+    if (addWinget(ctx, out_dir.path(ctx.b, setup_filename), setup_filename)) |winget_step| {
+        install.step.dependOn(winget_step);
+    }
     return &install.step;
+}
+
+/// WinGet manifests for the setup.exe, when the app has `.winget` and
+/// `-Dwinget-url` (or $ORIEL_WINGET_URL) names where it is published.
+fn addWinget(ctx: *const Context, setup: std.Build.LazyPath, setup_filename: []const u8) ?*std.Build.Step {
+    const w = ctx.metadata.winget orelse return null;
+    const base = getOrDeclareStringOption(ctx.b, "winget-url", "Windows packages: base URL the setup.exe is published under (e.g. https://github.com/<o>/<r>/releases/download/v1.0.0); writes WinGet manifests to zig-out/package/winget; default $ORIEL_WINGET_URL") orelse
+        ctx.b.graph.environ_map.get("ORIEL_WINGET_URL") orelse return null;
+    if (base.len == 0) return null;
+    const license = ctx.metadata.license orelse
+        return &ctx.b.addFail("WinGet needs a license: set .package.license (e.g. \"MIT\")").step;
+    const run = ctx.b.addRunArtifact(ctx.package_tool);
+    run.addArgs(&.{ "package-winget", "--installer" });
+    run.addFileArg(setup);
+    run.addArgs(&.{ "--url", ctx.b.fmt("{s}/{s}", .{ std.mem.trimEnd(u8, base, "/"), setup_filename }) });
+    run.addArgs(&.{ "--id", w.id, "--version", ctx.metadata.version, "--name", ctx.metadata.name });
+    run.addArgs(&.{ "--publisher", ctx.metadata.publisher, "--license", license });
+    run.addArgs(&.{ "--summary", ctx.metadata.summary, "--description", ctx.metadata.description });
+    run.addArgs(&.{ "--app-id", ctx.metadata.id, "--arch", wingetArch(ctx.target.result.cpu.arch) });
+    if (ctx.metadata.homepage) |h| run.addArgs(&.{ "--homepage", h });
+    if (w.moniker) |m| run.addArgs(&.{ "--moniker", m });
+    if (w.license_url) |u| run.addArgs(&.{ "--license-url", u });
+    if (w.release_notes_url) |u| run.addArgs(&.{ "--release-notes-url", u });
+    for (w.tags) |t| run.addArgs(&.{ "--tag", t });
+    for (ctx.metadata.url_schemes) |s| run.addArgs(&.{ "--url-scheme", s });
+    run.addArg("--out-dir");
+    const dir = run.addOutputDirectoryArg("winget");
+    const install = ctx.b.addInstallDirectory(.{ .source_dir = dir, .install_dir = .prefix, .install_subdir = "package/winget" });
+    return &install.step;
+}
+
+fn wingetArch(arch: std.Target.Cpu.Arch) []const u8 {
+    return switch (arch) {
+        .aarch64 => "arm64",
+        .x86 => "x86",
+        else => "x64",
+    };
 }
 
 /// `zig-out/package/<Name>.app`.
