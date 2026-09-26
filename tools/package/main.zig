@@ -2209,7 +2209,10 @@ test "packageNsisCmd builds Windows installer with makensis" {
     try tmp.dir.writeFile(io, .{ .sub_path = "model.bin", .data = "weights" });
     const cli_z = try std.fs.path.joinZ(allocator, &.{ tmp_path, "sample-cli.exe" });
     defer allocator.free(cli_z);
-    const model_arg = try std.fmt.allocPrintSentinel(allocator, "data/models/model.bin={s}/model.bin", .{tmp_path}, 0);
+    // A native path, as the build system passes: makensis on Windows finds no file at "C:\...\tmp/model.bin".
+    const model_src = try std.fs.path.join(allocator, &.{ tmp_path, "model.bin" });
+    defer allocator.free(model_src);
+    const model_arg = try std.fmt.allocPrintSentinel(allocator, "data/models/model.bin={s}", .{model_src}, 0);
     defer allocator.free(model_arg);
 
     const args = [_][:0]const u8{
