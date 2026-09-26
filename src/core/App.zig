@@ -416,6 +416,7 @@ pub fn emitTo(label: []const u8, name: []const u8, payload: anytype) !void {
     defer gpa.free(payload_json);
     const name_json = try std.json.Stringify.valueAlloc(gpa, name, .{});
     defer gpa.free(name_json);
+    if (comptime platform.has_emit_event) return platform.emitEvent(null, label, name_json, payload_json);
     const script = try std.fmt.allocPrintSentinel(gpa, "window.oriel?.__emit({s}, {s});", .{ name_json, payload_json }, 0);
     defer gpa.free(script);
     const label_z = try gpa.dupeZ(u8, label);
@@ -640,6 +641,7 @@ fn emitJson(target_handle: ?platform.WindowHandle, name: []const u8, payload: an
     defer gpa.free(payload_json);
     const name_json = try std.json.Stringify.valueAlloc(gpa, name, .{});
     defer gpa.free(name_json);
+    if (comptime platform.has_emit_event) return platform.emitEvent(target_handle, null, name_json, payload_json);
     const script = try std.fmt.allocPrintSentinel(gpa, "window.oriel?.__emit({s}, {s});", .{ name_json, payload_json }, 0);
     defer gpa.free(script);
 
