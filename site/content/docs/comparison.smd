@@ -1,0 +1,72 @@
+---
+.title = "Oriel and Vercel native",
+.description = "How Oriel compares with Vercel Labs' native (formerly zero-native), measured against what GhostPen needs.",
+.date = .date("2026-09-27T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+[Vercel Labs' native](https://github.com/vercel-labs/native) (formerly
+zero-native) is the other Zig framework for desktop apps. Both use Zig 0.16
+and target Linux, Windows and macOS, but they aim at different apps. This
+page compares them on what [GhostPen](https://highercomve.github.io/GhostPen/)
+needs: a React UI, and deep integration with the rest of the desktop. It
+reflects native v0.10.1 (commit `6b05318`, September 2026). native is
+pre-1.0 and moves fast, so check its
+[platform support page](https://github.com/vercel-labs/native) for changes.
+
+# Different starting points
+
+- **native draws its own UI.** Views are `.native` markup with logic in
+  TypeScript compiled to native code, or in Zig. Its engine draws every
+  pixel, with no WebView and no JavaScript runtime in the binary. A WebView
+  mode also exists (WebKitGTK, WKWebView, WebView2), and its `examples/react`
+  runs a Vite + React app with `window.zero.invoke` / `window.zero.on`.
+  Its mobile targets (iOS, Android) are experimental.
+- **Oriel is WebView-first.** The UI is a web frontend (React, Vue, Svelte or
+  vanilla) embedded at build time. The Zig side provides typed commands and
+  events, and the modules that reach outside the window: global shortcuts,
+  input injection, clipboard, tray, audio capture, llama.cpp and whisper.cpp.
+
+# Feature by feature
+
+| GhostPen needs | Oriel | native v0.10.1 |
+|---|---|---|
+| React + Vite UI in a WebView | ✅ | ✅ WebView mode (`window.zero.invoke`/`on`; events capped at 8 KiB) |
+| Tray icon and menu | ✅ Linux, Windows, macOS | macOS and Windows; not on Linux ("until a status-notifier implementation is selected") |
+| System-wide hotkeys | ✅ X11, Wayland portal, `RegisterHotKey`, macOS | ❌ shortcuts reach only the app's focused window |
+| Send copy/paste to other apps | ✅ XTest, Wayland virtual keyboard, `SendInput`, `CGEventPost` | ❌ |
+| Clipboard | ✅ text and images (PNG) | text, HTML, RTF; no images; on Wayland only while focused |
+| Popup near the cursor, always on top | ✅ incl. Wayland layer-shell overlays | Linux never applies window positions; no always-on-top on Wayland; no layer-shell; Windows refuses transparent windows with a WebView |
+| Microphone and system audio capture | ✅ Linux (PulseAudio/PipeWire), Windows, macOS | Windows and macOS; none on Linux |
+| llama.cpp / whisper.cpp | ✅ built in, on CUDA, Vulkan or Metal | possible after `native eject` (plain Zig build code, written by the app) |
+| Single instance, forwarding arguments | ✅ | ❌ |
+| Settings, app directories, credentials | ✅ | ✅ (app dirs, libsecret/Keychain credentials) |
+| Notifications | ✅ | ✅ (Windows: one balloon at a time) |
+| Packages | deb, rpm, AppImage, NSIS `setup.exe`, `.app`/`.dmg`, WinGet manifests | `.app`/`.dmg`; Linux and Windows installers are "future work" |
+| Self-update | ✅ Linux (AppImage), Windows, macOS; Ed25519 | macOS only |
+| Code signing | macOS Developer ID or self-signed (`oriel signing`) | macOS |
+
+# Where native is ahead
+
+- It runs without a WebView: its own renderer, UI written in TypeScript
+  compiled to native code, and experimental iOS and Android targets.
+- Tooling: an automation server with accessibility snapshots, recording and
+  replaying sessions frame by frame, a deterministic reference renderer, hot
+  reload that keeps state, and `native check` validation in milliseconds.
+- macOS is its primary platform and the most complete.
+
+# What a GhostPen port would take
+
+GhostPen's windows and screens map directly onto native's WebView mode.
+The parts that make it a system-wide tool don't: global hotkeys, pasting
+back into other apps, image OCR from the clipboard, and captions and
+dictation from Linux audio would all be written in the app itself. On
+Wayland, the popup menu and the captions overlay would also need a fork of
+native's GTK host, which can't position windows or use layer-shell. In
+Oriel these are modules the app turns on in `build.zig`.
+
+So the two frameworks suit different apps. native fits apps whose UI
+lives in their own window, especially where a WebView isn't wanted. Oriel
+fits apps that need a web UI plus the desktop around it: hotkeys, the
+clipboard, other apps' input, audio, and local AI models.

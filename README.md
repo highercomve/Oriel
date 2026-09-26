@@ -1640,6 +1640,20 @@ oriel dev              # run against Vite dev server with hot reload
 | macOS | ◐ AppKit + WKWebView shell and every module/plugin (tray, menu, dialog, notification, store, clipboard, fs_watch, global_shortcut, input, updater, media_server, audio_capture incl. system audio), whisper/llama on Metal, deep links, `.app`/`.dmg` packaging |
 | Mobile | ❌ |
 
+## Compared with Vercel native
+
+[Vercel Labs' native](https://github.com/vercel-labs/native) (formerly
+zero-native, v0.10.1) is the other Zig desktop framework. It draws its own UI
+(TypeScript compiled to native code, or Zig) and also has a WebView mode. It
+is ahead on no-WebView apps, experimental mobile targets and tooling
+(automation, record and replay). But it has no system-wide hotkeys, no input
+injection into other apps, no image clipboard, and no Linux tray or audio
+capture. Its Linux host can't position windows, and it has no Wayland
+layer-shell. For packaging it has only `.app`/`.dmg`, and self-update on
+macOS only. Those are the parts GhostPen is built on: see
+[Oriel and Vercel native](https://highercomve.github.io/Oriel/docs/comparison/)
+for the feature table.
+
 ## Building Oriel itself
 
 This section is for contributors working on the Oriel framework repository.
