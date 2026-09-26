@@ -62,6 +62,16 @@ pub const Security = struct {
     /// signed there. Remote capability origins are not covered: they keep
     /// the token check and their capabilities. Null (default): off.
     isolation: ?Isolation = null,
+    /// Drop `'unsafe-inline'` from `style-src` (`csp.strictStyles`): the
+    /// app's own `<style>` blocks still apply (their hashes are added to each
+    /// page's CSP at build time), but `style="..."` attributes in the HTML
+    /// and injected styles don't (setting `el.style` from script still
+    /// works). Off by default because many UI libraries set style attributes.
+    /// Dev builds have no CSP, so check a production build. (Inline
+    /// `<script>` blocks are always allowed by hash; note that with
+    /// `'unsafe-hashes'` in the CSP those hashes also allow event-handler
+    /// attributes with the same text.)
+    strict_styles: bool = false,
     /// Extra headers on the app's own successful responses (`app://`
     /// assets and the media scheme), e.g. Cross-Origin-Opener-Policy or
     /// Permissions-Policy. Names are limited to `allowed_header_names`
@@ -217,6 +227,21 @@ pub const default_csp = "default-src 'self'; " ++
     "font-src 'self' data:; " ++
     "connect-src 'self' http://127.0.0.1:*; " ++
     "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+
+/// The CSP the app's pages get (before per-page hashes, `csp.withHashes`):
+/// `csp`, without `'unsafe-inline'` styles under `strict_styles`, and with
+/// the isolation frame allowed under `isolation`.
+pub fn effectiveCsp(comptime sec: Security) ?[]const u8 {
+    comptime {
+        const base = sec.csp orelse {
+            if (sec.strict_styles) @compileError("security.strict_styles needs a CSP (security.csp is null)");
+            return null;
+        };
+        var s = sec;
+        s.csp = if (sec.strict_styles) @import("csp.zig").strictStyles(base) else base;
+        return @import("isolation.zig").appCsp(s);
+    }
+}
 
 pub const app_origin = if (builtin.os.tag == .windows) "https://app.localhost" else "app://app";
 

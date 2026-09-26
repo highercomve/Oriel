@@ -501,6 +501,9 @@ pub fn main(init: std.process.Init) !u8 {
             // Security 3 (the `isolation` checks): every call from the page
             // goes through isolation/hook.js. Off with -Disolation=false.
             .isolation = app.isolation,
+            // Security 4.1 (the `csp hash` and `csp styles` checks): no
+            // 'unsafe-inline' styles; index.html's <style> block is allowed by hash.
+            .strict_styles = true,
             // Security 1.3 / 1.4 (the `freeze prototype` and `security headers` checks).
             .freeze_prototype = true,
             .headers = &.{

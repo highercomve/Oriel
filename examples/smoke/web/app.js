@@ -314,6 +314,19 @@ async function securityChecks() {
   await sleep(50);
   check("csp inline", !window.__inlineRan, window.__inlineRan ? "inline script ran" : "injected inline <script> did not run");
 
+  // Security 4.1: index.html's own inline script and <style> block are
+  // allowed by their build-time hashes; injected ones aren't.
+  check("csp hash", window.__hashedInlineRan === true && !window.__inlineRan, `index.html's inline script ${window.__hashedInlineRan ? "ran" : "was blocked"}; injected one ${window.__inlineRan ? "ran" : "was blocked"}`);
+  const injectedStyle = document.createElement("style");
+  injectedStyle.textContent = "body { outline: 3px solid rgb(1, 2, 3) }";
+  document.head.append(injectedStyle);
+  await sleep(50);
+  const bodyStyle = getComputedStyle(document.body);
+  const ownApplied = bodyStyle.marginTop === "0px";
+  const injectedApplied = bodyStyle.outlineColor === "rgb(1, 2, 3)";
+  injectedStyle.remove();
+  check("csp styles", ownApplied && !injectedApplied, `index.html's <style> ${ownApplied ? "applied" : "blocked"}; injected <style> ${injectedApplied ? "applied" : "blocked"} (strict_styles)`);
+
   // Remote iframe: navigation policy keeps it on about:blank.
   const frame = document.createElement("iframe");
   frame.src = "https://example.com/";

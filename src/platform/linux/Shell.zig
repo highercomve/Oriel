@@ -130,8 +130,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         for (list, 0..) |p, i| a[i] = p.ptr;
         break :blk a;
     };
-    // With isolation on, the CSP also allows the isolation frame.
-    const csp_z: ?[:0]const u8 = if (comptime isolation.appCsp(config.security)) |c| (c ++ "\x00")[0..c.len :0] else null;
+    // strict_styles and isolation adjust the app's CSP (security.effectiveCsp).
+    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security)) |c| (c ++ "\x00")[0..c.len :0] else null;
 
     const Creator = window.WindowCreator(api, config, local, bridge_patterns, csp_z);
 

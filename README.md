@@ -450,6 +450,15 @@ Modeled on Tauri. Configure it with `Config.security`:
   COEP `require-corp` blocks cross-origin frames and subresources that don't
   opt in.
 
+- **Inline code by hash:** the build hashes every inline `<script>` and
+  `<style>` block of each HTML file (SHA-256) and adds the hashes to that
+  page's CSP, so the app's own inline code runs without `'unsafe-inline'`
+  while injected code doesn't. `security.strict_styles = true` also drops
+  `'unsafe-inline'` from `style-src` (the app's `<style>` blocks keep working;
+  `style="..."` attributes in the HTML and injected styles don't). A directive
+  that still has `'unsafe-inline'` is left alone, since a hash would switch it
+  off.
+
 - **Isolation pattern (opt-in):** `.isolation = .{ .hook = b.path("isolation/hook.js") }`
   in `addApp`, and `.security = .{ .isolation = app.isolation }` in the
   config. Every call from the app's own pages (`app://` and the dev server),
