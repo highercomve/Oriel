@@ -145,24 +145,21 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\!insertmacro un.GetParameters
         \\!insertmacro un.GetOptions
         \\
-        \\; A running app keeps its exe locked: Delete/File would skip it and the
-        \\; (un)install would still report success. Opening the exe for writing
-        \\; fails while it runs (and changes nothing otherwise), so check first.
+        \\; A running program keeps its exe locked: Delete/File would skip it and
+        \\; the (un)install would still report success. Opening an exe for writing
+        \\; fails while it runs (and changes nothing otherwise), so check the app
+        \\; and every extra executable first.
         \\!macro ORIEL_REQUIRE_NOT_RUNNING
-        \\  ${If} ${FileExists} "$INSTDIR\${EXE_NAME}.exe"
-        \\  oriel_check_running:
-        \\    ClearErrors
-        \\    FileOpen $R9 "$INSTDIR\${EXE_NAME}.exe" a
-        \\    ${If} ${Errors}
-        \\      IfSilent oriel_running_abort
-        \\      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${NAME} is running. Close it (it may be in the notification area), then click Retry." IDRETRY oriel_check_running
-        \\    oriel_running_abort:
-        \\      SetErrorLevel 2
-        \\      DetailPrint "${NAME} is running: close it and try again."
-        \\      Abort
-        \\    ${EndIf}
-        \\    FileClose $R9
-        \\  ${EndIf}
+        \\
+    );
+    try writeRunningCheck(w, 0, "${EXE_NAME}.exe", "${NAME}", " (it may be in the notification area)");
+    for (opts.extra_exes, 1..) |e, i| {
+        try metadata.validateExeName(e.name);
+        const esc_extra = try metadata.escapeNsisString(allocator, e.name);
+        defer allocator.free(esc_extra);
+        try writeRunningCheck(w, i, esc_extra, esc_extra, "");
+    }
+    try w.writeAll(
         \\!macroend
         \\
         \\!define MUI_ABORTWARNING
@@ -236,6 +233,9 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\FunctionEnd
         \\
         \\Section "Install"
+        \\  ; First, by name, whatever of ours is installed and running; the old
+        \\  ; uninstaller below then refuses for files under older names.
+        \\  !insertmacro ORIEL_REQUIRE_NOT_RUNNING
         \\  ; Upgrade: the installed version removes its own files first (their names
         \\  ; may differ from ours), in place and keeping the user's data.
         \\  ReadRegStr $R8 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "UninstallString"
@@ -249,10 +249,10 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\      DetailPrint "Could not run the previous uninstaller: continuing."
         \\    ${ElseIf} $R7 == 2
         \\      IfSilent oriel_upgrade_abort
-        \\      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${NAME} is running. Close it (it may be in the notification area), then click Retry." IDRETRY oriel_upgrade_uninstall
+        \\      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${NAME} (or one of its programs) is running. Close it (it may be in the notification area), then click Retry." IDRETRY oriel_upgrade_uninstall
         \\    oriel_upgrade_abort:
         \\      SetErrorLevel 2
-        \\      DetailPrint "${NAME} is running: close it and try again."
+        \\      DetailPrint "${NAME} (or one of its programs) is running: close it and try again."
         \\      Abort
         \\    ${ElseIf} $R7 != 0
         \\      DetailPrint "The previous uninstaller exited with $R7: continuing."
@@ -260,7 +260,6 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\    ; Run in place, it can't delete itself.
         \\    Delete "$INSTDIR\Uninstall.exe"
         \\  ${EndIf}
-        \\  !insertmacro ORIEL_REQUIRE_NOT_RUNNING
         \\  Call CheckWebView2
         \\
         \\  SetOutPath "$INSTDIR"
@@ -425,6 +424,30 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
     return try allocator.dupe(u8, out.written());
 }
 
+/// One block of ORIEL_REQUIRE_NOT_RUNNING: if `$INSTDIR\<file>` exists and
+/// can't be opened for writing, `what` is running: Retry/Cancel, or exit 2
+/// when silent. `index` keeps the labels unique within a section; `file`,
+/// `what` and `hint` are already escaped for NSIS strings.
+fn writeRunningCheck(w: *std.Io.Writer, index: usize, file: []const u8, what: []const u8, hint: []const u8) !void {
+    try w.print(
+        \\  ${{If}} ${{FileExists}} "$INSTDIR\{[file]s}"
+        \\  oriel_check_running_{[i]d}:
+        \\    ClearErrors
+        \\    FileOpen $R9 "$INSTDIR\{[file]s}" a
+        \\    ${{If}} ${{Errors}}
+        \\      IfSilent oriel_running_abort_{[i]d}
+        \\      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "{[what]s} is running. Close it{[hint]s}, then click Retry." IDRETRY oriel_check_running_{[i]d}
+        \\    oriel_running_abort_{[i]d}:
+        \\      SetErrorLevel 2
+        \\      DetailPrint "{[what]s} is running: close it and try again."
+        \\      Abort
+        \\    ${{EndIf}}
+        \\    FileClose $R9
+        \\  ${{EndIf}}
+        \\
+    , .{ .file = file, .i = index, .what = what, .hint = hint });
+}
+
 /// `rel` with `\\` separators, escaped for an NSIS string. Caller frees.
 fn windowsRelPath(allocator: std.mem.Allocator, rel: []const u8) ![]u8 {
     const esc = try metadata.escapeNsisString(allocator, rel);
@@ -493,14 +516,17 @@ test "generateNsisScript produces valid script with all options and escaping" {
 
     // Verify both sections refuse to run while the app does
     try testing.expect(std.mem.indexOf(u8, script, "!macro ORIEL_REQUIRE_NOT_RUNNING") != null);
-    try testing.expect(std.mem.indexOf(u8, script, "  !insertmacro ORIEL_REQUIRE_NOT_RUNNING\n  Call CheckWebView2") != null);
     try testing.expect(std.mem.indexOf(u8, script, "Section \"Uninstall\"\n  !insertmacro ORIEL_REQUIRE_NOT_RUNNING") != null);
 
-    // Verify an upgrade first runs the installed version's uninstaller in place,
-    // before the running check, without /REMOVEDATA, and gates on its exit code 2
+    // Verify an install first checks our own files by name, then runs the
+    // installed version's uninstaller in place, without /REMOVEDATA, and
+    // gates on its exit code 2
     const install = script[std.mem.indexOf(u8, script, "Section \"Install\"").?..];
     const upgrade_at = std.mem.indexOf(u8, install, "ExecWait '\"$INSTDIR\\Uninstall.exe\" /S _?=$INSTDIR' $R7").?;
-    try testing.expect(upgrade_at < std.mem.indexOf(u8, install, "!insertmacro ORIEL_REQUIRE_NOT_RUNNING").?);
+    const check_at = std.mem.indexOf(u8, install, "!insertmacro ORIEL_REQUIRE_NOT_RUNNING").?;
+    try testing.expect(check_at < upgrade_at);
+    // Once per section: its labels must stay unique.
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, install[0..std.mem.indexOf(u8, install, "SectionEnd").?], "!insertmacro ORIEL_REQUIRE_NOT_RUNNING"));
     try testing.expect(std.mem.indexOf(u8, install, "ReadRegStr $R8 HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_ID}\" \"UninstallString\"").? < upgrade_at);
     try testing.expect(std.mem.indexOf(u8, install[0..upgrade_at + 80], "/REMOVEDATA") == null);
     try testing.expect(std.mem.indexOf(u8, install, "${ElseIf} $R7 == 2\n      IfSilent oriel_upgrade_abort") != null);
@@ -657,6 +683,15 @@ test "generateNsisScript installs and uninstalls extra executables and files" {
         \\  Delete "$INSTDIR\Uninstall.exe"
     ;
     try testing.expect(std.mem.indexOf(u8, script, uninstall) != null);
+    // The running check covers the app and each extra executable, by name.
+    const macro = script[std.mem.indexOf(u8, script, "!macro ORIEL_REQUIRE_NOT_RUNNING").?..std.mem.indexOf(u8, script, "!macroend").?];
+    try testing.expect(std.mem.indexOf(u8, macro, "FileOpen $R9 \"$INSTDIR\\${EXE_NAME}.exe\" a") != null);
+    try testing.expect(std.mem.indexOf(u8, macro, "\"${NAME} is running. Close it (it may be in the notification area), then click Retry.\" IDRETRY oriel_check_running_0") != null);
+    try testing.expect(std.mem.indexOf(u8, macro, "${If} ${FileExists} \"$INSTDIR\\ghostpen-cli.exe\"\n  oriel_check_running_1:") != null);
+    try testing.expect(std.mem.indexOf(u8, macro, "FileOpen $R9 \"$INSTDIR\\ghostpen-cli.exe\" a") != null);
+    try testing.expect(std.mem.indexOf(u8, macro, "\"ghostpen-cli.exe is running. Close it, then click Retry.\" IDRETRY oriel_check_running_1") != null);
+    try testing.expect(std.mem.indexOf(u8, macro, "DetailPrint \"ghostpen-cli.exe is running: close it and try again.\"") != null);
+    try testing.expect(std.mem.indexOf(u8, macro, "oriel_check_running_2") == null);
     // The install directory itself goes last.
     try testing.expect(std.mem.indexOf(u8, script, "RMDir \"$INSTDIR\\models\"").? < std.mem.indexOf(u8, script, "RMDir \"$INSTDIR\"").?);
 
