@@ -83,7 +83,7 @@ no GTK needed to run it) that scaffolds apps and wraps their build steps,
 like `create-tauri-app` and `tauri dev/build`.
 
 ```sh
-# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.6.5.
+# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.6.6.
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
 ```
 
@@ -201,7 +201,7 @@ into place atomically under a lock file, so concurrent installs don't clash.
 oriel update --check          # Check whether a newer version is available without installing
 oriel update                  # Update to the latest release (prompts for confirmation on a TTY)
 oriel update --yes            # Update without prompting (required in non-interactive/CI environments)
-oriel update --version v0.6.5 # Update or downgrade to a specific release tag
+oriel update --version v0.6.6 # Update or downgrade to a specific release tag
 ```
 
 The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the release's `latest.json` (one signed entry per platform; releases before v0.3.1 only have `oriel-update-<arch>-<os>.json`, used as a fallback), verifies the Ed25519 signature of the entry for its own platform against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary (on Windows, where a running exe can't be overwritten, it is renamed to `oriel.exe.old` first and removed on the next run). The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
@@ -1074,6 +1074,10 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
     Vulkan (if built with `-Dggml_vulkan`) or the CPU. `-Dcuda_static=true`
     links cuBLAS in instead: it then needs only the NVIDIA driver, but is
     ~590 MB (cuBLASLt's kernels).
+  - `-Dggml_cuda_prebuilt=/abs/path/libggml-cuda.so` uses a library built
+    earlier (same Oriel ggml and options) instead of running nvcc, and implies
+    `-Dggml_cuda`: CI can cache the slow multi-architecture build (~70 min on
+    a hosted runner) and rebuild it only when ggml or the options change.
   - First build compiles ~140 CUDA files (~3–4 min on 16 cores), cached after.
   - Why a separate library: nvcc's host code uses GCC's libstdc++ while Zig
     builds C++ against libc++; the ggml backend interface between them is
