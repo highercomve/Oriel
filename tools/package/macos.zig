@@ -279,8 +279,11 @@ pub fn machoMinOs(head: []const u8) ?OsVersion {
             if (head.len < 8 + 32) return null;
             break :blk std.math.cast(usize, std.mem.readInt(u64, head[16..24], .big)) orelse return null;
         };
-        if (off >= head.len) return null;
-        return machoMinOs(head[off..]);
+        // A slice starts past the fat header, and isn't itself fat.
+        if (off < 8 or off >= head.len) return null;
+        const slice = head[off..];
+        if (slice.len >= 4 and (std.mem.readInt(u32, slice[0..4], .big) & 0xfffffffe) == 0xcafebabe) return null;
+        return machoMinOs(slice);
     }
     const magic = std.mem.readInt(u32, head[0..4], .little);
     const header_size: usize = switch (magic) {
@@ -296,7 +299,7 @@ pub fn machoMinOs(head: []const u8) ?OsVersion {
         if (off + 8 > head.len) return null;
         const cmd = std.mem.readInt(u32, head[off..][0..4], .little);
         const size = std.mem.readInt(u32, head[off + 4 ..][0..4], .little);
-        if (size < 8 or off + size > head.len) return null;
+        if (size < 8 or size > head.len - off) return null;
         if (cmd == lc_build_version and size >= 16) {
             if (std.mem.readInt(u32, head[off + 8 ..][0..4], .little) == platform_macos)
                 return .fromPacked(std.mem.readInt(u32, head[off + 12 ..][0..4], .little));
@@ -327,6 +330,12 @@ test machoMinOs {
     std.mem.writeInt(u32, buf[60..64], 0x001a0602, .little); // 26.6.2
     try std.testing.expectEqualStrings("26.6.2", try std.fmt.bufPrint(&out, "{f}", .{machoMinOs(&buf).?}));
     try std.testing.expect(machoMinOs(&buf).?.order(v) == .gt);
+    // A fat header whose slice points at itself (or at another fat header).
+    var fat: [48]u8 = @splat(0);
+    std.mem.writeInt(u32, fat[0..4], 0xcafebabe, .big);
+    std.mem.writeInt(u32, fat[4..8], 1, .big);
+    std.mem.writeInt(u32, fat[16..20], 0, .big);
+    try std.testing.expect(machoMinOs(&fat) == null);
     // Not Mach-O / truncated.
     try std.testing.expect(machoMinOs("#!/bin/sh\n") == null);
     try std.testing.expect(machoMinOs(buf[0..40]) == null);
