@@ -149,6 +149,15 @@ fn validateContents(c: *const contents.Contents, what: []const u8, taken: []cons
     return true;
 }
 
+/// The deployment target a Mach-O file declares (see macos.machoMinOs).
+fn machoMinOsOfFile(io: Io, path: []const u8) ?macos.OsVersion {
+    var file = Dir.cwd().openFile(io, path, .{}) catch return null;
+    defer file.close(io);
+    var head: [64 * 1024]u8 = undefined;
+    const n = file.readPositionalAll(io, &head, 0) catch return null;
+    return macos.machoMinOs(head[0..n]);
+}
+
 /// Copy the extra executables (mode 0755) and files (0644, parent
 /// directories created) into `dest_dir`.
 fn copyContents(gpa: std.mem.Allocator, io: Io, c: *const contents.Contents, dest_dir: []const u8) !void {
@@ -1614,6 +1623,19 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     const exe_dest = try std.fs.path.join(gpa, &.{ macos_dir, exe_name.? });
     defer gpa.free(exe_dest);
     try Dir.cwd().copyFile(bin_path.?, Dir.cwd(), exe_dest, io, .{ .permissions = filePerms(0o755) });
+    // LSMinimumSystemVersion is the executable's own deployment target
+    // (LC_BUILD_VERSION minos), so the two can't disagree: a bundle built on
+    // a newer Mac otherwise claims to run where its code can't.
+    var min_os_buf: [32]u8 = undefined;
+    if (machoMinOsOfFile(io, bin_path.?)) |v| {
+        const from_binary = std.fmt.bufPrint(&min_os_buf, "{f}", .{v}) catch unreachable;
+        if (!std.mem.eql(u8, from_binary, min_os)) std.debug.print("note: package-app: LSMinimumSystemVersion {s} (the executable's deployment target; --min-os said {s})\n", .{ from_binary, min_os });
+        min_os = from_binary;
+        for (extras.exes.items) |e| {
+            const ev = machoMinOsOfFile(io, e.src) orelse continue;
+            if (ev.order(v) == .gt) std.debug.print("warning: package-app: {s} needs macOS {f}, the app {f}: build it with the app's target (oriel.resolveTarget)\n", .{ e.name, ev, v });
+        }
+    }
     // Extra executables and code in Contents/MacOS, other files in
     // Contents/Resources (linked from MacOS).
     copyContentsMac(gpa, io, &extras, bundle) catch |err| switch (err) {

@@ -1334,11 +1334,13 @@ The generated NSIS installer provides:
 
 `<Name>.app/Contents` holds `MacOS/<exe>`, `Resources/icon.icns` (made from the PNG icon, no `iconutil` needed), `PkgInfo` and an `Info.plist` with:
 - `CFBundleIdentifier` = `.package.id`, `CFBundleName`/`CFBundleDisplayName` = `.name`, `CFBundleShortVersionString`/`CFBundleVersion` = `.version`.
-- `LSMinimumSystemVersion` = the target's minimum macOS. A native build targets the Mac it is built on; to ship to older macOS, build with e.g. `oriel package -Dtarget=aarch64-macos.13.0`.
+- `LSMinimumSystemVersion` = the executable's deployment target (read from its Mach-O `LC_BUILD_VERSION`, so the two always agree). `addApp` builds for macOS 13.0 when the target names no macOS version (a native build, or `-Dtarget=aarch64-macos`), not for the Mac doing the build, so a release built on a newer Mac or CI runner still runs on older ones; `-Dtarget=aarch64-macos.14.0` picks another minimum. Other executables an app puts in the bundle (`.package.contents`) should use `oriel.resolveTarget(b, target)` too; `package-app` warns when one needs a newer macOS than the app.
 - `CFBundleURLTypes` for `.url_schemes` (deep links).
 - `NSMicrophoneUsageDescription` and `NSAudioCaptureUsageDescription` when `audio_capture` is enabled (macOS refuses the permission without them).
 
 The bundle is **ad-hoc signed** (`codesign --sign -`), which is enough to run it on the Mac that built it and for macOS to attribute notifications and permission prompts to the app.
+
+**Unnotarized downloads and Gatekeeper.** An ad-hoc signed `.app` downloaded from the web (a GitHub release, say) is quarantined, and Gatekeeper refuses it: "Apple could not verify “<Name>” is free of malware…". Since macOS 15 the old right-click → Open shortcut no longer opens it. Users can allow it once in **System Settings → Privacy & Security → Open Anyway** (after the first attempt, with their password), or clear the quarantine flag from a terminal: `xattr -dr com.apple.quarantine /Applications/<Name>.app`. Notarizing the release (below) removes the prompt.
 
 **Distribution (Developer ID + notarization).** Other Macs need a Developer ID signature and notarization (an Apple developer account). `oriel package` does both when told which keychain identity and notarytool profile to use; `oriel build`'s `zig-out/<Name>.app` stays ad-hoc (fast, offline):
 

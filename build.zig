@@ -541,6 +541,24 @@ fn patchedHttpz(
     return module;
 }
 
+/// The deployment target macOS builds get when the target doesn't name a
+/// macOS version (native, or `-Dtarget=aarch64-macos`): an app built on a
+/// newer Mac must still run on older ones. Same as package-app's default.
+pub const default_macos_min: std.SemanticVersion = .{ .major = 13, .minor = 0, .patch = 0 };
+
+/// `target`, with `default_macos_min` as the minimum macOS version when it
+/// is a macOS target without one (an explicit `-Dtarget=aarch64-macos.14.0`
+/// wins). Oriel applies it to itself and to the apps `addApp` builds; use it
+/// for an app's other executables (e.g. a CLI bundled in the `.app`) so they
+/// run on the same macOS versions:
+///     const target = oriel.resolveTarget(b, b.standardTargetOptions(.{}));
+pub fn resolveTarget(b: *std.Build, target: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
+    if (target.result.os.tag != .macos or target.query.os_version_min != null) return target;
+    var query = target.query;
+    query.os_version_min = .{ .semver = default_macos_min };
+    return b.resolveTargetQuery(query);
+}
+
 // ---------------------------------------------------------------------------
 // App build helper (called from an app's build.zig)
 // ---------------------------------------------------------------------------
@@ -673,7 +691,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     addUpdaterSteps(b, oriel_dep.artifact("update_tool"));
 
     const oriel = oriel_dep.module("oriel");
-    const target = oriel.resolved_target.?;
+    const target = resolveTarget(b, oriel.resolved_target.?);
     const optimize = oriel.optimize.?;
     // When optimize was not explicitly given on the command-line, default production to ReleaseSafe
     const prod_optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe;
