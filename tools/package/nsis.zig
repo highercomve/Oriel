@@ -145,6 +145,26 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\!insertmacro un.GetParameters
         \\!insertmacro un.GetOptions
         \\
+        \\; A running app keeps its exe locked: Delete/File would skip it and the
+        \\; (un)install would still report success. Opening the exe for writing
+        \\; fails while it runs (and changes nothing otherwise), so check first.
+        \\!macro ORIEL_REQUIRE_NOT_RUNNING
+        \\  ${If} ${FileExists} "$INSTDIR\${EXE_NAME}.exe"
+        \\  oriel_check_running:
+        \\    ClearErrors
+        \\    FileOpen $R9 "$INSTDIR\${EXE_NAME}.exe" a
+        \\    ${If} ${Errors}
+        \\      IfSilent oriel_running_abort
+        \\      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${NAME} is running. Close it (it may be in the notification area), then click Retry." IDRETRY oriel_check_running
+        \\    oriel_running_abort:
+        \\      SetErrorLevel 2
+        \\      DetailPrint "${NAME} is running: close it and try again."
+        \\      Abort
+        \\    ${EndIf}
+        \\    FileClose $R9
+        \\  ${EndIf}
+        \\!macroend
+        \\
         \\!define MUI_ABORTWARNING
         \\!ifdef ICON_PATH
         \\!define MUI_ICON "${ICON_PATH}"
@@ -216,6 +236,7 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\FunctionEnd
         \\
         \\Section "Install"
+        \\  !insertmacro ORIEL_REQUIRE_NOT_RUNNING
         \\  Call CheckWebView2
         \\
         \\  SetOutPath "$INSTDIR"
@@ -289,6 +310,7 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\SectionEnd
         \\
         \\Section "Uninstall"
+        \\  !insertmacro ORIEL_REQUIRE_NOT_RUNNING
         \\  Var /GLOBAL uninst_remove_data
         \\  StrCpy $uninst_remove_data "0"
         \\
@@ -444,6 +466,11 @@ test "generateNsisScript produces valid script with all options and escaping" {
     try testing.expect(std.mem.indexOf(u8, script, "MessageBox MB_YESNO|MB_DEFBUTTON2|MB_ICONQUESTION") != null);
     try testing.expect(std.mem.indexOf(u8, script, "${un.GetOptions} $R0 \"/REMOVEDATA\" $R1") != null);
     try testing.expect(std.mem.indexOf(u8, script, "RMDir /r \"$LOCALAPPDATA\\${APP_ID}\"") != null);
+
+    // Verify both sections refuse to run while the app does
+    try testing.expect(std.mem.indexOf(u8, script, "!macro ORIEL_REQUIRE_NOT_RUNNING") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "Section \"Install\"\n  !insertmacro ORIEL_REQUIRE_NOT_RUNNING") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "Section \"Uninstall\"\n  !insertmacro ORIEL_REQUIRE_NOT_RUNNING") != null);
 
     // Verify WebView2 detection
     try testing.expect(std.mem.indexOf(u8, script, "Function CheckWebView2") != null);
