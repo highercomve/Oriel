@@ -387,7 +387,7 @@ pub fn Bridge(
             // With isolation on, the app's pages send only calls the
             // isolation hook signed; `request` is the call inside.
             const checked = isolation.check(temp_alloc, config.security, local, page_url, if (view.value) |v| @intFromPtr(v) else 0, message_request, req_slice) catch |err| {
-                replyError(reply, if (err == error.OutOfMemory) "OutOfMemory" else "Forbidden");
+                replyError(reply, isolation.errorText(err));
                 return;
             };
             const request = checked.request;

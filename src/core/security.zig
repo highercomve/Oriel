@@ -73,7 +73,7 @@ pub const Security = struct {
 
 /// `Security.isolation`. `hook` is JavaScript (e.g.
 /// `@embedFile("isolation/hook.js")`, or `oriel_app.isolation` from
-/// `addApp(.{ .isolation_hook = ... })`) that sets
+/// `addApp(.{ .isolation = .{ .hook = b.path("isolation/hook.js") } })`) that sets
 /// `globalThis.__ORIEL_ISOLATION_HOOK__ = (call) => call`: it gets
 /// `{ cmd, args }` for every call and returns it (or a modified one), or
 /// throws to reject it; it may be async. It runs in an opaque-origin frame

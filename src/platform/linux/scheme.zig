@@ -110,7 +110,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             const headers = soup.MessageHeaders.new(.response);
             headers.append("Content-Type", "text/html");
             headers.append("Content-Security-Policy", csp.?);
-            inline for (isolation.page_headers) |h| headers.append((h[0] ++ "\x00")[0..h[0].len :0], (h[1] ++ "\x00")[0..h[1].len :0]);
+            inline for (comptime isolation.pageHeaders(config.security)) |h| headers.append((h[0] ++ "\x00")[0..h[0].len :0], (h[1] ++ "\x00")[0..h[1].len :0]);
             response.setHttpHeaders(headers);
             request.finishWithResponse(response);
         }

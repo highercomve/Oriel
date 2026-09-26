@@ -65,7 +65,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             }
             const csp = isolation.pageCsp(gpa, config.security, local) catch return failTask(task);
             defer gpa.free(csp);
-            respondWith(task, url, 200, "text/html", page, csp, &isolation.page_headers);
+            respondWith(task, url, 200, "text/html", page, csp, comptime isolation.pageHeaders(config.security));
         }
 
         /// Only media streams outlive `startTask`.

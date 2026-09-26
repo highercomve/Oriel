@@ -393,7 +393,32 @@ async function securityChecks() {
     if (isoFrame) {
       try { doc = isoFrame.contentWindow.document ? "readable" : "null"; } catch (e) { doc = "refused"; }
     }
-    check("isolation key", fetched === "refused" && doc === "refused", `fetch ${iso.origin}/: ${fetched}; frame document: ${doc}`);
+    // Without the sandbox too: the isolation host is its own origin.
+    const plain = document.createElement("iframe");
+    plain.style.display = "none";
+    const loaded = new Promise((resolve) => { plain.onload = resolve; setTimeout(resolve, 3000); });
+    plain.src = iso.origin + "/";
+    document.body.append(plain);
+    await loaded;
+    let plainDoc;
+    try { plainDoc = plain.contentDocument ? "readable" : "null"; } catch (e) { plainDoc = "refused"; }
+    plain.remove();
+    check("isolation key", fetched === "refused" && doc === "refused" && plainDoc !== "readable", `fetch ${iso.origin}/: ${fetched}; frame document: ${doc}; unsandboxed frame document: ${plainDoc}`);
+    // Page script can evict the frame's key (more isolation frames than the
+    // per-window cap) or remove the frame: the bridge mounts a fresh one.
+    const extra = [];
+    for (let i = 0; i < 9; i++) {
+      const f = document.createElement("iframe");
+      f.style.display = "none";
+      extra.push(new Promise((resolve) => { f.onload = () => resolve(f); setTimeout(() => resolve(f), 3000); }));
+      f.src = iso.origin + "/?" + i;
+      document.body.append(f);
+    }
+    for (const f of await Promise.all(extra)) f.remove();
+    const afterEvict = await outcome(oriel.invoke("isolation_echo", { value: "evicted" }));
+    document.querySelector(`iframe[sandbox][src^="${iso.origin}"]`)?.remove();
+    const afterRemove = await outcome(oriel.invoke("isolation_echo", { value: "removed" }));
+    check("isolation recover", afterEvict.includes('"hooked":true') && afterRemove.includes('"hooked":true'), `after key eviction: ${afterEvict}; after frame removal: ${afterRemove}`);
     // frame-ancestors: only the app's own pages may frame the isolation page.
     check("isolation embed", isoProbe === "did not load", `framed by ${probe_url}: ${isoProbe}`);
   }

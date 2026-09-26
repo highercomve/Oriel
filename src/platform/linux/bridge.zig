@@ -25,6 +25,7 @@ const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
 const isolation_placeholder = "/*__ORIEL_ISOLATION__*/";
 
 comptime {
+    @setEvalBranchQuota(100_000); // the scan covers the whole script
     std.debug.assert(std.mem.count(u8, bridge_js, token_placeholder) == 1);
     std.debug.assert(std.mem.count(u8, bridge_js, isolation_placeholder) == 1);
 }
@@ -325,7 +326,7 @@ pub fn Bridge(
             // With isolation on, the app's pages send only calls the
             // isolation hook signed; `request` is the call inside.
             const checked = isolation.check(temp_alloc, config.security, local, page_url, @intFromPtr(view), message_request, req_slice) catch |err| {
-                reply.returnErrorMessage(if (err == error.OutOfMemory) "OutOfMemory" else "Forbidden");
+                reply.returnErrorMessage(isolation.errorText(err));
                 return 1;
             };
             const request = checked.request;

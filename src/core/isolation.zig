@@ -191,7 +191,7 @@ pub const Checked = struct {
 /// Without isolation, or for a remote capability origin, the request passes
 /// unchanged. From the app's own pages only a sealed call is accepted, and
 /// the call inside it replaces the request. `json` is the original message.
-/// Errors are logged here; bridges answer "Forbidden".
+/// Errors are logged here; bridges answer with `errorText`.
 pub fn check(
     arena: std.mem.Allocator,
     comptime sec: security.Security,
@@ -200,7 +200,7 @@ pub fn check(
     view: usize,
     request: ipc.Request,
     json: []const u8,
-) error{ Forbidden, OutOfMemory }!Checked {
+) error{ Forbidden, StaleKey, OutOfMemory }!Checked {
     if (comptime sec.isolation == null) return .{ .request = request, .json = json };
     var buf: [512]u8 = undefined;
     const o = security.origin(&buf, page_url) orelse return error.Forbidden;
@@ -217,12 +217,23 @@ pub fn check(
     if (!std.mem.eql(u8, request.cmd, sealed_cmd)) return error.Forbidden;
     const inner = open(arena, view, sealed) catch |err| {
         log.warn("isolation: refused a sealed IPC call ({s})", .{@errorName(err)});
-        return error.Forbidden;
+        // A key evicted from the table: the bridge mounts a fresh frame
+        // and sends the call once more (through the hook again).
+        return if (err == error.UnknownKey) error.StaleKey else error.Forbidden;
     };
     const unwrapped: ipc.Request = .{ .cmd = inner.cmd, .args = inner.args, .token = request.token };
     return .{
         .request = unwrapped,
         .json = try std.json.Stringify.valueAlloc(arena, unwrapped, .{ .emit_null_optional_fields = false }),
+    };
+}
+
+/// The reply text for a `check` error (the bridge JS matches "IsolationStale").
+pub fn errorText(err: error{ Forbidden, StaleKey, OutOfMemory }) [:0]const u8 {
+    return switch (err) {
+        error.Forbidden => "Forbidden",
+        error.StaleKey => "IsolationStale",
+        error.OutOfMemory => "OutOfMemory",
     };
 }
 
@@ -237,16 +248,17 @@ const runtime_head =
 ;
 const runtime_js =
     \\;
+    \\  // The key leaves the DOM first, whatever happens next.
+    \\  const meta = document.querySelector('meta[name="oriel-isolation"]');
+    \\  if (!meta) return;
+    \\  const [kid, b64] = String(meta.content).split(".");
+    \\  meta.remove();
     \\  const parentWin = window.parent;
     \\  if (parentWin === window) return;
     \\  // Only a direct child of the app's own top page: WebKit doesn't enforce
     \\  // this page's frame-ancestors for custom schemes.
     \\  const ao = location.ancestorOrigins;
     \\  if (ao && (ao.length !== 1 || !parents.includes(ao[0]))) return;
-    \\  const meta = document.querySelector('meta[name="oriel-isolation"]');
-    \\  if (!meta) return;
-    \\  const [kid, b64] = String(meta.content).split(".");
-    \\  meta.remove();
     \\  const raw = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     \\  const keyP = crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
     \\  raw.fill(0);
@@ -259,7 +271,7 @@ const runtime_js =
     \\  addEventListener("message", (e) => {
     \\    if (e.source !== parentWin) return;
     \\    const m = e.data;
-    \\    if (!m || typeof m !== "object" || typeof m.id !== "number" || typeof m.cmd !== "string" || typeof m.a !== "string") return;
+    \\    if (!m || typeof m !== "object" || typeof m.id !== "string" || typeof m.cmd !== "string" || typeof m.a !== "string") return;
     \\    (async () => {
     \\      const hook = globalThis.__ORIEL_ISOLATION_HOOK__;
     \\      if (typeof hook !== "function") throw new Error("no isolation hook");
@@ -275,7 +287,7 @@ const runtime_js =
     \\      }).catch((err) => failed(m.id, err));
     \\    }, (err) => failed(m.id, err));
     \\  });
-    \\  reply({ ready: true });
+    \\  reply({ ready: true, kid });
     \\})();
     \\
 ;
@@ -283,7 +295,29 @@ const runtime_js =
 /// The isolation page's single inline script: the runtime, then the hook.
 pub fn script(comptime sec: security.Security, comptime local: security.Local) []const u8 {
     const iso = sec.isolation orelse return "";
-    return runtime_head ++ " " ++ localOrigins(local) ++ runtime_js ++ ";\n" ++ iso.hook ++ "\n";
+    return runtime_head ++ " " ++ localOrigins(local) ++ runtime_js ++ ";\n" ++ lfOnly(iso.hook) ++ "\n";
+}
+
+/// `s` with CRLF and CR turned into LF, as the HTML parser does before CSP
+/// hashes an inline script (a hook checked out with CRLF would otherwise
+/// never match its hash).
+fn lfOnly(comptime s: []const u8) []const u8 {
+    comptime {
+        @setEvalBranchQuota(10_000 + s.len * 20);
+        if (std.mem.indexOfScalar(u8, s, '\r') == null) return s;
+        var buf: [s.len]u8 = undefined;
+        var n: usize = 0;
+        var i: usize = 0;
+        while (i < s.len) : (i += 1) {
+            if (s[i] == '\r') {
+                buf[n] = '\n';
+                if (i + 1 < s.len and s[i + 1] == '\n') i += 1;
+            } else buf[n] = s[i];
+            n += 1;
+        }
+        const out = buf[0..n].*;
+        return &out;
+    }
 }
 
 /// The app's own origins as a JavaScript array.
@@ -326,18 +360,31 @@ pub fn pageCsp(gpa: std.mem.Allocator, comptime sec: security.Security, comptime
 }
 
 /// Response headers of the isolation page besides Content-Type and its CSP.
-pub const page_headers = [_][2][]const u8{
-    .{ "X-Content-Type-Options", "nosniff" },
-    .{ "Cache-Control", "no-store" },
-    .{ "Referrer-Policy", "no-referrer" },
-};
+/// When the app's pages send Cross-Origin-Embedder-Policy, the frame must opt
+/// in too (the same COEP, and CORP cross-origin) or the page can't embed it.
+pub fn pageHeaders(comptime sec: security.Security) []const [2][]const u8 {
+    comptime {
+        var out: []const [2][]const u8 = &.{
+            .{ "X-Content-Type-Options", "nosniff" },
+            .{ "Cache-Control", "no-store" },
+            .{ "Referrer-Policy", "no-referrer" },
+        };
+        for (sec.headers) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, "Cross-Origin-Embedder-Policy") and security.headerUsable(h))
+                out = out ++ &[_][2][]const u8{ .{ "Cross-Origin-Embedder-Policy", h.value }, .{ "Cross-Origin-Resource-Policy", "cross-origin" } };
+        }
+        return out;
+    }
+}
 
-/// `page_headers` as "Name: value\r\n" lines.
-pub const page_header_lines = blk: {
-    var out: []const u8 = "";
-    for (page_headers) |h| out = out ++ h[0] ++ ": " ++ h[1] ++ "\r\n";
-    break :blk out;
-};
+/// `pageHeaders` as "Name: value\r\n" lines.
+pub fn pageHeaderLines(comptime sec: security.Security) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (pageHeaders(sec)) |h| out = out ++ h[0] ++ ": " ++ h[1] ++ "\r\n";
+        return out;
+    }
+}
 
 /// Whether `path` (of a request to `host`) is the isolation page.
 pub fn isPagePath(path: []const u8) bool {
@@ -372,16 +419,42 @@ pub fn bridgeScript(comptime sec: security.Security, comptime local: security.Lo
 const bridge_js =
     \\  const invoke = (() => {
     \\    if (!isoLocal.includes(location.origin) || window !== window.top) return rawInvoke;
+    \\    // id -> { resolve, reject, m, sent, retried }. Ids are random: page
+    \\    // script can post to the frame too, but can't claim a pending reply.
     \\    const pending = new Map();
     \\    let queue = [];
     \\    let frame = null;
+    \\    let frameKid = null;
     \\    let ready = false;
-    \\    let nextId = 1;
     \\    let readyTimer = 0;
-    \\    function rejectAll(ids, msg) {
-    \\      for (const id of ids) {
-    \\        const p = pending.get(id);
-    \\        if (p) { pending.delete(id); p.reject(new Error(msg)); }
+    \\    function newId() {
+    \\      const b = new Uint8Array(16);
+    \\      crypto.getRandomValues(b);
+    \\      return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+    \\    }
+    \\    function fail(id, msg) {
+    \\      const p = pending.get(id);
+    \\      if (p) { pending.delete(id); p.reject(new Error(msg)); }
+    \\    }
+    \\    // Calls posted to a frame document that went away never come back
+    \\    // (and never reached Zig): once more through the new one, else fail.
+    \\    function resendPosted(msg) {
+    \\      for (const [id, p] of pending) {
+    \\        if (!p.sent) continue;
+    \\        if (p.retried) { fail(id, msg); continue; }
+    \\        p.retried = true;
+    \\        p.sent = false;
+    \\        queue.push(p.m);
+    \\      }
+    \\    }
+    \\    function flush() {
+    \\      const q = queue;
+    \\      queue = [];
+    \\      for (const m of q) {
+    \\        const p = pending.get(m.id);
+    \\        if (!p) continue;
+    \\        p.sent = true;
+    \\        frame.contentWindow.postMessage(m, "*");
     \\      }
     \\    }
     \\    function attach(f) {
@@ -393,9 +466,10 @@ const bridge_js =
     \\      mo.observe(document, { childList: true });
     \\    }
     \\    function mount() {
-    \\      // Calls sent to a removed frame never come back.
-    \\      if (frame) rejectAll([...pending.keys()].filter((id) => !queue.some((m) => m.id === id)), "the isolation frame was removed");
+    \\      if (frame && frame.isConnected) frame.remove();
+    \\      resendPosted("the isolation frame went away");
     \\      ready = false;
+    \\      frameKid = null;
     \\      frame = document.createElement("iframe");
     \\      frame.setAttribute("sandbox", "allow-scripts");
     \\      frame.setAttribute("aria-hidden", "true");
@@ -406,9 +480,9 @@ const bridge_js =
     \\      clearTimeout(readyTimer);
     \\      readyTimer = setTimeout(() => {
     \\        if (ready) return;
-    \\        const ids = queue.map((m) => m.id);
+    \\        const q = queue;
     \\        queue = [];
-    \\        rejectAll(ids, "the isolation frame did not load");
+    \\        for (const m of q) fail(m.id, "the isolation frame did not load");
     \\      }, 10000);
     \\    }
     \\    window.addEventListener("message", (e) => {
@@ -417,30 +491,39 @@ const bridge_js =
     \\      if (!d || typeof d !== "object" || d.__oriel_iso !== true) return;
     \\      e.stopImmediatePropagation();
     \\      if (d.ready === true) {
+    \\        // A new document in the same frame (reloaded): a new key.
+    \\        if (frameKid !== null && d.kid !== frameKid) resendPosted("the isolation frame reloaded");
+    \\        frameKid = d.kid;
     \\        ready = true;
     \\        clearTimeout(readyTimer);
-    \\        const q = queue;
-    \\        queue = [];
-    \\        for (const m of q) frame.contentWindow.postMessage(m, "*");
+    \\        flush();
     \\        return;
     \\      }
     \\      const p = pending.get(d.id);
-    \\      if (!p) return;
+    \\      if (!p || !p.sent) return;
     \\      pending.delete(d.id);
     \\      if (typeof d.error === "string") { p.reject(new Error(d.error)); return; }
     \\      // Forwarded in the order the frame signed them (seq order).
-    \\      Promise.resolve(sendSealed({ kid: d.kid, s: d.s, mac: d.mac })).then(p.resolve, p.reject);
+    \\      Promise.resolve(sendSealed({ kid: d.kid, s: d.s, mac: d.mac })).then(p.resolve, (err) => {
+    \\        // Zig no longer has this frame's key (evicted): a fresh frame, once.
+    \\        if (p.retried || !String((err && err.message) || err).includes("IsolationStale")) { p.reject(err); return; }
+    \\        p.retried = true;
+    \\        p.sent = false;
+    \\        pending.set(p.m.id, p);
+    \\        if (d.kid === frameKid) mount();
+    \\        queue.push(p.m);
+    \\        if (ready) flush();
+    \\      });
     \\    }, true);
     \\    mount();
     \\    return (cmd, args) => new Promise((resolve, reject) => {
     \\      let a;
     \\      try { a = JSON.stringify(args ?? null); } catch (err) { reject(err); return; }
-    \\      const id = nextId++;
-    \\      pending.set(id, { resolve, reject });
-    \\      const m = { id, cmd: String(cmd), a };
+    \\      const m = { id: newId(), cmd: String(cmd), a };
+    \\      pending.set(m.id, { resolve, reject, m, sent: false, retried: false });
     \\      if (!frame.isConnected) mount();
-    \\      if (ready && frame.contentWindow) frame.contentWindow.postMessage(m, "*");
-    \\      else queue.push(m);
+    \\      queue.push(m);
+    \\      if (ready) flush();
     \\    });
     \\  })();
     \\
@@ -629,4 +712,30 @@ test "isolation page" {
     try std.testing.expect(std.mem.indexOf(u8, csp, &b64) != null);
     try std.testing.expect(isPagePath("/") and !isPagePath("/x.js"));
     checkHook(sec);
+}
+
+test "hook line endings and COEP" {
+    // The HTML parser turns CRLF into LF before CSP hashes the script.
+    const crlf: security.Security = comptime .{ .isolation = .{ .hook = "const a = 1;\r\nconst b = 2;\rconst c = 3;\r\n" } };
+    const s = comptime script(crlf, .{});
+    try std.testing.expect(std.mem.indexOfScalar(u8, s, '\r') == null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "const a = 1;\nconst b = 2;\nconst c = 3;\n") != null);
+    // Without COEP: no CORP/COEP on the frame; with it, both.
+    try std.testing.expectEqual(@as(usize, 3), comptime pageHeaders(.{}).len);
+    const coep = comptime pageHeaders(.{ .headers = &.{.{ .name = "cross-origin-embedder-policy", .value = "require-corp" }} });
+    try std.testing.expectEqual(@as(usize, 5), coep.len);
+    try std.testing.expectEqualStrings("require-corp", coep[3][1]);
+    try std.testing.expect(std.mem.indexOf(u8, comptime pageHeaderLines(.{}), "Cache-Control: no-store\r\n") != null);
+}
+
+test "an evicted key asks the bridge for a fresh frame" {
+    init(@splat(5));
+    defer forget(13);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const sec: security.Security = comptime .{ .isolation = .{ .hook = "" } };
+    const s = "{\"seq\":1,\"cmd\":\"x\"}";
+    const req: ipc.Request = .{ .cmd = sealed_cmd, .iso = .{ .kid = "0123456789abcdef", .s = s, .mac = "00" ** 32 } };
+    try std.testing.expectError(error.StaleKey, check(arena_state.allocator(), sec, .{}, security.app_origin ++ "/", 13, req, "{}"));
+    try std.testing.expectEqualStrings("IsolationStale", errorText(error.StaleKey));
 }

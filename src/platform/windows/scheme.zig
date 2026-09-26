@@ -127,7 +127,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             const hdr: ?[]u8 = if (page != null) blk: {
                 const csp = isolation.pageCsp(gpa, config.security, local) catch break :blk null;
                 defer gpa.free(csp);
-                break :blk std.fmt.allocPrint(gpa, "Content-Type: text/html\r\nContent-Security-Policy: {s}\r\n{s}", .{ csp, isolation.page_header_lines }) catch null;
+                break :blk std.fmt.allocPrint(gpa, "Content-Type: text/html\r\nContent-Security-Policy: {s}\r\n{s}", .{ csp, comptime isolation.pageHeaderLines(config.security) }) catch null;
             } else null;
             defer if (hdr) |h| gpa.free(h);
             if (page == null or hdr == null) {

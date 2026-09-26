@@ -388,6 +388,8 @@ pub fn WindowCreator(
         /// Removed via webview.remove_NavigationStarting in WindowData.deinit before freeing.
         const NavHandler = struct {
             handler: webview2.ICoreWebView2NavigationStartingEventHandler,
+            /// FrameNavigationStarting (iframes): the isolation frame is allowed there.
+            frame: bool = false,
 
             const nav_vtable = webview2.ICoreWebView2NavigationStartingEventHandler.VTable{
                 .QueryInterface = &qiNav,
@@ -411,7 +413,8 @@ pub fn WindowCreator(
             fn releaseNav(_: *webview2.ICoreWebView2NavigationStartingEventHandler) callconv(.winapi) win32.ULONG {
                 return 1;
             }
-            fn invokeNav(_: *webview2.ICoreWebView2NavigationStartingEventHandler, _: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2NavigationStartingEventArgs) callconv(.winapi) win32.HRESULT {
+            fn invokeNav(n_this: *webview2.ICoreWebView2NavigationStartingEventHandler, _: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2NavigationStartingEventArgs) callconv(.winapi) win32.HRESULT {
+                const n_self: *@This() = @fieldParentPtr("handler", n_this);
                 if (args) |a| {
                     var uri_w: ?win32.LPWSTR = null;
                     const uri_hr = a.lpVtbl.get_Uri(a, @ptrCast(&uri_w));
@@ -428,6 +431,13 @@ pub fn WindowCreator(
                         return win32.S_OK;
                     };
                     defer std.heap.smp_allocator.free(uri_u8);
+
+                    // The bridge's isolation frame (iframes only; a top-level
+                    // navigation to it stays blocked).
+                    if (comptime config.security.isolation != null) {
+                        var obuf: [512]u8 = undefined;
+                        if (n_self.frame) if (security.origin(&obuf, uri_u8)) |o| if (std.mem.eql(u8, o, isolation.origin)) return win32.S_OK;
+                    }
 
                     var user_init: win32.BOOL = .FALSE;
                     _ = a.lpVtbl.get_IsUserInitiated(a, &user_init);
@@ -736,6 +746,7 @@ pub fn WindowCreator(
 
             nav_handler: NavHandler,
             nav_token: webview2.EventRegistrationToken = .{},
+            frame_nav_handler: NavHandler,
             /// iframes: NavigationStarting only covers the top-level document.
             frame_nav_token: webview2.EventRegistrationToken = .{},
 
@@ -1163,6 +1174,10 @@ pub fn WindowCreator(
                 .nav_handler = .{
                     .handler = .{ .lpVtbl = &NavHandler.nav_vtable },
                 },
+                .frame_nav_handler = .{
+                    .handler = .{ .lpVtbl = &NavHandler.nav_vtable },
+                    .frame = true,
+                },
                 .nw_handler = .{
                     .handler = .{ .lpVtbl = &NewWinHandler.new_win_vtable },
                     .main_view = view,
@@ -1198,8 +1213,9 @@ pub fn WindowCreator(
 
             // Same policy for iframes as for the page (WebKitGTK's
             // decide-policy covers both); FrameNavigationStarting passes the
-            // same args type, so the same handler serves both events.
-            if (view.lpVtbl.add_FrameNavigationStarting(view, &data.nav_handler.handler, &data.frame_nav_token) < 0) {
+            // same args type, so the same handler code serves both events
+            // (plus the isolation frame, iframes only).
+            if (view.lpVtbl.add_FrameNavigationStarting(view, &data.frame_nav_handler.handler, &data.frame_nav_token) < 0) {
                 return error.WebView2AddEventHandlerFailed;
             }
             errdefer _ = view.lpVtbl.remove_FrameNavigationStarting(view, data.frame_nav_token);
