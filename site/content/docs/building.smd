@@ -264,6 +264,10 @@ First build takes a few minutes; cached builds are fast. For distributable build
 oriel build -Dggml_cuda -Dcuda_arch=all-major
 ```
 
+`-Dcuda_arch` also takes a list of compute capabilities, e.g. `-Dcuda_arch=75,86,89,120a` (machine code for each, PTX for the newest generic one; Blackwell needs the architecture-specific `120a`).
+
+The library links cuBLAS dynamically: users need the CUDA runtime installed, or it doesn't load and ggml falls back to Vulkan (when built with `-Dggml_vulkan`) or the CPU. `-Dcuda_static=true` links cuBLAS in, so only the NVIDIA driver is needed, at the cost of a ~590 MB library.
+
 Measured speedup (11 s audio clip on RTX 4070): 3.2 s on CPU → 0.8 s on CUDA.
 
 ### Metal (macOS)
