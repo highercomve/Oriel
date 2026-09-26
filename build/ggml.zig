@@ -29,6 +29,9 @@ pub const CudaOptions = struct {
     /// Link cuBLAS statically: the library then needs only the NVIDIA
     /// driver (libcuda.so.1), not a CUDA toolkit on the user's machine.
     static: bool = false,
+    /// A libggml-cuda.so built earlier with the same Oriel (ggml) version and
+    /// options: used as is, nvcc doesn't run (CI caches the ~70 min build).
+    prebuilt: ?[]const u8 = null,
 };
 
 /// nvcc arguments selecting the GPU architectures (see `CudaOptions.arch`).
@@ -257,7 +260,7 @@ pub fn addGgml(
         });
     }
 
-    if (cuda) |opts| b.addNamedLazyPath("libggml-cuda", addCudaBackend(b, ggml_root, opts));
+    if (cuda) |opts| b.addNamedLazyPath("libggml-cuda", if (opts.prebuilt) |p| .{ .cwd_relative = p } else addCudaBackend(b, ggml_root, opts));
     if (vulkan) |opts| b.addNamedLazyPath("libggml-vulkan", addVulkanBackend(b, oriel, ggml_root, write_files.getDirectory(), opts));
     if (metal) addMetalBackend(b, oriel, ggml_root, cpp_flags, metal_defs);
 

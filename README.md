@@ -1074,6 +1074,10 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
     Vulkan (if built with `-Dggml_vulkan`) or the CPU. `-Dcuda_static=true`
     links cuBLAS in instead: it then needs only the NVIDIA driver, but is
     ~590 MB (cuBLASLt's kernels).
+  - `-Dggml_cuda_prebuilt=/abs/path/libggml-cuda.so` uses a library built
+    earlier (same Oriel ggml and options) instead of running nvcc, and implies
+    `-Dggml_cuda`: CI can cache the slow multi-architecture build (~70 min on
+    a hosted runner) and rebuild it only when ggml or the options change.
   - First build compiles ~140 CUDA files (~3–4 min on 16 cores), cached after.
   - Why a separate library: nvcc's host code uses GCC's libstdc++ while Zig
     builds C++ against libc++; the ggml backend interface between them is
