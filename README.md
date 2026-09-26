@@ -917,7 +917,10 @@ A plain executable is replaced like on Linux (`raw` / `raw.gz`). An app in a
 of one `<Name>.app`; build it with `COPYFILE_DISABLE=1 tar -czf ... Name.app`):
 it is unpacked next to the running bundle, swapped with it atomically
 (`renameatx_np` `RENAME_SWAP`) and the old bundle is deleted; `restart`
-relaunches the bundle with `open -n`. Other OSes refuse `app.tar.gz`.
+relaunches the bundle with `open -n`. Other OSes refuse `app.tar.gz`. For
+distribution, tar the signed and notarized `zig-out/package/<Name>.app` (see
+[macOS bundles](#macos-bundles-app-dmg)), not `oriel build`'s ad-hoc
+`zig-out/<Name>.app`.
 
 #### 8. Security notes
 
@@ -1287,6 +1290,8 @@ oriel package -Dmacos-sign-identity="Developer ID Application: Your Name (AB12CD
 
 - `-Dmacos-sign-identity` (or `ORIEL_MACOS_SIGN_IDENTITY`): the `.app` in `zig-out/package` is signed with the hardened runtime, the generated `<Name>.entitlements` (usage entitlements for the declared permissions, e.g. `com.apple.security.device.audio-input`) and a secure timestamp, then checked with `codesign --verify --strict`; the `.dmg` is signed too. `security find-identity -v -p codesigning` lists the identities. `-` signs ad-hoc with the hardened runtime, to try the runtime and entitlements locally.
 - `-Dmacos-notarize-profile` (or `ORIEL_MACOS_NOTARIZE_PROFILE`): the signed `.dmg` goes to `xcrun notarytool submit --wait`; when Apple accepts it, the ticket is stapled (`xcrun stapler staple`) and `spctl` checks it. A rejection prints the `xcrun notarytool log` command with the submission id. Credentials stay in the keychain: the build only passes the profile name.
+- The two bundles have different code signatures, so macOS keeps separate permission grants (Accessibility, Microphone, …) for `zig-out/<Name>.app` and the signed package.
+- Only the main executable is signed: a bundle holding other code (helpers, dylibs) is refused rather than shipped half-signed.
 - `-Dmacos-sign-dry-run`: print the `codesign`/`notarytool`/`stapler`/`spctl` commands without running them (no identity or profile needed), and sign the package ad-hoc with the hardened runtime and the entitlements, so it runs as the signed app would.
 
 #### The AppImage caveat (system GTK4 & WebKitGTK 6.0)

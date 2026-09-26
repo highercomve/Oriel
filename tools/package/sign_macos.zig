@@ -46,6 +46,45 @@ pub fn validProfile(profile: []const u8) bool {
     return validValue(profile);
 }
 
+/// A path handed to a tool as a positional argument: never option-like.
+pub fn validPath(path: []const u8) bool {
+    return path.len > 0 and path[0] != '-';
+}
+
+/// The first Mach-O file in the bundle other than Contents/MacOS/<exe>
+/// (the executable named by the bundle's only MacOS entry), or null.
+/// Caller frees.
+fn nestedCode(gpa: std.mem.Allocator, io: Io, bundle: []const u8) !?[]u8 {
+    var dir = try Dir.cwd().openDir(io, bundle, .{ .iterate = true });
+    defer dir.close(io);
+    var main_count: usize = 0;
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        var file = entry.dir.openFile(io, entry.basename, .{}) catch continue;
+        defer file.close(io);
+        var magic: [4]u8 = undefined;
+        const n = file.readPositionalAll(io, &magic, 0) catch continue;
+        if (n < 4 or !isMachO(magic)) continue;
+        const in_macos = std.mem.startsWith(u8, entry.path, "Contents/MacOS/") and std.mem.indexOfScalarPos(u8, entry.path, "Contents/MacOS/".len, '/') == null;
+        if (in_macos and main_count == 0) {
+            main_count += 1;
+            continue;
+        }
+        return try gpa.dupe(u8, entry.path);
+    }
+    return null;
+}
+
+fn isMachO(magic: [4]u8) bool {
+    const m = std.mem.readInt(u32, &magic, .little);
+    return switch (m) {
+        0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca => true,
+        else => false,
+    };
+}
+
 fn validValue(v: []const u8) bool {
     if (v.len == 0 or v.len > 512 or v[0] == '-') return false;
     for (v) |c| if (c < 0x20 or c == 0x7f) return false;
@@ -63,9 +102,9 @@ pub fn codesignAppArgv(buf: *[11][]const u8, identity: []const u8, entitlements:
 }
 
 /// `xcrun notarytool submit` for `dmg`, waiting for the verdict (JSON).
-pub fn notarizeArgv(buf: *[10][]const u8, profile: []const u8, dmg: []const u8) []const []const u8 {
-    buf.* = .{ "/usr/bin/xcrun", "notarytool", "submit", dmg, "--keychain-profile", profile, "--wait", "--output-format", "json", "" };
-    return buf[0..9];
+pub fn notarizeArgv(buf: *[11][]const u8, profile: []const u8, dmg: []const u8) []const []const u8 {
+    buf.* = .{ "/usr/bin/xcrun", "notarytool", "submit", dmg, "--keychain-profile", profile, "--wait", "--timeout", "2h", "--output-format", "json" };
+    return buf[0..11];
 }
 
 pub const Verdict = struct {
@@ -80,9 +119,27 @@ pub fn parseVerdict(arena: std.mem.Allocator, json: []const u8) !Verdict {
 }
 
 fn printArgv(what: []const u8, argv: []const []const u8) void {
-    std.debug.print("{s}: dry run, would run:", .{what});
+    var prefix_buf: [64]u8 = undefined;
+    printCommand(std.fmt.bufPrint(&prefix_buf, "{s}: dry run, would run:", .{what}) catch what, argv);
+}
+
+/// `argv` as a line that can be pasted into a POSIX shell.
+fn printCommand(prefix: []const u8, argv: []const []const u8) void {
+    std.debug.print("{s}", .{prefix});
     for (argv) |a| {
-        if (std.mem.indexOfAny(u8, a, " '\"") != null) std.debug.print(" '{s}'", .{a}) else std.debug.print(" {s}", .{a});
+        if (a.len > 0 and std.mem.indexOfNone(u8, a, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./=:,+@%") == null) {
+            std.debug.print(" {s}", .{a});
+            continue;
+        }
+        std.debug.print(" '", .{});
+        var it = std.mem.splitScalar(u8, a, '\'');
+        var first = true;
+        while (it.next()) |part| {
+            if (!first) std.debug.print("'\\''", .{});
+            first = false;
+            std.debug.print("{s}", .{part});
+        }
+        std.debug.print("'", .{});
     }
     std.debug.print("\n", .{});
 }
@@ -153,6 +210,12 @@ pub fn signAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
             return 1;
         }
     }
+    for ([_][]const u8{ app.?, entitlements.?, out_dir.? }) |path| {
+        if (!validPath(path)) {
+            std.debug.print("error: sign-app: invalid path {s}\n", .{path});
+            return 1;
+        }
+    }
     if (builtin.os.tag != .macos) {
         std.debug.print("error: sign-app: signing needs codesign, on a macOS host\n", .{});
         return 1;
@@ -162,8 +225,16 @@ pub fn signAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
     const signed = try std.fs.path.join(gpa, &.{ out_dir.?, std.fs.path.basename(app.?) });
     defer gpa.free(signed);
     Dir.cwd().deleteTree(io, signed) catch {};
-    // ditto keeps the bundle's symlinks and modes.
-    runQuiet(gpa, io, "sign-app", &.{ "/usr/bin/ditto", app.?, signed }) catch return 1;
+    // ditto keeps the bundle's symlinks and modes; extended attributes and
+    // resource forks would fail codesign ("detritus not allowed").
+    runQuiet(gpa, io, "sign-app", &.{ "/usr/bin/ditto", "--norsrc", "--noextattr", "--noqtn", app.?, signed }) catch return 1;
+    // Only the main executable is signed (no --deep): other code in the
+    // bundle would stay ad-hoc and fail notarization.
+    if (nestedCode(gpa, io, signed) catch null) |extra| {
+        defer gpa.free(extra);
+        std.debug.print("error: sign-app: {s} holds code besides the main executable ({s}); signing nested code isn't supported yet\n", .{ signed, extra });
+        return 1;
+    }
 
     var buf: [11][]const u8 = undefined;
     const id = identity orelse placeholder_identity;
@@ -193,7 +264,7 @@ pub fn finishDmg(gpa: std.mem.Allocator, io: Io, dmg: []const u8, identity: ?[]c
         }
     }
     const p: []const u8 = profile orelse (if (dry_run) placeholder_profile else return);
-    var buf: [10][]const u8 = undefined;
+    var buf: [11][]const u8 = undefined;
     const submit = notarizeArgv(&buf, p, dmg);
     const staple = [_][]const u8{ "/usr/bin/xcrun", "stapler", "staple", dmg };
     const assess = [_][]const u8{ "/usr/sbin/spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=2", dmg };
@@ -203,19 +274,30 @@ pub fn finishDmg(gpa: std.mem.Allocator, io: Io, dmg: []const u8, identity: ?[]c
         printArgv("package-dmg", &assess);
         return;
     }
-    std.debug.print("package-dmg: notarizing {s} (this waits for Apple's verdict)...\n", .{std.fs.path.basename(dmg)});
-    const out = try run(gpa, io, "package-dmg", submit);
+    std.debug.print("package-dmg: notarizing {s} (this waits for Apple's verdict, at most 2 hours)...\n", .{std.fs.path.basename(dmg)});
+    // notarytool may exit non-zero on a rejection: read its verdict anyway.
+    const res = std.process.run(gpa, io, .{ .argv = submit }) catch |err| {
+        std.debug.print("error: package-dmg: failed to execute xcrun notarytool: {s}\n", .{@errorName(err)});
+        return error.ToolFailed;
+    };
+    defer gpa.free(res.stderr);
+    const out = res.stdout;
     defer gpa.free(out);
+    const exited_ok = res.term == .exited and res.term.exited == 0;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const verdict = parseVerdict(arena_state.allocator(), out) catch {
-        std.debug.print("error: package-dmg: unexpected notarytool output:\n{s}\n", .{out});
+        std.debug.print("error: package-dmg: notarytool failed:\n{s}{s}\n", .{ out, res.stderr });
         return error.ToolFailed;
     };
-    if (!std.mem.eql(u8, verdict.status, "Accepted")) {
-        std.debug.print("error: package-dmg: notarization {s}: {s}\n  details: xcrun notarytool log {s} --keychain-profile '{s}'\n", .{
-            if (verdict.status.len > 0) verdict.status else "failed", verdict.message, verdict.id, p,
+    if (!exited_ok or !std.mem.eql(u8, verdict.status, "Accepted")) {
+        std.debug.print("error: package-dmg: notarization {s}: {s}\n{s}", .{
+            if (verdict.status.len > 0) verdict.status else "failed", verdict.message, res.stderr,
         });
+        if (verdict.id.len > 0) {
+            var logbuf: [6][]const u8 = .{ "xcrun", "notarytool", "log", verdict.id, "--keychain-profile", p };
+            printCommand("  details:", &logbuf);
+        }
         return error.ToolFailed;
     }
     try runQuiet(gpa, io, "package-dmg", &staple);
@@ -254,4 +336,31 @@ test parseVerdict {
     );
     try std.testing.expectEqualStrings("Invalid", v.status);
     try std.testing.expectEqualStrings("2efe2717-52ef-43a5-96dc-0797e4ca1041", v.id);
+}
+
+test nestedCode {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "A.app/Contents/MacOS");
+    try tmp.dir.createDirPath(io, "A.app/Contents/Resources");
+    const macho = [_]u8{ 0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0 };
+    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/MacOS/a", .data = &macho });
+    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/Info.plist", .data = "<plist/>" });
+    const bundle = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/A.app", .{tmp.sub_path});
+    defer gpa.free(bundle);
+    try std.testing.expect(try nestedCode(gpa, io, bundle) == null);
+    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/Resources/helper.dylib", .data = &macho });
+    const extra = (try nestedCode(gpa, io, bundle)).?;
+    defer gpa.free(extra);
+    try std.testing.expectEqualStrings("Contents/Resources/helper.dylib", extra);
+    try std.testing.expect(validPath("/abs/A.app") and validPath(".zig-cache/x") and !validPath("-x.app") and !validPath(""));
+}
+
+test notarizeArgv {
+    var buf: [11][]const u8 = undefined;
+    const argv = notarizeArgv(&buf, "prof", "a.dmg");
+    try std.testing.expectEqualStrings("2h", argv[8]);
+    try std.testing.expectEqualStrings("json", argv[argv.len - 1]);
 }

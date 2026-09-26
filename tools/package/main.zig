@@ -1530,6 +1530,12 @@ fn packageDmgCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
         std.debug.print("error: package-dmg: needs --out-dir, --filename, --volname and --app\n", .{});
         return 1;
     }
+    for ([_][]const u8{ out_dir.?, filename.?, app_path.? }) |path| {
+        if (!sign_macos.validPath(path)) {
+            std.debug.print("error: package-dmg: invalid path {s}\n", .{path});
+            return 1;
+        }
+    }
     if (identity) |id| if (!sign_macos.validIdentity(id)) {
         std.debug.print("error: package-dmg: invalid signing identity\n", .{});
         return 1;

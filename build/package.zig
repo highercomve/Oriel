@@ -384,7 +384,9 @@ pub fn addPackageSteps(
     // macOS: `zig build` also installs `zig-out/<Name>.app`: Launch Services
     // (deep links), notifications and permission prompts need a bundle.
     var app_bundle: ?AppBundle = null;
-    const mac_signing: MacSigning = if (os_tag == .macos) macSigningOptions(b) else .{};
+    // Declared for every target (a CI script may pass them to all), used on macOS.
+    const mac_signing_opts = macSigningOptions(b);
+    const mac_signing: MacSigning = if (os_tag == .macos) mac_signing_opts else .{};
     if (os_tag == .macos) {
         const bundle = addAppBundle(b, package_tool, metadata, target, exe, icons_dir, permissions);
         b.getInstallStep().dependOn(installAppBundle(b, package_tool, bundle, bundle.name));
