@@ -612,7 +612,9 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             if (config.setup) |setup| setup() catch |err| log.err("setup failed: {s}", .{@errorName(err)});
             if (argv_url) |url| deep_link.deliver(url);
 
-            app.msgSend(void, "activateIgnoringOtherApps:", .{cocoa.boolean(true)});
+            // A background app (no main window at startup) leaves the focus
+            // where it is.
+            if (config.show_main_window) app.msgSend(void, "activateIgnoringOtherApps:", .{cocoa.boolean(true)});
             if (!quit_requested) app.msgSend(void, "run", .{});
             return exit_code.load(.monotonic);
         }

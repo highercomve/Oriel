@@ -80,11 +80,16 @@ var class_counter: std.atomic.Value(u32) = .init(0);
 /// `methods` is a tuple of `.{ "selector:", fn }`. Classes are never
 /// disposed: they live as long as the process.
 pub fn defineClass(comptime prefix: []const u8, protocols: []const [:0]const u8, methods: anytype) Class {
+    return defineSubclass(prefix, "NSObject", protocols, methods);
+}
+
+/// Like `defineClass`, with `superclass` (e.g. "NSWindow") instead of NSObject.
+pub fn defineSubclass(comptime prefix: []const u8, comptime superclass: [:0]const u8, protocols: []const [:0]const u8, methods: anytype) Class {
     const n = class_counter.fetchAdd(1, .monotonic);
     // The runtime keeps using the name, so it must outlive the class: never freed.
     const name = std.fmt.allocPrintSentinel(std.heap.smp_allocator, "{s}{d}", .{ prefix, n }, 0) catch
         std.debug.panic("out of memory defining {s}", .{prefix});
-    const cls = objc.allocateClassPair(class("NSObject"), name) orelse
+    const cls = objc.allocateClassPair(class(superclass), name) orelse
         std.debug.panic("objc_allocateClassPair({s}) failed", .{name});
     for (protocols) |p| addProtocol(cls, p);
     inline for (methods) |m| {
