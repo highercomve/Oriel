@@ -237,4 +237,6 @@ jobs:
           }
           Get-ChildItem winget | ForEach-Object { Write-Output "== $($_.Name)"; Get-Content $_.FullName }
           Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
-          .\wingetcreate.exe submit --token $env:WINGET_TOKEN --prtitle "Oriel ${{ github.ref_name }}" winget
+          # The token through wingetcreate's environment variable, not argv.
+          $env:WINGET_CREATE_GITHUB_TOKEN = $env:WINGET_TOKEN
+          .\wingetcreate.exe submit --prtitle "Oriel ${{ github.ref_name }}" winget
