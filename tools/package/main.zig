@@ -645,6 +645,10 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8, pa
     defer deb_deps.deinit(gpa);
     var rpm_deps: std.ArrayList([]const u8) = .empty;
     defer rpm_deps.deinit(gpa);
+    var replaces: std.ArrayList([]const u8) = .empty;
+    defer replaces.deinit(gpa);
+    var conflicts: std.ArrayList([]const u8) = .empty;
+    defer conflicts.deinit(gpa);
     var extras: contents.Contents = .{};
     defer extras.deinit(gpa);
     const what = if (packager == .deb) "package-deb" else "package-rpm";
@@ -702,6 +706,12 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8, pa
         } else if (std.mem.eql(u8, arg, "--rpm-dep") and i + 1 < args.len) {
             i += 1;
             try rpm_deps.append(gpa, args[i]);
+        } else if (std.mem.eql(u8, arg, "--replaces") and i + 1 < args.len) {
+            i += 1;
+            try replaces.append(gpa, args[i]);
+        } else if (std.mem.eql(u8, arg, "--conflicts") and i + 1 < args.len) {
+            i += 1;
+            try conflicts.append(gpa, args[i]);
         }
     }
 
@@ -761,6 +771,8 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8, pa
         .icons_dir = target_icons_dir,
         .deb_depends = deb_deps.items,
         .rpm_depends = rpm_deps.items,
+        .replaces = replaces.items,
+        .conflicts = conflicts.items,
         .extra_exes = extras.exes.items,
         .extra_files = extras.files.items,
     }) catch |err| {

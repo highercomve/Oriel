@@ -20,6 +20,11 @@ pub const NfpmOptions = struct {
     icons_dir: []const u8,
     deb_depends: []const []const u8 = &.{},
     rpm_depends: []const []const u8 = &.{},
+    /// Packages this one takes over (deb Replaces, rpm Obsoletes): e.g. the
+    /// app's earlier package name, so installing upgrades it.
+    replaces: []const []const u8 = &.{},
+    /// Packages that can't be installed alongside this one.
+    conflicts: []const []const u8 = &.{},
     /// Other executables, installed next to the app's (see below).
     extra_exes: []const contents.Exe = &.{},
     /// Files installed at their path relative to the app's executable.
@@ -33,6 +38,25 @@ pub const NfpmOptions = struct {
 pub fn exeDir(allocator: std.mem.Allocator, opts: NfpmOptions) ![]u8 {
     if (opts.extra_exes.len == 0 and opts.extra_files.len == 0) return allocator.dupe(u8, "/usr/bin");
     return std.fmt.allocPrint(allocator, "/usr/lib/{s}", .{opts.name});
+}
+
+/// `key:` and a list of package names (skipped when empty). Names are
+/// checked: letters, digits and `.+-_` only.
+fn writeNameList(allocator: std.mem.Allocator, w: *std.Io.Writer, key: []const u8, names: []const []const u8) !void {
+    if (names.len == 0) return;
+    try w.print("{s}:\n", .{key});
+    for (names) |n| {
+        if (!validPackageName(n)) return error.InvalidPackageName;
+        const esc = try metadata.escapeYamlScalar(allocator, n);
+        defer allocator.free(esc);
+        try w.print("  - \"{s}\"\n", .{esc});
+    }
+}
+
+pub fn validPackageName(n: []const u8) bool {
+    if (n.len == 0 or n.len > 128 or !std.ascii.isAlphanumeric(n[0])) return false;
+    for (n) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '+' or c == '-' or c == '_')) return false;
+    return true;
 }
 
 /// Generate nfpm.yaml content for building deb and rpm packages.
@@ -139,6 +163,10 @@ pub fn generateNfpmYaml(allocator: std.mem.Allocator, opts: NfpmOptions) ![]cons
         try w.print("    dst: \"/usr/share/icons/hicolor/{d}x{d}/apps/{s}.png\"\n", .{ size, size, esc_app_id });
         try w.writeAll("    file_info:\n      mode: 0644\n");
     }
+
+    // deb Replaces; nfpm writes rpm's Obsoletes from the same list.
+    try writeNameList(allocator, w, "replaces", opts.replaces);
+    try writeNameList(allocator, w, "conflicts", opts.conflicts);
 
     try w.writeAll("overrides:\n");
     try w.writeAll("  deb:\n    depends:\n");
@@ -291,6 +319,32 @@ test "generateNfpmYaml with optional metadata" {
     try testing.expect(std.mem.indexOf(u8, yaml, "dst: \"/usr/share/applications/dev.oriel.ReactNotes.desktop\"\n") != null);
     try testing.expect(std.mem.indexOf(u8, yaml, "- \"libgtk-4-1\"\n") != null);
     try testing.expect(std.mem.indexOf(u8, yaml, "- \"gtk4\"\n") != null);
+}
+
+test "generateNfpmYaml replaces and conflicts" {
+    const gpa = std.testing.allocator;
+    const yaml = try generateNfpmYaml(gpa, .{
+        .name = "ghostpen",
+        .version = "0.2.1",
+        .arch = "amd64",
+        .maintainer = "M",
+        .description = "D",
+        .binary_src = "/b",
+        .binary_name = "ghostpen",
+        .desktop_src = "/d",
+        .app_id = "dev.ghostpen.Oriel",
+        .icons_dir = "/i",
+        .replaces = &.{"ghost-pen"},
+        .conflicts = &.{"ghost-pen"},
+    });
+    defer gpa.free(yaml);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "replaces:\n  - \"ghost-pen\"\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "conflicts:\n  - \"ghost-pen\"\n") != null);
+    try std.testing.expectError(error.InvalidPackageName, generateNfpmYaml(gpa, .{
+        .name = "x", .version = "1", .arch = "amd64", .maintainer = "M", .description = "D",
+        .binary_src = "/b", .binary_name = "x", .desktop_src = "/d", .app_id = "x", .icons_dir = "/i",
+        .replaces = &.{"bad name"},
+    }));
 }
 
 test "generateNfpmYaml without optional metadata" {

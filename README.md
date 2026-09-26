@@ -41,6 +41,18 @@ The logo is that window seen from above. Its angled side walls read as `<`
 and `>`, like code, around a lit amber pane, a nod to Zig's orange. The
 project started as "ziguri"; it became Oriel before its first release.
 
+## Built with Oriel
+
+**[GhostPen](https://github.com/highercomve/GhostPen)** ([website](https://highercomve.github.io/GhostPen/)):
+AI text editing anywhere on the desktop. Select text in any app, press a
+hotkey, pick an action; the result is pasted back. It runs AI models itself
+(llama.cpp compiled in, CUDA or Metal), captions what the computer plays and
+takes dictation (whisper.cpp), on Linux, Windows and macOS. Ported from
+Tauri; its README [compares the two](https://github.com/highercomve/GhostPen#compared-with-the-rust-tauri-ghostpen)
+(build time, binary size, dependencies, memory).
+
+![GhostPen: the Playground and the menu, running a built-in model](assets/screenshots/ghostpen.png)
+
 ## Examples
 
 Each example is its own Zig package in [`examples/`](examples), built on Oriel
@@ -70,7 +82,7 @@ no GTK needed to run it) that scaffolds apps and wraps their build steps,
 like `create-tauri-app` and `tauri dev/build`.
 
 ```sh
-# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.6.0.
+# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.6.1.
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
 ```
 
@@ -188,7 +200,7 @@ into place atomically under a lock file, so concurrent installs don't clash.
 oriel update --check          # Check whether a newer version is available without installing
 oriel update                  # Update to the latest release (prompts for confirmation on a TTY)
 oriel update --yes            # Update without prompting (required in non-interactive/CI environments)
-oriel update --version v0.6.0 # Update or downgrade to a specific release tag
+oriel update --version v0.6.1 # Update or downgrade to a specific release tag
 ```
 
 The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the release's `latest.json` (one signed entry per platform; releases before v0.3.1 only have `oriel-update-<arch>-<os>.json`, used as a fallback), verifies the Ed25519 signature of the entry for its own platform against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary (on Windows, where a running exe can't be overwritten, it is renamed to `oriel.exe.old` first and removed on the next run). The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
@@ -1233,6 +1245,8 @@ Metadata is configured once in `build.zig` and shared across all target package 
     .formats = null,                       // Optional override list of formats (defaults to per-OS list)
     .extra_deb_depends = &.{},             // Extra deb runtime dependencies
     .extra_rpm_depends = &.{},             // Extra rpm runtime dependencies
+    .replaces = &.{"old-app-name"},       // deb Replaces / rpm Obsoletes: installing this upgrades them
+    .conflicts = &.{"old-app-name"},      // deb/rpm Conflicts: never installed side by side
     .webview2_loader = null,               // Optional path to WebView2Loader.dll for Windows (or via -Dwebview2-loader)
     .contents = .{},                       // What else the packages hold (see "Package contents")
 },

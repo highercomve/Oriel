@@ -71,6 +71,20 @@ An AppImage is a self-contained, relocatable package. It does **not** bundle GTK
 To run the AppImage on another machine, the system must have:
 - GTK4 and WebKitGTK 6.0 development packages installed (or runtime packages if available)
 
+### Replacing an older package
+
+`.replaces` and `.conflicts` (deb and rpm) name packages this one takes
+over, such as the app's earlier package name: installing the new package
+upgrades the old one instead of failing on shared files. GhostPen uses it
+for the Tauri version's `ghost-pen` package:
+
+```zig
+.package = .{
+    .replaces = &.{"ghost-pen"},
+    .conflicts = &.{"ghost-pen"},
+},
+```
+
 ### Package contents
 
 By default a package holds the app's executable (plus its desktop entry and icons). `.contents` adds more, to every format:

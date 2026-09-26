@@ -58,6 +58,8 @@ pub const Metadata = struct {
     extra_deb_depends: []const []const u8,
     extra_rpm_depends: []const []const u8,
     url_schemes: []const []const u8,
+    replaces: []const []const u8 = &.{},
+    conflicts: []const []const u8 = &.{},
 };
 
 /// Build-time options specified in an app's build.zig via `addApp(..., .{ .package = .{ ... } })`.
@@ -113,6 +115,13 @@ pub const PackageOptions = struct {
 
     /// Extra runtime dependencies for RPM packages.
     extra_rpm_depends: []const []const u8 = &.{},
+
+    /// Linux packages (deb, rpm) this one takes over: installing it upgrades
+    /// them (deb Replaces, rpm Obsoletes). E.g. the app's earlier package name.
+    replaces: []const []const u8 = &.{},
+
+    /// Linux packages (deb, rpm) that can't be installed alongside this one.
+    conflicts: []const []const u8 = &.{},
 
     /// Optional path to WebView2Loader.dll for Windows packages.
     /// If null, can also be provided via `-Dwebview2-loader=<path>` build option.
@@ -441,6 +450,8 @@ pub fn addPackageSteps(
         .extra_deb_depends = pkg_opts.extra_deb_depends,
         .extra_rpm_depends = pkg_opts.extra_rpm_depends,
         .url_schemes = pkg_opts.url_schemes,
+        .replaces = pkg_opts.replaces,
+        .conflicts = pkg_opts.conflicts,
     };
 
     // Derive dependencies from features
@@ -688,6 +699,8 @@ fn addDeb(ctx: *const Context) *std.Build.Step {
     for (ctx.deb_deps) |dep| {
         run.addArgs(&.{ "--deb-dep", dep });
     }
+    for (ctx.metadata.replaces) |r| run.addArgs(&.{ "--replaces", r });
+    for (ctx.metadata.conflicts) |c| run.addArgs(&.{ "--conflicts", c });
 
     const install = ctx.b.addInstallFileWithDir(
         out_dir.path(ctx.b, deb_filename),
@@ -730,6 +743,8 @@ fn addRpm(ctx: *const Context) *std.Build.Step {
     for (ctx.rpm_deps) |dep| {
         run.addArgs(&.{ "--rpm-dep", dep });
     }
+    for (ctx.metadata.replaces) |r| run.addArgs(&.{ "--replaces", r });
+    for (ctx.metadata.conflicts) |c| run.addArgs(&.{ "--conflicts", c });
 
     const install = ctx.b.addInstallFileWithDir(
         out_dir.path(ctx.b, rpm_filename),

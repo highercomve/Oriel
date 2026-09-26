@@ -50,7 +50,7 @@ Both installers read the same environment variables:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ORIEL_VERSION` | newest release | Tag to install, e.g. `v0.6.0` |
+| `ORIEL_VERSION` | newest release | Tag to install, e.g. `v0.6.1` |
 | `ORIEL_INSTALL_DIR` | `~/.local/bin` or `%LOCALAPPDATA%\Programs\oriel` | Where to put the binary |
 
 ## First-run workflow
@@ -68,7 +68,7 @@ The CLI can update itself in place using Oriel's built-in self-updater:
 ```sh
 oriel update --check          # check if an update is available without installing
 oriel update                  # download, verify, and replace the running binary
-oriel update --version v0.6.0 # target a specific release tag
+oriel update --version v0.6.1 # target a specific release tag
 ```
 
 Release manifests are Ed25519-signed and verified against the public key embedded in the binary. For non-interactive scripts and CI environments, pass `--yes` to proceed without a confirmation prompt.
