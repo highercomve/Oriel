@@ -31,7 +31,7 @@ pub const sqlite_vec = if (options.sqlite_vec) @import("modules/sqlite_vec.zig")
 pub const llama = if (options.llama) @import("modules/llama.zig") else struct {};
 pub const whisper = if (options.whisper) @import("modules/whisper.zig") else struct {};
 pub const audio_capture = if (options.audio_capture) @import("modules/audio_capture.zig") else struct {};
-/// GPU backends (libggml-cuda.so) for llama and whisper: `ggml_gpu.load(io)` before loading a model.
+/// GPU backends (libggml-cuda.so, libggml-vulkan.so) for llama and whisper: `ggml_gpu.load(io)` before loading a model.
 pub const ggml_gpu = if (options.llama or options.whisper) @import("modules/ggml_gpu.zig") else struct {};
 
 // App-specific plugins.

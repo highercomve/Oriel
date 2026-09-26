@@ -1073,7 +1073,25 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
   `gpuName` report it (e.g. "Apple M1").
   - Measured (examples/ghostpen-lite, Apple M1 in a VM, 5.9 s clip, tiny.en,
     incl. model load): 7.3 s on CPU → 0.95–1.4 s on Metal.
-- **Vulkan:** not supported yet (`-Dggml_vulkan` stops the build).
+- **Vulkan (Linux):** `-Dggml_vulkan` builds ggml's Vulkan backend (any GPU
+  vendor: NVIDIA, AMD, Intel) into `libggml-vulkan.so`, installed and packaged
+  like the CUDA one:
+  ```sh
+  oriel build -Dllama -Dwhisper -Dggml_vulkan
+  ```
+  - Needs the Vulkan headers and SPIRV-Headers, the Vulkan loader, and
+    `glslc` (shaderc) on PATH or `-Dglslc=/path/to/glslc`. Arch:
+    `vulkan-headers spirv-headers vulkan-icd-loader shaderc`; Debian/Ubuntu:
+    `libvulkan-dev spirv-headers glslc`.
+  - ggml's `vulkan-shaders-gen` is built for the host and compiles the ~145
+    shaders to SPIR-V (one cached step each, as ggml's CMake does), which are
+    embedded in the library. First build ~2 min on 16 cores.
+  - The library links `libvulkan.so.1`: on a machine without a Vulkan loader
+    or driver it doesn't load, and the app runs on the CPU. So a Vulkan build
+    is safe to ship to everyone.
+  - With both `-Dggml_cuda` and `-Dggml_vulkan`, `ggml_gpu.load` loads CUDA
+    first and Vulkan only if CUDA found no GPU (one card is never registered
+    twice).
 
 #### Multimodal (`mtmd`) status
 

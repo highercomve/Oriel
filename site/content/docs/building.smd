@@ -276,9 +276,17 @@ oriel build -Dwhisper
 
 Measured on an Apple M1 (5.9 s clip, whisper tiny.en, incl. model load): 7.3 s on CPU → about 1 s on Metal.
 
-### Vulkan
+### Vulkan (Linux)
 
-**Not supported yet.**
+Runs llama and whisper on any GPU vendor (NVIDIA, AMD, Intel):
+
+```sh
+oriel build -Dllama -Dwhisper -Dggml_vulkan
+```
+
+This requires the Vulkan headers, SPIRV-Headers, the Vulkan loader and `glslc` (shaderc), on PATH or with `-Dglslc=/path/to/glslc`. On Arch: `vulkan-headers spirv-headers vulkan-icd-loader shaderc`; on Debian/Ubuntu: `libvulkan-dev spirv-headers glslc`.
+
+The backend is compiled as `libggml-vulkan.so` (its shaders compiled to SPIR-V and embedded) and loaded at runtime from the app's directory. Without a Vulkan driver it doesn't load and the app runs on the CPU, so it is safe to ship to everyone. Built together with CUDA, CUDA is preferred and Vulkan is only loaded when CUDA finds no GPU.
 
 # App icon
 

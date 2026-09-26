@@ -9,6 +9,12 @@
 //! code uses GCC's libstdc++ while Zig builds C++ against libc++; the ggml
 //! backend interface between them is plain C. The library resolves ggml's
 //! own symbols from the executable (`rdynamic`, set by `addApp`).
+//!
+//! With `ggml_vulkan`, the Vulkan backend (any GPU vendor) is built the same
+//! way into `libggml-vulkan.so`: its shaders are compiled to SPIR-V with
+//! `glslc` by ggml's own generator (vulkan-shaders-gen, built for the host)
+//! and embedded. The library links the Vulkan loader, so on a machine without
+//! one it doesn't load and ggml stays on the CPU.
 
 const std = @import("std");
 
@@ -18,6 +24,35 @@ pub const CudaOptions = struct {
     /// nvcc `-arch` value: "native" (the GPUs in this machine), "sm_89", "all-major", ...
     arch: []const u8,
 };
+
+pub const VulkanOptions = struct {
+    /// The `glslc` shader compiler (shaderc).
+    glslc: []const u8,
+};
+
+/// Which optional shader extensions `glslc` supports, as ggml's CMake finds
+/// them: compile each feature test and look for "extension not supported".
+fn vulkanFeatures(b: *std.Build, ggml_root: std.Build.LazyPath, glslc: []const u8) []const []const u8 {
+    const tests = [_]struct { ext: []const u8, file: []const u8, define: []const u8 }{
+        .{ .ext = "GL_KHR_cooperative_matrix", .file = "coopmat.comp", .define = "GGML_VULKAN_COOPMAT_GLSLC_SUPPORT" },
+        .{ .ext = "GL_NV_cooperative_matrix2", .file = "coopmat2.comp", .define = "GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT" },
+        .{ .ext = "GL_NV_cooperative_matrix_decode_vector", .file = "coopmat2_decode_vector.comp", .define = "GGML_VULKAN_COOPMAT2_DECODE_VECTOR_GLSLC_SUPPORT" },
+        .{ .ext = "GL_EXT_integer_dot_product", .file = "integer_dot.comp", .define = "GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT" },
+        .{ .ext = "GL_EXT_bfloat16", .file = "bfloat16.comp", .define = "GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT" },
+        .{ .ext = "GL_EXT_float_e2m1", .file = "float_e2m1.comp", .define = "GGML_VULKAN_FLOAT_E2M1_GLSLC_SUPPORT" },
+        .{ .ext = "GL_EXT_float_e4m3", .file = "float_e4m3.comp", .define = "GGML_VULKAN_FLOAT_E4M3_GLSLC_SUPPORT" },
+    };
+    var defines: std.ArrayList([]const u8) = .empty;
+    for (tests) |t| {
+        const file = ggml_root.path(b, b.fmt("src/ggml-vulkan/vulkan-shaders/feature-tests/{s}", .{t.file})).getPath(b);
+        const result = std.process.run(b.allocator, b.graph.io, .{
+            .argv = &.{ glslc, "-o", "-", "-fshader-stage=compute", "--target-env=vulkan1.3", file },
+        }) catch |err| std.debug.panic("-Dggml_vulkan: running {s} failed ({s}); install shaderc or pass -Dglslc", .{ glslc, @errorName(err) });
+        const unsupported = std.mem.indexOf(u8, result.stderr, b.fmt("extension not supported: {s}", .{t.ext})) != null;
+        if (!unsupported) defines.append(b.allocator, t.define) catch @panic("OOM");
+    }
+    return defines.items;
+}
 
 /// ggml's Metal backend, compiled into the executable. The kernel sources
 /// are embedded by tools/metal_embed.zig (GGML_METAL_EMBED_LIBRARY, as
@@ -59,6 +94,7 @@ pub fn addGgml(
     oriel: *std.Build.Module,
     features: anytype,
     cuda: ?CudaOptions,
+    vulkan: ?VulkanOptions,
     metal: bool,
 ) void {
     if (!features.llama and !features.whisper) return;
@@ -189,6 +225,7 @@ pub fn addGgml(
     }
 
     if (cuda) |opts| b.addNamedLazyPath("libggml-cuda", addCudaBackend(b, ggml_root, opts));
+    if (vulkan) |opts| b.addNamedLazyPath("libggml-vulkan", addVulkanBackend(b, oriel, ggml_root, write_files.getDirectory(), opts));
     if (metal) addMetalBackend(b, oriel, ggml_root, cpp_flags, metal_defs);
 
     // llama.cpp sources
@@ -258,6 +295,87 @@ fn addCudaBackend(b: *std.Build, ggml_root: std.Build.LazyPath, opts: CudaOption
     // cudart is linked statically by nvcc; cuBLAS and the driver stay dynamic.
     link.addArgs(&.{ "-lcublas", "-lcublasLt", "-lcuda" });
     return lib;
+}
+
+/// Generate the Vulkan shaders (one cached step per .comp source, as ggml's
+/// CMake does) and build `libggml-vulkan.so` from them and ggml-vulkan.cpp.
+/// Returns the library's path.
+fn addVulkanBackend(
+    b: *std.Build,
+    oriel: *std.Build.Module,
+    ggml_root: std.Build.LazyPath,
+    version_headers: std.Build.LazyPath,
+    opts: VulkanOptions,
+) std.Build.LazyPath {
+    const vk_dir = ggml_root.path(b, "src/ggml-vulkan");
+    const shaders_dir = vk_dir.path(b, "vulkan-shaders");
+    var defines: std.ArrayList([]const u8) = .empty;
+    for (vulkanFeatures(b, ggml_root, opts.glslc)) |f| defines.append(b.allocator, b.fmt("-D{s}", .{f})) catch @panic("OOM");
+
+    const gen = b.addExecutable(.{
+        .name = "vulkan-shaders-gen",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .ReleaseFast,
+            .link_libcpp = true,
+        }),
+    });
+    gen.root_module.addCSourceFile(.{
+        .file = shaders_dir.path(b, "vulkan-shaders-gen.cpp"),
+        .flags = std.mem.concat(b.allocator, []const u8, &.{ &.{"-std=c++17"}, defines.items }) catch @panic("OOM"),
+    });
+
+    const header_name = "ggml-vulkan-shaders.hpp";
+    const header = b.addRunArtifact(gen);
+    header.addArg("--output-dir");
+    _ = header.addOutputDirectoryArg("spv");
+    header.addArg("--target-hpp");
+    const header_file = header.addOutputFileArg(header_name);
+
+    const lib = b.addLibrary(.{
+        .name = "ggml-vulkan",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .target = oriel.resolved_target.?,
+            .optimize = oriel.optimize.?,
+            .link_libc = true,
+            .link_libcpp = true,
+        }),
+    });
+    // ggml's own symbols come from the executable (rdynamic), like CUDA's.
+    lib.linker_allow_shlib_undefined = true;
+    const m = lib.root_module;
+    m.linkSystemLibrary("vulkan", .{});
+    m.addIncludePath(header_file.dirname());
+    m.addIncludePath(version_headers);
+    m.addIncludePath(ggml_root.path(b, "include"));
+    m.addIncludePath(ggml_root.path(b, "src"));
+    m.addIncludePath(vk_dir);
+    const flags = std.mem.concat(b.allocator, []const u8, &.{ &.{
+        "-std=c++17",           "-D_GNU_SOURCE",       "-DNDEBUG",
+        "-fno-sanitize=undefined",
+        // Build as a dynamically loaded backend (exports ggml_backend_init).
+        "-DGGML_BACKEND_DL",    "-DGGML_BACKEND_BUILD", "-DGGML_BACKEND_SHARED",
+        "-DGGML_SHARED",        "-DGGML_SCHED_MAX_COPIES=4",
+    }, defines.items }) catch @panic("OOM");
+    m.addCSourceFile(.{ .file = vk_dir.path(b, "ggml-vulkan.cpp"), .flags = flags });
+    // The header must exist before any source that includes it compiles.
+    lib.step.dependOn(&header.step);
+
+    for (vulkan_shader_sources) |src| {
+        const run = b.addRunArtifact(gen);
+        run.addArgs(&.{ "--glslc", opts.glslc, "--source" });
+        run.addFileArg(shaders_dir.path(b, src));
+        run.addArg("--output-dir");
+        _ = run.addOutputDirectoryArg("spv");
+        // Only its basename is used (the #include in the generated source).
+        run.addArgs(&.{ "--target-hpp", header_name, "--target-cpp" });
+        const cpp = run.addOutputFileArg(b.fmt("{s}.cpp", .{src}));
+        // Shaders #include the .glsl files next to them.
+        for (vulkan_shader_includes) |inc| run.addFileInput(shaders_dir.path(b, inc));
+        m.addCSourceFile(.{ .file = cpp, .flags = flags });
+    }
+    return lib.getEmittedBin();
 }
 
 const cuda_sources = [_][]const u8{
@@ -593,4 +711,184 @@ const llama_model_sources = [_][]const u8{
     "models/talkie.cpp",
     "models/wavtokenizer-dec.cpp",
     "models/xverse.cpp",
+};
+
+/// The .comp sources vulkan-shaders-gen compiles (ggml's CMake globs them).
+const vulkan_shader_sources = [_][]const u8{
+    "acc.comp",
+    "add1.comp",
+    "add.comp",
+    "add_id.comp",
+    "arange.comp",
+    "argmax.comp",
+    "argsort.comp",
+    "argsort_large.comp",
+    "col2im_1d.comp",
+    "concat.comp",
+    "contig_copy.comp",
+    "conv2d_dw.comp",
+    "conv2d_mm.comp",
+    "conv3d_mm.comp",
+    "conv_transpose_1d.comp",
+    "copy.comp",
+    "copy_from_quant.comp",
+    "copy_to_quant.comp",
+    "copy_transpose_02.comp",
+    "copy_transpose.comp",
+    "count_equal.comp",
+    "count_experts.comp",
+    "cross_entropy_loss_back.comp",
+    "cross_entropy_loss.comp",
+    "cumsum.comp",
+    "cumsum_multipass1.comp",
+    "cumsum_multipass2.comp",
+    "dequant_f32.comp",
+    "dequant_iq1_m.comp",
+    "dequant_iq1_s.comp",
+    "dequant_iq2_s.comp",
+    "dequant_iq2_xs.comp",
+    "dequant_iq2_xxs.comp",
+    "dequant_iq3_s.comp",
+    "dequant_iq3_xxs.comp",
+    "dequant_iq4_nl.comp",
+    "dequant_iq4_xs.comp",
+    "dequant_mxfp4.comp",
+    "dequant_nvfp4.comp",
+    "dequant_q1_0.comp",
+    "dequant_q2_0.comp",
+    "dequant_q2_k.comp",
+    "dequant_q3_k.comp",
+    "dequant_q4_0.comp",
+    "dequant_q4_1.comp",
+    "dequant_q4_k.comp",
+    "dequant_q5_0.comp",
+    "dequant_q5_1.comp",
+    "dequant_q5_k.comp",
+    "dequant_q6_k.comp",
+    "dequant_q8_0.comp",
+    "dequant_tq2_0.comp",
+    "diag.comp",
+    "diag_mask_inf.comp",
+    "div.comp",
+    "fill.comp",
+    "flash_attn_cm1.comp",
+    "flash_attn_cm2.comp",
+    "flash_attn.comp",
+    "flash_attn_mask_opt.comp",
+    "flash_attn_split_k_reduce.comp",
+    "fwht.comp",
+    "gated_delta_net.comp",
+    "geglu.comp",
+    "geglu_erf.comp",
+    "geglu_quick.comp",
+    "get_rows_back.comp",
+    "get_rows.comp",
+    "get_rows_quant.comp",
+    "gla.comp",
+    "group_norm.comp",
+    "im2col_3d.comp",
+    "im2col.comp",
+    "l2_norm.comp",
+    "lightning_indexer.comp",
+    "log.comp",
+    "mul.comp",
+    "mul_mat_split_k_reduce.comp",
+    "mul_mat_vec.comp",
+    "mul_mat_vec_iq1_m.comp",
+    "mul_mat_vec_iq1_s.comp",
+    "mul_mat_vec_iq2_s.comp",
+    "mul_mat_vec_iq2_xs.comp",
+    "mul_mat_vec_iq2_xxs.comp",
+    "mul_mat_vec_iq3_s.comp",
+    "mul_mat_vec_iq3_xxs.comp",
+    "mul_mat_vec_nc.comp",
+    "mul_mat_vec_p021.comp",
+    "mul_mat_vec_q2_k.comp",
+    "mul_mat_vec_q3_k.comp",
+    "mul_mat_vec_q4_k.comp",
+    "mul_mat_vec_q5_k.comp",
+    "mul_mat_vec_q6_k.comp",
+    "mul_mat_vecq.comp",
+    "mul_mat_vec_tq2_0.comp",
+    "mul_mm_cm2.comp",
+    "mul_mm.comp",
+    "mul_mmq.comp",
+    "multi_add.comp",
+    "norm.comp",
+    "opt_step_adamw.comp",
+    "opt_step_sgd.comp",
+    "out_prod.comp",
+    "pad.comp",
+    "pad_reflect_1d.comp",
+    "pool1d.comp",
+    "pool2d.comp",
+    "quantize_q8_1.comp",
+    "reglu.comp",
+    "repeat_back.comp",
+    "repeat.comp",
+    "rms_norm_back.comp",
+    "rms_norm.comp",
+    "rms_norm_partials.comp",
+    "roll.comp",
+    "rope_multi.comp",
+    "rope_neox.comp",
+    "rope_norm.comp",
+    "rope_vision.comp",
+    "scale.comp",
+    "silu_back.comp",
+    "snake.comp",
+    "soft_max_back.comp",
+    "soft_max.comp",
+    "soft_max_large1.comp",
+    "soft_max_large2.comp",
+    "soft_max_large3.comp",
+    "solve_tri.comp",
+    "ssm_conv.comp",
+    "ssm_scan.comp",
+    "sub.comp",
+    "sum_rows.comp",
+    "swiglu_clamp.comp",
+    "swiglu.comp",
+    "swiglu_oai.comp",
+    "timestep_embedding.comp",
+    "topk_argsort.comp",
+    "topk_moe.comp",
+    "topk_nary_search.comp",
+    "topk_radix_select.comp",
+    "tri.comp",
+    "unary.comp",
+    "upscale.comp",
+    "wkv6.comp",
+    "wkv7.comp",
+};
+
+/// Files the shaders #include.
+const vulkan_shader_includes = [_][]const u8{
+    "dequant_funcs_cm2.glsl",
+    "dequant_funcs.glsl",
+    "dequant_head.glsl",
+    "dot_product_funcs.glsl",
+    "fa_types.glsl",
+    "flash_attn_base.glsl",
+    "flash_attn_dequant.glsl",
+    "flash_attn_mmq_funcs.glsl",
+    "generic_binary_head.glsl",
+    "generic_head.glsl",
+    "generic_unary_head.glsl",
+    "glu_head.glsl",
+    "glu_main.glsl",
+    "mul_mat_vec_base.glsl",
+    "mul_mat_vec_iface.glsl",
+    "mul_mat_vecq_funcs.glsl",
+    "mul_mm_funcs.glsl",
+    "mul_mm_id_funcs.glsl",
+    "mul_mmq_funcs.glsl",
+    "mul_mmq_shmem_types.glsl",
+    "rope_funcs.glsl",
+    "rope_head.glsl",
+    "rope_params.glsl",
+    "soft_max_large_common.glsl",
+    "sum_rows.glsl",
+    "types.glsl",
+    "utils.glsl",
 };

@@ -47,9 +47,6 @@ const Features = struct {
     layer_shell: bool,
 
     fn fromOptions(b: *std.Build) Features {
-        if (b.option(bool, "ggml_vulkan", "Enable Vulkan backend (not supported)") orelse false) {
-            fatal("Vulkan is not supported yet, see README.md", .{});
-        }
         if (b.option(bool, "llama_mtmd", "Enable multimodal mtmd support (not supported)") orelse false) {
             fatal("llama_mtmd is not supported yet (libmtmd is not built; its API is experimental upstream), see README.md", .{});
         }
@@ -346,6 +343,10 @@ fn gitRef(b: *std.Build) ?[]const u8 {
     return null;
 }
 
+/// The ggml GPU backends built as loadable libraries (named lazy paths of the
+/// Oriel dependency; installed as `<name>.so` next to the executable).
+pub const gpu_backend_libraries = [_][]const u8{ "libggml-cuda", "libggml-vulkan" };
+
 /// `-Dggml_cuda`: build the CUDA backend for llama/whisper (Linux, needs the
 /// CUDA toolkit). `-Dcuda_path` defaults to $CUDA_PATH or /opt/cuda,
 /// `-Dcuda_arch` to "native" (the GPUs of the build machine).
@@ -359,6 +360,17 @@ fn cudaOptions(b: *std.Build, target: std.Build.ResolvedTarget) ?ggml.CudaOption
         .path = path orelse b.graph.environ_map.get("CUDA_PATH") orelse "/opt/cuda",
         .arch = arch orelse "native",
     };
+}
+
+/// `-Dggml_vulkan`: build the Vulkan backend for llama/whisper (Linux; any
+/// GPU vendor). Needs the Vulkan headers and loader, SPIRV-Headers, and
+/// `glslc` (shaderc), found on PATH or given with `-Dglslc`.
+fn vulkanOptions(b: *std.Build, target: std.Build.ResolvedTarget) ?ggml.VulkanOptions {
+    const enabled = b.option(bool, "ggml_vulkan", "Build the Vulkan backend for llama/whisper as libggml-vulkan.so (Linux; needs Vulkan headers and glslc)") orelse false;
+    const glslc = b.option([]const u8, "glslc", "glslc shader compiler for -Dggml_vulkan (default: glslc on PATH)");
+    if (!enabled) return null;
+    if (target.result.os.tag != .linux) fatal("-Dggml_vulkan is only supported on Linux targets for now", .{});
+    return .{ .glslc = glslc orelse "glslc" };
 }
 
 fn addOrielModule(
@@ -466,13 +478,15 @@ fn addOrielModule(
     }
     const cuda = cudaOptions(b, target);
     if (cuda != null and !features.llama and !features.whisper) fatal("-Dggml_cuda needs -Dllama or -Dwhisper", .{});
+    const vulkan = vulkanOptions(b, target);
+    if (vulkan != null and !features.llama and !features.whisper) fatal("-Dggml_vulkan needs -Dllama or -Dwhisper", .{});
     if (features.llama or features.whisper) {
         // Metal: on by default for macOS (Apple GPUs; the shader sources are
         // embedded and compiled by ggml at startup).
         const metal = b.option(bool, "ggml_metal", "Build ggml's Metal backend for llama/whisper (macOS; default on)") orelse
             (target.result.os.tag == .macos);
         if (metal and target.result.os.tag != .macos) fatal("-Dggml_metal needs a macOS target", .{});
-        ggml.addGgml(b, oriel, features, cuda, metal);
+        ggml.addGgml(b, oriel, features, cuda, vulkan, metal);
     }
     if (is_linux and (features.input or features.clipboard)) {
         const scanner = Scanner.create(b, .{});
@@ -819,10 +833,12 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         }
     }
 
-    // -Dggml_cuda: ship libggml-cuda.so next to the executable. It resolves
-    // ggml's symbols from the executable, so those must be exported.
-    if (oriel_dep.builder.named_lazy_paths.get("libggml-cuda")) |cuda_lib| {
-        b.getInstallStep().dependOn(&b.addInstallFileWithDir(cuda_lib, .bin, "libggml-cuda.so").step);
+    // -Dggml_cuda / -Dggml_vulkan: ship libggml-cuda.so / libggml-vulkan.so
+    // next to the executable. They resolve ggml's symbols from the
+    // executable, so those must be exported.
+    for (gpu_backend_libraries) |name| {
+        const lib = oriel_dep.builder.named_lazy_paths.get(name) orelse continue;
+        b.getInstallStep().dependOn(&b.addInstallFileWithDir(lib, .bin, b.fmt("{s}.so", .{name})).step);
         exe.rdynamic = true;
         if (dev_exe) |d| d.rdynamic = true;
     }

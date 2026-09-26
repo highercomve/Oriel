@@ -163,7 +163,7 @@ pub const Contents = struct {
     /// reached from Contents/MacOS through a symlink of their top-level name.
     files: []const File = &.{},
     /// Oriel's runtime libraries the app was built with (libggml-cuda.so with
-    /// -Dggml_cuda). Default on. A `files` entry of the same path replaces it.
+    /// -Dggml_cuda, libggml-vulkan.so with -Dggml_vulkan). Default on. A `files` entry of the same path replaces it.
     runtime_libraries: bool = true,
     /// Strip debug info and symbols from ELF executables/libraries in packages
     /// (Linux): the app, `executables` and the runtime libraries (the dynamic
@@ -226,11 +226,15 @@ fn resolvePayload(
     }
     files.appendSlice(b.allocator, contents.files) catch @panic("OOM");
     if (contents.runtime_libraries) {
-        if (oriel_dep.builder.named_lazy_paths.get("libggml-cuda")) |cuda_lib| cuda: {
-            const name = "libggml-cuda.so";
+        for ([_][]const u8{ "libggml-cuda", "libggml-vulkan" }) |lib_name| {
+            const lib = oriel_dep.builder.named_lazy_paths.get(lib_name) orelse continue;
+            const name = b.fmt("{s}.so", .{lib_name});
             // The app ships its own copy: keep that one.
-            for (contents.files) |f| if (std.ascii.eqlIgnoreCase(f.path, name)) break :cuda;
-            files.append(b.allocator, .{ .path = name, .source = if (strip) strippedElf(b, package_tool, cuda_lib, name) else cuda_lib }) catch @panic("OOM");
+            const own = for (contents.files) |f| {
+                if (std.ascii.eqlIgnoreCase(f.path, name)) break true;
+            } else false;
+            if (own) continue;
+            files.append(b.allocator, .{ .path = name, .source = if (strip) strippedElf(b, package_tool, lib, name) else lib }) catch @panic("OOM");
         }
     }
     const bin = exe.getEmittedBin();
