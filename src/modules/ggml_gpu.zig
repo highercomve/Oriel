@@ -1,9 +1,9 @@
 //! GPU backends for ggml (shared by the whisper and llama modules).
 //!
-//! CUDA is a separate library next to the executable (built with
-//! `-Dggml_cuda`, installed by `addApp`), loaded at runtime; Metal (macOS)
-//! is compiled in and registers itself. Without a usable GPU, ggml keeps
-//! running on the CPU backend.
+//! CUDA and Vulkan are separate libraries next to the executable (built with
+//! `-Dggml_cuda` / `-Dggml_vulkan`, installed by `addApp`), loaded at
+//! runtime; Metal (macOS) is compiled in and registers itself. Without a
+//! usable GPU, ggml keeps running on the CPU backend.
 
 const std = @import("std");
 
@@ -11,19 +11,43 @@ const c = @cImport({
     @cInclude("ggml-backend.h");
 });
 
-/// Load the GPU backend libraries (`libggml-cuda.so`, ...) found in the
-/// executable's directory. Only that directory is searched, never the current
-/// directory. Call once, before loading a model. Returns the number of GPU
-/// devices available afterwards; 0 means the models run on the CPU.
+/// The GPU backend libraries, in order of preference. The first one that
+/// registers a GPU wins: CUDA and Vulkan would both drive an NVIDIA card,
+/// and ggml would then split a model across the "two" devices.
+const libraries = [_][]const u8{ "libggml-cuda.so", "libggml-vulkan.so" };
+
+/// Load the GPU backend libraries found in the executable's directory
+/// (`libggml-cuda.so`, else `libggml-vulkan.so`). Only that directory is
+/// searched, never the current directory. Call once, before loading a model.
+/// Returns the number of GPU devices available afterwards; 0 means the
+/// models run on the CPU.
 pub fn load(io: std.Io) usize {
-    var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-    if (std.process.executableDirPath(io, buf[0 .. buf.len - 1])) |n| {
-        buf[n] = 0;
-        c.ggml_backend_load_all_from_path(@ptrCast(&buf));
-    } else |err| {
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = std.process.executableDirPath(io, &dir_buf) catch |err| {
         std.log.warn("ggml: cannot find the executable directory ({s}); CPU only", .{@errorName(err)});
+        return gpuCount();
+    };
+    for (libraries) |name| {
+        if (gpuCount() > 0) break;
+        var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&path_buf, "{s}{c}{s}", .{ dir_buf[0..n], std.fs.path.sep, name }) catch continue;
+        std.Io.Dir.accessAbsolute(io, path, .{}) catch continue;
+        pin(path);
+        // Logs and returns null when it can't load (no driver, no Vulkan loader).
+        _ = c.ggml_backend_load(path.ptr);
     }
     return gpuCount();
+}
+
+/// Keep a backend library mapped for the life of the process. When its
+/// backend finds no device, ggml unloads it again, but a Zig-built library
+/// (libggml-vulkan.so) leaves its C++ static destructors registered with
+/// atexit (no `__cxa_finalize` on unload): exit would then jump into
+/// unmapped code. Pinned, ggml's dlclose leaves it in place. If it can't be
+/// opened (e.g. no Vulkan loader), neither can ggml, and nothing stays.
+fn pin(path: [:0]const u8) void {
+    if (@import("builtin").os.tag == .windows) return;
+    _ = std.c.dlopen(path.ptr, .{ .NOW = true, .NODELETE = true });
 }
 
 /// Number of registered GPU devices.
