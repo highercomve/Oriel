@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Done (Milestones 1–10)
+# Done (Milestones 1–10, security hardening, packaging)
 
 ## Milestone 1: Async commands
 
@@ -60,17 +60,27 @@ Driven by the GhostPen port: transparent, always-on-top, click-through windows p
 
 Origin-bound IPC tokens (other-origin frames can't call commands), `security.freeze_prototype`, and `security.headers` (COOP, COEP, Permissions-Policy, …).
 
+## Security hardening, part 2 (v0.6.0)
+
+The isolation pattern (a sandboxed frame hook signs every IPC call with an HMAC key the page never sees), CSP hashes for inline scripts and styles (`strict_styles`), and macOS Developer ID signing and notarization in `oriel package`.
+
+## Package contents (v0.6.0)
+
+`.package.contents` chooses what every format ships besides the app: extra executables (e.g. a CLI, linked into `/usr/bin` on Linux), extra files, Oriel's runtime libraries (`libggml-cuda.so`), and stripped binaries. The Windows installer refuses to run over the running app; macOS signs nested code inside out.
+
+## GhostPen on Oriel
+
+The first full application built on Oriel: GhostPen, ported from Tauri, with built-in models (llama.cpp run by the app itself), live captions and dictation on Linux, Windows and macOS. Its port fixed event ordering (a command's events now reach the page before its reply, on every platform), keyboard focus for borderless windows on Windows and macOS, and added log files on macOS.
+
 # Next
 
-- GhostPen on Oriel: the first full application built on Oriel.
-- Security hardening, part 2: command scopes, local capabilities, the isolation pattern, CSP hashes, signing in the bundler.
+- Security hardening: command scopes and local capabilities.
 - Platform escape hatch: extra Info.plist keys, entitlements, Windows manifest and NSIS additions.
+- Authenticode signing for Windows installers.
 
 # Even later
 
-- Tauri's isolation pattern (sandbox for frontend code)
 - CI: automated `zig build test` and headless smoke checks on every push
-- Windows WASAPI loopback for audio capture
 - Vulkan GPU support (in addition to CUDA and Metal)
 - Per-monitor DPI scaling on Windows
 - Multimodal LLM support via libmtmd
