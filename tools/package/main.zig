@@ -19,6 +19,7 @@ pub const ico = @import("ico.zig");
 pub const nsis = @import("nsis.zig");
 pub const icns = @import("icns.zig");
 pub const macos = @import("macos.zig");
+pub const sign_macos = @import("sign_macos.zig");
 
 const Dir = std.Io.Dir;
 const Io = std.Io;
@@ -78,6 +79,8 @@ pub fn main(init: std.process.Init) !u8 {
         return packageAppCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "package-dmg")) {
         return packageDmgCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "sign-app")) {
+        return sign_macos.signAppCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "install-app")) {
         return installAppCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "install-desktop-entry")) {
@@ -100,7 +103,9 @@ fn printUsage() void {
         \\  package-appimage      Assemble AppDir, run mksquashfs, prepend runtime
         \\  package-nsis          Generate installer.nsi and build Windows setup.exe via makensis
         \\  package-app           Assemble a macOS .app bundle (Info.plist, icon.icns, ad-hoc signed)
-        \\  package-dmg           Build a macOS .dmg with the .app and an Applications link (hdiutil)
+        \\  package-dmg           Build a macOS .dmg with the .app and an Applications link (hdiutil);
+        \\                        --identity signs it, --notarize-profile notarizes and staples it
+        \\  sign-app              Copy a .app and sign it for distribution (hardened runtime, timestamp)
         \\  install-app           Replace a directory with a copy of a .app bundle (no stale files)
         \\  install-desktop-entry Install desktop file and icons to $XDG_DATA_HOME
         \\
@@ -1489,6 +1494,9 @@ fn packageDmgCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     var filename: ?[]const u8 = null;
     var volname: ?[]const u8 = null;
     var app_path: ?[]const u8 = null;
+    var identity: ?[]const u8 = null;
+    var profile: ?[]const u8 = null;
+    var dry_run = false;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -1505,6 +1513,14 @@ fn packageDmgCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
         } else if (std.mem.eql(u8, arg, "--app") and has_value) {
             i += 1;
             app_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--identity") and has_value) {
+            i += 1;
+            identity = args[i];
+        } else if (std.mem.eql(u8, arg, "--notarize-profile") and has_value) {
+            i += 1;
+            profile = args[i];
+        } else if (std.mem.eql(u8, arg, "--dry-run")) {
+            dry_run = true;
         } else {
             std.debug.print("error: package-dmg: unknown argument {s}\n", .{arg});
             return 1;
@@ -1512,6 +1528,18 @@ fn packageDmgCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     }
     if (out_dir == null or filename == null or volname == null or app_path == null) {
         std.debug.print("error: package-dmg: needs --out-dir, --filename, --volname and --app\n", .{});
+        return 1;
+    }
+    if (identity) |id| if (!sign_macos.validIdentity(id)) {
+        std.debug.print("error: package-dmg: invalid signing identity\n", .{});
+        return 1;
+    };
+    if (profile) |p| if (!sign_macos.validProfile(p)) {
+        std.debug.print("error: package-dmg: invalid notarytool profile name\n", .{});
+        return 1;
+    };
+    if (profile != null and !dry_run and (identity == null or std.mem.eql(u8, identity.?, sign_macos.ad_hoc))) {
+        std.debug.print("error: package-dmg: notarization needs a Developer ID identity (-Dmacos-sign-identity)\n", .{});
         return 1;
     }
     if (builtin.os.tag != .macos) {
@@ -1535,6 +1563,7 @@ fn packageDmgCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     const dmg = try std.fs.path.join(gpa, &.{ out_dir.?, filename.? });
     defer gpa.free(dmg);
     runTool(gpa, io, "package-dmg", &.{ "/usr/bin/hdiutil", "create", "-quiet", "-volname", volname.?, "-srcfolder", stage, "-ov", "-format", "UDZO", dmg }) catch return 1;
+    sign_macos.finishDmg(gpa, io, dmg, identity, profile, dry_run) catch return 1;
     return 0;
 }
 
@@ -1659,6 +1688,7 @@ test {
     std.testing.refAllDecls(ico);
     std.testing.refAllDecls(nsis);
     std.testing.refAllDecls(icns);
+    std.testing.refAllDecls(sign_macos);
     std.testing.refAllDecls(macos);
 }
 
