@@ -178,6 +178,31 @@ jobs:
           zig build combine-manifests -- dist/oriel-update-*.json \
             --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --out dist/latest.json
+      # WinGet (`winget install Highercomve.Oriel`): the Windows CLIs as a
+      # portable package; the winget job submits them once they're published.
+      - name: WinGet manifests
+        if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          B="https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG"
+          zig build winget -- --id Highercomve.Oriel --version "${TAG#v}" --name Oriel \
+            --publisher "Sergio Marin" --license MIT \
+            --license-url https://github.com/highercomve/Oriel/blob/main/LICENSE \
+            --homepage https://highercomve.github.io/Oriel/ \
+            --release-notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG" \
+            --summary "The Oriel CLI: build desktop apps with Zig and a web frontend" \
+            --moniker oriel --tag zig --tag desktop --tag framework --tag webview --tag cli \
+            --command oriel \
+            --portable "x64=$PWD/dist/oriel-x86_64-windows.exe=$B/oriel-x86_64-windows.exe" \
+            --portable "arm64=$PWD/dist/oriel-aarch64-windows.exe=$B/oriel-aarch64-windows.exe" \
+            --out-dir "$PWD/winget"
+      - name: Upload the WinGet manifests
+        if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+        uses: actions/upload-artifact@v4
+        with:
+          name: winget
+          path: winget/*
       - name: Checksums
         run: |
           cd dist && sha256sum oriel-* > SHA256SUMS && cat SHA256SUMS
@@ -188,3 +213,28 @@ jobs:
           # Only -rc/-beta tags are pre-releases (releases/latest skips those).
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
+
+  # A pull request to microsoft/winget-pkgs with this release's manifests.
+  # Needs the WINGET_TOKEN secret (a GitHub token with public_repo); skipped
+  # without it.
+  winget:
+    needs: [release]
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: winget
+          path: winget
+      - name: Submit to winget-pkgs
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:WINGET_TOKEN) {
+            Write-Output "::warning::WINGET_TOKEN is not set: the WinGet manifests were not submitted."
+            exit 0
+          }
+          Get-ChildItem winget | ForEach-Object { Write-Output "== $($_.Name)"; Get-Content $_.FullName }
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          .\wingetcreate.exe submit --token $env:WINGET_TOKEN --prtitle "Oriel ${{ github.ref_name }}" winget
