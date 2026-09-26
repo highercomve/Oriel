@@ -184,7 +184,14 @@ pub fn evalJs(target: ?@import("window.zig").WindowHandle, script: [:0]const u8)
         return;
     };
     task.* = .{ .target = target, .script = script_copy };
-    _ = glib.idleAdd(&evalScriptTask, task);
+    // On the main thread (a sync command emitting), run it now: queued for
+    // later, it would reach the page after the command's reply. Other
+    // threads queue it (FIFO with their command's reply).
+    if (glib.MainContext.default().isOwner() != 0) {
+        _ = evalScriptTask(task);
+    } else {
+        _ = glib.idleAdd(&evalScriptTask, task);
+    }
 }
 
 fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
@@ -232,7 +239,12 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
         return;
     };
     task.* = .{ .label = label_copy, .script = script_copy };
-    _ = glib.idleAdd(&evalScriptByLabelTask, task);
+    // See evalJs: in order with a sync command's reply.
+    if (glib.MainContext.default().isOwner() != 0) {
+        _ = evalScriptByLabelTask(task);
+    } else {
+        _ = glib.idleAdd(&evalScriptByLabelTask, task);
+    }
 }
 
 fn evalScriptByLabelTask(data: ?*anyopaque) callconv(.c) c_int {
