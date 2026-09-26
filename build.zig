@@ -355,12 +355,15 @@ fn cudaOptions(b: *std.Build, target: std.Build.ResolvedTarget) ?ggml.CudaOption
     const path = b.option([]const u8, "cuda_path", "CUDA toolkit root (default: $CUDA_PATH or /opt/cuda)");
     const arch = b.option([]const u8, "cuda_arch", "nvcc -arch value, or compute capabilities like 75,86,89,120 (default: native)");
     const static = b.option(bool, "cuda_static", "Link cuBLAS statically: needs only the NVIDIA driver at runtime (default: false)") orelse false;
-    if (!enabled) return null;
+    const prebuilt = b.option([]const u8, "ggml_cuda_prebuilt", "Use this libggml-cuda.so (built earlier by the same Oriel version) instead of running nvcc; implies -Dggml_cuda");
+    if (!enabled and prebuilt == null) return null;
+    if (prebuilt) |p| if (!std.fs.path.isAbsolute(p)) fatal("-Dggml_cuda_prebuilt needs an absolute path", .{});
     if (target.result.os.tag != .linux) fatal("-Dggml_cuda is only supported on Linux targets for now", .{});
     return .{
         .path = path orelse b.graph.environ_map.get("CUDA_PATH") orelse "/opt/cuda",
         .arch = arch orelse "native",
         .static = static,
+        .prebuilt = prebuilt,
     };
 }
 
