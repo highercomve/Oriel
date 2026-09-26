@@ -5,6 +5,11 @@
 //! - builds AppDir, runs mksquashfs, prepends type-2 runtime for .AppImage
 //! - installs dev/prod desktop entries and icons into $XDG_DATA_HOME
 //! - assembles macOS .app bundles and .dmg disk images
+//! - strips ELF executables and libraries for the packages (`strip-elf`)
+//!
+//! Every `package-*` command takes the package's contents besides the app's
+//! executable: `--extra-exe <path>` and `--extra-file <relpath>=<src>`
+//! (repeatable; see contents.zig).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -20,6 +25,8 @@ pub const nsis = @import("nsis.zig");
 pub const icns = @import("icns.zig");
 pub const macos = @import("macos.zig");
 pub const sign_macos = @import("sign_macos.zig");
+pub const contents = @import("contents.zig");
+pub const elf_strip = @import("elf_strip.zig");
 
 const Dir = std.Io.Dir;
 const Io = std.Io;
@@ -85,6 +92,8 @@ pub fn main(init: std.process.Init) !u8 {
         return installAppCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "install-desktop-entry")) {
         return installDesktopEntryCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "strip-elf")) {
+        return stripElfCmd(gpa, io, args);
     } else {
         std.debug.print("unknown command: {s}\n", .{command});
         printUsage();
@@ -108,8 +117,94 @@ fn printUsage() void {
         \\  sign-app              Copy a .app and sign it for distribution (hardened runtime, timestamp)
         \\  install-app           Replace a directory with a copy of a .app bundle (no stale files)
         \\  install-desktop-entry Install desktop file and icons to $XDG_DATA_HOME
+        \\  strip-elf             Copy an ELF file without its symbol table and debug info (--in, --out)
+        \\
+        \\package-* commands also take --extra-exe <path> and --extra-file <relpath>=<src>
+        \\(repeatable): more executables, and files placed relative to the app's executable.
         \\
     , .{});
+}
+
+// ---------------------------------------------------------------------------
+// package contents (--extra-exe, --extra-file)
+// ---------------------------------------------------------------------------
+
+/// `Contents.parseArg` for command `what`, printing the error. Returns
+/// null for an invalid argument, else whether it was consumed.
+fn parseContentsArg(c: *contents.Contents, gpa: std.mem.Allocator, what: []const u8, args: []const [:0]const u8, i: *usize) ?bool {
+    return c.parseArg(gpa, args, i) catch |err| {
+        std.debug.print("error: {s}: {s} {s}: {s}\n", .{ what, args[i.*], if (i.* + 1 < args.len) args[i.* + 1] else "", contents.describe(err) });
+        return null;
+    };
+}
+
+/// `Contents.validate`, printing the error: false when invalid. `taken`:
+/// destinations the command itself uses next to the app's executable.
+fn validateContents(c: *const contents.Contents, what: []const u8, taken: []const []const u8) bool {
+    var bad: []const u8 = "";
+    c.validate(taken, &bad) catch |err| {
+        std.debug.print("error: {s}: invalid package entry '{s}': {s}\n", .{ what, bad, contents.describe(err) });
+        return false;
+    };
+    return true;
+}
+
+/// Copy the extra executables (mode 0755) and files (0644, parent
+/// directories created) into `dest_dir`.
+fn copyContents(gpa: std.mem.Allocator, io: Io, c: *const contents.Contents, dest_dir: []const u8) !void {
+    for (c.exes.items) |e| {
+        const dest = try std.fs.path.join(gpa, &.{ dest_dir, e.name });
+        defer gpa.free(dest);
+        try Dir.cwd().copyFile(e.src, Dir.cwd(), dest, io, .{ .permissions = filePerms(0o755) });
+    }
+    for (c.files.items) |f| {
+        const dest = try std.fs.path.join(gpa, &.{ dest_dir, f.rel });
+        defer gpa.free(dest);
+        if (std.fs.path.dirname(dest)) |parent| try Dir.cwd().createDirPath(io, parent);
+        try Dir.cwd().copyFile(f.src, Dir.cwd(), dest, io, .{ .permissions = filePerms(0o644) });
+    }
+}
+
+/// `strip-elf --in <file> --out <file>`: `--out` is `--in` without its
+/// symbol table and debug sections (elf_strip.zig), same mode. A file that
+/// isn't an ELF executable or library, or that can't be stripped, is copied
+/// unchanged (with a warning for the latter).
+fn stripElfCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
+    var in_path: ?[]const u8 = null;
+    var out_path: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--in") and i + 1 < args.len) {
+            i += 1;
+            in_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--out") and i + 1 < args.len) {
+            i += 1;
+            out_path = args[i];
+        } else {
+            std.debug.print("error: strip-elf: unknown argument {s}\n", .{args[i]});
+            return 1;
+        }
+    }
+    if (in_path == null or out_path == null) {
+        std.debug.print("error: strip-elf: needs --in and --out\n", .{});
+        return 1;
+    }
+    const st = Dir.cwd().statFile(io, in_path.?, .{}) catch |err| {
+        std.debug.print("error: strip-elf: {s}: {s}\n", .{ in_path.?, @errorName(err) });
+        return 1;
+    };
+    const data = try Dir.cwd().readFileAlloc(io, in_path.?, gpa, .limited(4 << 30));
+    defer gpa.free(data);
+    const stripped: ?[]u8 = if (elf_strip.isElf(data)) elf_strip.strip(gpa, data) catch |err| blk: {
+        std.debug.print("warning: strip-elf: {s} is packaged unstripped: {s}\n", .{ in_path.?, @errorName(err) });
+        break :blk null;
+    } else null;
+    defer if (stripped) |s| gpa.free(s);
+    if (std.fs.path.dirname(out_path.?)) |parent| try Dir.cwd().createDirPath(io, parent);
+    var out = try Dir.cwd().createFile(io, out_path.?, .{ .permissions = st.permissions });
+    defer out.close(io);
+    try out.writeStreamingAll(io, stripped orelse data);
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -484,11 +579,16 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8, pa
     defer deb_deps.deinit(gpa);
     var rpm_deps: std.ArrayList([]const u8) = .empty;
     defer rpm_deps.deinit(gpa);
+    var extras: contents.Contents = .{};
+    defer extras.deinit(gpa);
+    const what = if (packager == .deb) "package-deb" else "package-rpm";
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
+        if (parseContentsArg(&extras, gpa, what, args, &i) orelse return 1) {
+            continue;
+        } else if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
             i += 1;
             out_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--filename") and i + 1 < args.len) {
@@ -569,6 +669,7 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8, pa
         std.debug.print("error: missing --icons-dir\n", .{});
         return 1;
     };
+    if (!validateContents(&extras, what, &.{target_bin_name})) return 1;
     const target_app_id = app_id orelse target_name;
     const target_maintainer = maintainer orelse target_name;
     const target_desc = description orelse target_name;
@@ -594,6 +695,8 @@ fn packageNfpmCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8, pa
         .icons_dir = target_icons_dir,
         .deb_depends = deb_deps.items,
         .rpm_depends = rpm_deps.items,
+        .extra_exes = extras.exes.items,
+        .extra_files = extras.files.items,
     });
     defer gpa.free(yaml_content);
     try Dir.cwd().writeFile(io, .{ .sub_path = nfpm_yaml_path, .data = yaml_content });
@@ -767,11 +870,15 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8
     var arch: []const u8 = "x86_64";
     var cache_dir: []const u8 = ".zig-cache";
     var runtime_override: ?[]const u8 = null;
+    var extras: contents.Contents = .{};
+    defer extras.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
+        if (parseContentsArg(&extras, gpa, "package-appimage", args, &i) orelse return 1) {
+            continue;
+        } else if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
             i += 1;
             out_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--filename") and i + 1 < args.len) {
@@ -836,6 +943,7 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8
         std.debug.print("error: package-appimage: invalid --exe-name '{s}': {s}\n", .{ target_exe_name, @errorName(err) });
         return 1;
     };
+    if (!validateContents(&extras, "package-appimage", &.{target_exe_name})) return 1;
 
     try Dir.cwd().createDirPath(io, dest_dir);
 
@@ -916,6 +1024,8 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8
     try Dir.cwd().copyFile(target_bin, Dir.cwd(), usr_bin_dest, io, .{
         .permissions = filePerms(0o755),
     });
+    // Extra executables and files next to it.
+    try copyContents(gpa, io, &extras, usr_bin_dir);
 
     // 3. Create squashfs image with mksquashfs
     const squashfs_path = try std.fmt.allocPrint(gpa, "{s}/app.squashfs", .{dest_dir});
@@ -1043,6 +1153,20 @@ pub fn findMakensis(gpa: std.mem.Allocator, io: Io) ![]const u8 {
     return error.MakensisNotFound;
 }
 
+/// `path` made absolute, or null (error printed) when it doesn't exist.
+fn absExistingFile(gpa: std.mem.Allocator, io: Io, path: []const u8) !?[]const u8 {
+    if (!pathExists(io, path)) {
+        std.debug.print("error: package-nsis: file not found: {s}\n", .{path});
+        return null;
+    }
+    return try ensureAbsolutePath(gpa, io, path);
+}
+
+fn fileSize(io: Io, path: []const u8) u64 {
+    const st = Dir.cwd().statFile(io, path, .{}) catch return 0;
+    return st.size;
+}
+
 fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
     var out_dir: ?[]const u8 = null;
     var filename: ?[]const u8 = null;
@@ -1058,11 +1182,15 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
     var homepage: ?[]const u8 = null;
     var url_schemes: std.ArrayList([]const u8) = .empty;
     defer url_schemes.deinit(gpa);
+    var extras: contents.Contents = .{};
+    defer extras.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
+        if (parseContentsArg(&extras, gpa, "package-nsis", args, &i) orelse return 1) {
+            continue;
+        } else if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
             i += 1;
             out_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--filename") and i + 1 < args.len) {
@@ -1130,6 +1258,13 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         std.debug.print("error: package-nsis: invalid --exe-name '{s}': {s}\n", .{ target_exe_name, @errorName(err) });
         return 1;
     };
+    {
+        // What the installer itself puts in $INSTDIR.
+        const app_exe_file = try std.fmt.allocPrint(gpa, "{s}.exe", .{clean_exe_name});
+        defer gpa.free(app_exe_file);
+        const taken = [_][]const u8{ app_exe_file, "Uninstall.exe", "WebView2Loader.dll" };
+        if (!validateContents(&extras, "package-nsis", taken[0..if (webview2_loader != null) taken.len else 2])) return 1;
+    }
 
     if (!pathExists(io, target_bin)) {
         std.debug.print("error: package-nsis: binary file not found: {s}\n", .{target_bin});
@@ -1203,13 +1338,41 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
             total_size_bytes += st.size;
         } else |_| {}
     }
+
+    // Extra executables and files, with absolute sources (makensis runs with -NOCD).
+    var abs_exes: std.ArrayList(contents.Exe) = .empty;
+    defer {
+        for (abs_exes.items) |e| gpa.free(e.src);
+        abs_exes.deinit(gpa);
+    }
+    var abs_files: std.ArrayList(contents.File) = .empty;
+    defer {
+        for (abs_files.items) |f| gpa.free(f.src);
+        abs_files.deinit(gpa);
+    }
+    for (extras.exes.items) |e| {
+        const src = try absExistingFile(gpa, io, e.src) orelse return 1;
+        abs_exes.append(gpa, .{ .src = src, .name = e.name }) catch |err| {
+            gpa.free(src);
+            return err;
+        };
+        total_size_bytes += fileSize(io, src);
+    }
+    for (extras.files.items) |f| {
+        const src = try absExistingFile(gpa, io, f.src) orelse return 1;
+        abs_files.append(gpa, .{ .src = src, .rel = f.rel }) catch |err| {
+            gpa.free(src);
+            return err;
+        };
+        total_size_bytes += fileSize(io, src);
+    }
     const estimated_size_kb: u64 = if (total_size_bytes > 0) (total_size_bytes + 1023) / 1024 else 0;
 
     // Generate installer.nsi
     const nsi_path = try std.fs.path.join(gpa, &.{ abs_out_dir, "installer.nsi" });
     defer gpa.free(nsi_path);
 
-    const script_content = try nsis.generateNsisScript(gpa, .{
+    const script_content = nsis.generateNsisScript(gpa, .{
         .name = target_name,
         .exe_name = clean_exe_name,
         .version = version,
@@ -1222,7 +1385,12 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         .homepage = homepage,
         .url_schemes = url_schemes.items,
         .estimated_size_kb = estimated_size_kb,
-    });
+        .extra_exes = abs_exes.items,
+        .extra_files = abs_files.items,
+    }) catch |err| {
+        std.debug.print("error: package-nsis: installer script: {s}\n", .{@errorName(err)});
+        return 1;
+    };
     defer gpa.free(script_content);
     try Dir.cwd().writeFile(io, .{ .sub_path = nsi_path, .data = script_content });
 
@@ -1284,12 +1452,16 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     var sign = true;
     var url_schemes: std.ArrayList([]const u8) = .empty;
     defer url_schemes.deinit(gpa);
+    var extras: contents.Contents = .{};
+    defer extras.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         const has_value = i + 1 < args.len;
-        if (std.mem.eql(u8, arg, "--out-dir") and has_value) {
+        if (parseContentsArg(&extras, gpa, "package-app", args, &i) orelse return 1) {
+            continue;
+        } else if (std.mem.eql(u8, arg, "--out-dir") and has_value) {
             i += 1;
             out_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--bin") and has_value) {
@@ -1336,6 +1508,11 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
         std.debug.print("error: package-app: missing {s}\n", .{m});
         return 1;
     }
+    metadata.validateExeName(exe_name.?) catch {
+        std.debug.print("error: package-app: invalid --exe-name '{s}'\n", .{exe_name.?});
+        return 1;
+    };
+    if (!validateContents(&extras, "package-app", &.{exe_name.?})) return 1;
 
     const bundle_name = macos.bundleDirName(gpa, name.?) catch |err| {
         std.debug.print("error: package-app: the app name \"{s}\" can't be a bundle name ({s}): use no '/', '\\' or ':', no control characters, and don't start with '.'\n", .{ name.?, @errorName(err) });
@@ -1356,6 +1533,8 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     const exe_dest = try std.fs.path.join(gpa, &.{ macos_dir, exe_name.? });
     defer gpa.free(exe_dest);
     try Dir.cwd().copyFile(bin_path.?, Dir.cwd(), exe_dest, io, .{ .permissions = filePerms(0o755) });
+    // Extra executables and files next to the executable, in Contents/MacOS.
+    try copyContents(gpa, io, &extras, macos_dir);
 
     var has_icon = false;
     if (icons_dir) |idir| {
@@ -1401,6 +1580,17 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     try Dir.cwd().writeFile(io, .{ .sub_path = ent_path, .data = ent });
 
     if (sign and builtin.os.tag == .macos) {
+        // Nested code first (inside-out), then the bundle, which seals it.
+        const nested = sign_macos.nestedCode(gpa, io, bundle, exe_name.?) catch |err| {
+            std.debug.print("error: package-app: looking for nested code in {s}: {s}\n", .{ bundle, @errorName(err) });
+            return 1;
+        };
+        defer sign_macos.freeNested(gpa, nested);
+        for (nested) |n| {
+            const path = try std.fs.path.join(gpa, &.{ bundle, n.path });
+            defer gpa.free(path);
+            runTool(gpa, io, "package-app", &.{ "/usr/bin/codesign", "--force", "--sign", "-", path }) catch return 1;
+        }
         runTool(gpa, io, "package-app", &.{ "/usr/bin/codesign", "--force", "--sign", "-", bundle }) catch return 1;
     }
     return 0;
@@ -1696,6 +1886,8 @@ test {
     std.testing.refAllDecls(icns);
     std.testing.refAllDecls(sign_macos);
     std.testing.refAllDecls(macos);
+    std.testing.refAllDecls(contents);
+    std.testing.refAllDecls(elf_strip);
 }
 
 test "resizeIcons custom png no overflow on large sizes" {
@@ -1939,6 +2131,14 @@ test "packageNsisCmd builds Windows installer with makensis" {
     const ico_path_z = try allocator.dupeZ(u8, ico_path);
     defer allocator.free(ico_path_z);
 
+    // Extras: a CLI next to the app and a data file in a subdirectory.
+    try tmp.dir.writeFile(io, .{ .sub_path = "sample-cli.exe", .data = "MZdummy-cli" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "model.bin", .data = "weights" });
+    const cli_z = try std.fs.path.joinZ(allocator, &.{ tmp_path, "sample-cli.exe" });
+    defer allocator.free(cli_z);
+    const model_arg = try std.fmt.allocPrintSentinel(allocator, "data/models/model.bin={s}/model.bin", .{tmp_path}, 0);
+    defer allocator.free(model_arg);
+
     const args = [_][:0]const u8{
         "--out-dir",
         out_dir_z,
@@ -1960,10 +2160,22 @@ test "packageNsisCmd builds Windows installer with makensis" {
         ico_path_z,
         "--url-scheme",
         "sample-scheme",
+        "--extra-exe",
+        cli_z,
+        "--extra-file",
+        model_arg,
     };
 
     const status = try packageNsisCmd(allocator, io, &args);
     try std.testing.expectEqual(@as(u8, 0), status);
+
+    const nsi_path = try std.fs.path.join(allocator, &.{ out_dir, "installer.nsi" });
+    defer allocator.free(nsi_path);
+    const nsi = try Dir.cwd().readFileAlloc(io, nsi_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(nsi);
+    try std.testing.expect(std.mem.indexOf(u8, nsi, "File \"/oname=$INSTDIR\\sample-cli.exe\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, nsi, "File \"/oname=$INSTDIR\\data\\models\\model.bin\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, nsi, "RMDir \"$INSTDIR\\data\\models\"\n  RMDir \"$INSTDIR\\data\"") != null);
 
     // Verify output installer exists
     const setup_exe_path = try std.fs.path.join(allocator, &.{ out_dir, "sample-1.0.0-setup.exe" });
@@ -1972,6 +2184,64 @@ test "packageNsisCmd builds Windows installer with makensis" {
     const setup_data = try Dir.cwd().readFileAlloc(io, setup_exe_path, allocator, .limited(10 * 1024 * 1024));
     defer allocator.free(setup_data);
     try std.testing.expect(setup_data.len > 1000);
+}
+
+test "packageAppCmd puts extra executables and files in Contents/MacOS" {
+    // Unsigned here (codesign is macOS-only); POSIX modes checked below.
+    if (builtin.os.tag == .windows or builtin.os.tag == .macos) return error.SkipZigTest;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    try tmp.dir.writeFile(io, .{ .sub_path = "notes", .data = "app" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "notes-cli", .data = "cli" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "m.bin", .data = "model" });
+    const out_z = try std.fs.path.joinZ(gpa, &.{ root, "out" });
+    defer gpa.free(out_z);
+    const bin_z = try std.fs.path.joinZ(gpa, &.{ root, "notes" });
+    defer gpa.free(bin_z);
+    const cli_z = try std.fs.path.joinZ(gpa, &.{ root, "notes-cli" });
+    defer gpa.free(cli_z);
+    const file_arg = try std.fmt.allocPrintSentinel(gpa, "data/m.bin={s}/m.bin", .{root}, 0);
+    defer gpa.free(file_arg);
+    const args = [_][:0]const u8{ "--out-dir", out_z, "--app-id", "dev.oriel.Notes", "--name", "Notes", "--exe-name", "notes", "--bin", bin_z, "--extra-exe", cli_z, "--extra-file", file_arg };
+    try std.testing.expectEqual(@as(u8, 0), try packageAppCmd(gpa, io, &args));
+
+    const cli = try tmp.dir.readFileAlloc(io, "out/Notes.app/Contents/MacOS/notes-cli", gpa, .limited(16));
+    defer gpa.free(cli);
+    try std.testing.expectEqualStrings("cli", cli);
+    const model = try tmp.dir.readFileAlloc(io, "out/Notes.app/Contents/MacOS/data/m.bin", gpa, .limited(16));
+    defer gpa.free(model);
+    try std.testing.expectEqualStrings("model", model);
+    const st = try tmp.dir.statFile(io, "out/Notes.app/Contents/MacOS/notes-cli", .{});
+    try std.testing.expectEqual(@as(u32, 0o755), @as(u32, @intCast(st.permissions.toMode())) & 0o777);
+}
+
+test "stripElfCmd strips an ELF file and copies anything else" {
+    if (builtin.object_format != .elf or @sizeOf(usize) != 8) return error.SkipZigTest;
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    const out_z = try std.fs.path.joinZ(gpa, &.{ root, "stripped" });
+    defer gpa.free(out_z);
+    const self_st = Dir.cwd().statFile(io, "/proc/self/exe", .{}) catch return error.SkipZigTest;
+    try std.testing.expectEqual(@as(u8, 0), try stripElfCmd(gpa, io, &.{ "--in", "/proc/self/exe", "--out", out_z }));
+    const st = try Dir.cwd().statFile(io, out_z, .{});
+    try std.testing.expect(st.size <= self_st.size);
+    try std.testing.expect(st.permissions.toMode() & 0o100 != 0); // still executable
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "text", .data = "not elf" });
+    const text_z = try std.fs.path.joinZ(gpa, &.{ root, "text" });
+    defer gpa.free(text_z);
+    try std.testing.expectEqual(@as(u8, 0), try stripElfCmd(gpa, io, &.{ "--in", text_z, "--out", out_z }));
+    const copy = try Dir.cwd().readFileAlloc(io, out_z, gpa, .limited(64));
+    defer gpa.free(copy);
+    try std.testing.expectEqualStrings("not elf", copy);
 }
 
 test "generateDesktopCmd with --url-scheme" {

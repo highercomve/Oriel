@@ -45,7 +45,35 @@ pub const ValidationError = error{
     ContainsControlChar,
     ContainsNewline,
     InvalidExec,
+    InvalidRelativePath,
 };
+
+/// Validate the destination of a file packaged next to the app's executable
+/// (`PackageOptions.contents.files[].path`), relative to the executable's
+/// directory: `/`-separated, not absolute, no empty, `.` or `..` component,
+/// no control characters, and none of `\ : * ? " < > | =` (not portable to
+/// Windows, or ambiguous in `--extra-file <path>=<src>`).
+pub fn validateRelativePath(path: []const u8) ValidationError!void {
+    if (path.len == 0 or path.len > 1024) return error.InvalidRelativePath;
+    for (path) |c| {
+        if (c < 0x20 or c == 0x7F) return error.InvalidRelativePath;
+        if (std.mem.indexOfScalar(u8, "\\:*?\"<>|=", c) != null) return error.InvalidRelativePath;
+    }
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |component| {
+        if (component.len == 0) return error.InvalidRelativePath; // absolute, `//` or trailing `/`
+        if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.InvalidRelativePath;
+    }
+}
+
+test validateRelativePath {
+    for ([_][]const u8{ "libggml-cuda.so", "data/model.bin", "a b/c.d", "share/x+y_z" }) |ok| {
+        try validateRelativePath(ok);
+    }
+    for ([_][]const u8{ "", "/etc/passwd", "../x", "a/../b", "a/./b", "./a", "a//b", "a/", "a\\b", "C:x", "a=b", "a\nb", "a\x00b", "a\x7fb" }) |bad| {
+        try std.testing.expectError(error.InvalidRelativePath, validateRelativePath(bad));
+    }
+}
 
 /// Validate reverse-DNS application ID (e.g. "dev.oriel.ReactNotes"):
 /// At least two dot-separated elements of [A-Za-z0-9_-], none empty or starting with a digit.

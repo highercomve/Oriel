@@ -8,6 +8,10 @@
 //!   copy of the bundle with the hardened runtime, the generated
 //!   `<Name>.entitlements` and a secure timestamp, and verifies it
 //!   (`codesign --verify --strict`); `package-dmg` signs the disk image too.
+//!   Nested code (the package's extra executables and libraries in
+//!   Contents/MacOS) is signed first, inside-out, with the same identity and
+//!   the hardened runtime (executables with the entitlements too), then the
+//!   bundle.
 //!   `-` signs ad-hoc with the hardened runtime (to try the runtime and the
 //!   entitlements locally; not distributable).
 //! - `-Dmacos-notarize-profile=<profile>` (or `ORIEL_MACOS_NOTARIZE_PROFILE`):
@@ -51,35 +55,104 @@ pub fn validPath(path: []const u8) bool {
     return path.len > 0 and path[0] != '-';
 }
 
-/// The first Mach-O file in the bundle other than Contents/MacOS/<exe>
-/// (the executable named by the bundle's only MacOS entry), or null.
-/// Caller frees.
-fn nestedCode(gpa: std.mem.Allocator, io: Io, bundle: []const u8) !?[]u8 {
+/// The bundle's main executable: CFBundleExecutable in Contents/Info.plist
+/// (as package-app writes it). Caller frees.
+pub fn mainExecutable(gpa: std.mem.Allocator, io: Io, bundle: []const u8) ![]u8 {
+    const plist_path = try std.fs.path.join(gpa, &.{ bundle, "Contents", "Info.plist" });
+    defer gpa.free(plist_path);
+    const plist = try Dir.cwd().readFileAlloc(io, plist_path, gpa, .limited(1024 * 1024));
+    defer gpa.free(plist);
+    const key = "<key>CFBundleExecutable</key>";
+    const k = std.mem.indexOf(u8, plist, key) orelse return error.NoBundleExecutable;
+    const open = std.mem.indexOfPos(u8, plist, k + key.len, "<string>") orelse return error.NoBundleExecutable;
+    const start = open + "<string>".len;
+    const end = std.mem.indexOfPos(u8, plist, start, "</string>") orelse return error.NoBundleExecutable;
+    const name = std.mem.trim(u8, plist[start..end], " \t\r\n");
+    if (name.len == 0 or std.mem.indexOfAny(u8, name, "/\\&<") != null or std.mem.eql(u8, name, "..")) return error.NoBundleExecutable;
+    return gpa.dupe(u8, name);
+}
+
+/// Nested code found in a bundle: a Mach-O file other than the main executable.
+pub const Nested = struct {
+    /// Relative to the bundle, with the host's separator.
+    path: []u8,
+    /// An executable (MH_EXECUTE), signed with the app's entitlements; a
+    /// library or plugin gets none.
+    executable: bool,
+};
+
+pub fn freeNested(gpa: std.mem.Allocator, list: []Nested) void {
+    for (list) |n| gpa.free(n.path);
+    gpa.free(list);
+}
+
+/// Every Mach-O file in the bundle except `Contents/MacOS/<main_exe>`,
+/// deepest paths first (the order to sign in: inside-out). Caller frees
+/// with `freeNested`.
+pub fn nestedCode(gpa: std.mem.Allocator, io: Io, bundle: []const u8, main_exe: []const u8) ![]Nested {
+    var list: std.ArrayList(Nested) = .empty;
+    errdefer {
+        for (list.items) |n| gpa.free(n.path);
+        list.deinit(gpa);
+    }
     var dir = try Dir.cwd().openDir(io, bundle, .{ .iterate = true });
     defer dir.close(io);
-    var main_count: usize = 0;
+    const main_path = try std.fs.path.join(gpa, &.{ "Contents", "MacOS", main_exe });
+    defer gpa.free(main_path);
     var walker = try dir.walk(gpa);
     defer walker.deinit();
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
+        if (std.mem.eql(u8, entry.path, main_path)) continue;
         var file = entry.dir.openFile(io, entry.basename, .{}) catch continue;
         defer file.close(io);
-        var magic: [4]u8 = undefined;
-        const n = file.readPositionalAll(io, &magic, 0) catch continue;
-        if (n < 4 or !isMachO(magic)) continue;
-        // The walker joins with the host's separator (`\` on Windows).
-        const sep = std.fs.path.sep;
-        const macos_dir = "Contents" ++ std.fs.path.sep_str ++ "MacOS" ++ std.fs.path.sep_str;
-        const in_macos = std.mem.startsWith(u8, entry.path, macos_dir) and std.mem.indexOfScalarPos(u8, entry.path, macos_dir.len, sep) == null;
-        if (in_macos and main_count == 0) {
-            main_count += 1;
-            continue;
-        }
+        const kind = machOKind(io, file) orelse continue;
         const path = try gpa.dupe(u8, entry.path);
-        std.mem.replaceScalar(u8, path, sep, '/'); // reported with `/` on every host
-        return path;
+        errdefer gpa.free(path);
+        try list.append(gpa, .{ .path = path, .executable = kind == .executable });
     }
-    return null;
+    std.mem.sort(Nested, list.items, {}, struct {
+        fn deeperFirst(_: void, a: Nested, b: Nested) bool {
+            const da = std.mem.count(u8, a.path, std.fs.path.sep_str);
+            const db = std.mem.count(u8, b.path, std.fs.path.sep_str);
+            return if (da != db) da > db else std.mem.lessThan(u8, a.path, b.path);
+        }
+    }.deeperFirst);
+    return list.toOwnedSlice(gpa);
+}
+
+const MachOKind = enum { executable, other };
+
+/// Null when `file` isn't Mach-O. A universal binary is judged by its
+/// first architecture.
+fn machOKind(io: Io, file: std.Io.File) ?MachOKind {
+    var head: [32]u8 = undefined;
+    const n = file.readPositionalAll(io, &head, 0) catch return null;
+    if (n < 16) return null;
+    const magic = head[0..4].*;
+    if (!isMachO(magic)) return null;
+    const m = std.mem.readInt(u32, &magic, .little);
+    if (m == 0xbebafeca or m == 0xcafebabe) {
+        // fat_header (big-endian): nfat_arch, then fat_arch { cputype,
+        // cpusubtype, offset, size, align }. 0xcafebabe is also Java's
+        // class-file magic: require a plausible architecture count.
+        const nfat = std.mem.readInt(u32, head[4..8], .big);
+        if (nfat == 0 or nfat > 32 or n < 20) return null;
+        const off = std.mem.readInt(u32, head[16..20], .big);
+        var slice: [16]u8 = undefined;
+        const got = file.readPositionalAll(io, &slice, off) catch return null;
+        if (got < 16 or !isMachO(slice[0..4].*)) return null;
+        return thinKind(slice);
+    }
+    return thinKind(head[0..16].*);
+}
+
+fn thinKind(h: [16]u8) MachOKind {
+    // mach_header: magic, cputype, cpusubtype, filetype (MH_EXECUTE = 2),
+    // in the byte order the magic shows.
+    const m = std.mem.readInt(u32, h[0..4], .little);
+    const endian: std.builtin.Endian = if (m == 0xfeedface or m == 0xfeedfacf) .little else .big;
+    return if (std.mem.readInt(u32, h[12..16], endian) == 2) .executable else .other;
 }
 
 fn isMachO(magic: [4]u8) bool {
@@ -99,11 +172,20 @@ fn validValue(v: []const u8) bool {
 /// `codesign` arguments signing `app`: the hardened runtime and
 /// `entitlements`, plus a secure timestamp for a real identity.
 pub fn codesignAppArgv(buf: *[11][]const u8, identity: []const u8, entitlements: []const u8, app: []const u8) []const []const u8 {
-    buf.* = .{ "/usr/bin/codesign", "--force", "--options", "runtime", "--entitlements", entitlements, "--timestamp", "--sign", identity, app, "" };
-    if (std.mem.eql(u8, identity, ad_hoc)) {
-        buf[6] = "--timestamp=none";
+    return codesignArgv(buf, identity, entitlements, app);
+}
+
+/// `codesign` arguments signing `path` (a bundle or a nested Mach-O file)
+/// with the hardened runtime, `entitlements` when given, and a secure
+/// timestamp for a real identity.
+pub fn codesignArgv(buf: *[11][]const u8, identity: []const u8, entitlements: ?[]const u8, path: []const u8) []const []const u8 {
+    const timestamp = if (std.mem.eql(u8, identity, ad_hoc)) "--timestamp=none" else "--timestamp";
+    if (entitlements) |ent| {
+        buf.* = .{ "/usr/bin/codesign", "--force", "--options", "runtime", "--entitlements", ent, timestamp, "--sign", identity, path, "" };
+        return buf[0..10];
     }
-    return buf[0..10];
+    buf.* = .{ "/usr/bin/codesign", "--force", "--options", "runtime", timestamp, "--sign", identity, path, "", "", "" };
+    return buf[0..8];
 }
 
 /// `xcrun notarytool submit` for `dmg`, waiting for the verdict (JSON).
@@ -233,27 +315,43 @@ pub fn signAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
     // ditto keeps the bundle's symlinks and modes; extended attributes and
     // resource forks would fail codesign ("detritus not allowed").
     runQuiet(gpa, io, "sign-app", &.{ "/usr/bin/ditto", "--norsrc", "--noextattr", "--noqtn", app.?, signed }) catch return 1;
-    // Only the main executable is signed (no --deep): other code in the
-    // bundle would stay ad-hoc and fail notarization.
-    if (nestedCode(gpa, io, signed) catch null) |extra| {
-        defer gpa.free(extra);
-        std.debug.print("error: sign-app: {s} holds code besides the main executable ({s}); signing nested code isn't supported yet\n", .{ signed, extra });
+    // Inside-out, no --deep: every nested Mach-O file (extra executables,
+    // libraries) with the same identity and the hardened runtime, then the
+    // bundle (which seals them). Executables get the app's entitlements.
+    const main_exe = mainExecutable(gpa, io, signed) catch |err| {
+        std.debug.print("error: sign-app: {s}: no CFBundleExecutable in Contents/Info.plist ({s})\n", .{ signed, @errorName(err) });
         return 1;
-    }
+    };
+    defer gpa.free(main_exe);
+    const nested = nestedCode(gpa, io, signed, main_exe) catch |err| {
+        std.debug.print("error: sign-app: looking for nested code in {s}: {s}\n", .{ signed, @errorName(err) });
+        return 1;
+    };
+    defer freeNested(gpa, nested);
 
-    var buf: [11][]const u8 = undefined;
     const id = identity orelse placeholder_identity;
-    if (dry_run and !std.mem.eql(u8, id, ad_hoc)) {
-        printArgv("sign-app", codesignAppArgv(&buf, id, entitlements.?, signed));
-        // Sign the copy the same way, ad-hoc: it runs under the hardened
-        // runtime with these entitlements, as the signed app would.
-        runQuiet(gpa, io, "sign-app", codesignAppArgv(&buf, ad_hoc, entitlements.?, signed)) catch return 1;
-    } else {
-        runQuiet(gpa, io, "sign-app", codesignAppArgv(&buf, id, entitlements.?, signed)) catch {
-            if (!std.mem.eql(u8, id, ad_hoc)) std.debug.print("  the keychain's signing identities: security find-identity -v -p codesigning\n", .{});
+    // A dry run with a real (or placeholder) identity prints the commands and
+    // signs ad-hoc the same way: the copy runs under the hardened runtime
+    // with these entitlements, as the signed app would.
+    const print_only = dry_run and !std.mem.eql(u8, id, ad_hoc);
+    const run_id = if (print_only) ad_hoc else id;
+    for (nested) |n| {
+        const path = try std.fs.path.join(gpa, &.{ signed, n.path });
+        defer gpa.free(path);
+        const ent: ?[]const u8 = if (n.executable) entitlements.? else null;
+        var buf: [11][]const u8 = undefined;
+        if (print_only) printArgv("sign-app", codesignArgv(&buf, id, ent, path));
+        runQuiet(gpa, io, "sign-app", codesignArgv(&buf, run_id, ent, path)) catch {
+            if (!print_only and !std.mem.eql(u8, id, ad_hoc)) std.debug.print("  the keychain's signing identities: security find-identity -v -p codesigning\n", .{});
             return 1;
         };
     }
+    var buf: [11][]const u8 = undefined;
+    if (print_only) printArgv("sign-app", codesignArgv(&buf, id, entitlements.?, signed));
+    runQuiet(gpa, io, "sign-app", codesignArgv(&buf, run_id, entitlements.?, signed)) catch {
+        if (!print_only and !std.mem.eql(u8, id, ad_hoc)) std.debug.print("  the keychain's signing identities: security find-identity -v -p codesigning\n", .{});
+        return 1;
+    };
     runQuiet(gpa, io, "sign-app", &.{ "/usr/bin/codesign", "--verify", "--strict", "--verbose=2", signed }) catch return 1;
     return 0;
 }
@@ -348,19 +446,47 @@ test nestedCode {
     const gpa = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDirPath(io, "A.app/Contents/MacOS");
+    try tmp.dir.createDirPath(io, "A.app/Contents/MacOS/lib");
     try tmp.dir.createDirPath(io, "A.app/Contents/Resources");
-    const macho = [_]u8{ 0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0 };
-    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/MacOS/a", .data = &macho });
-    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/Info.plist", .data = "<plist/>" });
+    const exe = [_]u8{ 0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 0x01, 0, 0, 0, 0, 2, 0, 0, 0 };
+    const dylib = [_]u8{ 0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 0x01, 0, 0, 0, 0, 6, 0, 0, 0 };
+    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/MacOS/a", .data = &exe });
+    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/Info.plist", .data = "<plist><dict>\n\t<key>CFBundleExecutable</key>\n\t<string>a</string>\n</dict></plist>" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/MacOS/data.bin", .data = "not code, 16 bytes or more" });
     const bundle = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/A.app", .{tmp.sub_path});
     defer gpa.free(bundle);
-    try std.testing.expect(try nestedCode(gpa, io, bundle) == null);
-    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/Resources/helper.dylib", .data = &macho });
-    const extra = (try nestedCode(gpa, io, bundle)).?;
-    defer gpa.free(extra);
-    try std.testing.expectEqualStrings("Contents/Resources/helper.dylib", extra);
+
+    const main_exe = try mainExecutable(gpa, io, bundle);
+    defer gpa.free(main_exe);
+    try std.testing.expectEqualStrings("a", main_exe);
+    const none = try nestedCode(gpa, io, bundle, main_exe);
+    defer freeNested(gpa, none);
+    try std.testing.expectEqual(@as(usize, 0), none.len);
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/MacOS/a-cli", .data = &exe });
+    try tmp.dir.writeFile(io, .{ .sub_path = "A.app/Contents/MacOS/lib/libx.dylib", .data = &dylib });
+    const found = try nestedCode(gpa, io, bundle, main_exe);
+    defer freeNested(gpa, found);
+    try std.testing.expectEqual(@as(usize, 2), found.len);
+    const sep = std.fs.path.sep_str;
+    // Deepest first: the library inside lib/ before the helper executable.
+    try std.testing.expectEqualStrings("Contents" ++ sep ++ "MacOS" ++ sep ++ "lib" ++ sep ++ "libx.dylib", found[0].path);
+    try std.testing.expect(!found[0].executable);
+    try std.testing.expectEqualStrings("Contents" ++ sep ++ "MacOS" ++ sep ++ "a-cli", found[1].path);
+    try std.testing.expect(found[1].executable);
     try std.testing.expect(validPath("/abs/A.app") and validPath(".zig-cache/x") and !validPath("-x.app") and !validPath(""));
+}
+
+test codesignArgv {
+    var buf: [11][]const u8 = undefined;
+    const lib = codesignArgv(&buf, "Developer ID Application: X", null, "A.app/Contents/MacOS/libx.dylib");
+    try std.testing.expectEqual(@as(usize, 8), lib.len);
+    try std.testing.expectEqualStrings("runtime", lib[3]);
+    try std.testing.expectEqualStrings("--timestamp", lib[4]);
+    for (lib) |a| try std.testing.expect(!std.mem.eql(u8, a, "--entitlements"));
+    const helper = codesignArgv(&buf, "-", "A.entitlements", "A.app/Contents/MacOS/a-cli");
+    try std.testing.expectEqualStrings("A.entitlements", helper[5]);
+    try std.testing.expectEqualStrings("--timestamp=none", helper[6]);
 }
 
 test notarizeArgv {

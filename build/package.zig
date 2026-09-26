@@ -119,7 +119,134 @@ pub const PackageOptions = struct {
     /// When provided, the DLL is copied next to the Windows executable in the installer.
     /// Available from the Microsoft.Web.WebView2 NuGet package (runtimes/win-x64/native/WebView2Loader.dll).
     webview2_loader: ?std.Build.LazyPath = null,
+
+    /// What the packages contain besides the app's executable (all formats).
+    contents: Contents = .{},
 };
+
+/// The package's contents besides the app's executable
+/// (`PackageOptions.contents`), for every format:
+///
+/// - deb/rpm: without extra executables or files the app is `/usr/bin/<exe>`
+///   as always; with them, the app, the extra executables and the files go to
+///   `/usr/lib/<exe>/` and `/usr/bin` gets symlinks to the executables (so a
+///   program finds its companions next to its own, symlink-resolved, path).
+/// - AppImage: `usr/bin/` next to the app.
+/// - NSIS: `$INSTDIR` (the uninstaller removes them again).
+/// - macOS: `<Name>.app/Contents/MacOS/`, signed inside-out with the bundle.
+///
+/// ```zig
+/// .contents = .{
+///     .executables = &.{cli},
+///     .files = &.{.{ .path = "data/model.bin", .source = b.path("model.bin") }},
+/// },
+/// ```
+pub const Contents = struct {
+    /// Other executables of the build (e.g. a CLI), installed next to the app's
+    /// executable under their file names; on Linux also linked into /usr/bin.
+    executables: []const *std.Build.Step.Compile = &.{},
+    /// Files placed next to the app's executable: `path` is relative to the
+    /// executable's directory (no absolute paths, no `..`), e.g. "data/model.bin".
+    /// Installed as-is (not stripped), mode 0644 on Linux and macOS.
+    files: []const File = &.{},
+    /// Oriel's runtime libraries the app was built with (libggml-cuda.so with
+    /// -Dggml_cuda). Default on.
+    runtime_libraries: bool = true,
+    /// Strip debug info and symbols from ELF executables/libraries in packages
+    /// (Linux): the app, `executables` and the runtime libraries (the dynamic
+    /// symbol table stays, so `-rdynamic` exports still reach plugins).
+    /// `zig build`'s zig-out keeps them. Default on.
+    strip: bool = true,
+};
+
+/// A file in `Contents.files`.
+pub const File = struct {
+    /// Destination relative to the app executable's directory, `/`-separated
+    /// (e.g. "data/model.bin"): not absolute, no `.` or `..` components, none
+    /// of `\ : * ? " < > | =`.
+    path: []const u8,
+    source: std.Build.LazyPath,
+};
+
+/// What every package format ships, resolved once from `Contents`
+/// (stripped copies when asked to).
+pub const Payload = struct {
+    /// The app's executable.
+    exe: std.Build.LazyPath,
+    /// Other executables; each file's basename is its installed name.
+    executables: []const std.Build.LazyPath = &.{},
+    /// Files at a path relative to the app's executable.
+    files: []const File = &.{},
+
+    /// `--extra-exe <path>` and `--extra-file <relpath>=<path>` for the
+    /// `package-*` commands (file arguments: the cache tracks their content).
+    fn addArgs(p: Payload, b: *std.Build, run: *std.Build.Step.Run) void {
+        for (p.executables) |e| {
+            run.addArg("--extra-exe");
+            run.addFileArg(e);
+        }
+        for (p.files) |f| {
+            run.addArg("--extra-file");
+            run.addPrefixedFileArg(b.fmt("{s}=", .{f.path}), f.source);
+        }
+    }
+};
+
+/// Resolve `contents` for `exe`: the extra executables, the files, Oriel's
+/// runtime libraries, stripped when `contents.strip` and the target is ELF.
+fn resolvePayload(
+    b: *std.Build,
+    oriel_dep: *std.Build.Dependency,
+    package_tool: *std.Build.Step.Compile,
+    exe: *std.Build.Step.Compile,
+    contents: Contents,
+) Payload {
+    const elf = exe.root_module.resolved_target.?.result.ofmt == .elf;
+    const strip = contents.strip and elf;
+    var executables: std.ArrayList(std.Build.LazyPath) = .empty;
+    var files: std.ArrayList(File) = .empty;
+    for (contents.executables) |e| {
+        const bin = e.getEmittedBin();
+        executables.append(b.allocator, if (strip) strippedElf(b, package_tool, bin, e.out_filename) else bin) catch @panic("OOM");
+    }
+    files.appendSlice(b.allocator, contents.files) catch @panic("OOM");
+    if (contents.runtime_libraries) {
+        if (oriel_dep.builder.named_lazy_paths.get("libggml-cuda")) |cuda_lib| {
+            const name = "libggml-cuda.so";
+            files.append(b.allocator, .{ .path = name, .source = if (strip) strippedElf(b, package_tool, cuda_lib, name) else cuda_lib }) catch @panic("OOM");
+        }
+    }
+    const bin = exe.getEmittedBin();
+    return .{
+        .exe = if (strip) strippedElf(b, package_tool, bin, exe.out_filename) else bin,
+        .executables = executables.items,
+        .files = files.items,
+    };
+}
+
+/// `src` without its symbol table and debug info (`package_tool strip-elf`),
+/// named `basename`. (`zig objcopy` can't strip ELF files yet.)
+fn strippedElf(b: *std.Build, package_tool: *std.Build.Step.Compile, src: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
+    const run = b.addRunArtifact(package_tool);
+    run.setName(b.fmt("strip {s}", .{basename}));
+    run.addArgs(&.{ "strip-elf", "--in" });
+    run.addFileArg(src);
+    run.addArg("--out");
+    return run.addOutputFileArg(basename);
+}
+
+/// A step failing with why `contents` can't be packaged, or null.
+fn checkContents(b: *std.Build, contents: Contents) ?*std.Build.Step {
+    for (contents.files) |f| {
+        metadata_mod.validateRelativePath(f.path) catch {
+            return &b.addFail(b.fmt("package contents: invalid file path \"{s}\": use a '/'-separated path relative to the executable's directory, without '.' or '..' components, control characters or any of \\ : * ? \" < > | =", .{f.path})).step;
+        };
+    }
+    for (contents.executables) |e| {
+        if (e.kind != .exe) return &b.addFail(b.fmt("package contents: {s} is not an executable (use .files for libraries)", .{e.name})).step;
+    }
+    return null;
+}
 
 /// Format packaging context passed to each format builder function.
 pub const Context = struct {
@@ -128,7 +255,10 @@ pub const Context = struct {
     package_tool: *std.Build.Step.Compile,
     metadata: Metadata,
     target: std.Build.ResolvedTarget,
-    exe: std.Build.LazyPath,
+    /// The app's executable and the package's other contents.
+    payload: Payload,
+    /// Fails the package steps when `PackageOptions.contents` is invalid.
+    contents_error: ?*std.Build.Step = null,
     desktop_file: std.Build.LazyPath,
     icons_dir: std.Build.LazyPath,
     deb_deps: []const []const u8,
@@ -230,6 +360,7 @@ fn addAppBundle(
     metadata: Metadata,
     target: std.Build.ResolvedTarget,
     exe: *std.Build.Step.Compile,
+    payload: Payload,
     icons_dir: std.Build.LazyPath,
     permissions: anytype,
 ) AppBundle {
@@ -252,7 +383,8 @@ fn addAppBundle(
         }
     }
     run.addArg("--bin");
-    run.addFileArg(exe.getEmittedBin());
+    run.addFileArg(payload.exe);
+    payload.addArgs(b, run);
     run.addArg("--icons-dir");
     run.addDirectoryArg(icons_dir);
     const name = b.fmt("{s}.app", .{metadata.name});
@@ -383,12 +515,16 @@ pub fn addPackageSteps(
 
     // macOS: `zig build` also installs `zig-out/<Name>.app`: Launch Services
     // (deep links), notifications and permission prompts need a bundle.
+    // The package contents, resolved once for every format.
+    const payload = resolvePayload(b, oriel_dep, package_tool, exe, pkg_opts.contents);
+    const contents_error = checkContents(b, pkg_opts.contents);
+
     var app_bundle: ?AppBundle = null;
     // Declared for every target (a CI script may pass them to all), used on macOS.
     const mac_signing_opts = macSigningOptions(b);
     const mac_signing: MacSigning = if (os_tag == .macos) mac_signing_opts else .{};
     if (os_tag == .macos) {
-        const bundle = addAppBundle(b, package_tool, metadata, target, exe, icons_dir, permissions);
+        const bundle = addAppBundle(b, package_tool, metadata, target, exe, payload, icons_dir, permissions);
         b.getInstallStep().dependOn(installAppBundle(b, package_tool, bundle, bundle.name));
         app_bundle = bundle;
     }
@@ -399,7 +535,8 @@ pub fn addPackageSteps(
         .package_tool = package_tool,
         .metadata = metadata,
         .target = target,
-        .exe = exe.getEmittedBin(),
+        .payload = payload,
+        .contents_error = contents_error,
         .desktop_file = desktop_file,
         .icons_dir = icons_dir,
         .deb_deps = deb_deps.items,
@@ -422,6 +559,7 @@ pub fn addPackageSteps(
     }
     for (target_formats) |fmt| {
         const step = addFormat(&ctx, fmt);
+        if (contents_error) |fail| step.dependOn(fail);
         package_step.dependOn(step);
         getOrCreateStep(b, b.fmt("package-{s}", .{@tagName(fmt)}), b.fmt("Build only the {s} package", .{@tagName(fmt)})).dependOn(step);
     }
@@ -533,7 +671,8 @@ fn addDeb(ctx: *const Context) *std.Build.Step {
     run.addArgs(&.{ "--binary-name", ctx.metadata.exe_name });
     run.addArgs(&.{ "--app-id", ctx.metadata.id });
     run.addArg("--bin");
-    run.addFileArg(ctx.exe);
+    run.addFileArg(ctx.payload.exe);
+    ctx.payload.addArgs(ctx.b, run);
     run.addArg("--desktop");
     run.addFileArg(ctx.desktop_file);
     run.addArg("--icons-dir");
@@ -574,7 +713,8 @@ fn addRpm(ctx: *const Context) *std.Build.Step {
     run.addArgs(&.{ "--binary-name", ctx.metadata.exe_name });
     run.addArgs(&.{ "--app-id", ctx.metadata.id });
     run.addArg("--bin");
-    run.addFileArg(ctx.exe);
+    run.addFileArg(ctx.payload.exe);
+    ctx.payload.addArgs(ctx.b, run);
     run.addArg("--desktop");
     run.addFileArg(ctx.desktop_file);
     run.addArg("--icons-dir");
@@ -602,7 +742,8 @@ fn addAppImage(ctx: *const Context) *std.Build.Step {
     const out_dir = run.addOutputDirectoryArg("appimage");
     run.addArgs(&.{ "--filename", appimage_filename });
     run.addArg("--bin");
-    run.addFileArg(ctx.exe);
+    run.addFileArg(ctx.payload.exe);
+    ctx.payload.addArgs(ctx.b, run);
     run.addArg("--desktop");
     run.addFileArg(ctx.desktop_file);
     run.addArg("--icons-dir");
@@ -651,7 +792,8 @@ fn addNsis(ctx: *const Context) *std.Build.Step {
         run.addArgs(&.{ "--url-scheme", s });
     }
     run.addArg("--bin");
-    run.addFileArg(ctx.exe);
+    run.addFileArg(ctx.payload.exe);
+    ctx.payload.addArgs(ctx.b, run);
     run.addArg("--icons-dir");
     run.addDirectoryArg(ctx.icons_dir);
     if (ctx.webview2_loader) |loader| {

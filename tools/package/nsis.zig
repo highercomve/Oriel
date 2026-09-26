@@ -4,12 +4,14 @@
 //! - No administrative privileges required (installs to `$LOCALAPPDATA\Programs\<name>`)
 //! - Start Menu shortcut and uninstaller
 //! - HKCU registry registration under `Software\Microsoft\Windows\CurrentVersion\Uninstall\<id>`
-//! - Bundled application executable and optional `WebView2Loader.dll`
+//! - Bundled application executable, optional `WebView2Loader.dll`, and the
+//!   package's extra executables and files (removed again by the uninstaller)
 //! - Automatic detection of the Microsoft Edge WebView2 Evergreen runtime
 //!   with bootstrapper download/install prompt if missing.
 
 const std = @import("std");
 const metadata = @import("metadata.zig");
+const contents = @import("contents.zig");
 
 pub const NsisOptions = struct {
     name: []const u8,
@@ -24,6 +26,10 @@ pub const NsisOptions = struct {
     homepage: ?[]const u8 = null,
     url_schemes: []const []const u8 = &.{},
     estimated_size_kb: ?u64 = null,
+    /// Other executables, installed into `$INSTDIR` under `name`.
+    extra_exes: []const contents.Exe = &.{},
+    /// Files installed at `$INSTDIR\<rel>` (subdirectories created).
+    extra_files: []const contents.File = &.{},
 };
 
 /// Evergreen WebView2 Runtime bootstrapper download URL (Microsoft official fwlink).
@@ -211,6 +217,31 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\  File "/oname=WebView2Loader.dll" "${WEBVIEW2_LOADER}"
         \\  !endif
         \\
+    );
+
+    // Extra executables and files (paths validated: no `..`, no `\\`).
+    for (opts.extra_exes) |e| {
+        try metadata.validateExeName(e.name);
+        const esc_src = try metadata.escapeNsisString(allocator, e.src);
+        defer allocator.free(esc_src);
+        const esc_dest = try metadata.escapeNsisString(allocator, e.name);
+        defer allocator.free(esc_dest);
+        try w.print("  File \"/oname=$INSTDIR\\{s}\" \"{s}\"\n", .{ esc_dest, esc_src });
+    }
+    for (opts.extra_files) |f| {
+        try metadata.validateRelativePath(f.rel);
+        const esc_src = try metadata.escapeNsisString(allocator, f.src);
+        defer allocator.free(esc_src);
+        const esc_dest = try windowsRelPath(allocator, f.rel);
+        defer allocator.free(esc_dest);
+        if (std.mem.lastIndexOfScalar(u8, esc_dest, '\\')) |slash| {
+            try w.print("  CreateDirectory \"$INSTDIR\\{s}\"\n", .{esc_dest[0..slash]});
+        }
+        try w.print("  File \"/oname=$INSTDIR\\{s}\" \"{s}\"\n", .{ esc_dest, esc_src });
+    }
+
+    try w.writeAll(
+        \\
         \\  ; Generate uninstaller
         \\  WriteUninstaller "$INSTDIR\Uninstall.exe"
         \\
@@ -271,6 +302,45 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\  !ifdef WEBVIEW2_LOADER
         \\  Delete "$INSTDIR\WebView2Loader.dll"
         \\  !endif
+        \\
+    );
+
+    for (opts.extra_exes) |e| {
+        const esc_dest = try metadata.escapeNsisString(allocator, e.name);
+        defer allocator.free(esc_dest);
+        try w.print("  Delete \"$INSTDIR\\{s}\"\n", .{esc_dest});
+    }
+    for (opts.extra_files) |f| {
+        const esc_dest = try windowsRelPath(allocator, f.rel);
+        defer allocator.free(esc_dest);
+        try w.print("  Delete \"$INSTDIR\\{s}\"\n", .{esc_dest});
+    }
+    // The directories the files needed, deepest first; RMDir without /r
+    // leaves a directory that still holds something (e.g. the user's files).
+    var dirs: std.ArrayList([]const u8) = .empty;
+    defer dirs.deinit(allocator);
+    for (opts.extra_files) |f| {
+        var it = contents.parentDirs(f.rel);
+        while (it.next()) |d| {
+            for (dirs.items) |seen| {
+                if (std.mem.eql(u8, seen, d)) break;
+            } else try dirs.append(allocator, d);
+        }
+    }
+    std.mem.sort([]const u8, dirs.items, {}, struct {
+        fn deeperFirst(_: void, a: []const u8, b: []const u8) bool {
+            const da = std.mem.count(u8, a, "/");
+            const db = std.mem.count(u8, b, "/");
+            return if (da != db) da > db else std.mem.lessThan(u8, a, b);
+        }
+    }.deeperFirst);
+    for (dirs.items) |d| {
+        const esc_dir = try windowsRelPath(allocator, d);
+        defer allocator.free(esc_dir);
+        try w.print("  RMDir \"$INSTDIR\\{s}\"\n", .{esc_dir});
+    }
+
+    try w.writeAll(
         \\  Delete "$INSTDIR\Uninstall.exe"
         \\
         \\  Delete "$SMPROGRAMS\${NAME}\${NAME}.lnk"
@@ -300,6 +370,14 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
     );
 
     return try allocator.dupe(u8, out.written());
+}
+
+/// `rel` with `\\` separators, escaped for an NSIS string. Caller frees.
+fn windowsRelPath(allocator: std.mem.Allocator, rel: []const u8) ![]u8 {
+    const esc = try metadata.escapeNsisString(allocator, rel);
+    const owned: []u8 = @constCast(esc);
+    std.mem.replaceScalar(u8, owned, '/', '\\');
+    return owned;
 }
 
 // ---------------------------------------------------------------------------
@@ -466,5 +544,62 @@ test "generateNsisScript rejects invalid url_schemes and invalid id" {
         .exe_name = "myapp",
         .binary_src = "bin/myapp.exe",
         .out_file = "dist/setup.exe",
+    }));
+}
+
+test "generateNsisScript installs and uninstalls extra executables and files" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const script = try generateNsisScript(allocator, .{
+        .name = "GhostPen",
+        .version = "0.1.0",
+        .publisher = "GhostPen",
+        .id = "dev.ghostpen.App",
+        .exe_name = "ghostpen",
+        .binary_src = "C:\\build\\ghostpen.exe",
+        .out_file = "C:\\out\\setup.exe",
+        .extra_exes = &.{.{ .src = "C:\\build\\ghostpen-cli.exe", .name = "ghostpen-cli.exe" }},
+        .extra_files = &.{
+            .{ .rel = "models/small/m$1.bin", .src = "C:\\m.bin" },
+            .{ .rel = "models/readme.txt", .src = "C:\\r.txt" },
+            .{ .rel = "top.dll", .src = "C:\\top.dll" },
+        },
+    });
+    defer allocator.free(script);
+
+    const install =
+        \\  File "/oname=$INSTDIR\ghostpen-cli.exe" "C:\build\ghostpen-cli.exe"
+        \\  CreateDirectory "$INSTDIR\models\small"
+        \\  File "/oname=$INSTDIR\models\small\m$$1.bin" "C:\m.bin"
+        \\  CreateDirectory "$INSTDIR\models"
+        \\  File "/oname=$INSTDIR\models\readme.txt" "C:\r.txt"
+        \\  File "/oname=$INSTDIR\top.dll" "C:\top.dll"
+        \\
+        \\  ; Generate uninstaller
+    ;
+    try testing.expect(std.mem.indexOf(u8, script, install) != null);
+    const uninstall =
+        \\  Delete "$INSTDIR\ghostpen-cli.exe"
+        \\  Delete "$INSTDIR\models\small\m$$1.bin"
+        \\  Delete "$INSTDIR\models\readme.txt"
+        \\  Delete "$INSTDIR\top.dll"
+        \\  RMDir "$INSTDIR\models\small"
+        \\  RMDir "$INSTDIR\models"
+        \\  Delete "$INSTDIR\Uninstall.exe"
+    ;
+    try testing.expect(std.mem.indexOf(u8, script, uninstall) != null);
+    // The install directory itself goes last.
+    try testing.expect(std.mem.indexOf(u8, script, "RMDir \"$INSTDIR\\models\"").? < std.mem.indexOf(u8, script, "RMDir \"$INSTDIR\"").?);
+
+    try testing.expectError(error.InvalidRelativePath, generateNsisScript(allocator, .{
+        .name = "GhostPen",
+        .version = "0.1.0",
+        .publisher = "GhostPen",
+        .id = "dev.ghostpen.App",
+        .exe_name = "ghostpen",
+        .binary_src = "b.exe",
+        .out_file = "s.exe",
+        .extra_files = &.{.{ .rel = "..\\..\\evil.dll", .src = "x" }},
     }));
 }
