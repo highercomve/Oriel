@@ -341,6 +341,9 @@ pub var current_app_id: ?[:0]const u8 = null;
 pub var current_security: security.Security = .{};
 
 pub var windows_list: std.ArrayList(*Window) = .empty;
+/// Guards `windows_list`. Never emit (App.emit/emitTo, Window.emit,
+/// platform.evalJs*) while holding it: on the main thread emits evaluate at
+/// once and take this (non-recursive) lock, which would deadlock.
 pub var windows_mutex: platform.Mutex = undefined;
 var mutex_init_state: std.atomic.Value(u8) = .init(0); // 0 = uninit, 1 = initializing, 2 = initialized
 
