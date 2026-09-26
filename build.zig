@@ -353,12 +353,14 @@ pub const gpu_backend_libraries = [_][]const u8{ "libggml-cuda", "libggml-vulkan
 fn cudaOptions(b: *std.Build, target: std.Build.ResolvedTarget) ?ggml.CudaOptions {
     const enabled = b.option(bool, "ggml_cuda", "Build the CUDA backend for llama/whisper as libggml-cuda.so (Linux; needs the CUDA toolkit)") orelse false;
     const path = b.option([]const u8, "cuda_path", "CUDA toolkit root (default: $CUDA_PATH or /opt/cuda)");
-    const arch = b.option([]const u8, "cuda_arch", "nvcc -arch value (default: native)");
+    const arch = b.option([]const u8, "cuda_arch", "nvcc -arch value, or compute capabilities like 75,86,89,120 (default: native)");
+    const static = b.option(bool, "cuda_static", "Link cuBLAS statically: needs only the NVIDIA driver at runtime (default: false)") orelse false;
     if (!enabled) return null;
     if (target.result.os.tag != .linux) fatal("-Dggml_cuda is only supported on Linux targets for now", .{});
     return .{
         .path = path orelse b.graph.environ_map.get("CUDA_PATH") orelse "/opt/cuda",
         .arch = arch orelse "native",
+        .static = static,
     };
 }
 

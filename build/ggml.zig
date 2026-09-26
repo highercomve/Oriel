@@ -21,9 +21,42 @@ const std = @import("std");
 pub const CudaOptions = struct {
     /// CUDA toolkit root (contains bin/nvcc and lib64).
     path: []const u8,
-    /// nvcc `-arch` value: "native" (the GPUs in this machine), "sm_89", "all-major", ...
+    /// nvcc `-arch` value: "native" (the GPUs in this machine), "sm_89",
+    /// "all-major", ...; or a comma-separated list of compute capabilities
+    /// ("75,86,89,120"): machine code for each, plus PTX for the newest so
+    /// later GPUs can still run it.
     arch: []const u8,
+    /// Link cuBLAS statically: the library then needs only the NVIDIA
+    /// driver (libcuda.so.1), not a CUDA toolkit on the user's machine.
+    static: bool = false,
 };
+
+/// nvcc arguments selecting the GPU architectures (see `CudaOptions.arch`).
+fn cudaArchArgs(b: *std.Build, arch: []const u8) []const []const u8 {
+    if (std.mem.indexOfScalar(u8, arch, ',') == null and !isComputeCapability(arch)) {
+        return b.allocator.dupe([]const u8, &.{b.fmt("-arch={s}", .{arch})}) catch @panic("OOM");
+    }
+    var args: std.ArrayList([]const u8) = .empty;
+    var ptx: ?[]const u8 = null;
+    var it = std.mem.tokenizeAny(u8, arch, ", ");
+    while (it.next()) |cc| {
+        if (!isComputeCapability(cc)) std.debug.panic("-Dcuda_arch: \"{s}\" is not a compute capability (e.g. 89, 120a)", .{cc});
+        args.append(b.allocator, b.fmt("-gencode=arch=compute_{s},code=sm_{s}", .{ cc, cc })) catch @panic("OOM");
+        // Architecture-specific targets (120a: Blackwell's FP4 MMA) have no
+        // forward-compatible PTX; the newest generic one provides it.
+        if (std.ascii.isDigit(cc[cc.len - 1])) ptx = cc;
+    }
+    if (ptx) |cc| args.append(b.allocator, b.fmt("-gencode=arch=compute_{s},code=compute_{s}", .{ cc, cc })) catch @panic("OOM");
+    return args.items;
+}
+
+/// "89", or "120a" / "100f" (architecture- and family-specific targets).
+fn isComputeCapability(s: []const u8) bool {
+    if (s.len < 2) return false;
+    const digits = if (s[s.len - 1] == 'a' or s[s.len - 1] == 'f') s[0 .. s.len - 1] else s;
+    for (digits) |ch| if (!std.ascii.isDigit(ch)) return false;
+    return true;
+}
 
 pub const VulkanOptions = struct {
     /// The `glslc` shader compiler (shaderc).
@@ -274,15 +307,14 @@ fn addCudaBackend(b: *std.Build, ggml_root: std.Build.LazyPath, opts: CudaOption
     const lib = link.addOutputFileArg("libggml-cuda.so");
     for (cuda_sources) |src| {
         const cc = b.addSystemCommand(&.{
-            nvcc,                             "-std=c++17",        "-O3",
-            b.fmt("-arch={s}", .{opts.arch}), "-use_fast_math",    "-extended-lambda",
-            "-compress-mode=size",            "-Xcompiler",        "-fPIC -Wno-pedantic",
-            "-DNDEBUG",
+            nvcc,                    "-std=c++17",        "-O3",
+            "-use_fast_math",        "-extended-lambda",  "-compress-mode=size",
+            "-Xcompiler",            "-fPIC -Wno-pedantic", "-DNDEBUG",
             // Build as a dynamically loaded backend (exports ggml_backend_init).
-                                  "-DGGML_BACKEND_DL", "-DGGML_BACKEND_BUILD",
-            "-DGGML_BACKEND_SHARED",          "-DGGML_SHARED",     "-DGGML_CUDA_USE_GRAPHS",
-            "-DGGML_SCHED_MAX_COPIES=4",
+            "-DGGML_BACKEND_DL",     "-DGGML_BACKEND_BUILD", "-DGGML_BACKEND_SHARED",
+            "-DGGML_SHARED",         "-DGGML_CUDA_USE_GRAPHS", "-DGGML_SCHED_MAX_COPIES=4",
         });
+        cc.addArgs(cudaArchArgs(b, opts.arch));
         cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "include"));
         cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "src"));
         cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "src/ggml-cuda"));
@@ -292,8 +324,14 @@ fn addCudaBackend(b: *std.Build, ggml_root: std.Build.LazyPath, opts: CudaOption
         const obj = cc.addOutputFileArg(b.fmt("{s}.o", .{std.fs.path.stem(src)}));
         link.addFileArg(obj);
     }
-    // cudart is linked statically by nvcc; cuBLAS and the driver stay dynamic.
-    link.addArgs(&.{ "-lcublas", "-lcublasLt", "-lcuda" });
+    // cudart is linked statically by nvcc; the driver stays dynamic.
+    if (opts.static) {
+        // Only the kernels ggml calls are kept, but cuBLASLt's are large.
+        link.addArgs(cudaArchArgs(b, opts.arch));
+        link.addArgs(&.{ "-lcublas_static", "-lcublasLt_static", "-lculibos", "-lcuda" });
+    } else {
+        link.addArgs(&.{ "-lcublas", "-lcublasLt", "-lcuda" });
+    }
     return lib;
 }
 

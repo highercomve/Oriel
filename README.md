@@ -1058,6 +1058,14 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
     ```sh
     oriel build -Dggml_cuda -Dcuda_arch=all-major
     ```
+    A comma-separated list of compute capabilities builds machine code for
+    each and PTX for the newest generic one (later GPUs JIT it; Blackwell needs the architecture-specific `120a`), e.g. Turing, Ampere,
+    Ada and Blackwell GeForce: `-Dcuda_arch=75,86,89,120a`.
+  - The library links cuBLAS 13 dynamically, so users need the CUDA runtime
+    (cuBLAS) installed; without it the library doesn't load and ggml uses
+    Vulkan (if built with `-Dggml_vulkan`) or the CPU. `-Dcuda_static=true`
+    links cuBLAS in instead: it then needs only the NVIDIA driver, but is
+    ~590 MB (cuBLASLt's kernels).
   - First build compiles ~140 CUDA files (~3–4 min on 16 cores), cached after.
   - Why a separate library: nvcc's host code uses GCC's libstdc++ while Zig
     builds C++ against libc++; the ggml backend interface between them is
