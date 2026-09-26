@@ -33,7 +33,7 @@
 					<a href="$site.page('docs/modules').link()">Modules</a>
 					<a href="$site.page('docs/roadmap').link()">Roadmap</a>
 					<a class="topnav-gh" href="https://github.com/highercomve/Oriel">GitHub</a>
-					<span class="version-badge">v0.6.2</span>
+					<span class="version-badge">v0.6.3</span>
 				</nav>
 			</div>
 		</header>
