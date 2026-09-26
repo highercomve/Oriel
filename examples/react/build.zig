@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
             .description = "A desktop notes application built with Oriel, React, Vite, and SQLite.",
             .categories = "Utility;TextEditor;",
             .version = "0.1.0",
-            .license = "MIT OR Apache-2.0",
+            .license = "MIT",
         },
     });
 }
