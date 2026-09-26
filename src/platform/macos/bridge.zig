@@ -217,6 +217,10 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
         return;
     };
     task.* = .{ .target = target, .script = script_copy };
+    // On the main thread (a sync command emitting), evaluate now: queued for
+    // later, it would reach the page after the command's reply. Other
+    // threads queue it (in order with their command's reply).
+    if (cocoa.isMainThread()) return Task.run(task);
     ShellMod.dispatchWithCleanup(&Task.run, task, &Task.cleanup);
 }
 
@@ -260,6 +264,8 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
         return;
     };
     task.* = .{ .label = label_copy, .script = script_copy };
+    // See evalJs: in order with a sync command's reply.
+    if (cocoa.isMainThread()) return Task.run(task);
     ShellMod.dispatchWithCleanup(&Task.run, task, &Task.cleanup);
 }
 
