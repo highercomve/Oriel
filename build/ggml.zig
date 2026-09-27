@@ -284,6 +284,7 @@ pub fn addGgml(
             .files = &(llama_core_sources ++ llama_model_sources),
             .flags = cpp_flags,
         });
+        if (features.llama_mtmd) addMtmd(b, oriel, l, c_flags, cpp_flags);
     }
 
     // whisper.cpp sources
@@ -456,6 +457,80 @@ fn addVulkanBackend(
     addVulkanShaders(b, m, ggml_root, sg.gen, opts.glslc, flags);
     return lib.getEmittedBin();
 }
+
+/// llama.cpp's multimodal library (tools/mtmd: images and audio for vision
+/// models, through their projector GGUF), with the header-only libraries it
+/// includes (stb_image, miniaudio, subprocess.h) and vendor/hash. Video
+/// (MTMD_VIDEO, which runs ffmpeg) stays off.
+fn addMtmd(b: *std.Build, oriel: *std.Build.Module, l: *std.Build.Dependency, c_flags: []const []const u8, cpp_flags: []const []const u8) void {
+    const vendor = l.path("vendor");
+    oriel.addIncludePath(l.path("tools/mtmd"));
+    oriel.addIncludePath(vendor);
+    const warn: []const []const u8 = &.{ "-Wno-cast-qual", "-w" };
+    const mtmd_flags = std.mem.concat(b.allocator, []const u8, &.{ cpp_flags, warn }) catch @panic("OOM");
+    oriel.addCSourceFiles(.{ .root = l.path("tools/mtmd"), .files = &mtmd_sources, .flags = mtmd_flags });
+    // vendor/hash: its sources include their siblings by name.
+    oriel.addIncludePath(vendor.path(b, "hash"));
+    oriel.addCSourceFiles(.{ .root = vendor.path(b, "hash"), .files = &.{"hash.cpp"}, .flags = mtmd_flags });
+    const hash_c = std.mem.concat(b.allocator, []const u8, &.{ c_flags, warn }) catch @panic("OOM");
+    oriel.addCSourceFiles(.{ .root = vendor.path(b, "hash"), .files = &.{ "xxhash/xxhash.c", "sha256/sha256.c" }, .flags = hash_c });
+    // sha1 is compiled as C++ (it lives in a namespace, like upstream).
+    oriel.addCSourceFile(.{ .file = vendor.path(b, "hash/sha1/sha1.c"), .flags = mtmd_flags, .language = .cpp });
+}
+
+/// tools/mtmd/CMakeLists.txt `add_library(mtmd ...)`.
+const mtmd_sources = [_][]const u8{
+    "mtmd.cpp",
+    "mtmd-audio.cpp",
+    "mtmd-image.cpp",
+    "mtmd-helper.cpp",
+    "mtmd-helper-gen.cpp",
+    "clip.cpp",
+    "models/cogvlm.cpp",
+    "models/conformer.cpp",
+    "models/deepseek4v.cpp",
+    "models/dots3note.cpp",
+    "models/dotsocr.cpp",
+    "models/exaone4_5.cpp",
+    "models/gemma4a.cpp",
+    "models/gemma4v.cpp",
+    "models/gemma4ua.cpp",
+    "models/gemma4uv.cpp",
+    "models/glm4v.cpp",
+    "models/granite-speech.cpp",
+    "models/granite4-vision.cpp",
+    "models/hunyuanvl.cpp",
+    "models/internvl.cpp",
+    "models/kimivl.cpp",
+    "models/kimik25.cpp",
+    "models/nemotron-v2-vl.cpp",
+    "models/muse-glimmer.cpp",
+    "models/llama4.cpp",
+    "models/llava.cpp",
+    "models/minicpmv.cpp",
+    "models/paddleocr.cpp",
+    "models/pixtral.cpp",
+    "models/qwen2vl.cpp",
+    "models/minimax-m3.cpp",
+    "models/qwen3vl.cpp",
+    "models/mimovl.cpp",
+    "models/qwen3a.cpp",
+    "models/mimo-audio.cpp",
+    "models/qwen3tts-spkenc.cpp",
+    "models/qwen3tts-gen.cpp",
+    "models/pockettts-seanet.cpp",
+    "models/pockettts-spkenc.cpp",
+    "models/pockettts-gen.cpp",
+    "models/step3vl.cpp",
+    "models/siglip.cpp",
+    "models/whisper-enc.cpp",
+    "models/deepseekocr.cpp",
+    "models/deepseekocr2.cpp",
+    "models/mobilenetv5.cpp",
+    "models/youtuvl.cpp",
+    "models/yasa2.cpp",
+    "models/parakeet.cpp",
+};
 
 const cuda_sources = [_][]const u8{
     "acc.cu",

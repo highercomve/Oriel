@@ -8,6 +8,10 @@ const oriel = @import("../oriel.zig");
 
 pub const c = @cImport({
     @cInclude("llama.h");
+    if (@import("build_options").llama_mtmd) {
+        @cInclude("mtmd.h");
+        @cInclude("mtmd-helper.h");
+    }
 });
 
 /// Return a copy of the backend system info string (CPU features); the
