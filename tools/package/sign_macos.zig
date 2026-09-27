@@ -7,7 +7,9 @@
 //!   certificate's SHA-1, or `ORIEL_MACOS_SIGN_IDENTITY`): `sign-app` signs a
 //!   copy of the bundle with the hardened runtime, the generated
 //!   `<Name>.entitlements` and a secure timestamp, and verifies it
-//!   (`codesign --verify --strict`); `package-dmg` signs the disk image too.
+//!   (`codesign --verify --strict`); `package-dmg` signs the disk image too
+//!   when it's notarized (a signed but un-notarized .dmg is refused by
+//!   Gatekeeper when opened; unsigned, only the app is assessed).
 //!   Nested code (the package's extra executables and libraries in
 //!   Contents/MacOS) is signed first, inside-out, with the same identity and
 //!   the hardened runtime, then the bundle. Nested executables get the app's
@@ -361,9 +363,16 @@ pub fn signAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
     return 0;
 }
 
-/// After `package-dmg` created `dmg`: sign it with `identity` (not ad-hoc)
-/// and notarize it with `profile`, or print what would run (`dry_run`).
+/// After `package-dmg` created `dmg`: when notarizing (`profile`), sign it
+/// with `identity` and notarize it, or print what would run (`dry_run`).
+///
+/// Without notarization the disk image stays unsigned: macOS 15 assesses a
+/// signed .dmg when it's opened and refuses one whose signature it can't
+/// verify (a self-signed certificate, or a Developer ID that isn't
+/// notarized), so users would meet Gatekeeper twice, for the .dmg and for
+/// the app. The app inside is signed either way.
 pub fn finishDmg(gpa: std.mem.Allocator, io: Io, dmg: []const u8, identity: ?[]const u8, profile: ?[]const u8, dry_run: bool) !void {
+    if (profile == null and !dry_run) return;
     const id: ?[]const u8 = identity orelse (if (dry_run) placeholder_identity else null);
     if (id) |sign_id| {
         if (!std.mem.eql(u8, sign_id, ad_hoc)) {
