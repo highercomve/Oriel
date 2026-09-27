@@ -145,17 +145,21 @@ pub const Placement = struct {
     anchor: Anchor = .center,
     /// Distance from the anchored edges, in logical pixels.
     margin: c_int = 0,
+    /// Shift from the anchored position, in logical pixels (x right, y down):
+    /// where the user dragged the window (`Window.startDragging`).
+    offset_x: c_int = 0,
+    offset_y: c_int = 0,
 
     pub const Anchor = enum { center, top, bottom, left, right, top_left, top_right, bottom_left, bottom_right };
 
     /// Top-left corner of a `w`×`h` window placed in `area`.
     pub fn origin(self: Placement, area: Rect, w: c_int, h: c_int) struct { x: c_int, y: c_int } {
-        const cx = area.x + @divTrunc(area.width - w, 2);
-        const cy = area.y + @divTrunc(area.height - h, 2);
-        const left = area.x + self.margin;
-        const right = area.x + area.width - w - self.margin;
-        const top = area.y + self.margin;
-        const bottom = area.y + area.height - h - self.margin;
+        const cx = area.x + @divTrunc(area.width - w, 2) + self.offset_x;
+        const cy = area.y + @divTrunc(area.height - h, 2) + self.offset_y;
+        const left = area.x + self.margin + self.offset_x;
+        const right = area.x + area.width - w - self.margin + self.offset_x;
+        const top = area.y + self.margin + self.offset_y;
+        const bottom = area.y + area.height - h - self.margin + self.offset_y;
         return switch (self.anchor) {
             .center => .{ .x = cx, .y = cy },
             .top => .{ .x = cx, .y = top },
@@ -172,6 +176,10 @@ pub const Placement = struct {
 
 pub const Rect = struct { x: c_int, y: c_int, width: c_int, height: c_int };
 
+/// How `platform.startWindowDrag` moves the window: by the OS (the window
+/// keeps no placement), by Oriel shifting its placement, or not at all.
+pub const DragMode = enum { native, placement, unsupported };
+
 test "Placement.origin" {
     const area: Rect = .{ .x = 0, .y = 0, .width = 1000, .height = 800 };
     const c = (Placement{}).origin(area, 200, 100);
@@ -183,6 +191,9 @@ test "Placement.origin" {
     const tr = (Placement{ .anchor = .top_right, .margin = 10 }).origin(.{ .x = 100, .y = 50, .width = 1000, .height = 800 }, 200, 100);
     try std.testing.expectEqual(@as(c_int, 890), tr.x);
     try std.testing.expectEqual(@as(c_int, 60), tr.y);
+    const moved = (Placement{ .anchor = .bottom, .margin = 48, .offset_x = -300, .offset_y = -20 }).origin(area, 200, 100);
+    try std.testing.expectEqual(@as(c_int, 100), moved.x);
+    try std.testing.expectEqual(@as(c_int, 632), moved.y);
 }
 
 pub const Window = struct {
@@ -243,6 +254,20 @@ pub const Window = struct {
     pub fn place(self: *Window, placement: Placement) void {
         self.options.placement = placement;
         platform.setWindowPlacement(self.handle, placement);
+    }
+
+    /// Let the user move the window with the mouse: call while the primary
+    /// button is down (a `mousedown` in the page), e.g. for a window without
+    /// decorations. The OS moves it where it can; a Wayland layer-shell
+    /// overlay (which the compositor won't move) follows the pointer until
+    /// the button is released, keeping its placement shifted by the drag.
+    pub fn startDragging(self: *Window) void {
+        switch (platform.startWindowDrag(self.handle)) {
+            // The OS moved it: showing it again must not put it back.
+            .native => self.options.placement = null,
+            .placement => {},
+            .unsupported => {},
+        }
     }
 
     /// Center the window on its monitor.

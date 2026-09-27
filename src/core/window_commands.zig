@@ -5,6 +5,7 @@
 //!   - close: request window closure (App.postCloseWindow)
 //!   - show/hide/focus: manipulate window visibility and focus
 //!   - setTitle/setSize/maximize/fullscreen: update window geometry & state
+//!   - startDragging: move the window with the pointer (button held down)
 //!   - get/all/current: query window information
 //!   - emitTo: send events targeted to a specific window
 //!
@@ -137,6 +138,15 @@ pub fn dispatch(
         const win = App.getWindow(args.label) orelse return error.WindowNotFound;
         const title_z = try arena.dupeZ(u8, args.title);
         win.setTitle(title_z);
+        return arena.dupe(u8, "null");
+    } else if (std.mem.eql(u8, action, "startDragging")) {
+        const args = try std.json.parseFromValueLeaky(struct { label: []const u8 }, arena, args_val, .{
+            .ignore_unknown_fields = true,
+        });
+        try security.validateLabel(args.label);
+        try security.validateWindowModification(sec, caller_win_label, args.label);
+        const win = App.getWindow(args.label) orelse return error.WindowNotFound;
+        win.startDragging();
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, action, "setSize")) {
         const args = try std.json.parseFromValueLeaky(struct { label: []const u8, width: c_int, height: c_int }, arena, args_val, .{

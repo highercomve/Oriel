@@ -106,6 +106,9 @@ pub const bridge_js =
     \\    fullscreen(fullscreen = true) {
     \\      return invoke("oriel:window:fullscreen", { label: this.label, fullscreen });
     \\    }
+    \\    startDragging() {
+    \\      return invoke("oriel:window:startDragging", { label: this.label });
+    \\    }
     \\    emit(event, payload) {
     \\      return windowApi.emitTo(this.label, event, payload);
     \\    }
@@ -192,6 +195,15 @@ pub const bridge_js =
     \\    },
     \\    window: Object.freeze(windowApi),
     \\  }) });
+    \\  // <div data-oriel-drag-region> moves the window when pressed (its buttons,
+    \\  // fields and links, and anything under data-oriel-no-drag, keep their clicks).
+    \\  window.addEventListener("mousedown", (e) => {
+    \\    if (e.button !== 0 || !(e.target instanceof Element)) return;
+    \\    if (!e.target.closest("[data-oriel-drag-region]")) return;
+    \\    if (e.target.closest("button, input, textarea, select, a, [contenteditable], [data-oriel-no-drag]")) return;
+    \\    e.preventDefault();
+    \\    Promise.resolve(windowApi.current().startDragging()).catch(() => {});
+    \\  }, true);
     \\})();
 ;
 

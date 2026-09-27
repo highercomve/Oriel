@@ -100,6 +100,8 @@ pub const WM_TIMER: UINT = 0x0113;
 pub const WM_DPICHANGED: UINT = 0x02E0;
 pub const WM_RBUTTONUP: UINT = 0x0205;
 pub const WM_LBUTTONUP: UINT = 0x0202;
+pub const WM_NCLBUTTONDOWN: UINT = 0x00A1;
+pub const HTCAPTION: WPARAM = 2;
 pub const WM_CONTEXTMENU: UINT = 0x007B;
 pub const WM_USER: UINT = 0x0400;
 pub const WM_APP: UINT = 0x8000;
@@ -576,6 +578,7 @@ pub extern "user32" fn SendMessageTimeoutW(
     uTimeout: UINT,
     lpdwResult: ?*DWORD_PTR,
 ) callconv(.winapi) LRESULT;
+pub extern "user32" fn ReleaseCapture() callconv(.winapi) BOOL;
 pub extern "user32" fn PostMessageW(hWnd: ?HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) BOOL;
 pub extern "user32" fn PostThreadMessageW(idThread: DWORD, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) BOOL;
 pub extern "user32" fn PostQuitMessage(nExitCode: c_int) callconv(.winapi) void;

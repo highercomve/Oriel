@@ -130,6 +130,30 @@ pub fn setWindowAlwaysOnTop(handle: WindowHandle, enabled: bool) void {
     onMain(Ctx, &ctx, Ctx.run);
 }
 
+/// Move the window with the pointer: AppKit's own window drag, from the
+/// mouse event being handled (the page's mousedown). Anything else as the
+/// current event means the button is already up: no drag.
+pub fn startWindowDrag(handle: WindowHandle) App.DragMode {
+    const Ctx = struct {
+        handle: WindowHandle,
+        mode: App.DragMode = .unsupported,
+        fn run(c: *@This()) void {
+            if (!alive(c.handle)) return;
+            const event = ShellMod.sharedApplication().msgSend(Object, "currentEvent", .{});
+            if (event.value == null) return;
+            const kind = event.msgSend(c_ulong, "type", .{});
+            if (kind != ns_left_mouse_down and kind != ns_left_mouse_dragged) return;
+            c.handle.nsWindow().msgSend(void, "performWindowDragWithEvent:", .{event});
+            c.mode = .native;
+        }
+    };
+    var ctx: Ctx = .{ .handle = handle };
+    onMain(Ctx, &ctx, Ctx.run);
+    return ctx.mode;
+}
+const ns_left_mouse_down: c_ulong = 1;
+const ns_left_mouse_dragged: c_ulong = 6;
+
 pub fn getWindowWorkArea(handle: WindowHandle) ?App.Rect {
     const Ctx = struct {
         handle: WindowHandle,

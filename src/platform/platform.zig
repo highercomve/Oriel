@@ -30,6 +30,7 @@
 //!   - `setWindowClickThrough(handle, enabled: bool) void`: Let the mouse pass through the window.
 //!   - `setWindowAlwaysOnTop(handle, enabled: bool) void`: Keep above other windows.
 //!   - `getWindowWorkArea(handle) ?App.Rect`: The usable area of the window's monitor.
+//!   - `startWindowDrag(handle) App.DragMode`: Move the window with the pointer while the primary button is down.
 //!   - `dispatchWithCleanup(func, ctx, cleanup) void`: Queue `func(ctx)` on the UI thread (any thread).
 //!   - `destroyWindow(handle: WindowHandle) void`: Destroy a native window and its associated platform resources.
 //!
@@ -81,6 +82,7 @@ comptime {
         "setWindowClickThrough",
         "setWindowAlwaysOnTop",
         "getWindowWorkArea",
+        "startWindowDrag",
         "dispatchWithCleanup",
     };
     for (required_decls) |decl_name| {
@@ -111,6 +113,7 @@ pub const setWindowPlacement = impl.setWindowPlacement;
 pub const setWindowClickThrough = impl.setWindowClickThrough;
 pub const setWindowAlwaysOnTop = impl.setWindowAlwaysOnTop;
 pub const getWindowWorkArea = impl.getWindowWorkArea;
+pub const startWindowDrag = impl.startWindowDrag;
 pub const dispatchWithCleanup = impl.dispatchWithCleanup;
 pub const createWindow = impl.createWindow;
 pub const destroyWindow = impl.destroyWindow;
