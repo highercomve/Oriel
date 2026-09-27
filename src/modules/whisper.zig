@@ -34,6 +34,66 @@ pub const TranscribeOptions = struct {
     threads: c_int = 4,
     /// Force one segment (short live-caption chunks).
     single_segment: bool = false,
+    /// Path of the voice activity detection model (`VadModel.install`):
+    /// whisper then only hears the speech. Without it, silence gets made-up
+    /// text ("Thank you.") and, past 30 s, repeats of the last sentence.
+    vad_model: ?[:0]const u8 = null,
+};
+
+/// whisper_full parameters for `opts` (greedy decoding), for callers that
+/// run whisper_full themselves (e.g. for segment timestamps). With VAD,
+/// whisper.cpp maps the timestamps back onto the original audio.
+pub fn fullParams(opts: TranscribeOptions) c.whisper_full_params {
+    var p = c.whisper_full_default_params(c.WHISPER_SAMPLING_GREEDY);
+    p.print_progress = false;
+    p.print_realtime = false;
+    p.print_timestamps = false;
+    p.print_special = false;
+    p.no_context = true;
+    // no_context only clears the prompt when a call starts: each 30 s
+    // window would still get the previous window's text as its prompt, and
+    // a window without speech then repeats it ("the lazy dog." every 2 s).
+    p.n_max_text_ctx = 0;
+    p.language = opts.language.ptr;
+    p.translate = opts.translate;
+    p.n_threads = opts.threads;
+    p.single_segment = opts.single_segment;
+    if (opts.vad_model) |path| {
+        p.vad = true;
+        p.vad_model_path = path.ptr;
+        p.vad_params = c.whisper_vad_default_params();
+        // Room around each stretch of speech (default 30 ms), so soft word
+        // onsets and endings aren't cut.
+        p.vad_params.speech_pad_ms = 200;
+    }
+    return p;
+}
+
+/// Silero VAD v6.2.0 (MIT, github.com/snakers4/silero-vad) in whisper.cpp's
+/// ggml format, built in: 885 KB, identical to ggml-org/whisper-vad's
+/// ggml-silero-v6.2.0.bin. whisper.cpp loads it from a file (once per
+/// context), so `install` writes it out.
+pub const VadModel = struct {
+    pub const bytes = @embedFile("whisper_vad_model");
+    pub const file_name = "ggml-silero-v6.2.0.bin";
+
+    /// Write the model into directory `dir` (absolute; created if missing)
+    /// unless it's there already, and return its path, which the caller frees.
+    pub fn install(io: std.Io, gpa: std.mem.Allocator, dir: []const u8) ![:0]u8 {
+        const path = try std.fs.path.joinZ(gpa, &.{ dir, file_name });
+        errdefer gpa.free(path);
+        var d = try std.Io.Dir.cwd().createDirPathOpen(io, dir, .{});
+        defer d.close(io);
+        if (d.readFileAlloc(io, file_name, gpa, .limited(bytes.len + 1))) |existing| {
+            defer gpa.free(existing);
+            if (std.mem.eql(u8, existing, bytes)) return path;
+        } else |_| {}
+        var f = try d.createFileAtomic(io, file_name, .{ .replace = true });
+        defer f.deinit(io);
+        try f.file.writeStreamingAll(io, bytes);
+        try f.replace(io);
+        return path;
+    }
 };
 
 /// A loaded whisper context handle. Not thread-safe: run one `transcribe`
@@ -49,17 +109,7 @@ pub const Context = struct {
     /// segments, joined, which the caller frees with `gpa`.
     pub fn transcribe(self: Context, gpa: std.mem.Allocator, samples: []const f32, opts: TranscribeOptions) ![]u8 {
         const n_samples = std.math.cast(c_int, samples.len) orelse return error.AudioTooLong;
-        var p = c.whisper_full_default_params(c.WHISPER_SAMPLING_GREEDY);
-        p.print_progress = false;
-        p.print_realtime = false;
-        p.print_timestamps = false;
-        p.print_special = false;
-        p.no_context = true;
-        p.language = opts.language.ptr;
-        p.translate = opts.translate;
-        p.n_threads = opts.threads;
-        p.single_segment = opts.single_segment;
-        if (c.whisper_full(self.handle, p, samples.ptr, n_samples) != 0) return error.TranscribeFailed;
+        if (c.whisper_full(self.handle, fullParams(opts), samples.ptr, n_samples) != 0) return error.TranscribeFailed;
 
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(gpa);
@@ -102,6 +152,41 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "fullParams: no text carried between windows; VAD only with a model" {
+    const plain = fullParams(.{});
+    try std.testing.expectEqual(@as(c_int, 0), plain.n_max_text_ctx);
+    try std.testing.expect(!plain.vad);
+    const vad = fullParams(.{ .vad_model = "silero.bin" });
+    try std.testing.expect(vad.vad);
+    try std.testing.expectEqualStrings("silero.bin", std.mem.span(vad.vad_model_path));
+    try std.testing.expectEqual(@as(c_int, 200), vad.vad_params.speech_pad_ms);
+}
+
+test "VadModel.install writes the model once and repairs a bad copy" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try std.fs.path.join(gpa, &.{ buf[0..try tmp.dir.realPath(io, &buf)], "models" });
+    defer gpa.free(dir);
+
+    const path = try VadModel.install(io, gpa, dir);
+    defer gpa.free(path);
+    try std.testing.expect(std.mem.endsWith(u8, path, VadModel.file_name));
+    const sub = "models" ++ std.fs.path.sep_str ++ VadModel.file_name;
+    const written = try tmp.dir.readFileAlloc(io, sub, gpa, .unlimited);
+    defer gpa.free(written);
+    try std.testing.expectEqualSlices(u8, VadModel.bytes, written);
+
+    try tmp.dir.writeFile(io, .{ .sub_path = sub, .data = "truncated" });
+    const again = try VadModel.install(io, gpa, dir);
+    defer gpa.free(again);
+    const repaired = try tmp.dir.readFileAlloc(io, sub, gpa, .unlimited);
+    defer gpa.free(repaired);
+    try std.testing.expectEqualSlices(u8, VadModel.bytes, repaired);
 }
 
 test "whisper check" {
