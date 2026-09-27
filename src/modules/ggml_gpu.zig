@@ -31,11 +31,16 @@ const libraries = [_][]const u8{ "libggml-cuda.so", "libggml-vulkan.so" };
 
 /// Load the GPU backend libraries found in the executable's directory
 /// (`libggml-cuda.so`, else `libggml-vulkan.so`). Only that directory is
-/// searched, never the current directory. Call once, before loading a model.
+/// searched, never the current directory. Call before loading a model; safe
+/// from several threads (serialized: ggml's backend registry isn't
+/// thread-safe, and on Windows the Vulkan instance is created here).
 /// Returns the number of GPU devices available afterwards; 0 means the
 /// models run on the CPU.
 pub fn load(io: std.Io) usize {
-    const n = loadLibraries(io);
+    load_mutex.lockUncancelable(io);
+    defer load_mutex.unlock(io);
+    // Windows has no loadable backends (Vulkan is compiled in).
+    const n = if (@import("builtin").os.tag == .windows) gpuCount() else loadLibraries(io);
     if (vulkan_static and n == 0 and !vulkan_registered) {
         if (vk.oriel_vulkan_loader_available() != 0) {
             // Creates the instance and enumerates the Vulkan devices; none
@@ -52,8 +57,9 @@ pub fn load(io: std.Io) usize {
 }
 
 /// Registered once: ggml keeps a list, and a second registration would
-/// list the same GPUs twice.
+/// list the same GPUs twice. Guarded by `load_mutex`.
 var vulkan_registered = false;
+var load_mutex: std.Io.Mutex = .init;
 
 fn loadLibraries(io: std.Io) usize {
     var dir_buf: [std.fs.max_path_bytes]u8 = undefined;

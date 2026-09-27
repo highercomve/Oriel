@@ -90,7 +90,10 @@ fn create(ctx: Context, cmd: Command) !u8 {
         return 2;
     }
 
-    const dir = cmd.out orelse try defaultKeysDir(arena, ctx.environ);
+    const dir = cmd.out orelse (try defaultKeysDir(arena, ctx.environ)) orelse {
+        try ctx.err.writeAll("error: no HOME (or XDG_CONFIG_HOME) to keep the certificate in: pass --out <dir>\n");
+        return 2;
+    };
     const slug = try slugify(arena, name);
     const p12_path = try std.fs.path.join(arena, &.{ dir, try std.fmt.allocPrint(arena, "{s}-codesign.p12", .{slug}) });
     const pw_path = try std.fmt.allocPrint(arena, "{s}.password", .{p12_path});
@@ -99,8 +102,10 @@ fn create(ctx: Context, cmd: Command) !u8 {
         try ctx.err.print("error: {s} exists; keep using it (a new certificate is a new identity to macOS), or pass --force\n", .{p12_path});
         return 1;
     }
+    // Private when this command creates it; an existing --out stays as it is.
+    const new_dir = !exists(ctx.io, dir);
     try cwd.createDirPath(ctx.io, dir);
-    if (builtin.os.tag != .windows) cwd.setFilePermissions(ctx.io, dir, .fromMode(0o700), .{}) catch {};
+    if (new_dir and builtin.os.tag != .windows) cwd.setFilePermissions(ctx.io, dir, .fromMode(0o700), .{}) catch {};
 
     // Work in a private temporary directory next to the output: the key
     // never lands anywhere world-readable.
@@ -108,7 +113,8 @@ fn create(ctx: Context, cmd: Command) !u8 {
     ctx.io.random(&rnd);
     const tmp = try std.fs.path.join(arena, &.{ dir, try std.fmt.allocPrint(arena, ".signing-{x}", .{rnd}) });
     try cwd.createDirPath(ctx.io, tmp);
-    defer cwd.deleteTree(ctx.io, tmp) catch {};
+    defer cwd.deleteTree(ctx.io, tmp) catch |err|
+        ctx.err.print("warning: could not remove {s} ({s}): delete it, it holds the private key\n", .{ tmp, @errorName(err) }) catch {};
     if (builtin.os.tag != .windows) cwd.setFilePermissions(ctx.io, tmp, .fromMode(0o700), .{}) catch {};
 
     const config = try std.fs.path.join(arena, &.{ tmp, "req.cnf" });
@@ -141,11 +147,11 @@ fn create(ctx: Context, cmd: Command) !u8 {
     // (OpenSSL 3's default AES/PBKDF2 PKCS#12 files are refused).
     if (!try quiet(ctx, &.{ openssl, "pkcs12", "-export", "-inkey", key, "-in", cert, "-name", name, "-keypbe", "PBE-SHA1-3DES", "-certpbe", "PBE-SHA1-3DES", "-macalg", "sha1", "-passout", try std.fmt.allocPrint(arena, "file:{s}", .{pass_file}), "-out", tmp_p12 })) return 1;
 
-    const p12 = try cwd.readFileAlloc(ctx.io, tmp_p12, arena, .limited(1 << 20));
-    try writePrivate(ctx.io, p12_path, p12);
-    try writePrivate(ctx.io, pw_path, password);
-
     const info = try certInfo(ctx, arena, openssl, cert) orelse return 1;
+    const p12 = try cwd.readFileAlloc(ctx.io, tmp_p12, arena, .limited(1 << 20));
+    // The password first: a .p12 without its password would be useless.
+    try writePrivate(ctx.io, pw_path, password);
+    try writePrivate(ctx.io, p12_path, p12);
     try ctx.out.print(
         \\Created a self-signed code-signing certificate "{s}" (valid {s} days):
         \\  {s}
@@ -183,35 +189,99 @@ fn import(ctx: Context, cmd: Command) !u8 {
     };
     const password = try readPassword(ctx, arena, cmd, file) orelse return 1;
 
-    const login = if (cmd.keychain) |k| std.mem.eql(u8, k, "login") else false;
-    const keychain = if (cmd.keychain) |k| (if (login) "login.keychain-db" else k) else ci_keychain;
-    if (!login) {
+    const openssl = try requireOpenssl(ctx, arena) orelse return 1;
+    const info = try p12Info(ctx, arena, openssl, file, password) orelse return 1;
+
+    // `security import` takes the password only in argv (visible to other
+    // processes while it runs): hand it a copy of the .p12 re-encrypted with
+    // a one-time password instead, in a private temporary directory.
+    var rnd_dir: [8]u8 = undefined;
+    ctx.io.random(&rnd_dir);
+    const tmp = try std.fmt.allocPrint(arena, "{s}/oriel-signing-{x}", .{ ctx.environ.get("TMPDIR") orelse "/tmp", rnd_dir });
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(ctx.io, tmp);
+    defer cwd.deleteTree(ctx.io, tmp) catch {};
+    cwd.setFilePermissions(ctx.io, tmp, .fromMode(0o700), .{}) catch {};
+    var once_bytes: [16]u8 = undefined;
+    ctx.io.random(&once_bytes);
+    const once = try std.fmt.allocPrint(arena, "{x}", .{once_bytes});
+    const copy = try reencrypt(ctx, arena, openssl, file, password, tmp, once) orelse return 1;
+
+    const custom = cmd.keychain != null and !std.mem.eql(u8, cmd.keychain.?, "login");
+    const keychain = if (cmd.keychain) |k| (if (std.mem.eql(u8, k, "login")) "login.keychain-db" else k) else ci_keychain;
+    if (cmd.keychain == null or custom) {
         // A keychain of its own, unlocked with a random password that is
-        // thrown away: nothing prompts, and nothing else lives in it.
+        // thrown away: nothing prompts. Only Oriel's own CI keychain is ever
+        // deleted and recreated; a keychain named with --keychain must not
+        // exist yet (it would be someone's, with their passwords).
         var rnd: [16]u8 = undefined;
         ctx.io.random(&rnd);
         const kc_pass = try std.fmt.allocPrint(arena, "{x}", .{rnd});
-        _ = try quietStatus(ctx, &.{ "/usr/bin/security", "delete-keychain", keychain });
+        if (custom) {
+            if (try keychainExists(ctx, arena, keychain)) {
+                try ctx.err.print("error: the keychain {s} already exists: pass a new name, or --keychain login for yours\n", .{keychain});
+                return 1;
+            }
+        } else {
+            _ = try quietStatus(ctx, &.{ "/usr/bin/security", "delete-keychain", ci_keychain });
+        }
         if (!try quiet(ctx, &.{ "/usr/bin/security", "create-keychain", "-p", kc_pass, keychain })) return 1;
         if (!try quiet(ctx, &.{ "/usr/bin/security", "unlock-keychain", "-p", kc_pass, keychain })) return 1;
         // No auto-lock timeout.
         if (!try quiet(ctx, &.{ "/usr/bin/security", "set-keychain-settings", keychain })) return 1;
-        if (!try quiet(ctx, &.{ "/usr/bin/security", "import", file, "-k", keychain, "-P", password, "-T", "/usr/bin/codesign" })) return 1;
+        if (!try quiet(ctx, &.{ "/usr/bin/security", "import", copy, "-k", keychain, "-P", once, "-T", "/usr/bin/codesign" })) return 1;
         // Let codesign use the key without a GUI prompt.
         if (!try quiet(ctx, &.{ "/usr/bin/security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", kc_pass, keychain })) return 1;
         try addToSearchList(ctx, arena, keychain);
     } else {
-        if (!try quiet(ctx, &.{ "/usr/bin/security", "import", file, "-k", keychain, "-P", password, "-T", "/usr/bin/codesign" })) return 1;
+        if (!try quiet(ctx, &.{ "/usr/bin/security", "import", copy, "-k", keychain, "-P", once, "-T", "/usr/bin/codesign" })) return 1;
     }
-
-    const openssl = try requireOpenssl(ctx, arena) orelse return 1;
-    const info = try p12Info(ctx, arena, openssl, file, password) orelse return 1;
     try ctx.out.print(
         \\Imported "{s}" into {s}.
         \\Sign with: oriel package -Dmacos-sign-identity={s}
         \\
     , .{ info.name, keychain, info.sha1 });
     return 0;
+}
+
+/// `file` re-encrypted into `dir` with `once` (the format macOS reads); its path.
+fn reencrypt(ctx: Context, arena: std.mem.Allocator, openssl: []const u8, file: []const u8, password: []const u8, dir: []const u8, once: []const u8) !?[]const u8 {
+    const pem = try std.fs.path.join(arena, &.{ dir, "both.pem" });
+    const out = try std.fs.path.join(arena, &.{ dir, "once.p12" });
+    const once_file = try std.fs.path.join(arena, &.{ dir, "once" });
+    try writePrivate(ctx.io, once_file, once);
+    var env = try ctx.environ.clone(arena);
+    try env.put("ORIEL_P12_PASSWORD", password);
+    // Key and certificate, unencrypted, only inside the private directory.
+    if (!try runEnv(ctx, &env, &.{ openssl, "pkcs12", "-in", file, "-nodes", "-passin", "env:ORIEL_P12_PASSWORD", "-out", pem }) and
+        !try runEnv(ctx, &env, &.{ openssl, "pkcs12", "-legacy", "-in", file, "-nodes", "-passin", "env:ORIEL_P12_PASSWORD", "-out", pem }))
+    {
+        try ctx.err.print("error: can't read {s} (wrong password?)\n", .{file});
+        return null;
+    }
+    if (!try quiet(ctx, &.{ openssl, "pkcs12", "-export", "-in", pem, "-keypbe", "PBE-SHA1-3DES", "-certpbe", "PBE-SHA1-3DES", "-macalg", "sha1", "-passout", try std.fmt.allocPrint(arena, "file:{s}", .{once_file}), "-out", out })) return null;
+    return out;
+}
+
+/// Run quietly with `env`; true when it succeeded.
+fn runEnv(ctx: Context, env: *const std.process.Environ.Map, argv: []const []const u8) !bool {
+    var child = try std.process.spawn(ctx.io, .{ .argv = argv, .environ_map = env, .stdout = .ignore, .stderr = .ignore });
+    const term = child.wait(ctx.io) catch |err| {
+        child.kill(ctx.io);
+        return err;
+    };
+    return Context.exitCode(term) == 0;
+}
+
+/// Whether a keychain of that name (or path) is in the user's keychain folder.
+fn keychainExists(ctx: Context, arena: std.mem.Allocator, keychain: []const u8) !bool {
+    if (std.fs.path.isAbsolute(keychain)) return exists(ctx.io, keychain);
+    const home = ctx.environ.get("HOME") orelse return false;
+    for ([_][]const u8{ "", "-db", ".keychain", ".keychain-db" }) |suffix| {
+        const p = try std.fmt.allocPrint(arena, "{s}/Library/Keychains/{s}{s}", .{ home, keychain, suffix });
+        if (exists(ctx.io, p)) return true;
+    }
+    return false;
 }
 
 /// Put `keychain` first in the user's keychain search list, keeping the rest.
@@ -223,7 +293,7 @@ fn addToSearchList(ctx: Context, arena: std.mem.Allocator, keychain: []const u8)
     var lines = std.mem.tokenizeAny(u8, got.stdout, "\n");
     while (lines.next()) |line| {
         const path = std.mem.trim(u8, line, " \t\"");
-        if (path.len == 0 or std.mem.endsWith(u8, path, ci_keychain)) continue;
+        if (path.len == 0 or std.mem.endsWith(u8, path, std.fs.path.basename(keychain))) continue;
         try argv.append(arena, try arena.dupe(u8, path));
     }
     if (!try quiet(ctx, argv.items)) return error.SecurityFailed;
@@ -238,7 +308,10 @@ fn show(ctx: Context, cmd: Command) !u8 {
     const openssl = try requireOpenssl(ctx, arena) orelse return 1;
     const file = cmd.file orelse {
         // List the certificates in the keys directory.
-        const dir = try defaultKeysDir(arena, ctx.environ);
+        const dir = (try defaultKeysDir(arena, ctx.environ)) orelse {
+            try ctx.err.writeAll("error: no HOME: pass the .p12 to show\n");
+            return 2;
+        };
         var d = std.Io.Dir.cwd().openDir(ctx.io, dir, .{ .iterate = true }) catch {
             try ctx.out.print("No certificates in {s} (oriel signing create).\n", .{dir});
             return 0;
@@ -288,29 +361,22 @@ fn p12Info(ctx: Context, arena: std.mem.Allocator, openssl: []const u8, p12: []c
     // The password goes through the environment, not argv (visible in ps).
     var env = try ctx.environ.clone(arena);
     try env.put("ORIEL_P12_PASSWORD", password);
-    const pem = try std.fmt.allocPrint(arena, "{s}.pem-{d}", .{ p12, std.Io.Clock.real.now(ctx.io).toNanoseconds() });
+    // The certificate (no key) in a private temporary directory.
+    var rnd: [8]u8 = undefined;
+    ctx.io.random(&rnd);
+    const dir = try std.fmt.allocPrint(arena, "{s}{c}oriel-cert-{x}", .{ ctx.environ.get("TMPDIR") orelse ctx.environ.get("TEMP") orelse "/tmp", std.fs.path.sep, rnd });
     const cwd = std.Io.Dir.cwd();
-    defer cwd.deleteFile(ctx.io, pem) catch {};
-    var child = try std.process.spawn(ctx.io, .{
-        .argv = &.{ openssl, "pkcs12", "-in", p12, "-nokeys", "-clcerts", "-passin", "env:ORIEL_P12_PASSWORD", "-out", pem },
-        .environ_map = &env,
-        .stdout = .ignore,
-        .stderr = .ignore,
-    });
-    const term = try child.wait(ctx.io);
-    if (Context.exitCode(term) != 0) {
-        // OpenSSL 3 reads SHA1-3DES files only with the legacy provider in
-        // some builds; retry with it.
-        var retry = try std.process.spawn(ctx.io, .{
-            .argv = &.{ openssl, "pkcs12", "-legacy", "-in", p12, "-nokeys", "-clcerts", "-passin", "env:ORIEL_P12_PASSWORD", "-out", pem },
-            .environ_map = &env,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        });
-        if (Context.exitCode(try retry.wait(ctx.io)) != 0) {
-            try ctx.err.print("error: can't read {s} (wrong password?)\n", .{p12});
-            return null;
-        }
+    try cwd.createDirPath(ctx.io, dir);
+    defer cwd.deleteTree(ctx.io, dir) catch {};
+    if (builtin.os.tag != .windows) cwd.setFilePermissions(ctx.io, dir, .fromMode(0o700), .{}) catch {};
+    const pem = try std.fs.path.join(arena, &.{ dir, "cert.pem" });
+    // OpenSSL 3 reads SHA1-3DES files only with the legacy provider in some
+    // builds: retry with it.
+    if (!try runEnv(ctx, &env, &.{ openssl, "pkcs12", "-in", p12, "-nokeys", "-clcerts", "-passin", "env:ORIEL_P12_PASSWORD", "-out", pem }) and
+        !try runEnv(ctx, &env, &.{ openssl, "pkcs12", "-legacy", "-in", p12, "-nokeys", "-clcerts", "-passin", "env:ORIEL_P12_PASSWORD", "-out", pem }))
+    {
+        try ctx.err.print("error: can't read {s} (wrong password?)\n", .{p12});
+        return null;
     }
     return certInfo(ctx, arena, openssl, pem);
 }
@@ -379,11 +445,23 @@ fn quietStatus(ctx: Context, argv: []const []const u8) !u8 {
     return got.code;
 }
 
+/// Write a 0600 file: a fresh `<path>.tmp` renamed over `path`, so an
+/// existing file's looser mode never carries over and a failed write
+/// leaves the old file whole.
 fn writePrivate(io: std.Io, path: []const u8, data: []const u8) !void {
     const cwd = std.Io.Dir.cwd();
-    var f = try cwd.createFile(io, path, .{ .truncate = true, .permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600) });
-    defer f.close(io);
-    try f.writeStreamingAll(io, data);
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path});
+    cwd.deleteFile(io, tmp) catch {};
+    {
+        var f = try cwd.createFile(io, tmp, .{ .exclusive = true, .permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600) });
+        defer f.close(io);
+        f.writeStreamingAll(io, data) catch |err| {
+            cwd.deleteFile(io, tmp) catch {};
+            return err;
+        };
+    }
+    try cwd.rename(tmp, cwd, path, io);
 }
 
 fn exists(io: std.Io, path: []const u8) bool {
@@ -391,14 +469,16 @@ fn exists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
-fn defaultKeysDir(gpa: std.mem.Allocator, env: *const std.process.Environ.Map) ![]const u8 {
+/// `~/.config/oriel/keys`; null without an absolute HOME (never a relative
+/// directory, which could be a repository).
+fn defaultKeysDir(gpa: std.mem.Allocator, env: *const std.process.Environ.Map) !?[]const u8 {
     if (env.get("XDG_CONFIG_HOME")) |xdg| {
-        if (std.fs.path.isAbsolute(xdg)) return std.fs.path.join(gpa, &.{ xdg, "oriel", "keys" });
+        if (std.fs.path.isAbsolute(xdg)) return try std.fs.path.join(gpa, &.{ xdg, "oriel", "keys" });
     }
     if (env.get("HOME") orelse env.get("USERPROFILE")) |home| {
-        if (std.fs.path.isAbsolute(home)) return std.fs.path.join(gpa, &.{ home, ".config", "oriel", "keys" });
+        if (std.fs.path.isAbsolute(home)) return try std.fs.path.join(gpa, &.{ home, ".config", "oriel", "keys" });
     }
-    return std.fs.path.join(gpa, &.{ ".oriel", "keys" });
+    return null;
 }
 
 /// `.name = "..."` of the addApp options in ./build.zig, if any.

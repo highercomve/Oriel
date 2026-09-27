@@ -18,6 +18,12 @@
 
 const std = @import("std");
 
+/// A user error in the build options: a message, not a stack trace.
+fn buildFail(comptime fmt: []const u8, args: anytype) noreturn {
+    std.debug.print("error: " ++ fmt ++ "\n", args);
+    std.process.exit(1);
+}
+
 pub const CudaOptions = struct {
     /// CUDA toolkit root (contains bin/nvcc and lib64).
     path: []const u8,
@@ -43,12 +49,13 @@ fn cudaArchArgs(b: *std.Build, arch: []const u8) []const []const u8 {
     var ptx: ?[]const u8 = null;
     var it = std.mem.tokenizeAny(u8, arch, ", ");
     while (it.next()) |cc| {
-        if (!isComputeCapability(cc)) std.debug.panic("-Dcuda_arch: \"{s}\" is not a compute capability (e.g. 89, 120a)", .{cc});
+        if (!isComputeCapability(cc)) buildFail("-Dcuda_arch: \"{s}\" is not a compute capability (e.g. 89, 120a)", .{cc});
         args.append(b.allocator, b.fmt("-gencode=arch=compute_{s},code=sm_{s}", .{ cc, cc })) catch @panic("OOM");
         // Architecture-specific targets (120a: Blackwell's FP4 MMA) have no
         // forward-compatible PTX; the newest generic one provides it.
         if (std.ascii.isDigit(cc[cc.len - 1])) ptx = cc;
     }
+    if (args.items.len == 0) buildFail("-Dcuda_arch: no compute capability in \"{s}\"", .{arch});
     if (ptx) |cc| args.append(b.allocator, b.fmt("-gencode=arch=compute_{s},code=compute_{s}", .{ cc, cc })) catch @panic("OOM");
     return args.items;
 }
@@ -86,7 +93,7 @@ fn vulkanFeatures(b: *std.Build, ggml_root: std.Build.LazyPath, glslc: []const u
         const file = ggml_root.path(b, b.fmt("src/ggml-vulkan/vulkan-shaders/feature-tests/{s}", .{t.file})).getPath(b);
         const result = std.process.run(b.allocator, b.graph.io, .{
             .argv = &.{ glslc, "-o", "-", "-fshader-stage=compute", "--target-env=vulkan1.3", file },
-        }) catch |err| std.debug.panic("-Dggml_vulkan: running {s} failed ({s}); install shaderc or pass -Dglslc", .{ glslc, @errorName(err) });
+        }) catch |err| buildFail("-Dggml_vulkan: running {s} failed ({s}); install shaderc or pass -Dglslc", .{ glslc, @errorName(err) });
         const unsupported = std.mem.indexOf(u8, result.stderr, b.fmt("extension not supported: {s}", .{t.ext})) != null;
         if (!unsupported) defines.append(b.allocator, t.define) catch @panic("OOM");
     }
