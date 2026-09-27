@@ -2502,7 +2502,10 @@ fn packageWingetCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) 
     m.commands = commands.items;
     if (m.description.len == 0) m.description = m.summary;
     for (portable.items, portable_files.items) |*p, file_path| {
-        const digest = try sha256File(io, file_path);
+        const digest = sha256File(io, file_path) catch |err| {
+            std.debug.print("error: package-winget: {s}: {s}\n", .{ file_path, @errorName(err) });
+            return 1;
+        };
         p.sha256 = try arena.dupe(u8, &digest);
     }
     m.portable = portable.items;
@@ -2517,7 +2520,10 @@ fn packageWingetCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) 
             std.debug.print("error: package-winget: --installer (or --portable) is required\n", .{});
             return 1;
         };
-        hex = try sha256File(io, installer_path);
+        hex = sha256File(io, installer_path) catch |err| {
+            std.debug.print("error: package-winget: {s}: {s}\n", .{ installer_path, @errorName(err) });
+            return 1;
+        };
         m.installer_sha256 = &hex;
     }
 
@@ -2534,7 +2540,7 @@ fn packageWingetCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) 
             std.debug.print("error: package-winget: {s} ({s})\n", .{ @errorName(err), switch (err) {
                 error.InvalidIdentifier => "the id must look like Publisher.App",
                 error.InvalidUrl => "the installer URL must be https://",
-                error.InvalidValue => "version, name, publisher, license and summary are required",
+                error.InvalidValue => "version, name, publisher, license, summary and (for an installer) --app-id are required; architectures are x86, x64, arm, arm64 or neutral",
                 else => "",
             } });
             return 1;

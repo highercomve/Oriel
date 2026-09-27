@@ -372,6 +372,8 @@ pub fn signAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
 /// notarized), so users would meet Gatekeeper twice, for the .dmg and for
 /// the app. The app inside is signed either way.
 pub fn finishDmg(gpa: std.mem.Allocator, io: Io, dmg: []const u8, identity: ?[]const u8, profile: ?[]const u8, dry_run: bool) !void {
+    // A dry run shows the whole signing and notarization sequence (with
+    // placeholders), so it goes on without a profile.
     if (profile == null and !dry_run) return;
     const id: ?[]const u8 = identity orelse (if (dry_run) placeholder_identity else null);
     if (id) |sign_id| {

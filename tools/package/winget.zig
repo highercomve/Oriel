@@ -98,12 +98,24 @@ fn checkInstaller(url: []const u8, sha256: []const u8) Error!void {
     for (sha256) |c| if (!std.ascii.isHex(c)) return error.InvalidValue;
 }
 
+fn validArch(a: []const u8) bool {
+    for ([_][]const u8{ "x86", "x64", "arm", "arm64", "neutral" }) |ok| if (std.mem.eql(u8, a, ok)) return true;
+    return false;
+}
+
 fn check(m: Manifest) Error!void {
     if (!validIdentifier(m.id)) return error.InvalidIdentifier;
     if (m.portable.len > 0) {
-        for (m.portable) |p| try checkInstaller(p.url, p.sha256);
+        for (m.portable) |p| {
+            try checkInstaller(p.url, p.sha256);
+            if (!validArch(p.architecture)) return error.InvalidValue;
+        }
         if (m.commands.len == 0) return error.InvalidValue;
-    } else try checkInstaller(m.installer_url, m.installer_sha256);
+    } else {
+        try checkInstaller(m.installer_url, m.installer_sha256);
+        // WinGet matches the installed app by it (upgrades).
+        if (m.product_code.len == 0 or !validArch(m.architecture)) return error.InvalidValue;
+    }
     if (m.version.len == 0 or m.name.len == 0 or m.publisher.len == 0 or m.license.len == 0 or m.summary.len == 0) return error.InvalidValue;
 }
 
@@ -207,9 +219,11 @@ pub fn writeLocale(w: *std.Io.Writer, m: Manifest) !void {
         try quoted(w, u);
     }
     try w.writeAll("\nShortDescription: ");
-    // WinGet caps ShortDescription at 256 characters.
-    try quoted(w, m.summary[0..@min(m.summary.len, 256)]);
-    if (!std.mem.eql(u8, m.description, m.summary)) {
+    // WinGet caps ShortDescription at 256 characters: cut on a character
+    // boundary, and keep the whole text as the Description then.
+    const short = truncateChars(m.summary, 256);
+    try quoted(w, short);
+    if (!std.mem.eql(u8, m.description, m.summary) or short.len < m.summary.len) {
         try w.writeAll("\nDescription: ");
         try quoted(w, m.description);
     }
@@ -229,6 +243,19 @@ pub fn writeLocale(w: *std.Io.Writer, m: Manifest) !void {
         try quoted(w, u);
     }
     try w.print("\nManifestType: defaultLocale\nManifestVersion: {s}\n", .{manifest_version});
+}
+
+/// The first `max` UTF-8 characters of `s` (bytes if it isn't UTF-8).
+fn truncateChars(s: []const u8, max: usize) []const u8 {
+    var it = (std.unicode.Utf8View.init(s) catch return s[0..@min(s.len, max)]).iterator();
+    var n: usize = 0;
+    while (n < max) : (n += 1) _ = it.nextCodepointSlice() orelse return s;
+    return s[0..it.i];
+}
+
+test truncateChars {
+    try std.testing.expectEqualStrings("año", truncateChars("año más", 3));
+    try std.testing.expectEqualStrings("short", truncateChars("short", 256));
 }
 
 fn upperHex(s: []const u8) [64]u8 {

@@ -12,12 +12,29 @@
 
 static HMODULE loader;
 static INIT_ONCE loader_once = INIT_ONCE_STATIC_INIT;
+static PFN_vkGetInstanceProcAddr fwd_vkGetInstanceProcAddr;
+static PFN_vkGetDeviceProcAddr fwd_vkGetDeviceProcAddr;
+static PFN_vkGetPhysicalDeviceFeatures2 fwd_vkGetPhysicalDeviceFeatures2;
+static PFN_vkCmdCopyBuffer fwd_vkCmdCopyBuffer;
 
+// Load vulkan-1.dll and look up every function ggml calls directly, once
+// (InitOnce publishes them to all threads). A loader missing any of them
+// counts as no loader: the Vulkan backend is then never registered, so the
+// forwarders below never run without their target.
 static BOOL CALLBACK load_loader(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     (void)once; (void)param; (void)ctx;
     // System directory only: never a vulkan-1.dll from the current directory.
-    loader = LoadLibraryExW(L"vulkan-1.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if (loader && !GetProcAddress(loader, "vkGetInstanceProcAddr")) loader = NULL;
+    HMODULE m = LoadLibraryExW(L"vulkan-1.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!m) return TRUE;
+    fwd_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)(void *)GetProcAddress(m, "vkGetInstanceProcAddr");
+    fwd_vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)(void *)GetProcAddress(m, "vkGetDeviceProcAddr");
+    fwd_vkGetPhysicalDeviceFeatures2 = (PFN_vkGetPhysicalDeviceFeatures2)(void *)GetProcAddress(m, "vkGetPhysicalDeviceFeatures2");
+    fwd_vkCmdCopyBuffer = (PFN_vkCmdCopyBuffer)(void *)GetProcAddress(m, "vkCmdCopyBuffer");
+    if (!fwd_vkGetInstanceProcAddr || !fwd_vkGetDeviceProcAddr || !fwd_vkGetPhysicalDeviceFeatures2 || !fwd_vkCmdCopyBuffer) {
+        FreeLibrary(m);
+        return TRUE;
+    }
+    loader = m;
     return TRUE;
 }
 
@@ -32,8 +49,9 @@ int oriel_vulkan_loader_available(void) {
 // (a null call as a thread started) on an Optimus laptop. So the Vulkan
 // instance is created without them, unless the user chose layers with the
 // loader's own VK_LOADER_LAYERS_DISABLE / VK_LOADER_LAYERS_ALLOW. The
-// variable is set only around the instance creation (ggml_backend_vk_reg),
-// so child processes and programs the app starts don't inherit it.
+// variable is set only around the instance creation (ggml_backend_vk_reg,
+// serialized by ggml_gpu.load), so programs the app starts later don't
+// inherit it.
 static int layers_disabled;
 
 void oriel_vulkan_layers_begin(void) {
@@ -46,38 +64,23 @@ void oriel_vulkan_layers_end(void) {
     layers_disabled = 0;
 }
 
-// The loader exports every core function; look each one up once.
-#define FORWARD(name) \
-    static PFN_##name fwd_##name; \
-    if (!fwd_##name) { \
-        if (!oriel_vulkan_loader_available()) return_fail; \
-        fwd_##name = (PFN_##name)(void *)GetProcAddress(loader, #name); \
-        if (!fwd_##name) return_fail; \
-    }
-
+// The forwarders: ggml calls these only after the backend was registered,
+// which needs oriel_vulkan_loader_available() (every pointer found). The
+// two ProcAddr functions check anyway: returning NULL is their way to fail.
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char *name) {
-#define return_fail return NULL
-    FORWARD(vkGetInstanceProcAddr)
+    if (!oriel_vulkan_loader_available()) return NULL;
     return fwd_vkGetInstanceProcAddr(instance, name);
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char *name) {
-    FORWARD(vkGetDeviceProcAddr)
+    if (!oriel_vulkan_loader_available()) return NULL;
     return fwd_vkGetDeviceProcAddr(device, name);
-#undef return_fail
 }
 
-// ggml only calls these once the loader is known to be there (it created an
-// instance through it), so a missing loader can't happen here.
-#define return_fail return
-
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice device, VkPhysicalDeviceFeatures2 *features) {
-    FORWARD(vkGetPhysicalDeviceFeatures2)
     fwd_vkGetPhysicalDeviceFeatures2(device, features);
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer dst, uint32_t count, const VkBufferCopy *regions) {
-    FORWARD(vkCmdCopyBuffer)
     fwd_vkCmdCopyBuffer(cmd, src, dst, count, regions);
 }
-#undef return_fail
