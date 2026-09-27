@@ -1132,14 +1132,32 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
     generates 55 tokens/s on Vulkan vs 15 on the CPU; whisper base
     transcribes a 6 s clip in 0.35 s vs 2.7 s.
 
-#### Multimodal (`mtmd`) status
+#### Multimodal (`mtmd`): images for vision models
 
-- `libmtmd` (llama.cpp `tools/mtmd`: image/audio input for vision and audio
-  models) is **not built yet**. It is buildable the same way (C++ sources plus
-  header-only vendored `stb_image`, `miniaudio`, `subprocess.h`), but upstream
-  marks the API experimental ("subject to many BREAKING CHANGES", `mtmd.h`)
-  and no Oriel app uses it yet. `-Dllama_mtmd` fails with a build error until
-  it is added.
+`-Dllama_mtmd` (with `-Dllama`) builds llama.cpp's multimodal library
+(`tools/mtmd`) into the app: images (and audio) for models that come with a
+projector, the `mmproj-*.gguf` file next to the model on Hugging Face. Its C API
+(`mtmd.h`, `mtmd-helper.h`) is in `oriel.llama.c`:
+
+```zig
+var mp = c.mtmd_context_params_default();
+mp.use_gpu = true;
+const vision = c.mtmd_init_from_file("mmproj-F16.gguf", model, mp);
+const bmp = c.mtmd_helper_bitmap_init_from_buf(vision, png.ptr, png.len, false, c.mtmd_helper_init_opt_default()).bitmap;
+// The prompt holds c.mtmd_default_marker() where the image goes:
+_ = c.mtmd_tokenize(vision, chunks, &input_text, &bitmaps, 1);
+_ = c.mtmd_helper_eval_chunks(vision, ctx, chunks, 0, 0, 512, true, &n_past);
+// ... then sample as for text.
+```
+
+- Built from the same sources as llama.cpp's CMake (`add_library(mtmd ...)`),
+  with the header-only `stb_image` (PNG, JPEG, BMP, GIF), `miniaudio` and
+  `vendor/hash`. Video (`MTMD_VIDEO`, which runs `ffmpeg`) stays off.
+- The projector runs on the same GPU backend as the model (CUDA, Vulkan,
+  Metal) or the CPU.
+- Upstream marks the API experimental ("subject to many BREAKING CHANGES"),
+  so pin llama.cpp with Oriel's version. GhostPen uses it for Extract Text
+  on its built-in models.
 
 #### Runtime API
 

@@ -83,7 +83,6 @@ The first full application built on Oriel: GhostPen, ported from Tauri, with bui
 - CI: automated `zig build test` and headless smoke checks on every push
 - Vulkan GPU support on Windows (Linux has `-Dggml_vulkan`)
 - Per-monitor DPI scaling on Windows
-- Multimodal LLM support via libmtmd
 
 # How to contribute
 

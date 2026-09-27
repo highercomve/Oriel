@@ -41,22 +41,22 @@ const Features = struct {
     // Native dependencies (DEFAULT OFF)
     sqlite_vec: bool,
     llama: bool,
+    /// llama.cpp's multimodal library (mtmd): images (and audio) for vision
+    /// models with their projector (mmproj GGUF). Needs `llama`.
+    llama_mtmd: bool,
     whisper: bool,
     audio_capture: bool,
     /// Linux/Wayland: overlay windows as layer surfaces (gtk4-layer-shell).
     layer_shell: bool,
 
     fn fromOptions(b: *std.Build) Features {
-        if (b.option(bool, "llama_mtmd", "Enable multimodal mtmd support (not supported)") orelse false) {
-            fatal("llama_mtmd is not supported yet (libmtmd is not built; its API is experimental upstream), see README.md", .{});
-        }
-
         // Every module and plugin builds for Linux, Windows and macOS; the
         // native dependencies are opt-in everywhere.
         var f: Features = undefined;
         inline for (@typeInfo(Features).@"struct".fields) |field| {
             const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
                 std.mem.eql(u8, field.name, "llama") or
+                std.mem.eql(u8, field.name, "llama_mtmd") or
                 std.mem.eql(u8, field.name, "whisper") or
                 std.mem.eql(u8, field.name, "audio_capture") or
                 std.mem.eql(u8, field.name, "layer_shell"));
@@ -66,6 +66,9 @@ const Features = struct {
             @field(f, field.name) = opt orelse (!is_native and !is_deep_link);
         }
 
+        if (f.llama_mtmd and !f.llama) {
+            fatal("llama_mtmd requires llama (-Dllama)", .{});
+        }
         if (f.sqlite_vec and !f.sql) {
             fatal("sqlite_vec requires sql to be enabled (cannot use -Dsqlite_vec with -Dsql=false)", .{});
         }
