@@ -315,6 +315,9 @@ pub fn addGgml(
             .files = &.{"whisper.cpp"},
             .flags = whisper_flags,
         });
+        // Silero VAD v6.2.0 in ggml format (whisper.VadModel): 885 KB, the
+        // same bytes as ggml-org/whisper-vad's ggml-silero-v6.2.0.bin.
+        oriel.addAnonymousImport("whisper_vad_model", .{ .root_source_file = w.path("models/for-tests-silero-v6.2.0-ggml.bin") });
     }
 }
 
