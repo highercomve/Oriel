@@ -594,7 +594,31 @@ fn writeDestinationIcns(gpa: std.mem.Allocator, io: Io, dest_dir: []const u8, sr
             try entries.append(gpa, .{ .size = 1024, .png_data = src_data }); // freed with the others
         } else gpa.free(src_data);
     } else |_| {}
-    const bytes = try icns.writeIcnsFromPngs(gpa, entries.items);
+    // 16x16 and 32x32 go in as ARGB pixels (see icns.zig): decode those PNGs.
+    var images: std.ArrayList(zigimg.Image) = .empty;
+    defer {
+        for (images.items) |*img| img.deinit(gpa);
+        images.deinit(gpa);
+    }
+    var rgbas: std.ArrayList(icns.RgbaIconEntry) = .empty;
+    defer rgbas.deinit(gpa);
+    for (icns.argb_sizes) |size| {
+        const entry = for (entries.items) |e| {
+            if (e.size == size) break e;
+        } else continue;
+        var img = zigimg.Image.fromMemory(gpa, entry.png_data) catch continue;
+        img.convert(gpa, .rgba32) catch {
+            img.deinit(gpa);
+            continue;
+        };
+        if (img.width != size or img.height != size) {
+            img.deinit(gpa);
+            continue;
+        }
+        try images.append(gpa, img);
+        try rgbas.append(gpa, .{ .size = size, .rgba = std.mem.sliceAsBytes(img.pixels.rgba32) });
+    }
+    const bytes = try icns.writeIcns(gpa, entries.items, rgbas.items);
     defer gpa.free(bytes);
     const path = try std.fmt.allocPrint(gpa, "{s}/icon.icns", .{dest_dir});
     defer gpa.free(path);
