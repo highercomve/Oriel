@@ -177,7 +177,7 @@ pub const Placement = struct {
 pub const Rect = struct { x: c_int, y: c_int, width: c_int, height: c_int };
 
 /// How `platform.startWindowDrag` moves the window: by the OS (the window
-/// keeps no placement), by Oriel shifting its placement, or not at all.
+/// moves it), by Oriel following the pointer (a layer surface), or not at all.
 pub const DragMode = enum { native, placement, unsupported };
 
 test "Placement.origin" {
@@ -260,12 +260,12 @@ pub const Window = struct {
     /// button is down (a `mousedown` in the page), e.g. for a window without
     /// decorations. The OS moves it where it can; a Wayland layer-shell
     /// overlay (which the compositor won't move) follows the pointer until
-    /// the button is released, keeping its placement shifted by the drag.
+    /// the button is released. Either way the window drops its placement
+    /// (`options.placement` becomes null): showing it again leaves it where
+    /// the user put it, and an app can tell it was moved.
     pub fn startDragging(self: *Window) void {
         switch (platform.startWindowDrag(self.handle)) {
-            // The OS moved it: showing it again must not put it back.
-            .native => self.options.placement = null,
-            .placement => {},
+            .native, .placement => self.options.placement = null,
             .unsupported => {},
         }
     }
