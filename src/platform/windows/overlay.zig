@@ -74,7 +74,12 @@ pub fn setWindowPlacement(handle: WindowHandle, placement: App.Placement) void {
     var outer: win32.RECT = undefined;
     if (win32.GetWindowRect(hwnd, &outer) == win32.FALSE) return;
     const s = scale(hwnd);
-    const scaled: App.Placement = .{ .anchor = placement.anchor, .margin = @intFromFloat(@round(@as(f32, @floatFromInt(placement.margin)) * s)) };
+    const px = struct {
+        fn f(v: c_int, k: f32) c_int {
+            return @intFromFloat(@round(@as(f32, @floatFromInt(v)) * k));
+        }
+    }.f;
+    const scaled: App.Placement = .{ .anchor = placement.anchor, .margin = px(placement.margin, s), .offset_x = px(placement.offset_x, s), .offset_y = px(placement.offset_y, s) };
     const o = scaled.origin(
         .{ .x = work.left, .y = work.top, .width = work.right - work.left, .height = work.bottom - work.top },
         outer.right - outer.left,
@@ -96,6 +101,19 @@ pub fn setWindowClickThrough(handle: WindowHandle, enabled: bool) void {
 
 pub fn setWindowAlwaysOnTop(handle: WindowHandle, enabled: bool) void {
     _ = win32.SetWindowPos(handle.hwnd, if (enabled) win32.HWND_TOPMOST else win32.HWND_NOTOPMOST, 0, 0, 0, 0, win32.SWP_NOMOVE | win32.SWP_NOSIZE | win32.SWP_NOACTIVATE);
+}
+
+/// Move the window with the pointer: the page's mousedown gave the webview
+/// the mouse capture; handing it back and "pressing" the caption starts the
+/// system's own move loop, as a title bar drag does.
+pub fn startWindowDrag(handle: WindowHandle) App.DragMode {
+    var pt: win32.POINT = undefined;
+    if (win32.GetCursorPos(&pt) == win32.FALSE) return .unsupported;
+    _ = win32.ReleaseCapture();
+    const x: u32 = @as(u16, @bitCast(@as(i16, @truncate(pt.x))));
+    const y: u32 = @as(u16, @bitCast(@as(i16, @truncate(pt.y))));
+    if (win32.PostMessageW(handle.hwnd, win32.WM_NCLBUTTONDOWN, win32.HTCAPTION, @intCast(x | (y << 16))) == win32.FALSE) return .unsupported;
+    return .native;
 }
 
 /// The work area of the window's monitor, in logical pixels.

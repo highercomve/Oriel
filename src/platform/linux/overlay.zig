@@ -11,6 +11,9 @@
 //! - Wayland without layer-shell: those three options can't be honoured by a
 //!   normal window; they're ignored (logged once).
 //! Transparency and click-through (an empty input region) work everywhere.
+//! Dragging (`startWindowDrag`): the compositor / window manager moves a
+//! normal window; a layer surface, which no compositor moves, follows the
+//! pointer here by shifting its placement (its margins).
 
 const std = @import("std");
 const gtk = @import("gtk");
@@ -41,6 +44,21 @@ extern fn gtk_widget_get_width(widget: *anyopaque) c_int;
 extern fn gtk_widget_get_height(widget: *anyopaque) c_int;
 extern fn gtk_widget_get_mapped(widget: *anyopaque) c_int;
 extern fn gtk_window_get_default_size(window: *anyopaque, width: *c_int, height: *c_int) void;
+extern fn gdk_display_get_default_seat(display: *anyopaque) ?*anyopaque;
+extern fn gdk_seat_get_pointer(seat: *anyopaque) ?*anyopaque;
+extern fn gdk_surface_get_device_position(surface: *anyopaque, device: *anyopaque, x: *f64, y: *f64, mask: ?*c_uint) c_int;
+extern fn gdk_toplevel_begin_move(toplevel: *anyopaque, device: *anyopaque, button: c_int, x: f64, y: f64, timestamp: u32) void;
+extern fn gdk_event_get_event_type(event: *anyopaque) c_int;
+extern fn gdk_event_get_position(event: *anyopaque, x: *f64, y: *f64) c_int;
+extern fn gdk_event_get_modifier_state(event: *anyopaque) c_uint;
+extern fn gtk_event_controller_legacy_new() *anyopaque;
+extern fn gtk_event_controller_set_propagation_phase(controller: *anyopaque, phase: c_int) void;
+extern fn gtk_widget_add_controller(widget: *anyopaque, controller: *anyopaque) void;
+extern fn g_signal_connect_data(instance: *anyopaque, signal: [*:0]const u8, handler: *const anyopaque, data: ?*anyopaque, destroy: ?*const anyopaque, flags: c_int) c_ulong;
+const gdk_motion_notify = 1;
+const gdk_button_release = 3;
+const gdk_button1_mask: c_uint = 1 << 8;
+const gtk_phase_capture = 1;
 
 // gtk4-layer-shell (linked with -Dlayer_shell).
 const layer = if (build_options.layer_shell) struct {
@@ -72,6 +90,9 @@ const State = struct {
     placement: ?App.Placement,
     click_through: bool = false,
     layer_surface: bool = false,
+    /// Layer surfaces: where the pointer grabbed the window (surface
+    /// coordinates) while the user drags it.
+    drag: ?struct { x: f64, y: f64 } = null,
 };
 
 /// Main thread only (GTK).
@@ -119,6 +140,11 @@ pub fn setup(window: *gtk.Window, view: *webkit.WebView, options: App.WindowOpti
             layer.gtk_layer_set_keyboard_mode(window, if (options.focus_on_show) keyboard_exclusive else keyboard_on_demand);
             st.layer_surface = true;
             applyLayerPlacement(window, options.placement orelse .{});
+            // Sees the pointer before the webview does, for startWindowDrag.
+            const ctrl = gtk_event_controller_legacy_new();
+            gtk_event_controller_set_propagation_phase(ctrl, gtk_phase_capture);
+            _ = g_signal_connect_data(ctrl, "event", @ptrCast(&onLayerEvent), window, null, 0);
+            gtk_widget_add_controller(window, ctrl);
             return;
         }
     }
@@ -169,10 +195,187 @@ fn applyLayerPlacement(window: *gtk.Window, placement: App.Placement) void {
         .{ .edge = edge_left, .on = left },
         .{ .edge = edge_right, .on = right },
     };
-    for (edges) |e| {
+    const m = layerMargins(placement);
+    const margins = [_]c_int{ m.top, m.bottom, m.left, m.right };
+    for (edges, margins) |e, margin| {
         layer.gtk_layer_set_anchor(window, e.edge, @intFromBool(e.on));
-        layer.gtk_layer_set_margin(window, e.edge, if (e.on) placement.margin else 0);
+        layer.gtk_layer_set_margin(window, e.edge, if (e.on) margin else 0);
     }
+}
+
+const Margins = struct { left: c_int, right: c_int, top: c_int, bottom: c_int };
+
+/// Layer margins for `p`: its margin, shifted by its offset (x right, y down).
+fn layerMargins(p: App.Placement) Margins {
+    return .{
+        .left = p.margin + p.offset_x,
+        .right = p.margin - p.offset_x,
+        .top = p.margin + p.offset_y,
+        .bottom = p.margin - p.offset_y,
+    };
+}
+
+const HEdge = enum { none, left, right };
+const VEdge = enum { none, top, bottom };
+
+fn hEdge(a: App.Placement.Anchor) HEdge {
+    return switch (a) {
+        .left, .top_left, .bottom_left => .left,
+        .right, .top_right, .bottom_right => .right,
+        else => .none,
+    };
+}
+
+fn vEdge(a: App.Placement.Anchor) VEdge {
+    return switch (a) {
+        .top, .top_left, .top_right => .top,
+        .bottom, .bottom_left, .bottom_right => .bottom,
+        else => .none,
+    };
+}
+
+fn anchorOf(h: HEdge, v: VEdge) App.Placement.Anchor {
+    return switch (v) {
+        .none => switch (h) {
+            .none => .center,
+            .left => .left,
+            .right => .right,
+        },
+        .top => switch (h) {
+            .none => .top,
+            .left => .top_left,
+            .right => .top_right,
+        },
+        .bottom => switch (h) {
+            .none => .bottom,
+            .left => .bottom_left,
+            .right => .bottom_right,
+        },
+    };
+}
+
+/// `p` anchored on both axes, at the same spot: a layer surface centred on
+/// an axis can't be shifted along it, so that axis gets its start edge.
+fn anchoredForDrag(p: App.Placement, area: App.Rect, w: c_int, h: c_int) App.Placement {
+    var q = p;
+    var he = hEdge(p.anchor);
+    var ve = vEdge(p.anchor);
+    if (he == .none) {
+        he = .left;
+        q.offset_x = @divTrunc(area.width - w, 2) + p.offset_x - p.margin;
+    }
+    if (ve == .none) {
+        ve = .top;
+        q.offset_y = @divTrunc(area.height - h, 2) + p.offset_y - p.margin;
+    }
+    q.anchor = anchorOf(he, ve);
+    return q;
+}
+
+/// `p` shifted by (dx, dy), kept inside `area` (for a `w`×`h` window).
+fn dragged(p: App.Placement, dx: c_int, dy: c_int, area: App.Rect, w: c_int, h: c_int) App.Placement {
+    var q = p;
+    const max_x = @max(0, area.width - w);
+    const max_y = @max(0, area.height - h);
+    switch (hEdge(p.anchor)) {
+        .left => q.offset_x = std.math.clamp(p.margin + p.offset_x + dx, 0, max_x) - p.margin,
+        .right => q.offset_x = p.margin - std.math.clamp(p.margin - p.offset_x - dx, 0, max_x),
+        .none => {},
+    }
+    switch (vEdge(p.anchor)) {
+        .top => q.offset_y = std.math.clamp(p.margin + p.offset_y + dy, 0, max_y) - p.margin,
+        .bottom => q.offset_y = p.margin - std.math.clamp(p.margin - p.offset_y - dy, 0, max_y),
+        .none => {},
+    }
+    return q;
+}
+
+fn windowSize(window: *gtk.Window) struct { w: c_int, h: c_int } {
+    var w = gtk_widget_get_width(window);
+    var h = gtk_widget_get_height(window);
+    if (w <= 0 or h <= 0) gtk_window_get_default_size(window, &w, &h);
+    return .{ .w = w, .h = h };
+}
+
+/// Move `window` with the pointer while the primary button is down.
+pub fn startWindowDrag(handle: anytype) App.DragMode {
+    const window: *gtk.Window = handle.gtk_window;
+    const surface = gtk_native_get_surface(window) orelse return .unsupported;
+    const display = gdk_surface_get_display(surface);
+    const seat = gdk_display_get_default_seat(display) orelse return .unsupported;
+    const pointer = gdk_seat_get_pointer(seat) orelse return .unsupported;
+    var x: f64 = 0;
+    var y: f64 = 0;
+    _ = gdk_surface_get_device_position(surface, pointer, &x, &y, null);
+
+    const st = stateFor(window);
+    if (st) |s| if (s.layer_surface) {
+        const area = getWindowWorkArea(.{ .gtk_window = window }) orelse return .unsupported;
+        const size = windowSize(window);
+        s.placement = anchoredForDrag(s.placement orelse .{}, area, size.w, size.h);
+        applyLayerPlacement(window, s.placement.?);
+        s.drag = .{ .x = x, .y = y };
+        return .placement;
+    };
+    // X11 or a normal Wayland window: the window manager moves it. It keeps
+    // no placement, so showing it again leaves it where the user put it.
+    if (st) |s| s.placement = null;
+    gdk_toplevel_begin_move(surface, pointer, 1, x, y, 0);
+    return .native;
+}
+
+/// Layer surfaces: follow the pointer while dragging (see startWindowDrag).
+fn onLayerEvent(_: *anyopaque, event: *anyopaque, window: *gtk.Window) callconv(.c) c_int {
+    const st = stateFor(window) orelse return 0;
+    const grab = st.drag orelse return 0;
+    switch (gdk_event_get_event_type(event)) {
+        gdk_button_release => st.drag = null,
+        gdk_motion_notify => {
+            if (gdk_event_get_modifier_state(event) & gdk_button1_mask == 0) {
+                st.drag = null; // the release went elsewhere
+                return 0;
+            }
+            var x: f64 = 0;
+            var y: f64 = 0;
+            if (gdk_event_get_position(event, &x, &y) == 0) return 0;
+            const dx: c_int = @intFromFloat(@round(x - grab.x));
+            const dy: c_int = @intFromFloat(@round(y - grab.y));
+            if (dx == 0 and dy == 0) return 1;
+            const area = getWindowWorkArea(.{ .gtk_window = window }) orelse return 1;
+            const size = windowSize(window);
+            // The surface moves under the pointer, which then sits at the
+            // grab point again: the next motion is the next step.
+            st.placement = dragged(st.placement orelse .{}, dx, dy, area, size.w, size.h);
+            applyLayerPlacement(window, st.placement.?);
+            return 1; // the page doesn't see the drag
+        },
+        else => {},
+    }
+    return 0;
+}
+
+test "layer drag: a centred axis gets its start edge, moves stay on the monitor" {
+    const area: App.Rect = .{ .x = 0, .y = 0, .width = 1000, .height = 800 };
+    const p = anchoredForDrag(.{ .anchor = .bottom, .margin = 64 }, area, 200, 100);
+    try std.testing.expectEqual(App.Placement.Anchor.bottom_left, p.anchor);
+    // Same spot: x = 400 from the left; still 64 from the bottom.
+    try std.testing.expectEqual(@as(c_int, 400), layerMargins(p).left);
+    try std.testing.expectEqual(@as(c_int, 64), layerMargins(p).bottom);
+    try std.testing.expectEqual(App.Rect{ .x = 400, .y = 636, .width = 200, .height = 100 }, rectOf(p, area));
+
+    const up = dragged(p, -50, -30, area, 200, 100);
+    try std.testing.expectEqual(@as(c_int, 350), layerMargins(up).left);
+    try std.testing.expectEqual(@as(c_int, 94), layerMargins(up).bottom);
+    try std.testing.expectEqual(App.Rect{ .x = 350, .y = 606, .width = 200, .height = 100 }, rectOf(up, area));
+
+    const far = dragged(up, 5000, 5000, area, 200, 100);
+    try std.testing.expectEqual(@as(c_int, 800), layerMargins(far).left);
+    try std.testing.expectEqual(@as(c_int, 0), layerMargins(far).bottom);
+}
+
+fn rectOf(p: App.Placement, area: App.Rect) App.Rect {
+    const o = p.origin(area, 200, 100);
+    return .{ .x = o.x, .y = o.y, .width = 200, .height = 100 };
 }
 
 fn onMap(widget: *gtk.Widget, _: ?*anyopaque) callconv(.c) void {
