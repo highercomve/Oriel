@@ -481,11 +481,17 @@ pub fn addPackageSteps(
     var deb_deps: std.ArrayList([]const u8) = .empty;
     var rpm_deps: std.ArrayList([]const u8) = .empty;
 
-    // Base GTK4 + WebKitGTK 6.0 dependencies
-    deb_deps.append(b.allocator, "libgtk-4-1") catch unreachable;
+    // Base GTK4 + WebKitGTK 6.0 dependencies, with the oldest versions that
+    // run: Oriel calls GTK 4.12 functions (gtk_css_provider_load_from_string),
+    // and release builds need glibc 2.38. So Ubuntu 24.04 / Debian 13 /
+    // Fedora 39 and later; on older ones (Ubuntu 22.04: GTK 4.6, glibc 2.35)
+    // the package manager says why instead of installing an app that can't start.
+    deb_deps.append(b.allocator, "libgtk-4-1 (>= 4.12)") catch unreachable;
     deb_deps.append(b.allocator, "libwebkitgtk-6.0-4") catch unreachable;
-    rpm_deps.append(b.allocator, "gtk4") catch unreachable;
+    deb_deps.append(b.allocator, "libc6 (>= 2.38)") catch unreachable;
+    rpm_deps.append(b.allocator, "gtk4 >= 4.12") catch unreachable;
     rpm_deps.append(b.allocator, "webkitgtk6.0") catch unreachable;
+    rpm_deps.append(b.allocator, "glibc >= 2.38") catch unreachable;
 
     const has_global_shortcut = isFeatureEnabled(oriel_dep, "global_shortcut");
     const has_input = isFeatureEnabled(oriel_dep, "input");
