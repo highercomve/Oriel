@@ -144,8 +144,14 @@ pub fn preloadLayerShell() void {
     argv[n] = null;
     // A new variable: glibc copies the environment array to add it, so the
     // block std.process.Init captured at startup is untouched.
+    // The executable's real path, not /proc/self/exe: the process is named
+    // after the file it runs ("exe" otherwise, for ps, pgrep and task managers).
+    var exe_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    const exe_len = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
+    if (exe_len <= 0 or exe_len >= exe_buf.len) return;
+    exe_buf[@intCast(exe_len)] = 0;
     if (setenv("LD_PRELOAD", layer_shell_lib, 1) != 0) return;
-    _ = execv("/proc/self/exe", &argv);
+    _ = execv(&exe_buf, &argv);
     // Still here: the restart failed. Carry on without layer surfaces.
     _ = unsetenv("LD_PRELOAD");
     log.warn("could not restart with {s}; overlays can't be placed on Wayland", .{layer_shell_lib});
