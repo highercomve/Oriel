@@ -85,7 +85,9 @@ run_case() {
         if [[ -n "$dev_runner_pid" ]]; then
             # Find children of dev_runner
             local runner_children
-            mapfile -t runner_children < <(pgrep -P "$dev_runner_pid" || true)
+            # A read loop, not mapfile: macOS ships bash 3.2.
+            runner_children=()
+            while IFS= read -r c; do runner_children+=("$c"); done < <(pgrep -P "$dev_runner_pid" || true)
             for c in ${runner_children[@]+"${runner_children[@]}"}; do
                 PIDS_TO_CLEANUP+=("$c")
                 local comm
@@ -100,7 +102,8 @@ run_case() {
             # Find grandchild of dev_server
             if [[ -n "$dev_server_pid" ]]; then
                 local dev_children
-                mapfile -t dev_children < <(pgrep -P "$dev_server_pid" || true)
+                dev_children=()
+                while IFS= read -r c; do dev_children+=("$c"); done < <(pgrep -P "$dev_server_pid" || true)
                 if [[ -n "${dev_children[0]:-}" ]]; then
                     grandchild_pid="${dev_children[0]}"
                     PIDS_TO_CLEANUP+=("$grandchild_pid")
