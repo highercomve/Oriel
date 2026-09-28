@@ -1,7 +1,8 @@
 //! Overlay windows on Linux (Milestone 10): transparency, always-on-top,
 //! skip-taskbar, placement on the monitor's work area and click-through.
 //!
-//! - Wayland with gtk4-layer-shell (`-Dlayer_shell=true`, and a compositor
+//! - Wayland with gtk4-layer-shell (`-Dlayer_shell=true`, the library
+//!   installed — it's loaded at runtime, see `preloadLayerShell` — and a compositor
 //!   supporting wlr-layer-shell: Hyprland, Sway, KDE, ...): windows that ask
 //!   for `always_on_top`, `skip_taskbar` or a `placement` become layer
 //!   surfaces (overlay layer, anchors + margins).
@@ -60,17 +61,140 @@ const gdk_button_release = 3;
 const gdk_button1_mask: c_uint = 1 << 8;
 const gtk_phase_capture = 1;
 
-// gtk4-layer-shell (linked with -Dlayer_shell).
-const layer = if (build_options.layer_shell) struct {
-    extern fn gtk_layer_is_supported() c_int;
-    extern fn gtk_layer_init_for_window(window: *gtk.Window) void;
-    extern fn gtk_layer_is_layer_window(window: *gtk.Window) c_int;
-    extern fn gtk_layer_set_layer(window: *gtk.Window, layer: c_int) void;
-    extern fn gtk_layer_set_namespace(window: *gtk.Window, name: [*:0]const u8) void;
-    extern fn gtk_layer_set_anchor(window: *gtk.Window, edge: c_int, anchor: c_int) void;
-    extern fn gtk_layer_set_margin(window: *gtk.Window, edge: c_int, margin: c_int) void;
-    extern fn gtk_layer_set_keyboard_mode(window: *gtk.Window, mode: c_int) void;
-} else struct {};
+/// gtk4-layer-shell, when the system has it (-Dlayer_shell; not linked:
+/// Ubuntu 24.04, for one, doesn't package it). It must be loaded before
+/// libwayland-client (it replaces some of its functions), which GTK loads at
+/// startup, so `preloadLayerShell` restarts the app once with it in
+/// LD_PRELOAD; its functions are then found here.
+const Layer = struct {
+    is_supported: *const fn () callconv(.c) c_int,
+    init_for_window: *const fn (*gtk.Window) callconv(.c) void,
+    set_layer: *const fn (*gtk.Window, c_int) callconv(.c) void,
+    set_namespace: *const fn (*gtk.Window, [*:0]const u8) callconv(.c) void,
+    set_anchor: *const fn (*gtk.Window, c_int, c_int) callconv(.c) void,
+    set_margin: *const fn (*gtk.Window, c_int, c_int) callconv(.c) void,
+    set_keyboard_mode: *const fn (*gtk.Window, c_int) callconv(.c) void,
+
+    var cached: ?Layer = null;
+    var resolved = false;
+
+    /// The library's functions, or null when it isn't loaded. Main thread.
+    fn get() ?*const Layer {
+        if (comptime !build_options.layer_shell) return null;
+        if (!resolved) {
+            resolved = true;
+            cached = resolve();
+        }
+        return if (cached) |*l| l else null;
+    }
+
+    fn sym(comptime T: type, name: [:0]const u8) ?T {
+        const p = std.c.dlsym(null, name) orelse return null;
+        return @ptrCast(@alignCast(p));
+    }
+
+    fn resolve() ?Layer {
+        return .{
+            .is_supported = sym(@FieldType(Layer, "is_supported"), "gtk_layer_is_supported") orelse return null,
+            .init_for_window = sym(@FieldType(Layer, "init_for_window"), "gtk_layer_init_for_window") orelse return null,
+            .set_layer = sym(@FieldType(Layer, "set_layer"), "gtk_layer_set_layer") orelse return null,
+            .set_namespace = sym(@FieldType(Layer, "set_namespace"), "gtk_layer_set_namespace") orelse return null,
+            .set_anchor = sym(@FieldType(Layer, "set_anchor"), "gtk_layer_set_anchor") orelse return null,
+            .set_margin = sym(@FieldType(Layer, "set_margin"), "gtk_layer_set_margin") orelse return null,
+            .set_keyboard_mode = sym(@FieldType(Layer, "set_keyboard_mode"), "gtk_layer_set_keyboard_mode") orelse return null,
+        };
+    }
+};
+
+const layer_shell_lib = "libgtk4-layer-shell.so.0";
+/// What `LD_PRELOAD` is renamed to once it has done its job (the same length:
+/// renamed in place, see `retirePreload`).
+const retired_preload = "ORIEL_LDPR";
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+extern "c" fn execv(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
+
+/// On Wayland with gtk4-layer-shell installed, restart the app once with the
+/// library in LD_PRELOAD, before GTK starts (see `Layer`). In the restarted
+/// process LD_PRELOAD is retired, so the app's own child processes (helpers,
+/// xdg-open, ...) don't load the library. Returns when nothing needs doing,
+/// the library is missing, or the restart failed: the app then runs without
+/// layer surfaces. Call first thing, on the main thread.
+pub fn preloadLayerShell() void {
+    if (comptime !build_options.layer_shell) return;
+    const loaded = std.c.dlsym(null, "gtk_layer_init_for_window") != null;
+    if (std.c.getenv("LD_PRELOAD")) |v| {
+        // Ours (the restarted process): done its job.
+        if (loaded and std.mem.eql(u8, std.mem.span(v), layer_shell_lib)) retirePreload();
+        return; // or the user's own: left alone
+    }
+    if (loaded) return; // linked in, or loaded some other way
+    if (std.c.getenv("WAYLAND_DISPLAY") == null) return; // X11: no layer surfaces
+    if (std.c.getenv("ORIEL_NO_LAYER_SHELL") != null) return;
+    const probe = std.c.dlopen(layer_shell_lib, .{ .LAZY = true }) orelse {
+        log.info("{s} not found: overlays can't be placed on Wayland", .{layer_shell_lib});
+        return;
+    };
+    _ = std.c.dlclose(probe);
+
+    var buf: [32 * 1024]u8 = undefined;
+    var argv: [256:null]?[*:0]const u8 = undefined;
+    const n = readCmdline(&buf, &argv) orelse return;
+    argv[n] = null;
+    // A new variable: glibc copies the environment array to add it, so the
+    // block std.process.Init captured at startup is untouched.
+    if (setenv("LD_PRELOAD", layer_shell_lib, 1) != 0) return;
+    _ = execv("/proc/self/exe", &argv);
+    // Still here: the restart failed. Carry on without layer surfaces.
+    _ = unsetenv("LD_PRELOAD");
+    log.warn("could not restart with {s}; overlays can't be placed on Wayland", .{layer_shell_lib});
+}
+
+/// Rename `LD_PRELOAD` in place so child processes don't inherit it. Not
+/// unsetenv: that shifts the entries of the environment array, which Zig's
+/// std.process.Init also holds with its original length, and the next
+/// std.process.spawn read a null entry (a crash). The same-length rename
+/// changes only the entry's bytes, seen alike by libc and Zig.
+fn retirePreload() void {
+    const key = "LD_PRELOAD=";
+    var i: usize = 0;
+    while (std.c.environ[i]) |entry| : (i += 1) {
+        const s = std.mem.span(entry);
+        if (!std.mem.startsWith(u8, s, key)) continue;
+        comptime std.debug.assert(retired_preload.len == key.len - 1);
+        @memcpy(entry[0..retired_preload.len], retired_preload);
+    }
+}
+
+/// This process's arguments from /proc/self/cmdline, NUL-separated in
+/// `buf`, pointed to from `argv`. Their count, or null.
+fn readCmdline(buf: []u8, argv: [:null]?[*:0]const u8) ?usize {
+    const fd = std.c.open("/proc/self/cmdline", .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
+    if (fd < 0) return null;
+    defer _ = std.c.close(fd);
+    var len: usize = 0;
+    while (len < buf.len - 1) {
+        const r = std.c.read(fd, buf[len..].ptr, buf.len - 1 - len);
+        if (r <= 0) break;
+        len += @intCast(r);
+    }
+    if (len == 0 or len >= buf.len - 1) return null; // empty, or too long to trust
+    if (buf[len - 1] != 0) {
+        buf[len] = 0;
+        len += 1;
+    }
+    var n: usize = 0;
+    var start: usize = 0;
+    for (buf[0..len], 0..) |c, i| {
+        if (c != 0) continue;
+        if (n == argv.len) return null;
+        argv[n] = @ptrCast(buf[start..i :0].ptr);
+        n += 1;
+        start = i + 1;
+    }
+    return n;
+}
 const edge_left = 0;
 const edge_right = 1;
 const edge_top = 2;
@@ -131,13 +255,13 @@ pub fn setup(window: *gtk.Window, view: *webkit.WebView, options: App.WindowOpti
     }) catch return;
     const st = &states.items[states.items.len - 1];
 
-    if (comptime build_options.layer_shell) {
-        if (layer.gtk_layer_is_supported() != 0) {
-            layer.gtk_layer_init_for_window(window);
-            layer.gtk_layer_set_namespace(window, app_id.ptr);
-            layer.gtk_layer_set_layer(window, if (options.always_on_top) layer_overlay else layer_top);
+    if (Layer.get()) |l| {
+        if (l.is_supported() != 0) {
+            l.init_for_window(window);
+            l.set_namespace(window, app_id.ptr);
+            l.set_layer(window, if (options.always_on_top) layer_overlay else layer_top);
             // A menu or dictation pill takes the keyboard while shown; captions don't.
-            layer.gtk_layer_set_keyboard_mode(window, if (options.focus_on_show) keyboard_exclusive else keyboard_on_demand);
+            l.set_keyboard_mode(window, if (options.focus_on_show) keyboard_exclusive else keyboard_on_demand);
             st.layer_surface = true;
             applyLayerPlacement(window, options.placement orelse .{});
             // Sees the pointer before the webview does, for startWindowDrag.
@@ -183,7 +307,7 @@ fn makeTransparent(window: *gtk.Window, view: *webkit.WebView) void {
 }
 
 fn applyLayerPlacement(window: *gtk.Window, placement: App.Placement) void {
-    if (comptime !build_options.layer_shell) return;
+    const l = Layer.get() orelse return;
     const a = placement.anchor;
     const top = a == .top or a == .top_left or a == .top_right;
     const bottom = a == .bottom or a == .bottom_left or a == .bottom_right;
@@ -198,8 +322,8 @@ fn applyLayerPlacement(window: *gtk.Window, placement: App.Placement) void {
     const m = layerMargins(placement);
     const margins = [_]c_int{ m.top, m.bottom, m.left, m.right };
     for (edges, margins) |e, margin| {
-        layer.gtk_layer_set_anchor(window, e.edge, @intFromBool(e.on));
-        layer.gtk_layer_set_margin(window, e.edge, if (e.on) margin else 0);
+        l.set_anchor(window, e.edge, @intFromBool(e.on));
+        l.set_margin(window, e.edge, if (e.on) margin else 0);
     }
 }
 
@@ -426,7 +550,7 @@ pub fn setWindowAlwaysOnTop(handle: anytype, enabled: bool) void {
     if (stateFor(window)) |st| {
         st.always_on_top = enabled;
         if (st.layer_surface) {
-            if (comptime build_options.layer_shell) layer.gtk_layer_set_layer(window, if (enabled) layer_overlay else layer_top);
+            if (Layer.get()) |l| l.set_layer(window, if (enabled) layer_overlay else layer_top);
             return;
         }
     }
