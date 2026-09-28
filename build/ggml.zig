@@ -292,6 +292,23 @@ pub fn addGgml(
             .flags = cpp_flags,
         });
         if (features.llama_mtmd) addMtmd(b, oriel, l, c_flags, cpp_flags);
+
+        // JSON schema → GBNF grammar (llama.JsonSchema): llama.cpp's converter
+        // and its JSON type from `common`, not the whole library. The shim's
+        // common.h comes first: it stands in for common/common.h.
+        oriel.addIncludePath(b.path("src/modules/llama/shim"));
+        oriel.addIncludePath(l.path("common"));
+        oriel.addIncludePath(l.path("vendor"));
+        oriel.addCSourceFiles(.{
+            .root = l.path("common"),
+            .files = &.{ "json-schema-to-grammar.cpp", "json.cpp" },
+            .flags = cpp_flags,
+        });
+        oriel.addCSourceFiles(.{
+            .root = b.path("src/modules/llama"),
+            .files = &.{"json_schema_grammar.cpp"},
+            .flags = cpp_flags,
+        });
     }
 
     // whisper.cpp sources
