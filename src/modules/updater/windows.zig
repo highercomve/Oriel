@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const win32 = @import("../../platform/windows/win32.zig");
+const single_instance = @import("../../platform/windows/single_instance.zig");
 const log = std.log.scoped(.oriel);
 
 pub fn processId() u32 {
@@ -117,6 +118,9 @@ pub fn restart(io: std.Io, exe_path: []const u8) !noreturn {
     si.cb = @sizeOf(win32.STARTUPINFOW);
     var pi: win32.PROCESS_INFORMATION = undefined;
 
+    // Before the new process checks for a running instance: this one can
+    // take a second to exit (see single_instance.release).
+    single_instance.release();
     if (win32.CreateProcessW(exe_w.ptr, cmdline_copy.ptr, null, null, win32.FALSE, 0, null, null, &si, &pi) == win32.FALSE) {
         return error.RestartFailed;
     }

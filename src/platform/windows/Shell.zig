@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const win32 = @import("win32.zig");
+const single_instance_mutex = @import("single_instance.zig");
 const webview2 = @import("webview2.zig");
 const dev_server = @import("dev_server.zig");
 const window = @import("window.zig");
@@ -468,10 +469,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         pub fn run(io: std.Io) u8 {
             const gpa = std.heap.smp_allocator;
             const app_id = if (config.dev != null) config.id ++ ".Dev" else config.id;
-            var h_mutex: ?win32.HANDLE = null;
-            defer {
-                if (h_mutex) |m| _ = win32.CloseHandle(m);
-            }
+            defer single_instance_mutex.release();
 
             // Single instance: for deep links, and for apps that handle a
             // second launch themselves (`on_second_instance`).
@@ -479,7 +477,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 const mutex_name_w = getAppMutexNameW(gpa, app_id) catch return 1;
                 defer gpa.free(mutex_name_w);
 
-                h_mutex = win32.CreateMutexW(null, win32.FALSE, mutex_name_w);
+                single_instance_mutex.mutex = win32.CreateMutexW(null, win32.FALSE, mutex_name_w);
                 if (win32.GetLastError() == win32.ERROR_ALREADY_EXISTS) {
                     forwardToPrimary(gpa, app_id);
                     return 0;
