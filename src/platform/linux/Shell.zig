@@ -142,6 +142,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
         pub fn run(io: std.Io) u8 {
             _ = io;
+            // Before GTK: may restart the app with gtk4-layer-shell preloaded.
+            @import("overlay.zig").preloadLayerShell();
             const id = if (config.dev != null) config.id ++ ".Dev" else config.id;
             const app_flags = if (uses_command_line)
                 gio.ApplicationFlags{ .handles_command_line = true }

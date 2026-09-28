@@ -422,10 +422,9 @@ fn addOrielModule(
     });
     oriel.addOptions("build_options", options);
 
-    if (is_linux and features.layer_shell) {
-        // Before GTK: gtk4-layer-shell must be linked ahead of libwayland-client.
-        oriel.linkSystemLibrary("gtk4-layer-shell-0", .{});
-    }
+    // gtk4-layer-shell (-Dlayer_shell) isn't linked: it's loaded at runtime
+    // when installed (src/platform/linux/overlay.zig, preloadLayerShell), so
+    // the app also runs where it isn't packaged (Ubuntu 24.04).
     if (is_linux) {
         const gobject = b.dependency("gobject", .{ .target = target, .optimize = optimize });
         oriel.addImport("glib", gobject.module("glib2"));
