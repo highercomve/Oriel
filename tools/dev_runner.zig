@@ -378,6 +378,11 @@ pub fn main(init: std.process.Init) !u8 {
 
     var in_dev_cmd = false;
     var in_app_args = false;
+    // -D options for the rebuild (`--build-arg=-Dname=value`).
+    var build_args: std.ArrayList([]const u8) = .empty;
+    defer build_args.deinit(gpa);
+    var build_argv: std.ArrayList([]const u8) = .empty;
+    defer build_argv.deinit(gpa);
 
     // Portable argv (WTF-16 on Windows, so not `args.vector`).
     const all_args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -417,6 +422,8 @@ pub fn main(init: std.process.Init) !u8 {
             };
         } else if (std.mem.startsWith(u8, arg, "--app-bin=")) {
             app_bin = arg["--app-bin=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--build-arg=")) {
+            try build_args.append(gpa, arg["--build-arg=".len..]);
         } else if (std.mem.eql(u8, arg, "--dev-cmd")) {
             in_dev_cmd = true;
         } else if (std.mem.eql(u8, arg, "--app-args")) {
@@ -598,10 +605,12 @@ pub fn main(init: std.process.Init) !u8 {
 
         if (global_should_exit.load(.acquire)) break;
 
-        // Run rebuild: zig build build-dev
-        const build_argv = [_][]const u8{ zig, "build", "build-dev" };
+        // Run rebuild: zig build build-dev, with the -D options `zig build dev` got.
+        build_argv.shrinkRetainingCapacity(0);
+        try build_argv.appendSlice(gpa, &.{ zig, "build", "build-dev" });
+        try build_argv.appendSlice(gpa, build_args.items);
         var build_child = std.process.spawn(io, .{
-            .argv = &build_argv,
+            .argv = build_argv.items,
             .cwd = .{ .path = project_dir },
             .environ_map = init.environ_map,
         }) catch |err| {

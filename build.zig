@@ -811,6 +811,11 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         addPermissionOptions(cfg, permissions);
         const d = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon, options.isolation));
         for (options.imports) |imp| d.root_module.addImport(imp.name, imp.module);
+        // Most of a Debug rebuild is LLVM writing debug info: without it an
+        // edit rebuilds in well under the time, but crashes print no
+        // symbolized stack traces.
+        if (!(b.option(bool, "dev_debug_info", "Debug info in the `oriel dev` build (false: faster rebuilds, no symbolized stack traces; default true)") orelse true))
+            d.root_module.strip = true;
         break :blk d;
     } else null;
 
@@ -903,6 +908,15 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
             b.fmt("--frontend-dir={s}", .{fe_dir}),
             b.fmt("--app-bin={s}", .{b.getInstallPath(.bin, d.name)}),
         });
+        // The rebuild after an edit (`zig build build-dev`) gets the same -D
+        // options as this build (-Dggml_cuda, -Ddev_debug_info, ...).
+        var opts = b.user_input_options.iterator();
+        while (opts.next()) |o| switch (o.value_ptr.value) {
+            .flag => runner.addArg(b.fmt("--build-arg=-D{s}", .{o.key_ptr.*})),
+            .scalar => |v| runner.addArg(b.fmt("--build-arg=-D{s}={s}", .{ o.key_ptr.*, v })),
+            .list => |l| for (l.items) |v| runner.addArg(b.fmt("--build-arg=-D{s}={s}", .{ o.key_ptr.*, v })),
+            else => {},
+        };
         // This script runs in the build runner, a child of the `zig` process.
         // A SIGTERM/SIGKILL to `zig` alone leaves the build runner (and so
         // dev_runner's direct parent) alive, so dev_runner watches `zig` itself.
