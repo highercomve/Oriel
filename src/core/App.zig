@@ -394,6 +394,84 @@ pub fn getWindow(label: []const u8) ?*Window {
     return null;
 }
 
+/// Options of windows declared with `registerWindow` and not created yet.
+/// Guarded by `windows_mutex`; the strings are owned (smp_allocator).
+var registered_windows: std.ArrayList(WindowOptions) = .empty;
+
+/// Declare a window without creating it: `ensureWindow(label)` creates it
+/// the first time it's needed. Each window is a web view (a WebKit or
+/// WebView2 process and a page load), so a window the user may never open
+/// (settings, a playground) costs nothing at startup. Declaring a label
+/// again replaces its options.
+pub fn registerWindow(options: WindowOptions) !void {
+    const gpa = std.heap.smp_allocator;
+    var opts = options;
+    opts.label = try gpa.dupeZ(u8, options.label);
+    errdefer gpa.free(opts.label);
+    opts.title = try gpa.dupeZ(u8, options.title);
+    errdefer gpa.free(opts.title);
+    opts.url = if (options.url) |u| try gpa.dupeZ(u8, u) else null;
+    errdefer if (opts.url) |u| gpa.free(u);
+
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    defer windows_mutex.unlock();
+    for (registered_windows.items) |*r| if (std.mem.eql(u8, r.label, opts.label)) {
+        freeRegistered(r.*);
+        r.* = opts;
+        return;
+    };
+    try registered_windows.append(gpa, opts);
+}
+
+fn freeRegistered(opts: WindowOptions) void {
+    const gpa = std.heap.smp_allocator;
+    gpa.free(opts.label);
+    gpa.free(opts.title);
+    if (opts.url) |u| gpa.free(u);
+}
+
+/// The window `label`, created now from its `registerWindow` options if it
+/// doesn't exist yet (hidden unless registered `visible`). Main thread.
+pub fn ensureWindow(label: []const u8) !*Window {
+    if (getWindow(label)) |w| return w;
+    const opts = blk: {
+        ensureWindowsMutex();
+        windows_mutex.lock();
+        defer windows_mutex.unlock();
+        for (registered_windows.items) |r| if (std.mem.eql(u8, r.label, label)) break :blk r;
+        return error.WindowNotFound;
+    };
+    // openWindow copies the options' strings; the registration keeps its own.
+    return openWindow(opts);
+}
+
+/// Whether `label` was declared with `registerWindow` (created or not).
+pub fn isWindowRegistered(label: []const u8) bool {
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    defer windows_mutex.unlock();
+    for (registered_windows.items) |r| if (std.mem.eql(u8, r.label, label)) return true;
+    return false;
+}
+
+test "registerWindow: declared, replaced, not created" {
+    try registerWindow(.{ .label = "lazy-test", .title = "A", .url = "index.html#/a" });
+    try registerWindow(.{ .label = "lazy-test", .title = "B", .url = null });
+    try std.testing.expect(isWindowRegistered("lazy-test"));
+    try std.testing.expect(!isWindowRegistered("other"));
+    try std.testing.expect(getWindow("lazy-test") == null);
+    windows_mutex.lock();
+    defer windows_mutex.unlock();
+    var n: usize = 0;
+    for (registered_windows.items) |r| if (std.mem.eql(u8, r.label, "lazy-test")) {
+        n += 1;
+        try std.testing.expectEqualStrings("B", r.title);
+        try std.testing.expect(r.url == null);
+    };
+    try std.testing.expectEqual(@as(usize, 1), n);
+}
+
 pub fn getWindowByHandle(handle: platform.WindowHandle) ?*Window {
     ensureWindowsMutex();
     windows_mutex.lock();
