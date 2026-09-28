@@ -3,7 +3,8 @@
 //! Provides backend command dispatch for `oriel.window` API from JavaScript:
 //!   - open: create and show a new window (App.openWindow)
 //!   - close: request window closure (App.postCloseWindow)
-//!   - show/hide/focus: manipulate window visibility and focus
+//!   - show/hide/focus: manipulate window visibility and focus (show creates
+//!     a window declared with App.registerWindow)
 //!   - setTitle/setSize/maximize/fullscreen: update window geometry & state
 //!   - startDragging: move the window with the pointer (button held down)
 //!   - get/all/current: query window information
@@ -108,7 +109,8 @@ pub fn dispatch(
         });
         try security.validateLabel(args.label);
         try security.validateWindowModification(sec, caller_win_label, args.label);
-        const win = App.getWindow(args.label) orelse return error.WindowNotFound;
+        // A window declared with App.registerWindow is created on first show.
+        const win = try App.ensureWindow(args.label);
         win.show();
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, action, "hide")) {
