@@ -709,6 +709,15 @@ pub const Frontend = struct {
     /// Where the generated TypeScript for the Zig commands is written,
     /// relative to `dir`. Null to skip type generation.
     types_path: ?[]const u8 = "src/oriel.ts",
+    /// How the TypeScript is generated. `.dev_exe` builds and runs the whole
+    /// development executable. `.root_decls` builds a small generator that
+    /// imports the app's root file and reads `pub const oriel_api: App.Api`,
+    /// or else `pub const Commands` (and `pub const Events`, if any): only the
+    /// command signatures are compiled, so a production build no longer
+    /// compiles the whole app a second time just for the bindings.
+    types_from: TypesFrom = .dev_exe,
+
+    pub const TypesFrom = enum { dev_exe, root_decls };
 
     pub const Dev = struct {
         url: []const u8 = "http://localhost:5173/",
@@ -805,12 +814,16 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         break :blk d;
     } else null;
 
-    // Generated TypeScript types, written by the dev build (no frontend needed).
+    // Generated TypeScript types, written by the dev build or a small
+    // generator (`frontend.types_from`); no frontend needed.
     var types_step: ?*std.Build.Step = null;
     if (fe.types_path) |types_path| {
         const can_run = target.result.os.tag == b.graph.host.result.os.tag and target.result.cpu.arch == b.graph.host.result.cpu.arch;
         if (can_run) {
-            const gen_exe = dev_exe orelse @panic("TypeScript generation needs a dev build (frontend.dev)");
+            const gen_exe = switch (fe.types_from) {
+                .dev_exe => dev_exe orelse @panic("TypeScript generation needs a dev build (frontend.dev)"),
+                .root_decls => typesGenerator(b, oriel, target, options, fe_dir, url_schemes, permissions, app_icon),
+            };
             const gen = b.addRunArtifact(gen_exe);
             gen.addArgs(&.{ "--emit-types", b.pathJoin(&.{ fe_dir, types_path }) });
             gen.has_side_effects = true;
@@ -939,6 +952,78 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     @import("build/package.zig").addPackageSteps(b, oriel_dep, options, exe, dev_exe, icons_dir, app_icon, permissions);
 
     return .{ .exe = exe, .dev_exe = dev_exe };
+}
+
+/// The TypeScript generator for `frontend.types_from = .root_decls`: imports
+/// the app's root file as a module and writes the bindings for its API
+/// (`--emit-types <path>`, like the dev executable). Only the declarations
+/// it names are analyzed, so it compiles in a fraction of the app's time.
+fn typesGenerator(
+    b: *std.Build,
+    oriel: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    options: AppOptions,
+    fe_dir: []const u8,
+    url_schemes: []const []const u8,
+    permissions: Permissions,
+    app_icon: std.Build.LazyPath,
+) *std.Build.Step.Compile {
+    const dev = options.frontend.dev orelse Frontend.Dev{};
+    const cfg = b.addOptions();
+    cfg.addOption(bool, "is_dev", true);
+    cfg.addOption([]const u8, "dev_url", dev.url);
+    cfg.addOption([]const []const u8, "dev_command", dev.command);
+    cfg.addOption([]const u8, "frontend_dir", fe_dir);
+    cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
+    cfg.addOption([]const []const u8, "url_schemes", url_schemes);
+    addPermissionOptions(cfg, permissions);
+    const app_root = b.createModule(.{
+        .root_source_file = options.root_source_file,
+        .target = target,
+        .optimize = .Debug,
+        .imports = &.{
+            .{ .name = "oriel", .module = oriel },
+            .{ .name = "oriel_app", .module = appConfigModule(b, oriel, cfg, null, app_icon, options.isolation) },
+        },
+    });
+    for (options.imports) |imp| app_root.addImport(imp.name, imp.module);
+    const files = b.addWriteFiles();
+    const root = files.add("oriel_types.zig",
+        \\const std = @import("std");
+        \\const oriel = @import("oriel");
+        \\const app = @import("app_root");
+        \\
+        \\const api: oriel.App.Api = if (@hasDecl(app, "oriel_api")) app.oriel_api else if (@hasDecl(app, "Commands")) .{
+        \\    .commands = app.Commands,
+        \\    .events = if (@hasDecl(app, "Events")) app.Events else struct {},
+        \\} else @compileError("frontend.types_from = .root_decls: the root file declares neither `pub const oriel_api` nor `pub const Commands`");
+        \\
+        \\pub fn main(init: std.process.Init) !u8 {
+        \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
+        \\    if (args.len != 3 or !std.mem.eql(u8, args[1], "--emit-types")) {
+        \\        std.debug.print("usage: {s} --emit-types <output.ts>\n", .{args[0]});
+        \\        return 2;
+        \\    }
+        \\    try oriel.writeTypes(init.io, init.gpa, api, args[2]);
+        \\    return 0;
+        \\}
+        \\
+    );
+    return b.addExecutable(.{
+        .name = b.fmt("{s}-types", .{options.name}),
+        .root_module = b.createModule(.{
+            .root_source_file = root,
+            .target = target,
+            .optimize = .Debug,
+            .imports = &.{
+                .{ .name = "oriel", .module = oriel },
+                .{ .name = "app_root", .module = app_root },
+            },
+        }),
+        // Like addExe: LLD for the GCC 16 crt1.o .sframe sections.
+        .use_llvm = true,
+        .use_lld = useLld(target),
+    });
 }
 
 /// The `oriel_app` module: build-time config for the app's main.zig.
