@@ -208,6 +208,11 @@ pub const Config = struct {
     force: bool = false,
 };
 
+/// Waits before retrying a request the server answered with a 5xx: right
+/// after a release is published, GitHub's download URLs answer 500 for a
+/// few minutes (seen with GhostPen 0.2.10), which failed every update.
+const server_error_retries = [_]i64{ 2_000, 5_000 };
+
 /// Fetch manifest from `config.manifest_url`, verify Ed25519 signature against `config.public_key_b64`,
 /// enforce size limit (64 KiB), timeout deadline, and check compatibility with `config`.
 pub fn checkForUpdate(
@@ -232,22 +237,30 @@ pub fn checkForUpdate(
             var client: std.http.Client = .{ .allocator = alloc, .io = i };
             defer client.deinit();
 
-            var fixed_writer = std.Io.Writer.fixed(buf);
-            const fetch_res = client.fetch(.{
-                .location = .{ .url = url },
-                .headers = .{
-                    .accept_encoding = .{ .override = "identity" },
-                },
-                .response_writer = &fixed_writer,
-            }) catch |err| switch (err) {
-                error.WriteFailed => return error.ManifestTooLarge,
-                else => |e| return e,
-            };
-
-            return FetchResult{
-                .bytes = fixed_writer.end,
-                .status = fetch_res.status,
-            };
+            // A server error is retried (GitHub answers 5xx for a while
+            // right after a release is published).
+            var attempt: usize = 0;
+            while (true) : (attempt += 1) {
+                var fixed_writer = std.Io.Writer.fixed(buf);
+                const fetch_res = client.fetch(.{
+                    .location = .{ .url = url },
+                    .headers = .{
+                        .accept_encoding = .{ .override = "identity" },
+                    },
+                    .response_writer = &fixed_writer,
+                }) catch |err| switch (err) {
+                    error.WriteFailed => return error.ManifestTooLarge,
+                    else => |e| return e,
+                };
+                if (fetch_res.status.class() == .server_error and attempt < server_error_retries.len) {
+                    try i.sleep(.fromMilliseconds(server_error_retries[attempt]), .awake);
+                    continue;
+                }
+                return FetchResult{
+                    .bytes = fixed_writer.end,
+                    .status = fetch_res.status,
+                };
+            }
         }
 
         fn sleepTimeout(i: std.Io, ms: u32) void {
@@ -368,7 +381,20 @@ pub fn downloadWithOptions(
             dp: ?[]const u8,
             pc: ?ProgressCallback,
         ) ![]u8 {
-            return downloadInternal(i, alloc, u, dp, pc);
+            // A server error comes before anything is written: retried.
+            for (server_error_retries) |delay_ms| {
+                return downloadInternal(i, alloc, u, dp, pc) catch |err| switch (err) {
+                    error.ServerError => {
+                        try i.sleep(.fromMilliseconds(delay_ms), .awake);
+                        continue;
+                    },
+                    else => err,
+                };
+            }
+            return downloadInternal(i, alloc, u, dp, pc) catch |err| switch (err) {
+                error.ServerError => error.BadHttpStatus,
+                else => err,
+            };
         }
 
         fn sleepTimeout(i: std.Io, ms: u32) void {
@@ -441,6 +467,7 @@ fn downloadInternal(
 
     var redirect_buf: [8192]u8 = undefined;
     var response = try req.receiveHead(&redirect_buf);
+    if (response.head.status.class() == .server_error) return error.ServerError;
     if (response.head.status != .ok) return error.BadHttpStatus;
 
     const content_length = response.head.content_length;
@@ -667,6 +694,8 @@ pub const MockServer = struct {
     gzip_payload: ?[]const u8 = null,
     /// Served for `.../latest.json`; null answers 404 (a release without one).
     combined_json: ?[]const u8 = null,
+    /// Requests left to answer with 500 (a server error the client retries).
+    fail_next: std.atomic.Value(u32) = .init(0),
     running: std.atomic.Value(bool) = .init(true),
 
     pub fn start(io: std.Io, port: u16, manifest_json: []const u8, payload: []const u8, gzip_payload: ?[]const u8) !*MockServer {
@@ -683,6 +712,7 @@ pub const MockServer = struct {
         self.payload = payload;
         self.gzip_payload = gzip_payload;
         self.combined_json = null;
+        self.fail_next = .init(0);
         self.mutex = .init;
         self.running = .init(true);
         self.thread = try std.Thread.spawn(.{}, run, .{self});
@@ -729,6 +759,15 @@ pub const MockServer = struct {
             }
             if (req_len == 0) continue;
             const req = req_buf[0..req_len];
+
+            if (std.mem.indexOf(u8, req, "GET /quit") == null and self.fail_next.load(.acquire) > 0) {
+                _ = self.fail_next.fetchSub(1, .acq_rel);
+                var w_buf: [256]u8 = undefined;
+                var writer = stream.writer(self.io, &w_buf);
+                writer.interface.writeAll("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n") catch {};
+                writer.interface.flush() catch {};
+                continue;
+            }
 
             if (std.mem.indexOf(u8, req, "/latest.json ") != null) {
                 self.mutex.lockUncancelable(self.io);
@@ -882,7 +921,10 @@ test "core end-to-end update flow" {
     // Valid check: 1.0.0 -> 2.0.0 available
     var valid_cfg = base_cfg;
     valid_cfg.current_version = "1.0.0";
+    // A server error first (GitHub right after a release): retried.
+    server.fail_next.store(1, .release);
     const update_opt = try checkForUpdate(io, allocator, valid_cfg);
+    try std.testing.expectEqual(@as(u32, 0), server.fail_next.load(.acquire));
     try std.testing.expect(update_opt != null);
     var update = update_opt.?;
     defer update.deinit();
@@ -926,7 +968,9 @@ test "core end-to-end update flow" {
         .callback = &ProgressContext.onProgress,
     };
 
+    server.fail_next.store(1, .release); // retried, as for the manifest
     const returned_path = try download(io, allocator, update, dummy_app_path, progress_cb);
+    try std.testing.expectEqual(@as(u32, 0), server.fail_next.load(.acquire));
     defer allocator.free(returned_path);
     try std.testing.expectEqualStrings(dummy_app_path, returned_path);
     try std.testing.expect(progress_ctx.called);
