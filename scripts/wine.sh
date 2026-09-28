@@ -91,7 +91,9 @@ setup)
     echo "wine:    $wine_bin"
     echo "prefix:  $WINEPREFIX"
     echo "loader:  $dir/webview2/WebView2Loader.dll"
-    ls -d "$WINEPREFIX/drive_c/Program Files (x86)/Microsoft/EdgeWebView/Application/"*/ 2>/dev/null | grep '/[0-9][0-9.]*/$' | sed 's#.*/Application/#webview2: #'
+    for d in "$WINEPREFIX/drive_c/Program Files (x86)/Microsoft/EdgeWebView/Application/"[0-9]*/; do
+        [ -d "$d" ] && echo "webview2: $(basename "$d")/"
+    done
     ;;
 loader)
     [ -f "$dir/webview2/WebView2Loader.dll" ] || die "run 'scripts/wine.sh setup' first"

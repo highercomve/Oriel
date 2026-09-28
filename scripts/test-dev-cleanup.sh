@@ -45,6 +45,7 @@ run_case() {
     # only to `zig` never reaches the build runner. In "parent" mode the
     # killed process is dev_runner's direct parent (PR_SET_PDEATHSIG); in
     # "grandparent" mode it is the process passed as --watch-pid (pidfd).
+    # shellcheck disable=SC2016 # expanded later, by eval
     local launch='"$DEV_RUNNER_BIN" ${WATCH_PID:+--watch-pid=$WATCH_PID} \
             --project-dir="$RUN_DIR" --watch-dir="$RUN_DIR/src" --frontend-dir="$RUN_DIR" \
             --dev-cmd sh -c "sleep 300 & sleep 300" --dev-cmd-end \
@@ -84,7 +85,7 @@ run_case() {
         if [[ -n "$dev_runner_pid" ]]; then
             # Find children of dev_runner
             local runner_children
-            runner_children=($(pgrep -P "$dev_runner_pid" || true))
+            mapfile -t runner_children < <(pgrep -P "$dev_runner_pid" || true)
             for c in ${runner_children[@]+"${runner_children[@]}"}; do
                 PIDS_TO_CLEANUP+=("$c")
                 local comm
@@ -99,7 +100,7 @@ run_case() {
             # Find grandchild of dev_server
             if [[ -n "$dev_server_pid" ]]; then
                 local dev_children
-                dev_children=($(pgrep -P "$dev_server_pid" || true))
+                mapfile -t dev_children < <(pgrep -P "$dev_server_pid" || true)
                 if [[ -n "${dev_children[0]:-}" ]]; then
                     grandchild_pid="${dev_children[0]}"
                     PIDS_TO_CLEANUP+=("$grandchild_pid")
