@@ -1,6 +1,6 @@
 .{
     .name = .oriel,
-    .version = "0.6.20",
+    .version = "0.6.21",
     .fingerprint = 0x7fe3da8e54e532b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
@@ -35,8 +35,8 @@
             .lazy = true,
         },
         .llama = .{
-            .url = "https://github.com/ggml-org/llama.cpp/archive/refs/tags/b10809.tar.gz",
-            .hash = "N-V-__8AAHbwMgr4KA1H9C3zP4kZGa5UKAO1qdRATS2di4OY",
+            .url = "https://github.com/ggml-org/llama.cpp/archive/d1d3c3396aa13a5f239109a822666c4870490ad5.tar.gz",
+            .hash = "N-V-__8AAJ9VPwoqxzSel7-NmUNw6D4Vi_RmMI8DOxVCYWAP",
             .lazy = true,
         },
         .whisper = .{

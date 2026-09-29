@@ -301,7 +301,10 @@ pub fn addGgml(
         oriel.addIncludePath(l.path("vendor"));
         oriel.addCSourceFiles(.{
             .root = l.path("common"),
-            .files = &.{ "json-schema-to-grammar.cpp", "json.cpp" },
+            // json-schema.cpp and trie.cpp/unicode.cpp: what the converter
+            // and its JSON type now reference from `common` (the shim's
+            // common.h stands in for the whole library).
+            .files = &.{ "json-schema-to-grammar.cpp", "json.cpp", "json-schema.cpp", "trie.cpp", "unicode.cpp" },
             .flags = cpp_flags,
         });
         oriel.addCSourceFiles(.{
@@ -346,13 +349,14 @@ fn addCudaBackend(b: *std.Build, ggml_root: std.Build.LazyPath, opts: CudaOption
     const lib = link.addOutputFileArg("libggml-cuda.so");
     for (cuda_sources) |src| {
         const cc = b.addSystemCommand(&.{
-            nvcc,                    "-std=c++17",        "-O3",
-            "-use_fast_math",        "-extended-lambda",  "-compress-mode=size",
-            "-Xcompiler",            "-fPIC -Wno-pedantic", "-DNDEBUG",
+            nvcc,                "-std=c++17",             "-O3",
+            "-use_fast_math",    "-extended-lambda",       "-compress-mode=size",
+            "-Xcompiler",        "-fPIC -Wno-pedantic",    "-DNDEBUG",
             // Build as a dynamically loaded backend (exports ggml_backend_init).
-            "-DGGML_BACKEND_DL",     "-DGGML_BACKEND_BUILD", "-DGGML_BACKEND_SHARED",
-            "-DGGML_SHARED",         "-DGGML_CUDA_USE_GRAPHS", "-DGGML_SCHED_MAX_COPIES=4",
+            "-DGGML_BACKEND_DL", "-DGGML_BACKEND_BUILD",   "-DGGML_BACKEND_SHARED",
+            "-DGGML_SHARED",     "-DGGML_CUDA_USE_GRAPHS", "-DGGML_SCHED_MAX_COPIES=4",
         });
+        cc.addArgs(fattn_defines);
         cc.addArgs(cudaArchArgs(b, opts.arch));
         cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "include"));
         cc.addPrefixedDirectoryArg("-I", ggml_root.path(b, "src"));
@@ -471,13 +475,16 @@ fn addVulkanBackend(
     m.addIncludePath(ggml_root.path(b, "include"));
     m.addIncludePath(ggml_root.path(b, "src"));
     m.addIncludePath(vk_dir);
-    const flags = std.mem.concat(b.allocator, []const u8, &.{ &.{
-        "-std=c++17",           "-D_GNU_SOURCE",       "-DNDEBUG",
-        "-fno-sanitize=undefined",
-        // Build as a dynamically loaded backend (exports ggml_backend_init).
-        "-DGGML_BACKEND_DL",    "-DGGML_BACKEND_BUILD", "-DGGML_BACKEND_SHARED",
-        "-DGGML_SHARED",        "-DGGML_SCHED_MAX_COPIES=4",
-    }, defines.items }) catch @panic("OOM");
+    const flags = std.mem.concat(b.allocator, []const u8, &.{
+        &.{
+            "-std=c++17",              "-D_GNU_SOURCE",     "-DNDEBUG",
+            "-fno-sanitize=undefined",
+            // Build as a dynamically loaded backend (exports ggml_backend_init).
+            "-DGGML_BACKEND_DL", "-DGGML_BACKEND_BUILD",
+            "-DGGML_BACKEND_SHARED",   "-DGGML_SHARED",     "-DGGML_SCHED_MAX_COPIES=4",
+        },
+        defines.items,
+    }) catch @panic("OOM");
     m.addCSourceFile(.{ .file = vk_dir.path(b, "ggml-vulkan.cpp"), .flags = flags });
     // The header must exist before any source that includes it compiles.
     lib.step.dependOn(&sg.header.step);
@@ -705,6 +712,39 @@ const cuda_sources = [_][]const u8{
     "template-instances/fattn-vec-instance-bf16-bf16.cu",
 };
 
+/// The FlashAttention K/V type combinations whose vec-kernel instances are
+/// compiled (mirrors `cuda_sources`' fattn-vec-instance list).
+const fattn_compiled = [_][]const u8{ "f16-f16", "q4_0-q4_0", "q8_0-q8_0", "bf16-bf16" };
+
+const fattn_types = [_][]const u8{ "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "bf16", "f16" };
+
+/// `-DGGML_CUDA_FA_<K>_<V>=0|1` for every combination: fattn.cu picks the vec
+/// kernel with `if constexpr (GGML_CUDA_FA_K_V)`, and upstream's CMake
+/// defines all 49 (the ones without a compiled instance as 0, where the
+/// kernel falls back to f16).
+fn fattnArg(comptime kv: []const u8) []const u8 {
+    comptime {
+        @setEvalBranchQuota(10000);
+        const dash = std.mem.indexOfScalar(u8, kv, '-').?;
+        var name: [kv.len]u8 = undefined;
+        for (kv[0..dash], 0..) |c, i| name[i] = std.ascii.toUpper(c);
+        name[dash] = '_';
+        for (kv[dash + 1 ..], 0..) |c, i| name[dash + 1 + i] = std.ascii.toUpper(c);
+        var compiled = false;
+        for (fattn_compiled) |c| compiled = compiled or std.mem.eql(u8, c, kv);
+        return std.fmt.comptimePrint("-DGGML_CUDA_FA_{s}={d}", .{ name, @intFromBool(compiled) });
+    }
+}
+
+const fattn_defines = blk: {
+    @setEvalBranchQuota(20000);
+    var out: []const []const u8 = &.{};
+    for (fattn_types) |k| for (fattn_types) |v| {
+        out = out ++ [_][]const u8{fattnArg(k ++ "-" ++ v)};
+    };
+    break :blk out;
+};
+
 const llama_core_sources = [_][]const u8{
     "llama.cpp",
     "llama-adapter.cpp",
@@ -795,6 +835,7 @@ const llama_model_sources = [_][]const u8{
     "models/gpt2.cpp",
     "models/gptneox.cpp",
     "models/granite.cpp",
+    "models/hy-v4.cpp",
     "models/granite-hybrid.cpp",
     "models/granite-moe.cpp",
     "models/granite-swa.cpp",
@@ -834,6 +875,7 @@ const llama_model_sources = [_][]const u8{
     "models/minimax-m3.cpp",
     "models/mistral3.cpp",
     "models/mistral4.cpp",
+    "models/maple.cpp",
     "models/modern-bert.cpp",
     "models/mpt.cpp",
     "models/muse-glimmer.cpp",
@@ -854,6 +896,7 @@ const llama_model_sources = [_][]const u8{
     "models/pangu-embed.cpp",
     "models/phi2.cpp",
     "models/phi3.cpp",
+    "models/spark2-5.cpp",
     "models/phimoe.cpp",
     "models/plamo.cpp",
     "models/plamo2.cpp",
