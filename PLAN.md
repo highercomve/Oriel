@@ -8,7 +8,7 @@ inside a milestone are independent and can run in parallel.
 
 oriel is a Tauri-like desktop framework in **Zig 0.16** (Linux first:
 GTK4 + WebKitGTK 6.0). The goal is to port two Tauri apps to it:
-**ghostpen** (`~/Code/ghostpen`: global hotkey → rewrite selected text with
+**ghostpen** (`~/Code/ghostpen-tauri`: global hotkey → rewrite selected text with
 an LLM → paste back; tray app) and **ghostreel** (`~/Code/ghostreel`: local
 video search with whisper.cpp/llama.cpp, SQLite, a local media server;
 Linux + Windows).
@@ -206,7 +206,7 @@ request, DB scan) freezes the UI. Everything below builds on this.
 
 Each workstream is a plugin file in `src/plugins/` with a real API (not just
 a `check`), a smoke check, and README docs. Reference behavior:
-`~/Code/ghostpen/src-tauri/src/pal/` and its README "Platform support".
+`~/Code/ghostpen-tauri/src-tauri/src/pal/` and its README "Platform support".
 
 ### 2a. Global shortcuts (`plugins/global_shortcut.zig`)
 - Wayland: `org.freedesktop.portal.GlobalShortcuts` via GDBus
