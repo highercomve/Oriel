@@ -91,6 +91,12 @@ pub const Config = struct {
     /// (without argv[0]) here, on the main thread of the running instance,
     /// and exits. Null keeps the platform default.
     on_second_instance: ?*const fn (args: []const []const u8) void = null,
+    /// The OS session is ending (Windows logoff, restart or shutdown). The
+    /// process may be killed as soon as this returns, before `run` returns,
+    /// so cleanup that would follow `run` (temp files, discovery files)
+    /// belongs here too. Called on the main thread. Linux and macOS quit
+    /// through the run loop on SIGTERM instead, so `run` returns there.
+    on_session_end: ?*const fn () void = null,
 };
 
 /// The process arguments, for the platform shell (deep links, second-launch

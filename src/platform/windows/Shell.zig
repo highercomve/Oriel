@@ -237,6 +237,10 @@ pub fn handleNotifyMessage(wParam: win32.WPARAM, lParam: win32.LPARAM) void {
 // Shell shutdown hook
 pub var on_shutdown_fn: ?*const fn () void = null;
 
+/// `App.Config.on_session_end`, set by Shell.run.
+var on_session_end_fn: ?*const fn () void = null;
+var session_ended = false;
+
 fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam: win32.LPARAM) callconv(.winapi) win32.LRESULT {
     switch (uMsg) {
         WM_DISPATCH => {
@@ -253,6 +257,18 @@ fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam:
         },
         WM_NOTIFY_CALLBACK => {
             handleNotifyMessage(wParam, lParam);
+            return 0;
+        },
+        // Logoff, restart or shutdown. Windows can end the process as soon
+        // as WM_ENDSESSION returns, without GetMessage ever seeing WM_QUIT, so
+        // the app's cleanup runs here. The host window is a hidden top-level
+        // window, so it gets this broadcast (a message-only window wouldn't).
+        win32.WM_ENDSESSION => {
+            if (wParam != 0 and !session_ended) {
+                session_ended = true;
+                log.info("session ending: running the app's session-end cleanup", .{});
+                if (on_session_end_fn) |f| f();
+            }
             return 0;
         },
         win32.WM_COPYDATA => {
@@ -485,6 +501,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             }
             on_second_instance_fn = &onSecondInstance;
             defer on_second_instance_fn = null;
+            on_session_end_fn = config.on_session_end;
+            defer on_session_end_fn = null;
 
             var cold_url: ?[]const u8 = null;
             defer {
