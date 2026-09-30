@@ -10,6 +10,7 @@
         .gobject = .{
             .url = "https://github.com/ianprime0509/zig-gobject/releases/download/v0.3.2/bindings-gnome50.tar.zst",
             .hash = "gobject-0.3.2-Skun7LD1fwF1wmLVmZnH0Qx_Bhkmfau25skjhPLoljHj",
+            .lazy = true,
         },
         .zigimg = .{
             .url = "git+https://github.com/zigimg/zigimg#b99b9d48899e90ef330f143b096e31cc245ea70a",
@@ -28,6 +29,7 @@
             // root; a .zip fails in Zig 0.16 with an empty global cache.
             .url = "https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz",
             .hash = "N-V-__8AAKJCwwDXnRHqzy_PjrI_Ss94kfSd-T7vNxQ-b3xA",
+            .lazy = true,
         },
         .sqlite_vec = .{
             .url = "https://github.com/asg017/sqlite-vec/releases/download/v0.1.9/sqlite-vec-0.1.9-amalgamation.tar.gz",
@@ -44,11 +46,28 @@
             .hash = "N-V-__8AAA3uSwK9mB79KfGlAs0n70EoYdSvFYRb8782-6Ce",
             .lazy = true,
         },
+        // Android GPU backends (-Dggml_vulkan, -Dggml_opencl): the Khronos
+        // headers, which the NDK lacks (vulkan.hpp, spirv/) or doesn't ship (OpenCL).
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz",
+            .hash = "N-V-__8AAGluhwIkfWs_S_i5ctSYH58cXuq_SYTNZ0nVUUlN",
+            .lazy = true,
+        },
+        .spirv_headers = .{
+            .url = "https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz",
+            .hash = "N-V-__8AAGbTPwCpO5RqFsSkao-YQrp4sYtjDvquqfjmh9pW",
+            .lazy = true,
+        },
+        .opencl_headers = .{
+            .url = "https://github.com/KhronosGroup/OpenCL-Headers/archive/refs/tags/v2026.05.29.tar.gz",
+            .hash = "N-V-__8AAEm0CAAEW33nP9aCUOvVMpgTvV3LxivhVTPQUD-T",
+            .lazy = true,
+        },
         .objc = .{
             .url = "git+https://github.com/mitchellh/zig-objc#c8de82ff80281215ad92900866dab7103a8efa8b",
             .hash = "zig_objc-0.0.0-Ir_Sp9gsAQCPAJc0oF5xoWePHWP6Y6tCphDeyNUThJoi",
             .lazy = true,
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand", "android/template", "LICENSE", "README.md" },
 }

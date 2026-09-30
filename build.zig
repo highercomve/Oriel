@@ -14,6 +14,8 @@
 const std = @import("std");
 const Scanner = @import("wayland").Scanner;
 const ggml = @import("build/ggml.zig");
+const android_build = @import("build/android.zig");
+const ios_build = @import("build/ios.zig");
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
@@ -49,9 +51,17 @@ const Features = struct {
     /// Linux/Wayland: overlay windows as layer surfaces (gtk4-layer-shell).
     layer_shell: bool,
 
-    fn fromOptions(b: *std.Build) Features {
+    /// Modules that have no Android backend: off by default for Android
+    /// targets, and an error when enabled there (their selectors explain why).
+    const unavailable_on_android = [_][]const u8{ "tray", "updater", "menu", "input", "media_server", "layer_shell" };
+    /// The same for iOS (docs/ios.md).
+    const unavailable_on_ios = [_][]const u8{ "tray", "updater", "menu", "global_shortcut", "input", "media_server", "layer_shell", "fs_watch" };
+
+    fn fromOptions(b: *std.Build, target: std.Build.ResolvedTarget) Features {
         // Every module and plugin builds for Linux, Windows and macOS; the
         // native dependencies are opt-in everywhere.
+        const android = target.result.abi.isAndroid();
+        const ios = target.result.os.tag == .ios;
         var f: Features = undefined;
         inline for (@typeInfo(Features).@"struct".fields) |field| {
             const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
@@ -63,7 +73,15 @@ const Features = struct {
             // deep_link is opt-in (default off), like the native dependencies.
             const is_deep_link = comptime std.mem.eql(u8, field.name, "deep_link");
             const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
-            @field(f, field.name) = opt orelse (!is_native and !is_deep_link);
+            const android_off = comptime for (unavailable_on_android) |n| {
+                if (std.mem.eql(u8, n, field.name)) break true;
+            } else false;
+            const ios_off = comptime for (unavailable_on_ios) |n| {
+                if (std.mem.eql(u8, n, field.name)) break true;
+            } else false;
+            if (android and android_off and opt == true) fatal("-D" ++ field.name ++ " is not available on Android (see docs/android.md)", .{});
+            if (ios and ios_off and opt == true) fatal("-D" ++ field.name ++ " is not available on iOS (see docs/ios.md)", .{});
+            @field(f, field.name) = opt orelse (!is_native and !is_deep_link and !(android and android_off) and !(ios and ios_off));
         }
 
         if (f.llama_mtmd and !f.llama) {
@@ -80,7 +98,7 @@ const Features = struct {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const features = Features.fromOptions(b);
+    const features = Features.fromOptions(b, target);
 
     const oriel = addOrielModule(b, target, optimize, features);
 
@@ -146,8 +164,10 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(update_tool);
     addUpdaterSteps(b, update_tool);
 
-    const is_linux = target.result.os.tag == .linux;
-    // Unit tests run natively on Linux, macOS and Windows.
+    const is_android = target.result.abi.isAndroid();
+    const is_linux = target.result.os.tag == .linux and !is_android;
+    // Unit tests run natively on Linux, macOS and Windows. Android targets
+    // are type-checked only (`zig build check -Dtarget=aarch64-linux-android`).
     const runs_tests = is_linux or target.result.os.tag == .macos or target.result.os.tag == .windows;
 
     const tests = b.addTest(.{
@@ -247,18 +267,20 @@ pub fn build(b: *std.Build) void {
         .{ "tools/package/main.zig", &.{.{ .name = "zigimg", .module = zigimg_target.module("zigimg") }} },
         .{ "tools/update_tool.zig", &.{.{ .name = "update_manifest", .module = update_manifest_target }} },
     };
-    for (host_tools) |tool| {
+    // Not for Android or iOS: the host tools never run on a phone.
+    if (!is_android and target.result.os.tag != .ios) for (host_tools) |tool| {
         check_step.dependOn(&b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(tool[0]),
             .target = target,
             .optimize = optimize,
             .imports = tool[1],
         }) }).step);
-    }
+    };
 
     // The CLI is part of Oriel's own build only: apps that depend on Oriel
     // never build it (and don't pay for the `git` call below).
-    if (b.pkg_hash.len == 0) addCli(b, target, optimize, test_step, check_step);
+    // Not for Android targets: the CLI runs on the development machine.
+    if (b.pkg_hash.len == 0 and !is_android and target.result.os.tag != .ios) addCli(b, target, optimize, test_step, check_step);
 }
 
 /// `zig build cli`: the `oriel` command-line tool (cli/), a static binary
@@ -282,9 +304,13 @@ fn addCli(
     options.addOption(?[]const u8, "update_public_key", update_public_key);
 
     // Linux builds use musl so the binary is fully static and runs on any
-    // distro (the CLI needs no libc anyway).
+    // distro (the CLI needs no libc anyway). The CLI is a desktop tool: an
+    // Android target builds it for Linux on the same CPU.
     var query = target.query;
-    if (target.result.os.tag == .linux) query.abi = .musl;
+    if (target.result.os.tag == .linux) {
+        query.abi = .musl;
+        query.android_api_level = null;
+    }
     // macOS: runs on macOS 13+ and any Mac CPU, not just the building one.
     const cli_target = resolveTarget(b, b.resolveTargetQuery(query));
     const updater_core_cli = b.createModule(.{
@@ -386,6 +412,19 @@ fn vulkanOptions(b: *std.Build, target: std.Build.ResolvedTarget) ?ggml.VulkanOp
     const glslc = b.option([]const u8, "glslc", "glslc shader compiler for -Dggml_vulkan (default: glslc on PATH; Windows: $VULKAN_SDK\\Bin\\glslc.exe)");
     const include = b.option([]const u8, "vulkan_include", "Vulkan and SPIR-V headers for -Dggml_vulkan (default: system paths; Windows: $VULKAN_SDK\\Include)");
     if (!enabled) return null;
+    if (target.result.abi.isAndroid()) {
+        // glslc from the NDK (shader-tools), vulkan.hpp from Vulkan-Headers,
+        // spirv/unified1/spirv.hpp from SPIRV-Headers.
+        const ndk_glslc: ?[]const u8 = if (android_build.ndk(b)) |ndk| b.pathJoin(&.{ ndk, "shader-tools", android_build.hostTag(b), if (b.graph.host.result.os.tag == .windows) "glslc.exe" else "glslc" }) else null;
+        const headers = b.lazyDependency("vulkan_headers", .{});
+        const spirv = b.lazyDependency("spirv_headers", .{});
+        if (headers == null or spirv == null) return null;
+        return .{
+            .glslc = glslc orelse ndk_glslc orelse "glslc",
+            .include = include,
+            .include_paths = b.allocator.dupe(std.Build.LazyPath, &.{ headers.?.path("include"), spirv.?.path("include") }) catch @panic("OOM"),
+        };
+    }
     switch (target.result.os.tag) {
         .linux => return .{ .glslc = glslc orelse "glslc", .include = include },
         .windows => {
@@ -412,13 +451,18 @@ fn addOrielModule(
         options.addOption(bool, field.name, @field(features, field.name));
     }
 
-    const is_linux = target.result.os.tag == .linux;
+    const is_android = target.result.abi.isAndroid();
+    // Desktop Linux: GTK, WebKitGTK, PulseAudio, Wayland and X11. Android is
+    // Linux to Zig, but has none of them.
+    const is_linux = target.result.os.tag == .linux and !is_android;
 
     const oriel = b.addModule("oriel", .{
         .root_source_file = b.path("src/oriel.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        // Android: the app is a shared library (liboriel.so) loaded by the JVM.
+        .pic = if (is_android) true else null,
     });
     oriel.addOptions("build_options", options);
 
@@ -426,15 +470,32 @@ fn addOrielModule(
     // when installed (src/platform/linux/overlay.zig, preloadLayerShell), so
     // the app also runs where it isn't packaged (Ubuntu 24.04).
     if (is_linux) {
-        const gobject = b.dependency("gobject", .{ .target = target, .optimize = optimize });
-        oriel.addImport("glib", gobject.module("glib2"));
-        oriel.addImport("gobject", gobject.module("gobject2"));
-        oriel.addImport("gio", gobject.module("gio2"));
-        oriel.addImport("gdk", gobject.module("gdk4"));
-        oriel.addImport("gtk", gobject.module("gtk4"));
-        oriel.addImport("webkit", gobject.module("webkit6"));
-        oriel.addImport("jsc", gobject.module("javascriptcore6"));
-        oriel.addImport("soup", gobject.module("soup3"));
+        // Lazy: only desktop Linux needs the GNOME bindings, so Android,
+        // macOS and Windows builds don't fetch them.
+        if (b.lazyDependency("gobject", .{ .target = target, .optimize = optimize })) |gobject| {
+            oriel.addImport("glib", gobject.module("glib2"));
+            oriel.addImport("gobject", gobject.module("gobject2"));
+            oriel.addImport("gio", gobject.module("gio2"));
+            oriel.addImport("gdk", gobject.module("gdk4"));
+            oriel.addImport("gtk", gobject.module("gtk4"));
+            oriel.addImport("webkit", gobject.module("webkit6"));
+            oriel.addImport("jsc", gobject.module("javascriptcore6"));
+            oriel.addImport("soup", gobject.module("soup3"));
+        }
+    } else if (is_android) {
+        // The NDK's libraries: logcat, ALooper (the main-thread dispatch),
+        // AAudio. Without an NDK only `zig build check` works (no linking).
+        if (android_build.ndk(b)) |ndk| {
+            android_build.addSysroot(b, oriel, ndk, target);
+            oriel.linkSystemLibrary("log", .{});
+            oriel.linkSystemLibrary("android", .{});
+            if (features.audio_capture) oriel.linkSystemLibrary("aaudio", .{});
+        }
+    } else if (target.result.os.tag == .ios) {
+        // UIKit + WebKit through the Objective-C runtime (src/platform/apple/
+        // objc.zig: no SDK headers, so `zig build check -Dtarget=aarch64-ios`
+        // works anywhere). Linking needs the iOS SDK (build/ios.zig).
+        if (ios_build.sdk(b)) |sdk| ios_build.link(oriel, sdk, features.audio_capture);
     } else if (target.result.os.tag == .windows) {
         oriel.linkSystemLibrary("user32", .{});
         oriel.linkSystemLibrary("gdi32", .{});
@@ -466,6 +527,8 @@ fn addOrielModule(
         if (features.audio_capture) {
             oriel.linkFramework("CoreAudio", .{});
             oriel.linkFramework("AudioToolbox", .{});
+            // dictation's system engine (SFSpeechRecognizer, AVAudioEngine).
+            oriel.linkFramework("Speech", .{});
         }
     }
 
@@ -480,8 +543,8 @@ fn addOrielModule(
         else
             httpz.module("httpz"));
     }
-    if (features.sql) {
-        const sqlite = b.dependency("sqlite", .{});
+    // Lazy: apps built with -Dsql=false never download SQLite.
+    if (features.sql) if (b.lazyDependency("sqlite", .{})) |sqlite| {
         // Only the headers on the include path: the tarball root also has a
         // `VERSION` file, which on case-insensitive file systems (macOS)
         // shadows C++'s <version> for every C++ source in the module (ggml).
@@ -493,7 +556,7 @@ fn addOrielModule(
             .file = sqlite.path("sqlite3.c"),
             .flags = &.{ "-DSQLITE_THREADSAFE=1", "-DSQLITE_DQS=0", "-DSQLITE_OMIT_DEPRECATED" },
         });
-    }
+    };
     if (features.sqlite_vec) {
         if (b.lazyDependency("sqlite_vec", .{})) |sqlite_vec| {
             oriel.addIncludePath(sqlite_vec.path("."));
@@ -507,15 +570,27 @@ fn addOrielModule(
     if (cuda != null and !features.llama and !features.whisper) fatal("-Dggml_cuda needs -Dllama or -Dwhisper", .{});
     const vulkan = vulkanOptions(b, target);
     if (vulkan != null and !features.llama and !features.whisper) fatal("-Dggml_vulkan needs -Dllama or -Dwhisper", .{});
-    // Windows compiles Vulkan in; ggml_gpu.load() registers it at runtime.
-    options.addOption(bool, "ggml_vulkan_static", vulkan != null and target.result.os.tag == .windows);
+    // Windows and Android compile Vulkan in; ggml_gpu.load() registers it at runtime.
+    options.addOption(bool, "ggml_vulkan_static", vulkan != null and (target.result.os.tag == .windows or is_android));
+    const opencl: ?ggml.OpenClOptions = if (b.option(bool, "ggml_opencl", "Build the OpenCL backend for llama/whisper (Android: Adreno GPUs)") orelse false) blk: {
+        if (!is_android) fatal("-Dggml_opencl is only supported on Android targets for now", .{});
+        if (!features.llama and !features.whisper) fatal("-Dggml_opencl needs -Dllama or -Dwhisper", .{});
+        const headers = b.lazyDependency("opencl_headers", .{}) orelse break :blk null;
+        break :blk .{ .headers = headers.path(".") };
+    } else null;
+    options.addOption(bool, "ggml_opencl_static", opencl != null);
     if (features.llama or features.whisper) {
-        // Metal: on by default for macOS (Apple GPUs; the shader sources are
-        // embedded and compiled by ggml at startup).
-        const metal = b.option(bool, "ggml_metal", "Build ggml's Metal backend for llama/whisper (macOS; default on)") orelse
-            (target.result.os.tag == .macos);
-        if (metal and target.result.os.tag != .macos) fatal("-Dggml_metal needs a macOS target", .{});
-        ggml.addGgml(b, oriel, features, cuda, vulkan, metal);
+        // Metal: on by default for macOS and iOS (Apple GPUs; the shader
+        // sources are embedded and compiled by ggml at startup).
+        const apple = target.result.os.tag == .macos or target.result.os.tag == .ios;
+        const metal = b.option(bool, "ggml_metal", "Build ggml's Metal backend for llama/whisper (macOS, iOS; default on)") orelse apple;
+        if (metal and !apple) fatal("-Dggml_metal needs a macOS or iOS target", .{});
+        // ARM extensions for ggml's CPU code: dotprod by default on Android
+        // (every arm64 phone since 2018), none elsewhere.
+        const arm_default: ggml.ArmLevel = if (is_android and target.result.cpu.arch == .aarch64) .dotprod else .baseline;
+        const arm = b.option(ggml.ArmLevel, "ggml_arm", "ARM extensions for ggml's CPU kernels: baseline, dotprod (Android default), i8mm") orelse arm_default;
+        options.addOption(ggml.ArmLevel, "ggml_arm", if (target.result.cpu.arch == .aarch64) arm else .baseline);
+        ggml.addGgml(b, oriel, features, cuda, vulkan, opencl, metal, arm);
     }
     if (is_linux and (features.input or features.clipboard)) {
         const scanner = Scanner.create(b, .{});
@@ -666,6 +741,26 @@ pub const AppOptions = struct {
     /// embeds the hook and exposes it as `oriel_app.isolation`; pass that to
     /// `App.Config.security.isolation` (see `security.Isolation`).
     isolation: ?Isolation = null,
+    /// Android-only system entry points (see docs/android.md), declared in
+    /// the generated manifest.
+    android: Android = .{},
+    /// iOS-only bundle settings (see docs/ios.md).
+    ios: Ios = .{},
+
+    pub const Ios = struct {
+        /// UIBackgroundModes `audio`: keep capturing (audio_capture) or
+        /// playing while the app is in the background.
+        background_audio: bool = false,
+    };
+
+    pub const Android = struct {
+        /// A Quick Settings tile with this label: taps send the system
+        /// event "tile" (`oriel.android.onSystemEvent`).
+        tile: ?[]const u8 = null,
+        /// The Oriel keyboard, with this name in the system's keyboard list:
+        /// `oriel.android.commitText` types into any app's focused field.
+        input_method: ?[]const u8 = null,
+    };
 
     pub const Isolation = struct {
         /// JavaScript setting `globalThis.__ORIEL_ISOLATION_HOOK__`.
@@ -761,6 +856,8 @@ pub fn addUpdaterSteps(b: *std.Build, update_tool: *std.Build.Step.Compile) void
 /// Calling it more than once is allowed: top-level steps are shared, so
 /// e.g. `zig build run` or `zig build package` acts on every app added.
 pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) App {
+    if (oriel_dep.module("oriel").resolved_target.?.result.abi.isAndroid()) return addAndroidApp(b, oriel_dep, options);
+    if (oriel_dep.module("oriel").resolved_target.?.result.os.tag == .ios) return addIosApp(b, oriel_dep, options);
     addUpdaterSteps(b, oriel_dep.artifact("update_tool"));
 
     const oriel = oriel_dep.module("oriel");
@@ -965,6 +1062,474 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     @import("build/package.zig").addPackageSteps(b, oriel_dep, options, exe, dev_exe, icons_dir, app_icon, permissions);
 
     return .{ .exe = exe, .dev_exe = dev_exe };
+}
+
+/// `addApp` for an Android target (`-Dtarget=aarch64-linux-android`,
+/// `x86_64-linux-android`): the app is `liboriel.so`, a shared library the
+/// Kotlin runtime loads (see docs/android.md). Steps:
+///   zig build              build the frontend, embed it, install
+///                          zig-out/jniLibs/<abi>/liboriel.so
+///   zig build android-dev  the same library loading the dev server instead
+///                          (reached from the device through `adb reverse`)
+///   zig build check        type-check the app (no binaries)
+/// The APK itself is built by Gradle (`oriel android build`).
+fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) App {
+    const oriel = oriel_dep.module("oriel");
+    const target = android_build.resolveTarget(b, oriel.resolved_target.?);
+    const optimize = oriel.optimize.?;
+    const prod_optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe;
+    const dev_optimize = if (b.user_input_options.contains("optimize")) optimize else .Debug;
+    const fe = options.frontend;
+    const fe_dir = b.pathFromRoot(fe.dir);
+    const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
+    const permissions = effectivePermissions(oriel_dep, options.permissions);
+    const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
+    const install_dir: std.Build.InstallDir = .{ .custom = b.fmt("jniLibs/{s}", .{android_build.abiDir(target.result)}) };
+
+    var install_step: ?*std.Build.Step = null;
+    if (fe.install_command) |cmd| {
+        if (!pathExists(b, b.pathJoin(&.{ fe_dir, "node_modules" }))) {
+            const install = b.addSystemCommand(cmd);
+            install.setCwd(.{ .cwd_relative = fe_dir });
+            install_step = &install.step;
+        }
+    }
+
+    // Production: the frontend built and embedded.
+    const embed = b.addRunArtifact(oriel_dep.artifact("embed_assets"));
+    embed.has_side_effects = true;
+    embed.addArg(b.pathJoin(&.{ fe_dir, fe.dist }));
+    const assets_dir = embed.addOutputDirectoryArg("assets");
+    if (fe.build_command) |cmd| {
+        const build_fe = b.addSystemCommand(cmd);
+        build_fe.setCwd(.{ .cwd_relative = fe_dir });
+        build_fe.has_side_effects = true;
+        if (install_step) |st| build_fe.step.dependOn(st);
+        embed.step.dependOn(&build_fe.step);
+    }
+    const prod_cfg = b.addOptions();
+    prod_cfg.addOption(bool, "is_dev", false);
+    prod_cfg.addOption([]const u8, "dev_url", "");
+    prod_cfg.addOption([]const []const u8, "dev_command", &.{});
+    prod_cfg.addOption([]const u8, "frontend_dir", fe_dir);
+    prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
+    prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
+    addPermissionOptions(prod_cfg, permissions);
+    const lib = addAndroidLib(b, oriel, target, prod_optimize, options, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation));
+    android_build.requireNdk(b, lib);
+    b.getInstallStep().dependOn(&b.addInstallArtifact(lib, .{ .dest_dir = .{ .override = install_dir } }).step);
+
+    // Snapdragon NPU: libggml-hexagon.so and its DSP libraries
+    // (libggml-htp-v*.so), built with Qualcomm's Hexagon SDK by llama.cpp's
+    // Android build at the same commit (docs/android.md). They link against
+    // ggml's libggml-base.so: a stub of that name whose only content is a
+    // dependency on liboriel.so gives them Oriel's own ggml.
+    if (b.option([]const u8, "ggml_hexagon_prebuilt", "Directory with libggml-hexagon.so and libggml-htp-v*.so for arm64 (Snapdragon NPU)")) |dir| {
+        if (target.result.cpu.arch != .aarch64) fatal("-Dggml_hexagon_prebuilt needs an arm64 target (aarch64-linux-android)", .{});
+        if (!std.fs.path.isAbsolute(dir)) fatal("-Dggml_hexagon_prebuilt needs an absolute path", .{});
+        var found = false;
+        var d = std.Io.Dir.cwd().openDir(b.graph.io, dir, .{ .iterate = true }) catch fatal("-Dggml_hexagon_prebuilt: cannot open {s}", .{dir});
+        defer d.close(b.graph.io);
+        var it = d.iterate();
+        while (it.next(b.graph.io) catch null) |entry| {
+            const is_backend = std.mem.eql(u8, entry.name, "libggml-hexagon.so");
+            if (!is_backend and !(std.mem.startsWith(u8, entry.name, "libggml-htp-") and std.mem.endsWith(u8, entry.name, ".so"))) continue;
+            found = found or is_backend;
+            b.getInstallStep().dependOn(&b.addInstallFileWithDir(.{ .cwd_relative = b.pathJoin(&.{ dir, entry.name }) }, install_dir, b.dupe(entry.name)).step);
+        }
+        if (!found) fatal("-Dggml_hexagon_prebuilt: no libggml-hexagon.so in {s}", .{dir});
+        const stub_root = b.addWriteFiles().add("ggml_base_stub.zig", "// libggml-base.so for prebuilt ggml backends: its dependency on liboriel.so is the point.\n");
+        const stub = b.addLibrary(.{
+            .name = "ggml-base",
+            .linkage = .dynamic,
+            .root_module = b.createModule(.{ .root_source_file = stub_root, .target = target, .optimize = prod_optimize, .pic = true }),
+            .use_llvm = true,
+            .use_lld = true,
+        });
+        stub.root_module.linkLibrary(lib);
+        android_build.configure(b, stub, target);
+        android_build.requireNdk(b, stub);
+        b.getInstallStep().dependOn(&b.addInstallArtifact(stub, .{ .dest_dir = .{ .override = install_dir } }).step);
+    }
+
+    // Development: the dev server's URL (through `adb reverse` on the device).
+    const dev = fe.dev orelse Frontend.Dev{};
+    const dev_cfg = b.addOptions();
+    dev_cfg.addOption(bool, "is_dev", true);
+    dev_cfg.addOption([]const u8, "dev_url", dev.url);
+    // The dev server runs on the development machine, not on the device.
+    dev_cfg.addOption([]const []const u8, "dev_command", &.{});
+    dev_cfg.addOption([]const u8, "frontend_dir", fe_dir);
+    dev_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
+    dev_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
+    addPermissionOptions(dev_cfg, permissions);
+    const dev_lib = addAndroidLib(b, oriel, target, dev_optimize, options, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation));
+    android_build.requireNdk(b, dev_lib);
+    @import("build/package.zig").getOrCreateStep(b, "android-dev", "Build the Android library against the dev server (zig-out/jniLibs)")
+        .dependOn(&b.addInstallArtifact(dev_lib, .{ .dest_dir = .{ .override = install_dir } }).step);
+
+    // The Gradle project (android/): `zig build android-project` writes it
+    // from Oriel's template (`-Dandroid_force` rewrites edited files); every
+    // build refreshes its copy of the Kotlin runtime, which must match this
+    // library.
+    const android_vars = androidProjectVars(b, options, permissions, url_schemes);
+    const package_tool = oriel_dep.artifact("package_tool");
+    const run_icons = b.addRunArtifact(package_tool);
+    run_icons.addArgs(&.{ "resize-icons", "--input" });
+    run_icons.addFileArg(app_icon);
+    run_icons.addArg("--out-dir");
+    const icons_dir = run_icons.addOutputDirectoryArg("icons");
+    run_icons.addArg("--brand-dir");
+    run_icons.addDirectoryArg(oriel_dep.path("assets/brand"));
+    const project_dir = b.pathFromRoot("android");
+    const force = b.option(bool, "android_force", "android-project: rewrite files that already exist (default: false)") orelse false;
+    const write_project = b.addRunArtifact(package_tool);
+    write_project.addArgs(&.{ "android-project", "--template" });
+    write_project.addDirectoryArg(oriel_dep.path("android/template"));
+    write_project.addArgs(&.{ "--out", project_dir, "--icons" });
+    write_project.addDirectoryArg(icons_dir);
+    for (android_vars) |v| write_project.addArgs(&.{ "--var", v });
+    if (force) write_project.addArg("--force");
+    write_project.has_side_effects = true;
+    @import("build/package.zig").getOrCreateStep(b, "android-project", "Write the Android (Gradle) project into android/ (-Dandroid_force rewrites edited files)").dependOn(&write_project.step);
+    const sync_runtime = b.addRunArtifact(package_tool);
+    sync_runtime.addArgs(&.{ "android-project", "--runtime-only", "--template" });
+    sync_runtime.addDirectoryArg(oriel_dep.path("android/template"));
+    sync_runtime.addArgs(&.{ "--out", project_dir });
+    for (android_vars) |v| sync_runtime.addArgs(&.{ "--var", v });
+    sync_runtime.has_side_effects = true;
+    b.getInstallStep().dependOn(&sync_runtime.step);
+
+    // Type-check only: nothing requests the binary.
+    const check_lib = addAndroidLib(b, oriel, target, dev_optimize, options, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation));
+    @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_lib.step);
+
+    if (fe.types_path != null) {
+        const fail = b.addFail("Cannot generate TypeScript types for an Android target; run `zig build types` natively on the host.");
+        @import("build/package.zig").getOrCreateStep(b, "types", "Generate TypeScript types for the Zig commands").dependOn(&fail.step);
+    }
+    return .{ .exe = lib, .dev_exe = dev_lib };
+}
+
+fn xmlEscape(b: *std.Build, text: []const u8) []const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (text) |ch| switch (ch) {
+        '&' => out.appendSlice(b.allocator, "&amp;") catch @panic("OOM"),
+        '<' => out.appendSlice(b.allocator, "&lt;") catch @panic("OOM"),
+        '>' => out.appendSlice(b.allocator, "&gt;") catch @panic("OOM"),
+        '"' => out.appendSlice(b.allocator, "&quot;") catch @panic("OOM"),
+        else => out.append(b.allocator, ch) catch @panic("OOM"),
+    };
+    return out.items;
+}
+
+/// `--var key=value` arguments for the Android template (android/template).
+fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissions, url_schemes: []const []const u8) []const []const u8 {
+    const pkg = options.package orelse PackageOptions{};
+    const app_id = pkg.id orelse b.fmt("dev.oriel.{s}", .{options.name});
+    const name = pkg.name orelse options.name;
+    const version = pkg.version orelse "0.1.0";
+    // versionCode from major.minor.patch: 1.2.3 -> 10203.
+    var code: u32 = 0;
+    var it = std.mem.splitScalar(u8, version, '.');
+    for (0..3) |_| code = code * 100 + (std.fmt.parseInt(u32, it.next() orelse "0", 10) catch 0);
+    if (code == 0) code = 1;
+
+    var perms: std.ArrayList(u8) = .empty;
+    const line = "    <uses-permission android:name=\"android.permission.{s}\" />\n";
+    if (permissions.microphone != null) {
+        perms.appendSlice(b.allocator, b.fmt(line, .{"RECORD_AUDIO"})) catch @panic("OOM");
+        perms.appendSlice(b.allocator, b.fmt(line, .{"FOREGROUND_SERVICE"})) catch @panic("OOM");
+        perms.appendSlice(b.allocator, b.fmt(line, .{"FOREGROUND_SERVICE_MICROPHONE"})) catch @panic("OOM");
+    }
+    if (permissions.camera != null) perms.appendSlice(b.allocator, b.fmt(line, .{"CAMERA"})) catch @panic("OOM");
+    if (permissions.location != null) {
+        perms.appendSlice(b.allocator, b.fmt(line, .{"ACCESS_COARSE_LOCATION"})) catch @panic("OOM");
+        perms.appendSlice(b.allocator, b.fmt(line, .{"ACCESS_FINE_LOCATION"})) catch @panic("OOM");
+    }
+    if (permissions.notifications != null) perms.appendSlice(b.allocator, b.fmt(line, .{"POST_NOTIFICATIONS"})) catch @panic("OOM");
+
+    var schemes: std.ArrayList(u8) = .empty;
+    for (url_schemes) |scheme| schemes.appendSlice(b.allocator, b.fmt(
+        \\            <intent-filter>
+        \\                <action android:name="android.intent.action.VIEW" />
+        \\                <category android:name="android.intent.category.DEFAULT" />
+        \\                <category android:name="android.intent.category.BROWSABLE" />
+        \\                <data android:scheme="{s}" />
+        \\            </intent-filter>
+        \\
+    , .{scheme})) catch @panic("OOM");
+
+    const audio_service = if (permissions.microphone != null)
+        \\        <service
+        \\            android:name="dev.oriel.OrielAudioService"
+        \\            android:exported="false"
+        \\            android:foregroundServiceType="microphone" />
+        \\
+        \\
+    else
+        "";
+
+    var components: std.ArrayList(u8) = .empty;
+    if (options.android.tile) |label| components.appendSlice(b.allocator, b.fmt(
+        \\        <service
+        \\            android:name="dev.oriel.OrielTileService"
+        \\            android:exported="true"
+        \\            android:label="{s}"
+        \\            android:icon="@mipmap/ic_launcher"
+        \\            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+        \\            <intent-filter>
+        \\                <action android:name="android.service.quicksettings.action.QS_TILE" />
+        \\            </intent-filter>
+        \\        </service>
+        \\
+        \\
+    , .{xmlEscape(b, label)})) catch @panic("OOM");
+    if (options.android.input_method) |label| components.appendSlice(b.allocator, b.fmt(
+        \\        <service
+        \\            android:name="dev.oriel.OrielInputMethod"
+        \\            android:exported="true"
+        \\            android:label="{s}"
+        \\            android:permission="android.permission.BIND_INPUT_METHOD">
+        \\            <intent-filter>
+        \\                <action android:name="android.view.InputMethod" />
+        \\            </intent-filter>
+        \\            <meta-data android:name="android.view.im" android:resource="@xml/oriel_input_method" />
+        \\        </service>
+        \\
+        \\
+    , .{xmlEscape(b, label)})) catch @panic("OOM");
+
+    // android/app to the installed libraries, relative so the project moves.
+    const app_dir = b.pathFromRoot("android/app");
+    const libs = b.pathJoin(&.{ b.install_prefix, "jniLibs" });
+    const lib_dir = std.fs.path.relative(b.allocator, b.build_root.path orelse "/", null, app_dir, libs) catch libs;
+
+    return b.allocator.dupe([]const u8, &.{
+        b.fmt("app_id={s}", .{app_id}),
+        b.fmt("name={s}", .{name}),
+        b.fmt("version={s}", .{version}),
+        b.fmt("version_code={d}", .{code}),
+        b.fmt("lib_dir={s}", .{lib_dir}),
+        b.fmt("permissions={s}", .{perms.items}),
+        b.fmt("url_schemes={s}", .{schemes.items}),
+        b.fmt("audio_service={s}", .{audio_service}),
+        b.fmt("android_components={s}", .{components.items}),
+        "width=960",
+        "height=720",
+        "min_width=360",
+        "min_height=320",
+    }) catch @panic("OOM");
+}
+
+/// The app as `liboriel.so`: a generated root that exports the JNI entry
+/// point (`NativeLib.start`, which runs the app's `main`) and routes logs
+/// and panics to logcat unless the app sets its own.
+/// `addApp` for an iOS target (`-Dtarget=aarch64-ios`, or
+/// `aarch64-ios-simulator` / `x86_64-ios-simulator`): an executable in an
+/// (unsigned) `.app` bundle (see docs/ios.md). Steps:
+///   zig build          build the frontend, embed it, write zig-out/ios/<Name>.app
+///   zig build ios-dev  the same app loading the dev server instead
+///                      (zig-out/ios-dev/<Name>.app; the device must reach
+///                      the dev URL, so use the machine's LAN address)
+///   zig build ios-ipa  zig-out/<Name>.ipa (Payload/<Name>.app, `zip`)
+///   zig build check    type-check the app (no binaries)
+/// Signing and installing are `xtool`'s (or Xcode's) job.
+fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) App {
+    const oriel = oriel_dep.module("oriel");
+    const target = ios_build.resolveTarget(b, oriel.resolved_target.?);
+    const optimize = oriel.optimize.?;
+    const prod_optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe;
+    const dev_optimize = if (b.user_input_options.contains("optimize")) optimize else .Debug;
+    const fe = options.frontend;
+    const fe_dir = b.pathFromRoot(fe.dir);
+    const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
+    const permissions = effectivePermissions(oriel_dep, options.permissions);
+    const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
+    const sdk = ios_build.sdk(b);
+    const audio_capture = @import("build/package.zig").isFeatureEnabledDefault(oriel_dep, "audio_capture", false);
+
+    var install_step: ?*std.Build.Step = null;
+    if (fe.install_command) |cmd| {
+        if (!pathExists(b, b.pathJoin(&.{ fe_dir, "node_modules" }))) {
+            const install = b.addSystemCommand(cmd);
+            install.setCwd(.{ .cwd_relative = fe_dir });
+            install_step = &install.step;
+        }
+    }
+
+    // Production: the frontend built and embedded.
+    const embed = b.addRunArtifact(oriel_dep.artifact("embed_assets"));
+    embed.has_side_effects = true;
+    embed.addArg(b.pathJoin(&.{ fe_dir, fe.dist }));
+    const assets_dir = embed.addOutputDirectoryArg("assets");
+    if (fe.build_command) |cmd| {
+        const build_fe = b.addSystemCommand(cmd);
+        build_fe.setCwd(.{ .cwd_relative = fe_dir });
+        build_fe.has_side_effects = true;
+        if (install_step) |st| build_fe.step.dependOn(st);
+        embed.step.dependOn(&build_fe.step);
+    }
+    const prod_cfg = b.addOptions();
+    prod_cfg.addOption(bool, "is_dev", false);
+    prod_cfg.addOption([]const u8, "dev_url", "");
+    prod_cfg.addOption([]const []const u8, "dev_command", &.{});
+    prod_cfg.addOption([]const u8, "frontend_dir", fe_dir);
+    prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
+    prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
+    addPermissionOptions(prod_cfg, permissions);
+    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation));
+    for (options.imports) |imp| exe.root_module.addImport(imp.name, imp.module);
+
+    // Development: the dev server's URL (reached over the network).
+    const dev = fe.dev orelse Frontend.Dev{};
+    const dev_cfg = b.addOptions();
+    dev_cfg.addOption(bool, "is_dev", true);
+    // A device reaches the development machine by its LAN address; the
+    // simulator shares the Mac's network, so localhost works there.
+    const dev_url = b.option([]const u8, "ios_dev_url", "iOS: the dev server's URL as the device reaches it (default: frontend.dev.url)") orelse dev.url;
+    dev_cfg.addOption([]const u8, "dev_url", dev_url);
+    // The dev server runs on the development machine, not on the device.
+    dev_cfg.addOption([]const []const u8, "dev_command", &.{});
+    dev_cfg.addOption([]const u8, "frontend_dir", fe_dir);
+    dev_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
+    dev_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
+    addPermissionOptions(dev_cfg, permissions);
+    const dev_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation));
+    for (options.imports) |imp| dev_exe.root_module.addImport(imp.name, imp.module);
+
+    for ([_]*std.Build.Step.Compile{ exe, dev_exe }) |c| {
+        if (sdk) |root| ios_build.link(c.root_module, root, audio_capture);
+        ios_build.configure(b, c);
+        ios_build.requireSdk(b, c);
+    }
+
+    const pkg = options.package orelse PackageOptions{};
+    const display_name = pkg.name orelse options.name;
+    const bundle_dir = b.fmt("{s}.app", .{display_name});
+    const package_tool = oriel_dep.artifact("package_tool");
+    const Bundle = struct { step: *std.Build.Step.Run, dir: std.Build.LazyPath };
+    const bundles = [_]struct { *std.Build.Step.Compile, bool }{ .{ exe, false }, .{ dev_exe, true } };
+    var made: [2]Bundle = undefined;
+    for (bundles, 0..) |entry, idx| {
+        const compile, const is_dev = entry;
+        const run = b.addRunArtifact(package_tool);
+        run.addArgs(&.{ "ios-app", "--out-dir" });
+        const out = run.addOutputDirectoryArg("ios");
+        run.addArg("--bin");
+        run.addArtifactArg(compile);
+        run.addArg("--icon");
+        run.addFileArg(app_icon);
+        run.addArgs(&.{
+            "--app-id",   pkg.id orelse b.fmt("dev.oriel.{s}", .{options.name}),
+            "--name",     display_name,
+            "--exe-name", options.name,
+            "--version",  pkg.version orelse "0.1.0",
+            "--min-os",   b.fmt("{f}", .{target.result.os.version_range.semver.min}),
+        });
+        if (ios_build.isSimulator(target.result)) run.addArg("--simulator");
+        if (options.ios.background_audio) run.addArg("--background-audio");
+        if (is_dev) run.addArg("--allow-http");
+        for (url_schemes) |scheme| run.addArgs(&.{ "--url-scheme", scheme });
+        inline for (@typeInfo(Permissions).@"struct".fields) |f| {
+            if (@field(permissions, f.name)) |reason| {
+                const text = if (reason.len > 0) reason else b.fmt("{s} {s}", .{ display_name, Permissions.defaultReasonFor(f.name) });
+                run.addArgs(&.{ "--permission", b.fmt("{s}={s}", .{ f.name, text }) });
+            }
+        }
+        made[idx] = .{ .step = run, .dir = out };
+    }
+    b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = made[0].dir, .install_dir = .prefix, .install_subdir = "ios" }).step);
+    @import("build/package.zig").getOrCreateStep(b, "ios-dev", "Build the iOS app against the dev server (zig-out/ios-dev)")
+        .dependOn(&b.addInstallDirectory(.{ .source_dir = made[1].dir, .install_dir = .prefix, .install_subdir = "ios-dev" }).step);
+
+    // .ipa: Payload/<Name>.app, zipped.
+    const stage = b.addWriteFiles();
+    _ = stage.addCopyDirectory(made[0].dir.path(b, bundle_dir), b.fmt("Payload/{s}", .{bundle_dir}), .{});
+    const zip = b.addSystemCommand(&.{ "zip", "-qry" });
+    zip.setCwd(stage.getDirectory());
+    const ipa = zip.addOutputFileArg(b.fmt("{s}.ipa", .{display_name}));
+    zip.addArg("Payload");
+    @import("build/package.zig").getOrCreateStep(b, "ios-ipa", "Package the iOS app as zig-out/<Name>.ipa (unsigned)")
+        .dependOn(&b.addInstallFile(ipa, b.fmt("{s}.ipa", .{display_name})).step);
+
+    // Type-check only: nothing requests the binary.
+    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation));
+    for (options.imports) |imp| check_exe.root_module.addImport(imp.name, imp.module);
+    // With an SDK, C dependencies (sql, whisper, ...) type-check too.
+    ios_build.configure(b, check_exe);
+    @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_exe.step);
+
+    if (fe.types_path != null) {
+        const fail = b.addFail("Cannot generate TypeScript types for an iOS target; run `zig build types` natively on the host.");
+        @import("build/package.zig").getOrCreateStep(b, "types", "Generate TypeScript types for the Zig commands").dependOn(&fail.step);
+    }
+    return .{ .exe = exe, .dev_exe = dev_exe };
+}
+
+fn addAndroidLib(
+    b: *std.Build,
+    oriel: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    options: AppOptions,
+    app_config: *std.Build.Module,
+) *std.Build.Step.Compile {
+    const app_root = b.createModule(.{
+        .root_source_file = options.root_source_file,
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+        .imports = &.{
+            .{ .name = "oriel", .module = oriel },
+            .{ .name = "oriel_app", .module = app_config },
+        },
+    });
+    for (options.imports) |imp| app_root.addImport(imp.name, imp.module);
+    const files = b.addWriteFiles();
+    const root = files.add("oriel_android.zig",
+        \\const std = @import("std");
+        \\const oriel = @import("oriel");
+        \\const app = @import("app_root");
+        \\
+        \\/// The app's options, logging to logcat unless it chose its own logFn.
+        \\/// No per-thread signal stack unless the app asks for one: it is a
+        \\/// 256 KiB thread-local that bionic allocates in every thread touching
+        \\/// the library's TLS (the UI and binder threads too), and it only serves
+        \\/// std's segfault handler, which a JNI library never installs (ART
+        \\/// handles the signals).
+        \\pub const std_options: std.Options = blk: {
+        \\    var o: std.Options = if (@hasDecl(app, "std_options")) app.std_options else .{};
+        \\    if (o.logFn == std.log.defaultLog) o.logFn = oriel.log.logFn;
+        \\    if (o.signal_stack_size == (std.Options{}).signal_stack_size) o.signal_stack_size = null;
+        \\    break :blk o;
+        \\};
+        \\
+        \\pub const panic = if (@hasDecl(app, "panic")) app.panic else oriel.android.panic;
+        \\
+        \\comptime {
+        \\    oriel.android.exportStart(app);
+        \\}
+        \\
+    );
+    const lib = b.addLibrary(.{
+        .name = "oriel",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = root,
+            .target = target,
+            .optimize = optimize,
+            .pic = true,
+            .imports = &.{
+                .{ .name = "oriel", .module = oriel },
+                .{ .name = "app_root", .module = app_root },
+            },
+        }),
+        .use_llvm = true,
+        .use_lld = true,
+    });
+    android_build.configure(b, lib, target);
+    return lib;
 }
 
 /// The TypeScript generator for `frontend.types_from = .root_decls`: imports

@@ -97,6 +97,10 @@ pub fn main(init: std.process.Init) !u8 {
         return stripElfCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "package-winget")) {
         return packageWingetCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "ios-app")) {
+        return @import("ios.zig").iosAppCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "android-project")) {
+        return @import("android.zig").androidProjectCmd(gpa, io, args);
     } else {
         std.debug.print("unknown command: {s}\n", .{command});
         printUsage();
@@ -122,6 +126,10 @@ fn printUsage() void {
         \\  install-desktop-entry Install desktop file and icons to $XDG_DATA_HOME
         \\  package-winget        WinGet manifests for a setup.exe (--installer, --url, --out-dir, --id, metadata)
         \\  strip-elf             Copy an ELF file without its symbol table and debug info (--in, --out)
+        \\  ios-app               Assemble an (unsigned) iOS .app bundle: Info.plist, icons
+        \\                        (--out-dir, --bin, --icon, --app-id, --name, --exe-name, --simulator, ...)
+        \\  android-project       Write the app's Android (Gradle) project from Oriel's template
+        \\                        (--template, --out, --icons, --var key=value, --force, --runtime-only)
         \\
         \\package-* commands also take --extra-exe <path> and --extra-file <relpath>=<src>
         \\(repeatable): more executables, and files placed relative to the app's executable.
@@ -2012,6 +2020,8 @@ pub fn resolveDataHome(gpa: std.mem.Allocator, env_map: *const std.process.Envir
 
 test {
     std.testing.refAllDecls(metadata);
+    std.testing.refAllDecls(@import("android.zig"));
+    std.testing.refAllDecls(@import("ios.zig"));
     std.testing.refAllDecls(desktop);
     std.testing.refAllDecls(nfpm);
     std.testing.refAllDecls(appimage);
@@ -2443,7 +2453,7 @@ test "generateDesktopCmd with --url-scheme" {
 
 /// POSIX mode on Linux/macOS; Windows has attributes instead of modes (and
 /// `@enumFromInt(0o755)` there would set read-only/system/... attribute bits).
-fn filePerms(mode: u32) std.Io.File.Permissions {
+pub fn filePerms(mode: u32) std.Io.File.Permissions {
     return if (builtin.os.tag == .windows) .default_file else .fromMode(@intCast(mode));
 }
 
@@ -2485,26 +2495,7 @@ fn packageWingetCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) 
         }
         const v: []const u8 = args[i + 1];
         i += 1;
-        if (std.mem.eql(u8, arg, "--installer")) installer = v
-        else if (std.mem.eql(u8, arg, "--out-dir")) out_dir = v
-        else if (std.mem.eql(u8, arg, "--url")) m.installer_url = v
-        else if (std.mem.eql(u8, arg, "--id")) m.id = v
-        else if (std.mem.eql(u8, arg, "--version")) m.version = v
-        else if (std.mem.eql(u8, arg, "--name")) m.name = v
-        else if (std.mem.eql(u8, arg, "--publisher")) m.publisher = v
-        else if (std.mem.eql(u8, arg, "--license")) m.license = v
-        else if (std.mem.eql(u8, arg, "--license-url")) m.license_url = v
-        else if (std.mem.eql(u8, arg, "--summary")) m.summary = v
-        else if (std.mem.eql(u8, arg, "--description")) m.description = v
-        else if (std.mem.eql(u8, arg, "--homepage")) m.homepage = v
-        else if (std.mem.eql(u8, arg, "--release-notes-url")) m.release_notes_url = v
-        else if (std.mem.eql(u8, arg, "--moniker")) m.moniker = v
-        else if (std.mem.eql(u8, arg, "--app-id")) m.product_code = v
-        else if (std.mem.eql(u8, arg, "--arch")) m.architecture = v
-        else if (std.mem.eql(u8, arg, "--tag")) try tags.append(arena, v)
-        else if (std.mem.eql(u8, arg, "--url-scheme")) try schemes.append(arena, v)
-        else if (std.mem.eql(u8, arg, "--command")) try commands.append(arena, v)
-        else if (std.mem.eql(u8, arg, "--portable")) {
+        if (std.mem.eql(u8, arg, "--installer")) installer = v else if (std.mem.eql(u8, arg, "--out-dir")) out_dir = v else if (std.mem.eql(u8, arg, "--url")) m.installer_url = v else if (std.mem.eql(u8, arg, "--id")) m.id = v else if (std.mem.eql(u8, arg, "--version")) m.version = v else if (std.mem.eql(u8, arg, "--name")) m.name = v else if (std.mem.eql(u8, arg, "--publisher")) m.publisher = v else if (std.mem.eql(u8, arg, "--license")) m.license = v else if (std.mem.eql(u8, arg, "--license-url")) m.license_url = v else if (std.mem.eql(u8, arg, "--summary")) m.summary = v else if (std.mem.eql(u8, arg, "--description")) m.description = v else if (std.mem.eql(u8, arg, "--homepage")) m.homepage = v else if (std.mem.eql(u8, arg, "--release-notes-url")) m.release_notes_url = v else if (std.mem.eql(u8, arg, "--moniker")) m.moniker = v else if (std.mem.eql(u8, arg, "--app-id")) m.product_code = v else if (std.mem.eql(u8, arg, "--arch")) m.architecture = v else if (std.mem.eql(u8, arg, "--tag")) try tags.append(arena, v) else if (std.mem.eql(u8, arg, "--url-scheme")) try schemes.append(arena, v) else if (std.mem.eql(u8, arg, "--command")) try commands.append(arena, v) else if (std.mem.eql(u8, arg, "--portable")) {
             var parts = std.mem.splitScalar(u8, v, '=');
             const arch = parts.next().?;
             const file_path = parts.next() orelse "";
@@ -2515,8 +2506,7 @@ fn packageWingetCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) 
             }
             try portable.append(arena, .{ .architecture = arch, .url = url, .sha256 = "" });
             try portable_files.append(arena, file_path);
-        }
-        else {
+        } else {
             std.debug.print("error: package-winget: unknown option {s}\n", .{arg});
             return 1;
         }

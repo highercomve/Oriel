@@ -1,0 +1,166 @@
+# iOS: build examples/showcase (every Oriel feature: dictation with whisper on
+# Metal, chat with llama.cpp, SQLite, files, notes, windows) for a device and
+# for the simulator against Xcode's SDKs, run it in a booted iPhone
+# simulator, and drive it with its scripted UI tests (uitest.js): the Chat
+# tab (download, streaming, Stop, a follow-up reusing the KV cache, Compare),
+# the models freed in the background, and Apple's speech recognizer in
+# English and Spanish on spoken test audio. Screenshots and logs are kept
+# as artifacts (and printed as base64). See docs/ios.md.
+name: iOS
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/platform/ios/**"
+      - "src/platform/apple/**"
+      - "src/**/ios.zig"
+      - "build/ios.zig"
+      - "build/ggml.zig"
+      - "tools/package/ios.zig"
+      - "examples/showcase/**"
+      - "src/modules/dictation/**"
+      - "src/modules/dictation.zig"
+      - "src/modules/chat.zig"
+      - "src/modules/llama.zig"
+      - "scripts/ios-ui-test.sh"
+      - ".github/workflows/ios.yml"
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  showcase:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Type-check (device and simulator)
+        run: |
+          zig build check -Dtarget=aarch64-ios -Dsql=false
+          zig build check -Dtarget=aarch64-ios-simulator -Dsql=false
+      - name: Type-check the showcase for macOS (dictation's Apple engine there)
+        working-directory: examples/showcase
+        run: zig build check
+      - name: Build for a device (links against iPhoneOS.sdk)
+        working-directory: examples/showcase
+        run: |
+          zig build -Dtarget=aarch64-ios -Dapple_sdk="$(xcrun --sdk iphoneos --show-sdk-path)" --summary all
+          zig build ios-ipa -Dtarget=aarch64-ios -Dapple_sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+          ls -la zig-out/ios/*.app zig-out/*.ipa
+      - name: Build for the simulator (whisper, Metal)
+        working-directory: examples/showcase
+        run: |
+          rm -rf zig-out
+          zig build -Dtarget=aarch64-ios-simulator -Dapple_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)" --summary all
+          # The simulator runs ad-hoc signed code only.
+          codesign --force --sign - "zig-out/ios/Oriel Showcase.app"
+          plutil -lint "zig-out/ios/Oriel Showcase.app/Info.plist"
+          plutil -p "zig-out/ios/Oriel Showcase.app/Info.plist"
+      - name: Boot a simulator
+        run: |
+          udid=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          for runtime, list_ in sorted(devices.items(), reverse=True):
+              if "iOS" not in runtime: continue
+              for d in list_:
+                  if d["name"].startswith("iPhone"):
+                      print(d["udid"]); sys.exit()
+          ')
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+      - name: Install and run
+        working-directory: examples/showcase
+        run: |
+          xcrun simctl install "$UDID" "zig-out/ios/Oriel Showcase.app"
+          # stdout/stderr of the app into a file; it keeps running.
+          xcrun simctl launch --stdout="$PWD/app.log" --stderr="$PWD/app.log" "$UDID" dev.oriel.Showcase
+          sleep 15
+          xcrun simctl io "$UDID" screenshot screenshot.png
+          # A deep link adds a note (oriel-showcase://note/<text>). `simctl
+          # openurl` makes iOS ask "Open in …?", which nothing here can tap:
+          # relaunch with the link as an argument instead (the app treats it
+          # as the launch's deep link, as on the desktop).
+          xcrun simctl terminate "$UDID" dev.oriel.Showcase
+          xcrun simctl launch --stdout="$PWD/app.log" --stderr="$PWD/app.log" "$UDID" dev.oriel.Showcase "oriel-showcase://note/Hello%20from%20CI"
+          sleep 8
+          xcrun simctl io "$UDID" screenshot screenshot-link.png
+          # Still running (a crash would have ended it).
+          xcrun simctl spawn "$UDID" launchctl list | grep -i Showcase
+          cat app.log
+      - name: "UI test: Chat (download, streaming, Stop, follow-up, Compare)"
+        working-directory: examples/showcase
+        run: ../../scripts/ios-ui-test.sh "$UDID" dev.oriel.Showcase chat 3600
+      - name: "Memory: the models are freed in the background"
+        working-directory: examples/showcase
+        run: |
+          pid=$(pgrep -f 'Oriel Showcase.app/oriel-showcase' | head -1)
+          echo "RSS in front, after chatting: $(ps -o rss= -p "$pid") KB"
+          # Another app to the front: the showcase goes to the background.
+          xcrun simctl launch "$UDID" com.apple.Preferences
+          sleep 10
+          echo "RSS in the background: $(ps -o rss= -p "$pid") KB"
+          grep -a "app background\|unloaded" ui-chat.log
+          grep -aq "unloaded the chat model" ui-chat.log
+      - name: Permissions for dictation (microphone, speech recognition)
+        run: |
+          xcrun simctl privacy "$UDID" grant all dev.oriel.Showcase || true
+          # Speech recognition may not be among simctl's services: grant it
+          # in the simulator's TCC database too.
+          db="$HOME/Library/Developer/CoreSimulator/Devices/$UDID/data/Library/TCC/TCC.db"
+          sqlite3 "$db" "insert or replace into access (service, client, client_type, auth_value, auth_reason, auth_version, flags) values ('kTCCServiceSpeechRecognition', 'dev.oriel.Showcase', 0, 2, 2, 1, 0)" || true
+          sqlite3 "$db" "select service, client, auth_value from access where client = 'dev.oriel.Showcase'" || true
+      - name: Spoken test audio (English, Spanish)
+        run: |
+          say -v '?' | grep -E 'en_US|es_(ES|MX)' | head -8
+          es_voice=$(say -v '?' | awk '/es_(ES|MX)/ {print $1; exit}')
+          say -v Samantha -o en.aiff "Hello, this is a dictation test. The weather is nice today and I would like a cup of coffee."
+          say -v "$es_voice" -o es.aiff "Hola, esta es una prueba de dictado. Hoy hace buen tiempo y quiero una taza de café."
+          afconvert -f WAVE -d LEI16@16000 -c 1 en.aiff en.wav
+          afconvert -f WAVE -d LEI16@16000 -c 1 es.aiff es.wav
+          ls -la en.wav es.wav
+      - name: "UI test: Apple speech dictation in English and Spanish"
+        working-directory: examples/showcase
+        run: |
+          data=$(xcrun simctl get_app_container "$UDID" dev.oriel.Showcase data)
+          models="$data/Library/Application Support/dev.oriel.Showcase/models"
+          mkdir -p "$models"
+          ok=0
+          for lang in en es; do
+            # test.wav stands in for the microphone (the simulator has none here).
+            cp "../../$lang.wav" "$models/test.wav"
+            ../../scripts/ios-ui-test.sh "$UDID" dev.oriel.Showcase "dictate-$lang" 300 || ok=1
+          done
+          rm -f "$models/test.wav"
+          exit $ok
+      - name: Screenshot in the log (base64 JPEG, for readers without artifact access)
+        if: always()
+        working-directory: examples/showcase
+        run: |
+          for f in screenshot*.png shot-*.png; do
+            [ -f "$f" ] || continue
+            sips -s format jpeg -s formatOptions 70 -Z 900 "$f" --out shot.jpg >/dev/null
+            echo "----BEGIN SCREENSHOT $f----"
+            base64 -b 76 -i shot.jpg
+            echo "----END SCREENSHOT $f----"
+          done
+      - name: Crash reports
+        if: failure()
+        run: ls -la ~/Library/Logs/DiagnosticReports/ && tail -n 200 ~/Library/Logs/DiagnosticReports/*howcase* || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: showcase-ios-simulator
+          path: |
+            examples/showcase/screenshot*.png
+            examples/showcase/shot-*.png
+            examples/showcase/app.log
+            examples/showcase/ui-*.log
+          if-no-files-found: ignore

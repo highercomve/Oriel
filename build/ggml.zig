@@ -74,6 +74,15 @@ pub const VulkanOptions = struct {
     /// Directory with vulkan/vulkan.hpp and spirv/ headers, when they aren't
     /// in the compiler's default paths (Windows: the Vulkan SDK's Include).
     include: ?[]const u8 = null,
+    /// The same as build paths (Android: the Vulkan-Headers and
+    /// SPIRV-Headers dependencies; the NDK has neither vulkan.hpp nor spirv/).
+    include_paths: []const std.Build.LazyPath = &.{},
+};
+
+/// `-Dggml_opencl` (Android): ggml-opencl compiled in, for Adreno GPUs.
+pub const OpenClOptions = struct {
+    /// Khronos OpenCL-Headers (the `opencl_headers` dependency).
+    headers: std.Build.LazyPath,
 };
 
 /// Which optional shader extensions `glslc` supports, as ggml's CMake finds
@@ -109,9 +118,15 @@ fn addMetalBackend(b: *std.Build, oriel: *std.Build.Module, ggml_root: std.Build
     oriel.addIncludePath(metal_dir);
     oriel.addCSourceFiles(.{
         .root = metal_dir,
-        .files = &.{ "ggml-metal.cpp", "ggml-metal-device.cpp", "ggml-metal-common.cpp", "ggml-metal-ops.cpp", "ggml-metal-fusion.cpp", "ggml-metal-tuning.cpp" },
+        .files = &.{ "ggml-metal.cpp", "ggml-metal-device.cpp", "ggml-metal-common.cpp", "ggml-metal-ops.cpp", "ggml-metal-tuning.cpp" },
         .flags = cpp_flags,
     });
+    // Newer ggml (llama's) splits kernel fusion into its own file; the
+    // ggml whisper.cpp ships (a whisper-only build) doesn't have it yet.
+    const fusion = metal_dir.path(b, "ggml-metal-fusion.cpp");
+    if (std.Io.Dir.cwd().access(b.graph.io, fusion.getPath(b), .{})) |_| {
+        oriel.addCSourceFile(.{ .file = fusion, .flags = cpp_flags });
+    } else |_| {}
     // Objective-C with manual retain/release, like upstream (no ARC).
     const objc_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{ "-fno-objc-arc", "-D_DARWIN_C_SOURCE", "-fno-sanitize=undefined" }, metal_defs }) catch @panic("OOM");
     oriel.addCSourceFiles(.{
@@ -135,13 +150,31 @@ fn addMetalBackend(b: *std.Build, oriel: *std.Build.Module, ggml_root: std.Build
     oriel.linkFramework("MetalKit", .{});
 }
 
+/// `-Dggml_arm`: the ARM extensions ggml's CPU code is compiled for (only
+/// ggml, llama.cpp and whisper.cpp; the rest of the app keeps the target's
+/// baseline). ggml picks its kernels at compile time: without dotprod its
+/// quantized dot products are emulated, and its repacked matmul kernels
+/// (q4_0, q8_0: 4x4 with dotprod, 4x8 with i8mm) are off. A CPU without
+/// the extension is refused at model load (ggml_gpu.cpuSupported), not
+/// crashed on.
+pub const ArmLevel = enum {
+    baseline,
+    /// ARMv8.2 dotprod and fp16: every Cortex-A55/A75 and later (2018 on).
+    dotprod,
+    /// dotprod, fp16 and i8mm: Armv8.6 and v9 cores (Cortex-A510/A710/X2
+    /// and later; Tensor G3, Snapdragon 8 Gen 1, Dimensity 9000 and later).
+    i8mm,
+};
+
 pub fn addGgml(
     b: *std.Build,
     oriel: *std.Build.Module,
     features: anytype,
     cuda: ?CudaOptions,
     vulkan: ?VulkanOptions,
+    opencl: ?OpenClOptions,
     metal: bool,
+    arm: ArmLevel,
 ) void {
     if (!features.llama and !features.whisper) return;
 
@@ -189,8 +222,21 @@ pub fn addGgml(
     const darwin: []const []const u8 = if (oriel.resolved_target.?.result.os.tag.isDarwin()) &.{"-D_DARWIN_C_SOURCE"} else &.{};
     // GGML_USE_METAL makes ggml-backend-reg.cpp register the Metal device.
     const metal_defs: []const []const u8 = if (metal) &.{ "-DGGML_USE_METAL", "-DGGML_METAL_EMBED_LIBRARY" } else &.{};
-    const c_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{ "-std=c11", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" }, darwin, metal_defs }) catch @panic("OOM");
-    const cpp_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{ "-std=c++17", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" }, darwin, metal_defs }) catch @panic("OOM");
+    // ggml and whisper.cpp are compiled optimized in every build mode: at
+    // -O0 (a Debug app) whisper ran ~30x slower on the CPU, 223 s for 8 s
+    // of audio on a Pixel. Clang takes the last -O, so this one wins.
+    const opt_level: []const []const u8 = if (oriel.optimize == .Debug or oriel.optimize == null) &.{"-O2"} else &.{};
+    // Features as cc1 flags: after Zig's own -target-feature list, so they win.
+    const dotprod: []const []const u8 = &.{ "-Xclang", "-target-feature", "-Xclang", "+dotprod", "-Xclang", "-target-feature", "-Xclang", "+fullfp16" };
+    const i8mm: []const []const u8 = &.{ "-Xclang", "-target-feature", "-Xclang", "+i8mm" };
+    const arm_flags: []const []const u8 = if (oriel.resolved_target.?.result.cpu.arch != .aarch64) &.{} else switch (arm) {
+        .baseline => &.{},
+        .dotprod => dotprod,
+        .i8mm => std.mem.concat(b.allocator, []const u8, &.{ dotprod, i8mm }) catch @panic("OOM"),
+    };
+    const opt = std.mem.concat(b.allocator, []const u8, &.{ opt_level, arm_flags }) catch @panic("OOM");
+    const c_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{ "-std=c11", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" }, darwin, metal_defs }) catch @panic("OOM");
+    const cpp_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{ "-std=c++17", "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600", "-DGGML_USE_CPU", "-fno-sanitize=undefined" }, darwin, metal_defs }) catch @panic("OOM");
 
     // GGML base sources
     oriel.addCSourceFiles(.{
@@ -271,8 +317,10 @@ pub fn addGgml(
     }
 
     if (cuda) |opts| b.addNamedLazyPath("libggml-cuda", if (opts.prebuilt) |p| .{ .cwd_relative = p } else addCudaBackend(b, ggml_root, opts));
+    if (opencl) |opts| addOpenClStatic(b, oriel, ggml_root, cpp_flags, opts);
     if (vulkan) |opts| {
-        if (oriel.resolved_target.?.result.os.tag == .windows)
+        // Windows and Android: compiled in (see addVulkanStatic).
+        if (oriel.resolved_target.?.result.os.tag == .windows or oriel.resolved_target.?.result.abi.isAndroid())
             addVulkanStatic(b, oriel, ggml_root, cpp_flags, opts)
         else
             b.addNamedLazyPath("libggml-vulkan", addVulkanBackend(b, oriel, ggml_root, write_files.getDirectory(), opts));
@@ -320,7 +368,7 @@ pub fn addGgml(
         oriel.addIncludePath(w.path("include"));
         oriel.addIncludePath(w.path("src"));
 
-        const whisper_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{
+        const whisper_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{
             "-std=c++17",
             "-D_GNU_SOURCE",
             "-D_XOPEN_SOURCE=600",
@@ -405,10 +453,34 @@ fn vulkanShadersGen(b: *std.Build, ggml_root: std.Build.LazyPath, glslc: []const
 
 const vulkan_shaders_header = "ggml-vulkan-shaders.hpp";
 
+/// The files in `shaders_dir` ending in `ext`, sorted: the .comp sources
+/// vulkan-shaders-gen compiles (ggml's CMake globs them too) and the .glsl
+/// files they #include. Listed rather than hard-coded because llama.cpp's
+/// and whisper.cpp's ggml trees have different shaders.
+fn vulkanShaderFiles(b: *std.Build, shaders_dir: std.Build.LazyPath, ext: []const u8) []const []const u8 {
+    const io = b.graph.io;
+    const path = shaders_dir.getPath(b);
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err|
+        buildFail("-Dggml_vulkan: can't open {s} ({s})", .{ path, @errorName(err) });
+    defer dir.close(io);
+    var files: std.ArrayList([]const u8) = .empty;
+    var it = dir.iterate();
+    while (it.next(io) catch |err| buildFail("-Dggml_vulkan: can't list {s} ({s})", .{ path, @errorName(err) })) |entry| {
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ext)) files.append(b.allocator, b.dupe(entry.name)) catch @panic("OOM");
+    }
+    std.mem.sort([]const u8, files.items, {}, struct {
+        fn lessThan(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.lessThan);
+    return files.items;
+}
+
 /// One generated .cpp per shader source (cached, parallel steps).
 fn addVulkanShaders(b: *std.Build, m: *std.Build.Module, ggml_root: std.Build.LazyPath, gen: *std.Build.Step.Compile, glslc: []const u8, flags: []const []const u8) void {
     const shaders_dir = ggml_root.path(b, "src/ggml-vulkan/vulkan-shaders");
-    for (vulkan_shader_sources) |src| {
+    const includes = vulkanShaderFiles(b, shaders_dir, ".glsl");
+    for (vulkanShaderFiles(b, shaders_dir, ".comp")) |src| {
         const run = b.addRunArtifact(gen);
         run.addArgs(&.{ "--glslc", glslc, "--source" });
         run.addFileArg(shaders_dir.path(b, src));
@@ -418,7 +490,7 @@ fn addVulkanShaders(b: *std.Build, m: *std.Build.Module, ggml_root: std.Build.La
         run.addArgs(&.{ "--target-hpp", vulkan_shaders_header, "--target-cpp" });
         const cpp = run.addOutputFileArg(b.fmt("{s}.cpp", .{src}));
         // Shaders #include the .glsl files next to them.
-        for (vulkan_shader_includes) |inc| run.addFileInput(shaders_dir.path(b, inc));
+        for (includes) |inc| run.addFileInput(shaders_dir.path(b, inc));
         m.addCSourceFile(.{ .file = cpp, .flags = flags });
     }
 }
@@ -433,12 +505,45 @@ fn addVulkanStatic(b: *std.Build, oriel: *std.Build.Module, ggml_root: std.Build
     var defines: std.ArrayList([]const u8) = .empty;
     const sg = vulkanShadersGen(b, ggml_root, opts.glslc, &defines);
     if (opts.include) |inc| oriel.addIncludePath(.{ .cwd_relative = inc });
+    for (opts.include_paths) |inc| oriel.addIncludePath(inc);
     oriel.addIncludePath(sg.header_file.dirname());
     oriel.addIncludePath(ggml_root.path(b, "src/ggml-vulkan"));
     const flags = std.mem.concat(b.allocator, []const u8, &.{ cpp_flags, defines.items }) catch @panic("OOM");
     oriel.addCSourceFile(.{ .file = ggml_root.path(b, "src/ggml-vulkan/ggml-vulkan.cpp"), .flags = flags });
     addVulkanShaders(b, oriel, ggml_root, sg.gen, opts.glslc, flags);
-    oriel.addCSourceFile(.{ .file = b.path("src/modules/ggml_vulkan_loader.c"), .flags = &.{"-std=c11"} });
+    const loader = if (oriel.resolved_target.?.result.abi.isAndroid()) "src/modules/ggml_vulkan_loader_android.c" else "src/modules/ggml_vulkan_loader.c";
+    oriel.addCSourceFile(.{ .file = b.path(loader), .flags = &.{"-std=c11"} });
+}
+
+/// Android: ggml-opencl compiled into liboriel.so with its kernels embedded
+/// (tools/embed_cl.zig) and the Adreno-tuned matmul kernels. OpenCL itself
+/// comes from the device's libOpenCL.so through src/modules/ggml_opencl_loader.c,
+/// and ggml_gpu.load() registers the backend only on an Adreno GPU (ggml's
+/// OpenCL kernels target it; other GPUs get Vulkan).
+fn addOpenClStatic(b: *std.Build, oriel: *std.Build.Module, ggml_root: std.Build.LazyPath, cpp_flags: []const []const u8, opts: OpenClOptions) void {
+    const cl_dir = ggml_root.path(b, "src/ggml-opencl");
+    const embed = b.addExecutable(.{
+        .name = "embed_cl",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/embed_cl.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    const run = b.addRunArtifact(embed);
+    run.addDirectoryArg(cl_dir.path(b, "kernels"));
+    const kernels = run.addOutputDirectoryArg("kernels");
+    oriel.addIncludePath(opts.headers);
+    oriel.addIncludePath(kernels);
+    const flags = std.mem.concat(b.allocator, []const u8, &.{ cpp_flags, &.{
+        "-DGGML_OPENCL_EMBED_KERNELS",
+        "-DGGML_OPENCL_SOA_Q",
+        "-DGGML_OPENCL_TARGET_VERSION=300",
+        "-DGGML_OPENCL_USE_ADRENO_KERNELS",
+        "-DCL_USE_DEPRECATED_OPENCL_1_2_APIS",
+    } }) catch @panic("OOM");
+    oriel.addCSourceFiles(.{ .root = cl_dir, .files = &.{ "ggml-opencl.cpp", "cl-program-cache.cpp" }, .flags = flags });
+    oriel.addCSourceFile(.{ .file = b.path("src/modules/ggml_opencl_loader.c"), .flags = &.{"-std=c11"} });
 }
 
 /// Generate the Vulkan shaders (one cached step per .comp source, as ggml's
@@ -935,191 +1040,4 @@ const llama_model_sources = [_][]const u8{
     "models/talkie.cpp",
     "models/wavtokenizer-dec.cpp",
     "models/xverse.cpp",
-};
-
-/// The .comp sources vulkan-shaders-gen compiles (ggml's CMake globs them).
-const vulkan_shader_sources = [_][]const u8{
-    "acc.comp",
-    "add1.comp",
-    "add.comp",
-    "add_id.comp",
-    "arange.comp",
-    "argmax.comp",
-    "argsort.comp",
-    "argsort_large.comp",
-    "col2im_1d.comp",
-    "concat.comp",
-    "contig_copy.comp",
-    "conv2d_dw.comp",
-    "conv2d_mm.comp",
-    "conv3d_mm.comp",
-    "conv_transpose_1d.comp",
-    "copy.comp",
-    "copy_from_quant.comp",
-    "copy_to_quant.comp",
-    "copy_transpose_02.comp",
-    "copy_transpose.comp",
-    "count_equal.comp",
-    "count_experts.comp",
-    "cross_entropy_loss_back.comp",
-    "cross_entropy_loss.comp",
-    "cumsum.comp",
-    "cumsum_multipass1.comp",
-    "cumsum_multipass2.comp",
-    "dequant_f32.comp",
-    "dequant_iq1_m.comp",
-    "dequant_iq1_s.comp",
-    "dequant_iq2_s.comp",
-    "dequant_iq2_xs.comp",
-    "dequant_iq2_xxs.comp",
-    "dequant_iq3_s.comp",
-    "dequant_iq3_xxs.comp",
-    "dequant_iq4_nl.comp",
-    "dequant_iq4_xs.comp",
-    "dequant_mxfp4.comp",
-    "dequant_nvfp4.comp",
-    "dequant_q1_0.comp",
-    "dequant_q2_0.comp",
-    "dequant_q2_k.comp",
-    "dequant_q3_k.comp",
-    "dequant_q4_0.comp",
-    "dequant_q4_1.comp",
-    "dequant_q4_k.comp",
-    "dequant_q5_0.comp",
-    "dequant_q5_1.comp",
-    "dequant_q5_k.comp",
-    "dequant_q6_k.comp",
-    "dequant_q8_0.comp",
-    "dequant_tq1_0.comp",
-    "dequant_tq2_0.comp",
-    "diag.comp",
-    "diag_mask_inf.comp",
-    "div.comp",
-    "dsv4_hc_comb.comp",
-    "dsv4_hc_post.comp",
-    "dsv4_hc_pre.comp",
-    "fill.comp",
-    "flash_attn_cm1.comp",
-    "flash_attn_cm2.comp",
-    "flash_attn.comp",
-    "flash_attn_mask_opt.comp",
-    "flash_attn_sparse_compact.comp",
-    "flash_attn_split_k_reduce.comp",
-    "fwht.comp",
-    "gated_delta_net.comp",
-    "geglu.comp",
-    "geglu_erf.comp",
-    "geglu_quick.comp",
-    "get_rows_back.comp",
-    "get_rows.comp",
-    "get_rows_quant.comp",
-    "gla.comp",
-    "group_norm.comp",
-    "im2col_3d.comp",
-    "im2col.comp",
-    "l2_norm.comp",
-    "lightning_indexer.comp",
-    "log.comp",
-    "mul.comp",
-    "mul_mat_split_k_reduce.comp",
-    "mul_mat_vec.comp",
-    "mul_mat_vec_iq1_m.comp",
-    "mul_mat_vec_iq1_s.comp",
-    "mul_mat_vec_iq2_s.comp",
-    "mul_mat_vec_iq2_xs.comp",
-    "mul_mat_vec_iq2_xxs.comp",
-    "mul_mat_vec_iq3_s.comp",
-    "mul_mat_vec_iq3_xxs.comp",
-    "mul_mat_vec_iq4_xs.comp",
-    "mul_mat_vec_nc.comp",
-    "mul_mat_vec_p021.comp",
-    "mul_mat_vec_q2_k.comp",
-    "mul_mat_vec_q3_k.comp",
-    "mul_mat_vec_q4_k.comp",
-    "mul_mat_vec_q5_k.comp",
-    "mul_mat_vec_q6_k.comp",
-    "mul_mat_vecq.comp",
-    "mul_mat_vec_tq1_0.comp",
-    "mul_mat_vec_tq2_0.comp",
-    "mul_mm_cm2.comp",
-    "mul_mm.comp",
-    "mul_mmq.comp",
-    "multi_add.comp",
-    "norm.comp",
-    "opt_step_adamw.comp",
-    "opt_step_sgd.comp",
-    "out_prod.comp",
-    "pad.comp",
-    "pad_reflect_1d.comp",
-    "pool1d.comp",
-    "pool2d.comp",
-    "quantize_q8_1.comp",
-    "reglu.comp",
-    "repeat_back.comp",
-    "repeat.comp",
-    "rms_norm_back.comp",
-    "rms_norm.comp",
-    "rms_norm_partials.comp",
-    "roll.comp",
-    "rope_multi.comp",
-    "rope_neox.comp",
-    "rope_norm.comp",
-    "rope_vision.comp",
-    "scale.comp",
-    "silu_back.comp",
-    "snake.comp",
-    "soft_max_back.comp",
-    "soft_max.comp",
-    "soft_max_large1.comp",
-    "soft_max_large2.comp",
-    "soft_max_large3.comp",
-    "solve_tri.comp",
-    "ssm_conv.comp",
-    "ssm_scan.comp",
-    "sub.comp",
-    "sum_rows.comp",
-    "swiglu_clamp.comp",
-    "swiglu.comp",
-    "swiglu_oai.comp",
-    "timestep_embedding.comp",
-    "topk_argsort.comp",
-    "topk_moe.comp",
-    "topk_nary_search.comp",
-    "topk_radix_select.comp",
-    "tri.comp",
-    "unary.comp",
-    "upscale.comp",
-    "wkv6.comp",
-    "wkv7.comp",
-};
-
-/// Files the shaders #include.
-const vulkan_shader_includes = [_][]const u8{
-    "dequant_funcs_cm2.glsl",
-    "dequant_funcs.glsl",
-    "dequant_head.glsl",
-    "dot_product_funcs.glsl",
-    "fa_types.glsl",
-    "flash_attn_base.glsl",
-    "flash_attn_dequant.glsl",
-    "flash_attn_mmq_funcs.glsl",
-    "generic_binary_head.glsl",
-    "generic_head.glsl",
-    "generic_unary_head.glsl",
-    "glu_head.glsl",
-    "glu_main.glsl",
-    "mul_mat_vec_base.glsl",
-    "mul_mat_vec_iface.glsl",
-    "mul_mat_vecq_funcs.glsl",
-    "mul_mm_funcs.glsl",
-    "mul_mm_id_funcs.glsl",
-    "mul_mmq_funcs.glsl",
-    "mul_mmq_shmem_types.glsl",
-    "rope_funcs.glsl",
-    "rope_head.glsl",
-    "rope_params.glsl",
-    "soft_max_large_common.glsl",
-    "sum_rows.glsl",
-    "types.glsl",
-    "utils.glsl",
 };

@@ -4,6 +4,8 @@
 //!     oriel doctor
 //!     oriel dev | build | run | package | types | check [zig build args...]
 //!     oriel zig install | uninstall | list | which [version]
+//!     oriel android init | dev | build | devices
+//!     oriel ios build | dev | install | setup
 //!
 //! A standalone static program (no GTK), built with `zig build cli`.
 
@@ -22,6 +24,8 @@ const desktop_entry_cmd = @import("desktop_entry.zig");
 const zig_cmd = @import("zig_manager.zig");
 const setup_cmd = @import("setup.zig");
 const signing_cmd = @import("signing.zig");
+const android_cmd = @import("android.zig");
+const ios_cmd = @import("ios.zig");
 
 const program = "oriel";
 
@@ -36,6 +40,8 @@ pub const Commands = union(enum) {
     signing: signing_cmd.Command,
     desktop_entry: desktop_entry_cmd.Command,
     zig: zig_cmd.Command,
+    android: android_cmd.Command,
+    ios: ios_cmd.Command,
     dev: project.Wrapper("dev", "Run the app against the frontend dev server, with hot reload"),
     build: project.Wrapper(null, "Build the app (frontend embedded) into zig-out/bin"),
     run: project.Wrapper("run", "Build and run the app"),
@@ -105,6 +111,8 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
             .signing => |c| return signing_cmd.run(ctx, c),
             .desktop_entry => |c| return desktop_entry_cmd.run(ctx, c),
             .zig => |c| return zig_cmd.run(ctx, c),
+            .android => |c| return android_cmd.runCommand(ctx, c),
+            .ios => |c| return ios_cmd.runCommand(ctx, c),
             inline else => |c| return project.exec(ctx, @TypeOf(c).zig_step, c.args),
         },
     }
@@ -123,6 +131,9 @@ test {
     _ = signing_cmd;
     _ = desktop_entry_cmd;
     _ = zig_cmd;
+    _ = android_cmd;
+    _ = ios_cmd;
+    _ = @import("ios_tools.zig");
     _ = project;
     _ = @import("template.zig");
 }

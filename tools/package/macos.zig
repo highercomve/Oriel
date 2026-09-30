@@ -35,7 +35,9 @@ pub const Permission = struct { kind: []const u8, reason: []const u8 };
 /// an app that uses a protected resource without its key).
 pub fn usageKeys(kind: []const u8) []const []const u8 {
     const map = .{
-        .{ "microphone", &[_][]const u8{"NSMicrophoneUsageDescription"} },
+        // The microphone's text also covers speech recognition (dictation's
+        // system engine asks for both; asking without the key ends the app).
+        .{ "microphone", &[_][]const u8{ "NSMicrophoneUsageDescription", "NSSpeechRecognitionUsageDescription" } },
         .{ "camera", &[_][]const u8{"NSCameraUsageDescription"} },
         .{ "location", &[_][]const u8{ "NSLocationWhenInUseUsageDescription", "NSLocationUsageDescription" } },
         .{ "system_audio", &[_][]const u8{"NSAudioCaptureUsageDescription"} },
@@ -123,14 +125,14 @@ pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
     return out.toOwnedSlice();
 }
 
-fn entry(w: *std.Io.Writer, key: []const u8, value: []const u8) !void {
+pub fn entry(w: *std.Io.Writer, key: []const u8, value: []const u8) !void {
     try w.print("\t<key>{s}</key>\n\t<string>", .{key});
     try escape(w, value);
     try w.writeAll("</string>\n");
 }
 
 /// XML text escaping.
-fn escape(w: *std.Io.Writer, s: []const u8) !void {
+pub fn escape(w: *std.Io.Writer, s: []const u8) !void {
     for (s) |ch| switch (ch) {
         '&' => try w.writeAll("&amp;"),
         '<' => try w.writeAll("&lt;"),
@@ -141,7 +143,7 @@ fn escape(w: *std.Io.Writer, s: []const u8) !void {
 }
 
 /// A plist string value: valid UTF-8, no control characters.
-fn checkText(v: []const u8) !void {
+pub fn checkText(v: []const u8) !void {
     if (v.len == 0 or !std.unicode.utf8ValidateSlice(v)) return error.InvalidPlistValue;
     for (v) |ch| if (ch < 0x20 or ch == 0x7F) return error.InvalidPlistValue;
 }
