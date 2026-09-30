@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Oriel Showcase</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="g-accent" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#3b82f6"/>
+      </linearGradient>
+    </defs>
+    <symbol id="i-echo" viewBox="0 0 24 24"><path d="M7 7h11l-3-3M17 17H6l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3 5 14h6l-1 7 8-11h-6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-windows" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 3h11a2 2 0 0 1 2 2v9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 21h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-device" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M11 18h2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-scale" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-1 1M14 10a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l1-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 9h8M8 12h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12 20 4l-6 16-3-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  </svg>
+
+  <header class="appbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>Oriel Showcase</h1>
+        <p id="info" class="sub">…</p>
+      </div>
+    </div>
+  </header>
+
+  <nav id="tabs" role="tablist" aria-label="Sections">
+    <a href="#dictate" role="tab"><svg><use href="#i-mic"/></svg><span>Dictate</span></a>
+    <a href="#chat" role="tab"><svg><use href="#i-chat"/></svg><span>Chat</span></a>
+    <a href="#notes" role="tab"><svg><use href="#i-note"/></svg><span>Notes</span></a>
+    <a href="#files" role="tab"><svg><use href="#i-folder"/></svg><span>Files</span></a>
+    <a href="#system" role="tab"><svg><use href="#i-bell"/></svg><span>System</span></a>
+    <a href="#app" role="tab"><svg><use href="#i-windows"/></svg><span>App</span></a>
+  </nav>
+
+  <main>
+    <!-- Dictate: whisper on the microphone, on the GPU when there is one. -->
+    <section id="dictate" role="tabpanel">
+      <div class="main-col">
+      <div class="card hero">
+        <span id="dict-backend" class="chip status"><i></i><b>Checking the GPU…</b></span>
+        <div class="recorder">
+          <button id="dict-rec" class="rec" disabled aria-label="Start recording">
+            <span class="ring"></span>
+            <svg><use href="#i-mic"/></svg>
+          </button>
+          <div id="dict-time" class="timer">0.0 s</div>
+          <p id="dict-state" class="state">Pick a model to start</p>
+        </div>
+      </div>
+
+      <div id="dict-out" class="stack"></div>
+      </div>
+
+      <div class="card">
+        <div id="dict-whisper">
+        <div class="field">
+          <span class="label">Model</span>
+          <div id="dict-model" class="segmented" role="radiogroup" aria-label="Model"></div>
+        </div>
+        <div id="dict-have" class="have-row" hidden>
+          <span id="dict-have-text"></span>
+          <button id="dict-delete" class="btn danger"><svg><use href="#i-trash"/></svg><span>Delete</span></button>
+        </div>
+        <div id="dict-get" class="getmodel" hidden>
+          <button id="dict-download" class="btn tonal"><svg><use href="#i-down"/></svg><span>Download</span></button>
+          <div class="progress" hidden><div id="dict-progress"></div></div>
+          <p id="dict-missing" class="hint"></p>
+        </div>
+        <div id="dict-legacy" class="legacy" hidden></div>
+        </div>
+        <div class="field">
+          <span class="label">Language</span>
+          <div id="dict-lang" class="segmented" role="radiogroup" aria-label="Language">
+            <button data-value="auto" aria-checked="true">Auto</button>
+            <button data-value="en">English</button>
+            <button data-value="es">Español</button>
+            <button data-value="de">Deutsch</button>
+          </div>
+        </div>
+        <div id="dict-whisper-opts">
+        <div class="field">
+          <span class="label">Processor</span>
+          <div id="dict-proc" class="segmented" role="radiogroup" aria-label="Processor">
+            <button data-value="auto" aria-checked="true">Auto</button>
+            <button data-value="gpu">GPU</button>
+            <button data-value="cpu">CPU</button>
+          </div>
+          <p id="dict-proc-note" class="hint"></p>
+        </div>
+        <div id="dict-source-field" class="field" hidden>
+          <span class="label">Listen to</span>
+          <select id="dict-source" aria-label="Audio source"><option value="">Default microphone</option></select>
+          <p class="hint">System audio: captions for what this computer plays (a call, a video).</p>
+        </div>
+        <label class="switch"><span><b>Skip silence</b><small>Voice detection: whisper only hears speech</small></span><input type="checkbox" id="dict-vad" checked><i></i></label>
+        </div>
+        <div id="dict-engine-field" class="field" hidden>
+          <span class="label">Engine</span>
+          <div id="dict-engine" class="segmented" role="radiogroup" aria-label="Engine">
+            <button data-value="whisper" aria-checked="true">Whisper<small>offline, any platform</small></button>
+            <button data-value="system">System<small id="dict-system-sub">the phone's own</small></button>
+          </div>
+          <p id="dict-system-note" class="hint" hidden>Pick your language: Auto is the phone's language.</p>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Chat: a local LLM through oriel.chat (llama.cpp). -->
+    <section id="chat" role="tabpanel">
+      <div class="main-col">
+      <div class="card hero chat-hero">
+        <span id="chat-backend" class="chip status"><i></i><b>Checking the GPU…</b></span>
+        <div id="chat-log" class="chat-log" aria-live="polite">
+          <p class="hint center" id="chat-empty">Ask anything. It runs on this device: nothing leaves it.</p>
+        </div>
+        <form id="chat-form" class="composer">
+          <button type="button" id="chat-mic" class="btn icon ghost" aria-label="Dictate the message"><svg><use href="#i-mic"/></svg></button>
+          <textarea id="chat-input" rows="1" placeholder="Message" aria-label="Message"></textarea>
+          <button id="chat-send" class="btn filled icon" aria-label="Send"><svg><use href="#i-send"/></svg></button>
+        </form>
+        <p id="chat-state" class="hint center"></p>
+      </div>
+      </div>
+      <div class="card">
+        <div class="field">
+          <span class="label">Model</span>
+          <div id="chat-model" class="segmented wrap" role="radiogroup" aria-label="Model"></div>
+        </div>
+        <div id="chat-have" class="have-row" hidden>
+          <span id="chat-have-text"></span>
+          <button id="chat-delete" class="btn danger"><svg><use href="#i-trash"/></svg><span>Delete</span></button>
+        </div>
+        <div id="chat-get" class="getmodel" hidden>
+          <button id="chat-download" class="btn tonal"><svg><use href="#i-down"/></svg><span>Download</span></button>
+          <div class="progress" hidden><div id="chat-progress"></div></div>
+        </div>
+        <div class="field">
+          <span class="label">Processor</span>
+          <div id="chat-proc" class="segmented" role="radiogroup" aria-label="Processor">
+            <button data-value="auto" aria-checked="true">Auto</button>
+            <button data-value="gpu">GPU</button>
+            <button data-value="cpu">CPU</button>
+          </div>
+          <p id="chat-proc-note" class="hint"></p>
+        </div>
+        <div class="row-actions">
+          <button id="chat-new" class="btn tonal"><svg><use href="#i-chat"/></svg><span>New chat</span></button>
+          <button id="chat-compare" class="btn ghost"><svg><use href="#i-scale"/></svg><span>Compare GPU and CPU</span></button>
+        </div>
+        <div id="chat-compare-out"></div>
+      </div>
+    </section>
+
+    <!-- Notes: SQLite through oriel.sql; deep links add notes. -->
+    <section id="notes" role="tabpanel">
+      <div class="card">
+        <h2>Notes</h2>
+        <p class="hint">Kept in SQLite (<code>oriel.sql</code>) in the app's data directory.</p>
+        <form id="note-form" class="inline">
+          <input id="note-input" placeholder="Write a note" aria-label="Note">
+          <button class="btn filled">Add</button>
+        </form>
+        <button id="note-dictation" class="btn ghost" hidden><svg><use href="#i-mic"/></svg><span>Add the last dictation</span></button>
+        <ul id="note-list" class="notes"></ul>
+      </div>
+      <div class="card">
+        <h2><svg class="h-icon"><use href="#i-link"/></svg> Deep links</h2>
+        <p class="hint">Open <code>oriel-showcase://note/Hello</code> from a browser or another app: the note appears here.</p>
+        <pre id="link-cmd" class="code"></pre>
+        <p id="link-out" class="result"></p>
+      </div>
+    </section>
+
+    <!-- Files: the platform's own pickers (oriel.dialog). -->
+    <section id="files" role="tabpanel">
+      <div class="card">
+        <h2>Open a file</h2>
+        <p class="hint">GTK, Win32 or AppKit on the desktop; the Storage Access Framework on Android; the document picker on iOS.</p>
+        <button id="file-open" class="btn filled"><svg><use href="#i-folder"/></svg><span>Open…</span></button>
+        <p id="file-info" class="result"></p>
+        <pre id="file-preview" class="code" hidden></pre>
+      </div>
+      <div class="card">
+        <h2>Transcribe a recording</h2>
+        <p class="hint">A WAV file, with whisper and the model picked on the Dictate tab.</p>
+        <button id="dict-file" class="btn tonal"><svg><use href="#i-mic"/></svg><span>Pick a WAV file…</span></button>
+        <p id="file-transcript" class="result"></p>
+      </div>
+      <div class="card">
+        <h2>Save a file</h2>
+        <textarea id="file-text" rows="4" aria-label="Text to save">Saved by Oriel Showcase.</textarea>
+        <button id="file-save" class="btn tonal"><svg><use href="#i-down"/></svg><span>Save as…</span></button>
+        <p id="file-out" class="result"></p>
+      </div>
+    </section>
+
+    <section id="system" role="tabpanel">
+      <div id="anywhere-card" class="card" hidden>
+        <h2>Dictate anywhere</h2>
+        <p id="anywhere-hint" class="hint"></p>
+        <button id="anywhere-toggle" class="btn filled"><svg><use href="#i-mic"/></svg><span>Start</span></button>
+        <p id="anywhere-out" class="result"></p>
+      </div>
+      <div class="tiles">
+        <button id="copy" class="tile"><svg><use href="#i-copy"/></svg><b>Copy</b><small>The note box's text to the clipboard</small></button>
+        <button id="paste" class="tile"><svg><use href="#i-copy"/></svg><b>Paste</b><small>Read the clipboard</small></button>
+        <button id="notify" class="tile"><svg><use href="#i-bell"/></svg><b>Notify</b><small>A notification from Zig</small></button>
+      </div>
+      <p id="sys-out" class="result"></p>
+      <div class="card">
+        <h2>Keyboard</h2>
+        <ul id="keys" class="keys"></ul>
+      </div>
+    </section>
+
+    <!-- App: windows, IPC, events from threads, the store. -->
+    <section id="app" role="tabpanel">
+      <div class="card">
+        <h2>Windows</h2>
+        <p class="hint">Desktop: a native window. Android desktop mode: a resizable window of its own. iPad: a scene.</p>
+        <button id="open" class="btn filled"><svg><use href="#i-windows"/></svg><span>Open a second window</span></button>
+        <p id="windows-out" class="result"></p>
+      </div>
+      <div class="card">
+        <h2>IPC echo</h2>
+        <p class="hint">Text goes to Zig and back, byte for byte.</p>
+        <form id="echo-form" class="inline">
+          <input id="echo-input" value="héllo 👋" aria-label="Text to echo">
+          <button class="btn filled">Echo</button>
+        </form>
+        <p id="echo-out" class="result"></p>
+      </div>
+      <div class="card">
+        <h2>Events from a worker</h2>
+        <p class="hint">A Zig worker thread emits five <code>tick</code> events.</p>
+        <div class="ticks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+        <button id="ticks" class="btn filled">Start</button>
+        <p id="tick-out" class="result"></p>
+      </div>
+      <h2 class="section-title">This device</h2>
+      <div class="card list">
+        <div class="row"><span>Platform</span><b id="platform"></b></div>
+        <div class="row"><span>Window</span><b id="size"></b></div>
+        <div class="row"><span>Launches (the store)</span><b id="launches">—</b></div>
+        <div class="row"><span>Whisper backend</span><b id="dev-backend">—</b></div>
+        <div class="row"><span>System speech</span><b id="dev-speech">—</b></div>
+        <div class="row"><span>Tray, menu, hotkeys</span><b id="dev-desktop">—</b></div>
+        <div class="row"><span>Data</span><b id="dev-data" class="wrap">—</b></div>
+      </div>
+      <p class="hint center">Right-click (or long-press) for the page's own menu. Back returns to the previous tab.</p>
+    </section>
+
+
+  </main>
+
+  <ul id="menu" role="menu" hidden>
+    <li role="menuitem" data-action="echo">Echo again</li>
+    <li role="menuitem" data-action="open">New window</li>
+    <li role="menuitem" data-action="close">Close this window</li>
+  </ul>
+  <script src="app.js"></script>
+  <script src="uitest.js"></script>
+</body>
+</html>

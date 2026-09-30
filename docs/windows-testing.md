@@ -39,7 +39,7 @@ cd ../..
 timeout 180 scripts/wine.sh run .wine-test/smoke/bin/oriel-smoke.exe --auto-quit 2>&1 | grep -E '^\[(ok|FAIL)\]'
 
 # Any app, with a screenshot after SHOT_AFTER seconds (default 20):
-SHOT=.wine-test/react.png scripts/wine.sh run .wine-test/react/bin/oriel-react-notes.exe
+SHOT=.wine-test/showcase.png scripts/wine.sh run .wine-test/showcase/bin/oriel-showcase.exe
 ```
 
 Build into `.wine-test/<app>` (`-p`), not the example's `zig-out/`, so the
@@ -53,10 +53,10 @@ fails inside Wine.
 ## Installer
 
 ```sh
-cd examples/react
-zig build package -Dtarget=x86_64-windows -Dwebview2-loader=$(../../scripts/wine.sh loader) -p ../../.wine-test/react-pkg
+cd examples/showcase
+zig build package -Dtarget=x86_64-windows -Dwebview2-loader=$(../../scripts/wine.sh loader) -p ../../.wine-test/showcase-pkg
 cd ../..
-scripts/wine.sh wine .wine-test/react-pkg/package/*-setup.exe /S; echo rc=$?
+scripts/wine.sh wine .wine-test/showcase-pkg/package/*-setup.exe /S; echo rc=$?
 ls ".wine-test/prefix/drive_c/users/steamuser/AppData/Local/Programs/"        # installed app
 ls ".wine-test/prefix/drive_c/users/steamuser/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/"
 ```
@@ -73,12 +73,13 @@ uses that same private display instead of starting another one, so
 ```sh
 cat > .wine-test/drive.sh <<'SH'
 #!/bin/bash
-scripts/wine.sh wine .wine-test/react/bin/oriel-react-notes.exe &
+scripts/wine.sh wine .wine-test/showcase/bin/oriel-showcase.exe &
 sleep 20
-win=$(xdotool search --name "React notes" | head -1)
+win=$(xdotool search --name "Oriel Showcase" | head -1)
+xdotool key ctrl+2; sleep 1                              # the Notes tab
 eval "$(xdotool getwindowgeometry --shell "$win")"      # X Y WIDTH HEIGHT
 xdotool mousemove $((X+300)) $((Y+112)) click 1
-xdotool type --delay 30 "hello from wine"; xdotool key Return; sleep 1
+xdotool type --delay 30 "hello from wine"; xdotool key Return; sleep 1   # a note
 import -window root .wine-test/drive.png
 scripts/wine.sh kill
 SH

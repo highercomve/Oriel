@@ -1,0 +1,10 @@
+.{
+    .name = .oriel_showcase,
+    .version = "0.0.0",
+    .fingerprint = 0x5288ded49f4cbc09,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .oriel = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "web" },
+}
