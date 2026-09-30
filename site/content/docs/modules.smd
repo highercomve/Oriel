@@ -284,7 +284,9 @@ Build time: ~45 seconds cold; cached builds are fast. CPU features auto-detected
 
 **Status:** Opt-in with `-Dllama`. Default: off.
 
-**GPU:** CUDA on Linux with `-Dggml_cuda`; Metal on macOS (on by default).
+**GPU:** CUDA on Linux with `-Dggml_cuda`; Vulkan on Linux and Windows with `-Dggml_vulkan`; Metal on macOS (on by default).
+
+Comparing with a Tauri sidecar or Rust crates? See [AI apps: Oriel and Tauri]($link.page('docs/ai')).
 
 ## Speech recognition (`-Dwhisper`)
 
@@ -302,7 +304,7 @@ Same build-time and distribution considerations as llama.
 
 **Status:** Opt-in with `-Dwhisper`. Default: off.
 
-**GPU:** CUDA on Linux with `-Dggml_cuda`.
+**GPU:** the same backends as llama: CUDA, Vulkan, Metal.
 
 ## CUDA acceleration
 

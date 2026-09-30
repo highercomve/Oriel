@@ -67,13 +67,49 @@
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><rect x="10" y="10" width="4" height="4"/></svg></div>
 					<h3>Local AI built in</h3>
-					<p>llama.cpp and whisper.cpp as modules, on the GPU with Vulkan or CUDA on Linux and Metal on macOS. Live captions run on the GPU in the ghostpen-lite example.</p>
+					<p>llama.cpp and whisper.cpp compiled into your app, not run as a sidecar. On the GPU with CUDA or Vulkan on Linux, Vulkan on Windows and Metal on macOS.</p>
 				</article>
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
 					<h3>Ship it</h3>
 					<p><code>oriel package</code> builds deb, rpm and AppImage. Windows <code>setup.exe</code> installers build on Windows or cross-compile from Linux.</p>
 				</article>
+			</div>
+		</section>
+
+		<section class="section">
+			<div class="section-head">
+				<h2>Local AI, compiled in</h2>
+				<p>In Tauri, a local model usually runs as a second process: a bundled <code>llama-server</code> or Ollama sidecar behind a localhost port. In Oriel, llama.cpp and whisper.cpp are part of your executable.</p>
+			</div>
+			<div class="feature-grid">
+				<article class="feature">
+					<h3>One binary, one build</h3>
+					<p><code>.llama = true</code> in <code>build.zig</code>. Zig compiles llama.cpp, whisper.cpp and a shared ggml with your app: no CMake, no sidecar to bundle, start and supervise.</p>
+				</article>
+				<article class="feature">
+					<h3>GPU from a build flag</h3>
+					<p><code>-Dggml_cuda</code>, <code>-Dggml_vulkan</code>, or Metal by default on macOS. Vulkan loads at runtime, so the same build falls back to the CPU on machines without a driver.</p>
+				</article>
+				<article class="feature">
+					<h3>Tokens over typed events</h3>
+					<p>An async command emits one event per token, typed in Zig and TypeScript. No localhost port in the path, so no CORS or CSP workarounds.</p>
+				</article>
+				<article class="feature">
+					<h3>JSON that parses</h3>
+					<p><code>jsonSchemaToGrammar</code> turns a JSON Schema into a llama.cpp grammar, so the model can only answer with JSON your structs accept.</p>
+				</article>
+				<article class="feature">
+					<h3>Speech and vision</h3>
+					<p>whisper.cpp with microphone and system-audio capture on every platform, and llama.cpp's multimodal library for vision models.</p>
+				</article>
+				<article class="feature">
+					<h3>MCP: not built in yet</h3>
+					<p>Neither framework ships an MCP server. An Oriel app can serve MCP over stdio from its own binary, reusing its Zig commands; the guide shows how.</p>
+				</article>
+			</div>
+			<div class="hero-actions" style="justify-content:flex-start;margin-top:20px">
+				<a class="btn btn-primary" href="$site.page('docs/ai').link()">AI apps: Oriel and Tauri</a>
 			</div>
 		</section>
 
@@ -180,6 +216,8 @@
 						<tr><td>Events (<code>emit</code> / <code>listen</code>)</td><td>Zig → JS, type-checked on both sides; targeted and broadcast</td></tr>
 						<tr><td>Capabilities</td><td>Per origin, per command, per window</td></tr>
 						<tr><td>Multiple windows</td><td><code>oriel.window.open()</code> from JS, routes, targeted events</td></tr>
+						<tr><td>Local LLM as a sidecar (<code>externalBin</code>) or Rust crates</td><td>llama.cpp and whisper.cpp compiled into the app; CUDA, Vulkan, Metal from build flags</td></tr>
+						<tr><td>Streaming over a <code>Channel</code>, or <code>fetch</code> to a sidecar's port</td><td>Typed events from an async command; no local port, no CORS</td></tr>
 						<tr><td>Updater</td><td>Ed25519-signed manifests, atomic replace, progress events</td></tr>
 						<tr><td><code>create-tauri-app</code>, <code>tauri dev/build</code></td><td><code>oriel init</code> (React, Vue, Svelte, vanilla), <code>oriel dev/build/package</code>, <code>oriel doctor</code></td></tr>
 						<tr><td>Rust + Cargo</td><td>Zig 0.16 and its build system: no multi-GB target directories</td></tr>

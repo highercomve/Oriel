@@ -1658,6 +1658,30 @@ oriel dev              # run against Vite dev server with hot reload
 | macOS | ◐ AppKit + WKWebView shell and every module/plugin (tray, menu, dialog, notification, store, clipboard, fs_watch, global_shortcut, input, updater, media_server, audio_capture incl. system audio), whisper/llama on Metal, deep links, `.app`/`.dmg` packaging |
 | Mobile | ❌ |
 
+### AI apps: compiled in, not a sidecar
+
+The biggest difference for LLM apps is where the model runs. In Tauri a
+local model usually runs as a second process (a bundled `llama-server` or
+Ollama sidecar behind a localhost port) or comes from Rust crates
+(`llama-cpp-2`, candle) set up per OS. In Oriel:
+
+- **llama.cpp and whisper.cpp are compiled into the executable** (`-Dllama`,
+  `-Dwhisper`): one process, no CMake, no sidecar to bundle or supervise.
+- **GPU from a build flag:** `-Dggml_cuda` (Linux), `-Dggml_vulkan` (Linux,
+  Windows; CPU fallback without a driver), Metal on macOS by default.
+- **Tokens stream as typed events** from an async command, reaching the page
+  before the command's reply; there is no local HTTP port, so no CORS/CSP
+  workaround.
+- **Structured output:** `oriel.llama.jsonSchemaToGrammar` constrains the model
+  to JSON matching a schema. **Vision:** `-Dllama_mtmd`. **Speech:** whisper
+  with `audio_capture` (mic and system audio) on every platform.
+- **MCP is not built in**, in Oriel or in Tauri. An Oriel app can serve MCP's
+  stdio JSON-RPC from its own binary (a `--mcp` mode), reusing the Zig
+  functions behind its commands, with no Node or Python bridge.
+
+See [AI apps: Oriel and Tauri](https://highercomve.github.io/Oriel/docs/ai/)
+for the details.
+
 ## Compared with Vercel native
 
 [Vercel Labs' native](https://github.com/vercel-labs/native) (formerly
