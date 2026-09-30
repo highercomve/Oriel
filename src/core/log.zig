@@ -3,7 +3,8 @@
 //! Routes `std.log` messages to both `stderr` and a persistent log file:
 //! `$XDG_DATA_HOME/<app_id>/app.log` (Linux), `%LOCALAPPDATA%\<app_id>\app.log`
 //! (Windows), `~/Library/Logs/<app_id>/app.log` (macOS, where Console.app
-//! finds it too). Appended to, never rotated. Thread-safe.
+//! finds it too), `<filesDir>/<app_id>/app.log` (Android, where messages go
+//! to logcat instead of stderr). Appended to, never rotated. Thread-safe.
 //!
 //! To use in an app's `main.zig`:
 //!     pub const std_options: std.Options = .{
@@ -12,12 +13,20 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
+const heap = @import("heap.zig");
 
-const is_linux = builtin.os.tag == .linux;
+/// Desktop Linux (GLib); Android is Linux too but has no GLib.
+const is_linux = builtin.os.tag == .linux and !builtin.abi.isAndroid();
+const is_android = builtin.abi.isAndroid();
 const is_windows = builtin.os.tag == .windows;
-const is_macos = builtin.os.tag == .macos;
-/// Linux and macOS write the file through a POSIX descriptor.
-const is_posix = is_linux or is_macos;
+/// macOS and iOS: `~/Library/Logs/<app_id>/app.log` (on iOS `$HOME` is the
+/// app's sandbox container), locked with a pthread mutex.
+const is_macos = builtin.os.tag == .macos or builtin.os.tag == .ios;
+/// Linux, Android and macOS write the file through a POSIX descriptor.
+const is_posix = is_linux or is_android or is_macos;
+/// macOS and Android lock with a plain pthread mutex.
+const is_pthread = is_macos or is_android;
+const android_paths = if (is_android) @import("../platform/android/paths.zig") else struct {};
 
 const glib = if (is_linux) @import("glib") else struct {};
 const win32 = if (is_windows) @import("../platform/windows/win32.zig") else struct {};
@@ -25,7 +34,7 @@ const win32 = if (is_windows) @import("../platform/windows/win32.zig") else stru
 var log_mutex: if (is_linux) glib.Mutex else void = if (is_linux) undefined else {};
 var log_mutex_initialized = false;
 var log_srw: if (is_windows) win32.SRWLOCK else void = if (is_windows) .{} else {};
-var log_pthread: if (is_macos) std.c.pthread_mutex_t else void = if (is_macos) .{} else {};
+var log_pthread: if (is_pthread) std.c.pthread_mutex_t else void = if (is_pthread) .{} else {};
 var log_fd: c_int = -1;
 var log_handle: ?win32.HANDLE = null;
 var log_path_buf: [1024]u8 = undefined;
@@ -46,7 +55,7 @@ fn lock() void {
         log_mutex.lock();
     } else if (is_windows) {
         win32.AcquireSRWLockExclusive(&log_srw);
-    } else if (is_macos) {
+    } else if (is_pthread) {
         _ = std.c.pthread_mutex_lock(&log_pthread);
     }
 }
@@ -56,7 +65,7 @@ fn unlock() void {
         log_mutex.unlock();
     } else if (is_windows) {
         win32.ReleaseSRWLockExclusive(&log_srw);
-    } else if (is_macos) {
+    } else if (is_pthread) {
         _ = std.c.pthread_mutex_unlock(&log_pthread);
     }
 }
@@ -93,6 +102,11 @@ pub fn init(app_id: []const u8) void {
         if (home[0] != '/') return; // empty or relative: no file
         var path_buf: [1024]u8 = undefined;
         const dir = std.fmt.bufPrintZ(&path_buf, "{s}/Library/Logs/{s}", .{ std.mem.span(home), app_id }) catch return;
+        initInDir(dir);
+    } else if (is_android) {
+        const files = android_paths.filesDir() orelse return;
+        var path_buf: [1024]u8 = undefined;
+        const dir = std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{ files, app_id }) catch return;
         initInDir(dir);
     }
 }
@@ -154,7 +168,7 @@ fn initInDir(dir: [:0]const u8) void {
         var file_buf: [1024]u8 = undefined;
         const file_path = std.fmt.bufPrintZ(&file_buf, "{s}\\app.log", .{dir}) catch return;
 
-        const gpa = std.heap.smp_allocator;
+        const gpa = heap.gpa;
         const dir_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, dir) catch return;
         defer gpa.free(dir_w);
         _ = win32.CreateDirectoryW(dir_w.ptr, null);
@@ -253,7 +267,13 @@ fn writeEntry(
     };
 
     if (to_stderr) {
-        if (is_posix) {
+        if (is_android) {
+            // logcat has its own timestamps and levels: just the message.
+            var line_buf: [4096]u8 = undefined;
+            const line = std.fmt.bufPrintZ(&line_buf, "({s}): " ++ format, .{scope_str} ++ args) catch
+                std.fmt.bufPrintZ(&line_buf, "({s}): [log truncated]", .{scope_str}) catch "";
+            _ = __android_log_write(androidPriority(level), "Oriel", line.ptr);
+        } else if (is_posix) {
             _ = std.c.write(2, formatted.ptr, formatted.len);
         } else if (is_windows) {
             const h = win32.GetStdHandle(win32.STD_ERROR_HANDLE);
@@ -296,7 +316,7 @@ fn getTimestamp(buf: []u8) []const u8 {
         return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{
             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
         }) catch "0000-00-00 00:00:00";
-    } else if (is_macos) {
+    } else if (is_pthread) {
         var now: std.c.time_t = undefined;
         _ = time(&now);
         var tm: [16]i64 = undefined; // struct tm (56 bytes on Darwin), aligned
@@ -306,6 +326,18 @@ fn getTimestamp(buf: []u8) []const u8 {
     }
     return "0000-00-00 00:00:00";
 }
+
+/// <android/log.h> priorities.
+fn androidPriority(comptime level: std.log.Level) c_int {
+    return switch (level) {
+        .err => 6, // ANDROID_LOG_ERROR
+        .warn => 5, // ANDROID_LOG_WARN
+        .info => 4, // ANDROID_LOG_INFO
+        .debug => 3, // ANDROID_LOG_DEBUG
+    };
+}
+
+extern "log" fn __android_log_write(prio: c_int, tag: [*:0]const u8, text: [*:0]const u8) c_int;
 
 extern "c" fn time(t: ?*std.c.time_t) std.c.time_t;
 extern "c" fn localtime_r(t: *const std.c.time_t, tm: *anyopaque) ?*anyopaque;

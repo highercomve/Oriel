@@ -1,6 +1,7 @@
 //! Media file opening facade selecting the Linux, Windows or macOS backend.
 
 const builtin = @import("builtin");
+const target = @import("../../core/target.zig");
 pub const common = @import("common.zig");
 
 pub const SymlinkPolicy = common.SymlinkPolicy;
@@ -12,11 +13,13 @@ pub const openRoot = impl.openRoot;
 pub const closeRoot = impl.closeRoot;
 pub const openInRoot = impl.openInRoot;
 
-pub const impl = switch (builtin.os.tag) {
+pub const impl = switch (target.os) {
     .linux => @import("open/linux.zig"),
     .windows => @import("open/windows.zig"),
     .macos => @import("open/macos.zig"),
-    else => @compileError("media open is not supported on " ++ @tagName(builtin.os.tag)),
+    .android => @compileError("media open is not available on Android: the media server is not ported yet (see docs/android.md)"),
+    .ios => @compileError("media open is not available on iOS: the media server is not ported yet (see docs/ios.md)"),
+    .other => @compileError("media open is not supported on " ++ target.name),
 };
 
 test {

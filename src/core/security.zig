@@ -243,7 +243,10 @@ pub fn effectiveCsp(comptime sec: Security) ?[]const u8 {
     }
 }
 
-pub const app_origin = if (builtin.os.tag == .windows) "https://app.localhost" else "app://app";
+/// Windows (WebView2) and Android (android.webkit.WebView) only give real
+/// origins to http(s) URLs, so the app is served from a reserved `.localhost`
+/// host there (answered by the webview, never the network).
+pub const app_origin = if (builtin.os.tag == .windows or builtin.abi.isAndroid()) "https://app.localhost" else "app://app";
 
 /// `scheme://host[:port]` of `url`, lowercased scheme/host, default ports
 /// dropped. Returns null for URLs without an authority (about:, data:, …).

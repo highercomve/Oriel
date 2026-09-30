@@ -48,6 +48,7 @@ pub const Model = struct {
 /// Load a model from the given filesystem path. Returns `error.ModelLoadFailed`
 /// if the file does not exist or cannot be parsed.
 pub fn loadModel(path: [:0]const u8, params: c.llama_model_params) !Model {
+    if (!@import("ggml_gpu.zig").cpuSupported()) return error.CpuUnsupported;
     const handle = c.llama_model_load_from_file(path.ptr, params) orelse return error.ModelLoadFailed;
     return .{ .handle = handle };
 }

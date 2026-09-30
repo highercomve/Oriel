@@ -227,10 +227,20 @@ test tokenValid {
 pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
     if (!@hasDecl(Commands, "async_commands")) return false;
     const list = @field(Commands, "async_commands");
+    comptime checkAsyncCommands(Commands, list);
     inline for (list) |item| {
         if (std.mem.eql(u8, item, cmd)) return true;
     }
     return false;
+}
+
+/// Every name in `async_commands` must be a command: otherwise a renamed or
+/// deleted command only shows up at runtime, as the page's UnknownCommand.
+fn checkAsyncCommands(comptime Commands: type, comptime list: anytype) void {
+    for (list) |name| {
+        if (!@hasDecl(Commands, name) or @typeInfo(@TypeOf(@field(Commands, name))) != .@"fn")
+            @compileError("async_commands lists \"" ++ name ++ "\", but Commands has no pub fn " ++ name);
+    }
 }
 
 /// A command's error message for the page (see `fail`); per thread, because
@@ -551,6 +561,13 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  openSettings(name: PermissionName): Promise<boolean>;
             \\}
             \\
+            \\/** The OS and CPU the app was built for (fixed per build). */
+            \\export interface Platform {
+            \\  os: "linux" | "macos" | "windows" | "android" | "ios";
+            \\  /** Zig's architecture name: "x86_64", "aarch64", ... */
+            \\  arch: string;
+            \\}
+            \\
             \\export interface DeepLinkApi {
             \\  current(): Promise<string | null>;
             \\}
@@ -566,6 +583,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\declare global {
             \\  interface Window {
             \\    oriel: {
+            \\      platform: Platform;
             \\      invoke(cmd: string, args: unknown): Promise<unknown>;
             \\      listen(event: string, callback: (payload: unknown) => void): () => void;
             \\      window: WindowApi;
@@ -597,6 +615,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export const deepLink: DeepLinkApi = (globalThis as any).oriel?.deepLink;
             \\/** Built-in OS permissions API. */
             \\export const permissions: PermissionsApi = (globalThis as any).oriel?.permissions;
+            \\/** The OS and CPU the app was built for: `platform.os === "android"`. */
+            \\export const platform: Platform = (globalThis as any).oriel?.platform;
             \\/** Global Oriel API object. */
             \\export const oriel: Window["oriel"] = (globalThis as any).oriel;
             \\/** Open a URL in the system's default browser. */
@@ -771,6 +791,8 @@ test "typescript generation" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "export const window") == null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "openExternal(url: string): Promise<void>;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "export function openExternal(url: string): Promise<void>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "      platform: Platform;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "export const platform: Platform") != null);
 }
 
 test "builtin open_external dispatch and validation" {

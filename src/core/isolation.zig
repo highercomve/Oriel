@@ -54,9 +54,9 @@ const log = struct {
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 
 /// The isolation page's origin (a second host of the app scheme).
-pub const origin = if (builtin.os.tag == .windows) "https://isolation.localhost" else "app://isolation";
+pub const origin = if (builtin.os.tag == .windows or builtin.abi.isAndroid()) "https://isolation.localhost" else "app://isolation";
 /// Its host, as the scheme handlers see it.
-pub const host = if (builtin.os.tag == .windows) "isolation.localhost" else "isolation";
+pub const host = if (builtin.os.tag == .windows or builtin.abi.isAndroid()) "isolation.localhost" else "isolation";
 
 /// The command name of a signed call (the real one is inside `s`).
 pub const sealed_cmd = "oriel:isolated";

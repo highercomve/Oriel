@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const target = @import("target.zig");
 pub const common = @import("permissions/common.zig");
 
 pub const Kind = common.Kind;
@@ -25,11 +26,13 @@ const log = struct {
     }
 };
 
-pub const impl = switch (builtin.os.tag) {
+pub const impl = switch (target.os) {
     .linux => @import("permissions/linux.zig"),
     .windows => @import("permissions/windows.zig"),
     .macos => @import("permissions/macos.zig"),
-    else => @compileError("permissions are not supported on " ++ @tagName(builtin.os.tag)),
+    .android => @import("permissions/android.zig"),
+    .ios => @import("permissions/ios.zig"),
+    .other => @compileError("permissions are not supported on " ++ target.name),
 };
 
 var declared_set: Declared = .{};

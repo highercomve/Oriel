@@ -4,14 +4,17 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const target = @import("core/target.zig");
 const Ed25519 = std.crypto.sign.Ed25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
-pub const backend = switch (builtin.os.tag) {
+pub const backend = switch (target.os) {
     .linux => @import("modules/updater/linux.zig"),
     .windows => @import("modules/updater/windows.zig"),
     .macos => @import("modules/updater/macos.zig"),
-    else => @compileError("updater is not supported on " ++ @tagName(builtin.os.tag)),
+    .android => @compileError("the updater is not available on Android: Play updates the app, and self-updating Play apps is not allowed (see docs/android.md)"),
+    .ios => @compileError("the updater is not available on iOS: the App Store (or TestFlight) updates iOS apps"),
+    .other => @compileError("updater is not supported on " ++ target.name),
 };
 
 // Pure-std manifest parsing and verification module

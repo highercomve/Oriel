@@ -12,6 +12,7 @@ const jsc = @import("jsc");
 const App = @import("../../core/App.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
+const build_target = @import("../../core/target.zig");
 const isolation = @import("../../core/isolation.zig");
 
 const log = std.log.scoped(.oriel);
@@ -106,6 +107,8 @@ pub const bridge_js =
     \\    }
     \\  };
     \\  Object.defineProperty(window, "oriel", { value: Object.freeze({
+    \\    platform:
+++ " " ++ build_target.platform_js ++ ",\n" ++
     \\    invoke,
     \\    listen(event, callback) {
     \\      let set = listeners.get(event);

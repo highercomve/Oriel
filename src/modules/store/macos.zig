@@ -5,17 +5,15 @@
 //!   (macOS has no separate config location; preferences plists are not used).
 //! - `cacheDir`: `~/Library/Caches/<app_id>`.
 //!
-//! Atomic replacement: a sibling temp file created exclusively (O_EXCL,
-//! mode 0600, no symlink following), written, fsync'ed, renamed over the
-//! target, then the directory is fsync'ed.
+//! Files are replaced atomically (`posix.zig`).
 
 const std = @import("std");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const posix = @import("posix.zig");
 
 const c = std.c;
-
-var temp_counter: std.atomic.Value(u32) = .init(1);
+const makePath = posix.makePath;
 
 /// `$HOME/<rel>/<app_id>`, created if missing. Caller frees.
 fn libraryPath(gpa: std.mem.Allocator, rel: []const u8, app_id: []const u8) ![]const u8 {
@@ -26,26 +24,6 @@ fn libraryPath(gpa: std.mem.Allocator, rel: []const u8, app_id: []const u8) ![]c
     errdefer gpa.free(path);
     try makePath(gpa, path);
     return path;
-}
-
-/// `mkdir -p` with mode 0755.
-fn makePath(gpa: std.mem.Allocator, path: []const u8) !void {
-    const z = try gpa.dupeZ(u8, path);
-    defer gpa.free(z);
-    var i: usize = 1;
-    while (i <= z.len) : (i += 1) {
-        if (i < z.len and z[i] != '/') continue;
-        const saved = z[i];
-        z[i] = 0;
-        defer z[i] = saved;
-        const rc = c.mkdir(z.ptr, 0o755);
-        if (rc != 0) {
-            switch (std.posix.errno(rc)) {
-                .EXIST => {},
-                else => return error.CreateDirectoryFailed,
-            }
-        }
-    }
 }
 
 /// Return the application config directory (created if missing):
@@ -70,102 +48,10 @@ pub fn cacheDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8 {
     return libraryPath(gpa, "Library/Caches", app_id);
 }
 
-const MacMutex = struct {
-    inner: c.pthread_mutex_t = .{},
-
-    pub fn init(self: *MacMutex) void {
-        self.* = .{};
-    }
-
-    pub fn deinit(self: *MacMutex) void {
-        _ = c.pthread_mutex_destroy(&self.inner);
-    }
-
-    pub fn lock(self: *MacMutex) void {
-        _ = c.pthread_mutex_lock(&self.inner);
-    }
-
-    pub fn unlock(self: *MacMutex) void {
-        _ = c.pthread_mutex_unlock(&self.inner);
-    }
-};
-
-const max_store_size = 16 * 1024 * 1024;
-
-/// The whole file, or null if it doesn't exist. Caller frees.
-fn macReadFile(gpa: std.mem.Allocator, path: [:0]const u8) !?[]u8 {
-    const fd = c.open(path.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
-    if (fd < 0) {
-        return switch (std.posix.errno(fd)) {
-            .NOENT => null,
-            else => error.OpenFailed,
-        };
-    }
-    defer _ = c.close(fd);
-
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(gpa);
-    var buf: [16 * 1024]u8 = undefined;
-    while (true) {
-        const n = c.read(fd, &buf, buf.len);
-        if (n < 0) {
-            if (std.posix.errno(n) == .INTR) continue;
-            return error.ReadFailed;
-        }
-        if (n == 0) break;
-        if (out.items.len + @as(usize, @intCast(n)) > max_store_size) return error.StoreTooLarge;
-        try out.appendSlice(gpa, buf[0..@intCast(n)]);
-    }
-    return try out.toOwnedSlice(gpa);
-}
-
-fn writeAll(fd: c.fd_t, bytes: []const u8) !void {
-    var off: usize = 0;
-    while (off < bytes.len) {
-        const n = c.write(fd, bytes[off..].ptr, bytes.len - off);
-        if (n < 0) {
-            if (std.posix.errno(n) == .INTR) continue;
-            return error.WriteFailed;
-        }
-        off += @intCast(n);
-    }
-}
-
-fn macWriteFileAtomic(path: [:0]const u8, bytes: []const u8) !void {
-    const gpa = std.heap.smp_allocator;
-    const n = temp_counter.fetchAdd(1, .monotonic);
-    const tmp = try std.fmt.allocPrintSentinel(gpa, "{s}.tmp.{d}.{d}", .{ path, c.getpid(), n }, 0);
-    defer gpa.free(tmp);
-
-    const fd = c.open(tmp.ptr, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true, .NOFOLLOW = true, .CLOEXEC = true }, @as(c.mode_t, 0o600));
-    if (fd < 0) return error.CreateTempFailed;
-    var renamed = false;
-    defer if (!renamed) {
-        _ = c.unlink(tmp.ptr);
-    };
-    {
-        defer _ = c.close(fd);
-        try writeAll(fd, bytes);
-        if (c.fsync(fd) != 0) return error.SyncFailed;
-    }
-    if (c.rename(tmp.ptr, path.ptr) != 0) return error.RenameFailed;
-    renamed = true;
-
-    // Make the rename itself durable.
-    const dir = std.fs.path.dirname(path) orelse ".";
-    const dir_z = try gpa.dupeZ(u8, dir);
-    defer gpa.free(dir_z);
-    const dfd = c.open(dir_z.ptr, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true });
-    if (dfd >= 0) {
-        defer _ = c.close(dfd);
-        _ = c.fsync(dfd); // best effort: the data itself is already synced
-    }
-}
-
 pub const Backend = struct {
-    pub const Mutex = MacMutex;
-    pub const readFile = macReadFile;
-    pub const writeFileAtomic = macWriteFileAtomic;
+    pub const Mutex = posix.Mutex;
+    pub const readFile = posix.readFile;
+    pub const writeFileAtomic = posix.writeFileAtomic;
     pub const configDir = appSupportDir;
 };
 

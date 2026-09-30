@@ -34,6 +34,12 @@ pub const TranscribeOptions = struct {
     threads: c_int = 4,
     /// Force one segment (short live-caption chunks).
     single_segment: bool = false,
+    /// Encoder context in frames (50 per second of audio), 0 for whisper's
+    /// fixed 30 s window (1500). Whisper pads every clip to 30 s, so a
+    /// short clip costs as much as a long one; `audioCtxFor` sizes it to
+    /// the clip instead: several times faster on short live chunks, at
+    /// some accuracy cost.
+    audio_ctx: c_int = 0,
     /// Path of the voice activity detection model (`VadModel.install`):
     /// whisper then only hears the speech. Without it, silence gets made-up
     /// text ("Thank you.") and, past 30 s, repeats of the last sentence.
@@ -58,6 +64,7 @@ pub fn fullParams(opts: TranscribeOptions) c.whisper_full_params {
     p.translate = opts.translate;
     p.n_threads = opts.threads;
     p.single_segment = opts.single_segment;
+    p.audio_ctx = opts.audio_ctx;
     if (opts.vad_model) |path| {
         p.vad = true;
         p.vad_model_path = path.ptr;
@@ -67,6 +74,20 @@ pub fn fullParams(opts: TranscribeOptions) c.whisper_full_params {
         p.vad_params.speech_pad_ms = 200;
     }
     return p;
+}
+
+/// An encoder context for `n_samples` of audio (`TranscribeOptions.audio_ctx`):
+/// its frames (50 per second) plus a margin, in steps of 64, at least 256
+/// (smaller contexts make whisper hallucinate) and at most whisper's 1500.
+pub fn audioCtxFor(n_samples: usize) c_int {
+    const frames = n_samples * 50 / sample_rate + 64;
+    return @intCast(@max(256, @min(1500, std.mem.alignForward(usize, frames, 64))));
+}
+
+test audioCtxFor {
+    try std.testing.expectEqual(@as(c_int, 256), audioCtxFor(sample_rate)); // 1 s
+    try std.testing.expectEqual(@as(c_int, 448), audioCtxFor(sample_rate * 7)); // 350 + 64
+    try std.testing.expectEqual(@as(c_int, 1500), audioCtxFor(sample_rate * 40));
 }
 
 /// Silero VAD v6.2.0 (MIT, github.com/snakers4/silero-vad) in whisper.cpp's
@@ -124,7 +145,10 @@ pub const Context = struct {
 
 /// Load a whisper model from the given filesystem path. Returns `error.ModelLoadFailed`
 /// if the file does not exist or cannot be parsed.
+/// `error.CpuUnsupported` when the CPU lacks the ARM extensions ggml was
+/// built for (`-Dggml_arm`).
 pub fn loadModel(path: [:0]const u8, params: c.whisper_context_params) !Context {
+    if (!@import("ggml_gpu.zig").cpuSupported()) return error.CpuUnsupported;
     const handle = c.whisper_init_from_file_with_params(path.ptr, params) orelse return error.ModelLoadFailed;
     return .{ .handle = handle };
 }

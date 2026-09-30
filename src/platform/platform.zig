@@ -5,6 +5,8 @@
 //!   - Linux: GTK4 + WebKitGTK 6.0 (`src/platform/linux/`)
 //!   - Windows: Win32 + WebView2 (`src/platform/windows/`)
 //!   - macOS: AppKit + WKWebView via the Objective-C runtime (`src/platform/macos/`)
+//!   - Android: a Kotlin Activity + android.webkit.WebView over JNI (`src/platform/android/`)
+//!   - iOS: UIKit + WKWebView via the Objective-C runtime (`src/platform/ios/`)
 //!
 //! Any platform backend must export the following declarations:
 //!
@@ -43,12 +45,15 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
+const target = @import("../core/target.zig");
 
-pub const impl = switch (builtin.os.tag) {
+pub const impl = switch (target.os) {
     .linux => @import("linux/linux.zig"),
+    .android => @import("android/android.zig"),
+    .ios => @import("ios/ios.zig"),
     .windows => @import("windows/windows.zig"),
     .macos => @import("macos/macos.zig"),
-    else => @compileError("Unsupported operating system: " ++ @tagName(builtin.os.tag) ++ ". Supported platforms are Linux, Windows and macOS."),
+    .other => @compileError("Unsupported operating system: " ++ target.name ++ ". Supported platforms are Linux, Android, Windows, macOS and iOS."),
 };
 
 // Comptime check that the selected implementation exports all required declarations.
@@ -87,7 +92,7 @@ comptime {
     };
     for (required_decls) |decl_name| {
         if (!@hasDecl(impl, decl_name)) {
-            @compileError("Platform implementation for " ++ @tagName(builtin.os.tag) ++ " is missing required declaration: " ++ decl_name);
+            @compileError("Platform implementation for " ++ target.name ++ " is missing required declaration: " ++ decl_name);
         }
     }
 }

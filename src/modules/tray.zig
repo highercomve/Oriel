@@ -5,6 +5,7 @@
 //! macOS backend: NSStatusItem + NSMenu.
 
 const builtin = @import("builtin");
+const target = @import("../core/target.zig");
 pub const common = @import("tray/common.zig");
 
 pub const MenuItem = common.MenuItem;
@@ -14,11 +15,13 @@ pub const Menu = common.Menu;
 pub const Tray = impl.Tray;
 pub const check = impl.check;
 
-pub const impl = switch (builtin.os.tag) {
+pub const impl = switch (target.os) {
     .linux => @import("tray/linux.zig"),
     .windows => @import("tray/windows.zig"),
     .macos => @import("tray/macos.zig"),
-    else => @compileError("tray is not supported on " ++ @tagName(builtin.os.tag)),
+    .android => @compileError("tray is not available on Android: there is no system tray (use a notification: see docs/android.md)"),
+    .ios => @compileError("tray is not available on iOS: there is no system tray"),
+    .other => @compileError("tray is not supported on " ++ target.name),
 };
 
 // Re-export Linux-specific watcher_name if on Linux

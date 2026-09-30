@@ -5,6 +5,7 @@
 //! macOS backend: NSPasteboard (text, PNG/TIFF) via main thread.
 
 const builtin = @import("builtin");
+const target = @import("../core/target.zig");
 const std = @import("std");
 
 pub const common = @import("clipboard/common.zig");
@@ -20,11 +21,13 @@ pub const writeText = impl.writeText;
 pub const writeImage = impl.writeImage;
 pub const check = impl.check;
 
-pub const impl = switch (builtin.os.tag) {
+pub const impl = switch (target.os) {
     .linux => @import("clipboard/linux.zig"),
     .windows => @import("clipboard/windows.zig"),
     .macos => @import("clipboard/macos.zig"),
-    else => @compileError("clipboard is not supported on " ++ @tagName(builtin.os.tag)),
+    .android => @import("clipboard/android.zig"),
+    .ios => @import("clipboard/ios.zig"),
+    .other => @compileError("clipboard is not supported on " ++ target.name),
 };
 
 test {

@@ -5,17 +5,20 @@
 //! macOS backend: UNUserNotificationCenter (bundled apps) or osascript.
 
 const builtin = @import("builtin");
+const target = @import("../core/target.zig");
 pub const common = @import("notification/common.zig");
 
 pub const NotificationOptions = common.NotificationOptions;
 pub const notify = impl.notify;
 pub const check = impl.check;
 
-pub const impl = switch (builtin.os.tag) {
+pub const impl = switch (target.os) {
     .linux => @import("notification/linux.zig"),
     .windows => @import("notification/windows.zig"),
     .macos => @import("notification/macos.zig"),
-    else => @compileError("notification is not supported on " ++ @tagName(builtin.os.tag)),
+    .android => @import("notification/android.zig"),
+    .ios => @import("notification/ios.zig"),
+    .other => @compileError("notification is not supported on " ++ target.name),
 };
 
 test {

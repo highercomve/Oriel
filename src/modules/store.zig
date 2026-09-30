@@ -5,6 +5,7 @@
 //! macOS backend: ~/Library/Application Support and Caches + libc JSON store.
 
 const builtin = @import("builtin");
+const target = @import("../core/target.zig");
 pub const common = @import("store/common.zig");
 
 pub const configDir = impl.configDir;
@@ -13,11 +14,13 @@ pub const cacheDir = impl.cacheDir;
 pub const Store = impl.Store;
 pub const check = impl.check;
 
-pub const impl = switch (builtin.os.tag) {
+pub const impl = switch (target.os) {
     .linux => @import("store/linux.zig"),
     .windows => @import("store/windows.zig"),
     .macos => @import("store/macos.zig"),
-    else => @compileError("store is not supported on " ++ @tagName(builtin.os.tag)),
+    .android => @import("store/android.zig"),
+    .ios => @import("store/macos.zig"),
+    .other => @compileError("store is not supported on " ++ target.name),
 };
 
 test {

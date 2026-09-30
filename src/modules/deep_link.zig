@@ -8,6 +8,7 @@
 //! macOS backend: Launch Services `kAEGetURL` Apple Events; schemes declared in Info.plist.
 
 const builtin = @import("builtin");
+const target = @import("../core/target.zig");
 pub const common = @import("deep_link/common.zig");
 
 pub const queue = @import("deep_link/queue.zig");
@@ -27,11 +28,13 @@ pub const setReady = impl.setReady;
 pub const isReady = impl.isReady;
 pub const check = impl.check;
 
-pub const impl = switch (builtin.os.tag) {
+pub const impl = switch (target.os) {
     .linux => @import("deep_link/linux.zig"),
     .windows => @import("deep_link/windows.zig"),
     .macos => @import("deep_link/macos.zig"),
-    else => @compileError("deep_link is not supported on " ++ @tagName(builtin.os.tag)),
+    .android => @import("deep_link/linux.zig"),
+    .ios => @import("deep_link/linux.zig"),
+    .other => @compileError("deep_link is not supported on " ++ target.name),
 };
 
 test {

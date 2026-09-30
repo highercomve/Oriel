@@ -13,6 +13,14 @@ pub const security = @import("core/security.zig");
 pub const isolation = @import("core/isolation.zig");
 pub const log = @import("core/log.zig");
 pub const platform = @import("platform/platform.zig");
+/// The OS family being built for (`target.is_android`, `target.os`).
+pub const target = @import("core/target.zig");
+/// Android backend internals the generated library root uses
+/// (`android.exportStart`, `android.panic`); empty elsewhere.
+pub const android = if (target.is_android) @import("platform/android/android.zig") else struct {};
+/// iOS-only APIs (`ios.onSystemEvent`: background, foreground, memory
+/// warnings); empty elsewhere.
+pub const ios = if (target.is_ios) @import("platform/ios/ios.zig") else struct {};
 /// OS permissions: declared in build.zig, queried and requested at runtime.
 pub const permissions = @import("core/permissions.zig");
 
@@ -33,6 +41,10 @@ pub const whisper = if (options.whisper) @import("modules/whisper.zig") else str
 pub const audio_capture = if (options.audio_capture) @import("modules/audio_capture.zig") else struct {};
 /// GPU backends (libggml-cuda.so, libggml-vulkan.so) for llama and whisper: `ggml_gpu.load(io)` before loading a model.
 pub const ggml_gpu = if (options.llama or options.whisper) @import("modules/ggml_gpu.zig") else struct {};
+/// Chat with a local LLM out of the box: models, templates, streaming, KV reuse, CPU or GPU (llama.cpp).
+pub const chat = if (options.llama) @import("modules/chat.zig") else struct {};
+/// Voice to text out of the box: live dictation and transcription, on whisper or the platform's recognizer.
+pub const dictation = if (options.whisper and options.audio_capture) @import("modules/dictation.zig") else struct {};
 
 // App-specific plugins.
 pub const global_shortcut = if (options.global_shortcut) @import("plugins/global_shortcut.zig") else struct {};
@@ -190,4 +202,9 @@ test {
     if (options.whisper) std.testing.refAllDecls(whisper);
     if (options.llama or options.whisper) std.testing.refAllDecls(ggml_gpu);
     if (options.audio_capture) std.testing.refAllDecls(audio_capture);
+    if (options.whisper and options.audio_capture) std.testing.refAllDecls(dictation);
+    if (options.llama) std.testing.refAllDecls(chat);
+    // dictation's Apple engine needs no whisper: checked on every Apple
+    // target (whisper's C sources need the SDK even to type-check).
+    if (target.is_ios or target.os == .macos) std.testing.refAllDecls(@import("modules/dictation/apple.zig"));
 }

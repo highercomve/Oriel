@@ -8,6 +8,7 @@
 //! a loopback device such as BlackHole).
 
 const builtin = @import("builtin");
+const target = @import("../core/target.zig");
 pub const common = @import("audio_capture/common.zig");
 
 pub const Source = common.Source;
@@ -16,11 +17,13 @@ pub const listSources = impl.listSources;
 pub const freeSources = common.freeSources;
 pub const check = impl.check;
 
-pub const impl = switch (builtin.os.tag) {
+pub const impl = switch (target.os) {
     .linux => @import("audio_capture/linux.zig"),
     .windows => @import("audio_capture/windows.zig"),
     .macos => @import("audio_capture/macos.zig"),
-    else => @compileError("audio_capture is not supported on " ++ @tagName(builtin.os.tag)),
+    .android => @import("audio_capture/android.zig"),
+    .ios => @import("audio_capture/ios.zig"),
+    .other => @compileError("audio_capture is not supported on " ++ target.name),
 };
 
 test {

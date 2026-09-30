@@ -5,6 +5,7 @@
 //! to `src/platform/platform.zig`.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const build_opts = @import("build_options");
 const platform = @import("../platform/platform.zig");
 const ipc = @import("ipc.zig");
@@ -311,7 +312,7 @@ pub const Window = struct {
         if (!self.options.remember_geometry) return;
         const size = self.getSize();
         const store_mod = @import("../modules/store.zig");
-        var store = store_mod.Store.open(std.heap.smp_allocator, self.app_id, "window_geometry") catch return;
+        var store = store_mod.Store.open(heap.gpa, self.app_id, "window_geometry") catch return;
         defer store.deinit();
 
         var key_w_buf: [128]u8 = undefined;
@@ -331,7 +332,7 @@ pub const Window = struct {
         if (!build_opts.store) return;
         if (!self.options.remember_geometry) return;
         const store_mod = @import("../modules/store.zig");
-        var store = store_mod.Store.open(std.heap.smp_allocator, self.app_id, "window_geometry") catch return;
+        var store = store_mod.Store.open(heap.gpa, self.app_id, "window_geometry") catch return;
         defer store.deinit();
 
         var key_w_buf: [128]u8 = undefined;
@@ -401,7 +402,7 @@ pub fn getWindow(label: []const u8) ?*Window {
 }
 
 /// Options of windows declared with `registerWindow` and not created yet.
-/// Guarded by `windows_mutex`; the strings are owned (smp_allocator).
+/// Guarded by `windows_mutex`; the strings are owned (`heap.gpa`).
 var registered_windows: std.ArrayList(WindowOptions) = .empty;
 
 /// Declare a window without creating it: `ensureWindow(label)` creates it
@@ -410,7 +411,7 @@ var registered_windows: std.ArrayList(WindowOptions) = .empty;
 /// (settings, a playground) costs nothing at startup. Declaring a label
 /// again replaces its options.
 pub fn registerWindow(options: WindowOptions) !void {
-    const gpa = std.heap.smp_allocator;
+    const gpa = heap.gpa;
     var opts = options;
     opts.label = try gpa.dupeZ(u8, options.label);
     errdefer gpa.free(opts.label);
@@ -431,7 +432,7 @@ pub fn registerWindow(options: WindowOptions) !void {
 }
 
 fn freeRegistered(opts: WindowOptions) void {
-    const gpa = std.heap.smp_allocator;
+    const gpa = heap.gpa;
     gpa.free(opts.label);
     gpa.free(opts.title);
     if (opts.url) |u| gpa.free(u);
@@ -523,7 +524,7 @@ pub fn emitTo(label: []const u8, name: []const u8, payload: anytype) !void {
     windows_mutex.unlock();
     if (!exists) return error.WindowNotFound;
 
-    const gpa = std.heap.smp_allocator;
+    const gpa = heap.gpa;
     const payload_json = try std.json.Stringify.valueAlloc(gpa, payload, .{});
     defer gpa.free(payload_json);
     const name_json = try std.json.Stringify.valueAlloc(gpa, name, .{});
@@ -559,7 +560,7 @@ pub fn openWindow(options: WindowOptions) !*Window {
 
     try security.validateWindowCount(current_security, getWindowCount());
 
-    const gpa = std.heap.smp_allocator;
+    const gpa = heap.gpa;
     const win_inst = try gpa.create(Window);
     errdefer gpa.destroy(win_inst);
 
@@ -695,14 +696,14 @@ pub fn spawn(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !v
 
         fn run(task: *ThreadPool.Task) void {
             const self: *@This() = @fieldParentPtr("task", task);
-            defer std.heap.smp_allocator.destroy(self);
+            defer heap.gpa.destroy(self);
             const result = @call(.auto, func, self.args);
             if (@typeInfo(@TypeOf(result)) == .error_union) {
                 _ = result catch |err| log.err("background task failed: {s}", .{@errorName(err)});
             }
         }
     };
-    const job = try std.heap.smp_allocator.create(Job);
+    const job = try heap.gpa.create(Job);
     job.* = .{ .task = .{ .run_fn = &Job.run }, .args = args };
     pool.post(&job.task);
 }
@@ -720,14 +721,14 @@ pub fn runOnMain(ctx: anytype, comptime func: fn (@TypeOf(ctx)) void) void {
         ctx: Ctx,
         fn run(p: ?*anyopaque) void {
             const self: *@This() = @ptrCast(@alignCast(p.?));
-            defer std.heap.smp_allocator.destroy(self);
+            defer heap.gpa.destroy(self);
             func(self.ctx);
         }
         fn drop(p: ?*anyopaque) void {
-            std.heap.smp_allocator.destroy(@as(*@This(), @ptrCast(@alignCast(p.?))));
+            heap.gpa.destroy(@as(*@This(), @ptrCast(@alignCast(p.?))));
         }
     };
-    const task = std.heap.smp_allocator.create(Task) catch {
+    const task = heap.gpa.create(Task) catch {
         log.err("runOnMain: out of memory; task dropped", .{});
         return;
     };
@@ -748,7 +749,7 @@ pub fn events(comptime Events: type) type {
 }
 
 fn emitJson(target_handle: ?platform.WindowHandle, name: []const u8, payload: anytype) !void {
-    const gpa = std.heap.smp_allocator;
+    const gpa = heap.gpa;
     const payload_json = try std.json.Stringify.valueAlloc(gpa, payload, .{});
     defer gpa.free(payload_json);
     const name_json = try std.json.Stringify.valueAlloc(gpa, name, .{});
@@ -810,12 +811,12 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     defer {
         ensureWindowsMutex();
         windows_mutex.lock();
-        windows_list.deinit(std.heap.smp_allocator);
+        windows_list.deinit(heap.gpa);
         windows_list = .empty;
         windows_mutex.unlock();
     }
 
-    const pool = ThreadPool.init(std.heap.smp_allocator, io, null) catch |err| {
+    const pool = ThreadPool.init(heap.gpa, io, null) catch |err| {
         log.err("failed to initialize worker thread pool: {s}", .{@errorName(err)});
         return 1;
     };
