@@ -12,3 +12,4 @@ deps/.zig-gobject-src/
 site/content/.smd.ziggy-schema
 public/
 .zig-cache/
+node_modules/
