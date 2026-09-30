@@ -201,6 +201,23 @@ code, pre { font-family: var(--mono); }
 }
 .shots figcaption { margin-top: 10px; font-size: 14px; color: var(--muted); }
 .shots figcaption strong { color: var(--text); }
+/* Phone screenshots: whole, tall, five across on wide screens. */
+.shots.phones { grid-template-columns: repeat(5, 1fr); align-items: start; }
+.shots.phones img { aspect-ratio: 540 / 1101; height: auto; object-fit: contain; object-position: top; border-radius: 22px;
+  background: #0e0f14; /* the app's own background, below a shorter shot */ }
+
+/* Smoke test: info card next to its screenshot. */
+.smoke-row { display: grid; grid-template-columns: 1fr 1.4fr; gap: 24px; align-items: start; margin-top: 80px; }
+.smoke-info h3 { margin: 0 0 8px; font-size: clamp(28px, 4vw, 38px); letter-spacing: -0.035em; line-height: 1.15; }
+.smoke-info p { margin: 0 0 14px; color: var(--muted); font-size: 15px; }
+.smoke-info ul { margin: 0 0 14px; padding-left: 18px; color: var(--muted); font-size: 15px; display: grid; gap: 6px; }
+.smoke-info strong { color: var(--text); }
+.smoke-shot { margin: calc(clamp(28px, 4vw, 38px) * 1.15 + 8px) 0 0; }
+.smoke-shot img {
+  display: block; width: 100%; border-radius: var(--radius);
+  border: 1px solid var(--border-strong); box-shadow: var(--shadow);
+}
+.smoke-shot figcaption { margin-top: 10px; font-size: 14px; color: var(--muted); }
 
 .platforms { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .platform { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
@@ -310,6 +327,7 @@ tr:last-child td { border-bottom: 0; }
   .topnav-gh, .version-badge { margin-left: 0; }
   .version-badge { align-self: flex-start; margin-top: 8px; }
   .feature-grid, .platforms, .shots { grid-template-columns: 1fr 1fr; }
+  .shots.phones { grid-template-columns: repeat(3, 1fr); }
   .code-pair { grid-template-columns: 1fr; }
   .docs { grid-template-columns: 1fr; gap: 0; padding: 0 16px; }
   .sidebar { position: static; max-height: none; padding: 20px 0 0; border-bottom: 1px solid var(--border); }
@@ -323,6 +341,7 @@ tr:last-child td { border-bottom: 0; }
   .hero { padding: 64px 16px 48px; }
   .section { padding: 48px 16px; }
   .feature-grid, .platforms, .shots { grid-template-columns: 1fr; }
+  .shots.phones { grid-template-columns: 1fr 1fr; }
   .footer-cols { gap: 40px; }
   .cta { margin: 16px 16px 64px; }
 }

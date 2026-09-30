@@ -13,10 +13,10 @@
 				<a href="$site.page('docs/building').link()">Building &amp; packaging</a>
 				<a href="$site.page('docs/signing').link()">Code signing</a>
 				<a href="$site.page('docs/permissions').link()">Permissions</a>
+				<a href="$site.page('docs/mobile').link()">Android and iOS</a>
 				<h4>Reference</h4>
 				<a href="$site.page('docs/concepts').link()">Concepts</a>
 				<a href="$site.page('docs/modules').link()">Modules</a>
-				<a href="$site.page('docs/ai').link()">AI apps: Oriel and Tauri</a>
 				<a href="$site.page('docs/comparison').link()">Oriel and Vercel native</a>
 				<a href="$site.page('docs/roadmap').link()">Roadmap</a>
 			</nav>

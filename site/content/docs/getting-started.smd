@@ -146,6 +146,8 @@ Projects created with `oriel init` include a default `icon.png`. At build time, 
 | `oriel types` | Regenerate the frontend's TypeScript types for the Zig commands |
 | `oriel check` | Type-check the app's Zig code without building (about a second) |
 | `oriel package` | Build packages into `zig-out/package` (deb, rpm, AppImage on Linux; setup.exe on Windows; .app and .dmg on macOS) |
+| `oriel android build` | Release APK and AAB for Android, through a generated Gradle project |
+| `oriel ios build` | An iOS `.app` / `.ipa`, no Xcode project needed |
 | `oriel zig` | Manage the Zig versions the CLI uses (`install`, `uninstall`, `list`, `which`) in `~/.oriel/zig` |
 | `oriel webview2` | Download and cache Microsoft Edge `WebView2Loader.dll` for Windows |
 
@@ -155,4 +157,4 @@ Every command is a thin wrapper around `zig build <step>`, run from anywhere ins
 
 # Next
 
-Build a complete app in the [tutorial]($link.page('docs/tutorial')): a Zig command called from the page, an event, SQLite storage and a tray icon.
+Build a complete app in the [tutorial]($link.page('docs/tutorial')): a Zig command called from the page, an event, SQLite storage and a tray icon. The same app builds for phones: see [Building & packaging]($link.page('docs/building')) and [Android and iOS]($link.page('docs/mobile')).

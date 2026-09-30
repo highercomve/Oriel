@@ -214,6 +214,18 @@ Start the bundle with `open zig-out/<Name>.app`: notifications then go through N
 
 The bundle is ad-hoc signed, enough for the Mac that built it. To distribute it, sign it with a Developer ID and notarize it: see [Code signing]($link.page('docs/signing')).
 
+# Android and iOS
+
+The same Zig and web code builds for phones: `oriel android build --apk --aab` writes an APK and AAB through a generated Gradle project, and `oriel ios build [--ipa]` writes an `.app` / `.ipa`. On Android it needs a JDK 17, the Android SDK and NDK; on iOS, Apple's SDK (on a Mac via `xcrun`, on Linux via [xtool](https://github.com/xtool-org/xtool)).
+
+```sh
+oriel android init                 # android/: the Gradle project, generated from build.zig
+oriel android build --apk --aab    # release APK and AAB (arm64-v8a and x86_64)
+oriel ios build                    # zig-out/ios/<Name>.app
+```
+
+See [Android and iOS]($link.page('docs/mobile')) for the full workflow (debug runs on a device, installing, what reuses or stands in for the desktop modules, and what was verified on which devices).
+
 # Native dependencies
 
 Some features require native C libraries, opt-in behind build flags.

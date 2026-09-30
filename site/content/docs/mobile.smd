@@ -1,0 +1,86 @@
+---
+.title = "Android and iOS",
+.description = "The same Oriel app on phones, tablets, Android desktop mode and ChromeOS: what runs, what replaces the desktop-only parts, and how to build.",
+.date = .date("2026-09-30T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+The same `main.zig`, `Commands`, `Events` and web frontend build for Android and iOS. Oriel gives each platform a native shell around its own webview:
+
+- **Android:** a thin Kotlin Activity hosting `android.webkit.WebView`, driven over JNI from `liboriel.so`. Every window is an Activity of its own, so in Android's desktop mode each one is a separate, resizable window.
+- **iOS:** UIKit with a `WKWebView` per window, driven from Zig through the Objective-C runtime. There is no Xcode project and no Swift.
+
+[`examples/showcase`](https://github.com/highercomve/Oriel/tree/main/examples/showcase) is one app that uses every feature and builds for all five platforms.
+
+# Status
+
+| | Android | iOS |
+|---|---|---|
+| Runs on | A Pixel phone (Tensor, Mali-G715), Android desktop mode (Mali-G925), the Android 15 emulator | The iOS simulator, in CI |
+| Webview | `android.webkit.WebView` (Chromium) | `WKWebView` |
+| Packaging | APK (sideloading) and AAB (Play), through a generated Gradle project | `.app` and `.ipa` |
+| Local AI | ggml on the CPU (ARM dotprod / i8mm kernels), Vulkan, OpenCL (Adreno), Hexagon (Snapdragon NPU) | ggml on Metal |
+| Status | Verified | Preview: not yet run on a device |
+
+# Building
+
+## Android
+
+Needs a JDK 17, the Android SDK (platform-tools, Gradle 8.9+) and the NDK (`$ANDROID_NDK_HOME`).
+
+```sh
+oriel android init                 # android/: the Gradle project, generated from build.zig
+oriel android dev --abi arm64      # debug build on the connected device, with the dev server
+oriel android build --apk --aab    # release APK and AAB (arm64-v8a and x86_64)
+```
+
+Or with Zig directly: `zig build -Dtarget=aarch64-linux-android` writes `zig-out/jniLibs/arm64-v8a/liboriel.so`, which Gradle packages.
+
+## iOS
+
+Needs Apple's SDK: on a Mac, `xcrun --sdk iphoneos --show-sdk-path`; on Linux, [xtool](https://github.com/xtool-org/xtool) extracts it from `Xcode.xip`.
+
+```sh
+oriel ios build [--simulator] [--ipa]    # zig-out/ios/<Name>.app (and .ipa)
+oriel ios dev --url http://<LAN address>:5173/
+oriel ios install [--simulator]
+```
+
+`zig build check -Dtarget=aarch64-ios` type-checks without the SDK.
+
+# What replaces the desktop-only parts
+
+Phones have no tray, no menu bar and no system-wide hotkeys. On Android and iOS those modules are off by default, and turning one on is a build error that says what to use instead:
+
+| Desktop | Android | iOS |
+|---|---|---|
+| Tray icon | A Quick Settings tile (`.android = .{ .tile = "…" }`), and actions on a foreground service's notification | — |
+| System-wide hotkeys | In-app keyboard shortcuts (`global_shortcut`), listed in the system's Meta+/ helper | — |
+| Typing into other apps (`input`) | The Oriel keyboard (`.android = .{ .input_method = "…" }`): `oriel.android.commitText` types into any app's focused field | — |
+| Running in the background | A foreground service (`oriel.android.setForegroundService`), for example to keep recording | Background audio (`.ios = .{ .background_audio = true }`) |
+| Updater | The stores | The App Store |
+
+Android also sends *system events* (`oriel.android.onSystemEvent`): a tile tap, a notification action, the headset button, the keyboard's mic button, and `trim-memory`, the cue to free large models when the app goes to the background.
+
+# Voice to text on phones
+
+[Dictation]($link.page('docs/modules')) works on both platforms. On Android it has two engines:
+
+- **Whisper**, offline in any language. Each model runs where Compare measured it faster on the device (the CPU until then): on a Pixel's Mali-G715, small on Vulkan and base on the CPU, with base drafting the live text at about 1.3 s per update.
+- **The system recognizer**, with no model to download: on a Pixel, Google's on-device model, streaming about one update a second.
+
+The showcase's "dictate anywhere" puts either into any app: tap the tile, the keyboard's mic or the headset button, talk, tap again, and the text lands in the focused field.
+
+# Chat on phones
+
+[Chat]($link.page('docs/modules')) runs a local LLM on the phone: Qwen2.5 0.5B and 1.5B or Llama 3.2 1B in q4_0, which ggml runs with its ARM dotprod/i8mm kernels. As with dictation, the CPU is the default on phones until Compare measures the GPU. The showcase's Chat tab has a mic that dictates the message.
+
+# Also on Android
+
+- **Deep links** open the app from a URL (`oriel-showcase://note/Hello` in the showcase) and reach `deep_link.onOpen`, cold or running.
+- **Files** go through the Storage Access Framework. `dialog.openFile` returns a copy in the app's cache. Save with `dialog.writeFile(io, path, data)`, which writes through the picked document's descriptor.
+- **Insets:** the page is kept clear of the status bar, the display cutout and the keyboard, and fills the window in desktop mode.
+- **Models** live in the app's external files directory, where `adb push` can reach them.
+
+The full notes, including what was verified on which device, are in [docs/android.md](https://github.com/highercomve/Oriel/blob/main/docs/android.md) and [docs/ios.md](https://github.com/highercomve/Oriel/blob/main/docs/ios.md).

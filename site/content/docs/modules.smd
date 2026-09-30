@@ -8,25 +8,29 @@
 
 # Module overview
 
-| Module | Flag | Default | Linux | Windows | macOS |
-|---|---|---|---|---|---|
-| Tray | `tray` | on | ✓ | ✓ | ✓ |
-| Updater | `updater` | on | ✓ | ✓ | ✓ |
-| Media server | `media_server` | on | ✓ | ✓ | ✓ |
-| SQL | `sql` | on | ✓ | ✓ | ✓ |
-| File watching | `fs_watch` | on | ✓ | ✓ | ✓ |
-| Dialogs | `dialog` | on | ✓ | ✓ | ✓ |
-| Notifications | `notification` | on | ✓ | ✓ | ✓ |
-| Settings store | `store` | on | ✓ | ✓ | ✓ |
-| App menu | `menu` | on | ✓ | ✓ | ✓ |
-| Global shortcuts | `global_shortcut` | on | ✓ | ✓ | ✓ |
-| Input injection | `input` | on | ✓ | ✓ | ✓ |
-| Clipboard | `clipboard` | on | ✓ | ✓ | ✓ |
-| Deep links | `deep_link` | **off** | ✓ | ✓ | ✓ |
-| Vector search | `sqlite_vec` | **off** | ✓ | ✓ | ✓ |
-| LLM inference | `llama` | **off** | ✓ | ✓ | ✓ |
-| Speech-to-text | `whisper` | **off** | ✓ | ✓ | ✓ |
-| Audio capture | `audio_capture` | **off** | ✓ | — (stub) | ✓ |
+| Module | Flag | Default | Linux | Windows | macOS | Android | iOS |
+|---|---|---|---|---|---|---|---|
+| Tray | `tray` | on | ✓ | ✓ | ✓ | — | — |
+| Updater | `updater` | on | ✓ | ✓ | ✓ | — (stores) | — (App Store) |
+| Media server | `media_server` | on | ✓ | ✓ | ✓ | — | — |
+| SQL | `sql` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
+| File watching | `fs_watch` | on | ✓ | ✓ | ✓ | ✓ | — |
+| Dialogs | `dialog` | on | ✓ | ✓ | ✓ | ✓ (SAF) | ✓ (document picker) |
+| Notifications | `notification` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Settings store | `store` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
+| App menu | `menu` | on | ✓ | ✓ | ✓ | — | — |
+| Global shortcuts | `global_shortcut` | on | ✓ | ✓ | ✓ | in-app (Meta+/ list) | — |
+| Input injection | `input` | on | ✓ | ✓ | ✓ | — (the Oriel keyboard) | — |
+| Clipboard | `clipboard` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Deep links | `deep_link` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Vector search | `sqlite_vec` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
+| LLM inference | `llama` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Speech-to-text | `whisper` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Audio capture | `audio_capture` | **off** | ✓ | ✓ | ✓ | ✓ (AAudio) | ✓ |
+| Dictation | `whisper` + `audio_capture` | **off** | ✓ | ✓ | ✓ | ✓ (+ system recognizer) | ✓ |
+| Chat (LLM) | `llama` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+On Android and iOS, a module marked — is off by default and a build error when turned on: the platform has no such thing (a tray, system-wide hotkeys) or forbids it. [Android and iOS]($link.page('docs/mobile')) has what replaces them.
 
 All modules build for Linux, Windows and macOS. Native dependencies (`sqlite_vec`, `llama`, `whisper`, `audio_capture`) are **off by default** and opt-in via `-D` flags. To disable a default-on module, pass `-D<name>=false`.
 
@@ -284,9 +288,7 @@ Build time: ~45 seconds cold; cached builds are fast. CPU features auto-detected
 
 **Status:** Opt-in with `-Dllama`. Default: off.
 
-**GPU:** CUDA on Linux with `-Dggml_cuda`; Vulkan on Linux and Windows with `-Dggml_vulkan`; Metal on macOS (on by default).
-
-Comparing with a Tauri sidecar or Rust crates? See [AI apps: Oriel and Tauri]($link.page('docs/ai')).
+**GPU:** CUDA on Linux with `-Dggml_cuda`; Metal on macOS (on by default).
 
 ## Speech recognition (`-Dwhisper`)
 
@@ -304,7 +306,9 @@ Same build-time and distribution considerations as llama.
 
 **Status:** Opt-in with `-Dwhisper`. Default: off.
 
-**GPU:** the same backends as llama: CUDA, Vulkan, Metal.
+**GPU:** CUDA on Linux with `-Dggml_cuda`; Vulkan on Linux, Windows and Android with `-Dggml_vulkan`; Metal on macOS and iOS (on by default).
+
+For live dictation and transcription with the tuning done for you, use Dictation (below), built on top of it.
 
 ## CUDA acceleration
 
@@ -318,9 +322,13 @@ Measured speedup on RTX 4070 (11 s audio): 3.2 s on CPU → 0.8 s on CUDA.
 
 Requires the CUDA toolkit and an NVIDIA GPU at runtime; CPU fallback works.
 
-## Metal acceleration (macOS)
+## Phones: ARM CPU kernels (`-Dggml_arm`)
 
-On macOS, ggml's Metal backend is built in by default (`-Dggml_metal=false` turns it off); the kernel sources are embedded, so no Xcode `metal` compiler is needed. Measured on an Apple M1 (5.9 s clip, tiny.en, incl. model load): 7.3 s on CPU → about 1 s on Metal.
+ggml, llama.cpp and whisper.cpp are compiled optimized in every build mode, and for ARM phones with the instructions their fast kernels need: `-Dggml_arm=dotprod` (the Android default: every phone since 2018) or `i8mm` (Armv8.6/v9: Tensor G3+, Snapdragon 8 Gen 1+, Dimensity 9000+). A CPU without them is refused at model load (`error.CpuUnsupported`), not crashed. Mobile GPU drivers often lose to these kernels, per model: on a Pixel's Mali-G715, whisper base ran 1.8× faster on the CPU, small 1.6× faster on Vulkan.
+
+## Metal acceleration (macOS, iOS)
+
+On macOS and iOS, ggml's Metal backend is built in by default (`-Dggml_metal=false` turns it off); the kernel sources are embedded, so no Xcode `metal` compiler is needed. Measured on an Apple M1 (5.9 s clip, tiny.en, incl. model load): 7.3 s on CPU → about 1 s on Metal.
 
 # Audio capture
 
@@ -336,6 +344,68 @@ var buf: [1600]f32 = undefined; // 100 ms
 try stream.read(&buf); // blocks until full
 ```
 
-**Platform support:** Linux (PulseAudio / PipeWire; system audio through monitor sources) · macOS (CoreAudio; "System audio (all apps)" through a Core Audio process tap on macOS 14.2+, no driver; needs the Microphone or System Audio Recording permission) · Windows stub (WASAPI loopback planned).
+**Platform support:** Linux (PulseAudio / PipeWire; system audio through monitor sources) · Windows (WASAPI; system audio through loopback of each output) · macOS (CoreAudio; "System audio (all apps)" through a Core Audio process tap on macOS 14.2+, no driver; needs the Microphone or System Audio Recording permission) · Android (AAudio, microphones; a foreground service keeps it going in the background) · iOS (AVAudioSession + AudioQueue, microphones; background audio with `.ios = .{ .background_audio = true }`).
 
 **Status:** Opt-in with `-Daudio_capture`. Default: off.
+
+# Dictation
+
+Voice to text with the tuning built in: live dictation from the microphone (or system audio, for captions), and transcription of recordings. Needs `-Dwhisper -Daudio_capture`.
+
+```zig
+oriel.dictation.init(init.io, init.gpa, models_dir);          // once, at startup
+const s = try oriel.dictation.start(.{ .language = "de" });    // from an async command
+// the page gets dictation:partial, dictation:final and dictation:level events
+const r = try oriel.dictation.stop(gpa);                       // r.text: everything said
+const t = try oriel.dictation.transcribeFile(gpa, "talk.wav", .{});
+```
+
+**Engines** (`.engine`):
+
+- `.whisper`: whisper.cpp on every platform, about 99 languages, offline.
+- `.system`: the platform's recognizer, with no model to download. On Android, `SpeechRecognizer`: Google's on-device model on a Pixel, streaming about one update a second. Its languages are the phone's (Oriel asks Android to download a missing language pack).
+- `.auto`: the system engine on Android when it runs on the device, otherwise whisper.
+
+**What whisper gets without tuning:**
+
+- Models: tiny, base and small in q8_0, with `download`, `delete` and `status`.
+- Silence skipping: Silero voice detection, so silence never reaches whisper.
+- Speed: whisper's window sized to the clip.
+- Live text from a smaller *draft* model (base under small), while the chosen model writes each phrase when you pause. Each runs on its own faster processor.
+- The CPU or the GPU per device and model (`.backend = .auto`): what `compare()` measured, remembered next to the models. Until then, the GPU on desktops and the CPU on phones; on phones the GPU must be 1.3× faster to be picked.
+
+**Files and samples:** `transcribeFile` reads WAV (PCM or float, any rate and channel count). `transcribeSamples` takes 16 kHz mono samples from any decoder.
+
+**Events:** `dictation:level`, `dictation:partial` (the phrase so far, `""` once final), `dictation:final`, `dictation:download`, `dictation:compare`, `dictation:error`, `dictation:ended`. `oriel.dictation.Events` has their types, for the app's own `Events` struct.
+
+**Building blocks:** `oriel.whisper`, `oriel.audio_capture` and `oriel.ggml_gpu` stay public for pipelines of your own.
+
+The showcase's Dictate tab uses all of it, and its System tab dictates into other apps.
+
+# Chat
+
+Chat and completion with a local LLM, the llama.cpp counterpart of Dictation. Needs `-Dllama`.
+
+```zig
+oriel.chat.init(init.io, init.gpa, models_dir);              // once, at startup
+const r = try oriel.chat.generate(gpa, &.{
+    .{ .role = "system", .content = "Answer briefly." },
+    .{ .role = "user", .content = "What is Zig?" },
+}, .{});                                                      // from an async command
+// chat:token events stream the reply; oriel.chat.cancel() stops it
+```
+
+**What you get without tuning:**
+
+- Models: small multilingual instruct models in q4_0 (Qwen2.5 0.5B and 1.5B, Llama 3.2 1B), and on desktops Qwen3.5 9B and Gemma 4 12B (a computer with 16 GB of memory runs them), with `download`, `delete` and `status`.
+- The model's own chat template (read from its GGUF): `messages` are plain `{ role, content }`. Qwen3.5 and Gemma 4 answer straight away; `.think = true` lets them reason first, and the reasoning stays out of the reply.
+- Tuned like llama-server: a resident threadpool, 2048-token prompt batches on desktops, a q8_0 KV cache with flash attention (f16 where the backend has none), the context capped at what the model was trained for and halved when memory runs out, and the CPU when the model doesn't fit on the GPU.
+- Structured output: `.schema` takes a JSON schema, and the reply follows it.
+- Streaming: `chat:token` events carry whole UTF-8 characters.
+- Speed across turns: the conversation's KV cache is reused, so a turn only evaluates what's new.
+- Long chats: a conversation longer than the context drops its oldest turns, and the system prompt stays.
+- The CPU or the GPU per device and model (`.backend = .auto`), as `compare()` measured it (tokens per second), with a warm-up for GPU models.
+
+**Result:** the text, the stop reason (`eos`, `length`, `cancelled`), the prompt and reply token counts, the tokens reused from the cache, and the tokens per second.
+
+**Building blocks:** `oriel.llama` (the C API and JSON-schema grammars) and `oriel.ggml_gpu`.

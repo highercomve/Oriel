@@ -61,12 +61,7 @@ like any app would be.
 
 <table>
   <tr>
-    <td width="55%"><img src="assets/screenshots/react-notes.png" alt="React notes example: notes stored in SQLite on the Zig side, with a do-not-disturb badge set from the tray menu"></td>
-    <td width="45%"><img src="assets/screenshots/ghostpen-lite.png" alt="GhostPen Lite example: global hotkey, clipboard pipeline and activity log"></td>
-  </tr>
-  <tr>
-    <td><b><a href="examples/react">React notes</a></b>: React + Vite frontend, notes in SQLite on the Zig side, tray menu, typed events, async commands, <code>oriel dev</code> with hot reload, and deb/rpm/AppImage packages.</td>
-    <td><b><a href="examples/ghostpen-lite">GhostPen Lite</a></b>: global hotkey → read clipboard → rewrite → paste back, with notifications and an activity log.</td>
+    <td colspan="2"><b><a href="examples/showcase">Oriel Showcase</a></b>: every Oriel feature in one app that builds for Linux, Windows, macOS, Android and iOS. Live dictation (<code>oriel.dictation</code>: whisper on the CPU or GPU, or the platform's recognizer), transcribing files, notes in SQLite with deep links (<code>oriel-showcase://note/…</code>), file pickers, the clipboard, notifications, windows, events and the store; per platform, "dictate anywhere" into other apps (a system-wide hotkey, the tray and the window menu on the desktop; a Quick Settings tile, a keyboard and in-app shortcuts on Android) and background audio on iOS.</td>
   </tr>
   <tr>
     <td colspan="2"><img src="assets/screenshots/smoke.png" alt="Smoke test example: every module and security check passing inside the webview"></td>
@@ -235,7 +230,7 @@ oriel deep-link unregister     # Removes the development registration
 ## Building an app
 
 An app is a normal Zig package that depends on Oriel through the Zig package
-manager and calls `addApp` (see `examples/react`); `oriel init` sets this
+manager and calls `addApp`; `oriel init` sets this
 up.
 
 ```zig
@@ -346,6 +341,17 @@ pub fn fetch_models(_: std.mem.Allocator, args: struct { baseUrl: []const u8 }) 
     return listModels(args.baseUrl) catch |err|
         oriel.ipc.fail("Could not reach {s} ({s})", .{ args.baseUrl, @errorName(err) });
 }
+```
+
+### Platform (`platform`)
+
+Every page gets the OS and CPU the app was built for, fixed per build:
+
+```ts
+import { platform } from "./oriel";   // or window.oriel.platform
+platform.os;    // "linux" | "macos" | "windows" | "android" | "ios"
+platform.arch;  // Zig's name: "x86_64", "aarch64", ...
+const mod = platform.os === "macos" ? "⌘" : "Ctrl";   // shortcut labels
 ```
 
 ### System browser (`openExternal`)
@@ -602,6 +608,11 @@ try oriel.global_shortcut.register(gpa, .{
   fires while an XWayland window has focus); without the portal `register` returns
   `error.PortalUnavailable`.
 - **X11:** Uses `XGrabKey` with a GLib main loop watch on the X connection file descriptor.
+- **Android:** no system-wide hotkeys exist, so shortcuts are in-app: they fire while one of
+  the app's windows has focus, from a hardware keyboard (desktop windowing, ChromeOS, DeX,
+  tablets), before the page sees the key. Each `description` is listed in the system's
+  keyboard shortcuts helper (Meta+/). Keys: letters, digits, F1–F12, navigation and
+  punctuation. Call `register` once the app runs (e.g. in `setup`).
 - **Windows:** Uses Win32 `RegisterHotKey` / `WM_HOTKEY` routed through the hidden host window. Unregisters on `unregister` and `deinit`. Same trigger string syntax ("CTRL+ALT+G", etc.). Marshalling via `Shell.runOnMainThread`. Runtime untested on Windows.
 - **macOS:** Carbon `RegisterEventHotKey` (no permission needed); callbacks on the main thread. Modifiers map literally: `ctrl` = Control, `alt` = Option, `shift`, `super`/`cmd`/`meta`/`win` = Command. Registration fails with `error.HotkeyAlreadyRegistered` when another app holds the combination.
 
@@ -1083,7 +1094,7 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
     builds C++ against libc++; the ggml backend interface between them is
     plain C. The executable is linked with `rdynamic` so the library
     resolves ggml's symbols from it.
-  - Measured (examples/ghostpen-lite, RTX 4070, 11 s clip, incl. model load):
+  - Measured (GhostPen Lite, RTX 4070, 11 s clip, incl. model load):
     small 3.2 s on CPU → 0.8 s on CUDA; large-v3-turbo q8 1.1 s on CUDA.
 - **Metal (macOS):** on by default for macOS targets (`-Dggml_metal=false`
   to turn it off). ggml's Metal backend is compiled into the executable and
@@ -1091,7 +1102,7 @@ Both `llama.cpp` and `whisper.cpp` vendor GGML internally. To eliminate duplicat
   `GGML_METAL_EMBED_LIBRARY`), so no Xcode `metal` compiler step is needed;
   ggml compiles them for the GPU when the model loads. `ggml_gpu.load` /
   `gpuName` report it (e.g. "Apple M1").
-  - Measured (examples/ghostpen-lite, Apple M1 in a VM, 5.9 s clip, tiny.en,
+  - Measured (GhostPen Lite, Apple M1 in a VM, 5.9 s clip, tiny.en,
     incl. model load): 7.3 s on CPU → 0.95–1.4 s on Metal.
 - **Vulkan (Linux):** `-Dggml_vulkan` builds ggml's Vulkan backend (any GPU
   vendor: NVIDIA, AMD, Intel) into `libggml-vulkan.so`, installed and packaged
@@ -1208,6 +1219,66 @@ const ctx = oriel.whisper.loadModel("path/to/whisper-base.bin", params) catch |e
 };
 defer ctx.deinit();
 ```
+
+### Chat with a local LLM (`oriel.chat`)
+
+Chat and completion with llama.cpp, with the tuning built in: enable `.llama = true`, then
+
+```zig
+oriel.chat.init(init.io, init.gpa, models_dir);              // once, at startup
+try oriel.chat.download("qwen2.5-0.5b");                      // or copy the GGUF there
+const r = try oriel.chat.generate(gpa, &.{
+    .{ .role = "system", .content = "Answer briefly." },
+    .{ .role = "user", .content = "What is Zig?" },
+}, .{});                                                      // from an async command
+// the page gets chat:token events as the reply is written; r.text is all of it
+oriel.chat.cancel();                                          // Stop, from any thread
+```
+
+- **Models:** small multilingual instruct models in q4_0 (Qwen2.5 0.5B and 1.5B, Llama 3.2 1B),
+  and on desktops Qwen3.5 9B and Gemma 4 12B (q4_K_M; 16 GB of memory), downloaded from Hugging
+  Face (`download`, `delete`, `status`); `.model = "auto"` is the largest on the device.
+- **Out of the box:**
+  - The model's own chat template (from its GGUF), so `messages` are plain `{ role, content }`.
+    Qwen3.5 and Gemma 4 answer without thinking first, unless `.think = true` (the thinking is
+    kept out of the reply).
+  - Tuned like llama-server: a resident threadpool, 2048-token prompt batches on desktops, a q8_0
+    KV cache with flash attention (f16 without it), the context capped at the model's and halved
+    when memory runs out, and the CPU when the model doesn't fit on the GPU.
+  - `.schema`: a JSON schema the reply follows.
+  - Tokens stream to the page as whole UTF-8 characters.
+  - Each turn reuses the conversation's KV cache, so only the new message is evaluated.
+  - A conversation longer than the context drops its oldest turns; the system prompt stays.
+  - The CPU or the GPU per device and model (`.backend = .auto`), from what `compare()` measured,
+    and a warm-up for GPU models.
+- **Building blocks:** `oriel.llama` (the C API, JSON-schema grammars) and `oriel.ggml_gpu`.
+- `examples/showcase`'s Chat tab uses all of it, with a mic that dictates the message (`oriel.dictation`).
+
+### Voice to text (`oriel.dictation`)
+
+Live dictation and transcription with the tuning built in: enable `.whisper = true, .audio_capture = true`, then
+
+```zig
+oriel.dictation.init(init.io, init.gpa, models_dir);           // once, at startup
+const s = try oriel.dictation.start(.{ .language = "de" });     // from a worker (loads models)
+// ... the page gets dictation:partial / dictation:final / dictation:level events
+const r = try oriel.dictation.stop(gpa);                        // r.text: everything said
+const t = try oriel.dictation.transcribeFile(gpa, "talk.wav", .{});
+```
+
+- **Engines** (`.engine`): `.whisper` (every platform, ~99 languages, offline), `.system` (the
+  platform's recognizer, no download; Android's SpeechRecognizer, Google's on-device model on a
+  Pixel) and `.auto` (the system engine on Android when it runs on the device, else whisper).
+- **What whisper gets without tuning:** q8_0 models (tiny/base/small; `download`, `delete`,
+  `status`), Silero voice detection, whisper's window sized to the clip, live text from the
+  next smaller model on the device (the draft) while the chosen model writes each phrase, and
+  the CPU or the GPU per device and model (`.backend = .auto`): what `compare` measured
+  (remembered next to the models), else the GPU on desktops and the CPU on phones.
+- **Files:** `transcribeFile` reads WAV (PCM or float, any rate and channels);
+  `transcribeSamples` takes 16 kHz mono samples from any decoder.
+- **Building blocks:** `oriel.whisper`, `oriel.audio_capture` and `oriel.ggml_gpu` stay public
+  for pipelines of your own.
+- `examples/showcase`'s Dictate tab uses all of it (and its System tab dictates into other apps).
 
 ### Deep links (`oriel.deep_link`)
 
@@ -1598,7 +1669,7 @@ The installer is per-user (`%LOCALAPPDATA%\Programs\<name>`, no admin), adds Sta
 
 #### Cross-Building for Windows
 
-From any Oriel application directory (e.g. `examples/react`):
+From any Oriel application directory (e.g. `examples/showcase`):
 
 ```sh
 # Cross-compile production Windows binary (zig-out/bin/<app>.exe)
@@ -1658,30 +1729,6 @@ oriel dev              # run against Vite dev server with hot reload
 | macOS | ◐ AppKit + WKWebView shell and every module/plugin (tray, menu, dialog, notification, store, clipboard, fs_watch, global_shortcut, input, updater, media_server, audio_capture incl. system audio), whisper/llama on Metal, deep links, `.app`/`.dmg` packaging |
 | Mobile | ❌ |
 
-### AI apps: compiled in, not a sidecar
-
-The biggest difference for LLM apps is where the model runs. In Tauri a
-local model usually runs as a second process (a bundled `llama-server` or
-Ollama sidecar behind a localhost port) or comes from Rust crates
-(`llama-cpp-2`, candle) set up per OS. In Oriel:
-
-- **llama.cpp and whisper.cpp are compiled into the executable** (`-Dllama`,
-  `-Dwhisper`): one process, no CMake, no sidecar to bundle or supervise.
-- **GPU from a build flag:** `-Dggml_cuda` (Linux), `-Dggml_vulkan` (Linux,
-  Windows; CPU fallback without a driver), Metal on macOS by default.
-- **Tokens stream as typed events** from an async command, reaching the page
-  before the command's reply; there is no local HTTP port, so no CORS/CSP
-  workaround.
-- **Structured output:** `oriel.llama.jsonSchemaToGrammar` constrains the model
-  to JSON matching a schema. **Vision:** `-Dllama_mtmd`. **Speech:** whisper
-  with `audio_capture` (mic and system audio) on every platform.
-- **MCP is not built in**, in Oriel or in Tauri. An Oriel app can serve MCP's
-  stdio JSON-RPC from its own binary (a `--mcp` mode), reusing the Zig
-  functions behind its commands, with no Node or Python bridge.
-
-See [AI apps: Oriel and Tauri](https://highercomve.github.io/Oriel/docs/ai/)
-for the details.
-
 ## Compared with Vercel native
 
 [Vercel Labs' native](https://github.com/vercel-labs/native) (formerly
@@ -1709,15 +1756,14 @@ The framework and the apps built with it are separate Zig packages:
 | `build.zig` | Framework build: the `oriel` module, `embed_assets`, `dev_runner`, `addApp()` for apps, unit tests |
 | `src/core/` | `App.zig` (platform-neutral windowing, IPC, events, asset lookup, dev mode), `ipc.zig` (command dispatch + TypeScript generation), `log.zig` (file + stderr logging) |
 | `src/platform/` | Platform abstraction: `platform.zig` (OS selection & comptime check), `platform/linux/` (GTK4 + WebKitGTK 6.0 shell: `Shell.zig`, `window.zig`, `scheme.zig`, `bridge.zig`, `dev_server.zig`) |
-| `src/modules/` | Built-in modules: `tray`, `menu`, `store`, `dialog`, `notification`, `updater`, `media_server`, `sql`, `sqlite_vec`, `llama`, `whisper`, `fs_watch` |
+| `src/modules/` | Built-in modules: `tray`, `menu`, `store`, `dialog`, `notification`, `updater`, `media_server`, `sql`, `sqlite_vec`, `llama`, `whisper`, `dictation`, `audio_capture`, `fs_watch` |
 | `src/plugins/` | App-specific plugins: `global_shortcut`, `input`, `clipboard` |
 | `tools/embed_assets.zig` | Embeds a built frontend directory into the binary |
 | `tools/dev_runner.zig` | Hot reload orchestrator: keeps dev server running while watching `src/` and restarting the Zig app |
 | `cli/` | The `oriel` command-line tool (`init`, `doctor`, build wrappers) and its embedded app templates |
 | `install.sh` | Installs the `oriel` CLI from GitHub Releases |
-| `examples/react/` | **App:** React + Vite notes app (own package) |
+| `examples/showcase/` | **App:** every feature, on Linux, Windows, macOS, Android and iOS (own package) |
 | `examples/smoke/` | **App:** checks every module (own package) |
-| `examples/ghostpen-lite/` | **App:** hotkey -> read clipboard -> rewrite -> paste pipeline (own package) |
 
 ### Framework build and test commands
 
@@ -1740,7 +1786,7 @@ zig build cli && cp zig-out/bin/oriel ~/.local/bin/
 
 ### Building examples from the repository
 
-The example apps in `examples/` (`examples/react`, `examples/smoke`, `examples/ghostpen-lite`)
+The example apps in `examples/` (`examples/showcase`, `examples/smoke`)
 are configured with `.path = "../.."` in their `build.zig.zon` so they build against
 the framework working tree:
 
@@ -1750,9 +1796,9 @@ cd examples/smoke
 zig build && ./zig-out/bin/oriel-smoke --check          # non-GUI checks
 ./zig-out/bin/oriel-smoke --auto-quit                  # in-webview checks
 
-# React notes example
-cd ../react
-zig build && ./zig-out/bin/oriel-react-notes
+# The showcase (desktop; see its build.zig for Android and iOS)
+cd ../showcase
+zig build run
 ```
 
 ### Headless testing (`scripts/headless.sh`)

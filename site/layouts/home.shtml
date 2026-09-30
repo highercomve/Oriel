@@ -1,6 +1,6 @@
 <extend template="base.shtml">
 <head id="head">
-	<title>Oriel · Desktop apps with Zig and the web</title>
+	<title>Oriel · Apps with Zig and the web, desktop and mobile</title>
 </head>
 <body id="body">
 	<main class="home">
@@ -8,9 +8,9 @@
 			<div class="hero-glow" aria-hidden="true"></div>
 			<div class="hero-inner">
 				<img class="hero-mark" src="$site.asset('brand/oriel-icon.svg').link()" alt="Oriel logo" width="96" height="96">
-				<p class="eyebrow">Zig 0.16 · Linux · Windows · macOS</p>
-				<h1 class="hero-title">Desktop apps in Zig.<br><span class="accent">UI with the web.</span></h1>
-				<p class="hero-lead">Oriel gives your React, Vue, Svelte or plain HTML frontend a native window and the system webview, and lets it call typed Zig commands. Small binaries, a small build cache, secure by default.</p>
+				<p class="eyebrow">Zig 0.16 · Linux · Windows · macOS · Android · iOS</p>
+				<h1 class="hero-title">Apps in Zig.<br><span class="accent">UI with the web.</span></h1>
+				<p class="hero-lead">Oriel gives your React, Vue, Svelte or plain HTML frontend a native window and the system webview on the desktop, a native app on Android and iOS, and typed Zig commands to call. One codebase, small binaries, secure by default.</p>
 				<div class="hero-actions">
 					<a class="btn btn-primary" href="$site.page('docs/getting-started').link()">Get started</a>
 					<a class="btn btn-ghost" href="https://github.com/highercomve/Oriel">View on GitHub</a>
@@ -62,54 +62,33 @@
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
 					<h3>Batteries, opt-in</h3>
-					<p>Tray, updater, SQLite and sqlite-vec, dialogs, notifications, global shortcuts, clipboard, file watching, media server.</p>
+					<p>Tray, updater, SQLite and sqlite-vec, dialogs, notifications, global shortcuts, clipboard, file watching, deep links, audio capture, media server.</p>
 				</article>
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><rect x="10" y="10" width="4" height="4"/></svg></div>
 					<h3>Local AI built in</h3>
-					<p>llama.cpp and whisper.cpp compiled into your app, not run as a sidecar. On the GPU with CUDA or Vulkan on Linux, Vulkan on Windows and Metal on macOS.</p>
+					<p>llama.cpp and whisper.cpp as modules: CUDA, Vulkan and Metal on the desktop, Metal on iOS, and ARM dotprod/i8mm CPU kernels, Vulkan, OpenCL and Hexagon on Android.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></div>
+					<h3>Voice, tuned</h3>
+					<p><code>oriel.dictation</code>: live dictation and file transcription out of the box. Whisper with voice detection, live draft text and a measured CPU or GPU per device, or the phone's own recognizer.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-8 8H4l2-3a8 8 0 1 1 15-5z"/></svg></div>
+					<h3>Chat, tuned</h3>
+					<p><code>oriel.chat</code> is a local LLM in a module: models, the chat template, streamed tokens and a reused KV cache, on the CPU or the GPU, per device.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg></div>
+					<h3>Phones and tablets too</h3>
+					<p>The same app on Android (phones, desktop mode, ChromeOS) and iOS. Tiles, a keyboard, notification actions and deep links stand in for the tray and hotkeys.</p>
 				</article>
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
 					<h3>Ship it</h3>
-					<p><code>oriel package</code> builds deb, rpm and AppImage. Windows <code>setup.exe</code> installers build on Windows or cross-compile from Linux.</p>
+					<p><code>oriel package</code> builds deb, rpm, AppImage, <code>.dmg</code> and Windows <code>setup.exe</code> (natively or cross-compiled from Linux); <code>oriel android build</code> an APK and AAB; <code>oriel ios build</code> an <code>.ipa</code>.</p>
 				</article>
-			</div>
-		</section>
-
-		<section class="section">
-			<div class="section-head">
-				<h2>Local AI, compiled in</h2>
-				<p>In Tauri, a local model usually runs as a second process: a bundled <code>llama-server</code> or Ollama sidecar behind a localhost port. In Oriel, llama.cpp and whisper.cpp are part of your executable.</p>
-			</div>
-			<div class="feature-grid">
-				<article class="feature">
-					<h3>One binary, one build</h3>
-					<p><code>.llama = true</code> in <code>build.zig</code>. Zig compiles llama.cpp, whisper.cpp and a shared ggml with your app: no CMake, no sidecar to bundle, start and supervise.</p>
-				</article>
-				<article class="feature">
-					<h3>GPU from a build flag</h3>
-					<p><code>-Dggml_cuda</code>, <code>-Dggml_vulkan</code>, or Metal by default on macOS. Vulkan loads at runtime, so the same build falls back to the CPU on machines without a driver.</p>
-				</article>
-				<article class="feature">
-					<h3>Tokens over typed events</h3>
-					<p>An async command emits one event per token, typed in Zig and TypeScript. No localhost port in the path, so no CORS or CSP workarounds.</p>
-				</article>
-				<article class="feature">
-					<h3>JSON that parses</h3>
-					<p><code>jsonSchemaToGrammar</code> turns a JSON Schema into a llama.cpp grammar, so the model can only answer with JSON your structs accept.</p>
-				</article>
-				<article class="feature">
-					<h3>Speech and vision</h3>
-					<p>whisper.cpp with microphone and system-audio capture on every platform, and llama.cpp's multimodal library for vision models.</p>
-				</article>
-				<article class="feature">
-					<h3>MCP: not built in yet</h3>
-					<p>Neither framework ships an MCP server. An Oriel app can serve MCP over stdio from its own binary, reusing its Zig commands; the guide shows how.</p>
-				</article>
-			</div>
-			<div class="hero-actions" style="justify-content:flex-start;margin-top:20px">
-				<a class="btn btn-primary" href="$site.page('docs/ai').link()">AI apps: Oriel and Tauri</a>
 			</div>
 		</section>
 
@@ -161,21 +140,48 @@
 
 		<section class="section">
 			<div class="section-head">
-				<h2>Examples</h2>
-				<p>The examples in the repository, running on Linux.</p>
+				<h2>The showcase</h2>
+				<p><a href="https://github.com/highercomve/Oriel/tree/main/examples/showcase">examples/showcase</a>: every Oriel feature in one app, from one codebase, for Linux, Windows, macOS, Android and iOS. Below, on a Pixel phone.</p>
 			</div>
-			<div class="shots">
+			<div class="shots phones">
 				<figure>
-					<img src="$site.asset('screenshots/react-notes.png').link()" alt="React notes example" loading="lazy">
-					<figcaption><strong>React notes</strong> · Vite, SQLite, tray, events, routes and a second window</figcaption>
+					<img src="$site.asset('screenshots/showcase-dictate.png').link()" alt="The showcase's Dictate tab on a Pixel: whisper small on Vulkan, drafted by base on the CPU, about 1.3 s per live update" loading="lazy">
+					<figcaption><strong>Dictate</strong> · live text on a Pixel: small on Vulkan, drafted by base on the CPU, ~1.3 s per update</figcaption>
 				</figure>
 				<figure>
-					<img src="$site.asset('screenshots/ghostpen-lite.png').link()" alt="ghostpen-lite example" loading="lazy">
-					<figcaption><strong>ghostpen-lite</strong> · global hotkey rewrite, live captions with whisper on CUDA</figcaption>
+					<img src="$site.asset('screenshots/showcase-chat.png').link()" alt="The showcase's Chat tab on a Pixel: Llama 3.2 1B on Vulkan, streamed tokens, models and CPU/GPU choice" loading="lazy">
+					<figcaption><strong>Chat</strong> · Llama 3.2 1B on Vulkan on a Pixel: streamed tokens, per-device model and CPU/GPU choice</figcaption>
 				</figure>
 				<figure>
-					<img src="$site.asset('screenshots/smoke.png').link()" alt="Smoke test app" loading="lazy">
-					<figcaption><strong>smoke</strong> · every module checked inside a real webview</figcaption>
+					<img src="$site.asset('screenshots/showcase-notes.png').link()" alt="The showcase's Notes tab: notes in SQLite, added by a deep link" loading="lazy">
+					<figcaption><strong>Notes</strong> · SQLite, and deep links that add a note from anywhere</figcaption>
+				</figure>
+				<figure>
+					<img src="$site.asset('screenshots/showcase-system.png').link()" alt="The showcase's System tab: dictate anywhere, clipboard, notifications and keyboard shortcuts" loading="lazy">
+					<figcaption><strong>System</strong> · dictate into any app, the clipboard, notifications, shortcuts</figcaption>
+				</figure>
+				<figure>
+					<img src="$site.asset('screenshots/showcase-app.png').link()" alt="The showcase's App tab: windows, the IPC echo and events from a worker" loading="lazy">
+					<figcaption><strong>App</strong> · windows, IPC round trips, events from worker threads</figcaption>
+				</figure>
+
+			</div>
+			<div class="smoke-row">
+				<div class="smoke-info">
+					<h3>smoke</h3>
+					<p><a href="https://github.com/highercomve/Oriel/tree/main/examples/smoke"><code>examples/smoke</code></a>: every module gets a pass/fail check inside a real webview — one run tells you Oriel works end to end on your machine, not just that it compiles.</p>
+					<ul>
+						<li><strong>Tray &amp; menus</strong> — dbusmenu icons, layout and actions</li>
+						<li><strong>Updater</strong> — Ed25519-verified manifests, tampered copies rejected</li>
+						<li><strong>Data</strong> — SQLite (with sqlite-vec), the JSON store, fs watching</li>
+						<li><strong>Desktop</strong> — dialogs, notifications, global shortcuts, clipboard, typed input into other apps</li>
+						<li><strong>Webview &amp; IPC</strong> — page fetch, <code>invoke</code> round trips, async commands from worker threads</li>
+					</ul>
+					<p>It runs in CI on every platform with each check listed, so a red one names the module.</p>
+				</div>
+				<figure class="smoke-shot">
+					<img src="$site.asset('screenshots/smoke.png').link()" alt="The smoke test app: a table of green OK rows, one per module, each with what it verified" loading="lazy">
+					<figcaption>Linux, continuous output: green per module, with what was actually verified</figcaption>
 				</figure>
 			</div>
 		</section>
@@ -200,6 +206,16 @@
 					<p>AppKit + WKWebView. Every module ported, Metal for whisper / llama, deep links, <code>.app</code> / <code>.dmg</code> packaging. Verified on macOS 15, Apple Silicon.</p>
 					<span class="status status-ok">Verified</span>
 				</div>
+				<div class="platform">
+					<h3>Android</h3>
+					<p>Kotlin shell + WebView over JNI, one window per Activity (resizable in desktop mode). APK and AAB. Verified on a Pixel phone, Android desktop mode and the emulator.</p>
+					<span class="status status-ok">Verified</span>
+				</div>
+				<div class="platform">
+					<h3>iOS</h3>
+					<p>UIKit + WKWebView from Zig, no Xcode project. <code>.app</code> and <code>.ipa</code>, Metal for whisper / llama. Runs in the simulator in CI; devices next.</p>
+					<span class="status status-beta">Preview</span>
+				</div>
 			</div>
 		</section>
 
@@ -216,10 +232,9 @@
 						<tr><td>Events (<code>emit</code> / <code>listen</code>)</td><td>Zig → JS, type-checked on both sides; targeted and broadcast</td></tr>
 						<tr><td>Capabilities</td><td>Per origin, per command, per window</td></tr>
 						<tr><td>Multiple windows</td><td><code>oriel.window.open()</code> from JS, routes, targeted events</td></tr>
-						<tr><td>Local LLM as a sidecar (<code>externalBin</code>) or Rust crates</td><td>llama.cpp and whisper.cpp compiled into the app; CUDA, Vulkan, Metal from build flags</td></tr>
-						<tr><td>Streaming over a <code>Channel</code>, or <code>fetch</code> to a sidecar's port</td><td>Typed events from an async command; no local port, no CORS</td></tr>
 						<tr><td>Updater</td><td>Ed25519-signed manifests, atomic replace, progress events</td></tr>
 						<tr><td><code>create-tauri-app</code>, <code>tauri dev/build</code></td><td><code>oriel init</code> (React, Vue, Svelte, vanilla), <code>oriel dev/build/package</code>, <code>oriel doctor</code></td></tr>
+						<tr><td>Tauri mobile</td><td>Android and iOS from the same Zig and web code; <code>oriel android</code> and <code>oriel ios</code></td></tr>
 						<tr><td>Rust + Cargo</td><td>Zig 0.16 and its build system: no multi-GB target directories</td></tr>
 					</tbody>
 				</table>

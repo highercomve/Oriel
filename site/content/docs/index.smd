@@ -1,6 +1,6 @@
 ---
 .title = "Documentation",
-.description = "Guides and reference for building desktop apps with Oriel.",
+.description = "Guides and reference for building desktop and mobile apps with Oriel.",
 .date = .date("2026-09-24T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",

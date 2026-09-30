@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Done (Milestones 1–10, security hardening, packaging)
+# Done (Milestones 1–10, security hardening, packaging, Android, iOS, dictation)
 
 ## Milestone 1: Async commands
 
@@ -72,7 +72,26 @@ The isolation pattern (a sandboxed frame hook signs every IPC call with an HMAC 
 
 The first full application built on Oriel: GhostPen, ported from Tauri, with built-in models (llama.cpp run by the app itself), live captions and dictation on Linux, Windows and macOS. Its port fixed event ordering (a command's events now reach the page before its reply, on every platform), keyboard focus for borderless windows on Windows and macOS, and added log files on macOS.
 
+## Android
+
+Oriel apps run on Android: a Kotlin Activity per window around `android.webkit.WebView`, driven over JNI from a Zig `liboriel.so` built with the real NDK, packaged with Gradle (APK and AAB). Verified on a Pixel phone, in Android's desktop mode and on the emulator. Modules have Android backends (AAudio, the Storage Access Framework, notifications, deep links, in-app keyboard shortcuts), and a Quick Settings tile, a foreground service and the Oriel keyboard stand in for the tray and system-wide hotkeys.
+
+## iOS (preview)
+
+UIKit and `WKWebView` driven from Zig through the Objective-C runtime, with no Xcode project: `.app` and `.ipa` builds, and CI runs the showcase in the iOS simulator. Not yet run on a device.
+
+## Voice to text (`oriel.dictation`)
+
+Live dictation and transcription with the tuning built in: whisper with voice detection, a draft model for the live text and a measured CPU-or-GPU choice per device, or the platform's own recognizer (Android). ggml is compiled optimized in every build mode and with ARM dotprod/i8mm kernels for phones.
+
+## One showcase
+
+`examples/showcase` replaces the per-platform and per-feature examples: one app using every feature, for Linux, Windows, macOS, Android and iOS.
+
 # Next
+
+- iOS on devices, and the system speech recognizer on iOS and macOS (`SFSpeechRecognizer`) as a dictation engine.
+- An LLM counterpart to dictation: chat and completion with llama.cpp, tuned out of the box.
 
 - Security hardening: command scopes and local capabilities.
 - Platform escape hatch: extra Info.plist keys, entitlements, Windows manifest and NSIS additions.
@@ -81,7 +100,6 @@ The first full application built on Oriel: GhostPen, ported from Tauri, with bui
 # Even later
 
 - CI: automated `zig build test` and headless smoke checks on every push
-- Vulkan GPU support on Windows (Linux has `-Dggml_vulkan`)
 - Per-monitor DPI scaling on Windows
 
 # How to contribute
