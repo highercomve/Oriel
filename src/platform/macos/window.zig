@@ -41,14 +41,6 @@ pub const WindowHandle = struct {
     /// for a window without a web view, else null.
     native: ?*anyopaque = null,
 
-    /// The native renderer's engine (-Dnative_ui), for a native window.
-    pub fn nativeEngine(self: WindowHandle) ?*anyopaque {
-        if (comptime !build_opts.native_ui) return null;
-        const p = self.native orelse return null;
-        const surface: *native.Surface = @ptrCast(@alignCast(p));
-        return surface.engine;
-    }
-
     pub fn eql(self: WindowHandle, other: WindowHandle) bool {
         return self.serial == other.serial;
     }
@@ -281,7 +273,8 @@ fn freeOp(op: Op) void {
 
 /// Read a window property on the main thread (waiting for it from others).
 fn query(comptime T: type, handle: WindowHandle, comptime get: fn (WindowHandle) T, fallback: T) T {
-    if (cocoa.isMainThread()) return get(handle);
+    // A stale handle (its window closed) must not reach freed state.
+    if (cocoa.isMainThread()) return if (App.getWindowByHandle(handle) != null) get(handle) else fallback;
     const Ctx = struct {
         handle: WindowHandle,
         result: T,

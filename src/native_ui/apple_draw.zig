@@ -128,6 +128,7 @@ fn rect(r: Rect) CGRect {
 
 const FontKey = struct { size: f32, weight: i32, italic: bool, mono: bool };
 var font_cache: std.ArrayListUnmanaged(struct { key: FontKey, font: CTFontRef }) = .empty;
+const font_cache_max = 128;
 
 /// CSS font-weight (100-900) to NSFontWeight/UIFontWeight.
 fn appleWeight(w: f32) f64 {
@@ -138,11 +139,19 @@ fn appleWeight(w: f32) f64 {
 
 /// `font_class`: "NSFont" (AppKit) or "UIFont" (UIKit).
 pub fn font(comptime font_class: [:0]const u8, size: f32, weight: f32, italic: bool, mono: bool) ?CTFontRef {
-    const key: FontKey = .{ .size = size, .weight = @intFromFloat(std.math.clamp(@round(weight / 100), 1, 9)), .italic = italic, .mono = mono };
+    // Half points: a font-size transition would otherwise add a font per frame.
+    const half = std.math.clamp(@round(size * 2) / 2, 0.5, 2000);
+    const key: FontKey = .{ .size = half, .weight = @intFromFloat(std.math.clamp(@round(weight / 100), 1, 9)), .italic = italic, .mono = mono };
     for (font_cache.items) |e| if (std.meta.eql(e.key, key)) return e.font;
+    // Bounded: past the limit start over (the text already built keeps the
+    // fonts it uses retained).
+    if (font_cache.items.len >= font_cache_max) {
+        for (font_cache.items) |e| CFRelease(e.font);
+        font_cache.clearRetainingCapacity();
+    }
     const cls = objc.getClass(font_class) orelse return null;
     const sel = if (mono) "monospacedSystemFontOfSize:weight:" else "systemFontOfSize:weight:";
-    const f = cls.msgSend(Object, sel, .{ @as(CGFloat, size), appleWeight(weight) });
+    const f = cls.msgSend(Object, sel, .{ @as(CGFloat, half), appleWeight(weight) });
     if (f.value == null) return null;
     var ct: CTFontRef = CFRetain(@ptrCast(f.value.?));
     if (italic) if (CTFontCreateCopyWithSymbolicTraits(ct, 0, null, kCTFontItalicTrait, kCTFontItalicTrait)) |it| {
