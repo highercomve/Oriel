@@ -147,11 +147,36 @@ export class Renderer {
       }
       return this.put(nodes, id, "icon", props, [], fixedNode);
     }
+    if (tag === "img") {
+      const src = el.getAttribute("src") || "";
+      if (!src) return null;
+      props.src = src.startsWith("data:") ? src : src.replace(/^(app:\/\/[^/]*)?\.?\//, "");
+      if (cs["object-fit"] && cs["object-fit"] !== "fill") props.fit = cs["object-fit"];
+      // width/height attributes size it when CSS doesn't (else its natural size).
+      for (const [k, a] of [["w", "width"], ["h", "height"]]) {
+        const v = el.getAttribute(a);
+        if (props[k] === undefined && v && /^[\d.]+(px)?$/.test(v.trim())) props[k] = parseFloat(v);
+      }
+      return this.put(nodes, id, "image", props, [], fixedNode);
+    }
     if (tag === "input" || tag === "textarea" || tag === "select") {
       const type = (el.getAttribute("type") || "text").toLowerCase();
       if (tag === "input" && (type === "checkbox" || type === "radio")) {
-        // Drawn by the page's CSS (or nothing); the click goes to the label.
+        // The click goes to the label. With appearance: none the page's CSS
+        // draws it; else the native side draws the default control, in the
+        // browser's 13px box with its 3px margin, in accent-color when checked.
         props.click = true;
+        const app = cs.appearance || cs["-webkit-appearance"];
+        if (app !== "none") {
+          props.ctl = type;
+          if (el.hasAttribute("checked")) props.on = true;
+          const acc = color(cs["accent-color"] || "");
+          if (acc) props.acc = acc;
+          if (props.w === undefined || props.w === "auto") props.w = 13;
+          if (props.h === undefined || props.h === "auto") props.h = 13;
+          if (!props.m) props.m = [3, 3, 3, 3];
+          delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
+        }
         return this.put(nodes, id, "view", props, [], fixedNode);
       }
       Object.assign(props, textProps(cs, fontSize));
@@ -174,6 +199,7 @@ export class Renderer {
     // Children: blocks, and inline content collected into text runs.
     const childCtx = { blockify: display === "flex" || display === "grid", parentText: cs["text-align"] };
     const kids = [];
+    let orders = null; // CSS order of the element children that set one
     const before = this.pseudo(el, cs, "before", nodes);
     if (before) kids.push(before);
     const flow = [];
@@ -201,8 +227,12 @@ export class Renderer {
     }
     flushRuns();
 
-    // An element holding only text becomes one text view.
-    if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length) {
+    // An element holding only text becomes one text view, unless it centers
+    // that text as a flex/grid box (a round icon button: ⚙ in a 28px circle):
+    // a text view is drawn from its top-left, so keep a box with a text child.
+    const aligns = (display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid") &&
+      (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]));
+    if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns) {
       Object.assign(props, textProps(cs, fontSize));
       props.runs = flow[0].text;
       this.putClick(props, el);
@@ -237,9 +267,16 @@ export class Renderer {
         }
       }
       kids.push(cid);
+      const ord = parseInt(this.cs.get(item.el)?.order, 10);
+      if (ord) (orders ??= new Map()).set(cid, ord);
     }
     const after = this.pseudo(el, cs, "after", nodes);
     if (after) kids.push(after);
+    // CSS order: flex/grid items laid out by it, then by source order.
+    if (orders && childCtx.blockify) {
+      const pos = new Map(kids.map((k, i) => [k, i]));
+      kids.sort((a, b) => (orders.get(a) || 0) - (orders.get(b) || 0) || pos.get(a) - pos.get(b));
+    }
 
     if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
     this.putClick(props, el);
@@ -270,6 +307,9 @@ export class Renderer {
     const cs = this.style(el, parentCS);
     const d = cs.display || "inline";
     if (d !== "inline") return false;
+    // position: absolute/fixed blockifies the box (CSS): an empty
+    // <span class="thumb"> with a background is a box, not text.
+    if (cs.position === "absolute" || cs.position === "fixed") return false;
     // Inline only if everything inside is inline too.
     for (const c of el.children) if (!this.isInline(c, cs)) return false;
     return true;

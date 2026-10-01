@@ -151,13 +151,42 @@ function cmpSpec(x, y) {
 
 export const viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false };
 
+// Media Queries 4 ranges: (width <= 720px), (400px < width <= 720px),
+// (height >= 30em) — what Vite/lightningcss turns max-width/min-width into.
+function rangeMatches(part) {
+  const inner = /^\(([^()]*)\)$/.exec(part)?.[1];
+  if (!inner || !/[<>=]/.test(inner) || inner.includes(":")) return null;
+  const tokens = inner.split(/(<=|>=|<|>|=)/).map((t) => t.trim()).filter(Boolean);
+  const valueOf = (t) => {
+    if (t === "width") return viewport.width;
+    if (t === "height") return viewport.height;
+    const n = parseFloat(t);
+    if (!Number.isFinite(n)) return NaN;
+    return t.endsWith("rem") || t.endsWith("em") ? n * 16 : n;
+  };
+  if (tokens.length < 3 || tokens.length % 2 === 0) return false;
+  for (let i = 0; i + 2 < tokens.length; i += 2) {
+    const a = valueOf(tokens[i]), op = tokens[i + 1], b = valueOf(tokens[i + 2]);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+    const ok = op === "<" ? a < b : op === "<=" ? a <= b : op === ">" ? a > b : op === ">=" ? a >= b : a === b;
+    if (!ok) return false;
+  }
+  return true;
+}
+
 export function mediaMatches(q) {
   if (!q) return true;
-  return splitTop(q, ",").some((alt) =>
-    alt.split(/\band\b/).every((part) => {
+  return splitTop(q, ",").some((alt) => {
+    alt = alt.trim();
+    let negate = false;
+    if (/^not\s/i.test(alt)) { negate = true; alt = alt.slice(4); }
+    alt = alt.replace(/^only\s+/i, "");
+    const all = alt.split(/\band\b/).every((part) => {
       part = part.trim();
       if (!part || part === "screen" || part === "all") return true;
       if (part === "print") return false;
+      const range = rangeMatches(part);
+      if (range !== null) return range;
       const m = /^\(\s*([\w-]+)\s*(?::\s*([^)]+))?\)$/.exec(part);
       if (!m) return false;
       const [, feat, raw] = m;
@@ -175,8 +204,9 @@ export function mediaMatches(q) {
         case "orientation": return val === (viewport.width >= viewport.height ? "landscape" : "portrait");
         default: return false;
       }
-    }),
-  );
+    });
+    return negate ? !all : all;
+  });
 }
 
 // ---------------------------------------------------------------------------

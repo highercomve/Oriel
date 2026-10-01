@@ -53,6 +53,7 @@ extern fn gtk_widget_set_vexpand(w: *Widget, e: c_int) void;
 extern fn gtk_entry_new() *Widget;
 extern fn gtk_entry_set_has_frame(e: *Widget, f: c_int) void;
 extern fn gtk_entry_set_placeholder_text(e: *Widget, t: [*:0]const u8) void;
+extern fn gtk_text_buffer_get_char_count(buffer: *anyopaque) c_int;
 extern fn gtk_entry_set_visibility(e: *Widget, v: c_int) void;
 extern fn gtk_editable_set_text(e: *Widget, t: [*:0]const u8) void;
 extern fn gtk_editable_get_text(e: *Widget) [*:0]const u8;
@@ -101,6 +102,23 @@ extern fn cairo_arc(cr: *cairo_t, xc: f64, yc: f64, r: f64, a1: f64, a2: f64) vo
 extern fn cairo_close_path(cr: *cairo_t) void;
 extern fn cairo_rectangle(cr: *cairo_t, x: f64, y: f64, w: f64, h: f64) void;
 extern fn cairo_clip(cr: *cairo_t) void;
+extern fn cairo_image_surface_create(format: c_int, w: c_int, h: c_int) ?*anyopaque;
+extern fn cairo_image_surface_get_data(surface: *anyopaque) ?[*]u8;
+extern fn cairo_image_surface_get_stride(surface: *anyopaque) c_int;
+extern fn cairo_surface_flush(surface: *anyopaque) void;
+extern fn cairo_surface_mark_dirty(surface: *anyopaque) void;
+extern fn cairo_surface_destroy(surface: *anyopaque) void;
+extern fn cairo_set_source_surface(cr: *cairo_t, surface: *anyopaque, x: f64, y: f64) void;
+extern fn g_bytes_new(data: ?*const anyopaque, size: usize) *anyopaque;
+extern fn g_bytes_unref(bytes: *anyopaque) void;
+extern fn gdk_texture_new_from_bytes(bytes: *anyopaque, err: *?*anyopaque) ?*anyopaque;
+extern fn gdk_texture_get_width(texture: *anyopaque) c_int;
+extern fn gdk_texture_get_height(texture: *anyopaque) c_int;
+extern fn gdk_texture_download(texture: *anyopaque, data: [*]u8, stride: usize) void;
+extern fn g_error_free(err: *anyopaque) void;
+extern fn gdk_pixbuf_loader_new() *anyopaque;
+extern fn gdk_pixbuf_loader_write(loader: *anyopaque, buf: [*]const u8, count: usize, err: *?*anyopaque) c_int;
+extern fn gdk_pixbuf_loader_close(loader: *anyopaque, err: *?*anyopaque) c_int;
 extern fn cairo_fill(cr: *cairo_t) void;
 extern fn cairo_fill_preserve(cr: *cairo_t) void;
 extern fn cairo_stroke(cr: *cairo_t) void;
@@ -133,7 +151,7 @@ extern fn pango_layout_set_width(l: *PangoLayout, w: c_int) void;
 extern fn pango_layout_set_wrap(l: *PangoLayout, wrap: c_int) void;
 extern fn pango_layout_set_alignment(l: *PangoLayout, a: c_int) void;
 extern fn pango_layout_set_font_description(l: *PangoLayout, d: ?*const PangoFontDescription) void;
-extern fn pango_layout_set_line_spacing(l: *PangoLayout, factor: f32) void;
+extern fn pango_attr_line_height_new_absolute(height: c_int) *PangoAttribute;
 extern fn pango_layout_get_pixel_size(l: *PangoLayout, w: *c_int, h: *c_int) void;
 extern fn pango_cairo_show_layout(cr: *cairo_t, l: *PangoLayout) void;
 extern fn pango_font_description_from_string(s: [*:0]const u8) *PangoFontDescription;
@@ -175,6 +193,9 @@ pub const Surface = struct {
     overlay: *Widget,
     area: *Widget,
     fields: std.AutoHashMap(i64, *Widget),
+    /// Decoded <img> pictures, one per image node (a clipboard preview is a
+    /// new data: URI each time: keyed by node, replaced when its src changes).
+    images: std.AutoHashMap(i64, Image),
     css: *GtkCssProvider,
     css_text: std.ArrayList(u8) = .empty,
     invoke_fn: Invoke,
@@ -202,6 +223,7 @@ pub const Surface = struct {
             .overlay = overlay,
             .area = area,
             .fields = .init(gpa),
+            .images = .init(gpa),
             .css = gtk_css_provider_new(),
             .invoke_fn = invoke_fn,
             .invoke_ctx = invoke_ctx,
@@ -288,6 +310,7 @@ fn focus(ctx: *anyopaque, node: *Node) void {
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     if (s.fields.fetchRemove(node.id)) |kv| gtk_overlay_remove_overlay(s.overlay, kv.value);
+    if (s.images.fetchRemove(node.id)) |kv| kv.value.deinit();
 }
 
 fn laidOut(ctx: *anyopaque) void {
@@ -299,6 +322,37 @@ fn laidOut(ctx: *anyopaque) void {
 
 // ---------------------------------------------------------------------------
 // Fields: native widgets for input, textarea and select
+
+/// Whether a box with a background painted after `field` (later in the
+/// tree's paint order, so not one of its ancestors) overlaps it: a sticky
+/// footer over a field scrolled under it. The field is a widget above the
+/// whole page and would show through, so it's hidden instead.
+fn coveredLater(s: *Surface, field: *Node) bool {
+    const root = s.engine.tree.root orelse return false;
+    const Walk = struct {
+        field: *Node,
+        seen: bool = false,
+        covered: bool = false,
+        fn visit(w: *@This(), n: *Node) void {
+            if (w.covered or n.props.vis == false) return;
+            if (n == w.field) {
+                w.seen = true;
+                return;
+            }
+            if (w.seen and n.props.bg != null) {
+                const r = n.clip.intersect(n.frame).intersect(w.field.frame);
+                if (r.w > 1 and r.h > 1) {
+                    w.covered = true;
+                    return;
+                }
+            }
+            for (n.kids.items) |k| w.visit(k);
+        }
+    };
+    var w: Walk = .{ .field = field };
+    w.visit(root);
+    return w.covered;
+}
 
 fn syncFields(s: *Surface) void {
     var css_changed = false;
@@ -329,7 +383,21 @@ fn syncFields(s: *Surface) void {
             }
         }
         gtk_widget_set_sensitive(w, @intFromBool(!n.props.dis));
-        const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
+        // The page changes placeholders too ("Select text first…" → "Tell
+        // GhostPen what to do…"); a text view's is drawn by paintPlaceholder.
+        if (n.kind == .input) {
+            const ph = s.gpa.dupeZ(u8, n.props.ph orelse "") catch continue;
+            defer s.gpa.free(ph);
+            gtk_entry_set_placeholder_text(w, ph.ptr);
+        }
+        // A field is a GTK widget over the page, not clipped by its scroll
+        // container: shown only while it lies entirely inside the visible
+        // area (else it was drawn over a sticky footer, half scrolled out).
+        const shown = n.clip.intersect(n.frame);
+        const visible = n.frame.w > 1 and n.frame.h > 1 and n.props.vis != false and
+            shown.h >= n.frame.h - 1 and shown.w >= n.frame.w - 1 and
+            !coveredLater(s, n);
+        if (std.c.getenv("ORIEL_NUI_FIELDS") != null) log.info("field {d} {s}: frame {d:.0},{d:.0} {d:.0}x{d:.0} clip {d:.0},{d:.0} {d:.0}x{d:.0} visible {}", .{ n.id, @tagName(n.kind), n.frame.x, n.frame.y, n.frame.w, n.frame.h, n.clip.x, n.clip.y, n.clip.w, n.clip.h, visible });
         gtk_widget_set_visible(w, @intFromBool(visible));
         css_changed = true;
     }
@@ -390,17 +458,20 @@ fn updateCss(s: *Surface) void {
     s.css_text.clearRetainingCapacity();
     const a = s.gpa;
     s.css_text.appendSlice(a,
-        \\.nui-field, .nui-field text, .nui-field > text, textview.nui-field, textview.nui-field text {
+        \\.nui-field, .nui-field text, .nui-field > text, textview.nui-field, textview.nui-field text,
+        \\dropdown.nui-field > button, dropdown.nui-field > button:hover, dropdown.nui-field > button:checked {
         \\  background: none; border: none; box-shadow: none; outline: none; padding: 0; margin: 0; min-height: 0;
         \\}
+        \\dropdown.nui-field > button { padding: 0 2px; }
         \\
     ) catch return;
     var it = s.fields.iterator();
     while (it.next()) |e| {
         const n = s.engine.tree.get(e.key_ptr.*) orelse continue;
         const c = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
-        s.css_text.print(a, ".nui-f{d}, .nui-f{d} text {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); font-size: {d:.1}px; caret-color: rgba({d:.0},{d:.0},{d:.0},1); }}\n", .{
-            n.id, n.id, c[0], c[1], c[2], c[3], n.props.fz orelse 16, c[0], c[1], c[2],
+        // The page's text color and size, on a dropdown's label and arrow too.
+        s.css_text.print(a, ".nui-f{d}, .nui-f{d} text, .nui-f{d} label, .nui-f{d} arrow {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); font-size: {d:.1}px; caret-color: rgba({d:.0},{d:.0},{d:.0},1); }}\n", .{
+            n.id, n.id, n.id, n.id, c[0], c[1], c[2], c[3], n.props.fz orelse 16, c[0], c[1], c[2],
         }) catch return;
     }
     s.css_text.append(a, 0) catch return;
@@ -433,6 +504,8 @@ fn onEntryActivate(e: *Widget, data: ?*anyopaque) callconv(.c) void {
 
 fn onBufferChanged(buffer: *anyopaque, data: ?*anyopaque) callconv(.c) void {
     const s = surfaceOf(data);
+    // The placeholder under an empty text view comes and goes with the text.
+    gtk_widget_queue_draw(s.area);
     if (s.updating) return;
     const view = g_object_get_data(buffer, "oriel-view") orelse return;
     const n = nodeOfWidget(s, view) orelse return;
@@ -604,6 +677,13 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             pango_layout_get_pixel_size(layout, &w, &h);
             out.* = .{ @floatFromInt(w + 1), @floatFromInt(h) };
         },
+        .image => {
+            // Its natural size, scaled down to the width it may take.
+            const img = imageOf(s, n) orelse return;
+            if (img.w <= 0 or img.h <= 0) return;
+            const k: f32 = if (!std.math.isInf(max_width) and max_width < img.w) max_width / img.w else 1;
+            out.* = .{ img.w * k, img.h * k };
+        },
         .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
         else => out.* = .{ 0, 0 },
@@ -640,6 +720,10 @@ fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
         };
     }
     if (n.props.ls) |ls| add0(attrs, pango_attr_letter_spacing_new(@intFromFloat(ls * PANGO_SCALE)));
+    // CSS line-height: each line box is that tall and the glyphs sit in its
+    // middle (half-leading above and below, negative when it's smaller than
+    // the font, as `line-height: 1` on an icon glyph). Pango >= 1.50.
+    if (n.props.lh) |lh| add0(attrs, pango_attr_line_height_new_absolute(@intFromFloat(lh * PANGO_SCALE)));
     const layout = gtk_widget_create_pango_layout(s.area, null);
     const desc = pango_font_description_from_string(if (n.props.mono) "Monospace" else "Sans");
     defer pango_font_description_free(desc);
@@ -656,10 +740,6 @@ fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
     if (n.props.ta) |ta| {
         if (std.mem.eql(u8, ta, "center")) pango_layout_set_alignment(layout, 1);
         if (std.mem.eql(u8, ta, "right")) pango_layout_set_alignment(layout, 2);
-    }
-    if (n.props.lh) |lh| {
-        const fz = n.props.fz orelse 16;
-        pango_layout_set_line_spacing(layout, lh / (fz * 1.17));
     }
     return layout;
 }
@@ -742,6 +822,9 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
     switch (n.kind) {
         .text => paintText(s, cr, n),
         .icon => paintIcon(cr, n),
+        .image => paintImage(s, cr, n),
+        .textarea => paintPlaceholder(s, cr, n),
+        .view => if (n.props.ctl != null) paintControl(cr, n),
         else => {},
     }
     for (n.kids.items) |k| paint(s, cr, k);
@@ -866,6 +949,225 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
     pango_cairo_show_layout(cr, layout);
 }
 
+/// A default checkbox or radio: an outlined box/circle, filled with the accent
+/// color (or a blue default) and a white mark when checked; dimmed disabled.
+fn paintControl(cr: *cairo_t, n: *Node) void {
+    const c = n.frame;
+    const size = @min(c.w, c.h);
+    if (size <= 0) return;
+    const x = c.x + (c.w - size) / 2;
+    const y = c.y + (c.h - size) / 2;
+    const radio = std.mem.eql(u8, n.props.ctl.?, "radio");
+    const acc = n.props.acc orelse tree_mod.Color{ 59, 108, 255, 1 };
+    const alpha: f32 = if (n.props.dis) 0.45 else 1;
+    cairo_save(cr);
+    defer cairo_restore(cr);
+    cairo_new_path(cr);
+    if (radio) {
+        cairo_arc(cr, x + size / 2, y + size / 2, size / 2 - 0.5, 0, 2 * std.math.pi);
+    } else {
+        roundRect(cr, .{ .x = x + 0.5, .y = y + 0.5, .w = size - 1, .h = size - 1 }, .{ 2.5, 2.5, 2.5, 2.5 });
+    }
+    if (n.props.on) {
+        setColor(cr, .{ acc[0], acc[1], acc[2], acc[3] * alpha });
+        cairo_fill(cr);
+        setColor(cr, .{ 255, 255, 255, alpha });
+        if (radio) {
+            cairo_new_path(cr);
+            cairo_arc(cr, x + size / 2, y + size / 2, size * 0.2, 0, 2 * std.math.pi);
+            cairo_fill(cr);
+        } else {
+            cairo_set_line_width(cr, @max(1.5, size * 0.13));
+            cairo_set_line_cap(cr, 1);
+            cairo_set_line_join(cr, 1);
+            cairo_move_to(cr, x + size * 0.25, y + size * 0.52);
+            cairo_line_to(cr, x + size * 0.43, y + size * 0.7);
+            cairo_line_to(cr, x + size * 0.76, y + size * 0.32);
+            cairo_stroke(cr);
+        }
+    } else {
+        setColor(cr, .{ 255, 255, 255, alpha });
+        cairo_fill_preserve(cr);
+        setColor(cr, .{ 118, 118, 118, alpha });
+        cairo_set_line_width(cr, 1);
+        cairo_stroke(cr);
+    }
+}
+
+/// A <textarea>'s placeholder: GtkTextView has none, so it's drawn under the
+/// (transparent) view while the buffer is empty, in the text color at half
+/// strength, as a browser does.
+fn paintPlaceholder(s: *Surface, cr: *cairo_t, n: *Node) void {
+    const ph = n.props.ph orelse return;
+    if (ph.len == 0) return;
+    const w = s.fields.get(n.id) orelse return;
+    if (gtk_text_buffer_get_char_count(gtk_text_view_get_buffer(w)) > 0) return;
+    const c = n.content();
+    const layout = gtk_widget_create_pango_layout(s.area, null);
+    defer g_object_unref(layout);
+    const desc = pango_font_description_from_string("Sans");
+    defer pango_font_description_free(desc);
+    pango_font_description_set_absolute_size(desc, (n.props.fz orelse 16) * PANGO_SCALE);
+    pango_layout_set_font_description(layout, desc);
+    pango_layout_set_text(layout, ph.ptr, @intCast(ph.len));
+    pango_layout_set_width(layout, @intFromFloat(@max(1, c.w) * PANGO_SCALE));
+    pango_layout_set_wrap(layout, 2);
+    var col = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
+    col[3] *= 0.5;
+    setColor(cr, col);
+    cairo_move_to(cr, c.x, c.y);
+    pango_cairo_show_layout(cr, layout);
+}
+
+// ---------------------------------------------------------------------------
+// Images (<img src="data:…"> or an app asset)
+
+const Image = struct {
+    src_hash: u64,
+    /// Cairo ARGB32 surface; null when the picture couldn't be decoded.
+    surface: ?*anyopaque,
+    w: f32,
+    h: f32,
+
+    fn deinit(img: Image) void {
+        if (img.surface) |sf| cairo_surface_destroy(sf);
+    }
+};
+
+/// The node's decoded picture (decoded on first use and when src changes).
+fn imageOf(s: *Surface, n: *Node) ?Image {
+    const src = n.props.src orelse return null;
+    const hash = std.hash.Wyhash.hash(0, src);
+    if (s.images.get(n.id)) |img| if (img.src_hash == hash) return img;
+    if (s.images.fetchRemove(n.id)) |kv| kv.value.deinit();
+    const img = decodeImage(s, src) catch |err| blk: {
+        log.warn("native ui: image {s}: {s}", .{ src[0..@min(src.len, 48)], @errorName(err) });
+        break :blk Image{ .src_hash = hash, .surface = null, .w = 0, .h = 0 };
+    };
+    var stored = img;
+    stored.src_hash = hash;
+    s.images.put(n.id, stored) catch {
+        stored.deinit();
+        return null;
+    };
+    return stored;
+}
+
+fn decodeImage(s: *Surface, src: []const u8) !Image {
+    var owned: ?[]u8 = null;
+    defer if (owned) |o| s.gpa.free(o);
+    const bytes: []const u8 = if (std.mem.startsWith(u8, src, "data:")) blk: {
+        const comma = std.mem.indexOfScalar(u8, src, ',') orelse return error.BadDataUri;
+        if (std.mem.indexOf(u8, src[0..comma], ";base64") == null) return error.NotBase64;
+        const b64 = std.mem.trim(u8, src[comma + 1 ..], " \t\r\n");
+        const dec = std.base64.standard.Decoder;
+        const buf = try s.gpa.alloc(u8, try dec.calcSizeForSlice(b64));
+        owned = buf;
+        try dec.decode(buf, b64);
+        break :blk buf;
+    } else s.engine.assetData(src) orelse return error.AssetNotFound;
+
+    // The declared size first: a few header bytes are enough. A tiny file can
+    // declare 30000x30000 px, and decoding it would allocate gigabytes (PNG
+    // can't be decoded smaller: the loader's size hint scales afterwards).
+    // Such a picture keeps its size for layout and isn't drawn.
+    const declared = probeSize(bytes) orelse return error.UnknownFormat;
+    if (@as(u64, @intCast(declared[0])) * @as(u64, @intCast(declared[1])) > max_image_pixels) {
+        log.warn("native ui: image {d}x{d} px is over the {d}-pixel limit: not drawn", .{ declared[0], declared[1], max_image_pixels });
+        return .{ .src_hash = 0, .surface = null, .w = @floatFromInt(declared[0]), .h = @floatFromInt(declared[1]) };
+    }
+
+    const gbytes = g_bytes_new(bytes.ptr, bytes.len); // copies
+    defer g_bytes_unref(gbytes);
+    var gerr: ?*anyopaque = null;
+    const texture = gdk_texture_new_from_bytes(gbytes, &gerr) orelse {
+        if (gerr) |e| g_error_free(e);
+        return error.DecodeFailed;
+    };
+    defer g_object_unref(texture);
+    const w = gdk_texture_get_width(texture);
+    const h = gdk_texture_get_height(texture);
+    if (w <= 0 or h <= 0) return error.EmptyImage;
+    // CAIRO_FORMAT_ARGB32 is GDK_MEMORY_DEFAULT (premultiplied, native endian).
+    const sf = cairo_image_surface_create(0, w, h) orelse return error.OutOfMemory;
+    errdefer cairo_surface_destroy(sf);
+    cairo_surface_flush(sf);
+    const data = cairo_image_surface_get_data(sf) orelse return error.OutOfMemory;
+    gdk_texture_download(texture, data, @intCast(cairo_image_surface_get_stride(sf)));
+    cairo_surface_mark_dirty(sf);
+    return .{ .src_hash = 0, .surface = sf, .w = @floatFromInt(w), .h = @floatFromInt(h) };
+}
+
+/// The largest picture decoded: 4096 x 4096 px (64 MB as ARGB, and the same
+/// again while it's converted).
+const max_image_pixels: u64 = 4096 * 4096;
+
+/// The width and height an image file declares, read by feeding a
+/// GdkPixbufLoader header bytes until it reports them (size-prepared), or
+/// null when it isn't an image it knows.
+fn probeSize(bytes: []const u8) ?[2]c_int {
+    const loader = gdk_pixbuf_loader_new();
+    defer g_object_unref(loader);
+    var size: [2]c_int = .{ 0, 0 };
+    const S = struct {
+        fn onSize(_: *anyopaque, w: c_int, h: c_int, data: ?*anyopaque) callconv(.c) void {
+            const out: *[2]c_int = @ptrCast(@alignCast(data.?));
+            out.* = .{ w, h };
+        }
+    };
+    _ = g_signal_connect_data(loader, "size-prepared", @ptrCast(&S.onSize), &size, null, 0);
+    var err: ?*anyopaque = null;
+    var off: usize = 0;
+    // Headers come first; 256 KiB is far more than any needs (and bounds
+    // what a broken file can make the loader decode).
+    while (off < bytes.len and off < 256 * 1024 and size[0] == 0) {
+        const n = @min(1024, bytes.len - off);
+        if (gdk_pixbuf_loader_write(loader, bytes.ptr + off, n, &err) == 0) break;
+        off += n;
+    }
+    if (err) |e| {
+        g_error_free(e);
+        err = null;
+    }
+    // Closing a partly written loader reports an error: expected, ignored.
+    _ = gdk_pixbuf_loader_close(loader, &err);
+    if (err) |e| g_error_free(e);
+    if (size[0] <= 0 or size[1] <= 0) return null;
+    return size;
+}
+
+/// Drawn in its content box per CSS object-fit (fill by default).
+fn paintImage(s: *Surface, cr: *cairo_t, n: *Node) void {
+    const img = imageOf(s, n) orelse return;
+    const sf = img.surface orelse return;
+    const c = n.content();
+    if (c.w <= 0 or c.h <= 0) return;
+    const fit = n.props.fit orelse "fill";
+    var kx: f64 = c.w / img.w;
+    var ky: f64 = c.h / img.h;
+    if (std.mem.eql(u8, fit, "contain")) {
+        kx = @min(kx, ky);
+        ky = kx;
+    } else if (std.mem.eql(u8, fit, "cover")) {
+        kx = @max(kx, ky);
+        ky = kx;
+    } else if (std.mem.eql(u8, fit, "none")) {
+        kx = 1;
+        ky = 1;
+    } else if (std.mem.eql(u8, fit, "scale-down")) {
+        kx = @min(1, @min(kx, ky));
+        ky = kx;
+    }
+    cairo_save(cr);
+    defer cairo_restore(cr);
+    cairo_rectangle(cr, c.x, c.y, c.w, c.h);
+    cairo_clip(cr);
+    cairo_translate(cr, c.x + (c.w - img.w * kx) / 2, c.y + (c.h - img.h * ky) / 2);
+    cairo_scale(cr, kx, ky);
+    cairo_set_source_surface(cr, sf, 0, 0);
+    cairo_paint(cr);
+}
+
 fn paintIcon(cr: *cairo_t, n: *Node) void {
     const icon = n.props.icon orelse return;
     const c = n.content();
@@ -896,4 +1198,29 @@ fn paintIcon(cr: *cairo_t, n: *Node) void {
             cairo_stroke(cr);
         }
     }
+}
+
+test "probeSize reads a PNG's declared size without decoding it" {
+    // A PNG signature, an IHDR chunk declaring 30000 x 30000 px, and the
+    // start of an IDAT chunk (libpng reports the size when it reaches the
+    // image data): a few bytes that would decode to 3.6 GB.
+    var png: [8 + 25 + 12]u8 = undefined;
+    @memcpy(png[0..8], "\x89PNG\r\n\x1a\n");
+    std.mem.writeInt(u32, png[8..12], 13, .big);
+    @memcpy(png[12..16], "IHDR");
+    std.mem.writeInt(u32, png[16..20], 30000, .big);
+    std.mem.writeInt(u32, png[20..24], 30000, .big);
+    png[24] = 8; // bit depth
+    png[25] = 6; // RGBA
+    png[26] = 0;
+    png[27] = 0;
+    png[28] = 0;
+    std.mem.writeInt(u32, png[29..33], std.hash.Crc32.hash(png[12..29]), .big);
+    std.mem.writeInt(u32, png[33..37], 0, .big);
+    @memcpy(png[37..41], "IDAT");
+    std.mem.writeInt(u32, png[41..45], std.hash.Crc32.hash(png[37..41]), .big);
+    const size = probeSize(&png) orelse return error.NoSize;
+    try std.testing.expectEqual(@as(c_int, 30000), size[0]);
+    try std.testing.expectEqual(@as(c_int, 30000), size[1]);
+    try std.testing.expect(@as(u64, @intCast(size[0])) * @as(u64, @intCast(size[1])) > max_image_pixels);
 }
