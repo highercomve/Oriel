@@ -14123,6 +14123,52 @@ ${a.stack || ""}`;
       break;
     }
   }
+  {
+    let proto = Object.getPrototypeOf(document.createElement("div"));
+    let desc = null;
+    while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "style"))) proto = Object.getPrototypeOf(proto);
+    if (desc?.get) {
+      const wrapped = /* @__PURE__ */ new WeakMap();
+      const touch = () => {
+        try {
+          if (renderer) renderer.dirty = true;
+        } catch {
+        }
+      };
+      Object.defineProperty(proto, "style", {
+        configurable: true,
+        get() {
+          const real = desc.get.call(this);
+          if (!real || typeof real !== "object") return real;
+          let w = wrapped.get(real);
+          if (!w) {
+            w = new Proxy(real, {
+              set(t, k, v) {
+                t[k] = v;
+                touch();
+                return true;
+              },
+              get(t, k) {
+                const v = t[k];
+                if (k === "setProperty" || k === "removeProperty") return (...a) => {
+                  const r = v.apply(t, a);
+                  touch();
+                  return r;
+                };
+                return typeof v === "function" ? v.bind(t) : v;
+              }
+            });
+            wrapped.set(real, w);
+          }
+          return w;
+        },
+        set(v) {
+          desc.set ? desc.set.call(this, v) : this.setAttribute("style", String(v));
+          touch();
+        }
+      });
+    }
+  }
   var inputProto = Object.getPrototypeOf(document.createElement("input"));
   Object.defineProperty(inputProto, "checked", {
     get() {

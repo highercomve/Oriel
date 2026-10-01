@@ -123,6 +123,42 @@ for (let proto = Object.getPrototypeOf(document.body); proto; proto = Object.get
 }
 void ET;
 
+// el.style.x = … and style.setProperty(…) update the style attribute inside
+// linkedom without a mutation record, so the renderer never saw them (a
+// requestAnimationFrame loop writing bar heights didn't move). Each
+// element's style is wrapped once: writes mark the page for a render.
+{
+  let proto = Object.getPrototypeOf(document.createElement("div"));
+  let desc = null;
+  while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "style"))) proto = Object.getPrototypeOf(proto);
+  if (desc?.get) {
+    const wrapped = new WeakMap();
+    // try: a write before `let renderer` below has run (TDZ) is ignored.
+    const touch = () => { try { if (renderer) renderer.dirty = true; } catch {} };
+    Object.defineProperty(proto, "style", {
+      configurable: true,
+      get() {
+        const real = desc.get.call(this);
+        if (!real || typeof real !== "object") return real;
+        let w = wrapped.get(real);
+        if (!w) {
+          w = new Proxy(real, {
+            set(t, k, v) { t[k] = v; touch(); return true; },
+            get(t, k) {
+              const v = t[k];
+              if (k === "setProperty" || k === "removeProperty") return (...a) => { const r = v.apply(t, a); touch(); return r; };
+              return typeof v === "function" ? v.bind(t) : v;
+            },
+          });
+          wrapped.set(real, w);
+        }
+        return w;
+      },
+      set(v) { desc.set ? desc.set.call(this, v) : this.setAttribute("style", String(v)); touch(); },
+    });
+  }
+}
+
 // checked reflects the attribute (so :checked styles follow it).
 const inputProto = Object.getPrototypeOf(document.createElement("input"));
 Object.defineProperty(inputProto, "checked", {
