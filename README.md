@@ -59,17 +59,35 @@ Tauri; its README [compares the two](https://github.com/highercomve/GhostPen#com
 Each example is its own Zig package in [`examples/`](examples), built on Oriel
 like any app would be.
 
-<table>
-  <tr>
-    <td colspan="2"><b><a href="examples/showcase">Oriel Showcase</a></b>: every Oriel feature in one app that builds for Linux, Windows, macOS, Android and iOS. Live dictation (<code>oriel.dictation</code>: whisper on the CPU or GPU, or the platform's recognizer), transcribing files, notes in SQLite with deep links (<code>oriel-showcase://note/…</code>), file pickers, the clipboard, notifications, windows, events and the store; per platform, "dictate anywhere" into other apps (a system-wide hotkey, the tray and the window menu on the desktop; a Quick Settings tile, a keyboard and in-app shortcuts on Android) and background audio on iOS.</td>
-  </tr>
-  <tr>
-    <td colspan="2"><img src="assets/screenshots/smoke.png" alt="Smoke test example: every module and security check passing inside the webview"></td>
-  </tr>
-  <tr>
-    <td colspan="2"><b><a href="examples/smoke">Smoke test</a></b>: runs every module's check and the security checks (CSP, navigation, IPC) inside the real webview.</td>
-  </tr>
-</table>
+### [Oriel Showcase](examples/showcase)
+
+**[examples/showcase](examples/showcase)**: every Oriel feature in one app,
+from one codebase, for Linux, Windows, macOS, Android and iOS. Live dictation
+(`oriel.dictation`: whisper on the CPU or GPU, or the platform's recognizer),
+chat with a local LLM (`oriel.chat`: models, the chat template, streamed
+tokens, a reused KV cache), notes in SQLite with deep links
+(`oriel-showcase://note/…`), file pickers, the clipboard, notifications,
+windows, events and the store; per platform, "dictate anywhere" into other
+apps (a system-wide hotkey, the tray and the window menu on the desktop; a
+Quick Settings tile, a keyboard and in-app shortcuts on Android) and
+background audio on iOS.
+
+<p>
+  <img src="assets/screenshots/showcase-dictate.png" alt="The Dictate tab on a Pixel: whisper small on Vulkan, drafted by base on the CPU" width="19%">
+  <img src="assets/screenshots/showcase-chat.png" alt="The Chat tab on a Pixel: Llama 3.2 1B on Vulkan, streamed tokens" width="19%">
+  <img src="assets/screenshots/showcase-notes.png" alt="The Notes tab: notes in SQLite, added by a deep link" width="19%">
+  <img src="assets/screenshots/showcase-system.png" alt="The System tab: dictate anywhere, clipboard, notifications and shortcuts" width="19%">
+  <img src="assets/screenshots/showcase-app.png" alt="The App tab: windows, the IPC echo and events from a worker" width="19%">
+</p>
+
+### [Smoke test](examples/smoke)
+
+**[examples/smoke](examples/smoke)**: every module gets a pass/fail check
+inside a real webview — one run tells you Oriel works end to end on your
+machine, not just that it compiles. It runs in CI on every platform with each
+check listed, so a red one names the module.
+
+![Smoke test: every module and security check passing inside the webview](assets/screenshots/smoke.png)
 
 ## The `oriel` CLI
 
