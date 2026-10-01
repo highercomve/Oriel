@@ -15,20 +15,42 @@ const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const permissions = @import("../../core/permissions.zig");
 const overlay = @import("overlay.zig");
+const build_opts = @import("build_options");
+const build_target = @import("../../core/target.zig");
+/// -Dnative_ui: pages drawn with Direct2D instead of WebView2 (docs/native-renderer.md).
+const native_win32 = if (build_opts.native_ui) @import("../../native_ui/win32.zig") else struct {
+    /// Never created without -Dnative_ui (nativeSurface returns null).
+    pub const Surface = struct {
+        pub fn resize(_: *Surface) void {}
+        pub fn takeFocus(_: *Surface) void {}
+        pub fn dpiChanged(_: *Surface) void {}
+        pub fn wheel(_: *Surface, _: usize, _: isize) void {}
+    };
+};
 
 const log = std.log.scoped(.oriel);
+
+/// The native renderer's surface of a window (-Dnative_ui), else null.
+fn nativeSurface(w: *App.Window) ?*native_win32.Surface {
+    if (comptime !build_opts.native_ui) return null;
+    if (w.handle.native == null) return null;
+    return @ptrCast(@alignCast(w.handle.data orelse return null));
+}
 
 pub const WINDOW_CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("OrielWindowClass");
 
 pub const WindowHandle = struct {
     hwnd: win32.HWND,
-    controller: *webview2.ICoreWebView2Controller,
-    webview: *webview2.ICoreWebView2,
+    /// Null for a native window (-Dnative_ui).
+    controller: ?*webview2.ICoreWebView2Controller,
+    webview: ?*webview2.ICoreWebView2,
+    /// The native renderer's engine (-Dnative_ui), else null.
+    native: ?*anyopaque = null,
     data: ?*anyopaque = null,
     deinit_fn: ?*const fn (ctx: *anyopaque) void = null,
 
     pub fn deinit(self: WindowHandle) void {
-        isolation.forget(@intFromPtr(self.webview));
+        if (self.webview) |v| isolation.forget(@intFromPtr(v));
         if (self.deinit_fn) |f| {
             if (self.data) |d| f(d);
         }
@@ -321,7 +343,8 @@ pub fn getWindowByView(view: *webview2.ICoreWebView2) ?*App.Window {
     defer App.windows_mutex.unlock();
     for (App.windows_list.items) |w| {
         var unk_b: ?*anyopaque = null;
-        if (w.handle.webview.lpVtbl.QueryInterface(w.handle.webview, &webview2.IID_IUnknown, &unk_b) < 0 or unk_b == null) continue;
+        const wv = w.handle.webview orelse continue;
+        if (wv.lpVtbl.QueryInterface(wv, &webview2.IID_IUnknown, &unk_b) < 0 or unk_b == null) continue;
         const unk_b_ptr: *webview2.IUnknown = @ptrCast(@alignCast(unk_b.?));
         defer _ = unk_b_ptr.lpVtbl.Release(unk_b_ptr);
         if (unk_a_ptr == unk_b_ptr) return w;
@@ -1113,6 +1136,8 @@ pub fn WindowCreator(
                 _ = win32.SendMessageW(hwnd, win32.WM_SETICON, win32.ICON_SMALL, @bitCast(@intFromPtr(icon_handle)));
             }
 
+            if (comptime build_opts.native_ui) return createNativeWindow(hwnd, options, win_inst, style, ex_style);
+
             // Compute userDataFolder: %LOCALAPPDATA%\<app_id>\WebView2
             const user_data_folder_w = blk: {
                 var buf: [win32.MAX_PATH]u16 = undefined;
@@ -1361,17 +1386,66 @@ pub fn WindowCreator(
             return handle;
         }
 
+        /// -Dnative_ui: the page's HTML, CSS and JS run on the native renderer
+        /// (QuickJS, Yoga, Direct2D/DirectWrite and EDIT controls), no WebView2.
+        fn createNativeWindow(hwnd: win32.HWND, options: App.WindowOptions, win_inst: *App.Window, style: win32.DWORD, ex_style: win32.DWORD) anyerror!WindowHandle {
+            const gpa = std.heap.smp_allocator;
+            // A menu bar takes its height from the client area: grow the
+            // window first, so the page gets the requested size.
+            if (ShellMod.on_window_created_fn) |hook| {
+                hook(hwnd);
+                if (win32.GetMenu(hwnd) != null) {
+                    const outer = outerSize(options.width, options.height, style, true, ex_style, windowDpi(hwnd));
+                    _ = win32.SetWindowPos(hwnd, null, 0, 0, outer.w, outer.h, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
+                }
+            }
+            if (options.transparent) overlay.enableAlpha(hwnd);
+            const url_z = try gpa.dupeZ(u8, options.url orelse "index.html");
+            defer gpa.free(url_z);
+            const surface = try native_win32.Surface.create(
+                gpa,
+                config.assets,
+                build_target.platform_json,
+                options.label,
+                url_z,
+                hwnd,
+                options.transparent,
+                BridgeImpl.nativeInvoke,
+                win_inst,
+            );
+            const handle = WindowHandle{
+                .hwnd = hwnd,
+                .controller = null,
+                .webview = null,
+                .native = surface.engine,
+                .data = surface,
+                .deinit_fn = &native_win32.Surface.destroyErased,
+            };
+            win_inst.handle = handle;
+            _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @bitCast(@intFromPtr(win_inst)));
+            // Shown (placed, focused or not) by App.openWindow when `visible`.
+            return handle;
+        }
+
         fn wndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam: win32.LPARAM) callconv(.winapi) win32.LRESULT {
             const win = windowFromUserData(hwnd);
 
             switch (uMsg) {
+                win32.WM_MOUSEWHEEL => {
+                    // The wheel goes to the focused window: hand it to the canvas.
+                    if (win) |w| if (nativeSurface(w)) |s| {
+                        s.wheel(wParam, lParam);
+                        return 0;
+                    };
+                    return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
+                },
                 win32.WM_TIMER => {
                     if (has_dev and wParam == DEV_RETRY_TIMER_ID) {
                         // Before the window is registered `win` is null: the
                         // timer stays and fires again.
                         if (win) |w| {
                             _ = win32.KillTimer(hwnd, DEV_RETRY_TIMER_ID);
-                            DevRetryHandler.retry(w.handle.webview);
+                            if (w.handle.webview) |v| DevRetryHandler.retry(v);
                         }
                         return 0;
                     }
@@ -1379,10 +1453,14 @@ pub fn WindowCreator(
                 },
                 win32.WM_SIZE => {
                     if (win) |w| {
+                        if (nativeSurface(w)) |s| {
+                            s.resize();
+                            return 0;
+                        }
                         if (!w.ready) return 0;
                         var bounds: win32.RECT = undefined;
                         _ = win32.GetClientRect(hwnd, &bounds);
-                        _ = w.handle.controller.putBounds(bounds);
+                        if (w.handle.controller) |ctl| _ = ctl.putBounds(bounds);
                     }
                     return 0;
                 },
@@ -1414,10 +1492,16 @@ pub fn WindowCreator(
                     // Alt+Tab back): hand it on to the webview, or the page
                     // gets no key events (document.hasFocus() stays false)
                     // until it's clicked.
-                    if (win) |w| if (w.ready) {
-                        _ = w.handle.controller.lpVtbl.MoveFocus(w.handle.controller, .PROGRAMMATIC);
-                        return 0;
-                    };
+                    if (win) |w| {
+                        if (nativeSurface(w)) |s| {
+                            s.takeFocus();
+                            return 0;
+                        }
+                        if (w.ready) if (w.handle.controller) |ctl| {
+                            _ = ctl.lpVtbl.MoveFocus(ctl, .PROGRAMMATIC);
+                            return 0;
+                        };
+                    }
                     return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
                 },
                 win32.WM_ERASEBKGND => {
@@ -1435,11 +1519,16 @@ pub fn WindowCreator(
                         _ = win32.SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
                     }
                     if (win) |w| {
+                        if (nativeSurface(w)) |s| {
+                            s.dpiChanged();
+                            return 0;
+                        }
                         if (!w.ready) return 0;
-                        _ = w.handle.controller.notifyParentWindowPositionChanged();
+                        const ctl = w.handle.controller orelse return 0;
+                        _ = ctl.notifyParentWindowPositionChanged();
                         var bounds: win32.RECT = undefined;
                         _ = win32.GetClientRect(hwnd, &bounds);
-                        _ = w.handle.controller.putBounds(bounds);
+                        _ = ctl.putBounds(bounds);
                     }
                     return 0;
                 },
