@@ -3,15 +3,16 @@
 //! page's view controller. WebKit's completion block is called exactly once,
 //! from the tapped action (the alert can't be dismissed otherwise).
 //!
-//! Ownership: each action's handler block owns its `Pending` (the action's
-//! arguments) through the block's copy/dispose helpers, so teardown follows
-//! exactly the live copies — however the alert ends. UIKit retains a copied
-//! block for as long as the alert does, and the last copy released drops the
-//! shared dialog state, WebKit's copied completion handler and the alert's
-//! own retain. A dialog that dies without an answer (the alert released
-//! without an action firing) still tears everything down; nothing needs the
-//! OK action to fire to clean up. The alert pointer is borrowed, never
-//! strongly held by the blocks, so no retain cycle.
+//! Ownership: each heap copy of an action's handler block owns its own
+//! `Pending` (the action's arguments) through the block's copy/dispose
+//! helpers; the stack block `addAction` builds owns the one it frees itself.
+//! `Shared.refs` counts the live heap copies only. UIKit keeps them for as
+//! long as the alert, which the presenting controller retains while it is on
+//! screen, so the last copy released (the alert gone, however it ended)
+//! drops the shared state and WebKit's copied completion handler, answering
+//! WebKit first if no action ran (it raises when a completion handler is
+//! released uncalled). The alert pointer is borrowed, never strongly held by
+//! the blocks, so no retain cycle.
 
 const std = @import("std");
 const apple = @import("apple.zig");
@@ -51,52 +52,64 @@ const Pending = struct {
     /// invoked.
     alert: apple.id,
     ok: bool,
-    /// One completion, refcounted by the live copies of its action blocks
-    /// plus `show`'s own ownership of the alert (dropped last).
+    /// One completion, refcounted by the live heap copies of its action blocks.
     shared: *Shared,
 };
 
 const Shared = struct {
     /// Whichever action runs first answers WebKit; the others are late.
     done: bool = false,
-    /// Live copies of the action blocks plus `show`'s retain.
-    refs: u32,
+    /// Live heap copies of the action blocks.
+    refs: u32 = 0,
 };
 
 fn finish(block: *apple.ManagedBlock, _: apple.id) callconv(.c) void {
-    const p: *Pending = @ptrCast(@alignCast(block.ctx.?));
+    const p: *Pending = @ptrCast(@alignCast(block.ctx orelse return));
     if (p.shared.done) return;
     p.shared.done = true;
-    switch (p.kind) {
-        .alert => apple.callBlock(p.handler, &.{}, .{}),
-        .confirm => apple.callBlock(p.handler, &.{apple.c.BOOL}, .{apple.boolean(p.ok)}),
-        .prompt => {
-            var text: apple.id = null;
-            if (p.ok) {
-                const fields = (Object{ .value = p.alert }).msgSend(Object, "textFields", .{});
-                if (fields.value != null and fields.msgSend(c_ulong, "count", .{}) > 0)
-                    text = fields.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, 0)}).msgSend(Object, "text", .{}).value;
-            }
-            apple.callBlock(p.handler, &.{apple.id}, .{text});
-        },
+    var text: apple.id = null;
+    if (p.kind == .prompt and p.ok) {
+        const fields = (Object{ .value = p.alert }).msgSend(Object, "textFields", .{});
+        if (fields.value != null and fields.msgSend(c_ulong, "count", .{}) > 0)
+            text = fields.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, 0)}).msgSend(Object, "text", .{}).value;
+    }
+    answer(p.kind, p.handler, p.ok, text);
+}
+
+/// Call WebKit's completion handler: OK/Cancel for confirm, the text for prompt.
+fn answer(kind: Kind, handler: apple.id, ok: bool, text: apple.id) void {
+    switch (kind) {
+        .alert => apple.callBlock(handler, &.{}, .{}),
+        .confirm => apple.callBlock(handler, &.{apple.c.BOOL}, .{apple.boolean(ok)}),
+        .prompt => apple.callBlock(handler, &.{apple.id}, .{text}),
     }
 }
 
-/// Per live copy of an action block: one refcount up.
-fn actionCopy(_: *apple.BlockLiteral, src: *apple.BlockLiteral) callconv(.c) void {
-    const block: *apple.ManagedBlock = @ptrCast(@alignCast(src));
-    const p: *Pending = @ptrCast(@alignCast(block.ctx.?));
+/// A heap copy of an action block (the runtime has copied `src` into `dst`):
+/// its own `Pending`, and one refcount up. Out of memory, the copy carries
+/// none and does nothing.
+fn actionCopy(dst: *apple.BlockLiteral, src: *apple.BlockLiteral) callconv(.c) void {
+    const from: *apple.ManagedBlock = @ptrCast(@alignCast(src));
+    const to: *apple.ManagedBlock = @ptrCast(@alignCast(dst));
+    to.ctx = null;
+    const p: *Pending = @ptrCast(@alignCast(from.ctx orelse return));
+    const own = std.heap.smp_allocator.create(Pending) catch return;
+    own.* = p.*;
     p.shared.refs += 1;
+    to.ctx = own;
 }
 
+/// A heap copy released: the last one answers WebKit if no action ran, then
+/// frees the dialog.
 fn actionDispose(src: *apple.BlockLiteral) callconv(.c) void {
     const block: *apple.ManagedBlock = @ptrCast(@alignCast(src));
-    const p: *Pending = @ptrCast(@alignCast(block.ctx.?));
-    p.shared.refs -= 1;
-    if (p.shared.refs == 0) {
+    const p: *Pending = @ptrCast(@alignCast(block.ctx orelse return));
+    const shared = p.shared;
+    shared.refs -= 1;
+    if (shared.refs == 0) {
+        if (!shared.done) answer(p.kind, p.handler, false, null);
         apple.releaseBlock(p.handler);
-        (Object{ .value = p.alert }).release();
-        std.heap.smp_allocator.destroy(p.shared);
+        std.heap.smp_allocator.destroy(shared);
     }
     std.heap.smp_allocator.destroy(p);
 }
@@ -106,19 +119,12 @@ const UIAlertActionStyleDefault: isize = 0;
 const UIAlertActionStyleCancel: isize = 1;
 
 fn addAction(alert: apple.id, kind: Kind, handler: apple.id, shared: *Shared, title: []const u8, ok: bool) void {
-    const p = std.heap.smp_allocator.create(Pending) catch {
-        shared.refs -= 1; // the last copy out frees the dialog
-        return;
-    };
-    p.* = .{ .kind = kind, .handler = handler, .alert = alert, .ok = ok, .shared = shared };
-    shared.refs += 1;
-    const t = apple.nsString(title) orelse {
-        shared.refs -= 1;
-        std.heap.smp_allocator.destroy(p);
-        return;
-    };
+    // The stack block's own `Pending`: UIKit copies the block (actionCopy
+    // gives the copy its own) before actionWithTitle returns.
+    var p: Pending = .{ .kind = kind, .handler = handler, .alert = alert, .ok = ok, .shared = shared };
+    const t = apple.nsString(title) orelse return;
     defer t.release();
-    var block = apple.managedBlock(finish, p, actionCopy, actionDispose);
+    var block = apple.managedBlock(finish, &p, actionCopy, actionDispose);
     const action = apple.class("UIAlertAction").msgSend(Object, "actionWithTitle:style:handler:", .{
         t, if (ok) UIAlertActionStyleDefault else UIAlertActionStyleCancel, block.ptr(),
     });
@@ -138,15 +144,17 @@ fn show(kind: Kind, view_id: apple.id, message: apple.id, default_text: apple.id
     };
     const handler = apple.copyBlock(handler_arg);
     const title = view.msgSend(Object, "title", .{});
+    // Ours until presented: the presenting controller retains it then.
     const alert = apple.class("UIAlertController").msgSend(Object, "alertControllerWithTitle:message:preferredStyle:", .{
         title, Object{ .value = message }, UIAlertControllerStyleAlert,
     }).retain();
+    defer alert.release();
     const shared = std.heap.smp_allocator.create(Shared) catch {
-        alert.release();
+        answer(kind, handler, false, null);
         apple.releaseBlock(handler);
         return;
     };
-    shared.* = .{ .refs = 1 }; // show's own ownership of the alert
+    shared.* = .{};
     if (kind == .prompt) {
         const Configure = struct {
             fn f(block: *apple.ContextBlock, field: apple.id) callconv(.c) void {
@@ -159,5 +167,12 @@ fn show(kind: Kind, view_id: apple.id, message: apple.id, default_text: apple.id
     }
     if (kind != .alert) addAction(alert.value, kind, handler, shared, "Cancel", false);
     addAction(alert.value, kind, handler, shared, "OK", true);
+    if (shared.refs == 0) {
+        // No action could be added: answer like a dismissed dialog.
+        answer(kind, handler, false, null);
+        apple.releaseBlock(handler);
+        std.heap.smp_allocator.destroy(shared);
+        return;
+    }
     controller.msgSend(void, "presentViewController:animated:completion:", .{ alert, apple.boolean(true), @as(apple.id, null) });
 }
