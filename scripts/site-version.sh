@@ -21,5 +21,7 @@ path = 'zine.ziggy'
 text = open(path).read()
 new = re.sub(r'(\.custom = \.\{[\s\S]*?\.version = ")[^"]*(")', r'\g<1>' + tag + r'\g<2>', text, count=1)
 assert new != text, "zine.ziggy: custom.version block not found"
+link = f"https://github.com/highercomve/Oriel/releases/tag/{tag}"
+new = re.sub(r'(\.custom = \.\{[\s\S]*?\.releases_link = ")[^"]*(")', r'\g<1>' + link + r'\g<2>', new, count=1)
 open(path, 'w').write(new)
 PY
