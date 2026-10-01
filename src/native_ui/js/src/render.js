@@ -36,7 +36,7 @@ small { font-size: .83em; }
 code, kbd, samp, pre, tt { font-family: monospace; }
 pre { white-space: pre; }
 a { color: #0645ad; text-decoration: underline; cursor: pointer; }
-button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; align-items: center; justify-content: center; }
+button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
 input, textarea, select { padding: 1px 2px; border: 2px inset #ccc; font-size: 13.33px; background: white; }
 textarea { white-space: pre-wrap; }
 hr { border-top: 1px solid #888; margin: .5em 0; }
@@ -139,6 +139,12 @@ export class Renderer {
       const icon = iconFor(el, cs, this.doc);
       if (!icon) return null;
       props.icon = icon;
+      // width/height attributes size the icon when CSS doesn't (presentational
+      // hints, as in a browser): <svg width="16" height="16">.
+      for (const [k, a] of [["w", "width"], ["h", "height"]]) {
+        const v = el.getAttribute(a);
+        if (props[k] === undefined && v && /^[\d.]+(px)?$/.test(v.trim())) props[k] = parseFloat(v);
+      }
       return this.put(nodes, id, "icon", props, [], fixedNode);
     }
     if (tag === "input" || tag === "textarea" || tag === "select") {
@@ -440,6 +446,12 @@ function boxProps(cs, display, fs, el) {
     p.ai = "stretch";
   }
   if (cs["justify-content"] && cs["justify-content"] !== "normal" && !p.jc) p.jc = cs["justify-content"];
+  // A browser centers a button's content, until the page lays the button
+  // out itself (display: flex or grid: then flex-start, like any box).
+  if (el?.localName === "button" && display !== "flex" && display !== "grid") {
+    p.ai = "center";
+    if (!p.jc) p.jc = "center";
+  }
   if (cs["align-self"] && cs["align-self"] !== "auto") p.as = cs["align-self"];
   if (cs["align-content"]) p.ac = cs["align-content"];
   if (cs["flex-grow"]) p.fg = parseFloat(cs["flex-grow"]);
