@@ -1748,7 +1748,7 @@ oriel dev              # run against Vite dev server with hot reload
 | `create-tauri-app`, `tauri dev/build`, `tauri info` | ✅ `oriel init` (React, Vue, Svelte, vanilla), `oriel dev/build/run/package`, `oriel doctor` |
 | Windows | ◐ Win32 + WebView2 shell and every module/plugin (tray, sql, store, dialog, notification, menu, updater, media_server, fs_watch, global_shortcut, input, clipboard), NSIS `setup.exe`; cross-built from Linux, runtime untested on Windows |
 | macOS | ◐ AppKit + WKWebView shell and every module/plugin (tray, menu, dialog, notification, store, clipboard, fs_watch, global_shortcut, input, updater, media_server, audio_capture incl. system audio), whisper/llama on Metal, deep links, `.app`/`.dmg` packaging |
-| Mobile | ❌ |
+| Mobile | ◐ Android (Kotlin Activity + WebView over JNI, one Activity per window, desktop mode): the shell and every module/plugin (tile, keyboard, notification actions, foreground service, input method, dialogs, notifications, clipboard, deep links, storage SAF), whisper/llama/dictation/chat with ARM dotprod/i8mm, Vulkan, OpenCL (Adreno) and Hexagon, verified on a Pixel; APK and AAB (`oriel android build`). iOS (UIKit + WKWebView from Zig, no Xcode project, Metal for whisper/llama): every module ported, verified in the simulator in CI; `.app`/`.ipa` via `oriel ios build` |
 
 ## Compared with Vercel native
 
