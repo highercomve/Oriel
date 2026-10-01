@@ -28,6 +28,7 @@ pub const impl = switch (target.os) {
 
 test {
     const std = @import("std");
+    _ = @import("audio_capture/resample.zig");
     std.testing.refAllDecls(common);
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(impl);
