@@ -29,7 +29,8 @@ Flattener: the DOM → native nodes, several elements per native view
 Zig: one node per native view, Yoga (flexbox) layout, text measured by
         │  the platform, frames applied
         │
-Backend: GTK 4 (Linux), Android views (JNI); later UIKit, AppKit, Win32
+Backend: GTK 4 (Linux), Android views (JNI), AppKit (macOS), UIKit (iOS);
+         later Win32
 ```
 
 Everything runs on the UI thread, as a browser's main thread: the page's
@@ -102,5 +103,58 @@ inline blocks flowing in text, `position: sticky`, `img`, `canvas`,
    presses are hit-tested in Zig. A native window never creates a WebView.
    The showcase APK measured with `dumpsys meminfo` against the WebView
    build.
-3. Then: transitions, `:hover`/`:focus`, grid, accessibility, and the
-   Apple and Windows backends.
+3. **macOS and iOS** (`src/native_ui/appkit.zig`, `uikit.zig`, sharing
+   `apple_draw.zig`): see "Apple" below. The showcase's `tour` and `chat`
+   UI tests pass on both; GhostPen's menu, Settings, Playground and its
+   transparent dictation and captions overlays run on AppKit.
+4. Then: grid, accessibility, and the Windows backend.
+
+## Apple (macOS, iOS)
+
+`-Dnative_ui` builds for macOS and iOS. Both backends draw the page the
+same way, in `apple_draw.zig`: boxes, borders, shadows (stacked layers, as on
+GTK), gradients and icons with CoreGraphics, text with CoreText (the system
+font at the CSS weight, from NSFont/UIFont, which are toll-free bridged to
+CTFont; a node's framesetter and frame are kept between layout and paint
+until its props change). CoreGraphics has no SVG path parser:
+`svg_path.zig` turns path data into move/line/curve calls (arcs as cubics).
+
+| | macOS (AppKit) | iOS (UIKit) |
+|---|---|---|
+| The page | one flipped NSView, the window's content view | one UIView in the controller's safe area, like a web view |
+| `input` / `textarea` / `select` | NSTextField (NSSecureTextField), NSTextView in an NSScrollView, NSPopUpButton | UITextField, UITextView, a UIButton with a UIMenu |
+| Input | clicks (control-click and right-click: `contextmenu`), hover and the hand cursor, the scroll wheel and trackpad, keys | taps, long presses (`contextmenu`), drags with a fling (gesture recognizers) |
+| Dark mode | the view's effective appearance | the trait collection |
+
+Native controls sit above everything the page draws, so each one is held
+by a view clipped to the part of its field the page shows: its content
+box within its clip, minus a bar painted over it later across its whole
+width (a fixed header or footer).
+
+The page renders at most once per frame (`Backend.request_frame`), however
+many events arrive (a chat streams a hundred tokens a second), and a page
+whose render takes long gets fewer frames, at least twice its render time
+apart, so commands and events still get through between them. The page's
+commands run from the main loop, never inside its JavaScript (a command may
+close the window, and with it the engine), and answers, timers and frames
+find their window by token, so one that arrives after it closed is dropped.
+
+Windows: transparency, always on top and placement as for a web view window
+(`overlay.setup` on macOS). On iPhone a second window is presented full
+screen with a close button (UIKit's), since nothing else closes it there;
+on iPad it gets a scene of its own.
+
+Debugging: `ORIEL_NUI_SNAPSHOT=<dir>` (macOS) writes each native window as
+drawn, fields included, to `<dir>/<label>.png` a moment after each layout,
+for runs nobody watches; `ORIEL_NUI_TRACE=1` logs clicks.
+
+Memory (the showcase, idle on its first tab, `footprint`): on macOS about
+70 MB for the native build against about 96 MB for the WebView build and its
+WebKit processes (GPU, WebContent, Networking); in the iOS simulator 196 MB
+against 550 MB (simulator processes carry the simulated system frameworks,
+so device numbers are lower, but the WebKit processes are what goes).
+
+Not yet: a text area's placeholder (NSTextView and UITextView have none),
+keyboard avoidance on iOS (a field under the keyboard isn't scrolled up),
+and the hardware keyboard on iOS (only fields get keys). CoreText, like
+Pango, breaks a word that doesn't fit its line, where CSS lets it overflow.

@@ -38,8 +38,8 @@ pub const Surface = struct {
     transparent: bool,
     invoke_fn: Invoke,
     invoke_ctx: ?*anyopaque,
-    /// Field controls by node id (+1 each, subviews of `view`).
-    fields: std.AutoHashMapUnmanaged(i64, Object) = .empty,
+    /// Field controls by node id.
+    fields: std.AutoHashMapUnmanaged(i64, Field) = .empty,
     updating: bool = false,
     dark: bool = false,
     /// How long the last frame's render took (µs), see `requestFrame`.
@@ -49,6 +49,15 @@ pub const Surface = struct {
     fling_v: f32 = 0,
     fling_at: [2]f32 = .{ 0, 0 },
     fling_gen: u32 = 0,
+};
+
+const Field = struct {
+    /// A plain view (+1) in the page's view, clipped to the part of the
+    /// field the page shows (`apple_draw.visiblePart`): the control is its
+    /// only subview.
+    holder: Object,
+    /// The UITextField, UITextView or UIButton (held by `holder`).
+    control: Object,
 };
 
 /// Live surfaces by token, and which surface and node a view or control
@@ -157,15 +166,17 @@ pub fn destroy(s: *Surface) void {
     while (it.next()) |f| dropField(f.*);
     s.fields.deinit(s.gpa);
     s.view.msgSend(void, "removeFromSuperview", .{});
-    s.view.release();
+    _ = s.view.msgSend(Object, "autorelease", .{}); // it may be in one of its own callbacks
     s.gpa.destroy(s);
 }
 
-fn dropField(f: Object) void {
-    _ = by_control.remove(key(f.value));
-    if (f.getClass()) |cls| if (cls.respondsToSelector(apple.objc.sel("setDelegate:"))) f.msgSend(void, "setDelegate:", .{apple.nil});
-    f.msgSend(void, "removeFromSuperview", .{});
-    f.release();
+fn dropField(f: Field) void {
+    _ = by_control.remove(key(f.control.value));
+    if (f.control.getClass()) |cls| if (cls.respondsToSelector(apple.objc.sel("setDelegate:"))) f.control.msgSend(void, "setDelegate:", .{apple.nil});
+    f.holder.msgSend(void, "removeFromSuperview", .{});
+    // Autoreleased, not released: the page may drop a field from inside
+    // that control's own callback (a handler for its Return).
+    _ = f.holder.msgSend(Object, "autorelease", .{}); // and with it the control
 }
 
 fn surfaceOf(ctx: *anyopaque) *Surface {
@@ -248,7 +259,7 @@ fn onTimer(p: ?*anyopaque) callconv(.c) void {
 fn focus(ctx: *anyopaque, n: *Node) void {
     const s = surfaceOf(ctx);
     const f = s.fields.get(n.id) orelse return;
-    _ = f.msgSend(BOOL, "becomeFirstResponder", .{});
+    _ = f.control.msgSend(BOOL, "becomeFirstResponder", .{});
 }
 
 fn removed(ctx: *anyopaque, n: *Node) void {
@@ -277,7 +288,7 @@ fn syncFields(s: *Surface) void {
     while (it.next()) |np| {
         const n = np.*;
         if (n.kind != .input and n.kind != .textarea and n.kind != .select) continue;
-        const f = s.fields.get(n.id) orelse blk: {
+        const field = s.fields.get(n.id) orelse blk: {
             const f = makeField(s, n) orelse continue;
             s.fields.put(s.gpa, n.id, f) catch {
                 dropField(f);
@@ -285,6 +296,7 @@ fn syncFields(s: *Surface) void {
             };
             break :blk f;
         };
+        const f = field.control;
         s.updating = true;
         defer s.updating = false;
         if (n.pending_value) |v| {
@@ -292,17 +304,21 @@ fn syncFields(s: *Surface) void {
             setValue(n, f, v);
         }
         style(n, f);
+        // The holder covers the visible part of the field; the control sits
+        // at the field's place inside it.
         const r = n.content();
-        f.msgSend(void, "setFrame:", .{CGRect{ .origin = .{ .x = r.x, .y = r.y }, .size = .{ .width = @max(1, r.w), .height = @max(1, r.h) } }});
-        const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
-        f.msgSend(void, "setHidden:", .{apple.boolean(!visible)});
+        const shown = draw.visiblePart(&s.engine.tree, n);
+        field.holder.msgSend(void, "setFrame:", .{CGRect{ .origin = .{ .x = shown.x, .y = shown.y }, .size = .{ .width = shown.w, .height = shown.h } }});
+        f.msgSend(void, "setFrame:", .{CGRect{ .origin = .{ .x = r.x - shown.x, .y = r.y - shown.y }, .size = .{ .width = @max(1, r.w), .height = @max(1, r.h) } }});
+        const visible = shown.h > 1 and shown.w > 1 and n.props.vis != false;
+        field.holder.msgSend(void, "setHidden:", .{apple.boolean(!visible)});
         if (n.kind == .textarea) f.msgSend(void, "setEditable:", .{apple.boolean(!n.props.dis)}) else f.msgSend(void, "setEnabled:", .{apple.boolean(!n.props.dis)});
     }
 }
 
 const UIControlEventEditingChanged: c_ulong = 1 << 17;
 
-fn makeField(s: *Surface, n: *Node) ?Object {
+fn makeField(s: *Surface, n: *Node) ?Field {
     const zero: CGRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 10, .height = 10 } };
     const f: Object = switch (n.kind) {
         .input => blk: {
@@ -337,9 +353,17 @@ fn makeField(s: *Surface, n: *Node) ?Object {
         },
         else => return null,
     };
+    const holder = apple.new(apple.class("UIView"));
+    if (holder.value == null) {
+        f.release();
+        return null;
+    }
+    holder.msgSend(void, "setClipsToBounds:", .{apple.boolean(true)});
+    holder.msgSend(void, "addSubview:", .{f});
+    f.release(); // the holder keeps it
     by_control.put(s.gpa, key(f.value), .{ .token = s.token, .node = n.id }) catch {};
-    s.view.msgSend(void, "addSubview:", .{f});
-    return f;
+    s.view.msgSend(void, "addSubview:", .{holder});
+    return .{ .holder = holder, .control = f };
 }
 
 const UIEdgeInsets = extern struct { top: f64 = 0, left: f64 = 0, bottom: f64 = 0, right: f64 = 0 };

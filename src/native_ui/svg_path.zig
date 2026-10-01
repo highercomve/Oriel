@@ -65,7 +65,9 @@ const Reader = struct {
             while (r.i < r.s.len and std.ascii.isDigit(r.s[r.i])) : (r.i += 1) exp_digits = true;
             if (!exp_digits) r.i = save;
         }
-        return std.fmt.parseFloat(f64, r.s[start..r.i]) catch null;
+        const v = std.fmt.parseFloat(f64, r.s[start..r.i]) catch return null;
+        // "1e400" parses as inf: an error, as in a browser (and arcs need finite numbers).
+        return if (std.math.isFinite(v)) v else null;
     }
 
     /// An arc flag: a single 0 or 1, possibly not separated ("a1 1 0 01 2 3").
@@ -241,6 +243,7 @@ fn arc(comptime Ctx: type, sink: Sink(Ctx), x1: f64, y1: f64, rx_in: f64, ry_in:
     // Step 4: the start angle and the sweep.
     const theta1 = angle(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
     var dtheta = angle((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry);
+    if (!std.math.isFinite(dtheta) or !std.math.isFinite(theta1)) return sink.line(sink.ctx, x2, y2);
     if (!sweep and dtheta > 0) dtheta -= 2 * std.math.pi;
     if (sweep and dtheta < 0) dtheta += 2 * std.math.pi;
 
@@ -346,6 +349,16 @@ test "arcs: compact flags, ends exactly, degenerate radii" {
     try expectPath("M0 0 A0 5 0 0 1 3 4", "M0.00,0.00 L3.00,4.00", true);
     // Same start and end: nothing.
     try expectPath("M1 1 A5 5 0 0 1 1 1", "M1.00,1.00", true);
+}
+
+test "numbers too large are errors, not infinities" {
+    try expectPath("M0 0A1e400 1 0 0 1 5 5", "M0.00,0.00", false);
+    try expectPath("M0 0L1e999 2", "M0.00,0.00", false);
+    // Radii that overflow on squaring still end the arc at its end point.
+    var rec: Rec = .{};
+    defer rec.out.deinit(std.testing.allocator);
+    try std.testing.expect(parse(*Rec, "M0 0A1e300 1e300 0 0 1 5 5", rec.sink()));
+    try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, rec.out.items, " "), "5.00,5.00"));
 }
 
 test "errors keep what came before" {

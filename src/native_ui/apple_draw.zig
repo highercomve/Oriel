@@ -138,7 +138,7 @@ fn appleWeight(w: f32) f64 {
 
 /// `font_class`: "NSFont" (AppKit) or "UIFont" (UIKit).
 pub fn font(comptime font_class: [:0]const u8, size: f32, weight: f32, italic: bool, mono: bool) ?CTFontRef {
-    const key: FontKey = .{ .size = size, .weight = @intFromFloat(@round(weight / 100)), .italic = italic, .mono = mono };
+    const key: FontKey = .{ .size = size, .weight = @intFromFloat(std.math.clamp(@round(weight / 100), 1, 9)), .italic = italic, .mono = mono };
     for (font_cache.items) |e| if (std.meta.eql(e.key, key)) return e.font;
     const cls = objc.getClass(font_class) orelse return null;
     const sel = if (mono) "monospacedSystemFontOfSize:weight:" else "systemFontOfSize:weight:";
@@ -296,6 +296,44 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     CGContextScaleCTM(cg, 1, -1);
     CGContextSetTextMatrix(cg, .{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 });
     CTFrameDraw(frame, cg);
+}
+
+// ---------------------------------------------------------------------------
+// Fields
+
+/// The part of a field the page shows: its content box within its clip,
+/// minus what the page paints over it later (a fixed header or footer bar
+/// across it), since native controls sit above everything drawn. Bars that
+/// cover the field's whole width cut it from the top or the bottom.
+pub fn visiblePart(tree: *tree_mod.Tree, field: *Node) Rect {
+    var shown = field.clip.intersect(field.content());
+    const root = tree.root orelse return shown;
+    var after = false;
+    cutBy(root, field, &after, &shown);
+    return shown;
+}
+
+fn cutBy(n: *Node, field: *Node, after: *bool, shown: *Rect) void {
+    if (n == field) {
+        after.* = true;
+        return; // its own children are inside it
+    }
+    if (n.props.vis == false) return;
+    if (after.* and n.props.bg != null and shown.h > 0) {
+        const cover = n.clip.intersect(n.frame);
+        if (cover.x <= shown.x and cover.x + cover.w >= shown.x + shown.w and cover.h > 0) {
+            const top = shown.y;
+            const bottom = shown.y + shown.h;
+            if (cover.y <= top and cover.y + cover.h > top) {
+                // Over its top: what's left starts below the bar.
+                const new_top = @min(bottom, cover.y + cover.h);
+                shown.* = .{ .x = shown.x, .y = new_top, .w = shown.w, .h = bottom - new_top };
+            } else if (cover.y < bottom and cover.y + cover.h >= bottom) {
+                shown.* = .{ .x = shown.x, .y = top, .w = shown.w, .h = @max(0, cover.y - top) };
+            }
+        }
+    }
+    for (n.kids.items) |k| cutBy(k, field, after, shown);
 }
 
 // ---------------------------------------------------------------------------
