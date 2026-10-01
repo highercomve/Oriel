@@ -126,7 +126,9 @@ pub fn ensureXtool(ctx: Context, yes: bool) !?[]u8 {
         return null;
     };
     const file = try Dir.cwd().openFile(ctx.io, part, .{});
-    file.setPermissions(ctx.io, .fromMode(0o755)) catch {};
+    if (builtin.os.tag != .windows) {
+        file.setPermissions(ctx.io, std.Io.File.Permissions.fromMode(0o755)) catch {};
+    }
     file.close(ctx.io);
     try Dir.rename(Dir.cwd(), part, Dir.cwd(), dest, ctx.io);
     try ctx.out.print("installed xtool in {s}\n", .{dest});
