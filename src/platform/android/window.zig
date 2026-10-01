@@ -440,7 +440,7 @@ pub fn WindowCreator(
             }) orelse false;
             if (!ok) return error.CreateWindowFailed;
             if (comptime build_opts.native_ui) {
-                _ = native.create(std.heap.smp_allocator, id, config.assets, build_target.platform_json, options.label, BridgeImpl.nativeInvoke, win_inst) catch |err| {
+                _ = native.create(std.heap.smp_allocator, id, config.assets, build_target.platform_json, options.label, options.url orelse "index.html", BridgeImpl.nativeInvoke, win_inst) catch |err| {
                     log.err("native ui: cannot start the page ({s})", .{@errorName(err)});
                     _ = runtime.call(.void, "destroyWindow", "(I)V", .{@as(i32, @intCast(id))});
                     return err;

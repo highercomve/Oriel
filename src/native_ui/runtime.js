@@ -13158,7 +13158,9 @@ globalThis.atob ??= (s) => {
     }
     const vb = (root.getAttribute("viewBox") || svg.getAttribute("viewBox") || "0 0 24 24").split(/[\s,]+/).map(Number);
     const shapes = [];
-    collect(root, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter" }, current, doc, shapes);
+    let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter" });
+    if (root !== svg) paint = paintOf(root, paint);
+    collect(root, paint, current, doc, shapes);
     if (!shapes.length) return null;
     return { vb, shapes };
   }
@@ -13166,13 +13168,7 @@ globalThis.atob ??= (s) => {
     for (const c of el.children) {
       const tag = c.localName;
       if (tag === "defs" || tag === "symbol" || tag === "title" || tag === "lineargradient" || tag === "linearGradient") continue;
-      const paint = {
-        fill: attr(c, "fill") ?? inherited.fill,
-        stroke: attr(c, "stroke") ?? inherited.stroke,
-        sw: parseFloat(attr(c, "stroke-width") ?? inherited.sw),
-        cap: attr(c, "stroke-linecap") ?? inherited.cap,
-        join: attr(c, "stroke-linejoin") ?? inherited.join
-      };
+      const paint = paintOf(c, inherited);
       if (tag === "g") {
         collect(c, paint, current, doc, out);
         continue;
@@ -13189,6 +13185,15 @@ globalThis.atob ??= (s) => {
         ...c.getAttribute("fill-rule") === "evenodd" ? { evenodd: true } : {}
       });
     }
+  }
+  function paintOf(el, inherited) {
+    return {
+      fill: attr(el, "fill") ?? inherited.fill,
+      stroke: attr(el, "stroke") ?? inherited.stroke,
+      sw: parseFloat(attr(el, "stroke-width") ?? inherited.sw),
+      cap: attr(el, "stroke-linecap") ?? inherited.cap,
+      join: attr(el, "stroke-linejoin") ?? inherited.join
+    };
   }
   function attr(el, name) {
     const v = el.getAttribute(name);
@@ -13266,7 +13271,7 @@ small { font-size: .83em; }
 code, kbd, samp, pre, tt { font-family: monospace; }
 pre { white-space: pre; }
 a { color: #0645ad; text-decoration: underline; cursor: pointer; }
-button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; align-items: center; justify-content: center; }
+button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
 input, textarea, select { padding: 1px 2px; border: 2px inset #ccc; font-size: 13.33px; background: white; }
 textarea { white-space: pre-wrap; }
 hr { border-top: 1px solid #888; margin: .5em 0; }
@@ -13355,6 +13360,10 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         const icon = iconFor(el, cs, this.doc);
         if (!icon) return null;
         props.icon = icon;
+        for (const [k, a] of [["w", "width"], ["h", "height"]]) {
+          const v = el.getAttribute(a);
+          if (props[k] === void 0 && v && /^[\d.]+(px)?$/.test(v.trim())) props[k] = parseFloat(v);
+        }
         return this.put(nodes, id, "icon", props, [], fixedNode);
       }
       if (tag === "input" || tag === "textarea" || tag === "select") {
@@ -13650,6 +13659,10 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
       p.ai = "stretch";
     }
     if (cs["justify-content"] && cs["justify-content"] !== "normal" && !p.jc) p.jc = cs["justify-content"];
+    if (el?.localName === "button" && display !== "flex" && display !== "grid") {
+      p.ai = "center";
+      if (!p.jc) p.jc = "center";
+    }
     if (cs["align-self"] && cs["align-self"] !== "auto") p.as = cs["align-self"];
     if (cs["align-content"]) p.ac = cs["align-content"];
     if (cs["flex-grow"]) p.fg = parseFloat(cs["flex-grow"]);
@@ -14223,9 +14236,39 @@ ${a.stack || ""}`;
   Object.defineProperty(document, "activeElement", { get() {
     return this.__active || this.body;
   }, configurable: true });
-  var hash = "";
-  var search = "";
+  var startUrl = String(host.url || "");
+  var hashAt = startUrl.indexOf("#");
+  var hash = hashAt >= 0 ? startUrl.slice(hashAt) : "";
+  var beforeHash = hashAt >= 0 ? startUrl.slice(0, hashAt) : startUrl;
+  var search = beforeHash.indexOf("?") >= 0 ? beforeHash.slice(beforeHash.indexOf("?")) : "";
+  if (hash === "#") hash = "";
   var fireHash = () => setTimeout(() => fireWindow(new Event("hashchange")), 0);
+  var emptySelection = () => ({
+    isCollapsed: true,
+    rangeCount: 0,
+    type: "None",
+    anchorNode: null,
+    focusNode: null,
+    toString() {
+      return "";
+    },
+    removeAllRanges() {
+    },
+    addRange() {
+    },
+    getRangeAt() {
+      throw new RangeError("No range");
+    },
+    collapse() {
+    },
+    selectAllChildren() {
+    },
+    containsNode() {
+      return false;
+    }
+  });
+  g.getSelection = emptySelection;
+  if (typeof document !== "undefined" && !document.getSelection) document.getSelection = emptySelection;
   g.location = {
     get hash() {
       return hash;
@@ -14669,6 +14712,14 @@ ${a.stack || ""}`;
           const code = src ? host.asset(src.replace(/^\.?\//, "")) : s.textContent;
           if (!code) {
             if (src) console.warn(`script not found: ${src}`);
+            continue;
+          }
+          if (s.getAttribute("type") === "module") {
+            try {
+              Promise.resolve(host.evalModule(src ? src.replace(/^\.?\//, "") : "inline.js", code)).catch((e) => console.error(e));
+            } catch (e) {
+              console.error(e);
+            }
             continue;
           }
           try {

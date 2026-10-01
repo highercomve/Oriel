@@ -247,7 +247,7 @@ fn gobjectTypeName(obj: *anyopaque) [*:0]const u8 {
 var warned_wayland = false;
 
 /// Called by createWindow before the window is presented.
-pub fn setup(window: *gtk.Window, view: *webkit.WebView, options: App.WindowOptions, app_id: [:0]const u8) void {
+pub fn setup(window: *gtk.Window, view: ?*webkit.WebView, options: App.WindowOptions, app_id: [:0]const u8) void {
     if (options.transparent) makeTransparent(window, view);
 
     const wants_overlay = options.always_on_top or options.skip_taskbar or options.placement != null;
@@ -298,7 +298,7 @@ pub fn forget(window: *gtk.Window) void {
 
 var css_installed = false;
 
-fn makeTransparent(window: *gtk.Window, view: *webkit.WebView) void {
+fn makeTransparent(window: *gtk.Window, view: ?*webkit.WebView) void {
     if (!css_installed) {
         if (gdk_display_get_default()) |display| {
             const provider = gtk_css_provider_new();
@@ -308,8 +308,11 @@ fn makeTransparent(window: *gtk.Window, view: *webkit.WebView) void {
         }
     }
     gtk_widget_add_css_class(window, "oriel-transparent");
+    // A native window (-Dnative_ui) has no web view: its surface clears to
+    // transparent itself (native_ui/gtk.zig, Surface.transparent).
+    const v = view orelse return;
     const clear: GdkRGBA = .{ .red = 0, .green = 0, .blue = 0, .alpha = 0 };
-    webkit_web_view_set_background_color(view, &clear);
+    webkit_web_view_set_background_color(v, &clear);
 }
 
 fn applyLayerPlacement(window: *gtk.Window, placement: App.Placement) void {
