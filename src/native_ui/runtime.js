@@ -13414,7 +13414,8 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         flow.push({ el: child });
       }
       flushRuns();
-      if (flow.length === 1 && flow[0].text && !before2 && !cs.__rules.after.length) {
+      const aligns = (display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid") && (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]));
+      if (flow.length === 1 && flow[0].text && !before2 && !cs.__rules.after.length && !aligns) {
         Object.assign(props, textProps(cs, fontSize));
         props.runs = flow[0].text;
         this.putClick(props, el);
@@ -13475,6 +13476,7 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
       const cs = this.style(el, parentCS);
       const d = cs.display || "inline";
       if (d !== "inline") return false;
+      if (cs.position === "absolute" || cs.position === "fixed") return false;
       for (const c of el.children) if (!this.isInline(c, cs)) return false;
       return true;
     }

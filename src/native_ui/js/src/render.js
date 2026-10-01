@@ -201,8 +201,12 @@ export class Renderer {
     }
     flushRuns();
 
-    // An element holding only text becomes one text view.
-    if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length) {
+    // An element holding only text becomes one text view, unless it centers
+    // that text as a flex/grid box (a round icon button: ⚙ in a 28px circle):
+    // a text view is drawn from its top-left, so keep a box with a text child.
+    const aligns = (display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid") &&
+      (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]));
+    if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns) {
       Object.assign(props, textProps(cs, fontSize));
       props.runs = flow[0].text;
       this.putClick(props, el);
@@ -270,6 +274,9 @@ export class Renderer {
     const cs = this.style(el, parentCS);
     const d = cs.display || "inline";
     if (d !== "inline") return false;
+    // position: absolute/fixed blockifies the box (CSS): an empty
+    // <span class="thumb"> with a background is a box, not text.
+    if (cs.position === "absolute" || cs.position === "fixed") return false;
     // Inline only if everything inside is inline too.
     for (const c of el.children) if (!this.isInline(c, cs)) return false;
     return true;

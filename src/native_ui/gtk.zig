@@ -133,7 +133,7 @@ extern fn pango_layout_set_width(l: *PangoLayout, w: c_int) void;
 extern fn pango_layout_set_wrap(l: *PangoLayout, wrap: c_int) void;
 extern fn pango_layout_set_alignment(l: *PangoLayout, a: c_int) void;
 extern fn pango_layout_set_font_description(l: *PangoLayout, d: ?*const PangoFontDescription) void;
-extern fn pango_layout_set_line_spacing(l: *PangoLayout, factor: f32) void;
+extern fn pango_attr_line_height_new_absolute(height: c_int) *PangoAttribute;
 extern fn pango_layout_get_pixel_size(l: *PangoLayout, w: *c_int, h: *c_int) void;
 extern fn pango_cairo_show_layout(cr: *cairo_t, l: *PangoLayout) void;
 extern fn pango_font_description_from_string(s: [*:0]const u8) *PangoFontDescription;
@@ -390,17 +390,20 @@ fn updateCss(s: *Surface) void {
     s.css_text.clearRetainingCapacity();
     const a = s.gpa;
     s.css_text.appendSlice(a,
-        \\.nui-field, .nui-field text, .nui-field > text, textview.nui-field, textview.nui-field text {
+        \\.nui-field, .nui-field text, .nui-field > text, textview.nui-field, textview.nui-field text,
+        \\dropdown.nui-field > button, dropdown.nui-field > button:hover, dropdown.nui-field > button:checked {
         \\  background: none; border: none; box-shadow: none; outline: none; padding: 0; margin: 0; min-height: 0;
         \\}
+        \\dropdown.nui-field > button { padding: 0 2px; }
         \\
     ) catch return;
     var it = s.fields.iterator();
     while (it.next()) |e| {
         const n = s.engine.tree.get(e.key_ptr.*) orelse continue;
         const c = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
-        s.css_text.print(a, ".nui-f{d}, .nui-f{d} text {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); font-size: {d:.1}px; caret-color: rgba({d:.0},{d:.0},{d:.0},1); }}\n", .{
-            n.id, n.id, c[0], c[1], c[2], c[3], n.props.fz orelse 16, c[0], c[1], c[2],
+        // The page's text color and size, on a dropdown's label and arrow too.
+        s.css_text.print(a, ".nui-f{d}, .nui-f{d} text, .nui-f{d} label, .nui-f{d} arrow {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); font-size: {d:.1}px; caret-color: rgba({d:.0},{d:.0},{d:.0},1); }}\n", .{
+            n.id, n.id, n.id, n.id, c[0], c[1], c[2], c[3], n.props.fz orelse 16, c[0], c[1], c[2],
         }) catch return;
     }
     s.css_text.append(a, 0) catch return;
@@ -640,6 +643,10 @@ fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
         };
     }
     if (n.props.ls) |ls| add0(attrs, pango_attr_letter_spacing_new(@intFromFloat(ls * PANGO_SCALE)));
+    // CSS line-height: each line box is that tall and the glyphs sit in its
+    // middle (half-leading above and below, negative when it's smaller than
+    // the font, as `line-height: 1` on an icon glyph). Pango >= 1.50.
+    if (n.props.lh) |lh| add0(attrs, pango_attr_line_height_new_absolute(@intFromFloat(lh * PANGO_SCALE)));
     const layout = gtk_widget_create_pango_layout(s.area, null);
     const desc = pango_font_description_from_string(if (n.props.mono) "Monospace" else "Sans");
     defer pango_font_description_free(desc);
@@ -656,10 +663,6 @@ fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
     if (n.props.ta) |ta| {
         if (std.mem.eql(u8, ta, "center")) pango_layout_set_alignment(layout, 1);
         if (std.mem.eql(u8, ta, "right")) pango_layout_set_alignment(layout, 2);
-    }
-    if (n.props.lh) |lh| {
-        const fz = n.props.fz orelse 16;
-        pango_layout_set_line_spacing(layout, lh / (fz * 1.17));
     }
     return layout;
 }
