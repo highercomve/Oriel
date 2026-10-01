@@ -252,7 +252,10 @@ pub fn build(b: *std.Build) void {
             check_step.dependOn(&b.addTest(.{ .root_module = m }).step);
         }
     } else {
-        check_step.dependOn(&b.addTest(.{ .root_module = oriel }).step);
+        const check_oriel = b.addTest(.{ .root_module = oriel });
+        // iOS: the SDK's libc headers for the C code (SQLite), when there is an SDK.
+        if (target.result.os.tag == .ios) ios_build.configure(b, check_oriel);
+        check_step.dependOn(&check_oriel.step);
     }
 
     // The host tools run on the machine that builds the app, which may be
