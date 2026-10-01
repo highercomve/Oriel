@@ -122,7 +122,15 @@ pub const Events = struct {
     @"dictation:ended": struct { engine: []const u8 },
 };
 pub const Partial = struct { text: []const u8 };
-pub const Final = struct { text: []const u8, audio_s: f32, transcribe_ms: u64, backend: []const u8 };
+pub const Final = struct {
+    text: []const u8,
+    audio_s: f32,
+    transcribe_ms: u64,
+    backend: []const u8,
+    /// False when the phrase went to the platform's servers (Apple speech
+    /// without the language's on-device model).
+    on_device: bool = true,
+};
 
 fn emit(comptime name: []const u8, payload: @FieldType(Events, name)) void {
     App.emit(name, payload);

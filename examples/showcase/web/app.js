@@ -221,13 +221,15 @@ function segmented(el, onPick) {
   });
 }
 segmented($("dict-engine"), (v) => { dict.engine = v; dictRender(); });
-segmented($("dict-lang"), (v) => { dict.lang = v; });
+segmented($("dict-lang"), (v) => { dict.lang = v; dict.usedServers = false; }); // another language may have its model
 segmented($("dict-model"), (v) => { dict.model = v; dictRender(); });
 segmented($("dict-proc"), (v) => { dict.backend = v; dictRender(); });
 
 function setState(text) { $("dict-state").textContent = text; }
 const engineNow = () => (dict.engine === "auto" ? dict.status?.auto_engine || "whisper" : dict.engine);
-const systemName = () => (dict.status?.system_on_device ? "System · on-device" : "System speech");
+// "on-device" until a phrase says it went to Apple's servers (no on-device
+// model for the language).
+const systemName = () => (dict.status?.system_on_device && !dict.usedServers ? "System · on-device" : "System speech");
 
 async function dictRefresh() {
   if (!dict.status) loadSources();
@@ -481,6 +483,7 @@ listen("dictation:partial", (p) => {
   dict.live.card.querySelector(".partial").textContent = p.text;
 });
 listen("dictation:final", (f) => {
+  if (f.on_device === false) dict.usedServers = true;
   if (!dict.live) return;
   const el = dict.live.card.querySelector(".final");
   el.textContent = (el.textContent ? el.textContent + " " : "") + f.text;

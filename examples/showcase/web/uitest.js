@@ -121,7 +121,8 @@
     const offF = listen("dictation:final", (f) => { finals.push(f.text); log(`final (${f.backend}): ${f.text}`); });
     const offE = listen("dictation:error", (e) => log(`error: ${e.message}`));
     $("dict-rec").click();
-    await until(() => dict.recording || /Error|allowed/.test($("dict-state").textContent), 90000, "listening");
+    // Listening, or a reason it can't (an error, a missing permission or language).
+    await until(() => dict.recording || /Error|allowed|didn't|doesn't/.test($("dict-state").textContent), 90000, "listening");
     await log(`state: ${$("dict-state").textContent}`);
     check(dict.recording, "not listening");
     await sleep(4000);
