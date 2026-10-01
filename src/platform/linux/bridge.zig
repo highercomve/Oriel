@@ -371,7 +371,7 @@ pub fn Bridge(
                 const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
                 const req_json = std.fmt.allocPrint(arena, "{{\"cmd\":{f},\"args\":{s}}}", .{ std.json.fmt(cmd, .{}), if (args_json.len > 0) args_json else "null" }) catch break :blk error.OutOfMemory;
                 const job = gpa.create(NativeReply) catch break :blk error.OutOfMemory;
-                job.* = .{ .engine = engine, .call_id = call_id };
+                job.* = .{ .engine = engine, .serial = engine.serial, .call_id = call_id };
                 ipc.dispatchAsync(api.commands, worker_pool, gpa, req_json, worker_pool.io, job, NativeReply.onWorkerDone) catch |err| {
                     gpa.destroy(job);
                     break :blk err;
@@ -382,15 +382,22 @@ pub fn Bridge(
         }
 
         const NativeReply = struct {
+            /// Not owned: the window may close (and free its engine) while a
+            /// worker runs the command, so it's checked by engineAlive before use.
             engine: *native.Engine,
+            serial: u64,
             call_id: u32,
             ok: bool = true,
             text: []u8 = &.{},
 
             fn post(engine: *native.Engine, call_id: u32, ok: bool, text: []const u8) void {
+                postFor(engine, engine.serial, call_id, ok, text);
+            }
+
+            fn postFor(engine: *native.Engine, serial: u64, call_id: u32, ok: bool, text: []const u8) void {
                 const gpa = std.heap.smp_allocator;
                 const r = gpa.create(NativeReply) catch return;
-                r.* = .{ .engine = engine, .call_id = call_id, .ok = ok, .text = gpa.dupe(u8, text) catch {
+                r.* = .{ .engine = engine, .serial = serial, .call_id = call_id, .ok = ok, .text = gpa.dupe(u8, text) catch {
                     gpa.destroy(r);
                     return;
                 } };
@@ -400,10 +407,13 @@ pub fn Bridge(
             fn onWorkerDone(self: *NativeReply, arena_state: std.heap.ArenaAllocator, res: ?[:0]const u8, err_name: ?[:0]const u8) void {
                 var a = arena_state;
                 defer a.deinit();
+                // A worker thread: only the pointer and serial are copied; the
+                // engine is checked on the main thread (idle) before use.
                 const engine = self.engine;
+                const serial = self.serial;
                 const call_id = self.call_id;
                 std.heap.smp_allocator.destroy(self);
-                if (err_name) |e| post(engine, call_id, false, e) else post(engine, call_id, true, res orelse "null");
+                if (err_name) |e| postFor(engine, serial, call_id, false, e) else postFor(engine, serial, call_id, true, res orelse "null");
             }
 
             fn idle(data: ?*anyopaque) callconv(.c) c_int {
@@ -412,8 +422,24 @@ pub fn Bridge(
                     std.heap.smp_allocator.free(self.text);
                     std.heap.smp_allocator.destroy(self);
                 }
+                // The window closed while the command ran: nobody to answer.
+                if (!engineAlive(self.engine, self.serial)) return 0;
                 self.engine.resolve(self.call_id, self.ok, self.text);
                 return 0;
+            }
+
+            /// Whether an open window still has this engine (the same one: its
+            /// serial, read only once the pointer is found among live windows).
+            /// Main thread, where windows close and engines are freed.
+            fn engineAlive(engine: *native.Engine, serial: u64) bool {
+                App.ensureWindowsMutex();
+                App.windows_mutex.lock();
+                defer App.windows_mutex.unlock();
+                for (App.windows_list.items) |win| {
+                    const e = win.handle.native orelse continue;
+                    if (e == @as(*anyopaque, @ptrCast(engine))) return engine.serial == serial;
+                }
+                return false;
             }
         };
 

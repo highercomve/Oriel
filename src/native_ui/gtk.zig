@@ -116,6 +116,9 @@ extern fn gdk_texture_get_width(texture: *anyopaque) c_int;
 extern fn gdk_texture_get_height(texture: *anyopaque) c_int;
 extern fn gdk_texture_download(texture: *anyopaque, data: [*]u8, stride: usize) void;
 extern fn g_error_free(err: *anyopaque) void;
+extern fn gdk_pixbuf_loader_new() *anyopaque;
+extern fn gdk_pixbuf_loader_write(loader: *anyopaque, buf: [*]const u8, count: usize, err: *?*anyopaque) c_int;
+extern fn gdk_pixbuf_loader_close(loader: *anyopaque, err: *?*anyopaque) c_int;
 extern fn cairo_fill(cr: *cairo_t) void;
 extern fn cairo_fill_preserve(cr: *cairo_t) void;
 extern fn cairo_stroke(cr: *cairo_t) void;
@@ -1064,6 +1067,16 @@ fn decodeImage(s: *Surface, src: []const u8) !Image {
         break :blk buf;
     } else s.engine.assetData(src) orelse return error.AssetNotFound;
 
+    // The declared size first: a few header bytes are enough. A tiny file can
+    // declare 30000x30000 px, and decoding it would allocate gigabytes (PNG
+    // can't be decoded smaller: the loader's size hint scales afterwards).
+    // Such a picture keeps its size for layout and isn't drawn.
+    const declared = probeSize(bytes) orelse return error.UnknownFormat;
+    if (@as(u64, @intCast(declared[0])) * @as(u64, @intCast(declared[1])) > max_image_pixels) {
+        log.warn("native ui: image {d}x{d} px is over the {d}-pixel limit: not drawn", .{ declared[0], declared[1], max_image_pixels });
+        return .{ .src_hash = 0, .surface = null, .w = @floatFromInt(declared[0]), .h = @floatFromInt(declared[1]) };
+    }
+
     const gbytes = g_bytes_new(bytes.ptr, bytes.len); // copies
     defer g_bytes_unref(gbytes);
     var gerr: ?*anyopaque = null;
@@ -1083,6 +1096,44 @@ fn decodeImage(s: *Surface, src: []const u8) !Image {
     gdk_texture_download(texture, data, @intCast(cairo_image_surface_get_stride(sf)));
     cairo_surface_mark_dirty(sf);
     return .{ .src_hash = 0, .surface = sf, .w = @floatFromInt(w), .h = @floatFromInt(h) };
+}
+
+/// The largest picture decoded: 4096 x 4096 px (64 MB as ARGB, and the same
+/// again while it's converted).
+const max_image_pixels: u64 = 4096 * 4096;
+
+/// The width and height an image file declares, read by feeding a
+/// GdkPixbufLoader header bytes until it reports them (size-prepared), or
+/// null when it isn't an image it knows.
+fn probeSize(bytes: []const u8) ?[2]c_int {
+    const loader = gdk_pixbuf_loader_new();
+    defer g_object_unref(loader);
+    var size: [2]c_int = .{ 0, 0 };
+    const S = struct {
+        fn onSize(_: *anyopaque, w: c_int, h: c_int, data: ?*anyopaque) callconv(.c) void {
+            const out: *[2]c_int = @ptrCast(@alignCast(data.?));
+            out.* = .{ w, h };
+        }
+    };
+    _ = g_signal_connect_data(loader, "size-prepared", @ptrCast(&S.onSize), &size, null, 0);
+    var err: ?*anyopaque = null;
+    var off: usize = 0;
+    // Headers come first; 256 KiB is far more than any needs (and bounds
+    // what a broken file can make the loader decode).
+    while (off < bytes.len and off < 256 * 1024 and size[0] == 0) {
+        const n = @min(1024, bytes.len - off);
+        if (gdk_pixbuf_loader_write(loader, bytes.ptr + off, n, &err) == 0) break;
+        off += n;
+    }
+    if (err) |e| {
+        g_error_free(e);
+        err = null;
+    }
+    // Closing a partly written loader reports an error: expected, ignored.
+    _ = gdk_pixbuf_loader_close(loader, &err);
+    if (err) |e| g_error_free(e);
+    if (size[0] <= 0 or size[1] <= 0) return null;
+    return size;
 }
 
 /// Drawn in its content box per CSS object-fit (fill by default).
@@ -1147,4 +1198,29 @@ fn paintIcon(cr: *cairo_t, n: *Node) void {
             cairo_stroke(cr);
         }
     }
+}
+
+test "probeSize reads a PNG's declared size without decoding it" {
+    // A PNG signature, an IHDR chunk declaring 30000 x 30000 px, and the
+    // start of an IDAT chunk (libpng reports the size when it reaches the
+    // image data): a few bytes that would decode to 3.6 GB.
+    var png: [8 + 25 + 12]u8 = undefined;
+    @memcpy(png[0..8], "\x89PNG\r\n\x1a\n");
+    std.mem.writeInt(u32, png[8..12], 13, .big);
+    @memcpy(png[12..16], "IHDR");
+    std.mem.writeInt(u32, png[16..20], 30000, .big);
+    std.mem.writeInt(u32, png[20..24], 30000, .big);
+    png[24] = 8; // bit depth
+    png[25] = 6; // RGBA
+    png[26] = 0;
+    png[27] = 0;
+    png[28] = 0;
+    std.mem.writeInt(u32, png[29..33], std.hash.Crc32.hash(png[12..29]), .big);
+    std.mem.writeInt(u32, png[33..37], 0, .big);
+    @memcpy(png[37..41], "IDAT");
+    std.mem.writeInt(u32, png[41..45], std.hash.Crc32.hash(png[37..41]), .big);
+    const size = probeSize(&png) orelse return error.NoSize;
+    try std.testing.expectEqual(@as(c_int, 30000), size[0]);
+    try std.testing.expectEqual(@as(c_int, 30000), size[1]);
+    try std.testing.expect(@as(u64, @intCast(size[0])) * @as(u64, @intCast(size[1])) > max_image_pixels);
 }

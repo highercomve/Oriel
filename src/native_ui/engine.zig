@@ -44,6 +44,8 @@ pub const Backend = struct {
     props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
 };
 
+var next_serial: std.atomic.Value(u64) = .init(0);
+
 pub const Engine = struct {
     gpa: std.mem.Allocator,
     js: *anyopaque,
@@ -57,6 +59,9 @@ pub const Engine = struct {
     /// rendered: the tree was laid out then, and the backend still has to
     /// draw that layout when the call settles.
     relaid: bool = false,
+    /// Unique per engine for the process: an answer that outlived its window
+    /// tells a new engine at the same address apart from its own.
+    serial: u64 = 0,
 
     pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, width: f32, height: f32) !*Engine {
         const e = try gpa.create(Engine);
@@ -68,6 +73,7 @@ pub const Engine = struct {
             .backend = backend,
             .assets = assets,
         };
+        e.serial = next_serial.fetchAdd(1, .monotonic) + 1;
         e.tree.width = width;
         e.tree.height = height;
         e.tree.on_remove = backend.removed;
