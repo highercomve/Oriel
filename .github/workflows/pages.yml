@@ -27,6 +27,9 @@ jobs:
           chmod +x /tmp/zine
           echo "/tmp" >> $GITHUB_PATH
 
+      - name: Read the version from GitHub's latest release
+        run: ./scripts/site-version.sh
+
       - name: Build site
         run: zine release
 
