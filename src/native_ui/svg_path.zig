@@ -1,238 +1,370 @@
 //! SVG path data (`<path d="...">`) for backends without a parser of their
-//! own (Win32; GTK has GskPath, Android PathParser). Commands come out in
-//! absolute coordinates, with H/V turned into lines and S/T's reflected
-//! control points resolved, so a backend only maps six calls onto its
-//! geometry API.
+//! own (CoreGraphics on macOS and iOS, Direct2D on Windows; GTK has GskPath,
+//! Android PathParser): the commands are resolved to absolute
+//! move/line/cubic/quadratic/close calls on a sink, arcs as cubic Béziers.
+//!
+//! Lenient like browsers: parsing stops at the first error and what was read
+//! so far is kept.
 
 const std = @import("std");
 
-/// `sink` has: move(x, y), line(x, y), cubic(x1, y1, x2, y2, x, y),
-/// quad(x1, y1, x, y), arc(rx, ry, rotation_deg, large, sweep, x, y),
-/// close(). Parsing stops at the first malformed command (as browsers do,
-/// everything before it is drawn).
-pub fn parse(d: []const u8, sink: anytype) void {
-    var p: Parser = .{ .s = d };
-    var cmd: u8 = 0;
-    var x: f32 = 0;
-    var y: f32 = 0;
-    var start_x: f32 = 0;
-    var start_y: f32 = 0;
-    // The last control point, for S and T.
-    var cx: f32 = 0;
-    var cy: f32 = 0;
-    var last: u8 = 0;
-    while (true) {
-        p.skipSpace();
-        if (p.i >= p.s.len) return;
-        const ch = p.s[p.i];
-        if (std.ascii.isAlphabetic(ch)) {
-            cmd = ch;
-            p.i += 1;
-        } else if (cmd == 0) {
-            return; // numbers before any command
-        } else if (cmd == 'M') {
-            cmd = 'L'; // more pairs after a moveto are linetos
-        } else if (cmd == 'm') {
-            cmd = 'l';
-        } else if (cmd == 'Z' or cmd == 'z') {
-            return;
-        }
-        const rel = std.ascii.isLower(cmd);
-        const ox: f32 = if (rel) x else 0;
-        const oy: f32 = if (rel) y else 0;
-        switch (std.ascii.toUpper(cmd)) {
-            'M' => {
-                x = ox + (p.num() orelse return);
-                y = oy + (p.num() orelse return);
-                start_x = x;
-                start_y = y;
-                sink.move(x, y);
-            },
-            'L' => {
-                x = ox + (p.num() orelse return);
-                y = oy + (p.num() orelse return);
-                sink.line(x, y);
-            },
-            'H' => {
-                x = ox + (p.num() orelse return);
-                sink.line(x, y);
-            },
-            'V' => {
-                y = oy + (p.num() orelse return);
-                sink.line(x, y);
-            },
-            'C' => {
-                const x1 = ox + (p.num() orelse return);
-                const y1 = oy + (p.num() orelse return);
-                const x2 = ox + (p.num() orelse return);
-                const y2 = oy + (p.num() orelse return);
-                x = ox + (p.num() orelse return);
-                y = oy + (p.num() orelse return);
-                sink.cubic(x1, y1, x2, y2, x, y);
-                cx = x2;
-                cy = y2;
-            },
-            'S' => {
-                const reflect = last == 'C' or last == 'S';
-                const x1 = if (reflect) 2 * x - cx else x;
-                const y1 = if (reflect) 2 * y - cy else y;
-                const x2 = ox + (p.num() orelse return);
-                const y2 = oy + (p.num() orelse return);
-                x = ox + (p.num() orelse return);
-                y = oy + (p.num() orelse return);
-                sink.cubic(x1, y1, x2, y2, x, y);
-                cx = x2;
-                cy = y2;
-            },
-            'Q' => {
-                const x1 = ox + (p.num() orelse return);
-                const y1 = oy + (p.num() orelse return);
-                x = ox + (p.num() orelse return);
-                y = oy + (p.num() orelse return);
-                sink.quad(x1, y1, x, y);
-                cx = x1;
-                cy = y1;
-            },
-            'T' => {
-                const reflect = last == 'Q' or last == 'T';
-                const x1 = if (reflect) 2 * x - cx else x;
-                const y1 = if (reflect) 2 * y - cy else y;
-                x = ox + (p.num() orelse return);
-                y = oy + (p.num() orelse return);
-                sink.quad(x1, y1, x, y);
-                cx = x1;
-                cy = y1;
-            },
-            'A' => {
-                const rx = p.num() orelse return;
-                const ry = p.num() orelse return;
-                const rot = p.num() orelse return;
-                const large = p.flag() orelse return;
-                const sweep = p.flag() orelse return;
-                x = ox + (p.num() orelse return);
-                y = oy + (p.num() orelse return);
-                sink.arc(@abs(rx), @abs(ry), rot, large, sweep, x, y);
-            },
-            'Z' => {
-                sink.close();
-                x = start_x;
-                y = start_y;
-            },
-            else => return,
-        }
-        last = std.ascii.toUpper(cmd);
-    }
+/// Where the path goes. `ctx` is passed back to every call.
+pub fn Sink(comptime Ctx: type) type {
+    return struct {
+        ctx: Ctx,
+        move: *const fn (Ctx, f64, f64) void,
+        line: *const fn (Ctx, f64, f64) void,
+        cubic: *const fn (Ctx, f64, f64, f64, f64, f64, f64) void,
+        quad: *const fn (Ctx, f64, f64, f64, f64) void,
+        close: *const fn (Ctx) void,
+    };
 }
 
-const Parser = struct {
+const Reader = struct {
     s: []const u8,
     i: usize = 0,
 
-    fn skipSpace(p: *Parser) void {
-        while (p.i < p.s.len and (std.ascii.isWhitespace(p.s[p.i]) or p.s[p.i] == ',')) p.i += 1;
+    fn skipSep(r: *Reader) void {
+        while (r.i < r.s.len) : (r.i += 1) switch (r.s[r.i]) {
+            ' ', '\t', '\n', '\r', ',' => {},
+            else => return,
+        };
     }
 
-    /// A number: "-1.5", ".5", "1e-3"; "1.5.5" is two numbers and "1-2" too.
-    fn num(p: *Parser) ?f32 {
-        p.skipSpace();
-        const start = p.i;
-        if (p.i < p.s.len and (p.s[p.i] == '-' or p.s[p.i] == '+')) p.i += 1;
+    fn atEnd(r: *Reader) bool {
+        r.skipSep();
+        return r.i >= r.s.len;
+    }
+
+    /// The next character starts a number (vs a command letter).
+    fn atNumber(r: *Reader) bool {
+        r.skipSep();
+        if (r.i >= r.s.len) return false;
+        const c = r.s[r.i];
+        return (c >= '0' and c <= '9') or c == '-' or c == '+' or c == '.';
+    }
+
+    fn number(r: *Reader) ?f64 {
+        r.skipSep();
+        const start = r.i;
+        if (r.i < r.s.len and (r.s[r.i] == '-' or r.s[r.i] == '+')) r.i += 1;
         var digits = false;
-        var dot = false;
-        while (p.i < p.s.len) : (p.i += 1) {
-            const c = p.s[p.i];
-            if (std.ascii.isDigit(c)) {
-                digits = true;
-            } else if (c == '.' and !dot) {
-                dot = true;
-            } else break;
+        while (r.i < r.s.len and std.ascii.isDigit(r.s[r.i])) : (r.i += 1) digits = true;
+        if (r.i < r.s.len and r.s[r.i] == '.') {
+            r.i += 1;
+            while (r.i < r.s.len and std.ascii.isDigit(r.s[r.i])) : (r.i += 1) digits = true;
         }
         if (!digits) {
-            p.i = start;
+            r.i = start;
             return null;
         }
-        if (p.i < p.s.len and (p.s[p.i] == 'e' or p.s[p.i] == 'E')) {
-            const save = p.i;
-            p.i += 1;
-            if (p.i < p.s.len and (p.s[p.i] == '-' or p.s[p.i] == '+')) p.i += 1;
-            if (p.i < p.s.len and std.ascii.isDigit(p.s[p.i])) {
-                while (p.i < p.s.len and std.ascii.isDigit(p.s[p.i])) p.i += 1;
-            } else p.i = save;
+        if (r.i < r.s.len and (r.s[r.i] == 'e' or r.s[r.i] == 'E')) {
+            const save = r.i;
+            r.i += 1;
+            if (r.i < r.s.len and (r.s[r.i] == '-' or r.s[r.i] == '+')) r.i += 1;
+            var exp_digits = false;
+            while (r.i < r.s.len and std.ascii.isDigit(r.s[r.i])) : (r.i += 1) exp_digits = true;
+            if (!exp_digits) r.i = save;
         }
-        return std.fmt.parseFloat(f32, p.s[start..p.i]) catch null;
+        const v = std.fmt.parseFloat(f64, r.s[start..r.i]) catch return null;
+        // "1e400" parses as inf: an error, as in a browser (and arcs need finite numbers).
+        return if (std.math.isFinite(v)) v else null;
     }
 
-    /// An arc flag: a single 0 or 1, which may run into the next number
-    /// ("a1 1 0 011 1": large 0, sweep 1, then 1 1).
-    fn flag(p: *Parser) ?bool {
-        p.skipSpace();
-        if (p.i >= p.s.len) return null;
-        const c = p.s[p.i];
+    /// An arc flag: a single 0 or 1, possibly not separated ("a1 1 0 01 2 3").
+    fn flag(r: *Reader) ?bool {
+        r.skipSep();
+        if (r.i >= r.s.len) return null;
+        const c = r.s[r.i];
         if (c != '0' and c != '1') return null;
-        p.i += 1;
+        r.i += 1;
         return c == '1';
     }
 };
 
-const Recorder = struct {
-    out: std.ArrayList(u8) = .empty,
-    a: std.mem.Allocator,
+/// Parse `d` into `sink`. Returns false when the data had an error (what came
+/// before it was still emitted).
+pub fn parse(comptime Ctx: type, d: []const u8, sink: Sink(Ctx)) bool {
+    var r: Reader = .{ .s = d };
+    var cx: f64 = 0; // current point
+    var cy: f64 = 0;
+    var sx: f64 = 0; // subpath start
+    var sy: f64 = 0;
+    // The last control point, for S/s and T/t.
+    var last_cubic: ?[2]f64 = null;
+    var last_quad: ?[2]f64 = null;
+    var cmd: u8 = 0;
+    while (!r.atEnd()) {
+        if (!r.atNumber()) {
+            cmd = r.s[r.i];
+            r.i += 1;
+        } else if (cmd == 0) {
+            return false; // a number before any command
+        }
+        const rel = std.ascii.isLower(cmd);
+        const ox = if (rel) cx else 0;
+        const oy = if (rel) cy else 0;
+        switch (std.ascii.toUpper(cmd)) {
+            'M' => {
+                const x = (r.number() orelse return false) + ox;
+                const y = (r.number() orelse return false) + oy;
+                sink.move(sink.ctx, x, y);
+                cx = x;
+                cy = y;
+                sx = x;
+                sy = y;
+                // Further pairs after a moveto are linetos.
+                cmd = if (rel) 'l' else 'L';
+                last_cubic = null;
+                last_quad = null;
+            },
+            'L' => {
+                const x = (r.number() orelse return false) + ox;
+                const y = (r.number() orelse return false) + oy;
+                sink.line(sink.ctx, x, y);
+                cx = x;
+                cy = y;
+                last_cubic = null;
+                last_quad = null;
+            },
+            'H' => {
+                const x = (r.number() orelse return false) + ox;
+                sink.line(sink.ctx, x, cy);
+                cx = x;
+                last_cubic = null;
+                last_quad = null;
+            },
+            'V' => {
+                const y = (r.number() orelse return false) + oy;
+                sink.line(sink.ctx, cx, y);
+                cy = y;
+                last_cubic = null;
+                last_quad = null;
+            },
+            'C' => {
+                var v: [6]f64 = undefined;
+                for (&v, 0..) |*x, i| x.* = (r.number() orelse return false) + (if (i % 2 == 0) ox else oy);
+                sink.cubic(sink.ctx, v[0], v[1], v[2], v[3], v[4], v[5]);
+                last_cubic = .{ v[2], v[3] };
+                last_quad = null;
+                cx = v[4];
+                cy = v[5];
+            },
+            'S' => {
+                var v: [4]f64 = undefined;
+                for (&v, 0..) |*x, i| x.* = (r.number() orelse return false) + (if (i % 2 == 0) ox else oy);
+                // The first control point mirrors the last one.
+                const c1 = if (last_cubic) |lc| [2]f64{ 2 * cx - lc[0], 2 * cy - lc[1] } else [2]f64{ cx, cy };
+                sink.cubic(sink.ctx, c1[0], c1[1], v[0], v[1], v[2], v[3]);
+                last_cubic = .{ v[0], v[1] };
+                last_quad = null;
+                cx = v[2];
+                cy = v[3];
+            },
+            'Q' => {
+                var v: [4]f64 = undefined;
+                for (&v, 0..) |*x, i| x.* = (r.number() orelse return false) + (if (i % 2 == 0) ox else oy);
+                sink.quad(sink.ctx, v[0], v[1], v[2], v[3]);
+                last_quad = .{ v[0], v[1] };
+                last_cubic = null;
+                cx = v[2];
+                cy = v[3];
+            },
+            'T' => {
+                const x = (r.number() orelse return false) + ox;
+                const y = (r.number() orelse return false) + oy;
+                const c = if (last_quad) |lq| [2]f64{ 2 * cx - lq[0], 2 * cy - lq[1] } else [2]f64{ cx, cy };
+                sink.quad(sink.ctx, c[0], c[1], x, y);
+                last_quad = c;
+                last_cubic = null;
+                cx = x;
+                cy = y;
+            },
+            'A' => {
+                const rx = r.number() orelse return false;
+                const ry = r.number() orelse return false;
+                const rot = r.number() orelse return false;
+                const large = r.flag() orelse return false;
+                const sweep = r.flag() orelse return false;
+                const x = (r.number() orelse return false) + ox;
+                const y = (r.number() orelse return false) + oy;
+                arc(Ctx, sink, cx, cy, rx, ry, rot, large, sweep, x, y);
+                cx = x;
+                cy = y;
+                last_cubic = null;
+                last_quad = null;
+            },
+            'Z' => {
+                sink.close(sink.ctx);
+                cx = sx;
+                cy = sy;
+                last_cubic = null;
+                last_quad = null;
+                // A number after Z without a command is an error; any command may follow.
+                if (r.atNumber()) return false;
+            },
+            else => return false,
+        }
+    }
+    return true;
+}
 
-    fn put(r: *Recorder, comptime fmt: []const u8, args: anytype) void {
-        r.out.print(r.a, fmt, args) catch {};
+/// An elliptical arc from (x1, y1) to (x2, y2) (SVG's endpoint form) as
+/// cubic Béziers of at most a quarter turn each (SVG 1.1, F.6.5 and F.6.6).
+fn arc(comptime Ctx: type, sink: Sink(Ctx), x1: f64, y1: f64, rx_in: f64, ry_in: f64, rot_deg: f64, large: bool, sweep: bool, x2: f64, y2: f64) void {
+    if (x1 == x2 and y1 == y2) return;
+    var rx = @abs(rx_in);
+    var ry = @abs(ry_in);
+    if (rx == 0 or ry == 0) return sink.line(sink.ctx, x2, y2);
+    const phi = rot_deg * std.math.pi / 180.0;
+    const cos_phi = @cos(phi);
+    const sin_phi = @sin(phi);
+    // Step 1: the midpoint in the rotated frame.
+    const dx = (x1 - x2) / 2;
+    const dy = (y1 - y2) / 2;
+    const x1p = cos_phi * dx + sin_phi * dy;
+    const y1p = -sin_phi * dx + cos_phi * dy;
+    // Radii too small: scale them up.
+    const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+    if (lambda > 1) {
+        const s = @sqrt(lambda);
+        rx *= s;
+        ry *= s;
     }
-    fn move(r: *Recorder, x: f32, y: f32) void {
-        r.put("M{d} {d} ", .{ x, y });
+    // Step 2: the center in the rotated frame.
+    const num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+    const den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+    var coef = if (den == 0) 0 else @sqrt(@max(0, num / den));
+    if (large == sweep) coef = -coef;
+    const cxp = coef * rx * y1p / ry;
+    const cyp = -coef * ry * x1p / rx;
+    // Step 3: the center.
+    const ccx = cos_phi * cxp - sin_phi * cyp + (x1 + x2) / 2;
+    const ccy = sin_phi * cxp + cos_phi * cyp + (y1 + y2) / 2;
+    // Step 4: the start angle and the sweep.
+    const theta1 = angle(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+    var dtheta = angle((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry);
+    if (!std.math.isFinite(dtheta) or !std.math.isFinite(theta1)) return sink.line(sink.ctx, x2, y2);
+    if (!sweep and dtheta > 0) dtheta -= 2 * std.math.pi;
+    if (sweep and dtheta < 0) dtheta += 2 * std.math.pi;
+
+    const segments: usize = @max(1, @as(usize, @intFromFloat(@ceil(@abs(dtheta) / (std.math.pi / 2.0) - 1e-9))));
+    const delta = dtheta / @as(f64, @floatFromInt(segments));
+    // Control point distance for a circular arc of `delta`.
+    const t = 4.0 / 3.0 * @tan(delta / 4);
+    var th = theta1;
+    var i: usize = 0;
+    while (i < segments) : (i += 1) {
+        const c0 = @cos(th);
+        const s0 = @sin(th);
+        const c1 = @cos(th + delta);
+        const s1 = @sin(th + delta);
+        // On the unit circle, then scaled, rotated and moved.
+        const p = [_][2]f64{
+            .{ c0 - t * s0, s0 + t * c0 },
+            .{ c1 + t * s1, s1 - t * c1 },
+            .{ c1, s1 },
+        };
+        var out: [3][2]f64 = undefined;
+        for (p, 0..) |q, k| {
+            const ex = q[0] * rx;
+            const ey = q[1] * ry;
+            out[k] = .{ cos_phi * ex - sin_phi * ey + ccx, sin_phi * ex + cos_phi * ey + ccy };
+        }
+        // The last point exactly at the end (no drift).
+        if (i == segments - 1) out[2] = .{ x2, y2 };
+        sink.cubic(sink.ctx, out[0][0], out[0][1], out[1][0], out[1][1], out[2][0], out[2][1]);
+        th += delta;
     }
-    fn line(r: *Recorder, x: f32, y: f32) void {
-        r.put("L{d} {d} ", .{ x, y });
+}
+
+/// The signed angle from vector u to vector v.
+fn angle(ux: f64, uy: f64, vx: f64, vy: f64) f64 {
+    return std.math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+}
+
+// ---------------------------------------------------------------------------
+
+const Rec = struct {
+    out: std.ArrayList(u8) = .empty,
+    fn sink(self: *Rec) Sink(*Rec) {
+        return .{ .ctx = self, .move = move, .line = line, .cubic = cubic, .quad = quad, .close = close };
     }
-    fn cubic(r: *Recorder, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) void {
-        r.put("C{d} {d} {d} {d} {d} {d} ", .{ x1, y1, x2, y2, x, y });
+    fn put(self: *Rec, comptime fmt: []const u8, args: anytype) void {
+        self.out.print(std.testing.allocator, fmt, args) catch unreachable;
     }
-    fn quad(r: *Recorder, x1: f32, y1: f32, x: f32, y: f32) void {
-        r.put("Q{d} {d} {d} {d} ", .{ x1, y1, x, y });
+    fn move(self: *Rec, x: f64, y: f64) void {
+        self.put("M{d:.2},{d:.2} ", .{ x, y });
     }
-    fn arc(r: *Recorder, rx: f32, ry: f32, rot: f32, large: bool, sweep: bool, x: f32, y: f32) void {
-        r.put("A{d} {d} {d} {d} {d} {d} {d} ", .{ rx, ry, rot, @intFromBool(large), @intFromBool(sweep), x, y });
+    fn line(self: *Rec, x: f64, y: f64) void {
+        self.put("L{d:.2},{d:.2} ", .{ x, y });
     }
-    fn close(r: *Recorder) void {
-        r.put("Z ", .{});
+    fn cubic(self: *Rec, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64) void {
+        self.put("C{d:.2},{d:.2},{d:.2},{d:.2},{d:.2},{d:.2} ", .{ a, b, c, d, e, f });
+    }
+    fn quad(self: *Rec, a: f64, b: f64, c: f64, d: f64) void {
+        self.put("Q{d:.2},{d:.2},{d:.2},{d:.2} ", .{ a, b, c, d });
+    }
+    fn close(self: *Rec) void {
+        self.put("Z ", .{});
     }
 };
 
-fn expectPath(d: []const u8, want: []const u8) !void {
-    var r: Recorder = .{ .a = std.testing.allocator };
-    defer r.out.deinit(std.testing.allocator);
-    parse(d, &r);
-    try std.testing.expectEqualStrings(want, std.mem.trimEnd(u8, r.out.items, " "));
+fn expectPath(d: []const u8, want: []const u8, ok: bool) !void {
+    var rec: Rec = .{};
+    defer rec.out.deinit(std.testing.allocator);
+    try std.testing.expectEqual(ok, parse(*Rec, d, rec.sink()));
+    try std.testing.expectEqualStrings(want, std.mem.trimEnd(u8, rec.out.items, " "));
 }
 
-test "absolute and relative commands, implicit linetos" {
-    try expectPath("M10 10 L20 10 L20 20 Z", "M10 10 L20 10 L20 20 Z");
-    try expectPath("m10,10 10,0 0,10z", "M10 10 L20 10 L20 20 Z");
-    try expectPath("M5 5h10v10H5V5", "M5 5 L15 5 L15 15 L5 15 L5 5");
+test "lines, relative commands, implicit repeats" {
+    try expectPath("M10 10 L20 10 h5 v-5 z", "M10.00,10.00 L20.00,10.00 L25.00,10.00 L25.00,5.00 Z", true);
+    // Pairs after a moveto are linetos; relative after a relative moveto.
+    try expectPath("m1 1 2 2 3 3", "M1.00,1.00 L3.00,3.00 L6.00,6.00", true);
+    try expectPath("M0 0L1 1 2 2", "M0.00,0.00 L1.00,1.00 L2.00,2.00", true);
+    // After Z, the current point is the subpath's start.
+    try expectPath("M5 5 l1 0 z l2 2", "M5.00,5.00 L6.00,5.00 Z L7.00,7.00", true);
 }
 
 test "compact numbers" {
-    try expectPath("M1.5.5L-1-2", "M1.5 0.5 L-1 -2");
-    try expectPath("M1e1 2E-1", "M10 0.2");
+    try expectPath("M1.5.5L-1-2", "M1.50,0.50 L-1.00,-2.00", true);
+    try expectPath("M1e1,2E-1", "M10.00,0.20", true);
+    try expectPath("M0,0 L.5,.25", "M0.00,0.00 L0.50,0.25", true);
 }
 
-test "curves: S and T reflect the last control point" {
-    try expectPath("M0 0C1 2 3 4 5 6S9 10 11 12", "M0 0 C1 2 3 4 5 6 C7 8 9 10 11 12");
-    try expectPath("M0 0Q2 2 4 0T8 0", "M0 0 Q2 2 4 0 Q6 -2 8 0");
+test "curves and their reflections" {
+    try expectPath("M0 0 C1 2 3 4 5 6 S9 10 11 12", "M0.00,0.00 C1.00,2.00,3.00,4.00,5.00,6.00 C7.00,8.00,9.00,10.00,11.00,12.00", true);
+    try expectPath("M0 0 Q1 1 2 0 T4 0", "M0.00,0.00 Q1.00,1.00,2.00,0.00 Q3.00,-1.00,4.00,0.00", true);
     // S without a previous C: the first control point is the current point.
-    try expectPath("M1 1S3 3 5 5", "M1 1 C1 1 3 3 5 5");
+    try expectPath("M0 0 S1 1 2 2", "M0.00,0.00 C0.00,0.00,1.00,1.00,2.00,2.00", true);
 }
 
-test "arcs with run-together flags" {
-    try expectPath("M10 10a5 5 0 011 1", "M10 10 A5 5 0 0 1 11 11");
-    try expectPath("M0 0A2,3 45 1,0 4,4", "M0 0 A2 3 45 1 0 4 4");
+test "arcs: compact flags, ends exactly, degenerate radii" {
+    var rec: Rec = .{};
+    defer rec.out.deinit(std.testing.allocator);
+    // A half circle of radius 5 from (0,0) to (10,0): two quarter cubics.
+    try std.testing.expect(parse(*Rec, "M0 0a5 5 0 0110 0", rec.sink()));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, rec.out.items, "C"));
+    try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, rec.out.items, " "), "10.00,0.00"));
+    // Zero radius: a line.
+    try expectPath("M0 0 A0 5 0 0 1 3 4", "M0.00,0.00 L3.00,4.00", true);
+    // Same start and end: nothing.
+    try expectPath("M1 1 A5 5 0 0 1 1 1", "M1.00,1.00", true);
 }
 
-test "close returns to the subpath's start; malformed input stops" {
-    try expectPath("M2 2l3 0zl0 3", "M2 2 L5 2 Z L2 5");
-    try expectPath("M0 0L1", "M0 0");
-    try expectPath("5 5", "");
+test "numbers too large are errors, not infinities" {
+    try expectPath("M0 0A1e400 1 0 0 1 5 5", "M0.00,0.00", false);
+    try expectPath("M0 0L1e999 2", "M0.00,0.00", false);
+    // Radii that overflow on squaring still end the arc at its end point.
+    var rec: Rec = .{};
+    defer rec.out.deinit(std.testing.allocator);
+    try std.testing.expect(parse(*Rec, "M0 0A1e300 1e300 0 0 1 5 5", rec.sink()));
+    try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, rec.out.items, " "), "5.00,5.00"));
+}
+
+test "errors keep what came before" {
+    try expectPath("M0 0 L1 1 X 2 2", "M0.00,0.00 L1.00,1.00", false);
+    try expectPath("10 10", "", false);
+    try expectPath("M0 0 L1", "M0.00,0.00", false);
+    try expectPath("", "", true);
 }

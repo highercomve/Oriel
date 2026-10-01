@@ -1371,6 +1371,28 @@ const PathSink = struct {
     }
 };
 
+/// svg_path's sink (f64; arcs already turned into cubics) onto PathSink.
+const S = struct {
+    fn f(v: f64) f32 {
+        return @floatCast(v);
+    }
+    fn move(ps: *PathSink, x: f64, y: f64) void {
+        ps.move(f(x), f(y));
+    }
+    fn line(ps: *PathSink, x: f64, y: f64) void {
+        ps.line(f(x), f(y));
+    }
+    fn cubic(ps: *PathSink, x1: f64, y1: f64, x2: f64, y2: f64, x: f64, y: f64) void {
+        ps.cubic(f(x1), f(y1), f(x2), f(y2), f(x), f(y));
+    }
+    fn quad(ps: *PathSink, x1: f64, y1: f64, x: f64, y: f64) void {
+        ps.quad(f(x1), f(y1), f(x), f(y));
+    }
+    fn close(ps: *PathSink) void {
+        ps.close();
+    }
+};
+
 fn pathGeometry(d: []const u8, filled: bool, evenodd: bool) ?*c.ID2D1PathGeometry {
     const fac = d2d.?;
     var geo: ?*c.ID2D1PathGeometry = null;
@@ -1383,7 +1405,14 @@ fn pathGeometry(d: []const u8, filled: bool, evenodd: bool) ?*c.ID2D1PathGeometr
     defer releaseCom(sink);
     var ps: PathSink = .{ .sink = sink.?, .filled = filled };
     ps.simple().lpVtbl.*.SetFillMode.?(ps.simple(), if (evenodd) c.D2D1_FILL_MODE_ALTERNATE else c.D2D1_FILL_MODE_WINDING);
-    svg_path.parse(d, &ps);
+    _ = svg_path.parse(*PathSink, d, .{
+        .ctx = &ps,
+        .move = S.move,
+        .line = S.line,
+        .cubic = S.cubic,
+        .quad = S.quad,
+        .close = S.close,
+    });
     ps.end(false);
     if (ps.simple().lpVtbl.*.Close.?(ps.simple()) < 0) {
         releaseCom(geo);

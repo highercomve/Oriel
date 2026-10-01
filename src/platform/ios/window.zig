@@ -20,17 +20,24 @@ const permissions = @import("../../core/permissions.zig");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
+const build_opts = @import("build_options");
+const build_target = @import("../../core/target.zig");
+/// -Dnative_ui: pages drawn with native views instead of WebKit (docs/native-renderer.md).
+const native = if (build_opts.native_ui) @import("../../native_ui/uikit.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
 
 pub const WindowHandle = struct {
     /// The window's view controller (+1).
     controller: apple.id,
-    /// Its WKWebView (+1).
+    /// Its WKWebView (+1); null for a native window.
     webview: apple.id,
     /// Unique per window for the run (a queued copy must not match a new
     /// window at a reused address).
     serial: u64,
+    /// The native renderer's surface (-Dnative_ui, `native_ui/uikit.zig`)
+    /// for a window without a web view, else null.
+    native: ?*anyopaque = null,
 
     pub fn eql(self: WindowHandle, other: WindowHandle) bool {
         return self.serial == other.serial;
@@ -311,8 +318,14 @@ pub fn setWindowSize(handle: WindowHandle, width: c_int, height: c_int) void {
     _ = height;
 }
 
+/// The view showing the page: the web view, or a native window's drawing view.
+fn pageView(handle: WindowHandle) Object {
+    if (comptime build_opts.native_ui) if (handle.native) |p| return @as(*native.Surface, @ptrCast(@alignCast(p))).view;
+    return .{ .value = handle.webview };
+}
+
 fn sizeNow(handle: WindowHandle) WindowSize {
-    const bounds = (Object{ .value = handle.webview }).msgSend(apple.CGRect, "bounds", .{});
+    const bounds = pageView(handle).msgSend(apple.CGRect, "bounds", .{});
     return .{ .width = @intFromFloat(bounds.size.width), .height = @intFromFloat(bounds.size.height) };
 }
 
@@ -445,6 +458,8 @@ pub fn detachFromScene(ui_window: apple.id) void {
 }
 
 fn teardown(handle: WindowHandle) void {
+    if (comptime build_opts.native_ui) if (handle.native) |p| native.destroy(@ptrCast(@alignCast(p)));
+    _ = close_buttons.remove(handle.serial);
     isolation.forget(@intFromPtr(handle.webview));
     const view: Object = .{ .value = handle.webview };
     view.msgSend(void, "setNavigationDelegate:", .{apple.nil});
@@ -527,6 +542,42 @@ const policy_allow: isize = 1;
 const nav_link_activated: isize = 0;
 const nav_form_submitted: isize = 1;
 
+/// A native second window presented full screen (iPhone) has nothing to
+/// close it by: a close button over its top right corner (-Dnative_ui).
+/// The button (borrowed: its container holds it) by window serial.
+var close_buttons: std.AutoHashMapUnmanaged(u64, apple.id) = .empty;
+var close_target: Object = apple.nil;
+
+fn addCloseButton(container: Object, serial: u64) void {
+    if (close_target.value == null) close_target = apple.new(apple.defineClass("OrielCloseTarget", &.{}, .{
+        .{ "closeTapped:", closeTapped },
+    }));
+    const button = apple.class("UIButton").msgSend(Object, "buttonWithType:", .{@as(isize, 7)}); // UIButtonTypeClose
+    if (button.value == null) return;
+    button.msgSend(void, "setTranslatesAutoresizingMaskIntoConstraints:", .{apple.boolean(false)});
+    button.msgSend(void, "addTarget:action:forControlEvents:", .{ close_target, apple.objc.sel("closeTapped:").value, @as(c_ulong, 1 << 6) }); // touch up inside
+    if (apple.nsString("Close")) |l| {
+        defer l.release();
+        button.msgSend(void, "setAccessibilityLabel:", .{l});
+    }
+    container.msgSend(void, "addSubview:", .{button});
+    const guide = container.msgSend(Object, "safeAreaLayoutGuide", .{});
+    const top = button.msgSend(Object, "topAnchor", .{}).msgSend(Object, "constraintEqualToAnchor:constant:", .{ guide.msgSend(Object, "topAnchor", .{}), @as(f64, 8) });
+    const trailing = button.msgSend(Object, "trailingAnchor", .{}).msgSend(Object, "constraintEqualToAnchor:constant:", .{ guide.msgSend(Object, "trailingAnchor", .{}), @as(f64, -12) });
+    top.msgSend(void, "setActive:", .{apple.boolean(true)});
+    trailing.msgSend(void, "setActive:", .{apple.boolean(true)});
+    close_buttons.put(std.heap.smp_allocator, serial, button.value) catch {};
+}
+
+fn closeTapped(_: apple.id, _: apple.c.SEL, sender: apple.id) callconv(.c) void {
+    var it = close_buttons.iterator();
+    while (it.next()) |e| if (e.value_ptr.* == sender) {
+        const win = getWindowBySerial(e.key_ptr.*) orelse return;
+        closeWindow(win.handle);
+        return;
+    };
+}
+
 pub fn WindowCreator(
     comptime api: App.Api,
     comptime config: App.Config,
@@ -582,11 +633,11 @@ pub fn WindowCreator(
         }
 
         pub fn createWindow(options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle {
-            _ = win_inst;
             if (!apple.isMainThread()) return error.NotMainThread;
             const pool = apple.objc.AutoreleasePool.init();
             defer pool.deinit();
             const gpa = std.heap.smp_allocator;
+            if (comptime build_opts.native_ui) return createNativeWindow(options, win_inst);
 
             const wk_config = apple.new(apple.class("WKWebViewConfiguration"));
             defer wk_config.release();
@@ -646,6 +697,57 @@ pub fn WindowCreator(
             });
             applyLayout(state(serial).?);
             return .{ .controller = controller.value, .webview = view.value, .serial = serial };
+        }
+
+        /// -Dnative_ui: the page's HTML, CSS and JS run on the native renderer
+        /// (QuickJS, Yoga, CoreGraphics/CoreText and UIKit fields), no WebKit.
+        /// The page sits in the safe area, as a web view does.
+        fn createNativeWindow(options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle {
+            const gpa = std.heap.smp_allocator;
+            const screen = apple.class("UIScreen").msgSend(Object, "mainScreen", .{}).msgSend(apple.CGRect, "bounds", .{});
+            const surface = try native.create(
+                gpa,
+                config.assets,
+                build_target.platform_json,
+                options.label,
+                options.url orelse "index.html",
+                @floatCast(screen.size.width),
+                @floatCast(screen.size.height),
+                options.transparent,
+                BridgeImpl.nativeInvoke,
+                win_inst,
+            );
+            errdefer native.destroy(surface);
+            const controller = controller_class.?.msgSend(Object, "alloc", .{}).msgSend(Object, "init", .{});
+            if (controller.value == null) return error.CreateWindowFailed;
+            errdefer controller.release();
+            const container = apple.new(apple.class("UIView"));
+            defer container.release();
+            container.msgSend(void, "setBackgroundColor:", .{apple.class("UIColor").msgSend(Object, if (options.transparent) "clearColor" else "systemBackgroundColor", .{})});
+            const view = surface.view;
+            view.msgSend(void, "setTranslatesAutoresizingMaskIntoConstraints:", .{apple.boolean(false)});
+            container.msgSend(void, "addSubview:", .{view});
+            const safe = edgeConstraints(view, container.msgSend(Object, "safeAreaLayoutGuide", .{}));
+            errdefer safe.release();
+            const full = edgeConstraints(view, container);
+            errdefer full.release();
+            controller.msgSend(void, "setView:", .{container});
+            if (apple.nsString(options.title)) |t| {
+                defer t.release();
+                controller.msgSend(void, "setTitle:", .{t});
+            }
+            const serial = next_serial.fetchAdd(1, .monotonic);
+            try states.put(gpa, serial, .{
+                .fullscreen = options.fullscreen,
+                .safe_constraints = safe.value,
+                .full_constraints = full.value,
+            });
+            applyLayout(state(serial).?);
+            // iPhone: a second window is presented over the first, full
+            // screen, with nothing to close it by (iPad gives it a scene).
+            const idiom = apple.class("UIDevice").msgSend(Object, "currentDevice", .{}).msgSend(isize, "userInterfaceIdiom", .{});
+            if (!std.mem.eql(u8, options.label, "main") and idiom != UIUserInterfaceIdiomPad) addCloseButton(container, serial);
+            return .{ .controller = controller.value, .webview = null, .serial = serial, .native = surface };
         }
 
         fn load(view: Object, uri: []const u8) !void {

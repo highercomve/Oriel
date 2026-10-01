@@ -42,6 +42,11 @@ pub const Backend = struct {
     focus: *const fn (ctx: *anyopaque, node: *Node) void,
     /// A node's props changed (optional: backends that mirror them).
     props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
+    /// Optional: call `Engine.frame()` soon (the next display frame). With
+    /// it, the page renders at most once per frame, as a browser does,
+    /// however many events reach it; without it, after every call into
+    /// JavaScript.
+    request_frame: ?*const fn (ctx: *anyopaque) void = null,
 };
 
 var next_serial: std.atomic.Value(u64) = .init(0);
@@ -62,6 +67,8 @@ pub const Engine = struct {
     /// Unique per engine for the process: an answer that outlived its window
     /// tells a new engine at the same address apart from its own.
     serial: u64 = 0,
+    /// A frame was requested (`Backend.request_frame`) and hasn't run yet.
+    frame_pending: bool = false,
 
     pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, width: f32, height: f32) !*Engine {
         const e = try gpa.create(Engine);
@@ -169,9 +176,29 @@ pub const Engine = struct {
         return r == 1;
     }
 
-    /// After JS ran: microtasks, the page's render, layout.
+    /// After JS ran: microtasks, then the page's render and layout, now or
+    /// (`Backend.request_frame`) at the next frame.
     fn settle(e: *Engine) void {
         oqjs_run_jobs(e.js);
+        if (e.booted) if (e.backend.request_frame) |request| {
+            if (!e.frame_pending) {
+                e.frame_pending = true;
+                request(e.backend.ctx);
+            }
+            return;
+        };
+        e.renderNow();
+    }
+
+    /// A frame (`Backend.request_frame`): render what changed since the last.
+    pub fn frame(e: *Engine) void {
+        if (!e.frame_pending) return;
+        e.frame_pending = false;
+        if (e.in_call > 0) return; // inside the page: its call settles
+        e.renderNow();
+    }
+
+    fn renderNow(e: *Engine) void {
         const render = "__oriel.render()";
         e.in_call += 1;
         _ = oqjs_eval(e.js, render, render.len, "<render>");
@@ -278,4 +305,9 @@ export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64) void {
     n.scroll_y = @floatCast(y);
     e.tree.replace();
     e.backend.laid_out(e.backend.ctx);
+}
+
+test {
+    // Pure Zig, used by the Apple backends (apple_draw.zig): tested everywhere.
+    _ = @import("svg_path.zig");
 }
