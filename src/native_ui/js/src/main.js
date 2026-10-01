@@ -9,7 +9,7 @@
 //   evalScript(name, code)      run a page script at the top level
 //   evalModule(name, code)      run a module script (imports load from the assets) → promise
 //   focus(id), scrollIntoView(id, block), scrollTo(id, y)
-//   platform (JSON), label (the window's label)
+//   platform (JSON), label (the window's label), url (the window's URL)
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
 
@@ -201,8 +201,14 @@ Object.defineProperty(document, "activeElement", { get() { return this.__active 
 // ---------------------------------------------------------------------------
 // location, history, matchMedia, storage, navigator
 
-let hash = "";
-let search = "";
+// The window's own URL ("index.html#/settings", "index.html?second=1"): its
+// query and fragment, as a WebView window loading that URL would see them.
+const startUrl = String(host.url || "");
+const hashAt = startUrl.indexOf("#");
+let hash = hashAt >= 0 ? startUrl.slice(hashAt) : "";
+const beforeHash = hashAt >= 0 ? startUrl.slice(0, hashAt) : startUrl;
+let search = beforeHash.indexOf("?") >= 0 ? beforeHash.slice(beforeHash.indexOf("?")) : "";
+if (hash === "#") hash = "";
 const fireHash = () => setTimeout(() => fireWindow(new Event("hashchange")), 0);
 g.location = {
   get hash() { return hash; },

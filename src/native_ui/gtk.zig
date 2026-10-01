@@ -182,7 +182,7 @@ pub const Surface = struct {
         return s.overlay;
     }
 
-    pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, width: f32, height: f32, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
+    pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, width: f32, height: f32, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
         const s = try gpa.create(Surface);
         errdefer gpa.destroy(s);
         const overlay = gtk_overlay_new();
@@ -210,7 +210,7 @@ pub const Surface = struct {
             .add_timer = addTimer,
             .invoke = invoke,
             .focus = focus,
-        }, assets, platform_json, label, width, height);
+        }, assets, platform_json, label, url, width, height);
 
         gtk_drawing_area_set_draw_func(area, draw, s, null);
         _ = g_signal_connect_data(@ptrCast(area), "resize", @ptrCast(&onResize), s, null, 0);

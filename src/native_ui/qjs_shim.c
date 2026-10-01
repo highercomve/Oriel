@@ -320,7 +320,7 @@ static void set_fn(JSContext *ctx, JSValue obj, const char *name, JSCFunction *f
     JS_SetPropertyStr(ctx, obj, name, JS_NewCFunction(ctx, fn, name, len));
 }
 
-void *oqjs_new(void *opaque, const char *platform_json, const char *label) {
+void *oqjs_new(void *opaque, const char *platform_json, const char *label, const char *url) {
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) return NULL;
     JSContext *ctx = JS_NewContext(rt);
@@ -348,6 +348,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label) {
     set_fn(ctx, host, "evalModule", h_eval_module, 2);
     JS_SetPropertyStr(ctx, host, "platform", JS_NewString(ctx, platform_json));
     JS_SetPropertyStr(ctx, host, "label", JS_NewString(ctx, label));
+    JS_SetPropertyStr(ctx, host, "url", JS_NewString(ctx, url));
     JS_SetPropertyStr(ctx, global, "__host", host);
     JS_FreeValue(ctx, global);
     return self;
