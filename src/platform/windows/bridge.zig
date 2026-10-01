@@ -48,12 +48,14 @@ const NativeEngines = struct {
 
 /// The engine still belongs to an open window (a reply or event for a
 /// window that closed meanwhile is dropped, not run on a freed engine).
-pub fn nativeEngineAlive(e: *native.Engine) bool {
+/// `serial` tells a new engine at a reused address apart; `e` is only
+/// read once it's known to be some open window's engine.
+pub fn nativeEngineAlive(e: *native.Engine, serial: u64) bool {
     if (comptime !build_opts.native_ui) return false;
     App.ensureWindowsMutex();
     App.windows_mutex.lock();
     defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |win| if (win.handle.native == @as(?*anyopaque, @ptrCast(e))) return true;
+    for (App.windows_list.items) |win| if (win.handle.native == @as(?*anyopaque, @ptrCast(e))) return e.serial == serial;
     return false;
 }
 
@@ -314,21 +316,27 @@ pub fn Bridge(
         /// commands are: a command that pumps messages must not nest inside
         /// the page's JavaScript), and answers only engines still open.
         pub fn nativeInvoke(_: ?*anyopaque, engine: *native.Engine, call_id: u32, cmd: []const u8, args_json: []const u8) void {
+            if (comptime !build_opts.native_ui) return;
             const gpa = std.heap.smp_allocator;
-            const call = gpa.create(NativeCall) catch return;
-            call.* = .{ .engine = engine, .call_id = call_id, .cmd = gpa.dupe(u8, cmd) catch {
-                gpa.destroy(call);
+            const cmd_copy = gpa.dupe(u8, cmd) catch return;
+            const args_copy = gpa.dupe(u8, args_json) catch {
+                gpa.free(cmd_copy);
                 return;
-            }, .args = gpa.dupe(u8, args_json) catch {
-                gpa.free(call.cmd);
-                gpa.destroy(call);
+            };
+            const call = gpa.create(NativeCall) catch {
+                gpa.free(cmd_copy);
+                gpa.free(args_copy);
                 return;
-            } };
+            };
+            call.* = .{ .engine = engine, .serial = engine.serial, .call_id = call_id, .cmd = cmd_copy, .args = args_copy };
             ShellMod.dispatchWithCleanup(&NativeCall.run, call, &NativeCall.cleanup);
         }
 
         const NativeCall = struct {
             engine: *native.Engine,
+            /// `engine.serial` when the call was made: a new engine at the
+            /// same address (its window closed, another opened) isn't this one.
+            serial: u64,
             call_id: u32,
             cmd: []u8,
             args: []u8,
@@ -356,6 +364,9 @@ pub fn Bridge(
                 var label: ?[]const u8 = null;
                 var url: ?[]const u8 = null;
                 for (App.windows_list.items) |win| if (win.handle.native == @as(?*anyopaque, @ptrCast(self.engine))) {
+                    // Another window's engine at the same address: not ours
+                    // (its label would grant the wrong window's commands).
+                    if (self.engine.serial != self.serial) break;
                     label = arena.dupe(u8, win.label) catch null;
                     url = if (win.options.url) |u| arena.dupe(u8, u) catch null else null;
                     break;
@@ -381,7 +392,7 @@ pub fn Bridge(
                     const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
                     const req_json = std.fmt.allocPrint(arena, "{{\"cmd\":{f},\"args\":{s}}}", .{ std.json.fmt(self.cmd, .{}), if (self.args.len > 0) self.args else "null" }) catch break :blk error.OutOfMemory;
                     const job = gpa.create(NativeReply) catch break :blk error.OutOfMemory;
-                    job.* = .{ .engine = self.engine, .call_id = self.call_id };
+                    job.* = .{ .engine = self.engine, .serial = self.serial, .call_id = self.call_id };
                     ipc.dispatchAsync(api.commands, worker_pool, gpa, req_json, worker_pool.io, job, NativeReply.onWorkerDone) catch |err| {
                         gpa.destroy(job);
                         break :blk err;
@@ -389,7 +400,7 @@ pub fn Bridge(
                     return;
                 };
                 // A sync command may have closed the window.
-                if (!nativeEngineAlive(self.engine)) return;
+                if (!nativeEngineAlive(self.engine, self.serial)) return;
                 if (result) |json| self.engine.resolve(self.call_id, true, json) else |err| self.engine.resolve(self.call_id, false, ipc.errorText(err));
             }
         };
@@ -397,6 +408,7 @@ pub fn Bridge(
         /// An async command's answer, from a worker to the message loop.
         const NativeReply = struct {
             engine: *native.Engine,
+            serial: u64,
             call_id: u32,
             ok: bool = true,
             text: []u8 = &.{},
@@ -424,7 +436,7 @@ pub fn Bridge(
                 const self: *NativeReply = @ptrCast(@alignCast(ctx));
                 defer discard(ctx);
                 // The window may have closed while the command ran.
-                if (!nativeEngineAlive(self.engine)) return;
+                if (!nativeEngineAlive(self.engine, self.serial)) return;
                 self.engine.resolve(self.call_id, self.ok, self.text);
             }
         };

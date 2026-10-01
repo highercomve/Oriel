@@ -109,7 +109,6 @@ pub const Surface = struct {
         const hinst = c.GetModuleHandleW(null);
         s.hwnd = c.CreateWindowExW(0, class_name, null, c.WS_CHILD | c.WS_VISIBLE | c.WS_CLIPCHILDREN, 0, 0, rc.right - rc.left, rc.bottom - rc.top, hparent, null, hinst, null) orelse return error.CreateWindowFailed;
         errdefer _ = c.DestroyWindow(s.hwnd);
-        _ = c.SetWindowLongPtrW(s.hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(s)));
         const w: f32 = @as(f32, @floatFromInt(rc.right - rc.left)) / s.scale;
         const h: f32 = @as(f32, @floatFromInt(rc.bottom - rc.top)) / s.scale;
         s.engine = try Engine.create(gpa, .{
@@ -121,6 +120,9 @@ pub const Surface = struct {
             .invoke = invoke,
             .focus = focus,
         }, assets, platform_json, label, url, w, h);
+        // Only now may the canvas reach the surface: before, `s.engine` is
+        // undefined (and on failure the canvas goes away without it).
+        _ = c.SetWindowLongPtrW(s.hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(s)));
         s.engine.boot(s.dark, false);
         return s;
     }
@@ -198,6 +200,13 @@ pub const Surface = struct {
 fn toHandle(comptime T: type, v: usize) T {
     const bits = v;
     return @as(*const T, @ptrCast(&bits)).*;
+}
+
+/// A length in device pixels: rounded, NaN and infinities (a layout gone
+/// wrong) as 0, clamped to what a window can hold. @intFromFloat would panic.
+fn px(v: f32) c_int {
+    if (!std.math.isFinite(v)) return 0;
+    return @intFromFloat(std.math.clamp(@round(v), -1e6, 1e6));
 }
 
 fn dpiScale(hwnd: c.HWND) f32 {
@@ -398,10 +407,10 @@ fn fieldRegion(s: *Surface, po: *const PaintOrder, n: *Node, r: Rect) c.HRGN {
     const local = struct {
         fn rgn(sc: f32, base: Rect, a: Rect) c.HRGN {
             return c.CreateRectRgn(
-                @intFromFloat(@round((a.x - base.x) * sc)),
-                @intFromFloat(@round((a.y - base.y) * sc)),
-                @intFromFloat(@round((a.x + a.w - base.x) * sc)),
-                @intFromFloat(@round((a.y + a.h - base.y) * sc)),
+                px((a.x - base.x) * sc),
+                px((a.y - base.y) * sc),
+                px((a.x + a.w - base.x) * sc),
+                px((a.y + a.h - base.y) * sc),
             );
         }
     }.rgn;
@@ -445,12 +454,12 @@ fn syncFields(s: *Surface) void {
         const r = n.content();
         const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
         if (visible) {
-            const x: c_int = @intFromFloat(@round(r.x * s.scale));
-            const y: c_int = @intFromFloat(@round(r.y * s.scale));
-            const w: c_int = @max(1, @as(c_int, @intFromFloat(@round(r.w * s.scale))));
-            var h: c_int = @max(1, @as(c_int, @intFromFloat(@round(r.h * s.scale))));
+            const x = px(r.x * s.scale);
+            const y = px(r.y * s.scale);
+            const w: c_int = @max(1, px(r.w * s.scale));
+            var h: c_int = @max(1, px(r.h * s.scale));
             // A combobox's height includes its drop-down list.
-            if (f.kind == .select) h += @intFromFloat(200 * s.scale);
+            if (f.kind == .select) h += px(200 * s.scale);
             _ = c.SetWindowPos(f.hwnd, null, x, y, w, h, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_SHOWWINDOW);
             const rgn = fieldRegion(s, &po, n, r);
             if (rgn != null or f.clipped) {
@@ -548,15 +557,15 @@ fn backgroundUnder(s: *Surface, n: *Node) c.COLORREF {
 }
 
 fn styleField(s: *Surface, f: *Field, n: *Node) void {
-    const px: c_int = @intFromFloat(@round((n.props.fz orelse 16) * s.scale));
-    if (px != f.font_px) {
+    const size = px((n.props.fz orelse 16) * s.scale);
+    if (size != f.font_px) {
         const face = std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI");
-        const font = c.CreateFontW(-px, 0, 0, 0, c.FW_NORMAL, 0, 0, 0, c.DEFAULT_CHARSET, c.OUT_DEFAULT_PRECIS, c.CLIP_DEFAULT_PRECIS, c.CLEARTYPE_QUALITY, c.DEFAULT_PITCH, face);
+        const font = c.CreateFontW(-size, 0, 0, 0, c.FW_NORMAL, 0, 0, 0, c.DEFAULT_CHARSET, c.OUT_DEFAULT_PRECIS, c.CLIP_DEFAULT_PRECIS, c.CLEARTYPE_QUALITY, c.DEFAULT_PITCH, face);
         if (font != null) {
             _ = c.SendMessageW(f.hwnd, c.WM_SETFONT, @intFromPtr(font), c.TRUE);
             if (f.font) |old| _ = c.DeleteObject(old);
             f.font = font;
-            f.font_px = px;
+            f.font_px = size;
         }
     }
     const fg = colorRef(n.props.col orelse .{ 0, 0, 0, 1 });
@@ -596,7 +605,11 @@ fn fieldText(s: *Surface, hwnd: c.HWND) ?[]u8 {
         out.deinit(s.gpa);
         return null;
     };
-    return out.toOwnedSlice(s.gpa) catch null;
+    // On failure the list still owns its buffer.
+    return out.toOwnedSlice(s.gpa) catch {
+        out.deinit(s.gpa);
+        return null;
+    };
 }
 
 fn onFieldCommand(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
@@ -628,12 +641,19 @@ fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
             if (p) |sp| {
                 const s = surfaceOf(sp);
                 if (fieldOf(s, hwnd)) |fx| {
+                    // Copied before the page runs: its handler may remove
+                    // this field (a submitted form re-rendered), freeing the
+                    // map entry and destroying this very window.
+                    const id = fx.node.id;
+                    const single_line = fx.field.kind == .input;
                     const name = if (wparam == c.VK_RETURN) "Enter" else "Escape";
                     var buf: [48]u8 = undefined;
                     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d}]", .{ name, modFlags() }) catch "";
-                    const prevented = s.engine.event(fx.node.id, "key", json);
+                    const prevented = s.engine.event(id, "key", json);
+                    // Gone: nothing left to hand the key to.
+                    if (c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null) return 0;
                     // A single-line field has no use for Enter (it would beep).
-                    if (prevented or fx.field.kind == .input) return 0;
+                    if (prevented or single_line) return 0;
                 }
             }
         },
@@ -757,6 +777,8 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         c.WM_ERASEBKGND => return 1,
         c.WM_TIMER => {
             _ = c.KillTimer(hwnd, wparam);
+            // Ours are the page's ids + 1 (addTimer): nothing else is.
+            if (wparam == 0 or wparam > std.math.maxInt(u32) + 1) return 0;
             s.engine.timerFired(@intCast(wparam - 1));
             return 0;
         },
