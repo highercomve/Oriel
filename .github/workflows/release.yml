@@ -91,9 +91,27 @@ jobs:
           Copy-Item zig-out/bin/oriel.exe "$rel/oriel-x86_64-windows.exe"
           $hash = (Get-FileHash -Algorithm SHA256 "$rel/oriel-x86_64-windows.exe").Hash.ToLowerInvariant()
           Set-Content -Path "$rel/SHA256SUMS" -Value "$hash  oriel-x86_64-windows.exe"
-          $server = Start-Process python -ArgumentList '-m','http.server','18766','--bind','127.0.0.1','--directory','mirror' -PassThru
+          $servererr = Join-Path $PWD cli-python.err
+          $serverout = Join-Path $PWD cli-python.out
+          $server = Start-Process python -ArgumentList '-m','http.server','18766','--bind','127.0.0.1','--directory','mirror' -PassThru -RedirectStandardError $servererr -RedirectStandardOutput $serverout
           Start-Sleep -Seconds 2
+          $pyInfo = Get-Content $serverout -ErrorAction SilentlyContinue; $pyInfo += Get-Content $servererr -ErrorAction SilentlyContinue
+          Write-Output "python server: $($pyInfo -join '; ')"
           try {
+            # Wait for the local mirror to answer (the old fixed 2 s sleep
+            # raced the server's startup on slower images).
+            $url = 'http://127.0.0.1:18766/download/v0.0.0-ci/oriel-x86_64-windows.exe'
+            $ready = $false
+            for ($i = 0; $i -lt 10; $i++) {
+              try {
+                $probe = Invoke-WebRequest $url -Method Head -UseBasicParsing
+                if ($probe.StatusCode -eq 200) { $ready = $true; break }
+              } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ready) {
+              Write-Output ("python errored: " + (Get-Content $servererr -ErrorAction SilentlyContinue))
+              throw "the local mirror never answered $url"
+            }
             $env:ORIEL_RELEASES_URL = 'http://127.0.0.1:18766'
             $env:ORIEL_VERSION = 'v0.0.0-ci'
             $env:ORIEL_INSTALL_DIR = "$PWD/ci-install"
@@ -101,7 +119,7 @@ jobs:
             ./install.ps1 # again, over the installed exe
             & "$PWD/ci-install/oriel.exe" --version
           } finally {
-            Stop-Process -Id $server.Id
+            if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id }
           }
 
   release:
