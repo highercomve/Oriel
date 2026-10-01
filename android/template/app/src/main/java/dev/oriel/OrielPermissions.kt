@@ -45,7 +45,8 @@ internal object OrielPermissions {
     fun status(kind: Int): Int {
         return when (kind) {
             SCREEN_CAPTURE, SYSTEM_AUDIO -> PROMPT // MediaProjection asks every session
-            ACCESSIBILITY -> if (accessibilityEnabled()) GRANTED else PROMPT
+            // Only an app with an accessibility service has something to enable.
+            ACCESSIBILITY -> if (!hasAccessibilityService()) DENIED else if (accessibilityEnabled()) GRANTED else PROMPT
             NOTIFICATIONS -> if (Build.VERSION.SDK_INT < 33) {
                 if (OrielRuntime.notificationsEnabled()) GRANTED else DENIED
             } else runtimeStatus(kind)
@@ -68,8 +69,17 @@ internal object OrielPermissions {
         return am.getEnabledAccessibilityServiceList(-1).any { it.resolveInfo.serviceInfo.packageName == OrielRuntime.app.packageName }
     }
 
+    /** Whether the app declares an AccessibilityService. */
+    private fun hasAccessibilityService(): Boolean {
+        val app = OrielRuntime.app
+        val intent = Intent("android.accessibilityservice.AccessibilityService").setPackage(app.packageName)
+        return app.packageManager.queryIntentServices(intent, 0).isNotEmpty()
+    }
+
     /** Show the system prompt; the answer goes to NativeLib.onPermissionResult. */
     fun request(kind: Int): Boolean {
+        // Without a service the settings page has nothing of the app's to turn on.
+        if (kind == ACCESSIBILITY && !hasAccessibilityService()) return false
         if (kind == ACCESSIBILITY) return openSettings(kind).also { if (it) NativeLib.onPermissionResult(kind, status(kind)) }
         val p = permission(kind) ?: return false
         val host = OrielRuntime.foreground ?: return false
