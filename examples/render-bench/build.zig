@@ -1,0 +1,35 @@
+const std = @import("std");
+const oriel = @import("oriel");
+
+/// Render speed of the two renderers on one page: `zig build` (WebView) and
+/// `zig build -Dnative_ui` (native widgets). See README.md.
+pub fn build(b: *std.Build) void {
+    const target = oriel.resolveTarget(b, b.standardTargetOptions(.{}));
+    const optimize = b.standardOptimizeOption(.{});
+    const dep = b.dependency("oriel", .{
+        .target = target,
+        .optimize = optimize,
+        .native_ui = b.option(bool, "native_ui", "Draw the page with native widgets instead of a WebView (experimental)") orelse false,
+    });
+    _ = oriel.addApp(b, dep, .{
+        .name = "oriel-render-bench",
+        .root_source_file = b.path("main.zig"),
+        // A static page: no npm, no dev server, embedded as-is.
+        .frontend = .{
+            .dir = "web",
+            .dist = ".",
+            .build_command = null,
+            .install_command = null,
+            .dev = null,
+            .types_path = null,
+        },
+        .package = .{
+            .id = "dev.oriel.RenderBench",
+            .name = "Oriel Render Bench",
+            .summary = "WebView vs native renderer speed",
+            .description = "Times building, updating and animating DOM content in Oriel's WebView and native renderers.",
+            .categories = "Development;",
+            .version = "0.1.0",
+        },
+    });
+}
