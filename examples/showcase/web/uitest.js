@@ -47,31 +47,35 @@
 
     // A long answer, to see it stream and stop it. The simulator runs on
     // the Mac's CPU, fast enough to finish a whole answer in a second or
-    // two, so everything is measured from the token events themselves: the
-    // bubble's length after the 3rd and the 12th token, then Stop. Counting
-    // is long and never refused (a 0.5B model sometimes declines a story);
-    // an answer that still ends before 12 tokens is asked again.
-    let tokens = 0, len3 = 0, len12 = 0;
+    // two, and token events reach the page in bursts, so everything is
+    // measured from the token events themselves: the bubble's length after
+    // the 3rd and the 8th token, then Stop. Counting is long and never
+    // refused (a 0.5B model sometimes declines a story), but it may still
+    // shorten it ("1 … 200") and finish before Stop arrives: then ask again.
+    let tokens = 0, len3 = 0, len8 = 0;
     const bubbleText = () => { const b = $("chat-log").querySelectorAll(".bubble"); return b[b.length - 1].querySelector("p").textContent; };
     const meta = () => { const s = $("chat-log").querySelectorAll(".bubble small"); return s.length ? s[s.length - 1].textContent : ""; };
     const offTok = listen("chat:token", () => {
       tokens += 1; // after the page's own listener, which appended the token
       if (tokens === 3) len3 = bubbleText().length;
-      if (tokens === 12) { len12 = bubbleText().length; $("chat-send").click(); } // Stop while busy
+      if (tokens === 8) { len8 = bubbleText().length; $("chat-send").click(); } // Stop while busy
     });
     for (let attempt = 1; ; attempt++) {
-      tokens = 0; len3 = 0; len12 = 0;
+      // A fresh conversation each time: asked again in the same one, the
+      // model copies its earlier short answers (run 49: 29, 5, then 1 token).
+      if (attempt > 1) $("chat-new").click();
+      tokens = 0; len3 = 0; len8 = 0;
       $("chat-input").value = "Count from 1 to 200, one number per line.";
       $("chat-form").requestSubmit();
       const t0 = Date.now();
       await until(() => tokens >= 1, 5 * 60000, "the first token");
       await log(`first token after ${Date.now() - t0} ms`);
       await until(() => !chatState.busy, 5 * 60000, "the reply to end");
-      if (tokens >= 12 || attempt === 3) break;
-      await log(`the answer ended after ${tokens} tokens ("${bubbleText().slice(0, 80)}"): asking again`);
+      if (/stopped/.test(meta()) || attempt === 4) break;
+      await log(`attempt ${attempt}: the answer ended on its own after ${tokens} tokens (${meta()}): asking again`);
     }
-    await log(`streaming: the bubble had ${len3} characters after 3 tokens, ${len12} after 12; ${tokens} tokens in all`);
-    check(len12 > len3 && len3 > 0, "the reply didn't grow while streaming");
+    await log(`streaming: the bubble had ${len3} characters after 3 tokens, ${len8} after 8; ${tokens} tokens reached the page`);
+    check(len8 > len3 && len3 > 0, "the reply didn't grow while streaming");
     await log(`stopped: ${meta()}`);
     check(/stopped/.test(meta()), "the stopped reply doesn't say it was stopped");
     await shot("chat-stopped");
