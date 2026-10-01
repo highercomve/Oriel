@@ -301,8 +301,17 @@ pub const Tree = struct {
     }
 
     fn setProps(t: *Tree, n: *Node, value: std.json.Value) !void {
+        // A value the backend hasn't taken yet lives in the arena reset
+        // below: keep a copy, or it would point into reused memory when the
+        // new props carry no `val` (fields send it only when it changed).
+        const unconsumed: ?[]u8 = if (n.pending_value) |v| try t.gpa.dupe(u8, v) else null;
+        defer if (unconsumed) |u| t.gpa.free(u);
+        n.pending_value = null;
         // Keep a little for the next props, not an old <img> data: URI's megabytes.
         _ = n.arena.reset(.{ .retain_with_limit = 64 * 1024 });
+        // The old props' slices are gone with the reset: if copying the new
+        // ones fails, the node must not keep pointing into the arena.
+        n.props = .{};
         const a = n.arena.allocator();
         // Copy the JSON value into the node's arena (the ops arena goes away).
         const copy = try cloneValue(a, value);
@@ -310,7 +319,11 @@ pub const Tree = struct {
             log.warn("node {d}: bad props ({s})", .{ n.id, @errorName(err) });
             break :blk .{};
         };
-        if (n.props.val) |v| n.pending_value = v;
+        if (n.props.val) |v| {
+            n.pending_value = v;
+        } else if (unconsumed) |u| {
+            n.pending_value = try a.dupe(u8, u);
+        }
         styleYoga(n);
         if (t.on_props) |cb| cb(t.measure_ctx, n, copy);
         if (yg.YGNodeHasMeasureFunc(n.yn)) yg.YGNodeMarkDirty(n.yn);
@@ -606,4 +619,24 @@ test "idOf: JS numbers to node ids" {
     try std.testing.expectEqual(none, Tree.idOf(-std.math.inf(f64)));
     try std.testing.expectEqual(none, Tree.idOf(1e300));
     try std.testing.expectEqual(none, Tree.idOf(-1e300));
+}
+
+test "a field's value set by the page survives props that don't repeat it" {
+    // Yoga is linked only with -Dnative_ui.
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const Dummy = struct {
+        fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 10, 10 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, Dummy.measure);
+    defer t.deinit();
+    try t.apply("[[\"c\",1,\"input\"],[\"p\",1,{\"val\":\"typed by the page\"}]]");
+    // Before the backend took it: new props without `val` (fields send it
+    // only when it changed) reset the node's arena.
+    try t.apply("[[\"p\",1,{\"ph\":\"a placeholder that reuses the arena's memory\"}]]");
+    const n = t.get(1).?;
+    try std.testing.expectEqualStrings("typed by the page", n.pending_value.?);
+    try std.testing.expectEqualStrings("a placeholder that reuses the arena's memory", n.props.ph.?);
 }
