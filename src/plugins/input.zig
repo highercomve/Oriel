@@ -3,6 +3,7 @@
 //! Linux backend: zwp_virtual_keyboard_v1 (Wayland) + XTest (X11).
 //! Windows backend: Win32 SendInput.
 //! macOS backend: CGEvent (needs the Accessibility permission).
+//! Android: a stub (apps can't type into other apps).
 
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
@@ -12,7 +13,10 @@ pub const impl = switch (target.os) {
     .linux => @import("input/linux.zig"),
     .windows => @import("input/windows.zig"),
     .macos => @import("input/macos.zig"),
-    .android => @compileError("input is not available on Android: apps cannot type into other apps (use an input method: see docs/android.md)"),
+    // Apps can't type into other apps: a stub with the same API (every call
+    // fails, `check` says so), so the same app source builds (Android: use
+    // an input method, see docs/android.md).
+    .android => @import("input/android.zig"),
     .ios => @compileError("input is not available on iOS: apps cannot type into other apps"),
     .other => @compileError("input is not supported on " ++ target.name),
 };

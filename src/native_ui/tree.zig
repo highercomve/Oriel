@@ -255,10 +255,18 @@ pub const Tree = struct {
         t.dirty = true;
     }
 
+    /// A node id from a JS number: NaN, infinities and values outside i64
+    /// (which @intFromFloat would panic on) name no node (render.js counts
+    /// up from 1, with 0 and -1 for the window's nodes).
+    pub fn idOf(x: f64) i64 {
+        if (!std.math.isFinite(x) or x <= -0x1p63 or x >= 0x1p63) return std.math.minInt(i64);
+        return @intFromFloat(x);
+    }
+
     fn num(v: std.json.Value) i64 {
         return switch (v) {
             .integer => |i| i,
-            .float => |x| @intFromFloat(x),
+            .float => |x| idOf(x),
             else => 0,
         };
     }
@@ -293,7 +301,8 @@ pub const Tree = struct {
     }
 
     fn setProps(t: *Tree, n: *Node, value: std.json.Value) !void {
-        _ = n.arena.reset(.retain_capacity);
+        // Keep a little for the next props, not an old <img> data: URI's megabytes.
+        _ = n.arena.reset(.{ .retain_with_limit = 64 * 1024 });
         const a = n.arena.allocator();
         // Copy the JSON value into the node's arena (the ops arena goes away).
         const copy = try cloneValue(a, value);
@@ -355,12 +364,25 @@ pub const Tree = struct {
         if (p.scroll or p.clip) child_clip = clip.intersect(n.frame);
         if (p.scroll) {
             var bottom: f32 = 0;
-            for (n.kids.items) |k| bottom = @max(bottom, yg.YGNodeLayoutGetTop(k.yn) + yg.YGNodeLayoutGetHeight(k.yn) + yg.YGNodeLayoutGetMargin(k.yn, yg.YGEdgeBottom));
+            for (n.kids.items) |k| bottom = @max(bottom, overflowBottom(k, 0));
             n.content_h = bottom + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeBottom);
             n.scroll_y = std.math.clamp(n.scroll_y, 0, @max(0, n.content_h - n.frame.h));
         }
         const sy = if (p.scroll) n.scroll_y else 0;
         for (n.kids.items) |k| place(k, n.frame.x, n.frame.y - sy, child_clip);
+    }
+
+    /// How far down a node's box reaches, with what overflows it (CSS's
+    /// scrollable overflow): a page whose body is `height: 100%` still
+    /// scrolls its taller content. A box that clips or scrolls keeps its
+    /// own overflow. `top`: the parent's top in the scroll container.
+    fn overflowBottom(k: *Node, top: f32) f32 {
+        const y = top + yg.YGNodeLayoutGetTop(k.yn);
+        var bottom = y + yg.YGNodeLayoutGetHeight(k.yn) + yg.YGNodeLayoutGetMargin(k.yn, yg.YGEdgeBottom);
+        if (!k.props.scroll and !k.props.clip) {
+            for (k.kids.items) |c| bottom = @max(bottom, overflowBottom(c, y));
+        }
+        return bottom;
     }
 
     /// Debugging (ORIEL_NUI_DUMP=1): the laid-out tree on stderr.
@@ -572,4 +594,16 @@ fn alignOf(s: ?[]const u8, default: yg.YGAlign) yg.YGAlign {
     if (std.mem.eql(u8, v, "space-around")) return yg.YGAlignSpaceAround;
     if (std.mem.eql(u8, v, "auto")) return yg.YGAlignAuto;
     return default;
+}
+
+test "idOf: JS numbers to node ids" {
+    try std.testing.expectEqual(@as(i64, 42), Tree.idOf(42));
+    try std.testing.expectEqual(@as(i64, -1), Tree.idOf(-1));
+    try std.testing.expectEqual(@as(i64, 0), Tree.idOf(0));
+    const none = std.math.minInt(i64);
+    try std.testing.expectEqual(none, Tree.idOf(std.math.nan(f64)));
+    try std.testing.expectEqual(none, Tree.idOf(std.math.inf(f64)));
+    try std.testing.expectEqual(none, Tree.idOf(-std.math.inf(f64)));
+    try std.testing.expectEqual(none, Tree.idOf(1e300));
+    try std.testing.expectEqual(none, Tree.idOf(-1e300));
 }
