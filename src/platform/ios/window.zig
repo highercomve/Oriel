@@ -170,7 +170,8 @@ fn freeOp(op: Op) void {
 }
 
 fn query(comptime T: type, handle: WindowHandle, comptime get: fn (WindowHandle) T, fallback: T) T {
-    if (apple.isMainThread()) return get(handle);
+    // A stale handle (its window closed) must not reach freed state.
+    if (apple.isMainThread()) return if (App.getWindowByHandle(handle) != null) get(handle) else fallback;
     const Ctx = struct {
         handle: WindowHandle,
         result: T,
