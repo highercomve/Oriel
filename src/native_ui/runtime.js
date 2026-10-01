@@ -13366,6 +13366,17 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         }
         return this.put(nodes, id, "icon", props, [], fixedNode);
       }
+      if (tag === "img") {
+        const src = el.getAttribute("src") || "";
+        if (!src) return null;
+        props.src = src.startsWith("data:") ? src : src.replace(/^(app:\/\/[^/]*)?\.?\//, "");
+        if (cs["object-fit"] && cs["object-fit"] !== "fill") props.fit = cs["object-fit"];
+        for (const [k, a] of [["w", "width"], ["h", "height"]]) {
+          const v = el.getAttribute(a);
+          if (props[k] === void 0 && v && /^[\d.]+(px)?$/.test(v.trim())) props[k] = parseFloat(v);
+        }
+        return this.put(nodes, id, "image", props, [], fixedNode);
+      }
       if (tag === "input" || tag === "textarea" || tag === "select") {
         const type = (el.getAttribute("type") || "text").toLowerCase();
         if (tag === "input" && (type === "checkbox" || type === "radio")) {
