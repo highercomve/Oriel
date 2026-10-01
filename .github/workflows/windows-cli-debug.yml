@@ -61,7 +61,7 @@ jobs:
       - name: Scenario 5 — empty environment (winget harness runs with a minimal block)
         shell: pwsh
         run: |
-          $psi = [System.Diagnostics.ProcessStartInfo]
+          $psi = [System.Diagnostics.ProcessStartInfo]::new()
           $psi.FileName = "$env:LOCALAPPDATA\Microsoft\WinGet\Links\oriel.exe"
           $psi.UseShellExecute = $false
           $psi.EnvironmentVariables.Clear()
@@ -70,6 +70,7 @@ jobs:
           $p = [System.Diagnostics.Process]::Start($psi)
           $p.WaitForExit()
           Write-Output "exit=$($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Write-Output $p.StandardError.ReadToEnd() }
 
       - name: Crash dumps
         if: always()
