@@ -98,6 +98,10 @@ export class Renderer {
     nodes.set(-1, { kind: "view", props: { scroll: true, fg: 1, fs: 1, ai: "stretch" }, kids: [bodyNode] });
     nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: bgOf(rootCS) }, kids: [-1, ...fixed] });
     this.emit(nodes);
+    // A scrollIntoView that waited for this render (main.js).
+    const scroll = this.pendingScroll;
+    this.pendingScroll = null;
+    if (scroll && scroll.el.isConnected) this.host.scrollIntoView(this.idOf(scroll.el, "el"), scroll.block);
   }
 
   style(el, parentCS) {
