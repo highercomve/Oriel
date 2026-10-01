@@ -13325,6 +13325,9 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
       nodes.set(-1, { kind: "view", props: { scroll: true, fg: 1, fs: 1, ai: "stretch" }, kids: [bodyNode] });
       nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: bgOf(rootCS) }, kids: [-1, ...fixed] });
       this.emit(nodes);
+      const scroll = this.pendingScroll;
+      this.pendingScroll = null;
+      if (scroll && scroll.el.isConnected) this.host.scrollIntoView(this.idOf(scroll.el, "el"), scroll.block);
     }
     style(el, parentCS) {
       const m = this.engine.matching(el);
@@ -14213,11 +14216,14 @@ ${a.stack || ""}`;
   };
   elProto.scrollIntoView = function(opts) {
     if (!renderer) return;
-    renderer.render();
     const block = typeof opts === "object" ? opts.block || "start" : opts === false ? "end" : "start";
+    if (renderer.dirty) {
+      renderer.pendingScroll = { el: this, block };
+      return;
+    }
     host.scrollIntoView(renderer.idOf(this, "el"), block);
   };
-  elProto.click = function() {
+  Object.getPrototypeOf(document.createElement("div")).click = elProto.click = function() {
     activate(this, 0);
   };
   var active = null;

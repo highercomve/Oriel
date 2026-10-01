@@ -9,9 +9,18 @@
 //                 tokens stream in, Stop, a follow-up (KV cache reuse), Compare.
 //   dictate-<lang> the Dictate tab with the System engine in <lang> (en, es),
 //                 on test.wav in the models directory (no microphone in CI).
+//   tour          every tab (a screenshot each), IPC echo, events from a
+//                 worker, a note, and a second window opened and closed:
+//                 the native renderer's run (docs/native-renderer.md).
 (async () => {
   const name = await invoke("ui_test");
   if (!name) return;
+  // A second window (the tour opens one): no test of its own; it closes
+  // itself when asked (a window may only close itself).
+  if (new URLSearchParams(location.search).has("second")) {
+    listen("ui-test:close", () => window.oriel.window.current().close());
+    return;
+  }
   const log = (line) => invoke("ui_log", { line: String(line) });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const shot = async (n) => { await log(`screenshot ${n}`); await sleep(8000); }; // simctl takes seconds
@@ -139,9 +148,53 @@
     check(text && text !== "Nothing heard", "nothing transcribed");
   }
 
+  async function tour() {
+    for (const tab of ["dictate", "chat", "notes", "files", "system", "app"]) {
+      location.hash = "#" + tab;
+      await sleep(800);
+      check($(tab).classList.contains("active"), `tab ${tab} not shown`);
+      await log(`tab ${tab} shown`);
+      await shot(`tour-${tab}`);
+    }
+    // IPC: text to Zig and back, byte for byte.
+    const text = "héllo 👋 ✓ 世界 \"q\" <b>";
+    $("echo-input").value = text;
+    $("echo-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await until(() => /Round trip|Mismatch|Error/.test($("echo-out").textContent), 10000, "the echo");
+    check($("echo-out").textContent === `✓ Round trip: ${text}`, $("echo-out").textContent);
+    await log("echo ok");
+    // Events from a worker thread.
+    $("ticks").click();
+    await until(() => /All five/.test($("tick-out").textContent), 15000, "five ticks");
+    await log("ticks ok");
+    await shot("tour-app-done");
+    // A note in SQLite.
+    location.hash = "#notes";
+    await sleep(500);
+    const note = `tour note ${Date.now() % 100000}`;
+    $("note-input").value = note;
+    $("note-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await until(() => $("note-list").textContent.includes(note), 10000, "the note");
+    await log("note ok");
+    await shot("tour-notes-done");
+    // A second window, then closed again.
+    location.hash = "#app";
+    await sleep(500);
+    $("open").click();
+    await until(() => /Opened window|Error/.test($("windows-out").textContent), 15000, "the second window");
+    check(/Opened window/.test($("windows-out").textContent), $("windows-out").textContent);
+    const label = `second-${$("windows-out").textContent.match(/\d+/)[0]}`;
+    await log(`opened ${label}`);
+    await shot("tour-second-window");
+    await window.oriel.window.emitTo(label, "ui-test:close", null);
+    await until(() => /Closed/.test($("windows-out").textContent), 15000, "the close");
+    await log(`closed ${label}`);
+  }
+
   try {
     await log(`start ${name}`);
     if (name === "chat") await chat();
+    else if (name === "tour") await tour();
     else if (name.startsWith("dictate-")) await dictate(name.slice("dictate-".length));
     else throw new Error(`unknown test ${name}`);
     await log("done ok");

@@ -52,8 +52,9 @@ pub fn setup(win: Object, view: Object, options: App.WindowOptions) void {
         win.msgSend(void, "setHasShadow:", .{cocoa.boolean(false)});
         // WKWebView paints white under the page unless told not to. The key
         // resolves through a private setter: check it exists, since an
-        // unknown key raises (and terminates the app).
-        const cls = view.getClass().?;
+        // unknown key raises (and terminates the app). A native window
+        // (-Dnative_ui) has no web view: its view clears to transparent itself.
+        const cls = view.getClass() orelse return applyLevel(win, options);
         if (cls.respondsToSelector(cocoa.objc.sel("_setDrawsBackground:")) or cls.respondsToSelector(cocoa.objc.sel("setDrawsBackground:"))) {
             const no = cocoa.class("NSNumber").msgSend(Object, "numberWithBool:", .{cocoa.boolean(false)});
             const key = cocoa.nsString("drawsBackground") orelse return;
@@ -64,6 +65,11 @@ pub fn setup(win: Object, view: Object, options: App.WindowOptions) void {
             view.msgSend(void, "setUnderPageBackgroundColor:", .{clear}); // macOS 12+
         }
     }
+    applyLevel(win, options);
+}
+
+/// Always on top and the taskbar (Dock, Mission Control) behavior.
+fn applyLevel(win: Object, options: App.WindowOptions) void {
     if (options.always_on_top) win.msgSend(void, "setLevel:", .{levelFor(options)});
     if (options.skip_taskbar) {
         const behavior = win.msgSend(c_ulong, "collectionBehavior", .{});
