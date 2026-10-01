@@ -94,6 +94,7 @@ function setupLinks() {
   $("link-cmd").textContent = info.android ? `adb shell am start -d "${url}"`
     : info.os === "macos" ? `open "${url}"` : info.os === "windows" ? `start "" "${url}"`
     : info.os === "ios" ? `xcrun simctl openurl booted "${url}"` : `xdg-open "${url}"`;
+  $("link-note").hidden = info.os !== "windows";
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +309,7 @@ function dictRender() {
   $("dict-delete").disabled = dict.busy || dict.recording;
   $("dict-download").disabled = !!st.downloading;
   $("dict-file").disabled = dict.busy || dict.recording;
-  $("dict-missing").textContent = `Or copy ${m.file} to ${st.models_dir}/`;
+  $("dict-missing").textContent = `Or copy ${m.file} to ${st.models_dir}${info?.os === "windows" ? "\\" : "/"}`;
   const ready = !whisper || m.present;
   $("dict-rec").disabled = dict.busy || (!ready && !dict.recording);
   if (!dict.recording && !dict.busy) setState(ready ? "Tap to talk" : `Download ${m.name} (${m.mb} MB) to start`);

@@ -410,6 +410,20 @@ fn headlessTranscribe(gpa: std.mem.Allocator, path: []const u8) !u8 {
     return 0;
 }
 
+fn printUsage() void {
+    std.debug.print(
+        \\Oriel Showcase: with no arguments, opens the app.
+        \\
+        \\  --chat "<message>"    answer it and a follow-up (the second turn reuses the KV cache)
+        \\  --download <model>    download a chat model (e.g. qwen2.5-0.5b)
+        \\  --compare <model>     the Chat tab's GPU vs CPU comparison
+        \\  --transcribe <wav>    transcribe a file (the whisper model must be downloaded)
+        \\  --ui-test <name>      the page drives its own controls (web/uitest.js)
+        \\  -h, --help            this help
+        \\
+    , .{});
+}
+
 pub fn main(init: std.process.Init) !u8 {
     // Whisper models: large, so on Android in the external files directory
     // (/sdcard/Android/data/<id>/files/...), which adb can write to.
@@ -436,12 +450,18 @@ pub fn main(init: std.process.Init) !u8 {
         var it = try init.minimal.args.iterateAllocator(init.gpa);
         defer it.deinit();
         _ = it.next();
-        if (it.next()) |flag| if (it.next()) |arg| {
-            if (std.mem.eql(u8, flag, "--chat")) return headlessChat(init.gpa, arg);
-            if (std.mem.eql(u8, flag, "--download")) return headlessDownload(arg);
-            if (std.mem.eql(u8, flag, "--compare")) return headlessCompare(arg);
-            if (std.mem.eql(u8, flag, "--transcribe")) return headlessTranscribe(init.gpa, arg);
-        };
+        if (it.next()) |flag| {
+            if (std.mem.eql(u8, flag, "--help") or std.mem.eql(u8, flag, "-h")) {
+                printUsage();
+                return 0;
+            }
+            if (it.next()) |arg| {
+                if (std.mem.eql(u8, flag, "--chat")) return headlessChat(init.gpa, arg);
+                if (std.mem.eql(u8, flag, "--download")) return headlessDownload(arg);
+                if (std.mem.eql(u8, flag, "--compare")) return headlessCompare(arg);
+                if (std.mem.eql(u8, flag, "--transcribe")) return headlessTranscribe(init.gpa, arg);
+            }
+        }
     }
     // `--ui-test <name>` or ORIEL_UI_TEST=<name> (on iOS, `SIMCTL_CHILD_`
     // variables reach the app): the page drives its own controls
