@@ -171,3 +171,31 @@ jobs:
             examples/showcase/app.log
             examples/showcase/ui-*.log
           if-no-files-found: ignore
+
+  # What a phone would test that a Mac can: no iPhone here, and the
+  # simulator runs ggml on the CPU. macOS uses the same Metal backend,
+  # chat.compare and model download path (on macOS, Zig's TLS reads the
+  # keychain), so the showcase runs them natively on the runner's GPU.
+  macos-metal:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build the showcase for macOS (llama and whisper with Metal)
+        working-directory: examples/showcase
+        run: zig build --summary all
+      - name: Download Qwen2.5 0.5B
+        working-directory: examples/showcase
+        run: ./zig-out/bin/oriel-showcase --download qwen2.5-0.5b
+      - name: Chat, and a follow-up reusing the KV cache
+        working-directory: examples/showcase
+        run: |
+          set -o pipefail
+          ./zig-out/bin/oriel-showcase --chat "Count from 1 to 10." 2>&1 | tee chat.txt
+          grep -Eq '\([1-9][0-9]* reused\)' chat.txt # the follow-up's prompt
+      - name: Compare the GPU (Metal) and the CPU
+        working-directory: examples/showcase
+        run: ./zig-out/bin/oriel-showcase --compare qwen2.5-0.5b
