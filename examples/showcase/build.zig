@@ -57,6 +57,9 @@ pub fn build(b: *std.Build) void {
         .cuda_arch = b.option([]const u8, "cuda_arch", "nvcc -arch value, or compute capabilities like 75,86,89,120 (default: native)"),
         .cuda_static = b.option(bool, "cuda_static", "Link cuBLAS statically: needs only the NVIDIA driver at runtime (default: false)") orelse false,
         // ARM extensions for whisper's CPU kernels (Oriel's -Dggml_arm).
+        // Experimental: the page drawn with native views instead of a WebView
+        // (QuickJS + Yoga; Linux and Android so far). docs/native-renderer.md
+        .native_ui = b.option(bool, "native_ui", "Draw the page with native views instead of a WebView (experimental)") orelse false,
         .ggml_arm = b.option(ArmLevel, "ggml_arm", "ARM extensions for whisper on the CPU: baseline, dotprod (Android default), i8mm") orelse
             if (target.result.abi.isAndroid() and target.result.cpu.arch == .aarch64) ArmLevel.dotprod else .baseline,
     });

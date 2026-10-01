@@ -1,0 +1,887 @@
+//! The native renderer's GTK 4 backend (docs/native-renderer.md).
+//!
+//! Boxes, text (Pango) and icons (GskPath) are drawn with Cairo in one
+//! drawing area; text fields, text areas and selects are real GTK widgets
+//! placed over it by a GtkOverlay at their nodes' frames. Clicks, scrolling
+//! and keys are hit-tested on the node tree and sent to the page.
+
+const std = @import("std");
+const gtk = @import("gtk");
+const engine_mod = @import("engine.zig");
+const tree_mod = @import("tree.zig");
+const Engine = engine_mod.Engine;
+const Node = tree_mod.Node;
+const Rect = tree_mod.Rect;
+
+const log = std.log.scoped(.native_ui);
+
+// ---------------------------------------------------------------------------
+// C APIs (GTK, Cairo, Pango, GLib): declared here, linked through GTK.
+
+const Widget = gtk.Widget;
+const cairo_t = opaque {};
+const cairo_pattern_t = opaque {};
+const PangoLayout = opaque {};
+const PangoAttrList = opaque {};
+const PangoFontDescription = opaque {};
+const PangoAttribute = extern struct { klass: ?*anyopaque, start_index: c_uint, end_index: c_uint };
+const GskPath = opaque {};
+const GdkRectangle = extern struct { x: c_int, y: c_int, width: c_int, height: c_int };
+const GtkCssProvider = opaque {};
+
+extern fn gtk_drawing_area_new() *Widget;
+extern fn gtk_drawing_area_set_draw_func(area: *Widget, func: *const fn (*Widget, *cairo_t, c_int, c_int, ?*anyopaque) callconv(.c) void, data: ?*anyopaque, destroy: ?*anyopaque) void;
+extern fn gtk_overlay_new() *Widget;
+extern fn gtk_overlay_set_child(overlay: *Widget, child: *Widget) void;
+extern fn gtk_overlay_add_overlay(overlay: *Widget, child: *Widget) void;
+extern fn gtk_overlay_remove_overlay(overlay: *Widget, child: *Widget) void;
+extern fn gtk_widget_queue_draw(w: *Widget) void;
+extern fn gtk_widget_queue_allocate(w: *Widget) void;
+extern fn gtk_widget_set_focusable(w: *Widget, focusable: c_int) void;
+extern fn gtk_widget_grab_focus(w: *Widget) c_int;
+extern fn gtk_widget_set_visible(w: *Widget, visible: c_int) void;
+extern fn gtk_widget_set_sensitive(w: *Widget, sensitive: c_int) void;
+extern fn gtk_widget_add_controller(w: *Widget, controller: *anyopaque) void;
+extern fn gtk_widget_set_cursor_from_name(w: *Widget, name: ?[*:0]const u8) void;
+extern fn gtk_widget_add_css_class(w: *Widget, class: [*:0]const u8) void;
+extern fn gtk_widget_create_pango_layout(w: *Widget, text: ?[*:0]const u8) *PangoLayout;
+extern fn gtk_widget_get_width(w: *Widget) c_int;
+extern fn gtk_widget_get_height(w: *Widget) c_int;
+extern fn gtk_widget_get_display(w: *Widget) *anyopaque;
+extern fn gtk_widget_set_hexpand(w: *Widget, e: c_int) void;
+extern fn gtk_widget_set_vexpand(w: *Widget, e: c_int) void;
+extern fn gtk_entry_new() *Widget;
+extern fn gtk_entry_set_has_frame(e: *Widget, f: c_int) void;
+extern fn gtk_entry_set_placeholder_text(e: *Widget, t: [*:0]const u8) void;
+extern fn gtk_entry_set_visibility(e: *Widget, v: c_int) void;
+extern fn gtk_editable_set_text(e: *Widget, t: [*:0]const u8) void;
+extern fn gtk_editable_get_text(e: *Widget) [*:0]const u8;
+extern fn gtk_editable_set_width_chars(e: *Widget, n: c_int) void;
+extern fn gtk_text_view_new() *Widget;
+extern fn gtk_text_view_get_buffer(v: *Widget) *anyopaque;
+extern fn gtk_text_view_set_wrap_mode(v: *Widget, mode: c_int) void;
+extern fn gtk_text_view_set_accepts_tab(v: *Widget, a: c_int) void;
+extern fn gtk_text_buffer_set_text(b: *anyopaque, t: [*]const u8, len: c_int) void;
+extern fn gtk_text_buffer_get_start_iter(b: *anyopaque, it: *[80]u8) void;
+extern fn gtk_text_buffer_get_end_iter(b: *anyopaque, it: *[80]u8) void;
+extern fn gtk_text_buffer_get_text(b: *anyopaque, s: *[80]u8, e: *[80]u8, hidden: c_int) [*:0]u8;
+extern fn gtk_drop_down_new_from_strings(strings: [*]const ?[*:0]const u8) *Widget;
+extern fn gtk_drop_down_get_selected(d: *Widget) c_uint;
+extern fn gtk_drop_down_set_selected(d: *Widget, pos: c_uint) void;
+extern fn gtk_gesture_click_new() *anyopaque;
+extern fn gtk_gesture_single_set_button(g: *anyopaque, button: c_uint) void;
+extern fn gtk_gesture_single_get_current_button(g: *anyopaque) c_uint;
+extern fn gtk_event_controller_get_current_event_state(c: *anyopaque) c_uint;
+extern fn gtk_event_controller_scroll_new(flags: c_uint) *anyopaque;
+extern fn gtk_event_controller_motion_new() *anyopaque;
+extern fn gtk_event_controller_key_new() *anyopaque;
+extern fn gtk_event_controller_set_propagation_phase(c: *anyopaque, phase: c_int) void;
+extern fn gtk_css_provider_new() *GtkCssProvider;
+extern fn gtk_css_provider_load_from_string(p: *GtkCssProvider, s: [*:0]const u8) void;
+extern fn gtk_style_context_add_provider_for_display(display: *anyopaque, provider: *GtkCssProvider, priority: c_uint) void;
+extern fn gtk_settings_get_default() ?*anyopaque;
+extern fn gdk_keyval_name(keyval: c_uint) ?[*:0]const u8;
+extern fn gdk_keyval_to_unicode(keyval: c_uint) u32;
+extern fn g_signal_connect_data(instance: *anyopaque, signal: [*:0]const u8, handler: *const anyopaque, data: ?*anyopaque, destroy: ?*anyopaque, flags: c_int) c_ulong;
+extern fn g_object_set_data(obj: *anyopaque, key: [*:0]const u8, data: ?*anyopaque) void;
+extern fn g_object_get_data(obj: *anyopaque, key: [*:0]const u8) ?*anyopaque;
+extern fn g_object_get(obj: *anyopaque, first: [*:0]const u8, ...) void;
+extern fn g_object_unref(obj: *anyopaque) void;
+extern fn g_free(p: ?*anyopaque) void;
+extern fn g_timeout_add(ms: c_uint, func: *const fn (?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) c_uint;
+extern fn g_getenv(name: [*:0]const u8) ?[*:0]const u8;
+
+extern fn cairo_save(cr: *cairo_t) void;
+extern fn cairo_restore(cr: *cairo_t) void;
+extern fn cairo_new_path(cr: *cairo_t) void;
+extern fn cairo_new_sub_path(cr: *cairo_t) void;
+extern fn cairo_move_to(cr: *cairo_t, x: f64, y: f64) void;
+extern fn cairo_line_to(cr: *cairo_t, x: f64, y: f64) void;
+extern fn cairo_arc(cr: *cairo_t, xc: f64, yc: f64, r: f64, a1: f64, a2: f64) void;
+extern fn cairo_close_path(cr: *cairo_t) void;
+extern fn cairo_rectangle(cr: *cairo_t, x: f64, y: f64, w: f64, h: f64) void;
+extern fn cairo_clip(cr: *cairo_t) void;
+extern fn cairo_fill(cr: *cairo_t) void;
+extern fn cairo_fill_preserve(cr: *cairo_t) void;
+extern fn cairo_stroke(cr: *cairo_t) void;
+extern fn cairo_set_source_rgba(cr: *cairo_t, r: f64, g: f64, b: f64, a: f64) void;
+extern fn cairo_set_source(cr: *cairo_t, p: *cairo_pattern_t) void;
+extern fn cairo_set_line_width(cr: *cairo_t, w: f64) void;
+extern fn cairo_set_line_cap(cr: *cairo_t, cap: c_int) void;
+extern fn cairo_set_line_join(cr: *cairo_t, join: c_int) void;
+extern fn cairo_set_fill_rule(cr: *cairo_t, rule: c_int) void;
+extern fn cairo_translate(cr: *cairo_t, x: f64, y: f64) void;
+extern fn cairo_scale(cr: *cairo_t, x: f64, y: f64) void;
+extern fn cairo_rotate(cr: *cairo_t, angle: f64) void;
+extern fn cairo_push_group(cr: *cairo_t) void;
+extern fn cairo_pop_group_to_source(cr: *cairo_t) void;
+extern fn cairo_paint_with_alpha(cr: *cairo_t, a: f64) void;
+extern fn cairo_paint(cr: *cairo_t) void;
+extern fn cairo_pattern_create_linear(x0: f64, y0: f64, x1: f64, y1: f64) *cairo_pattern_t;
+extern fn cairo_pattern_add_color_stop_rgba(p: *cairo_pattern_t, off: f64, r: f64, g: f64, b: f64, a: f64) void;
+extern fn cairo_pattern_destroy(p: *cairo_pattern_t) void;
+extern fn cairo_pattern_create_radial(cx0: f64, cy0: f64, r0: f64, cx1: f64, cy1: f64, r1: f64) *cairo_pattern_t;
+extern fn cairo_pattern_set_matrix(p: *cairo_pattern_t, m: *const CairoMatrix) void;
+const CairoMatrix = extern struct { xx: f64, yx: f64, xy: f64, yy: f64, x0: f64, y0: f64 };
+
+extern fn pango_layout_set_text(l: *PangoLayout, t: [*]const u8, len: c_int) void;
+extern fn pango_layout_set_attributes(l: *PangoLayout, attrs: ?*PangoAttrList) void;
+extern fn pango_layout_set_width(l: *PangoLayout, w: c_int) void;
+extern fn pango_layout_set_wrap(l: *PangoLayout, wrap: c_int) void;
+extern fn pango_layout_set_alignment(l: *PangoLayout, a: c_int) void;
+extern fn pango_layout_set_font_description(l: *PangoLayout, d: ?*const PangoFontDescription) void;
+extern fn pango_layout_set_line_spacing(l: *PangoLayout, factor: f32) void;
+extern fn pango_layout_get_pixel_size(l: *PangoLayout, w: *c_int, h: *c_int) void;
+extern fn pango_cairo_show_layout(cr: *cairo_t, l: *PangoLayout) void;
+extern fn pango_font_description_from_string(s: [*:0]const u8) *PangoFontDescription;
+extern fn pango_font_description_set_absolute_size(d: *PangoFontDescription, size: f64) void;
+extern fn pango_font_description_set_weight(d: *PangoFontDescription, w: c_int) void;
+extern fn pango_font_description_set_style(d: *PangoFontDescription, s: c_int) void;
+extern fn pango_font_description_free(d: *PangoFontDescription) void;
+extern fn pango_attr_list_new() *PangoAttrList;
+extern fn pango_attr_list_unref(l: *PangoAttrList) void;
+extern fn pango_attr_list_insert(l: *PangoAttrList, a: *PangoAttribute) void;
+extern fn pango_attr_foreground_new(r: u16, g: u16, b: u16) *PangoAttribute;
+extern fn pango_attr_foreground_alpha_new(a: u16) *PangoAttribute;
+extern fn pango_attr_background_new(r: u16, g: u16, b: u16) *PangoAttribute;
+extern fn pango_attr_background_alpha_new(a: u16) *PangoAttribute;
+extern fn pango_attr_weight_new(w: c_int) *PangoAttribute;
+extern fn pango_attr_style_new(s: c_int) *PangoAttribute;
+extern fn pango_attr_size_new_absolute(size: c_int) *PangoAttribute;
+extern fn pango_attr_family_new(family: [*:0]const u8) *PangoAttribute;
+extern fn pango_attr_underline_new(u: c_int) *PangoAttribute;
+extern fn pango_attr_letter_spacing_new(s: c_int) *PangoAttribute;
+
+extern fn gsk_path_parse(s: [*:0]const u8) ?*GskPath;
+extern fn gsk_path_to_cairo(p: *GskPath, cr: *cairo_t) void;
+extern fn gsk_path_unref(p: *GskPath) void;
+
+const PANGO_SCALE = 1024;
+
+// ---------------------------------------------------------------------------
+
+pub const Invoke = *const fn (ctx: ?*anyopaque, engine: *Engine, call_id: u32, cmd: []const u8, args_json: []const u8) void;
+
+/// A window's native page: the overlay that goes into the GtkWindow.
+pub const Surface = struct {
+    gpa: std.mem.Allocator,
+    engine: *Engine = undefined,
+    overlay: *Widget,
+    area: *Widget,
+    fields: std.AutoHashMap(i64, *Widget),
+    css: *GtkCssProvider,
+    css_text: std.ArrayList(u8) = .empty,
+    invoke_fn: Invoke,
+    invoke_ctx: ?*anyopaque,
+    pointer: [2]f32 = .{ 0, 0 },
+    hovered: i64 = 0,
+    updating: bool = false,
+    dark: bool = false,
+
+    pub fn widget(s: *Surface) *Widget {
+        return s.overlay;
+    }
+
+    pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, width: f32, height: f32, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
+        const s = try gpa.create(Surface);
+        errdefer gpa.destroy(s);
+        const overlay = gtk_overlay_new();
+        const area = gtk_drawing_area_new();
+        gtk_widget_set_hexpand(area, 1);
+        gtk_widget_set_vexpand(area, 1);
+        gtk_widget_set_focusable(area, 1);
+        gtk_overlay_set_child(overlay, area);
+        s.* = .{
+            .gpa = gpa,
+            .overlay = overlay,
+            .area = area,
+            .fields = .init(gpa),
+            .css = gtk_css_provider_new(),
+            .invoke_fn = invoke_fn,
+            .invoke_ctx = invoke_ctx,
+            .dark = prefersDark(),
+        };
+        gtk_style_context_add_provider_for_display(gtk_widget_get_display(area), s.css, 800);
+        s.engine = try Engine.create(gpa, .{
+            .ctx = s,
+            .measure = measure,
+            .laid_out = laidOut,
+            .removed = removed,
+            .add_timer = addTimer,
+            .invoke = invoke,
+            .focus = focus,
+        }, assets, platform_json, label, width, height);
+
+        gtk_drawing_area_set_draw_func(area, draw, s, null);
+        _ = g_signal_connect_data(@ptrCast(area), "resize", @ptrCast(&onResize), s, null, 0);
+        _ = g_signal_connect_data(@ptrCast(overlay), "get-child-position", @ptrCast(&onChildPosition), s, null, 0);
+
+        const click = gtk_gesture_click_new();
+        gtk_gesture_single_set_button(click, 0);
+        _ = g_signal_connect_data(click, "pressed", @ptrCast(&onPressed), s, null, 0);
+        _ = g_signal_connect_data(click, "released", @ptrCast(&onReleased), s, null, 0);
+        gtk_widget_add_controller(area, click);
+        const scroll = gtk_event_controller_scroll_new(1); // vertical
+        _ = g_signal_connect_data(scroll, "scroll", @ptrCast(&onScroll), s, null, 0);
+        gtk_widget_add_controller(area, scroll);
+        const motion = gtk_event_controller_motion_new();
+        _ = g_signal_connect_data(motion, "motion", @ptrCast(&onMotion), s, null, 0);
+        _ = g_signal_connect_data(motion, "leave", @ptrCast(&onLeave), s, null, 0);
+        gtk_widget_add_controller(area, motion);
+        const keys = gtk_event_controller_key_new();
+        _ = g_signal_connect_data(keys, "key-pressed", @ptrCast(&onKey), s, null, 0);
+        gtk_widget_add_controller(area, keys);
+
+        s.engine.boot(s.dark, false);
+        return s;
+    }
+
+    fn prefersDark() bool {
+        if (g_getenv("ORIEL_COLOR_SCHEME")) |v| return std.mem.eql(u8, std.mem.span(v), "dark");
+        const settings = gtk_settings_get_default() orelse return false;
+        var dark: c_int = 0;
+        g_object_get(settings, "gtk-application-prefer-dark-theme", &dark, @as(?*anyopaque, null));
+        return dark != 0;
+    }
+};
+
+fn surfaceOf(p: ?*anyopaque) *Surface {
+    return @ptrCast(@alignCast(p.?));
+}
+
+// ---------------------------------------------------------------------------
+// Backend hooks
+
+fn invoke(ctx: *anyopaque, engine: *Engine, call_id: u32, cmd: []const u8, args_json: []const u8) void {
+    const s = surfaceOf(ctx);
+    s.invoke_fn(s.invoke_ctx, engine, call_id, cmd, args_json);
+}
+
+const TimerData = struct { engine: *Engine, id: u32 };
+
+fn addTimer(_: *anyopaque, engine: *Engine, id: u32, ms: u32) void {
+    const d = std.heap.smp_allocator.create(TimerData) catch return;
+    d.* = .{ .engine = engine, .id = id };
+    _ = g_timeout_add(ms, onTimer, d);
+}
+
+fn onTimer(p: ?*anyopaque) callconv(.c) c_int {
+    const d: *TimerData = @ptrCast(@alignCast(p.?));
+    const engine = d.engine;
+    const id = d.id;
+    std.heap.smp_allocator.destroy(d);
+    engine.timerFired(id);
+    return 0;
+}
+
+fn focus(ctx: *anyopaque, node: *Node) void {
+    const s = surfaceOf(ctx);
+    if (s.fields.get(node.id)) |w| _ = gtk_widget_grab_focus(w);
+}
+
+fn removed(ctx: *anyopaque, node: *Node) void {
+    const s = surfaceOf(ctx);
+    if (s.fields.fetchRemove(node.id)) |kv| gtk_overlay_remove_overlay(s.overlay, kv.value);
+}
+
+fn laidOut(ctx: *anyopaque) void {
+    const s = surfaceOf(ctx);
+    syncFields(s);
+    gtk_widget_queue_draw(s.area);
+    gtk_widget_queue_allocate(s.overlay);
+}
+
+// ---------------------------------------------------------------------------
+// Fields: native widgets for input, textarea and select
+
+fn syncFields(s: *Surface) void {
+    var css_changed = false;
+    var it = s.engine.tree.nodes.valueIterator();
+    while (it.next()) |np| {
+        const n = np.*;
+        if (n.kind != .input and n.kind != .textarea and n.kind != .select) continue;
+        const w = s.fields.get(n.id) orelse blk: {
+            const w = makeField(s, n) catch continue;
+            s.fields.put(n.id, w) catch continue;
+            gtk_overlay_add_overlay(s.overlay, w);
+            css_changed = true;
+            break :blk w;
+        };
+        s.updating = true;
+        defer s.updating = false;
+        if (n.pending_value) |v| {
+            n.pending_value = null;
+            const z = s.gpa.dupeZ(u8, v) catch continue;
+            defer s.gpa.free(z);
+            switch (n.kind) {
+                .input => gtk_editable_set_text(w, z.ptr),
+                .textarea => gtk_text_buffer_set_text(gtk_text_view_get_buffer(w), z.ptr, @intCast(z.len)),
+                .select => if (n.props.options) |opts| for (opts, 0..) |o, i| {
+                    if (std.mem.eql(u8, o[0], v)) gtk_drop_down_set_selected(w, @intCast(i));
+                },
+                else => {},
+            }
+        }
+        gtk_widget_set_sensitive(w, @intFromBool(!n.props.dis));
+        const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
+        gtk_widget_set_visible(w, @intFromBool(visible));
+        css_changed = true;
+    }
+    if (css_changed) updateCss(s);
+}
+
+fn makeField(s: *Surface, n: *Node) !*Widget {
+    const w: *Widget = switch (n.kind) {
+        .input => blk: {
+            const e = gtk_entry_new();
+            gtk_entry_set_has_frame(e, 0);
+            gtk_editable_set_width_chars(e, 1);
+            if (n.props.pw) gtk_entry_set_visibility(e, 0);
+            if (n.props.ph) |ph| {
+                const z = try s.gpa.dupeZ(u8, ph);
+                defer s.gpa.free(z);
+                gtk_entry_set_placeholder_text(e, z.ptr);
+            }
+            _ = g_signal_connect_data(@ptrCast(e), "changed", @ptrCast(&onEntryChanged), s, null, 0);
+            _ = g_signal_connect_data(@ptrCast(e), "activate", @ptrCast(&onEntryActivate), s, null, 0);
+            break :blk e;
+        },
+        .textarea => blk: {
+            const v = gtk_text_view_new();
+            gtk_text_view_set_wrap_mode(v, 3); // word-char
+            gtk_text_view_set_accepts_tab(v, 0);
+            _ = g_signal_connect_data(gtk_text_view_get_buffer(v), "changed", @ptrCast(&onBufferChanged), s, null, 0);
+            g_object_set_data(gtk_text_view_get_buffer(v), "oriel-view", v);
+            const keys = gtk_event_controller_key_new();
+            gtk_event_controller_set_propagation_phase(keys, 1); // capture: before the text view
+            _ = g_signal_connect_data(keys, "key-pressed", @ptrCast(&onFieldKey), s, null, 0);
+            gtk_widget_add_controller(v, keys);
+            break :blk v;
+        },
+        .select => blk: {
+            var labels: std.ArrayList(?[*:0]const u8) = .empty;
+            defer {
+                for (labels.items) |l| if (l) |p| s.gpa.free(std.mem.span(p));
+                labels.deinit(s.gpa);
+            }
+            if (n.props.options) |opts| for (opts) |o| try labels.append(s.gpa, (try s.gpa.dupeZ(u8, o[1])).ptr);
+            try labels.append(s.gpa, null);
+            const d = gtk_drop_down_new_from_strings(labels.items.ptr);
+            _ = g_signal_connect_data(@ptrCast(d), "notify::selected", @ptrCast(&onSelected), s, null, 0);
+            break :blk d;
+        },
+        else => unreachable,
+    };
+    g_object_set_data(@ptrCast(w), "oriel-node", @ptrFromInt(@as(usize, @intCast(n.id))));
+    var buf: [32]u8 = undefined;
+    const cls = try std.fmt.bufPrintSentinel(&buf, "nui-f{d}", .{n.id}, 0);
+    gtk_widget_add_css_class(w, cls.ptr);
+    gtk_widget_add_css_class(w, "nui-field");
+    return w;
+}
+
+fn updateCss(s: *Surface) void {
+    s.css_text.clearRetainingCapacity();
+    const a = s.gpa;
+    s.css_text.appendSlice(a,
+        \\.nui-field, .nui-field text, .nui-field > text, textview.nui-field, textview.nui-field text {
+        \\  background: none; border: none; box-shadow: none; outline: none; padding: 0; margin: 0; min-height: 0;
+        \\}
+        \\
+    ) catch return;
+    var it = s.fields.iterator();
+    while (it.next()) |e| {
+        const n = s.engine.tree.get(e.key_ptr.*) orelse continue;
+        const c = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
+        s.css_text.print(a, ".nui-f{d}, .nui-f{d} text {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); font-size: {d:.1}px; caret-color: rgba({d:.0},{d:.0},{d:.0},1); }}\n", .{
+            n.id, n.id, c[0], c[1], c[2], c[3], n.props.fz orelse 16, c[0], c[1], c[2],
+        }) catch return;
+    }
+    s.css_text.append(a, 0) catch return;
+    gtk_css_provider_load_from_string(s.css, @ptrCast(s.css_text.items.ptr));
+}
+
+fn nodeOfWidget(s: *Surface, w: *anyopaque) ?*Node {
+    const id: i64 = @intCast(@intFromPtr(g_object_get_data(w, "oriel-node") orelse return null));
+    return s.engine.tree.get(id);
+}
+
+fn sendValue(s: *Surface, n: *Node, kind: []const u8, text: []const u8) void {
+    const json = std.json.Stringify.valueAlloc(s.gpa, text, .{}) catch return;
+    defer s.gpa.free(json);
+    _ = s.engine.event(n.id, kind, json);
+}
+
+fn onEntryChanged(e: *Widget, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    if (s.updating) return;
+    const n = nodeOfWidget(s, e) orelse return;
+    sendValue(s, n, "input", std.mem.span(gtk_editable_get_text(e)));
+}
+
+fn onEntryActivate(e: *Widget, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    const n = nodeOfWidget(s, e) orelse return;
+    _ = s.engine.event(n.id, "key", "[\"Enter\",0]");
+}
+
+fn onBufferChanged(buffer: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    if (s.updating) return;
+    const view = g_object_get_data(buffer, "oriel-view") orelse return;
+    const n = nodeOfWidget(s, view) orelse return;
+    var start: [80]u8 = undefined;
+    var end: [80]u8 = undefined;
+    gtk_text_buffer_get_start_iter(buffer, &start);
+    gtk_text_buffer_get_end_iter(buffer, &end);
+    const text = gtk_text_buffer_get_text(buffer, &start, &end, 0);
+    defer g_free(text);
+    sendValue(s, n, "input", std.mem.span(text));
+}
+
+fn onSelected(d: *Widget, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    if (s.updating) return;
+    const n = nodeOfWidget(s, d) orelse return;
+    const i = gtk_drop_down_get_selected(d);
+    const opts = n.props.options orelse return;
+    if (i >= opts.len) return;
+    sendValue(s, n, "change", opts[i][0]);
+}
+
+fn onFieldKey(controller: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaceOf(data);
+    const name = keyName(keyval) orelse return 0;
+    // Only keys a page commonly handles in a text area: Enter and Escape.
+    if (!std.mem.eql(u8, name, "Enter") and !std.mem.eql(u8, name, "Escape")) return 0;
+    const view = gtkWidgetOfController(controller) orelse return 0;
+    const n = nodeOfWidget(s, view) orelse return 0;
+    var buf: [64]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d}]", .{ name, modFlags(state) }) catch return 0;
+    return @intFromBool(s.engine.event(n.id, "key", json));
+}
+
+extern fn gtk_event_controller_get_widget(c: *anyopaque) ?*Widget;
+fn gtkWidgetOfController(c: *anyopaque) ?*Widget {
+    return gtk_event_controller_get_widget(c);
+}
+
+fn onChildPosition(_: *Widget, child: *Widget, alloc: *GdkRectangle, data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaceOf(data);
+    const n = nodeOfWidget(s, child) orelse return 0;
+    const r = n.content();
+    alloc.* = .{ .x = @intFromFloat(@round(r.x)), .y = @intFromFloat(@round(r.y)), .width = @max(1, @as(c_int, @intFromFloat(@round(r.w)))), .height = @max(1, @as(c_int, @intFromFloat(@round(r.h)))) };
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Input
+
+fn modFlags(state: c_uint) u32 {
+    var f: u32 = 0;
+    if (state & 1 != 0) f |= 1; // shift
+    if (state & 4 != 0) f |= 2; // control
+    if (state & 8 != 0) f |= 4; // alt
+    if (state & (1 << 28) != 0) f |= 8; // super/meta
+    return f;
+}
+
+fn keyName(keyval: c_uint) ?[]const u8 {
+    const name = std.mem.span(gdk_keyval_name(keyval) orelse return null);
+    const map = .{
+        .{ "Return", "Enter" },     .{ "KP_Enter", "Enter" }, .{ "Escape", "Escape" }, .{ "Tab", "Tab" },
+        .{ "BackSpace", "Backspace" }, .{ "Delete", "Delete" }, .{ "Up", "ArrowUp" },  .{ "Down", "ArrowDown" },
+        .{ "Left", "ArrowLeft" },   .{ "Right", "ArrowRight" }, .{ "Home", "Home" },     .{ "End", "End" },
+        .{ "Page_Up", "PageUp" },   .{ "Page_Down", "PageDown" }, .{ "space", " " },
+    };
+    inline for (map) |m| if (std.mem.eql(u8, name, m[0])) return m[1];
+    if (name.len == 1) return name;
+    return null;
+}
+
+fn onResize(_: *Widget, width: c_int, height: c_int, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    s.engine.resize(@floatFromInt(width), @floatFromInt(height), s.dark);
+}
+
+fn onPressed(gesture: *anyopaque, _: c_int, x: f64, y: f64, data: ?*anyopaque) callconv(.c) void {
+    _ = gesture;
+    const s = surfaceOf(data);
+    _ = gtk_widget_grab_focus(s.area);
+    // :active while the button is down.
+    if (s.engine.tree.hit(@floatCast(x), @floatCast(y))) |n| _ = s.engine.event(n.id, "press", "null");
+}
+
+fn onReleased(gesture: *anyopaque, _: c_int, x: f64, y: f64, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    _ = s.engine.event(0, "release", "null");
+    const n = s.engine.tree.hit(@floatCast(x), @floatCast(y)) orelse return;
+    const button = gtk_gesture_single_get_current_button(gesture);
+    if (button == 3) {
+        var buf: [64]u8 = undefined;
+        const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0}]", .{ x, y }) catch return;
+        _ = s.engine.event(n.id, "contextmenu", json);
+        return;
+    }
+    if (button != 1) return;
+    if (disabledUp(n)) return;
+    var buf: [16]u8 = undefined;
+    const flags = std.fmt.bufPrint(&buf, "{d}", .{modFlags(gtk_event_controller_get_current_event_state(gesture))}) catch return;
+    _ = s.engine.event(n.id, "click", flags);
+}
+
+fn disabledUp(start: *Node) bool {
+    var n: ?*Node = start;
+    while (n) |x| : (n = x.parent) if (x.props.dis) return true;
+    return false;
+}
+
+fn clickableUp(start: *Node) bool {
+    var n: ?*Node = start;
+    while (n) |x| : (n = x.parent) if (x.props.click) return !x.props.dis;
+    return false;
+}
+
+fn onScroll(_: *anyopaque, _: f64, dy: f64, data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaceOf(data);
+    const n = s.engine.tree.hit(s.pointer[0], s.pointer[1]);
+    var target = s.engine.tree.scroller(n);
+    while (target) |t| {
+        if (s.engine.scrollBy(t, @as(f32, @floatCast(dy)) * 48)) return 1;
+        target = s.engine.tree.scroller(t.parent);
+    }
+    return 0;
+}
+
+fn onLeave(_: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    if (s.hovered == 0) return;
+    s.hovered = 0;
+    _ = s.engine.event(0, "hover", "null");
+}
+
+fn onMotion(_: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    s.pointer = .{ @floatCast(x), @floatCast(y) };
+    const n = s.engine.tree.hit(s.pointer[0], s.pointer[1]);
+    gtk_widget_set_cursor_from_name(s.area, if (n != null and clickableUp(n.?)) "pointer" else null);
+    // :hover: the page hears when the node under the pointer changes.
+    const id: i64 = if (n) |node| node.id else 0;
+    if (id != s.hovered) {
+        s.hovered = id;
+        _ = s.engine.event(id, "hover", "null");
+    }
+}
+
+fn onKey(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaceOf(data);
+    const name = keyName(keyval) orelse return 0;
+    var buf: [64]u8 = undefined;
+    const key = std.json.Stringify.valueAlloc(s.gpa, name, .{}) catch return 0;
+    defer s.gpa.free(key);
+    const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ key, modFlags(state) }) catch return 0;
+    return @intFromBool(s.engine.event(0, "key", json));
+}
+
+// ---------------------------------------------------------------------------
+// Text
+
+fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
+    const s = surfaceOf(ctx);
+    const fz = n.props.fz orelse 16;
+    switch (n.kind) {
+        .text => {
+            const layout = textLayout(s, n, max_width) orelse return;
+            defer g_object_unref(layout);
+            var w: c_int = 0;
+            var h: c_int = 0;
+            pango_layout_get_pixel_size(layout, &w, &h);
+            out.* = .{ @floatFromInt(w + 1), @floatFromInt(h) };
+        },
+        .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
+        .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
+        else => out.* = .{ 0, 0 },
+    }
+}
+
+fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
+    const runs = n.props.runs orelse return null;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(s.gpa);
+    const attrs = pango_attr_list_new();
+    defer pango_attr_list_unref(attrs);
+    for (runs) |r| {
+        const start: c_uint = @intCast(text.items.len);
+        text.appendSlice(s.gpa, r.t) catch return null;
+        const end: c_uint = @intCast(text.items.len);
+        const add = struct {
+            fn f(list: *PangoAttrList, a: *PangoAttribute, st: c_uint, en: c_uint) void {
+                a.start_index = st;
+                a.end_index = en;
+                pango_attr_list_insert(list, a);
+            }
+        }.f;
+        add(attrs, pango_attr_foreground_new(c16(r.c[0]), c16(r.c[1]), c16(r.c[2])), start, end);
+        if (r.c[3] < 1) add(attrs, pango_attr_foreground_alpha_new(@intFromFloat(@max(0, @min(1, r.c[3])) * 65535)), start, end);
+        add(attrs, pango_attr_size_new_absolute(@intFromFloat(r.sz * PANGO_SCALE)), start, end);
+        add(attrs, pango_attr_weight_new(@intFromFloat(r.w)), start, end);
+        if (r.i) add(attrs, pango_attr_style_new(2), start, end);
+        if (r.mono) add(attrs, pango_attr_family_new("Monospace"), start, end);
+        if (r.u) add(attrs, pango_attr_underline_new(1), start, end);
+        if (r.bg) |bg| if (bg[3] > 0) {
+            add(attrs, pango_attr_background_new(c16(bg[0]), c16(bg[1]), c16(bg[2])), start, end);
+            if (bg[3] < 1) add(attrs, pango_attr_background_alpha_new(@intFromFloat(bg[3] * 65535)), start, end);
+        };
+    }
+    if (n.props.ls) |ls| add0(attrs, pango_attr_letter_spacing_new(@intFromFloat(ls * PANGO_SCALE)));
+    const layout = gtk_widget_create_pango_layout(s.area, null);
+    const desc = pango_font_description_from_string(if (n.props.mono) "Monospace" else "Sans");
+    defer pango_font_description_free(desc);
+    pango_font_description_set_absolute_size(desc, (n.props.fz orelse 16) * PANGO_SCALE);
+    pango_layout_set_font_description(layout, desc);
+    pango_layout_set_text(layout, text.items.ptr, @intCast(text.items.len));
+    pango_layout_set_attributes(layout, attrs);
+    if (n.props.nowrap or std.math.isInf(width)) {
+        pango_layout_set_width(layout, -1);
+    } else {
+        pango_layout_set_width(layout, @intFromFloat(@max(1, width) * PANGO_SCALE));
+        pango_layout_set_wrap(layout, 2); // word-char
+    }
+    if (n.props.ta) |ta| {
+        if (std.mem.eql(u8, ta, "center")) pango_layout_set_alignment(layout, 1);
+        if (std.mem.eql(u8, ta, "right")) pango_layout_set_alignment(layout, 2);
+    }
+    if (n.props.lh) |lh| {
+        const fz = n.props.fz orelse 16;
+        pango_layout_set_line_spacing(layout, lh / (fz * 1.17));
+    }
+    return layout;
+}
+
+fn add0(list: *PangoAttrList, a: *PangoAttribute) void {
+    a.start_index = 0;
+    a.end_index = std.math.maxInt(c_uint);
+    pango_attr_list_insert(list, a);
+}
+
+fn c16(v: f32) u16 {
+    return @intFromFloat(@max(0, @min(255, v)) * 257);
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+
+fn draw(_: *Widget, cr: *cairo_t, _: c_int, _: c_int, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    if (s.engine.tree.dirty) s.engine.tree.layout();
+    const root = s.engine.tree.root orelse return;
+    // Under the page: white, as in a browser (the root's background, if
+    // any, is painted over it).
+    cairo_set_source_rgba(cr, 1, 1, 1, 1);
+    cairo_paint(cr);
+    paint(s, cr, root);
+}
+
+fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
+    const p = n.props;
+    if (p.vis == false) return;
+    const f = n.frame;
+    const visible = n.clip.intersect(.{ .x = f.x - 40, .y = f.y - 40, .w = f.w + 80, .h = f.h + 80 });
+    if (visible.w <= 0 or visible.h <= 0) {
+        // Off screen: its children may still be (absolute ones).
+        if (n.kids.items.len == 0) return;
+    }
+    cairo_save(cr);
+    defer cairo_restore(cr);
+    cairo_rectangle(cr, n.clip.x, n.clip.y, n.clip.w, n.clip.h);
+    cairo_clip(cr);
+    // scale and rotate: around the box's center, for it and its children.
+    const sc = p.sc orelse 1;
+    const rot = p.rot orelse 0;
+    if (sc != 1 or rot != 0) {
+        const cx = f.x + f.w / 2;
+        const cy = f.y + f.h / 2;
+        cairo_translate(cr, cx, cy);
+        if (rot != 0) cairo_rotate(cr, rot * std.math.pi / 180.0);
+        if (sc != 1) cairo_scale(cr, sc, sc);
+        cairo_translate(cr, -cx, -cy);
+    }
+    const alpha = p.op orelse 1;
+    if (alpha < 1) cairo_push_group(cr);
+
+    const r = n.radius();
+    if (p.sh) |sh| shadow(cr, f, r, sh);
+    if (p.bg) |bg| {
+        // The color under the gradient (CSS layers).
+        if (bg.color) |c| {
+            roundRect(cr, f, r);
+            setColor(cr, c);
+            cairo_fill(cr);
+        }
+        if (bg.gradient) |g| {
+            roundRect(cr, f, r);
+            const pat = gradient(f, g);
+            cairo_set_source(cr, pat);
+            cairo_fill(cr);
+            cairo_pattern_destroy(pat);
+        }
+    }
+    if (p.bw) |bw| border(cr, f, r, bw, p.bc);
+    switch (n.kind) {
+        .text => paintText(s, cr, n),
+        .icon => paintIcon(cr, n),
+        else => {},
+    }
+    for (n.kids.items) |k| paint(s, cr, k);
+    if (alpha < 1) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, alpha);
+    }
+}
+
+fn setColor(cr: *cairo_t, c: tree_mod.Color) void {
+    cairo_set_source_rgba(cr, c[0] / 255, c[1] / 255, c[2] / 255, c[3]);
+}
+
+fn roundRect(cr: *cairo_t, f: Rect, r: [4]f32) void {
+    const x: f64 = f.x;
+    const y: f64 = f.y;
+    const w: f64 = f.w;
+    const h: f64 = f.h;
+    const pi = std.math.pi;
+    cairo_new_path(cr);
+    if (r[0] == 0 and r[1] == 0 and r[2] == 0 and r[3] == 0) {
+        cairo_rectangle(cr, x, y, w, h);
+        return;
+    }
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, x + w - r[1], y + r[1], r[1], -pi / 2.0, 0);
+    cairo_arc(cr, x + w - r[2], y + h - r[2], r[2], 0, pi / 2.0);
+    cairo_arc(cr, x + r[3], y + h - r[3], r[3], pi / 2.0, pi);
+    cairo_arc(cr, x + r[0], y + r[0], r[0], pi, 3 * pi / 2.0);
+    cairo_close_path(cr);
+}
+
+fn gradient(f: Rect, g: tree_mod.Gradient) *cairo_pattern_t {
+    if (g.radial) |rad| {
+        // A unit circle at the origin, mapped onto the ellipse.
+        const cx = f.x + boxLen(rad[0], f.w);
+        const cy = f.y + boxLen(rad[1], f.h);
+        const rx = @max(0.01, boxLen(rad[2], f.w));
+        const ry = @max(0.01, boxLen(rad[3], f.h));
+        const pat = cairo_pattern_create_radial(0, 0, 0, 0, 0, 1);
+        cairo_pattern_set_matrix(pat, &.{ .xx = 1 / rx, .yx = 0, .xy = 0, .yy = 1 / ry, .x0 = -cx / rx, .y0 = -cy / ry });
+        for (g.stops) |st| cairo_pattern_add_color_stop_rgba(pat, st[4], st[0] / 255, st[1] / 255, st[2] / 255, st[3]);
+        return pat;
+    }
+    const a = g.angle * std.math.pi / 180.0;
+    const dx = @sin(a);
+    const dy = -@cos(a);
+    const len = @abs(f.w * dx) + @abs(f.h * dy);
+    const cx = f.x + f.w / 2;
+    const cy = f.y + f.h / 2;
+    const pat = cairo_pattern_create_linear(cx - dx * len / 2, cy - dy * len / 2, cx + dx * len / 2, cy + dy * len / 2);
+    for (g.stops) |st| cairo_pattern_add_color_stop_rgba(pat, st[4], st[0] / 255, st[1] / 255, st[2] / 255, st[3]);
+    return pat;
+}
+
+/// A gradient length: px, or "50%" of `total`.
+fn boxLen(v: tree_mod.Dim, total: f32) f32 {
+    return switch (v) {
+        .integer => |i| @floatFromInt(i),
+        .float => |x| @floatCast(x),
+        .string => |s| if (std.mem.endsWith(u8, s, "%")) (std.fmt.parseFloat(f32, s[0 .. s.len - 1]) catch 0) / 100 * total else 0,
+        else => 0,
+    };
+}
+
+fn border(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) void {
+    const colors = bc orelse return;
+    const uniform = bw[0] == bw[1] and bw[1] == bw[2] and bw[2] == bw[3];
+    if (uniform and bw[0] > 0) {
+        const half = bw[0] / 2;
+        const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
+        var ri = r;
+        for (&ri) |*x| x.* = @max(0, x.* - half);
+        roundRect(cr, inner, ri);
+        setColor(cr, colors[0]);
+        cairo_set_line_width(cr, bw[0]);
+        cairo_stroke(cr);
+        return;
+    }
+    // Per side (straight edges).
+    const sides = [4]Rect{
+        .{ .x = f.x, .y = f.y, .w = f.w, .h = bw[0] },
+        .{ .x = f.x + f.w - bw[1], .y = f.y, .w = bw[1], .h = f.h },
+        .{ .x = f.x, .y = f.y + f.h - bw[2], .w = f.w, .h = bw[2] },
+        .{ .x = f.x, .y = f.y, .w = bw[3], .h = f.h },
+    };
+    for (sides, 0..) |sd, i| {
+        if (bw[i] <= 0 or colors[i][3] <= 0) continue;
+        cairo_new_path(cr);
+        cairo_rectangle(cr, sd.x, sd.y, sd.w, sd.h);
+        setColor(cr, colors[i]);
+        cairo_fill(cr);
+    }
+}
+
+fn shadow(cr: *cairo_t, f: Rect, r: [4]f32, sh: tree_mod.Shadow) void {
+    // A soft shadow from stacked layers, from half the blur inside the box
+    // to half outside: like CSS's blur, the box's edge gets half the color
+    // and the shadow fades out over the blur distance.
+    const steps: usize = 8;
+    var i: usize = 0;
+    while (i < steps) : (i += 1) {
+        const t: f32 = (@as(f32, @floatFromInt(i)) + 0.5) / @as(f32, @floatFromInt(steps));
+        const grow = sh.spread + sh.blur * (t - 0.5);
+        const rect: Rect = .{ .x = f.x + sh.x - grow, .y = f.y + sh.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
+        if (rect.w <= 0 or rect.h <= 0) continue;
+        var rr = r;
+        for (&rr) |*x| x.* = @max(0, x.* + grow);
+        roundRect(cr, rect, rr);
+        var c = sh.color;
+        c[3] = sh.color[3] / @as(f32, @floatFromInt(steps));
+        setColor(cr, c);
+        cairo_fill(cr);
+    }
+}
+
+fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
+    const c = n.content();
+    const layout = textLayout(s, n, c.w + 1) orelse return;
+    defer g_object_unref(layout);
+    cairo_move_to(cr, c.x, c.y);
+    pango_cairo_show_layout(cr, layout);
+}
+
+fn paintIcon(cr: *cairo_t, n: *Node) void {
+    const icon = n.props.icon orelse return;
+    const c = n.content();
+    if (c.w <= 0 or c.h <= 0 or icon.vb[2] <= 0 or icon.vb[3] <= 0) return;
+    const scale = @min(c.w / icon.vb[2], c.h / icon.vb[3]);
+    cairo_save(cr);
+    defer cairo_restore(cr);
+    cairo_translate(cr, c.x + (c.w - icon.vb[2] * scale) / 2, c.y + (c.h - icon.vb[3] * scale) / 2);
+    cairo_scale(cr, scale, scale);
+    cairo_translate(cr, -icon.vb[0], -icon.vb[1]);
+    var buf: [4096]u8 = undefined;
+    for (icon.shapes) |sh| {
+        const d = std.fmt.bufPrintSentinel(&buf, "{s}", .{sh.d}, 0) catch continue;
+        const path = gsk_path_parse(d.ptr) orelse continue;
+        defer gsk_path_unref(path);
+        cairo_new_path(cr);
+        gsk_path_to_cairo(path, cr);
+        if (sh.fill) |fill| {
+            cairo_set_fill_rule(cr, if (sh.evenodd) 1 else 0);
+            setColor(cr, fill);
+            if (sh.stroke != null) cairo_fill_preserve(cr) else cairo_fill(cr);
+        }
+        if (sh.stroke) |stroke| {
+            setColor(cr, stroke);
+            cairo_set_line_width(cr, sh.sw);
+            cairo_set_line_cap(cr, if (std.mem.eql(u8, sh.cap, "round")) 1 else if (std.mem.eql(u8, sh.cap, "square")) 2 else 0);
+            cairo_set_line_join(cr, if (std.mem.eql(u8, sh.join, "round")) 1 else if (std.mem.eql(u8, sh.join, "bevel")) 2 else 0);
+            cairo_stroke(cr);
+        }
+    }
+}

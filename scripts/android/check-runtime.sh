@@ -6,7 +6,8 @@
 # Kotlin:
 #   - every `runtime.call(..., "name", "signature", ...)` in src/ matches a
 #     static method of dev.oriel.OrielRuntime;
-#   - every `NativeLib` native has a Zig export and vice versa.
+#   - every `NativeLib` and `NuiNative` (-Dnative_ui) native has a Zig export
+#     and vice versa.
 # Needs a JDK (17+) and Maven. Usage: scripts/android/check-runtime.sh
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -42,32 +43,43 @@ java -cp "$cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler -no-stdlib -Werror=fal
   "$root"/android/template/app/src/main/java/dev/oriel/*.kt
 javap -s -p -cp out dev.oriel.OrielRuntime > runtime.txt
 javap -s -p -cp out dev.oriel.NativeLib > natives.txt
+javap -s -p -cp out dev.oriel.NuiNative > nui-natives.txt
 python3 - "$root" <<'PY'
 import glob, re, sys
 root = sys.argv[1]
 calls = set()
-exports = set()
+exports = {"NativeLib": set(), "NuiNative": set()}
 for f in glob.glob(root + "/src/**/*.zig", recursive=True):
     s = open(f).read()
     for m in re.finditer(r'runtime\.call(?:With)?\([^,]*?\.(?:void|boolean|int|long|object),\s*"(\w+)",\s*"([^"]+)"', s):
         calls.add((m.group(1), m.group(2), f[len(root) + 1:]))
-    exports |= set(re.findall(r'"Java_dev_oriel_NativeLib_(\w+)"', s))
-    exports |= set(re.findall(r'prefix \+\+ "(\w+)"', s))
+    for cls, names in exports.items():
+        names |= set(re.findall(r'"Java_dev_oriel_' + cls + r'_(\w+)"', s))
+    prefix = re.search(r'const prefix = "Java_dev_oriel_(\w+?)_"', s)
+    if prefix:
+        exports.setdefault(prefix.group(1), set()).update(re.findall(r'prefix \+\+ "(\w+)"', s))
 lines = open("runtime.txt").read().split("\n")
 methods = set()
 for i, l in enumerate(lines):
     m = re.search(r"public static .*? (\w+)\(", l)
     if m and i + 1 < len(lines) and "descriptor:" in lines[i + 1]:
         methods.add((m.group(1), lines[i + 1].split("descriptor:")[1].strip()))
-natives = set(re.findall(r"native \S+ (\w+)\(", open("natives.txt").read()))
+natives = {
+    "NativeLib": set(re.findall(r"native \S+ (\w+)\(", open("natives.txt").read())),
+    "NuiNative": set(re.findall(r"native \S+ (\w+)\(", open("nui-natives.txt").read())),
+}
 bad = [c for c in calls if (c[0], c[1]) not in methods]
 for name, sig, where in bad:
     print(f"{where}: OrielRuntime.{name}{sig} does not exist in the Kotlin runtime")
-for n in sorted(natives - exports):
-    print(f"NativeLib.{n} has no Zig export")
-for n in sorted(exports - natives):
-    print(f"Zig exports NativeLib.{n}, which Kotlin doesn't declare")
-if bad or natives != exports:
+mismatch = False
+for cls in sorted(set(natives) | set(exports)):
+    have, want = natives.get(cls, set()), exports.get(cls, set())
+    for n in sorted(have - want):
+        print(f"{cls}.{n} has no Zig export")
+    for n in sorted(want - have):
+        print(f"Zig exports {cls}.{n}, which Kotlin doesn't declare")
+    mismatch |= have != want
+if bad or mismatch:
     sys.exit(1)
-print(f"ok: {len(calls)} calls into Kotlin, {len(natives)} natives")
+print(f"ok: {len(calls)} calls into Kotlin, {sum(len(v) for v in natives.values())} natives")
 PY

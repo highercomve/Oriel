@@ -1,0 +1,295 @@
+---
+.title = "Native renderer (experimental)",
+.description = "Your HTML, CSS and JavaScript drawn with native views instead of a WebView: no browser process, a fraction of the memory, the same web code.",
+.date = .date("2026-10-01T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+An Oriel app normally shows its page in the system's webview. The native renderer is an optional second renderer: the app's own `index.html`, `style.css` and `app.js` run in a small JavaScript engine inside the app, and the page is drawn with the platform's views. There is no browser and no renderer process.
+
+It is **experimental**: it runs on Linux (GTK 4) and Android, behind a build flag, and it covers the HTML and CSS that map onto native views, not the whole web platform. The [showcase](https://github.com/highercomve/Oriel/tree/main/examples/showcase) runs on it unchanged: dictation, chat with a local model, notes in SQLite, files, notifications.
+
+# Why
+
+A webview is a browser. On Android, every WebView app starts Chromium's renderer in a sandboxed process of its own, and the app process carries Chromium's code too. For a small app that is most of the memory it uses.
+
+```=html
+<figure class="nr-fig">
+<svg viewBox="0 0 760 270" role="img" aria-labelledby="nr-proc-t">
+  <title id="nr-proc-t">With the WebView, an app runs in two processes; with the native renderer, in one</title>
+  <text class="nr-h" x="20" y="28">With the WebView</text>
+  <rect class="nr-box" x="20" y="44" width="330" height="96" rx="10"/>
+  <text class="nr-t" x="36" y="70">App process</text>
+  <text class="nr-s" x="36" y="92">Zig, Kotlin, WebView host</text>
+  <text class="nr-s" x="36" y="112">(Chromium's code mapped in)</text>
+  <rect class="nr-box nr-hot" x="20" y="152" width="330" height="96" rx="10"/>
+  <text class="nr-t" x="36" y="178">Renderer process (sandboxed)</text>
+  <text class="nr-s" x="36" y="200">HTML, CSS, layout, V8, the GPU</text>
+  <text class="nr-s" x="36" y="220">compositor: the page itself</text>
+  <text class="nr-h" x="410" y="28">With the native renderer</text>
+  <rect class="nr-box nr-acc" x="410" y="44" width="330" height="140" rx="10"/>
+  <text class="nr-t" x="426" y="70">App process</text>
+  <text class="nr-s" x="426" y="92">Zig, Kotlin</text>
+  <text class="nr-s" x="426" y="112">QuickJS + the page's DOM</text>
+  <text class="nr-s" x="426" y="132">Yoga layout</text>
+  <text class="nr-s" x="426" y="152">one Canvas view + native fields</text>
+  <text class="nr-s nr-dim" x="426" y="220">No renderer process</text>
+</svg>
+<figcaption>The same app, two ways to show its page.</figcaption>
+</figure>
+```
+
+Measured with `adb shell dumpsys meminfo` on a Chromebook (Android 15 in ARC). Totals are proportional set size (PSS) of every process the app runs:
+
+```=html
+<figure class="nr-fig">
+<svg viewBox="0 0 760 276" role="img" aria-labelledby="nr-mem-t">
+  <title id="nr-mem-t">Memory on Android: Oriel native hello world 20.3 MB, the showcase on the native renderer 30.4, React Native 39.9, Oriel WebView 105.5, Tauri 119.0, the showcase on the WebView 141.5</title>
+  <g class="nr-bars">
+    <text class="nr-s" x="250" y="34" text-anchor="end">Oriel native · hello world</text>
+    <rect class="nr-bar nr-acc-fill" x="262" y="20" width="53" height="20" rx="4"/>
+    <text class="nr-v" x="323" y="35">20.3 MB</text>
+    <text class="nr-s" x="250" y="74" text-anchor="end">Oriel native · showcase</text>
+    <rect class="nr-bar nr-acc-fill" x="262" y="60" width="79" height="20" rx="4"/>
+    <text class="nr-v" x="349" y="75">30.4 MB</text>
+    <text class="nr-s" x="250" y="114" text-anchor="end">React Native · hello world</text>
+    <rect class="nr-bar" x="262" y="100" width="104" height="20" rx="4"/>
+    <text class="nr-v" x="374" y="115">39.9 MB</text>
+    <text class="nr-s" x="250" y="154" text-anchor="end">Oriel WebView · hello world</text>
+    <rect class="nr-bar" x="262" y="140" width="274" height="20" rx="4"/>
+    <text class="nr-v" x="544" y="155">105.5 MB</text>
+    <text class="nr-s" x="250" y="194" text-anchor="end">Tauri · hello world</text>
+    <rect class="nr-bar" x="262" y="180" width="309" height="20" rx="4"/>
+    <text class="nr-v" x="579" y="195">119.0 MB</text>
+    <text class="nr-s" x="250" y="234" text-anchor="end">Oriel WebView · showcase</text>
+    <rect class="nr-bar" x="262" y="220" width="368" height="20" rx="4"/>
+    <text class="nr-v" x="638" y="235">141.5 MB</text>
+  </g>
+</svg>
+<figcaption>Hello worlds and the full showcase. Single readings: a few MB of noise is normal.</figcaption>
+</figure>
+```
+
+| The showcase, same sources | WebView | Native |
+|---|---|---|
+| App process | 70.2 MB | 30.4 MB |
+| WebView renderer | 71.3 MB | none |
+| **Total** | **141.5 MB** | **30.4 MB** |
+| Release APK, arm64, CPU only | 10.4 MB | 12.4 MB |
+
+The native build costs about 2 MB of APK: QuickJS, Yoga and the renderer's JavaScript. Speed where it matters is the same: the showcase's chat streams Llama 3.2 1B at 43 tokens/s on the CPU, against 40 with the WebView.
+
+# Compared with Tauri and React Native
+
+| | Oriel native | Oriel WebView | Tauri 2 | React Native |
+|---|---|---|---|---|
+| UI drawn by | Native views | System WebView | System WebView | Native views |
+| UI written in | HTML, CSS, JS (a subset) | Any web stack | Any web stack | React Native components |
+| JavaScript in | QuickJS (app) | V8 (renderer) | V8 (renderer) | Hermes (app) |
+| Native side | Zig | Zig | Rust | Kotlin, C++ |
+| Processes | 1 | 2 | 2 | 1 |
+| Memory, hello world | **20.3 MB** | 105.5 MB | 119.0 MB | 39.9 MB |
+| Memory, the showcase | **30.4 MB** | 141.5 MB | — | — |
+| APK, hello world | 3.1 MB | **0.85 MB** | 6.0 MB | 18.5 MB |
+| Reuses a web app | Mostly | Yes | Yes | No |
+| Desktop | Linux | Linux, Windows, macOS | Linux, Windows, macOS | Windows, macOS (separate projects) |
+| Status | Experimental | Stable | Stable | Stable |
+
+On Android. Memory is the total PSS of the app's processes on Android 15 (ChromeOS ARC), from `dumpsys meminfo`; APK sizes are release builds for arm64; React Native is 0.87. "Mostly": what the CSS above covers. The hello worlds: Oriel's is a line of text and a button; Tauri's and React Native's are their starter templates.
+
+What the numbers say:
+
+- **Without a browser, Oriel uses half of React Native's memory**, while keeping web code: 20.3 MB for a hello world against 39.9 MB, and the whole showcase (30.4 MB) uses less than React Native's hello world.
+- **The WebView renderer is the smallest download** (0.85 MB): it uses the browser the system already has. The native renderer adds about 2 MB: QuickJS, Yoga and the renderer's JavaScript. React Native ships its engine and framework (18.5 MB).
+- **The trade:** the WebView runs any web code on every platform; the native renderer runs the part of the web an app's interface uses, today on Linux and Android.
+
+# Try it
+
+Add `-Dnative_ui` to the build. Nothing else changes: the same `main.zig`, commands, events and web files.
+
+```sh
+# Linux
+zig build -Dnative_ui run
+
+# Android
+zig build -Dtarget=aarch64-linux-android -Doptimize=ReleaseSafe -Dnative_ui
+(cd android && gradle assembleRelease)
+```
+
+Your app's `build.zig` passes the option to Oriel (the showcase does: `.native_ui = b.option(bool, "native_ui", …)`). With it, windows never create a WebView; without it, nothing of the renderer is compiled in.
+
+# How it works
+
+```=html
+<figure class="nr-fig">
+<svg viewBox="0 0 760 430" role="img" aria-labelledby="nr-arch-t">
+  <title id="nr-arch-t">Architecture: the page runs in QuickJS with a DOM, a style engine and a flattener; Zig lays out the nodes with Yoga; a backend draws them</title>
+  <defs><marker id="nr-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="nr-arrowhead"/></marker></defs>
+  <rect class="nr-box" x="20" y="20" width="170" height="110" rx="10"/>
+  <text class="nr-t" x="36" y="46">Your app's files</text>
+  <text class="nr-m" x="36" y="72">index.html</text>
+  <text class="nr-m" x="36" y="92">style.css</text>
+  <text class="nr-m" x="36" y="112">app.js</text>
+  <rect class="nr-group" x="230" y="20" width="510" height="150" rx="12"/>
+  <text class="nr-label" x="246" y="42">QUICKJS · THE PAGE'S JAVASCRIPT, IN THE APP</text>
+  <rect class="nr-box" x="246" y="56" width="150" height="98" rx="8"/>
+  <text class="nr-t" x="260" y="80">DOM</text>
+  <text class="nr-s" x="260" y="102">linkedom: elements,</text>
+  <text class="nr-s" x="260" y="120">events, timers,</text>
+  <text class="nr-s" x="260" y="138">window.oriel</text>
+  <rect class="nr-box" x="412" y="56" width="150" height="98" rx="8"/>
+  <text class="nr-t" x="426" y="80">Style engine</text>
+  <text class="nr-s" x="426" y="102">cascade, var(),</text>
+  <text class="nr-s" x="426" y="120">inheritance,</text>
+  <text class="nr-s" x="426" y="138">@media</text>
+  <rect class="nr-box nr-acc" x="578" y="56" width="146" height="98" rx="8"/>
+  <text class="nr-t" x="592" y="80">Flattener</text>
+  <text class="nr-s" x="592" y="102">elements → nodes,</text>
+  <text class="nr-s" x="592" y="120">diffed with the</text>
+  <text class="nr-s" x="592" y="138">last frame</text>
+  <path class="nr-line" d="M190 75 H 244" marker-end="url(#nr-arrow)"/>
+  <rect class="nr-group" x="230" y="200" width="510" height="90" rx="12"/>
+  <text class="nr-label" x="246" y="222">ZIG · THE NODE TREE</text>
+  <text class="nr-s" x="246" y="248">One node per native view, laid out by Yoga (flexbox, gap, absolute).</text>
+  <text class="nr-s" x="246" y="270">Text is measured by the platform. Out: frames, clips, scroll offsets.</text>
+  <path class="nr-line" d="M651 156 V 198" marker-end="url(#nr-arrow)"/>
+  <text class="nr-m nr-dim" x="660" y="184">ops</text>
+  <rect class="nr-box" x="230" y="320" width="245" height="90" rx="10"/>
+  <text class="nr-t" x="246" y="346">GTK 4 (Linux)</text>
+  <text class="nr-s" x="246" y="368">draws with Cairo and Pango;</text>
+  <text class="nr-s" x="246" y="388">fields: GtkEntry, GtkTextView</text>
+  <rect class="nr-box" x="495" y="320" width="245" height="90" rx="10"/>
+  <text class="nr-t" x="511" y="346">Android</text>
+  <text class="nr-s" x="511" y="368">draws on a Canvas;</text>
+  <text class="nr-s" x="511" y="388">fields: EditText, Spinner</text>
+  <path class="nr-line" d="M420 292 V 318" marker-end="url(#nr-arrow)"/>
+  <path class="nr-line" d="M560 292 V 318" marker-end="url(#nr-arrow)"/>
+  <rect class="nr-box" x="20" y="200" width="170" height="90" rx="10"/>
+  <text class="nr-t" x="36" y="226">Zig commands</text>
+  <text class="nr-s" x="36" y="248">invoke() and</text>
+  <text class="nr-s" x="36" y="268">App.emit, as today</text>
+  <path class="nr-line" d="M246 140 C 150 150, 110 160, 105 198" marker-start="url(#nr-arrow)" marker-end="url(#nr-arrow)"/>
+  <path class="nr-line nr-back" d="M230 350 H 212 V 128 H 244" marker-end="url(#nr-arrow)"/>
+  <text class="nr-s nr-dim" x="204" y="322" text-anchor="end">events:</text>
+  <text class="nr-s nr-dim" x="204" y="340" text-anchor="end">taps, keys, text</text>
+</svg>
+<figcaption>Taps, keys and text come back as DOM events on the page's elements. Everything runs on the UI thread, like a browser's main thread. Async commands run on Oriel's worker pool and resolve their promises back on it.</figcaption>
+</figure>
+```
+
+**The page's JavaScript** runs in [QuickJS-ng](https://github.com/quickjs-ng/quickjs), a small embeddable engine compiled into the app. [linkedom](https://github.com/WebReflection/linkedom) gives it a DOM: `document`, elements, `querySelector`, events, `classList`, `dataset`. Oriel adds what a page expects from a browser: timers, `location.hash` and `history`, `matchMedia`, `localStorage`, `KeyboardEvent`, form submission, and `window.oriel`, the same bridge to your Zig commands and events as in the WebView. Your scripts run as `<script>` tags would, in order.
+
+**The style engine** parses each stylesheet once and indexes its rules by their rightmost selector. For every element it runs the cascade (specificity, `!important`, inline styles), resolves custom properties and `calc()`, inherits text properties and evaluates `@media` (width, `prefers-color-scheme`, `pointer`).
+
+**The flattener** turns the styled DOM into as few native nodes as it can (below), and compares them with the previous frame. Only the differences cross over to Zig, as small operations: create a node, set its properties, set its children, remove it.
+
+**Zig** keeps one node per native view, maps the CSS onto [Yoga](https://www.yogalayout.dev/), the flexbox engine React Native uses, and lays the tree out. Text is measured by the platform's own text engine, so a paragraph wraps where it will be drawn.
+
+**The backend** draws. On both platforms one view draws the whole page (boxes, gradients, borders, shadows, styled text, SVG icons) and the fields are real platform widgets placed over it: the system keyboard, selection, autocorrect and accessibility of a text field come for free.
+
+## One frame
+
+```=html
+<figure class="nr-fig">
+<svg viewBox="0 0 760 290" role="img" aria-labelledby="nr-frame-t">
+  <title id="nr-frame-t">One frame: an event, the page's handlers, a render, the operations, layout, drawing</title>
+  <defs><marker id="nr-arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" class="nr-arrowhead"/></marker></defs>
+  <rect class="nr-box" x="10" y="10" width="218" height="80" rx="8"/>
+  <text class="nr-n" x="26" y="38">1</text><text class="nr-t" x="46" y="38">Event</text>
+  <text class="nr-s" x="26" y="60">a tap, a key, a timer,</text><text class="nr-s" x="26" y="78">a command's reply</text>
+  <rect class="nr-box" x="262" y="10" width="218" height="80" rx="8"/>
+  <text class="nr-n" x="278" y="38">2</text><text class="nr-t" x="298" y="38">Handlers</text>
+  <text class="nr-s" x="278" y="60">your JavaScript,</text><text class="nr-s" x="278" y="78">then its promises</text>
+  <rect class="nr-box nr-acc" x="514" y="10" width="218" height="80" rx="8"/>
+  <text class="nr-n" x="530" y="38">3</text><text class="nr-t" x="550" y="38">Render</text>
+  <text class="nr-s" x="530" y="60">if the DOM changed:</text><text class="nr-s" x="530" y="78">styles, flattening</text>
+  <rect class="nr-box" x="10" y="120" width="218" height="80" rx="8"/>
+  <text class="nr-n" x="26" y="148">4</text><text class="nr-t" x="46" y="148">Diff</text>
+  <text class="nr-s" x="26" y="170">operations for</text><text class="nr-s" x="26" y="188">what changed only</text>
+  <rect class="nr-box" x="262" y="120" width="218" height="80" rx="8"/>
+  <text class="nr-n" x="278" y="148">5</text><text class="nr-t" x="298" y="148">Layout</text>
+  <text class="nr-s" x="278" y="170">Yoga; text measured</text><text class="nr-s" x="278" y="188">by the platform</text>
+  <rect class="nr-box" x="514" y="120" width="218" height="80" rx="8"/>
+  <text class="nr-n" x="530" y="148">6</text><text class="nr-t" x="550" y="148">Draw</text>
+  <text class="nr-s" x="530" y="170">the frames to the</text><text class="nr-s" x="530" y="188">view, a redraw</text>
+  <path class="nr-line" d="M230 50 H260" marker-end="url(#nr-arrow2)"/>
+  <path class="nr-line" d="M482 50 H512" marker-end="url(#nr-arrow2)"/>
+  <path class="nr-line" d="M230 160 H260" marker-end="url(#nr-arrow2)"/>
+  <path class="nr-line" d="M482 160 H512" marker-end="url(#nr-arrow2)"/>
+  <path class="nr-line" d="M664 92 V 102 H 119 V 118" marker-end="url(#nr-arrow2)"/>
+  <text class="nr-s nr-dim" x="10" y="250">Scrolling skips steps 2 to 5: the offset moves, Zig re-places the frames, the view redraws.</text>
+  <text class="nr-s nr-dim" x="10" y="272">Reading layout from JS (getBoundingClientRect, scrollHeight) lays out on demand.</text>
+</svg>
+</figure>
+```
+
+On Android the boundary between Zig and Kotlin is crossed a few times per frame, not per element: Kotlin keeps a copy of each node's properties (sent as JSON when they change) and receives all the frames at once, as one packed float array, after each layout. Touches come back as taps, drags with fling and long presses, and are hit-tested in Zig on the node tree.
+
+## Several elements, one native view
+
+A browser keeps a box for every element. The flattener doesn't: most elements only group or style their children, and a native view per element would cost memory and time for nothing.
+
+```=html
+<figure class="nr-fig">
+<svg viewBox="0 0 760 300" role="img" aria-labelledby="nr-flat-t">
+  <title id="nr-flat-t">Flattening: a card's eight elements become six drawn nodes and one layout-only node</title>
+  <defs><marker id="nr-arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" class="nr-arrowhead"/></marker></defs>
+  <rect class="nr-code" x="10" y="10" width="360" height="280" rx="10"/>
+  <text class="nr-m" x="26" y="42">&lt;div class="card"&gt;</text>
+  <text class="nr-m" x="42" y="70">&lt;h2&gt;Notes&lt;/h2&gt;</text>
+  <text class="nr-m" x="42" y="98">&lt;p&gt;Kept in &lt;b&gt;SQLite&lt;/b&gt;.&lt;/p&gt;</text>
+  <text class="nr-m" x="42" y="126">&lt;div class="row"&gt;</text>
+  <text class="nr-m" x="58" y="154">&lt;button&gt;</text>
+  <text class="nr-m" x="74" y="182">&lt;svg&gt;…&lt;/svg&gt;</text>
+  <text class="nr-m" x="74" y="210">&lt;span&gt;Add&lt;/span&gt;</text>
+  <text class="nr-m" x="58" y="238">&lt;/button&gt;</text>
+  <text class="nr-m" x="42" y="266">&lt;/div&gt;&lt;/div&gt;</text>
+  <path class="nr-line" d="M380 150 H 404" marker-end="url(#nr-arrow3)"/>
+  <rect class="nr-box nr-acc" x="410" y="10" width="340" height="280" rx="10"/>
+  <text class="nr-t" x="426" y="40">View</text><text class="nr-s" x="470" y="40">background, radius, shadow</text>
+  <text class="nr-t" x="442" y="70">Text</text><text class="nr-s" x="486" y="70">"Notes"</text>
+  <text class="nr-t" x="442" y="98">Text</text><text class="nr-s" x="486" y="98">2 runs: "Kept in ", bold "SQLite"</text>
+  <text class="nr-s nr-dim" x="442" y="126">.row: no view, only layout</text>
+  <text class="nr-t" x="458" y="154">View</text><text class="nr-s" x="502" y="154">the button: clickable</text>
+  <text class="nr-t" x="474" y="182">Icon</text><text class="nr-s" x="518" y="182">vector paths</text>
+  <text class="nr-t" x="474" y="210">Text</text><text class="nr-s" x="518" y="210">"Add"</text>
+  <text class="nr-s nr-dim" x="426" y="266">8 elements → 6 drawn nodes, 1 layout-only</text>
+</svg>
+</figure>
+```
+
+| HTML | Native |
+|---|---|
+| An element holding only text and inline elements (`b`, `i`, `a`, `span`, `code`, `br`…) | One text view with styled runs |
+| A box that only lays out its children | A layout node only: nothing is drawn |
+| A box with a background, border, radius or shadow | One drawn box |
+| `input`, `textarea`, `select` | The platform's text field, text area or drop-down |
+| Inline `svg` and `<use href="#symbol">` | One icon, drawn from its paths |
+| `display: none`, `[hidden]` | Nothing |
+
+Events go the other way: a tap on a node becomes a `click` on its element, bubbling through the DOM, with the browser's default actions (a link's `href="#…"`, a label's control, a form's submit button). Text fields send `input`, selects `change`, and Enter in a field reaches the page's `keydown` before it submits the form.
+
+# What it supports
+
+- **Selectors:** types, classes, ids, attributes, `:not()`, `:first-child`, `:last-child`, `:nth-child()`, `:focus`, `:hover` (a mouse or trackpad), `:active` (while pressed), descendant and child combinators, `::before` and `::after` with `content`.
+- **The cascade:** specificity, `!important`, inline styles, `var()` with fallbacks, `calc()`, `color-mix()`, inheritance, `@media` on width, `prefers-color-scheme` and `pointer`.
+- **Layout:** `display` (`flex`, `block`, `inline-flex`, `none`; `grid` as wrapping rows), the flexbox properties, `gap`, sizes and their limits, margins (`auto` too), padding, `position: absolute`, `fixed` and `relative`, `inset`, `overflow` (scroll and clip), `aspect-ratio`, transforms (`translate`, `scale`, `rotate`; scale and rotate are drawn, layout keeps the box).
+- **Drawing:** colors (hex, `rgb()`, `hsl()`), linear and radial gradients, borders, `border-radius`, `box-shadow` (blurred like CSS), `opacity`, fonts (size, weight, italic, monospace), `line-height`, `letter-spacing`, `text-align`, `white-space`, underline.
+- **Transitions:** `transition` (and its longhands) on opacity, backgrounds (colors and gradients), color, transforms, width and height, border colors and `box-shadow`, with durations, delays and timing functions (`ease`, `linear`, `cubic-bezier()`, `steps()`).
+- **Animations:** `@keyframes` and `animation` (and its longhands): the same properties, iteration counts and `infinite`, directions (`alternate`, `reverse`), fill modes and delays. Frames that leave out `from` or `to` use the element's own values, as in CSS. While transitions or animations run, only the animated nodes are updated each frame: no styles or flattening.
+- **JavaScript:** what DOM-based UI code uses. The showcase is plain JavaScript; libraries that render through the DOM (React DOM, Preact, Vue, Svelte) use the same calls, but haven't been tried yet.
+
+Not yet: animating `background-position`, `filter` and `backdrop-filter` (a blurred background is drawn opaque), skew and 3D transforms, grid areas and spans, floats, `position: sticky`, `canvas`, `iframe`, `img`. A page that measures text or draws itself won't work.
+
+It is not a browser, and it isn't trying to be one: it runs the part of the web that an app's interface uses. When a page uses something outside it, the layout still works and the property is ignored.
+
+# Status
+
+| | Linux (GTK 4) | Android |
+|---|---|---|
+| Runs | The showcase: every tab | The showcase: every tab, on a Pixel 8 and on ChromeOS |
+| Fields | `GtkEntry`, `GtkTextView`, `GtkDropDown` | `EditText`, `Spinner` |
+| Input | Clicks, wheel, keys, context menu, hover | Taps, drag with fling, long press, keys, the back button, mouse hover |
+
+Next: accessibility (each node exposed to the screen reader), images, then the Apple and Windows backends. The design notes are in [`docs/native-renderer.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-renderer.md).

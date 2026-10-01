@@ -94,9 +94,8 @@ open class OrielActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         val w = orielWindow
-        val view = w?.webView
         when {
-            view != null && view.canGoBack() -> view.goBack()
+            w != null && w.goBack() -> {}
             // Like other launcher apps: back leaves the main window running.
             w == null || w.isMain -> moveTaskToBack(true)
             else -> NativeLib.onCloseRequested(w.id)
@@ -135,7 +134,7 @@ open class OrielActivity : Activity() {
 
     internal fun hasWindowFocusOrVisible(): Boolean = started
 
-    internal fun setWebView(view: WebView) {
+    internal fun setContent(view: View) {
         root.removeAllViews()
         root.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         view.requestFocus(View.FOCUS_DOWN)
