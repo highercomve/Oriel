@@ -7,6 +7,7 @@
 //   ops(json)                   the frame's operations (render.js)
 //   frame(id) → [x, y, w, h]    a node's last layout, in window coordinates
 //   evalScript(name, code)      run a page script at the top level
+//   evalModule(name, code)      run a module script (imports load from the assets) → promise
 //   focus(id), scrollIntoView(id, block), scrollTo(id, y)
 //   platform (JSON), label (the window's label)
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
@@ -474,6 +475,14 @@ g.__oriel = {
         const src = s.getAttribute("src");
         const code = src ? host.asset(src.replace(/^\.?\//, "")) : s.textContent;
         if (!code) { if (src) console.warn(`script not found: ${src}`); continue; }
+        if (s.getAttribute("type") === "module") {
+          // An ES module (Vite's output): its imports and import() load from
+          // the app's assets; a failure shows up as a rejected promise.
+          try {
+            Promise.resolve(host.evalModule(src ? src.replace(/^\.?\//, "") : "inline.js", code)).catch((e) => console.error(e));
+          } catch (e) { console.error(e); }
+          continue;
+        }
         // As a global script (not eval): top-level let/const are shared between scripts.
         try { host.evalScript(src || "inline", code); } catch (e) { console.error(e); }
       }

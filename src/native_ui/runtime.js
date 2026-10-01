@@ -14671,6 +14671,14 @@ ${a.stack || ""}`;
             if (src) console.warn(`script not found: ${src}`);
             continue;
           }
+          if (s.getAttribute("type") === "module") {
+            try {
+              Promise.resolve(host.evalModule(src ? src.replace(/^\.?\//, "") : "inline.js", code)).catch((e) => console.error(e));
+            } catch (e) {
+              console.error(e);
+            }
+            continue;
+          }
           try {
             host.evalScript(src || "inline", code);
           } catch (e) {
