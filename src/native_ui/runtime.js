@@ -14243,6 +14243,32 @@ ${a.stack || ""}`;
   var search = beforeHash.indexOf("?") >= 0 ? beforeHash.slice(beforeHash.indexOf("?")) : "";
   if (hash === "#") hash = "";
   var fireHash = () => setTimeout(() => fireWindow(new Event("hashchange")), 0);
+  var emptySelection = () => ({
+    isCollapsed: true,
+    rangeCount: 0,
+    type: "None",
+    anchorNode: null,
+    focusNode: null,
+    toString() {
+      return "";
+    },
+    removeAllRanges() {
+    },
+    addRange() {
+    },
+    getRangeAt() {
+      throw new RangeError("No range");
+    },
+    collapse() {
+    },
+    selectAllChildren() {
+    },
+    containsNode() {
+      return false;
+    }
+  });
+  g.getSelection = emptySelection;
+  if (typeof document !== "undefined" && !document.getSelection) document.getSelection = emptySelection;
   g.location = {
     get hash() {
       return hash;
