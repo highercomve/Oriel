@@ -105,6 +105,9 @@ extern fn cairo_fill(cr: *cairo_t) void;
 extern fn cairo_fill_preserve(cr: *cairo_t) void;
 extern fn cairo_stroke(cr: *cairo_t) void;
 extern fn cairo_set_source_rgba(cr: *cairo_t, r: f64, g: f64, b: f64, a: f64) void;
+extern fn cairo_set_operator(cr: *cairo_t, op: c_int) void;
+const cairo_operator_clear: c_int = 0; // CAIRO_OPERATOR_CLEAR
+const cairo_operator_over: c_int = 2; // CAIRO_OPERATOR_OVER
 extern fn cairo_set_source(cr: *cairo_t, p: *cairo_pattern_t) void;
 extern fn cairo_set_line_width(cr: *cairo_t, w: f64) void;
 extern fn cairo_set_line_cap(cr: *cairo_t, cap: c_int) void;
@@ -164,6 +167,9 @@ pub const Invoke = *const fn (ctx: ?*anyopaque, engine: *Engine, call_id: u32, c
 
 /// A window's native page: the overlay that goes into the GtkWindow.
 pub const Surface = struct {
+    /// The window is transparent (WindowOptions.transparent): no white page
+    /// under the content, so rounded corners and overlays show what's behind.
+    transparent: bool = false,
     gpa: std.mem.Allocator,
     engine: *Engine = undefined,
     overlay: *Widget,
@@ -182,7 +188,7 @@ pub const Surface = struct {
         return s.overlay;
     }
 
-    pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, width: f32, height: f32, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
+    pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, width: f32, height: f32, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
         const s = try gpa.create(Surface);
         errdefer gpa.destroy(s);
         const overlay = gtk_overlay_new();
@@ -210,7 +216,7 @@ pub const Surface = struct {
             .add_timer = addTimer,
             .invoke = invoke,
             .focus = focus,
-        }, assets, platform_json, label, width, height);
+        }, assets, platform_json, label, url, width, height);
 
         gtk_drawing_area_set_draw_func(area, draw, s, null);
         _ = g_signal_connect_data(@ptrCast(area), "resize", @ptrCast(&onResize), s, null, 0);
@@ -676,9 +682,15 @@ fn draw(_: *Widget, cr: *cairo_t, _: c_int, _: c_int, data: ?*anyopaque) callcon
     if (s.engine.tree.dirty) s.engine.tree.layout();
     const root = s.engine.tree.root orelse return;
     // Under the page: white, as in a browser (the root's background, if
-    // any, is painted over it).
-    cairo_set_source_rgba(cr, 1, 1, 1, 1);
-    cairo_paint(cr);
+    // any, is painted over it); nothing in a transparent window.
+    if (s.transparent) {
+        cairo_set_operator(cr, cairo_operator_clear);
+        cairo_paint(cr);
+        cairo_set_operator(cr, cairo_operator_over);
+    } else {
+        cairo_set_source_rgba(cr, 1, 1, 1, 1);
+        cairo_paint(cr);
+    }
     paint(s, cr, root);
 }
 

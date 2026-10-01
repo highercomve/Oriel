@@ -16,7 +16,11 @@ export function iconFor(svg, cs, doc) {
   }
   const vb = (root.getAttribute("viewBox") || svg.getAttribute("viewBox") || "0 0 24 24").split(/[\s,]+/).map(Number);
   const shapes = [];
-  collect(root, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter" }, current, doc, shapes);
+  // Paint set on <svg> (Feather/Lucide icons: fill="none" stroke="currentColor"
+  // stroke-width="2" on the root) and on the <symbol>, inherited by the shapes.
+  let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter" });
+  if (root !== svg) paint = paintOf(root, paint);
+  collect(root, paint, current, doc, shapes);
   if (!shapes.length) return null;
   return { vb, shapes };
 }
@@ -25,13 +29,7 @@ function collect(el, inherited, current, doc, out) {
   for (const c of el.children) {
     const tag = c.localName;
     if (tag === "defs" || tag === "symbol" || tag === "title" || tag === "lineargradient" || tag === "linearGradient") continue;
-    const paint = {
-      fill: attr(c, "fill") ?? inherited.fill,
-      stroke: attr(c, "stroke") ?? inherited.stroke,
-      sw: parseFloat(attr(c, "stroke-width") ?? inherited.sw),
-      cap: attr(c, "stroke-linecap") ?? inherited.cap,
-      join: attr(c, "stroke-linejoin") ?? inherited.join,
-    };
+    const paint = paintOf(c, inherited);
     if (tag === "g") { collect(c, paint, current, doc, out); continue; }
     const d = pathData(c);
     if (!d) continue;
@@ -45,6 +43,16 @@ function collect(el, inherited, current, doc, out) {
       ...(c.getAttribute("fill-rule") === "evenodd" ? { evenodd: true } : {}),
     });
   }
+}
+
+function paintOf(el, inherited) {
+  return {
+    fill: attr(el, "fill") ?? inherited.fill,
+    stroke: attr(el, "stroke") ?? inherited.stroke,
+    sw: parseFloat(attr(el, "stroke-width") ?? inherited.sw),
+    cap: attr(el, "stroke-linecap") ?? inherited.cap,
+    join: attr(el, "stroke-linejoin") ?? inherited.join,
+  };
 }
 
 function attr(el, name) {

@@ -164,11 +164,163 @@ static JSValue h_eval_script(JSContext *ctx, JSValueConst this_val, int argc, JS
     return JS_UNDEFINED;
 }
 
+// ---- ES modules ---------------------------------------------------------------
+// `<script type="module">` and `import()`: module names are asset paths
+// ("assets/index-x.js"); `./x`, `../x` resolve against the importing module,
+// `/x` and `app://app/x` against the root, a query or fragment is dropped.
+
+static char *nui_join(JSContext *ctx, const char *base, const char *name) {
+    const char *n = name;
+    if (strncmp(n, "app://app/", 10) == 0) n += 10;
+    size_t blen = 0;
+    if (n[0] == '/') {
+        n++;
+    } else if (n[0] == '.') {
+        const char *slash = strrchr(base, '/');
+        if (slash) blen = (size_t)(slash - base) + 1;
+    }
+    size_t nlen = strcspn(n, "?#");
+    char *out = js_malloc(ctx, blen + nlen + 1);
+    if (!out) return NULL;
+    memcpy(out, base, blen);
+    memcpy(out + blen, n, nlen);
+    out[blen + nlen] = 0;
+    // Collapse "./" and "dir/../" segments in place.
+    char *segs[128];
+    int depth = 0;
+    char *w = out, *r = out;
+    while (*r) {
+        char *end = strchr(r, '/');
+        size_t len = end ? (size_t)(end - r) : strlen(r);
+        if ((len == 1 && r[0] == '.') || len == 0) {
+        } else if (len == 2 && r[0] == '.' && r[1] == '.') {
+            if (depth > 0) w = segs[--depth];
+        } else {
+            if (depth < 128) segs[depth++] = w;
+            memmove(w, r, len);
+            w += len;
+            if (end) *w++ = '/';
+        }
+        if (!end) break;
+        r = end + 1;
+    }
+    *w = 0;
+    return out;
+}
+
+static char *nui_normalize(JSContext *ctx, const char *base, const char *name, void *opaque) {
+    (void)opaque;
+    return nui_join(ctx, base, name);
+}
+
+// import.meta.resolve(spec): the app:// URL of `spec` from this module.
+static JSValue nui_meta_resolve(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic, JSValueConst *data) {
+    (void)this_val; (void)magic;
+    if (argc < 1) return JS_UNDEFINED;
+    const char *base = JS_ToCString(ctx, data[0]);
+    const char *spec = JS_ToCString(ctx, argv[0]);
+    JSValue res = JS_UNDEFINED;
+    if (base && spec) {
+        char *p = nui_join(ctx, base, spec);
+        if (p) {
+            size_t plen = strlen(p);
+            char *url = js_malloc(ctx, plen + 11);
+            if (url) {
+                memcpy(url, "app://app/", 10);
+                memcpy(url + 10, p, plen + 1);
+                res = JS_NewString(ctx, url);
+                js_free(ctx, url);
+            }
+            js_free(ctx, p);
+        }
+    }
+    if (base) JS_FreeCString(ctx, base);
+    if (spec) JS_FreeCString(ctx, spec);
+    return res;
+}
+
+static int nui_set_meta(JSContext *ctx, JSModuleDef *m, const char *name) {
+    JSValue meta = JS_GetImportMeta(ctx, m);
+    if (JS_IsException(meta)) return -1;
+    size_t nlen = strlen(name);
+    char *url = js_malloc(ctx, nlen + 11);
+    if (!url) { JS_FreeValue(ctx, meta); return -1; }
+    memcpy(url, "app://app/", 10);
+    memcpy(url + 10, name, nlen + 1);
+    JS_SetPropertyStr(ctx, meta, "url", JS_NewString(ctx, url));
+    js_free(ctx, url);
+    JSValue base = JS_NewString(ctx, name);
+    JS_SetPropertyStr(ctx, meta, "resolve", JS_NewCFunctionData(ctx, nui_meta_resolve, 1, 0, 1, &base));
+    JS_FreeValue(ctx, base);
+    JS_FreeValue(ctx, meta);
+    return 0;
+}
+
+// Compile `code` (needs a NUL at code[len]) as module `name` with its
+// import.meta set: the module value (for JS_EvalFunction), or an exception.
+static JSValue nui_compile_module(JSContext *ctx, const char *name, const char *code, size_t len) {
+    JSValue fn = JS_Eval(ctx, code, len, name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(fn)) return fn;
+    if (nui_set_meta(ctx, JS_VALUE_GET_PTR(fn), name) < 0) { JS_FreeValue(ctx, fn); return JS_EXCEPTION; }
+    return fn;
+}
+
+static JSModuleDef *nui_load_module(JSContext *ctx, const char *name, void *opaque) {
+    (void)opaque;
+    const char *data = NULL;
+    size_t len = 0;
+    if (!oriel_nui_asset(opaque_of(ctx), name, strlen(name), &data, &len)) {
+        JS_ThrowReferenceError(ctx, "module not found: %s", name);
+        return NULL;
+    }
+    // Assets aren't NUL-terminated; JS_Eval needs it.
+    char *code = js_malloc(ctx, len + 1);
+    if (!code) return NULL;
+    memcpy(code, data, len);
+    code[len] = 0;
+    JSValue fn = nui_compile_module(ctx, name, code, len);
+    js_free(ctx, code);
+    if (JS_IsException(fn)) return NULL;
+    // The loader hands back the definition; the runtime keeps the module.
+    JSModuleDef *m = JS_VALUE_GET_PTR(fn);
+    JS_FreeValue(ctx, fn);
+    return m;
+}
+
+// host.evalModule(name, code): run a module script; returns its evaluation
+// promise (the caller reports a rejection).
+static JSValue h_eval_module(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_UNDEFINED;
+    size_t nlen = 0, clen = 0;
+    const char *raw = JS_ToCStringLen(ctx, &nlen, argv[0]);
+    const char *code = JS_ToCStringLen(ctx, &clen, argv[1]);
+    JSValue ret = JS_UNDEFINED;
+    if (raw && code) {
+        char *name = nui_join(ctx, "", raw);
+        if (name) {
+            JSValue fn = nui_compile_module(ctx, name, code, clen);
+            if (JS_IsException(fn)) {
+                report(ctx);
+            } else {
+                // Links the imports (through the loader) and runs it: a
+                // promise for its evaluation (consumes fn).
+                ret = JS_EvalFunction(ctx, fn);
+                if (JS_IsException(ret)) { report(ctx); ret = JS_UNDEFINED; }
+            }
+            js_free(ctx, name);
+        }
+    }
+    if (raw) JS_FreeCString(ctx, raw);
+    if (code) JS_FreeCString(ctx, code);
+    return ret;
+}
+
 static void set_fn(JSContext *ctx, JSValue obj, const char *name, JSCFunction *fn, int len) {
     JS_SetPropertyStr(ctx, obj, name, JS_NewCFunction(ctx, fn, name, len));
 }
 
-void *oqjs_new(void *opaque, const char *platform_json, const char *label) {
+void *oqjs_new(void *opaque, const char *platform_json, const char *label, const char *url) {
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) return NULL;
     JSContext *ctx = JS_NewContext(rt);
@@ -179,6 +331,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label) {
     self->opaque = opaque;
     JS_SetContextOpaque(ctx, opaque);
     JS_SetMaxStackSize(rt, 4 * 1024 * 1024);
+    JS_SetModuleLoaderFunc(rt, nui_normalize, nui_load_module, NULL);
 
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue host = JS_NewObject(ctx);
@@ -192,8 +345,10 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label) {
     set_fn(ctx, host, "scrollIntoView", h_scroll_into_view, 2);
     set_fn(ctx, host, "scrollTo", h_scroll_to, 2);
     set_fn(ctx, host, "evalScript", h_eval_script, 2);
+    set_fn(ctx, host, "evalModule", h_eval_module, 2);
     JS_SetPropertyStr(ctx, host, "platform", JS_NewString(ctx, platform_json));
     JS_SetPropertyStr(ctx, host, "label", JS_NewString(ctx, label));
+    JS_SetPropertyStr(ctx, host, "url", JS_NewString(ctx, url));
     JS_SetPropertyStr(ctx, global, "__host", host);
     JS_FreeValue(ctx, global);
     return self;

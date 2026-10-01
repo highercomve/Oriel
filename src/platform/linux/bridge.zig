@@ -284,13 +284,23 @@ fn evalScriptByLabelTask(data: ?*anyopaque) callconv(.c) c_int {
     }
     App.ensureWindowsMutex();
     App.windows_mutex.lock();
-    const web_view = for (App.windows_list.items) |win| {
-        if (std.mem.eql(u8, win.label, task.label)) break win.handle.web_view;
-    } else null;
+    var web_view: ?*webkit.WebView = null;
+    // A native window (-Dnative_ui) has an engine instead of a web view:
+    // targeted events (App.emitTo) must reach it too.
+    var engine: ?*anyopaque = null;
+    for (App.windows_list.items) |win| {
+        if (!std.mem.eql(u8, win.label, task.label)) continue;
+        web_view = win.handle.web_view;
+        if (comptime build_opts.native_ui) engine = win.handle.native;
+        break;
+    }
     App.windows_mutex.unlock();
 
     if (web_view) |view| {
         view.evaluateJavascript(task.script, -1, null, null, null, null, null);
+    } else if (comptime build_opts.native_ui) {
+        // Outside the lock: the page may open or close windows.
+        if (engine) |e| @as(*native.Engine, @ptrCast(@alignCast(e))).evalScript(task.script);
     }
     return 0; // one-shot
 }

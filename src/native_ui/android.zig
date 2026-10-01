@@ -48,7 +48,7 @@ pub fn engineOf(window: u32) ?*Engine {
 
 /// Create window `window`'s page and run it. The Kotlin side
 /// (`OrielRuntime.createWindow` with the native flag) must exist already.
-pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
+pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
     const s = try gpa.create(Surface);
     errdefer gpa.destroy(s);
     s.* = .{ .gpa = gpa, .window = window, .invoke_fn = invoke_fn, .invoke_ctx = invoke_ctx };
@@ -66,7 +66,7 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .invoke = invoke,
         .focus = focus,
         .props = props,
-    }, assets, platform_json, label, if (w > 0) w else 400, if (h > 0) h else 800);
+    }, assets, platform_json, label, url, if (w > 0) w else 400, if (h > 0) h else 800);
     try surfaces.put(gpa, window, s);
     s.engine.boot(dark, true);
     return s;

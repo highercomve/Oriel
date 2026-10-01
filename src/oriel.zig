@@ -7,6 +7,15 @@
 const std = @import("std");
 pub const options = @import("build_options");
 
+// -Dnative_ui links the engine's C shim (QuickJS) into every program built
+// with this module, and the shim calls the engine's exported oriel_nui_*
+// functions: reference the engine here so they exist in programs that never
+// reach the platform code (the TypeScript generator of `types_from =
+// .root_decls`), not only in the app.
+comptime {
+    if (options.native_ui) _ = @import("native_ui/engine.zig");
+}
+
 pub const App = @import("core/App.zig");
 pub const ipc = @import("core/ipc.zig");
 pub const security = @import("core/security.zig");

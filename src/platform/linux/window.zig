@@ -290,12 +290,17 @@ pub fn WindowCreator(
                 config.assets,
                 build_target.platform_json,
                 options.label,
+                options.url orelse "index.html",
                 @floatFromInt(options.width),
                 @floatFromInt(options.height),
                 BridgeImpl.nativeInvoke,
                 win_inst,
             );
+            surface.transparent = options.transparent;
             window.setChild(surface.widget());
+            // Transparency and overlay placement (layer-shell, always on top),
+            // as for a web view window.
+            overlay.setup(window, null, options, (config.id ++ "\x00")[0..config.id.len :0]);
             _ = gtk.Window.signals.close_request.connect(window, *App.Window, &onWindowCloseRequest, win_inst, .{});
             if (options.visible) window.present();
             return WindowHandle{

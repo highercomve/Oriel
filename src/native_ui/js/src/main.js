@@ -7,8 +7,9 @@
 //   ops(json)                   the frame's operations (render.js)
 //   frame(id) → [x, y, w, h]    a node's last layout, in window coordinates
 //   evalScript(name, code)      run a page script at the top level
+//   evalModule(name, code)      run a module script (imports load from the assets) → promise
 //   focus(id), scrollIntoView(id, block), scrollTo(id, y)
-//   platform (JSON), label (the window's label)
+//   platform (JSON), label (the window's label), url (the window's URL)
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
 
@@ -200,9 +201,25 @@ Object.defineProperty(document, "activeElement", { get() { return this.__active 
 // ---------------------------------------------------------------------------
 // location, history, matchMedia, storage, navigator
 
-let hash = "";
-let search = "";
+// The window's own URL ("index.html#/settings", "index.html?second=1"): its
+// query and fragment, as a WebView window loading that URL would see them.
+const startUrl = String(host.url || "");
+const hashAt = startUrl.indexOf("#");
+let hash = hashAt >= 0 ? startUrl.slice(hashAt) : "";
+const beforeHash = hashAt >= 0 ? startUrl.slice(0, hashAt) : startUrl;
+let search = beforeHash.indexOf("?") >= 0 ? beforeHash.slice(beforeHash.indexOf("?")) : "";
+if (hash === "#") hash = "";
 const fireHash = () => setTimeout(() => fireWindow(new Event("hashchange")), 0);
+// Text selection: native fields keep their own; the page has none to read
+// (an empty, collapsed selection, as in a browser with nothing selected).
+const emptySelection = () => ({
+  isCollapsed: true, rangeCount: 0, type: "None", anchorNode: null, focusNode: null,
+  toString() { return ""; }, removeAllRanges() {}, addRange() {}, getRangeAt() { throw new RangeError("No range"); },
+  collapse() {}, selectAllChildren() {}, containsNode() { return false; },
+});
+g.getSelection = emptySelection;
+if (typeof document !== "undefined" && !document.getSelection) document.getSelection = emptySelection;
+
 g.location = {
   get hash() { return hash; },
   set hash(v) { v = String(v); if (v && !v.startsWith("#")) v = "#" + v; if (v !== hash) { hash = v; history.push(v); fireHash(); } },
@@ -474,6 +491,14 @@ g.__oriel = {
         const src = s.getAttribute("src");
         const code = src ? host.asset(src.replace(/^\.?\//, "")) : s.textContent;
         if (!code) { if (src) console.warn(`script not found: ${src}`); continue; }
+        if (s.getAttribute("type") === "module") {
+          // An ES module (Vite's output): its imports and import() load from
+          // the app's assets; a failure shows up as a rejected promise.
+          try {
+            Promise.resolve(host.evalModule(src ? src.replace(/^\.?\//, "") : "inline.js", code)).catch((e) => console.error(e));
+          } catch (e) { console.error(e); }
+          continue;
+        }
         // As a global script (not eval): top-level let/const are shared between scripts.
         try { host.evalScript(src || "inline", code); } catch (e) { console.error(e); }
       }
