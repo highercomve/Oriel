@@ -32,6 +32,20 @@ test exStyle {
 /// Let DWM compose the window with per-pixel alpha, and give the webview a
 /// transparent background: only what the page paints shows.
 pub fn makeTransparent(hwnd: win32.HWND, controller: *webview2.ICoreWebView2Controller) void {
+    enableAlpha(hwnd);
+    var c2: ?*anyopaque = null;
+    if (controller.lpVtbl.QueryInterface(controller, &webview2.IID_ICoreWebView2Controller2, &c2) < 0 or c2 == null) {
+        log.warn("transparent window: this WebView2 runtime has no ICoreWebView2Controller2", .{});
+        return;
+    }
+    const ctl2: *webview2.ICoreWebView2Controller2 = @ptrCast(@alignCast(c2.?));
+    defer _ = ctl2.lpVtbl.base.Release(@ptrCast(ctl2));
+    _ = ctl2.lpVtbl.put_DefaultBackgroundColor(ctl2, .{ .A = 0, .R = 0, .G = 0, .B = 0 });
+}
+
+/// Let DWM compose the window's client area with per-pixel alpha (what the
+/// webview or the native renderer leaves transparent shows what's behind).
+pub fn enableAlpha(hwnd: win32.HWND) void {
     // An empty blur region: no blur, just alpha composition of the client area.
     const region = win32.CreateRectRgn(0, 0, -1, -1);
     defer if (region) |r| {
@@ -45,15 +59,6 @@ pub fn makeTransparent(hwnd: win32.HWND, controller: *webview2.ICoreWebView2Cont
     };
     const hr = win32.DwmEnableBlurBehindWindow(hwnd, &bb);
     if (hr < 0) log.warn("transparent window: DwmEnableBlurBehindWindow failed (0x{X})", .{@as(u32, @bitCast(hr))});
-
-    var c2: ?*anyopaque = null;
-    if (controller.lpVtbl.QueryInterface(controller, &webview2.IID_ICoreWebView2Controller2, &c2) < 0 or c2 == null) {
-        log.warn("transparent window: this WebView2 runtime has no ICoreWebView2Controller2", .{});
-        return;
-    }
-    const ctl2: *webview2.ICoreWebView2Controller2 = @ptrCast(@alignCast(c2.?));
-    defer _ = ctl2.lpVtbl.base.Release(@ptrCast(ctl2));
-    _ = ctl2.lpVtbl.put_DefaultBackgroundColor(ctl2, .{ .A = 0, .R = 0, .G = 0, .B = 0 });
 }
 
 fn scale(hwnd: win32.HWND) f32 {

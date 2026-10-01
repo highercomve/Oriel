@@ -29,7 +29,7 @@ Flattener: the DOM → native nodes, several elements per native view
 Zig: one node per native view, Yoga (flexbox) layout, text measured by
         │  the platform, frames applied
         │
-Backend: GTK 4 (Linux), Android views (JNI); later UIKit, AppKit, Win32
+Backend: GTK 4 (Linux), Android views (JNI), Direct2D (Windows); later UIKit, AppKit
 ```
 
 Everything runs on the UI thread, as a browser's main thread: the page's
@@ -102,5 +102,25 @@ inline blocks flowing in text, `position: sticky`, `img`, `canvas`,
    presses are hit-tested in Zig. A native window never creates a WebView.
    The showcase APK measured with `dumpsys meminfo` against the WebView
    build.
-3. Then: transitions, `:hover`/`:focus`, grid, accessibility, and the
-   Apple and Windows backends.
+3. **Windows** (`src/native_ui/win32.zig`): one child window, the canvas,
+   draws boxes, gradients, borders, shadows, text (DirectWrite, color
+   emoji) and icons (Direct2D path geometries from
+   `src/native_ui/svg_path.zig`, which parses SVG path data) with
+   Direct2D; fields are real EDIT and COMBOBOX controls over it, with
+   Enter and Escape sent to the page first. Clicks, the wheel, keys and
+   hover are hit-tested in Zig as on GTK. The render target's DPI is the
+   window's, so the tree stays in CSS pixels. A transparent window (overlays)
+   clears to transparent and gets the same DWM blur-behind as a WebView2
+   one, so only what the page paints shows; always-on-top and placement
+   are the window's, as for WebView2 windows. A native window never
+   creates WebView2. Commands run from the message loop (queued, as sync web
+   commands are) and answer only engines whose window is still open. The
+   showcase, idle on its first tab: 31 MB private working set in one
+   process, against 90 MB in seven processes with WebView2.
+
+   Not yet: color emoji inside the EDIT controls (GDI draws them as
+   outlines), owner-drawn selects (a COMBOBOX keeps the system look), IME
+   composition shown on the canvas (fields get it from Windows), and
+   accessibility (UI Automation).
+4. Then: transitions, `:hover`/`:focus`, grid, accessibility, and the
+   Apple backends.
