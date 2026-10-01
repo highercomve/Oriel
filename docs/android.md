@@ -89,6 +89,14 @@ for both ABIs (signed with `$ORIEL_ANDROID_KEYSTORE`,
 `$ORIEL_ANDROID_KEY_PASSWORD`). Without the CLI: `zig build
 -Dtarget=aarch64-linux-android` then `gradle installDebug` in `android/`.
 
+Release builds are small: Zig strips the library (Debug builds keep their
+symbols) and R8 shrinks the Kotlin side; a hello world's APK is 0.8 MB.
+R8 can't see what native code calls by name over JNI, so
+`android/app/proguard-rules.pro` keeps Oriel's runtime (`dev.oriel.**`). If
+your Zig code calls classes of your own through JNI, add a `-keep` rule for
+them there. Projects generated before this change keep their old
+`build.gradle.kts`; `oriel android init --force` regenerates it.
+
 Checks that need no NDK: `zig build check -Dtarget=aarch64-linux-android`,
 `scripts/android/check.sh` (apps with llama/whisper) and
 `scripts/android/check-runtime.sh` (compiles the Kotlin runtime and checks

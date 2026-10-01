@@ -18,6 +18,10 @@ const std = @import("std");
 const options = @import("build_options");
 
 const c = @cImport({
+    // Zig defines _FORTIFY_SOURCE in optimized builds; translate-c can't
+    // read the NDK's fortified <stdio.h> (Android release builds failed).
+    // The C code itself is compiled with its own flags.
+    @cUndef("_FORTIFY_SOURCE");
     @cInclude("ggml.h");
     @cInclude("ggml-alloc.h");
     @cInclude("ggml-backend.h");

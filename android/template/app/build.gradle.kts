@@ -32,7 +32,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 shrinks the Kotlin runtime and androidx (2.9 -> 0.13 MB of
+            // dex); proguard-rules.pro keeps what the native code calls by name.
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (System.getenv("ORIEL_ANDROID_KEYSTORE") != null) signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -40,7 +43,8 @@ android {
     sourceSets["main"].jniLibs.srcDirs("@@lib_dir@@")
 
     packaging {
-        // Zig strips nothing Gradle should strip again; keep the libraries as built.
+        // Release libraries come stripped from Zig, Debug ones keep their
+        // symbols: either way Gradle keeps the libraries as built.
         jniLibs.keepDebugSymbols += "**/*.so"
         jniLibs.useLegacyPackaging = false
     }
