@@ -87,6 +87,8 @@ jobs:
             err.txt
 
       - name: Scenario 6 — built from this tree, same scenarios
+        uses: actions/checkout@v4
+      - name: Set up Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
