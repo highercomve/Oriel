@@ -3,6 +3,7 @@
 // release`) rewrites it with GitHub's latest release, read at build time.
 .custom = .{
     .version = "v0.7.0",
+    .releases_link = "https://github.com/highercomve/Oriel/releases/tag/v0.7.0",
 },
 .site = .simple(.{
     .title = "Oriel",

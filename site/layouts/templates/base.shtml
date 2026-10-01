@@ -33,7 +33,7 @@
 					<a href="$site.page('docs/modules').link()">Modules</a>
 					<a href="$site.page('docs/roadmap').link()">Roadmap</a>
 					<a class="topnav-gh" href="https://github.com/highercomve/Oriel">GitHub</a>
-					<span class="version-badge" :text="$site.custom.get('version')"></span>
+					<a class="version-badge" href="$site.custom.get('releases_link')" :text="$site.custom.get('version')"></a>
 				</nav>
 			</div>
 		</header>
