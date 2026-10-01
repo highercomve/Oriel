@@ -334,6 +334,17 @@ fn ensureModel(m: *const Model, want_gpu: bool, n_ctx: u32) !u64 {
     const model = while (true) {
         var mp = c.llama_model_default_params();
         mp.n_gpu_layers = if (gpu) 999 else 0;
+        // On the CPU, no GPU device at all (an empty list). With a GPU backend
+        // built in, llama.cpp otherwise still uses it: the weights went to
+        // its host buffer, ahead of the CPU's repacked layouts (the fast Arm
+        // dotprod/i8mm kernels), and on ChromeOS ARC's virtio-gpu that
+        // memory is uncached for the CPU (40 tok/s became 2.8); without the
+        // host buffer it still ran at half speed (20 tok/s).
+        var no_devices = [_]c.ggml_backend_dev_t{null};
+        if (!gpu) {
+            mp.devices = &no_devices;
+            mp.no_host = true;
+        }
         // Phones: read the weights into memory. Models live in the app's
         // external files directory, behind Android's FUSE layer, where a
         // mapped file the CPU reads every token is slow; memory reclaim
