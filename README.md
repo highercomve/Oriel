@@ -80,6 +80,9 @@ background audio on iOS.
   <img src="assets/screenshots/showcase-app.png" alt="The App tab: windows, the IPC echo and events from a worker" width="19%">
 </p>
 
+How to build and package it for each platform, with the GPU options:
+[examples/showcase/README.md](examples/showcase/README.md).
+
 ### [Smoke test](examples/smoke)
 
 **[examples/smoke](examples/smoke)**: every module gets a pass/fail check
