@@ -1524,6 +1524,9 @@ fn addAndroidLib(
             .target = target,
             .optimize = optimize,
             .pic = true,
+            // Release libraries ship without debug info (5.3 -> 0.6 MB for
+            // a hello world); Debug keeps it for ndk-stack and lldb.
+            .strip = if (optimize == .Debug) null else true,
             .imports = &.{
                 .{ .name = "oriel", .module = oriel },
                 .{ .name = "app_root", .module = app_root },

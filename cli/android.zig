@@ -83,10 +83,12 @@ const Env = struct {
     }
 
     /// android/gradlew if the project has one, else Gradle from PATH.
+    /// Caller frees.
     fn gradle(e: Env) ?[]const u8 {
         const wrapper = std.fs.path.join(e.ctx.gpa, &.{ e.android_dir, if (builtin.os.tag == .windows) "gradlew.bat" else "gradlew" }) catch return null;
         if (exists(e.ctx.io, wrapper)) return wrapper;
-        if (e.ctx.hasExecutable("gradle") catch false) return "gradle";
+        e.ctx.gpa.free(wrapper);
+        if (e.ctx.hasExecutable("gradle") catch false) return e.ctx.gpa.dupe(u8, "gradle") catch null;
         e.ctx.err.print("error: no Gradle: install Gradle 8.9+ (or run `gradle wrapper` in android/)\n", .{}) catch {};
         return null;
     }
@@ -233,6 +235,7 @@ fn dev(e: Env, args: []const []const u8) !u8 {
     defer e.ctx.gpa.free(target_arg);
     if (!e.zigBuild(&.{ "android-dev", target_arg })) return 1;
     const gradle = e.gradle() orelse return 1;
+    defer e.ctx.gpa.free(gradle);
     if (!run(e.ctx, &.{ gradle, "installDebug" }, e.android_dir)) return 1;
     const tcp = try std.fmt.allocPrint(e.ctx.gpa, "tcp:{s}", .{port});
     defer e.ctx.gpa.free(tcp);
@@ -282,6 +285,7 @@ fn build(e: Env, args: []const []const u8) !u8 {
         if (!e.zigBuild(&.{ target_arg, "-Doptimize=ReleaseSafe" })) return 1;
     }
     const gradle = e.gradle() orelse return 1;
+    defer e.ctx.gpa.free(gradle);
     var tasks: std.ArrayList([]const u8) = .empty;
     defer tasks.deinit(e.ctx.gpa);
     try tasks.append(e.ctx.gpa, gradle);
