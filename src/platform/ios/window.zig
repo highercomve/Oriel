@@ -192,8 +192,12 @@ fn show(handle: WindowHandle) void {
     if (st.presented) return;
     // The main window appears when the system connects the first scene.
     if (isMain(handle)) return;
+    // A scene of its own on iPad. The Info.plist always declares multiple
+    // scenes, so supportsMultipleScenes is YES on iPhone too, where asking
+    // for a scene silently does nothing: check the idiom as well.
     const app = ShellMod.sharedApplication();
-    if (apple.isTrue(app.msgSend(apple.c.BOOL, "supportsMultipleScenes", .{}))) {
+    const idiom = apple.class("UIDevice").msgSend(Object, "currentDevice", .{}).msgSend(isize, "userInterfaceIdiom", .{});
+    if (idiom == UIUserInterfaceIdiomPad and apple.isTrue(app.msgSend(apple.c.BOOL, "supportsMultipleScenes", .{}))) {
         ShellMod.requestScene(handle.serial);
         return;
     }
@@ -205,6 +209,8 @@ fn show(handle: WindowHandle) void {
     top.msgSend(void, "presentViewController:animated:completion:", .{ controller, apple.boolean(true), @as(apple.id, null) });
     st.presented = true;
 }
+
+const UIUserInterfaceIdiomPad: isize = 1;
 
 fn topPresented(controller: Object) Object {
     var top = controller;
