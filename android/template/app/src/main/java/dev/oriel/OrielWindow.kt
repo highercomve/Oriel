@@ -78,6 +78,8 @@ internal class OrielWindow(
     /** What the Activity shows. */
     private val content: View get() = nui ?: webView!!
     var activity: OrielActivity? = null
+    /** When showWindow last started an Activity for this window that hasn't attached yet (uptime ms; 0: none). */
+    var launchedAt = 0L
     /** The current main-frame document's reply channel (from its hello). */
     private var replyProxy: JavaScriptReplyProxy? = null
     /** Messages posted before the document said hello. */
@@ -179,6 +181,7 @@ internal class OrielWindow(
     /** Show the WebView in `host` (moving it out of an old Activity). */
     fun attachTo(host: OrielActivity) {
         activity = host
+        launchedAt = 0L
         context.baseContext = host
         (content.parent as? ViewGroup)?.removeView(content)
         host.setContent(content)
