@@ -112,12 +112,18 @@ jobs:
           grep -aq "unloaded the chat model" ui-chat.log
       - name: Permissions for dictation (microphone, speech recognition)
         run: |
-          xcrun simctl privacy "$UDID" grant all dev.oriel.Showcase || true
-          # Speech recognition may not be among simctl's services: grant it
-          # in the simulator's TCC database too.
+          # Run 40 still showed the microphone prompt after `grant all`: grant
+          # it by name too, and both services in the simulator's TCC database
+          # (speech recognition isn't among simctl's services), then restart
+          # tccd so it reads them.
+          xcrun simctl privacy "$UDID" grant all dev.oriel.Showcase || echo "grant all failed"
+          xcrun simctl privacy "$UDID" grant microphone dev.oriel.Showcase || echo "grant microphone failed"
           db="$HOME/Library/Developer/CoreSimulator/Devices/$UDID/data/Library/TCC/TCC.db"
-          sqlite3 "$db" "insert or replace into access (service, client, client_type, auth_value, auth_reason, auth_version, flags) values ('kTCCServiceSpeechRecognition', 'dev.oriel.Showcase', 0, 2, 2, 1, 0)" || true
+          for service in kTCCServiceMicrophone kTCCServiceSpeechRecognition; do
+            sqlite3 "$db" "insert or replace into access (service, client, client_type, auth_value, auth_reason, auth_version, flags) values ('$service', 'dev.oriel.Showcase', 0, 2, 2, 1, 0)" || echo "TCC $service failed"
+          done
           sqlite3 "$db" "select service, client, auth_value from access where client = 'dev.oriel.Showcase'" || true
+          xcrun simctl spawn "$UDID" launchctl stop com.apple.tccd || true
       - name: Spoken test audio (English, Spanish)
         run: |
           say -v '?' | grep -E 'en_US|es_(ES|MX)' | head -8
@@ -147,9 +153,9 @@ jobs:
         run: |
           for f in screenshot*.png shot-*.png; do
             [ -f "$f" ] || continue
-            sips -s format jpeg -s formatOptions 70 -Z 900 "$f" --out shot.jpg >/dev/null
+            sips -s format jpeg -s formatOptions 60 -Z 900 "$f" --out shot.jpg >/dev/null
             echo "----BEGIN SCREENSHOT $f----"
-            base64 -b 76 -i shot.jpg
+            base64 -i shot.jpg # one line: the log API returns only the last 5000 lines
             echo "----END SCREENSHOT $f----"
           done
       - name: Crash reports
