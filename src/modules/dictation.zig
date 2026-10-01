@@ -313,10 +313,11 @@ pub fn delete(name: []const u8) !void {
 
 /// Memory pressure (e.g. Android's trim-memory at 40, the app in the
 /// background): free the models unless listening; the next session loads
-/// them again. The last recording stays (`compare` reruns it).
+/// them again. The last recording stays (`compare` reruns it). Returns at
+/// once while a model is in use (safe to call on the main thread).
 pub fn unloadIdle() void {
     if (recording.load(.acquire) or transcriber != null) return;
-    mutex.lockUncancelable(io);
+    if (!mutex.tryLock()) return;
     defer mutex.unlock(io);
     if (loaded) |l| {
         l.ctx.deinit();

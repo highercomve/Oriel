@@ -2,7 +2,9 @@
 //! file, renamed when complete, with progress per megabyte. Redirects are
 //! followed by hand (Hugging Face sends to its CDN), and on Android each
 //! host is resolved by `oriel.android.preconnect` first (Zig's resolver
-//! needs /etc/resolv.conf, which Android doesn't have).
+//! needs /etc/resolv.conf, which Android doesn't have). On iOS the download
+//! goes through NSURLSession (model_download/ios.zig): Zig's TLS finds no
+//! CA certificates there.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -28,6 +30,14 @@ pub fn fetch(
     defer dir.close(io);
     const part = try std.fmt.allocPrint(gpa, "{s}.part", .{file_name});
     defer gpa.free(part);
+    if (builtin.os.tag == .ios) {
+        const part_path = try std.fs.path.join(gpa, &.{ dir_path, part });
+        defer gpa.free(part_path);
+        try @import("model_download/ios.zig").fetch(io, url, part_path, expected_mb, ctx, progress);
+        try dir.rename(part, dir, file_name, io);
+        log.info("downloaded {s}", .{file_name});
+        return;
+    }
 
     var client: std.http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();

@@ -580,10 +580,14 @@ fn addOrielModule(
     } else null;
     options.addOption(bool, "ggml_opencl_static", opencl != null);
     if (features.llama or features.whisper) {
-        // Metal: on by default for macOS and iOS (Apple GPUs; the shader
-        // sources are embedded and compiled by ggml at startup).
+        // Metal: on by default for macOS and iOS devices (Apple GPUs; the
+        // shader sources are embedded and compiled by ggml at startup). Off
+        // for the iOS simulator, whose Metal lacks what ggml's kernels need
+        // (loading a model on it ends the app; llama.cpp's and whisper.cpp's
+        // own iOS examples use the CPU there too).
         const apple = target.result.os.tag == .macos or target.result.os.tag == .ios;
-        const metal = b.option(bool, "ggml_metal", "Build ggml's Metal backend for llama/whisper (macOS, iOS; default on)") orelse apple;
+        const simulator = target.result.os.tag == .ios and target.result.abi == .simulator;
+        const metal = b.option(bool, "ggml_metal", "Build ggml's Metal backend for llama/whisper (macOS, iOS devices; default on, off for the simulator)") orelse (apple and !simulator);
         if (metal and !apple) fatal("-Dggml_metal needs a macOS or iOS target", .{});
         // ARM extensions for ggml's CPU code: dotprod by default on Android
         // (every arm64 phone since 2018), none elsewhere.

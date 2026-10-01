@@ -14,7 +14,7 @@
   if (!name) return;
   const log = (line) => invoke("ui_log", { line: String(line) });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const shot = async (n) => { await log(`screenshot ${n}`); await sleep(3000); };
+  const shot = async (n) => { await log(`screenshot ${n}`); await sleep(8000); }; // simctl takes seconds
   async function until(ok, ms, what) {
     const end = Date.now() + ms;
     while (Date.now() < end) {
@@ -38,35 +38,46 @@
         if (p.done_mb >= next) { log(`download ${p.done_mb} of ${p.total_mb} MB`); next = p.done_mb + 100; }
       });
       $("chat-download").click();
-      await until(() => chatState.status.models.find((x) => x.name === model).present, 30 * 60000, "the download");
+      const failed = () => /Download failed/.test($("chat-state").textContent);
+      await until(() => chatState.status.models.find((x) => x.name === model).present || failed(), 30 * 60000, "the download");
+      check(!failed(), $("chat-state").textContent);
       if (typeof off === "function") off();
     }
     await log(`model present; ${$("chat-backend").textContent.trim()}; ${$("chat-proc-note").textContent}`);
 
-    // A long answer, to see it stream and stop it.
-    let tokens = 0;
-    const offTok = listen("chat:token", () => { tokens += 1; });
-    $("chat-input").value = "Write a long story about a lighthouse keeper and a storm.";
-    $("chat-form").requestSubmit();
-    const t0 = Date.now();
-    await until(() => tokens >= 1, 5 * 60000, "the first token");
-    await log(`first token after ${Date.now() - t0} ms`);
-    await until(() => tokens >= 20, 5 * 60000, "20 tokens");
+    // A long answer, to see it stream and stop it. The simulator runs on
+    // the Mac's CPU, fast enough to finish a whole answer in a second or
+    // two, so everything is measured from the token events themselves: the
+    // bubble's length after the 3rd and the 12th token, then Stop. Counting
+    // is long and never refused (a 0.5B model sometimes declines a story);
+    // an answer that still ends before 12 tokens is asked again.
+    let tokens = 0, len3 = 0, len12 = 0;
     const bubbleText = () => { const b = $("chat-log").querySelectorAll(".bubble"); return b[b.length - 1].querySelector("p").textContent; };
-    const len1 = bubbleText().length;
-    await sleep(1500);
-    const len2 = bubbleText().length;
-    await log(`streaming: ${tokens} tokens so far; the bubble grew from ${len1} to ${len2} characters`);
-    check(len2 > len1, "the reply didn't grow while streaming");
-    await shot("chat-streaming");
-    $("chat-send").click(); // Stop while busy
-    await until(() => !chatState.busy, 60000, "Stop");
     const meta = () => { const s = $("chat-log").querySelectorAll(".bubble small"); return s.length ? s[s.length - 1].textContent : ""; };
+    const offTok = listen("chat:token", () => {
+      tokens += 1; // after the page's own listener, which appended the token
+      if (tokens === 3) len3 = bubbleText().length;
+      if (tokens === 12) { len12 = bubbleText().length; $("chat-send").click(); } // Stop while busy
+    });
+    for (let attempt = 1; ; attempt++) {
+      tokens = 0; len3 = 0; len12 = 0;
+      $("chat-input").value = "Count from 1 to 200, one number per line.";
+      $("chat-form").requestSubmit();
+      const t0 = Date.now();
+      await until(() => tokens >= 1, 5 * 60000, "the first token");
+      await log(`first token after ${Date.now() - t0} ms`);
+      await until(() => !chatState.busy, 5 * 60000, "the reply to end");
+      if (tokens >= 12 || attempt === 3) break;
+      await log(`the answer ended after ${tokens} tokens ("${bubbleText().slice(0, 80)}"): asking again`);
+    }
+    await log(`streaming: the bubble had ${len3} characters after 3 tokens, ${len12} after 12; ${tokens} tokens in all`);
+    check(len12 > len3 && len3 > 0, "the reply didn't grow while streaming");
     await log(`stopped: ${meta()}`);
     check(/stopped/.test(meta()), "the stopped reply doesn't say it was stopped");
+    await shot("chat-stopped");
 
     // A follow-up: the conversation so far is in the KV cache.
-    $("chat-input").value = "Now tell the same story in one sentence.";
+    $("chat-input").value = "Now count from 1 to 5.";
     $("chat-form").requestSubmit();
     await until(() => chatState.busy, 10000, "the follow-up to start");
     await until(() => !chatState.busy, 10 * 60000, "the follow-up");

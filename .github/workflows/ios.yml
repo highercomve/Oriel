@@ -15,6 +15,7 @@ on:
       - "src/platform/ios/**"
       - "src/platform/apple/**"
       - "src/**/ios.zig"
+      - "build.zig"
       - "build/ios.zig"
       - "build/ggml.zig"
       - "tools/package/ios.zig"
@@ -53,7 +54,7 @@ jobs:
           zig build -Dtarget=aarch64-ios -Dapple_sdk="$(xcrun --sdk iphoneos --show-sdk-path)" --summary all
           zig build ios-ipa -Dtarget=aarch64-ios -Dapple_sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
           ls -la zig-out/ios/*.app zig-out/*.ipa
-      - name: Build for the simulator (whisper, Metal)
+      - name: Build for the simulator (whisper and llama on the CPU)
         working-directory: examples/showcase
         run: |
           rm -rf zig-out

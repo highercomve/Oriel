@@ -108,7 +108,7 @@ options:
 | audio_capture | `AVAudioSession` (play and record, mixing with other apps) + AudioQueue, mono f32 at the requested rate; sources are "default" and the session's inputs (built-in mic, headset, Bluetooth). |
 | store | As on macOS, under the app's sandbox. |
 | deep_link | See above. |
-| llama, whisper | ggml with Metal (on by default for iOS targets, `-Dggml_metal=false` to leave it out). `chat` and `dictation` use the CPU on phones until their Compare measures the GPU (Metal must be 1.3× faster to be picked). |
+| llama, whisper | ggml with Metal (on by default for devices, `-Dggml_metal=false` to leave it out; off for the simulator, whose Metal can't run ggml's kernels: there both use the CPU). `chat` and `dictation` use the CPU on phones until their Compare measures the GPU (Metal must be 1.3× faster to be picked). |
 | dictation (system engine) | Apple's Speech framework (`dictation/apple.zig`, iOS and macOS): `SFSpeechRecognizer` on an `AVAudioEngine` input tap, on the device when `supportsOnDeviceRecognition`, with punctuation. Each phrase is its own recognition task (ended after a pause or 50 s, since Apple stops a task after about a minute), so events match Android's. `.auto` picks it on iOS when it runs on the device. Needs the microphone and speech recognition permissions: the Info.plist gets `NSSpeechRecognitionUsageDescription` with the microphone's text, and authorization is asked on the first start. |
 | tray, menu, global_shortcut, input, updater, media_server, fs_watch | Not available on iOS: off by default for iOS targets, and a build error when enabled. |
 

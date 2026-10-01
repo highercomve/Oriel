@@ -234,8 +234,8 @@ pub const Commands = struct {
         return try dictation.transcribeFile(gpa, path, args);
     }
 
-    /// `--ui-test <name>` on the command line (iOS: `xcrun simctl launch
-    /// ... --ui-test chat`): the page runs that scripted test (uitest.js).
+    /// `--ui-test <name>` on the command line, or ORIEL_UI_TEST=<name> in
+    /// the environment: the page runs that scripted test (uitest.js).
     pub fn ui_test(_: std.mem.Allocator) ?[]const u8 {
         return ui_test_name;
     }
@@ -258,11 +258,13 @@ pub const Commands = struct {
 var ui_test_name: ?[]const u8 = null;
 
 /// iOS: in the background (or warned about memory), free the models; the
-/// next dictation or reply loads them again.
+/// next dictation or reply loads them again. On the main thread, before
+/// the handler returns: iOS suspends the app right after (both return at
+/// once while a model is in use).
 fn onIosEvent(name: []const u8, _: []const u8) void {
     if (std.mem.eql(u8, name, "background") or std.mem.eql(u8, name, "memory-warning")) {
-        oriel.App.spawn(dictation.unloadIdle, .{}) catch {};
-        oriel.App.spawn(chat.unloadIdle, .{}) catch {};
+        dictation.unloadIdle();
+        chat.unloadIdle();
     }
 }
 
@@ -422,12 +424,17 @@ pub fn main(init: std.process.Init) !u8 {
             if (std.mem.eql(u8, flag, "--transcribe")) return headlessTranscribe(init.gpa, arg);
         };
     }
-    // `--ui-test <name>`: the page drives its own controls (web/uitest.js).
+    // `--ui-test <name>` or ORIEL_UI_TEST=<name> (on iOS, `SIMCTL_CHILD_`
+    // variables reach the app): the page drives its own controls
+    // (web/uitest.js).
     if (!oriel.target.is_android) {
         var it = try init.minimal.args.iterateAllocator(init.gpa);
         defer it.deinit();
         while (it.next()) |arg| if (std.mem.eql(u8, arg, "--ui-test")) {
             if (it.next()) |n| ui_test_name = try init.arena.allocator().dupe(u8, n);
+        };
+        if (ui_test_name == null) if (init.environ_map.get("ORIEL_UI_TEST")) |n| {
+            if (n.len > 0) ui_test_name = try init.arena.allocator().dupe(u8, n);
         };
     }
 

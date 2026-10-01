@@ -276,10 +276,11 @@ pub fn delete(name: []const u8) !void {
 }
 
 /// Memory pressure (the app in the background): free the model unless it
-/// is answering; the next reply loads it again.
+/// is answering or loading (then it returns at once: safe to call on the
+/// main thread); the next reply loads it again.
 pub fn unloadIdle() void {
     if (generating.load(.acquire)) return;
-    mutex.lockUncancelable(io);
+    if (!mutex.tryLock()) return;
     defer mutex.unlock(io);
     if (loaded) |*l| {
         l.deinit();

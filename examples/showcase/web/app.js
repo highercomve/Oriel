@@ -675,9 +675,11 @@ $("chat-download").addEventListener("click", async () => {
   const name = chatState.model;
   $("chat-download").disabled = true;
   $("chat-get").querySelector(".progress").hidden = false;
-  try { await invoke("chat_download", { model: name }); } catch (e) { $("chat-state").textContent = `Download failed: ${e.message || e}`; }
+  let failed = null;
+  try { await invoke("chat_download", { model: name }); } catch (e) { failed = `Download failed: ${e.message || e}`; }
   $("chat-get").querySelector(".progress").hidden = true;
   await chatRefresh();
+  if (failed) $("chat-state").textContent = failed; // after the refresh, which resets it
 });
 listen("chat:download", (p) => {
   $("chat-progress").style.width = `${Math.round((100 * p.done_mb) / Math.max(1, p.total_mb))}%`;

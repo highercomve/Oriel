@@ -213,7 +213,9 @@ pub var on_shutdown_fn: ?*const fn () void = null;
 /// The app's lifecycle, for apps to react to (`oriel.ios.onSystemEvent`):
 /// "background" (every window left the screen), "foreground" (back), and
 /// "memory-warning" (iOS may end the app next: drop caches and models).
-/// Called on the main thread.
+/// Called on the main thread. Do "background" work right there, not on
+/// another thread: iOS suspends the app soon after the handler returns,
+/// and a worker it froze mid-way finishes only when the app comes back.
 pub const SystemEventHandler = *const fn (name: []const u8, data: []const u8) void;
 var system_event_handler: ?SystemEventHandler = null;
 
