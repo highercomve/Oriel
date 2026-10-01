@@ -22,6 +22,10 @@ const handlers = @import("handlers.zig");
 const bridge_mod = @import("bridge.zig");
 const scheme_mod = @import("scheme.zig");
 const permissions = @import("../../core/permissions.zig");
+const build_opts = @import("build_options");
+const build_target = @import("../../core/target.zig");
+/// -Dnative_ui: pages drawn with native views instead of a WebView (docs/native-renderer.md).
+const native = if (build_opts.native_ui) @import("../../native_ui/android.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
 
@@ -51,6 +55,7 @@ const flag_devtools: i32 = 1 << 4;
 const flag_focus: i32 = 1 << 5;
 const flag_main: i32 = 1 << 6;
 const flag_media: i32 = 1 << 7;
+const flag_native: i32 = 1 << 8;
 
 // ---------------------------------------------------------------------------
 // Operations (UI thread, forwarded from other threads)
@@ -282,6 +287,7 @@ pub fn getWindowById(id: u32) ?*App.Window {
 
 fn teardown(handle: WindowHandle) void {
     isolation.forget(handle.id);
+    if (comptime build_opts.native_ui) native.destroy(handle.id);
     _ = runtime.call(.void, "destroyWindow", "(I)V", .{@as(i32, @intCast(handle.id))});
 }
 
@@ -393,7 +399,6 @@ pub fn WindowCreator(
         }
 
         pub fn createWindow(options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle {
-            _ = win_inst; // looked up through App.windows_list by id
             if (!ShellMod.isMainThread()) return error.NotMainThread;
             const gpa = heap.gpa;
             const target_uri = try security.resolveWindowUrl(
@@ -417,6 +422,7 @@ pub fn WindowCreator(
             if (options.focus_on_show) flags |= flag_focus;
             if (std.mem.eql(u8, options.label, "main")) flags |= flag_main;
             if (media) flags |= flag_media;
+            if (comptime build_opts.native_ui) flags |= flag_native;
 
             const id = next_id.fetchAdd(1, .monotonic);
             const ok = runtime.call(.boolean, "createWindow", "(I[B[B[BIIIII[B[B)Z", .{
@@ -433,6 +439,13 @@ pub fn WindowCreator(
                 @as([]const u8, rules),
             }) orelse false;
             if (!ok) return error.CreateWindowFailed;
+            if (comptime build_opts.native_ui) {
+                _ = native.create(std.heap.smp_allocator, id, config.assets, build_target.platform_json, options.label, BridgeImpl.nativeInvoke, win_inst) catch |err| {
+                    log.err("native ui: cannot start the page ({s})", .{@errorName(err)});
+                    _ = runtime.call(.void, "destroyWindow", "(I)V", .{@as(i32, @intCast(id))});
+                    return err;
+                };
+            }
             return .{ .id = id };
         }
 

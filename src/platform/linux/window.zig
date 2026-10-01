@@ -15,6 +15,10 @@ const isolation = @import("../../core/isolation.zig");
 const dev_server = @import("dev_server.zig");
 const permissions = @import("../../core/permissions.zig");
 const overlay = @import("overlay.zig");
+const build_opts = @import("build_options");
+const build_target = @import("../../core/target.zig");
+/// -Dnative_ui: pages drawn with native views instead of WebKit (docs/native-renderer.md).
+const native_gtk = if (build_opts.native_ui) @import("../../native_ui/gtk.zig") else struct {};
 
 extern fn g_type_check_instance_is_a(instance: *anyopaque, iface_type: usize) c_int;
 extern fn webkit_user_media_permission_is_for_audio_device(req: *webkit.UserMediaPermissionRequest) c_int;
@@ -60,7 +64,10 @@ const log = std.log.scoped(.oriel);
 pub const WindowHandle = struct {
     gtk_window: *gtk.Window,
     app_window: *gtk.ApplicationWindow,
-    web_view: *webkit.WebView,
+    /// Null for a native window (-Dnative_ui).
+    web_view: ?*webkit.WebView,
+    /// The native renderer's engine (-Dnative_ui), else null.
+    native: ?*anyopaque = null,
 
     pub fn eql(self: WindowHandle, other: WindowHandle) bool {
         return self.gtk_window == other.gtk_window;
@@ -131,7 +138,7 @@ pub fn focusWindow(handle: WindowHandle) void {
 }
 
 pub fn destroyWindow(handle: WindowHandle) void {
-    isolation.forget(@intFromPtr(handle.web_view));
+    if (handle.web_view) |v| isolation.forget(@intFromPtr(v));
     handle.gtk_window.destroy();
 }
 
@@ -225,6 +232,8 @@ pub fn WindowCreator(
                 window.as(gtk.Widget).setSizeRequest(options.min_width orelse -1, options.min_height orelse -1);
             }
 
+            if (comptime build_opts.native_ui) return createNativeWindow(window, app_window, options, win_inst);
+
             const view = webkit.WebView.new();
             SchemeImpl.register(view);
 
@@ -273,13 +282,37 @@ pub fn WindowCreator(
             };
         }
 
+        /// -Dnative_ui: the page's HTML, CSS and JS run on the native renderer
+        /// (QuickJS, Yoga, Cairo/Pango and GTK fields), no WebKit.
+        fn createNativeWindow(window: *gtk.Window, app_window: *gtk.ApplicationWindow, options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle {
+            const surface = try native_gtk.Surface.create(
+                std.heap.smp_allocator,
+                config.assets,
+                build_target.platform_json,
+                options.label,
+                @floatFromInt(options.width),
+                @floatFromInt(options.height),
+                BridgeImpl.nativeInvoke,
+                win_inst,
+            );
+            window.setChild(surface.widget());
+            _ = gtk.Window.signals.close_request.connect(window, *App.Window, &onWindowCloseRequest, win_inst, .{});
+            if (options.visible) window.present();
+            return WindowHandle{
+                .gtk_window = window,
+                .app_window = app_window,
+                .web_view = null,
+                .native = surface.engine,
+            };
+        }
+
         fn onWindowCloseRequest(window: *gtk.Window, win: *App.Window) callconv(.c) c_int {
             if ((std.mem.eql(u8, win.label, "main") and config.on_close == .hide) or win.options.hide_on_close) {
                 window.as(gtk.Widget).setVisible(0);
                 return 1;
             }
             overlay.forget(window);
-            isolation.forget(@intFromPtr(win.handle.web_view));
+            if (win.handle.web_view) |v| isolation.forget(@intFromPtr(v));
 
             win.saveGeometry();
 
@@ -371,7 +404,7 @@ pub fn WindowCreator(
                             .url = uri_z,
                         }) catch |err| log.err("window.open failed: {s}", .{@errorName(err)});
                     } else if (App.getWindow("main")) |mw| {
-                        mw.handle.web_view.loadUri(uri);
+                        if (mw.handle.web_view) |v| v.loadUri(uri);
                     }
                 } else decision.use(),
                 .open_external => {

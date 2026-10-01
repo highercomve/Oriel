@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Message
 import android.util.Log
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.PermissionRequest
@@ -27,7 +28,9 @@ import java.io.ByteArrayInputStream
 
 /**
  * One Oriel window: a WebView that lives as long as the window, shown in an
- * [OrielActivity] while the window is visible. The WebView is created with a
+ * [OrielActivity] while the window is visible. With the native renderer
+ * (FLAG_NATIVE, -Dnative_ui) it is a [NuiView] instead and no WebView is
+ * ever created. The WebView is created with a
  * [MutableContextWrapper] so it survives its Activity (hidden windows keep
  * running, recreated Activities get the same page).
  */
@@ -54,6 +57,7 @@ internal class OrielWindow(
         const val FLAG_FOCUS = 1 shl 5
         const val FLAG_MAIN = 1 shl 6
         const val FLAG_MEDIA = 1 shl 7
+        const val FLAG_NATIVE = 1 shl 8
 
         const val HELLO = "__oriel_hello__"
         const val APP_ORIGIN = "https://app.localhost"
@@ -63,8 +67,16 @@ internal class OrielWindow(
     }
 
     private val context = MutableContextWrapper(OrielRuntime.app)
-    var webView: WebView = createWebView()
+    val native get() = flags and FLAG_NATIVE != 0
+    var webView: WebView? = if (native) null else createWebView()
         private set
+    private val nui: NuiView? = if (native) NuiView(context, id) { w, h ->
+        val density = context.resources.displayMetrics.density
+        cssWidth = (w / density).toInt()
+        cssHeight = (h / density).toInt()
+    }.also { Nui.views[id] = it } else null
+    /** What the Activity shows. */
+    private val content: View get() = nui ?: webView!!
     var activity: OrielActivity? = null
     /** The current main-frame document's reply channel (from its hello). */
     private var replyProxy: JavaScriptReplyProxy? = null
@@ -151,16 +163,25 @@ internal class OrielWindow(
         }
     }
 
-    fun eval(script: String) = webView.evaluateJavascript(script, null)
+    fun eval(script: String) = webView?.evaluateJavascript(script, null)
 
-    fun load(target: String) = webView.loadUrl(target)
+    fun load(target: String) = webView?.loadUrl(target)
+
+    /** The back button: the page's history first. */
+    fun goBack(): Boolean {
+        if (nui != null) return NuiNative.back(id)
+        val view = webView ?: return false
+        if (!view.canGoBack()) return false
+        view.goBack()
+        return true
+    }
 
     /** Show the WebView in `host` (moving it out of an old Activity). */
     fun attachTo(host: OrielActivity) {
         activity = host
         context.baseContext = host
-        (webView.parent as? ViewGroup)?.removeView(webView)
-        host.setWebView(webView)
+        (content.parent as? ViewGroup)?.removeView(content)
+        host.setContent(content)
         host.applyTitle(title)
         host.applyFullscreen(fullscreen)
     }
@@ -169,16 +190,17 @@ internal class OrielWindow(
         if (activity !== host) return
         activity = null
         context.baseContext = OrielRuntime.app
-        (webView.parent as? ViewGroup)?.removeView(webView)
+        (content.parent as? ViewGroup)?.removeView(content)
     }
 
     fun destroy() {
         destroyed = true
         activity?.finishByRuntime()
         activity = null
-        (webView.parent as? ViewGroup)?.removeView(webView)
-        webView.stopLoading()
-        webView.destroy()
+        (content.parent as? ViewGroup)?.removeView(content)
+        if (nui != null) Nui.views.remove(id)
+        webView?.stopLoading()
+        webView?.destroy()
         queued.clear()
         replyProxy = null
     }
@@ -186,8 +208,9 @@ internal class OrielWindow(
     /** The renderer died: a fresh WebView on the same URL. */
     private fun recreate() {
         val host = activity
-        (webView.parent as? ViewGroup)?.removeView(webView)
-        webView.destroy()
+        val old = webView ?: return
+        (old.parent as? ViewGroup)?.removeView(old)
+        old.destroy()
         replyProxy = null
         webView = createWebView()
         host?.let { attachTo(it) }

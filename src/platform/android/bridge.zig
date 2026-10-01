@@ -21,6 +21,9 @@ const isolation = @import("../../core/isolation.zig");
 const runtime = @import("runtime.zig");
 const ShellMod = @import("Shell.zig");
 const window_mod = @import("window.zig");
+const build_opts = @import("build_options");
+/// -Dnative_ui: pages drawn with native views (docs/native-renderer.md).
+const native = if (build_opts.native_ui) @import("../../native_ui/android.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
 
@@ -61,10 +64,16 @@ pub const bridge_js = blk: {
 
 /// Post `json` to window `id`'s page (UI thread).
 fn post(id: u32, json: []const u8) void {
+    if (comptime build_opts.native_ui) if (native.engineOf(id)) |e| return e.message(json);
     _ = runtime.call(.void, "postMessage", "(I[B)V", .{ @as(i32, @intCast(id)), json });
 }
 
 fn evaluate(id: u32, script: []const u8) void {
+    if (comptime build_opts.native_ui) if (native.engineOf(id)) |e| {
+        const z = heap.gpa.dupeZ(u8, script) catch return;
+        defer heap.gpa.free(z);
+        return e.evalScript(z);
+    };
     _ = runtime.call(.void, "evalJs", "(I[B)V", .{ @as(i32, @intCast(id)), script });
 }
 
@@ -184,6 +193,82 @@ pub fn Bridge(
             defer gpa.free(with_token);
             return std.fmt.allocPrint(gpa, "{s}window.__oriel_window_label = {s};\n{s}", .{ comptime security.bridgePrelude(config.security), label_json, with_token });
         }
+
+        /// The native renderer's `invoke` (-Dnative_ui): the same dispatch as
+        /// `onMessage`, for the app's own page. No IPC token or isolation: the
+        /// page is the app's embedded code running in its own engine, not web
+        /// content. `ctx` is the window (*App.Window). Answers arrive from the
+        /// task queue, never inside the call that asked.
+        pub fn nativeInvoke(ctx: ?*anyopaque, window: u32, call_id: u32, cmd: []const u8, args_json: []const u8) void {
+            const win: *App.Window = @ptrCast(@alignCast(ctx.?));
+            const gpa = heap.gpa;
+            var arena_state = std.heap.ArenaAllocator.init(gpa);
+            defer arena_state.deinit();
+            const arena = arena_state.allocator();
+            const page_url = security.resolveWindowUrl(arena, config.security, local, null, win.options.url, config.start) catch "https://app.localhost/index.html";
+            const args = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch .null;
+            const request: ipc.Request = .{ .cmd = cmd, .args = args };
+            const pool = App.getWorkerPool();
+
+            const result: anyerror![]const u8 = blk: {
+                if (window_commands.isWindowCommand(cmd))
+                    break :blk window_commands.dispatch(config.security, local, arena, page_url, win.label, cmd, args);
+                if (!security.commandAllowedForWindow(config.security, local, page_url, cmd, win.label)) {
+                    log.warn("native page: blocked command \"{f}\" (window: {s})", .{ std.zig.fmtString(cmd[0..@min(cmd.len, 64)]), win.label });
+                    break :blk error.Forbidden;
+                }
+                if (ipc.isBuiltinCommand(cmd)) break :blk ipc.dispatchBuiltin(config.security, arena, request);
+                if (!ipc.isAsync(api.commands, cmd)) break :blk ipc.dispatchRequest(api.commands, arena, request, if (pool) |p| p.io else null);
+                const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
+                const req_json = std.json.Stringify.valueAlloc(arena, request, .{}) catch break :blk error.OutOfMemory;
+                const job = gpa.create(NativeReply) catch break :blk error.OutOfMemory;
+                job.* = .{ .window = window, .call_id = call_id };
+                ipc.dispatchAsync(api.commands, worker_pool, gpa, req_json, worker_pool.io, job, NativeReply.onWorkerDone) catch |err| {
+                    gpa.destroy(job);
+                    break :blk err;
+                };
+                return;
+            };
+            if (result) |json| NativeReply.send(window, call_id, true, json) else |err| NativeReply.send(window, call_id, false, ipc.errorText(err));
+        }
+
+        const NativeReply = struct {
+            window: u32,
+            call_id: u32,
+            ok: bool = true,
+            text: []u8 = &.{},
+
+            fn send(window: u32, call_id: u32, ok: bool, text: []const u8) void {
+                const gpa = heap.gpa;
+                const r = gpa.create(NativeReply) catch return;
+                r.* = .{ .window = window, .call_id = call_id, .ok = ok, .text = gpa.dupe(u8, text) catch {
+                    gpa.destroy(r);
+                    return;
+                } };
+                ShellMod.dispatchWithCleanup(&run, r, &drop);
+            }
+
+            fn onWorkerDone(self: *NativeReply, arena_state: std.heap.ArenaAllocator, res: ?[:0]const u8, err_name: ?[:0]const u8) void {
+                var a = arena_state;
+                defer a.deinit();
+                const window = self.window;
+                const call_id = self.call_id;
+                heap.gpa.destroy(self);
+                if (err_name) |e| send(window, call_id, false, e) else send(window, call_id, true, res orelse "null");
+            }
+
+            fn run(ctx: ?*anyopaque) void {
+                const self: *NativeReply = @ptrCast(@alignCast(ctx.?));
+                defer drop(self);
+                native.resolve(self.window, self.call_id, self.ok, self.text);
+            }
+
+            fn drop(ctx: ?*anyopaque) void {
+                const self: *NativeReply = @ptrCast(@alignCast(ctx.?));
+                heap.gpa.free(self.text);
+                heap.gpa.destroy(self);
+            }
+        };
 
         const Message = struct {
             id: ?u64 = null,

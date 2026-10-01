@@ -50,6 +50,9 @@ const Features = struct {
     audio_capture: bool,
     /// Linux/Wayland: overlay windows as layer surfaces (gtk4-layer-shell).
     layer_shell: bool,
+    /// Experimental: draw the page with native views instead of a WebView
+    /// (QuickJS-ng + Yoga; Linux and Android so far). docs/native-renderer.md
+    native_ui: bool,
 
     /// Modules that have no Android backend: off by default for Android
     /// targets, and an error when enabled there (their selectors explain why).
@@ -69,7 +72,8 @@ const Features = struct {
                 std.mem.eql(u8, field.name, "llama_mtmd") or
                 std.mem.eql(u8, field.name, "whisper") or
                 std.mem.eql(u8, field.name, "audio_capture") or
-                std.mem.eql(u8, field.name, "layer_shell"));
+                std.mem.eql(u8, field.name, "layer_shell") or
+                std.mem.eql(u8, field.name, "native_ui"));
             // deep_link is opt-in (default off), like the native dependencies.
             const is_deep_link = comptime std.mem.eql(u8, field.name, "deep_link");
             const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
@@ -84,6 +88,9 @@ const Features = struct {
             @field(f, field.name) = opt orelse (!is_native and !is_deep_link and !(android and android_off) and !(ios and ios_off));
         }
 
+        if (f.native_ui and !(target.result.os.tag == .linux)) {
+            fatal("-Dnative_ui is experimental: Linux and Android only so far (docs/native-renderer.md)", .{});
+        }
         if (f.llama_mtmd and !f.llama) {
             fatal("llama_mtmd requires llama (-Dllama)", .{});
         }
@@ -557,6 +564,7 @@ fn addOrielModule(
             .flags = &.{ "-DSQLITE_THREADSAFE=1", "-DSQLITE_DQS=0", "-DSQLITE_OMIT_DEPRECATED" },
         });
     };
+    if (features.native_ui) addNativeUi(b, oriel);
     if (features.sqlite_vec) {
         if (b.lazyDependency("sqlite_vec", .{})) |sqlite_vec| {
             oriel.addIncludePath(sqlite_vec.path("."));
@@ -1717,4 +1725,35 @@ fn useLld(target: std.Build.ResolvedTarget) bool {
 fn pathExists(b: *std.Build, path: []const u8) bool {
     std.Io.Dir.cwd().access(b.graph.io, path, .{}) catch return false;
     return true;
+}
+
+/// -Dnative_ui: QuickJS-ng (the page's JavaScript) and Yoga (flexbox
+/// layout), compiled into the oriel module. docs/native-renderer.md
+fn addNativeUi(b: *std.Build, oriel: *std.Build.Module) void {
+    const no_ubsan = "-fno-sanitize=undefined"; // both rely on unspecified C behavior
+    if (b.lazyDependency("quickjs", .{})) |qjs| {
+        oriel.addIncludePath(qjs.path("."));
+        oriel.addCSourceFiles(.{
+            .root = qjs.path("."),
+            .files = &.{ "quickjs.c", "libregexp.c", "libunicode.c", "dtoa.c" },
+            .flags = &.{ "-std=gnu11", "-D_GNU_SOURCE", "-O2", no_ubsan, "-funsigned-char", "-fwrapv" },
+        });
+        // The page's `__host` and the entry points engine.zig calls.
+        oriel.addCSourceFile(.{ .file = b.path("src/native_ui/qjs_shim.c"), .flags = &.{ "-std=gnu11", "-O2", no_ubsan } });
+    }
+    if (b.lazyDependency("yoga", .{})) |yoga| {
+        oriel.addIncludePath(yoga.path("."));
+        oriel.addCSourceFiles(.{
+            .root = yoga.path("yoga"),
+            .files = &.{
+                "YGConfig.cpp",                 "YGEnums.cpp",               "YGNode.cpp",           "YGNodeLayout.cpp",
+                "YGNodeStyle.cpp",              "YGPixelGrid.cpp",           "YGValue.cpp",          "algorithm/AbsoluteLayout.cpp",
+                "algorithm/Baseline.cpp",       "algorithm/Cache.cpp",       "algorithm/CalculateLayout.cpp", "algorithm/FlexLine.cpp",
+                "algorithm/PixelGrid.cpp",      "config/Config.cpp",         "debug/AssertFatal.cpp", "debug/Log.cpp",
+                "event/event.cpp",              "node/LayoutResults.cpp",    "node/Node.cpp",
+            },
+            .flags = &.{ "-std=c++20", "-O2", no_ubsan, "-fno-exceptions" },
+        });
+        oriel.link_libcpp = true;
+    }
 }

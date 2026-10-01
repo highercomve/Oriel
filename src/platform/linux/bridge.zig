@@ -16,6 +16,9 @@ const build_target = @import("../../core/target.zig");
 const isolation = @import("../../core/isolation.zig");
 
 const log = std.log.scoped(.oriel);
+const build_opts = @import("build_options");
+/// -Dnative_ui: pages drawn with native views (docs/native-renderer.md).
+const native = if (build_opts.native_ui) @import("../../native_ui/engine.zig") else struct {};
 
 pub const handler_name = "oriel";
 
@@ -218,20 +221,30 @@ fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
     if (task.target) |v| {
         App.ensureWindowsMutex();
         App.windows_mutex.lock();
-        const web_view = for (App.windows_list.items) |win| {
+        const web_view: ?*webkit.WebView = for (App.windows_list.items) |win| {
             if (win.handle.eql(v)) break win.handle.web_view;
         } else null;
         App.windows_mutex.unlock();
         if (web_view) |view| {
             view.evaluateJavascript(task.script, -1, null, null, null, null, null);
+        } else if (comptime build_opts.native_ui) {
+            if (nativeEngine(v)) |e| e.evalScript(task.script);
         }
     } else {
         App.ensureWindowsMutex();
         App.windows_mutex.lock();
-        defer App.windows_mutex.unlock();
+        var engines: [16]*anyopaque = undefined;
+        var n_engines: usize = 0;
         for (App.windows_list.items) |win| {
-            win.handle.web_view.evaluateJavascript(task.script, -1, null, null, null, null, null);
+            if (win.handle.web_view) |view| view.evaluateJavascript(task.script, -1, null, null, null, null, null);
+            if (comptime build_opts.native_ui) if (win.handle.native) |e| if (n_engines < engines.len) {
+                engines[n_engines] = e;
+                n_engines += 1;
+            };
         }
+        App.windows_mutex.unlock();
+        // Outside the lock: the page may open or close windows.
+        if (comptime build_opts.native_ui) for (engines[0..n_engines]) |e| @as(*native.Engine, @ptrCast(@alignCast(e))).evalScript(task.script);
     }
     return 0; // one-shot
 }
@@ -318,6 +331,81 @@ pub fn Bridge(
                 .{ .detail = handler_name },
             );
         }
+
+        /// The native renderer's `invoke` (-Dnative_ui): the same dispatch as
+        /// `onMessage`, for the app's own page. No IPC token or isolation: the
+        /// page is the app's embedded code running in its own engine, not web
+        /// content. `ctx` is the window (*App.Window). Answers arrive on the
+        /// main loop, never inside the call that asked.
+        pub fn nativeInvoke(ctx: ?*anyopaque, engine: *native.Engine, call_id: u32, cmd: []const u8, args_json: []const u8) void {
+            const win: *App.Window = @ptrCast(@alignCast(ctx.?));
+            const gpa = std.heap.smp_allocator;
+            var arena_state = std.heap.ArenaAllocator.init(gpa);
+            defer arena_state.deinit();
+            const arena = arena_state.allocator();
+            const page_url = security.resolveWindowUrl(arena, config.security, local, null, win.options.url, config.start) catch "app://localhost/index.html";
+            const args = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch .null;
+            const request: ipc.Request = .{ .cmd = cmd, .args = args };
+            const pool = App.getWorkerPool();
+
+            const result: anyerror![]const u8 = blk: {
+                if (window_commands.isWindowCommand(cmd))
+                    break :blk window_commands.dispatch(config.security, local, arena, page_url, win.label, cmd, args);
+                if (!security.commandAllowedForWindow(config.security, local, page_url, cmd, win.label)) {
+                    log.warn("native page: blocked command \"{f}\" (window: {s})", .{ std.zig.fmtString(cmd[0..@min(cmd.len, 64)]), win.label });
+                    break :blk error.Forbidden;
+                }
+                if (ipc.isBuiltinCommand(cmd)) break :blk ipc.dispatchBuiltin(config.security, arena, request);
+                if (!ipc.isAsync(api.commands, cmd)) break :blk ipc.dispatchRequest(api.commands, arena, request, if (pool) |p| p.io else null);
+                // Async: on the worker pool, answered from the main loop.
+                const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
+                const req_json = std.fmt.allocPrint(arena, "{{\"cmd\":{f},\"args\":{s}}}", .{ std.json.fmt(cmd, .{}), if (args_json.len > 0) args_json else "null" }) catch break :blk error.OutOfMemory;
+                const job = gpa.create(NativeReply) catch break :blk error.OutOfMemory;
+                job.* = .{ .engine = engine, .call_id = call_id };
+                ipc.dispatchAsync(api.commands, worker_pool, gpa, req_json, worker_pool.io, job, NativeReply.onWorkerDone) catch |err| {
+                    gpa.destroy(job);
+                    break :blk err;
+                };
+                return;
+            };
+            if (result) |json| NativeReply.post(engine, call_id, true, json) else |err| NativeReply.post(engine, call_id, false, ipc.errorText(err));
+        }
+
+        const NativeReply = struct {
+            engine: *native.Engine,
+            call_id: u32,
+            ok: bool = true,
+            text: []u8 = &.{},
+
+            fn post(engine: *native.Engine, call_id: u32, ok: bool, text: []const u8) void {
+                const gpa = std.heap.smp_allocator;
+                const r = gpa.create(NativeReply) catch return;
+                r.* = .{ .engine = engine, .call_id = call_id, .ok = ok, .text = gpa.dupe(u8, text) catch {
+                    gpa.destroy(r);
+                    return;
+                } };
+                _ = glib.idleAdd(&idle, r);
+            }
+
+            fn onWorkerDone(self: *NativeReply, arena_state: std.heap.ArenaAllocator, res: ?[:0]const u8, err_name: ?[:0]const u8) void {
+                var a = arena_state;
+                defer a.deinit();
+                const engine = self.engine;
+                const call_id = self.call_id;
+                std.heap.smp_allocator.destroy(self);
+                if (err_name) |e| post(engine, call_id, false, e) else post(engine, call_id, true, res orelse "null");
+            }
+
+            fn idle(data: ?*anyopaque) callconv(.c) c_int {
+                const self: *NativeReply = @ptrCast(@alignCast(data));
+                defer {
+                    std.heap.smp_allocator.free(self.text);
+                    std.heap.smp_allocator.destroy(self);
+                }
+                self.engine.resolve(self.call_id, self.ok, self.text);
+                return 0;
+            }
+        };
 
         fn onMessage(
             _: *webkit.UserContentManager,
@@ -482,4 +570,14 @@ pub fn Bridge(
             return 1;
         }
     };
+}
+
+fn nativeEngine(handle: @import("window.zig").WindowHandle) ?*native.Engine {
+    App.ensureWindowsMutex();
+    App.windows_mutex.lock();
+    defer App.windows_mutex.unlock();
+    for (App.windows_list.items) |win| {
+        if (win.handle.eql(handle)) return @ptrCast(@alignCast(win.handle.native orelse return null));
+    }
+    return null;
 }
