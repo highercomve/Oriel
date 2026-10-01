@@ -22,9 +22,9 @@ jobs:
         run: |
           $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\oriel.exe'
           New-Item -ItemType Directory -Force -Path $key | Out-Null
-          Set-ItemProperty $key DumpFolder -ExpandProperty 'C:\dumps' ExpandString
-          Set-ItemProperty $key DumpType 2 DWORD
-          Set-ItemProperty $key DumpCount 10 DWORD
+          New-Item -PropertyType ExpandString -Name DumpFolder -Path $key -Value 'C:\dumps' | Out-Null
+          Set-ItemProperty $key -Name DumpType -Value 2 -Type DWord
+          Set-ItemProperty $key -Name DumpCount -Value 10 -Type DWord
           New-Item -ItemType Directory -Force -Path C:\dumps | Out-Null
 
       - name: Winget-style locations (Packages dir + hard-linked command)
@@ -75,6 +75,7 @@ jobs:
         if: always()
         run: |
           Get-ChildItem C:\dumps | ForEach-Object { Write-Output $_.FullName }
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
