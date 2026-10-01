@@ -20,6 +20,43 @@ const isolation = @import("../../core/isolation.zig");
 
 const log = std.log.scoped(.oriel);
 
+const build_opts = @import("build_options");
+/// -Dnative_ui: pages drawn with native views (docs/native-renderer.md).
+const native = if (build_opts.native_ui) @import("../../native_ui/engine.zig") else struct {
+    pub const Engine = opaque {};
+};
+
+/// Up to 16 native windows' engines, found under the windows lock and
+/// called outside it (a page may open or close windows).
+const NativeEngines = struct {
+    items: [16]*native.Engine = undefined,
+    len: usize = 0,
+
+    fn add(self: *NativeEngines, win: *App.Window) void {
+        if (comptime !build_opts.native_ui) return;
+        const e = win.handle.native orelse return;
+        if (self.len == self.items.len) return;
+        self.items[self.len] = @ptrCast(@alignCast(e));
+        self.len += 1;
+    }
+
+    fn eval(self: *const NativeEngines, script: [:0]const u8) void {
+        if (comptime !build_opts.native_ui) return;
+        for (self.items[0..self.len]) |e| e.evalScript(script);
+    }
+};
+
+/// The engine still belongs to an open window (a reply or event for a
+/// window that closed meanwhile is dropped, not run on a freed engine).
+pub fn nativeEngineAlive(e: *native.Engine) bool {
+    if (comptime !build_opts.native_ui) return false;
+    App.ensureWindowsMutex();
+    App.windows_mutex.lock();
+    defer App.windows_mutex.unlock();
+    for (App.windows_list.items) |win| if (win.handle.native == @as(?*anyopaque, @ptrCast(e))) return true;
+    return false;
+}
+
 /// Replaced by `ipc.tokenScript` (which defines `const ipcToken`) in each
 /// window's copy of `bridge_js`.
 const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
@@ -60,14 +97,18 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
             const script_w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.smp_allocator, self.script) catch return;
             defer std.heap.smp_allocator.free(script_w);
 
+            var engines: NativeEngines = .{};
             if (self.target) |v| {
                 // Handles match by HWND only: use the live window's webview,
                 // not the (possibly stale) copy queued with the task.
                 App.ensureWindowsMutex();
                 App.windows_mutex.lock();
-                const webview = for (App.windows_list.items) |win| {
-                    if (win.handle.eql(v)) break win.handle.webview;
-                } else null;
+                var webview: ?*webview2.ICoreWebView2 = null;
+                for (App.windows_list.items) |win| if (win.handle.eql(v)) {
+                    webview = win.handle.webview;
+                    engines.add(win);
+                    break;
+                };
                 App.windows_mutex.unlock();
 
                 if (webview) |view| {
@@ -76,11 +117,13 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
             } else {
                 App.ensureWindowsMutex();
                 App.windows_mutex.lock();
-                defer App.windows_mutex.unlock();
                 for (App.windows_list.items) |win| {
-                    _ = win.handle.webview.executeScript(script_w.ptr, null);
+                    if (win.handle.webview) |view| _ = view.executeScript(script_w.ptr, null);
+                    engines.add(win);
                 }
+                App.windows_mutex.unlock();
             }
+            engines.eval(self.script);
         }
     };
 
@@ -103,15 +146,26 @@ pub fn emitEvent(target: ?window_mod.WindowHandle, label: ?[]const u8, name_json
     const msg = std.fmt.allocPrint(gpa, "{{\"__oriel_event\":{s},\"payload\":{s}}}", .{ name_json, payload_json }) catch return;
     defer gpa.free(msg);
     const msg_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, msg) catch return;
+    // Native pages (-Dnative_ui) get the event as a call, like App.emit's
+    // script on platforms without web messages.
+    const script: ?[:0]u8 = if (comptime build_opts.native_ui)
+        (std.fmt.allocPrintSentinel(gpa, "window.oriel?.__emit({s}, {s});", .{ name_json, payload_json }, 0) catch {
+            gpa.free(msg_w);
+            return;
+        })
+    else
+        null;
 
     const Task = struct {
         target: ?window_mod.WindowHandle,
         label: ?[]u8,
         msg_w: [:0]u16,
+        script: ?[:0]u8,
 
         fn discard(self: *@This()) void {
             const a = std.heap.smp_allocator;
             if (self.label) |l| a.free(l);
+            if (self.script) |s| a.free(s);
             a.free(self.msg_w);
             a.destroy(self);
         }
@@ -123,23 +177,27 @@ pub fn emitEvent(target: ?window_mod.WindowHandle, label: ?[]const u8, name_json
         fn run(ctx: ?*anyopaque) void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
             defer discard(self);
+            var engines: NativeEngines = .{};
             App.ensureWindowsMutex();
             App.windows_mutex.lock();
-            defer App.windows_mutex.unlock();
             for (App.windows_list.items) |win| {
                 // Handles match by HWND: the live window's webview, not a stale copy.
                 if (self.target) |t| if (!win.handle.eql(t)) continue;
                 if (self.label) |l| if (!std.mem.eql(u8, win.label, l)) continue;
-                _ = win.handle.webview.postWebMessageAsJson(self.msg_w.ptr);
+                if (win.handle.webview) |view| _ = view.postWebMessageAsJson(self.msg_w.ptr);
+                engines.add(win);
             }
+            App.windows_mutex.unlock();
+            if (self.script) |s| engines.eval(s);
         }
     };
 
     const task = gpa.create(Task) catch {
         gpa.free(msg_w);
+        if (script) |s| gpa.free(s);
         return;
     };
-    task.* = .{ .target = target, .label = null, .msg_w = msg_w };
+    task.* = .{ .target = target, .label = null, .msg_w = msg_w, .script = script };
     if (label) |l| task.label = gpa.dupe(u8, l) catch {
         Task.discard(task);
         return;
@@ -182,14 +240,21 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
 
             App.ensureWindowsMutex();
             App.windows_mutex.lock();
-            const webview = for (App.windows_list.items) |win| {
-                if (std.mem.eql(u8, win.label, self.label)) break win.handle.webview;
-            } else null;
+            var webview: ?*webview2.ICoreWebView2 = null;
+            // A native window (-Dnative_ui) has an engine instead of a web
+            // view: targeted events (App.emitTo) must reach it too.
+            var engines: NativeEngines = .{};
+            for (App.windows_list.items) |win| if (std.mem.eql(u8, win.label, self.label)) {
+                webview = win.handle.webview;
+                engines.add(win);
+                break;
+            };
             App.windows_mutex.unlock();
 
             if (webview) |view| {
                 _ = view.executeScript(script_w.ptr, null);
             }
+            engines.eval(self.script);
         }
     };
 
@@ -241,6 +306,128 @@ pub fn Bridge(
             }
             return true;
         }
+
+        /// The native renderer's `invoke` (-Dnative_ui): the same dispatch as
+        /// `onMessage`, for the app's own page. No IPC token or isolation:
+        /// the page is the app's embedded code running in its own engine, not
+        /// web content. Runs from the message loop (queued, as sync web
+        /// commands are: a command that pumps messages must not nest inside
+        /// the page's JavaScript), and answers only engines still open.
+        pub fn nativeInvoke(_: ?*anyopaque, engine: *native.Engine, call_id: u32, cmd: []const u8, args_json: []const u8) void {
+            const gpa = std.heap.smp_allocator;
+            const call = gpa.create(NativeCall) catch return;
+            call.* = .{ .engine = engine, .call_id = call_id, .cmd = gpa.dupe(u8, cmd) catch {
+                gpa.destroy(call);
+                return;
+            }, .args = gpa.dupe(u8, args_json) catch {
+                gpa.free(call.cmd);
+                gpa.destroy(call);
+                return;
+            } };
+            ShellMod.dispatchWithCleanup(&NativeCall.run, call, &NativeCall.cleanup);
+        }
+
+        const NativeCall = struct {
+            engine: *native.Engine,
+            call_id: u32,
+            cmd: []u8,
+            args: []u8,
+
+            fn cleanup(ctx: ?*anyopaque) void {
+                const self: *NativeCall = @ptrCast(@alignCast(ctx));
+                const gpa = std.heap.smp_allocator;
+                gpa.free(self.cmd);
+                gpa.free(self.args);
+                gpa.destroy(self);
+            }
+
+            fn run(ctx: ?*anyopaque) void {
+                if (comptime !build_opts.native_ui) return;
+                const self: *NativeCall = @ptrCast(@alignCast(ctx));
+                defer cleanup(ctx);
+                const gpa = std.heap.smp_allocator;
+                var arena_state = std.heap.ArenaAllocator.init(gpa);
+                defer arena_state.deinit();
+                const arena = arena_state.allocator();
+
+                // The window by its engine (it may have closed since the call).
+                App.ensureWindowsMutex();
+                App.windows_mutex.lock();
+                var label: ?[]const u8 = null;
+                var url: ?[]const u8 = null;
+                for (App.windows_list.items) |win| if (win.handle.native == @as(?*anyopaque, @ptrCast(self.engine))) {
+                    label = arena.dupe(u8, win.label) catch null;
+                    url = if (win.options.url) |u| arena.dupe(u8, u) catch null else null;
+                    break;
+                };
+                App.windows_mutex.unlock();
+                const win_label = label orelse return;
+
+                const page_url = security.resolveWindowUrl(arena, config.security, local, null, url, config.start) catch "app://localhost/index.html";
+                const args = std.json.parseFromSliceLeaky(std.json.Value, arena, self.args, .{}) catch .null;
+                const request: ipc.Request = .{ .cmd = self.cmd, .args = args };
+                const pool = App.getWorkerPool();
+
+                const result: anyerror![]const u8 = blk: {
+                    if (window_commands.isWindowCommand(self.cmd))
+                        break :blk window_commands.dispatch(config.security, local, arena, page_url, win_label, self.cmd, args);
+                    if (!security.commandAllowedForWindow(config.security, local, page_url, self.cmd, win_label)) {
+                        log.warn("native page: blocked command \"{f}\" (window: {s})", .{ std.zig.fmtString(self.cmd[0..@min(self.cmd.len, 64)]), win_label });
+                        break :blk error.Forbidden;
+                    }
+                    if (ipc.isBuiltinCommand(self.cmd)) break :blk ipc.dispatchBuiltin(config.security, arena, request);
+                    if (!ipc.isAsync(api.commands, self.cmd)) break :blk ipc.dispatchRequest(api.commands, arena, request, if (pool) |p| p.io else null);
+                    // Async: on the worker pool, answered from the message loop.
+                    const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
+                    const req_json = std.fmt.allocPrint(arena, "{{\"cmd\":{f},\"args\":{s}}}", .{ std.json.fmt(self.cmd, .{}), if (self.args.len > 0) self.args else "null" }) catch break :blk error.OutOfMemory;
+                    const job = gpa.create(NativeReply) catch break :blk error.OutOfMemory;
+                    job.* = .{ .engine = self.engine, .call_id = self.call_id };
+                    ipc.dispatchAsync(api.commands, worker_pool, gpa, req_json, worker_pool.io, job, NativeReply.onWorkerDone) catch |err| {
+                        gpa.destroy(job);
+                        break :blk err;
+                    };
+                    return;
+                };
+                // A sync command may have closed the window.
+                if (!nativeEngineAlive(self.engine)) return;
+                if (result) |json| self.engine.resolve(self.call_id, true, json) else |err| self.engine.resolve(self.call_id, false, ipc.errorText(err));
+            }
+        };
+
+        /// An async command's answer, from a worker to the message loop.
+        const NativeReply = struct {
+            engine: *native.Engine,
+            call_id: u32,
+            ok: bool = true,
+            text: []u8 = &.{},
+
+            fn onWorkerDone(self: *NativeReply, arena_state: std.heap.ArenaAllocator, res: ?[:0]const u8, err_name: ?[:0]const u8) void {
+                var a = arena_state;
+                defer a.deinit();
+                const gpa = std.heap.smp_allocator;
+                self.ok = err_name == null;
+                self.text = gpa.dupe(u8, if (err_name) |e| e else res orelse "null") catch {
+                    gpa.destroy(self);
+                    return;
+                };
+                ShellMod.dispatchWithCleanup(&deliver, self, &discard);
+            }
+
+            fn discard(ctx: ?*anyopaque) void {
+                const self: *NativeReply = @ptrCast(@alignCast(ctx));
+                std.heap.smp_allocator.free(self.text);
+                std.heap.smp_allocator.destroy(self);
+            }
+
+            fn deliver(ctx: ?*anyopaque) void {
+                if (comptime !build_opts.native_ui) return;
+                const self: *NativeReply = @ptrCast(@alignCast(ctx));
+                defer discard(ctx);
+                // The window may have closed while the command ran.
+                if (!nativeEngineAlive(self.engine)) return;
+                self.engine.resolve(self.call_id, self.ok, self.text);
+            }
+        };
 
         pub fn onMessage(
             view: *webview2.ICoreWebView2,

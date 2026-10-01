@@ -51,7 +51,7 @@ const Features = struct {
     /// Linux/Wayland: overlay windows as layer surfaces (gtk4-layer-shell).
     layer_shell: bool,
     /// Experimental: draw the page with native views instead of a WebView
-    /// (QuickJS-ng + Yoga; Linux and Android so far). docs/native-renderer.md
+    /// (QuickJS-ng + Yoga; Linux, Windows and Android so far). docs/native-renderer.md
     native_ui: bool,
 
     /// Modules that have no Android backend: off by default for Android
@@ -88,8 +88,8 @@ const Features = struct {
             @field(f, field.name) = opt orelse (!is_native and !is_deep_link and !(android and android_off) and !(ios and ios_off));
         }
 
-        if (f.native_ui and !(target.result.os.tag == .linux)) {
-            fatal("-Dnative_ui is experimental: Linux and Android only so far (docs/native-renderer.md)", .{});
+        if (f.native_ui and !(target.result.os.tag == .linux or target.result.os.tag == .windows)) {
+            fatal("-Dnative_ui is experimental: Linux, Windows and Android only so far (docs/native-renderer.md)", .{});
         }
         if (f.llama_mtmd and !f.llama) {
             fatal("llama_mtmd requires llama (-Dllama)", .{});
@@ -515,6 +515,12 @@ fn addOrielModule(
         oriel.linkSystemLibrary("shlwapi", .{});
         oriel.linkSystemLibrary("ws2_32", .{});
         oriel.linkSystemLibrary("dwmapi", .{});
+        // -Dnative_ui: the page drawn with Direct2D and DirectWrite
+        // (src/native_ui/win32.zig).
+        if (features.native_ui) {
+            oriel.linkSystemLibrary("d2d1", .{});
+            oriel.linkSystemLibrary("dwrite", .{});
+        }
     } else if (target.result.os.tag == .macos) {
         // AppKit + WebKit through the Objective-C runtime (zig-objc). Its build
         // needs the Apple SDK, so only on a Mac: cross-building the framework for
@@ -788,6 +794,16 @@ pub const Permissions = @import("src/core/permissions/common.zig").Declared;
 const PermissionKind = @import("src/core/permissions/common.zig").Kind;
 
 /// The declared permissions plus the ones enabled modules need.
+/// A boolean option the app passed to the Oriel dependency (`.native_ui = true`).
+fn dependencyFlag(oriel_dep: *std.Build.Dependency, name: []const u8) bool {
+    const opt = oriel_dep.builder.user_input_options.get(name) orelse return false;
+    return switch (opt.value) {
+        .flag => true,
+        .scalar => |s| std.mem.eql(u8, s, "true"),
+        else => false,
+    };
+}
+
 fn effectivePermissions(oriel_dep: *std.Build.Dependency, declared: Permissions) Permissions {
     var p = declared;
     if (@import("build/package.zig").isFeatureEnabledDefault(oriel_dep, "audio_capture", false)) {
@@ -989,6 +1005,13 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
                 .file = rc_file,
                 .include_paths = &.{icons_dir},
             });
+        }
+        // -Dnative_ui: Windows 8+ and Common Controls 6 for its EDIT and
+        // COMBOBOX fields (src/native_ui/win32.manifest).
+        if (dependencyFlag(oriel_dep, "native_ui")) {
+            const manifest = oriel_dep.path("src/native_ui/win32.manifest");
+            exe.win32_manifest = manifest;
+            if (dev_exe) |d| d.win32_manifest = manifest;
         }
     }
 
