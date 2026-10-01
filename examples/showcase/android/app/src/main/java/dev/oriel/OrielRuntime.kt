@@ -125,7 +125,7 @@ object OrielRuntime {
                 script.utf8(), rules.utf8().split('\n').filter { it.isNotEmpty() }.toSet(),
             )
         } catch (e: Exception) {
-            Log.e(TAG, "cannot create a WebView (is Android System WebView installed?)", e)
+            Log.e(TAG, "cannot create the window's view (is Android System WebView installed?)", e)
             return false
         }
         windows[id] = w
@@ -133,7 +133,7 @@ object OrielRuntime {
             mainWindow = w
             mainActivity?.let { w.attachTo(it) }
         }
-        w.load(w.url)
+        if (!w.native) w.load(w.url)
         return true
     }
 
@@ -238,6 +238,42 @@ object OrielRuntime {
         val wm = context.getSystemService(WindowManager::class.java)
         val bounds = if (Build.VERSION.SDK_INT >= 30) wm.maximumWindowMetrics.bounds else Rect(0, 0, context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
         return (context.dp(bounds.width()).toLong() shl 32) or context.dp(bounds.height()).toLong()
+    }
+
+    // --- The native renderer (-Dnative_ui; src/native_ui/android.zig) ---
+
+    @JvmStatic
+    fun nuiViewport(id: Int): Long = Nui.viewport(id)
+
+    @JvmStatic
+    fun nuiMeasure(id: Int, node: Int, max64: Int): Long = Nui.views[id]?.measureText(node, max64) ?: 0
+
+    @JvmStatic
+    fun nuiProps(id: Int, node: Int, kind: ByteArray, json: ByteArray) {
+        Nui.views[id]?.props(node, kind.utf8(), json.utf8())
+    }
+
+    @JvmStatic
+    fun nuiRemove(id: Int, node: Int) {
+        Nui.views[id]?.remove(node)
+    }
+
+    @JvmStatic
+    fun nuiFrames(id: Int, frames: ByteArray) {
+        Nui.views[id]?.frames(frames)
+    }
+
+    @JvmStatic
+    fun nuiValue(id: Int, node: Int, value: ByteArray) {
+        Nui.views[id]?.value(node, value.utf8())
+    }
+
+    @JvmStatic
+    fun nuiTimer(id: Int, timer: Int, ms: Int) = Nui.timer(id, timer, ms)
+
+    @JvmStatic
+    fun nuiFocus(id: Int, node: Int) {
+        Nui.views[id]?.focusField(node)
     }
 
     @JvmStatic

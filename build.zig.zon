@@ -46,6 +46,18 @@
             .hash = "N-V-__8AAA3uSwK9mB79KfGlAs0n70EoYdSvFYRb8782-6Ce",
             .lazy = true,
         },
+        // -Dnative_ui (experimental, docs/native-renderer.md): the page's
+        // JavaScript runs on QuickJS-ng, and Yoga lays out the native views.
+        .quickjs = .{
+            .url = "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.17.0.tar.gz",
+            .hash = "N-V-__8AAHXdRAAredjqGKa2uZcnUUzmDSajEa9AQDETVRYW",
+            .lazy = true,
+        },
+        .yoga = .{
+            .url = "https://github.com/facebook/yoga/archive/refs/tags/v3.2.1.tar.gz",
+            .hash = "N-V-__8AAOYl0gAU76B1VRPFD9AWvy2VkOef2jN0B3sISTeO",
+            .lazy = true,
+        },
         // Android GPU backends (-Dggml_vulkan, -Dggml_opencl): the Khronos
         // headers, which the NDK lacks (vulkan.hpp, spirv/) or doesn't ship (OpenCL).
         .vulkan_headers = .{
