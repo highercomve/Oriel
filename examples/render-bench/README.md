@@ -1,0 +1,55 @@
+# Render bench
+
+One static page, timed in Oriel's two renderers: the WebView (WebKitGTK on
+Linux) and the experimental native renderer (`-Dnative_ui`: QuickJS, a fake
+DOM, Yoga layout, GTK drawing; see `docs/native-renderer.md`).
+
+```sh
+zig build -Doptimize=ReleaseFast                                  # WebView
+zig build -Dnative_ui -Doptimize=ReleaseFast -p zig-out-native    # native
+./zig-out/bin/oriel-render-bench                                  # GUI
+RENDER_BENCH=1 ./zig-out-native/bin/oriel-render-bench            # one JSON line, then exits
+```
+
+`RENDER_BENCH` is an environment variable because GTK rejects command-line
+options it doesn't know.
+
+## What it measures
+
+Each test runs 3 times; the median is reported.
+
+| Test | What |
+|---|---|
+| startup → page script | Process start until the page's first script runs |
+| startup → first frame | … until its first `requestAnimationFrame` |
+| build N rows | Create N styled rows, then force layout (`offsetHeight`) |
+| update N rows | Change every row's text, then force layout |
+| animate 200 boxes | `requestAnimationFrame` moving 200 boxes for 2 s: frames per second |
+| memory (PSS) | Proportional memory of the app and all its child processes (a WebView page runs in WebKit's own processes) |
+
+Times cover the DOM work and the layout it triggers, not painting, in both
+renderers. The native renderer's `requestAnimationFrame` is a 16 ms timer, not
+the display's frame clock.
+
+## Results
+
+Linux, ReleaseFast, headless (Xvfb, software rendering), 2026-10-01:
+
+| Test | WebView | Native |
+|---|---|---|
+| startup → page script | 523 ms | 79 ms |
+| startup → first frame | 572 ms | 280 ms |
+| memory at start | 311 MB | 162 MB |
+| build 1000 rows | 20 ms | 109 ms |
+| build 3000 rows | 70 ms | 344 ms |
+| update 1000 rows | 10 ms | 11 ms |
+| update 3000 rows | 41 ms | 35 ms |
+| animate 200 boxes | 60 fps | 37 fps |
+| memory after the tests | 352 MB | 422 MB |
+
+The native renderer starts several times faster and with half the memory,
+and updates text as fast. Building large DOMs is about 5× slower (QuickJS
+runs linkedom and the style engine; WebKit's DOM is native code), animation
+reaches about 37 fps against the WebView's 60, and its memory grows with
+every rebuild (+260 MB here against +41 MB): created and removed rows aren't
+all released yet.

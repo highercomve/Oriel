@@ -12263,13 +12263,42 @@ globalThis.atob ??= (s) => {
     return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
   }
   var viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false };
+  function rangeMatches(part) {
+    const inner = /^\(([^()]*)\)$/.exec(part)?.[1];
+    if (!inner || !/[<>=]/.test(inner) || inner.includes(":")) return null;
+    const tokens = inner.split(/(<=|>=|<|>|=)/).map((t) => t.trim()).filter(Boolean);
+    const valueOf = (t) => {
+      if (t === "width") return viewport.width;
+      if (t === "height") return viewport.height;
+      const n2 = parseFloat(t);
+      if (!Number.isFinite(n2)) return NaN;
+      return t.endsWith("rem") || t.endsWith("em") ? n2 * 16 : n2;
+    };
+    if (tokens.length < 3 || tokens.length % 2 === 0) return false;
+    for (let i = 0; i + 2 < tokens.length; i += 2) {
+      const a = valueOf(tokens[i]), op = tokens[i + 1], b = valueOf(tokens[i + 2]);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+      const ok = op === "<" ? a < b : op === "<=" ? a <= b : op === ">" ? a > b : op === ">=" ? a >= b : a === b;
+      if (!ok) return false;
+    }
+    return true;
+  }
   function mediaMatches(q) {
     if (!q) return true;
-    return splitTop(q, ",").some(
-      (alt) => alt.split(/\band\b/).every((part) => {
+    return splitTop(q, ",").some((alt) => {
+      alt = alt.trim();
+      let negate = false;
+      if (/^not\s/i.test(alt)) {
+        negate = true;
+        alt = alt.slice(4);
+      }
+      alt = alt.replace(/^only\s+/i, "");
+      const all = alt.split(/\band\b/).every((part) => {
         part = part.trim();
         if (!part || part === "screen" || part === "all") return true;
         if (part === "print") return false;
+        const range = rangeMatches(part);
+        if (range !== null) return range;
         const m = /^\(\s*([\w-]+)\s*(?::\s*([^)]+))?\)$/.exec(part);
         if (!m) return false;
         const [, feat, raw] = m;
@@ -12297,8 +12326,9 @@ globalThis.atob ??= (s) => {
           default:
             return false;
         }
-      })
-    );
+      });
+      return negate ? !all : all;
+    });
   }
   var INHERITED = /* @__PURE__ */ new Set([
     "color",
@@ -13366,10 +13396,36 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         }
         return this.put(nodes, id, "icon", props, [], fixedNode);
       }
+      if (tag === "img") {
+        const src = el.getAttribute("src") || "";
+        if (!src) return null;
+        props.src = src.startsWith("data:") ? src : src.replace(/^(app:\/\/[^/]*)?\.?\//, "");
+        if (cs["object-fit"] && cs["object-fit"] !== "fill") props.fit = cs["object-fit"];
+        for (const [k, a] of [["w", "width"], ["h", "height"]]) {
+          const v = el.getAttribute(a);
+          if (props[k] === void 0 && v && /^[\d.]+(px)?$/.test(v.trim())) props[k] = parseFloat(v);
+        }
+        return this.put(nodes, id, "image", props, [], fixedNode);
+      }
       if (tag === "input" || tag === "textarea" || tag === "select") {
         const type = (el.getAttribute("type") || "text").toLowerCase();
         if (tag === "input" && (type === "checkbox" || type === "radio")) {
           props.click = true;
+          const app = cs.appearance || cs["-webkit-appearance"];
+          if (app !== "none") {
+            props.ctl = type;
+            if (el.hasAttribute("checked")) props.on = true;
+            const acc = color(cs["accent-color"] || "");
+            if (acc) props.acc = acc;
+            if (props.w === void 0 || props.w === "auto") props.w = 13;
+            if (props.h === void 0 || props.h === "auto") props.h = 13;
+            if (!props.m) props.m = [3, 3, 3, 3];
+            delete props.pad;
+            delete props.bw;
+            delete props.bc;
+            delete props.bg;
+            delete props.br;
+          }
           return this.put(nodes, id, "view", props, [], fixedNode);
         }
         Object.assign(props, textProps(cs, fontSize));
@@ -13388,6 +13444,7 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
       }
       const childCtx = { blockify: display === "flex" || display === "grid", parentText: cs["text-align"] };
       const kids = [];
+      let orders = null;
       const before2 = this.pseudo(el, cs, "before", nodes);
       if (before2) kids.push(before2);
       const flow = [];
@@ -13414,7 +13471,8 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         flow.push({ el: child });
       }
       flushRuns();
-      if (flow.length === 1 && flow[0].text && !before2 && !cs.__rules.after.length) {
+      const aligns = (display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid") && (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]));
+      if (flow.length === 1 && flow[0].text && !before2 && !cs.__rules.after.length && !aligns) {
         Object.assign(props, textProps(cs, fontSize));
         props.runs = flow[0].text;
         this.putClick(props, el);
@@ -13448,9 +13506,15 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
           }
         }
         kids.push(cid);
+        const ord = parseInt(this.cs.get(item.el)?.order, 10);
+        if (ord) (orders ??= /* @__PURE__ */ new Map()).set(cid, ord);
       }
       const after2 = this.pseudo(el, cs, "after", nodes);
       if (after2) kids.push(after2);
+      if (orders && childCtx.blockify) {
+        const pos = new Map(kids.map((k, i) => [k, i]));
+        kids.sort((a, b) => (orders.get(a) || 0) - (orders.get(b) || 0) || pos.get(a) - pos.get(b));
+      }
       if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
       this.putClick(props, el);
       return this.put(nodes, id, "view", props, kids, fixedNode);
@@ -13475,6 +13539,7 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
       const cs = this.style(el, parentCS);
       const d = cs.display || "inline";
       if (d !== "inline") return false;
+      if (cs.position === "absolute" || cs.position === "fixed") return false;
       for (const c of el.children) if (!this.isInline(c, cs)) return false;
       return true;
     }
@@ -14121,6 +14186,52 @@ ${a.stack || ""}`;
       break;
     }
   }
+  {
+    let proto = Object.getPrototypeOf(document.createElement("div"));
+    let desc = null;
+    while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "style"))) proto = Object.getPrototypeOf(proto);
+    if (desc?.get) {
+      const wrapped = /* @__PURE__ */ new WeakMap();
+      const touch = () => {
+        try {
+          if (renderer) renderer.dirty = true;
+        } catch {
+        }
+      };
+      Object.defineProperty(proto, "style", {
+        configurable: true,
+        get() {
+          const real = desc.get.call(this);
+          if (!real || typeof real !== "object") return real;
+          let w = wrapped.get(real);
+          if (!w) {
+            w = new Proxy(real, {
+              set(t, k, v) {
+                t[k] = v;
+                touch();
+                return true;
+              },
+              get(t, k) {
+                const v = t[k];
+                if (k === "setProperty" || k === "removeProperty") return (...a) => {
+                  const r = v.apply(t, a);
+                  touch();
+                  return r;
+                };
+                return typeof v === "function" ? v.bind(t) : v;
+              }
+            });
+            wrapped.set(real, w);
+          }
+          return w;
+        },
+        set(v) {
+          desc.set ? desc.set.call(this, v) : this.setAttribute("style", String(v));
+          touch();
+        }
+      });
+    }
+  }
   var inputProto = Object.getPrototypeOf(document.createElement("input"));
   Object.defineProperty(inputProto, "checked", {
     get() {
@@ -14657,6 +14768,28 @@ ${a.stack || ""}`;
     for (const n2 of next) if (!prev.includes(n2)) n2.setAttribute(attr2, "");
     marked.set(attr2, next);
   }
+  function hoverEvents(from, to) {
+    if (from === to) return;
+    const chain = (n2) => {
+      const out = [];
+      for (; n2 && n2.nodeType === 1; n2 = n2.parentNode) out.push(n2);
+      return out;
+    };
+    const fromChain = chain(from), toChain = chain(to);
+    const fire = (target, type, bubbles, related) => {
+      if (!target) return;
+      const ev = new Event(type, { bubbles, cancelable: bubbles });
+      Object.defineProperty(ev, "relatedTarget", { value: related, configurable: true });
+      for (const k of ["clientX", "clientY", "pageX", "pageY", "screenX", "screenY", "button", "buttons"]) Object.defineProperty(ev, k, { value: 0, configurable: true });
+      target.dispatchEvent(ev);
+    };
+    for (const prefix of ["pointer", "mouse"]) {
+      fire(from, prefix + "out", true, to);
+      for (const n2 of fromChain) if (!toChain.includes(n2)) fire(n2, prefix + "leave", false, to);
+      fire(to, prefix + "over", true, from);
+      for (const n2 of [...toChain].reverse()) if (!fromChain.includes(n2)) fire(n2, prefix + "enter", false, from);
+    }
+  }
   function bindInline(el) {
     const bound = el.__inline ||= /* @__PURE__ */ new Map();
     for (const attr2 of [...el.attributes || []]) {
@@ -14779,9 +14912,12 @@ ${a.stack || ""}`;
           // The system back button: true when the page went back.
           // The pointer over a node (or none), a press and its release: the
           // element and its ancestors match :hover and :active.
-          case "hover":
+          case "hover": {
+            const before2 = marked.get("data-nui-hover") || [];
             markChain("data-nui-hover", el);
+            hoverEvents(before2[0] || null, el || null);
             return false;
+          }
           case "press":
             markChain("data-nui-active", el);
             return false;

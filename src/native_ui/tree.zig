@@ -11,7 +11,7 @@ pub const yg = @cImport({
 
 const log = std.log.scoped(.native_ui);
 
-pub const Kind = enum { view, text, input, textarea, select, icon };
+pub const Kind = enum { view, text, input, textarea, select, icon, image };
 
 pub const Color = [4]f32; // r, g, b 0-255; a 0-1
 
@@ -107,6 +107,13 @@ pub const Props = struct {
     options: ?[]const [2][]const u8 = null,
     // Icons
     icon: ?Icon = null,
+    // Images (<img>): a data: URI or an app asset path, and CSS object-fit.
+    src: ?[]const u8 = null,
+    fit: ?[]const u8 = null,
+    // A default checkbox/radio (<input> without appearance: none).
+    ctl: ?[]const u8 = null,
+    on: bool = false,
+    acc: ?Color = null,
 };
 
 pub const Rect = struct {
@@ -261,7 +268,7 @@ pub const Tree = struct {
         const n = try t.gpa.create(Node);
         n.* = .{ .id = id, .kind = kind, .yn = yg.YGNodeNewWithConfig(t.config), .arena = .init(t.gpa), .tree = t };
         yg.YGNodeSetContext(n.yn, n);
-        if (kind == .text or kind == .input or kind == .textarea or kind == .select) {
+        if (kind == .text or kind == .input or kind == .textarea or kind == .select or kind == .image) {
             yg.YGNodeSetMeasureFunc(n.yn, measureFn);
         }
         try t.nodes.put(id, n);

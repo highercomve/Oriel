@@ -44,6 +44,8 @@ pub const Backend = struct {
     props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
 };
 
+var next_serial: std.atomic.Value(u64) = .init(0);
+
 pub const Engine = struct {
     gpa: std.mem.Allocator,
     js: *anyopaque,
@@ -53,6 +55,13 @@ pub const Engine = struct {
     script_buf: std.ArrayList(u8) = .empty,
     booted: bool = false,
     in_call: u32 = 0,
+    /// The page read its layout (offsetWidth, getBoundingClientRect…) while it
+    /// rendered: the tree was laid out then, and the backend still has to
+    /// draw that layout when the call settles.
+    relaid: bool = false,
+    /// Unique per engine for the process: an answer that outlived its window
+    /// tells a new engine at the same address apart from its own.
+    serial: u64 = 0,
 
     pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, width: f32, height: f32) !*Engine {
         const e = try gpa.create(Engine);
@@ -64,6 +73,7 @@ pub const Engine = struct {
             .backend = backend,
             .assets = assets,
         };
+        e.serial = next_serial.fetchAdd(1, .monotonic) + 1;
         e.tree.width = width;
         e.tree.height = height;
         e.tree.on_remove = backend.removed;
@@ -169,8 +179,18 @@ pub const Engine = struct {
         oqjs_run_jobs(e.js);
         if (e.tree.dirty) {
             e.tree.layout();
+            e.relaid = true;
+        }
+        if (e.relaid) {
+            e.relaid = false;
             e.backend.laid_out(e.backend.ctx);
         }
+    }
+
+    /// The bytes of an app asset ("assets/x.png"), or null.
+    pub fn assetData(e: *Engine, path: []const u8) ?[]const u8 {
+        const a = App.findAsset(e.assets, path, false) orelse return null;
+        return a.data;
     }
 
     pub fn jsMemory(e: *Engine) usize {
@@ -222,7 +242,10 @@ export fn oriel_nui_ops(p: *anyopaque, json: [*]const u8, len: usize) void {
 
 export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {
     const e = engineOf(p);
-    if (e.tree.dirty) e.tree.layout();
+    if (e.tree.dirty) {
+        e.tree.layout();
+        e.relaid = true;
+    }
     const n = e.tree.get(@intFromFloat(id)) orelse return 0;
     out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(n.content_h, n.frame.h) };
     return 1;
@@ -230,14 +253,20 @@ export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {
 
 export fn oriel_nui_focus(p: *anyopaque, id: f64) void {
     const e = engineOf(p);
-    if (e.tree.dirty) e.tree.layout();
+    if (e.tree.dirty) {
+        e.tree.layout();
+        e.relaid = true;
+    }
     const n = e.tree.get(@intFromFloat(id)) orelse return;
     e.backend.focus(e.backend.ctx, n);
 }
 
 export fn oriel_nui_scroll_into_view(p: *anyopaque, id: f64, block: [*]const u8, len: usize) void {
     const e = engineOf(p);
-    if (e.tree.dirty) e.tree.layout();
+    if (e.tree.dirty) {
+        e.tree.layout();
+        e.relaid = true;
+    }
     const n = e.tree.get(@intFromFloat(id)) orelse return;
     e.tree.scrollIntoView(n, block[0..len]);
     e.backend.laid_out(e.backend.ctx);
