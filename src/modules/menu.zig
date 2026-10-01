@@ -11,7 +11,8 @@ const backend = switch (target.os) {
     .linux => @import("menu/linux.zig"),
     .windows => @import("menu/windows.zig"),
     .macos => @import("menu/macos.zig"),
-    .android => @compileError("menu is not available on Android: apps have no menu bar (see docs/android.md)"),
+    // No menu bar: a stub with the same API (see docs/android.md).
+    .android => @import("menu/android.zig"),
     .ios => @compileError("menu is not available on iOS: apps have no menu bar"),
     .other => @compileError("Unsupported platform for menu module"),
 };

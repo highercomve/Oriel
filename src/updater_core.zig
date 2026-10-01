@@ -12,7 +12,9 @@ pub const backend = switch (target.os) {
     .linux => @import("modules/updater/linux.zig"),
     .windows => @import("modules/updater/windows.zig"),
     .macos => @import("modules/updater/macos.zig"),
-    .android => @compileError("the updater is not available on Android: Play updates the app, and self-updating Play apps is not allowed (see docs/android.md)"),
+    // The store updates the app (and self-updating Play apps isn't allowed):
+    // checking for a release works, installing it fails (docs/android.md).
+    .android => @import("modules/updater/android.zig"),
     .ios => @compileError("the updater is not available on iOS: the App Store (or TestFlight) updates iOS apps"),
     .other => @compileError("updater is not supported on " ++ target.name),
 };
