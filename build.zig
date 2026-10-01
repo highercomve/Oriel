@@ -88,8 +88,8 @@ const Features = struct {
             @field(f, field.name) = opt orelse (!is_native and !is_deep_link and !(android and android_off) and !(ios and ios_off));
         }
 
-        if (f.native_ui and !(target.result.os.tag == .linux or target.result.os.tag == .windows)) {
-            fatal("-Dnative_ui is experimental: Linux, Windows and Android only so far (docs/native-renderer.md)", .{});
+        if (f.native_ui and !(target.result.os.tag == .linux or target.result.os.tag == .windows or target.result.os.tag == .macos or target.result.os.tag == .ios)) {
+            fatal("-Dnative_ui is experimental: Linux, Windows, macOS, Android and iOS only so far (docs/native-renderer.md)", .{});
         }
         if (f.llama_mtmd and !f.llama) {
             fatal("llama_mtmd requires llama (-Dllama)", .{});
@@ -1757,6 +1757,11 @@ fn pathExists(b: *std.Build, path: []const u8) bool {
 /// layout), compiled into the oriel module. docs/native-renderer.md
 fn addNativeUi(b: *std.Build, oriel: *std.Build.Module) void {
     const no_ubsan = "-fno-sanitize=undefined"; // both rely on unspecified C behavior
+    // The Apple backends draw with CoreGraphics and CoreText (apple_draw.zig).
+    if (oriel.resolved_target) |t| if (t.result.os.tag == .macos or t.result.os.tag == .ios) {
+        oriel.linkFramework("CoreGraphics", .{});
+        oriel.linkFramework("CoreText", .{});
+    };
     if (b.lazyDependency("quickjs", .{})) |qjs| {
         oriel.addIncludePath(qjs.path("."));
         oriel.addCSourceFiles(.{

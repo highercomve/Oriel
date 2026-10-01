@@ -24,6 +24,10 @@ const permissions = @import("../../core/permissions.zig");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
+const build_opts = @import("build_options");
+const build_target = @import("../../core/target.zig");
+/// -Dnative_ui: pages drawn with native views instead of WebKit (docs/native-renderer.md).
+const native = if (build_opts.native_ui) @import("../../native_ui/appkit.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
 
@@ -33,6 +37,17 @@ pub const WindowHandle = struct {
     /// Unique per window for the whole run: a queued handle copy must not
     /// match a new window that reuses a closed one's address.
     serial: u64,
+    /// The native renderer's surface (-Dnative_ui, `native_ui/appkit.zig`)
+    /// for a window without a web view, else null.
+    native: ?*anyopaque = null,
+
+    /// The native renderer's engine (-Dnative_ui), for a native window.
+    pub fn nativeEngine(self: WindowHandle) ?*anyopaque {
+        if (comptime !build_opts.native_ui) return null;
+        const p = self.native orelse return null;
+        const surface: *native.Surface = @ptrCast(@alignCast(p));
+        return surface.engine;
+    }
 
     pub fn eql(self: WindowHandle, other: WindowHandle) bool {
         return self.serial == other.serial;
@@ -42,7 +57,7 @@ pub const WindowHandle = struct {
         return .{ .value = self.window };
     }
 
-    fn webView(self: WindowHandle) Object {
+    pub fn webView(self: WindowHandle) Object {
         return .{ .value = self.webview };
     }
 };
@@ -155,11 +170,18 @@ fn returnFocus() void {
 
 /// Give the web view the keyboard when the window itself holds it (a
 /// control the page focused inside the web view keeps it).
+/// The view that takes the page's keys: the web view, or a native window's
+/// drawing view.
+fn pageView(handle: WindowHandle) Object {
+    if (comptime build_opts.native_ui) if (handle.native) |p| return @as(*native.Surface, @ptrCast(@alignCast(p))).view;
+    return handle.webView();
+}
+
 fn focusPage(handle: WindowHandle) void {
     const win = handle.nsWindow();
     const responder = win.msgSend(Object, "firstResponder", .{});
     if (responder.value == null or responder.value == handle.window) {
-        _ = win.msgSend(cocoa.c.BOOL, "makeFirstResponder:", .{handle.webView()});
+        _ = win.msgSend(cocoa.c.BOOL, "makeFirstResponder:", .{pageView(handle)});
     }
 }
 
@@ -437,6 +459,15 @@ fn getWindowByNSWindow(nswindow: cocoa.id) ?*App.Window {
 /// torn down from inside its own delegate or webview callbacks.
 fn teardown(handle: WindowHandle) void {
     allowOverlayKey(handle.window, false);
+    if (comptime build_opts.native_ui) if (handle.native) |p| {
+        // The window must not keep pointing at the view (its initial first
+        // responder is unretained).
+        const w = handle.nsWindow();
+        w.msgSend(void, "setInitialFirstResponder:", .{cocoa.nil});
+        _ = w.msgSend(cocoa.c.BOOL, "makeFirstResponder:", .{cocoa.nil});
+        w.msgSend(void, "setContentView:", .{cocoa.nil});
+        native.destroy(@ptrCast(@alignCast(p)));
+    };
     const view = handle.webView();
     if (handle.webview) |v| isolation.forget(@intFromPtr(v));
     view.msgSend(void, "setNavigationDelegate:", .{cocoa.nil});
@@ -608,7 +639,6 @@ pub fn WindowCreator(
         }
 
         pub fn createWindow(options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle {
-            _ = win_inst; // looked up through App.windows_list by NSWindow / WKWebView
             if (!cocoa.isMainThread()) return error.NotMainThread;
             const pool = objc.AutoreleasePool.init();
             defer pool.deinit();
@@ -649,6 +679,8 @@ pub fn WindowCreator(
                 }});
             }
             win.msgSend(void, "center", .{});
+
+            if (comptime build_opts.native_ui) return createNativeWindow(win, options, win_inst);
 
             const wk_config = cocoa.new(cocoa.class("WKWebViewConfiguration"));
             defer wk_config.release(); // the webview copies it
@@ -697,6 +729,33 @@ pub fn WindowCreator(
             try load(view, target_uri);
 
             return .{ .window = win.value, .webview = view.value, .serial = next_serial.fetchAdd(1, .monotonic) };
+        }
+
+        /// -Dnative_ui: the page's HTML, CSS and JS run on the native renderer
+        /// (QuickJS, Yoga, CoreGraphics/CoreText and AppKit fields), no WebKit.
+        fn createNativeWindow(win: Object, options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle {
+            const surface = try native.create(
+                std.heap.smp_allocator,
+                config.assets,
+                build_target.platform_json,
+                options.label,
+                options.url orelse "index.html",
+                @floatFromInt(options.width),
+                @floatFromInt(options.height),
+                options.transparent,
+                BridgeImpl.nativeInvoke,
+                win_inst,
+            );
+            errdefer native.destroy(surface);
+            win.msgSend(void, "setContentView:", .{surface.view});
+            win.msgSend(void, "setInitialFirstResponder:", .{surface.view});
+            _ = win.msgSend(cocoa.c.BOOL, "makeFirstResponder:", .{surface.view});
+            win.msgSend(void, "setAcceptsMouseMovedEvents:", .{cocoa.boolean(true)});
+            win.msgSend(void, "setDelegate:", .{window_delegate});
+            // Transparency and overlay placement (always on top, placement),
+            // as for a web view window.
+            overlay.setup(win, cocoa.nil, options);
+            return .{ .window = win.value, .webview = null, .serial = next_serial.fetchAdd(1, .monotonic), .native = surface };
         }
 
         fn load(view: Object, uri: []const u8) !void {

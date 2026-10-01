@@ -214,11 +214,18 @@ elProto.focus = function () {
 elProto.blur = function () { if (document.__active === this) document.__active = null; };
 elProto.scrollIntoView = function (opts) {
   if (!renderer) return;
-  renderer.render();
   const block = typeof opts === "object" ? opts.block || "start" : opts === false ? "end" : "start";
+  // Changes not rendered yet: scroll after the next render, rather than
+  // render now. It returns nothing, so the page can't tell, and a page that
+  // keeps scrolling to its newest line (a chat streaming tokens) doesn't
+  // render the whole document once per token.
+  if (renderer.dirty) { renderer.pendingScroll = { el: this, block }; return; }
   host.scrollIntoView(renderer.idOf(this, "el"), block);
 };
-elProto.click = function () { activate(this, 0); };
+// linkedom defines its own click() on HTMLElement.prototype (one level
+// below elProto), which only fires the event: replace it there too, so a
+// page's el.click() also submits forms, follows links and toggles boxes.
+Object.getPrototypeOf(document.createElement("div")).click = elProto.click = function () { activate(this, 0); };
 // The focused element; it carries data-nui-focus, which the style engine
 // matches for :focus (css.js).
 let active = null;
