@@ -388,6 +388,21 @@ fn headlessChat(gpa: std.mem.Allocator, message: []const u8) !u8 {
     return 0;
 }
 
+fn headlessDownload(model: []const u8) !u8 {
+    if (!chat.present(try chat.find(model))) try chat.download(model);
+    std.debug.print("{s}: present\n", .{model});
+    return 0;
+}
+
+/// Compare's measurement, as the Chat tab runs it: the GPU (if any) and the
+/// CPU on the same prompt, and which one `.auto` uses from then on.
+fn headlessCompare(model: []const u8) !u8 {
+    const r = try chat.compare(.{ .model = model });
+    if (r.gpu) |g| std.debug.print("GPU: {d:.1} tok/s ({d} tokens, prompt {d} ms)\n", .{ g.tokens_per_s, g.tokens, g.prompt_ms }) else std.debug.print("GPU: none\n", .{});
+    std.debug.print("CPU: {d:.1} tok/s ({d} tokens, prompt {d} ms)\nauto uses: {s}\n", .{ r.cpu.tokens_per_s, r.cpu.tokens, r.cpu.prompt_ms, r.faster });
+    return 0;
+}
+
 fn headlessTranscribe(gpa: std.mem.Allocator, path: []const u8) !u8 {
     const t = try dictation.transcribeFile(gpa, path, .{});
     defer gpa.free(t.text);
@@ -414,13 +429,17 @@ pub fn main(init: std.process.Init) !u8 {
 
     // Headless checks (desktop): `--chat "<message>"` answers it and a
     // follow-up (the second turn reuses the KV cache), `--transcribe <wav>`
-    // prints the text; the models must be in the models directory.
+    // prints the text (the models must be in the models directory);
+    // `--download <model>` fetches a chat model, `--compare <model>` runs
+    // the Chat tab's GPU/CPU comparison.
     if (!oriel.target.is_android and !oriel.target.is_ios) {
         var it = try init.minimal.args.iterateAllocator(init.gpa);
         defer it.deinit();
         _ = it.next();
         if (it.next()) |flag| if (it.next()) |arg| {
             if (std.mem.eql(u8, flag, "--chat")) return headlessChat(init.gpa, arg);
+            if (std.mem.eql(u8, flag, "--download")) return headlessDownload(arg);
+            if (std.mem.eql(u8, flag, "--compare")) return headlessCompare(arg);
             if (std.mem.eql(u8, flag, "--transcribe")) return headlessTranscribe(init.gpa, arg);
         };
     }

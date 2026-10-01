@@ -719,10 +719,23 @@ pub fn compare(opts: Options) !Comparison {
     o.backend = .cpu;
     const cpu_run = try timed(&messages, o);
     emit("chat:compare", .{ .backend = "CPU", .tokens_per_s = cpu_run.tokens_per_s });
-    const margin: f32 = if (is_phone) 1.3 else 1.0;
-    const gpu_wins = if (gpu_run) |g| g.tokens_per_s >= cpu_run.tokens_per_s * margin else false;
+    const gpu_wins = if (gpu_run) |g| gpuWins(g.tokens_per_s, cpu_run.tokens_per_s, is_phone) else false;
     if (gpu_run != null) prefs.set(io, gpa, models_dir, m.name, gpu_wins);
     return .{ .model = m.name, .gpu = gpu_run, .cpu = cpu_run, .faster = if (gpu_wins) "gpu" else "cpu" };
+}
+
+/// Whether Compare picks the GPU: at least as fast on desktops; on phones
+/// 1.3× the CPU, since a GPU barely faster isn't worth its heat and battery.
+fn gpuWins(gpu_tps: f32, cpu_tps: f32, phone: bool) bool {
+    const margin: f32 = if (phone) 1.3 else 1.0;
+    return gpu_tps >= cpu_tps * margin;
+}
+
+test gpuWins {
+    try std.testing.expect(gpuWins(20, 20, false));
+    try std.testing.expect(!gpuWins(19, 20, false));
+    try std.testing.expect(!gpuWins(25, 20, true)); // 1.25×: not enough on a phone
+    try std.testing.expect(gpuWins(26, 20, true));
 }
 
 fn ensureBackendLocked() void {
