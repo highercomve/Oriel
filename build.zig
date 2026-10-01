@@ -55,7 +55,8 @@ const Features = struct {
     native_ui: bool,
 
     /// Modules that have no Android backend: off by default for Android
-    /// targets, and an error when enabled there (their selectors explain why).
+    /// targets. Enabled, they build as stubs with the same API (their
+    /// selectors explain why), so one app source builds for every platform.
     const unavailable_on_android = [_][]const u8{ "tray", "updater", "menu", "input", "media_server", "layer_shell" };
     /// The same for iOS (docs/ios.md).
     const unavailable_on_ios = [_][]const u8{ "tray", "updater", "menu", "global_shortcut", "input", "media_server", "layer_shell", "fs_watch" };
@@ -83,10 +84,11 @@ const Features = struct {
             const ios_off = comptime for (unavailable_on_ios) |n| {
                 if (std.mem.eql(u8, n, field.name)) break true;
             } else false;
-            if (android and android_off and opt == true) fatal("-D" ++ field.name ++ " is not available on Android (see docs/android.md)", .{});
             if (ios and ios_off and opt == true) fatal("-D" ++ field.name ++ " is not available on iOS (see docs/ios.md)", .{});
             @field(f, field.name) = opt orelse (!is_native and !is_deep_link and !(android and android_off) and !(ios and ios_off));
         }
+        // gtk4-layer-shell is a Wayland thing: asked for on Android, it's off.
+        if (android) f.layer_shell = false;
 
         if (f.native_ui and !(target.result.os.tag == .linux or target.result.os.tag == .windows or target.result.os.tag == .macos or target.result.os.tag == .ios)) {
             fatal("-Dnative_ui is experimental: Linux, Windows, macOS, Android and iOS only so far (docs/native-renderer.md)", .{});
