@@ -273,7 +273,7 @@ export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {
         e.tree.layout();
         e.relaid = true;
     }
-    const n = e.tree.get(@intFromFloat(id)) orelse return 0;
+    const n = e.tree.get(Tree.idOf(id)) orelse return 0;
     out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(n.content_h, n.frame.h) };
     return 1;
 }
@@ -284,7 +284,7 @@ export fn oriel_nui_focus(p: *anyopaque, id: f64) void {
         e.tree.layout();
         e.relaid = true;
     }
-    const n = e.tree.get(@intFromFloat(id)) orelse return;
+    const n = e.tree.get(Tree.idOf(id)) orelse return;
     e.backend.focus(e.backend.ctx, n);
 }
 
@@ -294,15 +294,16 @@ export fn oriel_nui_scroll_into_view(p: *anyopaque, id: f64, block: [*]const u8,
         e.tree.layout();
         e.relaid = true;
     }
-    const n = e.tree.get(@intFromFloat(id)) orelse return;
+    const n = e.tree.get(Tree.idOf(id)) orelse return;
     e.tree.scrollIntoView(n, block[0..len]);
     e.backend.laid_out(e.backend.ctx);
 }
 
 export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64) void {
     const e = engineOf(p);
-    const n = e.tree.get(@intFromFloat(id)) orelse return;
-    n.scroll_y = @floatCast(y);
+    if (e.tree.dirty) e.tree.layout();
+    const n = e.tree.get(Tree.idOf(id)) orelse return;
+    n.scroll_y = std.math.clamp(@as(f32, @floatCast(y)), 0, @max(0, n.content_h - n.frame.h));
     e.tree.replace();
     e.backend.laid_out(e.backend.ctx);
 }
