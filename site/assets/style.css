@@ -345,3 +345,30 @@ tr:last-child td { border-bottom: 0; }
   .footer-cols { gap: 40px; }
   .cta { margin: 16px 16px 64px; }
 }
+
+/* Native renderer page: diagrams (inline SVG, themed by the site's colors) */
+.nr-fig { margin: 28px 0; overflow-x: auto; }
+@media (max-width: 700px) { .nr-fig svg { min-width: 620px; } }
+.nr-fig svg { width: 100%; height: auto; display: block; overflow: visible; }
+.nr-fig figcaption { margin-top: 10px; color: var(--faint); font-size: 0.85rem; }
+.nr-fig text { font-family: var(--font); fill: var(--text); }
+.nr-fig .nr-t { font-size: 15px; font-weight: 600; }
+.nr-fig .nr-h { font-size: 14px; font-weight: 600; fill: var(--muted); }
+.nr-fig .nr-s { font-size: 13px; fill: var(--muted); }
+.nr-fig .nr-m { font-family: var(--mono); font-size: 13px; fill: var(--muted); }
+.nr-fig .nr-v { font-size: 13px; font-weight: 600; }
+.nr-fig .nr-n { font-size: 13px; font-weight: 700; fill: var(--accent); }
+.nr-fig .nr-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; fill: var(--faint); }
+.nr-fig .nr-dim { fill: var(--faint); }
+.nr-fig .nr-box { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1; }
+.nr-fig .nr-group { fill: none; stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 4 4; }
+.nr-fig .nr-code { fill: var(--code-bg); stroke: var(--border); }
+.nr-fig .nr-code ~ .nr-m { fill: #e8e2d6; }
+.nr-fig .nr-acc { stroke: var(--accent); stroke-width: 1.5; }
+.nr-fig .nr-hot { stroke: var(--faint); stroke-dasharray: 5 4; }
+.nr-fig .nr-line { fill: none; stroke: var(--faint); stroke-width: 1.5; }
+.nr-fig .nr-back { stroke-dasharray: 4 4; }
+.nr-fig .nr-arrowhead { fill: var(--faint); }
+.nr-fig .nr-bar { fill: var(--border-strong); }
+.nr-fig .nr-acc-fill { fill: var(--accent); }
+.tag-exp { font-size: 0.7em; padding: 1px 6px; border-radius: 99px; border: 1px solid var(--border-strong); color: var(--faint); vertical-align: 1px; margin-left: 4px; }

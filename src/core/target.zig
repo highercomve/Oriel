@@ -32,6 +32,8 @@ pub const name: []const u8 = if (os == .other) @tagName(builtin.os.tag) else @ta
 /// `{ os: "android", arch: "aarch64" }`. `os` is `name`; `arch` is Zig's CPU
 /// architecture name ("x86_64", "aarch64").
 pub const platform_js = "Object.freeze({ os: \"" ++ name ++ "\", arch: \"" ++ @tagName(builtin.cpu.arch) ++ "\" })";
+/// The same as JSON, for the native renderer (docs/native-renderer.md).
+pub const platform_json = "{\"os\":\"" ++ name ++ "\",\"arch\":\"" ++ @tagName(builtin.cpu.arch) ++ "\"}";
 
 test "platform_js names the OS the way target.name does" {
     const std = @import("std");
