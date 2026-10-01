@@ -101,6 +101,20 @@ extern fn cairo_arc(cr: *cairo_t, xc: f64, yc: f64, r: f64, a1: f64, a2: f64) vo
 extern fn cairo_close_path(cr: *cairo_t) void;
 extern fn cairo_rectangle(cr: *cairo_t, x: f64, y: f64, w: f64, h: f64) void;
 extern fn cairo_clip(cr: *cairo_t) void;
+extern fn cairo_image_surface_create(format: c_int, w: c_int, h: c_int) ?*anyopaque;
+extern fn cairo_image_surface_get_data(surface: *anyopaque) ?[*]u8;
+extern fn cairo_image_surface_get_stride(surface: *anyopaque) c_int;
+extern fn cairo_surface_flush(surface: *anyopaque) void;
+extern fn cairo_surface_mark_dirty(surface: *anyopaque) void;
+extern fn cairo_surface_destroy(surface: *anyopaque) void;
+extern fn cairo_set_source_surface(cr: *cairo_t, surface: *anyopaque, x: f64, y: f64) void;
+extern fn g_bytes_new(data: ?*const anyopaque, size: usize) *anyopaque;
+extern fn g_bytes_unref(bytes: *anyopaque) void;
+extern fn gdk_texture_new_from_bytes(bytes: *anyopaque, err: *?*anyopaque) ?*anyopaque;
+extern fn gdk_texture_get_width(texture: *anyopaque) c_int;
+extern fn gdk_texture_get_height(texture: *anyopaque) c_int;
+extern fn gdk_texture_download(texture: *anyopaque, data: [*]u8, stride: usize) void;
+extern fn g_error_free(err: *anyopaque) void;
 extern fn cairo_fill(cr: *cairo_t) void;
 extern fn cairo_fill_preserve(cr: *cairo_t) void;
 extern fn cairo_stroke(cr: *cairo_t) void;
@@ -175,6 +189,9 @@ pub const Surface = struct {
     overlay: *Widget,
     area: *Widget,
     fields: std.AutoHashMap(i64, *Widget),
+    /// Decoded <img> pictures, one per image node (a clipboard preview is a
+    /// new data: URI each time: keyed by node, replaced when its src changes).
+    images: std.AutoHashMap(i64, Image),
     css: *GtkCssProvider,
     css_text: std.ArrayList(u8) = .empty,
     invoke_fn: Invoke,
@@ -202,6 +219,7 @@ pub const Surface = struct {
             .overlay = overlay,
             .area = area,
             .fields = .init(gpa),
+            .images = .init(gpa),
             .css = gtk_css_provider_new(),
             .invoke_fn = invoke_fn,
             .invoke_ctx = invoke_ctx,
@@ -288,6 +306,7 @@ fn focus(ctx: *anyopaque, node: *Node) void {
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     if (s.fields.fetchRemove(node.id)) |kv| gtk_overlay_remove_overlay(s.overlay, kv.value);
+    if (s.images.fetchRemove(node.id)) |kv| kv.value.deinit();
 }
 
 fn laidOut(ctx: *anyopaque) void {
@@ -607,6 +626,13 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             pango_layout_get_pixel_size(layout, &w, &h);
             out.* = .{ @floatFromInt(w + 1), @floatFromInt(h) };
         },
+        .image => {
+            // Its natural size, scaled down to the width it may take.
+            const img = imageOf(s, n) orelse return;
+            if (img.w <= 0 or img.h <= 0) return;
+            const k: f32 = if (!std.math.isInf(max_width) and max_width < img.w) max_width / img.w else 1;
+            out.* = .{ img.w * k, img.h * k };
+        },
         .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
         else => out.* = .{ 0, 0 },
@@ -745,6 +771,7 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
     switch (n.kind) {
         .text => paintText(s, cr, n),
         .icon => paintIcon(cr, n),
+        .image => paintImage(s, cr, n),
         else => {},
     }
     for (n.kids.items) |k| paint(s, cr, k);
@@ -867,6 +894,107 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
     defer g_object_unref(layout);
     cairo_move_to(cr, c.x, c.y);
     pango_cairo_show_layout(cr, layout);
+}
+
+// ---------------------------------------------------------------------------
+// Images (<img src="data:…"> or an app asset)
+
+const Image = struct {
+    src_hash: u64,
+    /// Cairo ARGB32 surface; null when the picture couldn't be decoded.
+    surface: ?*anyopaque,
+    w: f32,
+    h: f32,
+
+    fn deinit(img: Image) void {
+        if (img.surface) |sf| cairo_surface_destroy(sf);
+    }
+};
+
+/// The node's decoded picture (decoded on first use and when src changes).
+fn imageOf(s: *Surface, n: *Node) ?Image {
+    const src = n.props.src orelse return null;
+    const hash = std.hash.Wyhash.hash(0, src);
+    if (s.images.get(n.id)) |img| if (img.src_hash == hash) return img;
+    if (s.images.fetchRemove(n.id)) |kv| kv.value.deinit();
+    const img = decodeImage(s, src) catch |err| blk: {
+        log.warn("native ui: image {s}: {s}", .{ src[0..@min(src.len, 48)], @errorName(err) });
+        break :blk Image{ .src_hash = hash, .surface = null, .w = 0, .h = 0 };
+    };
+    var stored = img;
+    stored.src_hash = hash;
+    s.images.put(n.id, stored) catch {
+        stored.deinit();
+        return null;
+    };
+    return stored;
+}
+
+fn decodeImage(s: *Surface, src: []const u8) !Image {
+    var owned: ?[]u8 = null;
+    defer if (owned) |o| s.gpa.free(o);
+    const bytes: []const u8 = if (std.mem.startsWith(u8, src, "data:")) blk: {
+        const comma = std.mem.indexOfScalar(u8, src, ',') orelse return error.BadDataUri;
+        if (std.mem.indexOf(u8, src[0..comma], ";base64") == null) return error.NotBase64;
+        const b64 = std.mem.trim(u8, src[comma + 1 ..], " \t\r\n");
+        const dec = std.base64.standard.Decoder;
+        const buf = try s.gpa.alloc(u8, try dec.calcSizeForSlice(b64));
+        owned = buf;
+        try dec.decode(buf, b64);
+        break :blk buf;
+    } else s.engine.assetData(src) orelse return error.AssetNotFound;
+
+    const gbytes = g_bytes_new(bytes.ptr, bytes.len); // copies
+    defer g_bytes_unref(gbytes);
+    var gerr: ?*anyopaque = null;
+    const texture = gdk_texture_new_from_bytes(gbytes, &gerr) orelse {
+        if (gerr) |e| g_error_free(e);
+        return error.DecodeFailed;
+    };
+    defer g_object_unref(texture);
+    const w = gdk_texture_get_width(texture);
+    const h = gdk_texture_get_height(texture);
+    if (w <= 0 or h <= 0) return error.EmptyImage;
+    // CAIRO_FORMAT_ARGB32 is GDK_MEMORY_DEFAULT (premultiplied, native endian).
+    const sf = cairo_image_surface_create(0, w, h) orelse return error.OutOfMemory;
+    errdefer cairo_surface_destroy(sf);
+    cairo_surface_flush(sf);
+    const data = cairo_image_surface_get_data(sf) orelse return error.OutOfMemory;
+    gdk_texture_download(texture, data, @intCast(cairo_image_surface_get_stride(sf)));
+    cairo_surface_mark_dirty(sf);
+    return .{ .src_hash = 0, .surface = sf, .w = @floatFromInt(w), .h = @floatFromInt(h) };
+}
+
+/// Drawn in its content box per CSS object-fit (fill by default).
+fn paintImage(s: *Surface, cr: *cairo_t, n: *Node) void {
+    const img = imageOf(s, n) orelse return;
+    const sf = img.surface orelse return;
+    const c = n.content();
+    if (c.w <= 0 or c.h <= 0) return;
+    const fit = n.props.fit orelse "fill";
+    var kx: f64 = c.w / img.w;
+    var ky: f64 = c.h / img.h;
+    if (std.mem.eql(u8, fit, "contain")) {
+        kx = @min(kx, ky);
+        ky = kx;
+    } else if (std.mem.eql(u8, fit, "cover")) {
+        kx = @max(kx, ky);
+        ky = kx;
+    } else if (std.mem.eql(u8, fit, "none")) {
+        kx = 1;
+        ky = 1;
+    } else if (std.mem.eql(u8, fit, "scale-down")) {
+        kx = @min(1, @min(kx, ky));
+        ky = kx;
+    }
+    cairo_save(cr);
+    defer cairo_restore(cr);
+    cairo_rectangle(cr, c.x, c.y, c.w, c.h);
+    cairo_clip(cr);
+    cairo_translate(cr, c.x + (c.w - img.w * kx) / 2, c.y + (c.h - img.h * ky) / 2);
+    cairo_scale(cr, kx, ky);
+    cairo_set_source_surface(cr, sf, 0, 0);
+    cairo_paint(cr);
 }
 
 fn paintIcon(cr: *cairo_t, n: *Node) void {

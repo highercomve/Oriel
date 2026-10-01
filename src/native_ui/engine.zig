@@ -181,6 +181,12 @@ pub const Engine = struct {
         }
     }
 
+    /// The bytes of an app asset ("assets/x.png"), or null.
+    pub fn assetData(e: *Engine, path: []const u8) ?[]const u8 {
+        const a = App.findAsset(e.assets, path, false) orelse return null;
+        return a.data;
+    }
+
     pub fn jsMemory(e: *Engine) usize {
         return oqjs_memory(e.js);
     }
