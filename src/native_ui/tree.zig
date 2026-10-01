@@ -110,6 +110,10 @@ pub const Props = struct {
     // Images (<img>): a data: URI or an app asset path, and CSS object-fit.
     src: ?[]const u8 = null,
     fit: ?[]const u8 = null,
+    // A default checkbox/radio (<input> without appearance: none).
+    ctl: ?[]const u8 = null,
+    on: bool = false,
+    acc: ?Color = null,
 };
 
 pub const Rect = struct {

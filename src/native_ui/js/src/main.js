@@ -481,6 +481,29 @@ function markChain(attr, el) {
   marked.set(attr, next);
 }
 
+// The pointer moved from element `from` to `to` (either may be null): the
+// events a browser fires, so React's onMouseEnter/onMouseLeave (built from
+// bubbling mouseover/mouseout and their relatedTarget) and plain
+// mouseenter/mouseleave listeners run.
+function hoverEvents(from, to) {
+  if (from === to) return;
+  const chain = (n) => { const out = []; for (; n && n.nodeType === 1; n = n.parentNode) out.push(n); return out; };
+  const fromChain = chain(from), toChain = chain(to);
+  const fire = (target, type, bubbles, related) => {
+    if (!target) return;
+    const ev = new Event(type, { bubbles, cancelable: bubbles });
+    Object.defineProperty(ev, "relatedTarget", { value: related, configurable: true });
+    for (const k of ["clientX", "clientY", "pageX", "pageY", "screenX", "screenY", "button", "buttons"]) Object.defineProperty(ev, k, { value: 0, configurable: true });
+    target.dispatchEvent(ev);
+  };
+  for (const prefix of ["pointer", "mouse"]) {
+    fire(from, prefix + "out", true, to);
+    for (const n of fromChain) if (!toChain.includes(n)) fire(n, prefix + "leave", false, to);
+    fire(to, prefix + "over", true, from);
+    for (const n of [...toChain].reverse()) if (!fromChain.includes(n)) fire(n, prefix + "enter", false, from);
+  }
+}
+
 // Inline handlers (onclick="…"): linkedom keeps them as attributes only.
 // Each becomes a listener running the code with `event` and `this`, like a
 // browser's; returning false prevents the default.
@@ -582,7 +605,12 @@ g.__oriel = {
         // The system back button: true when the page went back.
         // The pointer over a node (or none), a press and its release: the
         // element and its ancestors match :hover and :active.
-        case "hover": markChain("data-nui-hover", el); return false;
+        case "hover": {
+          const before = marked.get("data-nui-hover") || [];
+          markChain("data-nui-hover", el);
+          hoverEvents(before[0] || null, el || null);
+          return false;
+        }
         case "press": markChain("data-nui-active", el); return false;
         case "release": markChain("data-nui-active", null); return false;
         case "back": if (!history.length) return false; g.history.back(); return true;

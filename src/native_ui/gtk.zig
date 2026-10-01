@@ -53,6 +53,7 @@ extern fn gtk_widget_set_vexpand(w: *Widget, e: c_int) void;
 extern fn gtk_entry_new() *Widget;
 extern fn gtk_entry_set_has_frame(e: *Widget, f: c_int) void;
 extern fn gtk_entry_set_placeholder_text(e: *Widget, t: [*:0]const u8) void;
+extern fn gtk_text_buffer_get_char_count(buffer: *anyopaque) c_int;
 extern fn gtk_entry_set_visibility(e: *Widget, v: c_int) void;
 extern fn gtk_editable_set_text(e: *Widget, t: [*:0]const u8) void;
 extern fn gtk_editable_get_text(e: *Widget) [*:0]const u8;
@@ -319,6 +320,37 @@ fn laidOut(ctx: *anyopaque) void {
 // ---------------------------------------------------------------------------
 // Fields: native widgets for input, textarea and select
 
+/// Whether a box with a background painted after `field` (later in the
+/// tree's paint order, so not one of its ancestors) overlaps it: a sticky
+/// footer over a field scrolled under it. The field is a widget above the
+/// whole page and would show through, so it's hidden instead.
+fn coveredLater(s: *Surface, field: *Node) bool {
+    const root = s.engine.tree.root orelse return false;
+    const Walk = struct {
+        field: *Node,
+        seen: bool = false,
+        covered: bool = false,
+        fn visit(w: *@This(), n: *Node) void {
+            if (w.covered or n.props.vis == false) return;
+            if (n == w.field) {
+                w.seen = true;
+                return;
+            }
+            if (w.seen and n.props.bg != null) {
+                const r = n.clip.intersect(n.frame).intersect(w.field.frame);
+                if (r.w > 1 and r.h > 1) {
+                    w.covered = true;
+                    return;
+                }
+            }
+            for (n.kids.items) |k| w.visit(k);
+        }
+    };
+    var w: Walk = .{ .field = field };
+    w.visit(root);
+    return w.covered;
+}
+
 fn syncFields(s: *Surface) void {
     var css_changed = false;
     var it = s.engine.tree.nodes.valueIterator();
@@ -348,7 +380,21 @@ fn syncFields(s: *Surface) void {
             }
         }
         gtk_widget_set_sensitive(w, @intFromBool(!n.props.dis));
-        const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
+        // The page changes placeholders too ("Select text first…" → "Tell
+        // GhostPen what to do…"); a text view's is drawn by paintPlaceholder.
+        if (n.kind == .input) {
+            const ph = s.gpa.dupeZ(u8, n.props.ph orelse "") catch continue;
+            defer s.gpa.free(ph);
+            gtk_entry_set_placeholder_text(w, ph.ptr);
+        }
+        // A field is a GTK widget over the page, not clipped by its scroll
+        // container: shown only while it lies entirely inside the visible
+        // area (else it was drawn over a sticky footer, half scrolled out).
+        const shown = n.clip.intersect(n.frame);
+        const visible = n.frame.w > 1 and n.frame.h > 1 and n.props.vis != false and
+            shown.h >= n.frame.h - 1 and shown.w >= n.frame.w - 1 and
+            !coveredLater(s, n);
+        if (std.c.getenv("ORIEL_NUI_FIELDS") != null) log.info("field {d} {s}: frame {d:.0},{d:.0} {d:.0}x{d:.0} clip {d:.0},{d:.0} {d:.0}x{d:.0} visible {}", .{ n.id, @tagName(n.kind), n.frame.x, n.frame.y, n.frame.w, n.frame.h, n.clip.x, n.clip.y, n.clip.w, n.clip.h, visible });
         gtk_widget_set_visible(w, @intFromBool(visible));
         css_changed = true;
     }
@@ -455,6 +501,8 @@ fn onEntryActivate(e: *Widget, data: ?*anyopaque) callconv(.c) void {
 
 fn onBufferChanged(buffer: *anyopaque, data: ?*anyopaque) callconv(.c) void {
     const s = surfaceOf(data);
+    // The placeholder under an empty text view comes and goes with the text.
+    gtk_widget_queue_draw(s.area);
     if (s.updating) return;
     const view = g_object_get_data(buffer, "oriel-view") orelse return;
     const n = nodeOfWidget(s, view) orelse return;
@@ -772,6 +820,8 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         .text => paintText(s, cr, n),
         .icon => paintIcon(cr, n),
         .image => paintImage(s, cr, n),
+        .textarea => paintPlaceholder(s, cr, n),
+        .view => if (n.props.ctl != null) paintControl(cr, n),
         else => {},
     }
     for (n.kids.items) |k| paint(s, cr, k);
@@ -892,6 +942,76 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
     const c = n.content();
     const layout = textLayout(s, n, c.w + 1) orelse return;
     defer g_object_unref(layout);
+    cairo_move_to(cr, c.x, c.y);
+    pango_cairo_show_layout(cr, layout);
+}
+
+/// A default checkbox or radio: an outlined box/circle, filled with the accent
+/// color (or a blue default) and a white mark when checked; dimmed disabled.
+fn paintControl(cr: *cairo_t, n: *Node) void {
+    const c = n.frame;
+    const size = @min(c.w, c.h);
+    if (size <= 0) return;
+    const x = c.x + (c.w - size) / 2;
+    const y = c.y + (c.h - size) / 2;
+    const radio = std.mem.eql(u8, n.props.ctl.?, "radio");
+    const acc = n.props.acc orelse tree_mod.Color{ 59, 108, 255, 1 };
+    const alpha: f32 = if (n.props.dis) 0.45 else 1;
+    cairo_save(cr);
+    defer cairo_restore(cr);
+    cairo_new_path(cr);
+    if (radio) {
+        cairo_arc(cr, x + size / 2, y + size / 2, size / 2 - 0.5, 0, 2 * std.math.pi);
+    } else {
+        roundRect(cr, .{ .x = x + 0.5, .y = y + 0.5, .w = size - 1, .h = size - 1 }, .{ 2.5, 2.5, 2.5, 2.5 });
+    }
+    if (n.props.on) {
+        setColor(cr, .{ acc[0], acc[1], acc[2], acc[3] * alpha });
+        cairo_fill(cr);
+        setColor(cr, .{ 255, 255, 255, alpha });
+        if (radio) {
+            cairo_new_path(cr);
+            cairo_arc(cr, x + size / 2, y + size / 2, size * 0.2, 0, 2 * std.math.pi);
+            cairo_fill(cr);
+        } else {
+            cairo_set_line_width(cr, @max(1.5, size * 0.13));
+            cairo_set_line_cap(cr, 1);
+            cairo_set_line_join(cr, 1);
+            cairo_move_to(cr, x + size * 0.25, y + size * 0.52);
+            cairo_line_to(cr, x + size * 0.43, y + size * 0.7);
+            cairo_line_to(cr, x + size * 0.76, y + size * 0.32);
+            cairo_stroke(cr);
+        }
+    } else {
+        setColor(cr, .{ 255, 255, 255, alpha });
+        cairo_fill_preserve(cr);
+        setColor(cr, .{ 118, 118, 118, alpha });
+        cairo_set_line_width(cr, 1);
+        cairo_stroke(cr);
+    }
+}
+
+/// A <textarea>'s placeholder: GtkTextView has none, so it's drawn under the
+/// (transparent) view while the buffer is empty, in the text color at half
+/// strength, as a browser does.
+fn paintPlaceholder(s: *Surface, cr: *cairo_t, n: *Node) void {
+    const ph = n.props.ph orelse return;
+    if (ph.len == 0) return;
+    const w = s.fields.get(n.id) orelse return;
+    if (gtk_text_buffer_get_char_count(gtk_text_view_get_buffer(w)) > 0) return;
+    const c = n.content();
+    const layout = gtk_widget_create_pango_layout(s.area, null);
+    defer g_object_unref(layout);
+    const desc = pango_font_description_from_string("Sans");
+    defer pango_font_description_free(desc);
+    pango_font_description_set_absolute_size(desc, (n.props.fz orelse 16) * PANGO_SCALE);
+    pango_layout_set_font_description(layout, desc);
+    pango_layout_set_text(layout, ph.ptr, @intCast(ph.len));
+    pango_layout_set_width(layout, @intFromFloat(@max(1, c.w) * PANGO_SCALE));
+    pango_layout_set_wrap(layout, 2);
+    var col = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
+    col[3] *= 0.5;
+    setColor(cr, col);
     cairo_move_to(cr, c.x, c.y);
     pango_cairo_show_layout(cr, layout);
 }

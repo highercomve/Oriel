@@ -162,8 +162,21 @@ export class Renderer {
     if (tag === "input" || tag === "textarea" || tag === "select") {
       const type = (el.getAttribute("type") || "text").toLowerCase();
       if (tag === "input" && (type === "checkbox" || type === "radio")) {
-        // Drawn by the page's CSS (or nothing); the click goes to the label.
+        // The click goes to the label. With appearance: none the page's CSS
+        // draws it; else the native side draws the default control, in the
+        // browser's 13px box with its 3px margin, in accent-color when checked.
         props.click = true;
+        const app = cs.appearance || cs["-webkit-appearance"];
+        if (app !== "none") {
+          props.ctl = type;
+          if (el.hasAttribute("checked")) props.on = true;
+          const acc = color(cs["accent-color"] || "");
+          if (acc) props.acc = acc;
+          if (props.w === undefined || props.w === "auto") props.w = 13;
+          if (props.h === undefined || props.h === "auto") props.h = 13;
+          if (!props.m) props.m = [3, 3, 3, 3];
+          delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
+        }
         return this.put(nodes, id, "view", props, [], fixedNode);
       }
       Object.assign(props, textProps(cs, fontSize));
@@ -186,6 +199,7 @@ export class Renderer {
     // Children: blocks, and inline content collected into text runs.
     const childCtx = { blockify: display === "flex" || display === "grid", parentText: cs["text-align"] };
     const kids = [];
+    let orders = null; // CSS order of the element children that set one
     const before = this.pseudo(el, cs, "before", nodes);
     if (before) kids.push(before);
     const flow = [];
@@ -253,9 +267,16 @@ export class Renderer {
         }
       }
       kids.push(cid);
+      const ord = parseInt(this.cs.get(item.el)?.order, 10);
+      if (ord) (orders ??= new Map()).set(cid, ord);
     }
     const after = this.pseudo(el, cs, "after", nodes);
     if (after) kids.push(after);
+    // CSS order: flex/grid items laid out by it, then by source order.
+    if (orders && childCtx.blockify) {
+      const pos = new Map(kids.map((k, i) => [k, i]));
+      kids.sort((a, b) => (orders.get(a) || 0) - (orders.get(b) || 0) || pos.get(a) - pos.get(b));
+    }
 
     if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
     this.putClick(props, el);
