@@ -53,8 +53,12 @@ pub const Surface = struct {
 };
 
 const Field = struct {
-    /// What sits in the view: the text field, popup, or (text areas) the
-    /// scroll view around the text view.
+    /// A plain view (+1) in the page's view, clipped to the part of the
+    /// field the page shows (a field half scrolled out of its container is
+    /// cut there, as in a browser): the control is its only subview.
+    holder: Object,
+    /// The text field, popup, or (text areas) the scroll view around the
+    /// text view (held by `holder`).
     outer: Object,
     /// What has the text: the same, or the text view.
     inner: Object,
@@ -69,6 +73,7 @@ var by_control: std.AutoHashMapUnmanaged(usize, Owner) = .empty;
 var next_token: u64 = 1;
 
 var view_class: ?cocoa.Class = null;
+var holder_class: ?cocoa.Class = null;
 var field_delegate: Object = cocoa.nil;
 
 fn key(o: id) usize {
@@ -103,6 +108,10 @@ fn classes() void {
         .{ "scrollWheel:", scrollWheel },
         .{ "keyDown:", keyDown },
         .{ "viewDidChangeEffectiveAppearance", appearanceChanged },
+    });
+    // A field's holder: flipped like the page, so frames read top-down.
+    holder_class = cocoa.defineSubclass("OrielNuiFlippedView", "NSView", &.{}, .{
+        .{ "isFlipped", yes },
     });
     field_delegate = cocoa.new(cocoa.defineClass("OrielNuiFieldDelegate", &.{ "NSTextFieldDelegate", "NSTextViewDelegate" }, .{
         .{ "controlTextDidChange:", controlTextDidChange },
@@ -170,7 +179,7 @@ pub fn destroy(s: *Surface) void {
     while (it.next()) |e| dropField(e.value_ptr.*);
     s.fields.deinit(s.gpa);
     s.view.msgSend(void, "removeFromSuperview", .{});
-    s.view.release();
+    _ = s.view.msgSend(Object, "autorelease", .{}); // it may be in one of its own callbacks
     s.gpa.free(s.label);
     s.gpa.destroy(s);
 }
@@ -180,8 +189,15 @@ fn dropField(f: Field) void {
     _ = by_control.remove(key(f.inner.value));
     // A delegate outlives nothing: clear it before the control goes.
     if (f.inner.getClass()) |cls| if (cls.respondsToSelector(cocoa.objc.sel("setDelegate:"))) f.inner.msgSend(void, "setDelegate:", .{cocoa.nil});
-    f.outer.msgSend(void, "removeFromSuperview", .{});
-    f.outer.release();
+    // A text field being edited: end it, so the window's field editor
+    // doesn't keep a delegate that's going away.
+    if (f.inner.getClass()) |cls| if (cls.respondsToSelector(cocoa.objc.sel("abortEditing"))) {
+        _ = f.inner.msgSend(BOOL, "abortEditing", .{});
+    };
+    f.holder.msgSend(void, "removeFromSuperview", .{});
+    // Autoreleased, not released: the page may drop a field from inside
+    // that control's own callback (a handler for its Enter).
+    _ = f.holder.msgSend(Object, "autorelease", .{}); // and with it the control
 }
 
 fn surfaceOf(ctx: *anyopaque) *Surface {
@@ -342,10 +358,14 @@ fn syncFields(s: *Surface) void {
             setValue(n, f, v);
         }
         style(n, f);
+        // The holder covers the visible part of the field; the control sits
+        // at the field's place inside it.
         const r = n.content();
-        f.outer.msgSend(void, "setFrame:", .{NSRect{ .origin = .{ .x = r.x, .y = r.y }, .size = .{ .width = @max(1, r.w), .height = @max(1, r.h) } }});
-        const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
-        f.outer.msgSend(void, "setHidden:", .{cocoa.boolean(!visible)});
+        const shown = draw.visiblePart(&s.engine.tree, n);
+        f.holder.msgSend(void, "setFrame:", .{NSRect{ .origin = .{ .x = shown.x, .y = shown.y }, .size = .{ .width = shown.w, .height = shown.h } }});
+        f.outer.msgSend(void, "setFrame:", .{NSRect{ .origin = .{ .x = r.x - shown.x, .y = r.y - shown.y }, .size = .{ .width = @max(1, r.w), .height = @max(1, r.h) } }});
+        const visible = shown.h > 1 and shown.w > 1 and n.props.vis != false;
+        f.holder.msgSend(void, "setHidden:", .{cocoa.boolean(!visible)});
         if (n.kind != .textarea) f.inner.msgSend(void, "setEnabled:", .{cocoa.boolean(!n.props.dis)}) else f.inner.msgSend(void, "setEditable:", .{cocoa.boolean(!n.props.dis)});
     }
 }
@@ -367,7 +387,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
                 tf.msgSend(void, "setPlaceholderString:", .{str});
             };
             tf.msgSend(void, "setDelegate:", .{field_delegate});
-            break :blk .{ .outer = tf, .inner = tf };
+            break :blk .{ .holder = cocoa.nil, .outer = tf, .inner = tf };
         },
         .textarea => blk: {
             const sv = cocoa.class("NSScrollView").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
@@ -392,26 +412,43 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             tv.msgSend(void, "setDelegate:", .{field_delegate});
             sv.msgSend(void, "setDocumentView:", .{tv});
             tv.release(); // the scroll view holds it
-            break :blk .{ .outer = sv, .inner = tv };
+            break :blk .{ .holder = cocoa.nil, .outer = sv, .inner = tv };
         },
         .select => blk: {
             const pb = cocoa.class("NSPopUpButton").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:pullsDown:", .{ zero, cocoa.boolean(false) });
             if (pb.value == null) return null;
             pb.msgSend(void, "setBordered:", .{cocoa.boolean(false)});
-            if (n.props.options) |opts| for (opts) |o| if (cocoa.nsString(o[1])) |str| {
+            // Each item carries its option's index as its tag: titles may
+            // repeat (addItemWithTitle: replaces an equal one) or be skipped.
+            const no_key = cocoa.nsString("") orelse {
+                pb.release();
+                return null;
+            };
+            defer no_key.release();
+            const menu = pb.msgSend(Object, "menu", .{});
+            if (n.props.options) |opts| for (opts, 0..) |o, i| if (cocoa.nsString(o[1])) |str| {
                 defer str.release();
-                pb.msgSend(void, "addItemWithTitle:", .{str});
+                const item = menu.msgSend(Object, "addItemWithTitle:action:keyEquivalent:", .{ str, @as(cocoa.c.SEL, null), no_key });
+                item.msgSend(void, "setTag:", .{@as(c_long, @intCast(i))});
             };
             pb.msgSend(void, "setTarget:", .{field_delegate});
             pb.msgSend(void, "setAction:", .{cocoa.objc.sel("popupChanged:").value});
-            break :blk .{ .outer = pb, .inner = pb };
+            break :blk .{ .holder = cocoa.nil, .outer = pb, .inner = pb };
         },
         else => return null,
     };
+    const holder = holder_class.?.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+    if (holder.value == null) {
+        f.outer.release();
+        return null;
+    }
+    if (holder.getClass().?.respondsToSelector(cocoa.objc.sel("setClipsToBounds:"))) holder.msgSend(void, "setClipsToBounds:", .{cocoa.boolean(true)}); // macOS 14+; before, views always clip
+    holder.msgSend(void, "addSubview:", .{f.outer});
+    f.outer.release(); // the holder keeps it
+    f.holder = holder;
     by_control.put(s.gpa, key(f.outer.value), .{ .token = s.token, .node = n.id }) catch {};
     by_control.put(s.gpa, key(f.inner.value), .{ .token = s.token, .node = n.id }) catch {};
-    s.view.msgSend(void, "addSubview:", .{f.outer});
-    _ = &f;
+    s.view.msgSend(void, "addSubview:", .{holder});
     return f;
 }
 
@@ -426,7 +463,7 @@ fn setValue(n: *Node, f: Field, v: []const u8) void {
             f.inner.msgSend(void, "setString:", .{str});
         },
         .select => if (n.props.options) |opts| for (opts, 0..) |o, i| {
-            if (std.mem.eql(u8, o[0], v)) f.inner.msgSend(void, "selectItemAtIndex:", .{@as(c_long, @intCast(i))});
+            if (std.mem.eql(u8, o[0], v)) _ = f.inner.msgSend(BOOL, "selectItemWithTag:", .{@as(c_long, @intCast(i))});
         },
         else => {},
     }
@@ -501,7 +538,9 @@ fn textViewCommand(_: id, _: SEL, tv: id, selector: SEL) callconv(.c) BOOL {
 fn popupChanged(_: id, _: SEL, sender: id) callconv(.c) void {
     const o = ownerOf(sender) orelse return;
     if (o.s.updating) return;
-    const i = (Object{ .value = sender }).msgSend(c_long, "indexOfSelectedItem", .{});
+    const item = (Object{ .value = sender }).msgSend(Object, "selectedItem", .{});
+    if (item.value == null) return;
+    const i = item.msgSend(c_long, "tag", .{});
     const opts = o.n.props.options orelse return;
     if (i < 0 or @as(usize, @intCast(i)) >= opts.len) return;
     sendValue(o.s, o.n, "change", opts[@intCast(i)][0]);

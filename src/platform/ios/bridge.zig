@@ -398,7 +398,7 @@ pub fn Bridge(
                         break;
                     };
                 }
-                if (label.len == 0) return;
+                if (label.len == 0) return native.resolve(self.token, self.call_id, false, "WindowNotFound");
                 const page_url = security.resolveWindowUrl(arena, config.security, local, null, url, config.start) catch "app://localhost/index.html";
                 const args = std.json.parseFromSliceLeaky(std.json.Value, arena, self.args_json, .{}) catch .null;
                 const request: ipc.Request = .{ .cmd = self.cmd, .args = args };

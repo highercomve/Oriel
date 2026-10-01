@@ -459,7 +459,15 @@ fn getWindowByNSWindow(nswindow: cocoa.id) ?*App.Window {
 /// torn down from inside its own delegate or webview callbacks.
 fn teardown(handle: WindowHandle) void {
     allowOverlayKey(handle.window, false);
-    if (comptime build_opts.native_ui) if (handle.native) |p| native.destroy(@ptrCast(@alignCast(p)));
+    if (comptime build_opts.native_ui) if (handle.native) |p| {
+        // The window must not keep pointing at the view (its initial first
+        // responder is unretained).
+        const w = handle.nsWindow();
+        w.msgSend(void, "setInitialFirstResponder:", .{cocoa.nil});
+        _ = w.msgSend(cocoa.c.BOOL, "makeFirstResponder:", .{cocoa.nil});
+        w.msgSend(void, "setContentView:", .{cocoa.nil});
+        native.destroy(@ptrCast(@alignCast(p)));
+    };
     const view = handle.webView();
     if (handle.webview) |v| isolation.forget(@intFromPtr(v));
     view.msgSend(void, "setNavigationDelegate:", .{cocoa.nil});
