@@ -203,6 +203,12 @@ test {
     if (options.deep_link) std.testing.refAllDecls(deep_link);
     if (options.global_shortcut) std.testing.refAllDecls(global_shortcut);
     if (options.input) std.testing.refAllDecls(input);
+    // The native renderer's own tests: its tree everywhere, the GTK backend
+    // on desktop Linux.
+    if (options.native_ui) {
+        _ = @import("native_ui/tree.zig");
+        if (@import("builtin").os.tag == .linux and !@import("builtin").abi.isAndroid()) _ = @import("native_ui/gtk.zig");
+    }
     if (options.clipboard) std.testing.refAllDecls(clipboard);
     if (options.fs_watch) std.testing.refAllDecls(fs_watch);
     if (options.sql) std.testing.refAllDecls(sql);
