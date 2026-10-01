@@ -105,10 +105,16 @@ jobs:
           pid=$(pgrep -f 'Oriel Showcase.app/oriel-showcase' | head -1)
           echo "RSS in front, after chatting: $(ps -o rss= -p "$pid") KB"
           # Another app to the front: the showcase goes to the background.
-          xcrun simctl launch "$UDID" com.apple.Preferences
-          sleep 10
+          # Run 46's Settings launch didn't take it there (no "app
+          # background"): wait for the line, and try other apps if not.
+          for app in com.apple.Preferences com.apple.mobilesafari com.apple.Maps; do
+            xcrun simctl launch "$UDID" "$app" || continue
+            for i in $(seq 15); do grep -aq "app background" ui-chat.log && break 2; sleep 1; done
+            echo "still in front after launching $app"
+          done
+          sleep 3
           echo "RSS in the background: $(ps -o rss= -p "$pid") KB"
-          grep -a "app background\|unloaded" ui-chat.log
+          grep -a "app background\|unloaded" ui-chat.log || true
           grep -aq "unloaded the chat model" ui-chat.log
       - name: Permissions for dictation (microphone, speech recognition)
         run: |
