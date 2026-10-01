@@ -1,12 +1,12 @@
 ---
 .title = "Roadmap",
 .description = "What is done, what is next.",
-.date = .date("2026-09-24T00:00:00"),
+.date = .date("2026-10-01T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
 
-# Done (Milestones 1–10, security hardening, packaging, Android, iOS, dictation)
+# Done (Milestones 1–10, security hardening, packaging, Android, iOS, dictation, chat)
 
 ## Milestone 1: Async commands
 
@@ -82,7 +82,11 @@ UIKit and `WKWebView` driven from Zig through the Objective-C runtime, with no X
 
 ## Voice to text (`oriel.dictation`)
 
-Live dictation and transcription with the tuning built in: whisper with voice detection, a draft model for the live text and a measured CPU-or-GPU choice per device, or the platform's own recognizer (Android). ggml is compiled optimized in every build mode and with ARM dotprod/i8mm kernels for phones.
+Live dictation and transcription with the tuning built in: whisper with voice detection, a draft model for the live text and a measured CPU-or-GPU choice per device, or the platform's own recognizer (Android). ggml is compiled optimized in every build mode and with ARM dotprod/i8mm kernels for phones. On Apple platforms the system recognizer (`SFSpeechRecognizer`) is a dictation engine too: it falls back to Apple's servers on error 300, keeps the last partial when no final arrives, and reports whether it answered from the device or from Apple's servers.
+
+## Chat (`oriel.chat`)
+
+A local LLM in the app, tuned the same way: models (Qwen2.5 0.5B/1.5B, Llama 3.2 1B and more), the chat template handled in Zig, streamed tokens, a reused KV cache and a mic that dictates the message. Models download once per platform (`model_download`: the release's gateway or huggingface, verified, resumed on Android via the download manager and on iOS through NSURLSession).
 
 ## One showcase
 
@@ -90,17 +94,17 @@ Live dictation and transcription with the tuning built in: whisper with voice de
 
 # Next
 
-- iOS on devices, and the system speech recognizer on iOS and macOS (`SFSpeechRecognizer`) as a dictation engine.
-- An LLM counterpart to dictation: chat and completion with llama.cpp, tuned out of the box.
-
+- iOS on devices: run the showcase on an iPhone, verify Metal dictation and chat there (`zig build check -Dtarget=aarch64-ios` and the simulator CI are the base at hand).
 - Security hardening: command scopes and local capabilities.
-- Platform escape hatch: extra Info.plist keys, entitlements, Windows manifest and NSIS additions.
-- Authenticode signing for Windows installers.
+- Platform escape hatch: extra Info.plist keys, entitlements, Windows manifest and NSIS additions, Android Manifest snippets.
+- Authenticode signing for Windows installers (`oriel signing` covers macOS self-signed certificates today).
+- Windows runtime sweep: the modules marked "runtime untested on Windows" (menu accelerators, clipboard images, store, global shortcuts, input, notifications) verified on real hardware.
 
 # Even later
 
-- CI: automated `zig build test` and headless smoke checks on every push
+- CI: `zig build test` and headless smoke checks on every push (today they run per release and for the iOS simulator)
 - Per-monitor DPI scaling on Windows
+- Windows tray/menu polish (hitting what "runtime untested" hides)
 
 # How to contribute
 
