@@ -213,7 +213,7 @@
 				</div>
 				<div class="platform">
 					<h3>iOS</h3>
-					<p>UIKit + WKWebView from Zig, no Xcode project. <code>.app</code> and <code>.ipa</code>, Metal for whisper / llama. Runs in the simulator in CI; devices next.</p>
+					<p>UIKit + WKWebView from Zig, no Xcode project. <code>.app</code> and <code>.ipa</code>, Metal for whisper / llama. The showcase verified in the iPhone simulator (iOS 18): commands, events, workers, local chat, a second window. Real devices next.</p>
 					<span class="status status-beta">Preview</span>
 				</div>
 			</div>
