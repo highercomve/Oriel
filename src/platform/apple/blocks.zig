@@ -19,6 +19,9 @@ pub const BlockLiteral = extern struct {
 pub const BlockDescriptor = extern struct {
     reserved: c_ulong,
     size: c_ulong,
+    /// Only set on managed blocks (the runtime requires BLOCK_HAS_COPY_DISPOSE).
+    copy: ?*const anyopaque = null,
+    dispose: ?*const anyopaque = null,
 };
 
 extern "c" fn _Block_copy(block: ?*const anyopaque) ?*anyopaque;
@@ -26,6 +29,8 @@ extern "c" fn _Block_release(block: ?*const anyopaque) void;
 extern var _NSConcreteGlobalBlock: [32]usize;
 
 const BLOCK_IS_GLOBAL: c_int = 1 << 28;
+/// The descriptor carries copy/dispose helpers the runtime calls.
+const BLOCK_HAS_COPY_DISPOSE: c_int = 1 << 25;
 
 /// A block with no captures that calls `invoke` (its first parameter is the
 /// block itself). For completion handlers whose state lives elsewhere; the
@@ -75,6 +80,54 @@ pub fn contextBlock(comptime invoke: anytype, ctx: ?*anyopaque) ContextBlock {
         },
         .ctx = ctx,
     };
+}
+
+/// The context is heap-owned by the block: the runtime calls `copyHelper`
+/// (receiver, source) for every copy `_Block_copy` makes and
+/// `disposeHelper` (source) when a copy's final release runs. The helpers
+/// own the refcounting/teardown, so what lives-on is exactly live copies
+/// and the invoke path only needs shared, guarded state.
+pub const ManagedBlock = extern struct {
+    lit: BlockLiteral,
+    ctx: ?*anyopaque,
+
+    pub fn ptr(self: *ManagedBlock) id {
+        return @ptrCast(self);
+    }
+};
+
+pub fn managedBlock(
+    comptime invoke: anytype,
+    ctx: ?*anyopaque,
+    comptime copyHelper: fn (*BlockLiteral, *BlockLiteral) callconv(.c) void,
+    comptime disposeHelper: fn (*BlockLiteral) callconv(.c) void,
+) ManagedBlock {
+    const S = struct {
+        const descriptor: BlockDescriptor = .{
+            .reserved = 0,
+            .size = @sizeOf(ManagedBlock),
+            .copy = @ptrCast(&copyHelper),
+            .dispose = @ptrCast(&disposeHelper),
+        };
+    };
+    return .{
+        .lit = .{
+            .isa = @ptrCast(&_NSConcreteStackBlock),
+            .flags = BLOCK_HAS_COPY_DISPOSE,
+            .reserved = 0,
+            .invoke = @ptrCast(&invoke),
+            .descriptor = &S.descriptor,
+        },
+        .ctx = ctx,
+    };
+}
+
+// Layout agreement with clang's ABI: the runtime memcpy's block literals
+// and reads the descriptor fields above; assert the sizes/alignment are
+// the expected ones whenever anything is changed here.
+comptime {
+    if (@sizeOf(BlockLiteral) != @sizeOf(usize) * 3 + @sizeOf(c_int) * 2) @compileError("BlockLiteral layout");
+    if (@sizeOf(ManagedBlock) != @sizeOf(BlockLiteral) + @sizeOf(?*anyopaque)) @compileError("ManagedBlock layout");
 }
 
 /// Call a block received as an `id` with `args`, of the types `params`
