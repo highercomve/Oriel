@@ -14223,8 +14223,12 @@ ${a.stack || ""}`;
   Object.defineProperty(document, "activeElement", { get() {
     return this.__active || this.body;
   }, configurable: true });
-  var hash = "";
-  var search = "";
+  var startUrl = String(host.url || "");
+  var hashAt = startUrl.indexOf("#");
+  var hash = hashAt >= 0 ? startUrl.slice(hashAt) : "";
+  var beforeHash = hashAt >= 0 ? startUrl.slice(0, hashAt) : startUrl;
+  var search = beforeHash.indexOf("?") >= 0 ? beforeHash.slice(beforeHash.indexOf("?")) : "";
+  if (hash === "#") hash = "";
   var fireHash = () => setTimeout(() => fireWindow(new Event("hashchange")), 0);
   g.location = {
     get hash() {

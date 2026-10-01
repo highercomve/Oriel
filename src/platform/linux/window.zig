@@ -290,6 +290,7 @@ pub fn WindowCreator(
                 config.assets,
                 build_target.platform_json,
                 options.label,
+                options.url orelse "index.html",
                 @floatFromInt(options.width),
                 @floatFromInt(options.height),
                 BridgeImpl.nativeInvoke,

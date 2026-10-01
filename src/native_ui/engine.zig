@@ -16,7 +16,7 @@ const log = std.log.scoped(.native_ui);
 /// The JS side, built from src/native_ui/js (npm run build).
 const runtime_js = @embedFile("runtime.js");
 
-extern fn oqjs_new(opaque_ptr: *anyopaque, platform_json: [*:0]const u8, label: [*:0]const u8) ?*anyopaque;
+extern fn oqjs_new(opaque_ptr: *anyopaque, platform_json: [*:0]const u8, label: [*:0]const u8, url: [*:0]const u8) ?*anyopaque;
 extern fn oqjs_eval(h: *anyopaque, code: [*]const u8, len: usize, name: [*:0]const u8) c_int;
 extern fn oqjs_run_jobs(h: *anyopaque) void;
 extern fn oqjs_memory(h: *anyopaque) usize;
@@ -54,7 +54,7 @@ pub const Engine = struct {
     booted: bool = false,
     in_call: u32 = 0,
 
-    pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, platform_json: [:0]const u8, label: [:0]const u8, width: f32, height: f32) !*Engine {
+    pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, width: f32, height: f32) !*Engine {
         const e = try gpa.create(Engine);
         errdefer gpa.destroy(e);
         e.* = .{
@@ -68,7 +68,7 @@ pub const Engine = struct {
         e.tree.height = height;
         e.tree.on_remove = backend.removed;
         e.tree.on_props = backend.props;
-        e.js = oqjs_new(e, platform_json.ptr, label.ptr) orelse return error.QuickJsInitFailed;
+        e.js = oqjs_new(e, platform_json.ptr, label.ptr, url.ptr) orelse return error.QuickJsInitFailed;
         if (oqjs_eval(e.js, runtime_js.ptr, runtime_js.len, "runtime.js") < 0) return error.RuntimeFailed;
         return e;
     }
