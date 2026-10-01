@@ -1,0 +1,97 @@
+name: Windows CLI validation debug
+# Reproduce the winget portable-package validation crash on a real Windows
+# runner: the v0.6.22 review reported oriel.exe exit code -1073741819
+# (0xC0000005, access violation) with no reproducible case locally (Wine and
+# the release runner are clean).
+on:
+  workflow_dispatch:
+
+jobs:
+  winget-style:
+    runs-on: windows-latest
+    steps:
+      - name: Fetch the released CLI (the binary the validator ran)
+        run: |
+          New-Item -ItemType Directory -Force -Path cli-test | Out-Null
+          $tag = 'v0.6.22'
+          Invoke-WebRequest "https://github.com/highercomve/Oriel/releases/download/$tag/oriel-x86_64-windows.exe" -OutFile cli-test\oriel.exe
+          (Get-FileHash cli-test\oriel.exe -Algorithm SHA256).Hash
+
+      - name: WER local dumps for oriel.exe
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\oriel.exe'
+          New-Item -ItemType Directory -Force -Path $key | Out-Null
+          Set-ItemProperty $key DumpFolder -ExpandProperty 'C:\dumps' ExpandString
+          Set-ItemProperty $key DumpType 2 DWORD
+          Set-ItemProperty $key DumpCount 10 DWORD
+          New-Item -ItemType Directory -Force -Path C:\dumps | Out-Null
+
+      - name: Winget-style locations (Packages dir + hard-linked command)
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Highercomve.Oriel__DefaultSource" | Out-Null
+          Copy-Item cli-test\oriel.exe "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Highercomve.Oriel__DefaultSource\oriel.exe" -Force
+          New-Item -ItemType Directory -Force -Path "$env:LOCALAPPDATA\Microsoft\WinGet\Links" | Out-Null
+          New-Item -ItemType HardLink -Path "$env:LOCALAPPDATA\Microsoft\WinGet\Links\oriel.exe" -Target "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Highercomve.Oriel__DefaultSource\oriel.exe" | Out-Null
+
+      - name: Scenario 1 — command path, --version
+        run: |
+          & "$env:LOCALAPPDATA\Microsoft\WinGet\Links\oriel.exe" --version
+          Write-Output "exit=$LASTEXITCODE"
+
+      - name: Scenario 2 — no arguments
+        run: |
+          cmd /c "%LOCALAPPDATA%\Microsoft\WinGet\Links\oriel.exe"
+          Write-Output "exit=$LASTEXITCODE"
+
+      - name: Scenario 3 — redirected output (no console write)
+        run: |
+          cmd /c "%LOCALAPPDATA%\Microsoft\WinGet\Links\oriel.exe > out.txt 2> err.txt"
+          Write-Output "exit=$LASTEXITCODE"
+          Get-Content out.txt | Select-Object -First 5
+          Get-Content err.txt | Select-Object -First 5
+
+      - name: Scenario 4 — no console at all (session 0 style)
+        run: |
+          $p = Start-Process -FilePath "$env:LOCALAPPDATA\Microsoft\WinGet\Links\oriel.exe" -ArgumentList '--version' -WindowStyle Hidden -RedirectStandardOutput cli-test\sp-out.txt -RedirectStandardError cli-test\sp-err.txt -Wait -PassThru
+          Write-Output "exit=$($p.ExitCode)"
+          Get-Content cli-test\sp-out.txt | Select-Object -First 5
+          Get-Content cli-test\sp-err.txt | Select-Object -First 5
+
+      - name: Scenario 5 — empty environment (winget harness runs with a minimal block)
+        shell: pwsh
+        run: |
+          $psi = [System.Diagnostics.ProcessStartInfo]
+          $psi.FileName = "$env:LOCALAPPDATA\Microsoft\WinGet\Links\oriel.exe"
+          $psi.UseShellExecute = $false
+          $psi.EnvironmentVariables.Clear()
+          $psi.EnvironmentVariables['SystemRoot'] = $env:SystemRoot
+          $psi.EnvironmentVariables['LOCALAPPDATA'] = $env:LOCALAPPDATA
+          $p = [System.Diagnostics.Process]::Start($psi)
+          $p.WaitForExit()
+          Write-Output "exit=$($p.ExitCode)"
+
+      - name: Crash dumps
+        if: always()
+        run: |
+          Get-ChildItem C:\dumps | ForEach-Object { Write-Output $_.FullName }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wer-dumps
+          path: |
+            C:\dumps\*
+            out.txt
+            err.txt
+
+      - name: Scenario 6 — built from this tree, same scenarios
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build it
+        run: zig build cli
+      - name: Run it like the validator does
+        run: |
+          cmd /c "zig-out\bin\oriel.exe"
+          Write-Output "exit=$LASTEXITCODE"
