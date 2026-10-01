@@ -145,8 +145,15 @@ var io: std.Io = undefined;
 var gpa: std.mem.Allocator = undefined;
 var models_dir: []const u8 = "";
 var initialized = false;
+/// True from `init` to the end of `deinit`; read without a lock in
+/// `deinit` to keep calls before init (undefined `io`) out.
+var ever_init: std.atomic.Value(bool) = .init(false);
 
-/// Guards everything below except the recording state.
+/// Start, stop and teardown have one owner. Never taken by capture or
+/// transcription workers: joining while holding `mutex` would deadlock.
+var lifecycle_mutex: std.Io.Mutex = .init;
+
+/// Guards model operations; thread handles/session_engine use lifecycle_mutex.
 var mutex: std.Io.Mutex = .init;
 var gpu_loaded = false;
 var backend_name: []const u8 = "CPU";
@@ -174,7 +181,14 @@ pub fn init(app_io: std.Io, app_gpa: std.mem.Allocator, dir: []const u8) void {
     gpa = app_gpa;
     models_dir = dir;
     initialized = true;
+    ever_init.store(true, .release);
     whisper.silenceLogs();
+    // Android's system recognizer must be cancelled while the UI thread's
+    // dispatch queue still runs; deinit() itself is past that point.
+    if (comptime is_android) {
+        const ShellMod = @import("../platform/android/Shell.zig");
+        if (ShellMod.on_shutdown_fn == null) ShellMod.on_shutdown_fn = &system.shutDown;
+    }
 }
 
 /// Load the GPU backend once (a Vulkan instance and a self-test: not at
@@ -324,6 +338,10 @@ pub fn delete(name: []const u8) !void {
 /// them again. The last recording stays (`compare` reruns it). Returns at
 /// once while a model is in use (safe to call on the main thread).
 pub fn unloadIdle() void {
+    if (!ever_init.load(.acquire)) return;
+    if (!lifecycle_mutex.tryLock()) return;
+    defer lifecycle_mutex.unlock(io);
+    if (!initialized) return;
     if (recording.load(.acquire) or transcriber != null) return;
     if (!mutex.tryLock()) return;
     defer mutex.unlock(io);
@@ -449,7 +467,10 @@ fn pickEngine(e: Engine) !Engine {
 
 /// Start listening. Blocks while models load: call it from a worker.
 pub fn start(opts: Options) !Started {
-    std.debug.assert(initialized);
+    if (!ever_init.load(.acquire)) return error.NotInitialized;
+    lifecycle_mutex.lockUncancelable(io);
+    defer lifecycle_mutex.unlock(io);
+    if (!initialized) return error.NotInitialized;
     const engine = try pickEngine(opts.engine);
     if (engine == .system) {
         if (comptime !has_system) return error.EngineUnavailable;
@@ -698,6 +719,10 @@ pub const Result = struct {
 /// Stop listening: the last phrase is finalized, then the session's text
 /// (allocated with `a`). Blocks until then: call it from a worker.
 pub fn stop(a: std.mem.Allocator) !Result {
+    if (!ever_init.load(.acquire)) return error.NotInitialized;
+    lifecycle_mutex.lockUncancelable(io);
+    defer lifecycle_mutex.unlock(io);
+    if (!initialized) return error.NotInitialized;
     if (has_system and session_engine == .system) {
         const r = try system.stop(a);
         return .{
@@ -712,11 +737,7 @@ pub fn stop(a: std.mem.Allocator) !Result {
             .last_ms = 0,
         };
     }
-    recording.store(false, .release);
-    if (thread) |t| t.join();
-    thread = null;
-    if (transcriber) |t| t.join();
-    transcriber = null;
+    joinWorkers();
 
     mutex.lockUncancelable(io);
     defer mutex.unlock(io);
@@ -734,6 +755,50 @@ pub fn stop(a: std.mem.Allocator) !Result {
         .mean_ms = if (stats.updates > 0) stats.total_ms / stats.updates else 0,
         .last_ms = stats.last_final_ms,
     };
+}
+
+/// Caller holds lifecycle_mutex, never the model mutex needed by workers.
+fn joinWorkers() void {
+    recording.store(false, .release);
+    if (thread) |t| t.join();
+    thread = null;
+    if (transcriber) |t| t.join();
+    transcriber = null;
+}
+
+/// Release recording workers, models and buffers before the app's Io goes
+/// away. App.run calls this after draining the command pool. Other callers
+/// must finish commands first; system capture must already be shut down on
+/// its UI thread (Android: the Shell hook registered in `init`). Safe when
+/// init was never called or teardown already ran.
+pub fn deinit() void {
+    if (!ever_init.load(.acquire)) return;
+    lifecycle_mutex.lockUncancelable(io);
+    defer lifecycle_mutex.unlock(io);
+    if (!initialized) {
+        ever_init.store(false, .release);
+        return;
+    }
+    if (has_system and system.isActive()) {
+        // init registered the platform hook; if it wasn't called (a crash
+        // path in Shell), warn instead of waiting for an engine we can't
+        // reach anymore.
+        log.warn("deinit: the system recognizer is still active (missing shutdown hook)", .{});
+        return;
+    }
+    joinWorkers();
+    mutex.lockUncancelable(io);
+    defer mutex.unlock(io);
+    if (loaded) |l| l.ctx.deinit();
+    loaded = null;
+    dropDraft();
+    samples.deinit(gpa);
+    samples = .empty;
+    finals.deinit(gpa);
+    finals = .empty;
+    models_dir = "";
+    initialized = false;
+    ever_init.store(false, .release);
 }
 
 // ---------------------------------------------------------------------------
@@ -770,12 +835,17 @@ pub fn compare(a: std.mem.Allocator, opts: Options) !Comparison {
     if (samples.items.len < rate / 2) return error.NothingRecorded;
     const audio = clip(samples.items);
     const lang = try a.dupeZ(u8, opts.language);
+    defer a.free(lang);
     const t: TranscribeOptions = .{ .vad = opts.vad };
 
     ensureGpu();
     var gpu_run: ?Run = null;
+    errdefer if (gpu_run) |r| a.free(r.text);
     if (gpu_name != null) {
-        if (try loadInto(&loaded, m, true) > 0) _ = try transcribe(a, audio[0..@min(audio.len, 2 * rate)], lang, t);
+        if (try loadInto(&loaded, m, true) > 0) {
+            const warm = try transcribe(a, audio[0..@min(audio.len, 2 * rate)], lang, t);
+            a.free(warm.text);
+        }
         gpu_run = try transcribe(a, audio, lang, t);
         emit("dictation:compare", .{ .backend = "GPU", .transcribe_ms = gpu_run.?.transcribe_ms });
     }
@@ -901,4 +971,31 @@ fn vadPath() ![:0]const u8 {
 
 test {
     _ = wav;
+}
+
+// Host-only: lifecycle contracts (before init, after teardown, restart).
+// A real transcription needs a model; what is checked here is the locking
+// order and the state teardown.
+test "lifecycle APIs are safe before init and keep working after teardown" {
+    if (comptime !(builtin.os.tag == .linux or builtin.os.tag == .macos)) return error.SkipZigTest;
+
+    // Before init: undefined globals (io) must not be touched.
+    try std.testing.expectError(error.NotInitialized, stop(std.testing.allocator));
+    deinit();
+    try std.testing.expect(!initialized);
+
+    // A session without a recording (native) has no finalized text and
+    // needs a model; without one, as on a device, stop reports NoModel.
+    init(std.testing.io, std.testing.allocator, "/tmp");
+    defer deinit();
+    try std.testing.expectError(error.NoModel, stop(std.testing.allocator));
+    unloadIdle();
+
+    deinit();
+    try std.testing.expect(!initialized);
+    // Restarting (Android: the process outlives the app) re-initializes
+    // cleanly and the second teardown runs too.
+    init(std.testing.io, std.testing.allocator, "/tmp");
+    deinit();
+    try std.testing.expect(!initialized);
 }

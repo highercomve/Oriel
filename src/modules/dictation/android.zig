@@ -34,6 +34,10 @@ var mutex: ShellMod.Mutex = .{};
 var finals: std.ArrayList(u8) = .empty;
 var active = std.atomic.Value(bool).init(false);
 var ended = std.atomic.Value(bool).init(true);
+/// Set while the app is shutting down: callbacks dispatched before the
+/// cancel but delivered after it must not touch the stale `io` or emit
+/// events from it.
+var shut = std.atomic.Value(bool).init(false);
 var io: std.Io = undefined;
 var t_start: std.Io.Timestamp = undefined;
 var updates: u32 = 0;
@@ -43,6 +47,7 @@ var last_error: ?[]const u8 = null;
 /// (the device's language). `on_device`: prefer the on-device recognizer.
 pub fn start(app_io: std.Io, language: []const u8, on_device: bool) !void {
     io = app_io;
+    shut.store(false, .release);
     if (active.load(.acquire)) return error.AlreadyRecording;
     mutex.lock();
     finals.clearRetainingCapacity();
@@ -103,6 +108,19 @@ fn elapsed() f32 {
     return @as(f32, @floatFromInt(@max(ns, 0))) / std.time.ns_per_s;
 }
 
+/// Shell shutdown hook (registered by `dictation.init`, runs on the UI
+/// thread while its queue still works): cancels the recognizer and marks
+/// the session dead so late callbacks can't use the old `io` or emit
+/// events from it. Does not wait for the recognizer: the shutdown call is
+/// synchronous on the Kotlin side.
+pub fn shutDown() void {
+    if (!active.load(.acquire)) return;
+    shut.store(true, .release);
+    _ = runtime.call(.void, "speechStop", "()V", .{});
+    active.store(false, .release);
+    ended.store(true, .release);
+}
+
 /// SpeechRecognizer.ERROR_* names, for the "dictation:error" event.
 fn errorName(code: i32) []const u8 {
     return switch (code) {
@@ -127,6 +145,9 @@ fn errorName(code: i32) []const u8 {
 
 /// NativeLib.onSpeech (UI thread).
 fn nativeSpeech(env: *jni.Env, _: jni.jclass, kind: jni.jint, text_arr: jni.jobject) callconv(.c) void {
+    // The app is going away (Shell teardown): drop the result instead of
+    // using the stale `io` (elapsed(), App.emit from it).
+    if (shut.load(.acquire)) return;
     const text = (env.bytesAlloc(heap.gpa, text_arr) catch return) orelse &.{};
     defer if (text.len > 0) heap.gpa.free(text);
     const seconds = elapsed();

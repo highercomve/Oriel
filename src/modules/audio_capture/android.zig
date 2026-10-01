@@ -16,6 +16,7 @@ const std = @import("std");
 const heap = @import("../../core/heap.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const Resampler = @import("resample.zig");
 const runtime = @import("../../platform/android/runtime.zig");
 const ShellMod = @import("../../platform/android/Shell.zig");
 
@@ -108,13 +109,11 @@ pub const Stream = struct {
     rate: u32,
     device_rate: u32,
     channels: u32,
-    /// Device-rate mono frames not consumed yet (resampling).
-    pending: std.ArrayList(f32) = .empty,
-    /// Position of the next output sample in `pending`, in device frames.
-    pos: f64 = 0,
+    resampler: Resampler = .{},
 
     /// Open `source` (a `Source.name`; null = the default input).
     pub fn open(source: ?[:0]const u8, app_name: [:0]const u8, rate: u32) !Stream {
+        if (rate < 8000 or rate > 192000) return error.UnsupportedSampleRate;
         _ = app_name; // Android shows the app itself as the recorder
         var builder: ?*AAudioStreamBuilder = null;
         var r = AAudio_createStreamBuilder(&builder);
@@ -154,31 +153,7 @@ pub const Stream = struct {
     pub fn read(self: *Stream, samples: []f32) !void {
         const gpa = heap.gpa;
         if (self.device_rate == self.rate and self.channels == 1) return self.readDevice(samples);
-        const step = @as(f64, @floatFromInt(self.device_rate)) / @as(f64, @floatFromInt(self.rate));
-        var out: usize = 0;
-        var chunk: [1024]f32 = undefined;
-        while (out < samples.len) {
-            // Enough device frames for the next output sample?
-            const need: usize = @as(usize, @intFromFloat(@floor(self.pos))) + 2;
-            if (self.pending.items.len < need) {
-                try self.readDevice(&chunk);
-                try self.pending.appendSlice(gpa, &chunk);
-                continue;
-            }
-            const i: usize = @intFromFloat(@floor(self.pos));
-            const frac: f32 = @floatCast(self.pos - @floor(self.pos));
-            samples[out] = self.pending.items[i] * (1 - frac) + self.pending.items[i + 1] * frac;
-            out += 1;
-            self.pos += step;
-            // Drop consumed frames now and then.
-            const consumed: usize = @intFromFloat(@floor(self.pos));
-            if (consumed > 4096) {
-                const rest = self.pending.items.len - consumed;
-                std.mem.copyForwards(f32, self.pending.items[0..rest], self.pending.items[consumed..]);
-                self.pending.shrinkRetainingCapacity(rest);
-                self.pos -= @floatFromInt(consumed);
-            }
-        }
+        try self.resampler.read(gpa, samples, self.device_rate, self.rate, self, readDevice);
     }
 
     /// Mono device-rate frames (downmixed when the device gave more channels).
@@ -205,7 +180,7 @@ pub const Stream = struct {
     pub fn close(self: *Stream) void {
         _ = AAudioStream_requestStop(self.stream);
         _ = AAudioStream_close(self.stream);
-        self.pending.deinit(heap.gpa);
+        self.resampler.deinit(heap.gpa);
     }
 };
 

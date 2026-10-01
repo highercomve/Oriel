@@ -825,6 +825,10 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     defer {
         pool.deinit();
         worker_pool = null;
+        // Dictation owns threads outside the command pool. They must finish
+        // while this run's Io and allocator are still alive (Android restarts).
+        if (build_opts.whisper and build_opts.audio_capture)
+            @import("../modules/dictation.zig").deinit();
         current_app_id = null;
     }
 
