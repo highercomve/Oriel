@@ -100,6 +100,12 @@ var generation: usize = 0;
 var on_device_now = false;
 var partial_len: usize = 0;
 var partial_hash: u64 = 0;
+/// The current phrase's latest partial text (under `lock`), made its final
+/// when the phrase ends without one: Apple's servers sometimes send none.
+var partial_text: std.ArrayList(u8) = .empty;
+/// Phrases up to this generation are in `finals` from their partial text:
+/// a final arriving for them later is dropped.
+var promoted_gen: usize = 0;
 var last_change: std.Io.Timestamp = undefined;
 var phrase_start: std.Io.Timestamp = undefined;
 
@@ -240,12 +246,15 @@ pub fn start(app_io: std.Io, language: []const u8, on_device: bool, audio: ?[]f3
         return error.AlreadyRecording;
     }
     authorize() catch |e| {
+        log.warn("Apple speech: {s}", .{@errorName(e)});
         if (audio) |a| audio_gpa.free(a);
         return e;
     };
     io = app_io;
     _ = std.c.pthread_mutex_lock(&lock);
     finals.clearRetainingCapacity();
+    partial_text.clearRetainingCapacity();
+    promoted_gen = generation;
     updates = 0;
     last_error = null;
     _ = std.c.pthread_mutex_unlock(&lock);
@@ -270,6 +279,7 @@ pub fn start(app_io: std.Io, language: []const u8, on_device: bool, audio: ?[]f3
         ctx.err = e;
     };
     if (ctx.err) |e| {
+        log.warn("Apple speech: {s}: {s}", .{ language, @errorName(e) });
         active.store(false, .release);
         var none: void = {};
         ShellMod.runOnMainThread(void, &none, struct {
@@ -293,7 +303,10 @@ fn startMain(language: []const u8, on_device: bool) !void {
     defer pool.deinit();
     const r = makeRecognizer(language) orelse return error.LanguageUnavailable;
     recognizer = r.value;
-    if (!isTrue(r.msgSend(BOOL, "isAvailable", .{}))) return error.RecognizerUnavailable;
+    // Often false just after creating a recognizer for another language
+    // (it turns true a moment later): start anyway, and let the task's
+    // own error say if it really can't.
+    if (!isTrue(r.msgSend(BOOL, "isAvailable", .{}))) log.warn("Apple speech: {s}: the recognizer says it isn't available yet; trying", .{language});
     on_device_now = on_device and isTrue(r.msgSend(BOOL, "supportsOnDeviceRecognition", .{}));
     try startTask();
     if (test_audio == null) try startMicrophone();
@@ -347,6 +360,7 @@ fn startTask() !void {
 /// End the current phrase: its request gets no more audio (its final
 /// result follows), and a new task takes over.
 fn nextPhrase() void {
+    promotePartial();
     _ = std.c.pthread_mutex_lock(&lock);
     const req = request;
     _ = std.c.pthread_mutex_unlock(&lock);
@@ -439,12 +453,17 @@ fn onResult(block: *blocks.ContextBlock, result: id, err: id) callconv(.c) void 
         const r: Object = .{ .value = result };
         const text = utf8(r.msgSend(Object, "bestTranscription", .{}).msgSend(Object, "formattedString", .{}));
         if (isTrue(r.msgSend(BOOL, "isFinal", .{}))) {
-            if (text.len > 0) {
+            if (current) {
+                _ = std.c.pthread_mutex_lock(&lock);
+                partial_text.clearRetainingCapacity();
+                _ = std.c.pthread_mutex_unlock(&lock);
+            }
+            if (text.len > 0 and gen > promoted_gen) {
                 _ = std.c.pthread_mutex_lock(&lock);
                 if (finals.items.len > 0) finals.append(heap.gpa, ' ') catch {};
                 finals.appendSlice(heap.gpa, text) catch {};
                 _ = std.c.pthread_mutex_unlock(&lock);
-                App.emit("dictation:final", .{ .text = text, .audio_s = elapsed(), .transcribe_ms = @as(u64, 0), .backend = name });
+                App.emit("dictation:final", .{ .text = text, .audio_s = elapsed(), .transcribe_ms = @as(u64, 0), .backend = name, .on_device = on_device_now });
             }
             if (current) {
                 App.emit("dictation:partial", .{ .text = "" });
@@ -457,6 +476,10 @@ fn onResult(block: *blocks.ContextBlock, result: id, err: id) callconv(.c) void 
         if (h != partial_hash) {
             partial_hash = h;
             partial_len = text.len;
+            _ = std.c.pthread_mutex_lock(&lock);
+            partial_text.clearRetainingCapacity();
+            partial_text.appendSlice(heap.gpa, text) catch {};
+            _ = std.c.pthread_mutex_unlock(&lock);
             last_change = std.Io.Clock.awake.now(io);
             _ = std.c.pthread_mutex_lock(&lock);
             updates += 1;
@@ -468,6 +491,14 @@ fn onResult(block: *blocks.ContextBlock, result: id, err: id) callconv(.c) void 
     if (err == null or !current) return;
     const code = (Object{ .value = err }).msgSend(isize, "code", .{});
     if (isQuiet(code)) return taskEnded();
+    // 300: the on-device recognizer failed to start, though the recognizer
+    // claims support (its language's model isn't installed: the simulator,
+    // or a phone that hasn't fetched it yet). Go on with Apple's servers.
+    if (code == 300 and on_device_now) {
+        log.warn("speech recognizer: no on-device model for this language; using Apple's servers", .{});
+        on_device_now = false;
+        return startTask() catch |e| fail(@errorName(e));
+    }
     const domain = utf8((Object{ .value = err }).msgSend(Object, "domain", .{}));
     log.warn("speech recognizer: {s} {d}", .{ domain, code });
     fail(std.fmt.bufPrint(&error_buf, "SpeechError{d}", .{code}) catch "SpeechError");
@@ -508,8 +539,29 @@ fn cleanup() void {
 }
 
 /// Listening is over (main thread): "dictation:ended".
+/// The current phrase ends: its latest partial text becomes its final now,
+/// whether or not the recognizer sends one later (dropped then).
+fn promotePartial() void {
+    _ = std.c.pthread_mutex_lock(&lock);
+    if (partial_text.items.len == 0) {
+        _ = std.c.pthread_mutex_unlock(&lock);
+        return;
+    }
+    if (finals.items.len > 0) finals.append(heap.gpa, ' ') catch {};
+    finals.appendSlice(heap.gpa, partial_text.items) catch {};
+    const text = heap.gpa.dupe(u8, partial_text.items) catch null;
+    partial_text.clearRetainingCapacity();
+    promoted_gen = generation;
+    _ = std.c.pthread_mutex_unlock(&lock);
+    if (text) |t| {
+        defer heap.gpa.free(t);
+        App.emit("dictation:final", .{ .text = t, .audio_s = elapsed(), .transcribe_ms = @as(u64, 0), .backend = name, .on_device = on_device_now });
+    }
+}
+
 fn finish() void {
     if (ended.load(.acquire)) return;
+    promotePartial();
     active.store(false, .release);
     cleanup();
     ended.store(true, .release);
