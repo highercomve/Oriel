@@ -80,12 +80,16 @@ pub const Engine = struct {
             .backend = backend,
             .assets = assets,
         };
+        // On failure below: the tree (its Yoga config, and any nodes the
+        // runtime already made) and the QuickJS runtime go too, as in destroy.
+        errdefer e.tree.deinit();
         e.serial = next_serial.fetchAdd(1, .monotonic) + 1;
         e.tree.width = width;
         e.tree.height = height;
         e.tree.on_remove = backend.removed;
         e.tree.on_props = backend.props;
         e.js = oqjs_new(e, platform_json.ptr, label.ptr, url.ptr) orelse return error.QuickJsInitFailed;
+        errdefer oqjs_free(e.js);
         if (oqjs_eval(e.js, runtime_js.ptr, runtime_js.len, "runtime.js") < 0) return error.RuntimeFailed;
         return e;
     }
