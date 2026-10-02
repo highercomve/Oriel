@@ -126,7 +126,8 @@ all with no clip or transform in effect drops everything recorded before it
 (a game loop's clear-then-redraw then keeps one frame's ops); drawing
 without such a clear accumulates, as in a browser.
 
-Only GTK draws canvases for now; elsewhere they lay out but draw nothing.
+GTK, macOS and iOS draw canvases (Apple: a CGBitmapContext per node, in
+apple_draw.zig); Windows and Android lay them out but draw nothing yet.
 
 ## Milestones
 
