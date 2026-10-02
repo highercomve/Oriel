@@ -119,6 +119,12 @@ for (const name of ["Node", "Element", "HTMLElement", "Text", "Comment", "Docume
   "DocumentType", "Attr", "CharacterData", "HTMLOptionElement", "HTMLImageElement", "HTMLCanvasElement", "CanvasRenderingContext2D"]) {
   if (dom[name] !== undefined && g[name] === undefined) g[name] = dom[name];
 }
+// Every element interface too: pages test `x instanceof
+// x.ownerDocument.defaultView.HTMLIFrameElement` (React), and the native
+// DOM's defaultView is the global.
+for (const name of Object.keys(dom)) {
+  if (/^(HTML|SVG)\w*Element$/.test(name) && g[name] === undefined) g[name] = dom[name];
+}
 
 // <canvas>: getContext records a program the backends replay (canvas.js).
 // Its ops mean the page changed, like a style write does.
