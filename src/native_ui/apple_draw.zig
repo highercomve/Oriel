@@ -958,6 +958,7 @@ fn imageOf(engine: *Engine, n: *Node) ?*ImageCache {
         hash = std.hash.Wyhash.hash(src.len, src);
         if (c.src_hash == hash.?) {
             c.src_ptr = @intFromPtr(src.ptr);
+            c.src_len = src.len;
             return c;
         }
         dropImage(n);
