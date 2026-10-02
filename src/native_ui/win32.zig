@@ -16,6 +16,7 @@ const std = @import("std");
 const engine_mod = @import("engine.zig");
 const tree_mod = @import("tree.zig");
 const text_measure_cache = @import("text_measure_cache.zig");
+const prof = @import("prof.zig");
 const svg_path = @import("svg_path.zig");
 const Engine = engine_mod.Engine;
 const Node = tree_mod.Node;
@@ -431,7 +432,13 @@ fn addTimer(ctx: *anyopaque, _: *Engine, id: u32, ms: u32) void {
     const s = surfaceOf(ctx);
     // Timer ids are the page's (unique per engine); +1 keeps them off 0.
     _ = c.SetTimer(s.hwnd, @as(usize, id) + 1, @max(1, ms), null);
+    if (comptime prof.enabled) timer_due[id % timer_due.len] = .{ .id = id, .due = prof.now() + @as(f64, @floatFromInt(ms)) };
 }
+
+/// -Dnative_ui_prof: when each page timer should fire (its lateness is
+/// reported when it does: SetTimer's tick, or the page's own work past the
+/// frame's slot).
+var timer_due: [64]struct { id: u32 = 0, due: f64 = 0 } = @splat(.{});
 
 fn focus(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
@@ -1087,6 +1094,11 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             _ = c.KillTimer(hwnd, wparam);
             // Ours are the page's ids + 1 (addTimer): nothing else is.
             if (wparam == 0 or wparam > std.math.maxInt(u32) + 1) return 0;
+            if (comptime prof.enabled) {
+                const id: u32 = @intCast(wparam - 1);
+                const d = timer_due[id % timer_due.len];
+                if (d.id == id) prof.report("timer late {d:.2}", .{prof.now() - d.due});
+            }
             s.engine.timerFired(@intCast(wparam - 1));
             return 0;
         },
@@ -2316,8 +2328,13 @@ const Painter = struct {
 };
 
 fn paintAll(s: *Surface) void {
+    const t0 = prof.now();
     if (s.engine.tree.dirty) s.engine.tree.layout();
+    const t1 = prof.now();
     if (!ensureTarget(s)) return;
+    const t2 = prof.now();
+    var t3: f64 = t2;
+    defer prof.report("draw layout {d:.2} target {d:.2} paint {d:.2} present {d:.2}", .{ t1 - t0, t2 - t1, t3 - t2, prof.now() - t3 });
     const hrt = s.rt.?;
     const rt: *c.ID2D1RenderTarget = @ptrCast(hrt);
     const vt = rt.lpVtbl.*;
@@ -2331,6 +2348,7 @@ fn paintAll(s: *Surface) void {
         var p: Painter = .{ .s = s, .rt = rt, .brush = s.brush.? };
         paint(&p, root);
     }
+    t3 = prof.now();
     const hr = vt.EndDraw.?(rt, null, null);
     if (hr == D2DERR_RECREATE_TARGET) {
         releaseTarget(s);
