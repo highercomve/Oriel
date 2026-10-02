@@ -37,19 +37,24 @@ Linux, ReleaseFast, headless (Xvfb, software rendering), 2026-10-01:
 
 | Test | WebView | Native |
 |---|---|---|
-| startup → page script | 523 ms | 79 ms |
-| startup → first frame | 572 ms | 280 ms |
-| memory at start | 311 MB | 162 MB |
-| build 1000 rows | 20 ms | 109 ms |
-| build 3000 rows | 70 ms | 344 ms |
-| update 1000 rows | 10 ms | 11 ms |
-| update 3000 rows | 41 ms | 35 ms |
+| startup → page script | 553 ms | 80 ms |
+| startup → first frame | 608 ms | 281 ms |
+| memory at start | 295 MB | 147 MB |
+| build 1000 rows | 21 ms | 118 ms |
+| build 3000 rows | 71 ms | 359 ms |
+| update 1000 rows | 10 ms | 10 ms |
+| update 3000 rows | 43 ms | 33 ms |
 | animate 200 boxes | 60 fps | 37 fps |
-| memory after the tests | 352 MB | 422 MB |
+| memory after the tests | 334 MB | 235 MB |
+| memory after a second round | 337 MB | 251 MB |
 
-The native renderer starts several times faster and with half the memory,
-and updates text as fast. Building large DOMs is about 5× slower (QuickJS
-runs linkedom and the style engine; WebKit's DOM is native code), animation
-reaches about 37 fps against the WebView's 60, and its memory grows with
-every rebuild (+260 MB here against +41 MB): created and removed rows aren't
-all released yet.
+The native renderer starts several times faster, in half the memory, and
+updates text as fast. Building large DOMs is about 5× slower (QuickJS runs
+linkedom and the style engine; WebKit's DOM is native code), and animation
+reaches about 37 fps against the WebView's 60.
+
+The second round tells retained memory from a leak: before native windows
+allocated with malloc and trimmed it after big removals (`malloc_trim`), the
+native build grew to 401 MB after the tests and 437 MB after a second round
+(smp_allocator and glibc keep freed pages); now 235 and 251 MB.
+`ORIEL_NUI_MEM=1` logs the JS heap and the tree's size every 20 renders.

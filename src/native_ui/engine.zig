@@ -67,6 +67,7 @@ pub const Engine = struct {
     /// Unique per engine for the process: an answer that outlived its window
     /// tells a new engine at the same address apart from its own.
     serial: u64 = 0,
+    renders: u64 = 0,
     /// A frame was requested (`Backend.request_frame`) and hasn't run yet.
     frame_pending: bool = false,
 
@@ -203,6 +204,12 @@ pub const Engine = struct {
     }
 
     fn renderNow(e: *Engine) void {
+        // ORIEL_NUI_MEM=1: the JS heap and the tree's size every 20 renders
+        // (finding what grows).
+        if (std.c.getenv("ORIEL_NUI_MEM") != null) {
+            e.renders += 1;
+            if (e.renders % 20 == 0) log.info("native ui mem: render {d}, JS heap {d} KB, {d} nodes", .{ e.renders, e.jsMemory() / 1024, e.tree.nodes.count() });
+        }
         const render = "__oriel.render()";
         e.in_call += 1;
         _ = oqjs_eval(e.js, render, render.len, "<render>");

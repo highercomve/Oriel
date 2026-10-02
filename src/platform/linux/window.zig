@@ -285,8 +285,11 @@ pub fn WindowCreator(
         /// -Dnative_ui: the page's HTML, CSS and JS run on the native renderer
         /// (QuickJS, Yoga, Cairo/Pango and GTK fields), no WebKit.
         fn createNativeWindow(window: *gtk.Window, app_window: *gtk.ApplicationWindow, options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle {
+            // malloc, not smp_allocator: freed tree/text memory goes back to
+            // the system (Surface trims after big removals); smp_allocator
+            // keeps every page it ever had.
             const surface = try native_gtk.Surface.create(
-                std.heap.smp_allocator,
+                std.heap.c_allocator,
                 config.assets,
                 build_target.platform_json,
                 options.label,
