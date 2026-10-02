@@ -286,6 +286,12 @@ object OrielRuntime {
         Nui.views[id]?.props(node, kind.utf8(), json.utf8())
     }
 
+    /** A text node's single run has new text (the direct text bridge, no props JSON). */
+    @JvmStatic
+    fun nuiText(id: Int, node: Int, text: ByteArray) {
+        Nui.views[id]?.text(node, text.utf8())
+    }
+
     @JvmStatic
     fun nuiRemove(id: Int, node: Int) {
         Nui.views[id]?.remove(node)
