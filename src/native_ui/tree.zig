@@ -250,6 +250,11 @@ pub const Props = struct {
     scroll: bool = false,
     /// overflow-x: auto/scroll: scrolls sideways.
     scrollx: bool = false,
+    /// A table (its border-spacing), a table row, a table cell (its colspan):
+    /// sizeTables lays the cells out in columns.
+    table: ?f32 = null,
+    trow: bool = false,
+    tcell: ?f32 = null,
     /// position: sticky, its insets (top, right, bottom, left; null: auto).
     sticky: ?[4]?f32 = null,
     clip: bool = false,
@@ -559,9 +564,154 @@ pub const Tree = struct {
         yg.YGNodeStyleSetWidth(root.yn, t.width);
         yg.YGNodeStyleSetHeight(root.yn, t.height);
         yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
+        // Tables need the first pass's widths, then fix their cells' widths
+        // and lay out again (every layout: a cell's content may have changed).
+        if (sizeTables(t, root)) yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
         const window: Rect = .{ .w = t.width, .h = t.height };
         place(root, 0, 0, window, window);
         t.dirty = false;
+    }
+
+    /// CSS's automatic table layout, for every table under `n`: true if
+    /// there was one. A column is as wide as its widest cell (a cell's
+    /// natural width: its content's, or its CSS width if wider); a cell
+    /// spanning columns widens them evenly if it needs more; the columns
+    /// shrink in proportion when they don't fit the room, and grow to a
+    /// table's CSS width.
+    fn sizeTables(t: *Tree, n: *Node) bool {
+        var any = false;
+        if (n.props.table != null) {
+            sizeTable(t, n) catch {};
+            any = true;
+        }
+        for (n.kids.items) |k| {
+            if (sizeTables(t, k)) any = true;
+        }
+        return any;
+    }
+
+    const max_table_cols = 1000;
+
+    fn sizeTable(t: *Tree, table: *Node) !void {
+        const gpa = t.gpa;
+        const sp = table.props.table orelse 0;
+        var rows: std.ArrayList(*Node) = .empty;
+        defer rows.deinit(gpa);
+        try collectRows(gpa, table, &rows);
+        // Natural widths, in row and cell order (for the spanning pass).
+        var natural: std.ArrayList(f32) = .empty;
+        defer natural.deinit(gpa);
+        var cols: std.ArrayList(f32) = .empty;
+        defer cols.deinit(gpa);
+        for (rows.items) |row| {
+            var c: usize = 0;
+            for (row.kids.items) |cell| {
+                const span = cellSpan(cell) orelse continue;
+                if (c + span > max_table_cols) break;
+                const w = naturalWidth(cell);
+                try natural.append(gpa, w);
+                while (cols.items.len < c + span) try cols.append(gpa, 0);
+                if (span == 1) cols.items[c] = @max(cols.items[c], w);
+                c += span;
+            }
+        }
+        const ncols = cols.items.len;
+        if (ncols == 0) return;
+        // Spanning cells: more room, shared by the columns they cover.
+        var i: usize = 0;
+        for (rows.items) |row| {
+            var c: usize = 0;
+            for (row.kids.items) |cell| {
+                const span = cellSpan(cell) orelse continue;
+                if (c + span > max_table_cols) break;
+                const w = natural.items[i];
+                i += 1;
+                if (span > 1) {
+                    const have = sumCols(cols.items[c .. c + span]) + sp * @as(f32, @floatFromInt(span - 1));
+                    if (w > have) for (cols.items[c .. c + span]) |*col| {
+                        col.* += (w - have) / @as(f32, @floatFromInt(span));
+                    };
+                }
+                c += span;
+            }
+        }
+        // The room: the table's own width when CSS sets it, else its
+        // container's (the table shrinks to its columns up to that).
+        const gaps = sp * @as(f32, @floatFromInt(ncols - 1));
+        const own = edgesX(table.yn);
+        const explicit = if (table.props.w) |d| d != .null and !(d == .string and std.mem.eql(u8, d.string, "auto")) else false;
+        const room = blk: {
+            if (explicit) break :blk yg.YGNodeLayoutGetWidth(table.yn) - own;
+            const parent = table.parent orelse break :blk std.math.inf(f32);
+            break :blk yg.YGNodeLayoutGetWidth(parent.yn) - edgesX(parent.yn) -
+                yg.YGNodeLayoutGetMargin(table.yn, yg.YGEdgeLeft) - yg.YGNodeLayoutGetMargin(table.yn, yg.YGEdgeRight) - own;
+        } - gaps;
+        const sum = sumCols(cols.items);
+        if (std.math.isFinite(room) and room >= 0) {
+            if (sum > room and sum > 0) {
+                const k = room / sum;
+                for (cols.items) |*col| col.* *= k;
+            } else if (explicit and sum < room) {
+                if (sum > 0) {
+                    const k = room / sum;
+                    for (cols.items) |*col| col.* *= k;
+                } else for (cols.items) |*col| {
+                    col.* = room / @as(f32, @floatFromInt(ncols));
+                }
+            }
+        }
+        // Each cell as wide as its columns (and the spacing between them).
+        for (rows.items) |row| {
+            var c: usize = 0;
+            for (row.kids.items) |cell| {
+                const span = cellSpan(cell) orelse continue;
+                if (c + span > max_table_cols) break;
+                const w = sumCols(cols.items[c .. c + span]) + sp * @as(f32, @floatFromInt(span - 1));
+                yg.YGNodeStyleSetWidth(cell.yn, @max(0, w));
+                c += span;
+            }
+        }
+    }
+
+    /// The table's rows, through its row groups (not nested tables').
+    fn collectRows(gpa: std.mem.Allocator, n: *Node, rows: *std.ArrayList(*Node)) !void {
+        for (n.kids.items) |k| {
+            if (k.props.trow) {
+                try rows.append(gpa, k);
+            } else if (k.props.table == null and k.props.tcell == null) {
+                try collectRows(gpa, k, rows);
+            }
+        }
+    }
+
+    fn cellSpan(cell: *Node) ?usize {
+        const s = cell.props.tcell orelse return null;
+        if (!std.math.isFinite(s)) return 1;
+        return @intFromFloat(std.math.clamp(s, 1, max_table_cols));
+    }
+
+    /// A cell laid out on its own with no width: its content's width.
+    fn naturalWidth(cell: *Node) f32 {
+        yg.YGNodeStyleSetWidthAuto(cell.yn);
+        yg.YGNodeCalculateLayout(cell.yn, std.math.nan(f32), std.math.nan(f32), yg.YGDirectionLTR);
+        var w = yg.YGNodeLayoutGetWidth(cell.yn);
+        if (!std.math.isFinite(w)) w = 0;
+        if (cell.props.w) |d| if (dimPx(d)) |px| {
+            w = @max(w, px);
+        };
+        return w;
+    }
+
+    fn sumCols(cols: []const f32) f32 {
+        var s: f32 = 0;
+        for (cols) |c| s += c;
+        return s;
+    }
+
+    /// Left + right padding and borders (a box's frame minus its content).
+    fn edgesX(y: yg.YGNodeRef) f32 {
+        return yg.YGNodeLayoutGetPadding(y, yg.YGEdgeLeft) + yg.YGNodeLayoutGetPadding(y, yg.YGEdgeRight) +
+            yg.YGNodeLayoutGetBorder(y, yg.YGEdgeLeft) + yg.YGNodeLayoutGetBorder(y, yg.YGEdgeRight);
     }
 
     /// `view`: the visible box of the nearest scroll container (what a
@@ -974,4 +1124,50 @@ test "sticky: kept in the view, never out of its parent" {
     f = .{ .x = 0, .y = -200, .w = 400, .h = 40 };
     Tree.stick(&f, .{ 0, null, null, null }, view, .{ .x = 0, .y = -300, .w = 400, .h = 220 });
     try std.testing.expectEqual(@as(f32, -120), f.y);
+}
+
+test "tables: columns as wide as their widest cell, spans widen them" {
+    const noMeasure = struct {
+        fn f(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 0, 0 };
+        }
+    }.f;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, noMeasure);
+    defer t.deinit();
+    t.width = 1000;
+    t.height = 800;
+    // A table (spacing 2) with two rows of fixed-width content, then a row
+    // whose one cell spans both columns and needs more room than they have.
+    try t.apply(
+        \\[["c",0,"view"],["c",1,"view"],["c",2,"view"],["c",3,"view"],["c",12,"view"],
+        \\ ["c",4,"view"],["c",5,"view"],["c",6,"view"],["c",7,"view"],["c",13,"view"],
+        \\ ["c",8,"view"],["c",9,"view"],["c",10,"view"],["c",11,"view"],["c",14,"view"],
+        \\ ["p",0,{"root":true,"fd":"column","ai":"stretch"}],
+        \\ ["p",1,{"table":2,"fd":"column","ai":"stretch","as":"flex-start","rg":2,"pad":[2,2,2,2]}],
+        \\ ["p",2,{"trow":true,"fd":"row","ai":"stretch","cg":2}],
+        \\ ["p",3,{"trow":true,"fd":"row","ai":"stretch","cg":2}],
+        \\ ["p",12,{"trow":true,"fd":"row","ai":"stretch","cg":2}],
+        \\ ["p",4,{"tcell":1,"fs":0}],["p",5,{"tcell":1,"fs":0}],["p",6,{"tcell":1,"fs":0}],["p",7,{"tcell":1,"fs":0}],
+        \\ ["p",13,{"tcell":2,"fs":0}],
+        \\ ["p",8,{"w":50,"h":10}],["p",9,{"w":100,"h":10}],["p",10,{"w":80,"h":10}],["p",11,{"w":20,"h":10}],
+        \\ ["p",14,{"w":250,"h":10}],
+        \\ ["k",4,[8]],["k",5,[9]],["k",6,[10]],["k",7,[11]],["k",13,[14]],
+        \\ ["k",2,[4,5]],["k",3,[6,7]],["k",12,[13]],["k",1,[2,3,12]],["k",0,[1]],["r",0]]
+    );
+    t.layout();
+    const w = struct {
+        fn of(tree: *Tree, id: i64) f32 {
+            return tree.get(id).?.frame.w;
+        }
+    }.of;
+    // Columns 80 and 100 (182 with the gap) widened to the spanning 250:
+    // 34 more each.
+    try std.testing.expectEqual(@as(f32, 114), w(&t, 4));
+    try std.testing.expectEqual(@as(f32, 134), w(&t, 5));
+    try std.testing.expectEqual(@as(f32, 114), w(&t, 6));
+    try std.testing.expectEqual(@as(f32, 134), w(&t, 7));
+    try std.testing.expectEqual(@as(f32, 250), w(&t, 13));
+    // The table: its columns, the gap and its padding.
+    try std.testing.expectEqual(@as(f32, 254), w(&t, 1));
 }
