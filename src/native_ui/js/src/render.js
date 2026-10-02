@@ -51,6 +51,22 @@ col, colgroup { display: none; }
 
 const INLINE_DISPLAY = new Set(["inline"]);
 const ATOMIC_INLINE = new Set(["inline-block", "inline-flex", "inline-grid"]);
+// An inline element with a box of its own (padding, a border, rounded
+// corners, a horizontal margin: a "148 MB" badge after a label). At the
+// start or end of its line it is an inline box there (Renderer.boxedEnds),
+// not a run of the paragraph's text (a run has no padding or margin; only
+// its background would show, touching the text before it). Color, weight or
+// a background alone stay a run.
+const nonZero = (v) => !!v && (/^(thin|medium|thick)$/.test(v) || (parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v))));
+function boxedInline(cs) {
+  for (const side of ["top", "right", "bottom", "left"]) {
+    if (nonZero(cs[`padding-${side}`])) return true;
+    const style = cs[`border-${side}-style`];
+    if (style && style !== "none" && style !== "hidden" && nonZero(cs[`border-${side}-width`])) return true;
+  }
+  for (const c of ["top-left", "top-right", "bottom-right", "bottom-left"]) if (nonZero(cs[`border-${c}-radius`])) return true;
+  return nonZero(cs["margin-left"]) || nonZero(cs["margin-right"]);
+}
 const SKIP = new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
 const TEMPLATE_LEAF = new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
 const EMPTY = Object.freeze([]);
@@ -907,6 +923,7 @@ export class Renderer {
     const before = this.pseudo(el, cs, "before", nodes);
     if (before) kids.push(before);
     const flow = [];
+    const boxed = childCtx.blockify ? null : this.boxedEnds(el, cs, rematch);
     let runs = [];
     const flushRuns = () => {
       if (!runs.length) return;
@@ -923,7 +940,7 @@ export class Renderer {
         continue;
       }
       if (child.nodeType !== 1) continue;
-      if (!childCtx.blockify && this.isInline(child, cs, rematch)) {
+      if (!childCtx.blockify && !boxed?.has(child) && this.isInline(child, cs, rematch)) {
         this.inlineRuns(child, cs, fontSize, runs, rematch);
         continue;
       }
@@ -948,8 +965,12 @@ export class Renderer {
     // A line of inline content with an atomic box in it (a checkbox and its
     // label's text): a row that wraps, as an inline formatting context lays
     // it out, not a column (the text went under the box).
+    const atomic = (child) => {
+      const ccs = this.style(child, cs, rematch), d = ccs.display || "inline";
+      return ATOMIC_INLINE.has(d) || !!boxed?.has(child);
+    };
     const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) &&
-      flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""));
+      flow.every((f) => f.text || atomic(f.el));
     // One box and its text (a checkbox's label): the text shrinks to the
     // room beside the box and wraps there by words (its min width is the
     // longest word, tree.zig). Several boxes, or a box sized in % (a
@@ -963,7 +984,7 @@ export class Renderer {
     // one line that wraps, as in a browser, not a column; the whitespace
     // between them collapses to a space's width (none when they touch).
     if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 &&
-        flow.every((f) => f.el && ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""))) {
+        flow.every((f) => f.el && atomic(f.el))) {
       props.fd = "row"; props.fw = "wrap"; props.ai = "center";
       const nodesIn = [...el.childNodes];
       const spaced = nodesIn.some((n, i) => n.nodeType === 3 && /^\s+$/.test(n.data) && i > 0 && i < nodesIn.length - 1);
@@ -1060,6 +1081,29 @@ export class Renderer {
     const deeper = rematch || this.marks.get(el) === 2;
     for (let c = el.firstElementChild; c; c = c.nextElementSibling) if (!this.isInline(c, cs, deeper)) return false;
     return true;
+  }
+
+  // The inline elements with a box of their own (boxedInline) at the start
+  // or end of `el`'s content: inline boxes in its line (a row). One amid the
+  // text stays a run: a row can't flow text around a box mid-line (a padded
+  // <code> in a paragraph would split it into columns).
+  boxedEnds(el, cs, rematch) {
+    let out = null;
+    const blank = (c) => c.nodeType === 8 || (c.nodeType === 3 && !/\S/.test(c.data));
+    const isBoxed = (c) => {
+      if (c.nodeType !== 1 || SKIP.has(c.localName)) return false;
+      const ccs = this.style(c, cs, rematch);
+      if ((ccs.display || "inline") !== "inline" || !boxedInline(ccs)) return false;
+      return this.isInline(c, cs, rematch);
+    };
+    for (const step of ["nextSibling", "previousSibling"]) {
+      for (let c = step === "nextSibling" ? el.firstChild : el.lastChild; c; c = c[step]) {
+        if (blank(c)) continue;
+        if (!isBoxed(c)) break;
+        (out ??= new Set()).add(c);
+      }
+    }
+    return out;
   }
 
   inlineRuns(el, parentCS, parentFs, runs, rematch = false) {
