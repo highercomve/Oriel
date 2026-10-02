@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const tree_mod = @import("tree.zig");
+const prof = @import("prof.zig");
 pub const Tree = tree_mod.Tree;
 pub const Node = tree_mod.Node;
 
@@ -184,7 +185,9 @@ pub const Engine = struct {
 
     fn call(e: *Engine, script: [:0]const u8) bool {
         e.in_call += 1;
+        const t0 = prof.now();
         const r = oqjs_eval(e.js, script.ptr, script.len, "<native>");
+        if (e.in_call == 1) prof.report("call {d:.2} {s}", .{ prof.now() - t0, script[0..@min(script.len, 24)] });
         e.in_call -= 1;
         if (r < 0) log.err("native ui: in {s}", .{script[0..@min(script.len, 160)]});
         if (e.in_call == 0) e.settle();
@@ -226,7 +229,9 @@ pub const Engine = struct {
         e.in_call -= 1;
         oqjs_run_jobs(e.js);
         if (e.tree.dirty) {
+            const t0 = prof.now();
             e.tree.layout();
+            prof.report("layout {d:.2}", .{prof.now() - t0});
             e.relaid = true;
         }
         if (e.relaid) {
@@ -291,7 +296,9 @@ export fn oriel_nui_ops(p: *anyopaque, json: [*]const u8, len: usize) void {
 export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {
     const e = engineOf(p);
     if (e.tree.dirty) {
+        const t0 = prof.now();
         e.tree.layout();
+        prof.report("flayout {d:.2}", .{prof.now() - t0});
         e.relaid = true;
     }
     const n = e.tree.get(Tree.idOf(id)) orelse return 0;
@@ -330,6 +337,7 @@ export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64) void {
 }
 
 test {
+    _ = @import("prof.zig");
     // Pure Zig, used by the Apple backends (apple_draw.zig): tested everywhere.
     _ = @import("svg_path.zig");
     _ = @import("tree.zig");

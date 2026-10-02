@@ -466,6 +466,10 @@ fn addOrielModule(
     inline for (@typeInfo(Features).@"struct".fields) |field| {
         options.addOption(bool, field.name, @field(features, field.name));
     }
+    // -Dnative_ui_prof: the native renderer logs each stage's time
+    // (src/native_ui/prof.zig); compiled out without it.
+    const native_ui_prof = b.option(bool, "native_ui_prof", "Log the native renderer's stage timings (src/native_ui/prof.zig)") orelse false;
+    options.addOption(bool, "native_ui_prof", native_ui_prof);
 
     const is_android = target.result.abi.isAndroid();
     // Desktop Linux: GTK, WebKitGTK, PulseAudio, Wayland and X11. Android is
@@ -580,7 +584,7 @@ fn addOrielModule(
             .flags = &.{ "-DSQLITE_THREADSAFE=1", "-DSQLITE_DQS=0", "-DSQLITE_OMIT_DEPRECATED" },
         });
     };
-    if (features.native_ui) addNativeUi(b, oriel);
+    if (features.native_ui) addNativeUi(b, oriel, native_ui_prof);
     if (features.sqlite_vec) {
         if (b.lazyDependency("sqlite_vec", .{})) |sqlite_vec| {
             oriel.addIncludePath(sqlite_vec.path("."));
@@ -1789,7 +1793,7 @@ fn pathExists(b: *std.Build, path: []const u8) bool {
 
 /// -Dnative_ui: QuickJS-ng (the page's JavaScript) and Yoga (flexbox
 /// layout), compiled into the oriel module. docs/native-renderer.md
-fn addNativeUi(b: *std.Build, oriel: *std.Build.Module) void {
+fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool) void {
     const no_ubsan = "-fno-sanitize=undefined"; // both rely on unspecified C behavior
     // The Apple backends draw with CoreGraphics and CoreText (apple_draw.zig).
     if (oriel.resolved_target) |t| if (t.result.os.tag == .macos or t.result.os.tag == .ios) {
@@ -1805,7 +1809,11 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module) void {
             .flags = &.{ "-std=gnu11", "-D_GNU_SOURCE", "-O2", no_ubsan, "-funsigned-char", "-fwrapv" },
         });
         // The page's `__host` and the entry points engine.zig calls.
-        oriel.addCSourceFile(.{ .file = b.path("src/native_ui/qjs_shim.c"), .flags = &.{ "-std=gnu11", "-O2", no_ubsan } });
+        // -Dnative_ui_prof: `__host.prof` is true (render.js logs its stages).
+        oriel.addCSourceFile(.{ .file = b.path("src/native_ui/qjs_shim.c"), .flags = if (prof)
+            &.{ "-std=gnu11", "-O2", no_ubsan, "-DORIEL_NUI_PROF=1" }
+        else
+            &.{ "-std=gnu11", "-O2", no_ubsan } });
     }
     if (b.lazyDependency("yoga", .{})) |yoga| {
         oriel.addIncludePath(yoga.path("."));
