@@ -31,7 +31,7 @@ import {MutationObserverClass} from './mutation-observer.js';
 import {NamedNodeMap} from './named-node-map.js';
 import {NodeList} from './node-list.js';
 import {Range} from './range.js';
-import {Text} from './text.js';
+import {createText} from './text.js';
 import {TreeWalker} from './tree-walker.js';
 
 const query = (method, ownerDocument, selectors) => {
@@ -180,7 +180,7 @@ export class Document extends NonElementParentNode {
     range.commonAncestorContainer = this;
     return range;
   }
-  createTextNode(textContent) { return new Text(this, textContent); }
+  createTextNode(textContent) { return createText(this, textContent); }
   createTreeWalker(root, whatToShow = -1) { return new TreeWalker(root, whatToShow); }
   createNodeIterator(root, whatToShow = -1) { return this.createTreeWalker(root, whatToShow); }
 

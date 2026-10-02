@@ -115,6 +115,26 @@ function fixture(css, direct = false) {
   assert.equal(f.renderer.styleOf(leaves[1]).width, '75px');
 }
 
+// Cached font sizes include the resolved parent size, including relative
+// units and inherited sizes after stylesheet/inline changes.
+{
+  const f = fixture('.row { display:flex; font-size:1.5em } .leaf { font-size:80% }', true);
+  const main = f.document.querySelector('main');
+  main.setAttribute('style', 'font-size:20px');
+  main.innerHTML = '<div class="row"><span class="leaf">one</span></div><div class="row"><span class="leaf">two</span></div>';
+  f.check();
+  assert.equal(f.renderer.styleOf(main.firstChild).__fs, 30);
+  assert.equal(f.renderer.styleOf(main.firstChild.firstChild).__fs, 24);
+  main.setAttribute('style', 'font-size:30px');
+  f.check();
+  assert.equal(f.renderer.styleOf(main.firstChild).__fs, 45);
+  assert.equal(f.renderer.styleOf(main.firstChild.firstChild).__fs, 36);
+  main.firstChild.setAttribute('style', 'font-size:18px');
+  f.check();
+  assert.equal(f.renderer.styleOf(main.firstChild).__fs, 18);
+  assert.equal(f.renderer.styleOf(main.firstChild.firstChild).__fs, 14.4);
+}
+
 for (const direct of [false, true]) for (const extra of ["", ".row:first-child .n { color: red } .row + .row .dot { width: 9px }"]) {
   const f = fixture(`.row { display: flex } .n { width: 30px } .dot { width: 5px } .theme span { color: green } ${extra}`, direct);
   const stage = f.document.querySelector("main");

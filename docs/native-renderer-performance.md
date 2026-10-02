@@ -255,3 +255,38 @@ improved 228 → 194 MB; WebView measured 353 MB. These are medians from one
 process per variant, rather than confidence intervals. This quiet run supersedes
 the noisy phase-5 measurements for assessing the changes. See
 `examples/render-bench/results/2026-10-02-rows-phase5-reviewed-desktop.json`.
+
+## Further construction pass
+
+The owned LinkeDOM now avoids a token Set for single-token className reads and
+writes, while retaining normalization and exposed live classList behavior.
+Ordinary div/span and document-created text nodes initialize the same fields
+and prototypes directly; custom constructors and upgrades retain the general
+path. Differential constructor-layout, DOM-link, observer, class and custom
+element tests cover those boundaries.
+
+Flattening caches resolved font sizes by computed style and resolved parent
+size, avoiding repeated unit parsing and keyword-map allocation. Style identity
+reuse also compares resolved font size: equal relative CSS strings can resolve
+differently after a parent changes. Regression tests cover em/percentage sizes
+and inline parent/child updates.
+
+Final visible native comparison against a6d6e53 measured 1,000-row builds
+106.75 → 91.64 ms (14%) and 3,000-row builds 300.47 → 291.27 ms (3%).
+The larger-list trial ranges overlap, so that smaller difference is indicative.
+The DOM-only candidate had a mixed larger-list result and remains recorded
+separately. All binaries and checks completed before measurements. The page and
+synchronous layout reads were unchanged; both versions used 900×700 windows
+and medians of three trials in the second round.
+
+Three serial paired QuickJS processes measured DOM builds 44.45 → 35.30 ms
+and 135.40 → 106.60 ms, about 21% faster; JS rendering measured
+122.00 → 119.00 ms and 258.80 → 250.70 ms. Bridge traffic is unchanged.
+The factory-only ablation indicates about 3% less DOM time than class-name
+allocation avoidance alone. The largest remaining cost is flattening/emission;
+construction remains well behind WebView.
+
+Reports: `2026-10-02-rows-phase6-desktop.json`,
+`2026-10-02-rows-phase6-dom-only-desktop.json`,
+`2026-10-02-rows-phase6-qjs.json`, and
+`2026-10-02-rows-phase6-ablation.json` under `examples/render-bench/results`.

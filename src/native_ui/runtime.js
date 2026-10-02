@@ -8639,6 +8639,17 @@ globalThis.atob ??= (s) => {
       return escape2(this[VALUE]);
     }
   };
+  var createText = (ownerDocument, data = "") => {
+    const node = Object.create(Text4.prototype);
+    node.ownerDocument = ownerDocument;
+    node.localName = "#text";
+    node.nodeType = TEXT_NODE;
+    node.parentNode = null;
+    node[NEXT] = null;
+    node[PREV] = null;
+    node[VALUE] = $String(data);
+    return node;
+  };
 
   // vendor/linkedom/esm/mixin/parent-node.js
   var isNode = (node) => node instanceof Node2;
@@ -9373,9 +9384,17 @@ globalThis.atob ??= (s) => {
       stringAttribute.set(this, "id", value);
     }
     get className() {
-      return this.classList.value;
+      const value = this.getAttributeNode("class")?.value || "";
+      return !this[CLASS_LIST] && !/\s/.test(value) ? value : this.classList.value;
     }
     set className(value) {
+      value = $String(value);
+      if (!this[CLASS_LIST] && !/\s/.test(value)) {
+        const attribute2 = this.getAttributeNode("class");
+        if (attribute2) attribute2.value = value;
+        else setAttribute(this, new Attr(this.ownerDocument, "class", value));
+        return;
+      }
       const { classList } = this;
       classList.clear();
       classList.add(...$String(value).split(/\s+/));
@@ -11897,7 +11916,7 @@ globalThis.atob ??= (s) => {
       return range;
     }
     createTextNode(textContent3) {
-      return new Text4(this, textContent3);
+      return createText(this, textContent3);
     }
     createTreeWalker(root, whatToShow = -1) {
       return new TreeWalker(root, whatToShow);
@@ -11993,6 +12012,28 @@ globalThis.atob ??= (s) => {
   ).prototype = Document2.prototype;
 
   // vendor/linkedom/esm/html/document.js
+  var createPlainElement = (ownerDocument, localName) => {
+    const element = Object.create(HTMLElement.prototype);
+    element.ownerDocument = ownerDocument;
+    element.localName = localName;
+    element.nodeType = ELEMENT_NODE;
+    element.parentNode = null;
+    element[NEXT] = null;
+    element[PREV] = null;
+    element[PRIVATE] = null;
+    element[NEXT] = element[END] = {
+      [NEXT]: null,
+      [PREV]: element,
+      [START]: element,
+      nodeType: NODE_END,
+      ownerDocument,
+      parentNode: null
+    };
+    element[CLASS_LIST] = null;
+    element[DATASET] = null;
+    element[STYLE] = null;
+    return element;
+  };
   var createHTMLElement = (ownerDocument, builtin, localName, options) => {
     if (!builtin && htmlClasses.has(localName)) {
       const Class = htmlClasses.get(localName);
@@ -12008,6 +12049,8 @@ globalThis.atob ??= (s) => {
         return element;
       }
     }
+    if (!builtin && !ownerDocument[UPGRADE] && (localName === "div" || localName === "span"))
+      return createPlainElement(ownerDocument, localName);
     return new HTMLElement(ownerDocument, localName);
   };
   var HTMLDocument = class extends Document2 {
@@ -14073,7 +14116,7 @@ col, colgroup { display: none; }
       } else {
         cs = computeStyle(casc.spec, parentCS);
       }
-      if (c && c.cs !== cs && sameStyle(c.cs, cs)) cs = c.cs;
+      if (c && c.cs !== cs && sameStyle(c.cs, cs) && c.cs.__fs === fontSizeOf(cs, parentCS)) cs = c.cs;
       cs.__rules = m;
       this.sc.set(el, { parent: parentCS, cs, m, frame: this.frameNo, epoch: this.styleEpoch });
       return cs;
@@ -14896,8 +14939,16 @@ col, colgroup { display: none; }
   function alignFor(ta) {
     return ta === "center" ? "center" : ta === "right" || ta === "end" ? "flex-end" : "flex-start";
   }
+  var fontSizes = /* @__PURE__ */ new WeakMap();
   function fontSizeOf(cs, parentCS) {
     const pfs = parentCS?.__fs ?? 16;
+    const cached = fontSizes.get(cs);
+    if (cached && cached.parent === pfs) return cached.size;
+    const size = resolveFontSize(cs, pfs);
+    fontSizes.set(cs, { parent: pfs, size });
+    return size;
+  }
+  function resolveFontSize(cs, pfs) {
     const v = cs["font-size"];
     if (!v) return pfs;
     if (v.endsWith("em") && !v.endsWith("rem")) return parseFloat(v) * pfs;
