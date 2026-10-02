@@ -116,7 +116,7 @@ export class Renderer {
 
   // An element → a node id (or null when not rendered).
   keepsContentHeight(el, n) {
-    if (!n || n.kind !== "view") return false;
+    if (!n || (n.kind !== "view" && n.kind !== "text")) return false;
     const p = n.props, cs = this.cs.get(el) || {};
     return p.fs === undefined && p.h === undefined && p.fb === undefined && p.ar === undefined && !p.scroll && !p.clip &&
       !cs["flex-shrink"] && !cs["min-height"] && p.pos !== "absolute";
