@@ -11,6 +11,7 @@ const std = @import("std");
 const objc = @import("../platform/apple/objc.zig");
 const tree_mod = @import("tree.zig");
 const svg_path = @import("svg_path.zig");
+const Engine = @import("engine.zig").Engine;
 const Node = tree_mod.Node;
 const Rect = tree_mod.Rect;
 const Object = objc.Object;
@@ -91,6 +92,26 @@ extern fn CGColorRelease(c: CGColorRef) void;
 extern fn CGGradientCreateWithColorComponents(space: CGColorSpaceRef, components: [*]const CGFloat, locations: [*]const CGFloat, count: usize) ?CGGradientRef;
 extern fn CGGradientRelease(g: CGGradientRef) void;
 extern fn CGPathCreateWithRect(r: CGRect, t: ?*const CGAffineTransform) ?CGPathRef;
+extern fn CGContextAddArc(c: CGContextRef, x: CGFloat, y: CGFloat, r: CGFloat, a0: CGFloat, a1: CGFloat, clockwise: c_int) void;
+extern fn CGContextDrawImage(c: CGContextRef, r: CGRect, img: CGImageRef) void;
+extern fn CGImageRelease(img: CGImageRef) void;
+extern fn CFDataCreate(alloc: ?*anyopaque, bytes: [*]const u8, len: c_long) ?CFTypeRef;
+extern fn CGImageSourceCreateWithData(data: CFTypeRef, options: ?*anyopaque) ?CFTypeRef;
+extern fn CGImageSourceCopyPropertiesAtIndex(src: CFTypeRef, index: usize, options: ?*anyopaque) ?CFTypeRef;
+extern fn CFDictionaryGetValue(dict: CFTypeRef, key: *const anyopaque) ?*const anyopaque;
+extern fn CFNumberGetValue(num: *const anyopaque, kind: c_long, out: *anyopaque) u8;
+extern const kCGImagePropertyPixelWidth: CFStringRef;
+extern fn CGImageSourceCreateThumbnailAtIndex(src: CFTypeRef, index: usize, options: ?CFTypeRef) ?CGImageRef;
+extern fn CFDictionaryCreate(alloc: ?*anyopaque, keys: [*]const ?*const anyopaque, values: [*]const ?*const anyopaque, n: c_long, kcb: *const anyopaque, vcb: *const anyopaque) ?CFTypeRef;
+extern const kCFTypeDictionaryKeyCallBacks: u8;
+extern const kCFTypeDictionaryValueCallBacks: u8;
+extern const kCFBooleanTrue: CFTypeRef;
+extern const kCGImageSourceCreateThumbnailFromImageAlways: CFStringRef;
+extern const kCGImageSourceCreateThumbnailWithTransform: CFStringRef;
+extern const kCGImageSourceThumbnailMaxPixelSize: CFStringRef;
+extern const kCGImagePropertyPixelHeight: CFStringRef;
+const CGImageRef = *anyopaque;
+const kCFNumberSInt64Type: c_long = 4;
 extern fn CGPathRelease(p: CGPathRef) void;
 const kCGPathFill: c_int = 0;
 const kCGPathEOFill: c_int = 1;
@@ -268,6 +289,15 @@ pub fn dropText(n: *Node) void {
     std.heap.smp_allocator.destroy(c);
 }
 
+/// Forget everything a node keeps here (it goes away): its text or picture.
+pub fn dropNative(n: *Node) void {
+    switch (n.kind) {
+        .text => dropText(n),
+        .image => dropImage(n),
+        else => {},
+    }
+}
+
 /// The size a text node needs at `max_width` (inf: one line per paragraph).
 pub fn measureText(comptime font_class: [:0]const u8, n: *Node, max_width: f32) [2]f32 {
     const cache = textCache(font_class, n) orelse return .{ 0, 0 };
@@ -348,9 +378,17 @@ fn cutBy(n: *Node, field: *Node, after: *bool, shown: *Rect) void {
 // ---------------------------------------------------------------------------
 // Drawing
 
-/// Draw `tree` into `cg` (top-left origin). `transparent`: nothing under the
-/// page (a transparent window); else white, as in a browser.
-pub fn paint(comptime font_class: [:0]const u8, cg: CGContextRef, tree: *tree_mod.Tree, transparent: bool) void {
+/// Whether a text area's control is empty (its placeholder shows): the
+/// backend knows, from its UITextView / NSTextView.
+pub const Fields = struct {
+    ctx: *anyopaque,
+    empty: *const fn (ctx: *anyopaque, n: *Node) bool,
+};
+
+/// Draw the engine's tree into `cg` (top-left origin). `transparent`:
+/// nothing under the page (a transparent window); else white, as in a browser.
+pub fn paint(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engine, transparent: bool, fields: Fields) void {
+    const tree = &engine.tree;
     if (tree.dirty) tree.layout();
     const all: CGRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = tree.width, .height = tree.height } };
     if (transparent) {
@@ -360,10 +398,10 @@ pub fn paint(comptime font_class: [:0]const u8, cg: CGContextRef, tree: *tree_mo
         CGContextFillRect(cg, all);
     }
     const root = tree.root orelse return;
-    paintNode(font_class, cg, root);
+    paintNode(font_class, cg, engine, fields, root);
 }
 
-fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void {
+fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engine, fields: Fields, n: *Node) void {
     // Nothing of it on screen (absolutely placed children may still be).
     const p = n.props;
     if (p.vis == false) return;
@@ -406,9 +444,12 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     switch (n.kind) {
         .text => paintText(font_class, cg, n),
         .icon => paintIcon(cg, n),
+        .image => paintImage(cg, engine, n),
+        .textarea => if (fields.empty(fields.ctx, n)) paintPlaceholder(font_class, cg, n),
+        .view => if (p.ctl != null) paintControl(cg, n),
         else => {},
     }
-    for (n.kids.items) |k| paintNode(font_class, cg, k);
+    for (n.kids.items) |k| paintNode(font_class, cg, engine, fields, k);
 }
 
 fn setFill(cg: CGContextRef, c: tree_mod.Color) void {
@@ -499,10 +540,39 @@ fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Col
         const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
         var ri = r;
         for (&ri) |*x| x.* = @max(0, x.* - half);
-        roundRect(cg, inner, ri);
-        setStroke(cg, colors[0]);
         CGContextSetLineWidth(cg, bw[0]);
-        CGContextStrokePath(cg);
+        const same = for (colors[1..]) |c| {
+            if (!std.mem.eql(f32, &c, &colors[0])) break false;
+        } else true;
+        if (same) {
+            roundRect(cg, inner, ri);
+            setStroke(cg, colors[0]);
+            CGContextStrokePath(cg);
+            return;
+        }
+        // Sides in different colors (a spinner: border-top-color on a grey
+        // ring): the rounded border stroked once per side, clipped to that
+        // side's wedge (its two corners and the box's center), so the
+        // colors meet on the diagonals, as in CSS.
+        const cx = f.x + f.w / 2;
+        const cy = f.y + f.h / 2;
+        const corners = [4][2]f32{ .{ f.x, f.y }, .{ f.x + f.w, f.y }, .{ f.x + f.w, f.y + f.h }, .{ f.x, f.y + f.h } };
+        for (0..4) |i| {
+            if (colors[i][3] <= 0) continue;
+            const a0 = corners[i];
+            const a1 = corners[(i + 1) % 4];
+            CGContextSaveGState(cg);
+            defer CGContextRestoreGState(cg);
+            CGContextBeginPath(cg);
+            CGContextMoveToPoint(cg, a0[0], a0[1]);
+            CGContextAddLineToPoint(cg, a1[0], a1[1]);
+            CGContextAddLineToPoint(cg, cx, cy);
+            CGContextClosePath(cg);
+            CGContextClip(cg);
+            roundRect(cg, inner, ri);
+            setStroke(cg, colors[i]);
+            CGContextStrokePath(cg);
+        }
         return;
     }
     // Per side (straight edges).
@@ -591,4 +661,306 @@ fn paintIcon(cg: CGContextRef, n: *const Node) void {
 
 test {
     _ = svg_path;
+}
+
+// ---------------------------------------------------------------------------
+// Default checkbox and radio, a text area's placeholder
+
+/// A default checkbox or radio (`ctl`): an outlined box or circle, filled
+/// with the accent color (`acc`, else blue) and a white mark when checked
+/// (`on`); dimmed when disabled. As on GTK.
+fn paintControl(cg: CGContextRef, n: *const Node) void {
+    const c = n.frame;
+    const size = @min(c.w, c.h);
+    if (!(size > 0)) return; // NaN too
+    const x = c.x + (c.w - size) / 2;
+    const y = c.y + (c.h - size) / 2;
+    const radio = std.mem.eql(u8, n.props.ctl.?, "radio");
+    const acc = n.props.acc orelse tree_mod.Color{ 59, 108, 255, 1 };
+    const alpha: f32 = if (n.props.dis) 0.45 else 1;
+    CGContextSaveGState(cg);
+    defer CGContextRestoreGState(cg);
+    const outline = struct {
+        fn f(g: CGContextRef, is_radio: bool, ox: f32, oy: f32, sz: f32) void {
+            CGContextBeginPath(g);
+            if (is_radio) {
+                CGContextAddArc(g, ox + sz / 2, oy + sz / 2, sz / 2 - 0.5, 0, 2 * std.math.pi, 0);
+                CGContextClosePath(g);
+            } else roundRect(g, .{ .x = ox + 0.5, .y = oy + 0.5, .w = sz - 1, .h = sz - 1 }, .{ 2.5, 2.5, 2.5, 2.5 });
+        }
+    }.f;
+    outline(cg, radio, x, y, size);
+    if (n.props.on) {
+        setFill(cg, .{ acc[0], acc[1], acc[2], acc[3] * alpha });
+        CGContextFillPath(cg);
+        if (radio) {
+            CGContextBeginPath(cg);
+            CGContextAddArc(cg, x + size / 2, y + size / 2, size * 0.2, 0, 2 * std.math.pi, 0);
+            setFill(cg, .{ 255, 255, 255, alpha });
+            CGContextFillPath(cg);
+        } else {
+            setStroke(cg, .{ 255, 255, 255, alpha });
+            CGContextSetLineWidth(cg, @max(1.5, size * 0.13));
+            CGContextSetLineCap(cg, 1);
+            CGContextSetLineJoin(cg, 1);
+            CGContextBeginPath(cg);
+            CGContextMoveToPoint(cg, x + size * 0.25, y + size * 0.52);
+            CGContextAddLineToPoint(cg, x + size * 0.43, y + size * 0.7);
+            CGContextAddLineToPoint(cg, x + size * 0.76, y + size * 0.32);
+            CGContextStrokePath(cg);
+        }
+    } else {
+        setFill(cg, .{ 255, 255, 255, alpha });
+        setStroke(cg, .{ 118, 118, 118, alpha });
+        CGContextSetLineWidth(cg, 1);
+        CGContextDrawPath(cg, kCGPathFillStroke);
+    }
+}
+
+/// A <textarea>'s placeholder: NSTextView and UITextView have none, so it's
+/// drawn under the (transparent) control while it's empty, in the text color
+/// at half strength, as a browser does.
+fn paintPlaceholder(comptime font_class: [:0]const u8, cg: CGContextRef, n: *const Node) void {
+    const ph = n.props.ph orelse return;
+    if (ph.len == 0) return;
+    const c = n.content();
+    if (!(c.w > 0) or !(c.h > 0)) return; // NaN too
+    const s = CFAttributedStringCreateMutable(null, 0) orelse return;
+    defer CFRelease(s);
+    const str = CFStringCreateWithBytes(null, ph.ptr, @intCast(ph.len), kCFStringEncodingUTF8, 0) orelse return;
+    defer CFRelease(str);
+    CFAttributedStringReplaceString(s, .{ .location = 0, .length = 0 }, str);
+    const all: CFRange = .{ .location = 0, .length = CFStringGetLength(str) };
+    if (font(font_class, n.props.fz orelse 16, 400, false, false)) |f| CFAttributedStringSetAttribute(s, all, kCTFontAttributeName, f);
+    const col = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
+    const space = CGColorSpaceCreateDeviceRGB() orelse return;
+    defer CGColorSpaceRelease(space);
+    const comps = [4]CGFloat{ col[0] / 255, col[1] / 255, col[2] / 255, col[3] * 0.5 };
+    if (CGColorCreate(space, &comps)) |cc| {
+        CFAttributedStringSetAttribute(s, all, kCTForegroundColorAttributeName, cc);
+        CGColorRelease(cc);
+    }
+    const fs = CTFramesetterCreateWithAttributedString(s) orelse return;
+    defer CFRelease(fs);
+    const path = CGPathCreateWithRect(.{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = c.w, .height = c.h } }, null) orelse return;
+    defer CGPathRelease(path);
+    const frame = CTFramesetterCreateFrame(fs, .{ .location = 0, .length = 0 }, path, null) orelse return;
+    defer CFRelease(frame);
+    CGContextSaveGState(cg);
+    defer CGContextRestoreGState(cg);
+    CGContextClipToRect(cg, rect(c));
+    CGContextTranslateCTM(cg, c.x, c.y + c.h);
+    CGContextScaleCTM(cg, 1, -1);
+    CGContextSetTextMatrix(cg, .{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 });
+    CTFrameDraw(frame, cg);
+}
+
+// ---------------------------------------------------------------------------
+// Images (<img src="data:…"> or an app asset), decoded with ImageIO
+
+/// An image node's picture, kept in `Node.native` until its `src` changes
+/// (not on every props update: a transition would decode it every frame).
+const ImageCache = struct {
+    src_hash: u64,
+    /// The `src` slice last hashed: the same one isn't hashed again (a big
+    /// data: URI is megabytes, and measure and paint ask every frame).
+    src_ptr: usize = 0,
+    src_len: usize = 0,
+    /// Null when the picture couldn't be decoded, or is over the limit.
+    image: ?CGImageRef,
+    w: f32,
+    h: f32,
+};
+
+/// The largest picture decoded: 4096 x 4096 px declared. Larger ones keep
+/// their declared size for layout and aren't drawn, as on GTK: a tiny file
+/// can declare 30000 x 30000 px.
+const max_image_pixels: u64 = 4096 * 4096;
+/// What's kept decoded is at most this many px on its longer side (16 MB
+/// as 8-bit RGBA, whatever the file's depth), so a page of big pictures
+/// doesn't hold gigabytes.
+const max_decoded_side: i64 = 2048;
+
+fn dropImage(n: *Node) void {
+    const p = n.native orelse return;
+    n.native = null;
+    const c: *ImageCache = @ptrCast(@alignCast(p));
+    if (c.image) |img| CGImageRelease(img);
+    std.heap.smp_allocator.destroy(c);
+}
+
+fn imageOf(engine: *Engine, n: *Node) ?*ImageCache {
+    const src = n.props.src orelse {
+        dropImage(n); // no src any more: no picture
+        return null;
+    };
+    var hash: ?u64 = null;
+    if (n.native) |p| {
+        const c: *ImageCache = @ptrCast(@alignCast(p));
+        if (c.src_ptr == @intFromPtr(src.ptr) and c.src_len == src.len) return c;
+        hash = std.hash.Wyhash.hash(src.len, src);
+        if (c.src_hash == hash.?) {
+            c.src_ptr = @intFromPtr(src.ptr);
+            return c;
+        }
+        dropImage(n);
+    }
+    const c = std.heap.smp_allocator.create(ImageCache) catch return null;
+    c.* = .{ .src_hash = hash orelse std.hash.Wyhash.hash(src.len, src), .src_ptr = @intFromPtr(src.ptr), .src_len = src.len, .image = null, .w = 0, .h = 0 };
+    decodeImage(engine, src, c) catch |err| std.log.scoped(.native_ui).warn("native ui: image {s}: {s}", .{ src[0..@min(src.len, 48)], @errorName(err) });
+    n.native = c;
+    return c;
+}
+
+fn decodeImage(engine: *Engine, src: []const u8, out: *ImageCache) !void {
+    const gpa = std.heap.smp_allocator;
+    var owned: ?[]u8 = null;
+    defer if (owned) |o| gpa.free(o);
+    const bytes: []const u8 = if (std.mem.startsWith(u8, src, "data:")) blk: {
+        const comma = std.mem.indexOfScalar(u8, src, ',') orelse return error.BadDataUri;
+        if (std.mem.indexOf(u8, src[0..comma], ";base64") == null) return error.NotBase64;
+        const b64 = std.mem.trim(u8, src[comma + 1 ..], " \t\r\n");
+        const dec = std.base64.standard.Decoder;
+        const buf = try gpa.alloc(u8, try dec.calcSizeForSlice(b64));
+        owned = buf;
+        try dec.decode(buf, b64);
+        break :blk buf;
+    } else engine.assetData(src) orelse return error.AssetNotFound;
+    return decodeBytes(bytes, out, max_image_pixels);
+}
+
+/// Decode an image file's bytes into `out` (its declared size even when it
+/// isn't decoded).
+fn decodeBytes(bytes: []const u8, out: *ImageCache, limit: u64) !void {
+    if (bytes.len == 0 or bytes.len > std.math.maxInt(c_long)) return error.EmptyImage;
+    const data = CFDataCreate(null, bytes.ptr, @intCast(bytes.len)) orelse return error.OutOfMemory;
+    defer CFRelease(data);
+    const isrc = CGImageSourceCreateWithData(data, null) orelse return error.UnknownFormat;
+    defer CFRelease(isrc);
+    // The declared size first, from the header: nothing is decoded yet.
+    const props = CGImageSourceCopyPropertiesAtIndex(isrc, 0, null) orelse return error.UnknownFormat;
+    defer CFRelease(props);
+    var w: i64 = 0;
+    var h: i64 = 0;
+    if (CFDictionaryGetValue(props, kCGImagePropertyPixelWidth)) |v| _ = CFNumberGetValue(v, kCFNumberSInt64Type, &w);
+    if (CFDictionaryGetValue(props, kCGImagePropertyPixelHeight)) |v| _ = CFNumberGetValue(v, kCFNumberSInt64Type, &h);
+    if (w <= 0 or h <= 0) return error.UnknownFormat;
+    out.w = @floatFromInt(@min(w, 1 << 24));
+    out.h = @floatFromInt(@min(h, 1 << 24));
+    if (@as(u64, @intCast(w)) > limit or @as(u64, @intCast(h)) > limit or
+        @as(u64, @intCast(w)) * @as(u64, @intCast(h)) > limit) return error.OverThePixelLimit;
+    // Decoded at most max_decoded_side px on its longer side (a thumbnail:
+    // ImageIO decodes straight to that size), upright per its orientation.
+    const side = std.math.clamp(@max(w, h), 1, max_decoded_side);
+    const side_num = CFNumberCreate(null, kCFNumberSInt64Type, &side) orelse return error.OutOfMemory;
+    defer CFRelease(side_num);
+    const keys = [_]?*const anyopaque{ kCGImageSourceCreateThumbnailFromImageAlways, kCGImageSourceCreateThumbnailWithTransform, kCGImageSourceThumbnailMaxPixelSize };
+    const values = [_]?*const anyopaque{ kCFBooleanTrue, kCFBooleanTrue, side_num };
+    const opts = CFDictionaryCreate(null, &keys, &values, keys.len, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks) orelse return error.OutOfMemory;
+    defer CFRelease(opts);
+    out.image = CGImageSourceCreateThumbnailAtIndex(isrc, 0, opts) orelse return error.DecodeFailed;
+}
+
+/// An image's natural size, scaled down to the width it may take.
+pub fn measureImage(engine: *Engine, n: *Node, max_width: f32) [2]f32 {
+    const c = imageOf(engine, n) orelse return .{ 0, 0 };
+    if (!(c.w > 0) or !(c.h > 0)) return .{ 0, 0 };
+    const k: f32 = if (!std.math.isInf(max_width) and max_width < c.w) @max(0, max_width) / c.w else 1;
+    return .{ c.w * k, c.h * k };
+}
+
+/// Drawn in its content box per CSS object-fit (fill by default).
+fn paintImage(cg: CGContextRef, engine: *Engine, n: *Node) void {
+    const c_img = imageOf(engine, n) orelse return;
+    const img = c_img.image orelse return;
+    const c = n.content();
+    if (!(c.w > 0) or !(c.h > 0) or !(c_img.w > 0) or !(c_img.h > 0)) return; // NaN too
+    const fit = n.props.fit orelse "fill";
+    var kx: f32 = c.w / c_img.w;
+    var ky: f32 = c.h / c_img.h;
+    if (std.mem.eql(u8, fit, "contain")) {
+        kx = @min(kx, ky);
+        ky = kx;
+    } else if (std.mem.eql(u8, fit, "cover")) {
+        kx = @max(kx, ky);
+        ky = kx;
+    } else if (std.mem.eql(u8, fit, "none")) {
+        kx = 1;
+        ky = 1;
+    } else if (std.mem.eql(u8, fit, "scale-down")) {
+        kx = @min(1, @min(kx, ky));
+        ky = kx;
+    }
+    const dw = c_img.w * kx;
+    const dh = c_img.h * ky;
+    CGContextSaveGState(cg);
+    defer CGContextRestoreGState(cg);
+    CGContextClipToRect(cg, rect(c));
+    // CGContextDrawImage draws with y up: flip around the picture's box.
+    CGContextTranslateCTM(cg, c.x + (c.w - dw) / 2, c.y + (c.h - dh) / 2 + dh);
+    CGContextScaleCTM(cg, 1, -1);
+    CGContextDrawImage(cg, .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = dw, .height = dh } }, img);
+}
+
+fn testPng(comptime w: u32, comptime h: u32, with_pixels: bool) ![]u8 {
+    const gpa = std.testing.allocator;
+    var raw: std.ArrayList(u8) = .empty;
+    defer raw.deinit(gpa);
+    if (with_pixels) for (0..h) |_| {
+        try raw.append(gpa, 0);
+        try raw.appendNTimes(gpa, 0x80, w * 4);
+    };
+    var z: std.ArrayList(u8) = .empty;
+    defer z.deinit(gpa);
+    // A stored (uncompressed) zlib stream: header, one final block, adler32.
+    try z.appendSlice(gpa, &.{ 0x78, 0x01, 0x01 });
+    const len: u16 = @intCast(raw.items.len);
+    try z.appendSlice(gpa, &std.mem.toBytes(std.mem.nativeToLittle(u16, len)));
+    try z.appendSlice(gpa, &std.mem.toBytes(std.mem.nativeToLittle(u16, ~len)));
+    try z.appendSlice(gpa, raw.items);
+    try z.appendSlice(gpa, &std.mem.toBytes(std.mem.nativeToBig(u32, std.hash.Adler32.hash(raw.items))));
+    var png: std.ArrayList(u8) = .empty;
+    errdefer png.deinit(gpa);
+    try png.appendSlice(gpa, "\x89PNG\r\n\x1a\n");
+    var ihdr: [13]u8 = undefined;
+    std.mem.writeInt(u32, ihdr[0..4], w, .big);
+    std.mem.writeInt(u32, ihdr[4..8], h, .big);
+    ihdr[8..13].* = .{ 8, 6, 0, 0, 0 };
+    inline for (.{ .{ "IHDR", &ihdr }, .{ "IDAT", z.items }, .{ "IEND", "" } }) |c| {
+        const data: []const u8 = c[1];
+        try png.appendSlice(gpa, &std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(data.len))));
+        var crc = std.hash.Crc32.init();
+        crc.update(c[0]);
+        crc.update(data);
+        try png.appendSlice(gpa, c[0]);
+        try png.appendSlice(gpa, data);
+        try png.appendSlice(gpa, &std.mem.toBytes(std.mem.nativeToBig(u32, crc.final())));
+    }
+    return png.toOwnedSlice(gpa);
+}
+
+test "images: decoded, and over the pixel limit only measured" {
+    const small = try testPng(4, 3, true);
+    defer std.testing.allocator.free(small);
+    var c: ImageCache = .{ .src_hash = 0, .image = null, .w = 0, .h = 0 };
+    try decodeBytes(small, &c, max_image_pixels);
+    defer if (c.image) |img| CGImageRelease(img);
+    try std.testing.expect(c.image != null);
+    try std.testing.expectEqual(@as(f32, 4), c.w);
+    try std.testing.expectEqual(@as(f32, 3), c.h);
+    // Over the limit (12 px against 10 here; 4096 x 4096 in the app): its
+    // declared size from the header, for layout, and nothing decoded.
+    var b: ImageCache = .{ .src_hash = 0, .image = null, .w = 0, .h = 0 };
+    try std.testing.expectError(error.OverThePixelLimit, decodeBytes(small, &b, 10));
+    try std.testing.expect(b.image == null);
+    try std.testing.expectEqual(@as(f32, 4), b.w);
+    // A header declaring 30000 x 30000 px with no picture behind it: ImageIO
+    // gives it no size, so nothing is drawn (and nothing decoded).
+    const huge = try testPng(30000, 30000, false);
+    defer std.testing.allocator.free(huge);
+    var j: ImageCache = .{ .src_hash = 0, .image = null, .w = 0, .h = 0 };
+    try std.testing.expectError(error.UnknownFormat, decodeBytes(huge, &j, max_image_pixels));
+    try std.testing.expect(j.image == null);
+    // Not an image.
+    try std.testing.expectError(error.UnknownFormat, decodeBytes("not a picture at all", &j, max_image_pixels));
 }
