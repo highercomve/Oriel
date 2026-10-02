@@ -377,63 +377,8 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
 /// minus what the page paints over it later (a fixed header or footer bar
 /// across it), since native controls sit above everything drawn. Bars that
 /// cover the field's whole width cut it from the top or the bottom.
-/// <input type=range> (`props.range`: min, max, step): what a slider shows
-/// and sends, as Android's SeekBar does it.
-pub const Range = struct {
-    min: f64,
-    max: f64,
-    /// The step; "any" (0) is a thousandth of the span.
-    step: f64,
-
-    pub fn of(n: *const Node) Range {
-        const r = n.props.range orelse [3]f64{ 0, 100, 1 };
-        const lo = if (std.math.isFinite(r[0])) r[0] else 0;
-        const hi = if (std.math.isFinite(r[1]) and r[1] >= lo) r[1] else lo;
-        const any = (hi - lo) / 1000;
-        const step = if (std.math.isFinite(r[2]) and r[2] > 0) r[2] else any;
-        return .{ .min = lo, .max = hi, .step = if (step > 0) step else 1 };
-    }
-
-    /// `x` on the nearest step, inside min…max.
-    pub fn snap(r: Range, x: f64) f64 {
-        if (!std.math.isFinite(x)) return r.min;
-        const steps = @round((std.math.clamp(x, r.min, r.max) - r.min) / r.step);
-        return std.math.clamp(r.min + steps * r.step, r.min, r.max);
-    }
-
-    /// The page's text for a value ("3", "0.25"), the input's value attribute.
-    pub fn text(r: Range, buf: []u8, x: f64) []const u8 {
-        const v = r.snap(x);
-        if (v == @floor(v) and @abs(v) < 1e15) return std.fmt.bufPrint(buf, "{d}", .{@as(i64, @intFromFloat(v))}) catch "0";
-        const s = std.fmt.bufPrint(buf, "{d:.6}", .{v}) catch return "0";
-        var end = s.len;
-        while (end > 0 and s[end - 1] == '0') end -= 1;
-        if (end > 0 and s[end - 1] == '.') end -= 1;
-        return s[0..end];
-    }
-
-    /// A page value ("0.2") as a number, min when it isn't one.
-    pub fn parse(r: Range, v: []const u8) f64 {
-        return r.snap(std.fmt.parseFloat(f64, std.mem.trim(u8, v, " ")) catch r.min);
-    }
-};
-
-test "Range snaps and prints like Android" {
-    var n: Node = undefined;
-    n.props = .{ .range = .{ 0, 1, 0.05 } };
-    const r = Range.of(&n);
-    var buf: [32]u8 = undefined;
-    try std.testing.expectEqualStrings("0.25", r.text(&buf, 0.26));
-    try std.testing.expectEqualStrings("1", r.text(&buf, 7));
-    try std.testing.expectEqualStrings("0", r.text(&buf, -3));
-    try std.testing.expectEqual(@as(f64, 0.2), r.parse("0.2"));
-    try std.testing.expectEqual(@as(f64, 0), r.parse("x"));
-    n.props = .{};
-    const d = Range.of(&n);
-    try std.testing.expectEqualStrings("50", d.text(&buf, 49.6));
-    n.props = .{ .range = .{ 5, 1, 0 } }; // max below min: pinned at min
-    try std.testing.expectEqualStrings("5", Range.of(&n).text(&buf, 3));
-}
+/// <input type=range>: shared with the other backends (tree.zig).
+pub const Range = tree_mod.Range;
 
 pub fn visiblePart(tree: *tree_mod.Tree, field: *Node) Rect {
     var shown = field.clip.intersect(field.content());
