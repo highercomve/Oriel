@@ -566,7 +566,7 @@ pub const Store = struct {
         if (c.connected) s.setConnected(child, false);
         // The observer sees the removal while the node is alive (and while
         // the parent still counts as connected for connected_only).
-        if (s.observer) |o| if (!o.connected_only or was_connected) o.notify(o.ctx, .removed, parent, child, 0);
+        if (s.observer) |o| if (!o.connected_only or was_connected) s.notify(o, .removed, parent, child, 0);
         if (may_free and s.get(child).wrapped == 0 and s.get(child).parent == none) s.freeTree(child);
     }
 
@@ -709,7 +709,40 @@ pub const Store = struct {
     fn observe(s: *Store, kind: Mutation, target: Index, node: Index, name: u32) void {
         const o = s.observer orelse return;
         if (o.connected_only and !s.get(target).connected) return;
+        s.notify(o, kind, target, node, name);
+    }
+
+    /// Calls the observer. The bindings' hook makes wrappers for the nodes
+    /// and drops them before returning; a wrapper's finalizer frees a
+    /// detached subtree left without wrappers, which may be one this
+    /// operation still uses (a removed node it's about to free itself, a
+    /// moved one, a parser's fragment). The detached trees are pinned for
+    /// the call so that only the operation decides.
+    fn notify(s: *Store, o: Observer, kind: Mutation, target: Index, node: Index, name: u32) void {
+        const rt = s.pin(target);
+        const rn = if (node != none) s.pin(node) else none;
         o.notify(o.ctx, kind, target, node, name);
+        if (rn != none) s.unpin(rn);
+        if (rt != none) s.unpin(rt);
+    }
+
+    /// Pins the detached tree holding `idx` (connected trees hang off the
+    /// document, which isn't freed): its root counts one more wrapper.
+    /// Returns the root, or none.
+    fn pin(s: *Store, idx: Index) Index {
+        if (s.get(idx).connected) return none;
+        var root = idx;
+        while (s.get(root).parent != none) root = s.get(root).parent;
+        s.get(root).wrapped += 1;
+        return root;
+    }
+
+    /// Undoes `pin`, along the root's ancestors in case the hook inserted it
+    /// somewhere (linking added the pin to them). Frees nothing: the
+    /// operation decides what's left.
+    fn unpin(s: *Store, root: Index) void {
+        var idx = root;
+        while (idx != none) : (idx = s.get(idx).parent) s.get(idx).wrapped -= 1;
     }
 
     pub fn markDirty(s: *Store, idx: Index, what: u8) void {
@@ -1004,5 +1037,91 @@ test "many nodes across slabs, and allocation failures" {
             while (at.next()) |e| std.debug.print("fail_index {d}: atom {d} refs {d}\n", .{ fail_index, e.key_ptr.*, e.value_ptr.* });
         }
         try t.expect(f2.balanced());
+    }
+}
+
+/// An observer like the bindings' hook: it makes a wrapper for each node it
+/// is shown (when it has none) and drops it at once, so the wrapper is
+/// finalized inside the store's operation.
+const WrappingObserver = struct {
+    f: *Fake,
+    s: *Store,
+    next_key: i64 = 500,
+
+    fn notify(ctx: *anyopaque, kind: Mutation, target: Index, node: Index, name: u32) void {
+        _ = kind;
+        _ = name;
+        const o: *WrappingObserver = @ptrCast(@alignCast(ctx));
+        for ([_]Index{ target, node }) |idx| {
+            if (idx == none or o.s.wrapperOf(idx) != null) continue;
+            var w = o.f.make(o.next_key);
+            o.f.wrapper_nodes.put(o.next_key, idx) catch unreachable;
+            o.next_key += 1;
+            o.s.setWrapper(idx, &w);
+            Fake.free(o.f, &w);
+        }
+    }
+
+    /// Whether the free list visits each free record once.
+    fn freeListSane(s: *Store) bool {
+        var seen: usize = 0;
+        var idx = s.free_head;
+        while (idx != none) : (idx = s.get(idx).next) {
+            if (s.get(idx).kind != .free) return false;
+            seen += 1;
+            if (seen > s.used) return false; // a cycle
+        }
+        return true;
+    }
+};
+
+test "an observer's short-lived wrappers don't free nodes the operation still uses" {
+    const t = std.testing;
+    for ([_]bool{ true, false }) |connected_only| {
+        var f = Fake.new(t.allocator);
+        defer f.deinit();
+        var s = try Store.init(t.allocator, f.js(), 200, 201);
+        f.store = &s;
+        // Parsed markup: a connected element and its text, no wrappers.
+        const b = try s.createElement(100);
+        var v0 = f.make(9);
+        const t0 = try s.createData(.text, &v0);
+        Fake.free(&f, &v0);
+        try s.appendChild(b, t0);
+        try s.appendChild(s.document, b);
+        var o: WrappingObserver = .{ .f = &f, .s = &s };
+        s.observer = .{ .ctx = &o, .notify = WrappingObserver.notify, .connected_only = connected_only };
+        // textContent, twice: the old text node is removed (the observer
+        // wraps it, then drops the wrapper), a new one inserted.
+        for (0..2) |k| {
+            s.removeChildren(b);
+            try t.expect(WrappingObserver.freeListSane(&s));
+            var v = f.make(@intCast(10 + k));
+            const txt = try s.createData(.text, &v);
+            Fake.free(&f, &v);
+            try s.appendChild(b, txt);
+            try t.expect(WrappingObserver.freeListSane(&s));
+            try t.expectEqual(txt, s.get(b).first);
+            try t.expectEqual(b, s.get(txt).parent);
+        }
+        // Two new records are distinct, and neither is b's child.
+        const x = try s.createElement(101);
+        const y = try s.createElement(102);
+        try t.expect(x != y and x != s.get(b).first and y != s.get(b).first);
+        // A move between detached parents: the moved node survives.
+        try s.appendChild(x, y);
+        const z = try s.createElement(103);
+        try s.appendChild(z, y);
+        try t.expectEqual(Kind.element, s.get(y).kind);
+        try t.expectEqual(z, s.get(y).parent);
+        try t.expect(WrappingObserver.freeListSane(&s));
+        s.dropIfUnused(x);
+        s.dropIfUnused(z);
+        s.observer = null;
+        // The connected wrappers the observer made go with the store
+        // (their finalizers don't call back, as when the bindings close).
+        f.wrapper_nodes.clearRetainingCapacity();
+        s.deinit();
+        try t.expect(f.balanced());
     }
 }
