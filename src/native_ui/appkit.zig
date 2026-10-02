@@ -179,7 +179,7 @@ pub fn destroy(s: *Surface) void {
     while (it.next()) |e| dropField(e.value_ptr.*);
     s.fields.deinit(s.gpa);
     s.view.msgSend(void, "removeFromSuperview", .{});
-    _ = s.view.msgSend(Object, "autorelease", .{}); // it may be in one of its own callbacks
+    releaseLater(s.view); // it may be in one of its own callbacks
     s.gpa.free(s.label);
     s.gpa.destroy(s);
 }
@@ -195,9 +195,19 @@ fn dropField(f: Field) void {
         _ = f.inner.msgSend(BOOL, "abortEditing", .{});
     };
     f.holder.msgSend(void, "removeFromSuperview", .{});
-    // Autoreleased, not released: the page may drop a field from inside
-    // that control's own callback (a handler for its Enter).
-    _ = f.holder.msgSend(Object, "autorelease", .{}); // and with it the control
+    // Released later, not now: the page may drop a field from inside that
+    // control's own callback (a handler for its Enter), or while its menu is
+    // open (timers and commands run during menu tracking, each draining its
+    // own pool, so autorelease isn't late enough). A delayed perform runs in
+    // the default run loop mode only: after tracking ends.
+    releaseLater(f.holder); // and with it the control
+}
+
+/// Release `o` (our reference) once the run loop is back in its default
+/// mode. The delayed perform retains `o` and releases it after performing,
+/// so the performed `release` is the one that drops ours.
+fn releaseLater(o: Object) void {
+    o.msgSend(void, "performSelector:withObject:afterDelay:", .{ cocoa.objc.sel("release").value, cocoa.nil, @as(f64, 0) });
 }
 
 fn surfaceOf(ctx: *anyopaque) *Surface {
@@ -303,8 +313,8 @@ fn laidOut(ctx: *anyopaque) void {
     syncFields(s);
     s.view.msgSend(void, "setNeedsDisplay:", .{cocoa.boolean(true)});
     if (std.c.getenv("ORIEL_NUI_SNAPSHOT") != null and !s.snapshot_queued) {
-        s.snapshot_queued = true;
         const t = std.heap.smp_allocator.create(u64) catch return;
+        s.snapshot_queued = true;
         t.* = s.token;
         cocoa.afterMain(400, t, snapshot);
     }

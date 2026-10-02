@@ -205,20 +205,19 @@ fn evaluate(view: cocoa.id, script: []const u8) void {
 /// synchronously and may open or close windows. By token, so a window that
 /// closes on the way is skipped.
 const NativeEngines = struct {
-    tokens: [16]u64 = undefined,
-    len: usize = 0,
+    tokens: std.ArrayListUnmanaged(u64) = .empty,
 
     fn add(self: *NativeEngines, handle: window_mod.WindowHandle) void {
         if (comptime !build_opts.native_ui) return;
         const p = handle.native orelse return;
-        if (self.len == self.tokens.len) return;
-        self.tokens[self.len] = @as(*native.Surface, @ptrCast(@alignCast(p))).token;
-        self.len += 1;
+        self.tokens.append(std.heap.smp_allocator, @as(*native.Surface, @ptrCast(@alignCast(p))).token) catch
+            log.warn("out of memory: an event misses a native window", .{});
     }
 
     fn eval(self: *NativeEngines, script: [:0]const u8) void {
+        defer self.tokens.deinit(std.heap.smp_allocator);
         if (comptime !build_opts.native_ui) return;
-        for (self.tokens[0..self.len]) |t| if (native.get(t)) |surface| surface.engine.evalScript(script);
+        for (self.tokens.items) |t| if (native.get(t)) |surface| surface.engine.evalScript(script);
     }
 };
 

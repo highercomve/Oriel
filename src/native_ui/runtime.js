@@ -14350,8 +14350,15 @@ ${a.stack || ""}`;
     }
     host.scrollIntoView(renderer.idOf(this, "el"), block);
   };
+  var clicking = /* @__PURE__ */ new WeakSet();
   Object.getPrototypeOf(document.createElement("div")).click = elProto.click = function() {
-    activate(this, 0);
+    if (clicking.has(this)) return;
+    clicking.add(this);
+    try {
+      activate(this, 0);
+    } finally {
+      clicking.delete(this);
+    }
   };
   g.scrollTo = g.scroll = (x, y) => {
     const top = typeof x === "object" && x !== null ? x.top : y;

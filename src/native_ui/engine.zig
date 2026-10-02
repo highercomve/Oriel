@@ -322,4 +322,5 @@ export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64) void {
 test {
     // Pure Zig, used by the Apple backends (apple_draw.zig): tested everywhere.
     _ = @import("svg_path.zig");
+    _ = @import("tree.zig");
 }

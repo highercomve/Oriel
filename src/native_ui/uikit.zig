@@ -166,7 +166,7 @@ pub fn destroy(s: *Surface) void {
     while (it.next()) |f| dropField(f.*);
     s.fields.deinit(s.gpa);
     s.view.msgSend(void, "removeFromSuperview", .{});
-    _ = s.view.msgSend(Object, "autorelease", .{}); // it may be in one of its own callbacks
+    releaseLater(s.view); // it may be in one of its own callbacks
     s.gpa.destroy(s);
 }
 
@@ -174,9 +174,16 @@ fn dropField(f: Field) void {
     _ = by_control.remove(key(f.control.value));
     if (f.control.getClass()) |cls| if (cls.respondsToSelector(apple.objc.sel("setDelegate:"))) f.control.msgSend(void, "setDelegate:", .{apple.nil});
     f.holder.msgSend(void, "removeFromSuperview", .{});
-    // Autoreleased, not released: the page may drop a field from inside
-    // that control's own callback (a handler for its Return).
-    _ = f.holder.msgSend(Object, "autorelease", .{}); // and with it the control
+    // Released later, not now: the page may drop a field from inside that
+    // control's own callback (a handler for its Return or its menu).
+    releaseLater(f.holder); // and with it the control
+}
+
+/// Release `o` (our reference) once the run loop is back in its default
+/// mode. The delayed perform retains `o` and releases it after performing,
+/// so the performed `release` is the one that drops ours.
+fn releaseLater(o: Object) void {
+    o.msgSend(void, "performSelector:withObject:afterDelay:", .{ apple.objc.sel("release").value, apple.nil, @as(f64, 0) });
 }
 
 fn surfaceOf(ctx: *anyopaque) *Surface {
