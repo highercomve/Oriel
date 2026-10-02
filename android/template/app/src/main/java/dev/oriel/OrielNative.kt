@@ -472,6 +472,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     /** Each <canvas> node's bitmap, kept between paints (OrielCanvas.kt). */
     private val canvases = HashMap<Int, CanvasSurface>()
     private var frames = FloatArray(0)
+    /** `frames` as ints: each record's node id (slot 0). */
+    private var ids = IntArray(0)
     private val index = HashMap<Int, Int>() // node id → record
     private val density = resources.displayMetrics.density
     private var updating = false
@@ -562,11 +564,15 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     fun measureText(id: Int, max64: Int): Long = nodes[id]?.measure(max64) ?: 0
 
     fun frames(bytes: ByteArray) {
-        val fb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+        val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        val fb = bb.asFloatBuffer()
         frames = FloatArray(fb.remaining()).also { fb.get(it) }
+        // A record's first slot is its node's id as int bits (android.zig's
+        // pack): read as an int, not a float, so no id is rounded or a NaN.
+        ids = IntArray(frames.size).also { bb.asIntBuffer().get(it) }
         index.clear()
         var i = 0
-        while (i + REC <= frames.size) { index[frames[i].toInt()] = i; i += REC }
+        while (i + REC <= frames.size) { index[ids[i]] = i; i += REC }
         orderDirty = true
         syncFields()
         requestLayout()
@@ -661,7 +667,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         val from = paintEnd[r] ?: return out
         for (pos in from until paintOrder.size) {
             val k = paintOrder[pos]
-            val n = nodes[frames[k].toInt()]
+            val n = nodes[ids[k]]
             if (n != null && (n.bg?.let { Color.alpha(it) > 0 } == true || n.gradient != null)) {
                 val v = RectF(frames[k + 1], frames[k + 2], frames[k + 1] + frames[k + 3], frames[k + 2] + frames[k + 4])
                 if (v.intersect(frames[k + 5], frames[k + 6], frames[k + 5] + frames[k + 7], frames[k + 6] + frames[k + 8])) out += v
@@ -1059,7 +1065,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     private val paintEnd = HashMap<Int, Int>()
 
     private fun layerOf(k: Int): Long {
-        val p = nodes[frames[k].toInt()]?.p ?: return 0
+        val p = nodes[ids[k]]?.p ?: return 0
         val positioned = p.has("pos") || p.has("sticky") || p.has("rel")
         val z = (p.opt("z") as? Number)?.toLong() ?: 0L
         return 2 * z + if (positioned) 1 else 0
@@ -1102,7 +1108,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     /** Record `r` and its subtree (the records after it). */
     private fun draw(canvas: Canvas, r: Int) {
         val f = frames
-        val n = nodes[f[r].toInt()]
+        val n = nodes[ids[r]]
         val end = r + REC * (1 + f[r + 13].toInt())
         val x = f[r + 1]; val y = f[r + 2]; val w = f[r + 3]; val h = f[r + 4]
         val clipL = f[r + 5]; val clipT = f[r + 6]; val clipR = clipL + f[r + 7]; val clipB = clipT + f[r + 8]

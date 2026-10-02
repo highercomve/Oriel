@@ -108,9 +108,13 @@ fn surfaceOf(p: *anyopaque) *Surface {
     return @ptrCast(@alignCast(p));
 }
 
+/// A node's id across JNI and in the frame records (an int there; the page
+/// never reuses ids, so they grow). One beyond an i32 gets `no_id`, which
+/// Kotlin knows no node by: it's skipped there instead of a panic here.
 fn nid(n: *const Node) i32 {
-    return @intCast(n.id);
+    return if (n.id > std.math.minInt(i32) and n.id <= std.math.maxInt(i32)) @intCast(n.id) else no_id;
 }
+const no_id: i32 = std.math.minInt(i32);
 
 // ---------------------------------------------------------------------------
 // Backend hooks
@@ -240,7 +244,9 @@ fn pack(s: *Surface, n: *Node) !void {
     const start = s.frames.items.len;
     const c = n.content();
     const f = n.frame;
-    const vals = [record_len]f32{ @floatFromInt(n.id), f.x, f.y, f.w, f.h, n.clip.x, n.clip.y, n.clip.w, n.clip.h, c.x, c.y, c.w, c.h, 0 };
+    // The id's int bits, not its value as a float: a float holds integers
+    // exactly only up to 2^24 (Kotlin reads this slot as an int).
+    const vals = [record_len]f32{ @bitCast(nid(n)), f.x, f.y, f.w, f.h, n.clip.x, n.clip.y, n.clip.w, n.clip.h, c.x, c.y, c.w, c.h, 0 };
     try s.frames.appendSlice(s.gpa, std.mem.sliceAsBytes(&vals));
     for (n.kids.items) |k| try pack(s, k);
     const after: f32 = @floatFromInt((s.frames.items.len - start) / (record_len * 4) - 1);
