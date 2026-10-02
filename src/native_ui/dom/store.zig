@@ -126,6 +126,27 @@ pub const dirty_children: u8 = 2; // its children or text changed (re-flatten)
 
 pub const Error = error{ OutOfMemory, HierarchyRequest, NotFound, StaleNode };
 
+/// What a mutation was, for the observer (the bindings' MutationObserver and
+/// the renderer's marks).
+pub const Mutation = enum(u8) {
+    /// `node` was inserted into `target`.
+    added = 1,
+    /// `node` was removed from `target` (still alive during the call).
+    removed = 2,
+    /// `target`'s attribute `name` (an atom) changed.
+    attribute = 3,
+    /// `target`, a text or comment node, changed its data.
+    data = 4,
+};
+
+pub const Observer = struct {
+    ctx: *anyopaque,
+    notify: *const fn (ctx: *anyopaque, kind: Mutation, target: Index, node: Index, name: u32) void,
+    /// Only mutations of connected nodes (the renderer); a page observer
+    /// turns this off.
+    connected_only: bool = true,
+};
+
 pub const Store = struct {
     gpa: std.mem.Allocator,
     js: Js,
@@ -145,6 +166,7 @@ pub const Store = struct {
     dirty_list: std.ArrayList(Index) = .empty,
     /// Reused traversal stack.
     stack: std.ArrayList(Index) = .empty,
+    observer: ?Observer = null,
 
     /// `class_name`, `id_name`: the atoms of "class" and "id" (the store
     /// takes a reference to each).
@@ -396,6 +418,11 @@ pub const Store = struct {
         return copy;
     }
 
+    /// Another document (DOMParser): a root that isn't connected.
+    pub fn createDocumentNode(s: *Store) Error!Index {
+        return s.alloc(.document, 0);
+    }
+
     pub fn createFragment(s: *Store) Error!Index {
         return s.alloc(.fragment, 0);
     }
@@ -516,6 +543,7 @@ pub const Store = struct {
         if (p.connected and !c.connected) s.setConnected(child, true);
         s.markDirty(parent, dirty_children);
         s.markDirty(child, dirty_attrs);
+        s.observe(.added, parent, child, 0);
     }
 
     /// Takes a node out of its parent. `may_free`: free the subtree when
@@ -534,8 +562,12 @@ pub const Store = struct {
             while (idx != none) : (idx = s.get(idx).parent) s.get(idx).wrapped -= c.wrapped;
         }
         s.markDirty(parent, dirty_children);
+        const was_connected = c.connected;
         if (c.connected) s.setConnected(child, false);
-        if (may_free and c.wrapped == 0) s.freeTree(child);
+        // The observer sees the removal while the node is alive (and while
+        // the parent still counts as connected for connected_only).
+        if (s.observer) |o| if (!o.connected_only or was_connected) o.notify(o.ctx, .removed, parent, child, 0);
+        if (may_free and s.get(child).wrapped == 0 and s.get(child).parent == none) s.freeTree(child);
     }
 
     /// Marks a subtree (dis)connected; the store takes or queues the release
@@ -585,6 +617,7 @@ pub const Store = struct {
         n.data = data.*;
         n.has_data = true;
         if (n.parent != none) s.markDirty(n.parent, dirty_children);
+        s.observe(.data, idx, n.parent, 0);
     }
 
     pub fn dataOf(s: *Store, idx: Index) ?*const JsVal {
@@ -648,6 +681,7 @@ pub const Store = struct {
             try s.updateIdClasses(idx, name, value);
         }
         s.markDirty(idx, dirty_attrs);
+        s.observe(.attribute, idx, none, name);
     }
 
     /// Removes an attribute; true if it was there.
@@ -655,7 +689,9 @@ pub const Store = struct {
         const n = s.get(idx);
         const i = s.findAttr(idx, name) orelse return false;
         const a = s.attrAt(idx, i).?;
-        s.js.freeAtom(s.js.ctx, a.name);
+        // The name atom lives until the observer has seen it.
+        const name_held = a.name;
+        defer s.js.freeAtom(s.js.ctx, name_held);
         s.js.free(s.js.ctx, &a.value);
         // Keep the order: shift the later ones down.
         var j = i;
@@ -663,11 +699,18 @@ pub const Store = struct {
         n.attr_len -= 1;
         s.updateIdClasses(idx, name, null) catch unreachable; // removing allocates nothing
         s.markDirty(idx, dirty_attrs);
+        s.observe(.attribute, idx, none, name);
         return true;
     }
 
     // -----------------------------------------------------------------
     // Renderer marks
+
+    fn observe(s: *Store, kind: Mutation, target: Index, node: Index, name: u32) void {
+        const o = s.observer orelse return;
+        if (o.connected_only and !s.get(target).connected) return;
+        o.notify(o.ctx, kind, target, node, name);
+    }
 
     pub fn markDirty(s: *Store, idx: Index, what: u8) void {
         const n = s.get(idx);

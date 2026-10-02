@@ -37,6 +37,7 @@ typedef struct {
     void (*free_utf8)(void *ctx, const uint8_t *p);
     const uint8_t *(*atom_latin1)(void *ctx, uint32_t atom, size_t *len);
     const uint8_t *(*atom_utf8)(void *ctx, uint32_t atom, size_t *len);
+    void (*mutation)(void *ctx, uint8_t kind, Index target, Index node, uint32_t name);
 } Host;
 
 typedef struct Selector Selector;
@@ -81,6 +82,11 @@ extern Index nui_dom_parse_fragment(Dom *d, const uint8_t *bytes, size_t len, in
 extern Index nui_dom_child_named(Dom *d, Index parent, uint32_t name);
 extern bool nui_dom_foreign(Dom *d, Index idx);
 extern void nui_dom_set_foreign(Dom *d, Index idx, bool foreign);
+extern void nui_dom_observe(Dom *d, bool on, bool connected_only);
+extern Index nui_dom_create_document(Dom *d);
+extern int nui_dom_keep_selector(Dom *d, const uint8_t *bytes, size_t len);
+extern bool nui_dom_match_kept(Dom *d, Index idx, uint32_t id);
+extern bool nui_dom_class_style_only(Dom *d, Index idx, bool allow_style, const JSValue **cls, const JSValue **style);
 
 enum { K_ELEMENT = 1, K_TEXT = 3, K_COMMENT = 8, K_DOCUMENT = 9, K_FRAGMENT = 11 };
 enum { P_NODE, P_CHARDATA, P_TEXT, P_COMMENT, P_ELEMENT, P_HTML, P_FRAGMENT, P_DOCUMENT, P_COUNT };
@@ -93,6 +99,11 @@ struct DomCtx {
     JSValue protos[P_COUNT];
     JSValue ctors[P_COUNT];
     JSAtom a_class, a_id, a_html, a_head, a_body, a_title;
+    // Prototypes for elements by tag name (an object: tag → prototype), for
+    // other tags, and for SVG/MathML elements; set by the JS side.
+    JSValue tag_protos, element_proto, foreign_proto;
+    // The mutation hook (the JS side's observers), or undefined.
+    JSValue hook;
 };
 
 static JSClassID node_class_id;
@@ -170,6 +181,17 @@ static void node_finalizer(JSRuntime *rt, JSValueConst val) {
 
 static JSClassDef node_class = { "Node", .finalizer = node_finalizer };
 
+// An element's prototype: by tag, else the default (new reference).
+static JSValue element_proto(JSContext *ctx, DomCtx *dc, Index idx) {
+    if (nui_dom_foreign(dc->dom, idx) && JS_IsObject(dc->foreign_proto)) return JS_DupValue(ctx, dc->foreign_proto);
+    if (JS_IsObject(dc->tag_protos)) {
+        JSValue p = JS_GetProperty(ctx, dc->tag_protos, nui_dom_name(dc->dom, idx));
+        if (JS_IsObject(p)) return p;
+        JS_FreeValue(ctx, p);
+    }
+    return JS_DupValue(ctx, JS_IsObject(dc->element_proto) ? dc->element_proto : dc->protos[P_HTML]);
+}
+
 static int proto_for(DomCtx *dc, Index idx) {
     switch (nui_dom_kind(dc->dom, idx)) {
     case K_ELEMENT: return P_HTML;
@@ -186,7 +208,15 @@ static JSValue wrap(JSContext *ctx, DomCtx *dc, Index idx) {
     if (!idx) return JS_NULL;
     const JSValue *w = nui_dom_wrapper(dc->dom, idx);
     if (w) return JS_DupValue(ctx, *w);
-    JSValue obj = JS_NewObjectProtoClass(ctx, dc->protos[proto_for(dc, idx)], node_class_id);
+    int which = proto_for(dc, idx);
+    JSValue obj;
+    if (which == P_HTML) {
+        JSValue proto = element_proto(ctx, dc, idx);
+        obj = JS_NewObjectProtoClass(ctx, proto, node_class_id);
+        JS_FreeValue(ctx, proto);
+    } else {
+        obj = JS_NewObjectProtoClass(ctx, dc->protos[which], node_class_id);
+    }
     if (JS_IsException(obj)) return obj;
     JS_SetOpaque(obj, (void *)(uintptr_t)idx);
     nui_dom_set_wrapper(dc->dom, idx, &obj);
@@ -548,8 +578,14 @@ static JSValue el_set_inner_html(JSContext *ctx, JSValueConst this_val, JSValueC
     const char *s = JS_ToCStringLen(ctx, &len, v);
     if (!s) return JS_EXCEPTION;
     nui_dom_remove_children(dc->dom, self);
-    int r = nui_dom_parse_html(dc->dom, self, (const uint8_t *)s, len);
+    // Into a fragment first: the observers see the top-level nodes inserted,
+    // not every node the markup makes.
+    int code = 0;
+    Index f = nui_dom_parse_fragment(dc->dom, (const uint8_t *)s, len, &code);
     JS_FreeCString(ctx, s);
+    if (!f) return throw_code(ctx, code);
+    int r = nui_dom_insert(dc->dom, self, f, 0);
+    nui_dom_drop_if_unused(dc->dom, f);
     return r ? throw_code(ctx, r) : JS_UNDEFINED;
 }
 
@@ -812,6 +848,151 @@ static JSValue doc_create_fragment(JSContext *ctx, JSValueConst this_val, int ar
     return n ? wrap(ctx, dc, n) : JS_ThrowOutOfMemory(ctx);
 }
 
+// --- The JS side's hooks (__nuiDom) -------------------------------------------------------
+
+static void h_mutation(void *c, uint8_t kind, Index target, Index node, uint32_t name) {
+    JSContext *ctx = c;
+    DomCtx *dc = dc_of(ctx);
+    if (!dc || dc->closing || !JS_IsFunction(ctx, dc->hook)) return;
+    JSValue args[4];
+    args[0] = JS_NewInt32(ctx, kind);
+    args[1] = wrap(ctx, dc, target);
+    args[2] = node ? wrap(ctx, dc, node) : JS_NULL;
+    args[3] = name ? JS_AtomToString(ctx, name) : JS_UNDEFINED;
+    JSValue hook = JS_DupValue(ctx, dc->hook);
+    JSValue r = JS_Call(ctx, hook, JS_UNDEFINED, 4, args);
+    JS_FreeValue(ctx, hook);
+    if (JS_IsException(r)) {
+        // An observer's error doesn't stop the mutation (as in browsers):
+        // it's reported when the page's console runs.
+        JSValue e = JS_GetException(ctx);
+        JS_FreeValue(ctx, e);
+    }
+    JS_FreeValue(ctx, r);
+    for (int i = 0; i < 4; i++) JS_FreeValue(ctx, args[i]);
+}
+
+// __nuiDom.setProto(tag, proto): "" for other tags, "#foreign" for SVG/MathML.
+static JSValue nd_set_proto(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    const char *tag = JS_ToCString(ctx, argv[0]);
+    if (!tag) return JS_EXCEPTION;
+    if (!*tag) { JS_FreeValue(ctx, dc->element_proto); dc->element_proto = JS_DupValue(ctx, argv[1]); }
+    else if (!strcmp(tag, "#foreign")) { JS_FreeValue(ctx, dc->foreign_proto); dc->foreign_proto = JS_DupValue(ctx, argv[1]); }
+    else {
+        if (!JS_IsObject(dc->tag_protos)) dc->tag_protos = JS_NewObjectProto(ctx, JS_NULL);
+        JS_SetPropertyStr(ctx, dc->tag_protos, tag, JS_DupValue(ctx, argv[1]));
+    }
+    JS_FreeCString(ctx, tag);
+    return JS_UNDEFINED;
+}
+
+// __nuiDom.observe(hook | null, connectedOnly)
+static JSValue nd_observe(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    JS_FreeValue(ctx, dc->hook);
+    dc->hook = JS_IsFunction(ctx, argv[0]) ? JS_DupValue(ctx, argv[0]) : JS_UNDEFINED;
+    nui_dom_observe(dc->dom, JS_IsFunction(ctx, dc->hook), argc > 1 ? JS_ToBool(ctx, argv[1]) : true);
+    return JS_UNDEFINED;
+}
+
+static JSValue nd_keep_selector(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    size_t len;
+    const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!s) return JS_EXCEPTION;
+    int id = nui_dom_keep_selector(dc->dom, (const uint8_t *)s, len);
+    JSValue r = id >= 0 ? JS_NewInt32(ctx, id) : id == -4 ? JS_ThrowSyntaxError(ctx, "'%s' is not a valid selector", s) : JS_ThrowOutOfMemory(ctx);
+    JS_FreeCString(ctx, s);
+    return r;
+}
+
+static JSValue nd_match_kept(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    Index idx = (Index)(uintptr_t)JS_GetOpaque(argv[0], node_class_id);
+    uint32_t id;
+    if (!idx || JS_ToUint32(ctx, &id, argv[1])) return JS_FALSE;
+    return JS_NewBool(ctx, nui_dom_match_kept(dc->dom, idx, id));
+}
+
+// __nuiDom.classStyle(el, allowStyle): null when the element has other
+// attributes, else [class or undefined, style or undefined].
+static JSValue nd_class_style(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    Index idx = arg_node(ctx, argv[0]);
+    if (!idx) return JS_EXCEPTION;
+    const JSValue *cls, *style;
+    if (!nui_dom_class_style_only(dc->dom, idx, argc > 1 && JS_ToBool(ctx, argv[1]), &cls, &style)) return JS_NULL;
+    JSValue arr = JS_NewArray(ctx);
+    JS_SetPropertyUint32(ctx, arr, 0, cls ? JS_DupValue(ctx, *cls) : JS_UNDEFINED);
+    JS_SetPropertyUint32(ctx, arr, 1, style ? JS_DupValue(ctx, *style) : JS_UNDEFINED);
+    return arr;
+}
+
+// __nuiDom.attrs(el): [name, value, name, value…] in order.
+static JSValue nd_attrs(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    Index idx = arg_node(ctx, argv[0]);
+    if (!idx) return JS_EXCEPTION;
+    JSValue arr = JS_NewArray(ctx);
+    size_t n = nui_dom_attr_count(dc->dom, idx);
+    for (size_t i = 0; i < n; i++) {
+        const JSValue *v;
+        uint32_t name = nui_dom_attr_at(dc->dom, idx, i, &v);
+        JS_SetPropertyUint32(ctx, arr, (uint32_t)(2 * i), JS_AtomToString(ctx, name));
+        JS_SetPropertyUint32(ctx, arr, (uint32_t)(2 * i + 1), JS_DupValue(ctx, *v));
+    }
+    return arr;
+}
+
+static JSValue nd_create_document(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    Index d = nui_dom_create_document(dc->dom);
+    return d ? wrap(ctx, dc, d) : JS_ThrowOutOfMemory(ctx);
+}
+
+static JSValue nd_set_foreign(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    Index idx = arg_node(ctx, argv[0]);
+    if (!idx) return JS_EXCEPTION;
+    // Only before the page has seen it (its prototype is chosen then).
+    nui_dom_set_foreign(dc->dom, idx, JS_ToBool(ctx, argv[1]));
+    return JS_UNDEFINED;
+}
+
+// __nuiDom.createElement(tag, foreign): an element with its prototype
+// chosen after its namespace (createElementNS).
+static JSValue nd_create_element(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    bool foreign = argc > 1 && JS_ToBool(ctx, argv[1]);
+    JSAtom a = foreign ? JS_ValueToAtom(ctx, argv[0]) : name_atom(ctx, argv[0]);
+    if (a == JS_ATOM_NULL) return JS_EXCEPTION;
+    Index n = nui_dom_create_element(dc->dom, a);
+    JS_FreeAtom(ctx, a);
+    if (!n) return JS_ThrowOutOfMemory(ctx);
+    nui_dom_set_foreign(dc->dom, n, foreign);
+    return wrap(ctx, dc, n);
+}
+
+static JSValue nd_is_foreign(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    Index idx = (Index)(uintptr_t)JS_GetOpaque(argv[0], node_class_id);
+    return JS_NewBool(ctx, idx && nui_dom_foreign(dc->dom, idx));
+}
+
+static const JSCFunctionListEntry nui_dom_funcs[] = {
+    JS_CFUNC_DEF("setProto", 2, nd_set_proto),
+    JS_CFUNC_DEF("observe", 2, nd_observe),
+    JS_CFUNC_DEF("keepSelector", 1, nd_keep_selector),
+    JS_CFUNC_DEF("matchKept", 2, nd_match_kept),
+    JS_CFUNC_DEF("classStyle", 2, nd_class_style),
+    JS_CFUNC_DEF("attrs", 1, nd_attrs),
+    JS_CFUNC_DEF("createDocument", 0, nd_create_document),
+    JS_CFUNC_DEF("createElement", 2, nd_create_element),
+    JS_CFUNC_DEF("setForeign", 2, nd_set_foreign),
+    JS_CFUNC_DEF("isForeign", 1, nd_is_foreign),
+};
+
 // --- Setup ----------------------------------------------------------------------------
 
 static const JSCFunctionListEntry node_funcs[] = {
@@ -923,7 +1104,8 @@ DomCtx *nui_dom_install(JSContext *ctx) {
     dc->ctx = ctx;
     for (int i = 0; i < P_COUNT; i++) dc->protos[i] = dc->ctors[i] = JS_UNDEFINED;
     dc->host = (Host){ ctx, h_dup, h_free, h_dup_atom, h_free_atom, h_new_string, h_new_atom, h_value_atom, h_tokens,
-                       h_latin1, h_to_utf8, h_free_utf8, h_atom_latin1, h_atom_utf8 };
+                       h_latin1, h_to_utf8, h_free_utf8, h_atom_latin1, h_atom_utf8, h_mutation };
+    dc->tag_protos = dc->element_proto = dc->foreign_proto = dc->hook = JS_UNDEFINED;
     dc->dom = nui_dom_new(&dc->host);
     if (!dc->dom) { js_free(ctx, dc); return NULL; }
     JS_SetRuntimeOpaque(rt, dc);
@@ -949,6 +1131,9 @@ DomCtx *nui_dom_install(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
     static const char *names[P_COUNT] = { "Node", "CharacterData", "Text", "Comment", "Element", "HTMLElement", "DocumentFragment", "Document" };
     for (int i = 0; i < P_COUNT; i++) JS_SetPropertyStr(ctx, global, names[i], JS_DupValue(ctx, dc->ctors[i]));
+    JSValue nd = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, nd, nui_dom_funcs, COUNT(nui_dom_funcs));
+    JS_SetPropertyStr(ctx, global, "__nuiDom", nd);
     JS_FreeValue(ctx, global);
     return dc;
 }
@@ -960,6 +1145,12 @@ JSValue nui_dom_document_object(DomCtx *dc) {
 void nui_dom_uninstall(DomCtx *dc) {
     JSContext *ctx = dc->ctx;
     dc->closing = true;
+    if (dc->dom) nui_dom_observe(dc->dom, false, true);
+    JS_FreeValue(ctx, dc->hook);
+    JS_FreeValue(ctx, dc->tag_protos);
+    JS_FreeValue(ctx, dc->element_proto);
+    JS_FreeValue(ctx, dc->foreign_proto);
+    dc->hook = dc->tag_protos = dc->element_proto = dc->foreign_proto = JS_UNDEFINED;
     if (dc->dom) nui_dom_free(dc->dom); // drops its wrapper references (finalizers see `closing`)
     dc->dom = NULL;
     for (int i = 0; i < P_COUNT; i++) {

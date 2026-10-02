@@ -32,6 +32,8 @@ pub const Host = extern struct {
     free_utf8: *const fn (ctx: *anyopaque, p: [*]const u8) callconv(.c) void,
     atom_latin1: *const fn (ctx: *anyopaque, atom: u32, len: *usize) callconv(.c) ?[*]const u8,
     atom_utf8: *const fn (ctx: *anyopaque, atom: u32, len: *usize) callconv(.c) ?[*]const u8,
+    /// A mutation (store.Mutation), for the bindings' observers.
+    mutation: *const fn (ctx: *anyopaque, kind: u8, target: Index, node: Index, name: u32) callconv(.c) void,
 };
 
 /// One window's DOM: the store, its parser, compiled selectors (by text) and
@@ -41,6 +43,10 @@ pub const Dom = struct {
     parser: html.Parser,
     host: Host,
     selectors: std.StringHashMapUnmanaged(*sel.Selector) = .empty,
+    /// Selectors compiled for good (the runtime's style rules), by id.
+    kept: std.ArrayList(*sel.Selector) = .empty,
+    /// The atom of "style" (held).
+    style_name: u32 = 0,
     serializer: ser.Serializer = undefined,
 
     fn selHost(d: *Dom) sel.Host {
@@ -152,6 +158,7 @@ export fn nui_dom_new(host: *const Host) ?*Dom {
         gpa.destroy(d);
         return null;
     };
+    d.style_name = host.new_atom(host.ctx, "style", 5);
     d.serializer = .{ .store = &d.store, .gpa = gpa, .host = .{ .ctx = d, .atomLatin1 = fwdAtomLatin1, .atomUtf8 = fwdAtomUtf8, .strings = d.selHost() } };
     d.parser = .{
         .store = &d.store,
@@ -170,7 +177,16 @@ fn clearSelectors(d: *Dom) void {
     d.selectors.clearAndFree(gpa);
 }
 
+fn notify(ctx: *anyopaque, kind: st.Mutation, target: Index, node: Index, name: u32) void {
+    const h = hostOf(ctx);
+    h.mutation(h.ctx, @intFromEnum(kind), target, node, name);
+}
+
 export fn nui_dom_free(d: *Dom) void {
+    d.store.observer = null;
+    if (d.style_name != 0) d.host.free_atom(d.host.ctx, d.style_name);
+    for (d.kept.items) |k| sel.destroy(gpa, k);
+    d.kept.deinit(gpa);
     clearSelectors(d);
     d.serializer.deinit();
     d.parser.deinit();
@@ -409,4 +425,50 @@ export fn nui_dom_foreign(d: *Dom, idx: Index) bool {
 }
 export fn nui_dom_set_foreign(d: *Dom, idx: Index, foreign: bool) void {
     d.store.get(idx).foreign = foreign;
+}
+
+// --- Observing, documents, the renderer's helpers ----------------------------
+
+/// Mutations go to the host's `mutation` (off: none); connected_only: only
+/// those of nodes in the document.
+export fn nui_dom_observe(d: *Dom, on: bool, connected_only: bool) void {
+    d.store.observer = if (on) .{ .ctx = d, .notify = notify, .connected_only = connected_only } else null;
+}
+
+/// A new, empty document (DOMParser, createHTMLDocument): not connected.
+export fn nui_dom_create_document(d: *Dom) Index {
+    return d.store.createDocumentNode() catch none;
+}
+
+/// A selector compiled for good (its id, >= 0), or a negative code.
+export fn nui_dom_keep_selector(d: *Dom, bytes: [*]const u8, len: usize) c_int {
+    const compiled = sel.compile(gpa, d.selHost(), bytes[0..len]) catch |e| return if (e == error.Syntax) code_syntax else code_oom;
+    d.kept.append(gpa, compiled) catch {
+        sel.destroy(gpa, compiled);
+        return code_oom;
+    };
+    return @intCast(d.kept.items.len - 1);
+}
+
+export fn nui_dom_match_kept(d: *Dom, idx: Index, id: u32) bool {
+    if (id >= d.kept.items.len) return false;
+    const m = d.matcher();
+    return m.matches(idx, d.kept.items[id]);
+}
+
+/// For the renderer's style sharing: whether the element's only attributes
+/// are class (and style, when `allow_style`); its class value in *class
+/// (borrowed, or null when it has none).
+export fn nui_dom_class_style_only(d: *Dom, idx: Index, allow_style: bool, class: *?*const JsVal, style: *?*const JsVal) bool {
+    class.* = null;
+    style.* = null;
+    var i: usize = 0;
+    while (d.store.attrAt(idx, i)) |a| : (i += 1) {
+        if (a.name == d.store.class_name) {
+            class.* = &a.value;
+        } else if (allow_style and a.name == d.style_name) {
+            style.* = &a.value;
+        } else return false;
+    }
+    return true;
 }
