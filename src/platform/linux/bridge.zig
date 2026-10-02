@@ -244,9 +244,21 @@ fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
         }
         App.windows_mutex.unlock();
         // Outside the lock: the page may open or close windows.
-        if (comptime build_opts.native_ui) for (engines[0..n_engines]) |e| @as(*native.Engine, @ptrCast(@alignCast(e))).evalScript(task.script);
+        // Each still open: a page's script may close another window.
+        if (comptime build_opts.native_ui) for (engines[0..n_engines]) |e| {
+            if (engineListed(e)) @as(*native.Engine, @ptrCast(@alignCast(e))).evalScript(task.script);
+        };
     }
     return 0; // one-shot
+}
+
+/// Whether an open window has this native engine.
+fn engineListed(e: *anyopaque) bool {
+    App.ensureWindowsMutex();
+    App.windows_mutex.lock();
+    defer App.windows_mutex.unlock();
+    for (App.windows_list.items) |win| if (win.handle.native == e) return true;
+    return false;
 }
 
 pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {

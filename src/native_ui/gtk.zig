@@ -33,7 +33,7 @@ const GdkRectangle = extern struct { x: c_int, y: c_int, width: c_int, height: c
 const GtkCssProvider = opaque {};
 
 extern fn gtk_drawing_area_new() *Widget;
-extern fn gtk_drawing_area_set_draw_func(area: *Widget, func: *const fn (*Widget, *cairo_t, c_int, c_int, ?*anyopaque) callconv(.c) void, data: ?*anyopaque, destroy: ?*anyopaque) void;
+extern fn gtk_drawing_area_set_draw_func(area: *Widget, func: ?*const fn (*Widget, *cairo_t, c_int, c_int, ?*anyopaque) callconv(.c) void, data: ?*anyopaque, destroy: ?*anyopaque) void;
 extern fn gtk_overlay_new() *Widget;
 extern fn gtk_overlay_set_child(overlay: *Widget, child: *Widget) void;
 extern fn gtk_overlay_add_overlay(overlay: *Widget, child: *Widget) void;
@@ -102,6 +102,8 @@ extern fn g_object_set_data(obj: *anyopaque, key: [*:0]const u8, data: ?*anyopaq
 extern fn g_object_get_data(obj: *anyopaque, key: [*:0]const u8) ?*anyopaque;
 extern fn g_object_get(obj: *anyopaque, first: [*:0]const u8, ...) void;
 extern fn g_object_unref(obj: *anyopaque) void;
+extern fn g_signal_handlers_disconnect_matched(instance: *anyopaque, mask: c_int, signal_id: c_uint, detail: c_uint, closure: ?*anyopaque, func: ?*anyopaque, data: ?*anyopaque) c_uint;
+extern fn gtk_style_context_remove_provider_for_display(display: *anyopaque, provider: *GtkCssProvider) void;
 extern fn g_free(p: ?*anyopaque) void;
 extern fn g_timeout_add(ms: c_uint, func: *const fn (?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) c_uint;
 extern fn g_getenv(name: [*:0]const u8) ?[*:0]const u8;
@@ -242,6 +244,11 @@ pub const Surface = struct {
     css_text: std.ArrayList(u8) = .empty,
     invoke_fn: Invoke,
     invoke_ctx: ?*anyopaque,
+    /// The area's event controllers (their handlers go in `destroy`).
+    controllers: [4]*anyopaque = undefined,
+    /// Names the surface for its timers (`surfaces`): one that fires after
+    /// the window closed finds nothing.
+    token: u64 = 0,
     pointer: [2]f32 = .{ 0, 0 },
     hovered: i64 = 0,
     updating: bool = false,
@@ -306,9 +313,62 @@ pub const Surface = struct {
         const keys = gtk_event_controller_key_new();
         _ = g_signal_connect_data(keys, "key-pressed", @ptrCast(&onKey), s, null, 0);
         gtk_widget_add_controller(area, keys);
+        s.controllers = .{ click, scroll, motion, keys };
 
+        s.token = next_token;
+        next_token += 1;
+        surfaces.put(gpa, s.token, s) catch |err| {
+            s.engine.destroy();
+            return err;
+        };
         s.engine.boot(s.dark, false);
         return s;
+    }
+
+    /// The window is closing: the page, its fields, pictures and style go.
+    /// GTK destroys the widgets with the window right after; nothing of
+    /// theirs reaches the surface from here on (timers find no token).
+    pub fn destroy(s: *Surface) void {
+        _ = surfaces.remove(s.token);
+        gtk_drawing_area_set_draw_func(s.area, null, null, null);
+        disconnect(s, s.area);
+        disconnect(s, s.overlay);
+        for (s.controllers) |c| disconnect(s, c);
+        // A field emits signals while it goes (focus, text): not to us.
+        var fit = s.fields.iterator();
+        while (fit.next()) |e| disconnectField(s, e.key_ptr.*, e.value_ptr.*);
+        // The engine: freeing its tree calls `removed` for every node,
+        // which drops the fields, pictures and canvases.
+        s.engine.destroy();
+        var rest = s.fields.valueIterator();
+        while (rest.next()) |w| gtk_overlay_remove_overlay(s.overlay, w.*);
+        s.fields.deinit();
+        var imgs = s.images.valueIterator();
+        while (imgs.next()) |img| img.deinit();
+        s.images.deinit();
+        var cvs = s.canvases.valueIterator();
+        while (cvs.next()) |cv| cairo_surface_destroy(cv.surf);
+        s.canvases.deinit();
+        gtk_style_context_remove_provider_for_display(gtk_widget_get_display(s.area), s.css);
+        g_object_unref(s.css);
+        s.css_text.deinit(s.gpa);
+        if (s.sans) |font| pango_font_description_free(font);
+        if (s.mono) |font| pango_font_description_free(font);
+        s.gpa.destroy(s);
+    }
+
+    /// The page's JS is running (a command it called closes its window):
+    /// the close waits for the call to end.
+    pub fn busy(engine: *anyopaque) bool {
+        const e: *Engine = @ptrCast(@alignCast(engine));
+        return e.in_call > 0;
+    }
+
+    /// `destroy` for the surface whose engine this is (WindowHandle.native),
+    /// if it's still there.
+    pub fn destroyFor(engine: *anyopaque) void {
+        var it = surfaces.valueIterator();
+        while (it.next()) |sp| if (@as(*anyopaque, @ptrCast(sp.*.engine)) == engine) return sp.*.destroy();
     }
 
     fn prefersDark() bool {
@@ -319,6 +379,22 @@ pub const Surface = struct {
         return dark != 0;
     }
 };
+
+/// Live surfaces by token (the UI thread's only).
+var surfaces: std.AutoHashMapUnmanaged(u64, *Surface) = .empty;
+var next_token: u64 = 1;
+
+const G_SIGNAL_MATCH_DATA: c_int = 1 << 4;
+
+fn disconnect(s: *Surface, instance: *anyopaque) void {
+    _ = g_signal_handlers_disconnect_matched(instance, G_SIGNAL_MATCH_DATA, 0, 0, null, null, s);
+}
+
+fn disconnectField(s: *Surface, id: i64, w: *Widget) void {
+    disconnect(s, w);
+    const n = s.engine.tree.get(id) orelse return;
+    if (n.kind == .textarea) disconnect(s, gtk_text_view_get_buffer(w));
+}
 
 fn surfaceOf(p: ?*anyopaque) *Surface {
     return @ptrCast(@alignCast(p.?));
@@ -337,20 +413,21 @@ fn invoke(ctx: *anyopaque, engine: *Engine, call_id: u32, cmd: []const u8, args_
     s.invoke_fn(s.invoke_ctx, engine, call_id, cmd, args_json);
 }
 
-const TimerData = struct { engine: *Engine, id: u32 };
+const TimerData = struct { token: u64, id: u32 };
 
-fn addTimer(_: *anyopaque, engine: *Engine, id: u32, ms: u32) void {
+fn addTimer(ctx: *anyopaque, _: *Engine, id: u32, ms: u32) void {
     const d = std.heap.smp_allocator.create(TimerData) catch return;
-    d.* = .{ .engine = engine, .id = id };
+    d.* = .{ .token = surfaceOf(ctx).token, .id = id };
     _ = g_timeout_add(ms, onTimer, d);
 }
 
 fn onTimer(p: ?*anyopaque) callconv(.c) c_int {
     const d: *TimerData = @ptrCast(@alignCast(p.?));
-    const engine = d.engine;
+    const token = d.token;
     const id = d.id;
     std.heap.smp_allocator.destroy(d);
-    engine.timerFired(id);
+    const s = surfaces.get(token) orelse return 0; // the window is gone
+    s.engine.timerFired(id);
     return 0;
 }
 

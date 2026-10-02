@@ -139,6 +139,7 @@ pub fn focusWindow(handle: WindowHandle) void {
 
 pub fn destroyWindow(handle: WindowHandle) void {
     if (handle.web_view) |v| isolation.forget(@intFromPtr(v));
+    if (comptime build_opts.native_ui) if (handle.native) |e| native_gtk.Surface.destroyFor(e);
     handle.gtk_window.destroy();
 }
 
@@ -319,6 +320,13 @@ pub fn WindowCreator(
                 window.as(gtk.Widget).setVisible(0);
                 return 1;
             }
+            if (comptime build_opts.native_ui) if (win.handle.native) |e| {
+                // Not from inside the page's own call: again once it ended.
+                if (native_gtk.Surface.busy(e)) {
+                    postCloseWindow(win.handle);
+                    return 1;
+                }
+            };
             overlay.forget(window);
             if (win.handle.web_view) |v| isolation.forget(@intFromPtr(v));
 
@@ -340,6 +348,10 @@ pub fn WindowCreator(
             if (App.main_window == window) {
                 App.main_window = null;
             }
+
+            // The native page goes with its window (its timers too), once
+            // it's off the list that events and answers are sent through.
+            if (comptime build_opts.native_ui) if (win.handle.native) |e| native_gtk.Surface.destroyFor(e);
 
             std.heap.smp_allocator.free(win.label);
             std.heap.smp_allocator.free(win.options.title);
