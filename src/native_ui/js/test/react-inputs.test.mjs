@@ -4,8 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 
-const dir = new URL("./react-inputs/", import.meta.url).pathname;
+// A path, not URL.pathname ("/C:/…%20…" on Windows).
+const dir = fileURLToPath(new URL("./react-inputs/", import.meta.url));
 const nodes = new Map();
 const host = {
   log: (lvl, msg) => { if (lvl >= 2) console.log(msg); },

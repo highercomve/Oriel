@@ -3,10 +3,12 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
 
 const app = esbuild.buildSync({
-  entryPoints: [new URL("./react-real/app.jsx", import.meta.url).pathname],
+  // A path, not URL.pathname ("/C:/…%20…" on Windows).
+  entryPoints: [fileURLToPath(new URL("./react-real/app.jsx", import.meta.url))],
   bundle: true, write: false, format: "iife", jsx: "automatic", logLevel: "error",
   define: { "process.env.NODE_ENV": '"production"' },
 }).outputFiles[0].text;
@@ -51,4 +53,11 @@ const box = [...nodes].filter(([, k]) => k === "view").map(([id]) => id).find((i
 });
 await settle();
 assert.ok(box !== undefined && ctx.__state.checked, "clicking the checkbox reaches onChange");
+
+const pick = [...nodes].find(([, k]) => k === "select")?.[0];
+assert.ok(pick !== undefined, "the select is a native field");
+assert.equal(vm.runInContext('document.getElementById("pick").value', ctx), "b", "a controlled select's value is its selected option's");
+ctx.__oriel.event(pick, "change", "c");
+await settle();
+assert.equal(ctx.__state.pick, "c", "picking an option reaches onChange with its value");
 console.log("react (real): ok");
