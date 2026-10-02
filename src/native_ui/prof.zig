@@ -18,6 +18,16 @@ const log = std.log.scoped(.native_ui);
 /// A monotonic clock in ms (0 when profiling is off).
 pub inline fn now() f64 {
     if (comptime !enabled) return 0;
+    if (comptime @import("builtin").os.tag == .windows) {
+        // No clock_gettime: the performance counter.
+        const qpc = @extern(*const fn (*i64) callconv(.winapi) c_int, .{ .name = "QueryPerformanceCounter", .library_name = "kernel32" });
+        const qpf = @extern(*const fn (*i64) callconv(.winapi) c_int, .{ .name = "QueryPerformanceFrequency", .library_name = "kernel32" });
+        var t: i64 = 0;
+        var f: i64 = 1;
+        _ = qpc(&t);
+        _ = qpf(&f);
+        return @as(f64, @floatFromInt(t)) * 1e3 / @as(f64, @floatFromInt(@max(1, f)));
+    }
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     return @as(f64, @floatFromInt(ts.sec)) * 1e3 + @as(f64, @floatFromInt(ts.nsec)) / 1e6;
