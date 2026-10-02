@@ -156,6 +156,13 @@ extern fn CTFramesetterCreateWithAttributedString(s: CFAttributedStringRef) ?CTF
 extern fn CTFramesetterSuggestFrameSizeWithConstraints(fs: CTFramesetterRef, range: CFRange, attrs: ?*anyopaque, constraints: CGSize, fit: ?*CFRange) CGSize;
 extern fn CTFramesetterCreateFrame(fs: CTFramesetterRef, range: CFRange, path: CGPathRef, attrs: ?*anyopaque) ?CTFrameRef;
 extern fn CTFrameDraw(frame: CTFrameRef, c: CGContextRef) void;
+extern fn CTFrameGetLines(frame: CTFrameRef) CFTypeRef;
+extern fn CTFrameGetLineOrigins(frame: CTFrameRef, range: CFRange, origins: [*]CGPoint) void;
+extern fn CTLineGetStringRange(line: CFTypeRef) CFRange;
+extern fn CTLineGetOffsetForStringIndex(line: CFTypeRef, index: c_long, secondary: ?*CGFloat) CGFloat;
+extern fn CTLineGetTrailingWhitespaceWidth(line: CFTypeRef) f64;
+extern fn CFArrayGetCount(a: CFTypeRef) c_long;
+extern fn CFArrayGetValueAtIndex(a: CFTypeRef, i: c_long) CFTypeRef;
 const CTParagraphStyleSetting = extern struct { spec: u32, size: usize, value: *const anyopaque };
 extern fn CTParagraphStyleCreate(settings: [*]const CTParagraphStyleSetting, count: usize) ?CTParagraphStyleRef;
 const kCTParagraphStyleSpecifierAlignment: u32 = 0;
@@ -381,7 +388,61 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     CGContextTranslateCTM(cg, c.x, c.y + h);
     CGContextScaleCTM(cg, 1, -1);
     CGContextSetTextMatrix(cg, .{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 });
+    paintRunBackgrounds(cg, n, frame);
     CTFrameDraw(frame, cg);
+}
+
+/// A run's background (an inline highlight, a <code> amid the text): a box
+/// under its glyphs on each line it spans, as a browser paints an inline
+/// box's background. CoreText draws no backgrounds; the frame's lines give
+/// the positions (in the flipped CoreText space paintText set up).
+fn paintRunBackgrounds(cg: CGContextRef, n: *Node, frame: CTFrameRef) void {
+    const runs = n.props.runs orelse return;
+    var any = false;
+    for (runs) |r| if (r.bg != null) {
+        any = true;
+        break;
+    };
+    if (!any) return;
+    const lines = CTFrameGetLines(frame);
+    const count = CFArrayGetCount(lines);
+    if (count <= 0) return;
+    var origins_buf: [256]CGPoint = undefined;
+    const shown: usize = @intCast(@min(count, origins_buf.len));
+    CTFrameGetLineOrigins(frame, .{ .location = 0, .length = @intCast(shown) }, &origins_buf);
+    // Each run's range in the string (UTF-16 units), as attributed() built it.
+    var start: c_long = 0;
+    for (runs) |r| {
+        if (r.t.len == 0) continue;
+        const str = CFStringCreateWithBytes(null, r.t.ptr, @intCast(r.t.len), kCFStringEncodingUTF8, 0) orelse continue;
+        const len = CFStringGetLength(str);
+        CFRelease(str);
+        defer start += len;
+        const bg = r.bg orelse continue;
+        if (bg[3] <= 0) continue;
+        setFill(cg, bg);
+        const end = start + len;
+        for (0..shown) |i| {
+            const line = CFArrayGetValueAtIndex(lines, @intCast(i));
+            const lr = CTLineGetStringRange(line);
+            const a = @max(start, lr.location);
+            const b = @min(end, lr.location + lr.length);
+            if (a >= b) continue;
+            var ascent: CGFloat = 0;
+            var descent: CGFloat = 0;
+            const width = CTLineGetTypographicBounds(line, &ascent, &descent, null);
+            // Not under the space a line wraps after (a browser paints none there).
+            const text_end: CGFloat = @floatCast(width - CTLineGetTrailingWhitespaceWidth(line));
+            const x0 = @min(CTLineGetOffsetForStringIndex(line, a, null), text_end);
+            const x1 = @min(CTLineGetOffsetForStringIndex(line, b, null), text_end);
+            if (x1 <= x0) continue;
+            const o = origins_buf[i];
+            CGContextFillRect(cg, .{
+                .origin = .{ .x = o.x + x0, .y = o.y - descent },
+                .size = .{ .width = x1 - x0, .height = ascent + descent },
+            });
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
