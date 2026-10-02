@@ -213,6 +213,11 @@ export fn nui_dom_drop_if_unused(d: *Dom, idx: Index) void {
     d.store.dropIfUnused(idx);
 }
 
+/// The page listens for clicks on it (Node.listens).
+export fn nui_dom_set_listens(d: *Dom, idx: Index) void {
+    if (idx != st.none and idx < d.store.used) d.store.get(idx).listens = true;
+}
+
 /// Whether `idx` is a node now (an index from the page may be anything).
 export fn nui_dom_alive(d: *Dom, idx: Index) bool {
     return idx != st.none and idx < d.store.used and d.store.get(idx).kind != .free;
