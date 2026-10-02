@@ -215,6 +215,29 @@ fn numAt(op: []const std.json.Value, i: usize) f32 {
     };
 }
 
+/// `x` as an integer of type T, saturated to its range (NaN: 0). Values
+/// from the page (a font size, a gradient id) can be anything;
+/// @intFromFloat would panic on one out of range.
+pub fn sat(comptime T: type, x: anytype) T {
+    const f: f64 = switch (@typeInfo(@TypeOf(x))) {
+        .float, .comptime_float => @floatCast(x),
+        else => @floatFromInt(x),
+    };
+    if (std.math.isNan(f)) return 0;
+    const lo: f64 = @floatFromInt(std.math.minInt(T));
+    const hi: f64 = @floatFromInt(std.math.maxInt(T));
+    if (f <= lo) return std.math.minInt(T);
+    if (f >= hi) return std.math.maxInt(T);
+    return @intFromFloat(f);
+}
+
+test "sat clamps page values" {
+    try std.testing.expectEqual(@as(i32, std.math.maxInt(i32)), sat(i32, 3e12));
+    try std.testing.expectEqual(@as(i32, std.math.minInt(i32)), sat(i32, -1e30));
+    try std.testing.expectEqual(@as(i32, 0), sat(i32, std.math.nan(f64)));
+    try std.testing.expectEqual(@as(i64, 7), sat(i64, 7.9));
+}
+
 /// A paint: [r,g,b,a] (or [r,g,b]) — or ["g", id] for a gradient.
 fn paintAt(v: std.json.Value) ?CanvasPaint {
     if (v != .array) return null;
@@ -222,7 +245,7 @@ fn paintAt(v: std.json.Value) ?CanvasPaint {
     if (a.len == 2 and a[0] == .string and std.mem.eql(u8, a[0].string, "g")) {
         const id = switch (a[1]) {
             .integer => |x| x,
-            .float => |x| @as(i64, @intFromFloat(x)),
+            .float => |x| sat(i64, x),
             else => return null,
         };
         if (id < 0 or id > std.math.maxInt(u16)) return null;
@@ -235,7 +258,7 @@ fn paintAt(v: std.json.Value) ?CanvasPaint {
 fn gradId(v: std.json.Value) u16 {
     const x = switch (v) {
         .integer => |i| i,
-        .float => |f| @as(i64, @intFromFloat(f)),
+        .float => |f| sat(i64, f),
         else => 0,
     };
     return @intCast(@max(0, @min(x, std.math.maxInt(u16))));
@@ -853,6 +876,12 @@ pub const Tree = struct {
         if (yg.YGNodeHasMeasureFunc(n.yn)) yg.YGNodeMarkDirty(n.yn);
     }
 
+    fn isAncestorOrSelf(k: *const Node, n: *const Node) bool {
+        var p: ?*const Node = n;
+        while (p) |x| : (p = x.parent) if (x == k) return true;
+        return false;
+    }
+
     fn setKids(t: *Tree, n: *Node, ids: []const std.json.Value) !void {
         try n.kids.ensureTotalCapacity(t.gpa, ids.len);
         yg.YGNodeRemoveAllChildren(n.yn);
@@ -860,6 +889,9 @@ pub const Tree = struct {
         n.kids.clearRetainingCapacity();
         for (ids) |v| {
             const k = t.nodes.get(num(v) orelse continue) orelse continue;
+            // `n` itself or one of its ancestors as a child would make a
+            // cycle (layout and paint would recurse forever).
+            if (isAncestorOrSelf(k, n)) continue;
             if (k.parent) |old| {
                 for (old.kids.items, 0..) |x, i| if (x == k) {
                     _ = old.kids.orderedRemove(i);
@@ -1555,6 +1587,19 @@ test "equal unwrapped text metrics reuse frames but invalidate future wrapping" 
     t.layout();
     try std.testing.expect(try t.updateText(1, "wide text"));
     try std.testing.expect(t.dirty); // changed intrinsic width
+}
+
+test "a node can't become its own descendant" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",900,"view"],["c",901,"view"],["k",900,[901]],["k",901,[900,901]],["r",900]]
+    );
+    try std.testing.expectEqual(@as(usize, 0), t.get(901).?.kids.items.len);
+    try std.testing.expect(t.get(901).?.parent == t.get(900).?);
+    t.layout();
 }
 
 test "bulk child replacement retains order and detached node ownership" {

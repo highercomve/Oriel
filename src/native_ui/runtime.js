@@ -13594,6 +13594,7 @@ globalThis.atob ??= (s) => {
       this.canvas = el;
       this.ops = [];
       this.nGrad = 0;
+      this.grads = /* @__PURE__ */ new Map();
       this.s = new State2();
       this.stack = [];
       this.penX = 0;
@@ -13691,6 +13692,25 @@ globalThis.atob ??= (s) => {
     }
     // The state ops as they stand now (after a full-clear drop: the bitmap
     // kept this state, the program restarts from the defaults).
+    // The program starts over (a full clear or cover): the live gradients'
+    // definitions, then the state.
+    restart() {
+      this.ops.length = 0;
+      if (this.grads.size) {
+        const used = /* @__PURE__ */ new Set();
+        for (const st of [this.s, ...this.stack.map((x) => x.s)]) {
+          for (const p of [st.fillStyle, st.strokeStyle]) if (!isColor2(p) && p?.[0] === "g") used.add(p[1]);
+        }
+        for (const [id, def] of this.grads) {
+          if (def.dead && !used.has(id)) {
+            this.grads.delete(id);
+            continue;
+          }
+          for (const op of def) this.ops.push(op);
+        }
+      }
+      this.emitState();
+    }
     emitState() {
       const s = this.s;
       this.ops.push(
@@ -13832,8 +13852,7 @@ globalThis.atob ??= (s) => {
       this.penY = y;
       const p = this.s.fillStyle;
       if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped && isColor2(p) && p[3] >= 1 && Math.abs(this.tx) < 1e-9 && Math.abs(this.ty) < 1e-9 && Math.abs(this.scx - 1) < 1e-9 && Math.abs(this.scy - 1) < 1e-9 && Math.abs(this.rot) < 1e-9) {
-        this.ops.length = 0;
-        this.emitState();
+        this.restart();
       }
       this.push(["fr", x, y, w, h]);
     }
@@ -13850,9 +13869,8 @@ globalThis.atob ??= (s) => {
       if (![x, y, w, h].every(Number.isFinite)) return;
       this.penX = x;
       this.penY = y;
-      if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped && isColor2(this.s.fillStyle) && isColor2(this.s.strokeStyle) && Math.abs(this.tx) < 1e-9 && Math.abs(this.ty) < 1e-9 && Math.abs(this.scx - 1) < 1e-9 && Math.abs(this.scy - 1) < 1e-9 && Math.abs(this.rot) < 1e-9) {
-        this.ops.length = 0;
-        this.emitState();
+      if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped && Math.abs(this.tx) < 1e-9 && Math.abs(this.ty) < 1e-9 && Math.abs(this.scx - 1) < 1e-9 && Math.abs(this.scy - 1) < 1e-9 && Math.abs(this.rot) < 1e-9) {
+        this.restart();
       }
       this.push(["cr", x, y, w, h]);
     }
@@ -13877,17 +13895,25 @@ globalThis.atob ??= (s) => {
       return { width: w * size };
     }
     createLinearGradient(x0, y0, x1, y1) {
-      const id = ++this.nGrad;
-      this.push(["gl", id, +x0 || 0, +y0 || 0, +x1 || 0, +y1 || 0]);
-      return gradientOf(this, id);
+      return this.gradient(["gl", ++this.nGrad, +x0 || 0, +y0 || 0, +x1 || 0, +y1 || 0]);
     }
     createRadialGradient(x0, y0, r0, x1, y1, r1) {
-      const id = ++this.nGrad;
-      this.push(["gr", id, +x0 || 0, +y0 || 0, +r0 || 0, +x1 || 0, +y1 || 0, +r1 || 0]);
-      return gradientOf(this, id);
+      return this.gradient(["gr", ++this.nGrad, +x0 || 0, +y0 || 0, +r0 || 0, +x1 || 0, +y1 || 0, +r1 || 0]);
+    }
+    gradient(op) {
+      const id = op[1], def = [op];
+      this.grads.set(id, def);
+      this.push(op);
+      const g2 = gradientOf(this, id, def);
+      gradientGone?.register(g2, { grads: this.grads, id });
+      return g2;
     }
   };
-  function gradientOf(r, id) {
+  var gradientGone = typeof FinalizationRegistry === "function" ? new FinalizationRegistry(({ grads, id }) => {
+    const def = grads.get(id);
+    if (def) def.dead = true;
+  }) : null;
+  function gradientOf(r, id, def) {
     return {
       __grad: id,
       addColorStop(off, c) {
@@ -13895,7 +13921,9 @@ globalThis.atob ??= (s) => {
         if (!col) return;
         const o = +off;
         if (!Number.isFinite(o)) return;
-        r.push(["gs", id, Math.max(0, Math.min(1, o)), col[0], col[1], col[2], col[3]]);
+        const op = ["gs", id, Math.max(0, Math.min(1, o)), col[0], col[1], col[2], col[3]];
+        def.push(op);
+        r.push(op);
         notify();
       }
     };
@@ -15156,7 +15184,7 @@ col, colgroup { display: none; }
           prev.p = p;
         }
       }
-      if (ops.length) this.host.ops(JSON.stringify(ops));
+      if (ops.length) this.host.ops(wellFormedJSON(ops));
       this.schedule();
     }
   };
@@ -15528,7 +15556,13 @@ col, colgroup { display: none; }
   function encodeProps(props) {
     if (props.fd === "column") props.fd = void 0;
     if (props.ai === "stretch") props.ai = void 0;
-    return JSON.stringify(props);
+    return wellFormedJSON(props);
+  }
+  var LONE_SURROGATE = /\\ud[89a-f]/i;
+  var wellFormed = (_k, v) => typeof v === "string" ? v.toWellFormed() : v;
+  function wellFormedJSON(x) {
+    const s = JSON.stringify(x);
+    return LONE_SURROGATE.test(s) ? JSON.stringify(x, wellFormed) : s;
   }
   function gridToRows(cs, props, kids, nodes, renderer2, el, fs) {
     const tpl = cs["grid-template-columns"];
@@ -16308,6 +16342,7 @@ ${a.stack || ""}`;
       },
       removeEventListener(_t, fn) {
         this.listeners.delete(fn);
+        if (!this.listeners.size) mediaLists.delete(this);
       },
       addListener(fn) {
         this.addEventListener("change", fn);
