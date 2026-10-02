@@ -24,7 +24,7 @@ const native_win32 = if (build_opts.native_ui) @import("../../native_ui/win32.zi
         pub fn resize(_: *Surface) void {}
         pub fn takeFocus(_: *Surface) void {}
         pub fn dpiChanged(_: *Surface) void {}
-        pub fn wheel(_: *Surface, _: usize, _: isize) void {}
+        pub fn wheel(_: *Surface, _: u32, _: usize, _: isize) void {}
     };
 };
 
@@ -1431,10 +1431,10 @@ pub fn WindowCreator(
             const win = windowFromUserData(hwnd);
 
             switch (uMsg) {
-                win32.WM_MOUSEWHEEL => {
+                win32.WM_MOUSEWHEEL, win32.WM_MOUSEHWHEEL => {
                     // The wheel goes to the focused window: hand it to the canvas.
                     if (win) |w| if (nativeSurface(w)) |s| {
-                        s.wheel(wParam, lParam);
+                        s.wheel(uMsg, wParam, lParam);
                         return 0;
                     };
                     return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);

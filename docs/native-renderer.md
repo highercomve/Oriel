@@ -96,8 +96,9 @@ inline blocks flowing in text, `position: sticky`, `img`, `iframe`,
 `getContext("2d")` returns a recorder, and each drawing call appends a compact
 op to the element's program, which travels as the node's `cv` prop and is
 replayed on every paint. On GTK the program draws with Cairo into the
-canvas's own image surface (kept from frame to frame while the size holds),
-which is then painted on the page, clipped to the box's border-radius. A
+canvas's own image surface, on Windows with Direct2D into its own bitmap
+render target (either kept from frame to frame while the size holds), which
+is then painted on the page, clipped to the box's border-radius. A
 program can't harm the page: an unbalanced `restore()` is ignored, a
 `clearRect` clears the canvas only, and a call with an argument that isn't a
 finite number is dropped (by the recorder and again by the parser), as in a
@@ -123,7 +124,10 @@ all with no clip or transform in effect drops everything recorded before it
 (a game loop's clear-then-redraw then keeps one frame's ops); drawing
 without such a clear accumulates, as in a browser.
 
-Only GTK draws canvases for now; elsewhere they lay out but draw nothing.
+GTK and Windows draw canvases for now; elsewhere they lay out but draw
+nothing. On Windows, `strokeText` outlines the font's own glyphs (no
+fallback fonts), and a radial gradient's two circles share a center offset
+as Direct2D draws them (the inner radius moves the stops).
 
 ## Milestones
 

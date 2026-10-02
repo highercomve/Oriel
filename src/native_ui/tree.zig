@@ -153,19 +153,23 @@ pub fn parseCanvasCmds(a: std.mem.Allocator, v: std.json.Value) ![]CanvasCmd {
         } else if (std.mem.eql(u8, tag, "ga")) {
             c = .{ .global_alpha = x };
         } else if (std.mem.eql(u8, tag, "lc")) {
-            c = .{ .line_cap = @intFromFloat(@min(2, @max(0, x))) };
+            c = .{ .line_cap = @intCast(wordAt(op, &.{ "butt", "round", "square" }, 2) orelse continue) };
         } else if (std.mem.eql(u8, tag, "lj")) {
-            c = .{ .line_join = @intFromFloat(@min(2, @max(0, x))) };
+            c = .{ .line_join = @intCast(wordAt(op, &.{ "miter", "round", "bevel" }, 2) orelse continue) };
         } else if (std.mem.eql(u8, tag, "ta")) {
-            c = .{ .text_align = @intFromFloat(@min(2, @max(0, x))) };
+            const i = wordAt(op, &.{ "left", "center", "right", "start", "end" }, 2) orelse continue;
+            c = .{ .text_align = @intCast(if (i == 3) 0 else if (i == 4) 2 else i) };
         } else if (std.mem.eql(u8, tag, "tb")) {
-            c = .{ .text_baseline = @intFromFloat(@min(4, @max(0, x))) };
+            const i = wordAt(op, &.{ "alphabetic", "top", "hanging", "middle", "bottom", "ideographic" }, 4) orelse continue;
+            c = .{ .text_baseline = @intCast(@min(4, i)) };
         } else if (std.mem.eql(u8, tag, "fo") and op.len > 4) {
             c = .{ .font = .{ .italic = numAt(op, 1) != 0, .weight = numAt(op, 2), .size = numAt(op, 3), .family = try a.dupe(u8, op[4].string) } };
-        } else if (std.mem.eql(u8, tag, "gl") and op.len > 4) {
-            c = .{ .linear_gradient = .{ .id = gradId(op[1]), .x0 = x, .y0 = y, .x1 = numAt(op, 3), .y1 = numAt(op, 4) } };
-        } else if (std.mem.eql(u8, tag, "gr") and op.len > 6) {
-            c = .{ .radial_gradient = .{ .id = gradId(op[1]), .x0 = x, .y0 = y, .r0 = numAt(op, 3), .x1 = numAt(op, 4), .y1 = numAt(op, 5), .r1 = numAt(op, 6) } };
+        } else if (std.mem.eql(u8, tag, "gl") and op.len > 5) {
+            // ["gl",id,x0,y0,x1,y1]: the points after the id.
+            c = .{ .linear_gradient = .{ .id = gradId(op[1]), .x0 = numAt(op, 2), .y0 = numAt(op, 3), .x1 = numAt(op, 4), .y1 = numAt(op, 5) } };
+        } else if (std.mem.eql(u8, tag, "gr") and op.len > 7) {
+            // ["gr",id,x0,y0,r0,x1,y1,r1]
+            c = .{ .radial_gradient = .{ .id = gradId(op[1]), .x0 = numAt(op, 2), .y0 = numAt(op, 3), .r0 = numAt(op, 4), .x1 = numAt(op, 5), .y1 = numAt(op, 6), .r1 = numAt(op, 7) } };
         } else if (std.mem.eql(u8, tag, "gs") and op.len > 6) {
             c = .{ .color_stop = .{ .id = gradId(op[1]), .off = numAt(op, 2), .c = .{ numAt(op, 3), numAt(op, 4), numAt(op, 5), numAt(op, 6) } } };
         }
@@ -180,6 +184,20 @@ pub fn parseCanvasCmds(a: std.mem.Allocator, v: std.json.Value) ![]CanvasCmd {
         if (c) |cc| out.appendAssumeCapacity(cc);
     }
     return out.items;
+}
+
+/// lineCap, lineJoin, textAlign, textBaseline: the recorder sends the word
+/// ("round"); a number (its index) is taken too, up to `max`. Null: neither.
+fn wordAt(op: []const std.json.Value, words: []const []const u8, max: usize) ?usize {
+    if (op.len < 2) return null;
+    return switch (op[1]) {
+        .string => |w| for (words, 0..) |word, i| {
+            if (std.mem.eql(u8, w, word)) break i;
+        } else null,
+        .integer => |i| if (i >= 0 and i <= max) @intCast(i) else null,
+        .float => |f| if (f >= 0 and f <= @as(f64, @floatFromInt(max))) @intFromFloat(f) else null,
+        else => null,
+    };
 }
 
 fn numAt(op: []const std.json.Value, i: usize) f32 {
@@ -914,6 +932,24 @@ test "canvas ops parse" {
     try t.expectEqual(@as(f32, 16), cmds[6].font.size);
     try t.expect(cmds[6].font.italic);
     try t.expectEqual(@as(f32, 0.5), cmds[7].color_stop.off);
+    // Words as canvas.js sends them, and gradients' points after their id.
+    const words = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\[["lc","round"],["lj","bevel"],["ta","end"],["tb","middle"],["tb","ideographic"],["lc","nope"],["gl",4,1,2,3,5],["gr",5,1,2,3,4,6,7]]
+    , .{});
+    const wc = try parseCanvasCmds(a, words);
+    try t.expectEqual(7, wc.len);
+    try t.expectEqual(@as(u2, 1), wc[0].line_cap);
+    try t.expectEqual(@as(u2, 2), wc[1].line_join);
+    try t.expectEqual(@as(u2, 2), wc[2].text_align);
+    try t.expectEqual(@as(u3, 3), wc[3].text_baseline);
+    try t.expectEqual(@as(u3, 4), wc[4].text_baseline);
+    try t.expectEqual(@as(u16, 4), wc[5].linear_gradient.id);
+    try t.expectEqual(@as(f32, 1), wc[5].linear_gradient.x0);
+    try t.expectEqual(@as(f32, 5), wc[5].linear_gradient.y1);
+    try t.expectEqual(@as(u16, 5), wc[6].radial_gradient.id);
+    try t.expectEqual(@as(f32, 3), wc[6].radial_gradient.r0);
+    try t.expectEqual(@as(f32, 4), wc[6].radial_gradient.x1);
+    try t.expectEqual(@as(f32, 7), wc[6].radial_gradient.r1);
     // Junk ops are dropped, not fatal.
     const junk = try std.json.parseFromSliceLeaky(std.json.Value, a, "[[42],[\"zz\",1],[\"fr\",1,2,3,4]]", .{});
     const ok = try parseCanvasCmds(a, junk);

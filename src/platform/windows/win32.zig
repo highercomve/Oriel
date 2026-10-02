@@ -92,6 +92,7 @@ pub const WM_SIZE: UINT = 0x0005;
 pub const WM_ACTIVATE: UINT = 0x0006;
 pub const WM_SETFOCUS: UINT = 0x0007;
 pub const WM_MOUSEWHEEL: UINT = 0x020A;
+pub const WM_MOUSEHWHEEL: UINT = 0x020E;
 pub const WM_KILLFOCUS: UINT = 0x0008;
 pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_QUIT: UINT = 0x0012;
