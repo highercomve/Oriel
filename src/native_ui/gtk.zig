@@ -742,7 +742,7 @@ fn onSlid(sc: *Widget, data: ?*anyopaque) callconv(.c) void {
         gtk_range_set_value(sc, v);
         s.updating = false;
     }
-    const steps: usize = @intFromFloat(@round((v - r.min) / r.step));
+    const steps: usize = tree_mod.sat(u32, @round((v - r.min) / r.step));
     const last: usize = @intFromPtr(g_object_get_data(@ptrCast(sc), "oriel-step"));
     if (last == steps + 1) return; // same step as the last "input"
     g_object_set_data(@ptrCast(sc), "oriel-step", @ptrFromInt(steps + 1));
@@ -987,21 +987,21 @@ fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
         }.f;
         add(attrs, pango_attr_foreground_new(c16(r.c[0]), c16(r.c[1]), c16(r.c[2])), start, end);
         if (r.c[3] < 1) add(attrs, pango_attr_foreground_alpha_new(@intFromFloat(@max(0, @min(1, r.c[3])) * 65535)), start, end);
-        add(attrs, pango_attr_size_new_absolute(@intFromFloat(r.sz * PANGO_SCALE)), start, end);
-        add(attrs, pango_attr_weight_new(@intFromFloat(r.w)), start, end);
+        add(attrs, pango_attr_size_new_absolute(tree_mod.sat(c_int, r.sz * PANGO_SCALE)), start, end);
+        add(attrs, pango_attr_weight_new(tree_mod.sat(c_int, r.w)), start, end);
         if (r.i) add(attrs, pango_attr_style_new(2), start, end);
         if (r.mono) add(attrs, pango_attr_family_new("Monospace"), start, end);
         if (r.u) add(attrs, pango_attr_underline_new(1), start, end);
         if (r.bg) |bg| if (bg[3] > 0) {
             add(attrs, pango_attr_background_new(c16(bg[0]), c16(bg[1]), c16(bg[2])), start, end);
-            if (bg[3] < 1) add(attrs, pango_attr_background_alpha_new(@intFromFloat(bg[3] * 65535)), start, end);
+            if (bg[3] < 1) add(attrs, pango_attr_background_alpha_new(tree_mod.sat(u16, bg[3] * 65535)), start, end);
         };
     }
-    if (n.props.ls) |ls| add0(attrs, pango_attr_letter_spacing_new(@intFromFloat(ls * PANGO_SCALE)));
+    if (n.props.ls) |ls| add0(attrs, pango_attr_letter_spacing_new(tree_mod.sat(c_int, ls * PANGO_SCALE)));
     // CSS line-height: each line box is that tall and the glyphs sit in its
     // middle (half-leading above and below, negative when it's smaller than
     // the font, as `line-height: 1` on an icon glyph). Pango >= 1.50.
-    if (n.props.lh) |lh| add0(attrs, pango_attr_line_height_new_absolute(@intFromFloat(lh * PANGO_SCALE)));
+    if (n.props.lh) |lh| add0(attrs, pango_attr_line_height_new_absolute(tree_mod.sat(c_int, lh * PANGO_SCALE)));
     const layout = gtk_widget_create_pango_layout(s.area, null);
     const font = if (n.props.mono) &s.mono else &s.sans;
     if (font.* == null) font.* = pango_font_description_from_string(if (n.props.mono) "Monospace" else "Sans");
@@ -1013,7 +1013,7 @@ fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
     if (n.props.nowrap or std.math.isInf(width)) {
         pango_layout_set_width(layout, -1);
     } else {
-        pango_layout_set_width(layout, @intFromFloat(@max(1, width) * PANGO_SCALE));
+        pango_layout_set_width(layout, tree_mod.sat(c_int, @max(1, width) * PANGO_SCALE));
         pango_layout_set_wrap(layout, 2); // word-char
     }
     if (n.props.ta) |ta| {
@@ -1323,7 +1323,7 @@ fn paintPlaceholder(s: *Surface, cr: *cairo_t, n: *Node) void {
     pango_font_description_set_absolute_size(desc, (n.props.fz orelse 16) * PANGO_SCALE);
     pango_layout_set_font_description(layout, desc);
     pango_layout_set_text(layout, ph.ptr, @intCast(ph.len));
-    pango_layout_set_width(layout, @intFromFloat(@max(1, c.w) * PANGO_SCALE));
+    pango_layout_set_width(layout, tree_mod.sat(c_int, @max(1, c.w) * PANGO_SCALE));
     pango_layout_set_wrap(layout, 2);
     var col = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
     col[3] *= 0.5;
