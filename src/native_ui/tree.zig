@@ -10,6 +10,7 @@ pub const yg = @cImport({
 });
 
 const log = std.log.scoped(.native_ui);
+const prof = @import("prof.zig");
 
 pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas };
 
@@ -492,7 +493,11 @@ pub const Tree = struct {
     pub fn apply(t: *Tree, json: []const u8) !void {
         var arena: std.heap.ArenaAllocator = .init(t.gpa);
         defer arena.deinit();
+        const t0 = prof.now();
         const ops = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), json, .{});
+        const t1 = prof.now();
+        prof.props_ms = 0;
+        defer prof.report("apply parse {d:.2} ops {d:.2} (props {d:.2}) {d} bytes", .{ t1 - t0, prof.now() - t1, prof.props_ms, json.len });
         if (ops != .array) return error.BadOps;
         // Ops come from the page's runtime (and `__host.ops` is reachable from
         // the page): skip any that doesn't have the expected shape.
@@ -505,7 +510,11 @@ pub const Tree = struct {
             const arg: ?std.json.Value = if (a.len > 2) a[2] else null;
             switch (kind[0]) {
                 'c' => if (arg) |x| if (x == .string) try t.create(id, std.meta.stringToEnum(Kind, x.string) orelse .view),
-                'p' => if (arg) |x| if (t.nodes.get(id)) |n| try t.setProps(n, x),
+                'p' => if (arg) |x| if (t.nodes.get(id)) |n| {
+                    const p0 = prof.now();
+                    try t.setProps(n, x);
+                    prof.props_ms += prof.now() - p0;
+                },
                 'k' => if (arg) |x| if (x == .array) if (t.nodes.get(id)) |n| try t.setKids(n, x.array.items),
                 'd' => t.destroy(id),
                 'r' => t.root = t.nodes.get(id),
@@ -632,7 +641,11 @@ pub const Tree = struct {
         const root = t.root orelse return;
         yg.YGNodeStyleSetWidth(root.yn, t.width);
         yg.YGNodeStyleSetHeight(root.yn, t.height);
+        prof.measures = 0;
+        prof.measure_ms = 0;
+        const y0 = prof.now();
         yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
+        prof.report("yoga {d:.2}, {d} measures {d:.2}", .{ prof.now() - y0, prof.measures, prof.measure_ms });
         // Tables need the first pass's widths, then fix their cells' widths
         // and lay out again (every layout: a cell's content may have changed).
         if (sizeTables(t, root)) yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
@@ -953,7 +966,12 @@ fn measureFn(node: yg.YGNodeConstRef, width: f32, width_mode: yg.YGMeasureMode, 
     const n: *Node = @ptrCast(@alignCast(yg.YGNodeGetContext(node)));
     const max_w: f32 = if (width_mode == yg.YGMeasureModeUndefined or std.math.isNan(width)) std.math.inf(f32) else width;
     var out: [2]f32 = .{ 0, 0 };
+    const m0 = prof.now();
     n.tree.measure(n.tree.measure_ctx, n, max_w, &out);
+    if (prof.enabled) {
+        prof.measure_ms += prof.now() - m0;
+        prof.measures += 1;
+    }
     // A textarea is `cols` characters wide (about 0.6 em each, plus its
     // padding), as in a browser, not as wide as it may be; stretched in a
     // flex column it still fills it (that width is exact).

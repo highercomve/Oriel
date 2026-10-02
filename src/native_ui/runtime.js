@@ -13846,6 +13846,8 @@ col, colgroup { display: none; }
       const body = this.doc.body;
       const rootCS = this.style(this.doc.documentElement, null);
       this.cur = { own: [], kids: [], fixed: [] };
+      const P = this.host.prof ? this.host.now : null;
+      const t02 = P && P();
       const bodyNode = this.element(body, rootCS, nodes, { blockify: true, textAlign: "left" });
       const fixed = this.cur.fixed;
       this.cur = null;
@@ -13871,7 +13873,12 @@ col, colgroup { display: none; }
       nodes.set(-1, { kind: "view", props: { scroll: true, fg: 1, fs: 1, ai: "stretch" }, kids: [bodyNode] });
       const rootBg = bgOf(rootCS) || (this.cs.get(body) ? bgOf(this.cs.get(body)) : null);
       nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: [-1, ...fixed] });
+      const t1 = P && P();
       this.emit(nodes, full);
+      if (P) {
+        const ms = (x) => x.toFixed(2);
+        this.host.log(1, `PROF render ${full ? "full" : "incremental"}: ${nodes.size} nodes made, flatten ${ms(t1 - t02)}, emit ${ms(P() - t1 - this.applyMs)}, apply ${ms(this.applyMs)}`);
+      }
       const scroll = this.pendingScroll;
       this.pendingScroll = null;
       if (scroll && scroll.el.isConnected) this.host.scrollIntoView(this.idOf(scroll.el, "el"), scroll.block);
@@ -14384,7 +14391,12 @@ col, colgroup { display: none; }
         ops.push(`["r",0]`);
         this.rootSent = true;
       }
-      if (ops.length) this.host.ops(`[${ops.join(",")}]`);
+      this.applyMs = 0;
+      if (ops.length) {
+        const P = this.host.prof ? this.host.now : null, t02 = P && P();
+        this.host.ops(`[${ops.join(",")}]`);
+        if (P) this.applyMs = P() - t02;
+      }
       this.schedule();
     }
     // An element's @keyframes animations: their frames as node props

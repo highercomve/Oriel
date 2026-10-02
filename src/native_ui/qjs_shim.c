@@ -394,6 +394,9 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     JS_SetPropertyStr(ctx, host, "platform", JS_NewString(ctx, platform_json));
     JS_SetPropertyStr(ctx, host, "label", JS_NewString(ctx, label));
     JS_SetPropertyStr(ctx, host, "url", JS_NewString(ctx, url));
+#if defined(ORIEL_NUI_PROF)
+    JS_SetPropertyStr(ctx, host, "prof", JS_TRUE);
+#endif
     JS_SetPropertyStr(ctx, global, "__host", host);
     JS_FreeValue(ctx, global);
     return self;
