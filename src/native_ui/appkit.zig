@@ -33,6 +33,11 @@ pub const Surface = struct {
     gpa: std.mem.Allocator,
     token: u64,
     engine: *Engine = undefined,
+    /// The display link (+1) pacing the page's animation frames
+    /// (request_display_frame), or nil until the page asks for one.
+    display_link: Object = cocoa.nil,
+    /// The page asked for an animation frame since the last one.
+    frame_wanted: bool = false,
     /// The drawing view (+1), the window's content view.
     view: Object,
     transparent: bool,
@@ -98,6 +103,7 @@ pub fn resolve(token: u64, call_id: u32, ok: bool, text: []const u8) void {
 fn classes() void {
     if (view_class != null) return;
     view_class = cocoa.defineSubclass("OrielNuiView", "NSView", &.{}, .{
+        .{ "nuiDisplayFrame:", onDisplayFrame },
         .{ "isFlipped", yes },
         .{ "isOpaque", isOpaque },
         .{ "acceptsFirstResponder", yes },
@@ -170,6 +176,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .props = propsChanged,
         .text = textChanged,
         .request_frame = requestFrame,
+        .request_display_frame = if (hasDisplayLink(view)) requestDisplayFrame else null,
     }, assets, platform_json, label, url, width, height);
     // Text-only updates that keep a text's size keep the layout (its
     // natural size is kept per node: measureText).
@@ -180,6 +187,10 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
 
 /// Tear a surface down (its window is closing).
 pub fn destroy(s: *Surface) void {
+    if (s.display_link.value != null) {
+        s.display_link.msgSend(void, "invalidate", .{});
+        releaseLater(s.display_link); // it may be in its own callback
+    }
     _ = surfaces.remove(s.token);
     _ = by_view.remove(key(s.view.value));
     // The engine first: freeing its tree calls `removed` for every node,
@@ -281,6 +292,60 @@ fn onFrame(p: ?*anyopaque) callconv(.c) void {
     if (surfaces.get(token)) |still| still.render_us = nowUs() - start;
 }
 
+// ---------------------------------------------------------------------------
+// Display frames: the page's requestAnimationFrame at the display's refresh
+// (a ProMotion panel's 120 Hz, an external display's 144), not a 60 Hz timer.
+// The link runs only while the page asks: each frame takes the request, and
+// a frame with no new one pauses the link.
+
+extern const NSRunLoopCommonModes: id;
+
+const CAFrameRateRange = extern struct { minimum: f32, maximum: f32, preferred: f32 };
+
+fn hasDisplayLink(view: Object) bool {
+    // NSView.displayLink(target:selector:): macOS 14; before, the timer grid.
+    const cls = view.getClass() orelse return false;
+    return cls.respondsToSelector(cocoa.objc.sel("displayLinkWithTarget:selector:"));
+}
+
+fn requestDisplayFrame(ctx: *anyopaque) void {
+    const s = surfaceOf(ctx);
+    s.frame_wanted = true;
+    if (s.display_link.value != null) {
+        s.display_link.msgSend(void, "setPaused:", .{cocoa.boolean(false)});
+        return;
+    }
+    const link = s.view.msgSend(Object, "displayLinkWithTarget:selector:", .{ s.view, cocoa.objc.sel("nuiDisplayFrame:").value });
+    if (link.value == null) return;
+    s.display_link = link.retain();
+    
+    const loop = cocoa.class("NSRunLoop").msgSend(Object, "currentRunLoop", .{});
+    link.msgSend(void, "addToRunLoop:forMode:", .{ loop, Object{ .value = NSRunLoopCommonModes } });
+}
+
+fn onDisplayFrame(self: id, _: SEL, link_id: id) callconv(.c) void {
+    const link: Object = .{ .value = link_id };
+    const s = by_view.get(key(self)) orelse return;
+    if (!s.frame_wanted) {
+        link.msgSend(void, "setPaused:", .{cocoa.boolean(true)});
+        return;
+    }
+    s.frame_wanted = false;
+    // The refresh interval: this frame's to the next (a variable-rate panel
+    // changes it), else the link's nominal duration.
+    var interval = (link.msgSend(f64, "targetTimestamp", .{}) - link.msgSend(f64, "timestamp", .{})) * 1000;
+    if (!(interval > 0) or !std.math.isFinite(interval)) interval = link.msgSend(f64, "duration", .{}) * 1000;
+    if (!(interval > 0) or !std.math.isFinite(interval)) interval = 0;
+    const token = s.token;
+    const pool = cocoa.objc.AutoreleasePool.init();
+    defer pool.deinit();
+    s.engine.displayFrame(interval);
+    // The page may have closed its window during the frame (destroy
+    // invalidated the link); else the link runs on only if it asked again.
+    const still = surfaces.get(token) orelse return;
+    if (!still.frame_wanted) link.msgSend(void, "setPaused:", .{cocoa.boolean(true)});
+}
+
 const TimerData = struct { token: u64, id: u32 };
 
 fn addTimer(ctx: *anyopaque, _: *Engine, timer_id: u32, ms: u32) void {
@@ -317,6 +382,7 @@ fn removed(ctx: *anyopaque, n: *Node) void {
 /// New props: a text node's CoreText objects are stale.
 fn propsChanged(_: *anyopaque, n: *Node, _: std.json.Value) void {
     draw.dropText(n);
+    draw.imagePropsChanged(n);
     n.measured_text_size = null;
 }
 

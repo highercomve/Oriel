@@ -71,6 +71,18 @@ const SKIP = new Set(["script", "style", "head", "template", "title", "meta", "l
 const TEMPLATE_LEAF = new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
 const EMPTY = Object.freeze([]);
 
+/** A canvas or image box that a max-width may narrow below its natural
+ * width while the parent stretches it: a block in a block, no auto side
+ * margins, a max-width in px or a percentage of at least 100% (the
+ * stretched width is never wider than the parent anyway). */
+function narrowable(props, cs, parentCS) {
+  const mw = props.maxw;
+  if (mw === undefined || props.maxh !== undefined || !(props.ch > 0)) return false;
+  if (typeof mw === "string" && !(/%$/.test(mw) && parseFloat(mw) >= 100)) return false;
+  if (cs.display !== "block" || !["block", "flow-root"].includes(parentCS?.display)) return false;
+  return cs["margin-left"] !== "auto" && cs["margin-right"] !== "auto";
+}
+
 export class Renderer {
   constructor(document, engine, host) {
     this.doc = document;
@@ -887,7 +899,18 @@ export class Renderer {
         ["stretch", "normal", undefined].includes(cs["align-self"] && cs["align-self"] !== "auto" ? cs["align-self"] : parentCS?.["align-items"]);
       if (props.w === undefined && props.h === undefined) {
         if (stretched) props.ar = ratio;
-        else { props.w = props.cw; props.h = props.ch; }
+        else if (narrowable(props, cs, parentCS)) {
+          // A block in a block with a max-width (`max-width: 100%`): the
+          // parent's stretch gives its width, capped at the bitmap's, and its
+          // ratio the height, capped to match. Yoga takes the ratio from a
+          // width before it clamps that width (a set width or a stretched
+          // one), so the height cap is what keeps the shape: on a narrow
+          // screen it's the stretched width's, on a wide one the cap's.
+          const cap = typeof props.maxw === "number" ? Math.min(props.maxw, props.cw) : props.cw;
+          props.maxw = cap;
+          props.maxh = cap / ratio;
+          props.ar = ratio;
+        } else { props.w = props.cw; props.h = props.ch; }
       } else if (props.w === undefined || props.h === undefined) props.ar = ratio;
       props.fs = 0;
       // The drawing program so far (a game's last frame; static drawing
