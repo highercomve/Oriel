@@ -4622,6 +4622,9 @@ ${a.stack || ""}`;
   ]) {
     if (dom[name] !== void 0 && g[name] === void 0) g[name] = dom[name];
   }
+  for (const name of Object.keys(dom)) {
+    if (/^(HTML|SVG)\w*Element$/.test(name) && g[name] === void 0) g[name] = dom[name];
+  }
   install(dom, () => {
     try {
       if (renderer) renderer.dirty = true;
