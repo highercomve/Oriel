@@ -33,8 +33,34 @@ fn bytes(env: *Env, arr: jobject) ?[]u8 {
 }
 
 fn JNI_OnLoad(vm: *jni.Vm, _: ?*anyopaque) callconv(.c) jint {
+    importDebugEnv();
     return runtime.onLoad(vm);
 }
+
+/// An app can't be given environment variables on Android: the debug switches
+/// (ORIEL_NUI_TRACE, ORIEL_NUI_MEM…) come from a system property instead,
+/// `adb shell setprop debug.oriel.env "ORIEL_NUI_TRACE=1 ORIEL_NUI_MEM=1"`
+/// (space-separated NAME=VALUE, read when the library loads).
+fn importDebugEnv() void {
+    var buf: [92]u8 = undefined; // PROP_VALUE_MAX
+    const len = __system_property_get("debug.oriel.env", &buf);
+    if (len <= 0) return;
+    var words = std.mem.tokenizeScalar(u8, buf[0..@intCast(len)], ' ');
+    while (words.next()) |w| {
+        const eq = std.mem.indexOfScalar(u8, w, '=') orelse continue;
+        var name: [64]u8 = undefined;
+        var value: [92]u8 = undefined;
+        if (eq == 0 or eq >= name.len or w.len - eq - 1 >= value.len) continue;
+        @memcpy(name[0..eq], w[0..eq]);
+        name[eq] = 0;
+        @memcpy(value[0 .. w.len - eq - 1], w[eq + 1 ..]);
+        value[w.len - eq - 1] = 0;
+        _ = setenv(name[0..eq :0], value[0 .. w.len - eq - 1 :0], 1);
+    }
+}
+
+extern "c" fn __system_property_get(name: [*:0]const u8, value: [*]u8) c_int;
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 fn onMessage(env: *Env, _: jclass, win: jint, data: jobject, origin: jobject) callconv(.c) void {
     const f = handlers.on_message orelse return;

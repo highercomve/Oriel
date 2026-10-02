@@ -32,6 +32,7 @@ import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
 import android.text.style.MetricAffectingSpan
 import android.text.style.UnderlineSpan
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -84,6 +85,8 @@ internal object NuiNative {
     @JvmStatic external fun timer(window: Int, id: Int)
     @JvmStatic external fun back(window: Int): Boolean
     @JvmStatic external fun jsMemory(window: Int): Long
+    /** ORIEL_NUI_TRACE is set (`debug.oriel.env`): NuiView logs each draw. */
+    @JvmStatic external fun trace(): Boolean
     /** An app asset's bytes (an <img> src), or null. */
     @JvmStatic external fun asset(window: Int, path: ByteArray): ByteArray?
 }
@@ -92,6 +95,10 @@ internal object NuiNative {
 internal object Nui {
     val views = HashMap<Int, NuiView>()
     private val main = Handler(Looper.getMainLooper())
+    /** Logs "nui drawn <window>" (tag OrielNui) after each draw: logcat's
+     *  timestamps then give a change's on-screen time against the page's own
+     *  log lines (examples/render-bench). */
+    val trace by lazy { NuiNative.trace() }
 
     fun viewport(window: Int): Long {
         val res = (views[window]?.context ?: OrielRuntime.app).resources
@@ -962,6 +969,14 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     // --- Drawing --------------------------------------------------------------
 
     override fun onDraw(canvas: Canvas) {
+        try {
+            drawPage(canvas)
+        } finally {
+            if (Nui.trace) Log.d("OrielNui", "nui drawn $window")
+        }
+    }
+
+    private fun drawPage(canvas: Canvas) {
         canvas.drawColor(background)
         if (frames.size < REC) return
         canvas.save()
