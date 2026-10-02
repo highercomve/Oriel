@@ -1,0 +1,246 @@
+{
+  "commits": {
+    "before": "2143d84",
+    "after": "working tree based on 2143d84"
+  },
+  "method": "One visible ReleaseFast process per version, serially; 900x700 floating windows, unchanged page and synchronous layout reads; medians of 3 trials in the second round. Both versions built and tests finished before timing. Baseline is 2143d84; current premerges row leaf properties, directly copies ordinary font runs, avoids redundant eligible-leaf attribute checks, and emits Map entries without iterator pair arrays.",
+  "window": {
+    "before": {
+      "size": [
+        900,
+        700
+      ],
+      "at": [
+        800,
+        350
+      ],
+      "floating": true,
+      "class": "dev.oriel.RenderBench"
+    },
+    "after": {
+      "size": [
+        900,
+        700
+      ],
+      "at": [
+        800,
+        350
+      ],
+      "floating": true,
+      "class": "dev.oriel.RenderBench"
+    }
+  },
+  "reports": {
+    "before": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 43,
+          "runs": [
+            43
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 221,
+          "runs": [
+            221
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 140,
+          "runs": [
+            140
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 91.72,
+          "runs": [
+            98.42,
+            91.09,
+            91.72
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 285.53,
+          "runs": [
+            304.89,
+            282.07,
+            285.53
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 11.07,
+          "runs": [
+            15.93,
+            11.07,
+            10.49
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 41.06,
+          "runs": [
+            55.78,
+            41.06,
+            36.12
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 60.22,
+          "runs": [
+            60,
+            60.22,
+            60.22
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60.02,
+          "runs": [
+            60.07,
+            60.02,
+            59.99
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls": {
+          "median": 60,
+          "runs": [
+            59.97,
+            60.04,
+            60
+          ],
+          "unit": "fps"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 205,
+          "runs": [
+            205
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 211,
+          "runs": [
+            211
+          ],
+          "unit": "MB"
+        }
+      }
+    },
+    "after": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 43,
+          "runs": [
+            43
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 185,
+          "runs": [
+            185
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 119,
+          "runs": [
+            119
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 94.79,
+          "runs": [
+            96.02,
+            85.38,
+            94.79
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 275.24,
+          "runs": [
+            289.36,
+            275.24,
+            264.88
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 10.7,
+          "runs": [
+            15.91,
+            10.7,
+            10.5
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 36.08,
+          "runs": [
+            55.29,
+            36.08,
+            34.26
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 60.22,
+          "runs": [
+            60.05,
+            60.22,
+            60.22
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60.02,
+          "runs": [
+            60.03,
+            60.02,
+            60.02
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls": {
+          "median": 60.02,
+          "runs": [
+            59.96,
+            60.02,
+            60.05
+          ],
+          "unit": "fps"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 185,
+          "runs": [
+            185
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 196,
+          "runs": [
+            196
+          ],
+          "unit": "MB"
+        }
+      }
+    }
+  },
+  "runtime_sha256": {
+    "before": "018254bf08180f4b799a9bdf918e7f6252360e870b0bd2c4a4ed5303e3f4cbcc",
+    "after": "9c06c4bd93b9b877fef4988aa586310929d874809e9c37ec4846f3ccb88208c5"
+  },
+  "limitations": "Preceding candidate without combined style/flattening snapshot storage. Mixed row-build medians; overlapping trial ranges. Retained rather than replaced by the final comparison."
+}

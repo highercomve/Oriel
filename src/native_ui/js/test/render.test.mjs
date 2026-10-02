@@ -195,6 +195,34 @@ for (const direct of [false, true]) for (const extra of ["", ".row:first-child .
   }
 }
 
+// Shared row setup keeps text/font properties owned by each leaf, including
+// labels, listeners, decorated runs and a later switch between view and text.
+for (const direct of [false, true]) {
+  const f = fixture(".row { display: flex } .decorated { font-style: italic; font-family: monospace; text-decoration: underline; background: red }", direct);
+  const main = f.document.querySelector("main");
+  main.innerHTML = Array.from({ length: 3 }, (_, i) => `<div class="row"><span>plain ${i}</span><span class="decorated">styled ${i}</span><label>label ${i}</label></div>`).join("");
+  const rows = main.children;
+  rows[2].firstElementChild.__listens = 1;
+  f.check();
+  assert.equal(f.renderer.sc.get(rows[1].firstElementChild), f.renderer.fc.get(rows[1].firstElementChild), "direct leaf caches share one snapshot");
+  const a = f.renderer.fc.get(rows[1].firstElementChild).root.props;
+  const b = f.renderer.fc.get(rows[2].firstElementChild).root.props;
+  assert.notEqual(a, b, "shared setup does not share mutable props");
+  assert.notEqual(a.runs, b.runs);
+  assert.notEqual(a.runs[0], b.runs[0], "text updates cannot change a cousin run");
+  assert.equal(b.click, true);
+  assert.equal(f.renderer.fc.get(rows[1].lastElementChild).root.props.click, true);
+  rows[1].firstElementChild.textContent = "";
+  f.check();
+  rows[1].firstElementChild.textContent = "restored";
+  rows[1].firstElementChild.setAttribute("disabled", "");
+  rows[1].lastElementChild.setAttribute("onclick", "void 0");
+  f.check();
+  rows[1].firstElementChild.removeAttribute("disabled");
+  rows[1].firstElementChild.setAttribute("style", "color: blue; font-size: 23px");
+  f.check();
+}
+
 // Direct and JSON text updates agree with a fresh traversal, including
 // fallbacks that change kind/flow and general renders after direct writes.
 for (const direct of [false, true]) {

@@ -654,7 +654,6 @@ export class Renderer {
       const el = shape.children[i], entry = shape.plan.entries[i], childCS = entry.cs;
       const id = this.idOf(el, "el");
       this.own(id, el);
-      this.sc.set(el, { parent: cs, cs: childCS, m: entry.m, frame: this.frameNo, epoch: this.styleEpoch });
       const child = el.firstChild, ws = childCS["white-space"];
       let runs;
       if (!child) runs = [];
@@ -665,7 +664,9 @@ export class Renderer {
         if (childCS["text-transform"] === "uppercase") t = t.toUpperCase();
         else if (childCS["text-transform"] === "lowercase") t = t.toLowerCase();
         t = t.replace(/\s+/g, " ").trim();
-        runs = t ? [{ t, ...entry.run }] : [];
+        runs = t ? [entry.simpleRun
+          ? { t, c: entry.run.c, sz: entry.run.sz, w: entry.run.w }
+          : { t, ...entry.run }] : [];
       } else {
         const raw = [];
         for (let c = child; c; c = c.nextSibling) {
@@ -674,10 +675,12 @@ export class Renderer {
         }
         runs = trimRuns(raw);
       }
-      const props = { ...entry.box };
-      let kind = "view";
-      if (runs.length) { kind = "text"; Object.assign(props, entry.text); props.runs = runs; }
-      this.putClick(props, el);
+      const kind = runs.length ? "text" : "view";
+      const props = { ...(runs.length ? entry.textBox : entry.box) };
+      if (runs.length) props.runs = runs;
+      // flexShape accepted only class/style attributes and ordinary tags.
+      // Labels and listeners are the remaining element-specific click state.
+      if (el.localName === "label" || listens(el)) props.click = true;
       let template;
       if (!props.click && (kind === "view" || runs.length === 1)) {
         const key = kind === "text" ? "nativeText" : "nativeView";
@@ -693,10 +696,15 @@ export class Renderer {
       // General reuse still copies props before a new parent can adjust it.
       const node = { kind, props, kids: EMPTY, template };
       nodes.set(id, node);
-      this.fc.set(el, {
-        parent: cs, block: true, ts: spacing, id, fixed: false, own: [id], kids: EMPTY, fixedIds: EMPTY, seen: this.frameNo,
+      // Style and flattening snapshots have the same parent here. Style
+      // updates replace their record, so sharing cannot alter this snapshot.
+      const cached = {
+        parent: cs, cs: childCS, m: entry.m, frame: this.frameNo, epoch: this.styleEpoch,
+        block: true, ts: spacing, id, fixed: false, own: [id], kids: EMPTY, fixedIds: EMPTY, seen: this.frameNo,
         root: node, rootSpec: undefined, rootAnim: undefined,
-      });
+      };
+      this.sc.set(el, cached);
+      this.fc.set(el, cached);
       this.cur.kids.push(el);
       ids.push(id);
     }
@@ -713,7 +721,11 @@ export class Renderer {
           !["inline", "block", "inline-block"].includes(sc.cs.display || "inline") ||
           sc.cs.__rules.before.length || sc.cs.__rules.after.length) return;
       const fs = sc.cs.__fs;
-      entries.push({ cs: sc.cs, m: sc.m, box: boxProps(sc.cs, blockify(sc.cs.display || "inline"), fs, el), text: textProps(sc.cs, fs), run: runStyle(sc.cs, fs), order: parseInt(sc.cs.order, 10) || 0 });
+      const box = boxProps(sc.cs, blockify(sc.cs.display || "inline"), fs, el);
+      const run = runStyle(sc.cs, fs);
+      // Merge immutable layout/font setup once per shape. Every leaf still
+      // gets its own property object and text run.
+      entries.push({ cs: sc.cs, m: sc.m, box, textBox: { ...box, ...textProps(sc.cs, fs) }, run, simpleRun: Object.keys(run).length === 3, order: parseInt(sc.cs.order, 10) || 0 });
     }
     const order = entries.map((_, i) => i).sort((a, b) => entries[a].order - entries[b].order || a - b);
     if (shape.shapes.size >= 32) shape.shapes.delete(shape.shapes.keys().next().value);
@@ -1126,18 +1138,18 @@ export class Renderer {
     const now = Date.now();
     // Nodes made again (a new kind): their parents must attach them again.
     const remade = new Set();
-    for (const [id, n] of nodes) {
+    nodes.forEach((n, id) => {
+      const old = this.prev.get(id);
+      if (old && old.kind !== n.kind) remade.add(id);
+    });
+    nodes.forEach((n, id) => {
       const old = this.prev.get(id);
       if (old && old.p === null) { old.p = encodeProps(old.props); old.props = null; }
-      if (old && old.kind !== n.kind) remade.add(id);
-    }
-    for (const [id, n] of nodes) {
-      const old = this.prev.get(id);
       if (!old && this.host.leaf && this.createLeaf(id, n)) {
         const k = n.kids.length ? JSON.stringify(n.kids) : "[]";
         if (n.kids.length) ops.push(`["k",${id},${k}]`);
         this.prev.set(id, { kind: n.kind, p: null, props: n.props, k });
-        continue;
+        return;
       }
       if (!old || old.kind !== n.kind) this.tx.forget(id);
       // The props to show now: the page's, or on the way to them
@@ -1162,7 +1174,7 @@ export class Renderer {
       }
       this.prev.set(id, { kind: n.kind, p, k });
       if (n.props.val !== undefined) this.native.set(id, n.props.val);
-    }
+    });
     const drop = (id) => {
       if (!this.prev.has(id) || nodes.has(id)) return;
       ops.push(`["d",${id}]`); this.prev.delete(id); this.native.delete(id); this.tx.forget(id); this.anim.forget(id); this.owner.delete(id);
