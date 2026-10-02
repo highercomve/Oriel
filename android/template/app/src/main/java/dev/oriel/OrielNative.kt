@@ -123,6 +123,8 @@ internal class NuiNode(val id: Int, var kind: String) {
     var rot = 0f
     var shadow: JSONObject? = null
     /** An <img>: its decoded picture (maybe downsampled), its natural size in px, and the src it came from. */
+    /** A <canvas>: its drawing program, parsed once per change (OrielCanvas.kt). */
+    var canvasOps: List<CvOp> = emptyList()
     var image: Bitmap? = null
     var imageW = 0
     var imageH = 0
@@ -153,6 +155,10 @@ internal class NuiNode(val id: Int, var kind: String) {
         icon = null
         if (kind == "text") buildText()
         if (kind == "icon") p.optJSONObject("icon")?.let { icon = NuiIcon(it) }
+        if (kind == "canvas") {
+            canvasOps = CanvasProgram.parse(p.optJSONArray("cv"))
+            p.remove("cv") // parsed: the JSON isn't kept
+        }
     }
 
     private fun buildText() {
@@ -401,6 +407,8 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
     private val fields = HashMap<Int, View>()
     /** Each select's value as last shown (the page's, or the user's pick). */
     private val selectValues = HashMap<Int, String>()
+    /** Each <canvas> node's bitmap, kept between paints (OrielCanvas.kt). */
+    private val canvases = HashMap<Int, CanvasSurface>()
     private var frames = FloatArray(0)
     private val index = HashMap<Int, Int>() // node id → record
     private val density = resources.displayMetrics.density
@@ -478,6 +486,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
 
     fun remove(id: Int) {
         nodes.remove(id)
+        canvases.remove(id)?.recycle()
         selectValues.remove(id)
         fields.remove(id)?.let { removeView(it) }
     }
@@ -517,6 +526,13 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
     }
 
     // --- Size ---------------------------------------------------------------
+
+    /** Out of its window: the canvases' bitmaps go (the next paint makes new ones). */
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        for (c in canvases.values) c.recycle()
+        canvases.clear()
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -1003,6 +1019,14 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                 }
                 "icon" -> n.icon?.let { icon(canvas, it, f[r + 9], f[r + 10], f[r + 11], f[r + 12]) }
                 "image" -> n.image?.let { image(canvas, it, n.p.optString("fit", "fill"), f[r + 9], f[r + 10], f[r + 11], f[r + 12]) }
+                "canvas" -> if (n.canvasOps.isNotEmpty()) {
+                    // At the box, clipped to its rounded corners (radii set above).
+                    val clip = radii?.let { roundRect(x, y, w, h, it); path }
+                    canvases.getOrPut(n.id) { CanvasSurface() }.paint(
+                        canvas, n.canvasOps, n.p.optDouble("cw", w.toDouble()).toFloat(), n.p.optDouble("ch", h.toDouble()).toFloat(),
+                        x, y, w, h, density, clip,
+                    )
+                }
             }
         }
         var k = r + REC
