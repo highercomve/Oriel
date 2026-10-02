@@ -1,14 +1,20 @@
 ---
 .title = "Native renderer (experimental)",
 .description = "Your HTML, CSS and JavaScript drawn with native views instead of a WebView: no browser process, a fraction of the memory, the same web code.",
-.date = .date("2026-10-01T00:00:00"),
+.date = .date("2026-10-02T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
 
 An Oriel app normally shows its page in the system's webview. The native renderer is an optional second renderer: the app's own `index.html`, `style.css` and `app.js` run in a small JavaScript engine inside the app, and the page is drawn with the platform's views. There is no browser and no renderer process.
 
-It is **experimental**: it runs on Linux (GTK 4) and Android, behind a build flag, and it covers the HTML and CSS that map onto native views, not the whole web platform. The [showcase](https://github.com/highercomve/Oriel/tree/main/examples/showcase) runs on it unchanged: dictation, chat with a local model, notes in SQLite, files, notifications.
+It is **experimental**: it runs on Linux (GTK 4), Windows (Direct2D), macOS (AppKit), iOS (UIKit) and Android, behind a build flag, and it covers the HTML and CSS that map onto native views, not the whole web platform. The [showcase](https://github.com/highercomve/Oriel/tree/main/examples/showcase) runs on it unchanged: dictation, chat with a local model, notes in SQLite, files, notifications.
+
+[](<$image.siteAsset('screenshots/native-showcase.png').alt('The showcase drawn by the native renderer on Linux')>)
+
+*The showcase on the native renderer (GTK 4): no WebView, the same `index.html`, `style.css` and `app.js`.*
+
+The page's DOM is Oriel's own: a **native DOM**, a document store written in Zig behind QuickJS bindings, replaced the JavaScript DOM library ([linkedom](https://github.com/WebReflection/linkedom)) the renderer started with. It builds a page about twice as fast and keeps memory flat (below).
 
 # Why
 
@@ -93,7 +99,7 @@ The native build costs about 2 MB of APK: QuickJS, Yoga and the renderer's JavaS
 | Memory, the showcase | **30.4 MB** | 141.5 MB | — | — |
 | APK, hello world | 3.1 MB | **0.85 MB** | 6.0 MB | 18.5 MB |
 | Reuses a web app | Mostly | Yes | Yes | No |
-| Desktop | Linux | Linux, Windows, macOS | Linux, Windows, macOS | Windows, macOS (separate projects) |
+| Desktop | Linux, Windows, macOS | Linux, Windows, macOS | Linux, Windows, macOS | Windows, macOS (separate projects) |
 | Status | Experimental | Stable | Stable | Stable |
 
 On Android. Memory is the total PSS of the app's processes on Android 15 (ChromeOS ARC), from `dumpsys meminfo`; APK sizes are release builds for arm64; React Native is 0.87. "Mostly": what the CSS above covers. The hello worlds: Oriel's is a line of text and a button; Tauri's and React Native's are their starter templates.
@@ -102,7 +108,88 @@ What the numbers say:
 
 - **Without a browser, Oriel uses half of React Native's memory**, while keeping web code: 20.3 MB for a hello world against 39.9 MB, and the whole showcase (30.4 MB) uses less than React Native's hello world.
 - **The WebView renderer is the smallest download** (0.85 MB): it uses the browser the system already has. The native renderer adds about 2 MB: QuickJS, Yoga and the renderer's JavaScript. React Native ships its engine and framework (18.5 MB).
-- **The trade:** the WebView runs any web code on every platform; the native renderer runs the part of the web an app's interface uses, today on Linux and Android.
+- **The trade:** the WebView runs any web code; the native renderer runs the part of the web an app's interface uses, on Linux, Windows, macOS, iOS and Android.
+
+# Speed
+
+The [render bench](https://github.com/highercomve/Oriel/tree/main/examples/render-bench) times one page in both renderers: building and updating rows of styled text (each followed by a layout read, as `offsetHeight` forces in a browser), a `requestAnimationFrame` loop moving 200 boxes, and a `<canvas>` game loop.
+
+[](<$image.siteAsset('screenshots/native-render-bench.png').alt('The render bench results screen on the native renderer')>)
+
+*The bench's own results screen, native renderer, Linux.*
+
+Linux desktop, ReleaseFast, the median of 3 runs:
+
+| | Native renderer | WebView (WebKitGTK) |
+|---|---|---|
+| Build 1000 / 3000 rows | 40 / 125 ms | 19 / 69 ms |
+| Update 1000 / 3000 rows | **5.6 / 17 ms** | 10 / 40 ms |
+| First frame | **70 ms** | 390 ms |
+| Animate 200 boxes | 60 fps, up to the display's rate | 60 fps |
+| Canvas, 200 / 1000 balls | 60 / 60 fps | 60 / 60 fps |
+| Memory at start | **66 MB** | 284 MB |
+| Memory after the tests | **127 MB**, flat across rounds | 343 MB |
+
+The native renderer starts several times faster, in under half the memory, updates text faster than the WebView and animates at the display's rate. Building a large page from scratch is still about twice as slow: the WebView's DOM and style engine are native code with a JIT, the native renderer's page JavaScript runs in QuickJS, an interpreter.
+
+## The native DOM
+
+The renderer started on [linkedom](https://github.com/WebReflection/linkedom), a DOM written in JavaScript. Every element, attribute and text node was a JavaScript object, and building a page meant allocating thousands of them in the interpreter. The native DOM keeps the document in a Zig store instead: nodes are records in slabs, ids and classes are interned, selectors are matched natively, and JavaScript only holds small wrappers for the nodes it touches.
+
+```=html
+<figure class="nr-fig">
+<svg viewBox="0 0 760 280" role="img" aria-labelledby="nr-dom-t">
+  <title id="nr-dom-t">Build 1000 rows: 40 ms on the native DOM against 85 on linkedom. Update 1000 rows: 5.6 against 9.8 ms. Memory after the bench: 127 against 152 MB.</title>
+  <g class="nr-bars">
+    <text class="nr-h" x="20" y="24">Build 1000 rows (ms)</text>
+    <text class="nr-s" x="200" y="52" text-anchor="end">native DOM</text>
+    <rect class="nr-bar nr-acc-fill" x="212" y="38" width="188" height="20" rx="4"/>
+    <text class="nr-v" x="408" y="53">40</text>
+    <text class="nr-s" x="200" y="80" text-anchor="end">linkedom</text>
+    <rect class="nr-bar" x="212" y="66" width="400" height="20" rx="4"/>
+    <text class="nr-v" x="620" y="81">85</text>
+    <text class="nr-h" x="20" y="116">Update 1000 rows (ms)</text>
+    <text class="nr-s" x="200" y="144" text-anchor="end">native DOM</text>
+    <rect class="nr-bar nr-acc-fill" x="212" y="130" width="229" height="20" rx="4"/>
+    <text class="nr-v" x="449" y="145">5.6</text>
+    <text class="nr-s" x="200" y="172" text-anchor="end">linkedom</text>
+    <rect class="nr-bar" x="212" y="158" width="400" height="20" rx="4"/>
+    <text class="nr-v" x="620" y="173">9.8</text>
+    <text class="nr-h" x="20" y="208">Memory after the bench (MB)</text>
+    <text class="nr-s" x="200" y="236" text-anchor="end">native DOM</text>
+    <rect class="nr-bar nr-acc-fill" x="212" y="222" width="334" height="20" rx="4"/>
+    <text class="nr-v" x="554" y="237">127</text>
+    <text class="nr-s" x="200" y="264" text-anchor="end">linkedom</text>
+    <rect class="nr-bar" x="212" y="250" width="400" height="20" rx="4"/>
+    <text class="nr-v" x="620" y="265">152</text>
+  </g>
+</svg>
+<figcaption>Linux desktop. linkedom's memory kept growing round after round; the native DOM's stays flat.</figcaption>
+</figure>
+```
+
+Every platform got the same gain:
+
+| Build 1000 rows | Native DOM | linkedom |
+|---|---|---|
+| Linux | 40 ms | 85 ms |
+| macOS (Apple M1) | 62 ms | 104 ms |
+| Windows (a 2018 laptop) | 128 ms | 223 ms |
+| Android (a Chromebook) | 194 ms | 290 ms |
+
+The JavaScript heap of an idle page went from about 29 MB to about 2 MB. The native DOM is the default; `-Dnative_dom=false` builds the renderer on linkedom, to compare the two or as a fallback while a page needs something the native DOM lacks.
+
+## Against React Native on Android
+
+Same Chromebook, the same bench written in each framework (React Native 0.87 with Fabric and Hermes, release builds), timed until the rows are on screen:
+
+| | Plain Android views | Oriel native | React Native |
+|---|---|---|---|
+| Build 1000 rows | 54 ms | 216 ms | 475–514 ms |
+| Build 3000 rows | 183 ms | 1024 ms | 2284–2700 ms |
+| Update 1000 rows | 4.7 ms | 43–51 ms | 127–161 ms |
+
+Plain views, with no JavaScript at all, are the floor. Between the two that run web-style JavaScript, Oriel builds the page two to three times faster and updates it about three times faster than React Native.
 
 # Try it
 
@@ -117,7 +204,9 @@ zig build -Dtarget=aarch64-linux-android -Doptimize=ReleaseSafe -Dnative_ui
 (cd android && gradle assembleRelease)
 ```
 
-Your app's `build.zig` passes the option to Oriel (the showcase does: `.native_ui = b.option(bool, "native_ui", …)`). With it, windows never create a WebView; without it, nothing of the renderer is compiled in.
+Your app's `build.zig` passes the option to Oriel (the showcase does: `.native_ui = b.option(bool, "native_ui", …)`). With it, windows never create a WebView; without it, nothing of the renderer is compiled in. Add `-Dnative_dom=false` to run the page on linkedom instead of the native DOM.
+
+The same flag works for every target: `-Dtarget=x86_64-windows`, macOS and iOS builds (see [Building]($link.page('docs/building'))) draw with Direct2D, AppKit and UIKit.
 
 # How it works
 
@@ -135,9 +224,9 @@ Your app's `build.zig` passes the option to Oriel (the showcase does: `.native_u
   <text class="nr-label" x="246" y="42">QUICKJS · THE PAGE'S JAVASCRIPT, IN THE APP</text>
   <rect class="nr-box" x="246" y="56" width="150" height="98" rx="8"/>
   <text class="nr-t" x="260" y="80">DOM</text>
-  <text class="nr-s" x="260" y="102">linkedom: elements,</text>
-  <text class="nr-s" x="260" y="120">events, timers,</text>
-  <text class="nr-s" x="260" y="138">window.oriel</text>
+  <text class="nr-s" x="260" y="102">the native DOM (Zig):</text>
+  <text class="nr-s" x="260" y="120">elements, events,</text>
+  <text class="nr-s" x="260" y="138">timers, window.oriel</text>
   <rect class="nr-box" x="412" y="56" width="150" height="98" rx="8"/>
   <text class="nr-t" x="426" y="80">Style engine</text>
   <text class="nr-s" x="426" y="102">cascade, var(),</text>
@@ -156,13 +245,13 @@ Your app's `build.zig` passes the option to Oriel (the showcase does: `.native_u
   <path class="nr-line" d="M651 156 V 198" marker-end="url(#nr-arrow)"/>
   <text class="nr-m nr-dim" x="660" y="184">ops</text>
   <rect class="nr-box" x="230" y="320" width="245" height="90" rx="10"/>
-  <text class="nr-t" x="246" y="346">GTK 4 (Linux)</text>
-  <text class="nr-s" x="246" y="368">draws with Cairo and Pango;</text>
-  <text class="nr-s" x="246" y="388">fields: GtkEntry, GtkTextView</text>
+  <text class="nr-t" x="246" y="346">Desktop</text>
+  <text class="nr-s" x="246" y="368">GTK 4 + Cairo (Linux), Direct2D</text>
+  <text class="nr-s" x="246" y="388">(Windows), AppKit (macOS)</text>
   <rect class="nr-box" x="495" y="320" width="245" height="90" rx="10"/>
-  <text class="nr-t" x="511" y="346">Android</text>
-  <text class="nr-s" x="511" y="368">draws on a Canvas;</text>
-  <text class="nr-s" x="511" y="388">fields: EditText, Spinner</text>
+  <text class="nr-t" x="511" y="346">Mobile</text>
+  <text class="nr-s" x="511" y="368">UIKit (iOS), a Canvas view</text>
+  <text class="nr-s" x="511" y="388">(Android); native fields</text>
   <path class="nr-line" d="M420 292 V 318" marker-end="url(#nr-arrow)"/>
   <path class="nr-line" d="M560 292 V 318" marker-end="url(#nr-arrow)"/>
   <rect class="nr-box" x="20" y="200" width="170" height="90" rx="10"/>
@@ -178,7 +267,7 @@ Your app's `build.zig` passes the option to Oriel (the showcase does: `.native_u
 </figure>
 ```
 
-**The page's JavaScript** runs in [QuickJS-ng](https://github.com/quickjs-ng/quickjs), a small embeddable engine compiled into the app. [linkedom](https://github.com/WebReflection/linkedom) gives it a DOM: `document`, elements, `querySelector`, events, `classList`, `dataset`. Oriel adds what a page expects from a browser: timers, `location.hash` and `history`, `matchMedia`, `localStorage`, `KeyboardEvent`, form submission, and `window.oriel`, the same bridge to your Zig commands and events as in the WebView. Your scripts run as `<script>` tags would, in order.
+**The page's JavaScript** runs in [QuickJS-ng](https://github.com/quickjs-ng/quickjs), a small embeddable engine compiled into the app; the renderer's own JavaScript is compiled to QuickJS bytecode at build time, so it doesn't parse at startup. The **native DOM** gives the page `document`, elements, `querySelector`, events, `classList`, `dataset`: the nodes live in a Zig store, and JavaScript sees them through thin wrappers. Oriel adds what a page expects from a browser: timers, `location.hash` and `history`, `matchMedia`, `localStorage`, `KeyboardEvent`, form submission, and `window.oriel`, the same bridge to your Zig commands and events as in the WebView. Your scripts run as `<script>` tags would, in order.
 
 **The style engine** parses each stylesheet once and indexes its rules by their rightmost selector. For every element it runs the cascade (specificity, `!important`, inline styles), resolves custom properties and `calc()`, inherits text properties and evaluates `@media` (width, `prefers-color-scheme`, `pointer`).
 
@@ -186,7 +275,7 @@ Your app's `build.zig` passes the option to Oriel (the showcase does: `.native_u
 
 **Zig** keeps one node per native view, maps the CSS onto [Yoga](https://www.yogalayout.dev/), the flexbox engine React Native uses, and lays the tree out. Text is measured by the platform's own text engine, so a paragraph wraps where it will be drawn.
 
-**The backend** draws. On both platforms one view draws the whole page (boxes, gradients, borders, shadows, styled text, SVG icons) and the fields are real platform widgets placed over it: the system keyboard, selection, autocorrect and accessibility of a text field come for free.
+**The backend** draws. On every platform one view draws the whole page (boxes, gradients, borders, shadows, styled text, SVG icons) and the fields are real platform widgets placed over it: the system keyboard, selection, autocorrect and accessibility of a text field come for free.
 
 ## One frame
 
@@ -278,18 +367,22 @@ Events go the other way: a tap on a node becomes a `click` on its element, bubbl
 - **Drawing:** colors (hex, `rgb()`, `hsl()`), linear and radial gradients, borders, `border-radius`, `box-shadow` (blurred like CSS), `opacity`, fonts (size, weight, italic, monospace), `line-height`, `letter-spacing`, `text-align`, `white-space`, underline.
 - **Transitions:** `transition` (and its longhands) on opacity, backgrounds (colors and gradients), color, transforms, width and height, border colors and `box-shadow`, with durations, delays and timing functions (`ease`, `linear`, `cubic-bezier()`, `steps()`).
 - **Animations:** `@keyframes` and `animation` (and its longhands): the same properties, iteration counts and `infinite`, directions (`alternate`, `reverse`), fill modes and delays. Frames that leave out `from` or `to` use the element's own values, as in CSS. While transitions or animations run, only the animated nodes are updated each frame: no styles or flattening.
-- **JavaScript:** what DOM-based UI code uses. The showcase is plain JavaScript; libraries that render through the DOM (React DOM, Preact, Vue, Svelte) use the same calls, but haven't been tried yet.
+- **More elements:** `<canvas>` with a 2d context (shapes, paths, gradients, text, transforms; drawn into a bitmap of its own), `<img>` (data: URIs and app assets, `object-fit`), tables (`colspan`, `border-spacing`), `<input type="range">` as the platform's slider, `position: sticky`, horizontal scrolling (`overflow-x`).
+- **JavaScript:** what DOM-based UI code uses. React 19 is tested: controlled inputs, checkboxes, selects and sliders reach `onChange`. The showcase is plain JavaScript; libraries that render through the DOM (React DOM, Preact, Vue, Svelte) use the same calls, but haven't been tried yet.
 
-Not yet: animating `background-position`, `filter` and `backdrop-filter` (a blurred background is drawn opaque), skew and 3D transforms, grid areas and spans, floats, `position: sticky`, `canvas`, `iframe`, `img`. A page that measures text or draws itself won't work.
+Not yet: animating `background-position`, `filter` and `backdrop-filter` (a blurred background is drawn opaque), skew and 3D transforms, grid areas and spans, floats, `iframe`, canvas `drawImage` and pixel access, `rowspan`. A page that measures text with `measureText` gets an estimate.
 
 It is not a browser, and it isn't trying to be one: it runs the part of the web that an app's interface uses. When a page uses something outside it, the layout still works and the property is ignored.
 
 # Status
 
-| | Linux (GTK 4) | Android |
-|---|---|---|
-| Runs | The showcase: every tab | The showcase: every tab, on a Pixel 8 and on ChromeOS |
-| Fields | `GtkEntry`, `GtkTextView`, `GtkDropDown` | `EditText`, `Spinner` |
-| Input | Clicks, wheel, keys, context menu, hover | Taps, drag with fling, long press, keys, the back button, mouse hover |
+| | Linux | Windows | macOS | iOS | Android |
+|---|---|---|---|---|---|
+| Draws with | GTK 4, Cairo, Pango | Direct2D, DirectWrite | AppKit, Core Graphics, Core Text | UIKit, Core Graphics, Core Text | A Canvas view (Kotlin) |
+| Fields | `GtkEntry`, `GtkTextView`, `GtkDropDown`, `GtkScale` | Edit, ComboBox, trackbar | `NSTextField`, `NSTextView`, `NSPopUpButton`, `NSSlider` | `UITextField`, `UITextView`, `UISlider` | `EditText`, `Spinner`, `SeekBar` |
+| `<canvas>` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| The showcase | Every tab | Every tab | Every tab | Every tab | Every tab |
 
-Next: accessibility (each node exposed to the screen reader), images, then the Apple and Windows backends. The design notes are in [`docs/native-renderer.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-renderer.md).
+Verified on a Linux desktop, a Windows 11 laptop, an M1 Mac, the iOS simulator, a Chromebook and a Pixel phone.
+
+Next: accessibility (each node exposed to the screen reader) and a faster page build. The design notes are in [`docs/native-renderer.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-renderer.md) and [`docs/native-dom.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-dom.md).

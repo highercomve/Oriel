@@ -12,6 +12,7 @@
 const std = @import("std");
 const engine_mod = @import("engine.zig");
 const tree_mod = @import("tree.zig");
+const text_measure_cache = @import("text_measure_cache.zig");
 const jni = @import("../platform/android/jni.zig");
 const runtime = @import("../platform/android/runtime.zig");
 const Engine = engine_mod.Engine;
@@ -32,6 +33,15 @@ pub const Surface = struct {
     frames: std.ArrayList(u8) = .empty,
     json: std.ArrayList(u8) = .empty,
     hovered: i64 = 0,
+    /// Text sizes by content and width (rows repeating a label measure it
+    /// once), and the epoch of the nodes' natural sizes (bump both if the
+    /// font scale ever re-measures text: NuiView doesn't yet).
+    text_measurements: text_measure_cache.Cache = .{},
+    text_epoch: u64 = 1,
+    /// The page wants a display frame (host.vsync), and whether a
+    /// Choreographer callback for this window is already posted.
+    frame_wanted: bool = false,
+    frame_posted: bool = false,
 };
 
 /// The native windows by id (UI thread only).
@@ -67,6 +77,7 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .focus = focus,
         .props = props,
         .text = textChanged,
+        .request_display_frame = requestDisplayFrame,
     }, assets, platform_json, label, url, if (w > 0) w else 400, if (h > 0) h else 800);
     try surfaces.put(gpa, window, s);
     s.engine.boot(dark, true);
@@ -79,6 +90,7 @@ pub fn destroy(window: u32) void {
     s.engine.destroy();
     s.frames.deinit(s.gpa);
     s.json.deinit(s.gpa);
+    s.text_measurements.deinit(s.gpa);
     s.gpa.destroy(s);
 }
 
@@ -96,9 +108,13 @@ fn surfaceOf(p: *anyopaque) *Surface {
     return @ptrCast(@alignCast(p));
 }
 
+/// A node's id across JNI and in the frame records (an int there; the page
+/// never reuses ids, so they grow). One beyond an i32 gets `no_id`, which
+/// Kotlin knows no node by: it's skipped there instead of a panic here.
 fn nid(n: *const Node) i32 {
-    return @intCast(n.id);
+    return if (n.id > std.math.minInt(i32) and n.id <= std.math.maxInt(i32)) @intCast(n.id) else no_id;
 }
+const no_id: i32 = std.math.minInt(i32);
 
 // ---------------------------------------------------------------------------
 // Backend hooks
@@ -142,6 +158,16 @@ fn textChanged(ctx: *anyopaque, node: *Node) void {
     _ = runtime.call(.void, "nuiText", "(II[B)V", .{ wid(s.window), nid(node), @as([]const u8, runs[0].t) });
 }
 
+/// requestAnimationFrame: one Choreographer callback at the next refresh
+/// (Nui.requestFrame), posted only while frames are wanted.
+fn requestDisplayFrame(ctx: *anyopaque) void {
+    const s = surfaceOf(ctx);
+    s.frame_wanted = true;
+    if (s.frame_posted) return;
+    s.frame_posted = true;
+    _ = runtime.call(.void, "nuiRequestFrame", "(I)V", .{wid(s.window)});
+}
+
 /// Text sizes come from Kotlin (StaticLayout, in dp), and so do images'
 /// (their decoded size, scaled down to the width they may take); fields
 /// have a fixed size like on GTK.
@@ -149,15 +175,47 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const s = surfaceOf(ctx);
     const fz = n.props.fz orelse 16;
     switch (n.kind) {
-        .text, .image => {
-            const max: i32 = if (std.math.isInf(max_width)) -1 else @intFromFloat(@max(0, @min(max_width, 1e6)) * 64);
-            const r: u64 = @bitCast(runtime.call(.long, "nuiMeasure", "(III)J", .{ wid(s.window), nid(n), max }) orelse 0);
-            out.* = .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
+        .text => {
+            // Its natural (one-line) size, kept on the node like GTK's: at
+            // a width it fits in, that's the answer, without a JNI call
+            // (the tree clears it when the text or props change).
+            const nat = if (n.measured_text_size != null and n.text_measure_epoch == s.text_epoch) n.measured_text_size.? else blk: {
+                const size = measuredText(s, n, std.math.inf(f32));
+                n.measured_text_size = size;
+                n.text_measure_epoch = s.text_epoch;
+                break :blk size;
+            };
+            if (n.props.nowrap or max_width >= nat[0]) {
+                out.* = nat;
+                return;
+            }
+            out.* = measuredText(s, n, max_width);
         },
+        .image => out.* = kotlinMeasure(s, n, max_width),
         .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
         else => out.* = .{ 0, 0 },
     }
+}
+
+/// A text's size at `width` (inf: unbounded): from the content-keyed cache,
+/// else Kotlin's StaticLayout.
+fn measuredText(s: *Surface, n: *Node, width: f32) [2]f32 {
+    const actual = if (n.props.nowrap or std.math.isInf(width)) std.math.inf(f32) else @max(1, width);
+    var buf: [1024]u8 = undefined;
+    const key = text_measure_cache.keyFor(&buf, &n.props, actual);
+    if (key) |k| if (s.text_measurements.get(k)) |size| return size;
+    const size = kotlinMeasure(s, n, actual);
+    if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
+    return size;
+}
+
+/// nuiMeasure: the node's size from Kotlin at `max_width` (inf: unbounded),
+/// in 1/64 dp across JNI.
+fn kotlinMeasure(s: *Surface, n: *Node, max_width: f32) [2]f32 {
+    const max: i32 = if (std.math.isInf(max_width)) -1 else @intFromFloat(@max(0, @min(max_width, 1e6)) * 64);
+    const r: u64 = @bitCast(runtime.call(.long, "nuiMeasure", "(III)J", .{ wid(s.window), nid(n), max }) orelse 0);
+    return .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
 }
 
 /// After a layout or a scroll: the frames, in drawing order, and the
@@ -186,7 +244,9 @@ fn pack(s: *Surface, n: *Node) !void {
     const start = s.frames.items.len;
     const c = n.content();
     const f = n.frame;
-    const vals = [record_len]f32{ @floatFromInt(n.id), f.x, f.y, f.w, f.h, n.clip.x, n.clip.y, n.clip.w, n.clip.h, c.x, c.y, c.w, c.h, 0 };
+    // The id's int bits, not its value as a float: a float holds integers
+    // exactly only up to 2^24 (Kotlin reads this slot as an int).
+    const vals = [record_len]f32{ @bitCast(nid(n)), f.x, f.y, f.w, f.h, n.clip.x, n.clip.y, n.clip.w, n.clip.h, c.x, c.y, c.w, c.h, 0 };
     try s.frames.appendSlice(s.gpa, std.mem.sliceAsBytes(&vals));
     for (n.kids.items) |k| try pack(s, k);
     const after: f32 = @floatFromInt((s.frames.items.len - start) / (record_len * 4) - 1);
@@ -298,6 +358,17 @@ fn nEvent(env: *Env, _: jclass, win: jint, id: jint, kind: jobject, data: jobjec
     return @intFromBool(s.engine.event(id, k, if (d.len > 0) d else "null"));
 }
 
+/// The display refreshed (Choreographer; `interval_ms` from its refresh
+/// rate): the page's animation frame, if it still wants one. A page that
+/// asks again during it posts the next callback (requestDisplayFrame).
+fn nDisplayFrame(_: *Env, _: jclass, win: jint, interval_ms: f32) callconv(.c) void {
+    const s = byId(win) orelse return; // the window closed
+    s.frame_posted = false;
+    if (!s.frame_wanted) return;
+    s.frame_wanted = false;
+    s.engine.displayFrame(interval_ms);
+}
+
 fn nTimer(_: *Env, _: jclass, win: jint, id: jint) callconv(.c) void {
     const s = byId(win) orelse return;
     s.engine.timerFired(@bitCast(id));
@@ -333,6 +404,7 @@ fn nTrace(_: *Env, _: jclass) callconv(.c) jni.jboolean {
 comptime {
     const prefix = "Java_dev_oriel_NuiNative_";
     @export(&nTrace, .{ .name = prefix ++ "trace" });
+    @export(&nDisplayFrame, .{ .name = prefix ++ "displayFrame" });
     @export(&nResize, .{ .name = prefix ++ "resize" });
     @export(&nTap, .{ .name = prefix ++ "tap" });
     @export(&nPress, .{ .name = prefix ++ "press" });

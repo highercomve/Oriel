@@ -742,7 +742,7 @@ fn onSlid(sc: *Widget, data: ?*anyopaque) callconv(.c) void {
         gtk_range_set_value(sc, v);
         s.updating = false;
     }
-    const steps: usize = @intFromFloat(@round((v - r.min) / r.step));
+    const steps: usize = tree_mod.sat(u32, @round((v - r.min) / r.step));
     const last: usize = @intFromPtr(g_object_get_data(@ptrCast(sc), "oriel-step"));
     if (last == steps + 1) return; // same step as the last "input"
     g_object_set_data(@ptrCast(sc), "oriel-step", @ptrFromInt(steps + 1));
@@ -987,21 +987,21 @@ fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
         }.f;
         add(attrs, pango_attr_foreground_new(c16(r.c[0]), c16(r.c[1]), c16(r.c[2])), start, end);
         if (r.c[3] < 1) add(attrs, pango_attr_foreground_alpha_new(@intFromFloat(@max(0, @min(1, r.c[3])) * 65535)), start, end);
-        add(attrs, pango_attr_size_new_absolute(@intFromFloat(r.sz * PANGO_SCALE)), start, end);
-        add(attrs, pango_attr_weight_new(@intFromFloat(r.w)), start, end);
+        add(attrs, pango_attr_size_new_absolute(tree_mod.sat(c_int, r.sz * PANGO_SCALE)), start, end);
+        add(attrs, pango_attr_weight_new(tree_mod.sat(c_int, r.w)), start, end);
         if (r.i) add(attrs, pango_attr_style_new(2), start, end);
         if (r.mono) add(attrs, pango_attr_family_new("Monospace"), start, end);
         if (r.u) add(attrs, pango_attr_underline_new(1), start, end);
         if (r.bg) |bg| if (bg[3] > 0) {
             add(attrs, pango_attr_background_new(c16(bg[0]), c16(bg[1]), c16(bg[2])), start, end);
-            if (bg[3] < 1) add(attrs, pango_attr_background_alpha_new(@intFromFloat(bg[3] * 65535)), start, end);
+            if (bg[3] < 1) add(attrs, pango_attr_background_alpha_new(tree_mod.sat(u16, bg[3] * 65535)), start, end);
         };
     }
-    if (n.props.ls) |ls| add0(attrs, pango_attr_letter_spacing_new(@intFromFloat(ls * PANGO_SCALE)));
+    if (n.props.ls) |ls| add0(attrs, pango_attr_letter_spacing_new(tree_mod.sat(c_int, ls * PANGO_SCALE)));
     // CSS line-height: each line box is that tall and the glyphs sit in its
     // middle (half-leading above and below, negative when it's smaller than
     // the font, as `line-height: 1` on an icon glyph). Pango >= 1.50.
-    if (n.props.lh) |lh| add0(attrs, pango_attr_line_height_new_absolute(@intFromFloat(lh * PANGO_SCALE)));
+    if (n.props.lh) |lh| add0(attrs, pango_attr_line_height_new_absolute(tree_mod.sat(c_int, lh * PANGO_SCALE)));
     const layout = gtk_widget_create_pango_layout(s.area, null);
     const font = if (n.props.mono) &s.mono else &s.sans;
     if (font.* == null) font.* = pango_font_description_from_string(if (n.props.mono) "Monospace" else "Sans");
@@ -1013,7 +1013,7 @@ fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
     if (n.props.nowrap or std.math.isInf(width)) {
         pango_layout_set_width(layout, -1);
     } else {
-        pango_layout_set_width(layout, @intFromFloat(@max(1, width) * PANGO_SCALE));
+        pango_layout_set_width(layout, tree_mod.sat(c_int, @max(1, width) * PANGO_SCALE));
         pango_layout_set_wrap(layout, 2); // word-char
     }
     if (n.props.ta) |ta| {
@@ -1323,7 +1323,7 @@ fn paintPlaceholder(s: *Surface, cr: *cairo_t, n: *Node) void {
     pango_font_description_set_absolute_size(desc, (n.props.fz orelse 16) * PANGO_SCALE);
     pango_layout_set_font_description(layout, desc);
     pango_layout_set_text(layout, ph.ptr, @intCast(ph.len));
-    pango_layout_set_width(layout, @intFromFloat(@max(1, c.w) * PANGO_SCALE));
+    pango_layout_set_width(layout, tree_mod.sat(c_int, @max(1, c.w) * PANGO_SCALE));
     pango_layout_set_wrap(layout, 2);
     var col = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
     col[3] *= 0.5;
@@ -1354,6 +1354,9 @@ const CanvasState = struct {
     singular: bool = false,
 };
 
+/// The largest canvas bitmap: 4096 x 4096 px (64 MB as ARGB).
+const max_canvas_pixels: f64 = 4096 * 4096;
+
 fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
     const cmds = n.canvas orelse return;
     const f = n.frame;
@@ -1363,7 +1366,11 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
     // an unbalanced restore() would pop the window's own states, and a
     // clearRect must clear the canvas, not the page behind it. All of that
     // now stays in the canvas's surface.
-    const sf: f64 = @floatFromInt(@max(1, gtk_widget_get_scale_factor(s.area)));
+    var sf: f64 = @floatFromInt(@max(1, gtk_widget_get_scale_factor(s.area)));
+    // At most max_canvas_pixels (as on Apple): a bigger canvas gets a
+    // bitmap of fewer pixels per point, scaled up on the page.
+    const area = f.w * sf * f.h * sf;
+    if (area > max_canvas_pixels) sf *= @sqrt(max_canvas_pixels / area);
     const pw: c_int = @intFromFloat(@min(16384, @ceil(f.w * sf)));
     const ph: c_int = @intFromFloat(@min(16384, @ceil(f.h * sf)));
     if (pw <= 0 or ph <= 0) return;
@@ -1623,7 +1630,17 @@ const Image = struct {
     fn deinit(img: Image) void {
         if (img.surface) |sf| cairo_surface_destroy(sf);
     }
+
+    /// What its decoded pixels take (ARGB).
+    fn bytes(img: Image) u64 {
+        if (img.surface == null) return 0;
+        return @as(u64, @intFromFloat(img.w)) * @as(u64, @intFromFloat(img.h)) * 4;
+    }
 };
+
+/// All of a window's decoded pictures together: past it, the others go
+/// before a new one is kept (they're decoded again when painted).
+const max_image_cache_bytes: u64 = 256 * 1024 * 1024;
 
 /// The node's decoded picture (decoded on first use and when src changes).
 fn imageOf(s: *Surface, n: *Node) ?Image {
@@ -1637,6 +1654,14 @@ fn imageOf(s: *Surface, n: *Node) ?Image {
     };
     var stored = img;
     stored.src_hash = hash;
+    var total = stored.bytes();
+    var it = s.images.valueIterator();
+    while (it.next()) |other| total += other.bytes();
+    if (total > max_image_cache_bytes) {
+        var rest = s.images.valueIterator();
+        while (rest.next()) |other| other.deinit();
+        s.images.clearRetainingCapacity();
+    }
     s.images.put(n.id, stored) catch {
         stored.deinit();
         return null;

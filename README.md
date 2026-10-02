@@ -1720,6 +1720,22 @@ oriel dev              # run against Vite dev server with hot reload
 - **Not yet:** Developer ID signing and notarization; windows without decorations can't become key.
 - `ORIEL_SNAPSHOT=/tmp/shot.png` saves the main window's page (WebKit's snapshot API) a second after it loaded: screen capture of other apps needs a Screen Recording grant on macOS.
 
+## Native renderer (experimental)
+
+Build with `-Dnative_ui` and the app's HTML, CSS and JavaScript are drawn
+with native views instead of a WebView: QuickJS runs the page, Oriel's own
+native DOM (a Zig document store) holds it, Yoga lays it out, and GTK 4,
+Direct2D, AppKit, UIKit or Android views draw it. There is no browser
+process. On the Linux desktop the render bench updates 1000 rows in 5.6 ms
+(the WebView: 10), shows its first frame in 70 ms (390) and uses 127 MB
+after its tests (343). Building a large page is still about twice as slow
+as the WebView. `-Dnative_dom=false` builds it on linkedom instead.
+
+Details, numbers on every platform and a comparison with React Native:
+[the native renderer page](https://highercomve.github.io/Oriel/docs/native-renderer/),
+[`docs/native-renderer.md`](docs/native-renderer.md) and
+[`docs/native-dom.md`](docs/native-dom.md).
+
 ## Compared with Tauri
 
 | Tauri | Oriel (Linux) |
