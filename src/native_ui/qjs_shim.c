@@ -33,6 +33,7 @@ extern void oriel_nui_invoke(void *opaque, uint32_t call_id, const char *cmd, si
 extern void oriel_nui_timer(void *opaque, uint32_t timer_id, double ms);
 extern void oriel_nui_ops(void *opaque, const char *json, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
+extern int oriel_nui_vsync(void *opaque);
 extern int oriel_nui_leaf_style(void *opaque, double id, const char *json, size_t len);
 extern int oriel_nui_leaf(void *opaque, double id, double style_id, const char *text, size_t len, int is_text);
 extern int oriel_nui_frame(void *opaque, double id, double *out5);
@@ -190,6 +191,13 @@ static JSValue h_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
     int ok = oriel_nui_text(opaque_of(ctx), id, s, len);
     JS_FreeCString(ctx, s);
     return JS_NewBool(ctx, ok);
+}
+
+// host.vsync(): __oriel.vsync(interval) at the display's next refresh;
+// false when the backend can't (requestAnimationFrame keeps its timers).
+static JSValue h_vsync(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return JS_NewBool(ctx, oriel_nui_vsync(opaque_of(ctx)));
 }
 
 // host.now(): a monotonic clock in ms, sub-millisecond (performance.now).
@@ -446,6 +454,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
 #endif
     set_fn(ctx, host, "frame", h_frame, 1);
     set_fn(ctx, host, "now", h_now, 0);
+    set_fn(ctx, host, "vsync", h_vsync, 0);
     set_fn(ctx, host, "focus", h_focus, 1);
     set_fn(ctx, host, "scrollIntoView", h_scroll_into_view, 2);
     set_fn(ctx, host, "scrollTo", h_scroll_to, 2);
