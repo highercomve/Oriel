@@ -38,11 +38,24 @@
                 android:defaultHeight="@@height@@dp"
                 android:minWidth="@@min_width@@dp"
                 android:minHeight="@@min_height@@dp" />
+@@url_schemes@@        </activity>
+
+        <!-- The launcher icon: opens the main window at its remembered size
+             (OrielLaunchActivity), then goes. No task affinity: its own
+             throwaway task, so the main window gets a task of its own (with
+             the launch bounds) rather than this one. -->
+        <activity
+            android:name="dev.oriel.OrielLaunchActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-@@url_schemes@@        </activity>
+        </activity>
 
         <activity
             android:name="dev.oriel.OrielWindowActivity"
