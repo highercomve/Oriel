@@ -234,6 +234,28 @@ Object.defineProperty(inputProto, "disabled", {
   set(v) { if (v) this.setAttribute("disabled", ""); else this.removeAttribute("disabled"); },
   configurable: true,
 });
+// A select's value: linkedom only reads it (undefined without a [selected]
+// option). As in a browser, it's the selected option's value or else the
+// first's, and setting it selects the option with that value, so a native
+// change reaches React's onChange with the new value.
+const selectProto = Object.getPrototypeOf(document.createElement("select"));
+const optionValue = (o) => o.getAttribute("value") ?? o.textContent;
+Object.defineProperty(selectProto, "value", {
+  get() {
+    const opts = this.options;
+    for (const o of opts) if (o.hasAttribute("selected")) return optionValue(o);
+    return opts.length ? optionValue(opts[0]) : "";
+  },
+  set(v) {
+    const want = String(v);
+    let found = false;
+    for (const o of this.options) {
+      if (!found && optionValue(o) === want) { o.setAttribute("selected", ""); found = true; }
+      else o.removeAttribute("selected");
+    }
+  },
+  configurable: true,
+});
 for (const tag of ["button", "textarea", "select"]) {
   const proto = Object.getPrototypeOf(document.createElement(tag));
   if (!Object.getOwnPropertyDescriptor(proto, "disabled")?.set) {

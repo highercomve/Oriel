@@ -14811,6 +14811,26 @@ ${a.stack || ""}`;
     },
     configurable: true
   });
+  var selectProto = Object.getPrototypeOf(document.createElement("select"));
+  var optionValue = (o) => o.getAttribute("value") ?? o.textContent;
+  Object.defineProperty(selectProto, "value", {
+    get() {
+      const opts = this.options;
+      for (const o of opts) if (o.hasAttribute("selected")) return optionValue(o);
+      return opts.length ? optionValue(opts[0]) : "";
+    },
+    set(v) {
+      const want = String(v);
+      let found = false;
+      for (const o of this.options) {
+        if (!found && optionValue(o) === want) {
+          o.setAttribute("selected", "");
+          found = true;
+        } else o.removeAttribute("selected");
+      }
+    },
+    configurable: true
+  });
   for (const tag of ["button", "textarea", "select"]) {
     const proto = Object.getPrototypeOf(document.createElement(tag));
     if (!Object.getOwnPropertyDescriptor(proto, "disabled")?.set) {

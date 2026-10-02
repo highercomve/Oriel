@@ -340,6 +340,49 @@ pub const Rect = struct {
     }
 };
 
+/// A node's children in CSS paint order: negative z-index first, then the
+/// boxes in the flow, then positioned ones (absolute, fixed, sticky,
+/// relative) with z-index auto or 0, then positive z-index; tree order
+/// within each layer. So a sticky header paints over the rows scrolled
+/// under it, as in a browser. `reverse`: topmost first (hit testing). No
+/// allocation: one pass per layer present (two when nothing is positioned).
+pub const PaintIter = struct {
+    kids: []const *Node,
+    reverse: bool = false,
+    layer: ?i64 = null,
+    i: usize = 0,
+
+    /// The layer: 2 × z-index, +1 for a positioned box (above the flow at
+    /// the same z); the flow is 0.
+    pub fn layerOf(k: *const Node) i64 {
+        const p = k.props;
+        const positioned = p.pos != null or p.sticky != null or p.rel != null;
+        const z: i64 = p.z orelse 0;
+        return 2 * z + @intFromBool(positioned);
+    }
+
+    pub fn next(it: *PaintIter) ?*Node {
+        while (true) {
+            if (it.layer) |layer| {
+                while (it.i < it.kids.len) {
+                    const k = it.kids[if (it.reverse) it.kids.len - 1 - it.i else it.i];
+                    it.i += 1;
+                    if (layerOf(k) == layer) return k;
+                }
+            }
+            // The next layer up (or down, reversed) that has a child.
+            var found: ?i64 = null;
+            for (it.kids) |k| {
+                const l = layerOf(k);
+                if (it.layer) |cur| if (if (it.reverse) l >= cur else l <= cur) continue;
+                if (found == null or (if (it.reverse) l > found.? else l < found.?)) found = l;
+            }
+            it.layer = found orelse return null;
+            it.i = 0;
+        }
+    }
+};
+
 pub const Node = struct {
     id: i64,
     kind: Kind,
@@ -843,11 +886,9 @@ pub const Tree = struct {
     fn hitIn(n: *Node, x: f32, y: f32) ?*Node {
         if (n.props.vis == false) return null;
         if (!n.clip.contains(x, y)) return null;
-        var i = n.kids.items.len;
-        while (i > 0) {
-            i -= 1;
-            if (hitIn(n.kids.items[i], x, y)) |h| return h;
-        }
+        // Topmost first: the paint order backwards.
+        var it: PaintIter = .{ .kids = n.kids.items, .reverse = true };
+        while (it.next()) |k| if (hitIn(k, x, y)) |h| return h;
         return if (n.frame.contains(x, y) and n.props.root == false) n else null;
     }
 
@@ -1139,6 +1180,38 @@ test "a field's value set by the page survives props that don't repeat it" {
     const n = t.get(1).?;
     try std.testing.expectEqualStrings("typed by the page", n.pending_value.?);
     try std.testing.expectEqualStrings("a placeholder that reuses the arena's memory", n.props.ph.?);
+}
+
+test "paint order: the flow, then positioned boxes, z-index around them" {
+    const t = std.testing;
+    var nodes: [6]Node = undefined;
+    for (&nodes, 0..) |*n, i| n.* = .{ .id = @intCast(i), .kind = .view, .yn = undefined, .arena = undefined, .tree = undefined };
+    nodes[0].props.sticky = .{ 0, null, null, null }; // a sticky header, first in the tree
+    nodes[2].props.z = -1;
+    nodes[3].props.pos = "absolute";
+    nodes[3].props.z = 2;
+    nodes[4].props.rel = .{ 1, null, null, null };
+    var kids: [6]*Node = undefined;
+    for (&kids, &nodes) |*k, *n| k.* = n;
+    var order: [6]i64 = undefined;
+    var it: PaintIter = .{ .kids = &kids };
+    var i: usize = 0;
+    while (it.next()) |n| : (i += 1) order[i] = n.id;
+    try t.expectEqual(6, i);
+    try t.expectEqualSlices(i64, &.{ 2, 1, 5, 0, 4, 3 }, &order);
+    var rev: PaintIter = .{ .kids = &kids, .reverse = true };
+    i = 0;
+    while (rev.next()) |n| : (i += 1) order[i] = n.id;
+    try t.expectEqualSlices(i64, &.{ 3, 4, 0, 5, 1, 2 }, &order);
+    // Nothing positioned: tree order.
+    var plain: [3]Node = undefined;
+    for (&plain, 0..) |*n, j| n.* = .{ .id = @intCast(j), .kind = .view, .yn = undefined, .arena = undefined, .tree = undefined };
+    var pk = [3]*Node{ &plain[0], &plain[1], &plain[2] };
+    var pit: PaintIter = .{ .kids = &pk };
+    try t.expectEqual(@as(i64, 0), pit.next().?.id);
+    try t.expectEqual(@as(i64, 1), pit.next().?.id);
+    try t.expectEqual(@as(i64, 2), pit.next().?.id);
+    try t.expect(pit.next() == null);
 }
 
 test "sticky: kept in the view, never out of its parent" {
