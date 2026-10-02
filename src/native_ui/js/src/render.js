@@ -626,7 +626,13 @@ export class Renderer {
     // it out, not a column (the text went under the box).
     const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) &&
       flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""));
-    if (inlineLine) { props.fd = "row"; props.fw = "wrap"; props.ai = "center"; }
+    // One box and its text (a checkbox's label): the text shrinks to the
+    // room beside the box and wraps there by words (its min width is the
+    // longest word, tree.zig). Several boxes: they wrap to new lines.
+    if (inlineLine) {
+      props.fd = "row"; props.ai = "center";
+      if (flow.filter((f) => f.el).length > 1) props.fw = "wrap";
+    }
 
     for (const item of flow) {
       if (item.text) {

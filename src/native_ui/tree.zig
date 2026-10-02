@@ -345,6 +345,64 @@ pub const Rect = struct {
     }
 };
 
+/// <input type=range> (`props.range`: min, max, step): what a slider shows
+/// and sends, as Android's SeekBar does it (AppKit, UIKit and Win32 use it).
+pub const Range = struct {
+    min: f64,
+    max: f64,
+    /// The step; "any" (0) is a thousandth of the span.
+    step: f64,
+
+    pub fn of(n: *const Node) Range {
+        const r = n.props.range orelse [3]f64{ 0, 100, 1 };
+        const lo = if (std.math.isFinite(r[0])) r[0] else 0;
+        const hi = if (std.math.isFinite(r[1]) and r[1] >= lo) r[1] else lo;
+        const any = (hi - lo) / 1000;
+        const step = if (std.math.isFinite(r[2]) and r[2] > 0) r[2] else any;
+        return .{ .min = lo, .max = hi, .step = if (step > 0) step else 1 };
+    }
+
+    /// `x` on the nearest step, inside min…max.
+    pub fn snap(r: Range, x: f64) f64 {
+        if (!std.math.isFinite(x)) return r.min;
+        const steps = @round((std.math.clamp(x, r.min, r.max) - r.min) / r.step);
+        return std.math.clamp(r.min + steps * r.step, r.min, r.max);
+    }
+
+    /// The page's text for a value ("3", "0.25"), the input's value attribute.
+    pub fn text(r: Range, buf: []u8, x: f64) []const u8 {
+        const v = r.snap(x);
+        if (v == @floor(v) and @abs(v) < 1e15) return std.fmt.bufPrint(buf, "{d}", .{@as(i64, @intFromFloat(v))}) catch "0";
+        const s = std.fmt.bufPrint(buf, "{d:.6}", .{v}) catch return "0";
+        var end = s.len;
+        while (end > 0 and s[end - 1] == '0') end -= 1;
+        if (end > 0 and s[end - 1] == '.') end -= 1;
+        return s[0..end];
+    }
+
+    /// A page value ("0.2") as a number, min when it isn't one.
+    pub fn parse(r: Range, v: []const u8) f64 {
+        return r.snap(std.fmt.parseFloat(f64, std.mem.trim(u8, v, " ")) catch r.min);
+    }
+};
+
+test "Range snaps and prints like Android" {
+    var n: Node = undefined;
+    n.props = .{ .range = .{ 0, 1, 0.05 } };
+    const r = Range.of(&n);
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("0.25", r.text(&buf, 0.26));
+    try std.testing.expectEqualStrings("1", r.text(&buf, 7));
+    try std.testing.expectEqualStrings("0", r.text(&buf, -3));
+    try std.testing.expectEqual(@as(f64, 0.2), r.parse("0.2"));
+    try std.testing.expectEqual(@as(f64, 0), r.parse("x"));
+    n.props = .{};
+    const d = Range.of(&n);
+    try std.testing.expectEqualStrings("50", d.text(&buf, 49.6));
+    n.props = .{ .range = .{ 5, 1, 0 } }; // max below min: pinned at min
+    try std.testing.expectEqualStrings("5", Range.of(&n).text(&buf, 3));
+}
+
 /// A node's children in CSS paint order: negative z-index first, then the
 /// boxes in the flow, then positioned ones (absolute, fixed, sticky,
 /// relative) with z-index auto or 0, then positive z-index; tree order
@@ -611,6 +669,10 @@ pub const Tree = struct {
         styleYoga(n);
         // The props as sent, valid during the call (the ops arena).
         if (t.on_props) |cb| cb(t.measure_ctx, n, value);
+        // After the backend saw the new props (GTK drops its cached size).
+        wordMinWidth(t, n);
+        // A row or a column now: its text items' min width follows.
+        for (n.kids.items) |k| wordMinWidth(t, k);
         if (yg.YGNodeHasMeasureFunc(n.yn)) yg.YGNodeMarkDirty(n.yn);
     }
 
@@ -633,7 +695,45 @@ pub const Tree = struct {
             yg.YGNodeInsertChild(n.yn, k.yn, yg.YGNodeGetChildCount(n.yn));
             k.parent = n;
             try n.kids.append(t.gpa, k);
+            wordMinWidth(t, k);
         }
+    }
+
+    /// CSS's min-width: auto for a text item in a flex row: its longest
+    /// word, so the row shrinks its other items (a slider) rather than
+    /// breaking a label mid-word ("Rang/e"). Yoga has no min-content: the
+    /// text's unwrapped width (the backend's measure), all of it for one
+    /// word, else the longest word's share of the characters with a margin
+    /// (never more than the whole). Not in a column, nor when the page sets
+    /// min-width.
+    fn wordMinWidth(t: *Tree, k: *Node) void {
+        if (k.kind != .text or k.props.minw != null) return;
+        const in_row = if (k.parent) |p| std.mem.startsWith(u8, p.props.fd orelse "column", "row") else false;
+        const runs = k.props.runs orelse &.{};
+        var total: usize = 0;
+        var longest: usize = 0;
+        var word: usize = 0;
+        for (runs) |r| {
+            var it = (std.unicode.Utf8View.init(r.t) catch continue).iterator();
+            while (it.nextCodepoint()) |cp| {
+                total += 1;
+                if (cp == ' ' or cp == '\t' or cp == '\n') {
+                    word = 0;
+                } else {
+                    word += 1;
+                    longest = @max(longest, word);
+                }
+            }
+        }
+        if (!in_row or k.props.nowrap or longest == 0) {
+            yg.YGNodeStyleSetMinWidth(k.yn, std.math.nan(f32));
+            return;
+        }
+        var out: [2]f32 = .{ 0, 0 };
+        t.measure(t.measure_ctx, k, std.math.inf(f32), &out);
+        if (!(out[0] > 0) or !std.math.isFinite(out[0])) return;
+        const share = out[0] * @as(f32, @floatFromInt(longest)) / @as(f32, @floatFromInt(total)) * 1.15;
+        yg.YGNodeStyleSetMinWidth(k.yn, if (longest == total) out[0] else @min(out[0], share));
     }
 
     // -----------------------------------------------------------------
