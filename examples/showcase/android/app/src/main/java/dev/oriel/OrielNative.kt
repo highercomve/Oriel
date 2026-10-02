@@ -3,6 +3,8 @@ package dev.oriel
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
@@ -44,6 +46,7 @@ import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.OverScroller
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import org.json.JSONArray
@@ -53,8 +56,10 @@ import java.nio.ByteOrder
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
@@ -73,10 +78,14 @@ internal object NuiNative {
     @JvmStatic external fun hover(window: Int, x: Float, y: Float)
     @JvmStatic external fun longPress(window: Int, x: Float, y: Float): Boolean
     @JvmStatic external fun scroll(window: Int, x: Float, y: Float, dy: Float): Boolean
+    /** Scroll sideways at (x, y) dp: true if a container moved. */
+    @JvmStatic external fun scrollX(window: Int, x: Float, y: Float, dx: Float): Boolean
     @JvmStatic external fun event(window: Int, id: Int, kind: ByteArray, data: ByteArray): Boolean
     @JvmStatic external fun timer(window: Int, id: Int)
     @JvmStatic external fun back(window: Int): Boolean
     @JvmStatic external fun jsMemory(window: Int): Long
+    /** An app asset's bytes (an <img> src), or null. */
+    @JvmStatic external fun asset(window: Int, path: ByteArray): ByteArray?
 }
 
 /** The calls from Zig (through OrielRuntime's `nui*` statics). */
@@ -113,6 +122,14 @@ internal class NuiNode(val id: Int, var kind: String) {
     var sc = 1f
     var rot = 0f
     var shadow: JSONObject? = null
+    /** An <img>: its decoded picture (maybe downsampled), its natural size in px, and the src it came from. */
+    /** A <canvas>: its drawing program, parsed once per change (OrielCanvas.kt). */
+    var canvasOps: List<CvOp> = emptyList()
+    var image: Bitmap? = null
+    var imageW = 0
+    var imageH = 0
+    /** Which src the picture came from (length and hash: the src itself can be megabytes). */
+    var imageKey = 0L
     var text: CharSequence? = null
     var paint: TextPaint? = null
     var layout: StaticLayout? = null
@@ -138,6 +155,10 @@ internal class NuiNode(val id: Int, var kind: String) {
         icon = null
         if (kind == "text") buildText()
         if (kind == "icon") p.optJSONObject("icon")?.let { icon = NuiIcon(it) }
+        if (kind == "canvas") {
+            canvasOps = CanvasProgram.parse(p.optJSONArray("cv"))
+            p.remove("cv") // parsed: the JSON isn't kept
+        }
     }
 
     private fun buildText() {
@@ -193,6 +214,12 @@ internal class NuiNode(val id: Int, var kind: String) {
 
     /** Size for Yoga: width and height in 1/64 dp, packed. */
     fun measure(max64: Int): Long {
+        if (kind == "image") {
+            // Its natural size (pixels as CSS px), scaled down to the width it may take.
+            if (image == null || imageW <= 0 || imageH <= 0) return 0
+            val k = if (max64 >= 0 && max64 / 64f < imageW) max64 / 64f / imageW else 1f
+            return ((imageW * k * 64).toLong() shl 32) or (imageH * k * 64).toLong()
+        }
         val t = text ?: return 0
         val tp = paint ?: return 0
         val desired = ceil(Layout.getDesiredWidth(t, tp)).toInt() + 1
@@ -378,6 +405,10 @@ internal object SvgPath {
 internal class NuiView(context: Context, val window: Int, private val onSize: (Int, Int) -> Unit) : FrameLayout(context) {
     private val nodes = HashMap<Int, NuiNode>()
     private val fields = HashMap<Int, View>()
+    /** Each select's value as last shown (the page's, or the user's pick). */
+    private val selectValues = HashMap<Int, String>()
+    /** Each <canvas> node's bitmap, kept between paints (OrielCanvas.kt). */
+    private val canvases = HashMap<Int, CanvasSurface>()
     private var frames = FloatArray(0)
     private val index = HashMap<Int, Int>() // node id → record
     private val density = resources.displayMetrics.density
@@ -405,13 +436,58 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
     fun props(id: Int, kind: String, json: String) {
         val n = nodes.getOrPut(id) { NuiNode(id, kind) }
         n.update(json, kind)
+        if (kind == "image") decodeImage(n)
         if (n.p.optBoolean("root")) background = n.bg ?: Color.WHITE
         val f = fields[id]
         if (f != null) styleField(n, f)
     }
 
+    /**
+     * An <img>'s picture: a base64 data: URI or an app asset path. The
+     * bytes may come from outside (a clipboard image), so the size is read
+     * first and a large picture is downsampled: a small PNG can declare
+     * 30000 x 30000 pixels (3.6 GB decoded).
+     */
+    private fun decodeImage(n: NuiNode) {
+        val src = n.p.optString("src", "")
+        // Decoded, the src isn't needed: don't keep a data: URI in the props.
+        n.p.remove("src")
+        val key = (src.length.toLong() shl 32) or (src.hashCode().toLong() and 0xffffffffL)
+        if (key == n.imageKey) return
+        n.imageKey = key
+        n.image = null
+        n.imageW = 0
+        n.imageH = 0
+        if (src.isEmpty()) return
+        val bytes = try {
+            if (src.startsWith("data:")) {
+                val comma = src.indexOf(',')
+                if (comma < 0 || !src.substring(0, comma).contains(";base64")) null
+                else android.util.Base64.decode(src.substring(comma + 1), android.util.Base64.DEFAULT)
+            } else NuiNative.asset(window, src.bytes())
+        } catch (e: IllegalArgumentException) { null } catch (e: OutOfMemoryError) { null }
+        if (bytes == null) return imageFailed(src)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return imageFailed(src)
+        var sample = 1
+        while (bounds.outWidth / sample > MAX_IMAGE_SIDE || bounds.outHeight / sample > MAX_IMAGE_SIDE) sample *= 2
+        n.image = try {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+        } catch (e: OutOfMemoryError) { null }
+        if (n.image == null) return imageFailed(src)
+        n.imageW = bounds.outWidth
+        n.imageH = bounds.outHeight
+    }
+
+    private fun imageFailed(src: String) {
+        android.util.Log.w("Oriel", "native ui: image ${src.take(48)}: can't decode")
+    }
+
     fun remove(id: Int) {
         nodes.remove(id)
+        canvases.remove(id)?.recycle()
+        selectValues.remove(id)
         fields.remove(id)?.let { removeView(it) }
     }
 
@@ -433,8 +509,12 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
         updating = true
         try {
             when (f) {
+                is SeekBar -> rangeOf(nodes[id])?.let { f.progress = it.progress(v) }
                 is EditText -> if (f.text.toString() != v) { f.setText(v); f.setSelection(v.length) }
-                is Spinner -> options(nodes[id])?.indexOfFirst { it.first == v }?.let { if (it >= 0) f.setSelection(it) }
+                is Spinner -> {
+                    selectValues[id] = v
+                    options(nodes[id])?.indexOfFirst { it.first == v }?.let { if (it >= 0) f.setSelection(it) }
+                }
             }
         } finally { updating = false }
     }
@@ -446,6 +526,13 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
     }
 
     // --- Size ---------------------------------------------------------------
+
+    /** Out of its window: the canvases' bitmaps go (the next paint makes new ones). */
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        for (c in canvases.values) c.recycle()
+        canvases.clear()
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -468,20 +555,21 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
 
     private fun syncFields() {
         // What's drawn over the page: the root's children after the scroll view (fixed elements).
-        val overlays = ArrayList<RectF>()
+        val fixed = ArrayList<RectF>()
         if (frames.size >= REC * 2) {
             var k = REC + REC * (1 + frames[REC + 13].toInt())
             val end = REC * (1 + frames[13].toInt())
             while (k < end) {
-                overlays += RectF(frames[k + 1], frames[k + 2], frames[k + 1] + frames[k + 3], frames[k + 2] + frames[k + 4])
+                fixed += RectF(frames[k + 1], frames[k + 2], frames[k + 1] + frames[k + 3], frames[k + 2] + frames[k + 4])
                 k += REC * (1 + frames[k + 13].toInt())
             }
         }
-        for (n in nodes.values) {
+        // A snapshot: making or hiding a field can run callbacks that change `nodes`.
+        for (n in nodes.values.toList()) {
             if (!isField(n.kind)) continue
             val f = fields[n.id] ?: makeField(n.id) ?: continue
             val r = index[n.id]
-            val vis = if (r != null && frames[r + 3] > 1) visibleRect(r, overlays) else null
+            val vis = if (r != null && frames[r + 3] > 1) visibleRect(r, fixed + paintedOver(r)) else null
             if (vis == null) { f.visibility = INVISIBLE; continue }
             f.visibility = VISIBLE
             // The widget sits at the content box: clip it to the visible part.
@@ -491,6 +579,25 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                 ((vis.right - cx) * density).toInt(), ((vis.bottom - cy) * density).toInt(),
             )
         }
+    }
+
+    /**
+     * The visible boxes with a background painted after the field at record
+     * `r` (records come in paint order): a sticky footer, a z-index bar. The
+     * canvas draws them over the field, but its widget sits above the canvas.
+     */
+    private fun paintedOver(r: Int): List<RectF> {
+        val out = ArrayList<RectF>()
+        var k = r + REC * (1 + frames[r + 13].toInt())
+        while (k + REC <= frames.size) {
+            val n = nodes[frames[k].toInt()]
+            if (n != null && (n.bg?.let { Color.alpha(it) > 0 } == true || n.gradient != null)) {
+                val v = RectF(frames[k + 1], frames[k + 2], frames[k + 1] + frames[k + 3], frames[k + 2] + frames[k + 4])
+                if (v.intersect(frames[k + 5], frames[k + 6], frames[k + 5] + frames[k + 7], frames[k + 6] + frames[k + 8])) out += v
+            }
+            k += REC
+        }
+        return out
     }
 
     /** A field's content box inside its clip, minus the bars over it; null if hidden. */
@@ -512,7 +619,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
 
     private fun makeField(id: Int): View? {
         val n = nodes[id] ?: return null
-        val v: View = when (n.kind) {
+        val v: View = if (n.kind == "input" && n.p.has("range")) slider(n, id) else when (n.kind) {
             "input", "textarea" -> EditText(context).apply {
                 background = null
                 setPadding(0, 0, 0, 0)
@@ -555,18 +662,68 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, rowId: Long) {
                         if (updating) return
                         val o = options(nodes[id]) ?: return
-                        if (pos in o.indices) NuiNative.event(window, id, "change".bytes(), o[pos].first.bytes())
+                        if (pos !in o.indices) return
+                        // Android also calls this after the first layout, with
+                        // what the page already shows: only a new value is a change.
+                        if (selectValues[id] == o[pos].first) return
+                        selectValues[id] = o[pos].first
+                        NuiNative.event(window, id, "change".bytes(), o[pos].first.bytes())
                     }
                     override fun onNothingSelected(parent: AdapterView<*>?) {}
                 }
             }
             else -> return null
         }
-        v.setOnFocusChangeListener { _, has -> NuiNative.event(window, id, (if (has) "focus" else "blur").bytes(), ByteArray(0)) }
+        // Posted, not sent: Android changes focus synchronously while Zig is
+        // calling into Kotlin (a focused field removed while its node is
+        // destroyed, hidden while the frames are applied), and the page's
+        // handler could then render and free nodes in the middle of that.
+        v.setOnFocusChangeListener { _, has ->
+            val kind = if (has) "focus" else "blur"
+            post { if (Nui.views[window] === this) NuiNative.event(window, id, kind.bytes(), ByteArray(0)) }
+        }
         fields[id] = v
         styleField(n, v)
         addView(v)
         return v
+    }
+
+    /**
+     * <input type=range>: a SeekBar over the page's min/max/step (`range`).
+     * Dragging sends `input` with the value as text, letting go `change`.
+     */
+    private class Range(val min: Double, val max: Double, step: Double) {
+        val stepSize = if (step > 0) step else (max - min) / 1000
+        val steps = if (max > min && stepSize > 0) ((max - min) / stepSize).roundToInt().coerceIn(1, 100_000) else 1
+        fun progress(v: String) = v.toDoubleOrNull()?.let { ((it.coerceIn(min, max) - min) / stepSize).roundToInt().coerceIn(0, steps) } ?: 0
+        fun value(progress: Int): String {
+            val x = (min + progress * stepSize).coerceIn(min, max)
+            return if (x == floor(x) && abs(x) < 1e15) x.toLong().toString()
+            else String.format(java.util.Locale.ROOT, "%.6f", x).trimEnd('0').trimEnd('.')
+        }
+    }
+
+    private fun rangeOf(n: NuiNode?): Range? {
+        val r = n?.p?.optJSONArray("range") ?: return null
+        return Range(r.optDouble(0, 0.0), r.optDouble(1, 100.0), r.optDouble(2, 1.0))
+    }
+
+    private fun slider(n: NuiNode, id: Int): View = SeekBar(context).apply {
+        setPadding(0, 0, 0, 0)
+        val r = rangeOf(n) ?: Range(0.0, 100.0, 1.0)
+        max = r.steps
+        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser || updating) return
+                val value = (rangeOf(nodes[id]) ?: r).value(progress)
+                NuiNative.event(window, id, "input".bytes(), value.bytes())
+            }
+            override fun onStartTrackingTouch(bar: SeekBar) {}
+            override fun onStopTrackingTouch(bar: SeekBar) {
+                val value = (rangeOf(nodes[id]) ?: r).value(bar.progress)
+                NuiNative.event(window, id, "change".bytes(), value.bytes())
+            }
+        })
     }
 
     /** A select's options, drawn with the node's font size and color. */
@@ -589,6 +746,21 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
         val color = n.p.optJSONArray("col")?.let { NuiNode.color(it) } ?: Color.BLACK
         val fz = n.p.optDouble("fz", 16.0).toFloat()
         v.isEnabled = !n.p.optBoolean("dis")
+        if (v is SeekBar) {
+            val r = rangeOf(n)
+            updating = true
+            try {
+                if (r != null) {
+                    v.max = r.steps
+                    if (n.p.has("val")) v.progress = r.progress(n.p.optString("val"))
+                }
+            } finally { updating = false }
+            n.p.optJSONArray("acc")?.let { NuiNode.color(it) }?.let {
+                val tint = android.content.res.ColorStateList.valueOf(it)
+                v.progressTintList = tint
+                v.thumbTintList = tint
+            }
+        }
         if (v is Spinner) {
             // New options (the page fills a select later): a new adapter, the
             // page's value selected again, without a change event.
@@ -600,6 +772,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                 if (current == null || current.labels != labels) v.adapter = Options(n.id, labels)
                 else current.notifyDataSetChanged()
                 val value = n.p.optString("val", "")
+                selectValues[n.id] = value
                 val i = opts.indexOfFirst { it.first == value }
                 if (i >= 0 && i != v.selectedItemPosition) v.setSelection(i, false)
             } finally { updating = false }
@@ -639,11 +812,38 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
     private var downX = 0f
     private var downY = 0f
     private var lastY = 0f
+    private var lastX = 0f
     private var dragging = false
+    /** The drag scrolls sideways (it started more across than down). */
+    private var sideways = false
     private var longPressed = false
     private val longPress = Runnable {
         longPressed = true
         if (NuiNative.longPress(window, downX / density, downY / density)) performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+    }
+
+    /**
+     * A vertical drag that starts on a field (EditText, Spinner) scrolls the
+     * page, as in a ScrollView: past the touch slop the page takes it over
+     * (the field gets a cancel), unless the field scrolls its own text.
+     */
+    override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { downX = e.x; downY = e.y }
+            MotionEvent.ACTION_MOVE -> {
+                val dy = e.y - downY
+                if (abs(dy) <= slop || abs(dy) < abs(e.x - downX)) return false
+                val under = fields.values.firstOrNull { it.visibility == VISIBLE && downX >= it.left && downX < it.right && downY >= it.top && downY < it.bottom }
+                if (under != null && under.canScrollVertically(if (dy < 0) 1 else -1)) return false
+                scroller.forceFinished(true)
+                removeCallbacks(longPress)
+                dragging = true; sideways = false; longPressed = false; lastY = e.y; lastX = e.x
+                velocity?.recycle()
+                velocity = VelocityTracker.obtain().also { it.addMovement(e) }
+                return true
+            }
+        }
+        return false
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -663,11 +863,16 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                 velocity?.addMovement(e)
                 if (!dragging && (abs(e.y - downY) > slop || abs(e.x - downX) > slop)) {
                     dragging = true
+                    sideways = abs(e.x - downX) > abs(e.y - downY)
                     removeCallbacks(longPress)
                     NuiNative.press(window, 0f, 0f, false) // a drag isn't a press
                     lastY = e.y
+                    lastX = e.x
                 }
-                if (dragging) {
+                if (dragging && sideways) {
+                    NuiNative.scrollX(window, downX / density, downY / density, (lastX - e.x) / density)
+                    lastX = e.x
+                } else if (dragging) {
                     NuiNative.scroll(window, downX / density, downY / density, (lastY - e.y) / density)
                     lastY = e.y
                 }
@@ -683,7 +888,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                     val v = velocity
                     v?.computeCurrentVelocity(1000)
                     val vy = v?.yVelocity ?: 0f
-                    if (abs(vy) > ViewConfiguration.get(context).scaledMinimumFlingVelocity) fling(-vy)
+                    if (!sideways && abs(vy) > ViewConfiguration.get(context).scaledMinimumFlingVelocity) fling(-vy)
                 }
                 velocity?.recycle(); velocity = null
             }
@@ -694,6 +899,25 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
             }
         }
         return true
+    }
+
+    /** The mouse wheel and two-finger trackpad scrolling (ChromeOS, desktop mode). */
+    override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+        if (e.actionMasked == MotionEvent.ACTION_SCROLL && e.isFromSource(android.view.InputDevice.SOURCE_CLASS_POINTER)) {
+            val vc = ViewConfiguration.get(context)
+            var v = e.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            var h = e.getAxisValue(MotionEvent.AXIS_HSCROLL)
+            // Shift + wheel scrolls sideways, as in a browser.
+            if (e.metaState and KeyEvent.META_SHIFT_ON != 0 && h == 0f) { h = -v; v = 0f }
+            var moved = false
+            if (v != 0f) {
+                scroller.forceFinished(true)
+                moved = NuiNative.scroll(window, e.x / density, e.y / density, -v * vc.scaledVerticalScrollFactor / density)
+            }
+            if (h != 0f) moved = NuiNative.scrollX(window, e.x / density, e.y / density, h * vc.scaledHorizontalScrollFactor / density) || moved
+            if (moved) return true
+        }
+        return super.onGenericMotionEvent(e)
     }
 
     /** A mouse or trackpad over the page (ChromeOS, desktop mode): :hover. */
@@ -764,7 +988,11 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
         }
         if (n != null && n.op < 1f) canvas.saveLayerAlpha(clipL, clipT, clipR, clipB, (n.op * 255).toInt().coerceIn(0, 255))
         if (n != null && visible) {
-            val radii = radii(n, w, h)
+            // A box over the whole window (a frameless window's rounded
+            // panel): square. Android windows are rectangles under a system
+            // caption, so the corners would show the window behind the page.
+            val fillsWindow = x <= 0.5f && y <= 0.5f && x + w >= width / density - 0.5f && y + h >= height / density - 0.5f
+            val radii = if (fillsWindow) null else radii(n, w, h)
             n.shadow?.let { shadow(canvas, it, x, y, w, h, radii) }
             // The color under the gradient (CSS layers).
             n.bg?.let {
@@ -781,6 +1009,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                 fill.shader = null
             }
             n.bw?.let { border(canvas, n, it, x, y, w, h, radii) }
+            if (n.kind == "view" && n.p.has("ctl")) control(canvas, n, x, y, w, h)
             when (n.kind) {
                 "text" -> n.textLayout(ceil(f[r + 11]).toInt() + 1)?.let {
                     canvas.save()
@@ -789,6 +1018,15 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                     canvas.restore()
                 }
                 "icon" -> n.icon?.let { icon(canvas, it, f[r + 9], f[r + 10], f[r + 11], f[r + 12]) }
+                "image" -> n.image?.let { image(canvas, it, n.p.optString("fit", "fill"), f[r + 9], f[r + 10], f[r + 11], f[r + 12]) }
+                "canvas" -> if (n.canvasOps.isNotEmpty()) {
+                    // At the box, clipped to its rounded corners (radii set above).
+                    val clip = radii?.let { roundRect(x, y, w, h, it); path }
+                    canvases.getOrPut(n.id) { CanvasSurface() }.paint(
+                        canvas, n.canvasOps, n.p.optDouble("cw", w.toDouble()).toFloat(), n.p.optDouble("ch", h.toDouble()).toFloat(),
+                        x, y, w, h, density, clip,
+                    )
+                }
             }
         }
         var k = r + REC
@@ -797,6 +1035,75 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
             k += REC * (1 + f[k + 13].toInt())
         }
         canvas.restoreToCount(save)
+    }
+
+    /** An <img> in its content box, per CSS object-fit (fill by default). */
+    private fun image(canvas: Canvas, b: Bitmap, fit: String, x: Float, y: Float, w: Float, h: Float) {
+        if (w <= 0 || h <= 0 || b.width <= 0 || b.height <= 0) return
+        var kx = w / b.width
+        var ky = h / b.height
+        when (fit) {
+            "contain" -> { kx = min(kx, ky); ky = kx }
+            "cover" -> { kx = max(kx, ky); ky = kx }
+            "none" -> { kx = 1f; ky = 1f }
+            "scale-down" -> { kx = min(1f, min(kx, ky)); ky = kx }
+        }
+        val dw = b.width * kx
+        val dh = b.height * ky
+        canvas.save()
+        canvas.clipRect(x, y, x + w, y + h)
+        val l = x + (w - dw) / 2
+        val t = y + (h - dh) / 2
+        canvas.drawBitmap(b, null, RectF(l, t, l + dw, t + dh), imagePaint)
+        canvas.restore()
+    }
+
+    private val imagePaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private val controlPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    /**
+     * A default checkbox or radio (no appearance: none), as the GTK backend
+     * draws it: filled in accent-color with a check or dot when on, white
+     * with a grey outline when off, faded when disabled.
+     */
+    private fun control(canvas: Canvas, n: NuiNode, bx: Float, by: Float, bw: Float, bh: Float) {
+        val size = min(bw, bh)
+        if (size <= 0) return
+        val x = bx + (bw - size) / 2
+        val y = by + (bh - size) / 2
+        val radio = n.p.optString("ctl") == "radio"
+        val alpha = if (n.p.optBoolean("dis")) 0.45f else 1f
+        val acc = n.p.optJSONArray("acc")?.let { NuiNode.color(it) } ?: Color.rgb(59, 108, 255)
+        fun faded(c: Int) = Color.argb((Color.alpha(c) * alpha).toInt(), Color.red(c), Color.green(c), Color.blue(c))
+        val shape = Path().apply {
+            if (radio) addCircle(x + size / 2, y + size / 2, size / 2 - 0.5f, Path.Direction.CW)
+            else addRoundRect(RectF(x + 0.5f, y + 0.5f, x + size - 0.5f, y + size - 0.5f), 2.5f, 2.5f, Path.Direction.CW)
+        }
+        val p = controlPaint
+        p.shader = null
+        if (n.p.optBoolean("on")) {
+            p.style = Paint.Style.FILL; p.color = faded(acc)
+            canvas.drawPath(shape, p)
+            p.color = faded(Color.WHITE)
+            if (radio) {
+                canvas.drawCircle(x + size / 2, y + size / 2, size * 0.2f, p)
+            } else {
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = max(1.5f, size * 0.13f)
+                p.strokeCap = Paint.Cap.ROUND; p.strokeJoin = Paint.Join.ROUND
+                val check = Path().apply {
+                    moveTo(x + size * 0.25f, y + size * 0.52f)
+                    lineTo(x + size * 0.43f, y + size * 0.7f)
+                    lineTo(x + size * 0.76f, y + size * 0.32f)
+                }
+                canvas.drawPath(check, p)
+            }
+        } else {
+            p.style = Paint.Style.FILL; p.color = faded(Color.WHITE)
+            canvas.drawPath(shape, p)
+            p.style = Paint.Style.STROKE; p.strokeWidth = 1f; p.color = faded(Color.rgb(118, 118, 118))
+            canvas.drawPath(shape, p)
+        }
     }
 
     private fun radii(n: NuiNode, w: Float, h: Float): FloatArray? {
@@ -918,5 +1225,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
     companion object {
         /** Floats per node in the frames from Zig (android.zig `record_len`). */
         const val REC = 14
+        /** The largest side an <img> is decoded at (px); larger pictures are downsampled. */
+        const val MAX_IMAGE_SIDE = 4096
     }
 }

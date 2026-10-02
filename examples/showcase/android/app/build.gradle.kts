@@ -46,7 +46,9 @@ android {
         // Release libraries come stripped from Zig, Debug ones keep their
         // symbols: either way Gradle keeps the libraries as built.
         jniLibs.keepDebugSymbols += "**/*.so"
-        jniLibs.useLegacyPackaging = false
+        // Extracted on install: liboriel_exec.so (the app's own executable,
+        // for helper processes) must be a file Android lets the app run.
+        jniLibs.useLegacyPackaging = true
     }
 
     compileOptions {
