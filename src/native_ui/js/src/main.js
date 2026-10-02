@@ -7,6 +7,8 @@
 //   ops(json)                   the frame's operations (render.js)
 //   frame(id) → [x, y, w, h]    a node's last layout, in window coordinates
 //   now()                       a monotonic clock in ms (performance.now)
+//   vsync() → bool              __oriel.vsync(interval) at the display's next
+//                               refresh; false: the backend can't (timers)
 //   evalScript(name, code)      run a page script at the top level
 //   evalModule(name, code)      run a module script (imports load from the assets) → promise
 //   focus(id), scrollIntoView(id, block), scrollTo(id, y)
@@ -55,11 +57,12 @@ const t0 = host.now ? host.now() : Date.now();
 globalThis.performance ??= { now: host.now ? () => host.now() - t0 : () => Date.now() - t0 };
 
 // requestAnimationFrame: as in a browser, every callback asked for before a
-// frame runs in that frame, with the same timestamp, and frames come at a
-// steady 60 Hz (a grid of 16.7 ms slots, as a display's refresh), not 16 ms
-// after the last frame's work. A frame whose work overruns its slot
-// skips to the next one. One timer per frame: the page renders once after
-// all of its callbacks.
+// frame runs in that frame, with the same timestamp, and the page renders
+// once after all of them. Frames follow the display where the backend can
+// (host.vsync: GTK's frame clock…): a 120 Hz panel gets 120 a second, a
+// hidden window none. Elsewhere they come at a steady 60 Hz (a grid of
+// 16.7 ms slots, as a display's refresh), not 16 ms after the last frame's
+// work; a frame whose work overruns its slot skips to the next one.
 const FRAME_MS = 1000 / 60;
 let rafCallbacks = new Map();
 let rafSeq = 1;
@@ -78,11 +81,15 @@ function runFrame() {
     try { cb(now); } catch (e) { console.error(e); }
   }
 }
+// Display frames (host.vsync); off for good once the backend says it can't.
+let vsync = typeof host.vsync === "function";
 globalThis.requestAnimationFrame = (cb) => {
   const id = rafSeq++;
   rafCallbacks.set(id, cb);
   if (!rafPending) {
     rafPending = true;
+    if (vsync && host.vsync()) return id;
+    vsync = false;
     const now = performance.now();
     const slot = Math.max(Math.floor(now / FRAME_MS) + 1, lastSlot + 1);
     setTimer(runFrame, Math.max(0, Math.ceil(slot * FRAME_MS - now)), [], false);
@@ -813,6 +820,10 @@ g.__oriel = {
       }
       return false;
     });
+  },
+  // The display refreshed (host.vsync): the animation frame.
+  vsync(_intervalMs) {
+    guard(() => { if (rafPending) runFrame(); });
   },
   timer(id) {
     guard(() => {

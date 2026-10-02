@@ -15818,11 +15818,14 @@ ${a.stack || ""}`;
       }
     }
   }
+  var vsync = typeof host.vsync === "function";
   globalThis.requestAnimationFrame = (cb) => {
     const id = rafSeq++;
     rafCallbacks.set(id, cb);
     if (!rafPending) {
       rafPending = true;
+      if (vsync && host.vsync()) return id;
+      vsync = false;
       const now = performance.now();
       const slot = Math.max(Math.floor(now / FRAME_MS) + 1, lastSlot + 1);
       setTimer(runFrame, Math.max(0, Math.ceil(slot * FRAME_MS - now)), [], false);
@@ -16805,6 +16808,12 @@ ${a.stack || ""}`;
             return true;
         }
         return false;
+      });
+    },
+    // The display refreshed (host.vsync): the animation frame.
+    vsync(_intervalMs) {
+      guard(() => {
+        if (rafPending) runFrame();
       });
     },
     timer(id) {
