@@ -14,6 +14,7 @@ import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor } from "./icons.js";
 import { commandsOf } from "./canvas.js";
+import { NEXT } from "../node_modules/linkedom/esm/shared/symbols.js";
 
 // The user-agent stylesheet: what browsers do without CSS.
 export const UA_CSS = `
@@ -51,6 +52,7 @@ col, colgroup { display: none; }
 const INLINE_DISPLAY = new Set(["inline"]);
 const ATOMIC_INLINE = new Set(["inline-block", "inline-flex", "inline-grid"]);
 const SKIP = new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
+const TEMPLATE_LEAF = new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
 
 export class Renderer {
   constructor(document, engine, host) {
@@ -66,6 +68,8 @@ export class Renderer {
     this.animSpecs = new Map();    // id → its element's animations (this frame)
     this.ticking = false;
     this.nextId = 1;
+    this.leafStyles = new Map();   // immutable native leaf templates (bounded)
+    this.leafStyleBytes = 0;
     this.dirty = true;
     this.native = new Map();       // id → value the native field holds (inputs)
     this.cs = new WeakMap();       // element → computed style of the last frame
@@ -74,6 +78,9 @@ export class Renderer {
     // then, reused while nothing in it or above it changed.
     this.marks = new Map();        // element → 1 (its inline style changed) | 2 (match its rules again)
     this.flatMarks = new Set();    // nodes whose own output changed (text, children, a canvas…)
+    this.textOnly = true;          // pending mutations changed only text nodes
+    this.simpleLeaves = true;      // tests can compare with general flattening
+    this.flexLeaves = new WeakMap(); // parent computed style → row shapes
     this.full = true;              // everything again (first frame, the viewport changed)
     this.sc = new WeakMap();       // element → { parent cs, cs, matched rules, frame }
     this.fc = new WeakMap();       // element → what it made (element(), below)
@@ -101,14 +108,16 @@ export class Renderer {
   // differently (its attributes), 1 when only its inline style did.
   mark(el, level) {
     if (!el || el.nodeType !== 1) return;
+    this.textOnly = false;
     if ((this.marks.get(el) || 0) < level) this.marks.set(el, level);
     this.dirty = true;
   }
 
   // A node's output changed, not its style: its text, a canvas's program,
   // a click listener.
-  markFlat(node) {
+  markFlat(node, text = false) {
     if (!node) return;
+    if (!text) this.textOnly = false;
     this.flatMarks.add(node);
     this.dirty = true;
   }
@@ -134,12 +143,14 @@ export class Renderer {
       for (const n of r.addedNodes || []) {
         this.mark(n, 2);
         const parent = n.parentNode;
-        if (parent) { this.markFlat(parent); if (this.structural) this.mark(parent, 2); }
+        if (parent) { this.markFlat(parent, n.nodeType === 3); if (this.structural) this.mark(parent, 2); }
       }
       for (const n of r.removedNodes || []) {
         const parent = n.parentNode || this.parentOf.get(n);
-        if (parent) { this.markFlat(parent); if (this.structural) this.mark(parent, 2); }
-        this.markFlat(n);
+        if (parent) { this.markFlat(parent, n.nodeType === 3); if (this.structural) this.mark(parent, 2); }
+        // Rebuilding a text node's known parent accounts for its removal;
+        // retaining the removed node doubles work on textContent writes.
+        if (n.nodeType !== 3 || !parent) this.markFlat(n, n.nodeType === 3);
       }
     }
     this.dirty = true;
@@ -165,7 +176,85 @@ export class Renderer {
     if (!this.dirty || this.rendering) return;
     this.dirty = false;
     this.rendering = true;
-    try { this.renderNow(); } finally { this.rendering = false; }
+    try { if (!this.updateText()) this.renderNow(); } finally { this.rendering = false; }
+  }
+
+  // A text-only leaf keeps its box, font and parent's layout adjustments.
+  // Native layout will measure its new runs after the props operation; its
+  // unchanged row, siblings and ancestors need no JS traversal or diff.
+  updateText() {
+    if (!this.textOnly || this.full || this.noCache || this.structural || this.marks.size || !this.flatMarks.size || this.pendingScroll) return false;
+    for (const el of this.volatile) if (el.isConnected) return false;
+    const leaves = new Set();
+    for (const n of this.flatMarks) {
+      const el = n.nodeType === 3 ? n.parentNode || this.parentOf.get(n) : n;
+      if (!el || el.nodeType !== 1 || !el.isConnected) return false;
+      leaves.add(el);
+    }
+    const P = this.host.prof ? this.host.now : null, t0 = P && P();
+    const nodes = new Map(), updates = [];
+    for (const el of leaves) {
+      const fc = this.fc.get(el), cs = this.cs.get(el);
+      if (!fc || !cs || fc.root.kind !== "text" || fc.rootSpec || fc.rootAnim || el.firstElementChild ||
+          this.tx.targets.has(fc.id) || this.anim.state.has(fc.id)) return false;
+      const old = this.prev.get(fc.id);
+      if (!old || old.kind !== "text") return false;
+      const child = el.firstChild, ws = cs["white-space"] || "normal";
+      let runs;
+      if (child?.nodeType === 3 && !child.nextSibling && fc.root.props.runs.length === 1 &&
+          ws !== "pre" && ws !== "pre-wrap" && ws !== "pre-line") {
+        // The font/paint run is unchanged. Normalize its new string once
+        // without recomputing run styles or allocating an inline run flow.
+        let t = child.data;
+        if (cs["text-transform"] === "uppercase") t = t.toUpperCase();
+        else if (cs["text-transform"] === "lowercase") t = t.toLowerCase();
+        t = t.replace(/\s+/g, " ").trim();
+        runs = t ? [{ ...fc.root.props.runs[0], t }] : [];
+      } else {
+        const raw = [];
+        for (let c = child; c; c = c.nextSibling) {
+          if (c.nodeType === 3) raw.push(runFor(c.data, cs, cs.__fs));
+          else if (c.nodeType !== 8) return false;
+        }
+        runs = trimRuns(raw);
+      }
+      // Empty content can change the native kind and the parent's inline
+      // flow. Let the general renderer handle that structural change.
+      if (!runs.length) return false;
+      updates.push([el, fc, runs, old]);
+    }
+    // Validate every leaf before changing any cached output.
+    let direct = 0, nativeMs = 0;
+    for (const [el, fc, runs, old] of updates) {
+      const single = runs.length === 1 && fc.root.props.runs.length === 1;
+      const a = P && P();
+      const sent = single && this.host.text && this.host.text(fc.id, runs[0].t);
+      if (P) nativeMs += P() - a;
+      if (sent) {
+        // Preserve the target props for a later general diff/transition,
+        // but defer their JSON encoding until a traversal needs it.
+        const props = old.props || JSON.parse(old.p);
+        props.runs = runs;
+        old.props = props;
+        old.p = null;
+        direct++;
+      } else {
+        const props = old.props ? { ...old.props } : JSON.parse(old.p);
+        props.runs = runs;
+        nodes.set(fc.id, { kind: "text", props, kids: [] });
+      }
+      fc.root.props.runs = runs;
+      for (let child = el.firstChild; child; child = child.nextSibling) this.parentOf.set(child, el);
+    }
+    this.frameNo++;
+    this.flatMarks.clear();
+    this.gone = [];
+    this.dropped = [];
+    this.specs = new Map();
+    this.animSpecs = new Map();
+    this.emit(nodes, false);
+    if (P) this.host.log(1, `PROF text: ${updates.length} leaves, ${direct} direct, prepare ${(P() - t0 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
+    return true;
   }
 
   renderNow() {
@@ -175,9 +264,13 @@ export class Renderer {
     this.specs = new Map();
     this.animSpecs = new Map();
     this.frameNo++;
+    this.flexLeaves = new WeakMap();
     this.gone = [];
     this.dropped = [];
     const full = this.full || this.noCache;
+    // Compiled :has() matchers also cache descendant results. A new DOM
+    // needs a new matcher, as well as new computed/flattened styles.
+    if (this.noCache) for (const r of this.engine.rules) if (/:has\(/.test(r.sel)) r.match = null;
     if (full) {
       this.sc = new WeakMap();
       this.fc = new WeakMap();
@@ -203,6 +296,7 @@ export class Renderer {
     this.cur = null;
     this.marks.clear();
     this.flatMarks.clear();
+    this.textOnly = true;
     this.full = false;
     // What the changed elements no longer make (or elements gone from the
     // page): destroyed, unless made again elsewhere this frame (moved).
@@ -308,7 +402,7 @@ export class Renderer {
   // that share too (or the same parent). A browser's style sharing; off
   // when the sheets match by position (:nth-child, +, ~…).
   matchOf(el) {
-    const k = this.structural ? 0 : this.shareKey(el);
+    const k = this.structural || this.noCache ? 0 : this.shareKey(el);
     if (k <= 0) return this.engine.matching(el);
     let m = this.matchShare.get(k);
     if (!m) this.matchShare.set(k, (m = this.engine.matching(el)));
@@ -330,7 +424,9 @@ export class Renderer {
     let ok = !!parent && parent.nodeType === 1;
     let cls = "";
     if (ok) {
-      for (const a of el.attributes) {
+      // linkedom's attributes getter allocates an array and a Proxy on
+      // every read. Its attributes precede the children in the node list.
+      for (let a = el[NEXT]; a?.nodeType === 2; a = a[NEXT]) {
         if (a.name === "class") cls = a.value;
         else if (a.name !== "style" || this.styleAttrRules) { ok = false; break; }
       }
@@ -439,6 +535,84 @@ export class Renderer {
     const p = n.props, cs = this.cs.get(el) || {};
     return p.fs === undefined && p.h === undefined && p.fb === undefined && p.ar === undefined && !p.scroll && !p.clip &&
       !cs["flex-shrink"] && !cs["min-height"] && p.pos !== "absolute";
+  }
+
+  // A new flex row with ordinary leaves can reuse the CSS/layout setup of
+  // an equivalent row. Attributes that selectors distinguish, positional
+  // rules, inline aggregation, controls and existing rows stay general.
+  flexShape(el, cs, props) {
+    if (!this.simpleLeaves || this.structural || this.noCache || this.fc.has(el) ||
+        props.fd !== "row" || props.scroll || props.scrollx ||
+        cs.__rules.before.length || cs.__rules.after.length) return null;
+    const share = this.shareKey(el);
+    if (share <= 0) return null;
+    const children = [];
+    // Sharing ids identify the complete selector ancestry within this
+    // frame. Identical parent styles alone do not imply identical matches.
+    let key = `${share}|`;
+    for (let child = el.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType === 8) continue;
+      if (child.nodeType !== 1 || !TEMPLATE_LEAF.has(child.localName) || child.firstElementChild) return null;
+      let cls = "", inline = "";
+      for (let a = child[NEXT]; a?.nodeType === 2; a = a[NEXT]) {
+        if (a.name === "class") cls = a.value;
+        else if (a.name === "style") inline = a.value;
+        else return null;
+      }
+      const tag = child.localName;
+      key += `${tag.length}:${tag}${cls.length}:${cls}${inline.length}:${inline}`;
+      children.push(child);
+      if (children.length > 16) return null;
+    }
+    if (!children.length) return null;
+    let shapes = this.flexLeaves.get(cs);
+    if (!shapes) this.flexLeaves.set(cs, (shapes = new Map()));
+    return { children, key, shapes, plan: shapes.get(key) };
+  }
+
+  useFlexShape(shape, cs, nodes, spacing) {
+    const ids = [];
+    for (let i = 0; i < shape.children.length; i++) {
+      const el = shape.children[i], entry = shape.plan.entries[i], childCS = entry.cs;
+      const id = this.idOf(el, "el");
+      this.own(id, el);
+      this.cs.set(el, childCS);
+      this.sc.set(el, { parent: cs, cs: childCS, m: entry.m, frame: this.frameNo });
+      const raw = [];
+      for (let child = el.firstChild; child; child = child.nextSibling) {
+        this.parentOf.set(child, el);
+        if (child.nodeType === 3 && child.data) raw.push(runFor(child.data, childCS, childCS.__fs));
+      }
+      const runs = trimRuns(raw), props = { ...entry.box };
+      let kind = "view";
+      if (runs.length) { kind = "text"; Object.assign(props, entry.text); props.runs = runs; }
+      this.putClick(props, el);
+      nodes.set(id, { kind, props, kids: [] });
+      this.fc.set(el, {
+        parent: cs, block: true, ts: spacing, id, fixed: false, own: [id], kids: [], fixedIds: [], seen: this.frameNo,
+        root: { kind, props: { ...props }, kids: [] }, rootSpec: undefined, rootAnim: undefined,
+      });
+      this.cur.kids.push(el);
+      ids.push(id);
+    }
+    for (let child = shape.children[0].parentNode.firstChild; child; child = child.nextSibling) this.parentOf.set(child, child.parentNode);
+    return shape.plan.order.map((i) => ids[i]);
+  }
+
+  saveFlexShape(shape, nodes) {
+    const entries = [];
+    for (const el of shape.children) {
+      const sc = this.sc.get(el), fc = this.fc.get(el), n = fc && nodes.get(fc.id);
+      if (!sc || !fc || !n || n.kids.length || !["text", "view"].includes(n.kind) || fc.fixed ||
+          fc.rootSpec || fc.rootAnim || this.volatile.has(el) ||
+          !["inline", "block", "inline-block"].includes(sc.cs.display || "inline") ||
+          sc.cs.__rules.before.length || sc.cs.__rules.after.length) return;
+      const fs = sc.cs.__fs;
+      entries.push({ cs: sc.cs, m: sc.m, box: boxProps(sc.cs, blockify(sc.cs.display || "inline"), fs, el), text: textProps(sc.cs, fs), order: parseInt(sc.cs.order, 10) || 0 });
+    }
+    const order = entries.map((_, i) => i).sort((a, b) => entries[a].order - entries[b].order || a - b);
+    if (shape.shapes.size >= 32) shape.shapes.delete(shape.shapes.keys().next().value);
+    shape.shapes.set(shape.key, { entries, order });
   }
 
   build(el, parentCS, nodes, ctx) {
@@ -576,6 +750,34 @@ export class Renderer {
       return this.put(nodes, id, tag === "textarea" ? "textarea" : "input", props, [], fixedNode);
     }
 
+    // Plain leaves need no inline-flow objects, pseudo nodes or child-layout
+    // contexts. This also covers empty decorative elements in large lists.
+    const aligns = (display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid") &&
+      (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]));
+    if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns &&
+        display !== "grid" && !isTableDisplay(display)) {
+      const raw = [];
+      for (let child = el.firstChild; child; child = child.nextSibling) {
+        this.parentOf.set(child, el);
+        if (child.nodeType === 3 && child.data) raw.push(runFor(child.data, cs, fontSize));
+      }
+      const runs = trimRuns(raw);
+      this.putClick(props, el);
+      if (runs.length) {
+        Object.assign(props, textProps(cs, fontSize));
+        props.runs = runs;
+        return this.put(nodes, id, "text", props, [], fixedNode);
+      }
+      return this.put(nodes, id, "view", props, [], fixedNode);
+    }
+
+    const shape = display === "flex" && !fixedNode ? this.flexShape(el, cs, props) : null;
+    if (shape?.plan) {
+      const kids = this.useFlexShape(shape, cs, nodes, tableSpacingFor(display, props, ctx));
+      this.putClick(props, el);
+      return this.put(nodes, id, "view", props, kids);
+    }
+
     // Children: blocks, and inline content collected into text runs.
     const childCtx = { blockify: display === "flex" || display === "grid" || tableHolds(display), parentText: cs["text-align"],
       tableSpacing: tableSpacingFor(display, props, ctx), rematch };
@@ -592,7 +794,7 @@ export class Renderer {
       if (!trimmed.length) return;
       flow.push({ text: trimmed });
     };
-    for (const child of el.childNodes) {
+    for (let child = el.firstChild; child; child = child.nextSibling) {
       this.parentOf.set(child, el);
       if (child.nodeType === 3) {
         const t = child.data;
@@ -612,8 +814,6 @@ export class Renderer {
     // An element holding only text becomes one text view, unless it centers
     // that text as a flex/grid box (a round icon button: ⚙ in a 28px circle):
     // a text view is drawn from its top-left, so keep a box with a text child.
-    const aligns = (display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid") &&
-      (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]));
     if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns) {
       Object.assign(props, textProps(cs, fontSize));
       props.runs = flow[0].text;
@@ -682,6 +882,7 @@ export class Renderer {
       const pos = new Map(kids.map((k, i) => [k, i]));
       kids.sort((a, b) => (orders.get(a) || 0) - (orders.get(b) || 0) || pos.get(a) - pos.get(b));
     }
+    if (shape) this.saveFlexShape(shape, nodes);
 
     if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
     this.putClick(props, el);
@@ -715,7 +916,7 @@ export class Renderer {
     if (cs.position === "absolute" || cs.position === "fixed") return false;
     // Inline only if everything inside is inline too.
     const deeper = rematch || this.marks.get(el) === 2;
-    for (const c of el.children) if (!this.isInline(c, cs, deeper)) return false;
+    for (let c = el.firstElementChild; c; c = c.nextElementSibling) if (!this.isInline(c, cs, deeper)) return false;
     return true;
   }
 
@@ -727,7 +928,7 @@ export class Renderer {
     cs.__fs = fs;
     if (el.localName === "br") { runs.push({ t: "\n", ...runStyle(cs, fs) }); return; }
     const deeper = rematch || this.marks.get(el) === 2;
-    for (const child of el.childNodes) {
+    for (let child = el.firstChild; child; child = child.nextSibling) {
       this.parentOf.set(child, el);
       if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el));
       else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper);
@@ -760,9 +961,33 @@ export class Renderer {
   // ---------------------------------------------------------------------
   // Diff against the last frame
 
+  createLeaf(id, n) {
+    if (!this.host.leafStyle || !this.host.leaf ||
+        (n.kind !== "view" && (n.kind !== "text" || n.props.runs?.length !== 1 || n.kids.length)) ||
+        this.specs.has(id) || this.animSpecs.has(id) || this.leafStyles.size >= 1024 || this.leafStyleBytes >= 2 * 1024 * 1024) return false;
+    const base = { ...n.props };
+    if (n.kind === "text") base.runs = [{ ...n.props.runs[0], t: "" }];
+    const json = encodeProps(base);
+    let style = this.leafStyles.get(json);
+    const P = this.host.prof ? this.host.now : null;
+    if (style === undefined) {
+      style = this.leafStyles.size + 1;
+      const t0 = P && P();
+      if (!this.host.leafStyle(style, json)) style = 0;
+      if (P) this.applyMs += P() - t0;
+      this.leafStyles.set(json, style);
+      this.leafStyleBytes += json.length;
+    }
+    const t0 = P && P();
+    const created = style && this.host.leaf(id, style, n.kind === "text" ? n.props.runs[0].t : "", n.kind === "text");
+    if (P) this.applyMs += P() - t0;
+    return created;
+  }
+
   // `nodes`: what was made this frame; `full`: everything was (else the
   // ids in this.gone are what went away).
   emit(nodes, full) {
+    this.applyMs = 0;
     const ops = []; // each op's JSON: the props are encoded once, for the diff and the ops
 
     const now = Date.now();
@@ -770,10 +995,17 @@ export class Renderer {
     const remade = new Set();
     for (const [id, n] of nodes) {
       const old = this.prev.get(id);
+      if (old && old.p === null) { old.p = encodeProps(old.props); old.props = null; }
       if (old && old.kind !== n.kind) remade.add(id);
     }
     for (const [id, n] of nodes) {
       const old = this.prev.get(id);
+      if (!old && this.host.leaf && this.createLeaf(id, n)) {
+        const k = n.kids.length ? JSON.stringify(n.kids) : "[]";
+        if (n.kids.length) ops.push(`["k",${id},${k}]`);
+        this.prev.set(id, { kind: n.kind, p: null, props: n.props, k });
+        continue;
+      }
       if (!old || old.kind !== n.kind) this.tx.forget(id);
       // The props to show now: the page's, or on the way to them
       // (transitions, animations). Only nodes that have or had one keep
@@ -786,7 +1018,7 @@ export class Renderer {
         if (spec && old && old.kind === n.kind && !this.tx.targets.has(id)) this.tx.targets.set(id, JSON.parse(old.p));
         shown = this.anim.apply(id, this.tx.apply(id, n.props, spec, now), animSpec, now);
       } else if (this.tx.targets.has(id)) this.tx.forget(id);
-      const p = JSON.stringify(shown);
+      const p = encodeProps(shown);
       const k = JSON.stringify(n.kids);
       if (!old || old.kind !== n.kind) {
         if (old) ops.push(`["d",${id}]`);
@@ -805,11 +1037,10 @@ export class Renderer {
     if (full) { for (const id of [...this.prev.keys()]) drop(id); }
     else for (const id of this.gone) drop(id);
     if (!this.rootSent) { ops.push(`["r",0]`); this.rootSent = true; }
-    this.applyMs = 0;
     if (ops.length) {
       const P = this.host.prof ? this.host.now : null, t0 = P && P();
       this.host.ops(`[${ops.join(",")}]`);
-      if (P) this.applyMs = P() - t0;
+      if (P) this.applyMs += P() - t0;
     }
     this.schedule();
   }
@@ -843,7 +1074,7 @@ export class Renderer {
       const target = this.tx.targets.get(id);
       if (!prev || !target) { this.tx.forget(id); this.anim.forget(id); continue; }
       const shown = this.anim.apply(id, this.tx.apply(id, target, null, now), undefined, now);
-      const p = JSON.stringify(shown);
+      const p = encodeProps(shown);
       if (p !== prev.p) { ops.push(["p", id, shown]); prev.p = p; }
     }
     if (ops.length) this.host.ops(JSON.stringify(ops));
@@ -1206,8 +1437,19 @@ function trimRuns(runs) {
 }
 
 function strip(r, t) {
-  const { ws, ...rest } = r;
-  return { ...rest, t };
+  // These runs belong to this traversal; the style cache holds only
+  // their font/paint values. Finish them without a second allocation.
+  r.ws = undefined;
+  r.t = t;
+  return r;
+}
+
+// Layout consumes these defaults when a property is absent. Keep them
+// while flattening (parents inspect fd/ai), omit them on the wire.
+function encodeProps(props) {
+  if (props.fd === "column") props.fd = undefined;
+  if (props.ai === "stretch") props.ai = undefined;
+  return JSON.stringify(props);
 }
 
 // display: grid → rows of flex items (the column count from the template
