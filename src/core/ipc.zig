@@ -410,7 +410,9 @@ pub fn dispatchAsync(
         callback_context: @TypeOf(context),
 
         fn run(task: *ThreadPool.Task) void {
-            const self: *@This() = @fieldParentPtr("task", task);
+            // Job came from create (its own alignment); the field's
+            // pointer is only as aligned as the field (2 on 32-bit ARM).
+            const self: *@This() = @alignCast(@fieldParentPtr("task", task));
             const alloc = self.arena_state.allocator();
             var res_z: ?[:0]const u8 = null;
             var err_z: ?[:0]const u8 = null;
