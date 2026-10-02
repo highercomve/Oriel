@@ -13772,7 +13772,7 @@ col, colgroup { display: none; }
 `;
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
-  var nonZero = (v) => !!v && parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v));
+  var nonZero = (v) => !!v && (/^(thin|medium|thick)$/.test(v) || parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v)));
   function boxedInline(cs) {
     for (const side of ["top", "right", "bottom", "left"]) {
       if (nonZero(cs[`padding-${side}`])) return true;
@@ -14594,6 +14594,7 @@ col, colgroup { display: none; }
       const before2 = this.pseudo(el, cs, "before", nodes);
       if (before2) kids.push(before2);
       const flow = [];
+      const boxed = childCtx.blockify ? null : this.boxedEnds(el, cs, rematch);
       let runs = [];
       const flushRuns = () => {
         if (!runs.length) return;
@@ -14610,7 +14611,7 @@ col, colgroup { display: none; }
           continue;
         }
         if (child.nodeType !== 1) continue;
-        if (!childCtx.blockify && this.isInline(child, cs, rematch)) {
+        if (!childCtx.blockify && !boxed?.has(child) && this.isInline(child, cs, rematch)) {
           this.inlineRuns(child, cs, fontSize, runs, rematch);
           continue;
         }
@@ -14627,7 +14628,7 @@ col, colgroup { display: none; }
       }
       const atomic = (child) => {
         const ccs = this.style(child, cs, rematch), d = ccs.display || "inline";
-        return ATOMIC_INLINE.has(d) || d === "inline" && boxedInline(ccs);
+        return ATOMIC_INLINE.has(d) || !!boxed?.has(child);
       };
       const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) && flow.every((f) => f.text || atomic(f.el));
       if (inlineLine) {
@@ -14714,10 +14715,31 @@ col, colgroup { display: none; }
       const d = cs.display || "inline";
       if (d !== "inline") return false;
       if (cs.position === "absolute" || cs.position === "fixed") return false;
-      if (boxedInline(cs)) return false;
       const deeper = rematch || this.marks.get(el) === 2;
       for (let c = el.firstElementChild; c; c = c.nextElementSibling) if (!this.isInline(c, cs, deeper)) return false;
       return true;
+    }
+    // The inline elements with a box of their own (boxedInline) at the start
+    // or end of `el`'s content: inline boxes in its line (a row). One amid the
+    // text stays a run: a row can't flow text around a box mid-line (a padded
+    // <code> in a paragraph would split it into columns).
+    boxedEnds(el, cs, rematch) {
+      let out = null;
+      const blank = (c) => c.nodeType === 8 || c.nodeType === 3 && !/\S/.test(c.data);
+      const isBoxed = (c) => {
+        if (c.nodeType !== 1 || SKIP.has(c.localName)) return false;
+        const ccs = this.style(c, cs, rematch);
+        if ((ccs.display || "inline") !== "inline" || !boxedInline(ccs)) return false;
+        return this.isInline(c, cs, rematch);
+      };
+      for (const step of ["nextSibling", "previousSibling"]) {
+        for (let c = step === "nextSibling" ? el.firstChild : el.lastChild; c; c = c[step]) {
+          if (blank(c)) continue;
+          if (!isBoxed(c)) break;
+          (out ??= /* @__PURE__ */ new Set()).add(c);
+        }
+      }
+      return out;
     }
     inlineRuns(el, parentCS, parentFs, runs, rematch = false) {
       if (SKIP.has(el.localName)) return;
