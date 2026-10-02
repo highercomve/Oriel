@@ -30,7 +30,7 @@ pub const Run = struct {
 // A text-only update owns its new string separately from the unchanged
 // box/font props arena. Replaced in place, never accumulated per frame.
 const TextOverride = struct { run: Run, text: []u8 };
-const LeafStyle = struct { arena: std.heap.ArenaAllocator, props: Props };
+const LeafStyle = struct { arena: std.heap.ArenaAllocator, props: Props, yn: yg.YGNodeRef };
 
 /// A linear gradient (`angle`), or a radial one: `radial` is cx, cy, rx,
 /// ry, each px (a number) or a percentage of the box ("50%").
@@ -466,6 +466,10 @@ pub const Tree = struct {
     measure: Measure,
     /// Something changed since the last layout.
     dirty: bool = true,
+    paint_dirty: bool = false,
+    /// Backend supplies natural text sizes and context epochs. Equal,
+    /// unwrapped metrics can reuse the current frames after a text edit.
+    reuse_text_layout: bool = false,
     width: f32 = 800,
     height: f32 = 600,
     /// Called before a node goes (its widget is destroyed).
@@ -488,6 +492,7 @@ pub const Tree = struct {
         t.nodes.deinit();
         var styles = t.leaf_styles.valueIterator();
         while (styles.next()) |style| {
+            yg.YGNodeFree(style.*.yn);
             style.*.arena.deinit();
             t.gpa.destroy(style.*);
         }
@@ -515,11 +520,13 @@ pub const Tree = struct {
         if (t.leaf_styles.count() >= 1024 or json.len > 8192 or t.leaf_style_bytes + json.len > 2 * 1024 * 1024) return false;
         const style = try t.gpa.create(LeafStyle);
         errdefer t.gpa.destroy(style);
-        style.* = .{ .arena = .init(t.gpa), .props = .{} };
+        style.* = .{ .arena = .init(t.gpa), .props = .{}, .yn = yg.YGNodeNewWithConfig(t.config) };
+        errdefer yg.YGNodeFree(style.yn);
         errdefer style.arena.deinit();
         const a = style.arena.allocator();
         style.props = try std.json.parseFromSliceLeaky(Props, a, json, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
         try ownProps(a, &style.props);
+        applyYogaStyle(style.yn, style.props);
         try t.leaf_styles.put(t.gpa, id, style);
         t.leaf_style_bytes += json.len;
         return true;
@@ -547,7 +554,9 @@ pub const Tree = struct {
             n.text_override = o;
             n.props.runs = @as(*const [1]Run, @ptrCast(&o.run));
         }
-        styleYoga(n);
+        // Copy only style: each node keeps its own measure callback,
+        // context, children and layout. Avoid dozens of setters per row.
+        yg.YGNodeCopyStyle(n.yn, style.yn);
         t.dirty = true;
         return true;
     }
@@ -569,6 +578,8 @@ pub const Tree = struct {
         const runs = n.props.runs orelse return false;
         if (runs.len != 1) return false;
         if (std.mem.eql(u8, runs[0].t, text)) return true;
+        const previous_size = n.measured_text_size;
+        const previous_epoch = n.text_measure_epoch;
         const owned = try t.gpa.dupe(u8, text);
         errdefer t.gpa.free(owned);
         const o = n.text_override orelse try t.gpa.create(TextOverride);
@@ -580,8 +591,24 @@ pub const Tree = struct {
         n.props.runs = @as(*const [1]Run, @ptrCast(&o.run));
         n.measured_text_size = null;
         if (t.on_text) |cb| cb(t.measure_ctx, n);
+        var same_layout = false;
+        if (t.reuse_text_layout and !t.dirty and n.parent != null and previous_epoch != 0) {
+            if (previous_size) |previous| {
+                const content_width = yg.YGNodeLayoutGetWidth(n.yn) -
+                    yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeLeft) - yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeRight) -
+                    yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeLeft) - yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeRight);
+                if (n.props.nowrap or content_width >= previous[0]) {
+                    var current = [2]f32{ std.math.nan(f32), std.math.nan(f32) };
+                    t.measure(t.measure_ctx, n, std.math.inf(f32), &current);
+                    same_layout = previous_epoch == n.text_measure_epoch and previous[0] == current[0] and previous[1] == current[1];
+                }
+            }
+        }
+        // Yoga's measurement cache must still be invalidated: a future
+        // resize may wrap these different words at different positions.
         yg.YGNodeMarkDirty(n.yn);
-        t.dirty = true;
+        if (!same_layout) t.dirty = true;
+        t.paint_dirty = true;
         return true;
     }
 
@@ -672,10 +699,10 @@ pub const Tree = struct {
             };
             yg.YGNodeRemoveChild(p.yn, n.yn);
         }
-        for (n.kids.items) |k| {
-            yg.YGNodeRemoveChild(n.yn, k.yn);
-            k.parent = null;
-        }
+        // Removing the first child repeatedly shifts Yoga's vector on
+        // every iteration: quadratic work for a large list. Detach once.
+        yg.YGNodeRemoveAllChildren(n.yn);
+        for (n.kids.items) |k| k.parent = null;
         if (t.root == n) t.root = null;
         freeNode(t, n);
     }
@@ -725,10 +752,9 @@ pub const Tree = struct {
     }
 
     fn setKids(t: *Tree, n: *Node, ids: []const std.json.Value) !void {
-        for (n.kids.items) |k| {
-            yg.YGNodeRemoveChild(n.yn, k.yn);
-            k.parent = null;
-        }
+        try n.kids.ensureTotalCapacity(t.gpa, ids.len);
+        yg.YGNodeRemoveAllChildren(n.yn);
+        for (n.kids.items) |k| k.parent = null;
         n.kids.clearRetainingCapacity();
         for (ids) |v| {
             const k = t.nodes.get(num(v) orelse continue) orelse continue;
@@ -742,7 +768,7 @@ pub const Tree = struct {
             if (yg.YGNodeHasMeasureFunc(n.yn)) continue; // a measured leaf can't have children
             yg.YGNodeInsertChild(n.yn, k.yn, yg.YGNodeGetChildCount(n.yn));
             k.parent = n;
-            try n.kids.append(t.gpa, k);
+            n.kids.appendAssumeCapacity(k);
         }
     }
 
@@ -1141,8 +1167,10 @@ fn cloneValue(a: std.mem.Allocator, v: std.json.Value) !std.json.Value {
 // CSS → Yoga
 
 fn styleYoga(n: *Node) void {
-    const y = n.yn;
-    const p = n.props;
+    applyYogaStyle(n.yn, n.props);
+}
+
+fn applyYogaStyle(y: yg.YGNodeRef, p: Props) void {
     yg.YGNodeStyleSetFlexDirection(y, flexDir(p.fd));
     yg.YGNodeStyleSetFlexWrap(y, if (p.fw) |w| (if (std.mem.eql(u8, w, "wrap-reverse")) yg.YGWrapWrapReverse else yg.YGWrapWrap) else yg.YGWrapNoWrap);
     yg.YGNodeStyleSetJustifyContent(y, justify(p.jc));
@@ -1271,6 +1299,12 @@ test "shared leaf styles own strings and isolate text and general updates" {
     try std.testing.expectEqualStrings("50%", a.props.w.?.string);
     try std.testing.expectEqualStrings("first Ω\x00", a.props.runs.?[0].t);
     try std.testing.expectEqualStrings("second", b.props.runs.?[0].t);
+    const width = yg.YGNodeStyleGetWidth(a.yn);
+    try std.testing.expectEqual(@as(yg.YGUnit, yg.YGUnitPercent), width.unit);
+    try std.testing.expectEqual(@as(f32, 50), width.value);
+    try std.testing.expectEqual(@as(f32, 4), yg.YGNodeStyleGetPadding(a.yn, yg.YGEdgeLeft).value);
+    try std.testing.expect(yg.YGNodeHasMeasureFunc(a.yn));
+    try std.testing.expectEqual(@as(?*anyopaque, @ptrCast(a)), yg.YGNodeGetContext(a.yn));
     try std.testing.expect(!try t.createLeaf(10, .text, 1, "duplicate"));
     try std.testing.expect(!try t.createLeaf(12, .input, 1, "field"));
     try std.testing.expect(!try t.createLeaf(12, .view, 1, "not text"));
@@ -1284,10 +1318,131 @@ test "shared leaf styles own strings and isolate text and general updates" {
     try std.testing.expectEqual(@as(f32, 22), a.props.runs.?[0].sz);
     try std.testing.expectEqual(@as(f32, 18), b.props.runs.?[0].sz);
     try std.testing.expectEqualStrings("50%", b.props.w.?.string);
+    try std.testing.expectEqual(@as(f32, 90), yg.YGNodeStyleGetWidth(a.yn).value);
+    try std.testing.expectEqual(@as(yg.YGUnit, yg.YGUnitPercent), yg.YGNodeStyleGetWidth(b.yn).unit);
+    try std.testing.expectEqual(@as(f32, 50), yg.YGNodeStyleGetWidth(b.yn).value);
     try std.testing.expect(try t.defineLeafStyle(2, "{\"w\":8,\"h\":8,\"bg\":{\"color\":[255,0,0,1]}}"));
     try std.testing.expect(try t.createLeaf(12, .view, 2, ""));
     try std.testing.expectEqual(@as(i64, 8), t.get(12).?.props.w.?.integer);
+    try std.testing.expect(!yg.YGNodeHasMeasureFunc(t.get(12).?.yn));
     try std.testing.expect(!try t.defineLeafStyle(2, "{}"));
+}
+
+test "equal unwrapped text metrics reuse frames but invalidate future wrapping" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const Context = struct {
+        epoch: u64 = 1,
+        calls: usize = 0,
+        fn measure(ctx: *anyopaque, n: *Node, width: f32, out: *[2]f32) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            c.calls += 1;
+            const natural: [2]f32 = .{ if (std.mem.startsWith(u8, n.props.runs.?[0].t, "wide")) 30 else 20, 10 };
+            n.measured_text_size = natural;
+            n.text_measure_epoch = c.epoch;
+            out.* = natural;
+            if (!n.props.nowrap and width < natural[0]) {
+                out.* = .{ width, if (std.mem.indexOfScalar(u8, n.props.runs.?[0].t, ' ') != null) 30 else 20 };
+            }
+        }
+    };
+    var ctx: Context = .{};
+    var t = Tree.init(std.testing.allocator, &ctx, Context.measure);
+    defer t.deinit();
+    t.reuse_text_layout = true;
+    try t.apply(
+        \\[["c",0,"view"],["p",0,{"fd":"column"}],["c",1,"text"],["p",1,{"runs":[{"t":"aaaa"}]}],["k",0,[1]],["r",0]]
+    );
+    t.layout();
+    const n = t.get(1).?;
+    const original = n.frame;
+    try std.testing.expect(try t.updateText(1, "a a"));
+    try std.testing.expect(!t.dirty);
+    try std.testing.expect(t.paint_dirty);
+    try std.testing.expectEqualDeep(original, n.frame);
+    try std.testing.expect(yg.YGNodeIsDirty(n.yn));
+    // The retained frame was valid at the old width. A later narrow layout
+    // must measure the new words rather than using Yoga's old text cache.
+    t.width = 10;
+    t.dirty = true;
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 30), n.frame.h);
+    try std.testing.expect(try t.updateText(1, "bbbb"));
+    try std.testing.expect(t.dirty); // equal natural size, but currently wrapped
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 20), n.frame.h);
+    t.width = 800;
+    t.dirty = true;
+    t.layout();
+    ctx.epoch += 1;
+    try std.testing.expect(try t.updateText(1, "cccc"));
+    try std.testing.expect(t.dirty); // same metrics, changed font context
+    t.layout();
+    try std.testing.expect(try t.updateText(1, "wide text"));
+    try std.testing.expect(t.dirty); // changed intrinsic width
+}
+
+test "bulk child replacement retains order and detached node ownership" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",0,"view"],["c",1,"view"],["c",2,"view"],["c",3,"view"],["c",4,"view"],["k",0,[1,2,3]],["r",0]]
+    );
+    const one = t.get(1).?;
+    const two = t.get(2).?;
+    const three = t.get(3).?;
+    try t.apply("[[\"k\",0,[3,1]]]");
+    try std.testing.expectEqual(two, t.get(2).?);
+    try std.testing.expect(two.parent == null);
+    try std.testing.expect(yg.YGNodeGetOwner(two.yn) == null);
+    try std.testing.expectEqual(three.yn, yg.YGNodeGetChild(t.get(0).?.yn, 0));
+    try std.testing.expectEqual(one.yn, yg.YGNodeGetChild(t.get(0).?.yn, 1));
+    try t.apply("[[\"k\",4,[1,2]],[\"k\",0,[3,4]]]");
+    try std.testing.expectEqual(t.get(4).?, one.parent.?);
+    try std.testing.expectEqual(t.get(4).?, two.parent.?);
+    try std.testing.expectEqual(three, t.get(0).?.kids.items[0]);
+    try t.apply("[[\"d\",4]]");
+    try std.testing.expect(one.parent == null and two.parent == null);
+    try std.testing.expect(yg.YGNodeGetOwner(one.yn) == null);
+    try std.testing.expectEqual(one, t.get(1).?);
+    try std.testing.expectEqual(@as(usize, 1), t.get(0).?.kids.items.len);
+    try t.apply("[[\"k\",0,[]]]");
+    try std.testing.expect(three.parent == null);
+    try std.testing.expectEqual(@as(usize, 0), yg.YGNodeGetChildCount(t.get(0).?.yn));
+}
+
+test "shared Yoga styles lay out like general property updates" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var shared = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer shared.deinit();
+    var general = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer general.deinit();
+    const root =
+        \\[["c",0,"view"],["p",0,{"fd":"row","fw":"wrap","ai":"center","cg":7,"rg":3,"pad":[2,4,6,8]}],["r",0]]
+    ;
+    const props =
+        \\{"w":"40%","minh":20,"maxw":350,"m":[3,5,7,9],"pad":[1,2,3,4],"bw":[0,1,2,3],"fg":1,"fs":0,"as":"flex-end","runs":[{"t":"first","sz":18}]}
+    ;
+    try shared.apply(root);
+    try general.apply(root);
+    try std.testing.expect(try shared.defineLeafStyle(1, props));
+    for (1..4) |i| {
+        const id: i64 = @intCast(i);
+        try std.testing.expect(try shared.createLeaf(id, .text, 1, "first"));
+        const ops = try std.fmt.allocPrint(std.testing.allocator, "[[\"c\",{d},\"text\"],[\"p\",{d},{s}]]", .{ id, id, props });
+        defer std.testing.allocator.free(ops);
+        try general.apply(ops);
+    }
+    try shared.apply("[[\"k\",0,[1,2,3]]]");
+    try general.apply("[[\"k\",0,[1,2,3]]]");
+    shared.layout();
+    general.layout();
+    for (0..4) |i| {
+        const id: i64 = @intCast(i);
+        try std.testing.expectEqualDeep(general.get(id).?.frame, shared.get(id).?.frame);
+    }
 }
 
 fn leafAllocationFailures(gpa: std.mem.Allocator) !void {

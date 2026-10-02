@@ -31,7 +31,7 @@ pub const Backend = struct {
     ctx: *anyopaque,
     /// Text size for a text or field node at a width (inf: unbounded).
     measure: tree_mod.Measure,
-    /// The tree was laid out (or scrolled): update the views, redraw.
+    /// Geometry or painting changed: update the views and redraw.
     laid_out: *const fn (ctx: *anyopaque) void,
     /// A node goes away: drop its view.
     removed: *const fn (ctx: *anyopaque, node: *Node) void,
@@ -240,8 +240,9 @@ pub const Engine = struct {
             prof.report("layout {d:.2}", .{prof.now() - t0});
             e.relaid = true;
         }
-        if (e.relaid) {
+        if (e.relaid or e.tree.paint_dirty) {
             e.relaid = false;
+            e.tree.paint_dirty = false;
             e.backend.laid_out(e.backend.ctx);
         }
     }
