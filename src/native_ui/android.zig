@@ -72,6 +72,7 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .invoke = invoke,
         .focus = focus,
         .props = props,
+        .text = textChanged,
     }, assets, platform_json, label, url, if (w > 0) w else 400, if (h > 0) h else 800);
     try surfaces.put(gpa, window, s);
     s.engine.boot(dark, true);
@@ -137,6 +138,15 @@ fn props(ctx: *anyopaque, node: *Node, value: std.json.Value) void {
     // An <img>'s data: URI can be megabytes: don't keep that much for the
     // window's lifetime.
     if (s.json.capacity > 1 << 20) s.json.clearAndFree(s.gpa);
+}
+
+/// A text node's single run has new text (host.text): Kotlin swaps it into
+/// its copy of the props, without the props' JSON.
+fn textChanged(ctx: *anyopaque, node: *Node) void {
+    const s = surfaceOf(ctx);
+    const runs = node.props.runs orelse return;
+    if (runs.len != 1) return;
+    _ = runtime.call(.void, "nuiText", "(II[B)V", .{ wid(s.window), nid(node), @as([]const u8, runs[0].t) });
 }
 
 /// Text sizes come from Kotlin (StaticLayout, in dp), and so do images'

@@ -158,6 +158,7 @@ internal class NuiNode(val id: Int, var kind: String) {
         shadow = p.optJSONObject("sh")
         layout = null
         layoutWidth = -1
+        forgetSize()
         text = null
         icon = null
         if (kind == "text") buildText()
@@ -168,6 +169,20 @@ internal class NuiNode(val id: Int, var kind: String) {
         }
     }
 
+    /** A single run's new text (NuiView.text): same styles, new words. */
+    fun setText(t: String): Boolean {
+        val runs = p.optJSONArray("runs") ?: return false
+        if (kind != "text" || runs.length() != 1) return false
+        val r = runs.optJSONObject(0) ?: return false
+        r.put("t", t)
+        layout = null
+        layoutWidth = -1
+        forgetSize()
+        // Same styles: the paint stays, only the styled text is new.
+        if (paint != null) text = spans(p.optDouble("fz", 16.0).toFloat(), p.optBoolean("mono")) else buildText()
+        return true
+    }
+
     private fun buildText() {
         val fz = p.optDouble("fz", 16.0).toFloat()
         val mono = p.optBoolean("mono")
@@ -176,6 +191,12 @@ internal class NuiNode(val id: Int, var kind: String) {
         tp.typeface = typeface(p.optDouble("fwt", 400.0).toInt(), p.optBoolean("it"), mono)
         tp.color = p.optJSONArray("col")?.let { color(it) } ?: Color.BLACK
         if (p.has("ls")) tp.letterSpacing = p.optDouble("ls").toFloat() / fz
+        text = spans(fz, mono)
+        paint = tp
+    }
+
+    /** The runs as one styled text (each run's color, size, font, underline, background). */
+    private fun spans(fz: Float, mono: Boolean): CharSequence {
         val sb = SpannableStringBuilder()
         val runs = p.optJSONArray("runs") ?: JSONArray()
         for (i in 0 until runs.length()) {
@@ -191,8 +212,25 @@ internal class NuiNode(val id: Int, var kind: String) {
             if (r.optBoolean("u")) sb.setSpan(UnderlineSpan(), start, end, flags)
             r.optJSONArray("bg")?.let { val c = color(it); if (Color.alpha(c) > 0) sb.setSpan(BackgroundColorSpan(c), start, end, flags) }
         }
-        text = sb
-        paint = tp
+        return sb
+    }
+
+    // Yoga measures a text more than once per layout (and Tree.wordMinWidth
+    // once more), usually at the same width: its one-line width and the last
+    // answer are kept until its text or styles change.
+    private var desiredWidth = -1
+    private var measuredFor = Int.MIN_VALUE
+    private var measured = 0L
+
+    private fun forgetSize() {
+        desiredWidth = -1
+        measuredFor = Int.MIN_VALUE
+    }
+
+    /** The text's width on one line, in dp (+1 for rounding). */
+    private fun desired(t: CharSequence, tp: TextPaint): Int {
+        if (desiredWidth < 0) desiredWidth = ceil(Layout.getDesiredWidth(t, tp)).toInt() + 1
+        return desiredWidth
     }
 
     /** The text laid out `width` dp wide (unbounded: -1). */
@@ -200,8 +238,7 @@ internal class NuiNode(val id: Int, var kind: String) {
         val t = text ?: return null
         val tp = paint ?: return null
         val nowrap = p.optBoolean("nowrap")
-        val desired = ceil(Layout.getDesiredWidth(t, tp)).toInt() + 1
-        val w = if (width < 0 || nowrap) desired else max(1, width)
+        val w = if (width < 0 || nowrap) desired(t, tp) else max(1, width)
         if (layout != null && layoutWidth == w) return layout
         val align = when (p.optString("ta")) {
             "center" -> Layout.Alignment.ALIGN_CENTER
@@ -229,13 +266,16 @@ internal class NuiNode(val id: Int, var kind: String) {
         }
         val t = text ?: return 0
         val tp = paint ?: return 0
-        val desired = ceil(Layout.getDesiredWidth(t, tp)).toInt() + 1
+        if (max64 == measuredFor) return measured
+        val desired = desired(t, tp)
         val width = if (max64 < 0) desired else min(desired, max(1, max64 / 64))
         val l = textLayout(width) ?: return 0
         var w = 0f
         for (i in 0 until l.lineCount) w = max(w, l.getLineWidth(i))
         val wf = min(ceil(w) + 1, width.toFloat())
-        return ((wf * 64).toLong() shl 32) or (l.height * 64L)
+        measured = ((wf * 64).toLong() shl 32) or (l.height * 64L)
+        measuredFor = max64
+        return measured
     }
 
     companion object {
@@ -491,6 +531,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     private fun imageFailed(src: String) {
         android.util.Log.w("Oriel", "native ui: image ${src.take(48)}: can't decode")
+    }
+
+    fun text(id: Int, t: String) {
+        if (nodes[id]?.setText(t) == true) invalidate()
     }
 
     fun remove(id: Int) {
