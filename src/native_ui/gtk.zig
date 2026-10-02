@@ -216,6 +216,13 @@ pub const Surface = struct {
     images: std.AutoHashMap(i64, Image),
     /// Each canvas's bitmap, kept from frame to frame while its size holds.
     canvases: std.AutoHashMap(i64, CanvasBitmap),
+    /// Each text node's natural (unwrapped) size, measured once per props:
+    /// a measure at a width it fits in needs no new Pango layout.
+    text_sizes: std.AutoHashMap(i64, [2]f32),
+    /// The text fonts ("Sans", "Monospace"), parsed once; each layout
+    /// copies one after setting its size.
+    sans: ?*PangoFontDescription = null,
+    mono: ?*PangoFontDescription = null,
     css: *GtkCssProvider,
     css_text: std.ArrayList(u8) = .empty,
     invoke_fn: Invoke,
@@ -245,6 +252,7 @@ pub const Surface = struct {
             .fields = .init(gpa),
             .images = .init(gpa),
             .canvases = .init(gpa),
+            .text_sizes = .init(gpa),
             .css = gtk_css_provider_new(),
             .invoke_fn = invoke_fn,
             .invoke_ctx = invoke_ctx,
@@ -259,6 +267,7 @@ pub const Surface = struct {
             .add_timer = addTimer,
             .invoke = invoke,
             .focus = focus,
+            .props = propsChanged,
         }, assets, platform_json, label, url, width, height);
 
         gtk_drawing_area_set_draw_func(area, draw, s, null);
@@ -328,8 +337,15 @@ fn focus(ctx: *anyopaque, node: *Node) void {
     if (s.fields.get(node.id)) |w| _ = gtk_widget_grab_focus(w);
 }
 
+/// New props: a text node's size is measured again.
+fn propsChanged(ctx: *anyopaque, node: *Node, _: std.json.Value) void {
+    const s = surfaceOf(ctx);
+    _ = s.text_sizes.remove(node.id);
+}
+
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
+    _ = s.text_sizes.remove(node.id);
     if (s.fields.fetchRemove(node.id)) |kv| gtk_overlay_remove_overlay(s.overlay, kv.value);
     if (s.images.fetchRemove(node.id)) |kv| kv.value.deinit();
     if (s.canvases.fetchRemove(node.id)) |kv| cairo_surface_destroy(kv.value.surf);
@@ -698,6 +714,21 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const fz = n.props.fz orelse 16;
     switch (n.kind) {
         .text => {
+            // Its natural size; at a width it fits in, that's the answer.
+            const nat = s.text_sizes.get(n.id) orelse blk: {
+                const layout = textLayout(s, n, std.math.inf(f32)) orelse return;
+                defer g_object_unref(layout);
+                var w: c_int = 0;
+                var h: c_int = 0;
+                pango_layout_get_pixel_size(layout, &w, &h);
+                const size: [2]f32 = .{ @floatFromInt(w + 1), @floatFromInt(h) };
+                s.text_sizes.put(n.id, size) catch {};
+                break :blk size;
+            };
+            if (n.props.nowrap or max_width >= nat[0]) {
+                out.* = nat;
+                return;
+            }
             const layout = textLayout(s, n, max_width) orelse return;
             defer g_object_unref(layout);
             var w: c_int = 0;
@@ -753,8 +784,9 @@ fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
     // the font, as `line-height: 1` on an icon glyph). Pango >= 1.50.
     if (n.props.lh) |lh| add0(attrs, pango_attr_line_height_new_absolute(@intFromFloat(lh * PANGO_SCALE)));
     const layout = gtk_widget_create_pango_layout(s.area, null);
-    const desc = pango_font_description_from_string(if (n.props.mono) "Monospace" else "Sans");
-    defer pango_font_description_free(desc);
+    const font = if (n.props.mono) &s.mono else &s.sans;
+    if (font.* == null) font.* = pango_font_description_from_string(if (n.props.mono) "Monospace" else "Sans");
+    const desc = font.*.?;
     pango_font_description_set_absolute_size(desc, (n.props.fz orelse 16) * PANGO_SCALE);
     pango_layout_set_font_description(layout, desc);
     pango_layout_set_text(layout, text.items.ptr, @intCast(text.items.len));
