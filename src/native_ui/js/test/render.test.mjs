@@ -426,4 +426,23 @@ for (const css of [
   assert.equal(find(tree, (n) => n.kids.includes(tag)).props.fd, "row", "in a line with its text");
 }
 
+// A canvas a max-width may narrow keeps its shape: its parent's stretch
+// gives the width, capped at its bitmap's, with height capped to match
+// (Yoga takes a ratio from a width before clamping that width). Without a
+// max-width it keeps its bitmap's size.
+{
+  const f = fixture("div, canvas { display: block } .fit { max-width: 100% }");
+  const main = f.document.querySelector("main");
+  main.innerHTML = '<div><canvas class="fit"></canvas></div><div><canvas></canvas></div>';
+  for (const c of main.querySelectorAll("canvas")) { c.width = 428; c.height = 40; }
+  f.check();
+  const find = (n, pred, out = []) => { if (pred(n)) out.push(n); n.kids.forEach((k) => find(k, pred, out)); return out; };
+  const [fit, fixed] = find(f.tree(), (n) => n.kind === "canvas");
+  assert.equal(fit.props.w, undefined, "no set width: the parent stretches it");
+  assert.equal(fit.props.maxw, 428, "no wider than its bitmap");
+  assert.ok(Math.abs(fit.props.maxh - 40) < 1e-9, "no taller than its bitmap");
+  assert.ok(Math.abs(fit.props.ar - 10.7) < 1e-9, "its bitmap's ratio");
+  assert.deepEqual([fixed.props.w, fixed.props.h], [428, 40], "without a max-width: its bitmap's size");
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");
