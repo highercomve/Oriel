@@ -589,6 +589,16 @@ fn onLongPress(self: id, _: SEL, recognizer: id) callconv(.c) void {
     _ = s.engine.event(n.id, "contextmenu", json);
 }
 
+/// Scroll the sideways-scrolling container under `at` (or one around it) by `dx`.
+fn scrollAtX(s: *Surface, at: [2]f32, dx: f32) bool {
+    var target = s.engine.tree.scrollerX(s.engine.tree.hit(at[0], at[1]));
+    while (target) |t| {
+        if (s.engine.scrollByX(t, dx)) return true;
+        target = s.engine.tree.scrollerX(t.parent);
+    }
+    return false;
+}
+
 /// Scroll the container under `at` (or one around it) by `dy`.
 fn scrollAt(s: *Surface, at: [2]f32, dy: f32) bool {
     var target = s.engine.tree.scroller(s.engine.tree.hit(at[0], at[1]));
@@ -607,8 +617,10 @@ fn onPan(self: id, _: SEL, recognizer: id) callconv(.c) void {
     if (st == state_began or st == state_changed) {
         const t = r.msgSend(CGPoint, "translationInView:", .{s.view});
         r.msgSend(void, "setTranslation:inView:", .{ CGPoint{ .x = 0, .y = 0 }, s.view });
-        // The finger moves up: the content scrolls down.
-        _ = scrollAt(s, s.fling_at, @floatCast(-t.y));
+        // The finger moves up: the content scrolls down (and sideways the same).
+        if (!std.math.isFinite(t.x) or !std.math.isFinite(t.y)) return;
+        if (t.y != 0) _ = scrollAt(s, s.fling_at, @floatCast(-t.y));
+        if (t.x != 0) _ = scrollAtX(s, s.fling_at, @floatCast(-t.x));
         return;
     }
     if (st != state_ended) return;

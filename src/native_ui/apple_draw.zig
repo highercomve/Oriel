@@ -1010,8 +1010,10 @@ test "images: decoded, and over the pixel limit only measured" {
 /// its size holds (a game loop redraws every frame).
 const CanvasBitmap = struct { ctx: CGContextRef, w: usize, h: usize };
 
-/// The largest bitmap side, in pixels.
+/// The largest bitmap side, in pixels, and the largest area: 16 M px
+/// (64 MB as RGBA); a bigger canvas gets a bitmap of fewer pixels per point.
 const max_canvas_side: f64 = 16384;
+const max_canvas_pixels: f64 = 4096 * 4096;
 
 fn dropCanvas(n: *Node) void {
     const p = n.native orelse return;
@@ -1102,7 +1104,9 @@ fn paintCanvas(comptime font_class: [:0]const u8, cg: CGContextRef, scale: f64, 
     const cmds = n.canvas orelse return;
     const f = n.frame;
     if (!(f.w > 0) or !(f.h > 0)) return; // NaN too
-    const sf: f64 = if (scale > 0 and std.math.isFinite(scale)) scale else 1;
+    var sf: f64 = if (scale > 0 and std.math.isFinite(scale)) scale else 1;
+    const area = @as(f64, f.w) * f.h * sf * sf;
+    if (area > max_canvas_pixels) sf *= @sqrt(max_canvas_pixels / area);
     const pw: usize = @intFromFloat(@min(max_canvas_side, @ceil(f.w * sf)));
     const ph: usize = @intFromFloat(@min(max_canvas_side, @ceil(f.h * sf)));
     if (pw == 0 or ph == 0) return;
@@ -1149,6 +1153,11 @@ fn replay(comptime font_class: [:0]const u8, r: *Replay, cmds: []const tree_mod.
             else => {},
         };
         const m = &r.st.m;
+        defer if (!r.st.singular and !invertible(r.st.m)) {
+            // A transform that overflowed or collapsed (scale(1e-30) twice):
+            // as a scale by 0, nothing until the restore() that undoes it.
+            r.st.singular = true;
+        };
         switch (cmd) {
             .save => {
                 // Saved together or not at all, so restore stays balanced.
@@ -1191,8 +1200,13 @@ fn replay(comptime font_class: [:0]const u8, r: *Replay, cmds: []const tree_mod.
             .fill => |even| fillPath(r, r.path, even),
             .stroke => strokePath(r, r.path),
             .clip => |even| {
-                CGContextAddPath(ctx, r.path);
-                if (even) CGContextEOClip(ctx) else CGContextClip(ctx);
+                // An empty path clips everything (CG would leave the clip as is).
+                if (CGPathIsEmpty(r.path)) {
+                    CGContextClipToRect(ctx, .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } });
+                } else {
+                    CGContextAddPath(ctx, r.path);
+                    if (even) CGContextEOClip(ctx) else CGContextClip(ctx);
+                }
             },
             .fill_rect, .stroke_rect, .clear_rect => |q| {
                 // Their own path: the current one stays.
@@ -1230,6 +1244,12 @@ fn replay(comptime font_class: [:0]const u8, r: *Replay, cmds: []const tree_mod.
             },
         }
     }
+}
+
+fn invertible(m: CGAffineTransform) bool {
+    inline for (.{ m.a, m.b, m.c, m.d, m.tx, m.ty }) |v| if (!std.math.isFinite(v)) return false;
+    const det = m.a * m.d - m.b * m.c;
+    return std.math.isFinite(det) and det != 0;
 }
 
 fn putGrad(r: *Replay, id: u16, g: CanvasGrad) void {
@@ -1283,6 +1303,7 @@ fn setPaintColor(ctx: CGContextRef, c: tree_mod.Color, alpha: f32, stroke: bool)
 
 fn fillPath(r: *Replay, path: CGPathRef, even: bool) void {
     const ctx = r.ctx;
+    if (CGPathIsEmpty(path)) return; // nothing to fill (a gradient would flood the clip)
     CGContextSaveGState(ctx);
     defer CGContextRestoreGState(ctx);
     CGContextAddPath(ctx, path);
@@ -1302,6 +1323,7 @@ fn fillPath(r: *Replay, path: CGPathRef, even: bool) void {
 /// scale with it, as in a canvas.
 fn strokePath(r: *Replay, path: CGPathRef) void {
     const ctx = r.ctx;
+    if (CGPathIsEmpty(path)) return;
     const inv = CGAffineTransformInvert(r.st.m);
     const local = CGPathCreateCopyByTransformingPath(path, &inv) orelse return;
     defer CFRelease(local);

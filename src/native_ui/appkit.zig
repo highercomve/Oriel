@@ -714,15 +714,32 @@ fn scrollWheel(self: id, _: SEL, event: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const ev: Object = .{ .value = event };
     const precise = cocoa.isTrue(ev.msgSend(BOOL, "hasPreciseScrollingDeltas", .{}));
-    const raw: f64 = ev.msgSend(f64, "scrollingDeltaY", .{});
-    // Positive deltas move the content down (scroll up): the page's dy is the opposite.
-    const dy: f32 = @floatCast(-raw * (if (precise) @as(f64, 1) else 16));
-    if (dy == 0) return;
+    const k: f64 = if (precise) 1 else 16;
+    // Positive deltas move the content down/right: the page's d is the opposite.
+    var dy: f32 = @floatCast(-ev.msgSend(f64, "scrollingDeltaY", .{}) * k);
+    var dx: f32 = @floatCast(-ev.msgSend(f64, "scrollingDeltaX", .{}) * k);
+    // Shift with a mouse wheel scrolls sideways, as in browsers.
+    const shift = ev.msgSend(c_ulong, "modifierFlags", .{}) & (1 << 17) != 0;
+    if (shift and !precise and dx == 0) {
+        dx = dy;
+        dy = 0;
+    }
+    if (!std.math.isFinite(dx) or !std.math.isFinite(dy)) return;
     const p = point(self, event);
-    var target = s.engine.tree.scroller(s.engine.tree.hit(p[0], p[1]));
-    while (target) |t| {
-        if (s.engine.scrollBy(t, dy)) return;
-        target = s.engine.tree.scroller(t.parent);
+    const under = s.engine.tree.hit(p[0], p[1]);
+    if (dy != 0) {
+        var target = s.engine.tree.scroller(under);
+        while (target) |t| {
+            if (s.engine.scrollBy(t, dy)) break;
+            target = s.engine.tree.scroller(t.parent);
+        }
+    }
+    if (dx != 0) {
+        var target = s.engine.tree.scrollerX(under);
+        while (target) |t| {
+            if (s.engine.scrollByX(t, dx)) break;
+            target = s.engine.tree.scrollerX(t.parent);
+        }
     }
 }
 
