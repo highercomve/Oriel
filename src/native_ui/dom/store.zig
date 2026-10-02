@@ -167,6 +167,11 @@ pub const Store = struct {
     /// Reused traversal stack.
     stack: std.ArrayList(Index) = .empty,
     observer: ?Observer = null,
+    /// Detached trees that lost their last wrapper during an operation that
+    /// may still use them (handles: re-checked, freed by `collect`).
+    orphans: std.ArrayList(Handle) = .empty,
+    /// Observer calls in progress (JS runs inside them: no collecting).
+    hook_depth: u32 = 0,
 
     /// `class_name`, `id_name`: the atoms of "class" and "id" (the store
     /// takes a reference to each).
@@ -198,6 +203,7 @@ pub const Store = struct {
         s.slabs.deinit(s.gpa);
         s.releases.deinit(s.gpa);
         s.dirty_list.deinit(s.gpa);
+        s.orphans.deinit(s.gpa);
         s.stack.deinit(s.gpa);
         s.* = undefined;
     }
@@ -559,7 +565,14 @@ pub const Store = struct {
         c.next = none;
         if (c.wrapped != 0) {
             var idx = parent;
-            while (idx != none) : (idx = s.get(idx).parent) s.get(idx).wrapped -= c.wrapped;
+            var root = parent;
+            while (idx != none) : (idx = s.get(idx).parent) {
+                s.get(idx).wrapped -= c.wrapped;
+                root = idx;
+            }
+            // The old tree may have lost its last wrapper (JS held only
+            // the node removed): nothing reaches it now.
+            s.noteOrphan(root);
         }
         s.markDirty(parent, dirty_children);
         const was_connected = c.connected;
@@ -721,7 +734,9 @@ pub const Store = struct {
     fn notify(s: *Store, o: Observer, kind: Mutation, target: Index, node: Index, name: u32) void {
         const rt = s.pin(target);
         const rn = if (node != none) s.pin(node) else none;
+        s.hook_depth += 1;
         o.notify(o.ctx, kind, target, node, name);
+        s.hook_depth -= 1;
         if (rn != none) s.unpin(rn);
         if (rt != none) s.unpin(rt);
     }
@@ -738,11 +753,54 @@ pub const Store = struct {
     }
 
     /// Undoes `pin`, along the root's ancestors in case the hook inserted it
-    /// somewhere (linking added the pin to them). Frees nothing: the
-    /// operation decides what's left.
+    /// somewhere (linking added the pin to them). Frees nothing (the
+    /// operation may still use the tree); a tree left without wrappers is
+    /// listed for `collect`.
     fn unpin(s: *Store, root: Index) void {
         var idx = root;
-        while (idx != none) : (idx = s.get(idx).parent) s.get(idx).wrapped -= 1;
+        var top = root;
+        while (idx != none) : (idx = s.get(idx).parent) {
+            s.get(idx).wrapped -= 1;
+            top = idx;
+        }
+        s.noteOrphan(top);
+    }
+
+    /// A detached tree that nothing holds: no wrapper in it, not the document.
+    fn orphaned(s: *Store, root: Index) bool {
+        const n = s.get(root);
+        return n.kind != .free and root != s.document and !n.connected and n.parent == none and n.wrapped == 0;
+    }
+
+    fn noteOrphan(s: *Store, root: Index) void {
+        if (!s.orphaned(root)) return;
+        const h = s.handleOf(root);
+        // The same tree again (a parser's fragment, node after node).
+        if (s.orphans.getLastOrNull() == h) return;
+        // Before growing the list, drop the entries that no longer apply
+        // (freed, inserted somewhere, wrapped again).
+        if (s.orphans.items.len == s.orphans.capacity) {
+            var kept: usize = 0;
+            for (s.orphans.items) |o| {
+                const idx = s.resolve(o) orelse continue;
+                if (!s.orphaned(idx)) continue;
+                s.orphans.items[kept] = o;
+                kept += 1;
+            }
+            s.orphans.shrinkRetainingCapacity(kept);
+        }
+        s.orphans.append(s.gpa, h) catch {}; // no room: it leaks
+    }
+
+    /// Frees the listed trees still without wrappers. Only where no store
+    /// operation is under way (the bindings hold detached trees between
+    /// calls: a parsed fragment, a new text node): the engine's render.
+    pub fn collect(s: *Store) void {
+        if (s.hook_depth != 0) return;
+        while (s.orphans.pop()) |h| {
+            const idx = s.resolve(h) orelse continue;
+            if (s.orphaned(idx)) s.freeTree(idx);
+        }
     }
 
     pub fn markDirty(s: *Store, idx: Index, what: u8) void {
@@ -1124,4 +1182,74 @@ test "an observer's short-lived wrappers don't free nodes the operation still us
         s.deinit();
         try t.expect(f.balanced());
     }
+}
+
+test "a detached tree left without wrappers is freed by collect" {
+    const t = std.testing;
+    var f = Fake.new(t.allocator);
+    defer f.deinit();
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
+    f.store = &s;
+    // The page holds only the child; removing it leaves the parent unheld.
+    const a = try s.createElement(100);
+    const b = try s.createElement(101);
+    try s.appendChild(a, b);
+    var wb = f.make(20);
+    try f.wrapper_nodes.put(20, b);
+    s.setWrapper(b, &wb);
+    s.remove(b);
+    try t.expectEqual(Kind.element, s.get(a).kind); // not during the operation
+    s.collect();
+    try t.expectEqual(Kind.free, s.get(a).kind);
+    try t.expectEqual(Kind.element, s.get(b).kind); // still wrapped
+    Fake.free(&f, &wb);
+    try t.expectEqual(Kind.free, s.get(b).kind);
+    s.collect(); // nothing listed is left to free
+    s.deinit();
+    try t.expect(f.balanced());
+}
+
+/// An observer that drops the page's wrapper it was given, as a page
+/// releasing its last reference inside a mutation callback.
+const DroppingObserver = struct {
+    f: *Fake,
+    w: ?JsVal,
+
+    fn notify(ctx: *anyopaque, kind: Mutation, target: Index, node: Index, name: u32) void {
+        _ = kind;
+        _ = target;
+        _ = node;
+        _ = name;
+        const o: *DroppingObserver = @ptrCast(@alignCast(ctx));
+        if (o.w) |*w| Fake.free(o.f, w);
+        o.w = null;
+    }
+};
+
+test "a tree whose last wrapper goes during an observer call is freed by collect" {
+    const t = std.testing;
+    var f = Fake.new(t.allocator);
+    defer f.deinit();
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
+    f.store = &s;
+    const a = try s.createElement(100);
+    const b = try s.createElement(101);
+    try s.appendChild(a, b);
+    var wa = f.make(30);
+    try f.wrapper_nodes.put(30, a);
+    s.setWrapper(a, &wa);
+    var o: DroppingObserver = .{ .f = &f, .w = wa };
+    s.observer = .{ .ctx = &o, .notify = DroppingObserver.notify, .connected_only = false };
+    var v = f.make(31);
+    try s.setAttr(b, 202, &v);
+    Fake.free(&f, &v);
+    // Pinned during the call: alive after it, then freed by collect.
+    try t.expectEqual(Kind.element, s.get(a).kind);
+    try t.expectEqual(@as(u32, 0), s.get(a).wrapped);
+    s.observer = null;
+    s.collect();
+    try t.expectEqual(Kind.free, s.get(a).kind);
+    try t.expectEqual(Kind.free, s.get(b).kind);
+    s.deinit();
+    try t.expect(f.balanced());
 }

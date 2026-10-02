@@ -431,6 +431,12 @@ export fn nui_dom_set_foreign(d: *Dom, idx: Index, foreign: bool) void {
 
 /// Mutations go to the host's `mutation` (off: none); connected_only: only
 /// those of nodes in the document.
+/// Frees the detached trees left without wrappers (store.collect): the
+/// engine calls it where no DOM operation is under way.
+export fn nui_dom_collect(d: *Dom) void {
+    d.store.collect();
+}
+
 export fn nui_dom_observe(d: *Dom, on: bool, connected_only: bool) void {
     d.store.observer = if (on) .{ .ctx = d, .notify = notify, .connected_only = connected_only } else null;
 }

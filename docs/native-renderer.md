@@ -15,8 +15,9 @@ native views, and says so when a page uses something outside it.
 ```
 index.html, app.js, style.css (the app's assets, as for the WebView)
         │
-QuickJS ── a fake DOM (linkedom): document, elements, events, timers,
+QuickJS ── the DOM: document, elements, events, timers,
         │  window.oriel (invoke/listen) → the app's Zig commands, as today
+        │  (the native DOM, a Zig store; linkedom with -Dnative_dom=false)
         │
 Style engine: CSS parsed once; per element the cascade (selectors,
         │  specificity, inline styles), custom properties, inheritance,
@@ -38,6 +39,21 @@ JavaScript, styles, layout and widget updates. Async commands run on the
 worker pool as with the WebView, and resolve their promises back on the UI
 thread. `App.emit` reaches the page through the same
 `window.oriel.__emit(name, payload)` call as a WebView page.
+
+## The DOM
+
+With `-Dnative_ui` the page's DOM is the native one by default: a Zig store
+of nodes and attributes (`src/native_ui/dom`) behind QuickJS bindings, with
+the JavaScript side's interfaces on top (`src/native_ui/js/src/dom/native.js`;
+design in `docs/native-dom.md`). Building 1000 rows of the render bench takes
+about half as long as on linkedom, and memory after its tests stays flat.
+
+`-Dnative_dom=false` builds the same renderer on linkedom (the JavaScript DOM
+vendored in `src/native_ui/js/vendor/linkedom`): to compare the two, or as a
+fallback while a page needs something the native DOM lacks. The JavaScript
+side reaches either through one module, `#dom` (`src/dom/linkedom.js` or
+`src/dom/native-backend.js`); `npm run build` makes `runtime.js` (linkedom)
+and `runtime-native.js` (the native DOM), and the build embeds the one chosen.
 
 ## Flattening: several elements, one native view
 
