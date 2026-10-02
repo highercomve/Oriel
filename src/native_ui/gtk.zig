@@ -8,6 +8,7 @@
 const std = @import("std");
 const gtk = @import("gtk");
 const engine_mod = @import("engine.zig");
+const prof = @import("prof.zig");
 const tree_mod = @import("tree.zig");
 const Engine = engine_mod.Engine;
 const Node = tree_mod.Node;
@@ -831,7 +832,9 @@ fn draw(_: *Widget, cr: *cairo_t, _: c_int, _: c_int, data: ?*anyopaque) callcon
         cairo_set_source_rgba(cr, 1, 1, 1, 1);
         cairo_paint(cr);
     }
+    const t0 = prof.now();
     paint(s, cr, root);
+    prof.report("draw {d:.2}", .{prof.now() - t0});
 }
 
 fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {

@@ -13846,6 +13846,8 @@ col, colgroup { display: none; }
       const body = this.doc.body;
       const rootCS = this.style(this.doc.documentElement, null);
       this.cur = { own: [], kids: [], fixed: [] };
+      const P = this.host.prof ? this.host.now : null;
+      const t02 = P && P();
       const bodyNode = this.element(body, rootCS, nodes, { blockify: true, textAlign: "left" });
       const fixed = this.cur.fixed;
       this.cur = null;
@@ -13871,7 +13873,12 @@ col, colgroup { display: none; }
       nodes.set(-1, { kind: "view", props: { scroll: true, fg: 1, fs: 1, ai: "stretch" }, kids: [bodyNode] });
       const rootBg = bgOf(rootCS) || (this.cs.get(body) ? bgOf(this.cs.get(body)) : null);
       nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: [-1, ...fixed] });
+      const t1 = P && P();
       this.emit(nodes, full);
+      if (P) {
+        const ms = (x) => x.toFixed(2);
+        this.host.log(1, `PROF render ${full ? "full" : "incremental"}: ${nodes.size} nodes made, flatten ${ms(t1 - t02)}, emit ${ms(P() - t1 - this.applyMs)}, apply ${ms(this.applyMs)}`);
+      }
       const scroll = this.pendingScroll;
       this.pendingScroll = null;
       if (scroll && scroll.el.isConnected) this.host.scrollIntoView(this.idOf(scroll.el, "el"), scroll.block);
@@ -13883,7 +13890,7 @@ col, colgroup { display: none; }
       const c = this.sc.get(el);
       const mk = this.marks.get(el) || 0;
       if (c && c.parent === parentCS && (c.frame === this.frameNo || !rematch && !mk)) return c.cs;
-      const m = c && !rematch && mk < 2 ? c.m : this.engine.matching(el);
+      const m = c && !rematch && mk < 2 ? c.m : this.matchOf(el);
       const inline = el.getAttribute("style");
       const casc = this.cascadeOf(m.normal);
       let cs;
@@ -13955,6 +13962,48 @@ col, colgroup { display: none; }
       for (const k in important) put(k, important[k]);
       derived.set(cs, { base, parts: parts && [...parts] });
       return cs;
+    }
+    // Matched rules, shared within a frame by elements that selectors can't
+    // tell apart: the same tag and class, no other attributes, under parents
+    // that share too (or the same parent). A browser's style sharing; off
+    // when the sheets match by position (:nth-child, +, ~…).
+    matchOf(el) {
+      const k = this.structural ? 0 : this.shareKey(el);
+      if (k <= 0) return this.engine.matching(el);
+      let m = this.matchShare.get(k);
+      if (!m) this.matchShare.set(k, m = this.engine.matching(el));
+      return m;
+    }
+    // An element's sharing key this frame: > 0 when shareable, else minus
+    // its id (still a key for its children).
+    shareKey(el) {
+      if (this.keyFrame !== this.frameNo) {
+        this.keyFrame = this.frameNo;
+        this.keys = /* @__PURE__ */ new WeakMap();
+        this.keyIds = /* @__PURE__ */ new Map();
+        this.matchShare = /* @__PURE__ */ new Map();
+      }
+      let k = this.keys.get(el);
+      if (k !== void 0) return k;
+      const parent = el.parentNode;
+      let ok = !!parent && parent.nodeType === 1;
+      let cls = "";
+      if (ok) {
+        for (const a of el.attributes) {
+          if (a.name === "class") cls = a.value;
+          else if (a.name !== "style" || this.styleAttrRules) {
+            ok = false;
+            break;
+          }
+        }
+      }
+      if (ok) {
+        const name = `${this.shareKey(parent)}|${el.localName}|${cls}`;
+        k = this.keyIds.get(name);
+        if (k === void 0) this.keyIds.set(name, k = this.keyIds.size + 1);
+      } else k = -this.idOf(el, "el");
+      this.keys.set(el, k);
+      return k;
     }
     // The longhands of a set of matched rules (many elements match the same).
     cascadeOf(rules) {
@@ -14224,7 +14273,7 @@ col, colgroup { display: none; }
         this.putClick(props, el);
         return this.put(nodes, id, "text", props, [], fixedNode);
       }
-      const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) && flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs).display || ""));
+      const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) && flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""));
       if (inlineLine) {
         props.fd = "row";
         props.fw = "wrap";
@@ -14355,7 +14404,12 @@ col, colgroup { display: none; }
       for (const [id, n2] of nodes) {
         const old = this.prev.get(id);
         if (!old || old.kind !== n2.kind) this.tx.forget(id);
-        const shown = this.anim.apply(id, this.tx.apply(id, n2.props, this.specs.get(id) || null, now), this.animSpecs.get(id) || null, now);
+        const spec = this.specs.get(id) || null, animSpec = this.animSpecs.get(id) || null;
+        let shown = n2.props;
+        if (spec || animSpec || this.tx.anims.has(id) || this.anim.state.has(id)) {
+          if (spec && old && old.kind === n2.kind && !this.tx.targets.has(id)) this.tx.targets.set(id, JSON.parse(old.p));
+          shown = this.anim.apply(id, this.tx.apply(id, n2.props, spec, now), animSpec, now);
+        } else if (this.tx.targets.has(id)) this.tx.forget(id);
         const p = JSON.stringify(shown);
         const k = JSON.stringify(n2.kids);
         if (!old || old.kind !== n2.kind) {
@@ -14384,7 +14438,12 @@ col, colgroup { display: none; }
         ops.push(`["r",0]`);
         this.rootSent = true;
       }
-      if (ops.length) this.host.ops(`[${ops.join(",")}]`);
+      this.applyMs = 0;
+      if (ops.length) {
+        const P = this.host.prof ? this.host.now : null, t02 = P && P();
+        this.host.ops(`[${ops.join(",")}]`);
+        if (P) this.applyMs = P() - t02;
+      }
       this.schedule();
     }
     // An element's @keyframes animations: their frames as node props
@@ -14944,6 +15003,84 @@ col, colgroup { display: none; }
     return out;
   }
 
+  // src/html.js
+  var VOID = new Set("area base br col embed hr img input keygen link meta param source track wbr".split(" "));
+  var SPECIAL = new Set("script style textarea title template svg math p li dt dd option optgroup select table caption colgroup thead tbody tfoot tr td th rb rt rp rtc ruby noscript iframe noembed noframes xmp plaintext frameset frame head body html pre listing form button a nobr image".split(" "));
+  var ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\xA0" };
+  var TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>/y;
+  var ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  function decode(s) {
+    if (s.indexOf("&") < 0) return s;
+    let bad = false;
+    const out = s.replace(/&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);?/g, (m, e) => {
+      if (e[0] === "#") {
+        const n2 = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+        if (!(n2 > 0 && n2 <= 1114111) || n2 >= 55296 && n2 <= 57343) {
+          bad = true;
+          return m;
+        }
+        return String.fromCodePoint(n2);
+      }
+      if (!m.endsWith(";") || !Object.hasOwn(ENTITIES, e)) {
+        bad = true;
+        return m;
+      }
+      return ENTITIES[e];
+    });
+    return bad ? void 0 : out;
+  }
+  function parseSimple(doc, html2) {
+    const frag = doc.createDocumentFragment();
+    const stack = [frag];
+    let i = 0;
+    const n2 = html2.length;
+    while (i < n2) {
+      const lt = html2.indexOf("<", i);
+      const end = lt < 0 ? n2 : lt;
+      if (end > i) {
+        const t = decode(html2.slice(i, end));
+        if (t === void 0) return null;
+        stack[stack.length - 1].append(doc.createTextNode(t));
+      }
+      if (lt < 0) break;
+      if (html2.startsWith("<!--", lt)) {
+        const close = html2.indexOf("-->", lt + 4);
+        if (close < 0) return null;
+        stack[stack.length - 1].append(doc.createComment(html2.slice(lt + 4, close)));
+        i = close + 3;
+        continue;
+      }
+      TAG.lastIndex = lt;
+      const m = TAG.exec(html2);
+      if (!m) return null;
+      i = TAG.lastIndex;
+      const tag = m[2].toLowerCase();
+      if (SPECIAL.has(tag)) return null;
+      if (m[1]) {
+        if (m[3] || m[4] || stack.length < 2 || stack[stack.length - 1].localName !== tag) return null;
+        stack.pop();
+        continue;
+      }
+      const isVoid2 = VOID.has(tag);
+      if (m[4] && !isVoid2) return null;
+      const el = doc.createElement(tag);
+      if (m[3]) {
+        const attrs = [];
+        ATTR.lastIndex = 0;
+        for (let a; a = ATTR.exec(m[3]); ) {
+          const name = a[1].toLowerCase();
+          const v = decode(a[2] ?? a[3] ?? a[4] ?? "");
+          if (v === void 0 || attrs.some((x) => x[0] === name)) return null;
+          attrs.push([name, v]);
+        }
+        for (let k = attrs.length - 1; k >= 0; k--) el.setAttribute(attrs[k][0], attrs[k][1]);
+      }
+      stack[stack.length - 1].append(el);
+      if (!isVoid2) stack.push(el);
+    }
+    return stack.length === 1 ? frag : null;
+  }
+
   // src/main.js
   var host = globalThis.__host;
   var fmt = (args) => args.map((a) => {
@@ -15101,6 +15238,22 @@ ${a.stack || ""}`;
       } catch (e) {
         console.error(e);
       }
+    }
+  }
+  {
+    let proto = Object.getPrototypeOf(document.createElement("div"));
+    let desc = null;
+    while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "innerHTML"))) proto = Object.getPrototypeOf(proto);
+    if (desc?.set) {
+      Object.defineProperty(proto, "innerHTML", {
+        configurable: true,
+        get: desc.get,
+        set(html2) {
+          const frag = this.localName !== "template" && !this.closest?.("svg, math") ? parseSimple(this.ownerDocument, String(html2 ?? "")) : null;
+          if (frag) this.replaceChildren(frag);
+          else desc.set.call(this, html2);
+        }
+      });
     }
   }
   var ET = Object.getPrototypeOf(Object.getPrototypeOf(document.body)).constructor.prototype;
@@ -15851,9 +16004,21 @@ ${a.stack || ""}`;
       bound.set(type, { code: attr2.value, fn });
     }
   }
-  function bindInlineHandlers(root) {
-    bindInline(root);
-    for (const el of root.querySelectorAll?.("*") || []) bindInline(el);
+  {
+    let proto = Object.getPrototypeOf(document.body);
+    while (proto && !Object.prototype.hasOwnProperty.call(proto, "dispatchEvent")) proto = Object.getPrototypeOf(proto);
+    if (proto) {
+      const orig = proto.dispatchEvent;
+      proto.dispatchEvent = function(event) {
+        for (let n2 = this; n2 && n2.nodeType === 1; n2 = n2.parentNode) if (hasInline(n2)) bindInline(n2);
+        return orig.call(this, event);
+      };
+    }
+  }
+  function hasInline(el) {
+    if (el.__inline) return true;
+    for (const a of el.attributes || []) if (a.name.length > 2 && a.name[0] === "o" && a.name[1] === "n") return true;
+    return false;
   }
   function guard(fn) {
     try {
@@ -15898,13 +16063,6 @@ ${a.stack || ""}`;
             console.error(e);
           }
         }
-        bindInlineHandlers(document.documentElement);
-        new MutationObserver((records) => {
-          for (const r of records) {
-            if (r.type === "attributes" && /^on/.test(r.attributeName || "")) bindInline(r.target);
-            for (const n2 of r.addedNodes || []) if (n2.nodeType === 1) bindInlineHandlers(n2);
-          }
-        }).observe(document, { subtree: true, childList: true, attributes: true });
         document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
         fireWindow(new Event("load"));
         return true;
