@@ -306,6 +306,8 @@ pub const Props = struct {
     ph: ?[]const u8 = null,
     dis: bool = false,
     pw: bool = false,
+    /// A textarea's cols (20 when absent): its natural width.
+    cols: ?f32 = null,
     options: ?[]const [2][]const u8 = null,
     // Icons
     icon: ?Icon = null,
@@ -718,7 +720,7 @@ pub const Tree = struct {
             if (sum > room and sum > 0) {
                 const k = room / sum;
                 for (cols.items) |*col| col.* *= k;
-            } else if (explicit and sum < room) {
+            } else if ((explicit or stretched(table)) and sum < room) {
                 if (sum > 0) {
                     const k = room / sum;
                     for (cols.items) |*col| col.* *= k;
@@ -738,6 +740,19 @@ pub const Tree = struct {
                 c += span;
             }
         }
+    }
+
+    /// An auto-width table that its flex column stretches (no align-self;
+    /// the column's items stretch): as wide as the column, as in a browser,
+    /// its columns sharing the room. In a block, or with align-self, it
+    /// shrinks to its columns (render.js gives it align-self: flex-start).
+    fn stretched(table: *Node) bool {
+        if (table.props.as != null) return false;
+        const parent = table.parent orelse return false;
+        const fd = parent.props.fd orelse "column";
+        if (!std.mem.startsWith(u8, fd, "column")) return false;
+        const ai = parent.props.ai orelse "stretch";
+        return std.mem.eql(u8, ai, "stretch") or std.mem.eql(u8, ai, "normal");
     }
 
     /// The table's rows, through its row groups (not nested tables').
@@ -939,6 +954,13 @@ fn measureFn(node: yg.YGNodeConstRef, width: f32, width_mode: yg.YGMeasureMode, 
     const max_w: f32 = if (width_mode == yg.YGMeasureModeUndefined or std.math.isNan(width)) std.math.inf(f32) else width;
     var out: [2]f32 = .{ 0, 0 };
     n.tree.measure(n.tree.measure_ctx, n, max_w, &out);
+    // A textarea is `cols` characters wide (about 0.6 em each, plus its
+    // padding), as in a browser, not as wide as it may be; stretched in a
+    // flex column it still fills it (that width is exact).
+    if (n.kind == .textarea) if (n.props.cols) |cols| {
+        const fz = n.props.fz orelse 16;
+        out[0] = @min(out[0], cols * fz * 0.6 + 8);
+    };
     if (width_mode == yg.YGMeasureModeExactly) out[0] = width;
     if (width_mode == yg.YGMeasureModeAtMost) out[0] = @min(out[0], width);
     return .{ .width = out[0], .height = out[1] };
