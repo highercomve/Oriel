@@ -76,6 +76,12 @@ open class OrielActivity : Activity() {
         super.onStop()
     }
 
+    /** Window focus, for reads only a focused app may make (the clipboard). */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        OrielRuntime.focusChanged(this, hasFocus)
+    }
+
     override fun onResume() {
         super.onResume()
         OrielRuntime.foreground = this
@@ -226,8 +232,24 @@ open class OrielActivity : Activity() {
     }
 }
 
-/** The launcher: the main window, deep links (`singleTask`). */
+/** The main window, deep links (`singleTask`). */
 class OrielMainActivity : OrielActivity()
+
+/**
+ * The launcher icon: opens OrielMainActivity at the size the app gave its
+ * main window last time (desktop windowing, e.g. ChromeOS), which only a
+ * launch can set; then goes. Draws nothing (Theme.NoDisplay).
+ */
+class OrielLaunchActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val main = Intent(intent).setClass(this, OrielMainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val size = OrielRuntime.rememberedMainSize(this)
+        val options = size?.let { OrielRuntime.launchBounds(this, it.first, it.second) }
+        startActivity(main, options?.toBundle())
+        finish()
+    }
+}
 
 /** Every other window, each in its own task. */
 class OrielWindowActivity : OrielActivity()
