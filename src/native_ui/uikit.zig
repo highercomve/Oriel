@@ -56,8 +56,10 @@ const Field = struct {
     /// field the page shows (`apple_draw.visiblePart`): the control is its
     /// only subview.
     holder: Object,
-    /// The UITextField, UITextView or UIButton (held by `holder`).
+    /// The UITextField, UITextView, UIButton or UISlider (held by `holder`).
     control: Object,
+    /// A UISlider (<input type=range>): no text, placeholder or font.
+    slider: bool = false,
 };
 
 /// Live surfaces by token, and which surface and node a view or control
@@ -101,6 +103,8 @@ fn classes() void {
     });
     field_delegate = apple.new(apple.defineClass("OrielNuiFieldDelegate", &.{ "UITextFieldDelegate", "UITextViewDelegate" }, .{
         .{ "nuiFieldChanged:", fieldChanged },
+        .{ "nuiSliderMoved:", sliderMoved },
+        .{ "nuiSliderDone:", sliderDone },
         .{ "textFieldShouldReturn:", fieldShouldReturn },
         .{ "textViewDidChange:", textViewDidChange },
         .{ "textView:shouldChangeTextInRange:replacementText:", textViewShouldChange },
@@ -313,13 +317,19 @@ fn syncFields(s: *Surface) void {
         const f = field.control;
         s.updating = true;
         defer s.updating = false;
-        if (n.pending_value) |v| {
+        if (field.slider) {
+            styleSlider(n, f);
+            if (n.pending_value) |v| f.msgSend(void, "setValue:", .{@as(f32, @floatCast(draw.Range.of(n).parse(v)))});
             n.pending_value = null;
-            setValue(n, f, v);
+        } else {
+            if (n.pending_value) |v| {
+                n.pending_value = null;
+                setValue(n, f, v);
+            }
+            style(n, f);
         }
-        style(n, f);
         // The page changes placeholders; a text area's is drawn under it.
-        if (n.kind == .input) if (apple.nsString(n.props.ph orelse "")) |ph| {
+        if (n.kind == .input and !field.slider) if (apple.nsString(n.props.ph orelse "")) |ph| {
             defer ph.release();
             f.msgSend(void, "setPlaceholder:", .{ph});
         };
@@ -336,11 +346,24 @@ fn syncFields(s: *Surface) void {
 }
 
 const UIControlEventEditingChanged: c_ulong = 1 << 17;
+const UIControlEventValueChanged: c_ulong = 1 << 12;
+const UIControlEventTouchUp: c_ulong = (1 << 6) | (1 << 7) | (1 << 8); // inside, outside, cancel
 
 fn makeField(s: *Surface, n: *Node) ?Field {
     const zero: CGRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 10, .height = 10 } };
+    var slider = false;
     const f: Object = switch (n.kind) {
-        .input => blk: {
+        .input => if (n.props.range != null) blk: {
+            const sl = apple.class("UISlider").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+            if (sl.value == null) return null;
+            sl.msgSend(void, "setContinuous:", .{apple.boolean(true)});
+            sl.msgSend(void, "addTarget:action:forControlEvents:", .{ field_delegate, apple.objc.sel("nuiSliderMoved:").value, UIControlEventValueChanged });
+            sl.msgSend(void, "addTarget:action:forControlEvents:", .{ field_delegate, apple.objc.sel("nuiSliderDone:").value, UIControlEventTouchUp });
+            slider = true;
+            styleSlider(n, sl);
+            sl.msgSend(void, "setValue:", .{@as(f32, @floatCast(draw.Range.of(n).min))});
+            break :blk sl;
+        } else blk: {
             const tf = apple.class("UITextField").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (tf.value == null) return null;
             tf.msgSend(void, "setBorderStyle:", .{@as(isize, 0)}); // none: the page draws its own
@@ -382,7 +405,40 @@ fn makeField(s: *Surface, n: *Node) ?Field {
     f.release(); // the holder keeps it
     by_control.put(s.gpa, key(f.value), .{ .token = s.token, .node = n.id }) catch {};
     s.view.msgSend(void, "addSubview:", .{holder});
-    return .{ .holder = holder, .control = f };
+    return .{ .holder = holder, .control = f, .slider = slider };
+}
+
+/// The page's min/max (they may change) and accent-color on a UISlider.
+fn styleSlider(n: *Node, sl: Object) void {
+    const r = draw.Range.of(n);
+    sl.msgSend(void, "setMinimumValue:", .{@as(f32, @floatCast(r.min))});
+    sl.msgSend(void, "setMaximumValue:", .{@as(f32, @floatCast(r.max))});
+    if (n.props.acc) |a| sl.msgSend(void, "setMinimumTrackTintColor:", .{apple.class("UIColor").msgSend(Object, "colorWithRed:green:blue:alpha:", .{
+        @as(f64, a[0] / 255), @as(f64, a[1] / 255), @as(f64, a[2] / 255), @as(f64, a[3]),
+    })});
+}
+
+/// A slider's value on its step, as the page's text.
+fn sliderText(n: *Node, sl: Object, buf: []u8) []const u8 {
+    const r = draw.Range.of(n);
+    const v = r.snap(@floatCast(sl.msgSend(f32, "value", .{})));
+    sl.msgSend(void, "setValue:", .{@as(f32, @floatCast(v))});
+    return r.text(buf, v);
+}
+
+/// Dragging a slider: `input`; letting go: `change` (as Android's SeekBar).
+fn sliderMoved(_: id, _: SEL, sender: id) callconv(.c) void {
+    const o = ownerOf(sender) orelse return;
+    if (o.s.updating) return;
+    var buf: [48]u8 = undefined;
+    sendValue(o.s, o.n, "input", sliderText(o.n, .{ .value = sender }, &buf));
+}
+
+fn sliderDone(_: id, _: SEL, sender: id) callconv(.c) void {
+    const o = ownerOf(sender) orelse return;
+    if (o.s.updating) return;
+    var buf: [48]u8 = undefined;
+    sendValue(o.s, o.n, "change", sliderText(o.n, .{ .value = sender }, &buf));
 }
 
 const UIEdgeInsets = extern struct { top: f64 = 0, left: f64 = 0, bottom: f64 = 0, right: f64 = 0 };
@@ -563,15 +619,17 @@ fn touchesEnded(self: id, _: SEL, _: id, _: id) callconv(.c) void {
 }
 
 /// A tap or long press in a native field is the field's (the page's would
-/// take its focus away); a drag from one still scrolls the page.
+/// take its focus away); a drag from one still scrolls the page, except
+/// on a slider, which the drag moves.
 fn gestureShouldReceive(_: id, _: SEL, recognizer: id, touch: id) callconv(.c) BOOL {
     const r: Object = .{ .value = recognizer };
-    if (apple.isTrue(r.msgSend(BOOL, "isKindOfClass:", .{apple.class("UIPanGestureRecognizer").value}))) return apple.boolean(true);
+    const pan = apple.isTrue(r.msgSend(BOOL, "isKindOfClass:", .{apple.class("UIPanGestureRecognizer").value}));
     const page = r.msgSend(Object, "view", .{});
     var v = (Object{ .value = touch }).msgSend(Object, "view", .{});
     while (v.value != null and v.value != page.value) : (v = v.msgSend(Object, "superview", .{})) {
-        if (apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextField").value})) or
-            apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextView").value}))) return apple.boolean(false);
+        if (apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UISlider").value}))) return apple.boolean(false);
+        if (!pan and (apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextField").value})) or
+            apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextView").value})))) return apple.boolean(false);
     }
     return apple.boolean(true);
 }
