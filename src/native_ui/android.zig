@@ -38,6 +38,10 @@ pub const Surface = struct {
     /// font scale ever re-measures text: NuiView doesn't yet).
     text_measurements: text_measure_cache.Cache = .{},
     text_epoch: u64 = 1,
+    /// The page wants a display frame (host.vsync), and whether a
+    /// Choreographer callback for this window is already posted.
+    frame_wanted: bool = false,
+    frame_posted: bool = false,
 };
 
 /// The native windows by id (UI thread only).
@@ -73,6 +77,7 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .focus = focus,
         .props = props,
         .text = textChanged,
+        .request_display_frame = requestDisplayFrame,
     }, assets, platform_json, label, url, if (w > 0) w else 400, if (h > 0) h else 800);
     try surfaces.put(gpa, window, s);
     s.engine.boot(dark, true);
@@ -147,6 +152,16 @@ fn textChanged(ctx: *anyopaque, node: *Node) void {
     const runs = node.props.runs orelse return;
     if (runs.len != 1) return;
     _ = runtime.call(.void, "nuiText", "(II[B)V", .{ wid(s.window), nid(node), @as([]const u8, runs[0].t) });
+}
+
+/// requestAnimationFrame: one Choreographer callback at the next refresh
+/// (Nui.requestFrame), posted only while frames are wanted.
+fn requestDisplayFrame(ctx: *anyopaque) void {
+    const s = surfaceOf(ctx);
+    s.frame_wanted = true;
+    if (s.frame_posted) return;
+    s.frame_posted = true;
+    _ = runtime.call(.void, "nuiRequestFrame", "(I)V", .{wid(s.window)});
 }
 
 /// Text sizes come from Kotlin (StaticLayout, in dp), and so do images'
@@ -337,6 +352,17 @@ fn nEvent(env: *Env, _: jclass, win: jint, id: jint, kind: jobject, data: jobjec
     return @intFromBool(s.engine.event(id, k, if (d.len > 0) d else "null"));
 }
 
+/// The display refreshed (Choreographer; `interval_ms` from its refresh
+/// rate): the page's animation frame, if it still wants one. A page that
+/// asks again during it posts the next callback (requestDisplayFrame).
+fn nDisplayFrame(_: *Env, _: jclass, win: jint, interval_ms: f32) callconv(.c) void {
+    const s = byId(win) orelse return; // the window closed
+    s.frame_posted = false;
+    if (!s.frame_wanted) return;
+    s.frame_wanted = false;
+    s.engine.displayFrame(interval_ms);
+}
+
 fn nTimer(_: *Env, _: jclass, win: jint, id: jint) callconv(.c) void {
     const s = byId(win) orelse return;
     s.engine.timerFired(@bitCast(id));
@@ -372,6 +398,7 @@ fn nTrace(_: *Env, _: jclass) callconv(.c) jni.jboolean {
 comptime {
     const prefix = "Java_dev_oriel_NuiNative_";
     @export(&nTrace, .{ .name = prefix ++ "trace" });
+    @export(&nDisplayFrame, .{ .name = prefix ++ "displayFrame" });
     @export(&nResize, .{ .name = prefix ++ "resize" });
     @export(&nTap, .{ .name = prefix ++ "tap" });
     @export(&nPress, .{ .name = prefix ++ "press" });
