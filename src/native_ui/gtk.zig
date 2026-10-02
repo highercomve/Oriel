@@ -122,6 +122,7 @@ extern fn gdk_pixbuf_loader_close(loader: *anyopaque, err: *?*anyopaque) c_int;
 extern fn cairo_fill(cr: *cairo_t) void;
 extern fn cairo_fill_preserve(cr: *cairo_t) void;
 extern fn cairo_stroke(cr: *cairo_t) void;
+extern fn cairo_stroke_preserve(cr: *cairo_t) void;
 extern fn cairo_set_source_rgba(cr: *cairo_t, r: f64, g: f64, b: f64, a: f64) void;
 extern fn cairo_set_operator(cr: *cairo_t, op: c_int) void;
 const cairo_operator_clear: c_int = 0; // CAIRO_OPERATOR_CLEAR
@@ -134,6 +135,13 @@ extern fn cairo_set_fill_rule(cr: *cairo_t, rule: c_int) void;
 extern fn cairo_translate(cr: *cairo_t, x: f64, y: f64) void;
 extern fn cairo_scale(cr: *cairo_t, x: f64, y: f64) void;
 extern fn cairo_rotate(cr: *cairo_t, angle: f64) void;
+extern fn cairo_curve_to(cr: *cairo_t, x1: f64, y1: f64, x2: f64, y2: f64, x3: f64, y3: f64) void;
+const cairo_path_t = opaque {};
+extern fn cairo_copy_path(cr: *cairo_t) *cairo_path_t;
+extern fn cairo_append_path(cr: *cairo_t, path: *cairo_path_t) void;
+extern fn cairo_path_destroy(path: *cairo_path_t) void;
+const cairo_fill_rule_winding: c_int = 0;
+const cairo_fill_rule_even_odd: c_int = 1;
 extern fn cairo_push_group(cr: *cairo_t) void;
 extern fn cairo_pop_group_to_source(cr: *cairo_t) void;
 extern fn cairo_paint_with_alpha(cr: *cairo_t, a: f64) void;
@@ -153,7 +161,9 @@ extern fn pango_layout_set_alignment(l: *PangoLayout, a: c_int) void;
 extern fn pango_layout_set_font_description(l: *PangoLayout, d: ?*const PangoFontDescription) void;
 extern fn pango_attr_line_height_new_absolute(height: c_int) *PangoAttribute;
 extern fn pango_layout_get_pixel_size(l: *PangoLayout, w: *c_int, h: *c_int) void;
+extern fn pango_layout_get_baseline(l: *PangoLayout) c_int;
 extern fn pango_cairo_show_layout(cr: *cairo_t, l: *PangoLayout) void;
+extern fn pango_cairo_layout_path(cr: *cairo_t, l: *PangoLayout) void;
 extern fn pango_font_description_from_string(s: [*:0]const u8) *PangoFontDescription;
 extern fn pango_font_description_set_absolute_size(d: *PangoFontDescription, size: f64) void;
 extern fn pango_font_description_set_weight(d: *PangoFontDescription, w: c_int) void;
@@ -824,6 +834,7 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         .icon => paintIcon(cr, n),
         .image => paintImage(s, cr, n),
         .textarea => paintPlaceholder(s, cr, n),
+        .canvas => paintCanvas(s, cr, n),
         .view => if (n.props.ctl != null) paintControl(cr, n),
         else => {},
     }
@@ -1020,7 +1031,235 @@ fn paintPlaceholder(s: *Surface, cr: *cairo_t, n: *Node) void {
 }
 
 // ---------------------------------------------------------------------------
-// Images (<img src="data:…"> or an app asset)
+// <canvas>: the recorded program (src/native_ui/js/src/canvas.js) replayed
+// into cairo. Every paint replays the whole program from the context's
+// defaults; save/restore keeps the state on a stack here as in the page.
+
+const CanvasState = struct {
+    fill: tree_mod.CanvasPaint = .{ .color = .{ 0, 0, 0, 1 } },
+    stroke: tree_mod.CanvasPaint = .{ .color = .{ 0, 0, 0, 1 } },
+    lw: f32 = 1,
+    cap: u2 = 0, // butt, round, square
+    join: u2 = 0, // miter, round, bevel
+    alpha: f32 = 1,
+    font: tree_mod.CanvasFont = .{ .size = 10 },
+    talign: u2 = 0, // left, center, right
+    tbase: u3 = 0, // alphabetic, top, hanging, middle, bottom
+};
+
+fn paintCanvas(s: *Surface, cr: *cairo_t, n: *Node) void {
+    const cmds = n.canvas orelse return;
+    const f = n.frame;
+    if (f.w <= 0 or f.h <= 0) return;
+    // The drawing's coordinate space: the bitmap, scaled to the box (CSS
+    // width/height stretch it, as in a browser).
+    const cw = n.props.cw orelse f.w;
+    const ch = n.props.ch orelse f.h;
+    var st: CanvasState = .{};
+    var states: std.ArrayList(CanvasState) = .empty;
+    defer states.deinit(s.gpa);
+    var grads: std.AutoHashMap(u16, *cairo_pattern_t) = .init(s.gpa);
+    defer {
+        var it = grads.valueIterator();
+        while (it.next()) |p| cairo_pattern_destroy(p.*);
+        grads.deinit();
+    }
+    cairo_save(cr);
+    defer cairo_restore(cr);
+    cairo_new_path(cr);
+    cairo_rectangle(cr, f.x, f.y, f.w, f.h);
+    cairo_clip(cr); // a canvas draws within its element
+    cairo_translate(cr, f.x, f.y);
+    if (cw > 0 and ch > 0) cairo_scale(cr, f.w / cw, f.h / ch);
+    for (cmds) |cmd| switch (cmd) {
+        .save => {
+            states.append(s.gpa, st) catch {};
+            cairo_save(cr);
+        },
+        .restore => {
+            if (states.pop()) |prev| st = prev;
+            cairo_restore(cr);
+        },
+        .translate => |t| cairo_translate(cr, t[0], t[1]),
+        .scale => |t| cairo_scale(cr, t[0], t[1]),
+        .rotate => |a| cairo_rotate(cr, a),
+        .begin_path => cairo_new_path(cr),
+        .close_path => cairo_close_path(cr),
+        .move_to => |p| cairo_move_to(cr, p[0], p[1]),
+        .line_to => |p| cairo_line_to(cr, p[0], p[1]),
+        .rect => |r| cairo_rectangle(cr, r[0], r[1], r[2], r[3]),
+        .arc => |a| {
+            // A sweep from a0 to a1: increasing angles (cairo, in the
+            // y-down user space, draws a canvas's clockwise arc); the
+            // other way round draws the same segment from a1 up to a0.
+            var a1 = a.a1;
+            const two_pi: f32 = 2.0 * std.math.pi;
+            if (a.ccw) {
+                if (a1 > a.a0) a1 -= two_pi;
+                cairo_arc(cr, a.x, a.y, a.r, a1, a.a0);
+            } else {
+                if (a1 < a.a0) a1 += two_pi;
+                cairo_arc(cr, a.x, a.y, a.r, a.a0, a1);
+            }
+        },
+        .bezier_to => |b| cairo_curve_to(cr, b[0], b[1], b[2], b[3], b[4], b[5]),
+        .fill => |even| {
+            canvasSource(cr, st.fill, st.alpha, &grads);
+            cairo_set_fill_rule(cr, if (even) cairo_fill_rule_even_odd else cairo_fill_rule_winding);
+            cairo_fill_preserve(cr);
+        },
+        .stroke => {
+            canvasSource(cr, st.stroke, st.alpha, &grads);
+            cairo_set_line_width(cr, @max(0.1, st.lw));
+            cairo_set_line_cap(cr, st.cap);
+            cairo_set_line_join(cr, st.join);
+            cairo_stroke_preserve(cr);
+        },
+        .clip => |even| {
+            // cairo_clip eats the current path; a canvas keeps it.
+            const p = cairo_copy_path(cr);
+            cairo_set_fill_rule(cr, if (even) cairo_fill_rule_even_odd else cairo_fill_rule_winding);
+            cairo_clip(cr);
+            cairo_append_path(cr, p);
+            cairo_path_destroy(p);
+        },
+        .fill_rect => |r| canvasRect(cr, r, st, &grads, .fill),
+        .stroke_rect => |r| canvasRect(cr, r, st, &grads, .stroke),
+        .clear_rect => |r| {
+            // Out of the bitmap: to whatever's behind (the element's own
+            // CSS background is under the program; a browser's would be
+            // too, as its bitmap is transparent there).
+            const p = cairo_copy_path(cr);
+            cairo_new_path(cr);
+            cairo_rectangle(cr, r[0], r[1], r[2], r[3]);
+            cairo_set_operator(cr, cairo_operator_clear);
+            cairo_fill(cr);
+            cairo_set_operator(cr, cairo_operator_over);
+            cairo_append_path(cr, p);
+            cairo_path_destroy(p);
+        },
+        .fill_text => |t| canvasShowText(s, cr, t.t, t.x, t.y, st, false, &grads),
+        .stroke_text => |t| canvasShowText(s, cr, t.t, t.x, t.y, st, true, &grads),
+        .fill_style => |src| st.fill = src,
+        .stroke_style => |src| st.stroke = src,
+        .line_width => |w| st.lw = @max(0, w),
+        .line_cap => |cap| st.cap = cap,
+        .line_join => |join| st.join = join,
+        .global_alpha => |a| st.alpha = a,
+        .font => |fnt| st.font = fnt,
+        .text_align => |a| st.talign = a,
+        .text_baseline => |b| st.tbase = b,
+        .linear_gradient => |g| canvasPattern(&grads, g.id, cairo_pattern_create_linear(g.x0, g.y0, g.x1, g.y1)),
+        .radial_gradient => |g| canvasPattern(&grads, g.id, cairo_pattern_create_radial(g.x0, g.y0, @max(0.001, g.r0), g.x1, g.y1, @max(0.001, g.r1))),
+        .color_stop => |c| if (grads.get(c.id)) |pat| {
+            cairo_pattern_add_color_stop_rgba(pat, c.off, c.c[0] / 255, c.c[1] / 255, c.c[2] / 255, c.c[3]);
+        },
+    };
+}
+
+/// fillRect / strokeRect: they draw their own path and leave the page's
+/// one intact (cairo's fill and stroke would eat it).
+fn canvasRect(cr: *cairo_t, r: [4]f32, st: CanvasState, grads: *std.AutoHashMap(u16, *cairo_pattern_t), comptime what: enum { fill, stroke }) void {
+    const p = cairo_copy_path(cr);
+    cairo_new_path(cr);
+    cairo_rectangle(cr, r[0], r[1], r[2], r[3]);
+    switch (what) {
+        .fill => {
+            canvasSource(cr, st.fill, st.alpha, grads);
+            cairo_fill(cr);
+        },
+        .stroke => {
+            canvasSource(cr, st.stroke, st.alpha, grads);
+            cairo_set_line_width(cr, @max(0.1, st.lw));
+            cairo_set_line_cap(cr, st.cap);
+            cairo_set_line_join(cr, st.join);
+            cairo_stroke(cr);
+        },
+    }
+    cairo_append_path(cr, p);
+    cairo_path_destroy(p);
+}
+
+/// The source: a color (with the global alpha in), or a gradient's pattern
+/// (its stops already carry their alphas; the global alpha isn't applied).
+fn canvasSource(cr: *cairo_t, src: tree_mod.CanvasPaint, alpha: f32, grads: *std.AutoHashMap(u16, *cairo_pattern_t)) void {
+    switch (src) {
+        .color => |c| setColor(cr, .{ c[0], c[1], c[2], c[3] * alpha }),
+        .grad => |id| if (grads.get(id)) |pat| cairo_set_source(cr, pat),
+    }
+}
+
+fn canvasPattern(grads: *std.AutoHashMap(u16, *cairo_pattern_t), id: u16, pat: *cairo_pattern_t) void {
+    if (grads.fetchRemove(id)) |old| cairo_pattern_destroy(old.value);
+    grads.put(id, pat) catch cairo_pattern_destroy(pat);
+}
+
+fn canvasShowText(s: *Surface, cr: *cairo_t, text: []const u8, x: f32, y: f32, st: CanvasState, stroke: bool, grads: *std.AutoHashMap(u16, *cairo_pattern_t)) void {
+    // The font family: canvas's, or Pango's generic ones.
+    var owned: ?[:0]u8 = null;
+    defer if (owned) |o| s.gpa.free(o);
+    const family = st.font.family;
+    const name: [*:0]const u8 = if (family.len == 0 or std.ascii.endsWithIgnoreCase(family, "sans-serif"))
+        "Sans"
+    else if (std.ascii.endsWithIgnoreCase(family, "monospace"))
+        "Monospace"
+    else if (std.ascii.endsWithIgnoreCase(family, "serif"))
+        "Serif"
+    else blk: {
+        const z = s.gpa.dupeZ(u8, family) catch return;
+        owned = z;
+        break :blk z.ptr;
+    };
+    const layout = gtk_widget_create_pango_layout(s.area, null);
+    defer g_object_unref(layout);
+    const desc = pango_font_description_from_string(name);
+    defer pango_font_description_free(desc);
+    pango_font_description_set_absolute_size(desc, st.font.size * PANGO_SCALE);
+    pango_font_description_set_weight(desc, @intFromFloat(@min(900, @max(100, st.font.weight))));
+    if (st.font.italic) pango_font_description_set_style(desc, 2); // italic
+    pango_layout_set_font_description(layout, desc);
+    pango_layout_set_text(layout, text.ptr, @intCast(text.len));
+    pango_layout_set_width(layout, -1); // no wrap: canvas text draws one line
+    var w: c_int = 0;
+    var h: c_int = 0;
+    pango_layout_get_pixel_size(layout, &w, &h);
+    const fw: f32 = @floatFromInt(w);
+    const fh: f32 = @floatFromInt(h);
+    const baseline: f32 = @as(f32, @floatFromInt(pango_layout_get_baseline(layout))) / PANGO_SCALE;
+    // The layout's top-left from the anchor (x, y).
+    var px = x;
+    var py = y;
+    switch (st.talign) {
+        1 => px -= fw / 2,
+        2 => px -= fw,
+        else => {},
+    }
+    switch (st.tbase) {
+        1 => {}, // top
+        3 => py -= fh / 2, // middle
+        4 => py -= fh, // bottom
+        else => py -= baseline, // alphabetic / hanging
+    }
+    if (stroke) {
+        // The glyphs' outlines as a path of their own (the page's current
+        // path stays out of it), stroked with the stroke style.
+        const p = cairo_copy_path(cr);
+        cairo_new_path(cr);
+        cairo_move_to(cr, px, py);
+        pango_cairo_layout_path(cr, layout);
+        canvasSource(cr, st.stroke, st.alpha, grads);
+        cairo_set_line_width(cr, @max(0.5, st.lw));
+        cairo_set_line_join(cr, st.join);
+        cairo_stroke(cr);
+        cairo_append_path(cr, p);
+        cairo_path_destroy(p);
+    } else {
+        canvasSource(cr, st.fill, st.alpha, grads);
+        cairo_move_to(cr, px, py);
+        pango_cairo_show_layout(cr, layout);
+    }
+}
+
 
 const Image = struct {
     src_hash: u64,

@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { background: #20242c; color: #e8eaee; margin: 0; padding: 12px; font-size: 14px; display: flex; flex-direction: column; gap: 10px; height: 100vh; box-sizing: border-box; }
+  canvas { border-radius: 8px; display: block; }
+  #game { background: #10141b; }
+  .bar { display: flex; gap: 10px; align-items: center; }
+  .muted { color: #9aa0ab; }
+</style>
+</head>
+<body>
+  <div class="bar"><b>Canvas demo</b><span id="renderer" class="muted"></span><span id="fps" class="muted"></span></div>
+  <canvas id="static" width="440" height="150"></canvas>
+  <canvas id="game" width="440" height="120"></canvas>
+  <script>
+    document.getElementById("renderer").textContent = window.oriel.native ? "native" : "webview";
+
+    // --- static: shapes, gradient, path, text, clip, alpha ---
+    const s = document.getElementById("static").getContext("2d");
+    s.fillStyle = "#182238";
+    s.fillRect(0, 0, 440, 150);
+    const g = s.createLinearGradient(0, 0, 440, 0);
+    g.addColorStop(0, "rgba(109,139,255,0.25)");
+    g.addColorStop(1, "rgba(109,139,255,0)");
+    s.fillStyle = g;
+    s.fillRect(0, 0, 440, 150);
+    // a filled circle and a stroked one
+    s.beginPath();
+    s.arc(60, 75, 40, 0, 2 * Math.PI);
+    s.fillStyle = "rgba(255,120,80,0.85)";
+    s.fill();
+    s.beginPath();
+    s.arc(160, 75, 40, 0, 2 * Math.PI);
+    s.strokeStyle = "#6d8bff";
+    s.lineWidth = 3;
+    s.stroke();
+    // a rotated square and a bezier
+    s.save();
+    s.translate(250, 75);
+    s.rotate(Math.PI / 6);
+    s.fillStyle = "#3ad07a";
+    s.fillRect(-25, -25, 50, 50);
+    s.restore();
+    s.beginPath();
+    s.moveTo(300, 120);
+    s.bezierCurveTo(330, 20, 390, 20, 420, 120);
+    s.strokeStyle = "#e8c55a";
+    s.lineWidth = 2;
+    s.stroke();
+    // clipped text and baselines
+    s.fillStyle = "#e8eaee";
+    s.font = "bold 18px sans-serif";
+    s.textBaseline = "alphabetic";
+    s.fillText("Hello canvas", 300, 60);
+    s.font = "10px sans-serif";
+    s.textAlign = "center";
+    s.fillText("centered", 220, 145);
+
+    // --- game: bouncing balls off the walls ---
+    const ctx = document.getElementById("game").getContext("2d");
+    const W = 440, H = 120, R = 6;
+    const balls = [];
+    for (let i = 0; i < 12; i++) balls.push({
+        x: 20 + (i * 37) % (W - 40), y: 20 + (i * 23) % (H - 40),
+        dx: 1.4 + (i % 5), dy: 1.1 + (i % 3), c: ["#6d8bff", "#e8555a", "#3ad07a", "#e8c55a"][i % 4],
+    });
+    let frames = 0, t0 = performance.now();
+    function step() {
+      ctx.fillStyle = "#10141b";
+      ctx.fillRect(0, 0, W, H);
+      for (const b of balls) {
+        b.x += b.dx; b.y += b.dy;
+        if (b.x < R || b.x > W - R) b.dx = -b.dx;
+        if (b.y < R || b.y > H - R) b.dy = -b.dy;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, R, 0, 2 * Math.PI);
+        ctx.fillStyle = b.c;
+        ctx.fill();
+      }
+      frames++;
+      if (frames % 30 === 0) {
+        document.getElementById("fps").textContent = (frames / ((performance.now() - t0) / 1000)).toFixed(0) + " fps";
+      }
+      requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  </script>
+</body>
+</html>

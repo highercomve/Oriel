@@ -13,6 +13,7 @@ import { StyleEngine, computeStyle, parseInline, length, color, background, shad
 import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor } from "./icons.js";
+import { commandsOf } from "./canvas.js";
 
 // The user-agent stylesheet: what browsers do without CSS.
 export const UA_CSS = `
@@ -20,7 +21,7 @@ html, body, div, section, main, header, footer, nav, article, aside, form, field
 h1, h2, h3, h4, h5, h6, pre, blockquote, figure, figcaption, details, summary, address, hr { display: block; }
 head, script, style, template, title, meta, link, noscript, datalist, option, [hidden] { display: none; }
 li { display: list-item; }
-button, input, textarea, select, img, svg, progress, meter { display: inline-block; }
+button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
 button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
 body { margin: 8px; font-size: 16px; line-height: 1.2; color: black; }
@@ -162,6 +163,23 @@ export class Renderer {
         if (props[k] === undefined && v && /^[\d.]+(px)?$/.test(v.trim())) props[k] = parseFloat(v);
       }
       return this.put(nodes, id, "image", props, [], fixedNode);
+    }
+    if (tag === "canvas") {
+      // The bitmap's size in px (300x150 when the attributes are absent),
+      // the drawing's coordinate space; the box scales it.
+      props.cw = el.width;
+      props.ch = el.height;
+      // Size: CSS width and height, else the attributes', else the
+      // browser's 300x150. One CSS size set: the bitmap's ratio decides
+      // the other, as a browser keeps the bitmap's intrinsic ratio.
+      if (props.w === undefined && props.h === undefined) { props.w = props.cw; props.h = props.ch; }
+      else if (props.w === undefined || props.h === undefined) props.ar = props.cw / props.ch;
+      // The drawing program so far (a game's last frame; static drawing
+      // accumulates). Its children are the fallback content: not shown.
+      const cv = commandsOf(el);
+      if (cv.length) props.cv = cv;
+      this.putClick(props, el);
+      return this.put(nodes, id, "canvas", props, [], fixedNode);
     }
     if (tag === "input" || tag === "textarea" || tag === "select") {
       const type = (el.getAttribute("type") || "text").toLowerCase();
@@ -319,7 +337,7 @@ export class Renderer {
   isInline(el, parentCS) {
     if (SKIP.has(el.localName)) return true;
     if (el.localName === "svg" || el.localName === "input" || el.localName === "textarea" || el.localName === "select" ||
-        el.localName === "button" || el.localName === "img") return false;
+        el.localName === "button" || el.localName === "img" || el.localName === "canvas") return false;
     const cs = this.style(el, parentCS);
     const d = cs.display || "inline";
     if (d !== "inline") return false;

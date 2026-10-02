@@ -2098,33 +2098,33 @@ globalThis.atob ??= (s) => {
     CharCodes4[CharCodes4["OpeningSquareBracket"] = 91] = "OpeningSquareBracket";
   })(CharCodes2 || (CharCodes2 = {}));
   var State;
-  (function(State2) {
-    State2[State2["Text"] = 1] = "Text";
-    State2[State2["BeforeTagName"] = 2] = "BeforeTagName";
-    State2[State2["InTagName"] = 3] = "InTagName";
-    State2[State2["InSelfClosingTag"] = 4] = "InSelfClosingTag";
-    State2[State2["BeforeClosingTagName"] = 5] = "BeforeClosingTagName";
-    State2[State2["InClosingTagName"] = 6] = "InClosingTagName";
-    State2[State2["AfterClosingTagName"] = 7] = "AfterClosingTagName";
-    State2[State2["BeforeAttributeName"] = 8] = "BeforeAttributeName";
-    State2[State2["InAttributeName"] = 9] = "InAttributeName";
-    State2[State2["AfterAttributeName"] = 10] = "AfterAttributeName";
-    State2[State2["BeforeAttributeValue"] = 11] = "BeforeAttributeValue";
-    State2[State2["InAttributeValueDq"] = 12] = "InAttributeValueDq";
-    State2[State2["InAttributeValueSq"] = 13] = "InAttributeValueSq";
-    State2[State2["InAttributeValueNq"] = 14] = "InAttributeValueNq";
-    State2[State2["BeforeDeclaration"] = 15] = "BeforeDeclaration";
-    State2[State2["InDeclaration"] = 16] = "InDeclaration";
-    State2[State2["InProcessingInstruction"] = 17] = "InProcessingInstruction";
-    State2[State2["BeforeComment"] = 18] = "BeforeComment";
-    State2[State2["CDATASequence"] = 19] = "CDATASequence";
-    State2[State2["InSpecialComment"] = 20] = "InSpecialComment";
-    State2[State2["InCommentLike"] = 21] = "InCommentLike";
-    State2[State2["BeforeSpecialS"] = 22] = "BeforeSpecialS";
-    State2[State2["BeforeSpecialT"] = 23] = "BeforeSpecialT";
-    State2[State2["SpecialStartSequence"] = 24] = "SpecialStartSequence";
-    State2[State2["InSpecialTag"] = 25] = "InSpecialTag";
-    State2[State2["InEntity"] = 26] = "InEntity";
+  (function(State3) {
+    State3[State3["Text"] = 1] = "Text";
+    State3[State3["BeforeTagName"] = 2] = "BeforeTagName";
+    State3[State3["InTagName"] = 3] = "InTagName";
+    State3[State3["InSelfClosingTag"] = 4] = "InSelfClosingTag";
+    State3[State3["BeforeClosingTagName"] = 5] = "BeforeClosingTagName";
+    State3[State3["InClosingTagName"] = 6] = "InClosingTagName";
+    State3[State3["AfterClosingTagName"] = 7] = "AfterClosingTagName";
+    State3[State3["BeforeAttributeName"] = 8] = "BeforeAttributeName";
+    State3[State3["InAttributeName"] = 9] = "InAttributeName";
+    State3[State3["AfterAttributeName"] = 10] = "AfterAttributeName";
+    State3[State3["BeforeAttributeValue"] = 11] = "BeforeAttributeValue";
+    State3[State3["InAttributeValueDq"] = 12] = "InAttributeValueDq";
+    State3[State3["InAttributeValueSq"] = 13] = "InAttributeValueSq";
+    State3[State3["InAttributeValueNq"] = 14] = "InAttributeValueNq";
+    State3[State3["BeforeDeclaration"] = 15] = "BeforeDeclaration";
+    State3[State3["InDeclaration"] = 16] = "InDeclaration";
+    State3[State3["InProcessingInstruction"] = 17] = "InProcessingInstruction";
+    State3[State3["BeforeComment"] = 18] = "BeforeComment";
+    State3[State3["CDATASequence"] = 19] = "CDATASequence";
+    State3[State3["InSpecialComment"] = 20] = "InSpecialComment";
+    State3[State3["InCommentLike"] = 21] = "InCommentLike";
+    State3[State3["BeforeSpecialS"] = 22] = "BeforeSpecialS";
+    State3[State3["BeforeSpecialT"] = 23] = "BeforeSpecialT";
+    State3[State3["SpecialStartSequence"] = 24] = "SpecialStartSequence";
+    State3[State3["InSpecialTag"] = 25] = "InSpecialTag";
+    State3[State3["InEntity"] = 26] = "InEntity";
   })(State || (State = {}));
   function isWhitespace(c) {
     return c === CharCodes2.Space || c === CharCodes2.NewLine || c === CharCodes2.Tab || c === CharCodes2.FormFeed || c === CharCodes2.CarriageReturn;
@@ -13279,13 +13279,389 @@ globalThis.atob ??= (s) => {
     }
   }
 
+  // src/canvas.js
+  var notify = () => {
+  };
+  function commandsOf(el) {
+    return recorders.get(el)?.ops || [];
+  }
+  var recorders = /* @__PURE__ */ new WeakMap();
+  var CANVAS_DEFAULT_W = 300;
+  var CANVAS_DEFAULT_H = 150;
+  var TWO_PI = 2 * Math.PI;
+  function install(dom2, markDirty) {
+    const P = dom2.HTMLCanvasElement?.prototype;
+    if (!P) return;
+    notify = markDirty;
+    P.getContext = function(type) {
+      if (String(type) !== "2d") return null;
+      let r = recorders.get(this);
+      if (!r) recorders.set(this, r = new Recorder(this));
+      return r;
+    };
+    for (const [name, def] of [["width", CANVAS_DEFAULT_W], ["height", CANVAS_DEFAULT_H]]) {
+      Object.defineProperty(P, name, {
+        get() {
+          const v = parseFloat(this.getAttribute(name));
+          return Number.isFinite(v) && v > 0 ? v : def;
+        },
+        set(v) {
+          this.setAttribute(name, v);
+        },
+        configurable: true
+      });
+    }
+  }
+  var CAPS = { butt: 0, round: 1, square: 2 };
+  var JOINS = { miter: 0, round: 1, bevel: 2 };
+  var ALIGNS = { left: 0, start: 0, center: 1, right: 2, end: 2 };
+  var BASELINES = { alphabetic: 0, top: 1, hanging: 2, middle: 3, bottom: 4, ideographic: 4 };
+  var State2 = class {
+    constructor() {
+      this.fillStyle = [0, 0, 0, 1];
+      this.strokeStyle = [0, 0, 0, 1];
+      this.lineWidth = 1;
+      this.lineCap = "butt";
+      this.lineJoin = "miter";
+      this.globalAlpha = 1;
+      this.font = "10px sans-serif";
+      this.textAlign = "start";
+      this.textBaseline = "alphabetic";
+    }
+  };
+  var Recorder = class {
+    constructor(el) {
+      this.canvas = el;
+      this.ops = [];
+      this.nGrad = 0;
+      this.s = new State2();
+      this.stack = [];
+      this.penX = 0;
+      this.penY = 0;
+      this.tx = 0;
+      this.ty = 0;
+      this.scx = 1;
+      this.scy = 1;
+      this.rot = 0;
+      this.clipped = false;
+    }
+    push(op) {
+      this.ops.push(op);
+      notify();
+    }
+    // ------------------------------------------------------------- state
+    set fillStyle(v) {
+      this.putStyle("sf", "fillStyle", v);
+    }
+    get fillStyle() {
+      return this.s.fillStyle;
+    }
+    set strokeStyle(v) {
+      this.putStyle("ss", "strokeStyle", v);
+    }
+    get strokeStyle() {
+      return this.s.strokeStyle;
+    }
+    putStyle(tag, name, v) {
+      const paint = paintOf2(v);
+      if (paint === void 0) return;
+      if (samePaint(this.s[name], paint)) return;
+      this.s[name] = paint;
+      this.push([tag, paint]);
+    }
+    set lineWidth(v) {
+      this.putNum("lineWidth", "lw", v);
+    }
+    get lineWidth() {
+      return this.s.lineWidth;
+    }
+    set globalAlpha(v) {
+      const n2 = Number(v);
+      if (!Number.isFinite(n2) || n2 < 0 || n2 > 1) return;
+      this.putNum("globalAlpha", "ga", n2);
+    }
+    get globalAlpha() {
+      return this.s.globalAlpha;
+    }
+    set lineCap(v) {
+      if (v in CAPS) this.putWord("lineCap", "lc", v);
+    }
+    get lineCap() {
+      return this.s.lineCap;
+    }
+    set lineJoin(v) {
+      if (v in JOINS) this.putWord("lineJoin", "lj", v);
+    }
+    get lineJoin() {
+      return this.s.lineJoin;
+    }
+    set textAlign(v) {
+      if (v in ALIGNS) this.putWord("textAlign", "ta", v);
+    }
+    get textAlign() {
+      return this.s.textAlign;
+    }
+    set textBaseline(v) {
+      if (v in BASELINES) this.putWord("textBaseline", "tb", v);
+    }
+    get textBaseline() {
+      return this.s.textBaseline;
+    }
+    putNum(name, tag, v) {
+      const n2 = +v;
+      if (!Number.isFinite(n2) || n2 === this.s[name] || n2 < 0 && name === "lineWidth") return;
+      this.s[name] = n2;
+      this.push([tag, n2]);
+    }
+    putWord(name, tag, v) {
+      if (v === this.s[name]) return;
+      this.s[name] = v;
+      this.push([tag, v]);
+    }
+    set font(v) {
+      const f = fontOf(v);
+      if (!f) return;
+      const cur = fontOf(this.s.font) || {};
+      if (f.italic === cur.italic && f.weight === cur.weight && f.size === cur.size && f.family === cur.family) return;
+      this.s.font = String(v);
+      this.push(["fo", f.italic ? 1 : 0, f.weight, f.size, f.family || ""]);
+    }
+    get font() {
+      return this.s.font;
+    }
+    // The state ops as they stand now (after a full-clear drop: the bitmap
+    // kept this state, the program restarts from the defaults).
+    emitState() {
+      const s = this.s;
+      this.ops.push(
+        ["sf", s.fillStyle],
+        ["ss", s.strokeStyle],
+        ["lw", s.lineWidth],
+        ["lc", s.lineCap],
+        ["lj", s.lineJoin],
+        ["ga", s.globalAlpha]
+      );
+      const f = fontOf(s.font);
+      if (f) this.ops.push(["fo", f.italic ? 1 : 0, f.weight, f.size, f.family || ""]);
+      this.ops.push(["ta", s.textAlign], ["tb", s.textBaseline]);
+      notify();
+    }
+    // ------------------------------------------------------------- transforms
+    save() {
+      this.stack.push({ s: { ...this.s }, tx: this.tx, ty: this.ty, scx: this.scx, scy: this.scy, rot: this.rot, clipped: this.clipped });
+      this.push(["sv"]);
+    }
+    restore() {
+      const st = this.stack.pop();
+      if (!st) return;
+      this.s = st.s;
+      this.tx = st.tx;
+      this.ty = st.ty;
+      this.scx = st.scx;
+      this.scy = st.scy;
+      this.rot = st.rot;
+      this.clipped = st.clipped;
+      this.push(["rs"]);
+    }
+    translate(x, y) {
+      this.tx += +x || 0;
+      this.ty += +y || 0;
+      this.push(["tl", +x || 0, +y || 0]);
+    }
+    scale(x, y) {
+      this.scx *= +x || 1;
+      this.scy *= y === void 0 ? +x || 1 : +y || 1;
+      this.push(["ts", +x || 1, y === void 0 ? +x || 1 : +y || 1]);
+    }
+    rotate(a) {
+      this.rot += +a || 0;
+      this.push(["tr", +a || 0]);
+    }
+    // ------------------------------------------------------------- paths
+    beginPath() {
+      this.push(["bp"]);
+    }
+    closePath() {
+      this.push(["cp"]);
+    }
+    moveTo(x, y) {
+      this.penX = +x || 0;
+      this.penY = +y || 0;
+      this.push(["mv", this.penX, this.penY]);
+    }
+    lineTo(x, y) {
+      this.penX = +x || 0;
+      this.penY = +y || 0;
+      this.push(["ln", this.penX, this.penY]);
+    }
+    rect(x, y, w, h) {
+      this.penX = +x || 0;
+      this.penY = +y || 0;
+      this.push(["rc", this.penX, this.penY, +w || 0, +h || 0]);
+    }
+    arc(x, y, r, a0, a1, ccw) {
+      if (!(r >= 0)) return;
+      const start = +a0 || 0;
+      let end = a1 === void 0 ? TWO_PI : +a1;
+      if (!Number.isFinite(end)) end = start;
+      if (!ccw) {
+        if (end < start) end += TWO_PI;
+      } else {
+        if (end > start) end -= TWO_PI;
+      }
+      this.penX = x + r * Math.cos(end);
+      this.penY = y + r * Math.sin(end);
+      this.push(["ar", +x || 0, +y || 0, r, start, a1 === void 0 ? TWO_PI : +a1, ccw ? 1 : 0]);
+    }
+    // A canvas ellipse, as the recorder sees one: a scaled circle.
+    ellipse(x, y, rx, ry, rot = 0, a0 = 0, a1 = TWO_PI, ccw = false) {
+      if (!(rx >= 0 && ry >= 0)) return;
+      this.ops.push(
+        ["sv"],
+        ["tl", +x || 0, +y || 0],
+        ["tr", +rot || 0],
+        ["ts", rx, ry],
+        ["ar", 0, 0, 1, +a0 || 0, a1, ccw ? 1 : 0],
+        ["rs"]
+      );
+      this.penX = x + rx * Math.cos(+a1 || 0);
+      this.penY = y + ry * Math.sin(+a1 || 0);
+      notify();
+    }
+    // Quadratic curves become cubics (cairo has no quadratic: the control
+    // points sit 2/3 of the way to it, from each end).
+    quadraticCurveTo(cx, cy, x, y) {
+      const x0 = this.penX, y0 = this.penY, qx = +cx || 0, qy = +cy || 0, ex = +x || 0, ey = +y || 0;
+      this.penX = ex;
+      this.penY = ey;
+      this.push(["bz", x0 + 2 / 3 * (qx - x0), y0 + 2 / 3 * (qy - y0), ex + 2 / 3 * (qx - ex), ey + 2 / 3 * (qy - ey), ex, ey]);
+    }
+    bezierCurveTo(c1x, c1y, c2x, c2y, x, y) {
+      this.penX = +x || 0;
+      this.penY = +y || 0;
+      this.push(["bz", +c1x || 0, +c1y || 0, +c2x || 0, +c2y || 0, this.penX, this.penY]);
+    }
+    // ------------------------------------------------------------- drawing
+    fill(rule) {
+      this.push(["fl", rule === "evenodd" ? 1 : 0]);
+    }
+    stroke() {
+      this.push(["st"]);
+    }
+    clip(rule) {
+      this.clipped = true;
+      this.push(["cl", rule === "evenodd" ? 1 : 0]);
+    }
+    fillRect(x, y, w, h) {
+      x = +x || 0;
+      y = +y || 0;
+      w = +w || 0;
+      h = +h || 0;
+      this.penX = x;
+      this.penY = y;
+      const p = this.s.fillStyle;
+      if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped && isColor2(p) && p[3] >= 1 && Math.abs(this.tx) < 1e-9 && Math.abs(this.ty) < 1e-9 && Math.abs(this.scx - 1) < 1e-9 && Math.abs(this.scy - 1) < 1e-9 && Math.abs(this.rot) < 1e-9) {
+        this.ops.length = 0;
+        this.emitState();
+      }
+      this.push(["fr", x, y, w, h]);
+    }
+    strokeRect(x, y, w, h) {
+      this.penX = +x || 0;
+      this.penY = +y || 0;
+      this.push(["sr", this.penX, this.penY, +w || 0, +h || 0]);
+    }
+    clearRect(x, y, w, h) {
+      x = +x || 0;
+      y = +y || 0;
+      w = +w || 0;
+      h = +h || 0;
+      this.penX = x;
+      this.penY = y;
+      if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped && isColor2(this.s.fillStyle) && isColor2(this.s.strokeStyle) && Math.abs(this.tx) < 1e-9 && Math.abs(this.ty) < 1e-9 && Math.abs(this.scx - 1) < 1e-9 && Math.abs(this.scy - 1) < 1e-9 && Math.abs(this.rot) < 1e-9) {
+        this.ops.length = 0;
+        this.emitState();
+      }
+      this.push(["cr", x, y, w, h]);
+    }
+    fillText(t, x, y) {
+      if (t === void 0 || t === null || t === "") return;
+      this.penX = +x || 0;
+      this.penY = +y || 0;
+      this.push(["tx", String(t), this.penX, this.penY]);
+    }
+    strokeText(t, x, y) {
+      if (t === void 0 || t === null || t === "") return;
+      this.penX = +x || 0;
+      this.penY = +y || 0;
+      this.push(["sx", String(t), this.penX, this.penY]);
+    }
+    // Not a bitmap: measureText is a width estimate (Pango measures the DOM's
+    // text; a canvas would need a round trip to it).
+    measureText(t) {
+      const size = fontOf(this.s.font)?.size || 10;
+      let w = 0;
+      for (const ch of String(t)) w += /[ ilj|!.,:;'\x60]/.test(ch) ? 0.3 : /[ftrI(){}[\]-]/.test(ch) ? 0.4 : /[mwMW@]/.test(ch) ? 0.9 : 0.58;
+      return { width: w * size };
+    }
+    createLinearGradient(x0, y0, x1, y1) {
+      const id = ++this.nGrad;
+      this.push(["gl", id, +x0 || 0, +y0 || 0, +x1 || 0, +y1 || 0]);
+      return gradientOf(this, id);
+    }
+    createRadialGradient(x0, y0, r0, x1, y1, r1) {
+      const id = ++this.nGrad;
+      this.push(["gr", id, +x0 || 0, +y0 || 0, +r0 || 0, +x1 || 0, +y1 || 0, +r1 || 0]);
+      return gradientOf(this, id);
+    }
+  };
+  function gradientOf(r, id) {
+    return {
+      __grad: id,
+      addColorStop(off, c) {
+        const col = color(String(c));
+        if (!col) return;
+        const o = +off;
+        if (!Number.isFinite(o)) return;
+        r.push(["gs", id, Math.max(0, Math.min(1, o)), col[0], col[1], col[2], col[3]]);
+        notify();
+      }
+    };
+  }
+  function isColor2(p) {
+    return Array.isArray(p) && p.length === 4;
+  }
+  function paintOf2(v) {
+    if (typeof v === "object" && v !== null && typeof v.__grad === "number") return ["g", v.__grad];
+    if (typeof v !== "string") return void 0;
+    const c = color(v);
+    return c ? c : void 0;
+  }
+  function samePaint(a, b) {
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    if (Array.isArray(a)) return a.length === b.length && a.every((x, i) => x === b[i]);
+    return a === b;
+  }
+  function fontOf(v) {
+    const m = /^\s*(italic\s+)?(?:(\d+|bold|normal|lighter)\s+)?([\d.]+)(px|pt|em)\s+(.+?)\s*$/.exec(String(v || ""));
+    if (!m) return null;
+    let size = parseFloat(m[3]);
+    if (m[4] === "pt") size *= 4 / 3;
+    if (m[4] === "em") size *= 16;
+    let weight2 = 400;
+    if (m[2] === "bold") weight2 = 700;
+    else if (m[2] === "lighter") weight2 = 300;
+    else if (m[2] !== void 0 && m[2] !== "normal") weight2 = parseInt(m[2], 10) || 400;
+    return { italic: !!m[1], weight: weight2, size, family: m[5] ? m[5].replace(/["']/g, "") : "" };
+  }
+
   // src/render.js
   var UA_CSS = `
 html, body, div, section, main, header, footer, nav, article, aside, form, fieldset, p, ul, ol, li, dl, dt, dd,
 h1, h2, h3, h4, h5, h6, pre, blockquote, figure, figcaption, details, summary, address, hr { display: block; }
 head, script, style, template, title, meta, link, noscript, datalist, option, [hidden] { display: none; }
 li { display: list-item; }
-button, input, textarea, select, img, svg, progress, meter { display: inline-block; }
+button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
 button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
 body { margin: 8px; font-size: 16px; line-height: 1.2; color: black; }
@@ -13409,6 +13785,18 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
           if (props[k] === void 0 && v && /^[\d.]+(px)?$/.test(v.trim())) props[k] = parseFloat(v);
         }
         return this.put(nodes, id, "image", props, [], fixedNode);
+      }
+      if (tag === "canvas") {
+        props.cw = el.width;
+        props.ch = el.height;
+        if (props.w === void 0 && props.h === void 0) {
+          props.w = props.cw;
+          props.h = props.ch;
+        } else if (props.w === void 0 || props.h === void 0) props.ar = props.cw / props.ch;
+        const cv = commandsOf(el);
+        if (cv.length) props.cv = cv;
+        this.putClick(props, el);
+        return this.put(nodes, id, "canvas", props, [], fixedNode);
       }
       if (tag === "input" || tag === "textarea" || tag === "select") {
         const type = (el.getAttribute("type") || "text").toLowerCase();
@@ -13544,7 +13932,7 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
     }
     isInline(el, parentCS) {
       if (SKIP.has(el.localName)) return true;
-      if (el.localName === "svg" || el.localName === "input" || el.localName === "textarea" || el.localName === "select" || el.localName === "button" || el.localName === "img") return false;
+      if (el.localName === "svg" || el.localName === "input" || el.localName === "textarea" || el.localName === "select" || el.localName === "button" || el.localName === "img" || el.localName === "canvas") return false;
       const cs = this.style(el, parentCS);
       const d = cs.display || "inline";
       if (d !== "inline") return false;
@@ -14140,10 +14528,18 @@ ${a.stack || ""}`;
     "Attr",
     "CharacterData",
     "HTMLOptionElement",
-    "HTMLImageElement"
+    "HTMLImageElement",
+    "HTMLCanvasElement",
+    "CanvasRenderingContext2D"
   ]) {
     if (dom[name] !== void 0 && g[name] === void 0) g[name] = dom[name];
   }
+  install(dom, () => {
+    try {
+      if (renderer) renderer.dirty = true;
+    } catch {
+    }
+  });
   var Event = g.Event;
   var KeyboardEvent = class extends Event {
     constructor(type, init = {}) {
