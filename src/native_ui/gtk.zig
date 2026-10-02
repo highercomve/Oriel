@@ -279,6 +279,7 @@ pub const Surface = struct {
             .text = textChanged,
             .deinit = releaseTextMeasurements,
         }, assets, platform_json, label, url, width, height);
+        s.engine.tree.reuse_text_layout = true;
 
         gtk_drawing_area_set_draw_func(area, draw, s, null);
         _ = g_signal_connect_data(@ptrCast(area), "resize", @ptrCast(&onResize), s, null, 0);

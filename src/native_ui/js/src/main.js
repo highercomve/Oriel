@@ -19,6 +19,7 @@ import { StyleEngine, viewport, mediaMatches } from "./css.js";
 import { Renderer, UA_CSS } from "./render.js";
 import * as canvas from "./canvas.js";
 import { parseSimple } from "./html.js";
+import { ignoreCase } from "../node_modules/linkedom/esm/shared/utils.js";
 
 const host = globalThis.__host;
 
@@ -163,7 +164,15 @@ function fireWindow(ev) {
       configurable: true,
       get: desc.get,
       set(html) {
-        const frag = this.localName !== "template" && !this.closest?.("svg, math") ? parseSimple(this.ownerDocument, String(html ?? "")) : null;
+        // This fixed ancestry check does not need compiling a CSS selector
+        // for every small innerHTML assignment (thousands when building rows).
+        let simple = this.localName !== "template";
+        const fold = ignoreCase(this);
+        if (simple) for (let el = this; el?.nodeType === 1; el = el.parentNode) {
+          const tag = fold ? el.localName.toLowerCase() : el.localName;
+          if (tag === "svg" || tag === "math") { simple = false; break; }
+        }
+        const frag = simple ? parseSimple(this.ownerDocument, String(html ?? "")) : null;
         if (frag) this.replaceChildren(frag);
         else desc.set.call(this, html);
       },
@@ -744,6 +753,8 @@ g.__oriel = {
       // What changed, for the next render (render.js: only that is made again).
       renderer.observer = new MutationObserver((records) => renderer.note(records));
       renderer.observer.__nuiConnectedOnly = true;
+      renderer.observer.__nuiChild = (node, parent) => renderer.noteChild(node, parent);
+      renderer.observer.__nuiAttribute = (node, name) => renderer.noteAttribute(node, name);
       renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
       // The page's scripts, in order, at the top level (like <script> tags).
       for (const s of document.querySelectorAll("script")) {
