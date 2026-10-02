@@ -2,7 +2,7 @@
 // specificity, !important, inline styles), custom properties, inheritance and
 // media queries; values resolved to numbers, colors and keywords for layout.
 
-import { prepareMatch } from "../node_modules/linkedom/esm/shared/matches.js";
+import { prepareMatch } from "../vendor/linkedom/esm/shared/matches.js";
 
 // ---------------------------------------------------------------------------
 // Parsing

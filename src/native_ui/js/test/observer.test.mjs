@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import { performance } from "node:perf_hooks";
-import { parseHTML } from "linkedom";
+import { parseHTML } from "../vendor/linkedom/esm/index.js";
 
 const logs = [], props = new Map();
 const host = {

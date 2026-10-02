@@ -14,7 +14,7 @@ import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor } from "./icons.js";
 import { commandsOf } from "./canvas.js";
-import { NEXT } from "../node_modules/linkedom/esm/shared/symbols.js";
+import { NEXT } from "../vendor/linkedom/esm/shared/symbols.js";
 
 // The user-agent stylesheet: what browsers do without CSS.
 export const UA_CSS = `
@@ -53,6 +53,7 @@ const INLINE_DISPLAY = new Set(["inline"]);
 const ATOMIC_INLINE = new Set(["inline-block", "inline-flex", "inline-grid"]);
 const SKIP = new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
 const TEMPLATE_LEAF = new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
+const EMPTY = Object.freeze([]);
 
 export class Renderer {
   constructor(document, engine, host) {
@@ -79,7 +80,7 @@ export class Renderer {
     this.outside = false;
     this.inFrame = false;
     this.native = new Map();       // id → value the native field holds (inputs)
-    this.cs = new WeakMap();       // element → computed style of the last frame
+    this.styleEpoch = 0;           // full restyles invalidate matching, not last-style reads
     // Incremental rendering: what changed since the last frame (marks, from
     // the mutation records and style writes), and what each element made
     // then, reused while nothing in it or above it changed.
@@ -186,12 +187,29 @@ export class Renderer {
 
   idOf(obj, key) {
     let m = this.ids.get(obj);
-    if (!m) this.ids.set(obj, (m = {}));
+    // Ordinary elements have one native node. Keep its id directly rather
+    // than allocating a dictionary for every element; expand for pseudos,
+    // inline runs or grid rows only when they need additional ids.
+    if (typeof m === "number") {
+      if (key === "el") return m;
+      this.ids.set(obj, (m = { el: m }));
+    } else if (!m) {
+      if (key === "el") {
+        const id = this.nextId++;
+        this.ids.set(obj, id);
+        return id;
+      }
+      this.ids.set(obj, (m = {}));
+    }
     return m[key] ??= this.nextId++;
   }
 
   elementFor(id) {
     return this.owner.get(id) || null;
+  }
+
+  styleOf(el) {
+    return this.sc.get(el)?.cs;
   }
 
   // ---------------------------------------------------------------------
@@ -238,7 +256,7 @@ export class Renderer {
     const P = this.host.prof ? this.host.now : null, t0 = P && P();
     const nodes = new Map(), updates = [];
     for (const el of leaves) {
-      const fc = this.fc.get(el), cs = this.cs.get(el);
+      const fc = this.fc.get(el), cs = this.styleOf(el);
       if (!fc || !cs || fc.root.kind !== "text" || fc.rootSpec || fc.rootAnim || el.firstElementChild ||
           this.tx.targets.has(fc.id) || this.anim.state.has(fc.id)) return false;
       const old = this.prev.get(fc.id);
@@ -329,7 +347,7 @@ export class Renderer {
     // needs a new matcher, as well as new computed/flattened styles.
     if (this.noCache) for (const r of this.engine.rules) if (/:has\(/.test(r.sel)) r.match = null;
     if (full) {
-      this.sc = new WeakMap();
+      this.styleEpoch++;
       this.fc = new WeakMap();
       this.shared = new WeakMap();
       this.cascades.clear();
@@ -373,12 +391,12 @@ export class Renderer {
     if (!bodyNode) return;
     // The page keeps its height in the window's scroll view (see above).
     const bn = nodes.get(bodyNode);
-    if (bn && !this.cs.get(body)?.["flex-shrink"]) bn.props.fs = 0;
+    if (bn && !this.styleOf(body)?.["flex-shrink"]) bn.props.fs = 0;
     // The window: the page scrolls, fixed elements stay over it.
     nodes.set(-1, { kind: "view", props: { scroll: true, fg: 1, fs: 1, ai: "stretch" }, kids: [bodyNode] });
     // The window's background: <html>'s, else <body>'s (a browser paints the
     // whole viewport with it, below a short page too).
-    const rootBg = bgOf(rootCS) || (this.cs.get(body) ? bgOf(this.cs.get(body)) : null);
+    const rootBg = bgOf(rootCS) || (this.styleOf(body) ? bgOf(this.styleOf(body)) : null);
     nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: [-1, ...fixed] });
     const t1 = P && P();
     this.emit(nodes, full);
@@ -396,7 +414,8 @@ export class Renderer {
   // parent's style changed. `rematch`: an ancestor's attributes changed (a
   // descendant selector may match differently).
   style(el, parentCS, rematch = false) {
-    const c = this.sc.get(el);
+    const saved = this.sc.get(el);
+    const c = saved?.epoch === this.styleEpoch ? saved : null;
     const mk = this.marks.get(el) || 0;
     if (c && c.parent === parentCS && (c.frame === this.frameNo || (!rematch && !mk))) return c.cs;
     const m = c && !rematch && mk < 2 ? c.m : this.matchOf(el);
@@ -417,8 +436,7 @@ export class Renderer {
     // still be reused.
     if (c && c.cs !== cs && sameStyle(c.cs, cs)) cs = c.cs;
     cs.__rules = m;
-    this.sc.set(el, { parent: parentCS, cs, m, frame: this.frameNo });
-    this.cs.set(el, cs);
+    this.sc.set(el, { parent: parentCS, cs, m, frame: this.frameNo, epoch: this.styleEpoch });
     return cs;
   }
 
@@ -589,7 +607,7 @@ export class Renderer {
   // An element → a node id (or null when not rendered).
   keepsContentHeight(el, n) {
     if (!n || (n.kind !== "view" && n.kind !== "text")) return false;
-    const p = n.props, cs = this.cs.get(el) || {};
+    const p = n.props, cs = this.styleOf(el) || {};
     return p.fs === undefined && p.h === undefined && p.fb === undefined && p.ar === undefined && !p.scroll && !p.clip &&
       !cs["flex-shrink"] && !cs["min-height"] && p.pos !== "absolute";
   }
@@ -633,8 +651,7 @@ export class Renderer {
       const el = shape.children[i], entry = shape.plan.entries[i], childCS = entry.cs;
       const id = this.idOf(el, "el");
       this.own(id, el);
-      this.cs.set(el, childCS);
-      this.sc.set(el, { parent: cs, cs: childCS, m: entry.m, frame: this.frameNo });
+      this.sc.set(el, { parent: cs, cs: childCS, m: entry.m, frame: this.frameNo, epoch: this.styleEpoch });
       const child = el.firstChild, ws = childCS["white-space"];
       let runs;
       if (!child) runs = [];
@@ -668,10 +685,14 @@ export class Renderer {
           template = entry[key] = { json: encodeProps(base) };
         }
       }
-      nodes.set(id, { kind, props, kids: [], template });
+      // A direct flex leaf has no parent-side layout adjustments. Keep
+      // one output record as its snapshot, with shared immutable empties.
+      // General reuse still copies props before a new parent can adjust it.
+      const node = { kind, props, kids: EMPTY, template };
+      nodes.set(id, node);
       this.fc.set(el, {
-        parent: cs, block: true, ts: spacing, id, fixed: false, own: [id], kids: [], fixedIds: [], seen: this.frameNo,
-        root: { kind, props: { ...props }, kids: [] }, rootSpec: undefined, rootAnim: undefined,
+        parent: cs, block: true, ts: spacing, id, fixed: false, own: [id], kids: EMPTY, fixedIds: EMPTY, seen: this.frameNo,
+        root: node, rootSpec: undefined, rootAnim: undefined,
       });
       this.cur.kids.push(el);
       ids.push(id);
@@ -950,7 +971,7 @@ export class Renderer {
       // A scroll container's children keep their size too: CSS's min-size:
       // auto, which Yoga doesn't have (it would squeeze them to fit, and
       // there would be nothing to scroll).
-      else if ((props.scroll || props.scrollx) && !this.cs.get(item.el)?.["flex-shrink"]) { const n = nodes.get(cid); if (n) n.props.fs = 0; }
+      else if ((props.scroll || props.scrollx) && !this.styleOf(item.el)?.["flex-shrink"]) { const n = nodes.get(cid); if (n) n.props.fs = 0; }
       // A column whose height isn't definite (no height, not flexed itself:
       // min-height at most): CSS sizes a percentage flex-basis (`flex: 1`
       // is 1 1 0%) from the content, and min-height: auto keeps the item
@@ -970,13 +991,13 @@ export class Renderer {
       // An inline box (button, chip) in a block: as wide as its content, placed by text-align.
       if (!childCtx.blockify) {
         const n = nodes.get(cid);
-        const d = this.cs.get(item.el)?.display || "inline";
+        const d = this.styleOf(item.el)?.display || "inline";
         if (n && (ATOMIC_INLINE.has(d) || INLINE_DISPLAY.has(d)) && !n.props.as && n.props.pos !== "absolute") {
           n.props.as = alignFor(cs["text-align"]);
         }
       }
       kids.push(cid);
-      const ord = parseInt(this.cs.get(item.el)?.order, 10);
+      const ord = parseInt(this.styleOf(item.el)?.order, 10);
       if (ord) (orders ??= new Map()).set(cid, ord);
     }
     const after = this.pseudo(el, cs, "after", nodes);

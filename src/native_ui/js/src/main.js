@@ -14,12 +14,12 @@
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
 
-import { parseHTML } from "linkedom";
+import { parseHTML } from "../vendor/linkedom/esm/index.js";
 import { StyleEngine, viewport, mediaMatches } from "./css.js";
 import { Renderer, UA_CSS } from "./render.js";
 import * as canvas from "./canvas.js";
 import { parseSimple } from "./html.js";
-import { ignoreCase } from "../node_modules/linkedom/esm/shared/utils.js";
+import { ignoreCase } from "../vendor/linkedom/esm/shared/utils.js";
 
 const host = globalThis.__host;
 
@@ -463,7 +463,7 @@ Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
 Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
 g.devicePixelRatio = 1;
 g.getComputedStyle = (el) => {
-  const cs = renderer?.cs.get(el) || {};
+  const cs = renderer?.styleOf(el) || {};
   return new Proxy({}, { get: (_, k) => (k === "getPropertyValue" ? (p) => cs[p] ?? "" : cs[String(k).replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())] ?? "") });
 };
 g.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
