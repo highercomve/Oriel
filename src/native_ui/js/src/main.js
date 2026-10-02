@@ -178,6 +178,15 @@ Object.defineProperty(inputProto, "checked", {
   set(v) { if (v) this.setAttribute("checked", ""); else this.removeAttribute("checked"); },
   configurable: true,
 });
+// type: the attribute when it is a known type, else "text", as in a
+// browser (React only treats known types as text fields).
+const INPUT_TYPES = new Set(("button checkbox color date datetime-local email file hidden image month number password " +
+  "radio range reset search submit tel text time url week").split(" "));
+Object.defineProperty(inputProto, "type", {
+  get() { const t = (this.getAttribute("type") || "").toLowerCase(); return INPUT_TYPES.has(t) ? t : "text"; },
+  set(v) { this.setAttribute("type", v); },
+  configurable: true,
+});
 Object.defineProperty(inputProto, "disabled", {
   get() { return this.hasAttribute("disabled"); },
   set(v) { if (v) this.setAttribute("disabled", ""); else this.removeAttribute("disabled"); },
@@ -443,10 +452,24 @@ g.oriel = Object.freeze({
 // Events from the native views
 
 // A click: the event, then the browser's default action.
+const isCheckable = (n) => n?.localName === "input" && /^(checkbox|radio)$/.test(n.type);
+
 function activate(el, flags) {
+  // A checkbox or radio changes before its click is dispatched (and goes
+  // back if a listener cancels it), as in a browser: React's onChange for
+  // them reads the new state during the click.
+  const undo = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
   const ev = new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
   el.dispatchEvent(ev);
-  if (ev.defaultPrevented) return;
+  if (undo) {
+    if (ev.defaultPrevented) undo();
+    else {
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return;
+  }
+  if (ev.defaultPrevented || isCheckable(el)) return;
   for (let n = el; n && n.nodeType === 1; n = n.parentNode) {
     const tag = n.localName;
     if (tag === "a") {
@@ -456,14 +479,14 @@ function activate(el, flags) {
       return;
     }
     if (tag === "label") {
+      // The label clicks its control (which toggles a checkbox or radio).
       const ctl = n.htmlFor ? document.getElementById(n.getAttribute("for")) : n.querySelector("input, textarea, select");
       if (ctl && ctl !== el && !ctl.contains?.(el)) {
-        if (ctl.localName === "input" && /checkbox|radio/.test(ctl.getAttribute("type") || "")) toggle(ctl);
+        if (isCheckable(ctl)) activate(ctl, flags);
         else ctl.focus();
       }
       return;
     }
-    if (tag === "input" && /checkbox|radio/.test(n.getAttribute("type") || "")) { toggle(n); return; }
     if (tag === "button") {
       if (n.hasAttribute("disabled")) return;
       const type = (n.getAttribute("type") || "submit").toLowerCase();
@@ -473,11 +496,21 @@ function activate(el, flags) {
     }
   }
 }
-function toggle(input) {
-  if (input.hasAttribute("disabled")) return;
-  setNative(input, "checked", input.getAttribute("type") === "radio" ? true : !input.checked);
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.dispatchEvent(new Event("change", { bubbles: true }));
+// Toggle a checkbox, or check a radio and uncheck the rest of its group;
+// returns what puts them back.
+function check(input) {
+  const before = [[input, input.checked]];
+  if (input.type === "radio") {
+    const name = input.getAttribute("name");
+    if (name) {
+      const scope = input.closest("form") || document;
+      for (const r of scope.querySelectorAll('input[type="radio"]')) {
+        if (r !== input && r.getAttribute("name") === name && r.checked) { before.push([r, true]); setNative(r, "checked", false); }
+      }
+    }
+    setNative(input, "checked", true);
+  } else setNative(input, "checked", !input.checked);
+  return () => { for (const [n, v] of before) setNative(n, "checked", v); };
 }
 function submit(form) {
   const ev = new Event("submit", { bubbles: true, cancelable: true });
@@ -532,6 +565,33 @@ function hoverEvents(from, to) {
     for (const n of fromChain) if (!toChain.includes(n)) fire(n, prefix + "leave", false, to);
     fire(to, prefix + "over", true, from);
     for (const n of [...toChain].reverse()) if (!fromChain.includes(n)) fire(n, prefix + "enter", false, from);
+  }
+}
+
+// Event handler properties (el.oninput = fn, "oninput" in document): a
+// browser has them for every event. React checks for them to tell whether
+// the `input` event exists, and without them falls back to an old-IE path
+// that never sees a field's input (onChange never ran).
+const HANDLER_EVENTS = ("abort animationend beforeinput blur change click contextmenu dblclick error focus focusin focusout " +
+  "input invalid keydown keypress keyup load mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup " +
+  "pointercancel pointerdown pointermove pointerup reset resize scroll select submit toggle touchcancel touchend " +
+  "touchmove touchstart transitionend wheel").split(" ");
+for (const proto of [elProto, Object.getPrototypeOf(document)]) {
+  for (const type of HANDLER_EVENTS) {
+    if (Object.getOwnPropertyDescriptor(proto, "on" + type)) continue;
+    Object.defineProperty(proto, "on" + type, {
+      get() { return this.__handlers?.get(type)?.fn ?? null; },
+      set(fn) {
+        const handlers = (this.__handlers ||= new Map());
+        const old = handlers.get(type);
+        if (old) { this.removeEventListener(type, old.listener); handlers.delete(type); }
+        if (typeof fn !== "function") return;
+        const listener = function (event) { if (fn.call(this, event) === false) event.preventDefault(); };
+        this.addEventListener(type, listener);
+        handlers.set(type, { fn, listener });
+      },
+      configurable: true,
+    });
   }
 }
 
