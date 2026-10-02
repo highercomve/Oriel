@@ -5445,6 +5445,7 @@ globalThis.atob ??= (s) => {
             attributeOldValue
           }
         ] of observer.nodes) {
+          if (observer.__nuiConnectedOnly && target === ownerDocument && !element.isConnected) continue;
           if (childList) {
             if (subtree && (target === ownerDocument || target.contains(element)) || !subtree && target.children.includes(element)) {
               queueAttribute(
@@ -5478,6 +5479,7 @@ globalThis.atob ??= (s) => {
     if (active2) {
       for (const observer of observers) {
         for (const [target, { subtree, childList, characterData }] of observer.nodes) {
+          if (observer.__nuiConnectedOnly && target === ownerDocument && !(parentNode || element).isConnected) continue;
           if (childList) {
             if (parentNode && (target === parentNode || /* c8 ignore next */
             subtree && target.contains(parentNode)) || !parentNode && (subtree && (target === ownerDocument || /* c8 ignore next */
@@ -13709,6 +13711,7 @@ col, colgroup { display: none; }
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var SKIP = /* @__PURE__ */ new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
+  var TEMPLATE_LEAF = /* @__PURE__ */ new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
   var Renderer = class {
     constructor(document2, engine, host2) {
       this.doc = document2;
@@ -13723,11 +13726,16 @@ col, colgroup { display: none; }
       this.animSpecs = /* @__PURE__ */ new Map();
       this.ticking = false;
       this.nextId = 1;
+      this.leafStyles = /* @__PURE__ */ new Map();
+      this.leafStyleBytes = 0;
       this.dirty = true;
       this.native = /* @__PURE__ */ new Map();
       this.cs = /* @__PURE__ */ new WeakMap();
       this.marks = /* @__PURE__ */ new Map();
       this.flatMarks = /* @__PURE__ */ new Set();
+      this.textOnly = true;
+      this.simpleLeaves = true;
+      this.flexLeaves = /* @__PURE__ */ new WeakMap();
       this.full = true;
       this.sc = /* @__PURE__ */ new WeakMap();
       this.fc = /* @__PURE__ */ new WeakMap();
@@ -13753,13 +13761,15 @@ col, colgroup { display: none; }
     // differently (its attributes), 1 when only its inline style did.
     mark(el, level) {
       if (!el || el.nodeType !== 1) return;
+      this.textOnly = false;
       if ((this.marks.get(el) || 0) < level) this.marks.set(el, level);
       this.dirty = true;
     }
     // A node's output changed, not its style: its text, a canvas's program,
     // a click listener.
-    markFlat(node) {
+    markFlat(node, text = false) {
       if (!node) return;
+      if (!text) this.textOnly = false;
       this.flatMarks.add(node);
       this.dirty = true;
     }
@@ -13781,17 +13791,17 @@ col, colgroup { display: none; }
           this.mark(n2, 2);
           const parent = n2.parentNode;
           if (parent) {
-            this.markFlat(parent);
+            this.markFlat(parent, n2.nodeType === 3);
             if (this.structural) this.mark(parent, 2);
           }
         }
         for (const n2 of r.removedNodes || []) {
           const parent = n2.parentNode || this.parentOf.get(n2);
           if (parent) {
-            this.markFlat(parent);
+            this.markFlat(parent, n2.nodeType === 3);
             if (this.structural) this.mark(parent, 2);
           }
-          this.markFlat(n2);
+          if (n2.nodeType !== 3 || !parent) this.markFlat(n2, n2.nodeType === 3);
         }
       }
       this.dirty = true;
@@ -13813,19 +13823,91 @@ col, colgroup { display: none; }
       this.dirty = false;
       this.rendering = true;
       try {
-        this.renderNow();
+        if (!this.updateText()) this.renderNow();
       } finally {
         this.rendering = false;
       }
+    }
+    // A text-only leaf keeps its box, font and parent's layout adjustments.
+    // Native layout will measure its new runs after the props operation; its
+    // unchanged row, siblings and ancestors need no JS traversal or diff.
+    updateText() {
+      if (!this.textOnly || this.full || this.noCache || this.structural || this.marks.size || !this.flatMarks.size || this.pendingScroll) return false;
+      for (const el of this.volatile) if (el.isConnected) return false;
+      const leaves = /* @__PURE__ */ new Set();
+      for (const n2 of this.flatMarks) {
+        const el = n2.nodeType === 3 ? n2.parentNode || this.parentOf.get(n2) : n2;
+        if (!el || el.nodeType !== 1 || !el.isConnected) return false;
+        leaves.add(el);
+      }
+      const P = this.host.prof ? this.host.now : null, t02 = P && P();
+      const nodes = /* @__PURE__ */ new Map(), updates = [];
+      for (const el of leaves) {
+        const fc = this.fc.get(el), cs = this.cs.get(el);
+        if (!fc || !cs || fc.root.kind !== "text" || fc.rootSpec || fc.rootAnim || el.firstElementChild || this.tx.targets.has(fc.id) || this.anim.state.has(fc.id)) return false;
+        const old = this.prev.get(fc.id);
+        if (!old || old.kind !== "text") return false;
+        const child = el.firstChild, ws = cs["white-space"] || "normal";
+        let runs;
+        if (child?.nodeType === 3 && !child.nextSibling && fc.root.props.runs.length === 1 && ws !== "pre" && ws !== "pre-wrap" && ws !== "pre-line") {
+          let t = child.data;
+          if (cs["text-transform"] === "uppercase") t = t.toUpperCase();
+          else if (cs["text-transform"] === "lowercase") t = t.toLowerCase();
+          t = t.replace(/\s+/g, " ").trim();
+          runs = t ? [{ ...fc.root.props.runs[0], t }] : [];
+        } else {
+          const raw = [];
+          for (let c = child; c; c = c.nextSibling) {
+            if (c.nodeType === 3) raw.push(runFor(c.data, cs, cs.__fs));
+            else if (c.nodeType !== 8) return false;
+          }
+          runs = trimRuns(raw);
+        }
+        if (!runs.length) return false;
+        updates.push([el, fc, runs, old]);
+      }
+      let direct = 0, nativeMs = 0;
+      for (const [el, fc, runs, old] of updates) {
+        const single = runs.length === 1 && fc.root.props.runs.length === 1;
+        const a = P && P();
+        const sent = single && this.host.text && this.host.text(fc.id, runs[0].t);
+        if (P) nativeMs += P() - a;
+        if (sent) {
+          const props = old.props || JSON.parse(old.p);
+          props.runs = runs;
+          old.props = props;
+          old.p = null;
+          direct++;
+        } else {
+          const props = old.props ? { ...old.props } : JSON.parse(old.p);
+          props.runs = runs;
+          nodes.set(fc.id, { kind: "text", props, kids: [] });
+        }
+        fc.root.props.runs = runs;
+        for (let child = el.firstChild; child; child = child.nextSibling) this.parentOf.set(child, el);
+      }
+      this.frameNo++;
+      this.flatMarks.clear();
+      this.gone = [];
+      this.dropped = [];
+      this.specs = /* @__PURE__ */ new Map();
+      this.animSpecs = /* @__PURE__ */ new Map();
+      this.emit(nodes, false);
+      if (P) this.host.log(1, `PROF text: ${updates.length} leaves, ${direct} direct, prepare ${(P() - t02 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
+      return true;
     }
     renderNow() {
       const nodes = /* @__PURE__ */ new Map();
       this.specs = /* @__PURE__ */ new Map();
       this.animSpecs = /* @__PURE__ */ new Map();
       this.frameNo++;
+      this.flexLeaves = /* @__PURE__ */ new WeakMap();
       this.gone = [];
       this.dropped = [];
       const full = this.full || this.noCache;
+      if (this.noCache) {
+        for (const r of this.engine.rules) if (/:has\(/.test(r.sel)) r.match = null;
+      }
       if (full) {
         this.sc = /* @__PURE__ */ new WeakMap();
         this.fc = /* @__PURE__ */ new WeakMap();
@@ -13853,6 +13935,7 @@ col, colgroup { display: none; }
       this.cur = null;
       this.marks.clear();
       this.flatMarks.clear();
+      this.textOnly = true;
       this.full = false;
       const goneTree = (el, f) => {
         this.gone.push(...f.own);
@@ -13968,7 +14051,7 @@ col, colgroup { display: none; }
     // that share too (or the same parent). A browser's style sharing; off
     // when the sheets match by position (:nth-child, +, ~…).
     matchOf(el) {
-      const k = this.structural ? 0 : this.shareKey(el);
+      const k = this.structural || this.noCache ? 0 : this.shareKey(el);
       if (k <= 0) return this.engine.matching(el);
       let m = this.matchShare.get(k);
       if (!m) this.matchShare.set(k, m = this.engine.matching(el));
@@ -13989,7 +14072,7 @@ col, colgroup { display: none; }
       let ok = !!parent && parent.nodeType === 1;
       let cls = "";
       if (ok) {
-        for (const a of el.attributes) {
+        for (let a = el[NEXT]; a?.nodeType === 2; a = a[NEXT]) {
           if (a.name === "class") cls = a.value;
           else if (a.name !== "style" || this.styleAttrRules) {
             ok = false;
@@ -14111,6 +14194,88 @@ col, colgroup { display: none; }
       const p = n2.props, cs = this.cs.get(el) || {};
       return p.fs === void 0 && p.h === void 0 && p.fb === void 0 && p.ar === void 0 && !p.scroll && !p.clip && !cs["flex-shrink"] && !cs["min-height"] && p.pos !== "absolute";
     }
+    // A new flex row with ordinary leaves can reuse the CSS/layout setup of
+    // an equivalent row. Attributes that selectors distinguish, positional
+    // rules, inline aggregation, controls and existing rows stay general.
+    flexShape(el, cs, props) {
+      if (!this.simpleLeaves || this.structural || this.noCache || this.fc.has(el) || props.fd !== "row" || props.scroll || props.scrollx || cs.__rules.before.length || cs.__rules.after.length) return null;
+      const share = this.shareKey(el);
+      if (share <= 0) return null;
+      const children = [];
+      let key2 = `${share}|`;
+      for (let child = el.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType === 8) continue;
+        if (child.nodeType !== 1 || !TEMPLATE_LEAF.has(child.localName) || child.firstElementChild) return null;
+        let cls = "", inline = "";
+        for (let a = child[NEXT]; a?.nodeType === 2; a = a[NEXT]) {
+          if (a.name === "class") cls = a.value;
+          else if (a.name === "style") inline = a.value;
+          else return null;
+        }
+        const tag = child.localName;
+        key2 += `${tag.length}:${tag}${cls.length}:${cls}${inline.length}:${inline}`;
+        children.push(child);
+        if (children.length > 16) return null;
+      }
+      if (!children.length) return null;
+      let shapes = this.flexLeaves.get(cs);
+      if (!shapes) this.flexLeaves.set(cs, shapes = /* @__PURE__ */ new Map());
+      return { children, key: key2, shapes, plan: shapes.get(key2) };
+    }
+    useFlexShape(shape, cs, nodes, spacing) {
+      const ids = [];
+      for (let i = 0; i < shape.children.length; i++) {
+        const el = shape.children[i], entry = shape.plan.entries[i], childCS = entry.cs;
+        const id = this.idOf(el, "el");
+        this.own(id, el);
+        this.cs.set(el, childCS);
+        this.sc.set(el, { parent: cs, cs: childCS, m: entry.m, frame: this.frameNo });
+        const raw = [];
+        for (let child = el.firstChild; child; child = child.nextSibling) {
+          this.parentOf.set(child, el);
+          if (child.nodeType === 3 && child.data) raw.push(runFor(child.data, childCS, childCS.__fs));
+        }
+        const runs = trimRuns(raw), props = { ...entry.box };
+        let kind = "view";
+        if (runs.length) {
+          kind = "text";
+          Object.assign(props, entry.text);
+          props.runs = runs;
+        }
+        this.putClick(props, el);
+        nodes.set(id, { kind, props, kids: [] });
+        this.fc.set(el, {
+          parent: cs,
+          block: true,
+          ts: spacing,
+          id,
+          fixed: false,
+          own: [id],
+          kids: [],
+          fixedIds: [],
+          seen: this.frameNo,
+          root: { kind, props: { ...props }, kids: [] },
+          rootSpec: void 0,
+          rootAnim: void 0
+        });
+        this.cur.kids.push(el);
+        ids.push(id);
+      }
+      for (let child = shape.children[0].parentNode.firstChild; child; child = child.nextSibling) this.parentOf.set(child, child.parentNode);
+      return shape.plan.order.map((i) => ids[i]);
+    }
+    saveFlexShape(shape, nodes) {
+      const entries2 = [];
+      for (const el of shape.children) {
+        const sc = this.sc.get(el), fc = this.fc.get(el), n2 = fc && nodes.get(fc.id);
+        if (!sc || !fc || !n2 || n2.kids.length || !["text", "view"].includes(n2.kind) || fc.fixed || fc.rootSpec || fc.rootAnim || this.volatile.has(el) || !["inline", "block", "inline-block"].includes(sc.cs.display || "inline") || sc.cs.__rules.before.length || sc.cs.__rules.after.length) return;
+        const fs = sc.cs.__fs;
+        entries2.push({ cs: sc.cs, m: sc.m, box: boxProps(sc.cs, blockify(sc.cs.display || "inline"), fs, el), text: textProps(sc.cs, fs), order: parseInt(sc.cs.order, 10) || 0 });
+      }
+      const order = entries2.map((_, i) => i).sort((a, b) => entries2[a].order - entries2[b].order || a - b);
+      if (shape.shapes.size >= 32) shape.shapes.delete(shape.shapes.keys().next().value);
+      shape.shapes.set(shape.key, { entries: entries2, order });
+    }
     build(el, parentCS, nodes, ctx) {
       const tag = el.localName;
       if (SKIP.has(tag)) return null;
@@ -14231,6 +14396,28 @@ col, colgroup { display: none; }
         }
         return this.put(nodes, id, tag === "textarea" ? "textarea" : "input", props, [], fixedNode);
       }
+      const aligns = (display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid") && (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]));
+      if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns && display !== "grid" && !isTableDisplay(display)) {
+        const raw = [];
+        for (let child = el.firstChild; child; child = child.nextSibling) {
+          this.parentOf.set(child, el);
+          if (child.nodeType === 3 && child.data) raw.push(runFor(child.data, cs, fontSize));
+        }
+        const runs2 = trimRuns(raw);
+        this.putClick(props, el);
+        if (runs2.length) {
+          Object.assign(props, textProps(cs, fontSize));
+          props.runs = runs2;
+          return this.put(nodes, id, "text", props, [], fixedNode);
+        }
+        return this.put(nodes, id, "view", props, [], fixedNode);
+      }
+      const shape = display === "flex" && !fixedNode ? this.flexShape(el, cs, props) : null;
+      if (shape?.plan) {
+        const kids2 = this.useFlexShape(shape, cs, nodes, tableSpacingFor(display, props, ctx));
+        this.putClick(props, el);
+        return this.put(nodes, id, "view", props, kids2);
+      }
       const childCtx = {
         blockify: display === "flex" || display === "grid" || tableHolds(display),
         parentText: cs["text-align"],
@@ -14250,7 +14437,7 @@ col, colgroup { display: none; }
         if (!trimmed.length) return;
         flow.push({ text: trimmed });
       };
-      for (const child of el.childNodes) {
+      for (let child = el.firstChild; child; child = child.nextSibling) {
         this.parentOf.set(child, el);
         if (child.nodeType === 3) {
           const t = child.data;
@@ -14266,7 +14453,6 @@ col, colgroup { display: none; }
         flow.push({ el: child });
       }
       flushRuns();
-      const aligns = (display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid") && (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]));
       if (flow.length === 1 && flow[0].text && !before2 && !cs.__rules.after.length && !aligns) {
         Object.assign(props, textProps(cs, fontSize));
         props.runs = flow[0].text;
@@ -14323,6 +14509,7 @@ col, colgroup { display: none; }
         const pos = new Map(kids.map((k, i) => [k, i]));
         kids.sort((a, b) => (orders.get(a) || 0) - (orders.get(b) || 0) || pos.get(a) - pos.get(b));
       }
+      if (shape) this.saveFlexShape(shape, nodes);
       if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
       this.putClick(props, el);
       return this.put(nodes, id, "view", props, kids, fixedNode);
@@ -14347,7 +14534,7 @@ col, colgroup { display: none; }
       if (d !== "inline") return false;
       if (cs.position === "absolute" || cs.position === "fixed") return false;
       const deeper = rematch || this.marks.get(el) === 2;
-      for (const c of el.children) if (!this.isInline(c, cs, deeper)) return false;
+      for (let c = el.firstElementChild; c; c = c.nextElementSibling) if (!this.isInline(c, cs, deeper)) return false;
       return true;
     }
     inlineRuns(el, parentCS, parentFs, runs, rematch = false) {
@@ -14361,7 +14548,7 @@ col, colgroup { display: none; }
         return;
       }
       const deeper = rematch || this.marks.get(el) === 2;
-      for (const child of el.childNodes) {
+      for (let child = el.firstChild; child; child = child.nextSibling) {
         this.parentOf.set(child, el);
         if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el));
         else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper);
@@ -14391,18 +14578,49 @@ col, colgroup { display: none; }
     }
     // ---------------------------------------------------------------------
     // Diff against the last frame
+    createLeaf(id, n2) {
+      if (!this.host.leafStyle || !this.host.leaf || n2.kind !== "view" && (n2.kind !== "text" || n2.props.runs?.length !== 1 || n2.kids.length) || this.specs.has(id) || this.animSpecs.has(id) || this.leafStyles.size >= 1024 || this.leafStyleBytes >= 2 * 1024 * 1024) return false;
+      const base = { ...n2.props };
+      if (n2.kind === "text") base.runs = [{ ...n2.props.runs[0], t: "" }];
+      const json = encodeProps(base);
+      let style = this.leafStyles.get(json);
+      const P = this.host.prof ? this.host.now : null;
+      if (style === void 0) {
+        style = this.leafStyles.size + 1;
+        const t03 = P && P();
+        if (!this.host.leafStyle(style, json)) style = 0;
+        if (P) this.applyMs += P() - t03;
+        this.leafStyles.set(json, style);
+        this.leafStyleBytes += json.length;
+      }
+      const t02 = P && P();
+      const created = style && this.host.leaf(id, style, n2.kind === "text" ? n2.props.runs[0].t : "", n2.kind === "text");
+      if (P) this.applyMs += P() - t02;
+      return created;
+    }
     // `nodes`: what was made this frame; `full`: everything was (else the
     // ids in this.gone are what went away).
     emit(nodes, full) {
+      this.applyMs = 0;
       const ops = [];
       const now = Date.now();
       const remade = /* @__PURE__ */ new Set();
       for (const [id, n2] of nodes) {
         const old = this.prev.get(id);
+        if (old && old.p === null) {
+          old.p = encodeProps(old.props);
+          old.props = null;
+        }
         if (old && old.kind !== n2.kind) remade.add(id);
       }
       for (const [id, n2] of nodes) {
         const old = this.prev.get(id);
+        if (!old && this.host.leaf && this.createLeaf(id, n2)) {
+          const k2 = n2.kids.length ? JSON.stringify(n2.kids) : "[]";
+          if (n2.kids.length) ops.push(`["k",${id},${k2}]`);
+          this.prev.set(id, { kind: n2.kind, p: null, props: n2.props, k: k2 });
+          continue;
+        }
         if (!old || old.kind !== n2.kind) this.tx.forget(id);
         const spec = this.specs.get(id) || null, animSpec = this.animSpecs.get(id) || null;
         let shown = n2.props;
@@ -14410,7 +14628,7 @@ col, colgroup { display: none; }
           if (spec && old && old.kind === n2.kind && !this.tx.targets.has(id)) this.tx.targets.set(id, JSON.parse(old.p));
           shown = this.anim.apply(id, this.tx.apply(id, n2.props, spec, now), animSpec, now);
         } else if (this.tx.targets.has(id)) this.tx.forget(id);
-        const p = JSON.stringify(shown);
+        const p = encodeProps(shown);
         const k = JSON.stringify(n2.kids);
         if (!old || old.kind !== n2.kind) {
           if (old) ops.push(`["d",${id}]`);
@@ -14438,11 +14656,10 @@ col, colgroup { display: none; }
         ops.push(`["r",0]`);
         this.rootSent = true;
       }
-      this.applyMs = 0;
       if (ops.length) {
         const P = this.host.prof ? this.host.now : null, t02 = P && P();
         this.host.ops(`[${ops.join(",")}]`);
-        if (P) this.applyMs = P() - t02;
+        if (P) this.applyMs += P() - t02;
       }
       this.schedule();
     }
@@ -14479,7 +14696,7 @@ col, colgroup { display: none; }
           continue;
         }
         const shown = this.anim.apply(id, this.tx.apply(id, target, null, now), void 0, now);
-        const p = JSON.stringify(shown);
+        const p = encodeProps(shown);
         if (p !== prev.p) {
           ops.push(["p", id, shown]);
           prev.p = p;
@@ -14823,8 +15040,14 @@ col, colgroup { display: none; }
     return out;
   }
   function strip(r, t) {
-    const { ws, ...rest } = r;
-    return { ...rest, t };
+    r.ws = void 0;
+    r.t = t;
+    return r;
+  }
+  function encodeProps(props) {
+    if (props.fd === "column") props.fd = void 0;
+    if (props.ai === "stretch") props.ai = void 0;
+    return JSON.stringify(props);
   }
   function gridToRows(cs, props, kids, nodes, renderer2, el, fs) {
     const tpl = cs["grid-template-columns"];
@@ -15009,6 +15232,7 @@ col, colgroup { display: none; }
   var ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\xA0" };
   var TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>/y;
   var ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  var templates = /* @__PURE__ */ new Map();
   function decode(s) {
     if (s.indexOf("&") < 0) return s;
     let bad = false;
@@ -15030,6 +15254,58 @@ col, colgroup { display: none; }
     return bad ? void 0 : out;
   }
   function parseSimple(doc, html2) {
+    if (html2.length > 2048) return parseFull(doc, html2);
+    const lt = html2.indexOf("<"), gt = lt < 0 ? -1 : html2.indexOf(">", lt);
+    const key2 = lt < 0 ? "" : html2.slice(lt, gt < 0 ? lt + 32 : gt + 1);
+    const candidates = templates.get(key2);
+    if (candidates) for (const plan2 of candidates) {
+      const frag2 = fromTemplate(doc, html2, plan2);
+      if (frag2) return frag2;
+    }
+    const plan = [];
+    const frag = parseFull(doc, html2, plan);
+    if (frag && !plan.some((token) => token.kind === 1 && token.tag.includes("-"))) {
+      if (!candidates && templates.size >= 32) templates.delete(templates.keys().next().value);
+      const list = candidates || [];
+      if (list.length === 4) list.shift();
+      list.push(plan);
+      templates.set(key2, list);
+    }
+    return frag;
+  }
+  function fromTemplate(doc, html2, plan) {
+    let i = 0;
+    const text = [];
+    for (const token of plan) {
+      if (token.kind === 0) {
+        const lt = html2.indexOf("<", i), end = lt < 0 ? html2.length : lt;
+        const value = decode(html2.slice(i, end));
+        if (value === void 0) return null;
+        text.push(value);
+        i = end;
+      } else {
+        if (!html2.startsWith(token.raw, i)) return null;
+        i += token.raw.length;
+      }
+    }
+    if (i !== html2.length) return null;
+    const frag = doc.createDocumentFragment(), stack = [frag];
+    let ti = 0;
+    for (const token of plan) {
+      if (token.kind === 0) {
+        const value = text[ti++];
+        if (value) stack[stack.length - 1].appendChild(doc.createTextNode(value));
+      } else if (token.kind === 1) {
+        const el = doc.createElement(token.tag);
+        for (let k = token.attrs.length - 1; k >= 0; k--) el.setAttribute(token.attrs[k][0], token.attrs[k][1]);
+        stack[stack.length - 1].appendChild(el);
+        if (!token.void) stack.push(el);
+      } else if (token.kind === 2) stack.pop();
+      else stack[stack.length - 1].appendChild(doc.createComment(token.text));
+    }
+    return frag;
+  }
+  function parseFull(doc, html2, plan) {
     const frag = doc.createDocumentFragment();
     const stack = [frag];
     let i = 0;
@@ -15037,16 +15313,18 @@ col, colgroup { display: none; }
     while (i < n2) {
       const lt = html2.indexOf("<", i);
       const end = lt < 0 ? n2 : lt;
+      if (plan) plan.push({ kind: 0 });
       if (end > i) {
         const t = decode(html2.slice(i, end));
         if (t === void 0) return null;
-        stack[stack.length - 1].append(doc.createTextNode(t));
+        stack[stack.length - 1].appendChild(doc.createTextNode(t));
       }
       if (lt < 0) break;
       if (html2.startsWith("<!--", lt)) {
         const close = html2.indexOf("-->", lt + 4);
         if (close < 0) return null;
-        stack[stack.length - 1].append(doc.createComment(html2.slice(lt + 4, close)));
+        if (plan) plan.push({ kind: 3, raw: html2.slice(lt, close + 3), text: html2.slice(lt + 4, close) });
+        stack[stack.length - 1].appendChild(doc.createComment(html2.slice(lt + 4, close)));
         i = close + 3;
         continue;
       }
@@ -15058,14 +15336,15 @@ col, colgroup { display: none; }
       if (SPECIAL.has(tag)) return null;
       if (m[1]) {
         if (m[3] || m[4] || stack.length < 2 || stack[stack.length - 1].localName !== tag) return null;
+        if (plan) plan.push({ kind: 2, raw: m[0] });
         stack.pop();
         continue;
       }
       const isVoid2 = VOID.has(tag);
       if (m[4] && !isVoid2) return null;
       const el = doc.createElement(tag);
+      const attrs = [];
       if (m[3]) {
-        const attrs = [];
         ATTR.lastIndex = 0;
         for (let a; a = ATTR.exec(m[3]); ) {
           const name = a[1].toLowerCase();
@@ -15075,9 +15354,11 @@ col, colgroup { display: none; }
         }
         for (let k = attrs.length - 1; k >= 0; k--) el.setAttribute(attrs[k][0], attrs[k][1]);
       }
-      stack[stack.length - 1].append(el);
+      if (plan) plan.push({ kind: 1, raw: m[0], tag, attrs, void: isVoid2 });
+      stack[stack.length - 1].appendChild(el);
       if (!isVoid2) stack.push(el);
     }
+    if (plan && (n2 === 0 || html2.endsWith(">"))) plan.push({ kind: 0 });
     return stack.length === 1 ? frag : null;
   }
 
@@ -15278,7 +15559,7 @@ ${a.stack || ""}`;
       const wrapped = /* @__PURE__ */ new WeakMap();
       const touch = (el) => {
         try {
-          if (renderer) renderer.mark(el, 1);
+          if (renderer && el.isConnected) renderer.mark(el, 1);
         } catch {
         }
       };
@@ -16041,6 +16322,7 @@ ${a.stack || ""}`;
         }
         renderer = new Renderer(document, engine, host);
         renderer.observer = new MutationObserver((records) => renderer.note(records));
+        renderer.observer.__nuiConnectedOnly = true;
         renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
         for (const s of document.querySelectorAll("script")) {
           const src = s.getAttribute("src");

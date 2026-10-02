@@ -1,0 +1,265 @@
+{
+  "date": "2026-10-02",
+  "platform": "Linux, GTK, real Hyprland desktop",
+  "build_flags": [
+    "-Dnative_ui",
+    "-Doptimize=ReleaseFast"
+  ],
+  "processes_per_version": 1,
+  "trials_per_test": 3,
+  "before_commit": "e5f1a2ab2a0456dbe93e94d2d9347ef8a5ca23b9",
+  "after": "Working-tree renderer optimizations",
+  "before_runtime_sha256": "e4f0450b81ecd29bd3810aa0c9e35e56a8d5770b2715d544175a33aff5ae8258",
+  "after_runtime_sha256": "845002194aa17e7ffbe4fe12b5caab51bc668b7719ab75f03eaefa7dcc1df84b",
+  "limitations": [
+    "Only one process per version; trial ranges overlap.",
+    "Observed desktop window bounds changed from 1270x691 before to 1270x1392 after. Canvas size and visible painting work may differ.",
+    "Memory results are single observations and include native graphics allocations."
+  ],
+  "comparison": [
+    {
+      "step": "startup \u2192 page script",
+      "before": {
+        "median": 46.1,
+        "runs": [
+          46.1
+        ],
+        "unit": "ms"
+      },
+      "after": {
+        "median": 61.09,
+        "runs": [
+          61.09
+        ],
+        "unit": "ms"
+      },
+      "change_percent": 32.52
+    },
+    {
+      "step": "startup \u2192 first frame",
+      "before": {
+        "median": 274.73,
+        "runs": [
+          274.73
+        ],
+        "unit": "ms"
+      },
+      "after": {
+        "median": 281.03,
+        "runs": [
+          281.03
+        ],
+        "unit": "ms"
+      },
+      "change_percent": 2.29
+    },
+    {
+      "step": "memory at start (PSS, all processes)",
+      "before": {
+        "median": 107.48,
+        "runs": [
+          107.48
+        ],
+        "unit": "MB"
+      },
+      "after": {
+        "median": 114.42,
+        "runs": [
+          114.42
+        ],
+        "unit": "MB"
+      },
+      "change_percent": 6.46
+    },
+    {
+      "step": "build 1000 rows",
+      "before": {
+        "median": 251.71,
+        "runs": [
+          251.71,
+          245.36,
+          314.34
+        ],
+        "unit": "ms"
+      },
+      "after": {
+        "median": 233.41,
+        "runs": [
+          233.41,
+          291.66,
+          209.79
+        ],
+        "unit": "ms"
+      },
+      "change_percent": -7.27
+    },
+    {
+      "step": "build 3000 rows",
+      "before": {
+        "median": 826.38,
+        "runs": [
+          776.83,
+          826.38,
+          933.1
+        ],
+        "unit": "ms"
+      },
+      "after": {
+        "median": 798.09,
+        "runs": [
+          749.65,
+          798.09,
+          891.49
+        ],
+        "unit": "ms"
+      },
+      "change_percent": -3.42
+    },
+    {
+      "step": "update 1000 rows",
+      "before": {
+        "median": 97.58,
+        "runs": [
+          102.68,
+          97.58,
+          95.96
+        ],
+        "unit": "ms"
+      },
+      "after": {
+        "median": 95.67,
+        "runs": [
+          96.5,
+          95.67,
+          95.63
+        ],
+        "unit": "ms"
+      },
+      "change_percent": -1.96
+    },
+    {
+      "step": "update 3000 rows",
+      "before": {
+        "median": 315.62,
+        "runs": [
+          323.48,
+          315.62,
+          312.54
+        ],
+        "unit": "ms"
+      },
+      "after": {
+        "median": 321.05,
+        "runs": [
+          321.05,
+          327.21,
+          320.78
+        ],
+        "unit": "ms"
+      },
+      "change_percent": 1.72
+    },
+    {
+      "step": "animate 200 boxes",
+      "before": {
+        "median": 59.94,
+        "runs": [
+          59.57,
+          60.28,
+          59.94
+        ],
+        "unit": "fps"
+      },
+      "after": {
+        "median": 59.95,
+        "runs": [
+          59.95,
+          60.34,
+          59.93
+        ],
+        "unit": "fps"
+      },
+      "change_percent": 0.02
+    },
+    {
+      "step": "canvas 200 balls",
+      "before": {
+        "median": 60.02,
+        "runs": [
+          60.16,
+          60.02,
+          60.02
+        ],
+        "unit": "fps"
+      },
+      "after": {
+        "median": 60.02,
+        "runs": [
+          60.22,
+          60.02,
+          60.01
+        ],
+        "unit": "fps"
+      },
+      "change_percent": 0.0
+    },
+    {
+      "step": "canvas 1000 balls",
+      "before": {
+        "median": 59.99,
+        "runs": [
+          59.99,
+          59.97,
+          60.09
+        ],
+        "unit": "fps"
+      },
+      "after": {
+        "median": 59.99,
+        "runs": [
+          59.99,
+          60.02,
+          59.94
+        ],
+        "unit": "fps"
+      },
+      "change_percent": 0.0
+    },
+    {
+      "step": "memory after the tests (PSS, all processes)",
+      "before": {
+        "median": 230.83,
+        "runs": [
+          230.83
+        ],
+        "unit": "MB"
+      },
+      "after": {
+        "median": 259.46,
+        "runs": [
+          259.46
+        ],
+        "unit": "MB"
+      },
+      "change_percent": 12.4
+    },
+    {
+      "step": "memory after a second round (PSS, all processes)",
+      "before": {
+        "median": 254.09,
+        "runs": [
+          254.09
+        ],
+        "unit": "MB"
+      },
+      "after": {
+        "median": 266.13,
+        "runs": [
+          266.13
+        ],
+        "unit": "MB"
+      },
+      "change_percent": 4.74
+    }
+  ]
+}
