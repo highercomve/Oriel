@@ -856,7 +856,9 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         .view => if (n.props.ctl != null) paintControl(cr, n),
         else => {},
     }
-    for (n.kids.items) |k| paint(s, cr, k);
+    // CSS paint order: a sticky header over the rows scrolled under it.
+    var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
+    while (it.next()) |k| paint(s, cr, k);
     if (alpha < 1) {
         cairo_pop_group_to_source(cr);
         cairo_paint_with_alpha(cr, alpha);
