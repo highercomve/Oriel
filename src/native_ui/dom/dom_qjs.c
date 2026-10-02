@@ -88,6 +88,7 @@ extern Index nui_dom_create_document(Dom *d);
 extern int nui_dom_keep_selector(Dom *d, const uint8_t *bytes, size_t len);
 extern bool nui_dom_match_kept(Dom *d, Index idx, uint32_t id);
 extern bool nui_dom_alive(Dom *d, Index idx);
+extern void nui_dom_set_listens(Dom *d, Index idx);
 extern bool nui_dom_class_style_only(Dom *d, Index idx, bool allow_style, const JSValue **cls, const JSValue **style);
 
 enum { K_ELEMENT = 1, K_TEXT = 3, K_COMMENT = 8, K_DOCUMENT = 9, K_FRAGMENT = 11 };
@@ -989,6 +990,14 @@ static JSValue nd_index(JSContext *ctx, JSValueConst this_val, int argc, JSValue
     return JS_NewUint32(ctx, (Index)(uintptr_t)JS_GetOpaque(argv[0], node_class_id));
 }
 
+// __nuiDom.listens(node): the page listens for clicks on it.
+static JSValue nd_listens(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    Index idx = (Index)(uintptr_t)JS_GetOpaque(argv[0], node_class_id);
+    if (idx) nui_dom_set_listens(dc->dom, idx);
+    return JS_UNDEFINED;
+}
+
 // __nuiDom.nodeAt(index): the node there now, or null.
 static JSValue nd_node_at(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     DomCtx *dc = dc_of(ctx);
@@ -1017,6 +1026,7 @@ static const JSCFunctionListEntry nui_dom_funcs[] = {
     JS_CFUNC_DEF("isForeign", 1, nd_is_foreign),
     JS_CFUNC_DEF("index", 1, nd_index),
     JS_CFUNC_DEF("nodeAt", 1, nd_node_at),
+    JS_CFUNC_DEF("listens", 1, nd_listens),
 };
 
 // --- Setup ----------------------------------------------------------------------------

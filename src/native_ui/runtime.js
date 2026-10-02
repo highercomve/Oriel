@@ -12373,6 +12373,8 @@ globalThis.atob ??= (s) => {
   };
   var nodeIndex = null;
   var nodeAt = null;
+  var markListens = () => {
+  };
 
   // src/css.js
   function stripComments(css) {
@@ -14055,6 +14057,8 @@ col, colgroup { display: none; }
       this.dropped = [];
       this.stamps = [];
       this.noStamp = /* @__PURE__ */ new WeakSet();
+      this.listStamps = [];
+      this.noStampList = /* @__PURE__ */ new WeakSet();
       this.declined = false;
       this.structural = false;
       this.noCache = false;
@@ -14210,13 +14214,22 @@ col, colgroup { display: none; }
         leaves.add(el);
       }
       const P = this.host.prof ? this.host.now : null, t02 = P && P();
-      const nodes = /* @__PURE__ */ new Map(), updates = [], restamp = [];
+      const nodes = /* @__PURE__ */ new Map(), updates = [], restamp = [], restamped = /* @__PURE__ */ new Set();
       for (const el of leaves) {
         const fc = this.fc.get(el), cs = this.styleOf(el);
         if (!fc) {
           const row = el.parentNode, rf = row && this.fc.get(row);
-          if (!rf?.stamp || !row.isConnected) return false;
-          if (!restamp.includes(row)) restamp.push(row);
+          let plan = rf?.stamp, rowId = rf?.id;
+          if (!rf) {
+            const lf = row?.parentNode && this.fc.get(row.parentNode);
+            plan = lf?.list;
+            rowId = plan && this.idOf(row, "el");
+          }
+          if (!plan || !row.isConnected) return false;
+          if (!restamped.has(row)) {
+            restamped.add(row);
+            restamp.push(row, rowId, plan);
+          }
           continue;
         }
         if (!fc || !cs || fc.root.kind !== "text" || fc.rootSpec || fc.rootAnim || el.firstElementChild || this.tx.targets.has(fc.id) || this.anim.state.has(fc.id)) return false;
@@ -14241,11 +14254,14 @@ col, colgroup { display: none; }
         if (!runs || !runs.length) return false;
         updates.push(el, fc, runs, old);
       }
-      for (const row of restamp) {
-        const rf = this.fc.get(row);
-        if (!this.host.stamp(rf.id, row, rf.stamp)) {
-          rf.stamp = 0;
-          this.noStamp.add(row);
+      for (let i = 0; i < restamp.length; i += 3) {
+        const row = restamp[i];
+        if (!this.host.stamp(restamp[i + 1], row, restamp[i + 2])) {
+          const rf = this.fc.get(row);
+          if (rf) {
+            rf.stamp = 0;
+            this.noStamp.add(row);
+          } else this.noStampList.add(row.parentNode);
           return false;
         }
       }
@@ -14404,6 +14420,7 @@ col, colgroup { display: none; }
       const goneTree = (el, f) => {
         this.gone.push(...f.own);
         this.fc.delete(el);
+        this.sc.delete(el);
         for (const k of f.kids) {
           const kf = this.fc.get(k);
           if (kf && kf.seen !== this.frameNo) goneTree(k, kf);
@@ -14595,7 +14612,7 @@ col, colgroup { display: none; }
       const fc = this.fc.get(el);
       const block = !!ctx.blockify;
       const outer = this.cur;
-      if (fc && fc.parent === parentCS && fc.block === block && fc.ts === ctx.tableSpacing && !ctx.rematch && !this.flat.has(el)) {
+      if (fc && fc.parent === parentCS && fc.block === block && fc.ts === ctx.tableSpacing && !ctx.rematch && (!this.flat.has(el) || fc.seen === this.frameNo)) {
         fc.seen = this.frameNo;
         const r = fc.root;
         nodes.set(fc.id, { kind: r.kind, props: { ...r.props }, kids: r.kids.slice() });
@@ -14634,8 +14651,10 @@ col, colgroup { display: none; }
         root: { kind: own.kind, props: { ...own.props }, kids: own.kids.slice() },
         rootSpec: this.specs.get(id),
         rootAnim: this.animSpecs.get(id),
-        stamp: cur.stamp
+        stamp: cur.stamp,
         // a row whose children the tree stamps (its plan)
+        list: cur.list
+        // a list whose rows after the first the tree stamps (their plan)
       };
       if (fc) {
         if (fc.own.length) {
@@ -14808,7 +14827,9 @@ col, colgroup { display: none; }
       }
       const order = entries2.map((_, i) => i).sort((a, b) => entries2[a].order - entries2[b].order || a - b);
       if (shape.shapes.size >= 32) shape.shapes.delete(shape.shapes.keys().next().value);
-      shape.shapes.set(shape.key, { entries: entries2, order });
+      const plan = { entries: entries2, order };
+      shape.shapes.set(shape.key, plan);
+      this.savedShape = { row: shape.children[0].parentNode, children: shape.children, plan };
     }
     build(el, parentCS, nodes, ctx) {
       const tag = el.localName;
@@ -14973,6 +14994,11 @@ col, colgroup { display: none; }
         tableSpacing: tableSpacingFor(display, props, ctx),
         rematch
       };
+      const listed = this.host.stampList ? this.listOf(el, cs, props, display, childCtx, nodes, id) : null;
+      if (listed) {
+        this.putClick(props, el);
+        return this.put(nodes, id, "view", props, listed, fixedNode);
+      }
       const kids = [];
       let orders = null;
       const before2 = this.pseudo(el, cs, "before", nodes);
@@ -15044,27 +15070,7 @@ col, colgroup { display: none; }
         }
         const cid = this.element(item.el, cs, nodes, childCtx);
         if (cid === null) continue;
-        if (!childCtx.blockify) {
-          const n2 = nodes.get(cid);
-          if (n2 && n2.props.fs === void 0) n2.props.fs = 0;
-        } else if ((props.scroll || props.scrollx) && !this.styleOf(item.el)?.["flex-shrink"]) {
-          const n2 = nodes.get(cid);
-          if (n2) n2.props.fs = 0;
-        } else if (props.fd === "column" && this.keepsContentHeight(item.el, nodes.get(cid))) nodes.get(cid).props.fs = 0;
-        else if (props.fd === "column" && props.h === void 0 && props.fg === void 0 && !props.scroll && /flex$/.test(display)) {
-          const n2 = nodes.get(cid);
-          if (n2 && typeof n2.props.fb === "string" && n2.props.fb.endsWith("%") && !n2.props.scroll && !n2.props.clip) {
-            delete n2.props.fb;
-            n2.props.fs = 0;
-          }
-        }
-        if (!childCtx.blockify) {
-          const n2 = nodes.get(cid);
-          const d = this.styleOf(item.el)?.display || "inline";
-          if (n2 && (ATOMIC_INLINE.has(d) || INLINE_DISPLAY.has(d)) && !n2.props.as && n2.props.pos !== "absolute") {
-            n2.props.as = alignFor(cs["text-align"]);
-          }
-        }
+        this.adjustKid(nodes, cid, item.el, cs, props, display, childCtx);
         kids.push(cid);
         const ord = parseInt(this.styleOf(item.el)?.order, 10);
         if (ord) (orders ??= /* @__PURE__ */ new Map()).set(cid, ord);
@@ -15079,6 +15085,68 @@ col, colgroup { display: none; }
       if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
       this.putClick(props, el);
       return this.put(nodes, id, "view", props, kids, fixedNode);
+    }
+    // A list of rows the tree stamps (dom_stamp.stampList): every child an
+    // element, the first a row the tree stamps (a flex row of leaves) and the
+    // rest the same element again, which the tree checks. The first row is
+    // made here as any child is; its node as made (with this parent's
+    // adjustments) is every row's. Its id as the list's children, or null
+    // (nothing made) when the list doesn't look like one.
+    listOf(el, cs, props, display, childCtx, nodes, id) {
+      if (this.noStampList.has(el) || this.structural || this.noCache || display === "grid" || tableHolds(display) || cs.__rules.before.length || cs.__rules.after.length) return null;
+      const first = el.firstChild, second = first?.nextSibling;
+      if (first?.nodeType !== 1 || second?.nodeType !== 1 || second.localName !== first.localName || second.className !== first.className || !first.firstElementChild || !TEMPLATE_LEAF.has(first.firstElementChild.localName) || first.firstElementChild.firstElementChild) return null;
+      this.savedShape = null;
+      const cid = this.element(first, cs, nodes, childCtx);
+      const f = this.fc.get(first);
+      if (cid === null || !f) return null;
+      let plan = f.stamp;
+      const saved = this.savedShape;
+      if (!plan && saved?.row === first && this.host.stamp && !this.noStamp.has(first) && this.stampable({ children: saved.children, plan: saved.plan })) plan = this.stampPlanOf(saved.plan);
+      if (!plan) return null;
+      if (!childCtx.blockify && this.isInline(first, cs, childCtx.rematch)) {
+        this.noStampList.add(el);
+        return null;
+      }
+      this.adjustKid(nodes, cid, first, cs, props, display, childCtx);
+      const row = nodes.get(cid);
+      if (!row || row.kind !== "view") {
+        this.noStampList.add(el);
+        return null;
+      }
+      const style = this.leafStyleId(encodeProps({ ...row.props }));
+      if (!style) {
+        this.noStampList.add(el);
+        return null;
+      }
+      this.cur.list = plan;
+      this.listStamps.push(id, el, style, plan);
+      return [cid];
+    }
+    // What a parent makes of a child element's node in its general flow
+    // (its flex-shrink, basis, alignment), as build's children loop does.
+    adjustKid(nodes, cid, itemEl, cs, props, display, childCtx) {
+      if (!childCtx.blockify) {
+        const n2 = nodes.get(cid);
+        if (n2 && n2.props.fs === void 0) n2.props.fs = 0;
+      } else if ((props.scroll || props.scrollx) && !this.styleOf(itemEl)?.["flex-shrink"]) {
+        const n2 = nodes.get(cid);
+        if (n2) n2.props.fs = 0;
+      } else if (props.fd === "column" && this.keepsContentHeight(itemEl, nodes.get(cid))) nodes.get(cid).props.fs = 0;
+      else if (props.fd === "column" && props.h === void 0 && props.fg === void 0 && !props.scroll && /flex$/.test(display)) {
+        const n2 = nodes.get(cid);
+        if (n2 && typeof n2.props.fb === "string" && n2.props.fb.endsWith("%") && !n2.props.scroll && !n2.props.clip) {
+          delete n2.props.fb;
+          n2.props.fs = 0;
+        }
+      }
+      if (!childCtx.blockify) {
+        const n2 = nodes.get(cid);
+        const d = this.styleOf(itemEl)?.display || "inline";
+        if (n2 && (ATOMIC_INLINE.has(d) || INLINE_DISPLAY.has(d)) && !n2.props.as && n2.props.pos !== "absolute") {
+          n2.props.as = alignFor(cs["text-align"]);
+        }
+      }
     }
     putClick(props, el) {
       if (el.localName === "button" || el.localName === "a" || el.localName === "label" || el.localName === "summary" || el.hasAttribute("onclick") || listens(el)) props.click = true;
@@ -15251,7 +15319,7 @@ col, colgroup { display: none; }
       }
       const P = this.host.prof ? this.host.now : null, t02 = P && P();
       if (ops.length) this.host.ops(`[${ops.join(",")}]`);
-      if (this.stamps.length) this.stampRows();
+      if (this.stamps.length || this.listStamps.length) this.stampRows();
       if (P) this.applyMs += P() - t02;
       this.schedule();
     }
@@ -15267,6 +15335,16 @@ col, colgroup { display: none; }
         if (f) f.stamp = 0;
         this.flatMarks.add(st[i + 1]);
         this.noStamp.add(st[i + 1]);
+        this.dirty = this.declined = true;
+      }
+      const ls = this.listStamps;
+      this.listStamps = [];
+      for (let i = 0; i < ls.length; i += 4) {
+        if (this.host.stampList(ls[i], ls[i + 1], ls[i + 2], ls[i + 3])) continue;
+        const f = this.fc.get(ls[i + 1]);
+        if (f) f.list = 0;
+        this.flatMarks.add(ls[i + 1]);
+        this.noStampList.add(ls[i + 1]);
         this.dirty = this.declined = true;
       }
     }
@@ -16092,6 +16170,7 @@ ${a.stack || ""}`;
       proto.addEventListener = function(type, fn, opts) {
         if (type === "click" || type === "mousedown" || type === "pointerdown") {
           this.__listens = true;
+          markListens(this);
           renderer?.markFlat(this);
         }
         return orig.call(this, type, fn, opts);
