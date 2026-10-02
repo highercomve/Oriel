@@ -26,14 +26,14 @@ pub fn isSimulator(target: std.Target) bool {
 }
 
 /// The SDK's frameworks and libraries for `module`, and the frameworks
-/// Oriel's iOS backend uses.
-/// The SDK is the build's sysroot (Zig ships no iOS libc). Zig resolves
-/// library directories inside the sysroot, framework directories as given.
+/// Oriel's iOS backend uses. The SDK's paths are given to the iOS module
+/// (and its libc file, `configure`), not as the build's sysroot: that one is
+/// every step's, and the host tools (tools/qjs_bytecode.c) link the build
+/// machine's libc.
 pub fn link(module: *std.Build.Module, root: []const u8, audio_capture: bool) void {
     const b = module.owner;
-    if (b.sysroot == null) b.sysroot = root;
     module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ root, "System/Library/Frameworks" }) });
-    module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+    module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ root, "usr/lib" }) });
     module.linkSystemLibrary("objc", .{});
     for ([_][]const u8{ "Foundation", "UIKit", "WebKit", "AVFoundation", "UserNotifications", "UniformTypeIdentifiers", "CoreLocation" }) |fw|
         module.linkFramework(fw, .{});
