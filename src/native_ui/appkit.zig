@@ -203,10 +203,11 @@ fn dropField(f: Field) void {
     releaseLater(f.holder); // and with it the control
 }
 
-/// Release `o` once the run loop is back in its default mode.
+/// Release `o` (our reference) once the run loop is back in its default
+/// mode. The delayed perform retains `o` and releases it after performing,
+/// so the performed `release` is the one that drops ours.
 fn releaseLater(o: Object) void {
     o.msgSend(void, "performSelector:withObject:afterDelay:", .{ cocoa.objc.sel("release").value, cocoa.nil, @as(f64, 0) });
-    o.release(); // the perform holds it until then
 }
 
 fn surfaceOf(ctx: *anyopaque) *Surface {
