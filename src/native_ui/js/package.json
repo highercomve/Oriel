@@ -3,6 +3,9 @@
   "private": true,
   "description": "The JavaScript side of Oriel's experimental native renderer (docs/native-renderer.md): bundled into ../runtime.js, which the Zig build embeds.",
   "type": "module",
+  "imports": {
+    "#dom": "./src/dom/linkedom.js"
+  },
   "scripts": {
     "build": "node build.mjs",
     "test": "node test/html.test.mjs && node test/dom-construction.test.mjs && node test/media.test.mjs && node test/render.test.mjs && node test/observer.test.mjs && node test/events.test.mjs && node test/react-inputs.test.mjs && node test/react-real.test.mjs && node test/transitions.test.mjs && node test/animations.test.mjs && node test/frame-start.test.mjs && node test/harness.mjs"
