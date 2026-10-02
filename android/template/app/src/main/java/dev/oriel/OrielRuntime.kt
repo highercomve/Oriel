@@ -308,6 +308,9 @@ object OrielRuntime {
     }
 
     @JvmStatic
+    fun nuiRequestFrame(id: Int) = Nui.requestFrame(id)
+
+    @JvmStatic
     fun nuiTimer(id: Int, timer: Int, ms: Int) = Nui.timer(id, timer, ms)
 
     @JvmStatic

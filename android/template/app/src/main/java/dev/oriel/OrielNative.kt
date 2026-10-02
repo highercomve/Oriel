@@ -34,6 +34,7 @@ import android.text.style.MetricAffectingSpan
 import android.text.style.UnderlineSpan
 import android.util.Log
 import android.util.TypedValue
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -87,6 +88,8 @@ internal object NuiNative {
     @JvmStatic external fun jsMemory(window: Int): Long
     /** ORIEL_NUI_TRACE is set (`debug.oriel.env`): NuiView logs each draw. */
     @JvmStatic external fun trace(): Boolean
+    /** The display refreshed: the window's requestAnimationFrame callbacks run. */
+    @JvmStatic external fun displayFrame(window: Int, intervalMs: Float)
     /** An app asset's bytes (an <img> src), or null. */
     @JvmStatic external fun asset(window: Int, path: ByteArray): ByteArray?
 }
@@ -111,6 +114,18 @@ internal object Nui {
     }
 
     fun isDark(c: Configuration) = c.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+
+    /** One Choreographer callback for the window's next display frame
+     *  (android.zig's requestDisplayFrame posts one at a time). */
+    fun requestFrame(window: Int) {
+        Choreographer.getInstance().postFrameCallback {
+            val v = views[window] ?: return@postFrameCallback // the window closed
+            val hz = v.display?.refreshRate?.takeIf { it > 0 } ?: 60f
+            if (trace && ++displayFrames % 120 == 0) Log.d("OrielNui", "nui display frames $displayFrames at $hz Hz")
+            NuiNative.displayFrame(window, 1000f / hz)
+        }
+    }
+    private var displayFrames = 0
 
     fun timer(window: Int, id: Int, ms: Int) {
         main.postDelayed({ if (views.containsKey(window)) NuiNative.timer(window, id) }, ms.toLong())
