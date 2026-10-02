@@ -12492,7 +12492,7 @@ globalThis.atob ??= (s) => {
         out[prop2] = value;
     }
   }
-  var StyleEngine = class {
+  var StyleEngine = class _StyleEngine {
     constructor() {
       this.rules = [];
       this.index = { id: /* @__PURE__ */ new Map(), cls: /* @__PURE__ */ new Map(), tag: /* @__PURE__ */ new Map(), any: [] };
@@ -12548,11 +12548,18 @@ globalThis.atob ??= (s) => {
     }
     // Specified values (longhands) for one element from its rules and inline style.
     static cascade(rules, inline) {
-      const sorted = rules.slice().sort((x, y) => cmpSpec(x.spec, y.spec) || x.order - y.order);
       const normal = {}, important = {};
-      for (const r of sorted) for (const d of r.decls) expand(d.prop, d.value, d.important ? important : normal);
-      if (inline) for (const d of inline) expand(d.prop, d.value, d.important ? important : normal);
+      _StyleEngine.expandInto(_StyleEngine.sorted(rules).flatMap((r) => r.decls), normal, important);
+      if (inline) _StyleEngine.expandInto(inline, normal, important);
       return Object.assign(normal, important);
+    }
+    // Rules in cascade order: specificity, then source order.
+    static sorted(rules) {
+      return rules.slice().sort((x, y) => cmpSpec(x.spec, y.spec) || x.order - y.order);
+    }
+    // Declarations → longhands, into `normal` or (!important) `important`.
+    static expandInto(decls, normal, important) {
+      for (const d of decls) expand(d.prop, d.value, d.important ? important : normal);
     }
   };
   function push2(map, k, v) {
@@ -13719,6 +13726,75 @@ col, colgroup { display: none; }
       this.dirty = true;
       this.native = /* @__PURE__ */ new Map();
       this.cs = /* @__PURE__ */ new WeakMap();
+      this.marks = /* @__PURE__ */ new Map();
+      this.flatMarks = /* @__PURE__ */ new Set();
+      this.full = true;
+      this.sc = /* @__PURE__ */ new WeakMap();
+      this.fc = /* @__PURE__ */ new WeakMap();
+      this.parentOf = /* @__PURE__ */ new WeakMap();
+      this.volatile = /* @__PURE__ */ new Set();
+      this.shared = /* @__PURE__ */ new WeakMap();
+      this.cascades = /* @__PURE__ */ new Map();
+      this.frameNo = 0;
+      this.cur = null;
+      this.gone = [];
+      this.dropped = [];
+      this.structural = false;
+      this.noCache = false;
+      for (const r of engine.rules) {
+        if (/:(nth-|first-|last-|only-|empty)|[+~]/.test(r.sel)) this.structural = true;
+        if (/:has\(/.test(r.sel)) this.noCache = true;
+        if (/\[style[\]~|^$*=]/.test(r.sel)) this.styleAttrRules = true;
+      }
+    }
+    // ---------------------------------------------------------------------
+    // What changed
+    // An element's style may have changed: 2 when its rules may match
+    // differently (its attributes), 1 when only its inline style did.
+    mark(el, level) {
+      if (!el || el.nodeType !== 1) return;
+      if ((this.marks.get(el) || 0) < level) this.marks.set(el, level);
+      this.dirty = true;
+    }
+    // A node's output changed, not its style: its text, a canvas's program,
+    // a click listener.
+    markFlat(node) {
+      if (!node) return;
+      this.flatMarks.add(node);
+      this.dirty = true;
+    }
+    // The viewport or the theme changed: everything again.
+    markAll() {
+      this.full = true;
+      this.dirty = true;
+    }
+    // Mutation records (main.js observes the document).
+    note(records) {
+      for (const r of records) {
+        if (r.type === "attributes") {
+          const el = r.target;
+          this.mark(el, r.attributeName === "style" && !this.styleAttrRules ? 1 : 2);
+          if (this.structural && el.parentNode) this.mark(el.parentNode, 2);
+          continue;
+        }
+        for (const n2 of r.addedNodes || []) {
+          this.mark(n2, 2);
+          const parent = n2.parentNode;
+          if (parent) {
+            this.markFlat(parent);
+            if (this.structural) this.mark(parent, 2);
+          }
+        }
+        for (const n2 of r.removedNodes || []) {
+          const parent = n2.parentNode || this.parentOf.get(n2);
+          if (parent) {
+            this.markFlat(parent);
+            if (this.structural) this.mark(parent, 2);
+          }
+          this.markFlat(n2);
+        }
+      }
+      this.dirty = true;
     }
     idOf(obj, key2) {
       let m = this.ids.get(obj);
@@ -13731,34 +13807,245 @@ col, colgroup { display: none; }
     // ---------------------------------------------------------------------
     // One frame
     render() {
+      const pending2 = this.observer?.takeRecords();
+      if (pending2?.length) this.note(pending2);
       if (!this.dirty) return;
       this.dirty = false;
       const nodes = /* @__PURE__ */ new Map();
       this.specs = /* @__PURE__ */ new Map();
       this.animSpecs = /* @__PURE__ */ new Map();
-      this.owner.clear();
+      this.frameNo++;
+      this.gone = [];
+      this.dropped = [];
+      const full = this.full || this.noCache;
+      if (full) {
+        this.sc = /* @__PURE__ */ new WeakMap();
+        this.fc = /* @__PURE__ */ new WeakMap();
+        this.shared = /* @__PURE__ */ new WeakMap();
+        this.cascades.clear();
+        this.owner.clear();
+      }
+      const flat = this.flat = /* @__PURE__ */ new Set();
+      const up = (n2) => {
+        for (; n2 && !flat.has(n2); n2 = n2.parentNode) flat.add(n2);
+      };
+      for (const el of this.marks.keys()) up(el);
+      for (const n2 of this.flatMarks) up(n2);
+      for (const el of this.volatile) {
+        if (el.isConnected) up(el);
+        else this.volatile.delete(el);
+      }
       const body = this.doc.body;
       const rootCS = this.style(this.doc.documentElement, null);
+      this.cur = { own: [], kids: [], fixed: [] };
       const bodyNode = this.element(body, rootCS, nodes, { blockify: true, textAlign: "left" });
-      const fixed = nodes.get("fixed") || [];
-      nodes.delete("fixed");
+      const fixed = this.cur.fixed;
+      this.cur = null;
+      this.marks.clear();
+      this.flatMarks.clear();
+      this.full = false;
+      const goneTree = (el, f) => {
+        this.gone.push(...f.own);
+        this.fc.delete(el);
+        for (const k of f.kids) {
+          const kf = this.fc.get(k);
+          if (kf && kf.seen !== this.frameNo) goneTree(k, kf);
+        }
+      };
+      for (const [el, f] of this.dropped) {
+        const now = this.fc.get(el);
+        if (now && now.seen === this.frameNo) continue;
+        goneTree(el, now || f);
+      }
       if (!bodyNode) return;
       const bn = nodes.get(bodyNode);
       if (bn && !this.cs.get(body)?.["flex-shrink"]) bn.props.fs = 0;
       nodes.set(-1, { kind: "view", props: { scroll: true, fg: 1, fs: 1, ai: "stretch" }, kids: [bodyNode] });
       nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: bgOf(rootCS) }, kids: [-1, ...fixed] });
-      this.emit(nodes);
+      this.emit(nodes, full);
       const scroll = this.pendingScroll;
       this.pendingScroll = null;
       if (scroll && scroll.el.isConnected) this.host.scrollIntoView(this.idOf(scroll.el, "el"), scroll.block);
     }
-    style(el, parentCS) {
-      const m = this.engine.matching(el);
-      const spec = StyleEngine.cascade(m.normal, el.hasAttribute("style") ? parseInline(el.getAttribute("style")) : null);
-      const cs = computeStyle(spec, parentCS);
+    // An element's computed style: the last frame's while neither it nor its
+    // parent's style changed. `rematch`: an ancestor's attributes changed (a
+    // descendant selector may match differently).
+    style(el, parentCS, rematch = false) {
+      const c = this.sc.get(el);
+      const mk = this.marks.get(el) || 0;
+      if (c && c.parent === parentCS && (c.frame === this.frameNo || !rematch && !mk)) return c.cs;
+      const m = c && !rematch && mk < 2 ? c.m : this.engine.matching(el);
+      const inline = el.getAttribute("style");
+      const casc = this.cascadeOf(m.normal);
+      let cs;
+      if (inline) cs = this.inlineStyle(inline, casc, m, parentCS);
+      else if (parentCS && !m.before.length && !m.after.length) {
+        let by = this.shared.get(parentCS);
+        if (!by) this.shared.set(parentCS, by = /* @__PURE__ */ new Map());
+        cs = by.get(casc.spec);
+        if (!cs) {
+          cs = computeStyle(casc.spec, parentCS);
+          by.set(casc.spec, cs);
+        }
+      } else {
+        cs = computeStyle(casc.spec, parentCS);
+      }
+      if (c && c.cs !== cs && sameStyle(c.cs, cs)) cs = c.cs;
       cs.__rules = m;
+      this.sc.set(el, { parent: parentCS, cs, m, frame: this.frameNo });
       this.cs.set(el, cs);
       return cs;
+    }
+    // An element with an inline style: its rules' style (shared with its
+    // siblings) with the inline longhands over it, as computeStyle would put
+    // them; custom properties (var() everywhere below) take the long way.
+    inlineStyle(inline, casc, m, parentCS) {
+      const normal = {}, important = {};
+      StyleEngine.expandInto(parseInline(inline), normal, important);
+      let simple = !!parentCS && !m.before.length && !m.after.length;
+      if (simple) {
+        for (const k in normal) if (k.startsWith("--")) {
+          simple = false;
+          break;
+        }
+      }
+      if (simple) {
+        for (const k in important) if (k.startsWith("--")) {
+          simple = false;
+          break;
+        }
+      }
+      if (!simple) {
+        const spec = Object.assign({ ...casc.normal }, normal, casc.important, important);
+        return computeStyle(spec, parentCS);
+      }
+      let by = this.shared.get(parentCS);
+      if (!by) this.shared.set(parentCS, by = /* @__PURE__ */ new Map());
+      let base = by.get(casc.spec);
+      if (!base) {
+        base = computeStyle(casc.spec, parentCS);
+        by.set(casc.spec, base);
+      }
+      const cs = Object.assign(/* @__PURE__ */ Object.create(null), base);
+      let parts = /* @__PURE__ */ new Set();
+      const put = (k, v) => {
+        if (parts && PART_OF[k]) parts.add(PART_OF[k]);
+        else parts = null;
+        if (v === "inherit") {
+          if (parentCS[k] !== void 0) cs[k] = parentCS[k];
+          else delete cs[k];
+          return;
+        }
+        if (v === "initial" || v === "unset") {
+          delete cs[k];
+          return;
+        }
+        cs[k] = substitute(v, cs, 0);
+      };
+      for (const k in normal) if (!(k in casc.important)) put(k, normal[k]);
+      for (const k in important) put(k, important[k]);
+      derived.set(cs, { base, parts: parts && [...parts] });
+      return cs;
+    }
+    // The longhands of a set of matched rules (many elements match the same).
+    cascadeOf(rules) {
+      let key2 = "";
+      for (const r of rules) key2 += r.order + ",";
+      let c = this.cascades.get(key2);
+      if (!c) {
+        const sorted = StyleEngine.sorted(rules);
+        const normal = {}, important = {};
+        StyleEngine.expandInto(sorted.flatMap((r) => r.decls), normal, important);
+        c = { normal, important, spec: Object.assign({ ...normal }, important) };
+        if (this.cascades.size > 5e3) this.cascades.clear();
+        this.cascades.set(key2, c);
+      }
+      return c;
+    }
+    // ---------------------------------------------------------------------
+    // What the element being made makes (element(), below).
+    // A node made by the element being made.
+    put0(nodes, id, node) {
+      nodes.set(id, node);
+      this.cur.own.push(id);
+    }
+    own(id, el) {
+      this.owner.set(id, el);
+    }
+    spec(id, s) {
+      this.specs.set(id, s);
+    }
+    // An element → a node id (or null when not rendered or fixed).
+    //
+    // What it made is kept (`fc`): its parent's style, its blockification and
+    // table spacing, the ids it made itself (its node, text runs,
+    // pseudo-elements, grid rows), the child elements that made nodes, the
+    // fixed ids in it, and a copy of its own node as made (its parent adjusts
+    // the one it gets). While
+    // nothing in it changed (not in `flat`, no ancestor's rules matched
+    // again) and its parent's style is the same object, it is reused whole:
+    // its nodes stay as they are, only its own node is compared again.
+    element(el, parentCS, nodes, ctx) {
+      const fc = this.fc.get(el);
+      const block = !!ctx.blockify;
+      const outer = this.cur;
+      if (fc && fc.parent === parentCS && fc.block === block && fc.ts === ctx.tableSpacing && !ctx.rematch && !this.flat.has(el)) {
+        fc.seen = this.frameNo;
+        const r = fc.root;
+        nodes.set(fc.id, { kind: r.kind, props: { ...r.props }, kids: r.kids.slice() });
+        if (fc.rootSpec) this.specs.set(fc.id, fc.rootSpec);
+        if (fc.rootAnim) this.animSpecs.set(fc.id, fc.rootAnim);
+        outer.kids.push(el);
+        for (const f of fc.fixedIds) outer.fixed.push(f);
+        return fc.fixed ? null : fc.id;
+      }
+      const cur = this.cur = { own: [], kids: [], fixed: [] };
+      let out;
+      try {
+        out = this.build(el, parentCS, nodes, ctx);
+      } finally {
+        this.cur = outer;
+      }
+      const id = this.idOf(el, "el");
+      const own = cur.own.includes(id) ? nodes.get(id) : null;
+      if (!own) {
+        if (fc) {
+          this.fc.delete(el);
+          this.dropped.push([el, fc]);
+        }
+        return out;
+      }
+      const nf = {
+        parent: parentCS,
+        block,
+        ts: ctx.tableSpacing,
+        id,
+        fixed: out === null,
+        own: cur.own,
+        kids: cur.kids,
+        fixedIds: cur.fixed,
+        seen: this.frameNo,
+        root: { kind: own.kind, props: { ...own.props }, kids: own.kids.slice() },
+        rootSpec: this.specs.get(id),
+        rootAnim: this.animSpecs.get(id)
+      };
+      if (fc) {
+        if (fc.own.length) {
+          const now = new Set(cur.own);
+          for (const x of fc.own) if (!now.has(x)) this.gone.push(x);
+        }
+        if (fc.kids.length) {
+          const now = new Set(cur.kids);
+          for (const k of fc.kids) if (!now.has(k)) {
+            const kf = this.fc.get(k);
+            if (kf) this.dropped.push([k, kf]);
+          }
+        }
+      }
+      this.fc.set(el, nf);
+      outer.kids.push(el);
+      for (const f of cur.fixed) outer.fixed.push(f);
+      return out;
     }
     // An element → a node id (or null when not rendered).
     keepsContentHeight(el, n2) {
@@ -13766,22 +14053,23 @@ col, colgroup { display: none; }
       const p = n2.props, cs = this.cs.get(el) || {};
       return p.fs === void 0 && p.h === void 0 && p.fb === void 0 && p.ar === void 0 && !p.scroll && !p.clip && !cs["flex-shrink"] && !cs["min-height"] && p.pos !== "absolute";
     }
-    element(el, parentCS, nodes, ctx) {
+    build(el, parentCS, nodes, ctx) {
       const tag = el.localName;
       if (SKIP.has(tag)) return null;
-      const cs = this.style(el, parentCS);
+      const rematch = !!ctx.rematch || this.marks.get(el) === 2;
+      const cs = this.style(el, parentCS, !!ctx.rematch);
       let display = cs.display || "inline";
       if (display === "none") return null;
       if (ctx.blockify) display = blockify(display);
       const fontSize = fontSizeOf(cs, parentCS);
       cs.__fs = fontSize;
       const id = this.idOf(el, "el");
-      this.owner.set(id, el);
+      this.own(id, el);
       const props = boxProps(cs, display, fontSize, el);
       if (!ctx.blockify) delete props.as;
       if (isTableDisplay(display) && !tableProps(props, display, cs, fontSize, ctx, el)) return null;
       const transitions = transitionsOf(cs);
-      if (transitions) this.specs.set(id, transitions);
+      if (transitions) this.spec(id, transitions);
       this.noteAnimations(id, cs, fontSize);
       if (!ctx.blockify && ["block", "flex", "grid", "list-item"].includes(blockify(display)) && props.w === void 0 && props.pos !== "absolute" && cs["margin-left"] === "auto" && cs["margin-right"] === "auto") props.w = "100%";
       let fixedNode = false;
@@ -13790,6 +14078,7 @@ col, colgroup { display: none; }
         fixedNode = true;
       }
       if (tag === "svg") {
+        if (el.querySelector("use")) this.volatile.add(el);
         const icon = iconFor(el, cs, this.doc);
         if (!icon) return null;
         props.icon = icon;
@@ -13811,6 +14100,7 @@ col, colgroup { display: none; }
         return this.put(nodes, id, "image", props, [], fixedNode);
       }
       if (tag === "canvas") {
+        this.volatile.add(el);
         props.cw = el.width;
         props.ch = el.height;
         const ratio = props.ch > 0 ? props.cw / props.ch : 2;
@@ -13829,6 +14119,7 @@ col, colgroup { display: none; }
         return this.put(nodes, id, "canvas", props, [], fixedNode);
       }
       if (tag === "input" || tag === "textarea" || tag === "select") {
+        this.volatile.add(el);
         const type = (el.getAttribute("type") || "text").toLowerCase();
         if (tag === "input" && (type === "checkbox" || type === "radio")) {
           props.click = true;
@@ -13881,7 +14172,8 @@ col, colgroup { display: none; }
       const childCtx = {
         blockify: display === "flex" || display === "grid" || tableHolds(display),
         parentText: cs["text-align"],
-        tableSpacing: tableSpacingFor(display, props, ctx)
+        tableSpacing: tableSpacingFor(display, props, ctx),
+        rematch
       };
       const kids = [];
       let orders = null;
@@ -13897,14 +14189,15 @@ col, colgroup { display: none; }
         flow.push({ text: trimmed });
       };
       for (const child of el.childNodes) {
+        this.parentOf.set(child, el);
         if (child.nodeType === 3) {
           const t = child.data;
           if (t) runs.push(runFor(t, cs, fontSize));
           continue;
         }
         if (child.nodeType !== 1) continue;
-        if (!childCtx.blockify && this.isInline(child, cs)) {
-          this.inlineRuns(child, cs, fontSize, runs);
+        if (!childCtx.blockify && this.isInline(child, cs, rematch)) {
+          this.inlineRuns(child, cs, fontSize, runs, rematch);
           continue;
         }
         flushRuns();
@@ -13921,9 +14214,9 @@ col, colgroup { display: none; }
       for (const item of flow) {
         if (item.text) {
           const tid = this.idOf(el, "t" + kids.length);
-          this.owner.set(tid, el);
+          this.own(tid, el);
           const tp = { ...textProps(cs, fontSize), runs: item.text };
-          if (transitions) this.specs.set(tid, transitions);
+          if (transitions) this.spec(tid, transitions);
           tp.fs = childCtx.blockify && !props.scroll ? 1 : 0;
           this.put(nodes, tid, "text", tp, []);
           kids.push(tid);
@@ -13971,28 +14264,27 @@ col, colgroup { display: none; }
       if (el.hasAttribute("disabled")) props.dis = true;
     }
     put(nodes, id, kind, props, kids, fixedNode = false) {
-      nodes.set(id, { kind, props, kids });
+      this.put0(nodes, id, { kind, props, kids });
       if (fixedNode) {
-        let list = nodes.get("fixed");
-        if (!list) nodes.set("fixed", list = []);
-        list.push(id);
+        this.cur.fixed.push(id);
         return null;
       }
       return id;
     }
-    isInline(el, parentCS) {
+    isInline(el, parentCS, rematch = false) {
       if (SKIP.has(el.localName)) return true;
       if (el.localName === "svg" || el.localName === "input" || el.localName === "textarea" || el.localName === "select" || el.localName === "button" || el.localName === "img" || el.localName === "canvas") return false;
-      const cs = this.style(el, parentCS);
+      const cs = this.style(el, parentCS, rematch);
       const d = cs.display || "inline";
       if (d !== "inline") return false;
       if (cs.position === "absolute" || cs.position === "fixed") return false;
-      for (const c of el.children) if (!this.isInline(c, cs)) return false;
+      const deeper = rematch || this.marks.get(el) === 2;
+      for (const c of el.children) if (!this.isInline(c, cs, deeper)) return false;
       return true;
     }
-    inlineRuns(el, parentCS, parentFs, runs) {
+    inlineRuns(el, parentCS, parentFs, runs, rematch = false) {
       if (SKIP.has(el.localName)) return;
-      const cs = this.cs.get(el) || this.style(el, parentCS);
+      const cs = this.style(el, parentCS, rematch);
       if ((cs.display || "inline") === "none") return;
       const fs = fontSizeOf(cs, parentCS);
       cs.__fs = fs;
@@ -14000,9 +14292,11 @@ col, colgroup { display: none; }
         runs.push({ t: "\n", ...runStyle(cs, fs) });
         return;
       }
+      const deeper = rematch || this.marks.get(el) === 2;
       for (const child of el.childNodes) {
+        this.parentOf.set(child, el);
         if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el));
-        else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs);
+        else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper);
       }
     }
     pseudo(el, cs, which, nodes) {
@@ -14016,9 +14310,9 @@ col, colgroup { display: none; }
       const props = boxProps(pcs, display, fs, null);
       const id = this.idOf(el, which);
       const transitions = transitionsOf(pcs);
-      if (transitions) this.specs.set(id, transitions);
+      if (transitions) this.spec(id, transitions);
       this.noteAnimations(id, pcs, fs);
-      this.owner.set(id, el);
+      this.own(id, el);
       const text = /^["'](.*)["']$/.exec(content)?.[1] ?? "";
       if (text) {
         Object.assign(props, textProps(pcs, fs));
@@ -14029,9 +14323,10 @@ col, colgroup { display: none; }
     }
     // ---------------------------------------------------------------------
     // Diff against the last frame
-    emit(nodes) {
+    // `nodes`: what was made this frame; `full`: everything was (else the
+    // ids in this.gone are what went away).
+    emit(nodes, full) {
       const ops = [];
-      const seen = /* @__PURE__ */ new Set();
       const now = Date.now();
       const remade = /* @__PURE__ */ new Set();
       for (const [id, n2] of nodes) {
@@ -14039,38 +14334,38 @@ col, colgroup { display: none; }
         if (old && old.kind !== n2.kind) remade.add(id);
       }
       for (const [id, n2] of nodes) {
-        seen.add(id);
         const old = this.prev.get(id);
         if (!old || old.kind !== n2.kind) this.tx.forget(id);
         const shown = this.anim.apply(id, this.tx.apply(id, n2.props, this.specs.get(id) || null, now), this.animSpecs.get(id) || null, now);
         const p = JSON.stringify(shown);
         const k = JSON.stringify(n2.kids);
         if (!old || old.kind !== n2.kind) {
-          if (old) ops.push(["d", id]);
-          ops.push(["c", id, n2.kind]);
-          ops.push(["p", id, shown]);
-          ops.push(["k", id, n2.kids]);
+          if (old) ops.push(`["d",${id}]`);
+          ops.push(`["c",${id},${JSON.stringify(n2.kind)}]`, `["p",${id},${p}]`, `["k",${id},${k}]`);
         } else {
-          if (old.p !== p) ops.push(["p", id, shown]);
-          if (old.k !== k || n2.kids.some((c) => remade.has(c))) ops.push(["k", id, n2.kids]);
+          if (old.p !== p) ops.push(`["p",${id},${p}]`);
+          if (old.k !== k || n2.kids.some((c) => remade.has(c))) ops.push(`["k",${id},${k}]`);
         }
         this.prev.set(id, { kind: n2.kind, p, k });
         if (n2.props.val !== void 0) this.native.set(id, n2.props.val);
       }
-      for (const id of [...this.prev.keys()]) {
-        if (!seen.has(id)) {
-          ops.push(["d", id]);
-          this.prev.delete(id);
-          this.native.delete(id);
-          this.tx.forget(id);
-          this.anim.forget(id);
-        }
-      }
+      const drop = (id) => {
+        if (!this.prev.has(id) || nodes.has(id)) return;
+        ops.push(`["d",${id}]`);
+        this.prev.delete(id);
+        this.native.delete(id);
+        this.tx.forget(id);
+        this.anim.forget(id);
+        this.owner.delete(id);
+      };
+      if (full) {
+        for (const id of [...this.prev.keys()]) drop(id);
+      } else for (const id of this.gone) drop(id);
       if (!this.rootSent) {
-        ops.push(["r", 0]);
+        ops.push(`["r",0]`);
         this.rootSent = true;
       }
-      if (ops.length) this.host.ops(JSON.stringify(ops));
+      if (ops.length) this.host.ops(`[${ops.join(",")}]`);
       this.schedule();
     }
     // An element's @keyframes animations: their frames as node props
@@ -14079,7 +14374,8 @@ col, colgroup { display: none; }
       const list = animationsOf(cs, this.engine.keyframes);
       if (!list) return;
       const frames = list.map((a) => this.engine.keyframes[a.name].map((f) => ({ offset: f.offset, props: animProps(f.decls, cs, fs) })));
-      this.animSpecs.set(id, { key: cs.animation || list.map((a) => `${a.name} ${a.dur}`).join(","), list, frames });
+      const spec = { key: cs.animation || list.map((a) => `${a.name} ${a.dur}`).join(","), list, frames };
+      this.animSpecs.set(id, spec);
     }
     // While transitions or animations run: a frame every ~16 ms that sends
     // the animated nodes' props alone (no styles, no flattening).
@@ -14115,6 +14411,16 @@ col, colgroup { display: none; }
       this.schedule();
     }
   };
+  function sameStyle(a, b) {
+    let n2 = 0;
+    for (const k in a) {
+      if (k === "__rules" || k === "__fs") continue;
+      if (a[k] !== b[k]) return false;
+      n2++;
+    }
+    for (const k in b) if (k !== "__rules" && k !== "__fs") n2--;
+    return n2 === 0;
+  }
   function listens(el) {
     return !!el.__listens;
   }
@@ -14188,7 +14494,30 @@ col, colgroup { display: none; }
     const l = length(v, fs);
     return l === null ? void 0 : l;
   };
+  var memo = /* @__PURE__ */ new WeakMap();
+  function memoized(cs, key2, make) {
+    let m = memo.get(cs);
+    if (!m) memo.set(cs, m = /* @__PURE__ */ new Map());
+    let v = m.get(key2);
+    if (v === void 0) m.set(key2, v = make());
+    return v;
+  }
   function boxProps(cs, display, fs, el) {
+    const button = el?.localName === "button";
+    const key2 = `b${display}|${fs}|${button}`;
+    const d = derived.get(cs);
+    if (d?.parts) {
+      const p = { ...memoized(d.base, key2, () => makeBoxProps(d.base, display, fs, button)) };
+      for (const part of d.parts) {
+        const [keys2, make] = PARTS[part];
+        for (const k of keys2) delete p[k];
+        make(cs, fs, p);
+      }
+      return p;
+    }
+    return { ...memoized(cs, key2, () => makeBoxProps(cs, display, fs, button)) };
+  }
+  function makeBoxProps(cs, display, fs, button) {
     const p = {};
     if (display === "inline-flex") display = "flex";
     if (display === "inline-grid") display = "grid";
@@ -14214,7 +14543,7 @@ col, colgroup { display: none; }
       p.ai = "stretch";
     }
     if (cs["justify-content"] && cs["justify-content"] !== "normal" && !p.jc) p.jc = cs["justify-content"];
-    if (el?.localName === "button" && display !== "flex" && display !== "grid") {
+    if (button && display !== "flex" && display !== "grid") {
       p.ai = "center";
       if (!p.jc) p.jc = "center";
     }
@@ -14253,6 +14582,33 @@ col, colgroup { display: none; }
     const rg = num2(cs["row-gap"], fs), cg = num2(cs["column-gap"], fs);
     if (typeof rg === "number" && rg) p.rg = rg;
     if (typeof cg === "number" && cg) p.cg = cg;
+    positionPart(cs, fs, p);
+    const ov = cs["overflow-y"] || cs.overflow;
+    if (ov === "auto" || ov === "scroll") p.scroll = true;
+    const ovx = cs["overflow-x"];
+    if (ovx === "auto" || ovx === "scroll") p.scrollx = true;
+    if (cs["overflow-x"] === "hidden" || cs["overflow-y"] === "hidden" || cs.overflow === "hidden") p.clip = true;
+    if (cs["aspect-ratio"]) p.ar = parseFloat(cs["aspect-ratio"]);
+    transformPart(cs, fs, p);
+    const cur = color(cs.color);
+    backgroundPart(cs, p);
+    const r = ["top-left", "top-right", "bottom-right", "bottom-left"].map((c) => {
+      const v = cs[`border-${c}-radius`];
+      if (!v) return 0;
+      if (v.endsWith("%")) return { pct: parseFloat(v) };
+      return length(v, fs, false) ?? 0;
+    });
+    if (r.some((x) => x)) p.br = r.map((x) => typeof x === "object" ? `${x.pct}%` : Math.min(x, 9999));
+    if (cs.opacity !== void 0 && cs.opacity !== "1") p.op = parseFloat(cs.opacity);
+    const sh = shadow(cs["box-shadow"], cur);
+    if (sh) p.sh = sh;
+    if (cs.visibility === "hidden") p.vis = false;
+    if (cs.cursor === "pointer") p.click = true;
+    if (cs["z-index"] && cs["z-index"] !== "auto") p.z = parseInt(cs["z-index"], 10);
+    return p;
+  }
+  function positionPart(cs, fs, p) {
+    const sides = ["top", "right", "bottom", "left"];
     if (cs.position === "absolute" || cs.position === "fixed") {
       p.pos = "absolute";
       const ins = sides.map((s) => {
@@ -14273,39 +14629,54 @@ col, colgroup { display: none; }
       });
       if (ins.some((x) => x !== null)) p.rel = ins;
     }
-    const ov = cs["overflow-y"] || cs.overflow;
-    if (ov === "auto" || ov === "scroll") p.scroll = true;
-    const ovx = cs["overflow-x"];
-    if (ovx === "auto" || ovx === "scroll") p.scrollx = true;
-    if (cs["overflow-x"] === "hidden" || cs["overflow-y"] === "hidden" || cs.overflow === "hidden") p.clip = true;
-    if (cs["aspect-ratio"]) p.ar = parseFloat(cs["aspect-ratio"]);
+  }
+  function transformPart(cs, fs, p) {
     const tr = transformOf(cs, fs);
     if (tr.tx) p.tx = tr.tx;
     if (tr.ty) p.ty = tr.ty;
     if (tr.sc !== 1) p.sc = tr.sc;
     if (tr.rot) p.rot = tr.rot;
-    const cur = color(cs.color);
-    const bg = background(cs.background, cur);
+  }
+  function backgroundPart(cs, p) {
+    const bg = background(cs.background, color(cs.color));
     if (bg?.color && bg.color[3] < 1 && /blur\(/.test(cs["backdrop-filter"] || cs["-webkit-backdrop-filter"] || "")) {
       bg.color = [...bg.color.slice(0, 3), 1];
     }
     if (bg) p.bg = bg;
-    const r = ["top-left", "top-right", "bottom-right", "bottom-left"].map((c) => {
-      const v = cs[`border-${c}-radius`];
-      if (!v) return 0;
-      if (v.endsWith("%")) return { pct: parseFloat(v) };
-      return length(v, fs, false) ?? 0;
-    });
-    if (r.some((x) => x)) p.br = r.map((x) => typeof x === "object" ? `${x.pct}%` : Math.min(x, 9999));
-    if (cs.opacity !== void 0 && cs.opacity !== "1") p.op = parseFloat(cs.opacity);
-    const sh = shadow(cs["box-shadow"], cur);
-    if (sh) p.sh = sh;
-    if (cs.visibility === "hidden") p.vis = false;
-    if (cs.cursor === "pointer") p.click = true;
-    if (cs["z-index"] && cs["z-index"] !== "auto") p.z = parseInt(cs["z-index"], 10);
-    return p;
   }
+  var set1 = (k, v, p) => {
+    if (v !== void 0 && v !== null) p[k] = typeof v === "object" ? `${v.pct}%` : v;
+  };
+  var PARTS = {
+    tr: [["tx", "ty", "sc", "rot"], transformPart],
+    pos: [["pos", "ins", "sticky", "rel"], positionPart],
+    op: [["op"], (cs, fs, p) => {
+      if (cs.opacity !== void 0 && cs.opacity !== "1") p.op = parseFloat(cs.opacity);
+    }],
+    w: [["w"], (cs, fs, p) => set1("w", num2(cs.width, fs), p)],
+    h: [["h"], (cs, fs, p) => set1("h", num2(cs.height, fs), p)],
+    bg: [["bg"], (cs, fs, p) => backgroundPart(cs, p)]
+  };
+  var PART_OF = {
+    transform: "tr",
+    translate: "tr",
+    scale: "tr",
+    rotate: "tr",
+    position: "pos",
+    top: "pos",
+    right: "pos",
+    bottom: "pos",
+    left: "pos",
+    opacity: "op",
+    width: "w",
+    height: "h",
+    background: "bg"
+  };
+  var derived = /* @__PURE__ */ new WeakMap();
   function textProps(cs, fs) {
+    return memoized(cs, `t${fs}`, () => makeTextProps(cs, fs));
+  }
+  function makeTextProps(cs, fs) {
     const p = {};
     p.col = color(cs.color) || [0, 0, 0, 1];
     p.fz = fs;
@@ -14328,6 +14699,9 @@ col, colgroup { display: none; }
     return parseInt(w, 10) || 400;
   }
   function runStyle(cs, fs) {
+    return memoized(cs, `r${fs}`, () => makeRunStyle(cs, fs));
+  }
+  function makeRunStyle(cs, fs) {
     const r = { c: color(cs.color) || [0, 0, 0, 1], sz: fs, w: weight(cs["font-weight"]) };
     if (cs["font-style"] === "italic") r.i = true;
     if (/mono/.test(cs["font-family"] || "")) r.mono = true;
@@ -14387,6 +14761,7 @@ col, colgroup { display: none; }
           const l = length(mm ? mm[1] : what, fs, false);
           return typeof l === "number" ? l : 120;
         })();
+        renderer2.volatile.add(el);
         const width = renderer2.host.frame(renderer2.idOf(el, "el"))?.[2] || 0;
         const gap = props.cg || 0;
         const n2 = width ? Math.max(1, Math.floor((width + gap) / (minW + gap))) : Math.min(kids.length, 3);
@@ -14424,10 +14799,10 @@ col, colgroup { display: none; }
       });
       for (let j = rowKids.length; j < cols.length && /fr$|minmax/.test(cols[j]); j++) {
         const filler = renderer2.idOf(el, `fill${i}-${j}`);
-        nodes.set(filler, { kind: "view", props: { fg: 1, fb: 0 }, kids: [] });
+        renderer2.put0(nodes, filler, { kind: "view", props: { fg: 1, fb: 0 }, kids: [] });
         rowKids.push(filler);
       }
-      nodes.set(rowId, { kind: "view", props: { fd: "row", ai: props.ai === "center" ? "center" : "stretch", cg: props.cg, ...props.cg ? {} : {} }, kids: rowKids });
+      renderer2.put0(nodes, rowId, { kind: "view", props: { fd: "row", ai: props.ai === "center" ? "center" : "stretch", cg: props.cg, ...props.cg ? {} : {} }, kids: rowKids });
       rows.push(rowId);
     }
     props.fd = "column";
@@ -14716,7 +15091,7 @@ ${a.stack || ""}`;
       proto.addEventListener = function(type, fn, opts) {
         if (type === "click" || type === "mousedown" || type === "pointerdown") {
           this.__listens = true;
-          renderer && (renderer.dirty = true);
+          renderer?.markFlat(this);
         }
         return orig.call(this, type, fn, opts);
       };
@@ -14729,9 +15104,9 @@ ${a.stack || ""}`;
     while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "style"))) proto = Object.getPrototypeOf(proto);
     if (desc?.get) {
       const wrapped = /* @__PURE__ */ new WeakMap();
-      const touch = () => {
+      const touch = (el) => {
         try {
-          if (renderer) renderer.dirty = true;
+          if (renderer) renderer.mark(el, 1);
         } catch {
         }
       };
@@ -14742,17 +15117,18 @@ ${a.stack || ""}`;
           if (!real || typeof real !== "object") return real;
           let w = wrapped.get(real);
           if (!w) {
+            const el = this;
             w = new Proxy(real, {
               set(t, k, v) {
                 t[k] = v;
-                touch();
+                touch(el);
                 return true;
               },
               get(t, k) {
                 const v = t[k];
                 if (k === "setProperty" || k === "removeProperty") return (...a) => {
                   const r = v.apply(t, a);
-                  touch();
+                  touch(el);
                   return r;
                 };
                 return typeof v === "function" ? v.bind(t) : v;
@@ -14764,7 +15140,7 @@ ${a.stack || ""}`;
         },
         set(v) {
           desc.set ? desc.set.call(this, v) : this.setAttribute("style", String(v));
-          touch();
+          touch(this);
         }
       });
     }
@@ -15456,9 +15832,8 @@ ${a.stack || ""}`;
           else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
         }
         renderer = new Renderer(document, engine, host);
-        new MutationObserver(() => {
-          renderer.dirty = true;
-        }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+        renderer.observer = new MutationObserver((records) => renderer.note(records));
+        renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
         for (const s of document.querySelectorAll("script")) {
           const src = s.getAttribute("src");
           const code = src ? host.asset(src.replace(/^\.?\//, "")) : s.textContent;
@@ -15573,7 +15948,7 @@ ${a.stack || ""}`;
       guard(() => {
         const before2 = mediaSnapshot();
         Object.assign(viewport, { width: w, height: h, dark: !!dark });
-        if (renderer) renderer.dirty = true;
+        if (renderer) renderer.markAll();
         fireWindow(new Event("resize"));
         for (const ml of mediaLists) {
           const m = ml.matches;
@@ -15598,7 +15973,7 @@ ${a.stack || ""}`;
       guard(() => renderer?.render());
     },
     dirty() {
-      if (renderer) renderer.dirty = true;
+      if (renderer) renderer.markAll();
     }
   };
   function mediaSnapshot() {

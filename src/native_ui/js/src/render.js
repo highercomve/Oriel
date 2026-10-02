@@ -69,6 +69,80 @@ export class Renderer {
     this.dirty = true;
     this.native = new Map();       // id → value the native field holds (inputs)
     this.cs = new WeakMap();       // element → computed style of the last frame
+    // Incremental rendering: what changed since the last frame (marks, from
+    // the mutation records and style writes), and what each element made
+    // then, reused while nothing in it or above it changed.
+    this.marks = new Map();        // element → 1 (its inline style changed) | 2 (match its rules again)
+    this.flatMarks = new Set();    // nodes whose own output changed (text, children, a canvas…)
+    this.full = true;              // everything again (first frame, the viewport changed)
+    this.sc = new WeakMap();       // element → { parent cs, cs, matched rules, frame }
+    this.fc = new WeakMap();       // element → what it made (element(), below)
+    this.parentOf = new WeakMap(); // node → the element it was last flattened in (removals)
+    this.volatile = new Set();     // elements whose output can change without a mutation (fields…)
+    this.shared = new WeakMap();   // parent cs → Map(specified → cs): siblings with the same rules share one
+    this.cascades = new Map();     // matched rules → { normal, important } longhands
+    this.frameNo = 0;
+    this.cur = null;               // the element being made: { own ids, kids, fixed ids }
+    this.gone = [];                // ids to destroy this frame
+    this.dropped = [];             // [element, what it made]: gone unless made again this frame
+    this.structural = false;       // the sheets match by position (:nth-child, +, ~…)
+    this.noCache = false;          // the sheets use :has(): any change can restyle anything
+    for (const r of engine.rules) {
+      if (/:(nth-|first-|last-|only-|empty)|[+~]/.test(r.sel)) this.structural = true;
+      if (/:has\(/.test(r.sel)) this.noCache = true;
+      if (/\[style[\]~|^$*=]/.test(r.sel)) this.styleAttrRules = true;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // What changed
+
+  // An element's style may have changed: 2 when its rules may match
+  // differently (its attributes), 1 when only its inline style did.
+  mark(el, level) {
+    if (!el || el.nodeType !== 1) return;
+    if ((this.marks.get(el) || 0) < level) this.marks.set(el, level);
+    this.dirty = true;
+  }
+
+  // A node's output changed, not its style: its text, a canvas's program,
+  // a click listener.
+  markFlat(node) {
+    if (!node) return;
+    this.flatMarks.add(node);
+    this.dirty = true;
+  }
+
+  // The viewport or the theme changed: everything again.
+  markAll() {
+    this.full = true;
+    this.dirty = true;
+  }
+
+  // Mutation records (main.js observes the document).
+  note(records) {
+    for (const r of records) {
+      if (r.type === "attributes") {
+        const el = r.target;
+        // The style attribute matters to the rules only through [style].
+        this.mark(el, r.attributeName === "style" && !this.styleAttrRules ? 1 : 2);
+        // Sibling combinators: the next siblings may match differently.
+        if (this.structural && el.parentNode) this.mark(el.parentNode, 2);
+        continue;
+      }
+      // childList (linkedom also reports a text node's new data as its removal).
+      for (const n of r.addedNodes || []) {
+        this.mark(n, 2);
+        const parent = n.parentNode;
+        if (parent) { this.markFlat(parent); if (this.structural) this.mark(parent, 2); }
+      }
+      for (const n of r.removedNodes || []) {
+        const parent = n.parentNode || this.parentOf.get(n);
+        if (parent) { this.markFlat(parent); if (this.structural) this.mark(parent, 2); }
+        this.markFlat(n);
+      }
+    }
+    this.dirty = true;
   }
 
   idOf(obj, key) {
@@ -85,17 +159,58 @@ export class Renderer {
   // One frame
 
   render() {
+    // Records not delivered yet (a render from inside the page: focus()).
+    const pending = this.observer?.takeRecords();
+    if (pending?.length) this.note(pending);
     if (!this.dirty) return;
     this.dirty = false;
-    const nodes = new Map(); // id → { kind, props, kids }
+    // The nodes made (or copied) this frame, id → { kind, props, kids }:
+    // what emit() compares with the last frame. Reused subtrees aren't in it.
+    const nodes = new Map();
     this.specs = new Map();
     this.animSpecs = new Map();
-    this.owner.clear();
+    this.frameNo++;
+    this.gone = [];
+    this.dropped = [];
+    const full = this.full || this.noCache;
+    if (full) {
+      this.sc = new WeakMap();
+      this.fc = new WeakMap();
+      this.shared = new WeakMap();
+      this.cascades.clear();
+      this.owner.clear();
+    }
+    // What has to be made again: the marked nodes and every ancestor (an
+    // element whose children changed lays them out again).
+    const flat = (this.flat = new Set());
+    const up = (n) => { for (; n && !flat.has(n); n = n.parentNode) flat.add(n); };
+    for (const el of this.marks.keys()) up(el);
+    for (const n of this.flatMarks) up(n);
+    for (const el of this.volatile) { if (el.isConnected) up(el); else this.volatile.delete(el); }
     const body = this.doc.body;
     const rootCS = this.style(this.doc.documentElement, null);
+    this.cur = { own: [], kids: [], fixed: [] };
     const bodyNode = this.element(body, rootCS, nodes, { blockify: true, textAlign: "left" });
-    const fixed = nodes.get("fixed") || [];
-    nodes.delete("fixed");
+    const fixed = this.cur.fixed;
+    this.cur = null;
+    this.marks.clear();
+    this.flatMarks.clear();
+    this.full = false;
+    // What the changed elements no longer make (or elements gone from the
+    // page): destroyed, unless made again elsewhere this frame (moved).
+    const goneTree = (el, f) => {
+      this.gone.push(...f.own);
+      this.fc.delete(el);
+      for (const k of f.kids) {
+        const kf = this.fc.get(k);
+        if (kf && kf.seen !== this.frameNo) goneTree(k, kf);
+      }
+    };
+    for (const [el, f] of this.dropped) {
+      const now = this.fc.get(el);
+      if (now && now.seen === this.frameNo) continue;
+      goneTree(el, now || f);
+    }
     if (!bodyNode) return;
     // The page keeps its height in the window's scroll view (see above).
     const bn = nodes.get(bodyNode);
@@ -103,20 +218,162 @@ export class Renderer {
     // The window: the page scrolls, fixed elements stay over it.
     nodes.set(-1, { kind: "view", props: { scroll: true, fg: 1, fs: 1, ai: "stretch" }, kids: [bodyNode] });
     nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: bgOf(rootCS) }, kids: [-1, ...fixed] });
-    this.emit(nodes);
+    this.emit(nodes, full);
     // A scrollIntoView that waited for this render (main.js).
     const scroll = this.pendingScroll;
     this.pendingScroll = null;
     if (scroll && scroll.el.isConnected) this.host.scrollIntoView(this.idOf(scroll.el, "el"), scroll.block);
   }
 
-  style(el, parentCS) {
-    const m = this.engine.matching(el);
-    const spec = StyleEngine.cascade(m.normal, el.hasAttribute("style") ? parseInline(el.getAttribute("style")) : null);
-    const cs = computeStyle(spec, parentCS);
+  // An element's computed style: the last frame's while neither it nor its
+  // parent's style changed. `rematch`: an ancestor's attributes changed (a
+  // descendant selector may match differently).
+  style(el, parentCS, rematch = false) {
+    const c = this.sc.get(el);
+    const mk = this.marks.get(el) || 0;
+    if (c && c.parent === parentCS && (c.frame === this.frameNo || (!rematch && !mk))) return c.cs;
+    const m = c && !rematch && mk < 2 ? c.m : this.engine.matching(el);
+    const inline = el.getAttribute("style");
+    const casc = this.cascadeOf(m.normal);
+    let cs;
+    if (inline) cs = this.inlineStyle(inline, casc, m, parentCS);
+    else if (parentCS && !m.before.length && !m.after.length) {
+      // Siblings with the same rules under the same parent: one style.
+      let by = this.shared.get(parentCS);
+      if (!by) this.shared.set(parentCS, (by = new Map()));
+      cs = by.get(casc.spec);
+      if (!cs) { cs = computeStyle(casc.spec, parentCS); by.set(casc.spec, cs); }
+    } else {
+      cs = computeStyle(casc.spec, parentCS);
+    }
+    // The same values as before: the same object, so what's below can
+    // still be reused.
+    if (c && c.cs !== cs && sameStyle(c.cs, cs)) cs = c.cs;
     cs.__rules = m;
+    this.sc.set(el, { parent: parentCS, cs, m, frame: this.frameNo });
     this.cs.set(el, cs);
     return cs;
+  }
+
+  // An element with an inline style: its rules' style (shared with its
+  // siblings) with the inline longhands over it, as computeStyle would put
+  // them; custom properties (var() everywhere below) take the long way.
+  inlineStyle(inline, casc, m, parentCS) {
+    const normal = {}, important = {};
+    StyleEngine.expandInto(parseInline(inline), normal, important);
+    let simple = !!parentCS && !m.before.length && !m.after.length;
+    if (simple) for (const k in normal) if (k.startsWith("--")) { simple = false; break; }
+    if (simple) for (const k in important) if (k.startsWith("--")) { simple = false; break; }
+    if (!simple) {
+      const spec = Object.assign({ ...casc.normal }, normal, casc.important, important);
+      return computeStyle(spec, parentCS);
+    }
+    let by = this.shared.get(parentCS);
+    if (!by) this.shared.set(parentCS, (by = new Map()));
+    let base = by.get(casc.spec);
+    if (!base) { base = computeStyle(casc.spec, parentCS); by.set(casc.spec, base); }
+    const cs = Object.assign(Object.create(null), base);
+    let parts = new Set();
+    const put = (k, v) => {
+      if (parts && PART_OF[k]) parts.add(PART_OF[k]); else parts = null;
+      if (v === "inherit") { if (parentCS[k] !== undefined) cs[k] = parentCS[k]; else delete cs[k]; return; }
+      if (v === "initial" || v === "unset") { delete cs[k]; return; }
+      cs[k] = substitute(v, cs, 0);
+    };
+    // A rule's !important beats an inline declaration that isn't.
+    for (const k in normal) if (!(k in casc.important)) put(k, normal[k]);
+    for (const k in important) put(k, important[k]);
+    derived.set(cs, { base, parts: parts && [...parts] });
+    return cs;
+  }
+
+  // The longhands of a set of matched rules (many elements match the same).
+  cascadeOf(rules) {
+    let key = "";
+    for (const r of rules) key += r.order + ",";
+    let c = this.cascades.get(key);
+    if (!c) {
+      const sorted = StyleEngine.sorted(rules);
+      const normal = {}, important = {};
+      StyleEngine.expandInto(sorted.flatMap((r) => r.decls), normal, important);
+      c = { normal, important, spec: Object.assign({ ...normal }, important) };
+      if (this.cascades.size > 5000) this.cascades.clear();
+      this.cascades.set(key, c);
+    }
+    return c;
+  }
+
+  // ---------------------------------------------------------------------
+  // What the element being made makes (element(), below).
+
+  // A node made by the element being made.
+  put0(nodes, id, node) {
+    nodes.set(id, node);
+    this.cur.own.push(id);
+  }
+
+  own(id, el) {
+    this.owner.set(id, el);
+  }
+
+  spec(id, s) {
+    this.specs.set(id, s);
+  }
+
+  // An element → a node id (or null when not rendered or fixed).
+  //
+  // What it made is kept (`fc`): its parent's style, its blockification and
+  // table spacing, the ids it made itself (its node, text runs,
+  // pseudo-elements, grid rows), the child elements that made nodes, the
+  // fixed ids in it, and a copy of its own node as made (its parent adjusts
+  // the one it gets). While
+  // nothing in it changed (not in `flat`, no ancestor's rules matched
+  // again) and its parent's style is the same object, it is reused whole:
+  // its nodes stay as they are, only its own node is compared again.
+  element(el, parentCS, nodes, ctx) {
+    const fc = this.fc.get(el);
+    const block = !!ctx.blockify;
+    const outer = this.cur;
+    if (fc && fc.parent === parentCS && fc.block === block && fc.ts === ctx.tableSpacing && !ctx.rematch && !this.flat.has(el)) {
+      fc.seen = this.frameNo;
+      const r = fc.root;
+      nodes.set(fc.id, { kind: r.kind, props: { ...r.props }, kids: r.kids.slice() });
+      if (fc.rootSpec) this.specs.set(fc.id, fc.rootSpec);
+      if (fc.rootAnim) this.animSpecs.set(fc.id, fc.rootAnim);
+      outer.kids.push(el);
+      for (const f of fc.fixedIds) outer.fixed.push(f);
+      return fc.fixed ? null : fc.id;
+    }
+    const cur = (this.cur = { own: [], kids: [], fixed: [] });
+    let out;
+    try { out = this.build(el, parentCS, nodes, ctx); } finally { this.cur = outer; }
+    const id = this.idOf(el, "el");
+    const own = cur.own.includes(id) ? nodes.get(id) : null;
+    if (!own) {
+      // Not rendered now: what it made before goes.
+      if (fc) { this.fc.delete(el); this.dropped.push([el, fc]); }
+      return out;
+    }
+    const nf = {
+      parent: parentCS, block, ts: ctx.tableSpacing, id, fixed: out === null, own: cur.own, kids: cur.kids, fixedIds: cur.fixed, seen: this.frameNo,
+      root: { kind: own.kind, props: { ...own.props }, kids: own.kids.slice() },
+      rootSpec: this.specs.get(id), rootAnim: this.animSpecs.get(id),
+    };
+    if (fc) {
+      // Ids it made before and not now; child elements it no longer has.
+      if (fc.own.length) {
+        const now = new Set(cur.own);
+        for (const x of fc.own) if (!now.has(x)) this.gone.push(x);
+      }
+      if (fc.kids.length) {
+        const now = new Set(cur.kids);
+        for (const k of fc.kids) if (!now.has(k)) { const kf = this.fc.get(k); if (kf) this.dropped.push([k, kf]); }
+      }
+    }
+    this.fc.set(el, nf);
+    outer.kids.push(el);
+    for (const f of cur.fixed) outer.fixed.push(f);
+    return out;
   }
 
   // An element → a node id (or null when not rendered).
@@ -127,24 +384,25 @@ export class Renderer {
       !cs["flex-shrink"] && !cs["min-height"] && p.pos !== "absolute";
   }
 
-  element(el, parentCS, nodes, ctx) {
+  build(el, parentCS, nodes, ctx) {
     const tag = el.localName;
     if (SKIP.has(tag)) return null;
-    const cs = this.style(el, parentCS);
+    const rematch = !!ctx.rematch || this.marks.get(el) === 2;
+    const cs = this.style(el, parentCS, !!ctx.rematch);
     let display = cs.display || "inline";
     if (display === "none") return null;
     if (ctx.blockify) display = blockify(display);
     const fontSize = fontSizeOf(cs, parentCS);
     cs.__fs = fontSize;
     const id = this.idOf(el, "el");
-    this.owner.set(id, el);
+    this.own(id, el);
     const props = boxProps(cs, display, fontSize, el);
     // align-self applies to flex and grid items only: in a block it does
     // nothing (the box fills the line). Inline boxes get theirs below.
     if (!ctx.blockify) delete props.as;
     if (isTableDisplay(display) && !tableProps(props, display, cs, fontSize, ctx, el)) return null;
     const transitions = transitionsOf(cs);
-    if (transitions) this.specs.set(id, transitions);
+    if (transitions) this.spec(id, transitions);
     this.noteAnimations(id, cs, fontSize);
     // A block with auto side margins fills its container (up to max-width)
     // and is centered, where a flex item would shrink to its content.
@@ -157,6 +415,8 @@ export class Renderer {
 
     // Replaced elements.
     if (tag === "svg") {
+      // <use href="#id"> draws another element: it can change elsewhere.
+      if (el.querySelector("use")) this.volatile.add(el);
       const icon = iconFor(el, cs, this.doc);
       if (!icon) return null;
       props.icon = icon;
@@ -181,6 +441,7 @@ export class Renderer {
       return this.put(nodes, id, "image", props, [], fixedNode);
     }
     if (tag === "canvas") {
+      this.volatile.add(el); // its program changes without a mutation
       // The bitmap's size in px (300x150 when the attributes are absent),
       // the drawing's coordinate space; the box scales it.
       props.cw = el.width;
@@ -208,6 +469,7 @@ export class Renderer {
       return this.put(nodes, id, "canvas", props, [], fixedNode);
     }
     if (tag === "input" || tag === "textarea" || tag === "select") {
+      this.volatile.add(el); // its value changes without a mutation
       const type = (el.getAttribute("type") || "text").toLowerCase();
       if (tag === "input" && (type === "checkbox" || type === "radio")) {
         // The click goes to the label. With appearance: none the page's CSS
@@ -255,7 +517,7 @@ export class Renderer {
 
     // Children: blocks, and inline content collected into text runs.
     const childCtx = { blockify: display === "flex" || display === "grid" || tableHolds(display), parentText: cs["text-align"],
-      tableSpacing: tableSpacingFor(display, props, ctx) };
+      tableSpacing: tableSpacingFor(display, props, ctx), rematch };
     const kids = [];
     let orders = null; // CSS order of the element children that set one
     const before = this.pseudo(el, cs, "before", nodes);
@@ -270,14 +532,15 @@ export class Renderer {
       flow.push({ text: trimmed });
     };
     for (const child of el.childNodes) {
+      this.parentOf.set(child, el);
       if (child.nodeType === 3) {
         const t = child.data;
         if (t) runs.push(runFor(t, cs, fontSize));
         continue;
       }
       if (child.nodeType !== 1) continue;
-      if (!childCtx.blockify && this.isInline(child, cs)) {
-        this.inlineRuns(child, cs, fontSize, runs);
+      if (!childCtx.blockify && this.isInline(child, cs, rematch)) {
+        this.inlineRuns(child, cs, fontSize, runs, rematch);
         continue;
       }
       flushRuns();
@@ -300,9 +563,9 @@ export class Renderer {
     for (const item of flow) {
       if (item.text) {
         const tid = this.idOf(el, "t" + kids.length);
-        this.owner.set(tid, el);
+        this.own(tid, el);
         const tp = { ...textProps(cs, fontSize), runs: item.text };
-        if (transitions) this.specs.set(tid, transitions);
+        if (transitions) this.spec(tid, transitions);
         tp.fs = childCtx.blockify && !props.scroll ? 1 : 0;
         this.put(nodes, tid, "text", tp, []);
         kids.push(tid);
@@ -364,41 +627,42 @@ export class Renderer {
   }
 
   put(nodes, id, kind, props, kids, fixedNode = false) {
-    nodes.set(id, { kind, props, kids });
+    this.put0(nodes, id, { kind, props, kids });
     if (fixedNode) {
-      let list = nodes.get("fixed");
-      if (!list) nodes.set("fixed", (list = []));
-      list.push(id);
+      this.cur.fixed.push(id);
       return null; // not in its parent's flow
     }
     return id;
   }
 
-  isInline(el, parentCS) {
+  isInline(el, parentCS, rematch = false) {
     if (SKIP.has(el.localName)) return true;
     if (el.localName === "svg" || el.localName === "input" || el.localName === "textarea" || el.localName === "select" ||
         el.localName === "button" || el.localName === "img" || el.localName === "canvas") return false;
-    const cs = this.style(el, parentCS);
+    const cs = this.style(el, parentCS, rematch);
     const d = cs.display || "inline";
     if (d !== "inline") return false;
     // position: absolute/fixed blockifies the box (CSS): an empty
     // <span class="thumb"> with a background is a box, not text.
     if (cs.position === "absolute" || cs.position === "fixed") return false;
     // Inline only if everything inside is inline too.
-    for (const c of el.children) if (!this.isInline(c, cs)) return false;
+    const deeper = rematch || this.marks.get(el) === 2;
+    for (const c of el.children) if (!this.isInline(c, cs, deeper)) return false;
     return true;
   }
 
-  inlineRuns(el, parentCS, parentFs, runs) {
+  inlineRuns(el, parentCS, parentFs, runs, rematch = false) {
     if (SKIP.has(el.localName)) return;
-    const cs = this.cs.get(el) || this.style(el, parentCS);
+    const cs = this.style(el, parentCS, rematch);
     if ((cs.display || "inline") === "none") return;
     const fs = fontSizeOf(cs, parentCS);
     cs.__fs = fs;
     if (el.localName === "br") { runs.push({ t: "\n", ...runStyle(cs, fs) }); return; }
+    const deeper = rematch || this.marks.get(el) === 2;
     for (const child of el.childNodes) {
+      this.parentOf.set(child, el);
       if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el));
-      else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs);
+      else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper);
     }
   }
 
@@ -413,9 +677,9 @@ export class Renderer {
     const props = boxProps(pcs, display, fs, null);
     const id = this.idOf(el, which);
     const transitions = transitionsOf(pcs);
-    if (transitions) this.specs.set(id, transitions);
+    if (transitions) this.spec(id, transitions);
     this.noteAnimations(id, pcs, fs);
-    this.owner.set(id, el);
+    this.own(id, el);
     const text = /^["'](.*)["']$/.exec(content)?.[1] ?? "";
     if (text) {
       Object.assign(props, textProps(pcs, fs));
@@ -428,9 +692,11 @@ export class Renderer {
   // ---------------------------------------------------------------------
   // Diff against the last frame
 
-  emit(nodes) {
-    const ops = [];
-    const seen = new Set();
+  // `nodes`: what was made this frame; `full`: everything was (else the
+  // ids in this.gone are what went away).
+  emit(nodes, full) {
+    const ops = []; // each op's JSON: the props are encoded once, for the diff and the ops
+
     const now = Date.now();
     // Nodes made again (a new kind): their parents must attach them again.
     const remade = new Set();
@@ -439,7 +705,6 @@ export class Renderer {
       if (old && old.kind !== n.kind) remade.add(id);
     }
     for (const [id, n] of nodes) {
-      seen.add(id);
       const old = this.prev.get(id);
       if (!old || old.kind !== n.kind) this.tx.forget(id);
       // The props to show now: the page's, or on the way to them (transitions).
@@ -447,22 +712,23 @@ export class Renderer {
       const p = JSON.stringify(shown);
       const k = JSON.stringify(n.kids);
       if (!old || old.kind !== n.kind) {
-        if (old) ops.push(["d", id]);
-        ops.push(["c", id, n.kind]);
-        ops.push(["p", id, shown]);
-        ops.push(["k", id, n.kids]);
+        if (old) ops.push(`["d",${id}]`);
+        ops.push(`["c",${id},${JSON.stringify(n.kind)}]`, `["p",${id},${p}]`, `["k",${id},${k}]`);
       } else {
-        if (old.p !== p) ops.push(["p", id, shown]);
-        if (old.k !== k || n.kids.some((c) => remade.has(c))) ops.push(["k", id, n.kids]);
+        if (old.p !== p) ops.push(`["p",${id},${p}]`);
+        if (old.k !== k || n.kids.some((c) => remade.has(c))) ops.push(`["k",${id},${k}]`);
       }
       this.prev.set(id, { kind: n.kind, p, k });
       if (n.props.val !== undefined) this.native.set(id, n.props.val);
     }
-    for (const id of [...this.prev.keys()]) {
-      if (!seen.has(id)) { ops.push(["d", id]); this.prev.delete(id); this.native.delete(id); this.tx.forget(id); this.anim.forget(id); }
-    }
-    if (!this.rootSent) { ops.push(["r", 0]); this.rootSent = true; }
-    if (ops.length) this.host.ops(JSON.stringify(ops));
+    const drop = (id) => {
+      if (!this.prev.has(id) || nodes.has(id)) return;
+      ops.push(`["d",${id}]`); this.prev.delete(id); this.native.delete(id); this.tx.forget(id); this.anim.forget(id); this.owner.delete(id);
+    };
+    if (full) { for (const id of [...this.prev.keys()]) drop(id); }
+    else for (const id of this.gone) drop(id);
+    if (!this.rootSent) { ops.push(`["r",0]`); this.rootSent = true; }
+    if (ops.length) this.host.ops(`[${ops.join(",")}]`);
     this.schedule();
   }
 
@@ -472,7 +738,8 @@ export class Renderer {
     const list = animationsOf(cs, this.engine.keyframes);
     if (!list) return;
     const frames = list.map((a) => this.engine.keyframes[a.name].map((f) => ({ offset: f.offset, props: animProps(f.decls, cs, fs) })));
-    this.animSpecs.set(id, { key: cs.animation || list.map((a) => `${a.name} ${a.dur}`).join(","), list, frames });
+    const spec = { key: cs.animation || list.map((a) => `${a.name} ${a.dur}`).join(","), list, frames };
+    this.animSpecs.set(id, spec);
   }
 
   // While transitions or animations run: a frame every ~16 ms that sends
@@ -500,6 +767,18 @@ export class Renderer {
     if (ops.length) this.host.ops(JSON.stringify(ops));
     this.schedule();
   }
+}
+
+// Two computed styles with the same values (the bookkeeping keys aside).
+function sameStyle(a, b) {
+  let n = 0;
+  for (const k in a) {
+    if (k === "__rules" || k === "__fs") continue;
+    if (a[k] !== b[k]) return false;
+    n++;
+  }
+  for (const k in b) if (k !== "__rules" && k !== "__fs") n--;
+  return n === 0;
 }
 
 function listens(el) {
@@ -600,8 +879,35 @@ const num = (v, fs) => {
   return l === null ? undefined : l;
 };
 
-// Layout and drawing properties of a box.
+// Per computed style (shared by siblings with the same rules, kept while
+// it doesn't change): what its props come to, by the other arguments.
+const memo = new WeakMap();
+function memoized(cs, key, make) {
+  let m = memo.get(cs);
+  if (!m) memo.set(cs, (m = new Map()));
+  let v = m.get(key);
+  if (v === undefined) m.set(key, (v = make()));
+  return v;
+}
+
+// Layout and drawing properties of a box (a copy: the caller adds to it).
 function boxProps(cs, display, fs, el) {
+  const button = el?.localName === "button";
+  const key = `b${display}|${fs}|${button}`;
+  const d = derived.get(cs);
+  if (d?.parts) {
+    const p = { ...memoized(d.base, key, () => makeBoxProps(d.base, display, fs, button)) };
+    for (const part of d.parts) {
+      const [keys, make] = PARTS[part];
+      for (const k of keys) delete p[k];
+      make(cs, fs, p);
+    }
+    return p;
+  }
+  return { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button)) };
+}
+
+function makeBoxProps(cs, display, fs, button) {
   const p = {};
   if (display === "inline-flex") display = "flex";
   if (display === "inline-grid") display = "grid";
@@ -625,7 +931,7 @@ function boxProps(cs, display, fs, el) {
   if (cs["justify-content"] && cs["justify-content"] !== "normal" && !p.jc) p.jc = cs["justify-content"];
   // A browser centers a button's content, until the page lays the button
   // out itself (display: flex or grid: then flex-start, like any box).
-  if (el?.localName === "button" && display !== "flex" && display !== "grid") {
+  if (button && display !== "flex" && display !== "grid") {
     p.ai = "center";
     if (!p.jc) p.jc = "center";
   }
@@ -654,40 +960,17 @@ function boxProps(cs, display, fs, el) {
   const rg = num(cs["row-gap"], fs), cg = num(cs["column-gap"], fs);
   if (typeof rg === "number" && rg) p.rg = rg;
   if (typeof cg === "number" && cg) p.cg = cg;
-  if (cs.position === "absolute" || cs.position === "fixed") {
-    p.pos = "absolute";
-    const ins = sides.map((s) => { const l = num(cs[s], fs); return l === undefined || l === "auto" ? null : typeof l === "object" ? `${l.pct}%` : l; });
-    p.ins = ins;
-  } else if (cs.position === "sticky") {
-    // In the flow, then kept inside its scroll container's view (tree.zig).
-    const ins = sides.map((s) => { const l = num(cs[s], fs); return typeof l === "number" ? l : null; });
-    if (ins.some((x) => x !== null)) p.sticky = ins;
-  } else if (cs.position === "relative") {
-    const ins = sides.map((s) => { const l = num(cs[s], fs); return typeof l === "number" ? l : null; });
-    if (ins.some((x) => x !== null)) p.rel = ins;
-  }
+  positionPart(cs, fs, p);
   const ov = cs["overflow-y"] || cs.overflow;
   if (ov === "auto" || ov === "scroll") p.scroll = true;
   const ovx = cs["overflow-x"];
   if (ovx === "auto" || ovx === "scroll") p.scrollx = true;
   if (cs["overflow-x"] === "hidden" || cs["overflow-y"] === "hidden" || cs.overflow === "hidden") p.clip = true;
   if (cs["aspect-ratio"]) p.ar = parseFloat(cs["aspect-ratio"]);
-  // Transforms: translate moves the box; scale and rotate are drawn around its center.
-  const tr = transformOf(cs, fs);
-  if (tr.tx) p.tx = tr.tx;
-  if (tr.ty) p.ty = tr.ty;
-  if (tr.sc !== 1) p.sc = tr.sc;
-  if (tr.rot) p.rot = tr.rot;
+  transformPart(cs, fs, p);
   // Drawing
   const cur = color(cs.color);
-  const bg = background(cs.background, cur);
-  // backdrop-filter: blur() isn't drawn: a see-through bar over the page
-  // (a 92% background) would show the text behind it sharp. Opaque
-  // instead, which is what the blur looks like.
-  if (bg?.color && bg.color[3] < 1 && /blur\(/.test(cs["backdrop-filter"] || cs["-webkit-backdrop-filter"] || "")) {
-    bg.color = [...bg.color.slice(0, 3), 1];
-  }
-  if (bg) p.bg = bg;
+  backgroundPart(cs, p);
   const r = ["top-left", "top-right", "bottom-right", "bottom-left"].map((c) => {
     const v = cs[`border-${c}-radius`];
     if (!v) return 0;
@@ -704,7 +987,70 @@ function boxProps(cs, display, fs, el) {
   return p;
 }
 
+function positionPart(cs, fs, p) {
+  const sides = ["top", "right", "bottom", "left"];
+  if (cs.position === "absolute" || cs.position === "fixed") {
+    p.pos = "absolute";
+    const ins = sides.map((s) => { const l = num(cs[s], fs); return l === undefined || l === "auto" ? null : typeof l === "object" ? `${l.pct}%` : l; });
+    p.ins = ins;
+  } else if (cs.position === "sticky") {
+    // In the flow, then kept inside its scroll container's view (tree.zig).
+    const ins = sides.map((s) => { const l = num(cs[s], fs); return typeof l === "number" ? l : null; });
+    if (ins.some((x) => x !== null)) p.sticky = ins;
+  } else if (cs.position === "relative") {
+    const ins = sides.map((s) => { const l = num(cs[s], fs); return typeof l === "number" ? l : null; });
+    if (ins.some((x) => x !== null)) p.rel = ins;
+  }
+}
+
+// Transforms: translate moves the box; scale and rotate are drawn around its center.
+function transformPart(cs, fs, p) {
+  const tr = transformOf(cs, fs);
+  if (tr.tx) p.tx = tr.tx;
+  if (tr.ty) p.ty = tr.ty;
+  if (tr.sc !== 1) p.sc = tr.sc;
+  if (tr.rot) p.rot = tr.rot;
+}
+
+function backgroundPart(cs, p) {
+  const bg = background(cs.background, color(cs.color));
+  // backdrop-filter: blur() isn't drawn: a see-through bar over the page
+  // (a 92% background) would show the text behind it sharp. Opaque
+  // instead, which is what the blur looks like.
+  if (bg?.color && bg.color[3] < 1 && /blur\(/.test(cs["backdrop-filter"] || cs["-webkit-backdrop-filter"] || "")) {
+    bg.color = [...bg.color.slice(0, 3), 1];
+  }
+  if (bg) p.bg = bg;
+}
+
+// An inline style that sets only these (an animation writing transform,
+// opacity, left/top…): the box props are its rules' ones with that part
+// done again. Each: the props it makes, and how.
+const set1 = (k, v, p) => { if (v !== undefined && v !== null) p[k] = typeof v === "object" ? `${v.pct}%` : v; };
+const PARTS = {
+  tr: [["tx", "ty", "sc", "rot"], transformPart],
+  pos: [["pos", "ins", "sticky", "rel"], positionPart],
+  op: [["op"], (cs, fs, p) => { if (cs.opacity !== undefined && cs.opacity !== "1") p.op = parseFloat(cs.opacity); }],
+  w: [["w"], (cs, fs, p) => set1("w", num(cs.width, fs), p)],
+  h: [["h"], (cs, fs, p) => set1("h", num(cs.height, fs), p)],
+  bg: [["bg"], (cs, fs, p) => backgroundPart(cs, p)],
+};
+const PART_OF = {
+  transform: "tr", translate: "tr", scale: "tr", rotate: "tr",
+  position: "pos", top: "pos", right: "pos", bottom: "pos", left: "pos",
+  opacity: "op", width: "w", height: "h", background: "bg",
+};
+
+// Computed styles made from a shared one plus an inline style (style()):
+// cs → { base, parts } (null parts: something else changed).
+export const derived = new WeakMap();
+
+// Text properties (shared: callers copy them).
 function textProps(cs, fs) {
+  return memoized(cs, `t${fs}`, () => makeTextProps(cs, fs));
+}
+
+function makeTextProps(cs, fs) {
   const p = {};
   p.col = color(cs.color) || [0, 0, 0, 1];
   p.fz = fs;
@@ -728,7 +1074,12 @@ function weight(w) {
   return parseInt(w, 10) || 400;
 }
 
+// A text run's style (shared: callers copy it).
 function runStyle(cs, fs) {
+  return memoized(cs, `r${fs}`, () => makeRunStyle(cs, fs));
+}
+
+function makeRunStyle(cs, fs) {
   const r = { c: color(cs.color) || [0, 0, 0, 1], sz: fs, w: weight(cs["font-weight"]) };
   if (cs["font-style"] === "italic") r.i = true;
   if (/mono/.test(cs["font-family"] || "")) r.mono = true;
@@ -792,6 +1143,7 @@ function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
         const l = length(mm ? mm[1] : what, fs, false);
         return typeof l === "number" ? l : 120;
       })();
+      renderer.volatile.add(el); // its column count follows its laid-out width
       const width = renderer.host.frame(renderer.idOf(el, "el"))?.[2] || 0;
       const gap = props.cg || 0;
       const n = width ? Math.max(1, Math.floor((width + gap) / (minW + gap))) : Math.min(kids.length, 3);
@@ -820,10 +1172,10 @@ function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
     // A partial last row keeps its cells the same width.
     for (let j = rowKids.length; j < cols.length && /fr$|minmax/.test(cols[j]); j++) {
       const filler = renderer.idOf(el, `fill${i}-${j}`);
-      nodes.set(filler, { kind: "view", props: { fg: 1, fb: 0 }, kids: [] });
+      renderer.put0(nodes, filler, { kind: "view", props: { fg: 1, fb: 0 }, kids: [] });
       rowKids.push(filler);
     }
-    nodes.set(rowId, { kind: "view", props: { fd: "row", ai: props.ai === "center" ? "center" : "stretch", cg: props.cg, ...(props.cg ? {} : {}) }, kids: rowKids });
+    renderer.put0(nodes, rowId, { kind: "view", props: { fd: "row", ai: props.ai === "center" ? "center" : "stretch", cg: props.cg, ...(props.cg ? {} : {}) }, kids: rowKids });
     rows.push(rowId);
   }
   props.fd = "column";
