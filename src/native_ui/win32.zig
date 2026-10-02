@@ -116,6 +116,9 @@ fn uaBorder(n: *Node) bool {
     return true;
 }
 
+/// All of a window's decoded pictures together (see imageOf).
+const max_image_cache_bytes: u64 = 256 * 1024 * 1024;
+
 /// An <img>'s picture: decoded once per src (WIC, premultiplied BGRA), and
 /// the Direct2D bitmap made from it for the current render target.
 const Image = struct {
@@ -126,6 +129,13 @@ const Image = struct {
     bitmap: ?*c.ID2D1Bitmap = null,
     w: f32 = 0,
     h: f32 = 0,
+
+    /// What its decoded pixels take (BGRA; the GPU bitmap made from them
+    /// is the same again, released with the render target).
+    fn bytes(img: *const Image) u64 {
+        if (img.wic == null) return 0;
+        return @as(u64, @intFromFloat(img.w)) * @as(u64, @intFromFloat(img.h)) * 4;
+    }
 
     fn deinit(img: *Image) void {
         releaseCom(img.bitmap);
@@ -1391,13 +1401,22 @@ const CanvasGrad = struct {
     stops: std.ArrayList(c.D2D1_GRADIENT_STOP) = .empty,
 };
 
+/// The largest canvas bitmap: 4096 x 4096 px (64 MB as BGRA).
+const max_canvas_pixels: f32 = 4096 * 4096;
+
 fn paintCanvas(p: *Painter, n: *Node) void {
     const cmds = n.canvas orelse return;
     const s = p.s;
     const f = n.frame;
     if (!(f.w > 0 and f.h > 0) or !std.math.isFinite(f.w * f.h * s.scale)) return;
-    const pw: u32 = @intFromFloat(@min(16384, @ceil(f.w * s.scale)));
-    const ph: u32 = @intFromFloat(@min(16384, @ceil(f.h * s.scale)));
+    // At most max_canvas_pixels (as on GTK and Apple): a bigger canvas gets
+    // a bitmap of fewer pixels per point, scaled up on the page (the target
+    // keeps the box's size in DIPs).
+    var sf: f32 = s.scale;
+    const area = f.w * sf * f.h * sf;
+    if (area > max_canvas_pixels) sf *= @sqrt(max_canvas_pixels / area);
+    const pw: u32 = @intFromFloat(@max(1, @min(16384, @ceil(f.w * sf))));
+    const ph: u32 = @intFromFloat(@max(1, @min(16384, @ceil(f.h * sf))));
     if (pw == 0 or ph == 0) return;
     var owned: ?*c.ID2D1BitmapRenderTarget = null; // not cached: released after this frame
     defer releaseCom(owned);
@@ -2126,6 +2145,17 @@ fn imageOf(s: *Surface, n: *Node) ?*Image {
         break :blk .{ .src_hash = 0 };
     };
     img.src_hash = hash;
+    // All of the window's pictures together at most max_image_cache_bytes:
+    // past it the others go before this one is kept (they decode again
+    // when painted).
+    var total = img.bytes();
+    var it = s.images.valueIterator();
+    while (it.next()) |other| total += other.bytes();
+    if (total > max_image_cache_bytes) {
+        var rest = s.images.valueIterator();
+        while (rest.next()) |other| other.deinit();
+        s.images.clearRetainingCapacity();
+    }
     const gop = s.images.getOrPut(n.id) catch {
         img.deinit();
         return null;
