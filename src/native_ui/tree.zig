@@ -683,6 +683,12 @@ pub const Tree = struct {
         n.props.runs = @as(*const [1]Run, @ptrCast(&o.run));
         n.measured_text_size = null;
         if (t.on_text) |cb| cb(t.measure_ctx, n);
+        // Its longest word changed with it (a min width in a row): else the
+        // item keeps the old text's minimum ("1" as wide as "a longer chip").
+        const old_min = yg.YGNodeStyleGetMinWidth(n.yn).value;
+        t.wordMinWidth(n);
+        const new_min = yg.YGNodeStyleGetMinWidth(n.yn).value;
+        const min_changed = !(old_min == new_min or (std.math.isNan(old_min) and std.math.isNan(new_min)));
         var same_layout = false;
         if (t.reuse_text_layout and !t.dirty and n.parent != null and previous_epoch != 0) {
             if (previous_size) |previous| {
@@ -699,7 +705,7 @@ pub const Tree = struct {
         // Yoga's measurement cache must still be invalidated: a future
         // resize may wrap these different words at different positions.
         yg.YGNodeMarkDirty(n.yn);
-        if (!same_layout) t.dirty = true;
+        if (!same_layout or min_changed) t.dirty = true;
         t.paint_dirty = true;
         return true;
     }
@@ -1474,6 +1480,28 @@ test "shared leaf styles own strings and isolate text and general updates" {
     try std.testing.expectEqual(@as(i64, 8), t.get(12).?.props.w.?.integer);
     try std.testing.expect(!yg.YGNodeHasMeasureFunc(t.get(12).?.yn));
     try std.testing.expect(!try t.defineLeafStyle(2, "{}"));
+}
+
+test "a text changed in place gets its new longest word as min width in a row" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const Context = struct {
+        // 10 px a character, unwrapped.
+        fn measure(_: *anyopaque, n: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ @floatFromInt(10 * n.props.runs.?[0].t.len), 10 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, Context.measure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",0,"view"],["p",0,{"fd":"row"}],["c",1,"text"],["p",1,{"runs":[{"t":"longword"}]}],["k",0,[1]],["r",0]]
+    );
+    const n = t.get(1).?;
+    try std.testing.expectEqual(@as(f32, 80), yg.YGNodeStyleGetMinWidth(n.yn).value);
+    t.layout();
+    try std.testing.expect(try t.updateText(1, "1"));
+    try std.testing.expectEqual(@as(f32, 10), yg.YGNodeStyleGetMinWidth(n.yn).value);
+    try std.testing.expect(t.dirty);
 }
 
 test "equal unwrapped text metrics reuse frames but invalidate future wrapping" {

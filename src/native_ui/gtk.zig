@@ -84,6 +84,12 @@ extern fn gtk_event_controller_get_current_event_state(c: *anyopaque) c_uint;
 extern fn gtk_event_controller_scroll_new(flags: c_uint) *anyopaque;
 extern fn gtk_event_controller_motion_new() *anyopaque;
 extern fn gtk_event_controller_key_new() *anyopaque;
+extern fn gtk_scale_new_with_range(orientation: c_int, min: f64, max: f64, step: f64) *Widget;
+extern fn gtk_range_set_value(r: *Widget, v: f64) void;
+extern fn gtk_range_get_value(r: *Widget) f64;
+extern fn gtk_range_set_increments(r: *Widget, step: f64, page: f64) void;
+extern fn gtk_event_controller_legacy_new() *anyopaque;
+extern fn gdk_event_get_event_type(e: *anyopaque) c_int;
 extern fn gtk_event_controller_set_propagation_phase(c: *anyopaque, phase: c_int) void;
 extern fn gtk_css_provider_new() *GtkCssProvider;
 extern fn gtk_css_provider_load_from_string(p: *GtkCssProvider, s: [*:0]const u8) void;
@@ -438,7 +444,9 @@ fn syncFields(s: *Surface) void {
             const z = s.gpa.dupeZ(u8, v) catch continue;
             defer s.gpa.free(z);
             switch (n.kind) {
-                .input => gtk_editable_set_text(w, z.ptr),
+                .input => if (n.props.range != null) {
+                    gtk_range_set_value(w, tree_mod.Range.of(n).parse(v));
+                } else gtk_editable_set_text(w, z.ptr),
                 .textarea => gtk_text_buffer_set_text(gtk_text_view_get_buffer(w), z.ptr, @intCast(z.len)),
                 .select => if (n.props.options) |opts| for (opts, 0..) |o, i| {
                     if (std.mem.eql(u8, o[0], v)) gtk_drop_down_set_selected(w, @intCast(i));
@@ -449,7 +457,7 @@ fn syncFields(s: *Surface) void {
         gtk_widget_set_sensitive(w, @intFromBool(!n.props.dis));
         // The page changes placeholders too ("Select text first…" → "Tell
         // GhostPen what to do…"); a text view's is drawn by paintPlaceholder.
-        if (n.kind == .input) {
+        if (n.kind == .input and n.props.range == null) {
             const ph = s.gpa.dupeZ(u8, n.props.ph orelse "") catch continue;
             defer s.gpa.free(ph);
             gtk_entry_set_placeholder_text(w, ph.ptr);
@@ -470,7 +478,22 @@ fn syncFields(s: *Surface) void {
 
 fn makeField(s: *Surface, n: *Node) !*Widget {
     const w: *Widget = switch (n.kind) {
-        .input => blk: {
+        .input => if (n.props.range != null) blk: {
+            // <input type=range>: a GtkScale on the page's min/max/step;
+            // values snap to the step (Range, shared with the other
+            // backends) and go out as the page's text ("0.25").
+            const r = tree_mod.Range.of(n);
+            const sc = gtk_scale_new_with_range(0, r.min, r.max, r.step);
+            gtk_range_set_increments(sc, r.step, r.step * 10);
+            _ = g_signal_connect_data(@ptrCast(sc), "value-changed", @ptrCast(&onSlid), s, null, 0);
+            // "change" when the drag or key press ends, as in a browser;
+            // the wheel doesn't move a slider (the page scrolls past it).
+            const legacy = gtk_event_controller_legacy_new();
+            gtk_event_controller_set_propagation_phase(legacy, 1); // capture
+            _ = g_signal_connect_data(legacy, "event", @ptrCast(&onSliderEvent), s, null, 0);
+            gtk_widget_add_controller(sc, legacy);
+            break :blk sc;
+        } else blk: {
             const e = gtk_entry_new();
             gtk_entry_set_has_frame(e, 0);
             gtk_editable_set_width_chars(e, 1);
@@ -532,6 +555,14 @@ fn updateCss(s: *Surface) void {
     var it = s.fields.iterator();
     while (it.next()) |e| {
         const n = s.engine.tree.get(e.key_ptr.*) orelse continue;
+        if (n.props.range != null) {
+            // A slider: the page's accent-color on the filled part and knob.
+            const ac = n.props.acc orelse tree_mod.Color{ 59, 108, 255, 1 };
+            s.css_text.print(a, ".nui-f{d} highlight {{ background: rgba({d:.0},{d:.0},{d:.0},{d:.2}); border-color: transparent; }} .nui-f{d} slider {{ background: rgba({d:.0},{d:.0},{d:.0},1); border-color: transparent; }}\n", .{
+                n.id, ac[0], ac[1], ac[2], ac[3], n.id, ac[0], ac[1], ac[2],
+            }) catch return;
+            continue;
+        }
         const c = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
         // The page's text color and size, on a dropdown's label and arrow too.
         s.css_text.print(a, ".nui-f{d}, .nui-f{d} text, .nui-f{d} label, .nui-f{d} arrow {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); font-size: {d:.1}px; caret-color: rgba({d:.0},{d:.0},{d:.0},1); }}\n", .{
@@ -580,6 +611,44 @@ fn onBufferChanged(buffer: *anyopaque, data: ?*anyopaque) callconv(.c) void {
     const text = gtk_text_buffer_get_text(buffer, &start, &end, 0);
     defer g_free(text);
     sendValue(s, n, "input", std.mem.span(text));
+}
+
+/// The slider moved: "input" with the snapped value, once per step.
+fn onSlid(sc: *Widget, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    if (s.updating) return;
+    const n = nodeOfWidget(s, sc) orelse return;
+    const r = tree_mod.Range.of(n);
+    const v = r.snap(gtk_range_get_value(sc));
+    // GtkScale moves continuously; keep it on the step the page sees.
+    if (v != gtk_range_get_value(sc)) {
+        s.updating = true;
+        gtk_range_set_value(sc, v);
+        s.updating = false;
+    }
+    const steps: usize = @intFromFloat(@round((v - r.min) / r.step));
+    const last: usize = @intFromPtr(g_object_get_data(@ptrCast(sc), "oriel-step"));
+    if (last == steps + 1) return; // same step as the last "input"
+    g_object_set_data(@ptrCast(sc), "oriel-step", @ptrFromInt(steps + 1));
+    var buf: [64]u8 = undefined;
+    sendValue(s, n, "input", r.text(&buf, v));
+}
+
+/// A drag or key press on a slider ended: "change". A wheel turn is
+/// swallowed (it would move the slider under a page being scrolled).
+fn onSliderEvent(controller: *anyopaque, event: *anyopaque, data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaceOf(data);
+    const kind = gdk_event_get_event_type(event);
+    const scroll = 15; // GDK_SCROLL
+    if (kind == scroll) return 1;
+    // GDK_BUTTON_RELEASE, GDK_KEY_RELEASE, GDK_TOUCH_END
+    if (kind != 3 and kind != 5 and kind != 19) return 0;
+    const sc = gtkWidgetOfController(controller) orelse return 0;
+    const n = nodeOfWidget(s, sc) orelse return 0;
+    const r = tree_mod.Range.of(n);
+    var buf: [64]u8 = undefined;
+    sendValue(s, n, "change", r.text(&buf, gtk_range_get_value(sc)));
+    return 0;
 }
 
 fn onSelected(d: *Widget, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
