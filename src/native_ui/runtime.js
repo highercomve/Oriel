@@ -13757,7 +13757,7 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
     }
     // An element → a node id (or null when not rendered).
     keepsContentHeight(el, n2) {
-      if (!n2 || n2.kind !== "view") return false;
+      if (!n2 || n2.kind !== "view" && n2.kind !== "text") return false;
       const p = n2.props, cs = this.cs.get(el) || {};
       return p.fs === void 0 && p.h === void 0 && p.fb === void 0 && p.ar === void 0 && !p.scroll && !p.clip && !cs["flex-shrink"] && !cs["min-height"] && p.pos !== "absolute";
     }
