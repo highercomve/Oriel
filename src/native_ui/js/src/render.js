@@ -248,7 +248,7 @@ export class Renderer {
     const c = this.sc.get(el);
     const mk = this.marks.get(el) || 0;
     if (c && c.parent === parentCS && (c.frame === this.frameNo || (!rematch && !mk))) return c.cs;
-    const m = c && !rematch && mk < 2 ? c.m : this.engine.matching(el);
+    const m = c && !rematch && mk < 2 ? c.m : this.matchOf(el);
     const inline = el.getAttribute("style");
     const casc = this.cascadeOf(m.normal);
     let cs;
@@ -301,6 +301,47 @@ export class Renderer {
     for (const k in important) put(k, important[k]);
     derived.set(cs, { base, parts: parts && [...parts] });
     return cs;
+  }
+
+  // Matched rules, shared within a frame by elements that selectors can't
+  // tell apart: the same tag and class, no other attributes, under parents
+  // that share too (or the same parent). A browser's style sharing; off
+  // when the sheets match by position (:nth-child, +, ~…).
+  matchOf(el) {
+    const k = this.structural ? 0 : this.shareKey(el);
+    if (k <= 0) return this.engine.matching(el);
+    let m = this.matchShare.get(k);
+    if (!m) this.matchShare.set(k, (m = this.engine.matching(el)));
+    return m;
+  }
+
+  // An element's sharing key this frame: > 0 when shareable, else minus
+  // its id (still a key for its children).
+  shareKey(el) {
+    if (this.keyFrame !== this.frameNo) {
+      this.keyFrame = this.frameNo;
+      this.keys = new WeakMap();
+      this.keyIds = new Map();
+      this.matchShare = new Map();
+    }
+    let k = this.keys.get(el);
+    if (k !== undefined) return k;
+    const parent = el.parentNode;
+    let ok = !!parent && parent.nodeType === 1;
+    let cls = "";
+    if (ok) {
+      for (const a of el.attributes) {
+        if (a.name === "class") cls = a.value;
+        else if (a.name !== "style" || this.styleAttrRules) { ok = false; break; }
+      }
+    }
+    if (ok) {
+      const name = `${this.shareKey(parent)}|${el.localName}|${cls}`;
+      k = this.keyIds.get(name);
+      if (k === undefined) this.keyIds.set(name, (k = this.keyIds.size + 1));
+    } else k = -this.idOf(el, "el");
+    this.keys.set(el, k);
+    return k;
   }
 
   // The longhands of a set of matched rules (many elements match the same).
@@ -584,7 +625,7 @@ export class Renderer {
     // label's text): a row that wraps, as an inline formatting context lays
     // it out, not a column (the text went under the box).
     const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) &&
-      flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs).display || ""));
+      flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""));
     if (inlineLine) { props.fd = "row"; props.fw = "wrap"; props.ai = "center"; }
 
     for (const item of flow) {
@@ -734,8 +775,17 @@ export class Renderer {
     for (const [id, n] of nodes) {
       const old = this.prev.get(id);
       if (!old || old.kind !== n.kind) this.tx.forget(id);
-      // The props to show now: the page's, or on the way to them (transitions).
-      const shown = this.anim.apply(id, this.tx.apply(id, n.props, this.specs.get(id) || null, now), this.animSpecs.get(id) || null, now);
+      // The props to show now: the page's, or on the way to them
+      // (transitions, animations). Only nodes that have or had one keep
+      // their props in the transitions' bookkeeping.
+      const spec = this.specs.get(id) || null, animSpec = this.animSpecs.get(id) || null;
+      let shown = n.props;
+      if (spec || animSpec || this.tx.anims.has(id) || this.anim.state.has(id)) {
+        // A transition that appears with the change runs from the props
+        // last shown (not kept while the node had none).
+        if (spec && old && old.kind === n.kind && !this.tx.targets.has(id)) this.tx.targets.set(id, JSON.parse(old.p));
+        shown = this.anim.apply(id, this.tx.apply(id, n.props, spec, now), animSpec, now);
+      } else if (this.tx.targets.has(id)) this.tx.forget(id);
       const p = JSON.stringify(shown);
       const k = JSON.stringify(n.kids);
       if (!old || old.kind !== n.kind) {
