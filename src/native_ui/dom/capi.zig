@@ -6,6 +6,7 @@ const std = @import("std");
 const st = @import("store.zig");
 const html = @import("html.zig");
 const sel = @import("selector.zig");
+const ser = @import("serialize.zig");
 
 const Store = st.Store;
 const Index = st.Index;
@@ -29,6 +30,8 @@ pub const Host = extern struct {
     /// A string value as UTF-8 (free with free_utf8), or null.
     to_utf8: *const fn (ctx: *anyopaque, v: *const JsVal, len: *usize) callconv(.c) ?[*]const u8,
     free_utf8: *const fn (ctx: *anyopaque, p: [*]const u8) callconv(.c) void,
+    atom_latin1: *const fn (ctx: *anyopaque, atom: u32, len: *usize) callconv(.c) ?[*]const u8,
+    atom_utf8: *const fn (ctx: *anyopaque, atom: u32, len: *usize) callconv(.c) ?[*]const u8,
 };
 
 /// One window's DOM: the store, its parser, compiled selectors (by text) and
@@ -38,6 +41,7 @@ pub const Dom = struct {
     parser: html.Parser,
     host: Host,
     selectors: std.StringHashMapUnmanaged(*sel.Selector) = .empty,
+    serializer: ser.Serializer = undefined,
 
     fn selHost(d: *Dom) sel.Host {
         return .{ .ctx = d, .atom = fwdAtom, .freeAtom = fwdFreeAtom, .latin1 = fwdLatin1, .toUtf8 = fwdToUtf8, .freeUtf8 = fwdFreeUtf8 };
@@ -92,6 +96,14 @@ fn fwdFreeUtf8(ctx: *anyopaque, p: [*]const u8) void {
     const h = hostOf(ctx);
     h.free_utf8(h.ctx, p);
 }
+fn fwdAtomLatin1(ctx: *anyopaque, atom: u32, len: *usize) ?[*]const u8 {
+    const h = hostOf(ctx);
+    return h.atom_latin1(h.ctx, atom, len);
+}
+fn fwdAtomUtf8(ctx: *anyopaque, atom: u32, len: *usize) ?[*]const u8 {
+    const h = hostOf(ctx);
+    return h.atom_utf8(h.ctx, atom, len);
+}
 fn fwdValueAtom(ctx: *anyopaque, v: *const JsVal) u32 {
     const h = hostOf(ctx);
     return h.value_atom(h.ctx, v);
@@ -140,6 +152,7 @@ export fn nui_dom_new(host: *const Host) ?*Dom {
         gpa.destroy(d);
         return null;
     };
+    d.serializer = .{ .store = &d.store, .gpa = gpa, .host = .{ .ctx = d, .atomLatin1 = fwdAtomLatin1, .atomUtf8 = fwdAtomUtf8, .strings = d.selHost() } };
     d.parser = .{
         .store = &d.store,
         .gpa = gpa,
@@ -159,6 +172,7 @@ fn clearSelectors(d: *Dom) void {
 
 export fn nui_dom_free(d: *Dom) void {
     clearSelectors(d);
+    d.serializer.deinit();
     d.parser.deinit();
     d.store.deinit();
     gpa.destroy(d);
@@ -349,4 +363,50 @@ export fn nui_dom_by_id(d: *Dom, root: Index, id: u32) Index {
         e = s.get(e).next;
     }
     return none;
+}
+
+// --- Cloning, serializing, fragments ------------------------------------
+
+export fn nui_dom_clone(d: *Dom, idx: Index, deep: bool) Index {
+    return d.store.clone(idx, deep) catch none;
+}
+
+/// A node's markup (outer, or its children's) as UTF-8 in *out (valid until
+/// the next call).
+export fn nui_dom_serialize(d: *Dom, idx: Index, outer: bool, out: *[*]const u8, len: *usize) c_int {
+    const bytes = d.serializer.serialize(idx, outer) catch return code_oom;
+    out.* = bytes.ptr;
+    len.* = bytes.len;
+    return code_ok;
+}
+
+/// Markup parsed into a new fragment (0 on failure, with *out_code).
+export fn nui_dom_parse_fragment(d: *Dom, bytes: [*]const u8, len: usize, out_code: *c_int) Index {
+    const frag = d.store.createFragment() catch {
+        out_code.* = code_oom;
+        return none;
+    };
+    d.parser.parse(frag, bytes[0..len]) catch |e| {
+        d.store.dropIfUnused(frag);
+        out_code.* = code(e);
+        return none;
+    };
+    return frag;
+}
+
+/// The first child element of `parent` named `name` (an atom), or 0.
+export fn nui_dom_child_named(d: *Dom, parent: Index, name: u32) Index {
+    var c = d.store.get(parent).first;
+    while (c != none) : (c = d.store.get(c).next) {
+        const n = d.store.get(c);
+        if (n.kind == .element and (name == 0 or n.name == name)) return c;
+    }
+    return none;
+}
+
+export fn nui_dom_foreign(d: *Dom, idx: Index) bool {
+    return d.store.get(idx).foreign;
+}
+export fn nui_dom_set_foreign(d: *Dom, idx: Index, foreign: bool) void {
+    d.store.get(idx).foreign = foreign;
 }

@@ -717,6 +717,9 @@ JS_EXTERN JSValue JS_ConcatStrings(JSContext *ctx, JSValue a, JSValue b);
    8-bit characters (Latin-1) in one piece: the bytes and *plen, else NULL
    (a wide string or a rope). */
 JS_EXTERN const uint8_t *JS_GetStringLatin1(JSValueConst v, size_t *plen);
+/* Oriel: an atom's characters in place when stored as 8-bit (Latin-1)
+   characters, else NULL (wide, or a number atom). */
+JS_EXTERN const uint8_t *JS_GetAtomLatin1(JSContext *ctx, JSAtom atom, size_t *plen);
 /* Returns the class name or JS_ATOM_NULL if `id` is not a registered class. Must be freed with JS_FreeAtom. */
 JS_EXTERN JSAtom JS_GetClassName(JSRuntime *rt, JSClassID class_id);
 
