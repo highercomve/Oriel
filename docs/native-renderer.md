@@ -49,6 +49,7 @@ thread. `App.emit` reaches the page through the same
 | `button` (with an icon and a label) | One native button |
 | `input`, `textarea` | One native text field |
 | `input type=checkbox` | One native switch |
+| `input type=range` | One native slider (min, max, step; not yet on GTK): dragging sends `input`, letting go `change` |
 | `svg` with `<use href="#symbol">`, `img` | One image (the SVG rasterized at its size and color) |
 | `canvas` (2d context) | One view that replays the recorded 2d program (see below) |
 | `display: none`, `[hidden]` | Nothing |
@@ -192,6 +193,7 @@ until its props change). CoreGraphics has no SVG path parser:
 |---|---|---|
 | The page | one flipped NSView, the window's content view | one UIView in the controller's safe area, like a web view |
 | `input` / `textarea` / `select` | NSTextField (NSSecureTextField), NSTextView in an NSScrollView, NSPopUpButton | UITextField, UITextView, a UIButton with a UIMenu |
+| `input type=range` | NSSlider (`accent-color` tints the track) | UISlider |
 | Input | clicks (control-click and right-click: `contextmenu`), hover and the hand cursor, the scroll wheel and trackpad, keys | taps, long presses (`contextmenu`), drags with a fling (gesture recognizers) |
 | Dark mode | the view's effective appearance | the trait collection |
 
