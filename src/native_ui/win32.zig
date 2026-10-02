@@ -74,7 +74,30 @@ const Field = struct {
     /// painted by fieldProc while the field is empty.
     ph: ?[:0]u16 = null,
     ph_hash: u64 = 0,
+    /// A select's selection-field height (CB_SETITEMHEIGHT), in pixels.
+    item_h: c_int = 0,
 };
+
+/// A select's selection-field height (CB_SETITEMHEIGHT with -1).
+fn setItemHeight(f: *Field, item_h: c_int) void {
+    const v = @max(8, item_h);
+    if (v == f.item_h) return;
+    _ = c.SendMessageW(f.hwnd, c.CB_SETITEMHEIGHT, std.math.maxInt(usize), @intCast(v));
+    f.item_h = v;
+}
+
+/// The UA style's field border (render.js: 2px inset #ccc, or 1px #767676)
+/// all round: the page didn't style it.
+fn uaBorder(n: *Node) bool {
+    const bw = n.props.bw orelse return false;
+    const bc = n.props.bc orelse return false;
+    for (bw, bc) |w, col| {
+        const ua = (w == 2 and col[0] == 204 and col[1] == 204 and col[2] == 204) or
+            (w == 1 and col[0] == 118 and col[1] == 118 and col[2] == 118);
+        if (!ua) return false;
+    }
+    return true;
+}
 
 /// An <img>'s picture: decoded once per src (WIC, premultiplied BGRA), and
 /// the Direct2D bitmap made from it for the current render target.
@@ -516,17 +539,38 @@ fn syncFields(s: *Surface) void {
         _ = c.EnableWindow(f.hwnd, @intFromBool(!n.props.dis));
         styleField(s, f, n);
         if (f.kind == .textarea) setPlaceholder(s, f, n.props.ph orelse "");
-        // At the node's content box, in the canvas's physical pixels.
-        const r = n.content();
+        // At the node's content box, in the canvas's physical pixels. An
+        // unstyled select at its border box: the combobox's own border is
+        // its border (not a second one inside the CSS one).
+        const r = if (f.kind == .select and uaBorder(n)) n.frame else n.content();
         const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
         if (visible) {
             const x = px(r.x * s.scale);
             const y = px(r.y * s.scale);
             const w: c_int = @max(1, px(r.w * s.scale));
             var h: c_int = @max(1, px(r.h * s.scale));
-            // A combobox's height includes its drop-down list.
-            if (f.kind == .select) h += px(200 * s.scale);
+            const box_h = h;
+            if (f.kind == .select) {
+                // The selection field fits the box (else the combobox keeps
+                // its font's height and sticks out below it): a first guess
+                // at its border, corrected below by the closed height.
+                if (f.item_h == 0) setItemHeight(f, box_h - px(6 * s.scale));
+                // A combobox's height includes its drop-down list.
+                h += px(200 * s.scale);
+            }
             _ = c.SetWindowPos(f.hwnd, null, x, y, w, h, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_SHOWWINDOW);
+            if (f.kind == .select) {
+                // The closed control's height: its drop button's rect and
+                // the same inset below it (the window's own rect includes
+                // the list).
+                var cbi: c.COMBOBOXINFO = undefined;
+                cbi.cbSize = @sizeOf(c.COMBOBOXINFO);
+                if (c.GetComboBoxInfo(f.hwnd, &cbi) != 0) {
+                    const closed = cbi.rcButton.bottom + cbi.rcButton.top;
+                    const off = box_h - closed;
+                    if (closed > 0 and off != 0 and @abs(off) < @divTrunc(box_h, 2)) setItemHeight(f, f.item_h + off);
+                }
+            }
             const rgn = fieldRegion(s, &po, n, r);
             if (rgn != null or f.clipped) {
                 // The window owns the region from here on.

@@ -222,7 +222,10 @@ export class Renderer {
     if (bn && !this.cs.get(body)?.["flex-shrink"]) bn.props.fs = 0;
     // The window: the page scrolls, fixed elements stay over it.
     nodes.set(-1, { kind: "view", props: { scroll: true, fg: 1, fs: 1, ai: "stretch" }, kids: [bodyNode] });
-    nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: bgOf(rootCS) }, kids: [-1, ...fixed] });
+    // The window's background: <html>'s, else <body>'s (a browser paints the
+    // whole viewport with it, below a short page too).
+    const rootBg = bgOf(rootCS) || (this.cs.get(body) ? bgOf(this.cs.get(body)) : null);
+    nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: [-1, ...fixed] });
     this.emit(nodes, full);
     // A scrollIntoView that waited for this render (main.js).
     const scroll = this.pendingScroll;
@@ -508,6 +511,10 @@ export class Renderer {
       props.ph = el.getAttribute("placeholder") || "";
       props.dis = el.hasAttribute("disabled");
       props.pw = type === "password";
+      if (tag === "textarea") {
+        const cols = parseInt(el.getAttribute("cols") || "", 10);
+        props.cols = cols > 0 ? Math.min(cols, 1000) : 20;
+      }
       // A slider: the native side draws one (SeekBar), the value as text.
       if (type === "range") {
         const n = (a, d) => { const v = parseFloat(el.getAttribute(a)); return Number.isFinite(v) ? v : d; };
@@ -565,13 +572,20 @@ export class Renderer {
       return this.put(nodes, id, "text", props, [], fixedNode);
     }
 
+    // A line of inline content with an atomic box in it (a checkbox and its
+    // label's text): a row that wraps, as an inline formatting context lays
+    // it out, not a column (the text went under the box).
+    const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) &&
+      flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs).display || ""));
+    if (inlineLine) { props.fd = "row"; props.fw = "wrap"; props.ai = "center"; }
+
     for (const item of flow) {
       if (item.text) {
         const tid = this.idOf(el, "t" + kids.length);
         this.own(tid, el);
         const tp = { ...textProps(cs, fontSize), runs: item.text };
         if (transitions) this.spec(tid, transitions);
-        tp.fs = childCtx.blockify && !props.scroll ? 1 : 0;
+        tp.fs = (childCtx.blockify || inlineLine) && !props.scroll ? 1 : 0;
         this.put(nodes, tid, "text", tp, []);
         kids.push(tid);
         continue;
