@@ -116,6 +116,9 @@ fn uaBorder(n: *Node) bool {
     return true;
 }
 
+/// All of a window's decoded pictures together (see imageOf).
+const max_image_cache_bytes: u64 = 256 * 1024 * 1024;
+
 /// An <img>'s picture: decoded once per src (WIC, premultiplied BGRA), and
 /// the Direct2D bitmap made from it for the current render target.
 const Image = struct {
@@ -126,6 +129,13 @@ const Image = struct {
     bitmap: ?*c.ID2D1Bitmap = null,
     w: f32 = 0,
     h: f32 = 0,
+
+    /// What its decoded pixels take (BGRA; the GPU bitmap made from them
+    /// is the same again, released with the render target).
+    fn bytes(img: *const Image) u64 {
+        if (img.wic == null) return 0;
+        return @as(u64, @intFromFloat(img.w)) * @as(u64, @intFromFloat(img.h)) * 4;
+    }
 
     fn deinit(img: *Image) void {
         releaseCom(img.bitmap);
@@ -172,6 +182,15 @@ pub const Surface = struct {
     /// vsync thread.
     frame_wanted: bool = false,
     ticking: bool = false,
+    /// Removed fields' controls, destroyed later (flushDoomed): a page can
+    /// remove a field from the field's own notification (EN_CHANGE,
+    /// CBN_SELCHANGE, WM_HSCROLL), and the control's code still runs after
+    /// it returns: destroying it there crashed comctl32.
+    doomed: std.ArrayListUnmanaged(Doomed) = .empty,
+    doomed_posted: bool = false,
+    /// Inside a control's notification to the canvas (or a field's own
+    /// message): a nested message loop there must not flush `doomed`.
+    in_control: u32 = 0,
 
     /// The canvas fills `parent`'s client area.
     pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, parent: *anyopaque, transparent: bool, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
@@ -234,6 +253,9 @@ pub const Surface = struct {
         var it = s.fields.valueIterator();
         while (it.next()) |f| freeField(s, f);
         s.fields.deinit();
+        // Not inside any control now: their windows and GDI objects go.
+        flushDoomed(s);
+        s.doomed.deinit(s.gpa);
         // The target first: it walks the images to drop their bitmaps, and
         // releases the canvases (made by it).
         releaseTarget(s);
@@ -614,15 +636,41 @@ fn laidOut(ctx: *anyopaque) void {
 // ---------------------------------------------------------------------------
 // Fields: EDIT and COMBOBOX controls for input, textarea and select
 
+/// A removed field's control, its font and brush (still selected into it),
+/// destroyed by flushDoomed.
+const Doomed = struct { hwnd: c.HWND, font: ?c.HFONT, brush: ?c.HBRUSH };
+
+const WM_FREE_FIELDS: c.UINT = c.WM_APP + 0x53;
+
+/// The field leaves the page now: no node (so no more events to the page)
+/// and hidden. Its window goes later (WM_FREE_FIELDS): this may run inside
+/// that window's own notification.
 fn freeField(s: *Surface, f: *Field) void {
     if (f.ph) |ph| s.gpa.free(ph);
     f.ph = null;
     _ = c.RemovePropW(f.hwnd, prop_node);
-    _ = c.DestroyWindow(f.hwnd);
-    if (f.font) |h| _ = c.DeleteObject(h);
-    if (f.brush) |b| _ = c.DeleteObject(b);
+    _ = c.ShowWindow(f.hwnd, c.SW_HIDE);
+    s.doomed.append(s.gpa, .{ .hwnd = f.hwnd, .font = f.font, .brush = f.brush }) catch {
+        // No room to defer it: hidden and orphaned rather than destroyed
+        // under the control's feet (the canvas's DestroyWindow takes it).
+        f.font = null;
+        f.brush = null;
+        return;
+    };
     f.font = null;
     f.brush = null;
+    if (!s.doomed_posted) s.doomed_posted = c.PostMessageW(s.hwnd, WM_FREE_FIELDS, 0, 0) != 0;
+}
+
+/// Destroys the removed fields' controls and frees their GDI objects
+/// (outside any control's notification).
+fn flushDoomed(s: *Surface) void {
+    for (s.doomed.items) |d| {
+        _ = c.DestroyWindow(d.hwnd);
+        if (d.font) |h| _ = c.DeleteObject(h);
+        if (d.brush) |b| _ = c.DeleteObject(b);
+    }
+    s.doomed.clearRetainingCapacity();
 }
 
 /// A box the page paints over what came before it (an opaque background),
@@ -1091,7 +1139,9 @@ fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
                     const name = if (wparam == c.VK_RETURN) "Enter" else "Escape";
                     var buf: [48]u8 = undefined;
                     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d}]", .{ name, modFlags() }) catch "";
+                    s.in_control += 1;
                     const prevented = s.engine.event(id, "key", json);
+                    s.in_control -= 1;
                     // Gone: nothing left to hand the key to.
                     if (c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null) return 0;
                     // A single-line field has no use for Enter (it would beep).
@@ -1319,12 +1369,27 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             _ = sendKey(s, buf[0..len]);
             return 0;
         },
+        // Removed fields' controls: now that no control's code is running.
+        WM_FREE_FIELDS => {
+            s.doomed_posted = false;
+            if (s.in_control > 0) {
+                // A nested message loop inside a control's notification.
+                s.doomed_posted = c.PostMessageW(hwnd, WM_FREE_FIELDS, 0, 0) != 0;
+                return 0;
+            }
+            flushDoomed(s);
+            return 0;
+        },
         c.WM_COMMAND => {
+            s.in_control += 1;
+            defer s.in_control -= 1;
             if (lparam != 0) onFieldCommand(s, @truncate(wparam >> 16), toHandle(c.HWND, @bitCast(lparam)));
             return 0;
         },
         // A trackbar (<input type=range>) moved.
         c.WM_HSCROLL => {
+            s.in_control += 1;
+            defer s.in_control -= 1;
             if (lparam != 0) onSlider(s, @truncate(wparam), toHandle(c.HWND, @bitCast(lparam)));
             return 0;
         },
@@ -1487,13 +1552,22 @@ const CanvasGrad = struct {
     stops: std.ArrayList(c.D2D1_GRADIENT_STOP) = .empty,
 };
 
+/// The largest canvas bitmap: 4096 x 4096 px (64 MB as BGRA).
+const max_canvas_pixels: f32 = 4096 * 4096;
+
 fn paintCanvas(p: *Painter, n: *Node) void {
     const cmds = n.canvas orelse return;
     const s = p.s;
     const f = n.frame;
     if (!(f.w > 0 and f.h > 0) or !std.math.isFinite(f.w * f.h * s.scale)) return;
-    const pw: u32 = @intFromFloat(@min(16384, @ceil(f.w * s.scale)));
-    const ph: u32 = @intFromFloat(@min(16384, @ceil(f.h * s.scale)));
+    // At most max_canvas_pixels (as on GTK and Apple): a bigger canvas gets
+    // a bitmap of fewer pixels per point, scaled up on the page (the target
+    // keeps the box's size in DIPs).
+    var sf: f32 = s.scale;
+    const area = f.w * sf * f.h * sf;
+    if (area > max_canvas_pixels) sf *= @sqrt(max_canvas_pixels / area);
+    const pw: u32 = @intFromFloat(@max(1, @min(16384, @ceil(f.w * sf))));
+    const ph: u32 = @intFromFloat(@max(1, @min(16384, @ceil(f.h * sf))));
     if (pw == 0 or ph == 0) return;
     var owned: ?*c.ID2D1BitmapRenderTarget = null; // not cached: released after this frame
     defer releaseCom(owned);
@@ -2222,6 +2296,17 @@ fn imageOf(s: *Surface, n: *Node) ?*Image {
         break :blk .{ .src_hash = 0 };
     };
     img.src_hash = hash;
+    // All of the window's pictures together at most max_image_cache_bytes:
+    // past it the others go before this one is kept (they decode again
+    // when painted).
+    var total = img.bytes();
+    var it = s.images.valueIterator();
+    while (it.next()) |other| total += other.bytes();
+    if (total > max_image_cache_bytes) {
+        var rest = s.images.valueIterator();
+        while (rest.next()) |other| other.deinit();
+        s.images.clearRetainingCapacity();
+    }
     const gop = s.images.getOrPut(n.id) catch {
         img.deinit();
         return null;
