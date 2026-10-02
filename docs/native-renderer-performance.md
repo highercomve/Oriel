@@ -368,7 +368,8 @@ rendering is roughly 7–9 times faster in this isolation; even --jitless is
 roughly 3–5 times faster. Engine internals matter beyond the presence of JIT.
 These numbers exclude source parsing/boot and **native apply, layout and paint**.
 They are not estimates for integrated native timings; the standalone QuickJS
-harness also differs from the embedded app. No Hermes timing was performed.
+harness also differs from the embedded app. This first experiment did not time
+Hermes; the subsequent engine comparison below does.
 [Raw observations and trace validation](../examples/render-bench/results/2026-10-02-rows-engine-investigation.json).
 Reproduce with `test/bench-qjs.js` or `test/bench-node.mjs`; add `node --jitless`
 for the third configuration.
@@ -427,3 +428,102 @@ for the third configuration.
    extents for synchronous CSS geometry reads.
 4. Carry child-size dependencies through layout for the macOS width shortcut;
    keep this independent of construction/engine changes and test other backends.
+
+### Alternative engines tested, 2026-10-02
+
+Built all engines before measuring, waited for three quiet samples ten seconds
+apart with no compiler/Yocto workers, then ran three serial rounds with rotated
+engine order. Each row label has six observations. The new packaging script
+inlines the **unchanged runtime** and assets from the existing fake-host harness,
+allowing Hermes native AOT to compile the runtime rather than executing it via
+eval. These are fresh comparisons within this experiment; do not mix their
+absolute timings with the earlier eval-based experiment.
+
+Medians, **DOM / JS render** (style, flatten, emission), in milliseconds:
+
+| Engine / mode | Build 1,000 rows | Build 3,000 rows | Update 3,000 rows |
+|---|---:|---:|---:|
+| QuickJS-ng 0.17.0, Release | 37.30 / 113.90 | 116.40 / 232.30 | 17.80 / 18.55 |
+| JavaScriptCore 2.52.6 | 7.05 / 13.15 | 9.95 / 22.80 | 2.10 / 1.80 |
+| V8, Node 24.16.0 | 11.35 / 13.50 | 14.25 / 31.65 | 1.25 / 2.00 |
+| Hermes bytecode interpreter | 23.50 / 22.00 | 70.50 / 66.50 | 10.00 / 9.50 |
+| Hermes native AOT | 21.50 / 20.50 | 62.50 / 61.50 | 9.50 / 11.50 |
+| zjs, Zig ReleaseFast | 60.55 / 61.20 | 211.00 / 194.65 | 27.90 / 14.10 |
+| Kiesel, Zig ReleaseFast | 176.50 / 153.00 | 552.00 / 480.00 | 78.50 / 47.50 |
+| V8 --jitless | 21.05 / 19.05 | 61.35 / 71.10 | 7.10 / 5.60 |
+| JavaScriptCore --useJIT=false | 31.65 / 24.35 | 94.00 / 71.55 | 14.60 / 8.85 |
+
+JavaScriptCore's sum of construction/render medians is 32.75 ms versus QuickJS's
+348.70 ms for 3,000 rows, about 10.6 times faster in this isolation. V8 is about
+7.6 times faster; Hermes native AOT about 2.8 times faster. Neither Zig-written
+engine improves total row building versus QuickJS on this workload. These are
+**not native desktop timings**: source parsing/boot, native bridge application,
+layout, text measurement, painting, memory and startup remain unmeasured.
+The sample is small and the fixture runs 1,000-row steps before 3,000-row steps,
+so engine tiering/warm-up affects the larger-row observations.
+
+Verification runs separately from timing. All nine modes match QuickJS's exact
+ops/style/leaf/text calls and arguments across the first twelve row steps.
+QuickJS, V8, JavaScriptCore, zjs and Kiesel match all 24 steps in the final check.
+Hermes differs at canvas steps 16–23: canvas width becomes 400 instead of 600.
+This minimal for-of destructuring/closure reproduction prints
+`height:150 height:150` in the pinned Hermes revision under both `-O` and `-O0`,
+where JavaScriptCore prints `width:300 height:150`:
+
+```js
+const p = {};
+for (const [name, def] of [["width", 300], ["height", 150]]) {
+  Object.defineProperty(p, name, { get() { return name + ":" + def; } });
+}
+print(p.width, p.height);
+```
+
+This is the same pattern used by `canvas.install`. Hermes therefore is not a
+compatible replacement yet, despite correct row output. Kiesel also failed an
+initial trace smoke entering canvas with `TypeError: Cannot convert undefined
+to Object`; after normalizing CLI globals, its final trace and three timing
+rounds completed. That does not establish production stability. The packaging
+clears native Event/microtask globals and `navigator` before boot; QuickJS's CLI
+has a configurable, read-only navigator incompatible with the runtime assignment.
+
+Hermes is pinned to `6e2181b288b0306d8bd1988d38d32aa879b745d5` on static_h,
+Release (-O3), Hades GC, HEAP_HV_PREFER32. Bytecode uses `hermesc -O`;
+native AOT uses `shermes -O -enable-eval -script` and its shared runtime.
+Hermes and Kiesel use Date.now's integer milliseconds; small update/no-op
+measurements have correspondingly limited resolution. The other CLIs expose
+performance.now. Hermes's automatic JIT configuration in this revision enables
+it only on ARM64. Forcing JIT on x86-64 fails because the backend header is absent;
+neither Hermes result here is a JIT result.
+[Pinned JIT configuration](https://github.com/facebook/hermes/blob/6e2181b288b0306d8bd1988d38d32aa879b745d5/include/hermes/VM/JIT/Config.h).
+
+#### Engines written in Zig
+
+- [Kiesel](https://codeberg.org/kiesel-js/kiesel), pinned
+  `caeb23e4500fc35099b5945b20efe9bd4ece1e4b`: custom bytecode VM written in Zig,
+  using BDWGC and libregexp. Built with Zig 0.16.0, ReleaseFast, Intl/Temporal
+  disabled. It runs this fixture but is substantially slower.
+- [zjs](https://github.com/aneryu/zjs): Zig-native embedding API and CLI,
+  non-moving tracing collector, targets trusted in-process execution;
+  [limitations](https://github.com/aneryu/zjs/blob/main/LIMITATIONS.md).
+  Built unchanged with Zig 0.16.0, ReleaseFast defaults. Exact pinned revision
+  and raw observations are in the report. Row rendering is faster than QuickJS,
+  but DOM construction is slower and total building loses.
+- [zig-js](https://github.com/zig-utils/zig-js): pure Zig engine with a
+  JavaScriptCore-shaped C API; APIs are pre-stabilization. Requires Zig
+  0.17.0-dev and sibling zig-gc/zig-regex packages, so it was investigated but
+  not built/tested in this Zig 0.16 project. Its published benchmark claims
+  are not measurements of Oriel's workload.
+- [Lightpanda's Zig runtime integration](https://github.com/lightpanda-io/zig-js-runtime)
+  uses V8; [Bun](https://bun.com/docs/project/license) uses JavaScriptCore.
+  A runtime written in Zig does not imply its JavaScript engine is Zig-written.
+
+The measured next candidate is an optional **JavaScriptCore native backend**
+under the existing host contract. Linux has the JavaScriptCoreGTK C API installed;
+macOS supplies JavaScriptCore. Windows/build distribution, synchronous geometry,
+callback/lifetime/exception handling, behavior tests, startup, footprint and
+complete native desktop timings must be checked before selecting it. V8 remains
+a strong candidate, especially where JSC deployment is impractical. Keep
+QuickJS available while evaluating; no production engine changed in this pass.
+
+[Raw samples, pinned builds, fixture hashes and transcript checks](../examples/render-bench/results/2026-10-02-rows-alternative-engines.json).
+[Packaging/runner reproduction](../examples/render-bench/README.md#alternative-javascript-engines).
