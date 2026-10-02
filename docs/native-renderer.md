@@ -100,7 +100,8 @@ canvas's own image surface (kept from frame to frame while the size holds),
 which is then painted on the page, clipped to the box's border-radius. On
 macOS and iOS it draws with CoreGraphics into a CGBitmapContext the same way
 (apple_draw.zig: the box at the display's backing scale, at most 16 M
-pixels; text with CoreText). A
+pixels; text with CoreText), and on Windows with Direct2D into its own
+bitmap render target. A
 program can't harm the page: an unbalanced `restore()` is ignored, a
 `clearRect` clears the canvas only, and a call with an argument that isn't a
 finite number is dropped (by the recorder and again by the parser), as in a
@@ -126,14 +127,14 @@ all with no clip or transform in effect drops everything recorded before it
 (a game loop's clear-then-redraw then keeps one frame's ops); drawing
 without such a clear accumulates, as in a browser.
 
-GTK, macOS, iOS and Android draw canvases. On Apple (`apple_draw.zig`) the
-program replays into a CGBitmapContext per node. On Android
-(`OrielCanvas.kt`) it is parsed once per change and replayed into an
-`android.graphics.Bitmap` of the canvas's own (frame size × density, at
-most 16384 px a side and 16 M pixels), kept while the size holds and
-recycled when the node goes or the view leaves its window; it is drawn at
-the box, clipped to the border-radius. Windows lays canvases out but
-draws nothing yet.
+Every backend draws canvases. On Android (`OrielCanvas.kt`) the program is
+parsed once per change and replayed into an `android.graphics.Bitmap` of
+the canvas's own (frame size × density, at most 16384 px a side and 16 M
+pixels), kept while the size holds and recycled when the node goes or the
+view leaves its window; it is drawn at the box, clipped to the
+border-radius. On Windows, `strokeText` outlines the font's own glyphs (no
+fallback fonts), and a radial gradient's two circles share a center offset
+as Direct2D draws them (the inner radius moves the stops).
 
 ## Milestones
 

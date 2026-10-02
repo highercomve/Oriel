@@ -29,6 +29,7 @@ pub const c = @cImport({
     @cDefine("UNICODE", "1");
     @cInclude("windows.h");
     @cInclude("d2d1.h");
+    @cInclude("d2d1_1.h");
     @cInclude("dwrite.h");
     @cInclude("wincodec.h");
 });
@@ -38,7 +39,8 @@ const IID_IDWriteFactory = c.GUID{ .Data1 = 0xb859ee5a, .Data2 = 0xd838, .Data3 
 const IID_ID2D1Factory = c.GUID{ .Data1 = 0x06152247, .Data2 = 0x6f50, .Data3 = 0x465a, .Data4 = .{ 0x92, 0x45, 0x11, 0x8b, 0xfd, 0x3b, 0x60, 0x07 } };
 const CLSID_WICImagingFactory = c.GUID{ .Data1 = 0xcacaf262, .Data2 = 0x9370, .Data3 = 0x4615, .Data4 = .{ 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
 const IID_IWICImagingFactory = c.GUID{ .Data1 = 0xec5ec8a9, .Data2 = 0xc395, .Data3 = 0x4314, .Data4 = .{ 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70 } };
-const GUID_WICPixelFormat32bppPBGRA = c.GUID{ .Data1 = 0x6fddc324, .Data2 = 0x4e03, .Data3 = 0x4bfe, .Data4 = .{ 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x10 } };
+const IID_ID2D1DeviceContext = c.GUID{ .Data1 = 0xe8f7fe7a, .Data2 = 0x191c, .Data3 = 0x466d, .Data4 = .{ 0xad, 0x95, 0x97, 0x56, 0x78, 0xbd, 0xa9, 0x98 } };
+const GUID_WICPixelFormat32bppPBGRA =c.GUID{ .Data1 = 0x6fddc324, .Data2 = 0x4e03, .Data3 = 0x4bfe, .Data4 = .{ 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x10 } };
 
 const D2DERR_RECREATE_TARGET: c.HRESULT = @bitCast(@as(u32, 0x8899000C));
 /// D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT (Windows 8.1+): color emoji.
@@ -110,6 +112,9 @@ pub const Surface = struct {
     fields: std.AutoHashMap(i64, Field),
     /// Decoded pictures by node id (released with the node or a new src).
     images: std.AutoHashMap(i64, Image),
+    /// Each <canvas>'s bitmap by node id, kept from frame to frame while its
+    /// size holds (released with the node or the render target).
+    canvases: std.AutoHashMap(i64, CanvasBitmap),
     invoke_fn: Invoke,
     invoke_ctx: ?*anyopaque,
     pointer: [2]f32 = .{ 0, 0 },
@@ -132,11 +137,13 @@ pub const Surface = struct {
             .dark = prefersDark(),
             .fields = .init(gpa),
             .images = .init(gpa),
+            .canvases = .init(gpa),
             .invoke_fn = invoke_fn,
             .invoke_ctx = invoke_ctx,
         };
         errdefer s.fields.deinit();
         errdefer s.images.deinit();
+        errdefer s.canvases.deinit();
         var rc: c.RECT = undefined;
         _ = c.GetClientRect(hparent, &rc);
         const hinst = c.GetModuleHandleW(null);
@@ -171,11 +178,13 @@ pub const Surface = struct {
         var it = s.fields.valueIterator();
         while (it.next()) |f| freeField(s, f);
         s.fields.deinit();
-        // The target first: it walks the images to drop their bitmaps.
+        // The target first: it walks the images to drop their bitmaps, and
+        // releases the canvases (made by it).
         releaseTarget(s);
         var imgs = s.images.valueIterator();
         while (imgs.next()) |img| img.deinit();
         s.images.deinit();
+        s.canvases.deinit();
         _ = c.DestroyWindow(s.hwnd);
         s.gpa.destroy(s);
     }
@@ -215,9 +224,10 @@ pub const Surface = struct {
         _ = c.SetFocus(s.hwnd);
     }
 
-    /// A wheel message the parent got (the focus was on it).
-    pub fn wheel(s: *Surface, wparam: usize, lparam: isize) void {
-        _ = c.SendMessageW(s.hwnd, c.WM_MOUSEWHEEL, wparam, lparam);
+    /// A wheel message (WM_MOUSEWHEEL or WM_MOUSEHWHEEL) the parent got (the
+    /// focus was on it).
+    pub fn wheel(s: *Surface, msg: u32, wparam: usize, lparam: isize) void {
+        _ = c.SendMessageW(s.hwnd, msg, wparam, lparam);
     }
 
     fn prefersDark() bool {
@@ -308,6 +318,10 @@ fn releaseTarget(s: *Surface) void {
         releaseCom(img.bitmap);
         img.bitmap = null;
     }
+    // Canvases' bitmaps too: drawn again whole on the next paint.
+    var cvs = s.canvases.valueIterator();
+    while (cvs.next()) |b| freeCanvas(b.*);
+    s.canvases.clearRetainingCapacity();
     releaseCom(s.brush);
     s.brush = null;
     releaseCom(s.rt);
@@ -379,6 +393,7 @@ fn removed(ctx: *anyopaque, node: *Node) void {
         var img = kv.value;
         img.deinit();
     }
+    if (s.canvases.fetchRemove(node.id)) |kv| freeCanvas(kv.value);
     if (s.fields.fetchRemove(node.id)) |kv| {
         var f = kv.value;
         freeField(s, &f);
@@ -841,7 +856,10 @@ fn onMove(s: *Surface, pt: [2]f32) void {
     }
 }
 
-fn onWheel(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM) void {
+/// The wheel (WM_MOUSEWHEEL) or the tilt wheel / a touchpad's sideways
+/// swipe (WM_MOUSEHWHEEL, `sideways`); Shift with the wheel scrolls
+/// sideways too, as in a browser.
+fn onWheel(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM, sideways: bool) void {
     // Wheel positions are in screen coordinates.
     var p: c.POINT = .{
         .x = @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)))))),
@@ -852,7 +870,18 @@ fn onWheel(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM) void {
     const delta: i16 = @bitCast(@as(u16, @truncate(wparam >> 16)));
     // 120 per notch; GTK's 48 px per notch, down positive.
     const dy = -@as(f32, @floatFromInt(delta)) / 120.0 * 48.0;
-    var target = s.engine.tree.scroller(s.engine.tree.hit(pt[0], pt[1]));
+    const hit = s.engine.tree.hit(pt[0], pt[1]);
+    if (sideways or wparam & c.MK_SHIFT != 0) {
+        // WM_MOUSEHWHEEL: right positive; Shift+wheel: down scrolls right.
+        const dx = if (sideways) -dy else dy;
+        var tx = s.engine.tree.scrollerX(hit);
+        while (tx) |t| {
+            if (s.engine.scrollByX(t, dx)) return;
+            tx = s.engine.tree.scrollerX(t.parent);
+        }
+        if (sideways) return;
+    }
+    var target = s.engine.tree.scroller(hit);
     while (target) |t| {
         if (s.engine.scrollBy(t, dy)) return;
         target = s.engine.tree.scroller(t.parent);
@@ -921,8 +950,8 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             _ = c.SetCursor(toHandle(c.HCURSOR, @intFromPtr(LoadCursorW(null, if (s.hand) IDC_HAND else IDC_ARROW))));
             return c.TRUE;
         },
-        c.WM_MOUSEWHEEL => {
-            onWheel(s, wparam, lparam);
+        c.WM_MOUSEWHEEL, c.WM_MOUSEHWHEEL => {
+            onWheel(s, wparam, lparam, msg == c.WM_MOUSEHWHEEL);
             return 0;
         },
         c.WM_KEYDOWN, c.WM_SYSKEYDOWN => {
@@ -1051,6 +1080,756 @@ fn textLayout(s: *Surface, n: *Node, width: f32, brushes: ?*std.ArrayList(*c.ID2
         };
     }
     return l;
+}
+
+// ---------------------------------------------------------------------------
+// <canvas>: the recorded program (src/native_ui/js/src/canvas.js) replayed
+// with Direct2D into the canvas's own bitmap render target (kept from frame
+// to frame while its size holds), then drawn on the page clipped to the
+// box's border-radius. The program can't reach the page: an unbalanced
+// restore() is ignored and a clearRect clears the bitmap only. Every paint
+// replays the whole program from the context's defaults.
+
+/// A canvas's bitmap: made by the window's render target, released with it.
+const CanvasBitmap = struct { rt: *c.ID2D1BitmapRenderTarget, w: u32, h: u32 };
+
+fn freeCanvas(b: CanvasBitmap) void {
+    releaseCom(@as(?*c.ID2D1BitmapRenderTarget, b.rt));
+}
+
+const CanvasState = struct {
+    fill: tree_mod.CanvasPaint = .{ .color = .{ 0, 0, 0, 1 } },
+    stroke: tree_mod.CanvasPaint = .{ .color = .{ 0, 0, 0, 1 } },
+    lw: f32 = 1,
+    cap: u2 = 0, // butt, round, square
+    join: u2 = 0, // miter, round, bevel
+    alpha: f32 = 1,
+    font: tree_mod.CanvasFont = .{ .size = 10 },
+    talign: u2 = 0, // left, center, right
+    tbase: u3 = 0, // alphabetic, top, hanging, middle, bottom
+    /// A scale by 0: nothing drawn until the restore() that undoes it (the
+    /// transform has no inverse).
+    singular: bool = false,
+    /// User space to the bitmap's (DIPs: the box's CSS pixels).
+    xf: c.D2D1_MATRIX_3X2_F = identity,
+    /// How many clip layers were pushed when it was saved.
+    clips: usize = 0,
+};
+
+const P2 = c.D2D1_POINT_2F;
+
+/// The current path, in the bitmap's space: each point is transformed when
+/// it's added, as in a browser. It outlives fills, strokes and clips.
+const PathOp = union(enum) { move: P2, line: P2, bezier: [3]P2, close };
+
+const CanvasGrad = struct {
+    radial: bool,
+    /// linear: x0 y0 x1 y1; radial: x0 y0 r0 x1 y1 r1 (user space).
+    g: [6]f32,
+    stops: std.ArrayList(c.D2D1_GRADIENT_STOP) = .empty,
+};
+
+fn paintCanvas(p: *Painter, n: *Node) void {
+    const cmds = n.canvas orelse return;
+    const s = p.s;
+    const f = n.frame;
+    if (!(f.w > 0 and f.h > 0) or !std.math.isFinite(f.w * f.h * s.scale)) return;
+    const pw: u32 = @intFromFloat(@min(16384, @ceil(f.w * s.scale)));
+    const ph: u32 = @intFromFloat(@min(16384, @ceil(f.h * s.scale)));
+    if (pw == 0 or ph == 0) return;
+    var owned: ?*c.ID2D1BitmapRenderTarget = null; // not cached: released after this frame
+    defer releaseCom(owned);
+    const crt = canvasTarget(p, n.id, f, pw, ph, &owned) orelse return;
+    const rt: *c.ID2D1RenderTarget = @ptrCast(crt);
+    const vt = rt.lpVtbl.*;
+    var solid: ?*c.ID2D1SolidColorBrush = null;
+    const black: c.D2D1_COLOR_F = .{ .r = 0, .g = 0, .b = 0, .a = 1 };
+    if (vt.CreateSolidColorBrush.?(rt, &black, null, &solid) < 0 or solid == null) return;
+    defer releaseCom(solid);
+    // Copy blending (Windows 8+): a clearRect through a rotation or a clip.
+    var dc: ?*c.ID2D1DeviceContext = null;
+    const unk: *c.IUnknown = @ptrCast(rt);
+    if (unk.lpVtbl.*.QueryInterface.?(unk, &IID_ID2D1DeviceContext, @ptrCast(&dc)) < 0) dc = null;
+    defer releaseCom(dc);
+
+    vt.BeginDraw.?(rt);
+    vt.SetTransform.?(rt, &identity);
+    const clear: c.D2D1_COLOR_F = .{ .r = 0, .g = 0, .b = 0, .a = 0 };
+    vt.Clear.?(rt, &clear);
+    var cv: CanvasPainter = .{ .gpa = s.gpa, .rt = rt, .solid = solid.?, .dc = dc, .grads = .init(s.gpa) };
+    defer cv.deinit();
+    // The bitmap's space, scaled to the box (CSS width/height stretch it,
+    // as in a browser).
+    const cw = n.props.cw orelse f.w;
+    const ch = n.props.ch orelse f.h;
+    if (cw > 0 and ch > 0) cv.st.xf = matrix(f.w / cw, 0, 0, f.h / ch, 0, 0);
+    for (cmds) |cmd| cv.run(cmd);
+    // Layers must be popped before EndDraw.
+    cv.popClips(0);
+    if (vt.EndDraw.?(rt, null, null) < 0) {
+        // The device was lost: made again on the next paint.
+        if (owned == null) if (s.canvases.fetchRemove(n.id)) |kv| freeCanvas(kv.value);
+        return;
+    }
+
+    var bmp: ?*c.ID2D1Bitmap = null;
+    if (crt.lpVtbl.*.GetBitmap.?(crt, &bmp) < 0 or bmp == null) return;
+    defer releaseCom(bmp);
+    const pv = p.vt();
+    // Clipped to the box's rounded corners, as a browser clips a replaced
+    // element's content to its border-radius.
+    const r = n.radius();
+    const mask = if (r[0] > 0 or r[1] > 0 or r[2] > 0 or r[3] > 0) roundRectGeometry(f, r) else null;
+    defer releaseCom(mask);
+    if (mask) |m| {
+        const params: c.D2D1_LAYER_PARAMETERS = .{
+            .contentBounds = .{ .left = -1e6, .top = -1e6, .right = 1e6, .bottom = 1e6 },
+            .geometricMask = @ptrCast(m),
+            .maskAntialiasMode = c.D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            .maskTransform = identity,
+            .opacity = 1,
+            .opacityBrush = null,
+            .layerOptions = c.D2D1_LAYER_OPTIONS_NONE,
+        };
+        pv.PushLayer.?(p.rt, &params, null);
+    }
+    const dest = rectF(f);
+    pv.DrawBitmap.?(p.rt, bmp, &dest, 1, c.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, null);
+    if (mask != null) pv.PopLayer.?(p.rt);
+}
+
+/// The node's bitmap from the last frame when the size holds (a game loop
+/// redraws every frame), else a new one. One that can't be cached goes in
+/// `owned` (the caller releases it).
+fn canvasTarget(p: *Painter, id: i64, f: Rect, pw: u32, ph: u32, owned: *?*c.ID2D1BitmapRenderTarget) ?*c.ID2D1BitmapRenderTarget {
+    const s = p.s;
+    if (s.canvases.get(id)) |b| {
+        if (b.w == pw and b.h == ph) return b.rt;
+        _ = s.canvases.remove(id);
+        freeCanvas(b);
+    }
+    // The box's size in DIPs at the window's pixel density (capped).
+    const size: c.D2D1_SIZE_F = .{ .width = f.w, .height = f.h };
+    const psize: c.D2D1_SIZE_U = .{ .width = pw, .height = ph };
+    const fmt: c.D2D1_PIXEL_FORMAT = .{ .format = c.DXGI_FORMAT_B8G8R8A8_UNORM, .alphaMode = c.D2D1_ALPHA_MODE_PREMULTIPLIED };
+    var bt: ?*c.ID2D1BitmapRenderTarget = null;
+    if (p.vt().CreateCompatibleRenderTarget.?(p.rt, &size, &psize, &fmt, c.D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE, &bt) < 0 or bt == null) return null;
+    s.canvases.put(id, .{ .rt = bt.?, .w = pw, .h = ph }) catch {
+        owned.* = bt;
+    };
+    return bt;
+}
+
+fn invert(m: c.D2D1_MATRIX_3X2_F) ?c.D2D1_MATRIX_3X2_F {
+    const a = mget(m);
+    const det = a[0] * a[3] - a[1] * a[2];
+    if (!std.math.isFinite(det) or @abs(det) < 1e-12) return null;
+    const n0 = a[3] / det;
+    const n1 = -a[1] / det;
+    const n2 = -a[2] / det;
+    const n3 = a[0] / det;
+    return matrix(n0, n1, n2, n3, -(a[4] * n0 + a[5] * n2), -(a[4] * n1 + a[5] * n3));
+}
+
+fn addRef(o: anytype) void {
+    const u: *c.IUnknown = @ptrCast(o);
+    _ = u.lpVtbl.*.AddRef.?(u);
+}
+
+const CanvasPainter = struct {
+    gpa: std.mem.Allocator,
+    rt: *c.ID2D1RenderTarget,
+    solid: *c.ID2D1SolidColorBrush,
+    dc: ?*c.ID2D1DeviceContext,
+    st: CanvasState = .{},
+    states: std.ArrayList(CanvasState) = .empty,
+    path: std.ArrayList(PathOp) = .empty,
+    /// The current point (null: none yet) and its subpath's start.
+    cur: ?P2 = null,
+    start: P2 = .{ .x = 0, .y = 0 },
+    grads: std.AutoHashMap(u16, CanvasGrad),
+    /// clip() masks pushed as layers, in the bitmap's space (owned).
+    clips: std.ArrayList(*c.ID2D1PathGeometry) = .empty,
+
+    fn deinit(cv: *CanvasPainter) void {
+        // popClips(0) ran before EndDraw; anything left is only released.
+        for (cv.clips.items) |g| releaseCom(@as(?*c.ID2D1PathGeometry, g));
+        cv.clips.deinit(cv.gpa);
+        cv.states.deinit(cv.gpa);
+        cv.path.deinit(cv.gpa);
+        var it = cv.grads.valueIterator();
+        while (it.next()) |g| g.stops.deinit(cv.gpa);
+        cv.grads.deinit();
+    }
+
+    fn run(cv: *CanvasPainter, cmd: tree_mod.CanvasCmd) void {
+        if (cv.st.singular) switch (cmd) {
+            .translate, .scale, .rotate, .begin_path, .close_path, .move_to, .line_to, .rect, .arc, .bezier_to, .fill, .stroke, .clip, .fill_rect, .stroke_rect, .clear_rect, .fill_text, .stroke_text => return,
+            else => {},
+        };
+        switch (cmd) {
+            .save => {
+                var saved = cv.st;
+                saved.clips = cv.clips.items.len;
+                cv.states.append(cv.gpa, saved) catch return;
+            },
+            // Only what this program saved: an extra restore() is ignored.
+            .restore => if (cv.states.pop()) |prev| {
+                cv.popClips(prev.clips);
+                cv.st = prev;
+            },
+            .translate => |t| cv.st.xf = mul(matrix(1, 0, 0, 1, t[0], t[1]), cv.st.xf),
+            .scale => |t| if (t[0] == 0 or t[1] == 0) {
+                cv.st.singular = true;
+            } else {
+                cv.st.xf = mul(matrix(t[0], 0, 0, t[1], 0, 0), cv.st.xf);
+            },
+            .rotate => |a| cv.st.xf = mul(matrix(@cos(a), @sin(a), -@sin(a), @cos(a), 0, 0), cv.st.xf),
+            .begin_path => {
+                cv.path.clearRetainingCapacity();
+                cv.cur = null;
+            },
+            .close_path => if (cv.cur != null) {
+                cv.add(.close);
+                cv.cur = cv.start;
+            },
+            .move_to => |pt| cv.moveTo(cv.point(pt[0], pt[1])),
+            .line_to => |pt| cv.lineTo(cv.point(pt[0], pt[1])),
+            .rect => |r| {
+                cv.moveTo(cv.point(r[0], r[1]));
+                cv.lineTo(cv.point(r[0] + r[2], r[1]));
+                cv.lineTo(cv.point(r[0] + r[2], r[1] + r[3]));
+                cv.lineTo(cv.point(r[0], r[1] + r[3]));
+                cv.add(.close);
+                // A new subpath at the rectangle's corner.
+                cv.moveTo(cv.point(r[0], r[1]));
+            },
+            .arc => |a| cv.arc(a.x, a.y, a.r, a.a0, a.a1, a.ccw),
+            .bezier_to => |b| {
+                const c1 = cv.point(b[0], b[1]);
+                if (cv.cur == null) cv.moveTo(c1);
+                const end = cv.point(b[4], b[5]);
+                cv.add(.{ .bezier = .{ c1, cv.point(b[2], b[3]), end } });
+                cv.cur = end;
+            },
+            .fill => |even| if (cv.path.items.len > 0) {
+                const geo = cv.pathGeometry(even) orelse return;
+                defer releaseCom(@as(?*c.ID2D1PathGeometry, geo));
+                cv.draw(@ptrCast(geo), cv.st.fill, false);
+            },
+            .stroke => if (cv.path.items.len > 0) {
+                const geo = cv.pathGeometry(false) orelse return;
+                defer releaseCom(@as(?*c.ID2D1PathGeometry, geo));
+                cv.draw(@ptrCast(geo), cv.st.stroke, true);
+            },
+            .clip => |even| {
+                // An empty path clips everything out, as in a browser.
+                const geo = cv.pathGeometry(even) orelse return;
+                cv.clips.append(cv.gpa, geo) catch {
+                    releaseCom(@as(?*c.ID2D1PathGeometry, geo));
+                    return;
+                };
+                cv.pushClip(geo);
+            },
+            .fill_rect => |r| cv.rectOp(r, false),
+            .stroke_rect => |r| cv.rectOp(r, true),
+            .clear_rect => |r| cv.clearRect(r),
+            .fill_text => |t| cv.text(t.t, t.x, t.y, false),
+            .stroke_text => |t| cv.text(t.t, t.x, t.y, true),
+            .fill_style => |src| cv.st.fill = src,
+            .stroke_style => |src| cv.st.stroke = src,
+            .line_width => |w| cv.st.lw = @max(0, w),
+            .line_cap => |cap| cv.st.cap = cap,
+            .line_join => |join| cv.st.join = join,
+            .global_alpha => |a| cv.st.alpha = a,
+            .font => |fnt| cv.st.font = fnt,
+            .text_align => |a| cv.st.talign = a,
+            .text_baseline => |b| cv.st.tbase = b,
+            .linear_gradient => |g| cv.setGrad(g.id, false, .{ g.x0, g.y0, g.x1, g.y1, 0, 0 }),
+            .radial_gradient => |g| cv.setGrad(g.id, true, .{ g.x0, g.y0, g.r0, g.x1, g.y1, g.r1 }),
+            .color_stop => |cs| if (cv.grads.getPtr(cs.id)) |g| {
+                g.stops.append(cv.gpa, .{ .position = std.math.clamp(cs.off, 0, 1), .color = d2dColor(cs.c) }) catch {};
+            },
+        }
+    }
+
+    fn point(cv: *CanvasPainter, x: f32, y: f32) P2 {
+        const m = mget(cv.st.xf);
+        return .{ .x = x * m[0] + y * m[2] + m[4], .y = x * m[1] + y * m[3] + m[5] };
+    }
+
+    fn add(cv: *CanvasPainter, op: PathOp) void {
+        // A point that overflowed through the transform isn't added (as
+        // moveTo and lineTo skip theirs).
+        if (op == .bezier) for (op.bezier) |pt| {
+            if (!std.math.isFinite(pt.x) or !std.math.isFinite(pt.y)) return;
+        };
+        cv.path.append(cv.gpa, op) catch {};
+    }
+
+    fn moveTo(cv: *CanvasPainter, pt: P2) void {
+        if (!std.math.isFinite(pt.x) or !std.math.isFinite(pt.y)) return;
+        cv.add(.{ .move = pt });
+        cv.cur = pt;
+        cv.start = pt;
+    }
+
+    fn lineTo(cv: *CanvasPainter, pt: P2) void {
+        if (!std.math.isFinite(pt.x) or !std.math.isFinite(pt.y)) return;
+        if (cv.cur == null) return cv.moveTo(pt);
+        cv.add(.{ .line = pt });
+        cv.cur = pt;
+    }
+
+    /// As cubic Béziers of up to a quarter turn each, from a0 to a1
+    /// (clockwise in the y-down space unless ccw), joined to the current
+    /// point by a line.
+    fn arc(cv: *CanvasPainter, x: f32, y: f32, r: f32, a0: f32, a1: f32, ccw: bool) void {
+        if (r < 0) return;
+        const two_pi: f32 = 2.0 * std.math.pi;
+        const sweep: f32 = if (ccw) blk: {
+            const d = a0 - a1;
+            break :blk -(if (d >= two_pi) two_pi else @mod(d, two_pi));
+        } else blk: {
+            const d = a1 - a0;
+            break :blk if (d >= two_pi) two_pi else @mod(d, two_pi);
+        };
+        const p0 = cv.point(x + r * @cos(a0), y + r * @sin(a0));
+        if (cv.cur == null) cv.moveTo(p0) else cv.lineTo(p0);
+        if (sweep == 0 or r == 0) return;
+        const segs: f32 = @max(1, @ceil(@abs(sweep) / (std.math.pi / 2.0)));
+        const step = sweep / segs;
+        const k = 4.0 / 3.0 * @tan(step / 4);
+        var i: f32 = 0;
+        while (i < segs) : (i += 1) {
+            const t0 = a0 + step * i;
+            const t1 = t0 + step;
+            const cs0 = @cos(t0);
+            const sn0 = @sin(t0);
+            const cs1 = @cos(t1);
+            const sn1 = @sin(t1);
+            const end = cv.point(x + r * cs1, y + r * sn1);
+            cv.add(.{ .bezier = .{
+                cv.point(x + r * (cs0 - k * sn0), y + r * (sn0 + k * cs0)),
+                cv.point(x + r * (cs1 + k * sn1), y + r * (sn1 - k * cs1)),
+                end,
+            } });
+            cv.cur = end;
+        }
+    }
+
+    /// The current path as a Direct2D geometry (caller releases).
+    fn pathGeometry(cv: *CanvasPainter, evenodd: bool) ?*c.ID2D1PathGeometry {
+        const fac = d2d.?;
+        var geo: ?*c.ID2D1PathGeometry = null;
+        if (fac.lpVtbl.*.CreatePathGeometry.?(fac, &geo) < 0 or geo == null) return null;
+        var sink: ?*c.ID2D1GeometrySink = null;
+        if (geo.?.lpVtbl.*.Open.?(geo, &sink) < 0 or sink == null) {
+            releaseCom(geo);
+            return null;
+        }
+        defer releaseCom(sink);
+        const sk: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sink.?);
+        const sv = sk.lpVtbl.*;
+        sv.SetFillMode.?(sk, if (evenodd) c.D2D1_FILL_MODE_ALTERNATE else c.D2D1_FILL_MODE_WINDING);
+        var open = false;
+        var last: P2 = .{ .x = 0, .y = 0 };
+        var fig_start: P2 = last;
+        for (cv.path.items) |op| switch (op) {
+            .move => |pt| {
+                if (open) sv.EndFigure.?(sk, c.D2D1_FIGURE_END_OPEN);
+                sv.BeginFigure.?(sk, pt, c.D2D1_FIGURE_BEGIN_FILLED);
+                open = true;
+                last = pt;
+                fig_start = pt;
+            },
+            .line => |pt| {
+                if (!open) {
+                    sv.BeginFigure.?(sk, last, c.D2D1_FIGURE_BEGIN_FILLED);
+                    open = true;
+                    fig_start = last;
+                }
+                sv.AddLines.?(sk, &pt, 1);
+                last = pt;
+            },
+            .bezier => |b| {
+                if (!open) {
+                    sv.BeginFigure.?(sk, last, c.D2D1_FIGURE_BEGIN_FILLED);
+                    open = true;
+                    fig_start = last;
+                }
+                const seg: c.D2D1_BEZIER_SEGMENT = .{ .point1 = b[0], .point2 = b[1], .point3 = b[2] };
+                sv.AddBeziers.?(sk, &seg, 1);
+                last = b[2];
+            },
+            .close => if (open) {
+                sv.EndFigure.?(sk, c.D2D1_FIGURE_END_CLOSED);
+                open = false;
+                last = fig_start;
+            },
+        };
+        if (open) sv.EndFigure.?(sk, c.D2D1_FIGURE_END_OPEN);
+        if (sv.Close.?(sk) < 0) {
+            releaseCom(geo);
+            return null;
+        }
+        return geo;
+    }
+
+    /// A paint's brush with the global alpha in (caller releases); null:
+    /// nothing to paint with (a gradient without stops).
+    fn brushOf(cv: *CanvasPainter, src: tree_mod.CanvasPaint) ?*c.ID2D1Brush {
+        switch (src) {
+            .color => |col| {
+                const v = d2dColor(.{ col[0], col[1], col[2], col[3] * cv.st.alpha });
+                cv.solid.lpVtbl.*.SetColor.?(cv.solid, &v);
+                addRef(cv.solid);
+                return @ptrCast(cv.solid);
+            },
+            .grad => |id| {
+                const g = cv.grads.getPtr(id) orelse return null;
+                const b = cv.gradientBrush(g) orelse return null;
+                b.lpVtbl.*.SetOpacity.?(b, cv.st.alpha);
+                return b;
+            },
+        }
+    }
+
+    fn gradientBrush(cv: *CanvasPainter, g: *const CanvasGrad) ?*c.ID2D1Brush {
+        if (g.stops.items.len == 0) return null;
+        const stops = cv.gpa.dupe(c.D2D1_GRADIENT_STOP, g.stops.items) catch return null;
+        defer cv.gpa.free(stops);
+        // In offset order; stops at the same offset keep theirs (stable).
+        std.sort.insertion(c.D2D1_GRADIENT_STOP, stops, {}, struct {
+            fn less(_: void, a: c.D2D1_GRADIENT_STOP, b: c.D2D1_GRADIENT_STOP) bool {
+                return a.position < b.position;
+            }
+        }.less);
+        // A radial gradient's inner circle (concentric, as Direct2D draws
+        // one): the stops start at r0.
+        if (g.radial and g.g[2] > 0 and g.g[5] > 0) {
+            const k = std.math.clamp(g.g[2] / g.g[5], 0, 1);
+            for (stops) |*st| st.position = k + st.position * (1 - k);
+        }
+        const vt = cv.rt.lpVtbl.*;
+        var coll: ?*c.ID2D1GradientStopCollection = null;
+        if (vt.CreateGradientStopCollection.?(cv.rt, stops.ptr, @intCast(stops.len), c.D2D1_GAMMA_2_2, c.D2D1_EXTEND_MODE_CLAMP, &coll) < 0) return null;
+        defer releaseCom(coll);
+        if (g.radial) {
+            const props: c.D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES = .{
+                .center = .{ .x = g.g[3], .y = g.g[4] },
+                .gradientOriginOffset = .{ .x = g.g[0] - g.g[3], .y = g.g[1] - g.g[4] },
+                .radiusX = @max(0.001, g.g[5]),
+                .radiusY = @max(0.001, g.g[5]),
+            };
+            var b: ?*c.ID2D1RadialGradientBrush = null;
+            if (vt.CreateRadialGradientBrush.?(cv.rt, &props, null, coll, &b) < 0) return null;
+            return @ptrCast(b);
+        }
+        const props: c.D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES = .{
+            .startPoint = .{ .x = g.g[0], .y = g.g[1] },
+            .endPoint = .{ .x = g.g[2], .y = g.g[3] },
+        };
+        var b: ?*c.ID2D1LinearGradientBrush = null;
+        if (vt.CreateLinearGradientBrush.?(cv.rt, &props, null, coll, &b) < 0) return null;
+        return @ptrCast(b);
+    }
+
+    fn setGrad(cv: *CanvasPainter, id: u16, radial: bool, g: [6]f32) void {
+        if (cv.grads.fetchRemove(id)) |old| {
+            var o = old.value;
+            o.stops.deinit(cv.gpa);
+        }
+        cv.grads.put(id, .{ .radial = radial, .g = g }) catch {};
+    }
+
+    fn strokeStyleOf(cv: *CanvasPainter) ?*c.ID2D1StrokeStyle {
+        const caps = [3][]const u8{ "butt", "round", "square" };
+        const joins = [3][]const u8{ "miter", "round", "bevel" };
+        return strokeStyle(caps[@min(2, cv.st.cap)], joins[@min(2, cv.st.join)]);
+    }
+
+    /// Fills or strokes a geometry in the bitmap's space. Drawn back in
+    /// user space (the geometry through the inverse transform, the target
+    /// through the transform) so a gradient's points and the line width
+    /// are the program's; a plain fill needs neither.
+    fn draw(cv: *CanvasPainter, geo: *c.ID2D1Geometry, src: tree_mod.CanvasPaint, stroke: bool) void {
+        const brush = cv.brushOf(src) orelse return;
+        defer releaseCom(@as(?*c.ID2D1Brush, brush));
+        const vt = cv.rt.lpVtbl.*;
+        if (!stroke and src == .color) {
+            vt.SetTransform.?(cv.rt, &identity);
+            vt.FillGeometry.?(cv.rt, geo, brush, null);
+            return;
+        }
+        const inv = invert(cv.st.xf) orelse return;
+        const fac = d2d.?;
+        var tg: ?*c.ID2D1TransformedGeometry = null;
+        if (fac.lpVtbl.*.CreateTransformedGeometry.?(fac, geo, &inv, &tg) < 0 or tg == null) return;
+        defer releaseCom(tg);
+        vt.SetTransform.?(cv.rt, &cv.st.xf);
+        if (stroke) {
+            const style = cv.strokeStyleOf();
+            defer releaseCom(style);
+            vt.DrawGeometry.?(cv.rt, @ptrCast(tg), brush, @max(0.1, cv.st.lw), style);
+        } else vt.FillGeometry.?(cv.rt, @ptrCast(tg), brush, null);
+    }
+
+    /// fillRect / strokeRect: their own rectangle; the current path stays.
+    fn rectOp(cv: *CanvasPainter, r: [4]f32, stroke: bool) void {
+        const brush = cv.brushOf(if (stroke) cv.st.stroke else cv.st.fill) orelse return;
+        defer releaseCom(@as(?*c.ID2D1Brush, brush));
+        const rc: c.D2D1_RECT_F = .{ .left = @min(r[0], r[0] + r[2]), .top = @min(r[1], r[1] + r[3]), .right = @max(r[0], r[0] + r[2]), .bottom = @max(r[1], r[1] + r[3]) };
+        const vt = cv.rt.lpVtbl.*;
+        vt.SetTransform.?(cv.rt, &cv.st.xf);
+        if (stroke) {
+            const style = cv.strokeStyleOf();
+            defer releaseCom(style);
+            vt.DrawRectangle.?(cv.rt, &rc, brush, @max(0.1, cv.st.lw), style);
+        } else vt.FillRectangle.?(cv.rt, &rc, brush);
+    }
+
+    fn pushClip(cv: *CanvasPainter, geo: *c.ID2D1PathGeometry) void {
+        // The mask is in the bitmap's space: no transform.
+        cv.rt.lpVtbl.*.SetTransform.?(cv.rt, &identity);
+        const params: c.D2D1_LAYER_PARAMETERS = .{
+            .contentBounds = .{ .left = -1e6, .top = -1e6, .right = 1e6, .bottom = 1e6 },
+            .geometricMask = @ptrCast(geo),
+            .maskAntialiasMode = c.D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            .maskTransform = identity,
+            .opacity = 1,
+            .opacityBrush = null,
+            .layerOptions = c.D2D1_LAYER_OPTIONS_NONE,
+        };
+        cv.rt.lpVtbl.*.PushLayer.?(cv.rt, &params, null);
+    }
+
+    /// Pops the clip layers above `keep` (and releases their masks).
+    fn popClips(cv: *CanvasPainter, keep: usize) void {
+        while (cv.clips.items.len > keep) {
+            const g = cv.clips.pop().?;
+            cv.rt.lpVtbl.*.PopLayer.?(cv.rt);
+            releaseCom(@as(?*c.ID2D1PathGeometry, g));
+        }
+    }
+
+    /// To transparent, in the bitmap only (whatever's behind the canvas
+    /// shows there: its own CSS background, as in a browser).
+    fn clearRect(cv: *CanvasPainter, r: [4]f32) void {
+        const pts = [4]P2{ cv.point(r[0], r[1]), cv.point(r[0] + r[2], r[1]), cv.point(r[0] + r[2], r[1] + r[3]), cv.point(r[0], r[1] + r[3]) };
+        const vt = cv.rt.lpVtbl.*;
+        const m = mget(cv.st.xf);
+        const none: c.D2D1_COLOR_F = .{ .r = 0, .g = 0, .b = 0, .a = 0 };
+        if (cv.clips.items.len == 0 and m[1] == 0 and m[2] == 0) {
+            // Axis-aligned, unclipped: the common case (a game loop's clear).
+            var rc: c.D2D1_RECT_F = .{ .left = pts[0].x, .top = pts[0].y, .right = pts[0].x, .bottom = pts[0].y };
+            for (pts[1..]) |pt| {
+                rc.left = @min(rc.left, pt.x);
+                rc.top = @min(rc.top, pt.y);
+                rc.right = @max(rc.right, pt.x);
+                rc.bottom = @max(rc.bottom, pt.y);
+            }
+            vt.SetTransform.?(cv.rt, &identity);
+            vt.PushAxisAlignedClip.?(cv.rt, &rc, c.D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            vt.Clear.?(cv.rt, &none);
+            vt.PopAxisAlignedClip.?(cv.rt);
+            return;
+        }
+        // Rotated or clipped: the quad (inside the clips) copied over as
+        // transparent. Out of the clip layers first: inside one, a clear
+        // would only clear the layer, not the bitmap under it.
+        const dc = cv.dc orelse return;
+        var geo: *c.ID2D1Geometry = @ptrCast(polygonGeometry(&pts) orelse return);
+        defer releaseCom(@as(?*c.ID2D1Geometry, geo));
+        for (cv.clips.items) |clip| {
+            const next = intersectGeometry(geo, @ptrCast(clip)) orelse return;
+            releaseCom(@as(?*c.ID2D1Geometry, geo));
+            geo = @ptrCast(next);
+        }
+        for (cv.clips.items) |_| vt.PopLayer.?(cv.rt);
+        vt.SetTransform.?(cv.rt, &identity);
+        cv.solid.lpVtbl.*.SetColor.?(cv.solid, &none);
+        dc.lpVtbl.*.SetPrimitiveBlend.?(dc, c.D2D1_PRIMITIVE_BLEND_COPY);
+        vt.FillGeometry.?(cv.rt, geo, @ptrCast(cv.solid), null);
+        dc.lpVtbl.*.SetPrimitiveBlend.?(dc, c.D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+        for (cv.clips.items) |clip| cv.pushClip(clip);
+    }
+
+    /// fillText / strokeText: one line (DirectWrite), placed by textAlign
+    /// and textBaseline.
+    fn text(cv: *CanvasPainter, t: []const u8, x: f32, y: f32, stroke: bool) void {
+        const font = cv.st.font;
+        if (t.len == 0 or !(font.size > 0)) return;
+        const u = std.unicode.utf8ToUtf16LeAlloc(cv.gpa, t) catch return;
+        defer cv.gpa.free(u);
+        const family = std.unicode.utf8ToUtf16LeAllocZ(cv.gpa, canvasFamily(font.family)) catch return;
+        defer cv.gpa.free(family);
+        const dw = dwrite.?;
+        const weight: c.DWRITE_FONT_WEIGHT = @intFromFloat(std.math.clamp(font.weight, 1, 999));
+        const style: c.DWRITE_FONT_STYLE = if (font.italic) c.DWRITE_FONT_STYLE_ITALIC else c.DWRITE_FONT_STYLE_NORMAL;
+        var format: ?*c.IDWriteTextFormat = null;
+        if (dw.lpVtbl.*.CreateTextFormat.?(dw, family.ptr, null, weight, style, c.DWRITE_FONT_STRETCH_NORMAL, font.size, std.unicode.utf8ToUtf16LeStringLiteral(""), &format) < 0 or format == null) return;
+        defer releaseCom(format);
+        _ = format.?.lpVtbl.*.SetWordWrapping.?(format, c.DWRITE_WORD_WRAPPING_NO_WRAP);
+        var layout: ?*c.IDWriteTextLayout = null;
+        if (dw.lpVtbl.*.CreateTextLayout.?(dw, u.ptr, @intCast(u.len), format, 1e6, 1e6, &layout) < 0 or layout == null) return;
+        defer releaseCom(layout);
+        const l = layout.?;
+        var m: c.DWRITE_TEXT_METRICS = undefined;
+        if (l.lpVtbl.*.GetMetrics.?(l, &m) < 0) return;
+        var lm: [1]c.DWRITE_LINE_METRICS = undefined;
+        var lines: u32 = 0;
+        const baseline: f32 = if (l.lpVtbl.*.GetLineMetrics.?(l, &lm, 1, &lines) >= 0 and lines > 0) lm[0].baseline else font.size * 0.8;
+        // The layout's top-left from the anchor (x, y).
+        var tx = x;
+        var ty = y;
+        switch (cv.st.talign) {
+            1 => tx -= m.width / 2,
+            2 => tx -= m.width,
+            else => {},
+        }
+        switch (cv.st.tbase) {
+            1 => {}, // top
+            3 => ty -= m.height / 2, // middle
+            4 => ty -= m.height, // bottom
+            else => ty -= baseline, // alphabetic / hanging
+        }
+        const vt = cv.rt.lpVtbl.*;
+        if (!stroke) {
+            const brush = cv.brushOf(cv.st.fill) orelse return;
+            defer releaseCom(@as(?*c.ID2D1Brush, brush));
+            vt.SetTransform.?(cv.rt, &cv.st.xf);
+            vt.DrawTextLayout.?(cv.rt, .{ .x = tx, .y = ty }, l, brush, draw_text_color_font);
+            return;
+        }
+        // The glyphs' outlines, stroked (the current path stays out of it).
+        const outline = glyphOutline(cv.gpa, t, family, weight, style, font.size) orelse return;
+        defer releaseCom(@as(?*c.ID2D1PathGeometry, outline));
+        const fac = d2d.?;
+        const at = matrix(1, 0, 0, 1, tx, ty + baseline);
+        var tg: ?*c.ID2D1TransformedGeometry = null;
+        if (fac.lpVtbl.*.CreateTransformedGeometry.?(fac, @ptrCast(outline), &at, &tg) < 0 or tg == null) return;
+        defer releaseCom(tg);
+        const brush = cv.brushOf(cv.st.stroke) orelse return;
+        defer releaseCom(@as(?*c.ID2D1Brush, brush));
+        const st_style = cv.strokeStyleOf();
+        defer releaseCom(st_style);
+        vt.SetTransform.?(cv.rt, &cv.st.xf);
+        vt.DrawGeometry.?(cv.rt, @ptrCast(tg), brush, @max(0.1, cv.st.lw), st_style);
+    }
+};
+
+/// A canvas font's family: the first of the list, the generic ones as
+/// Windows' faces.
+fn canvasFamily(family: []const u8) []const u8 {
+    const first = std.mem.trim(u8, if (std.mem.indexOfScalar(u8, family, ',')) |i| family[0..i] else family, " \t'\"");
+    if (first.len == 0 or std.ascii.eqlIgnoreCase(first, "sans-serif") or std.ascii.eqlIgnoreCase(first, "system-ui")) return "Segoe UI";
+    if (std.ascii.eqlIgnoreCase(first, "monospace")) return "Consolas";
+    if (std.ascii.eqlIgnoreCase(first, "serif")) return "Times New Roman";
+    return first;
+}
+
+/// A closed polygon (caller releases).
+fn polygonGeometry(pts: []const P2) ?*c.ID2D1PathGeometry {
+    const fac = d2d.?;
+    var geo: ?*c.ID2D1PathGeometry = null;
+    if (fac.lpVtbl.*.CreatePathGeometry.?(fac, &geo) < 0 or geo == null) return null;
+    var sink: ?*c.ID2D1GeometrySink = null;
+    if (geo.?.lpVtbl.*.Open.?(geo, &sink) < 0 or sink == null) {
+        releaseCom(geo);
+        return null;
+    }
+    defer releaseCom(sink);
+    const sk: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sink.?);
+    const sv = sk.lpVtbl.*;
+    sv.BeginFigure.?(sk, pts[0], c.D2D1_FIGURE_BEGIN_FILLED);
+    sv.AddLines.?(sk, pts[1..].ptr, @intCast(pts.len - 1));
+    sv.EndFigure.?(sk, c.D2D1_FIGURE_END_CLOSED);
+    if (sv.Close.?(sk) < 0) {
+        releaseCom(geo);
+        return null;
+    }
+    return geo;
+}
+
+/// a ∩ b as a new geometry (caller releases).
+fn intersectGeometry(a: *c.ID2D1Geometry, b: *c.ID2D1Geometry) ?*c.ID2D1PathGeometry {
+    const fac = d2d.?;
+    var geo: ?*c.ID2D1PathGeometry = null;
+    if (fac.lpVtbl.*.CreatePathGeometry.?(fac, &geo) < 0 or geo == null) return null;
+    var sink: ?*c.ID2D1GeometrySink = null;
+    if (geo.?.lpVtbl.*.Open.?(geo, &sink) < 0 or sink == null) {
+        releaseCom(geo);
+        return null;
+    }
+    defer releaseCom(sink);
+    const ok = a.lpVtbl.*.CombineWithGeometry.?(a, b, c.D2D1_COMBINE_MODE_INTERSECT, null, 0.25, @ptrCast(sink)) >= 0;
+    const sk: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sink.?);
+    if (sk.lpVtbl.*.Close.?(sk) < 0 or !ok) {
+        releaseCom(geo);
+        return null;
+    }
+    return geo;
+}
+
+/// strokeText's glyphs as one geometry, the baseline's origin at (0, 0)
+/// (caller releases). The family's own glyphs only (no fallback fonts).
+fn glyphOutline(gpa: std.mem.Allocator, t: []const u8, family: [:0]const u16, weight: c.DWRITE_FONT_WEIGHT, style: c.DWRITE_FONT_STYLE, size: f32) ?*c.ID2D1PathGeometry {
+    const dw = dwrite.?;
+    var coll: ?*c.IDWriteFontCollection = null;
+    if (dw.lpVtbl.*.GetSystemFontCollection.?(dw, &coll, c.FALSE) < 0 or coll == null) return null;
+    defer releaseCom(coll);
+    const cl = coll.?;
+    var index: u32 = 0;
+    var exists: c.BOOL = c.FALSE;
+    if (cl.lpVtbl.*.FindFamilyName.?(cl, family.ptr, &index, &exists) < 0 or exists == c.FALSE) {
+        if (cl.lpVtbl.*.FindFamilyName.?(cl, sans_face, &index, &exists) < 0 or exists == c.FALSE) return null;
+    }
+    var fam: ?*c.IDWriteFontFamily = null;
+    if (cl.lpVtbl.*.GetFontFamily.?(cl, index, &fam) < 0 or fam == null) return null;
+    defer releaseCom(fam);
+    var font: ?*c.IDWriteFont = null;
+    if (fam.?.lpVtbl.*.GetFirstMatchingFont.?(fam, weight, c.DWRITE_FONT_STRETCH_NORMAL, style, &font) < 0 or font == null) return null;
+    defer releaseCom(font);
+    var face: ?*c.IDWriteFontFace = null;
+    if (font.?.lpVtbl.*.CreateFontFace.?(font, &face) < 0 or face == null) return null;
+    defer releaseCom(face);
+    const fc = face.?;
+
+    var cps: std.ArrayList(u32) = .empty;
+    defer cps.deinit(gpa);
+    var it = (std.unicode.Utf8View.init(t) catch return null).iterator();
+    while (it.nextCodepoint()) |cp| cps.append(gpa, cp) catch return null;
+    if (cps.items.len == 0) return null;
+    const glyphs = gpa.alloc(u16, cps.items.len) catch return null;
+    defer gpa.free(glyphs);
+    const metrics = gpa.alloc(c.DWRITE_GLYPH_METRICS, cps.items.len) catch return null;
+    defer gpa.free(metrics);
+    const advances = gpa.alloc(f32, cps.items.len) catch return null;
+    defer gpa.free(advances);
+    if (fc.lpVtbl.*.GetGlyphIndicesW.?(fc, cps.items.ptr, @intCast(cps.items.len), glyphs.ptr) < 0) return null;
+    if (fc.lpVtbl.*.GetDesignGlyphMetrics.?(fc, glyphs.ptr, @intCast(glyphs.len), metrics.ptr, c.FALSE) < 0) return null;
+    var fm: c.DWRITE_FONT_METRICS = undefined;
+    fc.lpVtbl.*.GetMetrics.?(fc, &fm);
+    const upem: f32 = @floatFromInt(@max(1, fm.designUnitsPerEm));
+    for (metrics, advances) |gm, *adv| adv.* = @as(f32, @floatFromInt(gm.advanceWidth)) * size / upem;
+
+    const fac = d2d.?;
+    var geo: ?*c.ID2D1PathGeometry = null;
+    if (fac.lpVtbl.*.CreatePathGeometry.?(fac, &geo) < 0 or geo == null) return null;
+    var sink: ?*c.ID2D1GeometrySink = null;
+    if (geo.?.lpVtbl.*.Open.?(geo, &sink) < 0 or sink == null) {
+        releaseCom(geo);
+        return null;
+    }
+    defer releaseCom(sink);
+    const ok = fc.lpVtbl.*.GetGlyphRunOutline.?(fc, size, glyphs.ptr, advances.ptr, null, @intCast(glyphs.len), c.FALSE, c.FALSE, @ptrCast(sink)) >= 0;
+    const sk: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sink.?);
+    if (sk.lpVtbl.*.Close.?(sk) < 0 or !ok) {
+        releaseCom(geo);
+        return null;
+    }
+    return geo;
 }
 
 // ---------------------------------------------------------------------------
@@ -1385,6 +2164,7 @@ fn paint(p: *Painter, n: *Node) void {
         .icon => paintIcon(p, n),
         .image => paintImage(p, n),
         .view => if (n.props.ctl != null) paintControl(p, n),
+        .canvas => paintCanvas(p, n),
         else => {},
     }
     for (n.kids.items) |k| paint(p, k);
