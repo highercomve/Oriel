@@ -1438,6 +1438,28 @@ fn roundRectGeometry(f: Rect, r: [4]f32) ?*c.ID2D1PathGeometry {
     return geo;
 }
 
+/// A filled triangle as a path geometry (a border side's mask). Caller
+/// releases.
+fn triangleGeometry(a: c.D2D1_POINT_2F, b: c.D2D1_POINT_2F, d: c.D2D1_POINT_2F) ?*c.ID2D1PathGeometry {
+    const fac = d2d.?;
+    var geo: ?*c.ID2D1PathGeometry = null;
+    if (fac.lpVtbl.*.CreatePathGeometry.?(fac, &geo) < 0) return null;
+    var sink: ?*c.ID2D1GeometrySink = null;
+    if (geo.?.lpVtbl.*.Open.?(geo, &sink) < 0) {
+        releaseCom(geo);
+        return null;
+    }
+    const simple: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sink.?);
+    const sv = simple.lpVtbl.*;
+    sv.BeginFigure.?(simple, a, c.D2D1_FIGURE_BEGIN_FILLED);
+    const pts = [2]c.D2D1_POINT_2F{ b, d };
+    sv.AddLines.?(simple, &pts, pts.len);
+    sv.EndFigure.?(simple, c.D2D1_FIGURE_END_CLOSED);
+    _ = sv.Close.?(simple);
+    releaseCom(sink);
+    return geo;
+}
+
 fn fillShape(p: *Painter, f: Rect, r: [4]f32, brush: *c.ID2D1Brush) void {
     if (f.w <= 0 or f.h <= 0) return;
     const vt = p.vt();
@@ -1528,7 +1550,42 @@ fn border(p: *Painter, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) v
         const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
         var ri = r;
         for (&ri) |*x| x.* = @max(0, x.* - half);
-        strokeShape(p, inner, ri, p.solid(colors[0]), bw[0]);
+        const same = for (colors[1..]) |col| {
+            if (!std.mem.eql(f32, &col, &colors[0])) break false;
+        } else true;
+        if (same) {
+            strokeShape(p, inner, ri, p.solid(colors[0]), bw[0]);
+            return;
+        }
+        // Sides in different colors (a spinner: border-top-color on a grey
+        // ring): the rounded border stroked once per side, masked to that
+        // side's wedge (its two corners and the box's center), so the
+        // colors meet on the diagonals, as in CSS.
+        const center: c.D2D1_POINT_2F = .{ .x = f.x + f.w / 2, .y = f.y + f.h / 2 };
+        const corners = [4]c.D2D1_POINT_2F{
+            .{ .x = f.x, .y = f.y },
+            .{ .x = f.x + f.w, .y = f.y },
+            .{ .x = f.x + f.w, .y = f.y + f.h },
+            .{ .x = f.x, .y = f.y + f.h },
+        };
+        const vt = p.vt();
+        for (0..4) |i| {
+            if (colors[i][3] <= 0) continue;
+            const wedge = triangleGeometry(corners[i], corners[(i + 1) % 4], center) orelse continue;
+            defer releaseCom(@as(?*c.ID2D1PathGeometry, wedge));
+            const params: c.D2D1_LAYER_PARAMETERS = .{
+                .contentBounds = .{ .left = -1e6, .top = -1e6, .right = 1e6, .bottom = 1e6 },
+                .geometricMask = @ptrCast(wedge),
+                .maskAntialiasMode = c.D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                .maskTransform = identity,
+                .opacity = 1,
+                .opacityBrush = null,
+                .layerOptions = c.D2D1_LAYER_OPTIONS_NONE,
+            };
+            vt.PushLayer.?(p.rt, &params, null);
+            strokeShape(p, inner, ri, p.solid(colors[i]), bw[0]);
+            vt.PopLayer.?(p.rt);
+        }
         return;
     }
     // Per side (straight edges).
