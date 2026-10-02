@@ -1,0 +1,122 @@
+{
+  "method": "One visible current ReleaseFast process, medians of three trials in the second benchmark round; 900x700 floating window. Baseline phase-1 process is recorded separately in 2026-10-02-rows-phase2-desktop.json (200.10/701.17 ms builds, 42.48/134.54 ms updates). Current runtime includes shared native styles for text and containers, frame-local flex row reuse, HTML templates, GTK shared text measurements and per-node natural sizes, node table compaction, and streamlined single-run updates. No concurrent benchmark or compilation.",
+  "window": {
+    "after": {
+      "size": [
+        900,
+        700
+      ],
+      "at": [
+        800,
+        350
+      ],
+      "floating": true,
+      "class": "dev.oriel.RenderBench"
+    }
+  },
+  "reports": {
+    "after": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 43,
+          "runs": [
+            43
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 205,
+          "runs": [
+            205
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 110,
+          "runs": [
+            110
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 152.96,
+          "runs": [
+            152.96,
+            149.6,
+            206.73
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 459.8,
+          "runs": [
+            438.92,
+            480.13,
+            459.8
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 20.36,
+          "runs": [
+            22.07,
+            20.36,
+            19.71
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 62.77,
+          "runs": [
+            68.04,
+            62.38,
+            62.77
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 60.28,
+          "runs": [
+            60.28,
+            60.27,
+            60.28
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60,
+          "runs": [
+            60.08,
+            60,
+            60
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls": {
+          "median": 60.02,
+          "runs": [
+            59.98,
+            60.02,
+            60.02
+          ],
+          "unit": "fps"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 218,
+          "runs": [
+            218
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 238,
+          "runs": [
+            238
+          ],
+          "unit": "MB"
+        }
+      }
+    }
+  }
+}

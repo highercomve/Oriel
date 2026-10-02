@@ -27,6 +27,11 @@ pub const Run = struct {
     bg: ?Color = null,
 };
 
+// A text-only update owns its new string separately from the unchanged
+// box/font props arena. Replaced in place, never accumulated per frame.
+const TextOverride = struct { run: Run, text: []u8 };
+const LeafStyle = struct { arena: std.heap.ArenaAllocator, props: Props };
+
 /// A linear gradient (`angle`), or a radial one: `radial` is cx, cy, rx,
 /// ry, each px (a number) or a percentage of the box ("50%").
 pub const Gradient = struct { angle: f32 = 180, radial: ?[4]Dim = null, stops: []const [5]f32 = &.{} };
@@ -410,6 +415,11 @@ pub const Node = struct {
     content_w: f32 = 0,
     /// The backend's widget for this node, if any.
     native: ?*anyopaque = null,
+    /// Backend natural text size; invalidated on props/text changes. A
+    /// backend epoch invalidates it when font context settings change.
+    measured_text_size: ?[2]f32 = null,
+    text_measure_epoch: u64 = 0,
+    text_override: ?*TextOverride = null,
     tree: *Tree,
 
     /// Draws something itself (vs. a box that only lays out its children).
@@ -447,6 +457,9 @@ pub const Node = struct {
 pub const Measure = *const fn (ctx: *anyopaque, node: *Node, max_width: f32, out: *[2]f32) void;
 
 pub const Tree = struct {
+    deleted_nodes: usize = 0,
+    leaf_styles: std.AutoHashMapUnmanaged(i64, *LeafStyle) = .empty,
+    leaf_style_bytes: usize = 0,
     gpa: std.mem.Allocator,
     nodes: std.AutoHashMap(i64, *Node),
     root: ?*Node = null,
@@ -462,6 +475,7 @@ pub const Tree = struct {
     /// Called after a node's props changed, with the props as sent (backends
     /// that keep their own copy: Android).
     on_props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
+    on_text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
 
     pub fn init(gpa: std.mem.Allocator, measure_ctx: *anyopaque, measure: Measure) Tree {
         const config = yg.YGConfigNew();
@@ -474,11 +488,18 @@ pub const Tree = struct {
         var it = t.nodes.valueIterator();
         while (it.next()) |n| freeNode(t, n.*);
         t.nodes.deinit();
+        var styles = t.leaf_styles.valueIterator();
+        while (styles.next()) |style| {
+            style.*.arena.deinit();
+            t.gpa.destroy(style.*);
+        }
+        t.leaf_styles.deinit(t.gpa);
         yg.YGConfigFree(t.config);
     }
 
     fn freeNode(t: *Tree, n: *Node) void {
         if (t.on_remove) |cb| cb(t.measure_ctx, n);
+        t.dropTextOverride(n);
         yg.YGNodeFree(n.yn);
         n.kids.deinit(t.gpa);
         n.arena.deinit();
@@ -487,6 +508,83 @@ pub const Tree = struct {
 
     pub fn get(t: *Tree, id: i64) ?*Node {
         return t.nodes.get(id);
+    }
+
+    /// Intern immutable typed props once; each new leaf shares them. The
+    /// cache is bounded and lives until nodes are freed at tree destruction.
+    pub fn defineLeafStyle(t: *Tree, id: i64, json: []const u8) !bool {
+        if (t.leaf_styles.contains(id)) return false;
+        if (t.leaf_styles.count() >= 1024 or json.len > 8192 or t.leaf_style_bytes + json.len > 2 * 1024 * 1024) return false;
+        const style = try t.gpa.create(LeafStyle);
+        errdefer t.gpa.destroy(style);
+        style.* = .{ .arena = .init(t.gpa), .props = .{} };
+        errdefer style.arena.deinit();
+        const a = style.arena.allocator();
+        style.props = try std.json.parseFromSliceLeaky(Props, a, json, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+        try ownProps(a, &style.props);
+        try t.leaf_styles.put(t.gpa, id, style);
+        t.leaf_style_bytes += json.len;
+        return true;
+    }
+
+    /// Create a new text/view node without reparsing and copying its style.
+    /// View children can be attached through the ordinary kids operation.
+    /// No existing node is replaced: a declined call leaves JSON fallback
+    /// free to handle general updates and backend mirrored properties.
+    pub fn createLeaf(t: *Tree, id: i64, kind: Kind, style_id: i64, text: []const u8) !bool {
+        if (t.nodes.contains(id) or (kind != .text and kind != .view)) return false;
+        const style = t.leaf_styles.get(style_id) orelse return false;
+        if (kind == .text and (style.props.runs == null or style.props.runs.?.len != 1)) return false;
+        if (kind == .view and style.props.runs != null) return false;
+        try t.create(id, kind);
+        errdefer t.destroy(id);
+        const n = t.get(id).?;
+        n.props = style.props;
+        if (kind == .text) {
+            const owned = try t.gpa.dupe(u8, text);
+            errdefer t.gpa.free(owned);
+            const o = try t.gpa.create(TextOverride);
+            o.* = .{ .run = style.props.runs.?[0], .text = owned };
+            o.run.t = owned;
+            n.text_override = o;
+            n.props.runs = @as(*const [1]Run, @ptrCast(&o.run));
+        }
+        styleYoga(n);
+        t.dirty = true;
+        return true;
+    }
+
+    fn dropTextOverride(t: *Tree, n: *Node) void {
+        if (n.text_override) |o| {
+            n.props.runs = null;
+            t.gpa.free(o.text);
+            t.gpa.destroy(o);
+            n.text_override = null;
+        }
+    }
+
+    /// Direct bridge for one existing text run: unchanged font, paint and
+    /// layout props need neither JSON decoding nor Yoga style setters.
+    pub fn updateText(t: *Tree, id: i64, text: []const u8) !bool {
+        const n = t.nodes.get(id) orelse return false;
+        if (n.kind != .text) return false;
+        const runs = n.props.runs orelse return false;
+        if (runs.len != 1) return false;
+        if (std.mem.eql(u8, runs[0].t, text)) return true;
+        const owned = try t.gpa.dupe(u8, text);
+        errdefer t.gpa.free(owned);
+        const o = n.text_override orelse try t.gpa.create(TextOverride);
+        const run = runs[0];
+        if (n.text_override != null) t.gpa.free(o.text);
+        o.* = .{ .run = run, .text = owned };
+        o.run.t = owned;
+        n.text_override = o;
+        n.props.runs = @as(*const [1]Run, @ptrCast(&o.run));
+        n.measured_text_size = null;
+        if (t.on_text) |cb| cb(t.measure_ctx, n);
+        yg.YGNodeMarkDirty(n.yn);
+        t.dirty = true;
+        return true;
     }
 
     // -----------------------------------------------------------------
@@ -523,6 +621,12 @@ pub const Tree = struct {
                 else => {},
             }
         }
+        // Rebuilding lists leaves tombstones in the node lookup table.
+        // Compact in place after large removals before new ids arrive.
+        if (t.deleted_nodes >= 1024) {
+            t.nodes.rehash();
+            t.deleted_nodes = 0;
+        }
         t.dirty = true;
     }
 
@@ -547,6 +651,11 @@ pub const Tree = struct {
         if (t.nodes.get(id) != null) t.destroy(id);
         const n = try t.gpa.create(Node);
         n.* = .{ .id = id, .kind = kind, .yn = yg.YGNodeNewWithConfig(t.config), .arena = .init(t.gpa), .tree = t };
+        errdefer {
+            yg.YGNodeFree(n.yn);
+            n.arena.deinit();
+            t.gpa.destroy(n);
+        }
         yg.YGNodeSetContext(n.yn, n);
         if (kind == .text or kind == .input or kind == .textarea or kind == .select or kind == .image) {
             yg.YGNodeSetMeasureFunc(n.yn, measureFn);
@@ -557,6 +666,7 @@ pub const Tree = struct {
     fn destroy(t: *Tree, id: i64) void {
         const n = t.nodes.get(id) orelse return;
         _ = t.nodes.remove(id);
+        t.deleted_nodes += 1;
         if (n.parent) |p| {
             for (p.kids.items, 0..) |k, i| if (k == n) {
                 _ = p.kids.orderedRemove(i);
@@ -579,6 +689,8 @@ pub const Tree = struct {
         const unconsumed: ?[]u8 = if (n.pending_value) |v| try t.gpa.dupe(u8, v) else null;
         defer if (unconsumed) |u| t.gpa.free(u);
         n.pending_value = null;
+        n.measured_text_size = null;
+        t.dropTextOverride(n);
         // Keep a little for the next props, not an old <img> data: URI's megabytes.
         _ = n.arena.reset(.{ .retain_with_limit = 64 * 1024 });
         // The old props' slices are gone with the reset: if copying the new
@@ -1141,6 +1253,122 @@ fn alignOf(s: ?[]const u8, default: yg.YGAlign) yg.YGAlign {
 
 fn testMeasure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
     out.* = .{ 10, 10 };
+}
+
+test "shared leaf styles own strings and isolate text and general updates" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    const source = try std.testing.allocator.dupe(u8,
+        \\{"w":"50%","pad":[1,2,3,4],"fz":18,"runs":[{"t":"","sz":18,"w":700,"c":[255,0,0,1]}]}
+    );
+    defer std.testing.allocator.free(source);
+    try std.testing.expect(try t.defineLeafStyle(1, source));
+    @memset(source, 'x');
+    try std.testing.expect(try t.createLeaf(10, .text, 1, "first Ω\x00"));
+    try std.testing.expect(try t.createLeaf(11, .text, 1, "second"));
+    const a = t.get(10).?;
+    const b = t.get(11).?;
+    try std.testing.expectEqualStrings("50%", a.props.w.?.string);
+    try std.testing.expectEqualStrings("first Ω\x00", a.props.runs.?[0].t);
+    try std.testing.expectEqualStrings("second", b.props.runs.?[0].t);
+    try std.testing.expect(!try t.createLeaf(10, .text, 1, "duplicate"));
+    try std.testing.expect(!try t.createLeaf(12, .input, 1, "field"));
+    try std.testing.expect(!try t.createLeaf(12, .view, 1, "not text"));
+    try std.testing.expect(!try t.createLeaf(12, .text, 99, "missing"));
+    try std.testing.expect(try t.updateText(10, "updated"));
+    try std.testing.expectEqualStrings("second", b.props.runs.?[0].t);
+    try t.apply(
+        \\[["p",10,{"w":90,"runs":[{"t":"general","sz":22}]}]]
+    );
+    try std.testing.expectEqualStrings("general", a.props.runs.?[0].t);
+    try std.testing.expectEqual(@as(f32, 22), a.props.runs.?[0].sz);
+    try std.testing.expectEqual(@as(f32, 18), b.props.runs.?[0].sz);
+    try std.testing.expectEqualStrings("50%", b.props.w.?.string);
+    try std.testing.expect(try t.defineLeafStyle(2, "{\"w\":8,\"h\":8,\"bg\":{\"color\":[255,0,0,1]}}"));
+    try std.testing.expect(try t.createLeaf(12, .view, 2, ""));
+    try std.testing.expectEqual(@as(i64, 8), t.get(12).?.props.w.?.integer);
+    try std.testing.expect(!try t.defineLeafStyle(2, "{}"));
+}
+
+fn leafAllocationFailures(gpa: std.mem.Allocator) !void {
+    var ctx: u8 = 0;
+    var t = Tree.init(gpa, &ctx, testMeasure);
+    defer t.deinit();
+    _ = try t.defineLeafStyle(1, "{\"w\":\"50%\",\"runs\":[{\"t\":\"\",\"sz\":18}]}");
+    _ = try t.createLeaf(10, .text, 1, "owned text");
+    _ = try t.updateText(10, "updated text");
+}
+
+test "leaf style and text creation clean up every allocation failure" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, leafAllocationFailures, .{});
+}
+
+test "native node lookup survives repeated large list removals" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var ctx: u8 = 0;
+    var t = Tree.init(gpa, &ctx, testMeasure);
+    defer t.deinit();
+    _ = try t.defineLeafStyle(1, "{\"w\":8,\"h\":8}");
+    _ = try t.createLeaf(99, .view, 1, "");
+    const permanent = t.get(99).?;
+    for (0..3) |round| {
+        const base: i64 = @intCast(100 + round * 2000);
+        var ops: std.ArrayList(u8) = .empty;
+        defer ops.deinit(gpa);
+        try ops.append(gpa, '[');
+        for (0..1100) |i| {
+            const id = base + @as(i64, @intCast(i));
+            try std.testing.expect(try t.createLeaf(id, .view, 1, ""));
+            if (i > 0) try ops.append(gpa, ',');
+            var buf: [48]u8 = undefined;
+            try ops.appendSlice(gpa, try std.fmt.bufPrint(&buf, "[\"d\",{d}]", .{id}));
+        }
+        try ops.append(gpa, ']');
+        try t.apply(ops.items);
+        try std.testing.expectEqual(@as(u32, 1), t.nodes.count());
+        try std.testing.expectEqual(permanent, t.get(99).?);
+        try std.testing.expect(t.get(base) == null);
+    }
+}
+
+test "direct text updates preserve props, dirty layout, and release overrides" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",1,"text"],["p",1,{"w":100,"fz":18,"pad":[1,2,3,4],"runs":[{"t":"old","sz":18,"w":700,"c":[255,0,0,1]}]}],["r",1]]
+    );
+    const n = t.get(1).?;
+    t.layout();
+    try std.testing.expect(!t.dirty);
+    n.measured_text_size = .{ 10, 10 };
+    try std.testing.expect(try t.updateText(1, "new Ω\x00text"));
+    try std.testing.expect(n.measured_text_size == null);
+    try std.testing.expect(t.dirty);
+    try std.testing.expect(yg.YGNodeIsDirty(n.yn));
+    const run = n.props.runs.?[0];
+    try std.testing.expectEqualStrings("new Ω\x00text", run.t);
+    try std.testing.expectEqual(@as(f32, 18), run.sz);
+    try std.testing.expectEqual(@as(f32, 700), run.w);
+    try std.testing.expectEqual(@as(f32, 255), run.c[0]);
+    try std.testing.expectEqual(@as(i64, 100), n.props.w.?.integer);
+    try std.testing.expectEqual(@as(i64, 2), n.props.pad.?[1].integer);
+    for (0..10) |_| try std.testing.expect(try t.updateText(1, "again"));
+    try std.testing.expect(!try t.updateText(99, "unknown"));
+    try t.apply(
+        \\[["p",1,{"runs":[{"t":"general"}]}]]
+    );
+    try std.testing.expect(n.text_override == null);
+    try std.testing.expectEqualStrings("general", n.props.runs.?[0].t);
+    try t.apply(
+        \\[["p",1,{"runs":[{"t":"one"},{"t":"two"}]}]]
+    );
+    try std.testing.expect(!try t.updateText(1, "mixed"));
 }
 
 test "a field's pending value survives a props update without one" {
