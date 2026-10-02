@@ -134,6 +134,9 @@ export class Renderer {
     const id = this.idOf(el, "el");
     this.owner.set(id, el);
     const props = boxProps(cs, display, fontSize, el);
+    // align-self applies to flex and grid items only: in a block it does
+    // nothing (the box fills the line). Inline boxes get theirs below.
+    if (!ctx.blockify) delete props.as;
     const transitions = transitionsOf(cs);
     if (transitions) this.specs.set(id, transitions);
     this.noteAnimations(id, cs, fontSize);
@@ -232,6 +235,15 @@ export class Renderer {
       props.ph = el.getAttribute("placeholder") || "";
       props.dis = el.hasAttribute("disabled");
       props.pw = type === "password";
+      // A slider: the native side draws one (SeekBar), the value as text.
+      if (type === "range") {
+        const n = (a, d) => { const v = parseFloat(el.getAttribute(a)); return Number.isFinite(v) ? v : d; };
+        props.range = [n("min", 0), n("max", 100), el.getAttribute("step") === "any" ? 0 : n("step", 1)];
+        if (props.h === undefined || props.h === "auto") props.h = 24;
+        const acc = color(cs["accent-color"] || "");
+        if (acc) props.acc = acc;
+        delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
+      }
       return this.put(nodes, id, tag === "textarea" ? "textarea" : "input", props, [], fixedNode);
     }
 
@@ -296,7 +308,7 @@ export class Renderer {
       // A scroll container's children keep their size too: CSS's min-size:
       // auto, which Yoga doesn't have (it would squeeze them to fit, and
       // there would be nothing to scroll).
-      else if (props.scroll && !this.cs.get(item.el)?.["flex-shrink"]) { const n = nodes.get(cid); if (n) n.props.fs = 0; }
+      else if ((props.scroll || props.scrollx) && !this.cs.get(item.el)?.["flex-shrink"]) { const n = nodes.get(cid); if (n) n.props.fs = 0; }
       // A column whose height isn't definite (no height, not flexed itself:
       // min-height at most): CSS sizes a percentage flex-basis (`flex: 1`
       // is 1 1 0%) from the content, and min-height: auto keeps the item
@@ -576,12 +588,18 @@ function boxProps(cs, display, fs, el) {
     p.pos = "absolute";
     const ins = sides.map((s) => { const l = num(cs[s], fs); return l === undefined || l === "auto" ? null : typeof l === "object" ? `${l.pct}%` : l; });
     p.ins = ins;
+  } else if (cs.position === "sticky") {
+    // In the flow, then kept inside its scroll container's view (tree.zig).
+    const ins = sides.map((s) => { const l = num(cs[s], fs); return typeof l === "number" ? l : null; });
+    if (ins.some((x) => x !== null)) p.sticky = ins;
   } else if (cs.position === "relative") {
     const ins = sides.map((s) => { const l = num(cs[s], fs); return typeof l === "number" ? l : null; });
     if (ins.some((x) => x !== null)) p.rel = ins;
   }
   const ov = cs["overflow-y"] || cs.overflow;
   if (ov === "auto" || ov === "scroll") p.scroll = true;
+  const ovx = cs["overflow-x"];
+  if (ovx === "auto" || ovx === "scroll") p.scrollx = true;
   if (cs["overflow-x"] === "hidden" || cs["overflow-y"] === "hidden" || cs.overflow === "hidden") p.clip = true;
   if (cs["aspect-ratio"]) p.ar = parseFloat(cs["aspect-ratio"]);
   // Transforms: translate moves the box; scale and rotate are drawn around its center.

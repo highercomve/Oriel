@@ -154,6 +154,16 @@ pub const Engine = struct {
     }
 
     /// Scroll a container by `dy`: true if it moved.
+    /// Scroll a container sideways by `dx`: true if it moved.
+    pub fn scrollByX(e: *Engine, node: *Node, dx: f32) bool {
+        const before = node.scroll_x;
+        node.scroll_x = std.math.clamp(node.scroll_x + dx, 0, @max(0, node.content_w - node.frame.w));
+        if (node.scroll_x == before) return false;
+        e.tree.replace();
+        e.backend.laid_out(e.backend.ctx);
+        return true;
+    }
+
     pub fn scrollBy(e: *Engine, node: *Node, dy: f32) bool {
         const before = node.scroll_y;
         node.scroll_y = std.math.clamp(node.scroll_y + dy, 0, @max(0, node.content_h - node.frame.h));

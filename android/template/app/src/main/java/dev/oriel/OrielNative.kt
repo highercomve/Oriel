@@ -46,6 +46,7 @@ import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.OverScroller
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import org.json.JSONArray
@@ -55,8 +56,10 @@ import java.nio.ByteOrder
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
@@ -75,6 +78,8 @@ internal object NuiNative {
     @JvmStatic external fun hover(window: Int, x: Float, y: Float)
     @JvmStatic external fun longPress(window: Int, x: Float, y: Float): Boolean
     @JvmStatic external fun scroll(window: Int, x: Float, y: Float, dy: Float): Boolean
+    /** Scroll sideways at (x, y) dp: true if a container moved. */
+    @JvmStatic external fun scrollX(window: Int, x: Float, y: Float, dx: Float): Boolean
     @JvmStatic external fun event(window: Int, id: Int, kind: ByteArray, data: ByteArray): Boolean
     @JvmStatic external fun timer(window: Int, id: Int)
     @JvmStatic external fun back(window: Int): Boolean
@@ -394,6 +399,8 @@ internal object SvgPath {
 internal class NuiView(context: Context, val window: Int, private val onSize: (Int, Int) -> Unit) : FrameLayout(context) {
     private val nodes = HashMap<Int, NuiNode>()
     private val fields = HashMap<Int, View>()
+    /** Each select's value as last shown (the page's, or the user's pick). */
+    private val selectValues = HashMap<Int, String>()
     private var frames = FloatArray(0)
     private val index = HashMap<Int, Int>() // node id → record
     private val density = resources.displayMetrics.density
@@ -471,6 +478,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
 
     fun remove(id: Int) {
         nodes.remove(id)
+        selectValues.remove(id)
         fields.remove(id)?.let { removeView(it) }
     }
 
@@ -492,8 +500,12 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
         updating = true
         try {
             when (f) {
+                is SeekBar -> rangeOf(nodes[id])?.let { f.progress = it.progress(v) }
                 is EditText -> if (f.text.toString() != v) { f.setText(v); f.setSelection(v.length) }
-                is Spinner -> options(nodes[id])?.indexOfFirst { it.first == v }?.let { if (it >= 0) f.setSelection(it) }
+                is Spinner -> {
+                    selectValues[id] = v
+                    options(nodes[id])?.indexOfFirst { it.first == v }?.let { if (it >= 0) f.setSelection(it) }
+                }
             }
         } finally { updating = false }
     }
@@ -591,7 +603,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
 
     private fun makeField(id: Int): View? {
         val n = nodes[id] ?: return null
-        val v: View = when (n.kind) {
+        val v: View = if (n.kind == "input" && n.p.has("range")) slider(n, id) else when (n.kind) {
             "input", "textarea" -> EditText(context).apply {
                 background = null
                 setPadding(0, 0, 0, 0)
@@ -634,7 +646,12 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, rowId: Long) {
                         if (updating) return
                         val o = options(nodes[id]) ?: return
-                        if (pos in o.indices) NuiNative.event(window, id, "change".bytes(), o[pos].first.bytes())
+                        if (pos !in o.indices) return
+                        // Android also calls this after the first layout, with
+                        // what the page already shows: only a new value is a change.
+                        if (selectValues[id] == o[pos].first) return
+                        selectValues[id] = o[pos].first
+                        NuiNative.event(window, id, "change".bytes(), o[pos].first.bytes())
                     }
                     override fun onNothingSelected(parent: AdapterView<*>?) {}
                 }
@@ -653,6 +670,44 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
         styleField(n, v)
         addView(v)
         return v
+    }
+
+    /**
+     * <input type=range>: a SeekBar over the page's min/max/step (`range`).
+     * Dragging sends `input` with the value as text, letting go `change`.
+     */
+    private class Range(val min: Double, val max: Double, step: Double) {
+        val stepSize = if (step > 0) step else (max - min) / 1000
+        val steps = if (max > min && stepSize > 0) ((max - min) / stepSize).roundToInt().coerceIn(1, 100_000) else 1
+        fun progress(v: String) = v.toDoubleOrNull()?.let { ((it.coerceIn(min, max) - min) / stepSize).roundToInt().coerceIn(0, steps) } ?: 0
+        fun value(progress: Int): String {
+            val x = (min + progress * stepSize).coerceIn(min, max)
+            return if (x == floor(x) && abs(x) < 1e15) x.toLong().toString()
+            else String.format(java.util.Locale.ROOT, "%.6f", x).trimEnd('0').trimEnd('.')
+        }
+    }
+
+    private fun rangeOf(n: NuiNode?): Range? {
+        val r = n?.p?.optJSONArray("range") ?: return null
+        return Range(r.optDouble(0, 0.0), r.optDouble(1, 100.0), r.optDouble(2, 1.0))
+    }
+
+    private fun slider(n: NuiNode, id: Int): View = SeekBar(context).apply {
+        setPadding(0, 0, 0, 0)
+        val r = rangeOf(n) ?: Range(0.0, 100.0, 1.0)
+        max = r.steps
+        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser || updating) return
+                val value = (rangeOf(nodes[id]) ?: r).value(progress)
+                NuiNative.event(window, id, "input".bytes(), value.bytes())
+            }
+            override fun onStartTrackingTouch(bar: SeekBar) {}
+            override fun onStopTrackingTouch(bar: SeekBar) {
+                val value = (rangeOf(nodes[id]) ?: r).value(bar.progress)
+                NuiNative.event(window, id, "change".bytes(), value.bytes())
+            }
+        })
     }
 
     /** A select's options, drawn with the node's font size and color. */
@@ -675,6 +730,21 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
         val color = n.p.optJSONArray("col")?.let { NuiNode.color(it) } ?: Color.BLACK
         val fz = n.p.optDouble("fz", 16.0).toFloat()
         v.isEnabled = !n.p.optBoolean("dis")
+        if (v is SeekBar) {
+            val r = rangeOf(n)
+            updating = true
+            try {
+                if (r != null) {
+                    v.max = r.steps
+                    if (n.p.has("val")) v.progress = r.progress(n.p.optString("val"))
+                }
+            } finally { updating = false }
+            n.p.optJSONArray("acc")?.let { NuiNode.color(it) }?.let {
+                val tint = android.content.res.ColorStateList.valueOf(it)
+                v.progressTintList = tint
+                v.thumbTintList = tint
+            }
+        }
         if (v is Spinner) {
             // New options (the page fills a select later): a new adapter, the
             // page's value selected again, without a change event.
@@ -686,6 +756,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                 if (current == null || current.labels != labels) v.adapter = Options(n.id, labels)
                 else current.notifyDataSetChanged()
                 val value = n.p.optString("val", "")
+                selectValues[n.id] = value
                 val i = opts.indexOfFirst { it.first == value }
                 if (i >= 0 && i != v.selectedItemPosition) v.setSelection(i, false)
             } finally { updating = false }
@@ -725,7 +796,10 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
     private var downX = 0f
     private var downY = 0f
     private var lastY = 0f
+    private var lastX = 0f
     private var dragging = false
+    /** The drag scrolls sideways (it started more across than down). */
+    private var sideways = false
     private var longPressed = false
     private val longPress = Runnable {
         longPressed = true
@@ -747,7 +821,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                 if (under != null && under.canScrollVertically(if (dy < 0) 1 else -1)) return false
                 scroller.forceFinished(true)
                 removeCallbacks(longPress)
-                dragging = true; longPressed = false; lastY = e.y
+                dragging = true; sideways = false; longPressed = false; lastY = e.y; lastX = e.x
                 velocity?.recycle()
                 velocity = VelocityTracker.obtain().also { it.addMovement(e) }
                 return true
@@ -773,11 +847,16 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                 velocity?.addMovement(e)
                 if (!dragging && (abs(e.y - downY) > slop || abs(e.x - downX) > slop)) {
                     dragging = true
+                    sideways = abs(e.x - downX) > abs(e.y - downY)
                     removeCallbacks(longPress)
                     NuiNative.press(window, 0f, 0f, false) // a drag isn't a press
                     lastY = e.y
+                    lastX = e.x
                 }
-                if (dragging) {
+                if (dragging && sideways) {
+                    NuiNative.scrollX(window, downX / density, downY / density, (lastX - e.x) / density)
+                    lastX = e.x
+                } else if (dragging) {
                     NuiNative.scroll(window, downX / density, downY / density, (lastY - e.y) / density)
                     lastY = e.y
                 }
@@ -793,7 +872,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                     val v = velocity
                     v?.computeCurrentVelocity(1000)
                     val vy = v?.yVelocity ?: 0f
-                    if (abs(vy) > ViewConfiguration.get(context).scaledMinimumFlingVelocity) fling(-vy)
+                    if (!sideways && abs(vy) > ViewConfiguration.get(context).scaledMinimumFlingVelocity) fling(-vy)
                 }
                 velocity?.recycle(); velocity = null
             }
@@ -809,12 +888,18 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
     /** The mouse wheel and two-finger trackpad scrolling (ChromeOS, desktop mode). */
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
         if (e.actionMasked == MotionEvent.ACTION_SCROLL && e.isFromSource(android.view.InputDevice.SOURCE_CLASS_POINTER)) {
-            val v = e.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            val vc = ViewConfiguration.get(context)
+            var v = e.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            var h = e.getAxisValue(MotionEvent.AXIS_HSCROLL)
+            // Shift + wheel scrolls sideways, as in a browser.
+            if (e.metaState and KeyEvent.META_SHIFT_ON != 0 && h == 0f) { h = -v; v = 0f }
+            var moved = false
             if (v != 0f) {
                 scroller.forceFinished(true)
-                val dy = -v * ViewConfiguration.get(context).scaledVerticalScrollFactor / density
-                if (NuiNative.scroll(window, e.x / density, e.y / density, dy)) return true
+                moved = NuiNative.scroll(window, e.x / density, e.y / density, -v * vc.scaledVerticalScrollFactor / density)
             }
+            if (h != 0f) moved = NuiNative.scrollX(window, e.x / density, e.y / density, h * vc.scaledHorizontalScrollFactor / density) || moved
+            if (moved) return true
         }
         return super.onGenericMotionEvent(e)
     }
