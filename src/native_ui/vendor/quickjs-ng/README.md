@@ -29,3 +29,9 @@ Each is marked `Oriel:` in the source.
   objects, replacer arrays and indentation take upstream's path. The output
   is the same as V8's on `tests/json-stringify.js`
   (`qjs tests/json-stringify.js` vs `node tests/json-stringify.js`).
+- **A profiler of JavaScript functions** (`ORIEL_QJS_FUNC_PROFILE`, off
+  unless defined; x86-64). Each bytecode function's own time (TSC ticks,
+  callees excluded, builtins it calls included) and calls, the top 60
+  printed to stderr at exit. For the QuickJS harness, e.g. a `qjs` built
+  from upstream's tree with this quickjs.c and
+  `-DCMAKE_C_FLAGS="-O2 -DORIEL_QJS_FUNC_PROFILE"`.

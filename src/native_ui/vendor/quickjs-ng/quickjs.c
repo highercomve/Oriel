@@ -18036,6 +18036,74 @@ static bool needs_backtrace(JSValue exc)
 }
 
 /* argv[] is modified if (flags & JS_CALL_FLAG_COPY_ARGV) = 0. */
+/* Oriel: a profiler of JavaScript functions, for finding what to make
+   faster. Built only with -DORIEL_QJS_FUNC_PROFILE (x86-64): each bytecode
+   function's own time (its callees' excluded; builtins it calls included)
+   in TSC ticks and its calls, printed at exit, the top 60 by own time. */
+#ifdef ORIEL_QJS_FUNC_PROFILE
+#include <x86intrin.h>
+typedef struct { const void *b; char *name; uint64_t self, calls; } QjsProfEntry;
+static QjsProfEntry qjs_prof_tab[1 << 16];
+static struct { QjsProfEntry *e; uint64_t start, child; } qjs_prof_stack[1 << 14];
+static int qjs_prof_sp, qjs_prof_registered;
+static int qjs_prof_cmp(const void *a, const void *b)
+{
+    const QjsProfEntry *x = a, *y = b;
+    return x->self < y->self ? 1 : x->self > y->self ? -1 : 0;
+}
+static void qjs_prof_dump(void)
+{
+    uint64_t total = 0;
+    int i, n = 0;
+    for (i = 0; i < (1 << 16); i++)
+        if (qjs_prof_tab[i].b) { qjs_prof_tab[n++] = qjs_prof_tab[i]; total += qjs_prof_tab[i].self; }
+    qsort(qjs_prof_tab, n, sizeof(qjs_prof_tab[0]), qjs_prof_cmp);
+    fprintf(stderr, "qjs profile: %d functions, own time (%% of all JS):\n", n);
+    for (i = 0; i < n && i < 60; i++)
+        fprintf(stderr, "%6.2f%% %10llu calls  %s\n", total ? 100.0 * qjs_prof_tab[i].self / total : 0.0,
+                (unsigned long long)qjs_prof_tab[i].calls, qjs_prof_tab[i].name);
+}
+static void qjs_prof_enter(JSRuntime *rt, JSFunctionBytecode *b)
+{
+    uint32_t h = (uint32_t)(((uintptr_t)b >> 4) * 2654435761u) >> 16;
+    QjsProfEntry *e;
+    if (!qjs_prof_registered) { qjs_prof_registered = 1; atexit(qjs_prof_dump); }
+    for (;;) {
+        e = &qjs_prof_tab[h];
+        if (e->b == b || !e->b) break;
+        h = (h + 1) & 0xffff;
+    }
+    if (!e->b) {
+        char name[64], file[64], buf[192];
+        e->b = b;
+        snprintf(buf, sizeof(buf), "%s  %s:%d", JS_AtomGetStrRT(rt, name, sizeof(name), b->func_name),
+                 JS_AtomGetStrRT(rt, file, sizeof(file), b->filename), b->line_num);
+        e->name = strdup(buf);
+    }
+    e->calls++;
+    if (qjs_prof_sp < (1 << 14)) {
+        qjs_prof_stack[qjs_prof_sp].e = e;
+        qjs_prof_stack[qjs_prof_sp].start = __rdtsc();
+        qjs_prof_stack[qjs_prof_sp].child = 0;
+    }
+    qjs_prof_sp++;
+}
+static void qjs_prof_exit(void)
+{
+    uint64_t t, now = __rdtsc();
+    if (--qjs_prof_sp >= (1 << 14) || qjs_prof_sp < 0) return;
+    t = now - qjs_prof_stack[qjs_prof_sp].start;
+    qjs_prof_stack[qjs_prof_sp].e->self += t - qjs_prof_stack[qjs_prof_sp].child;
+    if (qjs_prof_sp > 0 && qjs_prof_sp - 1 < (1 << 14))
+        qjs_prof_stack[qjs_prof_sp - 1].child += t;
+}
+#define QJS_PROF_ENTER(rt, b) qjs_prof_enter(rt, b)
+#define QJS_PROF_EXIT() qjs_prof_exit()
+#else
+#define QJS_PROF_ENTER(rt, b) ((void)0)
+#define QJS_PROF_EXIT() ((void)0)
+#endif
+
 static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                                JSValueConst this_obj, JSValueConst new_target,
                                int argc, JSValueConst *argv, int flags)
@@ -18096,6 +18164,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             pc = sf->cur_pc;
             sf->prev_frame = rt->current_stack_frame;
             rt->current_stack_frame = sf;
+            QJS_PROF_ENTER(rt, b);
             if (s->throw_flag)
                 goto exception;
             else
@@ -18167,6 +18236,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
     sf->prev_frame = rt->current_stack_frame;
     rt->current_stack_frame = sf;
     ctx = b->realm; /* set the current realm */
+    QJS_PROF_ENTER(rt, b);
 
 #ifdef ENABLE_DUMPS // JS_DUMP_BYTECODE_STEP
     if (check_dump_flag(ctx->rt, JS_DUMP_BYTECODE_STEP))
@@ -20967,6 +21037,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             JS_FreeValue(ctx, *pval);
         }
     }
+    QJS_PROF_EXIT();
     rt->current_stack_frame = sf->prev_frame;
     return ret_val;
 }
