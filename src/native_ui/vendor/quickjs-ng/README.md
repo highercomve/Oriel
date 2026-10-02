@@ -46,3 +46,7 @@ instructions, as QuickJS's own lookup is one hash probe for most reads;
 doubling property-array growth (1.4% fewer instructions, more memory per
 object). The upstream tests (`tests/*.js` in the upstream tree) pass and
 fail the same with these changes as without.
+- **`JS_GetStringLength`, `JS_ConcatStrings`, `JS_GetStringLatin1`,
+  `JS_GetAtomLatin1`** (quickjs.h): a string value's length, concatenation,
+  and a string's or an atom's 8-bit characters in place, for the native DOM
+  (bindings, selector matching and serializing without copies).

@@ -722,6 +722,17 @@ struct JSStringRope {
     JSValue right;        /* might be the empty string */
 };
 
+/* Oriel: a string value's length in UTF-16 code units (0 if not a string):
+   for the native DOM's bindings, without converting the string. */
+uint32_t JS_GetStringLength(JSValueConst v)
+{
+    switch (JS_VALUE_GET_TAG(v)) {
+    case JS_TAG_STRING: return JS_VALUE_GET_STRING(v)->len;
+    case JS_TAG_STRING_ROPE: return JS_VALUE_GET_STRING_ROPE(v)->len;
+    default: return 0;
+    }
+}
+
 static inline void *strv(JSString *p)
 {
     JSStringSlice *slice;
@@ -65260,3 +65271,38 @@ uintptr_t js_std_cmd(int cmd, ...) {
 #undef malloc
 #undef free
 #undef realloc
+
+/* Oriel: a + b for two strings (both references are taken), for the native
+   DOM's bindings. */
+JSValue JS_ConcatStrings(JSContext *ctx, JSValue a, JSValue b)
+{
+    return JS_ConcatString(ctx, a, b);
+}
+
+/* Oriel: a string's 8-bit characters in place (see quickjs.h), for the
+   native DOM's selector matching without copies. */
+const uint8_t *JS_GetStringLatin1(JSValueConst v, size_t *plen)
+{
+    JSString *p;
+    if (JS_VALUE_GET_TAG(v) != JS_TAG_STRING)
+        return NULL;
+    p = JS_VALUE_GET_STRING(v);
+    if (p->is_wide_char)
+        return NULL;
+    *plen = p->len;
+    return str8(p);
+}
+
+/* Oriel: an atom's 8-bit characters in place (see quickjs.h), for the
+   native DOM's serializer. */
+const uint8_t *JS_GetAtomLatin1(JSContext *ctx, JSAtom atom, size_t *plen)
+{
+    JSAtomStruct *p;
+    if (__JS_AtomIsTaggedInt(atom))
+        return NULL;
+    p = ctx->rt->atom_array[atom];
+    if (p->is_wide_char)
+        return NULL;
+    *plen = p->len;
+    return str8(p);
+}
