@@ -356,6 +356,38 @@ pub const Rect = struct {
 /// within each layer. So a sticky header paints over the rows scrolled
 /// under it, as in a browser. `reverse`: topmost first (hit testing). No
 /// allocation: one pass per layer present (two when nothing is positioned).
+/// A copy of `s` with each invalid UTF-8 sequence as U+FFFD. Text from
+/// the direct bridge comes straight from QuickJS, which keeps a lone
+/// surrogate as bytes no backend can draw (DirectWrite and CoreText drop
+/// the whole run).
+fn dupeUtf8Lossy(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
+    if (std.unicode.utf8ValidateSlice(s)) return gpa.dupe(u8, s);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var i: usize = 0;
+    while (i < s.len) {
+        const len = std.unicode.utf8ByteSequenceLength(s[i]) catch 0;
+        if (len > 0 and i + len <= s.len and std.meta.isError(std.unicode.utf8Decode(s[i .. i + len])) == false) {
+            try out.appendSlice(gpa, s[i .. i + len]);
+            i += len;
+        } else {
+            try out.appendSlice(gpa, "\u{FFFD}");
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+test "dupeUtf8Lossy replaces invalid sequences" {
+    const gpa = std.testing.allocator;
+    const ok = try dupeUtf8Lossy(gpa, "héllo");
+    defer gpa.free(ok);
+    try std.testing.expectEqualStrings("héllo", ok);
+    const bad = try dupeUtf8Lossy(gpa, "\xed\xa0\x80x\xff");
+    defer gpa.free(bad);
+    try std.testing.expectEqualStrings("\u{FFFD}\u{FFFD}\u{FFFD}x\u{FFFD}", bad);
+}
+
 pub const PaintIter = struct {
     kids: []const *Node,
     reverse: bool = false,
@@ -541,7 +573,7 @@ pub const Tree = struct {
         const n = t.get(id).?;
         n.props = style.props;
         if (kind == .text) {
-            const owned = try t.gpa.dupe(u8, text);
+            const owned = try dupeUtf8Lossy(t.gpa, text);
             errdefer t.gpa.free(owned);
             const o = try t.gpa.create(TextOverride);
             o.* = .{ .run = style.props.runs.?[0], .text = owned };
@@ -571,7 +603,7 @@ pub const Tree = struct {
         const runs = n.props.runs orelse return false;
         if (runs.len != 1) return false;
         if (std.mem.eql(u8, runs[0].t, text)) return true;
-        const owned = try t.gpa.dupe(u8, text);
+        const owned = try dupeUtf8Lossy(t.gpa, text);
         errdefer t.gpa.free(owned);
         const o = n.text_override orelse try t.gpa.create(TextOverride);
         const run = runs[0];
