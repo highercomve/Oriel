@@ -163,7 +163,8 @@ object OrielRuntime {
         val intent = if (w.isMain) {
             Intent(app, OrielMainActivity::class.java)
         } else {
-            Intent(app, OrielWindowActivity::class.java).putExtra(EXTRA_WINDOW, id)
+            val cls = if (w.translucent) OrielTransparentWindowActivity::class.java else OrielWindowActivity::class.java
+            Intent(app, cls).putExtra(EXTRA_WINDOW, id)
                 .addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
