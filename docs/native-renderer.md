@@ -126,8 +126,14 @@ all with no clip or transform in effect drops everything recorded before it
 (a game loop's clear-then-redraw then keeps one frame's ops); drawing
 without such a clear accumulates, as in a browser.
 
-GTK, macOS and iOS draw canvases (Apple: a CGBitmapContext per node, in
-apple_draw.zig); Windows and Android lay them out but draw nothing yet.
+GTK, macOS, iOS and Android draw canvases. On Apple (`apple_draw.zig`) the
+program replays into a CGBitmapContext per node. On Android
+(`OrielCanvas.kt`) it is parsed once per change and replayed into an
+`android.graphics.Bitmap` of the canvas's own (frame size × density, at
+most 16384 px a side and 16 M pixels), kept while the size holds and
+recycled when the node goes or the view leaves its window; it is drawn at
+the box, clipped to the border-radius. Windows lays canvases out but
+draws nothing yet.
 
 ## Milestones
 
