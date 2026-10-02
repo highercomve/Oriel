@@ -14,11 +14,13 @@ pub const Node = tree_mod.Node;
 
 const log = std.log.scoped(.native_ui);
 
-/// The JS side, built from src/native_ui/js (npm run build).
-const runtime_js = @embedFile("runtime.js");
+/// The JS side, built from src/native_ui/js (npm run build) into runtime.js,
+/// as QuickJS bytecode (compiled at build time: tools/qjs_bytecode.c).
+const runtime_bytecode = @import("runtime_bytecode").data;
 
 extern fn oqjs_new(opaque_ptr: *anyopaque, platform_json: [*:0]const u8, label: [*:0]const u8, url: [*:0]const u8) ?*anyopaque;
 extern fn oqjs_eval(h: *anyopaque, code: [*]const u8, len: usize, name: [*:0]const u8) c_int;
+extern fn oqjs_eval_bytecode(h: *anyopaque, code: [*]const u8, len: usize) c_int;
 extern fn oqjs_run_jobs(h: *anyopaque) void;
 extern fn oqjs_memory(h: *anyopaque) usize;
 extern fn oqjs_free(h: *anyopaque) void;
@@ -97,7 +99,7 @@ pub const Engine = struct {
         e.tree.on_text = backend.text;
         e.js = oqjs_new(e, platform_json.ptr, label.ptr, url.ptr) orelse return error.QuickJsInitFailed;
         errdefer oqjs_free(e.js);
-        if (oqjs_eval(e.js, runtime_js.ptr, runtime_js.len, "runtime.js") < 0) return error.RuntimeFailed;
+        if (oqjs_eval_bytecode(e.js, runtime_bytecode.ptr, runtime_bytecode.len) < 0) return error.RuntimeFailed;
         return e;
     }
 
