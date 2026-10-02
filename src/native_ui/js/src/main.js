@@ -18,6 +18,7 @@ import { parseHTML } from "linkedom";
 import { StyleEngine, viewport, mediaMatches } from "./css.js";
 import { Renderer, UA_CSS } from "./render.js";
 import * as canvas from "./canvas.js";
+import { parseSimple } from "./html.js";
 
 const host = globalThis.__host;
 
@@ -148,6 +149,25 @@ g.dispatchEvent = (ev) => { fireWindow(ev); return !ev.defaultPrevented; };
 function fireWindow(ev) {
   for (const fn of [...(winListeners.get(ev.type) || [])]) {
     try { fn.call(g, ev); } catch (e) { console.error(e); }
+  }
+}
+
+// innerHTML: plain markup is built directly (html.js), the rest by
+// linkedom's parser.
+{
+  let proto = Object.getPrototypeOf(document.createElement("div"));
+  let desc = null;
+  while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "innerHTML"))) proto = Object.getPrototypeOf(proto);
+  if (desc?.set) {
+    Object.defineProperty(proto, "innerHTML", {
+      configurable: true,
+      get: desc.get,
+      set(html) {
+        const frag = this.localName !== "template" && !this.closest?.("svg, math") ? parseSimple(this.ownerDocument, String(html ?? "")) : null;
+        if (frag) this.replaceChildren(frag);
+        else desc.set.call(this, html);
+      },
+    });
   }
 }
 
@@ -685,9 +705,24 @@ function bindInline(el) {
     bound.set(type, { code: attr.value, fn });
   }
 }
-function bindInlineHandlers(root) {
-  bindInline(root);
-  for (const el of root.querySelectorAll?.("*") || []) bindInline(el);
+// Bound when an event is dispatched, on the elements it reaches (not on
+// every element a page adds: a second document-wide mutation observer
+// that walked each added subtree made building pages slower).
+{
+  let proto = Object.getPrototypeOf(document.body);
+  while (proto && !Object.prototype.hasOwnProperty.call(proto, "dispatchEvent")) proto = Object.getPrototypeOf(proto);
+  if (proto) {
+    const orig = proto.dispatchEvent;
+    proto.dispatchEvent = function (event) {
+      for (let n = this; n && n.nodeType === 1; n = n.parentNode) if (hasInline(n)) bindInline(n);
+      return orig.call(this, event);
+    };
+  }
+}
+function hasInline(el) {
+  if (el.__inline) return true;
+  for (const a of el.attributes || []) if (a.name.length > 2 && a.name[0] === "o" && a.name[1] === "n") return true;
+  return false;
 }
 
 function guard(fn) {
@@ -725,13 +760,6 @@ g.__oriel = {
         // As a global script (not eval): top-level let/const are shared between scripts.
         try { host.evalScript(src || "inline", code); } catch (e) { console.error(e); }
       }
-      bindInlineHandlers(document.documentElement);
-      new MutationObserver((records) => {
-        for (const r of records) {
-          if (r.type === "attributes" && /^on/.test(r.attributeName || "")) bindInline(r.target);
-          for (const n of r.addedNodes || []) if (n.nodeType === 1) bindInlineHandlers(n);
-        }
-      }).observe(document, { subtree: true, childList: true, attributes: true });
       document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
       fireWindow(new Event("load"));
       return true;
