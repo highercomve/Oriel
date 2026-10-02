@@ -510,6 +510,10 @@ fn addOrielModule(
     // (src/native_ui/prof.zig); compiled out without it.
     const native_ui_prof = b.option(bool, "native_ui_prof", "Log the native renderer's stage timings (src/native_ui/prof.zig)") orelse false;
     options.addOption(bool, "native_ui_prof", native_ui_prof);
+    // -Dnative_dom: the native renderer's DOM is the native one
+    // (src/native_ui/dom, docs/native-dom.md) instead of linkedom.
+    const native_dom = b.option(bool, "native_dom", "Use the native DOM in the native renderer (docs/native-dom.md)") orelse false;
+    options.addOption(bool, "native_dom", native_dom);
 
     const is_android = target.result.abi.isAndroid();
     // Desktop Linux: GTK, WebKitGTK, PulseAudio, Wayland and X11. Android is
@@ -626,7 +630,7 @@ fn addOrielModule(
             .flags = &.{ "-DSQLITE_THREADSAFE=1", "-DSQLITE_DQS=0", "-DSQLITE_OMIT_DEPRECATED" },
         });
     };
-    if (features.native_ui) addNativeUi(b, oriel, native_ui_prof);
+    if (features.native_ui) addNativeUi(b, oriel, native_ui_prof, native_dom);
     if (features.sqlite_vec) {
         if (b.lazyDependency("sqlite_vec", .{})) |sqlite_vec| {
             oriel.addIncludePath(sqlite_vec.path("."));
@@ -1835,7 +1839,7 @@ fn pathExists(b: *std.Build, path: []const u8) bool {
 
 /// -Dnative_ui: QuickJS-ng (the page's JavaScript) and Yoga (flexbox
 /// layout), compiled into the oriel module. docs/native-renderer.md
-fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool) void {
+fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool, native_dom: bool) void {
     const no_ubsan = "-fno-sanitize=undefined"; // both rely on unspecified C behavior
     // The Apple backends draw with CoreGraphics and CoreText (apple_draw.zig).
     if (oriel.resolved_target) |t| if (t.result.os.tag == .macos or t.result.os.tag == .ios) {
@@ -1855,10 +1859,17 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool) void {
         });
         // The page's `__host` and the entry points engine.zig calls.
         // -Dnative_ui_prof: `__host.prof` is true (render.js logs its stages).
-        oriel.addCSourceFile(.{ .file = b.path("src/native_ui/qjs_shim.c"), .flags = if (prof)
-            &.{ "-std=gnu11", "-O2", no_ubsan, "-DORIEL_NUI_PROF=1" }
-        else
-            &.{ "-std=gnu11", "-O2", no_ubsan } });
+        // -Dnative_dom: the shim installs the native DOM (dom_qjs.c; its Zig
+        // side, dom/capi.zig, comes in through engine.zig).
+        var shim_flags: std.ArrayList([]const u8) = .empty;
+        shim_flags.appendSlice(b.allocator, &.{ "-std=gnu11", "-O2", no_ubsan }) catch @panic("OOM");
+        if (prof) shim_flags.append(b.allocator, "-DORIEL_NUI_PROF=1") catch @panic("OOM");
+        if (native_dom) shim_flags.append(b.allocator, "-DORIEL_NATIVE_DOM=1") catch @panic("OOM");
+        oriel.addCSourceFile(.{ .file = b.path("src/native_ui/qjs_shim.c"), .flags = shim_flags.items });
+        if (native_dom) {
+            oriel.addIncludePath(b.path("src/native_ui/dom"));
+            oriel.addCSourceFile(.{ .file = b.path("src/native_ui/dom/dom_qjs.c"), .flags = &.{ "-std=gnu11", "-O2", no_ubsan } });
+        }
 
         // runtime.js as QuickJS bytecode, compiled on the build machine by
         // tools/qjs_bytecode.c (the same QuickJS): the engine loads it
@@ -1875,7 +1886,7 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool) void {
         });
         compiler.root_module.addCSourceFile(.{ .file = b.path("tools/qjs_bytecode.c"), .flags = &.{ "-std=gnu11", "-O2", no_ubsan } });
         const compile = b.addRunArtifact(compiler);
-        compile.addFileArg(b.path("src/native_ui/runtime.js"));
+        compile.addFileArg(b.path(if (native_dom) "src/native_ui/runtime-native.js" else "src/native_ui/runtime.js"));
         const bytecode = compile.addOutputFileArg("runtime.qjsbc");
         const files = b.addWriteFiles();
         _ = files.addCopyFile(bytecode, "runtime.qjsbc");

@@ -40,10 +40,17 @@ extern void oriel_nui_focus(void *opaque, double id);
 extern void oriel_nui_scroll_into_view(void *opaque, double id, const char *block, size_t len);
 extern void oriel_nui_scroll_to(void *opaque, double id, double y);
 
+#if defined(ORIEL_NATIVE_DOM)
+#include "dom_qjs.h"
+#endif
+
 typedef struct {
     JSRuntime *rt;
     JSContext *ctx;
     void *opaque;
+#if defined(ORIEL_NATIVE_DOM)
+    DomCtx *dom; // the native DOM (docs/native-dom.md)
+#endif
     // Calls from Zig in progress (eval and jobs nest when a host function
     // calls back into the page).
     int depth;
@@ -449,6 +456,20 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
 #if defined(ORIEL_NUI_PROF)
     JS_SetPropertyStr(ctx, host, "prof", JS_TRUE);
 #endif
+#if defined(ORIEL_NATIVE_DOM)
+    // The native DOM: its interfaces and __nuiDom as globals, the document
+    // as __host.document (runtime-native.js).
+    self->dom = nui_dom_install(ctx);
+    if (!self->dom) {
+        JS_FreeValue(ctx, host);
+        JS_FreeValue(ctx, global);
+        js_free(ctx, self);
+        JS_FreeContext(ctx);
+        JS_FreeRuntime(rt);
+        return NULL;
+    }
+    JS_SetPropertyStr(ctx, host, "document", nui_dom_document_object(self->dom));
+#endif
     JS_SetPropertyStr(ctx, global, "__host", host);
     JS_FreeValue(ctx, global);
     return self;
@@ -504,6 +525,10 @@ void oqjs_free(void *p) {
     oqjs *self = p;
     JSRuntime *rt = self->rt;
     JSContext *ctx = self->ctx;
+#if defined(ORIEL_NATIVE_DOM)
+    // Before the context: the store holds values of it.
+    nui_dom_uninstall(self->dom);
+#endif
     js_free(ctx, self);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
