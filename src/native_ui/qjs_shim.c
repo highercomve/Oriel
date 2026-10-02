@@ -7,6 +7,19 @@
 #include <stdio.h>
 #include <string.h>
 #include "quickjs.h"
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+// How deep the page's JavaScript may recurse, measured from where the
+// outermost call from Zig entered: well under the UI thread's stack (1 MB
+// on iOS's main thread, 8 MB on macOS, Linux and Android), so runaway
+// recursion is a RangeError, not a crash on the guard page.
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#define NUI_MAX_STACK (512 * 1024)
+#else
+#define NUI_MAX_STACK (4 * 1024 * 1024)
+#endif
 
 // Implemented in engine.zig.
 extern void oriel_nui_log(void *opaque, int level, const char *msg, size_t len);
@@ -23,7 +36,17 @@ typedef struct {
     JSRuntime *rt;
     JSContext *ctx;
     void *opaque;
+    // Calls from Zig in progress (eval and jobs nest when a host function
+    // calls back into the page).
+    int depth;
 } oqjs;
+
+// The outermost call from Zig: the stack limit counts from here (the
+// runtime was created at another depth, and calls come from many).
+static void enter(oqjs *self) {
+    if (self->depth++ == 0) JS_UpdateStackTop(self->rt);
+}
+static void leave(oqjs *self) { self->depth--; }
 
 static void *opaque_of(JSContext *ctx) { return JS_GetContextOpaque(ctx); }
 
@@ -329,8 +352,9 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     self->rt = rt;
     self->ctx = ctx;
     self->opaque = opaque;
+    self->depth = 0;
     JS_SetContextOpaque(ctx, opaque);
-    JS_SetMaxStackSize(rt, 4 * 1024 * 1024);
+    JS_SetMaxStackSize(rt, NUI_MAX_STACK);
     JS_SetModuleLoaderFunc(rt, nui_normalize, nui_load_module, NULL);
 
     JSValue global = JS_GetGlobalObject(ctx);
@@ -358,7 +382,9 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
 // -1 on an exception (logged).
 int oqjs_eval(void *p, const char *code, size_t len, const char *name) {
     oqjs *self = p;
+    enter(self);
     JSValue r = JS_Eval(self->ctx, code, len, name, JS_EVAL_TYPE_GLOBAL);
+    leave(self);
     if (JS_IsException(r)) { report(self->ctx); return -1; }
     int truthy = JS_ToBool(self->ctx, r);
     JS_FreeValue(self->ctx, r);
@@ -369,11 +395,13 @@ int oqjs_eval(void *p, const char *code, size_t len, const char *name) {
 void oqjs_run_jobs(void *p) {
     oqjs *self = p;
     JSContext *job_ctx;
+    enter(self);
     for (;;) {
         int r = JS_ExecutePendingJob(self->rt, &job_ctx);
         if (r == 0) break;
         if (r < 0) report(job_ctx);
     }
+    leave(self);
 }
 
 size_t oqjs_memory(void *p) {

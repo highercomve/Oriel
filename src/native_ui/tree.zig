@@ -239,14 +239,20 @@ pub const Tree = struct {
         var arena: std.heap.ArenaAllocator = .init(t.gpa);
         defer arena.deinit();
         const ops = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), json, .{});
+        if (ops != .array) return error.BadOps;
+        // Ops come from the page's runtime (and `__host.ops` is reachable from
+        // the page): skip any that doesn't have the expected shape.
         for (ops.array.items) |op| {
+            if (op != .array or op.array.items.len < 2) continue;
             const a = op.array.items;
+            if (a[0] != .string or a[0].string.len == 0) continue;
             const kind = a[0].string;
-            const id = num(a[1]);
+            const id = num(a[1]) orelse continue;
+            const arg: ?std.json.Value = if (a.len > 2) a[2] else null;
             switch (kind[0]) {
-                'c' => try t.create(id, std.meta.stringToEnum(Kind, a[2].string) orelse .view),
-                'p' => if (t.nodes.get(id)) |n| try t.setProps(n, a[2]),
-                'k' => if (t.nodes.get(id)) |n| try t.setKids(n, a[2].array.items),
+                'c' => if (arg) |x| if (x == .string) try t.create(id, std.meta.stringToEnum(Kind, x.string) orelse .view),
+                'p' => if (arg) |x| if (t.nodes.get(id)) |n| try t.setProps(n, x),
+                'k' => if (arg) |x| if (x == .array) if (t.nodes.get(id)) |n| try t.setKids(n, x.array.items),
                 'd' => t.destroy(id),
                 'r' => t.root = t.nodes.get(id),
                 else => {},
@@ -263,11 +269,12 @@ pub const Tree = struct {
         return @intFromFloat(x);
     }
 
-    fn num(v: std.json.Value) i64 {
+    /// A node id from an op, or null when it isn't one (`apply` skips it).
+    fn num(v: std.json.Value) ?i64 {
         return switch (v) {
             .integer => |i| i,
-            .float => |x| idOf(x),
-            else => 0,
+            .float => |x| if (idOf(x) == std.math.minInt(i64)) null else idOf(x),
+            else => null,
         };
     }
 
@@ -336,7 +343,7 @@ pub const Tree = struct {
         }
         n.kids.clearRetainingCapacity();
         for (ids) |v| {
-            const k = t.nodes.get(num(v)) orelse continue;
+            const k = t.nodes.get(num(v) orelse continue) orelse continue;
             if (k.parent) |old| {
                 for (old.kids.items, 0..) |x, i| if (x == k) {
                     _ = old.kids.orderedRemove(i);
@@ -607,6 +614,37 @@ fn alignOf(s: ?[]const u8, default: yg.YGAlign) yg.YGAlign {
     if (std.mem.eql(u8, v, "space-around")) return yg.YGAlignSpaceAround;
     if (std.mem.eql(u8, v, "auto")) return yg.YGAlignAuto;
     return default;
+}
+
+fn testMeasure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+    out.* = .{ 10, 10 };
+}
+
+test "a field's pending value survives a props update without one" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var ctx: u8 = 0;
+    var t = Tree.init(gpa, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply("[[\"c\",1,\"input\"],[\"r\",1]]");
+    const long = "x" ** 3000;
+    try t.apply("[[\"p\",1,{\"val\":\"" ++ long ++ "\"}]]");
+    // A large update without `val` (a transition, a placeholder): the props
+    // arena is reset and grows past its old buffer.
+    try t.apply("[[\"p\",1,{\"ph\":\"" ++ ("y" ** 20000) ++ "\"}]]");
+    const n = t.get(1).?;
+    try std.testing.expectEqualStrings(long, n.pending_value.?);
+}
+
+test "ops with a bad shape or id are skipped" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var ctx: u8 = 0;
+    var t = Tree.init(gpa, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply("[1,[],[\"\"],[\"c\"],[\"c\",1e300,\"view\"],[\"c\",2],[\"k\",3,5],[\"p\",4]]");
+    try std.testing.expectEqual(@as(usize, 0), t.nodes.count());
+    try std.testing.expectError(error.BadOps, t.apply("{}"));
 }
 
 test "idOf: JS numbers to node ids" {

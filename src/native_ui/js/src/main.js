@@ -237,7 +237,14 @@ elProto.scrollIntoView = function (opts) {
 // linkedom defines its own click() on HTMLElement.prototype (one level
 // below elProto), which only fires the event: replace it there too, so a
 // page's el.click() also submits forms, follows links and toggles boxes.
-Object.getPrototypeOf(document.createElement("div")).click = elProto.click = function () { activate(this, 0); };
+// As in browsers, a click() on an element whose click is in progress does
+// nothing (a handler on a parent that clicks its child again would recurse).
+const clicking = new WeakSet();
+Object.getPrototypeOf(document.createElement("div")).click = elProto.click = function () {
+  if (clicking.has(this)) return;
+  clicking.add(this);
+  try { activate(this, 0); } finally { clicking.delete(this); }
+};
 // The page scrolls in the window's scroll view (node -1, render.js):
 // window.scrollTo(x, y) and scrollTo({ top }).
 g.scrollTo = g.scroll = (x, y) => {
