@@ -6,6 +6,10 @@ const invoke = (cmd, args) => window.oriel.invoke(cmd, args);
 const frame = () => new Promise((r) => requestAnimationFrame(r));
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 const RUNS = 3;
+// ORIEL_NUI_TRACE: a log line right before each timed row change (the native
+// renderer logs each draw after it: logcat's timestamps give the on-screen time).
+let trace = false;
+const mark = (name, r) => { if (trace) console.info(`bench mark: ${name} #${r}`); };
 
 const results = {};
 function show(name, runs, unit = "ms") {
@@ -33,6 +37,7 @@ async function timeBuild(n) {
     const stage = $("stage");
     stage.textContent = "";
     await frame();
+    mark(`build ${n} rows`, r);
     const t0 = performance.now();
     const list = buildRows(stage, n);
     void list.offsetHeight; // style + layout now
@@ -48,6 +53,7 @@ async function timeUpdate(n) {
   await frame();
   const runs = [];
   for (let r = 0; r < RUNS; r++) {
+    mark(`update ${n} rows`, r);
     const t0 = performance.now();
     let i = 0;
     for (const row of list.children) row.lastElementChild.textContent = `Row ${i++}: updated ${r}`;
@@ -165,6 +171,7 @@ async function run() {
 
 (async () => {
   const startup = await invoke("since_start");
+  trace = await invoke("trace_on").catch(() => false);
   const renderer = window.webkit || window.chrome?.webview ? "WebView" : "native";
   $("renderer").textContent = renderer;
   show("startup → page script", [startup]);
