@@ -64,8 +64,10 @@ Supported: selectors (types, classes, ids, attributes, `:not`, `:first-child`,
 cascade and `!important`, `var()` with fallbacks, `calc()`, `color-mix()`,
 inheritance of text properties, `@media` on width, color scheme and pointer;
 for layout `display` (`flex`, `block`, `inline-flex`, `none`, `grid`
-approximated by wrapping rows), the flexbox properties, `gap`, sizes,
-margins, padding, `position: absolute`/`fixed`/`relative` and `inset`,
+approximated by wrapping rows, and tables: `table`, row groups, rows and
+cells with automatic column widths, `colspan` and `border-spacing`), the
+flexbox properties, `gap`, sizes, margins, padding,
+`position: absolute`/`fixed`/`relative`/`sticky` and `inset`,
 `overflow`, transforms (translate moves the box; scale and rotate are drawn
 around its center); for drawing colors, linear and radial gradients,
 borders, `border-radius`, `box-shadow` (blurred like CSS), `opacity`, fonts,
@@ -77,7 +79,7 @@ the animated nodes are sent each frame).
 Ignored for now (the layout still works): animating `background-position`,
 skew and 3D transforms, `filter`, `backdrop-filter` (a blurred background is
 drawn opaque). Not supported: floats,
-inline blocks flowing in text, `position: sticky`, `img`, `iframe`,
+inline blocks flowing in text, `rowspan`, `img`, `iframe`,
 `contenteditable`, layout queries beyond sizes and
 `scrollHeight`.
 

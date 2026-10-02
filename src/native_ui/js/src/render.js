@@ -41,6 +41,11 @@ button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-si
 input, textarea, select { padding: 1px 2px; border: 2px inset #ccc; font-size: 13.33px; background: white; }
 textarea { white-space: pre-wrap; }
 hr { border-top: 1px solid #888; margin: .5em 0; }
+table { display: table; border-spacing: 2px; border-collapse: separate; }
+thead { display: table-header-group; } tbody { display: table-row-group; } tfoot { display: table-footer-group; }
+tr { display: table-row; } td, th { display: table-cell; padding: 1px; vertical-align: middle; }
+th { text-align: center; } caption { display: table-caption; text-align: center; }
+col, colgroup { display: none; }
 `;
 
 const INLINE_DISPLAY = new Set(["inline"]);
@@ -137,6 +142,7 @@ export class Renderer {
     // align-self applies to flex and grid items only: in a block it does
     // nothing (the box fills the line). Inline boxes get theirs below.
     if (!ctx.blockify) delete props.as;
+    if (isTableDisplay(display) && !tableProps(props, display, cs, fontSize, ctx, el)) return null;
     const transitions = transitionsOf(cs);
     if (transitions) this.specs.set(id, transitions);
     this.noteAnimations(id, cs, fontSize);
@@ -248,7 +254,8 @@ export class Renderer {
     }
 
     // Children: blocks, and inline content collected into text runs.
-    const childCtx = { blockify: display === "flex" || display === "grid", parentText: cs["text-align"] };
+    const childCtx = { blockify: display === "flex" || display === "grid" || tableHolds(display), parentText: cs["text-align"],
+      tableSpacing: tableSpacingFor(display, props, ctx) };
     const kids = [];
     let orders = null; // CSS order of the element children that set one
     const before = this.pseudo(el, cs, "before", nodes);
@@ -499,8 +506,70 @@ function listens(el) {
   return !!el.__listens;
 }
 
+// ---------------------------------------------------------------------------
+// Tables: the table and its row groups are flex columns, a row is a flex
+// row of cells, and tree.zig sizes the columns (each cell's natural width,
+// the widest per column) after the first layout. border-spacing becomes the
+// gaps (and the table's inner padding).
+
+const TABLE_GROUPS = new Set(["table-row-group", "table-header-group", "table-footer-group"]);
+
+function isTableDisplay(d) {
+  return d === "table" || d === "inline-table" || d === "table-row" || d === "table-cell" ||
+    d === "table-column" || d === "table-column-group" || TABLE_GROUPS.has(d);
+}
+
+// A table box whose children are laid out as flex items (rows, cells).
+function tableHolds(d) {
+  return d === "table" || d === "inline-table" || d === "table-row" || TABLE_GROUPS.has(d);
+}
+
+// The spacing a table box's children use: the table's own, passed down.
+function tableSpacingFor(d, props, ctx) {
+  if (d === "table" || d === "inline-table") return props.table;
+  return tableHolds(d) ? ctx.tableSpacing : undefined;
+}
+
+// A table element's props; false when it isn't drawn (columns).
+function tableProps(props, display, cs, fontSize, ctx, el) {
+  if (display === "table" || display === "inline-table") {
+    const sp = tableSpacing(cs, fontSize);
+    props.table = sp;
+    if (sp) {
+      props.rg = sp;
+      // The spacing also runs between the table's border and its cells.
+      props.pad = (props.pad || [0, 0, 0, 0]).map((v) => (typeof v === "number" ? v : 0) + sp);
+    }
+    // A table without a width is as wide as its columns.
+    if (props.w === undefined && !ctx.blockify && !props.as) props.as = "flex-start";
+  } else if (TABLE_GROUPS.has(display)) {
+    if (ctx.tableSpacing) props.rg = ctx.tableSpacing;
+  } else if (display === "table-row") {
+    props.trow = true;
+    props.fd = "row";
+    props.ai = "stretch";
+    if (ctx.tableSpacing) props.cg = ctx.tableSpacing;
+  } else if (display === "table-cell") {
+    const span = parseInt(el.getAttribute("colspan") || "1", 10);
+    props.tcell = Number.isFinite(span) && span > 1 ? Math.min(span, 1000) : 1;
+    props.fs = 0;
+    const va = cs["vertical-align"];
+    props.jc = va === "middle" ? "center" : va === "bottom" ? "flex-end" : "flex-start";
+  } else return false; // table-column, table-column-group
+  return true;
+}
+
+// border-spacing in px (its first value), 0 with collapsed borders.
+function tableSpacing(cs, fs) {
+  if (cs["border-collapse"] === "collapse") return 0;
+  const first = String(cs["border-spacing"] || "0").trim().split(/\s+/)[0];
+  const v = num(first, fs);
+  return typeof v === "number" && v > 0 ? v : 0;
+}
+
 function blockify(d) {
-  if (d === "inline" || d === "inline-block" || d === "list-item" || d === "table" || d === "table-cell") return "block";
+  if (d === "inline" || d === "inline-block" || d === "list-item" || d === "table-caption") return "block";
+  if (d === "inline-table") return "table";
   if (d === "inline-flex") return "flex";
   if (d === "inline-grid") return "grid";
   return d;
