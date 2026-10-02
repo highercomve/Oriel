@@ -9,6 +9,7 @@ const std = @import("std");
 const gtk = @import("gtk");
 const engine_mod = @import("engine.zig");
 const prof = @import("prof.zig");
+const text_measure_cache = @import("text_measure_cache.zig");
 const tree_mod = @import("tree.zig");
 const Engine = engine_mod.Engine;
 const Node = tree_mod.Node;
@@ -23,6 +24,7 @@ const Widget = gtk.Widget;
 const cairo_t = opaque {};
 const cairo_pattern_t = opaque {};
 const PangoLayout = opaque {};
+const PangoContext = opaque {};
 const PangoAttrList = opaque {};
 const PangoFontDescription = opaque {};
 const PangoAttribute = extern struct { klass: ?*anyopaque, start_index: c_uint, end_index: c_uint };
@@ -46,6 +48,11 @@ extern fn gtk_widget_add_controller(w: *Widget, controller: *anyopaque) void;
 extern fn gtk_widget_set_cursor_from_name(w: *Widget, name: ?[*:0]const u8) void;
 extern fn gtk_widget_add_css_class(w: *Widget, class: [*:0]const u8) void;
 extern fn gtk_widget_create_pango_layout(w: *Widget, text: ?[*:0]const u8) *PangoLayout;
+extern fn gtk_widget_get_pango_context(w: *Widget) *PangoContext;
+extern fn pango_context_get_serial(ctx: *PangoContext) c_uint;
+extern fn pango_context_changed(ctx: *PangoContext) void;
+extern fn gtk_init_check() c_int;
+extern fn g_object_ref_sink(object: *anyopaque) *anyopaque;
 extern fn gtk_widget_get_width(w: *Widget) c_int;
 extern fn gtk_widget_get_height(w: *Widget) c_int;
 extern fn gtk_widget_get_display(w: *Widget) *anyopaque;
@@ -217,9 +224,10 @@ pub const Surface = struct {
     images: std.AutoHashMap(i64, Image),
     /// Each canvas's bitmap, kept from frame to frame while its size holds.
     canvases: std.AutoHashMap(i64, CanvasBitmap),
-    /// Each text node's natural (unwrapped) size, measured once per props:
-    /// a measure at a width it fits in needs no new Pango layout.
-    text_sizes: std.AutoHashMap(i64, [2]f32),
+    text_measurements: text_measure_cache.Cache = .{},
+    text_context: ?*PangoContext = null,
+    text_serial: c_uint = 0,
+    text_epoch: u64 = 1,
     /// The text fonts ("Sans", "Monospace"), parsed once; each layout
     /// copies one after setting its size.
     sans: ?*PangoFontDescription = null,
@@ -253,7 +261,6 @@ pub const Surface = struct {
             .fields = .init(gpa),
             .images = .init(gpa),
             .canvases = .init(gpa),
-            .text_sizes = .init(gpa),
             .css = gtk_css_provider_new(),
             .invoke_fn = invoke_fn,
             .invoke_ctx = invoke_ctx,
@@ -269,6 +276,8 @@ pub const Surface = struct {
             .invoke = invoke,
             .focus = focus,
             .props = propsChanged,
+            .text = textChanged,
+            .deinit = releaseTextMeasurements,
         }, assets, platform_json, label, url, width, height);
 
         gtk_drawing_area_set_draw_func(area, draw, s, null);
@@ -308,6 +317,11 @@ fn surfaceOf(p: ?*anyopaque) *Surface {
     return @ptrCast(@alignCast(p.?));
 }
 
+fn releaseTextMeasurements(ctx: *anyopaque) void {
+    const s = surfaceOf(ctx);
+    s.text_measurements.deinit(s.gpa);
+}
+
 // ---------------------------------------------------------------------------
 // Backend hooks
 
@@ -340,13 +354,16 @@ fn focus(ctx: *anyopaque, node: *Node) void {
 
 /// New props: a text node's size is measured again.
 fn propsChanged(ctx: *anyopaque, node: *Node, _: std.json.Value) void {
-    const s = surfaceOf(ctx);
-    _ = s.text_sizes.remove(node.id);
+    textChanged(ctx, node);
+}
+
+fn textChanged(ctx: *anyopaque, node: *Node) void {
+    _ = ctx;
+    node.measured_text_size = null;
 }
 
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
-    _ = s.text_sizes.remove(node.id);
     if (s.fields.fetchRemove(node.id)) |kv| gtk_overlay_remove_overlay(s.overlay, kv.value);
     if (s.images.fetchRemove(node.id)) |kv| kv.value.deinit();
     if (s.canvases.fetchRemove(node.id)) |kv| cairo_surface_destroy(kv.value.surf);
@@ -354,6 +371,7 @@ fn removed(ctx: *anyopaque, node: *Node) void {
 
 fn laidOut(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
+    prof.report("text cache {d} entries {d} key bytes, {d} capacity resets", .{ s.text_measurements.entries.count(), s.text_measurements.bytes, s.text_measurements.capacity_resets });
     // A render that removed many nodes (a page section rebuilt): give the
     // freed memory back to the system. glibc's malloc keeps it otherwise
     // (QuickJS and the tree both allocate there), so memory only grew.
@@ -715,27 +733,26 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const fz = n.props.fz orelse 16;
     switch (n.kind) {
         .text => {
+            const context = gtk_widget_get_pango_context(s.area);
+            const serial = pango_context_get_serial(context);
+            if (s.text_context != context or s.text_serial != serial) {
+                s.text_measurements.clear(s.gpa);
+                s.text_epoch +%= 1;
+                s.text_context = context;
+                s.text_serial = serial;
+            }
             // Its natural size; at a width it fits in, that's the answer.
-            const nat = s.text_sizes.get(n.id) orelse blk: {
-                const layout = textLayout(s, n, std.math.inf(f32)) orelse return;
-                defer g_object_unref(layout);
-                var w: c_int = 0;
-                var h: c_int = 0;
-                pango_layout_get_pixel_size(layout, &w, &h);
-                const size: [2]f32 = .{ @floatFromInt(w + 1), @floatFromInt(h) };
-                s.text_sizes.put(n.id, size) catch {};
+            const nat = if (n.measured_text_size != null and n.text_measure_epoch == s.text_epoch) n.measured_text_size.? else blk: {
+                const size = measuredText(s, n, std.math.inf(f32)) orelse return;
+                n.measured_text_size = size;
+                n.text_measure_epoch = s.text_epoch;
                 break :blk size;
             };
             if (n.props.nowrap or max_width >= nat[0]) {
                 out.* = nat;
                 return;
             }
-            const layout = textLayout(s, n, max_width) orelse return;
-            defer g_object_unref(layout);
-            var w: c_int = 0;
-            var h: c_int = 0;
-            pango_layout_get_pixel_size(layout, &w, &h);
-            out.* = .{ @floatFromInt(w + 1), @floatFromInt(h) };
+            out.* = measuredText(s, n, max_width) orelse return;
         },
         .image => {
             // Its natural size, scaled down to the width it may take.
@@ -748,6 +765,21 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
         else => out.* = .{ 0, 0 },
     }
+}
+
+fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
+    const actual_width = if (n.props.nowrap or std.math.isInf(width)) std.math.inf(f32) else @max(1, width);
+    var buf: [1024]u8 = undefined;
+    const key = text_measure_cache.keyFor(&buf, &n.props, actual_width);
+    if (key) |k| if (s.text_measurements.get(k)) |size| return size;
+    const layout = textLayout(s, n, actual_width) orelse return null;
+    defer g_object_unref(layout);
+    var w: c_int = 0;
+    var h: c_int = 0;
+    pango_layout_get_pixel_size(layout, &w, &h);
+    const size: [2]f32 = .{ @floatFromInt(w + 1), @floatFromInt(h) };
+    if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
+    return size;
 }
 
 fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
@@ -1596,4 +1628,67 @@ test "probeSize reads a PNG's declared size without decoding it" {
     try std.testing.expectEqual(@as(c_int, 30000), size[0]);
     try std.testing.expectEqual(@as(c_int, 30000), size[1]);
     try std.testing.expect(@as(u64, @intCast(size[0])) * @as(u64, @intCast(size[1])) > max_image_pixels);
+}
+
+test "shared measurements match fresh Pango layouts after text, width and font changes" {
+    if (gtk_init_check() == 0) return error.SkipZigTest;
+    const area = gtk_drawing_area_new();
+    _ = g_object_ref_sink(area);
+    defer g_object_unref(area);
+    const gpa = std.testing.allocator;
+    var s = Surface{
+        .gpa = gpa,
+        .area = area,
+        .overlay = area,
+        .fields = .init(gpa),
+        .images = .init(gpa),
+        .canvases = .init(gpa),
+        .css = undefined,
+        .invoke_fn = undefined,
+        .invoke_ctx = null,
+    };
+    defer {
+        s.fields.deinit();
+        s.images.deinit();
+        s.canvases.deinit();
+        s.text_measurements.deinit(gpa);
+        if (s.sans) |font| pango_font_description_free(font);
+        if (s.mono) |font| pango_font_description_free(font);
+    }
+    var t = tree_mod.Tree.init(gpa, &s, measure);
+    defer t.deinit();
+    t.on_props = propsChanged;
+    t.on_text = textChanged;
+    try t.apply(
+        \\[["c",1,"text"],["p",1,{"fz":14,"runs":[{"t":"Latin Ω مرحبا repeated text","sz":14}]}]]
+    );
+    const n = t.get(1).?;
+    for ([_]f32{ 40, 1000, 40 }) |width| {
+        var cached: [2]f32 = undefined;
+        measure(&s, n, width, &cached);
+        const fresh = textLayout(&s, n, width).?;
+        defer g_object_unref(fresh);
+        var w: c_int = 0;
+        var h: c_int = 0;
+        pango_layout_get_pixel_size(fresh, &w, &h);
+        try std.testing.expectEqual(@as(f32, @floatFromInt(w + 1)), cached[0]);
+        try std.testing.expectEqual(@as(f32, @floatFromInt(h)), cached[1]);
+    }
+    try std.testing.expect(try t.updateText(1, "updated Ω text"));
+    try t.apply(
+        \\[["p",1,{"fz":24,"ls":2,"lh":32,"runs":[{"t":"updated Ω text","sz":24,"w":700,"i":true}]}]]
+    );
+    var cached: [2]f32 = undefined;
+    measure(&s, n, 80, &cached);
+    const fresh = textLayout(&s, n, 80).?;
+    defer g_object_unref(fresh);
+    var w: c_int = 0;
+    var h: c_int = 0;
+    pango_layout_get_pixel_size(fresh, &w, &h);
+    try std.testing.expectEqual(@as(f32, @floatFromInt(w + 1)), cached[0]);
+    try std.testing.expectEqual(@as(f32, @floatFromInt(h)), cached[1]);
+    const old_count = s.text_measurements.entries.count();
+    pango_context_changed(gtk_widget_get_pango_context(area));
+    measure(&s, n, 80, &cached);
+    try std.testing.expect(s.text_measurements.entries.count() < old_count);
 }

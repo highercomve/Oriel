@@ -165,6 +165,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .invoke = invoke,
         .focus = focus,
         .props = propsChanged,
+        .text = textChanged,
         .request_frame = requestFrame,
     }, assets, platform_json, label, url, width, height);
     s.engine.boot(s.dark, false);
@@ -309,6 +310,10 @@ fn removed(ctx: *anyopaque, n: *Node) void {
 
 /// New props: a text node's CoreText objects are stale.
 fn propsChanged(_: *anyopaque, n: *Node, _: std.json.Value) void {
+    draw.dropText(n);
+}
+
+fn textChanged(_: *anyopaque, n: *Node) void {
     draw.dropText(n);
 }
 
@@ -532,9 +537,12 @@ fn ownerOf(control: id) ?struct { s: *Surface, n: *Node } {
     return .{ .s = s, .n = n };
 }
 
+/// Nothing of the surface is read after the event: a window's close is
+/// queued today, but a handler that ended the surface would free it.
 fn sendValue(s: *Surface, n: *Node, kind: []const u8, text: []const u8) void {
-    const json = std.json.Stringify.valueAlloc(s.gpa, text, .{}) catch return;
-    defer s.gpa.free(json);
+    const gpa = s.gpa;
+    const json = std.json.Stringify.valueAlloc(gpa, text, .{}) catch return;
+    defer gpa.free(json);
     _ = s.engine.event(n.id, kind, json);
 }
 
@@ -819,8 +827,9 @@ fn keyDown(self: id, _: SEL, event: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const ev: Object = .{ .value = event };
     const name = keyName(ev) orelse return;
-    const k = std.json.Stringify.valueAlloc(s.gpa, name, .{}) catch return;
-    defer s.gpa.free(k);
+    const gpa = s.gpa; // not read from the surface after the event (see sendValue)
+    const k = std.json.Stringify.valueAlloc(gpa, name, .{}) catch return;
+    defer gpa.free(k);
     var buf: [64]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ k, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})) }) catch return;
     _ = s.engine.event(0, "key", json);
