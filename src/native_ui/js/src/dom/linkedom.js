@@ -72,3 +72,4 @@ export const collect = () => {};
 // the store).
 export const nodeIndex = null;
 export const nodeAt = null;
+export const markListens = () => {};

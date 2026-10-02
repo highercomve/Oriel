@@ -24,15 +24,65 @@ pub const id_base: i64 = 1 << 30;
 /// renders it the general way); the tree is unchanged then.
 pub fn stamp(t: *Tree, d: *capi.Dom, row: st.Index, row_id: i64, plan_id: u32) !bool {
     const plan = t.stampPlan(plan_id) orelse return false;
-    const s = &d.store;
-    if (row == st.none or row >= s.used or s.get(row).kind != .element) return false;
-
+    if (!isElement(d, row)) return false;
     var sfa = std.heap.stackFallback(2048, t.gpa);
     var arena: std.heap.ArenaAllocator = .init(sfa.get());
     defer arena.deinit();
-    const a = arena.allocator();
+    const leaves = (try rowLeaves(d, arena.allocator(), row, plan)) orelse return false;
+    return t.stampRow(row_id, leaves);
+}
 
-    // The children in source order (comments skipped), as leaves.
+/// Stamp list `list` (tree node `list_id`): its first row the runtime
+/// rendered (its node made by the page's ops, its children stamped with
+/// plan `plan_id`); every row after it, the same element as the first (tag,
+/// attributes, children and theirs, no click listener), gets a box leaf of
+/// style `row_style` (the first row's node as made, its parent's
+/// adjustments included) and its children stamped with the plan. All rows
+/// are checked before any is made: false (nothing changed) when one
+/// differs or the list holds anything else but comments.
+pub fn stampList(t: *Tree, d: *capi.Dom, list: st.Index, list_id: i64, row_style: i64, plan_id: u32) !bool {
+    const plan = t.stampPlan(plan_id) orelse return false;
+    if (!isElement(d, list) or !t.leaf_styles.contains(row_style)) return false;
+    const s = &d.store;
+    const first = nextElement(s, s.get(list).first) orelse return false;
+    if (!t.nodes.contains(id_base + @as(i64, first))) return false;
+
+    var arena: std.heap.ArenaAllocator = .init(t.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Row = struct { idx: st.Index, leaves: []const Tree.StampLeaf };
+    var rows: std.ArrayList(Row) = .empty;
+    var ids: std.ArrayList(i64) = .empty;
+    try ids.append(a, id_base + @as(i64, first));
+    var c = s.get(first).next;
+    while (c != st.none) : (c = s.get(c).next) {
+        const node = s.get(c);
+        if (node.kind == .comment) continue;
+        if (node.kind != .element or !try sameElement(d, first, c, true)) return false;
+        const leaves = (try rowLeaves(d, a, c, plan)) orelse return false;
+        try rows.append(a, .{ .idx = c, .leaves = leaves });
+        try ids.append(a, id_base + @as(i64, c));
+    }
+    for (rows.items) |r| {
+        const id = id_base + @as(i64, r.idx);
+        if (t.nodes.get(id)) |old| {
+            if (!(old.kind == .view and old.leaf_style == row_style)) {
+                t.destroy(id);
+            }
+        }
+        if (!t.nodes.contains(id)) {
+            if (!try t.createLeaf(id, .view, row_style, "")) return false;
+            t.nodes.get(id).?.stamp_owned = true;
+        }
+        if (!try t.stampRow(id, r.leaves)) return false;
+    }
+    return t.stampKids(list_id, ids.items);
+}
+
+/// Row `row`'s children as leaves in laid-out order (plan `plan`), or null
+/// when it doesn't have the plan's shape.
+fn rowLeaves(d: *capi.Dom, a: std.mem.Allocator, row: st.Index, plan: Tree.StampPlan) !?[]Tree.StampLeaf {
+    const s = &d.store;
     const n = plan.entries.len;
     const leaves = try a.alloc(Tree.StampLeaf, n);
     var i: usize = 0;
@@ -40,21 +90,90 @@ pub fn stamp(t: *Tree, d: *capi.Dom, row: st.Index, row_id: i64, plan_id: u32) !
     while (c != st.none) : (c = s.get(c).next) {
         const child = s.get(c);
         if (child.kind == .comment) continue;
-        if (child.kind != .element or i == n) return false;
+        if (child.kind != .element or i == n) return null;
         const e = plan.entries[i];
         const id = id_base + @as(i64, c);
-        const text = (try textOf(d, a, c, e.transform)) orelse return false;
+        const text = (try textOf(d, a, c, e.transform)) orelse return null;
         leaves[i] = if (text.len > 0)
             .{ .id = id, .kind = .text, .style = e.text_style, .text = text }
         else
             .{ .id = id, .kind = .view, .style = e.view_style, .text = "" };
-        if (leaves[i].style == 0) return false;
+        if (leaves[i].style == 0) return null;
         i += 1;
     }
-    if (i != n) return false;
+    if (i != n) return null;
     const ordered = try a.alloc(Tree.StampLeaf, n);
     for (plan.order, 0..) |at, k| ordered[k] = leaves[at];
-    return t.stampRow(row_id, ordered);
+    return ordered;
+}
+
+fn isElement(d: *capi.Dom, idx: st.Index) bool {
+    const s = &d.store;
+    return idx != st.none and idx < s.used and s.get(idx).kind == .element;
+}
+
+/// The first element from `c` on (comments skipped), or null at anything
+/// else.
+fn nextElement(s: *st.Store, from: st.Index) ?st.Index {
+    var c = from;
+    while (c != st.none) : (c = s.get(c).next) {
+        switch (s.get(c).kind) {
+            .comment => continue,
+            .element => return c,
+            else => return null,
+        }
+    }
+    return null;
+}
+
+/// Whether element `b` is element `a` again for the runtime's styles and
+/// output: the same tag, the same attributes (names and values), no click
+/// listener, and (with `kids`) the same element children, each the same
+/// element again (their own children aren't compared: rowLeaves reads them).
+fn sameElement(d: *capi.Dom, x: st.Index, y: st.Index, kids: bool) !bool {
+    const s = &d.store;
+    const nx = s.get(x);
+    const ny = s.get(y);
+    if (nx.name != ny.name or nx.foreign != ny.foreign or ny.listens or nx.listens) return false;
+    const count = s.attrCount(x);
+    if (s.attrCount(y) != count) return false;
+    for (0..count) |i| {
+        const ax = s.attrAt(x, i).?;
+        const vy = s.getAttr(y, ax.name) orelse return false;
+        if (!try sameString(d, &ax.value, vy)) return false;
+    }
+    if (!kids) return true;
+    var cx = nextElement(s, nx.first);
+    var cy = nextElement(s, ny.first);
+    while (cx != null or cy != null) {
+        const ex = cx orelse return false;
+        const ey = cy orelse return false;
+        if (!try sameElement(d, ex, ey, false)) return false;
+        cx = nextSibling(s, ex);
+        cy = nextSibling(s, ey);
+    }
+    return true;
+}
+
+/// The element after `c` among its siblings (other nodes skipped: rowLeaves
+/// declines a row whose children aren't all elements), null past the last.
+fn nextSibling(s: *st.Store, c: st.Index) ?st.Index {
+    var n = s.get(c).next;
+    while (n != st.none) : (n = s.get(n).next) if (s.get(n).kind == .element) return n;
+    return null;
+}
+
+/// Two string values with the same characters.
+fn sameString(d: *capi.Dom, x: *const st.JsVal, y: *const st.JsVal) !bool {
+    const h = &d.host;
+    var lx: usize = 0;
+    var ly: usize = 0;
+    if (h.latin1(h.ctx, x, &lx)) |px| if (h.latin1(h.ctx, y, &ly)) |py| return std.mem.eql(u8, px[0..lx], py[0..ly]);
+    const ux = h.to_utf8(h.ctx, x, &lx) orelse return error.OutOfMemory;
+    defer h.free_utf8(h.ctx, ux);
+    const uy = h.to_utf8(h.ctx, y, &ly) orelse return error.OutOfMemory;
+    defer h.free_utf8(h.ctx, uy);
+    return std.mem.eql(u8, ux[0..lx], uy[0..ly]);
 }
 
 /// An element's text as the runtime writes a simple leaf's: its one text

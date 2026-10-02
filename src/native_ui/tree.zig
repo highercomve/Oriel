@@ -595,9 +595,10 @@ pub const Node = struct {
     /// A leaf made from a leaf style (createLeaf): its id, so a row stamped
     /// again keeps a leaf whose style is the same (0: not a leaf).
     leaf_style: i64 = 0,
-    /// A row whose children the tree stamped itself (stampRow): they go
-    /// with it, and when the page's ops set its children instead.
-    stamped: bool = false,
+    /// Made by the tree itself (stampRow, stampList), not by the page's
+    /// ops: nothing else names it, so it goes with its parent, or when its
+    /// parent's children are set without it.
+    stamp_owned: bool = false,
     tree: *Tree,
 
     /// Draws something itself (vs. a box that only lays out its children).
@@ -813,11 +814,12 @@ pub const Tree = struct {
                 t.destroy(l.id);
             }
             if (!try t.createLeaf(l.id, l.kind, l.style, l.text)) return false;
+            t.nodes.get(l.id).?.stamp_owned = true;
         }
         // The same children in the same order (a text update): they stay
         // attached, each updated above (its min width with its text).
         same: {
-            if (!row.stamped or row.kids.items.len != leaves.len) break :same;
+            if (row.kids.items.len != leaves.len) break :same;
             for (row.kids.items, leaves) |k, l| if (k.id != l.id) break :same;
             return true;
         }
@@ -831,7 +833,23 @@ pub const Tree = struct {
             }
         };
         try t.attachKids(row, Ids{ .leaves = leaves });
-        row.stamped = true;
+        return true;
+    }
+
+    /// Make list `list_id`'s children `ids`, in order (stampList: the rows
+    /// the tree stamped, after the first, which the page's ops made).
+    pub fn stampKids(t: *Tree, list_id: i64, ids: []const i64) !bool {
+        const list = t.nodes.get(list_id) orelse return false;
+        const Ids = struct {
+            ids: []const i64,
+            fn len(x: @This()) usize {
+                return x.ids.len;
+            }
+            fn at(x: @This(), i: usize) ?i64 {
+                return x.ids[i];
+            }
+        };
+        try t.attachKids(list, Ids{ .ids = ids });
         return true;
     }
 
@@ -968,7 +986,7 @@ pub const Tree = struct {
         try t.nodes.put(id, n);
     }
 
-    fn destroy(t: *Tree, id: i64) void {
+    pub fn destroy(t: *Tree, id: i64) void {
         const n = t.nodes.get(id) orelse return;
         _ = t.nodes.remove(id);
         t.deleted_nodes += 1;
@@ -984,9 +1002,9 @@ pub const Tree = struct {
         yg.YGNodeRemoveAllChildren(n.yn);
         for (n.kids.items) |k| k.parent = null;
         if (t.root == n) t.root = null;
-        // Children it stamped itself: nothing else names them. (Detached
-        // above: destroying one doesn't touch `n.kids`.)
-        if (n.stamped) for (n.kids.items) |k| t.destroy(k.id);
+        // Children the tree stamped itself: nothing else names them.
+        // (Detached above: destroying one doesn't touch `n.kids`.)
+        for (n.kids.items) |k| if (k.stamp_owned) t.destroy(k.id);
         freeNode(t, n);
     }
 
@@ -1055,20 +1073,15 @@ pub const Tree = struct {
             }
         };
         try t.attachKids(n, Ids{ .values = ids });
-        // The page's ops set them now: none of them is stamped any more.
-        n.stamped = false;
     }
 
-    /// Make `ids` (len()/at(i)) `n`'s children, in order. A stamped row's
-    /// old children that aren't among them go (nothing else names them).
+    /// Make `ids` (len()/at(i)) `n`'s children, in order. Old children the
+    /// tree stamped itself that aren't among them go (nothing else names them).
     fn attachKids(t: *Tree, n: *Node, ids: anytype) !void {
         try n.kids.ensureTotalCapacity(t.gpa, ids.len());
         var stale: std.ArrayList(i64) = .empty;
         defer stale.deinit(t.gpa);
-        if (n.stamped) {
-            try stale.ensureTotalCapacity(t.gpa, n.kids.items.len);
-            for (n.kids.items) |k| stale.appendAssumeCapacity(k.id);
-        }
+        for (n.kids.items) |k| if (k.stamp_owned) try stale.append(t.gpa, k.id);
         yg.YGNodeRemoveAllChildren(n.yn);
         for (n.kids.items) |k| k.parent = null;
         n.kids.clearRetainingCapacity();
@@ -2210,7 +2223,7 @@ test "stampRow makes, keeps, updates and drops a row's leaves" {
     const first = [_]Tree.StampLeaf{ .{ .id = 11, .kind = .view, .style = 2, .text = "" }, .{ .id = 10, .kind = .text, .style = 1, .text = "Row 1" } };
     try std.testing.expect(try t.stampRow(5, &first));
     const row = t.get(5).?;
-    try std.testing.expect(row.stamped);
+    try std.testing.expect(t.get(10).?.stamp_owned and t.get(11).?.stamp_owned);
     try std.testing.expectEqual(@as(usize, 2), row.kids.items.len);
     try std.testing.expectEqual(@as(i64, 11), row.kids.items[0].id);
     const text = t.get(10).?;
@@ -2237,7 +2250,6 @@ test "stampRow makes, keeps, updates and drops a row's leaves" {
     // The page's ops set its children: the stamped ones go.
     try t.apply("[[\"c\",20,\"view\"],[\"k\",5,[20]]]");
     try std.testing.expect(t.get(10) == null);
-    try std.testing.expect(!row.stamped);
 
     // Stamped again: the ops' child is detached, not destroyed (the page's
     // runtime still names it); then the row goes, its leaves with it.
