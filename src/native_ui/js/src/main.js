@@ -14,12 +14,10 @@
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
 
-import { parseHTML } from "../vendor/linkedom/esm/index.js";
+import { openDocument, STYLE_RECORDS } from "#dom";
 import { StyleEngine, viewport, mediaMatches } from "./css.js";
 import { Renderer, UA_CSS } from "./render.js";
 import * as canvas from "./canvas.js";
-import { parseSimple } from "./html.js";
-import { ignoreCase } from "../vendor/linkedom/esm/shared/utils.js";
 
 const host = globalThis.__host;
 
@@ -97,7 +95,7 @@ globalThis.cancelAnimationFrame = (id) => { rafCallbacks.delete(id); };
 // The document
 
 const html = normalizeHtml(host.asset("index.html") || "<!doctype html><html><body></body></html>");
-const { window: dom, document } = parseHTML(html);
+const { window: dom, document } = openDocument(html);
 
 // Browsers add the <html>, <head> and <body> a page leaves out; linkedom
 // doesn't (it made <meta> the root, and the content no body). The leading
@@ -156,33 +154,6 @@ function fireWindow(ev) {
   }
 }
 
-// innerHTML: plain markup is built directly (html.js), the rest by
-// linkedom's parser.
-{
-  let proto = Object.getPrototypeOf(document.createElement("div"));
-  let desc = null;
-  while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "innerHTML"))) proto = Object.getPrototypeOf(proto);
-  if (desc?.set) {
-    Object.defineProperty(proto, "innerHTML", {
-      configurable: true,
-      get: desc.get,
-      set(html) {
-        // This fixed ancestry check does not need compiling a CSS selector
-        // for every small innerHTML assignment (thousands when building rows).
-        let simple = this.localName !== "template";
-        const fold = ignoreCase(this);
-        if (simple) for (let el = this; el?.nodeType === 1; el = el.parentNode) {
-          const tag = fold ? el.localName.toLowerCase() : el.localName;
-          if (tag === "svg" || tag === "math") { simple = false; break; }
-        }
-        const frag = simple ? parseSimple(this.ownerDocument, String(html ?? "")) : null;
-        if (frag) this.replaceChildren(frag);
-        else desc.set.call(this, html);
-      },
-    });
-  }
-}
-
 // Mark elements that listen for clicks: they become touchable views.
 const ET = Object.getPrototypeOf(Object.getPrototypeOf(document.body)).constructor.prototype;
 for (let proto = Object.getPrototypeOf(document.body); proto; proto = Object.getPrototypeOf(proto)) {
@@ -200,8 +171,9 @@ void ET;
 // el.style.x = … and style.setProperty(…) update the style attribute inside
 // linkedom without a mutation record, so the renderer never saw them (a
 // requestAnimationFrame loop writing bar heights didn't move). Each
-// element's style is wrapped once: writes mark the page for a render.
-{
+// element's style is wrapped once: writes mark the page for a render. (The
+// native DOM's style writes are attribute writes, which it reports.)
+if (!STYLE_RECORDS) {
   let proto = Object.getPrototypeOf(document.createElement("div"));
   let desc = null;
   while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "style"))) proto = Object.getPrototypeOf(proto);

@@ -2,7 +2,7 @@
 // specificity, !important, inline styles), custom properties, inheritance and
 // media queries; values resolved to numbers, colors and keywords for layout.
 
-import { prepareMatch } from "../vendor/linkedom/esm/shared/matches.js";
+import { compileMatch } from "#dom";
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -360,7 +360,7 @@ export class StyleEngine {
       if (!mediaMatches(r.media)) continue;
       let m = r.match;
       if (m === null) {
-        try { m = r.match = prepareMatch(el, r.sel); } catch { m = r.match = false; }
+        try { m = r.match = compileMatch(el, r.sel); } catch { m = r.match = false; }
       }
       if (!m) continue;
       let ok = false;
