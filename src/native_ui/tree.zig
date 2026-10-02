@@ -861,7 +861,12 @@ pub const Tree = struct {
                 };
                 yg.YGNodeRemoveChild(old.yn, k.yn);
             }
-            if (yg.YGNodeHasMeasureFunc(n.yn)) continue; // a measured leaf can't have children
+            if (yg.YGNodeHasMeasureFunc(n.yn)) {
+                // A measured leaf can't have children: `k` is left detached
+                // (not pointing at a parent that no longer lists it).
+                k.parent = null;
+                continue;
+            }
             yg.YGNodeInsertChild(n.yn, k.yn, yg.YGNodeGetChildCount(n.yn));
             k.parent = n;
             n.kids.appendAssumeCapacity(k);
