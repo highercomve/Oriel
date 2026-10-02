@@ -8,4 +8,14 @@ MIT License (LICENSE).
 
 ## Changes from upstream
 
-None yet.
+Each is marked `Oriel:` in the source.
+
+- **Hashing of Map/WeakMap keys and object lists** (`js_mix64`). Upstream
+  hashed an object pointer as `ptr * 3163` and a number as the XOR of its
+  double's halves times 3163, and the tables take the low bits. Pointers are
+  aligned and small integers' doubles have a zero low word, so those bits
+  hardly vary: most buckets stayed empty and lookups walked long chains. The
+  renderer keys Maps by node id and WeakMaps by element, so a third of its
+  instructions went to those walks (callgrind, building 1000 rows). A 64-bit
+  finalizer (MurmurHash3's fmix64) spreads them: 34% fewer instructions,
+  the render of 1000 rows 109 → 44 ms in the QuickJS harness.
