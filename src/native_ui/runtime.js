@@ -14120,7 +14120,7 @@ col, colgroup { display: none; }
       this.outside = false;
       this.rendering = true;
       try {
-        if (!this.updateText()) this.renderNow();
+        if (!this.updateText() && !this.updateBoxes()) this.renderNow();
       } finally {
         this.rendering = false;
       }
@@ -14219,6 +14219,69 @@ col, colgroup { display: none; }
         this.schedule();
       }
       if (P) this.host.log(1, `PROF text: ${updates.length / 4} leaves, ${direct} direct, prepare ${(P() - t02 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
+      return true;
+    }
+    // An animation loop writing transform or opacity (el.style.transform = …)
+    // on boxes with no children: their computed styles change in nothing
+    // else, so their node's other props, their layout and their ancestors'
+    // output stay as they are. Only those props are made again and only
+    // those nodes compared and sent, without flattening the page.
+    updateBoxes() {
+      if (!this.marks.size || this.flatMarks.size || this.full || this.noCache || this.pendingScroll) return false;
+      for (const el of this.volatile) if (el.isConnected) return false;
+      const P = this.host.prof ? this.host.now : null, t02 = P && P();
+      const changes = [];
+      for (const [el, level] of this.marks) {
+        if (level !== 1 || !el.isConnected || el.firstChild) return false;
+        const fc = this.fc.get(el), saved = this.sc.get(el);
+        if (!fc || !saved || saved.epoch !== this.styleEpoch || fc.parent !== saved.parent || fc.fixed || fc.own.length !== 1 || fc.kids.length || fc.rootSpec || fc.rootAnim || this.tx.targets.has(fc.id) || this.anim.state.has(fc.id)) return false;
+        const old = this.prev.get(fc.id);
+        if (!old || old.kind !== fc.root.kind) return false;
+        const d = derived.get(saved.cs);
+        if (!d?.parts || !d.parts.every((x) => x === "tr" || x === "op")) return false;
+        const normal = paintDecls(el.getAttribute("style"));
+        if (!normal) return false;
+        changes.push(fc, saved, d, normal, this.cascadeOf(saved.m.normal).important, old);
+      }
+      const t1 = P && P();
+      const nodes = /* @__PURE__ */ new Map();
+      for (let i = 0; i < changes.length; i += 6) {
+        const fc = changes[i], saved = changes[i + 1], d = changes[i + 2], normal = changes[i + 3], important = changes[i + 4], old = changes[i + 5];
+        const cs = saved.cs, parts = /* @__PURE__ */ new Set();
+        for (const k of PAINT_KEYS) {
+          if (k in normal && !(k in important)) {
+            cs[k] = substitute(normal[k], cs, 0);
+            parts.add(PART_OF[k]);
+          } else if (d.base[k] !== void 0) cs[k] = d.base[k];
+          else delete cs[k];
+        }
+        d.parts = [...parts];
+        saved.frame = this.frameNo + 1;
+        const paint = {};
+        transformPart(cs, cs.__fs, paint);
+        if (cs.opacity !== void 0 && cs.opacity !== "1") paint.op = parseFloat(cs.opacity);
+        const part = (p) => {
+          for (const k of PAINT_PROPS) delete p[k];
+          return Object.assign(p, paint);
+        };
+        const r = fc.root;
+        r.props = part({ ...r.props });
+        nodes.set(fc.id, { kind: r.kind, props: part(old.props ? { ...old.props } : JSON.parse(old.p)), kids: r.kids.slice() });
+      }
+      const t2 = P && P();
+      this.frameNo++;
+      this.marks.clear();
+      this.textOnly = true;
+      this.gone = [];
+      this.dropped = [];
+      this.specs = /* @__PURE__ */ new Map();
+      this.animSpecs = /* @__PURE__ */ new Map();
+      this.emit(nodes, false);
+      for (const [id, n2] of nodes) {
+        const e = this.prev.get(id);
+        if (e && e.p !== null) e.props = n2.props;
+      }
+      if (P) this.host.log(1, `PROF boxes: ${nodes.size} nodes, prepare ${(P() - t02 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t02).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
       return true;
     }
     renderNow() {
@@ -15097,6 +15160,25 @@ col, colgroup { display: none; }
       this.schedule();
     }
   };
+  function paintDecls(text) {
+    const out = {};
+    if (!text) return out;
+    for (const part of text.split(";")) {
+      const i = part.indexOf(":");
+      if (i < 0) {
+        if (part.trim()) return null;
+        continue;
+      }
+      const prop2 = part.slice(0, i).trim().toLowerCase(), value = part.slice(i + 1).trim();
+      if (!PAINT_KEYS.has(prop2)) return null;
+      if (!value) continue;
+      if (value.includes("!") || value.includes("var(") || value === "inherit" || value === "initial" || value === "unset") return null;
+      out[prop2] = value;
+    }
+    return out;
+  }
+  var PAINT_KEYS = /* @__PURE__ */ new Set(["transform", "translate", "scale", "rotate", "opacity"]);
+  var PAINT_PROPS = ["tx", "ty", "sc", "rot", "op"];
   function sameStyle(a, b) {
     let n2 = 0;
     for (const k in a) {
@@ -15527,6 +15609,54 @@ col, colgroup { display: none; }
     const n2 = parseFloat(m[1]);
     return m[2] === "turn" ? n2 * 360 : m[2] === "rad" ? n2 * 180 / Math.PI : m[2] === "grad" ? n2 * 0.9 : n2;
   }
+  var SIMPLE_FN = /\s*([a-zA-Z]+)\(([^()]*)\)\s*/y;
+  var PX = /^\s*(-?(?:\d+\.?\d*|\.\d+))(px)?\s*$/;
+  function simpleTransform(t, out, fs) {
+    SIMPLE_FN.lastIndex = 0;
+    while (SIMPLE_FN.lastIndex < t.length) {
+      const m = SIMPLE_FN.exec(t);
+      if (!m) return false;
+      const args = m[2].split(",");
+      const px = (i) => {
+        const a = PX.exec(args[i]);
+        return a && (a[2] || +a[1] === 0) ? +a[1] : null;
+      };
+      switch (m[1]) {
+        case "translateX":
+        case "translateY":
+        case "translate": {
+          if (m[1] !== "translate" && args.length !== 1) return false;
+          const x = px(0), y = args.length > 1 ? px(1) : 0;
+          if (x === null || y === null || args.length > 2) return false;
+          if (m[1] === "translateY") out.ty += x;
+          else {
+            out.tx += x;
+            out.ty += y;
+          }
+          break;
+        }
+        case "scale":
+        case "scaleX": {
+          const a = PX.exec(args[0]);
+          if (!a || a[2] || args.length > (m[1] === "scale" ? 2 : 1)) return false;
+          if (args.length === 2) {
+            const b = PX.exec(args[1]);
+            if (!b || b[2]) return false;
+          }
+          out.sc *= +a[1];
+          break;
+        }
+        case "rotate":
+        case "rotateZ":
+          if (args.length !== 1) return false;
+          out.rot += angleOf(args[0]);
+          break;
+        default:
+          return false;
+      }
+    }
+    return true;
+  }
   function transformOf(cs, fs) {
     const out = { tx: 0, ty: 0, sc: 1, rot: 0 };
     const len = (v) => {
@@ -15534,7 +15664,9 @@ col, colgroup { display: none; }
       return typeof l === "number" ? l : 0;
     };
     const t = cs.transform;
-    if (t && t !== "none") {
+    if (t && t !== "none" && !simpleTransform(t, out, fs)) {
+      out.tx = out.ty = out.rot = 0;
+      out.sc = 1;
       for (const m of t.matchAll(/([a-zA-Z]+)\(((?:[^()]|\([^()]*\))*)\)/g)) {
         const args = splitTop(m[2], ",").map((x) => x.trim());
         switch (m[1]) {
