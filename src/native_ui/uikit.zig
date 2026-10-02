@@ -519,9 +519,12 @@ fn ownerOf(control: id) ?struct { s: *Surface, n: *Node } {
     return .{ .s = s, .n = n };
 }
 
+/// Nothing of the surface is read after the event: a window's close is
+/// queued today, but a handler that ended the surface would free it.
 fn sendValue(s: *Surface, n: *Node, kind: []const u8, text: []const u8) void {
-    const json = std.json.Stringify.valueAlloc(s.gpa, text, .{}) catch return;
-    defer s.gpa.free(json);
+    const gpa = s.gpa;
+    const json = std.json.Stringify.valueAlloc(gpa, text, .{}) catch return;
+    defer gpa.free(json);
     _ = s.engine.event(n.id, kind, json);
 }
 
