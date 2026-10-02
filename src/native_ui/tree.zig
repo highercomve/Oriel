@@ -1560,6 +1560,31 @@ test "bulk child replacement retains order and detached node ownership" {
     try std.testing.expectEqual(@as(usize, 0), yg.YGNodeGetChildCount(t.get(0).?.yn));
 }
 
+test "children rejected by measured leaves detach before old parent destruction" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    for ([_]Kind{ .text, .input, .textarea, .select, .image }) |kind| {
+        var ctx: u8 = 0;
+        var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+        defer t.deinit();
+        try t.apply(
+            \\[["c",1,"view"],["c",2,"view"],["c",4,"view"],["k",1,[2]]]
+        );
+        const ops = try std.fmt.allocPrint(std.testing.allocator, "[[\"c\",3,\"{s}\"],[\"k\",3,[2]]]", .{@tagName(kind)});
+        defer std.testing.allocator.free(ops);
+        try t.apply(ops);
+        const child = t.get(2).?;
+        try std.testing.expect(child.parent == null);
+        try std.testing.expect(yg.YGNodeGetOwner(child.yn) == null);
+        try std.testing.expectEqual(@as(usize, 0), t.get(1).?.kids.items.len);
+        try std.testing.expectEqual(@as(usize, 0), t.get(3).?.kids.items.len);
+        // The old parent may now be freed; reattachment must not dereference it.
+        try t.apply("[[\"d\",1],[\"k\",4,[2]],[\"r\",4]]");
+        try std.testing.expectEqual(t.get(4).?, child.parent.?);
+        try std.testing.expectEqual(child.yn, yg.YGNodeGetChild(t.get(4).?.yn, 0));
+        t.layout();
+    }
+}
+
 test "shared Yoga styles lay out like general property updates" {
     if (!@import("build_options").native_ui) return error.SkipZigTest;
     var ctx: u8 = 0;
