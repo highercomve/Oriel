@@ -95,8 +95,17 @@ inline blocks flowing in text, `position: sticky`, `img`, `iframe`,
 `<canvas>` works with a 2d context, without a bitmap (`src/native_ui/js/src/canvas.js`):
 `getContext("2d")` returns a recorder, and each drawing call appends a compact
 op to the element's program, which travels as the node's `cv` prop and is
-replayed into the backend's draw pass on every paint — Cairo's own calls on
-GTK, in the same pass that draws the boxes (no extra surface, no texture).
+replayed on every paint. On GTK the program draws with Cairo into the
+canvas's own image surface (kept from frame to frame while the size holds),
+which is then painted on the page, clipped to the box's border-radius. A
+program can't harm the page: an unbalanced `restore()` is ignored, a
+`clearRect` clears the canvas only, and a call with an argument that isn't a
+finite number is dropped (by the recorder and again by the parser), as in a
+browser. A `scale(0)` hides what follows until the `restore()` that undoes it.
+
+The element sizes like a replaced element: the bitmap's size, or with one
+CSS dimension (or stretched in a column) the bitmap's ratio, and it doesn't
+shrink in a flex container.
 
 Supported: `fillRect`, `strokeRect`, `clearRect`, `beginPath`, `closePath`,
 `moveTo`, `lineTo`, `rect`, `arc`, `ellipse`, `bezierCurveTo`,

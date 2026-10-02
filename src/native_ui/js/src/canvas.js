@@ -201,19 +201,27 @@ class Recorder {
     this.push(["rs"]);
   }
 
+  // A browser ignores a transform call with an argument that isn't a finite
+  // number; 0 is a real value (scale(0) makes everything after it invisible).
   translate(x, y) {
-    this.tx += +x || 0; this.ty += +y || 0;
-    this.push(["tl", +x || 0, +y || 0]);
+    x = +x; y = +y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    this.tx += x; this.ty += y;
+    this.push(["tl", x, y]);
   }
 
   scale(x, y) {
-    this.scx *= +x || 1; this.scy *= y === undefined ? +x || 1 : +y || 1;
-    this.push(["ts", +x || 1, y === undefined ? +x || 1 : +y || 1]);
+    x = +x; y = y === undefined ? x : +y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    this.scx *= x; this.scy *= y;
+    this.push(["ts", x, y]);
   }
 
   rotate(a) {
-    this.rot += +a || 0;
-    this.push(["tr", +a || 0]);
+    a = +a;
+    if (!Number.isFinite(a)) return;
+    this.rot += a;
+    this.push(["tr", a]);
   }
 
   // ------------------------------------------------------------- paths
@@ -281,7 +289,8 @@ class Recorder {
   clip(rule) { this.clipped = true; this.push(["cl", rule === "evenodd" ? 1 : 0]); }
 
   fillRect(x, y, w, h) {
-    x = +x || 0; y = +y || 0; w = +w || 0; h = +h || 0;
+    x = +x; y = +y; w = +w; h = +h;
+    if (![x, y, w, h].every(Number.isFinite)) return; // ignored, as in a browser
     this.penX = x; this.penY = y;
     // An opaque fill of the whole bitmap (no clip, no transform): like a
     // full clearRect, it covers everything before it — the common way a
@@ -302,7 +311,8 @@ class Recorder {
   }
 
   clearRect(x, y, w, h) {
-    x = +x || 0; y = +y || 0; w = +w || 0; h = +h || 0;
+    x = +x; y = +y; w = +w; h = +h;
+    if (![x, y, w, h].every(Number.isFinite)) return; // ignored, as in a browser
     this.penX = x; this.penY = y;
     // A full clear with no clip or transform in effect: everything drawn
     // before it is gone from the bitmap (as in a browser), so the program

@@ -115,6 +115,13 @@ export class Renderer {
   }
 
   // An element → a node id (or null when not rendered).
+  keepsContentHeight(el, n) {
+    if (!n || n.kind !== "view") return false;
+    const p = n.props, cs = this.cs.get(el) || {};
+    return p.fs === undefined && p.h === undefined && p.fb === undefined && p.ar === undefined && !p.scroll && !p.clip &&
+      !cs["flex-shrink"] && !cs["min-height"] && p.pos !== "absolute";
+  }
+
   element(el, parentCS, nodes, ctx) {
     const tag = el.localName;
     if (SKIP.has(tag)) return null;
@@ -172,8 +179,18 @@ export class Renderer {
       // Size: CSS width and height, else the attributes', else the
       // browser's 300x150. One CSS size set: the bitmap's ratio decides
       // the other, as a browser keeps the bitmap's intrinsic ratio.
-      if (props.w === undefined && props.h === undefined) { props.w = props.cw; props.h = props.ch; }
-      else if (props.w === undefined || props.h === undefined) props.ar = props.cw / props.ch;
+      // With no CSS size, a column flex parent that stretches (the default)
+      // gives it its width and the bitmap's ratio its height; elsewhere it
+      // is the bitmap's size. Like any replaced element it doesn't shrink
+      // below that in a flex column (CSS min-size: auto).
+      const ratio = props.ch > 0 ? props.cw / props.ch : 2;
+      const stretched = ctx.blockify && /^column/.test(parentCS?.["flex-direction"] || "") &&
+        ["stretch", "normal", undefined].includes(cs["align-self"] && cs["align-self"] !== "auto" ? cs["align-self"] : parentCS?.["align-items"]);
+      if (props.w === undefined && props.h === undefined) {
+        if (stretched) props.ar = ratio;
+        else { props.w = props.cw; props.h = props.ch; }
+      } else if (props.w === undefined || props.h === undefined) props.ar = ratio;
+      props.fs = 0;
       // The drawing program so far (a game's last frame; static drawing
       // accumulates). Its children are the fallback content: not shown.
       const cv = commandsOf(el);
@@ -285,6 +302,10 @@ export class Renderer {
       // is 1 1 0%) from the content, and min-height: auto keeps the item
       // from shrinking below it, so the column grows and the page scrolls.
       // Yoga would squeeze the item into the min-height instead.
+      // A column item sized by its content (no height or basis, overflow
+      // visible) doesn't shrink below it either: min-height: auto. The
+      // column overflows instead, as in a browser.
+      else if (props.fd === "column" && this.keepsContentHeight(item.el, nodes.get(cid))) nodes.get(cid).props.fs = 0;
       else if (props.fd === "column" && props.h === undefined && props.fg === undefined && !props.scroll && /flex$/.test(display)) {
         const n = nodes.get(cid);
         if (n && typeof n.props.fb === "string" && n.props.fb.endsWith("%") && !n.props.scroll && !n.props.clip) {

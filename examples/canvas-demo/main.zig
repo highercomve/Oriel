@@ -13,7 +13,7 @@ pub fn main(init: std.process.Init) !u8 {
         .id = "dev.oriel.CanvasDemo",
         .title = "Oriel canvas demo",
         .width = 480,
-        .height = 320,
+        .height = 400,
         .assets = app.assets,
         .dev = app.dev,
     });
