@@ -13463,19 +13463,29 @@ globalThis.atob ??= (s) => {
       this.clipped = st.clipped;
       this.push(["rs"]);
     }
+    // A browser ignores a transform call with an argument that isn't a finite
+    // number; 0 is a real value (scale(0) makes everything after it invisible).
     translate(x, y) {
-      this.tx += +x || 0;
-      this.ty += +y || 0;
-      this.push(["tl", +x || 0, +y || 0]);
+      x = +x;
+      y = +y;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      this.tx += x;
+      this.ty += y;
+      this.push(["tl", x, y]);
     }
     scale(x, y) {
-      this.scx *= +x || 1;
-      this.scy *= y === void 0 ? +x || 1 : +y || 1;
-      this.push(["ts", +x || 1, y === void 0 ? +x || 1 : +y || 1]);
+      x = +x;
+      y = y === void 0 ? x : +y;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      this.scx *= x;
+      this.scy *= y;
+      this.push(["ts", x, y]);
     }
     rotate(a) {
-      this.rot += +a || 0;
-      this.push(["tr", +a || 0]);
+      a = +a;
+      if (!Number.isFinite(a)) return;
+      this.rot += a;
+      this.push(["tr", a]);
     }
     // ------------------------------------------------------------- paths
     beginPath() {
@@ -13553,10 +13563,11 @@ globalThis.atob ??= (s) => {
       this.push(["cl", rule === "evenodd" ? 1 : 0]);
     }
     fillRect(x, y, w, h) {
-      x = +x || 0;
-      y = +y || 0;
-      w = +w || 0;
-      h = +h || 0;
+      x = +x;
+      y = +y;
+      w = +w;
+      h = +h;
+      if (![x, y, w, h].every(Number.isFinite)) return;
       this.penX = x;
       this.penY = y;
       const p = this.s.fillStyle;
@@ -13572,10 +13583,11 @@ globalThis.atob ??= (s) => {
       this.push(["sr", this.penX, this.penY, +w || 0, +h || 0]);
     }
     clearRect(x, y, w, h) {
-      x = +x || 0;
-      y = +y || 0;
-      w = +w || 0;
-      h = +h || 0;
+      x = +x;
+      y = +y;
+      w = +w;
+      h = +h;
+      if (![x, y, w, h].every(Number.isFinite)) return;
       this.penX = x;
       this.penY = y;
       if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped && isColor2(this.s.fillStyle) && isColor2(this.s.strokeStyle) && Math.abs(this.tx) < 1e-9 && Math.abs(this.ty) < 1e-9 && Math.abs(this.scx - 1) < 1e-9 && Math.abs(this.scy - 1) < 1e-9 && Math.abs(this.rot) < 1e-9) {
@@ -13744,6 +13756,11 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
       return cs;
     }
     // An element → a node id (or null when not rendered).
+    keepsContentHeight(el, n2) {
+      if (!n2 || n2.kind !== "view") return false;
+      const p = n2.props, cs = this.cs.get(el) || {};
+      return p.fs === void 0 && p.h === void 0 && p.fb === void 0 && p.ar === void 0 && !p.scroll && !p.clip && !cs["flex-shrink"] && !cs["min-height"] && p.pos !== "absolute";
+    }
     element(el, parentCS, nodes, ctx) {
       const tag = el.localName;
       if (SKIP.has(tag)) return null;
@@ -13789,10 +13806,16 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
       if (tag === "canvas") {
         props.cw = el.width;
         props.ch = el.height;
+        const ratio = props.ch > 0 ? props.cw / props.ch : 2;
+        const stretched = ctx.blockify && /^column/.test(parentCS?.["flex-direction"] || "") && ["stretch", "normal", void 0].includes(cs["align-self"] && cs["align-self"] !== "auto" ? cs["align-self"] : parentCS?.["align-items"]);
         if (props.w === void 0 && props.h === void 0) {
-          props.w = props.cw;
-          props.h = props.ch;
-        } else if (props.w === void 0 || props.h === void 0) props.ar = props.cw / props.ch;
+          if (stretched) props.ar = ratio;
+          else {
+            props.w = props.cw;
+            props.h = props.ch;
+          }
+        } else if (props.w === void 0 || props.h === void 0) props.ar = ratio;
+        props.fs = 0;
         const cv = commandsOf(el);
         if (cv.length) props.cv = cv;
         this.putClick(props, el);
@@ -13888,7 +13911,8 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         } else if (props.scroll && !this.cs.get(item.el)?.["flex-shrink"]) {
           const n2 = nodes.get(cid);
           if (n2) n2.props.fs = 0;
-        } else if (props.fd === "column" && props.h === void 0 && props.fg === void 0 && !props.scroll && /flex$/.test(display)) {
+        } else if (props.fd === "column" && this.keepsContentHeight(item.el, nodes.get(cid))) nodes.get(cid).props.fs = 0;
+        else if (props.fd === "column" && props.h === void 0 && props.fg === void 0 && !props.scroll && /flex$/.test(display)) {
           const n2 = nodes.get(cid);
           if (n2 && typeof n2.props.fb === "string" && n2.props.fb.endsWith("%") && !n2.props.scroll && !n2.props.clip) {
             delete n2.props.fb;

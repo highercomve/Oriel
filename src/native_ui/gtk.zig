@@ -102,6 +102,10 @@ extern fn cairo_arc(cr: *cairo_t, xc: f64, yc: f64, r: f64, a1: f64, a2: f64) vo
 extern fn cairo_close_path(cr: *cairo_t) void;
 extern fn cairo_rectangle(cr: *cairo_t, x: f64, y: f64, w: f64, h: f64) void;
 extern fn cairo_clip(cr: *cairo_t) void;
+extern fn cairo_create(target: *anyopaque) ?*cairo_t;
+extern fn cairo_destroy(cr: *cairo_t) void;
+extern fn cairo_surface_set_device_scale(surface: *anyopaque, x: f64, y: f64) void;
+extern fn gtk_widget_get_scale_factor(w: *Widget) c_int;
 extern fn cairo_image_surface_create(format: c_int, w: c_int, h: c_int) ?*anyopaque;
 extern fn cairo_image_surface_get_data(surface: *anyopaque) ?[*]u8;
 extern fn cairo_image_surface_get_stride(surface: *anyopaque) c_int;
@@ -210,6 +214,8 @@ pub const Surface = struct {
     /// Decoded <img> pictures, one per image node (a clipboard preview is a
     /// new data: URI each time: keyed by node, replaced when its src changes).
     images: std.AutoHashMap(i64, Image),
+    /// Each canvas's bitmap, kept from frame to frame while its size holds.
+    canvases: std.AutoHashMap(i64, CanvasBitmap),
     css: *GtkCssProvider,
     css_text: std.ArrayList(u8) = .empty,
     invoke_fn: Invoke,
@@ -238,6 +244,7 @@ pub const Surface = struct {
             .area = area,
             .fields = .init(gpa),
             .images = .init(gpa),
+            .canvases = .init(gpa),
             .css = gtk_css_provider_new(),
             .invoke_fn = invoke_fn,
             .invoke_ctx = invoke_ctx,
@@ -325,6 +332,7 @@ fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     if (s.fields.fetchRemove(node.id)) |kv| gtk_overlay_remove_overlay(s.overlay, kv.value);
     if (s.images.fetchRemove(node.id)) |kv| kv.value.deinit();
+    if (s.canvases.fetchRemove(node.id)) |kv| cairo_surface_destroy(kv.value.surf);
 }
 
 fn laidOut(ctx: *anyopaque) void {
@@ -588,10 +596,10 @@ fn modFlags(state: c_uint) u32 {
 fn keyName(keyval: c_uint) ?[]const u8 {
     const name = std.mem.span(gdk_keyval_name(keyval) orelse return null);
     const map = .{
-        .{ "Return", "Enter" },     .{ "KP_Enter", "Enter" }, .{ "Escape", "Escape" }, .{ "Tab", "Tab" },
-        .{ "BackSpace", "Backspace" }, .{ "Delete", "Delete" }, .{ "Up", "ArrowUp" },  .{ "Down", "ArrowDown" },
-        .{ "Left", "ArrowLeft" },   .{ "Right", "ArrowRight" }, .{ "Home", "Home" },     .{ "End", "End" },
-        .{ "Page_Up", "PageUp" },   .{ "Page_Down", "PageDown" }, .{ "space", " " },
+        .{ "Return", "Enter" },        .{ "KP_Enter", "Enter" },     .{ "Escape", "Escape" }, .{ "Tab", "Tab" },
+        .{ "BackSpace", "Backspace" }, .{ "Delete", "Delete" },      .{ "Up", "ArrowUp" },    .{ "Down", "ArrowDown" },
+        .{ "Left", "ArrowLeft" },      .{ "Right", "ArrowRight" },   .{ "Home", "Home" },     .{ "End", "End" },
+        .{ "Page_Up", "PageUp" },      .{ "Page_Down", "PageDown" }, .{ "space", " " },
     };
     inline for (map) |m| if (std.mem.eql(u8, name, m[0])) return m[1];
     if (name.len == 1) return name;
@@ -1074,6 +1082,8 @@ fn paintPlaceholder(s: *Surface, cr: *cairo_t, n: *Node) void {
 // into cairo. Every paint replays the whole program from the context's
 // defaults; save/restore keeps the state on a stack here as in the page.
 
+const CanvasBitmap = struct { surf: *anyopaque, w: c_int, h: c_int };
+
 const CanvasState = struct {
     fill: tree_mod.CanvasPaint = .{ .color = .{ 0, 0, 0, 1 } },
     stroke: tree_mod.CanvasPaint = .{ .color = .{ 0, 0, 0, 1 } },
@@ -1084,12 +1094,53 @@ const CanvasState = struct {
     font: tree_mod.CanvasFont = .{ .size = 10 },
     talign: u2 = 0, // left, center, right
     tbase: u3 = 0, // alphabetic, top, hanging, middle, bottom
+    // A scale by 0: nothing drawn until the restore() that undoes it. Cairo
+    // can't take that matrix (its error would end the whole program).
+    singular: bool = false,
 };
 
-fn paintCanvas(s: *Surface, cr: *cairo_t, n: *Node) void {
+fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
     const cmds = n.canvas orelse return;
     const f = n.frame;
     if (f.w <= 0 or f.h <= 0) return;
+    // The program draws into its own surface, then that is painted on the
+    // page: cairo's errors are sticky (a scale(0), an infinite coordinate),
+    // an unbalanced restore() would pop the window's own states, and a
+    // clearRect must clear the canvas, not the page behind it. All of that
+    // now stays in the canvas's surface.
+    const sf: f64 = @floatFromInt(@max(1, gtk_widget_get_scale_factor(s.area)));
+    const pw: c_int = @intFromFloat(@min(16384, @ceil(f.w * sf)));
+    const ph: c_int = @intFromFloat(@min(16384, @ceil(f.h * sf)));
+    if (pw <= 0 or ph <= 0) return;
+    // The bitmap from the last frame when the size is the same (a game
+    // loop redraws every frame), cleared; else a new one.
+    var owned: ?*anyopaque = null; // not cached: destroyed after this frame
+    defer if (owned) |o| cairo_surface_destroy(o);
+    const img = blk: {
+        if (s.canvases.get(n.id)) |b| if (b.w == pw and b.h == ph) break :blk b.surf;
+        if (s.canvases.fetchRemove(n.id)) |kv| cairo_surface_destroy(kv.value.surf);
+        const fresh = cairo_image_surface_create(0, pw, ph) orelse return;
+        cairo_surface_set_device_scale(fresh, sf, sf);
+        s.canvases.put(n.id, .{ .surf = fresh, .w = pw, .h = ph }) catch {
+            owned = fresh;
+        };
+        break :blk fresh;
+    };
+    const cr = cairo_create(img) orelse return;
+    cairo_set_operator(cr, cairo_operator_clear);
+    cairo_paint(cr);
+    cairo_set_operator(cr, cairo_operator_over);
+    defer {
+        cairo_destroy(cr);
+        cairo_save(win_cr);
+        // Clipped to the box's rounded corners, as a browser clips a
+        // replaced element's content to its border-radius.
+        roundRect(win_cr, f, n.radius());
+        cairo_clip(win_cr);
+        cairo_set_source_surface(win_cr, img, f.x, f.y);
+        cairo_paint(win_cr);
+        cairo_restore(win_cr);
+    }
     // The drawing's coordinate space: the bitmap, scaled to the box (CSS
     // width/height stretch it, as in a browser).
     const cw = n.props.cw orelse f.w;
@@ -1103,97 +1154,105 @@ fn paintCanvas(s: *Surface, cr: *cairo_t, n: *Node) void {
         while (it.next()) |p| cairo_pattern_destroy(p.*);
         grads.deinit();
     }
-    cairo_save(cr);
-    defer cairo_restore(cr);
-    cairo_new_path(cr);
-    cairo_rectangle(cr, f.x, f.y, f.w, f.h);
-    cairo_clip(cr); // a canvas draws within its element
-    cairo_translate(cr, f.x, f.y);
+    // The surface is the element's box; the bitmap's space is scaled to it.
     if (cw > 0 and ch > 0) cairo_scale(cr, f.w / cw, f.h / ch);
-    for (cmds) |cmd| switch (cmd) {
-        .save => {
-            states.append(s.gpa, st) catch {};
-            cairo_save(cr);
-        },
-        .restore => {
-            if (states.pop()) |prev| st = prev;
-            cairo_restore(cr);
-        },
-        .translate => |t| cairo_translate(cr, t[0], t[1]),
-        .scale => |t| cairo_scale(cr, t[0], t[1]),
-        .rotate => |a| cairo_rotate(cr, a),
-        .begin_path => cairo_new_path(cr),
-        .close_path => cairo_close_path(cr),
-        .move_to => |p| cairo_move_to(cr, p[0], p[1]),
-        .line_to => |p| cairo_line_to(cr, p[0], p[1]),
-        .rect => |r| cairo_rectangle(cr, r[0], r[1], r[2], r[3]),
-        .arc => |a| {
-            // A sweep from a0 to a1: increasing angles (cairo, in the
-            // y-down user space, draws a canvas's clockwise arc); the
-            // other way round draws the same segment from a1 up to a0.
-            var a1 = a.a1;
-            const two_pi: f32 = 2.0 * std.math.pi;
-            if (a.ccw) {
-                if (a1 > a.a0) a1 -= two_pi;
-                cairo_arc(cr, a.x, a.y, a.r, a1, a.a0);
-            } else {
-                if (a1 < a.a0) a1 += two_pi;
-                cairo_arc(cr, a.x, a.y, a.r, a.a0, a1);
-            }
-        },
-        .bezier_to => |b| cairo_curve_to(cr, b[0], b[1], b[2], b[3], b[4], b[5]),
-        .fill => |even| {
-            canvasSource(cr, st.fill, st.alpha, &grads);
-            cairo_set_fill_rule(cr, if (even) cairo_fill_rule_even_odd else cairo_fill_rule_winding);
-            cairo_fill_preserve(cr);
-        },
-        .stroke => {
-            canvasSource(cr, st.stroke, st.alpha, &grads);
-            cairo_set_line_width(cr, @max(0.1, st.lw));
-            cairo_set_line_cap(cr, st.cap);
-            cairo_set_line_join(cr, st.join);
-            cairo_stroke_preserve(cr);
-        },
-        .clip => |even| {
-            // cairo_clip eats the current path; a canvas keeps it.
-            const p = cairo_copy_path(cr);
-            cairo_set_fill_rule(cr, if (even) cairo_fill_rule_even_odd else cairo_fill_rule_winding);
-            cairo_clip(cr);
-            cairo_append_path(cr, p);
-            cairo_path_destroy(p);
-        },
-        .fill_rect => |r| canvasRect(cr, r, st, &grads, .fill),
-        .stroke_rect => |r| canvasRect(cr, r, st, &grads, .stroke),
-        .clear_rect => |r| {
-            // Out of the bitmap: to whatever's behind (the element's own
-            // CSS background is under the program; a browser's would be
-            // too, as its bitmap is transparent there).
-            const p = cairo_copy_path(cr);
-            cairo_new_path(cr);
-            cairo_rectangle(cr, r[0], r[1], r[2], r[3]);
-            cairo_set_operator(cr, cairo_operator_clear);
-            cairo_fill(cr);
-            cairo_set_operator(cr, cairo_operator_over);
-            cairo_append_path(cr, p);
-            cairo_path_destroy(p);
-        },
-        .fill_text => |t| canvasShowText(s, cr, t.t, t.x, t.y, st, false, &grads),
-        .stroke_text => |t| canvasShowText(s, cr, t.t, t.x, t.y, st, true, &grads),
-        .fill_style => |src| st.fill = src,
-        .stroke_style => |src| st.stroke = src,
-        .line_width => |w| st.lw = @max(0, w),
-        .line_cap => |cap| st.cap = cap,
-        .line_join => |join| st.join = join,
-        .global_alpha => |a| st.alpha = a,
-        .font => |fnt| st.font = fnt,
-        .text_align => |a| st.talign = a,
-        .text_baseline => |b| st.tbase = b,
-        .linear_gradient => |g| canvasPattern(&grads, g.id, cairo_pattern_create_linear(g.x0, g.y0, g.x1, g.y1)),
-        .radial_gradient => |g| canvasPattern(&grads, g.id, cairo_pattern_create_radial(g.x0, g.y0, @max(0.001, g.r0), g.x1, g.y1, @max(0.001, g.r1))),
-        .color_stop => |c| if (grads.get(c.id)) |pat| {
-            cairo_pattern_add_color_stop_rgba(pat, c.off, c.c[0] / 255, c.c[1] / 255, c.c[2] / 255, c.c[3]);
-        },
-    };
+    for (cmds) |cmd| {
+        if (st.singular) switch (cmd) {
+            .translate, .scale, .rotate, .begin_path, .close_path, .move_to, .line_to, .rect, .arc, .bezier_to, .fill, .stroke, .clip, .fill_rect, .stroke_rect, .clear_rect, .fill_text, .stroke_text => continue,
+            else => {},
+        };
+        switch (cmd) {
+            .save => {
+                // Saved together or not at all, so restore stays balanced.
+                states.append(s.gpa, st) catch continue;
+                cairo_save(cr);
+            },
+            .restore => {
+                // Only what this program saved: an extra restore() is ignored,
+                // as in a browser (cairo would put the context in error).
+                if (states.pop()) |prev| {
+                    st = prev;
+                    cairo_restore(cr);
+                }
+            },
+            .translate => |t| cairo_translate(cr, t[0], t[1]),
+            .scale => |t| if (t[0] == 0 or t[1] == 0) {
+                st.singular = true;
+            } else cairo_scale(cr, t[0], t[1]),
+            .rotate => |a| cairo_rotate(cr, a),
+            .begin_path => cairo_new_path(cr),
+            .close_path => cairo_close_path(cr),
+            .move_to => |p| cairo_move_to(cr, p[0], p[1]),
+            .line_to => |p| cairo_line_to(cr, p[0], p[1]),
+            .rect => |r| cairo_rectangle(cr, r[0], r[1], r[2], r[3]),
+            .arc => |a| {
+                // A sweep from a0 to a1: increasing angles (cairo, in the
+                // y-down user space, draws a canvas's clockwise arc); the
+                // other way round draws the same segment from a1 up to a0.
+                var a1 = a.a1;
+                const two_pi: f32 = 2.0 * std.math.pi;
+                if (a.ccw) {
+                    if (a1 > a.a0) a1 -= two_pi;
+                    cairo_arc(cr, a.x, a.y, a.r, a1, a.a0);
+                } else {
+                    if (a1 < a.a0) a1 += two_pi;
+                    cairo_arc(cr, a.x, a.y, a.r, a.a0, a1);
+                }
+            },
+            .bezier_to => |b| cairo_curve_to(cr, b[0], b[1], b[2], b[3], b[4], b[5]),
+            .fill => |even| {
+                canvasSource(cr, st.fill, st.alpha, &grads);
+                cairo_set_fill_rule(cr, if (even) cairo_fill_rule_even_odd else cairo_fill_rule_winding);
+                cairo_fill_preserve(cr);
+            },
+            .stroke => {
+                canvasSource(cr, st.stroke, st.alpha, &grads);
+                cairo_set_line_width(cr, @max(0.1, st.lw));
+                cairo_set_line_cap(cr, st.cap);
+                cairo_set_line_join(cr, st.join);
+                cairo_stroke_preserve(cr);
+            },
+            .clip => |even| {
+                // cairo_clip eats the current path; a canvas keeps it.
+                const p = cairo_copy_path(cr);
+                cairo_set_fill_rule(cr, if (even) cairo_fill_rule_even_odd else cairo_fill_rule_winding);
+                cairo_clip(cr);
+                cairo_append_path(cr, p);
+                cairo_path_destroy(p);
+            },
+            .fill_rect => |r| canvasRect(cr, r, st, &grads, .fill),
+            .stroke_rect => |r| canvasRect(cr, r, st, &grads, .stroke),
+            .clear_rect => |r| {
+                // Out of the bitmap: to whatever's behind (the element's own
+                // CSS background is under the program; a browser's would be
+                // too, as its bitmap is transparent there).
+                const p = cairo_copy_path(cr);
+                cairo_new_path(cr);
+                cairo_rectangle(cr, r[0], r[1], r[2], r[3]);
+                cairo_set_operator(cr, cairo_operator_clear);
+                cairo_fill(cr);
+                cairo_set_operator(cr, cairo_operator_over);
+                cairo_append_path(cr, p);
+                cairo_path_destroy(p);
+            },
+            .fill_text => |t| canvasShowText(s, cr, t.t, t.x, t.y, st, false, &grads),
+            .stroke_text => |t| canvasShowText(s, cr, t.t, t.x, t.y, st, true, &grads),
+            .fill_style => |src| st.fill = src,
+            .stroke_style => |src| st.stroke = src,
+            .line_width => |w| st.lw = @max(0, w),
+            .line_cap => |cap| st.cap = cap,
+            .line_join => |join| st.join = join,
+            .global_alpha => |a| st.alpha = a,
+            .font => |fnt| st.font = fnt,
+            .text_align => |a| st.talign = a,
+            .text_baseline => |b| st.tbase = b,
+            .linear_gradient => |g| canvasPattern(&grads, g.id, cairo_pattern_create_linear(g.x0, g.y0, g.x1, g.y1)),
+            .radial_gradient => |g| canvasPattern(&grads, g.id, cairo_pattern_create_radial(g.x0, g.y0, @max(0.001, g.r0), g.x1, g.y1, @max(0.001, g.r1))),
+            .color_stop => |c| if (grads.get(c.id)) |pat| {
+                cairo_pattern_add_color_stop_rgba(pat, c.off, c.c[0] / 255, c.c[1] / 255, c.c[2] / 255, c.c[3]);
+            },
+        }
+    }
 }
 
 /// fillRect / strokeRect: they draw their own path and leave the page's
@@ -1298,7 +1357,6 @@ fn canvasShowText(s: *Surface, cr: *cairo_t, text: []const u8, x: f32, y: f32, s
         pango_cairo_show_layout(cr, layout);
     }
 }
-
 
 const Image = struct {
     src_hash: u64,

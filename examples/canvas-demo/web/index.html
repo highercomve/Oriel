@@ -5,6 +5,8 @@
   body { background: #20242c; color: #e8eaee; margin: 0; padding: 12px; font-size: 14px; display: flex; flex-direction: column; gap: 10px; height: 100vh; box-sizing: border-box; }
   canvas { border-radius: 8px; display: block; }
   #game { background: #10141b; }
+  .hostile-wrap { background: #c0392b; padding: 6px; border-radius: 8px; }
+  #hostile { background: #2a3040; }
   .bar { display: flex; gap: 10px; align-items: center; }
   .muted { color: #9aa0ab; }
 </style>
@@ -13,6 +15,8 @@
   <div class="bar"><b>Canvas demo</b><span id="renderer" class="muted"></span><span id="fps" class="muted"></span></div>
   <canvas id="static" width="440" height="150"></canvas>
   <canvas id="game" width="440" height="120"></canvas>
+  <div class="hostile-wrap"><canvas id="hostile" width="428" height="40"></canvas></div>
+  <div id="after">The page still draws after the hostile canvas.</div>
   <script>
     document.getElementById("renderer").textContent = window.oriel.native ? "native" : "webview";
 
@@ -56,6 +60,25 @@
     s.font = "10px sans-serif";
     s.textAlign = "center";
     s.fillText("centered", 220, 145);
+
+    // --- hostile: calls a browser shrugs off; they must not break the window ---
+    // (extra restore(), scale(0), a coordinate that overflows f32, and a
+    // clearRect that must show the canvas's own background, not the red
+    // behind it or a hole through the window).
+    const h = document.getElementById("hostile").getContext("2d");
+    h.fillStyle = "#6d8bff";
+    h.fillRect(0, 0, 428, 40);
+    h.clearRect(150, 5, 128, 30);
+    h.restore(); h.restore(); h.restore();
+    h.fillStyle = "#3ad07a";
+    h.fillRect(1e300, 0, 10, 10);
+    h.save();
+    h.scale(0, 0);
+    h.fillRect(0, 0, 428, 40);
+    h.restore();
+    h.fillStyle = "#e8eaee";
+    h.font = "12px sans-serif";
+    h.fillText("still drawing", 10, 25);
 
     // --- game: bouncing balls off the walls ---
     const ctx = document.getElementById("game").getContext("2d");

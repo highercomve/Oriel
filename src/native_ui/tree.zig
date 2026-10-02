@@ -169,6 +169,14 @@ pub fn parseCanvasCmds(a: std.mem.Allocator, v: std.json.Value) ![]CanvasCmd {
         } else if (std.mem.eql(u8, tag, "gs") and op.len > 6) {
             c = .{ .color_stop = .{ .id = gradId(op[1]), .off = numAt(op, 2), .c = .{ numAt(op, 3), numAt(op, 4), numAt(op, 5), numAt(op, 6) } } };
         }
+        // A call with an argument that isn't finite (or overflows f32) is
+        // ignored, as a browser's canvas does.
+        const finite = for (op[1..]) |arg| switch (arg) {
+            .float => |fv| if (!std.math.isFinite(@as(f32, @floatCast(fv)))) break false,
+            .integer => |iv| if (!std.math.isFinite(@as(f32, @floatFromInt(iv)))) break false,
+            else => {},
+        } else true;
+        if (!finite) continue;
         if (c) |cc| out.appendAssumeCapacity(cc);
     }
     return out.items;
@@ -852,6 +860,9 @@ test "canvas ops parse" {
     const junk = try std.json.parseFromSliceLeaky(std.json.Value, a, "[[42],[\"zz\",1],[\"fr\",1,2,3,4]]", .{});
     const ok = try parseCanvasCmds(a, junk);
     try t.expectEqual(1, ok.len);
+    // Arguments that overflow f32 (a browser ignores non-finite calls).
+    const huge = try std.json.parseFromSliceLeaky(std.json.Value, a, "[[\"ts\",1e300,1],[\"fr\",1,2,3,4]]", .{});
+    try t.expectEqual(1, (try parseCanvasCmds(a, huge)).len);
 }
 
 test "idOf: JS numbers to node ids" {
