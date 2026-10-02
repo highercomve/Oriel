@@ -256,7 +256,13 @@ formProto.reset = function () {
 
 // Layout reads, from the native layout.
 const elProto = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div")));
-const frameOf = (el) => (renderer && host.frame(renderer.idOf(el, "el"))) || [0, 0, 0, 0];
+// As in a browser, a layout read renders what changed first (the page just
+// added these elements: their size, not 0).
+const frameOf = (el) => {
+  if (!renderer) return [0, 0, 0, 0];
+  if (!renderer.rendering) renderer.render();
+  return host.frame(renderer.idOf(el, "el")) || [0, 0, 0, 0];
+};
 Object.defineProperties(elProto, {
   offsetWidth: { get() { return frameOf(this)[2]; }, configurable: true },
   offsetHeight: { get() { return frameOf(this)[3]; }, configurable: true },
