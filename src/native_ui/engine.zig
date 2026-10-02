@@ -323,4 +323,6 @@ test {
     // Pure Zig, used by the Apple backends (apple_draw.zig): tested everywhere.
     _ = @import("svg_path.zig");
     _ = @import("tree.zig");
+    // The Apple drawing (ImageIO, CoreText): tested where it runs.
+    if (comptime @import("builtin").os.tag == .macos) _ = @import("apple_draw.zig");
 }

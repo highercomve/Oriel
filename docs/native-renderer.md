@@ -174,7 +174,14 @@ WebKit processes (GPU, WebContent, Networking); in the iOS simulator 196 MB
 against 550 MB (simulator processes carry the simulated system frameworks,
 so device numbers are lower, but the WebKit processes are what goes).
 
-Not yet: a text area's placeholder (NSTextView and UITextView have none),
-keyboard avoidance on iOS (a field under the keyboard isn't scrolled up),
-and the hardware keyboard on iOS (only fields get keys). CoreText, like
-Pango, breaks a word that doesn't fit its line, where CSS lets it overflow.
+Images (`<img>`, a `data:` URI or an app asset) are decoded with ImageIO:
+the size a file declares is read from its header first, and a picture over
+4096 x 4096 px keeps that size for layout and isn't drawn (as on GTK);
+what's kept decoded is at most 2048 px on its longer side, and drawn per
+`object-fit`. Default checkboxes and radios are drawn as on GTK, and a text
+area's placeholder under its empty NSTextView / UITextView.
+
+Not yet: keyboard avoidance on iOS (a field under the keyboard isn't
+scrolled up), and the hardware keyboard on iOS (only fields get keys).
+CoreText, like Pango, breaks a word that doesn't fit its line, where CSS
+lets it overflow.
