@@ -22,6 +22,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Log
 import android.view.WindowManager
@@ -35,6 +36,8 @@ import java.io.File
  * Activities come and go ([OrielActivity]).
  */
 object OrielRuntime {
+    /** How long a started window Activity counts as pending (it normally attaches within a second). */
+    private const val LAUNCH_PENDING_MS = 5000L
     private const val TAG = "Oriel"
     const val EXTRA_WINDOW = "dev.oriel.window"
     const val EXTRA_ARGS = "dev.oriel.args"
@@ -152,6 +155,10 @@ object OrielRuntime {
             bringToFront(host)
             return
         }
+        // Already starting (show then focus, before the Activity attached):
+        // a second start would open a second, empty Activity for the window.
+        val now = SystemClock.uptimeMillis()
+        if (w.launchedAt != 0L && now - w.launchedAt < LAUNCH_PENDING_MS) return
         val intent = if (w.isMain) {
             Intent(app, OrielMainActivity::class.java)
         } else {
@@ -160,8 +167,10 @@ object OrielRuntime {
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
+            w.launchedAt = now
             app.startActivity(intent, launchBounds(w)?.toBundle())
         } catch (e: Exception) {
+            w.launchedAt = 0L
             Log.e(TAG, "cannot show window ${w.label}", e)
         }
     }

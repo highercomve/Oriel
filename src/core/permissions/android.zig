@@ -5,7 +5,8 @@
 //! - screen_capture, system_audio: MediaProjection asks the user every
 //!   session, so they are always `prompt`.
 //! - accessibility: an accessibility service the user enables in Settings;
-//!   `granted` once it is on.
+//!   `granted` once it is on, `denied` when the app declares none (nothing
+//!   to enable: `request` doesn't open Settings).
 //! The manifest must declare them: `oriel android init` writes the
 //! `<uses-permission>` entries from build.zig's `.permissions`.
 

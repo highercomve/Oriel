@@ -144,10 +144,7 @@ pub const Node = struct {
     arena: std.heap.ArenaAllocator,
     props: Props = .{},
     /// The value the page last set (fields); null once the backend took it.
-    /// It points into `pending_buf`, not the props arena: the next props
-    /// update (without a value) resets the arena before the backend reads it.
     pending_value: ?[]const u8 = null,
-    pending_buf: std.ArrayList(u8) = .empty,
     /// After layout: the frame in window coordinates, the visible part.
     frame: Rect = .{},
     clip: Rect = .{},
@@ -227,7 +224,6 @@ pub const Tree = struct {
         if (t.on_remove) |cb| cb(t.measure_ctx, n);
         yg.YGNodeFree(n.yn);
         n.kids.deinit(t.gpa);
-        n.pending_buf.deinit(t.gpa);
         n.arena.deinit();
         t.gpa.destroy(n);
     }
@@ -265,11 +261,19 @@ pub const Tree = struct {
         t.dirty = true;
     }
 
-    /// A node id, or null when it isn't a whole number an id can be.
+    /// A node id from a JS number: NaN, infinities and values outside i64
+    /// (which @intFromFloat would panic on) name no node (render.js counts
+    /// up from 1, with 0 and -1 for the window's nodes).
+    pub fn idOf(x: f64) i64 {
+        if (!std.math.isFinite(x) or x <= -0x1p63 or x >= 0x1p63) return std.math.minInt(i64);
+        return @intFromFloat(x);
+    }
+
+    /// A node id from an op, or null when it isn't one (`apply` skips it).
     fn num(v: std.json.Value) ?i64 {
         return switch (v) {
             .integer => |i| i,
-            .float => |x| if (std.math.isFinite(x) and @abs(x) <= 9007199254740992) @intFromFloat(x) else null,
+            .float => |x| if (idOf(x) == std.math.minInt(i64)) null else idOf(x),
             else => null,
         };
     }
@@ -304,7 +308,17 @@ pub const Tree = struct {
     }
 
     fn setProps(t: *Tree, n: *Node, value: std.json.Value) !void {
-        _ = n.arena.reset(.retain_capacity);
+        // A value the backend hasn't taken yet lives in the arena reset
+        // below: keep a copy, or it would point into reused memory when the
+        // new props carry no `val` (fields send it only when it changed).
+        const unconsumed: ?[]u8 = if (n.pending_value) |v| try t.gpa.dupe(u8, v) else null;
+        defer if (unconsumed) |u| t.gpa.free(u);
+        n.pending_value = null;
+        // Keep a little for the next props, not an old <img> data: URI's megabytes.
+        _ = n.arena.reset(.{ .retain_with_limit = 64 * 1024 });
+        // The old props' slices are gone with the reset: if copying the new
+        // ones fails, the node must not keep pointing into the arena.
+        n.props = .{};
         const a = n.arena.allocator();
         // Copy the JSON value into the node's arena (the ops arena goes away).
         const copy = try cloneValue(a, value);
@@ -313,10 +327,9 @@ pub const Tree = struct {
             break :blk .{};
         };
         if (n.props.val) |v| {
-            n.pending_value = null;
-            n.pending_buf.clearRetainingCapacity();
-            try n.pending_buf.appendSlice(t.gpa, v);
-            n.pending_value = n.pending_buf.items;
+            n.pending_value = v;
+        } else if (unconsumed) |u| {
+            n.pending_value = try a.dupe(u8, u);
         }
         styleYoga(n);
         if (t.on_props) |cb| cb(t.measure_ctx, n, copy);
@@ -371,12 +384,25 @@ pub const Tree = struct {
         if (p.scroll or p.clip) child_clip = clip.intersect(n.frame);
         if (p.scroll) {
             var bottom: f32 = 0;
-            for (n.kids.items) |k| bottom = @max(bottom, yg.YGNodeLayoutGetTop(k.yn) + yg.YGNodeLayoutGetHeight(k.yn) + yg.YGNodeLayoutGetMargin(k.yn, yg.YGEdgeBottom));
+            for (n.kids.items) |k| bottom = @max(bottom, overflowBottom(k, 0));
             n.content_h = bottom + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeBottom);
             n.scroll_y = std.math.clamp(n.scroll_y, 0, @max(0, n.content_h - n.frame.h));
         }
         const sy = if (p.scroll) n.scroll_y else 0;
         for (n.kids.items) |k| place(k, n.frame.x, n.frame.y - sy, child_clip);
+    }
+
+    /// How far down a node's box reaches, with what overflows it (CSS's
+    /// scrollable overflow): a page whose body is `height: 100%` still
+    /// scrolls its taller content. A box that clips or scrolls keeps its
+    /// own overflow. `top`: the parent's top in the scroll container.
+    fn overflowBottom(k: *Node, top: f32) f32 {
+        const y = top + yg.YGNodeLayoutGetTop(k.yn);
+        var bottom = y + yg.YGNodeLayoutGetHeight(k.yn) + yg.YGNodeLayoutGetMargin(k.yn, yg.YGEdgeBottom);
+        if (!k.props.scroll and !k.props.clip) {
+            for (k.kids.items) |c| bottom = @max(bottom, overflowBottom(c, y));
+        }
+        return bottom;
     }
 
     /// Debugging (ORIEL_NUI_DUMP=1): the laid-out tree on stderr.
@@ -595,6 +621,7 @@ fn testMeasure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
 }
 
 test "a field's pending value survives a props update without one" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var ctx: u8 = 0;
     var t = Tree.init(gpa, &ctx, testMeasure);
@@ -610,6 +637,7 @@ test "a field's pending value survives a props update without one" {
 }
 
 test "ops with a bad shape or id are skipped" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var ctx: u8 = 0;
     var t = Tree.init(gpa, &ctx, testMeasure);
@@ -617,4 +645,36 @@ test "ops with a bad shape or id are skipped" {
     try t.apply("[1,[],[\"\"],[\"c\"],[\"c\",1e300,\"view\"],[\"c\",2],[\"k\",3,5],[\"p\",4]]");
     try std.testing.expectEqual(@as(usize, 0), t.nodes.count());
     try std.testing.expectError(error.BadOps, t.apply("{}"));
+}
+
+test "idOf: JS numbers to node ids" {
+    try std.testing.expectEqual(@as(i64, 42), Tree.idOf(42));
+    try std.testing.expectEqual(@as(i64, -1), Tree.idOf(-1));
+    try std.testing.expectEqual(@as(i64, 0), Tree.idOf(0));
+    const none = std.math.minInt(i64);
+    try std.testing.expectEqual(none, Tree.idOf(std.math.nan(f64)));
+    try std.testing.expectEqual(none, Tree.idOf(std.math.inf(f64)));
+    try std.testing.expectEqual(none, Tree.idOf(-std.math.inf(f64)));
+    try std.testing.expectEqual(none, Tree.idOf(1e300));
+    try std.testing.expectEqual(none, Tree.idOf(-1e300));
+}
+
+test "a field's value set by the page survives props that don't repeat it" {
+    // Yoga is linked only with -Dnative_ui.
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const Dummy = struct {
+        fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 10, 10 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, Dummy.measure);
+    defer t.deinit();
+    try t.apply("[[\"c\",1,\"input\"],[\"p\",1,{\"val\":\"typed by the page\"}]]");
+    // Before the backend took it: new props without `val` (fields send it
+    // only when it changed) reset the node's arena.
+    try t.apply("[[\"p\",1,{\"ph\":\"a placeholder that reuses the arena's memory\"}]]");
+    const n = t.get(1).?;
+    try std.testing.expectEqualStrings("typed by the page", n.pending_value.?);
+    try std.testing.expectEqualStrings("a placeholder that reuses the arena's memory", n.props.ph.?);
 }

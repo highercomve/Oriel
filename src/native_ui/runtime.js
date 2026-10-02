@@ -13500,6 +13500,12 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         } else if (props.scroll && !this.cs.get(item.el)?.["flex-shrink"]) {
           const n2 = nodes.get(cid);
           if (n2) n2.props.fs = 0;
+        } else if (props.fd === "column" && props.h === void 0 && props.fg === void 0 && !props.scroll && /flex$/.test(display)) {
+          const n2 = nodes.get(cid);
+          if (n2 && typeof n2.props.fb === "string" && n2.props.fb.endsWith("%") && !n2.props.scroll && !n2.props.clip) {
+            delete n2.props.fb;
+            n2.props.fs = 0;
+          }
         }
         if (!childCtx.blockify) {
           const n2 = nodes.get(cid);
@@ -14342,6 +14348,13 @@ ${a.stack || ""}`;
       activate(this, 0);
     } finally {
       clicking.delete(this);
+    }
+  };
+  g.scrollTo = g.scroll = (x, y) => {
+    const top = typeof x === "object" && x !== null ? x.top : y;
+    if (renderer && top !== void 0) {
+      renderer.render();
+      host.scrollTo(-1, +top || 0);
     }
   };
   var active = null;

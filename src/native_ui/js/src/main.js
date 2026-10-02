@@ -233,6 +233,12 @@ Object.getPrototypeOf(document.createElement("div")).click = elProto.click = fun
   clicking.add(this);
   try { activate(this, 0); } finally { clicking.delete(this); }
 };
+// The page scrolls in the window's scroll view (node -1, render.js):
+// window.scrollTo(x, y) and scrollTo({ top }).
+g.scrollTo = g.scroll = (x, y) => {
+  const top = typeof x === "object" && x !== null ? x.top : y;
+  if (renderer && top !== undefined) { renderer.render(); host.scrollTo(-1, +top || 0); }
+};
 // The focused element; it carries data-nui-focus, which the style engine
 // matches for :focus (css.js).
 let active = null;
