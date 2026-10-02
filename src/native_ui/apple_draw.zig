@@ -161,6 +161,11 @@ extern fn CTFrameGetLineOrigins(frame: CTFrameRef, range: CFRange, origins: [*]C
 extern fn CTLineGetStringRange(line: CFTypeRef) CFRange;
 extern fn CTLineGetOffsetForStringIndex(line: CFTypeRef, index: c_long, secondary: ?*CGFloat) CGFloat;
 extern fn CTLineGetTrailingWhitespaceWidth(line: CFTypeRef) f64;
+extern fn CTLineGetGlyphRuns(line: CFTypeRef) CFTypeRef;
+extern fn CTRunGetStringRange(run: CFTypeRef) CFRange;
+extern fn CTRunGetGlyphCount(run: CFTypeRef) c_long;
+extern fn CTRunGetPositions(run: CFTypeRef, range: CFRange, out: [*]CGPoint) void;
+extern fn CTRunGetTypographicBounds(run: CFTypeRef, range: CFRange, ascent: ?*CGFloat, descent: ?*CGFloat, leading: ?*CGFloat) f64;
 extern fn CFArrayGetCount(a: CFTypeRef) c_long;
 extern fn CFArrayGetValueAtIndex(a: CFTypeRef, i: c_long) CFTypeRef;
 const CTParagraphStyleSetting = extern struct { spec: u32, size: usize, value: *const anyopaque };
@@ -425,22 +430,44 @@ fn paintRunBackgrounds(cg: CGContextRef, n: *Node, frame: CTFrameRef) void {
         for (0..shown) |i| {
             const line = CFArrayGetValueAtIndex(lines, @intCast(i));
             const lr = CTLineGetStringRange(line);
-            const a = @max(start, lr.location);
-            const b = @min(end, lr.location + lr.length);
-            if (a >= b) continue;
-            var ascent: CGFloat = 0;
-            var descent: CGFloat = 0;
-            const width = CTLineGetTypographicBounds(line, &ascent, &descent, null);
+            if (@max(start, lr.location) >= @min(end, lr.location + lr.length)) continue;
+            const width = CTLineGetTypographicBounds(line, null, null, null);
             // Not under the space a line wraps after (a browser paints none there).
             const text_end: CGFloat = @floatCast(width - CTLineGetTrailingWhitespaceWidth(line));
-            const x0 = @min(CTLineGetOffsetForStringIndex(line, a, null), text_end);
-            const x1 = @min(CTLineGetOffsetForStringIndex(line, b, null), text_end);
-            if (x1 <= x0) continue;
             const o = origins_buf[i];
-            CGContextFillRect(cg, .{
-                .origin = .{ .x = o.x + x0, .y = o.y - descent },
-                .size = .{ .width = x1 - x0, .height = ascent + descent },
-            });
+            // Per glyph run (one font, one direction): a right-to-left run
+            // amid left-to-right text has its own place on the line.
+            const glyph_runs = CTLineGetGlyphRuns(line);
+            var g: c_long = 0;
+            while (g < CFArrayGetCount(glyph_runs)) : (g += 1) {
+                const run = CFArrayGetValueAtIndex(glyph_runs, g);
+                const sr = CTRunGetStringRange(run);
+                const a = @max(start, sr.location);
+                const b = @min(end, sr.location + sr.length);
+                if (a >= b or CTRunGetGlyphCount(run) == 0) continue;
+                var ascent: CGFloat = 0;
+                var descent: CGFloat = 0;
+                const run_w = CTRunGetTypographicBounds(run, .{ .location = 0, .length = 0 }, &ascent, &descent, null);
+                var x0: CGFloat = undefined;
+                var x1: CGFloat = undefined;
+                if (a == sr.location and b == sr.location + sr.length) {
+                    var first: [1]CGPoint = undefined;
+                    CTRunGetPositions(run, .{ .location = 0, .length = 1 }, &first);
+                    x0 = first[0].x;
+                    x1 = x0 + @as(CGFloat, @floatCast(run_w));
+                } else {
+                    const xa = CTLineGetOffsetForStringIndex(line, a, null);
+                    const xb = CTLineGetOffsetForStringIndex(line, b, null);
+                    x0 = @min(xa, xb);
+                    x1 = @max(xa, xb);
+                }
+                x1 = @min(x1, text_end);
+                if (x1 <= x0) continue;
+                CGContextFillRect(cg, .{
+                    .origin = .{ .x = o.x + x0, .y = o.y - descent },
+                    .size = .{ .width = x1 - x0, .height = ascent + descent },
+                });
+            }
         }
     }
 }
