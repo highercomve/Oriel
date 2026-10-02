@@ -14354,7 +14354,6 @@ col, colgroup { display: none; }
         const el = shape.children[i], entry = shape.plan.entries[i], childCS = entry.cs;
         const id = this.idOf(el, "el");
         this.own(id, el);
-        this.sc.set(el, { parent: cs, cs: childCS, m: entry.m, frame: this.frameNo, epoch: this.styleEpoch });
         const child = el.firstChild, ws = childCS["white-space"];
         let runs;
         if (!child) runs = [];
@@ -14364,7 +14363,7 @@ col, colgroup { display: none; }
           if (childCS["text-transform"] === "uppercase") t = t.toUpperCase();
           else if (childCS["text-transform"] === "lowercase") t = t.toLowerCase();
           t = t.replace(/\s+/g, " ").trim();
-          runs = t ? [{ t, ...entry.run }] : [];
+          runs = t ? [entry.simpleRun ? { t, c: entry.run.c, sz: entry.run.sz, w: entry.run.w } : { t, ...entry.run }] : [];
         } else {
           const raw = [];
           for (let c = child; c; c = c.nextSibling) {
@@ -14373,14 +14372,10 @@ col, colgroup { display: none; }
           }
           runs = trimRuns(raw);
         }
-        const props = { ...entry.box };
-        let kind = "view";
-        if (runs.length) {
-          kind = "text";
-          Object.assign(props, entry.text);
-          props.runs = runs;
-        }
-        this.putClick(props, el);
+        const kind = runs.length ? "text" : "view";
+        const props = { ...runs.length ? entry.textBox : entry.box };
+        if (runs.length) props.runs = runs;
+        if (el.localName === "label" || listens(el)) props.click = true;
         let template;
         if (!props.click && (kind === "view" || runs.length === 1)) {
           const key2 = kind === "text" ? "nativeText" : "nativeView";
@@ -14393,8 +14388,12 @@ col, colgroup { display: none; }
         }
         const node = { kind, props, kids: EMPTY, template };
         nodes.set(id, node);
-        this.fc.set(el, {
+        const cached = {
           parent: cs,
+          cs: childCS,
+          m: entry.m,
+          frame: this.frameNo,
+          epoch: this.styleEpoch,
           block: true,
           ts: spacing,
           id,
@@ -14406,7 +14405,9 @@ col, colgroup { display: none; }
           root: node,
           rootSpec: void 0,
           rootAnim: void 0
-        });
+        };
+        this.sc.set(el, cached);
+        this.fc.set(el, cached);
         this.cur.kids.push(el);
         ids.push(id);
       }
@@ -14419,7 +14420,9 @@ col, colgroup { display: none; }
         const sc = this.sc.get(el), fc = this.fc.get(el), n2 = fc && nodes.get(fc.id);
         if (!sc || !fc || !n2 || n2.kids.length || !["text", "view"].includes(n2.kind) || fc.fixed || fc.rootSpec || fc.rootAnim || this.volatile.has(el) || !["inline", "block", "inline-block"].includes(sc.cs.display || "inline") || sc.cs.__rules.before.length || sc.cs.__rules.after.length) return;
         const fs = sc.cs.__fs;
-        entries2.push({ cs: sc.cs, m: sc.m, box: boxProps(sc.cs, blockify(sc.cs.display || "inline"), fs, el), text: textProps(sc.cs, fs), run: runStyle(sc.cs, fs), order: parseInt(sc.cs.order, 10) || 0 });
+        const box = boxProps(sc.cs, blockify(sc.cs.display || "inline"), fs, el);
+        const run = runStyle(sc.cs, fs);
+        entries2.push({ cs: sc.cs, m: sc.m, box, textBox: { ...box, ...textProps(sc.cs, fs) }, run, simpleRun: Object.keys(run).length === 3, order: parseInt(sc.cs.order, 10) || 0 });
       }
       const order = entries2.map((_, i) => i).sort((a, b) => entries2[a].order - entries2[b].order || a - b);
       if (shape.shapes.size >= 32) shape.shapes.delete(shape.shapes.keys().next().value);
@@ -14773,21 +14776,21 @@ col, colgroup { display: none; }
       const ops = [];
       const now = Date.now();
       const remade = /* @__PURE__ */ new Set();
-      for (const [id, n2] of nodes) {
+      nodes.forEach((n2, id) => {
+        const old = this.prev.get(id);
+        if (old && old.kind !== n2.kind) remade.add(id);
+      });
+      nodes.forEach((n2, id) => {
         const old = this.prev.get(id);
         if (old && old.p === null) {
           old.p = encodeProps(old.props);
           old.props = null;
         }
-        if (old && old.kind !== n2.kind) remade.add(id);
-      }
-      for (const [id, n2] of nodes) {
-        const old = this.prev.get(id);
         if (!old && this.host.leaf && this.createLeaf(id, n2)) {
           const k2 = n2.kids.length ? JSON.stringify(n2.kids) : "[]";
           if (n2.kids.length) ops.push(`["k",${id},${k2}]`);
           this.prev.set(id, { kind: n2.kind, p: null, props: n2.props, k: k2 });
-          continue;
+          return;
         }
         if (!old || old.kind !== n2.kind) this.tx.forget(id);
         const spec = this.specs.get(id) || null, animSpec = this.animSpecs.get(id) || null;
@@ -14807,7 +14810,7 @@ col, colgroup { display: none; }
         }
         this.prev.set(id, { kind: n2.kind, p, k });
         if (n2.props.val !== void 0) this.native.set(id, n2.props.val);
-      }
+      });
       const drop = (id) => {
         if (!this.prev.has(id) || nodes.has(id)) return;
         ops.push(`["d",${id}]`);

@@ -290,3 +290,55 @@ Reports: `2026-10-02-rows-phase6-desktop.json`,
 `2026-10-02-rows-phase6-dom-only-desktop.json`,
 `2026-10-02-rows-phase6-qjs.json`, and
 `2026-10-02-rows-phase6-ablation.json` under `examples/render-bench/results`.
+
+## Flattening and emission follow-up
+
+Based on `2143d84`, including the latest main and the Apple natural-size cache
+and word-minimum-width fixes. Row leaf plans now merge box/font properties once;
+each leaf owns its properties and text run. Ordinary three-field font runs copy
+the fields directly; decorated runs retain the general copy. Eligibility already
+rules out attributes other than class/style, so only labels/listeners need
+additional click checks on that path. Direct leaves share one style/flattening
+cache record; later style updates replace their record. Emission uses Map.forEach
+to avoid entry-pair iterator arrays, retaining the initial kind-change scan so
+parents reattach remade children regardless of traversal order.
+
+Full JavaScript and ReleaseFast native checks pass. New differential cases cover
+owned runs/props, decorated fonts, labels/listeners, empty/text transitions,
+disabled/onclick fallback and later inline font/style edits. Generated runtime is
+rebuilt from owned sources. Shared layout code was not changed.
+
+Three serial paired QuickJS processes (six trials per step) measured rendering
+120.60 → 115.00 ms for 1,000-row builds and 243.25 → 234.90 ms for 3,000,
+about 4.6% and 3.4% less. DOM time and bridge payload are essentially unchanged.
+Updates show no consistent improvement.
+
+The final visible Linux comparison is mixed:
+
+| Step | Before `2143d84` | Updated native |
+|---|---:|---:|
+| Build 1,000 | 91.56 ms | 95.50 ms |
+| Build 3,000 | 289.90 ms | 279.52 ms |
+| Update 1,000 | 10.85 ms | 10.64 ms |
+| Update 3,000 | 35.41 ms | 34.54 ms |
+
+Each variant ran once, visibly, at 900×700, with synchronous layout reads and
+second-round medians of three trials. Both binaries and checks finished before
+timing; compiler/Yocto monitoring was quiet. Build trial ranges overlap
+(1,000: 90.85–98.80 vs 86.59–114.20; 3,000: 280.69–293.03 vs 262.29–284.82).
+This establishes reduced allocations and a modest isolated rendering gain,
+**not a clear overall native construction win**. The preceding candidate also
+had mixed build medians (91.72 → 94.79 and 285.53 → 275.24), and is retained.
+No new WebView/macOS comparison was run; native construction remains far behind
+the earlier WebView reference.
+
+The macOS width-change proposal remains open. A changed text width can also
+change its Yoga word minimum, flex distribution, ancestor sizing or scroll
+extent. A future shortcut must prove those dependencies unchanged and preserve
+Yoga measurement invalidation and consistent frame/clip state after later
+layout or scrolling. The reported 37 ms macOS vs 12 ms Linux update is peer
+information, not a measurement made by this pass.
+
+Reports: `2026-10-02-rows-phase7-desktop.json`,
+`2026-10-02-rows-phase7-first-desktop.json`, and
+`2026-10-02-rows-phase7-qjs.json` under `examples/render-bench/results`.

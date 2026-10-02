@@ -36,6 +36,32 @@ not a bitmap: the 2d calls are replayed into Cairo each frame
 
 ## Results
 
+### Flattening and emission follow-up
+
+On `2143d84`, row leaves premerge font/layout setup, copy ordinary font fields
+directly, share style/flattening snapshot storage and avoid iterator pair arrays
+in emission. Properties and text runs remain owned per node; regression tests
+cover later font/style edits and interactive/empty leaves. All checks pass.
+
+Isolated QuickJS row-build rendering improves 3.4–4.6%. The final native desktop
+comparison is mixed; it does **not** establish a clear overall construction win:
+
+| Step | Before (`2143d84`) | Updated native |
+|---|---:|---:|
+| Build 1,000 rows | 91.56 ms | 95.50 ms |
+| Build 3,000 rows | 289.90 ms | 279.52 ms |
+| Update 1,000 rows | 10.85 ms | 10.64 ms |
+| Update 3,000 rows | 35.41 ms | 34.54 ms |
+
+One visible process per version, both built before timing, 900×700 windows,
+unchanged synchronous layout reads, second-round medians of three trials.
+Build trial ranges overlap. The preceding candidate was also mixed and remains
+recorded. WebView numbers below are earlier reference measurements. The shared
+macOS width-change layout shortcut is still open.
+[Final comparison](results/2026-10-02-rows-phase7-desktop.json),
+[preceding candidate](results/2026-10-02-rows-phase7-first-desktop.json),
+[isolated rendering](results/2026-10-02-rows-phase7-qjs.json).
+
 ### Construction pass
 
 The next pass avoids token Sets for simple class names, initializes ordinary
