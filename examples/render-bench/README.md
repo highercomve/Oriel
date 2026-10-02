@@ -165,6 +165,53 @@ qjs src/native_ui/js/test/bench-qjs.js src/native_ui/runtime.js examples/render-
 [Research and remaining implementation priorities](../../docs/native-renderer-performance.md)
 describe the remaining construction/rendering cost and the WebView gap.
 
+## Alternative JavaScript engines
+
+The engine comparison uses the same fake host and existing row workload.
+It embeds assets and inlines the unchanged runtime so CLIs without file APIs
+and native AOT compilers can execute the same source:
+
+```sh
+python3 src/native_ui/js/test/make-engine-bench.py --output /tmp/oriel-engine-rows.js
+python3 src/native_ui/js/test/make-engine-bench.py --trace --output /tmp/oriel-engine-rows-trace.js
+python3 src/native_ui/js/test/bench-engines.py /tmp/engine-config.json --output /tmp/engine-results.json
+```
+
+The config is `{"engines": {"QuickJS": {"command": ["qjs", "/tmp/oriel-engine-rows.js"],
+"trace_command": ["qjs", "/tmp/oriel-engine-rows-trace.js"]}, ...}}`.
+Put QuickJS first as the transcript reference. Add entries for `node`,
+`jsc`, `kiesel`, `zjs -s`, or compiled Hermes files. Arbitrary metadata such
+as revision/build flags is copied into results. The committed report contains
+the complete config used here; adjust executable paths for another machine.
+
+Build engines before running; finish all compilers/Yocto jobs first. Each mode
+runs untimed transcript checks, then three serial timing rounds in rotated
+order. Exact equality of the first twelve row steps is required for timings;
+full 24-step compatibility and failures are recorded separately. No production
+engine, native layout or paint is involved.
+
+Pinned source builds used here:
+
+```sh
+# Hermes static_h: 6e2181b288b0306d8bd1988d38d32aa879b745d5
+cmake -S /tmp/oriel-engine-hermes -B /tmp/oriel-engine-hermes-build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DHERMES_ENABLE_TEST_SUITE=OFF \
+  -DHERMESVM_ALLOW_JIT=1 -DHERMESVM_HEAP_HV_MODE=HEAP_HV_PREFER32
+cmake --build /tmp/oriel-engine-hermes-build --target hermes hermesc shermes hermesvm shermes_console -j6
+/tmp/oriel-engine-hermes-build/bin/hermesc -O -emit-binary -out /tmp/oriel-engine-rows.hbc /tmp/oriel-engine-rows.js
+/tmp/oriel-engine-hermes-build/bin/shermes -O -enable-eval -script -o /tmp/oriel-engine-rows-hermes-aot /tmp/oriel-engine-rows.js
+# Repeat both compiler commands for the --trace source and separate outputs.
+# Kiesel: caeb23e4500fc35099b5945b20efe9bd4ece1e4b, inside its checkout
+zig build -Doptimize=ReleaseFast -Denable-intl=false -Denable-temporal=false -j4
+# zjs: report-pinned revision, inside its checkout
+zig build zjs -Doptimize=ReleaseFast -j4
+```
+
+Both Zig builds use Zig 0.16.0. Engines are unchanged scratch checkouts;
+no node_modules modifications or new project dependencies are required.
+[Results](results/2026-10-02-rows-alternative-engines.json) and
+[analysis/compatibility limitations](../../docs/native-renderer-performance.md#alternative-engines-tested-2026-10-02).
+
 ## Historical results (before synchronous layout reads)
 
 The native build/update times below exclude rendering and layout. Commit
