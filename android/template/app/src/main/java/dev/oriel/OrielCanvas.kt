@@ -120,14 +120,32 @@ internal object CanvasProgram {
         "ss" -> paint(op.opt(1))?.let { CvOp.StrokeStyle(it) }
         "lw" -> CvOp.LineWidth(n(op, 1))
         "ga" -> CvOp.GlobalAlpha(n(op, 1))
-        "lc" -> CvOp.LineCap(n(op, 1).toInt().coerceIn(0, 2))
-        "lj" -> CvOp.LineJoin(n(op, 1).toInt().coerceIn(0, 2))
-        "ta" -> CvOp.TextAlign(n(op, 1).toInt().coerceIn(0, 2))
-        "tb" -> CvOp.TextBaseline(n(op, 1).toInt().coerceIn(0, 4))
+        "lc" -> wordAt(op, CAPS, 2)?.let { CvOp.LineCap(it) }
+        "lj" -> wordAt(op, JOINS, 2)?.let { CvOp.LineJoin(it) }
+        // start and end as left and right (left-to-right text).
+        "ta" -> wordAt(op, ALIGNS, 2)?.let { CvOp.TextAlign(if (it == 3) 0 else if (it == 4) 2 else it) }
+        // ideographic as bottom.
+        "tb" -> wordAt(op, BASELINES, 4)?.let { CvOp.TextBaseline(minOf(4, it)) }
         "fo" -> if (op.length() > 4) CvOp.Font(n(op, 1) != 0f, n(op, 2).toInt(), n(op, 3), op.opt(4) as? String ?: "") else null
         "gl" -> if (op.length() > 5) CvOp.LinearGrad(gradId(op.opt(1)), n(op, 2), n(op, 3), n(op, 4), n(op, 5)) else null
         "gr" -> if (op.length() > 7) CvOp.RadialGrad(gradId(op.opt(1)), n(op, 2), n(op, 3), n(op, 4), n(op, 5), n(op, 6), n(op, 7)) else null
         "gs" -> if (op.length() > 6) CvOp.ColorStop(gradId(op.opt(1)), n(op, 2), rgba(n(op, 3), n(op, 4), n(op, 5), n(op, 6))) else null
+        else -> null
+    }
+
+    private val CAPS = listOf("butt", "round", "square")
+    private val JOINS = listOf("miter", "round", "bevel")
+    private val ALIGNS = listOf("left", "center", "right", "start", "end")
+    private val BASELINES = listOf("alphabetic", "top", "hanging", "middle", "bottom", "ideographic")
+
+    /**
+     * A keyword argument (canvas.js sends the word: ["lc","round"]) as its
+     * index in `words`, or a number index up to `max`; null drops the op
+     * (an unknown word), as tree.zig's wordAt does.
+     */
+    private fun wordAt(op: JSONArray, words: List<String>, max: Int): Int? = when (val v = op.opt(1)) {
+        is String -> words.indexOf(v).takeIf { it >= 0 }
+        is Number -> v.toDouble().takeIf { it >= 0 && it <= max }?.toInt()
         else -> null
     }
 
