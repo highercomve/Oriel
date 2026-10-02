@@ -22,6 +22,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Log
 import android.view.WindowManager
@@ -35,6 +36,8 @@ import java.io.File
  * Activities come and go ([OrielActivity]).
  */
 object OrielRuntime {
+    /** How long a started window Activity counts as pending (it normally attaches within a second). */
+    private const val LAUNCH_PENDING_MS = 5000L
     private const val TAG = "Oriel"
     const val EXTRA_WINDOW = "dev.oriel.window"
     const val EXTRA_ARGS = "dev.oriel.args"
@@ -132,6 +135,7 @@ object OrielRuntime {
         if (w.isMain) {
             mainWindow = w
             mainActivity?.let { w.attachTo(it) }
+            rememberMainSize(w.width, w.height)
         }
         if (!w.native) w.load(w.url)
         return true
@@ -152,6 +156,10 @@ object OrielRuntime {
             bringToFront(host)
             return
         }
+        // Already starting (show then focus, before the Activity attached):
+        // a second start would open a second, empty Activity for the window.
+        val now = SystemClock.uptimeMillis()
+        if (w.launchedAt != 0L && now - w.launchedAt < LAUNCH_PENDING_MS) return
         val intent = if (w.isMain) {
             Intent(app, OrielMainActivity::class.java)
         } else {
@@ -160,22 +168,46 @@ object OrielRuntime {
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
+            w.launchedAt = now
             app.startActivity(intent, launchBounds(w)?.toBundle())
         } catch (e: Exception) {
+            w.launchedAt = 0L
             Log.e(TAG, "cannot show window ${w.label}", e)
         }
     }
 
     /** The window's size, centered, for desktop windowing (ignored elsewhere). */
-    private fun launchBounds(w: OrielWindow): ActivityOptions? {
-        if (w.width <= 0 || w.height <= 0) return null
-        val wm = app.getSystemService(WindowManager::class.java)
-        val screen = if (Build.VERSION.SDK_INT >= 30) wm.maximumWindowMetrics.bounds else Rect(0, 0, app.resources.displayMetrics.widthPixels, app.resources.displayMetrics.heightPixels)
-        val pw = minOf(app.px(w.width), screen.width())
-        val ph = minOf(app.px(w.height), screen.height())
+    private fun launchBounds(w: OrielWindow): ActivityOptions? = launchBounds(app, w.width, w.height)
+
+    /** A `width`×`height` dp window, centered (ignored outside desktop windowing). */
+    fun launchBounds(context: Context, width: Int, height: Int): ActivityOptions? {
+        if (width <= 0 || height <= 0) return null
+        val wm = context.getSystemService(WindowManager::class.java)
+        val screen = if (Build.VERSION.SDK_INT >= 30) wm.maximumWindowMetrics.bounds else Rect(0, 0, context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
+        val pw = minOf(context.px(width), screen.width())
+        val ph = minOf(context.px(height), screen.height())
         val left = screen.left + (screen.width() - pw) / 2
         val top = screen.top + (screen.height() - ph) / 2
         return ActivityOptions.makeBasic().setLaunchBounds(Rect(left, top, left + pw, top + ph))
+    }
+
+    /**
+     * The main window's size as the app asked for it (dp), remembered for
+     * the next launch: the launcher starts the app before its code says
+     * (OrielLaunchActivity).
+     */
+    private const val SIZE_PREFS = "dev.oriel.window"
+
+    fun rememberedMainSize(context: Context): Pair<Int, Int>? {
+        val p = context.getSharedPreferences(SIZE_PREFS, Context.MODE_PRIVATE)
+        val w = p.getInt("main.width", 0)
+        val h = p.getInt("main.height", 0)
+        return if (w > 0 && h > 0) w to h else null
+    }
+
+    private fun rememberMainSize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0 || rememberedMainSize(app) == (width to height)) return
+        app.getSharedPreferences(SIZE_PREFS, Context.MODE_PRIVATE).edit().putInt("main.width", width).putInt("main.height", height).apply()
     }
 
     private fun bringToFront(activity: OrielActivity) {
@@ -336,6 +368,20 @@ object OrielRuntime {
     // ---------------------------------------------------------------------
 
     private val clipboard get() = app.getSystemService(ClipboardManager::class.java)
+
+    /** The Oriel activity that has window focus, if one does. */
+    private var focused: OrielActivity? = null
+
+    fun focusChanged(activity: OrielActivity, hasFocus: Boolean) {
+        if (hasFocus) focused = activity else if (focused === activity) focused = null
+    }
+
+    /**
+     * Whether one of the app's windows has input focus: Android 10+ lets only
+     * the focused app read the clipboard (else it reads as empty).
+     */
+    @JvmStatic
+    fun hasFocus(): Boolean = focused?.let { !it.isFinishing && it.hasWindowFocus() } ?: false
 
     @JvmStatic
     fun clipboardReadText(): ByteArray? {
