@@ -18,8 +18,13 @@ export const classStyle = (el, allowStyle) => nd.classStyle(el, allowStyle);
 
 // Compiled once in the store, kept for the engine's life (a style sheet's
 // rules), matched natively.
+// One store selector per selector text: the renderer drops its :has()
+// matchers every render (linkedom's cache descendants) and compiles them
+// again, and the store keeps what it compiles for good.
+const kept = new Map();
 export function compileMatch(_el, sel) {
-  const id = nd.keepSelector(sel);
+  let id = kept.get(sel);
+  if (id === undefined) { id = nd.keepSelector(sel); kept.set(sel, id); }
   return (el) => nd.matchKept(el, id);
 }
 

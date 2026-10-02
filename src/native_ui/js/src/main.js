@@ -429,7 +429,7 @@ g.matchMedia = (q) => {
     get matches() { return mediaMatches(q.replace(/^\s*(only\s+)?(screen|all)\s+and\s+/, "")); },
     listeners: new Set(),
     addEventListener(_t, fn) { this.listeners.add(fn); mediaLists.add(this); },
-    removeEventListener(_t, fn) { this.listeners.delete(fn); },
+    removeEventListener(_t, fn) { this.listeners.delete(fn); if (!this.listeners.size) mediaLists.delete(this); },
     addListener(fn) { this.addEventListener("change", fn); },
     removeListener(fn) { this.removeEventListener("change", fn); },
   };
