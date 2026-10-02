@@ -459,6 +459,65 @@ fn dupeUtf8Lossy(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
+/// The page's JSON with each lone UTF-16 surrogate escape (\ud800-\udfff
+/// without its pair: text cut inside an emoji) made \ufffd: std.json
+/// rejects them, and with them a whole frame's ops. The input itself when
+/// it has none (the usual case: no copy, one scan); else a copy in `a`, of
+/// the same length (both escapes are six bytes).
+pub fn wellFormedEscapes(a: std.mem.Allocator, json: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, json, "\\ud") == null and std.mem.indexOf(u8, json, "\\uD") == null) return json;
+    const out = try a.alloc(u8, json.len);
+    var o: usize = 0;
+    var i: usize = 0;
+    while (i < json.len) {
+        if (json[i] != '\\' or i + 1 >= json.len) {
+            out[o] = json[i];
+            o += 1;
+            i += 1;
+            continue;
+        }
+        // An escape: two bytes, or six for \uXXXX (a backslash escaped
+        // as \\ is two bytes, so the u after it starts no escape).
+        const unit = if (json[i + 1] == 'u') hex4(json, i + 2) else null;
+        const len: usize = if (unit != null) 6 else 2;
+        if (unit) |u| if (u >= 0xD800 and u <= 0xDFFF) {
+            const paired = u <= 0xDBFF and i + 12 <= json.len and json[i + 6] == '\\' and json[i + 7] == 'u' and
+                if (hex4(json, i + 8)) |lo| lo >= 0xDC00 and lo <= 0xDFFF else false;
+            if (paired) {
+                @memcpy(out[o..][0..12], json[i..][0..12]);
+                o += 12;
+                i += 12;
+            } else {
+                @memcpy(out[o..][0..6], "\\ufffd");
+                o += 6;
+                i += 6;
+            }
+            continue;
+        };
+        @memcpy(out[o..][0..len], json[i..][0..len]);
+        o += len;
+        i += len;
+    }
+    return out[0..o];
+}
+
+fn hex4(s: []const u8, at: usize) ?u16 {
+    if (at + 4 > s.len) return null;
+    return std.fmt.parseInt(u16, s[at..][0..4], 16) catch null;
+}
+
+test "wellFormedEscapes makes lone surrogates U+FFFD, keeps the rest" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const clean = "[\"p\",1,{\"t\":\"ok\"}]";
+    try std.testing.expect((try wellFormedEscapes(a, clean)).ptr == clean.ptr);
+    try std.testing.expectEqualStrings("\"a\\ufffdb\\ufffd\\ud83d\\ude00\\\\ud800\\ufffd\"",
+        try wellFormedEscapes(a, "\"a\\ud83db\\ude00\\ud83d\\ude00\\\\ud800\\uDBFF\""));
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, a, try wellFormedEscapes(a, "[\"x\\ud800\"]"), .{});
+    try std.testing.expectEqualStrings("x\u{FFFD}", v.array.items[0].string);
+}
+
 test "dupeUtf8Lossy replaces invalid sequences" {
     const gpa = std.testing.allocator;
     const ok = try dupeUtf8Lossy(gpa, "héllo");
@@ -639,7 +698,7 @@ pub const Tree = struct {
         errdefer yg.YGNodeFree(style.yn);
         errdefer style.arena.deinit();
         const a = style.arena.allocator();
-        style.props = try std.json.parseFromSliceLeaky(Props, a, json, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+        style.props = try std.json.parseFromSliceLeaky(Props, a, try wellFormedEscapes(a, json), .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
         try ownProps(a, &style.props);
         applyYogaStyle(style.yn, style.props);
         try t.leaf_styles.put(t.gpa, id, style);
@@ -740,7 +799,7 @@ pub const Tree = struct {
         var arena: std.heap.ArenaAllocator = .init(t.gpa);
         defer arena.deinit();
         const t0 = prof.now();
-        const ops = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), json, .{});
+        const ops = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), try wellFormedEscapes(arena.allocator(), json), .{});
         const t1 = prof.now();
         prof.props_ms = 0;
         defer prof.report("apply parse {d:.2} ops {d:.2} (props {d:.2}) {d} bytes", .{ t1 - t0, prof.now() - t1, prof.props_ms, json.len });

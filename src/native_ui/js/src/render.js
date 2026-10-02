@@ -1333,7 +1333,7 @@ export class Renderer {
       const p = encodeProps(shown);
       if (p !== prev.p) { ops.push(["p", id, shown]); prev.p = p; }
     }
-    if (ops.length) this.host.ops(wellFormedJSON(ops));
+    if (ops.length) this.host.ops(JSON.stringify(ops));
     this.schedule();
   }
 }
@@ -1736,19 +1736,12 @@ function strip(r, t) {
 function encodeProps(props) {
   if (props.fd === "column") props.fd = undefined;
   if (props.ai === "stretch") props.ai = undefined;
-  return wellFormedJSON(props);
+  return JSON.stringify(props);
 }
 
-// JSON for the native side. A lone UTF-16 surrogate (text cut in the middle
-// of an emoji) comes out of JSON.stringify as an escape that Zig's JSON
-// parser rejects, and with it the whole frame's ops. Rare, so only then
-// encode again with each string made well formed (U+FFFD).
-const LONE_SURROGATE = /\\ud[89a-f]/i;
-const wellFormed = (_k, v) => (typeof v === "string" ? v.toWellFormed() : v);
-function wellFormedJSON(x) {
-  const s = JSON.stringify(x);
-  return LONE_SURROGATE.test(s) ? JSON.stringify(x, wellFormed) : s;
-}
+// (A lone UTF-16 surrogate, text cut inside an emoji, comes out of
+// JSON.stringify as an escape std.json rejects: the tree makes it U+FFFD,
+// tree.wellFormedEscapes, where scanning costs little.)
 
 // display: grid → rows of flex items (the column count from the template
 // and, for auto-fit, the container's last width).
