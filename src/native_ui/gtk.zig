@@ -116,6 +116,8 @@ extern fn gdk_texture_get_width(texture: *anyopaque) c_int;
 extern fn gdk_texture_get_height(texture: *anyopaque) c_int;
 extern fn gdk_texture_download(texture: *anyopaque, data: [*]u8, stride: usize) void;
 extern fn g_error_free(err: *anyopaque) void;
+/// glibc: return free heap pages to the system.
+extern fn malloc_trim(pad: usize) c_int;
 extern fn gdk_pixbuf_loader_new() *anyopaque;
 extern fn gdk_pixbuf_loader_write(loader: *anyopaque, buf: [*]const u8, count: usize, err: *?*anyopaque) c_int;
 extern fn gdk_pixbuf_loader_close(loader: *anyopaque, err: *?*anyopaque) c_int;
@@ -188,6 +190,8 @@ pub const Surface = struct {
     /// The window is transparent (WindowOptions.transparent): no white page
     /// under the content, so rounded corners and overlays show what's behind.
     transparent: bool = false,
+    /// The tree's size after the last layout (laidOut trims after big drops).
+    node_count: usize = 0,
     gpa: std.mem.Allocator,
     engine: *Engine = undefined,
     overlay: *Widget,
@@ -315,6 +319,12 @@ fn removed(ctx: *anyopaque, node: *Node) void {
 
 fn laidOut(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
+    // A render that removed many nodes (a page section rebuilt): give the
+    // freed memory back to the system. glibc's malloc keeps it otherwise
+    // (QuickJS and the tree both allocate there), so memory only grew.
+    const count = s.engine.tree.nodes.count();
+    if (s.node_count > count + 1000) _ = malloc_trim(0);
+    s.node_count = count;
     syncFields(s);
     gtk_widget_queue_draw(s.area);
     gtk_widget_queue_allocate(s.overlay);
