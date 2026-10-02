@@ -342,3 +342,88 @@ information, not a measurement made by this pass.
 Reports: `2026-10-02-rows-phase7-desktop.json`,
 `2026-10-02-rows-phase7-first-desktop.json`, and
 `2026-10-02-rows-phase7-qjs.json` under `examples/render-bench/results`.
+
+## Hermes and native list investigation
+
+The last allocation pass did not establish an overall native build win. This
+investigation changes the priority: **measure an alternative JS engine before
+spending more time on small copies or undertaking a complete native DOM rewrite**.
+This is a workload-specific conclusion from a new experiment, not a claim that
+one engine always wins.
+
+The same c860083 bundle, owned LinkeDOM, CSS, row algorithm and fake host ran under
+QuickJS-ng 0.17.0 (CLI Release, -O3), Node 24.16.0/V8, and V8 with JIT disabled.
+Three serial rounds, two trials each, yielded these medians:
+
+| Build | QuickJS DOM / render | V8 DOM / render | V8 --jitless DOM / render |
+|---|---:|---:|---:|
+| 1,000 | 36.05 / 115.30 ms | 10.80 / 13.25 ms | 20.20 / 21.80 ms |
+| 3,000 | 108.25 / 237.75 ms | 14.55 / 34.95 ms | 59.60 / 72.45 ms |
+
+The Node adapter imports the existing harness and changes only file loading,
+CLI/output globals and incompatible Node Event/microtask globals. Separate
+untimed verification compared every ops/style/leaf/text call and argument:
+all 24 step transcripts are exactly equal. Payload sizes match. V8 row-build
+rendering is roughly 7–9 times faster in this isolation; even --jitless is
+roughly 3–5 times faster. Engine internals matter beyond the presence of JIT.
+These numbers exclude source parsing/boot and **native apply, layout and paint**.
+They are not estimates for integrated native timings; the standalone QuickJS
+harness also differs from the embedded app. No Hermes timing was performed.
+[Raw observations and trace validation](../examples/render-bench/results/2026-10-02-rows-engine-investigation.json).
+Reproduce with `test/bench-qjs.js` or `test/bench-node.mjs`; add `node --jitless`
+for the third configuration.
+
+### What other implementations actually do
+
+- **Hermes:** its original ahead-of-time bytecode compilation removed runtime
+  source parsing and emphasized startup/memory. That alone does not remove row
+  allocations during a warm build. Newer static_h work supports native AOT and
+  baseline JIT alongside interpreted bytecode; current development notes also
+  describe faster object access and contiguous Map/Set backing storage with less
+  GC overhead. Evaluate a pinned build/mode instead of assuming all Hermes
+  configurations have the same behavior. [Original design](https://engineering.fb.com/2019/07/12/android/hermes/),
+  [compilation/runtime modes](https://github.com/facebook/hermes/blob/static_h/doc/blog/2025-11-02-hermes-compilation-runtime-modes.md),
+  [June 2026 development release notes](https://github.com/facebook/hermes/blob/static_h/doc/blog/2026-06-05-new-hermes-stable-release.md).
+- **React Native/Fabric:** JavaScript creates native shadow nodes through direct
+  interfaces; rendering does not require Oriel-style HTML parsing, DOM allocation,
+  CSS matching and JS flattening first. Shadow-tree diffing/host-view flattening
+  are C++ work. Native view flattening removes host views, not all logical/layout
+  nodes or their layout cost. Our typed leaf/style calls already adopt part of
+  this approach. [Pipeline](https://reactnative.dev/architecture/render-pipeline),
+  [flattening](https://reactnative.dev/architecture/view-flattening),
+  [createNode/appendChild bindings](https://github.com/facebook/react-native/blob/main/packages/react-native/ReactCommon/react/renderer/uimanager/UIManagerBinding.cpp).
+- **FlashList, Qt Quick and Flutter lists:** create the visible portion, recycle
+  delegates/cells or build children lazily. FlashList v2 progressively measures
+  and corrects predicted geometry before paint. Qt explicitly pools delegates;
+  Flutter recommends lazy list builders. This is a major reduction in work,
+  but does not demonstrate faster construction of all N rows. Reusing native
+  allocations alone also does not eliminate our JS DOM construction.
+  [FlashList v2](https://shopify.engineering/flashlist-v2),
+  [Qt ListView reuse](https://doc.qt.io/qt-6/qml-qtquick-listview.html),
+  [Flutter list/layout guidance](https://docs.flutter.dev/perf/best-practices).
+- **Flutter layout:** explicit constraints and dependency information let it
+  stop layout propagation where parents do not depend on a changed child size,
+  or where tight constraints make the outer size invariant. This is a concrete
+  model for the open macOS width-change shortcut, though CSS flex/intrinsic/
+  scrolling dependencies require our own correctness proof.
+  [Inside Flutter](https://docs.flutter.dev/resources/inside-flutter).
+
+### Concrete next experiments
+
+1. Add an isolated alternative-engine backend behind the existing host contract.
+   Test a pinned Hermes build with JIT/AOT modes or a platform-appropriate JIT
+   engine using the same DOM/runtime first. Require the full JS behavior suite,
+   synchronous geometry semantics, full native timings, startup, footprint and
+   target-platform builds before choosing an engine. This preserves page APIs
+   and directly targets the newly measured execution gap.
+2. Keep bulk typed subtree construction/native templates as a separate experiment:
+   instantiate a repeated structure from native styles and text slots, with
+   bounded storage, fresh DOM identities and correct fallback. Native template
+   expansion must eliminate per-node JS bookkeeping/host crossings to improve
+   on our existing cached styles; adding another cache is insufficient.
+3. Offer an explicit model-backed native list for large application feeds, with
+   lazy rows and reuse, while retaining the current full-N benchmark as a
+   separate test. Generic DOM virtualization cannot silently substitute estimated
+   extents for synchronous CSS geometry reads.
+4. Carry child-size dependencies through layout for the macOS width shortcut;
+   keep this independent of construction/engine changes and test other backends.

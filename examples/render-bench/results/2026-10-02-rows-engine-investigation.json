@@ -1,0 +1,544 @@
+{
+  "baseline": "Same c860083 runtime and fake host under QuickJS-ng, V8/Node24, and V8 --jitless; excludes native layout and paint",
+  "method": "3 serial rounds of QuickJS-ng, V8/Node and V8/Node --jitless; 2 trials per step per process, medians of 6 observations. Same runtime and fake host. Source compilation/boot, native apply/layout/paint are excluded. Node adapter only replaces qjs:std file loading and CLI/output globals and clears incompatible Node Event/microtask globals. Native operation transcripts verified in separate untimed runs.",
+  "summary": {
+    "build 1000": {
+      "quickjs": {
+        "dom": 36.05,
+        "render": 115.30000000000001,
+        "kb": 82.5
+      },
+      "v8": {
+        "dom": 10.8,
+        "render": 13.25,
+        "kb": 82.5
+      },
+      "v8_jitless": {
+        "dom": 20.200000000000003,
+        "render": 21.799999999999997,
+        "kb": 82.5
+      }
+    },
+    "update 1000": {
+      "quickjs": {
+        "dom": 5.5,
+        "render": 5.4,
+        "kb": 17.0
+      },
+      "v8": {
+        "dom": 1.35,
+        "render": 1.5499999999999998,
+        "kb": 17.0
+      },
+      "v8_jitless": {
+        "dom": 2.6500000000000004,
+        "render": 2.0,
+        "kb": 17.0
+      }
+    },
+    "build 3000": {
+      "quickjs": {
+        "dom": 108.25,
+        "render": 237.75,
+        "kb": 299.0
+      },
+      "v8": {
+        "dom": 14.55,
+        "render": 34.95,
+        "kb": 299.0
+      },
+      "v8_jitless": {
+        "dom": 59.599999999999994,
+        "render": 72.44999999999999,
+        "kb": 299.0
+      }
+    },
+    "update 3000": {
+      "quickjs": {
+        "dom": 17.5,
+        "render": 17.200000000000003,
+        "kb": 55.0
+      },
+      "v8": {
+        "dom": 1.2,
+        "render": 1.9,
+        "kb": 55.0
+      },
+      "v8_jitless": {
+        "dom": 6.800000000000001,
+        "render": 5.65,
+        "kb": 55.0
+      }
+    }
+  },
+  "raw": {
+    "quickjs": [
+      {
+        "build 1000": [
+          {
+            "dom": 35.6,
+            "render": 111.5,
+            "kb": 61
+          },
+          {
+            "dom": 37.2,
+            "render": 121.2,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 5.5,
+            "render": 5.7,
+            "kb": 17
+          },
+          {
+            "dom": 5.5,
+            "render": 5.3,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 108.9,
+            "render": 226.6,
+            "kb": 251
+          },
+          {
+            "dom": 106.9,
+            "render": 237.6,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 20.1,
+            "render": 23.9,
+            "kb": 55
+          },
+          {
+            "dom": 17.2,
+            "render": 16.8,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 35.8,
+            "render": 112.7,
+            "kb": 61
+          },
+          {
+            "dom": 37.5,
+            "render": 122.5,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 6.0,
+            "render": 5.4,
+            "kb": 17
+          },
+          {
+            "dom": 6.1,
+            "render": 5.3,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 113.0,
+            "render": 238.4,
+            "kb": 251
+          },
+          {
+            "dom": 110.3,
+            "render": 246.4,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 17.8,
+            "render": 18.5,
+            "kb": 55
+          },
+          {
+            "dom": 16.1,
+            "render": 16.3,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 36.2,
+            "render": 112.2,
+            "kb": 61
+          },
+          {
+            "dom": 35.9,
+            "render": 117.9,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 5.5,
+            "render": 5.4,
+            "kb": 17
+          },
+          {
+            "dom": 5.4,
+            "render": 5.4,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 107.6,
+            "render": 227.9,
+            "kb": 251
+          },
+          {
+            "dom": 106.7,
+            "render": 237.9,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 17.8,
+            "render": 17.6,
+            "kb": 55
+          },
+          {
+            "dom": 16.3,
+            "render": 16.3,
+            "kb": 55
+          }
+        ]
+      }
+    ],
+    "v8": [
+      {
+        "build 1000": [
+          {
+            "dom": 11.6,
+            "render": 11.9,
+            "kb": 61
+          },
+          {
+            "dom": 10.5,
+            "render": 15.3,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 1.8,
+            "render": 1.7,
+            "kb": 17
+          },
+          {
+            "dom": 1.0,
+            "render": 2.2,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 16.3,
+            "render": 29.7,
+            "kb": 251
+          },
+          {
+            "dom": 12.3,
+            "render": 32.5,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 1.2,
+            "render": 1.9,
+            "kb": 55
+          },
+          {
+            "dom": 1.0,
+            "render": 1.9,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 11.1,
+            "render": 11.6,
+            "kb": 61
+          },
+          {
+            "dom": 9.8,
+            "render": 15.0,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 1.8,
+            "render": 1.4,
+            "kb": 17
+          },
+          {
+            "dom": 1.0,
+            "render": 2.1,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 14.0,
+            "render": 35.3,
+            "kb": 251
+          },
+          {
+            "dom": 19.7,
+            "render": 40.2,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 10.3,
+            "render": 2.0,
+            "kb": 55
+          },
+          {
+            "dom": 1.1,
+            "render": 1.9,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 11.2,
+            "render": 11.2,
+            "kb": 61
+          },
+          {
+            "dom": 10.2,
+            "render": 14.6,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 1.7,
+            "render": 1.4,
+            "kb": 17
+          },
+          {
+            "dom": 1.0,
+            "render": 1.2,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 15.1,
+            "render": 34.6,
+            "kb": 251
+          },
+          {
+            "dom": 12.4,
+            "render": 44.3,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 1.5,
+            "render": 11.9,
+            "kb": 55
+          },
+          {
+            "dom": 1.2,
+            "render": 1.8,
+            "kb": 55
+          }
+        ]
+      }
+    ],
+    "v8_jitless": [
+      {
+        "build 1000": [
+          {
+            "dom": 20.9,
+            "render": 21.2,
+            "kb": 61
+          },
+          {
+            "dom": 19.2,
+            "render": 22.8,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 3.3,
+            "render": 2.5,
+            "kb": 17
+          },
+          {
+            "dom": 2.6,
+            "render": 2.0,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 58.6,
+            "render": 65.8,
+            "kb": 251
+          },
+          {
+            "dom": 58.9,
+            "render": 71.1,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 7.7,
+            "render": 5.7,
+            "kb": 55
+          },
+          {
+            "dom": 6.6,
+            "render": 5.7,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 20.1,
+            "render": 18.0,
+            "kb": 61
+          },
+          {
+            "dom": 20.5,
+            "render": 22.4,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 2.5,
+            "render": 2.1,
+            "kb": 17
+          },
+          {
+            "dom": 2.6,
+            "render": 2.0,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 58.2,
+            "render": 66.6,
+            "kb": 251
+          },
+          {
+            "dom": 62.3,
+            "render": 76.4,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 6.9,
+            "render": 5.6,
+            "kb": 55
+          },
+          {
+            "dom": 6.6,
+            "render": 5.3,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 20.1,
+            "render": 19.9,
+            "kb": 61
+          },
+          {
+            "dom": 20.3,
+            "render": 23.7,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 2.9,
+            "render": 2.0,
+            "kb": 17
+          },
+          {
+            "dom": 2.7,
+            "render": 2.0,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 61.9,
+            "render": 73.8,
+            "kb": 251
+          },
+          {
+            "dom": 60.3,
+            "render": 74.4,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 7.1,
+            "render": 5.8,
+            "kb": 55
+          },
+          {
+            "dom": 6.7,
+            "render": 5.4,
+            "kb": 55
+          }
+        ]
+      }
+    ]
+  },
+  "validation": {
+    "native_operation_traces": "Exact equality of ops/style/leaf/text calls for all steps in separate untimed verification runs",
+    "steps": 24,
+    "sha256": "7edd97c8b5d8b512ec1e7efb37af9a87d88aabf6dcf5ee24c5635194dc3ee1e3"
+  },
+  "runtime_sha256": "9c6e67d8676665130645ae4a4766ef2011af38dcc6f9fec53e884a3e30314b1d",
+  "versions": {
+    "runtime": "c860083",
+    "quickjs": "QuickJS-ng v0.17.0 CLI, CMake Release -O3 -DNDEBUG",
+    "node": "v24.16.0"
+  },
+  "limitations": "Engine isolation only; no Hermes executable available or Hermes timing performed. This does not predict full native build time, startup, memory or cross-platform suitability. V8 engine execution and host/runtime implementation both contribute; --jitless helps separate JIT effects but does not isolate individual algorithms."
+}
