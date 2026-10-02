@@ -405,4 +405,25 @@ for (const css of [
   assert.ok(ts.includes("model") && ts.includes("148 MB"), "bold text and the highlight stay runs");
 }
 
+// Amid the text, a padded inline (a <code> in prose, a boxed one inside a
+// plain link) stays a run: the paragraph stays one text, not a row of columns.
+// At the start of the line, a badge is an inline box too.
+{
+  const f = fixture("code, .pad { padding: 2px 4px; border-radius: 3px; background: #eee } .tag { padding: 0 4px; border-radius: 4px; margin-right: 6px; background: #3b6cff }");
+  const stage = f.document.querySelector("main");
+  stage.innerHTML = '<p id="a">Run <code>zig build</code> then wait for the long build to finish.</p>' +
+    '<p id="b">See <a>the docs <span class="pad">x</span></a> here.</p>' +
+    '<p id="c"><span class="tag">NEW</span>Faster builds</p>';
+  f.check();
+  const find = (n, pred) => pred(n) ? n : n.kids.map((k) => find(k, pred)).find(Boolean);
+  const tree = f.tree();
+  const prose = find(tree, (n) => n.kind === "text" && n.props.runs?.some((r) => r.t.includes("zig build")));
+  assert.ok(prose && prose.props.runs.some((r) => r.t.includes("then wait")), "prose with a padded code is one text");
+  const link = find(tree, (n) => n.kind === "text" && n.props.runs?.some((r) => r.t.includes("the docs")));
+  assert.ok(link && link.props.runs.some((r) => r.t.includes("here")), "a boxed inline inside a link mid-line stays in the paragraph's text");
+  const tag = find(tree, (n) => n.props.runs?.length === 1 && n.props.runs[0].t === "NEW");
+  assert.ok(tag && tag.props.pad && tag.props.br, "a leading badge is an inline box");
+  assert.equal(find(tree, (n) => n.kids.includes(tag)).props.fd, "row", "in a line with its text");
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");
