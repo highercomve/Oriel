@@ -65,6 +65,8 @@ pub const Node = struct {
     connected: bool = false,
     has_wrapper: bool = false,
     has_data: bool = false,
+    /// An SVG or MathML element (foreign content): names keep their case.
+    foreign: bool = false,
     /// Tag name atom (elements).
     name: u32 = 0,
     parent: Index = none,
@@ -341,6 +343,57 @@ pub const Store = struct {
         n.data = data.*;
         n.has_data = true;
         return idx;
+    }
+
+    /// A copy of a node (with its subtree when `deep`): new records that
+    /// share the original's string values and atoms (references taken,
+    /// nothing copied). The copy is detached and has no wrapper.
+    pub fn clone(s: *Store, idx: Index, deep: bool) Error!Index {
+        const src = s.get(idx);
+        const kind = if (src.kind == .document) Kind.fragment else src.kind;
+        const copy = try s.alloc(kind, src.name);
+        errdefer s.dropIfUnused(copy);
+        const d = s.get(copy);
+        const o = s.get(idx);
+        d.foreign = o.foreign;
+        if (o.has_data) {
+            s.js.dup(s.js.ctx, &o.data);
+            d.data = o.data;
+            d.has_data = true;
+        }
+        if (o.attr_len > inline_attrs) d.more = try s.gpa.alloc(Attr, o.attr_len - inline_attrs);
+        if (o.class_len > inline_classes) d.more_classes = s.gpa.alloc(u32, o.class_len - inline_classes) catch |e| {
+            s.gpa.free(d.more);
+            d.more = &.{};
+            return e;
+        };
+        var i: usize = 0;
+        while (i < o.attr_len) : (i += 1) {
+            const a = s.attrAt(idx, i).?;
+            s.js.dupAtom(s.js.ctx, a.name);
+            s.js.dup(s.js.ctx, &a.value);
+            if (i < inline_attrs) d.attrs[i] = a.* else d.more[i - inline_attrs] = a.*;
+            d.attr_len += 1;
+        }
+        if (o.id != 0) s.js.dupAtom(s.js.ctx, o.id);
+        d.id = o.id;
+        var it = o.classList();
+        while (it.next()) |c| {
+            s.js.dupAtom(s.js.ctx, c);
+            if (d.class_len < inline_classes) d.classes[d.class_len] = c else d.more_classes[d.class_len - inline_classes] = c;
+            d.class_len += 1;
+        }
+        if (deep) {
+            var c = s.get(idx).first;
+            while (c != none) : (c = s.get(c).next) {
+                const cc = try s.clone(c, true);
+                s.appendChild(copy, cc) catch |e| {
+                    s.dropIfUnused(cc);
+                    return e;
+                };
+            }
+        }
+        return copy;
     }
 
     pub fn createFragment(s: *Store) Error!Index {

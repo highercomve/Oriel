@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <strings.h>
 #include "quickjs.h"
 #include "dom_qjs.h"
 
@@ -34,6 +35,8 @@ typedef struct {
     const uint8_t *(*latin1)(void *ctx, const JSValue *v, size_t *len);
     const uint8_t *(*to_utf8)(void *ctx, const JSValue *v, size_t *len);
     void (*free_utf8)(void *ctx, const uint8_t *p);
+    const uint8_t *(*atom_latin1)(void *ctx, uint32_t atom, size_t *len);
+    const uint8_t *(*atom_utf8)(void *ctx, uint32_t atom, size_t *len);
 } Host;
 
 typedef struct Selector Selector;
@@ -72,6 +75,12 @@ extern bool nui_dom_matches(Dom *d, Index idx, const Selector *s);
 extern Index nui_dom_closest(Dom *d, Index idx, const Selector *s);
 extern void nui_dom_query(Dom *d, Index root, const Selector *s, void *ctx, bool (*found)(void *ctx, Index idx));
 extern Index nui_dom_by_id(Dom *d, Index root, uint32_t id);
+extern Index nui_dom_clone(Dom *d, Index idx, bool deep);
+extern int nui_dom_serialize(Dom *d, Index idx, bool outer, const uint8_t **out, size_t *len);
+extern Index nui_dom_parse_fragment(Dom *d, const uint8_t *bytes, size_t len, int *code);
+extern Index nui_dom_child_named(Dom *d, Index parent, uint32_t name);
+extern bool nui_dom_foreign(Dom *d, Index idx);
+extern void nui_dom_set_foreign(Dom *d, Index idx, bool foreign);
 
 enum { K_ELEMENT = 1, K_TEXT = 3, K_COMMENT = 8, K_DOCUMENT = 9, K_FRAGMENT = 11 };
 enum { P_NODE, P_CHARDATA, P_TEXT, P_COMMENT, P_ELEMENT, P_HTML, P_FRAGMENT, P_DOCUMENT, P_COUNT };
@@ -83,7 +92,7 @@ struct DomCtx {
     bool closing;
     JSValue protos[P_COUNT];
     JSValue ctors[P_COUNT];
-    JSAtom a_class, a_id;
+    JSAtom a_class, a_id, a_html, a_head, a_body, a_title;
 };
 
 static JSClassID node_class_id;
@@ -115,6 +124,17 @@ static const uint8_t *h_to_utf8(void *c, const JSValue *v, size_t *len) {
 }
 static void h_free_utf8(void *c, const uint8_t *p) {
     JS_FreeCString((JSContext *)c, (const char *)p);
+}
+static const uint8_t *h_atom_latin1(void *c, uint32_t atom, size_t *len) {
+    return JS_GetAtomLatin1((JSContext *)c, atom, len);
+}
+static const uint8_t *h_atom_utf8(void *c, uint32_t atom, size_t *len) {
+    JSContext *ctx = c;
+    JSValue v = JS_AtomToString(ctx, atom);
+    if (JS_IsException(v)) return NULL;
+    const char *s = JS_ToCStringLen(ctx, len, v);
+    JS_FreeValue(ctx, v);
+    return (const uint8_t *)s;
 }
 
 // The ASCII-whitespace-separated tokens of a string value, as atoms.
@@ -192,6 +212,13 @@ static JSValue throw_code(JSContext *ctx, int code) {
     case -2: return JS_ThrowTypeError(ctx, "HierarchyRequestError: the new child can't be inserted there");
     default: return JS_ThrowTypeError(ctx, "NotFoundError: the node is not a child of this node");
     }
+}
+
+// An attribute name's atom for an element: as given for SVG/MathML
+// elements, ASCII-lowercased for HTML ones.
+static JSAtom name_atom(JSContext *ctx, JSValueConst v);
+static JSAtom attr_atom(JSContext *ctx, DomCtx *dc, Index el, JSValueConst v) {
+    return nui_dom_foreign(dc->dom, el) ? JS_ValueToAtom(ctx, v) : name_atom(ctx, v);
 }
 
 // A name atom from a JS value, ASCII-lowercased (HTML names).
@@ -430,6 +457,7 @@ static JSValue el_local_name(JSContext *ctx, JSValueConst this_val) {
 
 static JSValue el_tag_name(JSContext *ctx, JSValueConst this_val) {
     THIS_NODE();
+    if (nui_dom_foreign(dc->dom, self)) return JS_AtomToString(ctx, nui_dom_name(dc->dom, self));
     size_t len;
     JSValue name = JS_AtomToString(ctx, nui_dom_name(dc->dom, self));
     const char *s = JS_ToCStringLen(ctx, &len, name);
@@ -461,7 +489,7 @@ static JSValue set_attr_atom(JSContext *ctx, DomCtx *dc, Index self, JSAtom name
 
 static JSValue el_get_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
-    JSAtom a = name_atom(ctx, argv[0]);
+    JSAtom a = attr_atom(ctx, dc, self, argv[0]);
     if (a == JS_ATOM_NULL) return JS_EXCEPTION;
     JSValue r = get_attr_atom(ctx, dc, self, a);
     JS_FreeAtom(ctx, a);
@@ -470,7 +498,7 @@ static JSValue el_get_attribute(JSContext *ctx, JSValueConst this_val, int argc,
 
 static JSValue el_has_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
-    JSAtom a = name_atom(ctx, argv[0]);
+    JSAtom a = attr_atom(ctx, dc, self, argv[0]);
     if (a == JS_ATOM_NULL) return JS_EXCEPTION;
     bool has = nui_dom_get_attr(dc->dom, self, a) != NULL;
     JS_FreeAtom(ctx, a);
@@ -479,7 +507,7 @@ static JSValue el_has_attribute(JSContext *ctx, JSValueConst this_val, int argc,
 
 static JSValue el_set_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
-    JSAtom a = name_atom(ctx, argv[0]);
+    JSAtom a = attr_atom(ctx, dc, self, argv[0]);
     if (a == JS_ATOM_NULL) return JS_EXCEPTION;
     JSValue r = set_attr_atom(ctx, dc, self, a, argc > 1 ? argv[1] : JS_UNDEFINED);
     JS_FreeAtom(ctx, a);
@@ -488,7 +516,7 @@ static JSValue el_set_attribute(JSContext *ctx, JSValueConst this_val, int argc,
 
 static JSValue el_remove_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
-    JSAtom a = name_atom(ctx, argv[0]);
+    JSAtom a = attr_atom(ctx, dc, self, argv[0]);
     if (a == JS_ATOM_NULL) return JS_EXCEPTION;
     nui_dom_remove_attr(dc->dom, self, a);
     JS_FreeAtom(ctx, a);
@@ -625,7 +653,133 @@ static JSValue doc_get_by_id(JSContext *ctx, JSValueConst this_val, int argc, JS
     return wrap(ctx, dc, n);
 }
 
+// --- Markup, cloning --------------------------------------------------------------------
+
+static JSValue serialize(JSContext *ctx, DomCtx *dc, Index idx, bool outer) {
+    const uint8_t *p;
+    size_t len;
+    if (nui_dom_serialize(dc->dom, idx, outer, &p, &len)) return JS_ThrowOutOfMemory(ctx);
+    return JS_NewStringLen(ctx, (const char *)p, len);
+}
+
+static JSValue el_get_inner_html(JSContext *ctx, JSValueConst this_val) {
+    THIS_NODE();
+    return serialize(ctx, dc, self, false);
+}
+
+static JSValue el_get_outer_html(JSContext *ctx, JSValueConst this_val) {
+    THIS_NODE();
+    return serialize(ctx, dc, self, true);
+}
+
+// Markup as a new fragment (0 with an exception pending).
+static Index fragment_of(JSContext *ctx, DomCtx *dc, JSValueConst v) {
+    size_t len;
+    const char *s = JS_ToCStringLen(ctx, &len, v);
+    if (!s) return 0;
+    int code = 0;
+    Index f = nui_dom_parse_fragment(dc->dom, (const uint8_t *)s, len, &code);
+    JS_FreeCString(ctx, s);
+    if (!f) throw_code(ctx, code);
+    return f;
+}
+
+static JSValue el_set_outer_html(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
+    THIS_NODE();
+    Index parent = nui_dom_parent(dc->dom, self);
+    if (!parent) return JS_UNDEFINED; // a detached element: nothing to replace (as browsers, minus the error)
+    Index f = fragment_of(ctx, dc, v);
+    if (!f) return JS_EXCEPTION;
+    int r = nui_dom_insert(dc->dom, parent, f, self);
+    nui_dom_drop_if_unused(dc->dom, f);
+    if (r) return throw_code(ctx, r);
+    nui_dom_remove(dc->dom, self);
+    return JS_UNDEFINED;
+}
+
+// insertAdjacent{HTML,Element,Text}: where the node goes for a position.
+static int adjacent(JSContext *ctx, DomCtx *dc, Index self, JSValueConst where, Index *parent, Index *ref) {
+    const char *w = JS_ToCString(ctx, where);
+    if (!w) return -1;
+    int ok = 0;
+    if (!strcasecmp(w, "beforebegin")) { *parent = nui_dom_parent(dc->dom, self); *ref = self; }
+    else if (!strcasecmp(w, "afterbegin")) { *parent = self; *ref = nui_dom_first(dc->dom, self); }
+    else if (!strcasecmp(w, "beforeend")) { *parent = self; *ref = 0; }
+    else if (!strcasecmp(w, "afterend")) { *parent = nui_dom_parent(dc->dom, self); *ref = nui_dom_next(dc->dom, self); }
+    else ok = -1;
+    if (ok < 0) JS_ThrowSyntaxError(ctx, "'%s' is not a valid position", w);
+    JS_FreeCString(ctx, w);
+    if (!ok && !*parent) { JS_ThrowTypeError(ctx, "NoModificationAllowedError: the element has no parent"); ok = -1; }
+    return ok;
+}
+
+static JSValue el_insert_adjacent_html(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    THIS_NODE();
+    Index parent = 0, ref = 0;
+    if (adjacent(ctx, dc, self, argv[0], &parent, &ref)) return JS_EXCEPTION;
+    Index f = fragment_of(ctx, dc, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (!f) return JS_EXCEPTION;
+    int r = nui_dom_insert(dc->dom, parent, f, ref);
+    nui_dom_drop_if_unused(dc->dom, f);
+    return r ? throw_code(ctx, r) : JS_UNDEFINED;
+}
+
+static JSValue el_insert_adjacent_element(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    THIS_NODE();
+    Index parent = 0, ref = 0;
+    if (adjacent(ctx, dc, self, argv[0], &parent, &ref)) return JS_EXCEPTION;
+    return insert(ctx, dc, parent, argc > 1 ? argv[1] : JS_UNDEFINED, ref);
+}
+
+static JSValue el_insert_adjacent_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    THIS_NODE();
+    Index parent = 0, ref = 0;
+    if (adjacent(ctx, dc, self, argv[0], &parent, &ref)) return JS_EXCEPTION;
+    Index t = text_from(ctx, dc, argc > 1 ? argv[1] : JS_UNDEFINED);
+    if (!t) return JS_EXCEPTION;
+    int r = nui_dom_insert(dc->dom, parent, t, ref);
+    if (r) { nui_dom_drop_if_unused(dc->dom, t); return throw_code(ctx, r); }
+    return JS_UNDEFINED;
+}
+
+static JSValue node_clone(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    THIS_NODE();
+    bool deep = argc > 0 && JS_ToBool(ctx, argv[0]);
+    Index c = nui_dom_clone(dc->dom, self, deep);
+    return c ? wrap(ctx, dc, c) : JS_ThrowOutOfMemory(ctx);
+}
+
 // --- Document ---------------------------------------------------------------------
+
+static JSValue doc_document_element(JSContext *ctx, JSValueConst this_val) {
+    THIS_NODE();
+    return wrap(ctx, dc, nui_dom_child_named(dc->dom, self, 0));
+}
+
+static JSValue doc_head(JSContext *ctx, JSValueConst this_val) {
+    THIS_NODE();
+    Index html = nui_dom_child_named(dc->dom, self, dc->a_html);
+    return wrap(ctx, dc, html ? nui_dom_child_named(dc->dom, html, dc->a_head) : 0);
+}
+
+static JSValue doc_body(JSContext *ctx, JSValueConst this_val) {
+    THIS_NODE();
+    Index html = nui_dom_child_named(dc->dom, self, dc->a_html);
+    return wrap(ctx, dc, html ? nui_dom_child_named(dc->dom, html, dc->a_body) : 0);
+}
+
+// Parses a whole page (index.html) into the document: its markup as the
+// document's children (<html> with <head> and <body>).
+static JSValue doc_write_page(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    THIS_NODE();
+    size_t len;
+    const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!s) return JS_EXCEPTION;
+    nui_dom_remove_children(dc->dom, self);
+    int r = nui_dom_parse_html(dc->dom, self, (const uint8_t *)s, len);
+    JS_FreeCString(ctx, s);
+    return r ? throw_code(ctx, r) : JS_UNDEFINED;
+}
 
 static JSValue doc_create_element(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     DomCtx *dc = dc_of(ctx);
@@ -676,6 +830,7 @@ static const JSCFunctionListEntry node_funcs[] = {
     JS_CFUNC_DEF("insertBefore", 2, node_insert_before),
     JS_CFUNC_DEF("removeChild", 1, node_remove_child),
     JS_CFUNC_DEF("contains", 1, node_contains),
+    JS_CFUNC_DEF("cloneNode", 0, node_clone),
 };
 
 static const JSCFunctionListEntry chardata_funcs[] = {
@@ -690,7 +845,11 @@ static const JSCFunctionListEntry element_funcs[] = {
     JS_CGETSET_DEF("nodeName", el_tag_name, NULL),
     JS_CGETSET_DEF("className", el_get_class, el_set_class),
     JS_CGETSET_DEF("id", el_get_id, el_set_id),
-    JS_CGETSET_DEF("innerHTML", NULL, el_set_inner_html),
+    JS_CGETSET_DEF("innerHTML", el_get_inner_html, el_set_inner_html),
+    JS_CGETSET_DEF("outerHTML", el_get_outer_html, el_set_outer_html),
+    JS_CFUNC_DEF("insertAdjacentHTML", 2, el_insert_adjacent_html),
+    JS_CFUNC_DEF("insertAdjacentElement", 2, el_insert_adjacent_element),
+    JS_CFUNC_DEF("insertAdjacentText", 2, el_insert_adjacent_text),
     JS_CGETSET_DEF("children", el_children, NULL),
     JS_CGETSET_DEF("firstElementChild", el_first_element, NULL),
     JS_CGETSET_DEF("lastElementChild", el_last_element, NULL),
@@ -720,6 +879,10 @@ static const JSCFunctionListEntry fragment_funcs[] = {
 };
 
 static const JSCFunctionListEntry document_funcs[] = {
+    JS_CGETSET_DEF("documentElement", doc_document_element, NULL),
+    JS_CGETSET_DEF("head", doc_head, NULL),
+    JS_CGETSET_DEF("body", doc_body, NULL),
+    JS_CFUNC_DEF("__writePage", 1, doc_write_page),
     JS_CFUNC_DEF("querySelector", 1, node_query_one),
     JS_CFUNC_DEF("querySelectorAll", 1, node_query_all),
     JS_CFUNC_DEF("getElementById", 1, doc_get_by_id),
@@ -760,12 +923,16 @@ DomCtx *nui_dom_install(JSContext *ctx) {
     dc->ctx = ctx;
     for (int i = 0; i < P_COUNT; i++) dc->protos[i] = dc->ctors[i] = JS_UNDEFINED;
     dc->host = (Host){ ctx, h_dup, h_free, h_dup_atom, h_free_atom, h_new_string, h_new_atom, h_value_atom, h_tokens,
-                       h_latin1, h_to_utf8, h_free_utf8 };
+                       h_latin1, h_to_utf8, h_free_utf8, h_atom_latin1, h_atom_utf8 };
     dc->dom = nui_dom_new(&dc->host);
     if (!dc->dom) { js_free(ctx, dc); return NULL; }
     JS_SetRuntimeOpaque(rt, dc);
     dc->a_class = JS_NewAtom(ctx, "class");
     dc->a_id = JS_NewAtom(ctx, "id");
+    dc->a_html = JS_NewAtom(ctx, "html");
+    dc->a_head = JS_NewAtom(ctx, "head");
+    dc->a_body = JS_NewAtom(ctx, "body");
+    dc->a_title = JS_NewAtom(ctx, "title");
 #define COUNT(a) (int)(sizeof(a) / sizeof(a[0]))
     if (make_proto(ctx, dc, P_NODE, -1, "Node", node_funcs, COUNT(node_funcs)) ||
         make_proto(ctx, dc, P_CHARDATA, P_NODE, "CharacterData", chardata_funcs, COUNT(chardata_funcs)) ||
@@ -801,6 +968,10 @@ void nui_dom_uninstall(DomCtx *dc) {
     }
     JS_FreeAtom(ctx, dc->a_class);
     JS_FreeAtom(ctx, dc->a_id);
+    JS_FreeAtom(ctx, dc->a_html);
+    JS_FreeAtom(ctx, dc->a_head);
+    JS_FreeAtom(ctx, dc->a_body);
+    JS_FreeAtom(ctx, dc->a_title);
     // Wrappers freed later (with the context) find no DOM.
     JS_SetRuntimeOpaque(JS_GetRuntime(ctx), NULL);
     js_free(ctx, dc);

@@ -65292,3 +65292,17 @@ const uint8_t *JS_GetStringLatin1(JSValueConst v, size_t *plen)
     *plen = p->len;
     return str8(p);
 }
+
+/* Oriel: an atom's 8-bit characters in place (see quickjs.h), for the
+   native DOM's serializer. */
+const uint8_t *JS_GetAtomLatin1(JSContext *ctx, JSAtom atom, size_t *plen)
+{
+    JSAtomStruct *p;
+    if (__JS_AtomIsTaggedInt(atom))
+        return NULL;
+    p = ctx->rt->atom_array[atom];
+    if (p->is_wide_char)
+        return NULL;
+    *plen = p->len;
+    return str8(p);
+}

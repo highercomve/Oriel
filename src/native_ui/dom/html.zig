@@ -134,7 +134,11 @@ pub const Parser = struct {
     name_buf: std.ArrayList(u8) = .empty,
     open: std.ArrayList(Open) = .empty,
 
-    const Open = struct { node: st.Index, atom: u32, class: Class };
+    const Open = struct { node: st.Index, atom: u32, class: Class, foreign: bool };
+
+    fn inForeign(p: *Parser) bool {
+        return p.open.items.len > 0 and p.open.items[p.open.items.len - 1].foreign;
+    }
 
     pub fn deinit(p: *Parser) void {
         p.text_buf.deinit(p.gpa);
@@ -218,19 +222,27 @@ pub const Parser = struct {
                 continue;
             }
             if (closing) {
-                const name = try p.lower(s[name_start..j]);
+                const name = if (p.inForeign()) s[name_start..j] else try p.lower(s[name_start..j]);
                 i = if (std.mem.indexOfScalarPos(u8, s, j, '>')) |gt| gt + 1 else s.len;
                 const atom = try p.newAtom(name);
                 defer p.make.freeAtom(p.make.ctx, atom);
                 // Closes the nearest open element of that name (and those
-                // above it); a stray end tag is ignored.
+                // above it); a stray end tag is ignored, except </p> and
+                // </br>, which make the element (as browsers do).
                 var k = p.open.items.len;
-                while (k > 0) {
+                const found = while (k > 0) {
                     k -= 1;
                     if (p.open.items[k].atom == atom) {
                         p.open.shrinkRetainingCapacity(k);
-                        break;
+                        break true;
                     }
+                } else false;
+                if (!found and (std.mem.eql(u8, name, "p") or std.mem.eql(u8, name, "br"))) {
+                    const el = try p.store.createElement(atom);
+                    p.store.appendChild(p.parentNow(root), el) catch |e| {
+                        p.store.dropIfUnused(el);
+                        return e;
+                    };
                 }
                 continue;
             }
@@ -246,17 +258,22 @@ pub const Parser = struct {
         // The lowercase name, kept in a small local buffer for the rules
         // below (name_buf is reused for the attributes).
         var name_local: [32]u8 = undefined;
-        const lname = try p.lower(s[name_start..name_end]);
+        // Foreign content (SVG, MathML) keeps its names' case: viewBox,
+        // linearGradient.
+        const foreign = p.inForeign() or std.ascii.eqlIgnoreCase(s[name_start..name_end], "svg") or std.ascii.eqlIgnoreCase(s[name_start..name_end], "math");
+        const lname = if (foreign and !std.ascii.eqlIgnoreCase(s[name_start..name_end], "svg") and !std.ascii.eqlIgnoreCase(s[name_start..name_end], "math")) s[name_start..name_end] else try p.lower(s[name_start..name_end]);
         const name: []const u8 = if (lname.len <= name_local.len) blk: {
             @memcpy(name_local[0..lname.len], lname);
             break :blk name_local[0..lname.len];
         } else lname; // a long (custom) tag: none of the rules below
         // Everything the rules need from the name, before the attributes
         // reuse name_buf (a long name may point into it).
-        const is_void = isIn(&void_elements, name);
-        const is_raw = name.len <= name_local.len and isIn(&raw_text, name);
-        const class = classOf(name);
-        while (p.open.items.len > 0 and impliedEnd(p.open.items[p.open.items.len - 1].class, name)) _ = p.open.pop();
+        const is_void = !foreign and isIn(&void_elements, name);
+        const is_raw = !foreign and name.len <= name_local.len and isIn(&raw_text, name);
+        const class = if (foreign) Class.other else classOf(name);
+        if (!foreign) while (p.open.items.len > 0 and impliedEnd(p.open.items[p.open.items.len - 1].class, name)) {
+            _ = p.open.pop();
+        };
         const atom = try p.newAtom(name);
         const el = blk: {
             defer p.make.freeAtom(p.make.ctx, atom);
@@ -266,6 +283,8 @@ pub const Parser = struct {
             p.store.dropIfUnused(el);
             return e;
         };
+        p.store.get(el).foreign = foreign;
+        var self_closing = false;
         var j = name_end;
         while (j < s.len) {
             while (j < s.len and std.ascii.isWhitespace(s[j])) j += 1;
@@ -275,12 +294,13 @@ pub const Parser = struct {
                 break;
             }
             if (s[j] == '/') {
+                self_closing = j + 1 < s.len and s[j + 1] == '>';
                 j += 1;
                 continue;
             }
             const an_start = j;
             while (j < s.len and !std.ascii.isWhitespace(s[j]) and s[j] != '=' and s[j] != '>' and !(s[j] == '/' and j + 1 < s.len and s[j + 1] == '>')) j += 1;
-            const attr_name = try p.lower(s[an_start..j]);
+            const attr_name = if (foreign) s[an_start..j] else try p.lower(s[an_start..j]);
             const an = try p.newAtom(attr_name);
             defer p.make.freeAtom(p.make.ctx, an);
             while (j < s.len and std.ascii.isWhitespace(s[j])) j += 1;
@@ -305,7 +325,8 @@ pub const Parser = struct {
             defer p.make.free(p.make.ctx, &v);
             try p.store.setAttr(el, an, &v);
         }
-        if (is_void) return j;
+        // "/>" closes foreign elements; HTML ignores it on others.
+        if (is_void or (foreign and self_closing)) return j;
         if (is_raw) {
             // Everything up to its end tag is text (with entities in
             // textarea and title).
@@ -319,7 +340,7 @@ pub const Parser = struct {
             try p.addData(el, .text, s[j..end], escapable);
             return if (end >= s.len) s.len else if (std.mem.indexOfScalarPos(u8, s, end, '>')) |gt| gt + 1 else s.len;
         }
-        try p.open.append(p.gpa, .{ .node = el, .atom = p.store.get(el).name, .class = class });
+        try p.open.append(p.gpa, .{ .node = el, .atom = p.store.get(el).name, .class = class, .foreign = foreign });
         return j;
     }
 };
