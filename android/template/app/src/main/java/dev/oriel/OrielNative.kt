@@ -168,6 +168,18 @@ internal class NuiNode(val id: Int, var kind: String) {
         }
     }
 
+    /** A single run's new text (NuiView.text): same styles, new words. */
+    fun setText(t: String): Boolean {
+        val runs = p.optJSONArray("runs") ?: return false
+        if (kind != "text" || runs.length() != 1) return false
+        val r = runs.optJSONObject(0) ?: return false
+        r.put("t", t)
+        layout = null
+        layoutWidth = -1
+        buildText()
+        return true
+    }
+
     private fun buildText() {
         val fz = p.optDouble("fz", 16.0).toFloat()
         val mono = p.optBoolean("mono")
@@ -491,6 +503,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     private fun imageFailed(src: String) {
         android.util.Log.w("Oriel", "native ui: image ${src.take(48)}: can't decode")
+    }
+
+    fun text(id: Int, t: String) {
+        if (nodes[id]?.setText(t) == true) invalidate()
     }
 
     fun remove(id: Int) {
