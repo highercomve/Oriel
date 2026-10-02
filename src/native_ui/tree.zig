@@ -11,7 +11,7 @@ pub const yg = @cImport({
 
 const log = std.log.scoped(.native_ui);
 
-pub const Kind = enum { view, text, input, textarea, select, icon, image };
+pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas };
 
 pub const Color = [4]f32; // r, g, b 0-255; a 0-1
 
@@ -41,6 +41,173 @@ pub const Shape = struct {
     evenodd: bool = false,
 };
 pub const Icon = struct { vb: [4]f32 = .{ 0, 0, 24, 24 }, shapes: []const Shape = &.{} };
+
+/// One <canvas> 2d-context drawing op (src/native_ui/js/src/canvas.js):
+/// the recorded program, replayed into the backend's draw pass each paint.
+/// A paint is a color or a gradient id (`grads` in the canvas painter).
+pub const CanvasPaint = union(enum) {
+    color: Color,
+    grad: u16,
+};
+
+pub const CanvasFont = struct { italic: bool = false, weight: f32 = 400, size: f32 = 10, family: []const u8 = "" };
+
+pub const CanvasCmd = union(enum) {
+    save,
+    restore,
+    begin_path,
+    close_path,
+    fill: bool, // evenodd
+    stroke,
+    clip: bool, // evenodd
+    translate: [2]f32,
+    scale: [2]f32,
+    rotate: f32,
+    move_to: [2]f32,
+    line_to: [2]f32,
+    rect: [4]f32,
+    arc: struct { x: f32, y: f32, r: f32, a0: f32, a1: f32, ccw: bool },
+    bezier_to: [6]f32,
+    fill_rect: [4]f32,
+    stroke_rect: [4]f32,
+    clear_rect: [4]f32,
+    fill_text: struct { t: []const u8, x: f32, y: f32 },
+    stroke_text: struct { t: []const u8, x: f32, y: f32 },
+    fill_style: CanvasPaint,
+    stroke_style: CanvasPaint,
+    line_width: f32,
+    line_cap: u2, // butt, round, square
+    line_join: u2, // miter, round, bevel
+    global_alpha: f32,
+    font: CanvasFont,
+    text_align: u2, // left, center, right
+    text_baseline: u3, // alphabetic, top, hanging, middle, bottom
+    linear_gradient: struct { id: u16, x0: f32, y0: f32, x1: f32, y1: f32 },
+    radial_gradient: struct { id: u16, x0: f32, y0: f32, r0: f32, x1: f32, y1: f32, r1: f32 },
+    color_stop: struct { id: u16, off: f32, c: Color },
+};
+
+/// A canvas node's drawing program, parsed from its props' `cv` (kept on
+/// the node, not in Props: it isn't one property, it's the whole program).
+pub fn parseCanvasCmds(a: std.mem.Allocator, v: std.json.Value) ![]CanvasCmd {
+    if (v != .array) return error.BadCmds;
+    const items = v.array.items;
+    var out: std.ArrayList(CanvasCmd) = .empty;
+    errdefer out.deinit(a);
+    try out.ensureTotalCapacity(a, items.len);
+    for (items) |item| {
+        if (item != .array or item.array.items.len == 0 or item.array.items[0] != .string) continue;
+        const op = item.array.items;
+        const tag = op[0].string;
+        const x: f32 = numAt(op, 1);
+        const y: f32 = numAt(op, 2);
+        var c: ?CanvasCmd = null;
+        if (std.mem.eql(u8, tag, "sv")) {
+            c = .save;
+        } else if (std.mem.eql(u8, tag, "rs")) {
+            c = .restore;
+        } else if (std.mem.eql(u8, tag, "bp")) {
+            c = .begin_path;
+        } else if (std.mem.eql(u8, tag, "cp")) {
+            c = .close_path;
+        } else if (std.mem.eql(u8, tag, "st")) {
+            c = .stroke;
+        } else if (std.mem.eql(u8, tag, "fl")) {
+            c = .{ .fill = numAt(op, 1) != 0 };
+        } else if (std.mem.eql(u8, tag, "cl")) {
+            c = .{ .clip = numAt(op, 1) != 0 };
+        } else if (std.mem.eql(u8, tag, "tl")) {
+            c = .{ .translate = .{ x, y } };
+        } else if (std.mem.eql(u8, tag, "ts")) {
+            c = .{ .scale = .{ x, y } };
+        } else if (std.mem.eql(u8, tag, "tr")) {
+            c = .{ .rotate = x };
+        } else if (std.mem.eql(u8, tag, "mv")) {
+            c = .{ .move_to = .{ x, y } };
+        } else if (std.mem.eql(u8, tag, "ln")) {
+            c = .{ .line_to = .{ x, y } };
+        } else if (std.mem.eql(u8, tag, "rc")) {
+            c = .{ .rect = .{ x, y, numAt(op, 3), numAt(op, 4) } };
+        } else if (std.mem.eql(u8, tag, "ar")) {
+            c = .{ .arc = .{ .x = x, .y = y, .r = numAt(op, 3), .a0 = numAt(op, 4), .a1 = numAt(op, 5), .ccw = numAt(op, 6) != 0 } };
+        } else if (std.mem.eql(u8, tag, "bz")) {
+            c = .{ .bezier_to = .{ x, y, numAt(op, 3), numAt(op, 4), numAt(op, 5), numAt(op, 6) } };
+        } else if (std.mem.eql(u8, tag, "fr")) {
+            c = .{ .fill_rect = .{ x, y, numAt(op, 3), numAt(op, 4) } };
+        } else if (std.mem.eql(u8, tag, "sr")) {
+            c = .{ .stroke_rect = .{ x, y, numAt(op, 3), numAt(op, 4) } };
+        } else if (std.mem.eql(u8, tag, "cr")) {
+            c = .{ .clear_rect = .{ x, y, numAt(op, 3), numAt(op, 4) } };
+        } else if (std.mem.eql(u8, tag, "tx") or std.mem.eql(u8, tag, "sx")) {
+            if (op.len < 2 or op[1] != .string or op[1].string.len == 0) continue;
+            const t = try a.dupe(u8, op[1].string);
+            c = if (std.mem.eql(u8, tag, "tx"))
+                .{ .fill_text = .{ .t = t, .x = numAt(op, 2), .y = numAt(op, 3) } }
+            else
+                .{ .stroke_text = .{ .t = t, .x = numAt(op, 2), .y = numAt(op, 3) } };
+        } else if (std.mem.eql(u8, tag, "sf") or std.mem.eql(u8, tag, "ss")) {
+            const paint = paintAt(op[1]) orelse continue;
+            c = if (std.mem.eql(u8, tag, "sf")) CanvasCmd{ .fill_style = paint } else CanvasCmd{ .stroke_style = paint };
+        } else if (std.mem.eql(u8, tag, "lw")) {
+            c = .{ .line_width = x };
+        } else if (std.mem.eql(u8, tag, "ga")) {
+            c = .{ .global_alpha = x };
+        } else if (std.mem.eql(u8, tag, "lc")) {
+            c = .{ .line_cap = @intFromFloat(@min(2, @max(0, x))) };
+        } else if (std.mem.eql(u8, tag, "lj")) {
+            c = .{ .line_join = @intFromFloat(@min(2, @max(0, x))) };
+        } else if (std.mem.eql(u8, tag, "ta")) {
+            c = .{ .text_align = @intFromFloat(@min(2, @max(0, x))) };
+        } else if (std.mem.eql(u8, tag, "tb")) {
+            c = .{ .text_baseline = @intFromFloat(@min(4, @max(0, x))) };
+        } else if (std.mem.eql(u8, tag, "fo") and op.len > 4) {
+            c = .{ .font = .{ .italic = numAt(op, 1) != 0, .weight = numAt(op, 2), .size = numAt(op, 3), .family = try a.dupe(u8, op[4].string) } };
+        } else if (std.mem.eql(u8, tag, "gl") and op.len > 4) {
+            c = .{ .linear_gradient = .{ .id = gradId(op[1]), .x0 = x, .y0 = y, .x1 = numAt(op, 3), .y1 = numAt(op, 4) } };
+        } else if (std.mem.eql(u8, tag, "gr") and op.len > 6) {
+            c = .{ .radial_gradient = .{ .id = gradId(op[1]), .x0 = x, .y0 = y, .r0 = numAt(op, 3), .x1 = numAt(op, 4), .y1 = numAt(op, 5), .r1 = numAt(op, 6) } };
+        } else if (std.mem.eql(u8, tag, "gs") and op.len > 6) {
+            c = .{ .color_stop = .{ .id = gradId(op[1]), .off = numAt(op, 2), .c = .{ numAt(op, 3), numAt(op, 4), numAt(op, 5), numAt(op, 6) } } };
+        }
+        if (c) |cc| out.appendAssumeCapacity(cc);
+    }
+    return out.items;
+}
+
+fn numAt(op: []const std.json.Value, i: usize) f32 {
+    if (i >= op.len) return 0;
+    return switch (op[i]) {
+        .integer => |x| @floatFromInt(x),
+        .float => |x| @floatCast(x),
+        else => 0,
+    };
+}
+
+/// A paint: [r,g,b,a] (or [r,g,b]) — or ["g", id] for a gradient.
+fn paintAt(v: std.json.Value) ?CanvasPaint {
+    if (v != .array) return null;
+    const a = v.array.items;
+    if (a.len == 2 and a[0] == .string and std.mem.eql(u8, a[0].string, "g")) {
+        const id = switch (a[1]) {
+            .integer => |x| x,
+            .float => |x| @as(i64, @intFromFloat(x)),
+            else => return null,
+        };
+        if (id < 0 or id > std.math.maxInt(u16)) return null;
+        return .{ .grad = @intCast(id) };
+    }
+    const rgb: Color = .{ numAt(a, 0), numAt(a, 1), numAt(a, 2), if (a.len > 3) numAt(a, 3) else 1 };
+    return .{ .color = rgb };
+}
+
+fn gradId(v: std.json.Value) u16 {
+    const x = switch (v) {
+        .integer => |i| i,
+        .float => |f| @as(i64, @intFromFloat(f)),
+        else => 0,
+    };
+    return @intCast(@max(0, @min(x, std.math.maxInt(u16))));
+}
 
 /// A length: a number (px), "50%", "auto", or null.
 pub const Dim = std.json.Value;
@@ -110,6 +277,9 @@ pub const Props = struct {
     // Images (<img>): a data: URI or an app asset path, and CSS object-fit.
     src: ?[]const u8 = null,
     fit: ?[]const u8 = null,
+    // <canvas>: the drawing's coordinate space (the bitmap's px size).
+    cw: ?f32 = null,
+    ch: ?f32 = null,
     // A default checkbox/radio (<input> without appearance: none).
     ctl: ?[]const u8 = null,
     on: bool = false,
@@ -145,6 +315,8 @@ pub const Node = struct {
     props: Props = .{},
     /// The value the page last set (fields); null once the backend took it.
     pending_value: ?[]const u8 = null,
+    /// For a canvas node: its drawing program, from props `cv`.
+    canvas: ?[]const CanvasCmd = null,
     /// After layout: the frame in window coordinates, the visible part.
     frame: Rect = .{},
     clip: Rect = .{},
@@ -331,6 +503,13 @@ pub const Tree = struct {
         } else if (unconsumed) |u| {
             n.pending_value = try a.dupe(u8, u);
         }
+        // A canvas's drawing program (its arena holds the strings).
+        n.canvas = null;
+        if (copy == .object) if (copy.object.get("cv")) |cv| {
+            if (parseCanvasCmds(a, cv)) |cmds| {
+                n.canvas = cmds;
+            } else |err| log.warn("node {d}: bad canvas ops ({s})", .{ n.id, @errorName(err) });
+        };
         styleYoga(n);
         if (t.on_props) |cb| cb(t.measure_ctx, n, copy);
         if (yg.YGNodeHasMeasureFunc(n.yn)) yg.YGNodeMarkDirty(n.yn);
@@ -645,6 +824,34 @@ test "ops with a bad shape or id are skipped" {
     try t.apply("[1,[],[\"\"],[\"c\"],[\"c\",1e300,\"view\"],[\"c\",2],[\"k\",3,5],[\"p\",4]]");
     try std.testing.expectEqual(@as(usize, 0), t.nodes.count());
     try std.testing.expectError(error.BadOps, t.apply("{}"));
+}
+
+test "canvas ops parse" {
+    // Pure JSON → CanvasCmd, no Yoga or native_ui needed.
+    const t = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const json = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\[["sv"],["sf",[255,0,0,1]],["ss",["g",3]],["fr",1,2,3,4],["ar",5,6,7,8,9,1],["tx","hi",10,11],["fo",1,700,16,"sans-serif"],["gs",3,0.5,1,2,3,4]]
+    , .{});
+    const cmds = try parseCanvasCmds(a, json);
+    try t.expectEqual(8, cmds.len);
+    try t.expectEqual(CanvasCmd.save, cmds[0]);
+    try t.expectEqual([4]f32{ 255, 0, 0, 1 }, cmds[1].fill_style.color);
+    try t.expectEqual(@as(u16, 3), cmds[2].stroke_style.grad);
+    try t.expectEqual([4]f32{ 1, 2, 3, 4 }, cmds[3].fill_rect);
+    try t.expectEqual(@as(f32, 5), cmds[4].arc.x);
+    try t.expectEqual(@as(f32, 7), cmds[4].arc.r);
+    try t.expect(cmds[4].arc.ccw);
+    try t.expectEqualStrings("hi", cmds[5].fill_text.t);
+    try t.expectEqual(@as(f32, 16), cmds[6].font.size);
+    try t.expect(cmds[6].font.italic);
+    try t.expectEqual(@as(f32, 0.5), cmds[7].color_stop.off);
+    // Junk ops are dropped, not fatal.
+    const junk = try std.json.parseFromSliceLeaky(std.json.Value, a, "[[42],[\"zz\",1],[\"fr\",1,2,3,4]]", .{});
+    const ok = try parseCanvasCmds(a, junk);
+    try t.expectEqual(1, ok.len);
 }
 
 test "idOf: JS numbers to node ids" {
