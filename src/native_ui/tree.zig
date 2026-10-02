@@ -309,6 +309,8 @@ pub const Props = struct {
     /// A textarea's cols (20 when absent): its natural width.
     cols: ?f32 = null,
     options: ?[]const [2][]const u8 = null,
+    /// <input type=range>: min, max, step (0: any).
+    range: ?[3]f64 = null,
     // Icons
     icon: ?Icon = null,
     // Images (<img>): a data: URI or an app asset path, and CSS object-fit.

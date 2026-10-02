@@ -62,6 +62,8 @@ const Field = struct {
     outer: Object,
     /// What has the text: the same, or the text view.
     inner: Object,
+    /// An NSSlider (<input type=range>): no text, placeholder or font.
+    slider: bool = false,
 };
 
 /// Live surfaces by token, and which surface and node a view or control
@@ -119,6 +121,7 @@ fn classes() void {
         .{ "textDidChange:", textDidChange },
         .{ "textView:doCommandBySelector:", textViewCommand },
         .{ "popupChanged:", popupChanged },
+        .{ "sliderChanged:", sliderChanged },
     }));
 }
 
@@ -371,7 +374,7 @@ fn syncFields(s: *Surface) void {
         style(n, f);
         // The page changes placeholders ("Select text first…" → "Tell
         // GhostPen what to do…"); a text area's is drawn under it.
-        if (n.kind == .input) if (cocoa.nsString(n.props.ph orelse "")) |ph| {
+        if (n.kind == .input and !f.slider) if (cocoa.nsString(n.props.ph orelse "")) |ph| {
             defer ph.release();
             f.inner.msgSend(void, "setPlaceholderString:", .{ph});
         };
@@ -390,7 +393,18 @@ fn syncFields(s: *Surface) void {
 fn makeField(s: *Surface, n: *Node) ?Field {
     const zero: NSRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 10, .height = 10 } };
     var f: Field = switch (n.kind) {
-        .input => blk: {
+        .input => if (n.props.range != null) blk: {
+            const sl = cocoa.class("NSSlider").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+            if (sl.value == null) return null;
+            const r = draw.Range.of(n);
+            sl.msgSend(void, "setMinValue:", .{r.min});
+            sl.msgSend(void, "setMaxValue:", .{r.max});
+            sl.msgSend(void, "setDoubleValue:", .{r.min});
+            sl.msgSend(void, "setContinuous:", .{cocoa.boolean(true)});
+            sl.msgSend(void, "setTarget:", .{field_delegate});
+            sl.msgSend(void, "setAction:", .{cocoa.objc.sel("sliderChanged:").value});
+            break :blk .{ .holder = cocoa.nil, .outer = sl, .inner = sl, .slider = true };
+        } else blk: {
             const cls = cocoa.class(if (n.props.pw) "NSSecureTextField" else "NSTextField");
             const tf = cls.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (tf.value == null) return null;
@@ -470,6 +484,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
 }
 
 fn setValue(n: *Node, f: Field, v: []const u8) void {
+    if (f.slider) return f.inner.msgSend(void, "setDoubleValue:", .{draw.Range.of(n).parse(v)});
     switch (n.kind) {
         .input => if (cocoa.nsString(v)) |str| {
             defer str.release();
@@ -487,6 +502,18 @@ fn setValue(n: *Node, f: Field, v: []const u8) void {
 }
 
 fn style(n: *Node, f: Field) void {
+    if (f.slider) {
+        // The page's min/max/step may change; accent-color tints the track.
+        const r = draw.Range.of(n);
+        f.inner.msgSend(void, "setMinValue:", .{r.min});
+        f.inner.msgSend(void, "setMaxValue:", .{r.max});
+        if (n.props.acc) |a| if (f.inner.getClass()) |cls| if (cls.respondsToSelector(cocoa.objc.sel("setTrackFillColor:"))) {
+            f.inner.msgSend(void, "setTrackFillColor:", .{cocoa.class("NSColor").msgSend(Object, "colorWithSRGBRed:green:blue:alpha:", .{
+                @as(f64, a[0] / 255), @as(f64, a[1] / 255), @as(f64, a[2] / 255), @as(f64, a[3]),
+            })});
+        };
+        return;
+    }
     const c = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
     const color = cocoa.class("NSColor").msgSend(Object, "colorWithSRGBRed:green:blue:alpha:", .{
         @as(f64, c[0] / 255), @as(f64, c[1] / 255), @as(f64, c[2] / 255), @as(f64, c[3]),
@@ -563,6 +590,26 @@ fn popupChanged(_: id, _: SEL, sender: id) callconv(.c) void {
     const opts = o.n.props.options orelse return;
     if (i < 0 or @as(usize, @intCast(i)) >= opts.len) return;
     sendValue(o.s, o.n, "change", opts[@intCast(i)][0]);
+}
+
+/// A slider moved: `input` while the mouse drags it, `input` and `change`
+/// when it lets go or a key moved it (as Android's SeekBar sends them).
+fn sliderChanged(_: id, _: SEL, sender: id) callconv(.c) void {
+    const o = ownerOf(sender) orelse return;
+    if (o.s.updating) return;
+    const sl: Object = .{ .value = sender };
+    const r = draw.Range.of(o.n);
+    var buf: [48]u8 = undefined;
+    const text = r.text(&buf, sl.msgSend(f64, "doubleValue", .{}));
+    sl.msgSend(void, "setDoubleValue:", .{r.snap(sl.msgSend(f64, "doubleValue", .{}))});
+    sendValue(o.s, o.n, "input", text);
+    const event = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{}).msgSend(Object, "currentEvent", .{});
+    const kind = if (event.value != null) event.msgSend(c_ulong, "type", .{}) else 0;
+    // NSEventTypeLeftMouseDown 1, LeftMouseDragged 6: still dragging.
+    if (kind == 1 or kind == 6) return;
+    // The page may have closed the window or rebuilt the node.
+    const again = ownerOf(sender) orelse return;
+    sendValue(again.s, again.n, "change", text);
 }
 
 // ---------------------------------------------------------------------------
