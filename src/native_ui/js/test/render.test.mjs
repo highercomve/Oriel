@@ -368,4 +368,18 @@ for (const css of [
   assert.equal(item.props.ta ?? "left", "left", "a menu item's stays left (left: the wire default)");
 }
 
+// A label's line with one box: a checkbox keeps its text beside it (no
+// wrap); a field sized in % (`width: 100%`) wraps under its text, as in a
+// browser, instead of squeezing it to its longest word.
+{
+  const f = fixture("input { width: 100% } input[type=checkbox] { width: auto }");
+  const main = f.document.querySelector("main");
+  main.innerHTML = '<label>Profile name<input value="x"></label><label>Temperature<input type="range"></label><label><input type="checkbox">Remember me</label>';
+  f.check();
+  const [name, temp, check] = f.tree().kids[0].kids[0].kids.at(-1).kids;
+  assert.equal(name.props.fw, "wrap", "a 100% field goes under its label");
+  assert.equal(temp.props.fw, "wrap", "so does a 100% slider");
+  assert.equal(check.props.fw, undefined, "a checkbox keeps its text beside it");
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");
