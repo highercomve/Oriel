@@ -127,15 +127,19 @@ fn props(ctx: *anyopaque, node: *Node, value: std.json.Value) void {
     s.json.clearRetainingCapacity();
     s.json.print(s.gpa, "{f}", .{std.json.fmt(value, .{})}) catch return;
     _ = runtime.call(.void, "nuiProps", "(II[B[B)V", .{ wid(s.window), nid(node), @as([]const u8, @tagName(node.kind)), @as([]const u8, s.json.items) });
+    // An <img>'s data: URI can be megabytes: don't keep that much for the
+    // window's lifetime.
+    if (s.json.capacity > 1 << 20) s.json.clearAndFree(s.gpa);
 }
 
-/// Text sizes come from Kotlin (StaticLayout, in dp); fields have a
-/// fixed size like on GTK.
+/// Text sizes come from Kotlin (StaticLayout, in dp), and so do images'
+/// (their decoded size, scaled down to the width they may take); fields
+/// have a fixed size like on GTK.
 fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const s = surfaceOf(ctx);
     const fz = n.props.fz orelse 16;
     switch (n.kind) {
-        .text => {
+        .text, .image => {
             const max: i32 = if (std.math.isInf(max_width)) -1 else @intFromFloat(@max(0, @min(max_width, 1e6)) * 64);
             const r: u64 = @bitCast(runtime.call(.long, "nuiMeasure", "(III)J", .{ wid(s.window), nid(n), max }) orelse 0);
             out.* = .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
@@ -282,6 +286,15 @@ fn nBack(_: *Env, _: jclass, win: jint) callconv(.c) jboolean {
     return @intFromBool(s.engine.back());
 }
 
+/// An app asset's bytes (an <img> src that isn't a data: URI), or null.
+fn nAsset(env: *Env, _: jclass, win: jint, path: jobject) callconv(.c) jobject {
+    const s = byId(win) orelse return null;
+    const p = (env.bytesAlloc(s.gpa, path) catch return null) orelse return null;
+    defer s.gpa.free(p);
+    const data = s.engine.assetData(std.mem.trimStart(u8, p, "./")) orelse return null;
+    return env.newBytes(data);
+}
+
 /// The JS heap in bytes (for the memory numbers).
 fn nJsMemory(_: *Env, _: jclass, win: jint) callconv(.c) jni.jlong {
     const s = byId(win) orelse return 0;
@@ -300,6 +313,7 @@ comptime {
     @export(&nTimer, .{ .name = prefix ++ "timer" });
     @export(&nBack, .{ .name = prefix ++ "back" });
     @export(&nJsMemory, .{ .name = prefix ++ "jsMemory" });
+    @export(&nAsset, .{ .name = prefix ++ "asset" });
 }
 
 test {

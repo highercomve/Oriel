@@ -80,6 +80,8 @@ pub const Engine = struct {
             .backend = backend,
             .assets = assets,
         };
+        // On failure below: the tree (its Yoga config, and any nodes the
+        // runtime already made) and the QuickJS runtime go too, as in destroy.
         errdefer e.tree.deinit();
         e.serial = next_serial.fetchAdd(1, .monotonic) + 1;
         e.tree.width = width;
@@ -234,13 +236,6 @@ fn engineOf(p: *anyopaque) *Engine {
     return @ptrCast(@alignCast(p));
 }
 
-/// A node id from the page (`__host` calls take numbers): null unless it
-/// is a whole number an id can be (the page could pass NaN or 1e300).
-fn nodeId(v: f64) ?i64 {
-    if (!std.math.isFinite(v) or @abs(v) > 9007199254740992) return null;
-    return @intFromFloat(v);
-}
-
 export fn oriel_nui_log(p: *anyopaque, level: c_int, msg: [*]const u8, len: usize) void {
     _ = p;
     const s = msg[0..len];
@@ -282,7 +277,7 @@ export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {
         e.tree.layout();
         e.relaid = true;
     }
-    const n = e.tree.get(nodeId(id) orelse return 0) orelse return 0;
+    const n = e.tree.get(Tree.idOf(id)) orelse return 0;
     out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(n.content_h, n.frame.h) };
     return 1;
 }
@@ -293,7 +288,7 @@ export fn oriel_nui_focus(p: *anyopaque, id: f64) void {
         e.tree.layout();
         e.relaid = true;
     }
-    const n = e.tree.get(nodeId(id) orelse return) orelse return;
+    const n = e.tree.get(Tree.idOf(id)) orelse return;
     e.backend.focus(e.backend.ctx, n);
 }
 
@@ -303,15 +298,16 @@ export fn oriel_nui_scroll_into_view(p: *anyopaque, id: f64, block: [*]const u8,
         e.tree.layout();
         e.relaid = true;
     }
-    const n = e.tree.get(nodeId(id) orelse return) orelse return;
+    const n = e.tree.get(Tree.idOf(id)) orelse return;
     e.tree.scrollIntoView(n, block[0..len]);
     e.backend.laid_out(e.backend.ctx);
 }
 
 export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64) void {
     const e = engineOf(p);
-    const n = e.tree.get(nodeId(id) orelse return) orelse return;
-    n.scroll_y = @floatCast(y);
+    if (e.tree.dirty) e.tree.layout();
+    const n = e.tree.get(Tree.idOf(id)) orelse return;
+    n.scroll_y = std.math.clamp(@as(f32, @floatCast(y)), 0, @max(0, n.content_h - n.frame.h));
     e.tree.replace();
     e.backend.laid_out(e.backend.ctx);
 }

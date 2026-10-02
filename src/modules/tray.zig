@@ -3,6 +3,7 @@
 //! Linux backend: StatusNotifierItem + com.canonical.dbusmenu over GDBus.
 //! Windows backend: Win32 Shell_NotifyIconW + TrackPopupMenu.
 //! macOS backend: NSStatusItem + NSMenu.
+//! Android: a stub (no system tray).
 
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
@@ -19,7 +20,9 @@ pub const impl = switch (target.os) {
     .linux => @import("tray/linux.zig"),
     .windows => @import("tray/windows.zig"),
     .macos => @import("tray/macos.zig"),
-    .android => @compileError("tray is not available on Android: there is no system tray (use a notification: see docs/android.md)"),
+    // No system tray: a stub with the same API (Tray.create fails), so the
+    // same app source builds (use a notification: see docs/android.md).
+    .android => @import("tray/android.zig"),
     .ios => @compileError("tray is not available on iOS: there is no system tray"),
     .other => @compileError("tray is not supported on " ++ target.name),
 };

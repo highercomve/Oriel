@@ -262,6 +262,18 @@ export class Renderer {
       // auto, which Yoga doesn't have (it would squeeze them to fit, and
       // there would be nothing to scroll).
       else if (props.scroll && !this.cs.get(item.el)?.["flex-shrink"]) { const n = nodes.get(cid); if (n) n.props.fs = 0; }
+      // A column whose height isn't definite (no height, not flexed itself:
+      // min-height at most): CSS sizes a percentage flex-basis (`flex: 1`
+      // is 1 1 0%) from the content, and min-height: auto keeps the item
+      // from shrinking below it, so the column grows and the page scrolls.
+      // Yoga would squeeze the item into the min-height instead.
+      else if (props.fd === "column" && props.h === undefined && props.fg === undefined && !props.scroll && /flex$/.test(display)) {
+        const n = nodes.get(cid);
+        if (n && typeof n.props.fb === "string" && n.props.fb.endsWith("%") && !n.props.scroll && !n.props.clip) {
+          delete n.props.fb;
+          n.props.fs = 0;
+        }
+      }
       // An inline box (button, chip) in a block: as wide as its content, placed by text-align.
       if (!childCtx.blockify) {
         const n = nodes.get(cid);
