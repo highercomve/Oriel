@@ -18,8 +18,11 @@ animations and other unsupported cases. Android keeps the JSON operations
 because its native views mirror those properties.
 
 The renderer's document observer now ignores detached DOM construction;
-attaching the finished subtree records the insertion and computes its
-styles. Page-created observers retain their original behavior. The bundled
+attaching the finished subtree marks the insertion and computes its
+styles. Its private observer now marks connected mutations directly, without
+allocating queued records or per-record added/removed arrays. Synchronous
+layout reads see those marks immediately. Page-created observers retain their
+queued records and original behavior. The bundled
 linkedom patch checks its expected source structure at build time so a
 dependency upgrade cannot silently drop the optimization. Style mutation
 hooks also avoid notifying the renderer for detached elements.
@@ -53,6 +56,38 @@ The GTK cache follows Pango's context change serial rather than assuming
 font metrics stay unchanged.
 [Pango context serial](https://docs.gtk.org/Pango/method.Context.get_serial.html).
 
+The third pass reduces work still left inside those fast paths. HTML templates
+clone private shallow element/attribute prototypes, so each assignment keeps
+fresh nodes without reapplying identical attributes. Template storage remains
+bounded and document-specific; custom tags and `is` attributes stay general.
+A fixed ancestor walk replaces CSS selector compilation for the SVG/MathML
+eligibility check on every `innerHTML` assignment. New flex leaves reuse their
+encoded native style template, and eligible text updates reuse owned run
+objects only after every affected leaf has validated.
+
+Each native immutable style now also owns a prepared Yoga style node. New
+nodes copy its style once rather than repeating dozens of setters. Children,
+measurement callbacks, contexts and layout stay independent. Tests compare
+copied-style layout with the JSON property path and verify that updating one
+node does not change another's style.
+[Yoga 3.2.1 style-copy implementation](https://github.com/facebook/yoga/blob/v3.2.1/yoga/YGNodeStyle.cpp#L34).
+
+The fourth pass removes quadratic child clearing in native list replacement:
+one bulk Yoga detach replaces repeated removals from the beginning of its
+child vector. Native child storage reserves capacity before changing ownership.
+Tests cover ordering, moving nodes between parents, emptying a list, and
+destroying a parent while retaining its detached children.
+
+GTK can also retain frames after a text edit when natural width and height
+are exactly unchanged, the font-context epoch matches, and the text is
+unwrapped at its current content width (or explicitly `nowrap`). It still
+invalidates Yoga's measurement cache for future resizing, and independently
+marks painting dirty. Wrapped text, changed metrics, changed contexts and
+other backends continue through layout. Tests check changed word breaks
+after a narrow resize, wrapped-text updates and font-context invalidation.
+Simple new flex leaves also normalize a single text node directly rather
+than allocating a general run flow.
+
 The tests compare incremental native operations against independently
 rebuilt trees, exercise both direct and JSON text updates, check observer
 insertion/removal behavior in the actual runtime bundle, and check owned
@@ -61,51 +96,58 @@ Apple and Windows need platform benchmark verification.
 
 ## What the controlled measurements establish
 
-The final visible ReleaseFast run uses the unchanged benchmark page and its
-synchronous layout reads, a 900 × 700 floating window, and medians of three
-trials in the second round. The phase-1 baseline was run separately on the
-same desktop geometry. The WebView reference is from the earlier comparison.
+The latest comparison runs one visible ReleaseFast process for the previous
+native runtime, the updated native runtime and WebView, serially. All use
+the unchanged benchmark page, synchronous layout reads, identical 900 × 700
+floating windows, and medians of three trials from the second round.
 
-| Step | Start of latest pass | Final native | WebView reference |
+| Step | Native before this pass | Current native | Fresh WebView |
 |---|---:|---:|---:|
-| Build 1,000 rows | 200.10 ms | 152.96 ms | 20 ms |
-| Build 3,000 rows | 701.17 ms | 459.80 ms | 69 ms |
-| Update 1,000 rows | 42.48 ms | 20.36 ms | 10 ms |
-| Update 3,000 rows | 134.54 ms | 62.77 ms | 40 ms |
+| Build 1,000 rows | 127.15 ms | 122.37 ms | 21 ms |
+| Build 3,000 rows | 352.95 ms | 327.05 ms | 68 ms |
+| Update 1,000 rows | 16.36 ms | 10.85 ms | 10 ms |
+| Update 3,000 rows | 50.93 ms | 34.78 ms | 41 ms |
 
-This pass reduced builds 24–34% and updates 52–53%. Across both passes,
-compared with `e5f1a2a` (242.54/815.57 ms builds, 93.43/305.35 ms updates),
-the reductions are 37–44% and 78–79%. Final native startup to first frame was
-205 ms; PSS was 110 MB at start and 238 MB after the second round. Animation
-and both canvas workloads remained about 60 fps. Rows still lose to WebView;
-these single-process runs do not establish confidence intervals.
-[Baseline reports](../examples/render-bench/results/2026-10-02-rows-phase2-desktop.json),
-[final report](../examples/render-bench/results/2026-10-02-rows-final-desktop.json),
-[original native/WebView comparison](../examples/render-bench/results/2026-10-02-rows-desktop.json).
+Native updates improve 32–34% this pass; builds improve 4–7%. The native
+3,000-row update is about 15% faster than the fresh WebView result; 1,000-row
+updates are close. Builds still trail WebView substantially. These
+single-process runs do not establish confidence intervals.
+
+Native startup to first frame is 204 ms versus WebView's 486 ms. Native PSS
+after the second round is 216 MB versus 335 MB; animation/canvas remain
+about 60 fps native and 62 fps WebView. Across all passes, compared with
+`e5f1a2a` (242.54/815.57 ms builds, 93.43/305.35 ms updates), reductions are
+50–60% for builds and 88–89% for updates.
+[Latest full comparison and individual trials](../examples/render-bench/results/2026-10-02-rows-phase4-desktop.json),
+[preceding pass](../examples/render-bench/results/2026-10-02-rows-phase3-desktop.json),
+[original comparison](../examples/render-bench/results/2026-10-02-rows-desktop.json).
 
 Three serial paired QuickJS processes, two trials per step per process,
-isolate the latest JavaScript changes. The fake host excludes native apply,
+isolate the preceding pass's JavaScript changes. The fake host excludes native apply,
 layout and paint; values are medians of six measurements.
 
-| Step | DOM before → after | Render before → after | Payload before → after |
-|---|---:|---:|---:|
-| Build 1,000 rows | 76.60 → 72.55 ms | 176.10 → 144.45 ms | 667 → 82.5 KB |
-| Build 3,000 rows | 234.90 → 230.15 ms | 426.15 → 334.95 ms | 2,089 → 299 KB |
-| Update 1,000 rows | 7.55 → 7.45 ms | 10.20 → 6.20 ms | 17 → 17 KB |
-| Update 3,000 rows | 26.30 → 25.50 ms | 37.75 → 21.60 ms | 55 → 55 KB |
+| Step | DOM before → after | JS render before → after |
+|---|---:|---:|
+| Build 1,000 rows | 74.10 → 48.95 ms | 144.60 → 132.55 ms |
+| Build 3,000 rows | 239.75 → 144.45 ms | 336.15 → 313.45 ms |
+| Update 1,000 rows | 7.60 → 6.15 ms | 6.25 → 5.45 ms |
+| Update 3,000 rows | 25.80 → 22.05 ms | 21.75 → 20.25 ms |
 
-The baseline includes the first pass's text bridge and detached observer
-filtering. Build traffic drops 86–88%; JavaScript render CPU drops 18–21%
-for builds and 39–43% for updates. DOM construction alone still exceeds the
-WebView's full build time; the remaining gap requires more than bridge tuning.
-[Latest isolated results](../examples/render-bench/results/2026-10-02-rows-phase2-qjs.json),
+DOM build CPU drops 34–40%; JavaScript rendering drops 7–8% for builds and
+7–13% for updates. Wire traffic is unchanged by this pass. The previous pass
+had already reduced build traffic 86–88%. Even the new 49 ms construction time
+for 1,000 rows exceeds WebView's entire 20 ms build time, so the remaining gap
+requires more than bridge tuning.
+[Latest isolated results](../examples/render-bench/results/2026-10-02-rows-phase3-qjs.json),
+[shared-style pass](../examples/render-bench/results/2026-10-02-rows-phase2-qjs.json),
 [first-pass isolated results](../examples/render-bench/results/2026-10-02-rows-qjs.json).
 
-Profiling found repeated native text-cache lookups and node-map fragmentation
-after bulk removal. The shared measurement cache did not reach its capacity
-(about 15,000 entries, 1 MB of keys); raising its limit would not have fixed
-that cost. Per-node natural sizes and node-map compaction address the measured
-problem instead. Profiling adds overhead; its timings are diagnostic.
+Earlier profiling found repeated native text-cache lookups and node-map
+fragmentation after bulk removal. The shared measurement cache did not reach
+its capacity (about 15,000 entries, 1 MB of keys); raising its limit would not
+have fixed that cost. Per-node natural sizes and node-map compaction address
+the measured problem instead. Profiling adds overhead; its timings are
+diagnostic rather than directly comparable with ReleaseFast measurements.
 
 ## Ways to close the remaining gap, in priority order
 
@@ -121,7 +163,7 @@ problem instead. Profiling adds overhead; its timings are diagnostic.
    speedup for Oriel. [React Native architecture](https://reactnative.dev/blog/2024/10/23/the-new-architecture-is-here).
 
 2. **Move DOM construction and the hottest rendering loops into native
-   code.** Even the optimized fake-DOM construction alone takes about 73 ms
+   code.** Even the optimized fake-DOM construction alone takes about 49 ms
    for 1,000 rows. The desktop WebView measurement for construction *and
    layout* is 20 ms, so removing JSON alone cannot close that gap.
    Introduce native-owned node storage and a JavaScript DOM facade gradually,

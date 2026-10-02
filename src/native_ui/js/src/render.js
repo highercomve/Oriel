@@ -166,6 +166,24 @@ export class Renderer {
     this.dirty = true;
   }
 
+  // The private document observer can report directly without allocating
+  // child-list records and their arrays. Page observers remain queued.
+  noteChild(node, removedFrom) {
+    const parent = removedFrom || node.parentNode || this.parentOf.get(node);
+    if (!removedFrom) this.mark(node, 2);
+    if (parent) {
+      this.markFlat(parent, node.nodeType === 3);
+      if (this.structural) this.mark(parent, 2);
+    }
+    if (removedFrom && (node.nodeType !== 3 || !parent)) this.markFlat(node, false);
+    this.dirty = true;
+  }
+
+  noteAttribute(el, name) {
+    this.mark(el, name === "style" && !this.styleAttrRules ? 1 : 2);
+    if (this.structural && el.parentNode) this.mark(el.parentNode, 2);
+  }
+
   idOf(obj, key) {
     let m = this.ids.get(obj);
     if (!m) this.ids.set(obj, (m = {}));
@@ -235,7 +253,9 @@ export class Renderer {
         if (cs["text-transform"] === "uppercase") t = t.toUpperCase();
         else if (cs["text-transform"] === "lowercase") t = t.toLowerCase();
         t = t.replace(/\s+/g, " ").trim();
-        runs = t ? [{ ...fc.root.props.runs[0], t }] : [];
+        // Defer changing the existing owned run until every leaf validates.
+        // A string marks this case; no run object/array needs allocating.
+        runs = t || null;
       } else {
         const raw = [];
         for (let c = child; c; c = c.nextSibling) {
@@ -246,12 +266,15 @@ export class Renderer {
       }
       // Empty content can change the native kind and the parent's inline
       // flow. Let the general renderer handle that structural change.
-      if (!runs.length) return false;
-      updates.push([el, fc, runs, old]);
+      if (!runs || !runs.length) return false;
+      updates.push(el, fc, runs, old);
     }
     // Validate every leaf before changing any cached output.
     let direct = 0, nativeMs = 0;
-    for (const [el, fc, runs, old] of updates) {
+    for (let i = 0; i < updates.length; i += 4) {
+      const el = updates[i], fc = updates[i + 1], value = updates[i + 2], old = updates[i + 3];
+      const runs = typeof value === "string" ? fc.root.props.runs : value;
+      if (typeof value === "string") runs[0].t = value;
       const single = runs.length === 1 && fc.root.props.runs.length === 1;
       const a = P && P();
       const sent = single && this.host.text && this.host.text(fc.id, runs[0].t);
@@ -278,8 +301,9 @@ export class Renderer {
     this.dropped = [];
     this.specs = new Map();
     this.animSpecs = new Map();
-    this.emit(nodes, false);
-    if (P) this.host.log(1, `PROF text: ${updates.length} leaves, ${direct} direct, prepare ${(P() - t0 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
+    if (nodes.size) this.emit(nodes, false);
+    else { this.applyMs = 0; this.schedule(); }
+    if (P) this.host.log(1, `PROF text: ${updates.length / 4} leaves, ${direct} direct, prepare ${(P() - t0 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
     return true;
   }
 
@@ -604,16 +628,40 @@ export class Renderer {
       this.own(id, el);
       this.cs.set(el, childCS);
       this.sc.set(el, { parent: cs, cs: childCS, m: entry.m, frame: this.frameNo });
-      const raw = [];
-      for (let child = el.firstChild; child; child = child.nextSibling) {
+      const child = el.firstChild, ws = childCS["white-space"];
+      let runs;
+      if (!child) runs = [];
+      else if (child.nodeType === 3 && !child.nextSibling &&
+          ws !== "pre" && ws !== "pre-wrap" && ws !== "pre-line") {
         this.parentOf.set(child, el);
-        if (child.nodeType === 3 && child.data) raw.push(runFor(child.data, childCS, childCS.__fs));
+        let t = child.data;
+        if (childCS["text-transform"] === "uppercase") t = t.toUpperCase();
+        else if (childCS["text-transform"] === "lowercase") t = t.toLowerCase();
+        t = t.replace(/\s+/g, " ").trim();
+        runs = t ? [{ t, ...entry.run }] : [];
+      } else {
+        const raw = [];
+        for (let c = child; c; c = c.nextSibling) {
+          this.parentOf.set(c, el);
+          if (c.nodeType === 3 && c.data) raw.push(runFor(c.data, childCS, childCS.__fs));
+        }
+        runs = trimRuns(raw);
       }
-      const runs = trimRuns(raw), props = { ...entry.box };
+      const props = { ...entry.box };
       let kind = "view";
       if (runs.length) { kind = "text"; Object.assign(props, entry.text); props.runs = runs; }
       this.putClick(props, el);
-      nodes.set(id, { kind, props, kids: [] });
+      let template;
+      if (!props.click && (kind === "view" || runs.length === 1)) {
+        const key = kind === "text" ? "nativeText" : "nativeView";
+        template = entry[key];
+        if (!template) {
+          const base = { ...props };
+          if (kind === "text") base.runs = [{ ...runs[0], t: "" }];
+          template = entry[key] = { json: encodeProps(base) };
+        }
+      }
+      nodes.set(id, { kind, props, kids: [], template });
       this.fc.set(el, {
         parent: cs, block: true, ts: spacing, id, fixed: false, own: [id], kids: [], fixedIds: [], seen: this.frameNo,
         root: { kind, props: { ...props }, kids: [] }, rootSpec: undefined, rootAnim: undefined,
@@ -634,7 +682,7 @@ export class Renderer {
           !["inline", "block", "inline-block"].includes(sc.cs.display || "inline") ||
           sc.cs.__rules.before.length || sc.cs.__rules.after.length) return;
       const fs = sc.cs.__fs;
-      entries.push({ cs: sc.cs, m: sc.m, box: boxProps(sc.cs, blockify(sc.cs.display || "inline"), fs, el), text: textProps(sc.cs, fs), order: parseInt(sc.cs.order, 10) || 0 });
+      entries.push({ cs: sc.cs, m: sc.m, box: boxProps(sc.cs, blockify(sc.cs.display || "inline"), fs, el), text: textProps(sc.cs, fs), run: runStyle(sc.cs, fs), order: parseInt(sc.cs.order, 10) || 0 });
     }
     const order = entries.map((_, i) => i).sort((a, b) => entries[a].order - entries[b].order || a - b);
     if (shape.shapes.size >= 32) shape.shapes.delete(shape.shapes.keys().next().value);
@@ -1013,13 +1061,17 @@ export class Renderer {
   createLeaf(id, n) {
     if (!this.host.leafStyle || !this.host.leaf ||
         (n.kind !== "view" && (n.kind !== "text" || n.props.runs?.length !== 1 || n.kids.length)) ||
-        this.specs.has(id) || this.animSpecs.has(id) || this.leafStyles.size >= 1024 || this.leafStyleBytes >= 2 * 1024 * 1024) return false;
-    const base = { ...n.props };
-    if (n.kind === "text") base.runs = [{ ...n.props.runs[0], t: "" }];
-    const json = encodeProps(base);
-    let style = this.leafStyles.get(json);
+        this.specs.has(id) || this.animSpecs.has(id)) return false;
+    let json = n.template?.json;
+    if (json === undefined) {
+      const base = { ...n.props };
+      if (n.kind === "text") base.runs = [{ ...n.props.runs[0], t: "" }];
+      json = encodeProps(base);
+    }
+    let style = n.template?.style ?? this.leafStyles.get(json);
     const P = this.host.prof ? this.host.now : null;
     if (style === undefined) {
+      if (this.leafStyles.size >= 1024 || this.leafStyleBytes + json.length > 2 * 1024 * 1024) return false;
       style = this.leafStyles.size + 1;
       const t0 = P && P();
       if (!this.host.leafStyle(style, json)) style = 0;
@@ -1027,6 +1079,7 @@ export class Renderer {
       this.leafStyles.set(json, style);
       this.leafStyleBytes += json.length;
     }
+    if (n.template) n.template.style = style;
     const t0 = P && P();
     const created = style && this.host.leaf(id, style, n.kind === "text" ? n.props.runs[0].t : "", n.kind === "text");
     if (P) this.applyMs += P() - t0;
