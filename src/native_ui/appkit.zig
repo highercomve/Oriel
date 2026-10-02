@@ -585,7 +585,10 @@ fn drawRect(self: id, _: SEL, _: NSRect) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const ctx = cocoa.class("NSGraphicsContext").msgSend(Object, "currentContext", .{});
     const cg: ?*anyopaque = ctx.msgSend(?*anyopaque, "CGContext", .{});
-    draw.paint("NSFont", @ptrCast(cg orelse return), s.engine, s.transparent, .{ .ctx = s, .empty = fieldEmpty });
+    // A canvas's bitmap is as many pixels per point as the screen has.
+    const win = s.view.msgSend(Object, "window", .{});
+    const scale: f64 = if (win.value != null) win.msgSend(f64, "backingScaleFactor", .{}) else 2;
+    draw.paint("NSFont", @ptrCast(cg orelse return), s.engine, s.transparent, .{ .ctx = s, .empty = fieldEmpty }, scale);
 }
 
 /// A text area's control is empty: its placeholder is drawn under it.

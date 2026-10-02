@@ -504,7 +504,9 @@ const NSRange = extern struct { location: c_ulong, length: c_ulong };
 fn drawRect(self: id, _: SEL, _: CGRect) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const cg = UIGraphicsGetCurrentContext() orelse return;
-    draw.paint("UIFont", @ptrCast(cg), s.engine, s.transparent, .{ .ctx = s, .empty = fieldEmpty });
+    // A canvas's bitmap is as many pixels per point as the screen has.
+    const scale: f64 = s.view.msgSend(f64, "contentScaleFactor", .{});
+    draw.paint("UIFont", @ptrCast(cg), s.engine, s.transparent, .{ .ctx = s, .empty = fieldEmpty }, scale);
 }
 
 extern fn UIGraphicsGetCurrentContext() ?*anyopaque;
