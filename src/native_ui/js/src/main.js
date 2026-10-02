@@ -14,7 +14,7 @@
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
 
-import { openDocument, STYLE_RECORDS } from "#dom";
+import { openDocument, STYLE_RECORDS, collect } from "#dom";
 import { StyleEngine, viewport, mediaMatches } from "./css.js";
 import { Renderer, UA_CSS } from "./render.js";
 import * as canvas from "./canvas.js";
@@ -838,7 +838,10 @@ g.__oriel = {
     });
   },
   render() {
-    guard(() => renderer?.render());
+    guard(() => {
+      collect();
+      renderer?.render();
+    });
   },
   dirty() {
     guard(() => renderer?.markAll());

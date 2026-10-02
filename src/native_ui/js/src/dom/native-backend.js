@@ -23,5 +23,9 @@ export function compileMatch(_el, sel) {
   return (el) => nd.matchKept(el, id);
 }
 
+// Frees the detached trees nothing holds; called where no DOM operation is
+// under way (the engine's render).
+export const collect = () => nd.collect();
+
 // Style writes are attribute writes: the store reports them.
 export const STYLE_RECORDS = true;

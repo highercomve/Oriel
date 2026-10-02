@@ -1245,6 +1245,7 @@ globalThis.atob ??= (s) => {
     const id = nd.keepSelector(sel);
     return (el) => nd.matchKept(el, id);
   }
+  var collect = () => nd.collect();
   var STYLE_RECORDS = true;
 
   // src/css.js
@@ -2325,17 +2326,17 @@ globalThis.atob ??= (s) => {
     const shapes = [];
     let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter" });
     if (root !== svg) paint = paintOf(root, paint);
-    collect(root, paint, current, doc, shapes);
+    collect2(root, paint, current, doc, shapes);
     if (!shapes.length) return null;
     return { vb, shapes };
   }
-  function collect(el, inherited, current, doc, out) {
+  function collect2(el, inherited, current, doc, out) {
     for (const c of el.children) {
       const tag = c.localName;
       if (tag === "defs" || tag === "symbol" || tag === "title" || tag === "lineargradient" || tag === "linearGradient") continue;
       const paint = paintOf(c, inherited);
       if (tag === "g") {
-        collect(c, paint, current, doc, out);
+        collect2(c, paint, current, doc, out);
         continue;
       }
       const d = pathData(c);
@@ -5586,7 +5587,10 @@ ${a.stack || ""}`;
       });
     },
     render() {
-      guard(() => renderer?.render());
+      guard(() => {
+        collect();
+        renderer?.render();
+      });
     },
     dirty() {
       guard(() => renderer?.markAll());

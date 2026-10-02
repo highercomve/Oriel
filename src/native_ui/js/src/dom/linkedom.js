@@ -64,3 +64,6 @@ function patchInnerHTML(document) {
     },
   });
 }
+
+// Nothing to collect: linkedom's nodes are JS objects.
+export const collect = () => {};
