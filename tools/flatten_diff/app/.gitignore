@@ -1,0 +1,4 @@
+web/
+zig-out/
+.zig-cache/
+zig-pkg/
