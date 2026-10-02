@@ -4668,6 +4668,11 @@ ${a.stack || ""}`;
       }
     }
   }
+  for (const type of ["click", "dblclick", "mousedown", "mouseup", "pointerdown", "pointerup", "input", "change", "submit"]) {
+    document.addEventListener(type, (e) => {
+      if (e.bubbles && !e.cancelBubble) fireWindow(e);
+    });
+  }
   var ET = Object.getPrototypeOf(Object.getPrototypeOf(document.body)).constructor.prototype;
   for (let proto = Object.getPrototypeOf(document.body); proto; proto = Object.getPrototypeOf(proto)) {
     if (Object.prototype.hasOwnProperty.call(proto, "addEventListener")) {

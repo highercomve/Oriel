@@ -160,6 +160,13 @@ function fireWindow(ev) {
   }
 }
 
+// The window ends the bubble path: a page may delegate its clicks from there
+// (addEventListener("click", …) on window). Forwarded from the document while
+// the event still has its target; keys and contextmenu go there on their own.
+for (const type of ["click", "dblclick", "mousedown", "mouseup", "pointerdown", "pointerup", "input", "change", "submit"]) {
+  document.addEventListener(type, (e) => { if (e.bubbles && !e.cancelBubble) fireWindow(e); });
+}
+
 // Mark elements that listen for clicks: they become touchable views.
 const ET = Object.getPrototypeOf(Object.getPrototypeOf(document.body)).constructor.prototype;
 for (let proto = Object.getPrototypeOf(document.body); proto; proto = Object.getPrototypeOf(proto)) {
