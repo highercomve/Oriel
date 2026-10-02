@@ -6,6 +6,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 #include "quickjs.h"
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -130,6 +135,21 @@ static JSValue h_ops(JSContext *ctx, JSValueConst this_val, int argc, JSValueCon
     const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
     if (s) { oriel_nui_ops(opaque_of(ctx), s, len); JS_FreeCString(ctx, s); }
     return JS_UNDEFINED;
+}
+
+// host.now(): a monotonic clock in ms, sub-millisecond (performance.now).
+static JSValue h_now(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+#if defined(_WIN32)
+    LARGE_INTEGER t, f;
+    QueryPerformanceCounter(&t);
+    QueryPerformanceFrequency(&f);
+    return JS_NewFloat64(ctx, (double)t.QuadPart * 1e3 / (double)f.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return JS_NewFloat64(ctx, (double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6);
+#endif
 }
 
 static JSValue h_frame(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -365,6 +385,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "timer", h_timer, 2);
     set_fn(ctx, host, "ops", h_ops, 1);
     set_fn(ctx, host, "frame", h_frame, 1);
+    set_fn(ctx, host, "now", h_now, 0);
     set_fn(ctx, host, "focus", h_focus, 1);
     set_fn(ctx, host, "scrollIntoView", h_scroll_into_view, 2);
     set_fn(ctx, host, "scrollTo", h_scroll_to, 2);
