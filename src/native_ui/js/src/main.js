@@ -16,7 +16,7 @@
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
 
-import { openDocument, STYLE_RECORDS, collect } from "#dom";
+import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches } from "./css.js";
 import { Renderer, UA_CSS } from "./render.js";
 import * as canvas from "./canvas.js";
@@ -180,7 +180,7 @@ for (let proto = Object.getPrototypeOf(document.body); proto; proto = Object.get
   if (Object.prototype.hasOwnProperty.call(proto, "addEventListener")) {
     const orig = proto.addEventListener;
     proto.addEventListener = function (type, fn, opts) {
-      if (type === "click" || type === "mousedown" || type === "pointerdown") { this.__listens = true; renderer?.markFlat(this); }
+      if (type === "click" || type === "mousedown" || type === "pointerdown") { this.__listens = true; markListens(this); renderer?.markFlat(this); }
       return orig.call(this, type, fn, opts);
     };
     break;

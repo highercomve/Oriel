@@ -141,6 +141,8 @@ export class Renderer {
     this.dropped = [];             // [element, what it made]: gone unless made again this frame
     this.stamps = [];              // [row id, row element, plan] the tree stamps after emit (host.stamp)
     this.noStamp = new WeakSet();  // rows the tree declined: made the general way from now on
+    this.listStamps = [];          // [list id, list element, row style, plan] (host.stampList)
+    this.noStampList = new WeakSet(); // lists that aren't (or stopped being) the same row again
     this.declined = false;         // a stamp was declined: render again the general way
     this.structural = false;       // the sheets match by position (:nth-child, +, ~…)
     this.noCache = false;          // the sheets use :has(): any change can restyle anything
@@ -312,15 +314,21 @@ export class Renderer {
       leaves.add(el);
     }
     const P = this.host.prof ? this.host.now : null, t0 = P && P();
-    const nodes = new Map(), updates = [], restamp = [];
+    const nodes = new Map(), updates = [], restamp = [], restamped = new Set();
     for (const el of leaves) {
       const fc = this.fc.get(el), cs = this.styleOf(el);
       if (!fc) {
-        // A child of a row the tree stamps: the tree reads the new text
-        // itself (host.stamp), once per row.
+        // A child of a row the tree stamps (itself, or as a list's row):
+        // the tree reads the new text itself (host.stamp), once per row.
         const row = el.parentNode, rf = row && this.fc.get(row);
-        if (!rf?.stamp || !row.isConnected) return false;
-        if (!restamp.includes(row)) restamp.push(row);
+        let plan = rf?.stamp, rowId = rf?.id;
+        if (!rf) {
+          const lf = row?.parentNode && this.fc.get(row.parentNode);
+          plan = lf?.list;
+          rowId = plan && this.idOf(row, "el");
+        }
+        if (!plan || !row.isConnected) return false;
+        if (!restamped.has(row)) { restamped.add(row); restamp.push(row, rowId, plan); }
         continue;
       }
       if (!fc || !cs || fc.root.kind !== "text" || fc.rootSpec || fc.rootAnim || el.firstElementChild ||
@@ -353,12 +361,12 @@ export class Renderer {
       if (!runs || !runs.length) return false;
       updates.push(el, fc, runs, old);
     }
-    for (const row of restamp) {
-      const rf = this.fc.get(row);
-      if (!this.host.stamp(rf.id, row, rf.stamp)) {
+    for (let i = 0; i < restamp.length; i += 3) {
+      const row = restamp[i];
+      if (!this.host.stamp(restamp[i + 1], row, restamp[i + 2])) {
         // Its shape changed (more text nodes…): the general way.
-        rf.stamp = 0;
-        this.noStamp.add(row);
+        const rf = this.fc.get(row);
+        if (rf) { rf.stamp = 0; this.noStamp.add(row); } else this.noStampList.add(row.parentNode);
         return false;
       }
     }
@@ -531,6 +539,9 @@ export class Renderer {
     const goneTree = (el, f) => {
       this.gone.push(...f.own);
       this.fc.delete(el);
+      // Its style too: the element may be rendered again later (a list's
+      // row the tree stamps meanwhile, which JS doesn't see restyled).
+      this.sc.delete(el);
       for (const k of f.kids) {
         const kf = this.fc.get(k);
         if (kf && kf.seen !== this.frameNo) goneTree(k, kf);
@@ -724,7 +735,10 @@ export class Renderer {
     const fc = this.fc.get(el);
     const block = !!ctx.blockify;
     const outer = this.cur;
-    if (fc && fc.parent === parentCS && fc.block === block && fc.ts === ctx.tableSpacing && !ctx.rematch && !this.flat.has(el)) {
+    // Reused while nothing in it changed, or when made already this frame
+    // (listOf made a list's first row before its parent's general loop).
+    if (fc && fc.parent === parentCS && fc.block === block && fc.ts === ctx.tableSpacing && !ctx.rematch &&
+        (!this.flat.has(el) || fc.seen === this.frameNo)) {
       fc.seen = this.frameNo;
       const r = fc.root;
       nodes.set(fc.id, { kind: r.kind, props: { ...r.props }, kids: r.kids.slice() });
@@ -749,6 +763,7 @@ export class Renderer {
       root: { kind: own.kind, props: { ...own.props }, kids: own.kids.slice() },
       rootSpec: this.specs.get(id), rootAnim: this.animSpecs.get(id),
       stamp: cur.stamp, // a row whose children the tree stamps (its plan)
+      list: cur.list,   // a list whose rows after the first the tree stamps (their plan)
     };
     if (fc) {
       // Ids it made before and not now; child elements it no longer has.
@@ -933,7 +948,11 @@ export class Renderer {
     }
     const order = entries.map((_, i) => i).sort((a, b) => entries[a].order - entries[b].order || a - b);
     if (shape.shapes.size >= 32) shape.shapes.delete(shape.shapes.keys().next().value);
-    shape.shapes.set(shape.key, { entries, order });
+    const plan = { entries, order };
+    shape.shapes.set(shape.key, plan);
+    // A list's first row, made the general way before its shape was known:
+    // listOf stamps the rest of the list with it at once.
+    this.savedShape = { row: shape.children[0].parentNode, children: shape.children, plan };
   }
 
   build(el, parentCS, nodes, ctx) {
@@ -1126,6 +1145,13 @@ export class Renderer {
     // Children: blocks, and inline content collected into text runs.
     const childCtx = { blockify: display === "flex" || display === "grid" || tableHolds(display), parentText: cs["text-align"],
       tableSpacing: tableSpacingFor(display, props, ctx), rematch };
+    // A list of the same row again and again: its first row here, the rest
+    // stamped by the tree (host.stampList, after emit).
+    const listed = this.host.stampList ? this.listOf(el, cs, props, display, childCtx, nodes, id) : null;
+    if (listed) {
+      this.putClick(props, el);
+      return this.put(nodes, id, "view", props, listed, fixedNode);
+    }
     const kids = [];
     let orders = null; // CSS order of the element children that set one
     const before = this.pseudo(el, cs, "before", nodes);
@@ -1212,36 +1238,7 @@ export class Renderer {
       }
       const cid = this.element(item.el, cs, nodes, childCtx);
       if (cid === null) continue;
-      // Block layout: children keep their size (a flex column would shrink them).
-      if (!childCtx.blockify) { const n = nodes.get(cid); if (n && n.props.fs === undefined) n.props.fs = 0; }
-      // A scroll container's children keep their size too: CSS's min-size:
-      // auto, which Yoga doesn't have (it would squeeze them to fit, and
-      // there would be nothing to scroll).
-      else if ((props.scroll || props.scrollx) && !this.styleOf(item.el)?.["flex-shrink"]) { const n = nodes.get(cid); if (n) n.props.fs = 0; }
-      // A column whose height isn't definite (no height, not flexed itself:
-      // min-height at most): CSS sizes a percentage flex-basis (`flex: 1`
-      // is 1 1 0%) from the content, and min-height: auto keeps the item
-      // from shrinking below it, so the column grows and the page scrolls.
-      // Yoga would squeeze the item into the min-height instead.
-      // A column item sized by its content (no height or basis, overflow
-      // visible) doesn't shrink below it either: min-height: auto. The
-      // column overflows instead, as in a browser.
-      else if (props.fd === "column" && this.keepsContentHeight(item.el, nodes.get(cid))) nodes.get(cid).props.fs = 0;
-      else if (props.fd === "column" && props.h === undefined && props.fg === undefined && !props.scroll && /flex$/.test(display)) {
-        const n = nodes.get(cid);
-        if (n && typeof n.props.fb === "string" && n.props.fb.endsWith("%") && !n.props.scroll && !n.props.clip) {
-          delete n.props.fb;
-          n.props.fs = 0;
-        }
-      }
-      // An inline box (button, chip) in a block: as wide as its content, placed by text-align.
-      if (!childCtx.blockify) {
-        const n = nodes.get(cid);
-        const d = this.styleOf(item.el)?.display || "inline";
-        if (n && (ATOMIC_INLINE.has(d) || INLINE_DISPLAY.has(d)) && !n.props.as && n.props.pos !== "absolute") {
-          n.props.as = alignFor(cs["text-align"]);
-        }
-      }
+      this.adjustKid(nodes, cid, item.el, cs, props, display, childCtx);
       kids.push(cid);
       const ord = parseInt(this.styleOf(item.el)?.order, 10);
       if (ord) (orders ??= new Map()).set(cid, ord);
@@ -1258,6 +1255,80 @@ export class Renderer {
     if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
     this.putClick(props, el);
     return this.put(nodes, id, "view", props, kids, fixedNode);
+  }
+
+  // A list of rows the tree stamps (dom_stamp.stampList): every child an
+  // element, the first a row the tree stamps (a flex row of leaves) and the
+  // rest the same element again, which the tree checks. The first row is
+  // made here as any child is; its node as made (with this parent's
+  // adjustments) is every row's. Its id as the list's children, or null
+  // (nothing made) when the list doesn't look like one.
+  listOf(el, cs, props, display, childCtx, nodes, id) {
+    if (this.noStampList.has(el) || this.structural || this.noCache || display === "grid" || tableHolds(display) ||
+        cs.__rules.before.length || cs.__rules.after.length) return null;
+    const first = el.firstChild, second = first?.nextSibling;
+    // Cheap looks first: two rows of the same tag and class, of leaves.
+    if (first?.nodeType !== 1 || second?.nodeType !== 1 || second.localName !== first.localName ||
+        second.className !== first.className || !first.firstElementChild ||
+        !TEMPLATE_LEAF.has(first.firstElementChild.localName) || first.firstElementChild.firstElementChild) return null;
+    this.savedShape = null;
+    const cid = this.element(first, cs, nodes, childCtx);
+    const f = this.fc.get(first);
+    if (cid === null || !f) return null;
+    // Its plan: the row's stamp, or the shape its general build just saved
+    // (the list's first render).
+    let plan = f.stamp;
+    const saved = this.savedShape;
+    if (!plan && saved?.row === first && this.host.stamp && !this.noStamp.has(first) &&
+        this.stampable({ children: saved.children, plan: saved.plan })) plan = this.stampPlanOf(saved.plan);
+    // Not a row the tree stamps (yet): the general way (the loop reuses
+    // the first row made here).
+    if (!plan) return null;
+    if (!childCtx.blockify && this.isInline(first, cs, childCtx.rematch)) { this.noStampList.add(el); return null; }
+    this.adjustKid(nodes, cid, first, cs, props, display, childCtx);
+    const row = nodes.get(cid);
+    if (!row || row.kind !== "view") { this.noStampList.add(el); return null; }
+    // Every row's node: the first's props (its children are the tree's).
+    const style = this.leafStyleId(encodeProps({ ...row.props }));
+    if (!style) { this.noStampList.add(el); return null; }
+    this.cur.list = plan;
+    this.listStamps.push(id, el, style, plan);
+    return [cid];
+  }
+
+  // What a parent makes of a child element's node in its general flow
+  // (its flex-shrink, basis, alignment), as build's children loop does.
+  adjustKid(nodes, cid, itemEl, cs, props, display, childCtx) {
+    // Block layout: children keep their size (a flex column would shrink them).
+    if (!childCtx.blockify) { const n = nodes.get(cid); if (n && n.props.fs === undefined) n.props.fs = 0; }
+    // A scroll container's children keep their size too: CSS's min-size:
+    // auto, which Yoga doesn't have (it would squeeze them to fit, and
+    // there would be nothing to scroll).
+    else if ((props.scroll || props.scrollx) && !this.styleOf(itemEl)?.["flex-shrink"]) { const n = nodes.get(cid); if (n) n.props.fs = 0; }
+    // A column whose height isn't definite (no height, not flexed itself:
+    // min-height at most): CSS sizes a percentage flex-basis (`flex: 1`
+    // is 1 1 0%) from the content, and min-height: auto keeps the item
+    // from shrinking below it, so the column grows and the page scrolls.
+    // Yoga would squeeze the item into the min-height instead.
+    // A column item sized by its content (no height or basis, overflow
+    // visible) doesn't shrink below it either: min-height: auto. The
+    // column overflows instead, as in a browser.
+    else if (props.fd === "column" && this.keepsContentHeight(itemEl, nodes.get(cid))) nodes.get(cid).props.fs = 0;
+    else if (props.fd === "column" && props.h === undefined && props.fg === undefined && !props.scroll && /flex$/.test(display)) {
+      const n = nodes.get(cid);
+      if (n && typeof n.props.fb === "string" && n.props.fb.endsWith("%") && !n.props.scroll && !n.props.clip) {
+        delete n.props.fb;
+        n.props.fs = 0;
+      }
+    }
+    // An inline box (button, chip) in a block: as wide as its content, placed by text-align.
+    if (!childCtx.blockify) {
+      const n = nodes.get(cid);
+      const d = this.styleOf(itemEl)?.display || "inline";
+      if (n && (ATOMIC_INLINE.has(d) || INLINE_DISPLAY.has(d)) && !n.props.as && n.props.pos !== "absolute") {
+        n.props.as = alignFor(cs["text-align"]);
+      }
+    }
   }
 
   putClick(props, el) {
@@ -1439,7 +1510,7 @@ export class Renderer {
     const P = this.host.prof ? this.host.now : null, t0 = P && P();
     if (ops.length) this.host.ops(`[${ops.join(",")}]`);
     // Rows the tree stamps from the DOM, now that they exist there.
-    if (this.stamps.length) this.stampRows();
+    if (this.stamps.length || this.listStamps.length) this.stampRows();
     if (P) this.applyMs += P() - t0;
     this.schedule();
   }
@@ -1456,6 +1527,17 @@ export class Renderer {
       if (f) f.stamp = 0;
       this.flatMarks.add(st[i + 1]);
       this.noStamp.add(st[i + 1]);
+      this.dirty = this.declined = true;
+    }
+    // Lists after their first rows (stamped above).
+    const ls = this.listStamps;
+    this.listStamps = [];
+    for (let i = 0; i < ls.length; i += 4) {
+      if (this.host.stampList(ls[i], ls[i + 1], ls[i + 2], ls[i + 3])) continue;
+      const f = this.fc.get(ls[i + 1]);
+      if (f) f.list = 0;
+      this.flatMarks.add(ls[i + 1]);
+      this.noStampList.add(ls[i + 1]);
       this.dirty = this.declined = true;
     }
   }

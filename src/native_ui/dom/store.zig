@@ -67,6 +67,9 @@ pub const Node = struct {
     has_data: bool = false,
     /// An SVG or MathML element (foreign content): names keep their case.
     foreign: bool = false,
+    /// The page listens for clicks on it (the runtime's addEventListener):
+    /// the tree can't stamp it as a plain leaf (dom_stamp.zig).
+    listens: bool = false,
     /// Tag name atom (elements).
     name: u32 = 0,
     parent: Index = none,

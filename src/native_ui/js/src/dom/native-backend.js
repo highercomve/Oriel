@@ -39,3 +39,6 @@ export const STYLE_RECORDS = true;
 // can stamp rows from the DOM itself), and the node at one (events).
 export const nodeIndex = (node) => nd.index(node);
 export const nodeAt = (index) => nd.nodeAt(index);
+
+// The page listens for clicks on it: the tree won't stamp it as a plain leaf.
+export const markListens = (node) => nd.listens(node);

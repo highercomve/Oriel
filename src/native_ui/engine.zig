@@ -26,6 +26,7 @@ comptime {
     if (native_dom) {
         _ = @import("dom/capi.zig");
         @export(&stampExport, .{ .name = "oriel_nui_stamp" });
+        @export(&stampListExport, .{ .name = "oriel_nui_stamp_list" });
     }
 }
 
@@ -39,6 +40,15 @@ fn stampExport(p: *anyopaque, row_id: f64, dom: *anyopaque, row: u32, plan: u32)
     if (!native_dom) return 0;
     const e = engineOf(p);
     const ok = dom_stamp.stamp(&e.tree, @ptrCast(@alignCast(dom)), row, Tree.idOf(row_id), plan) catch return 0;
+    return @intFromBool(ok);
+}
+
+/// host.stampList(listId, list, rowStyle, plan): a list's rows after its
+/// first stamped by the tree (dom_stamp.stampList); 0 when declined.
+fn stampListExport(p: *anyopaque, list_id: f64, dom: *anyopaque, list: u32, row_style: f64, plan: u32) callconv(.c) c_int {
+    if (!native_dom) return 0;
+    const e = engineOf(p);
+    const ok = dom_stamp.stampList(&e.tree, @ptrCast(@alignCast(dom)), list, Tree.idOf(list_id), Tree.idOf(row_style), plan) catch return 0;
     return @intFromBool(ok);
 }
 
