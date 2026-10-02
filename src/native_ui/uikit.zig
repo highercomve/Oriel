@@ -566,12 +566,12 @@ fn touchesEnded(self: id, _: SEL, _: id, _: id) callconv(.c) void {
 /// take its focus away); a drag from one still scrolls the page.
 fn gestureShouldReceive(_: id, _: SEL, recognizer: id, touch: id) callconv(.c) BOOL {
     const r: Object = .{ .value = recognizer };
-    if (r.msgSend(BOOL, "isKindOfClass:", .{apple.class("UIPanGestureRecognizer").value}) == apple.boolean(true)) return apple.boolean(true);
+    if (apple.isTrue(r.msgSend(BOOL, "isKindOfClass:", .{apple.class("UIPanGestureRecognizer").value}))) return apple.boolean(true);
     const page = r.msgSend(Object, "view", .{});
     var v = (Object{ .value = touch }).msgSend(Object, "view", .{});
     while (v.value != null and v.value != page.value) : (v = v.msgSend(Object, "superview", .{})) {
-        if (v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextField").value}) == apple.boolean(true) or
-            v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextView").value}) == apple.boolean(true)) return apple.boolean(false);
+        if (apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextField").value})) or
+            apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextView").value}))) return apple.boolean(false);
     }
     return apple.boolean(true);
 }
