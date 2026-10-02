@@ -91,6 +91,57 @@ async function timeAnimation(count, ms) {
   show(`animate ${count} boxes`, runs, "fps");
 }
 
+// A canvas game loop: physics on `count` balls, then a full redraw each
+// frame (background fill + circles + text), the way a small game draws.
+async function timeCanvasBalls(count, ms) {
+  const stage = $("stage");
+  const runs = [];
+  for (let r = 0; r < RUNS; r++) {
+    stage.textContent = "";
+    const el = document.createElement("canvas");
+    const w = stage.clientWidth || 600, h = stage.clientHeight || 300;
+    el.width = w; el.height = h;
+    el.style.width = "100%"; el.style.height = "100%";
+    stage.append(el);
+    const ctx = el.getContext("2d");
+    const colors = ["#6d8bff", "#e8555a", "#3ad07a", "#e8c55a", "#e8eaee"];
+    const balls = [];
+    for (let i = 0; i < count; i++) balls.push({
+      x: 10 + (i * 37.13) % (w - 20), y: 10 + (i * 23.71) % (h - 20),
+      dx: 40 + (i % 7) * 17, dy: 30 + (i % 5) * 23, c: colors[i % colors.length],
+    });
+    let frames = 0;
+    const t0 = performance.now();
+    let last = t0;
+    await new Promise((done) => {
+      const tick = (now) => {
+        const dt = Math.min(0.05, (now - last) / 1000);
+        last = now;
+        ctx.fillStyle = "#10141b";
+        ctx.fillRect(0, 0, w, h);
+        for (const b of balls) {
+          b.x += b.dx * dt; b.y += b.dy * dt;
+          if (b.x < 6 || b.x > w - 6) b.dx = -b.dx;
+          if (b.y < 6 || b.y > h - 6) b.dy = -b.dy;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, 6, 0, 2 * Math.PI);
+          ctx.fillStyle = b.c;
+          ctx.fill();
+        }
+        ctx.fillStyle = "#e8eaee";
+        ctx.font = "12px sans-serif";
+        ctx.textBaseline = "top";
+        ctx.fillText(`${count} balls`, 8, 8);
+        frames++;
+        if (now - t0 < ms) requestAnimationFrame(tick); else done();
+      };
+      requestAnimationFrame(tick);
+    });
+    runs.push(frames / ((performance.now() - t0) / 1000));
+  }
+  show(`canvas ${count} balls`, runs, "fps");
+}
+
 async function run() {
   $("rows").textContent = "";
   $("run").disabled = true;
@@ -98,6 +149,7 @@ async function run() {
     () => timeBuild(1000), () => timeBuild(3000),
     () => timeUpdate(1000), () => timeUpdate(3000),
     () => timeAnimation(200, 2000),
+    () => timeCanvasBalls(200, 2000), () => timeCanvasBalls(1000, 2000),
   ];
   for (const [i, step] of steps.entries()) {
     $("status").textContent = `Running ${i + 1} of ${steps.length}…`;

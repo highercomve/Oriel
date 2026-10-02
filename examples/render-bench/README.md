@@ -25,15 +25,18 @@ Each test runs 3 times; the median is reported.
 | build N rows | Create N styled rows, then force layout (`offsetHeight`) |
 | update N rows | Change every row's text, then force layout |
 | animate 200 boxes | `requestAnimationFrame` moving 200 boxes for 2 s: frames per second |
+| canvas N balls | A `<canvas>` game loop: physics on N balls, then a full redraw (background, circles, text) each frame for 2 s: frames per second |
 | memory (PSS) | Proportional memory of the app and all its child processes (a WebView page runs in WebKit's own processes) |
 
 Times cover the DOM work and the layout it triggers, not painting, in both
 renderers. The native renderer's `requestAnimationFrame` is a 16 ms timer, not
-the display's frame clock.
+the display's frame clock, so its frame rates cap at about 60. Its canvas is
+not a bitmap: the 2d calls are replayed into Cairo each frame
+(docs/native-renderer.md, "Canvas").
 
 ## Results
 
-Linux, ReleaseFast, headless (Xvfb, software rendering), 2026-10-01:
+Linux, ReleaseFast, headless (Xvfb, software rendering), 2026-10-02:
 
 | Test | WebView | Native |
 |---|---|---|

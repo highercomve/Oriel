@@ -16,6 +16,7 @@
 import { parseHTML } from "linkedom";
 import { StyleEngine, viewport, mediaMatches } from "./css.js";
 import { Renderer, UA_CSS } from "./render.js";
+import * as canvas from "./canvas.js";
 
 const host = globalThis.__host;
 
@@ -77,9 +78,15 @@ g.self = g;
 for (const name of ["Node", "Element", "HTMLElement", "Text", "Comment", "DocumentFragment", "Event", "CustomEvent",
   "EventTarget", "MutationObserver", "DOMParser", "HTMLInputElement", "HTMLTextAreaElement", "HTMLSelectElement",
   "HTMLButtonElement", "HTMLAnchorElement", "SVGElement", "Range", "TreeWalker", "NodeFilter", "HTMLTemplateElement",
-  "DocumentType", "Attr", "CharacterData", "HTMLOptionElement", "HTMLImageElement"]) {
+  "DocumentType", "Attr", "CharacterData", "HTMLOptionElement", "HTMLImageElement", "HTMLCanvasElement", "CanvasRenderingContext2D"]) {
   if (dom[name] !== undefined && g[name] === undefined) g[name] = dom[name];
 }
+
+// <canvas>: getContext records a program the backends replay (canvas.js).
+// Its ops mean the page changed, like a style write does.
+canvas.install(dom, () => {
+  try { if (renderer) renderer.dirty = true; } catch {}
+});
 const Event = g.Event;
 class KeyboardEvent extends Event {
   constructor(type, init = {}) {
