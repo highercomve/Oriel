@@ -59,6 +59,12 @@ pub const Backend = struct {
     /// however many events reach it; without it, after every call into
     /// JavaScript.
     request_frame: ?*const fn (ctx: *anyopaque) void = null,
+    /// Optional: call `Engine.displayFrame(interval_ms)` once, at the
+    /// display's next refresh (GTK's frame clock, CVDisplayLink /
+    /// CADisplayLink, Choreographer, DWM). With it, requestAnimationFrame
+    /// follows the display (120 Hz panels get 120 frames a second, a hidden
+    /// window none); without it, a 60 Hz timer grid.
+    request_display_frame: ?*const fn (ctx: *anyopaque) void = null,
 };
 
 // usize: 32-bit targets (armv7, x86 Android) have no 64-bit atomic add. Wrapping
@@ -152,6 +158,13 @@ pub const Engine = struct {
 
     pub fn timerFired(e: *Engine, id: u32) void {
         _ = e.callf("__oriel.timer({d})", .{id});
+    }
+
+    /// The display refreshes (`Backend.request_display_frame`): the page's
+    /// animation frame. `interval_ms`: the display's refresh interval (0
+    /// when unknown).
+    pub fn displayFrame(e: *Engine, interval_ms: f64) void {
+        _ = e.callf("__oriel.vsync({d:.3})", .{interval_ms});
     }
 
     /// A command's answer: `json` is its result, or the error text when !ok.
@@ -307,6 +320,14 @@ export fn oriel_nui_ops(p: *anyopaque, json: [*]const u8, len: usize) void {
     const e = engineOf(p);
     if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: ops {s}", .{json[0..@min(len, 300)]});
     e.tree.apply(json[0..len]) catch |err| log.err("native ui: bad ops ({s})", .{@errorName(err)});
+}
+
+/// host.vsync(): ask for a display frame; 0 when the backend has none.
+export fn oriel_nui_vsync(p: *anyopaque) c_int {
+    const e = engineOf(p);
+    const request = e.backend.request_display_frame orelse return 0;
+    request(e.backend.ctx);
+    return 1;
 }
 
 export fn oriel_nui_text(p: *anyopaque, id: f64, text: [*]const u8, len: usize) c_int {

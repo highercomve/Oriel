@@ -106,6 +106,10 @@ extern fn g_signal_handlers_disconnect_matched(instance: *anyopaque, mask: c_int
 extern fn gtk_style_context_remove_provider_for_display(display: *anyopaque, provider: *GtkCssProvider) void;
 extern fn g_free(p: ?*anyopaque) void;
 extern fn g_timeout_add(ms: c_uint, func: *const fn (?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) c_uint;
+extern fn gtk_widget_add_tick_callback(w: *Widget, func: *const fn (*Widget, *anyopaque, ?*anyopaque) callconv(.c) c_int, data: ?*anyopaque, notify: ?*anyopaque) c_uint;
+extern fn gtk_widget_remove_tick_callback(w: *Widget, id: c_uint) void;
+extern fn gdk_frame_clock_get_frame_time(clock: *anyopaque) i64;
+extern fn gdk_frame_clock_get_refresh_info(clock: *anyopaque, base_time: i64, refresh_interval: ?*i64, presentation_time: ?*i64) void;
 extern fn g_getenv(name: [*:0]const u8) ?[*:0]const u8;
 
 extern fn cairo_save(cr: *cairo_t) void;
@@ -249,6 +253,10 @@ pub const Surface = struct {
     /// Names the surface for its timers (`surfaces`): one that fires after
     /// the window closed finds nothing.
     token: u64 = 0,
+    /// The page asked for an animation frame (host.vsync), and the frame
+    /// clock's tick callback giving it (0: none registered).
+    frame_wanted: bool = false,
+    tick_id: c_uint = 0,
     pointer: [2]f32 = .{ 0, 0 },
     hovered: i64 = 0,
     updating: bool = false,
@@ -291,6 +299,7 @@ pub const Surface = struct {
             .props = propsChanged,
             .text = textChanged,
             .deinit = releaseTextMeasurements,
+            .request_display_frame = requestDisplayFrame,
         }, assets, platform_json, label, url, width, height);
         s.engine.tree.reuse_text_layout = true;
 
@@ -330,6 +339,8 @@ pub const Surface = struct {
     /// theirs reaches the surface from here on (timers find no token).
     pub fn destroy(s: *Surface) void {
         _ = surfaces.remove(s.token);
+        if (s.tick_id != 0) gtk_widget_remove_tick_callback(s.area, s.tick_id);
+        s.tick_id = 0;
         gtk_drawing_area_set_draw_func(s.area, null, null, null);
         disconnect(s, s.area);
         disconnect(s, s.overlay);
@@ -428,6 +439,34 @@ fn onTimer(p: ?*anyopaque) callconv(.c) c_int {
     std.heap.smp_allocator.destroy(d);
     const s = surfaces.get(token) orelse return 0; // the window is gone
     s.engine.timerFired(id);
+    return 0;
+}
+
+/// host.vsync: the page's next animation frame comes with the frame clock's
+/// next frame (the display's refresh). The tick callback stays while the
+/// page keeps asking (an animation loop) and goes when it stops, so an idle
+/// page doesn't keep the clock running; a hidden window gets no frames.
+fn requestDisplayFrame(ctx: *anyopaque) void {
+    const s = surfaceOf(ctx);
+    s.frame_wanted = true;
+    if (s.tick_id == 0) s.tick_id = gtk_widget_add_tick_callback(s.area, onTick, @ptrFromInt(s.token), null);
+}
+
+fn onTick(_: *Widget, clock: *anyopaque, data: ?*anyopaque) callconv(.c) c_int {
+    const token: u64 = @intFromPtr(data);
+    const s = surfaces.get(token) orelse return 0; // G_SOURCE_REMOVE: the window is gone
+    if (!s.frame_wanted) {
+        s.tick_id = 0;
+        return 0;
+    }
+    s.frame_wanted = false;
+    var interval_us: i64 = 0;
+    gdk_frame_clock_get_refresh_info(clock, gdk_frame_clock_get_frame_time(clock), &interval_us, null);
+    s.engine.displayFrame(@as(f64, @floatFromInt(@max(interval_us, 0))) / 1000);
+    // The page may have closed its window during the frame.
+    const still = surfaces.get(token) orelse return 0;
+    if (still.frame_wanted) return 1; // G_SOURCE_CONTINUE: the loop asked again
+    still.tick_id = 0;
     return 0;
 }
 
