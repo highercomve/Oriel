@@ -195,6 +195,9 @@ export class Renderer {
     const body = this.doc.body;
     const rootCS = this.style(this.doc.documentElement, null);
     this.cur = { own: [], kids: [], fixed: [] };
+    // -Dnative_ui_prof (src/native_ui/prof.zig): each render's stages.
+    const P = this.host.prof ? this.host.now : null;
+    const t0 = P && P();
     const bodyNode = this.element(body, rootCS, nodes, { blockify: true, textAlign: "left" });
     const fixed = this.cur.fixed;
     this.cur = null;
@@ -226,7 +229,12 @@ export class Renderer {
     // whole viewport with it, below a short page too).
     const rootBg = bgOf(rootCS) || (this.cs.get(body) ? bgOf(this.cs.get(body)) : null);
     nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: [-1, ...fixed] });
+    const t1 = P && P();
     this.emit(nodes, full);
+    if (P) {
+      const ms = (x) => x.toFixed(2);
+      this.host.log(1, `PROF render ${full ? "full" : "incremental"}: ${nodes.size} nodes made, flatten ${ms(t1 - t0)}, emit ${ms(P() - t1 - this.applyMs)}, apply ${ms(this.applyMs)}`);
+    }
     // A scrollIntoView that waited for this render (main.js).
     const scroll = this.pendingScroll;
     this.pendingScroll = null;
@@ -747,7 +755,12 @@ export class Renderer {
     if (full) { for (const id of [...this.prev.keys()]) drop(id); }
     else for (const id of this.gone) drop(id);
     if (!this.rootSent) { ops.push(`["r",0]`); this.rootSent = true; }
-    if (ops.length) this.host.ops(`[${ops.join(",")}]`);
+    this.applyMs = 0;
+    if (ops.length) {
+      const P = this.host.prof ? this.host.now : null, t0 = P && P();
+      this.host.ops(`[${ops.join(",")}]`);
+      if (P) this.applyMs = P() - t0;
+    }
     this.schedule();
   }
 
