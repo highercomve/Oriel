@@ -115,13 +115,25 @@ pub fn exportStart(comptime root: type) void {
                 },
                 .arena = &arena_allocator,
                 .gpa = gpa,
-                .io = threaded.io(),
+                // Names resolve through bionic (netd); the executable is the
+                // app's launcher, not app_process64 (io.zig).
+                .io = @import("io.zig").wrap(threaded.io()),
                 .environ_map = &environ_map,
                 .preopens = preopens,
             }));
         }
     };
     @export(&S.start, .{ .name = "Java_dev_oriel_NativeLib_start" });
+
+    const Exec = struct {
+        /// The app's `main` in a process of its own (launcher.zig): no JVM,
+        /// no UI. For apps that start themselves as helpers (`--llm-helper`);
+        /// a `main` that reaches `oriel.main` here has no window to open.
+        fn execMain(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
+            return S.callMain(argv[0..@intCast(argc)]);
+        }
+    };
+    @export(&Exec.execMain, .{ .name = "oriel_exec_main" });
 }
 
 fn wrapMain(result: anytype) u8 {
