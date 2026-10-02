@@ -19808,6 +19808,23 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 atom = get_u32(pc);
                 pc += 4;
 
+                /* Oriel: a new field on a plain extensible object (an
+                   object literal's): added directly, as JS_DefineProperty
+                   would end up doing, without its generic checks */
+                if (likely(JS_VALUE_GET_TAG(sp[-2]) == JS_TAG_OBJECT)) {
+                    JSObject *p = JS_VALUE_GET_OBJ(sp[-2]);
+                    JSProperty *pr;
+                    if (p->class_id == JS_CLASS_OBJECT && !p->is_exotic &&
+                        p->extensible && !__JS_AtomIsTaggedInt(atom) &&
+                        !find_own_property(&pr, p, atom)) {
+                        pr = add_property(ctx, p, atom, JS_PROP_C_W_E);
+                        if (unlikely(!pr))
+                            goto exception;
+                        pr->u.value = sp[-1]; /* takes the reference */
+                        sp--;
+                        BREAK;
+                    }
+                }
                 ret = JS_DefinePropertyValue(ctx, sp[-2], atom, sp[-1],
                                              JS_PROP_C_W_E | JS_PROP_THROW);
                 sp--;

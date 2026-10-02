@@ -35,3 +35,14 @@ Each is marked `Oriel:` in the source.
   printed to stderr at exit. For the QuickJS harness, e.g. a `qjs` built
   from upstream's tree with this quickjs.c and
   `-DCMAKE_C_FLAGS="-O2 -DORIEL_QJS_FUNC_PROFILE"`.
+- **Object literal fields** (`OP_define_field`). A new field on a plain,
+  extensible object without it is added with add_property directly, as
+  JS_DefineProperty ends up doing, without its generic checks (1.1% fewer
+  instructions building rows).
+
+Tried and not kept: an inline property cache (per-runtime, keyed by shape
+version and atom, with a prototype epoch): 95% hits but only 0.5% fewer
+instructions, as QuickJS's own lookup is one hash probe for most reads;
+doubling property-array growth (1.4% fewer instructions, more memory per
+object). The upstream tests (`tests/*.js` in the upstream tree) pass and
+fail the same with these changes as without.
