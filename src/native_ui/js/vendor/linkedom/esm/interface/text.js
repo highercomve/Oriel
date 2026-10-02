@@ -1,5 +1,6 @@
 import {TEXT_NODE} from '../shared/constants.js';
-import {VALUE} from '../shared/symbols.js';
+import {VALUE, NEXT, PREV} from '../shared/symbols.js';
+import {String} from '../shared/utils.js';
 import {escape} from '../shared/text-escaper.js';
 
 import {CharacterData} from './character-data.js';
@@ -40,3 +41,17 @@ export class Text extends CharacterData {
 
   toString() { return escape(this[VALUE]); }
 }
+
+// Oriel: document-created text needs the same fields and prototype as Text,
+// without the Text/CharacterData/Node/EventTarget constructor chain.
+export const createText = (ownerDocument, data = '') => {
+  const node = Object.create(Text.prototype);
+  node.ownerDocument = ownerDocument;
+  node.localName = '#text';
+  node.nodeType = TEXT_NODE;
+  node.parentNode = null;
+  node[NEXT] = null;
+  node[PREV] = null;
+  node[VALUE] = String(data);
+  return node;
+};

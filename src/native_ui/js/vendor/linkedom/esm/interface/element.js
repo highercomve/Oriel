@@ -108,8 +108,20 @@ export class Element extends ParentNode {
   get id() { return stringAttribute.get(this, 'id'); }
   set id(value) { stringAttribute.set(this, 'id', value); }
 
-  get className() { return this.classList.value; }
+  get className() {
+    // A single token needs no token Set. Preserve the existing normalization
+    // path for whitespace, duplicates and an already-exposed classList.
+    const value = this.getAttributeNode('class')?.value || '';
+    return !this[CLASS_LIST] && !/\s/.test(value) ? value : this.classList.value;
+  }
   set className(value) {
+    value = String(value);
+    if (!this[CLASS_LIST] && !/\s/.test(value)) {
+      const attribute = this.getAttributeNode('class');
+      if (attribute) attribute.value = value;
+      else setAttribute(this, new Attr(this.ownerDocument, 'class', value));
+      return;
+    }
     const {classList} = this;
     classList.clear();
     classList.add(...(String(value).split(/\s+/)));

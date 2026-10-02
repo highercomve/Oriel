@@ -9,6 +9,12 @@ types, and worker bundles are omitted; Oriel imports this ESM source directly.
 Oriel changes (upstream trailing whitespace is also normalized):
 
 - Allocate event-listener Maps on the first listener, rather than for every node.
+- Read/write simple single-token class names without allocating a DOMTokenList;
+  preserve token normalization and an exposed live classList through the general path.
+- Initialize ordinary div/span and document-created Text nodes in one function,
+  preserving constructor fields and prototypes. Registry matches, customized
+  built-ins and upgrades retain constructor behavior. Constructor-layout tests
+  must be updated if upstream changes these instance fields.
 - Give the private renderer observer connected-node callbacks that avoid mutation
   record allocation. Page-created observers retain the upstream record behavior.
 - Use the canvas shim explicitly; Oriel renders canvas through the native bridge.

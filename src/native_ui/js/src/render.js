@@ -434,7 +434,10 @@ export class Renderer {
     }
     // The same values as before: the same object, so what's below can
     // still be reused.
-    if (c && c.cs !== cs && sameStyle(c.cs, cs)) cs = c.cs;
+    // Equal CSS strings can resolve to a different size under a changed
+    // parent (em/%/inherited relative sizes). Keep style identity only when
+    // its previously resolved font size is also unchanged.
+    if (c && c.cs !== cs && sameStyle(c.cs, cs) && c.cs.__fs === fontSizeOf(cs, parentCS)) cs = c.cs;
     cs.__rules = m;
     this.sc.set(el, { parent: parentCS, cs, m, frame: this.frameNo, epoch: this.styleEpoch });
     return cs;
@@ -1301,8 +1304,17 @@ function alignFor(ta) {
   return ta === "center" ? "center" : ta === "right" || ta === "end" ? "flex-end" : "flex-start";
 }
 
+const fontSizes = new WeakMap();
 function fontSizeOf(cs, parentCS) {
   const pfs = parentCS?.__fs ?? 16;
+  const cached = fontSizes.get(cs);
+  if (cached && cached.parent === pfs) return cached.size;
+  const size = resolveFontSize(cs, pfs);
+  fontSizes.set(cs, { parent: pfs, size });
+  return size;
+}
+
+function resolveFontSize(cs, pfs) {
   const v = cs["font-size"];
   if (!v) return pfs;
   if (v.endsWith("em") && !v.endsWith("rem")) return parseFloat(v) * pfs;

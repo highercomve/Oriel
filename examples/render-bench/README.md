@@ -36,7 +36,34 @@ not a bitmap: the 2d calls are replayed into Cairo each frame
 
 ## Results
 
-Linux desktop, ReleaseFast, 2026-10-02. The latest comparison runs one visible
+### Construction pass
+
+The next pass avoids token Sets for simple class names, initializes ordinary
+DOM elements/text without the constructor chain, and caches resolved font sizes
+by computed style and parent size. Relative-font style reuse now invalidates
+correctly after parent font changes. Full JavaScript/native checks pass.
+
+Both binaries were built first, with no compilation during timing. One visible
+process per version used the unchanged page, 900×700 windows, synchronous
+layout reads and second-round medians of three trials:
+
+| Construction | Before (`a6d6e53`) | Updated native |
+|---|---:|---:|
+| 1,000 rows | 106.75 ms | 91.64 ms |
+| 3,000 rows | 300.47 ms | 291.27 ms |
+
+The smaller build improves 14%; the larger median improves 3%, but its trial
+ranges overlap. Isolated QuickJS DOM construction improves about 21% at both
+sizes. The DOM-only candidate had mixed larger-list results; adding font-size
+caching gave the final result above. General style sharing, measurement and
+layout still dominate the remaining construction gap versus WebView.
+[Construction comparison](results/2026-10-02-rows-phase6-desktop.json),
+[DOM-only candidate](results/2026-10-02-rows-phase6-dom-only-desktop.json),
+[isolated DOM/render timings](results/2026-10-02-rows-phase6-qjs.json).
+
+### Preceding allocation pass and WebView reference
+
+Linux desktop, ReleaseFast, 2026-10-02. The preceding comparison runs one visible
 process for the previous native runtime, the updated native runtime and
 WebView, serially, in identical floating 900 × 700 windows. Each reports
 medians of three trials in the second benchmark round. The page is unchanged
@@ -77,7 +104,7 @@ compilation, directly mark private renderer mutations, share native styles,
 copy prepared Yoga styles, cache measurements and compact native lookups.
 Page observers retain their queued records and DOM nodes remain fresh.
 
-Current native startup to first frame is 220 ms versus WebView's 482 ms.
+That pass measured native startup to first frame at 220 ms versus WebView's 482 ms.
 Native animation/canvas remain about 60 fps; WebView is about 62 fps. PSS
 after the second round is 194 MB native versus 353 MB WebView, and down from
 228 MB for the reviewed native baseline. Earlier passes already substantially
