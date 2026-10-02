@@ -12,6 +12,7 @@
 const std = @import("std");
 const engine_mod = @import("engine.zig");
 const tree_mod = @import("tree.zig");
+const text_measure_cache = @import("text_measure_cache.zig");
 const jni = @import("../platform/android/jni.zig");
 const runtime = @import("../platform/android/runtime.zig");
 const Engine = engine_mod.Engine;
@@ -32,6 +33,11 @@ pub const Surface = struct {
     frames: std.ArrayList(u8) = .empty,
     json: std.ArrayList(u8) = .empty,
     hovered: i64 = 0,
+    /// Text sizes by content and width (rows repeating a label measure it
+    /// once), and the epoch of the nodes' natural sizes (bump both if the
+    /// font scale ever re-measures text: NuiView doesn't yet).
+    text_measurements: text_measure_cache.Cache = .{},
+    text_epoch: u64 = 1,
 };
 
 /// The native windows by id (UI thread only).
@@ -78,6 +84,7 @@ pub fn destroy(window: u32) void {
     s.engine.destroy();
     s.frames.deinit(s.gpa);
     s.json.deinit(s.gpa);
+    s.text_measurements.deinit(s.gpa);
     s.gpa.destroy(s);
 }
 
@@ -139,15 +146,47 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const s = surfaceOf(ctx);
     const fz = n.props.fz orelse 16;
     switch (n.kind) {
-        .text, .image => {
-            const max: i32 = if (std.math.isInf(max_width)) -1 else @intFromFloat(@max(0, @min(max_width, 1e6)) * 64);
-            const r: u64 = @bitCast(runtime.call(.long, "nuiMeasure", "(III)J", .{ wid(s.window), nid(n), max }) orelse 0);
-            out.* = .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
+        .text => {
+            // Its natural (one-line) size, kept on the node like GTK's: at
+            // a width it fits in, that's the answer, without a JNI call
+            // (the tree clears it when the text or props change).
+            const nat = if (n.measured_text_size != null and n.text_measure_epoch == s.text_epoch) n.measured_text_size.? else blk: {
+                const size = measuredText(s, n, std.math.inf(f32));
+                n.measured_text_size = size;
+                n.text_measure_epoch = s.text_epoch;
+                break :blk size;
+            };
+            if (n.props.nowrap or max_width >= nat[0]) {
+                out.* = nat;
+                return;
+            }
+            out.* = measuredText(s, n, max_width);
         },
+        .image => out.* = kotlinMeasure(s, n, max_width),
         .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
         else => out.* = .{ 0, 0 },
     }
+}
+
+/// A text's size at `width` (inf: unbounded): from the content-keyed cache,
+/// else Kotlin's StaticLayout.
+fn measuredText(s: *Surface, n: *Node, width: f32) [2]f32 {
+    const actual = if (n.props.nowrap or std.math.isInf(width)) std.math.inf(f32) else @max(1, width);
+    var buf: [1024]u8 = undefined;
+    const key = text_measure_cache.keyFor(&buf, &n.props, actual);
+    if (key) |k| if (s.text_measurements.get(k)) |size| return size;
+    const size = kotlinMeasure(s, n, actual);
+    if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
+    return size;
+}
+
+/// nuiMeasure: the node's size from Kotlin at `max_width` (inf: unbounded),
+/// in 1/64 dp across JNI.
+fn kotlinMeasure(s: *Surface, n: *Node, max_width: f32) [2]f32 {
+    const max: i32 = if (std.math.isInf(max_width)) -1 else @intFromFloat(@max(0, @min(max_width, 1e6)) * 64);
+    const r: u64 = @bitCast(runtime.call(.long, "nuiMeasure", "(III)J", .{ wid(s.window), nid(n), max }) orelse 0);
+    return .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
 }
 
 /// After a layout or a scroll: the frames, in drawing order, and the
