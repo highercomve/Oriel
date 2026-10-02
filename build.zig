@@ -1791,6 +1791,7 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module) void {
     if (oriel.resolved_target) |t| if (t.result.os.tag == .macos or t.result.os.tag == .ios) {
         oriel.linkFramework("CoreGraphics", .{});
         oriel.linkFramework("CoreText", .{});
+        oriel.linkFramework("ImageIO", .{}); // <img>
     };
     if (b.lazyDependency("quickjs", .{})) |qjs| {
         oriel.addIncludePath(qjs.path("."));

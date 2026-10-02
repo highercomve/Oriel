@@ -224,10 +224,11 @@ fn isDark(view: Object) bool {
 // ---------------------------------------------------------------------------
 // Backend hooks
 
-fn measure(_: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
+fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const fz = n.props.fz orelse 16;
     switch (n.kind) {
         .text => out.* = draw.measureText("NSFont", n, max_width),
+        .image => out.* = draw.measureImage(surfaceOf(ctx).engine, n, max_width),
         .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
         else => out.* = .{ 0, 0 },
@@ -299,7 +300,7 @@ fn focus(ctx: *anyopaque, n: *Node) void {
 
 fn removed(ctx: *anyopaque, n: *Node) void {
     const s = surfaceOf(ctx);
-    draw.dropText(n);
+    draw.dropNative(n);
     if (s.fields.fetchRemove(n.id)) |kv| dropField(kv.value);
 }
 
@@ -368,6 +369,12 @@ fn syncFields(s: *Surface) void {
             setValue(n, f, v);
         }
         style(n, f);
+        // The page changes placeholders ("Select text first…" → "Tell
+        // GhostPen what to do…"); a text area's is drawn under it.
+        if (n.kind == .input) if (cocoa.nsString(n.props.ph orelse "")) |ph| {
+            defer ph.release();
+            f.inner.msgSend(void, "setPlaceholderString:", .{ph});
+        };
         // The holder covers the visible part of the field; the control sits
         // at the field's place inside it.
         const r = n.content();
@@ -537,6 +544,8 @@ fn textDidChange(_: id, _: SEL, note: id) callconv(.c) void {
     const tv = (Object{ .value = note }).msgSend(Object, "object", .{});
     const o = ownerOf(tv.value) orelse return;
     if (o.s.updating) return;
+    // The placeholder under it comes and goes with the text.
+    o.s.view.msgSend(void, "setNeedsDisplay:", .{cocoa.boolean(true)});
     const text = cocoa.utf8(tv.msgSend(Object, "string", .{})) orelse "";
     sendValue(o.s, o.n, "input", text);
 }
@@ -576,7 +585,14 @@ fn drawRect(self: id, _: SEL, _: NSRect) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const ctx = cocoa.class("NSGraphicsContext").msgSend(Object, "currentContext", .{});
     const cg: ?*anyopaque = ctx.msgSend(?*anyopaque, "CGContext", .{});
-    draw.paint("NSFont", @ptrCast(cg orelse return), &s.engine.tree, s.transparent);
+    draw.paint("NSFont", @ptrCast(cg orelse return), s.engine, s.transparent, .{ .ctx = s, .empty = fieldEmpty });
+}
+
+/// A text area's control is empty: its placeholder is drawn under it.
+fn fieldEmpty(ctx: *anyopaque, n: *Node) bool {
+    const s = surfaceOf(ctx);
+    const f = s.fields.get(n.id) orelse return true;
+    return f.inner.msgSend(Object, "string", .{}).msgSend(c_ulong, "length", .{}) == 0;
 }
 
 fn resizeSubviews(self: id, _: SEL, _: NSSize) callconv(.c) void {
