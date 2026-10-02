@@ -121,6 +121,13 @@ export class Renderer {
     this.textOnly = true;          // pending mutations changed only text nodes
     this.simpleLeaves = true;      // tests can compare with general flattening
     this.flexLeaves = new WeakMap(); // parent computed style → row shapes
+    // Style sharing by ancestry (shareKey): names → ids and ids → matched
+    // rules, kept from frame to frame while the styles are (a full render
+    // starts them over); the element → id cache is per frame.
+    this.keyIds = new Map();
+    this.matchShare = new Map();
+    this.uids = new WeakMap();     // element → its own sharing id when it can't share (renewed when its attributes change)
+    this.uidSeq = 0;
     this.full = true;              // everything again (first frame, the viewport changed)
     this.sc = new WeakMap();       // element → { parent cs, cs, matched rules, frame }
     this.fc = new WeakMap();       // element → what it made (element(), below)
@@ -151,6 +158,8 @@ export class Renderer {
   // differently (its attributes), 1 when only its inline style did.
   mark(el, level) {
     if (!el || el.nodeType !== 1) return;
+    // Its attributes changed: what's below it matches again (shareKey).
+    if (level === 2) this.uids.delete(el);
     if (!this.inFrame) this.outside = true;
     this.textOnly = false;
     if ((this.marks.get(el) || 0) < level) this.marks.set(el, level);
@@ -477,10 +486,16 @@ export class Renderer {
     this.specs = new Map();
     this.animSpecs = new Map();
     this.frameNo++;
-    this.flexLeaves = new WeakMap();
     this.gone = [];
     this.dropped = [];
     const full = this.full || this.noCache;
+    // Sharing ids, their matches and the row shapes stay while the styles
+    // do (bounded: a page making ever new ancestries starts over).
+    if (full || this.keyIds.size > 50000) {
+      this.keyIds.clear();
+      this.matchShare.clear();
+      this.flexLeaves = new WeakMap();
+    }
     // Compiled :has() matchers also cache descendant results. A new DOM
     // needs a new matcher, as well as new computed/flattened styles.
     if (this.noCache) for (const r of this.engine.rules) if (/:has\(/.test(r.sel)) r.match = null;
@@ -631,8 +646,6 @@ export class Renderer {
     if (this.keyFrame !== this.frameNo) {
       this.keyFrame = this.frameNo;
       this.keys = new WeakMap();
-      this.keyIds = new Map();
-      this.matchShare = new Map();
     }
     let k = this.keys.get(el);
     if (k !== undefined) return k;
@@ -647,7 +660,18 @@ export class Renderer {
       const name = `${this.shareKey(parent)}|${el.localName}|${cls}`;
       k = this.keyIds.get(name);
       if (k === undefined) this.keyIds.set(name, (k = this.keyIds.size + 1));
-    } else k = -this.idOf(el, "el");
+    } else {
+      // Not shareable (an id, another attribute, the root): its own id,
+      // never reused (a node id's store index is, after the node goes),
+      // after its parent's key, so what's below it matches again when it
+      // or anything above it changes. Negative: matched on its own.
+      let u = this.uids.get(el);
+      if (!u) this.uids.set(el, (u = ++this.uidSeq));
+      const name = `${parent?.nodeType === 1 ? this.shareKey(parent) : 0}|u${u}`;
+      k = this.keyIds.get(name);
+      if (k === undefined) this.keyIds.set(name, (k = this.keyIds.size + 1));
+      k = -k;
+    }
     this.keys.set(el, k);
     return k;
   }
@@ -761,8 +785,8 @@ export class Renderer {
     const share = this.shareKey(el);
     if (share <= 0) return null;
     const children = [];
-    // Sharing ids identify the complete selector ancestry within this
-    // frame. Identical parent styles alone do not imply identical matches.
+    // Sharing ids identify the complete selector ancestry (shareKey).
+    // Identical parent styles alone do not imply identical matches.
     let key = `${share}|`;
     for (let child = el.firstChild; child; child = child.nextSibling) {
       if (child.nodeType === 8) continue;
