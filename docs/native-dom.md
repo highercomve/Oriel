@@ -1,0 +1,160 @@
+# Native DOM: design
+
+Status: proposal (2026-10-02). Owner: perf/native-engine.
+
+The native renderer (`-Dnative_ui`) runs the page's DOM as JavaScript inside
+QuickJS (linkedom, vendored in `src/native_ui/js/vendor/linkedom`), and its
+style engine and flattener as JavaScript too (`css.js`, `render.js`). This
+document proposes moving the DOM into Zig, then the style engine and the
+flattener, in phases that each must be faster than what they replace.
+
+## Why
+
+Render bench on the desktop (Linux, one visible run), building rows, after
+the QuickJS work (fixed Map hashing, JSON fast path, bytecode runtime):
+
+| | build 1000 / 3000 rows | update 1000 / 3000 rows |
+|---|---|---|
+| native, QuickJS (main) | 83 / 250 ms | 10.0 / 30.6 ms |
+| JavaScriptCore, interpreter only | 65 / 209 ms | 8.4 / 33.4 ms |
+| JavaScriptCore with its JIT | 18 / 60 ms | 2.4 / 4.3 ms |
+| WebView | 19 / 69 ms | 10 / 40 ms |
+
+JavaScriptCore's speed is almost all its JIT, which we don't use (memory: 440+
+MB; not allowed on iOS). Interpreter-level work on QuickJS is near its limit
+(an inline property cache gave 0.5%; see the vendor README). What's left is the
+amount of JavaScript run per row.
+
+Where building 1000 rows spends its JavaScript time (QuickJS function profiler,
+`-DORIEL_QJS_FUNC_PROFILE`):
+
+| share | where |
+|---|---|
+| ~45% | `render.js`: styling, flattening, encoding the native nodes |
+| ~33% | linkedom: creating elements, the tree, mutation callbacks |
+| ~6% | `html.js`: innerHTML |
+
+Cost of single operations in QuickJS (`qjs`, ns per operation):
+
+| operation | ns |
+|---|---|
+| call a C function / C getter | ~35 / ~19 |
+| call a JS method / JS getter | ~54 / ~62 |
+| linkedom `firstChild` / `nextSibling` | 142 / 128 |
+| linkedom `getAttribute("id")` | 256 |
+| linkedom `createElement("span")` | 1,940 |
+| linkedom create + append + remove | 3,544 |
+
+A call into C is cheaper than any linkedom operation, and linkedom's element
+creation is two orders of magnitude above a C call: a native DOM reached from
+JavaScript through C functions can be several times faster, and the renderer
+reading the tree benefits too (every `firstChild`, `nextSibling`,
+`getAttribute` it does today is a linkedom call).
+
+## Goal and gates
+
+Each phase lands only if it is faster than what it replaces, on these
+measurements, and breaks nothing:
+
+- the QuickJS harness (`src/native_ui/js/test/bench-qjs.js`): DOM and render
+  times for building and updating 1000 / 3000 rows;
+- the render bench on the desktop (one visible run per version);
+- memory (PSS after the tests): no worse than linkedom's;
+- tests: `npm test` (React, inputs, html, observer, render…), `zig build test
+  -Dnative_ui`, the showcase and canvas demo screenshots unchanged, GhostPen
+  usable; on Windows, macOS and Android through the peer sessions.
+
+Target at the end: building 1000 rows within 1.5× the WebView (~30 ms), updates
+at least as fast as today, memory and startup leads kept.
+
+## Design
+
+### The document store (Zig)
+
+One store per window (per `Engine`), owned by Zig:
+
+- **Nodes**: a pool of fixed-size records addressed by a `u32` index with a
+  generation (stale handles detectable). Fields: kind (element, text, comment,
+  fragment, document), tag (an interned name id), parent, first child, last
+  child, previous and next sibling (indexes), a small inline attribute array
+  (spilling to a heap array), text (owned bytes for text and comments), flags
+  (connected, dirty bits for the renderer), the JS wrapper (see below).
+- **Names**: tag and attribute names interned once (ids), so comparisons and
+  selector matching are integer compares.
+- **Attributes**: (name id, value bytes); `class` also kept split into token ids
+  for selector matching and `classList`.
+- **Mutation log**: every change appends a compact record (kind, node,
+  attribute name, old value when asked). The renderer reads its dirty marks
+  straight from the store (no JavaScript observer); page `MutationObserver`s
+  get records built from the log when they ask.
+
+Children lists are linked (prev/next), like linkedom's but without its
+interleaved attribute and end markers, so insert and remove are O(1).
+
+### JavaScript bindings (QuickJS, C/Zig)
+
+- Each node gets at most one wrapper object (identity: `a.firstChild ===
+  a.firstChild`), a QuickJS class instance holding the node handle, created
+  when JavaScript first sees the node. Prototypes per interface (`Node`,
+  `Element`, `HTMLElement`, `HTMLDivElement`…), so `instanceof` and React's
+  checks work.
+- The hot API is native (C functions and getters): `createElement`,
+  `createTextNode`, `append`/`appendChild`/`insertBefore`/`removeChild`/
+  `remove`/`replaceChildren`, `parentNode`, `firstChild`, `lastChild`,
+  `nextSibling`, `previousSibling`, `children`, `childNodes`, `nodeType`,
+  `localName`/`tagName`, `id`, `className`, `classList`, `get/set/has/
+  removeAttribute`, `textContent`, `innerHTML`/`outerHTML` (a Zig HTML parser
+  and serializer), `cloneNode`, `isConnected`, `contains`, `querySelector(All)`/
+  `matches`/`closest` (a Zig selector engine, shared with the style phase).
+- The long tail stays JavaScript, written on top of the native primitives:
+  events (`EventTarget`, dispatch, bubbling), `MutationObserver` (over the
+  mutation log), `style` (`CSSStyleDeclaration` over the `style` attribute),
+  `dataset`, form fields' `value`/`checked`, `Range`, `TreeWalker`… Most of it
+  can come from linkedom's own code, adapted.
+- Expandos (`el.__reactFiber$…`, the renderer's own fields) live on the
+  wrapper, so the wrapper must live as long as its node can be reached from
+  the page: the store keeps a strong reference to the wrapper while the node is
+  connected or has expandos, and a detached node without expandos is owned by
+  its wrapper (freed in the wrapper's finalizer). (Open question below.)
+
+### The renderer
+
+Phase by phase, the renderer reads more from the store directly:
+
+1. `render.js` unchanged, reading the tree through the native accessors (faster
+   than linkedom's getters), and taking dirty marks from the store.
+2. The style engine in Zig: rules parsed once, selectors compiled to match on
+   name ids, matched rules and computed styles cached per node in the store
+   (the sharing `render.js` already does). `render.js` asks the store for a
+   node's computed values.
+3. The flattener in Zig: the store produces `tree.zig`'s nodes and props
+   directly, without the JSON ops; JavaScript only runs the page.
+
+## Phases
+
+| phase | what | gate |
+|---|---|---|
+| 0 | Prototype: the store and the hot bindings (createElement, className/setAttribute, append, textContent, innerHTML for plain markup, tree getters, getAttribute), in the QuickJS harness only | building 1000 rows' DOM ≥ 3× faster than linkedom (harness) |
+| 1 | Drop-in DOM: the rest of the API linkedom gives our tests, pages and React; dirty marks from the store; linkedom kept behind a build option until the gate | all tests pass; DOM part ≥ 3× faster; render bench build/update faster; memory no worse |
+| 2 | Style engine in Zig | render time for building rows ≥ 2× faster; same screenshots |
+| 3 | Flattener in Zig, no JSON ops | build 1000 rows ≤ ~30 ms on the desktop, updates ≤ today's |
+
+Phase 0 decides whether the rest is worth it: if a native DOM isn't clearly
+faster through QuickJS's C calls, we stop there.
+
+## Risks and open questions
+
+- **API surface.** Pages and React use far more DOM than the hot path. Mitigation:
+  a differential test that runs the same scripts against linkedom and the
+  native DOM and compares the serialized tree and the observed values; React's
+  tests already in `npm test`.
+- **Wrapper lifetime and expandos.** Keeping wrappers alive while nodes are
+  connected costs memory per node (one small object, which linkedom spends
+  anyway: its nodes *are* JS objects). Needs care with QuickJS's cycle
+  collector (a wrapper reachable from a connected node must not be collected).
+- **Selector coverage.** The style engine and `querySelector` need the selectors
+  `css.js` supports today (and linkedom's, for `querySelector`).
+- **Platforms.** All Zig and C, so it builds wherever the engine does; each
+  backend's tests run through the peer sessions.
+- **Maintenance.** We own a DOM. linkedom stays available behind a build option
+  until phase 1 passes everywhere.
