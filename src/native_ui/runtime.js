@@ -14076,10 +14076,10 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
     schedule() {
       if (this.ticking || !this.tx.active && !this.anim.active) return;
       this.ticking = true;
-      setTimeout(() => {
+      requestAnimationFrame(() => {
         this.ticking = false;
         this.tick();
-      }, 16);
+      });
     }
     tick() {
       const now = Date.now();
@@ -14531,11 +14531,42 @@ ${a.stack || ""}`;
   globalThis.clearTimeout = globalThis.clearInterval = (id) => {
     timers.delete(id);
   };
-  globalThis.requestAnimationFrame = (cb) => setTimer(() => cb(performance.now()), 16, [], false);
-  globalThis.cancelAnimationFrame = globalThis.clearTimeout;
   globalThis.queueMicrotask ??= (fn) => Promise.resolve().then(fn);
-  var t0 = Date.now();
-  globalThis.performance ??= { now: () => Date.now() - t0 };
+  var t0 = host.now ? host.now() : Date.now();
+  globalThis.performance ??= { now: host.now ? () => host.now() - t0 : () => Date.now() - t0 };
+  var FRAME_MS = 1e3 / 60;
+  var rafCallbacks = /* @__PURE__ */ new Map();
+  var rafSeq = 1;
+  var rafPending = false;
+  var lastSlot = -1;
+  function runFrame() {
+    rafPending = false;
+    const now = performance.now();
+    lastSlot = Math.max(lastSlot, Math.floor(now / FRAME_MS));
+    const due = rafCallbacks;
+    rafCallbacks = /* @__PURE__ */ new Map();
+    for (const cb of due.values()) {
+      try {
+        cb(now);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  }
+  globalThis.requestAnimationFrame = (cb) => {
+    const id = rafSeq++;
+    rafCallbacks.set(id, cb);
+    if (!rafPending) {
+      rafPending = true;
+      const now = performance.now();
+      const slot = Math.max(Math.floor(now / FRAME_MS) + 1, lastSlot + 1);
+      setTimer(runFrame, Math.max(0, Math.ceil(slot * FRAME_MS - now)), [], false);
+    }
+    return id;
+  };
+  globalThis.cancelAnimationFrame = (id) => {
+    rafCallbacks.delete(id);
+  };
   var html = normalizeHtml(host.asset("index.html") || "<!doctype html><html><body></body></html>");
   var { window: dom, document } = parseHTML(html);
   function normalizeHtml(src) {
