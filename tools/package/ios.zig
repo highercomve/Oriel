@@ -96,6 +96,9 @@ pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
         "\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n";
     try w.writeAll("\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n" ++ orientations ++ "\t</array>\n");
     try w.writeAll("\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n" ++ orientations ++ "\t</array>\n");
+    // ProMotion: an iPhone's display link may go past 60 Hz (the page's
+    // requestAnimationFrame follows the display; iPads need no key).
+    try w.writeAll("\t<key>CADisableMinimumFrameDurationOnPhone</key>\n\t<true/>\n");
     // Scenes: the app delegate supplies the configuration; iPad windows
     // each get a scene.
     try w.writeAll("\t<key>UIApplicationSceneManifest</key>\n\t<dict>\n\t\t<key>UIApplicationSupportsMultipleScenes</key>\n\t\t<true/>\n\t</dict>\n");
@@ -283,6 +286,7 @@ test generateInfoPlist {
         "<key>NSSpeechRecognitionUsageDescription</key>\n\t<string>Dictation</string>",
         "<string>iPhoneOS</string>",
         "<key>UIApplicationSupportsMultipleScenes</key>",
+        "<key>CADisableMinimumFrameDurationOnPhone</key>\n\t<true/>",
         "<string>dev.oriel.window</string>",
         "<string>AppIcon60x60</string>",
         "<string>audio</string>",
