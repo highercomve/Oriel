@@ -4065,7 +4065,7 @@ col, colgroup { display: none; }
           prev.p = p;
         }
       }
-      if (ops.length) this.host.ops(wellFormedJSON(ops));
+      if (ops.length) this.host.ops(JSON.stringify(ops));
       this.schedule();
     }
   };
@@ -4437,13 +4437,7 @@ col, colgroup { display: none; }
   function encodeProps(props) {
     if (props.fd === "column") props.fd = void 0;
     if (props.ai === "stretch") props.ai = void 0;
-    return wellFormedJSON(props);
-  }
-  var LONE_SURROGATE = /\\ud[89a-f]/i;
-  var wellFormed = (_k, v) => typeof v === "string" ? v.toWellFormed() : v;
-  function wellFormedJSON(x) {
-    const s = JSON.stringify(x);
-    return LONE_SURROGATE.test(s) ? JSON.stringify(x, wellFormed) : s;
+    return JSON.stringify(props);
   }
   function gridToRows(cs, props, kids, nodes, renderer2, el, fs) {
     const tpl = cs["grid-template-columns"];
