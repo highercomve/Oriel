@@ -43,6 +43,9 @@ pub const Surface = struct {
     hovered: i64 = 0,
     updating: bool = false,
     dark: bool = false,
+    /// The text measures kept in the nodes (apple_draw.measureText) hold
+    /// while this holds; bumped when the text may measure differently.
+    text_epoch: u64 = 1,
     pointer_hand: bool = false,
     /// The window's label (ORIEL_NUI_SNAPSHOT file names).
     label: []u8 = &.{},
@@ -168,6 +171,9 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .text = textChanged,
         .request_frame = requestFrame,
     }, assets, platform_json, label, url, width, height);
+    // Text-only updates that keep a text's size keep the layout (its
+    // natural size is kept per node: measureText).
+    s.engine.tree.reuse_text_layout = true;
     s.engine.boot(s.dark, false);
     return s;
 }
@@ -231,7 +237,7 @@ fn isDark(view: Object) bool {
 fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const fz = n.props.fz orelse 16;
     switch (n.kind) {
-        .text => out.* = draw.measureText("NSFont", n, max_width),
+        .text => out.* = draw.measureText("NSFont", n, max_width, surfaceOf(ctx).text_epoch),
         .image => out.* = draw.measureImage(surfaceOf(ctx).engine, n, max_width),
         .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
@@ -311,10 +317,12 @@ fn removed(ctx: *anyopaque, n: *Node) void {
 /// New props: a text node's CoreText objects are stale.
 fn propsChanged(_: *anyopaque, n: *Node, _: std.json.Value) void {
     draw.dropText(n);
+    n.measured_text_size = null;
 }
 
 fn textChanged(_: *anyopaque, n: *Node) void {
     draw.dropText(n);
+    n.measured_text_size = null;
 }
 
 fn laidOut(ctx: *anyopaque) void {
@@ -664,6 +672,8 @@ fn appearanceChanged(self: id, _: SEL) callconv(.c) void {
     const dark = isDark(s.view);
     if (dark == s.dark) return;
     s.dark = dark;
+    s.text_epoch +%= 1;
+    if (s.text_epoch == 0) s.text_epoch = 1;
     // Same size: force the page to hear the new color scheme.
     const w = s.engine.tree.width;
     s.engine.tree.width = -1;
