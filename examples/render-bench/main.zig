@@ -77,6 +77,14 @@ pub const Commands = struct {
         return bench_mode;
     }
 
+    /// Whether ORIEL_NUI_TRACE is set (on Android: `debug.oriel.env`): the
+    /// page then logs a line before each timed row change, and the native
+    /// renderer one after each draw, so logcat's timestamps give the
+    /// on-screen time.
+    pub fn trace_on(_: std.mem.Allocator) bool {
+        return std.c.getenv("ORIEL_NUI_TRACE") != null;
+    }
+
     /// The results as JSON: printed on stdout; in bench mode the app quits.
     pub fn report(_: std.mem.Allocator, args: struct { json: []const u8 }) void {
         std.debug.print("{s}\n", .{args.json});
