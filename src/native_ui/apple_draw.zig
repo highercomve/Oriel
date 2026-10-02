@@ -405,7 +405,9 @@ fn cutBy(n: *Node, field: *Node, after: *bool, shown: *Rect) void {
             }
         }
     }
-    for (n.kids.items) |k| cutBy(k, field, after, shown);
+    // In paint order: what paints after the field covers it.
+    var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
+    while (it.next()) |k| cutBy(k, field, after, shown);
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +487,9 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
         .canvas => paintCanvas(font_class, cg, scale, n),
         else => {},
     }
-    for (n.kids.items) |k| paintNode(font_class, cg, engine, fields, scale, k);
+    // CSS paint order: positioned boxes (a sticky header) over the flow.
+    var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
+    while (it.next()) |k| paintNode(font_class, cg, engine, fields, scale, k);
 }
 
 fn setFill(cg: CGContextRef, c: tree_mod.Color) void {

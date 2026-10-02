@@ -70,6 +70,7 @@ var next_token: u64 = 1;
 
 var view_class: ?apple.Class = null;
 var field_delegate: Object = apple.nil;
+var gesture_delegate: Object = apple.nil;
 
 fn key(o: id) usize {
     return @intFromPtr(o);
@@ -104,6 +105,10 @@ fn classes() void {
         .{ "textViewDidChange:", textViewDidChange },
         .{ "textView:shouldChangeTextInRange:replacementText:", textViewShouldChange },
     }));
+    gesture_delegate = apple.new(apple.defineClass("OrielNuiGestureDelegate", &.{"UIGestureRecognizerDelegate"}, .{
+        .{ "gestureRecognizer:shouldReceiveTouch:", gestureShouldReceive },
+        .{ "gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:", gestureAlongside },
+    }));
 }
 
 /// Create a window's page at `width`×`height` points and run it.
@@ -132,6 +137,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         const r = apple.class(g[0]).msgSend(Object, "alloc", .{}).msgSend(Object, "initWithTarget:action:", .{ view, apple.objc.sel(g[1]).value });
         // Touches still reach the view (:active), and fields keep theirs.
         r.msgSend(void, "setCancelsTouchesInView:", .{apple.boolean(false)});
+        r.msgSend(void, "setDelegate:", .{gesture_delegate});
         view.msgSend(void, "addGestureRecognizer:", .{r});
         r.release();
     }
@@ -556,6 +562,30 @@ fn touchesEnded(self: id, _: SEL, _: id, _: id) callconv(.c) void {
     _ = s.engine.event(0, "release", "null");
 }
 
+/// A tap or long press in a native field is the field's (the page's would
+/// take its focus away); a drag from one still scrolls the page.
+fn gestureShouldReceive(_: id, _: SEL, recognizer: id, touch: id) callconv(.c) BOOL {
+    const r: Object = .{ .value = recognizer };
+    if (apple.isTrue(r.msgSend(BOOL, "isKindOfClass:", .{apple.class("UIPanGestureRecognizer").value}))) return apple.boolean(true);
+    const page = r.msgSend(Object, "view", .{});
+    var v = (Object{ .value = touch }).msgSend(Object, "view", .{});
+    while (v.value != null and v.value != page.value) : (v = v.msgSend(Object, "superview", .{})) {
+        if (apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextField").value})) or
+            apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextView").value}))) return apple.boolean(false);
+    }
+    return apple.boolean(true);
+}
+
+/// A field's own recognizers (double tap to select, …) run beside the page's
+/// (the system's and the page's own keep UIKit's rules):
+/// a tap on the page right after one in a field is the page's.
+fn gestureAlongside(_: id, _: SEL, recognizer: id, other: id) callconv(.c) BOOL {
+    const mine = (Object{ .value = recognizer }).msgSend(Object, "view", .{});
+    const theirs = (Object{ .value = other }).msgSend(Object, "view", .{});
+    if (theirs.value == null or theirs.value == mine.value) return apple.boolean(false);
+    return theirs.msgSend(BOOL, "isDescendantOfView:", .{mine});
+}
+
 fn disabledUp(start: *Node) bool {
     var n: ?*Node = start;
     while (n) |x| : (n = x.parent) if (x.props.dis) return true;
@@ -573,7 +603,9 @@ fn onTap(self: id, _: SEL, recognizer: id) callconv(.c) void {
     // A tap on the page takes the keyboard from a field.
     _ = s.view.msgSend(BOOL, "endEditing:", .{apple.boolean(true)});
     const p = pointIn(s.view, r);
-    const n = s.engine.tree.hit(p[0], p[1]) orelse return;
+    const hit = s.engine.tree.hit(p[0], p[1]);
+    if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: tap at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], if (hit) |h| h.id else 0 });
+    const n = hit orelse return;
     if (disabledUp(n)) return;
     _ = s.engine.event(n.id, "click", "0");
 }
