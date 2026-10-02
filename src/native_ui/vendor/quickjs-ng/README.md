@@ -19,3 +19,13 @@ Each is marked `Oriel:` in the source.
   instructions went to those walks (callgrind, building 1000 rows). A 64-bit
   finalizer (MurmurHash3's fmix64) spreads them: 34% fewer instructions,
   the render of 1000 rows 109 → 44 ms in the QuickJS harness.
+- **JSON.stringify fast path** (`json_put_quoted`, `json_put_number`,
+  `json_plain_object`, the C `stack`). A plain object's properties are read
+  in shape order (what Object.keys gives when no key is an integer) instead
+  of through an allocated key array and full lookups; keys, strings and
+  numbers go straight into the output buffer; the circular-reference stack
+  is a C array instead of a JS Array; an element's key string is made only
+  when a toJSON or replacer may use it. Getters, integer keys, exotic
+  objects, replacer arrays and indentation take upstream's path. The output
+  is the same as V8's on `tests/json-stringify.js`
+  (`qjs tests/json-stringify.js` vs `node tests/json-stringify.js`).
