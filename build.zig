@@ -223,7 +223,7 @@ pub fn build(b: *std.Build) void {
         dom_bench_step.dependOn(&b.addInstallArtifact(dom_bench, .{}).step);
         // The store's own tests.
         const dom_tests = b.addTest(.{
-            .root_module = b.createModule(.{ .root_source_file = b.path("src/native_ui/dom/store.zig"), .target = target, .optimize = optimize }),
+            .root_module = b.createModule(.{ .root_source_file = b.path("src/native_ui/dom/tests.zig"), .target = target, .optimize = optimize }),
             .use_llvm = true,
             .use_lld = useLld(target),
         });

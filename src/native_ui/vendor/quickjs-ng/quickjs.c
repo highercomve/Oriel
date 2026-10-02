@@ -65278,3 +65278,17 @@ JSValue JS_ConcatStrings(JSContext *ctx, JSValue a, JSValue b)
 {
     return JS_ConcatString(ctx, a, b);
 }
+
+/* Oriel: a string's 8-bit characters in place (see quickjs.h), for the
+   native DOM's selector matching without copies. */
+const uint8_t *JS_GetStringLatin1(JSValueConst v, size_t *plen)
+{
+    JSString *p;
+    if (JS_VALUE_GET_TAG(v) != JS_TAG_STRING)
+        return NULL;
+    p = JS_VALUE_GET_STRING(v);
+    if (p->is_wide_char)
+        return NULL;
+    *plen = p->len;
+    return str8(p);
+}
