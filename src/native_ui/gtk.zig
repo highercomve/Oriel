@@ -1354,6 +1354,9 @@ const CanvasState = struct {
     singular: bool = false,
 };
 
+/// The largest canvas bitmap: 4096 x 4096 px (64 MB as ARGB).
+const max_canvas_pixels: f64 = 4096 * 4096;
+
 fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
     const cmds = n.canvas orelse return;
     const f = n.frame;
@@ -1363,7 +1366,11 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
     // an unbalanced restore() would pop the window's own states, and a
     // clearRect must clear the canvas, not the page behind it. All of that
     // now stays in the canvas's surface.
-    const sf: f64 = @floatFromInt(@max(1, gtk_widget_get_scale_factor(s.area)));
+    var sf: f64 = @floatFromInt(@max(1, gtk_widget_get_scale_factor(s.area)));
+    // At most max_canvas_pixels (as on Apple): a bigger canvas gets a
+    // bitmap of fewer pixels per point, scaled up on the page.
+    const area = f.w * sf * f.h * sf;
+    if (area > max_canvas_pixels) sf *= @sqrt(max_canvas_pixels / area);
     const pw: c_int = @intFromFloat(@min(16384, @ceil(f.w * sf)));
     const ph: c_int = @intFromFloat(@min(16384, @ceil(f.h * sf)));
     if (pw <= 0 or ph <= 0) return;
@@ -1623,7 +1630,17 @@ const Image = struct {
     fn deinit(img: Image) void {
         if (img.surface) |sf| cairo_surface_destroy(sf);
     }
+
+    /// What its decoded pixels take (ARGB).
+    fn bytes(img: Image) u64 {
+        if (img.surface == null) return 0;
+        return @as(u64, @intFromFloat(img.w)) * @as(u64, @intFromFloat(img.h)) * 4;
+    }
 };
+
+/// All of a window's decoded pictures together: past it, the others go
+/// before a new one is kept (they're decoded again when painted).
+const max_image_cache_bytes: u64 = 256 * 1024 * 1024;
 
 /// The node's decoded picture (decoded on first use and when src changes).
 fn imageOf(s: *Surface, n: *Node) ?Image {
@@ -1637,6 +1654,14 @@ fn imageOf(s: *Surface, n: *Node) ?Image {
     };
     var stored = img;
     stored.src_hash = hash;
+    var total = stored.bytes();
+    var it = s.images.valueIterator();
+    while (it.next()) |other| total += other.bytes();
+    if (total > max_image_cache_bytes) {
+        var rest = s.images.valueIterator();
+        while (rest.next()) |other| other.deinit();
+        s.images.clearRetainingCapacity();
+    }
     s.images.put(n.id, stored) catch {
         stored.deinit();
         return null;
