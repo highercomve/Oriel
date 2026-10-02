@@ -12,6 +12,8 @@ const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const dev_server = @import("dev_server.zig");
 const window = @import("window.zig");
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 const WindowHandle = window.WindowHandle;
 
 const log = std.log.scoped(.oriel);
@@ -144,6 +146,11 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             _ = io;
             // Before GTK: may restart the app with gtk4-layer-shell preloaded.
             @import("overlay.zig").preloadLayerShell();
+            // -Dnative_ui draws each page with Cairo itself: GTK's GPU
+            // renderer (Vulkan or GL) would only composite it, and starting
+            // one cost ~120 ms before the first frame and ~60 MB (render
+            // bench). Cairo, unless the user chose one (GSK_RENDERER).
+            if (comptime build_opts.native_ui) _ = setenv("GSK_RENDERER", "cairo", 0);
             const id = if (config.dev != null) config.id ++ ".Dev" else config.id;
             const app_flags = if (uses_command_line)
                 gio.ApplicationFlags{ .handles_command_line = true }
