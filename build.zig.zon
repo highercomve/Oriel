@@ -46,13 +46,9 @@
             .hash = "N-V-__8AAA3uSwK9mB79KfGlAs0n70EoYdSvFYRb8782-6Ce",
             .lazy = true,
         },
-        // -Dnative_ui (experimental, docs/native-renderer.md): the page's
-        // JavaScript runs on QuickJS-ng, and Yoga lays out the native views.
-        .quickjs = .{
-            .url = "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.17.0.tar.gz",
-            .hash = "N-V-__8AAHXdRAAredjqGKa2uZcnUUzmDSajEa9AQDETVRYW",
-            .lazy = true,
-        },
+        // -Dnative_ui (experimental, docs/native-renderer.md): Yoga lays out
+        // the native views; the page's JavaScript runs on QuickJS-ng, kept in
+        // src/native_ui/vendor/quickjs-ng.
         .yoga = .{
             .url = "https://github.com/facebook/yoga/archive/refs/tags/v3.2.1.tar.gz",
             .hash = "N-V-__8AAOYl0gAU76B1VRPFD9AWvy2VkOef2jN0B3sISTeO",
