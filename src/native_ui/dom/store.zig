@@ -287,6 +287,12 @@ pub const Store = struct {
             s.js.freeAtom(s.js.ctx, atom);
             return true;
         };
+        // class_len is a u16: tokens past that many are not indexed (the
+        // attribute keeps them; selectors on them just won't match).
+        if (n.class_len == std.math.maxInt(u16)) {
+            s.js.freeAtom(s.js.ctx, atom);
+            return true;
+        }
         if (n.class_len >= inline_classes) {
             const extra = n.class_len - inline_classes;
             if (extra == n.more_classes.len) {
@@ -328,6 +334,7 @@ pub const Store = struct {
     fn release(s: *Store, idx: Index) void {
         const n = s.get(idx);
         std.debug.assert(!n.has_wrapper and n.wrapped == 0);
+        std.debug.assert(n.kind != .free); // released twice
         s.releaseContent(n);
         n.* = .{ .gen = n.gen +% 1, .next = s.free_head };
         s.free_head = idx;
@@ -437,6 +444,9 @@ pub const Store = struct {
     /// unless it was inserted somewhere.
     pub fn dropIfUnused(s: *Store, idx: Index) void {
         const n = s.get(idx);
+        // Already freed (a second drop): freeing again would put the record
+        // on the free list twice, and two later nodes would share it.
+        if (n.kind == .free) return;
         if (n.parent == none and n.wrapped == 0 and idx != s.document) s.freeTree(idx);
     }
 
