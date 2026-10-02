@@ -2,6 +2,7 @@
 // builds, or gives up (null) for markup it doesn't handle.
 import { parseHTML } from "linkedom";
 import { parseSimple } from "../src/html.js";
+import assert from "node:assert/strict";
 
 const { document } = parseHTML("<!doctype html><html><body></body></html>");
 const same = [
@@ -44,4 +45,17 @@ for (const html of fallback) {
   if (parseSimple(document, html) !== null) { failed++; console.error(`html: should fall back: ${JSON.stringify(html)}`); }
 }
 if (failed) { console.error(`html: ${failed} failed`); process.exit(1); }
+const markup = '<span class="clone-check">one</span><span>two</span>';
+const first = parseSimple(document, markup);
+first.firstChild.setAttribute("class", "mutated");
+first.firstChild.appendChild(document.createElement("b"));
+const second = parseSimple(document, markup.replace(">one<", ">three<"));
+assert.equal(second.firstChild.getAttribute("class"), "clone-check");
+assert.equal(second.firstChild.textContent, "three");
+assert.equal(second.firstChild.firstElementChild, null);
+assert.notEqual(first.firstChild, second.firstChild);
+const { document: other } = parseHTML('<html><body></body></html>');
+const crossDocument = parseSimple(other, markup);
+assert.equal(crossDocument.firstChild.ownerDocument, other);
+assert.equal(crossDocument.firstChild.firstChild.ownerDocument, other);
 console.log(`html: all ${same.length + fallback.length} cases pass`);

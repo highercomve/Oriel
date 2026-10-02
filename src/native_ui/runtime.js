@@ -5445,7 +5445,13 @@ globalThis.atob ??= (s) => {
             attributeOldValue
           }
         ] of observer.nodes) {
-          if (observer.__nuiConnectedOnly && target === ownerDocument && !element.isConnected) continue;
+          if (observer.__nuiConnectedOnly && target === ownerDocument) {
+            if (!element.isConnected) continue;
+            if (observer.__nuiAttribute) {
+              observer.__nuiAttribute(element, attributeName);
+              break;
+            }
+          }
           if (childList) {
             if (subtree && (target === ownerDocument || target.contains(element)) || !subtree && target.children.includes(element)) {
               queueAttribute(
@@ -5479,7 +5485,13 @@ globalThis.atob ??= (s) => {
     if (active2) {
       for (const observer of observers) {
         for (const [target, { subtree, childList, characterData }] of observer.nodes) {
-          if (observer.__nuiConnectedOnly && target === ownerDocument && !(parentNode || element).isConnected) continue;
+          if (observer.__nuiConnectedOnly && target === ownerDocument) {
+            if (!(parentNode || element).isConnected) continue;
+            if (observer.__nuiChild) {
+              observer.__nuiChild(element, parentNode);
+              break;
+            }
+          }
           if (childList) {
             if (parentNode && (target === parentNode || /* c8 ignore next */
             subtree && target.contains(parentNode)) || !parentNode && (subtree && (target === ownerDocument || /* c8 ignore next */
@@ -13811,6 +13823,22 @@ col, colgroup { display: none; }
       }
       this.dirty = true;
     }
+    // The private document observer can report directly without allocating
+    // child-list records and their arrays. Page observers remain queued.
+    noteChild(node, removedFrom) {
+      const parent = removedFrom || node.parentNode || this.parentOf.get(node);
+      if (!removedFrom) this.mark(node, 2);
+      if (parent) {
+        this.markFlat(parent, node.nodeType === 3);
+        if (this.structural) this.mark(parent, 2);
+      }
+      if (removedFrom && (node.nodeType !== 3 || !parent)) this.markFlat(node, false);
+      this.dirty = true;
+    }
+    noteAttribute(el, name) {
+      this.mark(el, name === "style" && !this.styleAttrRules ? 1 : 2);
+      if (this.structural && el.parentNode) this.mark(el.parentNode, 2);
+    }
     idOf(obj, key2) {
       let m = this.ids.get(obj);
       if (!m) this.ids.set(obj, m = {});
@@ -13874,7 +13902,7 @@ col, colgroup { display: none; }
           if (cs["text-transform"] === "uppercase") t = t.toUpperCase();
           else if (cs["text-transform"] === "lowercase") t = t.toLowerCase();
           t = t.replace(/\s+/g, " ").trim();
-          runs = t ? [{ ...fc.root.props.runs[0], t }] : [];
+          runs = t || null;
         } else {
           const raw = [];
           for (let c = child; c; c = c.nextSibling) {
@@ -13883,11 +13911,14 @@ col, colgroup { display: none; }
           }
           runs = trimRuns(raw);
         }
-        if (!runs.length) return false;
-        updates.push([el, fc, runs, old]);
+        if (!runs || !runs.length) return false;
+        updates.push(el, fc, runs, old);
       }
       let direct = 0, nativeMs = 0;
-      for (const [el, fc, runs, old] of updates) {
+      for (let i = 0; i < updates.length; i += 4) {
+        const el = updates[i], fc = updates[i + 1], value = updates[i + 2], old = updates[i + 3];
+        const runs = typeof value === "string" ? fc.root.props.runs : value;
+        if (typeof value === "string") runs[0].t = value;
         const single = runs.length === 1 && fc.root.props.runs.length === 1;
         const a = P && P();
         const sent = single && this.host.text && this.host.text(fc.id, runs[0].t);
@@ -13912,8 +13943,12 @@ col, colgroup { display: none; }
       this.dropped = [];
       this.specs = /* @__PURE__ */ new Map();
       this.animSpecs = /* @__PURE__ */ new Map();
-      this.emit(nodes, false);
-      if (P) this.host.log(1, `PROF text: ${updates.length} leaves, ${direct} direct, prepare ${(P() - t02 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
+      if (nodes.size) this.emit(nodes, false);
+      else {
+        this.applyMs = 0;
+        this.schedule();
+      }
+      if (P) this.host.log(1, `PROF text: ${updates.length / 4} leaves, ${direct} direct, prepare ${(P() - t02 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
       return true;
     }
     renderNow() {
@@ -14250,12 +14285,25 @@ col, colgroup { display: none; }
         this.own(id, el);
         this.cs.set(el, childCS);
         this.sc.set(el, { parent: cs, cs: childCS, m: entry.m, frame: this.frameNo });
-        const raw = [];
-        for (let child = el.firstChild; child; child = child.nextSibling) {
+        const child = el.firstChild, ws = childCS["white-space"];
+        let runs;
+        if (!child) runs = [];
+        else if (child.nodeType === 3 && !child.nextSibling && ws !== "pre" && ws !== "pre-wrap" && ws !== "pre-line") {
           this.parentOf.set(child, el);
-          if (child.nodeType === 3 && child.data) raw.push(runFor(child.data, childCS, childCS.__fs));
+          let t = child.data;
+          if (childCS["text-transform"] === "uppercase") t = t.toUpperCase();
+          else if (childCS["text-transform"] === "lowercase") t = t.toLowerCase();
+          t = t.replace(/\s+/g, " ").trim();
+          runs = t ? [{ t, ...entry.run }] : [];
+        } else {
+          const raw = [];
+          for (let c = child; c; c = c.nextSibling) {
+            this.parentOf.set(c, el);
+            if (c.nodeType === 3 && c.data) raw.push(runFor(c.data, childCS, childCS.__fs));
+          }
+          runs = trimRuns(raw);
         }
-        const runs = trimRuns(raw), props = { ...entry.box };
+        const props = { ...entry.box };
         let kind = "view";
         if (runs.length) {
           kind = "text";
@@ -14263,7 +14311,17 @@ col, colgroup { display: none; }
           props.runs = runs;
         }
         this.putClick(props, el);
-        nodes.set(id, { kind, props, kids: [] });
+        let template;
+        if (!props.click && (kind === "view" || runs.length === 1)) {
+          const key2 = kind === "text" ? "nativeText" : "nativeView";
+          template = entry[key2];
+          if (!template) {
+            const base = { ...props };
+            if (kind === "text") base.runs = [{ ...runs[0], t: "" }];
+            template = entry[key2] = { json: encodeProps(base) };
+          }
+        }
+        nodes.set(id, { kind, props, kids: [], template });
         this.fc.set(el, {
           parent: cs,
           block: true,
@@ -14290,7 +14348,7 @@ col, colgroup { display: none; }
         const sc = this.sc.get(el), fc = this.fc.get(el), n2 = fc && nodes.get(fc.id);
         if (!sc || !fc || !n2 || n2.kids.length || !["text", "view"].includes(n2.kind) || fc.fixed || fc.rootSpec || fc.rootAnim || this.volatile.has(el) || !["inline", "block", "inline-block"].includes(sc.cs.display || "inline") || sc.cs.__rules.before.length || sc.cs.__rules.after.length) return;
         const fs = sc.cs.__fs;
-        entries2.push({ cs: sc.cs, m: sc.m, box: boxProps(sc.cs, blockify(sc.cs.display || "inline"), fs, el), text: textProps(sc.cs, fs), order: parseInt(sc.cs.order, 10) || 0 });
+        entries2.push({ cs: sc.cs, m: sc.m, box: boxProps(sc.cs, blockify(sc.cs.display || "inline"), fs, el), text: textProps(sc.cs, fs), run: runStyle(sc.cs, fs), order: parseInt(sc.cs.order, 10) || 0 });
       }
       const order = entries2.map((_, i) => i).sort((a, b) => entries2[a].order - entries2[b].order || a - b);
       if (shape.shapes.size >= 32) shape.shapes.delete(shape.shapes.keys().next().value);
@@ -14613,13 +14671,17 @@ col, colgroup { display: none; }
     // ---------------------------------------------------------------------
     // Diff against the last frame
     createLeaf(id, n2) {
-      if (!this.host.leafStyle || !this.host.leaf || n2.kind !== "view" && (n2.kind !== "text" || n2.props.runs?.length !== 1 || n2.kids.length) || this.specs.has(id) || this.animSpecs.has(id) || this.leafStyles.size >= 1024 || this.leafStyleBytes >= 2 * 1024 * 1024) return false;
-      const base = { ...n2.props };
-      if (n2.kind === "text") base.runs = [{ ...n2.props.runs[0], t: "" }];
-      const json = encodeProps(base);
-      let style = this.leafStyles.get(json);
+      if (!this.host.leafStyle || !this.host.leaf || n2.kind !== "view" && (n2.kind !== "text" || n2.props.runs?.length !== 1 || n2.kids.length) || this.specs.has(id) || this.animSpecs.has(id)) return false;
+      let json = n2.template?.json;
+      if (json === void 0) {
+        const base = { ...n2.props };
+        if (n2.kind === "text") base.runs = [{ ...n2.props.runs[0], t: "" }];
+        json = encodeProps(base);
+      }
+      let style = n2.template?.style ?? this.leafStyles.get(json);
       const P = this.host.prof ? this.host.now : null;
       if (style === void 0) {
+        if (this.leafStyles.size >= 1024 || this.leafStyleBytes + json.length > 2 * 1024 * 1024) return false;
         style = this.leafStyles.size + 1;
         const t03 = P && P();
         if (!this.host.leafStyle(style, json)) style = 0;
@@ -14627,6 +14689,7 @@ col, colgroup { display: none; }
         this.leafStyles.set(json, style);
         this.leafStyleBytes += json.length;
       }
+      if (n2.template) n2.template.style = style;
       const t02 = P && P();
       const created = style && this.host.leaf(id, style, n2.kind === "text" ? n2.props.runs[0].t : "", n2.kind === "text");
       if (P) this.applyMs += P() - t02;
@@ -15298,7 +15361,7 @@ col, colgroup { display: none; }
     }
     const plan = [];
     const frag = parseFull(doc, html2, plan);
-    if (frag && !plan.some((token) => token.kind === 1 && token.tag.includes("-"))) {
+    if (frag && !plan.some((token) => token.kind === 1 && (token.tag.includes("-") || token.attrs.some(([name]) => name === "is")))) {
       if (!candidates && templates.size >= 32) templates.delete(templates.keys().next().value);
       const list = candidates || [];
       if (list.length === 4) list.shift();
@@ -15330,8 +15393,9 @@ col, colgroup { display: none; }
         const value = text[ti++];
         if (value) stack[stack.length - 1].appendChild(doc.createTextNode(value));
       } else if (token.kind === 1) {
-        const el = doc.createElement(token.tag);
-        for (let k = token.attrs.length - 1; k >= 0; k--) el.setAttribute(token.attrs[k][0], token.attrs[k][1]);
+        const seed = token.seeds?.get(doc);
+        const el = seed ? seed.cloneNode(false) : doc.createElement(token.tag);
+        if (!seed) for (let k = token.attrs.length - 1; k >= 0; k--) el.setAttribute(token.attrs[k][0], token.attrs[k][1]);
         stack[stack.length - 1].appendChild(el);
         if (!token.void) stack.push(el);
       } else if (token.kind === 2) stack.pop();
@@ -15388,7 +15452,14 @@ col, colgroup { display: none; }
         }
         for (let k = attrs.length - 1; k >= 0; k--) el.setAttribute(attrs[k][0], attrs[k][1]);
       }
-      if (plan) plan.push({ kind: 1, raw: m[0], tag, attrs, void: isVoid2 });
+      if (plan) plan.push({
+        kind: 1,
+        raw: m[0],
+        tag,
+        attrs,
+        void: isVoid2,
+        seeds: tag.includes("-") || attrs.some(([name]) => name === "is") ? null : new WeakMap([[doc, el.cloneNode(false)]])
+      });
       stack[stack.length - 1].appendChild(el);
       if (!isVoid2) stack.push(el);
     }
@@ -15569,7 +15640,16 @@ ${a.stack || ""}`;
         configurable: true,
         get: desc.get,
         set(html2) {
-          const frag = this.localName !== "template" && !this.closest?.("svg, math") ? parseSimple(this.ownerDocument, String(html2 ?? "")) : null;
+          let simple = this.localName !== "template";
+          const fold = ignoreCase(this);
+          if (simple) for (let el = this; el?.nodeType === 1; el = el.parentNode) {
+            const tag = fold ? el.localName.toLowerCase() : el.localName;
+            if (tag === "svg" || tag === "math") {
+              simple = false;
+              break;
+            }
+          }
+          const frag = simple ? parseSimple(this.ownerDocument, String(html2 ?? "")) : null;
           if (frag) this.replaceChildren(frag);
           else desc.set.call(this, html2);
         }
@@ -16366,6 +16446,8 @@ ${a.stack || ""}`;
         renderer = new Renderer(document, engine, host);
         renderer.observer = new MutationObserver((records) => renderer.note(records));
         renderer.observer.__nuiConnectedOnly = true;
+        renderer.observer.__nuiChild = (node, parent) => renderer.noteChild(node, parent);
+        renderer.observer.__nuiAttribute = (node, name) => renderer.noteAttribute(node, name);
         renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
         for (const s of document.querySelectorAll("script")) {
           const src = s.getAttribute("src");

@@ -41,9 +41,15 @@ await build({
         // don't allocate records for every detached attribute/append.
         // Page-created observers retain linkedom's original behavior.
         const attributes = source.slice(0, split).replace(marker,
-          "        if (observer.__nuiConnectedOnly && target === ownerDocument && !element.isConnected) continue;\n" + marker);
+          "        if (observer.__nuiConnectedOnly && target === ownerDocument) {\n" +
+          "          if (!element.isConnected) continue;\n" +
+          "          if (observer.__nuiAttribute) { observer.__nuiAttribute(element, attributeName); break; }\n" +
+          "        }\n" + marker);
         const children = source.slice(split).replace(marker,
-          "        if (observer.__nuiConnectedOnly && target === ownerDocument && !(parentNode || element).isConnected) continue;\n" + marker);
+          "        if (observer.__nuiConnectedOnly && target === ownerDocument) {\n" +
+          "          if (!(parentNode || element).isConnected) continue;\n" +
+          "          if (observer.__nuiChild) { observer.__nuiChild(element, parentNode); break; }\n" +
+          "        }\n" + marker);
         return { contents: attributes + children, loader: "js" };
       });
     },

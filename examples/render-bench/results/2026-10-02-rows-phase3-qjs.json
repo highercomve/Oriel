@@ -1,0 +1,360 @@
+{
+  "baseline": "Working tree after phase 2; native row builds 153/460 ms and updates 20/63 ms",
+  "method": "3 serial paired processes, 2 trials per step per process, fake native host, medians of 6 measurements",
+  "summary": {
+    "build 1000": {
+      "before": {
+        "dom": 74.1,
+        "render": 144.6,
+        "kb": 82.5
+      },
+      "after": {
+        "dom": 48.95,
+        "render": 132.55,
+        "kb": 82.5
+      }
+    },
+    "update 1000": {
+      "before": {
+        "dom": 7.6,
+        "render": 6.25,
+        "kb": 17.0
+      },
+      "after": {
+        "dom": 6.15,
+        "render": 5.45,
+        "kb": 17.0
+      }
+    },
+    "build 3000": {
+      "before": {
+        "dom": 239.75,
+        "render": 336.15,
+        "kb": 299.0
+      },
+      "after": {
+        "dom": 144.45,
+        "render": 313.45,
+        "kb": 299.0
+      }
+    },
+    "update 3000": {
+      "before": {
+        "dom": 25.8,
+        "render": 21.75,
+        "kb": 55.0
+      },
+      "after": {
+        "dom": 22.05,
+        "render": 20.25,
+        "kb": 55.0
+      }
+    }
+  },
+  "raw": {
+    "before": [
+      {
+        "build 1000": [
+          {
+            "dom": 73.1,
+            "render": 142.1,
+            "kb": 61
+          },
+          {
+            "dom": 75.1,
+            "render": 147.1,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 7.7,
+            "render": 6.2,
+            "kb": 17
+          },
+          {
+            "dom": 7.6,
+            "render": 6.2,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 225.8,
+            "render": 307.5,
+            "kb": 251
+          },
+          {
+            "dom": 243.1,
+            "render": 362.1,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 27.0,
+            "render": 22.6,
+            "kb": 55
+          },
+          {
+            "dom": 24.5,
+            "render": 20.2,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 71.6,
+            "render": 140.8,
+            "kb": 61
+          },
+          {
+            "dom": 77.9,
+            "render": 151.9,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 7.6,
+            "render": 6.5,
+            "kb": 17
+          },
+          {
+            "dom": 7.6,
+            "render": 6.3,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 228.3,
+            "render": 301.8,
+            "kb": 251
+          },
+          {
+            "dom": 245.5,
+            "render": 370.5,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 30.7,
+            "render": 26.1,
+            "kb": 55
+          },
+          {
+            "dom": 25.1,
+            "render": 20.9,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 72.1,
+            "render": 139.5,
+            "kb": 61
+          },
+          {
+            "dom": 75.5,
+            "render": 148.8,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 7.7,
+            "render": 6.4,
+            "kb": 17
+          },
+          {
+            "dom": 7.6,
+            "render": 6.2,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 239.7,
+            "render": 310.2,
+            "kb": 251
+          },
+          {
+            "dom": 239.8,
+            "render": 373.7,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 26.5,
+            "render": 22.7,
+            "kb": 55
+          },
+          {
+            "dom": 24.1,
+            "render": 19.6,
+            "kb": 55
+          }
+        ]
+      }
+    ],
+    "after": [
+      {
+        "build 1000": [
+          {
+            "dom": 48.4,
+            "render": 132.6,
+            "kb": 61
+          },
+          {
+            "dom": 49.5,
+            "render": 133.3,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 7.7,
+            "render": 7.2,
+            "kb": 17
+          },
+          {
+            "dom": 6.6,
+            "render": 6.2,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 148.6,
+            "render": 291.4,
+            "kb": 251
+          },
+          {
+            "dom": 146.0,
+            "render": 323.8,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 23.5,
+            "render": 21.2,
+            "kb": 55
+          },
+          {
+            "dom": 20.6,
+            "render": 19.5,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 46.5,
+            "render": 132.1,
+            "kb": 61
+          },
+          {
+            "dom": 49.9,
+            "render": 134.4,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 6.2,
+            "render": 5.4,
+            "kb": 17
+          },
+          {
+            "dom": 6.0,
+            "render": 5.4,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 141.3,
+            "render": 293.6,
+            "kb": 251
+          },
+          {
+            "dom": 143.2,
+            "render": 323.5,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 24.7,
+            "render": 21.8,
+            "kb": 55
+          },
+          {
+            "dom": 19.6,
+            "render": 18.5,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 46.2,
+            "render": 130.7,
+            "kb": 61
+          },
+          {
+            "dom": 49.8,
+            "render": 132.5,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 6.1,
+            "render": 5.5,
+            "kb": 17
+          },
+          {
+            "dom": 5.8,
+            "render": 5.4,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 142.6,
+            "render": 304.9,
+            "kb": 251
+          },
+          {
+            "dom": 145.7,
+            "render": 322.0,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 23.5,
+            "render": 21.0,
+            "kb": 55
+          },
+          {
+            "dom": 19.2,
+            "render": 17.9,
+            "kb": 55
+          }
+        ]
+      }
+    ]
+  }
+}

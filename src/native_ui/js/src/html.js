@@ -52,7 +52,8 @@ export function parseSimple(doc, html) {
   const frag = parseFull(doc, html, plan);
   // Custom-element construction can run page code during parsing. Preserve
   // the ordinary parser's interleaving for those fragments.
-  if (frag && !plan.some((token) => token.kind === 1 && token.tag.includes("-"))) {
+  if (frag && !plan.some((token) => token.kind === 1 &&
+      (token.tag.includes("-") || token.attrs.some(([name]) => name === "is")))) {
     if (!candidates && templates.size >= 32) templates.delete(templates.keys().next().value);
     const list = candidates || [];
     if (list.length === 4) list.shift();
@@ -85,8 +86,9 @@ function fromTemplate(doc, html, plan) {
       const value = text[ti++];
       if (value) stack[stack.length - 1].appendChild(doc.createTextNode(value));
     } else if (token.kind === 1) {
-      const el = doc.createElement(token.tag);
-      for (let k = token.attrs.length - 1; k >= 0; k--) el.setAttribute(token.attrs[k][0], token.attrs[k][1]);
+      const seed = token.seeds?.get(doc);
+      const el = seed ? seed.cloneNode(false) : doc.createElement(token.tag);
+      if (!seed) for (let k = token.attrs.length - 1; k >= 0; k--) el.setAttribute(token.attrs[k][0], token.attrs[k][1]);
       stack[stack.length - 1].appendChild(el);
       if (!token.void) stack.push(el);
     } else if (token.kind === 2) stack.pop();
@@ -146,7 +148,8 @@ function parseFull(doc, html, plan) {
       // linkedom puts each new attribute first: last to first keeps the order.
       for (let k = attrs.length - 1; k >= 0; k--) el.setAttribute(attrs[k][0], attrs[k][1]);
     }
-    if (plan) plan.push({ kind: 1, raw: m[0], tag, attrs, void: isVoid });
+    if (plan) plan.push({ kind: 1, raw: m[0], tag, attrs, void: isVoid,
+      seeds: tag.includes("-") || attrs.some(([name]) => name === "is") ? null : new WeakMap([[doc, el.cloneNode(false)]]) });
     stack[stack.length - 1].appendChild(el);
     if (!isVoid) stack.push(el);
   }
