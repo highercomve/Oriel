@@ -271,14 +271,18 @@ export class Renderer {
     } finally { this.rendering = false; }
   }
 
-  // An animation frame begins (main.js): what the page changed outside the
-  // frames since the last render is rendered now, before the callbacks.
+  // An animation frame begins (main.js): everything the page changed since
+  // the last render is rendered now, before the callbacks, as a browser
+  // renders at the end of every frame: changes made outside the frames (a
+  // timer, an event) and a previous frame's own (its callbacks or their
+  // promise jobs) alike. With frames at the display's rate that is the
+  // pacing; a frame's changes don't wait for the engine's paced render.
   frameStart() {
     const pending = this.observer?.takeRecords();
     if (pending?.length) this.note(pending);
     try {
-      if (this.outside) {
-        if (this.host.prof) this.host.log(1, "PROF frame start: rendering changes made outside the frames");
+      if (this.dirty) {
+        if (this.host.prof) this.host.log(1, `PROF frame start: rendering changes made ${this.outside ? "outside the frames" : "by the last frame"}`);
         this.render();
       }
     } finally {
