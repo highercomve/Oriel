@@ -866,6 +866,16 @@ export class Renderer {
       props.fd = "row"; props.ai = "center";
       if (flow.filter((f) => f.el).length > 1) props.fw = "wrap";
     }
+    // Only atomic inline boxes (buttons side by side, inline-block chips):
+    // one line that wraps, as in a browser, not a column; the whitespace
+    // between them collapses to a space's width (none when they touch).
+    if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 &&
+        flow.every((f) => f.el && ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""))) {
+      props.fd = "row"; props.fw = "wrap"; props.ai = "center";
+      const nodesIn = [...el.childNodes];
+      const spaced = nodesIn.some((n, i) => n.nodeType === 3 && /^\s+$/.test(n.data) && i > 0 && i < nodesIn.length - 1);
+      if (spaced && props.cg === undefined) { props.cg = Math.round(fontSize * 0.28 * 10) / 10; }
+    }
 
     for (const item of flow) {
       if (item.text) {
