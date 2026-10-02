@@ -68,11 +68,13 @@ let rafPending = false;
 let lastSlot = -1;
 function runFrame() {
   rafPending = false;
+  // This frame's callbacks: one a render below asks for (a transition
+  // starting) runs in the next frame, as in a browser.
+  const due = rafCallbacks;
+  rafCallbacks = new Map();
   try { renderer?.frameStart(); } catch (e) { console.error(e); }
   const now = performance.now();
   lastSlot = Math.max(lastSlot, Math.floor(now / FRAME_MS));
-  const due = rafCallbacks;
-  rafCallbacks = new Map();
   for (const cb of due.values()) {
     try { cb(now); } catch (e) { console.error(e); }
   }

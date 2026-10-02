@@ -195,11 +195,14 @@ export class Renderer {
   frameStart() {
     const pending = this.observer?.takeRecords();
     if (pending?.length) this.note(pending);
-    if (this.outside) {
-      if (this.host.prof) this.host.log(1, "PROF frame start: rendering changes made outside the frames");
-      this.render();
+    try {
+      if (this.outside) {
+        if (this.host.prof) this.host.log(1, "PROF frame start: rendering changes made outside the frames");
+        this.render();
+      }
+    } finally {
+      this.inFrame = true;
     }
-    this.inFrame = true;
   }
 
   // A text-only leaf keeps its box, font and parent's layout adjustments.
@@ -841,6 +844,9 @@ export class Renderer {
     // An element holding only text becomes one text view, unless it centers
     // that text as a flex/grid box (a round icon button: ⚙ in a 28px circle):
     // a text view is drawn from its top-left, so keep a box with a text child.
+    // A button's label spans its width (its text-align applies: a menu
+    // item's left-aligned label) and is centered in its height.
+    if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
     if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns) {
       Object.assign(props, textProps(cs, fontSize));
       props.runs = flow[0].text;

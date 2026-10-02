@@ -13839,11 +13839,14 @@ col, colgroup { display: none; }
     frameStart() {
       const pending2 = this.observer?.takeRecords();
       if (pending2?.length) this.note(pending2);
-      if (this.outside) {
-        if (this.host.prof) this.host.log(1, "PROF frame start: rendering changes made outside the frames");
-        this.render();
+      try {
+        if (this.outside) {
+          if (this.host.prof) this.host.log(1, "PROF frame start: rendering changes made outside the frames");
+          this.render();
+        }
+      } finally {
+        this.inFrame = true;
       }
-      this.inFrame = true;
     }
     // A text-only leaf keeps its box, font and parent's layout adjustments.
     // Native layout will measure its new runs after the props operation; its
@@ -14473,6 +14476,7 @@ col, colgroup { display: none; }
         flow.push({ el: child });
       }
       flushRuns();
+      if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
       if (flow.length === 1 && flow[0].text && !before2 && !cs.__rules.after.length && !aligns) {
         Object.assign(props, textProps(cs, fontSize));
         props.runs = flow[0].text;
@@ -15426,6 +15430,8 @@ ${a.stack || ""}`;
   var lastSlot = -1;
   function runFrame() {
     rafPending = false;
+    const due = rafCallbacks;
+    rafCallbacks = /* @__PURE__ */ new Map();
     try {
       renderer?.frameStart();
     } catch (e) {
@@ -15433,8 +15439,6 @@ ${a.stack || ""}`;
     }
     const now = performance.now();
     lastSlot = Math.max(lastSlot, Math.floor(now / FRAME_MS));
-    const due = rafCallbacks;
-    rafCallbacks = /* @__PURE__ */ new Map();
     for (const cb of due.values()) {
       try {
         cb(now);
