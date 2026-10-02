@@ -13729,6 +13729,8 @@ col, colgroup { display: none; }
       this.leafStyles = /* @__PURE__ */ new Map();
       this.leafStyleBytes = 0;
       this.dirty = true;
+      this.outside = false;
+      this.inFrame = false;
       this.native = /* @__PURE__ */ new Map();
       this.cs = /* @__PURE__ */ new WeakMap();
       this.marks = /* @__PURE__ */ new Map();
@@ -13761,6 +13763,7 @@ col, colgroup { display: none; }
     // differently (its attributes), 1 when only its inline style did.
     mark(el, level) {
       if (!el || el.nodeType !== 1) return;
+      if (!this.inFrame) this.outside = true;
       this.textOnly = false;
       if ((this.marks.get(el) || 0) < level) this.marks.set(el, level);
       this.dirty = true;
@@ -13769,12 +13772,14 @@ col, colgroup { display: none; }
     // a click listener.
     markFlat(node, text = false) {
       if (!node) return;
+      if (!this.inFrame) this.outside = true;
       if (!text) this.textOnly = false;
       this.flatMarks.add(node);
       this.dirty = true;
     }
     // The viewport or the theme changed: everything again.
     markAll() {
+      if (!this.inFrame) this.outside = true;
       this.full = true;
       this.dirty = true;
     }
@@ -13821,12 +13826,24 @@ col, colgroup { display: none; }
       if (pending2?.length) this.note(pending2);
       if (!this.dirty || this.rendering) return;
       this.dirty = false;
+      this.outside = false;
       this.rendering = true;
       try {
         if (!this.updateText()) this.renderNow();
       } finally {
         this.rendering = false;
       }
+    }
+    // An animation frame begins (main.js): what the page changed outside the
+    // frames since the last render is rendered now, before the callbacks.
+    frameStart() {
+      const pending2 = this.observer?.takeRecords();
+      if (pending2?.length) this.note(pending2);
+      if (this.outside) {
+        if (this.host.prof) this.host.log(1, "PROF frame start: rendering changes made outside the frames");
+        this.render();
+      }
+      this.inFrame = true;
     }
     // A text-only leaf keeps its box, font and parent's layout adjustments.
     // Native layout will measure its new runs after the props operation; its
@@ -15406,6 +15423,11 @@ ${a.stack || ""}`;
   var lastSlot = -1;
   function runFrame() {
     rafPending = false;
+    try {
+      renderer?.frameStart();
+    } catch (e) {
+      console.error(e);
+    }
     const now = performance.now();
     lastSlot = Math.max(lastSlot, Math.floor(now / FRAME_MS));
     const due = rafCallbacks;
@@ -16301,12 +16323,16 @@ ${a.stack || ""}`;
     for (const a of el.attributes || []) if (a.name.length > 2 && a.name[0] === "o" && a.name[1] === "n") return true;
     return false;
   }
+  var guardDepth = 0;
   function guard(fn) {
+    if (guardDepth++ === 0 && renderer) renderer.inFrame = false;
     try {
       return fn();
     } catch (e) {
       console.error(e);
       return false;
+    } finally {
+      guardDepth--;
     }
   }
   g.__oriel = {
@@ -16456,7 +16482,7 @@ ${a.stack || ""}`;
       guard(() => renderer?.render());
     },
     dirty() {
-      if (renderer) renderer.markAll();
+      guard(() => renderer?.markAll());
     }
   };
   function mediaSnapshot() {

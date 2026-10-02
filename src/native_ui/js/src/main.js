@@ -68,6 +68,7 @@ let rafPending = false;
 let lastSlot = -1;
 function runFrame() {
   rafPending = false;
+  try { renderer?.frameStart(); } catch (e) { console.error(e); }
   const now = performance.now();
   lastSlot = Math.max(lastSlot, Math.floor(now / FRAME_MS));
   const due = rafCallbacks;
@@ -725,8 +726,12 @@ function hasInline(el) {
   return false;
 }
 
+// Each call from the host starts a new task: an animation frame's task
+// (runFrame, its callbacks and their microtasks) ends there.
+let guardDepth = 0;
 function guard(fn) {
-  try { return fn(); } catch (e) { console.error(e); return false; }
+  if (guardDepth++ === 0 && renderer) renderer.inFrame = false;
+  try { return fn(); } catch (e) { console.error(e); return false; } finally { guardDepth--; }
 }
 
 g.__oriel = {
@@ -851,7 +856,7 @@ g.__oriel = {
     guard(() => renderer?.render());
   },
   dirty() {
-    if (renderer) renderer.markAll();
+    guard(() => renderer?.markAll());
   },
 };
 
