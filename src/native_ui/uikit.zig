@@ -155,6 +155,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .invoke = invoke,
         .focus = focus,
         .props = propsChanged,
+        .text = textChanged,
         .request_frame = requestFrame,
     }, assets, platform_json, label, url, width, height);
     s.engine.boot(s.dark, true);
@@ -284,6 +285,10 @@ fn removed(ctx: *anyopaque, n: *Node) void {
 
 /// New props: a text node's CoreText objects are stale.
 fn propsChanged(_: *anyopaque, n: *Node, _: std.json.Value) void {
+    draw.dropText(n);
+}
+
+fn textChanged(_: *anyopaque, n: *Node) void {
     draw.dropText(n);
 }
 

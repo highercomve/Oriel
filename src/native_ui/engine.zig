@@ -43,6 +43,10 @@ pub const Backend = struct {
     focus: *const fn (ctx: *anyopaque, node: *Node) void,
     /// A node's props changed (optional: backends that mirror them).
     props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
+    /// A single text run changed through the direct bridge.
+    text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
+    /// Release backend caches after all native nodes have been removed.
+    deinit: ?*const fn (ctx: *anyopaque) void = null,
     /// Optional: call `Engine.frame()` soon (the next display frame). With
     /// it, the page renders at most once per frame, as a browser does,
     /// however many events reach it; without it, after every call into
@@ -90,6 +94,7 @@ pub const Engine = struct {
         e.tree.height = height;
         e.tree.on_remove = backend.removed;
         e.tree.on_props = backend.props;
+        e.tree.on_text = backend.text;
         e.js = oqjs_new(e, platform_json.ptr, label.ptr, url.ptr) orelse return error.QuickJsInitFailed;
         errdefer oqjs_free(e.js);
         if (oqjs_eval(e.js, runtime_js.ptr, runtime_js.len, "runtime.js") < 0) return error.RuntimeFailed;
@@ -99,6 +104,7 @@ pub const Engine = struct {
     pub fn destroy(e: *Engine) void {
         oqjs_free(e.js);
         e.tree.deinit();
+        if (e.backend.deinit) |deinit| deinit(e.backend.ctx);
         e.script_buf.deinit(e.gpa);
         e.gpa.destroy(e);
     }
@@ -291,6 +297,19 @@ export fn oriel_nui_ops(p: *anyopaque, json: [*]const u8, len: usize) void {
     const e = engineOf(p);
     if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: ops {s}", .{json[0..@min(len, 300)]});
     e.tree.apply(json[0..len]) catch |err| log.err("native ui: bad ops ({s})", .{@errorName(err)});
+}
+
+export fn oriel_nui_text(p: *anyopaque, id: f64, text: [*]const u8, len: usize) c_int {
+    const e = engineOf(p);
+    return if (e.tree.updateText(Tree.idOf(id), text[0..len]) catch return 0) 1 else 0;
+}
+
+export fn oriel_nui_leaf_style(p: *anyopaque, id: f64, json: [*]const u8, len: usize) c_int {
+    return if (engineOf(p).tree.defineLeafStyle(Tree.idOf(id), json[0..len]) catch return 0) 1 else 0;
+}
+
+export fn oriel_nui_leaf(p: *anyopaque, id: f64, style_id: f64, text: [*]const u8, len: usize, is_text: c_int) c_int {
+    return if (engineOf(p).tree.createLeaf(Tree.idOf(id), if (is_text != 0) .text else .view, Tree.idOf(style_id), text[0..len]) catch return 0) 1 else 0;
 }
 
 export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {

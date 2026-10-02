@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node test/html.test.mjs && node test/media.test.mjs && node test/react-inputs.test.mjs && node test/react-real.test.mjs && node test/transitions.test.mjs && node test/animations.test.mjs && node test/harness.mjs"
+    "test": "node test/html.test.mjs && node test/media.test.mjs && node test/render.test.mjs && node test/observer.test.mjs && node test/react-inputs.test.mjs && node test/react-real.test.mjs && node test/transitions.test.mjs && node test/animations.test.mjs && node test/harness.mjs"
   },
   "dependencies": {
     "linkedom": "0.18.13"

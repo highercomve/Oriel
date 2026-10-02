@@ -1,0 +1,122 @@
+{
+  "method": "One visible ReleaseFast process per version; each reports 3 trials per step in a second benchmark round. Same floating window geometry. Native baseline e5f1a2a, updated working tree, WebView existing build from this checkout. No concurrent benchmark or compilation.",
+  "window": {
+    "profile": {
+      "size": [
+        900,
+        700
+      ],
+      "at": [
+        800,
+        350
+      ],
+      "floating": true,
+      "class": "dev.oriel.RenderBench"
+    }
+  },
+  "reports": {
+    "profile": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 42,
+          "runs": [
+            42
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 206,
+          "runs": [
+            206
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 110,
+          "runs": [
+            110
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 211.69,
+          "runs": [
+            211.69,
+            197.27,
+            212.56
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 682.7,
+          "runs": [
+            682.7,
+            680.3,
+            772.61
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 41.17,
+          "runs": [
+            45.5,
+            41.17,
+            40.23
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 126.9,
+          "runs": [
+            138.49,
+            126.9,
+            126.84
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 60.37,
+          "runs": [
+            60.37,
+            60.38,
+            60.37
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60.02,
+          "runs": [
+            60.1,
+            60.01,
+            60.02
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls": {
+          "median": 60,
+          "runs": [
+            60,
+            60,
+            60.03
+          ],
+          "unit": "fps"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 217,
+          "runs": [
+            217
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 221,
+          "runs": [
+            221
+          ],
+          "unit": "MB"
+        }
+      }
+    }
+  }
+}
