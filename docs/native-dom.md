@@ -184,6 +184,35 @@ them in 5.6 ms (9.8 ms), and memory after two rounds stays at 127 MB (152 MB).
 Linux is verified (tests, showcase, GhostPen, the bench); Windows, macOS/iOS
 and Android are next.
 
+**Phase 3, step one: rows stamped from the DOM (2026-10-02).** Profiling
+showed styles weren't the cost for rows (style() and matching ~3% of the
+JavaScript time building them, thanks to style sharing): the flattener and
+emit were (~60%), per child: an id, map entries, a node object, a leaf call
+and its bookkeeping. So phase 2 waits and the flattener's commonest case went
+native first:
+
+- Node ids of DOM nodes are `2^30 +` the store index (`idOf`, `elementFor`
+  through `__nuiDom.index`/`nodeAt`), so the tree can name an element's node
+  without asking JavaScript.
+- A flex row of simple leaves (render.js's row shapes: ordinary tags, class
+  and style attributes only, each child empty or one text node, no listeners
+  or labels) registers a plan once (`host.stampPlan`: each child's leaf
+  styles, its text-transform, the CSS order). Its node is emitted as usual,
+  with no children; after the ops, `host.stamp(row id, row, plan)` has the
+  tree read the children from the store (`dom_stamp.zig`: text with
+  whitespace collapsed as the runtime does) and make, keep or update their
+  leaves (`Tree.stampRow`). The row owns them: they go with it, or when the
+  page's ops set its children.
+- A text change inside a stamped row stamps it again (updateText): leaves
+  whose text is unchanged stay, the row isn't re-attached.
+- Not on Android (no leaf bridge: its backend mirrors each node's props).
+
+Render bench on the desktop: build 1000 rows 40 -> 25 ms, 3000 rows 120 ->
+77 ms, update 1000 5.4 -> 3.6 ms, memory after the tests 192 -> 174 MB.
+A stamped and an unstamped page make the same tree (a differential page:
+text, order, transforms, empty and filled children, removals, and the rows
+that must take the general path).
+
 ## Risks and open questions
 
 - **API surface.** Pages and React use far more DOM than the hot path. Mitigation:

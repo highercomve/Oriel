@@ -34,6 +34,10 @@ extern void oriel_nui_timer(void *opaque, uint32_t timer_id, double ms);
 extern void oriel_nui_ops(void *opaque, const char *json, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
 extern int oriel_nui_vsync(void *opaque);
+extern uint32_t oriel_nui_stamp_plan(void *opaque, const double *v, size_t len);
+#if defined(ORIEL_NATIVE_DOM)
+extern int oriel_nui_stamp(void *opaque, double row_id, void *dom, uint32_t row, uint32_t plan);
+#endif
 extern int oriel_nui_leaf_style(void *opaque, double id, const char *json, size_t len);
 extern int oriel_nui_leaf(void *opaque, double id, double style_id, const char *text, size_t len, int is_text);
 extern int oriel_nui_frame(void *opaque, double id, double *out5);
@@ -192,6 +196,41 @@ static JSValue h_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
     JS_FreeCString(ctx, s);
     return JS_NewBool(ctx, ok);
 }
+
+#if defined(ORIEL_NATIVE_DOM) && !defined(__ANDROID__)
+// host.stampPlan([n, (text style, box style, transform) x n, order x n]):
+// a row plan's id for host.stamp, 0 when not kept (tree.zig).
+static JSValue h_stamp_plan(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    int64_t len;
+    if (argc < 1 || JS_GetLength(ctx, argv[0], &len) < 0) return JS_EXCEPTION;
+    if (len <= 0 || len > 1 + 64 * 4) return JS_NewUint32(ctx, 0);
+    double v[1 + 64 * 4];
+    for (int64_t i = 0; i < len; i++) {
+        JSValue x = JS_GetPropertyUint32(ctx, argv[0], (uint32_t)i);
+        int bad = JS_ToFloat64(ctx, &v[i], x);
+        JS_FreeValue(ctx, x);
+        if (bad) return JS_EXCEPTION;
+    }
+    return JS_NewUint32(ctx, oriel_nui_stamp_plan(opaque_of(ctx), v, (size_t)len));
+}
+#endif
+
+#if defined(ORIEL_NATIVE_DOM) && !defined(__ANDROID__)
+// host.stamp(rowId, rowElement, plan): the tree makes the row's leaves from
+// the native DOM itself (dom_stamp.zig); false when the row doesn't have
+// the plan's shape now.
+static JSValue h_stamp(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    double row_id;
+    uint32_t plan;
+    if (argc < 3 || JS_ToFloat64(ctx, &row_id, argv[0]) || JS_ToUint32(ctx, &plan, argv[2])) return JS_EXCEPTION;
+    void *dom = nui_dom_of_ctx(ctx);
+    uint32_t row = nui_dom_node_index(argv[1]);
+    if (!dom || !row) return JS_FALSE;
+    return JS_NewBool(ctx, oriel_nui_stamp(opaque_of(ctx), row_id, dom, row, plan));
+}
+#endif
 
 // host.vsync(): __oriel.vsync(interval) at the display's next refresh;
 // false when the backend can't (requestAnimationFrame keeps its timers).
@@ -455,6 +494,12 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "frame", h_frame, 1);
     set_fn(ctx, host, "now", h_now, 0);
     set_fn(ctx, host, "vsync", h_vsync, 0);
+#if defined(ORIEL_NATIVE_DOM) && !defined(__ANDROID__)
+    // Rows stamped from the native DOM: only with host.leaf (not Android,
+    // whose backend mirrors every node's props).
+    set_fn(ctx, host, "stampPlan", h_stamp_plan, 1);
+    set_fn(ctx, host, "stamp", h_stamp, 3);
+#endif
     set_fn(ctx, host, "focus", h_focus, 1);
     set_fn(ctx, host, "scrollIntoView", h_scroll_into_view, 2);
     set_fn(ctx, host, "scrollTo", h_scroll_to, 2);
