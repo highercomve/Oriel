@@ -510,9 +510,10 @@ fn addOrielModule(
     // (src/native_ui/prof.zig); compiled out without it.
     const native_ui_prof = b.option(bool, "native_ui_prof", "Log the native renderer's stage timings (src/native_ui/prof.zig)") orelse false;
     options.addOption(bool, "native_ui_prof", native_ui_prof);
-    // -Dnative_dom: the native renderer's DOM is the native one
-    // (src/native_ui/dom, docs/native-dom.md) instead of linkedom.
-    const native_dom = b.option(bool, "native_dom", "Use the native DOM in the native renderer (docs/native-dom.md)") orelse false;
+    // The native renderer's DOM: the native one (src/native_ui/dom,
+    // docs/native-dom.md) by default; -Dnative_dom=false for linkedom (to
+    // compare, or as a fallback).
+    const native_dom = features.native_ui and (b.option(bool, "native_dom", "With -Dnative_ui: the native DOM (default), or linkedom when false (docs/native-dom.md)") orelse true);
     options.addOption(bool, "native_dom", native_dom);
 
     const is_android = target.result.abi.isAndroid();
