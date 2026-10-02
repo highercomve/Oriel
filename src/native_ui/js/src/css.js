@@ -372,11 +372,20 @@ export class StyleEngine {
 
   // Specified values (longhands) for one element from its rules and inline style.
   static cascade(rules, inline) {
-    const sorted = rules.slice().sort((x, y) => cmpSpec(x.spec, y.spec) || x.order - y.order);
     const normal = {}, important = {};
-    for (const r of sorted) for (const d of r.decls) expand(d.prop, d.value, d.important ? important : normal);
-    if (inline) for (const d of inline) expand(d.prop, d.value, d.important ? important : normal);
+    StyleEngine.expandInto(StyleEngine.sorted(rules).flatMap((r) => r.decls), normal, important);
+    if (inline) StyleEngine.expandInto(inline, normal, important);
     return Object.assign(normal, important);
+  }
+
+  // Rules in cascade order: specificity, then source order.
+  static sorted(rules) {
+    return rules.slice().sort((x, y) => cmpSpec(x.spec, y.spec) || x.order - y.order);
+  }
+
+  // Declarations → longhands, into `normal` or (!important) `important`.
+  static expandInto(decls, normal, important) {
+    for (const d of decls) expand(d.prop, d.value, d.important ? important : normal);
   }
 }
 

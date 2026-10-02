@@ -157,7 +157,7 @@ for (let proto = Object.getPrototypeOf(document.body); proto; proto = Object.get
   if (Object.prototype.hasOwnProperty.call(proto, "addEventListener")) {
     const orig = proto.addEventListener;
     proto.addEventListener = function (type, fn, opts) {
-      if (type === "click" || type === "mousedown" || type === "pointerdown") { this.__listens = true; renderer && (renderer.dirty = true); }
+      if (type === "click" || type === "mousedown" || type === "pointerdown") { this.__listens = true; renderer?.markFlat(this); }
       return orig.call(this, type, fn, opts);
     };
     break;
@@ -176,7 +176,7 @@ void ET;
   if (desc?.get) {
     const wrapped = new WeakMap();
     // try: a write before `let renderer` below has run (TDZ) is ignored.
-    const touch = () => { try { if (renderer) renderer.dirty = true; } catch {} };
+    const touch = (el) => { try { if (renderer) renderer.mark(el, 1); } catch {} };
     Object.defineProperty(proto, "style", {
       configurable: true,
       get() {
@@ -184,11 +184,12 @@ void ET;
         if (!real || typeof real !== "object") return real;
         let w = wrapped.get(real);
         if (!w) {
+          const el = this;
           w = new Proxy(real, {
-            set(t, k, v) { t[k] = v; touch(); return true; },
+            set(t, k, v) { t[k] = v; touch(el); return true; },
             get(t, k) {
               const v = t[k];
-              if (k === "setProperty" || k === "removeProperty") return (...a) => { const r = v.apply(t, a); touch(); return r; };
+              if (k === "setProperty" || k === "removeProperty") return (...a) => { const r = v.apply(t, a); touch(el); return r; };
               return typeof v === "function" ? v.bind(t) : v;
             },
           });
@@ -196,7 +197,7 @@ void ET;
         }
         return w;
       },
-      set(v) { desc.set ? desc.set.call(this, v) : this.setAttribute("style", String(v)); touch(); },
+      set(v) { desc.set ? desc.set.call(this, v) : this.setAttribute("style", String(v)); touch(this); },
     });
   }
 }
@@ -277,7 +278,13 @@ formProto.reset = function () {
 
 // Layout reads, from the native layout.
 const elProto = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div")));
-const frameOf = (el) => (renderer && host.frame(renderer.idOf(el, "el"))) || [0, 0, 0, 0];
+// As in a browser, a layout read renders what changed first (the page just
+// added these elements: their size, not 0).
+const frameOf = (el) => {
+  if (!renderer) return [0, 0, 0, 0];
+  if (!renderer.rendering) renderer.render();
+  return host.frame(renderer.idOf(el, "el")) || [0, 0, 0, 0];
+};
 Object.defineProperties(elProto, {
   offsetWidth: { get() { return frameOf(this)[2]; }, configurable: true },
   offsetHeight: { get() { return frameOf(this)[3]; }, configurable: true },
@@ -699,7 +706,9 @@ g.__oriel = {
         else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
       }
       renderer = new Renderer(document, engine, host);
-      new MutationObserver(() => { renderer.dirty = true; }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+      // What changed, for the next render (render.js: only that is made again).
+      renderer.observer = new MutationObserver((records) => renderer.note(records));
+      renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
       // The page's scripts, in order, at the top level (like <script> tags).
       for (const s of document.querySelectorAll("script")) {
         const src = s.getAttribute("src");
@@ -794,7 +803,7 @@ g.__oriel = {
     guard(() => {
       const before = mediaSnapshot();
       Object.assign(viewport, { width: w, height: h, dark: !!dark });
-      if (renderer) renderer.dirty = true;
+      if (renderer) renderer.markAll();
       fireWindow(new Event("resize"));
       for (const ml of mediaLists) {
         const m = ml.matches;
@@ -813,7 +822,7 @@ g.__oriel = {
     guard(() => renderer?.render());
   },
   dirty() {
-    if (renderer) renderer.dirty = true;
+    if (renderer) renderer.markAll();
   },
 };
 

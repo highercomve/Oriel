@@ -572,11 +572,16 @@ pub const Tree = struct {
         // ones fails, the node must not keep pointing into the arena.
         n.props = .{};
         const a = n.arena.allocator();
-        // Copy the JSON value into the node's arena (the ops arena goes away).
-        const copy = try cloneValue(a, value);
-        n.props = std.json.parseFromValueLeaky(Props, a, copy, .{ .ignore_unknown_fields = true }) catch |err| blk: {
+        // Parsed from the ops' JSON into the node's arena (the ops arena goes
+        // away): std.json copies strings and slices, not the Dims (JSON
+        // values), whose strings ownProps copies.
+        n.props = std.json.parseFromValueLeaky(Props, a, value, .{ .ignore_unknown_fields = true }) catch |err| blk: {
             log.warn("node {d}: bad props ({s})", .{ n.id, @errorName(err) });
             break :blk .{};
+        };
+        ownProps(a, &n.props) catch |err| {
+            n.props = .{};
+            return err;
         };
         if (n.props.val) |v| {
             n.pending_value = v;
@@ -585,13 +590,14 @@ pub const Tree = struct {
         }
         // A canvas's drawing program (its arena holds the strings).
         n.canvas = null;
-        if (copy == .object) if (copy.object.get("cv")) |cv| {
+        if (value == .object) if (value.object.get("cv")) |cv| {
             if (parseCanvasCmds(a, cv)) |cmds| {
                 n.canvas = cmds;
             } else |err| log.warn("node {d}: bad canvas ops ({s})", .{ n.id, @errorName(err) });
         };
         styleYoga(n);
-        if (t.on_props) |cb| cb(t.measure_ctx, n, copy);
+        // The props as sent, valid during the call (the ops arena).
+        if (t.on_props) |cb| cb(t.measure_ctx, n, value);
         if (yg.YGNodeHasMeasureFunc(n.yn)) yg.YGNodeMarkDirty(n.yn);
     }
 
@@ -938,6 +944,27 @@ fn measureFn(node: yg.YGNodeConstRef, width: f32, width_mode: yg.YGMeasureMode, 
     return .{ .width = out[0], .height = out[1] };
 }
 
+/// A Dim's string into the node's arena (numbers need nothing).
+fn ownDim(a: std.mem.Allocator, d: *Dim) !void {
+    d.* = switch (d.*) {
+        .string, .number_string, .array, .object => try cloneValue(a, d.*),
+        else => return,
+    };
+}
+
+/// The Dims in parsed props, which still point into the ops' JSON.
+fn ownProps(a: std.mem.Allocator, p: *Props) !void {
+    inline for (std.meta.fields(Props)) |f| {
+        switch (f.type) {
+            ?Dim => if (@field(p, f.name)) |*d| try ownDim(a, d),
+            ?[4]Dim => if (@field(p, f.name)) |*arr| for (arr) |*d| try ownDim(a, d),
+            ?[4]?Dim => if (@field(p, f.name)) |*arr| for (arr) |*od| if (od.*) |*d| try ownDim(a, d),
+            else => {},
+        }
+    }
+    if (p.bg) |*bg| if (bg.gradient) |*g| if (g.radial) |*r| for (r) |*d| try ownDim(a, d);
+}
+
 fn cloneValue(a: std.mem.Allocator, v: std.json.Value) !std.json.Value {
     return switch (v) {
         .string => |s| .{ .string = try a.dupe(u8, s) },
@@ -1088,6 +1115,23 @@ test "a field's pending value survives a props update without one" {
     try t.apply("[[\"p\",1,{\"ph\":\"" ++ ("y" ** 20000) ++ "\"}]]");
     const n = t.get(1).?;
     try std.testing.expectEqualStrings(long, n.pending_value.?);
+}
+
+test "props' strings outlive the ops they came in" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply("[[\"c\",1,\"view\"],[\"p\",1,{\"w\":\"50%\",\"m\":[\"auto\",1,2,\"10%\"],\"ins\":[null,\"5%\",3,null],\"bg\":{\"gradient\":{\"radial\":[\"50%\",\"25%\",8,\"71%\"],\"stops\":[[1,2,3,1,0]]}},\"fd\":\"row\"}]]");
+    // Another apply reuses the freed ops memory.
+    try t.apply("[[\"c\",2,\"view\"],[\"p\",2,{\"w\":\"XXXXXXXX\",\"m\":[\"XXXXXXX\",1,2,\"XXXXXX\"],\"fd\":\"column\"}]]");
+    const p = t.get(1).?.props;
+    try std.testing.expectEqualStrings("50%", p.w.?.string);
+    try std.testing.expectEqualStrings("auto", p.m.?[0].string);
+    try std.testing.expectEqualStrings("10%", p.m.?[3].string);
+    try std.testing.expectEqualStrings("5%", p.ins.?[1].?.string);
+    try std.testing.expectEqualStrings("71%", p.bg.?.gradient.?.radial.?[3].string);
+    try std.testing.expectEqualStrings("row", p.fd.?);
 }
 
 test "ops with a bad shape or id are skipped" {
