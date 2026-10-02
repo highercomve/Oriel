@@ -87,6 +87,7 @@ extern void nui_dom_collect(Dom *d);
 extern Index nui_dom_create_document(Dom *d);
 extern int nui_dom_keep_selector(Dom *d, const uint8_t *bytes, size_t len);
 extern bool nui_dom_match_kept(Dom *d, Index idx, uint32_t id);
+extern bool nui_dom_alive(Dom *d, Index idx);
 extern bool nui_dom_class_style_only(Dom *d, Index idx, bool allow_style, const JSValue **cls, const JSValue **style);
 
 enum { K_ELEMENT = 1, K_TEXT = 3, K_COMMENT = 8, K_DOCUMENT = 9, K_FRAGMENT = 11 };
@@ -982,6 +983,20 @@ static JSValue nd_create_element(JSContext *ctx, JSValueConst this_val, int argc
     return wrap(ctx, dc, n);
 }
 
+// __nuiDom.index(node): its store index (the renderer's node ids, which
+// the tree can stamp from the DOM itself); 0 for no node.
+static JSValue nd_index(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return JS_NewUint32(ctx, (Index)(uintptr_t)JS_GetOpaque(argv[0], node_class_id));
+}
+
+// __nuiDom.nodeAt(index): the node there now, or null.
+static JSValue nd_node_at(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    DomCtx *dc = dc_of(ctx);
+    uint32_t idx;
+    if (JS_ToUint32(ctx, &idx, argv[0]) || !nui_dom_alive(dc->dom, idx)) return JS_NULL;
+    return wrap(ctx, dc, idx);
+}
+
 static JSValue nd_is_foreign(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     DomCtx *dc = dc_of(ctx);
     Index idx = (Index)(uintptr_t)JS_GetOpaque(argv[0], node_class_id);
@@ -1000,6 +1015,8 @@ static const JSCFunctionListEntry nui_dom_funcs[] = {
     JS_CFUNC_DEF("createElement", 2, nd_create_element),
     JS_CFUNC_DEF("setForeign", 2, nd_set_foreign),
     JS_CFUNC_DEF("isForeign", 1, nd_is_foreign),
+    JS_CFUNC_DEF("index", 1, nd_index),
+    JS_CFUNC_DEF("nodeAt", 1, nd_node_at),
 };
 
 // --- Setup ----------------------------------------------------------------------------
@@ -1175,4 +1192,15 @@ void nui_dom_uninstall(DomCtx *dc) {
     // Wrappers freed later (with the context) find no DOM.
     JS_SetRuntimeOpaque(JS_GetRuntime(ctx), NULL);
     js_free(ctx, dc);
+}
+
+// For host.stamp (qjs_shim.c): the context's DOM, and a value's node index
+// (0 when it isn't a node).
+void *nui_dom_of_ctx(JSContext *ctx) {
+    DomCtx *dc = dc_of(ctx);
+    return dc ? dc->dom : NULL;
+}
+
+uint32_t nui_dom_node_index(JSValueConst v) {
+    return (Index)(uintptr_t)JS_GetOpaque(v, node_class_id);
 }
