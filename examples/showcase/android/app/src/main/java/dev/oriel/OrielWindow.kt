@@ -67,10 +67,13 @@ internal class OrielWindow(
     }
 
     private val context = MutableContextWrapper(OrielRuntime.app)
+    /** Shown in a translucent Activity (OrielTransparentWindowActivity). The
+     *  main window's Activity is opaque: it opens from the launcher. */
+    val translucent get() = flags and FLAG_TRANSPARENT != 0 && flags and FLAG_MAIN == 0
     val native get() = flags and FLAG_NATIVE != 0
     var webView: WebView? = if (native) null else createWebView()
         private set
-    private val nui: NuiView? = if (native) NuiView(context, id) { w, h ->
+    private val nui: NuiView? = if (native) NuiView(context, id, translucent) { w, h ->
         val density = context.resources.displayMetrics.density
         cssWidth = (w / density).toInt()
         cssHeight = (h / density).toInt()

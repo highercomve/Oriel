@@ -402,7 +402,7 @@ internal object SvgPath {
  * EditText/Spinner children placed at their nodes' content boxes.
  */
 @SuppressLint("ViewConstructor")
-internal class NuiView(context: Context, val window: Int, private val onSize: (Int, Int) -> Unit) : FrameLayout(context) {
+internal class NuiView(context: Context, val window: Int, private val transparent: Boolean, private val onSize: (Int, Int) -> Unit) : FrameLayout(context) {
     private val nodes = HashMap<Int, NuiNode>()
     private val fields = HashMap<Int, View>()
     /** Each select's value as last shown (the page's, or the user's pick). */
@@ -416,8 +416,9 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
     /** The page prevented the last Enter (its key up is consumed too). */
     private var enterTaken = false
     private var dark = Nui.isDark(resources.configuration)
-    /** Under the page: white, as in a browser, until the root has a background. */
-    private var background: Int = Color.WHITE
+    /** Under the page: the root's background; else white, as in a browser, or nothing in a transparent window. */
+    private val pageDefault = if (transparent) Color.TRANSPARENT else Color.WHITE
+    private var background: Int = pageDefault
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
@@ -436,8 +437,9 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
     fun props(id: Int, kind: String, json: String) {
         val n = nodes.getOrPut(id) { NuiNode(id, kind) }
         n.update(json, kind)
+        orderDirty = true // z-index or position may have changed
         if (kind == "image") decodeImage(n)
-        if (n.p.optBoolean("root")) background = n.bg ?: Color.WHITE
+        if (n.p.optBoolean("root")) background = n.bg ?: pageDefault
         val f = fields[id]
         if (f != null) styleField(n, f)
     }
@@ -499,6 +501,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
         index.clear()
         var i = 0
         while (i + REC <= frames.size) { index[frames[i].toInt()] = i; i += REC }
+        orderDirty = true
         syncFields()
         requestLayout()
         invalidate()
@@ -583,19 +586,20 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
 
     /**
      * The visible boxes with a background painted after the field at record
-     * `r` (records come in paint order): a sticky footer, a z-index bar. The
+     * `r` (in paint order, after its subtree): a sticky footer, a z-index bar. The
      * canvas draws them over the field, but its widget sits above the canvas.
      */
     private fun paintedOver(r: Int): List<RectF> {
         val out = ArrayList<RectF>()
-        var k = r + REC * (1 + frames[r + 13].toInt())
-        while (k + REC <= frames.size) {
+        ensurePaintOrder()
+        val from = paintEnd[r] ?: return out
+        for (pos in from until paintOrder.size) {
+            val k = paintOrder[pos]
             val n = nodes[frames[k].toInt()]
             if (n != null && (n.bg?.let { Color.alpha(it) > 0 } == true || n.gradient != null)) {
                 val v = RectF(frames[k + 1], frames[k + 2], frames[k + 1] + frames[k + 3], frames[k + 2] + frames[k + 4])
                 if (v.intersect(frames[k + 5], frames[k + 6], frames[k + 5] + frames[k + 7], frames[k + 6] + frames[k + 8])) out += v
             }
-            k += REC
         }
         return out
     }
@@ -962,12 +966,63 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
         if (frames.size < REC) return
         canvas.save()
         canvas.scale(density, density)
-        var i = 0
-        while (i + REC <= frames.size) {
-            draw(canvas, i)
-            i += REC * (1 + frames[i + 13].toInt())
-        }
+        ensurePaintOrder()
+        for (r in topLevel) draw(canvas, r)
         canvas.restore()
+    }
+
+    // --- Paint order -------------------------------------------------------------
+    // CSS's, as tree.zig's PaintIter: a parent's children by layer (2 × z-index,
+    // +1 for a positioned or sticky box), tree order within a layer. A sticky
+    // header paints over the rows scrolled under it. Computed once per change.
+
+    private var orderDirty = true
+    private var topLevel = IntArray(0)
+    /** Each record's children in paint order (records of `frames`). */
+    private val kidsInOrder = HashMap<Int, IntArray>()
+    /** Every record in paint order, and where each one's subtree ends in it. */
+    private var paintOrder = IntArray(0)
+    private val paintEnd = HashMap<Int, Int>()
+
+    private fun layerOf(k: Int): Long {
+        val p = nodes[frames[k].toInt()]?.p ?: return 0
+        val positioned = p.has("pos") || p.has("sticky") || p.has("rel")
+        val z = (p.opt("z") as? Number)?.toLong() ?: 0L
+        return 2 * z + if (positioned) 1 else 0
+    }
+
+    private fun ordered(records: List<Int>): IntArray {
+        if (records.size < 2) return records.toIntArray()
+        val layers = records.map { layerOf(it) }
+        if (layers.all { it == layers[0] }) return records.toIntArray()
+        // A stable sort: tree order within a layer.
+        return records.indices.sortedBy { layers[it] }.map { records[it] }.toIntArray()
+    }
+
+    private fun ensurePaintOrder() {
+        if (!orderDirty) return
+        orderDirty = false
+        kidsInOrder.clear()
+        paintEnd.clear()
+        val f = frames
+        val tops = ArrayList<Int>()
+        var i = 0
+        while (i + REC <= f.size) { tops += i; i += REC * (1 + f[i + 13].toInt()) }
+        topLevel = ordered(tops)
+        val out = ArrayList<Int>(f.size / REC)
+        fun visit(r: Int) {
+            out += r
+            val end = r + REC * (1 + f[r + 13].toInt())
+            val kids = ArrayList<Int>()
+            var k = r + REC
+            while (k < end && k + REC <= f.size) { kids += k; k += REC * (1 + f[k + 13].toInt()) }
+            val order = ordered(kids)
+            kidsInOrder[r] = order
+            for (c in order) visit(c)
+            paintEnd[r] = out.size
+        }
+        for (r in topLevel) visit(r)
+        paintOrder = out.toIntArray()
     }
 
     /** Record `r` and its subtree (the records after it). */
@@ -1029,11 +1084,7 @@ internal class NuiView(context: Context, val window: Int, private val onSize: (I
                 }
             }
         }
-        var k = r + REC
-        while (k < end) {
-            draw(canvas, k)
-            k += REC * (1 + f[k + 13].toInt())
-        }
+        for (k in kidsInOrder[r] ?: IntArray(0)) draw(canvas, k)
         canvas.restoreToCount(save)
     }
 

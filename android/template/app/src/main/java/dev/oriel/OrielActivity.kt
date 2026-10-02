@@ -252,4 +252,7 @@ class OrielLaunchActivity : Activity() {
 }
 
 /** Every other window, each in its own task. */
-class OrielWindowActivity : OrielActivity()
+open class OrielWindowActivity : OrielActivity()
+
+/** A transparent window (Theme.Oriel.Transparent): a translucent Activity. */
+class OrielTransparentWindowActivity : OrielWindowActivity()
