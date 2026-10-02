@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { background: #20242c; color: #e8eaee; margin: 0; padding: 12px; font-size: 14px; }
+  canvas { border-radius: 8px; display: block; }
+  #c1 { background: #111; }
+</style>
+</head>
+<body>
+  <div>Canvas demo</div>
+  <canvas id="c1" width="320" height="180"></canvas>
+  <canvas id="c2" width="120" height="60"></canvas>
+  <script>
+    const c1 = document.getElementById("c1").getContext("2d");
+    // Static drawing: a rect, a gradient, a path, text.
+    c1.fillStyle = "#1c355e";
+    c1.fillRect(10, 10, 300, 160);
+    const g = c1.createLinearGradient(0, 0, 320, 0);
+    g.addColorStop(0, "rgba(109,139,255,0.9)");
+    g.addColorStop(1, "#6d8bff");
+    c1.fillStyle = g;
+    c1.fillRect(10, 10, 100, 40);
+    c1.beginPath();
+    c1.arc(200, 100, 40, 0, 2 * Math.PI);
+    c1.fillStyle = "rgba(255,120,80,0.8)";
+    c1.fill();
+    c1.strokeStyle = "#ffffff";
+    c1.lineWidth = 2;
+    c1.beginPath();
+    c1.moveTo(20, 170);
+    c1.lineTo(300, 120);
+    c1.stroke();
+    c1.fillStyle = "#fff";
+    c1.font = "bold 16px sans-serif";
+    c1.textBaseline = "top";
+    c1.fillText("Hello canvas", 120, 20);
+
+    const c2 = document.getElementById("c2").getContext("2d");
+    let t = 0;
+    // A game loop: full clear (the program resets), then one frame.
+    function frame() {
+      c2.fillStyle = "#000";
+      c2.fillRect(0, 0, 120, 60);
+      c2.fillStyle = "#4f8";
+      const x = 60 + 40 * Math.sin(t);
+      c2.fillRect(x - 5, 25, 10, 10);
+      t += 0.1;
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

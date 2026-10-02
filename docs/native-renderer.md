@@ -50,6 +50,7 @@ thread. `App.emit` reaches the page through the same
 | `input`, `textarea` | One native text field |
 | `input type=checkbox` | One native switch |
 | `svg` with `<use href="#symbol">`, `img` | One image (the SVG rasterized at its size and color) |
+| `canvas` (2d context) | One view that replays the recorded 2d program (see below) |
 | `display: none`, `[hidden]` | Nothing |
 
 Events go the other way: a click on a native view becomes a `click` on its
@@ -76,18 +77,44 @@ the animated nodes are sent each frame).
 Ignored for now (the layout still works): animating `background-position`,
 skew and 3D transforms, `filter`, `backdrop-filter` (a blurred background is
 drawn opaque). Not supported: floats,
-inline blocks flowing in text, `position: sticky`, `img`, `canvas`,
-`iframe`, `contenteditable`, layout queries beyond sizes and
+inline blocks flowing in text, `position: sticky`, `img`, `iframe`,
+`contenteditable`, layout queries beyond sizes and
 `scrollHeight`.
 
 ## Limits and costs
 
 - The fake DOM and style engine cost memory (a few MB), still far below a
   WebView renderer.
-- Code that measures layout or draws (`canvas`, `getBoundingClientRect`
+- Code that measures layout or draws (`getBoundingClientRect`
   beyond sizes Yoga knows) does not work.
 - DOM-based UI libraries that rely on the browser's layout or event details
   may not work.
+
+## Canvas
+
+`<canvas>` works with a 2d context, without a bitmap (`src/native_ui/js/src/canvas.js`):
+`getContext("2d")` returns a recorder, and each drawing call appends a compact
+op to the element's program, which travels as the node's `cv` prop and is
+replayed into the backend's draw pass on every paint — Cairo's own calls on
+GTK, in the same pass that draws the boxes (no extra surface, no texture).
+
+Supported: `fillRect`, `strokeRect`, `clearRect`, `beginPath`, `closePath`,
+`moveTo`, `lineTo`, `rect`, `arc`, `ellipse`, `bezierCurveTo`,
+`quadraticCurveTo` (as a cubic), `fill` (winding and evenodd), `stroke`,
+`clip`, `save`/`restore`, `translate`/`scale`/`rotate`, `fillText`,
+`strokeText`, colors (hex, `rgb()`, `hsl()`, names) and linear and radial
+gradients, `globalAlpha`, `lineWidth`/`lineCap`/`lineJoin`, `font` (size,
+weight, style, family), `textAlign` and `textBaseline`.
+
+Not a bitmap: no `drawImage`, no `getImageData`/`putImageData`, no
+`measureText` (a width estimate; Pango measures the DOM's text) and no
+patterns. The program re-runs whole on every paint, so it must stand for
+the whole bitmap: a `clearRect` — or an opaque `fillRect` — that covers it
+all with no clip or transform in effect drops everything recorded before it
+(a game loop's clear-then-redraw then keeps one frame's ops); drawing
+without such a clear accumulates, as in a browser.
+
+Only GTK draws canvases for now; elsewhere they lay out but draw nothing.
 
 ## Milestones
 
