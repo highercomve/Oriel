@@ -68,6 +68,10 @@ let rafPending = false;
 let lastSlot = -1;
 function runFrame() {
   rafPending = false;
+  // What the page changed since the last frame is rendered before this
+  // frame's callbacks, as a browser renders at the end of every frame (the
+  // engine's own frame, paced after a long render, may not have come yet).
+  try { if (renderer?.dirty && !renderer.rendering) renderer.render(); } catch (e) { console.error(e); }
   const now = performance.now();
   lastSlot = Math.max(lastSlot, Math.floor(now / FRAME_MS));
   const due = rafCallbacks;

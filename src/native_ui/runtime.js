@@ -15406,6 +15406,11 @@ ${a.stack || ""}`;
   var lastSlot = -1;
   function runFrame() {
     rafPending = false;
+    try {
+      if (renderer?.dirty && !renderer.rendering) renderer.render();
+    } catch (e) {
+      console.error(e);
+    }
     const now = performance.now();
     lastSlot = Math.max(lastSlot, Math.floor(now / FRAME_MS));
     const due = rafCallbacks;
