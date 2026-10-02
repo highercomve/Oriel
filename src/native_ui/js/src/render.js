@@ -14,7 +14,7 @@ import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor } from "./icons.js";
 import { commandsOf } from "./canvas.js";
-import { NEXT } from "../vendor/linkedom/esm/shared/symbols.js";
+import { classStyle } from "#dom";
 
 // The user-agent stylesheet: what browsers do without CSS.
 export const UA_CSS = `
@@ -518,12 +518,8 @@ export class Renderer {
     let ok = !!parent && parent.nodeType === 1;
     let cls = "";
     if (ok) {
-      // linkedom's attributes getter allocates an array and a Proxy on
-      // every read. Its attributes precede the children in the node list.
-      for (let a = el[NEXT]; a?.nodeType === 2; a = a[NEXT]) {
-        if (a.name === "class") cls = a.value;
-        else if (a.name !== "style" || this.styleAttrRules) { ok = false; break; }
-      }
+      const cs = classStyle(el, !this.styleAttrRules);
+      if (cs) cls = cs[0] ?? ""; else ok = false;
     }
     if (ok) {
       const name = `${this.shareKey(parent)}|${el.localName}|${cls}`;
@@ -647,12 +643,9 @@ export class Renderer {
     for (let child = el.firstChild; child; child = child.nextSibling) {
       if (child.nodeType === 8) continue;
       if (child.nodeType !== 1 || !TEMPLATE_LEAF.has(child.localName) || child.firstElementChild) return null;
-      let cls = "", inline = "";
-      for (let a = child[NEXT]; a?.nodeType === 2; a = a[NEXT]) {
-        if (a.name === "class") cls = a.value;
-        else if (a.name === "style") inline = a.value;
-        else return null;
-      }
+      const cs = classStyle(child, true);
+      if (!cs) return null;
+      const cls = cs[0] ?? "", inline = cs[1] ?? "";
       const tag = child.localName;
       key += `${tag.length}:${tag}${cls.length}:${cls}${inline.length}:${inline}`;
       children.push(child);

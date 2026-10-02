@@ -18,6 +18,11 @@ const log = std.log.scoped(.native_ui);
 /// as QuickJS bytecode (compiled at build time: tools/qjs_bytecode.c).
 const runtime_bytecode = @import("runtime_bytecode").data;
 
+// -Dnative_dom: the native DOM's C API (dom_qjs.c calls it).
+comptime {
+    if (@import("build_options").native_dom) _ = @import("dom/capi.zig");
+}
+
 extern fn oqjs_new(opaque_ptr: *anyopaque, platform_json: [*:0]const u8, label: [*:0]const u8, url: [*:0]const u8) ?*anyopaque;
 extern fn oqjs_eval(h: *anyopaque, code: [*]const u8, len: usize, name: [*:0]const u8) c_int;
 extern fn oqjs_eval_bytecode(h: *anyopaque, code: [*]const u8, len: usize) c_int;

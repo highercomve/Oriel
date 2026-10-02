@@ -177,6 +177,13 @@ Phase by phase, the renderer reads more from the store directly:
 Phase 0 decides whether the rest is worth it: if a native DOM isn't clearly
 faster through QuickJS's C calls, we stop there.
 
+**Status (2026-10-02):** phases 0 and 1 are in. With `-Dnative_ui` the native
+DOM is the default; `-Dnative_dom=false` builds on linkedom. On the desktop
+the render bench builds 1000 rows in 39.7 ms (linkedom: 84.5 ms) and updates
+them in 5.6 ms (9.8 ms), and memory after two rounds stays at 127 MB (152 MB).
+Linux is verified (tests, showcase, GhostPen, the bench); Windows, macOS/iOS
+and Android are next.
+
 ## Risks and open questions
 
 - **API surface.** Pages and React use far more DOM than the hot path. Mitigation:

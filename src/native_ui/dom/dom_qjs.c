@@ -83,6 +83,7 @@ extern Index nui_dom_child_named(Dom *d, Index parent, uint32_t name);
 extern bool nui_dom_foreign(Dom *d, Index idx);
 extern void nui_dom_set_foreign(Dom *d, Index idx, bool foreign);
 extern void nui_dom_observe(Dom *d, bool on, bool connected_only);
+extern void nui_dom_collect(Dom *d);
 extern Index nui_dom_create_document(Dom *d);
 extern int nui_dom_keep_selector(Dom *d, const uint8_t *bytes, size_t len);
 extern bool nui_dom_match_kept(Dom *d, Index idx, uint32_t id);
@@ -896,6 +897,13 @@ static JSValue nd_observe(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     return JS_UNDEFINED;
 }
 
+// __nuiDom.collect(): frees detached trees nothing holds (only where no DOM
+// operation is under way: the engine's render).
+static JSValue nd_collect(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    nui_dom_collect(dc_of(ctx)->dom);
+    return JS_UNDEFINED;
+}
+
 static JSValue nd_keep_selector(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     DomCtx *dc = dc_of(ctx);
     size_t len;
@@ -983,6 +991,7 @@ static JSValue nd_is_foreign(JSContext *ctx, JSValueConst this_val, int argc, JS
 static const JSCFunctionListEntry nui_dom_funcs[] = {
     JS_CFUNC_DEF("setProto", 2, nd_set_proto),
     JS_CFUNC_DEF("observe", 2, nd_observe),
+    JS_CFUNC_DEF("collect", 0, nd_collect),
     JS_CFUNC_DEF("keepSelector", 1, nd_keep_selector),
     JS_CFUNC_DEF("matchKept", 2, nd_match_kept),
     JS_CFUNC_DEF("classStyle", 2, nd_class_style),

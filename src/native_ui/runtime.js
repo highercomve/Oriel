@@ -12183,6 +12183,195 @@ globalThis.atob ??= (s) => {
   }
   setPrototypeOf(Document4, Document2).prototype = Document2.prototype;
 
+  // src/html.js
+  var VOID = new Set("area base br col embed hr img input keygen link meta param source track wbr".split(" "));
+  var SPECIAL = new Set("script style textarea title template svg math p li dt dd option optgroup select table caption colgroup thead tbody tfoot tr td th rb rt rp rtc ruby noscript iframe noembed noframes xmp plaintext frameset frame head body html pre listing form button a nobr image".split(" "));
+  var ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\xA0" };
+  var TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>/y;
+  var ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  var templates = /* @__PURE__ */ new Map();
+  function decode(s) {
+    if (s.indexOf("&") < 0) return s;
+    let bad = false;
+    const out = s.replace(/&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);?/g, (m, e) => {
+      if (e[0] === "#") {
+        const n2 = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+        if (!(n2 > 0 && n2 <= 1114111) || n2 >= 55296 && n2 <= 57343) {
+          bad = true;
+          return m;
+        }
+        return String.fromCodePoint(n2);
+      }
+      if (!m.endsWith(";") || !Object.hasOwn(ENTITIES, e)) {
+        bad = true;
+        return m;
+      }
+      return ENTITIES[e];
+    });
+    return bad ? void 0 : out;
+  }
+  function parseSimple(doc, html2) {
+    if (html2.length > 2048) return parseFull(doc, html2);
+    const lt = html2.indexOf("<"), gt = lt < 0 ? -1 : html2.indexOf(">", lt);
+    const key2 = lt < 0 ? "" : html2.slice(lt, gt < 0 ? lt + 32 : gt + 1);
+    const candidates = templates.get(key2);
+    if (candidates) for (const plan2 of candidates) {
+      const frag2 = fromTemplate(doc, html2, plan2);
+      if (frag2) return frag2;
+    }
+    const plan = [];
+    const frag = parseFull(doc, html2, plan);
+    if (frag && !plan.some((token) => token.kind === 1 && (token.tag.includes("-") || token.attrs.some(([name]) => name === "is")))) {
+      if (!candidates && templates.size >= 32) templates.delete(templates.keys().next().value);
+      const list = candidates || [];
+      if (list.length === 4) list.shift();
+      list.push(plan);
+      templates.set(key2, list);
+    }
+    return frag;
+  }
+  function fromTemplate(doc, html2, plan) {
+    let i = 0;
+    const text = [];
+    for (const token of plan) {
+      if (token.kind === 0) {
+        const lt = html2.indexOf("<", i), end = lt < 0 ? html2.length : lt;
+        const value = decode(html2.slice(i, end));
+        if (value === void 0) return null;
+        text.push(value);
+        i = end;
+      } else {
+        if (!html2.startsWith(token.raw, i)) return null;
+        i += token.raw.length;
+      }
+    }
+    if (i !== html2.length) return null;
+    const frag = doc.createDocumentFragment(), stack = [frag];
+    let ti = 0;
+    for (const token of plan) {
+      if (token.kind === 0) {
+        const value = text[ti++];
+        if (value) stack[stack.length - 1].appendChild(doc.createTextNode(value));
+      } else if (token.kind === 1) {
+        const seed = token.seeds?.get(doc);
+        const el = seed ? seed.cloneNode(false) : doc.createElement(token.tag);
+        if (!seed) for (let k = token.attrs.length - 1; k >= 0; k--) el.setAttribute(token.attrs[k][0], token.attrs[k][1]);
+        stack[stack.length - 1].appendChild(el);
+        if (!token.void) stack.push(el);
+      } else if (token.kind === 2) stack.pop();
+      else stack[stack.length - 1].appendChild(doc.createComment(token.text));
+    }
+    return frag;
+  }
+  function parseFull(doc, html2, plan) {
+    const frag = doc.createDocumentFragment();
+    const stack = [frag];
+    let i = 0;
+    const n2 = html2.length;
+    while (i < n2) {
+      const lt = html2.indexOf("<", i);
+      const end = lt < 0 ? n2 : lt;
+      if (plan) plan.push({ kind: 0 });
+      if (end > i) {
+        const t = decode(html2.slice(i, end));
+        if (t === void 0) return null;
+        stack[stack.length - 1].appendChild(doc.createTextNode(t));
+      }
+      if (lt < 0) break;
+      if (html2.startsWith("<!--", lt)) {
+        const close = html2.indexOf("-->", lt + 4);
+        if (close < 0) return null;
+        if (plan) plan.push({ kind: 3, raw: html2.slice(lt, close + 3), text: html2.slice(lt + 4, close) });
+        stack[stack.length - 1].appendChild(doc.createComment(html2.slice(lt + 4, close)));
+        i = close + 3;
+        continue;
+      }
+      TAG.lastIndex = lt;
+      const m = TAG.exec(html2);
+      if (!m) return null;
+      i = TAG.lastIndex;
+      const tag = m[2].toLowerCase();
+      if (SPECIAL.has(tag)) return null;
+      if (m[1]) {
+        if (m[3] || m[4] || stack.length < 2 || stack[stack.length - 1].localName !== tag) return null;
+        if (plan) plan.push({ kind: 2, raw: m[0] });
+        stack.pop();
+        continue;
+      }
+      const isVoid2 = VOID.has(tag);
+      if (m[4] && !isVoid2) return null;
+      const el = doc.createElement(tag);
+      const attrs = [];
+      if (m[3]) {
+        ATTR.lastIndex = 0;
+        for (let a; a = ATTR.exec(m[3]); ) {
+          const name = a[1].toLowerCase();
+          const v = decode(a[2] ?? a[3] ?? a[4] ?? "");
+          if (v === void 0 || attrs.some((x) => x[0] === name)) return null;
+          attrs.push([name, v]);
+        }
+        for (let k = attrs.length - 1; k >= 0; k--) el.setAttribute(attrs[k][0], attrs[k][1]);
+      }
+      if (plan) plan.push({
+        kind: 1,
+        raw: m[0],
+        tag,
+        attrs,
+        void: isVoid2,
+        seeds: tag.includes("-") || attrs.some(([name]) => name === "is") ? null : new WeakMap([[doc, el.cloneNode(false)]])
+      });
+      stack[stack.length - 1].appendChild(el);
+      if (!isVoid2) stack.push(el);
+    }
+    if (plan && (n2 === 0 || html2.endsWith(">"))) plan.push({ kind: 0 });
+    return stack.length === 1 ? frag : null;
+  }
+
+  // src/dom/linkedom.js
+  function openDocument(html2) {
+    const { window: window2, document: document2 } = parseHTML(html2);
+    patchInnerHTML(document2);
+    return { window: window2, document: document2 };
+  }
+  var pair = [void 0, void 0];
+  function classStyle(el, allowStyle) {
+    pair[0] = pair[1] = void 0;
+    for (let a = el[NEXT]; a?.nodeType === 2; a = a[NEXT]) {
+      if (a.name === "class") pair[0] = a.value;
+      else if (a.name === "style" && allowStyle) pair[1] = a.value;
+      else return null;
+    }
+    return pair;
+  }
+  var compileMatch = (el, sel) => prepareMatch(el, sel);
+  var STYLE_RECORDS = false;
+  function patchInnerHTML(document2) {
+    let proto = Object.getPrototypeOf(document2.createElement("div"));
+    let desc = null;
+    while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "innerHTML"))) proto = Object.getPrototypeOf(proto);
+    if (!desc?.set) return;
+    Object.defineProperty(proto, "innerHTML", {
+      configurable: true,
+      get: desc.get,
+      set(html2) {
+        let simple = this.localName !== "template";
+        const fold = ignoreCase(this);
+        if (simple) for (let el = this; el?.nodeType === 1; el = el.parentNode) {
+          const tag = fold ? el.localName.toLowerCase() : el.localName;
+          if (tag === "svg" || tag === "math") {
+            simple = false;
+            break;
+          }
+        }
+        const frag = simple ? parseSimple(this.ownerDocument, String(html2 ?? "")) : null;
+        if (frag) this.replaceChildren(frag);
+        else desc.set.call(this, html2);
+      }
+    });
+  }
+  var collect = () => {
+  };
+
   // src/css.js
   function stripComments(css) {
     return css.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -12595,7 +12784,7 @@ globalThis.atob ??= (s) => {
         let m = r.match;
         if (m === null) {
           try {
-            m = r.match = prepareMatch(el, r.sel);
+            m = r.match = compileMatch(el, r.sel);
           } catch {
             m = r.match = false;
           }
@@ -13261,17 +13450,17 @@ globalThis.atob ??= (s) => {
     const shapes = [];
     let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter" });
     if (root !== svg) paint = paintOf(root, paint);
-    collect(root, paint, current, doc, shapes);
+    collect2(root, paint, current, doc, shapes);
     if (!shapes.length) return null;
     return { vb, shapes };
   }
-  function collect(el, inherited, current, doc, out) {
+  function collect2(el, inherited, current, doc, out) {
     for (const c of el.children) {
       const tag = c.localName;
       if (tag === "defs" || tag === "symbol" || tag === "title" || tag === "lineargradient" || tag === "linearGradient") continue;
       const paint = paintOf(c, inherited);
       if (tag === "g") {
-        collect(c, paint, current, doc, out);
+        collect2(c, paint, current, doc, out);
         continue;
       }
       const d = pathData(c);
@@ -14208,13 +14397,9 @@ col, colgroup { display: none; }
       let ok = !!parent && parent.nodeType === 1;
       let cls = "";
       if (ok) {
-        for (let a = el[NEXT]; a?.nodeType === 2; a = a[NEXT]) {
-          if (a.name === "class") cls = a.value;
-          else if (a.name !== "style" || this.styleAttrRules) {
-            ok = false;
-            break;
-          }
-        }
+        const cs = classStyle(el, !this.styleAttrRules);
+        if (cs) cls = cs[0] ?? "";
+        else ok = false;
       }
       if (ok) {
         const name = `${this.shareKey(parent)}|${el.localName}|${cls}`;
@@ -14342,12 +14527,9 @@ col, colgroup { display: none; }
       for (let child = el.firstChild; child; child = child.nextSibling) {
         if (child.nodeType === 8) continue;
         if (child.nodeType !== 1 || !TEMPLATE_LEAF.has(child.localName) || child.firstElementChild) return null;
-        let cls = "", inline = "";
-        for (let a = child[NEXT]; a?.nodeType === 2; a = a[NEXT]) {
-          if (a.name === "class") cls = a.value;
-          else if (a.name === "style") inline = a.value;
-          else return null;
-        }
+        const cs2 = classStyle(child, true);
+        if (!cs2) return null;
+        const cls = cs2[0] ?? "", inline = cs2[1] ?? "";
         const tag = child.localName;
         key2 += `${tag.length}:${tag}${cls.length}:${cls}${inline.length}:${inline}`;
         children.push(child);
@@ -15443,150 +15625,6 @@ col, colgroup { display: none; }
     return out;
   }
 
-  // src/html.js
-  var VOID = new Set("area base br col embed hr img input keygen link meta param source track wbr".split(" "));
-  var SPECIAL = new Set("script style textarea title template svg math p li dt dd option optgroup select table caption colgroup thead tbody tfoot tr td th rb rt rp rtc ruby noscript iframe noembed noframes xmp plaintext frameset frame head body html pre listing form button a nobr image".split(" "));
-  var ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\xA0" };
-  var TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>/y;
-  var ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
-  var templates = /* @__PURE__ */ new Map();
-  function decode(s) {
-    if (s.indexOf("&") < 0) return s;
-    let bad = false;
-    const out = s.replace(/&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);?/g, (m, e) => {
-      if (e[0] === "#") {
-        const n2 = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
-        if (!(n2 > 0 && n2 <= 1114111) || n2 >= 55296 && n2 <= 57343) {
-          bad = true;
-          return m;
-        }
-        return String.fromCodePoint(n2);
-      }
-      if (!m.endsWith(";") || !Object.hasOwn(ENTITIES, e)) {
-        bad = true;
-        return m;
-      }
-      return ENTITIES[e];
-    });
-    return bad ? void 0 : out;
-  }
-  function parseSimple(doc, html2) {
-    if (html2.length > 2048) return parseFull(doc, html2);
-    const lt = html2.indexOf("<"), gt = lt < 0 ? -1 : html2.indexOf(">", lt);
-    const key2 = lt < 0 ? "" : html2.slice(lt, gt < 0 ? lt + 32 : gt + 1);
-    const candidates = templates.get(key2);
-    if (candidates) for (const plan2 of candidates) {
-      const frag2 = fromTemplate(doc, html2, plan2);
-      if (frag2) return frag2;
-    }
-    const plan = [];
-    const frag = parseFull(doc, html2, plan);
-    if (frag && !plan.some((token) => token.kind === 1 && (token.tag.includes("-") || token.attrs.some(([name]) => name === "is")))) {
-      if (!candidates && templates.size >= 32) templates.delete(templates.keys().next().value);
-      const list = candidates || [];
-      if (list.length === 4) list.shift();
-      list.push(plan);
-      templates.set(key2, list);
-    }
-    return frag;
-  }
-  function fromTemplate(doc, html2, plan) {
-    let i = 0;
-    const text = [];
-    for (const token of plan) {
-      if (token.kind === 0) {
-        const lt = html2.indexOf("<", i), end = lt < 0 ? html2.length : lt;
-        const value = decode(html2.slice(i, end));
-        if (value === void 0) return null;
-        text.push(value);
-        i = end;
-      } else {
-        if (!html2.startsWith(token.raw, i)) return null;
-        i += token.raw.length;
-      }
-    }
-    if (i !== html2.length) return null;
-    const frag = doc.createDocumentFragment(), stack = [frag];
-    let ti = 0;
-    for (const token of plan) {
-      if (token.kind === 0) {
-        const value = text[ti++];
-        if (value) stack[stack.length - 1].appendChild(doc.createTextNode(value));
-      } else if (token.kind === 1) {
-        const seed = token.seeds?.get(doc);
-        const el = seed ? seed.cloneNode(false) : doc.createElement(token.tag);
-        if (!seed) for (let k = token.attrs.length - 1; k >= 0; k--) el.setAttribute(token.attrs[k][0], token.attrs[k][1]);
-        stack[stack.length - 1].appendChild(el);
-        if (!token.void) stack.push(el);
-      } else if (token.kind === 2) stack.pop();
-      else stack[stack.length - 1].appendChild(doc.createComment(token.text));
-    }
-    return frag;
-  }
-  function parseFull(doc, html2, plan) {
-    const frag = doc.createDocumentFragment();
-    const stack = [frag];
-    let i = 0;
-    const n2 = html2.length;
-    while (i < n2) {
-      const lt = html2.indexOf("<", i);
-      const end = lt < 0 ? n2 : lt;
-      if (plan) plan.push({ kind: 0 });
-      if (end > i) {
-        const t = decode(html2.slice(i, end));
-        if (t === void 0) return null;
-        stack[stack.length - 1].appendChild(doc.createTextNode(t));
-      }
-      if (lt < 0) break;
-      if (html2.startsWith("<!--", lt)) {
-        const close = html2.indexOf("-->", lt + 4);
-        if (close < 0) return null;
-        if (plan) plan.push({ kind: 3, raw: html2.slice(lt, close + 3), text: html2.slice(lt + 4, close) });
-        stack[stack.length - 1].appendChild(doc.createComment(html2.slice(lt + 4, close)));
-        i = close + 3;
-        continue;
-      }
-      TAG.lastIndex = lt;
-      const m = TAG.exec(html2);
-      if (!m) return null;
-      i = TAG.lastIndex;
-      const tag = m[2].toLowerCase();
-      if (SPECIAL.has(tag)) return null;
-      if (m[1]) {
-        if (m[3] || m[4] || stack.length < 2 || stack[stack.length - 1].localName !== tag) return null;
-        if (plan) plan.push({ kind: 2, raw: m[0] });
-        stack.pop();
-        continue;
-      }
-      const isVoid2 = VOID.has(tag);
-      if (m[4] && !isVoid2) return null;
-      const el = doc.createElement(tag);
-      const attrs = [];
-      if (m[3]) {
-        ATTR.lastIndex = 0;
-        for (let a; a = ATTR.exec(m[3]); ) {
-          const name = a[1].toLowerCase();
-          const v = decode(a[2] ?? a[3] ?? a[4] ?? "");
-          if (v === void 0 || attrs.some((x) => x[0] === name)) return null;
-          attrs.push([name, v]);
-        }
-        for (let k = attrs.length - 1; k >= 0; k--) el.setAttribute(attrs[k][0], attrs[k][1]);
-      }
-      if (plan) plan.push({
-        kind: 1,
-        raw: m[0],
-        tag,
-        attrs,
-        void: isVoid2,
-        seeds: tag.includes("-") || attrs.some(([name]) => name === "is") ? null : new WeakMap([[doc, el.cloneNode(false)]])
-      });
-      stack[stack.length - 1].appendChild(el);
-      if (!isVoid2) stack.push(el);
-    }
-    if (plan && (n2 === 0 || html2.endsWith(">"))) plan.push({ kind: 0 });
-    return stack.length === 1 ? frag : null;
-  }
-
   // src/main.js
   var host = globalThis.__host;
   var fmt = (args) => args.map((a) => {
@@ -15663,7 +15701,7 @@ ${a.stack || ""}`;
     rafCallbacks.delete(id);
   };
   var html = normalizeHtml(host.asset("index.html") || "<!doctype html><html><body></body></html>");
-  var { window: dom, document } = parseHTML(html);
+  var { window: dom, document } = openDocument(html);
   function normalizeHtml(src) {
     if (/<body[\s>]/i.test(src)) return src;
     let s = src.replace(/^\s*<!doctype[^>]*>/i, "").replace(/^\s*<html[^>]*>/i, "").replace(/<\/html>\s*$/i, "");
@@ -15708,6 +15746,9 @@ ${a.stack || ""}`;
   ]) {
     if (dom[name] !== void 0 && g[name] === void 0) g[name] = dom[name];
   }
+  for (const name of Object.keys(dom)) {
+    if (/^(HTML|SVG)\w*Element$/.test(name) && g[name] === void 0) g[name] = dom[name];
+  }
   install(dom, () => {
     try {
       if (renderer) renderer.dirty = true;
@@ -15751,30 +15792,10 @@ ${a.stack || ""}`;
       }
     }
   }
-  {
-    let proto = Object.getPrototypeOf(document.createElement("div"));
-    let desc = null;
-    while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "innerHTML"))) proto = Object.getPrototypeOf(proto);
-    if (desc?.set) {
-      Object.defineProperty(proto, "innerHTML", {
-        configurable: true,
-        get: desc.get,
-        set(html2) {
-          let simple = this.localName !== "template";
-          const fold = ignoreCase(this);
-          if (simple) for (let el = this; el?.nodeType === 1; el = el.parentNode) {
-            const tag = fold ? el.localName.toLowerCase() : el.localName;
-            if (tag === "svg" || tag === "math") {
-              simple = false;
-              break;
-            }
-          }
-          const frag = simple ? parseSimple(this.ownerDocument, String(html2 ?? "")) : null;
-          if (frag) this.replaceChildren(frag);
-          else desc.set.call(this, html2);
-        }
-      });
-    }
+  for (const type of ["click", "dblclick", "mousedown", "mouseup", "pointerdown", "pointerup", "input", "change", "submit"]) {
+    document.addEventListener(type, (e) => {
+      if (e.bubbles && !e.cancelBubble) fireWindow(e);
+    });
   }
   var ET = Object.getPrototypeOf(Object.getPrototypeOf(document.body)).constructor.prototype;
   for (let proto = Object.getPrototypeOf(document.body); proto; proto = Object.getPrototypeOf(proto)) {
@@ -15790,7 +15811,7 @@ ${a.stack || ""}`;
       break;
     }
   }
-  {
+  if (!STYLE_RECORDS) {
     let proto = Object.getPrototypeOf(document.createElement("div"));
     let desc = null;
     while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "style"))) proto = Object.getPrototypeOf(proto);
@@ -16698,7 +16719,10 @@ ${a.stack || ""}`;
       });
     },
     render() {
-      guard(() => renderer?.render());
+      guard(() => {
+        collect();
+        renderer?.render();
+      });
     },
     dirty() {
       guard(() => renderer?.markAll());

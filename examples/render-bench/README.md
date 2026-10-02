@@ -1,15 +1,29 @@
 # Render bench
 
 One static page, timed in Oriel's two renderers: the WebView (WebKitGTK on
-Linux) and the experimental native renderer (`-Dnative_ui`: QuickJS, a fake
-DOM, Yoga layout, GTK drawing; see `docs/native-renderer.md`).
+Linux) and the experimental native renderer (`-Dnative_ui`: QuickJS, the
+native DOM, Yoga layout, GTK drawing; see `docs/native-renderer.md`).
 
 ```sh
 zig build -Doptimize=ReleaseFast                                  # WebView
-zig build -Dnative_ui -Doptimize=ReleaseFast -p zig-out-native    # native
+zig build -Dnative_ui -Doptimize=ReleaseFast -p zig-out-native    # native (native DOM)
+zig build -Dnative_ui -Dnative_dom=false -Doptimize=ReleaseFast -p zig-out-linkedom  # native on linkedom
 ./zig-out/bin/oriel-render-bench                                  # GUI
 RENDER_BENCH=1 ./zig-out-native/bin/oriel-render-bench            # one JSON line, then exits
 ```
+
+The native DOM against linkedom (2026-10-02, the desktop, one run each):
+
+| | native DOM | linkedom |
+|---|---|---|
+| build 1000 rows | 39.7 ms | 84.5 ms |
+| build 3000 rows | 124.6 ms | 244.0 ms |
+| update 1000 rows | 5.6 ms | 9.8 ms |
+| update 3000 rows | 16.8 ms | 31.8 ms |
+| memory after a second round (PSS) | 127 MB | 152 MB |
+
+Results below this point are from linkedom builds (before the native DOM
+was the default).
 
 `RENDER_BENCH` is an environment variable because GTK rejects command-line
 options it doesn't know.

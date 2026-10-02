@@ -12,6 +12,9 @@ pub fn build(b: *std.Build) void {
         .native_ui = b.option(bool, "native_ui", "Draw the page with native widgets instead of a WebView (experimental)") orelse false,
         // -Dnative_ui_prof: the native renderer logs its stage timings.
         .native_ui_prof = b.option(bool, "native_ui_prof", "Log the native renderer's stage timings") orelse false,
+        // -Dnative_dom=false: the native renderer on linkedom instead of the
+        // native DOM (docs/native-dom.md); unset, Oriel's default.
+        .native_dom = b.option(bool, "native_dom", "With -Dnative_ui: the native DOM (default), or linkedom when false"),
     });
     _ = oriel.addApp(b, dep, .{
         .name = "oriel-render-bench",
