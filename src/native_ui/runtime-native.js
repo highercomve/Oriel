@@ -2883,6 +2883,13 @@ col, colgroup { display: none; }
   var SKIP = /* @__PURE__ */ new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
   var TEMPLATE_LEAF = /* @__PURE__ */ new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
   var EMPTY = Object.freeze([]);
+  function narrowable(props, cs, parentCS) {
+    const mw = props.maxw;
+    if (mw === void 0 || props.maxh !== void 0 || !(props.ch > 0)) return false;
+    if (typeof mw === "string" && !(/%$/.test(mw) && parseFloat(mw) >= 100)) return false;
+    if (cs.display !== "block" || !["block", "flow-root"].includes(parentCS?.display)) return false;
+    return cs["margin-left"] !== "auto" && cs["margin-right"] !== "auto";
+  }
   var Renderer = class {
     constructor(document2, engine, host2) {
       this.doc = document2;
@@ -3646,7 +3653,12 @@ col, colgroup { display: none; }
         const stretched = ctx.blockify && /^column/.test(parentCS?.["flex-direction"] || "") && ["stretch", "normal", void 0].includes(cs["align-self"] && cs["align-self"] !== "auto" ? cs["align-self"] : parentCS?.["align-items"]);
         if (props.w === void 0 && props.h === void 0) {
           if (stretched) props.ar = ratio;
-          else {
+          else if (narrowable(props, cs, parentCS)) {
+            const cap = typeof props.maxw === "number" ? Math.min(props.maxw, props.cw) : props.cw;
+            props.maxw = cap;
+            props.maxh = cap / ratio;
+            props.ar = ratio;
+          } else {
             props.w = props.cw;
             props.h = props.ch;
           }
