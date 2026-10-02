@@ -43,14 +43,27 @@
                 android:minWidth="360dp"
                 android:minHeight="320dp" />
             <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-            <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="oriel-showcase" />
+            </intent-filter>
+        </activity>
+
+        <!-- The launcher icon: opens the main window at its remembered size
+             (OrielLaunchActivity), then goes. No task affinity: its own
+             throwaway task, so the main window gets a task of its own (with
+             the launch bounds) rather than this one. -->
+        <activity
+            android:name="dev.oriel.OrielLaunchActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
