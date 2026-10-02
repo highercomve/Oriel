@@ -34,3 +34,8 @@ export const collect = () => nd.collect();
 
 // Style writes are attribute writes: the store reports them.
 export const STYLE_RECORDS = true;
+
+// A node's store index (the renderer's node ids come from it, so the tree
+// can stamp rows from the DOM itself), and the node at one (events).
+export const nodeIndex = (node) => nd.index(node);
+export const nodeAt = (index) => nd.nodeAt(index);

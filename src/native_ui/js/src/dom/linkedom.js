@@ -67,3 +67,8 @@ function patchInnerHTML(document) {
 
 // Nothing to collect: linkedom's nodes are JS objects.
 export const collect = () => {};
+
+// Node ids come from the renderer's own counter (native-backend.js: from
+// the store).
+export const nodeIndex = null;
+export const nodeAt = null;

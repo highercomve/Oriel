@@ -18,9 +18,33 @@ const log = std.log.scoped(.native_ui);
 /// as QuickJS bytecode (compiled at build time: tools/qjs_bytecode.c).
 const runtime_bytecode = @import("runtime_bytecode").data;
 
-// -Dnative_dom: the native DOM's C API (dom_qjs.c calls it).
+// -Dnative_dom: the native DOM's C API (dom_qjs.c calls it), and rows
+// stamped from it (host.stamp).
+const native_dom = @import("build_options").native_dom;
+const dom_stamp = if (native_dom) @import("dom_stamp.zig") else struct {};
 comptime {
-    if (@import("build_options").native_dom) _ = @import("dom/capi.zig");
+    if (native_dom) {
+        _ = @import("dom/capi.zig");
+        @export(&stampExport, .{ .name = "oriel_nui_stamp" });
+    }
+}
+
+test {
+    if (native_dom) _ = dom_stamp;
+}
+
+/// host.stamp(rowId, row, plan): row element `row` (a DOM store index in
+/// `dom`) stamped as tree row `row_id` (dom_stamp.zig); 0 when declined.
+fn stampExport(p: *anyopaque, row_id: f64, dom: *anyopaque, row: u32, plan: u32) callconv(.c) c_int {
+    if (!native_dom) return 0;
+    const e = engineOf(p);
+    const ok = dom_stamp.stamp(&e.tree, @ptrCast(@alignCast(dom)), row, Tree.idOf(row_id), plan) catch return 0;
+    return @intFromBool(ok);
+}
+
+/// host.stampPlan([...]): a row plan's id (Tree.defineStampPlan), 0 if not.
+export fn oriel_nui_stamp_plan(p: *anyopaque, v: [*]const f64, len: usize) u32 {
+    return engineOf(p).tree.defineStampPlan(v[0..len]) catch 0;
 }
 
 extern fn oqjs_new(opaque_ptr: *anyopaque, platform_json: [*:0]const u8, label: [*:0]const u8, url: [*:0]const u8) ?*anyopaque;
