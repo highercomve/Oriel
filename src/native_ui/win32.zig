@@ -167,6 +167,11 @@ pub const Surface = struct {
     hand: bool = false,
     tracking: bool = false,
     updating: bool = false,
+    /// requestAnimationFrame on the display's refresh (requestDisplayFrame):
+    /// the page asked for the next frame, and the window is armed on the
+    /// vsync thread.
+    frame_wanted: bool = false,
+    ticking: bool = false,
 
     /// The canvas fills `parent`'s client area.
     pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, parent: *anyopaque, transparent: bool, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
@@ -202,6 +207,7 @@ pub const Surface = struct {
             .laid_out = laidOut,
             .removed = removed,
             .add_timer = addTimer,
+            .request_display_frame = requestDisplayFrame,
             .invoke = invoke,
             .focus = focus,
             .props = propsChanged,
@@ -220,6 +226,9 @@ pub const Surface = struct {
         // fields sends it messages (EN_KILLFOCUS, WM_CTLCOLOR*) while the
         // engine goes away, and its timers die with it below.
         _ = c.SetWindowLongPtrW(s.hwnd, c.GWLP_USERDATA, 0);
+        // No more display frames for this window.
+        if (s.ticking) vsync.disarm(s.hwnd);
+        s.ticking = false;
         // Then the engine: freeing its nodes calls `removed` for the fields.
         s.engine.destroy();
         var it = s.fields.valueIterator();
@@ -414,6 +423,144 @@ fn ensureTarget(s: *Surface) bool {
     }
     s.brush = brush;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Display frames (host.vsync): requestAnimationFrame on the display's refresh
+//
+// One thread for the process waits for each DWM composition (DwmFlush: the
+// display's refresh) while any window wants frames, and posts
+// WM_DISPLAY_FRAME to those windows, at most one queued per window. The UI
+// thread runs the frame (onDisplayFrame) as GTK's tick callback does: the
+// window stays armed only while the page keeps asking.
+
+const WM_DISPLAY_FRAME: c.UINT = c.WM_APP + 0x52;
+
+const DwmFlush = @extern(*const fn () callconv(.winapi) c.HRESULT, .{ .name = "DwmFlush", .library_name = "dwmapi" });
+const DwmGetCompositionTimingInfo = @extern(*const fn (c.HWND, *DwmTimingInfo) callconv(.winapi) c.HRESULT, .{ .name = "DwmGetCompositionTimingInfo", .library_name = "dwmapi" });
+/// DWM_TIMING_INFO (dwmapi.h, packed to 1, 292 bytes; cbSize must match):
+/// only the refresh rate is read.
+const DwmTimingInfo = extern struct {
+    cbSize: u32 align(1),
+    rateRefresh_num: u32 align(1),
+    rateRefresh_den: u32 align(1),
+    qpcRefreshPeriod: u64 align(1),
+    rest: [272]u8 align(1) = undefined,
+};
+comptime {
+    std.debug.assert(@sizeOf(DwmTimingInfo) == 292);
+}
+
+const vsync = struct {
+    const Entry = struct { hwnd: c.HWND, posted: bool = false };
+    /// The entries are shared with the vsync thread (an SRW lock).
+    const mutex = struct {
+        var lock_: c.SRWLOCK = .{ .Ptr = null };
+        fn lock() void {
+            c.AcquireSRWLockExclusive(&lock_);
+        }
+        fn unlock() void {
+            c.ReleaseSRWLockExclusive(&lock_);
+        }
+    };
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
+    var wake: c.HANDLE = null;
+    var started = false;
+
+    /// The window gets WM_DISPLAY_FRAME at each refresh until disarm (UI thread).
+    fn arm(hwnd: c.HWND) void {
+        if (!started) {
+            wake = c.CreateEventW(null, c.FALSE, c.FALSE, null);
+            if (wake == null) return;
+            const t = std.Thread.spawn(.{}, run, .{}) catch return;
+            t.detach();
+            started = true;
+        }
+        mutex.lock();
+        defer mutex.unlock();
+        for (entries.items) |e| if (e.hwnd == hwnd) return;
+        entries.append(std.heap.page_allocator, .{ .hwnd = hwnd }) catch return;
+        _ = c.SetEvent(wake);
+    }
+
+    fn disarm(hwnd: c.HWND) void {
+        mutex.lock();
+        defer mutex.unlock();
+        for (entries.items, 0..) |e, i| if (e.hwnd == hwnd) {
+            _ = entries.swapRemove(i);
+            return;
+        };
+    }
+
+    /// The window ran its frame: the next refresh may post again.
+    fn done(hwnd: c.HWND) void {
+        mutex.lock();
+        defer mutex.unlock();
+        for (entries.items) |*e| if (e.hwnd == hwnd) {
+            e.posted = false;
+        };
+    }
+
+    fn run() void {
+        while (true) {
+            mutex.lock();
+            const any = entries.items.len > 0;
+            mutex.unlock();
+            if (!any) {
+                _ = c.WaitForSingleObject(wake, c.INFINITE);
+                continue;
+            }
+            // The next composition; without DWM (none on Windows 8+), a
+            // 60 Hz-ish wait.
+            if (DwmFlush() < 0) c.Sleep(15);
+            mutex.lock();
+            defer mutex.unlock();
+            for (entries.items) |*e| {
+                // One queued per window; a minimized one waits.
+                if (e.posted or c.IsIconic(e.hwnd) != 0) continue;
+                if (c.PostMessageW(e.hwnd, WM_DISPLAY_FRAME, 0, 0) != 0) e.posted = true;
+            }
+        }
+    }
+};
+
+/// host.vsync: the page's next animation frame comes at the display's next
+/// refresh.
+fn requestDisplayFrame(ctx: *anyopaque) void {
+    const s = surfaceOf(ctx);
+    s.frame_wanted = true;
+    if (!s.ticking) {
+        s.ticking = true;
+        vsync.arm(s.hwnd);
+    }
+}
+
+/// The display refreshed (WM_DISPLAY_FRAME, UI thread).
+fn onDisplayFrame(s: *Surface, hwnd: c.HWND) void {
+    defer vsync.done(hwnd);
+    if (!s.frame_wanted) {
+        s.ticking = false;
+        vsync.disarm(hwnd);
+        return;
+    }
+    s.frame_wanted = false;
+    // The last frame on screen first: a posted message comes before
+    // WM_PAINT, and a page that keeps every frame busy would never paint.
+    _ = c.UpdateWindow(hwnd);
+    var info: DwmTimingInfo = .{ .cbSize = @sizeOf(DwmTimingInfo), .rateRefresh_num = 0, .rateRefresh_den = 0, .qpcRefreshPeriod = 0 };
+    const interval: f64 = if (DwmGetCompositionTimingInfo(null, &info) >= 0 and info.rateRefresh_num > 0)
+        1000.0 * @as(f64, @floatFromInt(info.rateRefresh_den)) / @as(f64, @floatFromInt(info.rateRefresh_num))
+    else
+        0;
+    s.engine.displayFrame(interval);
+    // The page may have closed its window during the frame.
+    if (c.IsWindow(hwnd) == 0) return;
+    const p: ?*anyopaque = @ptrFromInt(@as(usize, @bitCast(c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA))));
+    const still = surfaceOf(p orelse return);
+    if (!still.frame_wanted) {
+        still.ticking = false;
+        vsync.disarm(hwnd);
+    }
 }
 
 fn surfaceOf(p: ?*anyopaque) *Surface {
@@ -1090,6 +1237,10 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             return 0;
         },
         c.WM_ERASEBKGND => return 1,
+        WM_DISPLAY_FRAME => {
+            onDisplayFrame(s, hwnd);
+            return 0;
+        },
         c.WM_TIMER => {
             _ = c.KillTimer(hwnd, wparam);
             // Ours are the page's ids + 1 (addTimer): nothing else is.
