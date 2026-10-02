@@ -881,7 +881,12 @@ pub const Tree = struct {
         t.measure(t.measure_ctx, k, std.math.inf(f32), &out);
         if (!(out[0] > 0) or !std.math.isFinite(out[0])) return;
         const share = out[0] * @as(f32, @floatFromInt(longest)) / @as(f32, @floatFromInt(total)) * 1.15;
-        yg.YGNodeStyleSetMinWidth(k.yn, if (longest == total) out[0] else @min(out[0], share));
+        // Yoga's min-width is the border box: the text's own padding and
+        // border come on top (a padded label otherwise wraps its last letters).
+        var inset: f32 = 0;
+        if (k.props.pad) |pd| inset += (dimPx(pd[1]) orelse 0) + (dimPx(pd[3]) orelse 0);
+        if (k.props.bw) |bw| inset += bw[1] + bw[3];
+        yg.YGNodeStyleSetMinWidth(k.yn, inset + if (longest == total) out[0] else @min(out[0], share));
     }
 
     // -----------------------------------------------------------------
@@ -1469,6 +1474,19 @@ test "native node lookup survives repeated large list removals" {
         try std.testing.expectEqual(permanent, t.get(99).?);
         try std.testing.expect(t.get(base) == null);
     }
+}
+
+test "a padded text in a flex row keeps its word plus its padding and border" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",1,"view"],["p",1,{"fd":"row"}],["c",2,"text"],["p",2,{"pad":[0,6,0,6],"bw":[1,1,1,1],"runs":[{"t":"Alpha","sz":14}]}],["k",1,[2]],["r",1]]
+    );
+    // testMeasure: 10 wide; + 6 + 6 padding + 1 + 1 border.
+    const mw = yg.YGNodeStyleGetMinWidth(t.get(2).?.yn);
+    try std.testing.expectEqual(@as(f32, 24), mw.value);
 }
 
 test "direct text updates preserve props, dirty layout, and release overrides" {
