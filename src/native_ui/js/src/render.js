@@ -71,6 +71,13 @@ export class Renderer {
     this.leafStyles = new Map();   // immutable native leaf templates (bounded)
     this.leafStyleBytes = 0;
     this.dirty = true;
+    // Changes the page made outside an animation frame's task (a timer, an
+    // event, a command's answer) since the last render: the next frame
+    // renders them before its callbacks, as a browser's frame would have.
+    // A frame's own changes (rAF loops, transitions) keep the engine's
+    // paced frame. main.js sets inFrame for a frame's task.
+    this.outside = false;
+    this.inFrame = false;
     this.native = new Map();       // id → value the native field holds (inputs)
     this.cs = new WeakMap();       // element → computed style of the last frame
     // Incremental rendering: what changed since the last frame (marks, from
@@ -108,6 +115,7 @@ export class Renderer {
   // differently (its attributes), 1 when only its inline style did.
   mark(el, level) {
     if (!el || el.nodeType !== 1) return;
+    if (!this.inFrame) this.outside = true;
     this.textOnly = false;
     if ((this.marks.get(el) || 0) < level) this.marks.set(el, level);
     this.dirty = true;
@@ -117,6 +125,7 @@ export class Renderer {
   // a click listener.
   markFlat(node, text = false) {
     if (!node) return;
+    if (!this.inFrame) this.outside = true;
     if (!text) this.textOnly = false;
     this.flatMarks.add(node);
     this.dirty = true;
@@ -124,6 +133,7 @@ export class Renderer {
 
   // The viewport or the theme changed: everything again.
   markAll() {
+    if (!this.inFrame) this.outside = true;
     this.full = true;
     this.dirty = true;
   }
@@ -175,8 +185,24 @@ export class Renderer {
     if (pending?.length) this.note(pending);
     if (!this.dirty || this.rendering) return;
     this.dirty = false;
+    this.outside = false;
     this.rendering = true;
     try { if (!this.updateText()) this.renderNow(); } finally { this.rendering = false; }
+  }
+
+  // An animation frame begins (main.js): what the page changed outside the
+  // frames since the last render is rendered now, before the callbacks.
+  frameStart() {
+    const pending = this.observer?.takeRecords();
+    if (pending?.length) this.note(pending);
+    try {
+      if (this.outside) {
+        if (this.host.prof) this.host.log(1, "PROF frame start: rendering changes made outside the frames");
+        this.render();
+      }
+    } finally {
+      this.inFrame = true;
+    }
   }
 
   // A text-only leaf keeps its box, font and parent's layout adjustments.
@@ -752,8 +778,12 @@ export class Renderer {
 
     // Plain leaves need no inline-flow objects, pseudo nodes or child-layout
     // contexts. This also covers empty decorative elements in large lists.
-    const aligns = (display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid") &&
-      (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]));
+    const layoutBox = display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid";
+    const aligns = (layoutBox &&
+      (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]))) ||
+      // A button centers its label in its height (a row stretches it to
+      // its tallest sibling's): a box around the text, not a text view.
+      (el.localName === "button" && !layoutBox);
     if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns &&
         display !== "grid" && !isTableDisplay(display)) {
       const raw = [];
@@ -814,6 +844,9 @@ export class Renderer {
     // An element holding only text becomes one text view, unless it centers
     // that text as a flex/grid box (a round icon button: ⚙ in a 28px circle):
     // a text view is drawn from its top-left, so keep a box with a text child.
+    // A button's label spans its width (its text-align applies: a menu
+    // item's left-aligned label) and is centered in its height.
+    if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
     if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns) {
       Object.assign(props, textProps(cs, fontSize));
       props.runs = flow[0].text;
