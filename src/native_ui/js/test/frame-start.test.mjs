@@ -1,7 +1,9 @@
-// node test/frame-start.test.mjs: what a page changed outside an animation
-// frame (a timer) is rendered when the next frame starts, before its
-// callbacks, so their first layout read is cheap; what a frame changes
-// itself waits for the engine's paced frame.
+// node test/frame-start.test.mjs: what a page changed since the last render
+// is rendered when the next frame starts, before its callbacks, as a
+// browser renders at the end of every frame: changes made outside the
+// frames (a timer) and a frame's own alike, so the next frame's first
+// layout read is cheap (render-bench clears the stage, awaits a frame, then
+// times a build).
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
@@ -52,5 +54,5 @@ assert.ok(ctx.r1, "the first frame ran");
 assert.equal(ctx.r1.renderedAtStart, true, "rows built in a timer are rendered when the next frame starts");
 assert.equal(ctx.r1.readRendered, false, "so the frame's first layout read has nothing left to render");
 assert.ok(ctx.r2, "the second frame ran");
-assert.equal(ctx.r2.renderedAtStart, false, "a frame's own change waits for the engine's paced frame");
+assert.equal(ctx.r2.renderedAtStart, true, "a frame's own change is rendered when the next frame starts");
 console.log("frame start: ok");
