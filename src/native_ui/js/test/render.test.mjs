@@ -382,4 +382,27 @@ for (const css of [
   assert.equal(check.props.fw, undefined, "a checkbox keeps its text beside it");
 }
 
+// An inline element with a box of its own (GhostPen's "148 MB" model
+// badge: margin, padding, rounded corners, a background) is an inline box in
+// its line; bold text and a background-only highlight stay runs.
+{
+  const f = fixture(".badge { margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #3b6cff } .hl { background: yellow }");
+  const stage = f.document.querySelector("main");
+  stage.innerHTML = '<p>Small <b>model</b> <span class="hl">148 MB</span><span class="badge">in use</span></p>';
+  f.check();
+  const find = (n, pred) => pred(n) ? n : n.kids.map((k) => find(k, pred)).find(Boolean);
+  const tree = f.tree();
+  const badge = find(tree, (n) => n.props.runs?.some((r) => r.t === "in use"));
+  assert.ok(badge, "the badge is a node");
+  assert.deepEqual(badge.props.pad, [1, 6, 1, 6], "with its padding");
+  assert.deepEqual(badge.props.m, [0, 0, 0, 6], "its margin");
+  assert.ok(badge.props.br && badge.props.bg, "its corners and background");
+  assert.ok(!badge.props.runs.some((r) => r.t.includes("148")), "not merged into the paragraph's runs");
+  const line = find(tree, (n) => n.kids.includes(badge));
+  assert.equal(line.props.fd, "row", "the paragraph is a line with the badge in it");
+  const text = line.kids.find((k) => k !== badge && k.kind === "text");
+  const ts = text.props.runs.map((r) => r.t).join("");
+  assert.ok(ts.includes("model") && ts.includes("148 MB"), "bold text and the highlight stay runs");
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");

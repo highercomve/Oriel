@@ -51,6 +51,21 @@ col, colgroup { display: none; }
 
 const INLINE_DISPLAY = new Set(["inline"]);
 const ATOMIC_INLINE = new Set(["inline-block", "inline-flex", "inline-grid"]);
+// An inline element with a box of its own (padding, a border, rounded
+// corners, a horizontal margin: a "148 MB" badge after a label): an inline
+// box in its line, not a run of the paragraph's text (a run has no padding
+// or margin; only its background would show, touching the text before it).
+// Color, weight or a background alone stay a run.
+const nonZero = (v) => !!v && parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v));
+function boxedInline(cs) {
+  for (const side of ["top", "right", "bottom", "left"]) {
+    if (nonZero(cs[`padding-${side}`])) return true;
+    const style = cs[`border-${side}-style`];
+    if (style && style !== "none" && style !== "hidden" && nonZero(cs[`border-${side}-width`])) return true;
+  }
+  for (const c of ["top-left", "top-right", "bottom-right", "bottom-left"]) if (nonZero(cs[`border-${c}-radius`])) return true;
+  return nonZero(cs["margin-left"]) || nonZero(cs["margin-right"]);
+}
 const SKIP = new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
 const TEMPLATE_LEAF = new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
 const EMPTY = Object.freeze([]);
@@ -948,8 +963,12 @@ export class Renderer {
     // A line of inline content with an atomic box in it (a checkbox and its
     // label's text): a row that wraps, as an inline formatting context lays
     // it out, not a column (the text went under the box).
+    const atomic = (child) => {
+      const ccs = this.style(child, cs, rematch), d = ccs.display || "inline";
+      return ATOMIC_INLINE.has(d) || (d === "inline" && boxedInline(ccs));
+    };
     const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) &&
-      flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""));
+      flow.every((f) => f.text || atomic(f.el));
     // One box and its text (a checkbox's label): the text shrinks to the
     // room beside the box and wraps there by words (its min width is the
     // longest word, tree.zig). Several boxes, or a box sized in % (a
@@ -963,7 +982,7 @@ export class Renderer {
     // one line that wraps, as in a browser, not a column; the whitespace
     // between them collapses to a space's width (none when they touch).
     if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 &&
-        flow.every((f) => f.el && ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""))) {
+        flow.every((f) => f.el && atomic(f.el))) {
       props.fd = "row"; props.fw = "wrap"; props.ai = "center";
       const nodesIn = [...el.childNodes];
       const spaced = nodesIn.some((n, i) => n.nodeType === 3 && /^\s+$/.test(n.data) && i > 0 && i < nodesIn.length - 1);
@@ -1056,6 +1075,8 @@ export class Renderer {
     // position: absolute/fixed blockifies the box (CSS): an empty
     // <span class="thumb"> with a background is a box, not text.
     if (cs.position === "absolute" || cs.position === "fixed") return false;
+    // A box of its own (a padded, rounded badge): an inline box, not a run.
+    if (boxedInline(cs)) return false;
     // Inline only if everything inside is inline too.
     const deeper = rematch || this.marks.get(el) === 2;
     for (let c = el.firstElementChild; c; c = c.nextElementSibling) if (!this.isInline(c, cs, deeper)) return false;

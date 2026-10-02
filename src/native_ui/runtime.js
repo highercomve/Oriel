@@ -13772,6 +13772,16 @@ col, colgroup { display: none; }
 `;
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
+  var nonZero = (v) => !!v && parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v));
+  function boxedInline(cs) {
+    for (const side of ["top", "right", "bottom", "left"]) {
+      if (nonZero(cs[`padding-${side}`])) return true;
+      const style = cs[`border-${side}-style`];
+      if (style && style !== "none" && style !== "hidden" && nonZero(cs[`border-${side}-width`])) return true;
+    }
+    for (const c of ["top-left", "top-right", "bottom-right", "bottom-left"]) if (nonZero(cs[`border-${c}-radius`])) return true;
+    return nonZero(cs["margin-left"]) || nonZero(cs["margin-right"]);
+  }
   var SKIP = /* @__PURE__ */ new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
   var TEMPLATE_LEAF = /* @__PURE__ */ new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
   var EMPTY = Object.freeze([]);
@@ -14615,14 +14625,18 @@ col, colgroup { display: none; }
         this.putClick(props, el);
         return this.put(nodes, id, "text", props, [], fixedNode);
       }
-      const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) && flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""));
+      const atomic = (child) => {
+        const ccs = this.style(child, cs, rematch), d = ccs.display || "inline";
+        return ATOMIC_INLINE.has(d) || d === "inline" && boxedInline(ccs);
+      };
+      const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) && flow.every((f) => f.text || atomic(f.el));
       if (inlineLine) {
         props.fd = "row";
         props.ai = "center";
         const boxes = flow.filter((f) => f.el);
         if (boxes.length > 1 || boxes.some((f) => /%\s*$/.test(this.style(f.el, cs, rematch).width || ""))) props.fw = "wrap";
       }
-      if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 && flow.every((f) => f.el && ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""))) {
+      if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 && flow.every((f) => f.el && atomic(f.el))) {
         props.fd = "row";
         props.fw = "wrap";
         props.ai = "center";
@@ -14700,6 +14714,7 @@ col, colgroup { display: none; }
       const d = cs.display || "inline";
       if (d !== "inline") return false;
       if (cs.position === "absolute" || cs.position === "fixed") return false;
+      if (boxedInline(cs)) return false;
       const deeper = rematch || this.marks.get(el) === 2;
       for (let c = el.firstElementChild; c; c = c.nextElementSibling) if (!this.isInline(c, cs, deeper)) return false;
       return true;
