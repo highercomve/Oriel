@@ -120,6 +120,14 @@ async function run() {
   show("startup → first frame", [await invoke("since_start")]);
   show("memory at start (PSS, all processes)", [await invoke("pss_mb")], "MB");
   await run();
+  // A second round: memory that grows again is a leak, memory reused from the
+  // first round isn't.
+  if (await invoke("bench_mode_on")) {
+    const first = results["memory after the tests (PSS, all processes)"];
+    await run();
+    results["memory after a second round (PSS, all processes)"] = results["memory after the tests (PSS, all processes)"];
+    results["memory after the tests (PSS, all processes)"] = first;
+  }
   $("run").addEventListener("click", run);
   if (await invoke("bench_mode_on")) await invoke("report", { json: JSON.stringify({ renderer, results }) });
 })();
