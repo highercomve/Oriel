@@ -49,7 +49,7 @@ thread. `App.emit` reaches the page through the same
 | `button` (with an icon and a label) | One native button |
 | `input`, `textarea` | One native text field |
 | `input type=checkbox` | One native switch |
-| `input type=range` | One native slider (min, max, step; not yet on GTK): dragging sends `input`, letting go `change` |
+| `input type=range` | One native slider (min, max, step; GtkScale on GTK, a trackbar on Windows, SeekBar on Android, NSSlider/UISlider on Apple): dragging sends `input`, letting go `change` |
 | `svg` with `<use href="#symbol">`, `img` | One image (the SVG rasterized at its size and color) |
 | `canvas` (2d context) | One view that replays the recorded 2d program (see below) |
 | `display: none`, `[hidden]` | Nothing |
