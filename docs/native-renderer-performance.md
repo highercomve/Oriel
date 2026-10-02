@@ -22,9 +22,11 @@ attaching the finished subtree marks the insertion and computes its
 styles. Its private observer now marks connected mutations directly, without
 allocating queued records or per-record added/removed arrays. Synchronous
 layout reads see those marks immediately. Page-created observers retain their
-queued records and original behavior. The bundled
-linkedom patch checks its expected source structure at build time so a
-dependency upgrade cannot silently drop the optimization. Style mutation
+queued records and original behavior. The observer changes live directly in the owned LinkeDOM source under
+`src/native_ui/js/vendor/linkedom`, together with its upstream license and
+version metadata. Runtime code and tests import that source; the build never
+patches npm packages. Any other dependency we modify must also be vendored
+before applying the change. Style mutation
 hooks also avoid notifying the renderer for detached elements.
 
 Earlier improvements replace allocating child/attribute collections with
@@ -220,3 +222,23 @@ Commit `18a2a86` changed native layout reads to flush rendering: earlier native
 DOM-only timings are not valid comparison baselines. Accept an architectural
 change only after correctness checks and an actual full-path improvement;
 the WebView advantage on rows remains the benchmark to beat.
+
+## DOM allocation and flattening pass
+
+LinkeDOM listener storage is now lazy: DOM nodes without listeners allocate no
+listener Map. The renderer stores primary native IDs as numbers, expands them
+only for auxiliary nodes, shares immutable empty child arrays and simple leaf
+snapshots, and uses one computed-style cache with epoch invalidation. Tests
+cover listener allocation, event semantics, auxiliary IDs, hidden-node styles,
+and full restyles. The vendored fork and all unmodified npm dependencies are
+reproducible from the tracked sources and lockfile.
+
+The visible phase-5 native pair measured builds of 1,000/3,000 rows at
+256.08 → 201.72 ms / 756.52 → 641.84 ms, and updates at
+26.70 → 23.80 ms / 80.59 → 72.68 ms. Unrelated background compilation
+was active throughout this pair, so these differences are indicative and
+include scheduling noise; the absolute times must not be compared with the
+earlier WebView measurements. Both versions used the same 900×700 window
+and unchanged benchmark page, with second-round medians of three trials.
+Full reports are in
+`examples/render-bench/results/2026-10-02-rows-phase5-desktop.json`.

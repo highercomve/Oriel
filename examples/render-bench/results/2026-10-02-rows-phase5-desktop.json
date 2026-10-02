@@ -1,0 +1,238 @@
+{
+  "method": "One visible ReleaseFast process per native version, serially; identical 900x700 floating windows; medians of three trials in the second benchmark round. Baseline is phase 4. Current adds lazy DOM listener storage, scalar primary node IDs, shared immutable empty arrays and leaf snapshots, and one style cache with epoch invalidation. Benchmark page unchanged; forced layout reads retained. LinkeDOM is vendored project source; build-time dependency patches are removed.",
+  "window": {
+    "before": {
+      "size": [
+        900,
+        700
+      ],
+      "at": [
+        800,
+        350
+      ],
+      "floating": true,
+      "class": "dev.oriel.RenderBench"
+    },
+    "after": {
+      "size": [
+        900,
+        700
+      ],
+      "at": [
+        800,
+        350
+      ],
+      "floating": true,
+      "class": "dev.oriel.RenderBench"
+    }
+  },
+  "reports": {
+    "before": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 94,
+          "runs": [
+            94
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 596,
+          "runs": [
+            596
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 115,
+          "runs": [
+            115
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 256.08,
+          "runs": [
+            256.08,
+            461.87,
+            239.25
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 756.52,
+          "runs": [
+            729.08,
+            756.52,
+            843.21
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 26.7,
+          "runs": [
+            38.68,
+            26.7,
+            25.85
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 80.59,
+          "runs": [
+            120.26,
+            80.59,
+            80.54
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 51.57,
+          "runs": [
+            52.82,
+            51.57,
+            51.49
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60.04,
+          "runs": [
+            60.18,
+            60.02,
+            60.04
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls": {
+          "median": 59.04,
+          "runs": [
+            58.94,
+            59.08,
+            59.04
+          ],
+          "unit": "fps"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 229,
+          "runs": [
+            229
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 214,
+          "runs": [
+            214
+          ],
+          "unit": "MB"
+        }
+      }
+    },
+    "after": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 92,
+          "runs": [
+            92
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 381,
+          "runs": [
+            381
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 98,
+          "runs": [
+            98
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 201.72,
+          "runs": [
+            201.72,
+            195.65,
+            290.06
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 641.84,
+          "runs": [
+            635.48,
+            641.84,
+            670.87
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 23.8,
+          "runs": [
+            34.3,
+            23.62,
+            23.8
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 72.68,
+          "runs": [
+            110.17,
+            72.52,
+            72.68
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 52.79,
+          "runs": [
+            52.84,
+            52.79,
+            52.1
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60.02,
+          "runs": [
+            60.02,
+            60.02,
+            60.06
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls": {
+          "median": 52.24,
+          "runs": [
+            51.78,
+            52.24,
+            53.89
+          ],
+          "unit": "fps"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 163,
+          "runs": [
+            163
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 193,
+          "runs": [
+            193
+          ],
+          "unit": "MB"
+        }
+      }
+    }
+  },
+  "caveat": "Unrelated background compilation was active during both versions. Absolute timings are not comparable to the earlier phase-4/WebView run; paired differences are indicative and include scheduling noise."
+}

@@ -1,6 +1,6 @@
 // The innerHTML fast path (src/html.js) builds what linkedom's parser
 // builds, or gives up (null) for markup it doesn't handle.
-import { parseHTML } from "linkedom";
+import { parseHTML } from "../vendor/linkedom/esm/index.js";
 import { parseSimple } from "../src/html.js";
 import assert from "node:assert/strict";
 

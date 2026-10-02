@@ -1,0 +1,7 @@
+{
+  "name": "@oriel/linkedom",
+  "version": "0.18.13-oriel",
+  "private": true,
+  "type": "module",
+  "license": "ISC"
+}

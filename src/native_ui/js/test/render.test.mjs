@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseHTML } from "linkedom";
+import { parseHTML } from "../vendor/linkedom/esm/index.js";
 import { StyleEngine } from "../src/css.js";
 import { Renderer, UA_CSS } from "../src/render.js";
 import { transitionsOf } from "../src/transitions.js";
@@ -70,6 +70,19 @@ function fixture(css, direct = false) {
   return { document, ...got, check };
 }
 
+{
+  const { document } = parseHTML('<html><body></body></html>');
+  const { renderer } = makeRenderer(document, '');
+  const element = document.createElement('div');
+  const primary = renderer.idOf(element, 'el');
+  assert.equal(typeof renderer.ids.get(element), 'number', 'ordinary elements need no id dictionary');
+  const pseudo = renderer.idOf(element, 'before');
+  assert.notEqual(pseudo, primary);
+  assert.equal(renderer.idOf(element, 'el'), primary, 'expanding id storage preserves the primary id');
+  assert.equal(renderer.idOf(element, 'before'), pseudo);
+  assert.notEqual(renderer.idOf(element, 'row0'), primary);
+}
+
 // The first edit after typed creation still has a lazy previous snapshot.
 // A declined text bridge must compare against the original text.
 {
@@ -82,6 +95,24 @@ function fixture(css, direct = false) {
   f.document.querySelector('span').textContent = 'after';
   f.check();
   assert.equal(declined, 1, "first edit reaches the direct bridge before fallback");
+}
+
+// A full restyle invalidates matching while preserving last-style reads
+// for elements no longer visited under a hidden ancestor.
+{
+  const f = fixture('.row { display:flex } .leaf { width:40px }', true);
+  f.document.querySelector('main').innerHTML = '<div class="row"><span class="leaf">one</span></div><div class="row"><span class="leaf">two</span></div>';
+  f.check();
+  const leaves = [...f.document.querySelectorAll('.leaf')];
+  assert.ok(Object.isFrozen(f.renderer.fc.get(leaves[1]).root.kids));
+  f.renderer.engine.addSheet('.leaf { width:75px; color:blue }');
+  f.renderer.markAll();
+  f.renderer.render();
+  for (const leaf of leaves) assert.equal(f.renderer.styleOf(leaf).width, '75px');
+  leaves[1].parentNode.style.display = 'none';
+  f.renderer.markAll();
+  f.renderer.render();
+  assert.equal(f.renderer.styleOf(leaves[1]).width, '75px');
 }
 
 for (const direct of [false, true]) for (const extra of ["", ".row:first-child .n { color: red } .row + .row .dot { width: 9px }"]) {
@@ -126,8 +157,8 @@ for (const direct of [false, true]) for (const extra of ["", ".row:first-child .
   f.document.querySelector("main").innerHTML = '<div class="card"><span class="active">A</span></div><div class="card"><span>B</span></div>';
   f.check();
   const cards = f.document.querySelectorAll(".card");
-  assert.equal(f.renderer.cs.get(cards[0]).width, "80px");
-  assert.equal(f.renderer.cs.get(cards[1]).width, "20px");
+  assert.equal(f.renderer.styleOf(cards[0]).width, "80px");
+  assert.equal(f.renderer.styleOf(cards[1]).width, "20px");
   cards[0].firstChild.className = "";
   cards[1].firstChild.className = "active";
   f.check();
