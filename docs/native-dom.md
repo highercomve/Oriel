@@ -91,6 +91,41 @@ One store per window (per `Engine`), owned by Zig:
 Children lists are linked (prev/next), like linkedom's but without its
 interleaved attribute and end markers, so insert and remove are O(1).
 
+### Memory and copying
+
+The store must not copy or allocate per operation where it can avoid it:
+
+- **No allocation per node.** Nodes are records in a pool (slabs of fixed-size
+  records, a free list for reuse), addressed by `u32` index + generation, not
+  pointers: no malloc/free per node, stable handles when the pool grows, and
+  tree walks touch small adjacent records.
+- **Strings aren't copied into Zig.** Text and attribute values are kept as
+  the QuickJS strings the page gave (a `JSValue`, one reference count
+  increment): `el.className = s`, `t.data = s` and `getAttribute` hand the same
+  string back and forth without conversion. Bytes are made only where native
+  code needs them (the renderer's text, once, cached until the text changes).
+- **Names are QuickJS atoms.** Tag names, attribute names and class tokens are
+  `JSAtom`s (interned by QuickJS already): comparing, hashing and selector
+  matching are integer operations, and `el.localName` returns the atom's string
+  without building one.
+- **Attributes inline.** A few (name atom, value) pairs inside the node record,
+  spilling to a pooled array only for elements with many.
+- **Children are linked, collections are views.** Insert and remove relink
+  indexes in O(1); `children` and `childNodes` are live views read on access,
+  not arrays kept in sync.
+- **The mutation log is a ring of fixed records**, reused, read in place by the
+  renderer.
+- **innerHTML** converts the markup to bytes once (the only copy), parses it in
+  place and creates text and attribute values as QuickJS strings directly
+  (slices of the input, no intermediate buffers).
+- **No JSON between the store and the renderer** once the flattener is native
+  (phase 3): props go from the store into `tree.zig`'s nodes directly.
+
+Ownership is explicit: the store owns node records and holds one reference to
+each string value and wrapper it keeps; freeing a node releases exactly those.
+Every Zig change gets the usual review (leaks, use after free, ownership,
+reference counts) and allocation-failure tests.
+
 ### JavaScript bindings (QuickJS, C/Zig)
 
 - Each node gets at most one wrapper object (identity: `a.firstChild ===
