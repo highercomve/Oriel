@@ -112,6 +112,38 @@ extern const kCGImageSourceThumbnailMaxPixelSize: CFStringRef;
 extern const kCGImagePropertyPixelHeight: CFStringRef;
 const CGImageRef = *anyopaque;
 const kCFNumberSInt64Type: c_long = 4;
+extern fn CGBitmapContextCreate(data: ?*anyopaque, w: usize, h: usize, bpc: usize, bpr: usize, space: CGColorSpaceRef, info: u32) ?CGContextRef;
+extern fn CGBitmapContextCreateImage(c: CGContextRef) ?CGImageRef;
+extern fn CGContextRelease(c: CGContextRef) void;
+extern fn CGContextAddPath(c: CGContextRef, p: CGPathRef) void;
+extern fn CGContextConcatCTM(c: CGContextRef, t: CGAffineTransform) void;
+extern fn CGContextSetBlendMode(c: CGContextRef, mode: c_int) void;
+extern fn CGContextReplacePathWithStrokedPath(c: CGContextRef) void;
+extern fn CGContextSetTextDrawingMode(c: CGContextRef, mode: c_int) void;
+extern fn CGContextSetTextPosition(c: CGContextRef, x: CGFloat, y: CGFloat) void;
+extern fn CGPathCreateMutable() ?CGPathRef;
+extern fn CGPathMoveToPoint(p: CGPathRef, t: ?*const CGAffineTransform, x: CGFloat, y: CGFloat) void;
+extern fn CGPathAddLineToPoint(p: CGPathRef, t: ?*const CGAffineTransform, x: CGFloat, y: CGFloat) void;
+extern fn CGPathAddCurveToPoint(p: CGPathRef, t: ?*const CGAffineTransform, x1: CGFloat, y1: CGFloat, x2: CGFloat, y2: CGFloat, x: CGFloat, y: CGFloat) void;
+extern fn CGPathAddRect(p: CGPathRef, t: ?*const CGAffineTransform, r: CGRect) void;
+extern fn CGPathAddArc(p: CGPathRef, t: ?*const CGAffineTransform, x: CGFloat, y: CGFloat, r: CGFloat, a0: CGFloat, a1: CGFloat, clockwise: bool) void;
+extern fn CGPathCloseSubpath(p: CGPathRef) void;
+extern fn CGPathIsEmpty(p: CGPathRef) bool;
+extern fn CGPathCreateCopyByTransformingPath(p: CGPathRef, t: *const CGAffineTransform) ?CGPathRef;
+extern fn CGAffineTransformInvert(t: CGAffineTransform) CGAffineTransform;
+extern fn CTLineCreateWithAttributedString(s: CFAttributedStringRef) ?CFTypeRef;
+extern fn CTLineGetTypographicBounds(line: CFTypeRef, ascent: ?*CGFloat, descent: ?*CGFloat, leading: ?*CGFloat) f64;
+extern fn CTLineDraw(line: CFTypeRef, c: CGContextRef) void;
+extern fn CTFontCreateWithName(name: CFStringRef, size: CGFloat, matrix: ?*const CGAffineTransform) ?CTFontRef;
+extern const kCTForegroundColorFromContextAttributeName: CFStringRef;
+const kCGImageAlphaPremultipliedLast: u32 = 1;
+const kCGBitmapByteOrder32Big: u32 = 4 << 12;
+const kCGBlendModeNormal: c_int = 0;
+const kCGBlendModeClear: c_int = 16;
+const kCGTextFill: c_int = 0;
+const kCGTextStroke: c_int = 1;
+const kCGTextClip: c_int = 7;
+const kCGTextStrokeClip: c_int = 5;
 extern fn CGPathRelease(p: CGPathRef) void;
 const kCGPathFill: c_int = 0;
 const kCGPathEOFill: c_int = 1;
@@ -294,6 +326,7 @@ pub fn dropNative(n: *Node) void {
     switch (n.kind) {
         .text => dropText(n),
         .image => dropImage(n),
+        .canvas => dropCanvas(n),
         else => {},
     }
 }
@@ -387,7 +420,9 @@ pub const Fields = struct {
 
 /// Draw the engine's tree into `cg` (top-left origin). `transparent`:
 /// nothing under the page (a transparent window); else white, as in a browser.
-pub fn paint(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engine, transparent: bool, fields: Fields) void {
+/// `scale`: the display's backing scale (a canvas's bitmap is that many
+/// pixels per point).
+pub fn paint(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engine, transparent: bool, fields: Fields, scale: f64) void {
     const tree = &engine.tree;
     if (tree.dirty) tree.layout();
     const all: CGRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = tree.width, .height = tree.height } };
@@ -398,10 +433,10 @@ pub fn paint(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
         CGContextFillRect(cg, all);
     }
     const root = tree.root orelse return;
-    paintNode(font_class, cg, engine, fields, root);
+    paintNode(font_class, cg, engine, fields, scale, root);
 }
 
-fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engine, fields: Fields, n: *Node) void {
+fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engine, fields: Fields, scale: f64, n: *Node) void {
     // Nothing of it on screen (absolutely placed children may still be).
     const p = n.props;
     if (p.vis == false) return;
@@ -447,9 +482,10 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
         .image => paintImage(cg, engine, n),
         .textarea => if (fields.empty(fields.ctx, n)) paintPlaceholder(font_class, cg, n),
         .view => if (p.ctl != null) paintControl(cg, n),
+        .canvas => paintCanvas(font_class, cg, scale, n),
         else => {},
     }
-    for (n.kids.items) |k| paintNode(font_class, cg, engine, fields, k);
+    for (n.kids.items) |k| paintNode(font_class, cg, engine, fields, scale, k);
 }
 
 fn setFill(cg: CGContextRef, c: tree_mod.Color) void {
@@ -963,4 +999,404 @@ test "images: decoded, and over the pixel limit only measured" {
     try std.testing.expect(j.image == null);
     // Not an image.
     try std.testing.expectError(error.UnknownFormat, decodeBytes("not a picture at all", &j, max_image_pixels));
+}
+
+// ---------------------------------------------------------------------------
+// <canvas>: the recorded program (src/native_ui/js/src/canvas.js) replayed
+// into the canvas's own bitmap, then drawn at its frame. Every paint replays
+// the whole program from the context's defaults (docs/native-renderer.md).
+
+/// A canvas node's bitmap, kept in `Node.native` from frame to frame while
+/// its size holds (a game loop redraws every frame).
+const CanvasBitmap = struct { ctx: CGContextRef, w: usize, h: usize };
+
+/// The largest bitmap side, in pixels.
+const max_canvas_side: f64 = 16384;
+
+fn dropCanvas(n: *Node) void {
+    const p = n.native orelse return;
+    n.native = null;
+    const b: *CanvasBitmap = @ptrCast(@alignCast(p));
+    CGContextRelease(b.ctx);
+    std.heap.smp_allocator.destroy(b);
+}
+
+fn canvasBitmap(n: *Node, w: usize, h: usize) ?*CanvasBitmap {
+    if (n.native) |p| {
+        const b: *CanvasBitmap = @ptrCast(@alignCast(p));
+        if (b.w == w and b.h == h) return b;
+        dropCanvas(n);
+    }
+    const space = CGColorSpaceCreateDeviceRGB() orelse return null;
+    defer CGColorSpaceRelease(space);
+    // Premultiplied RGBA, its memory owned by the context.
+    const ctx = CGBitmapContextCreate(null, w, h, 8, 0, space, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big) orelse return null;
+    const b = std.heap.smp_allocator.create(CanvasBitmap) catch {
+        CGContextRelease(ctx);
+        return null;
+    };
+    b.* = .{ .ctx = ctx, .w = w, .h = h };
+    n.native = b;
+    return b;
+}
+
+const identity: CGAffineTransform = .{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 };
+
+extern fn CGAffineTransformTranslate(t: CGAffineTransform, x: CGFloat, y: CGFloat) CGAffineTransform;
+extern fn CGAffineTransformScale(t: CGAffineTransform, x: CGFloat, y: CGFloat) CGAffineTransform;
+extern fn CGAffineTransformRotate(t: CGAffineTransform, a: CGFloat) CGAffineTransform;
+
+const CanvasState = struct {
+    fill: tree_mod.CanvasPaint = .{ .color = .{ 0, 0, 0, 1 } },
+    stroke: tree_mod.CanvasPaint = .{ .color = .{ 0, 0, 0, 1 } },
+    lw: f32 = 1,
+    cap: u2 = 0, // butt, round, square
+    join: u2 = 0, // miter, round, bevel
+    alpha: f32 = 1,
+    font: tree_mod.CanvasFont = .{ .size = 10 },
+    talign: u2 = 0, // left, center, right
+    tbase: u3 = 0, // alphabetic, top, hanging, middle, bottom
+    /// The canvas transform (path points are put through it when added, as
+    /// a canvas does: a later transform doesn't move them).
+    m: CGAffineTransform = identity,
+    /// A scale by 0: nothing drawn until the restore() that undoes it.
+    singular: bool = false,
+};
+
+/// A gradient by id, as recorded: built into a CGGradient when used (its
+/// stops come after it).
+const CanvasGrad = struct {
+    radial: bool,
+    c: [6]f32, // x0, y0, x1, y1 (linear); x0, y0, r0, x1, y1, r1 (radial)
+    stops: std.ArrayListUnmanaged([5]f32) = .empty, // r, g, b, a, offset
+};
+
+const Replay = struct {
+    gpa: std.mem.Allocator,
+    ctx: CGContextRef,
+    st: CanvasState = .{},
+    states: std.ArrayListUnmanaged(CanvasState) = .empty,
+    /// The current path, in the canvas's base space (transforms applied):
+    /// it survives fill, stroke, fillRect, clearRect and clip.
+    path: CGPathRef,
+    grads: std.AutoHashMapUnmanaged(u16, CanvasGrad) = .empty,
+
+    fn deinit(r: *Replay) void {
+        CFRelease(r.path);
+        // Balanced: what the program saved and didn't restore.
+        for (r.states.items) |_| CGContextRestoreGState(r.ctx);
+        r.states.deinit(r.gpa);
+        var it = r.grads.valueIterator();
+        while (it.next()) |g| g.stops.deinit(r.gpa);
+        r.grads.deinit(r.gpa);
+    }
+
+    fn newPath(r: *Replay) void {
+        const fresh = CGPathCreateMutable() orelse return;
+        CFRelease(r.path);
+        r.path = fresh;
+    }
+};
+
+fn paintCanvas(comptime font_class: [:0]const u8, cg: CGContextRef, scale: f64, n: *Node) void {
+    const cmds = n.canvas orelse return;
+    const f = n.frame;
+    if (!(f.w > 0) or !(f.h > 0)) return; // NaN too
+    const sf: f64 = if (scale > 0 and std.math.isFinite(scale)) scale else 1;
+    const pw: usize = @intFromFloat(@min(max_canvas_side, @ceil(f.w * sf)));
+    const ph: usize = @intFromFloat(@min(max_canvas_side, @ceil(f.h * sf)));
+    if (pw == 0 or ph == 0) return;
+    const bmp = canvasBitmap(n, pw, ph) orelse return;
+    const ctx = bmp.ctx;
+    // The program draws into the canvas's own bitmap: an unbalanced
+    // restore() can't reach the page's states, and clearRect clears the
+    // canvas, not the page behind it.
+    CGContextSaveGState(ctx);
+    CGContextClearRect(ctx, .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = @floatFromInt(pw), .height = @floatFromInt(ph) } });
+    // y down, in points, then the bitmap's space scaled to the box (CSS
+    // width/height stretch it, as in a browser).
+    CGContextTranslateCTM(ctx, 0, @floatFromInt(ph));
+    CGContextScaleCTM(ctx, @as(f64, @floatFromInt(pw)) / f.w, -@as(f64, @floatFromInt(ph)) / f.h);
+    const cw = n.props.cw orelse f.w;
+    const ch = n.props.ch orelse f.h;
+    if (cw > 0 and ch > 0) CGContextScaleCTM(ctx, f.w / cw, f.h / ch);
+    var r: Replay = .{ .gpa = std.heap.smp_allocator, .ctx = ctx, .path = CGPathCreateMutable() orelse {
+        CGContextRestoreGState(ctx);
+        return;
+    } };
+    replay(font_class, &r, cmds);
+    r.deinit();
+    CGContextRestoreGState(ctx);
+
+    // The bitmap at the frame, clipped to the box's rounded corners (as a
+    // browser clips a replaced element's content to its border-radius).
+    const img = CGBitmapContextCreateImage(ctx) orelse return;
+    defer CGImageRelease(img);
+    CGContextSaveGState(cg);
+    defer CGContextRestoreGState(cg);
+    roundRect(cg, f, n.radius());
+    CGContextClip(cg);
+    CGContextTranslateCTM(cg, f.x, f.y + f.h);
+    CGContextScaleCTM(cg, 1, -1);
+    CGContextDrawImage(cg, .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = f.w, .height = f.h } }, img);
+}
+
+fn replay(comptime font_class: [:0]const u8, r: *Replay, cmds: []const tree_mod.CanvasCmd) void {
+    const ctx = r.ctx;
+    for (cmds) |cmd| {
+        if (r.st.singular) switch (cmd) {
+            .translate, .scale, .rotate, .begin_path, .close_path, .move_to, .line_to, .rect, .arc, .bezier_to, .fill, .stroke, .clip, .fill_rect, .stroke_rect, .clear_rect, .fill_text, .stroke_text => continue,
+            else => {},
+        };
+        const m = &r.st.m;
+        switch (cmd) {
+            .save => {
+                // Saved together or not at all, so restore stays balanced.
+                r.states.append(r.gpa, r.st) catch continue;
+                CGContextSaveGState(ctx);
+            },
+            .restore => {
+                // Only what this program saved: an extra restore() is ignored.
+                if (r.states.pop()) |prev| {
+                    r.st = prev;
+                    CGContextRestoreGState(ctx);
+                }
+            },
+            .translate => |t| m.* = CGAffineTransformTranslate(m.*, t[0], t[1]),
+            .scale => |t| if (t[0] == 0 or t[1] == 0) {
+                r.st.singular = true;
+            } else {
+                m.* = CGAffineTransformScale(m.*, t[0], t[1]);
+            },
+            .rotate => |a| m.* = CGAffineTransformRotate(m.*, a),
+            .begin_path => r.newPath(),
+            .close_path => if (!CGPathIsEmpty(r.path)) CGPathCloseSubpath(r.path),
+            .move_to => |p| CGPathMoveToPoint(r.path, m, p[0], p[1]),
+            .line_to => |p| if (CGPathIsEmpty(r.path)) CGPathMoveToPoint(r.path, m, p[0], p[1]) else CGPathAddLineToPoint(r.path, m, p[0], p[1]),
+            .rect => |q| CGPathAddRect(r.path, m, .{ .origin = .{ .x = q[0], .y = q[1] }, .size = .{ .width = q[2], .height = q[3] } }),
+            .arc => |a| {
+                // Canvas angles grow clockwise on screen (y down); CG's
+                // `clockwise` means decreasing angles, so it's the canvas's
+                // counterclockwise. A sweep of a full turn or more is a circle.
+                const two_pi: f32 = 2.0 * std.math.pi;
+                var a1 = a.a1;
+                if (!a.ccw and a1 - a.a0 >= two_pi) a1 = a.a0 + two_pi;
+                if (a.ccw and a.a0 - a1 >= two_pi) a1 = a.a0 - two_pi;
+                CGPathAddArc(r.path, m, a.x, a.y, @max(0, a.r), a.a0, a1, a.ccw);
+            },
+            .bezier_to => |b| {
+                if (CGPathIsEmpty(r.path)) CGPathMoveToPoint(r.path, m, b[0], b[1]);
+                CGPathAddCurveToPoint(r.path, m, b[0], b[1], b[2], b[3], b[4], b[5]);
+            },
+            .fill => |even| fillPath(r, r.path, even),
+            .stroke => strokePath(r, r.path),
+            .clip => |even| {
+                CGContextAddPath(ctx, r.path);
+                if (even) CGContextEOClip(ctx) else CGContextClip(ctx);
+            },
+            .fill_rect, .stroke_rect, .clear_rect => |q| {
+                // Their own path: the current one stays.
+                const tmp = CGPathCreateMutable() orelse continue;
+                defer CFRelease(tmp);
+                CGPathAddRect(tmp, m, .{ .origin = .{ .x = q[0], .y = q[1] }, .size = .{ .width = q[2], .height = q[3] } });
+                switch (cmd) {
+                    .fill_rect => fillPath(r, tmp, false),
+                    .stroke_rect => strokePath(r, tmp),
+                    else => {
+                        // To transparent, under the clip, whatever the transform.
+                        CGContextSaveGState(ctx);
+                        defer CGContextRestoreGState(ctx);
+                        CGContextSetBlendMode(ctx, kCGBlendModeClear);
+                        CGContextAddPath(ctx, tmp);
+                        CGContextFillPath(ctx);
+                    },
+                }
+            },
+            .fill_text => |t| canvasText(font_class, r, t.t, t.x, t.y, false),
+            .stroke_text => |t| canvasText(font_class, r, t.t, t.x, t.y, true),
+            .fill_style => |src| r.st.fill = src,
+            .stroke_style => |src| r.st.stroke = src,
+            .line_width => |w| r.st.lw = @max(0, w),
+            .line_cap => |cap| r.st.cap = cap,
+            .line_join => |join| r.st.join = join,
+            .global_alpha => |a| r.st.alpha = std.math.clamp(a, 0, 1),
+            .font => |fnt| r.st.font = fnt,
+            .text_align => |a| r.st.talign = a,
+            .text_baseline => |b| r.st.tbase = b,
+            .linear_gradient => |g| putGrad(r, g.id, .{ .radial = false, .c = .{ g.x0, g.y0, g.x1, g.y1, 0, 0 } }),
+            .radial_gradient => |g| putGrad(r, g.id, .{ .radial = true, .c = .{ g.x0, g.y0, @max(0, g.r0), g.x1, g.y1, @max(0, g.r1) } }),
+            .color_stop => |c| if (r.grads.getPtr(c.id)) |g| {
+                if (g.stops.items.len < 256) g.stops.append(r.gpa, .{ c.c[0], c.c[1], c.c[2], c.c[3], std.math.clamp(c.off, 0, 1) }) catch {};
+            },
+        }
+    }
+}
+
+fn putGrad(r: *Replay, id: u16, g: CanvasGrad) void {
+    if (r.grads.fetchRemove(id)) |old| {
+        var o = old.value;
+        o.stops.deinit(r.gpa);
+    }
+    r.grads.put(r.gpa, id, g) catch {};
+}
+
+/// Draw gradient `id` (in the canvas transform's space) over what's clipped.
+fn drawGrad(r: *Replay, id: u16) void {
+    const g = r.grads.get(id) orelse return;
+    if (g.stops.items.len == 0) return;
+    const space = CGColorSpaceCreateDeviceRGB() orelse return;
+    defer CGColorSpaceRelease(space);
+    var comps: [256 * 4]CGFloat = undefined;
+    var locs: [256]CGFloat = undefined;
+    // Stops sorted by offset (the page may add them in any order), stable.
+    var order: [256]u16 = undefined;
+    const count = g.stops.items.len;
+    for (0..count) |i| order[i] = @intCast(i);
+    const items = g.stops.items;
+    std.sort.insertion(u16, order[0..count], items, struct {
+        fn lt(st: []const [5]f32, a: u16, b: u16) bool {
+            return st[a][4] < st[b][4];
+        }
+    }.lt);
+    for (order[0..count], 0..) |k, i| {
+        const st = items[k];
+        comps[i * 4 + 0] = st[0] / 255;
+        comps[i * 4 + 1] = st[1] / 255;
+        comps[i * 4 + 2] = st[2] / 255;
+        comps[i * 4 + 3] = st[3];
+        locs[i] = st[4];
+    }
+    const grad = CGGradientCreateWithColorComponents(space, &comps, &locs, count) orelse return;
+    defer CGGradientRelease(grad);
+    CGContextConcatCTM(r.ctx, r.st.m);
+    if (g.radial) {
+        CGContextDrawRadialGradient(r.ctx, grad, .{ .x = g.c[0], .y = g.c[1] }, g.c[2], .{ .x = g.c[3], .y = g.c[4] }, g.c[5], kCGGradientDrawsBeforeAndAfter);
+    } else {
+        CGContextDrawLinearGradient(r.ctx, grad, .{ .x = g.c[0], .y = g.c[1] }, .{ .x = g.c[2], .y = g.c[3] }, kCGGradientDrawsBeforeAndAfter);
+    }
+}
+
+fn setPaintColor(ctx: CGContextRef, c: tree_mod.Color, alpha: f32, stroke: bool) void {
+    const comps = .{ c[0] / 255, c[1] / 255, c[2] / 255, c[3] * alpha };
+    if (stroke) CGContextSetRGBStrokeColor(ctx, comps[0], comps[1], comps[2], comps[3]) else CGContextSetRGBFillColor(ctx, comps[0], comps[1], comps[2], comps[3]);
+}
+
+fn fillPath(r: *Replay, path: CGPathRef, even: bool) void {
+    const ctx = r.ctx;
+    CGContextSaveGState(ctx);
+    defer CGContextRestoreGState(ctx);
+    CGContextAddPath(ctx, path);
+    switch (r.st.fill) {
+        .color => |c| {
+            setPaintColor(ctx, c, r.st.alpha, false);
+            CGContextDrawPath(ctx, if (even) kCGPathEOFill else kCGPathFill);
+        },
+        .grad => |id| {
+            if (even) CGContextEOClip(ctx) else CGContextClip(ctx);
+            drawGrad(r, id);
+        },
+    }
+}
+
+/// Stroked in the canvas transform's space, so the line width and dashes
+/// scale with it, as in a canvas.
+fn strokePath(r: *Replay, path: CGPathRef) void {
+    const ctx = r.ctx;
+    const inv = CGAffineTransformInvert(r.st.m);
+    const local = CGPathCreateCopyByTransformingPath(path, &inv) orelse return;
+    defer CFRelease(local);
+    CGContextSaveGState(ctx);
+    defer CGContextRestoreGState(ctx);
+    CGContextConcatCTM(ctx, r.st.m);
+    CGContextAddPath(ctx, local);
+    CGContextSetLineWidth(ctx, @max(0.1, r.st.lw));
+    CGContextSetLineCap(ctx, r.st.cap);
+    CGContextSetLineJoin(ctx, r.st.join);
+    switch (r.st.stroke) {
+        .color => |c| {
+            setPaintColor(ctx, c, r.st.alpha, true);
+            CGContextStrokePath(ctx);
+        },
+        .grad => |id| {
+            CGContextReplacePathWithStrokedPath(ctx);
+            CGContextClip(ctx);
+            // drawGrad applies the transform itself: undo ours first.
+            CGContextConcatCTM(ctx, CGAffineTransformInvert(r.st.m));
+            drawGrad(r, id);
+        },
+    }
+}
+
+/// fillText / strokeText: one line (no wrapping), placed by textAlign and
+/// textBaseline from (x, y), in the canvas transform.
+fn canvasText(comptime font_class: [:0]const u8, r: *Replay, text: []const u8, x: f32, y: f32, stroke: bool) void {
+    if (text.len == 0) return;
+    const ctx = r.ctx;
+    const st = r.st;
+    const size: f32 = if (st.font.size > 0 and st.font.size < 2000) st.font.size else 10;
+    const fam = st.font.family;
+    const generic_sans = fam.len == 0 or std.ascii.endsWithIgnoreCase(fam, "sans-serif") or std.ascii.endsWithIgnoreCase(fam, "system-ui");
+    const mono = std.ascii.endsWithIgnoreCase(fam, "monospace");
+    // A named family (or the generic serif) through CoreText; else the
+    // system font, as the page's own text.
+    var named: ?CTFontRef = null;
+    defer if (named) |nf| CFRelease(nf);
+    if (!generic_sans and !mono) {
+        const name: []const u8 = if (std.ascii.endsWithIgnoreCase(fam, "serif")) "Times New Roman" else std.mem.trim(u8, fam, " \"'");
+        if (CFStringCreateWithBytes(null, name.ptr, @intCast(name.len), kCFStringEncodingUTF8, 0)) |cf| {
+            defer CFRelease(cf);
+            named = CTFontCreateWithName(cf, size, null);
+        }
+    }
+    const fnt = named orelse font(font_class, size, st.font.weight, st.font.italic, mono) orelse return;
+    const s = CFAttributedStringCreateMutable(null, 0) orelse return;
+    defer CFRelease(s);
+    const str = CFStringCreateWithBytes(null, text.ptr, @intCast(@min(text.len, 1 << 20)), kCFStringEncodingUTF8, 0) orelse return;
+    defer CFRelease(str);
+    CFAttributedStringReplaceString(s, .{ .location = 0, .length = 0 }, str);
+    const all: CFRange = .{ .location = 0, .length = CFStringGetLength(str) };
+    CFAttributedStringSetAttribute(s, all, kCTFontAttributeName, fnt);
+    CFAttributedStringSetAttribute(s, all, kCTForegroundColorFromContextAttributeName, kCFBooleanTrue);
+    const line = CTLineCreateWithAttributedString(s) orelse return;
+    defer CFRelease(line);
+    var ascent: CGFloat = 0;
+    var descent: CGFloat = 0;
+    const width = CTLineGetTypographicBounds(line, &ascent, &descent, null);
+    // The baseline's start from the anchor (x, y), y down.
+    var px: f64 = x;
+    var py: f64 = y;
+    switch (st.talign) {
+        1 => px -= width / 2,
+        2 => px -= width,
+        else => {},
+    }
+    switch (st.tbase) {
+        1, 2 => py += ascent, // top, hanging
+        3 => py += (ascent - descent) / 2, // middle
+        4 => py -= descent, // bottom
+        else => {}, // alphabetic
+    }
+    CGContextSaveGState(ctx);
+    defer CGContextRestoreGState(ctx);
+    CGContextConcatCTM(ctx, st.m);
+    // Glyphs are drawn y up: flip them in the y-down space.
+    CGContextSetTextMatrix(ctx, .{ .a = 1, .b = 0, .c = 0, .d = -1, .tx = 0, .ty = 0 });
+    CGContextSetTextPosition(ctx, px, py);
+    const paint_src = if (stroke) st.stroke else st.fill;
+    switch (paint_src) {
+        .color => |c| {
+            setPaintColor(ctx, c, st.alpha, stroke);
+            if (stroke) CGContextSetLineWidth(ctx, @max(0.5, st.lw));
+            CGContextSetTextDrawingMode(ctx, if (stroke) kCGTextStroke else kCGTextFill);
+            CTLineDraw(line, ctx);
+        },
+        .grad => |id| {
+            // The glyphs as a clip, then the gradient through them.
+            if (stroke) CGContextSetLineWidth(ctx, @max(0.5, st.lw));
+            CGContextSetTextDrawingMode(ctx, if (stroke) kCGTextStrokeClip else kCGTextClip);
+            CTLineDraw(line, ctx);
+            CGContextConcatCTM(ctx, CGAffineTransformInvert(st.m));
+            drawGrad(r, id);
+        },
+    }
 }
