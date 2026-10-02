@@ -908,10 +908,39 @@ fn border(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) 
         const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
         var ri = r;
         for (&ri) |*x| x.* = @max(0, x.* - half);
-        roundRect(cr, inner, ri);
-        setColor(cr, colors[0]);
         cairo_set_line_width(cr, bw[0]);
-        cairo_stroke(cr);
+        const same = for (colors[1..]) |c| {
+            if (!std.mem.eql(f32, &c, &colors[0])) break false;
+        } else true;
+        if (same) {
+            roundRect(cr, inner, ri);
+            setColor(cr, colors[0]);
+            cairo_stroke(cr);
+            return;
+        }
+        // Sides in different colors (a spinner: border-top-color on a grey
+        // ring): the rounded border stroked once per side, clipped to that
+        // side's wedge (its two corners and the box's center), so the
+        // colors meet on the diagonals, as in CSS.
+        const cx = f.x + f.w / 2;
+        const cy = f.y + f.h / 2;
+        const corners = [4][2]f32{ .{ f.x, f.y }, .{ f.x + f.w, f.y }, .{ f.x + f.w, f.y + f.h }, .{ f.x, f.y + f.h } };
+        for (0..4) |i| {
+            if (colors[i][3] <= 0) continue;
+            const a0 = corners[i];
+            const a1 = corners[(i + 1) % 4];
+            cairo_save(cr);
+            cairo_new_path(cr);
+            cairo_move_to(cr, a0[0], a0[1]);
+            cairo_line_to(cr, a1[0], a1[1]);
+            cairo_line_to(cr, cx, cy);
+            cairo_close_path(cr);
+            cairo_clip(cr);
+            roundRect(cr, inner, ri);
+            setColor(cr, colors[i]);
+            cairo_stroke(cr);
+            cairo_restore(cr);
+        }
         return;
     }
     // Per side (straight edges).
