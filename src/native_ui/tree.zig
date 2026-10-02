@@ -869,7 +869,11 @@ pub const Tree = struct {
                 }
             }
         }
-        if (!in_row or k.props.nowrap or longest == 0) {
+        // A growing item (flex: 1, a segmented control's buttons): CSS
+        // shares the room from its 0 basis, so equal buttons stay equal;
+        // Yoga would start from this minimum and widen the longer labels.
+        const grows = (k.props.fg orelse 0) > 0;
+        if (!in_row or k.props.nowrap or longest == 0 or grows) {
             yg.YGNodeStyleSetMinWidth(k.yn, std.math.nan(f32));
             return;
         }
