@@ -159,6 +159,18 @@ void ET;
   }
 }
 
+// Set a field's value or checked as the user would: through the setter on
+// its prototype, not the element. React wraps value/checked on each element
+// to remember what it rendered, and an `input` event whose value went
+// through that wrapper looks unchanged to it (onChange never runs).
+function setNative(el, prop, v) {
+  for (let p = Object.getPrototypeOf(el); p; p = Object.getPrototypeOf(p)) {
+    const d = Object.getOwnPropertyDescriptor(p, prop);
+    if (d?.set) { d.set.call(el, v); return; }
+  }
+  el[prop] = v;
+}
+
 // checked reflects the attribute (so :checked styles follow it).
 const inputProto = Object.getPrototypeOf(document.createElement("input"));
 Object.defineProperty(inputProto, "checked", {
@@ -456,8 +468,7 @@ function activate(el, flags) {
 }
 function toggle(input) {
   if (input.hasAttribute("disabled")) return;
-  if (input.getAttribute("type") === "radio") input.checked = true;
-  else input.checked = !input.checked;
+  setNative(input, "checked", input.getAttribute("type") === "radio" ? true : !input.checked);
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
@@ -595,14 +606,14 @@ g.__oriel = {
         case "input": {
           if (!el) return false;
           renderer.native.set(id, data);
-          el.value = data;
+          setNative(el, "value", data);
           el.dispatchEvent(new Event("input", { bubbles: true }));
           return false;
         }
         case "change": {
           if (!el) return false;
           renderer.native.set(id, data);
-          el.value = data;
+          setNative(el, "value", data);
           el.dispatchEvent(new Event("change", { bubbles: true }));
           return false;
         }
