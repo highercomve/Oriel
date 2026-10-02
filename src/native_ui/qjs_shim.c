@@ -175,8 +175,10 @@ static JSValue h_leaf(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
     return JS_NewBool(ctx, ok);
 }
 
-// Backends that consume typed tree props can change text without a JSON
-// round trip. Android's mirrored props currently use the regular ops path.
+#endif
+
+// A text node's single run changed: straight to the tree and the backend
+// (Backend.text), without a JSON round trip.
 static JSValue h_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 2) return JS_FALSE;
@@ -189,7 +191,6 @@ static JSValue h_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
     JS_FreeCString(ctx, s);
     return JS_NewBool(ctx, ok);
 }
-#endif
 
 // host.now(): a monotonic clock in ms, sub-millisecond (performance.now).
 static JSValue h_now(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -438,8 +439,8 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "invoke", h_invoke, 3);
     set_fn(ctx, host, "timer", h_timer, 2);
     set_fn(ctx, host, "ops", h_ops, 1);
-#if !defined(__ANDROID__)
     set_fn(ctx, host, "text", h_text, 2);
+#if !defined(__ANDROID__)
     set_fn(ctx, host, "leafStyle", h_leaf_style, 2);
     set_fn(ctx, host, "leaf", h_leaf, 4);
 #endif
