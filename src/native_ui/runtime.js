@@ -5161,10 +5161,10 @@ globalThis.atob ??= (s) => {
         options: { is: extend ? localName : "" },
         localName: extend || localName
       });
-      const check = extend ? (element) => {
+      const check2 = extend ? (element) => {
         return element.localName === extend && element.getAttribute("is") === localName;
       } : (element) => element.localName === localName;
-      registry.set(localName, { Class, check });
+      registry.set(localName, { Class, check: check2 });
       if (waiting.has(localName)) {
         for (const resolve of waiting.get(localName))
           resolve(Class);
@@ -5183,8 +5183,8 @@ globalThis.atob ??= (s) => {
       const { ownerDocument, registry } = this;
       const ce = element.getAttribute("is") || element.localName;
       if (registry.has(ce)) {
-        const { Class, check } = registry.get(ce);
-        if (check(element)) {
+        const { Class, check: check2 } = registry.get(ce);
+        if (check2(element)) {
           const { attributes, isConnected: isConnected2 } = element;
           for (const attr2 of attributes)
             element.removeAttributeNode(attr2);
@@ -13773,6 +13773,7 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
       const id = this.idOf(el, "el");
       this.owner.set(id, el);
       const props = boxProps(cs, display, fontSize, el);
+      if (!ctx.blockify) delete props.as;
       const transitions = transitionsOf(cs);
       if (transitions) this.specs.set(id, transitions);
       this.noteAnimations(id, cs, fontSize);
@@ -13854,6 +13855,21 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         props.ph = el.getAttribute("placeholder") || "";
         props.dis = el.hasAttribute("disabled");
         props.pw = type === "password";
+        if (type === "range") {
+          const n2 = (a, d) => {
+            const v = parseFloat(el.getAttribute(a));
+            return Number.isFinite(v) ? v : d;
+          };
+          props.range = [n2("min", 0), n2("max", 100), el.getAttribute("step") === "any" ? 0 : n2("step", 1)];
+          if (props.h === void 0 || props.h === "auto") props.h = 24;
+          const acc = color(cs["accent-color"] || "");
+          if (acc) props.acc = acc;
+          delete props.pad;
+          delete props.bw;
+          delete props.bc;
+          delete props.bg;
+          delete props.br;
+        }
         return this.put(nodes, id, tag === "textarea" ? "textarea" : "input", props, [], fixedNode);
       }
       const childCtx = { blockify: display === "flex" || display === "grid", parentText: cs["text-align"] };
@@ -13908,7 +13924,7 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         if (!childCtx.blockify) {
           const n2 = nodes.get(cid);
           if (n2 && n2.props.fs === void 0) n2.props.fs = 0;
-        } else if (props.scroll && !this.cs.get(item.el)?.["flex-shrink"]) {
+        } else if ((props.scroll || props.scrollx) && !this.cs.get(item.el)?.["flex-shrink"]) {
           const n2 = nodes.get(cid);
           if (n2) n2.props.fs = 0;
         } else if (props.fd === "column" && this.keepsContentHeight(item.el, nodes.get(cid))) nodes.get(cid).props.fs = 0;
@@ -14191,6 +14207,12 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         return l === void 0 || l === "auto" ? null : typeof l === "object" ? `${l.pct}%` : l;
       });
       p.ins = ins;
+    } else if (cs.position === "sticky") {
+      const ins = sides.map((s) => {
+        const l = num2(cs[s], fs);
+        return typeof l === "number" ? l : null;
+      });
+      if (ins.some((x) => x !== null)) p.sticky = ins;
     } else if (cs.position === "relative") {
       const ins = sides.map((s) => {
         const l = num2(cs[s], fs);
@@ -14200,6 +14222,8 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
     }
     const ov = cs["overflow-y"] || cs.overflow;
     if (ov === "auto" || ov === "scroll") p.scroll = true;
+    const ovx = cs["overflow-x"];
+    if (ovx === "auto" || ovx === "scroll") p.scrollx = true;
     if (cs["overflow-x"] === "hidden" || cs["overflow-y"] === "hidden" || cs.overflow === "hidden") p.clip = true;
     if (cs["aspect-ratio"]) p.ar = parseFloat(cs["aspect-ratio"]);
     const tr = transformOf(cs, fs);
@@ -14682,6 +14706,17 @@ ${a.stack || ""}`;
     },
     configurable: true
   });
+  var INPUT_TYPES = new Set("button checkbox color date datetime-local email file hidden image month number password radio range reset search submit tel text time url week".split(" "));
+  Object.defineProperty(inputProto, "type", {
+    get() {
+      const t = (this.getAttribute("type") || "").toLowerCase();
+      return INPUT_TYPES.has(t) ? t : "text";
+    },
+    set(v) {
+      this.setAttribute("type", v);
+    },
+    configurable: true
+  });
   Object.defineProperty(inputProto, "disabled", {
     get() {
       return this.hasAttribute("disabled");
@@ -15153,10 +15188,20 @@ ${a.stack || ""}`;
     },
     window: Object.freeze(windowApi)
   });
+  var isCheckable = (n2) => n2?.localName === "input" && /^(checkbox|radio)$/.test(n2.type);
   function activate(el, flags) {
+    const undo = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
     const ev = new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
     el.dispatchEvent(ev);
-    if (ev.defaultPrevented) return;
+    if (undo) {
+      if (ev.defaultPrevented) undo();
+      else {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return;
+    }
+    if (ev.defaultPrevented || isCheckable(el)) return;
     for (let n2 = el; n2 && n2.nodeType === 1; n2 = n2.parentNode) {
       const tag = n2.localName;
       if (tag === "a") {
@@ -15169,13 +15214,9 @@ ${a.stack || ""}`;
       if (tag === "label") {
         const ctl = n2.htmlFor ? document.getElementById(n2.getAttribute("for")) : n2.querySelector("input, textarea, select");
         if (ctl && ctl !== el && !ctl.contains?.(el)) {
-          if (ctl.localName === "input" && /checkbox|radio/.test(ctl.getAttribute("type") || "")) toggle(ctl);
+          if (isCheckable(ctl)) activate(ctl, flags);
           else ctl.focus();
         }
-        return;
-      }
-      if (tag === "input" && /checkbox|radio/.test(n2.getAttribute("type") || "")) {
-        toggle(n2);
         return;
       }
       if (tag === "button") {
@@ -15187,11 +15228,24 @@ ${a.stack || ""}`;
       }
     }
   }
-  function toggle(input) {
-    if (input.hasAttribute("disabled")) return;
-    setNative(input, "checked", input.getAttribute("type") === "radio" ? true : !input.checked);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
+  function check(input) {
+    const before2 = [[input, input.checked]];
+    if (input.type === "radio") {
+      const name = input.getAttribute("name");
+      if (name) {
+        const scope = input.closest("form") || document;
+        for (const r of scope.querySelectorAll('input[type="radio"]')) {
+          if (r !== input && r.getAttribute("name") === name && r.checked) {
+            before2.push([r, true]);
+            setNative(r, "checked", false);
+          }
+        }
+      }
+      setNative(input, "checked", true);
+    } else setNative(input, "checked", !input.checked);
+    return () => {
+      for (const [n2, v] of before2) setNative(n2, "checked", v);
+    };
   }
   function submit(form) {
     const ev = new Event("submit", { bubbles: true, cancelable: true });
@@ -15243,6 +15297,32 @@ ${a.stack || ""}`;
       for (const n2 of fromChain) if (!toChain.includes(n2)) fire(n2, prefix + "leave", false, to);
       fire(to, prefix + "over", true, from);
       for (const n2 of [...toChain].reverse()) if (!fromChain.includes(n2)) fire(n2, prefix + "enter", false, from);
+    }
+  }
+  var HANDLER_EVENTS = "abort animationend beforeinput blur change click contextmenu dblclick error focus focusin focusout input invalid keydown keypress keyup load mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup pointercancel pointerdown pointermove pointerup reset resize scroll select submit toggle touchcancel touchend touchmove touchstart transitionend wheel".split(" ");
+  for (const proto of [elProto, Object.getPrototypeOf(document)]) {
+    for (const type of HANDLER_EVENTS) {
+      if (Object.getOwnPropertyDescriptor(proto, "on" + type)) continue;
+      Object.defineProperty(proto, "on" + type, {
+        get() {
+          return this.__handlers?.get(type)?.fn ?? null;
+        },
+        set(fn) {
+          const handlers = this.__handlers ||= /* @__PURE__ */ new Map();
+          const old = handlers.get(type);
+          if (old) {
+            this.removeEventListener(type, old.listener);
+            handlers.delete(type);
+          }
+          if (typeof fn !== "function") return;
+          const listener = function(event) {
+            if (fn.call(this, event) === false) event.preventDefault();
+          };
+          this.addEventListener(type, listener);
+          handlers.set(type, { fn, listener });
+        },
+        configurable: true
+      });
     }
   }
   function bindInline(el) {

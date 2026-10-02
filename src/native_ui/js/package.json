@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node test/media.test.mjs && node test/react-inputs.test.mjs && node test/transitions.test.mjs && node test/animations.test.mjs && node test/harness.mjs"
+    "test": "node test/media.test.mjs && node test/react-inputs.test.mjs && node test/react-real.test.mjs && node test/transitions.test.mjs && node test/animations.test.mjs && node test/harness.mjs"
   },
   "dependencies": {
     "linkedom": "0.18.13"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   }
 }

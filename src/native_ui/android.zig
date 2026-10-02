@@ -258,6 +258,19 @@ fn nScroll(_: *Env, _: jclass, win: jint, x: f32, y: f32, dy: f32) callconv(.c) 
     return 0;
 }
 
+/// A sideways drag or wheel at (x, y): scroll the nearest container that
+/// can scroll sideways; true if one moved.
+fn nScrollX(_: *Env, _: jclass, win: jint, x: f32, y: f32, dx: f32) callconv(.c) jboolean {
+    const s = byId(win) orelse return 0;
+    const n = s.engine.tree.hit(x, y);
+    var target = s.engine.tree.scrollerX(n);
+    while (target) |t| {
+        if (s.engine.scrollByX(t, dx)) return 1;
+        target = s.engine.tree.scrollerX(t.parent);
+    }
+    return 0;
+}
+
 /// A field's event: kind "input", "change" (data: the value as UTF-8),
 /// "key" (data: JSON), "focus", "blur".
 fn nEvent(env: *Env, _: jclass, win: jint, id: jint, kind: jobject, data: jobject) callconv(.c) jboolean {
@@ -309,6 +322,7 @@ comptime {
     @export(&nHover, .{ .name = prefix ++ "hover" });
     @export(&nLongPress, .{ .name = prefix ++ "longPress" });
     @export(&nScroll, .{ .name = prefix ++ "scroll" });
+    @export(&nScrollX, .{ .name = prefix ++ "scrollX" });
     @export(&nEvent, .{ .name = prefix ++ "event" });
     @export(&nTimer, .{ .name = prefix ++ "timer" });
     @export(&nBack, .{ .name = prefix ++ "back" });

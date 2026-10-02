@@ -248,6 +248,10 @@ pub const Props = struct {
     ins: ?[4]?Dim = null,
     rel: ?[4]?f32 = null,
     scroll: bool = false,
+    /// overflow-x: auto/scroll: scrolls sideways.
+    scrollx: bool = false,
+    /// position: sticky, its insets (top, right, bottom, left; null: auto).
+    sticky: ?[4]?f32 = null,
     clip: bool = false,
     ar: ?f32 = null,
     tx: ?f32 = null,
@@ -331,6 +335,8 @@ pub const Node = struct {
     /// Scroll containers: the content's height and the offset.
     content_h: f32 = 0,
     scroll_y: f32 = 0,
+    scroll_x: f32 = 0,
+    content_w: f32 = 0,
     /// The backend's widget for this node, if any.
     native: ?*anyopaque = null,
     tree: *Tree,
@@ -554,11 +560,13 @@ pub const Tree = struct {
         yg.YGNodeStyleSetHeight(root.yn, t.height);
         yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
         const window: Rect = .{ .w = t.width, .h = t.height };
-        place(root, 0, 0, window);
+        place(root, 0, 0, window, window);
         t.dirty = false;
     }
 
-    fn place(n: *Node, ox: f32, oy: f32, clip: Rect) void {
+    /// `view`: the visible box of the nearest scroll container (what a
+    /// sticky box sticks to).
+    fn place(n: *Node, ox: f32, oy: f32, clip: Rect, view: Rect) void {
         const p = n.props;
         n.frame = .{
             .x = ox + yg.YGNodeLayoutGetLeft(n.yn) + (p.tx orelse 0),
@@ -566,17 +574,59 @@ pub const Tree = struct {
             .w = yg.YGNodeLayoutGetWidth(n.yn),
             .h = yg.YGNodeLayoutGetHeight(n.yn),
         };
+        if (p.sticky) |ins| if (n.parent) |parent| stick(&n.frame, ins, view, parent.frame);
         n.clip = clip;
         var child_clip = clip;
-        if (p.scroll or p.clip) child_clip = clip.intersect(n.frame);
+        var child_view = view;
+        if (p.scroll or p.scrollx or p.clip) child_clip = clip.intersect(n.frame);
+        if (p.scroll or p.scrollx) child_view = n.frame;
         if (p.scroll) {
             var bottom: f32 = 0;
             for (n.kids.items) |k| bottom = @max(bottom, overflowBottom(k, 0));
             n.content_h = bottom + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeBottom);
             n.scroll_y = std.math.clamp(n.scroll_y, 0, @max(0, n.content_h - n.frame.h));
         }
+        if (p.scrollx) {
+            var right: f32 = 0;
+            for (n.kids.items) |k| right = @max(right, overflowRight(k, 0));
+            n.content_w = right + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeRight);
+            n.scroll_x = std.math.clamp(n.scroll_x, 0, @max(0, n.content_w - n.frame.w));
+        }
         const sy = if (p.scroll) n.scroll_y else 0;
-        for (n.kids.items) |k| place(k, n.frame.x, n.frame.y - sy, child_clip);
+        const sx = if (p.scrollx) n.scroll_x else 0;
+        for (n.kids.items) |k| place(k, n.frame.x - sx, n.frame.y - sy, child_clip, child_view);
+    }
+
+    /// position: sticky: the box stays in the scroll container's view (minus
+    /// its insets) as the page scrolls, but never leaves its parent's box.
+    fn stick(f: *Rect, ins: [4]?f32, view: Rect, parent: Rect) void {
+        if (ins[0]) |top| {
+            const want = @min(view.y + top, parent.y + parent.h - f.h);
+            if (want > f.y) f.y = want;
+        }
+        if (ins[2]) |bottom| {
+            const want = @max(view.y + view.h - bottom - f.h, parent.y);
+            if (want < f.y) f.y = want;
+        }
+        if (ins[3]) |left| {
+            const want = @min(view.x + left, parent.x + parent.w - f.w);
+            if (want > f.x) f.x = want;
+        }
+        if (ins[1]) |right| {
+            const want = @max(view.x + view.w - right - f.w, parent.x);
+            if (want < f.x) f.x = want;
+        }
+    }
+
+    /// How far right a node's box reaches, with what overflows it (the
+    /// horizontal twin of overflowBottom).
+    fn overflowRight(k: *Node, left: f32) f32 {
+        const x = left + yg.YGNodeLayoutGetLeft(k.yn);
+        var right = x + yg.YGNodeLayoutGetWidth(k.yn) + yg.YGNodeLayoutGetMargin(k.yn, yg.YGEdgeRight);
+        if (!k.props.scroll and !k.props.scrollx and !k.props.clip) {
+            for (k.kids.items) |c| right = @max(right, overflowRight(c, x));
+        }
+        return right;
     }
 
     /// How far down a node's box reaches, with what overflows it (CSS's
@@ -586,7 +636,7 @@ pub const Tree = struct {
     fn overflowBottom(k: *Node, top: f32) f32 {
         const y = top + yg.YGNodeLayoutGetTop(k.yn);
         var bottom = y + yg.YGNodeLayoutGetHeight(k.yn) + yg.YGNodeLayoutGetMargin(k.yn, yg.YGEdgeBottom);
-        if (!k.props.scroll and !k.props.clip) {
+        if (!k.props.scroll and !k.props.scrollx and !k.props.clip) {
             for (k.kids.items) |c| bottom = @max(bottom, overflowBottom(c, y));
         }
         return bottom;
@@ -612,7 +662,8 @@ pub const Tree = struct {
     /// Re-place after a scroll (no new layout).
     pub fn replace(t: *Tree) void {
         const root = t.root orelse return;
-        place(root, 0, 0, .{ .w = t.width, .h = t.height });
+        const window: Rect = .{ .w = t.width, .h = t.height };
+        place(root, 0, 0, window, window);
     }
 
     /// The deepest node under a point (later siblings on top).
@@ -636,6 +687,13 @@ pub const Tree = struct {
     pub fn scroller(_: *Tree, start: ?*Node) ?*Node {
         var n = start;
         while (n) |x| : (n = x.parent) if (x.props.scroll and x.content_h > x.frame.h + 0.5) return x;
+        return null;
+    }
+
+    /// The nearest container that can scroll sideways.
+    pub fn scrollerX(_: *Tree, start: ?*Node) ?*Node {
+        var n = start;
+        while (n) |x| : (n = x.parent) if (x.props.scrollx and x.content_w > x.frame.w + 0.5) return x;
         return null;
     }
 
@@ -737,7 +795,7 @@ fn styleYoga(n: *Node) void {
     yg.YGNodeStyleSetGap(y, yg.YGGutterRow, p.rg orelse 0);
     yg.YGNodeStyleSetGap(y, yg.YGGutterColumn, p.cg orelse 0);
     yg.YGNodeStyleSetPositionType(y, if (p.pos != null and std.mem.eql(u8, p.pos.?, "absolute")) yg.YGPositionTypeAbsolute else yg.YGPositionTypeRelative);
-    yg.YGNodeStyleSetOverflow(y, if (p.scroll) yg.YGOverflowScroll else if (p.clip) yg.YGOverflowHidden else yg.YGOverflowVisible);
+    yg.YGNodeStyleSetOverflow(y, if (p.scroll or p.scrollx) yg.YGOverflowScroll else if (p.clip) yg.YGOverflowHidden else yg.YGOverflowVisible);
     if (p.ar) |ar| yg.YGNodeStyleSetAspectRatio(y, ar) else yg.YGNodeStyleSetAspectRatio(y, std.math.nan(f32));
     yg.YGNodeStyleSetDisplay(y, yg.YGDisplayFlex);
 }
@@ -895,4 +953,25 @@ test "a field's value set by the page survives props that don't repeat it" {
     const n = t.get(1).?;
     try std.testing.expectEqualStrings("typed by the page", n.pending_value.?);
     try std.testing.expectEqualStrings("a placeholder that reuses the arena's memory", n.props.ph.?);
+}
+
+test "sticky: kept in the view, never out of its parent" {
+    const view: Rect = .{ .x = 0, .y = 0, .w = 400, .h = 600 };
+    const parent: Rect = .{ .x = 0, .y = -300, .w = 400, .h = 1200 };
+    // A footer (bottom: 0) below the view moves up to its bottom edge.
+    var f: Rect = .{ .x = 0, .y = 840, .w = 400, .h = 60 };
+    Tree.stick(&f, .{ null, null, 0, null }, view, parent);
+    try std.testing.expectEqual(@as(f32, 540), f.y);
+    // In view already: it stays.
+    f = .{ .x = 0, .y = 200, .w = 400, .h = 60 };
+    Tree.stick(&f, .{ null, null, 0, null }, view, parent);
+    try std.testing.expectEqual(@as(f32, 200), f.y);
+    // A header (top: 0) scrolled above the view comes down to its top...
+    f = .{ .x = 0, .y = -100, .w = 400, .h = 40 };
+    Tree.stick(&f, .{ 0, null, null, null }, view, parent);
+    try std.testing.expectEqual(@as(f32, 0), f.y);
+    // ...but not past the end of its parent (which ends at -80).
+    f = .{ .x = 0, .y = -200, .w = 400, .h = 40 };
+    Tree.stick(&f, .{ 0, null, null, null }, view, .{ .x = 0, .y = -300, .w = 400, .h = 220 });
+    try std.testing.expectEqual(@as(f32, -120), f.y);
 }
