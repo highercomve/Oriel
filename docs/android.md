@@ -242,6 +242,18 @@ found no usable GPU), desktop windowing on a Chromebook/Googlebook
 bounds), AAudio capture latency, arm64 at runtime (only x86_64 ran), and
 16 KiB-page devices (the libraries are aligned; not run on one).
 
+Host names and helper processes (2026-10-01, GhostPen with built-in
+models on a Chromebook): the app's `Io` (`src/platform/android/io.zig`)
+resolves names with bionic's getaddrinfo, since `Io.Threaded` reads
+/etc/resolv.conf, which Android doesn't have (every lookup failed with
+NameServerFailure). Its executable path is `liboriel_exec.so`
+(`launcher.zig`), a 9 KB launcher installed next to `liboriel.so` that
+loads it and runs the app's `main` (`oriel_exec_main`), so an app that
+starts itself as a helper (`--llm-helper`) gets a process of its own
+instead of starting app_process64. The Gradle project extracts the
+native libraries (`useLegacyPackaging = true`) so the launcher is a file
+Android lets the app run.
+
 Not done: the updater (sideloaded APK updates), the media server
 (`openat2` may be blocked by Android's seccomp filter), draw-over-apps
 overlays, other apps' audio (MediaProjection), per-device benchmarks.

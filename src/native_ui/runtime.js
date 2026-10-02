@@ -14241,6 +14241,16 @@ ${a.stack || ""}`;
       });
     }
   }
+  function setNative(el, prop2, v) {
+    for (let p = Object.getPrototypeOf(el); p; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, prop2);
+      if (d?.set) {
+        d.set.call(el, v);
+        return;
+      }
+    }
+    el[prop2] = v;
+  }
   var inputProto = Object.getPrototypeOf(document.createElement("input"));
   Object.defineProperty(inputProto, "checked", {
     get() {
@@ -14752,8 +14762,7 @@ ${a.stack || ""}`;
   }
   function toggle(input) {
     if (input.hasAttribute("disabled")) return;
-    if (input.getAttribute("type") === "radio") input.checked = true;
-    else input.checked = !input.checked;
+    setNative(input, "checked", input.getAttribute("type") === "radio" ? true : !input.checked);
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
@@ -14903,14 +14912,14 @@ ${a.stack || ""}`;
           case "input": {
             if (!el) return false;
             renderer.native.set(id, data);
-            el.value = data;
+            setNative(el, "value", data);
             el.dispatchEvent(new Event("input", { bubbles: true }));
             return false;
           }
           case "change": {
             if (!el) return false;
             renderer.native.set(id, data);
-            el.value = data;
+            setNative(el, "value", data);
             el.dispatchEvent(new Event("change", { bubbles: true }));
             return false;
           }
