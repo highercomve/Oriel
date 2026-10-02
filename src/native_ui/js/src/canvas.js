@@ -106,6 +106,10 @@ class Recorder {
     this.canvas = el;
     this.ops = [];
     this.nGrad = 0;
+    // Each live gradient's definition (its creation op and color stops),
+    // replayed when the program restarts at a full clear: the page may
+    // still paint with it. Gone with the gradient object (gradientGone).
+    this.grads = new Map();
     this.s = new State();
     this.stack = [];
     this.penX = 0;
@@ -173,6 +177,23 @@ class Recorder {
 
   // The state ops as they stand now (after a full-clear drop: the bitmap
   // kept this state, the program restarts from the defaults).
+  // The program starts over (a full clear or cover): the live gradients'
+  // definitions, then the state.
+  restart() {
+    this.ops.length = 0;
+    if (this.grads.size) {
+      const used = new Set();
+      for (const st of [this.s, ...this.stack.map((x) => x.s)]) {
+        for (const p of [st.fillStyle, st.strokeStyle]) if (!isColor(p) && p?.[0] === "g") used.add(p[1]);
+      }
+      for (const [id, def] of this.grads) {
+        if (def.dead && !used.has(id)) { this.grads.delete(id); continue; }
+        for (const op of def) this.ops.push(op);
+      }
+    }
+    this.emitState();
+  }
+
   emitState() {
     const s = this.s;
     this.ops.push(
@@ -299,8 +320,7 @@ class Recorder {
     if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped && isColor(p) && p[3] >= 1 &&
         Math.abs(this.tx) < 1e-9 && Math.abs(this.ty) < 1e-9 && Math.abs(this.scx - 1) < 1e-9 &&
         Math.abs(this.scy - 1) < 1e-9 && Math.abs(this.rot) < 1e-9) {
-      this.ops.length = 0;
-      this.emitState();
+      this.restart();
     }
     this.push(["fr", x, y, w, h]);
   }
@@ -317,13 +337,10 @@ class Recorder {
     // A full clear with no clip or transform in effect: everything drawn
     // before it is gone from the bitmap (as in a browser), so the program
     // restarts here — the state first, which the bitmap would have kept.
-    // (Only while the state's paints are colors: a gradient's creation
-    // ops would be dropped with the rest.)
-    if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped && isColor(this.s.fillStyle) && isColor(this.s.strokeStyle) &&
+    if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped &&
         Math.abs(this.tx) < 1e-9 && Math.abs(this.ty) < 1e-9 && Math.abs(this.scx - 1) < 1e-9 &&
         Math.abs(this.scy - 1) < 1e-9 && Math.abs(this.rot) < 1e-9) {
-      this.ops.length = 0;
-      this.emitState();
+      this.restart();
     }
     this.push(["cr", x, y, w, h]);
   }
@@ -350,19 +367,31 @@ class Recorder {
   }
 
   createLinearGradient(x0, y0, x1, y1) {
-    const id = ++this.nGrad;
-    this.push(["gl", id, +x0 || 0, +y0 || 0, +x1 || 0, +y1 || 0]);
-    return gradientOf(this, id);
+    return this.gradient(["gl", ++this.nGrad, +x0 || 0, +y0 || 0, +x1 || 0, +y1 || 0]);
   }
 
   createRadialGradient(x0, y0, r0, x1, y1, r1) {
-    const id = ++this.nGrad;
-    this.push(["gr", id, +x0 || 0, +y0 || 0, +r0 || 0, +x1 || 0, +y1 || 0, +r1 || 0]);
-    return gradientOf(this, id);
+    return this.gradient(["gr", ++this.nGrad, +x0 || 0, +y0 || 0, +r0 || 0, +x1 || 0, +y1 || 0, +r1 || 0]);
+  }
+
+  gradient(op) {
+    const id = op[1], def = [op];
+    this.grads.set(id, def);
+    this.push(op);
+    const g = gradientOf(this, id, def);
+    gradientGone?.register(g, { grads: this.grads, id });
+    return g;
   }
 }
 
-function gradientOf(r, id) {
+// A gradient object the page no longer holds can't be assigned again: its
+// definition is marked dead, and a restart drops it unless a style (the
+// current state's or a saved one) still paints with it, which keeps only
+// its id. Without FinalizationRegistry definitions stay, as many as made.
+const gradientGone = typeof FinalizationRegistry === "function"
+  ? new FinalizationRegistry(({ grads, id }) => { const def = grads.get(id); if (def) def.dead = true; }) : null;
+
+function gradientOf(r, id, def) {
   return {
     __grad: id,
     addColorStop(off, c) {
@@ -370,7 +399,9 @@ function gradientOf(r, id) {
       if (!col) return;
       const o = +off;
       if (!Number.isFinite(o)) return;
-      r.push(["gs", id, Math.max(0, Math.min(1, o)), col[0], col[1], col[2], col[3]]);
+      const op = ["gs", id, Math.max(0, Math.min(1, o)), col[0], col[1], col[2], col[3]];
+      def.push(op);
+      r.push(op);
       notify();
     },
   };
