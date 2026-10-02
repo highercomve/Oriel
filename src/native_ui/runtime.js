@@ -14616,7 +14616,8 @@ col, colgroup { display: none; }
       if (inlineLine) {
         props.fd = "row";
         props.ai = "center";
-        if (flow.filter((f) => f.el).length > 1) props.fw = "wrap";
+        const boxes = flow.filter((f) => f.el);
+        if (boxes.length > 1 || boxes.some((f) => /%\s*$/.test(this.style(f.el, cs, rematch).width || ""))) props.fw = "wrap";
       }
       if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 && flow.every((f) => f.el && ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""))) {
         props.fd = "row";
