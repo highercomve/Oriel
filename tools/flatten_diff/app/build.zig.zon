@@ -1,0 +1,10 @@
+.{
+    .name = .oriel_flatten_diff,
+    .version = "0.0.0",
+    .fingerprint = 0xc8a01b9f1ee0dd8c,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .oriel = .{ .path = "../../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "main.zig", "web" },
+}

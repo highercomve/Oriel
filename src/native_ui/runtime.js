@@ -14038,6 +14038,10 @@ col, colgroup { display: none; }
       this.textOnly = true;
       this.simpleLeaves = true;
       this.flexLeaves = /* @__PURE__ */ new WeakMap();
+      this.keyIds = /* @__PURE__ */ new Map();
+      this.matchShare = /* @__PURE__ */ new Map();
+      this.uids = /* @__PURE__ */ new WeakMap();
+      this.uidSeq = 0;
       this.full = true;
       this.sc = /* @__PURE__ */ new WeakMap();
       this.fc = /* @__PURE__ */ new WeakMap();
@@ -14066,6 +14070,7 @@ col, colgroup { display: none; }
     // differently (its attributes), 1 when only its inline style did.
     mark(el, level) {
       if (!el || el.nodeType !== 1) return;
+      if (level === 2) this.uids.delete(el);
       if (!this.inFrame) this.outside = true;
       this.textOnly = false;
       if ((this.marks.get(el) || 0) < level) this.marks.set(el, level);
@@ -14356,10 +14361,14 @@ col, colgroup { display: none; }
       this.specs = /* @__PURE__ */ new Map();
       this.animSpecs = /* @__PURE__ */ new Map();
       this.frameNo++;
-      this.flexLeaves = /* @__PURE__ */ new WeakMap();
       this.gone = [];
       this.dropped = [];
       const full = this.full || this.noCache;
+      if (full || this.keyIds.size > 5e4) {
+        this.keyIds.clear();
+        this.matchShare.clear();
+        this.flexLeaves = /* @__PURE__ */ new WeakMap();
+      }
       if (this.noCache) {
         for (const r of this.engine.rules) if (/:has\(/.test(r.sel)) r.match = null;
       }
@@ -14518,8 +14527,6 @@ col, colgroup { display: none; }
       if (this.keyFrame !== this.frameNo) {
         this.keyFrame = this.frameNo;
         this.keys = /* @__PURE__ */ new WeakMap();
-        this.keyIds = /* @__PURE__ */ new Map();
-        this.matchShare = /* @__PURE__ */ new Map();
       }
       let k = this.keys.get(el);
       if (k !== void 0) return k;
@@ -14535,7 +14542,14 @@ col, colgroup { display: none; }
         const name = `${this.shareKey(parent)}|${el.localName}|${cls}`;
         k = this.keyIds.get(name);
         if (k === void 0) this.keyIds.set(name, k = this.keyIds.size + 1);
-      } else k = -this.idOf(el, "el");
+      } else {
+        let u = this.uids.get(el);
+        if (!u) this.uids.set(el, u = ++this.uidSeq);
+        const name = `${parent?.nodeType === 1 ? this.shareKey(parent) : 0}|u${u}`;
+        k = this.keyIds.get(name);
+        if (k === void 0) this.keyIds.set(name, k = this.keyIds.size + 1);
+        k = -k;
+      }
       this.keys.set(el, k);
       return k;
     }
