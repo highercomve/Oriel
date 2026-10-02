@@ -273,12 +273,19 @@ export class Renderer {
     let direct = 0, nativeMs = 0;
     for (let i = 0; i < updates.length; i += 4) {
       const el = updates[i], fc = updates[i + 1], value = updates[i + 2], old = updates[i + 3];
-      const runs = typeof value === "string" ? fc.root.props.runs : value;
-      if (typeof value === "string") runs[0].t = value;
-      const single = runs.length === 1 && fc.root.props.runs.length === 1;
+      const str = typeof value === "string";
+      const cur = fc.root.props.runs;
+      const single = (str || value.length === 1) && cur.length === 1;
       const a = P && P();
-      const sent = single && this.host.text && this.host.text(fc.id, runs[0].t);
+      const sent = single && this.host.text && this.host.text(fc.id, str ? value : value[0].t);
       if (P) nativeMs += P() - a;
+      // The run is shared with the last sent props: change it in place only
+      // once the native side has the text, else the fallback below would
+      // diff equal props and never send it.
+      let runs = value;
+      if (str) {
+        if (sent) { cur[0].t = value; runs = cur; } else runs = [{ ...cur[0], t: value }, ...cur.slice(1)];
+      }
       if (sent) {
         // Preserve the target props for a later general diff/transition,
         // but defer their JSON encoding until a traversal needs it.
