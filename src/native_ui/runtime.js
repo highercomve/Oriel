@@ -14489,6 +14489,16 @@ col, colgroup { display: none; }
         props.ai = "center";
         if (flow.filter((f) => f.el).length > 1) props.fw = "wrap";
       }
+      if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 && flow.every((f) => f.el && ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""))) {
+        props.fd = "row";
+        props.fw = "wrap";
+        props.ai = "center";
+        const nodesIn = [...el.childNodes];
+        const spaced = nodesIn.some((n2, i) => n2.nodeType === 3 && /^\s+$/.test(n2.data) && i > 0 && i < nodesIn.length - 1);
+        if (spaced && props.cg === void 0) {
+          props.cg = Math.round(fontSize * 0.28 * 10) / 10;
+        }
+      }
       for (const item of flow) {
         if (item.text) {
           const tid = this.idOf(el, "t" + kids.length);
