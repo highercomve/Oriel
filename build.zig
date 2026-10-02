@@ -427,7 +427,11 @@ fn vulkanOptions(b: *std.Build, target: std.Build.ResolvedTarget) ?ggml.VulkanOp
     if (target.result.abi.isAndroid()) {
         // glslc from the NDK (shader-tools), vulkan.hpp from Vulkan-Headers,
         // spirv/unified1/spirv.hpp from SPIRV-Headers.
-        const ndk_glslc: ?[]const u8 = if (android_build.ndk(b)) |ndk| b.pathJoin(&.{ ndk, "shader-tools", android_build.hostTag(b), if (b.graph.host.result.os.tag == .windows) "glslc.exe" else "glslc" }) else null;
+        // The NDK's tools are x86_64 (universal on macOS): on another Linux
+        // host (an ARM Chromebook's Linux) they don't run, so glslc on PATH.
+        const host = b.graph.host.result;
+        const ndk_runs = host.os.tag != .linux or host.cpu.arch == .x86_64;
+        const ndk_glslc: ?[]const u8 = if (!ndk_runs) null else if (android_build.ndk(b)) |ndk| b.pathJoin(&.{ ndk, "shader-tools", android_build.hostTag(b), if (host.os.tag == .windows) "glslc.exe" else "glslc" }) else null;
         const headers = b.lazyDependency("vulkan_headers", .{});
         const spirv = b.lazyDependency("spirv_headers", .{});
         if (headers == null or spirv == null) return null;
