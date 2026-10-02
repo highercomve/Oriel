@@ -51477,12 +51477,130 @@ static JSValue js_json_rawJSON(JSContext *ctx, JSValueConst this_val,
 
 typedef struct JSONStringifyContext {
     JSValueConst replacer_func;
-    JSValue stack;
     JSValue property_list;
     JSValue gap;
     JSValue empty;
     StringBuffer *b;
+    /* Oriel: the objects being written (circular references), a C array
+       instead of a JS one (upstream pushed, popped and searched an Array
+       through its generic methods for every object). Not owned: each is
+       held by the js_json_to_str frame writing it. */
+    JSObject **stack;
+    uint32_t stack_len, stack_size;
 } JSONStringifyContext;
+
+/* Oriel: `p` quoted as a JSON string, into the buffer (as JS_ToQuotedString,
+   without making the quoted string first). */
+static int json_put_quoted(StringBuffer *b, JSString *p)
+{
+    int i, start;
+    uint32_t c;
+    char buf[16];
+
+    if (string_buffer_putc8(b, '\"'))
+        return -1;
+    for(i = 0; i < p->len; ) {
+        start = i;
+        c = string_getc(p, &i);
+        if (c >= 32 && c != '\"' && c != '\\' && !is_surrogate(c)) {
+            /* a run of characters that need no escape */
+            while (i < p->len) {
+                int j = i;
+                uint32_t d = string_getc(p, &j);
+                if (d < 32 || d == '\"' || d == '\\' || is_surrogate(d))
+                    break;
+                i = j;
+            }
+            if (string_buffer_concat(b, p, start, i))
+                return -1;
+            continue;
+        }
+        switch(c) {
+        case '\t': c = 't'; goto quote;
+        case '\r': c = 'r'; goto quote;
+        case '\n': c = 'n'; goto quote;
+        case '\b': c = 'b'; goto quote;
+        case '\f': c = 'f'; goto quote;
+        case '\"':
+        case '\\':
+        quote:
+            if (string_buffer_putc8(b, '\\') || string_buffer_putc8(b, c))
+                return -1;
+            break;
+        default:
+            snprintf(buf, sizeof(buf), "\\u%04x", c);
+            if (string_buffer_write8(b, (uint8_t*)buf, 6))
+                return -1;
+            break;
+        }
+    }
+    return string_buffer_putc8(b, '\"');
+}
+
+/* Oriel: a number, as JSON writes it, into the buffer. */
+static int json_put_number(StringBuffer *b, JSValueConst val)
+{
+    char buf[64];
+    size_t len;
+    double d;
+    JSDTOATempMem dtoa_mem;
+
+    if (JS_VALUE_GET_TAG(val) == JS_TAG_INT) {
+        len = i32toa(buf, JS_VALUE_GET_INT(val));
+        return string_buffer_write8(b, (uint8_t *)buf, len);
+    }
+    d = JS_VALUE_GET_FLOAT64(val);
+    if (!isfinite(d))
+        return string_buffer_puts8(b, "null");
+    if (js_dtoa_max_len(d, 10, 0, JS_DTOA_FORMAT_FREE) > (int)sizeof(buf) - 1)
+        return string_buffer_concat_value_free(b, js_dtoa2(b->ctx, d, 10, 0, JS_DTOA_FORMAT_FREE));
+    len = js_dtoa(buf, d, 10, 0, JS_DTOA_FORMAT_FREE, &dtoa_mem);
+    return string_buffer_write8(b, (uint8_t *)buf, len);
+}
+
+static int json_stack_push(JSContext *ctx, JSONStringifyContext *jsc, JSObject *p)
+{
+    uint32_t i;
+    for (i = 0; i < jsc->stack_len; i++) {
+        if (jsc->stack[i] == p) {
+            JS_ThrowTypeError(ctx, "circular reference");
+            return -1;
+        }
+    }
+    if (jsc->stack_len == jsc->stack_size) {
+        uint32_t n = jsc->stack_size ? jsc->stack_size * 2 : 16;
+        JSObject **a = js_realloc(ctx, jsc->stack, n * sizeof(*a));
+        if (!a)
+            return -1;
+        jsc->stack = a;
+        jsc->stack_size = n;
+    }
+    jsc->stack[jsc->stack_len++] = p;
+    return 0;
+}
+
+/* Oriel: whether the fast object path applies: a plain object whose own
+   properties are all ordinary data properties with string (not index)
+   keys, so their order is the shape's (Object.keys). */
+static bool json_plain_object(JSContext *ctx, JSObject *p)
+{
+    JSShape *sh;
+    JSShapeProperty *prs;
+    uint32_t i;
+
+    if (p->class_id != JS_CLASS_OBJECT || p->is_exotic)
+        return false;
+    sh = p->shape;
+    for (i = 0, prs = get_shape_prop(sh); i < sh->prop_count; i++, prs++) {
+        if (prs->atom == JS_ATOM_NULL)
+            continue; /* deleted */
+        if (__JS_AtomIsTaggedInt(prs->atom))
+            return false;
+        if ((prs->flags & JS_PROP_TMASK) != JS_PROP_NORMAL)
+            return false;
+    }
+    return true;
+}
 
 static JSValue JS_ToQuotedStringFree(JSContext *ctx, JSValue val) {
     JSValue r = JS_ToQuotedString(ctx, val);
@@ -51593,16 +51711,14 @@ static int js_json_to_str(JSContext *ctx, JSONStringifyContext *jsc,
             val = val1;
             goto concat_value;
         }
-        v = js_array_includes(ctx, jsc->stack, 1, vc(&val));
-        if (JS_IsException(v))
-            goto exception;
-        if (JS_ToBoolFree(ctx, v)) {
-            JS_ThrowTypeError(ctx, "circular reference");
-            goto exception;
+        if (JS_IsEmptyString(jsc->gap)) {
+            /* Oriel: no indentation: nothing to concatenate */
+            indent1 = js_dup(jsc->empty);
+        } else {
+            indent1 = JS_ConcatString(ctx, js_dup(indent), js_dup(jsc->gap));
+            if (JS_IsException(indent1))
+                goto exception;
         }
-        indent1 = JS_ConcatString(ctx, js_dup(indent), js_dup(jsc->gap));
-        if (JS_IsException(indent1))
-            goto exception;
         if (!JS_IsEmptyString(jsc->gap)) {
             sep = JS_ConcatString3(ctx, "\n", js_dup(indent1), "");
             if (JS_IsException(sep))
@@ -51614,8 +51730,7 @@ static int js_json_to_str(JSContext *ctx, JSONStringifyContext *jsc,
             sep = js_dup(jsc->empty);
             sep1 = js_dup(jsc->empty);
         }
-        v = js_array_push(ctx, jsc->stack, 1, vc(&val), 0);
-        if (check_exception_free(ctx, v))
+        if (json_stack_push(ctx, jsc, p))
             goto exception;
         ret = js_is_array(ctx, val);
         if (ret < 0)
@@ -51628,16 +51743,30 @@ static int js_json_to_str(JSContext *ctx, JSONStringifyContext *jsc,
                 if (i > 0)
                     string_buffer_putc8(jsc->b, ',');
                 string_buffer_concat_value(jsc->b, sep);
-                v = JS_GetPropertyInt64(ctx, val, i);
+                /* Oriel: a fast array's element directly (re-checked each
+                   time: a toJSON may change the array) */
+                if (p->class_id == JS_CLASS_ARRAY && p->fast_array &&
+                    i < p->u.array.count)
+                    v = js_dup(p->u.array.u.values[i]);
+                else
+                    v = JS_GetPropertyInt64(ctx, val, i);
                 if (JS_IsException(v))
                     goto exception;
-                /* XXX: could do this string conversion only when needed */
-                prop = JS_ToStringFree(ctx, js_int64(i));
-                if (JS_IsException(prop))
-                    goto exception;
-                v = js_json_check(ctx, jsc, val, v, prop);
-                JS_FreeValue(ctx, prop);
-                prop = JS_UNDEFINED;
+                /* Oriel: the key only for what may use it (toJSON, a
+                   replacer); a primitive needs no check without one */
+                if (JS_IsUndefined(jsc->replacer_func) && !JS_IsObject(v) &&
+                    !JS_IsBigInt(v)) {
+                    v = js_json_check(ctx, jsc, val, v, JS_UNDEFINED);
+                } else {
+                    prop = JS_ToStringFree(ctx, js_int64(i));
+                    if (JS_IsException(prop)) {
+                        JS_FreeValue(ctx, v);
+                        goto exception;
+                    }
+                    v = js_json_check(ctx, jsc, val, v, prop);
+                    JS_FreeValue(ctx, prop);
+                    prop = JS_UNDEFINED;
+                }
                 if (JS_IsException(v))
                     goto exception;
                 if (JS_IsUndefined(v))
@@ -51650,6 +51779,93 @@ static int js_json_to_str(JSContext *ctx, JSONStringifyContext *jsc,
                 string_buffer_concat_value(jsc->b, indent);
             }
             string_buffer_putc8(jsc->b, ']');
+        } else if (JS_IsUndefined(jsc->property_list) && json_plain_object(ctx, p)) {
+            /* Oriel: a plain object's properties in shape order (what
+               Object.keys gives for string keys), keys quoted straight into
+               the buffer. The atoms are taken first, as upstream takes the
+               keys; a toJSON that changes the object makes the next values
+               come from a full lookup. */
+            JSShape *sh0 = p->shape;
+            JSShapeProperty *prs;
+            uint32_t n = 0, k, cap = sh0->prop_count;
+            JSAtom atoms_buf[16], *atoms = atoms_buf;
+            uint32_t idx_buf[16], *idx = idx_buf;
+            if (cap > 16) {
+                atoms = js_malloc(ctx, cap * sizeof(*atoms));
+                idx = js_malloc(ctx, cap * sizeof(*idx));
+                if (!atoms || !idx) {
+                    if (atoms != atoms_buf) js_free(ctx, atoms);
+                    if (idx != idx_buf) js_free(ctx, idx);
+                    goto exception;
+                }
+            }
+            for (k = 0, prs = get_shape_prop(sh0); k < sh0->prop_count; k++, prs++) {
+                if (prs->atom == JS_ATOM_NULL || !(prs->flags & JS_PROP_ENUMERABLE))
+                    continue;
+                if (ctx->rt->atom_array[prs->atom]->atom_type != JS_ATOM_TYPE_STRING)
+                    continue; /* symbols aren't keys */
+                atoms[n] = JS_DupAtom(ctx, prs->atom);
+                idx[n] = k;
+                n++;
+            }
+            string_buffer_putc8(jsc->b, '{');
+            has_content = false;
+            ret = 0;
+            for (k = 0; k < n; k++) {
+                if (p->shape == sh0)
+                    v = js_dup(p->prop[idx[k]].u.value);
+                else
+                    v = JS_GetProperty(ctx, val, atoms[k]);
+                if (JS_IsException(v)) {
+                    ret = -1;
+                    break;
+                }
+                if (JS_IsUndefined(jsc->replacer_func) && !JS_IsObject(v) &&
+                    !JS_IsBigInt(v)) {
+                    v = js_json_check(ctx, jsc, val, v, JS_UNDEFINED);
+                } else {
+                    JSValue key = JS_AtomToString(ctx, atoms[k]);
+                    if (JS_IsException(key)) {
+                        JS_FreeValue(ctx, v);
+                        ret = -1;
+                        break;
+                    }
+                    v = js_json_check(ctx, jsc, val, v, key);
+                    JS_FreeValue(ctx, key);
+                }
+                if (JS_IsException(v)) {
+                    ret = -1;
+                    break;
+                }
+                if (!JS_IsUndefined(v)) {
+                    if (has_content)
+                        string_buffer_putc8(jsc->b, ',');
+                    string_buffer_concat_value(jsc->b, sep);
+                    if (json_put_quoted(jsc->b, ctx->rt->atom_array[atoms[k]])) {
+                        JS_FreeValue(ctx, v);
+                        ret = -1;
+                        break;
+                    }
+                    string_buffer_putc8(jsc->b, ':');
+                    string_buffer_concat_value(jsc->b, sep1);
+                    if (js_json_to_str(ctx, jsc, val, v, indent1)) {
+                        ret = -1;
+                        break;
+                    }
+                    has_content = true;
+                }
+            }
+            for (k = 0; k < n; k++)
+                JS_FreeAtom(ctx, atoms[k]);
+            if (atoms != atoms_buf) js_free(ctx, atoms);
+            if (idx != idx_buf) js_free(ctx, idx);
+            if (ret)
+                goto exception;
+            if (has_content && JS_VALUE_GET_STRING(jsc->gap)->len != 0) {
+                string_buffer_putc8(jsc->b, '\n');
+                string_buffer_concat_value(jsc->b, indent);
+            }
+            string_buffer_putc8(jsc->b, '}');
         } else {
             if (!JS_IsUndefined(jsc->property_list))
                 tab = js_dup(jsc->property_list);
@@ -51696,8 +51912,7 @@ static int js_json_to_str(JSContext *ctx, JSONStringifyContext *jsc,
             }
             string_buffer_putc8(jsc->b, '}');
         }
-        if (check_exception_free(ctx, js_array_pop(ctx, jsc->stack, 0, NULL, 0)))
-            goto exception;
+        jsc->stack_len--;
         JS_FreeValue(ctx, val);
         JS_FreeValue(ctx, tab);
         JS_FreeValue(ctx, sep);
@@ -51709,17 +51924,19 @@ static int js_json_to_str(JSContext *ctx, JSONStringifyContext *jsc,
  concat_primitive:
     switch (JS_VALUE_GET_NORM_TAG(val)) {
     case JS_TAG_STRING:
+        /* Oriel: quoted straight into the buffer */
+        ret = json_put_quoted(jsc->b, JS_VALUE_GET_STRING(val));
+        JS_FreeValue(ctx, val);
+        return ret;
     case JS_TAG_STRING_ROPE:
         val = JS_ToQuotedStringFree(ctx, val);
         if (JS_IsException(val))
             goto exception;
         goto concat_value;
     case JS_TAG_FLOAT64:
-        if (!isfinite(JS_VALUE_GET_FLOAT64(val))) {
-            val = JS_NULL;
-        }
-        goto concat_value;
     case JS_TAG_INT:
+        /* Oriel: written straight into the buffer */
+        return json_put_number(jsc->b, val);
     case JS_TAG_BOOL:
     case JS_TAG_NULL:
     concat_value:
@@ -51753,7 +51970,8 @@ JSValue JS_JSONStringify(JSContext *ctx, JSValueConst obj,
     int64_t i, j, n;
 
     jsc->replacer_func = JS_UNDEFINED;
-    jsc->stack = JS_UNDEFINED;
+    jsc->stack = NULL;
+    jsc->stack_len = jsc->stack_size = 0;
     jsc->property_list = JS_UNDEFINED;
     jsc->gap = JS_UNDEFINED;
     jsc->b = &b_s;
@@ -51762,9 +51980,6 @@ JSValue JS_JSONStringify(JSContext *ctx, JSValueConst obj,
     wrapper = JS_UNDEFINED;
 
     string_buffer_init(ctx, jsc->b, 0);
-    jsc->stack = JS_NewArray(ctx);
-    if (JS_IsException(jsc->stack))
-        goto exception;
     if (JS_IsFunction(ctx, replacer)) {
         jsc->replacer_func = replacer;
     } else {
@@ -51877,7 +52092,7 @@ done:
     JS_FreeValue(ctx, jsc->empty);
     JS_FreeValue(ctx, jsc->gap);
     JS_FreeValue(ctx, jsc->property_list);
-    JS_FreeValue(ctx, jsc->stack);
+    js_free(ctx, jsc->stack);
     return ret;
 }
 
