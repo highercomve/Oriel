@@ -1159,6 +1159,31 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     android_build.requireNdk(b, lib);
     b.getInstallStep().dependOn(&b.addInstallArtifact(lib, .{ .dest_dir = .{ .override = install_dir } }).step);
 
+    // liboriel_exec.so: the app's `main` in a process of its own, for apps
+    // that start themselves as helpers (src/platform/android/launcher.zig).
+    // Named like a library so the APK installs it next to liboriel.so.
+    const launcher = b.addExecutable(.{
+        .name = "oriel_exec",
+        // Against bionic's libc.so and libdl.so (the NDK has no static libc for apps).
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = oriel_dep.path("src/platform/android/launcher.zig"),
+            .target = target,
+            .optimize = .ReleaseSmall,
+            .link_libc = true,
+            .strip = true,
+            .pic = true,
+        }),
+        .use_llvm = true,
+        .use_lld = true,
+    });
+    launcher.pie = true;
+    android_build.configure(b, launcher, target);
+    if (android_build.ndk(b)) |ndk_root| android_build.addSysroot(b, launcher.root_module, ndk_root, target);
+    android_build.requireNdk(b, launcher);
+    const install_launcher = b.addInstallArtifact(launcher, .{ .dest_dir = .{ .override = install_dir }, .dest_sub_path = "liboriel_exec.so" });
+    b.getInstallStep().dependOn(&install_launcher.step);
+
     // Snapdragon NPU: libggml-hexagon.so and its DSP libraries
     // (libggml-htp-v*.so), built with Qualcomm's Hexagon SDK by llama.cpp's
     // Android build at the same commit (docs/android.md). They link against
@@ -1207,6 +1232,8 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     android_build.requireNdk(b, dev_lib);
     @import("build/package.zig").getOrCreateStep(b, "android-dev", "Build the Android library against the dev server (zig-out/jniLibs)")
         .dependOn(&b.addInstallArtifact(dev_lib, .{ .dest_dir = .{ .override = install_dir } }).step);
+    @import("build/package.zig").getOrCreateStep(b, "android-dev", "Build the Android library against the dev server (zig-out/jniLibs)")
+        .dependOn(&install_launcher.step);
 
     // The Gradle project (android/): `zig build android-project` writes it
     // from Oriel's template (`-Dandroid_force` rewrites edited files); every
