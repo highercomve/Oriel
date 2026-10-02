@@ -1,0 +1,361 @@
+{
+  "baseline": "Working runtime after phase 1: direct text bridge and detached observer filtering, before repeated-row templates, shared native styles, and streamlined single-run updates",
+  "method": "3 serial paired processes, 2 trials per step per process, fake native host, medians of 6 measurements",
+  "summary": {
+    "build 1000": {
+      "before": {
+        "dom": 76.6,
+        "render": 176.1,
+        "kb": 667.0
+      },
+      "after": {
+        "dom": 72.55,
+        "render": 144.45,
+        "kb": 82.5
+      }
+    },
+    "update 1000": {
+      "before": {
+        "dom": 7.55,
+        "render": 10.2,
+        "kb": 17.0
+      },
+      "after": {
+        "dom": 7.45,
+        "render": 6.2,
+        "kb": 17.0
+      }
+    },
+    "build 3000": {
+      "before": {
+        "dom": 234.9,
+        "render": 426.15,
+        "kb": 2089.0
+      },
+      "after": {
+        "dom": 230.15,
+        "render": 334.95,
+        "kb": 299.0
+      }
+    },
+    "update 3000": {
+      "before": {
+        "dom": 26.3,
+        "render": 37.75,
+        "kb": 55.0
+      },
+      "after": {
+        "dom": 25.5,
+        "render": 21.6,
+        "kb": 55.0
+      }
+    }
+  },
+  "raw": {
+    "before": [
+      {
+        "build 1000": [
+          {
+            "dom": 76.0,
+            "render": 176.1,
+            "kb": 644
+          },
+          {
+            "dom": 81.1,
+            "render": 176.1,
+            "kb": 690
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 7.5,
+            "render": 10.7,
+            "kb": 17
+          },
+          {
+            "dom": 7.4,
+            "render": 8.9,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 234.9,
+            "render": 420.6,
+            "kb": 2041
+          },
+          {
+            "dom": 244.1,
+            "render": 443.1,
+            "kb": 2137
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 26.6,
+            "render": 37.8,
+            "kb": 55
+          },
+          {
+            "dom": 24.2,
+            "render": 29.9,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 76.2,
+            "render": 175.3,
+            "kb": 644
+          },
+          {
+            "dom": 77.9,
+            "render": 180.8,
+            "kb": 690
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 7.8,
+            "render": 10.8,
+            "kb": 17
+          },
+          {
+            "dom": 7.6,
+            "render": 9.0,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 234.9,
+            "render": 395.3,
+            "kb": 2041
+          },
+          {
+            "dom": 228.5,
+            "render": 431.7,
+            "kb": 2137
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 27.7,
+            "render": 38.6,
+            "kb": 55
+          },
+          {
+            "dom": 24.2,
+            "render": 30.2,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 75.5,
+            "render": 176.1,
+            "kb": 644
+          },
+          {
+            "dom": 77.0,
+            "render": 174.7,
+            "kb": 690
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 7.4,
+            "render": 10.8,
+            "kb": 17
+          },
+          {
+            "dom": 7.7,
+            "render": 9.7,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 245.4,
+            "render": 400.0,
+            "kb": 2041
+          },
+          {
+            "dom": 228.4,
+            "render": 435.0,
+            "kb": 2137
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 26.7,
+            "render": 37.7,
+            "kb": 55
+          },
+          {
+            "dom": 26.0,
+            "render": 38.0,
+            "kb": 55
+          }
+        ]
+      }
+    ],
+    "after": [
+      {
+        "build 1000": [
+          {
+            "dom": 71.1,
+            "render": 140.0,
+            "kb": 61
+          },
+          {
+            "dom": 74.2,
+            "render": 148.3,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 7.6,
+            "render": 6.3,
+            "kb": 17
+          },
+          {
+            "dom": 7.5,
+            "render": 6.2,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 221.9,
+            "render": 313.5,
+            "kb": 251
+          },
+          {
+            "dom": 236.9,
+            "render": 356.4,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 26.2,
+            "render": 22.0,
+            "kb": 55
+          },
+          {
+            "dom": 23.7,
+            "render": 19.9,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 70.9,
+            "render": 140.6,
+            "kb": 61
+          },
+          {
+            "dom": 73.8,
+            "render": 148.7,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 7.5,
+            "render": 6.2,
+            "kb": 17
+          },
+          {
+            "dom": 7.4,
+            "render": 6.3,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 221.5,
+            "render": 298.4,
+            "kb": 251
+          },
+          {
+            "dom": 237.9,
+            "render": 365.5,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 26.7,
+            "render": 24.4,
+            "kb": 55
+          },
+          {
+            "dom": 24.8,
+            "render": 21.2,
+            "kb": 55
+          }
+        ]
+      },
+      {
+        "build 1000": [
+          {
+            "dom": 71.3,
+            "render": 140.0,
+            "kb": 61
+          },
+          {
+            "dom": 74.2,
+            "render": 149.1,
+            "kb": 104
+          }
+        ],
+        "update 1000": [
+          {
+            "dom": 7.4,
+            "render": 6.2,
+            "kb": 17
+          },
+          {
+            "dom": 7.3,
+            "render": 6.2,
+            "kb": 17
+          }
+        ],
+        "build 3000": [
+          {
+            "dom": 223.4,
+            "render": 300.1,
+            "kb": 251
+          },
+          {
+            "dom": 237.4,
+            "render": 357.7,
+            "kb": 347
+          }
+        ],
+        "update 3000": [
+          {
+            "dom": 26.8,
+            "render": 23.1,
+            "kb": 55
+          },
+          {
+            "dom": 23.5,
+            "render": 20.2,
+            "kb": 55
+          }
+        ]
+      }
+    ]
+  },
+  "after": "Current runtime, including typed creation of text leaves and view containers"
+}

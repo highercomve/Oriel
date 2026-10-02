@@ -15,6 +15,7 @@
 const std = @import("std");
 const engine_mod = @import("engine.zig");
 const tree_mod = @import("tree.zig");
+const text_measure_cache = @import("text_measure_cache.zig");
 const svg_path = @import("svg_path.zig");
 const Engine = engine_mod.Engine;
 const Node = tree_mod.Node;
@@ -138,6 +139,11 @@ pub const Surface = struct {
     /// Each <canvas>'s bitmap by node id, kept from frame to frame while its
     /// size holds (released with the node or the render target).
     canvases: std.AutoHashMap(i64, CanvasBitmap),
+    /// Text sizes by content and layout inputs (shared with GTK's scheme),
+    /// and the epoch the nodes' cached natural sizes belong to (a DPI
+    /// change starts a new one).
+    text_measurements: text_measure_cache.Cache = .{},
+    text_epoch: u64 = 1,
     invoke_fn: Invoke,
     invoke_ctx: ?*anyopaque,
     pointer: [2]f32 = .{ 0, 0 },
@@ -182,6 +188,8 @@ pub const Surface = struct {
             .add_timer = addTimer,
             .invoke = invoke,
             .focus = focus,
+            .props = propsChanged,
+            .text = textChanged,
         }, assets, platform_json, label, url, w, h);
         // Only now may the canvas reach the surface: before, `s.engine` is
         // undefined (and on failure the canvas goes away without it).
@@ -208,6 +216,7 @@ pub const Surface = struct {
         while (imgs.next()) |img| img.deinit();
         s.images.deinit();
         s.canvases.deinit();
+        s.text_measurements.deinit(s.gpa);
         _ = c.DestroyWindow(s.hwnd);
         s.gpa.destroy(s);
     }
@@ -236,6 +245,10 @@ pub const Surface = struct {
     pub fn dpiChanged(s: *Surface) void {
         s.scale = dpiScale(s.parent);
         releaseTarget(s); // recreated at the new DPI
+        // Text measured again (in DIPs it shouldn't move, but rounding and
+        // hinting may).
+        s.text_measurements.clear(s.gpa);
+        s.text_epoch +%= 1;
         var it = s.fields.valueIterator();
         while (it.next()) |f| f.font_px = 0; // fonts at the new size
         s.resize();
@@ -2047,16 +2060,51 @@ fn paintControl(p: *Painter, n: *Node) void {
     }
 }
 
+/// A text's size at `width` (inf: unwrapped), through the shared cache
+/// (keyed by the text and every layout input, so equal rows share it).
+fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
+    const actual_width = if (n.props.nowrap or std.math.isInf(width)) std.math.inf(f32) else @max(1, width);
+    var buf: [1024]u8 = undefined;
+    const key = text_measure_cache.keyFor(&buf, &n.props, actual_width);
+    if (key) |k| if (s.text_measurements.get(k)) |size| return size;
+    const layout = textLayout(s, n, actual_width, null) orelse return null;
+    defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
+    var m: c.DWRITE_TEXT_METRICS = undefined;
+    if (layout.lpVtbl.*.GetMetrics.?(layout, &m) < 0) return null;
+    const size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, @ceil(m.height) };
+    if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
+    return size;
+}
+
+/// New props or a new text (the direct bridge): measured again.
+fn propsChanged(ctx: *anyopaque, node: *Node, _: std.json.Value) void {
+    textChanged(ctx, node);
+}
+
+fn textChanged(_: *anyopaque, node: *Node) void {
+    node.measured_text_size = null;
+}
+
 fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const s = surfaceOf(ctx);
     const fz = n.props.fz orelse 16;
     switch (n.kind) {
         .text => {
-            const layout = textLayout(s, n, max_width, null) orelse return;
-            defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
-            var m: c.DWRITE_TEXT_METRICS = undefined;
-            if (layout.lpVtbl.*.GetMetrics.?(layout, &m) < 0) return;
-            out.* = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, @ceil(m.height) };
+            // Its natural size (kept on the node until its props or text
+            // change); at a width it fits in, that's the answer. Yoga asks
+            // several times per node and layout: a DirectWrite layout each
+            // time was most of a big list's update.
+            const nat = if (n.measured_text_size != null and n.text_measure_epoch == s.text_epoch) n.measured_text_size.? else blk: {
+                const size = measuredText(s, n, std.math.inf(f32)) orelse return;
+                n.measured_text_size = size;
+                n.text_measure_epoch = s.text_epoch;
+                break :blk size;
+            };
+            if (n.props.nowrap or max_width >= nat[0]) {
+                out.* = nat;
+                return;
+            }
+            out.* = measuredText(s, n, max_width) orelse return;
         },
         .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
