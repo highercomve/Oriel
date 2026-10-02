@@ -33,6 +33,7 @@ pub const c = @cImport({
     @cInclude("d2d1_1.h");
     @cInclude("dwrite.h");
     @cInclude("wincodec.h");
+    @cInclude("commctrl.h");
 });
 
 // The import libraries don't export these.
@@ -77,7 +78,21 @@ const Field = struct {
     ph_hash: u64 = 0,
     /// A select's selection-field height (CB_SETITEMHEIGHT), in pixels.
     item_h: c_int = 0,
+    /// <input type=range>: a trackbar, positions 0…steps of the range's step.
+    slider: bool = false,
+    /// The position last sent as `input` (a drag sends it once per step).
+    sent_pos: isize = -1,
 };
+
+/// A slider's position for a value, and the number of steps (its maximum).
+fn sliderPos(r: tree_mod.Range, v: f64) isize {
+    return @intFromFloat(@round((r.snap(v) - r.min) / r.step));
+}
+fn sliderSteps(r: tree_mod.Range) isize {
+    return @intFromFloat(@min(@round((r.max - r.min) / r.step), std.math.maxInt(i32)));
+}
+
+var common_controls = false;
 
 /// A select's selection-field height (CB_SETITEMHEIGHT with -1).
 fn setItemHeight(f: *Field, item_h: c_int) void {
@@ -551,6 +566,7 @@ fn syncFields(s: *Surface) void {
         }
         _ = c.EnableWindow(f.hwnd, @intFromBool(!n.props.dis));
         styleField(s, f, n);
+        if (f.slider) setSliderRange(f.*, n);
         if (f.kind == .textarea) setPlaceholder(s, f, n.props.ph orelse "");
         // At the node's content box, in the canvas's physical pixels. An
         // unstyled select at its border box: the combobox's own border is
@@ -635,7 +651,109 @@ fn paintPlaceholder(hwnd: c.HWND) void {
     _ = c.DrawTextW(hdc, ph.ptr, -1, &rc, c.DT_WORDBREAK | c.DT_NOPREFIX | c.DT_EDITCONTROL);
 }
 
+/// <input type=range>: a trackbar, positions 0…steps (the value snaps to
+/// the range's step); its WM_HSCROLL goes to the canvas (onSlider).
+fn makeSlider(s: *Surface, n: *Node) !Field {
+    if (!common_controls) {
+        const icc: c.INITCOMMONCONTROLSEX = .{ .dwSize = @sizeOf(c.INITCOMMONCONTROLSEX), .dwICC = c.ICC_BAR_CLASSES };
+        _ = c.InitCommonControlsEx(&icc);
+        common_controls = true;
+    }
+    const cls = std.unicode.utf8ToUtf16LeStringLiteral("msctls_trackbar32");
+    const style: c.DWORD = c.WS_CHILD | c.WS_TABSTOP | c.TBS_HORZ | c.TBS_NOTICKS;
+    const hinst = c.GetModuleHandleW(null);
+    // Layered in a transparent window, as the other fields (makeField).
+    const hwnd: c.HWND = blk: {
+        if (s.transparent) {
+            if (c.CreateWindowExW(c.WS_EX_LAYERED, cls, null, style, 0, 0, 1, 1, s.hwnd, null, hinst, null)) |h| {
+                _ = c.SetLayeredWindowAttributes(h, 0, 255, c.LWA_ALPHA);
+                break :blk h;
+            }
+        }
+        break :blk c.CreateWindowExW(0, cls, null, style, 0, 0, 1, 1, s.hwnd, null, hinst, null) orelse return error.CreateWindowFailed;
+    };
+    _ = c.SetPropW(hwnd, prop_node, @ptrFromInt(@as(usize, @intCast(n.id))));
+    const f: Field = .{ .hwnd = hwnd, .kind = n.kind, .slider = true };
+    setSliderRange(f, n);
+    return f;
+}
+
+fn setSliderRange(f: Field, n: *Node) void {
+    const steps = sliderSteps(tree_mod.Range.of(n));
+    if (c.SendMessageW(f.hwnd, c.TBM_GETRANGEMAX, 0, 0) == steps) return;
+    _ = c.SendMessageW(f.hwnd, c.TBM_SETRANGEMIN, c.FALSE, 0);
+    _ = c.SendMessageW(f.hwnd, c.TBM_SETRANGEMAX, c.TRUE, steps);
+    _ = c.SendMessageW(f.hwnd, c.TBM_SETLINESIZE, 0, 1);
+    _ = c.SendMessageW(f.hwnd, c.TBM_SETPAGESIZE, 0, @max(1, @divTrunc(steps, 10)));
+}
+
+/// A trackbar moved (WM_HSCROLL): `input` for each new position while it
+/// drags or a key steps it, `change` when it's let go (TB_ENDTRACK), as
+/// AppKit's slider and Android's SeekBar send them.
+fn onSlider(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
+    if (s.updating) return;
+    const fx = fieldOf(s, hwnd) orelse return;
+    if (!fx.field.slider) return;
+    const r = tree_mod.Range.of(fx.node);
+    const pos: isize = c.SendMessageW(hwnd, c.TBM_GETPOS, 0, 0);
+    var buf: [48]u8 = undefined;
+    const text = r.text(&buf, r.min + @as(f64, @floatFromInt(pos)) * r.step);
+    if (pos != fx.field.sent_pos) {
+        fx.field.sent_pos = pos;
+        sendValue(s, fx.node, "input", text);
+    }
+    if (code != c.TB_ENDTRACK) return;
+    // The page may have closed the window or rebuilt the node.
+    if (c.IsWindow(hwnd) == 0) return;
+    const again = fieldOf(s, hwnd) orelse return;
+    sendValue(s, again.node, "change", text);
+}
+
+/// accent-color on a trackbar (NM_CUSTOMDRAW): the thumb and the channel up
+/// to it in the accent, the rest of the channel grey. Null: draw the default.
+fn sliderDraw(s: *Surface, cd: *c.NMCUSTOMDRAW) ?c.LRESULT {
+    const fx = fieldOf(s, cd.hdr.hwndFrom) orelse return null;
+    if (!fx.field.slider) return null;
+    const acc = fx.node.props.acc orelse return null;
+    if (cd.dwDrawStage == c.CDDS_PREPAINT) return c.CDRF_NOTIFYITEMDRAW;
+    if (cd.dwDrawStage != c.CDDS_ITEMPREPAINT) return null;
+    const col = colorRef(acc);
+    switch (cd.dwItemSpec) {
+        c.TBCD_CHANNEL => {
+            var thumb: c.RECT = undefined;
+            _ = c.SendMessageW(cd.hdr.hwndFrom, c.TBM_GETTHUMBRECT, 0, @bitCast(@intFromPtr(&thumb)));
+            const grey = c.CreateSolidBrush(0xB0B0B0) orelse return null;
+            defer _ = c.DeleteObject(grey);
+            const fill = c.CreateSolidBrush(col) orelse return null;
+            defer _ = c.DeleteObject(fill);
+            _ = c.FillRect(cd.hdc, &cd.rc, grey);
+            var done = cd.rc;
+            done.right = @max(done.left, @min(done.right, @divTrunc(thumb.left + thumb.right, 2)));
+            _ = c.FillRect(cd.hdc, &done, fill);
+            return c.CDRF_SKIPDEFAULT;
+        },
+        c.TBCD_THUMB => {
+            const brush = c.CreateSolidBrush(col) orelse return null;
+            defer _ = c.DeleteObject(brush);
+            const pen = c.CreatePen(c.PS_SOLID, 1, col) orelse return null;
+            defer _ = c.DeleteObject(pen);
+            const old_brush = c.SelectObject(cd.hdc, brush);
+            const old_pen = c.SelectObject(cd.hdc, pen);
+            defer {
+                _ = c.SelectObject(cd.hdc, old_brush);
+                _ = c.SelectObject(cd.hdc, old_pen);
+            }
+            const rc = cd.rc;
+            const w = rc.right - rc.left;
+            _ = c.RoundRect(cd.hdc, rc.left, rc.top, rc.right, rc.bottom, w, w);
+            return c.CDRF_SKIPDEFAULT;
+        },
+        else => return null,
+    }
+}
+
 fn makeField(s: *Surface, n: *Node) !Field {
+    if (n.kind == .input and n.props.range != null) return makeSlider(s, n);
     const class = std.unicode.utf8ToUtf16LeStringLiteral("EDIT");
     const style: c.DWORD = switch (n.kind) {
         .input => @as(c.DWORD, c.WS_CHILD | c.WS_TABSTOP | c.ES_AUTOHSCROLL) | (if (n.props.pw) @as(c.DWORD, c.ES_PASSWORD) else @as(c.DWORD, 0)),
@@ -681,6 +799,13 @@ fn makeField(s: *Surface, n: *Node) !Field {
 }
 
 fn setFieldValue(s: *Surface, f: *Field, n: *Node, v: []const u8) void {
+    if (f.slider) {
+        const r = tree_mod.Range.of(n);
+        const pos = sliderPos(r, r.parse(v));
+        _ = c.SendMessageW(f.hwnd, c.TBM_SETPOS, c.TRUE, pos);
+        f.sent_pos = pos;
+        return;
+    }
     switch (f.kind) {
         .input, .textarea => {
             // EDIT controls want CRLF line ends.
@@ -1034,6 +1159,18 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         c.WM_COMMAND => {
             if (lparam != 0) onFieldCommand(s, @truncate(wparam >> 16), toHandle(c.HWND, @bitCast(lparam)));
             return 0;
+        },
+        // A trackbar (<input type=range>) moved.
+        c.WM_HSCROLL => {
+            if (lparam != 0) onSlider(s, @truncate(wparam), toHandle(c.HWND, @bitCast(lparam)));
+            return 0;
+        },
+        c.WM_NOTIFY => if (lparam != 0) {
+            const hdr: *const c.NMHDR = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            // NM_CUSTOMDRAW (NM_FIRST - 12; the header's macro doesn't translate).
+            if (hdr.code == @as(c.UINT, @bitCast(@as(i32, -12)))) {
+                if (sliderDraw(s, @ptrFromInt(@as(usize, @bitCast(lparam))))) |r| return r;
+            }
         },
         c.WM_CTLCOLOREDIT, c.WM_CTLCOLORLISTBOX, c.WM_CTLCOLORSTATIC => {
             const field_hwnd = toHandle(c.HWND, @bitCast(lparam));
