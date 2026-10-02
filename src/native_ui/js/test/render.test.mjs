@@ -253,4 +253,26 @@ for (const css of [
   assert.ok(props.runs.every((r) => !Object.hasOwn(r, "ws")));
 }
 
+
+// A text-only button keeps a box that centers its label in its height (a
+// row of flex: 1 buttons stretches the short ones to the tallest); the label
+// spans its width, so the button's text-align applies (a menu item's left).
+{
+  const f = fixture(".seg { display: flex } .seg button { flex: 1 } .menu { display: block; width: 100%; text-align: left }");
+  const stage = f.document.querySelector("main");
+  stage.innerHTML = '<div class="seg"><button>A</button><button>A much longer label</button></div><button class="menu">Item</button>';
+  f.check();
+  const find = (n, pred) => pred(n) ? n : n.kids.map((k) => find(k, pred)).find(Boolean);
+  const tree = f.tree();
+  const labelOf = (t) => find(tree, (n) => n.kind === "text" && n.props.runs?.[0]?.t === t);
+  const boxOf = (label) => find(tree, (n) => n.kids.includes(label));
+  const a = labelOf("A"), item = labelOf("Item");
+  assert.ok(a && item, "the labels are text nodes");
+  assert.equal(boxOf(a).kind, "view", "inside a box");
+  assert.equal(boxOf(a).props.jc, "center", "centered in its height");
+  assert.equal(boxOf(a).props.ai ?? "stretch", "stretch", "spanning its width (stretch: the wire default)");
+  assert.equal(a.props.ta, "center", "a button's label is centered by its text-align");
+  assert.equal(item.props.ta ?? "left", "left", "a menu item's stays left (left: the wire default)");
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");
