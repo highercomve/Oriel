@@ -16,6 +16,7 @@ git -C "$root" show "$ref:src/native_ui/runtime-native.js" > "$work/rt-base.js"
 # Whatever happens, the runtime goes back as it was.
 trap 'cp "$work/rt-new.js" "$rt"; rm -rf "$work"' EXIT
 
+mkdir -p "$here/app/web"
 steps=$(python3 "$here/page.py" --steps)
 status=0
 for n in $(seq 1 "$steps"); do
