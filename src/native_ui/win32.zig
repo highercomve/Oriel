@@ -441,7 +441,8 @@ const PaintOrder = struct {
         const order = po.next;
         if (n.kind == .input or n.kind == .textarea or n.kind == .select) po.fields.put(gpa, n.id, order) catch {};
         if (paintsOpaque(n)) po.occluders.append(gpa, .{ .order = order, .rect = n.clip.intersect(n.frame) }) catch {};
-        for (n.kids.items) |k| po.walk(gpa, k);
+        var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
+        while (it.next()) |k| po.walk(gpa, k);
     }
 
     fn paintsOpaque(n: *Node) bool {
@@ -2167,7 +2168,9 @@ fn paint(p: *Painter, n: *Node) void {
         .canvas => paintCanvas(p, n),
         else => {},
     }
-    for (n.kids.items) |k| paint(p, k);
+    // CSS paint order: positioned boxes (a sticky header) over the flow.
+    var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
+    while (it.next()) |k| paint(p, k);
 }
 
 fn uniform(r: [4]f32) bool {
