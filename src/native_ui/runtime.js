@@ -13693,6 +13693,11 @@ button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-si
 input, textarea, select { padding: 1px 2px; border: 2px inset #ccc; font-size: 13.33px; background: white; }
 textarea { white-space: pre-wrap; }
 hr { border-top: 1px solid #888; margin: .5em 0; }
+table { display: table; border-spacing: 2px; border-collapse: separate; }
+thead { display: table-header-group; } tbody { display: table-row-group; } tfoot { display: table-footer-group; }
+tr { display: table-row; } td, th { display: table-cell; padding: 1px; vertical-align: middle; }
+th { text-align: center; } caption { display: table-caption; text-align: center; }
+col, colgroup { display: none; }
 `;
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
@@ -13774,6 +13779,7 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
       this.owner.set(id, el);
       const props = boxProps(cs, display, fontSize, el);
       if (!ctx.blockify) delete props.as;
+      if (isTableDisplay(display) && !tableProps(props, display, cs, fontSize, ctx, el)) return null;
       const transitions = transitionsOf(cs);
       if (transitions) this.specs.set(id, transitions);
       this.noteAnimations(id, cs, fontSize);
@@ -13872,7 +13878,11 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
         }
         return this.put(nodes, id, tag === "textarea" ? "textarea" : "input", props, [], fixedNode);
       }
-      const childCtx = { blockify: display === "flex" || display === "grid", parentText: cs["text-align"] };
+      const childCtx = {
+        blockify: display === "flex" || display === "grid" || tableHolds(display),
+        parentText: cs["text-align"],
+        tableSpacing: tableSpacingFor(display, props, ctx)
+      };
       const kids = [];
       let orders = null;
       const before2 = this.pseudo(el, cs, "before", nodes);
@@ -14108,8 +14118,51 @@ hr { border-top: 1px solid #888; margin: .5em 0; }
   function listens(el) {
     return !!el.__listens;
   }
+  var TABLE_GROUPS = /* @__PURE__ */ new Set(["table-row-group", "table-header-group", "table-footer-group"]);
+  function isTableDisplay(d) {
+    return d === "table" || d === "inline-table" || d === "table-row" || d === "table-cell" || d === "table-column" || d === "table-column-group" || TABLE_GROUPS.has(d);
+  }
+  function tableHolds(d) {
+    return d === "table" || d === "inline-table" || d === "table-row" || TABLE_GROUPS.has(d);
+  }
+  function tableSpacingFor(d, props, ctx) {
+    if (d === "table" || d === "inline-table") return props.table;
+    return tableHolds(d) ? ctx.tableSpacing : void 0;
+  }
+  function tableProps(props, display, cs, fontSize, ctx, el) {
+    if (display === "table" || display === "inline-table") {
+      const sp = tableSpacing(cs, fontSize);
+      props.table = sp;
+      if (sp) {
+        props.rg = sp;
+        props.pad = (props.pad || [0, 0, 0, 0]).map((v) => (typeof v === "number" ? v : 0) + sp);
+      }
+      if (props.w === void 0 && !ctx.blockify && !props.as) props.as = "flex-start";
+    } else if (TABLE_GROUPS.has(display)) {
+      if (ctx.tableSpacing) props.rg = ctx.tableSpacing;
+    } else if (display === "table-row") {
+      props.trow = true;
+      props.fd = "row";
+      props.ai = "stretch";
+      if (ctx.tableSpacing) props.cg = ctx.tableSpacing;
+    } else if (display === "table-cell") {
+      const span = parseInt(el.getAttribute("colspan") || "1", 10);
+      props.tcell = Number.isFinite(span) && span > 1 ? Math.min(span, 1e3) : 1;
+      props.fs = 0;
+      const va = cs["vertical-align"];
+      props.jc = va === "middle" ? "center" : va === "bottom" ? "flex-end" : "flex-start";
+    } else return false;
+    return true;
+  }
+  function tableSpacing(cs, fs) {
+    if (cs["border-collapse"] === "collapse") return 0;
+    const first = String(cs["border-spacing"] || "0").trim().split(/\s+/)[0];
+    const v = num2(first, fs);
+    return typeof v === "number" && v > 0 ? v : 0;
+  }
   function blockify(d) {
-    if (d === "inline" || d === "inline-block" || d === "list-item" || d === "table" || d === "table-cell") return "block";
+    if (d === "inline" || d === "inline-block" || d === "list-item" || d === "table-caption") return "block";
+    if (d === "inline-table") return "table";
     if (d === "inline-flex") return "flex";
     if (d === "inline-grid") return "grid";
     return d;
