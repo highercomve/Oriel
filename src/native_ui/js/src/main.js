@@ -196,7 +196,7 @@ void ET;
   if (desc?.get) {
     const wrapped = new WeakMap();
     // try: a write before `let renderer` below has run (TDZ) is ignored.
-    const touch = (el) => { try { if (renderer) renderer.mark(el, 1); } catch {} };
+    const touch = (el) => { try { if (renderer && el.isConnected) renderer.mark(el, 1); } catch {} };
     Object.defineProperty(proto, "style", {
       configurable: true,
       get() {
@@ -743,6 +743,7 @@ g.__oriel = {
       renderer = new Renderer(document, engine, host);
       // What changed, for the next render (render.js: only that is made again).
       renderer.observer = new MutationObserver((records) => renderer.note(records));
+      renderer.observer.__nuiConnectedOnly = true;
       renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
       // The page's scripts, in order, at the top level (like <script> tags).
       for (const s of document.querySelectorAll("script")) {

@@ -32,6 +32,9 @@ extern int oriel_nui_asset(void *opaque, const char *path, size_t len, const cha
 extern void oriel_nui_invoke(void *opaque, uint32_t call_id, const char *cmd, size_t cmd_len, const char *args, size_t args_len);
 extern void oriel_nui_timer(void *opaque, uint32_t timer_id, double ms);
 extern void oriel_nui_ops(void *opaque, const char *json, size_t len);
+extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
+extern int oriel_nui_leaf_style(void *opaque, double id, const char *json, size_t len);
+extern int oriel_nui_leaf(void *opaque, double id, double style_id, const char *text, size_t len, int is_text);
 extern int oriel_nui_frame(void *opaque, double id, double *out5);
 extern void oriel_nui_focus(void *opaque, double id);
 extern void oriel_nui_scroll_into_view(void *opaque, double id, const char *block, size_t len);
@@ -136,6 +139,50 @@ static JSValue h_ops(JSContext *ctx, JSValueConst this_val, int argc, JSValueCon
     if (s) { oriel_nui_ops(opaque_of(ctx), s, len); JS_FreeCString(ctx, s); }
     return JS_UNDEFINED;
 }
+
+#if !defined(__ANDROID__)
+static JSValue h_leaf_style(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_FALSE;
+    double id;
+    if (JS_ToFloat64(ctx, &id, argv[0]) < 0) return JS_EXCEPTION;
+    size_t len;
+    const char *s = JS_ToCStringLen(ctx, &len, argv[1]);
+    if (!s) return JS_EXCEPTION;
+    int ok = oriel_nui_leaf_style(opaque_of(ctx), id, s, len);
+    JS_FreeCString(ctx, s);
+    return JS_NewBool(ctx, ok);
+}
+
+static JSValue h_leaf(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 4) return JS_FALSE;
+    double id, style_id;
+    if (JS_ToFloat64(ctx, &id, argv[0]) < 0 || JS_ToFloat64(ctx, &style_id, argv[1]) < 0) return JS_EXCEPTION;
+    size_t len;
+    const char *s = JS_ToCStringLen(ctx, &len, argv[2]);
+    if (!s) return JS_EXCEPTION;
+    int is_text = JS_ToBool(ctx, argv[3]);
+    int ok = oriel_nui_leaf(opaque_of(ctx), id, style_id, s, len, is_text);
+    JS_FreeCString(ctx, s);
+    return JS_NewBool(ctx, ok);
+}
+
+// Backends that consume typed tree props can change text without a JSON
+// round trip. Android's mirrored props currently use the regular ops path.
+static JSValue h_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_FALSE;
+    double id;
+    if (JS_ToFloat64(ctx, &id, argv[0]) < 0) return JS_EXCEPTION;
+    size_t len = 0;
+    const char *s = JS_ToCStringLen(ctx, &len, argv[1]);
+    if (!s) return JS_EXCEPTION;
+    int ok = oriel_nui_text(opaque_of(ctx), id, s, len);
+    JS_FreeCString(ctx, s);
+    return JS_NewBool(ctx, ok);
+}
+#endif
 
 // host.now(): a monotonic clock in ms, sub-millisecond (performance.now).
 static JSValue h_now(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -384,6 +431,11 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "invoke", h_invoke, 3);
     set_fn(ctx, host, "timer", h_timer, 2);
     set_fn(ctx, host, "ops", h_ops, 1);
+#if !defined(__ANDROID__)
+    set_fn(ctx, host, "text", h_text, 2);
+    set_fn(ctx, host, "leafStyle", h_leaf_style, 2);
+    set_fn(ctx, host, "leaf", h_leaf, 4);
+#endif
     set_fn(ctx, host, "frame", h_frame, 1);
     set_fn(ctx, host, "now", h_now, 0);
     set_fn(ctx, host, "focus", h_focus, 1);
