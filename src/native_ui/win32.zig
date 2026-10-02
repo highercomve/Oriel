@@ -167,6 +167,15 @@ pub const Surface = struct {
     hand: bool = false,
     tracking: bool = false,
     updating: bool = false,
+    /// Removed fields' controls, destroyed later (flushDoomed): a page can
+    /// remove a field from the field's own notification (EN_CHANGE,
+    /// CBN_SELCHANGE, WM_HSCROLL), and the control's code still runs after
+    /// it returns: destroying it there crashed comctl32.
+    doomed: std.ArrayListUnmanaged(Doomed) = .empty,
+    doomed_posted: bool = false,
+    /// Inside a control's notification to the canvas (or a field's own
+    /// message): a nested message loop there must not flush `doomed`.
+    in_control: u32 = 0,
 
     /// The canvas fills `parent`'s client area.
     pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, parent: *anyopaque, transparent: bool, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
@@ -225,6 +234,9 @@ pub const Surface = struct {
         var it = s.fields.valueIterator();
         while (it.next()) |f| freeField(s, f);
         s.fields.deinit();
+        // Not inside any control now: their windows and GDI objects go.
+        flushDoomed(s);
+        s.doomed.deinit(s.gpa);
         // The target first: it walks the images to drop their bitmaps, and
         // releases the canvases (made by it).
         releaseTarget(s);
@@ -467,15 +479,41 @@ fn laidOut(ctx: *anyopaque) void {
 // ---------------------------------------------------------------------------
 // Fields: EDIT and COMBOBOX controls for input, textarea and select
 
+/// A removed field's control, its font and brush (still selected into it),
+/// destroyed by flushDoomed.
+const Doomed = struct { hwnd: c.HWND, font: ?c.HFONT, brush: ?c.HBRUSH };
+
+const WM_FREE_FIELDS: c.UINT = c.WM_APP + 0x53;
+
+/// The field leaves the page now: no node (so no more events to the page)
+/// and hidden. Its window goes later (WM_FREE_FIELDS): this may run inside
+/// that window's own notification.
 fn freeField(s: *Surface, f: *Field) void {
     if (f.ph) |ph| s.gpa.free(ph);
     f.ph = null;
     _ = c.RemovePropW(f.hwnd, prop_node);
-    _ = c.DestroyWindow(f.hwnd);
-    if (f.font) |h| _ = c.DeleteObject(h);
-    if (f.brush) |b| _ = c.DeleteObject(b);
+    _ = c.ShowWindow(f.hwnd, c.SW_HIDE);
+    s.doomed.append(s.gpa, .{ .hwnd = f.hwnd, .font = f.font, .brush = f.brush }) catch {
+        // No room to defer it: hidden and orphaned rather than destroyed
+        // under the control's feet (the canvas's DestroyWindow takes it).
+        f.font = null;
+        f.brush = null;
+        return;
+    };
     f.font = null;
     f.brush = null;
+    if (!s.doomed_posted) s.doomed_posted = c.PostMessageW(s.hwnd, WM_FREE_FIELDS, 0, 0) != 0;
+}
+
+/// Destroys the removed fields' controls and frees their GDI objects
+/// (outside any control's notification).
+fn flushDoomed(s: *Surface) void {
+    for (s.doomed.items) |d| {
+        _ = c.DestroyWindow(d.hwnd);
+        if (d.font) |h| _ = c.DeleteObject(h);
+        if (d.brush) |b| _ = c.DeleteObject(b);
+    }
+    s.doomed.clearRetainingCapacity();
 }
 
 /// A box the page paints over what came before it (an opaque background),
@@ -944,7 +982,9 @@ fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
                     const name = if (wparam == c.VK_RETURN) "Enter" else "Escape";
                     var buf: [48]u8 = undefined;
                     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d}]", .{ name, modFlags() }) catch "";
+                    s.in_control += 1;
                     const prevented = s.engine.event(id, "key", json);
+                    s.in_control -= 1;
                     // Gone: nothing left to hand the key to.
                     if (c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null) return 0;
                     // A single-line field has no use for Enter (it would beep).
@@ -1168,12 +1208,27 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             _ = sendKey(s, buf[0..len]);
             return 0;
         },
+        // Removed fields' controls: now that no control's code is running.
+        WM_FREE_FIELDS => {
+            s.doomed_posted = false;
+            if (s.in_control > 0) {
+                // A nested message loop inside a control's notification.
+                s.doomed_posted = c.PostMessageW(hwnd, WM_FREE_FIELDS, 0, 0) != 0;
+                return 0;
+            }
+            flushDoomed(s);
+            return 0;
+        },
         c.WM_COMMAND => {
+            s.in_control += 1;
+            defer s.in_control -= 1;
             if (lparam != 0) onFieldCommand(s, @truncate(wparam >> 16), toHandle(c.HWND, @bitCast(lparam)));
             return 0;
         },
         // A trackbar (<input type=range>) moved.
         c.WM_HSCROLL => {
+            s.in_control += 1;
+            defer s.in_control -= 1;
             if (lparam != 0) onSlider(s, @truncate(wparam), toHandle(c.HWND, @bitCast(lparam)));
             return 0;
         },
