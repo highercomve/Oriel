@@ -14276,8 +14276,8 @@ col, colgroup { display: none; }
       const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) && flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""));
       if (inlineLine) {
         props.fd = "row";
-        props.fw = "wrap";
         props.ai = "center";
+        if (flow.filter((f) => f.el).length > 1) props.fw = "wrap";
       }
       for (const item of flow) {
         if (item.text) {

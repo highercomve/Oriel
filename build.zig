@@ -531,6 +531,8 @@ fn addOrielModule(
             oriel.linkSystemLibrary("d2d1", .{});
             oriel.linkSystemLibrary("dwrite", .{});
             oriel.linkSystemLibrary("windowscodecs", .{});
+            // Trackbars (<input type=range>).
+            oriel.linkSystemLibrary("comctl32", .{});
         }
     } else if (target.result.os.tag == .macos) {
         // AppKit + WebKit through the Objective-C runtime (zig-objc). Its build
