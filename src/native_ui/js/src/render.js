@@ -473,7 +473,8 @@ export class Renderer {
   schedule() {
     if (this.ticking || (!this.tx.active && !this.anim.active)) return;
     this.ticking = true;
-    setTimeout(() => { this.ticking = false; this.tick(); }, 16);
+    // On the page's frames (main.js), with its requestAnimationFrame callbacks.
+    requestAnimationFrame(() => { this.ticking = false; this.tick(); });
   }
 
   tick() {

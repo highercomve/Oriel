@@ -6,6 +6,7 @@
 //   timer(id, ms)               → later __oriel.timer(id)
 //   ops(json)                   the frame's operations (render.js)
 //   frame(id) → [x, y, w, h]    a node's last layout, in window coordinates
+//   now()                       a monotonic clock in ms (performance.now)
 //   evalScript(name, code)      run a page script at the top level
 //   evalModule(name, code)      run a module script (imports load from the assets) → promise
 //   focus(id), scrollIntoView(id, block), scrollTo(id, y)
@@ -47,11 +48,45 @@ function setTimer(fn, ms, args, repeat) {
 globalThis.setTimeout = (fn, ms, ...args) => setTimer(fn, ms, args, false);
 globalThis.setInterval = (fn, ms, ...args) => setTimer(fn, Math.max(4, +ms || 0), args, true);
 globalThis.clearTimeout = globalThis.clearInterval = (id) => { timers.delete(id); };
-globalThis.requestAnimationFrame = (cb) => setTimer(() => cb(performance.now()), 16, [], false);
-globalThis.cancelAnimationFrame = globalThis.clearTimeout;
 globalThis.queueMicrotask ??= (fn) => Promise.resolve().then(fn);
-const t0 = Date.now();
-globalThis.performance ??= { now: () => Date.now() - t0 };
+// performance.now(): host.now() is a monotonic clock with sub-millisecond
+// resolution (Date.now() has whole milliseconds).
+const t0 = host.now ? host.now() : Date.now();
+globalThis.performance ??= { now: host.now ? () => host.now() - t0 : () => Date.now() - t0 };
+
+// requestAnimationFrame: as in a browser, every callback asked for before a
+// frame runs in that frame, with the same timestamp, and frames come at a
+// steady 60 Hz (a grid of 16.7 ms slots, as a display's refresh), not 16 ms
+// after the last frame's work. A frame whose work overruns its slot
+// skips to the next one. One timer per frame: the page renders once after
+// all of its callbacks.
+const FRAME_MS = 1000 / 60;
+let rafCallbacks = new Map();
+let rafSeq = 1;
+let rafPending = false;
+let lastSlot = -1;
+function runFrame() {
+  rafPending = false;
+  const now = performance.now();
+  lastSlot = Math.max(lastSlot, Math.floor(now / FRAME_MS));
+  const due = rafCallbacks;
+  rafCallbacks = new Map();
+  for (const cb of due.values()) {
+    try { cb(now); } catch (e) { console.error(e); }
+  }
+}
+globalThis.requestAnimationFrame = (cb) => {
+  const id = rafSeq++;
+  rafCallbacks.set(id, cb);
+  if (!rafPending) {
+    rafPending = true;
+    const now = performance.now();
+    const slot = Math.max(Math.floor(now / FRAME_MS) + 1, lastSlot + 1);
+    setTimer(runFrame, Math.max(0, Math.ceil(slot * FRAME_MS - now)), [], false);
+  }
+  return id;
+};
+globalThis.cancelAnimationFrame = (id) => { rafCallbacks.delete(id); };
 
 // ---------------------------------------------------------------------------
 // The document
