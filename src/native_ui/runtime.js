@@ -14413,7 +14413,10 @@ col, colgroup { display: none; }
         }
         return this.put(nodes, id, tag === "textarea" ? "textarea" : "input", props, [], fixedNode);
       }
-      const aligns = (display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid") && (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]));
+      const layoutBox = display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid";
+      const aligns = layoutBox && (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"])) || // A button centers its label in its height (a row stretches it to
+      // its tallest sibling's): a box around the text, not a text view.
+      el.localName === "button" && !layoutBox;
       if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns && display !== "grid" && !isTableDisplay(display)) {
         const raw = [];
         for (let child = el.firstChild; child; child = child.nextSibling) {

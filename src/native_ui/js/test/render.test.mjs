@@ -253,4 +253,22 @@ for (const css of [
   assert.ok(props.runs.every((r) => !Object.hasOwn(r, "ws")));
 }
 
+
+// A text-only button keeps a box that centers its label (a row of flex: 1
+// buttons stretches the short ones to the tallest); a flex button is the
+// page's layout.
+{
+  const f = fixture(".seg { display: flex } .seg button { flex: 1 } .own { display: flex }");
+  const stage = f.document.querySelector("main");
+  stage.innerHTML = '<div class="seg"><button>A</button><button>A much longer label</button></div><button class="own">Own</button>';
+  f.check();
+  const find = (n, pred) => pred(n) ? n : n.kids.map((k) => find(k, pred)).find(Boolean);
+  const label = find(f.tree(), (n) => n.kind === "text" && n.props.runs?.[0]?.t === "A");
+  assert.ok(label, "the label is a text node");
+  const box = find(f.tree(), (n) => n.kids.some((k) => k === label || (k.kind === "text" && k.props.runs?.[0]?.t === "A")));
+  assert.equal(box.kind, "view", "inside a box");
+  assert.equal(box.props.ai, "center", "centered across");
+  assert.equal(box.props.jc, "center", "and along");
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");
