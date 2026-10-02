@@ -1819,6 +1819,32 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool) void {
             &.{ "-std=gnu11", "-O2", no_ubsan, "-DORIEL_NUI_PROF=1" }
         else
             &.{ "-std=gnu11", "-O2", no_ubsan } });
+
+        // runtime.js as QuickJS bytecode, compiled on the build machine by
+        // tools/qjs_bytecode.c (the same QuickJS): the engine loads it
+        // instead of parsing and compiling the source on every window.
+        const compiler = b.addExecutable(.{
+            .name = "qjs_bytecode",
+            .root_module = b.createModule(.{ .target = b.graph.host, .optimize = .ReleaseFast, .link_libc = true }),
+        });
+        compiler.root_module.addIncludePath(qjs);
+        compiler.root_module.addCSourceFiles(.{
+            .root = qjs,
+            .files = &.{ "quickjs.c", "libregexp.c", "libunicode.c", "dtoa.c" },
+            .flags = &.{ "-std=gnu11", "-D_GNU_SOURCE", "-O2", no_ubsan, "-funsigned-char", "-fwrapv" },
+        });
+        compiler.root_module.addCSourceFile(.{ .file = b.path("tools/qjs_bytecode.c"), .flags = &.{ "-std=gnu11", "-O2", no_ubsan } });
+        const compile = b.addRunArtifact(compiler);
+        compile.addFileArg(b.path("src/native_ui/runtime.js"));
+        const bytecode = compile.addOutputFileArg("runtime.qjsbc");
+        const files = b.addWriteFiles();
+        _ = files.addCopyFile(bytecode, "runtime.qjsbc");
+        const module_src = files.add("runtime_bytecode.zig",
+            \\//! runtime.js compiled to QuickJS bytecode (build.zig, addNativeUi).
+            \\pub const data = @embedFile("runtime.qjsbc");
+            \\
+        );
+        oriel.addAnonymousImport("runtime_bytecode", .{ .root_source_file = module_src });
     }
     if (b.lazyDependency("yoga", .{})) |yoga| {
         oriel.addIncludePath(yoga.path("."));

@@ -467,6 +467,19 @@ int oqjs_eval(void *p, const char *code, size_t len, const char *name) {
     return truthy > 0 ? 1 : 0;
 }
 
+// Run a script compiled to bytecode (JS_WriteObject: tools/qjs_bytecode.c);
+// 0, or -1 on an exception (logged) or a bytecode this QuickJS can't read.
+int oqjs_eval_bytecode(void *p, const uint8_t *code, size_t len) {
+    oqjs *self = p;
+    enter(self);
+    JSValue fn = JS_ReadObject(self->ctx, code, len, JS_READ_OBJ_BYTECODE);
+    JSValue r = JS_IsException(fn) ? fn : JS_EvalFunction(self->ctx, fn); // consumes fn
+    leave(self);
+    if (JS_IsException(r)) { report(self->ctx); return -1; }
+    JS_FreeValue(self->ctx, r);
+    return 0;
+}
+
 // Run the pending promise jobs (microtasks).
 void oqjs_run_jobs(void *p) {
     oqjs *self = p;
