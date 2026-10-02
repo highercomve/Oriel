@@ -713,6 +713,10 @@ JS_EXTERN bool JS_IsRegisteredClass(JSRuntime *rt, JSClassID class_id);
 JS_EXTERN uint32_t JS_GetStringLength(JSValueConst v);
 /* Oriel: a + b for two strings (both references are taken) */
 JS_EXTERN JSValue JS_ConcatStrings(JSContext *ctx, JSValue a, JSValue b);
+/* Oriel: a string's characters without converting it, when it is stored as
+   8-bit characters (Latin-1) in one piece: the bytes and *plen, else NULL
+   (a wide string or a rope). */
+JS_EXTERN const uint8_t *JS_GetStringLatin1(JSValueConst v, size_t *plen);
 /* Returns the class name or JS_ATOM_NULL if `id` is not a registered class. Must be freed with JS_FreeAtom. */
 JS_EXTERN JSAtom JS_GetClassName(JSRuntime *rt, JSClassID class_id);
 

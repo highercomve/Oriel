@@ -31,13 +31,19 @@ const std = @import("std");
 /// 32-bit), held opaquely: the store only counts references through C.
 pub const JsVal = if (@sizeOf(usize) == 8) extern struct { u: u64, tag: i64 } else extern struct { v: u64 };
 
-/// QuickJS reference counting, implemented in dom_qjs.c (tests: fakes).
+/// QuickJS reference counting and the few conversions the store needs,
+/// implemented in dom_qjs.c (tests: fakes).
 pub const Js = struct {
     ctx: *anyopaque,
     dup: *const fn (ctx: *anyopaque, v: *const JsVal) void,
     free: *const fn (ctx: *anyopaque, v: *const JsVal) void,
     dupAtom: *const fn (ctx: *anyopaque, a: u32) void,
     freeAtom: *const fn (ctx: *anyopaque, a: u32) void,
+    /// The atom of a string value (a new reference), 0 on failure.
+    valueAtom: *const fn (ctx: *anyopaque, v: *const JsVal) u32,
+    /// The whitespace-separated tokens of a string value, as atoms (new
+    /// references) passed to `add`; false on failure.
+    tokens: *const fn (ctx: *anyopaque, v: *const JsVal, sink: *anyopaque, add: *const fn (sink: *anyopaque, atom: u32) bool) bool,
 };
 
 pub const Index = u32;
@@ -80,6 +86,29 @@ pub const Node = struct {
     attrs: [inline_attrs]Attr = undefined,
     /// Attributes beyond the inline ones (attr_len - inline_attrs of them).
     more: []Attr = &.{},
+    /// The id attribute's value as an atom (0: none), and the class
+    /// attribute's tokens as atoms: what selectors compare (integers).
+    id: u32 = 0,
+    class_len: u16 = 0,
+    classes: [inline_classes]u32 = undefined,
+    more_classes: []u32 = &.{},
+
+    pub fn classList(n: *const Node) ClassIter {
+        return .{ .n = n };
+    }
+};
+
+const inline_classes = 2;
+
+/// The class atoms of a node.
+pub const ClassIter = struct {
+    n: *const Node,
+    i: usize = 0,
+    pub fn next(it: *ClassIter) ?u32 {
+        if (it.i >= it.n.class_len) return null;
+        defer it.i += 1;
+        return if (it.i < inline_classes) it.n.classes[it.i] else it.n.more_classes[it.i - inline_classes];
+    }
 };
 
 /// A node as the bindings hold it: index and generation in one u64.
@@ -98,6 +127,9 @@ pub const Error = error{ OutOfMemory, HierarchyRequest, NotFound, StaleNode };
 pub const Store = struct {
     gpa: std.mem.Allocator,
     js: Js,
+    /// The atoms of the names "class" and "id" (held by the store).
+    class_name: u32,
+    id_name: u32,
     slabs: std.ArrayList(*[slab_len]Node) = .empty,
     /// Records handed out so far (index 0 is never used).
     used: u32 = 1,
@@ -112,8 +144,12 @@ pub const Store = struct {
     /// Reused traversal stack.
     stack: std.ArrayList(Index) = .empty,
 
-    pub fn init(gpa: std.mem.Allocator, js: Js) Error!Store {
-        var s: Store = .{ .gpa = gpa, .js = js };
+    /// `class_name`, `id_name`: the atoms of "class" and "id" (the store
+    /// takes a reference to each).
+    pub fn init(gpa: std.mem.Allocator, js: Js, class_name: u32, id_name: u32) Error!Store {
+        js.dupAtom(js.ctx, class_name);
+        js.dupAtom(js.ctx, id_name);
+        var s: Store = .{ .gpa = gpa, .js = js, .class_name = class_name, .id_name = id_name };
         errdefer s.deinit();
         s.document = try s.alloc(.document, 0);
         s.get(s.document).connected = true;
@@ -133,6 +169,8 @@ pub const Store = struct {
         }
         for (s.releases.items) |*v| s.js.free(s.js.ctx, v);
         for (s.slabs.items) |slab| s.gpa.destroy(slab);
+        s.js.freeAtom(s.js.ctx, s.class_name);
+        s.js.freeAtom(s.js.ctx, s.id_name);
         s.slabs.deinit(s.gpa);
         s.releases.deinit(s.gpa);
         s.dirty_list.deinit(s.gpa);
@@ -194,6 +232,67 @@ pub const Store = struct {
             s.js.free(s.js.ctx, &a.value);
         }
         if (n.more.len != 0) s.gpa.free(n.more);
+        s.clearIdClasses(n);
+    }
+
+    fn clearIdClasses(s: *Store, n: *Node) void {
+        if (n.id != 0) s.js.freeAtom(s.js.ctx, n.id);
+        n.id = 0;
+        var it = n.classList();
+        while (it.next()) |a| s.js.freeAtom(s.js.ctx, a);
+        if (n.more_classes.len != 0) s.gpa.free(n.more_classes);
+        n.more_classes = &.{};
+        n.class_len = 0;
+    }
+
+    const ClassSink = struct { s: *Store, n: *Node, failed: bool = false };
+
+    fn addClass(sink_ptr: *anyopaque, atom: u32) bool {
+        const sink: *ClassSink = @ptrCast(@alignCast(sink_ptr));
+        const s = sink.s;
+        const n = sink.n;
+        // A repeated token is kept once (selectors only ask whether it's there).
+        var it = n.classList();
+        while (it.next()) |a| if (a == atom) {
+            s.js.freeAtom(s.js.ctx, atom);
+            return true;
+        };
+        if (n.class_len >= inline_classes) {
+            const extra = n.class_len - inline_classes;
+            if (extra == n.more_classes.len) {
+                const cap = if (n.more_classes.len == 0) 4 else n.more_classes.len * 2;
+                n.more_classes = s.gpa.realloc(n.more_classes, cap) catch {
+                    s.js.freeAtom(s.js.ctx, atom);
+                    sink.failed = true;
+                    return false;
+                };
+            }
+            n.more_classes[extra] = atom;
+        } else n.classes[n.class_len] = atom;
+        n.class_len += 1;
+        return true;
+    }
+
+    /// The id or class attribute changed: their atoms again.
+    fn updateIdClasses(s: *Store, idx: Index, name: u32, value: ?*const JsVal) Error!void {
+        const n = s.get(idx);
+        if (name == s.id_name) {
+            if (n.id != 0) s.js.freeAtom(s.js.ctx, n.id);
+            n.id = 0;
+            if (value) |v| {
+                const a = s.js.valueAtom(s.js.ctx, v);
+                if (a == 0) return error.OutOfMemory;
+                n.id = a;
+            }
+        } else if (name == s.class_name) {
+            var it = n.classList();
+            while (it.next()) |a| s.js.freeAtom(s.js.ctx, a);
+            n.class_len = 0;
+            if (value) |v| {
+                var sink: ClassSink = .{ .s = s, .n = n };
+                if (!s.js.tokens(s.js.ctx, v, &sink, addClass) or sink.failed) return error.OutOfMemory;
+            }
+        }
     }
 
     fn release(s: *Store, idx: Index) void {
@@ -478,6 +577,7 @@ pub const Store = struct {
             s.js.dup(s.js.ctx, value);
             s.js.free(s.js.ctx, &a.value);
             a.value = value.*;
+            try s.updateIdClasses(idx, name, value);
         } else {
             if (n.attr_len >= inline_attrs) {
                 const extra = n.attr_len - inline_attrs;
@@ -492,6 +592,7 @@ pub const Store = struct {
             s.js.dupAtom(s.js.ctx, name);
             s.js.dup(s.js.ctx, value);
             a.* = .{ .name = name, .value = value.* };
+            try s.updateIdClasses(idx, name, value);
         }
         s.markDirty(idx, dirty_attrs);
     }
@@ -507,6 +608,7 @@ pub const Store = struct {
         var j = i;
         while (j + 1 < n.attr_len) : (j += 1) s.attrAt(idx, j).?.* = s.attrAt(idx, j + 1).?.*;
         n.attr_len -= 1;
+        s.updateIdClasses(idx, name, null) catch unreachable; // removing allocates nothing
         s.markDirty(idx, dirty_attrs);
         return true;
     }
@@ -536,14 +638,31 @@ const Fake = struct {
     /// Wrappers finalized (their id), to call back into the store.
     store: ?*Store = null,
     wrapper_nodes: std.AutoHashMap(i64, Index),
+    /// A string value's tokens (class attributes), as atoms.
+    tokens_of: std.AutoHashMap(i64, []const u32),
 
     fn new(a: std.mem.Allocator) Fake {
-        return .{ .values = .init(a), .atoms = .init(a), .wrapper_nodes = .init(a) };
+        return .{ .values = .init(a), .atoms = .init(a), .wrapper_nodes = .init(a), .tokens_of = .init(a) };
     }
     fn deinit(f: *Fake) void {
         f.values.deinit();
         f.atoms.deinit();
         f.wrapper_nodes.deinit();
+        f.tokens_of.deinit();
+    }
+    /// A value's atom: 1000 + its key.
+    fn valueAtom(c: *anyopaque, v: *const JsVal) u32 {
+        const a: u32 = @intCast(1000 + key(v));
+        dupAtom(c, a);
+        return a;
+    }
+    fn tokens(c: *anyopaque, v: *const JsVal, sink: *anyopaque, add: *const fn (*anyopaque, u32) bool) bool {
+        const list = of(c).tokens_of.get(key(v)) orelse return true;
+        for (list) |a| {
+            dupAtom(c, a);
+            if (!add(sink, a)) return false;
+        }
+        return true;
     }
     fn of(c: *anyopaque) *Fake {
         return @ptrCast(@alignCast(c));
@@ -576,7 +695,7 @@ const Fake = struct {
         of(c).atoms.getPtr(a).?.* -= 1;
     }
     fn js(f: *Fake) Js {
-        return .{ .ctx = f, .dup = dup, .free = free, .dupAtom = dupAtom, .freeAtom = freeAtom };
+        return .{ .ctx = f, .dup = dup, .free = free, .dupAtom = dupAtom, .freeAtom = freeAtom, .valueAtom = valueAtom, .tokens = tokens };
     }
     /// A new value with one reference (the caller's).
     fn make(f: *Fake, k: i64) JsVal {
@@ -599,7 +718,7 @@ test "tree, attributes and text; every reference released" {
     const t = std.testing;
     var f = Fake.new(t.allocator);
     defer f.deinit();
-    var s = try Store.init(t.allocator, f.js());
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
     f.store = &s;
     const div = try s.createElement(100);
     const span = try s.createElement(101);
@@ -634,11 +753,38 @@ test "tree, attributes and text; every reference released" {
     try t.expect(f.balanced());
 }
 
+test "id and class atoms follow their attributes" {
+    const t = std.testing;
+    var f = Fake.new(t.allocator);
+    defer f.deinit();
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
+    f.store = &s;
+    const el = try s.createElement(100);
+    try f.tokens_of.put(7, &.{ 300, 301, 300, 302 }); // "a b a c"
+    var cls = f.make(7);
+    try s.setAttr(el, 200, &cls);
+    Fake.free(&f, &cls);
+    var it = s.get(el).classList();
+    var got: [4]u32 = undefined;
+    var n: usize = 0;
+    while (it.next()) |a| : (n += 1) got[n] = a;
+    try t.expectEqualSlices(u32, &.{ 300, 301, 302 }, got[0..n]);
+    var id = f.make(8);
+    try s.setAttr(el, 201, &id);
+    Fake.free(&f, &id);
+    try t.expectEqual(@as(u32, 1008), s.get(el).id);
+    try t.expect(s.removeAttr(el, 200));
+    try t.expectEqual(@as(u16, 0), s.get(el).class_len);
+    s.dropIfUnused(el);
+    s.deinit();
+    try t.expect(f.balanced());
+}
+
 test "wrappers: held while connected, the detached subtree freed with the last one" {
     const t = std.testing;
     var f = Fake.new(t.allocator);
     defer f.deinit();
-    var s = try Store.init(t.allocator, f.js());
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
     f.store = &s;
     const list = try s.createElement(100);
     var w_list = f.make(10); // the page's wrapper for `list`
@@ -666,7 +812,7 @@ test "a detached subtree lives while any wrapper in it does" {
     const t = std.testing;
     var f = Fake.new(t.allocator);
     defer f.deinit();
-    var s = try Store.init(t.allocator, f.js());
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
     f.store = &s;
     const a = try s.createElement(100);
     const b = try s.createElement(101);
@@ -688,7 +834,7 @@ test "moves, fragments, hierarchy errors and stale handles" {
     const t = std.testing;
     var f = Fake.new(t.allocator);
     defer f.deinit();
-    var s = try Store.init(t.allocator, f.js());
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
     f.store = &s;
     const root = try s.createElement(1);
     try s.appendChild(s.document, root);
@@ -723,7 +869,7 @@ test "many nodes across slabs, and allocation failures" {
     const t = std.testing;
     var f = Fake.new(t.allocator);
     defer f.deinit();
-    var s = try Store.init(t.allocator, f.js());
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
     f.store = &s;
     const root = try s.createElement(1);
     try s.appendChild(s.document, root);
@@ -742,7 +888,7 @@ test "many nodes across slabs, and allocation failures" {
         var fa = std.testing.FailingAllocator.init(t.allocator, .{ .fail_index = fail_index });
         var f2 = Fake.new(t.allocator);
         defer f2.deinit();
-        var s2 = Store.init(fa.allocator(), f2.js()) catch continue;
+        var s2 = Store.init(fa.allocator(), f2.js(), 200, 201) catch continue;
         f2.store = &s2;
         build: {
             const e = s2.createElement(1) catch break :build;

@@ -29,7 +29,14 @@ typedef struct {
     void (*free_atom)(void *ctx, uint32_t a);
     bool (*new_string)(void *ctx, const uint8_t *bytes, size_t len, JSValue *out);
     uint32_t (*new_atom)(void *ctx, const uint8_t *bytes, size_t len);
+    uint32_t (*value_atom)(void *ctx, const JSValue *v);
+    bool (*tokens)(void *ctx, const JSValue *v, void *sink, bool (*add)(void *sink, uint32_t atom));
+    const uint8_t *(*latin1)(void *ctx, const JSValue *v, size_t *len);
+    const uint8_t *(*to_utf8)(void *ctx, const JSValue *v, size_t *len);
+    void (*free_utf8)(void *ctx, const uint8_t *p);
 } Host;
+
+typedef struct Selector Selector;
 
 extern Dom *nui_dom_new(const Host *host);
 extern void nui_dom_free(Dom *d);
@@ -60,6 +67,11 @@ extern bool nui_dom_remove_attr(Dom *d, Index idx, uint32_t name);
 extern size_t nui_dom_attr_count(Dom *d, Index idx);
 extern uint32_t nui_dom_attr_at(Dom *d, Index idx, size_t i, const JSValue **out);
 extern int nui_dom_parse_html(Dom *d, Index root, const uint8_t *bytes, size_t len);
+extern Selector *nui_dom_selector(Dom *d, const uint8_t *bytes, size_t len, int *code);
+extern bool nui_dom_matches(Dom *d, Index idx, const Selector *s);
+extern Index nui_dom_closest(Dom *d, Index idx, const Selector *s);
+extern void nui_dom_query(Dom *d, Index root, const Selector *s, void *ctx, bool (*found)(void *ctx, Index idx));
+extern Index nui_dom_by_id(Dom *d, Index root, uint32_t id);
 
 enum { K_ELEMENT = 1, K_TEXT = 3, K_COMMENT = 8, K_DOCUMENT = 9, K_FRAGMENT = 11 };
 enum { P_NODE, P_CHARDATA, P_TEXT, P_COMMENT, P_ELEMENT, P_HTML, P_FRAGMENT, P_DOCUMENT, P_COUNT };
@@ -90,6 +102,40 @@ static bool h_new_string(void *c, const uint8_t *b, size_t len, JSValue *out) {
 }
 static uint32_t h_new_atom(void *c, const uint8_t *b, size_t len) {
     return JS_NewAtomLen((JSContext *)c, (const char *)b, len);
+}
+static uint32_t h_value_atom(void *c, const JSValue *v) {
+    return JS_ValueToAtom((JSContext *)c, *v);
+}
+static const uint8_t *h_latin1(void *c, const JSValue *v, size_t *len) {
+    (void)c;
+    return JS_GetStringLatin1(*v, len);
+}
+static const uint8_t *h_to_utf8(void *c, const JSValue *v, size_t *len) {
+    return (const uint8_t *)JS_ToCStringLen((JSContext *)c, len, *v);
+}
+static void h_free_utf8(void *c, const uint8_t *p) {
+    JS_FreeCString((JSContext *)c, (const char *)p);
+}
+
+// The ASCII-whitespace-separated tokens of a string value, as atoms.
+static bool h_tokens(void *c, const JSValue *v, void *sink, bool (*add)(void *, uint32_t)) {
+    JSContext *ctx = c;
+    size_t len;
+    const char *s = JS_ToCStringLen(ctx, &len, *v);
+    if (!s) return false;
+    bool ok = true;
+    size_t i = 0;
+    while (ok && i < len) {
+        while (i < len && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r' || s[i] == '\f')) i++;
+        size_t start = i;
+        while (i < len && !(s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r' || s[i] == '\f')) i++;
+        if (i > start) {
+            JSAtom a = JS_NewAtomLen(ctx, s + start, i - start);
+            ok = a != JS_ATOM_NULL && add(sink, a);
+        }
+    }
+    JS_FreeCString(ctx, s);
+    return ok;
 }
 
 // --- Wrappers ------------------------------------------------------------------
@@ -504,6 +550,81 @@ static JSValue el_children(JSContext *ctx, JSValueConst this_val) {
     return arr;
 }
 
+// --- Selectors ------------------------------------------------------------------------
+
+// The compiled selector for a JS value, or NULL with a SyntaxError (or out
+// of memory) pending.
+static const Selector *selector_of(JSContext *ctx, DomCtx *dc, JSValueConst v) {
+    size_t len;
+    const char *s = JS_ToCStringLen(ctx, &len, v);
+    if (!s) return NULL;
+    int code = 0;
+    const Selector *sel = nui_dom_selector(dc->dom, (const uint8_t *)s, len, &code);
+    if (!sel) {
+        if (code == -4) JS_ThrowSyntaxError(ctx, "'%s' is not a valid selector", s);
+        else JS_ThrowOutOfMemory(ctx);
+    }
+    JS_FreeCString(ctx, s);
+    return sel;
+}
+
+static JSValue el_matches(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    THIS_NODE();
+    const Selector *sel = selector_of(ctx, dc, argv[0]);
+    if (!sel) return JS_EXCEPTION;
+    return JS_NewBool(ctx, nui_dom_matches(dc->dom, self, sel));
+}
+
+static JSValue el_closest(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    THIS_NODE();
+    const Selector *sel = selector_of(ctx, dc, argv[0]);
+    if (!sel) return JS_EXCEPTION;
+    return wrap(ctx, dc, nui_dom_closest(dc->dom, self, sel));
+}
+
+typedef struct { JSContext *ctx; DomCtx *dc; JSValue arr; uint32_t n; Index first; bool all; bool failed; } QueryCtx;
+
+static bool query_found(void *p, Index idx) {
+    QueryCtx *q = p;
+    if (!q->all) { q->first = idx; return false; }
+    JSValue w = wrap(q->ctx, q->dc, idx);
+    if (JS_IsException(w)) { q->failed = true; return false; }
+    JS_SetPropertyUint32(q->ctx, q->arr, q->n++, w);
+    return true;
+}
+
+static JSValue query(JSContext *ctx, DomCtx *dc, Index root, JSValueConst sel_v, bool all) {
+    const Selector *sel = selector_of(ctx, dc, sel_v);
+    if (!sel) return JS_EXCEPTION;
+    QueryCtx q = { ctx, dc, JS_UNDEFINED, 0, 0, all, false };
+    if (all) {
+        q.arr = JS_NewArray(ctx);
+        if (JS_IsException(q.arr)) return q.arr;
+    }
+    nui_dom_query(dc->dom, root, sel, &q, query_found);
+    if (q.failed) { JS_FreeValue(ctx, q.arr); return JS_EXCEPTION; }
+    return all ? q.arr : wrap(ctx, dc, q.first);
+}
+
+static JSValue node_query_one(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    THIS_NODE();
+    return query(ctx, dc, self, argv[0], false);
+}
+
+static JSValue node_query_all(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    THIS_NODE();
+    return query(ctx, dc, self, argv[0], true);
+}
+
+static JSValue doc_get_by_id(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    THIS_NODE();
+    JSAtom a = JS_ValueToAtom(ctx, argv[0]);
+    if (a == JS_ATOM_NULL) return JS_EXCEPTION;
+    Index n = nui_dom_by_id(dc->dom, self, a);
+    JS_FreeAtom(ctx, a);
+    return wrap(ctx, dc, n);
+}
+
 // --- Document ---------------------------------------------------------------------
 
 static JSValue doc_create_element(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -582,9 +703,16 @@ static const JSCFunctionListEntry element_funcs[] = {
     JS_CFUNC_DEF("append", 0, node_append),
     JS_CFUNC_DEF("prepend", 0, node_prepend),
     JS_CFUNC_DEF("remove", 0, node_remove),
+    JS_CFUNC_DEF("matches", 1, el_matches),
+    JS_CFUNC_DEF("closest", 1, el_closest),
+    JS_CFUNC_DEF("querySelector", 1, node_query_one),
+    JS_CFUNC_DEF("querySelectorAll", 1, node_query_all),
 };
 
 static const JSCFunctionListEntry fragment_funcs[] = {
+    JS_CFUNC_DEF("querySelector", 1, node_query_one),
+    JS_CFUNC_DEF("querySelectorAll", 1, node_query_all),
+    JS_CFUNC_DEF("getElementById", 1, doc_get_by_id),
     JS_CFUNC_DEF("append", 0, node_append),
     JS_CFUNC_DEF("prepend", 0, node_prepend),
     JS_CGETSET_DEF("children", el_children, NULL),
@@ -592,6 +720,9 @@ static const JSCFunctionListEntry fragment_funcs[] = {
 };
 
 static const JSCFunctionListEntry document_funcs[] = {
+    JS_CFUNC_DEF("querySelector", 1, node_query_one),
+    JS_CFUNC_DEF("querySelectorAll", 1, node_query_all),
+    JS_CFUNC_DEF("getElementById", 1, doc_get_by_id),
     JS_CFUNC_DEF("createElement", 1, doc_create_element),
     JS_CFUNC_DEF("createTextNode", 1, doc_create_text),
     JS_CFUNC_DEF("createComment", 1, doc_create_comment),
@@ -628,7 +759,8 @@ DomCtx *nui_dom_install(JSContext *ctx) {
     if (!dc) return NULL;
     dc->ctx = ctx;
     for (int i = 0; i < P_COUNT; i++) dc->protos[i] = dc->ctors[i] = JS_UNDEFINED;
-    dc->host = (Host){ ctx, h_dup, h_free, h_dup_atom, h_free_atom, h_new_string, h_new_atom };
+    dc->host = (Host){ ctx, h_dup, h_free, h_dup_atom, h_free_atom, h_new_string, h_new_atom, h_value_atom, h_tokens,
+                       h_latin1, h_to_utf8, h_free_utf8 };
     dc->dom = nui_dom_new(&dc->host);
     if (!dc->dom) { js_free(ctx, dc); return NULL; }
     JS_SetRuntimeOpaque(rt, dc);
