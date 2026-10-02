@@ -162,8 +162,13 @@ export class Renderer {
     // Records not delivered yet (a render from inside the page: focus()).
     const pending = this.observer?.takeRecords();
     if (pending?.length) this.note(pending);
-    if (!this.dirty) return;
+    if (!this.dirty || this.rendering) return;
     this.dirty = false;
+    this.rendering = true;
+    try { this.renderNow(); } finally { this.rendering = false; }
+  }
+
+  renderNow() {
     // The nodes made (or copied) this frame, id → { kind, props, kids }:
     // what emit() compares with the last frame. Reused subtrees aren't in it.
     const nodes = new Map();

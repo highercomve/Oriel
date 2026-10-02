@@ -13809,8 +13809,16 @@ col, colgroup { display: none; }
     render() {
       const pending2 = this.observer?.takeRecords();
       if (pending2?.length) this.note(pending2);
-      if (!this.dirty) return;
+      if (!this.dirty || this.rendering) return;
       this.dirty = false;
+      this.rendering = true;
+      try {
+        this.renderNow();
+      } finally {
+        this.rendering = false;
+      }
+    }
+    renderNow() {
       const nodes = /* @__PURE__ */ new Map();
       this.specs = /* @__PURE__ */ new Map();
       this.animSpecs = /* @__PURE__ */ new Map();
@@ -15212,7 +15220,11 @@ ${a.stack || ""}`;
     for (const f of this.querySelectorAll("input, textarea")) f.value = f.getAttribute("value") || "";
   };
   var elProto = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div")));
-  var frameOf = (el) => renderer && host.frame(renderer.idOf(el, "el")) || [0, 0, 0, 0];
+  var frameOf = (el) => {
+    if (!renderer) return [0, 0, 0, 0];
+    if (!renderer.rendering) renderer.render();
+    return host.frame(renderer.idOf(el, "el")) || [0, 0, 0, 0];
+  };
   Object.defineProperties(elProto, {
     offsetWidth: { get() {
       return frameOf(this)[2];
