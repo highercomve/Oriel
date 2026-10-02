@@ -1803,10 +1803,13 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool) void {
         oriel.linkFramework("CoreText", .{});
         oriel.linkFramework("ImageIO", .{}); // <img>
     };
-    if (b.lazyDependency("quickjs", .{})) |qjs| {
-        oriel.addIncludePath(qjs.path("."));
+    // QuickJS-ng lives in the repo (src/native_ui/vendor/quickjs-ng, see its
+    // README.md): tuned for the renderer.
+    {
+        const qjs = b.path("src/native_ui/vendor/quickjs-ng");
+        oriel.addIncludePath(qjs);
         oriel.addCSourceFiles(.{
-            .root = qjs.path("."),
+            .root = qjs,
             .files = &.{ "quickjs.c", "libregexp.c", "libunicode.c", "dtoa.c" },
             .flags = &.{ "-std=gnu11", "-D_GNU_SOURCE", "-O2", no_ubsan, "-funsigned-char", "-fwrapv" },
         });
