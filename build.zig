@@ -522,6 +522,7 @@ fn addOrielModule(
         if (features.native_ui) {
             oriel.linkSystemLibrary("d2d1", .{});
             oriel.linkSystemLibrary("dwrite", .{});
+            oriel.linkSystemLibrary("windowscodecs", .{});
         }
     } else if (target.result.os.tag == .macos) {
         // AppKit + WebKit through the Objective-C runtime (zig-objc). Its build

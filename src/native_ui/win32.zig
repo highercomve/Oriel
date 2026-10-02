@@ -30,11 +30,15 @@ pub const c = @cImport({
     @cInclude("windows.h");
     @cInclude("d2d1.h");
     @cInclude("dwrite.h");
+    @cInclude("wincodec.h");
 });
 
 // The import libraries don't export these.
 const IID_IDWriteFactory = c.GUID{ .Data1 = 0xb859ee5a, .Data2 = 0xd838, .Data3 = 0x4b5b, .Data4 = .{ 0xa2, 0xe8, 0x1a, 0xdc, 0x7d, 0x93, 0xdb, 0x48 } };
 const IID_ID2D1Factory = c.GUID{ .Data1 = 0x06152247, .Data2 = 0x6f50, .Data3 = 0x465a, .Data4 = .{ 0x92, 0x45, 0x11, 0x8b, 0xfd, 0x3b, 0x60, 0x07 } };
+const CLSID_WICImagingFactory = c.GUID{ .Data1 = 0xcacaf262, .Data2 = 0x9370, .Data3 = 0x4615, .Data4 = .{ 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
+const IID_IWICImagingFactory = c.GUID{ .Data1 = 0xec5ec8a9, .Data2 = 0xc395, .Data3 = 0x4314, .Data4 = .{ 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70 } };
+const GUID_WICPixelFormat32bppPBGRA = c.GUID{ .Data1 = 0x6fddc324, .Data2 = 0x4e03, .Data3 = 0x4bfe, .Data4 = .{ 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x10 } };
 
 const D2DERR_RECREATE_TARGET: c.HRESULT = @bitCast(@as(u32, 0x8899000C));
 /// D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT (Windows 8.1+): color emoji.
@@ -48,6 +52,8 @@ const prop_node = std.unicode.utf8ToUtf16LeStringLiteral("OrielNuiNode");
 // Shared by every window (all on the UI thread).
 var d2d: ?*c.ID2D1Factory = null;
 var dwrite: ?*c.IDWriteFactory = null;
+/// Images (<img>); created on the first one.
+var wic: ?*c.IWICImagingFactory = null;
 var class_registered = false;
 
 pub const Invoke = *const fn (ctx: ?*anyopaque, engine: *Engine, call_id: u32, cmd: []const u8, args_json: []const u8) void;
@@ -62,6 +68,29 @@ const Field = struct {
     fg: c.COLORREF = 0,
     /// A window region limits it to its scroll containers' visible part.
     clipped: bool = false,
+    /// A textarea's placeholder (owned; the cue banner is single-line only),
+    /// painted by fieldProc while the field is empty.
+    ph: ?[:0]u16 = null,
+    ph_hash: u64 = 0,
+};
+
+/// An <img>'s picture: decoded once per src (WIC, premultiplied BGRA), and
+/// the Direct2D bitmap made from it for the current render target.
+const Image = struct {
+    src_hash: u64,
+    /// Null when it couldn't be decoded or is over the size limit (then w/h
+    /// are still its declared size, for layout).
+    wic: ?*c.IWICBitmap = null,
+    bitmap: ?*c.ID2D1Bitmap = null,
+    w: f32 = 0,
+    h: f32 = 0,
+
+    fn deinit(img: *Image) void {
+        releaseCom(img.bitmap);
+        releaseCom(img.wic);
+        img.bitmap = null;
+        img.wic = null;
+    }
 };
 
 /// A window's native page: the canvas inside the app's window.
@@ -79,6 +108,8 @@ pub const Surface = struct {
     transparent: bool = false,
     dark: bool = false,
     fields: std.AutoHashMap(i64, Field),
+    /// Decoded pictures by node id (released with the node or a new src).
+    images: std.AutoHashMap(i64, Image),
     invoke_fn: Invoke,
     invoke_ctx: ?*anyopaque,
     pointer: [2]f32 = .{ 0, 0 },
@@ -100,10 +131,12 @@ pub const Surface = struct {
             .transparent = transparent,
             .dark = prefersDark(),
             .fields = .init(gpa),
+            .images = .init(gpa),
             .invoke_fn = invoke_fn,
             .invoke_ctx = invoke_ctx,
         };
         errdefer s.fields.deinit();
+        errdefer s.images.deinit();
         var rc: c.RECT = undefined;
         _ = c.GetClientRect(hparent, &rc);
         const hinst = c.GetModuleHandleW(null);
@@ -136,9 +169,13 @@ pub const Surface = struct {
         // Then the engine: freeing its nodes calls `removed` for the fields.
         s.engine.destroy();
         var it = s.fields.valueIterator();
-        while (it.next()) |f| freeField(f);
+        while (it.next()) |f| freeField(s, f);
         s.fields.deinit();
+        // The target first: it walks the images to drop their bitmaps.
         releaseTarget(s);
+        var imgs = s.images.valueIterator();
+        while (imgs.next()) |img| img.deinit();
+        s.images.deinit();
         _ = c.DestroyWindow(s.hwnd);
         s.gpa.destroy(s);
     }
@@ -265,6 +302,12 @@ const IDC_HAND: usize = 32649;
 const HKEY_CURRENT_USER: usize = 0x80000001;
 
 fn releaseTarget(s: *Surface) void {
+    // Bitmaps belong to the render target: made again from the WIC copy.
+    var imgs = s.images.valueIterator();
+    while (imgs.next()) |img| {
+        releaseCom(img.bitmap);
+        img.bitmap = null;
+    }
     releaseCom(s.brush);
     s.brush = null;
     releaseCom(s.rt);
@@ -332,9 +375,13 @@ fn focus(ctx: *anyopaque, node: *Node) void {
 
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
+    if (s.images.fetchRemove(node.id)) |kv| {
+        var img = kv.value;
+        img.deinit();
+    }
     if (s.fields.fetchRemove(node.id)) |kv| {
         var f = kv.value;
-        freeField(&f);
+        freeField(s, &f);
     }
 }
 
@@ -347,7 +394,9 @@ fn laidOut(ctx: *anyopaque) void {
 // ---------------------------------------------------------------------------
 // Fields: EDIT and COMBOBOX controls for input, textarea and select
 
-fn freeField(f: *Field) void {
+fn freeField(s: *Surface, f: *Field) void {
+    if (f.ph) |ph| s.gpa.free(ph);
+    f.ph = null;
     _ = c.RemovePropW(f.hwnd, prop_node);
     _ = c.DestroyWindow(f.hwnd);
     if (f.font) |h| _ = c.DeleteObject(h);
@@ -450,6 +499,7 @@ fn syncFields(s: *Surface) void {
         }
         _ = c.EnableWindow(f.hwnd, @intFromBool(!n.props.dis));
         styleField(s, f, n);
+        if (f.kind == .textarea) setPlaceholder(s, f, n.props.ph orelse "");
         // At the node's content box, in the canvas's physical pixels.
         const r = n.content();
         const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
@@ -471,6 +521,45 @@ fn syncFields(s: *Surface) void {
             _ = c.ShowWindow(f.hwnd, c.SW_HIDE);
         }
     }
+}
+
+fn setPlaceholder(s: *Surface, f: *Field, ph: []const u8) void {
+    const hash = std.hash.Wyhash.hash(1, ph);
+    if (hash == f.ph_hash and (f.ph != null) == (ph.len > 0)) return;
+    if (f.ph) |old| s.gpa.free(old);
+    f.ph = if (ph.len > 0) std.unicode.utf8ToUtf16LeAllocZ(s.gpa, ph) catch null else null;
+    f.ph_hash = hash;
+    _ = c.InvalidateRect(f.hwnd, null, c.TRUE);
+}
+
+/// Half way between two colors (a placeholder: the text color at half
+/// strength over the field's background, as a browser shows it).
+fn blend(a: c.COLORREF, b: c.COLORREF) c.COLORREF {
+    const r = ((a & 0xFF) + (b & 0xFF)) / 2;
+    const g = (((a >> 8) & 0xFF) + ((b >> 8) & 0xFF)) / 2;
+    const bl = (((a >> 16) & 0xFF) + ((b >> 16) & 0xFF)) / 2;
+    return r | (g << 8) | (bl << 16);
+}
+
+/// After an empty multi-line field painted itself: its placeholder on top.
+fn paintPlaceholder(hwnd: c.HWND) void {
+    if (c.GetWindowTextLengthW(hwnd) > 0) return;
+    const canvas = c.GetParent(hwnd);
+    const p: ?*anyopaque = @ptrFromInt(@as(usize, @bitCast(c.GetWindowLongPtrW(canvas, c.GWLP_USERDATA))));
+    const s = surfaceOf(p orelse return);
+    const fx = fieldOf(s, hwnd) orelse return;
+    const ph = fx.field.ph orelse return;
+    const hdc = c.GetDC(hwnd) orelse return;
+    defer _ = c.ReleaseDC(hwnd, hdc);
+    var rc: c.RECT = undefined;
+    _ = c.SendMessageW(hwnd, c.EM_GETRECT, 0, @bitCast(@intFromPtr(&rc)));
+    const old_font = if (fx.field.font) |font| c.SelectObject(hdc, font) else null;
+    defer if (old_font) |o| {
+        _ = c.SelectObject(hdc, o);
+    };
+    _ = c.SetBkMode(hdc, c.TRANSPARENT);
+    _ = c.SetTextColor(hdc, blend(fx.field.fg, fx.field.bg));
+    _ = c.DrawTextW(hdc, ph.ptr, -1, &rc, c.DT_WORDBREAK | c.DT_NOPREFIX | c.DT_EDITCONTROL);
 }
 
 fn makeField(s: *Surface, n: *Node) !Field {
@@ -617,6 +706,7 @@ fn onFieldCommand(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
     const fx = fieldOf(s, hwnd) orelse return;
     switch (fx.field.kind) {
         .input, .textarea => if (code == c.EN_CHANGE) {
+            if (fx.field.kind == .textarea and fx.field.ph != null) _ = c.InvalidateRect(hwnd, null, c.TRUE);
             const text = fieldText(s, hwnd) orelse return;
             defer s.gpa.free(text);
             sendValue(s, fx.node, "input", text);
@@ -664,6 +754,12 @@ fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
         c.WM_NCDESTROY => {
             _ = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(old)));
             _ = c.RemovePropW(hwnd, prop_old_proc);
+        },
+        c.WM_PAINT => {
+            const r = c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+            const style: usize = @bitCast(c.GetWindowLongPtrW(hwnd, c.GWL_STYLE));
+            if (style & c.ES_MULTILINE != 0) paintPlaceholder(hwnd);
+            return r;
         },
         else => {},
     }
@@ -957,6 +1053,176 @@ fn textLayout(s: *Surface, n: *Node, width: f32, brushes: ?*std.ArrayList(*c.ID2
     return l;
 }
 
+// ---------------------------------------------------------------------------
+// Images (<img src="data:…"> or an app asset), decoded with WIC
+
+/// The largest picture decoded: 4096 x 4096 px (64 MB as BGRA). Larger ones
+/// keep their declared size for layout and aren't drawn.
+const max_image_pixels: u64 = 4096 * 4096;
+
+fn wicFactory() ?*c.IWICImagingFactory {
+    if (wic) |f| return f;
+    // COM on this (the UI) thread; already initialized is fine.
+    _ = c.CoInitializeEx(null, c.COINIT_APARTMENTTHREADED);
+    var f: ?*c.IWICImagingFactory = null;
+    if (c.CoCreateInstance(&CLSID_WICImagingFactory, null, c.CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, @ptrCast(&f)) < 0) return null;
+    wic = f;
+    return f;
+}
+
+/// The node's picture (decoded on first use and when src changes). The
+/// pointer is into `images`: valid until the next insert or removal.
+fn imageOf(s: *Surface, n: *Node) ?*Image {
+    const src = n.props.src orelse return null;
+    const hash = std.hash.Wyhash.hash(0, src);
+    if (s.images.getPtr(n.id)) |img| {
+        if (img.src_hash == hash) return img;
+        img.deinit();
+        _ = s.images.remove(n.id);
+    }
+    var img: Image = decodeImage(s, src) catch |err| blk: {
+        log.warn("native ui: image {s}: {s}", .{ src[0..@min(src.len, 48)], @errorName(err) });
+        break :blk .{ .src_hash = 0 };
+    };
+    img.src_hash = hash;
+    const gop = s.images.getOrPut(n.id) catch {
+        img.deinit();
+        return null;
+    };
+    gop.value_ptr.* = img;
+    return gop.value_ptr;
+}
+
+fn decodeImage(s: *Surface, src: []const u8) !Image {
+    var owned: ?[]u8 = null;
+    defer if (owned) |o| s.gpa.free(o);
+    const bytes: []const u8 = if (std.mem.startsWith(u8, src, "data:")) blk: {
+        const comma = std.mem.indexOfScalar(u8, src, ',') orelse return error.BadDataUri;
+        if (std.mem.indexOf(u8, src[0..comma], ";base64") == null) return error.NotBase64;
+        const b64 = std.mem.trim(u8, src[comma + 1 ..], " \t\r\n");
+        const dec = std.base64.standard.Decoder;
+        const buf = try s.gpa.alloc(u8, try dec.calcSizeForSlice(b64));
+        owned = buf;
+        try dec.decode(buf, b64);
+        break :blk buf;
+    } else s.engine.assetData(src) orelse return error.AssetNotFound;
+    if (bytes.len == 0 or bytes.len > std.math.maxInt(u32)) return error.BadImage;
+
+    const f = wicFactory() orelse return error.WicUnavailable;
+    const fv = f.lpVtbl.*;
+    // A stream over the bytes (not copied: they outlive the decode below,
+    // which copies the pixels into a bitmap of its own).
+    var stream: ?*c.IWICStream = null;
+    if (fv.CreateStream.?(f, &stream) < 0) return error.WicFailed;
+    defer releaseCom(stream);
+    if (stream.?.lpVtbl.*.InitializeFromMemory.?(stream, @constCast(bytes.ptr), @intCast(bytes.len)) < 0) return error.WicFailed;
+    var decoder: ?*c.IWICBitmapDecoder = null;
+    if (fv.CreateDecoderFromStream.?(f, @ptrCast(stream), null, c.WICDecodeMetadataCacheOnDemand, &decoder) < 0) return error.UnknownFormat;
+    defer releaseCom(decoder);
+    var frame: ?*c.IWICBitmapFrameDecode = null;
+    if (decoder.?.lpVtbl.*.GetFrame.?(decoder, 0, &frame) < 0) return error.DecodeFailed;
+    defer releaseCom(frame);
+
+    // The declared size first (the header only): a tiny file can declare
+    // 30000x30000 px, and decoding it would allocate gigabytes.
+    var w: c.UINT = 0;
+    var h: c.UINT = 0;
+    const frame_src: *c.IWICBitmapSource = @ptrCast(frame.?);
+    if (frame_src.lpVtbl.*.GetSize.?(frame_src, &w, &h) < 0 or w == 0 or h == 0) return error.EmptyImage;
+    if (@as(u64, w) * @as(u64, h) > max_image_pixels) {
+        log.warn("native ui: image {d}x{d} px is over the {d}-pixel limit: not drawn", .{ w, h, max_image_pixels });
+        return .{ .src_hash = 0, .w = @floatFromInt(w), .h = @floatFromInt(h) };
+    }
+
+    var conv: ?*c.IWICFormatConverter = null;
+    if (fv.CreateFormatConverter.?(f, &conv) < 0) return error.WicFailed;
+    defer releaseCom(conv);
+    if (conv.?.lpVtbl.*.Initialize.?(conv, frame_src, &GUID_WICPixelFormat32bppPBGRA, c.WICBitmapDitherTypeNone, null, 0, c.WICBitmapPaletteTypeCustom) < 0) return error.DecodeFailed;
+    // Decoded now, into memory of its own.
+    var bmp: ?*c.IWICBitmap = null;
+    if (fv.CreateBitmapFromSource.?(f, @ptrCast(conv), c.WICBitmapCacheOnLoad, &bmp) < 0 or bmp == null) return error.DecodeFailed;
+    return .{ .src_hash = 0, .wic = bmp, .w = @floatFromInt(w), .h = @floatFromInt(h) };
+}
+
+/// Drawn in its content box per CSS object-fit (fill by default).
+fn paintImage(p: *Painter, n: *Node) void {
+    const img = imageOf(p.s, n) orelse return;
+    const wbmp = img.wic orelse return;
+    const ct = n.content();
+    if (ct.w <= 0 or ct.h <= 0 or img.w <= 0 or img.h <= 0) return;
+    const vt = p.vt();
+    if (img.bitmap == null) {
+        var b: ?*c.ID2D1Bitmap = null;
+        if (vt.CreateBitmapFromWicBitmap.?(p.rt, @ptrCast(wbmp), null, &b) < 0) return;
+        img.bitmap = b;
+    }
+    const fit = n.props.fit orelse "fill";
+    var kx: f32 = ct.w / img.w;
+    var ky: f32 = ct.h / img.h;
+    if (std.mem.eql(u8, fit, "contain")) {
+        kx = @min(kx, ky);
+        ky = kx;
+    } else if (std.mem.eql(u8, fit, "cover")) {
+        kx = @max(kx, ky);
+        ky = kx;
+    } else if (std.mem.eql(u8, fit, "none")) {
+        kx = 1;
+        ky = 1;
+    } else if (std.mem.eql(u8, fit, "scale-down")) {
+        kx = @min(1, @min(kx, ky));
+        ky = kx;
+    }
+    const dw = img.w * kx;
+    const dh = img.h * ky;
+    const dest: c.D2D1_RECT_F = .{ .left = ct.x + (ct.w - dw) / 2, .top = ct.y + (ct.h - dh) / 2, .right = ct.x + (ct.w + dw) / 2, .bottom = ct.y + (ct.h + dh) / 2 };
+    const box = rectF(ct);
+    vt.PushAxisAlignedClip.?(p.rt, &box, c.D2D1_ANTIALIAS_MODE_ALIASED);
+    defer vt.PopAxisAlignedClip.?(p.rt);
+    vt.DrawBitmap.?(p.rt, img.bitmap, &dest, 1, c.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, null);
+}
+
+// ---------------------------------------------------------------------------
+// Default checkbox and radio (an <input> without appearance: none)
+
+/// An outlined box/circle, filled with the accent color (or a blue default)
+/// and a white mark when checked; dimmed when disabled (as gtk.zig draws it).
+fn paintControl(p: *Painter, n: *Node) void {
+    const fr = n.frame;
+    const size = @min(fr.w, fr.h);
+    if (size <= 0) return;
+    const x = fr.x + (fr.w - size) / 2;
+    const y = fr.y + (fr.h - size) / 2;
+    const radio = std.mem.eql(u8, n.props.ctl.?, "radio");
+    const acc = n.props.acc orelse tree_mod.Color{ 59, 108, 255, 1 };
+    const alpha: f32 = if (n.props.dis) 0.45 else 1;
+    const vt = p.vt();
+    const circle: c.D2D1_ELLIPSE = .{ .point = .{ .x = x + size / 2, .y = y + size / 2 }, .radiusX = size / 2 - 0.5, .radiusY = size / 2 - 0.5 };
+    const box: c.D2D1_ROUNDED_RECT = .{ .rect = .{ .left = x + 0.5, .top = y + 0.5, .right = x + size - 0.5, .bottom = y + size - 0.5 }, .radiusX = 2.5, .radiusY = 2.5 };
+    if (n.props.on) {
+        const fill = p.solid(.{ acc[0], acc[1], acc[2], acc[3] * alpha });
+        if (radio) vt.FillEllipse.?(p.rt, &circle, fill) else vt.FillRoundedRectangle.?(p.rt, &box, fill);
+        const white = p.solid(.{ 255, 255, 255, alpha });
+        if (radio) {
+            const dot: c.D2D1_ELLIPSE = .{ .point = circle.point, .radiusX = size * 0.2, .radiusY = size * 0.2 };
+            vt.FillEllipse.?(p.rt, &dot, white);
+        } else {
+            const st = strokeStyle("round", "round");
+            defer releaseCom(st);
+            const sw = @max(1.5, size * 0.13);
+            const a: c.D2D1_POINT_2F = .{ .x = x + size * 0.25, .y = y + size * 0.52 };
+            const b: c.D2D1_POINT_2F = .{ .x = x + size * 0.43, .y = y + size * 0.7 };
+            const e: c.D2D1_POINT_2F = .{ .x = x + size * 0.76, .y = y + size * 0.32 };
+            vt.DrawLine.?(p.rt, a, b, white, sw, st);
+            vt.DrawLine.?(p.rt, b, e, white, sw, st);
+        }
+    } else {
+        const white = p.solid(.{ 255, 255, 255, alpha });
+        if (radio) vt.FillEllipse.?(p.rt, &circle, white) else vt.FillRoundedRectangle.?(p.rt, &box, white);
+        const grey = p.solid(.{ 118, 118, 118, alpha });
+        if (radio) vt.DrawEllipse.?(p.rt, &circle, grey, 1, null) else vt.DrawRoundedRectangle.?(p.rt, &box, grey, 1, null);
+    }
+}
+
 fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const s = surfaceOf(ctx);
     const fz = n.props.fz orelse 16;
@@ -970,6 +1236,13 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
         },
         .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
+        .image => {
+            // Its natural size, scaled down to the width it may take.
+            const img = imageOf(s, n) orelse return;
+            if (img.w <= 0 or img.h <= 0) return;
+            const k: f32 = if (!std.math.isInf(max_width) and max_width < img.w) max_width / img.w else 1;
+            out.* = .{ img.w * k, img.h * k };
+        },
         else => out.* = .{ 0, 0 },
     }
 }
@@ -1110,6 +1383,8 @@ fn paint(p: *Painter, n: *Node) void {
     switch (n.kind) {
         .text => paintText(p, n),
         .icon => paintIcon(p, n),
+        .image => paintImage(p, n),
+        .view => if (n.props.ctl != null) paintControl(p, n),
         else => {},
     }
     for (n.kids.items) |k| paint(p, k);
