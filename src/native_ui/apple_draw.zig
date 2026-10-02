@@ -332,11 +332,25 @@ pub fn dropNative(n: *Node) void {
 }
 
 /// The size a text node needs at `max_width` (inf: one line per paragraph).
-pub fn measureText(comptime font_class: [:0]const u8, n: *Node, max_width: f32) [2]f32 {
-    const cache = textCache(font_class, n) orelse return .{ 0, 0 };
+/// Its natural (unwrapped) size is kept in the node under the surface's
+/// text epoch (`epoch`, from 1): a measure at a width it fits in needs no
+/// CoreText, and a text-only update that keeps that size keeps its layout
+/// (`Tree.reuse_text_layout`). New props or text clear it.
+pub fn measureText(comptime font_class: [:0]const u8, n: *Node, max_width: f32, epoch: u64) [2]f32 {
+    const nat = if (n.measured_text_size != null and n.text_measure_epoch == epoch) n.measured_text_size.? else blk: {
+        const size = suggestText(font_class, n, big) orelse return .{ 0, 0 };
+        n.measured_text_size = size;
+        n.text_measure_epoch = epoch;
+        break :blk size;
+    };
+    if (n.props.nowrap or std.math.isInf(max_width) or max_width >= nat[0]) return nat;
+    return suggestText(font_class, n, @max(1, max_width)) orelse .{ 0, 0 };
+}
+
+fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 {
+    const cache = textCache(font_class, n) orelse return null;
     const fs = cache.fs orelse return .{ 0, @round((n.props.fz orelse 16) * 1.2) };
-    const w: CGFloat = if (n.props.nowrap or std.math.isInf(max_width)) big else @max(1, max_width);
-    const size = CTFramesetterSuggestFrameSizeWithConstraints(fs, .{ .location = 0, .length = 0 }, null, .{ .width = w, .height = big }, null);
+    const size = CTFramesetterSuggestFrameSizeWithConstraints(fs, .{ .location = 0, .length = 0 }, null, .{ .width = if (n.props.nowrap) big else w, .height = big }, null);
     return .{ @floatCast(@ceil(size.width) + 1), @floatCast(@ceil(size.height)) };
 }
 
