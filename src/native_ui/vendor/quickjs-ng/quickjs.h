@@ -709,6 +709,10 @@ JS_EXTERN JSClassID JS_NewClassID(JSRuntime *rt, JSClassID *pclass_id);
 JS_EXTERN JSClassID JS_GetClassID(JSValueConst v);
 JS_EXTERN int JS_NewClass(JSRuntime *rt, JSClassID class_id, const JSClassDef *class_def);
 JS_EXTERN bool JS_IsRegisteredClass(JSRuntime *rt, JSClassID class_id);
+/* Oriel: a string value's length in UTF-16 code units (0 if not a string) */
+JS_EXTERN uint32_t JS_GetStringLength(JSValueConst v);
+/* Oriel: a + b for two strings (both references are taken) */
+JS_EXTERN JSValue JS_ConcatStrings(JSContext *ctx, JSValue a, JSValue b);
 /* Returns the class name or JS_ATOM_NULL if `id` is not a registered class. Must be freed with JS_FreeAtom. */
 JS_EXTERN JSAtom JS_GetClassName(JSRuntime *rt, JSClassID class_id);
 

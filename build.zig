@@ -191,6 +191,46 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
         .use_lld = useLld(b.graph.host),
     });
+    // The native DOM against linkedom, outside the app (docs/native-dom.md):
+    // `zig build dom-bench -Doptimize=ReleaseFast`, then
+    // zig-out/bin/dom_bench tools/dom_bench/bench.js [linkedom bundle].
+    {
+        const qjs = b.path("src/native_ui/vendor/quickjs-ng");
+        const dom_lib = b.addLibrary(.{
+            .name = "nui_dom",
+            .linkage = .static,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/native_ui/dom/capi.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        const dom_bench = b.addExecutable(.{
+            .name = "dom_bench",
+            .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }),
+            .use_llvm = true,
+            .use_lld = useLld(target),
+        });
+        dom_bench.root_module.addIncludePath(qjs);
+        dom_bench.root_module.addIncludePath(b.path("src/native_ui/dom"));
+        const qflags: []const []const u8 = &.{ "-std=gnu11", "-D_GNU_SOURCE", "-O2", "-fno-sanitize=undefined", "-funsigned-char", "-fwrapv" };
+        dom_bench.root_module.addCSourceFiles(.{ .root = qjs, .files = &.{ "quickjs.c", "libregexp.c", "libunicode.c", "dtoa.c" }, .flags = qflags });
+        dom_bench.root_module.addCSourceFile(.{ .file = b.path("src/native_ui/dom/dom_qjs.c"), .flags = &.{ "-std=gnu11", "-O2", "-fno-sanitize=undefined" } });
+        dom_bench.root_module.addCSourceFile(.{ .file = b.path("tools/dom_bench/main.c"), .flags = &.{ "-std=gnu11", "-O2" } });
+        dom_bench.root_module.linkLibrary(dom_lib);
+        const dom_bench_step = b.step("dom-bench", "Build the native DOM benchmark (tools/dom_bench)");
+        dom_bench_step.dependOn(&b.addInstallArtifact(dom_bench, .{}).step);
+        // The store's own tests.
+        const dom_tests = b.addTest(.{
+            .root_module = b.createModule(.{ .root_source_file = b.path("src/native_ui/dom/store.zig"), .target = target, .optimize = optimize }),
+            .use_llvm = true,
+            .use_lld = useLld(target),
+        });
+        const dom_test_step = b.step("dom-test", "Run the native DOM store's tests");
+        dom_test_step.dependOn(&b.addRunArtifact(dom_tests).step);
+    }
+
     const test_step = b.step("test", "Run unit tests");
     if (runs_tests) {
         test_step.dependOn(&b.addRunArtifact(tests).step);
