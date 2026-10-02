@@ -242,3 +242,16 @@ earlier WebView measurements. Both versions used the same 900×700 window
 and unchanged benchmark page, with second-round medians of three trials.
 Full reports are in
 `examples/render-bench/results/2026-10-02-rows-phase5-desktop.json`.
+
+After rebasing onto review fixes in `9f21bb9`, a fresh comparison used reviewed
+main as baseline and `780f945` as current. Both native binaries were built before
+timing, and measurements waited for Yocto and compiler activity to settle.
+Builds of 1,000/3,000 rows improved 125.66 → 106.33 ms /
+340.51 → 304.82 ms; updates improved 11.77 → 10.69 ms /
+39.00 → 33.44 ms. Fresh WebView measured 19/72 ms for builds and 10/41 ms
+for updates. Native leads the larger update by about 18%, remains close for the
+smaller update, and still trails builds significantly. Native second-round PSS
+improved 228 → 194 MB; WebView measured 353 MB. These are medians from one
+process per variant, rather than confidence intervals. This quiet run supersedes
+the noisy phase-5 measurements for assessing the changes. See
+`examples/render-bench/results/2026-10-02-rows-phase5-reviewed-desktop.json`.

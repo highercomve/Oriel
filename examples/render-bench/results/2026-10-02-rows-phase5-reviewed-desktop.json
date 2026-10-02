@@ -1,0 +1,368 @@
+{
+  "commits": {
+    "before": "9f21bb9",
+    "after": "780f945"
+  },
+  "method": "One visible ReleaseFast process per native version, serially; identical 900x700 floating windows; medians of three trials in the second benchmark round. Baseline is reviewed main commit 9f21bb9; current is 780f945 based on the same reviewed commit. Both binaries and native checks finish before timing runs; Yocto/compiler activity must settle first. Current adds lazy DOM listener storage, scalar primary node IDs, shared immutable empty arrays and leaf snapshots, and one style cache with epoch invalidation. Benchmark page unchanged; forced layout reads retained. Fresh WebView process run immediately afterward, same page and window geometry.",
+  "window": {
+    "before": {
+      "size": [
+        900,
+        700
+      ],
+      "at": [
+        800,
+        350
+      ],
+      "floating": true,
+      "class": "dev.oriel.RenderBench"
+    },
+    "after": {
+      "size": [
+        900,
+        700
+      ],
+      "at": [
+        800,
+        350
+      ],
+      "floating": true,
+      "class": "dev.oriel.RenderBench"
+    },
+    "webview": {
+      "size": [
+        900,
+        700
+      ],
+      "at": [
+        1404,
+        243
+      ],
+      "floating": true,
+      "class": "dev.oriel.RenderBench"
+    }
+  },
+  "reports": {
+    "before": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 52,
+          "runs": [
+            52
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 240,
+          "runs": [
+            240
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 114,
+          "runs": [
+            114
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 125.66,
+          "runs": [
+            125.66,
+            194.37,
+            96.05
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 340.51,
+          "runs": [
+            318.25,
+            340.51,
+            350.6
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 11.77,
+          "runs": [
+            17.96,
+            11.77,
+            11.42
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 39,
+          "runs": [
+            57.75,
+            39,
+            34.85
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 60.24,
+          "runs": [
+            60.16,
+            60.28,
+            60.24
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60,
+          "runs": [
+            60.09,
+            60,
+            60
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls": {
+          "median": 60.01,
+          "runs": [
+            59.99,
+            60.01,
+            60.02
+          ],
+          "unit": "fps"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 230,
+          "runs": [
+            230
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 228,
+          "runs": [
+            228
+          ],
+          "unit": "MB"
+        }
+      }
+    },
+    "after": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 47,
+          "runs": [
+            47
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 220,
+          "runs": [
+            220
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 118,
+          "runs": [
+            118
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 106.33,
+          "runs": [
+            106.33,
+            97.07,
+            117.55
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 304.82,
+          "runs": [
+            313.67,
+            303.29,
+            304.82
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 10.69,
+          "runs": [
+            15.73,
+            10.69,
+            10.14
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 33.44,
+          "runs": [
+            50.3,
+            33.44,
+            32.58
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 60.26,
+          "runs": [
+            60.22,
+            60.26,
+            60.26
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60.03,
+          "runs": [
+            60.03,
+            60.03,
+            60
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls": {
+          "median": 60.02,
+          "runs": [
+            60.01,
+            60.03,
+            60.02
+          ],
+          "unit": "fps"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 186,
+          "runs": [
+            186
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 194,
+          "runs": [
+            194
+          ],
+          "unit": "MB"
+        }
+      }
+    },
+    "webview": {
+      "renderer": "WebView",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 414.15,
+          "runs": [
+            414.15
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 482.35,
+          "runs": [
+            482.35
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 306.56,
+          "runs": [
+            306.56
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 19,
+          "runs": [
+            23,
+            19,
+            19
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 72,
+          "runs": [
+            79,
+            72,
+            70
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 10,
+          "runs": [
+            10,
+            9,
+            10
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 41,
+          "runs": [
+            41,
+            40,
+            41
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 62.31,
+          "runs": [
+            62.69,
+            62.31,
+            62.31
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 62.28,
+          "runs": [
+            62.31,
+            59.79,
+            62.28
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls": {
+          "median": 62.28,
+          "runs": [
+            62.28,
+            62.28,
+            62.28
+          ],
+          "unit": "fps"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 345.11,
+          "runs": [
+            345.11
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 352.61,
+          "runs": [
+            352.61
+          ],
+          "unit": "MB"
+        }
+      }
+    }
+  },
+  "environment_checks": {
+    "before_timing": "No active compilers or Yocto workers for three samples, 10 seconds apart.",
+    "between_native_and_webview": {
+      "active_compilers": 0,
+      "yocto_workers": 0
+    },
+    "after_timing": {
+      "active_compilers": 0,
+      "yocto_workers": 0
+    },
+    "builds": "All binaries were built before timing; no builds or tests ran during measurements."
+  }
+}

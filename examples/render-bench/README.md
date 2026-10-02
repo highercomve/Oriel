@@ -40,22 +40,31 @@ Linux desktop, ReleaseFast, 2026-10-02. The latest comparison runs one visible
 process for the previous native runtime, the updated native runtime and
 WebView, serially, in identical floating 900 × 700 windows. Each reports
 medians of three trials in the second benchmark round. The page is unchanged
-and synchronous rendering/layout reads remain inside the timed section.
+and synchronous rendering/layout reads remain inside the timed section. Both
+native binaries were built first, using reviewed main `9f21bb9` as the baseline
+and `780f945` as current. Measurements waited for the user's Yocto build to
+finish; compiler/Yocto checks were quiet before and after the comparison.
 
 | Step | Native before this pass | Current native | Fresh WebView |
 |---|---:|---:|---:|
-| Build 1,000 rows | 127.15 ms | 122.37 ms | 21 ms |
-| Build 3,000 rows | 352.95 ms | 327.05 ms | 68 ms |
-| Update 1,000 rows | 16.36 ms | 10.85 ms | 10 ms |
-| Update 3,000 rows | 50.93 ms | 34.78 ms | 41 ms |
+| Build 1,000 rows | 125.66 ms | 106.33 ms | 19 ms |
+| Build 3,000 rows | 340.51 ms | 304.82 ms | 72 ms |
+| Update 1,000 rows | 11.77 ms | 10.69 ms | 10 ms |
+| Update 3,000 rows | 39.00 ms | 33.44 ms | 41 ms |
 
-This pass reduces updates 32–34% and builds 4–7%. Native is about 15% faster
+This allocation pass reduces updates 9–14% and builds 10–15%. Native is about 18% faster
 for the 3,000-row update, and close at 1,000 rows; WebView still wins builds
 by a large margin. These are single-process comparisons, not confidence
 intervals or proof of performance on every platform.
-[Current comparison, trials and window geometry](results/2026-10-02-rows-phase4-desktop.json).
+[Current comparison, trials and window geometry](results/2026-10-02-rows-phase5-reviewed-desktop.json).
 
-Native list replacement now detaches Yoga children in bulk, avoiding
+The owned LinkeDOM source now allocates listener Maps only on the first
+listener. Flattening uses scalar primary IDs, shared empty child arrays and
+leaf snapshots, and a single style cache with epoch invalidation. Runtime and
+tests import `src/native_ui/js/vendor/linkedom`; the build has no dependency
+source patches.
+
+Native list replacement also detaches Yoga children in bulk, avoiding
 quadratic child-vector shifting. Simple new flex leaves build single text
 runs directly. GTK retains frames for text edits only when measured natural
 width/height are exactly unchanged, the font context matches and the text
@@ -68,10 +77,11 @@ compilation, directly mark private renderer mutations, share native styles,
 copy prepared Yoga styles, cache measurements and compact native lookups.
 Page observers retain their queued records and DOM nodes remain fresh.
 
-Current native startup to first frame is 204 ms versus WebView's 486 ms.
+Current native startup to first frame is 220 ms versus WebView's 482 ms.
 Native animation/canvas remain about 60 fps; WebView is about 62 fps. PSS
-after the second round is 216 MB native versus 335 MB WebView. Across all
-passes, versus `e5f1a2a`, row builds improved 50–60% and updates 88–89%.
+after the second round is 194 MB native versus 353 MB WebView, and down from
+228 MB for the reviewed native baseline. Earlier passes already substantially
+reduced the original row costs.
 [Original native/WebView comparison](results/2026-10-02-rows-desktop.json),
 [preceding pass](results/2026-10-02-rows-phase3-desktop.json).
 
