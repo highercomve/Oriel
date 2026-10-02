@@ -1252,6 +1252,8 @@ globalThis.atob ??= (s) => {
   }
   var collect = () => nd.collect();
   var STYLE_RECORDS = true;
+  var nodeIndex = (node) => nd.index(node);
+  var nodeAt = (index) => nd.nodeAt(index);
 
   // src/css.js
   function stripComments(css) {
@@ -2881,6 +2883,7 @@ col, colgroup { display: none; }
     return nonZero(cs["margin-left"]) || nonZero(cs["margin-right"]);
   }
   var SKIP = /* @__PURE__ */ new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
+  var NATIVE_ID_BASE = 2 ** 30;
   var TEMPLATE_LEAF = /* @__PURE__ */ new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
   var EMPTY = Object.freeze([]);
   function narrowable(props, cs, parentCS) {
@@ -2927,6 +2930,9 @@ col, colgroup { display: none; }
       this.cur = null;
       this.gone = [];
       this.dropped = [];
+      this.stamps = [];
+      this.noStamp = /* @__PURE__ */ new WeakSet();
+      this.declined = false;
       this.structural = false;
       this.noCache = false;
       for (const r of engine.rules) {
@@ -3006,6 +3012,7 @@ col, colgroup { display: none; }
       if (this.structural && el.parentNode) this.mark(el.parentNode, 2);
     }
     idOf(obj, key) {
+      if (key === "el" && nodeIndex) return NATIVE_ID_BASE + nodeIndex(obj);
       let m = this.ids.get(obj);
       if (typeof m === "number") {
         if (key === "el") return m;
@@ -3021,7 +3028,9 @@ col, colgroup { display: none; }
       return m[key] ??= this.nextId++;
     }
     elementFor(id) {
-      return this.owner.get(id) || null;
+      const el = this.owner.get(id);
+      if (el) return el;
+      return nodeAt && id >= NATIVE_ID_BASE ? nodeAt(id - NATIVE_ID_BASE) : null;
     }
     styleOf(el) {
       return this.sc.get(el)?.cs;
@@ -3037,6 +3046,11 @@ col, colgroup { display: none; }
       this.rendering = true;
       try {
         if (!this.updateText() && !this.updateBoxes()) this.renderNow();
+        if (this.declined) {
+          this.declined = false;
+          this.dirty = false;
+          this.renderNow();
+        }
       } finally {
         this.rendering = false;
       }
@@ -3068,9 +3082,15 @@ col, colgroup { display: none; }
         leaves.add(el);
       }
       const P = this.host.prof ? this.host.now : null, t02 = P && P();
-      const nodes = /* @__PURE__ */ new Map(), updates = [];
+      const nodes = /* @__PURE__ */ new Map(), updates = [], restamp = [];
       for (const el of leaves) {
         const fc = this.fc.get(el), cs = this.styleOf(el);
+        if (!fc) {
+          const row = el.parentNode, rf = row && this.fc.get(row);
+          if (!rf?.stamp || !row.isConnected) return false;
+          if (!restamp.includes(row)) restamp.push(row);
+          continue;
+        }
         if (!fc || !cs || fc.root.kind !== "text" || fc.rootSpec || fc.rootAnim || el.firstElementChild || this.tx.targets.has(fc.id) || this.anim.state.has(fc.id)) return false;
         const old = this.prev.get(fc.id);
         if (!old || old.kind !== "text") return false;
@@ -3092,6 +3112,14 @@ col, colgroup { display: none; }
         }
         if (!runs || !runs.length) return false;
         updates.push(el, fc, runs, old);
+      }
+      for (const row of restamp) {
+        const rf = this.fc.get(row);
+        if (!this.host.stamp(rf.id, row, rf.stamp)) {
+          rf.stamp = 0;
+          this.noStamp.add(row);
+          return false;
+        }
       }
       let direct = 0, nativeMs = 0;
       for (let i = 0; i < updates.length; i += 4) {
@@ -3411,7 +3439,7 @@ col, colgroup { display: none; }
       this.cur.own.push(id);
     }
     own(id, el) {
-      this.owner.set(id, el);
+      if (id < NATIVE_ID_BASE || !nodeAt) this.owner.set(id, el);
     }
     spec(id, s) {
       this.specs.set(id, s);
@@ -3468,7 +3496,9 @@ col, colgroup { display: none; }
         seen: this.frameNo,
         root: { kind: own.kind, props: { ...own.props }, kids: own.kids.slice() },
         rootSpec: this.specs.get(id),
-        rootAnim: this.animSpecs.get(id)
+        rootAnim: this.animSpecs.get(id),
+        stamp: cur.stamp
+        // a row whose children the tree stamps (its plan)
       };
       if (fc) {
         if (fc.own.length) {
@@ -3498,7 +3528,7 @@ col, colgroup { display: none; }
     // an equivalent row. Attributes that selectors distinguish, positional
     // rules, inline aggregation, controls and existing rows stay general.
     flexShape(el, cs, props) {
-      if (!this.simpleLeaves || this.structural || this.noCache || this.fc.has(el) || props.fd !== "row" || props.scroll || props.scrollx || cs.__rules.before.length || cs.__rules.after.length) return null;
+      if (!this.simpleLeaves || this.structural || this.noCache || this.fc.has(el) && !this.fc.get(el).stamp || props.fd !== "row" || props.scroll || props.scrollx || cs.__rules.before.length || cs.__rules.after.length) return null;
       const share = this.shareKey(el);
       if (share <= 0) return null;
       const children = [];
@@ -3518,6 +3548,50 @@ col, colgroup { display: none; }
       let shapes = this.flexLeaves.get(cs);
       if (!shapes) this.flexLeaves.set(cs, shapes = /* @__PURE__ */ new Map());
       return { children, key, shapes, plan: shapes.get(key) };
+    }
+    // Whether the tree can stamp this row's children: each a leaf with no
+    // click of its own, empty or one text node, its white space collapsed
+    // (dom_stamp.zig makes the same text as useFlexShape).
+    stampable(shape) {
+      const entries = shape.plan.entries;
+      for (let i = 0; i < shape.children.length; i++) {
+        const el = shape.children[i];
+        if (el.localName === "label" || listens(el)) return false;
+        const c = el.firstChild;
+        if (c && (c.nodeType !== 3 || c.nextSibling)) return false;
+        const ws = entries[i].cs["white-space"];
+        if (ws === "pre" || ws === "pre-wrap" || ws === "pre-line") return false;
+      }
+      return true;
+    }
+    // A row plan's id in the tree (host.stampPlan): each child's leaf
+    // styles, as useFlexShape's templates make them, its text-transform, and
+    // the laid-out order. 0 when the tree won't keep it.
+    stampPlanOf(plan) {
+      if (plan.stamp !== void 0) return plan.stamp;
+      const v = [plan.entries.length];
+      let ok = true;
+      for (const e of plan.entries) {
+        const text = this.leafStyleId(encodeProps({ ...e.textBox, runs: [{ t: "", ...e.run }] }));
+        const view = this.leafStyleId(encodeProps({ ...e.box }));
+        if (!text || !view) ok = false;
+        const tt = e.cs["text-transform"];
+        v.push(text, view, tt === "uppercase" ? 1 : tt === "lowercase" ? 2 : 0);
+      }
+      v.push(...plan.order);
+      return plan.stamp = ok ? this.host.stampPlan(v) : 0;
+    }
+    // A leaf style's id in the tree for these props (host.leafStyle), made
+    // once; 0 past the bounds.
+    leafStyleId(json) {
+      let style = this.leafStyles.get(json);
+      if (style !== void 0) return style;
+      if (this.leafStyles.size >= 1024 || this.leafStyleBytes + json.length > 2 * 1024 * 1024) return 0;
+      style = this.leafStyles.size + 1;
+      if (!this.host.leafStyle(style, json)) style = 0;
+      this.leafStyles.set(json, style);
+      this.leafStyleBytes += json.length;
+      return style;
     }
     useFlexShape(shape, cs, nodes, spacing) {
       const ids = [];
@@ -3745,6 +3819,13 @@ col, colgroup { display: none; }
       }
       const shape = display === "flex" && !fixedNode ? this.flexShape(el, cs, props) : null;
       if (shape?.plan) {
+        const plan = this.host.stamp && !this.noStamp.has(el) && this.stampable(shape) ? this.stampPlanOf(shape.plan) : 0;
+        if (plan) {
+          this.cur.stamp = plan;
+          this.stamps.push(id, el, plan);
+          this.putClick(props, el);
+          return this.put(nodes, id, "view", props, EMPTY);
+        }
         const kids2 = this.useFlexShape(shape, cs, nodes, tableSpacingFor(display, props, ctx));
         this.putClick(props, el);
         return this.put(nodes, id, "view", props, kids2);
@@ -4031,12 +4112,26 @@ col, colgroup { display: none; }
         ops.push(`["r",0]`);
         this.rootSent = true;
       }
-      if (ops.length) {
-        const P = this.host.prof ? this.host.now : null, t02 = P && P();
-        this.host.ops(`[${ops.join(",")}]`);
-        if (P) this.applyMs += P() - t02;
-      }
+      const P = this.host.prof ? this.host.now : null, t02 = P && P();
+      if (ops.length) this.host.ops(`[${ops.join(",")}]`);
+      if (this.stamps.length) this.stampRows();
+      if (P) this.applyMs += P() - t02;
       this.schedule();
+    }
+    // host.stamp for this frame's stamped rows. One the tree declines (its
+    // children changed shape in a way only the tree saw): no longer stamped,
+    // and render() goes the general way at once.
+    stampRows() {
+      const st = this.stamps;
+      this.stamps = [];
+      for (let i = 0; i < st.length; i += 3) {
+        if (this.host.stamp(st[i], st[i + 1], st[i + 2])) continue;
+        const f = this.fc.get(st[i + 1]);
+        if (f) f.stamp = 0;
+        this.flatMarks.add(st[i + 1]);
+        this.noStamp.add(st[i + 1]);
+        this.dirty = this.declined = true;
+      }
     }
     // An element's @keyframes animations: their frames as node props
     // (resolved with the element's style: var(), currentColor, em).
@@ -4077,7 +4172,7 @@ col, colgroup { display: none; }
           prev.p = p;
         }
       }
-      if (ops.length) this.host.ops(wellFormedJSON(ops));
+      if (ops.length) this.host.ops(JSON.stringify(ops));
       this.schedule();
     }
   };
@@ -4449,13 +4544,7 @@ col, colgroup { display: none; }
   function encodeProps(props) {
     if (props.fd === "column") props.fd = void 0;
     if (props.ai === "stretch") props.ai = void 0;
-    return wellFormedJSON(props);
-  }
-  var LONE_SURROGATE = /\\ud[89a-f]/i;
-  var wellFormed = (_k, v) => typeof v === "string" ? v.toWellFormed() : v;
-  function wellFormedJSON(x) {
-    const s = JSON.stringify(x);
-    return LONE_SURROGATE.test(s) ? JSON.stringify(x, wellFormed) : s;
+    return JSON.stringify(props);
   }
   function gridToRows(cs, props, kids, nodes, renderer2, el, fs) {
     const tpl = cs["grid-template-columns"];

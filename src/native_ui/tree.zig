@@ -459,6 +459,65 @@ fn dupeUtf8Lossy(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
+/// The page's JSON with each lone UTF-16 surrogate escape (\ud800-\udfff
+/// without its pair: text cut inside an emoji) made \ufffd: std.json
+/// rejects them, and with them a whole frame's ops. The input itself when
+/// it has none (the usual case: no copy, one scan); else a copy in `a`, of
+/// the same length (both escapes are six bytes).
+pub fn wellFormedEscapes(a: std.mem.Allocator, json: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, json, "\\ud") == null and std.mem.indexOf(u8, json, "\\uD") == null) return json;
+    const out = try a.alloc(u8, json.len);
+    var o: usize = 0;
+    var i: usize = 0;
+    while (i < json.len) {
+        if (json[i] != '\\' or i + 1 >= json.len) {
+            out[o] = json[i];
+            o += 1;
+            i += 1;
+            continue;
+        }
+        // An escape: two bytes, or six for \uXXXX (a backslash escaped
+        // as \\ is two bytes, so the u after it starts no escape).
+        const unit = if (json[i + 1] == 'u') hex4(json, i + 2) else null;
+        const len: usize = if (unit != null) 6 else 2;
+        if (unit) |u| if (u >= 0xD800 and u <= 0xDFFF) {
+            const paired = u <= 0xDBFF and i + 12 <= json.len and json[i + 6] == '\\' and json[i + 7] == 'u' and
+                if (hex4(json, i + 8)) |lo| lo >= 0xDC00 and lo <= 0xDFFF else false;
+            if (paired) {
+                @memcpy(out[o..][0..12], json[i..][0..12]);
+                o += 12;
+                i += 12;
+            } else {
+                @memcpy(out[o..][0..6], "\\ufffd");
+                o += 6;
+                i += 6;
+            }
+            continue;
+        };
+        @memcpy(out[o..][0..len], json[i..][0..len]);
+        o += len;
+        i += len;
+    }
+    return out[0..o];
+}
+
+fn hex4(s: []const u8, at: usize) ?u16 {
+    if (at + 4 > s.len) return null;
+    return std.fmt.parseInt(u16, s[at..][0..4], 16) catch null;
+}
+
+test "wellFormedEscapes makes lone surrogates U+FFFD, keeps the rest" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const clean = "[\"p\",1,{\"t\":\"ok\"}]";
+    try std.testing.expect((try wellFormedEscapes(a, clean)).ptr == clean.ptr);
+    try std.testing.expectEqualStrings("\"a\\ufffdb\\ufffd\\ud83d\\ude00\\\\ud800\\ufffd\"",
+        try wellFormedEscapes(a, "\"a\\ud83db\\ude00\\ud83d\\ude00\\\\ud800\\uDBFF\""));
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, a, try wellFormedEscapes(a, "[\"x\\ud800\"]"), .{});
+    try std.testing.expectEqualStrings("x\u{FFFD}", v.array.items[0].string);
+}
+
 test "dupeUtf8Lossy replaces invalid sequences" {
     const gpa = std.testing.allocator;
     const ok = try dupeUtf8Lossy(gpa, "héllo");
@@ -533,6 +592,12 @@ pub const Node = struct {
     measured_text_size: ?[2]f32 = null,
     text_measure_epoch: u64 = 0,
     text_override: ?*TextOverride = null,
+    /// A leaf made from a leaf style (createLeaf): its id, so a row stamped
+    /// again keeps a leaf whose style is the same (0: not a leaf).
+    leaf_style: i64 = 0,
+    /// A row whose children the tree stamped itself (stampRow): they go
+    /// with it, and when the page's ops set its children instead.
+    stamped: bool = false,
     tree: *Tree,
 
     /// Draws something itself (vs. a box that only lays out its children).
@@ -573,6 +638,8 @@ pub const Tree = struct {
     deleted_nodes: usize = 0,
     leaf_styles: std.AutoHashMapUnmanaged(i64, *LeafStyle) = .empty,
     leaf_style_bytes: usize = 0,
+    /// Row plans for stampRow's callers (defineStampPlan), by id - 1.
+    stamp_plans: std.ArrayList(StampPlan) = .empty,
     gpa: std.mem.Allocator,
     nodes: std.AutoHashMap(i64, *Node),
     root: ?*Node = null,
@@ -602,6 +669,8 @@ pub const Tree = struct {
     }
 
     pub fn deinit(t: *Tree) void {
+        for (t.stamp_plans.items) |plan| t.gpa.free(plan.mem);
+        t.stamp_plans.deinit(t.gpa);
         var it = t.nodes.valueIterator();
         while (it.next()) |n| freeNode(t, n.*);
         t.nodes.deinit();
@@ -639,7 +708,7 @@ pub const Tree = struct {
         errdefer yg.YGNodeFree(style.yn);
         errdefer style.arena.deinit();
         const a = style.arena.allocator();
-        style.props = try std.json.parseFromSliceLeaky(Props, a, json, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+        style.props = try std.json.parseFromSliceLeaky(Props, a, try wellFormedEscapes(a, json), .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
         try ownProps(a, &style.props);
         applyYogaStyle(style.yn, style.props);
         try t.leaf_styles.put(t.gpa, id, style);
@@ -672,7 +741,97 @@ pub const Tree = struct {
         // Copy only style: each node keeps its own measure callback,
         // context, children and layout. Avoid dozens of setters per row.
         yg.YGNodeCopyStyle(n.yn, style.yn);
+        n.leaf_style = style_id;
         t.dirty = true;
+        return true;
+    }
+
+    /// A row plan (defineStampPlan): for each child element, in source
+    /// order, its leaf styles (text and box) and how its text is written;
+    /// and the order the children are laid out in (CSS order).
+    pub const StampPlan = struct {
+        /// The one allocation holding both slices below.
+        mem: []align(@alignOf(StampEntry)) u8,
+        entries: []StampEntry,
+        /// Into `entries`, laid-out order (the slice after them).
+        order: []const u16,
+    };
+    pub const StampEntry = struct {
+        text_style: i64,
+        view_style: i64,
+        transform: enum(u8) { none, upper, lower },
+    };
+
+    /// Register a row plan: [n, (text style, box style, transform) × n,
+    /// order × n] as numbers (the page's runtime builds it). Its id (> 0),
+    /// or 0 when malformed or past the bound.
+    pub fn defineStampPlan(t: *Tree, v: []const f64) !u32 {
+        if (v.len < 1 or t.stamp_plans.items.len >= 1024) return 0;
+        const count = sat(usize, v[0]);
+        if (count == 0 or count > 64 or v.len != 1 + count * 4) return 0;
+        // One allocation: the entries, then the order.
+        const bytes = count * @sizeOf(StampEntry) + count * @sizeOf(u16);
+        const mem = try t.gpa.alignedAlloc(u8, .of(StampEntry), bytes);
+        errdefer t.gpa.free(mem);
+        const entries: []StampEntry = @as([*]StampEntry, @ptrCast(mem.ptr))[0..count];
+        const order: []u16 = @as([*]u16, @ptrCast(@alignCast(mem.ptr + count * @sizeOf(StampEntry))))[0..count];
+        for (entries, 0..) |*e, i| {
+            const tr = sat(u8, v[1 + i * 3 + 2]);
+            e.* = .{ .text_style = sat(i64, v[1 + i * 3]), .view_style = sat(i64, v[1 + i * 3 + 1]), .transform = if (tr == 1) .upper else if (tr == 2) .lower else .none };
+        }
+        for (order, 0..) |*o, i| {
+            const at = sat(usize, v[1 + count * 3 + i]);
+            if (at >= count) return error.BadPlan;
+            o.* = @intCast(at);
+        }
+        try t.stamp_plans.append(t.gpa, .{ .mem = mem, .entries = entries, .order = order });
+        return @intCast(t.stamp_plans.items.len);
+    }
+
+    pub fn stampPlan(t: *Tree, id: u32) ?StampPlan {
+        if (id == 0 or id > t.stamp_plans.items.len) return null;
+        return t.stamp_plans.items[id - 1];
+    }
+
+    /// A stamped child: its id, its kind and leaf style, its text.
+    pub const StampLeaf = struct { id: i64, kind: Kind, style: i64, text: []const u8 };
+
+    /// Make row `row_id`'s children these leaves (in laid-out order),
+    /// without the page's ops: a leaf with the same id, kind and style is
+    /// kept (its text updated), others are made from their leaf style, and
+    /// the row's old stamped children not among them go. False when the
+    /// row or a style is unknown (nothing changed then).
+    pub fn stampRow(t: *Tree, row_id: i64, leaves: []const StampLeaf) !bool {
+        const row = t.nodes.get(row_id) orelse return false;
+        for (leaves) |l| if (!t.leaf_styles.contains(l.style) or l.id == row_id) return false;
+        for (leaves) |l| {
+            if (t.nodes.get(l.id)) |old| {
+                if (old.kind == l.kind and old.leaf_style == l.style and old.leaf_style != 0) {
+                    if (l.kind == .text) _ = try t.updateText(l.id, l.text);
+                    continue;
+                }
+                t.destroy(l.id);
+            }
+            if (!try t.createLeaf(l.id, l.kind, l.style, l.text)) return false;
+        }
+        // The same children in the same order (a text update): they stay
+        // attached, each updated above (its min width with its text).
+        same: {
+            if (!row.stamped or row.kids.items.len != leaves.len) break :same;
+            for (row.kids.items, leaves) |k, l| if (k.id != l.id) break :same;
+            return true;
+        }
+        const Ids = struct {
+            leaves: []const StampLeaf,
+            fn len(x: @This()) usize {
+                return x.leaves.len;
+            }
+            fn at(x: @This(), i: usize) ?i64 {
+                return x.leaves[i].id;
+            }
+        };
+        try t.attachKids(row, Ids{ .leaves = leaves });
+        row.stamped = true;
         return true;
     }
 
@@ -740,7 +899,7 @@ pub const Tree = struct {
         var arena: std.heap.ArenaAllocator = .init(t.gpa);
         defer arena.deinit();
         const t0 = prof.now();
-        const ops = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), json, .{});
+        const ops = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), try wellFormedEscapes(arena.allocator(), json), .{});
         const t1 = prof.now();
         prof.props_ms = 0;
         defer prof.report("apply parse {d:.2} ops {d:.2} (props {d:.2}) {d} bytes", .{ t1 - t0, prof.now() - t1, prof.props_ms, json.len });
@@ -825,6 +984,9 @@ pub const Tree = struct {
         yg.YGNodeRemoveAllChildren(n.yn);
         for (n.kids.items) |k| k.parent = null;
         if (t.root == n) t.root = null;
+        // Children it stamped itself: nothing else names them. (Detached
+        // above: destroying one doesn't touch `n.kids`.)
+        if (n.stamped) for (n.kids.items) |k| t.destroy(k.id);
         freeNode(t, n);
     }
 
@@ -883,12 +1045,36 @@ pub const Tree = struct {
     }
 
     fn setKids(t: *Tree, n: *Node, ids: []const std.json.Value) !void {
-        try n.kids.ensureTotalCapacity(t.gpa, ids.len);
+        const Ids = struct {
+            values: []const std.json.Value,
+            fn len(x: @This()) usize {
+                return x.values.len;
+            }
+            fn at(x: @This(), i: usize) ?i64 {
+                return num(x.values[i]);
+            }
+        };
+        try t.attachKids(n, Ids{ .values = ids });
+        // The page's ops set them now: none of them is stamped any more.
+        n.stamped = false;
+    }
+
+    /// Make `ids` (len()/at(i)) `n`'s children, in order. A stamped row's
+    /// old children that aren't among them go (nothing else names them).
+    fn attachKids(t: *Tree, n: *Node, ids: anytype) !void {
+        try n.kids.ensureTotalCapacity(t.gpa, ids.len());
+        var stale: std.ArrayList(i64) = .empty;
+        defer stale.deinit(t.gpa);
+        if (n.stamped) {
+            try stale.ensureTotalCapacity(t.gpa, n.kids.items.len);
+            for (n.kids.items) |k| stale.appendAssumeCapacity(k.id);
+        }
         yg.YGNodeRemoveAllChildren(n.yn);
         for (n.kids.items) |k| k.parent = null;
         n.kids.clearRetainingCapacity();
-        for (ids) |v| {
-            const k = t.nodes.get(num(v) orelse continue) orelse continue;
+        defer for (stale.items) |id| if (t.nodes.get(id)) |k| if (k.parent == null) t.destroy(id);
+        for (0..ids.len()) |at| {
+            const k = t.nodes.get(ids.at(at) orelse continue) orelse continue;
             // `n` itself or one of its ancestors as a child would make a
             // cycle (layout and paint would recurse forever).
             if (isAncestorOrSelf(k, n)) continue;
@@ -2005,4 +2191,58 @@ test "tables: columns as wide as their widest cell, spans widen them" {
     try std.testing.expectEqual(@as(f32, 250), w(&t, 13));
     // The table: its columns, the gap and its padding.
     try std.testing.expectEqual(@as(f32, 254), w(&t, 1));
+}
+
+test "stampRow makes, keeps, updates and drops a row's leaves" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try std.testing.expect(try t.defineLeafStyle(1, "{\"fz\":14,\"runs\":[{\"t\":\"\",\"sz\":14,\"w\":400,\"c\":[0,0,0,1]}]}"));
+    try std.testing.expect(try t.defineLeafStyle(2, "{\"w\":8,\"h\":8}"));
+    try t.apply("[[\"c\",0,\"view\"],[\"c\",5,\"view\"],[\"p\",5,{\"fd\":\"row\"}],[\"k\",0,[5]],[\"r\",0]]");
+    // A plan: two children, laid out in reverse order.
+    const plan = try t.defineStampPlan(&.{ 2, 1, 2, 0, 1, 2, 1, 1, 0 });
+    try std.testing.expect(plan > 0);
+    try std.testing.expectEqual(@as(usize, 2), t.stampPlan(plan).?.entries.len);
+    try std.testing.expectEqual(@as(u32, 0), try t.defineStampPlan(&.{ 2, 1, 2, 0 }));
+
+    const first = [_]Tree.StampLeaf{ .{ .id = 11, .kind = .view, .style = 2, .text = "" }, .{ .id = 10, .kind = .text, .style = 1, .text = "Row 1" } };
+    try std.testing.expect(try t.stampRow(5, &first));
+    const row = t.get(5).?;
+    try std.testing.expect(row.stamped);
+    try std.testing.expectEqual(@as(usize, 2), row.kids.items.len);
+    try std.testing.expectEqual(@as(i64, 11), row.kids.items[0].id);
+    const text = t.get(10).?;
+    try std.testing.expectEqualStrings("Row 1", text.props.runs.?[0].t);
+
+    // Again with a new text: the same leaf, updated in place.
+    const second = [_]Tree.StampLeaf{ .{ .id = 11, .kind = .view, .style = 2, .text = "" }, .{ .id = 10, .kind = .text, .style = 1, .text = "Row 1, updated" } };
+    try std.testing.expect(try t.stampRow(5, &second));
+    try std.testing.expect(t.get(10).? == text);
+    try std.testing.expectEqualStrings("Row 1, updated", text.props.runs.?[0].t);
+
+    // The text child empty now: a box; the other child gone.
+    const third = [_]Tree.StampLeaf{.{ .id = 10, .kind = .view, .style = 2, .text = "" }};
+    try std.testing.expect(try t.stampRow(5, &third));
+    try std.testing.expect(t.get(11) == null);
+    try std.testing.expectEqual(Kind.view, t.get(10).?.kind);
+    try std.testing.expectEqual(@as(usize, 1), row.kids.items.len);
+
+    // An unknown style changes nothing.
+    const bad = [_]Tree.StampLeaf{.{ .id = 12, .kind = .view, .style = 9, .text = "" }};
+    try std.testing.expect(!try t.stampRow(5, &bad));
+    try std.testing.expect(t.get(10) != null);
+
+    // The page's ops set its children: the stamped ones go.
+    try t.apply("[[\"c\",20,\"view\"],[\"k\",5,[20]]]");
+    try std.testing.expect(t.get(10) == null);
+    try std.testing.expect(!row.stamped);
+
+    // Stamped again: the ops' child is detached, not destroyed (the page's
+    // runtime still names it); then the row goes, its leaves with it.
+    try std.testing.expect(try t.stampRow(5, &first));
+    try std.testing.expect(t.get(20).?.parent == null);
+    try t.apply("[[\"d\",5]]");
+    try std.testing.expect(t.get(10) == null and t.get(11) == null);
 }
