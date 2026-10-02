@@ -940,10 +940,12 @@ export class Renderer {
       flow.every((f) => f.text || ATOMIC_INLINE.has(this.style(f.el, cs, rematch).display || ""));
     // One box and its text (a checkbox's label): the text shrinks to the
     // room beside the box and wraps there by words (its min width is the
-    // longest word, tree.zig). Several boxes: they wrap to new lines.
+    // longest word, tree.zig). Several boxes, or a box sized in % (a
+    // `width: 100%` field under its label): they wrap to new lines.
     if (inlineLine) {
       props.fd = "row"; props.ai = "center";
-      if (flow.filter((f) => f.el).length > 1) props.fw = "wrap";
+      const boxes = flow.filter((f) => f.el);
+      if (boxes.length > 1 || boxes.some((f) => /%\s*$/.test(this.style(f.el, cs, rematch).width || ""))) props.fw = "wrap";
     }
     // Only atomic inline boxes (buttons side by side, inline-block chips):
     // one line that wraps, as in a browser, not a column; the whitespace
