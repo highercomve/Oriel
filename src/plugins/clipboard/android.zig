@@ -4,6 +4,9 @@
 //! clip (re-encoded as PNG); writing shares the PNG through the runtime's
 //! `FileProvider`. Android 10+ lets only the app in focus (or the default
 //! input method) read the clipboard: reads from the background return "".
+//! A read off the UI thread waits a moment for a window to get focus, so one
+//! made as a window opens (GhostPen's menu reads the selection then) sees
+//! the clipboard.
 
 const std = @import("std");
 const heap = @import("../../core/heap.zig");
@@ -17,7 +20,7 @@ pub const TextCallback = *const fn (result: anyerror![]const u8, user_data: ?*an
 pub const ImageCallback = *const fn (result: anyerror!?[]const u8, user_data: ?*anyopaque) void;
 
 const Call = struct {
-    op: enum { read_text, read_image, write_text, write_image },
+    op: enum { read_text, read_image, write_text, write_image, focused },
     gpa: std.mem.Allocator = heap.gpa,
     input: []const u8 = "",
     out: ?[]u8 = null,
@@ -30,6 +33,7 @@ const Call = struct {
             return;
         };
         switch (self.op) {
+            .focused => self.err = if (runtime.call(.boolean, "hasFocus", "()Z", .{}) orelse false) null else error.NotFocused,
             .read_text => {
                 const arr = runtime.call(.object, "clipboardReadText", "()[B", .{}) orelse null;
                 self.out = runtime.takeBytes(e, self.gpa, arr);
@@ -57,8 +61,23 @@ fn dispatchSync(call: *Call) !void {
     if (call.err) |e| return e;
 }
 
+/// Off the UI thread: wait (up to 1.5 s) for one of the app's windows to have
+/// focus. The UI thread can't wait (focus arrives on it), so it reads now.
+fn waitForFocus() void {
+    if (ShellMod.isMainThread()) return;
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        var call: Call = .{ .op = .focused };
+        ShellMod.runOnMainThread(Call, &call, Call.run) catch return;
+        if (call.err == null) return;
+        const ts: std.c.timespec = .{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
+        _ = std.c.nanosleep(&ts, null);
+    }
+}
+
 /// Caller frees.
 pub fn readText(gpa: std.mem.Allocator) ![]u8 {
+    waitForFocus();
     var call: Call = .{ .op = .read_text, .gpa = gpa };
     try dispatchSync(&call);
     return call.out orelse try gpa.dupe(u8, "");
@@ -66,6 +85,7 @@ pub fn readText(gpa: std.mem.Allocator) ![]u8 {
 
 /// PNG bytes (caller frees), or null when the clipboard holds no image.
 pub fn readImage(gpa: std.mem.Allocator) !?[]u8 {
+    waitForFocus();
     var call: Call = .{ .op = .read_image, .gpa = gpa };
     try dispatchSync(&call);
     return call.out;
