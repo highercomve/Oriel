@@ -61,7 +61,9 @@ pub const Backend = struct {
     request_frame: ?*const fn (ctx: *anyopaque) void = null,
 };
 
-var next_serial: std.atomic.Value(u64) = .init(0);
+// usize: 32-bit targets (armv7, x86 Android) have no 64-bit atomic add. Wrapping
+// would take 4 billion engines in one process.
+var next_serial: std.atomic.Value(usize) = .init(0);
 
 pub const Engine = struct {
     gpa: std.mem.Allocator,
@@ -96,7 +98,7 @@ pub const Engine = struct {
         // On failure below: the tree (its Yoga config, and any nodes the
         // runtime already made) and the QuickJS runtime go too, as in destroy.
         errdefer e.tree.deinit();
-        e.serial = next_serial.fetchAdd(1, .monotonic) + 1;
+        e.serial = @as(u64, next_serial.fetchAdd(1, .monotonic)) + 1;
         e.tree.width = width;
         e.tree.height = height;
         e.tree.on_remove = backend.removed;

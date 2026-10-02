@@ -314,8 +314,15 @@ fn nJsMemory(_: *Env, _: jclass, win: jint) callconv(.c) jni.jlong {
     return @intCast(s.engine.jsMemory());
 }
 
+/// ORIEL_NUI_TRACE (on Android from `debug.oriel.env`): NuiView logs when it
+/// has drawn ("nui drawn", tag OrielNui), for on-screen timings.
+fn nTrace(_: *Env, _: jclass) callconv(.c) jni.jboolean {
+    return @intFromBool(std.c.getenv("ORIEL_NUI_TRACE") != null);
+}
+
 comptime {
     const prefix = "Java_dev_oriel_NuiNative_";
+    @export(&nTrace, .{ .name = prefix ++ "trace" });
     @export(&nResize, .{ .name = prefix ++ "resize" });
     @export(&nTap, .{ .name = prefix ++ "tap" });
     @export(&nPress, .{ .name = prefix ++ "press" });

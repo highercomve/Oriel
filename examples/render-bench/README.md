@@ -48,6 +48,23 @@ a 60 Hz grid, so its frame rates cap at about 60. Its canvas is
 not a bitmap: the 2d calls are replayed into Cairo each frame
 (docs/native-renderer.md, "Canvas").
 
+### On screen (Android)
+
+On Android the page's engine runs on the UI thread and hands each change to
+the view synchronously, so the times above already include applying it;
+what they leave out is Android's layout pass and the draw. With
+`ORIEL_NUI_TRACE` the page logs a line before each timed row change and the
+native view one after each draw; `onscreen.py` gives the time from one to the
+next. An Android app gets no environment variables: Oriel reads them from the
+`debug.oriel.env` property when its library loads.
+
+```sh
+adb shell setprop debug.oriel.env "'ORIEL_NUI_TRACE=1 ORIEL_NUI_MEM=1'"
+adb logcat -c   # then start the app and let it finish
+adb logcat -d -v epoch > run.txt && ./onscreen.py run.txt
+adb shell setprop debug.oriel.env "''"
+```
+
 ## Results
 
 ### Flattening and emission follow-up
