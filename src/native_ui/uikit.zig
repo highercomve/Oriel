@@ -299,7 +299,9 @@ fn requestDisplayFrame(ctx: *anyopaque) void {
     s.display_link = link.retain();
     // ProMotion: up to the screen's rate (the Info.plist's
     // CADisableMinimumFrameDurationOnPhone lets an iPhone go past 60).
-    const max_fps: f32 = @floatFromInt(@max(60, apple.class("UIScreen").msgSend(Object, "mainScreen", .{}).msgSend(isize, "maximumFramesPerSecond", .{})));
+    const window = s.view.msgSend(Object, "window", .{});
+    const screen = if (window.value != null) window.msgSend(Object, "screen", .{}) else apple.class("UIScreen").msgSend(Object, "mainScreen", .{});
+    const max_fps: f32 = @floatFromInt(@max(60, if (screen.value != null) screen.msgSend(isize, "maximumFramesPerSecond", .{}) else 60));
     link.msgSend(void, "setPreferredFrameRateRange:", .{CAFrameRateRange{ .minimum = 30, .maximum = max_fps, .preferred = max_fps }});
     const loop = apple.class("NSRunLoop").msgSend(Object, "currentRunLoop", .{});
     link.msgSend(void, "addToRunLoop:forMode:", .{ loop, Object{ .value = NSRunLoopCommonModes } });
