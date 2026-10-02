@@ -97,7 +97,10 @@ inline blocks flowing in text, `position: sticky`, `img`, `iframe`,
 op to the element's program, which travels as the node's `cv` prop and is
 replayed on every paint. On GTK the program draws with Cairo into the
 canvas's own image surface (kept from frame to frame while the size holds),
-which is then painted on the page, clipped to the box's border-radius. A
+which is then painted on the page, clipped to the box's border-radius. On
+macOS and iOS it draws with CoreGraphics into a CGBitmapContext the same way
+(apple_draw.zig: the box at the display's backing scale, at most 16 M
+pixels; text with CoreText). A
 program can't harm the page: an unbalanced `restore()` is ignored, a
 `clearRect` clears the canvas only, and a call with an argument that isn't a
 finite number is dropped (by the recorder and again by the parser), as in a
