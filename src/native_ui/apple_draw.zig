@@ -156,6 +156,18 @@ extern fn CTFramesetterCreateWithAttributedString(s: CFAttributedStringRef) ?CTF
 extern fn CTFramesetterSuggestFrameSizeWithConstraints(fs: CTFramesetterRef, range: CFRange, attrs: ?*anyopaque, constraints: CGSize, fit: ?*CFRange) CGSize;
 extern fn CTFramesetterCreateFrame(fs: CTFramesetterRef, range: CFRange, path: CGPathRef, attrs: ?*anyopaque) ?CTFrameRef;
 extern fn CTFrameDraw(frame: CTFrameRef, c: CGContextRef) void;
+extern fn CTFrameGetLines(frame: CTFrameRef) CFTypeRef;
+extern fn CTFrameGetLineOrigins(frame: CTFrameRef, range: CFRange, origins: [*]CGPoint) void;
+extern fn CTLineGetStringRange(line: CFTypeRef) CFRange;
+extern fn CTLineGetOffsetForStringIndex(line: CFTypeRef, index: c_long, secondary: ?*CGFloat) CGFloat;
+extern fn CTLineGetTrailingWhitespaceWidth(line: CFTypeRef) f64;
+extern fn CTLineGetGlyphRuns(line: CFTypeRef) CFTypeRef;
+extern fn CTRunGetStringRange(run: CFTypeRef) CFRange;
+extern fn CTRunGetGlyphCount(run: CFTypeRef) c_long;
+extern fn CTRunGetPositions(run: CFTypeRef, range: CFRange, out: [*]CGPoint) void;
+extern fn CTRunGetTypographicBounds(run: CFTypeRef, range: CFRange, ascent: ?*CGFloat, descent: ?*CGFloat, leading: ?*CGFloat) f64;
+extern fn CFArrayGetCount(a: CFTypeRef) c_long;
+extern fn CFArrayGetValueAtIndex(a: CFTypeRef, i: c_long) CFTypeRef;
 const CTParagraphStyleSetting = extern struct { spec: u32, size: usize, value: *const anyopaque };
 extern fn CTParagraphStyleCreate(settings: [*]const CTParagraphStyleSetting, count: usize) ?CTParagraphStyleRef;
 const kCTParagraphStyleSpecifierAlignment: u32 = 0;
@@ -381,7 +393,83 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     CGContextTranslateCTM(cg, c.x, c.y + h);
     CGContextScaleCTM(cg, 1, -1);
     CGContextSetTextMatrix(cg, .{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 });
+    paintRunBackgrounds(cg, n, frame);
     CTFrameDraw(frame, cg);
+}
+
+/// A run's background (an inline highlight, a <code> amid the text): a box
+/// under its glyphs on each line it spans, as a browser paints an inline
+/// box's background. CoreText draws no backgrounds; the frame's lines give
+/// the positions (in the flipped CoreText space paintText set up).
+fn paintRunBackgrounds(cg: CGContextRef, n: *Node, frame: CTFrameRef) void {
+    const runs = n.props.runs orelse return;
+    var any = false;
+    for (runs) |r| if (r.bg != null) {
+        any = true;
+        break;
+    };
+    if (!any) return;
+    const lines = CTFrameGetLines(frame);
+    const count = CFArrayGetCount(lines);
+    if (count <= 0) return;
+    var origins_buf: [256]CGPoint = undefined;
+    const shown: usize = @intCast(@min(count, origins_buf.len));
+    CTFrameGetLineOrigins(frame, .{ .location = 0, .length = @intCast(shown) }, &origins_buf);
+    // Each run's range in the string (UTF-16 units), as attributed() built it.
+    var start: c_long = 0;
+    for (runs) |r| {
+        if (r.t.len == 0) continue;
+        const str = CFStringCreateWithBytes(null, r.t.ptr, @intCast(r.t.len), kCFStringEncodingUTF8, 0) orelse continue;
+        const len = CFStringGetLength(str);
+        CFRelease(str);
+        defer start += len;
+        const bg = r.bg orelse continue;
+        if (bg[3] <= 0) continue;
+        setFill(cg, bg);
+        const end = start + len;
+        for (0..shown) |i| {
+            const line = CFArrayGetValueAtIndex(lines, @intCast(i));
+            const lr = CTLineGetStringRange(line);
+            if (@max(start, lr.location) >= @min(end, lr.location + lr.length)) continue;
+            const width = CTLineGetTypographicBounds(line, null, null, null);
+            // Not under the space a line wraps after (a browser paints none there).
+            const text_end: CGFloat = @floatCast(width - CTLineGetTrailingWhitespaceWidth(line));
+            const o = origins_buf[i];
+            // Per glyph run (one font, one direction): a right-to-left run
+            // amid left-to-right text has its own place on the line.
+            const glyph_runs = CTLineGetGlyphRuns(line);
+            var g: c_long = 0;
+            while (g < CFArrayGetCount(glyph_runs)) : (g += 1) {
+                const run = CFArrayGetValueAtIndex(glyph_runs, g);
+                const sr = CTRunGetStringRange(run);
+                const a = @max(start, sr.location);
+                const b = @min(end, sr.location + sr.length);
+                if (a >= b or CTRunGetGlyphCount(run) == 0) continue;
+                var ascent: CGFloat = 0;
+                var descent: CGFloat = 0;
+                const run_w = CTRunGetTypographicBounds(run, .{ .location = 0, .length = 0 }, &ascent, &descent, null);
+                var x0: CGFloat = undefined;
+                var x1: CGFloat = undefined;
+                if (a == sr.location and b == sr.location + sr.length) {
+                    var first: [1]CGPoint = undefined;
+                    CTRunGetPositions(run, .{ .location = 0, .length = 1 }, &first);
+                    x0 = first[0].x;
+                    x1 = x0 + @as(CGFloat, @floatCast(run_w));
+                } else {
+                    const xa = CTLineGetOffsetForStringIndex(line, a, null);
+                    const xb = CTLineGetOffsetForStringIndex(line, b, null);
+                    x0 = @min(xa, xb);
+                    x1 = @max(xa, xb);
+                }
+                x1 = @min(x1, text_end);
+                if (x1 <= x0) continue;
+                CGContextFillRect(cg, .{
+                    .origin = .{ .x = o.x + x0, .y = o.y - descent },
+                    .size = .{ .width = x1 - x0, .height = ascent + descent },
+                });
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
