@@ -38401,9 +38401,25 @@ static void js_object_list_init(JSObjectList *s)
     memset(s, 0, sizeof(*s));
 }
 
+/* Oriel: a 64-bit finalizer (MurmurHash3's fmix64) for hash tables that
+   take the low bits. Object pointers (aligned) and small integers (as
+   doubles: a zero low word) have constant low bits: multiplying them by a
+   constant, as upstream did, left most buckets empty and the rest with
+   long chains (Map and WeakMap lookups were a third of the renderer's
+   time). */
+static inline uint32_t js_mix64(uint64_t x)
+{
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return (uint32_t)x;
+}
+
 static uint32_t js_object_list_get_hash(JSObject *p, uint32_t hash_size)
 {
-    return ((uintptr_t)p * 3163) & (hash_size - 1);
+    return js_mix64((uintptr_t)p) & (hash_size - 1);
 }
 
 static int js_object_list_resize_hash(JSContext *ctx, JSObjectList *s,
@@ -53370,7 +53386,7 @@ static JSValueConst map_normalize_key_const(JSContext *ctx, JSValueConst key)
     return safe_const(map_normalize_key(ctx, unsafe_unconst(key)));
 }
 
-/* XXX: better hash ? */
+/* Oriel: pointers and numbers go through js_mix64 (see it). */
 static uint32_t map_hash_key(JSContext *ctx, JSValueConst key)
 {
     uint32_t tag = JS_VALUE_GET_NORM_TAG(key);
@@ -53391,7 +53407,7 @@ static uint32_t map_hash_key(JSContext *ctx, JSValueConst key)
         break;
     case JS_TAG_OBJECT:
     case JS_TAG_SYMBOL:
-        h = (uintptr_t)JS_VALUE_GET_PTR(key) * 3163;
+        h = js_mix64((uintptr_t)JS_VALUE_GET_PTR(key));
         break;
     case JS_TAG_INT:
         d = JS_VALUE_GET_INT(key);
@@ -53410,7 +53426,7 @@ static uint32_t map_hash_key(JSContext *ctx, JSValueConst key)
             d = NAN;
     hash_float64:
         u.d = d;
-        h = (u.u32[0] ^ u.u32[1]) * 3163;
+        h = js_mix64(u.u64);
         tag = JS_TAG_FLOAT64;
         break;
     default:
