@@ -70,6 +70,20 @@ function fixture(css, direct = false) {
   return { document, ...got, check };
 }
 
+// The first edit after typed creation still has a lazy previous snapshot.
+// A declined text bridge must compare against the original text.
+{
+  const f = fixture('.row { display: flex }', true);
+  f.document.querySelector('main').innerHTML = '<div class="row"><span>before</span></div>';
+  f.renderer.render();
+  f.renderer.observer.takeRecords();
+  let declined = 0;
+  f.renderer.host.text = () => { declined++; return false; };
+  f.document.querySelector('span').textContent = 'after';
+  f.check();
+  assert.equal(declined, 1, "first edit reaches the direct bridge before fallback");
+}
+
 for (const direct of [false, true]) for (const extra of ["", ".row:first-child .n { color: red } .row + .row .dot { width: 9px }"]) {
   const f = fixture(`.row { display: flex } .n { width: 30px } .dot { width: 5px } .theme span { color: green } ${extra}`, direct);
   const stage = f.document.querySelector("main");
