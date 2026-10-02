@@ -934,6 +934,18 @@ fn dropImage(n: *Node) void {
     std.heap.smp_allocator.destroy(c);
 }
 
+/// New props: the next look at the picture compares `src` by its contents
+/// once. The props arena is reused, so a new `src` of the same length can
+/// land at the old one's address ("assets/on.png" -> "assets/no.png"), and
+/// the pointer alone would keep the old picture.
+pub fn imagePropsChanged(n: *Node) void {
+    if (n.kind != .image) return;
+    const p = n.native orelse return;
+    const c: *ImageCache = @ptrCast(@alignCast(p));
+    c.src_ptr = 0;
+    c.src_len = 0;
+}
+
 fn imageOf(engine: *Engine, n: *Node) ?*ImageCache {
     const src = n.props.src orelse {
         dropImage(n); // no src any more: no picture

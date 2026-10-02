@@ -317,6 +317,7 @@ fn removed(ctx: *anyopaque, n: *Node) void {
 /// New props: a text node's CoreText objects are stale.
 fn propsChanged(_: *anyopaque, n: *Node, _: std.json.Value) void {
     draw.dropText(n);
+    draw.imagePropsChanged(n);
     n.measured_text_size = null;
 }
 
