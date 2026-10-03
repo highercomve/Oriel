@@ -1724,7 +1724,7 @@ globalThis.atob ??= (s) => {
       if (t === "width") return viewport.width;
       if (t === "height") return viewport.height;
       if (t === "resolution") return viewport.dpr;
-      if (/(dppx|x|dpi|dpcm)$/.test(t)) return dppx(t);
+      if (/^[\d.]+(dppx|x|dpi|dpcm)$/.test(t)) return dppx(t);
       const n2 = parseFloat(t);
       if (!Number.isFinite(n2)) return NaN;
       return t.endsWith("rem") || t.endsWith("em") ? n2 * 16 : n2;
