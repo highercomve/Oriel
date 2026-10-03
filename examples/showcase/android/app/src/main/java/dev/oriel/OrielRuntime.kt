@@ -12,6 +12,7 @@ import android.content.ClipboardManager
 import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -19,6 +20,7 @@ import android.graphics.Rect
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -271,6 +273,34 @@ object OrielRuntime {
         val wm = context.getSystemService(WindowManager::class.java)
         val bounds = if (Build.VERSION.SDK_INT >= 30) wm.maximumWindowMetrics.bounds else Rect(0, 0, context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
         return (context.dp(bounds.width()).toLong() shl 32) or context.dp(bounds.height()).toLong()
+    }
+
+    // --- The battery, for power meters (render-bench's power_now) ---
+
+    /**
+     * The battery now: its current in µA (BatteryManager's CURRENT_NOW, its
+     * sign the device's: most report a discharge as negative) shifted 32,
+     * the voltage in mV shifted 1, and 1 while a charger is plugged in.
+     * 0: unknown.
+     */
+    @JvmStatic
+    fun batteryNow(): Long {
+        val bm = app.getSystemService(BatteryManager::class.java) ?: return 0
+        val ua = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
+        if (ua == Int.MIN_VALUE) return 0
+        // The sticky battery broadcast, read without a receiver.
+        val i = app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val mv = i?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0) ?: 0
+        val plugged = (i?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        return (ua.toLong() shl 32) or ((mv.toLong() and 0x7fffffff) shl 1) or (if (plugged) 1L else 0L)
+    }
+
+    /** The battery's charge counter in µAh, or Long.MIN_VALUE when the device has none. */
+    @JvmStatic
+    fun batteryCharge(): Long {
+        val bm = app.getSystemService(BatteryManager::class.java) ?: return Long.MIN_VALUE
+        val v = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
+        return if (v == Int.MIN_VALUE || v <= 0) Long.MIN_VALUE else v.toLong()
     }
 
     // --- The native renderer (-Dnative_ui; src/native_ui/android.zig) ---
