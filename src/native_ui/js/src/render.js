@@ -1101,6 +1101,10 @@ export class Renderer {
     // align-self applies to flex and grid items only: in a block it does
     // nothing (the box fills the line). Inline boxes get theirs below.
     if (!ctx.blockify) delete props.as;
+    // A form control or button without a width keeps its own in a block
+    // (display: block doesn't stretch it to the line, as it does a div); a
+    // flex item still stretches.
+    if (!ctx.blockify && display === "block" && CONTROLS.has(tag) && (props.w === undefined || props.w === "auto")) props.as = "flex-start";
     if (isTableDisplay(display) && !tableProps(props, display, cs, fontSize, ctx, el)) return null;
     const transitions = transitionsOf(cs);
     if (transitions) this.spec(id, transitions);
@@ -1208,10 +1212,6 @@ export class Renderer {
     if (tag === "input" || tag === "textarea" || tag === "select") {
       this.volatile.add(el); // its value changes without a mutation
       const type = (el.getAttribute("type") || "text").toLowerCase();
-      // A control without a width keeps its own in a block (display: block
-      // doesn't stretch it to the line, as it does a div); a flex item still
-      // stretches.
-      if (!ctx.blockify && display === "block" && (props.w === undefined || props.w === "auto")) props.as = "flex-start";
       if (tag === "input" && (type === "checkbox" || type === "radio")) {
         // The click goes to the label. With appearance: none the page's CSS
         // draws it; else the native side draws the default control, in the
@@ -2170,6 +2170,7 @@ function isSize(v) {
 // Form controls are border-box unless the page says otherwise, as in
 // browsers' own style sheets (a rule in UA_CSS would cost every element's
 // matching a little).
+const CONTROLS = new Set(["input", "textarea", "select", "button"]);
 const BORDER_BOX_INPUTS = new Set(["button", "submit", "reset", "checkbox", "radio", "color", "file", "range", "image"]);
 function borderBoxByDefault(el) {
   const t = el?.localName;
