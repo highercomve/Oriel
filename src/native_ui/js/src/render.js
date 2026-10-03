@@ -2952,8 +2952,27 @@ function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
 function numberOf(v) {
   if (v === undefined || v === null) return NaN;
   const t = String(v).trim().replace(/calc\(/g, "(");
-  if (/^[\d.+\-*/()\s]+$/.test(t)) { try { return +Function(`return (${t})`)(); } catch { return NaN; } }
+  if (/^[\d.+\-*/()\s]+$/.test(t)) return arithmetic(t);
   return parseFloat(t);
+}
+
+// + - * / and parentheses over plain numbers (a calc() of numbers), or NaN.
+// Parsed here, not compiled (the app's CSP may refuse the page's eval, and
+// the runtime runs as the page).
+export function arithmetic(src) {
+  const toks = src.match(/\d*\.?\d+(?:e[+-]?\d+)?|[-+*/()]/gi) || [];
+  let i = 0;
+  const atom = () => {
+    const t = toks[i++];
+    if (t === "(") { const v = sum(); if (toks[i++] !== ")") return NaN; return v; }
+    if (t === "-") return -atom();
+    if (t === "+") return atom();
+    return t === undefined ? NaN : parseFloat(t);
+  };
+  const product = () => { let v = atom(); while (toks[i] === "*" || toks[i] === "/") v = toks[i++] === "*" ? v * atom() : v / atom(); return v; };
+  const sum = () => { let v = product(); while (toks[i] === "+" || toks[i] === "-") v = toks[i++] === "+" ? v + product() : v - product(); return v; };
+  const v = sum();
+  return i === toks.length ? v : NaN;
 }
 
 function angleOf(v) {
