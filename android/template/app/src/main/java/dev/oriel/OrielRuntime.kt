@@ -332,6 +332,15 @@ object OrielRuntime {
         Nui.views[id]?.focusField(node)
     }
 
+    /** A text field's selection in UTF-16 units, start << 32 | end, or -1 (android.zig selection). */
+    @JvmStatic
+    fun nuiSelection(id: Int, node: Int): Long = Nui.views[id]?.selection(node) ?: -1
+
+    @JvmStatic
+    fun nuiSetSelection(id: Int, node: Int, start: Int, end: Int) {
+        Nui.views[id]?.setSelection(node, start, end)
+    }
+
     @JvmStatic
     fun evalJs(id: Int, script: ByteArray) {
         windows[id]?.eval(script.utf8())

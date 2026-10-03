@@ -109,6 +109,8 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .add_timer = addTimer,
         .invoke = invoke,
         .focus = focus,
+        .selection = selection,
+        .set_selection = setSelection,
         .props = props,
         .text = textChanged,
         .measure_texts = measureTexts,
@@ -185,6 +187,23 @@ fn focus(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     flushLeaves(s);
     _ = runtime.call(.void, "nuiFocus", "(II)V", .{ wid(s.window), nid(node) });
+}
+
+/// Backend.selection: an EditText's selection, in UTF-16 units (Java's).
+fn selection(ctx: *anyopaque, node: *Node, out: *[2]u32) bool {
+    const s = surfaceOf(ctx);
+    const v = runtime.call(.long, "nuiSelection", "(II)J", .{ wid(s.window), nid(node) }) orelse return false;
+    if (v < 0) return false;
+    const u: u64 = @bitCast(v);
+    out.* = .{ @truncate(u >> 32), @truncate(u) };
+    return true;
+}
+
+/// Backend.set_selection: EditText.setSelection.
+fn setSelection(ctx: *anyopaque, node: *Node, start: u32, end: u32) void {
+    const s = surfaceOf(ctx);
+    const clamp = std.math.maxInt(i32);
+    _ = runtime.call(.void, "nuiSetSelection", "(IIII)V", .{ wid(s.window), nid(node), @as(i32, @intCast(@min(start, clamp))), @as(i32, @intCast(@min(end, clamp))) });
 }
 
 fn removed(ctx: *anyopaque, node: *Node) void {
@@ -812,6 +831,8 @@ fn nEvent(env: *Env, _: jclass, win: jint, id: jint, kind: jobject, data: jobjec
     defer gpa.free(k);
     const d = (env.bytesAlloc(gpa, data) catch return 0) orelse (gpa.alloc(u8, 0) catch return 0);
     defer gpa.free(d);
+    // A text field's edit: [value, inputType, data] as JSON from Kotlin.
+    if (std.mem.eql(u8, k, "edit")) return @intFromBool(s.engine.event(id, "input", d));
     if (std.mem.eql(u8, k, "input") or std.mem.eql(u8, k, "change")) {
         const json = std.json.Stringify.valueAlloc(gpa, d, .{}) catch return 0;
         defer gpa.free(json);
