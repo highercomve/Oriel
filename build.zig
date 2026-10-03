@@ -1968,9 +1968,12 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool, native_dom: 
             },
             .flags = &.{ "-std=c++20", "-O2", no_ubsan, "-fno-exceptions" },
         });
-        // PixelGrid.cpp without its fmod calls (see the file).
-        oriel.addCSourceFile(.{
-            .file = b.path("src/native_ui/yoga/PixelGrid.cpp"),
+        // PixelGrid.cpp without its fmod calls, telling the tree each
+        // node's unrounded box; and a setter for a node's laid-out width
+        // (see the files).
+        oriel.addCSourceFiles(.{
+            .root = b.path("src/native_ui/yoga"),
+            .files = &.{ "PixelGrid.cpp", "oriel.cpp" },
             .flags = &.{ "-std=c++20", "-O2", no_ubsan, "-fno-exceptions" },
         });
         oriel.link_libcpp = true;
