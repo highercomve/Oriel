@@ -3812,7 +3812,14 @@ fn paintOutline(p: *Painter, f: Rect, r: [4]f32, ol: tree_mod.Outline) void {
     const box: Rect = .{ .x = f.x - grow, .y = f.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
     if (box.w <= 2 * ol.w or box.h <= 2 * ol.w) return;
     var radii: [4]f32 = undefined;
-    for (r, 0..) |x, i| radii[i] = if (x > 0) @max(0, x + grow) else 0;
+    for (r, 0..) |x, i| radii[i] = @max(if (x > 0) @max(0, x + grow) else 0, ol.r);
+    // A focus ring's halo: 1px around it, its corners 1px rounder.
+    if (ol.h) |h| if (h[3] > 0) {
+        const halo: Rect = .{ .x = box.x - 1, .y = box.y - 1, .w = box.w + 2, .h = box.h + 2 };
+        var hr: [4]f32 = undefined;
+        for (radii, 0..) |x, i| hr[i] = if (x > 0) x + 1 else 0;
+        border(p, halo, hr, .{ 1, 1, 1, 1 }, .{ h, h, h, h }, null);
+    };
     const bw = [4]f32{ ol.w, ol.w, ol.w, ol.w };
     const bc = [4]tree_mod.Color{ ol.c, ol.c, ol.c, ol.c };
     border(p, box, radii, bw, bc, ol.s);
