@@ -598,18 +598,20 @@ fn measuredText(s: *Surface, n: *Node, width: f32) [2]f32 {
 
 /// host.fontMetrics: the ascent and descent (px) of the font text is drawn
 /// with (NuiNode's typeface) at `size`, from Kotlin's Paint.FontMetrics.
-fn fontMetrics(ctx: *anyopaque, size: f32, mono: bool, out: *[2]f32) bool {
+fn fontMetrics(ctx: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
     const s = surfaceOf(ctx);
     const key: FontKey = .{ .size64 = @intFromFloat(@round(std.math.clamp(size, 1, 512) * 64)), .mono = mono };
+    // TODO(android): Paint.FontMetrics' leading as the line gap, for
+    // line-height: normal; 0 until then.
     if (s.font_metrics.get(key)) |m| {
-        out.* = m;
+        out.* = .{ m[0], m[1], 0 };
         return true;
     }
     const r: u64 = @bitCast(runtime.call(.long, "nuiFontMetrics", "(IZ)J", .{ @as(i32, @intCast(key.size64)), mono }) orelse return false);
     if (r == 0) return false;
     const m: [2]f32 = .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
     if (s.font_metrics.count() < 256) s.font_metrics.put(s.gpa, key, m) catch {};
-    out.* = m;
+    out.* = .{ m[0], m[1], 0 };
     return true;
 }
 

@@ -381,7 +381,7 @@ fn onDisplayFrame(self: id, _: SEL, link_id: id) callconv(.c) void {
 /// timer is due within `warm_margin` or the page wants an animation frame:
 /// a cold font takes a few ms, which shouldn't make a due timer late.
 /// Backend.font_metrics: the text font's ascent and descent at a size.
-fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[2]f32) bool {
+fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
     return draw.fontMetrics("NSFont", size, mono, out);
 }
 

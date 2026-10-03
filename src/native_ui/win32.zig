@@ -1970,10 +1970,12 @@ fn fontRatios(mono: bool, weight: f32, italic: bool) ?[2]f32 {
 /// Backend.font_metrics: the text font's ascent and descent in px at
 /// `size` (the regular face's; where a line of inline images puts its
 /// baseline).
-fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[2]f32) bool {
+fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
     const r = fontRatios(mono, 400, false) orelse return false;
     if (!(size > 0) or !std.math.isFinite(size)) return false;
-    out.* = .{ r[0] * size, r[1] * size };
+    // TODO(win): the face's lineGap (DWRITE_FONT_METRICS.lineGap) for
+    // line-height: normal; 0 until then.
+    out.* = .{ r[0] * size, r[1] * size, 0 };
     return true;
 }
 

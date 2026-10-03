@@ -139,6 +139,7 @@ extern fn CTLineGetTypographicBounds(line: CFTypeRef, ascent: ?*CGFloat, descent
 extern fn CTLineDraw(line: CFTypeRef, c: CGContextRef) void;
 extern fn CTFontGetAscent(font: CTFontRef) CGFloat;
 extern fn CTFontGetDescent(font: CTFontRef) CGFloat;
+extern fn CTFontGetLeading(font: CTFontRef) CGFloat;
 extern fn CTFontCreateWithName(name: CFStringRef, size: CGFloat, matrix: ?*const CGAffineTransform) ?CTFontRef;
 extern const kCTForegroundColorFromContextAttributeName: CFStringRef;
 const kCGImageAlphaPremultipliedLast: u32 = 1;
@@ -237,12 +238,12 @@ pub fn font(comptime font_class: [:0]const u8, size: f32, weight: f32, italic: b
 
 /// Backend.font_metrics: the ascent and descent (px) of the text font at
 /// `size` (regular weight, monospaced or not), the font paintText uses.
-pub fn fontMetrics(comptime font_class: [:0]const u8, size: f32, mono: bool, out: *[2]f32) bool {
+pub fn fontMetrics(comptime font_class: [:0]const u8, size: f32, mono: bool, out: *[3]f32) bool {
     if (!(size > 0) or !std.math.isFinite(size)) return false;
     const f = font(font_class, size, 400, false, mono) orelse return false;
     // The cached font is at the nearest half point: scaled to `size`.
     const k: CGFloat = size / std.math.clamp(@round(size * 2) / 2, 0.5, 2000);
-    out.* = .{ @floatCast(CTFontGetAscent(f) * k), @floatCast(CTFontGetDescent(f) * k) };
+    out.* = .{ @floatCast(CTFontGetAscent(f) * k), @floatCast(CTFontGetDescent(f) * k), @floatCast(CTFontGetLeading(f) * k) };
     return true;
 }
 
