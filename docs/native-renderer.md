@@ -189,9 +189,11 @@ the animated nodes are sent each frame).
   as the ring between the border box and `paddingBoxXY`), the children's
   clip (`Node.paddingClipXY()`: each inner x radius less the left or right
   border, y less the top or bottom), the outline and box-shadow (each
-  rounded corner grown on both axes: `Radii.grown`). Win32 and GTK
-  (gtk.zig roundRectXY, roundedSides) do all of these; Apple and Android
-  still use `radius()`.
+  rounded corner grown on both axes: `Radii.grown`). Win32, GTK
+  (gtk.zig roundRectXY, roundedSides) and Apple (apple_draw.zig
+  addEllipseRect, roundedSides: every solid rounded border is the filled
+  ring, as WebKit draws it) do all of these; Android still uses
+  `radius()`.
 
 **Text metrics** (each backend, to match its own WebView):
 
