@@ -1449,10 +1449,28 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paint(s, cr, k);
     if (round_clip) cairo_restore(cr);
+    if (p.ol) |ol| outline(cr, f, r, ol);
     if (alpha < 1) {
         cairo_pop_group_to_source(cr);
         cairo_paint_with_alpha(cr, alpha);
     }
+}
+
+/// CSS outline: a border of its own around the box grown by offset +
+/// width, its corners the box's radius grown as much (square ones stay
+/// square), solid, dashed or dotted.
+fn outline(cr: *cairo_t, f: Rect, r: [4]f32, ol: tree_mod.Outline) void {
+    if (!(ol.w > 0) or !(ol.c[3] > 0)) return;
+    const grow = ol.o + ol.w;
+    const box: Rect = .{ .x = f.x - grow, .y = f.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
+    if (box.w <= 2 * ol.w or box.h <= 2 * ol.w) return;
+    var radii: [4]f32 = undefined;
+    for (r, 0..) |x, i| radii[i] = if (x > 0) @max(0, x + grow) else 0;
+    const bw = [4]f32{ ol.w, ol.w, ol.w, ol.w };
+    const bc = [4]tree_mod.Color{ ol.c, ol.c, ol.c, ol.c };
+    cairo_save(cr);
+    defer cairo_restore(cr);
+    if (ol.s) |style| dashedBorder(cr, box, radii, bw, bc, style) else border(cr, box, radii, bw, bc);
 }
 
 fn setColor(cr: *cairo_t, c: tree_mod.Color) void {
