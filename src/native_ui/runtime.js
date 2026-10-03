@@ -18123,9 +18123,9 @@ ${a.stack || ""}`;
     for (const el of document.querySelectorAll(FOCUSABLE)) {
       let index = parseInt(el.getAttribute("tabindex"), 10);
       if (Number.isNaN(index)) {
-        if (!naturallyFocusable(el)) continue;
+        if (!naturallyFocusable(el) || tabRule !== "all" && !textLike(el)) continue;
         index = 0;
-      }
+      } else if (tabRule === "ios" && CONTROLS2.has(el.localName) && !textLike(el)) continue;
       if (index < 0 || CONTROLS2.has(el.localName) && el.hasAttribute("disabled") || !shown(el)) continue;
       (index > 0 ? positive : rest).push([index, el]);
     }
@@ -18133,6 +18133,10 @@ ${a.stack || ""}`;
     return [...positive, ...rest].map((e) => e[1]);
   }
   var CONTROLS2 = /* @__PURE__ */ new Set(["input", "button", "select", "textarea"]);
+  var tabRule = platform.os === "ios" ? "ios" : platform.os === "macos" && !platform.fullKeyboardAccess ? "mac" : "all";
+  function textLike(el) {
+    return el.localName === "select" || textField(el) || ["", "true", "plaintext-only"].includes(el.getAttribute("contenteditable"));
+  }
   function naturallyFocusable(el) {
     switch (el.localName) {
       case "a":

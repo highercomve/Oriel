@@ -268,6 +268,19 @@ when the page focuses an element that isn't a native field, the keyboard
 goes to the page's view. GTK: a capture-phase key controller on the
 overlay sends Tab from a field.
 
+On Apple platforms Tab visits what WKWebView's does (measured): on macOS
+without Full Keyboard Access (the system's keyboard navigation setting,
+off by default; `platform.fullKeyboardAccess`, read as a window opens)
+only text fields, selects, textareas and contenteditable, plus anything
+with an explicit `tabindex >= 0` (a button or link without one is
+skipped); with Full Keyboard Access, every control, as above. On iOS the
+same as macOS's default, but a `tabindex` doesn't bring in a button,
+checkbox or range. WKWebView on iOS moves nothing on a hardware Tab while
+nothing has focus; here the first Tab focuses the first element (more
+useful than doing nothing). macOS takes Tab from AppKit's key-view loop
+in a local event monitor; iOS from the page view's presses and a Tab key
+command.
+
 Backends: macOS (mouse moves, drags, buttons; key up from a local event monitor,
 AppKit not sending `keyUp:` to the page's view) and iOS (one touch; a drag the
 page doesn't take scrolls as before), GTK (mouse moves, drags and buttons;
