@@ -938,6 +938,15 @@ static JSValue nd_observe(JSContext *ctx, JSValueConst this_val, int argc, JSVal
 
 // __nuiDom.collect(): frees detached trees nothing holds (only where no DOM
 // operation is under way: the engine's render).
+// __nuiDom.internal(map): marks the runtime's own WeakMap/WeakSet (keyed by
+// nodes) so its entries don't keep a node's wrapper from being pruned (a
+// page's weak references do); returns it.
+static JSValue nd_internal(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (argc < 1) return JS_UNDEFINED;
+    JS_SetMapInternal(argv[0]);
+    return JS_DupValue(ctx, argv[0]);
+}
+
 static JSValue nd_collect(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     nui_dom_collect(dc_of(ctx)->dom);
     return JS_UNDEFINED;
@@ -1053,6 +1062,7 @@ static const JSCFunctionListEntry nui_dom_funcs[] = {
     JS_CFUNC_DEF("setProto", 2, nd_set_proto),
     JS_CFUNC_DEF("observe", 2, nd_observe),
     JS_CFUNC_DEF("collect", 0, nd_collect),
+    JS_CFUNC_DEF("internal", 1, nd_internal),
     JS_CFUNC_DEF("keepSelector", 1, nd_keep_selector),
     JS_CFUNC_DEF("matchKept", 2, nd_match_kept),
     JS_CFUNC_DEF("classStyle", 2, nd_class_style),

@@ -653,6 +653,7 @@ typedef struct JSMapRecord {
 
 typedef struct JSMapState {
     bool is_weak; /* true if WeakSet/WeakMap */
+    bool internal; /* Oriel: the runtime's own cache (JS_SetMapInternal) */
     struct list_head records; /* list of JSMapRecord.link */
     uint32_t record_count;
     struct list_head *hash_table;
@@ -1695,6 +1696,20 @@ int JS_GetRefCount(JSValueConst v)
     return JS_VALUE_HAS_REF_COUNT(v) ? JS_REF_COUNT(JS_VALUE_GET_PTR(v)) : 1;
 }
 
+/* Oriel: marks a WeakMap or WeakSet as the runtime's own cache: its keys'
+   entries don't count as state (JS_ObjectHasState). */
+void JS_SetMapInternal(JSValueConst map)
+{
+    if (JS_VALUE_GET_TAG(map) != JS_TAG_OBJECT)
+        return;
+    JSObject *p = JS_VALUE_GET_OBJ(map);
+    if (p->class_id != JS_CLASS_WEAKMAP && p->class_id != JS_CLASS_WEAKSET)
+        return;
+    JSMapState *s = p->u.map_state;
+    if (s)
+        s->internal = true;
+}
+
 /* Oriel: whether an object carries state of its own (properties, a
    prototype other than `proto`, or not extensible); a native DOM wrapper
    without any is replaced by an equal new one. Weak references to it
@@ -1707,6 +1722,13 @@ bool JS_ObjectHasState(JSValueConst v, JSValueConst proto)
     JSShape *sh = p->shape;
     if (sh->prop_count - sh->deleted_prop_count > 0 || !p->extensible)
         return true;
+    /* A page's weak reference to it (a WeakMap/WeakSet key, a WeakRef, a
+       FinalizationRegistry target) is state; the runtime's own caches
+       (internal maps) aren't. */
+    for (JSWeakRefRecord *wr = p->first_weak_ref; wr != NULL; wr = wr->next_weak_ref) {
+        if (wr->kind != JS_WEAK_REF_KIND_MAP || !wr->u.map_record->map->internal)
+            return true;
+    }
     JSObject *want = JS_VALUE_GET_TAG(proto) == JS_TAG_OBJECT ? JS_VALUE_GET_OBJ(proto) : NULL;
     return sh->proto != want;
 }

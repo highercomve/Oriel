@@ -36,6 +36,11 @@
 //   paint: [r,g,b,a] (r g b 0-255, a 0-1) or ["g", id]
 
 import { color } from "./css.js";
+// The runtime's own weak caches keyed by nodes: marked so their entries
+// don't keep a node's wrapper from being replaced (a page's weak
+// references do: dom/store.zig prune).
+const internalWeak = (m) => (globalThis.__nuiDom?.internal?.(m), m);
+
 
 let notify = () => {};
 
@@ -94,7 +99,7 @@ export function encodeProgram(ops) {
   return [i === size ? nums : nums.subarray(0, i), strs];
 }
 
-const recorders = new WeakMap();
+const recorders = internalWeak(new WeakMap());
 const CANVAS_DEFAULT_W = 300;
 const CANVAS_DEFAULT_H = 150;
 const TWO_PI = 2 * Math.PI;

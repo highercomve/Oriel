@@ -227,6 +227,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
         .use_lld = useLld(b.graph.host),
     });
+    var dom_js_test: ?*std.Build.Step = null;
     // The native DOM against linkedom, outside the app (docs/native-dom.md):
     // `zig build dom-bench -Doptimize=ReleaseFast`, then
     // zig-out/bin/dom_bench tools/dom_bench/bench.js [linkedom bundle].
@@ -265,11 +266,19 @@ pub fn build(b: *std.Build) void {
         });
         const dom_test_step = b.step("dom-test", "Run the native DOM store's tests");
         dom_test_step.dependOn(&b.addRunArtifact(dom_tests).step);
+        // The bindings with QuickJS: wrapper identity and weak references.
+        const js_test = b.addRunArtifact(dom_bench);
+        js_test.addFileArg(b.path("tools/dom_bench/wrappers.test.js"));
+        js_test.expectStdOutEqual("wrappers: ok\n");
+        const dom_js_test_step = b.step("dom-js-test", "Run the native DOM's QuickJS tests (tools/dom_bench)");
+        dom_js_test_step.dependOn(&js_test.step);
+        dom_js_test = &js_test.step;
     }
 
     const test_step = b.step("test", "Run unit tests");
     if (runs_tests) {
         test_step.dependOn(&b.addRunArtifact(tests).step);
+        if (dom_js_test) |t| test_step.dependOn(t);
         test_step.dependOn(&b.addRunArtifact(package_tests).step);
     }
 

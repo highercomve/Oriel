@@ -178,6 +178,7 @@ extern fn cairo_push_group(cr: *cairo_t) void;
 extern fn cairo_pop_group_to_source(cr: *cairo_t) void;
 extern fn cairo_paint_with_alpha(cr: *cairo_t, a: f64) void;
 extern fn cairo_paint(cr: *cairo_t) void;
+extern fn cairo_pattern_set_extend(p: *cairo_pattern_t, extend: c_int) void;
 extern fn cairo_pattern_create_linear(x0: f64, y0: f64, x1: f64, y1: f64) *cairo_pattern_t;
 extern fn cairo_pattern_add_color_stop_rgba(p: *cairo_pattern_t, off: f64, r: f64, g: f64, b: f64, a: f64) void;
 extern fn cairo_pattern_destroy(p: *cairo_pattern_t) void;
@@ -1853,16 +1854,22 @@ fn roundRect(cr: *cairo_t, f: Rect, r: [4]f32) void {
     cairo_close_path(cr);
 }
 
+/// A gradient's pattern: its stops resolved over the gradient line (px
+/// and calc() positions, missing ones: Gradient.resolve); a repeating one
+/// is one period long and repeats (CAIRO_EXTEND_REPEAT).
 fn gradient(f: Rect, g: tree_mod.Gradient) *cairo_pattern_t {
+    var buf: [260]tree_mod.Gradient.Stop = undefined;
     if (g.radialIn(f.w, f.h)) |rad| {
-        // A unit circle at the origin, mapped onto the ellipse.
+        // A unit circle at the origin, mapped onto the ellipse; its ray
+        // (the x radius) is the gradient line.
         const cx = f.x + rad[0];
         const cy = f.y + rad[1];
         const rx = rad[2];
         const ry = rad[3];
-        const pat = cairo_pattern_create_radial(0, 0, 0, 0, 0, 1);
+        const res = g.resolve(rx, &buf);
+        const pat = cairo_pattern_create_radial(0, 0, 0, 0, 0, res.period orelse 1);
         cairo_pattern_set_matrix(pat, &.{ .xx = 1 / rx, .yx = 0, .xy = 0, .yy = 1 / ry, .x0 = -cx / rx, .y0 = -cy / ry });
-        for (g.stops) |st| cairo_pattern_add_color_stop_rgba(pat, st[4], st[0] / 255, st[1] / 255, st[2] / 255, st[3]);
+        addStops(pat, res);
         return pat;
     }
     const a = g.angle * std.math.pi / 180.0;
@@ -1871,9 +1878,18 @@ fn gradient(f: Rect, g: tree_mod.Gradient) *cairo_pattern_t {
     const len = @abs(f.w * dx) + @abs(f.h * dy);
     const cx = f.x + f.w / 2;
     const cy = f.y + f.h / 2;
-    const pat = cairo_pattern_create_linear(cx - dx * len / 2, cy - dy * len / 2, cx + dx * len / 2, cy + dy * len / 2);
-    for (g.stops) |st| cairo_pattern_add_color_stop_rgba(pat, st[4], st[0] / 255, st[1] / 255, st[2] / 255, st[3]);
+    const res = g.resolve(len, &buf);
+    const span = len * (res.period orelse 1);
+    const x0 = cx - dx * len / 2;
+    const y0 = cy - dy * len / 2;
+    const pat = cairo_pattern_create_linear(x0, y0, x0 + dx * span, y0 + dy * span);
+    addStops(pat, res);
     return pat;
+}
+
+fn addStops(pat: *cairo_pattern_t, res: tree_mod.Gradient.Resolved) void {
+    for (res.stops) |st| cairo_pattern_add_color_stop_rgba(pat, st[4], st[0] / 255, st[1] / 255, st[2] / 255, st[3]);
+    if (res.period != null) cairo_pattern_set_extend(pat, 1); // CAIRO_EXTEND_REPEAT
 }
 
 fn border(cr: *cairo_t, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color) void {

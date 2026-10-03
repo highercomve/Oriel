@@ -161,13 +161,16 @@ reference counts) and allocation-failure tests.
   wrapper carrying state has properties of its own.
 - When an operation detaches a tree, the store releases at once what only
   it holds: the whole tree when nothing else references it, else each owned
-  wrapper with no state (no own properties, its usual prototype,
-  extensible) that nothing else references; a later walk to such a node
-  makes an equal new wrapper. Trees the renderer still references for a
-  frame are checked again before the next renders (`collect`). A
-  WeakMap/WeakSet/WeakRef entry for such a node is lost (a weak reference
-  isn't state): a page relying on one for a node in a removed tree it
-  doesn't reference otherwise sees a new wrapper.
+  wrapper with no state that nothing else references; a later walk to such
+  a node makes an equal new wrapper. State is own properties, a prototype
+  other than its usual one, not being extensible, or being the target of a
+  weak reference (a WeakMap/WeakSet key, a WeakRef, a FinalizationRegistry
+  target), so a page's weak entries keep their wrapper; the runtime's own
+  WeakMap/WeakSet caches are marked internal (`__nuiDom.internal`) and
+  don't count. Trees the renderer still references for a frame are checked
+  again before the next renders (`collect`). `zig build dom-js-test`
+  (tools/dom_bench/wrappers.test.js) checks weak entries and expandos
+  across a removal, a GC and a reattach.
 - A detached tree left without wrappers is freed when its last wrapper is
   finalized, unless an operation is under way (QuickJS's cycle collector
   can run inside the mutation hook, while a clone is building its copy):

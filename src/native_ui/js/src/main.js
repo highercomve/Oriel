@@ -21,6 +21,11 @@ import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules } from "./css.js";
 import { Renderer, UA_CSS, UA_CSS_WEBKIT, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
+// The runtime's own weak caches keyed by nodes: marked so their entries
+// don't keep a node's wrapper from being replaced (a page's weak
+// references do: dom/store.zig prune).
+const internalWeak = (m) => (globalThis.__nuiDom?.internal?.(m), m);
+
 
 const host = globalThis.__host;
 
@@ -240,7 +245,7 @@ if (!STYLE_RECORDS) {
   let desc = null;
   while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "style"))) proto = Object.getPrototypeOf(proto);
   if (desc?.get) {
-    const wrapped = new WeakMap();
+    const wrapped = internalWeak(new WeakMap());
     // try: a write before `let renderer` below has run (TDZ) is ignored.
     const touch = (el) => { try { if (renderer && el.isConnected) renderer.mark(el, 1); } catch {} };
     Object.defineProperty(proto, "style", {
@@ -339,7 +344,7 @@ Object.defineProperty(inputProto, "value", {
 // Setting it moves the native field's too (host.setSelection).
 const SELECTABLE = new Set(["", "text", "search", "url", "tel", "password"]);
 const selectable = (el) => el.localName === "textarea" || SELECTABLE.has((el.getAttribute("type") || "").toLowerCase());
-const lastSelection = new WeakMap();
+const lastSelection = internalWeak(new WeakMap());
 function selectionOf(el) {
   const len = String(el.value ?? "").length;
   if (renderer && host.selection) {
@@ -542,7 +547,7 @@ elProto.scrollIntoView = function (opts) {
 // page's el.click() also submits forms, follows links and toggles boxes.
 // As in browsers, a click() on an element whose click is in progress does
 // nothing (a handler on a parent that clicks its child again would recurse).
-const clicking = new WeakSet();
+const clicking = internalWeak(new WeakSet());
 Object.getPrototypeOf(document.createElement("div")).click = elProto.click = function () {
   if (clicking.has(this)) return;
   clicking.add(this);
@@ -581,8 +586,8 @@ const textField = (el) => el?.localName === "textarea" || el?.isContentEditable 
 // and on Enter in a one-line field, if the user edited it (the backend's
 // input) and its value differs from what it was at focus or at the last
 // change. A script's value doesn't count (browsers fire nothing for it).
-const changeBase = new WeakMap(); // field → its value at focus or the last change
-const edited = new WeakSet();
+const changeBase = internalWeak(new WeakMap()); // field → its value at focus or the last change
+const edited = internalWeak(new WeakSet());
 const changeField = (el) => el?.localName === "textarea" ||
   (el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase()));
 function fireChange(el) {
@@ -1221,7 +1226,7 @@ function guard(fn) {
 // sheetChanged), with a CSSOM over them (element.sheet,
 // document.styleSheets, insertRule/deleteRule, disabled).
 
-const linkCss = new WeakMap(); // <link> → { href, css } (its asset, read once)
+const linkCss = internalWeak(new WeakMap()); // <link> → { href, css } (its asset, read once)
 // Per-node state kept on the node's wrapper (a symbol property, not
 // enumerable) rather than in a WeakMap: a wrapper holding state is one the
 // native DOM keeps while its tree lives; one without any may be replaced
@@ -1230,7 +1235,7 @@ const ownSlot = (name) => {
   const key = Symbol(name);
   // A frozen or non-extensible target (a page's own EventTarget) keeps its
   // state beside it instead.
-  const aside = new WeakMap();
+  const aside = internalWeak(new WeakMap());
   return {
     get: (o) => (Object.prototype.hasOwnProperty.call(o, key) ? o[key] : aside.get(o)),
     set: (o, v) => {
