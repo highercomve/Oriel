@@ -703,6 +703,14 @@ whole px (1080 px at density 2.625 is 412 CSS px, not 411.43), the page
 scaled to fit (`Nui.cssScale`), so `innerWidth`, media queries and what
 fits in a row match the WebView's.
 
+Windows does the same at fractional scales: the client area in whole CSS
+px rounded up (784 px at 125% is 628, at 150% 523), drawn at the monitor's
+scale (the last fraction of a px cut, as WebView2 does).
+`document.documentElement.clientWidth`/`clientHeight` are the viewport's,
+on every backend. `ORIEL_NUI_SCALE=1.25` (testing) forces a scale on
+Win32, as `--force-device-scale-factor=1.25` does for WebView2 (through
+`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`).
+
 Touches come back as taps, drags with fling, long presses (`contextmenu`)
 and the mouse wheel, hit-tested in Zig on the tree. A transparent window
 (an overlay) opens in a translucent Activity, so nothing is drawn where the
