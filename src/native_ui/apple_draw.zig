@@ -89,6 +89,12 @@ extern fn CGContextSetTextMatrix(c: CGContextRef, t: CGAffineTransform) void;
 extern fn CGContextDrawLinearGradient(c: CGContextRef, g: CGGradientRef, start: CGPoint, end: CGPoint, options: u32) void;
 extern fn CGContextDrawRadialGradient(c: CGContextRef, g: CGGradientRef, sc: CGPoint, sr: CGFloat, ec: CGPoint, er: CGFloat, options: u32) void;
 extern fn CGColorSpaceCreateDeviceRGB() ?CGColorSpaceRef;
+extern fn CGColorSpaceCreateWithName(name: CFStringRef) ?CGColorSpaceRef;
+extern const kCGColorSpaceSRGB: CFStringRef;
+extern fn CGContextSetFillColorSpace(c: CGContextRef, space: CGColorSpaceRef) void;
+extern fn CGContextSetStrokeColorSpace(c: CGContextRef, space: CGColorSpaceRef) void;
+extern fn CGContextSetFillColor(c: CGContextRef, components: [*]const CGFloat) void;
+extern fn CGContextSetStrokeColor(c: CGContextRef, components: [*]const CGFloat) void;
 extern fn CGColorSpaceRelease(s: CGColorSpaceRef) void;
 extern fn CGColorCreate(space: CGColorSpaceRef, components: [*]const CGFloat) ?CGColorRef;
 extern fn CGColorRelease(c: CGColorRef) void;
@@ -402,11 +408,10 @@ fn lineBoxOf(comptime font_class: [:0]const u8, n: *const Node) ?LineBox {
 fn attributed(comptime font_class: [:0]const u8, n: *const Node) ?CFAttributedStringRef {
     const runs = n.props.runs orelse return null;
     const s = CFAttributedStringCreateMutable(null, 0) orelse return null;
-    const space = CGColorSpaceCreateDeviceRGB() orelse {
+    const space = srgb() orelse {
         CFRelease(s);
         return null;
     };
-    defer CGColorSpaceRelease(space);
     for (runs) |r| {
         if (r.t.len == 0) continue;
         const str = CFStringCreateWithBytes(null, r.t.ptr, @intCast(r.t.len), kCFStringEncodingUTF8, 0) orelse continue;
@@ -761,7 +766,7 @@ pub fn paint(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
     if (transparent) {
         CGContextClearRect(cg, all);
     } else {
-        CGContextSetRGBFillColor(cg, 1, 1, 1, 1);
+        setFillRGBA(cg, 1, 1, 1, 1);
         CGContextFillRect(cg, all);
     }
     const root = tree.root orelse return;
@@ -869,12 +874,37 @@ fn paintOutline(cg: CGContextRef, f: Rect, r: [4]f32, ol: tree_mod.Outline) void
     border(cg, box, radii, .{ ol.w, ol.w, ol.w, ol.w }, .{ ol.c, ol.c, ol.c, ol.c }, ol.s);
 }
 
+/// CSS colors are sRGB (as WebKit draws them, matched to the display):
+/// every fill, stroke, gradient, text color and canvas bitmap is in this
+/// space, not the device's (whose values would go to the display as they
+/// are). Created once, kept.
+var srgb_space: ?CGColorSpaceRef = null;
+
+fn srgb() ?CGColorSpaceRef {
+    if (srgb_space == null) srgb_space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB) orelse CGColorSpaceCreateDeviceRGB();
+    return srgb_space;
+}
+
+fn setFillRGBA(cg: CGContextRef, r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat) void {
+    const space = srgb() orelse return CGContextSetRGBFillColor(cg, r, g, b, a);
+    const comps = [4]CGFloat{ r, g, b, a };
+    CGContextSetFillColorSpace(cg, space);
+    CGContextSetFillColor(cg, &comps);
+}
+
+fn setStrokeRGBA(cg: CGContextRef, r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat) void {
+    const space = srgb() orelse return CGContextSetRGBStrokeColor(cg, r, g, b, a);
+    const comps = [4]CGFloat{ r, g, b, a };
+    CGContextSetStrokeColorSpace(cg, space);
+    CGContextSetStrokeColor(cg, &comps);
+}
+
 fn setFill(cg: CGContextRef, c: tree_mod.Color) void {
-    CGContextSetRGBFillColor(cg, c[0] / 255, c[1] / 255, c[2] / 255, c[3]);
+    setFillRGBA(cg, c[0] / 255, c[1] / 255, c[2] / 255, c[3]);
 }
 
 fn setStroke(cg: CGContextRef, c: tree_mod.Color) void {
-    CGContextSetRGBStrokeColor(cg, c[0] / 255, c[1] / 255, c[2] / 255, c[3]);
+    setStrokeRGBA(cg, c[0] / 255, c[1] / 255, c[2] / 255, c[3]);
 }
 
 /// A rectangle with per-corner radii (top-left, top-right, bottom-right,
@@ -904,8 +934,7 @@ fn addRoundRect(cg: CGContextRef, f: Rect, r: [4]f32) void {
 
 fn gradient(cg: CGContextRef, f: Rect, r: [4]f32, g: tree_mod.Gradient) void {
     if (g.stops.len == 0) return;
-    const space = CGColorSpaceCreateDeviceRGB() orelse return;
-    defer CGColorSpaceRelease(space);
+    const space = srgb() orelse return;
     var comps: [64 * 4]CGFloat = undefined;
     var locs: [64]CGFloat = undefined;
     const count = @min(g.stops.len, locs.len);
@@ -1182,8 +1211,7 @@ fn paintPlaceholder(comptime font_class: [:0]const u8, cg: CGContextRef, n: *con
     const all: CFRange = .{ .location = 0, .length = CFStringGetLength(str) };
     if (font(font_class, n.props.fz orelse 16, 400, false, n.props.mono, n.props.ff)) |f| CFAttributedStringSetAttribute(s, all, kCTFontAttributeName, f);
     const col = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
-    const space = CGColorSpaceCreateDeviceRGB() orelse return;
-    defer CGColorSpaceRelease(space);
+    const space = srgb() orelse return;
     const comps = [4]CGFloat{ col[0] / 255, col[1] / 255, col[2] / 255, col[3] * 0.5 };
     if (CGColorCreate(space, &comps)) |cc| {
         CFAttributedStringSetAttribute(s, all, kCTForegroundColorAttributeName, cc);
@@ -1455,8 +1483,7 @@ fn canvasBitmap(n: *Node, w: usize, h: usize) ?*CanvasBitmap {
         if (b.w == w and b.h == h) return b;
         dropCanvas(n);
     }
-    const space = CGColorSpaceCreateDeviceRGB() orelse return null;
-    defer CGColorSpaceRelease(space);
+    const space = srgb() orelse return null;
     // Premultiplied RGBA, its memory owned by the context.
     const ctx = CGBitmapContextCreate(null, w, h, 8, 0, space, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big) orelse return null;
     const b = std.heap.smp_allocator.create(CanvasBitmap) catch {
@@ -1757,8 +1784,7 @@ fn putGrad(r: *Replay, id: u16, g: CanvasGrad) void {
 fn drawGrad(r: *Replay, id: u16) void {
     const g = r.grads.get(id) orelse return;
     if (g.stops.items.len == 0) return;
-    const space = CGColorSpaceCreateDeviceRGB() orelse return;
-    defer CGColorSpaceRelease(space);
+    const space = srgb() orelse return;
     var comps: [256 * 4]CGFloat = undefined;
     var locs: [256]CGFloat = undefined;
     // Stops sorted by offset (the page may add them in any order), stable.
@@ -1791,7 +1817,7 @@ fn drawGrad(r: *Replay, id: u16) void {
 
 fn setPaintColor(ctx: CGContextRef, c: tree_mod.Color, alpha: f32, stroke: bool) void {
     const comps = .{ c[0] / 255, c[1] / 255, c[2] / 255, c[3] * alpha };
-    if (stroke) CGContextSetRGBStrokeColor(ctx, comps[0], comps[1], comps[2], comps[3]) else CGContextSetRGBFillColor(ctx, comps[0], comps[1], comps[2], comps[3]);
+    if (stroke) setStrokeRGBA(ctx, comps[0], comps[1], comps[2], comps[3]) else setFillRGBA(ctx, comps[0], comps[1], comps[2], comps[3]);
 }
 
 /// Off in a test: the same pictures the slow way.

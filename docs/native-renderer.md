@@ -543,6 +543,12 @@ font at the CSS weight, from NSFont/UIFont, which are toll-free bridged to
 CTFont; a node's framesetter and frame are kept between layout and paint
 until its props change). CoreGraphics has no SVG path parser:
 `svg_path.zig` turns path data into move/line/curve calls (arcs as cubics).
+Colors are sRGB, as CSS's: every fill, stroke, gradient, text color and
+canvas bitmap is in the sRGB color space (not the device's, whose values
+would reach a wide-gamut display unmatched), and a macOS window's backing
+store is sRGB too, so translucent colors blend in sRGB as WebKit's layers
+do (checked against WKWebView pixel for pixel: opaque and half-alpha
+swatches, a gradient, text, a border and a canvas fill).
 
 | | macOS (AppKit) | iOS (UIKit) |
 |---|---|---|
