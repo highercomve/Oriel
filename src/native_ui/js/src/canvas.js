@@ -50,6 +50,50 @@ export function commandsOf(el) {
   return recorders.get(el)?.ops || [];
 }
 
+// Its version: changes with every recorded op or restart (the renderer sends
+// a program to the tree when it changed: host.canvas). 0 before any draw.
+export function versionOf(el) {
+  return recorders.get(el)?.version || 0;
+}
+
+// A program as numbers for the tree (host.canvas, tree.decodeCanvas): each
+// op its code and a fixed number of arguments (CANVAS_ARGS); strings (text,
+// font families) by index into `strs`; paints as [kind, a, b, c, d] (0: a
+// color r, g, b, a; 1: gradient id). Codes and words match tree.zig.
+const CANVAS_CODES = { sv: 1, rs: 2, bp: 3, cp: 4, st: 5, fl: 6, cl: 7, tl: 8, ts: 9, tr: 10, mv: 11, ln: 12, rc: 13, ar: 14, bz: 15,
+  fr: 16, sr: 17, cr: 18, tx: 19, sx: 20, sf: 21, ss: 22, lw: 23, ga: 24, lc: 25, lj: 26, ta: 27, tb: 28, fo: 29, gl: 30, gr: 31, gs: 32 };
+export const CANVAS_ARGS = [0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 1, 2, 2, 4, 6, 6, 4, 4, 4, 3, 3, 5, 5, 1, 1, 1, 1, 1, 1, 4, 5, 7, 6];
+const WORDS = {
+  lc: { butt: 0, round: 1, square: 2 },
+  lj: { miter: 0, round: 1, bevel: 2 },
+  ta: { left: 0, center: 1, right: 2, start: 0, end: 2 },
+  tb: { alphabetic: 0, top: 1, hanging: 2, middle: 3, bottom: 4, ideographic: 4 },
+};
+export function encodeProgram(ops) {
+  let size = 0;
+  for (const op of ops) size += 1 + (CANVAS_ARGS[CANVAS_CODES[op[0]]] ?? 0);
+  const nums = new Float64Array(size), strs = [];
+  let i = 0;
+  for (const op of ops) {
+    const code = CANVAS_CODES[op[0]];
+    if (!code) continue;
+    nums[i++] = code;
+    switch (op[0]) {
+      case "tx": case "sx": nums[i++] = strs.push(String(op[1])) - 1; nums[i++] = op[2]; nums[i++] = op[3]; break;
+      case "fo": nums[i++] = op[1]; nums[i++] = op[2]; nums[i++] = op[3]; nums[i++] = strs.push(op[4] || "") - 1; break;
+      case "sf": case "ss": {
+        const p = op[1];
+        if (p?.[0] === "g") { nums[i++] = 1; nums[i++] = p[1]; nums[i++] = 0; nums[i++] = 0; nums[i++] = 0; }
+        else { nums[i++] = 0; nums[i++] = p[0]; nums[i++] = p[1]; nums[i++] = p[2]; nums[i++] = p[3]; }
+        break;
+      }
+      case "lc": case "lj": case "ta": case "tb": nums[i++] = WORDS[op[0]][op[1]] ?? 0; break;
+      default: for (let k = 1; k <= CANVAS_ARGS[code]; k++) nums[i++] = op[k] === true ? 1 : op[k] === false ? 0 : op[k] ?? 0;
+    }
+  }
+  return [i === size ? nums : nums.subarray(0, i), strs];
+}
+
 const recorders = new WeakMap();
 const CANVAS_DEFAULT_W = 300;
 const CANVAS_DEFAULT_H = 150;
@@ -105,6 +149,7 @@ class Recorder {
   constructor(el) {
     this.canvas = el;
     this.ops = [];
+    this.version = 0; // bumped with every change to `ops` (versionOf)
     this.nGrad = 0;
     // Each live gradient's definition (its creation op and color stops),
     // replayed when the program restarts at a full clear: the page may
@@ -119,7 +164,7 @@ class Recorder {
     this.clipped = false;
   }
 
-  push(op) { this.ops.push(op); notify(); }
+  push(op) { this.ops.push(op); this.version++; notify(); }
 
   // ------------------------------------------------------------- state
   set fillStyle(v) { this.putStyle("sf", "fillStyle", v); }
@@ -181,6 +226,7 @@ class Recorder {
   // definitions, then the state.
   restart() {
     this.ops.length = 0;
+    this.version++;
     if (this.grads.size) {
       const used = new Set();
       for (const st of [this.s, ...this.stack.map((x) => x.s)]) {
@@ -195,6 +241,7 @@ class Recorder {
   }
 
   emitState() {
+    this.version++;
     const s = this.s;
     this.ops.push(
       ["sf", s.fillStyle], ["ss", s.strokeStyle],
@@ -287,6 +334,7 @@ class Recorder {
     );
     this.penX = x + rx * Math.cos(+a1 || 0);
     this.penY = y + ry * Math.sin(+a1 || 0);
+    this.version++;
     notify();
   }
 

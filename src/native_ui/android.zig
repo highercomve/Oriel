@@ -96,6 +96,9 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .text = textChanged,
         .leaf_style = leafStyle,
         .paint = paintChanged,
+        // Kotlin keeps a copy of every node's props: canvas programs go in
+        // them until this backend has Backend.canvas.
+        .mirrors_props = true,
         .leaf = leaf,
         .request_display_frame = requestDisplayFrame,
     }, assets, platform_json, label, url, if (w > 0) w else 400, if (h > 0) h else 800);
