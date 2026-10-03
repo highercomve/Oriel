@@ -2507,6 +2507,18 @@ test "text updates wait for one measure_texts call before the layout" {
     t.destroy(4);
     t.layout();
     try std.testing.expectEqual(@as(usize, 1), Context.batches);
+    // A growing box around one label (a flex: 1 button): its minimum
+    // follows the label's batched size.
+    try t.apply(
+        \\[["c",5,"view"],["p",5,{"fg":1,"fb":0}],["c",6,"text"],["p",6,{"runs":[{"t":"ab"}]}],["k",5,[6]],["k",3,[5]]]
+    );
+    t.layout();
+    Context.singles = 0;
+    try std.testing.expect(try t.updateText(6, "abcdefgh"));
+    try std.testing.expect(t.needsLayout());
+    try std.testing.expectEqual(@as(usize, 2), Context.batches);
+    try std.testing.expectEqual(@as(usize, 0), Context.singles);
+    try std.testing.expectEqual(@as(f32, 80), t.get(5).?.grow_min);
 }
 
 test "a field's pending value survives a props update without one" {
