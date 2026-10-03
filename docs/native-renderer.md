@@ -178,8 +178,10 @@ auto-repeat) and `"keyup"` with `[key, modifiers]`.
 
 Backends: macOS (mouse moves, drags, buttons; key up from a local event monitor,
 AppKit not sending `keyUp:` to the page's view) and iOS (one touch; a drag the
-page doesn't take scrolls as before). GTK, Windows and Android still send only
-clicks, hover and key downs.
+page doesn't take scrolls as before), GTK (mouse moves, drags and buttons;
+moves coalesced on the frame clock; keyup from the key controller, repeat
+from the keys held). Windows and Android still send only clicks, hover and
+key downs.
 
 ## Canvas
 
