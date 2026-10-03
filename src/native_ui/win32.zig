@@ -180,6 +180,8 @@ pub const Surface = struct {
     /// requestAnimationFrame on the display's refresh (requestDisplayFrame):
     /// the page asked for the next frame, and the window is armed on the
     /// vsync thread.
+    /// Fonts to load while idle (warmFonts), in the page's order.
+    warm: std.ArrayListUnmanaged(engine_mod.FontSpec) = .empty,
     frame_wanted: bool = false,
     ticking: bool = false,
     /// Removed fields' controls, destroyed later (flushDoomed): a page can
@@ -227,6 +229,7 @@ pub const Surface = struct {
             .removed = removed,
             .add_timer = addTimer,
             .request_display_frame = requestDisplayFrame,
+            .warm_fonts = warmFonts,
             .invoke = invoke,
             .focus = focus,
             .props = propsChanged,
@@ -256,6 +259,7 @@ pub const Surface = struct {
         // Not inside any control now: their windows and GDI objects go.
         flushDoomed(s);
         s.doomed.deinit(s.gpa);
+        s.warm.deinit(s.gpa);
         // The target first: it walks the images to drop their bitmaps, and
         // releases the canvases (made by it).
         releaseTarget(s);
@@ -545,6 +549,59 @@ const vsync = struct {
         }
     }
 };
+
+// ---------------------------------------------------------------------------
+// Fonts loaded while idle (host.warmFonts)
+//
+// The first text in a face pays for DirectWrite's font match and load (on a
+// cold start, reading the font file): the page sends the sizes and weights
+// its rules use, and each is loaded on its own idle turn. WM_TIMER comes
+// only when nothing else is queued, and a turn with any input, posted
+// message (a display frame), paint or due timer waiting, or an animation
+// running, is put off: a frame is never delayed by more than one face.
+
+/// The SetTimer id of the warm-up turns (above every page timer id + 1).
+const warm_timer: usize = @as(usize, std.math.maxInt(u32)) + 3;
+
+fn warmFonts(ctx: *anyopaque, specs: []const engine_mod.FontSpec) void {
+    const s = surfaceOf(ctx);
+    s.warm.appendSlice(s.gpa, specs) catch return;
+    _ = c.SetTimer(s.hwnd, warm_timer, 1, null);
+}
+
+fn onWarmTimer(s: *Surface, hwnd: c.HWND) void {
+    if (s.warm.items.len == 0) return;
+    // Only when idle: anything queued goes first, and an animation keeps
+    // the thread for its frames.
+    if ((c.GetQueueStatus(c.QS_ALLINPUT) >> 16) != 0 or s.ticking) {
+        _ = c.SetTimer(hwnd, warm_timer, 50, null);
+        return;
+    }
+    // In the page's order: the commonest first.
+    const spec = s.warm.orderedRemove(0);
+    const t0 = prof.now();
+    warmFace(spec);
+    prof.report("warm font {d:.1}px {d}{s}{s} {d:.2}", .{ spec.size, spec.weight, if (spec.italic) " italic" else "", if (spec.mono) " mono" else "", prof.now() - t0 });
+    if (s.warm.items.len > 0) _ = c.SetTimer(hwnd, warm_timer, 1, null);
+}
+
+/// A short text laid out in the face (as textLayout makes it): its font
+/// matched, loaded and shaped once.
+fn warmFace(spec: engine_mod.FontSpec) void {
+    const dw = dwrite orelse return;
+    const weight: c.DWRITE_FONT_WEIGHT = @intCast(std.math.clamp(spec.weight, 1, 999));
+    const style: c.DWRITE_FONT_STYLE = if (spec.italic) c.DWRITE_FONT_STYLE_ITALIC else c.DWRITE_FONT_STYLE_NORMAL;
+    const size = if (std.math.isFinite(spec.size) and spec.size > 0) spec.size else 16;
+    var format: ?*c.IDWriteTextFormat = null;
+    if (dw.lpVtbl.*.CreateTextFormat.?(dw, if (spec.mono) mono_face else sans_face, null, weight, style, c.DWRITE_FONT_STRETCH_NORMAL, size, std.unicode.utf8ToUtf16LeStringLiteral(""), &format) < 0 or format == null) return;
+    defer releaseCom(format);
+    const text = std.unicode.utf8ToUtf16LeStringLiteral("Aa");
+    var layout: ?*c.IDWriteTextLayout = null;
+    if (dw.lpVtbl.*.CreateTextLayout.?(dw, text, text.len, format, 1e6, 1e6, &layout) < 0 or layout == null) return;
+    defer releaseCom(layout);
+    var m: c.DWRITE_TEXT_METRICS = undefined;
+    _ = layout.?.lpVtbl.*.GetMetrics.?(layout, &m);
+}
 
 /// host.vsync: the page's next animation frame comes at the display's next
 /// refresh.
@@ -1293,6 +1350,10 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         },
         c.WM_TIMER => {
             _ = c.KillTimer(hwnd, wparam);
+            if (wparam == warm_timer) {
+                onWarmTimer(s, hwnd);
+                return 0;
+            }
             // Ours are the page's ids + 1 (addTimer): nothing else is.
             if (wparam == 0 or wparam > std.math.maxInt(u32) + 1) return 0;
             if (comptime prof.enabled) {
