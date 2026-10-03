@@ -14644,6 +14644,10 @@ tr { display: table-row; } td, th { display: table-cell; padding: 1px; vertical-
 th { text-align: center; } caption { display: table-caption; text-align: center; }
 col, colgroup { display: none; }
 `;
+  var UA_CSS_WEBKIT = `
+button, input, textarea, select { font-size: 11px; }
+textarea { font-family: -webkit-small-control, system-ui; }
+`;
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
@@ -18146,6 +18150,7 @@ ${a.stack || ""}`;
         const engine = new StyleEngine();
         const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
         engine.addSheet(UA_CSS, sheets);
+        if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
         for (const link of document.querySelectorAll('link[rel="stylesheet"][href], style')) {
           const path = link.localName === "style" ? void 0 : link.getAttribute("href").replace(/^\.?\//, "");
           const css = path === void 0 ? link.textContent : host.asset(path);
