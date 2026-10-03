@@ -36,6 +36,9 @@ pub const Host = extern struct {
     mutation: *const fn (ctx: *anyopaque, kind: u8, target: Index, node: Index, name: u32) callconv(.c) void,
     /// A value's reference count.
     ref_count: *const fn (ctx: *anyopaque, v: *const JsVal) callconv(.c) c_int,
+    /// Whether a wrapper carries state of its own (expandos, a changed
+    /// prototype, not extensible).
+    has_state: *const fn (ctx: *anyopaque, v: *const JsVal) callconv(.c) c_int,
 };
 
 /// One window's DOM: the store, its parser, compiled selectors (by text) and
@@ -67,6 +70,10 @@ const max_selectors = 512;
 // host's C ones (the context is the Dom).
 fn hostOf(ctx: *anyopaque) *Host {
     return &@as(*Dom, @ptrCast(@alignCast(ctx))).host;
+}
+fn fwdHasState(ctx: *anyopaque, v: *const JsVal) bool {
+    const h = hostOf(ctx);
+    return h.has_state(h.ctx, v) != 0;
 }
 fn fwdRefCount(ctx: *anyopaque, v: *const JsVal) i32 {
     const h = hostOf(ctx);
@@ -151,7 +158,7 @@ export fn nui_dom_new(host: *const Host) ?*Dom {
     const d = gpa.create(Dom) catch return null;
     // Every field set (defaults included), then the store and parser.
     d.* = .{ .store = undefined, .parser = undefined, .host = host.* };
-    const js: st.Js = .{ .ctx = d, .dup = fwdDup, .free = fwdFree, .dupAtom = fwdDupAtom, .freeAtom = fwdFreeAtom, .valueAtom = fwdValueAtom, .tokens = fwdTokens, .refCount = fwdRefCount };
+    const js: st.Js = .{ .ctx = d, .dup = fwdDup, .free = fwdFree, .dupAtom = fwdDupAtom, .freeAtom = fwdFreeAtom, .valueAtom = fwdValueAtom, .tokens = fwdTokens, .refCount = fwdRefCount, .hasState = fwdHasState };
     const class_name = host.new_atom(host.ctx, "class", 5);
     const id_name = host.new_atom(host.ctx, "id", 2);
     defer if (class_name != 0) host.free_atom(host.ctx, class_name);
@@ -257,13 +264,19 @@ export fn nui_dom_connected(d: *Dom, idx: Index) bool {
 // --- The tree ---------------------------------------------------------
 
 export fn nui_dom_insert(d: *Dom, parent: Index, child: Index, ref: Index) c_int {
+    d.store.op_depth += 1;
+    defer d.store.op_depth -= 1;
     d.store.insertBefore(parent, child, ref) catch |e| return code(e);
     return code_ok;
 }
 export fn nui_dom_remove(d: *Dom, idx: Index) void {
+    d.store.op_depth += 1;
+    defer d.store.op_depth -= 1;
     d.store.remove(idx);
 }
 export fn nui_dom_remove_children(d: *Dom, idx: Index) void {
+    d.store.op_depth += 1;
+    defer d.store.op_depth -= 1;
     d.store.removeChildren(idx);
 }
 
@@ -299,16 +312,22 @@ export fn nui_dom_data(d: *Dom, idx: Index) ?*const JsVal {
     return d.store.dataOf(idx);
 }
 export fn nui_dom_set_data(d: *Dom, idx: Index, v: *const JsVal) void {
+    d.store.op_depth += 1;
+    defer d.store.op_depth -= 1;
     d.store.setData(idx, v);
 }
 export fn nui_dom_get_attr(d: *Dom, idx: Index, name: u32) ?*const JsVal {
     return d.store.getAttr(idx, name);
 }
 export fn nui_dom_set_attr(d: *Dom, idx: Index, name: u32, v: *const JsVal) c_int {
+    d.store.op_depth += 1;
+    defer d.store.op_depth -= 1;
     d.store.setAttr(idx, name, v) catch |e| return code(e);
     return code_ok;
 }
 export fn nui_dom_remove_attr(d: *Dom, idx: Index, name: u32) bool {
+    d.store.op_depth += 1;
+    defer d.store.op_depth -= 1;
     return d.store.removeAttr(idx, name);
 }
 export fn nui_dom_attr_count(d: *Dom, idx: Index) usize {
@@ -328,6 +347,8 @@ export fn nui_dom_attr_at(d: *Dom, idx: Index, i: usize, out: *?*const JsVal) u3
 
 /// Parses UTF-8 markup and appends the nodes to `root`.
 export fn nui_dom_parse_html(d: *Dom, root: Index, bytes: [*]const u8, len: usize) c_int {
+    d.store.op_depth += 1;
+    defer d.store.op_depth -= 1;
     d.parser.parse(root, bytes[0..len]) catch |e| return code(e);
     return code_ok;
 }
@@ -413,6 +434,8 @@ export fn nui_dom_by_id(d: *Dom, root: Index, id: u32) Index {
 // --- Cloning, serializing, fragments ------------------------------------
 
 export fn nui_dom_clone(d: *Dom, idx: Index, deep: bool) Index {
+    d.store.op_depth += 1;
+    defer d.store.op_depth -= 1;
     return d.store.clone(idx, deep) catch none;
 }
 
@@ -427,6 +450,8 @@ export fn nui_dom_serialize(d: *Dom, idx: Index, outer: bool, out: *[*]const u8,
 
 /// Markup parsed into a new fragment (0 on failure, with *out_code).
 export fn nui_dom_parse_fragment(d: *Dom, bytes: [*]const u8, len: usize, out_code: *c_int) Index {
+    d.store.op_depth += 1;
+    defer d.store.op_depth -= 1;
     const frag = d.store.createFragment() catch {
         out_code.* = code_oom;
         return none;

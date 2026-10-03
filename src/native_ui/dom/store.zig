@@ -50,9 +50,12 @@ pub const Js = struct {
     /// The whitespace-separated tokens of a string value, as atoms (new
     /// references) passed to `add`; false on failure.
     tokens: *const fn (ctx: *anyopaque, v: *const JsVal, sink: *anyopaque, add: *const fn (sink: *anyopaque, atom: u32) bool) bool,
-    /// A value's reference count (null: unknown, trees wait for the
-    /// cycle collector).
+    /// A value's reference count (null: unknown; detached trees then wait
+    /// for the cycle collector, and nothing is pruned).
     refCount: ?*const fn (ctx: *anyopaque, v: *const JsVal) i32 = null,
+    /// Whether a wrapper carries state of its own: expandos, a changed
+    /// prototype, not extensible (null: unknown, owned wrappers are kept).
+    hasState: ?*const fn (ctx: *anyopaque, v: *const JsVal) bool = null,
 };
 
 pub const Index = u32;
@@ -191,10 +194,18 @@ pub const Store = struct {
     orphans: std.ArrayList(Handle) = .empty,
     /// Observer calls in progress (JS runs inside them: no collecting).
     hook_depth: u32 = 0,
+    /// Operations in progress (the bindings' calls that change the tree or
+    /// reach the observer): a tree a finalizer leaves without wrappers is
+    /// listed for `collect` then, not freed under them.
+    op_depth: u32 = 0,
     /// Detached roots an operation left owning their trees: at its end,
     /// one nothing else references is released at once (`unheld`), not
     /// left for the cycle collector.
     candidates: std.ArrayList(Handle) = .empty,
+    /// Detached trees still owning wrappers after that check (the page's
+    /// render caches held some for a frame): checked again by `collect`
+    /// (before each render), a few times, then left to the cycle collector.
+    watch: std.ArrayList(struct { h: Handle, age: u8 }) = .empty,
 
     /// `class_name`, `id_name`: the atoms of "class" and "id" (the store
     /// takes a reference to each).
@@ -244,6 +255,7 @@ pub const Store = struct {
         s.dirty_list.deinit(s.gpa);
         s.orphans.deinit(s.gpa);
         s.candidates.deinit(s.gpa);
+        s.watch.deinit(s.gpa);
         s.stack.deinit(s.gpa);
         s.* = undefined;
     }
@@ -516,7 +528,8 @@ pub const Store = struct {
     }
 
     /// A wrapper was finalized (its last reference went): the node forgets
-    /// it, and a detached subtree left without wrappers is freed.
+    /// it, and a detached subtree left without wrappers is freed (or, inside
+    /// an operation, listed for `collect`).
     pub fn wrapperFinalized(s: *Store, idx: Index) void {
         const n = s.get(idx);
         std.debug.assert(n.has_wrapper and !n.connected);
@@ -627,6 +640,43 @@ pub const Store = struct {
         return null;
     }
 
+    /// A tree the page still holds: its owned wrappers that only the store
+    /// references and that hold no state (no own properties: no expandos,
+    /// listeners or template content, see native.js) go now. A later walk
+    /// to their node makes an equal new one; keeping them would keep every
+    /// removed row's wrapper until a cycle collection.
+    fn prune(s: *Store, root: Index) void {
+        const rc = s.js.refCount orelse return;
+        const state = s.js.hasState orelse return;
+        var count: usize = 0;
+        var idx = root;
+        while (s.nextWrapped(root, idx)) |next| : (idx = next) {
+            const n = s.get(next);
+            if (n.owned and rc(s.js.ctx, &n.wrapper) == 1 and !state(s.js.ctx, &n.wrapper)) count += 1;
+        }
+        if (count == 0) return;
+        s.releases.ensureUnusedCapacity(s.gpa, 2 * count) catch return;
+        const rw = s.get(root).wrapper;
+        idx = root;
+        while (s.nextWrapped(root, idx)) |next| : (idx = next) {
+            const n = s.get(next);
+            if (!(n.owned and rc(s.js.ctx, &n.wrapper) == 1 and !state(s.js.ctx, &n.wrapper))) continue;
+            // Only as many as were counted (and room reserved for).
+            if (count == 0) break;
+            count -= 1;
+            n.owned = false;
+            s.releases.appendAssumeCapacity(n.wrapper);
+            s.releases.appendAssumeCapacity(rw);
+        }
+    }
+
+    /// Whether `root`'s wrapper owns any wrapper in its tree.
+    fn ownsAny(s: *Store, root: Index) bool {
+        var idx = root;
+        while (s.nextWrapped(root, idx)) |next| : (idx = next) if (s.get(next).owned) return true;
+        return false;
+    }
+
     /// Whether only the store references `root`'s owning tree: the root's
     /// wrapper only by its owned ones, each of those only by the store.
     fn unheld(s: *Store, root: Index) bool {
@@ -668,9 +718,15 @@ pub const Store = struct {
             n.wrapped = @intCast(@as(i64, n.wrapped) + delta);
             root = idx;
         }
+        // A detached tree that lost its last wrapper: freed now, unless an
+        // operation is under way. A finalizer can run at any allocation,
+        // the cycle collector's included, also inside an operation building
+        // that very tree (a clone the mutation hook wrapped and dropped):
+        // then it's listed for `collect` (before the next render).
         if (delta < 0) {
-            const r = s.get(root);
-            if (!r.connected and r.wrapped == 0) s.freeTree(root);
+            if (s.op_depth == 0 and s.hook_depth == 0) {
+                if (s.orphaned(root)) s.freeTree(root);
+            } else s.noteOrphan(root);
         }
     }
 
@@ -831,7 +887,12 @@ pub const Store = struct {
             // than at the cycle collector's next run.
             const h = s.candidates.pop() orelse return;
             const idx = s.resolve(h) orelse continue;
-            if (s.owns(idx) and s.unheld(idx)) s.disown(idx, idx, true);
+            if (!s.owns(idx)) continue;
+            if (s.unheld(idx)) s.disown(idx, idx, true) else s.prune(idx);
+            if (s.ownsAny(idx)) watch: {
+                for (s.watch.items) |w| if (w.h == h) break :watch;
+                s.watch.append(s.gpa, .{ .h = h, .age = 0 }) catch {};
+            }
         }
     }
 
@@ -1024,6 +1085,24 @@ pub const Store = struct {
     /// calls: a parsed fragment, a new text node): the engine's render.
     pub fn collect(s: *Store) void {
         if (s.hook_depth != 0) return;
+        // The watched trees again: released or pruned now that the page's
+        // references may have gone.
+        var i: usize = 0;
+        while (i < s.watch.items.len) {
+            const w = &s.watch.items[i];
+            const idx = s.resolve(w.h) orelse {
+                _ = s.watch.swapRemove(i);
+                continue;
+            };
+            if (s.owns(idx)) {
+                if (s.unheld(idx)) s.disown(idx, idx, true) else s.prune(idx);
+            }
+            w.age += 1;
+            if (!s.owns(idx) or !s.ownsAny(idx) or w.age >= 8) {
+                _ = s.watch.swapRemove(i);
+            } else i += 1;
+        }
+        s.flush();
         while (s.orphans.pop()) |h| {
             const idx = s.resolve(h) orelse continue;
             if (s.orphaned(idx)) s.freeTree(idx);
@@ -1060,6 +1139,8 @@ const Fake = struct {
     /// Freeing a cycle (QuickJS's REMOVE_CYCLES): references only count
     /// down, no finalizer runs from a free.
     in_cycles: bool = false,
+    /// Wrappers with own properties (expandos), by key.
+    props: std.AutoHashMapUnmanaged(i64, i32) = .empty,
 
     fn new(a: std.mem.Allocator) Fake {
         return .{ .values = .init(a), .atoms = .init(a), .wrapper_nodes = .init(a), .tokens_of = .init(a), .edges = .init(a) };
@@ -1069,7 +1150,14 @@ const Fake = struct {
         f.atoms.deinit();
         f.wrapper_nodes.deinit();
         f.tokens_of.deinit();
+        f.props.deinit(f.edges.allocator);
         f.edges.deinit();
+    }
+    fn refCount(c: *anyopaque, v: *const JsVal) i32 {
+        return @intCast(of(c).values.get(key(v)) orelse 0);
+    }
+    fn hasState(c: *anyopaque, v: *const JsVal) bool {
+        return (of(c).props.get(key(v)) orelse 0) > 0;
     }
     /// A value's atom: 1000 + its key.
     fn valueAtom(c: *anyopaque, v: *const JsVal) u32 {
@@ -1118,6 +1206,9 @@ const Fake = struct {
     fn hold(f: *Fake, owner: i64, held: i64) void {
         f.values.getPtr(held).?.* += 1;
         f.edges.put(owner, held) catch unreachable;
+        // An expando: state on the owner (an own property in QuickJS).
+        const gop = f.props.getOrPut(f.edges.allocator, owner) catch unreachable;
+        gop.value_ptr.* = if (gop.found_existing) gop.value_ptr.* + 1 else 1;
     }
 
     const Counts = struct { f: *Fake, counts: *std.AutoHashMap(i64, i64), delta: i64 };
@@ -1214,7 +1305,7 @@ const Fake = struct {
         of(c).atoms.getPtr(a).?.* -= 1;
     }
     fn js(f: *Fake) Js {
-        return .{ .ctx = f, .dup = dup, .free = free, .dupAtom = dupAtom, .freeAtom = freeAtom, .valueAtom = valueAtom, .tokens = tokens };
+        return .{ .ctx = f, .dup = dup, .free = free, .dupAtom = dupAtom, .freeAtom = freeAtom, .valueAtom = valueAtom, .tokens = tokens, .refCount = refCount, .hasState = hasState };
     }
     /// A new value with one reference (the caller's).
     fn make(f: *Fake, k: i64) JsVal {
@@ -1266,7 +1357,9 @@ test "tree, attributes and text; every reference released" {
     try s.appendChild(s.document, div);
     try t.expect(s.get(text).connected);
     s.remove(div);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(div).kind);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(text).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1321,7 +1414,9 @@ test "wrappers: held while connected, the detached subtree freed with the last o
     // the subtree freed.
     s.remove(list);
     try t.expectEqual(@as(i64, 0), f.refs(10));
+    s.collect();
     try t.expectEqual(Kind.free, s.get(list).kind);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(row).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1343,7 +1438,9 @@ test "a detached subtree lives while any wrapper in it does" {
     // b.parentNode must still be a.
     try t.expectEqual(a, s.get(b).parent);
     Fake.free(&f, &wb); // the last wrapper: the whole subtree goes
+    s.collect();
     try t.expectEqual(Kind.free, s.get(a).kind);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(b).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1437,18 +1534,38 @@ const WrappingObserver = struct {
     f: *Fake,
     s: *Store,
     next_key: i64 = 500,
+    /// Also run the cycle collector in the hook (JS allocating there):
+    /// at every call, or only at call `gc_at` (1-based) when set.
+    gc: bool = false,
+    gc_at: u32 = 0,
+    calls: u32 = 0,
 
     fn notify(ctx: *anyopaque, kind: Mutation, target: Index, node: Index, name: u32) void {
         _ = kind;
         _ = name;
         const o: *WrappingObserver = @ptrCast(@alignCast(ctx));
-        for ([_]Index{ target, node }) |idx| {
-            if (idx == none or o.s.wrapperOf(idx) != null) continue;
-            var w = o.f.make(o.next_key);
+        // As the bindings' hook: both wrappers held while the JS runs (made,
+        // or an existing one's reference taken), dropped after.
+        var held: [2]?JsVal = .{ null, null };
+        for ([_]Index{ target, node }, 0..) |idx, k| {
+            if (idx == none) continue;
+            if (o.s.wrapperOf(idx)) |w| {
+                Fake.dup(o.f, w);
+                held[k] = w.*;
+                continue;
+            }
+            const w = o.f.make(o.next_key);
             o.f.wrapper_nodes.put(o.next_key, idx) catch unreachable;
             o.next_key += 1;
             o.s.setWrapper(idx, &w);
-            Fake.free(o.f, &w);
+            held[k] = w;
+        }
+        defer for (&held) |*h| if (h.*) |*w| Fake.free(o.f, w);
+        o.calls += 1;
+        if (o.gc and (o.gc_at == 0 or o.gc_at == o.calls)) {
+            var freed: std.ArrayList(i64) = .empty;
+            defer freed.deinit(std.testing.allocator);
+            o.f.collectCycles(std.testing.allocator, &freed);
         }
     }
 
@@ -1535,6 +1652,7 @@ test "a detached tree left without wrappers is freed by collect" {
     try t.expectEqual(Kind.free, s.get(a).kind);
     try t.expectEqual(Kind.element, s.get(b).kind); // still wrapped
     Fake.free(&f, &wb);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(b).kind);
     s.collect(); // nothing listed is left to free
     s.deinit();
@@ -1581,6 +1699,7 @@ test "a tree whose last wrapper goes during an observer call is freed by collect
     s.observer = null;
     s.collect();
     try t.expectEqual(Kind.free, s.get(a).kind);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(b).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1671,6 +1790,7 @@ test "wrappers in a detached tree are owned by its root's; ownership moves with 
     Fake.free(&f, &w2);
     s.remove(r1);
     Fake.free(&f, &w1);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(r1).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1697,7 +1817,9 @@ test "a dropped detached tree is freed, a cycle through its expandos included" {
     defer freed.deinit(t.allocator);
     f.collectCycles(t.allocator, &freed);
     try t.expectEqual(@as(usize, 2), freed.items.len);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(root).kind);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(button).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1718,6 +1840,7 @@ test "a detached tree attached later keeps the expandos set on it" {
     try s.appendChild(row, button);
     var wr = try wrapNode(&f, &s, root, 10);
     var wb = try wrapNode(&f, &s, button, 30);
+    try f.props.put(t.allocator, 30, 1); // button.$$click
     Fake.free(&f, &wb);
     var freed: std.ArrayList(i64) = .empty;
     defer freed.deinit(t.allocator);
@@ -1728,9 +1851,8 @@ test "a detached tree attached later keeps the expandos set on it" {
     try t.expectEqual(@as(i64, 1), f.refs(30)); // the document's (connected)
     try f.accounted(t.allocator, &.{.{ 10, 1 }});
     Fake.free(&f, &wr);
-    s.remove(root); // nothing outside holds it: the collector frees it
-    f.collectCycles(t.allocator, &freed);
-    try t.expectEqual(@as(usize, 2), freed.items.len);
+    s.remove(root); // nothing outside holds it: released at once
+    s.collect();
     try t.expectEqual(Kind.free, s.get(button).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1748,6 +1870,7 @@ test "a subtree removed from the document: its root owns it until it's dropped" 
     try s.appendChild(s.document, list);
     var wl = try wrapNode(&f, &s, list, 10);
     var wi = try wrapNode(&f, &s, item, 20);
+    try f.props.put(t.allocator, 20, 1); // an expando: kept with its tree
     Fake.free(&f, &wi); // the document holds it
     s.remove(list); // the page still holds the list
     try t.expect(s.get(item).owned and s.get(item).has_wrapper);
@@ -1759,6 +1882,7 @@ test "a subtree removed from the document: its root owns it until it's dropped" 
     Fake.free(&f, &wl);
     f.collectCycles(t.allocator, &freed);
     try t.expectEqual(@as(usize, 2), freed.items.len);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(item).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1780,6 +1904,7 @@ test "nested detached roots: the outer root owns the inner tree, and gives it ba
     var wh = try wrapNode(&f, &s, holder, 20);
     var wi = try wrapNode(&f, &s, inner, 30);
     var wl = try wrapNode(&f, &s, leaf, 40);
+    try f.props.put(t.allocator, 40, 1); // an expando: kept with its tree
     Fake.free(&f, &wl); // inner's tree holds it
     try t.expect(s.get(leaf).owned);
     try s.appendChild(holder, inner);
@@ -1824,6 +1949,7 @@ test "a root the page dropped lives while a node in its tree is held" {
     Fake.free(&f, &wa);
     f.collectCycles(t.allocator, &freed);
     try t.expectEqual(@as(usize, 3), freed.items.len);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(root).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1851,6 +1977,7 @@ test "a root wrapped after its descendants owns them from then on" {
     defer freed.deinit(t.allocator);
     f.collectCycles(t.allocator, &freed);
     try t.expectEqual(@as(usize, 2), freed.items.len);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(root).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1892,6 +2019,7 @@ test "fragments, removeChildren and clones move owned wrappers" {
     Fake.free(&f, &wh);
     Fake.free(&f, &wf);
     f.collectCycles(t.allocator, &freed);
+    s.collect();
     try t.expectEqual(Kind.free, s.get(host).kind);
     s.deinit();
     try t.expect(f.balanced());
@@ -1956,4 +2084,211 @@ test "owned wrappers moved with no memory to queue their release: kept, dropped 
         s.deinit();
         try t.expect(f.balanced());
     }
+}
+
+test "a removed tree: released at once if only the store holds it, else its stateless wrappers go" {
+    const t = std.testing;
+    var f = Fake.new(t.allocator);
+    defer f.deinit();
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
+    f.store = &s;
+    const list = try s.createElement(1);
+    const a = try s.createElement(2);
+    const b = try s.createElement(3);
+    try s.appendChild(list, a);
+    try s.appendChild(list, b);
+    try s.appendChild(s.document, list);
+    var wl = try wrapNode(&f, &s, list, 10);
+    var wa = try wrapNode(&f, &s, a, 20);
+    var wb = try wrapNode(&f, &s, b, 30);
+    try f.props.put(t.allocator, 30, 1); // b.$$click = …
+    Fake.free(&f, &wa);
+    Fake.free(&f, &wb);
+    // The page holds the list: a (no state) goes, b (an expando) stays owned.
+    s.remove(list);
+    try t.expect(!s.get(a).has_wrapper);
+    try t.expect(s.get(b).owned);
+    try f.accounted(t.allocator, &.{.{ 10, 1 }});
+    // Back in, then out with nothing outside holding it: released at once.
+    try s.appendChild(s.document, list);
+    Fake.free(&f, &wl);
+    s.remove(list);
+    s.collect();
+    try t.expectEqual(Kind.free, s.get(list).kind);
+    s.collect();
+    try t.expectEqual(Kind.free, s.get(b).kind);
+    s.deinit();
+    try t.expect(f.balanced());
+}
+
+test "a removed tree's wrappers held a while longer (a render's cache) go at a later collect" {
+    const t = std.testing;
+    var f = Fake.new(t.allocator);
+    defer f.deinit();
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
+    f.store = &s;
+    const list = try s.createElement(1);
+    const row = try s.createElement(2);
+    try s.appendChild(list, row);
+    try s.appendChild(s.document, list);
+    var wl = try wrapNode(&f, &s, list, 10);
+    var wr = try wrapNode(&f, &s, row, 20); // the renderer's reference, for now
+    s.remove(list);
+    try t.expect(s.get(row).owned); // still referenced: kept, watched
+    Fake.free(&f, &wr); // the render dropped it
+    s.collect();
+    try t.expect(!s.get(row).has_wrapper); // no state: gone
+    Fake.free(&f, &wl); // no cycle left: the list goes with the page's reference
+    s.collect();
+    try t.expectEqual(Kind.free, s.get(list).kind);
+    s.deinit();
+    try t.expect(f.balanced());
+}
+
+/// The store's records are consistent: the free list holds each free record
+/// once, live records' links agree, and `wrapped` counts what it says.
+fn checkStore(s: *Store) !void {
+    const t = std.testing;
+    var seen = std.AutoHashMap(Index, void).init(t.allocator);
+    defer seen.deinit();
+    var f = s.free_head;
+    while (f != none) : (f = s.get(f).next) {
+        try t.expect(!(try seen.getOrPut(f)).found_existing);
+        try t.expectEqual(Kind.free, s.get(f).kind);
+    }
+    var i: Index = 1;
+    while (i < s.used) : (i += 1) {
+        const n = s.get(i);
+        if (n.kind == .free) continue;
+        try t.expect(!seen.contains(i));
+        var count: u32 = @intFromBool(n.has_wrapper);
+        var c = n.first;
+        var prev: Index = none;
+        while (c != none) : (c = s.get(c).next) {
+            try t.expect(s.get(c).kind != .free);
+            try t.expectEqual(i, s.get(c).parent);
+            try t.expectEqual(prev, s.get(c).prev);
+            count += s.get(c).wrapped;
+            prev = c;
+        }
+        try t.expectEqual(prev, n.last);
+        try t.expectEqual(count, n.wrapped);
+        if (n.owned) try t.expect(n.has_wrapper and !n.connected and n.parent != none);
+    }
+}
+
+test "fuzz: wrappers, moves, removals, clones and collections keep the store consistent" {
+    const t = std.testing;
+    var seed: u64 = 0;
+    while (seed < 300) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed);
+        const r = prng.random();
+        var f = Fake.new(t.allocator);
+        defer f.deinit();
+        var s = try Store.init(t.allocator, f.js(), 200, 201);
+        f.store = &s;
+        // Nodes the test knows (handles), and the page's wrappers.
+        var nodes: std.ArrayList(Handle) = .empty;
+        defer nodes.deinit(t.allocator);
+        var page: std.ArrayList(JsVal) = .empty;
+        defer page.deinit(t.allocator);
+        var next_key: i64 = 100;
+        try nodes.append(t.allocator, s.handleOf(s.document));
+        // Odd seeds: an observer that wraps what it's shown and drops it (the
+        // bindings' hook, a page observer's view: detached mutations too).
+        var obs: WrappingObserver = .{ .f = &f, .s = &s, .gc = seed % 4 == 3 };
+        if (seed % 2 == 1) s.observer = .{ .ctx = &obs, .notify = WrappingObserver.notify, .connected_only = false };
+        var step: usize = 0;
+        while (step < 150) : (step += 1) {
+            const pick = struct {
+                fn one(st: *Store, list: []const Handle, rr: std.Random) ?Index {
+                    if (list.len == 0) return null;
+                    return st.resolve(list[rr.uintLessThan(usize, list.len)]);
+                }
+            }.one;
+            const op = r.uintLessThan(u8, 10);
+            if (op != 9) s.op_depth += 1; // the bindings' calls
+            defer if (op != 9) {
+                s.op_depth -= 1;
+            };
+            switch (op) {
+                0, 1 => try nodes.append(t.allocator, s.handleOf(try s.createElement(@intCast(1 + r.uintLessThan(u32, 3))))),
+                2 => if (pick(&s, nodes.items, r)) |idx| if (s.wrapperOf(idx) == null) {
+                    page.append(t.allocator, try wrapNode(&f, &s, idx, next_key)) catch unreachable;
+                    if (r.boolean()) try f.props.put(t.allocator, next_key, 1);
+                    next_key += 1;
+                },
+                3 => if (page.items.len > 0) {
+                    var w = page.swapRemove(r.uintLessThan(usize, page.items.len));
+                    Fake.free(&f, &w);
+                },
+                4, 5 => if (pick(&s, nodes.items, r)) |a| if (pick(&s, nodes.items, r)) |b| {
+                    s.appendChild(a, b) catch {};
+                },
+                6 => if (pick(&s, nodes.items, r)) |idx| s.remove(idx),
+                7 => if (pick(&s, nodes.items, r)) |idx| s.removeChildren(idx),
+                8 => if (pick(&s, nodes.items, r)) |idx| if (s.get(idx).kind != .document) {
+                    // A copy is built whatever runs in the hook.
+                    const c = try s.clone(idx, true);
+                    if (r.boolean()) try nodes.append(t.allocator, s.handleOf(c)) else s.dropIfUnused(c);
+                },
+                else => {
+                    s.collect();
+                    var freed: std.ArrayList(i64) = .empty;
+                    defer freed.deinit(t.allocator);
+                    f.collectCycles(t.allocator, &freed);
+                },
+            }
+            checkStore(&s) catch |e| {
+                std.debug.print("seed {d} step {d}\n", .{ seed, step });
+                return e;
+            };
+        }
+        for (page.items) |*w| Fake.free(&f, w);
+        f.store = null;
+        s.deinit();
+        try t.expect(f.balanced());
+    }
+}
+
+test "a deep clone survives a cycle collection in the mutation hook" {
+    const t = std.testing;
+    var f = Fake.new(t.allocator);
+    defer f.deinit();
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
+    f.store = &s;
+    // Solid's row template: li > (span > b), (button > i). Copying the
+    // button's child runs the hook while the li's copy, wrapped by the hook
+    // before and dropped, is held by nothing but this clone.
+    const li = try s.createElement(1);
+    const span = try s.createElement(2);
+    const b = try s.createElement(3);
+    const button = try s.createElement(4);
+    const i = try s.createElement(5);
+    try s.appendChild(span, b);
+    try s.appendChild(button, i);
+    try s.appendChild(li, span);
+    try s.appendChild(li, button);
+    // The bindings' hook: wraps what it's shown, drops it, and JS
+    // allocating there runs the cycle collector.
+    // Appends: b into span, span into li, i into button (here the
+    // collection runs: li's copy and span's are a cycle by then), button
+    // into li.
+    var obs: WrappingObserver = .{ .f = &f, .s = &s, .gc = true, .gc_at = 3 };
+    s.observer = .{ .ctx = &obs, .notify = WrappingObserver.notify, .connected_only = false };
+    s.op_depth += 1; // the bindings' call
+    const copy = try s.clone(li, true);
+    s.op_depth -= 1;
+    s.observer = null;
+    try t.expectEqual(Kind.element, s.get(copy).kind);
+    try t.expect(s.get(copy).first != none and s.get(s.get(copy).first).next != none);
+    try checkStore(&s);
+    s.dropIfUnused(copy);
+    s.dropIfUnused(li);
+    var freed: std.ArrayList(i64) = .empty;
+    defer freed.deinit(t.allocator);
+    f.collectCycles(t.allocator, &freed);
+    f.store = null;
+    s.deinit();
+    try t.expect(f.balanced());
 }
