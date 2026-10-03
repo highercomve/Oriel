@@ -12987,12 +12987,15 @@ globalThis.atob ??= (s) => {
       case "border-color":
         return box(prop2, (side) => `border-${side}-color`);
       case "border-radius": {
-        const v = splitSpaces(value.split("/")[0]);
-        const [a, b = a, c = a, d = b] = v;
-        out["border-top-left-radius"] = a;
-        out["border-top-right-radius"] = b;
-        out["border-bottom-right-radius"] = c;
-        out["border-bottom-left-radius"] = d;
+        const [hv, vv] = value.split("/");
+        const four = (s) => {
+          const [a, b = a, c = a, d = b] = splitSpaces(s.trim());
+          return [a, b, c, d];
+        };
+        const h = four(hv);
+        const v = vv === void 0 ? h : four(vv);
+        const corners = ["top-left", "top-right", "bottom-right", "bottom-left"];
+        for (let i = 0; i < 4; i++) out[`border-${corners[i]}-radius`] = h[i] === v[i] ? h[i] : `${h[i]} ${v[i]}`;
         return;
       }
       case "border":
@@ -16861,13 +16864,21 @@ textarea { font-family: -webkit-small-control, system-ui; }
     transformPart(cs, fs, p);
     const cur = color(cs.color);
     backgroundPart(cs, p);
+    const one = (v) => {
+      if (!v) return 0;
+      if (v.endsWith("%")) return `${parseFloat(v) || 0}%`;
+      const l = length(v, fs, false);
+      return typeof l === "number" ? Math.max(0, Math.min(l, 9999)) : 0;
+    };
     const r = ["top-left", "top-right", "bottom-right", "bottom-left"].map((c) => {
       const v = cs[`border-${c}-radius`];
       if (!v) return 0;
-      if (v.endsWith("%")) return { pct: parseFloat(v) };
-      return length(v, fs, false) ?? 0;
+      const [a, b] = splitSpaces(String(v));
+      const x = one(a);
+      const y = b === void 0 ? x : one(b);
+      return x === y ? x : [x, y];
     });
-    if (r.some((x) => x)) p.br = r.map((x) => typeof x === "object" ? `${x.pct}%` : Math.min(x, 9999));
+    if (r.some((x) => x && x !== "0%")) p.br = r;
     if (cs.opacity !== void 0 && cs.opacity !== "1") p.op = parseFloat(cs.opacity);
     const sh = shadow(cs["box-shadow"], cur);
     if (sh) p.sh = sh;
