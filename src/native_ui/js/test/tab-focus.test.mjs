@@ -106,11 +106,12 @@ assert.deepEqual(bootPage(macPage, { os: "ios" })(7), ["s2", "t1", "d0", "ce", "
 }
 
 // The ring above is WebKit's (linux). On Windows and Android it is
-// Chromium's: 2px #101010 in a white halo, placed by the kind of element.
-{
+// Chromium's: a 2px band in a white halo, placed by the kind of element;
+// #101010 on Windows, orange on Android.
+for (const [os, band] of [["windows", [16, 16, 16, 1]], ["android", [229, 151, 0, 1]]]) {
   const winPage = `<html><body><button id="b">b</button><a href="#x" id="a" style="display: block">a</a><div id="d" tabindex="0">d</div><input type="checkbox" id="k"><input id="t"></body></html>`;
   let ops = "";
-  const winHost = { ...host, asset: (p) => (p === "index.html" ? winPage : undefined), platform: JSON.stringify({ os: "windows", arch: "x86_64" }),
+  const winHost = { ...host, asset: (p) => (p === "index.html" ? winPage : undefined), platform: JSON.stringify({ os, arch: "x86_64" }),
     ops: (json) => { ops = json; for (const [k, id, x] of JSON.parse(json)) if (k === "c") nodes.set(id, x); else if (k === "d") nodes.delete(id); } };
   const wctx = vm.createContext({ __host: winHost });
   vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), wctx, { filename: "runtime.js" });
@@ -123,8 +124,8 @@ assert.deepEqual(bootPage(macPage, { os: "ios" })(7), ["s2", "t1", "d0", "ce", "
     const id = vm.runInContext("document.activeElement.id", wctx);
     const ol = JSON.parse(ops).map((op) => op[0] === "p" && op[2].ol).find(Boolean);
     rings[id] = ol && [ol.o, ol.r];
-    if (id === "b") assert.deepEqual(ol, { w: 2, c: [16, 16, 16, 1], o: -2, h: [255, 255, 255, 1], r: 3 });
+    if (id === "b") assert.deepEqual(ol, { w: 2, c: band, o: -2, h: [255, 255, 255, 1], r: 3 }, os);
   }
-  assert.deepEqual(rings, { b: [-2, 3], a: [0, 4], d: [-1, 4], k: [1, 3], t: [-2, 3] });
+  assert.deepEqual(rings, { b: [-2, 3], a: [0, 4], d: [-1, 4], k: [1, 3], t: [-2, 3] }, os);
 }
 console.log("tab focus: ok");
