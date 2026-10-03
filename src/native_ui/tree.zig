@@ -3648,3 +3648,18 @@ test "calc(50% - 8px) sizes resolve against the container: the Vite starters' 2x
     t.layout();
     try std.testing.expectEqual(@as(f32, 210), t.get(5).?.frame.w);
 }
+
+test "a margin in a wrapping row moves its item down (align-items: flex-start)" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    t.width = 300;
+    t.height = 200;
+    try t.apply(
+        \\[["c",0,"view"],["c",1,"view"],["p",1,{"fd":"row","fw":"wrap","ai":"flex-start"}],["c",2,"view"],["p",2,{"w":50,"h":20,"m":[10,10,10,10]}],["k",1,[2]],["k",0,[1]],["r",0]]
+    );
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 10), t.get(2).?.frame.y);
+    try std.testing.expectEqual(@as(f32, 10), t.get(2).?.frame.x);
+}
