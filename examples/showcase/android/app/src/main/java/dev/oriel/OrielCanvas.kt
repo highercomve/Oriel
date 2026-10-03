@@ -133,6 +133,76 @@ internal object CanvasProgram {
         else -> null
     }
 
+    /**
+     * `count` ops packed by android.zig's putCanvasCmd from the program
+     * tree.zig parsed (a tag, the CanvasCmd variant's index, then its
+     * fields), as `parse` would make them from the JSON; null when cut off.
+     */
+    fun unpack(b: java.nio.ByteBuffer, count: Int): List<CvOp>? {
+        if (count < 0) return null
+        val out = ArrayList<CvOp>(count)
+        fun f() = b.float
+        fun str(): String? {
+            val len = b.int
+            if (len < 0 || len > b.remaining()) return null
+            val s = String(b.array(), b.arrayOffset() + b.position(), len, Charsets.UTF_8)
+            b.position(b.position() + len)
+            return s
+        }
+        fun paint(): CvPaint = if (b.get().toInt() == 0) CvPaint.Solid(rgba(f(), f(), f(), f())) else CvPaint.Grad(b.int)
+        try {
+            repeat(count) {
+                val op: CvOp? = when (b.get().toInt()) {
+                    0 -> CvOp.Save
+                    1 -> CvOp.Restore
+                    2 -> CvOp.BeginPath
+                    3 -> CvOp.ClosePath
+                    4 -> CvOp.Fill(b.get().toInt() != 0)
+                    5 -> CvOp.Stroke
+                    6 -> CvOp.Clip(b.get().toInt() != 0)
+                    7 -> CvOp.Translate(f(), f())
+                    8 -> CvOp.Scale(f(), f())
+                    9 -> CvOp.Rotate(f())
+                    10 -> CvOp.MoveTo(f(), f())
+                    11 -> CvOp.LineTo(f(), f())
+                    12 -> CvOp.Rect(f(), f(), f(), f())
+                    13 -> CvOp.Arc(f(), f(), f(), f(), f(), b.get().toInt() != 0)
+                    14 -> CvOp.Bezier(f(), f(), f(), f(), f(), f())
+                    15 -> CvOp.FillRect(f(), f(), f(), f())
+                    16 -> CvOp.StrokeRect(f(), f(), f(), f())
+                    17 -> CvOp.ClearRect(f(), f(), f(), f())
+                    18, 19 -> {
+                        val stroke = b.get(b.position() - 1).toInt() == 19
+                        val t = str() ?: return null
+                        val x = f(); val y = f()
+                        if (t.isEmpty()) null else CvOp.Text(t, x, y, stroke)
+                    }
+                    20 -> CvOp.FillStyle(paint())
+                    21 -> CvOp.StrokeStyle(paint())
+                    22 -> CvOp.LineWidth(f())
+                    23 -> CvOp.LineCap(b.get().toInt())
+                    24 -> CvOp.LineJoin(b.get().toInt())
+                    25 -> CvOp.GlobalAlpha(f())
+                    26 -> {
+                        val italic = b.get().toInt() != 0
+                        val weight = f().toInt(); val size = f()
+                        CvOp.Font(italic, weight, size, str() ?: return null)
+                    }
+                    27 -> CvOp.TextAlign(b.get().toInt())
+                    28 -> CvOp.TextBaseline(b.get().toInt())
+                    29 -> CvOp.LinearGrad(b.int, f(), f(), f(), f())
+                    30 -> CvOp.RadialGrad(b.int, f(), f(), f(), f(), f(), f())
+                    31 -> CvOp.ColorStop(b.int, f(), rgba(f(), f(), f(), f()))
+                    else -> return null
+                }
+                if (op != null) out += op
+            }
+        } catch (e: java.nio.BufferUnderflowException) {
+            return null
+        }
+        return out
+    }
+
     private val CAPS = listOf("butt", "round", "square")
     private val JOINS = listOf("miter", "round", "bevel")
     private val ALIGNS = listOf("left", "center", "right", "start", "end")
