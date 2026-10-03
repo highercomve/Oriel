@@ -1314,6 +1314,11 @@ export class Renderer {
       if (spaced && props.cg === undefined) { props.cg = Math.round(fontSize * 0.28 * 10) / 10; }
     }
 
+    // Block flow: the kids whose margins don't collapse (lines of text,
+    // inline boxes, pseudo-elements), for collapseMargins.
+    const flowBlock = !childCtx.blockify && props.fd === "column" && display !== "grid" && !tableHolds(display);
+    const inLine = flowBlock ? new Set() : null;
+    if (before) inLine?.add(before);
     for (const item of flow) {
       if (item.text) {
         const tid = this.idOf(el, "t" + kids.length);
@@ -1323,17 +1328,20 @@ export class Renderer {
         tp.fs = (childCtx.blockify || inlineLine) && !props.scroll ? 1 : 0;
         this.put(nodes, tid, "text", tp, []);
         kids.push(tid);
+        inLine?.add(tid);
         continue;
       }
       const cid = this.element(item.el, cs, nodes, childCtx);
       if (cid === null) continue;
       this.adjustKid(nodes, cid, item.el, cs, props, display, childCtx);
       kids.push(cid);
+      if (inLine && (ATOMIC_INLINE.has(this.styleOf(item.el)?.display || "inline") || boxed?.has(item.el))) inLine.add(cid);
       const ord = parseInt(this.styleOf(item.el)?.order, 10);
       if (ord) (orders ??= new Map()).set(cid, ord);
     }
     const after = this.pseudo(el, cs, "after", nodes);
-    if (after) kids.push(after);
+    if (after) { kids.push(after); inLine?.add(after); }
+    if (flowBlock) collapseMargins(nodes, kids, inLine, props, display, ctx);
     // CSS order: flex/grid items laid out by it, then by source order.
     if (orders && childCtx.blockify) {
       const pos = new Map(kids.map((k, i) => [k, i]));
@@ -1392,6 +1400,10 @@ export class Renderer {
     this.adjustKid(nodes, cid, first, cs, props, display, childCtx);
     const row = nodes.get(cid);
     if (!row || row.kind !== "view") { this.noStampList.add(el); return null; }
+    // Rows in block flow with margins above and below: theirs collapse
+    // between them (collapseMargins), which one shared style can't say.
+    const rm = row.props.m;
+    if (!childCtx.blockify && rm && rm[0] && rm[2]) { this.noStampList.add(el); return null; }
     // Every row's node: the first's props (its children are the tree's).
     const style = this.leafStyleId(encodeProps({ ...row.props }));
     if (!style) { this.noStampList.add(el); return null; }
@@ -1774,6 +1786,75 @@ function isTableDisplay(d) {
 }
 
 // A table box whose children are laid out as flex items (rows, cells).
+// Two adjoining vertical margins as one (CSS 2.2 §8.3.1): the largest
+// positive plus the most negative.
+function collapsed(a, b) {
+  return Math.max(a, b, 0) + Math.min(a, b, 0);
+}
+
+// A margin in px, or null when it can't collapse here (a percentage).
+function pxMargin(n, side) {
+  const v = n.props.m ? n.props.m[side] : 0;
+  return typeof v === "number" ? v : null;
+}
+
+function setMargin(n, side, v) {
+  // A new array: the props' own may be shared (memoized boxProps, a
+  // reused element's saved node).
+  const m = n.props.m ? n.props.m.slice() : [0, 0, 0, 0];
+  m[side] = v;
+  n.props.m = m;
+}
+
+// Block flow's vertical margins, where Yoga adds them: adjacent blocks
+// get the larger of the two (the lower one's goes to 0), and the first
+// and last block's margin collapses through `props`'s (the container's)
+// own when no padding or border separates them and the container isn't
+// a formatting context of its own (a flex or grid item, scrolled or
+// clipped, positioned, an inline-block or a cell). `inLine`: kids in
+// lines (text, inline boxes, pseudo-elements), which separate blocks.
+function collapseMargins(nodes, kids, inLine, props, display, ctx) {
+  let prev = null, first = null, last = null, lastLine = false, seen = false;
+  for (const id of kids) {
+    const n = nodes.get(id);
+    if (!n || n.props.pos === "absolute") continue;
+    if (inLine.has(id)) { prev = null; seen = true; lastLine = true; continue; }
+    if (!seen) first = n;
+    seen = true;
+    lastLine = false;
+    last = n;
+    if (prev) {
+      const a = pxMargin(prev, 2), b = pxMargin(n, 0);
+      if (a !== null && b !== null && a && b) {
+        setMargin(prev, 2, collapsed(a, b));
+        setMargin(n, 0, 0);
+      }
+    }
+    prev = n;
+  }
+  const own = { props };
+  const through = (display === "block" || display === "list-item") && !ctx.blockify && !props.scroll && !props.scrollx &&
+    !props.clip && props.pos !== "absolute";
+  if (!through) return;
+  const side = (n, s) => !(props.pad?.[s]) && !(props.bw?.[s]) && n;
+  if (side(first, 0)) {
+    const a = pxMargin(own, 0), b = pxMargin(first, 0);
+    if (a !== null && b !== null && b) {
+      props.m = (own.props.m ?? [0, 0, 0, 0]).slice();
+      props.m[0] = collapsed(a, b);
+      setMargin(first, 0, 0);
+    }
+  }
+  if (!lastLine && side(last, 2) && props.h === undefined && !props.minh) {
+    const a = pxMargin(own, 2), b = pxMargin(last, 2);
+    if (a !== null && b !== null && b) {
+      props.m = (props.m ?? [0, 0, 0, 0]).slice();
+      props.m[2] = collapsed(a, b);
+      setMargin(last, 2, 0);
+    }
+  }
+}
+
 function tableHolds(d) {
   return d === "table" || d === "inline-table" || d === "table-row" || TABLE_GROUPS.has(d);
 }
@@ -1940,6 +2021,10 @@ function makeBoxProps(cs, display, fs, button) {
     p.bw = bw;
     const cur = color(cs.color);
     p.bc = sides.map((s) => color(cs[`border-${s}-color`] || "currentcolor", cur) || [0, 0, 0, 0]);
+    // Dashed or dotted: the first side drawn so (the backends draw one
+    // style for the box).
+    const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
+    if (style) p.bs = style;
   }
   const rg = num(cs["row-gap"], fs), cg = num(cs["column-gap"], fs);
   if (typeof rg === "number" && rg) p.rg = rg;
