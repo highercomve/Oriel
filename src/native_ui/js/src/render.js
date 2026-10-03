@@ -37,6 +37,7 @@ b, strong, th { font-weight: bold; }
 i, em, cite, var, dfn { font-style: italic; }
 small { font-size: .83em; }
 code, kbd, samp, pre, tt { font-family: monospace; }
+button, input, textarea, select { font-family: system-ui; }
 pre { white-space: pre; }
 a { color: #0645ad; text-decoration: underline; cursor: pointer; }
 button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
@@ -2335,13 +2336,16 @@ function runStyle(cs, fs) {
 
 // The font-family list for the backend (Pango and fontconfig, like the
 // WebView, resolve CSS's generic and system names: system-ui, monospace),
-// unquoted, comma-separated; none for plain sans-serif (the default).
+// unquoted, comma-separated. Form controls are system-ui (UA_CSS), as
+// browsers draw them in the system font.
+// Always sent. "default" (a CSS keyword, never a family's name): the page
+// sets none, and the backend uses its WebView's default face (WebKitGTK's
+// is sans-serif; Chromium's and WKWebView's, Times), not "serif" itself.
 function familyOf(cs) {
   const f = cs["font-family"];
-  if (!f) return undefined;
+  if (!f) return "default";
   const list = splitTop(f, ",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-  if (!list.length || (list.length === 1 && list[0] === "sans-serif")) return undefined;
-  return list.join(", ");
+  return list.length ? list.join(", ") : "default";
 }
 
 function makeRunStyle(cs, fs) {

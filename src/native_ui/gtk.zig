@@ -534,6 +534,9 @@ const generic_families = std.StaticStringMap([]const u8).initComptime(.{
     .{ "system-ui", "system-ui" },   .{ "ui-sans-serif", "sans-serif" }, .{ "ui-serif", "serif" },
     .{ "ui-monospace", "monospace" }, .{ "ui-rounded", "sans-serif" }, .{ "cursive", "cursive" },
     .{ "fantasy", "fantasy" },       .{ "emoji", "emoji" },           .{ "math", "math" },
+    // No family set (render.js familyOf): WebKitGTK's default face, its
+    // default-font-family setting, sans-serif (not serif, as Chromium).
+    .{ "default", "sans-serif" },
 });
 
 /// The family a browser draws a CSS font-family list in: the first one
