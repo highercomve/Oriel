@@ -9,7 +9,7 @@
 //   ["d", id]                destroy (and its subtree)
 //   ["r", id]                the root (the body)
 
-import { StyleEngine, computeStyle, parseInline, length, color, background, shadow, splitSpaces, splitTop, substitute, pctString } from "./css.js";
+import { StyleEngine, computeStyle, parseInline, length, color, background, shadow, splitSpaces, splitTop, substitute, pctString, maxContent, fitContent } from "./css.js";
 import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor, svgScope, svgDataText, svgSize } from "./icons.js";
@@ -77,6 +77,7 @@ const SHEET_OWNERS = new Set(["style", "link"]);
 // Rules changed at once beyond which every element is styled again rather
 // than the ones each rule's selector finds.
 const SHEET_RULES_INCREMENTAL = 64;
+const INTRINSIC_WIDTHS = new Set(["max-content", "fit-content", "-webkit-fit-content", "-moz-fit-content"]);
 const ATOMIC_INLINE = new Set(["inline-block", "inline-flex", "inline-grid"]);
 // Replaced elements: an image's bottom sits on the line's baseline.
 const REPLACED = new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
@@ -853,6 +854,12 @@ export class Renderer {
     // A rule's !important beats an inline declaration that isn't.
     for (const k in normal) if (!(k in casc.important)) put(k, normal[k]);
     for (const k in important) put(k, important[k]);
+    // An inline width: max-content changes how its text wraps too.
+    const mc = maxContent(cs, parentCS);
+    const fc = !mc && fitContent(cs, parentCS);
+    if (mc !== !!base.__maxc || fc !== !!base.__fitc) parts = null;
+    if (mc) cs.__maxc = true; else delete cs.__maxc;
+    if (fc) cs.__fitc = true; else delete cs.__fitc;
     derived.set(cs, { base, parts: parts && [...parts] });
     return cs;
   }
@@ -1199,8 +1206,16 @@ export class Renderer {
     this.noteAnimations(id, cs, fontSize);
     // A block with auto side margins fills its container (up to max-width)
     // and is centered, where a flex item would shrink to its content.
-    if (!ctx.blockify && ["block", "flex", "grid", "list-item"].includes(blockify(display)) && props.w === undefined && props.pos !== "absolute" &&
+    const intrinsic = INTRINSIC_WIDTHS.has(cs.width) && props.w === undefined;
+    if (!ctx.blockify && !intrinsic && ["block", "flex", "grid", "list-item"].includes(blockify(display)) && props.w === undefined && props.pos !== "absolute" &&
         cs["margin-left"] === "auto" && cs["margin-right"] === "auto") props.w = "100%";
+    // width: max-content or fit-content: as wide as its content, not its
+    // container (fit-content still wraps within it). Yoga sizes a box that
+    // isn't stretched so: in a block or a flex column it isn't stretched
+    // (auto side margins still center it). A flex row's item already
+    // starts from its content (and shrinks, as in browsers).
+    if (intrinsic && props.pos !== "absolute" && !props.as &&
+        !(ctx.blockify && !/^column/.test(parentCS?.["flex-direction"] || "row"))) props.as = "flex-start";
 
     // Position: fixed → in the window's overlay layer.
     let fixedNode = false;
@@ -2459,7 +2474,9 @@ function makeTextProps(cs, fs) {
   const ta = cs["text-align"];
   if (ta && ta !== "start" && ta !== "left") p.ta = ta === "end" ? "right" : ta;
   const ws = cs["white-space"];
-  if (ws === "nowrap" || ws === "pre") p.nowrap = true;
+  if (ws === "nowrap" || ws === "pre" || (cs.__maxc && (!ws || ws === "normal"))) p.nowrap = true;
+  if (cs.__maxc) p.mc = true;
+  else if (cs.__fitc) p.fc = true;
   if (cs["letter-spacing"] && cs["letter-spacing"] !== "normal") p.ls = length(cs["letter-spacing"], fs, false) ?? undefined;
   return p;
 }
