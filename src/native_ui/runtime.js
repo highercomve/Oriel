@@ -15460,7 +15460,16 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (!bodyNode) return;
       const bn = nodes.get(bodyNode);
       if (bn && !this.styleOf(body)?.["flex-shrink"]) bn.props.fs = 0;
-      nodes.set(-1, { kind: "view", props: { scroll: true, fg: 1, fs: 1, ai: "stretch" }, kids: [bodyNode] });
+      const winProps = { scroll: true, fg: 1, fs: 1, ai: "stretch" };
+      const bodyCS = this.styleOf(body);
+      scrollbarPart({ ...bodyCS || {}, ...rootCS, "overflow-y": rootCS["overflow-y"] || bodyCS?.["overflow-y"] }, winProps, true);
+      const rootOv = rootCS["overflow-y"] || rootCS.overflow;
+      const usedOv = rootOv && rootOv !== "visible" ? rootOv : bodyCS?.["overflow-y"] || bodyCS?.overflow;
+      if (usedOv === "hidden" || usedOv === "clip") {
+        winProps.sbw = "none";
+        delete winProps.sbs;
+      }
+      nodes.set(-1, { kind: "view", props: winProps, kids: [bodyNode] });
       const rootBg = bgOf(rootCS) || (this.styleOf(body) ? bgOf(this.styleOf(body)) : null);
       nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: [-1, ...fixed] });
       const t1 = P && P();
@@ -16773,6 +16782,19 @@ input[type="range"] { height: 20px; margin: 2px; }
     const l = length(v, pfs, false);
     return typeof l === "number" ? l : pfs;
   }
+  function scrollbarPart(cs, p, root) {
+    if (cs["overflow-y"] === "scroll" || !cs["overflow-y"] && cs.overflow === "scroll" || /^stable/.test(cs["scrollbar-gutter"] || "")) p.sbs = true;
+    const sw = cs["scrollbar-width"];
+    if (sw === "thin" || sw === "none") p.sbw = sw;
+    const scheme = cs["color-scheme"] || "normal";
+    const dark = /dark/.test(scheme) ? !/light/.test(scheme) || viewport.dark : root && !/light/.test(scheme) && viewport.dark;
+    if (dark) p.dk = true;
+    const sc = cs["scrollbar-color"];
+    if (sc && sc !== "auto") {
+      const [thumb, track] = splitSpaces(sc).map((v) => color(v, color(cs.color)));
+      if (thumb && track) p.sbc = [thumb, track];
+    }
+  }
   function bgOf(cs) {
     return background(cs.background, color(cs.color)) || null;
   }
@@ -16962,6 +16984,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     positionPart(cs, fs, p);
     const ov = cs["overflow-y"] || cs.overflow;
     if (ov === "auto" || ov === "scroll") p.scroll = true;
+    if (p.scroll) scrollbarPart(cs, p, false);
     const ovx = cs["overflow-x"];
     if (ovx === "auto" || ovx === "scroll") p.scrollx = true;
     if (cs["overflow-x"] === "hidden" || cs["overflow-y"] === "hidden" || cs.overflow === "hidden") p.clip = true;
@@ -17904,6 +17927,16 @@ ${a.stack || ""}`;
     if (!renderer.rendering) renderer.render();
     return host.frame(renderer.idOf(el, "el")) || [0, 0, 0, 0];
   };
+  function borderOf(el) {
+    const cs = renderer?.styleOf?.(el);
+    if (!cs) return [0, 0, 0, 0];
+    return ["top", "right", "bottom", "left"].map((s) => {
+      const style = cs[`border-${s}-style`];
+      if (!style || style === "none" || style === "hidden") return 0;
+      const w = cs[`border-${s}-width`] ?? "medium";
+      return { thin: 1, medium: 3, thick: 5 }[w] ?? (parseFloat(w) || 0);
+    });
+  }
   Object.defineProperties(elProto, {
     offsetWidth: { get() {
       return frameOf(this)[2];
@@ -17911,14 +17944,27 @@ ${a.stack || ""}`;
     offsetHeight: { get() {
       return frameOf(this)[3];
     }, configurable: true },
-    // The root element's client box is the viewport (innerWidth less a
-    // scrollbar, which these pages don't have), as in browsers.
-    clientWidth: { get() {
-      return this === document.documentElement ? viewport.width : frameOf(this)[2];
-    }, configurable: true },
-    clientHeight: { get() {
-      return this === document.documentElement ? viewport.height : frameOf(this)[3];
-    }, configurable: true },
+    // The root element's client box is the viewport (innerWidth less the
+    // window's scrollbar), as in browsers; a scroller's leaves its
+    // scrollbar's room out (the frame's sixth value).
+    clientWidth: {
+      get() {
+        if (this === document.documentElement) return viewport.width - (renderer && host.frame(-1)?.[5] || 0);
+        const f = frameOf(this);
+        const b = borderOf(this);
+        return Math.max(0, f[2] - b[1] - b[3] - (f[5] || 0));
+      },
+      configurable: true
+    },
+    // The padding box's height (no horizontal scrollbar here).
+    clientHeight: {
+      get() {
+        if (this === document.documentElement) return viewport.height;
+        const b = borderOf(this);
+        return Math.max(0, frameOf(this)[3] - b[0] - b[2]);
+      },
+      configurable: true
+    },
     scrollHeight: { get() {
       const f = frameOf(this);
       return f[4] ?? f[3];

@@ -150,6 +150,27 @@ opacity, backgrounds, color, transforms, sizes, border colors and shadows
 (src/native_ui/js/src/transitions.js, animations.js: while they run, only
 the animated nodes are sent each frame).
 
+**Scrollbars** (each backend):
+
+- A backend whose WebView's scrollbars take room (Windows' classic ones)
+  sets `Tree.scrollbar = .{ auto, thin }` in CSS px (Win32: 15, 10); an
+  overlay platform leaves it 0 and nothing changes. A scroller (`scroll`,
+  the window's node -1 too) that overflows, or has `sbs` (overflow-y:
+  scroll, scrollbar-gutter: stable), then keeps that room at its right
+  (`Node.gutter`): Tree.layout lays it out again with it, taken from its
+  content box (a content-box px width shrinks; `sbw: "none"` keeps none,
+  `"thin"` the thin width). `host.frame(id)[5]` is the gutter: JS's
+  clientWidth leaves it (and the borders) out, and
+  `document.documentElement.clientWidth` the window's.
+- The backend draws the bar in that room and handles it: `dk` (dark: the
+  scroller's color-scheme, the window's also from the system's), `sbc`
+  (scrollbar-color [thumb, track]). Win32 draws WebView2's: track
+  #fcfcfc / #2c2c2c, thumb and arrows #8b8b8b / #9f9f9f, a pill thumb 60%
+  of the bar's width, arrow buttons as tall as it's wide; arrows scroll
+  40px, the track 87.5% of the view (both repeating while held), the
+  thumb drags, the wheel scrolls the system's lines per notch at 100/3 px
+  a line (100px), as Chromium.
+
 **Field edits and selection** (each backend with native text fields):
 
 - Keys first: keydown (and keyup) on the field before the control acts, a
