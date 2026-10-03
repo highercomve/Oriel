@@ -19,7 +19,7 @@
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules } from "./css.js";
-import { Renderer, UA_CSS, UA_CSS_WEBKIT, setFocusVisible } from "./render.js";
+import { Renderer, UA_CSS, UA_CSS_WEBKIT, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
 
 const host = globalThis.__host;
@@ -567,6 +567,7 @@ const store = (name) => {
 g.localStorage = store("local");
 g.sessionStorage = store("session");
 const platform = JSON.parse(host.platform || "{}");
+setFocusRingOS(platform.os);
 g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: undefined, maxTouchPoints: viewport.coarse ? 5 : 0 };
 Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
 Object.defineProperty(g, "innerHeight", { get: () => viewport.height });

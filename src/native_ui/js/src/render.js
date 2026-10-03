@@ -51,6 +51,10 @@ textarea { white-space: pre-wrap; }
    border and none. */
 textarea { padding: 2px; border-width: 1px; }
 select { padding: 0; border-width: 1px; }
+/* Chromium's margins round a checkbox, a radio and a slider (a page's
+   margin: 0 wins). */
+input[type=checkbox], input[type=radio] { margin: 3px 3px 3px 4px; }
+input[type=range] { margin: 2px; }
 hr { border-top: 1px solid #888; margin: .5em 0; }
 table { display: table; border-spacing: 2px; border-collapse: separate; }
 thead { display: table-header-group; } tbody { display: table-row-group; } tfoot { display: table-footer-group; }
@@ -1299,7 +1303,7 @@ export class Renderer {
       if (tag === "input" && (type === "checkbox" || type === "radio")) {
         // The click goes to the label. With appearance: none the page's CSS
         // draws it; else the native side draws the default control, in the
-        // browser's 13px box with its 3px margin, in accent-color when checked.
+        // browser's 13px box (its margin: UA_CSS), in accent-color when checked.
         props.click = true;
         const app = cs.appearance || cs["-webkit-appearance"];
         if (app !== "none") {
@@ -1309,7 +1313,6 @@ export class Renderer {
           if (acc) props.acc = acc;
           if (props.w === undefined || props.w === "auto") props.w = 13;
           if (props.h === undefined || props.h === "auto") props.h = 13;
-          if (!props.m) props.m = [3, 3, 3, 3];
           delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
         }
         return this.put(nodes, id, "view", props, [], fixedNode);
@@ -1339,13 +1342,12 @@ export class Renderer {
         props.cols = size > 0 ? Math.min(size, 1000) : 20;
       }
       // A slider: the native side draws one (SeekBar), the value as text,
-      // in Chromium's 129x16 box with its 2px margin.
+      // in Chromium's 129x16 box (its 2px margin: UA_CSS).
       if (type === "range") {
         const n = (a, d) => { const v = parseFloat(el.getAttribute(a)); return Number.isFinite(v) ? v : d; };
         props.range = [n("min", 0), n("max", 100), el.getAttribute("step") === "any" ? 0 : n("step", 1)];
         if (props.w === undefined || props.w === "auto") props.w = 129;
         if (props.h === undefined || props.h === "auto") props.h = 16;
-        if (!props.m) props.m = [2, 2, 2, 2];
         const acc = color(cs["accent-color"] || "");
         if (acc) props.acc = acc;
         delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
@@ -2219,12 +2221,34 @@ function boxProps(cs, display, fs, el) {
 // field), unless the page styles the outline. Here rather than a rule in
 // UA_CSS, which every element would be matched against.
 // main.js says which element matches :focus-visible (one at most).
+// The ring is the platform's browser's (setFocusRingOS, at boot):
+// - WebKit's (macOS, iOS, WebKitGTK): blue, 2px, 1px out.
+// - Chromium's (WebView2, Android's WebView): 2px #101010 inside a 1px
+//   white halo (h), its corners at least r round (its outer edge's). As
+//   WebView2 draws it: over a control's own border (o -2, r 3), 1px over a
+//   box's edge (o -1, r 4), just outside a link (o 0) and 1px off a
+//   checkbox or radio (o 1, r 3).
 const FOCUS_RING = { w: 2, c: [0, 103, 244, 1], o: 1 };
+const CHROMIUM_RING = (o, r) => ({ w: 2, c: [16, 16, 16, 1], o, h: [255, 255, 255, 1], r });
+const CHROMIUM_RINGS = { control: CHROMIUM_RING(-2, 3), check: CHROMIUM_RING(1, 3), link: CHROMIUM_RING(0, 4), box: CHROMIUM_RING(-1, 4) };
+let chromiumRing = false;
+export function setFocusRingOS(os) { chromiumRing = os === "windows" || os === "android"; }
 let focusVisible = null;
 export function setFocusVisible(el) { focusVisible = el; }
 function focusRing(cs, el, p) {
-  if (el === focusVisible && el && !p.ol && cs["outline-style"] === undefined && cs["outline-width"] === undefined) p.ol = FOCUS_RING;
+  if (el === focusVisible && el && !p.ol && cs["outline-style"] === undefined && cs["outline-width"] === undefined) p.ol = chromiumRing ? chromiumRingFor(el) : FOCUS_RING;
   return p;
+}
+function chromiumRingFor(el) {
+  switch (el.localName) {
+    case "input": {
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      return type === "checkbox" || type === "radio" ? CHROMIUM_RINGS.check : CHROMIUM_RINGS.control;
+    }
+    case "button": case "select": case "textarea": return CHROMIUM_RINGS.control;
+    case "a": return el.hasAttribute("href") ? CHROMIUM_RINGS.link : CHROMIUM_RINGS.box;
+    default: return CHROMIUM_RINGS.box;
+  }
 }
 
 // outline: drawn outside the border box (offset + width), around its
