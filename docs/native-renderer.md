@@ -133,7 +133,10 @@ flexbox properties, `gap`, sizes, margins, padding,
 `position: absolute`/`fixed`/`relative`/`sticky` and `inset`,
 `overflow`, transforms (translate moves the box; scale and rotate are drawn
 around its center); for drawing colors, linear and radial gradients,
-borders, `border-radius`, `box-shadow` (blurred like CSS), `outline`, `opacity`, fonts,
+borders, `border-radius` (with sides of different widths, the inner
+corners are ellipses and colors meet on the lines from the outer to the
+inner corners, as browsers draw a card's `border-left: 6px`; GTK:
+roundedSides in gtk.zig), `box-shadow` (blurred like CSS), `outline`, `opacity`, fonts,
 `text-align`, `white-space`; transitions and `@keyframes` animations on
 opacity, backgrounds, color, transforms, sizes, border colors and shadows
 (src/native_ui/js/src/transitions.js, animations.js: while they run, only
