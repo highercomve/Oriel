@@ -22,6 +22,8 @@ body { margin: 0; font-size: 14px; }
 .item .v { color: #333; text-transform: uppercase; }
 .dense .item { padding: 0; }
 .item:hover { padding-left: 9px; }
+.item:hover .k { width: 34px; }
+.row .n:hover { width: 52px; }
 </style></head><body><div id="wrap"><div id="list"></div></div><div id="list2"></div><script>
 const list = document.getElementById("list"), wrap = document.getElementById("wrap");
 const add = (html) => { const r = document.createElement("div"); r.className = "row"; r.innerHTML = html; list.append(r); return r; };
@@ -59,6 +61,8 @@ steps=[
  'hover(list2.children[6]);',
  'hover(list2.children[0].children[0]);',
  'list2.children[6].children[1].textContent = "while hovered"; hover(null);',
+ 'hover(rows[0].children[0]);',
+ 'hover(rows[1]); hover(rows[3].children[2]);',
 ]
 if sys.argv[1] == '--steps':
     print(len(steps))
