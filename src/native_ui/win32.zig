@@ -2165,11 +2165,24 @@ const CanvasPainter = struct {
     grads: std.AutoHashMap(u16, CanvasGrad),
     /// clip() masks pushed as layers, in the bitmap's space (owned).
     clips: std.ArrayList(*c.ID2D1PathGeometry) = .empty,
+    /// The current path as whole circles (the bitmap's space: cx, cy,
+    /// radius), while it's nothing else: a game's balls in one path.
+    /// Filled opaque, they're drawn one by one (fillCircles), as Apple's
+    /// apple_draw.zig: a geometry of hundreds of circles a fill was most of
+    /// Breakout's frame at 500 balls.
+    circles: std.ArrayList([3]f32) = .empty,
+    /// The path is only `circles` (each starting fresh or at a moveTo on
+    /// its own start point), all wound the same way.
+    only_circles: bool = true,
+    circles_ccw: bool = false,
+    /// A moveTo not yet followed by anything (the bitmap's space).
+    pending_move: ?P2 = null,
 
     fn deinit(cv: *CanvasPainter) void {
         // popClips(0) ran before EndDraw; anything left is only released.
         for (cv.clips.items) |g| releaseCom(@as(?*c.ID2D1PathGeometry, g));
         cv.clips.deinit(cv.gpa);
+        cv.circles.deinit(cv.gpa);
         cv.states.deinit(cv.gpa);
         cv.path.deinit(cv.gpa);
         var it = cv.grads.valueIterator();
@@ -2203,14 +2216,27 @@ const CanvasPainter = struct {
             .begin_path => {
                 cv.path.clearRetainingCapacity();
                 cv.cur = null;
+                cv.circles.clearRetainingCapacity();
+                cv.only_circles = true;
+                cv.pending_move = null;
             },
             .close_path => if (cv.cur != null) {
                 cv.add(.close);
                 cv.cur = cv.start;
+                // A closed circle is still one; an open moveTo isn't a figure.
+                if (cv.pending_move != null) cv.notCircles();
             },
-            .move_to => |pt| cv.moveTo(cv.point(pt[0], pt[1])),
-            .line_to => |pt| cv.lineTo(cv.point(pt[0], pt[1])),
+            .move_to => |pt| {
+                const p = cv.point(pt[0], pt[1]);
+                cv.moveTo(p);
+                cv.pending_move = p;
+            },
+            .line_to => |pt| {
+                cv.lineTo(cv.point(pt[0], pt[1]));
+                cv.notCircles();
+            },
             .rect => |r| {
+                cv.notCircles();
                 cv.moveTo(cv.point(r[0], r[1]));
                 cv.lineTo(cv.point(r[0] + r[2], r[1]));
                 cv.lineTo(cv.point(r[0] + r[2], r[1] + r[3]));
@@ -2219,8 +2245,12 @@ const CanvasPainter = struct {
                 // A new subpath at the rectangle's corner.
                 cv.moveTo(cv.point(r[0], r[1]));
             },
-            .arc => |a| cv.arc(a.x, a.y, a.r, a.a0, a.a1, a.ccw),
+            .arc => |a| {
+                cv.noteArc(a.x, a.y, a.r, a.a0, a.a1, a.ccw);
+                cv.arc(a.x, a.y, a.r, a.a0, a.a1, a.ccw);
+            },
             .bezier_to => |b| {
+                cv.notCircles();
                 const c1 = cv.point(b[0], b[1]);
                 if (cv.cur == null) cv.moveTo(c1);
                 const end = cv.point(b[4], b[5]);
@@ -2228,6 +2258,7 @@ const CanvasPainter = struct {
                 cv.cur = end;
             },
             .fill => |even| if (cv.path.items.len > 0) {
+                if (!even and cv.fillCircles()) return;
                 const geo = cv.pathGeometry(even) orelse return;
                 defer releaseCom(@as(?*c.ID2D1PathGeometry, geo));
                 cv.draw(@ptrCast(geo), cv.st.fill, false);
@@ -2266,6 +2297,68 @@ const CanvasPainter = struct {
                 g.stops.append(cv.gpa, .{ .position = std.math.clamp(cs.off, 0, 1), .color = d2dColor(cs.c) }) catch {};
             },
         }
+    }
+
+    /// The path gets something other than a whole circle.
+    fn notCircles(cv: *CanvasPainter) void {
+        cv.only_circles = false;
+        cv.circles.clearRetainingCapacity();
+    }
+
+    /// An arc is added (user units, before the transform): a whole circle
+    /// keeps the path's circles, anything else ends them.
+    fn noteArc(cv: *CanvasPainter, x: f32, y: f32, r: f32, a0: f32, a1: f32, ccw: bool) void {
+        if (!cv.only_circles) return;
+        const m = mget(cv.st.xf);
+        const two_pi: f32 = 2.0 * std.math.pi;
+        // (A turn from a0 != 0 may round a hair short in f32.)
+        const whole = (if (ccw) a0 - a1 else a1 - a0) >= two_pi - 1e-4;
+        // A circle stays one: orthogonal columns of the same length.
+        const s2 = m[0] * m[0] + m[1] * m[1];
+        const similar = s2 > 0 and @abs(s2 - (m[2] * m[2] + m[3] * m[3])) <= 1e-5 * s2 and @abs(m[0] * m[2] + m[1] * m[3]) <= 1e-5 * s2;
+        // Its winding in the bitmap's space: a reflection turns it round.
+        const winding = ccw != (m[0] * m[3] - m[1] * m[2] < 0);
+        if (!whole or !similar or !(r >= 0) or (cv.circles.items.len > 0 and winding != cv.circles_ccw)) return cv.notCircles();
+        // Its start point: where a moveTo must be, if the path has more.
+        const start = cv.point(x + r * @cos(a0), y + r * @sin(a0));
+        if (cv.pending_move) |p| {
+            const tol = 1e-3 * @max(1.0, @sqrt(s2) * r);
+            if (@abs(p.x - start.x) > tol or @abs(p.y - start.y) > tol) return cv.notCircles();
+        } else if (cv.path.items.len > 0) {
+            // Joined to what came before by a line: not just circles.
+            return cv.notCircles();
+        }
+        const center = cv.point(x, y);
+        if (!std.math.isFinite(center.x) or !std.math.isFinite(center.y)) return cv.notCircles();
+        cv.pending_move = null;
+        cv.circles_ccw = winding;
+        cv.circles.append(cv.gpa, .{ center.x, center.y, @sqrt(s2) * r }) catch cv.notCircles();
+    }
+
+    /// Off in a test: the same pictures the slow way.
+    var circles_one_by_one = true;
+
+    /// The current path filled as its circles, one by one, when that's the
+    /// same picture: a nonzero fill (even-odd makes holes where they
+    /// overlap) of whole circles wound one way (their union), in an opaque
+    /// color (an overlap can't blend twice). Many circles only: a few go
+    /// the usual way. False: fill the path.
+    fn fillCircles(cv: *CanvasPainter) bool {
+        if (!circles_one_by_one or !cv.only_circles or cv.circles.items.len < 8 or cv.pending_move != null) return false;
+        const col = switch (cv.st.fill) {
+            .color => |x| x,
+            .grad => return false,
+        };
+        if (col[3] * cv.st.alpha < 1) return false;
+        const brush = cv.brushOf(cv.st.fill) orelse return false;
+        defer releaseCom(@as(?*c.ID2D1Brush, brush));
+        const vt = cv.rt.lpVtbl.*;
+        vt.SetTransform.?(cv.rt, &identity);
+        for (cv.circles.items) |k| {
+            const e: c.D2D1_ELLIPSE = .{ .point = .{ .x = k[0], .y = k[1] }, .radiusX = k[2], .radiusY = k[2] };
+            vt.FillEllipse.?(cv.rt, &e, brush);
+        }
+        return true;
     }
 
     fn point(cv: *CanvasPainter, x: f32, y: f32) P2 {
