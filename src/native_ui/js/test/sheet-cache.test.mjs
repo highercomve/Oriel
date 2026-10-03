@@ -24,4 +24,18 @@ const view = (e) => JSON.stringify({
 });
 assert.equal(view(first), view(fresh), "keeping doesn't change what's parsed");
 assert.equal(view(second), view(fresh), "read back from the cache: the same engine");
+
+// The build's copy (tools/qjs_modules.zig runs sheet-compiler.js: the
+// same JSON), found by the sheet's asset path.
+import { sheetData } from "../src/css.js";
+await import("../src/sheet-compiler.js");
+assert.equal(globalThis.__orielSheetJSON(css), JSON.stringify(sheetData(css)), "the compiler writes what addSheet keeps");
+const built = new Map([["assets/app.css", globalThis.__orielSheetJSON(css)]]);
+const asked = [];
+const fromBuild = { get: (c, path) => (asked.push(path), built.get(path)), keep: () => assert.fail("a built sheet isn't parsed") };
+const third = new StyleEngine();
+third.addSheet(UA_CSS, null);
+third.addSheet(css, fromBuild, "assets/app.css");
+assert.deepEqual(asked, ["assets/app.css"]);
+assert.equal(view(third), view(fresh), "read from the build: the same engine");
 console.log("sheet cache: ok");
