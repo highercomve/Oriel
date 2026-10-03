@@ -168,6 +168,12 @@ internal class NuiNode(val id: Int, var kind: String) {
     var layout: StaticLayout? = null
     var layoutWidth = -1
     var icon: NuiIcon? = null
+    /** Inline outlines (a focused link's ring): runs with `ol`, neighbours with the same one together. */
+    var rings: List<RunRing> = emptyList()
+
+    /** Runs `start` until `end` of the text with outline `ol`, their content
+     *  area (fonts' ascent and descent, px) `above` and `below` the baseline. */
+    class RunRing(val start: Int, val end: Int, val ol: JSONObject, val above: Float, val below: Float)
 
     /** A single run's text set apart from `p` (setText, a leaf's text):
      *  `p` may be a leaf style's, shared by every node made from it. */
@@ -264,6 +270,8 @@ internal class NuiNode(val id: Int, var kind: String) {
         val runs = p.optJSONArray("runs") ?: JSONArray()
         // Each run's start, end and size, for line-height (LineHeight).
         val sized = ArrayList<Float>()
+        val rings = ArrayList<RunRing>()
+        val density = android.content.res.Resources.getSystem().displayMetrics.density
         for (i in 0 until runs.length()) {
             val r = runs.optJSONObject(i) ?: continue
             val start = sb.length
@@ -277,7 +285,20 @@ internal class NuiNode(val id: Int, var kind: String) {
             sb.setSpan(FontSpan(typeface(r.optDouble("w", 400.0).toInt(), r.optBoolean("i"), family(r.optString("ff").ifEmpty { p.optString("ff") }, r.optBoolean("mono") || mono))), start, end, flags)
             if (r.optBoolean("u")) sb.setSpan(UnderlineSpan(), start, end, flags)
             r.optJSONArray("bg")?.let { val c = color(it); if (Color.alpha(c) > 0) sb.setSpan(BackgroundColorSpan(c), start, end, flags) }
+            r.optJSONObject("ol")?.let { ol ->
+                // Its box's content area: the run's font's ascent and descent,
+                // rounded in device pixels (win32.zig contentExtent).
+                val sz = r.optDouble("sz", fz.toDouble()).toFloat()
+                val m = fontRatios(r.optString("ff").ifEmpty { p.optString("ff") }, r.optBoolean("mono") || mono)
+                val above = Math.round(m[0] * sz * density) / density
+                val below = Math.round(m[1] * sz * density) / density
+                val last = rings.lastOrNull()
+                if (last != null && last.end == start && last.ol.toString() == ol.toString()) {
+                    rings[rings.size - 1] = RunRing(last.start, end, ol, max(last.above, above), max(last.below, below))
+                } else rings += RunRing(start, end, ol, above, below)
+            }
         }
+        this.rings = rings
         // line-height: every line exactly that tall (CSS's, a length here);
         // normal (no lh): the font's own, as Chrome makes it (LineHeight).
         if (sb.isNotEmpty()) {
@@ -1634,6 +1655,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                     canvas.save()
                     canvas.translate(f[r + 9], f[r + 10])
                     it.draw(canvas)
+                    for (ring in n.rings) runRing(canvas, it, ring)
                     canvas.restore()
                 }
                 "icon" -> n.icon?.let { icon(canvas, it, f[r + 9], f[r + 10], f[r + 11], f[r + 12]) }
@@ -1741,6 +1763,70 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         stroke.pathEffect = null
         stroke.strokeCap = Paint.Cap.BUTT
     }
+
+    /**
+     * An inline element's outline (a focused link's ring, Run `ol`) around
+     * its runs as laid out (win32.zig runRing): a box per line they're on,
+     * the spaces where a line wraps left out, its sides on whole pixels, as
+     * tall as their content area around the line's baseline; several lines
+     * get one outline around them all, as Chromium draws a wrapped link's.
+     */
+    private fun runRing(canvas: Canvas, l: Layout, ring: NuiNode.RunRing) {
+        val t = l.text
+        val boxes = ArrayList<RectF>()
+        for (k in 0 until l.lineCount) {
+            var a = max(ring.start, l.getLineStart(k))
+            var b = min(ring.end, l.getLineEnd(k))
+            while (a < b && t[a] == ' ') a++
+            while (b > a && (t[b - 1] == ' ' || t[b - 1] == '\n' || t[b - 1] == '\r')) b--
+            if (a >= b) continue
+            ringPath.reset()
+            l.getSelectionPath(a, b, ringPath)
+            ringPath.computeBounds(rect, true)
+            val x0 = Math.round(rect.left).toFloat(); val x1 = Math.round(rect.right).toFloat()
+            val base = l.getLineBaseline(k).toFloat()
+            if (x1 > x0) boxes += RectF(x0, base - ring.above, x1, base + ring.below)
+        }
+        if (boxes.isEmpty()) return
+        val ol = ring.ol
+        if (boxes.size == 1 || ol.has("s")) {
+            // One line (or dashes, which go per box): the box's own outline.
+            for (b in boxes) outline(canvas, ol, b.left, b.top, b.width(), b.height(), null)
+            return
+        }
+        val ow = ol.optDouble("w", 0.0).toFloat()
+        val color = NuiNode.color(ol.optJSONArray("c"))
+        if (!(ow > 0) || Color.alpha(color) == 0) return
+        val o = ol.optDouble("o", 0.0).toFloat()
+        val r = ol.optDouble("r", 0.0).toFloat()
+        // The ring: the boxes grown by offset + width, less them grown by the
+        // offset; the halo 1px around that.
+        fun union(grow: Float, radius: Float): Path {
+            val u = Path()
+            for (b in boxes) {
+                val one = Path()
+                val g = RectF(b.left - grow, b.top - grow, b.right + grow, b.bottom + grow)
+                if (g.width() <= 0 || g.height() <= 0) continue
+                if (radius > 0) one.addRoundRect(g, radius, radius, Path.Direction.CW) else one.addRect(g, Path.Direction.CW)
+                u.op(one, Path.Op.UNION)
+            }
+            return u
+        }
+        val outer = union(o + ow, r)
+        ol.optJSONArray("h")?.let { hj ->
+            val halo = NuiNode.color(hj)
+            if (Color.alpha(halo) == 0) return@let
+            val edge = union(o + ow + 1, r + 1)
+            edge.op(outer, Path.Op.DIFFERENCE)
+            fill.color = halo
+            canvas.drawPath(edge, fill)
+        }
+        outer.op(union(o, max(0f, r - ow)), Path.Op.DIFFERENCE)
+        fill.color = color
+        canvas.drawPath(outer, fill)
+    }
+
+    private val ringPath = Path()
 
     /** Clip to the box's padding box (tree.zig paddingClipXY): inset by the
      *  borders `bw` (top, right, bottom, left), each corner's ellipse less

@@ -370,7 +370,9 @@ visible too, as in browsers. An inline element has no box of its own: its
 outline (the page's, or the focus ring of a link with `:focus-visible`)
 is set on its text runs (Run `ol`), and the backend draws it around each
 line fragment of them (GTK: runRing, one box per line, the spaces where a
-line wraps left out); a backend that doesn't read `ol` on runs draws no
+line wraps left out; Win32 and Android (OrielNative.kt runRing: the
+StaticLayout's selection path per line, merged with Path.op) one outline
+around a wrapped link's boxes, as Chromium); a backend that doesn't read `ol` on runs draws no
 ring on an inline link.
 Backends must give Tab to the page, also while a native field has the
 keyboard, and not move the focus themselves when the page used the key;
