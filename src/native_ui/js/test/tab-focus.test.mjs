@@ -127,4 +127,26 @@ assert.deepEqual(bootPage(macPage, { os: "ios" })(7), ["s2", "t1", "d0", "ce", "
   }
   assert.deepEqual(rings, { b: [-2, 3], a: [0, 4], d: [-1, 4], k: [1, 3], t: [-2, 3] });
 }
+
+// WKWebView's on macOS: the accent blue at half alpha, 4px, by kind.
+{
+  const macPage = `<html><body><button id="b">b</button><a href="#x" id="a" style="display: block">a</a><div id="d" tabindex="0">d</div><input type="checkbox" id="k"><input id="t"></body></html>`;
+  let ops = "";
+  const macHost = { ...host, asset: (p) => (p === "index.html" ? macPage : undefined), platform: JSON.stringify({ os: "macos", arch: "aarch64", fullKeyboardAccess: true }),
+    ops: (json) => { ops = json; for (const [k, id, x] of JSON.parse(json)) if (k === "c") nodes.set(id, x); else if (k === "d") nodes.delete(id); } };
+  const mctx = vm.createContext({ __host: macHost });
+  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), mctx, { filename: "runtime.js" });
+  mctx.__oriel.boot(400, 600, false, false);
+  mctx.__oriel.render();
+  const rings = {};
+  for (let i = 0; i < 5; i++) {
+    mctx.__oriel.event(0, "key", ["Tab", 0, false]);
+    mctx.__oriel.render();
+    const id = vm.runInContext("document.activeElement.id", mctx);
+    const ol = JSON.parse(ops).map((op) => op[0] === "p" && op[2].ol).find(Boolean);
+    rings[id] = ol && [ol.w, ol.o, ol.r];
+    if (id === "t") assert.deepEqual(ol, { w: 4, c: [0, 103, 244, 0.5], o: -1, r: 2 });
+  }
+  assert.deepEqual(rings, { b: [4, -1, 5], a: [4, 1, 2], d: [4, 1, 2], k: [4, -1, 5], t: [4, -1, 2] });
+}
 console.log("tab focus: ok");

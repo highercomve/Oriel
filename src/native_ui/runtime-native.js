@@ -5561,32 +5561,38 @@ textarea { font-family: -webkit-small-control, system-ui; }
   var FOCUS_RING = { w: 2, c: [0, 103, 244, 1], o: 1 };
   var CHROMIUM_RING = (o, r) => ({ w: 2, c: [16, 16, 16, 1], o, h: [255, 255, 255, 1], r });
   var CHROMIUM_RINGS = { control: CHROMIUM_RING(-2, 3), check: CHROMIUM_RING(1, 3), link: CHROMIUM_RING(0, 4), box: CHROMIUM_RING(-1, 4) };
-  var chromiumRing = false;
+  var MAC_RING = (o, r) => ({ w: 4, c: [0, 103, 244, 0.5], o, r });
+  var MAC_RINGS = { field: MAC_RING(-1, 2), control: MAC_RING(-1, 5), check: MAC_RING(-1, 5), link: MAC_RING(1, 2), box: MAC_RING(1, 2) };
+  var IOS_RING = (o, r) => ({ w: 3, c: [0, 122, 255, 0.5], o, r });
+  var IOS_RINGS = { field: IOS_RING(-2, 8), control: IOS_RING(-2, 8), check: IOS_RING(-2, 8), link: IOS_RING(0, 0), box: IOS_RING(0, 0) };
+  var osRings = null;
   function setFocusRingOS(os) {
-    chromiumRing = os === "windows" || os === "android";
+    osRings = os === "windows" || os === "android" ? CHROMIUM_RINGS : os === "macos" ? MAC_RINGS : os === "ios" ? IOS_RINGS : null;
   }
   var focusVisible = null;
   function setFocusVisible(el) {
     focusVisible = el;
   }
   function focusRing(cs, el, p) {
-    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = chromiumRing ? chromiumRingFor(el) : FOCUS_RING;
+    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = osRings ? ringFor(osRings, el) : FOCUS_RING;
     return p;
   }
-  function chromiumRingFor(el) {
+  function ringFor(rings, el) {
     switch (el.localName) {
       case "input": {
         const type = (el.getAttribute("type") || "").toLowerCase();
-        return type === "checkbox" || type === "radio" ? CHROMIUM_RINGS.check : CHROMIUM_RINGS.control;
+        if (type === "checkbox" || type === "radio") return rings.check;
+        return ["button", "submit", "reset", "range", "color", "file", "image"].includes(type) ? rings.control : rings.field || rings.control;
       }
+      case "textarea":
+        return rings.field || rings.control;
       case "button":
       case "select":
-      case "textarea":
-        return CHROMIUM_RINGS.control;
+        return rings.control;
       case "a":
-        return el.hasAttribute("href") ? CHROMIUM_RINGS.link : CHROMIUM_RINGS.box;
+        return el.hasAttribute("href") ? rings.link : rings.box;
       default:
-        return CHROMIUM_RINGS.box;
+        return rings.box;
     }
   }
   function outlinePart(cs, fs, p) {
@@ -6587,7 +6593,7 @@ ${a.stack || ""}`;
     }
   };
   var active = null;
-  var keyboardFocus = false;
+  var keyboardFocus = true;
   var TEXT_INPUTS = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
   var textField = (el) => el?.localName === "textarea" || el?.isContentEditable || el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
   var focusEvent = (type, bubbles, relatedTarget) => {

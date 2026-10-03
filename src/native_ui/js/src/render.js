@@ -2222,32 +2222,45 @@ function boxProps(cs, display, fs, el) {
 // UA_CSS, which every element would be matched against.
 // main.js says which element matches :focus-visible (one at most).
 // The ring is the platform's browser's (setFocusRingOS, at boot):
-// - WebKit's (macOS, iOS, WebKitGTK): blue, 2px, 1px out.
+// - WebKitGTK's: blue, 2px, 1px out.
 // - Chromium's (WebView2, Android's WebView): 2px #101010 inside a 1px
 //   white halo (h), its corners at least r round (its outer edge's). As
 //   WebView2 draws it: over a control's own border (o -2, r 3), 1px over a
 //   box's edge (o -1, r 4), just outside a link (o 0) and 1px off a
 //   checkbox or radio (o 1, r 3).
+// - WKWebView's (measured), the system blue at half alpha (macOS's
+//   accent, rgb(0, 103, 244); iOS's, rgb(0, 122, 255)): on macOS 4px,
+//   1px off a box or link (o 1, r 2) and 1px over a control's edge (o -1;
+//   r 2, AppKit's bezel rings 5); on iOS 3px, just outside a box (o 0)
+//   and 2px over a control's edge (o -2, r 8).
 const FOCUS_RING = { w: 2, c: [0, 103, 244, 1], o: 1 };
 const CHROMIUM_RING = (o, r) => ({ w: 2, c: [16, 16, 16, 1], o, h: [255, 255, 255, 1], r });
 const CHROMIUM_RINGS = { control: CHROMIUM_RING(-2, 3), check: CHROMIUM_RING(1, 3), link: CHROMIUM_RING(0, 4), box: CHROMIUM_RING(-1, 4) };
-let chromiumRing = false;
-export function setFocusRingOS(os) { chromiumRing = os === "windows" || os === "android"; }
+const MAC_RING = (o, r) => ({ w: 4, c: [0, 103, 244, 0.5], o, r });
+const MAC_RINGS = { field: MAC_RING(-1, 2), control: MAC_RING(-1, 5), check: MAC_RING(-1, 5), link: MAC_RING(1, 2), box: MAC_RING(1, 2) };
+const IOS_RING = (o, r) => ({ w: 3, c: [0, 122, 255, 0.5], o, r });
+const IOS_RINGS = { field: IOS_RING(-2, 8), control: IOS_RING(-2, 8), check: IOS_RING(-2, 8), link: IOS_RING(0, 0), box: IOS_RING(0, 0) };
+let osRings = null;
+export function setFocusRingOS(os) {
+  osRings = os === "windows" || os === "android" ? CHROMIUM_RINGS : os === "macos" ? MAC_RINGS : os === "ios" ? IOS_RINGS : null;
+}
 let focusVisible = null;
 export function setFocusVisible(el) { focusVisible = el; }
 function focusRing(cs, el, p) {
-  if (el === focusVisible && el && !p.ol && cs["outline-style"] === undefined && cs["outline-width"] === undefined) p.ol = chromiumRing ? chromiumRingFor(el) : FOCUS_RING;
+  if (el === focusVisible && el && !p.ol && cs["outline-style"] === undefined && cs["outline-width"] === undefined) p.ol = osRings ? ringFor(osRings, el) : FOCUS_RING;
   return p;
 }
-function chromiumRingFor(el) {
+function ringFor(rings, el) {
   switch (el.localName) {
     case "input": {
       const type = (el.getAttribute("type") || "").toLowerCase();
-      return type === "checkbox" || type === "radio" ? CHROMIUM_RINGS.check : CHROMIUM_RINGS.control;
+      if (type === "checkbox" || type === "radio") return rings.check;
+      return ["button", "submit", "reset", "range", "color", "file", "image"].includes(type) ? rings.control : rings.field || rings.control;
     }
-    case "button": case "select": case "textarea": return CHROMIUM_RINGS.control;
-    case "a": return el.hasAttribute("href") ? CHROMIUM_RINGS.link : CHROMIUM_RINGS.box;
-    default: return CHROMIUM_RINGS.box;
+    case "textarea": return rings.field || rings.control;
+    case "button": case "select": return rings.control;
+    case "a": return el.hasAttribute("href") ? rings.link : rings.box;
+    default: return rings.box;
   }
 }
 
