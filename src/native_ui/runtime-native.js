@@ -5611,28 +5611,35 @@ textarea { font-family: -webkit-small-control, system-ui; }
     const ring = (o, r) => ({ w: 2, c, o, h: [255, 255, 255, 1], r });
     return { control: ring(-2, 3), check: ring(1, 3), link: ring(0, 4), box: ring(-1, 4) };
   };
-  var RINGS_BY_OS = { windows: chromiumRings([16, 16, 16, 1]), android: chromiumRings([229, 151, 0, 1]) };
-  var chromiumRing = null;
+  var WINDOWS_RINGS = chromiumRings([16, 16, 16, 1]);
+  var ANDROID_RINGS = chromiumRings([229, 151, 0, 1]);
+  var MAC_RING = (o, r) => ({ w: 4, c: [0, 103, 244, 0.5], o, r });
+  var MAC_RINGS = { field: MAC_RING(-1, 2), control: MAC_RING(-1, 5), check: MAC_RING(-1, 5), link: MAC_RING(1, 2), box: MAC_RING(1, 2) };
+  var IOS_RING = (o, r) => ({ w: 3, c: [0, 122, 255, 0.5], o, r });
+  var IOS_RINGS = { field: IOS_RING(-2, 8), control: IOS_RING(-2, 8), check: IOS_RING(-2, 8), link: IOS_RING(0, 0), box: IOS_RING(0, 0) };
+  var osRings = null;
   function setFocusRingOS(os) {
-    chromiumRing = RINGS_BY_OS[os] || null;
+    osRings = { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
   }
   var focusVisible = null;
   function setFocusVisible(el) {
     focusVisible = el;
   }
   function focusRing(cs, el, p) {
-    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = chromiumRing ? chromiumRingFor(chromiumRing, el) : FOCUS_RING;
+    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = osRings ? ringFor(osRings, el) : FOCUS_RING;
     return p;
   }
-  function chromiumRingFor(rings, el) {
+  function ringFor(rings, el) {
     switch (el.localName) {
       case "input": {
         const type = (el.getAttribute("type") || "").toLowerCase();
-        return type === "checkbox" || type === "radio" ? rings.check : rings.control;
+        if (type === "checkbox" || type === "radio") return rings.check;
+        return ["button", "submit", "reset", "range", "color", "file", "image"].includes(type) ? rings.control : rings.field || rings.control;
       }
+      case "textarea":
+        return rings.field || rings.control;
       case "button":
       case "select":
-      case "textarea":
         return rings.control;
       case "a":
         return el.hasAttribute("href") ? rings.link : rings.box;
@@ -6680,7 +6687,7 @@ ${a.stack || ""}`;
     }
   };
   var active = null;
-  var keyboardFocus = false;
+  var keyboardFocus = true;
   var TEXT_INPUTS = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
   var textField = (el) => el?.localName === "textarea" || el?.isContentEditable || el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
   var focusEvent = (type, bubbles, relatedTarget) => {

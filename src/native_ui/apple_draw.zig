@@ -67,6 +67,7 @@ extern fn CGContextAddArcToPoint(c: CGContextRef, x1: CGFloat, y1: CGFloat, x2: 
 extern fn CGContextAddRect(c: CGContextRef, r: CGRect) void;
 extern fn CGContextClosePath(c: CGContextRef) void;
 extern fn CGContextFillPath(c: CGContextRef) void;
+extern fn CGContextEOFillPath(c: CGContextRef) void;
 extern fn CGContextFillRect(c: CGContextRef, r: CGRect) void;
 extern fn CGContextClearRect(c: CGContextRef, r: CGRect) void;
 extern fn CGContextStrokePath(c: CGContextRef) void;
@@ -843,9 +844,28 @@ fn paintOutline(cg: CGContextRef, f: Rect, r: [4]f32, ol: tree_mod.Outline) void
     const box: Rect = .{ .x = f.x - grow, .y = f.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
     if (box.w <= 2 * ol.w or box.h <= 2 * ol.w) return;
     var radii: [4]f32 = undefined;
-    for (r, 0..) |x, i| radii[i] = if (x > 0) @max(0, x + grow) else 0;
+    for (r, 0..) |x, i| radii[i] = @max(if (x > 0) @max(0, x + grow) else 0, ol.r);
     CGContextSaveGState(cg);
     defer CGContextRestoreGState(cg);
+    // A focus ring's halo: 1px around it, its corners 1px rounder.
+    if (ol.h) |h| if (h[3] > 0) {
+        const halo: Rect = .{ .x = box.x - 1, .y = box.y - 1, .w = box.w + 2, .h = box.h + 2 };
+        var hr: [4]f32 = undefined;
+        for (radii, 0..) |x, i| hr[i] = if (x > 0) x + 1 else 0;
+        border(cg, halo, hr, .{ 1, 1, 1, 1 }, .{ h, h, h, h }, null);
+    };
+    if (ol.s == null) {
+        // Solid: the ring between the outer edge and the inner one, so a
+        // corner rounder outside than the width (a focus ring's) stays round.
+        const inner: Rect = .{ .x = box.x + ol.w, .y = box.y + ol.w, .w = box.w - 2 * ol.w, .h = box.h - 2 * ol.w };
+        var ri: [4]f32 = undefined;
+        for (radii, 0..) |x, i| ri[i] = @max(0, x - ol.w);
+        roundRect(cg, box, radii);
+        addRoundRect(cg, inner, ri);
+        setFill(cg, ol.c);
+        CGContextEOFillPath(cg);
+        return;
+    }
     border(cg, box, radii, .{ ol.w, ol.w, ol.w, ol.w }, .{ ol.c, ol.c, ol.c, ol.c }, ol.s);
 }
 
@@ -861,6 +881,11 @@ fn setStroke(cg: CGContextRef, c: tree_mod.Color) void {
 /// bottom-left) as the current path.
 fn roundRect(cg: CGContextRef, f: Rect, r: [4]f32) void {
     CGContextBeginPath(cg);
+    addRoundRect(cg, f, r);
+}
+
+/// roundRect's shape added to the current path.
+fn addRoundRect(cg: CGContextRef, f: Rect, r: [4]f32) void {
     if (r[0] == 0 and r[1] == 0 and r[2] == 0 and r[3] == 0) {
         CGContextAddRect(cg, rect(f));
         return;
