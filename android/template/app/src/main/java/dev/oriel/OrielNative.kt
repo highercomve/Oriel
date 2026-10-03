@@ -839,9 +839,12 @@ internal class NuiView(context: Context, val window: Int, private val transparen
      */
     fun leaves(bytes: ByteArray) {
         val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        // Only paint ('X': opacity, scale, rotation) and text: the paint order stands.
+        var reorder = false
         while (b.remaining() >= 9) {
             val tag = b.get().toInt().toChar()
             val id = b.int
+            if (tag != 'X' && tag != 'T' && tag != 'C') reorder = true
             when (tag) {
                 'S' -> {
                     val json = utf8(b, b.int) ?: return
@@ -880,7 +883,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 else -> return
             }
         }
-        orderDirty = true
+        if (reorder) orderDirty = true
         invalidate()
     }
 
@@ -936,18 +939,45 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     fun frames(bytes: ByteArray) {
         val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         val fb = bb.asFloatBuffer()
+        val was = frames
         frames = FloatArray(fb.remaining()).also { fb.get(it) }
         // A record's first slot is its node's id as int bits (android.zig's
         // pack): read as an int, not a float, so no id is rounded or a NaN.
-        ids = IntArray(frames.size).also { bb.asIntBuffer().get(it) }
-        index.clear()
-        var i = 0
-        while (i + REC <= frames.size) { index[ids[i]] = i; i += REC }
-        orderDirty = true
+        val newIds = IntArray(frames.size).also { bb.asIntBuffer().get(it) }
+        // The same nodes in the same order (an animation's frame: boxes
+        // moved, nothing made or removed): the index and the paint order
+        // stand, and the View needs no layout pass unless a field moved.
+        val sameNodes = was.size == frames.size && sameRecords(ids, newIds)
+        ids = newIds
+        if (!sameNodes) {
+            index.clear()
+            var i = 0
+            while (i + REC <= frames.size) { index[ids[i]] = i; i += REC }
+            orderDirty = true
+        }
         if (Nui.dump) dumpFrames()
-        syncFields()
-        requestLayout()
+        if (fields.isNotEmpty()) {
+            syncFields()
+            if (!sameNodes || fieldsMoved(was)) requestLayout()
+        } else if (!sameNodes) requestLayout()
         invalidate()
+    }
+
+    /** Both frames list the same node ids, record for record. */
+    private fun sameRecords(a: IntArray, b: IntArray): Boolean {
+        if (a.size != b.size) return false
+        var i = 0
+        while (i + REC <= a.size) { if (a[i] != b[i]) return false; i += REC }
+        return true
+    }
+
+    /** A field's record changed from `was` (same records): its widget needs placing again. */
+    private fun fieldsMoved(was: FloatArray): Boolean {
+        for (id in fields.keys) {
+            val r = index[id] ?: return true
+            for (k in 1 until REC) if (was[r + k] != frames[r + k]) return true
+        }
+        return false
     }
 
     fun value(id: Int, v: String) {
