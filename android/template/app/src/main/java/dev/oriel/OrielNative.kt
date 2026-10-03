@@ -2118,7 +2118,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
      * The stops over a gradient line `line` px long (tree.zig
      * Gradient.resolve): `su` gives each stop's unit when they aren't all
      * fractions (`%` a fraction, `p` px, `a` none given: evenly between the
-     * given ones, the first 0 and the last 1). Repeating (`rep`): one
+     * given ones, the first 0 and the last 1; `c` a calc(): its fraction
+     * and its px part in `sp`). Repeating (`rep`): one
      * period's stops, 0..1 within it, phased so a period starts at the
      * line's start, and the period's length as a fraction of the line.
      */
@@ -2128,7 +2129,13 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         val su = g.optString("su", "")
         if (su.isNotEmpty()) {
             val auto = BooleanArray(n) { (if (it < su.length) su[it] else '%') == 'a' }
-            for (i in 0 until n) if (i < su.length && su[i] == 'p') s[i][4] = if (line > 0) s[i][4] / line else 0f
+            val sp = g.optJSONArray("sp")
+            for (i in 0 until n) {
+                val u = if (i < su.length) su[i] else '%'
+                if (u == 'p') s[i][4] = if (line > 0) s[i][4] / line else 0f
+                // calc(100% - 20px): the fraction in pos, the px in sp.
+                if (u == 'c' && sp != null && i < sp.length() && line > 0) s[i][4] += sp.optDouble(i, 0.0).toFloat() / line
+            }
             if (auto[0]) { s[0][4] = 0f; auto[0] = false }
             if (n > 1 && auto[n - 1]) { s[n - 1][4] = 1f; auto[n - 1] = false }
             // Missing positions: evenly between the given ones.
