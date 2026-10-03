@@ -2309,13 +2309,110 @@ fn normalLineHeight(family: [:0]const u16, size: f32, weight: f32, italic: bool)
     return @round(m[0] * size) + @round(m[1] * size) + @round(m[2] * size);
 }
 
-/// The height of a line of this text: its CSS line-height (fractional, as
-/// Chromium keeps it), else the normal one of its largest run's font.
+/// The height of a line of this text, as CSS stacks its inline boxes on
+/// one baseline (textExtent): every line alike, the tallest any line can
+/// be (lineExtents has each line's). Its CSS line-height (fractional, as
+/// Chromium keeps it) when the fonts' metrics can't be had.
 fn lineBox(props: *const tree_mod.Props) ?f32 {
+    if (textExtent(props)) |e| return e.top + e.bottom;
     if (props.lh) |lh| return if (lh > 0) lh else null;
+    return null;
+}
+
+/// Above and below a line's baseline (px).
+const Extent = struct { top: f32, bottom: f32 };
+
+/// An inline box's extent on its line as Chromium lays it out: its font's
+/// ascent and descent (each rounded) and the leading around them: the
+/// line-height less them, or the font's line gap (rounded) when normal,
+/// split with the smaller half above.
+fn fontExtent(family: [:0]const u16, sz: f32, weight: f32, italic: bool, lh: ?f32) ?Extent {
+    const m = fontRatios(family, weight, italic) orelse return null;
+    const a = @round(m[0] * sz);
+    const d = @round(m[1] * sz);
+    if (lh) |h| if (h > 0) {
+        const half = (h - (a + d)) / 2;
+        return .{ .top = a + half, .bottom = d + half };
+    };
+    const gap = @round(m[2] * sz);
+    const up = @floor(gap / 2);
+    return .{ .top = a + up, .bottom = d + gap - up };
+}
+
+/// An inline box's content area: its font's ascent and descent, rounded.
+fn contentExtent(family: [:0]const u16, sz: f32, weight: f32, italic: bool) ?Extent {
+    const m = fontRatios(family, weight, italic) orelse return null;
+    return .{ .top = @round(m[0] * sz), .bottom = @round(m[1] * sz) };
+}
+
+/// The block's own font's (CSS's strut: every line has it).
+fn strutExtent(props: *const tree_mod.Props) ?Extent {
+    return fontExtent(familyOf(props.ff, props.mono), props.fz orelse 16, props.fwt orelse 400, props.it, props.lh);
+}
+
+fn runExtent(props: *const tree_mod.Props, r: tree_mod.Run) ?Extent {
+    return fontExtent(runFamily(props, r), r.sz, r.w, r.i, props.lh);
+}
+
+fn widen(e: ?Extent, x: ?Extent) ?Extent {
+    const b = x orelse return e;
+    const a = e orelse return b;
+    return .{ .top = @max(a.top, b.top), .bottom = @max(a.bottom, b.bottom) };
+}
+
+/// Every run's box with the strut's: the line box of a line that has
+/// them all (a 16px Arial line with monospace code in it: 15 above, 4
+/// below, 19, as Chromium makes it).
+fn textExtent(props: *const tree_mod.Props) ?Extent {
+    var e = strutExtent(props);
+    for (props.runs orelse &.{}) |r| e = widen(e, runExtent(props, r));
+    return e;
+}
+
+/// Each line's extent when they differ (a font on some lines only), from
+/// the runs on it; null when every line is textExtent's (the layout's
+/// uniform spacing is then exact).
+fn lineExtents(props: *const tree_mod.Props, layout: *c.IDWriteTextLayout, out: []Extent) ?[]Extent {
     const runs = props.runs orelse return null;
-    const r = largestRun(runs) orelse return null;
-    return normalLineHeight(runFamily(props, r), r.sz, r.w, r.i);
+    if (runs.len < 2) return null;
+    const all = textExtent(props) orelse return null;
+    var lines: [64]c.DWRITE_LINE_METRICS = undefined;
+    var count: u32 = 0;
+    if (layout.lpVtbl.*.GetLineMetrics.?(layout, &lines, lines.len, &count) < 0 or count < 2 or count > lines.len) return null;
+    const strut = strutExtent(props);
+    var differ = false;
+    var ls: u32 = 0;
+    var ri: usize = 0;
+    var rs: u32 = 0; // ri's first unit
+    for (lines[0..count], 0..) |line, k| {
+        if (k >= out.len) return null;
+        const le = ls + line.length;
+        var e = strut;
+        // The runs with a part on this line.
+        while (ri < runs.len) {
+            const len: u32 = @intCast(std.unicode.calcUtf16LeLen(runs[ri].t) catch runs[ri].t.len);
+            const re = rs + len;
+            if (re > ls and rs < le and len > 0) e = widen(e, runExtent(props, runs[ri]));
+            if (re > le) break; // goes on to the next line
+            rs = re;
+            ri += 1;
+        }
+        const x = e orelse all;
+        out[k] = x;
+        if (x.top != all.top or x.bottom != all.bottom) differ = true;
+        ls = le;
+    }
+    return if (differ) out[0..count] else null;
+}
+
+/// Where line `k` is drawn in a layout spaced uniformly by textExtent:
+/// how far to move it (0 when lines are alike) to sit where its own
+/// extent puts it, below the lines before it.
+fn lineShift(exts: []const Extent, all: Extent, k: usize) f32 {
+    var y: f32 = 0;
+    for (exts[0..k]) |e| y += e.top + e.bottom;
+    const h = all.top + all.bottom;
+    return y + exts[k].top - (@as(f32, @floatFromInt(k)) * h + all.top);
 }
 
 /// A field's line: its CSS line-height, else its font's normal one.
@@ -2332,17 +2429,15 @@ fn textHeight(props: *const tree_mod.Props, h: f32) f32 {
     return if (lineBox(props) != null) h else @ceil(h);
 }
 
-/// Where a line of `lh` puts its baseline, as CSS does: the font's
-/// (rounded) ascent plus half the leading (lh less the ascent and
-/// descent), which is negative when lh is shorter than the font: the
-/// glyphs stay centered on the line (a 36px h1 on 23.2px lines). The
-/// largest run's font; 0.8 lh when its metrics can't be had.
+/// Where a line of `lh` puts its baseline, as CSS does: the tallest top of
+/// its inline boxes (textExtent: each font's rounded ascent plus its share
+/// of the leading, which is negative when lh is shorter than the font: the
+/// glyphs stay centered on the line, a 36px h1 on 23.2px lines); 0.8 lh
+/// when the metrics can't be had.
 fn cssBaseline(props: *const tree_mod.Props, runs: []const tree_mod.Run, lh: f32) f32 {
-    const r = largestRun(runs) orelse return lh * 0.8;
-    const m = fontRatios(runFamily(props, r), r.w, r.i) orelse return lh * 0.8;
-    const a = @round(m[0] * r.sz);
-    const d = @round(m[1] * r.sz);
-    return (lh - (a + d)) / 2 + a;
+    _ = runs;
+    const e = textExtent(props) orelse return lh * 0.8;
+    return e.top;
 }
 
 /// textLayout for props (a probe's: fastTextSize).
@@ -3460,7 +3555,13 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
     var m: c.DWRITE_TEXT_METRICS = undefined;
     if (layout.lpVtbl.*.GetMetrics.?(layout, &m) < 0) return null;
-    const size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, textHeight(&n.props, m.height) };
+    var size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, textHeight(&n.props, m.height) };
+    // Lines of their own heights: theirs added up.
+    var ext_buf: [64]Extent = undefined;
+    if (lineExtents(&n.props, layout, &ext_buf)) |xs| {
+        size[1] = 0;
+        for (xs) |e| size[1] += e.top + e.bottom;
+    }
     if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
     return size;
 }
@@ -4258,6 +4359,21 @@ fn paintText(p: *Painter, n: *Node) void {
     }
     const layout = textLayout(s, n, ct.w + 1, &brushes) orelse return;
     defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
+    // Lines of different heights (a font on some only): each drawn moved
+    // to where its own extent puts it (lineShift).
+    var ext_buf: [64]Extent = undefined;
+    const exts = lineExtents(&n.props, layout, &ext_buf);
+    const all = textExtent(&n.props);
+    const shift = struct {
+        fn at(e: ?[]const Extent, a: ?Extent, y0: f32, top: f32) f32 {
+            const xs = e orelse return 0;
+            const ae = a orelse return 0;
+            const h = ae.top + ae.bottom;
+            if (!(h > 0)) return 0;
+            const k: usize = @intFromFloat(@max(0, @min(@as(f32, @floatFromInt(xs.len - 1)), @round((top - y0) / h))));
+            return lineShift(xs, ae, k);
+        }
+    }.at;
     // Run backgrounds (marks, code), behind the text.
     if (n.props.runs) |runs| {
         var pos: u32 = 0;
@@ -4270,14 +4386,25 @@ fn paintText(p: *Painter, n: *Node) void {
             var count: u32 = 0;
             if (layout.lpVtbl.*.HitTestTextRange.?(layout, pos, w16, ct.x, ct.y, &rects, rects.len, &count) < 0) continue;
             for (rects[0..@min(count, rects.len)]) |m| {
-                const rc: c.D2D1_RECT_F = .{ .left = m.left, .top = m.top, .right = m.left + m.width, .bottom = m.top + m.height };
+                const dy = shift(exts, all, ct.y, m.top);
+                const rc: c.D2D1_RECT_F = .{ .left = m.left, .top = m.top + dy, .right = m.left + m.width, .bottom = m.top + m.height + dy };
                 p.vt().FillRectangle.?(p.rt, &rc, p.solid(bg));
             }
         }
     }
     // Runs without a color of their own (none: each run sets one) use black.
     const origin: c.D2D1_POINT_2F = .{ .x = ct.x, .y = ct.y };
-    p.vt().DrawTextLayout.?(p.rt, origin, layout, p.solid(.{ 0, 0, 0, 1 }), draw_text_color_font);
+    if (exts) |xs| {
+        const h = all.?.top + all.?.bottom;
+        for (0..xs.len) |k| {
+            const dy = lineShift(xs, all.?, k);
+            const top = ct.y + @as(f32, @floatFromInt(k)) * h;
+            const band: c.D2D1_RECT_F = .{ .left = ct.x - 1e4, .top = top + dy, .right = ct.x + ct.w + 1e4, .bottom = top + h + dy };
+            p.vt().PushAxisAlignedClip.?(p.rt, &band, c.D2D1_ANTIALIAS_MODE_ALIASED);
+            p.vt().DrawTextLayout.?(p.rt, .{ .x = ct.x, .y = ct.y + dy }, layout, p.solid(.{ 0, 0, 0, 1 }), draw_text_color_font);
+            p.vt().PopAxisAlignedClip.?(p.rt);
+        }
+    } else p.vt().DrawTextLayout.?(p.rt, origin, layout, p.solid(.{ 0, 0, 0, 1 }), draw_text_color_font);
     // A focused inline link's ring (or an inline element's outline),
     // around each of its line fragments: its runs (a <b> in it) together.
     if (n.props.runs) |runs| {
@@ -4287,9 +4414,13 @@ fn paintText(p: *Painter, n: *Node) void {
             const start = pos;
             pos += @intCast(std.unicode.calcUtf16LeLen(runs[i].t) catch runs[i].t.len);
             const ol = runs[i].ol orelse continue;
-            while (i + 1 < runs.len and runs[i + 1].ol != null and std.meta.eql(runs[i + 1].ol.?, ol)) : (i += 1)
+            // Its boxes' content area: the runs' fonts' ascent and descent.
+            var box: ?Extent = contentExtent(runFamily(&n.props, runs[i]), runs[i].sz, runs[i].w, runs[i].i);
+            while (i + 1 < runs.len and runs[i + 1].ol != null and std.meta.eql(runs[i + 1].ol.?, ol)) : (i += 1) {
                 pos += @intCast(std.unicode.calcUtf16LeLen(runs[i + 1].t) catch runs[i + 1].t.len);
-            runRing(p, layout, runs, ct.x, ct.y, start, pos, ol);
+                box = widen(box, contentExtent(runFamily(&n.props, runs[i + 1]), runs[i + 1].sz, runs[i + 1].w, runs[i + 1].i));
+            }
+            runRing(p, layout, runs, ct.x, ct.y, start, pos, ol, .{ .exts = exts, .all = all, .box = box });
         }
     }
 }
@@ -4298,14 +4429,19 @@ fn paintText(p: *Painter, n: *Node) void {
 /// layout drawn at (x, y): a box per line it's on (the spaces where a line
 /// wraps left out, as tall as that line, its sides on whole pixels), and
 /// around them one outline, as Chromium draws a wrapped link's ring.
-fn runRing(p: *Painter, layout: *c.IDWriteTextLayout, runs: []const tree_mod.Run, x: f32, y: f32, start: u32, end: u32, ol: tree_mod.Outline) void {
+/// Where its lines are (paintText): each line's extent when they differ,
+/// all of them together, and the ring's runs' content area (ascent and
+/// descent: the box's height, as Chromium draws an inline box's ring).
+const RingLines = struct { exts: ?[]const Extent, all: ?Extent, box: ?Extent };
+
+fn runRing(p: *Painter, layout: *c.IDWriteTextLayout, runs: []const tree_mod.Run, x: f32, y: f32, start: u32, end: u32, ol: tree_mod.Outline, at: RingLines) void {
     var lines_buf: [64]c.DWRITE_LINE_METRICS = undefined;
     var count: u32 = 0;
     if (layout.lpVtbl.*.GetLineMetrics.?(layout, &lines_buf, lines_buf.len, &count) < 0 and count > lines_buf.len) return;
     var boxes: [64]Rect = undefined;
     var nb: usize = 0;
     var ls: u32 = 0;
-    for (lines_buf[0..@min(count, lines_buf.len)]) |line| {
+    for (lines_buf[0..@min(count, lines_buf.len)], 0..) |line, k| {
         defer ls += line.length;
         var a = @max(start, ls);
         var b = @min(end, ls + line.length);
@@ -4328,6 +4464,14 @@ fn runRing(p: *Painter, layout: *c.IDWriteTextLayout, runs: []const tree_mod.Run
         }
         x0 = @round(x0);
         x1 = @round(x1);
+        // Its height: the content area around the line's baseline.
+        if (at.all) |all| if (at.box) |cb| {
+            const h = all.top + all.bottom;
+            const dy = if (at.exts) |xs| (if (k < xs.len) lineShift(xs, all, k) else 0) else 0;
+            const base = y + @as(f32, @floatFromInt(k)) * h + all.top + dy;
+            top = base - cb.top;
+            bottom = base + cb.bottom;
+        };
         if (x1 > x0 and bottom > top and nb < boxes.len) {
             boxes[nb] = .{ .x = x0, .y = top, .w = x1 - x0, .h = bottom - top };
             nb += 1;
