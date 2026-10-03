@@ -2,10 +2,13 @@
 //!
 //! Like the GTK backend, the page is drawn by one view: `NuiView` (Kotlin,
 //! OrielNative.kt) draws boxes, text (StaticLayout) and icons (Path) on a
-//! Canvas, and puts real EditText/Spinner widgets over the fields. Kotlin
-//! keeps a copy of every node's props (sent as JSON when they change) and
-//! gets the laid-out frames as one packed array after each layout. Touches
-//! come back as taps and scrolls, hit-tested here on the node tree.
+//! Canvas, and puts real EditText/Spinner/SeekBar widgets over the fields.
+//! Kotlin keeps a copy of every node's props: as JSON when the page's ops
+//! change them, a run's new text alone (host.text), and leaf styles once
+//! with compact records for the nodes made from them (host.leaf, stamped
+//! rows; one batch). It gets the laid-out frames as one packed array after
+//! each layout. Touches come back as taps and scrolls, hit-tested here on
+//! the node tree.
 //!
 //! Everything runs on the UI thread (Oriel's main thread on Android).
 

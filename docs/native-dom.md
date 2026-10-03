@@ -205,7 +205,10 @@ native first:
   page's ops set its children.
 - A text change inside a stamped row stamps it again (updateText): leaves
   whose text is unchanged stay, the row isn't re-attached.
-- Not on Android (no leaf bridge: its backend mirrors each node's props).
+- On Android too since 2026-10-02 (android/stamping): its backend, which
+  keeps its own copy of each node's props, learns of leaf styles and of the
+  nodes the tree makes through `Tree.on_leaf_style` and `Tree.on_create`,
+  sent to Kotlin in one batch. Build 1000 rows there: 110–121 -> 13 ms.
 
 Render bench on the desktop: build 1000 rows 40 -> 25 ms, 3000 rows 120 ->
 77 ms, update 1000 5.4 -> 3.6 ms, memory after the tests 192 -> 174 MB.
