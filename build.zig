@@ -1953,9 +1953,14 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool, native_dom: 
                 "YGConfig.cpp",                 "YGEnums.cpp",               "YGNode.cpp",           "YGNodeLayout.cpp",
                 "YGNodeStyle.cpp",              "YGPixelGrid.cpp",           "YGValue.cpp",          "algorithm/AbsoluteLayout.cpp",
                 "algorithm/Baseline.cpp",       "algorithm/Cache.cpp",       "algorithm/CalculateLayout.cpp", "algorithm/FlexLine.cpp",
-                "algorithm/PixelGrid.cpp",      "config/Config.cpp",         "debug/AssertFatal.cpp", "debug/Log.cpp",
+                "config/Config.cpp",         "debug/AssertFatal.cpp", "debug/Log.cpp",
                 "event/event.cpp",              "node/LayoutResults.cpp",    "node/Node.cpp",
             },
+            .flags = &.{ "-std=c++20", "-O2", no_ubsan, "-fno-exceptions" },
+        });
+        // PixelGrid.cpp without its fmod calls (see the file).
+        oriel.addCSourceFile(.{
+            .file = b.path("src/native_ui/yoga/PixelGrid.cpp"),
             .flags = &.{ "-std=c++20", "-O2", no_ubsan, "-fno-exceptions" },
         });
         oriel.link_libcpp = true;
