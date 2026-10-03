@@ -138,6 +138,8 @@ extern fn CTLineCreateWithAttributedString(s: CFAttributedStringRef) ?CFTypeRef;
 extern fn CTLineGetTypographicBounds(line: CFTypeRef, ascent: ?*CGFloat, descent: ?*CGFloat, leading: ?*CGFloat) f64;
 extern fn CTLineDraw(line: CFTypeRef, c: CGContextRef) void;
 extern fn CTFontGetAscent(font: CTFontRef) CGFloat;
+extern fn CTFontCopyFamilyName(font: CTFontRef) ?CFStringRef;
+extern fn CFStringCompare(a: CFStringRef, b: CFStringRef, options: u32) isize;
 extern fn CTFontGetDescent(font: CTFontRef) CGFloat;
 extern fn CTFontGetLeading(font: CTFontRef) CGFloat;
 extern fn CTFontCreateWithName(name: CFStringRef, size: CGFloat, matrix: ?*const CGAffineTransform) ?CTFontRef;
@@ -181,6 +183,8 @@ const kCTParagraphStyleSpecifierLineBreakMode: u32 = 6;
 const kCTParagraphStyleSpecifierMaximumLineHeight: u32 = 8;
 const kCTParagraphStyleSpecifierMinimumLineHeight: u32 = 9;
 const kCTFontItalicTrait: u32 = 1 << 0;
+const kCTFontBoldTrait: u32 = 1 << 1;
+const kCFCompareCaseInsensitive: u32 = 1;
 extern const kCTFontAttributeName: CFStringRef;
 extern const kCTForegroundColorAttributeName: CFStringRef;
 extern const kCTUnderlineStyleAttributeName: CFStringRef;
@@ -197,7 +201,7 @@ fn rect(r: Rect) CGRect {
 // Fonts: the system font (San Francisco) at a weight, from NSFont/UIFont,
 // which are toll-free bridged to CTFont. Cached, retained, for the run.
 
-const FontKey = struct { size: f32, weight: i32, italic: bool, mono: bool };
+const FontKey = struct { size: f32, weight: i32, italic: bool, mono: bool, family: u64 };
 var font_cache: std.ArrayListUnmanaged(struct { key: FontKey, font: CTFontRef }) = .empty;
 const font_cache_max = 128;
 
@@ -208,11 +212,19 @@ fn appleWeight(w: f32) f64 {
     return table[i];
 }
 
-/// `font_class`: "NSFont" (AppKit) or "UIFont" (UIKit).
-pub fn font(comptime font_class: [:0]const u8, size: f32, weight: f32, italic: bool, mono: bool) ?CTFontRef {
+/// `font_class`: "NSFont" (AppKit) or "UIFont" (UIKit). `family`: the CSS
+/// font-family list (null: sans-serif), resolved as WKWebView does
+/// (resolveFamily).
+pub fn font(comptime font_class: [:0]const u8, size: f32, weight: f32, italic: bool, mono: bool, family: ?[]const u8) ?CTFontRef {
     // Half points: a font-size transition would otherwise add a font per frame.
     const half = std.math.clamp(@round(size * 2) / 2, 0.5, 2000);
-    const key: FontKey = .{ .size = half, .weight = @intFromFloat(std.math.clamp(@round(weight / 100), 1, 9)), .italic = italic, .mono = mono };
+    const key: FontKey = .{
+        .size = half,
+        .weight = @intFromFloat(std.math.clamp(@round(weight / 100), 1, 9)),
+        .italic = italic,
+        .mono = mono,
+        .family = if (family) |f| std.hash.Wyhash.hash(0, f) else 0,
+    };
     for (font_cache.items) |e| if (std.meta.eql(e.key, key)) return e.font;
     // Bounded: past the limit start over (the text already built keeps the
     // fonts it uses retained).
@@ -220,11 +232,7 @@ pub fn font(comptime font_class: [:0]const u8, size: f32, weight: f32, italic: b
         for (font_cache.items) |e| CFRelease(e.font);
         font_cache.clearRetainingCapacity();
     }
-    const cls = objc.getClass(font_class) orelse return null;
-    const sel = if (mono) "monospacedSystemFontOfSize:weight:" else "systemFontOfSize:weight:";
-    const f = cls.msgSend(Object, sel, .{ @as(CGFloat, half), appleWeight(weight) });
-    if (f.value == null) return null;
-    var ct: CTFontRef = CFRetain(@ptrCast(f.value.?));
+    var ct = resolveFamily(font_class, half, weight, mono, family) orelse return null;
     if (italic) if (CTFontCreateCopyWithSymbolicTraits(ct, 0, null, kCTFontItalicTrait, kCTFontItalicTrait)) |it| {
         CFRelease(ct);
         ct = it;
@@ -236,15 +244,138 @@ pub fn font(comptime font_class: [:0]const u8, size: f32, weight: f32, italic: b
     return ct;
 }
 
-/// Backend.font_metrics: the ascent and descent (px) of the text font at
-/// `size` (regular weight, monospaced or not), the font paintText uses.
+/// The system font (+1), or its monospaced cut, at a CSS weight.
+fn systemFont(comptime font_class: [:0]const u8, size: f32, weight: f32, mono: bool) ?CTFontRef {
+    const cls = objc.getClass(font_class) orelse return null;
+    const sel = if (mono) "monospacedSystemFontOfSize:weight:" else "systemFontOfSize:weight:";
+    const f = cls.msgSend(Object, sel, .{ @as(CGFloat, size), appleWeight(weight) });
+    if (f.value == null) return null;
+    return CFRetain(@ptrCast(f.value.?));
+}
+
+/// An installed family by name (+1), bold from 600, or null when it isn't
+/// installed (CoreText would substitute another).
+fn namedFont(name: []const u8, size: f32, weight: f32) ?CTFontRef {
+    const cf = CFStringCreateWithBytes(null, name.ptr, @intCast(name.len), kCFStringEncodingUTF8, 0) orelse return null;
+    defer CFRelease(cf);
+    var f = CTFontCreateWithName(cf, size, null) orelse return null;
+    const got = CTFontCopyFamilyName(f) orelse {
+        CFRelease(f);
+        return null;
+    };
+    defer CFRelease(got);
+    if (CFStringCompare(got, cf, kCFCompareCaseInsensitive) != 0) {
+        CFRelease(f);
+        return null;
+    }
+    if (weight >= 600) if (CTFontCreateCopyWithSymbolicTraits(f, 0, null, kCTFontBoldTrait, kCTFontBoldTrait)) |bold| {
+        CFRelease(f);
+        f = bold;
+    };
+    return f;
+}
+
+/// A CSS font-family list to a font (+1), as WKWebView resolves it: the
+/// first family that's installed; system-ui (and -apple-system,
+/// BlinkMacSystemFont, ui-sans-serif) the system font, ui-monospace its
+/// monospaced cut; the generic families WebKit's defaults (sans-serif
+/// Helvetica, serif Times, monospace Courier). Null: sans-serif (or
+/// monospace for `mono`).
+fn resolveFamily(comptime font_class: [:0]const u8, size: f32, weight: f32, mono: bool, family: ?[]const u8) ?CTFontRef {
+    const eq = std.ascii.eqlIgnoreCase;
+    var it = std.mem.tokenizeScalar(u8, family orelse "", ',');
+    while (it.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " \t\"'");
+        if (name.len == 0) continue;
+        if (eq(name, "system-ui") or eq(name, "-apple-system") or eq(name, "BlinkMacSystemFont") or eq(name, "ui-sans-serif"))
+            return systemFont(font_class, size, weight, false);
+        if (eq(name, "ui-monospace")) return systemFont(font_class, size, weight, true);
+        const generic: ?[]const u8 = if (eq(name, "sans-serif")) "Helvetica" else if (eq(name, "serif") or eq(name, "ui-serif")) "Times" else if (eq(name, "monospace")) "Courier" else if (eq(name, "cursive")) "Apple Chancery" else if (eq(name, "fantasy")) "Papyrus" else null;
+        if (namedFont(generic orelse name, size, weight)) |f| return f;
+    }
+    return namedFont(if (mono) "Courier" else "Helvetica", size, weight) orelse systemFont(font_class, size, weight, mono);
+}
+
+/// A font's line metrics as WebKit uses them on Apple platforms
+/// (FontCocoa): line-height: normal is their sum. Measured against
+/// WKWebView (16 and 36 px; system-ui, Helvetica, Courier, Times, Helvetica
+/// Neue):
+/// - macOS: ascent, descent and line gap each rounded to whole pixels;
+///   Times, Helvetica and Courier get round((ascent + descent) x 0.15)
+///   more ascent, to match their Windows counterparts.
+/// - iOS: each rounded up; Helvetica gets round(sum x 0.15) more ascent
+///   (iOS's Times is Times New Roman, and its Courier gets none).
+const LineMetrics = struct { ascent: f32, descent: f32, gap: f32 };
+
+const ios = @import("builtin").os.tag == .ios;
+
+fn familyIs(f: CTFontRef, comptime names: []const []const u8) bool {
+    const fam = CTFontCopyFamilyName(f) orelse return false;
+    defer CFRelease(fam);
+    inline for (names) |name| {
+        if (CFStringCreateWithBytes(null, name.ptr, name.len, kCFStringEncodingUTF8, 0)) |cf| {
+            defer CFRelease(cf);
+            if (CFStringCompare(fam, cf, kCFCompareCaseInsensitive) == 0) return true;
+        }
+    }
+    return false;
+}
+
+fn lineMetrics(f: CTFontRef) LineMetrics {
+    const A: f32 = @floatCast(CTFontGetAscent(f));
+    const D: f32 = @floatCast(CTFontGetDescent(f));
+    const L: f32 = @floatCast(@max(0, CTFontGetLeading(f)));
+    if (ios) {
+        var a = @ceil(A);
+        const d = @ceil(D);
+        const g = @ceil(L);
+        if (familyIs(f, &.{"Helvetica"})) a += @round((a + d + g) * 0.15);
+        return .{ .ascent = a, .descent = d, .gap = g };
+    }
+    var a = @round(A);
+    const d = @round(D);
+    if (familyIs(f, &.{ "Times", "Helvetica", "Courier" })) a += @round((a + d) * 0.15);
+    return .{ .ascent = a, .descent = d, .gap = @round(L) };
+}
+
+/// Backend.font_metrics: the ascent, descent and line gap (px, as WebKit
+/// rounds them) of the default sans-serif (or monospace) at `size`.
 pub fn fontMetrics(comptime font_class: [:0]const u8, size: f32, mono: bool, out: *[3]f32) bool {
     if (!(size > 0) or !std.math.isFinite(size)) return false;
-    const f = font(font_class, size, 400, false, mono) orelse return false;
-    // The cached font is at the nearest half point: scaled to `size`.
-    const k: CGFloat = size / std.math.clamp(@round(size * 2) / 2, 0.5, 2000);
-    out.* = .{ @floatCast(CTFontGetAscent(f) * k), @floatCast(CTFontGetDescent(f) * k), @floatCast(CTFontGetLeading(f) * k) };
+    const f = font(font_class, size, 400, false, mono, null) orelse return false;
+    const m = lineMetrics(f);
+    out.* = .{ m.ascent, m.descent, m.gap };
     return true;
+}
+
+/// A text node's line box: its height (CSS line-height, whole pixels as
+/// WebKit keeps it, else normal: its largest font's ascent + descent +
+/// gap) and that font's ascent and descent, which place the baseline.
+const LineBox = struct { h: f32, m: LineMetrics };
+
+fn lineBoxOf(comptime font_class: [:0]const u8, n: *const Node) ?LineBox {
+    var size: f32 = n.props.fz orelse 16;
+    var weight: f32 = 400;
+    var italic = false;
+    var mono = n.props.mono;
+    var family = n.props.ff;
+    if (n.props.runs) |runs| {
+        if (runs.len > 0) size = 0;
+        for (runs) |r| if (r.sz >= size) {
+            size = r.sz;
+            weight = r.w;
+            italic = r.i;
+            mono = r.mono or n.props.mono;
+            family = r.ff orelse n.props.ff;
+        };
+    }
+    const f = font(font_class, size, weight, italic, mono, family) orelse return null;
+    const m = lineMetrics(f);
+    if (n.props.lh) |lh| {
+        if (!(lh >= 1) or !std.math.isFinite(lh)) return null;
+        return .{ .h = @floor(lh), .m = m };
+    }
+    return .{ .h = m.ascent + m.descent + m.gap, .m = m };
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +397,7 @@ fn attributed(comptime font_class: [:0]const u8, n: *const Node) ?CFAttributedSt
         const start = CFAttributedStringGetLength(s);
         CFAttributedStringReplaceString(s, .{ .location = start, .length = 0 }, str);
         const range: CFRange = .{ .location = start, .length = CFStringGetLength(str) };
-        if (font(font_class, r.sz, r.w, r.i, r.mono or n.props.mono)) |f| CFAttributedStringSetAttribute(s, range, kCTFontAttributeName, f);
+        if (font(font_class, r.sz, r.w, r.i, r.mono or n.props.mono, r.ff orelse n.props.ff)) |f| CFAttributedStringSetAttribute(s, range, kCTFontAttributeName, f);
         const comps = [4]CGFloat{ r.c[0] / 255, r.c[1] / 255, r.c[2] / 255, r.c[3] };
         if (CGColorCreate(space, &comps)) |col| {
             CFAttributedStringSetAttribute(s, range, kCTForegroundColorAttributeName, col);
@@ -300,9 +431,11 @@ fn attributed(comptime font_class: [:0]const u8, n: *const Node) ?CFAttributedSt
     }
     settings[count] = .{ .spec = kCTParagraphStyleSpecifierAlignment, .size = 1, .value = &alignment };
     count += 1;
+    // Every line exactly its line box (lineBoxOf: CSS's, or normal as
+    // WebKit makes it): CoreText measures lines x that.
     var lh: CGFloat = 0;
-    if (n.props.lh) |v| {
-        lh = v;
+    if (lineBoxOf(font_class, n)) |lb| {
+        lh = lb.h;
         settings[count] = .{ .spec = kCTParagraphStyleSpecifierMinimumLineHeight, .size = @sizeOf(CGFloat), .value = &lh };
         count += 1;
         settings[count] = .{ .spec = kCTParagraphStyleSpecifierMaximumLineHeight, .size = @sizeOf(CGFloat), .value = &lh };
@@ -398,6 +531,12 @@ fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 
     const cache = textCache(font_class, n) orelse return null;
     const fs = cache.fs orelse return .{ 0, @round((n.props.fz orelse 16) * 1.2) };
     const size = CTFramesetterSuggestFrameSizeWithConstraints(fs, .{ .location = 0, .length = 0 }, null, .{ .width = if (n.props.nowrap) big else w, .height = big }, null);
+    // Lines x the line box (CoreText's own height can be a hair over, a
+    // font's leading on top of the fixed line height).
+    if (lineBoxOf(font_class, n)) |lb| {
+        const lines = @max(1, @round(size.height / lb.h));
+        return .{ @floatCast(@ceil(size.width) + 1), @floatCast(lines * lb.h) };
+    }
     return .{ @floatCast(@ceil(size.width) + 1), @floatCast(@ceil(size.height)) };
 }
 
@@ -412,13 +551,13 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     // A CSS line-height: the lines are placed here (cssLineOrigin), so the
     // frame only breaks them, in a frame tall enough to keep every one (a
     // line-height under the font's own height made CoreText drop lines).
-    const css_lh = cssLineHeight(n);
+    const lb = lineBoxOf(font_class, n);
     if (cache.frame == null or cache.frame_w != w or cache.frame_h < h) {
         const need = CTFramesetterSuggestFrameSizeWithConstraints(fs, .{ .location = 0, .length = 0 }, null, .{ .width = w, .height = big }, null);
         h = @max(c.h, @ceil(need.height));
-        if (css_lh) |lh| {
+        if (lb) |box| {
             // Lines at the font's own height (generously: 3 font sizes each).
-            const lines = @ceil(need.height / lh) + 1;
+            const lines = @ceil(need.height / box.h) + 1;
             h = @max(h, lines * 3 * @as(CGFloat, n.props.fz orelse 16));
         }
         const path = CGPathCreateWithRect(.{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = if (n.props.nowrap) @ceil(need.width) + 1 else w, .height = h } }, null) orelse return;
@@ -437,45 +576,36 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     CGContextTranslateCTM(cg, c.x, c.y + h);
     CGContextScaleCTM(cg, 1, -1);
     CGContextSetTextMatrix(cg, .{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 });
-    paintRunBackgrounds(cg, n, frame, h);
-    if (css_lh == null) return CTFrameDraw(frame, cg);
+    paintRunBackgrounds(cg, frame, h, lb, n);
+    if (lb == null) return CTFrameDraw(frame, cg);
     const lines = CTFrameGetLines(frame);
     var i: c_long = 0;
     while (i < CFArrayGetCount(lines)) : (i += 1) {
         const line = CFArrayGetValueAtIndex(lines, i);
-        const o = lineOrigin(n, frame, line, i, h);
+        const o = lineOrigin(frame, i, h, lb);
         CGContextSetTextPosition(cg, o.x, o.y);
         CTLineDraw(line, cg);
     }
 }
 
-/// The text's CSS line-height in px, when it sets one.
-fn cssLineHeight(n: *const Node) ?CGFloat {
-    const lh = n.props.lh orelse return null;
-    return if (lh > 0 and std.math.isFinite(lh)) lh else null;
-}
-
 /// Line `i`'s origin in the flipped CoreText space paintText sets up (y up
-/// from the bottom of a frame `h` tall). With a CSS line-height, CSS's line
-/// box: the line is exactly that tall, its glyphs centered in it (half the
-/// leading above, half below), even when that's less than the font's own
-/// height (gtk.zig's cssHeight and paintText do the same). Else CoreText's.
-fn lineOrigin(n: *const Node, frame: CTFrameRef, line: CFTypeRef, i: c_long, h: CGFloat) CGPoint {
+/// from the bottom of a frame `h` tall): in its line box (`lb`), the
+/// baseline half the leading under the top plus the ascent, as CSS and
+/// WebKit place it (gtk.zig and win32.zig do the same), the glyphs
+/// overflowing a line box shorter than the font. Without one, CoreText's.
+fn lineOrigin(frame: CTFrameRef, i: c_long, h: CGFloat, lb: ?LineBox) CGPoint {
     var o: [1]CGPoint = undefined;
     CTFrameGetLineOrigins(frame, .{ .location = i, .length = 1 }, &o);
-    const lh = cssLineHeight(n) orelse return o[0];
-    var ascent: CGFloat = 0;
-    var descent: CGFloat = 0;
-    _ = CTLineGetTypographicBounds(line, &ascent, &descent, null);
-    const top = @as(CGFloat, @floatFromInt(i)) * lh + (lh - (ascent + descent)) / 2;
-    return .{ .x = o[0].x, .y = h - (top + ascent) };
+    const box = lb orelse return o[0];
+    const top = @as(CGFloat, @floatFromInt(i)) * box.h + (box.h - (box.m.ascent + box.m.descent)) / 2;
+    return .{ .x = o[0].x, .y = h - (top + box.m.ascent) };
 }
 
 /// A run's background (an inline highlight, a <code> amid the text): a box
 /// under its glyphs on each line it spans, as a browser paints an inline
 /// box's background. CoreText draws no backgrounds; the frame's lines give
 /// the positions (in the flipped CoreText space paintText set up).
-fn paintRunBackgrounds(cg: CGContextRef, n: *Node, frame: CTFrameRef, h: CGFloat) void {
+fn paintRunBackgrounds(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, lb: ?LineBox, n: *Node) void {
     const runs = n.props.runs orelse return;
     var any = false;
     for (runs) |r| if (r.bg != null) {
@@ -488,7 +618,7 @@ fn paintRunBackgrounds(cg: CGContextRef, n: *Node, frame: CTFrameRef, h: CGFloat
     if (count <= 0) return;
     var origins_buf: [256]CGPoint = undefined;
     const shown: usize = @intCast(@min(count, origins_buf.len));
-    for (0..shown) |i| origins_buf[i] = lineOrigin(n, frame, CFArrayGetValueAtIndex(lines, @intCast(i)), @intCast(i), h);
+    for (0..shown) |i| origins_buf[i] = lineOrigin(frame, @intCast(i), h, lb);
     // Each run's range in the string (UTF-16 units), as attributed() built it.
     var start: c_long = 0;
     for (runs) |r| {
@@ -680,10 +810,27 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
         roundRect(cg, pb.rect, pb.radii);
         CGContextClip(cg);
     }
-    defer if (round_clip) CGContextRestoreGState(cg);
     // CSS paint order: positioned boxes (a sticky header) over the flow.
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paintNode(font_class, cg, engine, fields, scale, k);
+    if (round_clip) CGContextRestoreGState(cg);
+    // Over the box and its children, outside its own clip.
+    if (p.ol) |ol| paintOutline(cg, f, r, ol);
+}
+
+/// CSS outline: a border of its own around the box grown by offset +
+/// width, its corners the box's radius grown as much (square ones stay
+/// square), solid, dashed or dotted (as gtk.zig's).
+fn paintOutline(cg: CGContextRef, f: Rect, r: [4]f32, ol: tree_mod.Outline) void {
+    if (!(ol.w > 0) or !(ol.c[3] > 0)) return;
+    const grow = ol.o + ol.w;
+    const box: Rect = .{ .x = f.x - grow, .y = f.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
+    if (box.w <= 2 * ol.w or box.h <= 2 * ol.w) return;
+    var radii: [4]f32 = undefined;
+    for (r, 0..) |x, i| radii[i] = if (x > 0) @max(0, x + grow) else 0;
+    CGContextSaveGState(cg);
+    defer CGContextRestoreGState(cg);
+    border(cg, box, radii, .{ ol.w, ol.w, ol.w, ol.w }, .{ ol.c, ol.c, ol.c, ol.c }, ol.s);
 }
 
 fn setFill(cg: CGContextRef, c: tree_mod.Color) void {
@@ -992,7 +1139,7 @@ fn paintPlaceholder(comptime font_class: [:0]const u8, cg: CGContextRef, n: *con
     defer CFRelease(str);
     CFAttributedStringReplaceString(s, .{ .location = 0, .length = 0 }, str);
     const all: CFRange = .{ .location = 0, .length = CFStringGetLength(str) };
-    if (font(font_class, n.props.fz orelse 16, 400, false, false)) |f| CFAttributedStringSetAttribute(s, all, kCTFontAttributeName, f);
+    if (font(font_class, n.props.fz orelse 16, 400, false, n.props.mono, n.props.ff)) |f| CFAttributedStringSetAttribute(s, all, kCTFontAttributeName, f);
     const col = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
     const space = CGColorSpaceCreateDeviceRGB() orelse return;
     defer CGColorSpaceRelease(space);
@@ -1700,7 +1847,7 @@ fn canvasText(comptime font_class: [:0]const u8, r: *Replay, text: []const u8, x
             named = CTFontCreateWithName(cf, size, null);
         }
     }
-    const fnt = named orelse font(font_class, size, st.font.weight, st.font.italic, mono) orelse return;
+    const fnt = named orelse font(font_class, size, st.font.weight, st.font.italic, mono, if (mono) "ui-monospace" else "system-ui") orelse return;
     const s = CFAttributedStringCreateMutable(null, 0) orelse return;
     defer CFRelease(s);
     const str = CFStringCreateWithBytes(null, text.ptr, @intCast(@min(text.len, 1 << 20)), kCFStringEncodingUTF8, 0) orelse return;
