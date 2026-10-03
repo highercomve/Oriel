@@ -1687,18 +1687,33 @@ globalThis.atob ??= (s) => {
       this.order = 0;
       this.keyframes = {};
     }
-    addSheet(css) {
-      const rules = parseSheet(css, this.order);
-      this.order += rules.length;
-      Object.assign(this.keyframes, rules.keyframes);
-      for (const r of rules) {
+    // `cache`: { get(css) → JSON | undefined, keep(css, json) } (the native
+    // one keeps a sheet's parsed rules for the process: a second window
+    // doesn't parse and index them again).
+    addSheet(css, cache) {
+      let parsed = null;
+      const kept2 = cache?.get(css);
+      if (kept2) {
+        try {
+          parsed = JSON.parse(kept2);
+        } catch {
+          parsed = null;
+        }
+      }
+      if (!parsed) {
+        const rules = parseSheet(css, 0);
+        parsed = { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
+        try {
+          cache?.keep(css, JSON.stringify(parsed));
+        } catch {
+        }
+      }
+      Object.assign(this.keyframes, parsed.keyframes);
+      for (const [sel, pseudo, spec, decls, media, key] of parsed.rules) {
+        const r = { sel, pseudo, spec, decls, media, order: this.order++, match: null };
         this.rules.push(r);
-        const last = r.sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "").split(/[\s>+~]+/).filter(Boolean).pop() || "*";
-        const id = /#([\w-]+)/.exec(last), cls = /\.([\w-]+)/.exec(last), tag = /^([a-zA-Z][\w-]*)/.exec(last);
-        if (id) push(this.index.id, id[1], r);
-        else if (cls) push(this.index.cls, cls[1], r);
-        else if (tag) push(this.index.tag, tag[1].toLowerCase(), r);
-        else this.index.any.push(r);
+        if (key[0] === "any") this.index.any.push(r);
+        else push(this.index[key[0]], key[1], r);
       }
     }
     // Matching rules for an element: { normal: [...], before: [...], after: [...] }.
@@ -1750,6 +1765,14 @@ globalThis.atob ??= (s) => {
       for (const d of decls) expand(d.prop, d.value, d.important ? important : normal);
     }
   };
+  function indexKey(sel) {
+    const last = sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "").split(/[\s>+~]+/).filter(Boolean).pop() || "*";
+    const id = /#([\w-]+)/.exec(last), cls = /\.([\w-]+)/.exec(last), tag = /^([a-zA-Z][\w-]*)/.exec(last);
+    if (id) return ["id", id[1]];
+    if (cls) return ["cls", cls[1]];
+    if (tag) return ["tag", tag[1].toLowerCase()];
+    return ["any"];
+  }
   function push(map, k, v) {
     let l = map.get(k);
     if (!l) map.set(k, l = []);
@@ -5968,13 +5991,16 @@ ${a.stack || ""}`;
     boot(w, h, dark, coarse) {
       return guard(() => {
         Object.assign(viewport, { width: w, height: h, dark: !!dark, coarse: !!coarse });
+        const P = host.prof ? host.now : null, b0 = P && P();
         const engine = new StyleEngine();
-        engine.addSheet(UA_CSS);
+        const sheets = host.sheetCache ? { get: (css) => host.sheetCache(css), keep: (css, json) => host.sheetKeep(css, json) } : null;
+        engine.addSheet(UA_CSS, sheets);
         for (const link of document.querySelectorAll('link[rel="stylesheet"][href], style')) {
           const css = link.localName === "style" ? link.textContent : host.asset(link.getAttribute("href").replace(/^\.?\//, ""));
-          if (css) engine.addSheet(css);
+          if (css) engine.addSheet(css, sheets);
           else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
         }
+        const b1 = P && P();
         renderer = new Renderer(document, engine, host);
         renderer.stateEls = () => {
           const out = [];
@@ -5987,6 +6013,7 @@ ${a.stack || ""}`;
         renderer.observer.__nuiChild = (node, parent) => renderer.noteChild(node, parent);
         renderer.observer.__nuiAttribute = (node, name) => renderer.noteAttribute(node, name);
         renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+        const b2 = P && P();
         for (const s of document.querySelectorAll("script")) {
           const src = s.getAttribute("src");
           const code = src ? host.asset(src.replace(/^\.?\//, "")) : s.textContent;
@@ -6015,8 +6042,10 @@ ${a.stack || ""}`;
             console.error(e);
           }
         }
+        const b3 = P && P();
         document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
         fireWindow(new Event("load"));
+        if (P) host.log(1, `PROF boot: styles ${(b1 - b0).toFixed(2)} (${engine.rules.length} rules), renderer ${(b2 - b1).toFixed(2)}, scripts ${(b3 - b2).toFixed(2)}, events ${(P() - b3).toFixed(2)}`);
         return true;
       });
     },
