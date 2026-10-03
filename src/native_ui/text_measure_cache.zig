@@ -55,6 +55,9 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
     k.byte(@intFromBool(props.mono));
     k.optional(props.lh);
     k.optional(props.ls);
+    // The font family lists (a font of its own: other glyphs, other
+    // metrics); longer ones aren't keyed.
+    if (!k.family(props.ff)) return null;
     const ta = props.ta orelse "left";
     k.byte(if (std.mem.eql(u8, ta, "center")) 1 else if (std.mem.eql(u8, ta, "right")) 2 else 0);
     k.byte(@intCast(runs.len));
@@ -70,6 +73,7 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
         for (r.c) |channel| k.float(channel);
         k.byte(@intFromBool(r.bg != null));
         if (r.bg) |bg| for (bg) |channel| k.float(channel);
+        if (!k.family(r.ff)) return null;
     }
     return buf[0..k.len];
 }
@@ -87,6 +91,17 @@ const Key = struct {
     }
     fn float(k: *Key, value: f32) void {
         k.integer(@bitCast(value));
+    }
+    fn family(k: *Key, value: ?[]const u8) bool {
+        const f = value orelse {
+            k.byte(0);
+            return true;
+        };
+        if (f.len > 48) return false;
+        k.byte(@intCast(f.len + 1));
+        @memcpy(k.buf[k.len..][0..f.len], f);
+        k.len += f.len;
+        return true;
     }
     fn optional(k: *Key, value: ?f32) void {
         k.byte(@intFromBool(value != null));
