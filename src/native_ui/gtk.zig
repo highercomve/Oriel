@@ -1331,12 +1331,12 @@ fn roundRect(cr: *cairo_t, f: Rect, r: [4]f32) void {
 }
 
 fn gradient(f: Rect, g: tree_mod.Gradient) *cairo_pattern_t {
-    if (g.radial) |rad| {
+    if (g.radialIn(f.w, f.h)) |rad| {
         // A unit circle at the origin, mapped onto the ellipse.
-        const cx = f.x + boxLen(rad[0], f.w);
-        const cy = f.y + boxLen(rad[1], f.h);
-        const rx = @max(0.01, boxLen(rad[2], f.w));
-        const ry = @max(0.01, boxLen(rad[3], f.h));
+        const cx = f.x + rad[0];
+        const cy = f.y + rad[1];
+        const rx = rad[2];
+        const ry = rad[3];
         const pat = cairo_pattern_create_radial(0, 0, 0, 0, 0, 1);
         cairo_pattern_set_matrix(pat, &.{ .xx = 1 / rx, .yx = 0, .xy = 0, .yy = 1 / ry, .x0 = -cx / rx, .y0 = -cy / ry });
         for (g.stops) |st| cairo_pattern_add_color_stop_rgba(pat, st[4], st[0] / 255, st[1] / 255, st[2] / 255, st[3]);
@@ -1351,11 +1351,6 @@ fn gradient(f: Rect, g: tree_mod.Gradient) *cairo_pattern_t {
     const pat = cairo_pattern_create_linear(cx - dx * len / 2, cy - dy * len / 2, cx + dx * len / 2, cy + dy * len / 2);
     for (g.stops) |st| cairo_pattern_add_color_stop_rgba(pat, st[4], st[0] / 255, st[1] / 255, st[2] / 255, st[3]);
     return pat;
-}
-
-/// A gradient length: px, or "50%" of `total`.
-fn boxLen(v: tree_mod.Dim, total: f32) f32 {
-    return v.len(total);
 }
 
 fn border(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) void {

@@ -2835,11 +2835,6 @@ fn strokeShape(p: *Painter, f: Rect, r: [4]f32, brush: *c.ID2D1Brush, width: f32
     vt.DrawGeometry.?(p.rt, @ptrCast(geo), brush, width, null);
 }
 
-/// A gradient length: px, or "50%" of `total`.
-fn boxLen(v: tree_mod.Dim, total: f32) f32 {
-    return v.len(total);
-}
-
 /// A brush for a CSS gradient over `f`. Caller releases.
 fn gradientBrush(p: *Painter, f: Rect, g: tree_mod.Gradient) ?*c.ID2D1Brush {
     if (g.stops.len == 0) return null;
@@ -2850,12 +2845,12 @@ fn gradientBrush(p: *Painter, f: Rect, g: tree_mod.Gradient) ?*c.ID2D1Brush {
     var coll: ?*c.ID2D1GradientStopCollection = null;
     if (vt.CreateGradientStopCollection.?(p.rt, &stops_buf, @intCast(count), c.D2D1_GAMMA_2_2, c.D2D1_EXTEND_MODE_CLAMP, &coll) < 0) return null;
     defer releaseCom(coll);
-    if (g.radial) |rad| {
+    if (g.radialIn(f.w, f.h)) |rad| {
         const props: c.D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES = .{
-            .center = .{ .x = f.x + boxLen(rad[0], f.w), .y = f.y + boxLen(rad[1], f.h) },
+            .center = .{ .x = f.x + rad[0], .y = f.y + rad[1] },
             .gradientOriginOffset = .{ .x = 0, .y = 0 },
-            .radiusX = @max(0.01, boxLen(rad[2], f.w)),
-            .radiusY = @max(0.01, boxLen(rad[3], f.h)),
+            .radiusX = rad[2],
+            .radiusY = rad[3],
         };
         var b: ?*c.ID2D1RadialGradientBrush = null;
         if (vt.CreateRadialGradientBrush.?(p.rt, &props, null, coll, &b) < 0) return null;
