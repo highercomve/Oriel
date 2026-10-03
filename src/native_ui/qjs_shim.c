@@ -34,6 +34,7 @@ extern void oriel_nui_timer(void *opaque, uint32_t timer_id, double ms);
 extern void oriel_nui_ops(void *opaque, const char *json, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
 extern int oriel_nui_vsync(void *opaque);
+extern void oriel_nui_warm_fonts(void *opaque, const double *v, size_t count);
 extern uint32_t oriel_nui_stamp_plan(void *opaque, const double *v, size_t len);
 #if defined(ORIEL_NATIVE_DOM)
 extern int oriel_nui_stamp(void *opaque, double row_id, void *dom, uint32_t row, uint32_t plan);
@@ -257,6 +258,31 @@ static JSValue h_stamp_list(JSContext *ctx, JSValueConst this_val, int argc, JSV
     return JS_NewBool(ctx, oriel_nui_stamp_list(opaque_of(ctx), list_id, dom, list, row_style, plan, template_row, kept, (size_t)kept_len));
 }
 #endif
+
+// host.warmFonts([[size, weight, italic, mono], ...]): fonts the backend
+// loads while idle (at most 64).
+static JSValue h_warm_fonts(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    int64_t len;
+    if (argc < 1 || JS_GetLength(ctx, argv[0], &len) < 0) return JS_EXCEPTION;
+    if (len > 64) len = 64;
+    double v[64 * 4];
+    size_t n = 0;
+    for (int64_t i = 0; i < len; i++) {
+        JSValue spec = JS_GetPropertyUint32(ctx, argv[0], (uint32_t)i);
+        int bad = 0;
+        for (uint32_t k = 0; k < 4 && !bad; k++) {
+            JSValue x = JS_GetPropertyUint32(ctx, spec, k);
+            bad = JS_ToFloat64(ctx, &v[n * 4 + k], x);
+            JS_FreeValue(ctx, x);
+        }
+        JS_FreeValue(ctx, spec);
+        if (bad) return JS_EXCEPTION;
+        n++;
+    }
+    oriel_nui_warm_fonts(opaque_of(ctx), v, n);
+    return JS_UNDEFINED;
+}
 
 // host.vsync(): __oriel.vsync(interval) at the display's next refresh;
 // false when the backend can't (requestAnimationFrame keeps its timers).
@@ -527,6 +553,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "frame", h_frame, 1);
     set_fn(ctx, host, "now", h_now, 0);
     set_fn(ctx, host, "vsync", h_vsync, 0);
+    set_fn(ctx, host, "warmFonts", h_warm_fonts, 1);
 #if defined(ORIEL_NATIVE_DOM)
     // Rows stamped from the native DOM (Android learns of the nodes the
     // tree makes through Backend.leaf).

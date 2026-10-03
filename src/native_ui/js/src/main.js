@@ -17,7 +17,7 @@
 // after each call it runs the pending jobs and `__oriel.render()`.
 
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
-import { StyleEngine, viewport, mediaMatches } from "./css.js";
+import { StyleEngine, viewport, mediaMatches, fontSpecs } from "./css.js";
 import { Renderer, UA_CSS } from "./render.js";
 import * as canvas from "./canvas.js";
 
@@ -780,6 +780,8 @@ g.__oriel = {
         // As a global script (not eval): top-level let/const are shared between scripts.
         try { host.evalScript(src || "inline", code); } catch (e) { console.error(e); }
       }
+      // The fonts the rules use, loaded while the window is idle.
+      if (host.warmFonts) { try { host.warmFonts(fontSpecs(engine.rules)); } catch (e) { console.error(e); } }
       document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
       fireWindow(new Event("load"));
       return true;
