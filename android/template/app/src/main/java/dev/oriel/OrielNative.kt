@@ -248,9 +248,10 @@ internal class NuiNode(val id: Int, var kind: String) {
     private fun buildText() {
         val fz = p.optDouble("fz", 16.0).toFloat()
         val mono = p.optBoolean("mono")
+        val ff = p.optString("ff")
         val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
         tp.textSize = fz
-        tp.typeface = typeface(p.optDouble("fwt", 400.0).toInt(), p.optBoolean("it"), mono)
+        tp.typeface = typeface(p.optDouble("fwt", 400.0).toInt(), p.optBoolean("it"), family(ff, mono))
         tp.color = p.optJSONArray("col")?.let { color(it) } ?: Color.BLACK
         if (p.has("ls")) tp.letterSpacing = p.optDouble("ls").toFloat() / fz
         text = spans(fz, mono)
@@ -273,14 +274,16 @@ internal class NuiNode(val id: Int, var kind: String) {
             val flags = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             r.optJSONArray("c")?.let { sb.setSpan(ForegroundColorSpan(color(it)), start, end, flags) }
             sb.setSpan(RelativeSizeSpan(r.optDouble("sz", fz.toDouble()).toFloat() / fz), start, end, flags)
-            sb.setSpan(FontSpan(typeface(r.optDouble("w", 400.0).toInt(), r.optBoolean("i"), r.optBoolean("mono") || mono)), start, end, flags)
+            sb.setSpan(FontSpan(typeface(r.optDouble("w", 400.0).toInt(), r.optBoolean("i"), family(r.optString("ff").ifEmpty { p.optString("ff") }, r.optBoolean("mono") || mono))), start, end, flags)
             if (r.optBoolean("u")) sb.setSpan(UnderlineSpan(), start, end, flags)
             r.optJSONArray("bg")?.let { val c = color(it); if (Color.alpha(c) > 0) sb.setSpan(BackgroundColorSpan(c), start, end, flags) }
         }
-        // line-height: every line exactly that tall (CSS's, a length here).
-        if (p.has("lh") && sb.isNotEmpty()) {
-            val (a, d) = fontRatios(mono)
-            sb.setSpan(LineHeight(p.optDouble("lh").toFloat(), fz, a, d, sized.toFloatArray()), 0, sb.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+        // line-height: every line exactly that tall (CSS's, a length here);
+        // normal (no lh): the font's own, as Chrome makes it (LineHeight).
+        if (sb.isNotEmpty()) {
+            val m = fontRatios(p.optString("ff"), mono)
+            val lh = if (p.has("lh")) p.optDouble("lh").toFloat() else Float.NaN
+            sb.setSpan(LineHeight(lh, fz, m, sized.toFloatArray()), 0, sb.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
         }
         return sb
     }
@@ -345,11 +348,12 @@ internal class NuiNode(val id: Int, var kind: String) {
         val sz = r?.optDouble("sz", fz) ?: fz
         val w = r?.optDouble("w", 400.0)?.toInt() ?: 400
         val italic = r?.optBoolean("i") ?: false
-        val key = "$fz $sz $w $italic $mono ${p.optDouble("lh", -1.0)}"
+        val ff = r?.optString("ff")?.ifEmpty { null } ?: p.optString("ff")
+        val key = "$fz $sz $w $italic $mono ${p.optDouble("lh", -1.0)} $ff"
         return lineStyles.getOrPut(key) {
             val fp = TextPaint(Paint.ANTI_ALIAS_FLAG)
             fp.textSize = sz.toFloat()
-            fp.typeface = typeface(w, italic, mono)
+            fp.typeface = typeface(w, italic, family(ff, mono))
             LineStyle(fp, builder(t.subSequence(0, 1), tp, 1 shl 20).build().height)
         }
     }
@@ -411,54 +415,86 @@ internal class NuiNode(val id: Int, var kind: String) {
             return Color.argb(alpha, a.optInt(0).coerceIn(0, 255), a.optInt(1).coerceIn(0, 255), a.optInt(2).coerceIn(0, 255))
         }
 
-        /** The text font's ascent and descent per px of size (LineHeight), mono or not. */
-        private val ratios = HashMap<Boolean, Pair<Float, Float>>()
+        /** A font family's ascent, descent and line gap per px of size (LineHeight), by CSS font-family list and mono. */
+        private val ratios = HashMap<String, FloatArray>()
 
-        fun fontRatios(mono: Boolean): Pair<Float, Float> = ratios.getOrPut(mono) {
+        fun fontRatios(ff: String, mono: Boolean): FloatArray = ratios.getOrPut("$mono $ff") {
             val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
             tp.textSize = 100f
-            tp.typeface = typeface(400, false, mono)
+            tp.typeface = family(ff, mono)
             val fm = tp.fontMetrics
-            -fm.ascent / 100f to fm.descent / 100f
+            floatArrayOf(-fm.ascent / 100f, fm.descent / 100f, max(0f, fm.leading) / 100f)
         }
 
-        /** Ascent (as a positive length) and descent of the text font at `size` px, in 1/64 px, packed. */
+        /** The default sans (or monospace) font's ascent, descent and line gap at `size` px, in 1/64 px, 21 bits each. */
         fun fontMetrics(size: Float, mono: Boolean): Long {
-            val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
-            tp.textSize = size
-            tp.typeface = typeface(400, false, mono)
-            val fm = tp.fontMetrics
-            return ((-fm.ascent * 64).toLong() shl 32) or (fm.descent * 64).toLong()
+            val m = fontRatios("", mono)
+            fun q(v: Float) = (v * size * 64).toLong().coerceIn(0, (1L shl 21) - 1)
+            return (q(m[0]) shl 42) or (q(m[1]) shl 21) or q(m[2])
         }
 
-        fun typeface(weight: Int, italic: Boolean, mono: Boolean): Typeface =
-            Typeface.create(if (mono) Typeface.MONOSPACE else Typeface.DEFAULT, weight.coerceIn(1, 1000), italic)
+        /** CSS font-family lists resolved, as Chrome on Android does: the first family the system has. */
+        private val families = HashMap<String, Typeface>()
+
+        fun family(ff: String?, mono: Boolean): Typeface {
+            if (ff.isNullOrEmpty()) return if (mono) Typeface.MONOSPACE else Typeface.DEFAULT
+            return families.getOrPut(ff) {
+                for (raw in ff.split(',')) {
+                    val name = raw.trim().trim('"', '\'')
+                    when (name.lowercase()) {
+                        "sans-serif", "system-ui", "ui-sans-serif", "-apple-system", "blinkmacsystemfont", "roboto" -> return@getOrPut Typeface.DEFAULT
+                        "monospace", "ui-monospace" -> return@getOrPut Typeface.MONOSPACE
+                        "serif", "ui-serif" -> return@getOrPut Typeface.SERIF
+                        "" -> continue
+                    }
+                    // A family the system knows (fonts.xml: cursive, casual, …); an unknown name gives the default.
+                    val tf = Typeface.create(name, Typeface.NORMAL)
+                    if (tf !== Typeface.DEFAULT) return@getOrPut tf
+                }
+                Typeface.DEFAULT
+            }
+        }
+
+        fun typeface(weight: Int, italic: Boolean, mono: Boolean): Typeface = typeface(weight, italic, family(null, mono))
+
+        fun typeface(weight: Int, italic: Boolean, base: Typeface): Typeface = Typeface.create(base, weight.coerceIn(1, 1000), italic)
     }
 }
 
 /**
  * CSS line-height on Android's lines. Every text size on a line gets a box
- * `px` tall with its glyphs centred in it (half-leading: half the
- * difference above, half below, shorter than the font too), all on one
- * baseline with the paragraph's own size (the strut); the line covers
- * them. One size: each line exactly `px`, a fractional one rounded per
- * line so n lines add up to n × px (23.2: 23, 23, 24…). `a`, `d`: the
- * font's ascent and descent per px; `runs`: start, end, size of each run.
+ * of its line height with its glyphs centred in it (half-leading, shorter
+ * than the font too), all on one baseline with the paragraph's own size
+ * (the strut); the line covers them. The line height is `px`, or with
+ * `line-height: normal` (`px` NaN) the font's own as Chrome on Android
+ * makes it: ascent, descent and line gap each rounded in device pixels.
+ * One size: each line that tall, a fractional height rounded per line so n
+ * lines add up to n × it (23.2: 23, 23, 24…). `m`: the font's ascent,
+ * descent and line gap per px; `runs`: start, end, size of each run.
  */
-private class LineHeight(private val px: Float, private val fz: Float, private val a: Float, private val d: Float, private val runs: FloatArray) :
+private class LineHeight(private val px: Float, private val fz: Float, private val m: FloatArray, private val runs: FloatArray) :
     android.text.style.LineHeightSpan {
+    private val density = android.content.res.Resources.getSystem().displayMetrics.density
+
+    private fun heightAt(sz: Float): Float {
+        if (!px.isNaN()) return px
+        val k = sz * density
+        return (Math.round(m[0] * k) + Math.round(m[1] * k) + Math.round(m[2] * k)) / density
+    }
+
     override fun chooseHeight(text: CharSequence, start: Int, end: Int, spanstartv: Int, lineHeight: Int, fm: Paint.FontMetricsInt) {
-        if (fm.descent - fm.ascent <= 0 || px <= 0) return
+        val a = m[0]; val d = m[1]
+        val lh = heightAt(fz)
+        if (fm.descent - fm.ascent <= 0 || !(lh > 0)) return
         // Above and below the baseline: the strut's, then each run's on this line.
-        val half = (px - (a + d) * fz) / 2
-        var above = a * fz + half
-        var below = d * fz + half
+        var above = a * fz + (lh - (a + d) * fz) / 2
+        var below = d * fz + (lh - (a + d) * fz) / 2
         var mixed = false
         var i = 0
         while (i + 2 < runs.size) {
             val sz = runs[i + 2]
             if (runs[i] < end && runs[i + 1] > start && sz != fz) {
-                val h = (px - (a + d) * sz) / 2
+                val h = (heightAt(sz) - (a + d) * sz) / 2
                 above = max(above, a * sz + h)
                 below = max(below, d * sz + h)
                 mixed = true
@@ -470,8 +506,8 @@ private class LineHeight(private val px: Float, private val fz: Float, private v
             fm.descent = Math.round(below)
         } else {
             // This line's top is `lineHeight` (spanstartv: where the span began).
-            val line = Math.round((lineHeight - spanstartv) / px)
-            val target = Math.round((line + 1) * px) - Math.round(line * px)
+            val line = Math.round((lineHeight - spanstartv) / lh)
+            val target = Math.round((line + 1) * lh) - Math.round(line * lh)
             fm.ascent = -Math.round(above)
             fm.descent = fm.ascent + target
         }
@@ -1553,6 +1589,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             }
         }
         val kids = kidsInOrder[r] ?: IntArray(0)
+        val inner = canvas.save()
         // A box that clips (overflow hidden, or a scroller) with rounded
         // corners: its children are clipped to its rounded padding box
         // (tree.zig's roundClips and paddingClip); its own border isn't.
@@ -1560,7 +1597,65 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             radii(n, w, h)?.let { paddingClip(canvas, x, y, w, h, it, n.bw) }
         }
         for (k in kids) draw(canvas, k)
+        canvas.restoreToCount(inner)
+        // The outline: after the content and children, outside the box's own clip.
+        if (n != null && visible) n.p.optJSONObject("ol")?.let { outline(canvas, it, x, y, w, h, radii(n, w, h)) }
         canvas.restoreToCount(save)
+    }
+
+    /**
+     * CSS outline (`ol`: w, c, o?, s?), as gtk.zig's outline(): a border of
+     * its own around the border box grown by offset + width, its radii grown
+     * as much (a square corner stays square), solid, dashed or dotted.
+     */
+    private fun outline(canvas: Canvas, ol: JSONObject, x: Float, y: Float, w: Float, h: Float, r: FloatArray?) {
+        val ow = ol.optDouble("w", 0.0).toFloat()
+        val color = NuiNode.color(ol.optJSONArray("c"))
+        if (!(ow > 0) || Color.alpha(color) == 0) return
+        val grow = ol.optDouble("o", 0.0).toFloat() + ow
+        val bx = x - grow; val by = y - grow; val bw = w + 2 * grow; val bh = h + 2 * grow
+        if (bw <= 2 * ow || bh <= 2 * ow) return
+        val half = ow / 2
+        roundRect(bx + half, by + half, bw - ow, bh - ow, r?.let { a -> FloatArray(4) { if (a[it] > 0) max(0f, a[it] + grow - half) else 0f } })
+        stroke.color = color
+        stroke.strokeWidth = ow
+        stroke.strokeJoin = Paint.Join.MITER
+        stroke.strokeCap = Paint.Cap.BUTT
+        val style = ol.optString("s")
+        val square = r == null || r.all { it <= 0 }
+        if (style == "dashed" && square) {
+            // As Chrome: each side on its own, corner to corner (solid corners),
+            // dashes of 2 × width (3 × below 3 px), gaps about the width, evened out.
+            val d = if (ow >= 3) 2 * ow else 3 * ow
+            val l = bx + half; val t = by + half; val rr = bx + bw - half; val b = by + bh - half
+            for ((x0, y0, x1, y1) in listOf(floatArrayOf(bx, t, bx + bw, t), floatArrayOf(bx, b, bx + bw, b), floatArrayOf(l, by, l, by + bh), floatArrayOf(rr, by, rr, by + bh))) {
+                val len = abs(x1 - x0) + abs(y1 - y0)
+                var n = max(2, Math.round((len + ow) / (d + ow)))
+                while (n > 2 && len - n * d < (n - 1) * 0.5f * ow) n--
+                val gap = (len - n * d) / (n - 1)
+                stroke.pathEffect = if (gap > 0) android.graphics.DashPathEffect(floatArrayOf(d, gap), 0f) else null
+                canvas.drawLine(x0, y0, x1, y1, stroke)
+            }
+            stroke.pathEffect = null
+            return
+        }
+        if (style == "dashed" || style == "dotted") {
+            // gtk.zig's dashPattern over the whole outline: dashes of 3 × width
+            // (dots of width), as many as fit with even gaps; round dots from 3 px.
+            val len = android.graphics.PathMeasure(path, true).length
+            val d = if (style == "dotted") ow else 3 * ow
+            if (len > d) {
+                val k = max(2f, Math.round((len + d) / (2 * d)).toFloat())
+                val gap = (len - k * d) / (k - 1)
+                stroke.pathEffect = if (style == "dotted" && ow >= 3) {
+                    stroke.strokeCap = Paint.Cap.ROUND
+                    android.graphics.DashPathEffect(floatArrayOf(0.001f, d + gap - 0.001f), 0f)
+                } else android.graphics.DashPathEffect(floatArrayOf(d, gap), 0f)
+            }
+        }
+        canvas.drawPath(path, stroke)
+        stroke.pathEffect = null
+        stroke.strokeCap = Paint.Cap.BUTT
     }
 
     /** Clip to the box's padding box: inset by the borders `bw` (top, right,
@@ -1792,7 +1887,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         /** Floats per node in the frames from Zig (android.zig `record_len`). */
         const val REC = 14
         /** android.zig's prop_keys, index for index (append only). */
-        val PROP_KEYS = arrayOf("fd","w","h","fs","ai","runs","t","c","sz","wt","dis","click","cg","rg","ar","val","maxw","maxh","minw","minh","fw","fg","fb","as","ac","jc","acc","src","range","pw","pos","ph","pad","m","options","on","icon","fit","cw","ch","cv","ctl","cols","trow","tcell","table","bc","bg","br","bw","clip","col","fwt","fz","ins","it","lh","ls","mono","nowrap","op","rel","rot","sc","scroll","scrollx","sh","sticky","ta","tx","ty","vis","z","root","color","gradient","angle","stops","radial","spread","blur","x","y","vb","shapes","d","fill","stroke","sw","cap","join","evenodd","u","i","label","href","hover","radius","cx","cy")
+        val PROP_KEYS = arrayOf("fd","w","h","fs","ai","runs","t","c","sz","wt","dis","click","cg","rg","ar","val","maxw","maxh","minw","minh","fw","fg","fb","as","ac","jc","acc","src","range","pw","pos","ph","pad","m","options","on","icon","fit","cw","ch","cv","ctl","cols","trow","tcell","table","bc","bg","br","bw","clip","col","fwt","fz","ins","it","lh","ls","mono","nowrap","op","rel","rot","sc","scroll","scrollx","sh","sticky","ta","tx","ty","vis","z","root","color","gradient","angle","stops","radial","spread","blur","x","y","vb","shapes","d","fill","stroke","sw","cap","join","evenodd","u","i","label","href","hover","radius","cx","cy","ff","ol")
         /** The largest side an <img> is decoded at (px); larger pictures are downsampled. */
         const val MAX_IMAGE_SIDE = 4096
         /** radial-gradient sizes (tree.zig Gradient.RadialExtent); another is farthest-corner. */
