@@ -181,6 +181,51 @@ function rangeMatches(part) {
 const mediaAnswers = new Map();
 const mediaFor = { width: NaN, height: NaN, dark: null, coarse: null, reducedMotion: null };
 
+// The fonts a page's rules can ask for: [size px, weight, italic, mono],
+// at most `max`, for the backend to load while idle (host.warmFonts): the
+// first text in a new size or weight costs a font match and load (~2.5 ms
+// on GTK), paid when a tab is first shown otherwise. Sizes in px, rem
+// (of the root's) and em (of 16); weights as given; italic and monospace
+// when some rule uses them.
+export function fontSpecs(rules, max = 48) {
+  const sizes = new Set([16]), weights = new Set([400]);
+  let italic = false, mono = false, root = 16;
+  const sizeOf = (v) => {
+    const m = /^([\d.]+)(px|rem|em)$/.exec(String(v || "").trim());
+    if (!m) return null;
+    const n = parseFloat(m[1]);
+    return m[2] === "px" ? n : m[2] === "rem" ? n * root : n * 16;
+  };
+  // The root's size first (rem).
+  for (const r of rules) {
+    if (r.sel !== "html" && r.sel !== ":root") continue;
+    const d = {};
+    StyleEngine.expandInto(r.decls, d, d);
+    const px = /^[\d.]+px$/.test(d["font-size"] || "") ? parseFloat(d["font-size"]) : null;
+    if (px) root = px;
+  }
+  sizes.add(root);
+  for (const r of rules) {
+    const d = {};
+    StyleEngine.expandInto(r.decls, d, d);
+    const size = sizeOf(d["font-size"]);
+    if (size && size >= 6 && size <= 96) sizes.add(Math.round(size * 2) / 2);
+    const w = d["font-weight"];
+    if (w) weights.add(w === "bold" ? 700 : w === "normal" ? 400 : parseInt(w, 10) || 400);
+    if (/italic|oblique/.test(d["font-style"] || "")) italic = true;
+    if (/mono|courier|consolas|menlo/i.test(d["font-family"] || "")) mono = true;
+  }
+  const out = [];
+  // Common sizes first: the root's and the default, then the others.
+  const order = [...sizes].sort((a, b) => (b === root) - (a === root) || (b === 16) - (a === 16) || a - b);
+  for (const size of order) {
+    for (const w of weights) out.push([size, w, 0, 0]);
+    if (italic) out.push([size, 400, 1, 0]);
+    if (mono) out.push([size, 400, 0, 1]);
+  }
+  return out.slice(0, max);
+}
+
 export function mediaMatches(q) {
   if (!q) return true;
   const v = viewport, f = mediaFor;

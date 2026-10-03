@@ -104,7 +104,14 @@ pub const Backend = struct {
     /// follows the display (120 Hz panels get 120 frames a second, a hidden
     /// window none); without it, a 60 Hz timer grid.
     request_display_frame: ?*const fn (ctx: *anyopaque) void = null,
+    /// Optional: load these fonts while idle (host.warmFonts: the sizes and
+    /// weights the page's rules use), so the first text in each doesn't pay
+    /// for the font match and load when a page or tab is shown.
+    warm_fonts: ?*const fn (ctx: *anyopaque, specs: []const FontSpec) void = null,
 };
+
+/// A font the page may use (Backend.warm_fonts).
+pub const FontSpec = struct { size: f32, weight: u16, italic: bool, mono: bool };
 
 // usize: 32-bit targets (armv7, x86 Android) have no 64-bit atomic add. Wrapping
 // would take 4 billion engines in one process.
@@ -394,6 +401,21 @@ export fn oriel_nui_ops(p: *anyopaque, json: [*]const u8, len: usize) void {
     const e = engineOf(p);
     if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: ops {s}", .{json[0..@min(len, 300)]});
     e.tree.apply(json[0..len]) catch |err| log.err("native ui: bad ops ({s})", .{@errorName(err)});
+}
+
+/// host.warmFonts([[size, weight, italic, mono], ...]) as flat numbers.
+export fn oriel_nui_warm_fonts(p: *anyopaque, v: [*]const f64, count: usize) void {
+    const e = engineOf(p);
+    const warm = e.backend.warm_fonts orelse return;
+    var specs: [64]FontSpec = undefined;
+    const n = @min(count, specs.len);
+    for (0..n) |i| specs[i] = .{
+        .size = @floatCast(std.math.clamp(v[i * 4], 1, 512)),
+        .weight = tree_mod.sat(u16, v[i * 4 + 1]),
+        .italic = v[i * 4 + 2] != 0,
+        .mono = v[i * 4 + 3] != 0,
+    };
+    warm(e.backend.ctx, specs[0..n]);
 }
 
 /// host.vsync(): ask for a display frame; 0 when the backend has none.
