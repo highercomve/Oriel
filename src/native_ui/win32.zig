@@ -2004,7 +2004,8 @@ fn textLayout(s: *Surface, n: *Node, width: f32, brushes: ?*std.ArrayList(*c.ID2
 /// A CSS font-family list (`ff`; null: Oriel's default sans, or the
 /// monospace one) as the DirectWrite family Chromium would use: the
 /// first installed name, or generic family (system-ui: Segoe UI,
-/// sans-serif: Arial, serif: Times New Roman, monospace: Consolas).
+/// sans-serif: Arial, serif: Times New Roman, monospace: Consolas;
+/// "default", no font-family set: Times New Roman, as WebView2).
 /// Null-terminated UTF-16, cached by list (owned for the process).
 var families: std.StringHashMapUnmanaged([:0]const u16) = .empty;
 
@@ -2024,6 +2025,8 @@ fn resolveFamily(list: []const u8) ?[:0]const u16 {
         .{ "ui-serif", "Times New Roman" }, .{ "monospace", "Consolas" },     .{ "ui-monospace", "Consolas" },
         .{ "cursive", "Comic Sans MS" },  .{ "fantasy", "Impact" },             .{ "math", "Cambria Math" },
         .{ "emoji", "Segoe UI Emoji" },   .{ "ui-rounded", "Segoe UI" },
+        // The page set no font-family: WebView2's default face.
+        .{ "default", "Times New Roman" },
     };
     var it = std.mem.splitScalar(u8, list, ',');
     while (it.next()) |raw| {
