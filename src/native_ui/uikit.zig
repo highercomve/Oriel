@@ -98,6 +98,8 @@ var by_control: std.AutoHashMapUnmanaged(usize, Owner) = .empty;
 var next_token: u64 = 1;
 
 var view_class: ?apple.Class = null;
+var text_field_class: ?apple.Class = null;
+var text_view_class: ?apple.Class = null;
 var field_delegate: Object = apple.nil;
 var gesture_delegate: Object = apple.nil;
 
@@ -139,6 +141,17 @@ fn classes() void {
         .{ "pressesBegan:withEvent:", pressesBegan },
         .{ "pressesEnded:withEvent:", pressesEnded },
         .{ "pressesCancelled:withEvent:", pressesCancelled },
+    });
+    // A field's hardware keys reach the page before the field acts on them.
+    text_field_class = apple.defineSubclass("OrielNuiTextField", "UITextField", &.{}, .{
+        .{ "pressesBegan:withEvent:", textFieldPressesBegan },
+        .{ "pressesEnded:withEvent:", textFieldPressesEnded },
+        .{ "pressesCancelled:withEvent:", textFieldPressesCancelled },
+    });
+    text_view_class = apple.defineSubclass("OrielNuiTextView", "UITextView", &.{}, .{
+        .{ "pressesBegan:withEvent:", textViewPressesBegan },
+        .{ "pressesEnded:withEvent:", textViewPressesEnded },
+        .{ "pressesCancelled:withEvent:", textViewPressesCancelled },
     });
     field_delegate = apple.new(apple.defineClass("OrielNuiFieldDelegate", &.{ "UITextFieldDelegate", "UITextViewDelegate" }, .{
         .{ "nuiFieldChanged:", fieldChanged },
@@ -596,7 +609,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             sl.msgSend(void, "setValue:", .{@as(f32, @floatCast(draw.Range.of(n).min))});
             break :blk sl;
         } else blk: {
-            const tf = apple.class("UITextField").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+            const tf = (Object{ .value = @ptrCast(text_field_class.?.value) }).msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (tf.value == null) return null;
             tf.msgSend(void, "setBorderStyle:", .{@as(isize, 0)}); // none: the page draws its own
             tf.msgSend(void, "setSecureTextEntry:", .{apple.boolean(n.props.pw)});
@@ -609,7 +622,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             break :blk tf;
         },
         .textarea => blk: {
-            const tv = apple.class("UITextView").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+            const tv = (Object{ .value = @ptrCast(text_view_class.?.value) }).msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (tv.value == null) return null;
             tv.msgSend(void, "setBackgroundColor:", .{apple.class("UIColor").msgSend(Object, "clearColor", .{})});
             tv.msgSend(void, "setTextContainerInset:", .{UIEdgeInsets{}});
@@ -820,6 +833,10 @@ fn pressKeyName(k: Object, buf: []u8) ?[]const u8 {
         0x4D => "End",
         0x4B => "PageUp",
         0x4E => "PageDown",
+        0xE0, 0xE4 => "Control",
+        0xE1, 0xE5 => "Shift",
+        0xE2, 0xE6 => "Alt",
+        0xE3, 0xE7 => "Meta",
         else => null,
     };
     if (named) |n| return n;
@@ -838,6 +855,152 @@ fn pressMods(k: Object) u32 {
     if (f & (1 << 19) != 0) m |= 4;
     if (f & (1 << 20) != 0) m |= 8;
     return m;
+}
+
+/// A modifier key's own flag (shift 1, control 2, alt 4, meta 8), else 0:
+/// set on its key down, clear on its key up, as browsers report them.
+fn modifierBit(k: Object) u32 {
+    return switch (k.msgSend(isize, "keyCode", .{})) {
+        0xE1, 0xE5 => 1,
+        0xE0, 0xE4 => 2,
+        0xE2, 0xE6 => 4,
+        0xE3, 0xE7 => 8,
+        else => 0,
+    };
+}
+
+/// A press's mods for its "key" or "keyup".
+fn pressModsFor(k: Object, kind: []const u8) u32 {
+    const bit = modifierBit(k);
+    const m = pressMods(k);
+    return if (bit == 0) m else if (std.mem.eql(u8, kind, "key")) m | bit else m & ~bit;
+}
+
+/// An Enter key down the presses gave the page, let through: the field's
+/// own Return (fieldShouldReturn, a text area's newline) doesn't send it again.
+var press_enter_sent = false;
+
+/// A field's presses for the page ("key" or "keyup", on its node), before
+/// the field has them: true when the page prevented every one (the field
+/// doesn't get them). Not Tab (it goes up to the page's view, fieldTab),
+/// nothing while an input method composes (the field's alone), and no key
+/// up for a key let go while Command is down (WebKit fires none).
+fn fieldPresses(self: id, presses: id, kind: []const u8) bool {
+    const o = ownerOf(self) orelse return false;
+    const field: Object = .{ .value = self };
+    if (field.msgSend(Object, "markedTextRange", .{}).value != null) return false;
+    const s = o.s;
+    const nid = o.n.id;
+    const token = s.token;
+    const gpa = s.gpa; // not read from the surface after an event
+    const all = (Object{ .value = presses }).msgSend(Object, "allObjects", .{});
+    const count: usize = @intCast(@max(0, all.msgSend(isize, "count", .{})));
+    const down = std.mem.eql(u8, kind, "key");
+    var prevented = count > 0;
+    for (0..count) |i| {
+        const k = all.msgSend(Object, "objectAtIndex:", .{i}).msgSend(Object, "key", .{});
+        if (k.value == null or k.msgSend(isize, "keyCode", .{}) == 0x2B) {
+            prevented = false;
+            continue;
+        }
+        var nbuf: [8]u8 = undefined;
+        const name = pressKeyName(k, &nbuf) orelse {
+            prevented = false;
+            continue;
+        };
+        const mods = pressModsFor(k, kind);
+        if (!down and mods & 8 != 0 and modifierBit(k) == 0) {
+            prevented = false;
+            continue;
+        }
+        const q = std.json.Stringify.valueAlloc(gpa, name, .{}) catch return false;
+        defer gpa.free(q);
+        var buf: [64]u8 = undefined;
+        const json = std.fmt.bufPrint(&buf, "[{s},{d},false]", .{ q, mods }) catch continue;
+        if (!down) {
+            laterKeyUp(token, nid, json);
+            continue;
+        }
+        const used = (surfaces.get(token) orelse return true).engine.event(nid, kind, json);
+        if (surfaces.get(token) == null) return true; // the page closed its window
+        if (!used) {
+            prevented = false;
+            if (down and std.mem.eql(u8, name, "Enter")) press_enter_sent = true;
+        }
+    }
+    return prevented;
+}
+
+const ObjcSuper = extern struct { receiver: id, super_class: ?*anyopaque };
+extern fn objc_msgSendSuper() void;
+
+/// UIKit's own pressesBegan: (or Ended, Cancelled) for a field subclass.
+fn superPresses(self: id, comptime superclass: [:0]const u8, comptime selector: [:0]const u8, presses: id, event: id) void {
+    const sup: ObjcSuper = .{ .receiver = self, .super_class = @ptrCast(apple.class(superclass).value) };
+    const f: *const fn (*const ObjcSuper, SEL, id, id) callconv(.c) void = @ptrCast(&objc_msgSendSuper);
+    f(&sup, apple.objc.sel(selector).value, presses, event);
+}
+
+/// A field's key up, a turn after UIKit's own pressesEnded: UIKit types
+/// the character a little after the press, and the page hears keyup after
+/// the input (as in WebKit).
+const LaterKeyUp = struct { token: u64, nid: i64, len: usize, json: [64]u8 };
+
+fn laterKeyUp(token: u64, nid: i64, json: []const u8) void {
+    const k = std.heap.smp_allocator.create(LaterKeyUp) catch return;
+    k.* = .{ .token = token, .nid = nid, .len = json.len, .json = undefined };
+    @memcpy(k.json[0..json.len], json);
+    apple.asyncMain(k, onLaterKeyUp);
+}
+
+fn onLaterKeyUp(p: ?*anyopaque) callconv(.c) void {
+    const k: *LaterKeyUp = @ptrCast(@alignCast(p.?));
+    defer std.heap.smp_allocator.destroy(k);
+    const s = surfaces.get(k.token) orelse return; // the window is gone
+    if (s.engine.tree.get(k.nid) == null) return; // the field is gone
+    _ = s.engine.event(k.nid, "keyup", k.json[0..k.len]);
+}
+
+fn textFieldPressesBegan(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
+    if (!fieldPresses(self, presses, "key")) superPresses(self, "UITextField", "pressesBegan:withEvent:", presses, event);
+}
+
+fn textFieldPressesEnded(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
+    superPresses(self, "UITextField", "pressesEnded:withEvent:", presses, event);
+    _ = fieldPresses(self, presses, "keyup");
+    press_enter_sent = false;
+}
+
+fn textFieldPressesCancelled(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
+    superPresses(self, "UITextField", "pressesCancelled:withEvent:", presses, event);
+    _ = fieldPresses(self, presses, "keyup");
+    press_enter_sent = false;
+}
+
+fn textViewPressesBegan(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
+    if (!fieldPresses(self, presses, "key")) superPresses(self, "UITextView", "pressesBegan:withEvent:", presses, event);
+}
+
+fn textViewPressesEnded(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
+    superPresses(self, "UITextView", "pressesEnded:withEvent:", presses, event);
+    _ = fieldPresses(self, presses, "keyup");
+    press_enter_sent = false;
+}
+
+fn textViewPressesCancelled(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
+    superPresses(self, "UITextView", "pressesCancelled:withEvent:", presses, event);
+    _ = fieldPresses(self, presses, "keyup");
+    press_enter_sent = false;
+}
+
+fn hasTab(presses: id) bool {
+    const all = (Object{ .value = presses }).msgSend(Object, "allObjects", .{});
+    const count: usize = @intCast(@max(0, all.msgSend(isize, "count", .{})));
+    for (0..count) |i| {
+        const k = all.msgSend(Object, "objectAtIndex:", .{i}).msgSend(Object, "key", .{});
+        if (k.value != null and k.msgSend(isize, "keyCode", .{}) == 0x2B) return true;
+    }
+    return false;
 }
 
 /// A Tab press that came up from a field: the page's "key"/"keyup", on
@@ -882,7 +1045,7 @@ fn sendPresses(self: id, presses: id, kind: []const u8) bool {
         const q = std.json.Stringify.valueAlloc(gpa, name, .{}) catch return false;
         defer gpa.free(q);
         var buf: [64]u8 = undefined;
-        const json = std.fmt.bufPrint(&buf, "[{s},{d},false]", .{ q, pressMods(k) }) catch continue;
+        const json = std.fmt.bufPrint(&buf, "[{s},{d},false]", .{ q, pressModsFor(k, kind) }) catch continue;
         if (!s.engine.event(0, kind, json)) prevented = false;
         if (surfaces.get(token) == null) return true; // the page closed its window
     }
@@ -890,10 +1053,14 @@ fn sendPresses(self: id, presses: id, kind: []const u8) bool {
 }
 
 fn pressesBegan(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
-    // A field's keys passing up the chain: its own, but Tab is the page's
-    // (its focus navigation; UIKit's key command doesn't fire from a
-    // field). Nothing is forwarded from here (UIKit forwards them).
-    if (!apple.isTrue((Object{ .value = self }).msgSend(BOOL, "isFirstResponder", .{}))) return fieldTab(self, presses, "key");
+    // A field's keys passing up the chain (the field told the page, see
+    // fieldPresses): on to UIKit's text input, through UIView's own (not
+    // nextResponder's), but Tab is the page's (its focus navigation;
+    // UIKit's key command doesn't fire from a field).
+    if (!apple.isTrue((Object{ .value = self }).msgSend(BOOL, "isFirstResponder", .{}))) {
+        if (!hasTab(presses)) return superPresses(self, "UIView", "pressesBegan:withEvent:", presses, event);
+        return fieldTab(self, presses, "key");
+    }
     // Not all the page's: on up the responder chain (UIView's own does that).
     if (!sendPresses(self, presses, "key")) {
         const next = (Object{ .value = self }).msgSend(Object, "nextResponder", .{});
@@ -902,8 +1069,11 @@ fn pressesBegan(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
 }
 
 fn pressesCancelled(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
-    // A field's keys passing up the chain: UIKit's to forward, not ours.
-    if (!apple.isTrue((Object{ .value = self }).msgSend(BOOL, "isFirstResponder", .{}))) return;
+    // A field's keys passing up the chain: on, through UIView's own.
+    if (!apple.isTrue((Object{ .value = self }).msgSend(BOOL, "isFirstResponder", .{}))) {
+        if (!hasTab(presses)) superPresses(self, "UIView", "pressesCancelled:withEvent:", presses, event);
+        return;
+    }
     // Not all the page's: on up the responder chain (UIView's own does that).
     if (!sendPresses(self, presses, "keyup")) {
         const next = (Object{ .value = self }).msgSend(Object, "nextResponder", .{});
@@ -912,7 +1082,10 @@ fn pressesCancelled(self: id, _: SEL, presses: id, event: id) callconv(.c) void 
 }
 
 fn pressesEnded(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
-    if (!apple.isTrue((Object{ .value = self }).msgSend(BOOL, "isFirstResponder", .{}))) return fieldTab(self, presses, "keyup");
+    if (!apple.isTrue((Object{ .value = self }).msgSend(BOOL, "isFirstResponder", .{}))) {
+        if (!hasTab(presses)) return superPresses(self, "UIView", "pressesEnded:withEvent:", presses, event);
+        return fieldTab(self, presses, "keyup");
+    }
     // Not all the page's: on up the responder chain (UIView's own does that).
     if (!sendPresses(self, presses, "keyup")) {
         const next = (Object{ .value = self }).msgSend(Object, "nextResponder", .{});
@@ -958,6 +1131,11 @@ fn fieldChanged(_: id, _: SEL, field: id) callconv(.c) void {
 /// Return in a one-line field: the page's Enter (which submits its form).
 fn fieldShouldReturn(_: id, _: SEL, field: id) callconv(.c) BOOL {
     const o = ownerOf(field) orelse return apple.boolean(true);
+    // A hardware Enter the page already heard (fieldPresses).
+    if (press_enter_sent) {
+        press_enter_sent = false;
+        return apple.boolean(false);
+    }
     _ = o.s.engine.event(o.n.id, "key", "[\"Enter\",0]");
     return apple.boolean(false);
 }
@@ -977,6 +1155,11 @@ fn textViewShouldChange(_: id, _: SEL, tv: id, _: NSRange, text: id) callconv(.c
     const s = apple.utf8(.{ .value = text }) orelse return apple.boolean(true);
     if (!std.mem.eql(u8, s, "\n")) return apple.boolean(true);
     const o = ownerOf(tv) orelse return apple.boolean(true);
+    // A hardware Enter the page already heard and let through (fieldPresses).
+    if (press_enter_sent) {
+        press_enter_sent = false;
+        return apple.boolean(true);
+    }
     const prevented = o.s.engine.event(o.n.id, "key", "[\"Enter\",0]");
     return apple.boolean(!prevented);
 }

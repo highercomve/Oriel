@@ -744,6 +744,15 @@ function keyEvent(el, data, type = "keydown") {
   const ev = new KeyboardEvent(type, init);
   (el || document.body).dispatchEvent(ev);
   if (!ev.defaultPrevented) fireWindow(ev);
+  // keypress after a keydown let through, for a character or Enter (not
+  // with Control or Command); WebKit's also for Escape, and on macOS with
+  // Command. Preventing it keeps the character out too.
+  if (type === "keydown" && !ev.defaultPrevented && keypressFor(key, init)) {
+    const press = new KeyboardEvent("keypress", init);
+    (el || document.body).dispatchEvent(press);
+    if (!press.defaultPrevented) fireWindow(press);
+    if (press.defaultPrevented) return true;
+  }
   // Tab moves the focus, Shift+Tab back, unless the page took the key.
   if (type === "keydown" && !ev.defaultPrevented && key === "Tab" && !(init.ctrlKey || init.altKey || init.metaKey)) {
     return tabFocus(init.shiftKey) || false;
@@ -754,6 +763,13 @@ function keyEvent(el, data, type = "keydown") {
     if (form) { submit(form); return true; }
   }
   return ev.defaultPrevented;
+}
+
+const WEBKIT_KEYPRESS = platform.os === "macos" || platform.os === "ios";
+function keypressFor(key, init) {
+  if (init.ctrlKey || (init.metaKey && platform.os !== "macos")) return false;
+  if (key === "Enter" || (WEBKIT_KEYPRESS && key === "Escape")) return true;
+  return [...key].length === 1;
 }
 
 // Sequential focus, as browsers order it: positive tabindex first

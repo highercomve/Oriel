@@ -881,6 +881,8 @@ fn commandKey(control: id, selector: SEL) ?bool {
         return null;
     const o = ownerOf(control) orelse return null;
     const event = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{}).msgSend(Object, "currentEvent", .{});
+    // The page heard this key as it came (onKeyEvent) and let it through.
+    if (event.value != null and event.value == field_key) return false;
     const flags = if (event.value != null) modFlags(event.msgSend(c_ulong, "modifierFlags", .{})) else 0;
     var buf: [48]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d}]", .{ name, flags }) catch return null;
@@ -1236,15 +1238,7 @@ fn keyDown(self: id, _: SEL, event: id) callconv(.c) void {
 /// A key down for the page ("key", on node `nid` or the focused element):
 /// true when the page prevented its default.
 fn sendKeyDown(s: *Surface, nid: i64, event: id) bool {
-    const ev: Object = .{ .value = event };
-    const name = keyName(ev) orelse return false;
-    const gpa = s.gpa; // not read from the surface after the event (see sendValue)
-    const k = std.json.Stringify.valueAlloc(gpa, name, .{}) catch return false;
-    defer gpa.free(k);
-    var buf: [64]u8 = undefined;
-    const repeat = cocoa.isTrue(ev.msgSend(BOOL, "isARepeat", .{}));
-    const json = std.fmt.bufPrint(&buf, "[{s},{d},{}]", .{ k, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})), repeat }) catch return false;
-    return s.engine.event(nid, "key", json);
+    return sendKey(s, nid, event, "key");
 }
 
 /// The last Tab key down the monitor sent the page (keyDown skips it).
@@ -1266,6 +1260,7 @@ const MonitorBlock = extern struct {
 const block_is_global: c_int = 1 << 28;
 const key_up_mask: c_ulonglong = 1 << 11; // NSEventMaskKeyUp
 const key_down_mask: c_ulonglong = 1 << 10; // NSEventMaskKeyDown
+const flags_changed_mask: c_ulonglong = 1 << 12; // NSEventMaskFlagsChanged
 const tab_key_code: c_ushort = 48;
 const key_up_descriptor: BlockDescriptor = .{ .reserved = 0, .size = @sizeOf(MonitorBlock) };
 var key_up_block: MonitorBlock = undefined;
@@ -1276,7 +1271,7 @@ fn installKeyUpMonitor() void {
     key_up_monitor = true;
     key_up_block = .{ .isa = &_NSConcreteGlobalBlock, .flags = block_is_global, .reserved = 0, .invoke = onKeyEvent, .descriptor = &key_up_descriptor };
     // The monitor lives as long as the process (never removed).
-    _ = cocoa.class("NSEvent").msgSend(Object, "addLocalMonitorForEventsMatchingMask:handler:", .{ key_up_mask | key_down_mask, @as(*anyopaque, @ptrCast(&key_up_block)) });
+    _ = cocoa.class("NSEvent").msgSend(Object, "addLocalMonitorForEventsMatchingMask:handler:", .{ key_up_mask | key_down_mask | flags_changed_mask, @as(*anyopaque, @ptrCast(&key_up_block)) });
 }
 
 fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
@@ -1285,22 +1280,11 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
     if (window.value == null) return event;
     const responder = window.msgSend(Object, "firstResponder", .{});
     if (responder.value == null) return event;
-    // NSEventTypeKeyUp 11: the page view's (a field's key up is its own).
-    if (ev.msgSend(c_ulong, "type", .{}) == 11) {
-        if (by_view.contains(key(responder.value))) keyUp(responder.value, event);
-        return event;
-    }
-    // Tab (and Shift+Tab): AppKit's key-view loop takes it before any
-    // keyDown:, from the page and from its fields. The page hears it first
-    // (its focus navigation); the loop only gets what it doesn't handle.
-    if (ev.msgSend(c_ushort, "keyCode", .{}) != tab_key_code) {
-        tab_sent = null;
-        return event;
-    }
+    const page = by_view.get(key(responder.value));
     var s: *Surface = undefined;
     var nid: i64 = 0;
-    if (by_view.get(key(responder.value))) |page| {
-        s = page;
+    if (page) |p| {
+        s = p;
     } else {
         // A field: its control (a text field's is the field editor's delegate).
         var control = responder;
@@ -1310,20 +1294,76 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
         s = surfaces.get(o.token) orelse return event;
         nid = o.node;
     }
-    tab_sent = event;
+    switch (ev.msgSend(c_ulong, "type", .{})) {
+        // NSEventTypeFlagsChanged 12: Shift, Control, Option or Command
+        // went down or up, its own keydown and keyup, as in browsers.
+        12 => {
+            sendModifier(s, nid, ev);
+            return event;
+        },
+        // NSEventTypeKeyUp 11 (AppKit sends the page's view no keyUp:). Not
+        // a key let go while Command is down: WebKit fires no keyup for it.
+        11 => {
+            if (ev.msgSend(c_ulong, "modifierFlags", .{}) & (1 << 20) == 0) _ = sendKey(s, nid, event, "keyup");
+            return event;
+        },
+        else => {},
+    }
+    // A key down. Tab (and Shift+Tab): AppKit's key-view loop takes it
+    // before any keyDown:, from the page and from its fields. The page
+    // hears it first (its focus navigation); the loop only gets what it
+    // doesn't handle. The page's other keys come to its keyDown:.
+    const tab = ev.msgSend(c_ushort, "keyCode", .{}) == tab_key_code;
+    if (page != null and !tab) {
+        tab_sent = null;
+        return event;
+    }
+    if (page != null) tab_sent = event;
+    // A field's keys reach the page before the field acts on them, and one
+    // it prevents never reaches the field (no character, no caret move, no
+    // select-all). While an input method composes (marked text), its keys
+    // are the field's alone: the page hears none of them.
+    if (page == null) {
+        if (cocoa.isTrue(responder.msgSend(BOOL, "respondsToSelector:", .{cocoa.objc.sel("hasMarkedText").value})) and
+            cocoa.isTrue(responder.msgSend(BOOL, "hasMarkedText", .{}))) return event;
+        field_key = event;
+    }
     return if (sendKeyDown(s, nid, event)) null else event;
 }
 
-fn keyUp(self: id, event: id) void {
-    const s = by_view.get(key(self)) orelse return;
+/// Shift, Control, Option or Command (either side) as the page's key down
+/// or up: down when its flag is now set.
+fn sendModifier(s: *Surface, nid: i64, ev: Object) void {
+    const code = ev.msgSend(c_ushort, "keyCode", .{});
+    const name: []const u8, const bit: c_ulong = switch (code) {
+        56, 60 => .{ "Shift", 1 << 17 },
+        59, 62 => .{ "Control", 1 << 18 },
+        58, 61 => .{ "Alt", 1 << 19 },
+        55, 54 => .{ "Meta", 1 << 20 },
+        else => return,
+    };
+    const flags = ev.msgSend(c_ulong, "modifierFlags", .{});
+    var buf: [48]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d},false]", .{ name, modFlags(flags) }) catch return;
+    _ = s.engine.event(nid, if (flags & bit != 0) "key" else "keyup", json);
+}
+
+/// The key down a field's keys last sent the page (commandKey doesn't
+/// send it again).
+var field_key: id = null;
+
+/// A key's "key" (down) or "keyup" for the page, on node `nid` (0: the
+/// focused element): true when the page prevented its default.
+fn sendKey(s: *Surface, nid: i64, event: id, kind: []const u8) bool {
     const ev: Object = .{ .value = event };
-    const name = keyName(ev) orelse return;
-    const gpa = s.gpa;
-    const k = std.json.Stringify.valueAlloc(gpa, name, .{}) catch return;
+    const name = keyName(ev) orelse return false;
+    const gpa = s.gpa; // not read from the surface after the event (see sendValue)
+    const k = std.json.Stringify.valueAlloc(gpa, name, .{}) catch return false;
     defer gpa.free(k);
     var buf: [64]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ k, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})) }) catch return;
-    _ = s.engine.event(0, "keyup", json);
+    const repeat = cocoa.isTrue(ev.msgSend(BOOL, "isARepeat", .{}));
+    const json = std.fmt.bufPrint(&buf, "[{s},{d},{}]", .{ k, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})), repeat }) catch return false;
+    return s.engine.event(nid, kind, json);
 }
 
 test {
