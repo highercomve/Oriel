@@ -267,12 +267,13 @@ fn isDark(view: Object) bool {
 // Backend hooks
 
 fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
-    const fz = n.props.fz orelse 16;
     switch (n.kind) {
         .text => out.* = draw.measureText("UIFont", n, max_width, surfaceOf(ctx).text_epoch),
         .image => out.* = draw.measureImage(surfaceOf(ctx).engine, n, max_width),
-        .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
-        .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
+        // One line of the field's font (WebKit's control sizes come from
+        // it); a textarea `rows` of them (2 by default).
+        .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), draw.fieldLine("UIFont", n) },
+        .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, draw.fieldLine("UIFont", n) * @max(1, n.props.rows orelse 2) },
         else => out.* = .{ 0, 0 },
     }
 }
@@ -495,7 +496,12 @@ fn focus(ctx: *anyopaque, n: *Node) void {
         }
         return;
     };
-    _ = f.control.msgSend(BOOL, "becomeFirstResponder", .{});
+    // A control that can't take the keyboard (a select's button): the
+    // field that had it gives it up.
+    if (!apple.isTrue(f.control.msgSend(BOOL, "becomeFirstResponder", .{})) and focusedField(s) != 0) {
+        _ = s.view.msgSend(BOOL, "endEditing:", .{apple.boolean(true)});
+        _ = s.view.msgSend(BOOL, "becomeFirstResponder", .{});
+    }
 }
 
 fn removed(ctx: *anyopaque, n: *Node) void {
