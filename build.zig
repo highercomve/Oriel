@@ -146,6 +146,16 @@ pub fn build(b: *std.Build) void {
             .flags = &.{ "-std=gnu11", "-D_GNU_SOURCE", "-O2", "-fno-sanitize=undefined", "-funsigned-char", "-fwrapv" },
         });
         qjs_modules.root_module.addCSourceFile(.{ .file = b.path("tools/qjs_modules.c"), .flags = &.{ "-std=gnu11", "-O2", "-fno-sanitize=undefined" } });
+        // The runtime's sheet parser (src/native_ui/js/build.mjs), for the
+        // app's .css files.
+        const sheet_files = b.addWriteFiles();
+        _ = sheet_files.addCopyFile(b.path("src/native_ui/sheet-compiler.js"), "sheet-compiler.js");
+        const sheet_src = sheet_files.add("sheet_compiler.zig",
+            \\//! src/native_ui/sheet-compiler.js, for tools/qjs_modules.zig.
+            \\pub const source = @embedFile("sheet-compiler.js");
+            \\
+        );
+        qjs_modules.root_module.addAnonymousImport("sheet_compiler", .{ .root_source_file = sheet_src });
         b.installArtifact(qjs_modules);
     }
 
