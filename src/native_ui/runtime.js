@@ -14788,6 +14788,7 @@ h4, h5, h6 { font-weight: bold; margin: 1.33em 0; }
 b, strong, th { font-weight: bold; }
 i, em, cite, var, dfn { font-style: italic; }
 small { font-size: .83em; }
+mark { background-color: yellow; color: black; }
 code, kbd, samp, pre, tt { font-family: monospace; }
 /* Controls in the platform's control font, as Chromium (-webkit-small-control:
    Arial on Windows; a backend that doesn't know the name takes system-ui), a
@@ -16193,6 +16194,19 @@ input[type="range"] { height: 20px; margin: 2px; }
             const m = n2.props.m ? [...n2.props.m] : [0, 0, 0, 0];
             if (typeof m[2] === "number") {
               m[2] += gap;
+              n2.props = { ...n2.props, m };
+            }
+          }
+        }
+        if (boxed?.has(item.el)) {
+          const n2 = nodes.get(cid);
+          const pad = n2?.props.pad, bw = n2?.props.bw;
+          const v = (i) => (typeof pad?.[i] === "number" ? pad[i] : 0) + (typeof bw?.[i] === "number" ? bw[i] : 0);
+          if (n2 && (v(0) > 0 || v(2) > 0)) {
+            const m = n2.props.m ? [...n2.props.m] : [0, 0, 0, 0];
+            if (typeof m[0] === "number" && typeof m[2] === "number") {
+              m[0] -= v(0);
+              m[2] -= v(2);
               n2.props = { ...n2.props, m };
             }
           }

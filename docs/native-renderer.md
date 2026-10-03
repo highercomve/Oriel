@@ -308,8 +308,17 @@ box. As browsers draw it (box-decoration-break: slice):
   CoreText kerning (on the character before the box and on its last one;
   a first-line indent for a box at the very start), the fragments from
   the glyphs' positions and advances. Checked against WKWebView (a chip in
-  a sentence, one that wraps over two lines, a bordered one). Win32, GTK
-  and Android still draw such runs plain.
+  a sentence, one that wraps over two lines, a bordered one). GTK
+  (gtk.zig boxRoom, paintInlineBoxes): the room as an invisible U+2061
+  shaped that wide before the box's text and after it (it breaks as a
+  letter, so the room stays with the text), the fragments from Pango's x
+  ranges, the content area from the font's rounded ascent and descent on
+  the line's baseline; checked against WebKitGTK (the same cases, and a
+  `<mark>` with padding). Win32 and Android still draw such runs plain.
+- An inline box at a line's start or end is a node in the line's row
+  (Baselines): render.js takes its vertical padding and border off its
+  top and bottom margins, so they overflow the line, as an inline box's
+  do, instead of making it taller.
 
 **Baselines** (each backend): a line of inline content with boxes in it
 (a code chip at a line's end, a button or checkbox beside its label) is a
@@ -321,8 +330,15 @@ the ascent, as it places the line; Apple's measureText does), else an
 estimate (0.9 em of ascent in a line box of `lh` or 1.2 em); a box's is
 its first child's; an input's or select's, its one line of text centered
 in its content box. Checked on Apple against WKWebView (a chip, a button,
-a checkbox, an input, an inline-block chip in 24px); Win32, GTK and
-Android should set `Node.baseline` in their measure.
+a checkbox, an input, an inline-block chip in 24px). GTK's measuredText
+sets it to the first line's extent's top, where paintText draws it (every
+text with a line box is drawn line by line on CSS's baselines, not
+Pango's, which sat 0.2 to 1.2px off); checked against WebKitGTK. Win32 and
+Android should set `Node.baseline` in their measure. Known gap (Yoga): a
+box's baseline is its first child's top plus that child's baseline, and
+while Yoga sizes a row it reads the child's top from the box's previous
+layout (0 the first time), so a button beside text makes the row a few
+pixels taller than WebKit's (26 + 3 for a 14px button in a 16px line).
 
 **Screen scale** (each backend): `platform.dpr` in the platform JSON,
 the screen's pixels per CSS px, read as a window opens (Apple: the main
