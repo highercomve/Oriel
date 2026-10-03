@@ -211,6 +211,13 @@ extern fn pango_context_get_metrics(ctx: *PangoContext, desc: ?*const PangoFontD
 extern fn pango_font_metrics_get_ascent(m: *PangoFontMetrics) c_int;
 extern fn pango_font_metrics_get_descent(m: *PangoFontMetrics) c_int;
 extern fn pango_font_metrics_unref(m: *PangoFontMetrics) void;
+extern fn pango_font_metrics_get_height(m: *PangoFontMetrics) c_int;
+extern fn pango_cairo_font_map_get_default() *anyopaque;
+extern fn pango_font_map_create_context(map: *anyopaque) ?*PangoContext;
+extern fn pango_cairo_context_set_font_options(ctx: *PangoContext, opts: ?*const anyopaque) void;
+extern fn cairo_font_options_create() ?*anyopaque;
+extern fn cairo_font_options_set_hint_metrics(opts: *anyopaque, hint: c_int) void;
+extern fn cairo_font_options_destroy(opts: *anyopaque) void;
 extern fn pango_attr_list_new() *PangoAttrList;
 extern fn pango_attr_list_unref(l: *PangoAttrList) void;
 extern fn pango_attr_list_insert(l: *PangoAttrList, a: *PangoAttribute) void;
@@ -222,6 +229,7 @@ extern fn pango_attr_weight_new(w: c_int) *PangoAttribute;
 extern fn pango_attr_style_new(s: c_int) *PangoAttribute;
 extern fn pango_attr_size_new_absolute(size: c_int) *PangoAttribute;
 extern fn pango_attr_family_new(family: [*:0]const u8) *PangoAttribute;
+extern fn pango_font_description_set_family(d: *PangoFontDescription, family: [*:0]const u8) void;
 extern fn pango_attr_underline_new(u: c_int) *PangoAttribute;
 extern fn pango_attr_letter_spacing_new(s: c_int) *PangoAttribute;
 
@@ -266,6 +274,11 @@ pub const Surface = struct {
     /// copies one after setting its size.
     sans: ?*PangoFontDescription = null,
     mono: ?*PangoFontDescription = null,
+    /// Unhinted metrics (hint-metrics off): ascent, descent and line gap as
+    /// the font's tables have them, what browsers' line-height: normal is
+    /// made of (normalLineHeight). By size (1/64 px) and monospace.
+    metrics_ctx: ?*PangoContext = null,
+    font_metrics: std.AutoHashMapUnmanaged(u64, [3]f32) = .empty,
     css: *GtkCssProvider,
     css_text: std.ArrayList(u8) = .empty,
     invoke_fn: Invoke,
@@ -410,6 +423,8 @@ pub const Surface = struct {
         s.css_text.deinit(s.gpa);
         if (s.sans) |font| pango_font_description_free(font);
         if (s.mono) |font| pango_font_description_free(font);
+        if (s.metrics_ctx) |c| g_object_unref(c);
+        s.font_metrics.deinit(s.gpa);
         s.gpa.destroy(s);
     }
 
@@ -492,21 +507,83 @@ fn onTimer(p: ?*anyopaque) callconv(.c) c_int {
 /// Backend.warm_fonts: the fonts load one per idle moment (low priority:
 /// after input, drawing and the page's timers), each by laying out a
 /// short text in it, as the first text in that size and weight would.
-/// host.fontMetrics: the ascent and descent of the font text is measured
-/// with (textLayout's), at `size` px.
-fn fontMetrics(ctx: *anyopaque, size: f32, mono: bool, out: *[2]f32) bool {
-    const s = surfaceOf(ctx);
+/// host.fontMetrics: the ascent, descent and line gap of the font text is
+/// measured with (textLayout's), at `size` px, unhinted.
+fn fontMetrics(ctx: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
+    out.* = unhintedMetrics(surfaceOf(ctx), size, mono, null) orelse return false;
+    return true;
+}
+
+fn familyHash(family: ?[]const u8) u64 {
+    return if (family) |f| std.hash.Wyhash.hash(0, f) else 0;
+}
+
+/// A font description for this text: Sans or Monospace, or its CSS family
+/// list, at `size` px (the surface's own, changed in place: one at a time).
+fn fontDesc(s: *Surface, size: f32, mono: bool, family: ?[]const u8) *PangoFontDescription {
     const font = if (mono) &s.mono else &s.sans;
     if (font.* == null) font.* = pango_font_description_from_string(if (mono) "Monospace" else "Sans");
     const desc = font.*.?;
+    var buf: [256]u8 = undefined;
+    const name: [*:0]const u8 = if (family) |f| (std.fmt.bufPrintZ(&buf, "{s}", .{f}) catch "Sans") else if (mono) "Monospace" else "Sans";
+    pango_font_description_set_family(desc, name);
     pango_font_description_set_absolute_size(desc, size * PANGO_SCALE);
-    const m = pango_context_get_metrics(gtk_widget_get_pango_context(s.area), desc, null) orelse return false;
-    defer pango_font_metrics_unref(m);
-    out.* = .{
-        @as(f32, @floatFromInt(pango_font_metrics_get_ascent(m))) / PANGO_SCALE,
-        @as(f32, @floatFromInt(pango_font_metrics_get_descent(m))) / PANGO_SCALE,
+    return desc;
+}
+
+fn unhintedMetrics(s: *Surface, size: f32, mono: bool, family: ?[]const u8) ?[3]f32 {
+    const key: u64 = (familyHash(family) *% 31) ^ ((@as(u64, @intFromBool(mono)) << 32) | tree_mod.sat(u32, size * 64));
+    if (s.font_metrics.get(key)) |m| return m;
+    const ctx = s.metrics_ctx orelse blk: {
+        const c = pango_font_map_create_context(pango_cairo_font_map_get_default()) orelse return null;
+        if (cairo_font_options_create()) |opts| {
+            cairo_font_options_set_hint_metrics(opts, 1); // CAIRO_HINT_METRICS_OFF
+            pango_cairo_context_set_font_options(c, opts);
+            cairo_font_options_destroy(opts);
+        }
+        s.metrics_ctx = c;
+        break :blk c;
     };
-    return true;
+    const desc = fontDesc(s, size, mono, family);
+    const m = pango_context_get_metrics(ctx, desc, null) orelse return null;
+    defer pango_font_metrics_unref(m);
+    const a = @as(f32, @floatFromInt(pango_font_metrics_get_ascent(m))) / PANGO_SCALE;
+    const d = @as(f32, @floatFromInt(pango_font_metrics_get_descent(m))) / PANGO_SCALE;
+    const h = @as(f32, @floatFromInt(pango_font_metrics_get_height(m))) / PANGO_SCALE;
+    const out = [3]f32{ a, d, @max(0, h - a - d) };
+    if (s.font_metrics.count() >= 256) s.font_metrics.clearRetainingCapacity();
+    s.font_metrics.put(s.gpa, key, out) catch {};
+    return out;
+}
+
+/// line-height: normal as WebKitGTK and Chromium make it: the font's
+/// ascent, descent and line gap, each rounded (Noto Sans at 16px: 17 + 5 +
+/// 0 = 22, where Pango's own lines are 23).
+fn normalLineHeight(s: *Surface, size: f32, mono: bool, family: ?[]const u8) ?f32 {
+    const m = unhintedMetrics(s, size, mono, family) orelse return null;
+    return @round(m[0]) + @round(m[1]) + @round(m[2]);
+}
+
+/// The height of a line of this text: its CSS line-height, else the
+/// normal one of its largest font.
+fn lineBox(s: *Surface, props: *const tree_mod.Props) ?f32 {
+    // A CSS line-height in whole pixels, as WebKit (the WebView here, and
+    // WKWebView) keeps it: 145% of 16px is 23 (Chromium: 23.2).
+    if (props.lh) |lh| return if (lh >= 1) @floor(lh) else null;
+    var size: f32 = props.fz orelse 16;
+    var mono = props.mono;
+    var family = props.ff;
+    if (props.runs) |runs| {
+        if (runs.len > 0) size = 0;
+        for (runs) |r| {
+            if (r.sz >= size) {
+                size = r.sz;
+                if (r.ff) |f| family = f;
+            }
+            mono = mono or r.mono;
+        }
+    }
+    return normalLineHeight(s, size, mono, family);
 }
 
 fn warmFonts(ctx: *anyopaque, specs: []const engine_mod.FontSpec) void {
@@ -1147,7 +1224,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     var w: c_int = 0;
     var h: c_int = 0;
     pango_layout_get_pixel_size(layout, &w, &h);
-    const size: [2]f32 = .{ @floatFromInt(w + 1), cssHeight(&n.props, pango_layout_get_line_count(layout)) orelse @floatFromInt(h) };
+    const size: [2]f32 = .{ @floatFromInt(w + 1), cssHeight(s, &n.props, pango_layout_get_line_count(layout)) orelse @floatFromInt(h) };
     if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
     return size;
 }
@@ -1157,9 +1234,8 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
 /// with 23.2px lines). Pango keeps lines no shorter than its own minimum,
 /// so the height is the lines times the line-height (null without one),
 /// and paintText centers Pango's lines in it.
-fn cssHeight(props: *const tree_mod.Props, lines: c_int) ?f32 {
-    const lh = props.lh orelse return null;
-    if (!(lh > 0)) return null;
+fn cssHeight(s: *Surface, props: *const tree_mod.Props, lines: c_int) ?f32 {
+    const lh = lineBox(s, props) orelse return null;
     return lh * @as(f32, @floatFromInt(@max(1, lines)));
 }
 
@@ -1173,7 +1249,7 @@ fn cssHeight(props: *const tree_mod.Props, lines: c_int) ?f32 {
 // or a text that wraps take Pango's layout. ORIEL_NUI_TEXT_CHECK=1 measures
 // both and logs any difference.
 
-const FontKey = struct { mono: bool, italic: bool, weight: u16, size: u32, fz: u32, lh: i32 };
+const FontKey = struct { mono: bool, italic: bool, weight: u16, size: u32, fz: u32, lh: i32, family: u64 };
 const pair_unknown: i32 = -1;
 const pair_ligature: i32 = -2;
 const PairWidths = struct {
@@ -1203,6 +1279,7 @@ fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
         .size = tree_mod.sat(u32, r.sz * 64),
         .fz = tree_mod.sat(u32, (props.fz orelse 16) * 64),
         .lh = if (props.lh) |lh| tree_mod.sat(i32, lh * 64) else -1,
+        .family = familyHash(r.ff orelse props.ff),
     };
     const table = s.glyph_widths.get(key) orelse blk: {
         if (s.glyph_widths.count() >= 64) clearGlyphWidths(s);
@@ -1225,7 +1302,7 @@ fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
         units += w;
     }
     const px = @divTrunc(units + PANGO_SCALE - 1, PANGO_SCALE);
-    return .{ @floatFromInt(px + 1), cssHeight(props, 1) orelse @floatFromInt(table.height) };
+    return .{ @floatFromInt(px + 1), cssHeight(s, props, 1) orelse @floatFromInt(table.height) };
 }
 
 fn pairWidth(s: *Surface, props: *const tree_mod.Props, r: tree_mod.Run, table: *PairWidths, a: u8, b: u8) ?i32 {
@@ -1317,7 +1394,11 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32) ?*PangoLa
         add(attrs, pango_attr_size_new_absolute(tree_mod.sat(c_int, r.sz * PANGO_SCALE)), start, end);
         add(attrs, pango_attr_weight_new(tree_mod.sat(c_int, r.w)), start, end);
         if (r.i) add(attrs, pango_attr_style_new(2), start, end);
-        if (r.mono) add(attrs, pango_attr_family_new("Monospace"), start, end);
+        if (r.ff) |ff| {
+            // Its CSS family list (Pango copies the name).
+            var buf: [256]u8 = undefined;
+            if (std.fmt.bufPrintZ(&buf, "{s}", .{ff})) |name| add(attrs, pango_attr_family_new(name), start, end) else |_| {}
+        } else if (r.mono) add(attrs, pango_attr_family_new("Monospace"), start, end);
         if (r.u) add(attrs, pango_attr_underline_new(1), start, end);
         if (r.bg) |bg| if (bg[3] > 0) {
             add(attrs, pango_attr_background_new(c16(bg[0]), c16(bg[1]), c16(bg[2])), start, end);
@@ -1328,12 +1409,11 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32) ?*PangoLa
     // CSS line-height: each line box is that tall and the glyphs sit in its
     // middle (half-leading above and below, negative when it's smaller than
     // the font, as `line-height: 1` on an icon glyph). Pango >= 1.50.
-    if (n.props.lh) |lh| add0(attrs, pango_attr_line_height_new_absolute(tree_mod.sat(c_int, lh * PANGO_SCALE)));
+    // Without one, line-height: normal as browsers make it (lineBox).
+    if (lineBox(s, n.props)) |lh| add0(attrs, pango_attr_line_height_new_absolute(tree_mod.sat(c_int, lh * PANGO_SCALE)));
     const layout = gtk_widget_create_pango_layout(s.area, null);
-    const font = if (n.props.mono) &s.mono else &s.sans;
-    if (font.* == null) font.* = pango_font_description_from_string(if (n.props.mono) "Monospace" else "Sans");
-    const desc = font.*.?;
-    pango_font_description_set_absolute_size(desc, (n.props.fz orelse 16) * PANGO_SCALE);
+    // (The layout keeps a copy of the description.)
+    const desc = fontDesc(s, n.props.fz orelse 16, n.props.mono, n.props.ff);
     pango_layout_set_font_description(layout, desc);
     pango_layout_set_text(layout, text.items.ptr, @intCast(text.items.len));
     pango_layout_set_attributes(layout, attrs);
@@ -1693,7 +1773,7 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
     defer g_object_unref(layout);
     // Pango's lines centered in CSS's line boxes when those are shorter.
     var dy: f32 = 0;
-    if (cssHeight(&n.props, pango_layout_get_line_count(layout))) |css_h| {
+    if (cssHeight(s, &n.props, pango_layout_get_line_count(layout))) |css_h| {
         var w: c_int = 0;
         var h: c_int = 0;
         pango_layout_get_size(layout, &w, &h);
@@ -2402,6 +2482,8 @@ test "shared measurements match fresh Pango layouts after text, width and font c
         s.glyph_widths.deinit(gpa);
         if (s.sans) |font| pango_font_description_free(font);
         if (s.mono) |font| pango_font_description_free(font);
+        if (s.metrics_ctx) |c| g_object_unref(c);
+        s.font_metrics.deinit(s.gpa);
     }
     var t = tree_mod.Tree.init(gpa, &s, measure);
     defer t.deinit();
@@ -2420,7 +2502,7 @@ test "shared measurements match fresh Pango layouts after text, width and font c
         var h: c_int = 0;
         pango_layout_get_pixel_size(fresh, &w, &h);
         try std.testing.expectEqual(@as(f32, @floatFromInt(w + 1)), cached[0]);
-        try std.testing.expectEqual(@as(f32, @floatFromInt(h)), cached[1]);
+        try std.testing.expectEqual(cssHeight(&s, &n.props, pango_layout_get_line_count(fresh)) orelse @as(f32, @floatFromInt(h)), cached[1]);
     }
     try std.testing.expect(try t.updateText(1, "updated Ω text"));
     try t.apply(
@@ -2434,7 +2516,7 @@ test "shared measurements match fresh Pango layouts after text, width and font c
     var h: c_int = 0;
     pango_layout_get_pixel_size(fresh, &w, &h);
     try std.testing.expectEqual(@as(f32, @floatFromInt(w + 1)), cached[0]);
-    try std.testing.expectEqual(@as(f32, @floatFromInt(h)), cached[1]);
+    try std.testing.expectEqual(cssHeight(&s, &n.props, pango_layout_get_line_count(fresh)) orelse @as(f32, @floatFromInt(h)), cached[1]);
     const old_count = s.text_measurements.entries.count();
     pango_context_changed(gtk_widget_get_pango_context(area));
     measure(&s, n, 80, &cached);

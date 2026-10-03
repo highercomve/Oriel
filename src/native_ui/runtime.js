@@ -14610,7 +14610,7 @@ li { display: list-item; }
 button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
 button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
-html { font-size: 16px; line-height: 1.2; color: black; }
+html { font-size: 16px; color: black; }
 body { margin: 8px; }
 p, ul, ol, dl, blockquote, pre, figure { margin-top: 1em; margin-bottom: 1em; }
 ul, ol { padding-left: 40px; }
@@ -14637,6 +14637,11 @@ col, colgroup { display: none; }
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
+  function lineHeightPx(v, fs) {
+    if (/^[\d.]+$/.test(v)) return parseFloat(v) * fs;
+    if (v.endsWith("%")) return parseFloat(v) / 100 * fs;
+    return length(v, fs, false) ?? void 0;
+  }
   var fontMetricsCache = /* @__PURE__ */ new Map();
   function lineDescent(cs, fs, host2) {
     const mono = /mono/.test(cs["font-family"] || "");
@@ -14648,12 +14653,13 @@ col, colgroup { display: none; }
       } catch {
         m = null;
       }
-      if (!m) m = [fs * 1.125, fs * 0.3125];
+      if (!m) m = [fs * 1.069, fs * 0.293, 0];
       fontMetricsCache.set(key2, m);
     }
-    const [ascent, descent] = m;
+    const [ascent, descent, gap = 0] = m;
+    const normal = Math.round(ascent) + Math.round(descent) + Math.round(gap);
     const v = cs["line-height"];
-    const lh = !v || v === "normal" ? ascent + descent : /^[\d.]+$/.test(v) ? parseFloat(v) * fs : length(v, fs, false) ?? ascent + descent;
+    const lh = !v || v === "normal" ? normal : lineHeightPx(v, fs) ?? normal;
     return Math.max(0, lh / 2 - (ascent - descent) / 2);
   }
   var nonZero = (v) => !!v && (/^(thin|medium|thick)$/.test(v) || parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v)));
@@ -15832,7 +15838,7 @@ col, colgroup { display: none; }
       const flowBlock = !childCtx.blockify && props.fd === "column" && display !== "grid" && !tableHolds(display);
       const inLine = flowBlock ? /* @__PURE__ */ new Set() : null;
       if (before2) inLine?.add(before2);
-      for (const item of flow) {
+      for (const [index, item] of flow.entries()) {
         if (item.text) {
           const tid = this.idOf(el, "t" + kids.length);
           this.own(tid, el);
@@ -15847,6 +15853,17 @@ col, colgroup { display: none; }
         const cid = this.element(item.el, cs, nodes, childCtx);
         if (cid === null) continue;
         this.adjustKid(nodes, cid, item.el, cs, props, display, childCtx);
+        if (flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch)) {
+          const n2 = nodes.get(cid);
+          const gap = lineDescent(cs, fontSize, this.host);
+          if (n2 && gap > 0) {
+            const m = n2.props.m ? [...n2.props.m] : [0, 0, 0, 0];
+            if (typeof m[2] === "number") {
+              m[2] += gap;
+              n2.props = { ...n2.props, m };
+            }
+          }
+        }
         kids.push(cid);
         if (inLine && (ATOMIC_INLINE.has(this.styleOf(item.el)?.display || "inline") || boxed?.has(item.el))) inLine.add(cid);
         const ord = parseInt(this.styleOf(item.el)?.order, 10);
@@ -15977,6 +15994,20 @@ col, colgroup { display: none; }
         return null;
       }
       return id;
+    }
+    // Whether flow[i] is an image on the baseline with no inline content
+    // beside it (blocks, or nothing, before and after).
+    loneImage(flow, i, cs, rematch) {
+      const f = flow[i];
+      if (!f.el || !this.imageLine([f], cs, rematch)) return false;
+      const inlineAt = (j) => {
+        const g2 = flow[j];
+        if (!g2) return false;
+        if (g2.text) return true;
+        const d = this.style(g2.el, cs, rematch).display || "inline";
+        return d.startsWith("inline");
+      };
+      return !inlineAt(i - 1) && !inlineAt(i + 1);
     }
     // Whether the in-flow content is only images on the baseline (imageLine).
     imageLine(flow, cs, rematch) {
@@ -16646,8 +16677,10 @@ col, colgroup { display: none; }
     p.fwt = weight(cs["font-weight"]);
     if (cs["font-style"] === "italic") p.it = true;
     if (/mono/.test(cs["font-family"] || "")) p.mono = true;
+    const ff = familyOf(cs);
+    if (ff) p.ff = ff;
     const lh = cs["line-height"];
-    if (lh && lh !== "normal") p.lh = /^[\d.]+$/.test(lh) ? parseFloat(lh) * fs : length(lh, fs, false) ?? void 0;
+    if (lh && lh !== "normal") p.lh = lineHeightPx(lh, fs);
     const ta = cs["text-align"];
     if (ta && ta !== "start" && ta !== "left") p.ta = ta === "end" ? "right" : ta;
     const ws = cs["white-space"];
@@ -16664,10 +16697,19 @@ col, colgroup { display: none; }
   function runStyle(cs, fs) {
     return memoized(cs, `r${fs}`, () => makeRunStyle(cs, fs));
   }
+  function familyOf(cs) {
+    const f = cs["font-family"];
+    if (!f) return void 0;
+    const list = splitTop(f, ",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+    if (!list.length || list.length === 1 && list[0] === "sans-serif") return void 0;
+    return list.join(", ");
+  }
   function makeRunStyle(cs, fs) {
     const r = { c: color(cs.color) || [0, 0, 0, 1], sz: fs, w: weight(cs["font-weight"]) };
     if (cs["font-style"] === "italic") r.i = true;
     if (/mono/.test(cs["font-family"] || "")) r.mono = true;
+    const ff = familyOf(cs);
+    if (ff) r.ff = ff;
     if ((cs["text-decoration-line"] || "") === "underline") r.u = true;
     return r;
   }

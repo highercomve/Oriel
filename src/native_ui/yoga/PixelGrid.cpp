@@ -12,7 +12,10 @@
 // node's position and size go through here, every layout); and each node
 // with a context (the tree's nodes) gets its absolute left and its width
 // before rounding (oriel_yoga_laid: Tree.leafOnly rounds a text's new
-// width as this would).
+// width as this would); and a text's top and height round to the nearest
+// pixel, as browsers' line boxes do (a 23.2px line is 23, not 24: rounded
+// up, every line of a page added a pixel). Its width still rounds up, so
+// it doesn't wrap.
 
 #include <cmath>
 
@@ -111,7 +114,7 @@ void roundLayoutResultsToPixelGrid(
         PhysicalEdge::Left);
 
     node->setLayoutPosition(
-        roundValueToPixelGrid(nodeTop, pointScaleFactor, false, textRounding),
+        roundValueToPixelGrid(nodeTop, pointScaleFactor, false, false),
         PhysicalEdge::Top);
 
     // We multiply dimension by scale factor and if the result is close to the
@@ -120,9 +123,6 @@ void roundLayoutResultsToPixelGrid(
     const bool hasFractionalWidth =
         !yoga::inexactEquals(fract1(nodeWidth * pointScaleFactor), 0) &&
         !yoga::inexactEquals(fract1(nodeWidth * pointScaleFactor), 1.0);
-    const bool hasFractionalHeight =
-        !yoga::inexactEquals(fract1(nodeHeight * pointScaleFactor), 0) &&
-        !yoga::inexactEquals(fract1(nodeHeight * pointScaleFactor), 1.0);
 
     node->setLayoutDimension(
         roundValueToPixelGrid(
@@ -138,10 +138,10 @@ void roundLayoutResultsToPixelGrid(
         roundValueToPixelGrid(
             absoluteNodeBottom,
             pointScaleFactor,
-            (textRounding && hasFractionalHeight),
-            (textRounding && !hasFractionalHeight)) -
+            false,
+            false) -
             roundValueToPixelGrid(
-                absoluteNodeTop, pointScaleFactor, false, textRounding),
+                absoluteNodeTop, pointScaleFactor, false, false),
         Dimension::Height);
   }
 

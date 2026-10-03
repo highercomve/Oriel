@@ -322,18 +322,17 @@ static JSValue h_warm_fonts(JSContext *ctx, JSValueConst this_val, int argc, JSV
     return JS_UNDEFINED;
 }
 
-// host.fontMetrics(size, mono): the backend's [ascent, descent] in px for
-// its text font at `size`, or undefined (the runtime then estimates).
+// host.fontMetrics(size, mono): the backend's [ascent, descent, lineGap]
+// in px for its text font at `size`, or undefined (the runtime estimates).
 static JSValue h_font_metrics(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     double size = 16;
     if (argc >= 1 && JS_ToFloat64(ctx, &size, argv[0]) < 0) return JS_EXCEPTION;
     int mono = argc >= 2 ? JS_ToBool(ctx, argv[1]) : 0;
-    double out[2];
+    double out[3];
     if (!oriel_nui_font_metrics(opaque_of(ctx), size, mono, out)) return JS_UNDEFINED;
     JSValue arr = JS_NewArray(ctx);
-    JS_SetPropertyUint32(ctx, arr, 0, JS_NewFloat64(ctx, out[0]));
-    JS_SetPropertyUint32(ctx, arr, 1, JS_NewFloat64(ctx, out[1]));
+    for (uint32_t i = 0; i < 3; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
     return arr;
 }
 
