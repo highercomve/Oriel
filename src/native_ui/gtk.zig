@@ -214,6 +214,13 @@ extern fn pango_font_metrics_get_ascent(m: *PangoFontMetrics) c_int;
 extern fn pango_font_metrics_get_descent(m: *PangoFontMetrics) c_int;
 extern fn pango_font_metrics_unref(m: *PangoFontMetrics) void;
 extern fn pango_font_metrics_get_height(m: *PangoFontMetrics) c_int;
+extern fn pango_font_metrics_get_approximate_digit_width(m: *PangoFontMetrics) c_int;
+extern fn pango_font_description_get_size(d: *PangoFontDescription) c_int;
+extern fn pango_font_description_get_size_is_absolute(d: *PangoFontDescription) c_int;
+extern fn pango_font_description_get_family(d: *PangoFontDescription) ?[*:0]const u8;
+extern fn gtk_widget_get_style_context(w: *Widget) *anyopaque;
+extern fn gtk_style_context_lookup_color(ctx: *anyopaque, name: [*:0]const u8, color: *GdkRGBA) c_int;
+const GdkRGBA = extern struct { red: f32, green: f32, blue: f32, alpha: f32 };
 const PangoFontFamily = opaque {};
 extern fn pango_font_map_list_families(map: *anyopaque, families: *?[*]*PangoFontFamily, n: *c_int) void;
 extern fn pango_font_family_get_name(f: *PangoFontFamily) [*:0]const u8;
@@ -283,7 +290,8 @@ pub const Surface = struct {
     /// the font's tables have them, what browsers' line-height: normal is
     /// made of (normalLineHeight). By size (1/64 px) and monospace.
     metrics_ctx: ?*PangoContext = null,
-    font_metrics: std.AutoHashMapUnmanaged(u64, [3]f32) = .empty,
+    /// Unhinted [ascent, descent, line gap, digit width] by font and size.
+font_metrics: std.AutoHashMapUnmanaged(u64, [4]f32) = .empty,
     /// The installed families (lowercase), and CSS family lists resolved
     /// to the one a browser would use (resolveFamily). Keys and values owned.
     installed_families: std.StringHashMapUnmanaged(void) = .empty,
@@ -344,6 +352,9 @@ pub const Surface = struct {
             .dark = prefersDark(),
         };
         gtk_style_context_add_provider_for_display(gtk_widget_get_display(area), s.css, 800);
+        // The engine copies the platform JSON.
+        const look = withLook(gpa, platform_json, area);
+        defer if (look) |l| gpa.free(l);
         s.engine = try Engine.create(gpa, .{
             .ctx = s,
             .measure = measure,
@@ -358,8 +369,9 @@ pub const Surface = struct {
             .request_display_frame = requestDisplayFrame,
             .warm_fonts = warmFonts,
         .font_metrics = fontMetrics,
-        }, assets, platform_json, label, url, width, height);
+        }, assets, look orelse platform_json, label, url, width, height);
         s.engine.tree.reuse_text_layout = true;
+        s.engine.tree.fields_sized = true;
 
         gtk_drawing_area_set_draw_func(area, draw, s, null);
         _ = g_signal_connect_data(@ptrCast(area), "resize", @ptrCast(&onResize), s, null, 0);
@@ -527,8 +539,47 @@ fn onTimer(p: ?*anyopaque) callconv(.c) c_int {
 /// host.fontMetrics: the ascent, descent and line gap of the font text is
 /// measured with (textLayout's), at `size` px, unhinted.
 fn fontMetrics(ctx: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
-    out.* = unhintedMetrics(surfaceOf(ctx), size, mono, null) orelse return false;
+    const m = unhintedMetrics(surfaceOf(ctx), size, mono, null) orelse return false;
+    out.* = m[0..3].*;
     return true;
+}
+
+/// The platform JSON with the GTK theme's look, as WebKitGTK uses it for
+/// its controls: `accent` (the accent color, [r, g, b]: its focus ring)
+/// and `uiFont` (gtk-font-name's family and size in whole px: its form
+/// controls' font). Owned by the caller; null: as is.
+fn withLook(gpa: std.mem.Allocator, platform_json: [:0]const u8, w: *Widget) ?[:0]const u8 {
+    const trimmed = std.mem.trimEnd(u8, platform_json, " \n");
+    if (trimmed.len < 2 or trimmed[trimmed.len - 1] != '}') return null;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const body = trimmed[0 .. trimmed.len - 1];
+    var sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
+    out.writer.writeAll(body) catch return null;
+    var rgba: GdkRGBA = undefined;
+    if (gtk_style_context_lookup_color(gtk_widget_get_style_context(w), "accent_bg_color", &rgba) != 0) {
+        out.writer.print("{s}\"accent\":[{d},{d},{d}]", .{ sep, @round(rgba.red * 255), @round(rgba.green * 255), @round(rgba.blue * 255) }) catch return null;
+        sep = ",";
+    }
+    if (gtk_settings_get_default()) |settings| {
+        var name: ?[*:0]u8 = null;
+        g_object_get(settings, "gtk-font-name", &name, @as(?*anyopaque, null));
+        defer g_free(name);
+        if (name) |n| {
+            const desc = pango_font_description_from_string(n);
+            defer pango_font_description_free(desc);
+            const size = @as(f32, @floatFromInt(pango_font_description_get_size(desc))) / PANGO_SCALE;
+            // Points at 96 dpi, as GTK and WebKitGTK take them.
+            const px = @floor(if (pango_font_description_get_size_is_absolute(desc) != 0) size else size * 96.0 / 72.0);
+            if (pango_font_description_get_family(desc)) |family| if (px > 0) {
+                out.writer.print("{s}\"uiFont\":[", .{sep}) catch return null;
+                std.json.Stringify.value(std.mem.span(family), .{}, &out.writer) catch return null;
+                out.writer.print(",{d}]", .{px}) catch return null;
+            };
+        }
+    }
+    out.writer.writeAll("}") catch return null;
+    return gpa.dupeZ(u8, out.written()) catch null;
 }
 
 fn familyHash(family: ?[]const u8) u64 {
@@ -630,7 +681,7 @@ fn fontDesc(s: *Surface, size: f32, mono: bool, family: ?[]const u8) *PangoFontD
     return desc;
 }
 
-fn unhintedMetrics(s: *Surface, size: f32, mono: bool, family: ?[]const u8) ?[3]f32 {
+fn unhintedMetrics(s: *Surface, size: f32, mono: bool, family: ?[]const u8) ?[4]f32 {
     const key: u64 = (familyHash(family) *% 31) ^ ((@as(u64, @intFromBool(mono)) << 32) | tree_mod.sat(u32, size * 64));
     if (s.font_metrics.get(key)) |m| return m;
     const ctx = s.metrics_ctx orelse blk: {
@@ -649,7 +700,8 @@ fn unhintedMetrics(s: *Surface, size: f32, mono: bool, family: ?[]const u8) ?[3]
     const a = @as(f32, @floatFromInt(pango_font_metrics_get_ascent(m))) / PANGO_SCALE;
     const d = @as(f32, @floatFromInt(pango_font_metrics_get_descent(m))) / PANGO_SCALE;
     const h = @as(f32, @floatFromInt(pango_font_metrics_get_height(m))) / PANGO_SCALE;
-    const out = [3]f32{ a, d, @max(0, h - a - d) };
+    const digit = @as(f32, @floatFromInt(pango_font_metrics_get_approximate_digit_width(m))) / PANGO_SCALE;
+    const out = [4]f32{ a, d, @max(0, h - a - d), digit };
     if (s.font_metrics.count() >= 256) s.font_metrics.clearRetainingCapacity();
     s.font_metrics.put(s.gpa, key, out) catch {};
     return out;
@@ -1306,7 +1358,6 @@ fn onKeyUp(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyo
 
 fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const s = surfaceOf(ctx);
-    const fz = n.props.fz orelse 16;
     switch (n.kind) {
         .text => {
             const context = gtk_widget_get_pango_context(s.area);
@@ -1338,8 +1389,7 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             const k: f32 = if (!std.math.isInf(max_width) and max_width < img.w) max_width / img.w else 1;
             out.* = .{ img.w * k, img.h * k };
         },
-        .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
-        .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
+        .input, .select, .textarea => out.* = fieldSize(s, n, max_width),
         else => out.* = .{ 0, 0 },
     }
 }
@@ -1369,6 +1419,41 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
 /// with 23.2px lines). Pango keeps lines no shorter than its own minimum,
 /// so the height is the lines times the line-height (null without one),
 /// and paintText centers Pango's lines in it.
+/// A field's content box as WebKitGTK sizes it: a text field `cols`
+/// (size, 20) digits wide and 6 px more, a textarea `cols` digits by `rows`
+/// lines, a select its longest option and its arrow, a line of the font's
+/// normal height.
+fn fieldSize(s: *Surface, n: *Node, max_width: f32) [2]f32 {
+    const fz = n.props.fz orelse 16;
+    const m = unhintedMetrics(s, fz, n.props.mono, n.props.ff) orelse [4]f32{ fz * 0.8, fz * 0.25, 0, fz * 0.55 };
+    const line = @round(m[0]) + @round(m[1]) + @round(m[2]);
+    const cols = n.props.cols orelse 20;
+    var size: [2]f32 = switch (n.kind) {
+        .textarea => .{ cols * m[3], line * (n.props.rows orelse 2) },
+        .select => .{ longestOption(s, n) + 16, line },
+        else => .{ cols * m[3] + 6, line },
+    };
+    if (!std.math.isInf(max_width) and n.kind != .textarea) size[0] = @min(size[0], max_width);
+    return size;
+}
+
+/// The widest option label of a select, in its font.
+fn longestOption(s: *Surface, n: *Node) f32 {
+    const opts = n.props.options orelse return 0;
+    const layout = gtk_widget_create_pango_layout(s.area, null);
+    defer g_object_unref(layout);
+    pango_layout_set_font_description(layout, fontDesc(s, n.props.fz orelse 16, n.props.mono, n.props.ff));
+    var widest: f32 = 0;
+    for (opts) |o| {
+        pango_layout_set_text(layout, o[1].ptr, @intCast(o[1].len));
+        var w: c_int = 0;
+        var h: c_int = 0;
+        pango_layout_get_size(layout, &w, &h);
+        widest = @max(widest, @as(f32, @floatFromInt(w)) / PANGO_SCALE);
+    }
+    return @ceil(widest);
+}
+
 fn cssHeight(s: *Surface, props: *const tree_mod.Props, lines: c_int) ?f32 {
     const lh = lineBox(s, props) orelse return null;
     return lh * @as(f32, @floatFromInt(@max(1, lines)));

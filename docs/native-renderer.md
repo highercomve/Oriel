@@ -180,7 +180,18 @@ the animated nodes are sent each frame).
   `-webkit-small-control, system-ui` (UA_CSS; a textarea `monospace`), as
   Chromium draws them: in the platform's control font, which is Arial on
   Windows (Win32 maps the name so); a backend that doesn't know the name
-  takes the `system-ui` after it.
+  takes the `system-ui` after it. On Linux the WebView is WebKitGTK, and
+  its controls are WebKit's in the GTK theme (measured): render.js
+  uaCssWebkitGtk, with `platform.uiFont` (gtk-font-name's family and size,
+  floored to whole px: Adwaita Sans 11pt is 14px) on every control, a 1px
+  `#cdcdcd` border rounded 5px, white text fields and `#f4f4f4`
+  buttons and selects, 12px checkboxes, 20px sliders, and
+  `platform.accent` (the theme's `accent_bg_color`) as their
+  `accent-color`. GTK sizes fields as WebKit does (gtk.zig fieldSize): a
+  text field `size` (20) digit widths and 6px, a textarea `cols` digits by
+  `rows` lines, a select its longest option and its arrow, a line the
+  font's normal height (`Tree.fields_sized`: measureFn keeps a textarea's
+  width).
 - `Backend.font_metrics` (host.fontMetrics): `[ascent, descent, lineGap]`
   in px, unhinted, for the default sans (or monospace) at a size; the
   runtime uses it for an image's line (the baseline gap below an inline
@@ -277,6 +288,10 @@ enabled form controls, `<summary>` in `<details>`, contenteditable and
 it wraps at the ends. The element focused is scrolled into view
 (`block: "nearest"`) and matches `:focus-visible`, which draws browsers'
 focus ring (2 px blue, offset 1 px) unless the page styles its outline.
+On Linux it is WebKitGTK's: 2 px in `platform.accent` at 0.8 alpha
+(WebKit's blue without one), over a control's border (offset -2, 5px
+corners), just outside a link or another box (offset 1). Before any
+pointer input a script's `focus()` is visible too, as in browsers.
 Backends must give Tab to the page, also while a native field has the
 keyboard, and not move the focus themselves when the page used the key;
 when the page focuses an element that isn't a native field, the keyboard
