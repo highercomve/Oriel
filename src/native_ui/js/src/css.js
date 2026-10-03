@@ -11,17 +11,28 @@ function stripComments(css) {
   return css.replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-// Split at a separator outside parentheses and quotes.
+// Split at a separator outside parentheses and quotes. A regular
+// expression jumps between the characters that matter (QuickJS runs it
+// natively; a loop over each character is interpreted).
+const specials = { ",": /["'()[\],]/g, ";": /["'()[\];]/g };
 export function splitTop(s, sep) {
+  // Nothing to step over: a plain split.
+  if (!/["'()[\]]/.test(s)) return s.split(sep);
+  const re = specials[sep] ?? new RegExp(`["'()[\\]${sep.replace(/[\\\]^-]/g, "\\$&")}]`, "g");
   const out = [];
-  let depth = 0, quote = null, start = 0;
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i];
-    if (quote) { if (c === quote && s[i - 1] !== "\\") quote = null; continue; }
-    if (c === '"' || c === "'") quote = c;
-    else if (c === "(" || c === "[") depth++;
-    else if (c === ")" || c === "]") depth--;
-    else if (depth === 0 && c === sep) { out.push(s.slice(start, i)); start = i + 1; }
+  let depth = 0, start = 0;
+  re.lastIndex = 0;
+  for (let m; (m = re.exec(s)); ) {
+    const k = m.index, c = s.charCodeAt(k);
+    if (c === 34 || c === 39) {
+      // A quoted run, to its closing quote (not an escaped one).
+      let e = k;
+      do e = s.indexOf(m[0], e + 1); while (e > 0 && s.charCodeAt(e - 1) === 92);
+      if (e < 0) break;
+      re.lastIndex = e + 1;
+    } else if (c === 40 || c === 91) depth++; // ( [
+    else if (c === 41 || c === 93) depth--; // ) ]
+    else if (depth === 0) { out.push(s.slice(start, k)); start = k + 1; }
   }
   out.push(s.slice(start));
   return out;
@@ -49,7 +60,7 @@ function parseDecls(text) {
     let value = part.slice(i + 1).trim();
     if (!prop || !value) continue;
     let important = false;
-    const m = /!\s*important\s*$/i.exec(value);
+    const m = value.includes("!") ? /!\s*important\s*$/i.exec(value) : null;
     if (m) { important = true; value = value.slice(0, m.index).trim(); }
     decls.push({ prop: prop.startsWith("--") ? part.slice(0, i).trim() : prop, value, important });
   }
@@ -72,11 +83,13 @@ export function parseSheet(css, orderBase = 0) {
       const open = text.indexOf("{", i);
       if (open < 0) break;
       const prelude = text.slice(i, open).trim();
-      // Find the matching brace.
-      let depth = 1, j = open + 1;
-      for (; j < text.length && depth; j++) {
-        if (text[j] === "{") depth++;
-        else if (text[j] === "}") depth--;
+      // Find the matching brace (j: just past it, or the end).
+      let depth = 1, j = open + 1, nextOpen = text.indexOf("{", j);
+      while (depth) {
+        const close = text.indexOf("}", j);
+        if (close < 0) { j = text.length; break; }
+        if (nextOpen >= 0 && nextOpen < close) { depth++; j = nextOpen + 1; nextOpen = text.indexOf("{", j); }
+        else { depth--; j = close + 1; }
       }
       const body = text.slice(open + 1, j - 1);
       i = j;
@@ -93,12 +106,14 @@ export function parseSheet(css, orderBase = 0) {
           sel = sel.trim();
           if (!sel) continue;
           let pseudo = null;
-          const pm = /::?(before|after)\s*$/.exec(sel);
-          if (pm) { pseudo = pm[1]; sel = sel.slice(0, pm.index).trim() || "*"; }
-          // :focus, :hover and :active are attributes the runtime moves
-          // with the focus, the pointer and the press (main.js).
-          sel = sel.replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
-          if (/::|:hover|:focus|:active|:visited|:empty\b/.test(sel)) continue; // states we don't track yet
+          if (sel.includes(":")) {
+            const pm = /::?(before|after)\s*$/.exec(sel);
+            if (pm) { pseudo = pm[1]; sel = sel.slice(0, pm.index).trim() || "*"; }
+            // :focus, :hover and :active are attributes the runtime moves
+            // with the focus, the pointer and the press (main.js).
+            sel = sel.replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
+            if (/::|:hover|:focus|:active|:visited|:empty\b/.test(sel)) continue; // states we don't track yet
+          }
           rules.push({ sel, pseudo, spec: specificity(sel), decls, media, order: order++, match: null });
         }
       }
@@ -132,7 +147,7 @@ function keyframes(body) {
 
 function specificity(sel) {
   let a = 0, b = 0, c = 0;
-  const s = sel.replace(/:(not|is|has|where)\(([^)]*)\)/g, (_, fn, inner) => {
+  const s = !sel.includes("(") ? sel : sel.replace(/:(not|is|has|where)\(([^)]*)\)/g, (_, fn, inner) => {
     if (fn !== "where") { const sp = specificity(inner); a += sp[0]; b += sp[1]; c += sp[2]; }
     return "";
   });
@@ -399,16 +414,16 @@ export class StyleEngine {
     this.keyframes = {};
   }
 
-  // `cache`: { get(css) → JSON | undefined, keep(css, json) } (the native
-  // one keeps a sheet's parsed rules for the process: a second window
-  // doesn't parse and index them again).
-  addSheet(css, cache) {
+  // `cache`: { get(css, path) → JSON | undefined, keep(css, json) } (the
+  // native one keeps a sheet's parsed rules for the process: a second
+  // window doesn't parse and index them again; and finds the ones the app
+  // was built with, by the sheet's asset `path`: tools/qjs_modules.zig).
+  addSheet(css, cache, path) {
     let parsed = null;
-    const kept = cache?.get(css);
+    const kept = cache?.get(css, path);
     if (kept) { try { parsed = JSON.parse(kept); } catch { parsed = null; } }
     if (!parsed) {
-      const rules = parseSheet(css, 0);
-      parsed = { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
+      parsed = sheetData(css);
       try { cache?.keep(css, JSON.stringify(parsed)); } catch {}
     }
     Object.assign(this.keyframes, parsed.keyframes);
@@ -463,10 +478,17 @@ export class StyleEngine {
   }
 }
 
+// A sheet's rules as addSheet keeps them (and the build compiles them:
+// sheet-compiler.js): [sel, pseudo, spec, decls, media, index key] each.
+export function sheetData(css) {
+  const rules = parseSheet(css, 0);
+  return { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
+}
+
 // A rule's index key: the rightmost compound selector's id, class or tag.
 // (Ignoring pseudo-class arguments: section:not(.active) is about sections.)
 function indexKey(sel) {
-  const last = sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "").split(/[\s>+~]+/).filter(Boolean).pop() || "*";
+  const last = (sel.includes("(") ? sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "") : sel).split(/[\s>+~]+/).filter(Boolean).pop() || "*";
   const id = /#([\w-]+)/.exec(last), cls = /\.([\w-]+)/.exec(last), tag = /^([a-zA-Z][\w-]*)/.exec(last);
   if (id) return ["id", id[1]];
   if (cls) return ["cls", cls[1]];

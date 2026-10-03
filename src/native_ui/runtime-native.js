@@ -1260,21 +1260,27 @@ globalThis.atob ??= (s) => {
   function stripComments(css) {
     return css.replace(/\/\*[\s\S]*?\*\//g, "");
   }
+  var specials = { ",": /["'()[\],]/g, ";": /["'()[\];]/g };
   function splitTop(s, sep) {
+    if (!/["'()[\]]/.test(s)) return s.split(sep);
+    const re = specials[sep] ?? new RegExp(`["'()[\\]${sep.replace(/[\\\]^-]/g, "\\$&")}]`, "g");
     const out = [];
-    let depth = 0, quote = null, start = 0;
-    for (let i = 0; i < s.length; i++) {
-      const c = s[i];
-      if (quote) {
-        if (c === quote && s[i - 1] !== "\\") quote = null;
-        continue;
-      }
-      if (c === '"' || c === "'") quote = c;
-      else if (c === "(" || c === "[") depth++;
-      else if (c === ")" || c === "]") depth--;
-      else if (depth === 0 && c === sep) {
-        out.push(s.slice(start, i));
-        start = i + 1;
+    let depth = 0, start = 0;
+    re.lastIndex = 0;
+    for (let m; m = re.exec(s); ) {
+      const k = m.index, c = s.charCodeAt(k);
+      if (c === 34 || c === 39) {
+        let e = k;
+        do
+          e = s.indexOf(m[0], e + 1);
+        while (e > 0 && s.charCodeAt(e - 1) === 92);
+        if (e < 0) break;
+        re.lastIndex = e + 1;
+      } else if (c === 40 || c === 91) depth++;
+      else if (c === 41 || c === 93) depth--;
+      else if (depth === 0) {
+        out.push(s.slice(start, k));
+        start = k + 1;
       }
     }
     out.push(s.slice(start));
@@ -1303,7 +1309,7 @@ globalThis.atob ??= (s) => {
       let value = part.slice(i + 1).trim();
       if (!prop || !value) continue;
       let important = false;
-      const m = /!\s*important\s*$/i.exec(value);
+      const m = value.includes("!") ? /!\s*important\s*$/i.exec(value) : null;
       if (m) {
         important = true;
         value = value.slice(0, m.index).trim();
@@ -1326,10 +1332,21 @@ globalThis.atob ??= (s) => {
         const open = text.indexOf("{", i);
         if (open < 0) break;
         const prelude = text.slice(i, open).trim();
-        let depth = 1, j = open + 1;
-        for (; j < text.length && depth; j++) {
-          if (text[j] === "{") depth++;
-          else if (text[j] === "}") depth--;
+        let depth = 1, j = open + 1, nextOpen = text.indexOf("{", j);
+        while (depth) {
+          const close = text.indexOf("}", j);
+          if (close < 0) {
+            j = text.length;
+            break;
+          }
+          if (nextOpen >= 0 && nextOpen < close) {
+            depth++;
+            j = nextOpen + 1;
+            nextOpen = text.indexOf("{", j);
+          } else {
+            depth--;
+            j = close + 1;
+          }
         }
         const body = text.slice(open + 1, j - 1);
         i = j;
@@ -1346,13 +1363,15 @@ globalThis.atob ??= (s) => {
             sel = sel.trim();
             if (!sel) continue;
             let pseudo = null;
-            const pm = /::?(before|after)\s*$/.exec(sel);
-            if (pm) {
-              pseudo = pm[1];
-              sel = sel.slice(0, pm.index).trim() || "*";
+            if (sel.includes(":")) {
+              const pm = /::?(before|after)\s*$/.exec(sel);
+              if (pm) {
+                pseudo = pm[1];
+                sel = sel.slice(0, pm.index).trim() || "*";
+              }
+              sel = sel.replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
+              if (/::|:hover|:focus|:active|:visited|:empty\b/.test(sel)) continue;
             }
-            sel = sel.replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
-            if (/::|:hover|:focus|:active|:visited|:empty\b/.test(sel)) continue;
             rules.push({ sel, pseudo, spec: specificity(sel), decls, media, order: order++, match: null });
           }
         }
@@ -1382,7 +1401,7 @@ globalThis.atob ??= (s) => {
   }
   function specificity(sel) {
     let a = 0, b = 0, c = 0;
-    const s = sel.replace(/:(not|is|has|where)\(([^)]*)\)/g, (_, fn, inner) => {
+    const s = !sel.includes("(") ? sel : sel.replace(/:(not|is|has|where)\(([^)]*)\)/g, (_, fn, inner) => {
       if (fn !== "where") {
         const sp = specificity(inner);
         a += sp[0];
@@ -1690,12 +1709,13 @@ globalThis.atob ??= (s) => {
       this.order = 0;
       this.keyframes = {};
     }
-    // `cache`: { get(css) → JSON | undefined, keep(css, json) } (the native
-    // one keeps a sheet's parsed rules for the process: a second window
-    // doesn't parse and index them again).
-    addSheet(css, cache) {
+    // `cache`: { get(css, path) → JSON | undefined, keep(css, json) } (the
+    // native one keeps a sheet's parsed rules for the process: a second
+    // window doesn't parse and index them again; and finds the ones the app
+    // was built with, by the sheet's asset `path`: tools/qjs_modules.zig).
+    addSheet(css, cache, path) {
       let parsed = null;
-      const kept2 = cache?.get(css);
+      const kept2 = cache?.get(css, path);
       if (kept2) {
         try {
           parsed = JSON.parse(kept2);
@@ -1704,8 +1724,7 @@ globalThis.atob ??= (s) => {
         }
       }
       if (!parsed) {
-        const rules = parseSheet(css, 0);
-        parsed = { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
+        parsed = sheetData(css);
         try {
           cache?.keep(css, JSON.stringify(parsed));
         } catch {
@@ -1768,8 +1787,12 @@ globalThis.atob ??= (s) => {
       for (const d of decls) expand(d.prop, d.value, d.important ? important : normal);
     }
   };
+  function sheetData(css) {
+    const rules = parseSheet(css, 0);
+    return { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
+  }
   function indexKey(sel) {
-    const last = sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "").split(/[\s>+~]+/).filter(Boolean).pop() || "*";
+    const last = (sel.includes("(") ? sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "") : sel).split(/[\s>+~]+/).filter(Boolean).pop() || "*";
     const id = /#([\w-]+)/.exec(last), cls = /\.([\w-]+)/.exec(last), tag = /^([a-zA-Z][\w-]*)/.exec(last);
     if (id) return ["id", id[1]];
     if (cls) return ["cls", cls[1]];
@@ -6220,11 +6243,12 @@ ${a.stack || ""}`;
         Object.assign(viewport, { width: w, height: h, dark: !!dark, coarse: !!coarse });
         const P = host.prof ? host.now : null, b0 = P && P();
         const engine = new StyleEngine();
-        const sheets = host.sheetCache ? { get: (css) => host.sheetCache(css), keep: (css, json) => host.sheetKeep(css, json) } : null;
+        const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
         engine.addSheet(UA_CSS, sheets);
         for (const link of document.querySelectorAll('link[rel="stylesheet"][href], style')) {
-          const css = link.localName === "style" ? link.textContent : host.asset(link.getAttribute("href").replace(/^\.?\//, ""));
-          if (css) engine.addSheet(css, sheets);
+          const path = link.localName === "style" ? void 0 : link.getAttribute("href").replace(/^\.?\//, "");
+          const css = path === void 0 ? link.textContent : host.asset(path);
+          if (css) engine.addSheet(css, sheets, path);
           else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
         }
         const b1 = P && P();

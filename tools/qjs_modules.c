@@ -38,3 +38,53 @@ int oriel_qjs_compile_module(const char *code, size_t len, const char *name, uns
     js_free(ctx, bc);
     return 0;
 }
+
+static int sheets_ready;
+
+// A style sheet's rules as the runtime keeps them (sheet-compiler.js:
+// __orielSheetJSON): 0 and *out (free with free()) on success.
+int oriel_qjs_compile_sheet(const char *compiler, size_t compiler_len, const char *css, size_t len, char **out, size_t *out_len) {
+    if (!ctx) {
+        rt = JS_NewRuntime();
+        ctx = rt ? JS_NewContext(rt) : NULL;
+        if (!ctx) return -1;
+    }
+    if (!sheets_ready) {
+        char *src = malloc(compiler_len + 1);
+        if (!src) return -1;
+        memcpy(src, compiler, compiler_len);
+        src[compiler_len] = 0;
+        JSValue r = JS_Eval(ctx, src, compiler_len, "sheet-compiler.js", JS_EVAL_TYPE_GLOBAL);
+        free(src);
+        if (JS_IsException(r)) {
+            JS_FreeValue(ctx, JS_GetException(ctx));
+            return -1;
+        }
+        JS_FreeValue(ctx, r);
+        sheets_ready = 1;
+    }
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue fn = JS_GetPropertyStr(ctx, global, "__orielSheetJSON");
+    JS_FreeValue(ctx, global);
+    JSValue arg = JS_NewStringLen(ctx, css, len);
+    JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 1, &arg);
+    JS_FreeValue(ctx, arg);
+    JS_FreeValue(ctx, fn);
+    if (JS_IsException(r)) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        return -1;
+    }
+    size_t n = 0;
+    const char *json = JS_ToCStringLen(ctx, &n, r);
+    JS_FreeValue(ctx, r);
+    if (!json) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        return -1;
+    }
+    *out = malloc(n ? n : 1);
+    if (*out) memcpy(*out, json, n);
+    JS_FreeCString(ctx, json);
+    if (!*out) return -1;
+    *out_len = n;
+    return 0;
+}
