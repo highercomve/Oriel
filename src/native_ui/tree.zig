@@ -1173,8 +1173,9 @@ pub const Tree = struct {
                 break;
             };
             yg.YGNodeRemoveChild(p.yn, n.yn);
-            // A growing box that lost its label: no minimum from it any more.
-            if (p.kind != .text and p.grow_min > 0) growBoxMinWidth(t, p);
+            // A box that lost its label drops its minimum (one left with
+            // only a label gains one).
+            if (p.kind != .text) growBoxMinWidth(t, p);
         }
         // Removing the first child repeatedly shifts Yoga's vector on
         // every iteration: quadratic work for a large list. Detach once.
@@ -1318,7 +1319,7 @@ pub const Tree = struct {
                     break;
                 };
                 yg.YGNodeRemoveChild(old.yn, k.yn);
-                if (old != n and old.kind != .text and old.grow_min > 0) growBoxMinWidth(t, old);
+                if (old.kind != .text) growBoxMinWidth(t, old);
             }
             if (yg.YGNodeHasMeasureFunc(n.yn)) {
                 // A measured leaf can't have children: `k` is left detached
@@ -1344,6 +1345,8 @@ pub const Tree = struct {
     /// min-width.
     fn wordMinWidth(t: *Tree, k: *Node) void {
         if (k.kind != .text) return growBoxMinWidth(t, k);
+        unfreeze(k);
+        k.grow_min = std.math.nan(f32);
         if (k.props.minw != null) return;
         const in_row = if (k.parent) |p| std.mem.startsWith(u8, p.props.fd orelse "column", "row") else false;
         // A growing item (flex: 1, a segmented control's buttons): CSS
@@ -1351,8 +1354,6 @@ pub const Tree = struct {
         // Yoga would start from this minimum and widen the longer labels.
         // Its minimum waits for the layout (freezeGrowMins).
         const grows = (k.props.fg orelse 0) > 0;
-        unfreeze(k);
-        k.grow_min = std.math.nan(f32);
         const word = if (in_row and !k.props.nowrap) textWordWidth(t, k) else null;
         if (word == null or grows) yg.YGNodeStyleSetMinWidth(k.yn, std.math.nan(f32));
         const w = word orelse return;
@@ -2332,6 +2333,18 @@ test "flex: 1 boxes around one label (text-only buttons) keep its whole words" {
     );
     t.layout();
     for ([_]*Node{ auto, english, espanol }) |n| try std.testing.expectEqual(@as(f32, 80), yg.YGNodeLayoutGetWidth(n.yn));
+    // A box with an icon and a label: no minimum; the icon goes, and the
+    // box keeps the label's words like the others.
+    try t.apply(
+        \\[["c",14,"view"],["p",14,{"w":0}],["c",15,"text"],["p",15,{"runs":[{"t":"Deutsch"}]}],["k",3,[14,15]]]
+    );
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 80), yg.YGNodeLayoutGetWidth(espanol.yn));
+    try t.apply(
+        \\[["d",14]]
+    );
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 82), yg.YGNodeLayoutGetWidth(espanol.yn));
 }
 
 test "direct text updates preserve props, dirty layout, and release overrides" {
