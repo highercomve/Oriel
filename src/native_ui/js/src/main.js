@@ -882,6 +882,7 @@ function submit(form) {
 
 // A key went down (`type` "keydown", data [key, modifiers, repeat]) or up
 // ("keyup", [key, modifiers]).
+const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "AltGraph", "CapsLock"]);
 function keyEvent(el, data, type = "keydown") {
   const [key, flags, repeat] = data;
   const init = { key, code: key, bubbles: true, cancelable: true, repeat: !!repeat, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
@@ -1493,7 +1494,17 @@ g.__oriel = {
           el.dispatchEvent(new Event("change", { bubbles: true }));
           return false;
         }
-        case "key": keyboardFocus = true; return keyEvent(el || document.__active, data);
+        case "key": {
+          keyboardFocus = true;
+          // A key (not a modifier alone) while an element has focus from a
+          // pointer makes it :focus-visible, as browsers do.
+          const a = document.__active;
+          if (a && !MODIFIER_KEYS.has(data?.[0]) && !a.hasAttribute?.("data-nui-focus-visible")) {
+            a.setAttribute?.("data-nui-focus-visible", "");
+            setFocusVisible(a);
+          }
+          return keyEvent(el || a, data);
+        }
         case "keyup": return keyEvent(el || document.__active, data, "keyup");
         // A pointer went down, moved, went up or was taken by the system:
         // data [phase, x, y, buttons, pointerId, pointerType, modifiers].

@@ -190,4 +190,19 @@ assert.match(lastOps, /"t":"link"[^}]*"ol":\{"w":2/, "the focused link's run has
   one.__oriel.event(0, "dpr", 2);
   assert.equal(vm.runInContext("JSON.stringify([devicePixelRatio, heard])", one), "[2,[true]]");
 }
+// A key while an element has focus from a pointer makes it :focus-visible
+// (a modifier alone doesn't), as browsers do.
+{
+  const tabs = bootPage(`<html><body><div id="box" tabindex="0">box</div></body></html>`, { os: "windows" });
+  const c = tabs.ctx;
+  c.__oriel.event(0, "pointer", ["down", 1, 1, 1, 1, "mouse", 0]);
+  vm.runInContext(`document.getElementById("box").focus()`, c);
+  const fv = () => vm.runInContext(`document.getElementById("box").hasAttribute("data-nui-focus-visible")`, c);
+  assert.equal(fv(), false, "pointer focus: no ring");
+  c.__oriel.event(0, "key", ["Shift", 1, false]);
+  assert.equal(fv(), false, "a modifier alone: still no ring");
+  c.__oriel.event(0, "key", ["End", 0, false]);
+  assert.equal(fv(), true, "a key: the ring");
+}
+
 console.log("tab focus: ok");
