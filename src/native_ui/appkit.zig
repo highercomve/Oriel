@@ -57,6 +57,10 @@ pub const Surface = struct {
     /// while this holds; bumped when the text may measure differently.
     text_epoch: u64 = 1,
     pointer_hand: bool = false,
+    /// The field node that has the keyboard (0: none), as the page last
+    /// heard it ("focus"/"blur"), and whether a check is queued.
+    focused: i64 = 0,
+    focus_check_queued: bool = false,
     /// The mouse's last move, sent to the page at the next display frame
     /// (one a frame, however fast the mouse reports).
     /// The tree's node count after the last layout, and whether a trim of
@@ -137,8 +141,24 @@ fn classes() void {
     holder_class = cocoa.defineSubclass("OrielNuiFlippedView", "NSView", &.{}, .{
         .{ "isFlipped", yes },
     });
+    // The fields: their class's own, telling the page when they take the
+    // keyboard (a click into a text field calls no delegate).
+    text_field_class = cocoa.defineSubclass("OrielNuiTextField", "NSTextField", &.{}, .{
+        .{ "becomeFirstResponder", textFieldBecomeFirst },
+    });
+    secure_field_class = cocoa.defineSubclass("OrielNuiSecureTextField", "NSSecureTextField", &.{}, .{
+        .{ "becomeFirstResponder", secureFieldBecomeFirst },
+    });
+    text_view_class = cocoa.defineSubclass("OrielNuiTextView", "NSTextView", &.{}, .{
+        .{ "becomeFirstResponder", textViewBecomeFirst },
+        .{ "resignFirstResponder", textViewResignFirst },
+    });
     field_delegate = cocoa.new(cocoa.defineClass("OrielNuiFieldDelegate", &.{ "NSTextFieldDelegate", "NSTextViewDelegate" }, .{
         .{ "controlTextDidChange:", controlTextDidChange },
+        .{ "controlTextDidBeginEditing:", fieldEditingChanged },
+        .{ "controlTextDidEndEditing:", fieldEditingChanged },
+        .{ "textDidBeginEditing:", fieldEditingChanged },
+        .{ "textDidEndEditing:", fieldEditingChanged },
         .{ "control:textView:doCommandBySelector:", controlCommand },
         .{ "textDidChange:", textDidChange },
         .{ "textView:doCommandBySelector:", textViewCommand },
@@ -597,7 +617,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             sl.msgSend(void, "setAction:", .{cocoa.objc.sel("sliderChanged:").value});
             break :blk .{ .holder = cocoa.nil, .outer = sl, .inner = sl, .slider = true };
         } else blk: {
-            const cls = cocoa.class(if (n.props.pw) "NSSecureTextField" else "NSTextField");
+            const cls = (if (n.props.pw) secure_field_class else text_field_class).?;
             const tf = cls.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (tf.value == null) return null;
             tf.msgSend(void, "setBezeled:", .{cocoa.boolean(false)});
@@ -619,7 +639,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             sv.msgSend(void, "setBorderType:", .{@as(c_ulong, 0)});
             sv.msgSend(void, "setHasVerticalScroller:", .{cocoa.boolean(true)});
             sv.msgSend(void, "setAutohidesScrollers:", .{cocoa.boolean(true)});
-            const tv = cocoa.class("NSTextView").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+            const tv = text_view_class.?.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (tv.value == null) {
                 sv.release();
                 return null;
@@ -731,6 +751,86 @@ fn sendValue(s: *Surface, n: *Node, kind: []const u8, text: []const u8) void {
     const json = std.json.Stringify.valueAlloc(gpa, text, .{}) catch return;
     defer gpa.free(json);
     _ = s.engine.event(n.id, kind, json);
+}
+
+// ---------------------------------------------------------------------------
+// Focus: the page hears which field has the keyboard ("focus" and "blur",
+// so :focus, :focus-visible and document.activeElement follow it). A text
+// field hands the keyboard to the window's field editor; its owner is the
+// editor's delegate. Checked once things settle after a change.
+
+var text_field_class: ?cocoa.objc.Class = null;
+var secure_field_class: ?cocoa.objc.Class = null;
+var text_view_class: ?cocoa.objc.Class = null;
+
+fn textFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
+    const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSTextField"), BOOL, "becomeFirstResponder", .{});
+    focusChangedNear(self);
+    return ok;
+}
+
+fn secureFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
+    const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSSecureTextField"), BOOL, "becomeFirstResponder", .{});
+    focusChangedNear(self);
+    return ok;
+}
+
+fn textViewBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
+    const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSTextView"), BOOL, "becomeFirstResponder", .{});
+    focusChangedNear(self);
+    return ok;
+}
+
+fn textViewResignFirst(self: id, _: SEL) callconv(.c) BOOL {
+    const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSTextView"), BOOL, "resignFirstResponder", .{});
+    focusChangedNear(self);
+    return ok;
+}
+
+fn fieldEditingChanged(_: id, _: SEL, note: id) callconv(.c) void {
+    focusChangedNear((Object{ .value = note }).msgSend(Object, "object", .{}).value);
+}
+
+/// A field of some page may have taken or lost the keyboard.
+fn focusChangedNear(control: id) void {
+    const o = by_control.get(key(control)) orelse return;
+    const s = surfaces.get(o.token) orelse return;
+    queueFocusCheck(s);
+}
+
+fn queueFocusCheck(s: *Surface) void {
+    if (s.focus_check_queued) return;
+    const t = std.heap.smp_allocator.create(u64) catch return;
+    t.* = s.token;
+    s.focus_check_queued = true;
+    cocoa.afterMain(0, t, onFocusCheck);
+}
+
+fn onFocusCheck(p: ?*anyopaque) callconv(.c) void {
+    const t: *u64 = @ptrCast(@alignCast(p.?));
+    const token = t.*;
+    std.heap.smp_allocator.destroy(t);
+    const s = surfaces.get(token) orelse return;
+    s.focus_check_queued = false;
+    // The field node whose control has the keyboard, if any.
+    var nid: i64 = 0;
+    const window = s.view.msgSend(Object, "window", .{});
+    if (window.value != null) {
+        var r = window.msgSend(Object, "firstResponder", .{});
+        if (r.value != null and cocoa.isTrue(r.msgSend(BOOL, "isKindOfClass:", .{cocoa.class("NSTextView").value})) and
+            cocoa.isTrue(r.msgSend(BOOL, "isFieldEditor", .{}))) r = r.msgSend(Object, "delegate", .{});
+        if (r.value != null) if (by_control.get(key(r.value))) |o| {
+            if (o.token == token) nid = o.node;
+        };
+    }
+    if (nid == s.focused) return;
+    const old = s.focused;
+    s.focused = nid;
+    if (old != 0) {
+        _ = s.engine.event(old, "blur", "null");
+        if (surfaces.get(token) == null) return; // the page closed its window
+    }
+    if (nid != 0) _ = s.engine.event(nid, "focus", "null");
 }
 
 fn controlTextDidChange(_: id, _: SEL, note: id) callconv(.c) void {
@@ -880,6 +980,7 @@ fn mouseDown(self: id, _: SEL, event: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     // A click on the page takes the keyboard from a field.
     _ = s.view.msgSend(Object, "window", .{}).msgSend(BOOL, "makeFirstResponder:", .{s.view});
+    if (s.focused != 0) queueFocusCheck(s);
     const p = point(self, event);
     const token = s.token;
     const mods = modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{}));
