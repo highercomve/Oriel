@@ -34,6 +34,8 @@ pub const Host = extern struct {
     atom_utf8: *const fn (ctx: *anyopaque, atom: u32, len: *usize) callconv(.c) ?[*]const u8,
     /// A mutation (store.Mutation), for the bindings' observers.
     mutation: *const fn (ctx: *anyopaque, kind: u8, target: Index, node: Index, name: u32) callconv(.c) void,
+    /// A value's reference count.
+    ref_count: *const fn (ctx: *anyopaque, v: *const JsVal) callconv(.c) c_int,
 };
 
 /// One window's DOM: the store, its parser, compiled selectors (by text) and
@@ -65,6 +67,10 @@ const max_selectors = 512;
 // host's C ones (the context is the Dom).
 fn hostOf(ctx: *anyopaque) *Host {
     return &@as(*Dom, @ptrCast(@alignCast(ctx))).host;
+}
+fn fwdRefCount(ctx: *anyopaque, v: *const JsVal) i32 {
+    const h = hostOf(ctx);
+    return h.ref_count(h.ctx, v);
 }
 fn fwdDup(ctx: *anyopaque, v: *const JsVal) void {
     const h = hostOf(ctx);
@@ -145,7 +151,7 @@ export fn nui_dom_new(host: *const Host) ?*Dom {
     const d = gpa.create(Dom) catch return null;
     // Every field set (defaults included), then the store and parser.
     d.* = .{ .store = undefined, .parser = undefined, .host = host.* };
-    const js: st.Js = .{ .ctx = d, .dup = fwdDup, .free = fwdFree, .dupAtom = fwdDupAtom, .freeAtom = fwdFreeAtom, .valueAtom = fwdValueAtom, .tokens = fwdTokens };
+    const js: st.Js = .{ .ctx = d, .dup = fwdDup, .free = fwdFree, .dupAtom = fwdDupAtom, .freeAtom = fwdFreeAtom, .valueAtom = fwdValueAtom, .tokens = fwdTokens, .refCount = fwdRefCount };
     const class_name = host.new_atom(host.ctx, "class", 5);
     const id_name = host.new_atom(host.ctx, "id", 2);
     defer if (class_name != 0) host.free_atom(host.ctx, class_name);
@@ -272,6 +278,19 @@ export fn nui_dom_set_wrapper(d: *Dom, idx: Index, w: *const JsVal) void {
 }
 export fn nui_dom_wrapper_finalized(d: *Dom, idx: Index) void {
     d.store.wrapperFinalized(idx);
+}
+/// The wrappers a node's wrapper holds for the cycle collector (gc_mark).
+export fn nui_dom_marks(d: *Dom, idx: Index, ctx: *anyopaque, mark: *const fn (ctx: *anyopaque, v: *const JsVal) callconv(.c) void) void {
+    const Wrap = struct {
+        ctx: *anyopaque,
+        mark: *const fn (ctx: *anyopaque, v: *const JsVal) callconv(.c) void,
+        fn call(c: *anyopaque, v: *const JsVal) void {
+            const w: *@This() = @ptrCast(@alignCast(c));
+            w.mark(w.ctx, v);
+        }
+    };
+    var w: Wrap = .{ .ctx = ctx, .mark = mark };
+    d.store.marks(idx, &w, Wrap.call);
 }
 
 // --- Text and attributes ----------------------------------------------

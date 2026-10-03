@@ -877,6 +877,8 @@ JS_EXTERN void JS_FreeValueRT(JSRuntime *rt, JSValue v);
 #define JS_FreeValuesRT(rt, ...) JS_CALLX_(JS_FreeValueRT, rt, JS_COUNT_ARGS(__VA_ARGS__), __VA_ARGS__)
 JS_EXTERN JSValue JS_DupValue(JSContext *ctx, JSValueConst v);
 JS_EXTERN JSValue JS_DupValueRT(JSRuntime *rt, JSValueConst v);
+/* Oriel: a value's reference count (1 for a value without one). */
+JS_EXTERN int JS_GetRefCount(JSValueConst v);
 JS_EXTERN int JS_ToBool(JSContext *ctx, JSValueConst val); /* return -1 for JS_EXCEPTION */
 static inline JSValue JS_ToBoolean(JSContext *ctx, JSValueConst val)
 {
