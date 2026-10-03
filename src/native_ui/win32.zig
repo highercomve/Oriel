@@ -730,7 +730,14 @@ var timer_due: [64]struct { id: u32 = 0, due: f64 = 0 } = @splat(.{});
 
 fn focus(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
-    if (s.fields.get(node.id)) |f| _ = c.SetFocus(f.hwnd);
+    if (s.fields.get(node.id)) |f| {
+        _ = c.SetFocus(f.hwnd);
+        return;
+    }
+    // Not a field (a button, a link): the keyboard leaves the field that
+    // had it, so typing goes to the page.
+    const had = c.GetFocus() orelse return;
+    if (had != s.hwnd and c.IsChild(s.hwnd, had) != 0) _ = c.SetFocus(s.hwnd);
 }
 
 fn removed(ctx: *anyopaque, node: *Node) void {
@@ -1029,6 +1036,7 @@ fn makeSlider(s: *Surface, n: *Node) !Field {
     errdefer _ = c.DestroyWindow(clip);
     const hwnd = c.CreateWindowExW(0, cls, null, style, 0, 0, 1, 1, clip, null, c.GetModuleHandleW(null), null) orelse return error.CreateWindowFailed;
     _ = c.SetPropW(hwnd, prop_node, @ptrFromInt(@as(usize, @intCast(n.id))));
+    subclass(hwnd, &controlProc);
     const f: Field = .{ .hwnd = hwnd, .clip = clip, .kind = n.kind, .slider = true };
     setSliderRange(f, n);
     return f;
@@ -1129,14 +1137,16 @@ fn makeField(s: *Surface, n: *Node) !Field {
                 defer s.gpa.free(w);
                 _ = c.SendMessageW(hwnd, EM_SETCUEBANNER, c.TRUE, @bitCast(@intFromPtr(w.ptr)));
             }
-            // Enter and Escape go to the page first (a form's submit).
-            const old = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(&fieldProc)));
-            _ = c.SetPropW(hwnd, prop_old_proc, @ptrFromInt(@as(usize, @bitCast(old))));
+            // Enter, Escape and Tab go to the page first (a form's submit).
+            subclass(hwnd, &fieldProc);
         },
-        .select => if (n.props.options) |opts| for (opts) |o| {
-            const w = try std.unicode.utf8ToUtf16LeAllocZ(s.gpa, o[1]);
-            defer s.gpa.free(w);
-            _ = c.SendMessageW(hwnd, c.CB_ADDSTRING, 0, @bitCast(@intFromPtr(w.ptr)));
+        .select => {
+            subclass(hwnd, &controlProc);
+            if (n.props.options) |opts| for (opts) |o| {
+                const w = try std.unicode.utf8ToUtf16LeAllocZ(s.gpa, o[1]);
+                defer s.gpa.free(w);
+                _ = c.SendMessageW(hwnd, c.CB_ADDSTRING, 0, @bitCast(@intFromPtr(w.ptr)));
+            };
         },
         else => {},
     }
@@ -1354,9 +1364,54 @@ fn onFieldCommand(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
     }
 }
 
+/// A field's own window procedure in place of its class's (fieldProc,
+/// controlProc), kept to call on.
+fn subclass(hwnd: c.HWND, proc: c.WNDPROC) void {
+    const old = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(proc)));
+    _ = c.SetPropW(hwnd, prop_old_proc, @ptrFromInt(@as(usize, @bitCast(old))));
+}
+
+/// The field whose Tab the page just had: its WM_CHAR is eaten too (a
+/// textarea would type it; a one-line field beeps).
+var tab_eaten: c.HWND = null;
+
+/// Tab and Shift+Tab in a field go to the page, as keys (it moves the
+/// focus, main.js), and never to the control: a browser's textarea
+/// doesn't type a tab. True when the message was the Tab's.
+fn tabKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM) bool {
+    if (msg == c.WM_CHAR and wparam == '\t' and tab_eaten == hwnd) {
+        tab_eaten = null;
+        return true;
+    }
+    if (msg != c.WM_KEYDOWN or wparam != c.VK_TAB) return false;
+    if (c.GetKeyState(c.VK_CONTROL) < 0 or c.GetKeyState(c.VK_MENU) < 0) return false;
+    const p: ?*anyopaque = @ptrFromInt(@as(usize, @bitCast(c.GetWindowLongPtrW(c.GetParent(hwnd), c.GWLP_USERDATA))));
+    const s = surfaceOf(p orelse return false);
+    const fx = fieldOf(s, hwnd) orelse return false;
+    tab_eaten = hwnd;
+    var buf: [48]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"Tab\",{d}]", .{modFlags()}) catch return true;
+    s.in_control += 1;
+    defer s.in_control -= 1;
+    _ = s.engine.event(fx.node.id, "key", json);
+    return true;
+}
+
+/// A select's and a slider's window procedure: Tab goes to the page.
+fn controlProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
+    const old: c.WNDPROC = @ptrCast(c.GetPropW(hwnd, prop_old_proc) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam));
+    if (tabKey(hwnd, msg, wparam)) return 0;
+    if (msg == c.WM_NCDESTROY) {
+        _ = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(old)));
+        _ = c.RemovePropW(hwnd, prop_old_proc);
+    }
+    return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+}
+
 /// Edit controls' window procedure: Enter and Escape go to the page first.
 fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
     const old: c.WNDPROC = @ptrCast(c.GetPropW(hwnd, prop_old_proc) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam));
+    if (tabKey(hwnd, msg, wparam)) return 0;
     switch (msg) {
         c.WM_KEYDOWN => if (wparam == c.VK_RETURN or wparam == c.VK_ESCAPE) {
             const canvas = c.GetParent(hwnd);
