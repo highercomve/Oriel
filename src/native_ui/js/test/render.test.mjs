@@ -395,7 +395,7 @@ for (const css of [
   const badge = find(tree, (n) => n.props.runs?.some((r) => r.t === "in use"));
   assert.ok(badge, "the badge is a node");
   assert.deepEqual(badge.props.pad, [1, 6, 1, 6], "with its padding");
-  assert.deepEqual(badge.props.m, [0, 0, 0, 6], "its margin");
+  assert.deepEqual(badge.props.m, [-1, 0, -1, 6], "its margin, less its vertical padding (which overflows the line)");
   assert.ok(badge.props.br && badge.props.bg, "its corners and background");
   assert.ok(!badge.props.runs.some((r) => r.t.includes("148")), "not merged into the paragraph's runs");
   const line = find(tree, (n) => n.kids.includes(badge));
