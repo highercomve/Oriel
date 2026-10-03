@@ -48,6 +48,8 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
     if (runs.len > 4) return null;
     var text_len: usize = 0;
     for (runs) |r| text_len += r.t.len;
+    // The text with four runs' fonts, line-heights, colors and boxes (up
+    // to ~116 bytes each) and the props' fit the 1024-byte key.
     if (text_len > 480) return null;
     var k = Key{ .buf = buf };
     k.float(width);
@@ -61,26 +63,27 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
     const ta = props.ta orelse "left";
     k.byte(if (std.mem.eql(u8, ta, "center")) 1 else if (std.mem.eql(u8, ta, "right")) 2 else 0);
     k.byte(@intCast(runs.len));
-    for (runs) |r| {
+    for (runs, 0..) |r, i| {
         k.integer(@intCast(r.t.len));
         @memcpy(buf[k.len..][0..r.t.len], r.t);
         k.len += r.t.len;
         k.float(r.sz);
         k.float(r.w);
         k.optional(r.lh);
+        // An inline box's room in the line (its decoration doesn't size).
+        k.byte(@intFromBool(r.ib != null));
+        if (r.ib) |ib| {
+            // The same box as the run before (its k, not the number).
+            k.byte(@intFromBool(i > 0 and runs[i - 1].ib != null and runs[i - 1].ib.?.k == ib.k));
+            k.float(ib.start());
+            k.float(ib.end());
+        }
         k.byte(@intFromBool(r.i));
         k.byte(@intFromBool(r.mono));
         k.byte(@intFromBool(r.u));
         for (r.c) |channel| k.float(channel);
         k.byte(@intFromBool(r.bg != null));
         if (r.bg) |bg| for (bg) |channel| k.float(channel);
-        // An inline box's room in the line (its box, as runs group).
-        k.byte(@intFromBool(r.ib != null));
-        if (r.ib) |ib| {
-            k.integer(ib.k);
-            k.float(ib.start());
-            k.float(ib.end());
-        }
         if (!k.family(r.ff)) return null;
     }
     return buf[0..k.len];
