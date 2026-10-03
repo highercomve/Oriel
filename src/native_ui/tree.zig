@@ -483,6 +483,77 @@ pub const Dim = union(enum) {
     }
 };
 
+/// A corner's border radius (render.js `br`): one length, or [x, y] when
+/// its two axes differ (border-radius: 50% on a 120x80 box, `a / b`). An x
+/// percentage is of the box's width, a y one of its height (radiusXY).
+pub const Corner = struct {
+    x: Dim,
+    y: Dim,
+
+    pub fn fromValue(v: std.json.Value) Corner {
+        if (v == .array and v.array.items.len == 2) return .{ .x = Dim.fromValue(v.array.items[0]), .y = Dim.fromValue(v.array.items[1]) };
+        const d = Dim.fromValue(v);
+        return .{ .x = d, .y = d };
+    }
+
+    pub fn jsonParse(a: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Corner {
+        return fromValue(try std.json.innerParse(std.json.Value, a, source, options));
+    }
+
+    pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !Corner {
+        return fromValue(source);
+    }
+};
+
+/// Corner radii per axis (top-left, top-right, bottom-right, bottom-left):
+/// a corner is an ellipse x by y; square when either is 0.
+pub const Radii = struct {
+    x: [4]f32 = .{ 0, 0, 0, 0 },
+    y: [4]f32 = .{ 0, 0, 0, 0 },
+
+    pub fn circle(r: [4]f32) Radii {
+        return .{ .x = r, .y = r };
+    }
+
+    /// No rounded corner.
+    pub fn square(r: Radii) bool {
+        for (r.x, r.y) |a, b| if (a > 0 and b > 0) return false;
+        return true;
+    }
+
+    /// The same ellipse at every corner.
+    pub fn uniform(r: Radii) bool {
+        return r.x[0] == r.x[1] and r.x[1] == r.x[2] and r.x[2] == r.x[3] and
+            r.y[0] == r.y[1] and r.y[1] == r.y[2] and r.y[2] == r.y[3];
+    }
+
+    /// Each rounded corner grown by `d` on both axes (a square one stays
+    /// square): an outline's or a shadow's corners.
+    pub fn grown(r: Radii, d: f32) Radii {
+        var out: Radii = .{};
+        for (0..4) |i| if (r.x[i] > 0 and r.y[i] > 0) {
+            out.x[i] = @max(0, r.x[i] + d);
+            out.y[i] = @max(0, r.y[i] + d);
+        };
+        return out;
+    }
+
+    /// Scaled down together until adjacent corners fit a w x h box (CSS's
+    /// overlap rule, each axis against its own sides).
+    pub fn fitted(r: Radii, w: f32, h: f32) Radii {
+        const f = @min(@min(fit(w, r.x[0] + r.x[1]), fit(w, r.x[3] + r.x[2])), @min(fit(h, r.y[0] + r.y[3]), fit(h, r.y[1] + r.y[2])));
+        if (f >= 1) return r;
+        var out = r;
+        for (&out.x) |*v| v.* *= f;
+        for (&out.y) |*v| v.* *= f;
+        return out;
+    }
+
+    fn fit(len: f32, sum: f32) f32 {
+        return if (sum > 0) @max(0, len) / sum else 1;
+    }
+};
+
 pub const Props = struct {
     root: bool = false,
     // Layout
@@ -532,7 +603,7 @@ pub const Props = struct {
     ty: ?f32 = null,
     // Drawing
     bg: ?Background = null,
-    br: ?[4]Dim = null,
+    br: ?[4]Corner = null,
     op: ?f32 = null,
     sh: ?Shadow = null,
     ol: ?Outline = null,
@@ -872,14 +943,34 @@ pub const Node = struct {
         return .{ .x = n.frame.x + l, .y = n.frame.y + t, .w = @max(0, n.frame.w - l - r), .h = @max(0, n.frame.h - t - b) };
     }
 
+    /// Circular radii (the smaller axis of an elliptical corner), for
+    /// backends that draw no ellipses yet; radiusXY is the CSS one.
     pub fn radius(n: *const Node) [4]f32 {
         const br = n.props.br orelse return .{ 0, 0, 0, 0 };
         var out: [4]f32 = undefined;
         const lim = @min(n.frame.w, n.frame.h) / 2;
         for (br, 0..) |v, i| {
-            out[i] = @min(lim, v.len(@min(n.frame.w, n.frame.h)));
+            out[i] = @min(lim, @min(v.x.len(@min(n.frame.w, n.frame.h)), v.y.len(@min(n.frame.w, n.frame.h))));
         }
         return out;
+    }
+
+    /// The corners as CSS draws them: x of the box's width, y of its
+    /// height (percentages too), scaled down together to fit.
+    pub fn radiusXY(n: *const Node) Radii {
+        const br = n.props.br orelse return .{};
+        var out: Radii = .{};
+        for (br, 0..) |v, i| {
+            out.x[i] = @max(0, v.x.len(n.frame.w));
+            out.y[i] = @max(0, v.y.len(n.frame.h));
+        }
+        return out.fitted(n.frame.w, n.frame.h);
+    }
+
+    /// The rounded padding box a box's children are clipped to, its
+    /// corners elliptical (paddingBoxXY).
+    pub fn paddingClipXY(n: *const Node) RoundRectXY {
+        return paddingBoxXY(n.frame, n.radiusXY(), n.props.bw);
     }
 
     /// Whether the box clips its children to its rounded corners: it clips
@@ -914,6 +1005,46 @@ pub fn paddingBox(f: Rect, r: [4]f32, bw: ?[4]f32) RoundRect {
         @max(0, r[2] - @max(b[2], b[1])),
         @max(0, r[3] - @max(b[2], b[3])),
     } };
+}
+
+/// A rectangle with elliptical corner radii.
+pub const RoundRectXY = struct { rect: Rect, radii: Radii };
+
+/// The padding box of a box at `f` with radii `r` and border widths `bw`
+/// (top, right, bottom, left), as CSS makes it: each corner's x radius
+/// less its side's (left or right) width, its y radius less the top's or
+/// bottom's.
+pub fn paddingBoxXY(f: Rect, r: Radii, bw: ?[4]f32) RoundRectXY {
+    const b = bw orelse return .{ .rect = f, .radii = r };
+    const rect: Rect = .{ .x = f.x + b[3], .y = f.y + b[0], .w = @max(0, f.w - b[1] - b[3]), .h = @max(0, f.h - b[0] - b[2]) };
+    return .{ .rect = rect, .radii = .{
+        .x = .{ @max(0, r.x[0] - b[3]), @max(0, r.x[1] - b[1]), @max(0, r.x[2] - b[1]), @max(0, r.x[3] - b[3]) },
+        .y = .{ @max(0, r.y[0] - b[0]), @max(0, r.y[1] - b[0]), @max(0, r.y[2] - b[2]), @max(0, r.y[3] - b[2]) },
+    } };
+}
+
+test "radii: per axis, fitted as CSS does, inner ellipses" {
+    const half: Radii = Radii.circle(.{ 60, 60, 60, 60 }).fitted(120, 80);
+    // 50%-like: 60 each way on a 120x80 box scales to 40 (80 / 120).
+    try std.testing.expectApproxEqAbs(@as(f32, 40), half.x[0], 1e-4);
+    const ell: Radii = .{ .x = .{ 60, 60, 60, 60 }, .y = .{ 40, 40, 40, 40 } };
+    try std.testing.expectEqual(ell, ell.fitted(120, 80));
+    const pb = paddingBoxXY(.{ .x = 0, .y = 0, .w = 120, .h = 80 }, ell, .{ 4, 16, 4, 16 });
+    try std.testing.expectEqual([4]f32{ 44, 44, 44, 44 }, pb.radii.x);
+    try std.testing.expectEqual([4]f32{ 36, 36, 36, 36 }, pb.radii.y);
+    try std.testing.expect(!ell.square());
+    try std.testing.expect((Radii{ .x = .{ 5, 0, 0, 0 } }).square());
+    try std.testing.expectEqual([4]f32{ 62, 62, 62, 62 }, ell.grown(2).x);
+}
+
+test "Corner: one length or [x, y]" {
+    const one = try std.json.parseFromSlice([4]Corner, std.testing.allocator, "[12, \"50%\", [10, 20], [\"50%\", 8]]", .{});
+    defer one.deinit();
+    try std.testing.expectEqual(Dim{ .px = 12 }, one.value[0].y);
+    try std.testing.expectEqual(Dim{ .pct = 50 }, one.value[1].x);
+    try std.testing.expectEqual(Dim{ .px = 20 }, one.value[2].y);
+    try std.testing.expectEqual(Dim{ .pct = 50 }, one.value[3].x);
+    try std.testing.expectEqual(Dim{ .px = 8 }, one.value[3].y);
 }
 
 test "paddingBox: the border box inset by the border, inner radii" {

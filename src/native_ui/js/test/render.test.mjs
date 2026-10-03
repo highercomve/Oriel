@@ -596,4 +596,21 @@ for (const css of [
   assert.deepEqual(sizes, { h: 32, a: 24, b: 36 });
 }
 
+// border-radius per axis: one length per corner when its axes agree, else
+// [x, y] ("a / b", or a longhand's two values); percentages stay "N%".
+{
+  const { document } = parseHTML('<html><body><div class="a">a</div><div class="b">b</div><div class="c">c</div><div class="d">d</div><div class="e">e</div></body></html>');
+  const { renderer, tree } = makeRenderer(document, ".a { border-radius: 50% } .b { border-radius: 10px / 20px } .c { border-radius: 4px 8px / 2px } .d { border-top-left-radius: 6px 12px } .e { border-radius: 0 }");
+  renderer.render();
+  const boxes = [];
+  const all = (n) => { if (n.props.runs) boxes.push(n); n.kids.forEach(all); };
+  all(tree());
+  const by = (t) => boxes.find((n) => n.props.runs[0].t === t).props;
+  assert.deepEqual(by("a").br, ["50%", "50%", "50%", "50%"]);
+  assert.deepEqual(by("b").br, [[10, 20], [10, 20], [10, 20], [10, 20]]);
+  assert.deepEqual(by("c").br, [[4, 2], [8, 2], [4, 2], [8, 2]]);
+  assert.deepEqual(by("d").br, [[6, 12], 0, 0, 0]);
+  assert.equal(by("e").br, undefined);
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");
