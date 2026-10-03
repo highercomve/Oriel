@@ -593,7 +593,9 @@ function activate(el, flags) {
   // them reads the new state during the click.
   const undo = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
   // Where the pointer went up (the press that made this click), when the backend sends pointers.
-  const ev = new MouseEvent("click", { bubbles: true, cancelable: true, clientX: lastPointer[0], clientY: lastPointer[1], shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
+  const [clientX, clientY] = lastPointer;
+  lastPointer = [0, 0]; // one click's (a keyboard's or el.click()'s has none)
+  const ev = new MouseEvent("click", { bubbles: true, cancelable: true, clientX, clientY, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
   el.dispatchEvent(ev);
   if (undo) {
     if (ev.defaultPrevented) undo();
@@ -700,7 +702,7 @@ function pointerEvent(el, data) {
     const touch = { identifier: pointerId, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: 0.5 };
     const on = phase === "down" || phase === "move" ? [touch] : [];
     if (fire(new TouchEvent(names[2], { bubbles: true, cancelable: phase !== "cancel", touches: on, targetTouches: on, changedTouches: [touch], ...mods }))) prevented = true;
-  } else if (names[1] && fire(new MouseEvent(names[1], init))) prevented = true;
+  } else if (names[1] && fire(new MouseEvent(names[1], { ...init, button: 0 }))) prevented = true;
   // A press: the page takes the drag (no scrolling) when it said so in CSS.
   if (phase === "down" && !prevented) {
     for (let n = target; n && n.nodeType === 1; n = n.parentNode) {

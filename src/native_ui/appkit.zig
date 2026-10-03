@@ -881,7 +881,9 @@ fn mouseDown(self: id, _: SEL, event: id) callconv(.c) void {
     const hit = s.engine.tree.hit(p[0], p[1]);
     if (hit) |n| _ = s.engine.event(n.id, "press", "null");
     if (surfaces.get(token) == null) return;
-    s.move = null;
+    // A move still waiting goes before the down.
+    if (s.move != null) flushMove(s);
+    if (surfaces.get(token) == null) return;
     _ = sendPointer(s, "down", p, 1, mods);
 }
 
@@ -933,14 +935,22 @@ fn clickableUp(start: *Node) bool {
 }
 
 fn mouseDragged(self: id, _: SEL, event: id) callconv(.c) void {
-    const s = by_view.get(key(self)) orelse return;
-    queueMove(s, point(self, event), 1, modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
+    pointerMoved(self, event, 1);
 }
 
 fn mouseMoved(self: id, _: SEL, event: id) callconv(.c) void {
+    pointerMoved(self, event, 0);
+}
+
+/// The mouse moved (`buttons` 1: dragging): the page's pointer move, then
+/// the cursor and :hover under it.
+fn pointerMoved(self: id, event: id, buttons: u32) void {
     const s = by_view.get(key(self)) orelse return;
+    const token = s.token;
     const p = point(self, event);
-    queueMove(s, p, 0, modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
+    queueMove(s, p, buttons, modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
+    // Sent at once (no display link): the page may have closed its window.
+    if (surfaces.get(token) == null) return;
     const n = s.engine.tree.hit(p[0], p[1]);
     const hand = n != null and clickableUp(n.?);
     if (hand != s.pointer_hand) {

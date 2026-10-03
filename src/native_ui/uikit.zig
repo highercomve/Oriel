@@ -67,6 +67,9 @@ pub const Surface = struct {
     /// The page took the finger's drag (touch-action: none, or it
     /// prevented the pointerdown): no scrolling, fling or long press.
     drag_owned: bool = false,
+    /// The pan in progress is the page's drag (drag_owned when it began;
+    /// it can end after the finger's touchesEnded).
+    pan_owned: bool = false,
     /// The finger's last move, sent at the next display frame.
     /// The tree's node count after the last layout, and whether a trim of
     /// its emptied pool slabs is due (trimPools, 2 s after a big drop).
@@ -830,6 +833,7 @@ fn touchesMoved(self: id, _: SEL, touches: id, _: id) callconv(.c) void {
 fn touchesEnded(self: id, _: SEL, touches: id, _: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const token = s.token;
+    s.drag_owned = false;
     if (s.touching) {
         if (s.move != null) flushMove(s);
         if (surfaces.get(token) == null) return;
@@ -844,6 +848,7 @@ fn touchesEnded(self: id, _: SEL, touches: id, _: id) callconv(.c) void {
 fn touchesCancelled(self: id, _: SEL, touches: id, _: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const token = s.token;
+    s.drag_owned = false;
     if (s.touching) {
         s.touching = false;
         s.move = null;
@@ -938,8 +943,6 @@ fn onTap(self: id, _: SEL, recognizer: id) callconv(.c) void {
     // A tap on the page takes the keyboard from a field.
     _ = s.view.msgSend(BOOL, "endEditing:", .{apple.boolean(true)});
     const p = pointIn(s.view, r);
-    const hit = s.engine.tree.hit(p[0], p[1]);
-    if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: tap at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], if (hit) |h| h.id else 0 });
     // The finger's up before its click (as a browser), though the tap
     // recognizer fires before touchesEnded.
     if (s.touching) {
@@ -950,6 +953,9 @@ fn onTap(self: id, _: SEL, recognizer: id) callconv(.c) void {
         _ = sendPointer(s, "up", p, 0);
         if (surfaces.get(token) == null) return;
     }
+    // Hit-tested after the up: its handler may have changed the page.
+    const hit = s.engine.tree.hit(p[0], p[1]);
+    if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: tap at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], if (hit) |h| h.id else 0 });
     const n = hit orelse return;
     if (disabledUp(n)) return;
     _ = s.engine.event(n.id, "click", "0");
@@ -992,7 +998,8 @@ fn onPan(self: id, _: SEL, recognizer: id) callconv(.c) void {
     const r: Object = .{ .value = recognizer };
     const st = r.msgSend(isize, "state", .{});
     // The page's drag: it gets the finger's moves, nothing scrolls.
-    if (s.drag_owned) return;
+    if (st == state_began) s.pan_owned = s.drag_owned;
+    if (s.pan_owned) return;
     if (st == state_began and s.touching) {
         // The page scrolls: the page's pointer is cancelled, as in a browser.
         const token = s.token;
