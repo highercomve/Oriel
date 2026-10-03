@@ -728,6 +728,9 @@ fn freeField(s: *Surface, f: *Field) void {
     if (f.ph) |ph| s.gpa.free(ph);
     f.ph = null;
     _ = c.RemovePropW(f.hwnd, prop_node);
+    // Its control no longer finds the surface through it (the surface may
+    // go before the window does: destroy frees the fields, then flushes).
+    _ = c.SetWindowLongPtrW(f.clip, c.GWLP_USERDATA, 0);
     _ = c.ShowWindow(f.clip, c.SW_HIDE);
     // The clip window goes with its control in it.
     s.doomed.append(s.gpa, .{ .hwnd = f.clip, .font = f.font, .brush = f.brush }) catch {
