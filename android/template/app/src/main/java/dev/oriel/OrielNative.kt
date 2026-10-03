@@ -1914,29 +1914,93 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         return floatArrayOf(cx, cy, max(0.01f, rx), max(0.01f, ry))
     }
 
+    /** Stops ready to draw (tree.zig Gradient.Resolved): colors, positions 0..1 and, repeating, the period as a fraction of the line. */
+    private class Stops(val colors: IntArray, val pos: FloatArray, val period: Float?)
+
+    /**
+     * The stops over a gradient line `line` px long (tree.zig
+     * Gradient.resolve): `su` gives each stop's unit when they aren't all
+     * fractions (`%` a fraction, `p` px, `a` none given: evenly between the
+     * given ones, the first 0 and the last 1). Repeating (`rep`): one
+     * period's stops, 0..1 within it, phased so a period starts at the
+     * line's start, and the period's length as a fraction of the line.
+     */
+    private fun resolveStops(g: JSONObject, stops: JSONArray, line: Float): Stops {
+        val n = stops.length()
+        val s = Array(n) { i -> stops.optJSONArray(i).let { a -> FloatArray(5) { a?.optDouble(it, if (it == 3) 1.0 else 0.0)?.toFloat() ?: 0f } } }
+        val su = g.optString("su", "")
+        if (su.isNotEmpty()) {
+            val auto = BooleanArray(n) { (if (it < su.length) su[it] else '%') == 'a' }
+            for (i in 0 until n) if (i < su.length && su[i] == 'p') s[i][4] = if (line > 0) s[i][4] / line else 0f
+            if (auto[0]) { s[0][4] = 0f; auto[0] = false }
+            if (n > 1 && auto[n - 1]) { s[n - 1][4] = 1f; auto[n - 1] = false }
+            // Missing positions: evenly between the given ones.
+            var i = 1
+            while (i < n) {
+                if (!auto[i]) { i++; continue }
+                var j = i
+                while (j < n && auto[j]) j++
+                val a = s[i - 1][4]; val b = if (j < n) s[j][4] else a
+                for (k in i until j) s[k][4] = a + (b - a) * (k - i + 1) / (j - i + 1)
+                i = j
+            }
+        }
+        // Never back: a position less than one before it is that one.
+        for (i in 1 until n) s[i][4] = max(s[i][4], s[i - 1][4])
+        fun out(list: List<FloatArray>, period: Float?) = Stops(
+            IntArray(list.size) { val c = list[it]; Color.argb((c[3] * 255).toInt().coerceIn(0, 255), c[0].toInt().coerceIn(0, 255), c[1].toInt().coerceIn(0, 255), c[2].toInt().coerceIn(0, 255)) },
+            FloatArray(list.size) { list[it][4] }, period,
+        )
+        if (!g.optBoolean("rep")) return out(s.toList(), null)
+        val first = s[0][4]
+        val per = s[n - 1][4] - first
+        // No period: the last color everywhere (as browsers draw it).
+        if (!(per > 1e-6f)) return out(s.map { s[n - 1].copyOf().also { c -> c[4] = it[4] } }, null)
+        for (st in s) st[4] = (st[4] - first) / per
+        // Phased so a period starts at 0: the line's 0 is `at` into a period.
+        val q = first / per
+        val at = 1 - (q - floor(q))
+        if (!(at > 1e-6f && at < 1 - 1e-6f)) return out(s.toList(), per)
+        val wrap = s[n - 1].copyOf()
+        for (i in 1 until n) if (s[i][4] >= at) {
+            val a = s[i - 1]; val b = s[i]
+            val t = if (b[4] > a[4]) (at - a[4]) / (b[4] - a[4]) else 0f
+            for (c in 0 until 4) wrap[c] = a[c] + (b[c] - a[c]) * t
+            break
+        }
+        val list = ArrayList<FloatArray>(n + 2)
+        list += wrap.copyOf().also { it[4] = 0f }
+        for (st in s) if (st[4] >= at) list += st.copyOf().also { it[4] = st[4] - at }
+        for (st in s) if (st[4] < at) list += st.copyOf().also { it[4] = st[4] + (1 - at) }
+        list += wrap.copyOf().also { it[4] = 1f }
+        return out(list, per)
+    }
+
     private fun gradient(g: JSONObject, x: Float, y: Float, w: Float, h: Float): Shader? {
         val stops = g.optJSONArray("stops") ?: return null
         if (stops.length() < 2) return null
-        val colors = IntArray(stops.length())
-        val pos = FloatArray(stops.length())
-        for (i in 0 until stops.length()) {
-            val s = stops.optJSONArray(i)
-            colors[i] = NuiNode.color(s)
-            pos[i] = s?.optDouble(4, 0.0)?.toFloat() ?: 0f
-        }
         g.optJSONArray("radial")?.let { r ->
-            // A circle of radius rx, squeezed to ry vertically.
+            // A circle of radius rx, squeezed to ry vertically; its line is the x radius.
             val (ox, oy, rx, ry) = radialIn(g, r, w, h)
+            val st = resolveStops(g, stops, rx)
             val cx = x + ox; val cy = y + oy
-            return RadialGradient(cx, cy, rx, colors, pos, Shader.TileMode.CLAMP).also {
+            // Repeating: one period's gradient, repeated (Shader.TileMode.REPEAT).
+            val radius = max(0.01f, rx * (st.period ?: 1f))
+            val mode = if (st.period != null) Shader.TileMode.REPEAT else Shader.TileMode.CLAMP
+            return RadialGradient(cx, cy, radius, st.colors, st.pos, mode).also {
                 it.setLocalMatrix(Matrix().apply { setScale(1f, ry / rx, cx, cy) })
             }
         }
         val a = Math.toRadians(g.optDouble("angle", 180.0))
         val dx = sin(a).toFloat(); val dy = (-cos(a)).toFloat()
         val len = abs(w * dx) + abs(h * dy)
+        val st = resolveStops(g, stops, len)
         val cx = x + w / 2; val cy = y + h / 2
-        return LinearGradient(cx - dx * len / 2, cy - dy * len / 2, cx + dx * len / 2, cy + dy * len / 2, colors, pos, Shader.TileMode.CLAMP)
+        val x0 = cx - dx * len / 2; val y0 = cy - dy * len / 2
+        // Repeating: the line's first period, repeated beyond it (Shader.TileMode.REPEAT).
+        val end = len * (st.period ?: 1f)
+        val mode = if (st.period != null) Shader.TileMode.REPEAT else Shader.TileMode.CLAMP
+        return LinearGradient(x0, y0, x0 + dx * end, y0 + dy * end, st.colors, st.pos, mode)
     }
 
     private fun border(canvas: Canvas, n: NuiNode, bw: FloatArray, x: Float, y: Float, w: Float, h: Float, r: FloatArray?) {
