@@ -211,6 +211,7 @@ extern fn pango_layout_get_text(l: *PangoLayout) [*:0]const u8;
 extern fn pango_layout_get_pixel_size(l: *PangoLayout, w: *c_int, h: *c_int) void;
 extern fn pango_layout_get_baseline(l: *PangoLayout) c_int;
 extern fn pango_cairo_show_layout(cr: *cairo_t, l: *PangoLayout) void;
+extern fn pango_cairo_show_layout_line(cr: *cairo_t, line: *anyopaque) void;
 extern fn pango_layout_get_line_count(l: *PangoLayout) c_int;
 extern fn pango_cairo_layout_path(cr: *cairo_t, l: *PangoLayout) void;
 extern fn pango_font_description_from_string(s: [*:0]const u8) *PangoFontDescription;
@@ -718,34 +719,107 @@ fn unhintedMetrics(s: *Surface, size: f32, mono: bool, family: ?[]const u8) ?[4]
     return out;
 }
 
-/// line-height: normal as WebKitGTK and Chromium make it: the font's
-/// ascent, descent and line gap, each rounded (Noto Sans at 16px: 17 + 5 +
-/// 0 = 22, where Pango's own lines are 23).
-fn normalLineHeight(s: *Surface, size: f32, mono: bool, family: ?[]const u8) ?f32 {
-    const m = unhintedMetrics(s, size, mono, family) orelse return null;
-    return @round(m[0]) + @round(m[1]) + @round(m[2]);
-}
-
-/// The height of a line of this text: its CSS line-height, else the
-/// normal one of its largest font.
+/// The height of a line of this text, as CSS stacks its inline boxes on
+/// one baseline (textExtent): every line alike, the tallest any line can
+/// be (lineExtents has each line's). Null with a line-height under a pixel
+/// (Pango's own lines, centered) or without the fonts' metrics.
 fn lineBox(s: *Surface, props: *const tree_mod.Props) ?f32 {
+    if (props.lh) |lh| if (lh < 1) return null;
+    if (textExtent(s, props)) |e| return e.top + e.bottom;
     // A CSS line-height in whole pixels, as WebKit (the WebView here, and
     // WKWebView) keeps it: 145% of 16px is 23 (Chromium: 23.2).
-    if (props.lh) |lh| return if (lh >= 1) @floor(lh) else null;
-    var size: f32 = props.fz orelse 16;
-    var mono = props.mono;
-    var family = props.ff;
-    if (props.runs) |runs| {
-        if (runs.len > 0) size = 0;
-        for (runs) |r| {
-            if (r.sz >= size) {
-                size = r.sz;
-                if (r.ff) |f| family = f;
-            }
-            mono = mono or r.mono;
+    if (props.lh) |lh| return @floor(lh);
+    return null;
+}
+
+/// Above and below a line's baseline (px).
+const Extent = struct { top: f32, bottom: f32 };
+
+/// An inline box's extent on its line as WebKit lays it out: its font's
+/// ascent and descent (each rounded) and the leading around them: its
+/// line-height (whole pixels) less them, or the font's line gap (rounded)
+/// when normal, split with the smaller half above (line-height: normal of
+/// Noto Sans at 16px: 17 + 5 + 0 = 22, where Pango's own lines are 23).
+fn fontExtent(s: *Surface, size: f32, mono: bool, family: ?[]const u8, lh: ?f32) ?Extent {
+    const m = unhintedMetrics(s, size, mono, family) orelse return null;
+    const a = @round(m[0]);
+    const d = @round(m[1]);
+    if (lh) |h| if (h >= 1) {
+        const half = (@floor(h) - (a + d)) / 2;
+        return .{ .top = a + half, .bottom = d + half };
+    };
+    const gap = @round(m[2]);
+    const up = @floor(gap / 2);
+    return .{ .top = a + up, .bottom = d + gap - up };
+}
+
+/// The block's own font's (CSS's strut: every line has it).
+fn strutExtent(s: *Surface, props: *const tree_mod.Props) ?Extent {
+    return fontExtent(s, props.fz orelse 16, props.mono, props.ff, props.lh);
+}
+
+fn runExtent(s: *Surface, props: *const tree_mod.Props, r: tree_mod.Run) ?Extent {
+    return fontExtent(s, r.sz, r.mono or props.mono, r.ff orelse props.ff, r.lh orelse props.lh);
+}
+
+fn widen(e: ?Extent, x: ?Extent) ?Extent {
+    const b = x orelse return e;
+    const a = e orelse return b;
+    return .{ .top = @max(a.top, b.top), .bottom = @max(a.bottom, b.bottom) };
+}
+
+/// Every run's box with the strut's: the line box of a line that has
+/// them all.
+fn textExtent(s: *Surface, props: *const tree_mod.Props) ?Extent {
+    var e = strutExtent(s, props);
+    for (props.runs orelse &.{}) |r| e = widen(e, runExtent(s, props, r));
+    return e;
+}
+
+/// Each line's extent when they differ (a bigger font on some lines
+/// only), from the runs on it; null when every line is textExtent's.
+fn lineExtents(s: *Surface, props: *const tree_mod.Props, layout: *PangoLayout, out: []Extent) ?[]Extent {
+    const runs = props.runs orelse return null;
+    if (runs.len < 2) return null;
+    if (props.lh) |lh| if (lh < 1) return null;
+    const all = textExtent(s, props) orelse return null;
+    const count: usize = @intCast(@max(0, pango_layout_get_line_count(layout)));
+    if (count < 2 or count > out.len) return null;
+    const strut = strutExtent(s, props);
+    const it = pango_layout_get_iter(layout) orelse return null;
+    defer pango_layout_iter_free(it);
+    var differ = false;
+    var ri: usize = 0;
+    var rs: usize = 0; // ri's first byte
+    var k: usize = 0;
+    while (k < count) : (k += 1) {
+        const line = pango_layout_iter_get_line_readonly(it) orelse return null;
+        const head: *const PangoLayoutLineHead = @ptrCast(@alignCast(line));
+        const ls: usize = @intCast(@max(0, head.start_index));
+        const le = ls + @as(usize, @intCast(@max(0, head.length)));
+        var e = strut;
+        // The runs with a part on this line.
+        while (ri < runs.len) {
+            const re = rs + runs[ri].t.len;
+            if (re > ls and rs < le) e = widen(e, runExtent(s, props, runs[ri]));
+            if (re > le) break; // goes on to the next line
+            rs = re;
+            ri += 1;
         }
+        const x = e orelse all;
+        out[k] = x;
+        if (x.top != all.top or x.bottom != all.bottom) differ = true;
+        if (pango_layout_iter_next_line(it) == 0) break;
     }
-    return normalLineHeight(s, size, mono, family);
+    if (k + 1 < count) return null;
+    return if (differ) out[0..count] else null;
+}
+
+/// The lines' extents laid end to end: the text's height when they differ.
+fn extentsHeight(exts: []const Extent) f32 {
+    var h: f32 = 0;
+    for (exts) |e| h += e.top + e.bottom;
+    return h;
 }
 
 fn warmFonts(ctx: *anyopaque, specs: []const engine_mod.FontSpec) void {
@@ -1440,7 +1514,9 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     var w: c_int = 0;
     var h: c_int = 0;
     pango_layout_get_pixel_size(layout, &w, &h);
-    const size: [2]f32 = .{ @floatFromInt(w + 1), cssHeight(s, &n.props, pango_layout_get_line_count(layout)) orelse @floatFromInt(h) };
+    var exts: [64]Extent = undefined;
+    const css_h = if (lineExtents(s, &n.props, layout, &exts)) |e| extentsHeight(e) else cssHeight(s, &n.props, pango_layout_get_line_count(layout));
+    const size: [2]f32 = .{ @floatFromInt(w + 1), css_h orelse @floatFromInt(h) };
     if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
     return size;
 }
@@ -2161,6 +2237,10 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
     const c = n.content();
     const layout = textLayout(s, n, c.w + 1) orelse return;
     defer g_object_unref(layout);
+    // Lines of different heights (a bigger font on some): each on its own
+    // baseline, below the lines before it.
+    var exts: [64]Extent = undefined;
+    if (lineExtents(s, &n.props, layout, &exts)) |e| return paintLines(cr, layout, c.x, c.y, e);
     // Pango's lines centered in CSS's line boxes when those are shorter.
     var dy: f32 = 0;
     if (cssHeight(s, &n.props, pango_layout_get_line_count(layout))) |css_h| {
@@ -2184,6 +2264,23 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
             runRing(cr, layout, c.x, c.y + dy, start, end, ol);
         }
         start = end;
+    }
+}
+
+/// A layout's lines drawn one by one at (x, y), line k's baseline its
+/// extent's top below the lines before it.
+fn paintLines(cr: *cairo_t, layout: *PangoLayout, x: f32, y: f32, exts: []const Extent) void {
+    const it = pango_layout_get_iter(layout) orelse return;
+    defer pango_layout_iter_free(it);
+    var top = y;
+    for (exts) |e| {
+        const line = pango_layout_iter_get_line_readonly(it) orelse return;
+        var logical: PangoRectangle = .{};
+        pango_layout_iter_get_line_extents(it, null, &logical);
+        cairo_move_to(cr, x + @as(f32, @floatFromInt(logical.x)) / PANGO_SCALE, top + e.top);
+        pango_cairo_show_layout_line(cr, line);
+        top += e.top + e.bottom;
+        if (pango_layout_iter_next_line(it) == 0) return;
     }
 }
 
