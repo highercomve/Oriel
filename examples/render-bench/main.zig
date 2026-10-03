@@ -26,8 +26,21 @@ pub const Commands = struct {
     /// Proportional memory (PSS: shared pages split between the processes
     /// using them) in MB of this process and its children, children's
     /// children…: a WebView's page runs in WebKit's own processes. Linux
-    /// /proc; 0 elsewhere.
+    /// /proc; 0 elsewhere. It moves with what else on the desktop maps the
+    /// same libraries (a GL driver's are tens of MB): private_mb doesn't.
     pub fn pss_mb(_: std.mem.Allocator) f64 {
+        return treeMb("\nPss:");
+    }
+
+    /// The same processes' private memory (Pss_Anon: their heaps and other
+    /// anonymous pages, not shared libraries' pages): what the app itself
+    /// allocated, comparable from one day to the next.
+    pub fn private_mb(_: std.mem.Allocator) f64 {
+        return treeMb("\nPss_Anon:");
+    }
+
+    /// One smaps_rollup field, summed over this process's tree, in MB.
+    fn treeMb(comptime key: []const u8) f64 {
         var pids: [512]u32 = undefined;
         var parents: [512]u32 = undefined;
         var pss_kb: [512]u64 = undefined;
@@ -49,8 +62,8 @@ pub const Commands = struct {
             var big: [2048]u8 = undefined;
             const rollup = std.Io.Dir.cwd().readFile(io, std.fmt.bufPrint(&path_buf, "/proc/{d}/smaps_rollup", .{pid}) catch continue, &big) catch continue;
             // "Pss:   12345 kB"
-            const at = std.mem.indexOf(u8, rollup, "\nPss:") orelse continue;
-            var line = std.mem.tokenizeAny(u8, rollup[at + 5 ..], " \t\n");
+            const at = std.mem.indexOf(u8, rollup, key) orelse continue;
+            var line = std.mem.tokenizeAny(u8, rollup[at + key.len ..], " \t\n");
             pids[n] = pid;
             parents[n] = ppid;
             pss_kb[n] = std.fmt.parseInt(u64, line.next() orelse continue, 10) catch continue;
