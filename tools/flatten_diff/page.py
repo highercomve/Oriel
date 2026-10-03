@@ -65,4 +65,7 @@ if sys.argv[1] == '--steps':
     sys.exit()
 n=int(sys.argv[1])
 body=''.join('void list.offsetHeight;\n'+s+'\n' for s in steps[:n])
-print(head+body+'</script></body></html>')
+# The tree is dumped when the page has booted; then the window closes (and
+# the app exits) rather than waiting for run.sh's timeout.
+tail = 'setTimeout(() => window.oriel.window.current().close(), 0);\n'
+print(head+body+tail+'</script></body></html>')
