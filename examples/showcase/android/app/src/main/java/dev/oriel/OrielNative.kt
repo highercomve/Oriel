@@ -1631,9 +1631,11 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     }
 
     /**
-     * CSS outline (`ol`: w, c, o?, s?), as gtk.zig's outline(): a border of
-     * its own around the border box grown by offset + width, its radii grown
-     * as much (a square corner stays square), solid, dashed or dotted.
+     * CSS outline (`ol`: w, c, o?, s?, h?, r?), as win32.zig's paintOutline:
+     * a border of its own around the border box grown by offset + width, its
+     * radii grown as much (a square corner stays square) and at least `r`,
+     * solid, dashed or dotted; a focus ring's halo `h`: 1px around it, its
+     * corners 1px rounder.
      */
     private fun outline(canvas: Canvas, ol: JSONObject, x: Float, y: Float, w: Float, h: Float, r: FloatArray?) {
         val ow = ol.optDouble("w", 0.0).toFloat()
@@ -1642,14 +1644,26 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         val grow = ol.optDouble("o", 0.0).toFloat() + ow
         val bx = x - grow; val by = y - grow; val bw = w + 2 * grow; val bh = h + 2 * grow
         if (bw <= 2 * ow || bh <= 2 * ow) return
+        val least = ol.optDouble("r", 0.0).toFloat()
+        val outer = FloatArray(4) { val x = r?.get(it) ?: 0f; max(if (x > 0) max(0f, x + grow) else 0f, least) }
+        ol.optJSONArray("h")?.let { hj ->
+            val halo = NuiNode.color(hj)
+            if (Color.alpha(halo) == 0) return@let
+            roundRect(bx - 0.5f, by - 0.5f, bw + 1, bh + 1, FloatArray(4) { if (outer[it] > 0) outer[it] + 0.5f else 0f })
+            stroke.color = halo
+            stroke.strokeWidth = 1f
+            stroke.strokeJoin = Paint.Join.MITER
+            stroke.strokeCap = Paint.Cap.BUTT
+            canvas.drawPath(path, stroke)
+        }
         val half = ow / 2
-        roundRect(bx + half, by + half, bw - ow, bh - ow, r?.let { a -> FloatArray(4) { if (a[it] > 0) max(0f, a[it] + grow - half) else 0f } })
+        val square = outer.all { it <= 0 }
+        roundRect(bx + half, by + half, bw - ow, bh - ow, if (square) null else FloatArray(4) { if (outer[it] > 0) max(0f, outer[it] - half) else 0f })
         stroke.color = color
         stroke.strokeWidth = ow
         stroke.strokeJoin = Paint.Join.MITER
         stroke.strokeCap = Paint.Cap.BUTT
         val style = ol.optString("s")
-        val square = r == null || r.all { it <= 0 }
         if (style == "dashed" && square) {
             // As Chrome: each side on its own, corner to corner (solid corners),
             // dashes of 2 × width (3 × below 3 px), gaps about the width, evened out.
