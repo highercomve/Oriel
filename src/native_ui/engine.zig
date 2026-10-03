@@ -125,6 +125,8 @@ pub const Engine = struct {
     renders: u64 = 0,
     /// A frame was requested (`Backend.request_frame`) and hasn't run yet.
     frame_pending: bool = false,
+    /// ORIEL_NUI_PAGE: the file read for index.html (tools/flatten_diff).
+    page_override: ?[]u8 = null,
 
     pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, width: f32, height: f32) !*Engine {
         const e = try gpa.create(Engine);
@@ -153,6 +155,7 @@ pub const Engine = struct {
 
     pub fn destroy(e: *Engine) void {
         oqjs_free(e.js);
+        if (e.page_override) |page| e.gpa.free(page);
         e.tree.deinit();
         if (e.backend.deinit) |deinit| deinit(e.backend.ctx);
         e.script_buf.deinit(e.gpa);
@@ -335,10 +338,40 @@ export fn oriel_nui_log(p: *anyopaque, level: c_int, msg: [*]const u8, len: usiz
 
 export fn oriel_nui_asset(p: *anyopaque, path: [*]const u8, len: usize, out: *[*]const u8, out_len: *usize) c_int {
     const e = engineOf(p);
+    if (pageOverride(e, path[0..len])) |page| {
+        out.* = page.ptr;
+        out_len.* = page.len;
+        return 1;
+    }
     const a = App.findAsset(e.assets, path[0..len], false) orelse return 0;
     out.* = a.data.ptr;
     out_len.* = a.data.len;
     return 1;
+}
+
+/// Debugging (Linux): ORIEL_NUI_PAGE=<file> is read for index.html instead
+/// of the embedded one, so one build of an app renders any page
+/// (tools/flatten_diff compares a runtime's trees step by step).
+fn pageOverride(e: *Engine, path: []const u8) ?[]const u8 {
+    if (comptime @import("builtin").os.tag != .linux) return null;
+    if (!std.mem.eql(u8, path, "index.html")) return null;
+    if (e.page_override) |page| return page;
+    const file = std.c.getenv("ORIEL_NUI_PAGE") orelse return null;
+    const fd = std.c.open(file, .{ .ACCMODE = .RDONLY });
+    if (fd < 0) return null;
+    defer _ = std.c.close(fd);
+    var buf: std.ArrayList(u8) = .empty;
+    while (true) {
+        buf.ensureUnusedCapacity(e.gpa, 64 * 1024) catch break;
+        const n = std.c.read(fd, buf.unusedCapacitySlice().ptr, buf.unusedCapacitySlice().len);
+        if (n <= 0) break;
+        buf.items.len += @intCast(n);
+    }
+    e.page_override = buf.toOwnedSlice(e.gpa) catch {
+        buf.deinit(e.gpa);
+        return null;
+    };
+    return e.page_override;
 }
 
 export fn oriel_nui_invoke(p: *anyopaque, call_id: u32, cmd: [*]const u8, cmd_len: usize, args: [*]const u8, args_len: usize) void {
