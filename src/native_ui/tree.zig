@@ -1173,6 +1173,8 @@ pub const Tree = struct {
                 break;
             };
             yg.YGNodeRemoveChild(p.yn, n.yn);
+            // A growing box that lost its label: no minimum from it any more.
+            if (p.kind != .text and p.grow_min > 0) growBoxMinWidth(t, p);
         }
         // Removing the first child repeatedly shifts Yoga's vector on
         // every iteration: quadratic work for a large list. Detach once.
@@ -1316,6 +1318,7 @@ pub const Tree = struct {
                     break;
                 };
                 yg.YGNodeRemoveChild(old.yn, k.yn);
+                if (old != n and old.kind != .text and old.grow_min > 0) growBoxMinWidth(t, old);
             }
             if (yg.YGNodeHasMeasureFunc(n.yn)) {
                 // A measured leaf can't have children: `k` is left detached
@@ -1429,7 +1432,8 @@ pub const Tree = struct {
         if (!k.grow_frozen) return;
         k.grow_frozen = false;
         yg.YGNodeStyleSetFlexGrow(k.yn, k.props.fg orelse 0);
-        yg.YGNodeStyleSetMinWidth(k.yn, std.math.nan(f32));
+        // The page's own min-width, if it set one since (else none).
+        dimNoAuto(k.yn, k.props.minw, yg.YGNodeStyleSetMinWidth, yg.YGNodeStyleSetMinWidthPercent);
     }
 
     /// Every frozen item under `n` unfrozen, for a new layout (the room
@@ -2297,6 +2301,37 @@ test "flex: 1 boxes around one label (text-only buttons) keep its whole words" {
     try std.testing.expectEqual(@as(f32, 142), yg.YGNodeLayoutGetWidth(auto.yn));
     try std.testing.expectEqual(@as(f32, 129), yg.YGNodeLayoutGetWidth(english.yn));
     try std.testing.expectEqual(@as(f32, 129), yg.YGNodeLayoutGetWidth(espanol.yn));
+    // The page sets its own min-width on a box frozen at its words' width:
+    // that min-width holds. (Yoga also starts a growing item's flex basis at
+    // its min-width, unlike CSS, so the box ends wider than 100.)
+    try t.apply(
+        \\[["p",11,{"runs":[{"t":"Auto"}]}]]
+    );
+    t.width = 240;
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 82), yg.YGNodeLayoutGetWidth(english.yn));
+    try t.apply(
+        \\[["p",2,{"fg":1,"fb":0,"pad":[0,6,0,6],"minw":100}]]
+    );
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 100), yg.YGNodeStyleGetMinWidth(english.yn).value);
+    try std.testing.expect(yg.YGNodeLayoutGetWidth(english.yn) >= 100);
+    try std.testing.expectEqual(@as(f32, 82), yg.YGNodeLayoutGetWidth(espanol.yn));
+    // "English" moves into the third box (its old label goes away): the
+    // second box, now empty, keeps no minimum from it.
+    try t.apply(
+        \\[["p",2,{"fg":1,"fb":0,"pad":[0,6,0,6]}],["k",3,[12]],["d",13]]
+    );
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 79), yg.YGNodeLayoutGetWidth(auto.yn));
+    try std.testing.expectEqual(@as(f32, 79), yg.YGNodeLayoutGetWidth(english.yn));
+    try std.testing.expectEqual(@as(f32, 82), yg.YGNodeLayoutGetWidth(espanol.yn));
+    // Its label destroyed, the third box keeps none either.
+    try t.apply(
+        \\[["d",12]]
+    );
+    t.layout();
+    for ([_]*Node{ auto, english, espanol }) |n| try std.testing.expectEqual(@as(f32, 80), yg.YGNodeLayoutGetWidth(n.yn));
 }
 
 test "direct text updates preserve props, dirty layout, and release overrides" {
