@@ -250,9 +250,9 @@ the animated nodes are sent each frame).
   (apple_draw.zig gradient: expand over the line, a radial one out to the
   box's farthest corner in ray lengths, at most 1024 stops) and Android
   (OrielNative.kt resolveStops, a port of resolve(); Shader.TileMode.REPEAT
-  with the linear end point and the radial radius times `period`); GTK
-  still reads `stops` as fractions (px positions come out wrong
-  there, and a repeating gradient is drawn once). resolve() combines a
+  with the linear end point and the radial radius times `period`) and
+  GTK (gtk.zig gradient: resolve() over the line, the linear end point or
+  the radial unit circle times `period`, CAIRO_EXTEND_REPEAT). resolve() combines a
   `c` stop's parts, so Win32 and Apple have calc() stops; Android's
   resolveStops needs `sp` ported.
 
