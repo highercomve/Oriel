@@ -407,11 +407,23 @@ Object.defineProperty(document, "__active", {
   get() { return active; },
   set(el) {
     if (el === active) return;
-    active?.removeAttribute?.("data-nui-focus");
-    active?.removeAttribute?.("data-nui-focus-visible");
+    const old = active;
+    old?.removeAttribute?.("data-nui-focus");
+    old?.removeAttribute?.("data-nui-focus-visible");
     active = el || null;
     active?.setAttribute?.("data-nui-focus", "");
     if (active && (keyboardFocus || textField(active))) active.setAttribute?.("data-nui-focus-visible", "");
+    // As browsers: blur and focusout on the old one, then focus and focusin
+    // (focus and blur don't bubble). A listener may move the focus again.
+    const now = active;
+    if (old?.dispatchEvent) {
+      old.dispatchEvent(new FocusEvent("blur", { relatedTarget: now }));
+      old.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: now }));
+    }
+    if (now?.dispatchEvent && active === now) {
+      now.dispatchEvent(new FocusEvent("focus", { relatedTarget: old }));
+      now.dispatchEvent(new FocusEvent("focusin", { bubbles: true, relatedTarget: old }));
+    }
   },
   configurable: true,
 });

@@ -227,6 +227,14 @@ under the pointer for `:hover` and `mouseover`/`mouseenter`) works as before.
 Keys: `"key"` with `[key, modifiers, repeat]` (`keydown`, `event.repeat` set on
 auto-repeat) and `"keyup"` with `[key, modifiers]`.
 
+Focus: a native field that gets or loses the keyboard sends `"focus"` or
+`"blur"` (data `null`) on its node. The page then sets `:focus` and
+`document.activeElement`, and fires `blur` and `focusout` on the old
+element and `focus` and `focusin` on the new one, as browsers do;
+`element.focus()` does the same. GTK: a focus controller on each field
+(nothing is sent while a field is being removed). Android sends them
+too; each backend must, or `:focus` never matches on its fields.
+
 Backends: macOS (mouse moves, drags, buttons; key up from a local event monitor,
 AppKit not sending `keyUp:` to the page's view) and iOS (one touch; a drag the
 page doesn't take scrolls as before), GTK (mouse moves, drags and buttons;
