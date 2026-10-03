@@ -99,7 +99,7 @@ pub fn evalRefusal(buf: []u8, csp: ?[]const u8) ?[:0]const u8 {
 /// A page's checks run in an engine under the app's CSP `csp`: true when
 /// the script's value is.
 fn underCsp(csp: ?[]const u8, script: []const u8) !bool {
-    const app = @import("../core/app.zig");
+    const app = @import("../core/App.zig");
     const saved = app.current_security;
     defer app.current_security = saved;
     page_errors_expected = true;
@@ -334,7 +334,7 @@ pub const Engine = struct {
         e.tree.on_paint = backend.paint;
         e.tree.on_canvas = backend.canvas;
         // The app's CSP: eval and new Function refused, as its WebView would.
-        const csp = @import("../core/app.zig").current_security.csp;
+        const csp = @import("../core/App.zig").current_security.csp;
         var refusal_buf: [1024]u8 = undefined;
         if (evalRefusal(&refusal_buf, csp)) |r| e.csp_eval = try gpa.dupeZ(u8, r);
         errdefer if (e.csp_eval) |r| gpa.free(r);
