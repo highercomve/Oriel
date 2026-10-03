@@ -2853,8 +2853,11 @@ fn fontExtent(family: [:0]const u16, sz: f32, weight: f32, italic: bool, lh: ?f3
     const a = @round(m[0] * sz);
     const d = @round(m[1] * sz);
     if (lh) |h| if (h > 0) {
-        const half = (h - (a + d)) / 2;
-        return .{ .top = a + half, .bottom = d + half };
+        // Chromium floors the half above (CalculateLeadingSpace); the
+        // rest goes below.
+        const lead = h - (a + d);
+        const up = @floor(lead / 2);
+        return .{ .top = a + up, .bottom = d + lead - up };
     };
     const gap = @round(m[2] * sz);
     const up = @floor(gap / 2);
@@ -2893,8 +2896,9 @@ fn textExtent(props: *const tree_mod.Props) ?Extent {
 
 /// Each line's extent when they differ (a font on some lines only), from
 /// the runs on it; null when every line is textExtent's (the layout's
-/// uniform spacing is then exact).
-fn lineExtents(props: *const tree_mod.Props, layout: *c.IDWriteTextLayout, out: []Extent) ?[]Extent {
+/// uniform spacing is then exact). With `glyphs`, each line's content area
+/// too (its fonts' ascent and descent: where its glyphs are).
+fn lineExtents(props: *const tree_mod.Props, layout: *c.IDWriteTextLayout, out: []Extent, glyphs: ?[]Extent) ?[]Extent {
     const runs = props.runs orelse return null;
     if (runs.len < 2) return null;
     const all = textExtent(props) orelse return null;
@@ -2902,6 +2906,7 @@ fn lineExtents(props: *const tree_mod.Props, layout: *c.IDWriteTextLayout, out: 
     var count: u32 = 0;
     if (layout.lpVtbl.*.GetLineMetrics.?(layout, &lines, lines.len, &count) < 0 or count < 2 or count > lines.len) return null;
     const strut = strutExtent(props);
+    const strut_glyphs = contentExtent(familyOf(props.ff, props.mono), props.fz orelse 16, props.fwt orelse 400, props.it);
     var differ = false;
     var ls: u32 = 0;
     var ri: usize = 0;
@@ -2910,17 +2915,24 @@ fn lineExtents(props: *const tree_mod.Props, layout: *c.IDWriteTextLayout, out: 
         if (k >= out.len) return null;
         const le = ls + line.length;
         var e = strut;
+        var g = strut_glyphs;
         // The runs with a part on this line.
         while (ri < runs.len) {
             const len: u32 = @intCast(std.unicode.calcUtf16LeLen(runs[ri].t) catch runs[ri].t.len);
             const re = rs + len;
-            if (re > ls and rs < le and len > 0) e = widen(e, runExtent(props, runs[ri]));
+            if (re > ls and rs < le and len > 0) {
+                e = widen(e, runExtent(props, runs[ri]));
+                g = widen(g, contentExtent(runFamily(props, runs[ri]), runs[ri].sz, runs[ri].w, runs[ri].i));
+            }
             if (re > le) break; // goes on to the next line
             rs = re;
             ri += 1;
         }
         const x = e orelse all;
         out[k] = x;
+        if (glyphs) |gs| if (k < gs.len) {
+            gs[k] = g orelse x;
+        };
         if (x.top != all.top or x.bottom != all.bottom) differ = true;
         ls = le;
     }
@@ -4081,7 +4093,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     var size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, textHeight(&n.props, m.height) };
     // Lines of their own heights: theirs added up.
     var ext_buf: [64]Extent = undefined;
-    if (lineExtents(&n.props, layout, &ext_buf)) |xs| {
+    if (lineExtents(&n.props, layout, &ext_buf, null)) |xs| {
         size[1] = 0;
         for (xs) |e| size[1] += e.top + e.bottom;
     }
@@ -4969,7 +4981,8 @@ fn paintText(p: *Painter, n: *Node) void {
     // Lines of different heights (a font on some only): each drawn moved
     // to where its own extent puts it (lineShift).
     var ext_buf: [64]Extent = undefined;
-    const exts = lineExtents(&n.props, layout, &ext_buf);
+    var glyph_buf: [64]Extent = undefined;
+    const exts = lineExtents(&n.props, layout, &ext_buf, &glyph_buf);
     const all = textExtent(&n.props);
     const shift = struct {
         fn at(e: ?[]const Extent, a: ?Extent, y0: f32, top: f32) f32 {
@@ -5005,10 +5018,21 @@ fn paintText(p: *Painter, n: *Node) void {
     const origin: c.D2D1_POINT_2F = .{ .x = ct.x, .y = ct.y };
     if (exts) |xs| {
         const h = all.?.top + all.?.bottom;
+        // Each copy shows its own line's glyphs: cut, in the layout, midway
+        // between a line's glyphs and the next one's (a big font on a
+        // tight line-height overflows its line box, as in browsers).
+        const gs = glyph_buf[0..xs.len];
+        const cut = struct {
+            fn at(g: []const Extent, a: Extent, lh: f32, k: usize) f32 {
+                const base = @as(f32, @floatFromInt(k)) * lh + a.top;
+                return (base + g[k].bottom + base + lh - g[k + 1].top) / 2;
+            }
+        }.at;
         for (0..xs.len) |k| {
             const dy = lineShift(xs, all.?, k);
-            const top = ct.y + @as(f32, @floatFromInt(k)) * h;
-            const band: c.D2D1_RECT_F = .{ .left = ct.x - 1e4, .top = top + dy, .right = ct.x + ct.w + 1e4, .bottom = top + h + dy };
+            const above: f32 = if (k == 0) -1e4 else cut(gs, all.?, h, k - 1);
+            const below: f32 = if (k + 1 == xs.len) 1e4 else cut(gs, all.?, h, k);
+            const band: c.D2D1_RECT_F = .{ .left = ct.x - 1e4, .top = ct.y + above + dy, .right = ct.x + ct.w + 1e4, .bottom = ct.y + below + dy };
             p.vt().PushAxisAlignedClip.?(p.rt, &band, c.D2D1_ANTIALIAS_MODE_ALIASED);
             p.vt().DrawTextLayout.?(p.rt, .{ .x = ct.x, .y = ct.y + dy }, layout, p.solid(.{ 0, 0, 0, 1 }), draw_text_color_font);
             p.vt().PopAxisAlignedClip.?(p.rt);
@@ -5286,8 +5310,12 @@ fn paintInlineBoxes(p: *Painter, props: *const tree_mod.Props, layout: *c.IDWrit
             const h = all.top + all.bottom;
             const dy = if (at.exts) |xs| (if (k < xs.len) lineShift(xs, all, k) else 0) else 0;
             const base = y + @as(f32, @floatFromInt(k)) * h + all.top + dy;
-            const top = base - ce.top - ib.p[0] - bw[0];
-            const bottom = base + ce.bottom + ib.p[2] + bw[2];
+            // On whole pixels, as Chromium snaps it.
+            const top = @round(base - ce.top - ib.p[0] - bw[0]);
+            const bottom = @round(base + ce.bottom + ib.p[2] + bw[2]);
+            x0 = @round(x0);
+            x1 = @round(x1);
+            if (!(x1 > x0)) continue;
             const box: Rect = .{ .x = x0, .y = top, .w = x1 - x0, .h = bottom - top };
             var radii: Radii = .{};
             if (ib.br) |r| {

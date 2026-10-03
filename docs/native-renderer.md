@@ -327,8 +327,14 @@ box. As browsers draw it (box-decoration-break: slice):
   CoreText kerning (on the character before the box and on its last one;
   a first-line indent for a box at the very start), the fragments from
   the glyphs' positions and advances. Checked against WKWebView (a chip in
-  a sentence, one that wraps over two lines, a bordered one). Win32, GTK
-  and Android still draw such runs plain.
+  a sentence, one that wraps over two lines, a bordered one).
+- Win32 (win32.zig inlineBoxRoom, paintInlineBoxes): the room as
+  DirectWrite character spacing (IDWriteTextLayout1: leading on its first
+  character, trailing on its last, with the letter-spacing), the
+  fragments from HitTestTextRange per line, around the line's baseline.
+  Checked against WebView2 (chips in a sentence, a wrapped one, bordered,
+  margined and rounded ones, on 1.6 lines). GTK and Android still draw
+  such runs plain.
 
 **Baselines** (each backend): a line of inline content with boxes in it
 (a code chip at a line's end, a button or checkbox beside its label) is a
@@ -340,7 +346,10 @@ the ascent, as it places the line; Apple's measureText does), else an
 estimate (0.9 em of ascent in a line box of `lh` or 1.2 em); a box's is
 its first child's; an input's or select's, its one line of text centered
 in its content box. Checked on Apple against WKWebView (a chip, a button,
-a checkbox, an input, an inline-block chip in 24px); Win32, GTK and
+a checkbox, an input, an inline-block chip in 24px). Win32 sets it in
+measure (cssBaseline: where its uniform lines put the first), checked
+against WebView2 (a label, button, checkbox, input, select and a 28px
+span in one row, each pair alone, a chip after a 28px heading). GTK and
 Android should set `Node.baseline` in their measure.
 
 **Screen scale** (each backend): `platform.dpr` in the platform JSON,
@@ -744,8 +753,9 @@ display's 180 either way.
    showcase, idle on its first tab: 31 MB private working set in one
    process, against 90 MB in seven processes with WebView2.
 
-   Not yet: color emoji inside the EDIT controls (GDI draws them as
-   outlines), owner-drawn selects (a COMBOBOX keeps the system look), IME
+   Not yet: color emoji inside the fields (RichEdit 5, kept for its
+   multi-level undo, draws them as outlines: msftedit registers no D2D
+   class here and TO_DISPLAYFONTCOLOR has no effect), owner-drawn selects (a COMBOBOX keeps the system look), IME
    composition shown on the canvas (fields get it from Windows), and
    accessibility (UI Automation).
 4. **macOS and iOS** (`src/native_ui/appkit.zig`, `uikit.zig`, sharing
