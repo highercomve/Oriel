@@ -18951,6 +18951,17 @@ ${a.stack || ""}`;
           case "pointer":
             if (data?.[0] === "down" || data?.[0] === 0) keyboardFocus = false;
             return pointerEvent(el, data);
+          // The window went to a screen with another scale (data: the new
+          // devicePixelRatio): resolution queries' listeners hear it.
+          case "dpr": {
+            const dpr = +data;
+            if (!(dpr > 0) || dpr === viewport.dpr) return false;
+            const before2 = mediaSnapshot();
+            viewport.dpr = dpr;
+            renderer?.markAll();
+            mediaChanged(before2);
+            return false;
+          }
           case "focus":
             if (el) document.__active = el;
             return false;
@@ -19018,16 +19029,7 @@ ${a.stack || ""}`;
         Object.assign(viewport, { width: w, height: h, dark: !!dark });
         if (renderer) renderer.markAll();
         fireWindow(new Event("resize"));
-        for (const ml of mediaLists) {
-          const m = ml.matches;
-          if (before2.get(ml) !== m) for (const fn of ml.listeners) {
-            try {
-              fn({ matches: m, media: ml.media });
-            } catch (e) {
-              console.error(e);
-            }
-          }
-        }
+        mediaChanged(before2);
       });
     },
     // A message for the page from a platform that posts JSON (Android's
@@ -19047,6 +19049,18 @@ ${a.stack || ""}`;
       guard(() => renderer?.markAll());
     }
   };
+  function mediaChanged(before2) {
+    for (const ml of mediaLists) {
+      const m = ml.matches;
+      if (before2.get(ml) !== m) for (const fn of ml.listeners) {
+        try {
+          fn({ matches: m, media: ml.media });
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
+  }
   function mediaSnapshot() {
     const m = /* @__PURE__ */ new Map();
     for (const ml of mediaLists) m.set(ml, ml.matches);

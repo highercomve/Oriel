@@ -136,6 +136,7 @@ fn classes() void {
         .{ "scrollWheel:", scrollWheel },
         .{ "keyDown:", keyDown },
         .{ "viewDidChangeEffectiveAppearance", appearanceChanged },
+        .{ "viewDidChangeBackingProperties", backingChanged },
     });
     // A field's holder: flipped like the page, so frames read top-down.
     holder_class = cocoa.defineSubclass("OrielNuiFlippedView", "NSView", &.{}, .{
@@ -994,6 +995,19 @@ fn appearanceChanged(self: id, _: SEL) callconv(.c) void {
     const w = s.engine.tree.width;
     s.engine.tree.width = -1;
     s.engine.resize(w, s.engine.tree.height, dark);
+}
+
+/// The window went to a screen with another scale (or the view into a
+/// window): the page's devicePixelRatio ("dpr"; main.js ignores the same).
+fn backingChanged(self: id, _: SEL) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    const win = s.view.msgSend(Object, "window", .{});
+    if (win.value == null) return;
+    const scale: f64 = win.msgSend(f64, "backingScaleFactor", .{});
+    if (!(scale > 0)) return;
+    var buf: [32]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "{d}", .{scale}) catch return;
+    _ = s.engine.event(0, "dpr", json);
 }
 
 fn point(view: id, event: id) [2]f32 {
