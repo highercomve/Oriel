@@ -379,11 +379,16 @@ Pango's, which sat 0.2 to 1.2px off); checked against WebKitGTK. Win32's
 measure sets it where its uniform lines put the first (cssBaseline);
 checked against WebView2 (a label, button, checkbox, input, select and a
 28px span in one row, each pair alone, a chip after a 28px heading).
-Android should set `Node.baseline` in its measure. Known gap (Yoga): a
-box's baseline is its first child's top plus that child's baseline, and
-while Yoga sizes a row it reads the child's top from the box's previous
-layout (0 the first time), so a button beside text makes the row a few
-pixels taller than WebKit's (26 + 3 for a 14px button in a 16px line).
+Android should set `Node.baseline` in its measure. A box's baseline is
+its first child's top plus that child's baseline; while Yoga sizes a row
+it read the child's top from the box's previous layout (0 the first
+time), so a button beside text made the row a few pixels taller than
+WebKit's. build.zig patches Yoga's Baseline.cpp (patchedYogaBaseline,
+like patchedYogaLayout: the build stops if Yoga's text changes) to take
+the child's top from the box's top padding and border and how it places
+the child (justify-content in a column, the child's alignment in a row);
+tree.zig's test "a button beside text sits on the text's baseline on
+the first layout" (29 without it, 28 as it should be).
 
 **Screen scale** (each backend): `platform.dpr` in the platform JSON,
 the screen's pixels per CSS px, read as a window opens (Apple: the main

@@ -1972,7 +1972,7 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool, native_dom: 
             .files = &.{
                 "YGConfig.cpp",           "YGEnums.cpp",         "YGNode.cpp",             "YGNodeLayout.cpp",
                 "YGNodeStyle.cpp",        "YGPixelGrid.cpp",     "YGValue.cpp",            "algorithm/AbsoluteLayout.cpp",
-                "algorithm/Baseline.cpp", "algorithm/Cache.cpp", "algorithm/FlexLine.cpp", "config/Config.cpp",
+                "algorithm/Cache.cpp",    "algorithm/FlexLine.cpp", "config/Config.cpp",
                 "debug/AssertFatal.cpp",  "debug/Log.cpp",       "event/event.cpp",        "node/LayoutResults.cpp",
                 "node/Node.cpp",
             },
@@ -1980,6 +1980,10 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool, native_dom: 
         });
         oriel.addCSourceFile(.{
             .file = patchedYogaLayout(b, yoga.path("yoga/algorithm/CalculateLayout.cpp")),
+            .flags = &.{ "-std=c++20", "-O2", no_ubsan, "-fno-exceptions" },
+        });
+        oriel.addCSourceFile(.{
+            .file = patchedYogaBaseline(b, yoga.path("yoga/algorithm/Baseline.cpp")),
             .flags = &.{ "-std=c++20", "-O2", no_ubsan, "-fno-exceptions" },
         });
         // PixelGrid.cpp without its fmod calls, telling the tree each
@@ -1992,6 +1996,73 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool, native_dom: 
         });
         oriel.link_libcpp = true;
     }
+}
+
+/// Yoga's Baseline.cpp with a box's baseline taken from where its first
+/// child will sit (the box's top padding and border, and how it aligns the
+/// child), not from the child's laid-out position: while the row around the
+/// box is being sized that is a previous layout's (0 the first time), so a
+/// button beside text sat 3 px high and the row came out 3 px taller than
+/// WebKit's (29, not 26). The build stops if Yoga's text changed (look at
+/// the fix again).
+fn patchedYogaBaseline(b: *std.Build, src: std.Build.LazyPath) std.Build.LazyPath {
+    const io = b.graph.io;
+    const text = std.Io.Dir.cwd().readFileAlloc(io, src.getPath(b), b.allocator, .limited(1 << 20)) catch |e|
+        std.debug.panic("yoga: can't read Baseline.cpp: {s}", .{@errorName(e)});
+    const fixes = [_][2][]const u8{
+        .{
+            \\float calculateBaseline(const yoga::Node* node) {
+            ,
+            \\// Oriel (build.zig patchedYogaBaseline): where the baseline child's
+            \\// top sits in `node`, from the node's own top padding and border and
+            \\// how it places the child (a column: justify-content over all its
+            \\// children; a row: the child's alignment), as the layout will.
+            \\static float orielChildTop(const yoga::Node* node, const yoga::Node* child) {
+            \\  const auto& s = node->style();
+            \\  const float width = node->getLayout().measuredDimension(Dimension::Width);
+            \\  const float height = node->getLayout().measuredDimension(Dimension::Height);
+            \\  const float childHeight = child->getLayout().measuredDimension(Dimension::Height);
+            \\  if (std::isnan(height) || std::isnan(childHeight)) {
+            \\    return child->getLayout().position(PhysicalEdge::Top);
+            \\  }
+            \\  const float lead = s.computeFlexStartPaddingAndBorder(FlexDirection::Column, Direction::LTR, width);
+            \\  const float inner = height - lead -
+            \\      s.computeFlexEndPaddingAndBorder(FlexDirection::Column, Direction::LTR, width);
+            \\  const float margin = child->style().computeFlexStartMargin(FlexDirection::Column, Direction::LTR, width);
+            \\  float at = 0;
+            \\  if (isColumn(s.flexDirection())) {
+            \\    float used = 0;
+            \\    for (auto c : node->getLayoutChildren()) {
+            \\      if (c->style().positionType() == PositionType::Absolute) continue;
+            \\      used += c->getLayout().measuredDimension(Dimension::Height) +
+            \\          c->style().computeMarginForAxis(FlexDirection::Column, width);
+            \\    }
+            \\    if (s.justifyContent() == Justify::Center) at = (inner - used) / 2;
+            \\    else if (s.justifyContent() == Justify::FlexEnd) at = inner - used;
+            \\  } else {
+            \\    const float outer = childHeight + child->style().computeMarginForAxis(FlexDirection::Column, width);
+            \\    const Align align = resolveChildAlignment(node, child);
+            \\    if (align == Align::Center) at = (inner - outer) / 2;
+            \\    else if (align == Align::FlexEnd) at = inner - outer;
+            \\  }
+            \\  return lead + at + margin;
+            \\}
+            \\
+            \\float calculateBaseline(const yoga::Node* node) {
+        },
+        .{
+            \\  return baseline + baselineChild->getLayout().position(PhysicalEdge::Top);
+            ,
+            \\  return baseline + orielChildTop(node, baselineChild);
+        },
+    };
+    var out: []const u8 = text;
+    for (fixes) |fix| {
+        if (std.mem.count(u8, out, fix[0]) != 1) std.debug.panic("yoga: Baseline.cpp changed; patchedYogaBaseline's fix no longer applies", .{});
+        out = std.mem.replaceOwned(u8, b.allocator, out, fix[0], fix[1]) catch @panic("OOM");
+    }
+    const files = b.addWriteFiles();
+    return files.add("Baseline.cpp", out);
 }
 
 /// Yoga's CalculateLayout.cpp with its multi-line alignment (flex-wrap)

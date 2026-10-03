@@ -3199,6 +3199,39 @@ test "native node lookup survives repeated large list removals" {
     }
 }
 
+test "a button beside text sits on the text's baseline on the first layout" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const Context = struct {
+        // 16px text: 18 tall, its baseline 14; 14px: 16 tall, baseline 12.
+        fn measure(_: *anyopaque, n: *Node, _: f32, out: *[2]f32) void {
+            const big = n.props.runs.?[0].sz >= 16;
+            out.* = if (big) .{ 40, 18 } else .{ 20, 16 };
+            n.baseline = if (big) 14 else 12;
+        }
+    };
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, Context.measure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",0,"view"],["p",0,{"fd":"column","ai":"flex-start"}],["c",1,"view"],["p",1,{"fd":"row","ai":"baseline","w":400,"fs":0}],
+        \\["c",2,"text"],["p",2,{"fs":1,"runs":[{"t":"Press","sz":16}]}],
+        \\["c",3,"view"],["p",3,{"jc":"center","pad":[4,10,4,10],"bw":[2,2,2,2],"fs":0}],
+        \\["c",4,"text"],["p",4,{"runs":[{"t":"Go","sz":14}]}],
+        \\["k",3,[4]],["k",1,[2,3]],["k",0,[1]],["r",0]]
+    );
+    t.width = 300;
+    t.height = 200;
+    t.layout();
+    // As render.js sends a <button> beside text: its label centered in it,
+    // 4px padding and a 2px border. The button's baseline: 6 + 12 = 18; the
+    // text's 14: the text 4 down, the button at the top, the row the
+    // button's 28 (Yoga read the label at 0 the first time: the row 29).
+    const row = t.get(1).?.frame;
+    try std.testing.expectApproxEqAbs(@as(f32, 4), t.get(2).?.frame.y - row.y, 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), t.get(3).?.frame.y - row.y, 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 28), row.h, 1e-3);
+}
+
 test "a padded text in a flex row keeps its word plus its padding and border" {
     if (!@import("build_options").native_ui) return error.SkipZigTest;
     var ctx: u8 = 0;
