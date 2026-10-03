@@ -59,6 +59,14 @@ th { text-align: center; } caption { display: table-caption; text-align: center;
 col, colgroup { display: none; }
 `;
 
+// WebKit's controls (WKWebView, so the native renderer on macOS and iOS):
+// -webkit-small-control is the system font at 11px, a textarea's too
+// (measured against WKWebView: an input 19 tall on macOS, a textarea 32).
+export const UA_CSS_WEBKIT = `
+button, input, textarea, select { font-size: 11px; }
+textarea { font-family: -webkit-small-control, system-ui; }
+`;
+
 const INLINE_DISPLAY = new Set(["inline"]);
 const ATOMIC_INLINE = new Set(["inline-block", "inline-flex", "inline-grid"]);
 // Replaced elements: an image's bottom sits on the line's baseline.
