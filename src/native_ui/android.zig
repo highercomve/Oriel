@@ -69,7 +69,7 @@ pub const Surface = struct {
     move_mods: u32 = 0,
     move_mouse: bool = false,
     /// fontMetrics' answers by (size in 1/64 px, mono): one trip to Kotlin each.
-    font_metrics: std.AutoHashMapUnmanaged(FontKey, [2]f32) = .empty,
+    font_metrics: std.AutoHashMapUnmanaged(FontKey, [3]f32) = .empty,
 };
 
 const FontKey = struct { size64: u32, mono: bool };
@@ -256,6 +256,7 @@ pub const prop_keys = [_][]const u8{
     "ty",     "vis",    "z",      "root",   "color",   "gradient", "angle", "stops", "radial", "spread",
     "blur",   "x",      "y",      "vb",     "shapes",  "d",     "fill",  "stroke", "sw",   "cap",
     "join",   "evenodd", "u",     "i",      "label",   "href",  "hover", "radius", "cx",   "cy",
+    "ff",     "ol",
 };
 
 const prop_key_ids = blk: {
@@ -596,22 +597,26 @@ fn measuredText(s: *Surface, n: *Node, width: f32) [2]f32 {
     return size;
 }
 
-/// host.fontMetrics: the ascent and descent (px) of the font text is drawn
+/// host.fontMetrics: the ascent, descent and line gap (px) of the font text is drawn
 /// with (NuiNode's typeface) at `size`, from Kotlin's Paint.FontMetrics.
 fn fontMetrics(ctx: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
     const s = surfaceOf(ctx);
     const key: FontKey = .{ .size64 = @intFromFloat(@round(std.math.clamp(size, 1, 512) * 64)), .mono = mono };
-    // TODO(android): Paint.FontMetrics' leading as the line gap, for
-    // line-height: normal; 0 until then.
     if (s.font_metrics.get(key)) |m| {
-        out.* = .{ m[0], m[1], 0 };
+        out.* = m;
         return true;
     }
+    // Ascent, descent and line gap (Paint.FontMetrics' leading) in 1/64 px, 21 bits each.
     const r: u64 = @bitCast(runtime.call(.long, "nuiFontMetrics", "(IZ)J", .{ @as(i32, @intCast(key.size64)), mono }) orelse return false);
     if (r == 0) return false;
-    const m: [2]f32 = .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
+    const field = (1 << 21) - 1;
+    const m: [3]f32 = .{
+        @as(f32, @floatFromInt((r >> 42) & field)) / 64,
+        @as(f32, @floatFromInt((r >> 21) & field)) / 64,
+        @as(f32, @floatFromInt(r & field)) / 64,
+    };
     if (s.font_metrics.count() < 256) s.font_metrics.put(s.gpa, key, m) catch {};
-    out.* = .{ m[0], m[1], 0 };
+    out.* = m;
     return true;
 }
 

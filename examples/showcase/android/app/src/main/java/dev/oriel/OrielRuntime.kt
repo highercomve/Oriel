@@ -281,7 +281,7 @@ object OrielRuntime {
     @JvmStatic
     fun nuiMeasure(id: Int, node: Int, max64: Int): Long = Nui.views[id]?.measureText(node, max64) ?: 0
 
-    /** The text font's ascent and descent at `size64` / 64 px, in 1/64 px, packed (android.zig's fontMetrics). */
+    /** The text font's ascent, descent and line gap at `size64` / 64 px, in 1/64 px, 21 bits each (android.zig's fontMetrics). */
     @JvmStatic
     fun nuiFontMetrics(size64: Int, mono: Boolean): Long = NuiNode.fontMetrics(size64 / 64f, mono)
 
