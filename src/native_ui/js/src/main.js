@@ -749,6 +749,15 @@ g.__oriel = {
         else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
       }
       renderer = new Renderer(document, engine, host);
+      // The elements marked for :hover, :active and :focus (their
+      // data-nui-* attributes): a list the tree stamps renders those rows
+      // itself.
+      renderer.stateEls = () => {
+        const out = [];
+        for (const chain of marked.values()) for (const e of chain) out.push(e);
+        if (active) out.push(active);
+        return out;
+      };
       // What changed, for the next render (render.js: only that is made again).
       renderer.observer = new MutationObserver((records) => renderer.note(records));
       renderer.observer.__nuiConnectedOnly = true;

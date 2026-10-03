@@ -37,7 +37,8 @@ extern int oriel_nui_vsync(void *opaque);
 extern uint32_t oriel_nui_stamp_plan(void *opaque, const double *v, size_t len);
 #if defined(ORIEL_NATIVE_DOM)
 extern int oriel_nui_stamp(void *opaque, double row_id, void *dom, uint32_t row, uint32_t plan);
-extern int oriel_nui_stamp_list(void *opaque, double list_id, void *dom, uint32_t list, double row_style, uint32_t plan);
+extern int oriel_nui_stamp_list(void *opaque, double list_id, void *dom, uint32_t list, double row_style, uint32_t plan,
+                                uint32_t template_row, const uint32_t *kept, size_t kept_len);
 #endif
 extern int oriel_nui_leaf_style(void *opaque, double id, const char *json, size_t len);
 extern int oriel_nui_leaf(void *opaque, double id, double style_id, const char *text, size_t len, int is_text);
@@ -232,19 +233,31 @@ static JSValue h_stamp(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     return JS_NewBool(ctx, oriel_nui_stamp(opaque_of(ctx), row_id, dom, row, plan));
 }
 
-// host.stampList(listId, listElement, rowStyle, plan): the list's rows
-// after its first stamped by the tree from the native DOM (dom_stamp.zig);
-// false when a row isn't the first one again.
+// host.stampList(listId, listElement, rowStyle, plan, templateRow, keptRows):
+// the list's rows but the template and the kept ones (made by the runtime)
+// stamped by the tree from the native DOM (dom_stamp.zig); false when a
+// row isn't the template again.
 static JSValue h_stamp_list(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     double list_id, row_style;
     uint32_t plan;
+    int64_t kept_len;
     if (argc < 4 || JS_ToFloat64(ctx, &list_id, argv[0]) || JS_ToFloat64(ctx, &row_style, argv[2]) ||
         JS_ToUint32(ctx, &plan, argv[3])) return JS_EXCEPTION;
+    // Without a template row: the list's first; without kept rows: none.
+    kept_len = 0;
+    if (argc >= 6 && JS_GetLength(ctx, argv[5], &kept_len) < 0) return JS_EXCEPTION;
     void *dom = nui_dom_of_ctx(ctx);
-    uint32_t list = nui_dom_node_index(argv[1]);
-    if (!dom || !list) return JS_FALSE;
-    return JS_NewBool(ctx, oriel_nui_stamp_list(opaque_of(ctx), list_id, dom, list, row_style, plan));
+    uint32_t list = nui_dom_node_index(argv[1]), template_row = argc >= 5 ? nui_dom_node_index(argv[4]) : 0;
+    if (!dom || !list || kept_len < 0 || kept_len > 64) return JS_FALSE;
+    uint32_t kept[64];
+    for (int64_t i = 0; i < kept_len; i++) {
+        JSValue v = JS_GetPropertyUint32(ctx, argv[5], (uint32_t)i);
+        kept[i] = nui_dom_node_index(v);
+        JS_FreeValue(ctx, v);
+        if (!kept[i]) return JS_FALSE;
+    }
+    return JS_NewBool(ctx, oriel_nui_stamp_list(opaque_of(ctx), list_id, dom, list, row_style, plan, template_row, kept, (size_t)kept_len));
 }
 #endif
 
@@ -515,7 +528,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     // whose backend mirrors every node's props).
     set_fn(ctx, host, "stampPlan", h_stamp_plan, 1);
     set_fn(ctx, host, "stamp", h_stamp, 3);
-    set_fn(ctx, host, "stampList", h_stamp_list, 4);
+    set_fn(ctx, host, "stampList", h_stamp_list, 6);
 #endif
     set_fn(ctx, host, "focus", h_focus, 1);
     set_fn(ctx, host, "scrollIntoView", h_scroll_into_view, 2);
