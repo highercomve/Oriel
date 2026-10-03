@@ -1785,14 +1785,26 @@ export class Renderer {
   loneImage(flow, i, cs, rematch) {
     const f = flow[i];
     if (!f.el || !this.imageLine([f], cs, rematch)) return false;
-    const inlineAt = (j) => {
-      const g = flow[j];
-      if (!g) return false;
-      if (g.text) return true;
-      const d = this.style(g.el, cs, rematch).display || "inline";
-      return d.startsWith("inline");
+    // The nearest neighbor in `step`'s direction that takes room in the
+    // line: a collapsible space (Svelte's templates keep the spaces between
+    // tags) and out-of-flow boxes (position: absolute) don't, as
+    // in a browser, where `<img> <img style="position:absolute">` is still
+    // one image on its line.
+    const collapses = !(cs["white-space"] || "").startsWith("pre") && cs["white-space"] !== "break-spaces";
+    const inlineFrom = (j, step) => {
+      for (; j >= 0 && j < flow.length; j += step) {
+        const g = flow[j];
+        // The space kept between two inline boxes: it collapses away beside
+        // an out-of-flow box or at the line's end.
+        if (g.space && collapses) continue;
+        if (!g.el) return true;
+        const gcs = this.style(g.el, cs, rematch);
+        if (gcs.position === "absolute" || gcs.position === "fixed" || gcs.display === "none") continue;
+        return (gcs.display || "inline").startsWith("inline");
+      }
+      return false;
     };
-    return !inlineAt(i - 1) && !inlineAt(i + 1);
+    return !inlineFrom(i - 1, -1) && !inlineFrom(i + 1, 1);
   }
 
   // Whether the in-flow content is only images on the baseline (imageLine).

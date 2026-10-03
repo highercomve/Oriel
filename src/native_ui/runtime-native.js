@@ -5417,14 +5417,19 @@ input[type="range"] { height: 20px; margin: 2px; }
     loneImage(flow, i, cs, rematch) {
       const f = flow[i];
       if (!f.el || !this.imageLine([f], cs, rematch)) return false;
-      const inlineAt = (j) => {
-        const g2 = flow[j];
-        if (!g2) return false;
-        if (g2.text) return true;
-        const d = this.style(g2.el, cs, rematch).display || "inline";
-        return d.startsWith("inline");
+      const collapses = !(cs["white-space"] || "").startsWith("pre") && cs["white-space"] !== "break-spaces";
+      const inlineFrom = (j, step) => {
+        for (; j >= 0 && j < flow.length; j += step) {
+          const g2 = flow[j];
+          if (g2.space && collapses) continue;
+          if (!g2.el) return true;
+          const gcs = this.style(g2.el, cs, rematch);
+          if (gcs.position === "absolute" || gcs.position === "fixed" || gcs.display === "none") continue;
+          return (gcs.display || "inline").startsWith("inline");
+        }
+        return false;
       };
-      return !inlineAt(i - 1) && !inlineAt(i + 1);
+      return !inlineFrom(i - 1, -1) && !inlineFrom(i + 1, 1);
     }
     // Whether the in-flow content is only images on the baseline (imageLine).
     imageLine(flow, cs, rematch) {
