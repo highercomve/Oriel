@@ -508,7 +508,13 @@ fn focus(ctx: *anyopaque, n: *Node) void {
         if (s.focused != 0) _ = win.msgSend(BOOL, "makeFirstResponder:", .{s.view});
         return;
     };
-    _ = win.msgSend(BOOL, "makeFirstResponder:", .{f.inner});
+    // A control that won't take the keyboard (a popup without Full
+    // Keyboard Access): the page takes it from a field that had it.
+    if (!cocoa.isTrue(win.msgSend(BOOL, "makeFirstResponder:", .{f.inner})) or
+        !cocoa.isTrue(f.inner.msgSend(BOOL, "acceptsFirstResponder", .{})))
+    {
+        if (s.focused != 0) _ = win.msgSend(BOOL, "makeFirstResponder:", .{s.view});
+    }
 }
 
 fn removed(ctx: *anyopaque, n: *Node) void {

@@ -496,7 +496,12 @@ fn focus(ctx: *anyopaque, n: *Node) void {
         }
         return;
     };
-    _ = f.control.msgSend(BOOL, "becomeFirstResponder", .{});
+    // A control that can't take the keyboard (a select's button): the
+    // field that had it gives it up.
+    if (!apple.isTrue(f.control.msgSend(BOOL, "becomeFirstResponder", .{})) and focusedField(s) != 0) {
+        _ = s.view.msgSend(BOOL, "endEditing:", .{apple.boolean(true)});
+        _ = s.view.msgSend(BOOL, "becomeFirstResponder", .{});
+    }
 }
 
 fn removed(ctx: *anyopaque, n: *Node) void {
