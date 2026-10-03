@@ -2675,6 +2675,10 @@ function makeRunStyle(cs, fs) {
   const ff = familyOf(cs);
   if (ff) r.ff = ff;
   if (underlined(cs)) r.u = true;
+  // Its own line-height (a unitless one is its font size's: a 28px span
+  // in a line-height: 1.5 paragraph is 42px tall), for the line it's on.
+  const lh = cs["line-height"];
+  if (lh && lh !== "normal") r.lh = lineHeightPx(lh, fs);
   return r;
 }
 

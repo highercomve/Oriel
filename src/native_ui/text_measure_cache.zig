@@ -67,6 +67,7 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
         k.len += r.t.len;
         k.float(r.sz);
         k.float(r.w);
+        k.optional(r.lh);
         k.byte(@intFromBool(r.i));
         k.byte(@intFromBool(r.mono));
         k.byte(@intFromBool(r.u));
