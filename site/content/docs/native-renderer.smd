@@ -333,15 +333,15 @@ The native renderer runs whatever your web build produces. It isn't a framework 
 | | Status |
 |---|---|
 | Plain HTML, CSS and JavaScript | The [showcase](https://github.com/highercomve/Oriel/tree/main/examples/showcase): every tab |
-| React 19 | [GhostPen](https://github.com/highercomve/GhostPen) is a React app; controlled inputs, selects, checkboxes and sliders reach `onChange` (the runtime's tests run real React) |
-| Vue 3 | Vite's Vue starter, built with `vite build`: renders, and its counter updates on click |
-| Svelte 5 | Vite's Svelte starter: renders |
-| Preact | Vite's Preact starter: renders, and its counter updates on click |
+| React 19 | [GhostPen](https://github.com/highercomve/GhostPen) is a React app; controlled inputs, selects, checkboxes and sliders reach `onChange` (the runtime's tests run real React). Vite's React starter looks as in the WebView |
+| Vue 3 | Vite's Vue starter, built with `vite build`: looks as in the WebView, and its counter updates on click |
+| Svelte 5 | Vite's Svelte starter: looks as in the WebView, and its counter updates on click |
+| Preact | Vite's Preact starter: looks as in the WebView, and its counter updates on click |
 | Anything else that renders through the DOM (Solid, Lit, Alpine, htmx…) | The same calls; not tried yet |
 
 Use your usual tools: Vite, esbuild or any bundler, TypeScript, JSX, ES modules and lazy chunks. Oriel compiles the built JavaScript to bytecode and parses the CSS when the app is built, so the same `dist/` folder runs in the WebView and the native renderer.
 
-The limits are the renderer's, not the framework's: the CSS it supports (below), and browser APIs a page may use that aren't there yet (for example `iframe`, `<img>` with an SVG source, external SVG sprites, Blob URLs). A page that uses something missing still runs; that part is ignored. The WebView build stays available for anything that needs the whole web platform: the same app builds both ways, with or without `-Dnative_ui`.
+The limits are the renderer's, not the framework's: the CSS it supports (below), and browser APIs a page may use that aren't there yet (for example `iframe` and Blob URLs). A page that uses something missing still runs; that part is ignored. The WebView build stays available for anything that needs the whole web platform: the same app builds both ways, with or without `-Dnative_ui`.
 
 # Try it
 
