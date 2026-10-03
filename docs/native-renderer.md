@@ -261,6 +261,33 @@ the animated nodes are sent each frame).
   and padding on its sides), as browsers clip a replaced element; the
   other backends clip it to its content box only.
 
+**Inline boxes** (a run's `ib`, each backend): a padded, bordered or
+rounded inline element amid the text (a `<code>` chip, a highlighted
+`<span>`) stays runs (a row can't flow text around a box mid-line), and
+render.js gives them its decoration: `ib = { k, p, m, bw?, bc, br?, bg? }`
+(tree.zig InlineBox): `k` one per element (stable across renders; two
+like chips side by side are two boxes), padding `p` and margins `m`
+[top, right, bottom, left] px, border widths `bw` with one color `bc`,
+circular corner radii `br` [tl, tr, br, bl] px, and its background `bg`
+(no longer the runs' own `bg`). Consecutive runs with the same `k` are one
+box. As browsers draw it (box-decoration-break: slice):
+
+- The start side's margin, border and padding (`InlineBox.start()`) take
+  room in the line before its first character, the end side's (`end()`)
+  after its last; the vertical ones take none (they overflow the line).
+- Over each line fragment of its text: the background, then the border,
+  as tall as the font's content area (ascent and descent) plus the top
+  and bottom padding and border; the start side (its border, padding and
+  corners) only on its first fragment, the end side only on its last; a
+  fragment that wraps stops at the line's text (not over the space it
+  wraps after). Under the text.
+- Apple (apple_draw.zig inlineBoxRoom, paintInlineBoxes): the room as
+  CoreText kerning (on the character before the box and on its last one;
+  a first-line indent for a box at the very start), the fragments from
+  the glyphs' positions and advances. Checked against WKWebView (a chip in
+  a sentence, one that wraps over two lines, a bordered one). Win32, GTK
+  and Android still draw such runs plain.
+
 **Screen scale** (each backend): `platform.dpr` in the platform JSON,
 the screen's pixels per CSS px, read as a window opens (Apple: the main
 screen's backing scale / UIScreen's scale; GTK: the scale factor; Win32:
