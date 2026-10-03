@@ -367,7 +367,14 @@ static char *nui_join(JSContext *ctx, const char *base, const char *name) {
         } else if (len == 2 && r[0] == '.' && r[1] == '.') {
             if (depth > 0) w = segs[--depth];
         } else {
-            if (depth < 128) segs[depth++] = w;
+            // Deeper than this, a later ".." would pop the wrong level:
+            // refuse the path instead of resolving it to another module.
+            if (depth == 128) {
+                js_free(ctx, out);
+                JS_ThrowReferenceError(ctx, "module path too deep: %s", name);
+                return NULL;
+            }
+            segs[depth++] = w;
             memmove(w, r, len);
             w += len;
             if (end) *w++ = '/';
@@ -403,6 +410,8 @@ static JSValue nui_meta_resolve(JSContext *ctx, JSValueConst this_val, int argc,
                 js_free(ctx, url);
             }
             js_free(ctx, p);
+        } else {
+            res = JS_EXCEPTION; // nui_join threw (too deep, or out of memory)
         }
     }
     if (base) JS_FreeCString(ctx, base);
