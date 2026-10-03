@@ -1695,6 +1695,22 @@ int JS_GetRefCount(JSValueConst v)
     return JS_VALUE_HAS_REF_COUNT(v) ? JS_REF_COUNT(JS_VALUE_GET_PTR(v)) : 1;
 }
 
+/* Oriel: whether an object carries state of its own (properties, a
+   prototype other than `proto`, or not extensible); a native DOM wrapper
+   without any is replaced by an equal new one. Weak references to it
+   (WeakMap keys…) aren't counted. */
+bool JS_ObjectHasState(JSValueConst v, JSValueConst proto)
+{
+    if (JS_VALUE_GET_TAG(v) != JS_TAG_OBJECT)
+        return false;
+    JSObject *p = JS_VALUE_GET_OBJ(v);
+    JSShape *sh = p->shape;
+    if (sh->prop_count - sh->deleted_prop_count > 0 || !p->extensible)
+        return true;
+    JSObject *want = JS_VALUE_GET_TAG(proto) == JS_TAG_OBJECT ? JS_VALUE_GET_OBJ(proto) : NULL;
+    return sh->proto != want;
+}
+
 static void js_trigger_gc(JSRuntime *rt, size_t size)
 {
     bool force_gc;

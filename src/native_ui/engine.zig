@@ -491,6 +491,9 @@ pub const Engine = struct {
     /// allocation-driven collection.
     pub fn collectGarbage(e: *Engine) void {
         oqjs_run_gc(e.js);
+        // The native DOM's trees the collection left without wrappers go too
+        // (its finalizers only list them), not at the next render.
+        if (native_dom) _ = e.callf("globalThis.__nuiDom?.collect()", .{});
     }
 
     pub fn jsMemory(e: *Engine) usize {

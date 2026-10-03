@@ -146,11 +146,32 @@ reference counts) and allocation-failure tests.
   mutation log), `style` (`CSSStyleDeclaration` over the `style` attribute),
   `dataset`, form fields' `value`/`checked`, `Range`, `TreeWalker`… Most of it
   can come from linkedom's own code, adapted.
-- Expandos (`el.__reactFiber$…`, the renderer's own fields) live on the
-  wrapper, so the wrapper must live as long as its node can be reached from
-  the page: the store keeps a strong reference to the wrapper while the node is
-  connected or has expandos, and a detached node without expandos is owned by
-  its wrapper (freed in the wrapper's finalizer). (Open question below.)
+- Expandos (`el.__reactFiber$…`, Solid's `$$click`, the renderer's own
+  fields) live on the wrapper, so the wrapper must live as long as its node
+  can be reached from the page, as in a browser:
+  - Connected: the store holds a reference to the wrapper.
+  - In a detached tree whose root has a wrapper: the root's wrapper owns the
+    tree's other wrappers (the store holds a reference to each and, for
+    each, one to the root's), reported to QuickJS's cycle collector by the
+    wrapper class's `gc_mark` (store.zig `marks`). A tree the page dropped
+    is freed with its wrappers, cycles through its listeners included.
+  - The rest (a detached root without a wrapper): held only by the page.
+- Per-node state the runtime keeps (event listeners, a template's content,
+  a `<style>`'s CSSOM sheet) is a symbol property on the wrapper, so a
+  wrapper carrying state has properties of its own.
+- When an operation detaches a tree, the store releases at once what only
+  it holds: the whole tree when nothing else references it, else each owned
+  wrapper with no state (no own properties, its usual prototype,
+  extensible) that nothing else references; a later walk to such a node
+  makes an equal new wrapper. Trees the renderer still references for a
+  frame are checked again before the next renders (`collect`). A
+  WeakMap/WeakSet/WeakRef entry for such a node is lost (a weak reference
+  isn't state): a page relying on one for a node in a removed tree it
+  doesn't reference otherwise sees a new wrapper.
+- A detached tree left without wrappers is freed when its last wrapper is
+  finalized, unless an operation is under way (QuickJS's cycle collector
+  can run inside the mutation hook, while a clone is building its copy):
+  then at `collect`, before the next render, or after GTK's idle GC.
 
 ### The renderer
 
@@ -222,10 +243,9 @@ that must take the general path).
   a differential test that runs the same scripts against linkedom and the
   native DOM and compares the serialized tree and the observed values; React's
   tests already in `npm test`.
-- **Wrapper lifetime and expandos.** Keeping wrappers alive while nodes are
-  connected costs memory per node (one small object, which linkedom spends
-  anyway: its nodes *are* JS objects). Needs care with QuickJS's cycle
-  collector (a wrapper reachable from a connected node must not be collected).
+- **Wrapper lifetime and expandos.** Done as above (store.zig: ownership,
+  `marks`, `prune`; tests with a fake cycle collector and a fuzz that runs
+  it inside the mutation hook).
 - **Selector coverage.** The style engine and `querySelector` need the selectors
   `css.js` supports today (and linkedom's, for `querySelector`).
 - **Platforms.** All Zig and C, so it builds wherever the engine does; each

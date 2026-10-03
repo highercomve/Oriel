@@ -1972,16 +1972,26 @@ fn roundedSides(cr: *cairo_t, f: Rect, r: Radii, bw: [4]f32, colors: [4]tree_mod
     }
     for (0..4) |i| {
         if (bw[i] <= 0 or colors[i][3] <= 0) continue;
+        // A color already drawn with an earlier side.
+        const done = for (0..i) |k| {
+            if (bw[k] > 0 and std.mem.eql(f32, &colors[k], &colors[i])) break true;
+        } else false;
+        if (done) continue;
         cairo_save(cr);
         if (!same) {
-            const j = (i + 1) % 4;
+            // Every side of this color in one clip (their wedges' union):
+            // two neighbours of one color meet without a seam.
             cairo_new_path(cr);
-            cairo_move_to(cr, outer[i][0], outer[i][1]);
-            cairo_line_to(cr, outer[j][0], outer[j][1]);
-            cairo_line_to(cr, join[j][0], join[j][1]);
-            cairo_line_to(cr, mid[0], mid[1]);
-            cairo_line_to(cr, join[i][0], join[i][1]);
-            cairo_close_path(cr);
+            for (i..4) |k| {
+                if (bw[k] <= 0 or !std.mem.eql(f32, &colors[k], &colors[i])) continue;
+                const j = (k + 1) % 4;
+                cairo_move_to(cr, outer[k][0], outer[k][1]);
+                cairo_line_to(cr, outer[j][0], outer[j][1]);
+                cairo_line_to(cr, join[j][0], join[j][1]);
+                cairo_line_to(cr, mid[0], mid[1]);
+                cairo_line_to(cr, join[k][0], join[k][1]);
+                cairo_close_path(cr);
+            }
             cairo_clip(cr);
         }
         cairo_new_path(cr);
