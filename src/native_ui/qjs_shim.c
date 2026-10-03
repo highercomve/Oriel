@@ -36,6 +36,7 @@ extern void oriel_nui_ops(void *opaque, const char *json, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
 extern int oriel_nui_vsync(void *opaque);
 extern void oriel_nui_warm_fonts(void *opaque, const double *v, size_t count);
+extern int oriel_nui_canvas(void *opaque, double id, const double *nums, size_t len, const char *const *strs, const size_t *lens, size_t count);
 extern uint32_t oriel_nui_stamp_plan(void *opaque, const double *v, size_t len);
 #if defined(ORIEL_NATIVE_DOM)
 extern int oriel_nui_stamp(void *opaque, double row_id, void *dom, uint32_t row, uint32_t plan);
@@ -259,6 +260,41 @@ static JSValue h_stamp_list(JSContext *ctx, JSValueConst this_val, int argc, JSV
     return JS_NewBool(ctx, oriel_nui_stamp_list(opaque_of(ctx), list_id, dom, list, row_style, plan, template_row, kept, (size_t)kept_len));
 }
 #endif
+
+// host.canvas(id, Float64Array, [strings]): a canvas node's program as
+// numbers (canvas.js encodeProgram), read in place: no JSON either way.
+static JSValue h_canvas(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    double id;
+    if (argc < 3 || JS_ToFloat64(ctx, &id, argv[0])) return JS_EXCEPTION;
+    size_t offset = 0, bytes = 0, per = 0;
+    JSValue buffer = JS_GetTypedArrayBuffer(ctx, argv[1], &offset, &bytes, &per);
+    if (JS_IsException(buffer)) return JS_EXCEPTION;
+    size_t size = 0;
+    uint8_t *data = JS_GetArrayBuffer(ctx, &size, buffer);
+    JS_FreeValue(ctx, buffer);
+    if (!data || per != 8 || offset + bytes > size) return JS_ThrowTypeError(ctx, "host.canvas: a Float64Array");
+    int64_t count = 0;
+    if (JS_GetLength(ctx, argv[2], &count) < 0) return JS_EXCEPTION;
+    if (count < 0 || count > 1 << 20) return JS_FALSE;
+    const char **strs = count ? js_malloc(ctx, (size_t)count * sizeof *strs) : NULL;
+    size_t *lens = count ? js_malloc(ctx, (size_t)count * sizeof *lens) : NULL;
+    if (count && (!strs || !lens)) { js_free(ctx, strs); js_free(ctx, lens); return JS_EXCEPTION; }
+    int64_t made = 0;
+    int ok = 1;
+    for (; made < count; made++) {
+        JSValue v = JS_GetPropertyUint32(ctx, argv[2], (uint32_t)made);
+        strs[made] = JS_ToCStringLen(ctx, &lens[made], v);
+        JS_FreeValue(ctx, v);
+        if (!strs[made]) { ok = 0; break; }
+    }
+    // The doubles in place (a Float64Array's storage is 8-byte aligned).
+    int r = ok ? oriel_nui_canvas(opaque_of(ctx), id, (const double *)(data + offset), bytes / 8, strs, lens, (size_t)count) : 0;
+    for (int64_t i = 0; i < made; i++) JS_FreeCString(ctx, strs[i]);
+    js_free(ctx, strs);
+    js_free(ctx, lens);
+    return ok ? JS_NewBool(ctx, r) : JS_EXCEPTION;
+}
 
 // host.warmFonts([[size, weight, italic, mono], ...]): fonts the backend
 // loads while idle (at most 64).
@@ -701,6 +737,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "now", h_now, 0);
     set_fn(ctx, host, "vsync", h_vsync, 0);
     set_fn(ctx, host, "warmFonts", h_warm_fonts, 1);
+    set_fn(ctx, host, "canvas", h_canvas, 3);
     set_fn(ctx, host, "sheetCache", h_sheet_cache, 1);
     set_fn(ctx, host, "sheetKeep", h_sheet_keep, 2);
 #if defined(ORIEL_NATIVE_DOM)

@@ -13623,6 +13623,102 @@ globalThis.atob ??= (s) => {
   function commandsOf(el) {
     return recorders.get(el)?.ops || [];
   }
+  function versionOf(el) {
+    return recorders.get(el)?.version || 0;
+  }
+  var CANVAS_CODES = {
+    sv: 1,
+    rs: 2,
+    bp: 3,
+    cp: 4,
+    st: 5,
+    fl: 6,
+    cl: 7,
+    tl: 8,
+    ts: 9,
+    tr: 10,
+    mv: 11,
+    ln: 12,
+    rc: 13,
+    ar: 14,
+    bz: 15,
+    fr: 16,
+    sr: 17,
+    cr: 18,
+    tx: 19,
+    sx: 20,
+    sf: 21,
+    ss: 22,
+    lw: 23,
+    ga: 24,
+    lc: 25,
+    lj: 26,
+    ta: 27,
+    tb: 28,
+    fo: 29,
+    gl: 30,
+    gr: 31,
+    gs: 32
+  };
+  var CANVAS_ARGS = [0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 1, 2, 2, 4, 6, 6, 4, 4, 4, 3, 3, 5, 5, 1, 1, 1, 1, 1, 1, 4, 5, 7, 6];
+  var WORDS = {
+    lc: { butt: 0, round: 1, square: 2 },
+    lj: { miter: 0, round: 1, bevel: 2 },
+    ta: { left: 0, center: 1, right: 2, start: 0, end: 2 },
+    tb: { alphabetic: 0, top: 1, hanging: 2, middle: 3, bottom: 4, ideographic: 4 }
+  };
+  function encodeProgram(ops) {
+    let size = 0;
+    for (const op of ops) size += 1 + (CANVAS_ARGS[CANVAS_CODES[op[0]]] ?? 0);
+    const nums = new Float64Array(size), strs = [];
+    let i = 0;
+    for (const op of ops) {
+      const code = CANVAS_CODES[op[0]];
+      if (!code) continue;
+      nums[i++] = code;
+      switch (op[0]) {
+        case "tx":
+        case "sx":
+          nums[i++] = strs.push(String(op[1])) - 1;
+          nums[i++] = op[2];
+          nums[i++] = op[3];
+          break;
+        case "fo":
+          nums[i++] = op[1];
+          nums[i++] = op[2];
+          nums[i++] = op[3];
+          nums[i++] = strs.push(op[4] || "") - 1;
+          break;
+        case "sf":
+        case "ss": {
+          const p = op[1];
+          if (p?.[0] === "g") {
+            nums[i++] = 1;
+            nums[i++] = p[1];
+            nums[i++] = 0;
+            nums[i++] = 0;
+            nums[i++] = 0;
+          } else {
+            nums[i++] = 0;
+            nums[i++] = p[0];
+            nums[i++] = p[1];
+            nums[i++] = p[2];
+            nums[i++] = p[3];
+          }
+          break;
+        }
+        case "lc":
+        case "lj":
+        case "ta":
+        case "tb":
+          nums[i++] = WORDS[op[0]][op[1]] ?? 0;
+          break;
+        default:
+          for (let k = 1; k <= CANVAS_ARGS[code]; k++) nums[i++] = op[k] === true ? 1 : op[k] === false ? 0 : op[k] ?? 0;
+      }
+    }
+    return [i === size ? nums : nums.subarray(0, i), strs];
+  }
   var recorders = /* @__PURE__ */ new WeakMap();
   var CANVAS_DEFAULT_W = 300;
   var CANVAS_DEFAULT_H = 150;
@@ -13671,6 +13767,7 @@ globalThis.atob ??= (s) => {
     constructor(el) {
       this.canvas = el;
       this.ops = [];
+      this.version = 0;
       this.nGrad = 0;
       this.grads = /* @__PURE__ */ new Map();
       this.s = new State2();
@@ -13686,6 +13783,7 @@ globalThis.atob ??= (s) => {
     }
     push(op) {
       this.ops.push(op);
+      this.version++;
       notify();
     }
     // ------------------------------------------------------------- state
@@ -13774,6 +13872,7 @@ globalThis.atob ??= (s) => {
     // definitions, then the state.
     restart() {
       this.ops.length = 0;
+      this.version++;
       if (this.grads.size) {
         const used = /* @__PURE__ */ new Set();
         for (const st of [this.s, ...this.stack.map((x) => x.s)]) {
@@ -13790,6 +13889,7 @@ globalThis.atob ??= (s) => {
       this.emitState();
     }
     emitState() {
+      this.version++;
       const s = this.s;
       this.ops.push(
         ["sf", s.fillStyle],
@@ -13894,6 +13994,7 @@ globalThis.atob ??= (s) => {
       );
       this.penX = x + rx * Math.cos(+a1 || 0);
       this.penY = y + ry * Math.sin(+a1 || 0);
+      this.version++;
       notify();
     }
     // Quadratic curves become cubics (cairo has no quadratic: the control
@@ -14149,6 +14250,8 @@ col, colgroup { display: none; }
       this.stamps = [];
       this.noStamp = /* @__PURE__ */ new WeakSet();
       this.listStamps = [];
+      this.canvasEls = /* @__PURE__ */ new Map();
+      this.canvasSent = /* @__PURE__ */ new Map();
       this.noStampList = /* @__PURE__ */ new WeakSet();
       this.declined = false;
       this.structural = false;
@@ -14306,7 +14409,7 @@ col, colgroup { display: none; }
       this.outside = false;
       this.rendering = true;
       try {
-        if (!this.updateText() && !this.updateBoxes()) this.renderNow();
+        if (!this.canvasOnly() && !this.updateText() && !this.updateBoxes()) this.renderNow();
         if (this.declined) {
           this.declined = false;
           this.dirty = false;
@@ -15025,7 +15128,8 @@ col, colgroup { display: none; }
         return this.put(nodes, id, "image", props, [], fixedNode);
       }
       if (tag === "canvas") {
-        this.volatile.add(el);
+        if (this.host.canvasOps) this.canvasEls.set(el, id);
+        else this.volatile.add(el);
         props.cw = el.width;
         props.ch = el.height;
         const ratio = props.ch > 0 ? props.cw / props.ch : 2;
@@ -15043,8 +15147,10 @@ col, colgroup { display: none; }
           }
         } else if (props.w === void 0 || props.h === void 0) props.ar = ratio;
         props.fs = 0;
-        const cv = commandsOf(el);
-        if (cv.length) props.cv = cv;
+        if (!this.host.canvasOps) {
+          const cv = commandsOf(el);
+          if (cv.length) props.cv = cv;
+        }
         this.putClick(props, el);
         return this.put(nodes, id, "canvas", props, [], fixedNode);
       }
@@ -15458,6 +15564,7 @@ col, colgroup { display: none; }
         const p = encodeProps(shown);
         const k = JSON.stringify(n2.kids);
         if (!old || old.kind !== n2.kind) {
+          this.canvasSent.delete(id);
           if (old) ops.push(`["d",${id}]`);
           ops.push(`["c",${id},${JSON.stringify(n2.kind)}]`, `["p",${id},${p}]`, `["k",${id},${k}]`);
         } else {
@@ -15486,8 +15593,36 @@ col, colgroup { display: none; }
       const P = this.host.prof ? this.host.now : null, t02 = P && P();
       if (ops.length) this.host.ops(`[${ops.join(",")}]`);
       if (this.stamps.length || this.listStamps.length) this.stampRows();
+      if (this.canvasEls.size) this.sendCanvases();
       if (P) this.applyMs += P() - t02;
       this.schedule();
+    }
+    // The canvases whose program the tree doesn't have yet (host.canvas):
+    // numbers and strings, no JSON.
+    sendCanvases() {
+      for (const [el, id] of this.canvasEls) {
+        if (!el.isConnected || this.idOf(el, "el") !== id || !this.prev.has(id)) {
+          this.canvasEls.delete(el);
+          this.canvasSent.delete(id);
+          continue;
+        }
+        const v = versionOf(el);
+        if (this.canvasSent.get(id) === v) continue;
+        const P = this.host.prof ? this.host.now : null, t02 = P && P();
+        const [nums, strs] = encodeProgram(commandsOf(el));
+        const t1 = P && P();
+        if (this.host.canvas(id, nums, strs)) this.canvasSent.set(id, v);
+        if (P) this.host.log(1, `PROF canvas: ${nums.length} numbers, encode ${(t1 - t02).toFixed(2)}, send ${(P() - t1).toFixed(2)}`);
+      }
+    }
+    // Only canvases drew since the last render (nothing marked, no fields
+    // whose state changes without mutations): send their programs, flatten
+    // nothing.
+    canvasOnly() {
+      if (!this.host.canvasOps || !this.canvasEls.size || this.marks.size || this.flatMarks.size || this.full || this.pendingScroll) return false;
+      for (const el of this.volatile) if (el.isConnected) return false;
+      this.sendCanvases();
+      return true;
     }
     // host.stamp for this frame's stamped rows. One the tree declines (its
     // children changed shape in a way only the tree saw): no longer stamped,

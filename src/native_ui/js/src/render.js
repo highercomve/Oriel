@@ -13,7 +13,7 @@ import { StyleEngine, computeStyle, parseInline, length, color, background, shad
 import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor } from "./icons.js";
-import { commandsOf } from "./canvas.js";
+import { commandsOf, versionOf, encodeProgram } from "./canvas.js";
 import { classStyle, nodeIndex, nodeAt, compileMatch } from "#dom";
 
 // The user-agent stylesheet: what browsers do without CSS.
@@ -164,6 +164,8 @@ export class Renderer {
     this.stamps = [];              // [row id, row element, plan] the tree stamps after emit (host.stamp)
     this.noStamp = new WeakSet();  // rows the tree declined: made the general way from now on
     this.listStamps = [];          // [list id, list element, row style, plan, template row, rows made here] (host.stampList)
+    this.canvasEls = new Map();    // canvas element → its node id (programs sent apart: host.canvas)
+    this.canvasSent = new Map();   // node id → the program version it has
     this.noStampList = new WeakSet(); // lists that aren't (or stopped being) the same row again
     this.declined = false;         // a stamp was declined: render again the general way
     this.structural = false;       // the sheets match by position (:nth-child, +, ~…)
@@ -338,7 +340,7 @@ export class Renderer {
     this.outside = false;
     this.rendering = true;
     try {
-      if (!this.updateText() && !this.updateBoxes()) this.renderNow();
+      if (!this.canvasOnly() && !this.updateText() && !this.updateBoxes()) this.renderNow();
       // A row the tree couldn't stamp (its shape changed natively): the
       // general way now, not a frame later.
       if (this.declined) { this.declined = false; this.dirty = false; this.renderNow(); }
@@ -1093,7 +1095,11 @@ export class Renderer {
       return this.put(nodes, id, "image", props, [], fixedNode);
     }
     if (tag === "canvas") {
-      this.volatile.add(el); // its program changes without a mutation
+      // Its program changes without a mutation: sent apart from the props
+      // when the backend takes it so (host.canvas, after emit), else made
+      // again with them every render.
+      if (this.host.canvasOps) this.canvasEls.set(el, id);
+      else this.volatile.add(el);
       // The bitmap's size in px (300x150 when the attributes are absent),
       // the drawing's coordinate space; the box scales it.
       props.cw = el.width;
@@ -1126,8 +1132,10 @@ export class Renderer {
       props.fs = 0;
       // The drawing program so far (a game's last frame; static drawing
       // accumulates). Its children are the fallback content: not shown.
-      const cv = commandsOf(el);
-      if (cv.length) props.cv = cv;
+      if (!this.host.canvasOps) {
+        const cv = commandsOf(el);
+        if (cv.length) props.cv = cv;
+      }
       this.putClick(props, el);
       return this.put(nodes, id, "canvas", props, [], fixedNode);
     }
@@ -1595,6 +1603,7 @@ export class Renderer {
       const p = encodeProps(shown);
       const k = JSON.stringify(n.kids);
       if (!old || old.kind !== n.kind) {
+        this.canvasSent.delete(id); // a new node: its program is sent again
         if (old) ops.push(`["d",${id}]`);
         ops.push(`["c",${id},${JSON.stringify(n.kind)}]`, `["p",${id},${p}]`, `["k",${id},${k}]`);
       } else {
@@ -1615,8 +1624,38 @@ export class Renderer {
     if (ops.length) this.host.ops(`[${ops.join(",")}]`);
     // Rows the tree stamps from the DOM, now that they exist there.
     if (this.stamps.length || this.listStamps.length) this.stampRows();
+    if (this.canvasEls.size) this.sendCanvases();
     if (P) this.applyMs += P() - t0;
     this.schedule();
+  }
+
+  // The canvases whose program the tree doesn't have yet (host.canvas):
+  // numbers and strings, no JSON.
+  sendCanvases() {
+    for (const [el, id] of this.canvasEls) {
+      if (!el.isConnected || this.idOf(el, "el") !== id || !this.prev.has(id)) {
+        this.canvasEls.delete(el);
+        this.canvasSent.delete(id);
+        continue;
+      }
+      const v = versionOf(el);
+      if (this.canvasSent.get(id) === v) continue;
+      const P = this.host.prof ? this.host.now : null, t0 = P && P();
+      const [nums, strs] = encodeProgram(commandsOf(el));
+      const t1 = P && P();
+      if (this.host.canvas(id, nums, strs)) this.canvasSent.set(id, v);
+      if (P) this.host.log(1, `PROF canvas: ${nums.length} numbers, encode ${(t1 - t0).toFixed(2)}, send ${(P() - t1).toFixed(2)}`);
+    }
+  }
+
+  // Only canvases drew since the last render (nothing marked, no fields
+  // whose state changes without mutations): send their programs, flatten
+  // nothing.
+  canvasOnly() {
+    if (!this.host.canvasOps || !this.canvasEls.size || this.marks.size || this.flatMarks.size || this.full || this.pendingScroll) return false;
+    for (const el of this.volatile) if (el.isConnected) return false;
+    this.sendCanvases();
+    return true;
   }
 
   // host.stamp for this frame's stamped rows. One the tree declines (its

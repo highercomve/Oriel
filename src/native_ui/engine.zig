@@ -113,6 +113,15 @@ pub const Backend = struct {
     /// runtime sends such changes as "x" ops only when a backend that
     /// mirrors props has this (others read props when they draw).
     paint: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
+    /// Optional, for backends that mirror props: a canvas node's program
+    /// changed (Tree.on_canvas, host.canvas). The runtime sends programs
+    /// that way only when a backend that mirrors props has this.
+    canvas: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
+    /// The backend keeps its own copy of every node's props (Android's
+    /// Kotlin views), from `props`: then the runtime sends transform-only
+    /// changes and canvas programs outside the props only if it has `paint`
+    /// and `canvas`. (GTK's `props` only drops cached text sizes.)
+    mirrors_props: bool = false,
 };
 
 /// A font the page may use (Backend.warm_fonts).
@@ -166,12 +175,18 @@ pub const Engine = struct {
         e.tree.on_leaf_style = backend.leaf_style;
         e.tree.on_create = backend.leaf;
         e.tree.on_paint = backend.paint;
+        e.tree.on_canvas = backend.canvas;
         e.js = oqjs_new(e, platform_json.ptr, label.ptr, url.ptr) orelse return error.QuickJsInitFailed;
         errdefer oqjs_free(e.js);
         // Transform/opacity-only changes as "x" ops: unless the backend
-        // mirrors props without a paint hook (it would miss them).
-        if (backend.props == null or backend.paint != null) {
+        // mirrors props (mirrors_props) without a paint hook (it would miss them).
+        if (!backend.mirrors_props or backend.paint != null) {
             const flag = "__host.paintOps = true";
+            _ = oqjs_eval(e.js, flag, flag.len, "<native>");
+        }
+        // Canvas programs as numbers (host.canvas), likewise.
+        if (!backend.mirrors_props or backend.canvas != null) {
+            const flag = "__host.canvasOps = true";
             _ = oqjs_eval(e.js, flag, flag.len, "<native>");
         }
         if (oqjs_eval_bytecode(e.js, runtime_bytecode.ptr, runtime_bytecode.len) < 0) return error.RuntimeFailed;
@@ -413,6 +428,17 @@ export fn oriel_nui_ops(p: *anyopaque, json: [*]const u8, len: usize) void {
     const e = engineOf(p);
     if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: ops {s}", .{json[0..@min(len, 300)]});
     e.tree.apply(json[0..len]) catch |err| log.err("native ui: bad ops ({s})", .{@errorName(err)});
+}
+
+/// host.canvas(id, Float64Array, [strings]): a canvas node's program
+/// (Tree.setCanvas); 0 when the node is gone.
+export fn oriel_nui_canvas(p: *anyopaque, id: f64, nums: [*]const f64, len: usize, strs: [*]const [*]const u8, lens: [*]const usize, count: usize) c_int {
+    const e = engineOf(p);
+    const list = e.gpa.alloc([]const u8, count) catch return 0;
+    defer e.gpa.free(list);
+    for (list, 0..) |*l, i| l.* = strs[i][0..lens[i]];
+    const ok = e.tree.setCanvas(Tree.idOf(id), nums[0..len], list) catch return 0;
+    return @intFromBool(ok);
 }
 
 /// host.warmFonts([[size, weight, italic, mono], ...]) as flat numbers.
