@@ -293,6 +293,31 @@ Object.defineProperty(inputProto, "type", {
   set(v) { this.setAttribute("type", v); },
   configurable: true,
 });
+// A range's value as browsers sanitize it: halfway between min and max when
+// it's missing or not a number, else clamped to them and on a step.
+const valueDesc = Object.getOwnPropertyDescriptor(inputProto, "value");
+const rangeValue = (el, raw) => {
+  const num = (a, d) => { const v = parseFloat(el.getAttribute(a)); return Number.isFinite(v) ? v : d; };
+  const min = num("min", 0), max = Math.max(num("max", 100), min);
+  const step = el.getAttribute("step")?.toLowerCase() === "any" ? 0 : (num("step", 1) > 0 ? num("step", 1) : 1);
+  let v = raw.trim() === "" ? NaN : Number(raw);
+  if (!Number.isFinite(v)) v = min + (max - min) / 2;
+  v = Math.min(Math.max(v, min), max);
+  if (step) {
+    v = min + Math.round((v - min) / step) * step;
+    if (v > max) v -= step;
+    v = +v.toFixed(12);
+  }
+  return String(v);
+};
+Object.defineProperty(inputProto, "value", {
+  get() {
+    const raw = valueDesc.get.call(this);
+    return this.type === "range" ? rangeValue(this, raw ?? "") : raw;
+  },
+  set(v) { valueDesc.set.call(this, v); },
+  configurable: true,
+});
 Object.defineProperty(inputProto, "disabled", {
   get() { return this.hasAttribute("disabled"); },
   set(v) { if (v) this.setAttribute("disabled", ""); else this.removeAttribute("disabled"); },

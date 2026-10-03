@@ -64,3 +64,10 @@ assert.deepEqual(Array.from(ctx.focusLog), [
   "active:b", "blur:b:-", "focusout:b:-", "active:body",
 ]);
 console.log("events: focus, blur, focusin and focusout follow the active element");
+vm.runInContext(`
+  const r = (attrs) => { const el = document.createElement('input'); el.setAttribute('type', 'range');
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el.value; };
+  globalThis.ranges = [r({}), r({ min: 0, max: 10, step: 3 }), r({ value: 70 }), r({ value: 170 }), r({ min: 10, max: 5 }), r({ value: 'x', step: 'any', max: 1 })];
+`, ctx);
+assert.deepEqual(Array.from(ctx.ranges), ["50", "6", "70", "100", "10", "0.5"]);
+console.log("events: a range's value is halfway when missing, else clamped and on a step");
