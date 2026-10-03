@@ -4111,7 +4111,15 @@ fn border(p: *Painter, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color, b
         }
         return;
     }
-    // Per side (straight edges).
+    // Solid sides of different widths: the ring between the border box
+    // and the padding box, its inner corners elliptical (each radius less
+    // the two sides' widths), each color cut along the line from an outer
+    // corner to the padding box's, as browsers join them.
+    if (bs == null) {
+        unevenBorder(p, f, r, bw, colors);
+        return;
+    }
+    // Dashed or dotted, per side (straight edges).
     const sides = [4]Rect{
         .{ .x = f.x, .y = f.y, .w = f.w, .h = bw[0] },
         .{ .x = f.x + f.w - bw[1], .y = f.y, .w = bw[1], .h = f.h },
@@ -4127,6 +4135,121 @@ fn border(p: *Painter, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color, b
         const rc = rectF(sd);
         p.vt().FillRectangle.?(p.rt, &rc, p.solid(colors[i]));
     }
+}
+
+fn unevenBorder(p: *Painter, f: Rect, radii: [4]f32, bw: [4]f32, colors: [4]tree_mod.Color) void {
+    if (f.w <= 0 or f.h <= 0) return;
+    if (@max(@max(bw[0], bw[1]), @max(bw[2], bw[3])) <= 0) return;
+    // Radii that don't fit are scaled down together, as CSS does.
+    var r = radii;
+    for (&r) |*x| x.* = @max(0, x.*);
+    const fit = @min(1, @min(@min(f.w / @max(1e-3, r[0] + r[1]), f.w / @max(1e-3, r[3] + r[2])), @min(f.h / @max(1e-3, r[0] + r[3]), f.h / @max(1e-3, r[1] + r[2]))));
+    for (&r) |*x| x.* *= fit;
+    const inner: Rect = .{ .x = f.x + bw[3], .y = f.y + bw[0], .w = @max(0, f.w - bw[1] - bw[3]), .h = @max(0, f.h - bw[0] - bw[2]) };
+    // Inner corners (top-left, top-right, bottom-right, bottom-left): x
+    // radius less the left or right side, y less the top or bottom.
+    const irx = [4]f32{ @max(0, r[0] - bw[3]), @max(0, r[1] - bw[1]), @max(0, r[2] - bw[1]), @max(0, r[3] - bw[3]) };
+    const iry = [4]f32{ @max(0, r[0] - bw[0]), @max(0, r[1] - bw[0]), @max(0, r[2] - bw[2]), @max(0, r[3] - bw[2]) };
+    const fac = d2d.?;
+    var geo: ?*c.ID2D1PathGeometry = null;
+    if (fac.lpVtbl.*.CreatePathGeometry.?(fac, &geo) < 0 or geo == null) return;
+    defer releaseCom(geo);
+    var sink: ?*c.ID2D1GeometrySink = null;
+    if (geo.?.lpVtbl.*.Open.?(geo, &sink) < 0 or sink == null) return;
+    const simple: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sink.?);
+    simple.lpVtbl.*.SetFillMode.?(simple, c.D2D1_FILL_MODE_ALTERNATE);
+    roundFigure(sink.?, f, r, r);
+    if (inner.w > 0 and inner.h > 0) roundFigure(sink.?, inner, irx, iry);
+    _ = simple.lpVtbl.*.Close.?(simple);
+    releaseCom(sink);
+    const ring: *c.ID2D1Geometry = @ptrCast(geo.?);
+    const vt = p.vt();
+    const same = for (colors[1..]) |col| {
+        if (!std.mem.eql(f32, &col, &colors[0])) break false;
+    } else true;
+    if (same) {
+        if (colors[0][3] > 0) vt.FillGeometry.?(p.rt, ring, p.solid(colors[0]), null);
+        return;
+    }
+    const outer = [4]c.D2D1_POINT_2F{
+        .{ .x = f.x, .y = f.y },             .{ .x = f.x + f.w, .y = f.y },
+        .{ .x = f.x + f.w, .y = f.y + f.h }, .{ .x = f.x, .y = f.y + f.h },
+    };
+    const pad = [4]c.D2D1_POINT_2F{
+        .{ .x = inner.x, .y = inner.y },                     .{ .x = inner.x + inner.w, .y = inner.y },
+        .{ .x = inner.x + inner.w, .y = inner.y + inner.h }, .{ .x = inner.x, .y = inner.y + inner.h },
+    };
+    const center: c.D2D1_POINT_2F = .{ .x = f.x + f.w / 2, .y = f.y + f.h / 2 };
+    // Each corner's join line: from the outer corner through the padding
+    // box's (toward the middle when both sides there are 0 wide).
+    var dir: [4]c.D2D1_POINT_2F = undefined;
+    for (0..4) |i| {
+        dir[i] = .{ .x = pad[i].x - outer[i].x, .y = pad[i].y - outer[i].y };
+        if (@abs(dir[i].x) + @abs(dir[i].y) < 1e-3) dir[i] = .{ .x = center.x - outer[i].x, .y = center.y - outer[i].y };
+    }
+    // Each line drawn out of its corner's square (the radius, or the
+    // sides' widths), no further than the middle.
+    var ends: [4]c.D2D1_POINT_2F = undefined;
+    const cw = [4][2]f32{ .{ bw[3], bw[0] }, .{ bw[1], bw[0] }, .{ bw[1], bw[2] }, .{ bw[3], bw[2] } };
+    for (0..4) |i| {
+        const size = @min(@max(r[i], @max(cw[i][0], cw[i][1])) + 1, @min(f.w, f.h) / 2);
+        const k = size / @max(1e-3, @max(@abs(dir[i].x), @abs(dir[i].y)));
+        ends[i] = .{ .x = outer[i].x + dir[i].x * k, .y = outer[i].y + dir[i].y * k };
+    }
+    for (0..4) |i| {
+        if (bw[i] <= 0 or colors[i][3] <= 0) continue;
+        const j = (i + 1) % 4;
+        // The side's share: its corners' join lines as far as the corners'
+        // curves go, then the middle (no ring there).
+        const mask = polygonGeometry(&.{ outer[i], outer[j], ends[j], center, ends[i] }) orelse continue;
+        defer releaseCom(@as(?*c.ID2D1PathGeometry, mask));
+        const params: c.D2D1_LAYER_PARAMETERS = .{
+            .contentBounds = .{ .left = -1e6, .top = -1e6, .right = 1e6, .bottom = 1e6 },
+            .geometricMask = @ptrCast(mask),
+            .maskAntialiasMode = c.D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            .maskTransform = identity,
+            .opacity = 1,
+            .opacityBrush = null,
+            .layerOptions = c.D2D1_LAYER_OPTIONS_NONE,
+        };
+        vt.PushLayer.?(p.rt, &params, null);
+        vt.FillGeometry.?(p.rt, ring, p.solid(colors[i]), null);
+        vt.PopLayer.?(p.rt);
+    }
+}
+
+/// A rounded rectangle as one closed figure of `sink`, its corners
+/// (top-left, top-right, bottom-right, bottom-left) elliptical: rx by ry.
+fn roundFigure(sink: *c.ID2D1GeometrySink, f: Rect, rx: [4]f32, ry: [4]f32) void {
+    const simple: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sink);
+    const x = f.x;
+    const y = f.y;
+    const w = f.w;
+    const h = f.h;
+    const corner = struct {
+        fn add(s: *c.ID2D1GeometrySink, a: f32, b: f32, to: c.D2D1_POINT_2F) void {
+            if (a <= 0 or b <= 0) {
+                s.lpVtbl.*.AddLine.?(s, to);
+                return;
+            }
+            const arc: c.D2D1_ARC_SEGMENT = .{ .point = to, .size = .{ .width = a, .height = b }, .rotationAngle = 0, .sweepDirection = c.D2D1_SWEEP_DIRECTION_CLOCKWISE, .arcSize = c.D2D1_ARC_SIZE_SMALL };
+            s.lpVtbl.*.AddArc.?(s, &arc);
+        }
+    }.add;
+    const k0: f32 = if (rx[0] > 0 and ry[0] > 0) 1 else 0;
+    const k1: f32 = if (rx[1] > 0 and ry[1] > 0) 1 else 0;
+    const k2: f32 = if (rx[2] > 0 and ry[2] > 0) 1 else 0;
+    const k3: f32 = if (rx[3] > 0 and ry[3] > 0) 1 else 0;
+    simple.lpVtbl.*.BeginFigure.?(simple, .{ .x = x + rx[0] * k0, .y = y }, c.D2D1_FIGURE_BEGIN_FILLED);
+    sink.lpVtbl.*.AddLine.?(sink, .{ .x = x + w - rx[1] * k1, .y = y });
+    corner(sink, rx[1], ry[1], .{ .x = x + w, .y = y + ry[1] * k1 });
+    sink.lpVtbl.*.AddLine.?(sink, .{ .x = x + w, .y = y + h - ry[2] * k2 });
+    corner(sink, rx[2], ry[2], .{ .x = x + w - rx[2] * k2, .y = y + h });
+    sink.lpVtbl.*.AddLine.?(sink, .{ .x = x + rx[3] * k3, .y = y + h });
+    corner(sink, rx[3], ry[3], .{ .x = x, .y = y + h - ry[3] * k3 });
+    sink.lpVtbl.*.AddLine.?(sink, .{ .x = x, .y = y + ry[0] * k0 });
+    corner(sink, rx[0], ry[0], .{ .x = x + rx[0] * k0, .y = y });
+    simple.lpVtbl.*.EndFigure.?(simple, c.D2D1_FIGURE_END_CLOSED);
 }
 
 fn shadow(p: *Painter, f: Rect, r: [4]f32, sh: tree_mod.Shadow) void {
