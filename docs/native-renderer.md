@@ -142,7 +142,10 @@ the animated nodes are sent each frame).
   floors `lh`, as its WebView does.
 - `ff` on text props and runs: the CSS font-family list, unquoted (absent:
   sans-serif). Resolve it as the platform's WebView does (GTK: Pango and
-  fontconfig take the list as is, `system-ui` included).
+  fontconfig take the list as is, `system-ui` included; Win32: the first
+  installed name, or Chromium's generic families on Windows: system-ui
+  Segoe UI, sans-serif Arial, serif Times New Roman, monospace Consolas;
+  without `ff`, Segoe UI, Oriel's default).
 - `Backend.font_metrics` (host.fontMetrics): `[ascent, descent, lineGap]`
   in px, unhinted, for the default sans (or monospace) at a size; the
   runtime uses it for an image's line (the baseline gap below an inline
