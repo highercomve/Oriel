@@ -19,7 +19,7 @@
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules } from "./css.js";
-import { Renderer, UA_CSS, UA_CSS_WEBKIT, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
+import { Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
 // The runtime's own weak caches keyed by nodes: marked so their entries
 // don't keep a node's wrapper from being replaced (a page's weak
@@ -1407,9 +1407,10 @@ g.__oriel = {
       // Parsed sheets kept for the process (host.sheetCache/sheetKeep).
       const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
       engine.addSheet(UA_CSS, sheets);
-      // Where the WebView is WebKit's, its controls' look.
+      // Where the WebView is WebKit's, its controls' look; Chrome's on Android.
       if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
       else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets);
+      else if (platform.os === "android") engine.addSheet(UA_CSS_CHROME_ANDROID, sheets);
       for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
       const b1 = P && P();
       renderer = new Renderer(document, engine, host);

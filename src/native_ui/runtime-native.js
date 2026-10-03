@@ -3893,6 +3893,10 @@ col, colgroup { display: none; }
 button, input, textarea, select { font-size: 11px; }
 textarea { font-family: -webkit-small-control, system-ui; }
 `;
+  var UA_CSS_CHROME_ANDROID = `
+input[type=checkbox], input[type=radio] { width: 16px; height: 16px; }
+input[type=radio] { margin: 3px 3px 0 5px; }
+`;
   function uaCssWebkitGtk(font, accent) {
     const [family, px] = Array.isArray(font) && font.length === 2 ? font : ["system-ui", 14];
     const acc = Array.isArray(accent) && accent.length === 3 ? `input { accent-color: rgb(${accent.map((v) => +v || 0).join(", ")}); }` : "";
@@ -8179,6 +8183,7 @@ ${a.stack || ""}`;
         engine.addSheet(UA_CSS, sheets);
         if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
         else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets);
+        else if (platform.os === "android") engine.addSheet(UA_CSS_CHROME_ANDROID, sheets);
         for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
         const b1 = P && P();
         renderer = new Renderer(document, engine, host);
