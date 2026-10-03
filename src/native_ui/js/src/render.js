@@ -1472,7 +1472,10 @@ export class Renderer {
       }
       if (child.nodeType !== 1) continue;
       if (!childCtx.blockify && !boxed?.has(child) && this.isInline(child, cs, rematch)) {
+        const from = runs.length;
         this.inlineRuns(child, cs, fontSize, runs, rematch);
+        // A block's underline is drawn under its inline children's text.
+        if (underlined(cs)) for (let i = from; i < runs.length; i++) runs[i].u = true;
         continue;
       }
       const box = inlineBox(child);
@@ -1818,11 +1821,18 @@ export class Renderer {
     if (el.localName === "br") { runs.push({ t: "\n", br: true, ...runStyle(cs, fs) }); return; }
     const bg = (cs.background ? background(cs.background, color(cs.color))?.color : undefined) ?? outerBg;
     const deeper = rematch || this.marks.get(el) === 2;
+    const first = runs.length;
     for (let child = el.firstChild; child; child = child.nextSibling) {
       this.parentOf.set(child, el);
       if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el, bg));
       else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper, bg);
     }
+    // An inline element has no box: its outline (its own, or the focus
+    // ring) goes around its text's line fragments, as browsers draw it.
+    const ol = inlineOutline(cs, fs, el);
+    if (ol) for (let i = first; i < runs.length; i++) if (!runs[i].br) runs[i].ol = ol;
+    // Its underline is drawn under its inline children's text too.
+    if (underlined(cs)) for (let i = first; i < runs.length; i++) runs[i].u = true;
   }
 
   pseudo(el, cs, which, nodes) {
@@ -2318,6 +2328,18 @@ export function setFocusRingOS(os, accent) {
 }
 let focusVisible = null;
 export function setFocusVisible(el) { focusVisible = el; }
+// An inline element's outline for its runs: the page's, else the focus
+// ring when it has :focus-visible.
+function inlineOutline(cs, fs, el) {
+  if (cs["outline-style"] !== undefined || cs["outline-width"] !== undefined) {
+    const p = {};
+    outlinePart(cs, fs, p);
+    return p.ol || null;
+  }
+  if (el !== focusVisible) return null;
+  return osRings ? ringFor(osRings, el) : FOCUS_RING;
+}
+
 function focusRing(cs, el, p) {
   if (el === focusVisible && el && !p.ol && cs["outline-style"] === undefined && cs["outline-width"] === undefined) p.ol = osRings ? ringFor(osRings, el) : FOCUS_RING;
   return p;
@@ -2594,7 +2616,7 @@ function makeRunStyle(cs, fs) {
   if (/mono/.test(cs["font-family"] || "")) r.mono = true;
   const ff = familyOf(cs);
   if (ff) r.ff = ff;
-  if ((cs["text-decoration-line"] || "") === "underline") r.u = true;
+  if (underlined(cs)) r.u = true;
   return r;
 }
 
@@ -2602,6 +2624,10 @@ function makeRunStyle(cs, fs) {
 // <mark>, a highlighted <span>), painted behind its glyphs; never the box
 // that holds the text, which paints its own (a run's band would spill out
 // of a line box shorter than the font).
+// text-decoration: underline (it isn't inherited, but it decorates the
+// text of the inline content inside).
+const underlined = (cs) => /\bunderline\b/.test(cs["text-decoration-line"] || "");
+
 function runFor(text, cs, fs, src, bg) {
   let t = text;
   const tt = cs["text-transform"];

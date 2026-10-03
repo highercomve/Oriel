@@ -199,6 +199,14 @@ extern fn pango_layout_get_size(l: *PangoLayout, w: *c_int, h: *c_int) void;
 extern fn pango_layout_get_iter(l: *PangoLayout) ?*anyopaque;
 extern fn pango_layout_iter_next_cluster(it: *anyopaque) c_int;
 extern fn pango_layout_iter_free(it: *anyopaque) void;
+extern fn pango_layout_iter_next_line(it: *anyopaque) c_int;
+extern fn pango_layout_iter_get_line_readonly(it: *anyopaque) ?*anyopaque;
+extern fn pango_layout_iter_get_line_extents(it: *anyopaque, ink: ?*PangoRectangle, logical: ?*PangoRectangle) void;
+extern fn pango_layout_line_get_x_ranges(line: *anyopaque, start: c_int, end: c_int, ranges: *?[*]c_int, n: *c_int) void;
+const PangoRectangle = extern struct { x: c_int = 0, y: c_int = 0, width: c_int = 0, height: c_int = 0 };
+/// PangoLayoutLine's public head (pango-layout.h): its bytes in the text.
+const PangoLayoutLineHead = extern struct { layout: ?*anyopaque, start_index: c_int, length: c_int };
+extern fn pango_layout_get_text(l: *PangoLayout) [*:0]const u8;
 extern fn pango_layout_get_pixel_size(l: *PangoLayout, w: *c_int, h: *c_int) void;
 extern fn pango_layout_get_baseline(l: *PangoLayout) c_int;
 extern fn pango_cairo_show_layout(cr: *cairo_t, l: *PangoLayout) void;
@@ -2135,6 +2143,62 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
     }
     cairo_move_to(cr, c.x, c.y + dy);
     pango_cairo_show_layout(cr, layout);
+    // A focused inline link's ring, around each of its line fragments.
+    const runs = n.props.runs orelse return;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < runs.len) : (i += 1) {
+        var end = start + runs[i].t.len;
+        if (runs[i].ol) |ol| {
+            // The link's runs (a <b> in it) under one ring.
+            while (i + 1 < runs.len and runs[i + 1].ol != null and std.meta.eql(runs[i + 1].ol.?, ol)) : (i += 1) end += runs[i + 1].t.len;
+            runRing(cr, layout, c.x, c.y + dy, start, end, ol);
+        }
+        start = end;
+    }
+}
+
+/// An outline around the text from byte `start` to `end` of a layout drawn
+/// at (x, y): one box per line it's on (the spaces where a line wraps
+/// left out), as tall as that line.
+fn runRing(cr: *cairo_t, layout: *PangoLayout, x: f32, y: f32, start: usize, end: usize, ol: tree_mod.Outline) void {
+    const text = std.mem.span(pango_layout_get_text(layout));
+    const it = pango_layout_get_iter(layout) orelse return;
+    defer pango_layout_iter_free(it);
+    while (true) {
+        if (pango_layout_iter_get_line_readonly(it)) |line| {
+            // This line's part of the run, without spaces at its ends.
+            const head: *const PangoLayoutLineHead = @ptrCast(@alignCast(line));
+            const ls: usize = @intCast(@max(0, head.start_index));
+            const le: usize = @min(text.len, ls + @as(usize, @intCast(@max(0, head.length))));
+            var a = @max(start, ls);
+            var b = @min(end, le);
+            while (a < b and text[a] == ' ') a += 1;
+            while (b > a and (text[b - 1] == ' ' or text[b - 1] == '\n')) b -= 1;
+            if (a < b) {
+                var logical: PangoRectangle = .{};
+                pango_layout_iter_get_line_extents(it, null, &logical);
+                var ranges: ?[*]c_int = null;
+                var count: c_int = 0;
+                pango_layout_line_get_x_ranges(line, tree_mod.sat(c_int, a), tree_mod.sat(c_int, b), &ranges, &count);
+                if (ranges) |rs| {
+                    defer g_free(@ptrCast(rs));
+                    // One box over the ranges (they split where the style does).
+                    var x0: f32 = std.math.floatMax(f32);
+                    var x1: f32 = -std.math.floatMax(f32);
+                    for (0..@intCast(@max(0, count))) |i| {
+                        x0 = @min(x0, @as(f32, @floatFromInt(rs[2 * i])) / PANGO_SCALE);
+                        x1 = @max(x1, @as(f32, @floatFromInt(rs[2 * i + 1])) / PANGO_SCALE);
+                    }
+                    if (x1 > x0) {
+                        const box: Rect = .{ .x = x + x0, .y = y + @as(f32, @floatFromInt(logical.y)) / PANGO_SCALE, .w = x1 - x0, .h = @as(f32, @floatFromInt(logical.height)) / PANGO_SCALE };
+                        outline(cr, box, .{}, ol);
+                    }
+                }
+            }
+        }
+        if (pango_layout_iter_next_line(it) == 0) break;
+    }
 }
 
 /// A default checkbox or radio: an outlined box/circle, filled with the accent
