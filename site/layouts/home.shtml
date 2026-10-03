@@ -184,6 +184,22 @@
 					<figcaption>Linux, continuous output: green per module, with what was actually verified</figcaption>
 				</figure>
 			</div>
+			<div class="smoke-row">
+				<div class="smoke-info">
+					<h3>breakout</h3>
+					<p><a href="https://github.com/highercomve/Oriel/tree/main/examples/breakout"><code>examples/breakout</code></a>: a canvas game with an HTML and CSS interface, in the WebView or the <a href="$site.page('docs/native-renderer').link()">native renderer</a>. Drag on a phone; mouse or arrow keys on the desktop.</p>
+					<ul>
+						<li><strong>Three ways</strong> — the physics and drawing in JavaScript, or in Zig through <code>oriel.canvas</code></li>
+						<li><strong>500 balls on a 120 Hz phone</strong> — 120 fps from Zig (0.35 ms a frame), 63 fps from JavaScript, 120 in the WebView</li>
+						<li><strong>500 balls on a 144 Hz laptop</strong> — 144 fps from Zig, 59–75 from JavaScript, 103–116 in the WebView</li>
+					</ul>
+				</div>
+				<figure class="smoke-shot breakout-shots">
+					<img src="$site.asset('screenshots/breakout-desktop.png').link()" alt="Breakout in the native renderer on Linux, Zig mode: bricks, balls and the stats overlay" loading="lazy">
+					<img class="phone" src="$site.asset('screenshots/breakout-phone.png').link()" alt="Breakout in the native renderer on an Android phone, Zig mode, at 120 fps" loading="lazy">
+					<figcaption>The native renderer, Zig mode: Linux and an Android phone</figcaption>
+				</figure>
+			</div>
 		</section>
 
 		<section class="section">

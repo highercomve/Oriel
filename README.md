@@ -83,6 +83,29 @@ background audio on iOS.
 How to build and package it for each platform, with the GPU options:
 [examples/showcase/README.md](examples/showcase/README.md).
 
+### [Breakout](examples/breakout)
+
+**[examples/breakout](examples/breakout)**: a Breakout game that runs the same
+page in the WebView and in the [native renderer](#native-renderer-experimental).
+The board is a `<canvas>`; the score, overlays and settings are HTML and CSS.
+Drag on a phone, mouse or arrow keys on the desktop. Its physics and drawing
+run either in JavaScript or in Zig (`BREAKOUT_MODE=zig`, through
+`oriel.canvas`), so the same game compares three ways. At 500 balls:
+
+| | Native, Zig | Native, JavaScript | WebView |
+|---|---|---|---|
+| Windows 11 laptop, 144 Hz | 142–144 fps | 59–75 fps | 103–116 fps |
+| Android phone, 120 Hz | 120 fps (0.35 ms of Zig a frame) | 63 fps | 120 fps |
+
+<p>
+  <img src="assets/screenshots/breakout-desktop.png" alt="Breakout in the native renderer on Linux, Zig mode: bricks, balls and the stats overlay" width="62%">
+  <img src="assets/screenshots/breakout-phone.png" alt="Breakout in the native renderer on an Android phone, Zig mode, at 120 fps" width="24%">
+</p>
+
+The [render bench](examples/render-bench) times rows, animation, canvas and
+memory in both renderers, and the [canvas demo](examples/canvas-demo) draws
+the 2d context's shapes, paths and text.
+
 ### [Smoke test](examples/smoke)
 
 **[examples/smoke](examples/smoke)**: every module gets a pass/fail check
@@ -1732,8 +1755,11 @@ render bench: 1000 rows built in 6.4 ms (the WebView: 20) and updated in
 refresh rate (165 fps on a 180 Hz screen, against 62), and 174 MB after
 the tests (561). On a 120 Hz Android phone it builds 1000 rows in 13.8 ms,
 ten times faster than the same rows as plain Android views (132), and
-draws 1000 canvas balls at 92 fps. Videos of both renderers running the
-bench are on the site. `-Dnative_dom=false` builds it on linkedom
+draws 1000 canvas balls at 91 fps from JavaScript and at the display's
+120 fps from Zig. Videos of both renderers running the bench are on the
+site. Pages are laid out as in a browser: `box-sizing`, `calc()` sizes,
+rounded `overflow: hidden`, CSS line boxes, and pointer and key events on
+every platform. `-Dnative_dom=false` builds it on linkedom
 instead.
 
 Details, numbers on every platform and a comparison with React Native:
@@ -1806,6 +1832,9 @@ The framework and the apps built with it are separate Zig packages:
 | `install.sh` | Installs the `oriel` CLI from GitHub Releases |
 | `examples/showcase/` | **App:** every feature, on Linux, Windows, macOS, Android and iOS (own package) |
 | `examples/smoke/` | **App:** checks every module (own package) |
+| `examples/breakout/` | **App:** a canvas game in the WebView and the native renderer, JavaScript or Zig (own package) |
+| `examples/render-bench/` | **App:** the native renderer against the WebView: rows, animation, canvas, memory (own package) |
+| `examples/canvas-demo/` | **App:** the 2d canvas in the native renderer (own package) |
 
 ### Framework build and test commands
 
