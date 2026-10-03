@@ -1960,12 +1960,16 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool, native_dom: 
         oriel.addCSourceFiles(.{
             .root = yoga.path("yoga"),
             .files = &.{
-                "YGConfig.cpp",                 "YGEnums.cpp",               "YGNode.cpp",           "YGNodeLayout.cpp",
-                "YGNodeStyle.cpp",              "YGPixelGrid.cpp",           "YGValue.cpp",          "algorithm/AbsoluteLayout.cpp",
-                "algorithm/Baseline.cpp",       "algorithm/Cache.cpp",       "algorithm/CalculateLayout.cpp", "algorithm/FlexLine.cpp",
-                "config/Config.cpp",         "debug/AssertFatal.cpp", "debug/Log.cpp",
-                "event/event.cpp",              "node/LayoutResults.cpp",    "node/Node.cpp",
+                "YGConfig.cpp",           "YGEnums.cpp",         "YGNode.cpp",             "YGNodeLayout.cpp",
+                "YGNodeStyle.cpp",        "YGPixelGrid.cpp",     "YGValue.cpp",            "algorithm/AbsoluteLayout.cpp",
+                "algorithm/Baseline.cpp", "algorithm/Cache.cpp", "algorithm/FlexLine.cpp", "config/Config.cpp",
+                "debug/AssertFatal.cpp",  "debug/Log.cpp",       "event/event.cpp",        "node/LayoutResults.cpp",
+                "node/Node.cpp",
             },
+            .flags = &.{ "-std=c++20", "-O2", no_ubsan, "-fno-exceptions" },
+        });
+        oriel.addCSourceFile(.{
+            .file = patchedYogaLayout(b, yoga.path("yoga/algorithm/CalculateLayout.cpp")),
             .flags = &.{ "-std=c++20", "-O2", no_ubsan, "-fno-exceptions" },
         });
         // PixelGrid.cpp without its fmod calls, telling the tree each
@@ -1978,4 +1982,61 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool, native_dom: 
         });
         oriel.link_libcpp = true;
     }
+}
+
+/// Yoga's CalculateLayout.cpp with its multi-line alignment (flex-wrap)
+/// placing items as CSS does: an item aligned to the start of its line is
+/// put after its leading margin (Yoga put it at the line's top, its margin
+/// lost: a margin: 10px chip in a wrapping row sat 10 px high), and a
+/// centered one is centered with its margins. The build stops if Yoga's
+/// text changed (look at the fix again).
+fn patchedYogaLayout(b: *std.Build, src: std.Build.LazyPath) std.Build.LazyPath {
+    const io = b.graph.io;
+    const text = std.Io.Dir.cwd().readFileAlloc(io, src.getPath(b), b.allocator, .limited(1 << 22)) catch |e|
+        std.debug.panic("yoga: can't read CalculateLayout.cpp: {s}", .{@errorName(e)});
+    const fixes = [_][2][]const u8{
+        .{
+            \\              child->setLayoutPosition(
+            \\                  currentLead +
+            \\                      child->style().computeFlexStartPosition(
+            \\                          crossAxis, direction, availableInnerWidth),
+            \\                  flexStartEdge(crossAxis));
+            \\              break;
+            \\            }
+            \\            case Align::FlexEnd: {
+            ,
+            \\              child->setLayoutPosition(
+            \\                  currentLead +
+            \\                      child->style().computeFlexStartMargin(
+            \\                          crossAxis, direction, availableInnerWidth) +
+            \\                      child->style().computeFlexStartPosition(
+            \\                          crossAxis, direction, availableInnerWidth),
+            \\                  flexStartEdge(crossAxis));
+            \\              break;
+            \\            }
+            \\            case Align::FlexEnd: {
+        },
+        .{
+            \\              child->setLayoutPosition(
+            \\                  currentLead + (lineHeight - childHeight) / 2,
+            \\                  flexStartEdge(crossAxis));
+            ,
+            \\              child->setLayoutPosition(
+            \\                  currentLead +
+            \\                      child->style().computeFlexStartMargin(
+            \\                          crossAxis, direction, availableInnerWidth) +
+            \\                      (lineHeight - childHeight -
+            \\                       child->style().computeMarginForAxis(
+            \\                           crossAxis, availableInnerWidth)) /
+            \\                          2,
+            \\                  flexStartEdge(crossAxis));
+        },
+    };
+    var out: []const u8 = text;
+    for (fixes) |fix| {
+        if (std.mem.count(u8, out, fix[0]) != 1) std.debug.panic("yoga: CalculateLayout.cpp changed; patchedYogaLayout's fix no longer applies", .{});
+        out = std.mem.replaceOwned(u8, b.allocator, out, fix[0], fix[1]) catch @panic("OOM");
+    }
+    const files = b.addWriteFiles();
+    return files.add("CalculateLayout.cpp", out);
 }

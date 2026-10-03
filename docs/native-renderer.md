@@ -188,6 +188,11 @@ the animated nodes are sent each frame).
 - Yoga rounds a text node's width up (it mustn't wrap) but its top and
   height to the nearest pixel, as browsers' line boxes are
   (src/native_ui/yoga/PixelGrid.cpp).
+- In a row that wraps (`flex-wrap`), Yoga put an item aligned to the start
+  of its line at the line's top, its leading margin lost, and centered
+  items without their margins; build.zig (patchedYogaLayout) compiles
+  Yoga's CalculateLayout.cpp with both fixed, and stops if Yoga's text
+  changes.
 
 **Outline** (`ol` in a node's props, sent only when it has one: a style
 other than none/hidden, a width above 0 and a visible color):
