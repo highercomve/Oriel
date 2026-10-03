@@ -3510,6 +3510,7 @@ b, strong, th { font-weight: bold; }
 i, em, cite, var, dfn { font-style: italic; }
 small { font-size: .83em; }
 code, kbd, samp, pre, tt { font-family: monospace; }
+button, input, textarea, select { font-family: system-ui; }
 pre { white-space: pre; }
 a { color: #0645ad; text-decoration: underline; cursor: pointer; }
 button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
@@ -4661,9 +4662,11 @@ col, colgroup { display: none; }
       const flow = [];
       const boxed = childCtx.blockify ? null : this.boxedEnds(el, cs, rematch);
       let runs = [];
-      const flushRuns = () => {
+      const inlineBox = (child) => !childCtx.blockify && (ATOMIC_INLINE.has(this.style(child, cs, rematch).display || "inline") || !!boxed?.has(child));
+      let afterBox = false;
+      const flushRuns = (beforeBox = false) => {
         if (!runs.length) return;
-        const trimmed = trimRuns(runs, cs["white-space"]);
+        const trimmed = trimRuns(runs, cs["white-space"], afterBox, beforeBox);
         runs = [];
         if (!trimmed.length) return;
         flow.push({ text: trimmed });
@@ -4680,8 +4683,10 @@ col, colgroup { display: none; }
           this.inlineRuns(child, cs, fontSize, runs, rematch);
           continue;
         }
-        flushRuns();
+        const box = inlineBox(child);
+        flushRuns(box);
         flow.push({ el: child });
+        afterBox = box;
       }
       flushRuns();
       if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
@@ -5581,10 +5586,9 @@ col, colgroup { display: none; }
   }
   function familyOf(cs) {
     const f = cs["font-family"];
-    if (!f) return void 0;
+    if (!f) return "default";
     const list = splitTop(f, ",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-    if (!list.length || list.length === 1 && list[0] === "sans-serif") return void 0;
-    return list.join(", ");
+    return list.length ? list.join(", ") : "default";
   }
   function makeRunStyle(cs, fs) {
     const r = { c: color(cs.color) || [0, 0, 0, 1], sz: fs, w: weight(cs["font-weight"]) };
@@ -5605,9 +5609,9 @@ col, colgroup { display: none; }
     if (src) Object.defineProperty(r, "src", { value: src, enumerable: false });
     return r;
   }
-  function trimRuns(runs) {
+  function trimRuns(runs, _ws, keepStart = false, keepEnd = false) {
     const out = [];
-    let lastSpace = true;
+    let lastSpace = !keepStart;
     for (const r of runs) {
       let t = r.t;
       if (r.ws === "pre" || r.ws === "pre-wrap" || r.ws === "pre-line") {
@@ -5623,7 +5627,8 @@ col, colgroup { display: none; }
       lastSpace = t.endsWith(" ");
       out.push(strip(r, t));
     }
-    if (out.length) {
+    if ((keepStart || keepEnd) && out.every((r) => !r.t.trim() && r.ws === void 0)) return [];
+    if (out.length && !keepEnd) {
       const last = out[out.length - 1];
       if (last.ws !== "pre" && last.ws !== "pre-wrap") last.t = last.t.replace(/ $/, "");
       if (!last.t) out.pop();
