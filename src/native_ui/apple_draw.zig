@@ -354,6 +354,16 @@ pub fn fontMetrics(comptime font_class: [:0]const u8, size: f32, mono: bool, out
     return true;
 }
 
+/// A field's line (input, select, textarea): its CSS line-height, else
+/// the normal line height of its font, as WebKit sizes a control's text.
+pub fn fieldLine(comptime font_class: [:0]const u8, n: *const Node) f32 {
+    const fz = n.props.fz orelse 16;
+    if (n.props.lh) |lh| if (lh >= 1 and std.math.isFinite(lh)) return @floor(lh);
+    const f = font(font_class, fz, n.props.fwt orelse 400, n.props.it, n.props.mono, n.props.ff) orelse return @round(fz * 1.2);
+    const m = lineMetrics(f);
+    return m.ascent + m.descent + m.gap;
+}
+
 /// A text node's line box: its height (CSS line-height, whole pixels as
 /// WebKit keeps it, else normal: its largest font's ascent + descent +
 /// gap) and that font's ascent and descent, which place the baseline.
