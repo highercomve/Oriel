@@ -14,6 +14,7 @@ const tree_mod = @import("tree.zig");
 const Engine = engine_mod.Engine;
 const Node = tree_mod.Node;
 const Rect = tree_mod.Rect;
+const Radii = tree_mod.Radii;
 
 const log = std.log.scoped(.native_ui);
 
@@ -1727,17 +1728,18 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
     const alpha = p.op orelse 1;
     if (alpha < 1) cairo_push_group(cr);
 
-    const r = n.radius();
+    // Elliptical corners, as CSS draws them (tree.zig radiusXY).
+    const r = n.radiusXY();
     if (p.sh) |sh| shadow(cr, f, r, sh);
     if (p.bg) |bg| {
         // The color under the gradient (CSS layers).
         if (bg.color) |c| {
-            roundRect(cr, f, r);
+            roundRectXY(cr, f, r);
             setColor(cr, c);
             cairo_fill(cr);
         }
         if (bg.gradient) |g| {
-            roundRect(cr, f, r);
+            roundRectXY(cr, f, r);
             const pat = gradient(f, g);
             cairo_set_source(cr, pat);
             cairo_fill(cr);
@@ -1759,8 +1761,8 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
     const round_clip = n.roundClips();
     if (round_clip) {
         cairo_save(cr);
-        const pb = n.paddingClip();
-        roundRect(cr, pb.rect, pb.radii);
+        const pb = n.paddingClipXY();
+        roundRectXY(cr, pb.rect, pb.radii);
         cairo_clip(cr);
     }
     // CSS paint order: a sticky header over the rows scrolled under it.
@@ -1777,22 +1779,48 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
 /// CSS outline: a border of its own around the box grown by offset +
 /// width, its corners the box's radius grown as much (square ones stay
 /// square), solid, dashed or dotted.
-fn outline(cr: *cairo_t, f: Rect, r: [4]f32, ol: tree_mod.Outline) void {
+fn outline(cr: *cairo_t, f: Rect, r: Radii, ol: tree_mod.Outline) void {
     if (!(ol.w > 0) or !(ol.c[3] > 0)) return;
     const grow = ol.o + ol.w;
     const box: Rect = .{ .x = f.x - grow, .y = f.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
     if (box.w <= 2 * ol.w or box.h <= 2 * ol.w) return;
-    var radii: [4]f32 = undefined;
-    for (r, 0..) |x, i| radii[i] = if (x > 0) @max(0, x + grow) else 0;
-    const bw = [4]f32{ ol.w, ol.w, ol.w, ol.w };
-    const bc = [4]tree_mod.Color{ ol.c, ol.c, ol.c, ol.c };
+    // A focus ring's own corners round at least `r` (win32.zig's too).
+    var radii = r.grown(grow);
+    for (&radii.x) |*x| x.* = @max(x.*, ol.r);
+    for (&radii.y) |*y| y.* = @max(y.*, ol.r);
     cairo_save(cr);
     defer cairo_restore(cr);
+    // A focus ring's halo: 1px around it, its corners 1px rounder.
+    if (ol.h) |h| if (h[3] > 0) {
+        const halo: Rect = .{ .x = box.x - 1, .y = box.y - 1, .w = box.w + 2, .h = box.h + 2 };
+        border(cr, halo, radii.grown(1), .{ 1, 1, 1, 1 }, .{ h, h, h, h });
+    };
+    const bw = [4]f32{ ol.w, ol.w, ol.w, ol.w };
+    const bc = [4]tree_mod.Color{ ol.c, ol.c, ol.c, ol.c };
     if (ol.s) |style| dashedBorder(cr, box, radii, bw, bc, style) else border(cr, box, radii, bw, bc);
 }
 
 fn setColor(cr: *cairo_t, c: tree_mod.Color) void {
     cairo_set_source_rgba(cr, c[0] / 255, c[1] / 255, c[2] / 255, c[3]);
+}
+
+/// A rectangle with elliptical corners (tree.zig Radii) as the current
+/// path; a corner with either axis 0 square.
+fn roundRectXY(cr: *cairo_t, f: Rect, r: Radii) void {
+    cairo_new_path(cr);
+    if (r.square()) {
+        cairo_rectangle(cr, f.x, f.y, f.w, f.h);
+        return;
+    }
+    ellipseRect(cr, f, r.x, r.y);
+}
+
+/// Each corner less `d` on both axes (a stroke's middle inside the box).
+fn shrunk(r: Radii, d: f32) Radii {
+    var out = r;
+    for (&out.x) |*x| x.* = @max(0, x.* - d);
+    for (&out.y) |*y| y.* = @max(0, y.* - d);
+    return out;
 }
 
 fn roundRect(cr: *cairo_t, f: Rect, r: [4]f32) void {
@@ -1837,20 +1865,19 @@ fn gradient(f: Rect, g: tree_mod.Gradient) *cairo_pattern_t {
     return pat;
 }
 
-fn border(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) void {
+fn border(cr: *cairo_t, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color) void {
     const colors = bc orelse return;
     const uniform = bw[0] == bw[1] and bw[1] == bw[2] and bw[2] == bw[3];
     if (uniform and bw[0] > 0) {
         const half = bw[0] / 2;
         const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
-        var ri = r;
-        for (&ri) |*x| x.* = @max(0, x.* - half);
+        const ri = shrunk(r, half);
         cairo_set_line_width(cr, bw[0]);
         const same = for (colors[1..]) |c| {
             if (!std.mem.eql(f32, &c, &colors[0])) break false;
         } else true;
         if (same) {
-            roundRect(cr, inner, ri);
+            roundRectXY(cr, inner, ri);
             setColor(cr, colors[0]);
             cairo_stroke(cr);
             return;
@@ -1873,14 +1900,14 @@ fn border(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) 
             cairo_line_to(cr, cx, cy);
             cairo_close_path(cr);
             cairo_clip(cr);
-            roundRect(cr, inner, ri);
+            roundRectXY(cr, inner, ri);
             setColor(cr, colors[i]);
             cairo_stroke(cr);
             cairo_restore(cr);
         }
         return;
     }
-    if (r[0] > 0 or r[1] > 0 or r[2] > 0 or r[3] > 0) {
+    if (!r.square()) {
         roundedSides(cr, f, r, bw, colors);
         return;
     }
@@ -1906,10 +1933,9 @@ fn border(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) 
 /// CSS makes them), each side's color clipped to its wedge: the lines
 /// from its outer corners through its inner corners (where browsers join
 /// two colors), up to the middle.
-fn roundedSides(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, colors: [4]tree_mod.Color) void {
-    const inner: Rect = .{ .x = f.x + bw[3], .y = f.y + bw[0], .w = @max(0, f.w - bw[1] - bw[3]), .h = @max(0, f.h - bw[0] - bw[2]) };
-    const rx = [4]f32{ @max(0, r[0] - bw[3]), @max(0, r[1] - bw[1]), @max(0, r[2] - bw[1]), @max(0, r[3] - bw[3]) };
-    const ry = [4]f32{ @max(0, r[0] - bw[0]), @max(0, r[1] - bw[0]), @max(0, r[2] - bw[2]), @max(0, r[3] - bw[2]) };
+fn roundedSides(cr: *cairo_t, f: Rect, r: Radii, bw: [4]f32, colors: [4]tree_mod.Color) void {
+    const pb = tree_mod.paddingBoxXY(f, r, bw);
+    const inner = pb.rect;
     // One color where every drawn side has the same: one fill.
     var first: ?tree_mod.Color = null;
     const same = for (0..4) |i| {
@@ -1948,8 +1974,8 @@ fn roundedSides(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, colors: [4]tree_mo
             cairo_clip(cr);
         }
         cairo_new_path(cr);
-        ellipseRect(cr, f, r, r);
-        ellipseRect(cr, inner, rx, ry);
+        ellipseRect(cr, f, r.x, r.y);
+        ellipseRect(cr, inner, pb.radii.x, pb.radii.y);
         cairo_set_fill_rule(cr, 1); // even-odd: the ring
         setColor(cr, colors[i]);
         cairo_fill(cr);
@@ -2003,26 +2029,25 @@ fn dashPattern(len: f64, w: f64, style: tree_mod.BorderStyle) [2]f64 {
 }
 
 /// border-style: dashed or dotted (the first side styled so, Props.bs).
-fn dashedBorder(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color, style: tree_mod.BorderStyle) void {
+fn dashedBorder(cr: *cairo_t, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color, style: tree_mod.BorderStyle) void {
     const colors = bc orelse return;
     const round_dots = style == .dotted;
     cairo_save(cr);
     defer cairo_restore(cr);
     const uniform = bw[0] == bw[1] and bw[1] == bw[2] and bw[2] == bw[3];
-    const rounded = r[0] > 0 or r[1] > 0 or r[2] > 0 or r[3] > 0;
+    const rounded = !r.square();
     if (uniform and rounded and bw[0] > 0 and colors[0][3] > 0) {
         // Rounded: one dash pattern along the whole rounded stroke.
         const w: f64 = bw[0];
         const half = bw[0] / 2;
         const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
-        var ri = r;
-        for (&ri) |*x| x.* = @max(0, x.* - half);
+        const ri = shrunk(r, half);
         const d: f64 = if (style == .dotted) w else 3 * w;
         const pat = if (style == .dotted and w >= 3) [2]f64{ 0, 2 * d } else [2]f64{ d, d };
         cairo_set_line_width(cr, w);
         cairo_set_line_cap(cr, if (round_dots and w >= 3) 1 else 0);
         cairo_set_dash(cr, &pat, 2, 0);
-        roundRect(cr, inner, ri);
+        roundRectXY(cr, inner, ri);
         setColor(cr, colors[0]);
         cairo_stroke(cr);
         return;
@@ -2076,7 +2101,7 @@ test "dashPattern: whole dashes at both ends" {
     try std.testing.expectEqual(@as(f64, 0), dashPattern(60, 4, .dotted)[0]);
 }
 
-fn shadow(cr: *cairo_t, f: Rect, r: [4]f32, sh: tree_mod.Shadow) void {
+fn shadow(cr: *cairo_t, f: Rect, r: Radii, sh: tree_mod.Shadow) void {
     // A soft shadow from stacked layers, from half the blur inside the box
     // to half outside: like CSS's blur, the box's edge gets half the color
     // and the shadow fades out over the blur distance.
@@ -2087,9 +2112,7 @@ fn shadow(cr: *cairo_t, f: Rect, r: [4]f32, sh: tree_mod.Shadow) void {
         const grow = sh.spread + sh.blur * (t - 0.5);
         const rect: Rect = .{ .x = f.x + sh.x - grow, .y = f.y + sh.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
         if (rect.w <= 0 or rect.h <= 0) continue;
-        var rr = r;
-        for (&rr) |*x| x.* = @max(0, x.* + grow);
-        roundRect(cr, rect, rr);
+        roundRectXY(cr, rect, r.grown(grow));
         var c = sh.color;
         c[3] = sh.color[3] / @as(f32, @floatFromInt(steps));
         setColor(cr, c);
@@ -2323,7 +2346,7 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
         cairo_save(win_cr);
         // Clipped to the box's rounded corners, as a browser clips a
         // replaced element's content to its border-radius.
-        roundRect(win_cr, f, n.radius());
+        roundRectXY(win_cr, f, n.radiusXY());
         cairo_clip(win_cr);
         cairo_set_source_surface(win_cr, img, f.x, f.y);
         cairo_paint(win_cr);

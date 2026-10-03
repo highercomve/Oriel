@@ -168,8 +168,9 @@ the animated nodes are sent each frame).
   as the ring between the border box and `paddingBoxXY`), the children's
   clip (`Node.paddingClipXY()`: each inner x radius less the left or right
   border, y less the top or bottom), the outline and box-shadow (each
-  rounded corner grown on both axes: `Radii.grown`). Win32 does all of
-  these; GTK, Apple and Android still use `radius()`.
+  rounded corner grown on both axes: `Radii.grown`). Win32 and GTK
+  (gtk.zig roundRectXY, roundedSides) do all of these; Apple and Android
+  still use `radius()`.
 
 **Text metrics** (each backend, to match its own WebView):
 
