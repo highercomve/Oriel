@@ -2810,6 +2810,21 @@ function encodeProps(props) {
 // JSON.stringify as an escape std.json rejects: the tree makes it U+FFFD,
 // tree.wellFormedEscapes, where scanning costs little.)
 
+// A minmax()'s first argument, with any commas inside its own
+// parentheses (minmax(min(8em, 30%), 1fr) → "min(8em, 30%)"); null without one.
+function minmaxMin(track) {
+  const at = track.indexOf("minmax(");
+  if (at < 0) return null;
+  let depth = 0;
+  for (let i = at + 7; i < track.length; i++) {
+    const ch = track[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") { if (depth === 0) return null; depth--; }
+    else if (ch === "," && depth === 0) return track.slice(at + 7, i).trim();
+  }
+  return null;
+}
+
 // display: grid → rows of flex items (the column count from the template
 // and, for auto-fit, the container's last width).
 function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
@@ -2820,13 +2835,18 @@ function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
   if (rep) {
     const what = rep[2].trim();
     if (/^auto-(fit|fill)$/.test(rep[1].trim())) {
+      renderer.volatile.add(el); // its column count follows its laid-out width
+      // The columns share the content box: the frame less padding and borders.
+      const frameW = renderer.host.frame(renderer.idOf(el, "el"))?.[2] || 0;
+      const pad = props.pad || [0, 0, 0, 0], bw = props.bw || [0, 0, 0, 0];
+      const width = frameW ? Math.max(0, frameW - (+pad[1] || 0) - (+pad[3] || 0) - (+bw[1] || 0) - (+bw[3] || 0)) : 0;
       const minW = (() => {
-        const mm = /minmax\(\s*([^,]+(?:\([^)]*\))?)\s*,/.exec(what);
-        const l = length(mm ? mm[1] : what, fs, false);
+        // minmax(min(8em, 30%), 1fr): the first argument whole (its own
+        // commas inside parentheses), its percentages of the content width.
+        const track = minmaxMin(what) ?? what;
+        const l = length(width ? track.replace(/(-?[\d.]+)%/g, (_, n) => `${(n * width) / 100}px`) : track, fs, false);
         return typeof l === "number" ? l : 120;
       })();
-      renderer.volatile.add(el); // its column count follows its laid-out width
-      const width = renderer.host.frame(renderer.idOf(el, "el"))?.[2] || 0;
       const gap = props.cg || 0;
       const n = width ? Math.max(1, Math.floor((width + gap) / (minW + gap))) : Math.min(kids.length, 3);
       cols = Array(Math.max(1, Math.min(n, Math.max(kids.length, 1)))).fill("1fr");
