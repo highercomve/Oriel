@@ -195,6 +195,18 @@ pub const Surface = struct {
     hovered: i64 = 0,
     hand: bool = false,
     tracking: bool = false,
+    /// Mouse buttons down, as the DOM's `buttons` bits.
+    buttons: u32 = 0,
+    /// A pointer move waiting for the next display frame (queueMove).
+    move: ?PendingMove = null,
+    /// The touch or pen contact being followed (one at a time).
+    contact: ?Contact = null,
+    /// What keydown sent for each virtual key, for its keyup (a typed
+    /// character comes as WM_CHAR, which keyup's key code doesn't say).
+    key_names: [256][16]u8 = undefined,
+    key_lens: [256]u8 = @splat(0),
+    /// The last WM_KEYDOWN's virtual key: the key of the WM_CHAR it makes.
+    char_vk: c.WPARAM = 0,
     updating: bool = false,
     /// requestAnimationFrame on the display's refresh (requestDisplayFrame):
     /// the page asked for the next frame, and the window is armed on the
@@ -649,8 +661,11 @@ fn requestDisplayFrame(ctx: *anyopaque) void {
 }
 
 /// The display refreshed (WM_DISPLAY_FRAME, UI thread).
-fn onDisplayFrame(s: *Surface, hwnd: c.HWND) void {
+fn onDisplayFrame(s0: *Surface, hwnd: c.HWND) void {
     defer vsync.done(hwnd);
+    // Input first, then the frame (as a browser): a move waiting goes to
+    // the page, whose handler may ask for the frame that shows it.
+    const s = flushMove(s0) orelse return;
     if (!s.frame_wanted) {
         s.ticking = false;
         vsync.disarm(hwnd);
@@ -1362,12 +1377,36 @@ fn keyName(vk: c.WPARAM) ?[]const u8 {
     };
 }
 
-fn sendKey(s: *Surface, name: []const u8) bool {
+/// keydown for the page, `repeat` on auto-repeat; remembered for virtual
+/// key `vk`'s keyup.
+fn sendKey(s: *Surface, name: []const u8, vk: c.WPARAM, repeat: bool) bool {
+    if (vk < 256 and name.len <= 16) {
+        @memcpy(s.key_names[vk][0..name.len], name);
+        s.key_lens[vk] = @intCast(name.len);
+    }
     const key = std.json.Stringify.valueAlloc(s.gpa, name, .{}) catch return false;
     defer s.gpa.free(key);
     var buf: [64]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ key, modFlags() }) catch return false;
+    const json = std.fmt.bufPrint(&buf, "[{s},{d},{}]", .{ key, modFlags(), repeat }) catch return false;
     return s.engine.event(0, "key", json);
+}
+
+/// keyup for the page: the key its keydown sent.
+fn sendKeyUp(s: *Surface, vk: c.WPARAM) void {
+    if (vk >= 256 or s.key_lens[vk] == 0) return;
+    const name = s.key_names[vk][0..s.key_lens[vk]];
+    s.key_lens[vk] = 0;
+    const key = std.json.Stringify.valueAlloc(s.gpa, name, .{}) catch return;
+    defer s.gpa.free(key);
+    var buf: [64]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ key, modFlags() }) catch return;
+    _ = s.engine.event(0, "keyup", json);
+}
+
+/// Auto-repeat: a WM_KEYDOWN or WM_CHAR whose key was already down
+/// (lParam bit 30).
+fn repeated(lparam: c.LPARAM) bool {
+    return (@as(usize, @bitCast(lparam)) >> 30) & 1 != 0;
 }
 
 fn disabledUp(start: *Node) bool {
@@ -1386,6 +1425,221 @@ fn pointOf(s: *Surface, lparam: c.LPARAM) [2]f32 {
     const x: i16 = @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)))));
     const y: i16 = @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)) >> 16)));
     return .{ @as(f32, @floatFromInt(x)) / s.scale, @as(f32, @floatFromInt(y)) / s.scale };
+}
+
+// ---------------------------------------------------------------------------
+// Pointer events (docs/native-renderer.md, "Pointer and key events")
+
+const PendingMove = struct { at: [2]f32, buttons: u32, kind: PointerKind, mods: u32 };
+const PointerKind = enum { mouse, touch, pen };
+
+/// A touch or pen contact: its pointer id, where it went down and was
+/// last, whether the page took the drag (down's result) or it became a
+/// scroll.
+const Contact = struct { id: u32, kind: PointerKind, start: [2]f32, last: [2]f32, taken: bool, scrolling: bool = false };
+
+/// The surface of the canvas `hwnd`, while it's alive: an event's handler
+/// may close the page's window.
+fn liveSurface(hwnd: c.HWND) ?*Surface {
+    if (c.IsWindow(hwnd) == 0) return null;
+    const p: ?*anyopaque = @ptrFromInt(@as(usize, @bitCast(c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA))));
+    return if (p) |sp| surfaceOf(sp) else null;
+}
+
+/// A pointer event for the page (main.js pointerEvent) at `p` (CSS px),
+/// on the node there. True when the page took it.
+fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, kind: PointerKind, mods: u32) bool {
+    if (!std.math.isFinite(p[0]) or !std.math.isFinite(p[1])) return false;
+    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    var buf: [112]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"{s}\",{d}]", .{ phase, p[0], p[1], buttons, @tagName(kind), mods }) catch return false;
+    return s.engine.event(nid, "pointer", json);
+}
+
+/// A move waits for the next display frame (the latest one wins), so a
+/// 1000 Hz mouse doesn't flood the page.
+fn queueMove(s: *Surface, p: [2]f32, buttons: u32, kind: PointerKind, mods: u32) void {
+    s.move = .{ .at = p, .buttons = buttons, .kind = kind, .mods = mods };
+    if (!s.ticking) {
+        s.ticking = true;
+        vsync.arm(s.hwnd);
+    }
+}
+
+/// The move waiting, now (before a down or an up, at a display frame).
+/// Null when the page closed the window meanwhile.
+fn flushMove(s: *Surface) ?*Surface {
+    const m = s.move orelse return s;
+    s.move = null;
+    const hwnd = s.hwnd;
+    _ = sendPointer(s, "move", m.at, m.buttons, m.kind, m.mods);
+    return liveSurface(hwnd);
+}
+
+/// The DOM's `buttons` bits of a mouse message's wParam (MK_*).
+fn buttonsOf(wparam: c.WPARAM) u32 {
+    var b: u32 = 0;
+    if (wparam & c.MK_LBUTTON != 0) b |= 1;
+    if (wparam & c.MK_RBUTTON != 0) b |= 2;
+    if (wparam & c.MK_MBUTTON != 0) b |= 4;
+    return b;
+}
+
+/// A mouse message Windows made from a touch or a pen (WM_POINTER*
+/// handles those; this one would be the same contact twice).
+fn fromTouch() bool {
+    return (@as(usize, @bitCast(c.GetMessageExtraInfo())) & 0xFFFFFF00) == 0xFF515700;
+}
+
+/// A mouse button went down: the page's pointerdown, the window keeping
+/// the mouse until every button is up.
+fn onButtonDown(s: *Surface, lparam: c.LPARAM, bit: u32) void {
+    const hwnd = s.hwnd;
+    _ = c.SetCapture(hwnd);
+    const pt = pointOf(s, lparam);
+    const ls = flushMove(s) orelse return;
+    ls.buttons |= bit;
+    _ = sendPointer(ls, "down", pt, ls.buttons, .mouse, modFlags());
+}
+
+/// A mouse button went up: the page's pointerup (a move waiting first).
+/// Null when the page closed the window.
+fn onButtonUp(s: *Surface, lparam: c.LPARAM, bit: u32) ?*Surface {
+    const hwnd = s.hwnd;
+    const pt = pointOf(s, lparam);
+    const ls = flushMove(s) orelse return null;
+    ls.buttons &= ~bit;
+    if (ls.buttons == 0) _ = c.ReleaseCapture();
+    _ = sendPointer(ls, "up", pt, ls.buttons, .mouse, modFlags());
+    return liveSurface(hwnd);
+}
+
+extern "user32" fn GetPointerType(id: u32, t: *u32) callconv(.winapi) c_int;
+const WM_POINTERUPDATE = 0x0245;
+const WM_POINTERDOWN = 0x0246;
+const WM_POINTERUP = 0x0247;
+const WM_POINTERCAPTURECHANGED = 0x024C;
+const POINTER_FLAG_INCONTACT = 0x4;
+
+/// WM_POINTER* for a touch or a pen (a mouse keeps its own messages):
+/// false to leave it to DefWindowProc.
+fn onPointer(s: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool {
+    const id: u32 = @truncate(wparam & 0xFFFF);
+    var ptype: u32 = 0;
+    if (GetPointerType(id, &ptype) == 0) return false;
+    const kind: PointerKind = switch (ptype) {
+        2 => .touch,
+        3 => .pen,
+        else => return false,
+    };
+    const flags: u32 = @truncate((wparam >> 16) & 0xFFFF);
+    // Screen coordinates.
+    var p: c.POINT = .{
+        .x = @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)))))),
+        .y = @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)) >> 16)))),
+    };
+    _ = c.ScreenToClient(s.hwnd, &p);
+    const pt: [2]f32 = .{ @as(f32, @floatFromInt(p.x)) / s.scale, @as(f32, @floatFromInt(p.y)) / s.scale };
+    const hwnd = s.hwnd;
+    switch (msg) {
+        WM_POINTERDOWN => {
+            if (s.contact != null) return true; // one contact at a time
+            _ = c.SetFocus(hwnd);
+            // :active while it's down.
+            if (s.engine.tree.hit(pt[0], pt[1])) |n| _ = s.engine.event(n.id, "press", "null");
+            const ls = liveSurface(hwnd) orelse return true;
+            const ls2 = flushMove(ls) orelse return true;
+            const taken = sendPointer(ls2, "down", pt, 1, kind, modFlags());
+            const ls3 = liveSurface(hwnd) orelse return true;
+            ls3.contact = .{ .id = id, .kind = kind, .start = pt, .last = pt, .taken = taken };
+        },
+        WM_POINTERUPDATE => {
+            const ct = if (s.contact) |*x| (if (x.id == id) x else null) else null;
+            if (ct == null) {
+                // A pen above the screen: a hover move.
+                if (kind == .pen and flags & POINTER_FLAG_INCONTACT == 0) {
+                    onMove(s, pt);
+                    if (liveSurface(hwnd)) |ls| queueMove(ls, pt, 0, .pen, modFlags());
+                }
+                return true;
+            }
+            const k = ct.?;
+            if (k.taken) {
+                queueMove(s, pt, 1, kind, modFlags());
+            } else {
+                // Not the page's: past a few px it's a scroll, and the page
+                // hears the pointer was cancelled.
+                const dx = pt[0] - k.start[0];
+                const dy = pt[1] - k.start[1];
+                if (!k.scrolling and dx * dx + dy * dy > 8 * 8) {
+                    k.scrolling = true;
+                    s.move = null;
+                    _ = sendPointer(s, "cancel", pt, 0, kind, modFlags());
+                    const ls = liveSurface(hwnd) orelse return true;
+                    _ = ls.engine.event(0, "release", "null");
+                    const ls2 = liveSurface(hwnd) orelse return true;
+                    if (ls2.contact) |*c2| scrollTouch(ls2, c2.start, c2.last, pt);
+                    if (ls2.contact) |*c2| c2.last = pt;
+                    return true;
+                }
+                if (k.scrolling) scrollTouch(s, k.start, k.last, pt);
+            }
+            if (liveSurface(hwnd)) |ls| {
+                if (ls.contact) |*c2| c2.last = pt;
+            }
+        },
+        WM_POINTERUP => {
+            const k = s.contact orelse return true;
+            if (k.id != id) return true;
+            s.contact = null;
+            if (k.scrolling) return true;
+            const ls = flushMove(s) orelse return true;
+            _ = sendPointer(ls, "up", pt, 0, kind, modFlags());
+            const ls2 = liveSurface(hwnd) orelse return true;
+            _ = ls2.engine.event(0, "release", "null");
+            const ls3 = liveSurface(hwnd) orelse return true;
+            // The click a tap makes, with the up's coordinates.
+            const n = ls3.engine.tree.hit(pt[0], pt[1]) orelse return true;
+            if (disabledUp(n)) return true;
+            var buf: [16]u8 = undefined;
+            const fl = std.fmt.bufPrint(&buf, "{d}", .{modFlags()}) catch return true;
+            _ = ls3.engine.event(n.id, "click", fl);
+        },
+        WM_POINTERCAPTURECHANGED => {
+            const k = s.contact orelse return true;
+            if (k.id != id) return true;
+            s.contact = null;
+            if (!k.scrolling) {
+                s.move = null;
+                _ = sendPointer(s, "cancel", k.last, 0, kind, modFlags());
+                if (liveSurface(hwnd)) |ls| _ = ls.engine.event(0, "release", "null");
+            }
+        },
+        else => return false,
+    }
+    return true;
+}
+
+/// A touch that became a scroll: the scroll containers under where it
+/// went down follow it from `from` to `to`.
+fn scrollTouch(s: *Surface, start: [2]f32, from: [2]f32, to: [2]f32) void {
+    const hit = s.engine.tree.hit(start[0], start[1]);
+    const dy = from[1] - to[1];
+    const dx = from[0] - to[0];
+    if (dx != 0) {
+        var tx = s.engine.tree.scrollerX(hit);
+        while (tx) |t| {
+            if (s.engine.scrollByX(t, dx)) break;
+            tx = s.engine.tree.scrollerX(t.parent);
+        }
+    }
+    if (dy != 0) {
+        var target = s.engine.tree.scroller(hit);
+        while (target) |t| {
+            if (s.engine.scrollBy(t, dy)) break;
+            target = s.engine.tree.scroller(t.parent);
+        }
+    }
 }
 
 fn onMove(s: *Surface, pt: [2]f32) void {
@@ -1488,35 +1742,69 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             return 0;
         },
         c.WM_LBUTTONDOWN, c.WM_LBUTTONDBLCLK => {
+            if (fromTouch()) return 0;
             _ = c.SetFocus(hwnd);
-            _ = c.SetCapture(hwnd);
             const pt = pointOf(s, lparam);
             // :active while the button is down.
             if (s.engine.tree.hit(pt[0], pt[1])) |n| _ = s.engine.event(n.id, "press", "null");
+            if (liveSurface(hwnd)) |ls| onButtonDown(ls, lparam, 1);
+            return 0;
+        },
+        c.WM_RBUTTONDOWN, c.WM_RBUTTONDBLCLK, c.WM_MBUTTONDOWN, c.WM_MBUTTONDBLCLK => {
+            if (fromTouch()) return 0;
+            const right = msg == c.WM_RBUTTONDOWN or msg == c.WM_RBUTTONDBLCLK;
+            onButtonDown(s, lparam, if (right) 2 else 4);
             return 0;
         },
         c.WM_LBUTTONUP => {
-            _ = c.ReleaseCapture();
-            _ = s.engine.event(0, "release", "null");
-            const pt = pointOf(s, lparam);
-            const n = s.engine.tree.hit(pt[0], pt[1]) orelse return 0;
+            if (fromTouch()) return 0;
+            const ls = onButtonUp(s, lparam, 1) orelse return 0;
+            _ = ls.engine.event(0, "release", "null");
+            const ls2 = liveSurface(hwnd) orelse return 0;
+            // The click, with the up's coordinates.
+            const pt = pointOf(ls2, lparam);
+            const n = ls2.engine.tree.hit(pt[0], pt[1]) orelse return 0;
             if (disabledUp(n)) return 0;
             var buf: [16]u8 = undefined;
             const flags = std.fmt.bufPrint(&buf, "{d}", .{modFlags()}) catch return 0;
-            _ = s.engine.event(n.id, "click", flags);
+            _ = ls2.engine.event(n.id, "click", flags);
             return 0;
         },
         c.WM_RBUTTONUP => {
-            const pt = pointOf(s, lparam);
-            const n = s.engine.tree.hit(pt[0], pt[1]) orelse return 0;
+            if (fromTouch()) return 0;
+            const ls = onButtonUp(s, lparam, 2) orelse return 0;
+            const pt = pointOf(ls, lparam);
+            const n = ls.engine.tree.hit(pt[0], pt[1]) orelse return 0;
             var buf: [64]u8 = undefined;
             const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0}]", .{ pt[0], pt[1] }) catch return 0;
-            _ = s.engine.event(n.id, "contextmenu", json);
+            _ = ls.engine.event(n.id, "contextmenu", json);
+            return 0;
+        },
+        c.WM_MBUTTONUP => {
+            if (fromTouch()) return 0;
+            _ = onButtonUp(s, lparam, 4);
             return 0;
         },
         c.WM_MOUSEMOVE => {
-            onMove(s, pointOf(s, lparam));
+            if (fromTouch()) return 0;
+            const pt = pointOf(s, lparam);
+            onMove(s, pt);
+            if (liveSurface(hwnd)) |ls| queueMove(ls, pt, buttonsOf(wparam), .mouse, modFlags());
             return 0;
+        },
+        // The mouse taken away while a button was down (another window, a
+        // menu): the buttons are up as far as the page goes.
+        c.WM_CAPTURECHANGED => {
+            if (s.buttons != 0 and toHandle(c.HWND, @bitCast(lparam)) != hwnd) {
+                s.buttons = 0;
+                s.move = null;
+                _ = sendPointer(s, "cancel", s.pointer, 0, .mouse, modFlags());
+            }
+            return 0;
+        },
+        WM_POINTERDOWN, WM_POINTERUPDATE, WM_POINTERUP, WM_POINTERCAPTURECHANGED => {
+            if (onPointer(s, msg, wparam, lparam)) return 0;
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         c.WM_MOUSELEAVE => {
             s.tracking = false;
@@ -1535,13 +1823,19 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             return 0;
         },
         c.WM_KEYDOWN, c.WM_SYSKEYDOWN => {
+            // The key a WM_CHAR from this one belongs to (its keyup's).
+            s.char_vk = wparam;
             if (keyName(wparam)) |name| {
-                if (sendKey(s, name)) return 0;
+                if (sendKey(s, name, wparam, repeated(lparam))) return 0;
             } else if (c.GetKeyState(c.VK_CONTROL) < 0 and ((wparam >= 'A' and wparam <= 'Z') or (wparam >= '0' and wparam <= '9'))) {
                 // Ctrl+letter types no character: the shortcut as its key.
                 const ch: u8 = std.ascii.toLower(@intCast(wparam));
-                if (sendKey(s, &.{ch})) return 0;
+                if (sendKey(s, &.{ch}, wparam, repeated(lparam))) return 0;
             }
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        c.WM_KEYUP, c.WM_SYSKEYUP => {
+            sendKeyUp(s, wparam);
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         c.WM_CHAR => {
@@ -1550,7 +1844,7 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             var units: [2]u16 = .{ @intCast(wparam & 0xFFFF), 0 };
             var buf: [8]u8 = undefined;
             const len = std.unicode.utf16LeToUtf8(&buf, units[0..1]) catch return 0;
-            _ = sendKey(s, buf[0..len]);
+            _ = sendKey(s, buf[0..len], s.char_vk, repeated(lparam));
             return 0;
         },
         // Removed fields' controls: now that no control's code is running.
