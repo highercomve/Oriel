@@ -2134,7 +2134,7 @@ fn onScrollbarDown(s: *Surface, pt: [2]f32) bool {
 fn scrollbarStep(s: *Surface, pt: [2]f32) void {
     const n = s.engine.tree.get(s.sb_node) orelse return;
     const sb = scrollbarOf(n) orelse return;
-    const page = sb.bar.h * 0.875;
+    const page = @round(sb.bar.h * 0.875);
     const dy: f32 = switch (s.sb_part) {
         .up => -40,
         .down => 40,
