@@ -48,6 +48,8 @@ extern int oriel_nui_leaf_style(void *opaque, double id, const char *json, size_
 extern int oriel_nui_leaf(void *opaque, double id, double style_id, const char *text, size_t len, int is_text);
 extern int oriel_nui_frame(void *opaque, double id, double *out5);
 extern void oriel_nui_focus(void *opaque, double id);
+extern int oriel_nui_selection(void *opaque, double id, double *out);
+extern void oriel_nui_set_selection(void *opaque, double id, double start, double end);
 extern void oriel_nui_scroll_into_view(void *opaque, double id, const char *block, size_t len);
 extern void oriel_nui_scroll_to(void *opaque, double id, double y);
 
@@ -367,6 +369,27 @@ static JSValue h_frame(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     JSValue arr = JS_NewArray(ctx);
     for (uint32_t i = 0; i < 5; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
     return arr;
+}
+
+// host.selection(id): a text field's [start, end] (UTF-16), or undefined.
+static JSValue h_selection(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    double id = 0;
+    if (argc > 0) JS_ToFloat64(ctx, &id, argv[0]);
+    double out[2];
+    if (!oriel_nui_selection(opaque_of(ctx), id, out)) return JS_UNDEFINED;
+    JSValue arr = JS_NewArray(ctx);
+    for (uint32_t i = 0; i < 2; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
+    return arr;
+}
+
+// host.setSelection(id, start, end).
+static JSValue h_set_selection(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    double v[3] = { 0, 0, 0 };
+    for (int i = 0; i < 3 && i < argc; i++) JS_ToFloat64(ctx, &v[i], argv[i]);
+    oriel_nui_set_selection(opaque_of(ctx), v[0], v[1], v[2]);
+    return JS_UNDEFINED;
 }
 
 static JSValue h_focus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -797,6 +820,8 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "stampList", h_stamp_list, 6);
 #endif
     set_fn(ctx, host, "focus", h_focus, 1);
+    set_fn(ctx, host, "selection", h_selection, 1);
+    set_fn(ctx, host, "setSelection", h_set_selection, 3);
     set_fn(ctx, host, "scrollIntoView", h_scroll_into_view, 2);
     set_fn(ctx, host, "scrollTo", h_scroll_to, 2);
     set_fn(ctx, host, "evalScript", h_eval_script, 2);

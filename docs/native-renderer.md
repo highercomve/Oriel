@@ -150,6 +150,31 @@ opacity, backgrounds, color, transforms, sizes, border colors and shadows
 (src/native_ui/js/src/transitions.js, animations.js: while they run, only
 the animated nodes are sent each frame).
 
+**Field edits and selection** (each backend with native text fields):
+
+- Keys first: keydown (and keyup) on the field before the control acts, a
+  prevented keydown (or keypress, which main.js fires after it for a
+  character or Enter) keeping the key from the control.
+- Then, for a key that edits, `Engine.event(id, "beforeinput", [inputType,
+  data])` before the control applies it; `true` back means the page
+  prevented it and the control must not make the edit. inputType as
+  Chromium names them: `insertText` (data: the character),
+  `insertLineBreak` (Enter in a textarea), `deleteContentBackward` /
+  `deleteContentForward` (Backspace / Delete; `deleteWord…` with Ctrl or
+  Option), `insertFromPaste` (data: the pasted text, without line breaks
+  in a one-line field), `deleteByCut`, `historyUndo`. None for a key that
+  changes nothing (Backspace at the start).
+- After the edit, `"input"` with `[value, inputType, data]` (the same pair
+  the beforeinput had; a plain value string still works, as an edit with
+  no type).
+- `Backend.selection(node) → [start, end]` and `Backend.set_selection(node,
+  start, end)`, in UTF-16 units of the value (LF line ends: a Win32
+  textarea's CR LF counts once): `el.selectionStart`, `selectionEnd`,
+  `setSelectionRange()` and `select()` use them (host.selection,
+  host.setSelection); without them main.js keeps what the page set.
+  Win32 does all of this (IME composition stays the control's: no
+  beforeinput for it).
+
 **Gradient stops** (`bg.gradient`, each backend):
 
 - `stops` are `[r, g, b, a, pos]`. With only percentages, `pos` is a
