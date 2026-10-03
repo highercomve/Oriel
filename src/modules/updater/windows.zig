@@ -87,7 +87,11 @@ pub fn cleanupStaleFor(gpa: std.mem.Allocator, exe_path: []const u8) void {
 
     if (win32.DeleteFileW(old_w.ptr) == win32.FALSE) {
         const err = win32.GetLastError();
-        if (err != win32.ERROR_FILE_NOT_FOUND and err != win32.ERROR_PATH_NOT_FOUND) {
+        if (err == win32.ERROR_ACCESS_DENIED) {
+            // The previous process still runs from it (expected right
+            // after a restart): a later start removes it.
+            log.info("updater: {s} still in use; left for a later start", .{old_path});
+        } else if (err != win32.ERROR_FILE_NOT_FOUND and err != win32.ERROR_PATH_NOT_FOUND) {
             log.warn("updater: could not delete {s} ({d})", .{ old_path, err });
         }
     }
