@@ -489,6 +489,14 @@ with code): every paragraph's top and height the same.
 
 **Text metrics** (each backend, to match its own WebView):
 
+- Android: text paints are linear with subpixel positions (TEXT_FLAGS in
+  OrielNative.kt, and canvas text): the canvas is in dp, and without them
+  Android hints glyph advances at that small size (13.33px Roboto came out
+  7 px short over a sentence, 12px 3 px long). A text's width goes to Yoga
+  to 1/64 px, as Chrome keeps it, not rounded up and 1 px more; the layout
+  drawn is a whole px wider so it doesn't wrap. Widths now match the
+  Android WebView's within Yoga's rounding (10 to 32px, bold, monospace).
+
 - `line-height: normal` (no `lh` in the props; the UA sheet sets none) is
   the font's ascent + descent + line gap, each rounded to whole pixels, as
   WebKit and Chromium make it (Noto Sans at 16px: 17 + 5 + 0 = 22; at

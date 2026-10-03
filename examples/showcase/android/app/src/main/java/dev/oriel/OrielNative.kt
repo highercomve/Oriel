@@ -278,7 +278,7 @@ internal class NuiNode(val id: Int, var kind: String) {
         val fz = p.optDouble("fz", 16.0).toFloat()
         val mono = p.optBoolean("mono")
         val ff = p.optString("ff")
-        val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        val tp = TextPaint(TEXT_FLAGS)
         tp.textSize = fz
         tp.typeface = typeface(p.optDouble("fwt", 400.0).toInt(), p.optBoolean("it"), family(ff, mono))
         tp.color = p.optJSONArray("col")?.let { color(it) } ?: Color.BLACK
@@ -441,7 +441,7 @@ internal class NuiNode(val id: Int, var kind: String) {
         val ff = r?.optString("ff")?.ifEmpty { null } ?: p.optString("ff")
         val key = "$fz $sz $w $italic $mono ${p.optDouble("lh", -1.0)} $ff"
         return lineStyles.getOrPut(key) {
-            val fp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            val fp = TextPaint(TEXT_FLAGS)
             fp.textSize = sz.toFloat()
             fp.typeface = typeface(w, italic, family(ff, mono))
             val one = builder(t.subSequence(0, 1), tp, 1 shl 20).build()
@@ -451,15 +451,15 @@ internal class NuiNode(val id: Int, var kind: String) {
 
     /**
      * A plain text that fits on one line at `max64` (or unbounded): its width
-     * from the font (rounded as the StaticLayout path: ceil + 1) and its
+     * from the font (to 1/64 px, as Chrome keeps fractional widths) and its
      * style's line height, no layout. Null: the full path measures it.
      */
     private fun fastSize(t: CharSequence, tp: TextPaint, max64: Int): Long? {
         if (!plainLine(t)) return null
         val st = lineStyle(t, tp)
-        val w = ceil(st.paint.measureText(t, 0, t.length)).toInt() + 1
-        if (max64 >= 0 && w > max(1, max64 / 64)) return null // it wraps
-        return (w * 64L shl 32) or (st.height * 64L)
+        val w64 = ceil(st.paint.measureText(t, 0, t.length) * 64).toLong()
+        if (max64 >= 0 && w64 > max(64, max64)) return null // it wraps
+        return (w64 shl 32) or (st.height * 64L)
     }
 
     /**
@@ -507,8 +507,10 @@ internal class NuiNode(val id: Int, var kind: String) {
         val l = textLayout(width) ?: return 0
         var w = 0f
         for (i in 0 until l.lineCount) w = max(w, l.getLineWidth(i))
-        val wf = min(ceil(w) + 1, width.toFloat())
-        return ((wf * 64).toLong() shl 32) or (l.height * 64L)
+        // The lines' own width (to 1/64 px), as Chrome's; the layout drawn
+        // later is a whole px wider (textLayout's ceil + 1), so it doesn't wrap.
+        val wf = min(w, width.toFloat())
+        return (ceil(wf * 64).toLong() shl 32) or (l.height * 64L)
     }
 
     companion object {
@@ -525,7 +527,7 @@ internal class NuiNode(val id: Int, var kind: String) {
         private val ratios = HashMap<String, FloatArray>()
 
         fun fontRatios(ff: String, mono: Boolean): FloatArray = ratios.getOrPut("$mono $ff") {
-            val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            val tp = TextPaint(TEXT_FLAGS)
             tp.textSize = 100f
             tp.typeface = family(ff, mono)
             val fm = tp.fontMetrics
@@ -635,6 +637,15 @@ private class Spacer(val width: Float) : ReplacementSpan() {
     }
     override fun draw(canvas: Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {}
 }
+
+/**
+ * Text paints' flags: anti-aliased, and linear with subpixel positions, so
+ * glyph advances are the font's at the size, as Chrome lays text out. The
+ * canvas is in dp (CSS px): without them Android hints the metrics at that
+ * small size, and widths came out up to 6% off Chrome's (13.33px Roboto 7 px
+ * short over a sentence, 12px 3 px long).
+ */
+internal const val TEXT_FLAGS = Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG or Paint.LINEAR_TEXT_FLAG
 
 /** A run's font: the typeface with its weight and style. */
 private class FontSpan(val tf: Typeface) : MetricAffectingSpan() {
