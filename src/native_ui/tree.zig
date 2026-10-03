@@ -1055,7 +1055,7 @@ test "paddingBox: the border box inset by the border, inner radii" {
     try std.testing.expectEqual([4]f32{ 3, 3, 3, 3 }, none.radii);
 }
 
-pub const Measure =*const fn (ctx: *anyopaque, node: *Node, max_width: f32, out: *[2]f32) void;
+pub const Measure = *const fn (ctx: *anyopaque, node: *Node, max_width: f32, out: *[2]f32) void;
 
 pub const Tree = struct {
     deleted_nodes: usize = 0,

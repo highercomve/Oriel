@@ -324,7 +324,7 @@ Backends must give Tab to the page, also while a native field has the
 keyboard, and not move the focus themselves when the page used the key;
 when the page focuses an element that isn't a native field, the keyboard
 goes to the page's view. GTK: a capture-phase key controller on the
-overlay sends Tab from a field.
+overlay sends a field's keys to the page first (below).
 
 On Apple platforms Tab visits what WKWebView's does (measured): on macOS
 without Full Keyboard Access (the system's keyboard navigation setting,
@@ -343,7 +343,10 @@ Backends: macOS (mouse moves, drags, buttons; key up from a local event monitor,
 AppKit not sending `keyUp:` to the page's view) and iOS (one touch; a drag the
 page doesn't take scrolls as before), GTK (mouse moves, drags and buttons;
 moves coalesced on the frame clock; keyup from the key controller, repeat
-from the keys held), Android (one touch, or the mouse on ChromeOS with its
+from the keys held; while a native field has the keyboard, the overlay's
+capture-phase key controller sends its keydown and keyup on the field
+first, and a prevented keydown never reaches it; modifier keys are keys
+of their own, their flag set on their keydown), Android (one touch, or the mouse on ChromeOS with its
 buttons and hover moves; a touch the page doesn't take scrolls as before and
 gets a cancel, a mouse drag doesn't scroll; moves coalesced on
 Choreographer's frame; keydown with repeat and keyup from the page's view).
