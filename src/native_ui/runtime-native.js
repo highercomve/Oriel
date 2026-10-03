@@ -1287,17 +1287,21 @@ globalThis.atob ??= (s) => {
     return out;
   }
   function splitSpaces(s) {
+    s = s.trim();
+    if (!s.includes("(") && !s.includes(")")) return s ? s.split(/\s+/) : [];
     const out = [];
-    let depth = 0, cur = "";
-    for (const c of s.trim()) {
+    const re = /[()\s]/g;
+    let depth = 0, start = 0;
+    for (let m; m = re.exec(s); ) {
+      const c = m[0];
       if (c === "(") depth++;
-      if (c === ")") depth--;
-      if (depth === 0 && /\s/.test(c)) {
-        if (cur) out.push(cur);
-        cur = "";
-      } else cur += c;
+      else if (c === ")") depth--;
+      else if (depth === 0) {
+        if (m.index > start) out.push(s.slice(start, m.index));
+        start = m.index + 1;
+      }
     }
-    if (cur) out.push(cur);
+    if (start < s.length) out.push(s.slice(start));
     return out;
   }
   function parseDecls(text) {
@@ -3105,18 +3109,20 @@ col, colgroup { display: none; }
   var STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus"];
   function splitCompounds(sel) {
     const out = [];
-    let depth = 0, cur = "";
-    for (const ch of sel) {
-      if (ch === "(" || ch === "[") depth++;
-      else if (ch === ")" || ch === "]") depth--;
-      if (depth === 0 && (ch === " " || ch === ">" || ch === "+" || ch === "~")) {
-        if (cur.trim()) out.push(cur.trim());
-        cur = "";
-        continue;
+    const re = /[()[\] >+~]/g;
+    let depth = 0, start = 0;
+    for (let m; m = re.exec(sel); ) {
+      const c = m[0];
+      if (c === "(" || c === "[") depth++;
+      else if (c === ")" || c === "]") depth--;
+      else if (depth === 0) {
+        const part = sel.slice(start, m.index).trim();
+        if (part) out.push(part);
+        start = m.index + 1;
       }
-      cur += ch;
     }
-    if (cur.trim()) out.push(cur.trim());
+    const last = sel.slice(start).trim();
+    if (last) out.push(last);
     return out;
   }
   var TEMPLATE_LEAF = /* @__PURE__ */ new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);

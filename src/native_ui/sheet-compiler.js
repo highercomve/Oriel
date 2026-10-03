@@ -32,17 +32,21 @@
     return out;
   }
   function splitSpaces(s) {
+    s = s.trim();
+    if (!s.includes("(") && !s.includes(")")) return s ? s.split(/\s+/) : [];
     const out = [];
-    let depth = 0, cur = "";
-    for (const c of s.trim()) {
+    const re = /[()\s]/g;
+    let depth = 0, start = 0;
+    for (let m; m = re.exec(s); ) {
+      const c = m[0];
       if (c === "(") depth++;
-      if (c === ")") depth--;
-      if (depth === 0 && /\s/.test(c)) {
-        if (cur) out.push(cur);
-        cur = "";
-      } else cur += c;
+      else if (c === ")") depth--;
+      else if (depth === 0) {
+        if (m.index > start) out.push(s.slice(start, m.index));
+        start = m.index + 1;
+      }
     }
-    if (cur) out.push(cur);
+    if (start < s.length) out.push(s.slice(start));
     return out;
   }
   function parseDecls(text) {

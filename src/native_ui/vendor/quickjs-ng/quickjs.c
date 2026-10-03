@@ -18050,8 +18050,10 @@ static bool needs_backtrace(JSValue exc)
 /* Oriel: a profiler of JavaScript functions, for finding what to make
    faster. Built only with -DORIEL_QJS_FUNC_PROFILE (x86-64): each bytecode
    function's own time (its callees' excluded; builtins it calls included)
-   in TSC ticks and its calls, printed at exit, the top 60 by own time. */
+   in TSC ticks and its calls, printed at exit, the top 60 by own time; or
+   on SIGUSR1 (an app that doesn't exit: the counts so far). */
 #ifdef ORIEL_QJS_FUNC_PROFILE
+#include <signal.h>
 #include <x86intrin.h>
 typedef struct { const void *b; char *name; uint64_t self, calls; } QjsProfEntry;
 static QjsProfEntry qjs_prof_tab[1 << 16];
@@ -18066,19 +18068,28 @@ static void qjs_prof_dump(void)
 {
     uint64_t total = 0;
     int i, n = 0;
+    // Sorted in a copy: the table stays as it is (a dump on SIGUSR1).
+    static QjsProfEntry sorted[1 << 16];
     for (i = 0; i < (1 << 16); i++)
-        if (qjs_prof_tab[i].b) { qjs_prof_tab[n++] = qjs_prof_tab[i]; total += qjs_prof_tab[i].self; }
-    qsort(qjs_prof_tab, n, sizeof(qjs_prof_tab[0]), qjs_prof_cmp);
+        if (qjs_prof_tab[i].b) { sorted[n++] = qjs_prof_tab[i]; total += qjs_prof_tab[i].self; }
+    qsort(sorted, n, sizeof(sorted[0]), qjs_prof_cmp);
     fprintf(stderr, "qjs profile: %d functions, own time (%% of all JS):\n", n);
     for (i = 0; i < n && i < 60; i++)
-        fprintf(stderr, "%6.2f%% %10llu calls  %s\n", total ? 100.0 * qjs_prof_tab[i].self / total : 0.0,
-                (unsigned long long)qjs_prof_tab[i].calls, qjs_prof_tab[i].name);
+        fprintf(stderr, "%6.2f%% %10llu calls  %s\n", total ? 100.0 * sorted[i].self / total : 0.0,
+                (unsigned long long)sorted[i].calls, sorted[i].name);
+}
+// Printed from the handler (stdio isn't async-signal-safe: a debugging
+// build's risk; an idle app runs no JavaScript to print it later).
+static void qjs_prof_on_signal(int sig)
+{
+    (void)sig;
+    qjs_prof_dump();
 }
 static void qjs_prof_enter(JSRuntime *rt, JSFunctionBytecode *b)
 {
     uint32_t h = (uint32_t)(((uintptr_t)b >> 4) * 2654435761u) >> 16;
     QjsProfEntry *e;
-    if (!qjs_prof_registered) { qjs_prof_registered = 1; atexit(qjs_prof_dump); }
+    if (!qjs_prof_registered) { qjs_prof_registered = 1; atexit(qjs_prof_dump); signal(SIGUSR1, qjs_prof_on_signal); }
     for (;;) {
         e = &qjs_prof_tab[h];
         if (e->b == b || !e->b) break;
