@@ -4889,7 +4889,9 @@ col, colgroup { display: none; }
       }
       return out;
     }
-    inlineRuns(el, parentCS, parentFs, runs, rematch = false) {
+    // `outerBg`: an enclosing inline element's background (it covers the
+    // text of the inline elements inside it too).
+    inlineRuns(el, parentCS, parentFs, runs, rematch = false, outerBg = void 0) {
       if (SKIP2.has(el.localName)) return;
       const cs = this.style(el, parentCS, rematch);
       if ((cs.display || "inline") === "none") return;
@@ -4899,11 +4901,12 @@ col, colgroup { display: none; }
         runs.push({ t: "\n", ...runStyle(cs, fs) });
         return;
       }
+      const bg = (cs.background ? background(cs.background, color(cs.color))?.color : void 0) ?? outerBg;
       const deeper = rematch || this.marks.get(el) === 2;
       for (let child = el.firstChild; child; child = child.nextSibling) {
         this.parentOf.set(child, el);
-        if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el));
-        else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper);
+        if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el, bg));
+        else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper, bg);
       }
     }
     pseudo(el, cs, which, nodes) {
@@ -5515,16 +5518,15 @@ col, colgroup { display: none; }
     if (cs["font-style"] === "italic") r.i = true;
     if (/mono/.test(cs["font-family"] || "")) r.mono = true;
     if ((cs["text-decoration-line"] || "") === "underline") r.u = true;
-    const bg = background(cs.background, r.c);
-    if (bg?.color) r.bg = bg.color;
     return r;
   }
-  function runFor(text, cs, fs, src) {
+  function runFor(text, cs, fs, src, bg) {
     let t = text;
     const tt = cs["text-transform"];
     if (tt === "uppercase") t = t.toUpperCase();
     else if (tt === "lowercase") t = t.toLowerCase();
     const r = { t, ...runStyle(cs, fs), ws: cs["white-space"] || "normal" };
+    if (bg) r.bg = bg;
     if (src) Object.defineProperty(r, "src", { value: src, enumerable: false });
     return r;
   }
