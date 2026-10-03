@@ -270,6 +270,9 @@ pub const Surface = struct {
     /// Fonts to load while idle (warmFonts), and the idle source doing it.
     warm: std.ArrayList(engine_mod.FontSpec) = .empty,
     warm_id: c_uint = 0,
+    /// After a big removal: the tree's empty slabs released a while later
+    /// (onTrim), if no new list took them.
+    trim_id: c_uint = 0,
     pointer: [2]f32 = .{ 0, 0 },
     hovered: i64 = 0,
     updating: bool = false,
@@ -357,6 +360,8 @@ pub const Surface = struct {
         s.tick_id = 0;
         if (s.warm_id != 0) _ = g_source_remove(s.warm_id);
         s.warm_id = 0;
+        if (s.trim_id != 0) _ = g_source_remove(s.trim_id);
+        s.trim_id = 0;
         s.warm.deinit(s.gpa);
         gtk_drawing_area_set_draw_func(s.area, null, null, null);
         disconnect(s, s.area);
@@ -544,6 +549,13 @@ fn removed(ctx: *anyopaque, node: *Node) void {
     if (s.canvases.fetchRemove(node.id)) |kv| cairo_surface_destroy(kv.value.surf);
 }
 
+fn onTrim(data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaces.get(@intFromPtr(data)) orelse return 0; // the window is gone
+    s.trim_id = 0;
+    _ = s.engine.tree.trimPools();
+    return 0;
+}
+
 fn laidOut(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
     prof.report("text cache {d} entries {d} key bytes, {d} capacity resets", .{ s.text_measurements.entries.count(), s.text_measurements.bytes, s.text_measurements.capacity_resets });
@@ -551,7 +563,10 @@ fn laidOut(ctx: *anyopaque) void {
     // freed memory back to the system. glibc's malloc keeps it otherwise
     // (QuickJS and the tree both allocate there), so memory only grew.
     const count = s.engine.tree.nodes.count();
-    if (s.node_count > count + 1000) _ = malloc_trim(0);
+    if (s.node_count > count + 1000) {
+        _ = malloc_trim(0);
+        if (s.trim_id == 0) s.trim_id = g_timeout_add(2000, onTrim, @ptrFromInt(s.token));
+    }
     s.node_count = count;
     syncFields(s);
     gtk_widget_queue_draw(s.area);
