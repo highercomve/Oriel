@@ -2837,12 +2837,7 @@ fn strokeShape(p: *Painter, f: Rect, r: [4]f32, brush: *c.ID2D1Brush, width: f32
 
 /// A gradient length: px, or "50%" of `total`.
 fn boxLen(v: tree_mod.Dim, total: f32) f32 {
-    return switch (v) {
-        .integer => |i| @floatFromInt(i),
-        .float => |x| @floatCast(x),
-        .string => |str| if (std.mem.endsWith(u8, str, "%")) (std.fmt.parseFloat(f32, str[0 .. str.len - 1]) catch 0) / 100 * total else 0,
-        else => 0,
-    };
+    return v.len(total);
 }
 
 /// A brush for a CSS gradient over `f`. Caller releases.
