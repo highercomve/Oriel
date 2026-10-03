@@ -100,6 +100,18 @@ and `runtime-native.js` (the native DOM), and the build embeds the one chosen.
 | `canvas` (2d context) | One view that replays the recorded 2d program (see below) |
 | `display: none`, `[hidden]` | Nothing |
 
+An SVG's own `<style>` (Vite's logo: class fills and a
+`prefers-color-scheme` rule on a root with `fill="none"`) paints its
+shapes (icons.js `svgSheet`/`styleOf`): its rules, by specificity and
+order, media queries answered, over presentation attributes, and a shape's
+`style` attribute over both; `fill`, `stroke`, the stroke's width, cap and
+join, `display: none`, `visibility: hidden`, and `opacity`,
+`fill-opacity` and `stroke-opacity` (multiplied into the shape's colors).
+An SVG drawn as an image (`<img src="logo.svg">`) sees a light color
+scheme, as a browser's SVG image does; an inline one follows the page.
+Checked against WKWebView: the same logo inline and as an image, in dark
+mode (white parentheses inline, black in the image).
+
 Events go the other way: a click on a native view becomes a `click` on its
 element (bubbling through the fake DOM); text fields send `input`; Enter in
 a single-line field submits its `form`.

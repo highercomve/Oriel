@@ -696,7 +696,7 @@ globalThis.atob ??= (s) => {
       }
     }
     const tokenLists = internalWeak(/* @__PURE__ */ new WeakMap());
-    const styleOf = internalWeak(/* @__PURE__ */ new WeakMap());
+    const styleOf2 = internalWeak(/* @__PURE__ */ new WeakMap());
     function parseStyle(text) {
       const m = /* @__PURE__ */ new Map();
       for (const rule of (text || "").split(/\s*;\s*/)) {
@@ -853,8 +853,8 @@ globalThis.atob ??= (s) => {
         this.setAttribute("class", v);
       } },
       style: { get() {
-        let s = styleOf.get(this);
-        if (!s) styleOf.set(this, s = new Proxy({ _el: this }, styleHandler));
+        let s = styleOf2.get(this);
+        if (!s) styleOf2.set(this, s = new Proxy({ _el: this }, styleHandler));
         return s;
       }, set(v) {
         this.setAttribute("style", String(v));
@@ -879,9 +879,9 @@ globalThis.atob ??= (s) => {
         const v = this.getAttribute(name);
         return v === null ? null : new Attr(this, name, v);
       },
-      setAttributeNode(attr2) {
-        this.setAttribute(attr2.name, attr2._value ?? attr2.value);
-        attr2.ownerElement = this;
+      setAttributeNode(attr) {
+        this.setAttribute(attr.name, attr._value ?? attr.value);
+        attr.ownerElement = this;
         return null;
       },
       toggleAttribute(name, force) {
@@ -2991,7 +2991,16 @@ globalThis.atob ??= (s) => {
   };
 
   // src/icons.js
-  function iconFor(svg, cs, doc, files) {
+  function iconFor(svg, cs, doc, files, opts) {
+    if (!opts?.image || !viewport.dark) return iconOf(svg, cs, doc, files);
+    viewport.dark = false;
+    try {
+      return iconOf(svg, cs, doc, files);
+    } finally {
+      viewport.dark = true;
+    }
+  }
+  function iconOf(svg, cs, doc, files) {
     const current = color(cs.color) || [0, 0, 0, 1];
     let root = svg;
     const use = svg.querySelector("use");
@@ -3007,9 +3016,10 @@ globalThis.atob ??= (s) => {
     }
     const vb = (root.getAttribute("viewBox") || svg.getAttribute("viewBox") || "0 0 24 24").split(/[\s,]+/).map(Number);
     const shapes = [];
-    let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter" });
-    if (root !== svg) paint = paintOf(root, paint);
-    collect2(root, paint, current, doc, shapes);
+    const sheet = svgSheet(root === svg ? svg : root.closest?.("svg") || svg);
+    let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter", op: 1, fo: 1, so: 1 }, sheet);
+    if (root !== svg) paint = paintOf(root, paint, sheet);
+    collect2(root, paint, current, doc, shapes, sheet);
     if (!shapes.length) return null;
     return { vb, shapes };
   }
@@ -3078,22 +3088,24 @@ globalThis.atob ??= (s) => {
     "marker",
     "text"
   ]);
-  function collect2(el, inherited, current, doc, out) {
+  function collect2(el, inherited, current, doc, out, sheet) {
     for (const c of el.children) {
       const tag = c.localName;
       if (SKIP.has(tag)) continue;
       if (c.hasAttribute("mask")) continue;
-      const paint = paintOf(c, inherited);
+      const paint = paintOf(c, inherited, sheet);
+      if (paint.display === "none") continue;
       if (tag === "g") {
-        collect2(c, paint, current, doc, out);
+        collect2(c, paint, current, doc, out, sheet);
         continue;
       }
+      if (paint.visibility === "hidden" || paint.visibility === "collapse") continue;
       const d = pathData(c);
       if (!d) continue;
       out.push({
         d,
-        fill: paintColor(paint.fill, current, doc),
-        stroke: paintColor(paint.stroke, current, doc),
+        fill: faded(paintColor(paint.fill, current, doc), paint.op * paint.fo),
+        stroke: faded(paintColor(paint.stroke, current, doc), paint.op * paint.so),
         sw: paint.sw,
         cap: paint.cap,
         join: paint.join,
@@ -3101,24 +3113,60 @@ globalThis.atob ??= (s) => {
       });
     }
   }
-  function paintOf(el, inherited) {
+  function paintOf(el, inherited, sheet) {
+    const st = styleOf(el, sheet);
+    const get = (name) => st?.[name] ?? el.getAttribute(name);
+    const num3 = (v, d) => {
+      const x = parseFloat(v);
+      return Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : d;
+    };
     return {
-      fill: attr(el, "fill") ?? inherited.fill,
-      stroke: attr(el, "stroke") ?? inherited.stroke,
-      sw: parseFloat(attr(el, "stroke-width") ?? inherited.sw),
-      cap: attr(el, "stroke-linecap") ?? inherited.cap,
-      join: attr(el, "stroke-linejoin") ?? inherited.join
+      fill: get("fill") ?? inherited.fill,
+      stroke: get("stroke") ?? inherited.stroke,
+      sw: parseFloat(get("stroke-width") ?? inherited.sw),
+      cap: get("stroke-linecap") ?? inherited.cap,
+      join: get("stroke-linejoin") ?? inherited.join,
+      op: inherited.op * num3(get("opacity"), 1),
+      fo: num3(get("fill-opacity"), inherited.fo),
+      so: num3(get("stroke-opacity"), inherited.so),
+      display: get("display"),
+      visibility: get("visibility") ?? inherited.visibility
     };
   }
-  function attr(el, name) {
-    const v = el.getAttribute(name);
-    if (v !== null) return v;
-    const style = el.getAttribute("style");
-    if (style) {
-      const m = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`).exec(style);
-      if (m) return m[1].trim();
+  function svgSheet(svg) {
+    const texts = [...svg.querySelectorAll("style")].map((s) => s.textContent || "").filter(Boolean);
+    if (!texts.length) return null;
+    const rules = parseSheet(texts.join("\n"), 0).filter((r) => !r.pseudo);
+    const cmp = (a, b) => a.spec[0] - b.spec[0] || a.spec[1] - b.spec[1] || a.spec[2] - b.spec[2] || a.order - b.order;
+    return rules.length ? rules.sort(cmp) : null;
+  }
+  function styleOf(el, sheet) {
+    const inline = el.getAttribute("style");
+    if (!sheet && !inline) return null;
+    const out = {}, important = {};
+    const put = (d) => {
+      if (important[d.prop] && !d.important) return;
+      out[d.prop] = d.value;
+      if (d.important) important[d.prop] = true;
+    };
+    if (sheet) {
+      for (const r of sheet) {
+        if (r.media && !mediaMatches(r.media)) continue;
+        let hit = false;
+        try {
+          hit = el.matches(r.sel);
+        } catch {
+          hit = false;
+        }
+        if (hit) for (const d of r.decls) put(d);
+      }
     }
-    return null;
+    if (inline) for (const d of parseInline(inline)) put(d);
+    return out;
+  }
+  function faded(c, alpha) {
+    if (!c || alpha >= 1) return c;
+    return [c[0], c[1], c[2], c[3] * alpha];
   }
   function paintColor(p, current, doc) {
     if (!p || p === "none") return null;
@@ -3893,11 +3941,11 @@ input[type="range"] { height: 20px; margin: 2px; }
       for (const r of engine.rules) {
         const compounds = splitCompounds(r.sel);
         for (let i = 0; i < compounds.length - 1; i++) {
-          for (const attr2 of STATE_ATTRS) {
-            if (!compounds[i].includes(`[${attr2}]`)) continue;
-            const rest = compounds[i].split(`[${attr2}]`).join("") || "*";
-            let list = this.stateAbove.get(attr2);
-            if (!list) this.stateAbove.set(attr2, list = []);
+          for (const attr of STATE_ATTRS) {
+            if (!compounds[i].includes(`[${attr}]`)) continue;
+            const rest = compounds[i].split(`[${attr}]`).join("") || "*";
+            let list = this.stateAbove.get(attr);
+            if (!list) this.stateAbove.set(attr, list = []);
             if (!list.some((x) => x.sel === rest)) list.push({ sel: rest, match: null });
           }
         }
@@ -4049,8 +4097,8 @@ input[type="range"] { height: 20px; margin: 2px; }
     }
     // Whether a state attribute on `el` can change what's below it: it
     // matches a compound that has the state above a rule's subject.
-    stateMattersBelow(el, attr2) {
-      const list = this.stateAbove.get(attr2);
+    stateMattersBelow(el, attr) {
+      const list = this.stateAbove.get(attr);
       if (!list) return false;
       for (const c of list) {
         if (c.match === null) {
@@ -4834,7 +4882,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         const src = el.getAttribute("src") || "";
         if (!src) return null;
         const svg = /^data:image\/svg\+xml/.test(src) || /\.svg([?#]|$)/i.test(src) ? this.svgFile(src) : null;
-        const icon = svg && iconFor(svg.svg, { color: "black" }, svg, (file) => this.svgFile(file));
+        const icon = svg && iconFor(svg.svg, { color: "black" }, svg, (file) => this.svgFile(file), { image: true });
         if (icon) {
           props.icon = icon;
           for (const k of ["w", "h"]) if (props[k] === "auto") delete props[k];
@@ -7707,14 +7755,14 @@ ${a.stack || ""}`;
     return prevented;
   }
   var marked = /* @__PURE__ */ new Map();
-  function markChain(attr2, el) {
+  function markChain(attr, el) {
     const next = [];
     for (let n2 = el; n2 && n2.nodeType === 1; n2 = n2.parentNode) next.push(n2);
-    const prev = marked.get(attr2) || [];
+    const prev = marked.get(attr) || [];
     if (prev.length === next.length && prev.every((x, i) => x === next[i])) return;
-    for (const n2 of prev) if (!next.includes(n2)) n2.removeAttribute(attr2);
-    for (const n2 of next) if (!prev.includes(n2)) n2.setAttribute(attr2, "");
-    marked.set(attr2, next);
+    for (const n2 of prev) if (!next.includes(n2)) n2.removeAttribute(attr);
+    for (const n2 of next) if (!prev.includes(n2)) n2.setAttribute(attr, "");
+    marked.set(attr, next);
   }
   function hoverEvents(from, to) {
     if (from === to) return;
@@ -7766,16 +7814,16 @@ ${a.stack || ""}`;
   }
   function bindInline(el) {
     const bound = el.__inline ||= /* @__PURE__ */ new Map();
-    for (const attr2 of [...el.attributes || []]) {
-      const name = attr2.name.toLowerCase();
+    for (const attr of [...el.attributes || []]) {
+      const name = attr.name.toLowerCase();
       if (!name.startsWith("on") || name.length < 3) continue;
       const type = name.slice(2);
       const old = bound.get(type);
-      if (old && old.code === attr2.value) continue;
+      if (old && old.code === attr.value) continue;
       if (old) el.removeEventListener(type, old.fn);
       let compiled;
       try {
-        compiled = new Function("event", attr2.value);
+        compiled = new Function("event", attr.value);
       } catch (e) {
         console.error(`${name}: ${e}`);
         continue;
@@ -7784,7 +7832,7 @@ ${a.stack || ""}`;
         if (compiled.call(el, event) === false) event.preventDefault();
       };
       el.addEventListener(type, fn);
-      bound.set(type, { code: attr2.value, fn });
+      bound.set(type, { code: attr.value, fn });
     }
   }
   {

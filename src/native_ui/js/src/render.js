@@ -1285,7 +1285,7 @@ export class Renderer {
       // An SVG picture (a framework's logo): drawn as an icon, the
       // backends' images being bitmaps.
       const svg = /^data:image\/svg\+xml/.test(src) || /\.svg([?#]|$)/i.test(src) ? this.svgFile(src) : null;
-      const icon = svg && iconFor(svg.svg, { color: "black" }, svg, (file) => this.svgFile(file));
+      const icon = svg && iconFor(svg.svg, { color: "black" }, svg, (file) => this.svgFile(file), { image: true });
       if (icon) {
         props.icon = icon;
         for (const k of ["w", "h"]) if (props[k] === "auto") delete props[k];
