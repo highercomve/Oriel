@@ -315,7 +315,27 @@ without a display link sends them as they come). Hover (`"hover"`, the node
 under the pointer for `:hover` and `mouseover`/`mouseenter`) works as before.
 
 Keys: `"key"` with `[key, modifiers, repeat]` (`keydown`, `event.repeat` set on
-auto-repeat) and `"keyup"` with `[key, modifiers]`.
+auto-repeat) and `"keyup"` with `[key, modifiers]`. A `keydown` the page
+lets through is followed by `keypress` for a character or Enter (never
+with Control); WebKit's also for Escape, and on macOS with Command
+(measured). A prevented `keypress` uses the key too.
+
+Apple (measured against WKWebView, typing ab, Enter, Escape, Cmd+A and
+ArrowLeft into an input and a textarea, and into an input that prevents
+b, Enter, Cmd+A and ArrowLeft): a native field's keys reach the page,
+on the field, before the field acts on them, and a prevented keydown
+never reaches it (no character, no caret move, no select-all). Shift,
+Control, Option and Command have their own keydown and keyup. No keyup
+for a key let go while Command is down (WebKit fires none). While an
+input method composes (marked text) its keys are the field's alone: the
+page hears none of them (not measured: an input method here needs a system
+setting changed). macOS: a local
+event monitor (key down, key up, flags changed) on the window's first
+responder, the page's view or a field's (its field editor's delegate).
+iOS: the fields' own presses (subclasses of UITextField and UITextView),
+key up 10 ms after UIKit's (it types the character a little after the
+press, and the page hears input before keyup, as in WebKit), and the
+page view passes a field's presses on through UIView's own.
 
 Focus: a native field that gets or loses the keyboard sends `"focus"` or
 `"blur"` (data `null`) on its node. The page then sets `:focus` and

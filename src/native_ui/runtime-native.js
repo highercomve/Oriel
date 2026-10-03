@@ -7224,6 +7224,12 @@ ${a.stack || ""}`;
     const ev = new KeyboardEvent(type, init);
     (el || document.body).dispatchEvent(ev);
     if (!ev.defaultPrevented) fireWindow(ev);
+    if (type === "keydown" && !ev.defaultPrevented && keypressFor(key, init)) {
+      const press = new KeyboardEvent("keypress", init);
+      (el || document.body).dispatchEvent(press);
+      if (!press.defaultPrevented) fireWindow(press);
+      if (press.defaultPrevented) return true;
+    }
     if (type === "keydown" && !ev.defaultPrevented && key === "Tab" && !(init.ctrlKey || init.altKey || init.metaKey)) {
       return tabFocus(init.shiftKey) || false;
     }
@@ -7235,6 +7241,12 @@ ${a.stack || ""}`;
       }
     }
     return ev.defaultPrevented;
+  }
+  var WEBKIT_KEYPRESS = platform.os === "macos" || platform.os === "ios";
+  function keypressFor(key, init) {
+    if (init.ctrlKey || init.metaKey && platform.os !== "macos") return false;
+    if (key === "Enter" || WEBKIT_KEYPRESS && key === "Escape") return true;
+    return [...key].length === 1;
   }
   var FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable]";
   function tabOrder() {
