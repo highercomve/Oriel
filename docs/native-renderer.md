@@ -311,8 +311,8 @@ setting changed). macOS: a local
 event monitor (key down, key up, flags changed) on the window's first
 responder, the page's view or a field's (its field editor's delegate).
 iOS: the fields' own presses (subclasses of UITextField and UITextView),
-key up a turn after UIKit's (it types the character a little after the
-press; the first key of a session still comes after its keyup), and the
+key up 10 ms after UIKit's (it types the character a little after the
+press, and the page hears input before keyup, as in WebKit), and the
 page view passes a field's presses on through UIView's own.
 
 Focus: a native field that gets or loses the keyboard sends `"focus"` or
