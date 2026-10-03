@@ -182,6 +182,9 @@ g.MouseEvent = MouseEvent;
 g.PointerEvent = PointerEvent;
 g.TouchEvent = TouchEvent;
 g.InputEvent = g.FocusEvent = g.UIEvent = Event;
+// No shadow trees here yet: the class pages test against (Alpine checks
+// `el.parentNode instanceof ShadowRoot`).
+g.ShadowRoot ??= class ShadowRoot {};
 
 // window events (hashchange, resize, keydown, contextmenu…).
 const winListeners = new Map();
@@ -1178,6 +1181,8 @@ g.__oriel = {
       renderer.observer.__nuiAttribute = (node, name) => renderer.noteAttribute(node, name);
       renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
       const b2 = P && P();
+      // Templates hold their markup in their content, not as children.
+      for (const t of document.querySelectorAll("template")) t.content;
       // The page's scripts, in order, at the top level (like <script> tags).
       for (const s of document.querySelectorAll("script")) {
         const src = s.getAttribute("src");
