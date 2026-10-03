@@ -141,7 +141,7 @@ export class Renderer {
     this.dropped = [];             // [element, what it made]: gone unless made again this frame
     this.stamps = [];              // [row id, row element, plan] the tree stamps after emit (host.stamp)
     this.noStamp = new WeakSet();  // rows the tree declined: made the general way from now on
-    this.listStamps = [];          // [list id, list element, row style, plan] (host.stampList)
+    this.listStamps = [];          // [list id, list element, row style, plan, template row, rows made here] (host.stampList)
     this.noStampList = new WeakSet(); // lists that aren't (or stopped being) the same row again
     this.declined = false;         // a stamp was declined: render again the general way
     this.structural = false;       // the sheets match by position (:nth-child, +, ~…)
@@ -219,6 +219,8 @@ export class Renderer {
     const parent = removedFrom || node.parentNode || this.parentOf.get(node);
     if (!removedFrom) this.mark(node, 2);
     if (parent) {
+      // Its rows changed: a list the tree declined may be one again.
+      if (node.nodeType === 1) this.noStampList.delete(parent);
       this.markFlat(parent, node.nodeType === 3);
       if (this.structural) this.mark(parent, 2);
     }
@@ -228,6 +230,8 @@ export class Renderer {
 
   noteAttribute(el, name) {
     this.mark(el, name === "style" && !this.styleAttrRules ? 1 : 2);
+    // A row's attributes changed: its list may be one the tree stamps again.
+    if (el.parentNode) this.noStampList.delete(el.parentNode);
     if (this.structural && el.parentNode) this.mark(el.parentNode, 2);
   }
 
@@ -793,8 +797,8 @@ export class Renderer {
   // A new flex row with ordinary leaves can reuse the CSS/layout setup of
   // an equivalent row. Attributes that selectors distinguish, positional
   // rules, inline aggregation, controls and existing rows stay general.
-  flexShape(el, cs, props) {
-    if (!this.simpleLeaves || this.structural || this.noCache || (this.fc.has(el) && !this.fc.get(el).stamp) ||
+  flexShape(el, cs, props, force = false) {
+    if (!this.simpleLeaves || this.structural || this.noCache || (!force && this.fc.has(el) && !this.fc.get(el).stamp) ||
         props.fd !== "row" || props.scroll || props.scrollx ||
         cs.__rules.before.length || cs.__rules.after.length) return null;
     const share = this.shareKey(el);
@@ -1266,7 +1270,15 @@ export class Renderer {
   listOf(el, cs, props, display, childCtx, nodes, id) {
     if (this.noStampList.has(el) || this.structural || this.noCache || display === "grid" || tableHolds(display) ||
         cs.__rules.before.length || cs.__rules.after.length) return null;
-    const first = el.firstChild, second = first?.nextSibling;
+    // Rows hovered, pressed or focused (their data-nui-* attributes): made
+    // here the general way, so their :hover styles apply; the first other
+    // row is every stamped row's template.
+    let marked = null;
+    if (this.stateEls) for (const e of this.stateEls()) if (e.parentNode === el) (marked ??= []).push(e);
+    let first = el.firstChild;
+    while (first && marked?.includes(first)) first = first.nextSibling;
+    let second = first?.nextSibling;
+    while (second && marked?.includes(second)) second = second.nextSibling;
     // Cheap looks first: two rows of the same tag and class, of leaves.
     if (first?.nodeType !== 1 || second?.nodeType !== 1 || second.localName !== first.localName ||
         second.className !== first.className || !first.firstElementChild ||
@@ -1281,6 +1293,13 @@ export class Renderer {
     const saved = this.savedShape;
     if (!plan && saved?.row === first && this.host.stamp && !this.noStamp.has(first) &&
         this.stampable({ children: saved.children, plan: saved.plan })) plan = this.stampPlanOf(saved.plan);
+    // A first row made the general way before (its list declined once):
+    // its shape, if one is known.
+    if (!plan && this.host.stamp && !this.noStamp.has(first)) {
+      const rcs = this.styleOf(first), made = nodes.get(cid);
+      const shape = rcs && made ? this.flexShape(first, rcs, made.props, true) : null;
+      if (shape?.plan && this.stampable(shape)) plan = this.stampPlanOf(shape.plan);
+    }
     // Not a row the tree stamps (yet): the general way (the loop reuses
     // the first row made here).
     if (!plan) return null;
@@ -1291,9 +1310,17 @@ export class Renderer {
     // Every row's node: the first's props (its children are the tree's).
     const style = this.leafStyleId(encodeProps({ ...row.props }));
     if (!style) { this.noStampList.add(el); return null; }
+    // The marked rows, as any child (the tree keeps them in their places).
+    const kids = [cid];
+    if (marked) for (const m of marked) {
+      const mid = this.element(m, cs, nodes, childCtx);
+      if (mid === null) return null;
+      this.adjustKid(nodes, mid, m, cs, props, display, childCtx);
+      kids.push(mid);
+    }
     this.cur.list = plan;
-    this.listStamps.push(id, el, style, plan);
-    return [cid];
+    this.listStamps.push(id, el, style, plan, first, marked ?? EMPTY);
+    return kids;
   }
 
   // What a parent makes of a child element's node in its general flow
@@ -1532,8 +1559,8 @@ export class Renderer {
     // Lists after their first rows (stamped above).
     const ls = this.listStamps;
     this.listStamps = [];
-    for (let i = 0; i < ls.length; i += 4) {
-      if (this.host.stampList(ls[i], ls[i + 1], ls[i + 2], ls[i + 3])) continue;
+    for (let i = 0; i < ls.length; i += 6) {
+      if (this.host.stampList(ls[i], ls[i + 1], ls[i + 2], ls[i + 3], ls[i + 4], ls[i + 5])) continue;
       const f = this.fc.get(ls[i + 1]);
       if (f) f.list = 0;
       this.flatMarks.add(ls[i + 1]);

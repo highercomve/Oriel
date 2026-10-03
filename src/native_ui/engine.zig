@@ -43,12 +43,13 @@ fn stampExport(p: *anyopaque, row_id: f64, dom: *anyopaque, row: u32, plan: u32)
     return @intFromBool(ok);
 }
 
-/// host.stampList(listId, list, rowStyle, plan): a list's rows after its
-/// first stamped by the tree (dom_stamp.stampList); 0 when declined.
-fn stampListExport(p: *anyopaque, list_id: f64, dom: *anyopaque, list: u32, row_style: f64, plan: u32) callconv(.c) c_int {
+/// host.stampList(listId, list, rowStyle, plan, template, kept): a list's
+/// rows but its template and kept ones stamped by the tree
+/// (dom_stamp.stampList); 0 when declined.
+fn stampListExport(p: *anyopaque, list_id: f64, dom: *anyopaque, list: u32, row_style: f64, plan: u32, template: u32, kept: [*]const u32, kept_len: usize) callconv(.c) c_int {
     if (!native_dom) return 0;
     const e = engineOf(p);
-    const ok = dom_stamp.stampList(&e.tree, @ptrCast(@alignCast(dom)), list, Tree.idOf(list_id), Tree.idOf(row_style), plan) catch return 0;
+    const ok = dom_stamp.stampList(&e.tree, @ptrCast(@alignCast(dom)), list, Tree.idOf(list_id), Tree.idOf(row_style), plan, template, kept[0..kept_len]) catch return 0;
     return @intFromBool(ok);
 }
 

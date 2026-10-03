@@ -3009,6 +3009,7 @@ col, colgroup { display: none; }
       const parent = removedFrom || node.parentNode || this.parentOf.get(node);
       if (!removedFrom) this.mark(node, 2);
       if (parent) {
+        if (node.nodeType === 1) this.noStampList.delete(parent);
         this.markFlat(parent, node.nodeType === 3);
         if (this.structural) this.mark(parent, 2);
       }
@@ -3017,6 +3018,7 @@ col, colgroup { display: none; }
     }
     noteAttribute(el, name) {
       this.mark(el, name === "style" && !this.styleAttrRules ? 1 : 2);
+      if (el.parentNode) this.noStampList.delete(el.parentNode);
       if (this.structural && el.parentNode) this.mark(el.parentNode, 2);
     }
     idOf(obj, key) {
@@ -3563,8 +3565,8 @@ col, colgroup { display: none; }
     // A new flex row with ordinary leaves can reuse the CSS/layout setup of
     // an equivalent row. Attributes that selectors distinguish, positional
     // rules, inline aggregation, controls and existing rows stay general.
-    flexShape(el, cs, props) {
-      if (!this.simpleLeaves || this.structural || this.noCache || this.fc.has(el) && !this.fc.get(el).stamp || props.fd !== "row" || props.scroll || props.scrollx || cs.__rules.before.length || cs.__rules.after.length) return null;
+    flexShape(el, cs, props, force = false) {
+      if (!this.simpleLeaves || this.structural || this.noCache || !force && this.fc.has(el) && !this.fc.get(el).stamp || props.fd !== "row" || props.scroll || props.scrollx || cs.__rules.before.length || cs.__rules.after.length) return null;
       const share = this.shareKey(el);
       if (share <= 0) return null;
       const children = [];
@@ -3974,7 +3976,14 @@ col, colgroup { display: none; }
     // (nothing made) when the list doesn't look like one.
     listOf(el, cs, props, display, childCtx, nodes, id) {
       if (this.noStampList.has(el) || this.structural || this.noCache || display === "grid" || tableHolds(display) || cs.__rules.before.length || cs.__rules.after.length) return null;
-      const first = el.firstChild, second = first?.nextSibling;
+      let marked2 = null;
+      if (this.stateEls) {
+        for (const e of this.stateEls()) if (e.parentNode === el) (marked2 ??= []).push(e);
+      }
+      let first = el.firstChild;
+      while (first && marked2?.includes(first)) first = first.nextSibling;
+      let second = first?.nextSibling;
+      while (second && marked2?.includes(second)) second = second.nextSibling;
       if (first?.nodeType !== 1 || second?.nodeType !== 1 || second.localName !== first.localName || second.className !== first.className || !first.firstElementChild || !TEMPLATE_LEAF.has(first.firstElementChild.localName) || first.firstElementChild.firstElementChild) return null;
       this.savedShape = null;
       const cid = this.element(first, cs, nodes, childCtx);
@@ -3983,6 +3992,11 @@ col, colgroup { display: none; }
       let plan = f.stamp;
       const saved = this.savedShape;
       if (!plan && saved?.row === first && this.host.stamp && !this.noStamp.has(first) && this.stampable({ children: saved.children, plan: saved.plan })) plan = this.stampPlanOf(saved.plan);
+      if (!plan && this.host.stamp && !this.noStamp.has(first)) {
+        const rcs = this.styleOf(first), made = nodes.get(cid);
+        const shape = rcs && made ? this.flexShape(first, rcs, made.props, true) : null;
+        if (shape?.plan && this.stampable(shape)) plan = this.stampPlanOf(shape.plan);
+      }
       if (!plan) return null;
       if (!childCtx.blockify && this.isInline(first, cs, childCtx.rematch)) {
         this.noStampList.add(el);
@@ -3999,9 +4013,16 @@ col, colgroup { display: none; }
         this.noStampList.add(el);
         return null;
       }
+      const kids = [cid];
+      if (marked2) for (const m of marked2) {
+        const mid = this.element(m, cs, nodes, childCtx);
+        if (mid === null) return null;
+        this.adjustKid(nodes, mid, m, cs, props, display, childCtx);
+        kids.push(mid);
+      }
       this.cur.list = plan;
-      this.listStamps.push(id, el, style, plan);
-      return [cid];
+      this.listStamps.push(id, el, style, plan, first, marked2 ?? EMPTY);
+      return kids;
     }
     // What a parent makes of a child element's node in its general flow
     // (its flex-shrink, basis, alignment), as build's children loop does.
@@ -4219,8 +4240,8 @@ col, colgroup { display: none; }
       }
       const ls = this.listStamps;
       this.listStamps = [];
-      for (let i = 0; i < ls.length; i += 4) {
-        if (this.host.stampList(ls[i], ls[i + 1], ls[i + 2], ls[i + 3])) continue;
+      for (let i = 0; i < ls.length; i += 6) {
+        if (this.host.stampList(ls[i], ls[i + 1], ls[i + 2], ls[i + 3], ls[i + 4], ls[i + 5])) continue;
         const f = this.fc.get(ls[i + 1]);
         if (f) f.list = 0;
         this.flatMarks.add(ls[i + 1]);
@@ -5833,6 +5854,12 @@ ${a.stack || ""}`;
           else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
         }
         renderer = new Renderer(document, engine, host);
+        renderer.stateEls = () => {
+          const out = [];
+          for (const chain of marked.values()) for (const e of chain) out.push(e);
+          if (active) out.push(active);
+          return out;
+        };
         renderer.observer = new MutationObserver((records) => renderer.note(records));
         renderer.observer.__nuiConnectedOnly = true;
         renderer.observer.__nuiChild = (node, parent) => renderer.noteChild(node, parent);
