@@ -2885,6 +2885,23 @@ col, colgroup { display: none; }
   }
   var SKIP = /* @__PURE__ */ new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
   var NATIVE_ID_BASE = 2 ** 30;
+  var STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus"];
+  function splitCompounds(sel) {
+    const out = [];
+    let depth = 0, cur = "";
+    for (const ch of sel) {
+      if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      if (depth === 0 && (ch === " " || ch === ">" || ch === "+" || ch === "~")) {
+        if (cur.trim()) out.push(cur.trim());
+        cur = "";
+        continue;
+      }
+      cur += ch;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  }
   var TEMPLATE_LEAF = /* @__PURE__ */ new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
   var EMPTY = Object.freeze([]);
   function narrowable(props, cs, parentCS) {
@@ -2942,6 +2959,19 @@ col, colgroup { display: none; }
       this.declined = false;
       this.structural = false;
       this.noCache = false;
+      this.stateAbove = /* @__PURE__ */ new Map();
+      for (const r of engine.rules) {
+        const compounds = splitCompounds(r.sel);
+        for (let i = 0; i < compounds.length - 1; i++) {
+          for (const attr2 of STATE_ATTRS) {
+            if (!compounds[i].includes(`[${attr2}]`)) continue;
+            const rest = compounds[i].split(`[${attr2}]`).join("") || "*";
+            let list = this.stateAbove.get(attr2);
+            if (!list) this.stateAbove.set(attr2, list = []);
+            if (!list.some((x) => x.sel === rest)) list.push({ sel: rest, match: null });
+          }
+        }
+      }
       for (const r of engine.rules) {
         if (/:(nth-|first-|last-|only-|empty)|[+~]/.test(r.sel)) this.structural = true;
         if (/:has\(/.test(r.sel)) this.noCache = true;
@@ -3017,9 +3047,36 @@ col, colgroup { display: none; }
       this.dirty = true;
     }
     noteAttribute(el, name) {
+      if (STATE_ATTRS.includes(name) && !this.stateMattersBelow(el, name)) {
+        this.mark(el, 1.5);
+        if (el.parentNode) this.noStampList.delete(el.parentNode);
+        return;
+      }
       this.mark(el, name === "style" && !this.styleAttrRules ? 1 : 2);
       if (el.parentNode) this.noStampList.delete(el.parentNode);
       if (this.structural && el.parentNode) this.mark(el.parentNode, 2);
+    }
+    // Whether a state attribute on `el` can change what's below it: it
+    // matches a compound that has the state above a rule's subject.
+    stateMattersBelow(el, attr2) {
+      const list = this.stateAbove.get(attr2);
+      if (!list) return false;
+      for (const c of list) {
+        if (c.match === null) {
+          try {
+            c.match = compileMatch(el, c.sel);
+          } catch {
+            c.match = false;
+          }
+        }
+        if (!c.match) return true;
+        try {
+          if (c.match(el)) return true;
+        } catch {
+          return true;
+        }
+      }
+      return false;
     }
     idOf(obj, key) {
       if (key === "el" && nodeIndex) return NATIVE_ID_BASE + nodeIndex(obj);
@@ -3337,7 +3394,7 @@ col, colgroup { display: none; }
       const c = saved?.epoch === this.styleEpoch ? saved : null;
       const mk = this.marks.get(el) || 0;
       if (c && c.parent === parentCS && (c.frame === this.frameNo || !rematch && !mk)) return c.cs;
-      const m = c && !rematch && mk < 2 ? c.m : this.matchOf(el);
+      const m = c && !rematch && mk < 1.5 ? c.m : this.matchOf(el);
       const inline = el.getAttribute("style");
       const casc = this.cascadeOf(m.normal);
       let cs;
