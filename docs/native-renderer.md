@@ -140,12 +140,18 @@ the animated nodes are sent each frame).
   WebKit (WebKitGTK, WKWebView) keeps a computed line-height in whole
   pixels (145% of 16px is 23); Chromium (WebView2) keeps the fraction: GTK
   floors `lh`, as its WebView does.
-- `ff` on text props and runs: the CSS font-family list, unquoted (absent:
-  sans-serif). Resolve it as the platform's WebView does (GTK: Pango and
-  fontconfig take the list as is, `system-ui` included; Win32: the first
-  installed name, or Chromium's generic families on Windows: system-ui
-  Segoe UI, sans-serif Arial, serif Times New Roman, monospace Consolas;
-  without `ff`, Segoe UI, Oriel's default).
+- `ff` on text props and runs, always: the CSS font-family list,
+  unquoted, comma-separated, or `default` when the page sets none (a CSS
+  keyword, never a family's name). Resolve a list as browsers do: the first
+  family installed, or the first generic name (`serif`, `sans-serif`,
+  `monospace`, `system-ui`, `ui-*`); don't hand the whole list to the font
+  matcher (fontconfig lets a real family later in it beat the `system-ui`
+  alias). `default` is the WebView's own default face: WebKitGTK's is
+  sans-serif (its default-font-family setting; GTK maps it so), Chromium
+  (WebView2) and WKWebView use Times. Win32: the first installed name, or
+  Chromium's generic families on Windows (system-ui Segoe UI, sans-serif
+  Arial, serif Times New Roman, monospace Consolas). Form controls are
+  `system-ui` (UA_CSS), as browsers draw them in the system font.
 - `Backend.font_metrics` (host.fontMetrics): `[ascent, descent, lineGap]`
   in px, unhinted, for the default sans (or monospace) at a size; the
   runtime uses it for an image's line (the baseline gap below an inline
