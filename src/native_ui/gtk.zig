@@ -84,6 +84,7 @@ extern fn gtk_event_controller_get_current_event_state(c: *anyopaque) c_uint;
 extern fn gtk_event_controller_scroll_new(flags: c_uint) *anyopaque;
 extern fn gtk_event_controller_motion_new() *anyopaque;
 extern fn gtk_event_controller_key_new() *anyopaque;
+extern fn gtk_event_controller_focus_new() *anyopaque;
 extern fn gtk_scale_new_with_range(orientation: c_int, min: f64, max: f64, step: f64) *Widget;
 extern fn gtk_range_set_value(r: *Widget, v: f64) void;
 extern fn gtk_range_get_value(r: *Widget) f64;
@@ -212,6 +213,9 @@ extern fn pango_font_metrics_get_ascent(m: *PangoFontMetrics) c_int;
 extern fn pango_font_metrics_get_descent(m: *PangoFontMetrics) c_int;
 extern fn pango_font_metrics_unref(m: *PangoFontMetrics) void;
 extern fn pango_font_metrics_get_height(m: *PangoFontMetrics) c_int;
+const PangoFontFamily = opaque {};
+extern fn pango_font_map_list_families(map: *anyopaque, families: *?[*]*PangoFontFamily, n: *c_int) void;
+extern fn pango_font_family_get_name(f: *PangoFontFamily) [*:0]const u8;
 extern fn pango_cairo_font_map_get_default() *anyopaque;
 extern fn pango_font_map_create_context(map: *anyopaque) ?*PangoContext;
 extern fn pango_cairo_context_set_font_options(ctx: *PangoContext, opts: ?*const anyopaque) void;
@@ -279,6 +283,10 @@ pub const Surface = struct {
     /// made of (normalLineHeight). By size (1/64 px) and monospace.
     metrics_ctx: ?*PangoContext = null,
     font_metrics: std.AutoHashMapUnmanaged(u64, [3]f32) = .empty,
+    /// The installed families (lowercase), and CSS family lists resolved
+    /// to the one a browser would use (resolveFamily). Keys and values owned.
+    installed_families: std.StringHashMapUnmanaged(void) = .empty,
+    resolved_families: std.StringHashMapUnmanaged([]const u8) = .empty,
     css: *GtkCssProvider,
     css_text: std.ArrayList(u8) = .empty,
     invoke_fn: Invoke,
@@ -425,6 +433,7 @@ pub const Surface = struct {
         if (s.mono) |font| pango_font_description_free(font);
         if (s.metrics_ctx) |c| g_object_unref(c);
         s.font_metrics.deinit(s.gpa);
+        freeFamilies(s);
         s.gpa.destroy(s);
     }
 
@@ -463,6 +472,7 @@ fn disconnect(s: *Surface, instance: *anyopaque) void {
 
 fn disconnectField(s: *Surface, id: i64, w: *Widget) void {
     disconnect(s, w);
+    if (g_object_get_data(w, "oriel-focus")) |c| disconnect(s, c);
     const n = s.engine.tree.get(id) orelse return;
     if (n.kind == .textarea) disconnect(s, gtk_text_view_get_buffer(w));
 }
@@ -520,12 +530,94 @@ fn familyHash(family: ?[]const u8) u64 {
 
 /// A font description for this text: Sans or Monospace, or its CSS family
 /// list, at `size` px (the surface's own, changed in place: one at a time).
+/// CSS's generic families as fontconfig names them.
+const generic_families = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "serif", "serif" },           .{ "sans-serif", "sans-serif" }, .{ "monospace", "monospace" },
+    .{ "system-ui", "system-ui" },   .{ "ui-sans-serif", "sans-serif" }, .{ "ui-serif", "serif" },
+    .{ "ui-monospace", "monospace" }, .{ "ui-rounded", "sans-serif" }, .{ "cursive", "cursive" },
+    .{ "fantasy", "fantasy" },       .{ "emoji", "emoji" },           .{ "math", "math" },
+    // No family set (render.js familyOf): WebKitGTK's default face, its
+    // default-font-family setting, sans-serif (not serif, as Chromium).
+    .{ "default", "sans-serif" },
+});
+
+/// The family a browser draws a CSS font-family list in: the first one
+/// installed, or the first generic name (fontconfig's alias for it). Pango
+/// given the whole list lets fontconfig pick, and a weak alias like
+/// system-ui loses to a real family later in it (Roboto, where WebKit uses
+/// Adwaita Sans).
+fn resolveFamily(s: *Surface, list: []const u8) []const u8 {
+    if (s.resolved_families.get(list)) |name| return name;
+    if (s.installed_families.count() == 0) {
+        var fams: ?[*]*PangoFontFamily = null;
+        var n: c_int = 0;
+        pango_font_map_list_families(pango_cairo_font_map_get_default(), &fams, &n);
+        if (fams) |f| {
+            for (f[0..@intCast(n)]) |fam| {
+                const name = std.mem.span(pango_font_family_get_name(fam));
+                const low = std.ascii.allocLowerString(s.gpa, name) catch continue;
+                const got = s.installed_families.getOrPut(s.gpa, low) catch {
+                    s.gpa.free(low);
+                    continue;
+                };
+                if (got.found_existing) s.gpa.free(low);
+            }
+            g_free(@ptrCast(f));
+        }
+    }
+    var chosen: []const u8 = "sans-serif";
+    var it = std.mem.splitScalar(u8, list, ',');
+    while (it.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " \t\"'");
+        if (name.len == 0 or name.len > 128) continue;
+        var low_buf: [128]u8 = undefined;
+        const low = std.ascii.lowerString(&low_buf, name);
+        if (generic_families.get(low)) |g| {
+            chosen = g;
+            break;
+        }
+        if (s.installed_families.contains(low)) {
+            chosen = name;
+            break;
+        }
+    }
+    const key = s.gpa.dupe(u8, list) catch return chosen;
+    const value = s.gpa.dupe(u8, chosen) catch {
+        s.gpa.free(key);
+        return chosen;
+    };
+    if (s.resolved_families.count() >= 256) freeResolved(s);
+    s.resolved_families.put(s.gpa, key, value) catch {
+        s.gpa.free(key);
+        s.gpa.free(value);
+        return chosen;
+    };
+    return value;
+}
+
+fn freeResolved(s: *Surface) void {
+    var it = s.resolved_families.iterator();
+    while (it.next()) |e| {
+        s.gpa.free(e.key_ptr.*);
+        s.gpa.free(e.value_ptr.*);
+    }
+    s.resolved_families.clearRetainingCapacity();
+}
+
+fn freeFamilies(s: *Surface) void {
+    freeResolved(s);
+    s.resolved_families.deinit(s.gpa);
+    var it = s.installed_families.keyIterator();
+    while (it.next()) |k| s.gpa.free(k.*);
+    s.installed_families.deinit(s.gpa);
+}
+
 fn fontDesc(s: *Surface, size: f32, mono: bool, family: ?[]const u8) *PangoFontDescription {
     const font = if (mono) &s.mono else &s.sans;
     if (font.* == null) font.* = pango_font_description_from_string(if (mono) "Monospace" else "Sans");
     const desc = font.*.?;
     var buf: [256]u8 = undefined;
-    const name: [*:0]const u8 = if (family) |f| (std.fmt.bufPrintZ(&buf, "{s}", .{f}) catch "Sans") else if (mono) "Monospace" else "Sans";
+    const name: [*:0]const u8 = if (family) |f| (std.fmt.bufPrintZ(&buf, "{s}", .{resolveFamily(s, f)}) catch "Sans") else if (mono) "Monospace" else "Sans";
     pango_font_description_set_family(desc, name);
     pango_font_description_set_absolute_size(desc, size * PANGO_SCALE);
     return desc;
@@ -840,6 +932,13 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
         else => unreachable,
     };
     g_object_set_data(@ptrCast(w), "oriel-node", @ptrFromInt(@as(usize, @intCast(n.id))));
+    // The page hears which field has the keyboard (:focus, :focus-visible,
+    // document.activeElement), as on the other backends.
+    const focus_ctrl = gtk_event_controller_focus_new();
+    _ = g_signal_connect_data(focus_ctrl, "enter", @ptrCast(&onFieldFocus), s, null, 0);
+    _ = g_signal_connect_data(focus_ctrl, "leave", @ptrCast(&onFieldBlur), s, null, 0);
+    gtk_widget_add_controller(w, focus_ctrl);
+    g_object_set_data(@ptrCast(w), "oriel-focus", focus_ctrl);
     var buf: [32]u8 = undefined;
     const cls = try std.fmt.bufPrintSentinel(&buf, "nui-f{d}", .{n.id}, 0);
     gtk_widget_add_css_class(w, cls.ptr);
@@ -895,6 +994,24 @@ fn onEntryChanged(e: *Widget, data: ?*anyopaque) callconv(.c) void {
     if (s.updating) return;
     const n = nodeOfWidget(s, e) orelse return;
     sendValue(s, n, "input", std.mem.span(gtk_editable_get_text(e)));
+}
+
+fn onFieldFocus(ctrl: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    fieldFocus(ctrl, data, "focus");
+}
+
+fn onFieldBlur(ctrl: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    fieldFocus(ctrl, data, "blur");
+}
+
+fn fieldFocus(ctrl: *anyopaque, data: ?*anyopaque, what: []const u8) void {
+    const s = surfaceOf(data);
+    const w = gtk_event_controller_get_widget(ctrl) orelse return;
+    const n = nodeOfWidget(s, w) orelse return;
+    // Not while the field goes (`removed` takes it out first): the page
+    // isn't called back in the middle of its own change.
+    if (s.fields.get(n.id) != w) return;
+    _ = s.engine.event(n.id, what, "null");
 }
 
 fn onEntryActivate(e: *Widget, data: ?*anyopaque) callconv(.c) void {
@@ -1397,7 +1514,7 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32) ?*PangoLa
         if (r.ff) |ff| {
             // Its CSS family list (Pango copies the name).
             var buf: [256]u8 = undefined;
-            if (std.fmt.bufPrintZ(&buf, "{s}", .{ff})) |name| add(attrs, pango_attr_family_new(name), start, end) else |_| {}
+            if (std.fmt.bufPrintZ(&buf, "{s}", .{resolveFamily(s, ff)})) |name| add(attrs, pango_attr_family_new(name), start, end) else |_| {}
         } else if (r.mono) add(attrs, pango_attr_family_new("Monospace"), start, end);
         if (r.u) add(attrs, pango_attr_underline_new(1), start, end);
         if (r.bg) |bg| if (bg[3] > 0) {
@@ -2484,6 +2601,7 @@ test "shared measurements match fresh Pango layouts after text, width and font c
         if (s.mono) |font| pango_font_description_free(font);
         if (s.metrics_ctx) |c| g_object_unref(c);
         s.font_metrics.deinit(s.gpa);
+        freeFamilies(&s);
     }
     var t = tree_mod.Tree.init(gpa, &s, measure);
     defer t.deinit();

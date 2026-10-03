@@ -37,6 +37,7 @@ b, strong, th { font-weight: bold; }
 i, em, cite, var, dfn { font-style: italic; }
 small { font-size: .83em; }
 code, kbd, samp, pre, tt { font-family: monospace; }
+button, input, textarea, select { font-family: system-ui; }
 pre { white-space: pre; }
 a { color: #0645ad; text-decoration: underline; cursor: pointer; }
 button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
@@ -1305,9 +1306,14 @@ export class Renderer {
     const flow = [];
     const boxed = childCtx.blockify ? null : this.boxedEnds(el, cs, rematch);
     let runs = [];
-    const flushRuns = () => {
+    // An inline box before or after a stretch of text (a <code> chip in a
+    // sentence): the space between them stays, collapsed to one, as on a
+    // browser's line; only the line's own ends drop theirs.
+    const inlineBox = (child) => !childCtx.blockify && (ATOMIC_INLINE.has(this.style(child, cs, rematch).display || "inline") || !!boxed?.has(child));
+    let afterBox = false;
+    const flushRuns = (beforeBox = false) => {
       if (!runs.length) return;
-      const trimmed = trimRuns(runs, cs["white-space"]);
+      const trimmed = trimRuns(runs, cs["white-space"], afterBox, beforeBox);
       runs = [];
       if (!trimmed.length) return;
       flow.push({ text: trimmed });
@@ -1324,8 +1330,10 @@ export class Renderer {
         this.inlineRuns(child, cs, fontSize, runs, rematch);
         continue;
       }
-      flushRuns();
+      const box = inlineBox(child);
+      flushRuns(box);
       flow.push({ el: child });
+      afterBox = box;
     }
     flushRuns();
 
@@ -2328,13 +2336,16 @@ function runStyle(cs, fs) {
 
 // The font-family list for the backend (Pango and fontconfig, like the
 // WebView, resolve CSS's generic and system names: system-ui, monospace),
-// unquoted, comma-separated; none for plain sans-serif (the default).
+// unquoted, comma-separated. Form controls are system-ui (UA_CSS), as
+// browsers draw them in the system font.
+// Always sent. "default" (a CSS keyword, never a family's name): the page
+// sets none, and the backend uses its WebView's default face (WebKitGTK's
+// is sans-serif; Chromium's and WKWebView's, Times), not "serif" itself.
 function familyOf(cs) {
   const f = cs["font-family"];
-  if (!f) return undefined;
+  if (!f) return "default";
   const list = splitTop(f, ",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-  if (!list.length || (list.length === 1 && list[0] === "sans-serif")) return undefined;
-  return list.join(", ");
+  return list.length ? list.join(", ") : "default";
 }
 
 function makeRunStyle(cs, fs) {
@@ -2363,9 +2374,11 @@ function runFor(text, cs, fs, src, bg) {
 }
 
 // Collapse whitespace like HTML (except in pre / pre-wrap) and drop empty runs.
-function trimRuns(runs) {
+// `keepStart`, `keepEnd`: an inline box comes before / after these runs on
+// the same line: a space there stays (collapsed to one).
+function trimRuns(runs, _ws, keepStart = false, keepEnd = false) {
   const out = [];
-  let lastSpace = true;
+  let lastSpace = !keepStart;
   for (const r of runs) {
     let t = r.t;
     if (r.ws === "pre" || r.ws === "pre-wrap" || r.ws === "pre-line") {
@@ -2378,7 +2391,9 @@ function trimRuns(runs) {
     lastSpace = t.endsWith(" ");
     out.push(strip(r, t));
   }
-  if (out.length) {
+  // Only a space (between two boxes): the row of boxes spaces them itself.
+  if ((keepStart || keepEnd) && out.every((r) => !r.t.trim() && r.ws === undefined)) return [];
+  if (out.length && !keepEnd) {
     const last = out[out.length - 1];
     if (last.ws !== "pre" && last.ws !== "pre-wrap") last.t = last.t.replace(/ $/, "");
     if (!last.t) out.pop();
