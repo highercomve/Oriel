@@ -53,6 +53,9 @@ vm.runInContext(`
     el.addEventListener(t, e => focusLog.push(t + ':' + el.id + ':' + (e.relatedTarget?.id || '-')));
   document.body.addEventListener('focusin', () => focusLog.push('body:focusin'));
   document.body.addEventListener('focus', () => focusLog.push('body:focus'));
+  // During blur the old one has lost the focus and the new one doesn't have
+  // it yet: activeElement is the body, as in browsers.
+  a.addEventListener('blur', () => focusLog.push('during-blur:' + document.activeElement.localName));
   a.focus(); b.focus();
   focusLog.push('active:' + document.activeElement.id);
   b.blur();
@@ -60,7 +63,7 @@ vm.runInContext(`
 `, ctx);
 assert.deepEqual(Array.from(ctx.focusLog), [
   "focus:a:-", "focusin:a:-", "body:focusin",
-  "blur:a:b", "focusout:a:b", "focus:b:a", "focusin:b:a", "body:focusin",
+  "blur:a:b", "during-blur:body", "focusout:a:b", "focus:b:a", "focusin:b:a", "body:focusin",
   "active:b", "blur:b:-", "focusout:b:-", "active:body",
 ]);
 console.log("events: focus, blur, focusin and focusout follow the active element");

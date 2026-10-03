@@ -464,23 +464,30 @@ Object.defineProperty(document, "__active", {
   set(el) {
     if (el === active) return;
     const old = active;
-    old?.removeAttribute?.("data-nui-focus");
-    old?.removeAttribute?.("data-nui-focus-visible");
-    active = el || null;
-    active?.setAttribute?.("data-nui-focus", "");
-    const visible = active && (keyboardFocus || textField(active));
-    if (visible) active.setAttribute?.("data-nui-focus-visible", "");
-    setFocusVisible(visible ? active : null);
-    // As browsers fire them: blur and focusout on the old one, focus and
-    // focusin on the new one (focus and blur don't bubble).
-    const now = active;
-    if (old?.dispatchEvent) {
-      old.dispatchEvent(focusEvent("blur", false, now));
-      old.dispatchEvent(focusEvent("focusout", true, now));
+    // As browsers do: first the old one loses the focus (blur, then
+    // focusout; activeElement is the body meanwhile), then the new one gets
+    // it (focus, then focusin). Focus and blur don't bubble. A listener that
+    // moves the focus itself wins.
+    if (old) {
+      old.removeAttribute?.("data-nui-focus");
+      old.removeAttribute?.("data-nui-focus-visible");
+      active = null;
+      setFocusVisible(null);
+      if (old.dispatchEvent) {
+        old.dispatchEvent(focusEvent("blur", false, el || null));
+        old.dispatchEvent(focusEvent("focusout", true, el || null));
+      }
+      if (active !== null) return;
     }
-    if (now?.dispatchEvent && now === active) {
-      now.dispatchEvent(focusEvent("focus", false, old));
-      now.dispatchEvent(focusEvent("focusin", true, old));
+    if (!el) return;
+    active = el;
+    el.setAttribute?.("data-nui-focus", "");
+    const visible = keyboardFocus || textField(el);
+    if (visible) el.setAttribute?.("data-nui-focus-visible", "");
+    setFocusVisible(visible ? el : null);
+    if (el.dispatchEvent) {
+      el.dispatchEvent(focusEvent("focus", false, old));
+      if (active === el) el.dispatchEvent(focusEvent("focusin", true, old));
     }
   },
   configurable: true,
