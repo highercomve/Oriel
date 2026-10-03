@@ -882,7 +882,10 @@ fn commandKey(control: id, selector: SEL) ?bool {
     const o = ownerOf(control) orelse return null;
     const event = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{}).msgSend(Object, "currentEvent", .{});
     // The page heard this key as it came (onKeyEvent) and let it through.
-    if (event.value != null and event.value == field_key) return false;
+    if (event.value != null and event.value == field_key) {
+        field_key = null;
+        return false;
+    }
     const flags = if (event.value != null) modFlags(event.msgSend(c_ulong, "modifierFlags", .{})) else 0;
     var buf: [48]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d}]", .{ name, flags }) catch return null;
@@ -1294,18 +1297,25 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
         s = surfaces.get(o.token) orelse return event;
         nid = o.node;
     }
+    // While an input method composes (marked text) in a field, its keys
+    // are the field's alone: the page hears none of them.
+    const composing = page == null and cocoa.isTrue(responder.msgSend(BOOL, "respondsToSelector:", .{cocoa.objc.sel("hasMarkedText").value})) and
+        cocoa.isTrue(responder.msgSend(BOOL, "hasMarkedText", .{}));
+    // The page may close its window in a handler: nothing of it is used
+    // after, and the event goes nowhere.
+    const token = s.token;
     switch (ev.msgSend(c_ulong, "type", .{})) {
         // NSEventTypeFlagsChanged 12: Shift, Control, Option or Command
         // went down or up, its own keydown and keyup, as in browsers.
         12 => {
-            sendModifier(s, nid, ev);
-            return event;
+            if (!composing) sendModifier(s, nid, ev);
+            return if (surfaces.get(token) == null) null else event;
         },
         // NSEventTypeKeyUp 11 (AppKit sends the page's view no keyUp:). Not
         // a key let go while Command is down: WebKit fires no keyup for it.
         11 => {
-            if (ev.msgSend(c_ulong, "modifierFlags", .{}) & (1 << 20) == 0) _ = sendKey(s, nid, event, "keyup");
-            return event;
+            if (!composing and ev.msgSend(c_ulong, "modifierFlags", .{}) & (1 << 20) == 0) _ = sendKey(s, nid, event, "keyup");
+            return if (surfaces.get(token) == null) null else event;
         },
         else => {},
     }
@@ -1314,6 +1324,7 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
     // hears it first (its focus navigation); the loop only gets what it
     // doesn't handle. The page's other keys come to its keyDown:.
     const tab = ev.msgSend(c_ushort, "keyCode", .{}) == tab_key_code;
+    field_key = null;
     if (page != null and !tab) {
         tab_sent = null;
         return event;
@@ -1321,25 +1332,28 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
     if (page != null) tab_sent = event;
     // A field's keys reach the page before the field acts on them, and one
     // it prevents never reaches the field (no character, no caret move, no
-    // select-all). While an input method composes (marked text), its keys
-    // are the field's alone: the page hears none of them.
-    if (page == null) {
-        if (cocoa.isTrue(responder.msgSend(BOOL, "respondsToSelector:", .{cocoa.objc.sel("hasMarkedText").value})) and
-            cocoa.isTrue(responder.msgSend(BOOL, "hasMarkedText", .{}))) return event;
-        field_key = event;
-    }
-    return if (sendKeyDown(s, nid, event)) null else event;
+    // select-all).
+    if (composing) return event;
+    if (page == null) field_key = event;
+    const prevented = sendKeyDown(s, nid, event);
+    return if (prevented or surfaces.get(token) == null) null else event;
 }
 
 /// Shift, Control, Option or Command (either side) as the page's key down
-/// or up: down when its flag is now set.
+/// or up.
 fn sendModifier(s: *Surface, nid: i64, ev: Object) void {
     const code = ev.msgSend(c_ushort, "keyCode", .{});
+    // Down when its own side's (device-dependent) flag is now set: with
+    // both Shifts held, letting one go is its key up.
     const name: []const u8, const bit: c_ulong = switch (code) {
-        56, 60 => .{ "Shift", 1 << 17 },
-        59, 62 => .{ "Control", 1 << 18 },
-        58, 61 => .{ "Alt", 1 << 19 },
-        55, 54 => .{ "Meta", 1 << 20 },
+        56 => .{ "Shift", 0x2 },
+        60 => .{ "Shift", 0x4 },
+        59 => .{ "Control", 0x1 },
+        62 => .{ "Control", 0x2000 },
+        58 => .{ "Alt", 0x20 },
+        61 => .{ "Alt", 0x40 },
+        55 => .{ "Meta", 0x8 },
+        54 => .{ "Meta", 0x10 },
         else => return,
     };
     const flags = ev.msgSend(c_ulong, "modifierFlags", .{});

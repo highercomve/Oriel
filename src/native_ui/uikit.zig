@@ -876,9 +876,43 @@ fn pressModsFor(k: Object, kind: []const u8) u32 {
     return if (bit == 0) m else if (std.mem.eql(u8, kind, "key")) m | bit else m & ~bit;
 }
 
-/// An Enter key down the presses gave the page, let through: the field's
-/// own Return (fieldShouldReturn, a text area's newline) doesn't send it again.
-var press_enter_sent = false;
+/// The field whose last hardware key down was an Enter the page heard and
+/// let through: its own Return (fieldShouldReturn, a text area's newline)
+/// doesn't send it again. Cleared by the next key down and by a blur.
+var press_enter_field: id = null;
+
+/// Presses whose key down the page prevented: their end isn't UIKit's
+/// either (it never saw them begin).
+var prevented_presses: [8]id = .{null} ** 8;
+
+fn notePrevented(presses: id) void {
+    const all = (Object{ .value = presses }).msgSend(Object, "allObjects", .{});
+    const count: usize = @intCast(@max(0, all.msgSend(isize, "count", .{})));
+    for (0..count) |i| {
+        const p = all.msgSend(Object, "objectAtIndex:", .{i}).value;
+        for (&prevented_presses) |*slot| if (slot.* == null) {
+            slot.* = p;
+            break;
+        };
+    }
+}
+
+/// True (and forgotten) when every one of the presses began prevented.
+fn wasPrevented(presses: id) bool {
+    const all = (Object{ .value = presses }).msgSend(Object, "allObjects", .{});
+    const count: usize = @intCast(@max(0, all.msgSend(isize, "count", .{})));
+    var every = count > 0;
+    for (0..count) |i| {
+        const p = all.msgSend(Object, "objectAtIndex:", .{i}).value;
+        var found = false;
+        for (&prevented_presses) |*slot| if (slot.* == p) {
+            slot.* = null;
+            found = true;
+        };
+        if (!found) every = false;
+    }
+    return every;
+}
 
 /// A field's presses for the page ("key" or "keyup", on its node), before
 /// the field has them: true when the page prevented every one (the field
@@ -896,6 +930,7 @@ fn fieldPresses(self: id, presses: id, kind: []const u8) bool {
     const all = (Object{ .value = presses }).msgSend(Object, "allObjects", .{});
     const count: usize = @intCast(@max(0, all.msgSend(isize, "count", .{})));
     const down = std.mem.eql(u8, kind, "key");
+    if (down) press_enter_field = null;
     var prevented = count > 0;
     for (0..count) |i| {
         const k = all.msgSend(Object, "objectAtIndex:", .{i}).msgSend(Object, "key", .{});
@@ -925,7 +960,7 @@ fn fieldPresses(self: id, presses: id, kind: []const u8) bool {
         if (surfaces.get(token) == null) return true; // the page closed its window
         if (!used) {
             prevented = false;
-            if (down and std.mem.eql(u8, name, "Enter")) press_enter_sent = true;
+            if (down and std.mem.eql(u8, name, "Enter")) press_enter_field = self;
         }
     }
     return prevented;
@@ -941,16 +976,17 @@ fn superPresses(self: id, comptime superclass: [:0]const u8, comptime selector: 
     f(&sup, apple.objc.sel(selector).value, presses, event);
 }
 
-/// A field's key up, a turn after UIKit's own pressesEnded: UIKit types
+/// A field's key up, a moment after UIKit's own pressesEnded: UIKit types
 /// the character a little after the press, and the page hears keyup after
 /// the input (as in WebKit).
+const later_key_up_ms = 10; // (a turn of the main queue was sometimes too soon)
 const LaterKeyUp = struct { token: u64, nid: i64, len: usize, json: [64]u8 };
 
 fn laterKeyUp(token: u64, nid: i64, json: []const u8) void {
     const k = std.heap.smp_allocator.create(LaterKeyUp) catch return;
     k.* = .{ .token = token, .nid = nid, .len = json.len, .json = undefined };
     @memcpy(k.json[0..json.len], json);
-    apple.asyncMain(k, onLaterKeyUp);
+    apple.afterMain(later_key_up_ms, k, onLaterKeyUp);
 }
 
 fn onLaterKeyUp(p: ?*anyopaque) callconv(.c) void {
@@ -962,35 +998,31 @@ fn onLaterKeyUp(p: ?*anyopaque) callconv(.c) void {
 }
 
 fn textFieldPressesBegan(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
-    if (!fieldPresses(self, presses, "key")) superPresses(self, "UITextField", "pressesBegan:withEvent:", presses, event);
+    if (fieldPresses(self, presses, "key")) notePrevented(presses) else superPresses(self, "UITextField", "pressesBegan:withEvent:", presses, event);
 }
 
 fn textFieldPressesEnded(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
-    superPresses(self, "UITextField", "pressesEnded:withEvent:", presses, event);
+    if (!wasPrevented(presses)) superPresses(self, "UITextField", "pressesEnded:withEvent:", presses, event);
     _ = fieldPresses(self, presses, "keyup");
-    press_enter_sent = false;
 }
 
 fn textFieldPressesCancelled(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
-    superPresses(self, "UITextField", "pressesCancelled:withEvent:", presses, event);
+    if (!wasPrevented(presses)) superPresses(self, "UITextField", "pressesCancelled:withEvent:", presses, event);
     _ = fieldPresses(self, presses, "keyup");
-    press_enter_sent = false;
 }
 
 fn textViewPressesBegan(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
-    if (!fieldPresses(self, presses, "key")) superPresses(self, "UITextView", "pressesBegan:withEvent:", presses, event);
+    if (fieldPresses(self, presses, "key")) notePrevented(presses) else superPresses(self, "UITextView", "pressesBegan:withEvent:", presses, event);
 }
 
 fn textViewPressesEnded(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
-    superPresses(self, "UITextView", "pressesEnded:withEvent:", presses, event);
+    if (!wasPrevented(presses)) superPresses(self, "UITextView", "pressesEnded:withEvent:", presses, event);
     _ = fieldPresses(self, presses, "keyup");
-    press_enter_sent = false;
 }
 
 fn textViewPressesCancelled(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
-    superPresses(self, "UITextView", "pressesCancelled:withEvent:", presses, event);
+    if (!wasPrevented(presses)) superPresses(self, "UITextView", "pressesCancelled:withEvent:", presses, event);
     _ = fieldPresses(self, presses, "keyup");
-    press_enter_sent = false;
 }
 
 fn hasTab(presses: id) bool {
@@ -1101,6 +1133,7 @@ fn fieldFocused(_: id, _: SEL, control: id) callconv(.c) void {
 }
 
 fn fieldBlurred(_: id, _: SEL, control: id) callconv(.c) void {
+    if (press_enter_field == control) press_enter_field = null;
     const o = ownerOf(control) orelse return;
     _ = o.s.engine.event(o.n.id, "blur", "null");
 }
@@ -1132,8 +1165,8 @@ fn fieldChanged(_: id, _: SEL, field: id) callconv(.c) void {
 fn fieldShouldReturn(_: id, _: SEL, field: id) callconv(.c) BOOL {
     const o = ownerOf(field) orelse return apple.boolean(true);
     // A hardware Enter the page already heard (fieldPresses).
-    if (press_enter_sent) {
-        press_enter_sent = false;
+    if (press_enter_field == field) {
+        press_enter_field = null;
         return apple.boolean(false);
     }
     _ = o.s.engine.event(o.n.id, "key", "[\"Enter\",0]");
@@ -1156,8 +1189,8 @@ fn textViewShouldChange(_: id, _: SEL, tv: id, _: NSRange, text: id) callconv(.c
     if (!std.mem.eql(u8, s, "\n")) return apple.boolean(true);
     const o = ownerOf(tv) orelse return apple.boolean(true);
     // A hardware Enter the page already heard and let through (fieldPresses).
-    if (press_enter_sent) {
-        press_enter_sent = false;
+    if (press_enter_field == tv) {
+        press_enter_field = null;
         return apple.boolean(true);
     }
     const prevented = o.s.engine.event(o.n.id, "key", "[\"Enter\",0]");
