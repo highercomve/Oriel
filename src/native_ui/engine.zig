@@ -108,6 +108,11 @@ pub const Backend = struct {
     /// weights the page's rules use), so the first text in each doesn't pay
     /// for the font match and load when a page or tab is shown.
     warm_fonts: ?*const fn (ctx: *anyopaque, specs: []const FontSpec) void = null,
+    /// Optional, for backends that mirror props (`props`): a node's
+    /// transform or opacity changed alone (Tree.on_paint, the "x" op). The
+    /// runtime sends such changes as "x" ops only when a backend that
+    /// mirrors props has this (others read props when they draw).
+    paint: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
 };
 
 /// A font the page may use (Backend.warm_fonts).
@@ -160,8 +165,15 @@ pub const Engine = struct {
         e.tree.on_text = backend.text;
         e.tree.on_leaf_style = backend.leaf_style;
         e.tree.on_create = backend.leaf;
+        e.tree.on_paint = backend.paint;
         e.js = oqjs_new(e, platform_json.ptr, label.ptr, url.ptr) orelse return error.QuickJsInitFailed;
         errdefer oqjs_free(e.js);
+        // Transform/opacity-only changes as "x" ops: unless the backend
+        // mirrors props without a paint hook (it would miss them).
+        if (backend.props == null or backend.paint != null) {
+            const flag = "__host.paintOps = true";
+            _ = oqjs_eval(e.js, flag, flag.len, "<native>");
+        }
         if (oqjs_eval_bytecode(e.js, runtime_bytecode.ptr, runtime_bytecode.len) < 0) return error.RuntimeFailed;
         return e;
     }
