@@ -84,6 +84,7 @@ extern fn gtk_event_controller_get_current_event_state(c: *anyopaque) c_uint;
 extern fn gtk_event_controller_scroll_new(flags: c_uint) *anyopaque;
 extern fn gtk_event_controller_motion_new() *anyopaque;
 extern fn gtk_event_controller_key_new() *anyopaque;
+extern fn gtk_event_controller_focus_new() *anyopaque;
 extern fn gtk_scale_new_with_range(orientation: c_int, min: f64, max: f64, step: f64) *Widget;
 extern fn gtk_range_set_value(r: *Widget, v: f64) void;
 extern fn gtk_range_get_value(r: *Widget) f64;
@@ -471,6 +472,7 @@ fn disconnect(s: *Surface, instance: *anyopaque) void {
 
 fn disconnectField(s: *Surface, id: i64, w: *Widget) void {
     disconnect(s, w);
+    if (g_object_get_data(w, "oriel-focus")) |c| disconnect(s, c);
     const n = s.engine.tree.get(id) orelse return;
     if (n.kind == .textarea) disconnect(s, gtk_text_view_get_buffer(w));
 }
@@ -930,6 +932,13 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
         else => unreachable,
     };
     g_object_set_data(@ptrCast(w), "oriel-node", @ptrFromInt(@as(usize, @intCast(n.id))));
+    // The page hears which field has the keyboard (:focus, :focus-visible,
+    // document.activeElement), as on the other backends.
+    const focus_ctrl = gtk_event_controller_focus_new();
+    _ = g_signal_connect_data(focus_ctrl, "enter", @ptrCast(&onFieldFocus), s, null, 0);
+    _ = g_signal_connect_data(focus_ctrl, "leave", @ptrCast(&onFieldBlur), s, null, 0);
+    gtk_widget_add_controller(w, focus_ctrl);
+    g_object_set_data(@ptrCast(w), "oriel-focus", focus_ctrl);
     var buf: [32]u8 = undefined;
     const cls = try std.fmt.bufPrintSentinel(&buf, "nui-f{d}", .{n.id}, 0);
     gtk_widget_add_css_class(w, cls.ptr);
@@ -985,6 +994,24 @@ fn onEntryChanged(e: *Widget, data: ?*anyopaque) callconv(.c) void {
     if (s.updating) return;
     const n = nodeOfWidget(s, e) orelse return;
     sendValue(s, n, "input", std.mem.span(gtk_editable_get_text(e)));
+}
+
+fn onFieldFocus(ctrl: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    fieldFocus(ctrl, data, "focus");
+}
+
+fn onFieldBlur(ctrl: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    fieldFocus(ctrl, data, "blur");
+}
+
+fn fieldFocus(ctrl: *anyopaque, data: ?*anyopaque, what: []const u8) void {
+    const s = surfaceOf(data);
+    const w = gtk_event_controller_get_widget(ctrl) orelse return;
+    const n = nodeOfWidget(s, w) orelse return;
+    // Not while the field goes (`removed` takes it out first): the page
+    // isn't called back in the middle of its own change.
+    if (s.fields.get(n.id) != w) return;
+    _ = s.engine.event(n.id, what, "null");
 }
 
 fn onEntryActivate(e: *Widget, data: ?*anyopaque) callconv(.c) void {

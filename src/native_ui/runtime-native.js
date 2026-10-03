@@ -6325,11 +6325,21 @@ ${a.stack || ""}`;
     },
     set(el) {
       if (el === active) return;
-      active?.removeAttribute?.("data-nui-focus");
-      active?.removeAttribute?.("data-nui-focus-visible");
+      const old = active;
+      old?.removeAttribute?.("data-nui-focus");
+      old?.removeAttribute?.("data-nui-focus-visible");
       active = el || null;
       active?.setAttribute?.("data-nui-focus", "");
       if (active && (keyboardFocus || textField(active))) active.setAttribute?.("data-nui-focus-visible", "");
+      const now = active;
+      if (old?.dispatchEvent) {
+        old.dispatchEvent(new FocusEvent("blur", { relatedTarget: now }));
+        old.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: now }));
+      }
+      if (now?.dispatchEvent && active === now) {
+        now.dispatchEvent(new FocusEvent("focus", { relatedTarget: old }));
+        now.dispatchEvent(new FocusEvent("focusin", { bubbles: true, relatedTarget: old }));
+      }
     },
     configurable: true
   });
