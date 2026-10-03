@@ -191,7 +191,9 @@ the animated nodes are sent each frame).
   radii times `period`; Cairo: CAIRO_EXTEND_REPEAT). A backend whose
   gradients can't wrap (CoreGraphics) lays the period out with
   `Gradient.expand(resolved, extent, buf)` instead (extent: how much of
-  the line to cover, in line lengths). Win32 does this; GTK, Apple and
+  the line to cover, in line lengths). Win32 does this, and Apple
+  (apple_draw.zig gradient: expand over the line, a radial one out to the
+  box's farthest corner in ray lengths, at most 1024 stops); GTK and
   Android still read `stops` as fractions (px positions come out wrong
   there, and a repeating gradient is drawn once).
 
@@ -602,6 +604,10 @@ swatches, a gradient, text, a border and a canvas fill). A rounded border
 whose sides differ in width is the ring between the border box and the
 padding box (elliptical inner corners), each color clipped to its wedge
 and neighboring sides of one color sharing one, as on GTK (`roundedSides`).
+An inline link's ring (a run's `ol`) is a box per line its text is on
+(`paintRunRings`: spaces at the line's ends left out, its runs under one
+box), as tall as the font's content area, as WebKit draws it even in a
+taller line box. An `<img>` is clipped to its content edge's curve.
 
 | | macOS (AppKit) | iOS (UIKit) |
 |---|---|---|
