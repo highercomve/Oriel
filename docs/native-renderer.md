@@ -184,7 +184,11 @@ from the keys held), Android (one touch, or the mouse on ChromeOS with its
 buttons and hover moves; a touch the page doesn't take scrolls as before and
 gets a cancel, a mouse drag doesn't scroll; moves coalesced on
 Choreographer's frame; keydown with repeat and keyup from the page's view).
-Windows still sends only clicks, hover and key downs.
+Windows (the mouse's buttons, moves and drags, the window capturing the
+mouse while a button is down; one touch or pen through WM_POINTER, a touch
+the page doesn't take scrolls and gets a cancel, a pen also hovers; moves
+coalesced on the display frame; keydown with repeat from lParam's bit 30,
+keyup with the key its keydown sent, a typed character's too).
 
 ## Canvas
 
