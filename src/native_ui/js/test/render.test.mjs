@@ -584,4 +584,16 @@ for (const css of [
   assert.equal(by("d").ol, undefined);
 }
 
+// A font size is inherited as its computed length: a span in an h1 (2em)
+// is 32px, not 2em of 32; nested ems still compound.
+{
+  const { document } = parseHTML('<html><body><h1><span style="background: red">h</span></h1><div class="e"><span>a</span><div class="e"><b style="background: red">b</b></div></div></body></html>');
+  const { renderer, tree } = makeRenderer(document, ".e { font-size: 1.5em }");
+  renderer.render();
+  const sizes = {};
+  const all = (n) => { for (const r of n.props.runs || []) sizes[r.t] = r.sz; n.kids.forEach(all); };
+  all(tree());
+  assert.deepEqual(sizes, { h: 32, a: 24, b: 36 });
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");

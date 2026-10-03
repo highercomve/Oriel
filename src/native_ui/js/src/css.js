@@ -553,6 +553,8 @@ export function computeStyle(specified, parent) {
     // size (__fs, render.js) is resolved before its children's styles.
     const lh = parent["line-height"];
     if (lh && parent.__fs !== undefined && relativeUnit(lh)) cs["line-height"] = `${relativeLength(lh, parent.__fs)}px`;
+    // So is a font size (a span in an h1 is the h1's 32px, not 2em of it).
+    if (parent.__fs !== undefined && parent["font-size"] !== undefined) cs["font-size"] = `${parent.__fs}px`;
   }
   // Custom properties first (they may refer to inherited ones).
   for (const k in specified) if (k.startsWith("--")) cs[k] = specified[k];

@@ -13252,6 +13252,7 @@ globalThis.atob ??= (s) => {
       for (const k in parent) if (INHERITED.has(k) || k.startsWith("--")) cs[k] = parent[k];
       const lh = parent["line-height"];
       if (lh && parent.__fs !== void 0 && relativeUnit(lh)) cs["line-height"] = `${relativeLength(lh, parent.__fs)}px`;
+      if (parent.__fs !== void 0 && parent["font-size"] !== void 0) cs["font-size"] = `${parent.__fs}px`;
     }
     for (const k in specified) if (k.startsWith("--")) cs[k] = specified[k];
     for (const k in cs) if (k.startsWith("--")) cs[k] = substitute(cs[k], cs, 0);
