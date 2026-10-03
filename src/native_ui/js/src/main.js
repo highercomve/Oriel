@@ -737,9 +737,9 @@ function tabOrder() {
     // A missing or invalid tabindex: 0 if the element is focusable itself.
     let index = parseInt(el.getAttribute("tabindex"), 10);
     if (Number.isNaN(index)) {
-      if (!naturallyFocusable(el)) continue;
+      if (!naturallyFocusable(el) || (tabRule !== "all" && !textLike(el))) continue;
       index = 0;
-    }
+    } else if (tabRule === "ios" && CONTROLS.has(el.localName) && !textLike(el)) continue;
     if (index < 0 || (CONTROLS.has(el.localName) && el.hasAttribute("disabled")) || !shown(el)) continue;
     (index > 0 ? positive : rest).push([index, el]);
   }
@@ -747,6 +747,19 @@ function tabOrder() {
   return [...positive, ...rest].map((e) => e[1]);
 }
 const CONTROLS = new Set(["input", "button", "select", "textarea"]);
+// Which elements Tab visits, as the platform's WebView does (measured):
+// - "mac": macOS without Full Keyboard Access (the system's keyboard
+//   navigation setting, off by default): text fields, selects, textareas
+//   and contenteditable, plus anything with an explicit tabindex >= 0 (a
+//   button or link without one is skipped);
+// - "ios": the same, but a tabindex doesn't bring in a button, checkbox
+//   or range (WKWebView skipped a tabindex="0" button);
+// - "all": browsers' order (Full Keyboard Access, other platforms).
+const tabRule = platform.os === "ios" ? "ios" : platform.os === "macos" && !platform.fullKeyboardAccess ? "mac" : "all";
+function textLike(el) {
+  // (The contenteditable attribute itself: the native DOM has no isContentEditable.)
+  return el.localName === "select" || textField(el) || ["", "true", "plaintext-only"].includes(el.getAttribute("contenteditable"));
+}
 function naturallyFocusable(el) {
   switch (el.localName) {
     case "a": return el.hasAttribute("href");
