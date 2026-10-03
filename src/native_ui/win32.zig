@@ -271,8 +271,8 @@ pub const Surface = struct {
         const hinst = c.GetModuleHandleW(null);
         s.hwnd = c.CreateWindowExW(0, class_name, null, c.WS_CHILD | c.WS_VISIBLE | c.WS_CLIPCHILDREN, 0, 0, rc.right - rc.left, rc.bottom - rc.top, hparent, null, hinst, null) orelse return error.CreateWindowFailed;
         errdefer _ = c.DestroyWindow(s.hwnd);
-        const w: f32 = @as(f32, @floatFromInt(rc.right - rc.left)) / s.scale;
-        const h: f32 = @as(f32, @floatFromInt(rc.bottom - rc.top)) / s.scale;
+        const w = cssPx(rc.right - rc.left, s.scale);
+        const h = cssPx(rc.bottom - rc.top, s.scale);
         s.engine = try Engine.create(gpa, .{
             .ctx = s,
             .measure = measure,
@@ -344,7 +344,10 @@ pub const Surface = struct {
             const size: c.D2D1_SIZE_U = .{ .width = @intCast(@max(1, pw)), .height = @intCast(@max(1, ph)) };
             if (rt.lpVtbl.*.Resize.?(rt, &size) < 0) releaseTarget(s);
         }
-        s.engine.resize(@as(f32, @floatFromInt(pw)) / s.scale, @as(f32, @floatFromInt(ph)) / s.scale, s.dark);
+        // In whole CSS px, rounded up, as Chromium lays a page out at a
+        // fractional scale (784 px at 125%: 628, not 627.2); the page is
+        // still drawn at the scale, its last fraction of a px cut.
+        s.engine.resize(cssPx(pw, s.scale), cssPx(ph, s.scale), s.dark);
         _ = c.InvalidateRect(s.hwnd, null, c.FALSE);
     }
 
@@ -401,8 +404,36 @@ fn px(v: f32) c_int {
 }
 
 fn dpiScale(hwnd: c.HWND) f32 {
+    // ORIEL_NUI_SCALE (testing): this scale instead of the monitor's, as
+    // WebView2's --force-device-scale-factor.
+    if (forcedScale()) |k| return k;
     const dpi = c.GetDpiForWindow(hwnd);
     return if (dpi == 0) 1 else @as(f32, @floatFromInt(dpi)) / 96.0;
+}
+
+/// Physical px as whole CSS px, rounded up (a hair of float error isn't a
+/// px more: 785 / 1.25 is 628).
+fn cssPx(physical: c_int, scale: f32) f32 {
+    const v = @as(f32, @floatFromInt(physical)) / scale;
+    return @ceil(v - 1e-3);
+}
+
+var forced_scale: ?f32 = null;
+var forced_scale_read = false;
+
+fn forcedScale() ?f32 {
+    if (!forced_scale_read) {
+        forced_scale_read = true;
+        var buf: [32]u16 = undefined;
+        const n = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("ORIEL_NUI_SCALE"), &buf, buf.len);
+        if (n > 0 and n < buf.len) {
+            var ascii: [32]u8 = undefined;
+            for (buf[0..n], 0..) |u, i| ascii[i] = if (u < 128) @intCast(u) else '?';
+            const k = std.fmt.parseFloat(f32, ascii[0..n]) catch 0;
+            if (k >= 0.5 and k <= 8) forced_scale = k;
+        }
+    }
+    return forced_scale;
 }
 
 fn initShared() !void {
