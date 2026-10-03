@@ -39,6 +39,7 @@ typedef struct {
     const uint8_t *(*atom_utf8)(void *ctx, uint32_t atom, size_t *len);
     void (*mutation)(void *ctx, uint8_t kind, Index target, Index node, uint32_t name);
     int (*ref_count)(void *ctx, const JSValue *v);
+    int (*has_state)(void *ctx, const JSValue *v);
 } Host;
 
 typedef struct Selector Selector;
@@ -120,6 +121,7 @@ static DomCtx *dc_of(JSContext *ctx) { return JS_GetRuntimeOpaque(JS_GetRuntime(
 static void h_dup(void *c, const JSValue *v) { JS_DupValue((JSContext *)c, *v); }
 static void h_free(void *c, const JSValue *v) { JS_FreeValue((JSContext *)c, *v); }
 static int h_ref_count(void *c, const JSValue *v) { (void)c; return JS_GetRefCount(*v); }
+static int h_has_state(void *c, const JSValue *v);
 static void h_dup_atom(void *c, uint32_t a) { JS_DupAtom((JSContext *)c, a); }
 static void h_free_atom(void *c, uint32_t a) { JS_FreeAtom((JSContext *)c, a); }
 static bool h_new_string(void *c, const uint8_t *b, size_t len, JSValue *out) {
@@ -245,6 +247,20 @@ static JSValue wrap(JSContext *ctx, DomCtx *dc, Index idx) {
     JS_SetOpaque(obj, (void *)(uintptr_t)idx);
     nui_dom_set_wrapper(dc->dom, idx, &obj);
     return obj;
+}
+
+// Whether a node's wrapper carries state of its own: expandos, a changed
+// prototype (against the one wrap() gives its node), not extensible.
+static int h_has_state(void *c, const JSValue *v) {
+    JSContext *ctx = c;
+    DomCtx *dc = dc_of(ctx);
+    Index idx = (Index)(uintptr_t)JS_GetOpaque(*v, node_class_id);
+    if (!dc || !dc->dom || !idx) return 1;
+    int which = proto_for(dc, idx);
+    JSValue want = which == P_HTML ? element_proto(ctx, dc, idx) : JS_DupValue(ctx, dc->protos[which]);
+    bool state = JS_ObjectHasState(*v, want);
+    JS_FreeValue(ctx, want);
+    return state;
 }
 
 // `this`'s node, or 0 (a TypeError is pending) when it isn't one.
@@ -1161,7 +1177,7 @@ DomCtx *nui_dom_install(JSContext *ctx) {
     dc->ctx = ctx;
     for (int i = 0; i < P_COUNT; i++) dc->protos[i] = dc->ctors[i] = JS_UNDEFINED;
     dc->host = (Host){ ctx, h_dup, h_free, h_dup_atom, h_free_atom, h_new_string, h_new_atom, h_value_atom, h_tokens,
-                       h_latin1, h_to_utf8, h_free_utf8, h_atom_latin1, h_atom_utf8, h_mutation, h_ref_count };
+                       h_latin1, h_to_utf8, h_free_utf8, h_atom_latin1, h_atom_utf8, h_mutation, h_ref_count, h_has_state };
     dc->tag_protos = dc->element_proto = dc->foreign_proto = dc->hook = JS_UNDEFINED;
     dc->dom = nui_dom_new(&dc->host);
     if (!dc->dom) { js_free(ctx, dc); return NULL; }

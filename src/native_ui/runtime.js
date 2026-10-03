@@ -18872,7 +18872,24 @@ ${a.stack || ""}`;
     }
   }
   var linkCss = /* @__PURE__ */ new WeakMap();
-  var sheetOf = /* @__PURE__ */ new WeakMap();
+  var ownSlot = (name) => {
+    const key2 = Symbol(name);
+    const aside = /* @__PURE__ */ new WeakMap();
+    return {
+      get: (o) => Object.prototype.hasOwnProperty.call(o, key2) ? o[key2] : aside.get(o),
+      set: (o, v) => {
+        if (Object.prototype.hasOwnProperty.call(o, key2) || Object.isExtensible(o)) {
+          try {
+            Object.defineProperty(o, key2, { value: v, writable: true, configurable: true });
+            return;
+          } catch {
+          }
+        }
+        aside.set(o, v);
+      }
+    };
+  };
+  var sheetOf = ownSlot("sheet");
   function isSheetLink(el) {
     const rel = el.getAttribute("rel") || "";
     return /(^|\s)stylesheet(\s|$)/i.test(rel) && !/(^|\s)alternate(\s|$)/i.test(rel) && el.hasAttribute("href");
