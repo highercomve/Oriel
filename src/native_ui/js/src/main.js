@@ -454,7 +454,8 @@ const frameOf = (el) => {
 Object.defineProperties(elProto, {
   offsetWidth: { get() { return frameOf(this)[2]; }, configurable: true },
   offsetHeight: { get() { return frameOf(this)[3]; }, configurable: true },
-  // The root's: the viewport (a page's scrollbars overlay it here).
+  // The root element's client box is the viewport (innerWidth less a
+  // scrollbar, which these pages don't have), as in browsers.
   clientWidth: { get() { return this === document.documentElement ? viewport.width : frameOf(this)[2]; }, configurable: true },
   clientHeight: { get() { return this === document.documentElement ? viewport.height : frameOf(this)[3]; }, configurable: true },
   scrollHeight: { get() { const f = frameOf(this); return f[4] ?? f[3]; }, configurable: true },

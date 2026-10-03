@@ -6809,7 +6809,8 @@ ${a.stack || ""}`;
     offsetHeight: { get() {
       return frameOf(this)[3];
     }, configurable: true },
-    // The root's: the viewport (a page's scrollbars overlay it here).
+    // The root element's client box is the viewport (innerWidth less a
+    // scrollbar, which these pages don't have), as in browsers.
     clientWidth: { get() {
       return this === document.documentElement ? viewport.width : frameOf(this)[2];
     }, configurable: true },
