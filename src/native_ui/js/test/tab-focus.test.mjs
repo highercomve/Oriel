@@ -80,11 +80,13 @@ function bootPage(html, platform) {
   vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), c, { filename: "runtime.js" });
   c.__oriel.boot(400, 600, false, false);
   c.__oriel.render();
-  return (n) => {
+  const tabs = (n) => {
     const seen = [];
     for (let i = 0; i < n; i++) { c.__oriel.event(0, "key", ["Tab", 0, false]); seen.push(vm.runInContext("document.activeElement.id", c)); }
     return seen;
   };
+  tabs.ctx = c;
+  return tabs;
 }
 const macPage = `<html><body>
 <input id="t1"><input id="cb" type="checkbox"><button id="b1">Btn</button><a id="l1" href="#x">Link</a>
@@ -94,5 +96,13 @@ const macPage = `<html><body>
 assert.deepEqual(bootPage(macPage, { os: "macos", fullKeyboardAccess: false })(8), ["s2", "t1", "d0", "ce", "sel", "ta", "bt0", "s2"], "WKWebView's macOS order");
 assert.deepEqual(bootPage(macPage, { os: "macos", fullKeyboardAccess: true })(5), ["s2", "t1", "cb", "b1", "l1"], "with Full Keyboard Access: every control");
 assert.deepEqual(bootPage(macPage, { os: "ios" })(7), ["s2", "t1", "d0", "ce", "sel", "ta", "s2"], "iOS: WKWebView's order (no tabindex button)");
+
+// isContentEditable as browsers have it: inherited, and "false" stops it.
+{
+  const ce = `<html><body><div id="a" contenteditable><p id="b">x</p><span id="c" contenteditable="false"><i id="d">y</i></span></div><div id="e" contenteditable="plaintext-only"></div><div id="f" contenteditable="bogus"></div><div id="g"></div></body></html>`;
+  const c = bootPage(ce, { os: "linux" }).ctx;
+  const editable = vm.runInContext(`["a","b","c","d","e","f","g"].map((id) => document.getElementById(id).isContentEditable)`, c);
+  assert.deepEqual([...editable], [true, true, false, false, true, false, false], "isContentEditable");
+}
 
 console.log("tab focus: ok");

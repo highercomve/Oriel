@@ -366,6 +366,29 @@ formProto.reset = function () {
 
 // Layout reads, from the native layout.
 const elProto = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div")));
+// isContentEditable as browsers have it (the native DOM has none; linkedom's
+// counts contenteditable="false" as editable): "", "true" or
+// "plaintext-only" makes an element editable, "false" not, anything else
+// (or no attribute) inherits its parent's.
+{
+  const isContentEditable = {
+    get() {
+      for (let el = this; el && el.getAttribute; el = el.parentElement) {
+        const v = el.getAttribute("contenteditable");
+        if (v === null) continue;
+        const s = v.toLowerCase();
+        if (s === "" || s === "true" || s === "plaintext-only") return true;
+        if (s === "false") return false;
+      }
+      return false;
+    },
+    configurable: true,
+  };
+  // On elProto, and over linkedom's own nearer the elements.
+  Object.defineProperty(elProto, "isContentEditable", isContentEditable);
+  for (let p = Object.getPrototypeOf(document.createElement("div")); p && p !== elProto; p = Object.getPrototypeOf(p))
+    if (Object.prototype.hasOwnProperty.call(p, "isContentEditable")) Object.defineProperty(p, "isContentEditable", isContentEditable);
+}
 // As in a browser, a layout read renders what changed first (the page just
 // added these elements: their size, not 0).
 const frameOf = (el) => {
@@ -757,7 +780,6 @@ const CONTROLS = new Set(["input", "button", "select", "textarea"]);
 // - "all": browsers' order (Full Keyboard Access, other platforms).
 const tabRule = platform.os === "ios" ? "ios" : platform.os === "macos" && !platform.fullKeyboardAccess ? "mac" : "all";
 function textLike(el) {
-  // (The contenteditable attribute itself: the native DOM has no isContentEditable.)
   return el.localName === "select" || textField(el) || ["", "true", "plaintext-only"].includes(el.getAttribute("contenteditable"));
 }
 function naturallyFocusable(el) {

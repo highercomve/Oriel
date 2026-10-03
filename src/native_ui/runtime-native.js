@@ -6470,6 +6470,24 @@ ${a.stack || ""}`;
     for (const f of this.querySelectorAll("input, textarea")) f.value = f.getAttribute("value") || "";
   };
   var elProto = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div")));
+  {
+    const isContentEditable = {
+      get() {
+        for (let el = this; el && el.getAttribute; el = el.parentElement) {
+          const v = el.getAttribute("contenteditable");
+          if (v === null) continue;
+          const s = v.toLowerCase();
+          if (s === "" || s === "true" || s === "plaintext-only") return true;
+          if (s === "false") return false;
+        }
+        return false;
+      },
+      configurable: true
+    };
+    Object.defineProperty(elProto, "isContentEditable", isContentEditable);
+    for (let p = Object.getPrototypeOf(document.createElement("div")); p && p !== elProto; p = Object.getPrototypeOf(p))
+      if (Object.prototype.hasOwnProperty.call(p, "isContentEditable")) Object.defineProperty(p, "isContentEditable", isContentEditable);
+  }
   var frameOf = (el) => {
     if (!renderer) return [0, 0, 0, 0];
     if (!renderer.rendering) renderer.render();
