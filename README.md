@@ -1730,7 +1730,7 @@ process. On a Linux desktop it beats the WebView on every test of the
 render bench: 1000 rows built in 6.4 ms (the WebView: 20) and updated in
 2.8 ms (9), the first frame in 69 ms (431), animation at the display's
 refresh rate (165 fps on a 180 Hz screen, against 62), and 174 MB after
-the tests (561). On a 120 Hz Android phone it builds 1000 rows in 13.6 ms,
+the tests (561). On a 120 Hz Android phone it builds 1000 rows in 13.8 ms,
 ten times faster than the same rows as plain Android views (132), and
 draws 1000 canvas balls at 92 fps. Videos of both renderers running the
 bench are on the site. `-Dnative_dom=false` builds it on linkedom

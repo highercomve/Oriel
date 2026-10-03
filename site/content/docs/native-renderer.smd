@@ -257,9 +257,11 @@ The same bench, the native renderer, ReleaseFast (Windows: ReleaseSafe, as `orie
 | Windows 11 (a 2018 laptop, 144 Hz) | 18.9 ms | 8.2 ms | 72 fps | 64 fps |
 | macOS (M1, 120 Hz display) | 24.9 ms | 15.6 ms | 120 fps | 120 fps |
 | iOS (simulator, 60 Hz) | 22.3 ms | 13.8 ms | 60 fps | 60 fps |
-| Android (a 120 Hz phone) | 13.6 ms | 63.8 ms | 115 fps | 92 fps |
+| Android (a 120 Hz phone) | 13.8 ms | 18.9 ms | 116 fps | 91 fps |
 
-Where a test reaches the display's refresh rate, that is its ceiling. Android updates are the slowest still: each new string is measured with a `StaticLayout`, which the next step replaces with the cached-width sizing the desktop backends use.
+Where a test reaches the display's refresh rate, that is its ceiling.
+
+A canvas can also be drawn from the app's Zig code (`oriel.canvas`): the page keeps its HTML and CSS, and the drawing calls skip the JavaScript engine. With 1000 balls drawn from Zig, every platform reaches its display's rate: 179 fps on Linux (91 from JavaScript), 143 on Windows (64), 120 on macOS and on the phone (91 from JavaScript there). The [Breakout example](https://github.com/highercomve/Oriel/tree/main/examples/breakout) runs the same game both ways.
 
 ## The native DOM
 
