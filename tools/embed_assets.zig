@@ -3,7 +3,10 @@
 //!
 //!     pub const files: []const oriel.App.Asset = &.{ ... };
 //!
-//! Usage: embed_assets <src_dir> <out_dir>
+//! Usage: embed_assets <src_dir> <out_dir> [extra_dir]
+//!
+//! `extra_dir`: more files embedded with their paths under it (the native
+//! renderer's module bytecode, tools/qjs_modules.zig).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -15,8 +18,8 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     // Portable argv (WTF-16 on Windows, so not `args.vector`).
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
-    if (argv.len != 3) {
-        std.debug.print("usage: embed_assets <src_dir> <out_dir>\n", .{});
+    if (argv.len != 3 and argv.len != 4) {
+        std.debug.print("usage: embed_assets <src_dir> <out_dir> [extra_dir]\n", .{});
         std.process.exit(2);
     }
     const src_path = argv[1];
@@ -31,24 +34,17 @@ pub fn main(init: std.process.Init) !void {
     var out = try Dir.cwd().openDir(io, out_path, .{});
     defer out.close(io);
 
-    var paths: std.ArrayList([]const u8) = .empty;
+    var extra: ?Dir = if (argv.len == 4) try Dir.cwd().openDir(io, argv[3], .{ .iterate = true }) else null;
+    defer if (extra) |*e| e.close(io);
+
+    var paths: std.ArrayList(Entry) = .empty;
     defer {
-        for (paths.items) |p| gpa.free(p);
+        for (paths.items) |p| gpa.free(p.path);
         paths.deinit(gpa);
     }
-    var walker = try src.walk(gpa);
-    defer walker.deinit();
-    while (try walker.next(io)) |entry| {
-        if (entry.kind != .file) continue;
-        // Asset keys and @embedFile paths use '/'; the walker returns the
-        // native separator ('\\' on Windows).
-        const rel = try gpa.dupe(u8, entry.path);
-        errdefer gpa.free(rel);
-        if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, rel, '\\', '/');
-        if (std.mem.indexOfAny(u8, rel, "\"\\\n") != null) return error.UnsupportedFileName;
-        try paths.append(gpa, rel);
-    }
-    std.mem.sort([]const u8, paths.items, {}, lessThan);
+    try collect(io, gpa, src, false, &paths);
+    if (extra) |e| try collect(io, gpa, e, true, &paths);
+    std.mem.sort(Entry, paths.items, {}, lessThan);
 
     var source: std.Io.Writer.Allocating = .init(gpa);
     defer source.deinit();
@@ -60,15 +56,17 @@ pub fn main(init: std.process.Init) !void {
         \\pub const files: []const oriel.App.Asset = &.{
         \\
     );
-    for (paths.items) |path| {
+    for (paths.items) |p| {
+        const path = p.path;
+        const from = if (p.extra) extra.? else src;
         const dest = try std.fmt.allocPrint(gpa, "files/{s}", .{path});
         defer gpa.free(dest);
         if (std.fs.path.dirname(dest)) |dir| try out.createDirPath(io, dir);
-        try src.copyFile(path, out, dest, io, .{});
+        try from.copyFile(path, out, dest, io, .{});
         try w.print("    .{{ .path = \"{s}\", .data = @embedFile(\"{s}\"), .mime = \"{s}\"", .{ path, dest, mimeType(path) });
         // HTML: the CSP hashes of its inline scripts and style blocks.
         if (std.ascii.eqlIgnoreCase(std.fs.path.extension(path), ".html") or std.ascii.eqlIgnoreCase(std.fs.path.extension(path), ".htm")) {
-            const html = try src.readFileAlloc(io, path, gpa, .limited(64 * 1024 * 1024));
+            const html = try from.readFileAlloc(io, path, gpa, .limited(64 * 1024 * 1024));
             defer gpa.free(html);
             const hashes = try csp.inlineHashes(gpa, html);
             defer hashes.deinit(gpa);
@@ -81,8 +79,35 @@ pub fn main(init: std.process.Init) !void {
     try out.writeFile(io, .{ .sub_path = "assets.zig", .data = source.written() });
 }
 
-fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-    return std.mem.lessThan(u8, a, b);
+const Entry = struct { path: []const u8, extra: bool };
+
+fn collect(io: std.Io, gpa: std.mem.Allocator, dir: Dir, extra: bool, paths: *std.ArrayList(Entry)) !void {
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        // Asset keys and @embedFile paths use '/'; the walker returns the
+        // native separator ('\\' on Windows).
+        const rel = try gpa.dupe(u8, entry.path);
+        errdefer gpa.free(rel);
+        if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, rel, '\\', '/');
+        if (std.mem.indexOfAny(u8, rel, "\"\\\n") != null) return error.UnsupportedFileName;
+        // The frontend's own file of that path wins.
+        if (extra and has(paths.items, rel)) {
+            gpa.free(rel);
+            continue;
+        }
+        try paths.append(gpa, .{ .path = rel, .extra = extra });
+    }
+}
+
+fn has(entries: []const Entry, path: []const u8) bool {
+    for (entries) |e| if (std.mem.eql(u8, e.path, path)) return true;
+    return false;
+}
+
+fn lessThan(_: void, a: Entry, b: Entry) bool {
+    return std.mem.lessThan(u8, a.path, b.path);
 }
 
 fn mimeType(path: []const u8) []const u8 {
