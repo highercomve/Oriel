@@ -19,7 +19,7 @@
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs } from "./css.js";
-import { Renderer, UA_CSS } from "./render.js";
+import { Renderer, UA_CSS, UA_CSS_WEBKIT } from "./render.js";
 import * as canvas from "./canvas.js";
 
 const host = globalThis.__host;
@@ -885,6 +885,8 @@ g.__oriel = {
       // Parsed sheets kept for the process (host.sheetCache/sheetKeep).
       const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
       engine.addSheet(UA_CSS, sheets);
+      // Where the WebView is WebKit's, its controls' look.
+      if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
       for (const link of document.querySelectorAll('link[rel="stylesheet"][href], style')) {
         const path = link.localName === "style" ? undefined : link.getAttribute("href").replace(/^\.?\//, "");
         const css = path === undefined ? link.textContent : host.asset(path);
