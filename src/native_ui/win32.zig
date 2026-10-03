@@ -76,6 +76,9 @@ const Field = struct {
     kind: tree_mod.Kind,
     font: ?c.HFONT = null,
     font_px: c_int = 0,
+    /// The font's family and weight (familyOf's, cached for the process).
+    font_face: ?[*:0]const u16 = null,
+    font_weight: c_int = 0,
     brush: ?c.HBRUSH = null,
     bg: c.COLORREF = 0xFFFFFF,
     fg: c.COLORREF = 0,
@@ -1199,14 +1202,17 @@ fn backgroundUnder(s: *Surface, n: *Node) c.COLORREF {
 
 fn styleField(s: *Surface, f: *Field, n: *Node) void {
     const size = px((n.props.fz orelse 16) * s.scale);
-    if (size != f.font_px) {
-        const face = std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI");
-        const font = c.CreateFontW(-size, 0, 0, 0, c.FW_NORMAL, 0, 0, 0, c.DEFAULT_CHARSET, c.OUT_DEFAULT_PRECIS, c.CLIP_DEFAULT_PRECIS, c.CLEARTYPE_QUALITY, c.DEFAULT_PITCH, face);
+    const face = familyOf(n.props.ff, n.props.mono);
+    const weight: c_int = @intFromFloat(@max(1, @min(1000, n.props.fwt orelse 400)));
+    if (size != f.font_px or face.ptr != f.font_face or weight != f.font_weight) {
+        const font = c.CreateFontW(-size, 0, 0, 0, weight, @intFromBool(n.props.it), 0, 0, c.DEFAULT_CHARSET, c.OUT_DEFAULT_PRECIS, c.CLIP_DEFAULT_PRECIS, c.CLEARTYPE_QUALITY, c.DEFAULT_PITCH, face);
         if (font != null) {
             _ = c.SendMessageW(f.hwnd, c.WM_SETFONT, @intFromPtr(font), c.TRUE);
             if (f.font) |old| _ = c.DeleteObject(old);
             f.font = font;
             f.font_px = size;
+            f.font_face = face.ptr;
+            f.font_weight = weight;
         }
     }
     const fg = colorRef(n.props.col orelse .{ 0, 0, 0, 1 });
@@ -2024,6 +2030,8 @@ fn resolveFamily(list: []const u8) ?[:0]const u16 {
         .{ "ui-serif", "Times New Roman" }, .{ "monospace", "Consolas" },     .{ "ui-monospace", "Consolas" },
         .{ "cursive", "Comic Sans MS" },  .{ "fantasy", "Impact" },             .{ "math", "Cambria Math" },
         .{ "emoji", "Segoe UI Emoji" },   .{ "ui-rounded", "Segoe UI" },
+        // Chromium's control font (render.js's UA sheet for fields).
+        .{ "-webkit-small-control", "Arial" },
     };
     var it = std.mem.splitScalar(u8, list, ',');
     while (it.next()) |raw| {
@@ -2123,6 +2131,13 @@ fn lineBox(props: *const tree_mod.Props) ?f32 {
     const runs = props.runs orelse return null;
     const r = largestRun(runs) orelse return null;
     return normalLineHeight(runFamily(props, r), r.sz, r.w, r.i);
+}
+
+/// A field's line: its CSS line-height, else its font's normal one.
+fn fieldLine(n: *const Node) f32 {
+    if (n.props.lh) |lh| if (lh > 0) return lh;
+    const fz = n.props.fz orelse 16;
+    return normalLineHeight(familyOf(n.props.ff, n.props.mono), fz, n.props.fwt orelse 400, n.props.it) orelse @round(fz * 1.15);
 }
 
 /// A text's height from DirectWrite's: lines of its line box exactly
@@ -3405,7 +3420,6 @@ fn textChanged(_: *anyopaque, node: *Node) void {
 
 fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     const s = surfaceOf(ctx);
-    const fz = n.props.fz orelse 16;
     switch (n.kind) {
         .text => {
             // Its natural size (kept on the node until its props or text
@@ -3424,8 +3438,14 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             }
             out.* = measuredText(s, n, max_width) orelse return;
         },
-        .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
-        .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
+        // As Chromium: a line of the field's font (its line-height, else
+        // the font's normal one), `rows` of them in a textarea; a select's
+        // menu list adds 1px above and below.
+        .input, .select => {
+            const line = fieldLine(n);
+            out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), if (n.kind == .select) line + 2 else line };
+        },
+        .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, fieldLine(n) * (n.props.rows orelse 2) },
         .image => {
             // Its natural size, scaled down to the width it may take.
             const img = imageOf(s, n) orelse return;
