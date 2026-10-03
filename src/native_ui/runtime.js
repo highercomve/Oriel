@@ -14622,6 +14622,7 @@ b, strong, th { font-weight: bold; }
 i, em, cite, var, dfn { font-style: italic; }
 small { font-size: .83em; }
 code, kbd, samp, pre, tt { font-family: monospace; }
+button, input, textarea, select { font-family: system-ui; }
 pre { white-space: pre; }
 a { color: #0645ad; text-decoration: underline; cursor: pointer; }
 button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
@@ -16697,10 +16698,9 @@ col, colgroup { display: none; }
   }
   function familyOf(cs) {
     const f = cs["font-family"];
-    if (!f) return void 0;
+    if (!f) return "default";
     const list = splitTop(f, ",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-    if (!list.length || list.length === 1 && list[0] === "sans-serif") return void 0;
-    return list.join(", ");
+    return list.length ? list.join(", ") : "default";
   }
   function makeRunStyle(cs, fs) {
     const r = { c: color(cs.color) || [0, 0, 0, 1], sz: fs, w: weight(cs["font-weight"]) };
