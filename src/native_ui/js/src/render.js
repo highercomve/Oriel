@@ -15,6 +15,11 @@ import { Animations, animationsOf } from "./animations.js";
 import { iconFor, svgScope, svgDataText, svgSize } from "./icons.js";
 import { commandsOf, versionOf, encodeProgram } from "./canvas.js";
 import { classStyle, nodeIndex, nodeAt, compileMatch } from "#dom";
+// The runtime's own weak caches keyed by nodes: marked so their entries
+// don't keep a node's wrapper from being replaced (a page's weak
+// references do: dom/store.zig prune).
+const internalWeak = (m) => (globalThis.__nuiDom?.internal?.(m), m);
+
 
 // The user-agent stylesheet: what browsers do without CSS.
 export const UA_CSS = `
@@ -202,7 +207,7 @@ export class Renderer {
     this.doc = document;
     this.engine = engine;
     this.host = host;
-    this.ids = new WeakMap();      // element / text node → id
+    this.ids = internalWeak(new WeakMap());      // element / text node → id
     this.owner = new Map();        // id → the element it stands for (events)
     this.prev = new Map();         // id → { kind, props json, kids json }
     this.svgFiles = new Map();     // SVG file or data: URL → its scope (svgFile), or null
@@ -231,35 +236,35 @@ export class Renderer {
     this.flatMarks = new Set();    // nodes whose own output changed (text, children, a canvas…)
     this.textOnly = true;          // pending mutations changed only text nodes
     this.simpleLeaves = true;      // tests can compare with general flattening
-    this.flexLeaves = new WeakMap(); // parent computed style → row shapes
+    this.flexLeaves = internalWeak(new WeakMap()); // parent computed style → row shapes
     // Style sharing by ancestry (shareKey): names → ids and ids → matched
     // rules, kept from frame to frame while the styles are (a full render
     // starts them over); the element → id cache is per frame.
     this.keyIds = new Map();
     this.matchShare = new Map();
-    this.uids = new WeakMap();     // element → its own sharing id when it can't share (renewed when its attributes change)
+    this.uids = internalWeak(new WeakMap());     // element → its own sharing id when it can't share (renewed when its attributes change)
     this.uidSeq = 0;
     this.full = true;              // everything again (first frame, the viewport changed)
-    this.sc = new WeakMap();       // element → { parent cs, cs, matched rules, frame }
-    this.fc = new WeakMap();       // element → what it made (element(), below)
+    this.sc = internalWeak(new WeakMap());       // element → { parent cs, cs, matched rules, frame }
+    this.fc = internalWeak(new WeakMap());       // element → what it made (element(), below)
     // node → the element it was last flattened in (removals). The native
     // DOM reports a removed node's parent itself (noteChild), and a map
     // holding parents would keep every removed tree referenced from JS
     // (released only at the next cycle collection, not when removed).
-    this.parentOf = nodeIndex ? NO_PARENTS : new WeakMap();
+    this.parentOf = nodeIndex ? NO_PARENTS : internalWeak(new WeakMap());
     this.volatile = new Set();     // elements whose output can change without a mutation (fields…)
-    this.shared = new WeakMap();   // parent cs → Map(specified → cs): siblings with the same rules share one
+    this.shared = internalWeak(new WeakMap());   // parent cs → Map(specified → cs): siblings with the same rules share one
     this.cascades = new Map();     // matched rules → { normal, important } longhands
     this.frameNo = 0;
     this.cur = null;               // the element being made: { own ids, kids, fixed ids }
     this.gone = [];                // ids to destroy this frame
     this.dropped = [];             // [element, what it made]: gone unless made again this frame
     this.stamps = [];              // [row id, row element, plan] the tree stamps after emit (host.stamp)
-    this.noStamp = new WeakSet();  // rows the tree declined: made the general way from now on
+    this.noStamp = internalWeak(new WeakSet());  // rows the tree declined: made the general way from now on
     this.listStamps = [];          // [list id, list element, row style, plan, template row, rows made here] (host.stampList)
     this.canvasEls = new Map();    // canvas element → its node id (programs sent apart: host.canvas)
     this.canvasSent = new Map();   // node id → the program version it has
-    this.noStampList = new WeakSet(); // lists that aren't (or stopped being) the same row again
+    this.noStampList = internalWeak(new WeakSet()); // lists that aren't (or stopped being) the same row again
     this.declined = false;         // a stamp was declined: render again the general way
     this.structural = false;       // the sheets match by position (:nth-child, +, ~…)
     this.noCache = false;          // the sheets use :has(): any change can restyle anything
@@ -270,7 +275,7 @@ export class Renderer {
     this.sheetsDirty = false;      // a <style> or <link> changed: syncSheets() before the next render
     // The <style> and <link> elements seen: a text or attribute change is
     // a sheet's when it's one of theirs (no tag read per mutation).
-    this.sheetEls = new WeakSet();
+    this.sheetEls = internalWeak(new WeakSet());
     for (const el of document.querySelectorAll("style, link")) this.sheetEls.add(el);
     this.syncSheets = null;        // main.js: the page's sheets into the engine, true when they changed
     this.rulesChanged();
@@ -747,15 +752,15 @@ export class Renderer {
     if (full || this.keyIds.size > 50000) {
       this.keyIds.clear();
       this.matchShare.clear();
-      this.flexLeaves = new WeakMap();
+      this.flexLeaves = internalWeak(new WeakMap());
     }
     // Compiled :has() matchers also cache descendant results. A new DOM
     // needs a new matcher, as well as new computed/flattened styles.
     if (this.noCache) for (const r of this.engine.rules) if (/:has\(/.test(r.sel)) r.match = null;
     if (full) {
       this.styleEpoch++;
-      this.fc = new WeakMap();
-      this.shared = new WeakMap();
+      this.fc = internalWeak(new WeakMap());
+      this.shared = internalWeak(new WeakMap());
       this.cascades.clear();
       this.owner.clear();
     }
@@ -918,7 +923,7 @@ export class Renderer {
   shareKey(el) {
     if (this.keyFrame !== this.frameNo) {
       this.keyFrame = this.frameNo;
-      this.keys = new WeakMap();
+      this.keys = internalWeak(new WeakMap());
     }
     let k = this.keys.get(el);
     if (k !== undefined) return k;
@@ -2258,7 +2263,7 @@ function alignFor(ta) {
   return ta === "center" ? "center" : ta === "right" || ta === "end" ? "flex-end" : "flex-start";
 }
 
-const fontSizes = new WeakMap();
+const fontSizes = internalWeak(new WeakMap());
 function fontSizeOf(cs, parentCS) {
   const pfs = parentCS?.__fs ?? 16;
   const cached = fontSizes.get(cs);
@@ -2309,7 +2314,7 @@ const num = (v, fs) => {
 
 // Per computed style (shared by siblings with the same rules, kept while
 // it doesn't change): what its props come to, by the other arguments.
-const memo = new WeakMap();
+const memo = internalWeak(new WeakMap());
 function memoized(cs, key, make) {
   let m = memo.get(cs);
   if (!m) memo.set(cs, (m = new Map()));
@@ -2609,7 +2614,7 @@ const PART_OF = {
 
 // Computed styles made from a shared one plus an inline style (style()):
 // cs → { base, parts } (null parts: something else changed).
-export const derived = new WeakMap();
+export const derived = internalWeak(new WeakMap());
 
 // Text properties (shared: callers copy them).
 function textProps(cs, fs) {
@@ -2689,7 +2694,7 @@ const underlined = (cs) => /\bunderline\b/.test(cs["text-decoration-line"] || ""
 // the backend draws the box over each line fragment (box-decoration-break:
 // slice: the start side on the first fragment, the end side on the last).
 // (k stays an element's across renders: a changed one would remeasure the text.)
-const inlineBoxKeys = new WeakMap();
+const inlineBoxKeys = internalWeak(new WeakMap());
 let inlineBoxKey = 0;
 function inlineBox(el, cs, fs, bg) {
   let k = inlineBoxKeys.get(el);

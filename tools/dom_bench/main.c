@@ -31,6 +31,12 @@ static JSValue js_print(JSContext *ctx, JSValueConst this_val, int argc, JSValue
     return JS_UNDEFINED;
 }
 
+// gc(): a cycle collection now (tests).
+static JSValue js_gc(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JS_RunGC(JS_GetRuntime(ctx));
+    return JS_UNDEFINED;
+}
+
 static int eval_file(JSContext *ctx, const char *path) {
     size_t len;
     char *code = read_file(path, &len);
@@ -59,6 +65,7 @@ int main(int argc, char **argv) {
     JSContext *ctx = JS_NewContext(rt);
     JSValue global = JS_GetGlobalObject(ctx);
     JS_SetPropertyStr(ctx, global, "print", JS_NewCFunction(ctx, js_print, "print", 1));
+    JS_SetPropertyStr(ctx, global, "gc", JS_NewCFunction(ctx, js_gc, "gc", 0));
     const char *rows = getenv("ROWS");
     if (rows) JS_SetPropertyStr(ctx, global, "ROWS", JS_NewInt32(ctx, atoi(rows)));
     // atob for linkedom's entity tables

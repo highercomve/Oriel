@@ -12459,6 +12459,7 @@ globalThis.atob ??= (s) => {
   setPrototypeOf(Document4, Document2).prototype = Document2.prototype;
 
   // src/html.js
+  var internalWeak = (m) => (globalThis.__nuiDom?.internal?.(m), m);
   var VOID = new Set("area base br col embed hr img input keygen link meta param source track wbr".split(" "));
   var SPECIAL2 = new Set("script style textarea title template svg math p li dt dd option optgroup select table caption colgroup thead tbody tfoot tr td th rb rt rp rtc ruby noscript iframe noembed noframes xmp plaintext frameset frame head body html pre listing form button a nobr image".split(" "));
   var ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\xA0" };
@@ -12593,7 +12594,7 @@ globalThis.atob ??= (s) => {
         tag,
         attrs,
         void: isVoid2,
-        seeds: tag.includes("-") || attrs.some(([name]) => name === "is") ? null : new WeakMap([[doc, el.cloneNode(false)]])
+        seeds: tag.includes("-") || attrs.some(([name]) => name === "is") ? null : internalWeak(new WeakMap([[doc, el.cloneNode(false)]]))
       });
       stack[stack.length - 1].appendChild(el);
       if (!isVoid2) stack.push(el);
@@ -14249,6 +14250,7 @@ globalThis.atob ??= (s) => {
   }
 
   // src/canvas.js
+  var internalWeak2 = (m) => (globalThis.__nuiDom?.internal?.(m), m);
   var notify = () => {
   };
   function commandsOf(el) {
@@ -14350,7 +14352,7 @@ globalThis.atob ??= (s) => {
     }
     return [i === size ? nums : nums.subarray(0, i), strs];
   }
-  var recorders = /* @__PURE__ */ new WeakMap();
+  var recorders = internalWeak2(/* @__PURE__ */ new WeakMap());
   var CANVAS_DEFAULT_W = 300;
   var CANVAS_DEFAULT_H = 150;
   var TWO_PI = 2 * Math.PI;
@@ -14766,6 +14768,7 @@ globalThis.atob ??= (s) => {
   }
 
   // src/render.js
+  var internalWeak3 = (m) => (globalThis.__nuiDom?.internal?.(m), m);
   var UA_CSS = `
 html, body, div, section, main, header, footer, nav, article, aside, form, fieldset, p, ul, ol, li, dl, dt, dd,
 h1, h2, h3, h4, h5, h6, pre, blockquote, figure, figcaption, details, summary, address, hr { display: block; }
@@ -14912,7 +14915,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       this.doc = document2;
       this.engine = engine;
       this.host = host2;
-      this.ids = /* @__PURE__ */ new WeakMap();
+      this.ids = internalWeak3(/* @__PURE__ */ new WeakMap());
       this.owner = /* @__PURE__ */ new Map();
       this.prev = /* @__PURE__ */ new Map();
       this.svgFiles = /* @__PURE__ */ new Map();
@@ -14933,33 +14936,33 @@ input[type="range"] { height: 20px; margin: 2px; }
       this.flatMarks = /* @__PURE__ */ new Set();
       this.textOnly = true;
       this.simpleLeaves = true;
-      this.flexLeaves = /* @__PURE__ */ new WeakMap();
+      this.flexLeaves = internalWeak3(/* @__PURE__ */ new WeakMap());
       this.keyIds = /* @__PURE__ */ new Map();
       this.matchShare = /* @__PURE__ */ new Map();
-      this.uids = /* @__PURE__ */ new WeakMap();
+      this.uids = internalWeak3(/* @__PURE__ */ new WeakMap());
       this.uidSeq = 0;
       this.full = true;
-      this.sc = /* @__PURE__ */ new WeakMap();
-      this.fc = /* @__PURE__ */ new WeakMap();
-      this.parentOf = nodeIndex ? NO_PARENTS : /* @__PURE__ */ new WeakMap();
+      this.sc = internalWeak3(/* @__PURE__ */ new WeakMap());
+      this.fc = internalWeak3(/* @__PURE__ */ new WeakMap());
+      this.parentOf = nodeIndex ? NO_PARENTS : internalWeak3(/* @__PURE__ */ new WeakMap());
       this.volatile = /* @__PURE__ */ new Set();
-      this.shared = /* @__PURE__ */ new WeakMap();
+      this.shared = internalWeak3(/* @__PURE__ */ new WeakMap());
       this.cascades = /* @__PURE__ */ new Map();
       this.frameNo = 0;
       this.cur = null;
       this.gone = [];
       this.dropped = [];
       this.stamps = [];
-      this.noStamp = /* @__PURE__ */ new WeakSet();
+      this.noStamp = internalWeak3(/* @__PURE__ */ new WeakSet());
       this.listStamps = [];
       this.canvasEls = /* @__PURE__ */ new Map();
       this.canvasSent = /* @__PURE__ */ new Map();
-      this.noStampList = /* @__PURE__ */ new WeakSet();
+      this.noStampList = internalWeak3(/* @__PURE__ */ new WeakSet());
       this.declined = false;
       this.structural = false;
       this.noCache = false;
       this.sheetsDirty = false;
-      this.sheetEls = /* @__PURE__ */ new WeakSet();
+      this.sheetEls = internalWeak3(/* @__PURE__ */ new WeakSet());
       for (const el of document2.querySelectorAll("style, link")) this.sheetEls.add(el);
       this.syncSheets = null;
       this.rulesChanged();
@@ -15409,15 +15412,15 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (full || this.keyIds.size > 5e4) {
         this.keyIds.clear();
         this.matchShare.clear();
-        this.flexLeaves = /* @__PURE__ */ new WeakMap();
+        this.flexLeaves = internalWeak3(/* @__PURE__ */ new WeakMap());
       }
       if (this.noCache) {
         for (const r of this.engine.rules) if (/:has\(/.test(r.sel)) r.match = null;
       }
       if (full) {
         this.styleEpoch++;
-        this.fc = /* @__PURE__ */ new WeakMap();
-        this.shared = /* @__PURE__ */ new WeakMap();
+        this.fc = internalWeak3(/* @__PURE__ */ new WeakMap());
+        this.shared = internalWeak3(/* @__PURE__ */ new WeakMap());
         this.cascades.clear();
         this.owner.clear();
       }
@@ -15585,7 +15588,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     shareKey(el) {
       if (this.keyFrame !== this.frameNo) {
         this.keyFrame = this.frameNo;
-        this.keys = /* @__PURE__ */ new WeakMap();
+        this.keys = internalWeak3(/* @__PURE__ */ new WeakMap());
       }
       let k = this.keys.get(el);
       if (k !== void 0) return k;
@@ -16772,7 +16775,7 @@ input[type="range"] { height: 20px; margin: 2px; }
   function alignFor(ta) {
     return ta === "center" ? "center" : ta === "right" || ta === "end" ? "flex-end" : "flex-start";
   }
-  var fontSizes = /* @__PURE__ */ new WeakMap();
+  var fontSizes = internalWeak3(/* @__PURE__ */ new WeakMap());
   function fontSizeOf(cs, parentCS) {
     const pfs = parentCS?.__fs ?? 16;
     const cached = fontSizes.get(cs);
@@ -16811,7 +16814,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     const l = length(v, fs);
     return l === null ? void 0 : l;
   };
-  var memo = /* @__PURE__ */ new WeakMap();
+  var memo = internalWeak3(/* @__PURE__ */ new WeakMap());
   function memoized(cs, key2, make) {
     let m = memo.get(cs);
     if (!m) memo.set(cs, m = /* @__PURE__ */ new Map());
@@ -17089,7 +17092,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     height: "h",
     background: "bg"
   };
-  var derived = /* @__PURE__ */ new WeakMap();
+  var derived = internalWeak3(/* @__PURE__ */ new WeakMap());
   function textProps(cs, fs) {
     return memoized(cs, `t${fs}`, () => makeTextProps(cs, fs));
   }
@@ -17138,7 +17141,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     return r;
   }
   var underlined = (cs) => /\bunderline\b/.test(cs["text-decoration-line"] || "");
-  var inlineBoxKeys = /* @__PURE__ */ new WeakMap();
+  var inlineBoxKeys = internalWeak3(/* @__PURE__ */ new WeakMap());
   var inlineBoxKey = 0;
   function inlineBox(el, cs, fs, bg) {
     let k = inlineBoxKeys.get(el);
@@ -17494,6 +17497,7 @@ input[type="range"] { height: 20px; margin: 2px; }
   }
 
   // src/main.js
+  var internalWeak4 = (m) => (globalThis.__nuiDom?.internal?.(m), m);
   var host = globalThis.__host;
   var fmt = (args) => args.map((a) => {
     if (a instanceof Error) return `${a.name}: ${a.message}
@@ -17735,7 +17739,7 @@ ${a.stack || ""}`;
     let desc = null;
     while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "style"))) proto = Object.getPrototypeOf(proto);
     if (desc?.get) {
-      const wrapped = /* @__PURE__ */ new WeakMap();
+      const wrapped = internalWeak4(/* @__PURE__ */ new WeakMap());
       const touch = (el) => {
         try {
           if (renderer && el.isConnected) renderer.mark(el, 1);
@@ -17848,7 +17852,7 @@ ${a.stack || ""}`;
   });
   var SELECTABLE = /* @__PURE__ */ new Set(["", "text", "search", "url", "tel", "password"]);
   var selectable = (el) => el.localName === "textarea" || SELECTABLE.has((el.getAttribute("type") || "").toLowerCase());
-  var lastSelection = /* @__PURE__ */ new WeakMap();
+  var lastSelection = internalWeak4(/* @__PURE__ */ new WeakMap());
   function selectionOf(el) {
     const len = String(el.value ?? "").length;
     if (renderer && host.selection) {
@@ -18088,7 +18092,7 @@ ${a.stack || ""}`;
     }
     host.scrollIntoView(renderer.idOf(this, "el"), block);
   };
-  var clicking = /* @__PURE__ */ new WeakSet();
+  var clicking = internalWeak4(/* @__PURE__ */ new WeakSet());
   Object.getPrototypeOf(document.createElement("div")).click = elProto.click = function() {
     if (clicking.has(this)) return;
     clicking.add(this);
@@ -18122,8 +18126,8 @@ ${a.stack || ""}`;
   var keyboardFocus = true;
   var TEXT_INPUTS = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
   var textField = (el) => el?.localName === "textarea" || el?.isContentEditable || el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
-  var changeBase = /* @__PURE__ */ new WeakMap();
-  var edited = /* @__PURE__ */ new WeakSet();
+  var changeBase = internalWeak4(/* @__PURE__ */ new WeakMap());
+  var edited = internalWeak4(/* @__PURE__ */ new WeakSet());
   var changeField = (el) => el?.localName === "textarea" || el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
   function fireChange(el) {
     if (!changeField(el) || !edited.has(el)) return;
@@ -18880,10 +18884,10 @@ ${a.stack || ""}`;
       guardDepth--;
     }
   }
-  var linkCss = /* @__PURE__ */ new WeakMap();
+  var linkCss = internalWeak4(/* @__PURE__ */ new WeakMap());
   var ownSlot = (name) => {
     const key2 = Symbol(name);
-    const aside = /* @__PURE__ */ new WeakMap();
+    const aside = internalWeak4(/* @__PURE__ */ new WeakMap());
     return {
       get: (o) => Object.prototype.hasOwnProperty.call(o, key2) ? o[key2] : aside.get(o),
       set: (o, v) => {

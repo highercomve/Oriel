@@ -1,3 +1,8 @@
+// The runtime's own weak caches keyed by nodes: marked so their entries
+// don't keep a node's wrapper from being replaced (a page's weak
+// references do: dom/store.zig prune).
+const internalWeak = (m) => (globalThis.__nuiDom?.internal?.(m), m);
+
 // el.innerHTML = "…" without linkedom's parser for plain markup.
 //
 // linkedom parses each assignment into a new Document (htmlparser2), then
@@ -149,7 +154,7 @@ function parseFull(doc, html, plan) {
       for (let k = attrs.length - 1; k >= 0; k--) el.setAttribute(attrs[k][0], attrs[k][1]);
     }
     if (plan) plan.push({ kind: 1, raw: m[0], tag, attrs, void: isVoid,
-      seeds: tag.includes("-") || attrs.some(([name]) => name === "is") ? null : new WeakMap([[doc, el.cloneNode(false)]]) });
+      seeds: tag.includes("-") || attrs.some(([name]) => name === "is") ? null : internalWeak(new WeakMap([[doc, el.cloneNode(false)]])) });
     stack[stack.length - 1].appendChild(el);
     if (!isVoid) stack.push(el);
   }
