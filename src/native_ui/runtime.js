@@ -17714,21 +17714,26 @@ ${a.stack || ""}`;
     set(el) {
       if (el === active) return;
       const old = active;
-      old?.removeAttribute?.("data-nui-focus");
-      old?.removeAttribute?.("data-nui-focus-visible");
-      active = el || null;
-      active?.setAttribute?.("data-nui-focus", "");
-      const visible = active && (keyboardFocus || textField(active));
-      if (visible) active.setAttribute?.("data-nui-focus-visible", "");
-      setFocusVisible(visible ? active : null);
-      const now = active;
-      if (old?.dispatchEvent) {
-        old.dispatchEvent(focusEvent("blur", false, now));
-        old.dispatchEvent(focusEvent("focusout", true, now));
+      if (old) {
+        old.removeAttribute?.("data-nui-focus");
+        old.removeAttribute?.("data-nui-focus-visible");
+        active = null;
+        setFocusVisible(null);
+        if (old.dispatchEvent) {
+          old.dispatchEvent(focusEvent("blur", false, el || null));
+          old.dispatchEvent(focusEvent("focusout", true, el || null));
+        }
+        if (active !== null) return;
       }
-      if (now?.dispatchEvent && now === active) {
-        now.dispatchEvent(focusEvent("focus", false, old));
-        now.dispatchEvent(focusEvent("focusin", true, old));
+      if (!el) return;
+      active = el;
+      el.setAttribute?.("data-nui-focus", "");
+      const visible = keyboardFocus || textField(el);
+      if (visible) el.setAttribute?.("data-nui-focus-visible", "");
+      setFocusVisible(visible ? el : null);
+      if (el.dispatchEvent) {
+        el.dispatchEvent(focusEvent("focus", false, old));
+        if (active === el) el.dispatchEvent(focusEvent("focusin", true, old));
       }
     },
     configurable: true
