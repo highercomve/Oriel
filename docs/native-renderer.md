@@ -245,7 +245,23 @@ the animated nodes are sent each frame).
   UTF-16 units. Checked against the Android WebView: the same events,
   types, data and values for typing, Backspace, Delete, Enter in a
   textarea, Ctrl+V, Ctrl+X and Ctrl+Z (Chromium also selects what an undo
-  restores; Android leaves the caret).
+  restores; Android leaves the caret). Apple too: macOS asks in the text
+  field's `textView:shouldChangeTextInRange:replacementString:` (the field
+  editor's delegate is the field: OrielNuiTextField overrides it) and the
+  text view delegate's, iOS in `textField:shouldChange…` /
+  `textView:shouldChange…`; the type from the key that made the edit
+  (macOS: the current event; iOS: the last hardware key the field's
+  presses had; the soft keyboard's are insertText and
+  deleteContentBackward); marked text (an input method) stays the field's.
+  A text area undoes (NSTextView allowsUndo). Selection: the field
+  editor's or text view's `selectedRange` (macOS), UITextInput's
+  `selectedTextRange` (iOS), while the field is edited. Checked against
+  WKWebView: typing, Backspace, forward Delete, Option+Backspace, Cmd+Z,
+  in an input and a textarea, and with beforeinput prevented for a
+  character and a word delete (macOS: the same events, types, data,
+  values and selections line for line; iOS: the same types), and
+  setSelectionRange then typing over it (macOS). Not checked: paste and
+  cut (the user's clipboard was left alone).
 
 **Gradient stops** (`bg.gradient`, each backend):
 
@@ -371,6 +387,75 @@ another scale, the backend sends `Engine.event(0, "dpr", scale)`:
 devicePixelRatio follows and resolution queries' `change` listeners fire
 (macOS: the view's viewDidChangeBackingProperties). `document.documentElement`'s
 clientWidth and clientHeight are the viewport's, as in browsers.
+
+**Mixed-font line boxes** (each backend): with `line-height: normal`
+(no `lh`), a line's box stacks every inline box on it on the baseline,
+the block's own font (the strut, its `fz`/`ff`/`mono`) among them: each
+font's normal line box (ascent + descent + gap, rounded as the backend's
+WebView rounds them) with half its leading above the ascent; the line is
+as tall as the most above plus the most below, and the text as tall as
+its lines' sum. A 28px span on one line of four makes only that line
+taller (WKWebView: 68, not 4 × 32 or 96); a 13px code chip in 16px text
+changes nothing. With an explicit `lh` every line stays that tall (the
+props carry it in px, not as the factor a `line-height: 1.5` is for each
+inline box, and WebKit's lines came out uniform). Win32 (lineExtents,
+lineShift: each line drawn where its own box puts it) and Apple
+(apple_draw.zig linePlaces: each line's glyph runs' fonts and the strut;
+the places kept with the frame; lineOrigin, the measured height and
+`Node.baseline` use them) do this; checked against WKWebView on ten
+paragraphs (bold, a link, a 20px span, code, code on one line of three,
+small, line-height 1.5 with code, a 28px span on one line of four, serif
+with code): every paragraph's top and height the same.
+
+**What GTK still needs** (the others have these; gtk.zig pointers):
+
+- *Repeating gradients and px/calc stops*: `gradient()` adds `g.stops` as
+  fractions. Instead: `const res = g.resolve(if (radial) rad[2] else len,
+  &buf)` (tree.zig; it resolves `su`/`sp`, missing positions and the
+  repeating period), add `res.stops`, and when `res.period` is set use
+  `cairo_pattern_set_extend(pat, CAIRO_EXTEND_REPEAT)` with the linear
+  end point at `start + d * len * period` (radial: the radii times
+  `period`), as win32.zig gradientBrush does with D2D1_EXTEND_MODE_WRAP.
+  Cairo wraps, so no `expand()`. Check: repeating-linear-gradient(90deg,
+  red 0 10px, white 10px 20px), 45deg stripes, repeating-radial rings,
+  and `green calc(100% - 20px)` against WebKitGTK.
+- *Node.baseline*: in `measure` (measuredText), set `n.baseline` to the
+  first line's baseline below the content top: with a uniform line box
+  `(lh - (ascent + descent)) / 2 + ascent` from `unhintedMetrics` (the
+  same rounding as `normalLineHeight`), or, with Pango placing lines,
+  `pango_layout_get_baseline(layout) / PANGO_SCALE` plus paintText's
+  `dy`. Without it tree.zig estimates (0.9 em), a px or two off. Check a
+  "Press <button>" line and a label beside an input against WebKitGTK.
+- *Inline-box decoration (a run's `ib`)*: (1) the room: the start side's
+  margin, border and padding (`ib.start()`) before the box's first
+  character and `ib.end()` after its last; Pango has no per-character
+  kern, so either a `pango_attr_letter_spacing_new` on those two
+  characters (check how Pango splits letter spacing around a cluster
+  against WebKitGTK) or a `pango_attr_shape_new` placeholder
+  (U+FFFC; then every byte index after it shifts: run backgrounds, rings
+  and selection must add it). (2) the paint, before
+  `pango_cairo_show_layout`: for each box (consecutive runs with the
+  same `ib.k`) and each line it's on, its x range from
+  `pango_layout_line_get_x_ranges` (as runRing) less the room's margin,
+  the start side widened by `bw[3] + p[3]` on the first fragment only;
+  vertically the run font's ascent and descent around the line's
+  baseline (`pango_layout_iter_get_baseline`) plus `p`/`bw` top and
+  bottom; the background with `br` on the first fragment's left corners
+  and the last's right ones, then the border (only the first fragment's
+  left side, only the last's right). (3) drop the run's own `bg` for
+  these runs (render.js already sends none). apple_draw.zig
+  paintInlineBoxes is the reference; check the showcase's "(oriel.sql)"
+  and a chip that wraps against WebKitGTK.
+- *Mixed-font line boxes*: `lineBox()` takes the largest run's normal
+  height and `textLayoutOf` sets it on the whole text
+  (`pango_attr_line_height_new_absolute`), so every line is that tall.
+  For a text whose runs use another font than the strut and no `lh`:
+  don't set it, and place lines as above (each line's runs' fonts, via
+  `pango_layout_iter` and each run's `PangoFont` metrics, plus the
+  strut), drawing each line with `pango_cairo_show_layout_line` at its
+  own baseline and measuring the sum (cssHeight); run backgrounds, rings
+  and inline boxes then use those baselines. Check the ten paragraphs
+  above (the 28px span on one line of four: 68 in WebKit).
 
 **Text metrics** (each backend, to match its own WebView):
 
