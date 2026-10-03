@@ -364,16 +364,24 @@ private class Replay(private val c: Canvas) {
      *  path): its center and radius as given, and the transform then, so a
      *  fill under the same transform is a drawCircle, not a path. */
     private var circle = false
-    /** That circle isn't in `path` yet: added only when something else
-     *  needs the path (most circles are filled and dropped). */
-    private var circlePending = false
     private var circleX = 0f
     private var circleY = 0f
     private var circleR = 0f
-    private var circleA0 = 0f
-    private var circleSweep = 0f
     private val circleCtm = Matrix()
     private val ctmNow = Matrix()
+    /**
+     * What the path holds but `path` doesn't yet, while it's moveTos and
+     * whole circles: most such paths are filled circle by circle and
+     * dropped, so their curves are made only when something needs the
+     * Path (pathNow): a fill that isn't of circles, a stroke, a clip, or
+     * another kind of segment. Records, in order: 0 and a moveTo's point
+     * (the bitmap's space); 1 and an arc's x, y, r, a0, sweep and the
+     * transform's 9 values then.
+     */
+    private var lazy = FloatArray(256)
+    private var lazyLen = 0
+    private val lazyCtm = Matrix()
+    private val lazyM = FloatArray(9)
     /**
      * The current path as whole circles in the bitmap's space (cx, cy, r
      * each), while it's nothing else: a game's balls in one path. Filled
@@ -417,10 +425,11 @@ private class Replay(private val c: Canvas) {
             is CvOp.Translate -> { c.translate(op.x, op.y); st.ctm.preTranslate(op.x, op.y) }
             is CvOp.Scale -> if (op.x == 0f || op.y == 0f) st.singular = true else { c.scale(op.x, op.y); st.ctm.preScale(op.x, op.y) }
             is CvOp.Rotate -> Math.toDegrees(op.a.toDouble()).toFloat().let { c.rotate(it); st.ctm.preRotate(it) }
-            CvOp.BeginPath -> { path.reset(); circle = false; circlePending = false; circleCount = 0; onlyCircles = true; moved = false }
+            CvOp.BeginPath -> { path.reset(); lazyLen = 0; circle = false; circleCount = 0; onlyCircles = true; moved = false }
             CvOp.ClosePath -> { pathNow(); path.close(); notCircles() }
             is CvOp.MoveTo -> {
-                pathNow(); circle = false; map(op.x, op.y); path.moveTo(pt[0], pt[1])
+                circle = false; map(op.x, op.y)
+                if (onlyCircles) lazyMove(pt[0], pt[1]) else { pathNow(); path.moveTo(pt[0], pt[1]) }
                 moved = true; moveX = pt[0]; moveY = pt[1]
             }
             is CvOp.LineTo -> { pathNow(); circle = false; notCircles(); map(op.x, op.y); if (path.isEmpty) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1]) }
@@ -515,15 +524,44 @@ private class Replay(private val c: Canvas) {
             if (sweep <= -twoPi) sweep = -twoPi
             else if (sweep > 0) sweep = sweep % twoPi - twoPi
         }
+        // The path's first segment (not even a moveTo before it, which Skia
+        // counts): a fill under the same transform can be a drawCircle.
+        val first = lazyLen == 0 && path.isEmpty
         trackCircle(a, sweep, twoPi)
+        if (first && abs(sweep) == twoPi && a.r > 0) {
+            circle = true
+            circleX = a.x; circleY = a.y; circleR = a.r; circleCtm.set(st.ctm)
+        } else circle = false
+        // Still only circles (or this one on an empty path): kept as a
+        // record; the curves come when something needs them.
+        if (onlyCircles || circle) { lazyArc(a.x, a.y, a.r, a.a0, sweep); return }
         pathNow()
-        if (path.isEmpty && abs(sweep) == twoPi && a.r > 0) {
-            circle = true; circlePending = true
-            circleX = a.x; circleY = a.y; circleR = a.r; circleA0 = a.a0; circleSweep = sweep; circleCtm.set(st.ctm)
-            return
-        }
-        circle = false
         arcPath(a.x, a.y, a.r, a.a0, sweep)
+    }
+
+    private fun lazyRoom(n: Int) {
+        if (lazyLen + n > lazy.size) lazy = lazy.copyOf(maxOf(lazy.size * 2, lazyLen + n))
+    }
+
+    private fun lazyMove(x: Float, y: Float) {
+        lazyRoom(3)
+        lazy[lazyLen] = 0f; lazy[lazyLen + 1] = x; lazy[lazyLen + 2] = y
+        lazyLen += 3
+    }
+
+    private fun lazyArc(x: Float, y: Float, r: Float, a0: Float, sweep: Float) {
+        lazyRoom(15)
+        lazy[lazyLen] = 1f; lazy[lazyLen + 1] = x; lazy[lazyLen + 2] = y; lazy[lazyLen + 3] = r
+        lazy[lazyLen + 4] = a0; lazy[lazyLen + 5] = sweep
+        st.ctm.getValues(lazyM)
+        System.arraycopy(lazyM, 0, lazy, lazyLen + 6, 9)
+        lazyLen += 15
+    }
+
+    private fun lazyHasArc(): Boolean {
+        var i = 0
+        while (i < lazyLen) { if (lazy[i] == 1f) return true; i += if (lazy[i] == 0f) 3 else 15 }
+        return false
     }
 
     /** Something other than a whole circle joined the path. */
@@ -553,7 +591,7 @@ private class Replay(private val c: Canvas) {
         if (moved) {
             // Joined to its moveTo by a line unless it starts right there.
             if (abs(sxp - moveX) > 0.01f || abs(syp - moveY) > 0.01f) return notCircles()
-        } else if (circleCount > 0 || !path.isEmpty || circlePending) return notCircles()
+        } else if (circleCount > 0 || !path.isEmpty || lazyHasArc()) return notCircles()
         moved = false
         circlesCcw = ccw
         if (circleCount * 3 + 3 > circles.size) circles = circles.copyOf(circles.size * 2)
@@ -582,13 +620,22 @@ private class Replay(private val c: Canvas) {
         return true
     }
 
-    /** The pending circle into `path`, under the transform it was given in. */
+    /** The records into `path`, in order, each arc under the transform it
+     *  was given in: the Path the ops would have made at once. */
     private fun pathNow() {
-        if (!circlePending) return
-        circlePending = false
+        if (lazyLen == 0) return
+        val n = lazyLen
+        lazyLen = 0
         ctmNow.set(st.ctm)
-        st.ctm.set(circleCtm)
-        arcPath(circleX, circleY, circleR, circleA0, circleSweep)
+        var i = 0
+        while (i < n) {
+            if (lazy[i] == 0f) { path.moveTo(lazy[i + 1], lazy[i + 2]); i += 3; continue }
+            System.arraycopy(lazy, i + 6, lazyM, 0, 9)
+            lazyCtm.setValues(lazyM)
+            st.ctm.set(lazyCtm)
+            arcPath(lazy[i + 1], lazy[i + 2], lazy[i + 3], lazy[i + 4], lazy[i + 5])
+            i += 15
+        }
         st.ctm.set(ctmNow)
     }
 
