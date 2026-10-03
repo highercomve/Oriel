@@ -1938,55 +1938,82 @@ fn textLayout(s: *Surface, n: *Node, width: f32, brushes: ?*std.ArrayList(*c.ID2
     return textLayoutOf(s, &n.props, width, brushes);
 }
 
-/// Where a line of `lh` puts its baseline, as CSS does: the font's
-/// ascent plus half the leading (lh less the ascent and descent), which
-/// is negative when lh is shorter than the font: the glyphs stay
-/// centered on the line (a 36px h1 on 23.2px lines). The largest run's
-/// font; 0.8 lh when its metrics can't be had.
-fn cssBaseline(props: *const tree_mod.Props, runs: []const tree_mod.Run, lh: f32) f32 {
-    var big: ?tree_mod.Run = null;
-    for (runs) |r| if (big == null or r.sz > big.?.sz) {
-        big = r;
-    };
-    const r = big orelse return lh * 0.8;
-    const m = fontRatios(r.mono or props.mono, r.w, r.i) orelse return lh * 0.8;
-    return (lh - (m[0] + m[1]) * r.sz) / 2 + m[0] * r.sz;
+// ---------------------------------------------------------------------------
+// Fonts and line boxes (docs/native-renderer.md, "Text metrics"), as
+// WebView2 (Chromium) makes them on Windows.
+
+/// A CSS font-family list (`ff`; null: Oriel's default sans, or the
+/// monospace one) as the DirectWrite family Chromium would use: the
+/// first installed name, or generic family (system-ui: Segoe UI,
+/// sans-serif: Arial, serif: Times New Roman, monospace: Consolas).
+/// Null-terminated UTF-16, cached by list (owned for the process).
+var families: std.StringHashMapUnmanaged([:0]const u16) = .empty;
+
+fn familyOf(list: ?[]const u8, mono: bool) [:0]const u16 {
+    const l = list orelse return if (mono) mono_face else sans_face;
+    if (families.get(l)) |f| return f;
+    const f = resolveFamily(l) orelse (if (mono) mono_face else sans_face);
+    const key = std.heap.page_allocator.dupe(u8, l) catch return f;
+    families.put(std.heap.page_allocator, key, f) catch {};
+    return f;
 }
 
-/// A face's ascent and descent per em (system fonts, cached by mono,
-/// weight and italic); null when DirectWrite can't say (remembered too:
-/// a missing face isn't asked for again on every layout).
-var font_ratios: std.AutoHashMapUnmanaged(u32, ?[2]f32) = .empty;
+fn resolveFamily(list: []const u8) ?[:0]const u16 {
+    const generics = .{
+        .{ "system-ui", "Segoe UI" },     .{ "-apple-system", "Segoe UI" },     .{ "blinkmacsystemfont", "Segoe UI" },
+        .{ "ui-sans-serif", "Segoe UI" }, .{ "sans-serif", "Arial" },           .{ "serif", "Times New Roman" },
+        .{ "ui-serif", "Times New Roman" }, .{ "monospace", "Consolas" },     .{ "ui-monospace", "Consolas" },
+        .{ "cursive", "Comic Sans MS" },  .{ "fantasy", "Impact" },             .{ "math", "Cambria Math" },
+        .{ "emoji", "Segoe UI Emoji" },   .{ "ui-rounded", "Segoe UI" },
+    };
+    var it = std.mem.splitScalar(u8, list, ',');
+    while (it.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " \t\"'");
+        if (name.len == 0 or name.len > 120) continue;
+        var lower_buf: [120]u8 = undefined;
+        const lower = std.ascii.lowerString(&lower_buf, name);
+        inline for (generics) |g| if (std.mem.eql(u8, lower, g[0])) return std.unicode.utf8ToUtf16LeStringLiteral(g[1]);
+        // A named family, when it's installed.
+        const w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, name) catch continue;
+        if (installed(w)) return w;
+        std.heap.page_allocator.free(w);
+    }
+    return null;
+}
 
-fn fontRatios(mono: bool, weight: f32, italic: bool) ?[2]f32 {
+fn installed(family: [:0]const u16) bool {
+    const dw = dwrite orelse return false;
+    var coll: ?*c.IDWriteFontCollection = null;
+    if (dw.lpVtbl.*.GetSystemFontCollection.?(dw, &coll, c.FALSE) < 0 or coll == null) return false;
+    defer releaseCom(coll);
+    var index: c.UINT32 = 0;
+    var exists: c.BOOL = c.FALSE;
+    return coll.?.lpVtbl.*.FindFamilyName.?(coll, family.ptr, &index, &exists) >= 0 and exists != 0;
+}
+
+/// A face's ascent, descent and line gap per em, unhinted (its font
+/// tables, as DirectWrite's DWRITE_FONT_METRICS has them), cached by
+/// family, weight and italic; null when DirectWrite can't say (remembered
+/// too: a missing face isn't asked for again on every layout).
+var font_ratios: std.AutoHashMapUnmanaged(u64, ?[3]f32) = .empty;
+
+fn fontRatios(family: [:0]const u16, weight: f32, italic: bool) ?[3]f32 {
     const w: u32 = @intFromFloat(@max(1, @min(999, weight)));
-    const key: u32 = w | (@as(u32, @intFromBool(mono)) << 10) | (@as(u32, @intFromBool(italic)) << 11);
+    const key: u64 = std.hash.Wyhash.hash(w | (@as(u64, @intFromBool(italic)) << 10), std.mem.sliceAsBytes(family));
     if (font_ratios.get(key)) |v| return v;
-    const v = queryRatios(mono, w, italic);
+    const v = queryRatios(family, w, italic);
     font_ratios.put(std.heap.page_allocator, key, v) catch {};
     return v;
 }
 
-/// Backend.font_metrics: the text font's ascent and descent in px at
-/// `size` (the regular face's; where a line of inline images puts its
-/// baseline).
-fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
-    const r = fontRatios(mono, 400, false) orelse return false;
-    if (!(size > 0) or !std.math.isFinite(size)) return false;
-    // TODO(win): the face's lineGap (DWRITE_FONT_METRICS.lineGap) for
-    // line-height: normal; 0 until then.
-    out.* = .{ r[0] * size, r[1] * size, 0 };
-    return true;
-}
-
-fn queryRatios(mono: bool, w: u32, italic: bool) ?[2]f32 {
+fn queryRatios(name: [:0]const u16, w: u32, italic: bool) ?[3]f32 {
     const dw = dwrite orelse return null;
     var coll: ?*c.IDWriteFontCollection = null;
     if (dw.lpVtbl.*.GetSystemFontCollection.?(dw, &coll, c.FALSE) < 0 or coll == null) return null;
     defer releaseCom(coll);
     var index: c.UINT32 = 0;
     var exists: c.BOOL = c.FALSE;
-    if (coll.?.lpVtbl.*.FindFamilyName.?(coll, if (mono) mono_face else sans_face, &index, &exists) < 0 or exists == 0) return null;
+    if (coll.?.lpVtbl.*.FindFamilyName.?(coll, name.ptr, &index, &exists) < 0 or exists == 0) return null;
     var family: ?*c.IDWriteFontFamily = null;
     if (coll.?.lpVtbl.*.GetFontFamily.?(coll, index, &family) < 0 or family == null) return null;
     defer releaseCom(family);
@@ -1997,7 +2024,66 @@ fn queryRatios(mono: bool, w: u32, italic: bool) ?[2]f32 {
     font.?.lpVtbl.*.GetMetrics.?(font, &fm);
     if (fm.designUnitsPerEm == 0) return null;
     const em: f32 = @floatFromInt(fm.designUnitsPerEm);
-    return .{ @as(f32, @floatFromInt(fm.ascent)) / em, @as(f32, @floatFromInt(fm.descent)) / em };
+    return .{ @as(f32, @floatFromInt(fm.ascent)) / em, @as(f32, @floatFromInt(fm.descent)) / em, @as(f32, @floatFromInt(fm.lineGap)) / em };
+}
+
+/// Backend.font_metrics: the default sans (or monospace) face's ascent,
+/// descent and line gap in px at `size`, unhinted.
+fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
+    if (!(size > 0) or !std.math.isFinite(size)) return false;
+    const r = fontRatios(if (mono) mono_face else sans_face, 400, false) orelse return false;
+    out.* = .{ r[0] * size, r[1] * size, r[2] * size };
+    return true;
+}
+
+/// The run a line's box is made from: the largest (its font sets
+/// line-height: normal and the baseline).
+fn largestRun(runs: []const tree_mod.Run) ?tree_mod.Run {
+    var big: ?tree_mod.Run = null;
+    for (runs) |r| if (big == null or r.sz > big.?.sz) {
+        big = r;
+    };
+    return big;
+}
+
+fn runFamily(props: *const tree_mod.Props, r: tree_mod.Run) [:0]const u16 {
+    return familyOf(r.ff orelse props.ff, r.mono or props.mono);
+}
+
+/// line-height: normal as Chromium makes it: the font's ascent, descent
+/// and line gap, each rounded (Segoe UI at 16px: 17 + 4 + 0 = 21).
+fn normalLineHeight(family: [:0]const u16, size: f32, weight: f32, italic: bool) ?f32 {
+    const m = fontRatios(family, weight, italic) orelse return null;
+    return @round(m[0] * size) + @round(m[1] * size) + @round(m[2] * size);
+}
+
+/// The height of a line of this text: its CSS line-height (fractional, as
+/// Chromium keeps it), else the normal one of its largest run's font.
+fn lineBox(props: *const tree_mod.Props) ?f32 {
+    if (props.lh) |lh| return if (lh > 0) lh else null;
+    const runs = props.runs orelse return null;
+    const r = largestRun(runs) orelse return null;
+    return normalLineHeight(runFamily(props, r), r.sz, r.w, r.i);
+}
+
+/// A text's height from DirectWrite's: lines of its line box exactly
+/// (a fractional line-height kept, as Chromium does; Yoga rounds a text's
+/// height to the nearest pixel), else rounded up.
+fn textHeight(props: *const tree_mod.Props, h: f32) f32 {
+    return if (lineBox(props) != null) h else @ceil(h);
+}
+
+/// Where a line of `lh` puts its baseline, as CSS does: the font's
+/// (rounded) ascent plus half the leading (lh less the ascent and
+/// descent), which is negative when lh is shorter than the font: the
+/// glyphs stay centered on the line (a 36px h1 on 23.2px lines). The
+/// largest run's font; 0.8 lh when its metrics can't be had.
+fn cssBaseline(props: *const tree_mod.Props, runs: []const tree_mod.Run, lh: f32) f32 {
+    const r = largestRun(runs) orelse return lh * 0.8;
+    const m = fontRatios(runFamily(props, r), r.w, r.i) orelse return lh * 0.8;
+    const a = @round(m[0] * r.sz);
+    const d = @round(m[1] * r.sz);
+    return (lh - (a + d)) / 2 + a;
 }
 
 /// textLayout for props (a probe's: fastTextSize).
@@ -2011,7 +2097,8 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32, brushes: 
     const dw = dwrite.?;
     const fz = props.fz orelse 16;
     var format: ?*c.IDWriteTextFormat = null;
-    if (dw.lpVtbl.*.CreateTextFormat.?(dw, if (props.mono) mono_face else sans_face, null, c.DWRITE_FONT_WEIGHT_NORMAL, c.DWRITE_FONT_STYLE_NORMAL, c.DWRITE_FONT_STRETCH_NORMAL, fz, std.unicode.utf8ToUtf16LeStringLiteral(""), &format) < 0) return null;
+    const base_family = familyOf(props.ff, props.mono);
+    if (dw.lpVtbl.*.CreateTextFormat.?(dw, base_family.ptr, null, c.DWRITE_FONT_WEIGHT_NORMAL, c.DWRITE_FONT_STYLE_NORMAL, c.DWRITE_FONT_STRETCH_NORMAL, fz, std.unicode.utf8ToUtf16LeStringLiteral(""), &format) < 0) return null;
     defer releaseCom(format);
     const nowrap = props.nowrap or std.math.isInf(width);
     const max_w: f32 = if (nowrap) 1e6 else @max(1, width);
@@ -2027,13 +2114,16 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32, brushes: 
         // A line wider than nothing can't be aligned: only with a width.
         if (!nowrap) _ = fvt.SetTextAlignment.?(fmt, a);
     }
-    if (props.lh) |lh| _ = fvt.SetLineSpacing.?(fmt, c.DWRITE_LINE_SPACING_METHOD_UNIFORM, lh, cssBaseline(props, runs, lh));
+    // Every line exactly its CSS box (line-height, else normal as Chromium
+    // makes it), the glyphs centered as CSS does.
+    if (lineBox(props)) |lh| _ = fvt.SetLineSpacing.?(fmt, c.DWRITE_LINE_SPACING_METHOD_UNIFORM, lh, cssBaseline(props, runs, lh));
     for (runs, u.ranges) |r, range| {
         if (range.length == 0) continue;
         _ = vt.SetFontSize.?(l, r.sz, range);
         _ = vt.SetFontWeight.?(l, @intFromFloat(@max(1, @min(999, r.w))), range);
         if (r.i) _ = vt.SetFontStyle.?(l, c.DWRITE_FONT_STYLE_ITALIC, range);
-        if (r.mono) _ = vt.SetFontFamilyName.?(l, mono_face, range);
+        const fam = runFamily(props, r);
+        if (fam.ptr != base_family.ptr) _ = vt.SetFontFamilyName.?(l, fam.ptr, range);
         if (r.u) _ = vt.SetUnderline.?(l, c.TRUE, range);
         if (brushes) |list| if (s.rt) |hrt| {
             const rt = baseRt(hrt);
@@ -3100,7 +3190,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
     var m: c.DWRITE_TEXT_METRICS = undefined;
     if (layout.lpVtbl.*.GetMetrics.?(layout, &m) < 0) return null;
-    const size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, @ceil(m.height) };
+    const size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, textHeight(&n.props, m.height) };
     if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
     return size;
 }
@@ -3116,7 +3206,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
 // logs any difference. A new string was an IDWriteTextLayout (~19 µs):
 // most of render-bench's "update 1000 rows".
 
-const FontKey = struct { mono: bool, italic: bool, weight: u16, size: u32, fz: u32, lh: i32 };
+const FontKey = struct { mono: bool, italic: bool, weight: u16, size: u32, fz: u32, lh: i32, family: u64 };
 const pair_unknown: f32 = -1e30;
 const pair_ligature: f32 = -2e30;
 const PairWidths = struct {
@@ -3147,6 +3237,7 @@ fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
         .size = tree_mod.sat(u32, r.sz * 64),
         .fz = tree_mod.sat(u32, (props.fz orelse 16) * 64),
         .lh = if (props.lh) |lh| tree_mod.sat(i32, lh * 64) else -1,
+        .family = std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(runFamily(props, r))),
     };
     const table = s.glyph_widths.get(key) orelse blk: {
         if (s.glyph_widths.count() >= 64) clearGlyphWidths(s);
@@ -3160,7 +3251,7 @@ fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
     };
     if (table.height == 0) {
         const p = probe(s, props, r, "A") orelse return null;
-        table.height = @ceil(p.h);
+        table.height = textHeight(props, p.h);
     }
     var sum: f64 = 0;
     for (t, 0..) |ch, i| {
@@ -3226,7 +3317,7 @@ fn checkTextSize(s: *Surface, n: *Node, width: f32, fast: [2]f32) void {
     defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
     var m: c.DWRITE_TEXT_METRICS = undefined;
     if (layout.lpVtbl.*.GetMetrics.?(layout, &m) < 0) return;
-    const size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, @ceil(m.height) };
+    const size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, textHeight(&n.props, m.height) };
     if (size[0] != fast[0] or size[1] != fast[1]) {
         const t = if (n.props.runs) |runs| runs[0].t else "";
         log.warn("text size: fast {d}x{d}, DirectWrite {d}x{d} ({d}): \"{s}\"", .{ fast[0], fast[1], size[0], size[1], m.widthIncludingTrailingWhitespace, t[0..@min(t.len, 60)] });
@@ -3441,10 +3532,28 @@ fn paint(p: *Painter, n: *Node) void {
         };
         vt.PushLayer.?(p.rt, &params, null);
     }
-    defer if (mask != null) vt.PopLayer.?(p.rt);
     // CSS paint order: positioned boxes (a sticky header) over the flow.
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paint(p, k);
+    if (mask != null) vt.PopLayer.?(p.rt);
+    // The outline: over the box and its children, outside its own clip
+    // (with its transform and opacity).
+    if (props.ol) |ol| paintOutline(p, f, r, ol);
+}
+
+/// CSS outline: a border of its own around the box grown by offset +
+/// width, its corners the box's radius grown as much (square ones stay
+/// square), solid, dashed or dotted.
+fn paintOutline(p: *Painter, f: Rect, r: [4]f32, ol: tree_mod.Outline) void {
+    if (!(ol.w > 0) or !(ol.c[3] > 0)) return;
+    const grow = ol.o + ol.w;
+    const box: Rect = .{ .x = f.x - grow, .y = f.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
+    if (box.w <= 2 * ol.w or box.h <= 2 * ol.w) return;
+    var radii: [4]f32 = undefined;
+    for (r, 0..) |x, i| radii[i] = if (x > 0) @max(0, x + grow) else 0;
+    const bw = [4]f32{ ol.w, ol.w, ol.w, ol.w };
+    const bc = [4]tree_mod.Color{ ol.c, ol.c, ol.c, ol.c };
+    border(p, box, radii, bw, bc, ol.s);
 }
 
 /// A rounded rectangle as a geometry (caller releases): Direct2D's own
