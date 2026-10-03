@@ -4,6 +4,7 @@
 // into Zig through the oriel_nui_* functions it exports.
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #if defined(_WIN32)
@@ -464,8 +465,131 @@ static int nui_set_meta(JSContext *ctx, JSModuleDef *m, const char *name) {
 
 // Compile `code` (needs a NUL at code[len]) as module `name` with its
 // import.meta set: the module value (for JS_EvalFunction), or an exception.
+// Compiled modules as bytecode, for the process (every window's engine is
+// its own QuickJS runtime, and each one parsed and compiled the page's
+// bundle again: ~16 ms for GhostPen's 239 KB, per window). Keyed by name,
+// length and a hash of the source; read back with JS_ReadObject (as the
+// runtime itself and qjsc binaries load). UI thread only, as engines are.
+typedef struct ModuleCode {
+    struct ModuleCode *next;
+    char *name;
+    size_t len;
+    uint64_t hash;
+    uint8_t *bytes;
+    size_t size;
+} ModuleCode;
+static ModuleCode *module_codes;
+static size_t module_code_bytes;
+#define MODULE_CODE_LIMIT ((size_t)32 << 20)
+
+static uint64_t fnv1a(const char *s, size_t len) {
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < len; i++) { h ^= (uint8_t)s[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+static ModuleCode *module_code_find(const char *name, size_t len, uint64_t hash) {
+    for (ModuleCode *m = module_codes; m; m = m->next)
+        if (m->len == len && m->hash == hash && !strcmp(m->name, name)) return m;
+    return NULL;
+}
+
+static void module_code_keep(JSContext *ctx, const char *name, size_t len, uint64_t hash, JSValueConst fn) {
+    size_t size = 0;
+    uint8_t *buf = JS_WriteObject(ctx, &size, fn, JS_WRITE_OBJ_BYTECODE);
+    if (!buf) { JS_FreeValue(ctx, JS_GetException(ctx)); return; }
+    ModuleCode *m = NULL;
+    if (module_code_bytes + size <= MODULE_CODE_LIMIT && (m = malloc(sizeof *m))) {
+        m->bytes = malloc(size);
+        m->name = strdup(name);
+        if (m->bytes && m->name) {
+            memcpy(m->bytes, buf, size);
+            m->size = size;
+            m->len = len;
+            m->hash = hash;
+            m->next = module_codes;
+            module_codes = m;
+            module_code_bytes += size;
+        } else {
+            free(m->bytes);
+            free(m->name);
+            free(m);
+        }
+    }
+    js_free(ctx, buf);
+}
+
+// Parsed style sheets, for the process: the runtime keeps a sheet's rules
+// as JSON by its text (host.sheetKeep) and later windows read them back
+// (host.sheetCache) instead of parsing it again (~10 ms for GhostPen's).
+typedef struct SheetCode {
+    struct SheetCode *next;
+    char *css;
+    size_t len;
+    uint64_t hash;
+    char *json;
+    size_t json_len;
+} SheetCode;
+static SheetCode *sheet_codes;
+static size_t sheet_code_bytes;
+#define SHEET_CODE_LIMIT ((size_t)8 << 20)
+
+static SheetCode *sheet_find(const char *css, size_t len, uint64_t hash) {
+    for (SheetCode *m = sheet_codes; m; m = m->next)
+        if (m->len == len && m->hash == hash && !memcmp(m->css, css, len)) return m;
+    return NULL;
+}
+
+// host.sheetCache(css): the rules JSON kept for this text, or undefined.
+static JSValue h_sheet_cache(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    size_t len;
+    const char *css = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!css) return JS_EXCEPTION;
+    const SheetCode *m = sheet_find(css, len, fnv1a(css, len));
+    JS_FreeCString(ctx, css);
+    return m ? JS_NewStringLen(ctx, m->json, m->json_len) : JS_UNDEFINED;
+}
+
+// host.sheetKeep(css, json): keep a sheet's rules for later windows.
+static JSValue h_sheet_keep(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_UNDEFINED;
+    size_t len, json_len;
+    const char *css = JS_ToCStringLen(ctx, &len, argv[0]);
+    const char *json = JS_ToCStringLen(ctx, &json_len, argv[1]);
+    const uint64_t hash = css ? fnv1a(css, len) : 0;
+    if (css && json && !sheet_find(css, len, hash) && sheet_code_bytes + len + json_len <= SHEET_CODE_LIMIT) {
+        SheetCode *m = malloc(sizeof *m);
+        char *c = malloc(len ? len : 1), *j = malloc(json_len ? json_len : 1);
+        if (m && c && j) {
+            memcpy(c, css, len);
+            memcpy(j, json, json_len);
+            *m = (SheetCode){ sheet_codes, c, len, hash, j, json_len };
+            sheet_codes = m;
+            sheet_code_bytes += len + json_len;
+        } else {
+            free(m);
+            free(c);
+            free(j);
+        }
+    }
+    if (css) JS_FreeCString(ctx, css);
+    if (json) JS_FreeCString(ctx, json);
+    return JS_UNDEFINED;
+}
+
 static JSValue nui_compile_module(JSContext *ctx, const char *name, const char *code, size_t len) {
-    JSValue fn = JS_Eval(ctx, code, len, name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    const uint64_t hash = fnv1a(code, len);
+    const ModuleCode *kept = module_code_find(name, len, hash);
+    JSValue fn;
+    if (kept) {
+        fn = JS_ReadObject(ctx, kept->bytes, kept->size, JS_READ_OBJ_BYTECODE);
+    } else {
+        fn = JS_Eval(ctx, code, len, name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (!JS_IsException(fn)) module_code_keep(ctx, name, len, hash, fn);
+    }
     if (JS_IsException(fn)) return fn;
     if (nui_set_meta(ctx, JS_VALUE_GET_PTR(fn), name) < 0) { JS_FreeValue(ctx, fn); return JS_EXCEPTION; }
     return fn;
@@ -554,6 +678,8 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "now", h_now, 0);
     set_fn(ctx, host, "vsync", h_vsync, 0);
     set_fn(ctx, host, "warmFonts", h_warm_fonts, 1);
+    set_fn(ctx, host, "sheetCache", h_sheet_cache, 1);
+    set_fn(ctx, host, "sheetKeep", h_sheet_keep, 2);
 #if defined(ORIEL_NATIVE_DOM)
     // Rows stamped from the native DOM (Android learns of the nodes the
     // tree makes through Backend.leaf).
