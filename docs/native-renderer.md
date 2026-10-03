@@ -373,6 +373,16 @@ clientWidth and clientHeight are the viewport's, as in browsers.
   WebKit (WebKitGTK, WKWebView) keeps a computed line-height in whole
   pixels (145% of 16px is 23); Chromium (WebView2) keeps the fraction: GTK
   floors `lh`, as its WebView does.
+- Fonts of different sizes in one text (a `<code>`, a 28px `<span>`): each
+  run's inline box is its font's rounded ascent and descent plus the
+  leading of its line-height (a run's own `lh`, render.js: a unitless
+  line-height times the run's size, else the text's), or of its line gap
+  when normal, split with the smaller half above. Every line also has the
+  strut (the text's own font and `lh`). A line box reaches the highest top
+  and the lowest bottom of the boxes on it, so only the lines with the
+  bigger font are taller (WebKitGTK, measured: a 28px span on one of four
+  16px lines makes 22 + 38 + 22 + 22). GTK (lineExtents) and Win32
+  (lineExtents) stack each line on its own baseline.
 - `ff` on text props and runs, always: the CSS font-family list,
   unquoted, comma-separated, or `default` when the page sets none (a CSS
   keyword, never a family's name). Resolve a list as browsers do: the first

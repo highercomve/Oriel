@@ -35,6 +35,9 @@ pub const Run = struct {
     bg: ?Color = null,
     /// The CSS font-family list (render.js familyOf); null: sans-serif.
     ff: ?[]const u8 = null,
+    /// Its own CSS line-height in px (render.js; a unitless one times its
+    /// size), for the line box of the line it's on; null: the text's.
+    lh: ?f32 = null,
     /// A focus ring around this run's line fragments (an inline link with
     /// :focus-visible: it has no box of its own).
     ol: ?Outline = null,

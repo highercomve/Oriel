@@ -17138,6 +17138,8 @@ input[type="range"] { height: 20px; margin: 2px; }
     const ff = familyOf(cs);
     if (ff) r.ff = ff;
     if (underlined(cs)) r.u = true;
+    const lh = cs["line-height"];
+    if (lh && lh !== "normal") r.lh = lineHeightPx(lh, fs);
     return r;
   }
   var underlined = (cs) => /\bunderline\b/.test(cs["text-decoration-line"] || "");
