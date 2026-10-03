@@ -2424,13 +2424,24 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
   // Drawing
   const cur = color(cs.color);
   backgroundPart(cs, p);
+  // Each corner: one length (both axes), or [x, y] when they differ ("10px
+  // 20px", or border-radius: a / b); a percentage is the backend's to
+  // resolve (x of the width, y of the height).
+  const one = (v) => {
+    if (!v) return 0;
+    if (v.endsWith("%")) return `${parseFloat(v) || 0}%`;
+    const l = length(v, fs, false);
+    return typeof l === "number" ? Math.max(0, Math.min(l, 9999)) : 0;
+  };
   const r = ["top-left", "top-right", "bottom-right", "bottom-left"].map((c) => {
     const v = cs[`border-${c}-radius`];
     if (!v) return 0;
-    if (v.endsWith("%")) return { pct: parseFloat(v) };
-    return length(v, fs, false) ?? 0;
+    const [a, b] = splitSpaces(String(v));
+    const x = one(a);
+    const y = b === undefined ? x : one(b);
+    return x === y ? x : [x, y];
   });
-  if (r.some((x) => x)) p.br = r.map((x) => (typeof x === "object" ? `${x.pct}%` : Math.min(x, 9999)));
+  if (r.some((x) => x && x !== "0%")) p.br = r;
   if (cs.opacity !== undefined && cs.opacity !== "1") p.op = parseFloat(cs.opacity);
   const sh = shadow(cs["box-shadow"], cur);
   if (sh) p.sh = sh;

@@ -149,6 +149,28 @@ opacity, backgrounds, color, transforms, sizes, border colors and shadows
 (src/native_ui/js/src/transitions.js, animations.js: while they run, only
 the animated nodes are sent each frame).
 
+**Corner radii** (`br`, each backend):
+
+- `br` is four corners (top-left, top-right, bottom-right, bottom-left),
+  each one length (px, or `"N%"`) for both axes, or `[x, y]` when they
+  differ: `border-radius: 50%` on a 120x80 box is `"50%"` (an ellipse
+  60x40), `border-radius: 40px / 20px` is `[40, 20]` per corner, and a
+  longhand's two values (`border-top-left-radius: 60px 20px`) the same.
+  A backend reading a corner as one number sees an array there (Android's
+  Kotlin takes it as 0, a square corner, until it is ported).
+- Resolve with `Node.radiusXY()` (tree.zig): an x percentage is of the
+  box's width, a y one of its height, and all corners are scaled down
+  together until adjacent ones fit (CSS's overlap rule). A corner with
+  either axis 0 is square. `Node.radius()` is a circular fallback (the
+  smaller axis) for a backend that draws no ellipses yet.
+- Draw every rounded shape with the ellipses: the background, the border
+  (a uniform one stroked inset by half its width, each axis; uneven sides
+  as the ring between the border box and `paddingBoxXY`), the children's
+  clip (`Node.paddingClipXY()`: each inner x radius less the left or right
+  border, y less the top or bottom), the outline and box-shadow (each
+  rounded corner grown on both axes: `Radii.grown`). Win32 does all of
+  these; GTK, Apple and Android still use `radius()`.
+
 **Text metrics** (each backend, to match its own WebView):
 
 - `line-height: normal` (no `lh` in the props; the UA sheet sets none) is
