@@ -414,16 +414,16 @@ export class StyleEngine {
     this.keyframes = {};
   }
 
-  // `cache`: { get(css) → JSON | undefined, keep(css, json) } (the native
-  // one keeps a sheet's parsed rules for the process: a second window
-  // doesn't parse and index them again).
-  addSheet(css, cache) {
+  // `cache`: { get(css, path) → JSON | undefined, keep(css, json) } (the
+  // native one keeps a sheet's parsed rules for the process: a second
+  // window doesn't parse and index them again; and finds the ones the app
+  // was built with, by the sheet's asset `path`: tools/qjs_modules.zig).
+  addSheet(css, cache, path) {
     let parsed = null;
-    const kept = cache?.get(css);
+    const kept = cache?.get(css, path);
     if (kept) { try { parsed = JSON.parse(kept); } catch { parsed = null; } }
     if (!parsed) {
-      const rules = parseSheet(css, 0);
-      parsed = { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
+      parsed = sheetData(css);
       try { cache?.keep(css, JSON.stringify(parsed)); } catch {}
     }
     Object.assign(this.keyframes, parsed.keyframes);
@@ -476,6 +476,13 @@ export class StyleEngine {
   static expandInto(decls, normal, important) {
     for (const d of decls) expand(d.prop, d.value, d.important ? important : normal);
   }
+}
+
+// A sheet's rules as addSheet keeps them (and the build compiles them:
+// sheet-compiler.js): [sel, pseudo, spec, decls, media, index key] each.
+export function sheetData(css) {
+  const rules = parseSheet(css, 0);
+  return { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
 }
 
 // A rule's index key: the rightmost compound selector's id, class or tag.

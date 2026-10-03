@@ -1709,12 +1709,13 @@ globalThis.atob ??= (s) => {
       this.order = 0;
       this.keyframes = {};
     }
-    // `cache`: { get(css) → JSON | undefined, keep(css, json) } (the native
-    // one keeps a sheet's parsed rules for the process: a second window
-    // doesn't parse and index them again).
-    addSheet(css, cache) {
+    // `cache`: { get(css, path) → JSON | undefined, keep(css, json) } (the
+    // native one keeps a sheet's parsed rules for the process: a second
+    // window doesn't parse and index them again; and finds the ones the app
+    // was built with, by the sheet's asset `path`: tools/qjs_modules.zig).
+    addSheet(css, cache, path) {
       let parsed = null;
-      const kept2 = cache?.get(css);
+      const kept2 = cache?.get(css, path);
       if (kept2) {
         try {
           parsed = JSON.parse(kept2);
@@ -1723,8 +1724,7 @@ globalThis.atob ??= (s) => {
         }
       }
       if (!parsed) {
-        const rules = parseSheet(css, 0);
-        parsed = { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
+        parsed = sheetData(css);
         try {
           cache?.keep(css, JSON.stringify(parsed));
         } catch {
@@ -1787,6 +1787,10 @@ globalThis.atob ??= (s) => {
       for (const d of decls) expand(d.prop, d.value, d.important ? important : normal);
     }
   };
+  function sheetData(css) {
+    const rules = parseSheet(css, 0);
+    return { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
+  }
   function indexKey(sel) {
     const last = (sel.includes("(") ? sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "") : sel).split(/[\s>+~]+/).filter(Boolean).pop() || "*";
     const id = /#([\w-]+)/.exec(last), cls = /\.([\w-]+)/.exec(last), tag = /^([a-zA-Z][\w-]*)/.exec(last);
@@ -6239,11 +6243,12 @@ ${a.stack || ""}`;
         Object.assign(viewport, { width: w, height: h, dark: !!dark, coarse: !!coarse });
         const P = host.prof ? host.now : null, b0 = P && P();
         const engine = new StyleEngine();
-        const sheets = host.sheetCache ? { get: (css) => host.sheetCache(css), keep: (css, json) => host.sheetKeep(css, json) } : null;
+        const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
         engine.addSheet(UA_CSS, sheets);
         for (const link of document.querySelectorAll('link[rel="stylesheet"][href], style')) {
-          const css = link.localName === "style" ? link.textContent : host.asset(link.getAttribute("href").replace(/^\.?\//, ""));
-          if (css) engine.addSheet(css, sheets);
+          const path = link.localName === "style" ? void 0 : link.getAttribute("href").replace(/^\.?\//, "");
+          const css = path === void 0 ? link.textContent : host.asset(path);
+          if (css) engine.addSheet(css, sheets, path);
           else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
         }
         const b1 = P && P();

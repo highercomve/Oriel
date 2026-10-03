@@ -576,16 +576,24 @@ static SheetCode *sheet_find(const char *css, size_t len, uint64_t hash) {
     return NULL;
 }
 
-// host.sheetCache(css): the rules JSON kept for this text, or undefined.
+static const char *embedded_sheet(JSContext *ctx, JSValueConst path, uint64_t hash, size_t len, size_t *size);
+
+// host.sheetCache(css, path): the rules JSON kept for this text, or the
+// one the app was built with for its asset `path` (if it's this text), or
+// undefined.
 static JSValue h_sheet_cache(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1) return JS_UNDEFINED;
     size_t len;
     const char *css = JS_ToCStringLen(ctx, &len, argv[0]);
     if (!css) return JS_EXCEPTION;
-    const SheetCode *m = sheet_find(css, len, fnv1a(css, len));
+    const uint64_t hash = fnv1a(css, len);
+    const SheetCode *m = sheet_find(css, len, hash);
     JS_FreeCString(ctx, css);
-    return m ? JS_NewStringLen(ctx, m->json, m->json_len) : JS_UNDEFINED;
+    if (m) return JS_NewStringLen(ctx, m->json, m->json_len);
+    size_t size = 0;
+    const char *json = argc >= 2 && JS_IsString(argv[1]) ? embedded_sheet(ctx, argv[1], hash, len, &size) : NULL;
+    return json ? JS_NewStringLen(ctx, json, size) : JS_UNDEFINED;
 }
 
 // host.sheetKeep(css, json): keep a sheet's rules for later windows.
@@ -632,6 +640,31 @@ static const uint8_t *embedded_module(JSContext *ctx, const char *name, uint64_t
     if (h != hash || l != (uint64_t)len) return NULL;
     *size = data_len - 24;
     return (const uint8_t *)data + 24;
+}
+
+// A sheet's rules parsed with the app (tools/qjs_modules.zig:
+// "<path>.sheet", "OQJSSHT1", the sheet's hash and length, the JSON), when
+// they were parsed from this text; else NULL.
+static const char *embedded_sheet(JSContext *ctx, JSValueConst path_value, uint64_t hash, size_t len, size_t *size) {
+    size_t path_len;
+    const char *name = JS_ToCStringLen(ctx, &path_len, path_value);
+    if (!name) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        return NULL;
+    }
+    char path[512];
+    int n = snprintf(path, sizeof path, "%s.sheet", name);
+    JS_FreeCString(ctx, name);
+    if (n <= 0 || (size_t)n >= sizeof path) return NULL;
+    const char *data = NULL;
+    size_t data_len = 0;
+    if (!oriel_nui_asset(opaque_of(ctx), path, (size_t)n, &data, &data_len) || data_len <= 24) return NULL;
+    if (memcmp(data, "OQJSSHT1", 8) != 0) return NULL;
+    uint64_t h = 0, l = 0;
+    for (int i = 7; i >= 0; i--) { h = (h << 8) | (uint8_t)data[8 + i]; l = (l << 8) | (uint8_t)data[16 + i]; }
+    if (h != hash || l != (uint64_t)len) return NULL;
+    *size = data_len - 24;
+    return data + 24;
 }
 
 static JSValue nui_compile_module(JSContext *ctx, const char *name, const char *code, size_t len) {
@@ -738,7 +771,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "vsync", h_vsync, 0);
     set_fn(ctx, host, "warmFonts", h_warm_fonts, 1);
     set_fn(ctx, host, "canvas", h_canvas, 3);
-    set_fn(ctx, host, "sheetCache", h_sheet_cache, 1);
+    set_fn(ctx, host, "sheetCache", h_sheet_cache, 2);
     set_fn(ctx, host, "sheetKeep", h_sheet_keep, 2);
 #if defined(ORIEL_NATIVE_DOM)
     // Rows stamped from the native DOM (Android learns of the nodes the

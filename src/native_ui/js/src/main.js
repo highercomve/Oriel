@@ -745,11 +745,12 @@ g.__oriel = {
       const P = host.prof ? host.now : null, b0 = P && P();
       const engine = new StyleEngine();
       // Parsed sheets kept for the process (host.sheetCache/sheetKeep).
-      const sheets = host.sheetCache ? { get: (css) => host.sheetCache(css), keep: (css, json) => host.sheetKeep(css, json) } : null;
+      const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
       engine.addSheet(UA_CSS, sheets);
       for (const link of document.querySelectorAll('link[rel="stylesheet"][href], style')) {
-        const css = link.localName === "style" ? link.textContent : host.asset(link.getAttribute("href").replace(/^\.?\//, ""));
-        if (css) engine.addSheet(css, sheets);
+        const path = link.localName === "style" ? undefined : link.getAttribute("href").replace(/^\.?\//, "");
+        const css = path === undefined ? link.textContent : host.asset(path);
+        if (css) engine.addSheet(css, sheets, path);
         else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
       }
       const b1 = P && P();
