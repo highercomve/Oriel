@@ -14,7 +14,7 @@ import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor } from "./icons.js";
 import { commandsOf } from "./canvas.js";
-import { classStyle, nodeIndex, nodeAt } from "#dom";
+import { classStyle, nodeIndex, nodeAt, compileMatch } from "#dom";
 
 // The user-agent stylesheet: what browsers do without CSS.
 export const UA_CSS = `
@@ -72,6 +72,28 @@ const SKIP = new Set(["script", "style", "head", "template", "title", "meta", "l
 // index (dom_stamp.zig's id_base), so the tree can make a row's children
 // itself. Ids counted out here (pseudo-elements, text runs) stay below.
 const NATIVE_ID_BASE = 2 ** 30;
+// The attributes main.js moves for :hover, :active and :focus (css.js).
+const STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus"];
+
+// A selector's compounds, left to right (split at combinators outside
+// brackets and parentheses).
+function splitCompounds(sel) {
+  const out = [];
+  let depth = 0, cur = "";
+  for (const ch of sel) {
+    if (ch === "(" || ch === "[") depth++;
+    else if (ch === ")" || ch === "]") depth--;
+    if (depth === 0 && (ch === " " || ch === ">" || ch === "+" || ch === "~")) {
+      if (cur.trim()) out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
 const TEMPLATE_LEAF = new Set(["div", "span", "p", "b", "i", "strong", "em", "small", "label"]);
 const EMPTY = Object.freeze([]);
 
@@ -146,6 +168,23 @@ export class Renderer {
     this.declined = false;         // a stamp was declined: render again the general way
     this.structural = false;       // the sheets match by position (:nth-child, +, ~…)
     this.noCache = false;          // the sheets use :has(): any change can restyle anything
+    // :hover, :active and :focus (data-nui-* attributes): the compounds
+    // that use one above a rule's subject (`.card:hover .title`), the state
+    // taken out. A state change on an element matching none of them only
+    // changes its own style (noteAttribute).
+    this.stateAbove = new Map();   // attribute → [compound selector]
+    for (const r of engine.rules) {
+      const compounds = splitCompounds(r.sel);
+      for (let i = 0; i < compounds.length - 1; i++) {
+        for (const attr of STATE_ATTRS) {
+          if (!compounds[i].includes(`[${attr}]`)) continue;
+          const rest = compounds[i].split(`[${attr}]`).join("") || "*";
+          let list = this.stateAbove.get(attr);
+          if (!list) this.stateAbove.set(attr, (list = []));
+          if (!list.some((x) => x.sel === rest)) list.push({ sel: rest, match: null });
+        }
+      }
+    }
     for (const r of engine.rules) {
       if (/:(nth-|first-|last-|only-|empty)|[+~]/.test(r.sel)) this.structural = true;
       if (/:has\(/.test(r.sel)) this.noCache = true;
@@ -229,10 +268,30 @@ export class Renderer {
   }
 
   noteAttribute(el, name) {
+    if (STATE_ATTRS.includes(name) && !this.stateMattersBelow(el, name)) {
+      // Hovered, pressed or focused: only its own rules may match
+      // differently (1.5: match it again, not what's below it).
+      this.mark(el, 1.5);
+      if (el.parentNode) this.noStampList.delete(el.parentNode);
+      return;
+    }
     this.mark(el, name === "style" && !this.styleAttrRules ? 1 : 2);
     // A row's attributes changed: its list may be one the tree stamps again.
     if (el.parentNode) this.noStampList.delete(el.parentNode);
     if (this.structural && el.parentNode) this.mark(el.parentNode, 2);
+  }
+
+  // Whether a state attribute on `el` can change what's below it: it
+  // matches a compound that has the state above a rule's subject.
+  stateMattersBelow(el, attr) {
+    const list = this.stateAbove.get(attr);
+    if (!list) return false;
+    for (const c of list) {
+      if (c.match === null) { try { c.match = compileMatch(el, c.sel); } catch { c.match = false; } }
+      if (!c.match) return true; // can't tell: as before
+      try { if (c.match(el)) return true; } catch { return true; }
+    }
+    return false;
   }
 
   idOf(obj, key) {
@@ -586,7 +645,9 @@ export class Renderer {
     const c = saved?.epoch === this.styleEpoch ? saved : null;
     const mk = this.marks.get(el) || 0;
     if (c && c.parent === parentCS && (c.frame === this.frameNo || (!rematch && !mk))) return c.cs;
-    const m = c && !rematch && mk < 2 ? c.m : this.matchOf(el);
+    // Its rules again: its attributes changed (1.5: a state, 2), or an
+    // ancestor's did; an inline style alone (1) keeps them.
+    const m = c && !rematch && mk < 1.5 ? c.m : this.matchOf(el);
     const inline = el.getAttribute("style");
     const casc = this.cascadeOf(m.normal);
     let cs;
