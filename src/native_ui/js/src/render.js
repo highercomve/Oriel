@@ -508,6 +508,7 @@ export class Renderer {
     }
     const t1 = P && P();
     const nodes = new Map();
+    const paintOps = this.host.paintOps ? [] : null;
     for (let i = 0; i < changes.length; i += 6) {
       const fc = changes[i], saved = changes[i + 1], d = changes[i + 2], normal = changes[i + 3], important = changes[i + 4], old = changes[i + 5];
       // The new values in place: as inlineStyle() would make them (a rule's
@@ -532,7 +533,14 @@ export class Renderer {
       };
       const r = fc.root;
       r.props = part({ ...r.props });
-      nodes.set(fc.id, { kind: r.kind, props: part(old.props ? { ...old.props } : JSON.parse(old.p)), kids: r.kids.slice() });
+      const sent = part(old.props ? { ...old.props } : JSON.parse(old.p));
+      if (paintOps) {
+        // Just the transform and opacity (the "x" op); the props kept
+        // unencoded (a later diff encodes them if it needs to).
+        const n = (v) => (v === undefined ? "null" : v);
+        paintOps.push(`["x",${fc.id},${n(sent.tx)},${n(sent.ty)},${n(sent.sc)},${n(sent.rot)},${n(sent.op)}]`);
+        this.prev.set(fc.id, { kind: old.kind, p: null, props: sent, k: old.k });
+      } else nodes.set(fc.id, { kind: r.kind, props: sent, kids: r.kids.slice() });
     }
     const t2 = P && P();
     this.frameNo++;
@@ -542,11 +550,19 @@ export class Renderer {
     this.dropped = [];
     this.specs = new Map();
     this.animSpecs = new Map();
-    this.emit(nodes, false);
-    // The props as sent, beside their JSON: the next frame of the loop
-    // starts from them without parsing it.
-    for (const [id, n] of nodes) { const e = this.prev.get(id); if (e && e.p !== null) e.props = n.props; }
-    if (P) this.host.log(1, `PROF boxes: ${nodes.size} nodes, prepare ${(P() - t0 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t0).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
+    if (paintOps) {
+      this.applyMs = 0;
+      const a = P && P();
+      if (paintOps.length) this.host.ops(`[${paintOps.join(",")}]`);
+      if (P) this.applyMs = P() - a;
+      this.schedule();
+    } else {
+      this.emit(nodes, false);
+      // The props as sent, beside their JSON: the next frame of the loop
+      // starts from them without parsing it.
+      for (const [id, n] of nodes) { const e = this.prev.get(id); if (e && e.p !== null) e.props = n.props; }
+    }
+    if (P) this.host.log(1, `PROF boxes: ${paintOps ? paintOps.length : nodes.size} nodes, prepare ${(P() - t0 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t0).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
     return true;
   }
 
