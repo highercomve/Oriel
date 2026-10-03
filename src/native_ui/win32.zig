@@ -265,6 +265,7 @@ pub const Surface = struct {
             .add_timer = addTimer,
             .request_display_frame = requestDisplayFrame,
             .warm_fonts = warmFonts,
+            .font_metrics = fontMetrics,
             .invoke = invoke,
             .focus = focus,
             .props = propsChanged,
@@ -1953,13 +1954,30 @@ fn cssBaseline(props: *const tree_mod.Props, runs: []const tree_mod.Run, lh: f32
 }
 
 /// A face's ascent and descent per em (system fonts, cached by mono,
-/// weight and italic); null when DirectWrite can't say.
-var font_ratios: std.AutoHashMapUnmanaged(u32, [2]f32) = .empty;
+/// weight and italic); null when DirectWrite can't say (remembered too:
+/// a missing face isn't asked for again on every layout).
+var font_ratios: std.AutoHashMapUnmanaged(u32, ?[2]f32) = .empty;
 
 fn fontRatios(mono: bool, weight: f32, italic: bool) ?[2]f32 {
     const w: u32 = @intFromFloat(@max(1, @min(999, weight)));
     const key: u32 = w | (@as(u32, @intFromBool(mono)) << 10) | (@as(u32, @intFromBool(italic)) << 11);
     if (font_ratios.get(key)) |v| return v;
+    const v = queryRatios(mono, w, italic);
+    font_ratios.put(std.heap.page_allocator, key, v) catch {};
+    return v;
+}
+
+/// Backend.font_metrics: the text font's ascent and descent in px at
+/// `size` (the regular face's; where a line of inline images puts its
+/// baseline).
+fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[2]f32) bool {
+    const r = fontRatios(mono, 400, false) orelse return false;
+    if (!(size > 0) or !std.math.isFinite(size)) return false;
+    out.* = .{ r[0] * size, r[1] * size };
+    return true;
+}
+
+fn queryRatios(mono: bool, w: u32, italic: bool) ?[2]f32 {
     const dw = dwrite orelse return null;
     var coll: ?*c.IDWriteFontCollection = null;
     if (dw.lpVtbl.*.GetSystemFontCollection.?(dw, &coll, c.FALSE) < 0 or coll == null) return null;
@@ -1977,9 +1995,7 @@ fn fontRatios(mono: bool, weight: f32, italic: bool) ?[2]f32 {
     font.?.lpVtbl.*.GetMetrics.?(font, &fm);
     if (fm.designUnitsPerEm == 0) return null;
     const em: f32 = @floatFromInt(fm.designUnitsPerEm);
-    const v: [2]f32 = .{ @as(f32, @floatFromInt(fm.ascent)) / em, @as(f32, @floatFromInt(fm.descent)) / em };
-    font_ratios.put(std.heap.page_allocator, key, v) catch {};
-    return v;
+    return .{ @as(f32, @floatFromInt(fm.ascent)) / em, @as(f32, @floatFromInt(fm.descent)) / em };
 }
 
 /// textLayout for props (a probe's: fastTextSize).
