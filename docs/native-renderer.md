@@ -649,6 +649,11 @@ boundary is crossed per change, not per element:
 | Text sizes (`nuiMeasure`) | Only on a miss: a text's natural size is kept on its node, sizes by content and width in a cache, and Kotlin keeps its last answer and one-line width |
 | A display frame (`nuiRequestFrame` → `displayFrame`) | While the page wants animation frames: one `Choreographer` callback per frame at the display's rate (120 on a 120 Hz phone), none when it stops |
 
+The page's CSS px are Chromium's: the view's width in DIPs rounded up to
+whole px (1080 px at density 2.625 is 412 CSS px, not 411.43), the page
+scaled to fit (`Nui.cssScale`), so `innerWidth`, media queries and what
+fits in a row match the WebView's.
+
 Touches come back as taps, drags with fling, long presses (`contextmenu`)
 and the mouse wheel, hit-tested in Zig on the tree. A transparent window
 (an overlay) opens in a translucent Activity, so nothing is drawn where the

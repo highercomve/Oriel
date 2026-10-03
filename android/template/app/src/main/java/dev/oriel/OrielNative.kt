@@ -118,11 +118,22 @@ internal object Nui {
         val res = (views[window]?.context ?: OrielRuntime.app).resources
         val m = res.displayMetrics
         val v = views[window]
-        val w = if (v != null && v.width > 0) (v.width / m.density).toLong() else (m.widthPixels / m.density).toLong()
-        val h = if (v != null && v.height > 0) (v.height / m.density).toLong() else (m.heightPixels / m.density).toLong()
+        val wp = if (v != null && v.width > 0) v.width else m.widthPixels
+        val hp = if (v != null && v.height > 0) v.height else m.heightPixels
+        val k = cssScale(wp, m.density)
+        val w = Math.round(wp / k).toLong()
+        val h = Math.round(hp / k).toLong()
         val dark = if (isDark(res.configuration)) 1L else 0L
         return (dark shl 32) or ((h and 0xffff) shl 16) or (w and 0xffff)
     }
+
+    /**
+     * Device pixels per CSS px for a page `px` wide, as Chromium makes its
+     * layout viewport: the width in DIPs rounded up to whole CSS px (1080 px
+     * at 2.625 is 412, not 411.43), the page scaled to fit, so a row the
+     * WebView fits in 412 px fits here too.
+     */
+    fun cssScale(px: Int, density: Float): Float = if (px > 0) px / ceil(px / density - 1e-3f) else density
 
     fun isDark(c: Configuration) = c.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
 
@@ -686,7 +697,9 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     /** `frames` as ints: each record's node id (slot 0). */
     private var ids = IntArray(0)
     private val index = HashMap<Int, Int>() // node id → record
-    private val density = resources.displayMetrics.density
+    /** Device pixels per CSS px (Nui.cssScale): the display's density, a
+     *  little less where its width in DIPs isn't whole. */
+    private var density = resources.displayMetrics.density
     private var updating = false
     /** The page prevented the last Enter (its key up is consumed too). */
     private var enterTaken = false
@@ -949,6 +962,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        density = Nui.cssScale(w, resources.displayMetrics.density)
         onSize(w, h)
         if (w > 0 && h > 0) NuiNative.resize(window, w / density, h / density, dark)
     }
