@@ -48,7 +48,9 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
     if (runs.len > 4) return null;
     var text_len: usize = 0;
     for (runs) |r| text_len += r.t.len;
-    if (text_len > 512) return null;
+    // The text with four runs' fonts, line-heights, colors and boxes (up
+    // to ~116 bytes each) and the props' fit the 1024-byte key.
+    if (text_len > 480) return null;
     var k = Key{ .buf = buf };
     k.float(width);
     k.float(props.fz orelse 16);
