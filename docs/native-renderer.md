@@ -166,7 +166,9 @@ the animated nodes are sent each frame).
   radii times `period`; Cairo: CAIRO_EXTEND_REPEAT). A backend whose
   gradients can't wrap (CoreGraphics) lays the period out with
   `Gradient.expand(resolved, extent, buf)` instead (extent: how much of
-  the line to cover, in line lengths). Win32 does this; GTK, Apple and
+  the line to cover, in line lengths). Win32 does this, and Apple
+  (apple_draw.zig gradient: expand over the line, a radial one out to the
+  box's farthest corner in ray lengths, at most 1024 stops); GTK and
   Android still read `stops` as fractions (px positions come out wrong
   there, and a repeating gradient is drawn once).
 

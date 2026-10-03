@@ -1016,35 +1016,55 @@ fn addRoundRect(cg: CGContextRef, f: Rect, r: Radii) void {
 fn gradient(cg: CGContextRef, f: Rect, r: Radii, g: tree_mod.Gradient) void {
     if (g.stops.len == 0) return;
     const space = srgb() orelse return;
-    var comps: [64 * 4]CGFloat = undefined;
-    var locs: [64]CGFloat = undefined;
-    const count = @min(g.stops.len, locs.len);
-    for (g.stops[0..count], 0..) |st, i| {
-        comps[i * 4 + 0] = st[0] / 255;
-        comps[i * 4 + 1] = st[1] / 255;
-        comps[i * 4 + 2] = st[2] / 255;
-        comps[i * 4 + 3] = st[3];
-        locs[i] = std.math.clamp(st[4], 0, 1);
-    }
-    const grad = CGGradientCreateWithColorComponents(space, &comps, &locs, count) orelse return;
-    defer CGGradientRelease(grad);
-    CGContextSaveGState(cg);
-    defer CGContextRestoreGState(cg);
-    roundRect(cg, f, r);
-    CGContextClip(cg);
-    if (g.radialIn(f.w, f.h)) |rad| {
-        // A unit circle at the origin, stretched onto the ellipse.
-        CGContextTranslateCTM(cg, f.x + rad[0], f.y + rad[1]);
-        CGContextScaleCTM(cg, rad[2], rad[3]);
-        CGContextDrawRadialGradient(cg, grad, .{ .x = 0, .y = 0 }, 0, .{ .x = 0, .y = 0 }, 1, kCGGradientDrawsBeforeAndAfter);
-        return;
-    }
     // The CSS gradient line: through the center at `angle` (0 = up), long
     // enough for the corners to get the end colors.
     const a = g.angle * std.math.pi / 180.0;
     const dx = @sin(a);
     const dy = -@cos(a);
     const len = @abs(f.w * dx) + @abs(f.h * dy);
+    const radial = g.radialIn(f.w, f.h);
+    // Stops in px or without a position, and a repeating gradient's period
+    // (tree.zig resolve). CoreGraphics' gradients don't wrap: the periods
+    // are laid out end to end (expand) over what the box needs, the line
+    // (linear) or out to its farthest corner (radial, in ray lengths).
+    var resolved_buf: [64]tree_mod.Gradient.Stop = undefined;
+    const res = g.resolve(if (radial) |rad| rad[2] else len, &resolved_buf);
+    if (res.stops.len == 0) return;
+    var extent: f32 = 1;
+    if (res.period != null) if (radial) |rad| {
+        const corners = [4][2]f32{ .{ 0, 0 }, .{ f.w, 0 }, .{ 0, f.h }, .{ f.w, f.h } };
+        for (corners) |k| {
+            const ex = (k[0] - rad[0]) / rad[2];
+            const ey = (k[1] - rad[1]) / rad[3];
+            extent = @max(extent, @sqrt(ex * ex + ey * ey));
+        }
+    };
+    var expanded: [1024]tree_mod.Gradient.Stop = undefined;
+    const stops = tree_mod.Gradient.expand(res, extent, &expanded);
+    if (stops.len == 0) return;
+    var comps: [1024 * 4]CGFloat = undefined;
+    var locs: [1024]CGFloat = undefined;
+    for (stops, 0..) |st, i| {
+        comps[i * 4 + 0] = st[0] / 255;
+        comps[i * 4 + 1] = st[1] / 255;
+        comps[i * 4 + 2] = st[2] / 255;
+        comps[i * 4 + 3] = st[3];
+        locs[i] = std.math.clamp(st[4], 0, 1);
+    }
+    const grad = CGGradientCreateWithColorComponents(space, &comps, &locs, stops.len) orelse return;
+    defer CGGradientRelease(grad);
+    CGContextSaveGState(cg);
+    defer CGContextRestoreGState(cg);
+    roundRect(cg, f, r);
+    CGContextClip(cg);
+    if (radial) |rad| {
+        // A unit circle at the origin, stretched onto the ellipse (as many
+        // ray lengths out as the stops were laid over).
+        CGContextTranslateCTM(cg, f.x + rad[0], f.y + rad[1]);
+        CGContextScaleCTM(cg, rad[2] * extent, rad[3] * extent);
+        CGContextDrawRadialGradient(cg, grad, .{ .x = 0, .y = 0 }, 0, .{ .x = 0, .y = 0 }, 1, kCGGradientDrawsBeforeAndAfter);
+        return;
+    }
     const cx = f.x + f.w / 2;
     const cy = f.y + f.h / 2;
     CGContextDrawLinearGradient(cg, grad, .{ .x = cx - dx * len / 2, .y = cy - dy * len / 2 }, .{ .x = cx + dx * len / 2, .y = cy + dy * len / 2 }, kCGGradientDrawsBeforeAndAfter);
