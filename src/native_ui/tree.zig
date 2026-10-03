@@ -361,8 +361,48 @@ fn gradId(v: std.json.Value) u16 {
     return @intCast(@max(0, @min(x, std.math.maxInt(u16))));
 }
 
-/// A length: a number (px), "50%", "auto", or null.
-pub const Dim = std.json.Value;
+/// A length: a number (px), "50%", "auto", or none (null or any other
+/// string). 8 bytes, parsed straight from the props JSON (a std.json.Value
+/// was 48, and Props held fourteen of them by value).
+pub const Dim = union(enum) {
+    px: f32,
+    pct: f32,
+    auto,
+    none,
+
+    /// px as is, a percentage of `total`, 0 otherwise.
+    pub fn len(d: Dim, total: f32) f32 {
+        return switch (d) {
+            .px => |x| x,
+            .pct => |x| x / 100 * total,
+            else => 0,
+        };
+    }
+
+    pub fn fromValue(v: std.json.Value) Dim {
+        return switch (v) {
+            .integer => |i| .{ .px = @floatFromInt(i) },
+            .float => |x| .{ .px = @floatCast(x) },
+            .number_string => |s| .{ .px = std.fmt.parseFloat(f32, s) catch return .none },
+            .string => |s| fromString(s),
+            else => .none,
+        };
+    }
+
+    pub fn fromString(s: []const u8) Dim {
+        if (std.mem.eql(u8, s, "auto")) return .auto;
+        if (std.mem.endsWith(u8, s, "%")) return .{ .pct = std.fmt.parseFloat(f32, s[0 .. s.len - 1]) catch return .none };
+        return .none;
+    }
+
+    pub fn jsonParse(a: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Dim {
+        return fromValue(try std.json.innerParse(std.json.Value, a, source, options));
+    }
+
+    pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !Dim {
+        return fromValue(source);
+    }
+};
 
 pub const Props = struct {
     root: bool = false,
@@ -722,12 +762,7 @@ pub const Node = struct {
         var out: [4]f32 = undefined;
         const lim = @min(n.frame.w, n.frame.h) / 2;
         for (br, 0..) |v, i| {
-            out[i] = @min(lim, switch (v) {
-                .integer => |x| @as(f32, @floatFromInt(x)),
-                .float => |x| @as(f32, @floatCast(x)),
-                .string => |s| if (std.mem.endsWith(u8, s, "%")) (std.fmt.parseFloat(f32, s[0 .. s.len - 1]) catch 0) / 100 * @min(n.frame.w, n.frame.h) else 0,
-                else => 0,
-            });
+            out[i] = @min(lim, v.len(@min(n.frame.w, n.frame.h)));
         }
         return out;
     }
@@ -743,6 +778,12 @@ pub const Tree = struct {
     stamp_plans: std.ArrayList(StampPlan) = .empty,
     gpa: std.mem.Allocator,
     nodes: std.AutoHashMap(i64, *Node),
+    /// Nodes and text overrides come from pools: packed side by side (a
+    /// general allocator rounds a node up to its size class, which on the
+    /// first build is page faults), and a freed one is the next one made.
+    /// Their memory goes back with the tree.
+    node_pool: std.heap.MemoryPool(Node) = .empty,
+    text_pool: std.heap.MemoryPool(TextOverride) = .empty,
     root: ?*Node = null,
     config: yg.YGConfigRef,
     measure_ctx: *anyopaque,
@@ -795,6 +836,8 @@ pub const Tree = struct {
             t.gpa.destroy(style.*);
         }
         t.leaf_styles.deinit(t.gpa);
+        t.node_pool.deinit(t.gpa);
+        t.text_pool.deinit(t.gpa);
         yg.YGConfigFree(t.config);
     }
 
@@ -808,7 +851,7 @@ pub const Tree = struct {
         yg.YGNodeFree(n.yn);
         n.kids.deinit(t.gpa);
         n.arena.deinit();
-        t.gpa.destroy(n);
+        t.node_pool.destroy(n);
     }
 
     pub fn get(t: *Tree, id: i64) ?*Node {
@@ -827,7 +870,6 @@ pub const Tree = struct {
         errdefer style.arena.deinit();
         const a = style.arena.allocator();
         style.props = try std.json.parseFromSliceLeaky(Props, a, try wellFormedEscapes(a, json), .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
-        try ownProps(a, &style.props);
         applyYogaStyle(style.yn, style.props);
         try t.leaf_styles.put(t.gpa, id, style);
         t.leaf_style_bytes += json.len;
@@ -851,7 +893,7 @@ pub const Tree = struct {
         if (kind == .text) {
             const owned = try dupeUtf8Lossy(t.gpa, text);
             errdefer t.gpa.free(owned);
-            const o = try t.gpa.create(TextOverride);
+            const o = try t.text_pool.create(t.gpa);
             o.* = .{ .run = style.props.runs.?[0], .text = owned };
             o.run.t = owned;
             n.text_override = o;
@@ -976,7 +1018,7 @@ pub const Tree = struct {
         if (n.text_override) |o| {
             n.props.runs = null;
             t.gpa.free(o.text);
-            t.gpa.destroy(o);
+            t.text_pool.destroy(o);
             n.text_override = null;
         }
     }
@@ -993,7 +1035,7 @@ pub const Tree = struct {
         const previous_epoch = n.text_measure_epoch;
         const owned = try dupeUtf8Lossy(t.gpa, text);
         errdefer t.gpa.free(owned);
-        const o = n.text_override orelse try t.gpa.create(TextOverride);
+        const o = n.text_override orelse try t.text_pool.create(t.gpa);
         const run = runs[0];
         if (n.text_override != null) t.gpa.free(o.text);
         o.* = .{ .run = run, .text = owned };
@@ -1094,12 +1136,12 @@ pub const Tree = struct {
 
     fn create(t: *Tree, id: i64, kind: Kind) !void {
         if (t.nodes.get(id) != null) t.destroy(id);
-        const n = try t.gpa.create(Node);
+        const n = try t.node_pool.create(t.gpa);
         n.* = .{ .id = id, .kind = kind, .yn = yg.YGNodeNewWithConfig(t.config), .arena = .init(t.gpa), .tree = t };
         errdefer {
             yg.YGNodeFree(n.yn);
             n.arena.deinit();
-            t.gpa.destroy(n);
+            t.node_pool.destroy(n);
         }
         yg.YGNodeSetContext(n.yn, n);
         if (kind == .text or kind == .input or kind == .textarea or kind == .select or kind == .image) {
@@ -1189,15 +1231,10 @@ pub const Tree = struct {
         n.props = .{};
         const a = n.arena.allocator();
         // Parsed from the ops' JSON into the node's arena (the ops arena goes
-        // away): std.json copies strings and slices, not the Dims (JSON
-        // values), whose strings ownProps copies.
+        // away): std.json copies strings and slices; Dims hold no pointers.
         n.props = std.json.parseFromValueLeaky(Props, a, value, .{ .ignore_unknown_fields = true }) catch |err| blk: {
             log.warn("node {d}: bad props ({s})", .{ n.id, @errorName(err) });
             break :blk .{};
-        };
-        ownProps(a, &n.props) catch |err| {
-            n.props = .{};
-            return err;
         };
         if (n.props.val) |v| {
             n.pending_value = v;
@@ -1411,7 +1448,7 @@ pub const Tree = struct {
         // container's (the table shrinks to its columns up to that).
         const gaps = sp * @as(f32, @floatFromInt(ncols - 1));
         const own = edgesX(table.yn);
-        const explicit = if (table.props.w) |d| d != .null and !(d == .string and std.mem.eql(u8, d.string, "auto")) else false;
+        const explicit = if (table.props.w) |d| d == .px or d == .pct else false;
         const room = blk: {
             if (explicit) break :blk yg.YGNodeLayoutGetWidth(table.yn) - own;
             const parent = table.parent orelse break :blk std.math.inf(f32);
@@ -1674,47 +1711,6 @@ fn measureFn(node: yg.YGNodeConstRef, width: f32, width_mode: yg.YGMeasureMode, 
     return .{ .width = out[0], .height = out[1] };
 }
 
-/// A Dim's string into the node's arena (numbers need nothing).
-fn ownDim(a: std.mem.Allocator, d: *Dim) !void {
-    d.* = switch (d.*) {
-        .string, .number_string, .array, .object => try cloneValue(a, d.*),
-        else => return,
-    };
-}
-
-/// The Dims in parsed props, which still point into the ops' JSON.
-fn ownProps(a: std.mem.Allocator, p: *Props) !void {
-    inline for (std.meta.fields(Props)) |f| {
-        switch (f.type) {
-            ?Dim => if (@field(p, f.name)) |*d| try ownDim(a, d),
-            ?[4]Dim => if (@field(p, f.name)) |*arr| for (arr) |*d| try ownDim(a, d),
-            ?[4]?Dim => if (@field(p, f.name)) |*arr| for (arr) |*od| if (od.*) |*d| try ownDim(a, d),
-            else => {},
-        }
-    }
-    if (p.bg) |*bg| if (bg.gradient) |*g| if (g.radial) |*r| for (r) |*d| try ownDim(a, d);
-}
-
-fn cloneValue(a: std.mem.Allocator, v: std.json.Value) !std.json.Value {
-    return switch (v) {
-        .string => |s| .{ .string = try a.dupe(u8, s) },
-        .number_string => |s| .{ .number_string = try a.dupe(u8, s) },
-        .array => |arr| blk: {
-            var out = std.json.Array.init(a);
-            try out.ensureTotalCapacity(arr.items.len);
-            for (arr.items) |x| out.appendAssumeCapacity(try cloneValue(a, x));
-            break :blk .{ .array = out };
-        },
-        .object => |obj| blk: {
-            var out: std.json.ObjectMap = .empty;
-            var it = obj.iterator();
-            while (it.next()) |e| try out.put(a, try a.dupe(u8, e.key_ptr.*), try cloneValue(a, e.value_ptr.*));
-            break :blk .{ .object = out };
-        },
-        else => v,
-    };
-}
-
 // ---------------------------------------------------------------------------
 // CSS → Yoga
 
@@ -1740,21 +1736,24 @@ fn applyYogaStyle(y: yg.YGNodeRef, p: Props) void {
     dimNoAuto(y, p.maxh, yg.YGNodeStyleSetMaxHeight, yg.YGNodeStyleSetMaxHeightPercent);
     const edges = [4]yg.YGEdge{ yg.YGEdgeTop, yg.YGEdgeRight, yg.YGEdgeBottom, yg.YGEdgeLeft };
     for (edges, 0..) |e, i| {
-        const m: Dim = if (p.m) |mm| mm[i] else .{ .integer = 0 };
+        const m: Dim = if (p.m) |mm| mm[i] else .{ .px = 0 };
         switch (m) {
-            .string => |s| if (std.mem.eql(u8, s, "auto")) yg.YGNodeStyleSetMarginAuto(y, e) else if (pct(s)) |v| yg.YGNodeStyleSetMarginPercent(y, e, v) else yg.YGNodeStyleSetMargin(y, e, 0),
-            else => yg.YGNodeStyleSetMargin(y, e, dimPx(m) orelse 0),
+            .px => |v| yg.YGNodeStyleSetMargin(y, e, v),
+            .pct => |v| yg.YGNodeStyleSetMarginPercent(y, e, v),
+            .auto => yg.YGNodeStyleSetMarginAuto(y, e),
+            .none => yg.YGNodeStyleSetMargin(y, e, 0),
         }
-        const pd: Dim = if (p.pad) |pp| pp[i] else .{ .integer = 0 };
+        const pd: Dim = if (p.pad) |pp| pp[i] else .{ .px = 0 };
         switch (pd) {
-            .string => |s| if (pct(s)) |v| yg.YGNodeStyleSetPaddingPercent(y, e, v) else yg.YGNodeStyleSetPadding(y, e, 0),
+            .pct => |v| yg.YGNodeStyleSetPaddingPercent(y, e, v),
             else => yg.YGNodeStyleSetPadding(y, e, dimPx(pd) orelse 0),
         }
         yg.YGNodeStyleSetBorder(y, e, if (p.bw) |bw| bw[i] else 0);
         if (p.ins) |ins| {
             if (ins[i]) |v| switch (v) {
-                .string => |s| if (pct(s)) |x| yg.YGNodeStyleSetPositionPercent(y, e, x) else yg.YGNodeStyleSetPositionAuto(y, e),
-                else => yg.YGNodeStyleSetPosition(y, e, dimPx(v) orelse 0),
+                .px => |x| yg.YGNodeStyleSetPosition(y, e, x),
+                .pct => |x| yg.YGNodeStyleSetPositionPercent(y, e, x),
+                else => yg.YGNodeStyleSetPositionAuto(y, e),
             } else yg.YGNodeStyleSetPositionAuto(y, e);
         } else if (p.rel) |rel| {
             if (rel[i]) |v| yg.YGNodeStyleSetPosition(y, e, v) else yg.YGNodeStyleSetPositionAuto(y, e);
@@ -1770,31 +1769,26 @@ fn applyYogaStyle(y: yg.YGNodeRef, p: Props) void {
 
 fn dimPx(v: Dim) ?f32 {
     return switch (v) {
-        .integer => |i| @floatFromInt(i),
-        .float => |x| @floatCast(x),
+        .px => |x| x,
         else => null,
     };
-}
-
-fn pct(s: []const u8) ?f32 {
-    if (!std.mem.endsWith(u8, s, "%")) return null;
-    return std.fmt.parseFloat(f32, s[0 .. s.len - 1]) catch null;
 }
 
 fn dim(y: yg.YGNodeRef, v: ?Dim, set: anytype, set_pct: anytype, set_auto: anytype) void {
     const d = v orelse return set_auto(y);
     switch (d) {
-        .string => |s| if (pct(s)) |x| set_pct(y, x) else set_auto(y),
-        .null => set_auto(y),
-        else => set(y, dimPx(d) orelse return set_auto(y)),
+        .px => |x| set(y, x),
+        .pct => |x| set_pct(y, x),
+        else => set_auto(y),
     }
 }
 
 fn dimNoAuto(y: yg.YGNodeRef, v: ?Dim, set: anytype, set_pct: anytype) void {
     const d = v orelse return set(y, std.math.nan(f32));
     switch (d) {
-        .string => |s| if (pct(s)) |x| set_pct(y, x) else set(y, std.math.nan(f32)),
-        else => set(y, dimPx(d) orelse std.math.nan(f32)),
+        .px => |x| set(y, x),
+        .pct => |x| set_pct(y, x),
+        else => set(y, std.math.nan(f32)),
     }
 }
 
@@ -1848,7 +1842,7 @@ test "shared leaf styles own strings and isolate text and general updates" {
     try std.testing.expect(try t.createLeaf(11, .text, 1, "second"));
     const a = t.get(10).?;
     const b = t.get(11).?;
-    try std.testing.expectEqualStrings("50%", a.props.w.?.string);
+    try std.testing.expectEqual(@as(f32, 50), a.props.w.?.pct);
     try std.testing.expectEqualStrings("first Ω\x00", a.props.runs.?[0].t);
     try std.testing.expectEqualStrings("second", b.props.runs.?[0].t);
     const width = yg.YGNodeStyleGetWidth(a.yn);
@@ -1869,13 +1863,13 @@ test "shared leaf styles own strings and isolate text and general updates" {
     try std.testing.expectEqualStrings("general", a.props.runs.?[0].t);
     try std.testing.expectEqual(@as(f32, 22), a.props.runs.?[0].sz);
     try std.testing.expectEqual(@as(f32, 18), b.props.runs.?[0].sz);
-    try std.testing.expectEqualStrings("50%", b.props.w.?.string);
+    try std.testing.expectEqual(@as(f32, 50), b.props.w.?.pct);
     try std.testing.expectEqual(@as(f32, 90), yg.YGNodeStyleGetWidth(a.yn).value);
     try std.testing.expectEqual(@as(yg.YGUnit, yg.YGUnitPercent), yg.YGNodeStyleGetWidth(b.yn).unit);
     try std.testing.expectEqual(@as(f32, 50), yg.YGNodeStyleGetWidth(b.yn).value);
     try std.testing.expect(try t.defineLeafStyle(2, "{\"w\":8,\"h\":8,\"bg\":{\"color\":[255,0,0,1]}}"));
     try std.testing.expect(try t.createLeaf(12, .view, 2, ""));
-    try std.testing.expectEqual(@as(i64, 8), t.get(12).?.props.w.?.integer);
+    try std.testing.expectEqual(@as(f32, 8), t.get(12).?.props.w.?.px);
     try std.testing.expect(!yg.YGNodeHasMeasureFunc(t.get(12).?.yn));
     try std.testing.expect(!try t.defineLeafStyle(2, "{}"));
 }
@@ -2134,8 +2128,8 @@ test "direct text updates preserve props, dirty layout, and release overrides" {
     try std.testing.expectEqual(@as(f32, 18), run.sz);
     try std.testing.expectEqual(@as(f32, 700), run.w);
     try std.testing.expectEqual(@as(f32, 255), run.c[0]);
-    try std.testing.expectEqual(@as(i64, 100), n.props.w.?.integer);
-    try std.testing.expectEqual(@as(i64, 2), n.props.pad.?[1].integer);
+    try std.testing.expectEqual(@as(f32, 100), n.props.w.?.px);
+    try std.testing.expectEqual(@as(f32, 2), n.props.pad.?[1].px);
     for (0..10) |_| try std.testing.expect(try t.updateText(1, "again"));
     try std.testing.expect(!try t.updateText(99, "unknown"));
     try t.apply(
@@ -2174,11 +2168,11 @@ test "props' strings outlive the ops they came in" {
     // Another apply reuses the freed ops memory.
     try t.apply("[[\"c\",2,\"view\"],[\"p\",2,{\"w\":\"XXXXXXXX\",\"m\":[\"XXXXXXX\",1,2,\"XXXXXX\"],\"fd\":\"column\"}]]");
     const p = t.get(1).?.props;
-    try std.testing.expectEqualStrings("50%", p.w.?.string);
-    try std.testing.expectEqualStrings("auto", p.m.?[0].string);
-    try std.testing.expectEqualStrings("10%", p.m.?[3].string);
-    try std.testing.expectEqualStrings("5%", p.ins.?[1].?.string);
-    try std.testing.expectEqualStrings("71%", p.bg.?.gradient.?.radial.?[3].string);
+    try std.testing.expectEqual(@as(f32, 50), p.w.?.pct);
+    try std.testing.expectEqual(Dim.auto, p.m.?[0]);
+    try std.testing.expectEqual(@as(f32, 10), p.m.?[3].pct);
+    try std.testing.expectEqual(@as(f32, 5), p.ins.?[1].?.pct);
+    try std.testing.expectEqual(@as(f32, 71), p.bg.?.gradient.?.radial.?[3].pct);
     try std.testing.expectEqualStrings("row", p.fd.?);
 }
 
