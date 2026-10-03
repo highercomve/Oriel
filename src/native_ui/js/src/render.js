@@ -1108,6 +1108,8 @@ export class Renderer {
       // the drawing's coordinate space; the box scales it.
       props.cw = el.width;
       props.ch = el.height;
+      // Its id attribute: what the app's Zig code opens it by (canvas.zig).
+      if (el.id) props.eid = el.id;
       // Size: CSS width and height, else the attributes', else the
       // browser's 300x150. One CSS size set: the bitmap's ratio decides
       // the other, as a browser keeps the bitmap's intrinsic ratio.

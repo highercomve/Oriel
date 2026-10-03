@@ -185,6 +185,75 @@ border-radius. On Windows, `strokeText` outlines the font's own glyphs (no
 fallback fonts), and a radial gradient's two circles share a center offset
 as Direct2D draws them (the inner radius moves the stops).
 
+### Canvas from Zig
+
+With the native renderer, the app's Zig code can draw into a page's
+`<canvas>` itself, with no JavaScript per frame: `oriel.canvas`
+(`src/native_ui/zig_canvas.zig`). The page lays the canvas out (and its
+buttons, scores and menus); Zig simulates and draws.
+
+```zig
+const canvas = oriel.canvas;
+
+const Game = struct {
+    target: canvas.Canvas,
+    program: canvas.Program,
+    // … the game's state
+
+    fn frame(g: *Game, _: canvas.Frame) bool {
+        const p = &g.program;
+        p.begin();
+        p.fillStyle(canvas.rgb(0x10141b));
+        p.fillRect(0, 0, 640, 360);
+        p.circle(g.x, g.y, 6);
+        p.fillStyle(canvas.rgb(0x6d8bff));
+        p.fill();
+        return g.target.commit(p); // false: the window or the canvas went
+    }
+};
+
+// On the UI thread (a command, or after the page asked for it), once the
+// page shows <canvas id="game" width="640" height="360">:
+const window = oriel.App.getWindow("main").?;
+game.target = canvas.Canvas.open(window, "game") orelse return; // null: not native, or not rendered yet
+game.program = .init(gpa);
+try canvas.onFrame(window, &game, Game.frame); // each display frame
+```
+
+- **Finding the canvas**: by its element's `id` attribute (render.js sends
+  it with the canvas's props). A `Canvas` is a value holding the window's
+  engine serial and the node's id, no pointer: after the window closes or
+  the page replaces the element, `commit` finds the element again by id, or
+  returns false.
+- **The program**: the same model as the page's 2d context (paths, arcs,
+  rectangles, text, transforms, gradients: `CanvasCmd`), so every backend
+  replays it as a page's canvas (GTK and Apple bitmaps, Win32 Direct2D,
+  Android's hardware canvas through `Backend.canvas`). Coordinates are the
+  canvas's drawing space (its `width`/`height` attributes, `Canvas.size()`);
+  the box scales it as in a browser. Recording never fails: out of memory
+  marks the program and `commit` refuses it.
+- **Memory**: `commit` gives the program's memory to the tree and takes the
+  previous frame's back (the two arenas swap contents), so a program drawn
+  every frame allocates nothing once warm. The tree owns what was committed
+  until the next commit or the node goes.
+- **Threads**: build a program on any thread; `commit`, `open`, `onFrame`
+  and `stopFrames` run on the UI thread. The frame callback runs there, at
+  the display's rate (the same display-frame path as
+  `requestAnimationFrame`), and frames stop when no callback and no
+  `requestAnimationFrame` wants one. A simulation on a worker hands its
+  state (or a built program) to the UI thread with `App.runOnMain`.
+- **Who draws**: once Zig commits to a canvas, the page's own drawing into
+  it (its 2d context, or a `cv` prop) is ignored, until `release()`.
+- **The WebView** has no such canvas (`open` returns null; the module is
+  `oriel.canvas` only with `-Dnative_ui`): an app that supports both draws
+  with the page's 2d context there.
+
+render-bench runs the canvas balls both ways (`zig_balls.zig`). GTK, 180 Hz
+desktop: 1000 balls at 150 fps from Zig (13 µs of Zig work a frame, then
+the backend's 4.5 ms replay) against 90 from JavaScript (2.9 ms of physics
+and recording, 1.8 ms encoding, then the same replay); 200 balls hold the
+display's 180 either way.
+
 ## Milestones
 
 1. **Linux prototype** (`-Dnative_ui`): QuickJS-ng and Yoga built with Zig,
