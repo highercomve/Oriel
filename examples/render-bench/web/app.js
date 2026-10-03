@@ -146,6 +146,34 @@ async function timeCanvasBalls(count, ms) {
     runs.push(frames / ((performance.now() - t0) / 1000));
   }
   show(`canvas ${count} balls`, runs, "fps");
+  await timeZigBalls(count, ms);
+}
+
+// The same balls drawn by the app's Zig code (zig_balls.zig, oriel.canvas):
+// no JavaScript per frame. Native renderer only.
+async function timeZigBalls(count, ms) {
+  if (window.webkit || window.chrome?.webview) return;
+  const stage = $("stage");
+  const runs = [], costs = [];
+  for (let r = 0; r < RUNS; r++) {
+    stage.textContent = "";
+    const el = document.createElement("canvas");
+    el.id = "zigballs";
+    el.width = stage.clientWidth || 600; el.height = stage.clientHeight || 300;
+    el.style.width = "100%"; el.style.height = "100%";
+    stage.append(el);
+    await frame();
+    if (!(await invoke("zig_balls", { count, ms }))) return;
+    let res;
+    do {
+      await new Promise((done) => setTimeout(done, 100));
+      res = await invoke("zig_balls_result");
+    } while (!res.done);
+    runs.push(res.fps);
+    costs.push(res.frame_us);
+  }
+  show(`canvas ${count} balls (Zig)`, runs, "fps");
+  show(`canvas ${count} balls (Zig), Zig work per frame`, costs, "µs");
 }
 
 async function run() {

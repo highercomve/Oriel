@@ -133,6 +133,8 @@ pub const FontSpec = struct { size: f32, weight: u16, italic: bool, mono: bool }
 // usize: 32-bit targets (armv7, x86 Android) have no 64-bit atomic add. Wrapping
 // would take 4 billion engines in one process.
 var next_serial: std.atomic.Value(usize) = .init(0);
+/// The open engines by serial (UI thread).
+var live: std.AutoHashMapUnmanaged(u64, *Engine) = .empty;
 
 pub const Engine = struct {
     gpa: std.mem.Allocator,
@@ -155,6 +157,19 @@ pub const Engine = struct {
     frame_pending: bool = false,
     /// ORIEL_NUI_PAGE: the file read for index.html (tools/flatten_diff).
     page_override: ?[]u8 = null,
+    /// The page asked for an animation frame (host.vsync): the next display
+    /// frame runs its requestAnimationFrame callbacks.
+    js_frame_wanted: bool = false,
+    /// The app's Zig code at each display frame (canvas.zig onFrame).
+    frame_hooks: std.ArrayList(FrameHook) = .empty,
+    /// Running them: what they commit shows with this frame.
+    in_frame_hooks: bool = false,
+
+    /// A Zig callback at each display frame while it returns true.
+    pub const FrameHook = struct {
+        ctx: *anyopaque,
+        func: *const fn (ctx: *anyopaque, e: *Engine, interval_ms: f64) bool,
+    };
 
     pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, width: f32, height: f32) !*Engine {
         const e = try gpa.create(Engine);
@@ -194,10 +209,19 @@ pub const Engine = struct {
             _ = oqjs_eval(e.js, flag, flag.len, "<native>");
         }
         if (oqjs_eval_bytecode(e.js, runtime_bytecode.ptr, runtime_bytecode.len) < 0) return error.RuntimeFailed;
+        try live.put(std.heap.smp_allocator, e.serial, e);
         return e;
     }
 
+    /// The engine with this serial, if its window is still open (UI
+    /// thread): what a Zig handle that outlived its window finds.
+    pub fn bySerial(serial: u64) ?*Engine {
+        return live.get(serial);
+    }
+
     pub fn destroy(e: *Engine) void {
+        _ = live.remove(e.serial);
+        e.frame_hooks.deinit(e.gpa);
         oqjs_free(e.js);
         if (e.page_override) |page| e.gpa.free(page);
         e.tree.deinit();
@@ -246,7 +270,59 @@ pub const Engine = struct {
     /// animation frame. `interval_ms`: the display's refresh interval (0
     /// when unknown).
     pub fn displayFrame(e: *Engine, interval_ms: f64) void {
-        _ = e.callf("__oriel.vsync({d:.3})", .{interval_ms});
+        // The app's Zig first (a canvas it draws), then the page's frame.
+        e.in_frame_hooks = true;
+        var i: usize = 0;
+        while (i < e.frame_hooks.items.len) {
+            const h = e.frame_hooks.items[i];
+            if (h.func(h.ctx, e, interval_ms)) {
+                i += 1;
+            } else {
+                _ = e.frame_hooks.orderedRemove(i);
+            }
+        }
+        e.in_frame_hooks = false;
+        if (e.frame_hooks.items.len > 0) e.requestDisplayFrame();
+        if (e.js_frame_wanted) {
+            e.js_frame_wanted = false;
+            _ = e.callf("__oriel.vsync({d:.3})", .{interval_ms});
+        } else if (e.in_call == 0) {
+            // Only Zig drew: show it without a JS render.
+            e.paintNow();
+        }
+    }
+
+    /// Lay out if needed and draw what changed, without the page's render
+    /// (a canvas the app's Zig drew).
+    pub fn paintNow(e: *Engine) void {
+        if (e.tree.needsLayout()) {
+            e.tree.layout();
+            e.relaid = true;
+        }
+        if (e.relaid or e.tree.paint_dirty) {
+            e.relaid = false;
+            e.tree.paint_dirty = false;
+            e.backend.laid_out(e.backend.ctx);
+        }
+    }
+
+    /// Run `hook` at each display frame until it returns false (UI thread).
+    pub fn addFrameHook(e: *Engine, hook: FrameHook) !void {
+        try e.frame_hooks.append(e.gpa, hook);
+        e.requestDisplayFrame();
+    }
+
+    /// Stop the hooks with this context.
+    pub fn removeFrameHooks(e: *Engine, ctx: *anyopaque) void {
+        var i: usize = 0;
+        while (i < e.frame_hooks.items.len) {
+            if (e.frame_hooks.items[i].ctx == ctx) _ = e.frame_hooks.orderedRemove(i) else i += 1;
+        }
+    }
+
+    /// The next display frame, or a 60 Hz timer when the backend has none.
+    fn requestDisplayFrame(e: *Engine) void {
+        if (e.backend.request_display_frame) |request| request(e.backend.ctx);
     }
 
     /// A command's answer: `json` is its result, or the error text when !ok.
@@ -464,6 +540,7 @@ export fn oriel_nui_warm_fonts(p: *anyopaque, v: [*]const f64, count: usize) voi
 export fn oriel_nui_vsync(p: *anyopaque) c_int {
     const e = engineOf(p);
     const request = e.backend.request_display_frame orelse return 0;
+    e.js_frame_wanted = true;
     request(e.backend.ctx);
     return 1;
 }

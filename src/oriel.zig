@@ -32,6 +32,10 @@ pub const android = if (target.is_android) @import("platform/android/android.zig
 pub const ios = if (target.is_ios) @import("platform/ios/ios.zig") else struct {};
 /// OS permissions: declared in build.zig, queried and requested at runtime.
 pub const permissions = @import("core/permissions.zig");
+/// -Dnative_ui: the app's Zig code draws into a page's <canvas>
+/// (native_ui/zig_canvas.zig; docs/native-renderer.md, "Canvas from Zig").
+/// Without it there is no native canvas: check `oriel.options.native_ui`.
+pub const canvas = if (options.native_ui) @import("native_ui/zig_canvas.zig") else struct {};
 
 // Built-in modules.
 pub const tray = if (options.tray) @import("modules/tray.zig") else struct {};

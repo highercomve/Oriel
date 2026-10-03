@@ -704,8 +704,7 @@ test "wellFormedEscapes makes lone surrogates U+FFFD, keeps the rest" {
     const a = arena.allocator();
     const clean = "[\"p\",1,{\"t\":\"ok\"}]";
     try std.testing.expect((try wellFormedEscapes(a, clean)).ptr == clean.ptr);
-    try std.testing.expectEqualStrings("\"a\\ufffdb\\ufffd\\ud83d\\ude00\\\\ud800\\ufffd\"",
-        try wellFormedEscapes(a, "\"a\\ud83db\\ude00\\ud83d\\ude00\\\\ud800\\uDBFF\""));
+    try std.testing.expectEqualStrings("\"a\\ufffdb\\ufffd\\ud83d\\ude00\\\\ud800\\ufffd\"", try wellFormedEscapes(a, "\"a\\ud83db\\ude00\\ud83d\\ude00\\\\ud800\\uDBFF\""));
     const v = try std.json.parseFromSliceLeaky(std.json.Value, a, try wellFormedEscapes(a, "[\"x\\ud800\"]"), .{});
     try std.testing.expectEqualStrings("x\u{FFFD}", v.array.items[0].string);
 }
@@ -771,6 +770,9 @@ pub const Node = struct {
     /// props arena) or host.canvas (in canvas_arena, kept across props).
     canvas: ?[]const CanvasCmd = null,
     canvas_from_props: bool = false,
+    /// The app's Zig code draws it (commitCanvas): the page's recordings
+    /// (host.canvas, `cv`) are ignored until releaseCanvas.
+    canvas_zig: bool = false,
     canvas_arena: ?*std.heap.ArenaAllocator = null,
     /// After layout: the frame in window coordinates, the visible part.
     frame: Rect = .{},
@@ -894,6 +896,9 @@ pub const Tree = struct {
     /// (leafOnly); off: always lay out (tests compare the two).
     leaf_only: bool = true,
     pending_texts: std.ArrayList(PendingText) = .empty,
+    /// <canvas> nodes by their element's id attribute (render.js sends it
+    /// as `eid`): what canvas.zig opens. Keys owned.
+    canvas_eids: std.StringHashMapUnmanaged(i64) = .empty,
     settle_nodes: std.ArrayList(*Node) = .empty,
 
     /// A text changed, before its measure: what it was, for the
@@ -921,6 +926,9 @@ pub const Tree = struct {
         }
         t.leaf_styles.deinit(t.gpa);
         t.pending_texts.deinit(t.gpa);
+        var eids = t.canvas_eids.keyIterator();
+        while (eids.next()) |k| t.gpa.free(k.*);
+        t.canvas_eids.deinit(t.gpa);
         t.settle_nodes.deinit(t.gpa);
         t.node_pool.deinit();
         t.text_pool.deinit();
@@ -929,6 +937,7 @@ pub const Tree = struct {
 
     fn freeNode(t: *Tree, n: *Node) void {
         if (t.on_remove) |cb| cb(t.measure_ctx, n);
+        if (n.kind == .canvas) t.forgetCanvasEid(n.id);
         if (n.canvas_arena) |ar| {
             ar.deinit();
             t.gpa.destroy(ar);
@@ -1412,6 +1421,7 @@ pub const Tree = struct {
     /// in an arena of its own, outside its props.
     pub fn setCanvas(t: *Tree, id: i64, nums: []const f64, strs: []const []const u8) !bool {
         const n = t.nodes.get(id) orelse return false;
+        if (n.canvas_zig) return true; // the app's Zig draws it
         const arena = n.canvas_arena orelse blk: {
             const ar = try t.gpa.create(std.heap.ArenaAllocator);
             ar.* = .init(t.gpa);
@@ -1426,6 +1436,66 @@ pub const Tree = struct {
         t.paint_dirty = true;
         if (t.on_canvas) |cb| cb(t.measure_ctx, n);
         return true;
+    }
+
+    /// A program from the app's Zig code (canvas.zig): `cmds` are in
+    /// `arena`, whose memory the node takes; `arena` gets the memory of the
+    /// node's last program back (the two arenas swap their contents, each
+    /// struct staying with its owner), for the next program to reuse. From
+    /// now on the page's recordings don't replace it (releaseCanvas).
+    /// False: no canvas with this id (or no memory for its arena).
+    pub fn commitCanvas(t: *Tree, id: i64, cmds: []const CanvasCmd, arena: *std.heap.ArenaAllocator) bool {
+        const n = t.nodes.get(id) orelse return false;
+        if (n.kind != .canvas) return false;
+        const mine = n.canvas_arena orelse blk: {
+            const ar = t.gpa.create(std.heap.ArenaAllocator) catch return false;
+            ar.* = .init(t.gpa);
+            n.canvas_arena = ar;
+            break :blk ar;
+        };
+        std.mem.swap(std.heap.ArenaAllocator, mine, arena);
+        n.canvas = cmds;
+        n.canvas_from_props = false;
+        n.canvas_zig = true;
+        t.paint_dirty = true;
+        if (t.on_canvas) |cb| cb(t.measure_ctx, n);
+        return true;
+    }
+
+    /// The page draws node `id` again (its next recording replaces the
+    /// Zig program).
+    pub fn releaseCanvas(t: *Tree, id: i64) void {
+        const n = t.nodes.get(id) orelse return;
+        n.canvas_zig = false;
+    }
+
+    /// The canvas node whose element has this id attribute, if any.
+    pub fn canvasByEid(t: *Tree, eid: []const u8) ?*Node {
+        const id = t.canvas_eids.get(eid) orelse return null;
+        const n = t.nodes.get(id) orelse return null;
+        return if (n.kind == .canvas) n else null;
+    }
+
+    fn noteCanvasEid(t: *Tree, id: i64, eid: []const u8) void {
+        if (t.canvas_eids.get(eid)) |have| if (have == id) return;
+        t.forgetCanvasEid(id);
+        if (eid.len == 0) return;
+        if (t.canvas_eids.getEntry(eid)) |e| {
+            e.value_ptr.* = id;
+            return;
+        }
+        const key = t.gpa.dupe(u8, eid) catch return;
+        t.canvas_eids.put(t.gpa, key, id) catch t.gpa.free(key);
+    }
+
+    fn forgetCanvasEid(t: *Tree, id: i64) void {
+        var it = t.canvas_eids.iterator();
+        while (it.next()) |e| if (e.value_ptr.* == id) {
+            const key = e.key_ptr.*;
+            t.canvas_eids.removeByPtr(e.key_ptr);
+            t.gpa.free(key);
+            return;
+        };
     }
 
     /// tx, ty, sc, rot, op as given (null: unset): drawing and frames only
@@ -1478,13 +1548,18 @@ pub const Tree = struct {
         }
         // A canvas's drawing program in its props (its arena holds the
         // strings); one host.canvas sent stays (it isn't in the props).
-        if (n.canvas_from_props) n.canvas = null;
-        if (value == .object) if (value.object.get("cv")) |cv| {
-            if (parseCanvasCmds(a, cv)) |cmds| {
-                n.canvas = cmds;
-                n.canvas_from_props = true;
-            } else |err| log.warn("node {d}: bad canvas ops ({s})", .{ n.id, @errorName(err) });
-        };
+        if (n.kind == .canvas and value == .object) if (value.object.get("eid")) |eid| if (eid == .string) t.noteCanvasEid(n.id, eid.string);
+        if (n.canvas_zig) {
+            // The app's Zig draws it: its program stays.
+        } else {
+            if (n.canvas_from_props) n.canvas = null;
+            if (value == .object) if (value.object.get("cv")) |cv| {
+                if (parseCanvasCmds(a, cv)) |cmds| {
+                    n.canvas = cmds;
+                    n.canvas_from_props = true;
+                } else |err| log.warn("node {d}: bad canvas ops ({s})", .{ n.id, @errorName(err) });
+            };
+        }
         styleYoga(n);
         // The props as sent, valid during the call (the ops arena).
         if (t.on_props) |cb| cb(t.measure_ctx, n, value);
@@ -3168,11 +3243,11 @@ test "decodeCanvas makes the commands parseCanvasCmds makes from JSON" {
     , .{});
     const strs = [_][]const u8{ "serif", "hi", "yo" };
     const nums = [_]f64{
-        1, 21, 0, 255, 0, 0, 0.5, 22, 1, 3, 0, 0, 0, 23, 2, 25, 1, 26, 2, 27, 2, 28, 3,
-        29, 1, 700, 12, 0, 3, 14, 10, 20, 5, 0, 6.28, 1, 6, 0, 19, 1, 1, 2, 20, 2, 3, 4,
-        30, 3, 0, 0, 10, 0, 32, 3, 0.5, 1, 2, 3, 1, 31, 4, 1, 2, 3, 4, 5, 6, 8, 1, 2, 9, 2, 2, 10, 0.5,
-        11, 1, 1, 12, 2, 2, 13, 0, 0, 4, 4, 15, 1, 2, 3, 4, 5, 6, 4, 7, 1, 5, 16, 0, 0, 1, 1,
-        17, 0, 0, 2, 2, 18, 0, 0, 3, 3, 24, 0.25, 2,
+        1,  21, 0,   255, 0,  0,   0.5, 22, 1,   3,  0,  0,    0,  23, 2, 25, 1, 26, 2, 27, 2,  28,   3,
+        29, 1,  700, 12,  0,  3,   14,  10, 20,  5,  0,  6.28, 1,  6,  0, 19, 1, 1,  2, 20, 2,  3,    4,
+        30, 3,  0,   0,   10, 0,   32,  3,  0.5, 1,  2,  3,    1,  31, 4, 1,  2, 3,  4, 5,  6,  8,    1,
+        2,  9,  2,   2,   10, 0.5, 11,  1,  1,   12, 2,  2,    13, 0,  0, 4,  4, 15, 1, 2,  3,  4,    5,
+        6,  4,  7,   1,   5,  16,  0,   0,  1,   1,  17, 0,    0,  2,  2, 18, 0, 0,  3, 3,  24, 0.25, 2,
     };
     const want = try parseCanvasCmds(a, json);
     const got = try decodeCanvas(a, &nums, &strs);
@@ -3258,4 +3333,50 @@ test "a text in a wrapping row starts from its unwrapped width, as CSS's max-con
 
 test {
     _ = @import("slab_pool.zig");
+    _ = @import("zig_canvas.zig");
+}
+
+test "a program committed from Zig: found by the element's id, kept over the page's, released" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var ctx: u8 = 0;
+    var t = Tree.init(gpa, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",1,"view"],["c",2,"canvas"],["p",2,{"eid":"game","cw":300,"ch":150}],["k",1,[2]],["r",1]]
+    );
+    const n = t.canvasByEid("game").?;
+    try std.testing.expectEqual(@as(i64, 2), n.id);
+    try std.testing.expect(t.canvasByEid("other") == null);
+    // Two frames: each commit swaps arenas, the program reuses the last.
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    for (0..2) |frame| {
+        _ = arena.reset(.retain_capacity);
+        const cmds = try arena.allocator().alloc(CanvasCmd, 2);
+        cmds[0] = .{ .fill_style = .{ .color = .{ 1, 2, 3, 1 } } };
+        cmds[1] = .{ .fill_rect = .{ 0, 0, @floatFromInt(frame + 10), 5 } };
+        t.paint_dirty = false;
+        try std.testing.expect(t.commitCanvas(2, cmds, &arena));
+        try std.testing.expect(t.paint_dirty);
+        try std.testing.expectEqual(@as(f32, @floatFromInt(frame + 10)), n.canvas.?[1].fill_rect[2]);
+    }
+    // The page's recording doesn't replace it, nor its props.
+    try std.testing.expect(try t.setCanvas(2, &.{ 16, 0, 0, 1, 1 }, &.{}));
+    try std.testing.expectEqual(@as(usize, 2), n.canvas.?.len);
+    try t.apply(
+        \\[["p",2,{"eid":"game","cw":300,"ch":150,"cv":[["fr",0,0,1,1]]}]]
+    );
+    try std.testing.expectEqual(@as(usize, 2), n.canvas.?.len);
+    // Released: the page draws it again.
+    t.releaseCanvas(2);
+    try std.testing.expect(try t.setCanvas(2, &.{ 16, 0, 0, 1, 1 }, &.{}));
+    try std.testing.expectEqual(@as(usize, 1), n.canvas.?.len);
+    // Not a canvas, or gone: nothing taken.
+    try std.testing.expect(!t.commitCanvas(1, &.{}, &arena));
+    try t.apply(
+        \\[["d",2]]
+    );
+    try std.testing.expect(t.canvasByEid("game") == null);
+    try std.testing.expect(!t.commitCanvas(2, &.{}, &arena));
 }
