@@ -4459,7 +4459,7 @@ globalThis.atob ??= (s) => {
     return ret + str.substr(lastIdx);
   }
   function getEscaper(regex, map) {
-    return function escape4(data) {
+    return function escape5(data) {
       let match;
       let lastIdx = 0;
       let result = "";
@@ -6255,7 +6255,7 @@ globalThis.atob ??= (s) => {
     ">": "&gt;"
   };
   var pe = (m) => esca[m];
-  var escape2 = (es) => replace.call(es, ca, pe);
+  var escape3 = (es) => replace.call(es, ca, pe);
 
   // vendor/linkedom/esm/interface/attr.js
   var QUOTE = /"/g;
@@ -6288,7 +6288,7 @@ globalThis.atob ??= (s) => {
       if (emptyAttributes.has(name) && !value) {
         return ignoreCase(this) ? name : `${name}=""`;
       }
-      const escapedValue = (ignoreCase(this) ? value : escape2(value)).replace(QUOTE, "&quot;");
+      const escapedValue = (ignoreCase(this) ? value : escape3(value)).replace(QUOTE, "&quot;");
       return `${name}="${escapedValue}"`;
     }
     toJSON() {
@@ -8911,7 +8911,7 @@ globalThis.atob ??= (s) => {
       return new _Text(ownerDocument, data);
     }
     toString() {
-      return escape2(this[VALUE]);
+      return escape3(this[VALUE]);
     }
   };
   var createText = (ownerDocument, data = "") => {
@@ -9785,7 +9785,7 @@ globalThis.atob ??= (s) => {
       if (name === "class")
         return this.className;
       const attribute2 = this.getAttributeNode(name);
-      return attribute2 && (ignoreCase(this) ? attribute2.value : escape2(attribute2.value));
+      return attribute2 && (ignoreCase(this) ? attribute2.value : escape3(attribute2.value));
     }
     getAttributeNode(name) {
       let next = this[NEXT];
@@ -12971,6 +12971,15 @@ globalThis.atob ??= (s) => {
         return box(prop2, (side, n2) => `${n2}-${side}`);
       case "inset":
         return box(prop2, (side) => side);
+      // Horizontal writing: inline is left and right, block top and bottom.
+      case "inset-inline":
+      case "inset-block": {
+        const [a, b = a] = splitSpaces(value);
+        const [s, e] = prop2 === "inset-inline" ? ["left", "right"] : ["top", "bottom"];
+        out[s] = a;
+        out[e] = b;
+        return;
+      }
       case "border-width":
         return box(prop2, (side) => `border-${side}-width`);
       case "border-style":
@@ -13029,6 +13038,12 @@ globalThis.atob ??= (s) => {
           out["flex-basis"] = "0%";
           return;
         }
+        if (v.length === 1) {
+          out["flex-grow"] = "1";
+          out["flex-shrink"] = "1";
+          out["flex-basis"] = v[0];
+          return;
+        }
         out["flex-grow"] = v[0] ?? "0";
         if (v.length === 2) {
           if (/^[\d.]+$/.test(v[1])) out["flex-shrink"] = v[1];
@@ -13056,6 +13071,18 @@ globalThis.atob ??= (s) => {
         const [a, j = a] = splitSpaces(value);
         out["align-items"] = a;
         out["justify-items"] = j;
+        return;
+      }
+      case "place-content": {
+        const [a, j = a] = splitSpaces(value);
+        out["align-content"] = a;
+        out["justify-content"] = j;
+        return;
+      }
+      case "place-self": {
+        const [a, j = a] = splitSpaces(value);
+        out["align-self"] = a;
+        out["justify-self"] = j;
         return;
       }
       case "background":
@@ -13235,7 +13262,7 @@ globalThis.atob ??= (s) => {
     v = String(v).trim();
     if (v === "auto" || v === "none" || v === "normal") return v === "auto" ? "auto" : null;
     if (v === "0") return 0;
-    let m = /^(-?[\d.]+)(px|rem|em|%|vh|vw|vmin|vmax|pt|ch|ex)?$/.exec(v);
+    let m = /^(-?[\d.]+)(px|rem|em|%|[sdl]?vh|[sdl]?vw|vmin|vmax|pt|ch|ex)?$/.exec(v);
     if (m) {
       const n2 = parseFloat(m[1]);
       switch (m[2]) {
@@ -13251,9 +13278,16 @@ globalThis.atob ??= (s) => {
           return n2 * fontSize * 0.5;
         case "pt":
           return n2 * 4 / 3;
+        // The small, dynamic and large viewport units: a window has one viewport.
         case "vh":
+        case "svh":
+        case "dvh":
+        case "lvh":
           return n2 * viewport.height / 100;
         case "vw":
+        case "svw":
+        case "dvw":
+        case "lvw":
           return n2 * viewport.width / 100;
         case "vmin":
           return n2 * Math.min(viewport.width, viewport.height) / 100;
@@ -13835,13 +13869,17 @@ globalThis.atob ??= (s) => {
   };
 
   // src/icons.js
-  function iconFor(svg, cs, doc) {
+  function iconFor(svg, cs, doc, files) {
     const current = color(cs.color) || [0, 0, 0, 1];
     let root = svg;
     const use = svg.querySelector("use");
     if (use) {
-      const href = (use.getAttribute("href") || use.getAttribute("xlink:href") || "").replace(/^#/, "");
-      const sym = href && doc.getElementById(href);
+      const href = use.getAttribute("href") || use.getAttribute("xlink:href") || "";
+      const hash2 = href.indexOf("#");
+      const file = hash2 < 0 ? href : href.slice(0, hash2);
+      const id = hash2 < 0 ? "" : href.slice(hash2 + 1);
+      if (file) doc = files?.(file);
+      const sym = id && doc?.getElementById(id);
       if (!sym) return null;
       root = sym;
     }
@@ -13853,10 +13891,76 @@ globalThis.atob ??= (s) => {
     if (!shapes.length) return null;
     return { vb, shapes };
   }
+  function svgScope(text, doc) {
+    const holder = doc.createElement("div");
+    holder.innerHTML = text.replace(/^\s*<\?xml[^>]*>/, "");
+    const svg = holder.querySelector("svg");
+    if (!svg) return null;
+    const ids = /* @__PURE__ */ new Map();
+    const walk = (el) => {
+      const id = el.getAttribute("id");
+      if (id && !ids.has(id)) ids.set(id, el);
+      for (const c of el.children) walk(c);
+    };
+    walk(svg);
+    return { svg, getElementById: (id) => ids.get(id) || null };
+  }
+  function svgDataText(src) {
+    const m = /^data:image\/svg\+xml(;[^,]*)?,(.*)$/s.exec(src);
+    if (!m) return null;
+    try {
+      if (/;base64/i.test(m[1] || "")) {
+        const bin = atob(m[2]);
+        try {
+          return decodeURIComponent(escape(bin));
+        } catch {
+          return bin;
+        }
+      }
+      return decodeURIComponent(m[2]);
+    } catch {
+      return null;
+    }
+  }
+  function svgSize(svg, vb) {
+    const px = (a) => {
+      const v = svg.getAttribute(a);
+      return v && /^[\d.]+(px)?$/.test(v.trim()) ? parseFloat(v) : void 0;
+    };
+    let w = px("width"), h = px("height");
+    const ratio = vb[2] > 0 && vb[3] > 0 ? vb[2] / vb[3] : 0;
+    if (w === void 0 && h !== void 0 && ratio) w = h * ratio;
+    if (h === void 0 && w !== void 0 && ratio) h = w / ratio;
+    if (w === void 0 || h === void 0) {
+      w = vb[2] || 300;
+      h = vb[3] || 150;
+    }
+    return { w, h, ratio };
+  }
+  var SKIP = /* @__PURE__ */ new Set([
+    "defs",
+    "symbol",
+    "title",
+    "desc",
+    "style",
+    "metadata",
+    "lineargradient",
+    "linearGradient",
+    "radialgradient",
+    "radialGradient",
+    "mask",
+    "clippath",
+    "clipPath",
+    "filter",
+    "pattern",
+    "marker",
+    "text"
+  ]);
   function collect2(el, inherited, current, doc, out) {
     for (const c of el.children) {
       const tag = c.localName;
-      if (tag === "defs" || tag === "symbol" || tag === "title" || tag === "lineargradient" || tag === "linearGradient") continue;
+      if (SKIP.has(tag)) continue;
+      if (c.hasAttribute("mask")) continue;
       const paint = paintOf(c, inherited);
       if (tag === "g") {
         collect2(c, paint, current, doc, out);
@@ -14464,7 +14568,8 @@ li { display: list-item; }
 button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
 button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
-body { margin: 8px; font-size: 16px; line-height: 1.2; color: black; }
+html { font-size: 16px; line-height: 1.2; color: black; }
+body { margin: 8px; }
 p, ul, ol, dl, blockquote, pre, figure { margin-top: 1em; margin-bottom: 1em; }
 ul, ol { padding-left: 40px; }
 h1 { font-size: 2em; margin: .67em 0; font-weight: bold; }
@@ -14499,7 +14604,7 @@ col, colgroup { display: none; }
     for (const c of ["top-left", "top-right", "bottom-right", "bottom-left"]) if (nonZero(cs[`border-${c}-radius`])) return true;
     return nonZero(cs["margin-left"]) || nonZero(cs["margin-right"]);
   }
-  var SKIP = /* @__PURE__ */ new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
+  var SKIP2 = /* @__PURE__ */ new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
   var NATIVE_ID_BASE = 2 ** 30;
   var STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus"];
   function splitCompounds(sel) {
@@ -14537,6 +14642,7 @@ col, colgroup { display: none; }
       this.ids = /* @__PURE__ */ new WeakMap();
       this.owner = /* @__PURE__ */ new Map();
       this.prev = /* @__PURE__ */ new Map();
+      this.svgFiles = /* @__PURE__ */ new Map();
       this.tx = new Transitions();
       this.specs = /* @__PURE__ */ new Map();
       this.anim = new Animations();
@@ -15406,7 +15512,7 @@ col, colgroup { display: none; }
     }
     build(el, parentCS, nodes, ctx) {
       const tag = el.localName;
-      if (SKIP.has(tag)) return null;
+      if (SKIP2.has(tag)) return null;
       const rematch = !!ctx.rematch || this.marks.get(el) === 2;
       const cs = this.style(el, parentCS, !!ctx.rematch);
       let display = cs.display || "inline";
@@ -15430,7 +15536,7 @@ col, colgroup { display: none; }
       }
       if (tag === "svg") {
         if (el.querySelector("use")) this.volatile.add(el);
-        const icon = iconFor(el, cs, this.doc);
+        const icon = iconFor(el, cs, this.doc, (file) => this.svgFile(file));
         if (!icon) return null;
         props.icon = icon;
         for (const [k, a] of [["w", "width"], ["h", "height"]]) {
@@ -15442,6 +15548,22 @@ col, colgroup { display: none; }
       if (tag === "img") {
         const src = el.getAttribute("src") || "";
         if (!src) return null;
+        const svg = /^data:image\/svg\+xml/.test(src) || /\.svg([?#]|$)/i.test(src) ? this.svgFile(src) : null;
+        const icon = svg && iconFor(svg.svg, { color: "black" }, svg, (file) => this.svgFile(file));
+        if (icon) {
+          props.icon = icon;
+          for (const k of ["w", "h"]) if (props[k] === "auto") delete props[k];
+          for (const [k, a] of [["w", "width"], ["h", "height"]]) {
+            const v = el.getAttribute(a);
+            if (props[k] === void 0 && v && /^[\d.]+(px)?$/.test(v.trim())) props[k] = parseFloat(v);
+          }
+          const size = svgSize(svg.svg, icon.vb);
+          if (props.w === void 0 && props.h === void 0) {
+            props.w = size.w;
+            props.h = size.h;
+          } else if ((props.w === void 0 || props.h === void 0) && size.ratio) props.ar = size.ratio;
+          return this.put(nodes, id, "icon", props, [], fixedNode);
+        }
         props.src = src.startsWith("data:") ? src : src.replace(/^(app:\/\/[^/]*)?\.?\//, "");
         if (cs["object-fit"] && cs["object-fit"] !== "fill") props.fit = cs["object-fit"];
         for (const [k, a] of [["w", "width"], ["h", "height"]]) {
@@ -15758,6 +15880,19 @@ col, colgroup { display: none; }
         }
       }
     }
+    // An SVG file of the app's (`icons.svg`, `/assets/vite.svg`) or a data:
+    // URL, parsed once: its scope (icons.js svgScope), or null.
+    svgFile(src) {
+      if (this.svgFiles.has(src)) return this.svgFiles.get(src);
+      let text = svgDataText(src);
+      if (text === null && !src.startsWith("data:") && !/^[a-z]+:\/\/(?!app)/i.test(src)) {
+        const path = src.replace(/^(app:\/\/[^/]*)?\.?\//, "").replace(/[?#].*$/, "");
+        text = this.host.asset?.(path) ?? null;
+      }
+      const scope = text ? svgScope(text, this.doc) : null;
+      this.svgFiles.set(src, scope);
+      return scope;
+    }
     putClick(props, el) {
       if (el.localName === "button" || el.localName === "a" || el.localName === "label" || el.localName === "summary" || el.hasAttribute("onclick") || listens(el)) props.click = true;
       if (el.hasAttribute("disabled")) props.dis = true;
@@ -15771,7 +15906,7 @@ col, colgroup { display: none; }
       return id;
     }
     isInline(el, parentCS, rematch = false) {
-      if (SKIP.has(el.localName)) return true;
+      if (SKIP2.has(el.localName)) return true;
       if (el.localName === "svg" || el.localName === "input" || el.localName === "textarea" || el.localName === "select" || el.localName === "button" || el.localName === "img" || el.localName === "canvas") return false;
       const cs = this.style(el, parentCS, rematch);
       const d = cs.display || "inline";
@@ -15789,7 +15924,7 @@ col, colgroup { display: none; }
       let out = null;
       const blank = (c) => c.nodeType === 8 || c.nodeType === 3 && !/\S/.test(c.data);
       const isBoxed = (c) => {
-        if (c.nodeType !== 1 || SKIP.has(c.localName)) return false;
+        if (c.nodeType !== 1 || SKIP2.has(c.localName)) return false;
         const ccs = this.style(c, cs, rematch);
         if ((ccs.display || "inline") !== "inline" || !boxedInline(ccs)) return false;
         return this.isInline(c, cs, rematch);
@@ -15804,7 +15939,7 @@ col, colgroup { display: none; }
       return out;
     }
     inlineRuns(el, parentCS, parentFs, runs, rematch = false) {
-      if (SKIP.has(el.localName)) return;
+      if (SKIP2.has(el.localName)) return;
       const cs = this.style(el, parentCS, rematch);
       if ((cs.display || "inline") === "none") return;
       const fs = fontSizeOf(cs, parentCS);

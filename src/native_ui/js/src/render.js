@@ -12,7 +12,7 @@
 import { StyleEngine, computeStyle, parseInline, length, color, background, shadow, splitSpaces, splitTop, substitute } from "./css.js";
 import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
-import { iconFor } from "./icons.js";
+import { iconFor, svgScope, svgDataText, svgSize } from "./icons.js";
 import { commandsOf, versionOf, encodeProgram } from "./canvas.js";
 import { classStyle, nodeIndex, nodeAt, compileMatch } from "#dom";
 
@@ -25,7 +25,8 @@ li { display: list-item; }
 button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
 button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
-body { margin: 8px; font-size: 16px; line-height: 1.2; color: black; }
+html { font-size: 16px; line-height: 1.2; color: black; }
+body { margin: 8px; }
 p, ul, ol, dl, blockquote, pre, figure { margin-top: 1em; margin-bottom: 1em; }
 ul, ol { padding-left: 40px; }
 h1 { font-size: 2em; margin: .67em 0; font-weight: bold; }
@@ -121,6 +122,7 @@ export class Renderer {
     this.ids = new WeakMap();      // element / text node → id
     this.owner = new Map();        // id → the element it stands for (events)
     this.prev = new Map();         // id → { kind, props json, kids json }
+    this.svgFiles = new Map();     // SVG file or data: URL → its scope (svgFile), or null
     this.tx = new Transitions();   // CSS transitions in progress
     this.specs = new Map();        // id → its element's transitions (this frame)
     this.anim = new Animations();  // @keyframes animations playing
@@ -1075,7 +1077,7 @@ export class Renderer {
     if (tag === "svg") {
       // <use href="#id"> draws another element: it can change elsewhere.
       if (el.querySelector("use")) this.volatile.add(el);
-      const icon = iconFor(el, cs, this.doc);
+      const icon = iconFor(el, cs, this.doc, (file) => this.svgFile(file));
       if (!icon) return null;
       props.icon = icon;
       // width/height attributes size the icon when CSS doesn't (presentational
@@ -1089,6 +1091,23 @@ export class Renderer {
     if (tag === "img") {
       const src = el.getAttribute("src") || "";
       if (!src) return null;
+      // An SVG picture (a framework's logo): drawn as an icon, the
+      // backends' images being bitmaps.
+      const svg = /^data:image\/svg\+xml/.test(src) || /\.svg([?#]|$)/i.test(src) ? this.svgFile(src) : null;
+      const icon = svg && iconFor(svg.svg, { color: "black" }, svg, (file) => this.svgFile(file));
+      if (icon) {
+        props.icon = icon;
+        for (const k of ["w", "h"]) if (props[k] === "auto") delete props[k];
+        for (const [k, a] of [["w", "width"], ["h", "height"]]) {
+          const v = el.getAttribute(a);
+          if (props[k] === undefined && v && /^[\d.]+(px)?$/.test(v.trim())) props[k] = parseFloat(v);
+        }
+        // Its own size, or its ratio when CSS sets one side.
+        const size = svgSize(svg.svg, icon.vb);
+        if (props.w === undefined && props.h === undefined) { props.w = size.w; props.h = size.h; }
+        else if ((props.w === undefined || props.h === undefined) && size.ratio) props.ar = size.ratio;
+        return this.put(nodes, id, "icon", props, [], fixedNode);
+      }
       props.src = src.startsWith("data:") ? src : src.replace(/^(app:\/\/[^/]*)?\.?\//, "");
       if (cs["object-fit"] && cs["object-fit"] !== "fill") props.fit = cs["object-fit"];
       // width/height attributes size it when CSS doesn't (else its natural size).
@@ -1459,6 +1478,20 @@ export class Renderer {
         n.props.as = alignFor(cs["text-align"]);
       }
     }
+  }
+
+  // An SVG file of the app's (`icons.svg`, `/assets/vite.svg`) or a data:
+  // URL, parsed once: its scope (icons.js svgScope), or null.
+  svgFile(src) {
+    if (this.svgFiles.has(src)) return this.svgFiles.get(src);
+    let text = svgDataText(src);
+    if (text === null && !src.startsWith("data:") && !/^[a-z]+:\/\/(?!app)/i.test(src)) {
+      const path = src.replace(/^(app:\/\/[^/]*)?\.?\//, "").replace(/[?#].*$/, "");
+      text = this.host.asset?.(path) ?? null;
+    }
+    const scope = text ? svgScope(text, this.doc) : null;
+    this.svgFiles.set(src, scope);
+    return scope;
   }
 
   putClick(props, el) {
