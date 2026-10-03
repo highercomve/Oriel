@@ -16,15 +16,20 @@ git -C "$root" show "$ref:src/native_ui/runtime-native.js" > "$work/rt-base.js"
 # Whatever happens, the runtime goes back as it was.
 trap 'cp "$work/rt-new.js" "$rt"; rm -rf "$work"' EXIT
 
+# One build per runtime; each step's page is read at run time (ORIEL_NUI_PAGE).
 mkdir -p "$here/app/web"
+python3 "$here/page.py" 0 > "$here/app/web/index.html"
+for v in new base; do
+  cp "$work/rt-$v.js" "$rt"
+  (cd "$here/app" && "$zig" build -Dnative_ui -Doptimize=ReleaseFast --prefix "$work/out-$v" >/dev/null)
+done
+
 steps=$(python3 "$here/page.py" --steps)
 status=0
 for n in $(seq 1 "$steps"); do
-  python3 "$here/page.py" "$n" > "$here/app/web/index.html"
+  python3 "$here/page.py" "$n" > "$work/page.html"
   for v in new base; do
-    cp "$work/rt-$v.js" "$rt"
-    (cd "$here/app" && "$zig" build -Dnative_ui -Doptimize=ReleaseFast --prefix "$work/out-$v" >/dev/null)
-    ORIEL_NUI_DUMP=1 timeout 15 env -u WAYLAND_DISPLAY xvfb-run -a dbus-run-session -- \
+    ORIEL_NUI_PAGE="$work/page.html" ORIEL_NUI_DUMP=1 timeout 15 env -u WAYLAND_DISPLAY xvfb-run -a dbus-run-session -- \
       "$work/out-$v/bin/oriel-flatten-diff" > "$work/$v.raw" 2>&1 || true
     # Ids differ between runtimes; the tree's shape, frames and text don't.
     grep -E '^ *(view|text|icon|image|input|canvas)#' "$work/$v.raw" | sed -E 's/#-?[0-9]+/#/' > "$work/$v.txt" || true
