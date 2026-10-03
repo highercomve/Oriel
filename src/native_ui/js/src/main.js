@@ -741,13 +741,18 @@ g.__oriel = {
   boot(w, h, dark, coarse) {
     return guard(() => {
       Object.assign(viewport, { width: w, height: h, dark: !!dark, coarse: !!coarse });
+      // -Dnative_ui_prof: boot's stages (styles, scripts, events).
+      const P = host.prof ? host.now : null, b0 = P && P();
       const engine = new StyleEngine();
-      engine.addSheet(UA_CSS);
+      // Parsed sheets kept for the process (host.sheetCache/sheetKeep).
+      const sheets = host.sheetCache ? { get: (css) => host.sheetCache(css), keep: (css, json) => host.sheetKeep(css, json) } : null;
+      engine.addSheet(UA_CSS, sheets);
       for (const link of document.querySelectorAll('link[rel="stylesheet"][href], style')) {
         const css = link.localName === "style" ? link.textContent : host.asset(link.getAttribute("href").replace(/^\.?\//, ""));
-        if (css) engine.addSheet(css);
+        if (css) engine.addSheet(css, sheets);
         else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
       }
+      const b1 = P && P();
       renderer = new Renderer(document, engine, host);
       // The elements marked for :hover, :active and :focus (their
       // data-nui-* attributes): a list the tree stamps renders those rows
@@ -764,6 +769,7 @@ g.__oriel = {
       renderer.observer.__nuiChild = (node, parent) => renderer.noteChild(node, parent);
       renderer.observer.__nuiAttribute = (node, name) => renderer.noteAttribute(node, name);
       renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+      const b2 = P && P();
       // The page's scripts, in order, at the top level (like <script> tags).
       for (const s of document.querySelectorAll("script")) {
         const src = s.getAttribute("src");
@@ -782,8 +788,10 @@ g.__oriel = {
       }
       // The fonts the rules use, loaded while the window is idle.
       if (host.warmFonts) { try { host.warmFonts(fontSpecs(engine.rules)); } catch (e) { console.error(e); } }
+      const b3 = P && P();
       document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
       fireWindow(new Event("load"));
+      if (P) host.log(1, `PROF boot: styles ${(b1 - b0).toFixed(2)} (${engine.rules.length} rules), renderer ${(b2 - b1).toFixed(2)}, scripts ${(b3 - b2).toFixed(2)}, events ${(P() - b3).toFixed(2)}`);
       return true;
     });
   },

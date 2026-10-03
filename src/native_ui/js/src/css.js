@@ -396,22 +396,27 @@ export class StyleEngine {
     this.keyframes = {};
   }
 
-  addSheet(css) {
-    const rules = parseSheet(css, this.order);
-    this.order += rules.length;
-    Object.assign(this.keyframes, rules.keyframes);
-    for (const r of rules) {
+  // `cache`: { get(css) → JSON | undefined, keep(css, json) } (the native
+  // one keeps a sheet's parsed rules for the process: a second window
+  // doesn't parse and index them again).
+  addSheet(css, cache) {
+    let parsed = null;
+    const kept = cache?.get(css);
+    if (kept) { try { parsed = JSON.parse(kept); } catch { parsed = null; } }
+    if (!parsed) {
+      const rules = parseSheet(css, 0);
+      parsed = { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
+      try { cache?.keep(css, JSON.stringify(parsed)); } catch {}
+    }
+    Object.assign(this.keyframes, parsed.keyframes);
+    for (const [sel, pseudo, spec, decls, media, key] of parsed.rules) {
+      const r = { sel, pseudo, spec, decls, media, order: this.order++, match: null };
       this.rules.push(r);
-      // Index by the rightmost compound selector's id, class or tag.
-      // (Ignoring pseudo-class arguments: section:not(.active) is about sections.)
-      const last = r.sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "").split(/[\s>+~]+/).filter(Boolean).pop() || "*";
-      const id = /#([\w-]+)/.exec(last), cls = /\.([\w-]+)/.exec(last), tag = /^([a-zA-Z][\w-]*)/.exec(last);
-      if (id) push(this.index.id, id[1], r);
-      else if (cls) push(this.index.cls, cls[1], r);
-      else if (tag) push(this.index.tag, tag[1].toLowerCase(), r);
-      else this.index.any.push(r);
+      if (key[0] === "any") this.index.any.push(r);
+      else push(this.index[key[0]], key[1], r);
     }
   }
+
 
   // Matching rules for an element: { normal: [...], before: [...], after: [...] }.
   matching(el) {
@@ -453,6 +458,17 @@ export class StyleEngine {
   static expandInto(decls, normal, important) {
     for (const d of decls) expand(d.prop, d.value, d.important ? important : normal);
   }
+}
+
+// A rule's index key: the rightmost compound selector's id, class or tag.
+// (Ignoring pseudo-class arguments: section:not(.active) is about sections.)
+function indexKey(sel) {
+  const last = sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "").split(/[\s>+~]+/).filter(Boolean).pop() || "*";
+  const id = /#([\w-]+)/.exec(last), cls = /\.([\w-]+)/.exec(last), tag = /^([a-zA-Z][\w-]*)/.exec(last);
+  if (id) return ["id", id[1]];
+  if (cls) return ["cls", cls[1]];
+  if (tag) return ["tag", tag[1].toLowerCase()];
+  return ["any"];
 }
 
 function push(map, k, v) {
