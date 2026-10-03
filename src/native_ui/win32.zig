@@ -2715,7 +2715,7 @@ fn paint(p: *Painter, n: *Node) void {
             releaseCom(@as(?*c.ID2D1Brush, gb));
         };
     }
-    if (props.bw) |bw| border(p, f, r, bw, props.bc);
+    if (props.bw) |bw| border(p, f, r, bw, props.bc, props.bs);
     switch (n.kind) {
         .text => paintText(p, n),
         .icon => paintIcon(p, n),
@@ -2817,22 +2817,22 @@ fn fillShape(p: *Painter, f: Rect, r: [4]f32, brush: *c.ID2D1Brush) void {
     vt.FillGeometry.?(p.rt, @ptrCast(geo), brush, null);
 }
 
-fn strokeShape(p: *Painter, f: Rect, r: [4]f32, brush: *c.ID2D1Brush, width: f32) void {
+fn strokeShape(p: *Painter, f: Rect, r: [4]f32, brush: *c.ID2D1Brush, width: f32, st: ?*c.ID2D1StrokeStyle) void {
     if (f.w <= 0 or f.h <= 0) return;
     const vt = p.vt();
     if (uniform(r)) {
         if (r[0] <= 0) {
             const rc = rectF(f);
-            vt.DrawRectangle.?(p.rt, &rc, brush, width, null);
+            vt.DrawRectangle.?(p.rt, &rc, brush, width, st);
         } else {
             const rr: c.D2D1_ROUNDED_RECT = .{ .rect = rectF(f), .radiusX = r[0], .radiusY = r[0] };
-            vt.DrawRoundedRectangle.?(p.rt, &rr, brush, width, null);
+            vt.DrawRoundedRectangle.?(p.rt, &rr, brush, width, st);
         }
         return;
     }
     const geo = roundRectGeometry(f, r) orelse return;
     defer releaseCom(@as(?*c.ID2D1PathGeometry, geo));
-    vt.DrawGeometry.?(p.rt, @ptrCast(geo), brush, width, null);
+    vt.DrawGeometry.?(p.rt, @ptrCast(geo), brush, width, st);
 }
 
 /// A gradient length: px, or "50%" of `total`.
@@ -2877,9 +2877,66 @@ fn gradientBrush(p: *Painter, f: Rect, g: tree_mod.Gradient) ?*c.ID2D1Brush {
     return @ptrCast(b);
 }
 
-fn border(p: *Painter, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) void {
+/// Dashed and dotted borders' strokes, made once: dashes 3 widths long
+/// with 3-width gaps, square dots a width apart for thin borders, round
+/// ones from 3 px (as Chromium draws them).
+var border_strokes: [3]?*c.ID2D1StrokeStyle = .{ null, null, null };
+
+fn borderStroke(bs: ?tree_mod.BorderStyle, width: f32) ?*c.ID2D1StrokeStyle {
+    const style = bs orelse return null;
+    const i: usize = switch (style) {
+        .dashed => 0,
+        .dotted => if (width < 3) 1 else 2,
+    };
+    if (border_strokes[i]) |st| return st;
+    const fac = d2d orelse return null;
+    const dashes: []const f32 = switch (i) {
+        0 => &.{ 3, 3 },
+        1 => &.{ 1, 1 },
+        else => &.{ 0, 2 },
+    };
+    const cap: c.D2D1_CAP_STYLE = if (i == 2) c.D2D1_CAP_STYLE_ROUND else c.D2D1_CAP_STYLE_FLAT;
+    const props: c.D2D1_STROKE_STYLE_PROPERTIES = .{ .startCap = c.D2D1_CAP_STYLE_FLAT, .endCap = c.D2D1_CAP_STYLE_FLAT, .dashCap = cap, .lineJoin = c.D2D1_LINE_JOIN_MITER, .miterLimit = 10, .dashStyle = c.D2D1_DASH_STYLE_CUSTOM, .dashOffset = 0 };
+    var st: ?*c.ID2D1StrokeStyle = null;
+    if (fac.lpVtbl.*.CreateStrokeStyle.?(fac, &props, dashes.ptr, @intCast(dashes.len), &st) < 0) return null;
+    border_strokes[i] = st;
+    return st;
+}
+
+/// One straight side dashed or dotted as Chromium draws it: a dash (3
+/// widths; a dot: 1) at each end and whole ones between, the gaps
+/// stretched to fit. Dots from 3 px are round.
+fn dashedSide(p: *Painter, sd: Rect, across: bool, w: f32, style: tree_mod.BorderStyle, brush: *c.ID2D1Brush) void {
+    const len = if (across) sd.w else sd.h;
+    if (len <= 0 or w <= 0) return;
+    const dash = if (style == .dashed) 3 * w else w;
+    var n = @round((len + dash) / (2 * dash));
+    if (n < 1) n = 1;
+    const gap = if (n > 1) (len - n * dash) / (n - 1) else 0;
+    const vt = p.vt();
+    var k: f32 = 0;
+    while (k < n) : (k += 1) {
+        const at = k * (dash + gap);
+        const d = if (n == 1) len else dash;
+        const rc: Rect = if (across) .{ .x = sd.x + at, .y = sd.y, .w = d, .h = sd.h } else .{ .x = sd.x, .y = sd.y + at, .w = sd.w, .h = d };
+        if (style == .dotted and w >= 3) {
+            const e: c.D2D1_ELLIPSE = .{ .point = .{ .x = rc.x + rc.w / 2, .y = rc.y + rc.h / 2 }, .radiusX = w / 2, .radiusY = w / 2 };
+            vt.FillEllipse.?(p.rt, &e, brush);
+        } else {
+            const rf = rectF(rc);
+            vt.FillRectangle.?(p.rt, &rf, brush);
+        }
+    }
+}
+
+fn border(p: *Painter, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color, bs: ?tree_mod.BorderStyle) void {
     const colors = bc orelse return;
-    if (uniform(bw) and bw[0] > 0) {
+    // Square corners, dashed or dotted: each side's dashes fitted to it
+    // (the per-side path below); one pattern around the rectangle would
+    // leave a side a stray dash.
+    const square = uniform(r) and r[0] <= 0;
+    if (uniform(bw) and bw[0] > 0 and !(bs != null and square)) {
+        const st = borderStroke(bs, bw[0]);
         const half = bw[0] / 2;
         const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
         var ri = r;
@@ -2888,7 +2945,7 @@ fn border(p: *Painter, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) v
             if (!std.mem.eql(f32, &col, &colors[0])) break false;
         } else true;
         if (same) {
-            strokeShape(p, inner, ri, p.solid(colors[0]), bw[0]);
+            strokeShape(p, inner, ri, p.solid(colors[0]), bw[0], st);
             return;
         }
         // Sides in different colors (a spinner: border-top-color on a grey
@@ -2917,7 +2974,7 @@ fn border(p: *Painter, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) v
                 .layerOptions = c.D2D1_LAYER_OPTIONS_NONE,
             };
             vt.PushLayer.?(p.rt, &params, null);
-            strokeShape(p, inner, ri, p.solid(colors[i]), bw[0]);
+            strokeShape(p, inner, ri, p.solid(colors[i]), bw[0], st);
             vt.PopLayer.?(p.rt);
         }
         return;
@@ -2931,6 +2988,10 @@ fn border(p: *Painter, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) v
     };
     for (sides, 0..) |sd, i| {
         if (bw[i] <= 0 or colors[i][3] <= 0) continue;
+        if (bs) |style| {
+            dashedSide(p, sd, i == 0 or i == 2, bw[i], style, p.solid(colors[i]));
+            continue;
+        }
         const rc = rectF(sd);
         p.vt().FillRectangle.?(p.rt, &rc, p.solid(colors[i]));
     }

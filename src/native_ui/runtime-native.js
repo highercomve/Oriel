@@ -1555,6 +1555,8 @@ globalThis.atob ??= (s) => {
         return box(prop, (side) => side);
       case "border-width":
         return box(prop, (side) => `border-${side}-width`);
+      case "border-style":
+        return box(prop, (side) => `border-${side}-style`);
       case "border-color":
         return box(prop, (side) => `border-${side}-color`);
       case "border-radius": {
@@ -1585,6 +1587,7 @@ globalThis.atob ??= (s) => {
         for (const s of sides) {
           out[`border-${s}-width`] = style === "none" ? "0" : width;
           out[`border-${s}-color`] = color2;
+          out[`border-${s}-style`] = style;
         }
         return;
       }
@@ -4190,6 +4193,9 @@ col, colgroup { display: none; }
           props.cg = Math.round(fontSize * 0.28 * 10) / 10;
         }
       }
+      const flowBlock = !childCtx.blockify && props.fd === "column" && display !== "grid" && !tableHolds(display);
+      const inLine = flowBlock ? /* @__PURE__ */ new Set() : null;
+      if (before) inLine?.add(before);
       for (const item of flow) {
         if (item.text) {
           const tid = this.idOf(el, "t" + kids.length);
@@ -4199,17 +4205,23 @@ col, colgroup { display: none; }
           tp.fs = (childCtx.blockify || inlineLine) && !props.scroll ? 1 : 0;
           this.put(nodes, tid, "text", tp, []);
           kids.push(tid);
+          inLine?.add(tid);
           continue;
         }
         const cid = this.element(item.el, cs, nodes, childCtx);
         if (cid === null) continue;
         this.adjustKid(nodes, cid, item.el, cs, props, display, childCtx);
         kids.push(cid);
+        if (inLine && (ATOMIC_INLINE.has(this.styleOf(item.el)?.display || "inline") || boxed?.has(item.el))) inLine.add(cid);
         const ord = parseInt(this.styleOf(item.el)?.order, 10);
         if (ord) (orders ??= /* @__PURE__ */ new Map()).set(cid, ord);
       }
       const after = this.pseudo(el, cs, "after", nodes);
-      if (after) kids.push(after);
+      if (after) {
+        kids.push(after);
+        inLine?.add(after);
+      }
+      if (flowBlock) collapseMargins(nodes, kids, inLine, props, display, ctx);
       if (orders && childCtx.blockify) {
         const pos = new Map(kids.map((k, i) => [k, i]));
         kids.sort((a, b) => (orders.get(a) || 0) - (orders.get(b) || 0) || pos.get(a) - pos.get(b));
@@ -4256,6 +4268,11 @@ col, colgroup { display: none; }
       this.adjustKid(nodes, cid, first, cs, props, display, childCtx);
       const row = nodes.get(cid);
       if (!row || row.kind !== "view") {
+        this.noStampList.add(el);
+        return null;
+      }
+      const rm = row.props.m;
+      if (!childCtx.blockify && rm && rm[0] && rm[2]) {
         this.noStampList.add(el);
         return null;
       }
@@ -4608,6 +4625,63 @@ col, colgroup { display: none; }
   function isTableDisplay(d) {
     return d === "table" || d === "inline-table" || d === "table-row" || d === "table-cell" || d === "table-column" || d === "table-column-group" || TABLE_GROUPS.has(d);
   }
+  function collapsed(a, b) {
+    return Math.max(a, b, 0) + Math.min(a, b, 0);
+  }
+  function pxMargin(n2, side) {
+    const v = n2.props.m ? n2.props.m[side] : 0;
+    return typeof v === "number" ? v : null;
+  }
+  function setMargin(n2, side, v) {
+    const m = n2.props.m ? n2.props.m.slice() : [0, 0, 0, 0];
+    m[side] = v;
+    n2.props.m = m;
+  }
+  function collapseMargins(nodes, kids, inLine, props, display, ctx) {
+    let prev = null, first = null, last = null, lastLine = false, seen = false;
+    for (const id of kids) {
+      const n2 = nodes.get(id);
+      if (!n2 || n2.props.pos === "absolute") continue;
+      if (inLine.has(id)) {
+        prev = null;
+        seen = true;
+        lastLine = true;
+        continue;
+      }
+      if (!seen) first = n2;
+      seen = true;
+      lastLine = false;
+      last = n2;
+      if (prev) {
+        const a = pxMargin(prev, 2), b = pxMargin(n2, 0);
+        if (a !== null && b !== null && a && b) {
+          setMargin(prev, 2, collapsed(a, b));
+          setMargin(n2, 0, 0);
+        }
+      }
+      prev = n2;
+    }
+    const own = { props };
+    const through = (display === "block" || display === "list-item") && !ctx.blockify && !props.scroll && !props.scrollx && !props.clip && props.pos !== "absolute";
+    if (!through) return;
+    const side = (n2, s) => !props.pad?.[s] && !props.bw?.[s] && n2;
+    if (side(first, 0)) {
+      const a = pxMargin(own, 0), b = pxMargin(first, 0);
+      if (a !== null && b !== null && b) {
+        props.m = (own.props.m ?? [0, 0, 0, 0]).slice();
+        props.m[0] = collapsed(a, b);
+        setMargin(first, 0, 0);
+      }
+    }
+    if (!lastLine && side(last, 2) && props.h === void 0 && !props.minh) {
+      const a = pxMargin(own, 2), b = pxMargin(last, 2);
+      if (a !== null && b !== null && b) {
+        props.m = (props.m ?? [0, 0, 0, 0]).slice();
+        props.m[2] = collapsed(a, b);
+        setMargin(last, 2, 0);
+      }
+    }
+  }
   function tableHolds(d) {
     return d === "table" || d === "inline-table" || d === "table-row" || TABLE_GROUPS.has(d);
   }
@@ -4766,6 +4840,8 @@ col, colgroup { display: none; }
       p.bw = bw;
       const cur2 = color(cs.color);
       p.bc = sides.map((s) => color(cs[`border-${s}-color`] || "currentcolor", cur2) || [0, 0, 0, 0]);
+      const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
+      if (style) p.bs = style;
     }
     const rg = num2(cs["row-gap"], fs), cg = num2(cs["column-gap"], fs);
     if (typeof rg === "number" && rg) p.rg = rg;
