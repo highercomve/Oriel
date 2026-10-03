@@ -842,9 +842,50 @@ pub const Node = struct {
         }
         return out;
     }
+
+    /// Whether the box clips its children to its rounded corners: it clips
+    /// (overflow hidden, or it scrolls) and has a border-radius.
+    pub fn roundClips(n: *const Node) bool {
+        const p = n.props;
+        if (!(p.clip or p.scroll or p.scrollx)) return false;
+        const r = n.radius();
+        return r[0] > 0 or r[1] > 0 or r[2] > 0 or r[3] > 0;
+    }
+
+    /// The rounded padding box a box's children are clipped to.
+    pub fn paddingClip(n: *const Node) RoundRect {
+        return paddingBox(n.frame, n.radius(), n.props.bw);
+    }
 };
 
-pub const Measure = *const fn (ctx: *anyopaque, node: *Node, max_width: f32, out: *[2]f32) void;
+/// A rectangle with corner radii (top-left, top-right, bottom-right,
+/// bottom-left).
+pub const RoundRect = struct { rect: Rect, radii: [4]f32 };
+
+/// The padding box of a box at `f` with radii `r` and border widths `bw`
+/// (top, right, bottom, left): the border box inset by the border, each
+/// radius less the wider of its corner's two borders (CSS's inner radius,
+/// kept circular).
+pub fn paddingBox(f: Rect, r: [4]f32, bw: ?[4]f32) RoundRect {
+    const b = bw orelse return .{ .rect = f, .radii = r };
+    const rect: Rect = .{ .x = f.x + b[3], .y = f.y + b[0], .w = @max(0, f.w - b[1] - b[3]), .h = @max(0, f.h - b[0] - b[2]) };
+    return .{ .rect = rect, .radii = .{
+        @max(0, r[0] - @max(b[0], b[3])),
+        @max(0, r[1] - @max(b[0], b[1])),
+        @max(0, r[2] - @max(b[2], b[1])),
+        @max(0, r[3] - @max(b[2], b[3])),
+    } };
+}
+
+test "paddingBox: the border box inset by the border, inner radii" {
+    const pb = paddingBox(.{ .x = 10, .y = 20, .w = 100, .h = 50 }, .{ 12, 12, 4, 0 }, .{ 1, 2, 3, 4 });
+    try std.testing.expectEqual(Rect{ .x = 14, .y = 21, .w = 94, .h = 46 }, pb.rect);
+    try std.testing.expectEqual([4]f32{ 8, 10, 1, 0 }, pb.radii);
+    const none = paddingBox(.{ .x = 0, .y = 0, .w = 10, .h = 10 }, .{ 3, 3, 3, 3 }, null);
+    try std.testing.expectEqual([4]f32{ 3, 3, 3, 3 }, none.radii);
+}
+
+pub const Measure =*const fn (ctx: *anyopaque, node: *Node, max_width: f32, out: *[2]f32) void;
 
 pub const Tree = struct {
     deleted_nodes: usize = 0,

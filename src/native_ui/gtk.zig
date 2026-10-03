@@ -1401,9 +1401,19 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         .view => if (n.props.ctl != null) paintControl(cr, n),
         else => {},
     }
+    // A box that clips its content (overflow hidden, or a scroller) with
+    // rounded corners: the children are clipped to its rounded padding box.
+    const round_clip = n.roundClips();
+    if (round_clip) {
+        cairo_save(cr);
+        const pb = n.paddingClip();
+        roundRect(cr, pb.rect, pb.radii);
+        cairo_clip(cr);
+    }
     // CSS paint order: a sticky header over the rows scrolled under it.
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paint(s, cr, k);
+    if (round_clip) cairo_restore(cr);
     if (alpha < 1) {
         cairo_pop_group_to_source(cr);
         cairo_paint_with_alpha(cr, alpha);
