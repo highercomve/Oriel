@@ -139,6 +139,50 @@ inline blocks flowing in text, `rowspan`, `img`, `iframe`,
 - DOM-based UI libraries that rely on the browser's layout or event details
   may not work.
 
+## Pointer and key events
+
+A backend reports the pointer through one engine event, `"pointer"`, on the
+node under it (0 for none), with the data
+`[phase, x, y, buttons, pointerId, pointerType, modifiers]`:
+
+| Field | Value |
+|---|---|
+| `phase` | `"down"`, `"move"`, `"up"` or `"cancel"` (the system took the gesture: a scroll) |
+| `x`, `y` | the view's coordinates in CSS px (the page's `clientX`/`clientY`) |
+| `buttons` | pressed buttons as in the DOM (1: primary); 0 for a hover move and on up |
+| `pointerId` | 1 for the mouse or the one touch |
+| `pointerType` | `"mouse"`, `"touch"` or `"pen"` |
+| `modifiers` | shift 1, control 2, alt 4, meta 8 |
+
+The page (`main.js`, `pointerEvent`) dispatches `pointerdown`/`move`/`up`/`cancel`
+and then `mousedown`/`move`/`up` (a mouse) or `touchstart`/`move`/`end`/`cancel` (a
+touch, with `touches` and `changedTouches`), bubbling to the window. The element a
+pointer went down on gets that pointer's moves and its up wherever they happen
+(implicit capture, as browsers do for touch; `setPointerCapture` moves it,
+`releasePointerCapture` drops it). The backend's own `"click"` still follows the
+up, and gets the up's coordinates.
+
+On `"down"` the event's result says whether the page takes the drag: true
+when a listener prevented the default, or the element or an ancestor has
+`touch-action: none` (or `pinch-zoom`). Then the backend doesn't scroll, fling
+or long-press for that touch. Otherwise, when it starts a scroll, it sends
+`"cancel"`.
+
+Moves go at most once per display frame: the backend keeps the latest one and
+sends it at the next frame, before the page's animation frame (a backend
+without a display link sends them as they come). Hover (`"hover"`, the node
+under the pointer for `:hover` and `mouseover`/`mouseenter`) works as before.
+
+Keys: `"key"` with `[key, modifiers, repeat]` (`keydown`, `event.repeat` set on
+auto-repeat) and `"keyup"` with `[key, modifiers]`.
+
+Backends: macOS (mouse moves, drags, buttons; key up from a local event monitor,
+AppKit not sending `keyUp:` to the page's view) and iOS (one touch; a drag the
+page doesn't take scrolls as before), GTK (mouse moves, drags and buttons;
+moves coalesced on the frame clock; keyup from the key controller, repeat
+from the keys held). Windows and Android still send only clicks, hover and
+key downs.
+
 ## Canvas
 
 `<canvas>` works with a 2d context, without a bitmap (`src/native_ui/js/src/canvas.js`):

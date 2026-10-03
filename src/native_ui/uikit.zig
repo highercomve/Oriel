@@ -62,6 +62,20 @@ pub const Surface = struct {
     fling_v: f32 = 0,
     fling_at: [2]f32 = .{ 0, 0 },
     fling_gen: u32 = 0,
+    /// A finger is down and the page hears it (pointer events).
+    touching: bool = false,
+    /// The page took the finger's drag (touch-action: none, or it
+    /// prevented the pointerdown): no scrolling, fling or long press.
+    drag_owned: bool = false,
+    /// The pan in progress is the page's drag (drag_owned when it began;
+    /// it can end after the finger's touchesEnded).
+    pan_owned: bool = false,
+    /// The finger's last move, sent at the next display frame.
+    /// The tree's node count after the last layout, and whether a trim of
+    /// its emptied pool slabs is due (trimPools, 2 s after a big drop).
+    node_count: usize = 0,
+    trim_queued: bool = false,
+    move: ?[2]f32 = null,
 };
 
 const Field = struct {
@@ -109,8 +123,9 @@ fn classes() void {
         .{ "layoutSubviews", layoutSubviews },
         .{ "traitCollectionDidChange:", traitsChanged },
         .{ "touchesBegan:withEvent:", touchesBegan },
+        .{ "touchesMoved:withEvent:", touchesMoved },
         .{ "touchesEnded:withEvent:", touchesEnded },
-        .{ "touchesCancelled:withEvent:", touchesEnded },
+        .{ "touchesCancelled:withEvent:", touchesCancelled },
         .{ "nuiTap:", onTap },
         .{ "nuiLongPress:", onLongPress },
         .{ "nuiPan:", onPan },
@@ -155,6 +170,8 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         const r = apple.class(g[0]).msgSend(Object, "alloc", .{}).msgSend(Object, "initWithTarget:action:", .{ view, apple.objc.sel(g[1]).value });
         // Touches still reach the view (:active), and fields keep theirs.
         r.msgSend(void, "setCancelsTouchesInView:", .{apple.boolean(false)});
+        // The page hears a finger lift (pointerup) before the tap's click.
+        r.msgSend(void, "setDelaysTouchesEnded:", .{apple.boolean(false)});
         r.msgSend(void, "setDelegate:", .{gesture_delegate});
         view.msgSend(void, "addGestureRecognizer:", .{r});
         r.release();
@@ -298,6 +315,12 @@ fn hasDisplayLink(view: Object) bool {
 fn requestDisplayFrame(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
     s.frame_wanted = true;
+    runDisplayLink(s);
+}
+
+/// Start (or resume) the display link: a frame the page asked for, or a
+/// finger's move to send.
+fn runDisplayLink(s: *Surface) void {
     if (s.display_link.value != null) {
         s.display_link.msgSend(void, "setPaused:", .{apple.boolean(false)});
         return;
@@ -318,6 +341,12 @@ fn requestDisplayFrame(ctx: *anyopaque) void {
 fn onDisplayFrame(self: id, _: SEL, link_id: id) callconv(.c) void {
     const link: Object = .{ .value = link_id };
     const s = by_view.get(key(self)) orelse return;
+    // Input first, then the frame (as a browser).
+    if (s.move != null) {
+        const token = s.token;
+        flushMove(s);
+        if (surfaces.get(token) == null) return; // the page closed its window
+    }
     if (!s.frame_wanted) {
         link.msgSend(void, "setPaused:", .{apple.boolean(true)});
         return;
@@ -461,6 +490,7 @@ fn textChanged(_: *anyopaque, n: *Node) void {
 
 fn laidOut(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
+    queueTrim(s);
     syncFields(s);
     s.view.msgSend(void, "setNeedsDisplay", .{});
 }
@@ -782,13 +812,92 @@ fn touchesBegan(self: id, _: SEL, touches: id, _: id) callconv(.c) void {
     const touch = (Object{ .value = touches }).msgSend(Object, "anyObject", .{});
     if (touch.value == null) return;
     const p = pointIn(s.view, touch);
+    const token = s.token;
     // :active while the finger is down.
     if (s.engine.tree.hit(p[0], p[1])) |n| _ = s.engine.event(n.id, "press", "null");
+    if (surfaces.get(token) == null) return;
+    s.move = null;
+    s.touching = true;
+    s.drag_owned = sendPointer(s, "down", p, 1);
 }
 
-fn touchesEnded(self: id, _: SEL, _: id, _: id) callconv(.c) void {
+fn touchesMoved(self: id, _: SEL, touches: id, _: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
+    if (!s.touching) return;
+    const touch = (Object{ .value = touches }).msgSend(Object, "anyObject", .{});
+    if (touch.value == null) return;
+    s.move = pointIn(s.view, touch);
+    runDisplayLink(s);
+}
+
+fn touchesEnded(self: id, _: SEL, touches: id, _: id) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    const token = s.token;
+    s.drag_owned = false;
+    if (s.touching) {
+        if (s.move != null) flushMove(s);
+        if (surfaces.get(token) == null) return;
+        s.touching = false;
+        const touch = (Object{ .value = touches }).msgSend(Object, "anyObject", .{});
+        if (touch.value != null) _ = sendPointer(s, "up", pointIn(s.view, touch), 0);
+        if (surfaces.get(token) == null) return;
+    }
     _ = s.engine.event(0, "release", "null");
+}
+
+fn touchesCancelled(self: id, _: SEL, touches: id, _: id) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    const token = s.token;
+    s.drag_owned = false;
+    if (s.touching) {
+        s.touching = false;
+        s.move = null;
+        const touch = (Object{ .value = touches }).msgSend(Object, "anyObject", .{});
+        const p = if (touch.value != null) pointIn(s.view, touch) else [2]f32{ 0, 0 };
+        _ = sendPointer(s, "cancel", p, 0);
+        if (surfaces.get(token) == null) return;
+    }
+    _ = s.engine.event(0, "release", "null");
+}
+
+/// A pointer event for the page (main.js pointerEvent): `phase` down, move,
+/// up or cancel at `p` (the view's points: CSS px), on the node there. True
+/// when the page prevented the default (on "down": it takes the drag).
+fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32) bool {
+    if (!std.math.isFinite(p[0]) or !std.math.isFinite(p[1])) return false;
+    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    var buf: [96]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"touch\",0]", .{ phase, p[0], p[1], buttons }) catch return false;
+    return s.engine.event(nid, "pointer", json);
+}
+
+/// A layout that dropped many nodes (a list that went): the tree's emptied
+/// pool slabs go back 2 s later, if the window is still there (a list
+/// rebuilt at once reuses them first).
+fn queueTrim(s: *Surface) void {
+    const count = s.engine.tree.nodes.count();
+    defer s.node_count = count;
+    if (s.node_count <= count + 1000 or s.trim_queued) return;
+    const t = std.heap.smp_allocator.create(u64) catch return;
+    t.* = s.token;
+    s.trim_queued = true;
+    apple.afterMain(2000, t, onTrim);
+}
+
+fn onTrim(p: ?*anyopaque) callconv(.c) void {
+    const t: *u64 = @ptrCast(@alignCast(p.?));
+    const token = t.*;
+    std.heap.smp_allocator.destroy(t);
+    const s = surfaces.get(token) orelse return; // the window is gone
+    s.trim_queued = false;
+    const freed = s.engine.tree.trimPools();
+    if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: trim freed {d} pool slabs", .{freed});
+}
+
+fn flushMove(s: *Surface) void {
+    const p = s.move orelse return;
+    s.move = null;
+    if (s.touching) _ = sendPointer(s, "move", p, 1);
 }
 
 /// A tap or long press in a native field is the field's (the page's would
@@ -834,6 +943,17 @@ fn onTap(self: id, _: SEL, recognizer: id) callconv(.c) void {
     // A tap on the page takes the keyboard from a field.
     _ = s.view.msgSend(BOOL, "endEditing:", .{apple.boolean(true)});
     const p = pointIn(s.view, r);
+    // The finger's up before its click (as a browser), though the tap
+    // recognizer fires before touchesEnded.
+    if (s.touching) {
+        const token = s.token;
+        if (s.move != null) flushMove(s);
+        if (surfaces.get(token) == null) return;
+        s.touching = false;
+        _ = sendPointer(s, "up", p, 0);
+        if (surfaces.get(token) == null) return;
+    }
+    // Hit-tested after the up: its handler may have changed the page.
     const hit = s.engine.tree.hit(p[0], p[1]);
     if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: tap at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], if (hit) |h| h.id else 0 });
     const n = hit orelse return;
@@ -845,6 +965,7 @@ fn onLongPress(self: id, _: SEL, recognizer: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const r: Object = .{ .value = recognizer };
     if (r.msgSend(isize, "state", .{}) != state_began) return;
+    if (s.drag_owned) return; // the page's drag (a finger held still on a game)
     const p = pointIn(s.view, r);
     const n = s.engine.tree.hit(p[0], p[1]) orelse return;
     var buf: [64]u8 = undefined;
@@ -876,6 +997,17 @@ fn onPan(self: id, _: SEL, recognizer: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const r: Object = .{ .value = recognizer };
     const st = r.msgSend(isize, "state", .{});
+    // The page's drag: it gets the finger's moves, nothing scrolls.
+    if (st == state_began) s.pan_owned = s.drag_owned;
+    if (s.pan_owned) return;
+    if (st == state_began and s.touching) {
+        // The page scrolls: the page's pointer is cancelled, as in a browser.
+        const token = s.token;
+        s.touching = false;
+        s.move = null;
+        _ = sendPointer(s, "cancel", pointIn(s.view, r), 0);
+        if (surfaces.get(token) == null) return;
+    }
     if (st == state_began) s.fling_at = pointIn(s.view, r);
     if (st == state_began or st == state_changed) {
         const t = r.msgSend(CGPoint, "translationInView:", .{s.view});
