@@ -9,7 +9,7 @@
 //   ["d", id]                destroy (and its subtree)
 //   ["r", id]                the root (the body)
 
-import { StyleEngine, computeStyle, parseInline, length, color, background, shadow, splitSpaces, splitTop, substitute } from "./css.js";
+import { StyleEngine, computeStyle, parseInline, length, color, background, shadow, splitSpaces, splitTop, substitute, pctString } from "./css.js";
 import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor, svgScope, svgDataText, svgSize } from "./icons.js";
@@ -1500,7 +1500,7 @@ export class Renderer {
     else if (props.fd === "column" && this.keepsContentHeight(itemEl, nodes.get(cid))) nodes.get(cid).props.fs = 0;
     else if (props.fd === "column" && props.h === undefined && props.fg === undefined && !props.scroll && /flex$/.test(display)) {
       const n = nodes.get(cid);
-      if (n && typeof n.props.fb === "string" && n.props.fb.endsWith("%") && !n.props.scroll && !n.props.clip) {
+      if (n && typeof n.props.fb === "string" && n.props.fb.includes("%") && !n.props.scroll && !n.props.clip) {
         delete n.props.fb;
         n.props.fs = 0;
       }
@@ -2096,7 +2096,7 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
   const p = {};
   if (display === "inline-flex") display = "flex";
   if (display === "inline-grid") display = "grid";
-  const set = (k, v) => { if (v !== undefined && v !== null) p[k] = typeof v === "object" ? `${v.pct}%` : v; };
+  const set = (k, v) => { if (v !== undefined && v !== null) p[k] = typeof v === "object" ? pctString(v) : v; };
   // Layout
   if (display === "flex") {
     p.fd = cs["flex-direction"] || "row";
@@ -2216,7 +2216,7 @@ function backgroundPart(cs, p) {
 // An inline style that sets only these (an animation writing transform,
 // opacity, left/top…): the box props are its rules' ones with that part
 // done again. Each: the props it makes, and how.
-const set1 = (k, v, p) => { if (v !== undefined && v !== null) p[k] = typeof v === "object" ? `${v.pct}%` : v; };
+const set1 = (k, v, p) => { if (v !== undefined && v !== null) p[k] = typeof v === "object" ? pctString(v) : v; };
 const PARTS = {
   tr: [["tx", "ty", "sc", "rot"], transformPart],
   pos: [["pos", "ins", "sticky", "rel"], positionPart],
