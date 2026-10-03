@@ -239,6 +239,9 @@ pub const Surface = struct {
     /// The field node the page last heard has the keyboard ("focus" and
     /// "blur", focusCheck); 0: none.
     focused: i64 = 0,
+    /// A field the page focused before its control existed (focus() right
+    /// after showing it): given the keyboard once syncFields makes it.
+    focus_pending: i64 = 0,
     /// A WM_FOCUS_CHECK is queued.
     focus_check_posted: bool = false,
 
@@ -732,9 +735,11 @@ var timer_due: [64]struct { id: u32 = 0, due: f64 = 0 } = @splat(.{});
 fn focus(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     if (s.fields.get(node.id)) |f| {
+        s.focus_pending = 0;
         _ = c.SetFocus(f.hwnd);
         return;
     }
+    s.focus_pending = if (node.kind == .input or node.kind == .textarea or node.kind == .select) node.id else 0;
     // Not a field (a button, a link): the keyboard leaves the field that
     // had it, so typing goes to the page.
     const had = c.GetFocus() orelse return;
@@ -749,6 +754,7 @@ fn removed(ctx: *anyopaque, node: *Node) void {
     }
     if (s.canvases.fetchRemove(node.id)) |kv| freeCanvas(kv.value);
     if (s.focused == node.id) s.focused = 0;
+    if (s.focus_pending == node.id) s.focus_pending = 0;
     if (s.fields.fetchRemove(node.id)) |kv| {
         var f = kv.value;
         freeField(s, &f);
@@ -981,6 +987,11 @@ fn syncFields(s: *Surface) void {
         _ = c.SetWindowPos(f.clip, null, x0, y0, x1 - x0, y1 - y0, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_SHOWWINDOW);
         _ = c.SetWindowPos(f.hwnd, null, cx - x0, cy - y0, 0, 0, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_NOSIZE | c.SWP_SHOWWINDOW);
     }
+    // A focus() that came before its field's control did.
+    if (s.focus_pending != 0) if (s.fields.get(s.focus_pending)) |f| {
+        s.focus_pending = 0;
+        _ = c.SetFocus(f.hwnd);
+    };
 }
 
 fn setPlaceholder(s: *Surface, f: *Field, ph: []const u8) void {
@@ -4117,16 +4128,64 @@ fn borderStroke(bs: ?tree_mod.BorderStyle, width: f32) ?*c.ID2D1StrokeStyle {
     return st;
 }
 
+/// Chromium's dash and gap, in border widths (StyledStrokeData): a dash 3
+/// wide with a 2-wide gap below 3px, 2 and 1 from 3px; a dot and a gap 1.
+fn dashRatio(style: tree_mod.BorderStyle, w: f32) [2]f32 {
+    if (style == .dotted) return .{ 1, 1 };
+    return if (w >= 3) .{ 2, 1 } else .{ 3, 2 };
+}
+
+/// The gap that fits whole dashes to `length` (Chromium's
+/// SelectBestDashGap): a closed path has as many gaps as dashes, an open
+/// one a dash at each end; of the two nearest counts, the gap nearer the
+/// wanted one.
+fn bestDashGap(length: f32, dash: f32, gap: f32, closed: bool) f32 {
+    const available = if (closed) length else length + gap;
+    const min_dashes = @floor(available / @max(1e-3, dash + gap));
+    const max_dashes = min_dashes + 1;
+    const min_gaps = if (closed) min_dashes else min_dashes - 1;
+    const max_gaps = if (closed) max_dashes else max_dashes - 1;
+    const min_gap = if (min_gaps > 0) (length - min_dashes * dash) / min_gaps else gap;
+    const max_gap = if (max_gaps > 0) (length - max_dashes * dash) / max_gaps else gap;
+    return if (max_gap <= 0 or @abs(min_gap - gap) < @abs(max_gap - gap)) min_gap else max_gap;
+}
+
+/// A rounded border dashed or dotted as Chromium strokes it: one closed
+/// path from the top side's start (after the top-left corner), clockwise,
+/// its dashes' gap fitted to the whole length (bestDashGap); round dots
+/// from 3px.
+fn dashedShape(p: *Painter, f: Rect, r: Radii, brush: *c.ID2D1Brush, w: f32, style: tree_mod.BorderStyle) void {
+    if (f.w <= 0 or f.h <= 0 or !(w > 0)) return;
+    const geo = roundRectGeometry(f, r) orelse return;
+    defer releaseCom(@as(?*c.ID2D1PathGeometry, geo));
+    var len: f32 = 0;
+    const g: *c.ID2D1Geometry = @ptrCast(geo);
+    if (g.lpVtbl.*.ComputeLength.?(g, null, 0.25, &len) < 0 or !(len > 0)) return;
+    const ratio = dashRatio(style, w);
+    const dash = ratio[0] * w;
+    const gap = bestDashGap(len, dash, ratio[1] * w, true);
+    const round = style == .dotted and w >= 3;
+    // In stroke widths; a round dot is a 0-long dash with round caps.
+    const dashes = if (round) [2]f32{ 0, (dash + gap) / w } else [2]f32{ dash / w, gap / w };
+    const cap: c.D2D1_CAP_STYLE = if (round) c.D2D1_CAP_STYLE_ROUND else c.D2D1_CAP_STYLE_FLAT;
+    const props: c.D2D1_STROKE_STYLE_PROPERTIES = .{ .startCap = c.D2D1_CAP_STYLE_FLAT, .endCap = c.D2D1_CAP_STYLE_FLAT, .dashCap = cap, .lineJoin = c.D2D1_LINE_JOIN_MITER, .miterLimit = 10, .dashStyle = c.D2D1_DASH_STYLE_CUSTOM, .dashOffset = if (round) -0.5 * dash / w else 0 };
+    var st: ?*c.ID2D1StrokeStyle = null;
+    if (d2d.?.lpVtbl.*.CreateStrokeStyle.?(d2d.?, &props, &dashes, 2, &st) < 0 or st == null) return;
+    defer releaseCom(st);
+    p.vt().DrawGeometry.?(p.rt, @ptrCast(geo), brush, w, st);
+}
+
 /// One straight side dashed or dotted as Chromium draws it: a dash (3
 /// widths; a dot: 1) at each end and whole ones between, the gaps
 /// stretched to fit. Dots from 3 px are round.
 fn dashedSide(p: *Painter, sd: Rect, across: bool, w: f32, style: tree_mod.BorderStyle, brush: *c.ID2D1Brush) void {
     const len = if (across) sd.w else sd.h;
     if (len <= 0 or w <= 0) return;
-    const dash = if (style == .dashed) 3 * w else w;
-    var n = @round((len + dash) / (2 * dash));
+    const ratio = dashRatio(style, w);
+    const dash = ratio[0] * w;
+    const gap = bestDashGap(len, dash, ratio[1] * w, false);
+    var n = @round((len + gap) / @max(1e-3, dash + gap));
     if (n < 1) n = 1;
-    const gap = if (n > 1) (len - n * dash) / (n - 1) else 0;
     const vt = p.vt();
     var k: f32 = 0;
     while (k < n) : (k += 1) {
@@ -4158,7 +4217,7 @@ fn border(p: *Painter, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color, bs
             if (!std.mem.eql(f32, &col, &colors[0])) break false;
         } else true;
         if (same) {
-            strokeShape(p, inner, ri, p.solid(colors[0]), bw[0], st);
+            if (bs) |style| dashedShape(p, inner, ri, p.solid(colors[0]), bw[0], style) else strokeShape(p, inner, ri, p.solid(colors[0]), bw[0], st);
             return;
         }
         // Sides in different colors (a spinner: border-top-color on a grey
@@ -4187,7 +4246,7 @@ fn border(p: *Painter, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color, bs
                 .layerOptions = c.D2D1_LAYER_OPTIONS_NONE,
             };
             vt.PushLayer.?(p.rt, &params, null);
-            strokeShape(p, inner, ri, p.solid(colors[i]), bw[0], st);
+            if (bs) |style| dashedShape(p, inner, ri, p.solid(colors[i]), bw[0], style) else strokeShape(p, inner, ri, p.solid(colors[i]), bw[0], st);
             vt.PopLayer.?(p.rt);
         }
         return;
@@ -4273,12 +4332,43 @@ fn unevenBorder(p: *Painter, f: Rect, radii: Radii, bw: [4]f32, colors: [4]tree_
         const k = size / @max(1e-3, @max(@abs(dir[i].x), @abs(dir[i].y)));
         ends[i] = .{ .x = outer[i].x + dir[i].x * k, .y = outer[i].y + dir[i].y * k };
     }
-    for (0..4) |i| {
-        if (bw[i] <= 0 or colors[i][3] <= 0) continue;
-        const j = (i + 1) % 4;
-        // The side's share: its corners' join lines as far as the corners'
-        // curves go, then the middle (no ring there).
-        const mask = polygonGeometry(&.{ outer[i], outer[j], ends[j], center, ends[i] }) orelse continue;
+    // Neighbouring sides of one color go under one mask: two anti-aliased
+    // masks meeting on their join line would leave a faint seam there.
+    const drawn = struct {
+        fn at(w: [4]f32, cs: [4]tree_mod.Color, i: usize) bool {
+            return w[i] > 0 and cs[i][3] > 0;
+        }
+    }.at;
+    const sameAs = struct {
+        fn at(w: [4]f32, cs: [4]tree_mod.Color, a: usize, b: usize) bool {
+            return w[a] > 0 and w[b] > 0 and std.mem.eql(f32, &cs[a], &cs[b]);
+        }
+    }.at;
+    // Start where a group begins (a side unlike the one before it).
+    var first: usize = 0;
+    while (first < 4 and sameAs(bw, colors, first, (first + 3) % 4)) first += 1;
+    if (first == 4) first = 0;
+    var done: usize = 0;
+    while (done < 4) {
+        const i = (first + done) % 4;
+        var m: usize = 1;
+        while (done + m < 4 and sameAs(bw, colors, i, (i + m) % 4)) m += 1;
+        done += m;
+        if (!drawn(bw, colors, i)) continue;
+        // The sides' share: their outer corners, the last and first
+        // corners' join lines as far as the curves go, then the middle (no
+        // ring there).
+        var pts: [8]c.D2D1_POINT_2F = undefined;
+        var np: usize = 0;
+        for (0..m + 1) |k| {
+            pts[np] = outer[(i + k) % 4];
+            np += 1;
+        }
+        pts[np] = ends[(i + m) % 4];
+        pts[np + 1] = center;
+        pts[np + 2] = ends[i];
+        np += 3;
+        const mask = polygonGeometry(pts[0..np]) orelse continue;
         defer releaseCom(@as(?*c.ID2D1PathGeometry, mask));
         const params: c.D2D1_LAYER_PARAMETERS = .{
             .contentBounds = .{ .left = -1e6, .top = -1e6, .right = 1e6, .bottom = 1e6 },
