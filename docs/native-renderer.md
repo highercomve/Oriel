@@ -263,6 +263,20 @@ the animated nodes are sent each frame).
   setSelectionRange then typing over it (macOS). Not checked: paste and
   cut (the user's clipboard was left alone).
 
+**Transform and opacity frames** (the "x" channel): a frame that changes
+only elements' transform or opacity (an animation loop writing
+`style.transform`, a transition) skips the flattener (render.js
+updateBoxes) and goes to Zig as numbers, `host.paint(Float64Array)`
+(Tree.applyPaint): entries of `[code, node id, count, count values]`,
+one after another. Code 1: tx, ty, sc, rot, op (5 values, NaN for unset),
+as the JSON op `["x", id, tx, ty, sc, rot, op]` that a host without
+`paint` still gets. A reader skips an entry it doesn't know by its count,
+so new codes (a 2D matrix's 6 values) can be added without breaking
+older readers; give a new code its own number and value count. Backends
+get each change through `Tree.on_paint`, as before. (GTK desktop, render
+bench "animate 200 boxes": 72 → 82 fps with the numbers and updateBoxes
+updating its props in place.)
+
 **Gradient stops** (`bg.gradient`, each backend):
 
 - `stops` are `[r, g, b, a, pos]`. With only percentages, `pos` is a
