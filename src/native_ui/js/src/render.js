@@ -43,7 +43,7 @@ code, kbd, samp, pre, tt { font-family: monospace; }
 button, input, select { font-family: -webkit-small-control, system-ui; }
 textarea { font-family: monospace; }
 pre { white-space: pre; }
-a { color: #0645ad; text-decoration: underline; cursor: pointer; }
+a { color: #0000ee; text-decoration: underline; cursor: pointer; }
 button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
 input, textarea, select { padding: 1px 2px; border: 2px inset #ccc; font-size: 13.33px; background: white; }
 textarea { white-space: pre-wrap; }
@@ -70,6 +70,25 @@ export const UA_CSS_WEBKIT = `
 button, input, textarea, select { font-size: 11px; }
 textarea { font-family: -webkit-small-control, system-ui; }
 `;
+
+// WebKitGTK's controls, as measured (Linux: the WebView there): the GTK
+// UI font (gtk-font-name's family, its size in whole px: platform.uiFont)
+// on every control, Adwaita's 1px #cdcdcd border rounded 5px, white text
+// fields, #f4f4f4 buttons and selects, 12px checkboxes and 20px sliders.
+export function uaCssWebkitGtk(font, accent) {
+  const [family, px] = Array.isArray(font) && font.length === 2 ? font : ["system-ui", 14];
+  // Sliders and checkboxes in the theme's accent color.
+  const acc = Array.isArray(accent) && accent.length === 3 ? `input { accent-color: rgb(${accent.map((v) => +v || 0).join(", ")}); }` : "";
+  return `${acc}
+button, input, textarea, select { font-size: ${+px || 14}px; font-family: ${JSON.stringify(String(family))}, system-ui; }
+input, textarea { padding: 2px; border: 1px solid #cdcdcd; border-radius: 5px; background-color: white; color: black; }
+button, select { border: 1px solid #cdcdcd; border-radius: 5px; background-color: #f4f4f4; color: rgba(0, 0, 0, 0.8); }
+button { padding: 3px 7px 4px; }
+select { padding: 5px 6px; }
+input[type="checkbox"], input[type="radio"] { width: 12px; height: 12px; margin: 3px 2px; }
+input[type="range"] { height: 20px; margin: 2px; }
+`;
+}
 
 const INLINE_DISPLAY = new Set(["inline"]);
 // Elements whose changes can change the page's sheets.
@@ -2285,9 +2304,17 @@ const MAC_RING = (o, r) => ({ w: 4, c: [0, 103, 244, 0.5], o, r });
 const MAC_RINGS = { field: MAC_RING(-1, 2), control: MAC_RING(-1, 5), check: MAC_RING(-1, 5), link: MAC_RING(1, 2), box: MAC_RING(1, 2) };
 const IOS_RING = (o, r) => ({ w: 3, c: [0, 122, 255, 0.5], o, r });
 const IOS_RINGS = { field: IOS_RING(-2, 8), control: IOS_RING(-2, 8), check: IOS_RING(-2, 8), link: IOS_RING(0, 0), box: IOS_RING(0, 0) };
+// WebKitGTK (Linux): 2px in the theme's accent color at 0.8 alpha (WebKit's
+// own blue without one), over a control's border (its 5px corners), just
+// outside a link or another box (measured). No halo.
+const webkitGtkRings = (accent) => {
+  const c = [...(Array.isArray(accent) && accent.length === 3 ? accent : [52, 132, 228]), 0.8];
+  const ring = (o, r) => ({ w: 2, c, o, r });
+  return { control: ring(-2, 5), check: ring(0, 3), link: ring(1, 3), box: ring(1, 3) };
+};
 let osRings = null;
-export function setFocusRingOS(os) {
-  osRings = { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
+export function setFocusRingOS(os, accent) {
+  osRings = os === "linux" ? webkitGtkRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
 }
 let focusVisible = null;
 export function setFocusVisible(el) { focusVisible = el; }

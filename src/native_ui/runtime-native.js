@@ -3625,7 +3625,7 @@ code, kbd, samp, pre, tt { font-family: monospace; }
 button, input, select { font-family: -webkit-small-control, system-ui; }
 textarea { font-family: monospace; }
 pre { white-space: pre; }
-a { color: #0645ad; text-decoration: underline; cursor: pointer; }
+a { color: #0000ee; text-decoration: underline; cursor: pointer; }
 button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
 input, textarea, select { padding: 1px 2px; border: 2px inset #ccc; font-size: 13.33px; background: white; }
 textarea { white-space: pre-wrap; }
@@ -3648,6 +3648,19 @@ col, colgroup { display: none; }
 button, input, textarea, select { font-size: 11px; }
 textarea { font-family: -webkit-small-control, system-ui; }
 `;
+  function uaCssWebkitGtk(font, accent) {
+    const [family, px] = Array.isArray(font) && font.length === 2 ? font : ["system-ui", 14];
+    const acc = Array.isArray(accent) && accent.length === 3 ? `input { accent-color: rgb(${accent.map((v) => +v || 0).join(", ")}); }` : "";
+    return `${acc}
+button, input, textarea, select { font-size: ${+px || 14}px; font-family: ${JSON.stringify(String(family))}, system-ui; }
+input, textarea { padding: 2px; border: 1px solid #cdcdcd; border-radius: 5px; background-color: white; color: black; }
+button, select { border: 1px solid #cdcdcd; border-radius: 5px; background-color: #f4f4f4; color: rgba(0, 0, 0, 0.8); }
+button { padding: 3px 7px 4px; }
+select { padding: 5px 6px; }
+input[type="checkbox"], input[type="radio"] { width: 12px; height: 12px; margin: 3px 2px; }
+input[type="range"] { height: 20px; margin: 2px; }
+`;
+  }
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var SHEET_OWNERS = /* @__PURE__ */ new Set(["style", "link"]);
   var SHEET_RULES_INCREMENTAL = 64;
@@ -5620,9 +5633,14 @@ textarea { font-family: -webkit-small-control, system-ui; }
   var MAC_RINGS = { field: MAC_RING(-1, 2), control: MAC_RING(-1, 5), check: MAC_RING(-1, 5), link: MAC_RING(1, 2), box: MAC_RING(1, 2) };
   var IOS_RING = (o, r) => ({ w: 3, c: [0, 122, 255, 0.5], o, r });
   var IOS_RINGS = { field: IOS_RING(-2, 8), control: IOS_RING(-2, 8), check: IOS_RING(-2, 8), link: IOS_RING(0, 0), box: IOS_RING(0, 0) };
+  var webkitGtkRings = (accent) => {
+    const c = [...Array.isArray(accent) && accent.length === 3 ? accent : [52, 132, 228], 0.8];
+    const ring = (o, r) => ({ w: 2, c, o, r });
+    return { control: ring(-2, 5), check: ring(0, 3), link: ring(1, 3), box: ring(1, 3) };
+  };
   var osRings = null;
-  function setFocusRingOS(os) {
-    osRings = { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
+  function setFocusRingOS(os, accent) {
+    osRings = os === "linux" ? webkitGtkRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
   }
   var focusVisible = null;
   function setFocusVisible(el) {
@@ -6910,7 +6928,7 @@ ${a.stack || ""}`;
   g.localStorage = store("local");
   g.sessionStorage = store("session");
   var platform = JSON.parse(host.platform || "{}");
-  setFocusRingOS(platform.os);
+  setFocusRingOS(platform.os, platform.accent);
   g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: void 0, maxTouchPoints: viewport.coarse ? 5 : 0 };
   Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
   Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
@@ -7561,6 +7579,7 @@ ${a.stack || ""}`;
         const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
         engine.addSheet(UA_CSS, sheets);
         if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
+        else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets);
         for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
         const b1 = P && P();
         renderer = new Renderer(document, engine, host);

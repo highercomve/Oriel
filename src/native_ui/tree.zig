@@ -1080,6 +1080,9 @@ pub const Tree = struct {
     /// Backend supplies natural text sizes and context epochs. Equal,
     /// unwrapped metrics can reuse the current frames after a text edit.
     reuse_text_layout: bool = false,
+    /// Backend measures fields as the WebView sizes them (a textarea's
+    /// cols): measureFn doesn't narrow a textarea to its own estimate.
+    fields_sized: bool = false,
     width: f32 = 800,
     height: f32 = 600,
     /// Called before a node goes (its widget is destroyed).
@@ -2462,7 +2465,7 @@ fn measureFn(node: yg.YGNodeConstRef, width: f32, width_mode: yg.YGMeasureMode, 
     // A textarea is `cols` characters wide (about 0.6 em each, plus its
     // padding), as in a browser, not as wide as it may be; stretched in a
     // flex column it still fills it (that width is exact).
-    if (n.kind == .textarea) if (n.props.cols) |cols| {
+    if (n.kind == .textarea and !n.tree.fields_sized) if (n.props.cols) |cols| {
         const fz = n.props.fz orelse 16;
         out[0] = @min(out[0], cols * fz * 0.6 + 8);
     };
