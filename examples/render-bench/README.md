@@ -91,10 +91,10 @@ Each test runs 3 times; the median is reported.
 | memory (PSS) | Proportional memory of the app and all its child processes (a WebView page runs in WebKit's own processes) |
 
 Times cover the DOM work and the layout it triggers, not painting, in both
-renderers. The native renderer's `requestAnimationFrame` uses host timers on
-a 60 Hz grid, so its frame rates cap at about 60. Its canvas is
-not a bitmap: the 2d calls are replayed into Cairo each frame
-(docs/native-renderer.md, "Canvas").
+renderers. The native renderer's `requestAnimationFrame` is paced by the
+display. Its canvas records a numeric 2d program, replayed into a bitmap
+of its own by the platform backend (see `docs/native-renderer.md`, "Canvas").
+The historical linkedom results below predate these changes.
 
 ### On screen (Android)
 
