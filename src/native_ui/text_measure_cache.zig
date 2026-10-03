@@ -48,7 +48,7 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
     if (runs.len > 4) return null;
     var text_len: usize = 0;
     for (runs) |r| text_len += r.t.len;
-    if (text_len > 512) return null;
+    if (text_len > 480) return null;
     var k = Key{ .buf = buf };
     k.float(width);
     k.float(props.fz orelse 16);
@@ -74,6 +74,13 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
         for (r.c) |channel| k.float(channel);
         k.byte(@intFromBool(r.bg != null));
         if (r.bg) |bg| for (bg) |channel| k.float(channel);
+        // An inline box's room in the line (its box, as runs group).
+        k.byte(@intFromBool(r.ib != null));
+        if (r.ib) |ib| {
+            k.integer(ib.k);
+            k.float(ib.start());
+            k.float(ib.end());
+        }
         if (!k.family(r.ff)) return null;
     }
     return buf[0..k.len];
