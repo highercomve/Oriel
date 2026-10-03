@@ -238,6 +238,20 @@ element and `focus` and `focusin` on the new one, as browsers do;
 (nothing is sent while a field is being removed). Android sends them
 too; each backend must, or `:focus` never matches on its fields.
 
+Tab: a `"key"` Tab (Shift+Tab back) that the page doesn't prevent moves
+the focus as browsers order it: positive `tabindex` first (ascending, then
+document order), then the rest in document order; links with `href`,
+enabled form controls, `<summary>` in `<details>`, contenteditable and
+`tabindex >= 0`, if shown (not `display: none` or `visibility: hidden`);
+it wraps at the ends. The element focused is scrolled into view
+(`block: "nearest"`) and matches `:focus-visible`, which draws browsers'
+focus ring (2 px blue, offset 1 px) unless the page styles its outline.
+Backends must give Tab to the page, also while a native field has the
+keyboard, and not move the focus themselves when the page used the key;
+when the page focuses an element that isn't a native field, the keyboard
+goes to the page's view. GTK: a capture-phase key controller on the
+overlay sends Tab from a field.
+
 Backends: macOS (mouse moves, drags, buttons; key up from a local event monitor,
 AppKit not sending `keyUp:` to the page's view) and iOS (one touch; a drag the
 page doesn't take scrolls as before), GTK (mouse moves, drags and buttons;
