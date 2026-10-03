@@ -12817,7 +12817,7 @@ globalThis.atob ??= (s) => {
   function cmpSpec(x, y) {
     return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
   }
-  var viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false };
+  var viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false, dpr: 1 };
   function rangeMatches(part) {
     const inner = /^\(([^()]*)\)$/.exec(part)?.[1];
     if (!inner || !/[<>=]/.test(inner) || inner.includes(":")) return null;
@@ -12825,6 +12825,8 @@ globalThis.atob ??= (s) => {
     const valueOf = (t) => {
       if (t === "width") return viewport.width;
       if (t === "height") return viewport.height;
+      if (t === "resolution") return viewport.dpr;
+      if (/(dppx|x|dpi|dpcm)$/.test(t)) return dppx(t);
       const n2 = parseFloat(t);
       if (!Number.isFinite(n2)) return NaN;
       return t.endsWith("rem") || t.endsWith("em") ? n2 * 16 : n2;
@@ -12838,8 +12840,15 @@ globalThis.atob ??= (s) => {
     }
     return true;
   }
+  function dppx(t) {
+    const n2 = parseFloat(t);
+    if (!Number.isFinite(n2)) return NaN;
+    if (t.endsWith("dpcm")) return n2 * 2.54 / 96;
+    if (t.endsWith("dpi")) return n2 / 96;
+    return n2;
+  }
   var mediaAnswers = /* @__PURE__ */ new Map();
-  var mediaFor = { width: NaN, height: NaN, dark: null, coarse: null, reducedMotion: null };
+  var mediaFor = { width: NaN, height: NaN, dark: null, coarse: null, reducedMotion: null, dpr: NaN };
   function fontSpecs(rules, max = 48) {
     const sizes = /* @__PURE__ */ new Set([16]), weights = /* @__PURE__ */ new Set([400]);
     let italic = false, mono = false, root = 16;
@@ -12879,9 +12888,9 @@ globalThis.atob ??= (s) => {
   function mediaMatches(q) {
     if (!q) return true;
     const v = viewport, f = mediaFor;
-    if (v.width !== f.width || v.height !== f.height || v.dark !== f.dark || v.coarse !== f.coarse || v.reducedMotion !== f.reducedMotion) {
+    if (v.width !== f.width || v.height !== f.height || v.dark !== f.dark || v.coarse !== f.coarse || v.reducedMotion !== f.reducedMotion || v.dpr !== f.dpr) {
       mediaAnswers.clear();
-      Object.assign(f, { width: v.width, height: v.height, dark: v.dark, coarse: v.coarse, reducedMotion: v.reducedMotion });
+      Object.assign(f, { width: v.width, height: v.height, dark: v.dark, coarse: v.coarse, reducedMotion: v.reducedMotion, dpr: v.dpr });
     }
     let answer = mediaAnswers.get(q);
     if (answer === void 0) {
@@ -12929,6 +12938,19 @@ globalThis.atob ??= (s) => {
             return val === (viewport.coarse ? "none" : "hover");
           case "orientation":
             return val === (viewport.width >= viewport.height ? "landscape" : "portrait");
+          // The screen's pixels per CSS px (devicePixelRatio), WebKit's
+          // prefixed device-pixel-ratio too (a bare number).
+          case "resolution":
+          case "-webkit-device-pixel-ratio":
+            return Math.abs(viewport.dpr - dppx(val)) < 1e-3;
+          case "min-resolution":
+          case "-webkit-min-device-pixel-ratio":
+          case "min--moz-device-pixel-ratio":
+            return viewport.dpr >= dppx(val) - 1e-3;
+          case "max-resolution":
+          case "-webkit-max-device-pixel-ratio":
+          case "max--moz-device-pixel-ratio":
+            return viewport.dpr <= dppx(val) + 1e-3;
           default:
             return false;
         }
@@ -17881,11 +17903,12 @@ ${a.stack || ""}`;
     offsetHeight: { get() {
       return frameOf(this)[3];
     }, configurable: true },
+    // The root's: the viewport (a page's scrollbars overlay it here).
     clientWidth: { get() {
-      return frameOf(this)[2];
+      return this === document.documentElement ? viewport.width : frameOf(this)[2];
     }, configurable: true },
     clientHeight: { get() {
-      return frameOf(this)[3];
+      return this === document.documentElement ? viewport.height : frameOf(this)[3];
     }, configurable: true },
     scrollHeight: { get() {
       const f = frameOf(this);
@@ -18160,7 +18183,8 @@ ${a.stack || ""}`;
   g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: void 0, maxTouchPoints: viewport.coarse ? 5 : 0 };
   Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
   Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
-  g.devicePixelRatio = 1;
+  viewport.dpr = platform.dpr > 0 ? +platform.dpr : 1;
+  Object.defineProperty(g, "devicePixelRatio", { get: () => viewport.dpr, configurable: true });
   g.getComputedStyle = (el) => {
     const cs = renderer?.styleOf(el) || {};
     return new Proxy({}, { get: (_, k) => k === "getPropertyValue" ? (p) => cs[p] ?? "" : cs[String(k).replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())] ?? "" });

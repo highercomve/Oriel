@@ -167,18 +167,21 @@ fn classes() void {
     }));
 }
 
-/// The platform JSON with `fullKeyboardAccess`: whether macOS's keyboard
-/// navigation setting lets Tab reach every control (WKWebView's Tab then
-/// visits buttons and links too), read as the window opens. Owned by the
-/// caller (the engine copies it); null: as is.
-fn withKeyboardAccess(gpa: std.mem.Allocator, platform_json: [:0]const u8) ?[:0]const u8 {
+/// The platform JSON with what's read as the window opens:
+/// `fullKeyboardAccess`, whether macOS's keyboard navigation setting lets
+/// Tab reach every control (WKWebView's Tab then visits buttons and links
+/// too), and `dpr`, the main screen's backing scale (devicePixelRatio).
+/// Owned by the caller (the engine copies it); null: as is.
+fn withPlatformExtras(gpa: std.mem.Allocator, platform_json: [:0]const u8) ?[:0]const u8 {
     const trimmed = std.mem.trimEnd(u8, platform_json, " \n");
     if (trimmed.len < 2 or trimmed[trimmed.len - 1] != '}') return null;
     const app = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{});
     const fka = cocoa.isTrue(app.msgSend(BOOL, "isFullKeyboardAccessEnabled", .{}));
+    const screen = cocoa.class("NSScreen").msgSend(Object, "mainScreen", .{});
+    const dpr: f64 = if (screen.value != null) screen.msgSend(f64, "backingScaleFactor", .{}) else 1;
     const body = trimmed[0 .. trimmed.len - 1];
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
-    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"fullKeyboardAccess\":{}}}", .{ body, sep, fka }, 0) catch null;
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"fullKeyboardAccess\":{},\"dpr\":{d}}}", .{ body, sep, fka, dpr }, 0) catch null;
 }
 
 /// Create a window's page at `width`×`height` points and run it.
@@ -212,9 +215,9 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     try by_view.put(gpa, key(view.value), s);
     errdefer _ = by_view.remove(key(view.value));
     s.dark = isDark(view);
-    const with_fka = withKeyboardAccess(gpa, platform_json);
-    defer if (with_fka) |j| gpa.free(j);
-    const platform = with_fka orelse platform_json;
+    const extras = withPlatformExtras(gpa, platform_json);
+    defer if (extras) |j| gpa.free(j);
+    const platform = extras orelse platform_json;
     s.engine = try Engine.create(gpa, .{
         .ctx = s,
         .measure = measure,

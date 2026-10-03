@@ -171,7 +171,7 @@ function cmpSpec(x, y) {
 // ---------------------------------------------------------------------------
 // Media queries
 
-export const viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false };
+export const viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false, dpr: 1 };
 
 // Media Queries 4 ranges: (width <= 720px), (400px < width <= 720px),
 // (height >= 30em) — what Vite/lightningcss turns max-width/min-width into.
@@ -182,6 +182,8 @@ function rangeMatches(part) {
   const valueOf = (t) => {
     if (t === "width") return viewport.width;
     if (t === "height") return viewport.height;
+    if (t === "resolution") return viewport.dpr;
+    if (/^[\d.]+(dppx|x|dpi|dpcm)$/.test(t)) return dppx(t);
     const n = parseFloat(t);
     if (!Number.isFinite(n)) return NaN;
     return t.endsWith("rem") || t.endsWith("em") ? n * 16 : n;
@@ -196,12 +198,22 @@ function rangeMatches(part) {
   return true;
 }
 
+// A resolution in dots per px (devicePixelRatio's unit): 2dppx, 2x,
+// 192dpi, 75.6dpcm; a bare number (a device-pixel-ratio's) as is.
+function dppx(t) {
+  const n = parseFloat(t);
+  if (!Number.isFinite(n)) return NaN;
+  if (t.endsWith("dpcm")) return (n * 2.54) / 96;
+  if (t.endsWith("dpi")) return n / 96;
+  return n;
+}
+
 // Each query's answer for the viewport as it is (main.js assigns its
 // fields on resize and theme changes): matching asks for every candidate
 // rule of every element, and parsing the query each time was ~14% of a
 // settings page's JavaScript.
 const mediaAnswers = new Map();
-const mediaFor = { width: NaN, height: NaN, dark: null, coarse: null, reducedMotion: null };
+const mediaFor = { width: NaN, height: NaN, dark: null, coarse: null, reducedMotion: null, dpr: NaN };
 
 // The fonts a page's rules can ask for: [size px, weight, italic, mono],
 // at most `max`, for the backend to load while idle (host.warmFonts): the
@@ -251,9 +263,9 @@ export function fontSpecs(rules, max = 48) {
 export function mediaMatches(q) {
   if (!q) return true;
   const v = viewport, f = mediaFor;
-  if (v.width !== f.width || v.height !== f.height || v.dark !== f.dark || v.coarse !== f.coarse || v.reducedMotion !== f.reducedMotion) {
+  if (v.width !== f.width || v.height !== f.height || v.dark !== f.dark || v.coarse !== f.coarse || v.reducedMotion !== f.reducedMotion || v.dpr !== f.dpr) {
     mediaAnswers.clear();
-    Object.assign(f, { width: v.width, height: v.height, dark: v.dark, coarse: v.coarse, reducedMotion: v.reducedMotion });
+    Object.assign(f, { width: v.width, height: v.height, dark: v.dark, coarse: v.coarse, reducedMotion: v.reducedMotion, dpr: v.dpr });
   }
   let answer = mediaAnswers.get(q);
   if (answer === undefined) {
@@ -290,6 +302,11 @@ function evalMedia(q) {
         case "pointer": return val === (viewport.coarse ? "coarse" : "fine");
         case "hover": return val === (viewport.coarse ? "none" : "hover");
         case "orientation": return val === (viewport.width >= viewport.height ? "landscape" : "portrait");
+        // The screen's pixels per CSS px (devicePixelRatio), WebKit's
+        // prefixed device-pixel-ratio too (a bare number).
+        case "resolution": case "-webkit-device-pixel-ratio": return Math.abs(viewport.dpr - dppx(val)) < 1e-3;
+        case "min-resolution": case "-webkit-min-device-pixel-ratio": case "min--moz-device-pixel-ratio": return viewport.dpr >= dppx(val) - 1e-3;
+        case "max-resolution": case "-webkit-max-device-pixel-ratio": case "max--moz-device-pixel-ratio": return viewport.dpr <= dppx(val) + 1e-3;
         default: return false;
       }
     });
