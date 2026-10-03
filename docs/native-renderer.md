@@ -106,6 +106,22 @@ a single-line field submits its `form`.
 
 ## CSS
 
+Style sheets: every `<style>` and `<link rel="stylesheet">` (an app
+asset), in document order, at boot and whenever the page changes one.
+A sheet added, removed or disabled (`disabled` on a `<link>`, a sheet's
+`disabled`), a `<style>`'s text changed, or rules inserted or deleted
+through the CSSOM (`element.sheet`, `document.styleSheets`, `cssRules`,
+`insertRule`/`deleteRule`, as CSS-in-JS libraries use them) all restyle
+the page at the next render. Only the elements that the rules that came or
+went match are styled again (a changed sheet is compared rule by rule, so
+one inserted rule parses and matches one rule). Everything is restyled
+when that can't be told: `:has()`, `@keyframes`, a selector the DOM can't
+query, or more than 64 rules at once. A `<link>` added after boot fires
+`load` (or `error`). The boot's sheets go through the parsed-sheet cache
+(the build's and the process's); later ones are parsed when they come.
+Constructed sheets (`new CSSStyleSheet()`) exist but aren't applied
+(`adoptedStyleSheets` isn't supported).
+
 Supported: selectors (types, classes, ids, attributes, `:not`, `:first-child`,
 `:focus`, `:focus-visible`, `:hover`, `:active`, descendant and child combinators, `::before`/`::after`), the
 cascade and `!important`, `var()` with fallbacks, `calc()`, `color-mix()`,
