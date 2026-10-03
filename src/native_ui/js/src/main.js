@@ -449,8 +449,10 @@ g.scrollTo = g.scroll = (x, y) => {
 // matches for :focus (css.js).
 // :focus-visible (data-nui-focus-visible) as browsers decide it: focus
 // that came by the keyboard, or a text field (it shows a caret either way).
+// Before any pointer press, a script's focus() counts as the keyboard's
+// (WebKit and Chromium show the ring for it then).
 let active = null;
-let keyboardFocus = false;
+let keyboardFocus = true;
 const TEXT_INPUTS = new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
 const textField = (el) => el?.localName === "textarea" || el?.isContentEditable ||
   (el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase()));
