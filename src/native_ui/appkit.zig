@@ -57,6 +57,13 @@ pub const Surface = struct {
     /// while this holds; bumped when the text may measure differently.
     text_epoch: u64 = 1,
     pointer_hand: bool = false,
+    /// The mouse's last move, sent to the page at the next display frame
+    /// (one a frame, however fast the mouse reports).
+    /// The tree's node count after the last layout, and whether a trim of
+    /// its emptied pool slabs is due (trimPools, 2 s after a big drop).
+    node_count: usize = 0,
+    trim_queued: bool = false,
+    move: ?PendingMove = null,
     /// The window's label (ORIEL_NUI_SNAPSHOT file names).
     label: []u8 = &.{},
     snapshot_queued: bool = false,
@@ -107,6 +114,7 @@ pub fn resolve(token: u64, call_id: u32, ok: bool, text: []const u8) void {
 
 fn classes() void {
     if (view_class != null) return;
+    installKeyUpMonitor();
     view_class = cocoa.defineSubclass("OrielNuiView", "NSView", &.{}, .{
         .{ "nuiDisplayFrame:", onDisplayFrame },
         .{ "isFlipped", yes },
@@ -119,7 +127,7 @@ fn classes() void {
         .{ "mouseUp:", mouseUp },
         .{ "rightMouseUp:", rightMouseUp },
         .{ "mouseMoved:", mouseMoved },
-        .{ "mouseDragged:", mouseMoved },
+        .{ "mouseDragged:", mouseDragged },
         .{ "mouseExited:", mouseExited },
         .{ "scrollWheel:", scrollWheel },
         .{ "keyDown:", keyDown },
@@ -319,6 +327,12 @@ fn hasDisplayLink(view: Object) bool {
 fn requestDisplayFrame(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
     s.frame_wanted = true;
+    runDisplayLink(s);
+}
+
+/// Start (or resume) the display link: a frame the page asked for, or a
+/// pointer move to send.
+fn runDisplayLink(s: *Surface) void {
     if (s.display_link.value != null) {
         s.display_link.msgSend(void, "setPaused:", .{cocoa.boolean(false)});
         return;
@@ -334,6 +348,13 @@ fn requestDisplayFrame(ctx: *anyopaque) void {
 fn onDisplayFrame(self: id, _: SEL, link_id: id) callconv(.c) void {
     const link: Object = .{ .value = link_id };
     const s = by_view.get(key(self)) orelse return;
+    // Input first, then the frame (as a browser): the page's handler can
+    // ask for the frame that shows it.
+    if (s.move != null) {
+        const token = s.token;
+        flushMove(s);
+        if (surfaces.get(token) == null) return; // the page closed its window
+    }
     if (!s.frame_wanted) {
         link.msgSend(void, "setPaused:", .{cocoa.boolean(true)});
         return;
@@ -478,6 +499,7 @@ fn textChanged(_: *anyopaque, n: *Node) void {
 
 fn laidOut(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
+    queueTrim(s);
     syncFields(s);
     s.view.msgSend(void, "setNeedsDisplay:", .{cocoa.boolean(true)});
     if (std.c.getenv("ORIEL_NUI_SNAPSHOT") != null and !s.snapshot_queued) {
@@ -853,14 +875,28 @@ fn mouseDown(self: id, _: SEL, event: id) callconv(.c) void {
     // A click on the page takes the keyboard from a field.
     _ = s.view.msgSend(Object, "window", .{}).msgSend(BOOL, "makeFirstResponder:", .{s.view});
     const p = point(self, event);
+    const token = s.token;
+    const mods = modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{}));
     // :active while the button is down.
-    if (s.engine.tree.hit(p[0], p[1])) |n| _ = s.engine.event(n.id, "press", "null");
+    const hit = s.engine.tree.hit(p[0], p[1]);
+    if (hit) |n| _ = s.engine.event(n.id, "press", "null");
+    if (surfaces.get(token) == null) return;
+    // A move still waiting goes before the down.
+    if (s.move != null) flushMove(s);
+    if (surfaces.get(token) == null) return;
+    _ = sendPointer(s, "down", p, 1, mods);
 }
 
 fn mouseUp(self: id, _: SEL, event: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
-    _ = s.engine.event(0, "release", "null");
+    const token = s.token;
+    // A move still waiting goes first, then the up, then the click.
+    if (s.move != null) flushMove(s);
+    if (surfaces.get(token) == null) return;
     const p = point(self, event);
+    _ = sendPointer(s, "up", p, 0, modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
+    if (surfaces.get(token) == null) return;
+    _ = s.engine.event(0, "release", "null");
     const hit = s.engine.tree.hit(p[0], p[1]);
     if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: click at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], if (hit) |h| h.id else 0 });
     const n = hit orelse return;
@@ -898,9 +934,23 @@ fn clickableUp(start: *Node) bool {
     return false;
 }
 
+fn mouseDragged(self: id, _: SEL, event: id) callconv(.c) void {
+    pointerMoved(self, event, 1);
+}
+
 fn mouseMoved(self: id, _: SEL, event: id) callconv(.c) void {
+    pointerMoved(self, event, 0);
+}
+
+/// The mouse moved (`buttons` 1: dragging): the page's pointer move, then
+/// the cursor and :hover under it.
+fn pointerMoved(self: id, event: id, buttons: u32) void {
     const s = by_view.get(key(self)) orelse return;
+    const token = s.token;
     const p = point(self, event);
+    queueMove(s, p, buttons, modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
+    // Sent at once (no display link): the page may have closed its window.
+    if (surfaces.get(token) == null) return;
     const n = s.engine.tree.hit(p[0], p[1]);
     const hand = n != null and clickableUp(n.?);
     if (hand != s.pointer_hand) {
@@ -959,6 +1009,59 @@ fn scrollWheel(self: id, _: SEL, event: id) callconv(.c) void {
     }
 }
 
+const PendingMove = struct { at: [2]f32, buttons: u32, mods: u32 };
+
+/// A pointer event for the page (main.js pointerEvent): `phase` down, move,
+/// up or cancel at `p` (the view's points: CSS px), on the node there.
+/// True when the page prevented the default.
+fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, mods: u32) bool {
+    if (!std.math.isFinite(p[0]) or !std.math.isFinite(p[1])) return false;
+    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    var buf: [96]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"mouse\",{d}]", .{ phase, p[0], p[1], buttons, mods }) catch return false;
+    return s.engine.event(nid, "pointer", json);
+}
+
+/// A mouse move waits for the next display frame (the latest one wins);
+/// without a display link (before macOS 14) it goes at once.
+fn queueMove(s: *Surface, p: [2]f32, buttons: u32, mods: u32) void {
+    if (!hasDisplayLink(s.view)) {
+        _ = sendPointer(s, "move", p, buttons, mods);
+        return;
+    }
+    s.move = .{ .at = p, .buttons = buttons, .mods = mods };
+    runDisplayLink(s);
+}
+
+/// A layout that dropped many nodes (a list that went): the tree's emptied
+/// pool slabs go back 2 s later, if the window is still there (a list
+/// rebuilt at once reuses them first).
+fn queueTrim(s: *Surface) void {
+    const count = s.engine.tree.nodes.count();
+    defer s.node_count = count;
+    if (s.node_count <= count + 1000 or s.trim_queued) return;
+    const t = std.heap.smp_allocator.create(u64) catch return;
+    t.* = s.token;
+    s.trim_queued = true;
+    cocoa.afterMain(2000, t, onTrim);
+}
+
+fn onTrim(p: ?*anyopaque) callconv(.c) void {
+    const t: *u64 = @ptrCast(@alignCast(p.?));
+    const token = t.*;
+    std.heap.smp_allocator.destroy(t);
+    const s = surfaces.get(token) orelse return; // the window is gone
+    s.trim_queued = false;
+    const freed = s.engine.tree.trimPools();
+    if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: trim freed {d} pool slabs", .{freed});
+}
+
+fn flushMove(s: *Surface) void {
+    const m = s.move orelse return;
+    s.move = null;
+    _ = sendPointer(s, "move", m.at, m.buttons, m.mods);
+}
+
 fn keyName(event: Object) ?[]const u8 {
     const code = event.msgSend(c_ushort, "keyCode", .{});
     return switch (code) {
@@ -992,8 +1095,56 @@ fn keyDown(self: id, _: SEL, event: id) callconv(.c) void {
     const k = std.json.Stringify.valueAlloc(gpa, name, .{}) catch return;
     defer gpa.free(k);
     var buf: [64]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ k, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})) }) catch return;
+    const repeat = cocoa.isTrue(ev.msgSend(BOOL, "isARepeat", .{}));
+    const json = std.fmt.bufPrint(&buf, "[{s},{d},{}]", .{ k, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})), repeat }) catch return;
     _ = s.engine.event(0, "key", json);
+}
+
+// Key releases: AppKit doesn't send keyUp: to the page's view (the key
+// window's first responder) here, so a local event monitor, one for the
+// process, hands each key up to the view that has the keyboard. The
+// handler is a global block (no captures), as the runtime's blocks are laid out.
+extern var _NSConcreteGlobalBlock: anyopaque;
+const BlockDescriptor = extern struct { reserved: c_ulong, size: c_ulong };
+const MonitorBlock = extern struct {
+    isa: *anyopaque,
+    flags: c_int,
+    reserved: c_int,
+    invoke: *const fn (*MonitorBlock, id) callconv(.c) id,
+    descriptor: *const BlockDescriptor,
+};
+const block_is_global: c_int = 1 << 28;
+const key_up_mask: c_ulonglong = 1 << 11; // NSEventMaskKeyUp
+const key_up_descriptor: BlockDescriptor = .{ .reserved = 0, .size = @sizeOf(MonitorBlock) };
+var key_up_block: MonitorBlock = undefined;
+var key_up_monitor: bool = false;
+
+fn installKeyUpMonitor() void {
+    if (key_up_monitor) return;
+    key_up_monitor = true;
+    key_up_block = .{ .isa = &_NSConcreteGlobalBlock, .flags = block_is_global, .reserved = 0, .invoke = onKeyUpEvent, .descriptor = &key_up_descriptor };
+    // The monitor lives as long as the process (never removed).
+    _ = cocoa.class("NSEvent").msgSend(Object, "addLocalMonitorForEventsMatchingMask:handler:", .{ key_up_mask, @as(*anyopaque, @ptrCast(&key_up_block)) });
+}
+
+fn onKeyUpEvent(_: *MonitorBlock, event: id) callconv(.c) id {
+    const window = (Object{ .value = event }).msgSend(Object, "window", .{});
+    if (window.value == null) return event;
+    const responder = window.msgSend(Object, "firstResponder", .{});
+    if (responder.value != null and by_view.contains(key(responder.value))) keyUp(responder.value, event);
+    return event; // still AppKit's (a field's key up is its own)
+}
+
+fn keyUp(self: id, event: id) void {
+    const s = by_view.get(key(self)) orelse return;
+    const ev: Object = .{ .value = event };
+    const name = keyName(ev) orelse return;
+    const gpa = s.gpa;
+    const k = std.json.Stringify.valueAlloc(gpa, name, .{}) catch return;
+    defer gpa.free(k);
+    var buf: [64]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ k, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})) }) catch return;
+    _ = s.engine.event(0, "keyup", json);
 }
 
 test {
