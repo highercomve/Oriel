@@ -349,7 +349,7 @@ The native renderer runs whatever your web build produces. It isn't a framework 
 | Svelte 5 | Vite's Svelte starter: looks as in the WebView, and its counter updates on click |
 | Preact | Vite's Preact starter: looks as in the WebView, and its counter updates on click |
 | CSS-in-JS (styled-components, emotion) and styles injected at runtime | React apps with each, and a Vue app whose scoped styles arrive from JavaScript: they look as in the WebView, before and after their props change |
-| Alpine.js 3 | A counter, a list with add and remove, and `x-if`: as in the WebView. Alpine compiles its expressions with `new Function`, which Oriel's default CSP forbids in the WebView: allow it (`'unsafe-eval'` in `security.csp`'s `script-src`) or use Alpine's CSP build (`@alpinejs/csp`) |
+| Alpine.js 3 | A counter, a list with add and remove, and `x-if`: as in the WebView. Alpine compiles its expressions with `new Function`, which Oriel's default CSP forbids, natively as in the WebView (an `EvalError`, the violation logged): allow it (`'unsafe-eval'` in `security.csp`'s `script-src`) or use Alpine's CSP build (`@alpinejs/csp`) |
 | Anything else that renders through the DOM (Solid, htmx…) | Being tried |
 | Web components (Lit) | Not yet: shadow DOM and constructed style sheets are missing |
 

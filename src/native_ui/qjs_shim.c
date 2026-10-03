@@ -103,6 +103,11 @@ static void report(JSContext *ctx) {
     JS_FreeValue(ctx, exc);
 }
 
+// The app's CSP's refusals (one CSP for the app: every window's the same),
+// of the page's eval and of inline event handlers: their messages, or NULL.
+static char *nui_csp_eval;
+static char *nui_csp_handlers;
+
 static JSValue h_log(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     int32_t level = 1;
@@ -436,6 +441,37 @@ static JSValue h_eval_script(JSContext *ctx, JSValueConst this_val, int argc, JS
     if (name) JS_FreeCString(ctx, name);
     if (code) JS_FreeCString(ctx, code);
     return JS_UNDEFINED;
+}
+
+// host.compileHandler(name, code): an inline event handler's function
+// (`function (event) { code }`), compiled by the host (not the page's eval,
+// which its CSP may refuse); a SyntaxError is thrown to the caller.
+static JSValue h_compile_handler(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_UNDEFINED;
+    size_t nlen = 0, clen = 0;
+    const char *name = JS_ToCStringLen(ctx, &nlen, argv[0]);
+    const char *code = JS_ToCStringLen(ctx, &clen, argv[1]);
+    JSValue r = JS_UNDEFINED;
+    if (nui_csp_handlers) {
+        // Refused by the CSP (no 'unsafe-inline'): noted, and no handler.
+        oriel_nui_log(opaque_of(ctx), 3, nui_csp_handlers, strlen(nui_csp_handlers));
+    } else if (name && code) {
+        static const char head[] = "(function (event) {\n";
+        static const char tail[] = "\n})";
+        size_t n = sizeof head - 1 + clen + sizeof tail - 1;
+        char *src = malloc(n + 1);
+        if (src) {
+            memcpy(src, head, sizeof head - 1);
+            memcpy(src + sizeof head - 1, code, clen);
+            memcpy(src + sizeof head - 1 + clen, tail, sizeof tail);
+            r = JS_Eval(ctx, src, n, name, JS_EVAL_TYPE_GLOBAL);
+            free(src);
+        }
+    }
+    if (name) JS_FreeCString(ctx, name);
+    if (code) JS_FreeCString(ctx, code);
+    return r;
 }
 
 // ---- ES modules ---------------------------------------------------------------
@@ -782,11 +818,45 @@ static void set_fn(JSContext *ctx, JSValue obj, const char *name, JSCFunction *f
     JS_SetPropertyStr(ctx, obj, name, JS_NewCFunction(ctx, fn, name, len));
 }
 
-void *oqjs_new(void *opaque, const char *platform_json, const char *label, const char *url) {
+// The refusal `*slot` keeps: `s` (a copy), or none.
+static void nui_csp_set(char **slot, const char *s) {
+    if (*slot && s && strcmp(*slot, s) == 0) return;
+    free(*slot);
+    *slot = NULL;
+    if (!s) return;
+    size_t n = strlen(s);
+    *slot = malloc(n + 1);
+    if (*slot) memcpy(*slot, s, n + 1);
+}
+
+// The app's CSP refuses the page's eval of strings: its violation logged,
+// and an EvalError as WebKit and Chromium throw it (the message, with the
+// directive, kept as the runtime's opaque).
+static JSValue nui_eval_refused(JSContext *ctx) {
+    const char *msg = nui_csp_eval;
+    if (!msg) msg = "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script.";
+    oriel_nui_log(opaque_of(ctx), 3, msg, strlen(msg));
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue ctor = JS_GetPropertyStr(ctx, global, "EvalError");
+    JSValue text = JS_NewString(ctx, msg);
+    JSValue err = JS_CallConstructor(ctx, ctor, 1, &text);
+    JS_FreeValue(ctx, text);
+    JS_FreeValue(ctx, ctor);
+    JS_FreeValue(ctx, global);
+    if (JS_IsException(err)) return err;
+    return JS_Throw(ctx, err);
+}
+
+
+void *oqjs_new(void *opaque, const char *platform_json, const char *label, const char *url, const char *eval_refusal, const char *inline_refusal) {
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) return NULL;
     JSContext *ctx = JS_NewContext(rt);
     if (!ctx) { JS_FreeRuntime(rt); return NULL; }
+    // The app's CSP: its refusals for this window's page.
+    nui_csp_set(&nui_csp_eval, eval_refusal);
+    nui_csp_set(&nui_csp_handlers, inline_refusal);
+    if (eval_refusal) JS_OrielSetEvalRefused(ctx, nui_eval_refused);
     oqjs *self = js_malloc(ctx, sizeof *self);
     self->rt = rt;
     self->ctx = ctx;
@@ -827,6 +897,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "scrollIntoView", h_scroll_into_view, 2);
     set_fn(ctx, host, "scrollTo", h_scroll_to, 3);
     set_fn(ctx, host, "evalScript", h_eval_script, 2);
+    set_fn(ctx, host, "compileHandler", h_compile_handler, 2);
     set_fn(ctx, host, "evalModule", h_eval_module, 2);
     JS_SetPropertyStr(ctx, host, "platform", JS_NewString(ctx, platform_json));
     JS_SetPropertyStr(ctx, host, "label", JS_NewString(ctx, label));

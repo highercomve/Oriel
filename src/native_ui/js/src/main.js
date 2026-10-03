@@ -28,6 +28,9 @@ const internalWeak = (m) => (globalThis.__nuiDom?.internal?.(m), m);
 
 
 const host = globalThis.__host;
+// The runtime's alone: a page reaching it could run strings (evalScript)
+// that its CSP refuses to eval.
+delete globalThis.__host;
 
 // ---------------------------------------------------------------------------
 // console
@@ -53,8 +56,15 @@ function setTimer(fn, ms, args, repeat) {
   host.timer(id, Math.max(0, +ms || 0));
   return id;
 }
-globalThis.setTimeout = (fn, ms, ...args) => setTimer(fn, ms, args, false);
-globalThis.setInterval = (fn, ms, ...args) => setTimer(fn, Math.max(4, +ms || 0), args, true);
+// A string is code, run at the top level when the timer fires (as an
+// indirect eval: refused, and only logged, under a CSP without 'unsafe-eval').
+const timerFn = (fn) => {
+  if (typeof fn !== "string") return fn;
+  const code = fn;
+  return () => { try { (0, eval)(code); } catch (e) { if (!(e instanceof EvalError)) throw e; } };
+};
+globalThis.setTimeout = (fn, ms, ...args) => setTimer(timerFn(fn), ms, args, false);
+globalThis.setInterval = (fn, ms, ...args) => setTimer(timerFn(fn), Math.max(4, +ms || 0), args, true);
 globalThis.clearTimeout = globalThis.clearInterval = (id) => { timers.delete(id); };
 globalThis.queueMicrotask ??= (fn) => Promise.resolve().then(fn);
 // performance.now(): host.now() is a monotonic clock with sub-millisecond
@@ -1186,7 +1196,10 @@ function bindInline(el) {
     if (old && old.code === attr.value) continue;
     if (old) el.removeEventListener(type, old.fn);
     let compiled;
-    try { compiled = new Function("event", attr.value); } catch (e) { console.error(`${name}: ${e}`); continue; }
+    // Through the host (its own compile, not the page's eval: an inline
+    // handler is the page's markup, which its CSP's eval rule doesn't cover).
+    try { compiled = host.compileHandler ? host.compileHandler(name, attr.value) : new Function("event", attr.value); } catch (e) { console.error(`${name}: ${e}`); continue; }
+    if (typeof compiled !== "function") continue;
     const fn = function (event) { if (compiled.call(el, event) === false) event.preventDefault(); };
     el.addEventListener(type, fn);
     bound.set(type, { code: attr.value, fn });

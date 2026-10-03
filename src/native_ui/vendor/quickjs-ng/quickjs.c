@@ -559,6 +559,10 @@ struct JSContext {
     JSGCObjectHeader header; /* must come first */
     JSRuntime *rt;
     struct list_head link;
+    /* Oriel: set when the page may not compile strings (a CSP without
+       'unsafe-eval'): eval, indirect eval and the Function constructors
+       return what it returns (an exception) instead (JS_OrielSetEvalRefused) */
+    JSValue (*oriel_eval_refused)(JSContext *ctx);
 
     uint16_t binary_object_count;
     uint32_t binary_object_size : 31;
@@ -1694,6 +1698,15 @@ JSValue JS_DupValueRT(JSRuntime *rt, JSValueConst v)
 int JS_GetRefCount(JSValueConst v)
 {
     return JS_VALUE_HAS_REF_COUNT(v) ? JS_REF_COUNT(JS_VALUE_GET_PTR(v)) : 1;
+}
+
+/* Oriel: the page may not compile strings (eval, new Function): `fn`
+   (NULL: it may) returns what they return instead (JS_ThrowEvalError's
+   exception, after the host notes the CSP violation). The host's own
+   JS_Eval is unaffected. */
+void JS_OrielSetEvalRefused(JSContext *ctx, JSValue (*fn)(JSContext *ctx))
+{
+    ctx->oriel_eval_refused = fn;
 }
 
 /* Oriel: marks a WeakMap or WeakSet as the runtime's own cache: its keys'
@@ -38458,6 +38471,9 @@ static JSValue JS_EvalObject(JSContext *ctx, JSValueConst this_obj,
 
     if (!JS_IsString(val))
         return js_dup(val);
+    /* Oriel: the page's eval of a string, refused by its CSP */
+    if (ctx->oriel_eval_refused)
+        return ctx->oriel_eval_refused(ctx);
     str = JS_ToCStringLen(ctx, &len, val);
     if (!str)
         return JS_EXCEPTION;
