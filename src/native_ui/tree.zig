@@ -4,6 +4,7 @@
 //! offsets and clips the backends draw and hit-test with.
 
 const std = @import("std");
+const SlabPool = @import("slab_pool.zig").SlabPool;
 pub const yg = @cImport({
     @cUndef("_FORTIFY_SOURCE");
     @cInclude("yoga/Yoga.h");
@@ -847,12 +848,11 @@ pub const Tree = struct {
     stamp_plans: std.ArrayList(StampPlan) = .empty,
     gpa: std.mem.Allocator,
     nodes: std.AutoHashMap(i64, *Node),
-    /// Nodes and text overrides come from pools: packed side by side (a
-    /// general allocator rounds a node up to its size class, which on the
-    /// first build is page faults), and a freed one is the next one made.
-    /// Their memory goes back with the tree.
-    node_pool: std.heap.MemoryPool(Node) = .empty,
-    text_pool: std.heap.MemoryPool(TextOverride) = .empty,
+    /// Nodes and text overrides come from slabs (slab_pool.zig): packed
+    /// side by side, a freed one is the next one made, and a slab whose
+    /// items are all freed goes back to the allocator.
+    node_pool: SlabPool(Node) = .{},
+    text_pool: SlabPool(TextOverride) = .{},
     root: ?*Node = null,
     config: yg.YGConfigRef,
     measure_ctx: *anyopaque,
@@ -922,8 +922,8 @@ pub const Tree = struct {
         t.leaf_styles.deinit(t.gpa);
         t.pending_texts.deinit(t.gpa);
         t.settle_nodes.deinit(t.gpa);
-        t.node_pool.deinit(t.gpa);
-        t.text_pool.deinit(t.gpa);
+        t.node_pool.deinit();
+        t.text_pool.deinit();
         yg.YGConfigFree(t.config);
     }
 
@@ -938,6 +938,13 @@ pub const Tree = struct {
         n.kids.deinit(t.gpa);
         n.arena.deinit();
         t.node_pool.destroy(n);
+    }
+
+    /// Give back the node and text slabs left empty (a list that went), but
+    /// one of each: backends call it a while after a big removal, so a
+    /// list rebuilt at once reuses them. The number of slabs released.
+    pub fn trimPools(t: *Tree) usize {
+        return t.node_pool.trim(1) + t.text_pool.trim(1);
     }
 
     pub fn get(t: *Tree, id: i64) ?*Node {
@@ -979,7 +986,7 @@ pub const Tree = struct {
         if (kind == .text) {
             const owned = try dupeUtf8Lossy(t.gpa, text);
             errdefer t.gpa.free(owned);
-            const o = try t.text_pool.create(t.gpa);
+            const o = try t.text_pool.create();
             o.* = .{ .run = style.props.runs.?[0], .text = owned };
             o.run.t = owned;
             n.text_override = o;
@@ -1121,7 +1128,7 @@ pub const Tree = struct {
         const previous_epoch = n.text_measure_epoch;
         const owned = try dupeUtf8Lossy(t.gpa, text);
         errdefer t.gpa.free(owned);
-        const o = n.text_override orelse try t.text_pool.create(t.gpa);
+        const o = n.text_override orelse try t.text_pool.create();
         const run = runs[0];
         if (n.text_override != null) t.gpa.free(o.text);
         o.* = .{ .run = run, .text = owned };
@@ -1349,7 +1356,7 @@ pub const Tree = struct {
 
     fn create(t: *Tree, id: i64, kind: Kind) !void {
         if (t.nodes.get(id) != null) t.destroy(id);
-        const n = try t.node_pool.create(t.gpa);
+        const n = try t.node_pool.create();
         // From a blank copied whole, then the fields: assigning the literal
         // zero-fills the node (1.3 KB) with compiler-rt's memset, a byte at
         // a time (a third of stamping a row); memcpy moves words.
@@ -3247,4 +3254,8 @@ test "a text in a wrapping row starts from its unwrapped width, as CSS's max-con
         \\[["p",8,{"fd":"row","fw":"wrap","w":260,"cg":8}],["p",4,{"w":90,"runs":[{"t":"Fits beside"}]}]]
     );
     try std.testing.expectEqual(@as(yg.YGUnit, yg.YGUnitAuto), yg.YGNodeStyleGetFlexBasis(t.get(4).?.yn).unit);
+}
+
+test {
+    _ = @import("slab_pool.zig");
 }

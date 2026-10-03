@@ -163,7 +163,11 @@ async function run() {
   }
   $("stage").textContent = "";
   await frame();
+  // As a window that has been idle a moment: the native renderer gives a
+  // removed list's memory back a while after (Tree.trimPools).
+  await new Promise((r) => setTimeout(r, 2500));
   show("memory after the tests (PSS, all processes)", [await invoke("pss_mb")], "MB");
+  show("private memory after the tests (all processes)", [await invoke("private_mb")], "MB");
   $("status").textContent = "Done.";
   $("run").disabled = false;
   return results;
@@ -178,14 +182,18 @@ async function run() {
   await frame();
   show("startup → first frame", [await invoke("since_start")]);
   show("memory at start (PSS, all processes)", [await invoke("pss_mb")], "MB");
+  show("private memory at start (all processes)", [await invoke("private_mb")], "MB");
   await run();
   // A second round: memory that grows again is a leak, memory reused from the
   // first round isn't.
   if (await invoke("bench_mode_on")) {
     const first = results["memory after the tests (PSS, all processes)"];
+    const firstPrivate = results["private memory after the tests (all processes)"];
     await run();
     results["memory after a second round (PSS, all processes)"] = results["memory after the tests (PSS, all processes)"];
+    results["private memory after a second round (all processes)"] = results["private memory after the tests (all processes)"];
     results["memory after the tests (PSS, all processes)"] = first;
+    results["private memory after the tests (all processes)"] = firstPrivate;
   }
   $("run").addEventListener("click", run);
   if (await invoke("bench_mode_on")) await invoke("report", { json: JSON.stringify({ renderer, results }) });
