@@ -984,7 +984,7 @@ fn fieldPresses(self: id, presses: id, kind: []const u8) bool {
         if (!used) {
             prevented = false;
             if (down and std.mem.eql(u8, name, "Enter")) press_enter_field = self;
-        }
+        } else if (down) last_key.len = 0; // the page took it: no edit of its own
     }
     return prevented;
 }
@@ -1015,6 +1015,9 @@ fn laterKeyUp(token: u64, nid: i64, json: []const u8) void {
 fn onLaterKeyUp(p: ?*anyopaque) callconv(.c) void {
     const k: *LaterKeyUp = @ptrCast(@alignCast(p.?));
     defer std.heap.smp_allocator.destroy(k);
+    // The key's edit, if it made one, came before its key up: a later
+    // (soft keyboard, menu) edit isn't named after it.
+    last_key.len = 0;
     const s = surfaces.get(k.token) orelse return; // the window is gone
     if (s.engine.tree.get(k.nid) == null) return; // the field is gone
     _ = s.engine.event(k.nid, "keyup", k.json[0..k.len]);
@@ -1181,7 +1184,7 @@ fn fieldChanged(_: id, _: SEL, field: id) callconv(.c) void {
     const o = ownerOf(field) orelse return;
     if (o.s.updating) return;
     const text = apple.utf8((Object{ .value = field }).msgSend(Object, "text", .{})) orelse "";
-    sendInput(o.s, o.n, text);
+    sendInput(field, o.s, o.n, text);
 }
 
 /// Return in a one-line field: the page's Enter (which submits its form).
@@ -1202,7 +1205,7 @@ fn textViewDidChange(_: id, _: SEL, tv: id) callconv(.c) void {
     o.s.view.msgSend(void, "setNeedsDisplay", .{});
     if (o.s.updating) return;
     const text = apple.utf8((Object{ .value = tv }).msgSend(Object, "text", .{})) orelse "";
-    sendInput(o.s, o.n, text);
+    sendInput(tv, o.s, o.n, text);
 }
 
 /// Return in a text area: the page's Enter first; no newline when it
@@ -1235,8 +1238,10 @@ fn fieldShouldChange(_: id, _: SEL, field: id, _: NSRange, text: id) callconv(.c
 /// The last hardware key down a field had (fieldPresses), for the edit it makes.
 var last_key: struct { name: [16]u8 = undefined, len: usize = 0, mods: u32 = 0 } = .{};
 
-/// The edit the page let through, for the input that follows it.
+/// The edit the page let through, for the input that follows it (only
+/// the same control's: one that never came leaves no type behind).
 var pending_type: ?[]const u8 = null;
+var pending_control: id = null;
 var pending_data: std.ArrayListUnmanaged(u8) = .empty;
 var pending_has_data = false;
 
@@ -1263,6 +1268,7 @@ fn editKind(repl: []const u8, textarea: bool) struct { t: []const u8, data: bool
 /// false when it prevented it. While an input method composes (marked
 /// text) the edits are the field's alone.
 fn askEdit(control: id, repl: []const u8, textarea: bool) bool {
+    pending_type = null;
     const o = ownerOf(control) orelse return true;
     if (o.s.updating) return true;
     if ((Object{ .value = control }).msgSend(Object, "markedTextRange", .{}).value != null) return true;
@@ -1274,6 +1280,7 @@ fn askEdit(control: id, repl: []const u8, textarea: bool) bool {
     defer gpa.free(json);
     if (o.s.engine.event(o.n.id, "beforeinput", json)) return false;
     pending_type = kind.t;
+    pending_control = control;
     pending_data.clearRetainingCapacity();
     pending_has_data = kind.data;
     if (kind.data) pending_data.appendSlice(std.heap.smp_allocator, repl) catch {
@@ -1284,8 +1291,8 @@ fn askEdit(control: id, repl: []const u8, textarea: bool) bool {
 
 /// After an edit: "input" with [value, inputType, data] (the edit the page
 /// heard of), or the value alone.
-fn sendInput(s: *Surface, n: *Node, text: []const u8) void {
-    const kind = pending_type orelse return sendValue(s, n, "input", text);
+fn sendInput(control: id, s: *Surface, n: *Node, text: []const u8) void {
+    const kind = (if (pending_control == control) pending_type else null) orelse return sendValue(s, n, "input", text);
     pending_type = null;
     const gpa = s.gpa;
     const v = std.json.Stringify.valueAlloc(gpa, text, .{}) catch return;

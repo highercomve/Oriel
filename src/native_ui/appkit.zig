@@ -793,8 +793,10 @@ fn ownerOf(control: id) ?struct { s: *Surface, n: *Node } {
 
 const NSRange = extern struct { location: c_ulong, length: c_ulong };
 
-/// The edit the page let through, for the input that follows it.
+/// The edit the page let through, for the input that follows it (only
+/// the same control's: one that never came leaves no type behind).
 var pending_type: ?[]const u8 = null;
+var pending_control: id = null;
 var pending_data: std.ArrayListUnmanaged(u8) = .empty;
 var pending_has_data = false;
 
@@ -805,22 +807,23 @@ fn editKind(repl: []const u8, textarea: bool) ?struct { t: []const u8, data: boo
     const ev = app.msgSend(Object, "currentEvent", .{});
     var code: c_ushort = 0xffff;
     var flags: c_ulong = 0;
-    var chars: []const u8 = "";
     if (ev.value != null and ev.msgSend(c_ulong, "type", .{}) == 10) { // a key down
         code = ev.msgSend(c_ushort, "keyCode", .{});
         flags = ev.msgSend(c_ulong, "modifierFlags", .{});
-        chars = cocoa.utf8(ev.msgSend(Object, "charactersIgnoringModifiers", .{})) orelse "";
     }
     const cmd = flags & (1 << 20) != 0;
     const alt = flags & (1 << 19) != 0;
     const shift = flags & (1 << 17) != 0;
-    if (cmd and std.mem.eql(u8, chars, "z")) return .{ .t = if (shift) "historyRedo" else "historyUndo", .data = false };
-    if (cmd and std.mem.eql(u8, chars, "x")) return .{ .t = "deleteByCut", .data = false };
+    const ctrl = flags & (1 << 18) != 0;
+    // By key code (Shift and Caps Lock change the characters): z, x, v.
+    if (cmd and code == 6) return .{ .t = if (shift) "historyRedo" else "historyUndo", .data = false };
+    if (cmd and code == 7) return .{ .t = "deleteByCut", .data = false };
     if (repl.len > 0) {
-        if (cmd and std.mem.eql(u8, chars, "v")) return .{ .t = "insertFromPaste", .data = true };
+        if (cmd and code == 9) return .{ .t = "insertFromPaste", .data = true };
         if (textarea and std.mem.eql(u8, repl, "\n")) return .{ .t = "insertLineBreak", .data = false };
         return .{ .t = "insertText", .data = true };
     }
+    if (ctrl and code == 2) return .{ .t = "deleteContentForward", .data = false }; // Ctrl+D
     return switch (code) {
         117 => .{ .t = if (alt) "deleteWordForward" else "deleteContentForward", .data = false },
         51 => .{ .t = if (cmd) "deleteSoftLineBackward" else if (alt) "deleteWordBackward" else "deleteContentBackward", .data = false },
@@ -832,6 +835,9 @@ fn editKind(repl: []const u8, textarea: bool) ?struct { t: []const u8, data: boo
 /// `range` with `repl`): false when it prevented it. While an input method
 /// composes (marked text) the edits are the field's alone.
 fn askEdit(control: id, tv: id, repl_id: id, textarea: bool) bool {
+    pending_type = null;
+    // An attributes-only change (no replacement string) isn't an edit.
+    if (repl_id == null) return true;
     const o = ownerOf(control) orelse return true;
     if (o.s.updating) return true;
     const t: Object = .{ .value = tv };
@@ -845,6 +851,7 @@ fn askEdit(control: id, tv: id, repl_id: id, textarea: bool) bool {
     defer gpa.free(json);
     if (o.s.engine.event(o.n.id, "beforeinput", json)) return false;
     pending_type = kind.t;
+    pending_control = control;
     pending_data.clearRetainingCapacity();
     pending_has_data = kind.data;
     if (kind.data) pending_data.appendSlice(std.heap.smp_allocator, repl) catch {
@@ -855,12 +862,22 @@ fn askEdit(control: id, tv: id, repl_id: id, textarea: bool) bool {
 
 fn textFieldShouldChange(self: id, _: SEL, tv: id, range: NSRange, repl: id) callconv(.c) BOOL {
     if (!askEdit(self, tv, repl, false)) return cocoa.boolean(false);
-    return (Object{ .value = self }).msgSendSuper(cocoa.class("NSTextField"), BOOL, "textView:shouldChangeTextInRange:replacementString:", .{ tv, range, repl });
+    return superShouldChange(self, cocoa.class("NSTextField"), tv, range, repl);
 }
 
 fn secureFieldShouldChange(self: id, _: SEL, tv: id, range: NSRange, repl: id) callconv(.c) BOOL {
     if (!askEdit(self, tv, repl, false)) return cocoa.boolean(false);
-    return (Object{ .value = self }).msgSendSuper(cocoa.class("NSSecureTextField"), BOOL, "textView:shouldChangeTextInRange:replacementString:", .{ tv, range, repl });
+    return superShouldChange(self, cocoa.class("NSSecureTextField"), tv, range, repl);
+}
+
+/// The field class's own answer (yes when it has none); a no drops the
+/// edit the page was told of.
+fn superShouldChange(self: id, class: cocoa.objc.Class, tv: id, range: NSRange, repl: id) BOOL {
+    const sel = cocoa.objc.sel("textView:shouldChangeTextInRange:replacementString:");
+    if (!cocoa.isTrue(class.msgSend(BOOL, "instancesRespondToSelector:", .{sel.value}))) return cocoa.boolean(true);
+    const ok = (Object{ .value = self }).msgSendSuper(class, BOOL, "textView:shouldChangeTextInRange:replacementString:", .{ tv, range, repl });
+    if (!cocoa.isTrue(ok)) pending_type = null;
+    return ok;
 }
 
 fn textViewShouldChange(_: id, _: SEL, tv: id, _: NSRange, repl: id) callconv(.c) BOOL {
@@ -869,8 +886,8 @@ fn textViewShouldChange(_: id, _: SEL, tv: id, _: NSRange, repl: id) callconv(.c
 
 /// After an edit: "input" with [value, inputType, data] (the edit the page
 /// heard of), or the value alone.
-fn sendInput(s: *Surface, n: *Node, text: []const u8) void {
-    const kind = pending_type orelse return sendValue(s, n, "input", text);
+fn sendInput(control: id, s: *Surface, n: *Node, text: []const u8) void {
+    const kind = (if (pending_control == control) pending_type else null) orelse return sendValue(s, n, "input", text);
     pending_type = null;
     const gpa = s.gpa;
     const v = std.json.Stringify.valueAlloc(gpa, text, .{}) catch return;
@@ -889,7 +906,10 @@ fn selection(ctx: *anyopaque, n: *Node, out: *[2]u32) bool {
     const f = s.fields.get(n.id) orelse return false;
     const tv = editorOf(f) orelse return false;
     const r = tv.msgSend(NSRange, "selectedRange", .{});
-    out.* = .{ @intCast(r.location), @intCast(r.location + r.length) };
+    const len: c_ulong = @intCast(@max(0, tv.msgSend(Object, "string", .{}).msgSend(c_long, "length", .{})));
+    if (r.location > len) return false; // NSNotFound: none
+    const end = @min(len, r.location + @min(r.length, len));
+    out.* = .{ @intCast(r.location), @intCast(end) };
     return true;
 }
 
@@ -1007,7 +1027,7 @@ fn controlTextDidChange(_: id, _: SEL, note: id) callconv(.c) void {
     const o = ownerOf(field.value) orelse return;
     if (o.s.updating) return;
     const text = cocoa.utf8(field.msgSend(Object, "stringValue", .{})) orelse "";
-    sendInput(o.s, o.n, text);
+    sendInput(field.value, o.s, o.n, text);
 }
 
 /// Enter (and Escape) in a field: the page's keydown; true when it
@@ -1043,7 +1063,7 @@ fn textDidChange(_: id, _: SEL, note: id) callconv(.c) void {
     // The placeholder under it comes and goes with the text.
     o.s.view.msgSend(void, "setNeedsDisplay:", .{cocoa.boolean(true)});
     const text = cocoa.utf8(tv.msgSend(Object, "string", .{})) orelse "";
-    sendInput(o.s, o.n, text);
+    sendInput(tv.value, o.s, o.n, text);
 }
 
 fn textViewCommand(_: id, _: SEL, tv: id, selector: SEL) callconv(.c) BOOL {
