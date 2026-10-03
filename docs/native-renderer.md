@@ -15,23 +15,32 @@ native views, and says so when a page uses something outside it.
 ```
 index.html, app.js, style.css (the app's assets, as for the WebView)
         │
-QuickJS ── the DOM: document, elements, events, timers,
-        │  window.oriel (invoke/listen) → the app's Zig commands, as today
-        │  (the native DOM, a Zig store; linkedom with -Dnative_dom=false)
+QuickJS-ng ── the page's JavaScript and Oriel's runtime (compiled to
+        │  bytecode at build time)
+        │
+The DOM: the native DOM (a Zig store; linkedom with -Dnative_dom=false):
+        │  document, elements, events, timers, window.oriel (invoke/listen)
+        │  → the app's Zig commands, as today
         │
 Style engine: CSS parsed once; per element the cascade (selectors,
         │  specificity, inline styles), custom properties, inheritance,
-        │  media queries (width, prefers-color-scheme)
+        │  media queries (width, prefers-color-scheme, pointer)
         │
 Flattener: the DOM → native nodes, several elements per native view
-        │  (below); diffed against the last frame → operations
-        │  create / update / children / remove
+        │  (below), only what changed since the last render; the differences
+        │  go to Zig as operations (create / update / children / remove), or
+        │  by three faster paths that skip the JSON:
+        │    host.text   one text run's new words
+        │    host.leaf   a node made from a style defined once
+        │    host.stamp  flex rows (and lists of them) read straight from
+        │                the native DOM by Zig
         │
-Zig: one node per native view, Yoga (flexbox) layout, text measured by
-        │  the platform, frames applied
+Tree (Zig): one node per native view, Yoga (flexbox) layout, text measured
+        │  by the platform (sizes cached), CSS paint order, the frames
         │
-Backend: GTK 4 (Linux), Android views (JNI), Direct2D (Windows), AppKit (macOS),
-         UIKit (iOS)
+Backend: GTK 4 (Linux), Direct2D (Windows), AppKit (macOS), UIKit (iOS),
+         Android views (JNI): one view draws the page, platform widgets
+         for the fields
 ```
 
 Everything runs on the UI thread, as a browser's main thread: the page's
@@ -39,6 +48,27 @@ JavaScript, styles, layout and widget updates. Async commands run on the
 worker pool as with the WebView, and resolve their promises back on the UI
 thread. `App.emit` reaches the page through the same
 `window.oriel.__emit(name, payload)` call as a WebView page.
+
+## The parts
+
+| Part | Where | What it does |
+|---|---|---|
+| JavaScript engine | `src/native_ui/vendor/quickjs-ng`, `qjs_shim.c` | QuickJS-ng, vendored and built with Zig. The shim makes the engine and its `__host` functions: `ops`, `text`, `leaf`/`leafStyle`, `stamp`/`stampPlan`/`stampList`, `frame` (a layout read), `vsync`, `invoke`, `timer`, `focus`, `scrollTo`, `log`, `asset` |
+| Runtime bytecode | `tools/qjs_bytecode.c`, `build.zig` | Oriel's runtime (`runtime-native.js`, or `runtime.js` on linkedom) compiled to QuickJS bytecode by a host tool at build time and loaded with `JS_ReadObject`: nothing to parse at startup. Bytecode made on a 64-bit host loads on 32-bit targets |
+| The runtime | `src/native_ui/js/src/main.js` | What a page expects from a browser: timers, `requestAnimationFrame`, events and their default actions, `location.hash` and `history`, `matchMedia`, `localStorage`, `KeyboardEvent`, forms, `window.oriel` |
+| The native DOM | `src/native_ui/dom` (`store.zig`, `html.zig`, `selector.zig`, `serialize.zig`, `capi.zig`, `dom_qjs.c`), `js/src/dom/native.js` | The document in a Zig store: nodes in slabs, names interned, `innerHTML` parsed and serialized natively, selectors compiled and matched natively; JavaScript holds thin wrappers. `docs/native-dom.md` |
+| linkedom | `js/vendor/linkedom`, `js/src/dom/linkedom.js` | The JavaScript DOM the renderer started on, vendored; `-Dnative_dom=false` |
+| Style engine | `js/src/css.js` | Stylesheets parsed once, rules indexed by their rightmost selector, the cascade, `var()`, `calc()`, `color-mix()`, inheritance, `@media`; elements with the same styles share one computed style |
+| Flattener | `js/src/render.js`, `html.js`, `icons.js` | Styled DOM → native nodes (below), incremental: only elements marked by the mutation observer are restyled and flattened. Emits ops, or uses the direct paths: `host.text` for a text run, `host.leaf` for nodes from a shared style, row plans for stamping |
+| Transitions, animations | `js/src/transitions.js`, `animations.js` | CSS transitions and `@keyframes`; while they run, only the animated nodes are sent each frame (transform-only frames skip the flattener) |
+| Canvas | `js/src/canvas.js`, each backend, `OrielCanvas.kt` | The 2d context as a recorded program, replayed by the backend into a bitmap of the canvas's own (below) |
+| Engine | `src/native_ui/engine.zig` | One per window: QuickJS, the tree and the backend behind a small interface (`Backend`). Runs the page's commands, timers and answers on the UI thread, renders after each call into JavaScript or once per frame (`request_frame`), and paces `requestAnimationFrame` to the display (`request_display_frame`) |
+| Node tree | `src/native_ui/tree.zig` | One node per native view: the ops applied, CSS mapped onto Yoga, layout, sticky, tables, a text's longest word as its minimum width in a row, CSS paint order (z-index, positioned boxes), hit testing, scrolling; leaf styles and stamped rows (`createLeaf`, `stampRow`); hooks for backends that keep their own copy of the props (`on_props`, `on_text`, `on_leaf_style`, `on_create`, `on_remove`) |
+| Row stamping | `src/native_ui/dom_stamp.zig` | A flex row of simple leaves, or a list of identical rows, read straight from the native DOM into the tree, without a JavaScript object per child |
+| Text sizes | `text_measure_cache.zig`, the backends | Text is measured by the platform's own engine (Pango, DirectWrite, Core Text, StaticLayout); a text's natural size is kept on its node, and sizes by content and width in a bounded cache |
+| Icons | `js/src/icons.js`, `svg_path.zig` | Inline SVG as vector shapes; path data parsed for backends without a parser (Core Graphics, Direct2D) |
+| Backends | `gtk.zig`, `win32.zig`, `appkit.zig`, `uikit.zig`, `apple_draw.zig`, `android.zig` + `OrielNative.kt` | One view draws the whole page; fields are the platform's widgets placed over it |
+| Tools | `examples/render-bench`, `tools/flatten_diff`, `tools/dom_bench`, `prof.zig` | The bench (WebView vs native, on-screen times on Android: `onscreen.py`); the same tree with and without a flattener change; the DOM alone; per-stage timings (`-Dnative_ui_prof`) |
 
 ## The DOM
 
@@ -161,14 +191,10 @@ as Direct2D draws them (the inner radius moves the stops).
    the JS runtime, the GTK backend; the showcase running with it; memory
    against the WebKitGTK build.
 2. **Android** (`src/native_ui/android.zig`, `OrielNative.kt`): the same
-   engine; like on GTK, one view (`NuiView`) draws the boxes, text
-   (StaticLayout with spans) and icons (Path) on a Canvas, with real
-   EditText/Spinner widgets over the fields. Kotlin keeps a copy of each
-   node's props (JSON, sent when they change) and gets the frames as one
-   packed float array after each layout; taps, drags (with fling) and long
-   presses are hit-tested in Zig. A native window never creates a WebView.
-   The showcase APK measured with `dumpsys meminfo` against the WebView
-   build.
+   engine; like on GTK, one view (`NuiView`) draws the page on a Canvas,
+   with real EditText/Spinner/SeekBar widgets over the fields. See
+   "Android" below. A native window never creates a WebView. The showcase
+   APK measured with `dumpsys meminfo` against the WebView build.
 3. **Windows** (`src/native_ui/win32.zig`): one child window, the canvas,
    draws boxes, gradients, borders, shadows, text (DirectWrite, color
    emoji) and icons (Direct2D path geometries from
@@ -193,7 +219,7 @@ as Direct2D draws them (the inner radius moves the stops).
    `apple_draw.zig`): see "Apple" below. The showcase's `tour` and `chat`
    UI tests pass on both; GhostPen's menu, Settings, Playground and its
    transparent dictation and captions overlays run on AppKit.
-5. Then: grid, accessibility (UI Automation, NSAccessibility, UIAccessibility, AT-SPI), and incremental styling (a full render restyles the whole document).
+5. Then: grid, and accessibility (UI Automation, NSAccessibility, UIAccessibility, AT-SPI, Android's AccessibilityNodeProvider).
 
 ## Apple (macOS, iOS)
 
@@ -252,3 +278,59 @@ Not yet: keyboard avoidance on iOS (a field under the keyboard isn't
 scrolled up), and the hardware keyboard on iOS (only fields get keys).
 CoreText, like Pango, breaks a word that doesn't fit its line, where CSS
 lets it overflow.
+
+## Android
+
+`android.zig` and `OrielNative.kt`. Like on GTK, one view (`NuiView`)
+draws the whole page on a Canvas: boxes, borders, shadows, gradients, text
+(StaticLayout with spans), icons (Path) and canvases (`OrielCanvas.kt`),
+in CSS paint order (z-index, then positioned and sticky boxes over the
+rest). Fields are real widgets placed over it: EditText, Spinner for a
+`select`, SeekBar for `input type=range`; one the page draws over (a sticky
+footer) is clipped to what shows.
+
+Kotlin keeps its own copy of each node's props: it draws from them and
+measures text with them. Everything runs on the UI thread, and the JNI
+boundary is crossed per change, not per element:
+
+| What crosses | When |
+|---|---|
+| A node's props as JSON (`nuiProps`) | The general path: a node made or changed by the page's ops |
+| A text run's new words (`nuiText`) | `host.text`: a text-only change keeps the node's paint; only the styled text and its layout are made again |
+| Leaf styles and leaves, one batch (`nuiLeaves`) | `host.leaf` and stamped rows: each leaf style once (its props JSON, parsed once into a template), then a compact record per node (id, kind, style, text). Sent before anything else names one of them |
+| The frames, one packed array (`nuiFrames`) | After each layout or scroll: per node its id (as int bits, exact for any id), frame, clip, content box and subtree size |
+| Text sizes (`nuiMeasure`) | Only on a miss: a text's natural size is kept on its node, sizes by content and width in a cache, and Kotlin keeps its last answer and one-line width |
+| A display frame (`nuiRequestFrame` → `displayFrame`) | While the page wants animation frames: one `Choreographer` callback per frame at the display's rate (120 on a 120 Hz phone), none when it stops |
+
+Touches come back as taps, drags with fling, long presses (`contextmenu`)
+and the mouse wheel, hit-tested in Zig on the tree. A transparent window
+(an overlay) opens in a translucent Activity, so nothing is drawn where the
+page draws nothing. armv7 and x86 builds work (32-bit: the store's tests
+and the bytecode were checked under qemu).
+
+Debugging: an app gets no environment variables on Android, so Oriel reads
+them from a system property when it loads,
+`adb shell setprop debug.oriel.env "'ORIEL_NUI_TRACE=1 ORIEL_NUI_MEM=1'"`.
+`ORIEL_NUI_TRACE` logs the ops and, from NuiView (tag `OrielNui`), each draw
+and every 120th display frame; `ORIEL_NUI_MEM` the JavaScript heap and the
+node count; `ORIEL_NUI_DUMP` what NuiView holds after each layout (kind,
+frame, colors, text), to compare two builds on a device.
+`examples/render-bench/onscreen.py` turns the trace into the time until a
+change is on screen.
+
+Speed (render bench, a Chromebook, arm64 ReleaseFast, the median of 3; the
+page's time includes NuiView applying the change, "on screen" adds
+Android's layout pass and the draw):
+
+| | Before the direct paths | Now | On screen now |
+|---|---|---|---|
+| Build 1000 rows | 194 ms | 13–14 ms | 35–37 ms |
+| Build 3000 rows | 712 ms | 36–40 ms | 108–188 ms |
+| Update 1000 rows | 78 ms | 31 ms | 37–38 ms |
+| Update 3000 rows | 229 ms | 74–78 ms | 89–91 ms |
+| Animate 200 boxes | 57 fps | 59 fps (60 Hz display; 118 fps on a 120 Hz phone's canvas demo) | |
+| Memory after the tests (PSS) | 127 MB | 109–114 MB | |
+
+"Before": the native DOM with every change as JSON. The gains came from
+the text bridge (an update of 1000 rows 78 → 37–44 ms), text sizes cached in Zig and
+Kotlin (builds 35–45% faster), and stamping (build 1000 rows 110 → 13 ms).

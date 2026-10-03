@@ -1730,7 +1730,11 @@ process. On a Linux desktop it beats the WebView on every test of the
 render bench: 1000 rows built in 9.1 ms (the WebView: 19) and updated in
 3.0 ms (10), the first frame in 66 ms (417), animation at the display's
 refresh rate (150 fps on a 180 Hz screen, against 62), and 126 MB after
-the tests (508). `-Dnative_dom=false` builds it on linkedom instead.
+the tests (508). On Android (a Chromebook) it builds 1000 rows in 13 ms,
+faster than the same rows as plain Android views (54) and about 13 times
+faster on screen than React Native, and animates at the display's rate
+(118 fps on a 120 Hz phone). `-Dnative_dom=false` builds it on linkedom
+instead.
 
 Details, numbers on every platform and a comparison with React Native:
 [the native renderer page](https://highercomve.github.io/Oriel/docs/native-renderer/),
