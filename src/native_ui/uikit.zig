@@ -135,6 +135,10 @@ fn classes() void {
         .{ "nuiSliderMoved:", sliderMoved },
         .{ "nuiSliderDone:", sliderDone },
         .{ "textFieldShouldReturn:", fieldShouldReturn },
+        .{ "textFieldDidBeginEditing:", fieldFocused },
+        .{ "textFieldDidEndEditing:", fieldBlurred },
+        .{ "textViewDidBeginEditing:", fieldFocused },
+        .{ "textViewDidEndEditing:", fieldBlurred },
         .{ "textViewDidChange:", textViewDidChange },
         .{ "textView:shouldChangeTextInRange:replacementText:", textViewShouldChange },
     }));
@@ -714,6 +718,18 @@ fn style(n: *Node, f: Object) void {
             f.msgSend(void, "setTintColor:", .{color}); // the caret
         },
     }
+}
+
+/// A field took the keyboard (UIKit's editing is its focus) or gave it up:
+/// the page's "focus" and "blur" (:focus, :focus-visible, activeElement).
+fn fieldFocused(_: id, _: SEL, control: id) callconv(.c) void {
+    const o = ownerOf(control) orelse return;
+    _ = o.s.engine.event(o.n.id, "focus", "null");
+}
+
+fn fieldBlurred(_: id, _: SEL, control: id) callconv(.c) void {
+    const o = ownerOf(control) orelse return;
+    _ = o.s.engine.event(o.n.id, "blur", "null");
 }
 
 fn ownerOf(control: id) ?struct { s: *Surface, n: *Node } {
