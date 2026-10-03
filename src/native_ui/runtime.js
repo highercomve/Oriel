@@ -17560,6 +17560,8 @@ ${a.stack || ""}`;
   g.PointerEvent = PointerEvent;
   g.TouchEvent = TouchEvent;
   g.InputEvent = g.FocusEvent = g.UIEvent = Event;
+  g.ShadowRoot ??= class ShadowRoot3 {
+  };
   var winListeners = /* @__PURE__ */ new Map();
   g.addEventListener = (type, fn) => {
     let s = winListeners.get(type);
@@ -18751,6 +18753,7 @@ ${a.stack || ""}`;
         renderer.observer.__nuiAttribute = (node, name) => renderer.noteAttribute(node, name);
         renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
         const b2 = P && P();
+        for (const t of document.querySelectorAll("template")) t.content;
         for (const s of document.querySelectorAll("script")) {
           const src = s.getAttribute("src");
           const code = src ? host.asset(src.replace(/^\.?\//, "")) : s.textContent;

@@ -128,6 +128,16 @@ export function installNativeDom(g, document) {
     nodeValue: { get() { return null; }, set(_v) {} },
     getRootNode() { return rootOf(this); },
     isSameNode(o) { return this === o; },
+    // `old` out, `node` in its place (Solid's reconciler uses it).
+    replaceChild(node, old) {
+      if (old?.parentNode !== this) throw new Error("NotFoundError: the node to replace is not a child of this node");
+      if (node === old) return old;
+      let ref = old.nextSibling;
+      if (ref === node) ref = node.nextSibling;
+      this.removeChild(old);
+      this.insertBefore(node, ref);
+      return old;
+    },
     isEqualNode(o) {
       if (!o || o.nodeType !== this.nodeType) return false;
       if (this.nodeType === ELEMENT_NODE) return this.outerHTML === o.outerHTML;
@@ -416,13 +426,17 @@ export function installNativeDom(g, document) {
   makeClass("HTMLUnknownElement", HTMLElement);
   const SVGElement = makeClass("SVGElement", Element, { ownerSVGElement: { get() { return this.parentNode?.closest?.("svg") ?? null; } } });
   nd.setProto("#foreign", SVGElement.prototype);
-  // <template>: its content, a fragment holding copies of its children.
+  // <template>: its content, a fragment its children move into, as a
+  // browser parses them there (a walk of the document doesn't see them:
+  // Alpine's x-for row would be evaluated outside its loop). The boot
+  // moves the parsed ones (main.js); markup set later (innerHTML) moves
+  // when the content is read.
   const contents = new WeakMap();
   def(classes.HTMLTemplateElement.prototype, {
     content: { get() {
       let f = contents.get(this);
       if (!f) contents.set(this, (f = document.createDocumentFragment()));
-      if (this.hasChildNodes() && !f.hasChildNodes()) for (let c = this.firstChild; c; c = c.nextSibling) f.appendChild(c.cloneNode(true));
+      while (this.firstChild) f.appendChild(this.firstChild);
       return f;
     } },
   });
