@@ -18,7 +18,7 @@
 
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
-import { StyleEngine, viewport, mediaMatches, fontSpecs } from "./css.js";
+import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules } from "./css.js";
 import { Renderer, UA_CSS, UA_CSS_WEBKIT, setFocusVisible } from "./render.js";
 import * as canvas from "./canvas.js";
 
@@ -939,6 +939,164 @@ function guard(fn) {
   try { return fn(); } catch (e) { console.error(e); return false; } finally { guardDepth--; }
 }
 
+// ---------------------------------------------------------------------------
+// The page's style sheets: <style> and <link rel="stylesheet">, in document
+// order, read at boot and again whenever one changes (render.js
+// sheetChanged), with a CSSOM over them (element.sheet,
+// document.styleSheets, insertRule/deleteRule, disabled).
+
+const linkCss = new WeakMap(); // <link> → { href, css } (its asset, read once)
+const sheetOf = new WeakMap(); // <style>/<link> → its CSSStyleSheet
+
+function isSheetLink(el) {
+  const rel = el.getAttribute("rel") || "";
+  return /(^|\s)stylesheet(\s|$)/i.test(rel) && !/(^|\s)alternate(\s|$)/i.test(rel) && el.hasAttribute("href");
+}
+
+// A sheet owner's own text: a <style>'s, or its <link>'s asset (null when
+// it isn't one); a link's load or error event fires once, after boot.
+function ownText(el, booting) {
+  if (el.localName === "style") return el.textContent;
+  const href = el.getAttribute("href");
+  let got = linkCss.get(el);
+  if (!got || got.href !== href) {
+    const css = host.asset(href.replace(/^\.?\//, "")) ?? null;
+    linkCss.set(el, (got = { href, css }));
+    if (css === null) console.warn(`stylesheet not found: ${href}`);
+    if (!booting) queueMicrotask(() => el.dispatchEvent(new Event(css === null ? "error" : "load")));
+  }
+  return got.css;
+}
+
+function pageSheets(booting) {
+  const out = [];
+  for (const el of document.querySelectorAll("link[rel][href], style")) {
+    if (el.localName === "link" && (!isSheetLink(el) || el.hasAttribute("disabled"))) continue;
+    const sheet = sheetOf.get(el);
+    if (sheet?.disabled) continue;
+    const text = ownText(el, booting);
+    if (text === null) continue;
+    // Rules the page inserted or deleted (CSSOM) stand for the text until
+    // the text changes.
+    const css = sheet ? sheet.__css(text) : text;
+    if (!css) continue;
+    const path = el.localName === "link" ? el.getAttribute("href").replace(/^\.?\//, "") : undefined;
+    out.push({ owner: el, css, path });
+  }
+  return out;
+}
+
+const sheetsChanged = () => renderer?.sheetChanged();
+const indexError = (msg) => (typeof DOMException === "function" ? new DOMException(msg, "IndexSizeError") : new RangeError(msg));
+
+class CSSRule {
+  constructor(text, sheet) { this.cssText = text; this.parentStyleSheet = sheet; }
+  get selectorText() { const at = this.cssText.indexOf("{"); return at < 0 ? "" : this.cssText.slice(0, at).trim(); }
+}
+
+class CSSStyleSheet {
+  constructor(owner = null) {
+    this.ownerNode = owner;
+    this.__text = null;   // the owner's text the rules came from
+    this.__rules = null;  // its rules, with the page's insertions and deletions
+    this.__list = null;   // cssRules (made again after a change)
+    this.__disabled = false;
+  }
+  get type() { return "text/css"; }
+  get href() { return this.ownerNode?.localName === "link" ? this.ownerNode.getAttribute("href") : null; }
+  get media() { return { mediaText: this.ownerNode?.getAttribute("media") || "", length: 0 }; }
+  get disabled() { return this.__disabled; }
+  set disabled(v) { if (this.__disabled !== !!v) { this.__disabled = !!v; sheetsChanged(); } }
+  __own() {
+    const text = this.ownerNode ? (ownText(this.ownerNode, false) ?? "") : (this.__text ?? "");
+    if (this.__rules === null || text !== this.__text) { this.__text = text; this.__rules = splitRules(text); this.__list = null; }
+    return this.__rules;
+  }
+  // The CSS the engine reads: the owner's text while the page hasn't
+  // changed the rules, else the rules.
+  __css(text) {
+    if (this.__rules === null || text !== this.__text) return text;
+    return this.__rules.join("\n");
+  }
+  get cssRules() {
+    const rules = this.__own();
+    if (!this.__list) {
+      this.__list = rules.map((t) => new CSSRule(t, this));
+      this.__list.item = (i) => this.__list[i] ?? null;
+    }
+    return this.__list;
+  }
+  get rules() { return this.cssRules; }
+  insertRule(rule, index = 0) {
+    const rules = this.__own();
+    if (index < 0 || index > rules.length) throw indexError(`insertRule: index ${index} is beyond ${rules.length} rules`);
+    const text = String(rule).trim();
+    if (splitRules(text).length !== 1) throw new SyntaxError(`insertRule: not one rule: ${text.slice(0, 60)}`);
+    rules.splice(index, 0, text);
+    this.__list = null;
+    sheetsChanged();
+    return index;
+  }
+  deleteRule(index) {
+    const rules = this.__own();
+    if (index < 0 || index >= rules.length) throw indexError(`deleteRule: no rule ${index}`);
+    rules.splice(index, 1);
+    this.__list = null;
+    sheetsChanged();
+  }
+  addRule(sel, style, index) {
+    this.insertRule(`${sel} { ${style} }`, index ?? this.__own().length);
+    return -1;
+  }
+  removeRule(index = 0) { this.deleteRule(index); }
+  // Constructed sheets only (new CSSStyleSheet()), as in browsers.
+  replaceSync(text) {
+    if (this.ownerNode) throw new Error("NotAllowedError: replaceSync on a sheet of the document");
+    this.__text = String(text);
+    this.__rules = splitRules(this.__text);
+    this.__list = null;
+  }
+  replace(text) { this.replaceSync(text); return Promise.resolve(this); }
+}
+g.CSSStyleSheet = CSSStyleSheet;
+g.CSSRule = CSSRule;
+
+function sheetFor(el) {
+  if (el.localName === "link" && !isSheetLink(el)) return null;
+  let sheet = sheetOf.get(el);
+  if (!sheet) sheetOf.set(el, (sheet = new CSSStyleSheet(el)));
+  return sheet;
+}
+for (const tag of ["style", "link"]) {
+  const proto = Object.getPrototypeOf(document.createElement(tag));
+  Object.defineProperty(proto, "sheet", { get() { return this.isConnected ? sheetFor(this) : null; }, configurable: true });
+  if (tag === "style") {
+    Object.defineProperty(proto, "disabled", {
+      get() { return sheetOf.get(this)?.disabled ?? false; },
+      set(v) { const sheet = sheetFor(this); if (sheet) sheet.disabled = v; },
+      configurable: true,
+    });
+  } else {
+    Object.defineProperty(proto, "disabled", {
+      get() { return this.hasAttribute("disabled"); },
+      set(v) { if (v) this.setAttribute("disabled", ""); else this.removeAttribute("disabled"); },
+      configurable: true,
+    });
+  }
+}
+Object.defineProperty(document, "styleSheets", {
+  get() {
+    const list = [];
+    for (const el of document.querySelectorAll("link[rel][href], style")) {
+      const sheet = sheetFor(el);
+      if (sheet) list.push(sheet);
+    }
+    list.item = (i) => list[i] ?? null;
+    return list;
+  },
+  configurable: true,
+});
+
 g.__oriel = {
   boot(w, h, dark, coarse) {
     return guard(() => {
@@ -951,14 +1109,13 @@ g.__oriel = {
       engine.addSheet(UA_CSS, sheets);
       // Where the WebView is WebKit's, its controls' look.
       if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
-      for (const link of document.querySelectorAll('link[rel="stylesheet"][href], style')) {
-        const path = link.localName === "style" ? undefined : link.getAttribute("href").replace(/^\.?\//, "");
-        const css = path === undefined ? link.textContent : host.asset(path);
-        if (css) engine.addSheet(css, sheets, path);
-        else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
-      }
+      for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
       const b1 = P && P();
       renderer = new Renderer(document, engine, host);
+      // A <style> or <link> added, removed or changed later (CSS-in-JS,
+      // a dev server's styles): read at the next render. Only the boot's
+      // sheets go through the process's parsed-sheet cache.
+      renderer.syncSheets = () => engine.syncSheets(pageSheets(false), null);
       // The elements marked for :hover, :active and :focus (their
       // data-nui-* attributes): a list the tree stamps renders those rows
       // itself.

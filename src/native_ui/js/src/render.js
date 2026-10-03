@@ -68,6 +68,11 @@ textarea { font-family: -webkit-small-control, system-ui; }
 `;
 
 const INLINE_DISPLAY = new Set(["inline"]);
+// Elements whose changes can change the page's sheets.
+const SHEET_OWNERS = new Set(["style", "link"]);
+// Rules changed at once beyond which every element is styled again rather
+// than the ones each rule's selector finds.
+const SHEET_RULES_INCREMENTAL = 64;
 const ATOMIC_INLINE = new Set(["inline-block", "inline-flex", "inline-grid"]);
 // Replaced elements: an image's bottom sits on the line's baseline.
 const REPLACED = new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
@@ -229,6 +234,21 @@ export class Renderer {
     // that use one above a rule's subject (`.card:hover .title`), the state
     // taken out. A state change on an element matching none of them only
     // changes its own style (noteAttribute).
+    this.sheetsDirty = false;      // a <style> or <link> changed: syncSheets() before the next render
+    // The <style> and <link> elements seen: a text or attribute change is
+    // a sheet's when it's one of theirs (no tag read per mutation).
+    this.sheetEls = new WeakSet();
+    for (const el of document.querySelectorAll("style, link")) this.sheetEls.add(el);
+    this.syncSheets = null;        // main.js: the page's sheets into the engine, true when they changed
+    this.rulesChanged();
+  }
+
+  // What the engine's rules call for (again, when the page's sheets changed).
+  rulesChanged() {
+    const engine = this.engine;
+    this.structural = false;
+    this.noCache = false;
+    this.styleAttrRules = false;
     this.stateAbove = new Map();   // attribute → [compound selector]
     for (const r of engine.rules) {
       const compounds = splitCompounds(r.sel);
@@ -247,6 +267,54 @@ export class Renderer {
       if (/:has\(/.test(r.sel)) this.noCache = true;
       if (/\[style[\]~|^$*=]/.test(r.sel)) this.styleAttrRules = true;
     }
+  }
+
+  // An element added or removed that is or holds a <style> or <link>
+  // (noted in sheetEls).
+  holdsSheet(n, type = n.nodeType) {
+    if (type !== 1) return false;
+    if (this.sheetEls.has(n)) return true;
+    if (SHEET_OWNERS.has(n.localName)) { this.sheetEls.add(n); return true; }
+    if (!n.firstElementChild) return false;
+    let found = false;
+    for (const el of n.querySelectorAll("style, link")) { this.sheetEls.add(el); found = true; }
+    return found;
+  }
+
+  // A <style> or <link> was added, removed or changed (or its sheet's
+  // rules, CSSOM): the sheets are read again before the next render.
+  sheetChanged() {
+    if (!this.inFrame) this.outside = true;
+    this.sheetsDirty = true;
+    this.textOnly = false;
+    this.dirty = true;
+  }
+
+  // The page's sheets read again. When they changed, the elements the
+  // rules that came or went match are styled again (and what's below
+  // them); every element when that can't be told (:has(), @keyframes, a
+  // selector the DOM can't query) or would cost more (many rules).
+  applySheets() {
+    this.sheetsDirty = false;
+    const change = this.syncSheets?.();
+    if (!change) return false;
+    this.rulesChanged();
+    // Matches shared by ancestry were made with the old rules, and
+    // cascades are known by their rules' order, which moved.
+    this.matchShare.clear();
+    this.cascades.clear();
+    const rules = [...change.added, ...change.removed];
+    let full = this.noCache || change.keyframes || rules.length > SHEET_RULES_INCREMENTAL;
+    const seen = new Set();
+    for (const r of full ? [] : rules) {
+      if (seen.has(r.sel)) continue;
+      seen.add(r.sel);
+      let els;
+      try { els = this.doc.querySelectorAll(r.sel); } catch { full = true; break; }
+      for (const el of els) this.mark(el, 2);
+    }
+    if (full) this.full = true;
+    return true;
   }
 
   // ---------------------------------------------------------------------
@@ -286,6 +354,7 @@ export class Renderer {
     for (const r of records) {
       if (r.type === "attributes") {
         const el = r.target;
+        if (this.sheetEls.has(el)) this.sheetChanged();
         // The style attribute matters to the rules only through [style].
         this.mark(el, r.attributeName === "style" && !this.styleAttrRules ? 1 : 2);
         // Sibling combinators: the next siblings may match differently.
@@ -293,12 +362,15 @@ export class Renderer {
         continue;
       }
       // childList (linkedom also reports a text node's new data as its removal).
+      if (this.sheetEls.has(r.target)) this.sheetChanged();
       for (const n of r.addedNodes || []) {
+        if (this.holdsSheet(n)) this.sheetChanged();
         this.mark(n, 2);
         const parent = n.parentNode;
         if (parent) { this.markFlat(parent, n.nodeType === 3); if (this.structural) this.mark(parent, 2); }
       }
       for (const n of r.removedNodes || []) {
+        if (this.holdsSheet(n)) this.sheetChanged();
         const parent = n.parentNode || this.parentOf.get(n);
         if (parent) { this.markFlat(parent, n.nodeType === 3); if (this.structural) this.mark(parent, 2); }
         // Rebuilding a text node's known parent accounts for its removal;
@@ -313,18 +385,21 @@ export class Renderer {
   // child-list records and their arrays. Page observers remain queued.
   noteChild(node, removedFrom) {
     const parent = removedFrom || node.parentNode || this.parentOf.get(node);
+    const type = node.nodeType;
+    if (type === 1 ? this.holdsSheet(node, type) : this.sheetEls.has(parent)) this.sheetChanged();
     if (!removedFrom) this.mark(node, 2);
     if (parent) {
       // Its rows changed: a list the tree declined may be one again.
-      if (node.nodeType === 1) this.noStampList.delete(parent);
-      this.markFlat(parent, node.nodeType === 3);
+      if (type === 1) this.noStampList.delete(parent);
+      this.markFlat(parent, type === 3);
       if (this.structural) this.mark(parent, 2);
     }
-    if (removedFrom && (node.nodeType !== 3 || !parent)) this.markFlat(node, false);
+    if (removedFrom && (type !== 3 || !parent)) this.markFlat(node, false);
     this.dirty = true;
   }
 
   noteAttribute(el, name) {
+    if (this.sheetEls.has(el)) this.sheetChanged();
     if (STATE_ATTRS.includes(name) && !this.stateMattersBelow(el, name)) {
       // Hovered, pressed or focused: only its own rules may match
       // differently (1.5: match it again, not what's below it).
@@ -395,7 +470,8 @@ export class Renderer {
     this.outside = false;
     this.rendering = true;
     try {
-      if (!this.canvasOnly() && !this.updateText() && !this.updateBoxes()) this.renderNow();
+      if (this.sheetsDirty && this.applySheets()) this.renderNow();
+      else if (!this.canvasOnly() && !this.updateText() && !this.updateBoxes()) this.renderNow();
       // A row the tree couldn't stamp (its shape changed natively): the
       // general way now, not a frame later.
       if (this.declined) { this.declined = false; this.dirty = false; this.renderNow(); }
