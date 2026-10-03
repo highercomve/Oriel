@@ -794,6 +794,10 @@ pub const Node = struct {
     grow_frozen: bool = false,
     /// Its text changed and waits for Tree.settleTexts (measure_texts).
     text_pending: bool = false,
+    /// From the last layout, before Yoga rounded it: its absolute left and
+    /// its width (oriel_yoga_laid; Tree.leafOnly).
+    yg_left: f64 = std.math.nan(f64),
+    yg_width: f64 = std.math.nan(f64),
     /// A leaf made from a leaf style (createLeaf): its id, so a row stamped
     /// again keeps a leaf whose style is the same (0: not a leaf).
     leaf_style: i64 = 0,
@@ -883,6 +887,9 @@ pub const Tree = struct {
     /// together before the next layout (Android: one trip to Kotlin, not
     /// one per row).
     measure_texts: ?*const fn (ctx: *anyopaque, nodes: []const *Node) void = null,
+    /// Text updates that change only their own width skip the layout
+    /// (leafOnly); off: always lay out (tests compare the two).
+    leaf_only: bool = true,
     pending_texts: std.ArrayList(PendingText) = .empty,
     settle_nodes: std.ArrayList(*Node) = .empty,
 
@@ -1194,7 +1201,84 @@ pub const Tree = struct {
         // Yoga's measurement cache must still be invalidated: a future
         // resize may wrap these different words at different positions.
         yg.YGNodeMarkDirty(n.yn);
-        if (!same_layout or min_changed) t.dirty = true;
+        if (!same_layout or min_changed) {
+            if (t.dirty or !t.leafOnly(n, previous_size, previous_epoch)) t.dirty = true;
+        }
+    }
+
+    /// A text whose new size changes nothing but its own width, set without
+    /// laying the tree out: the last child of a row that starts its items
+    /// at the left, with the same height, fitting the row before and after
+    /// (so nothing shrinks), not growing, with no width, minimum or maximum
+    /// of its own, in boxes whose widths don't depend on their content.
+    /// Its width is what Yoga's layout would make it, rounded the same way;
+    /// Yoga keeps it too (what reads the layout back), and its nodes stay
+    /// dirty for the next real layout. False: lay out as usual.
+    fn leafOnly(t: *Tree, n: *Node, previous_size: ?[2]f32, previous_epoch: u64) bool {
+        if (!t.leaf_only) return false;
+        const old = previous_size orelse return false;
+        if (n.kind != .text or !yg.YGNodeHasMeasureFunc(n.yn)) return false;
+        var nat = [2]f32{ std.math.nan(f32), std.math.nan(f32) };
+        t.measure(t.measure_ctx, n, std.math.inf(f32), &nat);
+        if (previous_epoch != n.text_measure_epoch or nat[1] != old[1] or !(nat[0] >= 0) or !std.math.isFinite(nat[0])) return false;
+        const row = n.parent orelse return false;
+        if (row.kids.items.len == 0 or row.kids.items[row.kids.items.len - 1] != n) return false;
+        const rp = row.props;
+        if (flexDir(rp.fd) != yg.YGFlexDirectionRow or rp.fw != null or justify(rp.jc) != yg.YGJustifyFlexStart) return false;
+        if (alignOf(rp.ai, yg.YGAlignStretch) == yg.YGAlignBaseline or rp.table != null or rp.trow or rp.scrollx) return false;
+        const p = n.props;
+        if ((p.fg orelse 0) > 0 or p.w != null or p.minw != null or p.maxw != null or p.ar != null or p.sticky != null) return false;
+        if (p.fb) |fb| if (fb != .auto and fb != .none) return false;
+        if (p.pos != null and std.mem.eql(u8, p.pos.?, "absolute")) return false;
+        if (alignOf(p.as, yg.YGAlignAuto) == yg.YGAlignBaseline or p.tcell != null) return false;
+        var margin_right: f64 = 0;
+        if (p.m) |m| {
+            for (m) |d| if (d != .px) return false;
+            margin_right = m[1].px;
+        }
+        if (!definiteWidth(row)) return false;
+        // Yoga's numbers: the text's box is its measure plus its padding
+        // and border (f32, as Yoga adds them); the row's content box.
+        const inset = yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeLeft) + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeRight) +
+            yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeLeft) + yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeRight);
+        const old_width: f32 = old[0] + inset;
+        const new_width: f32 = nat[0] + inset;
+        if (!(@abs(n.yg_width - old_width) < 1e-3) or !std.math.isFinite(n.yg_left) or !std.math.isFinite(row.yg_left)) return false;
+        const content_right = row.yg_left + row.yg_width -
+            yg.YGNodeLayoutGetPadding(row.yn, yg.YGEdgeRight) - yg.YGNodeLayoutGetBorder(row.yn, yg.YGEdgeRight);
+        const slack = 0.01;
+        if (n.yg_left + old_width + margin_right > content_right - slack) return false;
+        if (n.yg_left + new_width + margin_right > content_right - slack) return false;
+        // Rounded as roundLayoutResultsToPixelGrid rounds a measured node.
+        const w: f64 = new_width;
+        const frac = !nearly(fract1(w), 0) and !nearly(fract1(w), 1);
+        const rounded: f32 = @floatCast(roundToPixel(n.yg_left + w, frac, !frac) - roundToPixel(n.yg_left, false, true));
+        oriel_yoga_set_layout_width(n.yn, rounded);
+        n.yg_width = w;
+        n.frame.w = rounded;
+        t.paint_dirty = true;
+        return true;
+    }
+
+    /// A box whose width doesn't depend on its content: a px width, or
+    /// stretched across a column whose width doesn't (up to the root).
+    fn definiteWidth(n: *const Node) bool {
+        const p = n.props;
+        if (p.w) |w| switch (w) {
+            .px => return true,
+            .pct => return if (n.parent) |parent| definiteWidth(parent) else true,
+            else => {},
+        };
+        const parent = n.parent orelse return true;
+        if (p.pos != null and std.mem.eql(u8, p.pos.?, "absolute")) return false;
+        if (p.table != null or p.trow or p.tcell != null or p.maxw != null or p.minw != null) return false;
+        if (p.m) |m| if (m[1] == .auto or m[3] == .auto) return false;
+        const dir = flexDir(parent.props.fd);
+        if (dir != yg.YGFlexDirectionColumn and dir != yg.YGFlexDirectionColumnReverse) return false;
+        const self = alignOf(p.as, yg.YGAlignAuto);
+        const align_ = if (self == yg.YGAlignAuto) alignOf(parent.props.ai, yg.YGAlignStretch) else self;
+        if (align_ != yg.YGAlignStretch or parent.props.table != null) return false;
+        return definiteWidth(parent);
     }
 
     // -----------------------------------------------------------------
@@ -1922,6 +2006,36 @@ pub const Tree = struct {
     }
 };
 
+// Yoga's pixel rounding (src/native_ui/yoga/PixelGrid.cpp), for leafOnly:
+// the same arithmetic, at a point scale factor of 1.
+fn fract1(x: f64) f64 {
+    return x - @trunc(x);
+}
+
+fn nearly(a: f64, b: f64) bool {
+    return @abs(a - b) < 0.0001;
+}
+
+fn roundToPixel(value: f64, force_ceil: bool, force_floor: bool) f64 {
+    var fractial = fract1(value);
+    if (fractial < 0) fractial += 1;
+    if (nearly(fractial, 0)) return value - fractial;
+    if (nearly(fractial, 1)) return value - fractial + 1;
+    if (force_ceil) return value - fractial + 1;
+    if (force_floor) return value - fractial;
+    return value - fractial + @as(f64, if (!std.math.isNan(fractial) and (fractial > 0.5 or nearly(fractial, 0.5))) 1 else 0);
+}
+
+extern fn oriel_yoga_set_layout_width(node: yg.YGNodeRef, width: f32) void;
+
+/// Yoga's rounding pass, for each node: its unrounded absolute left and
+/// width (leafOnly starts from them).
+export fn oriel_yoga_laid(context: ?*anyopaque, absolute_left: f64, width: f64) void {
+    const n: *Node = @ptrCast(@alignCast(context orelse return));
+    n.yg_left = absolute_left;
+    n.yg_width = width;
+}
+
 fn measureFn(node: yg.YGNodeConstRef, width: f32, width_mode: yg.YGMeasureMode, height: f32, height_mode: yg.YGMeasureMode) callconv(.c) yg.YGSize {
     _ = height;
     _ = height_mode;
@@ -2631,6 +2745,71 @@ test "text updates wait for one measure_texts call before the layout" {
     try std.testing.expectEqual(@as(usize, 2), Context.batches);
     try std.testing.expectEqual(@as(usize, 0), Context.singles);
     try std.testing.expectEqual(@as(f32, 80), t.get(5).?.grow_min);
+}
+
+test "a text that only changes its own width gets the frame a layout would give it" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const Context = struct {
+        // 7.3 px a character (fractional, like real text), 17 high.
+        fn measure(_: *anyopaque, n: *Node, w: f32, out: *[2]f32) void {
+            const c: f32 = @floatFromInt(std.unicode.utf8CountCodepoints(n.props.runs.?[0].t) catch 0);
+            const nat = [2]f32{ 7.3 * c, 17 };
+            n.measured_text_size = nat;
+            out.* = if (w >= nat[0]) nat else .{ w, 34 };
+        }
+    };
+    var ctx: u8 = 0;
+    var trees: [2]Tree = .{ Tree.init(std.testing.allocator, &ctx, Context.measure), Tree.init(std.testing.allocator, &ctx, Context.measure) };
+    defer for (&trees) |*t| t.deinit();
+    trees[1].leaf_only = false;
+    // The render bench's rows (a number, a dot, a label), and rows the
+    // leaf-only path must refuse: centered, a growing label, a label
+    // that isn't last, a shrink-to-fit row (in a row), a label with padding.
+    const page =
+        \\[["c",1,"view"],["p",1,{"fd":"column","pad":[16,16,16,16]}],
+        \\["c",2,"view"],["p",2,{"fd":"column","clip":true}],
+        \\["c",10,"view"],["p",10,{"fd":"row","cg":8,"ai":"center","pad":[3,8,3,8],"bw":[0,0,1,0]}],
+        \\["c",11,"text"],["p",11,{"w":48,"runs":[{"t":"1"}]}],["c",12,"view"],["p",12,{"w":8,"h":8}],
+        \\["c",13,"text"],["p",13,{"runs":[{"t":"Row 1: the quick brown fox"}]}],["k",10,[11,12,13]],
+        \\["c",20,"view"],["p",20,{"fd":"row","jc":"center"}],["c",21,"text"],["p",21,{"runs":[{"t":"centered"}]}],["k",20,[21]],
+        \\["c",30,"view"],["p",30,{"fd":"row"}],["c",31,"text"],["p",31,{"fg":1,"runs":[{"t":"grows"}]}],["k",30,[31]],
+        \\["c",40,"view"],["p",40,{"fd":"row"}],["c",41,"text"],["p",41,{"runs":[{"t":"first"}]}],["c",42,"text"],["p",42,{"runs":[{"t":"last"}]}],["k",40,[41,42]],
+        \\["c",50,"view"],["p",50,{"fd":"row"}],["c",51,"view"],["p",51,{"fd":"row"}],["c",52,"text"],["p",52,{"runs":[{"t":"inner"}]}],["k",51,[52]],["k",50,[51]],
+        \\["c",60,"view"],["p",60,{"fd":"row","gap":3}],["c",61,"text"],["p",61,{"pad":[1,2.5,1,3.25],"runs":[{"t":"padded"}]}],["k",60,[61]],
+        \\["k",2,[10,20,30,40,50,60]],["k",1,[2]],["r",1]]
+    ;
+    for (&trees) |*t| {
+        try t.apply(page);
+        t.width = 300.5;
+        t.height = 400;
+        t.layout();
+    }
+    const texts = [_][]const u8{ "Row 1: updated", "Row 1: updated again and again", "x", "a much longer label that will not fit in three hundred px at all", "Row 1", "" };
+    var skipped: usize = 0;
+    for (texts) |text| {
+        for ([_]i64{ 13, 21, 31, 41, 42, 52, 61 }) |id| {
+            for (&trees) |*t| _ = try t.updateText(id, text);
+            if (!trees[0].dirty) skipped += 1;
+            for (&trees) |*t| if (t.needsLayout()) t.layout();
+            var it = trees[1].nodes.iterator();
+            while (it.next()) |e| {
+                const a = trees[0].get(e.key_ptr.*).?.frame;
+                const b = e.value_ptr.*.frame;
+                if (a.x != b.x or a.y != b.y or a.w != b.w or a.h != b.h) {
+                    std.debug.print("node {d} after {d} = \"{s}\": {any} vs {any}\n", .{ e.key_ptr.*, id, text, a, b });
+                    return error.TestUnexpectedResult;
+                }
+            }
+        }
+    }
+    // The bench's label and the padded one, while they fit before and
+    // after (the others always lay out).
+    try std.testing.expect(skipped >= 3);
+    // A scroll re-places from Yoga's layout: the same frames.
+    trees[0].replace();
+    trees[1].replace();
+    var it = trees[1].nodes.iterator();
+    while (it.next()) |e| try std.testing.expectEqual(e.value_ptr.*.frame, trees[0].get(e.key_ptr.*).?.frame);
 }
 
 test "a field's pending value survives a props update without one" {
