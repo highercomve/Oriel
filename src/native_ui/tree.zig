@@ -592,6 +592,12 @@ pub const Node = struct {
     measured_text_size: ?[2]f32 = null,
     text_measure_epoch: u64 = 0,
     text_override: ?*TextOverride = null,
+    /// A growing text item in a row (flex: 1): its longest word's width,
+    /// set as its min width only when its share of the row comes out
+    /// narrower (Tree.freezeGrowMins); nan: none.
+    grow_min: f32 = std.math.nan(f32),
+    /// Its min width set and its growth off for this layout.
+    grow_frozen: bool = false,
     /// A leaf made from a leaf style (createLeaf): its id, so a row stamped
     /// again keeps a leaf whose style is the same (0: not a leaf).
     leaf_style: i64 = 0,
@@ -898,9 +904,10 @@ pub const Tree = struct {
         // Its longest word changed with it (a min width in a row): else the
         // item keeps the old text's minimum ("1" as wide as "a longer chip").
         const old_min = yg.YGNodeStyleGetMinWidth(n.yn).value;
+        const old_grow_min = n.grow_min;
         t.wordMinWidth(n);
         const new_min = yg.YGNodeStyleGetMinWidth(n.yn).value;
-        const min_changed = !(old_min == new_min or (std.math.isNan(old_min) and std.math.isNan(new_min)));
+        const min_changed = !sameMin(old_min, new_min) or !sameMin(old_grow_min, n.grow_min);
         var same_layout = false;
         if (t.reuse_text_layout and !t.dirty and n.parent != null and previous_epoch != 0) {
             if (previous_size) |previous| {
@@ -1178,11 +1185,12 @@ pub const Tree = struct {
         // A growing item (flex: 1, a segmented control's buttons): CSS
         // shares the room from its 0 basis, so equal buttons stay equal;
         // Yoga would start from this minimum and widen the longer labels.
+        // Its minimum waits for the layout (freezeGrowMins).
         const grows = (k.props.fg orelse 0) > 0;
-        if (!in_row or k.props.nowrap or longest == 0 or grows) {
-            yg.YGNodeStyleSetMinWidth(k.yn, std.math.nan(f32));
-            return;
-        }
+        unfreeze(k);
+        k.grow_min = std.math.nan(f32);
+        if (!in_row or k.props.nowrap or longest == 0 or grows) yg.YGNodeStyleSetMinWidth(k.yn, std.math.nan(f32));
+        if (!in_row or k.props.nowrap or longest == 0) return;
         var out: [2]f32 = .{ 0, 0 };
         t.measure(t.measure_ctx, k, std.math.inf(f32), &out);
         if (!(out[0] > 0) or !std.math.isFinite(out[0])) return;
@@ -1192,7 +1200,46 @@ pub const Tree = struct {
         var inset: f32 = 0;
         if (k.props.pad) |pd| inset += (dimPx(pd[1]) orelse 0) + (dimPx(pd[3]) orelse 0);
         if (k.props.bw) |bw| inset += bw[1] + bw[3];
-        yg.YGNodeStyleSetMinWidth(k.yn, inset + if (longest == total) out[0] else @min(out[0], share));
+        const min = inset + if (longest == total) out[0] else @min(out[0], share);
+        if (grows) k.grow_min = min else yg.YGNodeStyleSetMinWidth(k.yn, min);
+    }
+
+    fn sameMin(a: f32, b: f32) bool {
+        return a == b or (std.math.isNan(a) and std.math.isNan(b));
+    }
+
+    /// Back to sharing the row from its basis (its props' growth, no min).
+    fn unfreeze(k: *Node) void {
+        if (!k.grow_frozen) return;
+        k.grow_frozen = false;
+        yg.YGNodeStyleSetFlexGrow(k.yn, k.props.fg orelse 0);
+        yg.YGNodeStyleSetMinWidth(k.yn, std.math.nan(f32));
+    }
+
+    /// Every frozen item under `n` unfrozen, for a new layout (the room
+    /// may have grown).
+    fn unfreezeAll(n: *Node) void {
+        unfreeze(n);
+        for (n.kids.items) |k| unfreezeAll(k);
+    }
+
+    /// CSS's flexible lengths (§9.7) for growing text items: each shares
+    /// the row from its basis, and one whose share comes out narrower than
+    /// its longest word is frozen at that width (min-width, no growth)
+    /// while the others share the rest. True if one was frozen (the
+    /// layout runs again).
+    fn freezeGrowMins(n: *Node) bool {
+        var any = false;
+        if (!n.grow_frozen and n.grow_min > 0 and yg.YGNodeLayoutGetWidth(n.yn) + 0.5 < n.grow_min) {
+            n.grow_frozen = true;
+            yg.YGNodeStyleSetMinWidth(n.yn, n.grow_min);
+            yg.YGNodeStyleSetFlexGrow(n.yn, 0);
+            any = true;
+        }
+        for (n.kids.items) |k| {
+            if (freezeGrowMins(k)) any = true;
+        }
+        return any;
     }
 
     // -----------------------------------------------------------------
@@ -1205,7 +1252,14 @@ pub const Tree = struct {
         prof.measures = 0;
         prof.measure_ms = 0;
         const y0 = prof.now();
+        unfreezeAll(root);
         yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
+        // Growing labels narrower than their longest word: frozen at it,
+        // the others share the rest (a few rounds: freezing one can
+        // narrow the others).
+        var rounds: usize = 0;
+        while (rounds < 4 and freezeGrowMins(root)) : (rounds += 1)
+            yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
         prof.report("yoga {d:.2}, {d} measures {d:.2}", .{ prof.now() - y0, prof.measures, prof.measure_ms });
         // Tables need the first pass's widths, then fix their cells' widths
         // and lay out again (every layout: a cell's content may have changed).
@@ -1982,6 +2036,46 @@ test "a padded text in a flex row keeps its word plus its padding and border" {
     // testMeasure: 10 wide; + 6 + 6 padding + 1 + 1 border.
     const mw = yg.YGNodeStyleGetMinWidth(t.get(2).?.yn);
     try std.testing.expectEqual(@as(f32, 24), mw.value);
+}
+
+test "flex: 1 labels in a row stay equal with room and keep whole words without" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const Context = struct {
+        // 10 px a character, unwrapped.
+        fn measure(_: *anyopaque, n: *Node, _: f32, out: *[2]f32) void {
+            const s = std.unicode.utf8CountCodepoints(n.props.runs.?[0].t) catch 0;
+            out.* = .{ @floatFromInt(10 * s), 10 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, Context.measure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",0,"view"],["p",0,{"fd":"row"}],
+        \\["c",1,"text"],["p",1,{"fg":1,"fb":0,"runs":[{"t":"Auto"}]}],
+        \\["c",2,"text"],["p",2,{"fg":1,"fb":0,"runs":[{"t":"English"}]}],
+        \\["c",3,"text"],["p",3,{"fg":1,"fb":0,"runs":[{"t":"Español"}]}],
+        \\["k",0,[1,2,3]],["r",0]]
+    );
+    const auto = t.get(1).?;
+    const english = t.get(2).?;
+    const espanol = t.get(3).?;
+    // Room for every word: equal thirds, as in a browser.
+    t.width = 300;
+    t.height = 100;
+    t.layout();
+    for ([_]*Node{ auto, english, espanol }) |n| try std.testing.expectEqual(@as(f32, 100), yg.YGNodeLayoutGetWidth(n.yn));
+    // A third (66.7) is less than "English" and "Español" (70): they keep
+    // their words, "Auto" takes the rest.
+    t.width = 200;
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 70), yg.YGNodeLayoutGetWidth(english.yn));
+    try std.testing.expectEqual(@as(f32, 70), yg.YGNodeLayoutGetWidth(espanol.yn));
+    try std.testing.expectEqual(@as(f32, 60), yg.YGNodeLayoutGetWidth(auto.yn));
+    // Wide again: equal again (nothing stays frozen).
+    t.width = 300;
+    t.layout();
+    for ([_]*Node{ auto, english, espanol }) |n| try std.testing.expectEqual(@as(f32, 100), yg.YGNodeLayoutGetWidth(n.yn));
 }
 
 test "direct text updates preserve props, dirty layout, and release overrides" {
