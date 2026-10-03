@@ -395,9 +395,18 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     // the frame lays text out from its top.
     const w: CGFloat = if (n.props.nowrap) big else c.w + 1;
     var h: CGFloat = c.h;
+    // A CSS line-height: the lines are placed here (cssLineOrigin), so the
+    // frame only breaks them, in a frame tall enough to keep every one (a
+    // line-height under the font's own height made CoreText drop lines).
+    const css_lh = cssLineHeight(n);
     if (cache.frame == null or cache.frame_w != w or cache.frame_h < h) {
         const need = CTFramesetterSuggestFrameSizeWithConstraints(fs, .{ .location = 0, .length = 0 }, null, .{ .width = w, .height = big }, null);
         h = @max(c.h, @ceil(need.height));
+        if (css_lh) |lh| {
+            // Lines at the font's own height (generously: 3 font sizes each).
+            const lines = @ceil(need.height / lh) + 1;
+            h = @max(h, lines * 3 * @as(CGFloat, n.props.fz orelse 16));
+        }
         const path = CGPathCreateWithRect(.{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = if (n.props.nowrap) @ceil(need.width) + 1 else w, .height = h } }, null) orelse return;
         defer CGPathRelease(path);
         const created = CTFramesetterCreateFrame(fs, .{ .location = 0, .length = 0 }, path, null) orelse return;
@@ -414,15 +423,45 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     CGContextTranslateCTM(cg, c.x, c.y + h);
     CGContextScaleCTM(cg, 1, -1);
     CGContextSetTextMatrix(cg, .{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 });
-    paintRunBackgrounds(cg, n, frame);
-    CTFrameDraw(frame, cg);
+    paintRunBackgrounds(cg, n, frame, h);
+    if (css_lh == null) return CTFrameDraw(frame, cg);
+    const lines = CTFrameGetLines(frame);
+    var i: c_long = 0;
+    while (i < CFArrayGetCount(lines)) : (i += 1) {
+        const line = CFArrayGetValueAtIndex(lines, i);
+        const o = lineOrigin(n, frame, line, i, h);
+        CGContextSetTextPosition(cg, o.x, o.y);
+        CTLineDraw(line, cg);
+    }
+}
+
+/// The text's CSS line-height in px, when it sets one.
+fn cssLineHeight(n: *const Node) ?CGFloat {
+    const lh = n.props.lh orelse return null;
+    return if (lh > 0 and std.math.isFinite(lh)) lh else null;
+}
+
+/// Line `i`'s origin in the flipped CoreText space paintText sets up (y up
+/// from the bottom of a frame `h` tall). With a CSS line-height, CSS's line
+/// box: the line is exactly that tall, its glyphs centered in it (half the
+/// leading above, half below), even when that's less than the font's own
+/// height (gtk.zig's cssHeight and paintText do the same). Else CoreText's.
+fn lineOrigin(n: *const Node, frame: CTFrameRef, line: CFTypeRef, i: c_long, h: CGFloat) CGPoint {
+    var o: [1]CGPoint = undefined;
+    CTFrameGetLineOrigins(frame, .{ .location = i, .length = 1 }, &o);
+    const lh = cssLineHeight(n) orelse return o[0];
+    var ascent: CGFloat = 0;
+    var descent: CGFloat = 0;
+    _ = CTLineGetTypographicBounds(line, &ascent, &descent, null);
+    const top = @as(CGFloat, @floatFromInt(i)) * lh + (lh - (ascent + descent)) / 2;
+    return .{ .x = o[0].x, .y = h - (top + ascent) };
 }
 
 /// A run's background (an inline highlight, a <code> amid the text): a box
 /// under its glyphs on each line it spans, as a browser paints an inline
 /// box's background. CoreText draws no backgrounds; the frame's lines give
 /// the positions (in the flipped CoreText space paintText set up).
-fn paintRunBackgrounds(cg: CGContextRef, n: *Node, frame: CTFrameRef) void {
+fn paintRunBackgrounds(cg: CGContextRef, n: *Node, frame: CTFrameRef, h: CGFloat) void {
     const runs = n.props.runs orelse return;
     var any = false;
     for (runs) |r| if (r.bg != null) {
@@ -435,7 +474,7 @@ fn paintRunBackgrounds(cg: CGContextRef, n: *Node, frame: CTFrameRef) void {
     if (count <= 0) return;
     var origins_buf: [256]CGPoint = undefined;
     const shown: usize = @intCast(@min(count, origins_buf.len));
-    CTFrameGetLineOrigins(frame, .{ .location = 0, .length = @intCast(shown) }, &origins_buf);
+    for (0..shown) |i| origins_buf[i] = lineOrigin(n, frame, CFArrayGetValueAtIndex(lines, @intCast(i)), @intCast(i), h);
     // Each run's range in the string (UTF-16 units), as attributed() built it.
     var start: c_long = 0;
     for (runs) |r| {
@@ -446,6 +485,10 @@ fn paintRunBackgrounds(cg: CGContextRef, n: *Node, frame: CTFrameRef) void {
         defer start += len;
         const bg = r.bg orelse continue;
         if (bg[3] <= 0) continue;
+        // The block's own background on its own text (render.js gives a run
+        // its element's background): the box already has it, and over a
+        // line box shorter than the glyphs it would spill outside it.
+        if (n.props.bg) |own| if (own.color) |oc| if (std.mem.eql(f32, &oc, &bg)) continue;
         setFill(cg, bg);
         const end = start + len;
         for (0..shown) |i| {
