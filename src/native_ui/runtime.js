@@ -16116,7 +16116,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       }
       if (inlineLine) {
         props.fd = "row";
-        props.ai = "center";
+        props.ai = "baseline";
         const boxes = flow.filter((f) => f.el);
         if (boxes.length > 1 || boxes.some((f) => /%\s*$/.test(this.style(f.el, cs, rematch).width || ""))) props.fw = "wrap";
         if (splitBreaks(flow)) props.fw = "wrap";
@@ -16283,7 +16283,7 @@ input[type="range"] { height: 20px; margin: 2px; }
           n2.props.fs = 0;
         }
       }
-      if (!childCtx.blockify) {
+      if (!childCtx.blockify && !(props.fd === "row" && props.ai === "baseline")) {
         const n2 = nodes.get(cid);
         const d = this.styleOf(itemEl)?.display || "inline";
         if (n2 && (ATOMIC_INLINE.has(d) || INLINE_DISPLAY.has(d)) && !n2.props.as && n2.props.pos !== "absolute") {

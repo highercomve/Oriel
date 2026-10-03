@@ -563,6 +563,9 @@ fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 
     // font's leading on top of the fixed line height).
     if (lineBoxOf(font_class, n)) |lb| {
         const lines = @max(1, @round(size.height / lb.h));
+        // The first baseline, as lineOrigin places it: half the leading
+        // under the line box's top, then the ascent (inline rows line up on it).
+        n.baseline = (lb.h - (lb.m.ascent + lb.m.descent)) / 2 + lb.m.ascent;
         return .{ @floatCast(@ceil(size.width) + 1), @floatCast(lines * lb.h) };
     }
     return .{ @floatCast(@ceil(size.width) + 1), @floatCast(@ceil(size.height)) };
