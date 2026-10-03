@@ -291,7 +291,7 @@ pub const Surface = struct {
     /// made of (normalLineHeight). By size (1/64 px) and monospace.
     metrics_ctx: ?*PangoContext = null,
     /// Unhinted [ascent, descent, line gap, digit width] by font and size.
-font_metrics: std.AutoHashMapUnmanaged(u64, [4]f32) = .empty,
+    font_metrics: std.AutoHashMapUnmanaged(u64, [4]f32) = .empty,
     /// The installed families (lowercase), and CSS family lists resolved
     /// to the one a browser would use (resolveFamily). Keys and values owned.
     installed_families: std.StringHashMapUnmanaged(void) = .empty,
@@ -368,7 +368,7 @@ font_metrics: std.AutoHashMapUnmanaged(u64, [4]f32) = .empty,
             .deinit = releaseTextMeasurements,
             .request_display_frame = requestDisplayFrame,
             .warm_fonts = warmFonts,
-        .font_metrics = fontMetrics,
+            .font_metrics = fontMetrics,
         }, assets, look orelse platform_json, label, url, width, height);
         s.engine.tree.reuse_text_layout = true;
         s.engine.tree.fields_sized = true;
@@ -393,11 +393,12 @@ font_metrics: std.AutoHashMapUnmanaged(u64, [4]f32) = .empty,
         _ = g_signal_connect_data(keys, "key-pressed", @ptrCast(&onKey), s, null, 0);
         _ = g_signal_connect_data(keys, "key-released", @ptrCast(&onKeyUp), s, null, 0);
         gtk_widget_add_controller(area, keys);
-        // Tab while a field has the keys: the page moves the focus (the
-        // area's controller doesn't hear a field's keys, and GTK would).
+        // Keys while a field has the keyboard: the page's first (keydown,
+        // Tab moving the focus), as the area's controller doesn't hear them.
         const tab = gtk_event_controller_key_new();
         gtk_event_controller_set_propagation_phase(tab, 1); // capture
-        _ = g_signal_connect_data(tab, "key-pressed", @ptrCast(&onFieldTab), s, null, 0);
+        _ = g_signal_connect_data(tab, "key-pressed", @ptrCast(&onFieldKey), s, null, 0);
+        _ = g_signal_connect_data(tab, "key-released", @ptrCast(&onFieldKeyUp), s, null, 0);
         gtk_widget_add_controller(overlay, tab);
         s.controllers = .{ click, scroll, motion, keys, tab };
 
@@ -590,10 +591,10 @@ fn familyHash(family: ?[]const u8) u64 {
 /// list, at `size` px (the surface's own, changed in place: one at a time).
 /// CSS's generic families as fontconfig names them.
 const generic_families = std.StaticStringMap([]const u8).initComptime(.{
-    .{ "serif", "serif" },           .{ "sans-serif", "sans-serif" }, .{ "monospace", "monospace" },
-    .{ "system-ui", "system-ui" },   .{ "ui-sans-serif", "sans-serif" }, .{ "ui-serif", "serif" },
-    .{ "ui-monospace", "monospace" }, .{ "ui-rounded", "sans-serif" }, .{ "cursive", "cursive" },
-    .{ "fantasy", "fantasy" },       .{ "emoji", "emoji" },           .{ "math", "math" },
+    .{ "serif", "serif" },            .{ "sans-serif", "sans-serif" },    .{ "monospace", "monospace" },
+    .{ "system-ui", "system-ui" },    .{ "ui-sans-serif", "sans-serif" }, .{ "ui-serif", "serif" },
+    .{ "ui-monospace", "monospace" }, .{ "ui-rounded", "sans-serif" },    .{ "cursive", "cursive" },
+    .{ "fantasy", "fantasy" },        .{ "emoji", "emoji" },              .{ "math", "math" },
     // No family set (render.js familyOf): WebKitGTK's default face, its
     // default-font-family setting, sans-serif (not serif, as Chromium).
     .{ "default", "sans-serif" },
@@ -963,7 +964,6 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
                 gtk_entry_set_placeholder_text(e, z.ptr);
             }
             _ = g_signal_connect_data(@ptrCast(e), "changed", @ptrCast(&onEntryChanged), s, null, 0);
-            _ = g_signal_connect_data(@ptrCast(e), "activate", @ptrCast(&onEntryActivate), s, null, 0);
             break :blk e;
         },
         .textarea => blk: {
@@ -972,10 +972,6 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
             gtk_text_view_set_accepts_tab(v, 0);
             _ = g_signal_connect_data(gtk_text_view_get_buffer(v), "changed", @ptrCast(&onBufferChanged), s, null, 0);
             g_object_set_data(gtk_text_view_get_buffer(v), "oriel-view", v);
-            const keys = gtk_event_controller_key_new();
-            gtk_event_controller_set_propagation_phase(keys, 1); // capture: before the text view
-            _ = g_signal_connect_data(keys, "key-pressed", @ptrCast(&onFieldKey), s, null, 0);
-            gtk_widget_add_controller(v, keys);
             break :blk v;
         },
         .select => blk: {
@@ -1075,12 +1071,6 @@ fn fieldFocus(ctrl: *anyopaque, data: ?*anyopaque, what: []const u8) void {
     _ = s.engine.event(n.id, what, "null");
 }
 
-fn onEntryActivate(e: *Widget, data: ?*anyopaque) callconv(.c) void {
-    const s = surfaceOf(data);
-    const n = nodeOfWidget(s, e) orelse return;
-    _ = s.engine.event(n.id, "key", "[\"Enter\",0]");
-}
-
 fn onBufferChanged(buffer: *anyopaque, data: ?*anyopaque) callconv(.c) void {
     const s = surfaceOf(data);
     // The placeholder under an empty text view comes and goes with the text.
@@ -1145,18 +1135,6 @@ fn onSelected(d: *Widget, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
     sendValue(s, n, "change", opts[i][0]);
 }
 
-fn onFieldKey(controller: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) c_int {
-    const s = surfaceOf(data);
-    const name = keyName(keyval) orelse return 0;
-    // Only keys a page commonly handles in a text area: Enter and Escape.
-    if (!std.mem.eql(u8, name, "Enter") and !std.mem.eql(u8, name, "Escape")) return 0;
-    const view = gtkWidgetOfController(controller) orelse return 0;
-    const n = nodeOfWidget(s, view) orelse return 0;
-    var buf: [64]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d}]", .{ name, modFlags(state) }) catch return 0;
-    return @intFromBool(s.engine.event(n.id, "key", json));
-}
-
 extern fn gtk_event_controller_get_widget(c: *anyopaque) ?*Widget;
 fn gtkWidgetOfController(c: *anyopaque) ?*Widget {
     return gtk_event_controller_get_widget(c);
@@ -1182,17 +1160,36 @@ fn modFlags(state: c_uint) u32 {
     return f;
 }
 
-fn keyName(keyval: c_uint) ?[]const u8 {
+/// A key as the DOM names it (KeyboardEvent.key): the named keys, the
+/// modifiers, else the character it types (in `buf`).
+fn keyName(keyval: c_uint, buf: *[8]u8) ?[]const u8 {
     const name = std.mem.span(gdk_keyval_name(keyval) orelse return null);
     const map = .{
-        .{ "Return", "Enter" },        .{ "KP_Enter", "Enter" },     .{ "Escape", "Escape" }, .{ "Tab", "Tab" }, .{ "ISO_Left_Tab", "Tab" },
-        .{ "BackSpace", "Backspace" }, .{ "Delete", "Delete" },      .{ "Up", "ArrowUp" },    .{ "Down", "ArrowDown" },
-        .{ "Left", "ArrowLeft" },      .{ "Right", "ArrowRight" },   .{ "Home", "Home" },     .{ "End", "End" },
-        .{ "Page_Up", "PageUp" },      .{ "Page_Down", "PageDown" }, .{ "space", " " },
+        .{ "Return", "Enter" },        .{ "KP_Enter", "Enter" }, .{ "Escape", "Escape" },             .{ "Tab", "Tab" },            .{ "ISO_Left_Tab", "Tab" },
+        .{ "BackSpace", "Backspace" }, .{ "Delete", "Delete" },  .{ "Up", "ArrowUp" },                .{ "Down", "ArrowDown" },     .{ "Left", "ArrowLeft" },
+        .{ "Right", "ArrowRight" },    .{ "Home", "Home" },      .{ "End", "End" },                   .{ "Page_Up", "PageUp" },     .{ "Page_Down", "PageDown" },
+        .{ "space", " " },             .{ "Insert", "Insert" },  .{ "Shift_L", "Shift" },             .{ "Shift_R", "Shift" },      .{ "Control_L", "Control" },
+        .{ "Control_R", "Control" },   .{ "Alt_L", "Alt" },      .{ "Alt_R", "Alt" },                 .{ "Meta_L", "Meta" },        .{ "Meta_R", "Meta" },
+        .{ "Super_L", "Meta" },        .{ "Super_R", "Meta" },   .{ "ISO_Level3_Shift", "AltGraph" }, .{ "Caps_Lock", "CapsLock" }, .{ "Menu", "ContextMenu" },
     };
     inline for (map) |m| if (std.mem.eql(u8, name, m[0])) return m[1];
-    if (name.len == 1) return name;
+    // F1 … F24.
+    if (name.len >= 2 and name.len <= 3 and name[0] == 'F' and std.ascii.isDigit(name[1])) return name;
+    const cp = gdk_keyval_to_unicode(keyval);
+    if (cp >= 0x20 and cp != 0x7f) {
+        const len = std.unicode.utf8Encode(@intCast(cp), buf) catch return null;
+        return buf[0..len];
+    }
     return null;
+}
+
+/// The modifier a modifier key is (modFlags' bit), or 0.
+fn modifierBit(name: []const u8) u32 {
+    if (std.mem.eql(u8, name, "Shift")) return 1;
+    if (std.mem.eql(u8, name, "Control")) return 2;
+    if (std.mem.eql(u8, name, "Alt")) return 4;
+    if (std.mem.eql(u8, name, "Meta")) return 8;
+    return 0;
 }
 
 fn onResize(_: *Widget, width: c_int, height: c_int, data: ?*anyopaque) callconv(.c) void {
@@ -1321,35 +1318,56 @@ fn onMotion(controller: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(
 }
 
 fn onKey(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) c_int {
-    const s = surfaceOf(data);
-    const name = keyName(keyval) orelse return 0;
-    var buf: [64]u8 = undefined;
-    const key = std.json.Stringify.valueAlloc(s.gpa, name, .{}) catch return 0;
+    return @intFromBool(keyDown(surfaceOf(data), keyval, state));
+}
+
+/// A key pressed: keydown on the focused element (the page's view's or a
+/// native field's), true when the page prevented it (the key is used up).
+fn keyDown(s: *Surface, keyval: c_uint, state: c_uint) bool {
+    var name_buf: [8]u8 = undefined;
+    const name = keyName(keyval, &name_buf) orelse return false;
+    const key = std.json.Stringify.valueAlloc(s.gpa, name, .{}) catch return false;
     defer s.gpa.free(key);
     // GTK reports auto-repeat as more presses: a key already down repeats.
     const repeat = s.keys_down.contains(keyval);
     s.keys_down.put(s.gpa, keyval, {}) catch {};
-    const json = std.fmt.bufPrint(&buf, "[{s},{d},{}]", .{ key, modFlags(state), repeat }) catch return 0;
-    return @intFromBool(s.engine.event(0, "key", json));
+    // A modifier's own keydown has its flag set, as in browsers (GTK's
+    // state is from before the press).
+    var buf: [64]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[{s},{d},{}]", .{ key, modFlags(state) | modifierBit(name), repeat }) catch return false;
+    return s.engine.event(0, "key", json);
 }
 
-fn onFieldTab(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) c_int {
+/// Keys while a native field has the keyboard (the overlay's capture
+/// controller hears them before the field): keydown on the page first, as
+/// a WebView's field sends them; a prevented key doesn't reach the field.
+/// The page's view hears its own keys (onKey). An input method composing
+/// in the field still gets its keys unless the page prevents them.
+fn onFieldKey(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) c_int {
     const s = surfaceOf(data);
-    const name = keyName(keyval) orelse return 0;
-    if (!std.mem.eql(u8, name, "Tab") or gtk_widget_has_focus(s.area) != 0) return 0;
-    var buf: [32]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[\"Tab\",{d},false]", .{modFlags(state)}) catch return 0;
-    return @intFromBool(s.engine.event(0, "key", json));
+    if (gtk_widget_has_focus(s.area) != 0) return 0;
+    return @intFromBool(keyDown(s, keyval, state));
+}
+
+fn onFieldKeyUp(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    if (gtk_widget_has_focus(s.area) != 0) return;
+    keyUp(s, keyval, state);
 }
 
 fn onKeyUp(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) void {
-    const s = surfaceOf(data);
+    keyUp(surfaceOf(data), keyval, state);
+}
+
+fn keyUp(s: *Surface, keyval: c_uint, state: c_uint) void {
     _ = s.keys_down.remove(keyval);
-    const name = keyName(keyval) orelse return;
-    var buf: [64]u8 = undefined;
+    var name_buf: [8]u8 = undefined;
+    const name = keyName(keyval, &name_buf) orelse return;
     const key = std.json.Stringify.valueAlloc(s.gpa, name, .{}) catch return;
     defer s.gpa.free(key);
-    const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ key, modFlags(state) }) catch return;
+    // A modifier's keyup has its flag cleared.
+    var buf: [64]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ key, modFlags(state) & ~modifierBit(name) }) catch return;
     _ = s.engine.event(0, "keyup", json);
 }
 
