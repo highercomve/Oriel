@@ -199,6 +199,7 @@ extern fn pango_layout_iter_free(it: *anyopaque) void;
 extern fn pango_layout_get_pixel_size(l: *PangoLayout, w: *c_int, h: *c_int) void;
 extern fn pango_layout_get_baseline(l: *PangoLayout) c_int;
 extern fn pango_cairo_show_layout(cr: *cairo_t, l: *PangoLayout) void;
+extern fn pango_layout_get_line_count(l: *PangoLayout) c_int;
 extern fn pango_cairo_layout_path(cr: *cairo_t, l: *PangoLayout) void;
 extern fn pango_font_description_from_string(s: [*:0]const u8) *PangoFontDescription;
 extern fn pango_font_description_set_absolute_size(d: *PangoFontDescription, size: f64) void;
@@ -1123,9 +1124,20 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     var w: c_int = 0;
     var h: c_int = 0;
     pango_layout_get_pixel_size(layout, &w, &h);
-    const size: [2]f32 = .{ @floatFromInt(w + 1), @floatFromInt(h) };
+    const size: [2]f32 = .{ @floatFromInt(w + 1), cssHeight(&n.props, pango_layout_get_line_count(layout)) orelse @floatFromInt(h) };
     if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
     return size;
+}
+
+/// CSS's line-height makes each line box exactly that tall, the glyphs
+/// centered in it, even when that's less than the font (a 36px heading
+/// with 23.2px lines). Pango keeps lines no shorter than its own minimum,
+/// so the height is the lines times the line-height (null without one),
+/// and paintText centers Pango's lines in it.
+fn cssHeight(props: *const tree_mod.Props, lines: c_int) ?f32 {
+    const lh = props.lh orelse return null;
+    if (!(lh > 0)) return null;
+    return lh * @as(f32, @floatFromInt(@max(1, lines)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1190,7 +1202,7 @@ fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
         units += w;
     }
     const px = @divTrunc(units + PANGO_SCALE - 1, PANGO_SCALE);
-    return .{ @floatFromInt(px + 1), @floatFromInt(table.height) };
+    return .{ @floatFromInt(px + 1), cssHeight(props, 1) orelse @floatFromInt(table.height) };
 }
 
 fn pairWidth(s: *Surface, props: *const tree_mod.Props, r: tree_mod.Run, table: *PairWidths, a: u8, b: u8) ?i32 {
@@ -1628,7 +1640,16 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
     const c = n.content();
     const layout = textLayout(s, n, c.w + 1) orelse return;
     defer g_object_unref(layout);
-    cairo_move_to(cr, c.x, c.y);
+    // Pango's lines centered in CSS's line boxes when those are shorter.
+    var dy: f32 = 0;
+    if (cssHeight(&n.props, pango_layout_get_line_count(layout))) |css_h| {
+        var w: c_int = 0;
+        var h: c_int = 0;
+        pango_layout_get_size(layout, &w, &h);
+        const pango_h = @as(f32, @floatFromInt(h)) / PANGO_SCALE;
+        if (pango_h > css_h) dy = (css_h - pango_h) / 2;
+    }
+    cairo_move_to(cr, c.x, c.y + dy);
     pango_cairo_show_layout(cr, layout);
 }
 
