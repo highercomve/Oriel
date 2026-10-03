@@ -1371,36 +1371,80 @@ fn subclass(hwnd: c.HWND, proc: c.WNDPROC) void {
     _ = c.SetPropW(hwnd, prop_old_proc, @ptrFromInt(@as(usize, @bitCast(old))));
 }
 
-/// The field whose Tab the page just had: its WM_CHAR is eaten too (a
-/// textarea would type it; a one-line field beeps).
-var tab_eaten: c.HWND = null;
+/// A field's keys go to the page first, as a browser's do: keydown (a
+/// named key or a Ctrl shortcut at WM_KEYDOWN, a typed character at its
+/// WM_CHAR), then the control (unless the page prevented the keydown),
+/// then keyup. The field whose key the page prevented (or Tab, which the
+/// page always has: main.js moves the focus) gets none of its WM_CHARs.
+var key_eaten: c.HWND = null;
+/// The last WM_KEYDOWN was the IME's (VK_PROCESSKEY): its composition is
+/// the control's; no keydown for its characters (Chromium sends one
+/// "Process" keydown; Win32 sends none).
+var key_ime = false;
 
-/// Tab and Shift+Tab in a field go to the page, as keys (it moves the
-/// focus, main.js), and never to the control: a browser's textarea
-/// doesn't type a tab. True when the message was the Tab's.
-fn tabKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM) bool {
-    if (msg == c.WM_CHAR and wparam == '\t' and tab_eaten == hwnd) {
-        tab_eaten = null;
-        return true;
+/// True when the message is eaten (the control mustn't see it).
+fn fieldKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool {
+    switch (msg) {
+        c.WM_KEYDOWN, c.WM_SYSKEYDOWN, c.WM_CHAR, c.WM_KEYUP, c.WM_SYSKEYUP => {},
+        else => return false,
     }
-    if (msg != c.WM_KEYDOWN or wparam != c.VK_TAB) return false;
-    if (c.GetKeyState(c.VK_CONTROL) < 0 or c.GetKeyState(c.VK_MENU) < 0) return false;
     const p: ?*anyopaque = @ptrFromInt(@as(usize, @bitCast(c.GetWindowLongPtrW(c.GetParent(hwnd), c.GWLP_USERDATA))));
     const s = surfaceOf(p orelse return false);
     const fx = fieldOf(s, hwnd) orelse return false;
-    tab_eaten = hwnd;
-    var buf: [48]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[\"Tab\",{d}]", .{modFlags()}) catch return true;
+    // Copied before the page runs: its handler may remove this field (a
+    // submitted form re-rendered), destroying this very window.
+    const id = fx.node.id;
+    const single_line = fx.field.kind == .input;
+    const edit = fx.field.kind == .input or fx.field.kind == .textarea;
     s.in_control += 1;
     defer s.in_control -= 1;
-    _ = s.engine.event(fx.node.id, "key", json);
-    return true;
+    switch (msg) {
+        c.WM_KEYDOWN, c.WM_SYSKEYDOWN => {
+            key_eaten = null;
+            key_ime = wparam == c.VK_PROCESSKEY;
+            if (key_ime) return false;
+            // The key a WM_CHAR from this one belongs to (its keyup's).
+            s.char_vk = wparam;
+            const ctrl = c.GetKeyState(c.VK_CONTROL) < 0;
+            const alt = c.GetKeyState(c.VK_MENU) < 0;
+            var ch: [1]u8 = undefined;
+            const name: []const u8 = keyName(wparam) orelse if (ctrl and ((wparam >= 'A' and wparam <= 'Z') or (wparam >= '0' and wparam <= '9'))) blk: {
+                // Ctrl+letter types no character: the shortcut as its key.
+                ch[0] = std.ascii.toLower(@intCast(wparam));
+                break :blk &ch;
+            } else return false; // a character: at its WM_CHAR
+            const prevented = sendKey(s, id, name, wparam, repeated(lparam));
+            // Gone: nothing left to hand the key to.
+            if (c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null) return true;
+            // Tab is the page's (no tab typed, no beep); so is a prevented
+            // key; Enter in a one-line field (it would beep); Escape's
+            // character (a multiline edit would close a dialog).
+            const tab = wparam == c.VK_TAB and !ctrl and !alt;
+            if (tab or prevented or (wparam == c.VK_RETURN and single_line) or wparam == c.VK_ESCAPE) key_eaten = hwnd;
+            return tab or prevented or (wparam == c.VK_RETURN and single_line);
+        },
+        c.WM_CHAR => {
+            if (key_eaten == hwnd) return true;
+            if (wparam < 0x20 or wparam == 0x7F) return false; // control characters: WM_KEYDOWN's
+            if (key_ime or !edit) return false;
+            if (c.GetKeyState(c.VK_CONTROL) < 0 and c.GetKeyState(c.VK_MENU) >= 0) return false;
+            var units: [2]u16 = .{ @intCast(wparam & 0xFFFF), 0 };
+            var buf: [8]u8 = undefined;
+            const len = std.unicode.utf16LeToUtf8(&buf, units[0..1]) catch return false;
+            const prevented = sendKey(s, id, buf[0..len], s.char_vk, repeated(lparam));
+            return prevented or c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null;
+        },
+        else => {
+            sendKeyUp(s, id, wparam);
+            return c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null;
+        },
+    }
 }
 
-/// A select's and a slider's window procedure: Tab goes to the page.
+/// A select's and a slider's window procedure: keys go to the page first.
 fn controlProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
     const old: c.WNDPROC = @ptrCast(c.GetPropW(hwnd, prop_old_proc) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam));
-    if (tabKey(hwnd, msg, wparam)) return 0;
+    if (fieldKey(hwnd, msg, wparam, lparam)) return 0;
     if (msg == c.WM_NCDESTROY) {
         _ = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(old)));
         _ = c.RemovePropW(hwnd, prop_old_proc);
@@ -1408,39 +1452,12 @@ fn controlProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ca
     return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
 }
 
-/// Edit controls' window procedure: Enter and Escape go to the page first.
+/// Edit controls' window procedure: keys go to the page first; a
+/// textarea's placeholder.
 fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
     const old: c.WNDPROC = @ptrCast(c.GetPropW(hwnd, prop_old_proc) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam));
-    if (tabKey(hwnd, msg, wparam)) return 0;
+    if (fieldKey(hwnd, msg, wparam, lparam)) return 0;
     switch (msg) {
-        c.WM_KEYDOWN => if (wparam == c.VK_RETURN or wparam == c.VK_ESCAPE) {
-            const canvas = c.GetParent(hwnd);
-            const p: ?*anyopaque = @ptrFromInt(@as(usize, @bitCast(c.GetWindowLongPtrW(canvas, c.GWLP_USERDATA))));
-            if (p) |sp| {
-                const s = surfaceOf(sp);
-                if (fieldOf(s, hwnd)) |fx| {
-                    // Copied before the page runs: its handler may remove
-                    // this field (a submitted form re-rendered), freeing the
-                    // map entry and destroying this very window.
-                    const id = fx.node.id;
-                    const single_line = fx.field.kind == .input;
-                    const name = if (wparam == c.VK_RETURN) "Enter" else "Escape";
-                    var buf: [48]u8 = undefined;
-                    const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d}]", .{ name, modFlags() }) catch "";
-                    s.in_control += 1;
-                    const prevented = s.engine.event(id, "key", json);
-                    s.in_control -= 1;
-                    // Gone: nothing left to hand the key to.
-                    if (c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null) return 0;
-                    // A single-line field has no use for Enter (it would beep).
-                    if (prevented or single_line) return 0;
-                }
-            }
-        },
-        c.WM_CHAR => if (wparam == '\r' or wparam == 27) {
-            const style: usize = @bitCast(c.GetWindowLongPtrW(hwnd, c.GWL_STYLE));
-            if (style & c.ES_MULTILINE == 0) return 0; // no beep
-        },
         c.WM_NCDESTROY => {
             _ = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(old)));
             _ = c.RemovePropW(hwnd, prop_old_proc);
@@ -1485,13 +1502,18 @@ fn keyName(vk: c.WPARAM) ?[]const u8 {
         c.VK_END => "End",
         c.VK_PRIOR => "PageUp",
         c.VK_NEXT => "PageDown",
+        // As browsers fire them: a modifier's own keydown and keyup.
+        c.VK_SHIFT => "Shift",
+        c.VK_CONTROL => "Control",
+        c.VK_MENU => "Alt",
+        c.VK_LWIN, c.VK_RWIN => "Meta",
         else => null,
     };
 }
 
-/// keydown for the page, `repeat` on auto-repeat; remembered for virtual
-/// key `vk`'s keyup.
-fn sendKey(s: *Surface, name: []const u8, vk: c.WPARAM, repeat: bool) bool {
+/// keydown for the page (on node `id`, a field's; 0: the focused element),
+/// `repeat` on auto-repeat; remembered for virtual key `vk`'s keyup.
+fn sendKey(s: *Surface, id: i64, name: []const u8, vk: c.WPARAM, repeat: bool) bool {
     if (vk < 256 and name.len <= 16) {
         @memcpy(s.key_names[vk][0..name.len], name);
         s.key_lens[vk] = @intCast(name.len);
@@ -1500,11 +1522,11 @@ fn sendKey(s: *Surface, name: []const u8, vk: c.WPARAM, repeat: bool) bool {
     defer s.gpa.free(key);
     var buf: [64]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[{s},{d},{}]", .{ key, modFlags(), repeat }) catch return false;
-    return s.engine.event(0, "key", json);
+    return s.engine.event(id, "key", json);
 }
 
 /// keyup for the page: the key its keydown sent.
-fn sendKeyUp(s: *Surface, vk: c.WPARAM) void {
+fn sendKeyUp(s: *Surface, id: i64, vk: c.WPARAM) void {
     if (vk >= 256 or s.key_lens[vk] == 0) return;
     const name = s.key_names[vk][0..s.key_lens[vk]];
     s.key_lens[vk] = 0;
@@ -1512,7 +1534,7 @@ fn sendKeyUp(s: *Surface, vk: c.WPARAM) void {
     defer s.gpa.free(key);
     var buf: [64]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ key, modFlags() }) catch return;
-    _ = s.engine.event(0, "keyup", json);
+    _ = s.engine.event(id, "keyup", json);
 }
 
 /// Auto-repeat: a WM_KEYDOWN or WM_CHAR whose key was already down
@@ -1948,16 +1970,16 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             // The key a WM_CHAR from this one belongs to (its keyup's).
             s.char_vk = wparam;
             if (keyName(wparam)) |name| {
-                if (sendKey(s, name, wparam, repeated(lparam))) return 0;
+                if (sendKey(s, 0, name, wparam, repeated(lparam))) return 0;
             } else if (c.GetKeyState(c.VK_CONTROL) < 0 and ((wparam >= 'A' and wparam <= 'Z') or (wparam >= '0' and wparam <= '9'))) {
                 // Ctrl+letter types no character: the shortcut as its key.
                 const ch: u8 = std.ascii.toLower(@intCast(wparam));
-                if (sendKey(s, &.{ch}, wparam, repeated(lparam))) return 0;
+                if (sendKey(s, 0, &.{ch}, wparam, repeated(lparam))) return 0;
             }
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         c.WM_KEYUP, c.WM_SYSKEYUP => {
-            sendKeyUp(s, wparam);
+            sendKeyUp(s, 0, wparam);
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         c.WM_CHAR => {
@@ -1966,7 +1988,7 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             var units: [2]u16 = .{ @intCast(wparam & 0xFFFF), 0 };
             var buf: [8]u8 = undefined;
             const len = std.unicode.utf16LeToUtf8(&buf, units[0..1]) catch return 0;
-            _ = sendKey(s, buf[0..len], s.char_vk, repeated(lparam));
+            _ = sendKey(s, 0, buf[0..len], s.char_vk, repeated(lparam));
             return 0;
         },
         // Removed fields' controls: now that no control's code is running.
