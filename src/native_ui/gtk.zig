@@ -212,6 +212,8 @@ extern fn pango_layout_get_pixel_size(l: *PangoLayout, w: *c_int, h: *c_int) voi
 extern fn pango_layout_get_baseline(l: *PangoLayout) c_int;
 extern fn pango_cairo_show_layout(cr: *cairo_t, l: *PangoLayout) void;
 extern fn pango_cairo_show_layout_line(cr: *cairo_t, line: *anyopaque) void;
+extern fn pango_attr_shape_new(ink: *const PangoRectangle, logical: *const PangoRectangle) *PangoAttribute;
+extern fn pango_layout_iter_get_baseline(it: *anyopaque) c_int;
 extern fn pango_layout_get_line_count(l: *PangoLayout) c_int;
 extern fn pango_cairo_layout_path(cr: *cairo_t, l: *PangoLayout) void;
 extern fn pango_font_description_from_string(s: [*:0]const u8) *PangoFontDescription;
@@ -789,8 +791,9 @@ fn lineExtents(s: *Surface, props: *const tree_mod.Props, layout: *PangoLayout, 
     const it = pango_layout_get_iter(layout) orelse return null;
     defer pango_layout_iter_free(it);
     var differ = false;
+    var walk: RunBytes = .{ .runs = runs };
+    var cur = walk.next(); // a run's bytes, while it's on the lines to come
     var ri: usize = 0;
-    var rs: usize = 0; // ri's first byte
     var k: usize = 0;
     while (k < count) : (k += 1) {
         const line = pango_layout_iter_get_line_readonly(it) orelse return null;
@@ -799,11 +802,10 @@ fn lineExtents(s: *Surface, props: *const tree_mod.Props, layout: *PangoLayout, 
         const le = ls + @as(usize, @intCast(@max(0, head.length)));
         var e = strut;
         // The runs with a part on this line.
-        while (ri < runs.len) {
-            const re = rs + runs[ri].t.len;
-            if (re > ls and rs < le) e = widen(e, runExtent(s, props, runs[ri]));
-            if (re > le) break; // goes on to the next line
-            rs = re;
+        while (cur) |range| {
+            if (range[1] > ls and range[0] < le) e = widen(e, runExtent(s, props, runs[ri]));
+            if (range[1] > le) break; // goes on to the next line
+            cur = walk.next();
             ri += 1;
         }
         const x = e orelse all;
@@ -813,6 +815,18 @@ fn lineExtents(s: *Surface, props: *const tree_mod.Props, layout: *PangoLayout, 
     }
     if (k + 1 < count) return null;
     return if (differ) out[0..count] else null;
+}
+
+/// Where paintText puts each line: lineExtents', else textExtent's on
+/// every line; null without a line box (Pango's own lines).
+fn textLines(s: *Surface, props: *const tree_mod.Props, layout: *PangoLayout, out: []Extent) ?[]Extent {
+    if (lineExtents(s, props, layout, out)) |e| return e;
+    if (lineBox(s, props) == null) return null;
+    const all = textExtent(s, props) orelse return null;
+    const count: usize = @intCast(@max(1, pango_layout_get_line_count(layout)));
+    if (count > out.len) return null;
+    @memset(out[0..count], all);
+    return out[0..count];
 }
 
 /// The lines' extents laid end to end: the text's height when they differ.
@@ -1499,15 +1513,22 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     }
 }
 
+/// Also sets `Node.baseline`: the first line's, where paintText puts it
+/// (the top of its extent), for rows that line items up on it.
 fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     const actual_width = if (n.props.nowrap or std.math.isInf(width)) std.math.inf(f32) else @max(1, width);
+    // Every line's extent alike (no bigger font on some lines only): the
+    // first baseline whatever the width, and sizes the cache can keep.
+    const all = if (lineBox(s, &n.props) != null) textExtent(s, &n.props) else null;
+    const even = if (all) |e| if (strutExtent(s, &n.props)) |st| st.top == e.top and st.bottom == e.bottom else false else true;
+    n.baseline = if (all) |e| e.top else std.math.nan(f32);
     // One line of plain text: its width from the glyph widths, no layout.
     if (fastTextSize(s, &n.props)) |size| if (std.math.isInf(actual_width) or size[0] - 1 <= actual_width) {
         if (std.c.getenv("ORIEL_NUI_TEXT_CHECK") != null) checkTextSize(s, n, actual_width, size);
         return size;
     };
     var buf: [1024]u8 = undefined;
-    const key = text_measure_cache.keyFor(&buf, &n.props, actual_width);
+    const key = if (even) text_measure_cache.keyFor(&buf, &n.props, actual_width) else null;
     if (key) |k| if (s.text_measurements.get(k)) |size| return size;
     const layout = textLayout(s, n, actual_width) orelse return null;
     defer g_object_unref(layout);
@@ -1515,7 +1536,10 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     var h: c_int = 0;
     pango_layout_get_pixel_size(layout, &w, &h);
     var exts: [64]Extent = undefined;
-    const css_h = if (lineExtents(s, &n.props, layout, &exts)) |e| extentsHeight(e) else cssHeight(s, &n.props, pango_layout_get_line_count(layout));
+    const css_h = if (lineExtents(s, &n.props, layout, &exts)) |e| blk: {
+        n.baseline = e[0].top;
+        break :blk extentsHeight(e);
+    } else cssHeight(s, &n.props, pango_layout_get_line_count(layout));
     const size: [2]f32 = .{ @floatFromInt(w + 1), css_h orelse @floatFromInt(h) };
     if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
     return size;
@@ -1596,6 +1620,8 @@ fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
     const runs = props.runs orelse return null;
     if (runs.len != 1 or props.ls != null) return null;
     const r = runs[0];
+    // An inline box's room is a layout's (textLayoutOf).
+    if (r.ib != null) return null;
     const t = r.t;
     if (t.len == 0 or t.len > 512) return null;
     for (t) |c| if (c < 0x20 or c >= 0x7f) return null;
@@ -1705,17 +1731,23 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32) ?*PangoLa
     defer text.deinit(s.gpa);
     const attrs = pango_attr_list_new();
     defer pango_attr_list_unref(attrs);
-    for (runs) |r| {
+    const add = struct {
+        fn f(list: *PangoAttrList, a: *PangoAttribute, st: c_uint, en: c_uint) void {
+            a.start_index = st;
+            a.end_index = en;
+            pango_attr_list_insert(list, a);
+        }
+    }.f;
+    for (runs, 0..) |r, ri| {
+        const room = boxRoom(runs, ri);
+        if (room[0] > 0) {
+            const at: c_uint = @intCast(text.items.len);
+            text.appendSlice(s.gpa, room_mark) catch return null;
+            add(attrs, roomShape(room[0]), at, at + mark_len);
+        }
         const start: c_uint = @intCast(text.items.len);
         text.appendSlice(s.gpa, r.t) catch return null;
         const end: c_uint = @intCast(text.items.len);
-        const add = struct {
-            fn f(list: *PangoAttrList, a: *PangoAttribute, st: c_uint, en: c_uint) void {
-                a.start_index = st;
-                a.end_index = en;
-                pango_attr_list_insert(list, a);
-            }
-        }.f;
         add(attrs, pango_attr_foreground_new(c16(r.c[0]), c16(r.c[1]), c16(r.c[2])), start, end);
         if (r.c[3] < 1) add(attrs, pango_attr_foreground_alpha_new(@intFromFloat(@max(0, @min(1, r.c[3])) * 65535)), start, end);
         add(attrs, pango_attr_size_new_absolute(tree_mod.sat(c_int, r.sz * PANGO_SCALE)), start, end);
@@ -1731,6 +1763,11 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32) ?*PangoLa
             add(attrs, pango_attr_background_new(c16(bg[0]), c16(bg[1]), c16(bg[2])), start, end);
             if (bg[3] < 1) add(attrs, pango_attr_background_alpha_new(tree_mod.sat(u16, bg[3] * 65535)), start, end);
         };
+        if (room[1] > 0) {
+            const at: c_uint = @intCast(text.items.len);
+            text.appendSlice(s.gpa, room_mark) catch return null;
+            add(attrs, roomShape(room[1]), at, at + mark_len);
+        }
     }
     if (n.props.ls) |ls| add0(attrs, pango_attr_letter_spacing_new(tree_mod.sat(c_int, ls * PANGO_SCALE)));
     // CSS line-height: each line box is that tall and the glyphs sit in its
@@ -1756,6 +1793,53 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32) ?*PangoLa
     }
     return layout;
 }
+
+// An inline box's room in the line (its margin, border and padding on
+// the start and end sides, docs "Inline boxes"): an invisible character
+// shaped that wide before its first run and after its last. U+2061 breaks
+// as a letter does, so the room stays with the box's text (a line can
+// break before the box, not between the room and its text).
+const room_mark = "\u{2061}";
+const mark_len: c_uint = room_mark.len;
+
+fn roomShape(w: f32) *PangoAttribute {
+    const rect: PangoRectangle = .{ .width = tree_mod.sat(c_int, w * PANGO_SCALE) };
+    return pango_attr_shape_new(&rect, &rect);
+}
+
+/// Run i's inline box's room before it (its first run) and after it (its
+/// last): 0 elsewhere.
+fn boxRoom(runs: []const tree_mod.Run, i: usize) [2]f32 {
+    const ib = runs[i].ib orelse return .{ 0, 0 };
+    const same = struct {
+        fn f(r: tree_mod.Run, k: u32) bool {
+            return if (r.ib) |o| o.k == k else false;
+        }
+    }.f;
+    const first = i == 0 or !same(runs[i - 1], ib.k);
+    const last = i + 1 == runs.len or !same(runs[i + 1], ib.k);
+    return .{ if (first) ib.start() else 0, if (last) ib.end() else 0 };
+}
+
+/// The runs' byte ranges in their layout's text (textLayoutOf: the room
+/// marks between them), one after another.
+const RunBytes = struct {
+    runs: []const tree_mod.Run,
+    i: usize = 0,
+    at: usize = 0,
+
+    fn next(w: *RunBytes) ?[2]usize {
+        if (w.i >= w.runs.len) return null;
+        const room = boxRoom(w.runs, w.i);
+        if (room[0] > 0) w.at += room_mark.len;
+        const start = w.at;
+        w.at += w.runs[w.i].t.len;
+        const end = w.at;
+        if (room[1] > 0) w.at += room_mark.len;
+        w.i += 1;
+        return .{ start, end };
+    }
+};
 
 fn add0(list: *PangoAttrList, a: *PangoAttribute) void {
     a.start_index = 0;
@@ -2240,30 +2324,122 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
     // Lines of different heights (a bigger font on some): each on its own
     // baseline, below the lines before it.
     var exts: [64]Extent = undefined;
-    if (lineExtents(s, &n.props, layout, &exts)) |e| return paintLines(cr, layout, c.x, c.y, e);
-    // Pango's lines centered in CSS's line boxes when those are shorter.
     var dy: f32 = 0;
-    if (cssHeight(s, &n.props, pango_layout_get_line_count(layout))) |css_h| {
-        var w: c_int = 0;
-        var h: c_int = 0;
-        pango_layout_get_size(layout, &w, &h);
-        const pango_h = @as(f32, @floatFromInt(h)) / PANGO_SCALE;
-        if (pango_h > css_h) dy = (css_h - pango_h) / 2;
+    const lines = textLines(s, &n.props, layout, &exts);
+    paintInlineBoxes(s, cr, layout, c.x, c.y, lines, n);
+    if (lines) |e| {
+        paintLines(cr, layout, c.x, c.y, e);
+    } else {
+        // Pango's lines centered in CSS's line boxes when those are shorter.
+        if (cssHeight(s, &n.props, pango_layout_get_line_count(layout))) |css_h| {
+            var w: c_int = 0;
+            var h: c_int = 0;
+            pango_layout_get_size(layout, &w, &h);
+            const pango_h = @as(f32, @floatFromInt(h)) / PANGO_SCALE;
+            if (pango_h > css_h) dy = (css_h - pango_h) / 2;
+        }
+        cairo_move_to(cr, c.x, c.y + dy);
+        pango_cairo_show_layout(cr, layout);
     }
-    cairo_move_to(cr, c.x, c.y + dy);
-    pango_cairo_show_layout(cr, layout);
     // A focused inline link's ring, around each of its line fragments.
     const runs = n.props.runs orelse return;
-    var start: usize = 0;
+    var walk: RunBytes = .{ .runs = runs };
     var i: usize = 0;
-    while (i < runs.len) : (i += 1) {
-        var end = start + runs[i].t.len;
+    while (walk.next()) |range| : (i += 1) {
+        var end = range[1];
         if (runs[i].ol) |ol| {
             // The link's runs (a <b> in it) under one ring.
-            while (i + 1 < runs.len and runs[i + 1].ol != null and std.meta.eql(runs[i + 1].ol.?, ol)) : (i += 1) end += runs[i + 1].t.len;
-            runRing(cr, layout, c.x, c.y + dy, start, end, ol);
+            while (i + 1 < runs.len and runs[i + 1].ol != null and std.meta.eql(runs[i + 1].ol.?, ol)) : (i += 1) end = (walk.next() orelse break)[1];
+            runRing(cr, layout, c.x, c.y + dy, range[0], end, ol);
         }
-        start = end;
+    }
+}
+
+/// The inline boxes' decoration (docs "Inline boxes"), under the text: on
+/// each line fragment of a box's text, its background, then its border, as
+/// tall as its font's content area (ascent and descent) and its padding
+/// and border; its start side on its first fragment only, its end side on
+/// its last. `lines`: where paintText puts each line (null: Pango's own).
+fn paintInlineBoxes(s: *Surface, cr: *cairo_t, layout: *PangoLayout, x: f32, y: f32, lines: ?[]const Extent, n: *Node) void {
+    const runs = n.props.runs orelse return;
+    const text = std.mem.span(pango_layout_get_text(layout));
+    var walk: RunBytes = .{ .runs = runs };
+    var i: usize = 0;
+    while (walk.next()) |range| : (i += 1) {
+        const ib = runs[i].ib orelse continue;
+        // The box's runs, and its font (its first run's).
+        const r = runs[i];
+        var end = range[1];
+        while (i + 1 < runs.len and runs[i + 1].ib != null and runs[i + 1].ib.?.k == ib.k) : (i += 1) end = (walk.next() orelse break)[1];
+        const start = range[0];
+        if (end <= start) continue;
+        const m = unhintedMetrics(s, r.sz, r.mono or n.props.mono, r.ff orelse n.props.ff) orelse continue;
+        const ascent = @round(m[0]);
+        const descent = @round(m[1]);
+        const bw = ib.bw orelse [4]f32{ 0, 0, 0, 0 };
+        const it = pango_layout_get_iter(layout) orelse return;
+        defer pango_layout_iter_free(it);
+        var top: f32 = y; // line k's top, when paintText places the lines
+        var k: usize = 0;
+        while (true) : (k += 1) {
+            const base = if (lines) |e| (if (k < e.len) top + e[k].top else break) else y + @as(f32, @floatFromInt(pango_layout_iter_get_baseline(it))) / PANGO_SCALE;
+            if (lines) |e| top += e[k].top + e[k].bottom;
+            if (pango_layout_iter_get_line_readonly(it)) |line| blk: {
+                const head: *const PangoLayoutLineHead = @ptrCast(@alignCast(line));
+                const ls: usize = @intCast(@max(0, head.start_index));
+                const le: usize = @min(text.len, ls + @as(usize, @intCast(@max(0, head.length))));
+                const a = @max(start, ls);
+                var b = @min(end, le);
+                if (a >= b) break :blk;
+                const first = a == start;
+                const last = b == end;
+                // A fragment that wraps: up to the line's text, not over
+                // the space it wraps after.
+                if (!last) while (b > a and (text[b - 1] == ' ' or text[b - 1] == '\n')) {
+                    b -= 1;
+                };
+                if (a >= b) break :blk;
+                var ranges: ?[*]c_int = null;
+                var count: c_int = 0;
+                pango_layout_line_get_x_ranges(line, tree_mod.sat(c_int, a), tree_mod.sat(c_int, b), &ranges, &count);
+                const rs = ranges orelse break :blk;
+                defer g_free(@ptrCast(rs));
+                var x0: f32 = std.math.floatMax(f32);
+                var x1: f32 = -std.math.floatMax(f32);
+                for (0..@intCast(@max(0, count))) |q| {
+                    x0 = @min(x0, @as(f32, @floatFromInt(rs[2 * q])) / PANGO_SCALE);
+                    x1 = @max(x1, @as(f32, @floatFromInt(rs[2 * q + 1])) / PANGO_SCALE);
+                }
+                if (!(x1 > x0)) break :blk;
+                if (first) x0 -= bw[3] + ib.p[3];
+                if (last) x1 += ib.p[1] + bw[1];
+                const box: Rect = .{
+                    .x = x + x0,
+                    .y = base - ascent - ib.p[0] - bw[0],
+                    .w = x1 - x0,
+                    .h = ascent + descent + ib.p[0] + ib.p[2] + bw[0] + bw[2],
+                };
+                var radii: Radii = .{};
+                if (ib.br) |br| {
+                    const keep = [4]bool{ first, last, last, first };
+                    for (0..4) |q| if (keep[q]) {
+                        radii.x[q] = br[q];
+                        radii.y[q] = br[q];
+                    };
+                    radii = radii.fitted(box.w, box.h);
+                }
+                if (ib.bg) |bg| if (bg[3] > 0) {
+                    roundRectXY(cr, box, radii);
+                    setColor(cr, bg);
+                    cairo_fill(cr);
+                };
+                if (ib.bw != null) {
+                    const sides = [4]f32{ bw[0], if (last) bw[1] else 0, bw[2], if (first) bw[3] else 0 };
+                    border(cr, box, radii, sides, .{ ib.bc, ib.bc, ib.bc, ib.bc });
+                }
+            }
+            if (pango_layout_iter_next_line(it) == 0) break;
+        }
     }
 }
 
