@@ -2438,13 +2438,35 @@ globalThis.atob ??= (s) => {
     const f = (n2) => l - a * Math.max(-1, Math.min(k(n2) - 3, Math.min(9 - k(n2), 1)));
     return [f(0) * 255, f(8) * 255, f(4) * 255];
   }
-  function stopsOf(parts, current) {
-    const stops = parts.map((p, i) => {
+  function stopsOf(parts, current, out = {}, rep = false) {
+    const raw = [];
+    for (const p of parts) {
       const t = splitSpaces(p);
       const c = color(t[0], current);
-      const pos = t[1] ? parseFloat(t[1]) / 100 : i / Math.max(parts.length - 1, 1);
-      return c ? [...c, pos] : null;
-    }).filter(Boolean);
+      if (!c) continue;
+      const at = t.slice(1, 3).map((v) => /%$/.test(v) ? { f: parseFloat(v) / 100 } : parseFloat(v) === 0 ? { f: 0 } : { px: length(v, 16, false) ?? 0 });
+      if (!at.length) raw.push({ c, at: null });
+      for (const a of at) raw.push({ c: c.slice(), at: a });
+    }
+    let stops;
+    if (rep || raw.some((s) => s.at && "px" in s.at)) {
+      out.su = raw.map((s) => !s.at ? "a" : "px" in s.at ? "p" : "%").join("");
+      stops = raw.map((s) => [...s.c, !s.at ? 0 : "px" in s.at ? s.at.px : s.at.f]);
+    } else {
+      const pos = raw.map((s) => s.at?.f ?? null);
+      if (pos.length && pos[0] == null) pos[0] = 0;
+      if (pos.length && pos[pos.length - 1] == null) pos[pos.length - 1] = 1;
+      for (let i = 1; i < pos.length; i++) {
+        if (pos[i] != null) {
+          pos[i] = Math.max(pos[i], pos[i - 1]);
+          continue;
+        }
+        let j = i;
+        while (pos[j] == null) j++;
+        for (let k = i; k < j; k++) pos[k] = pos[i - 1] + (pos[j] - pos[i - 1]) * (k - i + 1) / (j - i + 1);
+      }
+      stops = raw.map((s, i) => [...s.c, pos[i]]);
+    }
     stops.forEach((st, i) => {
       if (st[3] > 0) return;
       const n2 = stops[i - 1]?.[3] > 0 ? stops[i - 1] : stops[i + 1]?.[3] > 0 ? stops[i + 1] : null;
@@ -2456,7 +2478,7 @@ globalThis.atob ??= (s) => {
     });
     return stops;
   }
-  function radial(args, current) {
+  function radial(args, current, rep = false) {
     const parts = splitTop(args, ",").map((s) => s.trim());
     let cx = "50%", cy = "50%", rx = "71%", ry = "71%", ext = "farthest-corner", circle = false;
     if (!color(splitSpaces(parts[0])[0], current)) {
@@ -2486,9 +2508,11 @@ globalThis.atob ??= (s) => {
         cy = pos(a[1] ?? "center", cy);
       }
     }
-    const stops = stopsOf(parts, current);
+    const extra = {};
+    const stops = stopsOf(parts, current, extra, rep);
     if (!stops.length) return null;
-    const g2 = { radial: [cx, cy, rx, ry], stops };
+    const g2 = { radial: [cx, cy, rx, ry], stops, ...extra };
+    if (rep) g2.rep = true;
     if (ext) g2.ext = ext;
     if (circle) g2.circle = true;
     return g2;
@@ -2507,14 +2531,15 @@ globalThis.atob ??= (s) => {
           const dir = parts.shift();
           angle = { "to right": 90, "to left": 270, "to top": 0, "to bottom": 180, "to bottom right": 135, "to top right": 45 }[dir] ?? 180;
         }
-        const stops = stopsOf(parts, current);
-        if (stops.length) (out ||= {}).gradient = { angle, stops };
+        const extra = {};
+        const stops = stopsOf(parts, current, extra, !!g2[1]);
+        if (stops.length) (out ||= {}).gradient = { angle, stops, ...extra, ...g2[1] ? { rep: true } : {} };
         continue;
       }
-      const r = /^radial-gradient\((.*)\)/.exec(layer);
+      const r = /^(repeating-)?radial-gradient\((.*)\)/.exec(layer);
       if (r) {
         if (out?.gradient) continue;
-        const gr = radial(r[1], current);
+        const gr = radial(r[2], current, !!r[1]);
         if (gr) (out ||= {}).gradient = gr;
         continue;
       }
