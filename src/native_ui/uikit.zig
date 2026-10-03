@@ -194,6 +194,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .request_frame = requestFrame,
         .request_display_frame = if (hasDisplayLink(view)) requestDisplayFrame else null,
         .warm_fonts = warmFonts,
+        .font_metrics = fontMetrics,
     }, assets, platform_json, label, url, width, height);
     // Text-only updates that keep a text's size keep the layout (its
     // natural size is kept per node: measureText).
@@ -371,6 +372,11 @@ fn onDisplayFrame(self: id, _: SEL, link_id: id) callconv(.c) void {
 /// sleep: kCFRunLoopBeforeWaiting), one per idle moment, and not while a
 /// timer is due within `warm_margin` or the page wants an animation frame:
 /// a cold font takes a few ms, which shouldn't make a due timer late.
+/// Backend.font_metrics: the text font's ascent and descent at a size.
+fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[2]f32) bool {
+    return draw.fontMetrics("UIFont", size, mono, out);
+}
+
 fn warmFonts(ctx: *anyopaque, specs: []const engine_mod.FontSpec) void {
     const s = surfaceOf(ctx);
     s.warm.appendSlice(s.gpa, specs) catch return;
