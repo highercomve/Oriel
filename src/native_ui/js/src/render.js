@@ -52,6 +52,27 @@ col, colgroup { display: none; }
 
 const INLINE_DISPLAY = new Set(["inline"]);
 const ATOMIC_INLINE = new Set(["inline-block", "inline-flex", "inline-grid"]);
+// Replaced elements: an image's bottom sits on the line's baseline.
+const REPLACED = new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
+
+// How far a line box reaches below its baseline: the strut's descent plus
+// half the leading, from the backend's font (host.fontMetrics), else a
+// typical sans font's (Noto Sans: ascent 1.125, descent 0.3125 em).
+const fontMetricsCache = new Map();
+function lineDescent(cs, fs, host) {
+  const mono = /mono/.test(cs["font-family"] || "");
+  const key = `${fs}|${mono}`;
+  let m = fontMetricsCache.get(key);
+  if (!m) {
+    try { m = host?.fontMetrics?.(fs, mono); } catch { m = null; }
+    if (!m) m = [fs * 1.125, fs * 0.3125];
+    fontMetricsCache.set(key, m);
+  }
+  const [ascent, descent] = m;
+  const v = cs["line-height"];
+  const lh = !v || v === "normal" ? ascent + descent : /^[\d.]+$/.test(v) ? parseFloat(v) * fs : length(v, fs, false) ?? ascent + descent;
+  return Math.max(0, lh / 2 - (ascent - descent) / 2);
+}
 // An inline element with a box of its own (padding, a border, rounded
 // corners, a horizontal margin: a "148 MB" badge after a label). At the
 // start or end of its line it is an inline box there (Renderer.boxedEnds),
@@ -1310,6 +1331,20 @@ export class Renderer {
       return this.put(nodes, id, "text", props, [], fixedNode);
     }
 
+    // A line of only images (inline replaced elements on the baseline, the
+    // rest of the content out of flow): a browser's line box reaches below
+    // them by the font's descent and half-leading (an image in a <div> is
+    // a few px shorter than the <div>), unless the page makes them blocks.
+    const imageLine = !childCtx.blockify && props.fd === "column" && display !== "flex" && display !== "grid" && props.h === undefined &&
+      this.imageLine(flow, cs, rematch);
+    if (imageLine) {
+      const gap = lineDescent(cs, fontSize, this.host);
+      if (gap > 0) {
+        const pad = props.pad ? [...props.pad] : [0, 0, 0, 0];
+        if (typeof pad[2] === "number") { pad[2] += gap; props.pad = pad; }
+      }
+    }
+
     // A line of inline content with an atomic box in it (a checkbox and its
     // label's text): a row that wraps, as an inline formatting context lays
     // it out, not a column (the text went under the box).
@@ -1333,7 +1368,7 @@ export class Renderer {
     // between them collapses to a space's width (none when they touch).
     if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 &&
         flow.every((f) => f.el && atomic(f.el))) {
-      props.fd = "row"; props.fw = "wrap"; props.ai = "center";
+      props.fd = "row"; props.fw = "wrap"; props.ai = imageLine ? "flex-end" : "center"; // images: on one baseline
       const nodesIn = [...el.childNodes];
       const spaced = nodesIn.some((n, i) => n.nodeType === 3 && /^\s+$/.test(n.data) && i > 0 && i < nodesIn.length - 1);
       if (spaced && props.cg === undefined) { props.cg = Math.round(fontSize * 0.28 * 10) / 10; }
@@ -1509,6 +1544,21 @@ export class Renderer {
     return id;
   }
 
+  // Whether the in-flow content is only images on the baseline (imageLine).
+  imageLine(flow, cs, rematch) {
+    let any = false;
+    for (const f of flow) {
+      if (!f.el) return false;
+      const ccs = this.style(f.el, cs, rematch);
+      if (ccs.position === "absolute" || ccs.position === "fixed" || (ccs.display || "inline") === "none") continue;
+      const d = ccs.display || "inline";
+      const va = ccs["vertical-align"];
+      if (!REPLACED.has(f.el.localName) || (d !== "inline" && d !== "inline-block") || (va && va !== "baseline")) return false;
+      any = true;
+    }
+    return any;
+  }
+
   isInline(el, parentCS, rematch = false) {
     if (SKIP.has(el.localName)) return true;
     if (el.localName === "svg" || el.localName === "input" || el.localName === "textarea" || el.localName === "select" ||
@@ -1548,18 +1598,21 @@ export class Renderer {
     return out;
   }
 
-  inlineRuns(el, parentCS, parentFs, runs, rematch = false) {
+  // `outerBg`: an enclosing inline element's background (it covers the
+  // text of the inline elements inside it too).
+  inlineRuns(el, parentCS, parentFs, runs, rematch = false, outerBg = undefined) {
     if (SKIP.has(el.localName)) return;
     const cs = this.style(el, parentCS, rematch);
     if ((cs.display || "inline") === "none") return;
     const fs = fontSizeOf(cs, parentCS);
     cs.__fs = fs;
     if (el.localName === "br") { runs.push({ t: "\n", ...runStyle(cs, fs) }); return; }
+    const bg = (cs.background ? background(cs.background, color(cs.color))?.color : undefined) ?? outerBg;
     const deeper = rematch || this.marks.get(el) === 2;
     for (let child = el.firstChild; child; child = child.nextSibling) {
       this.parentOf.set(child, el);
-      if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el));
-      else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper);
+      if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el, bg));
+      else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper, bg);
     }
   }
 
@@ -2221,17 +2274,20 @@ function makeRunStyle(cs, fs) {
   if (cs["font-style"] === "italic") r.i = true;
   if (/mono/.test(cs["font-family"] || "")) r.mono = true;
   if ((cs["text-decoration-line"] || "") === "underline") r.u = true;
-  const bg = background(cs.background, r.c);
-  if (bg?.color) r.bg = bg.color;
   return r;
 }
 
-function runFor(text, cs, fs, src) {
+// A text run. `bg`: the background of the inline elements it is in (a
+// <mark>, a highlighted <span>), painted behind its glyphs; never the box
+// that holds the text, which paints its own (a run's band would spill out
+// of a line box shorter than the font).
+function runFor(text, cs, fs, src, bg) {
   let t = text;
   const tt = cs["text-transform"];
   if (tt === "uppercase") t = t.toUpperCase();
   else if (tt === "lowercase") t = t.toLowerCase();
   const r = { t, ...runStyle(cs, fs), ws: cs["white-space"] || "normal" };
+  if (bg) r.bg = bg;
   if (src) Object.defineProperty(r, "src", { value: src, enumerable: false });
   return r;
 }
