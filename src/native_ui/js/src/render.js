@@ -95,7 +95,7 @@ const SKIP = new Set(["script", "style", "head", "template", "title", "meta", "l
 // itself. Ids counted out here (pseudo-elements, text runs) stay below.
 const NATIVE_ID_BASE = 2 ** 30;
 // The attributes main.js moves for :hover, :active and :focus (css.js).
-const STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus"];
+const STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus", "data-nui-focus-visible"];
 
 // A selector's compounds, left to right (split at combinators outside
 // brackets and parentheses).
@@ -2067,6 +2067,25 @@ function boxProps(cs, display, fs, el) {
   return { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button, bb)) };
 }
 
+// outline: drawn outside the border box (offset + width), around its
+// rounded corners, over the box and its children, taking no room. Sent
+// only when there is one: ol { w, o (offset), c, s ("dashed"/"dotted";
+// absent: solid) }.
+function outlinePart(cs, fs, p) {
+  const style = cs["outline-style"];
+  if (!style || style === "none" || style === "hidden") return;
+  const wv = cs["outline-width"] || "medium";
+  const w = wv === "thin" ? 1 : wv === "medium" ? 3 : wv === "thick" ? 5 : num(wv, fs);
+  if (typeof w !== "number" || !(w > 0)) return;
+  const c = color(cs["outline-color"] || "currentcolor", color(cs.color));
+  if (!c || c[3] <= 0) return;
+  const o = num(cs["outline-offset"] || "0", fs);
+  const ol = { w, c };
+  if (typeof o === "number" && o) ol.o = o;
+  if (style === "dashed" || style === "dotted") ol.s = style;
+  p.ol = ol;
+}
+
 // A width, height or basis that sets a size (px or a percentage; not auto).
 function isSize(v) {
   return typeof v === "number" || (typeof v === "string" && v.endsWith("%"));
@@ -2147,6 +2166,7 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
     if (style) p.bs = style;
   }
   contentBox(cs, p, borderBox);
+  outlinePart(cs, fs, p);
   const rg = num(cs["row-gap"], fs), cg = num(cs["column-gap"], fs);
   if (typeof rg === "number" && rg) p.rg = rg;
   if (typeof cg === "number" && cg) p.cg = cg;

@@ -1656,7 +1656,7 @@ globalThis.atob ??= (s) => {
                 pseudo = pm[1];
                 sel = sel.slice(0, pm.index).trim() || "*";
               }
-              sel = sel.replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
+              sel = sel.replace(/:focus-visible(?![-\w])/g, "[data-nui-focus-visible]").replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
               if (/::|:hover|:focus|:active|:visited|:empty\b/.test(sel)) continue;
             }
             rules.push({ sel, pseudo, spec: specificity(sel), decls, media, order: order++, match: null });
@@ -1904,6 +1904,22 @@ globalThis.atob ??= (s) => {
           out[`border-${s}-color`] = color2;
           out[`border-${s}-style`] = style;
         }
+        return;
+      }
+      case "outline": {
+        let width = "medium", style = "none", color2 = "currentcolor";
+        for (const t of splitSpaces(value)) {
+          if (/^(none|hidden|auto|solid|dashed|dotted|double|groove|ridge|inset|outset)$/.test(t)) style = t;
+          else if (/^[\d.]|^(thin|medium|thick)$/.test(t)) width = t;
+          else color2 = t;
+        }
+        if (value === "0") {
+          width = "0";
+          style = "none";
+        }
+        out["outline-width"] = width;
+        out["outline-style"] = style;
+        out["outline-color"] = color2;
         return;
       }
       case "flex": {
@@ -3540,7 +3556,7 @@ col, colgroup { display: none; }
   }
   var SKIP2 = /* @__PURE__ */ new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
   var NATIVE_ID_BASE = 2 ** 30;
-  var STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus"];
+  var STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus", "data-nui-focus-visible"];
   function splitCompounds(sel) {
     const out = [];
     const re = /[()[\] >+~]/g;
@@ -5319,6 +5335,20 @@ col, colgroup { display: none; }
     }
     return { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button, bb)) };
   }
+  function outlinePart(cs, fs, p) {
+    const style = cs["outline-style"];
+    if (!style || style === "none" || style === "hidden") return;
+    const wv = cs["outline-width"] || "medium";
+    const w = wv === "thin" ? 1 : wv === "medium" ? 3 : wv === "thick" ? 5 : num2(wv, fs);
+    if (typeof w !== "number" || !(w > 0)) return;
+    const c = color(cs["outline-color"] || "currentcolor", color(cs.color));
+    if (!c || c[3] <= 0) return;
+    const o = num2(cs["outline-offset"] || "0", fs);
+    const ol = { w, c };
+    if (typeof o === "number" && o) ol.o = o;
+    if (style === "dashed" || style === "dotted") ol.s = style;
+    p.ol = ol;
+  }
   function isSize(v) {
     return typeof v === "number" || typeof v === "string" && v.endsWith("%");
   }
@@ -5399,6 +5429,7 @@ col, colgroup { display: none; }
       if (style) p.bs = style;
     }
     contentBox(cs, p, borderBox);
+    outlinePart(cs, fs, p);
     const rg = num2(cs["row-gap"], fs), cg = num2(cs["column-gap"], fs);
     if (typeof rg === "number" && rg) p.rg = rg;
     if (typeof cg === "number" && cg) p.cg = cg;
@@ -6244,6 +6275,9 @@ ${a.stack || ""}`;
     }
   };
   var active = null;
+  var keyboardFocus = false;
+  var TEXT_INPUTS = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
+  var textField = (el) => el?.localName === "textarea" || el?.isContentEditable || el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
   Object.defineProperty(document, "__active", {
     get() {
       return active;
@@ -6251,8 +6285,10 @@ ${a.stack || ""}`;
     set(el) {
       if (el === active) return;
       active?.removeAttribute?.("data-nui-focus");
+      active?.removeAttribute?.("data-nui-focus-visible");
       active = el || null;
       active?.setAttribute?.("data-nui-focus", "");
+      if (active && (keyboardFocus || textField(active))) active.setAttribute?.("data-nui-focus-visible", "");
     },
     configurable: true
   });
@@ -6897,6 +6933,7 @@ ${a.stack || ""}`;
         const el = renderer?.elementFor(id);
         switch (type) {
           case "click":
+            keyboardFocus = false;
             if (el) activate(el, data | 0);
             return false;
           case "input": {
@@ -6914,6 +6951,7 @@ ${a.stack || ""}`;
             return false;
           }
           case "key":
+            keyboardFocus = true;
             return keyEvent(el || document.__active, data);
           case "keyup":
             return keyEvent(el || document.__active, data, "keyup");
@@ -6922,6 +6960,7 @@ ${a.stack || ""}`;
           // True on "down" when the page takes the drag (touch-action: none,
           // or a listener prevented the default): the backend doesn't scroll.
           case "pointer":
+            if (data?.[0] === "down" || data?.[0] === 0) keyboardFocus = false;
             return pointerEvent(el, data);
           case "focus":
             if (el) document.__active = el;

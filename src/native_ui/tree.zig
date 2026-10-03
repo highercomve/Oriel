@@ -15,6 +15,10 @@ const prof = @import("prof.zig");
 
 pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas };
 pub const BorderStyle = enum { dashed, dotted };
+/// CSS outline (render.js outlinePart): `w` wide, `o` out from the border
+/// box, solid unless `s`; drawn around the box (its corners rounded by
+/// radius + o + w), over it and its children, taking no room.
+pub const Outline = struct { w: f32, o: f32 = 0, c: Color = .{ 0, 0, 0, 1 }, s: ?BorderStyle = null };
 
 pub const Color = [4]f32; // r, g, b 0-255; a 0-1
 
@@ -527,6 +531,7 @@ pub const Props = struct {
     br: ?[4]Dim = null,
     op: ?f32 = null,
     sh: ?Shadow = null,
+    ol: ?Outline = null,
     vis: ?bool = null,
     click: bool = false,
     z: ?i32 = null,

@@ -115,7 +115,7 @@
                 pseudo = pm[1];
                 sel = sel.slice(0, pm.index).trim() || "*";
               }
-              sel = sel.replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
+              sel = sel.replace(/:focus-visible(?![-\w])/g, "[data-nui-focus-visible]").replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
               if (/::|:hover|:focus|:active|:visited|:empty\b/.test(sel)) continue;
             }
             rules.push({ sel, pseudo, spec: specificity(sel), decls, media, order: order++, match: null });
@@ -221,6 +221,22 @@
           out[`border-${s}-color`] = color;
           out[`border-${s}-style`] = style;
         }
+        return;
+      }
+      case "outline": {
+        let width = "medium", style = "none", color = "currentcolor";
+        for (const t of splitSpaces(value)) {
+          if (/^(none|hidden|auto|solid|dashed|dotted|double|groove|ridge|inset|outset)$/.test(t)) style = t;
+          else if (/^[\d.]|^(thin|medium|thick)$/.test(t)) width = t;
+          else color = t;
+        }
+        if (value === "0") {
+          width = "0";
+          style = "none";
+        }
+        out["outline-width"] = width;
+        out["outline-style"] = style;
+        out["outline-color"] = color;
         return;
       }
       case "flex": {
