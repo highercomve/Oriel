@@ -45,6 +45,9 @@ pub const Surface = struct {
     /// Choreographer callback for this window is already posted.
     frame_wanted: bool = false,
     frame_posted: bool = false,
+    /// Device pixels per dp (the display's density), for line heights
+    /// rounded as Kotlin's (LineHeight).
+    density: f32 = 1,
     /// Leaf styles and natively made nodes (Tree.on_leaf_style, on_leaf) not
     /// yet sent to Kotlin: one nuiLeaves call per batch (flushLeaves), before
     /// anything else reaches NuiView.
@@ -104,6 +107,9 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
     // devicePixelRatio: the display's density, as the WebView's (2.625 on
     // a 412 dp phone 1080 px wide, though the page is laid out 412 CSS px).
     const with_dpr = withDensity(gpa, window, platform_json);
+    if (runtime.call(.int, "nuiDensity", "(I)I", .{wid(window)})) |milli| {
+        if (milli > 0) s.density = @as(f32, @floatFromInt(milli)) / 1000;
+    }
     defer if (with_dpr) |j| gpa.free(j);
     s.engine = try Engine.create(gpa, .{
         .ctx = s,
@@ -539,6 +545,17 @@ fn postFrame(s: *Surface) void {
     _ = runtime.call(.void, "nuiRequestFrame", "(I)V", .{wid(s.window)});
 }
 
+/// A field's line: its line-height, or the font's normal one as Kotlin's
+/// text lines have it (ascent, descent and line gap each rounded in device
+/// pixels, as Chrome on Android makes it).
+fn fieldLine(s: *Surface, n: *const Node, fz: f32) f32 {
+    if (n.props.lh) |lh| return lh;
+    var m: [3]f32 = undefined;
+    if (!fontMetrics(s, fz, n.props.mono, &m)) return @round(fz * 1.45);
+    const d = s.density;
+    return (@round(m[0] * d) + @round(m[1] * d) + @round(m[2] * d)) / d;
+}
+
 /// Text sizes come from Kotlin (StaticLayout, in dp), and so do images'
 /// (their decoded size, scaled down to the width they may take); fields
 /// have a fixed size like on GTK.
@@ -563,8 +580,9 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             out.* = measuredText(s, n, max_width);
         },
         .image => out.* = kotlinMeasure(s, n, max_width),
-        .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
-        .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
+        .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), fieldLine(s, n, fz) },
+        // `rows` lines (2 by default), as browsers size a textarea.
+        .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, fieldLine(s, n, fz) * (n.props.rows orelse 2) },
         else => out.* = .{ 0, 0 },
     }
 }
