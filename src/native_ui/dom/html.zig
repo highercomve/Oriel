@@ -176,7 +176,8 @@ pub const Parser = struct {
 
     /// A text or comment node under the current parent.
     fn addData(p: *Parser, parent: st.Index, kind: st.Kind, raw: []const u8, do_decode: bool) Error!void {
-        if (raw.len == 0) return;
+        // An empty comment stays (<!>: Svelte's anchors); empty text doesn't.
+        if (raw.len == 0 and kind != .comment) return;
         const bytes = if (do_decode) try decode(p.gpa, &p.text_buf, raw) else raw;
         var v = try p.newString(bytes);
         defer p.make.free(p.make.ctx, &v);
@@ -207,8 +208,17 @@ pub const Parser = struct {
                 continue;
             }
             if (rest.len > 1 and (rest[1] == '!' or rest[1] == '?')) {
-                // <!doctype …>, <?xml …?>: skipped
-                i = if (std.mem.indexOfScalarPos(u8, s, i, '>')) |gt| gt + 1 else s.len;
+                const gt = std.mem.indexOfScalarPos(u8, s, i, '>') orelse s.len;
+                // <!doctype …>: skipped. Any other <!…> or <?…> is a comment
+                // of what's up to ">", as browsers parse it (a "bogus
+                // comment"): Svelte marks where components go with <!>.
+                const doctype = rest.len >= 9 and std.ascii.eqlIgnoreCase(rest[0..9], "<!doctype");
+                const cdata = std.mem.startsWith(u8, rest, "<![CDATA[");
+                if (!doctype and !cdata) {
+                    const from = i + @as(usize, if (rest[1] == '!') 2 else 1);
+                    try p.addData(p.parentNow(root), .comment, s[@min(from, gt)..gt], false);
+                }
+                i = if (gt == s.len) s.len else gt + 1;
                 continue;
             }
             const closing = rest.len > 1 and rest[1] == '/';
