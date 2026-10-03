@@ -40,7 +40,9 @@ pub const Surface = struct {
     frame_wanted: bool = false,
     /// Fonts to load while idle (warm_fonts), the commonest first.
     warm: std.ArrayListUnmanaged(engine_mod.FontSpec) = .empty,
-    warm_pending: bool = false,
+    /// The page's pending timers and when they're due (CFAbsoluteTime):
+    /// an idle warm waits while one is due soon.
+    timer_dues: std.ArrayListUnmanaged(TimerDue) = .empty,
     /// The drawing view (+1), the window's content view.
     view: Object,
     transparent: bool,
@@ -198,6 +200,7 @@ pub fn destroy(s: *Surface) void {
     _ = surfaces.remove(s.token);
     _ = by_view.remove(key(s.view.value));
     s.warm.deinit(s.gpa);
+    s.timer_dues.deinit(s.gpa);
     // The engine first: freeing its tree calls `removed` for every node,
     // which drops that node's control from `fields`.
     s.engine.destroy();
@@ -351,33 +354,76 @@ fn onDisplayFrame(self: id, _: SEL, link_id: id) callconv(.c) void {
     if (!still.frame_wanted) link.msgSend(void, "setPaused:", .{cocoa.boolean(true)});
 }
 
-/// Backend.warm_fonts: one font per main-queue turn, after what the page
-/// has queued (input, frames, timers come between them).
+/// Backend.warm_fonts: fonts load when the main run loop is idle (about to
+/// sleep: kCFRunLoopBeforeWaiting), one per idle moment, and not while a
+/// timer is due within `warm_margin` or the page wants an animation frame:
+/// a cold font takes a few ms, which shouldn't make a due timer late.
 fn warmFonts(ctx: *anyopaque, specs: []const engine_mod.FontSpec) void {
     const s = surfaceOf(ctx);
     s.warm.appendSlice(s.gpa, specs) catch return;
-    if (!s.warm_pending) scheduleWarm(s);
+    startWarmObserver();
 }
 
-fn scheduleWarm(s: *Surface) void {
-    const t = std.heap.smp_allocator.create(u64) catch return;
-    t.* = s.token;
-    s.warm_pending = true;
-    cocoa.afterMain(1, t, onWarm);
+const TimerDue = struct { id: u32, due: f64 };
+const warm_margin: f64 = 0.010; // s
+
+extern fn CFAbsoluteTimeGetCurrent() f64;
+extern fn CFRunLoopGetMain() ?*anyopaque;
+extern fn CFRunLoopWakeUp(rl: ?*anyopaque) void;
+extern fn CFRunLoopObserverCreate(alloc: ?*anyopaque, activities: c_ulong, repeats: u8, order: c_long, callout: *const fn (?*anyopaque, c_ulong, ?*anyopaque) callconv(.c) void, context: ?*anyopaque) ?*anyopaque;
+extern fn CFRunLoopAddObserver(rl: ?*anyopaque, observer: ?*anyopaque, mode: ?*anyopaque) void;
+extern fn CFRunLoopRemoveObserver(rl: ?*anyopaque, observer: ?*anyopaque, mode: ?*anyopaque) void;
+extern fn CFRunLoopObserverInvalidate(observer: ?*anyopaque) void;
+extern fn CFRelease(cf: ?*anyopaque) void;
+extern const kCFRunLoopCommonModes: ?*anyopaque;
+const kCFRunLoopBeforeWaiting: c_ulong = 1 << 5;
+
+var warm_observer: ?*anyopaque = null;
+
+fn startWarmObserver() void {
+    if (warm_observer != null) return;
+    warm_observer = CFRunLoopObserverCreate(null, kCFRunLoopBeforeWaiting, 1, 0, onIdle, null) orelse return;
+    CFRunLoopAddObserver(CFRunLoopGetMain(), warm_observer, kCFRunLoopCommonModes);
+    CFRunLoopWakeUp(CFRunLoopGetMain()); // an idle moment soon, even with nothing else to do
 }
 
-fn onWarm(p: ?*anyopaque) callconv(.c) void {
-    const t: *u64 = @ptrCast(@alignCast(p.?));
-    const token = t.*;
-    std.heap.smp_allocator.destroy(t);
-    const s = surfaces.get(token) orelse return; // the window is gone
-    s.warm_pending = false;
-    if (s.warm.items.len == 0) return;
-    const spec = s.warm.orderedRemove(0);
-    const pool = cocoa.objc.AutoreleasePool.init();
-    defer pool.deinit();
-    draw.warmFont("NSFont", spec);
-    if (s.warm.items.len > 0) scheduleWarm(s);
+fn stopWarmObserver() void {
+    const o = warm_observer orelse return;
+    warm_observer = null;
+    CFRunLoopRemoveObserver(CFRunLoopGetMain(), o, kCFRunLoopCommonModes);
+    CFRunLoopObserverInvalidate(o);
+    CFRelease(o);
+}
+
+/// The run loop is about to sleep: warm one font, unless a page is busy
+/// (a frame wanted or pending, a timer due soon); wake the loop again while
+/// fonts are left, so the next idle moment comes.
+fn onIdle(_: ?*anyopaque, _: c_ulong, _: ?*anyopaque) callconv(.c) void {
+    const now = CFAbsoluteTimeGetCurrent();
+    var left = false;
+    var busy = false;
+    var it = surfaces.valueIterator();
+    while (it.next()) |sp| {
+        const s = sp.*;
+        if (s.warm.items.len > 0) left = true;
+        if (s.frame_wanted or s.engine.frame_pending) busy = true;
+        for (s.timer_dues.items) |t| if (t.due - now < warm_margin) {
+            busy = true;
+        };
+    }
+    if (!left) return stopWarmObserver();
+    if (busy) return; // the timer or frame wakes the loop; a later idle moment warms
+    it = surfaces.valueIterator();
+    while (it.next()) |sp| {
+        const s = sp.*;
+        if (s.warm.items.len == 0) continue;
+        const spec = s.warm.orderedRemove(0);
+        const pool = cocoa.objc.AutoreleasePool.init();
+        defer pool.deinit();
+        draw.warmFont("NSFont", spec);
+        break;
+    }
+    CFRunLoopWakeUp(CFRunLoopGetMain());
 }
 
 const TimerData = struct { token: u64, id: u32 };
@@ -386,6 +432,7 @@ fn addTimer(ctx: *anyopaque, _: *Engine, timer_id: u32, ms: u32) void {
     const s = surfaceOf(ctx);
     const d = std.heap.smp_allocator.create(TimerData) catch return;
     d.* = .{ .token = s.token, .id = timer_id };
+    s.timer_dues.append(s.gpa, .{ .id = timer_id, .due = CFAbsoluteTimeGetCurrent() + @as(f64, @floatFromInt(ms)) / 1000 }) catch {};
     cocoa.afterMain(ms, d, onTimer);
 }
 
@@ -395,6 +442,10 @@ fn onTimer(p: ?*anyopaque) callconv(.c) void {
     const timer_id = d.id;
     std.heap.smp_allocator.destroy(d);
     const s = surfaces.get(token) orelse return; // the window is gone
+    for (s.timer_dues.items, 0..) |t, i| if (t.id == timer_id) {
+        _ = s.timer_dues.swapRemove(i);
+        break;
+    };
     const pool = cocoa.objc.AutoreleasePool.init();
     defer pool.deinit();
     s.engine.timerFired(timer_id);
