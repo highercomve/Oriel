@@ -319,6 +319,10 @@ object OrielRuntime {
     @JvmStatic
     fun nuiFontMetrics(size64: Int, mono: Boolean): Long = NuiNode.fontMetrics(size64 / 64f, mono)
 
+    /** A text's first baseline in 1/64 dp, or -1 (android.zig's noteBaseline). */
+    @JvmStatic
+    fun nuiBaseline(id: Int, node: Int): Int = Nui.views[id]?.baselineOf(node) ?: -1
+
     /** Texts' unbounded sizes, all of a frame's at once (android.zig's measureTexts). */
     @JvmStatic
     fun nuiMeasureTexts(id: Int, nodes: ByteArray): ByteArray = Nui.views[id]?.measureTexts(nodes) ?: ByteArray(0)
