@@ -68,6 +68,10 @@ pub const Surface = struct {
     /// prevented the pointerdown): no scrolling, fling or long press.
     drag_owned: bool = false,
     /// The finger's last move, sent at the next display frame.
+    /// The tree's node count after the last layout, and whether a trim of
+    /// its emptied pool slabs is due (trimPools, 2 s after a big drop).
+    node_count: usize = 0,
+    trim_queued: bool = false,
     move: ?[2]f32 = null,
 };
 
@@ -483,6 +487,7 @@ fn textChanged(_: *anyopaque, n: *Node) void {
 
 fn laidOut(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
+    queueTrim(s);
     syncFields(s);
     s.view.msgSend(void, "setNeedsDisplay", .{});
 }
@@ -859,6 +864,29 @@ fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32) bool {
     var buf: [96]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"touch\",0]", .{ phase, p[0], p[1], buttons }) catch return false;
     return s.engine.event(nid, "pointer", json);
+}
+
+/// A layout that dropped many nodes (a list that went): the tree's emptied
+/// pool slabs go back 2 s later, if the window is still there (a list
+/// rebuilt at once reuses them first).
+fn queueTrim(s: *Surface) void {
+    const count = s.engine.tree.nodes.count();
+    defer s.node_count = count;
+    if (s.node_count <= count + 1000 or s.trim_queued) return;
+    const t = std.heap.smp_allocator.create(u64) catch return;
+    t.* = s.token;
+    s.trim_queued = true;
+    apple.afterMain(2000, t, onTrim);
+}
+
+fn onTrim(p: ?*anyopaque) callconv(.c) void {
+    const t: *u64 = @ptrCast(@alignCast(p.?));
+    const token = t.*;
+    std.heap.smp_allocator.destroy(t);
+    const s = surfaces.get(token) orelse return; // the window is gone
+    s.trim_queued = false;
+    const freed = s.engine.tree.trimPools();
+    if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: trim freed {d} pool slabs", .{freed});
 }
 
 fn flushMove(s: *Surface) void {
