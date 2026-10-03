@@ -259,6 +259,7 @@ internal class CanvasSurface {
      */
     fun paint(page: Canvas, ops: List<CvOp>, cw: Float, ch: Float, x: Float, y: Float, w: Float, h: Float, density: Float, clip: Path?) {
         if (w <= 0 || h <= 0 || ops.isEmpty()) return
+        if (page.isHardwareAccelerated) return paintDirect(page, ops, cw, ch, x, y, w, h, clip)
         // Frame size × density, at most 16384 a side and 16 M pixels (64 MB).
         var scale = density
         var pw = ceil(w * scale).toInt()
@@ -281,6 +282,25 @@ internal class CanvasSurface {
         if (clip != null) page.clipPath(clip)
         page.drawBitmap(bmp, null, RectF(x, y, x + w, y + h), compositePaint)
         page.restore()
+    }
+
+    /**
+     * On a hardware canvas: the program replayed onto the page itself, as a
+     * View's onDraw would (a display list the GPU draws, no bitmap to raster
+     * and upload each frame). A clearRect needs pixels of its own to clear:
+     * the program then draws into a layer (on the GPU too).
+     */
+    private fun paintDirect(page: Canvas, ops: List<CvOp>, cw: Float, ch: Float, x: Float, y: Float, w: Float, h: Float, clip: Path?) {
+        recycle()
+        val saved = page.save()
+        if (clip != null) page.clipPath(clip)
+        page.clipRect(x, y, x + w, y + h)
+        if (ops.any { it is CvOp.ClearRect }) page.saveLayer(x, y, x + w, y + h, null)
+        page.translate(x, y)
+        // The drawing's space is the bitmap's (cw × ch), stretched to the box.
+        if (cw > 0 && ch > 0) page.scale(w / cw, h / ch)
+        Replay(page).run(ops)
+        page.restoreToCount(saved)
     }
 
     private fun bitmapOf(pw: Int, ph: Int): Bitmap? {
@@ -340,6 +360,20 @@ private class Replay(private val c: Canvas) {
     private val pt = FloatArray(6)
     private val inverse = Matrix()
     private val userPath = Path()
+    /** The path is one whole circle (an arc of a full turn on an empty
+     *  path): its center and radius as given, and the transform then, so a
+     *  fill under the same transform is a drawCircle, not a path. */
+    private var circle = false
+    /** That circle isn't in `path` yet: added only when something else
+     *  needs the path (most circles are filled and dropped). */
+    private var circlePending = false
+    private var circleX = 0f
+    private var circleY = 0f
+    private var circleR = 0f
+    private var circleA0 = 0f
+    private var circleSweep = 0f
+    private val circleCtm = Matrix()
+    private val ctmNow = Matrix()
 
     fun run(ops: List<CvOp>) {
         for (op in ops) {
@@ -365,11 +399,12 @@ private class Replay(private val c: Canvas) {
             is CvOp.Translate -> { c.translate(op.x, op.y); st.ctm.preTranslate(op.x, op.y) }
             is CvOp.Scale -> if (op.x == 0f || op.y == 0f) st.singular = true else { c.scale(op.x, op.y); st.ctm.preScale(op.x, op.y) }
             is CvOp.Rotate -> Math.toDegrees(op.a.toDouble()).toFloat().let { c.rotate(it); st.ctm.preRotate(it) }
-            CvOp.BeginPath -> path.reset()
-            CvOp.ClosePath -> path.close()
-            is CvOp.MoveTo -> { map(op.x, op.y); path.moveTo(pt[0], pt[1]) }
-            is CvOp.LineTo -> { map(op.x, op.y); if (path.isEmpty) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1]) }
+            CvOp.BeginPath -> { path.reset(); circle = false; circlePending = false }
+            CvOp.ClosePath -> { pathNow(); path.close() }
+            is CvOp.MoveTo -> { pathNow(); circle = false; map(op.x, op.y); path.moveTo(pt[0], pt[1]) }
+            is CvOp.LineTo -> { pathNow(); circle = false; map(op.x, op.y); if (path.isEmpty) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1]) }
             is CvOp.Rect -> {
+                pathNow(); circle = false
                 map(op.x, op.y); path.moveTo(pt[0], pt[1])
                 map(op.x + op.w, op.y); path.lineTo(pt[0], pt[1])
                 map(op.x + op.w, op.y + op.h); path.lineTo(pt[0], pt[1])
@@ -379,20 +414,26 @@ private class Replay(private val c: Canvas) {
             }
             is CvOp.Arc -> arc(op)
             is CvOp.Quad -> {
+                pathNow(); circle = false
                 if (path.isEmpty) { map(op.cx, op.cy); path.moveTo(pt[0], pt[1]) }
                 map(op.cx, op.cy, op.x, op.y); path.quadTo(pt[0], pt[1], pt[2], pt[3])
             }
             is CvOp.Bezier -> {
+                pathNow(); circle = false
                 if (path.isEmpty) { map(op.c1x, op.c1y); path.moveTo(pt[0], pt[1]) }
                 map(op.c1x, op.c1y, op.c2x, op.c2y, op.x, op.y); path.cubicTo(pt[0], pt[1], pt[2], pt[3], pt[4], pt[5])
             }
             is CvOp.Fill -> {
                 path.fillType = if (op.evenOdd) Path.FillType.EVEN_ODD else Path.FillType.WINDING
-                if (use(st.fill, Paint.Style.FILL)) inUserSpace()?.let { c.drawPath(it, paint) }
+                if (use(st.fill, Paint.Style.FILL)) {
+                    if (circle && st.ctm == circleCtm) c.drawCircle(circleX, circleY, circleR, paint)
+                    else { pathNow(); inUserSpace()?.let { c.drawPath(it, paint) } }
+                }
             }
             // The line width, dashes and joins in the transform in effect now.
-            CvOp.Stroke -> if (use(st.stroke, Paint.Style.STROKE)) inUserSpace()?.let { c.drawPath(it, paint) }
+            CvOp.Stroke -> if (use(st.stroke, Paint.Style.STROKE)) { pathNow(); inUserSpace()?.let { c.drawPath(it, paint) } }
             is CvOp.Clip -> {
+                pathNow()
                 path.fillType = if (op.evenOdd) Path.FillType.EVEN_ODD else Path.FillType.WINDING
                 inUserSpace()?.let { c.clipPath(it) } // the path stays, as a canvas keeps it
             }
@@ -452,10 +493,31 @@ private class Replay(private val c: Canvas) {
             if (sweep <= -twoPi) sweep = -twoPi
             else if (sweep > 0) sweep = sweep % twoPi - twoPi
         }
-        var t = a.a0
-        map(a.x + a.r * cos(t), a.y + a.r * sin(t))
+        pathNow()
+        if (path.isEmpty && abs(sweep) == twoPi && a.r > 0) {
+            circle = true; circlePending = true
+            circleX = a.x; circleY = a.y; circleR = a.r; circleA0 = a.a0; circleSweep = sweep; circleCtm.set(st.ctm)
+            return
+        }
+        circle = false
+        arcPath(a.x, a.y, a.r, a.a0, sweep)
+    }
+
+    /** The pending circle into `path`, under the transform it was given in. */
+    private fun pathNow() {
+        if (!circlePending) return
+        circlePending = false
+        ctmNow.set(st.ctm)
+        st.ctm.set(circleCtm)
+        arcPath(circleX, circleY, circleR, circleA0, circleSweep)
+        st.ctm.set(ctmNow)
+    }
+
+    private fun arcPath(x: Float, y: Float, r: Float, a0: Float, sweep: Float) {
+        var t = a0
+        map(x + r * cos(t), y + r * sin(t))
         if (path.isEmpty) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1])
-        if (a.r == 0f || sweep == 0f) return
+        if (r == 0f || sweep == 0f) return
         val n = ceil(abs(sweep) / (PI.toFloat() / 2) - 1e-4f).toInt().coerceAtLeast(1)
         val step = sweep / n
         val k = 4f / 3f * tan(step / 4)
@@ -463,9 +525,9 @@ private class Replay(private val c: Canvas) {
             val t1 = t + step
             val c0 = cos(t); val s0 = sin(t); val c1 = cos(t1); val s1 = sin(t1)
             map(
-                a.x + a.r * (c0 - k * s0), a.y + a.r * (s0 + k * c0),
-                a.x + a.r * (c1 + k * s1), a.y + a.r * (s1 - k * c1),
-                a.x + a.r * c1, a.y + a.r * s1,
+                x + r * (c0 - k * s0), y + r * (s0 + k * c0),
+                x + r * (c1 + k * s1), y + r * (s1 - k * c1),
+                x + r * c1, y + r * s1,
             )
             path.cubicTo(pt[0], pt[1], pt[2], pt[3], pt[4], pt[5])
             t = t1
