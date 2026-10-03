@@ -13,7 +13,7 @@ import { StyleEngine, computeStyle, parseInline, length, color, background, shad
 import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor, svgScope, svgDataText, svgSize } from "./icons.js";
-import { commandsOf, versionOf, encodeProgram } from "./canvas.js";
+import { commandsOf, versionOf, programOf } from "./canvas.js";
 import { classStyle, nodeIndex, nodeAt, compileMatch } from "#dom";
 // The runtime's own weak caches keyed by nodes: marked so their entries
 // don't keep a node's wrapper from being replaced (a page's weak
@@ -2015,7 +2015,7 @@ export class Renderer {
       const v = versionOf(el);
       if (this.canvasSent.get(id) === v) continue;
       const P = this.host.prof ? this.host.now : null, t0 = P && P();
-      const [nums, strs] = encodeProgram(commandsOf(el));
+      const [nums, strs] = programOf(el);
       const t1 = P && P();
       if (this.host.canvas(id, nums, strs)) this.canvasSent.set(id, v);
       if (P) this.host.log(1, `PROF canvas: ${nums.length} numbers, encode ${(t1 - t0).toFixed(2)}, send ${(P() - t1).toFixed(2)}`);

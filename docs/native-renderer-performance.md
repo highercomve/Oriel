@@ -530,3 +530,36 @@ QuickJS available while evaluating; no production engine changed in this pass.
 
 [Raw samples, pinned builds, fixture hashes and transcript checks](../examples/render-bench/results/2026-10-02-rows-alternative-engines.json).
 [Packaging/runner reproduction](../examples/render-bench/README.md#alternative-javascript-engines).
+
+## Canvas recording in JavaScript, 2026-10-03
+
+The render-bench canvas test with 1000 balls (a path, a fill color and a fill
+per ball, each frame) spent its JavaScript time recording and encoding the
+program, not in the page's physics. QuickJS, desktop, one frame:
+
+| | before | after |
+|---|---|---|
+| page physics | 0.10 ms | 0.10 ms |
+| recording (canvas.js) | 2.6 ms | 1.3 ms |
+| `encodeProgram` | 1.9 ms | 0 |
+| render-bench rAF callback, median (in the app, `-Dnative_ui_prof`, a loaded machine) | 3.35 ms + 2.26 ms encode | 1.58 ms |
+
+- canvas.js records straight into the program's numbers (a Float64Array that
+  doubles when full, strings by index), the form host.canvas takes:
+  `programOf` hands them over without an encode pass; `commandsOf` decodes
+  ops for the JSON `cv` prop and tests. The hot calls (fillStyle, beginPath,
+  arc, fill) write their numbers inline (each call is ~70 ns in QuickJS), a
+  color string is parsed once (cached paints, compared by identity first),
+  the pen after an arc is worked out only when a curve needs it, the
+  buffer's capacity is a field (a typed array's `length` is a getter call),
+  and the renderer is told once per batch (`notified`, reset when it reads).
+- QuickJS (vendored, marked "Oriel"): `<`, `<=`, `>`, `>=`, `==`, `===` and
+  their negations compare two numbers as doubles in the interpreter loop
+  when one is a float (they went through `js_relational_slow` and
+  ToPrimitive); `OP_put_array_el` stores a number into a Float64Array
+  without calling `JS_SetPropertyValue`. Under callgrind (60 frames): 7.10G
+  → 6.03G instructions for the three QuickJS-side changes together with the
+  capacity field. Both keep JS's semantics (NaN, -0, conversions, detached
+  and resized buffers).
+- What's left is the interpreter's own cost per call and per indexed write
+  (~31 ns each, an Array's too): 4 calls and ~16 numbers per ball.

@@ -14254,10 +14254,22 @@ globalThis.atob ??= (s) => {
   var notify = () => {
   };
   function commandsOf(el) {
-    return recorders.get(el)?.ops || [];
+    const r = recorders.get(el);
+    if (!r) return [];
+    r.notified = false;
+    return decodeProgram(r.buf, r.n, r.strs);
+  }
+  function programOf(el) {
+    const r = recorders.get(el);
+    if (!r) return [new Float64Array(0), []];
+    r.notified = false;
+    return [r.buf.subarray(0, r.n), r.strs];
   }
   function versionOf(el) {
-    return recorders.get(el)?.version || 0;
+    const r = recorders.get(el);
+    if (!r) return 0;
+    r.notified = false;
+    return r.version;
   }
   var CANVAS_CODES = {
     sv: 1,
@@ -14300,57 +14312,43 @@ globalThis.atob ??= (s) => {
     ta: { left: 0, center: 1, right: 2, start: 0, end: 2 },
     tb: { alphabetic: 0, top: 1, hanging: 2, middle: 3, bottom: 4, ideographic: 4 }
   };
-  function encodeProgram(ops) {
-    let size = 0;
-    for (const op of ops) size += 1 + (CANVAS_ARGS[CANVAS_CODES[op[0]]] ?? 0);
-    const nums = new Float64Array(size), strs = [];
+  var CODE_TAGS = [];
+  for (const [tag, code] of Object.entries(CANVAS_CODES)) CODE_TAGS[code] = tag;
+  var WORD_OF = {};
+  for (const [tag, words] of Object.entries(WORDS)) {
+    WORD_OF[tag] = [];
+    for (const [w, n2] of Object.entries(words)) WORD_OF[tag][n2] ??= w;
+  }
+  function decodeProgram(nums, n2, strs) {
+    const ops = [];
     let i = 0;
-    for (const op of ops) {
-      const code = CANVAS_CODES[op[0]];
-      if (!code) continue;
-      nums[i++] = code;
-      switch (op[0]) {
+    while (i < n2) {
+      const code = nums[i++], tag = CODE_TAGS[code], k = CANVAS_ARGS[code];
+      const a = Array.from(nums.subarray(i, i + k));
+      i += k;
+      switch (tag) {
         case "tx":
         case "sx":
-          nums[i++] = strs.push(String(op[1])) - 1;
-          nums[i++] = op[2];
-          nums[i++] = op[3];
+          ops.push([tag, strs[a[0]], a[1], a[2]]);
           break;
         case "fo":
-          nums[i++] = op[1];
-          nums[i++] = op[2];
-          nums[i++] = op[3];
-          nums[i++] = strs.push(op[4] || "") - 1;
+          ops.push([tag, a[0], a[1], a[2], strs[a[3]]]);
           break;
         case "sf":
-        case "ss": {
-          const p = op[1];
-          if (p?.[0] === "g") {
-            nums[i++] = 1;
-            nums[i++] = p[1];
-            nums[i++] = 0;
-            nums[i++] = 0;
-            nums[i++] = 0;
-          } else {
-            nums[i++] = 0;
-            nums[i++] = p[0];
-            nums[i++] = p[1];
-            nums[i++] = p[2];
-            nums[i++] = p[3];
-          }
+        case "ss":
+          ops.push([tag, a[0] === 1 ? ["g", a[1]] : a.slice(1)]);
           break;
-        }
         case "lc":
         case "lj":
         case "ta":
         case "tb":
-          nums[i++] = WORDS[op[0]][op[1]] ?? 0;
+          ops.push([tag, WORD_OF[tag][a[0]]]);
           break;
         default:
-          for (let k = 1; k <= CANVAS_ARGS[code]; k++) nums[i++] = op[k] === true ? 1 : op[k] === false ? 0 : op[k] ?? 0;
+          ops.push([tag, ...a]);
       }
     }
-    return [i === size ? nums : nums.subarray(0, i), strs];
+    return ops;
   }
   var recorders = internalWeak2(/* @__PURE__ */ new WeakMap());
   var CANVAS_DEFAULT_W = 300;
@@ -14399,14 +14397,23 @@ globalThis.atob ??= (s) => {
   var Recorder = class {
     constructor(el) {
       this.canvas = el;
-      this.ops = [];
+      this.buf = new Float64Array(256);
+      this.cap = 256;
+      this.n = 0;
+      this.strs = [];
       this.version = 0;
+      this.notified = false;
       this.nGrad = 0;
       this.grads = /* @__PURE__ */ new Map();
       this.s = new State2();
       this.stack = [];
       this.penX = 0;
       this.penY = 0;
+      this.arcPen = false;
+      this.arcX = 0;
+      this.arcY = 0;
+      this.arcR = 0;
+      this.arcEnd = 0;
       this.tx = 0;
       this.ty = 0;
       this.scx = 1;
@@ -14415,13 +14422,99 @@ globalThis.atob ??= (s) => {
       this.clipped = false;
     }
     push(op) {
-      this.ops.push(op);
+      this.emit(op);
+      this.changed();
+    }
+    changed() {
       this.version++;
+      if (!this.notified) this.tell();
+    }
+    tell() {
+      this.notified = true;
       notify();
     }
+    // Room for k more numbers.
+    // (`cap`: the buffer's length, which is a getter call in QuickJS.)
+    room(k) {
+      if (this.n + k <= this.cap) return;
+      const b = new Float64Array(Math.max(this.cap * 2, this.n + k));
+      b.set(this.buf.subarray(0, this.n));
+      this.buf = b;
+      this.cap = b.length;
+    }
+    // An op into the program (encodeProgram's numbers).
+    emit(op) {
+      const code = CANVAS_CODES[op[0]];
+      if (!code) return;
+      this.room(1 + CANVAS_ARGS[code]);
+      const b = this.buf;
+      let i = this.n;
+      b[i++] = code;
+      switch (op[0]) {
+        case "tx":
+        case "sx":
+          b[i++] = this.strs.push(String(op[1])) - 1;
+          b[i++] = op[2];
+          b[i++] = op[3];
+          break;
+        case "fo":
+          b[i++] = op[1];
+          b[i++] = op[2];
+          b[i++] = op[3];
+          b[i++] = this.strs.push(op[4] || "") - 1;
+          break;
+        case "sf":
+        case "ss":
+          i = paintInto(b, i, op[1]);
+          break;
+        case "lc":
+        case "lj":
+        case "ta":
+        case "tb":
+          b[i++] = WORDS[op[0]][op[1]] ?? 0;
+          break;
+        default:
+          for (let k = 1; k <= CANVAS_ARGS[code]; k++) b[i++] = op[k] === true ? 1 : op[k] === false ? 0 : op[k] ?? 0;
+      }
+      this.n = i;
+    }
+    // Where the pen is (after an arc: its end).
+    pen() {
+      if (this.arcPen) {
+        this.penX = this.arcX + this.arcR * Math.cos(this.arcEnd);
+        this.penY = this.arcY + this.arcR * Math.sin(this.arcEnd);
+        this.arcPen = false;
+      }
+    }
     // ------------------------------------------------------------- state
+    // The hot calls (a game sets a color and draws a shape per sprite, each
+    // frame) write their numbers here, with few calls: each costs in QuickJS.
     set fillStyle(v) {
-      this.putStyle("sf", "fillStyle", v);
+      const p = typeof v === "string" ? paints.get(v) ?? paintOf2(v) : paintOf2(v);
+      if (!p) return;
+      const s = this.s, c = s.fillStyle;
+      if (p === c || p.length === 4 && c.length === 4 && p[0] === c[0] && p[1] === c[1] && p[2] === c[2] && p[3] === c[3]) return;
+      s.fillStyle = p;
+      if (this.n + 6 > this.cap) this.room(6);
+      const b = this.buf;
+      let i = this.n;
+      b[i++] = 21;
+      if (p.length === 4) {
+        b[i++] = 0;
+        b[i++] = p[0];
+        b[i++] = p[1];
+        b[i++] = p[2];
+        b[i++] = p[3];
+      } else {
+        b[i++] = 1;
+        b[i++] = p[1];
+        b[i++] = 0;
+        b[i++] = 0;
+        b[i++] = 0;
+      }
+      this.n = i;
+      this.version++;
+      if (!this.notified) this.tell();
     }
     get fillStyle() {
       return this.s.fillStyle;
@@ -14437,7 +14530,10 @@ globalThis.atob ??= (s) => {
       if (paint === void 0) return;
       if (samePaint(this.s[name], paint)) return;
       this.s[name] = paint;
-      this.push([tag, paint]);
+      this.room(6);
+      this.buf[this.n] = tag === "sf" ? 21 : 22;
+      this.n = paintInto(this.buf, this.n + 1, paint);
+      this.changed();
     }
     set lineWidth(v) {
       this.putNum("lineWidth", "lw", v);
@@ -14504,7 +14600,8 @@ globalThis.atob ??= (s) => {
     // The program starts over (a full clear or cover): the live gradients'
     // definitions, then the state.
     restart() {
-      this.ops.length = 0;
+      this.n = 0;
+      this.strs = [];
       this.version++;
       if (this.grads.size) {
         const used = /* @__PURE__ */ new Set();
@@ -14516,7 +14613,7 @@ globalThis.atob ??= (s) => {
             this.grads.delete(id);
             continue;
           }
-          for (const op of def) this.ops.push(op);
+          for (const op of def) this.emit(op);
         }
       }
       this.emitState();
@@ -14524,17 +14621,19 @@ globalThis.atob ??= (s) => {
     emitState() {
       this.version++;
       const s = this.s;
-      this.ops.push(
+      for (const op of [
         ["sf", s.fillStyle],
         ["ss", s.strokeStyle],
         ["lw", s.lineWidth],
         ["lc", s.lineCap],
         ["lj", s.lineJoin],
         ["ga", s.globalAlpha]
-      );
+      ]) this.emit(op);
       const f = fontOf(s.font);
-      if (f) this.ops.push(["fo", f.italic ? 1 : 0, f.weight, f.size, f.family || ""]);
-      this.ops.push(["ta", s.textAlign], ["tb", s.textBaseline]);
+      if (f) this.emit(["fo", f.italic ? 1 : 0, f.weight, f.size, f.family || ""]);
+      this.emit(["ta", s.textAlign]);
+      this.emit(["tb", s.textBaseline]);
+      this.notified = true;
       notify();
     }
     // ------------------------------------------------------------- transforms
@@ -14580,22 +14679,28 @@ globalThis.atob ??= (s) => {
     }
     // ------------------------------------------------------------- paths
     beginPath() {
-      this.push(["bp"]);
+      if (this.n + 1 > this.cap) this.room(1);
+      this.buf[this.n++] = 3;
+      this.version++;
+      if (!this.notified) this.tell();
     }
     closePath() {
       this.push(["cp"]);
     }
     moveTo(x, y) {
+      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["mv", this.penX, this.penY]);
     }
     lineTo(x, y) {
+      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["ln", this.penX, this.penY]);
     }
     rect(x, y, w, h) {
+      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["rc", this.penX, this.penY, +w || 0, +h || 0]);
@@ -14610,42 +14715,65 @@ globalThis.atob ??= (s) => {
       } else {
         if (end > start) end -= TWO_PI;
       }
-      this.penX = x + r * Math.cos(end);
-      this.penY = y + r * Math.sin(end);
-      this.push(["ar", +x || 0, +y || 0, r, start, a1 === void 0 ? TWO_PI : +a1, ccw ? 1 : 0]);
+      this.arcPen = true;
+      this.arcX = x;
+      this.arcY = y;
+      this.arcR = r;
+      this.arcEnd = end;
+      if (this.n + 7 > this.cap) this.room(7);
+      const b = this.buf;
+      let i = this.n;
+      b[i++] = 14;
+      b[i++] = +x || 0;
+      b[i++] = +y || 0;
+      b[i++] = r;
+      b[i++] = start;
+      b[i++] = a1 === void 0 ? TWO_PI : +a1;
+      b[i++] = ccw ? 1 : 0;
+      this.n = i;
+      this.version++;
+      if (!this.notified) this.tell();
     }
     // A canvas ellipse, as the recorder sees one: a scaled circle.
     ellipse(x, y, rx, ry, rot = 0, a0 = 0, a1 = TWO_PI, ccw = false) {
       if (!(rx >= 0 && ry >= 0)) return;
-      this.ops.push(
+      for (const op of [
         ["sv"],
         ["tl", +x || 0, +y || 0],
         ["tr", +rot || 0],
         ["ts", rx, ry],
         ["ar", 0, 0, 1, +a0 || 0, a1, ccw ? 1 : 0],
         ["rs"]
-      );
+      ]) this.emit(op);
+      this.arcPen = false;
       this.penX = x + rx * Math.cos(+a1 || 0);
       this.penY = y + ry * Math.sin(+a1 || 0);
-      this.version++;
-      notify();
+      this.changed();
     }
     // Quadratic curves become cubics (cairo has no quadratic: the control
     // points sit 2/3 of the way to it, from each end).
     quadraticCurveTo(cx, cy, x, y) {
+      this.pen();
       const x0 = this.penX, y0 = this.penY, qx = +cx || 0, qy = +cy || 0, ex = +x || 0, ey = +y || 0;
       this.penX = ex;
       this.penY = ey;
       this.push(["bz", x0 + 2 / 3 * (qx - x0), y0 + 2 / 3 * (qy - y0), ex + 2 / 3 * (qx - ex), ey + 2 / 3 * (qy - ey), ex, ey]);
     }
     bezierCurveTo(c1x, c1y, c2x, c2y, x, y) {
+      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["bz", +c1x || 0, +c1y || 0, +c2x || 0, +c2y || 0, this.penX, this.penY]);
     }
     // ------------------------------------------------------------- drawing
     fill(rule) {
-      this.push(["fl", rule === "evenodd" ? 1 : 0]);
+      if (this.n + 2 > this.cap) this.room(2);
+      const b = this.buf;
+      b[this.n] = 6;
+      b[this.n + 1] = rule === "evenodd" ? 1 : 0;
+      this.n += 2;
+      this.version++;
+      if (!this.notified) this.tell();
     }
     stroke() {
       this.push(["st"]);
@@ -14659,7 +14787,8 @@ globalThis.atob ??= (s) => {
       y = +y;
       w = +w;
       h = +h;
-      if (![x, y, w, h].every(Number.isFinite)) return;
+      if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h))) return;
+      this.arcPen = false;
       this.penX = x;
       this.penY = y;
       const p = this.s.fillStyle;
@@ -14669,6 +14798,7 @@ globalThis.atob ??= (s) => {
       this.push(["fr", x, y, w, h]);
     }
     strokeRect(x, y, w, h) {
+      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["sr", this.penX, this.penY, +w || 0, +h || 0]);
@@ -14678,7 +14808,8 @@ globalThis.atob ??= (s) => {
       y = +y;
       w = +w;
       h = +h;
-      if (![x, y, w, h].every(Number.isFinite)) return;
+      if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h))) return;
+      this.arcPen = false;
       this.penX = x;
       this.penY = y;
       if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped && Math.abs(this.tx) < 1e-9 && Math.abs(this.ty) < 1e-9 && Math.abs(this.scx - 1) < 1e-9 && Math.abs(this.scy - 1) < 1e-9 && Math.abs(this.rot) < 1e-9) {
@@ -14688,12 +14819,14 @@ globalThis.atob ??= (s) => {
     }
     fillText(t, x, y) {
       if (t === void 0 || t === null || t === "") return;
+      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["tx", String(t), this.penX, this.penY]);
     }
     strokeText(t, x, y) {
       if (t === void 0 || t === null || t === "") return;
+      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["sx", String(t), this.penX, this.penY]);
@@ -14736,20 +14869,42 @@ globalThis.atob ??= (s) => {
         const op = ["gs", id, Math.max(0, Math.min(1, o)), col[0], col[1], col[2], col[3]];
         def.push(op);
         r.push(op);
-        notify();
       }
     };
   }
   function isColor2(p) {
     return Array.isArray(p) && p.length === 4;
   }
+  var paints = /* @__PURE__ */ new Map();
   function paintOf2(v) {
     if (typeof v === "object" && v !== null && typeof v.__grad === "number") return ["g", v.__grad];
     if (typeof v !== "string") return void 0;
-    const c = color(v);
+    let c = paints.get(v);
+    if (c === void 0) {
+      c = color(v) || null;
+      if (paints.size >= 512) paints.clear();
+      paints.set(v, c);
+    }
     return c ? c : void 0;
   }
+  function paintInto(b, i, p) {
+    if (p?.[0] === "g") {
+      b[i++] = 1;
+      b[i++] = p[1];
+      b[i++] = 0;
+      b[i++] = 0;
+      b[i++] = 0;
+    } else {
+      b[i++] = 0;
+      b[i++] = p[0];
+      b[i++] = p[1];
+      b[i++] = p[2];
+      b[i++] = p[3];
+    }
+    return i;
+  }
   function samePaint(a, b) {
+    if (a === b) return true;
     if (Array.isArray(a) !== Array.isArray(b)) return false;
     if (Array.isArray(a)) return a.length === b.length && a.every((x, i) => x === b[i]);
     return a === b;
@@ -16565,7 +16720,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         const v = versionOf(el);
         if (this.canvasSent.get(id) === v) continue;
         const P = this.host.prof ? this.host.now : null, t02 = P && P();
-        const [nums, strs] = encodeProgram(commandsOf(el));
+        const [nums, strs] = programOf(el);
         const t1 = P && P();
         if (this.host.canvas(id, nums, strs)) this.canvasSent.set(id, v);
         if (P) this.host.log(1, `PROF canvas: ${nums.length} numbers, encode ${(t1 - t02).toFixed(2)}, send ${(P() - t1).toFixed(2)}`);
