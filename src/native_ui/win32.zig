@@ -33,6 +33,7 @@ pub const c = @cImport({
     @cInclude("d2d1.h");
     @cInclude("d2d1_1.h");
     @cInclude("dwrite.h");
+    @cInclude("dwrite_1.h");
     @cInclude("wincodec.h");
     @cInclude("commctrl.h");
 });
@@ -2138,8 +2139,19 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32, brushes: 
             }
         };
     }
+    // letter-spacing: after every character, as browsers add it
+    // (IDWriteTextLayout1, Windows 8+; without it, none).
+    if (props.ls) |ls| if (ls != 0 and std.math.isFinite(ls)) {
+        var l1: ?*c.IDWriteTextLayout1 = null;
+        if (vt.QueryInterface.?(l, &iid_text_layout1, @ptrCast(&l1)) >= 0) if (l1) |x| {
+            defer releaseCom(@as(?*c.IDWriteTextLayout1, x));
+            _ = x.lpVtbl.*.SetCharacterSpacing.?(x, 0, ls, 0, .{ .startPosition = 0, .length = @intCast(u.text.len) });
+        };
+    };
     return l;
 }
+
+const iid_text_layout1: c.GUID = .{ .Data1 = 0x9064D822, .Data2 = 0x80A7, .Data3 = 0x465C, .Data4 = .{ 0xA9, 0x86, 0xDF, 0x65, 0xF7, 0x8B, 0x8F, 0xEB } };
 
 // ---------------------------------------------------------------------------
 // <canvas>: the recorded program (src/native_ui/js/src/canvas.js) replayed
