@@ -663,14 +663,10 @@ fn gradient(cg: CGContextRef, f: Rect, r: [4]f32, g: tree_mod.Gradient) void {
     defer CGContextRestoreGState(cg);
     roundRect(cg, f, r);
     CGContextClip(cg);
-    if (g.radial) |rad| {
+    if (g.radialIn(f.w, f.h)) |rad| {
         // A unit circle at the origin, stretched onto the ellipse.
-        const cx = f.x + boxLen(rad[0], f.w);
-        const cy = f.y + boxLen(rad[1], f.h);
-        const rx = @max(0.01, boxLen(rad[2], f.w));
-        const ry = @max(0.01, boxLen(rad[3], f.h));
-        CGContextTranslateCTM(cg, cx, cy);
-        CGContextScaleCTM(cg, rx, ry);
+        CGContextTranslateCTM(cg, f.x + rad[0], f.y + rad[1]);
+        CGContextScaleCTM(cg, rad[2], rad[3]);
         CGContextDrawRadialGradient(cg, grad, .{ .x = 0, .y = 0 }, 0, .{ .x = 0, .y = 0 }, 1, kCGGradientDrawsBeforeAndAfter);
         return;
     }
@@ -683,11 +679,6 @@ fn gradient(cg: CGContextRef, f: Rect, r: [4]f32, g: tree_mod.Gradient) void {
     const cx = f.x + f.w / 2;
     const cy = f.y + f.h / 2;
     CGContextDrawLinearGradient(cg, grad, .{ .x = cx - dx * len / 2, .y = cy - dy * len / 2 }, .{ .x = cx + dx * len / 2, .y = cy + dy * len / 2 }, kCGGradientDrawsBeforeAndAfter);
-}
-
-/// A gradient length: px, or "50%" of `total`.
-fn boxLen(v: tree_mod.Dim, total: f32) f32 {
-    return v.len(total);
 }
 
 fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) void {

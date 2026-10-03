@@ -33,8 +33,58 @@ const TextOverride = struct { run: Run, text: []u8 };
 const LeafStyle = struct { arena: std.heap.ArenaAllocator, props: Props, yn: yg.YGNodeRef };
 
 /// A linear gradient (`angle`), or a radial one: `radial` is cx, cy, rx,
-/// ry, each px (a number) or a percentage of the box ("50%").
-pub const Gradient = struct { angle: f32 = 180, radial: ?[4]Dim = null, stops: []const [5]f32 = &.{} };
+/// ry, each px (a number) or a percentage of the box ("50%"). With `ext`
+/// (a CSS size keyword) the radii come from the box instead, a circle's
+/// with `circle` (radialIn).
+pub const Gradient = struct {
+    angle: f32 = 180,
+    radial: ?[4]Dim = null,
+    /// A RadialExtent's name (a string: one this build doesn't know is
+    /// the default, farthest-corner, not a failed props parse).
+    ext: ?[]const u8 = null,
+    circle: bool = false,
+    stops: []const [5]f32 = &.{},
+
+    pub const RadialExtent = enum { @"closest-side", @"farthest-side", @"closest-corner", @"farthest-corner" };
+
+    /// A radial gradient's center and radii in a `w` x `h` box: cx, cy
+    /// (from the box's origin), rx, ry (each at least 0.01).
+    pub fn radialIn(g: Gradient, w: f32, h: f32) ?[4]f32 {
+        const r = g.radial orelse return null;
+        const cx = r[0].len(w);
+        const cy = r[1].len(h);
+        var rx = r[2].len(w);
+        var ry = r[3].len(h);
+        if (g.ext) |name| {
+            const ext = std.meta.stringToEnum(RadialExtent, name) orelse .@"farthest-corner";
+            // The distances to the nearer and farther side, each axis.
+            const near_x = @min(@abs(cx), @abs(w - cx));
+            const near_y = @min(@abs(cy), @abs(h - cy));
+            const far_x = @max(@abs(cx), @abs(w - cx));
+            const far_y = @max(@abs(cy), @abs(h - cy));
+            if (g.circle) {
+                rx = switch (ext) {
+                    .@"closest-side" => @min(near_x, near_y),
+                    .@"farthest-side" => @max(far_x, far_y),
+                    .@"closest-corner" => std.math.hypot(near_x, near_y),
+                    .@"farthest-corner" => std.math.hypot(far_x, far_y),
+                };
+                ry = rx;
+            } else {
+                // An ellipse through a corner keeps the sides' aspect
+                // ratio: those radii times sqrt(2).
+                const k: f32 = switch (ext) {
+                    .@"closest-side", .@"farthest-side" => 1,
+                    else => std.math.sqrt2,
+                };
+                const near = ext == .@"closest-side" or ext == .@"closest-corner";
+                rx = k * (if (near) near_x else far_x);
+                ry = k * (if (near) near_y else far_y);
+            }
+        } else if (g.circle) ry = rx;
+        return .{ cx, cy, @max(0.01, rx), @max(0.01, ry) };
+    }
+};
 pub const Background = struct { color: ?Color = null, gradient: ?Gradient = null };
 pub const Shadow = struct { x: f32 = 0, y: f32 = 0, blur: f32 = 0, spread: f32 = 0, color: Color = .{ 0, 0, 0, 0.3 } };
 pub const Shape = struct {
@@ -2254,6 +2304,52 @@ test "flex: 1 labels in a row stay equal with room and keep whole words without"
     t.width = 300;
     t.layout();
     for ([_]*Node{ auto, english, espanol }) |n| try std.testing.expectEqual(@as(f32, 100), yg.YGNodeLayoutGetWidth(n.yn));
+}
+
+test "radial gradients: CSS sizes resolved against the box" {
+    const G = Gradient;
+    const pct = struct {
+        fn d(x: f32) Dim {
+            return .{ .pct = x };
+        }
+    }.d;
+    const center: [4]Dim = .{ pct(50), pct(50), pct(71), pct(71) };
+    const corner: [4]Dim = .{ pct(0), pct(0), pct(71), pct(71) };
+    const eq = struct {
+        fn f(want: [4]f32, got: ?[4]f32) !void {
+            for (want, got.?) |a, b| try std.testing.expectApproxEqAbs(a, b, 0.01);
+        }
+    }.f;
+    // 200 x 100, centered: the farthest corner (default), an ellipse with
+    // the box's proportions, and a circle reaching the corners.
+    try eq(.{ 100, 50, 100 * std.math.sqrt2, 50 * std.math.sqrt2 }, (G{ .radial = center, .ext = "farthest-corner" }).radialIn(200, 100));
+    try eq(.{ 100, 50, std.math.hypot(@as(f32, 100), 50), std.math.hypot(@as(f32, 100), 50) }, (G{ .radial = center, .ext = "farthest-corner", .circle = true }).radialIn(200, 100));
+    try eq(.{ 100, 50, 50, 50 }, (G{ .radial = center, .ext = "closest-side", .circle = true }).radialIn(200, 100));
+    try eq(.{ 100, 50, 100, 100 }, (G{ .radial = center, .ext = "farthest-side", .circle = true }).radialIn(200, 100));
+    // At the top left: the far corner is the bottom right.
+    try eq(.{ 0, 0, 200 * std.math.sqrt2, 100 * std.math.sqrt2 }, (G{ .radial = corner, .ext = "farthest-corner" }).radialIn(200, 100));
+    try eq(.{ 0, 0, 200, 100 }, (G{ .radial = corner, .ext = "farthest-side" }).radialIn(200, 100));
+    // At 20% 30%: the nearer sides 40 and 30 away.
+    const off: [4]Dim = .{ pct(20), pct(30), pct(71), pct(71) };
+    try eq(.{ 40, 30, 50, 50 }, (G{ .radial = off, .ext = "closest-corner", .circle = true }).radialIn(200, 100));
+    try eq(.{ 40, 30, 40 * std.math.sqrt2, 30 * std.math.sqrt2 }, (G{ .radial = off, .ext = "closest-corner" }).radialIn(200, 100));
+    // Explicit lengths as given; a circle's one radius both ways.
+    try eq(.{ 10, 20, 30, 30 }, (G{ .radial = .{ .{ .px = 10 }, .{ .px = 20 }, .{ .px = 30 }, .{ .px = 30 } }, .circle = true }).radialIn(200, 100));
+    try eq(.{ 100, 50, 100, 25 }, (G{ .radial = .{ pct(50), pct(50), pct(50), pct(25) } }).radialIn(200, 100));
+    try std.testing.expect((G{}).radialIn(200, 100) == null);
+    // A size this build doesn't know: the default.
+    try eq(.{ 100, 50, 100, 100 }, (G{ .radial = center, .ext = "farthest-side", .circle = true }).radialIn(200, 100));
+    try eq(.{ 100, 50, std.math.hypot(@as(f32, 100), 50), std.math.hypot(@as(f32, 100), 50) }, (G{ .radial = center, .ext = "nearest-star", .circle = true }).radialIn(200, 100));
+}
+
+test "radial gradient props parse their size keyword" {
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply("[[\"c\",1,\"view\"],[\"p\",1,{\"bg\":{\"gradient\":{\"radial\":[\"0%\",\"0%\",\"71%\",\"71%\"],\"ext\":\"closest-side\",\"circle\":true,\"stops\":[[1,2,3,1,0]]}}}]]");
+    const g = t.get(1).?.props.bg.?.gradient.?;
+    try std.testing.expectEqualStrings("closest-side", g.ext.?);
+    try std.testing.expect(g.circle);
 }
 
 test "flex: 1 boxes around one label (text-only buttons) keep its whole words" {
