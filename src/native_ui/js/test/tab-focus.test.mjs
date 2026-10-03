@@ -62,4 +62,37 @@ assert.deepEqual(back, ["d1", "i1", "a1"]);
 vm.runInContext(`document.addEventListener("keydown", (e) => { if (e.key === "Tab") e.preventDefault(); })`, ctx);
 assert.equal(tab(false), true, "prevented: the backend leaves it too");
 assert.equal(at(), "a1");
+// macOS without Full Keyboard Access: WKWebView's order (measured), text
+// fields, selects, textareas and contenteditable, plus explicit tabindex;
+// with it, every control too.
+function bootPage(html, platform) {
+  const els = new Map();
+  const h = {
+    log: (lvl, msg) => { if (lvl >= 2) console.log(msg); },
+    asset: (p) => (p === "index.html" ? html : undefined),
+    invoke: () => {}, timer: () => {},
+    frame: (id) => (els.has(id) ? [0, 0, 10, 10, 10] : undefined),
+    focus: () => {}, scrollIntoView: () => {}, scrollTo: () => {},
+    ops: (json) => { for (const [k, id, x] of JSON.parse(json)) if (k === "c") els.set(id, x); else if (k === "d") els.delete(id); },
+    platform: JSON.stringify(platform), label: "main", url: "index.html",
+  };
+  const c = vm.createContext({ __host: h });
+  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), c, { filename: "runtime.js" });
+  c.__oriel.boot(400, 600, false, false);
+  c.__oriel.render();
+  return (n) => {
+    const seen = [];
+    for (let i = 0; i < n; i++) { c.__oriel.event(0, "key", ["Tab", 0, false]); seen.push(vm.runInContext("document.activeElement.id", c)); }
+    return seen;
+  };
+}
+const macPage = `<html><body>
+<input id="t1"><input id="cb" type="checkbox"><button id="b1">Btn</button><a id="l1" href="#x">Link</a>
+<div id="d0" tabindex="0">div0</div><span id="s2" tabindex="2">span2</span><div id="ce" contenteditable>edit</div>
+<select id="sel"><option>one</option></select><textarea id="ta"></textarea><input id="rg" type="range"><button id="bt0" tabindex="0">btn0</button>
+</body></html>`;
+assert.deepEqual(bootPage(macPage, { os: "macos", fullKeyboardAccess: false })(8), ["s2", "t1", "d0", "ce", "sel", "ta", "bt0", "s2"], "WKWebView's macOS order");
+assert.deepEqual(bootPage(macPage, { os: "macos", fullKeyboardAccess: true })(5), ["s2", "t1", "cb", "b1", "l1"], "with Full Keyboard Access: every control");
+assert.deepEqual(bootPage(macPage, { os: "ios" })(7), ["s2", "t1", "d0", "ce", "sel", "ta", "s2"], "iOS: WKWebView's order (no tabindex button)");
+
 console.log("tab focus: ok");

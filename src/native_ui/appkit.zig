@@ -167,6 +167,20 @@ fn classes() void {
     }));
 }
 
+/// The platform JSON with `fullKeyboardAccess`: whether macOS's keyboard
+/// navigation setting lets Tab reach every control (WKWebView's Tab then
+/// visits buttons and links too), read as the window opens. Owned by the
+/// caller (the engine copies it); null: as is.
+fn withKeyboardAccess(gpa: std.mem.Allocator, platform_json: [:0]const u8) ?[:0]const u8 {
+    const trimmed = std.mem.trimEnd(u8, platform_json, " \n");
+    if (trimmed.len < 2 or trimmed[trimmed.len - 1] != '}') return null;
+    const app = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{});
+    const fka = cocoa.isTrue(app.msgSend(BOOL, "isFullKeyboardAccessEnabled", .{}));
+    const body = trimmed[0 .. trimmed.len - 1];
+    const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"fullKeyboardAccess\":{}}}", .{ body, sep, fka }, 0) catch null;
+}
+
 /// Create a window's page at `width`×`height` points and run it.
 pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, width: f32, height: f32, transparent: bool, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
     classes();
@@ -198,6 +212,9 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     try by_view.put(gpa, key(view.value), s);
     errdefer _ = by_view.remove(key(view.value));
     s.dark = isDark(view);
+    const with_fka = withKeyboardAccess(gpa, platform_json);
+    defer if (with_fka) |j| gpa.free(j);
+    const platform = with_fka orelse platform_json;
     s.engine = try Engine.create(gpa, .{
         .ctx = s,
         .measure = measure,
@@ -212,7 +229,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .request_display_frame = if (hasDisplayLink(view)) requestDisplayFrame else null,
         .warm_fonts = warmFonts,
         .font_metrics = fontMetrics,
-    }, assets, platform_json, label, url, width, height);
+    }, assets, platform, label, url, width, height);
     // Text-only updates that keep a text's size keep the layout (its
     // natural size is kept per node: measureText).
     s.engine.tree.reuse_text_layout = true;
