@@ -75,6 +75,10 @@ import kotlin.math.tan
 internal object NuiNative {
     @JvmStatic external fun resize(window: Int, width: Float, height: Float, dark: Boolean)
     @JvmStatic external fun tap(window: Int, x: Float, y: Float)
+    /** A pointer event for the page: phase 0 down, 1 move (sent at the next
+     *  display frame), 2 up, 3 cancel. True when the page prevented the
+     *  default (on down: it takes the drag). */
+    @JvmStatic external fun pointer(window: Int, phase: Int, x: Float, y: Float, buttons: Int, mouse: Boolean, mods: Int): Boolean
     /** A finger or button down on (x, y) (:active), or up. */
     @JvmStatic external fun press(window: Int, x: Float, y: Float, down: Boolean)
     /** A mouse over (x, y) (:hover), or gone (x < 0). */
@@ -1116,6 +1120,13 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     /** The drag scrolls sideways (it started more across than down). */
     private var sideways = false
     private var longPressed = false
+    /** The page heard this touch's down and no up or cancel yet. */
+    private var pointerDown = false
+    /** The page took the touch's drag (touch-action: none, or it prevented
+     *  the pointerdown): no scrolling, fling or long press. */
+    private var pageDrag = false
+    /** The touch is the mouse (ChromeOS): its drags don't scroll. */
+    private var mouseTouch = false
     private val longPress = Runnable {
         longPressed = true
         if (NuiNative.longPress(window, downX / density, downY / density)) performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
@@ -1145,6 +1156,29 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         return false
     }
 
+    /** Shift 1, control 2, alt 4, meta 8 (the DOM's modifier keys). */
+    private fun mods(meta: Int): Int =
+        (if (meta and KeyEvent.META_SHIFT_ON != 0) 1 else 0) or (if (meta and KeyEvent.META_CTRL_ON != 0) 2 else 0) or
+            (if (meta and KeyEvent.META_ALT_ON != 0) 4 else 0) or (if (meta and KeyEvent.META_META_ON != 0) 8 else 0)
+
+    /** The pressed buttons as the DOM's `buttons` (a finger: the primary). */
+    private fun buttons(e: MotionEvent): Int {
+        if (!mouseTouch) return 1
+        val b = e.buttonState
+        return (if (b and MotionEvent.BUTTON_PRIMARY != 0) 1 else 0) or (if (b and MotionEvent.BUTTON_SECONDARY != 0) 2 else 0) or
+            (if (b and MotionEvent.BUTTON_TERTIARY != 0) 4 else 0)
+    }
+
+    private fun pointer(phase: Int, e: MotionEvent, buttons: Int): Boolean =
+        NuiNative.pointer(window, phase, e.x / density, e.y / density, buttons, mouseTouch, mods(e.metaState))
+
+    /** The page's pointer goes: cancelled (a scroll took the touch) or up. */
+    private fun endPointer(phase: Int, e: MotionEvent) {
+        if (!pointerDown) return
+        pointerDown = false
+        pointer(phase, e, if (mouseTouch && phase == 2) buttons(e) else 0)
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
@@ -1152,21 +1186,39 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 scroller.forceFinished(true)
                 downX = e.x; downY = e.y; lastY = e.y
                 dragging = false; longPressed = false
+                mouseTouch = e.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE
                 velocity?.recycle()
                 velocity = VelocityTracker.obtain().also { it.addMovement(e) }
-                postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                 NuiNative.press(window, e.x / density, e.y / density, true)
+                pointerDown = true
+                pageDrag = pointer(0, e, buttons(e))
+                if (!pageDrag && !mouseTouch) postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                 if (!hasFocus()) requestFocus()
             }
             MotionEvent.ACTION_MOVE -> {
                 velocity?.addMovement(e)
-                if (!dragging && (abs(e.y - downY) > slop || abs(e.x - downX) > slop)) {
+                val beyond = abs(e.y - downY) > slop || abs(e.x - downX) > slop
+                // The page's drag, or the mouse's: the page hears every move, nothing scrolls.
+                if (pageDrag || mouseTouch) {
+                    if (!dragging && beyond) {
+                        dragging = true
+                        removeCallbacks(longPress)
+                        NuiNative.press(window, 0f, 0f, false) // a drag isn't a press
+                    }
+                    if (pointerDown) pointer(1, e, buttons(e))
+                    return true
+                }
+                if (!dragging && beyond) {
                     dragging = true
                     sideways = abs(e.x - downX) > abs(e.y - downY)
                     removeCallbacks(longPress)
                     NuiNative.press(window, 0f, 0f, false) // a drag isn't a press
+                    // The page scrolls: its pointer is cancelled, as in a browser.
+                    endPointer(3, e)
                     lastY = e.y
                     lastX = e.x
+                } else if (!dragging && pointerDown) {
+                    pointer(1, e, buttons(e))
                 }
                 if (dragging && sideways) {
                     NuiNative.scrollX(window, downX / density, downY / density, (lastX - e.x) / density)
@@ -1180,24 +1232,66 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 removeCallbacks(longPress)
                 if (!dragging) NuiNative.press(window, 0f, 0f, false)
                 velocity?.addMovement(e)
+                // The page hears the lift (pointerup) before the tap's click.
+                endPointer(2, e)
                 if (!dragging && !longPressed) {
                     hideKeyboard()
                     NuiNative.tap(window, e.x / density, e.y / density)
-                } else if (dragging) {
+                } else if (dragging && !pageDrag && !mouseTouch) {
                     val v = velocity
                     v?.computeCurrentVelocity(1000)
                     val vy = v?.yVelocity ?: 0f
                     if (!sideways && abs(vy) > ViewConfiguration.get(context).scaledMinimumFlingVelocity) fling(-vy)
                 }
+                pageDrag = false
                 velocity?.recycle(); velocity = null
             }
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
                 NuiNative.press(window, 0f, 0f, false)
+                endPointer(3, e)
+                pageDrag = false
                 velocity?.recycle(); velocity = null
             }
         }
         return true
+    }
+
+    // --- Keys -------------------------------------------------------------------
+
+    /** The page's keydown (with repeat) and keyup; what it prevents is consumed. */
+    override fun onKeyDown(keyCode: Int, e: KeyEvent): Boolean {
+        val k = keyName(e) ?: return super.onKeyDown(keyCode, e)
+        val json = "[${JSONObject.quote(k)},${mods(e.metaState)},${e.repeatCount > 0}]"
+        return NuiNative.event(window, 0, "key".bytes(), json.bytes()) || super.onKeyDown(keyCode, e)
+    }
+
+    override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean {
+        val k = keyName(e) ?: return super.onKeyUp(keyCode, e)
+        val json = "[${JSONObject.quote(k)},${mods(e.metaState)}]"
+        return NuiNative.event(window, 0, "keyup".bytes(), json.bytes()) || super.onKeyUp(keyCode, e)
+    }
+
+    /** The DOM's `key`: named keys, else the character typed (null: not the page's). */
+    private fun keyName(e: KeyEvent): String? = when (e.keyCode) {
+        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> "Enter"
+        KeyEvent.KEYCODE_ESCAPE -> "Escape"
+        KeyEvent.KEYCODE_TAB -> "Tab"
+        KeyEvent.KEYCODE_DEL -> "Backspace"
+        KeyEvent.KEYCODE_FORWARD_DEL -> "Delete"
+        KeyEvent.KEYCODE_DPAD_UP -> "ArrowUp"
+        KeyEvent.KEYCODE_DPAD_DOWN -> "ArrowDown"
+        KeyEvent.KEYCODE_DPAD_LEFT -> "ArrowLeft"
+        KeyEvent.KEYCODE_DPAD_RIGHT -> "ArrowRight"
+        KeyEvent.KEYCODE_MOVE_HOME -> "Home"
+        KeyEvent.KEYCODE_MOVE_END -> "End"
+        KeyEvent.KEYCODE_PAGE_UP -> "PageUp"
+        KeyEvent.KEYCODE_PAGE_DOWN -> "PageDown"
+        KeyEvent.KEYCODE_SPACE -> " "
+        else -> {
+            val c = e.getUnicodeChar(e.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_ALT_MASK or KeyEvent.META_META_MASK).inv())
+            if (c > 0 && !Character.isISOControl(c)) String(Character.toChars(c)) else null
+        }
     }
 
     /** The mouse wheel and two-finger trackpad scrolling (ChromeOS, desktop mode). */
@@ -1222,7 +1316,11 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     /** A mouse or trackpad over the page (ChromeOS, desktop mode): :hover. */
     override fun onHoverEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
-            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> NuiNative.hover(window, e.x / density, e.y / density)
+            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                NuiNative.hover(window, e.x / density, e.y / density)
+                // A hover move for the page's pointer (no buttons), once per frame.
+                NuiNative.pointer(window, 1, e.x / density, e.y / density, 0, true, mods(e.metaState))
+            }
             MotionEvent.ACTION_HOVER_EXIT -> NuiNative.hover(window, -1f, -1f)
         }
         return super.onHoverEvent(e)
