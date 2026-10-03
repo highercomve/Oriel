@@ -1,4 +1,4 @@
-//! The native renderer's Win32 backend (docs/native-renderer.md).
+﻿//! The native renderer's Win32 backend (docs/native-renderer.md).
 //!
 //! Boxes, text (DirectWrite) and icons (Direct2D path geometries, from
 //! svg_path.zig) are drawn with Direct2D in one child window, the canvas;
@@ -90,7 +90,10 @@ const Field = struct {
     ph_hash: u64 = 0,
     /// A select's selection-field height (CB_SETITEMHEIGHT), in pixels.
     item_h: c_int = 0,
-    /// <input type=range>: a trackbar, positions 0…steps of the range's step.
+    /// Its font's own (a themed combobox is never shorter than that and
+    /// its frame: a smaller one only cuts the text).
+    item_nat: c_int = 0,
+    /// <input type=range>: a trackbar, positions 0â€¦steps of the range's step.
     slider: bool = false,
     /// The position last sent as `input` (a drag sends it once per step).
     sent_pos: isize = -1,
@@ -118,19 +121,19 @@ fn comboClosedHeight(hwnd: c.HWND) ?c_int {
 
 /// A select's selection-field height (CB_SETITEMHEIGHT with -1).
 fn setItemHeight(f: *Field, item_h: c_int) void {
-    const v = @max(8, item_h);
+    const v = @max(@max(8, f.item_nat), item_h);
     if (v == f.item_h) return;
     _ = c.SendMessageW(f.hwnd, c.CB_SETITEMHEIGHT, std.math.maxInt(usize), @intCast(v));
     f.item_h = v;
 }
 
-/// The UA style's field border (render.js: 2px inset #ccc, or 1px #767676)
-/// all round: the page didn't style it.
+/// The UA style's field border (render.js: 2px inset #ccc, a select's and a
+/// textarea's 1px, or 1px #767676) all round: the page didn't style it.
 fn uaBorder(n: *Node) bool {
     const bw = n.props.bw orelse return false;
     const bc = n.props.bc orelse return false;
     for (bw, bc) |w, col| {
-        const ua = (w == 2 and col[0] == 204 and col[1] == 204 and col[2] == 204) or
+        const ua = ((w == 2 or w == 1) and col[0] == 204 and col[1] == 204 and col[2] == 204) or
             (w == 1 and col[0] == 118 and col[1] == 118 and col[2] == 118);
         if (!ua) return false;
     }
@@ -921,6 +924,7 @@ fn syncFields(s: *Surface) void {
             // The selection field fits the box (else the combobox keeps
             // its font's height and sticks out below it): a first guess
             // at its border, corrected below by the closed height.
+            if (f.item_nat == 0) f.item_nat = @intCast(c.SendMessageW(f.hwnd, c.CB_GETITEMHEIGHT, std.math.maxInt(usize), 0));
             if (f.item_h == 0) setItemHeight(f, box_h - px(6 * s.scale));
             // A combobox's height includes its drop-down list.
             h += px(200 * s.scale);
@@ -940,7 +944,12 @@ fn syncFields(s: *Surface) void {
                     const pb = paddingBox(n);
                     limit = .{ .x = box.x, .y = pb.y, .w = box.w, .h = pb.h };
                     place.y = pb.y + @max(0, (pb.h - ch) / 2);
-                } else limit.h = @max(box.h, ch);
+                } else if (ch > box.h) {
+                    // Its font's height and frame: centered on the box,
+                    // over its edges (Chromium's is the CSS box exactly).
+                    place.y = box.y - (ch - box.h) / 2;
+                    limit = .{ .x = box.x, .y = place.y, .w = box.w, .h = ch };
+                }
                 // No more than the closed combobox covers: the clip window
                 // paints nothing of its own (and the canvas doesn't paint
                 // under it).
@@ -1005,7 +1014,7 @@ fn paintPlaceholder(hwnd: c.HWND) void {
     _ = c.DrawTextW(hdc, ph.ptr, -1, &rc, c.DT_WORDBREAK | c.DT_NOPREFIX | c.DT_EDITCONTROL);
 }
 
-/// <input type=range>: a trackbar, positions 0…steps (the value snaps to
+/// <input type=range>: a trackbar, positions 0â€¦steps (the value snaps to
 /// the range's step); its WM_HSCROLL goes to the canvas (onSlider).
 fn makeSlider(s: *Surface, n: *Node) !Field {
     if (!common_controls) {
@@ -1208,6 +1217,9 @@ fn styleField(s: *Surface, f: *Field, n: *Node) void {
         const font = c.CreateFontW(-size, 0, 0, 0, weight, @intFromBool(n.props.it), 0, 0, c.DEFAULT_CHARSET, c.OUT_DEFAULT_PRECIS, c.CLIP_DEFAULT_PRECIS, c.CLEARTYPE_QUALITY, c.DEFAULT_PITCH, face);
         if (font != null) {
             _ = c.SendMessageW(f.hwnd, c.WM_SETFONT, @intFromPtr(font), c.TRUE);
+            // A select's field height again, from the new font's.
+            f.item_h = 0;
+            f.item_nat = 0;
             if (f.font) |old| _ = c.DeleteObject(old);
             f.font = font;
             f.font_px = size;
@@ -2097,6 +2109,98 @@ fn queryRatios(name: [:0]const u16, w: u32, italic: bool) ?[3]f32 {
     return .{ @as(f32, @floatFromInt(fm.ascent)) / em, @as(f32, @floatFromInt(fm.descent)) / em, @as(f32, @floatFromInt(fm.lineGap)) / em };
 }
 
+/// A face's widths per em, as Chromium sizes a text field by them: its
+/// glyph box's (head's xMax - xMin: its widest character) and its "x"'s
+/// advance (its average character); cached by family, null remembered.
+var char_widths: std.AutoHashMapUnmanaged(u64, ?[2]f32) = .empty;
+
+fn charWidths(family: [:0]const u16) ?[2]f32 {
+    const key = std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(family));
+    if (char_widths.get(key)) |v| return v;
+    const v = queryCharWidths(family);
+    char_widths.put(std.heap.page_allocator, key, v) catch {};
+    return v;
+}
+
+fn queryCharWidths(name: [:0]const u16) ?[2]f32 {
+    const dw = dwrite orelse return null;
+    var coll: ?*c.IDWriteFontCollection = null;
+    if (dw.lpVtbl.*.GetSystemFontCollection.?(dw, &coll, c.FALSE) < 0 or coll == null) return null;
+    defer releaseCom(coll);
+    var index: c.UINT32 = 0;
+    var exists: c.BOOL = c.FALSE;
+    if (coll.?.lpVtbl.*.FindFamilyName.?(coll, name.ptr, &index, &exists) < 0 or exists == 0) return null;
+    var family: ?*c.IDWriteFontFamily = null;
+    if (coll.?.lpVtbl.*.GetFontFamily.?(coll, index, &family) < 0 or family == null) return null;
+    defer releaseCom(family);
+    var font: ?*c.IDWriteFont = null;
+    if (family.?.lpVtbl.*.GetFirstMatchingFont.?(family, 400, c.DWRITE_FONT_STRETCH_NORMAL, c.DWRITE_FONT_STYLE_NORMAL, &font) < 0 or font == null) return null;
+    defer releaseCom(font);
+    var face: ?*c.IDWriteFontFace = null;
+    if (font.?.lpVtbl.*.CreateFontFace.?(font, &face) < 0 or face == null) return null;
+    defer releaseCom(face);
+    const fc = face.?;
+    var f1: ?*c.IDWriteFontFace1 = null;
+    if (fc.lpVtbl.*.QueryInterface.?(fc, &iid_font_face1, @ptrCast(&f1)) < 0 or f1 == null) return null;
+    defer releaseCom(f1);
+    var m1: c.DWRITE_FONT_METRICS1 = undefined;
+    f1.?.lpVtbl.*.IDWriteFontFace1_GetMetrics.?(f1, &m1);
+    if (m1.designUnitsPerEm == 0) return null;
+    const em: f32 = @floatFromInt(m1.designUnitsPerEm);
+    const cp = [1]u32{'x'};
+    var glyph: [1]u16 = undefined;
+    var gm: [1]c.DWRITE_GLYPH_METRICS = undefined;
+    if (fc.lpVtbl.*.GetGlyphIndicesW.?(fc, &cp, 1, &glyph) < 0 or fc.lpVtbl.*.GetDesignGlyphMetrics.?(fc, &glyph, 1, &gm, c.FALSE) < 0) return null;
+    return .{ @as(f32, @floatFromInt(@as(i32, m1.glyphBoxRight) - m1.glyphBoxLeft)) / em, @as(f32, @floatFromInt(gm[0].advanceWidth)) / em };
+}
+
+/// A text field's content width as Chromium makes it for `size`
+/// characters: that many average characters (each rounded to a pixel),
+/// plus a widest character less an average one. Arial 13.33px, size 20:
+/// 20 * 7 + 36 - 7 = 169.
+fn inputWidth(n: *const Node, size: f32) f32 {
+    const fz = n.props.fz orelse 16;
+    const w = charWidths(familyOf(n.props.ff, n.props.mono)) orelse return @round(size * fz * 0.5 + fz);
+    const avg = @round(w[1] * fz);
+    return @ceil(avg * size) + @round(w[0] * fz) - avg;
+}
+
+/// A textarea's: `cols` average characters (unrounded here) and a
+/// scrollbar (Consolas 13.33px, 20 cols: 147 + 15 = 162).
+fn textareaWidth(n: *const Node, cols: f32) f32 {
+    const fz = n.props.fz orelse 16;
+    const w = charWidths(familyOf(n.props.ff, n.props.mono)) orelse return cols * fz * 0.6 + 8;
+    return @ceil(w[1] * fz * cols) + 15;
+}
+
+/// The width of one line of `text` in the field's font (DirectWrite's).
+fn plainWidth(n: *const Node, text: []const u8) f32 {
+    const dw = dwrite orelse return 0;
+    var buf: [256]u16 = undefined;
+    const len = std.unicode.utf8ToUtf16Le(&buf, text[0..@min(text.len, 200)]) catch return 0;
+    const weight: c.DWRITE_FONT_WEIGHT = @intFromFloat(@max(1, @min(999, n.props.fwt orelse 400)));
+    const style: c.DWRITE_FONT_STYLE = if (n.props.it) c.DWRITE_FONT_STYLE_ITALIC else c.DWRITE_FONT_STYLE_NORMAL;
+    var format: ?*c.IDWriteTextFormat = null;
+    if (dw.lpVtbl.*.CreateTextFormat.?(dw, familyOf(n.props.ff, n.props.mono), null, weight, style, c.DWRITE_FONT_STRETCH_NORMAL, n.props.fz orelse 16, std.unicode.utf8ToUtf16LeStringLiteral(""), &format) < 0 or format == null) return 0;
+    defer releaseCom(format);
+    var layout: ?*c.IDWriteTextLayout = null;
+    if (dw.lpVtbl.*.CreateTextLayout.?(dw, &buf, @intCast(len), format, 1e6, 1e6, &layout) < 0 or layout == null) return 0;
+    defer releaseCom(layout);
+    var m: c.DWRITE_TEXT_METRICS = undefined;
+    if (layout.?.lpVtbl.*.GetMetrics.?(layout, &m) < 0) return 0;
+    return m.widthIncludingTrailingWhitespace;
+}
+
+/// A select's: its widest option, its inner padding and its arrow
+/// (Chromium on Windows: about 20.6px more; "one" in Arial 13.33px is 43).
+fn selectWidth(n: *const Node) f32 {
+    var widest: f32 = 0;
+    for (n.props.options orelse &.{}) |o| widest = @max(widest, plainWidth(n, o[1]));
+    return @round(widest + 20.6);
+}
+
+const iid_font_face1: c.GUID = .{ .Data1 = 0xa71efdb4, .Data2 = 0x9fdb, .Data3 = 0x4838, .Data4 = .{ 0xad, 0x90, 0xcf, 0xc3, 0xbe, 0x8c, 0x3d, 0xaf } };
+
 /// Backend.font_metrics: the default sans (or monospace) face's ascent,
 /// descent and line gap in px at `size`, unhinted.
 fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
@@ -2630,7 +2734,7 @@ const CanvasPainter = struct {
         cv.cur = pt;
     }
 
-    /// As cubic Béziers of up to a quarter turn each, from a0 to a1
+    /// As cubic BÃ©ziers of up to a quarter turn each, from a0 to a1
     /// (clockwise in the y-down space unless ccw), joined to the current
     /// point by a line.
     fn arc(cv: *CanvasPainter, x: f32, y: f32, r: f32, a0: f32, a1: f32, ccw: bool) void {
@@ -3001,7 +3105,7 @@ fn polygonGeometry(pts: []const P2) ?*c.ID2D1PathGeometry {
     return geo;
 }
 
-/// a ∩ b as a new geometry (caller releases).
+/// a âˆ© b as a new geometry (caller releases).
 fn intersectGeometry(a: *c.ID2D1Geometry, b: *c.ID2D1Geometry) ?*c.ID2D1PathGeometry {
     const fac = d2d.?;
     var geo: ?*c.ID2D1PathGeometry = null;
@@ -3082,7 +3186,7 @@ fn glyphOutline(gpa: std.mem.Allocator, t: []const u8, family: [:0]const u16, we
 }
 
 // ---------------------------------------------------------------------------
-// Images (<img src="data:…"> or an app asset), decoded with WIC
+// Images (<img src="data:â€¦"> or an app asset), decoded with WIC
 
 /// The largest picture decoded: 4096 x 4096 px (64 MB as BGRA). Larger ones
 /// keep their declared size for layout and aren't drawn.
@@ -3291,7 +3395,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
 // itself: width("ab") - width("b"). A pair DirectWrite makes one cluster
 // (a ligature), more than one run, letter spacing, other characters or a
 // text that wraps take the layout. ORIEL_NUI_TEXT_CHECK=1 measures both and
-// logs any difference. A new string was an IDWriteTextLayout (~19 µs):
+// logs any difference. A new string was an IDWriteTextLayout (~19 Âµs):
 // most of render-bench's "update 1000 rows".
 
 const FontKey = struct { mono: bool, italic: bool, weight: u16, size: u32, fz: u32, lh: i32, family: u64 };
@@ -3443,12 +3547,22 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
         },
         // As Chromium: a line of the field's font (its line-height, else
         // the font's normal one), `rows` of them in a textarea; a select's
-        // menu list adds 1px above and below.
-        .input, .select => {
+        // menu list adds 1px above and below. As wide as `size` (cols)
+        // characters, `cols` of them in a textarea, a select's widest option.
+        .input, .select, .textarea => {
             const line = fieldLine(n);
-            out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), if (n.kind == .select) line + 2 else line };
+            const w: f32 = switch (n.kind) {
+                .select => selectWidth(n),
+                .textarea => textareaWidth(n, n.props.cols orelse 20),
+                else => if (n.props.cols) |size| inputWidth(n, size) else 150,
+            };
+            const h = switch (n.kind) {
+                .select => line + 2,
+                .textarea => line * (n.props.rows orelse 2),
+                else => line,
+            };
+            out.* = .{ @min(max_width, w), h };
         },
-        .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, fieldLine(n) * (n.props.rows orelse 2) },
         .image => {
             // Its natural size, scaled down to the width it may take.
             const img = imageOf(s, n) orelse return;
@@ -4121,7 +4235,7 @@ fn paintIcon(p: *Painter, n: *Node) void {
     const scale = @min(ct.w / icon.vb[2], ct.h / icon.vb[3]);
     const saved = p.xf;
     defer p.setTransform(saved);
-    // viewBox → the content box, centered.
+    // viewBox â†’ the content box, centered.
     const tx = ct.x + (ct.w - icon.vb[2] * scale) / 2 - icon.vb[0] * scale;
     const ty = ct.y + (ct.h - icon.vb[3] * scale) / 2 - icon.vb[1] * scale;
     p.setTransform(mul(matrix(scale, 0, 0, scale, tx, ty), saved));
