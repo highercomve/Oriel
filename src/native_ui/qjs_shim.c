@@ -36,6 +36,7 @@ extern void oriel_nui_ops(void *opaque, const char *json, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
 extern int oriel_nui_vsync(void *opaque);
 extern void oriel_nui_warm_fonts(void *opaque, const double *v, size_t count);
+extern int oriel_nui_font_metrics(void *opaque, double size, int mono, double *out);
 extern int oriel_nui_canvas(void *opaque, double id, const double *nums, size_t len, const char *const *strs, const size_t *lens, size_t count);
 extern uint32_t oriel_nui_stamp_plan(void *opaque, const double *v, size_t len);
 #if defined(ORIEL_NATIVE_DOM)
@@ -319,6 +320,21 @@ static JSValue h_warm_fonts(JSContext *ctx, JSValueConst this_val, int argc, JSV
     }
     oriel_nui_warm_fonts(opaque_of(ctx), v, n);
     return JS_UNDEFINED;
+}
+
+// host.fontMetrics(size, mono): the backend's [ascent, descent] in px for
+// its text font at `size`, or undefined (the runtime then estimates).
+static JSValue h_font_metrics(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    double size = 16;
+    if (argc >= 1 && JS_ToFloat64(ctx, &size, argv[0]) < 0) return JS_EXCEPTION;
+    int mono = argc >= 2 ? JS_ToBool(ctx, argv[1]) : 0;
+    double out[2];
+    if (!oriel_nui_font_metrics(opaque_of(ctx), size, mono, out)) return JS_UNDEFINED;
+    JSValue arr = JS_NewArray(ctx);
+    JS_SetPropertyUint32(ctx, arr, 0, JS_NewFloat64(ctx, out[0]));
+    JS_SetPropertyUint32(ctx, arr, 1, JS_NewFloat64(ctx, out[1]));
+    return arr;
 }
 
 // host.vsync(): __oriel.vsync(interval) at the display's next refresh;
@@ -770,6 +786,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "now", h_now, 0);
     set_fn(ctx, host, "vsync", h_vsync, 0);
     set_fn(ctx, host, "warmFonts", h_warm_fonts, 1);
+    set_fn(ctx, host, "fontMetrics", h_font_metrics, 2);
     set_fn(ctx, host, "canvas", h_canvas, 3);
     set_fn(ctx, host, "sheetCache", h_sheet_cache, 2);
     set_fn(ctx, host, "sheetKeep", h_sheet_keep, 2);
