@@ -166,8 +166,10 @@ the animated nodes are sent each frame).
   radii times `period`; Cairo: CAIRO_EXTEND_REPEAT). A backend whose
   gradients can't wrap (CoreGraphics) lays the period out with
   `Gradient.expand(resolved, extent, buf)` instead (extent: how much of
-  the line to cover, in line lengths). Win32 does this; GTK, Apple and
-  Android still read `stops` as fractions (px positions come out wrong
+  the line to cover, in line lengths). Win32 does this, and Android
+  (OrielNative.kt resolveStops, a port of resolve(); Shader.TileMode.REPEAT
+  with the linear end point and the radial radius times `period`); GTK and
+  Apple still read `stops` as fractions (px positions come out wrong
   there, and a repeating gradient is drawn once).
 
 **Corner radii** (`br`, each backend):
