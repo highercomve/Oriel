@@ -1485,8 +1485,27 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 }
             }
         }
-        for (k in kidsInOrder[r] ?: IntArray(0)) draw(canvas, k)
+        val kids = kidsInOrder[r] ?: IntArray(0)
+        // A box that clips (overflow hidden, or a scroller) with rounded
+        // corners: its children are clipped to its rounded padding box
+        // (tree.zig's roundClips and paddingClip); its own border isn't.
+        if (n != null && kids.isNotEmpty() && (n.p.optBoolean("clip") || n.p.optBoolean("scroll") || n.p.optBoolean("scrollx"))) {
+            radii(n, w, h)?.let { paddingClip(canvas, x, y, w, h, it, n.bw) }
+        }
+        for (k in kids) draw(canvas, k)
         canvas.restoreToCount(save)
+    }
+
+    /** Clip to the box's padding box: inset by the borders `bw` (top, right,
+     *  bottom, left), each radius less the wider border at its corner. */
+    private fun paddingClip(canvas: Canvas, x: Float, y: Float, w: Float, h: Float, r: FloatArray, bw: FloatArray?) {
+        val b = bw ?: FloatArray(4)
+        val inner = floatArrayOf(
+            max(0f, r[0] - max(b[0], b[3])), max(0f, r[1] - max(b[0], b[1])),
+            max(0f, r[2] - max(b[2], b[1])), max(0f, r[3] - max(b[2], b[3])),
+        )
+        roundRect(x + b[3], y + b[0], max(0f, w - b[1] - b[3]), max(0f, h - b[0] - b[2]), inner)
+        canvas.clipPath(path)
     }
 
     /** An <img> in its content box, per CSS object-fit (fill by default). */
