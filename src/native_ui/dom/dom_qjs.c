@@ -38,6 +38,7 @@ typedef struct {
     const uint8_t *(*atom_latin1)(void *ctx, uint32_t atom, size_t *len);
     const uint8_t *(*atom_utf8)(void *ctx, uint32_t atom, size_t *len);
     void (*mutation)(void *ctx, uint8_t kind, Index target, Index node, uint32_t name);
+    int (*ref_count)(void *ctx, const JSValue *v);
 } Host;
 
 typedef struct Selector Selector;
@@ -63,6 +64,7 @@ extern void nui_dom_remove_children(Dom *d, Index idx);
 extern const JSValue *nui_dom_wrapper(Dom *d, Index idx);
 extern void nui_dom_set_wrapper(Dom *d, Index idx, const JSValue *w);
 extern void nui_dom_wrapper_finalized(Dom *d, Index idx);
+extern void nui_dom_marks(Dom *d, Index idx, void *ctx, void (*mark)(void *ctx, const JSValue *v));
 extern const JSValue *nui_dom_data(Dom *d, Index idx);
 extern void nui_dom_set_data(Dom *d, Index idx, const JSValue *v);
 extern const JSValue *nui_dom_get_attr(Dom *d, Index idx, uint32_t name);
@@ -117,6 +119,7 @@ static DomCtx *dc_of(JSContext *ctx) { return JS_GetRuntimeOpaque(JS_GetRuntime(
 
 static void h_dup(void *c, const JSValue *v) { JS_DupValue((JSContext *)c, *v); }
 static void h_free(void *c, const JSValue *v) { JS_FreeValue((JSContext *)c, *v); }
+static int h_ref_count(void *c, const JSValue *v) { (void)c; return JS_GetRefCount(*v); }
 static void h_dup_atom(void *c, uint32_t a) { JS_DupAtom((JSContext *)c, a); }
 static void h_free_atom(void *c, uint32_t a) { JS_FreeAtom((JSContext *)c, a); }
 static bool h_new_string(void *c, const uint8_t *b, size_t len, JSValue *out) {
@@ -182,7 +185,25 @@ static void node_finalizer(JSRuntime *rt, JSValueConst val) {
     nui_dom_wrapper_finalized(dc->dom, idx);
 }
 
-static JSClassDef node_class = { "Node", .finalizer = node_finalizer };
+// The wrappers this one holds through the store (store.zig `marks`): a
+// detached tree's root owns the others, each owned one its root, so the
+// cycle collector frees a tree the page dropped.
+typedef struct { JSRuntime *rt; JS_MarkFunc *mark_func; } MarkCtx;
+
+static void mark_one(void *ctx, const JSValue *v) {
+    MarkCtx *m = ctx;
+    JS_MarkValue(m->rt, *v, m->mark_func);
+}
+
+static void node_gc_mark(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func) {
+    DomCtx *dc = JS_GetRuntimeOpaque(rt);
+    Index idx = (Index)(uintptr_t)JS_GetOpaque(val, node_class_id);
+    if (!dc || dc->closing || !dc->dom || !idx) return;
+    MarkCtx m = { rt, mark_func };
+    nui_dom_marks(dc->dom, idx, &m, mark_one);
+}
+
+static JSClassDef node_class = { "Node", .finalizer = node_finalizer, .gc_mark = node_gc_mark };
 
 // An element's prototype: by tag, else the default (new reference).
 static JSValue element_proto(JSContext *ctx, DomCtx *dc, Index idx) {
@@ -1140,7 +1161,7 @@ DomCtx *nui_dom_install(JSContext *ctx) {
     dc->ctx = ctx;
     for (int i = 0; i < P_COUNT; i++) dc->protos[i] = dc->ctors[i] = JS_UNDEFINED;
     dc->host = (Host){ ctx, h_dup, h_free, h_dup_atom, h_free_atom, h_new_string, h_new_atom, h_value_atom, h_tokens,
-                       h_latin1, h_to_utf8, h_free_utf8, h_atom_latin1, h_atom_utf8, h_mutation };
+                       h_latin1, h_to_utf8, h_free_utf8, h_atom_latin1, h_atom_utf8, h_mutation, h_ref_count };
     dc->tag_protos = dc->element_proto = dc->foreign_proto = dc->hook = JS_UNDEFINED;
     dc->dom = nui_dom_new(&dc->host);
     if (!dc->dom) { js_free(ctx, dc); return NULL; }
