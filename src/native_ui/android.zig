@@ -560,6 +560,18 @@ fn fieldLine(s: *Surface, n: *const Node, fz: f32) f32 {
     return (@round(m[0] * d) + @round(m[1] * d) + @round(m[2] * d)) / d;
 }
 
+/// A select's widest option label in its font (nuiTextWidth), whole px up.
+fn longestOption(n: *const Node, fz: f32) f32 {
+    const opts = n.props.options orelse return 0;
+    var widest: f32 = 0;
+    const size64: i32 = @intFromFloat(@round(std.math.clamp(fz, 1, 512) * 64));
+    for (opts) |o| {
+        const w = runtime.call(.int, "nuiTextWidth", "([BI[BZ)I", .{ @as([]const u8, o[1]), size64, @as([]const u8, n.props.ff orelse ""), n.props.mono }) orelse continue;
+        widest = @max(widest, @as(f32, @floatFromInt(w)) / 64);
+    }
+    return @ceil(widest);
+}
+
 /// Text sizes come from Kotlin (StaticLayout, in dp), and so do images'
 /// (their decoded size, scaled down to the width they may take); fields
 /// have a fixed size like on GTK.
@@ -584,7 +596,12 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             out.* = measuredText(s, n, max_width);
         },
         .image => out.* = kotlinMeasure(s, n, max_width),
-        .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), fieldLine(s, n, fz) },
+        // As Chrome on Android sizes them (measured): a text field `size`
+        // (20) average characters of Roboto and the widest's extra
+        // (0.5716 em each, 2.37 em), a select its longest option and 20 px
+        // for its arrow.
+        .input => out.* = .{ @min(max_width, ((n.props.cols orelse 20) * 0.5716 + 2.37) * fz), fieldLine(s, n, fz) },
+        .select => out.* = .{ @min(max_width, longestOption(n, fz) + 20), fieldLine(s, n, fz) },
         // `rows` lines (2 by default), as browsers size a textarea.
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, fieldLine(s, n, fz) * (n.props.rows orelse 2) },
         else => out.* = .{ 0, 0 },
