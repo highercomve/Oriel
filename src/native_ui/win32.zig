@@ -229,6 +229,11 @@ pub const Surface = struct {
     /// is armed (laidOut: a big drop gives the empty slabs back).
     node_count: usize = 0,
     trim_armed: bool = false,
+    /// The field node the page last heard has the keyboard ("focus" and
+    /// "blur", focusCheck); 0: none.
+    focused: i64 = 0,
+    /// A WM_FOCUS_CHECK is queued.
+    focus_check_posted: bool = false,
 
     /// The canvas fills `parent`'s client area.
     pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, parent: *anyopaque, transparent: bool, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
@@ -729,6 +734,7 @@ fn removed(ctx: *anyopaque, node: *Node) void {
         img.deinit();
     }
     if (s.canvases.fetchRemove(node.id)) |kv| freeCanvas(kv.value);
+    if (s.focused == node.id) s.focused = 0;
     if (s.fields.fetchRemove(node.id)) |kv| {
         var f = kv.value;
         freeField(s, &f);
@@ -1279,6 +1285,37 @@ fn fieldText(s: *Surface, hwnd: c.HWND) ?[]u8 {
     };
 }
 
+/// The page hears which field has the keyboard ("focus" and "blur", so
+/// :focus, :focus-visible and document.activeElement follow it), after a
+/// field's or the canvas's focus changed. Focus that went to another
+/// window (another app) changes nothing; the page itself having it means
+/// no field. Checked once the change settled (a posted WM_FOCUS_CHECK): a
+/// page's own el.focus() moves the keyboard while its script runs.
+fn queueFocusCheck(s: *Surface) void {
+    if (!s.focus_check_posted) s.focus_check_posted = c.PostMessageW(s.hwnd, WM_FOCUS_CHECK, 0, 0) != 0;
+}
+
+const WM_FOCUS_CHECK: c.UINT = c.WM_APP + 0x54;
+
+fn focusCheck(s: *Surface) void {
+    const f = c.GetFocus() orelse return;
+    var nid: i64 = 0;
+    if (f != s.hwnd) {
+        if (fieldOf(s, f) orelse fieldOf(s, c.GetParent(f))) |fx| {
+            nid = fx.node.id;
+        } else if (c.IsChild(s.hwnd, f) == 0) return;
+    }
+    if (nid == s.focused) return;
+    const old = s.focused;
+    s.focused = nid;
+    const hwnd = s.hwnd;
+    if (old != 0) {
+        _ = s.engine.event(old, "blur", "null");
+        if (liveSurface(hwnd) == null) return; // the page closed its window
+    }
+    if (nid != 0) _ = s.engine.event(nid, "focus", "null");
+}
+
 fn onFieldCommand(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
     if (s.updating) return;
     const fx = fieldOf(s, hwnd) orelse return;
@@ -1717,6 +1754,16 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             return 0;
         },
         c.WM_ERASEBKGND => return 1,
+        // The page itself has the keyboard: a field that had it lost it.
+        c.WM_SETFOCUS => {
+            queueFocusCheck(s);
+            return 0;
+        },
+        WM_FOCUS_CHECK => {
+            s.focus_check_posted = false;
+            focusCheck(s);
+            return 0;
+        },
         WM_DISPLAY_FRAME => {
             onDisplayFrame(s, hwnd);
             return 0;
@@ -1863,7 +1910,13 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         c.WM_COMMAND => {
             s.in_control += 1;
             defer s.in_control -= 1;
-            if (lparam != 0) onFieldCommand(s, @truncate(wparam >> 16), toHandle(c.HWND, @bitCast(lparam)));
+            const code: c.WORD = @truncate(wparam >> 16);
+            // A field took or lost the keyboard.
+            if (code == c.EN_SETFOCUS or code == c.EN_KILLFOCUS or code == c.CBN_SETFOCUS or code == c.CBN_KILLFOCUS) {
+                queueFocusCheck(s);
+                return 0;
+            }
+            if (lparam != 0) onFieldCommand(s, code, toHandle(c.HWND, @bitCast(lparam)));
             return 0;
         },
         // A trackbar (<input type=range>) moved.
@@ -1875,6 +1928,11 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         },
         c.WM_NOTIFY => if (lparam != 0) {
             const hdr: *const c.NMHDR = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            // NM_SETFOCUS / NM_KILLFOCUS (NM_FIRST - 7, - 8): a trackbar's focus.
+            if (hdr.code == @as(c.UINT, @bitCast(@as(i32, -7))) or hdr.code == @as(c.UINT, @bitCast(@as(i32, -8)))) {
+                queueFocusCheck(s);
+                return 0;
+            }
             // NM_CUSTOMDRAW (NM_FIRST - 12; the header's macro doesn't translate).
             if (hdr.code == @as(c.UINT, @bitCast(@as(i32, -12)))) {
                 if (sliderDraw(s, @ptrFromInt(@as(usize, @bitCast(lparam))))) |r| return r;

@@ -17393,7 +17393,7 @@ ${a.stack || ""}`;
       host.focus(renderer.idOf(this, "el"));
     }
   };
-  elProto.blur = function() {
+  Object.getPrototypeOf(document.createElement("div")).blur = elProto.blur = function() {
     if (document.__active === this) document.__active = null;
   };
   elProto.scrollIntoView = function(opts) {
@@ -17426,17 +17426,32 @@ ${a.stack || ""}`;
   var keyboardFocus = false;
   var TEXT_INPUTS = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
   var textField = (el) => el?.localName === "textarea" || el?.isContentEditable || el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
+  var focusEvent = (type, bubbles, relatedTarget) => {
+    const ev = new Event(type, { bubbles });
+    Object.defineProperty(ev, "relatedTarget", { value: relatedTarget || null, configurable: true });
+    return ev;
+  };
   Object.defineProperty(document, "__active", {
     get() {
       return active;
     },
     set(el) {
       if (el === active) return;
-      active?.removeAttribute?.("data-nui-focus");
-      active?.removeAttribute?.("data-nui-focus-visible");
+      const old = active;
+      old?.removeAttribute?.("data-nui-focus");
+      old?.removeAttribute?.("data-nui-focus-visible");
       active = el || null;
       active?.setAttribute?.("data-nui-focus", "");
       if (active && (keyboardFocus || textField(active))) active.setAttribute?.("data-nui-focus-visible", "");
+      const now = active;
+      if (old?.dispatchEvent) {
+        old.dispatchEvent(focusEvent("blur", false, now));
+        old.dispatchEvent(focusEvent("focusout", true, now));
+      }
+      if (now?.dispatchEvent && now === active) {
+        now.dispatchEvent(focusEvent("focus", false, old));
+        now.dispatchEvent(focusEvent("focusin", true, old));
+      }
     },
     configurable: true
   });
