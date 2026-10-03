@@ -16067,7 +16067,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       const flow = [];
       const boxed = childCtx.blockify ? null : this.boxedEnds(el, cs, rematch);
       let runs = [];
-      const inlineBox = (child) => !childCtx.blockify && (ATOMIC_INLINE.has(this.style(child, cs, rematch).display || "inline") || !!boxed?.has(child));
+      const inlineBox2 = (child) => !childCtx.blockify && (ATOMIC_INLINE.has(this.style(child, cs, rematch).display || "inline") || !!boxed?.has(child));
       let afterBox = false;
       const flushRuns = (beforeBox = false) => {
         if (!runs.length) return;
@@ -16092,7 +16092,7 @@ input[type="range"] { height: 20px; margin: 2px; }
           if (underlined(cs)) for (let i = from; i < runs.length; i++) runs[i].u = true;
           continue;
         }
-        const box = inlineBox(child);
+        const box = inlineBox2(child);
         flushRuns(box);
         flow.push({ el: child });
         afterBox = box;
@@ -16396,6 +16396,15 @@ input[type="range"] { height: 20px; margin: 2px; }
         this.parentOf.set(child, el);
         if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el, bg));
         else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper, bg);
+      }
+      if (boxedInline(cs) && runs.length > first) {
+        const ownBg = cs.background ? background(cs.background, color(cs.color))?.color : void 0;
+        const ib = inlineBox(el, cs, fs, ownBg);
+        for (let i = first; i < runs.length; i++) {
+          if (runs[i].br || runs[i].ib) continue;
+          runs[i].ib = ib;
+          if (ownBg && runs[i].bg && runs[i].bg.every((v, j) => v === ownBg[j])) delete runs[i].bg;
+        }
       }
       const ol = inlineOutline(cs, fs, el);
       if (ol) {
@@ -17106,6 +17115,32 @@ input[type="range"] { height: 20px; margin: 2px; }
     return r;
   }
   var underlined = (cs) => /\bunderline\b/.test(cs["text-decoration-line"] || "");
+  var inlineBoxKeys = /* @__PURE__ */ new WeakMap();
+  var inlineBoxKey = 0;
+  function inlineBox(el, cs, fs, bg) {
+    let k = inlineBoxKeys.get(el);
+    if (k === void 0) inlineBoxKeys.set(el, k = ++inlineBoxKey);
+    const sides = ["top", "right", "bottom", "left"];
+    const px = (v) => {
+      const n2 = num2(v || "0", fs);
+      return typeof n2 === "number" && n2 > 0 ? n2 : 0;
+    };
+    const shown2 = (side) => {
+      const st = cs[`border-${side}-style`];
+      return st && st !== "none" && st !== "hidden";
+    };
+    const ib = { k, p: sides.map((d) => px(cs[`padding-${d}`])), m: [0, px(cs["margin-right"]), 0, px(cs["margin-left"])] };
+    const bw = sides.map((d) => shown2(d) ? px(cs[`border-${d}-width`] ?? "medium") || 0 : 0);
+    if (bw.some((w) => w > 0)) {
+      ib.bw = bw;
+      const side = sides.find((d, i) => bw[i] > 0);
+      ib.bc = color(cs[`border-${side}-color`] || "currentcolor", color(cs.color)) || [0, 0, 0, 1];
+    }
+    const br = ["top-left", "top-right", "bottom-right", "bottom-left"].map((c) => px(splitSpaces(cs[`border-${c}-radius`] || "0")[0]));
+    if (br.some((r) => r > 0)) ib.br = br;
+    if (bg && bg[3] > 0) ib.bg = bg;
+    return ib;
+  }
   function runFor(text, cs, fs, src, bg) {
     let t = text;
     const tt = cs["text-transform"];
