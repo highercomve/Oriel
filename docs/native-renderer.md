@@ -583,7 +583,10 @@ A path of many whole circles (a game's balls, eight or more in one path)
 filled nonzero in an opaque color is drawn circle by circle, which gives
 the same pixels (win32.zig and apple_draw.zig fillCircles, OrielCanvas.kt
 fillCircles): one path of hundreds of circles was most of Breakout's frame
-at 500 balls (Android emulator, JS mode: 20 → 55 fps).
+at 500 balls (Android emulator, JS mode: 20 → 55 fps). Android also makes such
+a path's curves only when something needs them (a fill that isn't of
+circles, a stroke, a clip, another kind of segment): its replay at 500
+balls went from 4.9 to 3.1 ms a frame.
 
 Every backend draws canvases. On Android (`OrielCanvas.kt`) the program is
 parsed once per change and replayed into an `android.graphics.Bitmap` of
