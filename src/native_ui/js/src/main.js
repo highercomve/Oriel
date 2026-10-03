@@ -454,8 +454,9 @@ const frameOf = (el) => {
 Object.defineProperties(elProto, {
   offsetWidth: { get() { return frameOf(this)[2]; }, configurable: true },
   offsetHeight: { get() { return frameOf(this)[3]; }, configurable: true },
-  clientWidth: { get() { return frameOf(this)[2]; }, configurable: true },
-  clientHeight: { get() { return frameOf(this)[3]; }, configurable: true },
+  // The root's: the viewport (a page's scrollbars overlay it here).
+  clientWidth: { get() { return this === document.documentElement ? viewport.width : frameOf(this)[2]; }, configurable: true },
+  clientHeight: { get() { return this === document.documentElement ? viewport.height : frameOf(this)[3]; }, configurable: true },
   scrollHeight: { get() { const f = frameOf(this); return f[4] ?? f[3]; }, configurable: true },
   offsetTop: { get() { return frameOf(this)[1]; }, configurable: true },
   offsetLeft: { get() { return frameOf(this)[0]; }, configurable: true },
@@ -635,7 +636,11 @@ setFocusRingOS(platform.os, platform.accent);
 g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: undefined, maxTouchPoints: viewport.coarse ? 5 : 0 };
 Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
 Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
-g.devicePixelRatio = 1;
+// The screen's pixels per CSS px: the backend's scale (platform.dpr:
+// Apple's backing scale, GTK's scale factor, Win32's DPI / 96, Android's
+// density), 1 without one; resolution media queries ask the same.
+viewport.dpr = platform.dpr > 0 ? +platform.dpr : 1;
+Object.defineProperty(g, "devicePixelRatio", { get: () => viewport.dpr, configurable: true });
 g.getComputedStyle = (el) => {
   const cs = renderer?.styleOf(el) || {};
   return new Proxy({}, { get: (_, k) => (k === "getPropertyValue" ? (p) => cs[p] ?? "" : cs[String(k).replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())] ?? "") });
