@@ -1845,6 +1845,18 @@ export class Renderer {
       if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el, bg));
       else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper, bg);
     }
+    // A padded, bordered or rounded inline element amid the text (a <code>
+    // chip): its decoration goes on its runs (`ib`), drawn by the backend
+    // over each line fragment; its own background goes with it.
+    if (boxedInline(cs) && runs.length > first) {
+      const ownBg = cs.background ? background(cs.background, color(cs.color))?.color : undefined;
+      const ib = inlineBox(el, cs, fs, ownBg);
+      for (let i = first; i < runs.length; i++) {
+        if (runs[i].br || runs[i].ib) continue;
+        runs[i].ib = ib;
+        if (ownBg && runs[i].bg && runs[i].bg.every((v, j) => v === ownBg[j])) delete runs[i].bg;
+      }
+    }
     // An inline element has no box: its outline (its own, or the focus
     // ring) goes around its text's line fragments, as browsers draw it.
     const ol = inlineOutline(cs, fs, el);
@@ -2665,6 +2677,35 @@ function makeRunStyle(cs, fs) {
 // text-decoration: underline (it isn't inherited, but it decorates the
 // text of the inline content inside).
 const underlined = (cs) => /\bunderline\b/.test(cs["text-decoration-line"] || "");
+
+// An inline box's decoration for its runs (docs: "Inline boxes"): `k` tells
+// one box from a like one next to it; padding, border widths and margins
+// [top, right, bottom, left] in px, one border color (the top's, or the
+// first side's that has one), circular corner radii in px, and its
+// background. Horizontal padding, border and margin take room in the line;
+// the backend draws the box over each line fragment (box-decoration-break:
+// slice: the start side on the first fragment, the end side on the last).
+// (k stays an element's across renders: a changed one would remeasure the text.)
+const inlineBoxKeys = new WeakMap();
+let inlineBoxKey = 0;
+function inlineBox(el, cs, fs, bg) {
+  let k = inlineBoxKeys.get(el);
+  if (k === undefined) inlineBoxKeys.set(el, (k = ++inlineBoxKey));
+  const sides = ["top", "right", "bottom", "left"];
+  const px = (v) => { const n = num(v || "0", fs); return typeof n === "number" && n > 0 ? n : 0; };
+  const shown = (side) => { const st = cs[`border-${side}-style`]; return st && st !== "none" && st !== "hidden"; };
+  const ib = { k, p: sides.map((d) => px(cs[`padding-${d}`])), m: [0, px(cs["margin-right"]), 0, px(cs["margin-left"])] };
+  const bw = sides.map((d) => (shown(d) ? px(cs[`border-${d}-width`] ?? "medium") || 0 : 0));
+  if (bw.some((w) => w > 0)) {
+    ib.bw = bw;
+    const side = sides.find((d, i) => bw[i] > 0);
+    ib.bc = color(cs[`border-${side}-color`] || "currentcolor", color(cs.color)) || [0, 0, 0, 1];
+  }
+  const br = ["top-left", "top-right", "bottom-right", "bottom-left"].map((c) => px(splitSpaces(cs[`border-${c}-radius`] || "0")[0]));
+  if (br.some((r) => r > 0)) ib.br = br;
+  if (bg && bg[3] > 0) ib.bg = bg;
+  return ib;
+}
 
 function runFor(text, cs, fs, src, bg) {
   let t = text;
