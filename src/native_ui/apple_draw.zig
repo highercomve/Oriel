@@ -182,12 +182,15 @@ extern fn CTLineGetGlyphRuns(line: CFTypeRef) CFTypeRef;
 extern fn CTRunGetStringRange(run: CFTypeRef) CFRange;
 extern fn CTRunGetGlyphCount(run: CFTypeRef) c_long;
 extern fn CTRunGetPositions(run: CFTypeRef, range: CFRange, out: [*]CGPoint) void;
+extern fn CTRunGetAdvances(run: CFTypeRef, range: CFRange, out: [*]CGSize) void;
+extern fn CTRunGetStringIndices(run: CFTypeRef, range: CFRange, out: [*]c_long) void;
 extern fn CTRunGetTypographicBounds(run: CFTypeRef, range: CFRange, ascent: ?*CGFloat, descent: ?*CGFloat, leading: ?*CGFloat) f64;
 extern fn CFArrayGetCount(a: CFTypeRef) c_long;
 extern fn CFArrayGetValueAtIndex(a: CFTypeRef, i: c_long) CFTypeRef;
 const CTParagraphStyleSetting = extern struct { spec: u32, size: usize, value: *const anyopaque };
 extern fn CTParagraphStyleCreate(settings: [*]const CTParagraphStyleSetting, count: usize) ?CTParagraphStyleRef;
 const kCTParagraphStyleSpecifierAlignment: u32 = 0;
+const kCTParagraphStyleSpecifierFirstLineHeadIndent: u32 = 1;
 const kCTParagraphStyleSpecifierLineBreakMode: u32 = 6;
 const kCTParagraphStyleSpecifierMaximumLineHeight: u32 = 8;
 const kCTParagraphStyleSpecifierMinimumLineHeight: u32 = 9;
@@ -449,6 +452,10 @@ fn attributed(comptime font_class: [:0]const u8, n: *const Node) ?CFAttributedSt
             CFRelease(num);
         }
     }
+    // Inline boxes (a padded <code> amid the text): their start and end room
+    // (margin, border, padding) as space after the character before the box
+    // and after its last one; a box that starts the text, a first-line indent.
+    const head = inlineBoxRoom(s, runs, n.props.ls orelse 0);
     // Alignment and line height.
     var settings: [4]CTParagraphStyleSetting = undefined;
     var count: usize = 0;
@@ -459,6 +466,11 @@ fn attributed(comptime font_class: [:0]const u8, n: *const Node) ?CFAttributedSt
     }
     settings[count] = .{ .spec = kCTParagraphStyleSpecifierAlignment, .size = 1, .value = &alignment };
     count += 1;
+    var indent: CGFloat = head;
+    if (indent > 0) {
+        settings[count] = .{ .spec = kCTParagraphStyleSpecifierFirstLineHeadIndent, .size = @sizeOf(CGFloat), .value = &indent };
+        count += 1;
+    }
     // Every line exactly its line box (lineBoxOf: CSS's, or normal as
     // WebKit makes it): CoreText measures lines x that.
     var lh: CGFloat = 0;
@@ -474,6 +486,182 @@ fn attributed(comptime font_class: [:0]const u8, n: *const Node) ?CFAttributedSt
         CFRelease(ps);
     }
     return s;
+}
+
+/// Each inline box's run group: its runs' range in the string (UTF-16
+/// units, as attributed() builds it) and its decoration. Consecutive runs
+/// with the same box (`k`) are one.
+const BoxSpan = struct { start: c_long, end: c_long, ib: tree_mod.InlineBox };
+
+fn inlineBoxSpans(runs: []const tree_mod.Run, out: []BoxSpan) []BoxSpan {
+    var k: usize = 0;
+    var start: c_long = 0;
+    var i: usize = 0;
+    while (i < runs.len) {
+        const len: c_long = @intCast(std.unicode.calcUtf16LeLen(runs[i].t) catch 0);
+        const ib = runs[i].ib orelse {
+            start += len;
+            i += 1;
+            continue;
+        };
+        var end = start + len;
+        while (i + 1 < runs.len and runs[i + 1].ib != null and runs[i + 1].ib.?.k == ib.k) : (i += 1)
+            end += @intCast(std.unicode.calcUtf16LeLen(runs[i + 1].t) catch 0);
+        if (end > start and k < out.len) {
+            out[k] = .{ .start = start, .end = end, .ib = ib };
+            k += 1;
+        }
+        start = end;
+        i += 1;
+    }
+    return out[0..k];
+}
+
+/// The inline boxes' room in the line (kerning: the space after a
+/// character): before a box, after the character before it; after it,
+/// after its last. The first-line indent a box at the very start needs.
+fn inlineBoxRoom(s: CFAttributedStringRef, runs: []const tree_mod.Run, ls: f32) CGFloat {
+    var spans_buf: [64]BoxSpan = undefined;
+    const spans = inlineBoxSpans(runs, &spans_buf);
+    if (spans.len == 0) return 0;
+    // Extra space per character (two boxes can share one), then the kerns.
+    var at: [128]c_long = undefined;
+    var extra: [128]f32 = undefined;
+    var m: usize = 0;
+    var head: CGFloat = 0;
+    const add = struct {
+        fn f(a: []c_long, e: []f32, cnt: *usize, idx: c_long, v: f32) void {
+            if (v <= 0) return;
+            for (0..cnt.*) |q| if (a[q] == idx) {
+                e[q] += v;
+                return;
+            };
+            if (cnt.* >= a.len) return;
+            a[cnt.*] = idx;
+            e[cnt.*] = v;
+            cnt.* += 1;
+        }
+    }.f;
+    for (spans) |sp| {
+        const before = sp.ib.start();
+        if (sp.start == 0) head += before else add(&at, &extra, &m, sp.start - 1, before);
+        add(&at, &extra, &m, sp.end - 1, sp.ib.end());
+    }
+    for (at[0..m], extra[0..m]) |idx, v| {
+        const k: f64 = ls + v;
+        if (CFNumberCreate(null, kCFNumberFloat64Type, &k)) |num| {
+            CFAttributedStringSetAttribute(s, .{ .location = idx, .length = 1 }, kCTKernAttributeName, num);
+            CFRelease(num);
+        }
+    }
+    return head;
+}
+
+/// The inline boxes' decoration (render.js inlineBox) over each line
+/// fragment, under the text: as browsers slice it, the start side (its
+/// border, padding and corners) on the box's first fragment and the end
+/// side on its last; as tall as the font's content area plus the vertical
+/// padding and border (which take no room in the line). In the flipped
+/// CoreText space paintText set up; the boxes are drawn in the page's way
+/// up (a frame `h` tall).
+fn paintInlineBoxes(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, lb: ?LineBox, n: *Node) void {
+    const runs = n.props.runs orelse return;
+    var spans_buf: [64]BoxSpan = undefined;
+    const spans = inlineBoxSpans(runs, &spans_buf);
+    if (spans.len == 0) return;
+    const lines = CTFrameGetLines(frame);
+    const count = CFArrayGetCount(lines);
+    CGContextSaveGState(cg);
+    defer CGContextRestoreGState(cg);
+    // Back to y down (the page's), relative to the text's box.
+    CGContextTranslateCTM(cg, 0, h);
+    CGContextScaleCTM(cg, 1, -1);
+    for (spans) |sp| {
+        const ib = sp.ib;
+        const bw = ib.bw orelse [4]f32{ 0, 0, 0, 0 };
+        var li: c_long = 0;
+        while (li < count) : (li += 1) {
+            const line = CFArrayGetValueAtIndex(lines, li);
+            const lr = CTLineGetStringRange(line);
+            const a = @max(sp.start, lr.location);
+            const b = @min(sp.end, lr.location + lr.length);
+            if (a >= b) continue;
+            const first = a == sp.start;
+            const last = b == sp.end;
+            const o = lineOrigin(frame, li, h, lb);
+            // Its glyphs' extent (their positions and advances: an advance
+            // has the room kerned after a box's last character), and the
+            // font's ascent and descent (its glyph runs').
+            var x0: CGFloat = std.math.floatMax(CGFloat);
+            var x1: CGFloat = -std.math.floatMax(CGFloat);
+            var ascent: CGFloat = 0;
+            var descent: CGFloat = 0;
+            const glyph_runs = CTLineGetGlyphRuns(line);
+            var g: c_long = 0;
+            while (g < CFArrayGetCount(glyph_runs)) : (g += 1) {
+                const run = CFArrayGetValueAtIndex(glyph_runs, g);
+                const sr = CTRunGetStringRange(run);
+                if (@max(a, sr.location) >= @min(b, sr.location + sr.length)) continue;
+                var ra: CGFloat = 0;
+                var rd: CGFloat = 0;
+                _ = CTRunGetTypographicBounds(run, .{ .location = 0, .length = 0 }, &ra, &rd, null);
+                ascent = @max(ascent, ra);
+                descent = @max(descent, rd);
+                const gc: usize = @intCast(@max(0, CTRunGetGlyphCount(run)));
+                var q: usize = 0;
+                while (q < gc) : (q += 32) {
+                    const take = @min(32, gc - q);
+                    var pos: [32]CGPoint = undefined;
+                    var adv: [32]CGSize = undefined;
+                    var idx: [32]c_long = undefined;
+                    const rr: CFRange = .{ .location = @intCast(q), .length = @intCast(take) };
+                    CTRunGetPositions(run, rr, &pos);
+                    CTRunGetAdvances(run, rr, &adv);
+                    CTRunGetStringIndices(run, rr, &idx);
+                    for (0..take) |t| if (idx[t] >= a and idx[t] < b) {
+                        x0 = @min(x0, pos[t].x);
+                        x1 = @max(x1, pos[t].x + adv[t].width);
+                    };
+                }
+            }
+            if (!(x1 > x0)) continue;
+            x0 += o.x;
+            x1 += o.x;
+            if (!last) {
+                // A fragment that wraps: up to the end of the line's text,
+                // not over the space it wraps after.
+                const width = CTLineGetTypographicBounds(line, null, null, null);
+                const text_end: CGFloat = @floatCast(width - CTLineGetTrailingWhitespaceWidth(line));
+                x1 = @min(x1, o.x + text_end);
+            }
+            if (first) x0 -= bw[3] + ib.p[3];
+            if (last) x1 -= ib.m[1];
+            if (x1 <= x0) continue;
+            // y down: the baseline at h - o.y.
+            const base = h - o.y;
+            const top = base - ascent - ib.p[0] - bw[0];
+            const bottom = base + descent + ib.p[2] + bw[2];
+            const box: Rect = .{ .x = @floatCast(x0), .y = @floatCast(top), .w = @floatCast(x1 - x0), .h = @floatCast(bottom - top) };
+            var radii: Radii = .{};
+            if (ib.br) |r| {
+                const keep = [4]bool{ first, last, last, first };
+                for (0..4) |q| if (keep[q]) {
+                    radii.x[q] = r[q];
+                    radii.y[q] = r[q];
+                };
+                radii = radii.fitted(box.w, box.h);
+            }
+            if (ib.bg) |bg| if (bg[3] > 0) {
+                roundRect(cg, box, radii);
+                setFill(cg, bg);
+                CGContextFillPath(cg);
+            };
+            if (ib.bw != null) {
+                const sides = [4]f32{ bw[0], if (last) bw[1] else 0, bw[2], if (first) bw[3] else 0 };
+                border(cg, box, radii, sides, .{ ib.bc, ib.bc, ib.bc, ib.bc }, null);
+            }
+        }
+    }
 }
 
 /// A text node's CoreText objects, kept in `Node.native` from one layout
@@ -604,6 +792,7 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     CGContextTranslateCTM(cg, c.x, c.y + h);
     CGContextScaleCTM(cg, 1, -1);
     CGContextSetTextMatrix(cg, .{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 });
+    paintInlineBoxes(cg, frame, h, lb, n);
     paintRunBackgrounds(cg, frame, h, lb, n);
     defer paintRunRings(cg, frame, h, lb, n);
     if (lb == null) return CTFrameDraw(frame, cg);

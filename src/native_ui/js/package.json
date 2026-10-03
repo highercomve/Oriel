@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node test/url.test.mjs && node test/html.test.mjs && node test/dom-construction.test.mjs && node test/media.test.mjs && node test/gradients.test.mjs && node test/render.test.mjs && node test/observer.test.mjs && node test/events.test.mjs && node test/window-click.test.mjs && node test/tab-focus.test.mjs && node test/dynamic-sheets.test.mjs && node test/intrinsic-width.test.mjs && node test/br.test.mjs && node test/react-inputs.test.mjs && node test/react-real.test.mjs && node test/transitions.test.mjs && node test/animations.test.mjs && node test/frame-start.test.mjs && node test/boxes.test.mjs && node test/boxes-x.test.mjs && node test/sheet-cache.test.mjs && node --expose-gc test/canvas-clear.test.mjs && node test/input-events.test.mjs && node test/harness.mjs"
+    "test": "node test/url.test.mjs && node test/html.test.mjs && node test/dom-construction.test.mjs && node test/media.test.mjs && node test/gradients.test.mjs && node test/render.test.mjs && node test/observer.test.mjs && node test/events.test.mjs && node test/window-click.test.mjs && node test/tab-focus.test.mjs && node test/dynamic-sheets.test.mjs && node test/intrinsic-width.test.mjs && node test/br.test.mjs && node test/inline-box.test.mjs && node test/react-inputs.test.mjs && node test/react-real.test.mjs && node test/transitions.test.mjs && node test/animations.test.mjs && node test/frame-start.test.mjs && node test/boxes.test.mjs && node test/boxes-x.test.mjs && node test/sheet-cache.test.mjs && node --expose-gc test/canvas-clear.test.mjs && node test/input-events.test.mjs && node test/harness.mjs"
   },
   "dependencies": {
     "css-select": "7.0.0",

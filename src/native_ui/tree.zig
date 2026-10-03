@@ -38,6 +38,31 @@ pub const Run = struct {
     /// A focus ring around this run's line fragments (an inline link with
     /// :focus-visible: it has no box of its own).
     ol: ?Outline = null,
+    /// The inline box this run is in (a padded <code> amid the text): its
+    /// decoration over each line fragment (docs "Inline boxes").
+    ib: ?InlineBox = null,
+};
+
+/// An inline box's decoration, the same on each of its runs (render.js
+/// inlineBox). `k` tells one box from a like one beside it. [top, right,
+/// bottom, left] px.
+pub const InlineBox = struct {
+    k: u32 = 0,
+    p: [4]f32 = .{ 0, 0, 0, 0 },
+    m: [4]f32 = .{ 0, 0, 0, 0 },
+    bw: ?[4]f32 = null,
+    bc: Color = .{ 0, 0, 0, 1 },
+    br: ?[4]f32 = null,
+    bg: ?Color = null,
+
+    /// The room it takes in the line before its first character and after
+    /// its last: margin, border and padding on that side.
+    pub fn start(b: InlineBox) f32 {
+        return b.m[3] + (if (b.bw) |w| w[3] else 0) + b.p[3];
+    }
+    pub fn end(b: InlineBox) f32 {
+        return b.m[1] + (if (b.bw) |w| w[1] else 0) + b.p[1];
+    }
 };
 
 // A text-only update owns its new string separately from the unchanged
