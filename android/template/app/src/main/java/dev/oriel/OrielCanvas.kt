@@ -374,6 +374,24 @@ private class Replay(private val c: Canvas) {
     private var circleSweep = 0f
     private val circleCtm = Matrix()
     private val ctmNow = Matrix()
+    /**
+     * The current path as whole circles in the bitmap's space (cx, cy, r
+     * each), while it's nothing else: a game's balls in one path. Filled
+     * opaque, they're drawn one by one (fillCircles), as win32.zig and
+     * apple_draw.zig do: a path of hundreds of circles was most of
+     * Breakout's frame at 500 balls.
+     */
+    private var circles = FloatArray(96)
+    private var circleCount = 0
+    /** The path is only `circles` (each starting fresh or at a moveTo on
+     *  its own start point), all wound the same way. */
+    private var onlyCircles = true
+    private var circlesCcw = false
+    /** A moveTo not yet followed by anything (the bitmap's space). */
+    private var moved = false
+    private var moveX = 0f
+    private var moveY = 0f
+    private val m9 = FloatArray(9)
 
     fun run(ops: List<CvOp>) {
         for (op in ops) {
@@ -399,12 +417,15 @@ private class Replay(private val c: Canvas) {
             is CvOp.Translate -> { c.translate(op.x, op.y); st.ctm.preTranslate(op.x, op.y) }
             is CvOp.Scale -> if (op.x == 0f || op.y == 0f) st.singular = true else { c.scale(op.x, op.y); st.ctm.preScale(op.x, op.y) }
             is CvOp.Rotate -> Math.toDegrees(op.a.toDouble()).toFloat().let { c.rotate(it); st.ctm.preRotate(it) }
-            CvOp.BeginPath -> { path.reset(); circle = false; circlePending = false }
-            CvOp.ClosePath -> { pathNow(); path.close() }
-            is CvOp.MoveTo -> { pathNow(); circle = false; map(op.x, op.y); path.moveTo(pt[0], pt[1]) }
-            is CvOp.LineTo -> { pathNow(); circle = false; map(op.x, op.y); if (path.isEmpty) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1]) }
+            CvOp.BeginPath -> { path.reset(); circle = false; circlePending = false; circleCount = 0; onlyCircles = true; moved = false }
+            CvOp.ClosePath -> { pathNow(); path.close(); notCircles() }
+            is CvOp.MoveTo -> {
+                pathNow(); circle = false; map(op.x, op.y); path.moveTo(pt[0], pt[1])
+                moved = true; moveX = pt[0]; moveY = pt[1]
+            }
+            is CvOp.LineTo -> { pathNow(); circle = false; notCircles(); map(op.x, op.y); if (path.isEmpty) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1]) }
             is CvOp.Rect -> {
-                pathNow(); circle = false
+                pathNow(); circle = false; notCircles()
                 map(op.x, op.y); path.moveTo(pt[0], pt[1])
                 map(op.x + op.w, op.y); path.lineTo(pt[0], pt[1])
                 map(op.x + op.w, op.y + op.h); path.lineTo(pt[0], pt[1])
@@ -414,19 +435,20 @@ private class Replay(private val c: Canvas) {
             }
             is CvOp.Arc -> arc(op)
             is CvOp.Quad -> {
-                pathNow(); circle = false
+                pathNow(); circle = false; notCircles()
                 if (path.isEmpty) { map(op.cx, op.cy); path.moveTo(pt[0], pt[1]) }
                 map(op.cx, op.cy, op.x, op.y); path.quadTo(pt[0], pt[1], pt[2], pt[3])
             }
             is CvOp.Bezier -> {
-                pathNow(); circle = false
+                pathNow(); circle = false; notCircles()
                 if (path.isEmpty) { map(op.c1x, op.c1y); path.moveTo(pt[0], pt[1]) }
                 map(op.c1x, op.c1y, op.c2x, op.c2y, op.x, op.y); path.cubicTo(pt[0], pt[1], pt[2], pt[3], pt[4], pt[5])
             }
             is CvOp.Fill -> {
                 path.fillType = if (op.evenOdd) Path.FillType.EVEN_ODD else Path.FillType.WINDING
                 if (use(st.fill, Paint.Style.FILL)) {
-                    if (circle && st.ctm == circleCtm) c.drawCircle(circleX, circleY, circleR, paint)
+                    if (!op.evenOdd && fillCircles()) Unit
+                    else if (circle && st.ctm == circleCtm) c.drawCircle(circleX, circleY, circleR, paint)
                     else { pathNow(); inUserSpace()?.let { c.drawPath(it, paint) } }
                 }
             }
@@ -493,6 +515,7 @@ private class Replay(private val c: Canvas) {
             if (sweep <= -twoPi) sweep = -twoPi
             else if (sweep > 0) sweep = sweep % twoPi - twoPi
         }
+        trackCircle(a, sweep, twoPi)
         pathNow()
         if (path.isEmpty && abs(sweep) == twoPi && a.r > 0) {
             circle = true; circlePending = true
@@ -501,6 +524,62 @@ private class Replay(private val c: Canvas) {
         }
         circle = false
         arcPath(a.x, a.y, a.r, a.a0, sweep)
+    }
+
+    /** Something other than a whole circle joined the path. */
+    private fun notCircles() {
+        onlyCircles = false
+        circleCount = 0
+    }
+
+    /**
+     * An arc into the path: still only circles if it's a whole one, under a
+     * transform that keeps circles round (no skew, the same scale both
+     * ways), starting fresh or at the moveTo just before it on its own
+     * start point, wound as the others.
+     */
+    private fun trackCircle(a: CvOp.Arc, sweep: Float, twoPi: Float) {
+        if (!onlyCircles) return
+        st.ctm.getValues(m9)
+        val sx = m9[Matrix.MSCALE_X]; val kx = m9[Matrix.MSKEW_X]; val ky = m9[Matrix.MSKEW_Y]; val sy = m9[Matrix.MSCALE_Y]
+        val s2 = sx * sx + ky * ky
+        val similar = abs(s2 - (kx * kx + sy * sy)) <= 1e-4f * s2 && abs(sx * kx + ky * sy) <= 1e-4f * s2 &&
+            m9[Matrix.MPERSP_0] == 0f && m9[Matrix.MPERSP_1] == 0f
+        val det = sx * sy - kx * ky
+        val ccw = (sweep < 0) != (det < 0)
+        if (abs(sweep) != twoPi || !similar || !(s2 > 0) || (circleCount > 0 && ccw != circlesCcw)) return notCircles()
+        map(a.x + a.r * cos(a.a0), a.y + a.r * sin(a.a0), a.x, a.y)
+        val sxp = pt[0]; val syp = pt[1]; val cx = pt[2]; val cy = pt[3]
+        if (moved) {
+            // Joined to its moveTo by a line unless it starts right there.
+            if (abs(sxp - moveX) > 0.01f || abs(syp - moveY) > 0.01f) return notCircles()
+        } else if (circleCount > 0 || !path.isEmpty || circlePending) return notCircles()
+        moved = false
+        circlesCcw = ccw
+        if (circleCount * 3 + 3 > circles.size) circles = circles.copyOf(circles.size * 2)
+        circles[circleCount * 3] = cx; circles[circleCount * 3 + 1] = cy; circles[circleCount * 3 + 2] = a.r * sqrt(s2)
+        circleCount++
+    }
+
+    /**
+     * The path filled as its circles, one by one, when that's the same
+     * picture (win32.zig fillCircles): a nonzero fill (even-odd makes holes
+     * where they overlap) of whole circles wound one way (their union), in
+     * an opaque color (an overlap can't blend twice). Many circles only: a
+     * few go the usual way. False: fill the path.
+     */
+    private fun fillCircles(): Boolean {
+        if (!onlyCircles || circleCount < 8 || moved) return false
+        val fill = st.fill as? CvPaint.Solid ?: return false
+        if (Color.alpha(fill.color) != 255 || st.alpha < 1f) return false
+        // The circles are in the bitmap's space: drawn under the canvas's
+        // own transform without the program's.
+        if (!st.ctm.invert(inverse)) return false
+        c.save()
+        c.concat(inverse)
+        for (i in 0 until circleCount) c.drawCircle(circles[i * 3], circles[i * 3 + 1], circles[i * 3 + 2], paint)
+        c.restore()
+        return true
     }
 
     /** The pending circle into `path`, under the transform it was given in. */
