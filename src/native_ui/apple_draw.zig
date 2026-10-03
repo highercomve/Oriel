@@ -415,10 +415,10 @@ fn mixedFonts(n: *const Node) bool {
     return false;
 }
 
-/// The lines' places of `frame` (as many as fit `out`), from each line's
-/// fonts (its glyph runs') and the strut.
-fn linePlaces(comptime font_class: [:0]const u8, n: *const Node, frame: CTFrameRef, out: []LinePlace) []LinePlace {
-    const strut = font(font_class, n.props.fz orelse 16, 400, false, n.props.mono, n.props.ff) orelse return out[0..0];
+/// The lines' places of `frame` (one per line, owned by the caller), from
+/// each line's fonts (its glyph runs') and the strut.
+fn linePlaces(comptime font_class: [:0]const u8, n: *const Node, frame: CTFrameRef) ?[]LinePlace {
+    const strut = font(font_class, n.props.fz orelse 16, 400, false, n.props.mono, n.props.ff) orelse return null;
     const lh: ?f32 = if (n.props.lh) |v| (if (v >= 1 and std.math.isFinite(v)) @floor(v) else null) else null;
     const parts = struct {
         // Above and below the baseline: the line box, half its leading above the ascent.
@@ -431,9 +431,10 @@ fn linePlaces(comptime font_class: [:0]const u8, n: *const Node, frame: CTFrameR
     const sp = parts(lineMetrics(strut), lh);
     const lines = CTFrameGetLines(frame);
     const count: usize = @intCast(@max(0, CFArrayGetCount(lines)));
+    const out = std.heap.smp_allocator.alloc(LinePlace, count) catch return null;
     var top: f32 = 0;
     var k: usize = 0;
-    while (k < count and k < out.len) : (k += 1) {
+    while (k < count) : (k += 1) {
         const line = CFArrayGetValueAtIndex(lines, @intCast(k));
         var above = sp[0];
         var below = sp[1];
@@ -449,7 +450,7 @@ fn linePlaces(comptime font_class: [:0]const u8, n: *const Node, frame: CTFrameR
         out[k] = .{ .top = top, .base = top + above, .h = above + below };
         top += above + below;
     }
-    return out[0..k];
+    return out;
 }
 
 fn lineBoxOf(comptime font_class: [:0]const u8, n: *const Node) ?LineBox {
@@ -828,8 +829,8 @@ fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 
         defer CGPathRelease(path);
         const frame = CTFramesetterCreateFrame(fs, .{ .location = 0, .length = 0 }, path, null) orelse break :mixed;
         defer CFRelease(frame);
-        var buf: [512]LinePlace = undefined;
-        const places = linePlaces(font_class, n, frame, &buf);
+        const places = linePlaces(font_class, n, frame) orelse break :mixed;
+        defer std.heap.smp_allocator.free(places);
         if (places.len == 0) break :mixed;
         n.baseline = places[0].base;
         const last = places[places.len - 1];
@@ -880,10 +881,8 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     // Several fonts: each line placed by its own (kept with the frame).
     const mixed = mixedFonts(n);
     if (mixed and (cache.places == null or cache.places_w != w)) {
-        var buf: [512]LinePlace = undefined;
-        const got = linePlaces(font_class, n, frame, &buf);
         if (cache.places) |old| std.heap.smp_allocator.free(old);
-        cache.places = std.heap.smp_allocator.dupe(LinePlace, got) catch null;
+        cache.places = linePlaces(font_class, n, frame);
         cache.places_w = w;
     }
     const pl: Placer = .{ .lb = lb, .places = if (mixed) cache.places else null };
