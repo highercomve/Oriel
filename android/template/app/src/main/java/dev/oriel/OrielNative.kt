@@ -1637,7 +1637,16 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                     canvas.restore()
                 }
                 "icon" -> n.icon?.let { icon(canvas, it, f[r + 9], f[r + 10], f[r + 11], f[r + 12]) }
-                "image" -> n.image?.let { image(canvas, it, n.p.optString("fit", "fill"), f[r + 9], f[r + 10], f[r + 11], f[r + 12]) }
+                "image" -> n.image?.let {
+                    // Clipped to the content edge's curve, as browsers clip a
+                    // replaced element: each corner less the border and padding on its sides.
+                    val cx = f[r + 9]; val cy = f[r + 10]; val cw = f[r + 11]; val ch = f[r + 12]
+                    val inner = inset(radii, cx - x, cy - y, x + w - cx - cw, y + h - cy - ch)
+                    val clipped = canvas.save()
+                    if (inner != null) { roundRect(cx, cy, cw, ch, inner); canvas.clipPath(path) }
+                    image(canvas, it, n.p.optString("fit", "fill"), cx, cy, cw, ch)
+                    canvas.restoreToCount(clipped)
+                }
                 "canvas" -> if (n.canvasOps.isNotEmpty()) {
                     // At the box, clipped to its rounded corners (radii set above).
                     val clip = radii?.let { roundRect(x, y, w, h, it); path }
@@ -1678,11 +1687,12 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         val bx = x - grow; val by = y - grow; val bw = w + 2 * grow; val bh = h + 2 * grow
         if (bw <= 2 * ow || bh <= 2 * ow) return
         val least = ol.optDouble("r", 0.0).toFloat()
-        val outer = FloatArray(4) { val x = r?.get(it) ?: 0f; max(if (x > 0) max(0f, x + grow) else 0f, least) }
+        val g = grown(r, grow)
+        val outer = FloatArray(8) { max(g?.get(it) ?: 0f, least) }
         ol.optJSONArray("h")?.let { hj ->
             val halo = NuiNode.color(hj)
             if (Color.alpha(halo) == 0) return@let
-            roundRect(bx - 0.5f, by - 0.5f, bw + 1, bh + 1, FloatArray(4) { if (outer[it] > 0) outer[it] + 0.5f else 0f })
+            roundRect(bx - 0.5f, by - 0.5f, bw + 1, bh + 1, grown(outer, 0.5f))
             stroke.color = halo
             stroke.strokeWidth = 1f
             stroke.strokeJoin = Paint.Join.MITER
@@ -1690,8 +1700,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             canvas.drawPath(path, stroke)
         }
         val half = ow / 2
-        val square = outer.all { it <= 0 }
-        roundRect(bx + half, by + half, bw - ow, bh - ow, if (square) null else FloatArray(4) { if (outer[it] > 0) max(0f, outer[it] - half) else 0f })
+        val square = square(outer)
+        roundRect(bx + half, by + half, bw - ow, bh - ow, if (square) null else shrunk(outer, half))
         stroke.color = color
         stroke.strokeWidth = ow
         stroke.strokeJoin = Paint.Join.MITER
@@ -1732,15 +1742,12 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         stroke.strokeCap = Paint.Cap.BUTT
     }
 
-    /** Clip to the box's padding box: inset by the borders `bw` (top, right,
-     *  bottom, left), each radius less the wider border at its corner. */
+    /** Clip to the box's padding box (tree.zig paddingClipXY): inset by the
+     *  borders `bw` (top, right, bottom, left), each corner's ellipse less
+     *  the borders on its two sides. */
     private fun paddingClip(canvas: Canvas, x: Float, y: Float, w: Float, h: Float, r: FloatArray, bw: FloatArray?) {
         val b = bw ?: FloatArray(4)
-        val inner = floatArrayOf(
-            max(0f, r[0] - max(b[0], b[3])), max(0f, r[1] - max(b[0], b[1])),
-            max(0f, r[2] - max(b[2], b[1])), max(0f, r[3] - max(b[2], b[3])),
-        )
-        roundRect(x + b[3], y + b[0], max(0f, w - b[1] - b[3]), max(0f, h - b[0] - b[2]), inner)
+        roundRect(x + b[3], y + b[0], max(0f, w - b[1] - b[3]), max(0f, h - b[0] - b[2]), inset(r, b[3], b[0], b[1], b[2]))
         canvas.clipPath(path)
     }
 
@@ -1813,29 +1820,63 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         }
     }
 
+    /**
+     * The corners as CSS draws them (tree.zig radiusXY): `br` is four
+     * corners, each one length or [x, y]; an x percentage is of the box's
+     * width, a y one of its height, and all are scaled down together until
+     * adjacent ones fit (Radii.fitted). Path.addRoundRect's order: (x, y)
+     * each, top left, top right, bottom right, bottom left; a corner with
+     * either axis 0 is square. Null when every corner is.
+     */
     private fun radii(n: NuiNode, w: Float, h: Float): FloatArray? {
         val br = n.br ?: return null
-        val lim = min(w, h) / 2
-        val out = FloatArray(4)
-        var any = false
+        val r = FloatArray(8)
         for (i in 0 until 4) {
             val v = br.opt(i)
-            val px = when (v) {
-                is Number -> v.toFloat()
-                is String -> if (v.endsWith("%")) (v.dropLast(1).toFloatOrNull() ?: 0f) / 100 * min(w, h) else 0f
-                else -> 0f
-            }
-            out[i] = min(lim, px)
-            if (out[i] > 0) any = true
+            val xy = v as? JSONArray
+            val rx = if (xy != null && xy.length() == 2) boxLen(xy.opt(0), w) else boxLen(v, w)
+            val ry = if (xy != null && xy.length() == 2) boxLen(xy.opt(1), h) else boxLen(v, h)
+            if (rx > 0 && ry > 0) { r[2 * i] = rx; r[2 * i + 1] = ry }
         }
-        return if (any) out else null
+        fun fit(len: Float, sum: Float) = if (sum > 0) max(0f, len) / sum else 1f
+        val f = min(min(fit(w, r[0] + r[2]), fit(w, r[6] + r[4])), min(fit(h, r[1] + r[7]), fit(h, r[3] + r[5])))
+        if (f < 1) for (i in r.indices) r[i] *= f
+        return if (square(r)) null else r
+    }
+
+    /** No rounded corner (Radii.square). */
+    private fun square(r: FloatArray?) = r == null || (0 until 4).none { r[2 * it] > 0 && r[2 * it + 1] > 0 }
+
+    /** Each rounded corner grown by `d` on both axes, a square one staying square (Radii.grown). */
+    private fun grown(r: FloatArray?, d: Float): FloatArray? {
+        if (r == null) return null
+        val out = FloatArray(8)
+        for (i in 0 until 4) if (r[2 * i] > 0 && r[2 * i + 1] > 0) {
+            out[2 * i] = max(0f, r[2 * i] + d); out[2 * i + 1] = max(0f, r[2 * i + 1] + d)
+        }
+        return if (square(out)) null else out
+    }
+
+    /** Each corner less `d` on both axes (a stroke's middle inside the box). */
+    private fun shrunk(r: FloatArray?, d: Float): FloatArray? = r?.let { a -> FloatArray(8) { max(0f, a[it] - d) } }
+
+    /**
+     * The radii inside the box's edges inset by l, t, r, b (tree.zig
+     * paddingBoxXY): each corner's x radius less its side's (left or
+     * right) inset, its y radius less the top's or bottom's.
+     */
+    private fun inset(r: FloatArray?, l: Float, t: Float, rr: Float, b: Float): FloatArray? {
+        if (r == null) return null
+        val out = floatArrayOf(r[0] - l, r[1] - t, r[2] - rr, r[3] - t, r[4] - rr, r[5] - b, r[6] - l, r[7] - b)
+        for (i in out.indices) out[i] = max(0f, out[i])
+        return if (square(out)) null else out
     }
 
     private fun roundRect(x: Float, y: Float, w: Float, h: Float, r: FloatArray?) {
         path.reset()
         rect.set(x, y, x + w, y + h)
-        if (r == null) path.addRect(rect, Path.Direction.CW)
-        else path.addRoundRect(rect, floatArrayOf(r[0], r[0], r[1], r[1], r[2], r[2], r[3], r[3]), Path.Direction.CW)
+        if (square(r)) path.addRect(rect, Path.Direction.CW)
+        else path.addRoundRect(rect, r!!, Path.Direction.CW)
     }
 
     /** A gradient length: px (a number) or "50%" of `total`. */
@@ -1905,7 +1946,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         val oneColor = drawn.all { colors[it] == colors[drawn[0]] }
         if (bw[0] == bw[1] && bw[1] == bw[2] && bw[2] == bw[3] && oneColor) {
             val half = bw[0] / 2
-            roundRect(x + half, y + half, w - bw[0], h - bw[0], r?.let { a -> FloatArray(4) { max(0f, a[it] - half) } })
+            roundRect(x + half, y + half, w - bw[0], h - bw[0], shrunk(r, half))
             stroke.color = colors[0]
             stroke.strokeWidth = bw[0]
             stroke.strokeCap = Paint.Cap.BUTT
@@ -1913,7 +1954,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             canvas.drawPath(path, stroke)
             return
         }
-        sides(canvas, x, y, w, h, r ?: FloatArray(4), bw, colors, oneColor)
+        sides(canvas, x, y, w, h, r ?: FloatArray(8), bw, colors, oneColor)
     }
 
     private val ring = Path()
@@ -1930,14 +1971,11 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     private fun sides(canvas: Canvas, x: Float, y: Float, w: Float, h: Float, r: FloatArray, bw: FloatArray, colors: IntArray, oneColor: Boolean) {
         val ix = x + bw[3]; val iy = y + bw[0]
         val iw = max(0f, w - bw[1] - bw[3]); val ih = max(0f, h - bw[0] - bw[2])
-        // Inner corners: (rx, ry) each, top left, top right, bottom right, bottom left.
-        val innerRadii = floatArrayOf(
-            max(0f, r[0] - bw[3]), max(0f, r[0] - bw[0]), max(0f, r[1] - bw[1]), max(0f, r[1] - bw[0]),
-            max(0f, r[2] - bw[1]), max(0f, r[2] - bw[2]), max(0f, r[3] - bw[3]), max(0f, r[3] - bw[2]),
-        )
+        // Inner corners: each outer ellipse less the borders on its two sides.
+        val innerRadii = inset(r, bw[3], bw[0], bw[1], bw[2]) ?: FloatArray(8)
         ring.reset()
         ring.fillType = Path.FillType.EVEN_ODD
-        ring.addRoundRect(RectF(x, y, x + w, y + h), floatArrayOf(r[0], r[0], r[1], r[1], r[2], r[2], r[3], r[3]), Path.Direction.CW)
+        ring.addRoundRect(RectF(x, y, x + w, y + h), r, Path.Direction.CW)
         ring.addRoundRect(RectF(ix, iy, ix + iw, iy + ih), innerRadii, Path.Direction.CW)
         if (oneColor) {
             fill.color = colors[(0 until 4).first { bw[it] > 0 }]
@@ -1957,11 +1995,22 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             if (dx == 0f && dy == 0f) t = 0f
             floatArrayOf(outer[k][0] + max(0f, t) * dx, outer[k][1] + max(0f, t) * dy)
         }
+        // Neighboring sides of one color share one wedge (no seam where two
+        // anti-aliased clips would meet): a run of them starts after a side
+        // of another color (apple_draw.zig's roundedSides).
+        fun sameAs(a: Int, b: Int) = bw[a] > 0 && bw[b] > 0 && colors[a] == colors[b]
         for (i in 0 until 4) {
             if (bw[i] <= 0 || Color.alpha(colors[i]) == 0) continue
-            val j = (i + 1) % 4
+            if (sameAs(i, (i + 3) % 4)) continue // in the run before it
             wedge.reset()
-            wedge.moveTo(outer[i][0], outer[i][1]); wedge.lineTo(outer[j][0], outer[j][1])
+            wedge.moveTo(outer[i][0], outer[i][1])
+            var last = i
+            while (sameAs(last, (last + 1) % 4) && (last + 1) % 4 != i) {
+                last = (last + 1) % 4
+                wedge.lineTo(outer[last][0], outer[last][1])
+            }
+            val j = (last + 1) % 4
+            wedge.lineTo(outer[j][0], outer[j][1])
             wedge.lineTo(join[j][0], join[j][1]); wedge.lineTo(mx, my); wedge.lineTo(join[i][0], join[i][1])
             wedge.close()
             canvas.save()
@@ -1977,7 +2026,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         val sx = sh.optDouble("x", 0.0).toFloat(); val sy = sh.optDouble("y", 0.0).toFloat()
         val blur = sh.optDouble("blur", 0.0).toFloat(); val spread = sh.optDouble("spread", 0.0).toFloat()
         val c = sh.optJSONArray("color")?.let { NuiNode.color(it) } ?: Color.argb(77, 0, 0, 0)
-        roundRect(x + sx - spread, y + sy - spread, w + 2 * spread, h + 2 * spread, FloatArray(4) { max(0f, (r?.get(it) ?: 0f) + spread) })
+        // Its rounded corners grown by the spread, square ones staying square (Radii.grown).
+        roundRect(x + sx - spread, y + sy - spread, w + 2 * spread, h + 2 * spread, grown(r, spread))
         shadowPaint.color = c
         // Skia's blur radius r is sigma = 0.57735 r + 0.5; it scales with the canvas (dp).
         shadowPaint.maskFilter = if (blur > 0) BlurMaskFilter(max(0.01f, (blur / 2 - 0.5f) / 0.57735f), BlurMaskFilter.Blur.NORMAL) else null
