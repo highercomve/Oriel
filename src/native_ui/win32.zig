@@ -284,6 +284,8 @@ pub const Surface = struct {
             .font_metrics = fontMetrics,
             .invoke = invoke,
             .focus = focus,
+            .selection = selection,
+            .set_selection = setSelection,
             .props = propsChanged,
             .text = textChanged,
         }, assets, platform_json, label, url, w, h);
@@ -744,6 +746,77 @@ fn focus(ctx: *anyopaque, node: *Node) void {
     // had it, so typing goes to the page.
     const had = c.GetFocus() orelse return;
     if (had != s.hwnd and c.IsChild(s.hwnd, had) != 0) _ = c.SetFocus(s.hwnd);
+}
+
+/// Backend.selection: an edit's EM_GETSEL, in its value's units (a
+/// textarea's CR LF line ends counted as the value's one LF).
+fn selection(ctx: *anyopaque, node: *Node, out: *[2]u32) bool {
+    const s = surfaceOf(ctx);
+    const f = s.fields.get(node.id) orelse return false;
+    if (f.kind != .input and f.kind != .textarea) return false;
+    var a: c.DWORD = 0;
+    var b: c.DWORD = 0;
+    _ = c.SendMessageW(f.hwnd, c.EM_GETSEL, @intFromPtr(&a), @bitCast(@intFromPtr(&b)));
+    out.* = .{ a, b };
+    if (f.kind == .textarea) {
+        const crs = editCrs(s, f.hwnd, @max(a, b)) orelse return true;
+        out.* = .{ a - crs[0], b - crs[1] };
+    }
+    return true;
+}
+
+/// Backend.set_selection: EM_SETSEL (a textarea's LF as its CR LF),
+/// scrolled to.
+fn setSelection(ctx: *anyopaque, node: *Node, start: u32, end: u32) void {
+    const s = surfaceOf(ctx);
+    const f = s.fields.get(node.id) orelse return;
+    if (f.kind != .input and f.kind != .textarea) return;
+    var a = start;
+    var b = end;
+    if (f.kind == .textarea) {
+        a += valueLineBreaks(s, f.hwnd, start);
+        b += valueLineBreaks(s, f.hwnd, end);
+    }
+    _ = c.SendMessageW(f.hwnd, c.EM_SETSEL, a, @intCast(b));
+    _ = c.SendMessageW(f.hwnd, c.EM_SCROLLCARET, 0, 0);
+}
+
+/// How many CRs an edit's text has before positions a and b (its units),
+/// for the first `upto` units read.
+fn editCrs(s: *Surface, hwnd: c.HWND, upto: u32) ?[2]u32 {
+    var a: c.DWORD = 0;
+    var b: c.DWORD = 0;
+    _ = c.SendMessageW(hwnd, c.EM_GETSEL, @intFromPtr(&a), @bitCast(@intFromPtr(&b)));
+    const len: usize = @intCast(c.GetWindowTextLengthW(hwnd));
+    const buf = s.gpa.alloc(u16, len + 1) catch return null;
+    defer s.gpa.free(buf);
+    const got: usize = @intCast(c.GetWindowTextW(hwnd, buf.ptr, @intCast(len + 1)));
+    var out: [2]u32 = .{ 0, 0 };
+    for (buf[0..@min(got, upto)], 0..) |u, i| if (u == 0x0D) {
+        if (i < a) out[0] += 1;
+        if (i < b) out[1] += 1;
+    };
+    return out;
+}
+
+/// How many line breaks a textarea's value has before value position `at`
+/// (each is CR LF, one unit more, in the edit).
+fn valueLineBreaks(s: *Surface, hwnd: c.HWND, at: u32) u32 {
+    const len: usize = @intCast(c.GetWindowTextLengthW(hwnd));
+    const buf = s.gpa.alloc(u16, len + 1) catch return 0;
+    defer s.gpa.free(buf);
+    const got: usize = @intCast(c.GetWindowTextW(hwnd, buf.ptr, @intCast(len + 1)));
+    var value_pos: u32 = 0;
+    var breaks: u32 = 0;
+    for (buf[0..got]) |u| {
+        if (value_pos >= at) break;
+        if (u == 0x0D) {
+            breaks += 1;
+            continue;
+        }
+        value_pos += 1;
+    }
+    return breaks;
 }
 
 fn removed(ctx: *anyopaque, node: *Node) void {
@@ -1364,7 +1437,18 @@ fn onFieldCommand(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
             if (fx.field.kind == .textarea and fx.field.ph != null) _ = c.InvalidateRect(hwnd, null, c.TRUE);
             const text = fieldText(s, hwnd) orelse return;
             defer s.gpa.free(text);
-            sendValue(s, fx.node, "input", text);
+            // [value, inputType, data]: the edit its beforeinput announced
+            // (a typed character, a deletion, a paste); else typing's.
+            const value = std.json.Stringify.valueAlloc(s.gpa, text, .{}) catch return;
+            defer s.gpa.free(value);
+            const known = edit_hwnd == hwnd;
+            const kind = if (known) edit_type else "insertText";
+            const data = if (known and edit_text != null) std.json.Stringify.valueAlloc(s.gpa, edit_text.?, .{}) catch return else null;
+            defer if (data) |d| s.gpa.free(d);
+            edit_hwnd = null;
+            const json = std.fmt.allocPrint(s.gpa, "[{s},\"{s}\",{s}]", .{ value, kind, data orelse "null" }) catch return;
+            defer s.gpa.free(json);
+            _ = s.engine.event(fx.node.id, "input", json);
         },
         .select => if (code == c.CBN_SELCHANGE) {
             const i = c.SendMessageW(hwnd, c.CB_GETCURSEL, 0, 0);
@@ -1413,6 +1497,7 @@ fn fieldKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool 
     switch (msg) {
         c.WM_KEYDOWN, c.WM_SYSKEYDOWN => {
             key_eaten = null;
+            edit_hwnd = null;
             key_ime = wparam == c.VK_PROCESSKEY;
             if (key_ime) return false;
             // The key a WM_CHAR from this one belongs to (its keyup's).
@@ -1433,7 +1518,20 @@ fn fieldKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool 
             // character (a multiline edit would close a dialog).
             const tab = wparam == c.VK_TAB and !ctrl and !alt;
             if (tab or prevented or (wparam == c.VK_RETURN and single_line) or wparam == c.VK_ESCAPE) key_eaten = hwnd;
-            return tab or prevented or (wparam == c.VK_RETURN and single_line);
+            if (tab or prevented or (wparam == c.VK_RETURN and single_line)) return true;
+            // The edit this key makes: beforeinput first; prevented, the
+            // field doesn't make it (its WM_CHAR is eaten too).
+            if (edit and !alt) if (keyEdit(hwnd, wparam, ctrl, single_line)) |kind| {
+                // A paste's data is the text it inserts.
+                const pasted = if (std.mem.eql(u8, kind, "insertFromPaste")) pasteText(s, hwnd, single_line) else null;
+                defer if (pasted) |t| s.gpa.free(t);
+                if (beforeInput(s, id, hwnd, kind, pasted)) {
+                    key_eaten = hwnd;
+                    return true;
+                }
+                if (c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null) return true;
+            };
+            return false;
         },
         c.WM_CHAR => {
             if (key_eaten == hwnd) return true;
@@ -1444,13 +1542,77 @@ fn fieldKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool 
             var buf: [8]u8 = undefined;
             const len = std.unicode.utf16LeToUtf8(&buf, units[0..1]) catch return false;
             const prevented = sendKey(s, id, buf[0..len], s.char_vk, repeated(lparam));
-            return prevented or c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null;
+            if (prevented or c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null) return true;
+            // Then the edit: insertText, the character.
+            return beforeInput(s, id, hwnd, "insertText", buf[0..len]) or c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null;
         },
         else => {
             sendKeyUp(s, id, wparam);
             return c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null;
         },
     }
+}
+
+/// The edit a key makes in an edit control, as Chromium names it
+/// (InputEvent.inputType), or null (it moves the caret, or does nothing:
+/// a backspace at the start).
+fn keyEdit(hwnd: c.HWND, vk: c.WPARAM, ctrl: bool, single_line: bool) ?[]const u8 {
+    var a: c.DWORD = 0;
+    var b: c.DWORD = 0;
+    _ = c.SendMessageW(hwnd, c.EM_GETSEL, @intFromPtr(&a), @bitCast(@intFromPtr(&b)));
+    const len: c.DWORD = @intCast(c.GetWindowTextLengthW(hwnd));
+    const selected = a != b;
+    return switch (vk) {
+        c.VK_BACK => if (!selected and a == 0) null else if (ctrl) "deleteWordBackward" else "deleteContentBackward",
+        c.VK_DELETE => if (!selected and a >= len) null else if (ctrl) "deleteWordForward" else "deleteContentForward",
+        c.VK_RETURN => if (single_line) null else "insertLineBreak",
+        'V' => if (ctrl) "insertFromPaste" else null,
+        'X' => if (ctrl and selected) "deleteByCut" else null,
+        'Z' => if (ctrl) "historyUndo" else null,
+        else => null,
+    };
+}
+
+/// The edit an edit control is about to make, for its input event
+/// (EN_CHANGE): its inputType and text (owned), set by beforeInput.
+var edit_hwnd: c.HWND = null;
+var edit_type: []const u8 = "";
+var edit_text: ?[]u8 = null;
+
+/// beforeinput on field `id` for an edit (`data`: the text it inserts);
+/// true when the page prevented it. Remembered for the input event.
+fn beforeInput(s: *Surface, id: i64, hwnd: c.HWND, kind: []const u8, data: ?[]const u8) bool {
+    edit_hwnd = hwnd;
+    edit_type = kind;
+    if (edit_text) |t| std.heap.page_allocator.free(t);
+    edit_text = if (data) |d| std.heap.page_allocator.dupe(u8, d) catch null else null;
+    const quoted = if (data) |d| std.json.Stringify.valueAlloc(s.gpa, d, .{}) catch return false else null;
+    defer if (quoted) |q| s.gpa.free(q);
+    const json = std.fmt.allocPrint(s.gpa, "[\"{s}\",{s}]", .{ kind, quoted orelse "null" }) catch return false;
+    defer s.gpa.free(json);
+    const prevented = s.engine.event(id, "beforeinput", json);
+    if (prevented) edit_hwnd = null;
+    return prevented;
+}
+
+/// The clipboard's text, as a paste puts it into a field: UTF-8 with LF
+/// line ends, none in a one-line field (as Chromium strips them). Caller
+/// frees.
+fn pasteText(s: *Surface, hwnd: c.HWND, single_line: bool) ?[]u8 {
+    if (c.OpenClipboard(hwnd) == 0) return null;
+    defer _ = c.CloseClipboard();
+    const h = c.GetClipboardData(c.CF_UNICODETEXT) orelse return null;
+    const p: [*:0]const u16 = @ptrCast(@alignCast(c.GlobalLock(h) orelse return null));
+    defer _ = c.GlobalUnlock(h);
+    const utf8 = std.unicode.utf16LeToUtf8Alloc(s.gpa, std.mem.span(p)) catch return null;
+    defer s.gpa.free(utf8);
+    var out: std.ArrayList(u8) = .empty;
+    for (utf8) |ch| {
+        if (ch == '\r') continue;
+        if (ch == '\n' and single_line) continue;
+        out.append(s.gpa, ch) catch return null;
+    }
+    return out.toOwnedSlice(s.gpa) catch null;
 }
 
 /// A select's and a slider's window procedure: keys go to the page first.
