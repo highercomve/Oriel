@@ -84,6 +84,13 @@ pub const Backend = struct {
     invoke: *const fn (ctx: *anyopaque, engine: *Engine, call_id: u32, cmd: []const u8, args_json: []const u8) void,
     /// Give a field the keyboard focus.
     focus: *const fn (ctx: *anyopaque, node: *Node) void,
+    /// Optional: a text field's selection, start and end in UTF-16 units
+    /// of its value (LF line ends); false when it has none (not made yet).
+    /// host.selection, for el.selectionStart / selectionEnd.
+    selection: ?*const fn (ctx: *anyopaque, node: *Node, out: *[2]u32) bool = null,
+    /// Optional: select that range of a text field (host.setSelection, for
+    /// el.setSelectionRange and select()).
+    set_selection: ?*const fn (ctx: *anyopaque, node: *Node, start: u32, end: u32) void = null,
     /// A node's props changed (optional: backends that mirror them).
     props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
     /// A single text run changed through the direct bridge.
@@ -592,6 +599,30 @@ export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {
     const n = e.tree.get(Tree.idOf(id)) orelse return 0;
     out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(n.content_h, n.frame.h) };
     return 1;
+}
+
+/// host.selection(id): the field's [start, end], or 0 (none).
+export fn oriel_nui_selection(p: *anyopaque, id: f64, out: *[2]f64) c_int {
+    const e = engineOf(p);
+    const get = e.backend.selection orelse return 0;
+    const n = e.tree.get(Tree.idOf(id)) orelse return 0;
+    var r: [2]u32 = undefined;
+    if (!get(e.backend.ctx, n, &r)) return 0;
+    out.* = .{ @floatFromInt(r[0]), @floatFromInt(r[1]) };
+    return 1;
+}
+
+/// host.setSelection(id, start, end).
+export fn oriel_nui_set_selection(p: *anyopaque, id: f64, start: f64, end: f64) void {
+    const e = engineOf(p);
+    const set = e.backend.set_selection orelse return;
+    const n = e.tree.get(Tree.idOf(id)) orelse return;
+    const clamp = struct {
+        fn u(v: f64) u32 {
+            return if (std.math.isFinite(v) and v > 0) @intFromFloat(@min(v, 1e9)) else 0;
+        }
+    }.u;
+    set(e.backend.ctx, n, clamp(start), clamp(end));
 }
 
 export fn oriel_nui_focus(p: *anyopaque, id: f64) void {
