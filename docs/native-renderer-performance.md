@@ -14,8 +14,9 @@ property object or resetting unchanged Yoga styles. It retains font and box
 properties, invalidates platform measurement caches, and dirties Yoga for
 the subsequent synchronous layout read. General rendering handles empty
 content, structural selectors, mixed inline content, styles, transitions,
-animations and other unsupported cases. Android keeps the JSON operations
-because its native views mirror those properties.
+animations and other unsupported cases. Android uses it too: its backend
+forwards the new run to NuiView, which keeps the node's paint and rebuilds
+only the styled text (update 1000 rows there: 78 -> 37-44 ms).
 
 The renderer's document observer now ignores detached DOM construction;
 attaching the finished subtree marks the insertion and computes its
@@ -46,7 +47,9 @@ The second pass adds these build and update improvements:
 - New text and view nodes reference immutable native style records through
   typed host calls. Containers attach children through the usual operation.
   Style storage is bounded; unsupported nodes and declined calls fall back
-  to JSON. Text strings remain individually owned. Android retains JSON.
+  to JSON. Text strings remain individually owned. Android uses them too:
+  each leaf style reaches Kotlin once, and the nodes made from it as compact
+  records in one batch per change (Tree.on_leaf_style, Tree.on_create).
 - GTK shares text measurements across nodes, using full bounded keys and
   invalidating on Pango context pointer/serial changes. Natural text sizes
   live directly on nodes, eliminating repeated hash-table lookups. Large
