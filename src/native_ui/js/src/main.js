@@ -513,6 +513,21 @@ let keyboardFocus = true;
 const TEXT_INPUTS = new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
 const textField = (el) => el?.localName === "textarea" || el?.isContentEditable ||
   (el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase()));
+// A text field's change, as browsers fire it: when it loses the focus,
+// and on Enter in a one-line field, if the user edited it (the backend's
+// input) and its value differs from what it was at focus or at the last
+// change. A script's value doesn't count (browsers fire nothing for it).
+const changeBase = new WeakMap(); // field → its value at focus or the last change
+const edited = new WeakSet();
+const changeField = (el) => el?.localName === "textarea" ||
+  (el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase()));
+function fireChange(el) {
+  if (!changeField(el) || !edited.has(el)) return;
+  edited.delete(el);
+  if (el.value === changeBase.get(el)) return;
+  changeBase.set(el, el.value);
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
 const focusEvent = (type, bubbles, relatedTarget) => {
   const ev = new Event(type, { bubbles });
   Object.defineProperty(ev, "relatedTarget", { value: relatedTarget || null, configurable: true });
@@ -528,6 +543,9 @@ Object.defineProperty(document, "__active", {
     // it (focus, then focusin). Focus and blur don't bubble. A listener that
     // moves the focus itself wins.
     if (old) {
+      // Its change first (an edited text field), then blur, as browsers.
+      fireChange(old);
+      if (active !== old) return;
       old.removeAttribute?.("data-nui-focus");
       old.removeAttribute?.("data-nui-focus-visible");
       active = null;
@@ -540,6 +558,7 @@ Object.defineProperty(document, "__active", {
     }
     if (!el) return;
     active = el;
+    if (changeField(el)) { changeBase.set(el, el.value); edited.delete(el); }
     el.setAttribute?.("data-nui-focus", "");
     const visible = keyboardFocus || textField(el);
     if (visible) el.setAttribute?.("data-nui-focus-visible", "");
@@ -818,8 +837,14 @@ function keyEvent(el, data, type = "keydown") {
   if (type === "keydown" && !ev.defaultPrevented && key === "Tab" && !(init.ctrlKey || init.altKey || init.metaKey)) {
     return tabFocus(init.shiftKey) || false;
   }
-  // Enter in a one-line field submits its form.
+  // Enter in a one-line field: Chromium's beforeinput (insertLineBreak,
+  // which changes nothing there), the field's change, then its form is
+  // submitted.
   if (type === "keydown" && !ev.defaultPrevented && key === "Enter" && el?.localName === "input") {
+    if (changeField(el)) {
+      el.dispatchEvent(inputEvent("beforeinput", "insertLineBreak", null, true));
+      fireChange(el);
+    }
     const form = el.closest("form");
     if (form) { submit(form); return true; }
   }
@@ -890,6 +915,28 @@ function shown(el) {
   }
   return true;
 }
+// A press focuses what it's on, as a browser's mousedown does: the
+// nearest focusable element from its target up (a field's padding or
+// border too, outside the native control), or, on nothing focusable, the
+// focus leaves. A mouse or pen on its press (not prevented); a touch at
+// its tap, before the click (a scroll that starts on a field doesn't
+// focus it).
+// WebKit on macOS and iOS focuses no button, link or checkbox on a click
+// (only text fields, selects and what has a tabindex). A label leaves it
+// to its click, which focuses its control.
+function pressFocus(target) {
+  for (let n = target; n && n.nodeType === 1; n = n.parentElement) {
+    if (n.localName === "label") return;
+    const index = parseInt(n.getAttribute("tabindex"), 10);
+    const focusable = Number.isNaN(index) ? naturallyFocusable(n) && (tabRule === "all" || textLike(n)) : true;
+    if (!focusable || (CONTROLS.has(n.localName) && n.hasAttribute("disabled"))) continue;
+    if (active !== n) n.focus();
+    return;
+  }
+  if (active) active.blur();
+}
+let tapFocus = null; // a touch's target, focused at its tap
+
 function tabFocus(back) {
   const order = tabOrder();
   if (!order.length) return false;
@@ -937,11 +984,16 @@ function pointerEvent(el, data) {
     return ev.defaultPrevented;
   };
   let prevented = fire(new PointerEvent(names[0], { ...init, pointerId, pointerType, isPrimary: true, pressure: buttons ? 0.5 : 0 }));
+  if (phase === "cancel") tapFocus = null;
   if (pointerType === "touch") {
     const touch = { identifier: pointerId, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: 0.5 };
     const on = phase === "down" || phase === "move" ? [touch] : [];
     if (fire(new TouchEvent(names[2], { bubbles: true, cancelable: phase !== "cancel", touches: on, targetTouches: on, changedTouches: [touch], ...mods }))) prevented = true;
   } else if (names[1] && fire(new MouseEvent(names[1], { ...init, button: 0 }))) prevented = true;
+  if (phase === "down" && !prevented) {
+    if (pointerType === "touch") tapFocus = target;
+    else { tapFocus = null; pressFocus(target); }
+  }
   // A press: the page takes the drag (no scrolling) when it said so in CSS.
   if (phase === "down" && !prevented) {
     for (let n = target; n && n.nodeType === 1; n = n.parentNode) {
@@ -1287,7 +1339,14 @@ g.__oriel = {
     return guard(() => {
       const el = renderer?.elementFor(id);
       switch (type) {
-        case "click": keyboardFocus = false; if (el) activate(el, data | 0); return false;
+        case "click": {
+          keyboardFocus = false;
+          // A touch's focus comes with its tap.
+          if (tapFocus && el) pressFocus(el);
+          tapFocus = null;
+          if (el) activate(el, data | 0);
+          return false;
+        }
         // A native field's edit: data its new value, or [value, inputType,
         // data] (the edit as beforeinput had it, docs/native-renderer.md).
         case "input": {
@@ -1295,6 +1354,7 @@ g.__oriel = {
           const [value, inputType, text] = Array.isArray(data) ? data : [data, undefined, undefined];
           renderer.native.set(id, value);
           setNative(el, "value", value);
+          edited.add(el);
           el.dispatchEvent(inputEvent("input", inputType, text, false));
           return false;
         }
