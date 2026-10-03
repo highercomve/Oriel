@@ -5230,20 +5230,37 @@ col, colgroup { display: none; }
   }
   function boxProps(cs, display, fs, el) {
     const button = el?.localName === "button";
-    const key = `b${display}|${fs}|${button}`;
+    const bb = borderBoxByDefault(el);
+    const key = `b${display}|${fs}|${button}|${bb}`;
     const d = derived.get(cs);
     if (d?.parts) {
-      const p = { ...memoized(d.base, key, () => makeBoxProps(d.base, display, fs, button)) };
+      const p = { ...memoized(d.base, key, () => makeBoxProps(d.base, display, fs, button, bb)) };
       for (const part of d.parts) {
         const [keys, make] = PARTS[part];
         for (const k of keys) delete p[k];
         make(cs, fs, p);
       }
+      contentBox(cs, p, bb);
       return p;
     }
-    return { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button)) };
+    return { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button, bb)) };
   }
-  function makeBoxProps(cs, display, fs, button) {
+  function isSize(v) {
+    return typeof v === "number" || typeof v === "string" && v.endsWith("%");
+  }
+  var BORDER_BOX_INPUTS = /* @__PURE__ */ new Set(["button", "submit", "reset", "checkbox", "radio", "color", "file", "range", "image"]);
+  function borderBoxByDefault(el) {
+    const t = el?.localName;
+    if (t === "button" || t === "select" || t === "meter" || t === "progress") return true;
+    return t === "input" && BORDER_BOX_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
+  }
+  var SIZE_KEYS = ["w", "h", "minw", "minh", "maxw", "maxh", "fb"];
+  function contentBox(cs, p, borderBox) {
+    const sizing = cs["box-sizing"] ?? (borderBox ? "border-box" : "content-box");
+    if ((p.pad || p.bw) && sizing !== "border-box" && SIZE_KEYS.some((k) => isSize(p[k]))) p.cb = true;
+    else delete p.cb;
+  }
+  function makeBoxProps(cs, display, fs, button, borderBox) {
     const p = {};
     if (display === "inline-flex") display = "flex";
     if (display === "inline-grid") display = "grid";
@@ -5307,6 +5324,7 @@ col, colgroup { display: none; }
       const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
       if (style) p.bs = style;
     }
+    contentBox(cs, p, borderBox);
     const rg = num2(cs["row-gap"], fs), cg = num2(cs["column-gap"], fs);
     if (typeof rg === "number" && rg) p.rg = rg;
     if (typeof cg === "number" && cg) p.cg = cg;
