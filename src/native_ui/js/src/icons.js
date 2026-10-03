@@ -2,12 +2,21 @@
 // data with their paint, colors resolved (currentColor, url(#gradient)).
 //   { vb: [x, y, w, h], shapes: [{ d, fill, stroke, sw, cap, join }] }
 
-import { color } from "./css.js";
+import { color, parseSheet, parseInline, mediaMatches, viewport } from "./css.js";
 
 // `doc` finds ids (a <use>'s symbol, a url(#gradient)): the page, or an SVG
 // file's own (svgScope). `files(path)`: an SVG file's scope, for a <use>
 // of another file's symbol (`<use href="icons.svg#github">`, a sprite).
-export function iconFor(svg, cs, doc, files) {
+// `opts.image`: an SVG drawn as an image (an <img>): its media queries see a
+// light color scheme, as a browser's SVG image does (the page's dark mode
+// doesn't reach into it).
+export function iconFor(svg, cs, doc, files, opts) {
+  if (!opts?.image || !viewport.dark) return iconOf(svg, cs, doc, files);
+  viewport.dark = false;
+  try { return iconOf(svg, cs, doc, files); } finally { viewport.dark = true; }
+}
+
+function iconOf(svg, cs, doc, files) {
   const current = color(cs.color) || [0, 0, 0, 1];
   let root = svg;
   const use = svg.querySelector("use");
@@ -23,11 +32,14 @@ export function iconFor(svg, cs, doc, files) {
   }
   const vb = (root.getAttribute("viewBox") || svg.getAttribute("viewBox") || "0 0 24 24").split(/[\s,]+/).map(Number);
   const shapes = [];
+  // The SVG's own style sheets (a <style> in it: Vite's logo), for its
+  // shapes only; a <use>d symbol's, its file's.
+  const sheet = svgSheet(root === svg ? svg : (root.closest?.("svg") || svg));
   // Paint set on <svg> (Feather/Lucide icons: fill="none" stroke="currentColor"
   // stroke-width="2" on the root) and on the <symbol>, inherited by the shapes.
-  let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter" });
-  if (root !== svg) paint = paintOf(root, paint);
-  collect(root, paint, current, doc, shapes);
+  let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter", op: 1, fo: 1, so: 1 }, sheet);
+  if (root !== svg) paint = paintOf(root, paint, sheet);
+  collect(root, paint, current, doc, shapes, sheet);
   if (!shapes.length) return null;
   return { vb, shapes };
 }
@@ -82,21 +94,23 @@ export function svgSize(svg, vb) {
 const SKIP = new Set(["defs", "symbol", "title", "desc", "style", "metadata", "lineargradient", "linearGradient", "radialgradient",
   "radialGradient", "mask", "clippath", "clipPath", "filter", "pattern", "marker", "text"]);
 
-function collect(el, inherited, current, doc, out) {
+function collect(el, inherited, current, doc, out, sheet) {
   for (const c of el.children) {
     const tag = c.localName;
     if (SKIP.has(tag)) continue;
     // Masked: drawn only through its mask (a logo's glow), which an icon
     // can't do; left out rather than drawn whole over the rest.
     if (c.hasAttribute("mask")) continue;
-    const paint = paintOf(c, inherited);
-    if (tag === "g") { collect(c, paint, current, doc, out); continue; }
+    const paint = paintOf(c, inherited, sheet);
+    if (paint.display === "none") continue;
+    if (tag === "g") { collect(c, paint, current, doc, out, sheet); continue; }
+    if (paint.visibility === "hidden" || paint.visibility === "collapse") continue;
     const d = pathData(c);
     if (!d) continue;
     out.push({
       d,
-      fill: paintColor(paint.fill, current, doc),
-      stroke: paintColor(paint.stroke, current, doc),
+      fill: faded(paintColor(paint.fill, current, doc), paint.op * paint.fo),
+      stroke: faded(paintColor(paint.stroke, current, doc), paint.op * paint.so),
       sw: paint.sw,
       cap: paint.cap,
       join: paint.join,
@@ -105,25 +119,67 @@ function collect(el, inherited, current, doc, out) {
   }
 }
 
-function paintOf(el, inherited) {
+// An element's paint, inherited where it sets none: its value from the
+// cascade (the SVG's sheet and its style attribute, which beat a
+// presentation attribute), else its attribute. Opacity multiplies down
+// (an approximation of group opacity: each shape's colors fade by it).
+function paintOf(el, inherited, sheet) {
+  const st = styleOf(el, sheet);
+  const get = (name) => st?.[name] ?? el.getAttribute(name);
+  const num = (v, d) => { const x = parseFloat(v); return Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : d; };
   return {
-    fill: attr(el, "fill") ?? inherited.fill,
-    stroke: attr(el, "stroke") ?? inherited.stroke,
-    sw: parseFloat(attr(el, "stroke-width") ?? inherited.sw),
-    cap: attr(el, "stroke-linecap") ?? inherited.cap,
-    join: attr(el, "stroke-linejoin") ?? inherited.join,
+    fill: get("fill") ?? inherited.fill,
+    stroke: get("stroke") ?? inherited.stroke,
+    sw: parseFloat(get("stroke-width") ?? inherited.sw),
+    cap: get("stroke-linecap") ?? inherited.cap,
+    join: get("stroke-linejoin") ?? inherited.join,
+    op: inherited.op * num(get("opacity"), 1),
+    fo: num(get("fill-opacity"), inherited.fo),
+    so: num(get("stroke-opacity"), inherited.so),
+    display: get("display"),
+    visibility: get("visibility") ?? inherited.visibility,
   };
 }
 
-function attr(el, name) {
-  const v = el.getAttribute(name);
-  if (v !== null) return v;
-  const style = el.getAttribute("style");
-  if (style) {
-    const m = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`).exec(style);
-    if (m) return m[1].trim();
+// An SVG's own style sheets (its <style> elements): the rules, by
+// specificity then order, or null. The page's sheets aren't applied to an
+// icon's shapes, only these (as a browser scopes them to that document for
+// an <img>, and an inline <svg>'s apply to it as well).
+function svgSheet(svg) {
+  const texts = [...svg.querySelectorAll("style")].map((s) => s.textContent || "").filter(Boolean);
+  if (!texts.length) return null;
+  const rules = parseSheet(texts.join("\n"), 0).filter((r) => !r.pseudo);
+  const cmp = (a, b) => a.spec[0] - b.spec[0] || a.spec[1] - b.spec[1] || a.spec[2] - b.spec[2] || a.order - b.order;
+  return rules.length ? rules.sort(cmp) : null;
+}
+
+// What the cascade gives an element: its sheet's matching rules (media
+// queries answered for the viewport: prefers-color-scheme), then its style
+// attribute; !important wins over either.
+function styleOf(el, sheet) {
+  const inline = el.getAttribute("style");
+  if (!sheet && !inline) return null;
+  const out = {}, important = {};
+  const put = (d) => {
+    if (important[d.prop] && !d.important) return;
+    out[d.prop] = d.value;
+    if (d.important) important[d.prop] = true;
+  };
+  if (sheet) {
+    for (const r of sheet) {
+      if (r.media && !mediaMatches(r.media)) continue;
+      let hit = false;
+      try { hit = el.matches(r.sel); } catch { hit = false; }
+      if (hit) for (const d of r.decls) put(d);
+    }
   }
-  return null;
+  if (inline) for (const d of parseInline(inline)) put(d);
+  return out;
+}
+
+function faded(c, alpha) {
+  if (!c || alpha >= 1) return c;
+  return [c[0], c[1], c[2], c[3] * alpha];
 }
 
 function paintColor(p, current, doc) {

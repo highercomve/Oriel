@@ -5468,8 +5468,8 @@ globalThis.atob ??= (s) => {
         const { Class, check: check2 } = registry.get(ce);
         if (check2(element)) {
           const { attributes, isConnected: isConnected2 } = element;
-          for (const attr2 of attributes)
-            element.removeAttributeNode(attr2);
+          for (const attr of attributes)
+            element.removeAttributeNode(attr);
           const values = entries(element);
           for (const [key2] of values)
             delete element[key2];
@@ -5477,8 +5477,8 @@ globalThis.atob ??= (s) => {
           ownerDocument[UPGRADE] = { element, values };
           new Class(ownerDocument, ce);
           customElements.set(element, { connected: isConnected2 });
-          for (const attr2 of attributes)
-            element.setAttributeNode(attr2);
+          for (const attr of attributes)
+            element.setAttributeNode(attr);
           if (isConnected2 && element.connectedCallback)
             element.connectedCallback();
         }
@@ -5653,9 +5653,9 @@ globalThis.atob ??= (s) => {
     else
       json.push(NODE_END);
   };
-  var attrAsJSON = (attr2, json) => {
-    json.push(ATTRIBUTE_NODE, attr2.name);
-    const value = attr2[VALUE].trim();
+  var attrAsJSON = (attr, json) => {
+    json.push(ATTRIBUTE_NODE, attr.name);
+    const value = attr[VALUE].trim();
     if (value)
       json.push(value);
   };
@@ -9376,12 +9376,12 @@ globalThis.atob ??= (s) => {
   var refs2 = /* @__PURE__ */ new WeakMap();
   var getKeys = (style) => [...style.keys()].filter((key2) => key2 !== PRIVATE);
   var updateKeys = (style) => {
-    const attr2 = refs2.get(style).getAttributeNode("style");
-    if (!attr2 || attr2[CHANGED] || style.get(PRIVATE) !== attr2) {
+    const attr = refs2.get(style).getAttributeNode("style");
+    if (!attr || attr[CHANGED] || style.get(PRIVATE) !== attr) {
       style.clear();
-      if (attr2) {
-        style.set(PRIVATE, attr2);
-        for (const rule of attr2[VALUE].split(/\s*;\s*/)) {
+      if (attr) {
+        style.set(PRIVATE, attr);
+        for (const rule of attr[VALUE].split(/\s*;\s*/)) {
           let [key2, ...rest] = rule.split(":");
           if (rest.length > 0) {
             key2 = key2.trim();
@@ -9392,7 +9392,7 @@ globalThis.atob ??= (s) => {
         }
       }
     }
-    return attr2;
+    return attr;
   };
   var handler2 = {
     get(style, name) {
@@ -9409,19 +9409,19 @@ globalThis.atob ??= (s) => {
       if (name === "cssText")
         style[name] = value;
       else {
-        let attr2 = updateKeys(style);
+        let attr = updateKeys(style);
         if (value == null)
           style.delete(esm_default2(name));
         else
           style.set(esm_default2(name), value);
-        if (!attr2) {
+        if (!attr) {
           const element = refs2.get(style);
-          attr2 = element.ownerDocument.createAttribute("style");
-          element.setAttributeNode(attr2);
-          style.set(PRIVATE, attr2);
+          attr = element.ownerDocument.createAttribute("style");
+          element.setAttributeNode(attr);
+          style.set(PRIVATE, attr);
         }
-        attr2[CHANGED] = false;
-        attr2[VALUE] = style.toString();
+        attr[CHANGED] = false;
+        attr[VALUE] = style.toString();
       }
       return true;
     }
@@ -9553,9 +9553,9 @@ globalThis.atob ??= (s) => {
     getNamedItem(name) {
       return this.ownerElement.getAttributeNode(name);
     }
-    setNamedItem(attr2) {
-      this.ownerElement.setAttributeNode(attr2);
-      this.unshift(attr2);
+    setNamedItem(attr) {
+      this.ownerElement.setAttributeNode(attr);
+      this.unshift(attr);
     }
     removeNamedItem(name) {
       const item = this.getNamedItem(name);
@@ -9569,8 +9569,8 @@ globalThis.atob ??= (s) => {
     getNamedItemNS(_, name) {
       return this.getNamedItem(name);
     }
-    setNamedItemNS(_, attr2) {
-      return this.setNamedItem(attr2);
+    setNamedItemNS(_, attr) {
+      return this.setNamedItem(attr);
     }
     removeNamedItemNS(_, name) {
       return this.removeNamedItem(name);
@@ -9960,9 +9960,9 @@ globalThis.atob ??= (s) => {
             break;
           }
           case ATTRIBUTE_NODE: {
-            const attr2 = next.cloneNode(deep);
-            attr2.ownerElement = parentNode;
-            addNext(attr2);
+            const attr = next.cloneNode(deep);
+            attr.ownerElement = parentNode;
+            addNext(attr);
             break;
           }
           case TEXT_NODE:
@@ -9986,14 +9986,14 @@ globalThis.atob ??= (s) => {
         next = next[NEXT];
         switch (next.nodeType) {
           case ATTRIBUTE_NODE: {
-            const attr2 = " " + next;
-            switch (attr2) {
+            const attr = " " + next;
+            switch (attr) {
               case " id":
               case " class":
               case " style":
                 break;
               default:
-                out.push(attr2);
+                out.push(attr);
             }
             break;
           }
@@ -10055,8 +10055,8 @@ globalThis.atob ??= (s) => {
     setAttributeNS(_, name, value) {
       this.setAttribute(name, value);
     }
-    setAttributeNodeNS(attr2) {
-      return this.setAttributeNode(attr2);
+    setAttributeNodeNS(attr) {
+      return this.setAttributeNode(attr);
     }
     /* c8 ignore stop */
   };
@@ -14076,7 +14076,16 @@ globalThis.atob ??= (s) => {
   };
 
   // src/icons.js
-  function iconFor(svg, cs, doc, files) {
+  function iconFor(svg, cs, doc, files, opts) {
+    if (!opts?.image || !viewport.dark) return iconOf(svg, cs, doc, files);
+    viewport.dark = false;
+    try {
+      return iconOf(svg, cs, doc, files);
+    } finally {
+      viewport.dark = true;
+    }
+  }
+  function iconOf(svg, cs, doc, files) {
     const current = color(cs.color) || [0, 0, 0, 1];
     let root = svg;
     const use = svg.querySelector("use");
@@ -14092,9 +14101,10 @@ globalThis.atob ??= (s) => {
     }
     const vb = (root.getAttribute("viewBox") || svg.getAttribute("viewBox") || "0 0 24 24").split(/[\s,]+/).map(Number);
     const shapes = [];
-    let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter" });
-    if (root !== svg) paint = paintOf(root, paint);
-    collect2(root, paint, current, doc, shapes);
+    const sheet = svgSheet(root === svg ? svg : root.closest?.("svg") || svg);
+    let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter", op: 1, fo: 1, so: 1 }, sheet);
+    if (root !== svg) paint = paintOf(root, paint, sheet);
+    collect2(root, paint, current, doc, shapes, sheet);
     if (!shapes.length) return null;
     return { vb, shapes };
   }
@@ -14163,22 +14173,24 @@ globalThis.atob ??= (s) => {
     "marker",
     "text"
   ]);
-  function collect2(el, inherited, current, doc, out) {
+  function collect2(el, inherited, current, doc, out, sheet) {
     for (const c of el.children) {
       const tag = c.localName;
       if (SKIP.has(tag)) continue;
       if (c.hasAttribute("mask")) continue;
-      const paint = paintOf(c, inherited);
+      const paint = paintOf(c, inherited, sheet);
+      if (paint.display === "none") continue;
       if (tag === "g") {
-        collect2(c, paint, current, doc, out);
+        collect2(c, paint, current, doc, out, sheet);
         continue;
       }
+      if (paint.visibility === "hidden" || paint.visibility === "collapse") continue;
       const d = pathData(c);
       if (!d) continue;
       out.push({
         d,
-        fill: paintColor(paint.fill, current, doc),
-        stroke: paintColor(paint.stroke, current, doc),
+        fill: faded(paintColor(paint.fill, current, doc), paint.op * paint.fo),
+        stroke: faded(paintColor(paint.stroke, current, doc), paint.op * paint.so),
         sw: paint.sw,
         cap: paint.cap,
         join: paint.join,
@@ -14186,24 +14198,60 @@ globalThis.atob ??= (s) => {
       });
     }
   }
-  function paintOf(el, inherited) {
+  function paintOf(el, inherited, sheet) {
+    const st = styleOf(el, sheet);
+    const get = (name) => st?.[name] ?? el.getAttribute(name);
+    const num3 = (v, d) => {
+      const x = parseFloat(v);
+      return Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : d;
+    };
     return {
-      fill: attr(el, "fill") ?? inherited.fill,
-      stroke: attr(el, "stroke") ?? inherited.stroke,
-      sw: parseFloat(attr(el, "stroke-width") ?? inherited.sw),
-      cap: attr(el, "stroke-linecap") ?? inherited.cap,
-      join: attr(el, "stroke-linejoin") ?? inherited.join
+      fill: get("fill") ?? inherited.fill,
+      stroke: get("stroke") ?? inherited.stroke,
+      sw: parseFloat(get("stroke-width") ?? inherited.sw),
+      cap: get("stroke-linecap") ?? inherited.cap,
+      join: get("stroke-linejoin") ?? inherited.join,
+      op: inherited.op * num3(get("opacity"), 1),
+      fo: num3(get("fill-opacity"), inherited.fo),
+      so: num3(get("stroke-opacity"), inherited.so),
+      display: get("display"),
+      visibility: get("visibility") ?? inherited.visibility
     };
   }
-  function attr(el, name) {
-    const v = el.getAttribute(name);
-    if (v !== null) return v;
-    const style = el.getAttribute("style");
-    if (style) {
-      const m = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`).exec(style);
-      if (m) return m[1].trim();
+  function svgSheet(svg) {
+    const texts = [...svg.querySelectorAll("style")].map((s) => s.textContent || "").filter(Boolean);
+    if (!texts.length) return null;
+    const rules = parseSheet(texts.join("\n"), 0).filter((r) => !r.pseudo);
+    const cmp = (a, b) => a.spec[0] - b.spec[0] || a.spec[1] - b.spec[1] || a.spec[2] - b.spec[2] || a.order - b.order;
+    return rules.length ? rules.sort(cmp) : null;
+  }
+  function styleOf(el, sheet) {
+    const inline = el.getAttribute("style");
+    if (!sheet && !inline) return null;
+    const out = {}, important = {};
+    const put = (d) => {
+      if (important[d.prop] && !d.important) return;
+      out[d.prop] = d.value;
+      if (d.important) important[d.prop] = true;
+    };
+    if (sheet) {
+      for (const r of sheet) {
+        if (r.media && !mediaMatches(r.media)) continue;
+        let hit = false;
+        try {
+          hit = el.matches(r.sel);
+        } catch {
+          hit = false;
+        }
+        if (hit) for (const d of r.decls) put(d);
+      }
     }
-    return null;
+    if (inline) for (const d of parseInline(inline)) put(d);
+    return out;
+  }
+  function faded(c, alpha) {
+    if (!c || alpha >= 1) return c;
+    return [c[0], c[1], c[2], c[3] * alpha];
   }
   function paintColor(p, current, doc) {
     if (!p || p === "none") return null;
@@ -14254,22 +14302,10 @@ globalThis.atob ??= (s) => {
   var notify = () => {
   };
   function commandsOf(el) {
-    const r = recorders.get(el);
-    if (!r) return [];
-    r.notified = false;
-    return decodeProgram(r.buf, r.n, r.strs);
-  }
-  function programOf(el) {
-    const r = recorders.get(el);
-    if (!r) return [new Float64Array(0), []];
-    r.notified = false;
-    return [r.buf.subarray(0, r.n), r.strs];
+    return recorders.get(el)?.ops || [];
   }
   function versionOf(el) {
-    const r = recorders.get(el);
-    if (!r) return 0;
-    r.notified = false;
-    return r.version;
+    return recorders.get(el)?.version || 0;
   }
   var CANVAS_CODES = {
     sv: 1,
@@ -14312,43 +14348,57 @@ globalThis.atob ??= (s) => {
     ta: { left: 0, center: 1, right: 2, start: 0, end: 2 },
     tb: { alphabetic: 0, top: 1, hanging: 2, middle: 3, bottom: 4, ideographic: 4 }
   };
-  var CODE_TAGS = [];
-  for (const [tag, code] of Object.entries(CANVAS_CODES)) CODE_TAGS[code] = tag;
-  var WORD_OF = {};
-  for (const [tag, words] of Object.entries(WORDS)) {
-    WORD_OF[tag] = [];
-    for (const [w, n2] of Object.entries(words)) WORD_OF[tag][n2] ??= w;
-  }
-  function decodeProgram(nums, n2, strs) {
-    const ops = [];
+  function encodeProgram(ops) {
+    let size = 0;
+    for (const op of ops) size += 1 + (CANVAS_ARGS[CANVAS_CODES[op[0]]] ?? 0);
+    const nums = new Float64Array(size), strs = [];
     let i = 0;
-    while (i < n2) {
-      const code = nums[i++], tag = CODE_TAGS[code], k = CANVAS_ARGS[code];
-      const a = Array.from(nums.subarray(i, i + k));
-      i += k;
-      switch (tag) {
+    for (const op of ops) {
+      const code = CANVAS_CODES[op[0]];
+      if (!code) continue;
+      nums[i++] = code;
+      switch (op[0]) {
         case "tx":
         case "sx":
-          ops.push([tag, strs[a[0]], a[1], a[2]]);
+          nums[i++] = strs.push(String(op[1])) - 1;
+          nums[i++] = op[2];
+          nums[i++] = op[3];
           break;
         case "fo":
-          ops.push([tag, a[0], a[1], a[2], strs[a[3]]]);
+          nums[i++] = op[1];
+          nums[i++] = op[2];
+          nums[i++] = op[3];
+          nums[i++] = strs.push(op[4] || "") - 1;
           break;
         case "sf":
-        case "ss":
-          ops.push([tag, a[0] === 1 ? ["g", a[1]] : a.slice(1)]);
+        case "ss": {
+          const p = op[1];
+          if (p?.[0] === "g") {
+            nums[i++] = 1;
+            nums[i++] = p[1];
+            nums[i++] = 0;
+            nums[i++] = 0;
+            nums[i++] = 0;
+          } else {
+            nums[i++] = 0;
+            nums[i++] = p[0];
+            nums[i++] = p[1];
+            nums[i++] = p[2];
+            nums[i++] = p[3];
+          }
           break;
+        }
         case "lc":
         case "lj":
         case "ta":
         case "tb":
-          ops.push([tag, WORD_OF[tag][a[0]]]);
+          nums[i++] = WORDS[op[0]][op[1]] ?? 0;
           break;
         default:
-          ops.push([tag, ...a]);
+          for (let k = 1; k <= CANVAS_ARGS[code]; k++) nums[i++] = op[k] === true ? 1 : op[k] === false ? 0 : op[k] ?? 0;
       }
     }
-    return ops;
+    return [i === size ? nums : nums.subarray(0, i), strs];
   }
   var recorders = internalWeak2(/* @__PURE__ */ new WeakMap());
   var CANVAS_DEFAULT_W = 300;
@@ -14397,23 +14447,14 @@ globalThis.atob ??= (s) => {
   var Recorder = class {
     constructor(el) {
       this.canvas = el;
-      this.buf = new Float64Array(256);
-      this.cap = 256;
-      this.n = 0;
-      this.strs = [];
+      this.ops = [];
       this.version = 0;
-      this.notified = false;
       this.nGrad = 0;
       this.grads = /* @__PURE__ */ new Map();
       this.s = new State2();
       this.stack = [];
       this.penX = 0;
       this.penY = 0;
-      this.arcPen = false;
-      this.arcX = 0;
-      this.arcY = 0;
-      this.arcR = 0;
-      this.arcEnd = 0;
       this.tx = 0;
       this.ty = 0;
       this.scx = 1;
@@ -14422,99 +14463,13 @@ globalThis.atob ??= (s) => {
       this.clipped = false;
     }
     push(op) {
-      this.emit(op);
-      this.changed();
-    }
-    changed() {
+      this.ops.push(op);
       this.version++;
-      if (!this.notified) this.tell();
-    }
-    tell() {
-      this.notified = true;
       notify();
     }
-    // Room for k more numbers.
-    // (`cap`: the buffer's length, which is a getter call in QuickJS.)
-    room(k) {
-      if (this.n + k <= this.cap) return;
-      const b = new Float64Array(Math.max(this.cap * 2, this.n + k));
-      b.set(this.buf.subarray(0, this.n));
-      this.buf = b;
-      this.cap = b.length;
-    }
-    // An op into the program (encodeProgram's numbers).
-    emit(op) {
-      const code = CANVAS_CODES[op[0]];
-      if (!code) return;
-      this.room(1 + CANVAS_ARGS[code]);
-      const b = this.buf;
-      let i = this.n;
-      b[i++] = code;
-      switch (op[0]) {
-        case "tx":
-        case "sx":
-          b[i++] = this.strs.push(String(op[1])) - 1;
-          b[i++] = op[2];
-          b[i++] = op[3];
-          break;
-        case "fo":
-          b[i++] = op[1];
-          b[i++] = op[2];
-          b[i++] = op[3];
-          b[i++] = this.strs.push(op[4] || "") - 1;
-          break;
-        case "sf":
-        case "ss":
-          i = paintInto(b, i, op[1]);
-          break;
-        case "lc":
-        case "lj":
-        case "ta":
-        case "tb":
-          b[i++] = WORDS[op[0]][op[1]] ?? 0;
-          break;
-        default:
-          for (let k = 1; k <= CANVAS_ARGS[code]; k++) b[i++] = op[k] === true ? 1 : op[k] === false ? 0 : op[k] ?? 0;
-      }
-      this.n = i;
-    }
-    // Where the pen is (after an arc: its end).
-    pen() {
-      if (this.arcPen) {
-        this.penX = this.arcX + this.arcR * Math.cos(this.arcEnd);
-        this.penY = this.arcY + this.arcR * Math.sin(this.arcEnd);
-        this.arcPen = false;
-      }
-    }
     // ------------------------------------------------------------- state
-    // The hot calls (a game sets a color and draws a shape per sprite, each
-    // frame) write their numbers here, with few calls: each costs in QuickJS.
     set fillStyle(v) {
-      const p = typeof v === "string" ? paints.get(v) ?? paintOf2(v) : paintOf2(v);
-      if (!p) return;
-      const s = this.s, c = s.fillStyle;
-      if (p === c || p.length === 4 && c.length === 4 && p[0] === c[0] && p[1] === c[1] && p[2] === c[2] && p[3] === c[3]) return;
-      s.fillStyle = p;
-      if (this.n + 6 > this.cap) this.room(6);
-      const b = this.buf;
-      let i = this.n;
-      b[i++] = 21;
-      if (p.length === 4) {
-        b[i++] = 0;
-        b[i++] = p[0];
-        b[i++] = p[1];
-        b[i++] = p[2];
-        b[i++] = p[3];
-      } else {
-        b[i++] = 1;
-        b[i++] = p[1];
-        b[i++] = 0;
-        b[i++] = 0;
-        b[i++] = 0;
-      }
-      this.n = i;
-      this.version++;
-      if (!this.notified) this.tell();
+      this.putStyle("sf", "fillStyle", v);
     }
     get fillStyle() {
       return this.s.fillStyle;
@@ -14530,10 +14485,7 @@ globalThis.atob ??= (s) => {
       if (paint === void 0) return;
       if (samePaint(this.s[name], paint)) return;
       this.s[name] = paint;
-      this.room(6);
-      this.buf[this.n] = tag === "sf" ? 21 : 22;
-      this.n = paintInto(this.buf, this.n + 1, paint);
-      this.changed();
+      this.push([tag, paint]);
     }
     set lineWidth(v) {
       this.putNum("lineWidth", "lw", v);
@@ -14600,8 +14552,7 @@ globalThis.atob ??= (s) => {
     // The program starts over (a full clear or cover): the live gradients'
     // definitions, then the state.
     restart() {
-      this.n = 0;
-      this.strs = [];
+      this.ops.length = 0;
       this.version++;
       if (this.grads.size) {
         const used = /* @__PURE__ */ new Set();
@@ -14613,7 +14564,7 @@ globalThis.atob ??= (s) => {
             this.grads.delete(id);
             continue;
           }
-          for (const op of def) this.emit(op);
+          for (const op of def) this.ops.push(op);
         }
       }
       this.emitState();
@@ -14621,19 +14572,17 @@ globalThis.atob ??= (s) => {
     emitState() {
       this.version++;
       const s = this.s;
-      for (const op of [
+      this.ops.push(
         ["sf", s.fillStyle],
         ["ss", s.strokeStyle],
         ["lw", s.lineWidth],
         ["lc", s.lineCap],
         ["lj", s.lineJoin],
         ["ga", s.globalAlpha]
-      ]) this.emit(op);
+      );
       const f = fontOf(s.font);
-      if (f) this.emit(["fo", f.italic ? 1 : 0, f.weight, f.size, f.family || ""]);
-      this.emit(["ta", s.textAlign]);
-      this.emit(["tb", s.textBaseline]);
-      this.notified = true;
+      if (f) this.ops.push(["fo", f.italic ? 1 : 0, f.weight, f.size, f.family || ""]);
+      this.ops.push(["ta", s.textAlign], ["tb", s.textBaseline]);
       notify();
     }
     // ------------------------------------------------------------- transforms
@@ -14679,28 +14628,22 @@ globalThis.atob ??= (s) => {
     }
     // ------------------------------------------------------------- paths
     beginPath() {
-      if (this.n + 1 > this.cap) this.room(1);
-      this.buf[this.n++] = 3;
-      this.version++;
-      if (!this.notified) this.tell();
+      this.push(["bp"]);
     }
     closePath() {
       this.push(["cp"]);
     }
     moveTo(x, y) {
-      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["mv", this.penX, this.penY]);
     }
     lineTo(x, y) {
-      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["ln", this.penX, this.penY]);
     }
     rect(x, y, w, h) {
-      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["rc", this.penX, this.penY, +w || 0, +h || 0]);
@@ -14715,65 +14658,42 @@ globalThis.atob ??= (s) => {
       } else {
         if (end > start) end -= TWO_PI;
       }
-      this.arcPen = true;
-      this.arcX = x;
-      this.arcY = y;
-      this.arcR = r;
-      this.arcEnd = end;
-      if (this.n + 7 > this.cap) this.room(7);
-      const b = this.buf;
-      let i = this.n;
-      b[i++] = 14;
-      b[i++] = +x || 0;
-      b[i++] = +y || 0;
-      b[i++] = r;
-      b[i++] = start;
-      b[i++] = a1 === void 0 ? TWO_PI : +a1;
-      b[i++] = ccw ? 1 : 0;
-      this.n = i;
-      this.version++;
-      if (!this.notified) this.tell();
+      this.penX = x + r * Math.cos(end);
+      this.penY = y + r * Math.sin(end);
+      this.push(["ar", +x || 0, +y || 0, r, start, a1 === void 0 ? TWO_PI : +a1, ccw ? 1 : 0]);
     }
     // A canvas ellipse, as the recorder sees one: a scaled circle.
     ellipse(x, y, rx, ry, rot = 0, a0 = 0, a1 = TWO_PI, ccw = false) {
       if (!(rx >= 0 && ry >= 0)) return;
-      for (const op of [
+      this.ops.push(
         ["sv"],
         ["tl", +x || 0, +y || 0],
         ["tr", +rot || 0],
         ["ts", rx, ry],
         ["ar", 0, 0, 1, +a0 || 0, a1, ccw ? 1 : 0],
         ["rs"]
-      ]) this.emit(op);
-      this.arcPen = false;
+      );
       this.penX = x + rx * Math.cos(+a1 || 0);
       this.penY = y + ry * Math.sin(+a1 || 0);
-      this.changed();
+      this.version++;
+      notify();
     }
     // Quadratic curves become cubics (cairo has no quadratic: the control
     // points sit 2/3 of the way to it, from each end).
     quadraticCurveTo(cx, cy, x, y) {
-      this.pen();
       const x0 = this.penX, y0 = this.penY, qx = +cx || 0, qy = +cy || 0, ex = +x || 0, ey = +y || 0;
       this.penX = ex;
       this.penY = ey;
       this.push(["bz", x0 + 2 / 3 * (qx - x0), y0 + 2 / 3 * (qy - y0), ex + 2 / 3 * (qx - ex), ey + 2 / 3 * (qy - ey), ex, ey]);
     }
     bezierCurveTo(c1x, c1y, c2x, c2y, x, y) {
-      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["bz", +c1x || 0, +c1y || 0, +c2x || 0, +c2y || 0, this.penX, this.penY]);
     }
     // ------------------------------------------------------------- drawing
     fill(rule) {
-      if (this.n + 2 > this.cap) this.room(2);
-      const b = this.buf;
-      b[this.n] = 6;
-      b[this.n + 1] = rule === "evenodd" ? 1 : 0;
-      this.n += 2;
-      this.version++;
-      if (!this.notified) this.tell();
+      this.push(["fl", rule === "evenodd" ? 1 : 0]);
     }
     stroke() {
       this.push(["st"]);
@@ -14787,8 +14707,7 @@ globalThis.atob ??= (s) => {
       y = +y;
       w = +w;
       h = +h;
-      if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h))) return;
-      this.arcPen = false;
+      if (![x, y, w, h].every(Number.isFinite)) return;
       this.penX = x;
       this.penY = y;
       const p = this.s.fillStyle;
@@ -14798,7 +14717,6 @@ globalThis.atob ??= (s) => {
       this.push(["fr", x, y, w, h]);
     }
     strokeRect(x, y, w, h) {
-      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["sr", this.penX, this.penY, +w || 0, +h || 0]);
@@ -14808,8 +14726,7 @@ globalThis.atob ??= (s) => {
       y = +y;
       w = +w;
       h = +h;
-      if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h))) return;
-      this.arcPen = false;
+      if (![x, y, w, h].every(Number.isFinite)) return;
       this.penX = x;
       this.penY = y;
       if (x <= 0 && y <= 0 && w >= this.canvas.width && h >= this.canvas.height && !this.clipped && Math.abs(this.tx) < 1e-9 && Math.abs(this.ty) < 1e-9 && Math.abs(this.scx - 1) < 1e-9 && Math.abs(this.scy - 1) < 1e-9 && Math.abs(this.rot) < 1e-9) {
@@ -14819,14 +14736,12 @@ globalThis.atob ??= (s) => {
     }
     fillText(t, x, y) {
       if (t === void 0 || t === null || t === "") return;
-      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["tx", String(t), this.penX, this.penY]);
     }
     strokeText(t, x, y) {
       if (t === void 0 || t === null || t === "") return;
-      this.arcPen = false;
       this.penX = +x || 0;
       this.penY = +y || 0;
       this.push(["sx", String(t), this.penX, this.penY]);
@@ -14869,42 +14784,20 @@ globalThis.atob ??= (s) => {
         const op = ["gs", id, Math.max(0, Math.min(1, o)), col[0], col[1], col[2], col[3]];
         def.push(op);
         r.push(op);
+        notify();
       }
     };
   }
   function isColor2(p) {
     return Array.isArray(p) && p.length === 4;
   }
-  var paints = /* @__PURE__ */ new Map();
   function paintOf2(v) {
     if (typeof v === "object" && v !== null && typeof v.__grad === "number") return ["g", v.__grad];
     if (typeof v !== "string") return void 0;
-    let c = paints.get(v);
-    if (c === void 0) {
-      c = color(v) || null;
-      if (paints.size >= 512) paints.clear();
-      paints.set(v, c);
-    }
+    const c = color(v);
     return c ? c : void 0;
   }
-  function paintInto(b, i, p) {
-    if (p?.[0] === "g") {
-      b[i++] = 1;
-      b[i++] = p[1];
-      b[i++] = 0;
-      b[i++] = 0;
-      b[i++] = 0;
-    } else {
-      b[i++] = 0;
-      b[i++] = p[0];
-      b[i++] = p[1];
-      b[i++] = p[2];
-      b[i++] = p[3];
-    }
-    return i;
-  }
   function samePaint(a, b) {
-    if (a === b) return true;
     if (Array.isArray(a) !== Array.isArray(b)) return false;
     if (Array.isArray(a)) return a.length === b.length && a.every((x, i) => x === b[i]);
     return a === b;
@@ -15133,11 +15026,11 @@ input[type="range"] { height: 20px; margin: 2px; }
       for (const r of engine.rules) {
         const compounds = splitCompounds(r.sel);
         for (let i = 0; i < compounds.length - 1; i++) {
-          for (const attr2 of STATE_ATTRS) {
-            if (!compounds[i].includes(`[${attr2}]`)) continue;
-            const rest = compounds[i].split(`[${attr2}]`).join("") || "*";
-            let list = this.stateAbove.get(attr2);
-            if (!list) this.stateAbove.set(attr2, list = []);
+          for (const attr of STATE_ATTRS) {
+            if (!compounds[i].includes(`[${attr}]`)) continue;
+            const rest = compounds[i].split(`[${attr}]`).join("") || "*";
+            let list = this.stateAbove.get(attr);
+            if (!list) this.stateAbove.set(attr, list = []);
             if (!list.some((x) => x.sel === rest)) list.push({ sel: rest, match: null });
           }
         }
@@ -15289,8 +15182,8 @@ input[type="range"] { height: 20px; margin: 2px; }
     }
     // Whether a state attribute on `el` can change what's below it: it
     // matches a compound that has the state above a rule's subject.
-    stateMattersBelow(el, attr2) {
-      const list = this.stateAbove.get(attr2);
+    stateMattersBelow(el, attr) {
+      const list = this.stateAbove.get(attr);
       if (!list) return false;
       for (const c of list) {
         if (c.match === null) {
@@ -15505,8 +15398,6 @@ input[type="range"] { height: 20px; margin: 2px; }
       const t1 = P && P();
       const nodes = /* @__PURE__ */ new Map();
       const paintOps = this.host.paintOps ? [] : null;
-      const nums = paintOps && this.host.paint ? new Float64Array(changes.length / 6 * 8) : null;
-      let at = 0;
       for (let i = 0; i < changes.length; i += 6) {
         const fc = changes[i], saved = changes[i + 1], d = changes[i + 2], normal = changes[i + 3], important = changes[i + 4], old = changes[i + 5];
         const cs = saved.cs, parts = /* @__PURE__ */ new Set();
@@ -15527,25 +15418,12 @@ input[type="range"] { height: 20px; margin: 2px; }
           return Object.assign(p, paint);
         };
         const r = fc.root;
-        part(r.props);
-        const sent = part(old.p === null && old.props ? old.props : old.props ? { ...old.props } : JSON.parse(old.p));
+        r.props = part({ ...r.props });
+        const sent = part(old.props ? { ...old.props } : JSON.parse(old.p));
         if (paintOps) {
-          if (nums) {
-            nums[at] = 1;
-            nums[at + 1] = fc.id;
-            nums[at + 2] = 5;
-            nums[at + 3] = sent.tx ?? NaN;
-            nums[at + 4] = sent.ty ?? NaN;
-            nums[at + 5] = sent.sc ?? NaN;
-            nums[at + 6] = sent.rot ?? NaN;
-            nums[at + 7] = sent.op ?? NaN;
-            at += 8;
-          } else {
-            const n2 = (v) => v === void 0 ? "null" : v;
-            paintOps.push(`["x",${fc.id},${n2(sent.tx)},${n2(sent.ty)},${n2(sent.sc)},${n2(sent.rot)},${n2(sent.op)}]`);
-          }
-          if (old.p === null && old.props === sent) {
-          } else this.prev.set(fc.id, { kind: old.kind, p: null, props: sent, k: old.k });
+          const n2 = (v) => v === void 0 ? "null" : v;
+          paintOps.push(`["x",${fc.id},${n2(sent.tx)},${n2(sent.ty)},${n2(sent.sc)},${n2(sent.rot)},${n2(sent.op)}]`);
+          this.prev.set(fc.id, { kind: old.kind, p: null, props: sent, k: old.k });
         } else nodes.set(fc.id, { kind: r.kind, props: sent, kids: r.kids.slice() });
       }
       const t2 = P && P();
@@ -15559,9 +15437,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (paintOps) {
         this.applyMs = 0;
         const a = P && P();
-        if (nums) {
-          if (at) this.host.paint(at === nums.length ? nums : nums.subarray(0, at));
-        } else if (paintOps.length) this.host.ops(`[${paintOps.join(",")}]`);
+        if (paintOps.length) this.host.ops(`[${paintOps.join(",")}]`);
         if (P) this.applyMs = P() - a;
         this.schedule();
       } else {
@@ -15571,7 +15447,7 @@ input[type="range"] { height: 20px; margin: 2px; }
           if (e && e.p !== null) e.props = n2.props;
         }
       }
-      if (P) this.host.log(1, `PROF boxes: ${nums ? at / 8 : paintOps ? paintOps.length : nodes.size} nodes, prepare ${(P() - t02 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t02).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
+      if (P) this.host.log(1, `PROF boxes: ${paintOps ? paintOps.length : nodes.size} nodes, prepare ${(P() - t02 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t02).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
       return true;
     }
     renderNow() {
@@ -16091,7 +15967,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         const src = el.getAttribute("src") || "";
         if (!src) return null;
         const svg = /^data:image\/svg\+xml/.test(src) || /\.svg([?#]|$)/i.test(src) ? this.svgFile(src) : null;
-        const icon = svg && iconFor(svg.svg, { color: "black" }, svg, (file) => this.svgFile(file));
+        const icon = svg && iconFor(svg.svg, { color: "black" }, svg, (file) => this.svgFile(file), { image: true });
         if (icon) {
           props.icon = icon;
           for (const k of ["w", "h"]) if (props[k] === "auto") delete props[k];
@@ -16519,19 +16395,14 @@ input[type="range"] { height: 20px; margin: 2px; }
     loneImage(flow, i, cs, rematch) {
       const f = flow[i];
       if (!f.el || !this.imageLine([f], cs, rematch)) return false;
-      const collapses = !(cs["white-space"] || "").startsWith("pre") && cs["white-space"] !== "break-spaces";
-      const inlineFrom = (j, step) => {
-        for (; j >= 0 && j < flow.length; j += step) {
-          const g2 = flow[j];
-          if (g2.space && collapses) continue;
-          if (!g2.el) return true;
-          const gcs = this.style(g2.el, cs, rematch);
-          if (gcs.position === "absolute" || gcs.position === "fixed" || gcs.display === "none") continue;
-          return (gcs.display || "inline").startsWith("inline");
-        }
-        return false;
+      const inlineAt = (j) => {
+        const g2 = flow[j];
+        if (!g2) return false;
+        if (g2.text) return true;
+        const d = this.style(g2.el, cs, rematch).display || "inline";
+        return d.startsWith("inline");
       };
-      return !inlineFrom(i - 1, -1) && !inlineFrom(i + 1, 1);
+      return !inlineAt(i - 1) && !inlineAt(i + 1);
     }
     // Whether the in-flow content is only images on the baseline (imageLine).
     imageLine(flow, cs, rematch) {
@@ -16742,7 +16613,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         const v = versionOf(el);
         if (this.canvasSent.get(id) === v) continue;
         const P = this.host.prof ? this.host.now : null, t02 = P && P();
-        const [nums, strs] = programOf(el);
+        const [nums, strs] = encodeProgram(commandsOf(el));
         const t1 = P && P();
         if (this.host.canvas(id, nums, strs)) this.canvasSent.set(id, v);
         if (P) this.host.log(1, `PROF canvas: ${nums.length} numbers, encode ${(t1 - t02).toFixed(2)}, send ${(P() - t1).toFixed(2)}`);
@@ -17241,18 +17112,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (ins.some((x) => x !== null)) p.rel = ins;
     }
   }
-  var TRANSLATE_PX = /^translate\(\s*(-?(?:\d+\.?\d*|\.\d+))px\s*,\s*(-?(?:\d+\.?\d*|\.\d+))px\s*\)$/;
   function transformPart(cs, fs, p) {
-    const t = cs.transform;
-    if (t !== void 0 && cs.translate === void 0 && cs.scale === void 0 && cs.rotate === void 0) {
-      const m = TRANSLATE_PX.exec(t);
-      if (m) {
-        const x = +m[1], y = +m[2];
-        if (x) p.tx = x;
-        if (y) p.ty = y;
-        return;
-      }
-    }
     const tr = transformOf(cs, fs);
     if (tr.tx) p.tx = tr.tx;
     if (tr.ty) p.ty = tr.ty;
@@ -17537,35 +17397,14 @@ input[type="range"] { height: 20px; margin: 2px; }
   function numberOf(v) {
     if (v === void 0 || v === null) return NaN;
     const t = String(v).trim().replace(/calc\(/g, "(");
-    if (/^[\d.+\-*/()\s]+$/.test(t)) return arithmetic(t);
-    return parseFloat(t);
-  }
-  function arithmetic(src) {
-    const toks = src.match(/\d*\.?\d+(?:e[+-]?\d+)?|[-+*/()]/gi) || [];
-    let i = 0;
-    const atom = () => {
-      const t = toks[i++];
-      if (t === "(") {
-        const v2 = sum();
-        if (toks[i++] !== ")") return NaN;
-        return v2;
+    if (/^[\d.+\-*/()\s]+$/.test(t)) {
+      try {
+        return +Function(`return (${t})`)();
+      } catch {
+        return NaN;
       }
-      if (t === "-") return -atom();
-      if (t === "+") return atom();
-      return t === void 0 ? NaN : parseFloat(t);
-    };
-    const product = () => {
-      let v2 = atom();
-      while (toks[i] === "*" || toks[i] === "/") v2 = toks[i++] === "*" ? v2 * atom() : v2 / atom();
-      return v2;
-    };
-    const sum = () => {
-      let v2 = product();
-      while (toks[i] === "+" || toks[i] === "-") v2 = toks[i++] === "+" ? v2 + product() : v2 - product();
-      return v2;
-    };
-    const v = sum();
-    return i === toks.length ? v : NaN;
+    }
+    return parseFloat(t);
   }
   function angleOf(v) {
     const m = /^(-?[\d.]+)(deg|turn|rad|grad)?$/.exec(String(v || "").trim());
@@ -17724,11 +17563,6 @@ input[type="range"] { height: 20px; margin: 2px; }
   // src/main.js
   var internalWeak4 = (m) => (globalThis.__nuiDom?.internal?.(m), m);
   var host = globalThis.__host;
-  delete globalThis.__host;
-  var hostRun = { script: host.evalScript, module: host.evalModule, handler: host.compileHandler };
-  delete host.evalScript;
-  delete host.evalModule;
-  delete host.compileHandler;
   var fmt = (args) => args.map((a) => {
     if (a instanceof Error) return `${a.name}: ${a.message}
 ${a.stack || ""}`;
@@ -17756,19 +17590,8 @@ ${a.stack || ""}`;
     host.timer(id, Math.max(0, +ms || 0));
     return id;
   }
-  var timerFn = (fn) => {
-    if (typeof fn === "function") return fn;
-    const code = String(fn);
-    return () => {
-      try {
-        (0, eval)(code);
-      } catch (e) {
-        if (!(e instanceof EvalError)) throw e;
-      }
-    };
-  };
-  globalThis.setTimeout = (fn, ms, ...args) => setTimer(timerFn(fn), ms, args, false);
-  globalThis.setInterval = (fn, ms, ...args) => setTimer(timerFn(fn), Math.max(4, +ms || 0), args, true);
+  globalThis.setTimeout = (fn, ms, ...args) => setTimer(fn, ms, args, false);
+  globalThis.setInterval = (fn, ms, ...args) => setTimer(fn, Math.max(4, +ms || 0), args, true);
   globalThis.clearTimeout = globalThis.clearInterval = (id) => {
     timers.delete(id);
   };
@@ -19017,14 +18840,14 @@ ${a.stack || ""}`;
     return prevented;
   }
   var marked = /* @__PURE__ */ new Map();
-  function markChain(attr2, el) {
+  function markChain(attr, el) {
     const next = [];
     for (let n2 = el; n2 && n2.nodeType === 1; n2 = n2.parentNode) next.push(n2);
-    const prev = marked.get(attr2) || [];
+    const prev = marked.get(attr) || [];
     if (prev.length === next.length && prev.every((x, i) => x === next[i])) return;
-    for (const n2 of prev) if (!next.includes(n2)) n2.removeAttribute(attr2);
-    for (const n2 of next) if (!prev.includes(n2)) n2.setAttribute(attr2, "");
-    marked.set(attr2, next);
+    for (const n2 of prev) if (!next.includes(n2)) n2.removeAttribute(attr);
+    for (const n2 of next) if (!prev.includes(n2)) n2.setAttribute(attr, "");
+    marked.set(attr, next);
   }
   function hoverEvents(from, to) {
     if (from === to) return;
@@ -19076,26 +18899,25 @@ ${a.stack || ""}`;
   }
   function bindInline(el) {
     const bound = el.__inline ||= /* @__PURE__ */ new Map();
-    for (const attr2 of [...el.attributes || []]) {
-      const name = attr2.name.toLowerCase();
+    for (const attr of [...el.attributes || []]) {
+      const name = attr.name.toLowerCase();
       if (!name.startsWith("on") || name.length < 3) continue;
       const type = name.slice(2);
       const old = bound.get(type);
-      if (old && old.code === attr2.value) continue;
+      if (old && old.code === attr.value) continue;
       if (old) el.removeEventListener(type, old.fn);
       let compiled;
       try {
-        compiled = hostRun.handler ? hostRun.handler(name, attr2.value) : new Function("event", attr2.value);
+        compiled = new Function("event", attr.value);
       } catch (e) {
         console.error(`${name}: ${e}`);
         continue;
       }
-      if (typeof compiled !== "function") continue;
       const fn = function(event) {
         if (compiled.call(el, event) === false) event.preventDefault();
       };
       el.addEventListener(type, fn);
-      bound.set(type, { code: attr2.value, fn });
+      bound.set(type, { code: attr.value, fn });
     }
   }
   {
@@ -19325,11 +19147,8 @@ ${a.stack || ""}`;
     },
     configurable: true
   });
-  var booted = false;
-  var oriel = {
+  g.__oriel = {
     boot(w, h, dark, coarse) {
-      if (booted) return;
-      booted = true;
       return guard(() => {
         Object.assign(viewport, { width: w, height: h, dark: !!dark, coarse: !!coarse });
         const P = host.prof ? host.now : null, b0 = P && P();
@@ -19364,14 +19183,14 @@ ${a.stack || ""}`;
           }
           if (s.getAttribute("type") === "module") {
             try {
-              Promise.resolve(hostRun.module(src ? src.replace(/^\.?\//, "") : "inline.js", code)).catch((e) => console.error(e));
+              Promise.resolve(host.evalModule(src ? src.replace(/^\.?\//, "") : "inline.js", code)).catch((e) => console.error(e));
             } catch (e) {
               console.error(e);
             }
             continue;
           }
           try {
-            hostRun.script(src || "inline", code);
+            host.evalScript(src || "inline", code);
           } catch (e) {
             console.error(e);
           }
@@ -19561,7 +19380,6 @@ ${a.stack || ""}`;
       guard(() => renderer?.markAll());
     }
   };
-  Object.defineProperty(g, "__oriel", { value: Object.freeze(oriel), writable: false, configurable: false, enumerable: false });
   function mediaChanged(before2) {
     for (const ml of mediaLists) {
       const m = ml.matches;
