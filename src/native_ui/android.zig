@@ -45,6 +45,9 @@ pub const Surface = struct {
     /// Choreographer callback for this window is already posted.
     frame_wanted: bool = false,
     frame_posted: bool = false,
+    /// First baselines (Node.baseline) by the text-measure key's hash: what
+    /// a cached size doesn't say.
+    baselines: std.AutoHashMapUnmanaged(u64, f32) = .empty,
     /// Device pixels per dp (the display's density), for line heights
     /// rounded as Kotlin's (LineHeight).
     density: f32 = 1,
@@ -158,6 +161,7 @@ pub fn destroy(window: u32) void {
     s.frames.deinit(s.gpa);
     s.json.deinit(s.gpa);
     s.text_measurements.deinit(s.gpa);
+    s.baselines.deinit(s.gpa);
     s.leaves.deinit(s.gpa);
     s.measure_ids.deinit(s.gpa);
     s.font_metrics.deinit(s.gpa);
@@ -599,6 +603,7 @@ fn measureTexts(ctx: *anyopaque, nodes: []const *Node) void {
         if (text_measure_cache.keyFor(&buf, &n.props, std.math.inf(f32))) |k| if (s.text_measurements.get(k)) |size| {
             n.measured_text_size = size;
             n.text_measure_epoch = s.text_epoch;
+            if (s.baselines.get(std.hash.Wyhash.hash(0, k))) |b| n.baseline = b;
             continue;
         };
         s.measure_ids.appendSlice(s.gpa, std.mem.asBytes(&std.mem.nativeToLittle(i32, nid(n)))) catch return measureEach(s, nodes);
@@ -608,12 +613,17 @@ fn measureTexts(ctx: *anyopaque, nodes: []const *Node) void {
     flushLeaves(s);
     const sizes = kotlinMeasureTexts(s) orelse return measureEach(s, nodes);
     for (s.measure_nodes.items, 0..) |n, i| {
-        const r = std.mem.readInt(u64, sizes[i * 8 ..][0..8], .little);
+        const r = std.mem.readInt(u64, sizes[i * 12 ..][0..8], .little);
+        const b64 = std.mem.readInt(i32, sizes[i * 12 + 8 ..][0..4], .little);
         const size: [2]f32 = .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
         n.measured_text_size = size;
         n.text_measure_epoch = s.text_epoch;
+        if (b64 >= 0) n.baseline = @as(f32, @floatFromInt(b64)) / 64;
         // Nodes with the same text measured twice in one batch store it twice: harmless.
-        if (text_measure_cache.keyFor(&buf, &n.props, std.math.inf(f32))) |k| s.text_measurements.put(s.gpa, k, size) catch {};
+        if (text_measure_cache.keyFor(&buf, &n.props, std.math.inf(f32))) |k| {
+            s.text_measurements.put(s.gpa, k, size) catch {};
+            if (b64 >= 0) putBaseline(s, std.hash.Wyhash.hash(0, k), n.baseline);
+        }
     }
 }
 
@@ -626,13 +636,14 @@ fn measureEach(s: *Surface, nodes: []const *Node) void {
     }
 }
 
-/// nuiMeasureTexts: the unbounded sizes of measure_ids' nodes, one u64 each
-/// (width << 32 | height, in 1/64 dp, little-endian), in measure_sizes.
+/// nuiMeasureTexts: the unbounded sizes of measure_ids' nodes, 12 bytes
+/// each (a u64, width << 32 | height, and an i32 first baseline or -1, in
+/// 1/64 dp, little-endian), in measure_sizes.
 fn kotlinMeasureTexts(s: *Surface) ?[]const u8 {
     const e = runtime.mainEnv() orelse return null;
     const arr = runtime.call(.object, "nuiMeasureTexts", "(I[B)[B", .{ wid(s.window), @as([]const u8, s.measure_ids.items) }) orelse return null;
     defer e.functions.DeleteLocalRef(e, arr);
-    const want = s.measure_nodes.items.len * 8;
+    const want = s.measure_nodes.items.len * 12;
     if (arr == null or e.functions.GetArrayLength(e, arr) != want) return null;
     s.measure_sizes.resize(s.gpa, want) catch return null;
     e.functions.GetByteArrayRegion(e, arr, 0, @intCast(want), s.measure_sizes.items.ptr);
@@ -645,10 +656,37 @@ fn measuredText(s: *Surface, n: *Node, width: f32) [2]f32 {
     const actual = if (n.props.nowrap or std.math.isInf(width)) std.math.inf(f32) else @max(1, width);
     var buf: [1024]u8 = undefined;
     const key = text_measure_cache.keyFor(&buf, &n.props, actual);
-    if (key) |k| if (s.text_measurements.get(k)) |size| return size;
-    const size = kotlinMeasure(s, n, actual);
-    if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
+    const size = blk: {
+        if (key) |k| if (s.text_measurements.get(k)) |size| break :blk size;
+        const size = kotlinMeasure(s, n, actual);
+        if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
+        break :blk size;
+    };
+    if (std.math.isNan(n.baseline)) noteBaseline(s, n);
     return size;
+}
+
+/// Node.baseline: the first line's baseline below the text's top, as its
+/// StaticLayout places it (cached by the text and style, as sizes are).
+fn noteBaseline(s: *Surface, n: *Node) void {
+    var buf: [1024]u8 = undefined;
+    const key = text_measure_cache.keyFor(&buf, &n.props, std.math.inf(f32));
+    const h = if (key) |k| std.hash.Wyhash.hash(0, k) else null;
+    if (h) |x| if (s.baselines.get(x)) |b| {
+        n.baseline = b;
+        return;
+    };
+    flushLeaves(s);
+    const b64 = runtime.call(.int, "nuiBaseline", "(II)I", .{ wid(s.window), nid(n) }) orelse return;
+    if (b64 < 0) return;
+    n.baseline = @as(f32, @floatFromInt(b64)) / 64;
+    if (h) |x| putBaseline(s, x, n.baseline);
+}
+
+/// A baseline into the cache, which starts over past 4096 (styles × texts).
+fn putBaseline(s: *Surface, key: u64, b: f32) void {
+    if (s.baselines.count() >= 4096) s.baselines.clearRetainingCapacity();
+    s.baselines.put(s.gpa, key, b) catch {};
 }
 
 /// host.fontMetrics: the ascent, descent and line gap (px) of the font text is drawn
