@@ -281,6 +281,10 @@ object OrielRuntime {
     @JvmStatic
     fun nuiMeasure(id: Int, node: Int, max64: Int): Long = Nui.views[id]?.measureText(node, max64) ?: 0
 
+    /** Texts' unbounded sizes, all of a frame's at once (android.zig's measureTexts). */
+    @JvmStatic
+    fun nuiMeasureTexts(id: Int, nodes: ByteArray): ByteArray = Nui.views[id]?.measureTexts(nodes) ?: ByteArray(0)
+
     @JvmStatic
     fun nuiProps(id: Int, node: Int, kind: ByteArray, json: ByteArray) {
         Nui.views[id]?.props(node, kind.utf8(), json.utf8())
