@@ -700,6 +700,10 @@ private class Replay(private val c: Canvas) {
         if (!use(if (op.stroke) st.stroke else st.fill, if (op.stroke) Paint.Style.STROKE else Paint.Style.FILL)) return
         if (op.stroke) paint.strokeWidth = st.lw.coerceAtLeast(0.5f)
         paint.textSize = st.size.coerceAtLeast(1f)
+        // The font's own advances at the size (TEXT_FLAGS), not ones hinted
+        // at the canvas's unscaled size.
+        paint.isSubpixelText = true
+        paint.isLinearText = true
         paint.typeface = Typeface.create(familyOf(st.family), st.weight.coerceIn(1, 1000), st.italic)
         paint.textAlign = when (st.align) { 1 -> Paint.Align.CENTER; 2 -> Paint.Align.RIGHT; else -> Paint.Align.LEFT }
         val fm = paint.fontMetrics
