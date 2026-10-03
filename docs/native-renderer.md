@@ -379,7 +379,12 @@ Pango's, which sat 0.2 to 1.2px off); checked against WebKitGTK. Win32's
 measure sets it where its uniform lines put the first (cssBaseline);
 checked against WebView2 (a label, button, checkbox, input, select and a
 28px span in one row, each pair alone, a chip after a 28px heading).
-Android should set `Node.baseline` in its measure. A box's baseline is
+Android's measure sets it from the StaticLayout's first line
+(getLineBaseline(0), or a plain line's style's one-character layout),
+with each text's natural size in the measure batch, cached beside the
+sizes; checked against the Android WebView (a code chip at a line's end,
+a button and a checkbox beside labels, an input, a 24px inline-block
+chip, a mixed-size line with a button). A box's baseline is
 its first child's top plus that child's baseline; while Yoga sizes a row
 it read the child's top from the box's previous layout (0 the first
 time), so a button beside text made the row a few pixels taller than
