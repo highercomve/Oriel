@@ -227,6 +227,16 @@ the animated nodes are sent each frame).
   and padding on its sides), as browsers clip a replaced element; the
   other backends clip it to its content box only.
 
+**Screen scale** (each backend): `platform.dpr` in the platform JSON,
+the screen's pixels per CSS px, read as a window opens (Apple: the main
+screen's backing scale / UIScreen's scale; GTK: the scale factor; Win32:
+DPI / 96; Android: the density). main.js makes it `devicePixelRatio` and
+answers `resolution`, `min-resolution`, `max-resolution` (dppx, x, dpi,
+dpcm) and `-webkit-min-device-pixel-ratio` queries with it; without one
+it's 1. Apple passes it (checked against WKWebView: 1 on a 1x Mac, 3 on
+an iPhone); the others add theirs. `document.documentElement`'s
+clientWidth and clientHeight are the viewport's, as in browsers.
+
 **Text metrics** (each backend, to match its own WebView):
 
 - `line-height: normal` (no `lh` in the props; the UA sheet sets none) is

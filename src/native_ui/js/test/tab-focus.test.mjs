@@ -176,4 +176,12 @@ assert.match(lastOps, /"t":"link"[^}]*"ol":\{"w":2/, "the focused link's run has
   assert.equal(mac.used.at(-1), true, "a prevented keypress uses the key");
   assert.equal(mac.used[0], false);
 }
+// devicePixelRatio from the backend's platform.dpr (1 without one), and the
+// root's clientWidth/clientHeight: the viewport (boot's 400 x 600).
+{
+  const c = bootPage(`<html><body><p>x</p></body></html>`, { os: "macos", dpr: 2 }).ctx;
+  assert.equal(vm.runInContext("JSON.stringify([devicePixelRatio, matchMedia('(min-resolution: 2dppx)').matches, document.documentElement.clientWidth, document.documentElement.clientHeight])", c), "[2,true,400,600]");
+  const one = bootPage(`<html><body></body></html>`, { os: "linux" }).ctx;
+  assert.equal(vm.runInContext("devicePixelRatio", one), 1);
+}
 console.log("tab focus: ok");
