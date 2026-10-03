@@ -1937,6 +1937,51 @@ fn textLayout(s: *Surface, n: *Node, width: f32, brushes: ?*std.ArrayList(*c.ID2
     return textLayoutOf(s, &n.props, width, brushes);
 }
 
+/// Where a line of `lh` puts its baseline, as CSS does: the font's
+/// ascent plus half the leading (lh less the ascent and descent), which
+/// is negative when lh is shorter than the font: the glyphs stay
+/// centered on the line (a 36px h1 on 23.2px lines). The largest run's
+/// font; 0.8 lh when its metrics can't be had.
+fn cssBaseline(props: *const tree_mod.Props, runs: []const tree_mod.Run, lh: f32) f32 {
+    var big: ?tree_mod.Run = null;
+    for (runs) |r| if (big == null or r.sz > big.?.sz) {
+        big = r;
+    };
+    const r = big orelse return lh * 0.8;
+    const m = fontRatios(r.mono or props.mono, r.w, r.i) orelse return lh * 0.8;
+    return (lh - (m[0] + m[1]) * r.sz) / 2 + m[0] * r.sz;
+}
+
+/// A face's ascent and descent per em (system fonts, cached by mono,
+/// weight and italic); null when DirectWrite can't say.
+var font_ratios: std.AutoHashMapUnmanaged(u32, [2]f32) = .empty;
+
+fn fontRatios(mono: bool, weight: f32, italic: bool) ?[2]f32 {
+    const w: u32 = @intFromFloat(@max(1, @min(999, weight)));
+    const key: u32 = w | (@as(u32, @intFromBool(mono)) << 10) | (@as(u32, @intFromBool(italic)) << 11);
+    if (font_ratios.get(key)) |v| return v;
+    const dw = dwrite orelse return null;
+    var coll: ?*c.IDWriteFontCollection = null;
+    if (dw.lpVtbl.*.GetSystemFontCollection.?(dw, &coll, c.FALSE) < 0 or coll == null) return null;
+    defer releaseCom(coll);
+    var index: c.UINT32 = 0;
+    var exists: c.BOOL = c.FALSE;
+    if (coll.?.lpVtbl.*.FindFamilyName.?(coll, if (mono) mono_face else sans_face, &index, &exists) < 0 or exists == 0) return null;
+    var family: ?*c.IDWriteFontFamily = null;
+    if (coll.?.lpVtbl.*.GetFontFamily.?(coll, index, &family) < 0 or family == null) return null;
+    defer releaseCom(family);
+    var font: ?*c.IDWriteFont = null;
+    if (family.?.lpVtbl.*.GetFirstMatchingFont.?(family, @intCast(w), c.DWRITE_FONT_STRETCH_NORMAL, if (italic) c.DWRITE_FONT_STYLE_ITALIC else c.DWRITE_FONT_STYLE_NORMAL, &font) < 0 or font == null) return null;
+    defer releaseCom(font);
+    var fm: c.DWRITE_FONT_METRICS = undefined;
+    font.?.lpVtbl.*.GetMetrics.?(font, &fm);
+    if (fm.designUnitsPerEm == 0) return null;
+    const em: f32 = @floatFromInt(fm.designUnitsPerEm);
+    const v: [2]f32 = .{ @as(f32, @floatFromInt(fm.ascent)) / em, @as(f32, @floatFromInt(fm.descent)) / em };
+    font_ratios.put(std.heap.page_allocator, key, v) catch {};
+    return v;
+}
+
 /// textLayout for props (a probe's: fastTextSize).
 fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32, brushes: ?*std.ArrayList(*c.ID2D1SolidColorBrush)) ?*c.IDWriteTextLayout {
     const runs = props.runs orelse return null;
@@ -1964,7 +2009,7 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32, brushes: 
         // A line wider than nothing can't be aligned: only with a width.
         if (!nowrap) _ = fvt.SetTextAlignment.?(fmt, a);
     }
-    if (props.lh) |lh| _ = fvt.SetLineSpacing.?(fmt, c.DWRITE_LINE_SPACING_METHOD_UNIFORM, lh, lh * 0.8);
+    if (props.lh) |lh| _ = fvt.SetLineSpacing.?(fmt, c.DWRITE_LINE_SPACING_METHOD_UNIFORM, lh, cssBaseline(props, runs, lh));
     for (runs, u.ranges) |r, range| {
         if (range.length == 0) continue;
         _ = vt.SetFontSize.?(l, r.sz, range);
