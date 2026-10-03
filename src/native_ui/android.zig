@@ -57,7 +57,15 @@ pub const Surface = struct {
     measure_ids: std.ArrayList(u8) = .empty,
     measure_nodes: std.ArrayList(*Node) = .empty,
     measure_sizes: std.ArrayList(u8) = .empty,
+    /// The node count after the last layout, and whether a trim_timer is
+    /// posted (laidOut).
+    node_count: usize = 0,
+    trim_posted: bool = false,
 };
+
+/// nuiTimer's id for trimming the tree's pools (the engine's timer ids count
+/// up from 1 and never reach it).
+const trim_timer: u32 = std.math.maxInt(u32);
 
 /// The native windows by id (UI thread only).
 var surfaces: std.AutoHashMapUnmanaged(u32, *Surface) = .empty;
@@ -588,6 +596,14 @@ fn laidOut(ctx: *anyopaque) void {
     pack(s, root) catch return;
     flushLeaves(s);
     _ = runtime.call(.void, "nuiFrames", "(I[B)V", .{ wid(s.window), @as([]const u8, s.frames.items) });
+    // A render that removed many nodes (a page section rebuilt): the
+    // tree's empty slabs go back to the system 2 s later, as on GTK.
+    const count = s.engine.tree.nodes.count();
+    if (s.node_count > count + 1000 and !s.trim_posted) {
+        s.trim_posted = true;
+        _ = runtime.call(.void, "nuiTimer", "(III)V", .{ wid(s.window), @as(i32, @bitCast(trim_timer)), @as(i32, 2000) });
+    }
+    s.node_count = count;
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
         const n = np.*;
@@ -732,7 +748,13 @@ fn nDisplayFrame(_: *Env, _: jclass, win: jint, interval_ms: f32) callconv(.c) v
 }
 
 fn nTimer(_: *Env, _: jclass, win: jint, id: jint) callconv(.c) void {
-    const s = byId(win) orelse return;
+    const s = byId(win) orelse return; // the window is gone
+    if (@as(u32, @bitCast(id)) == trim_timer) {
+        s.trim_posted = false;
+        const freed = s.engine.tree.trimPools();
+        if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("nui trim: {d} pool slabs freed", .{freed});
+        return;
+    }
     s.engine.timerFired(@bitCast(id));
 }
 
