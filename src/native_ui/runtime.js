@@ -13080,24 +13080,40 @@ globalThis.atob ??= (s) => {
   }
   function radial(args, current) {
     const parts = splitTop(args, ",").map((s) => s.trim());
-    let cx = "50%", cy = "50%", rx = "71%", ry = "71%";
+    let cx = "50%", cy = "50%", rx = "71%", ry = "71%", ext = "farthest-corner", circle = false;
     if (!color(splitSpaces(parts[0])[0], current)) {
       const [size, at] = parts.shift().split(/\bat\b/).map((x) => (x || "").trim());
       const len = (v) => /%$/.test(v) ? v : length(v, 16, false);
-      const pos = (v, axis) => ({ left: "0%", top: "0%", center: "50%", right: "100%", bottom: "100%" })[v] ?? len(v) ?? (axis ? cy : cx);
-      const sz = splitSpaces(size.replace(/\b(ellipse|circle)\b/g, "").trim()).filter((v) => /^[\d.]/.test(v));
-      if (sz.length) {
-        rx = len(sz[0]) ?? rx;
-        ry = len(sz[1] ?? sz[0]) ?? ry;
+      const words = splitSpaces(size);
+      const lens = words.filter((v) => /^[-\d.]/.test(v));
+      const kws = words.filter((w) => /^(closest|farthest)-(side|corner)$/.test(w));
+      const shapes = words.filter((w) => w === "circle" || w === "ellipse");
+      if (lens.length + kws.length + shapes.length !== words.length || shapes.length > 1 || kws.length > 1 || kws.length && lens.length || lens.length > 2) return null;
+      circle = shapes[0] === "circle" || lens.length === 1 && !shapes.length;
+      if (kws.length) ext = kws[0];
+      else if (lens.length) {
+        if (circle ? lens.length !== 1 || /%$/.test(lens[0]) : lens.length !== 2) return null;
+        const a = len(lens[0]), b = circle ? a : len(lens[1]);
+        if (a == null || b == null || parseFloat(a) < 0 || parseFloat(b) < 0) return null;
+        rx = a;
+        ry = b;
+        ext = null;
       }
       if (at) {
         const a = splitSpaces(at);
-        cx = pos(a[0], 0);
-        cy = pos(a[1] ?? "center", 1);
+        if (/^(top|bottom)$/.test(a[0]) || /^(left|right)$/.test(a[1] ?? "")) a.reverse();
+        if (a.length === 1 && /^(top|bottom)$/.test(a[0])) a.unshift("center");
+        const pos = (v, dflt) => ({ left: "0%", top: "0%", center: "50%", right: "100%", bottom: "100%" })[v] ?? (v == null ? dflt : len(v) ?? dflt);
+        cx = pos(a[0], cx);
+        cy = pos(a[1] ?? "center", cy);
       }
     }
     const stops = stopsOf(parts, current);
-    return stops.length ? { radial: [cx, cy, rx, ry], stops } : null;
+    if (!stops.length) return null;
+    const g2 = { radial: [cx, cy, rx, ry], stops };
+    if (ext) g2.ext = ext;
+    if (circle) g2.circle = true;
+    return g2;
   }
   function background(v, current) {
     if (!v || v === "none" || v === "transparent") return null;
