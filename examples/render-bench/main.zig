@@ -35,8 +35,34 @@ pub const Commands = struct {
     /// The same processes' private memory (Pss_Anon: their heaps and other
     /// anonymous pages, not shared libraries' pages): what the app itself
     /// allocated, comparable from one day to the next.
+    /// Windows: this process's private bytes (its committed heaps; a
+    /// WebView's msedgewebview2 processes aren't counted).
     pub fn private_mb(_: std.mem.Allocator) f64 {
+        if (@import("builtin").os.tag == .windows) return winPrivateMb();
         return treeMb("\nPss_Anon:");
+    }
+
+    const ProcessMemoryCountersEx = extern struct {
+        cb: u32,
+        page_fault_count: u32,
+        peak_working_set_size: usize,
+        working_set_size: usize,
+        quota_peak_paged_pool_usage: usize,
+        quota_paged_pool_usage: usize,
+        quota_peak_non_paged_pool_usage: usize,
+        quota_non_paged_pool_usage: usize,
+        pagefile_usage: usize,
+        peak_pagefile_usage: usize,
+        private_usage: usize,
+    };
+    extern "kernel32" fn K32GetProcessMemoryInfo(process: *anyopaque, counters: *ProcessMemoryCountersEx, cb: u32) callconv(.winapi) c_int;
+    extern "kernel32" fn GetCurrentProcess() callconv(.winapi) *anyopaque;
+
+    fn winPrivateMb() f64 {
+        var m: ProcessMemoryCountersEx = undefined;
+        m.cb = @sizeOf(ProcessMemoryCountersEx);
+        if (K32GetProcessMemoryInfo(GetCurrentProcess(), &m, m.cb) == 0) return 0;
+        return @as(f64, @floatFromInt(m.private_usage)) / (1024 * 1024);
     }
 
     /// One smaps_rollup field, summed over this process's tree, in MB.
