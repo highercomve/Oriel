@@ -14443,6 +14443,7 @@ col, colgroup { display: none; }
       }
       const t1 = P && P();
       const nodes = /* @__PURE__ */ new Map();
+      const paintOps = this.host.paintOps ? [] : null;
       for (let i = 0; i < changes.length; i += 6) {
         const fc = changes[i], saved = changes[i + 1], d = changes[i + 2], normal = changes[i + 3], important = changes[i + 4], old = changes[i + 5];
         const cs = saved.cs, parts = /* @__PURE__ */ new Set();
@@ -14464,7 +14465,12 @@ col, colgroup { display: none; }
         };
         const r = fc.root;
         r.props = part({ ...r.props });
-        nodes.set(fc.id, { kind: r.kind, props: part(old.props ? { ...old.props } : JSON.parse(old.p)), kids: r.kids.slice() });
+        const sent = part(old.props ? { ...old.props } : JSON.parse(old.p));
+        if (paintOps) {
+          const n2 = (v) => v === void 0 ? "null" : v;
+          paintOps.push(`["x",${fc.id},${n2(sent.tx)},${n2(sent.ty)},${n2(sent.sc)},${n2(sent.rot)},${n2(sent.op)}]`);
+          this.prev.set(fc.id, { kind: old.kind, p: null, props: sent, k: old.k });
+        } else nodes.set(fc.id, { kind: r.kind, props: sent, kids: r.kids.slice() });
       }
       const t2 = P && P();
       this.frameNo++;
@@ -14474,12 +14480,20 @@ col, colgroup { display: none; }
       this.dropped = [];
       this.specs = /* @__PURE__ */ new Map();
       this.animSpecs = /* @__PURE__ */ new Map();
-      this.emit(nodes, false);
-      for (const [id, n2] of nodes) {
-        const e = this.prev.get(id);
-        if (e && e.p !== null) e.props = n2.props;
+      if (paintOps) {
+        this.applyMs = 0;
+        const a = P && P();
+        if (paintOps.length) this.host.ops(`[${paintOps.join(",")}]`);
+        if (P) this.applyMs = P() - a;
+        this.schedule();
+      } else {
+        this.emit(nodes, false);
+        for (const [id, n2] of nodes) {
+          const e = this.prev.get(id);
+          if (e && e.p !== null) e.props = n2.props;
+        }
       }
-      if (P) this.host.log(1, `PROF boxes: ${nodes.size} nodes, prepare ${(P() - t02 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t02).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
+      if (P) this.host.log(1, `PROF boxes: ${paintOps ? paintOps.length : nodes.size} nodes, prepare ${(P() - t02 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t02).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
       return true;
     }
     renderNow() {

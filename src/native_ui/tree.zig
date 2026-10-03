@@ -667,6 +667,10 @@ pub const Tree = struct {
     /// so a backend that mirrors props (Android) learns of them here.
     on_leaf_style: ?*const fn (ctx: *anyopaque, id: i64, json: []const u8) void = null,
     on_create: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
+    /// A node's transform or opacity changed alone (the "x" op: an
+    /// animation's frame), its other props as they were: backends that
+    /// mirror props (Android) send just those, without on_props' JSON.
+    on_paint: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
 
     pub fn init(gpa: std.mem.Allocator, measure_ctx: *anyopaque, measure: Measure) Tree {
         const config = yg.YGConfigNew();
@@ -949,6 +953,9 @@ pub const Tree = struct {
                 'k' => if (arg) |x| if (x == .array) if (t.nodes.get(id)) |n| try t.setKids(n, x.array.items),
                 'd' => t.destroy(id),
                 'r' => t.root = t.nodes.get(id),
+                // ["x", id, tx, ty, sc, rot, op] (each a number or null):
+                // a node's transform and opacity alone.
+                'x' => if (t.nodes.get(id)) |n| if (a.len >= 7) t.setPaint(n, a[2..7]),
                 else => {},
             }
         }
@@ -1014,6 +1021,29 @@ pub const Tree = struct {
         // (Detached above: destroying one doesn't touch `n.kids`.)
         for (n.kids.items) |k| if (k.stamp_owned) t.destroy(k.id);
         freeNode(t, n);
+    }
+
+    /// tx, ty, sc, rot, op as given (null: unset): drawing and frames only
+    /// (translate moves a box after layout), no Yoga style.
+    fn setPaint(t: *Tree, n: *Node, v: []const std.json.Value) void {
+        n.props.tx = numF(v[0]);
+        n.props.ty = numF(v[1]);
+        n.props.sc = numF(v[2]);
+        n.props.rot = numF(v[3]);
+        n.props.op = numF(v[4]);
+        // Frames are placed again with the new translation (Yoga has
+        // nothing to lay out again).
+        t.dirty = true;
+        t.paint_dirty = true;
+        if (t.on_paint) |cb| cb(t.measure_ctx, n);
+    }
+
+    fn numF(v: std.json.Value) ?f32 {
+        return switch (v) {
+            .integer => |i| @floatFromInt(i),
+            .float => |f| if (std.math.isFinite(f)) @floatCast(f) else null,
+            else => null,
+        };
     }
 
     fn setProps(t: *Tree, n: *Node, value: std.json.Value) !void {
@@ -2265,4 +2295,32 @@ test "stampRow makes, keeps, updates and drops a row's leaves" {
     try std.testing.expect(t.get(20).?.parent == null);
     try t.apply("[[\"d\",5]]");
     try std.testing.expect(t.get(10) == null and t.get(11) == null);
+}
+
+test "the x op sets transform and opacity alone and moves the frame" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    const Hook = struct {
+        var calls: usize = 0;
+        fn paint(_: *anyopaque, _: *Node) void {
+            calls += 1;
+        }
+    };
+    t.on_paint = Hook.paint;
+    try t.apply("[[\"c\",0,\"view\"],[\"c\",1,\"view\"],[\"p\",1,{\"w\":10,\"h\":10,\"bg\":{\"color\":[1,2,3,1]}}],[\"k\",0,[1]],[\"r\",0]]");
+    t.layout();
+    const n = t.get(1).?;
+    try std.testing.expectEqual(@as(f32, 0), n.frame.x);
+    try t.apply("[[\"x\",1,5,6,2,null,0.5]]");
+    try std.testing.expect(t.dirty and Hook.calls == 1);
+    try std.testing.expectEqual(@as(?f32, 2), n.props.sc);
+    try std.testing.expectEqual(@as(?f32, null), n.props.rot);
+    try std.testing.expect(n.props.bg != null); // the rest as it was
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 5), n.frame.x);
+    try std.testing.expectEqual(@as(f32, 6), n.frame.y);
+    try t.apply("[[\"x\",1,null,null,null,null,null],[\"x\",99,1,1,1,1,1]]");
+    try std.testing.expectEqual(@as(?f32, null), n.props.tx);
 }
