@@ -1982,6 +1982,8 @@ pub const Tree = struct {
         defer if (unconsumed) |u| t.gpa.free(u);
         n.pending_value = null;
         n.measured_text_size = null;
+        // New props, maybe a new font: the backend measures the baseline again.
+        n.baseline = std.math.nan(f32);
         t.dropTextOverride(n);
         // Keep a little for the next props, not an old <img> data: URI's megabytes.
         _ = n.arena.reset(.{ .retain_with_limit = 64 * 1024 });
