@@ -239,6 +239,9 @@ pub const Surface = struct {
     /// The field node the page last heard has the keyboard ("focus" and
     /// "blur", focusCheck); 0: none.
     focused: i64 = 0,
+    /// A field the page focused before its control existed (focus() right
+    /// after showing it): given the keyboard once syncFields makes it.
+    focus_pending: i64 = 0,
     /// A WM_FOCUS_CHECK is queued.
     focus_check_posted: bool = false,
 
@@ -732,9 +735,11 @@ var timer_due: [64]struct { id: u32 = 0, due: f64 = 0 } = @splat(.{});
 fn focus(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     if (s.fields.get(node.id)) |f| {
+        s.focus_pending = 0;
         _ = c.SetFocus(f.hwnd);
         return;
     }
+    s.focus_pending = if (node.kind == .input or node.kind == .textarea or node.kind == .select) node.id else 0;
     // Not a field (a button, a link): the keyboard leaves the field that
     // had it, so typing goes to the page.
     const had = c.GetFocus() orelse return;
@@ -749,6 +754,7 @@ fn removed(ctx: *anyopaque, node: *Node) void {
     }
     if (s.canvases.fetchRemove(node.id)) |kv| freeCanvas(kv.value);
     if (s.focused == node.id) s.focused = 0;
+    if (s.focus_pending == node.id) s.focus_pending = 0;
     if (s.fields.fetchRemove(node.id)) |kv| {
         var f = kv.value;
         freeField(s, &f);
@@ -981,6 +987,11 @@ fn syncFields(s: *Surface) void {
         _ = c.SetWindowPos(f.clip, null, x0, y0, x1 - x0, y1 - y0, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_SHOWWINDOW);
         _ = c.SetWindowPos(f.hwnd, null, cx - x0, cy - y0, 0, 0, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_NOSIZE | c.SWP_SHOWWINDOW);
     }
+    // A focus() that came before its field's control did.
+    if (s.focus_pending != 0) if (s.fields.get(s.focus_pending)) |f| {
+        s.focus_pending = 0;
+        _ = c.SetFocus(f.hwnd);
+    };
 }
 
 fn setPlaceholder(s: *Surface, f: *Field, ph: []const u8) void {
@@ -4321,12 +4332,43 @@ fn unevenBorder(p: *Painter, f: Rect, radii: Radii, bw: [4]f32, colors: [4]tree_
         const k = size / @max(1e-3, @max(@abs(dir[i].x), @abs(dir[i].y)));
         ends[i] = .{ .x = outer[i].x + dir[i].x * k, .y = outer[i].y + dir[i].y * k };
     }
-    for (0..4) |i| {
-        if (bw[i] <= 0 or colors[i][3] <= 0) continue;
-        const j = (i + 1) % 4;
-        // The side's share: its corners' join lines as far as the corners'
-        // curves go, then the middle (no ring there).
-        const mask = polygonGeometry(&.{ outer[i], outer[j], ends[j], center, ends[i] }) orelse continue;
+    // Neighbouring sides of one color go under one mask: two anti-aliased
+    // masks meeting on their join line would leave a faint seam there.
+    const drawn = struct {
+        fn at(w: [4]f32, cs: [4]tree_mod.Color, i: usize) bool {
+            return w[i] > 0 and cs[i][3] > 0;
+        }
+    }.at;
+    const sameAs = struct {
+        fn at(w: [4]f32, cs: [4]tree_mod.Color, a: usize, b: usize) bool {
+            return w[a] > 0 and w[b] > 0 and std.mem.eql(f32, &cs[a], &cs[b]);
+        }
+    }.at;
+    // Start where a group begins (a side unlike the one before it).
+    var first: usize = 0;
+    while (first < 4 and sameAs(bw, colors, first, (first + 3) % 4)) first += 1;
+    if (first == 4) first = 0;
+    var done: usize = 0;
+    while (done < 4) {
+        const i = (first + done) % 4;
+        var m: usize = 1;
+        while (done + m < 4 and sameAs(bw, colors, i, (i + m) % 4)) m += 1;
+        done += m;
+        if (!drawn(bw, colors, i)) continue;
+        // The sides' share: their outer corners, the last and first
+        // corners' join lines as far as the curves go, then the middle (no
+        // ring there).
+        var pts: [8]c.D2D1_POINT_2F = undefined;
+        var np: usize = 0;
+        for (0..m + 1) |k| {
+            pts[np] = outer[(i + k) % 4];
+            np += 1;
+        }
+        pts[np] = ends[(i + m) % 4];
+        pts[np + 1] = center;
+        pts[np + 2] = ends[i];
+        np += 3;
+        const mask = polygonGeometry(pts[0..np]) orelse continue;
         defer releaseCom(@as(?*c.ID2D1PathGeometry, mask));
         const params: c.D2D1_LAYER_PARAMETERS = .{
             .contentBounds = .{ .left = -1e6, .top = -1e6, .right = 1e6, .bottom = 1e6 },
