@@ -687,12 +687,7 @@ fn gradient(cg: CGContextRef, f: Rect, r: [4]f32, g: tree_mod.Gradient) void {
 
 /// A gradient length: px, or "50%" of `total`.
 fn boxLen(v: tree_mod.Dim, total: f32) f32 {
-    return switch (v) {
-        .integer => |i| @floatFromInt(i),
-        .float => |x| @floatCast(x),
-        .string => |s| if (std.mem.endsWith(u8, s, "%")) (std.fmt.parseFloat(f32, s[0 .. s.len - 1]) catch 0) / 100 * total else 0,
-        else => 0,
-    };
+    return v.len(total);
 }
 
 fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) void {
