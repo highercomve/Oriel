@@ -574,6 +574,10 @@ swatches, a gradient, text, a border and a canvas fill). A rounded border
 whose sides differ in width is the ring between the border box and the
 padding box (elliptical inner corners), each color clipped to its wedge
 and neighboring sides of one color sharing one, as on GTK (`roundedSides`).
+An inline link's ring (a run's `ol`) is a box per line its text is on
+(`paintRunRings`: spaces at the line's ends left out, its runs under one
+box), as tall as the font's content area, as WebKit draws it even in a
+taller line box. An `<img>` is clipped to its content edge's curve.
 
 | | macOS (AppKit) | iOS (UIKit) |
 |---|---|---|

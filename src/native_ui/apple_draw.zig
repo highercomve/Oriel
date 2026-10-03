@@ -48,6 +48,7 @@ extern fn CFStringGetLength(s: CFStringRef) c_long;
 extern fn CFAttributedStringCreateMutable(alloc: ?*anyopaque, max: c_long) ?CFAttributedStringRef;
 extern fn CFAttributedStringReplaceString(s: CFAttributedStringRef, range: CFRange, replacement: CFStringRef) void;
 extern fn CFAttributedStringSetAttribute(s: CFAttributedStringRef, range: CFRange, name: CFStringRef, value: CFTypeRef) void;
+extern fn CFAttributedStringRemoveAttribute(s: CFAttributedStringRef, range: CFRange, name: CFStringRef) void;
 extern fn CFAttributedStringGetLength(s: CFAttributedStringRef) c_long;
 extern fn CFNumberCreate(alloc: ?*anyopaque, kind: c_long, value: *const anyopaque) ?CFNumberRef;
 const kCFStringEncodingUTF8: u32 = 0x08000100;
@@ -432,6 +433,10 @@ fn attributed(comptime font_class: [:0]const u8, n: *const Node) ?CFAttributedSt
                 CFAttributedStringSetAttribute(s, range, kCTUnderlineStyleAttributeName, num);
                 CFRelease(num);
             }
+        } else {
+            // Text added after an underlined run takes its attributes: the
+            // link's underline would run on into the words after it.
+            CFAttributedStringRemoveAttribute(s, range, kCTUnderlineStyleAttributeName);
         }
     }
     const len = CFAttributedStringGetLength(s);
@@ -600,6 +605,7 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     CGContextScaleCTM(cg, 1, -1);
     CGContextSetTextMatrix(cg, .{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 });
     paintRunBackgrounds(cg, frame, h, lb, n);
+    defer paintRunRings(cg, frame, h, lb, n);
     if (lb == null) return CTFrameDraw(frame, cg);
     const lines = CTFrameGetLines(frame);
     var i: c_long = 0;
@@ -622,6 +628,95 @@ fn lineOrigin(frame: CTFrameRef, i: c_long, h: CGFloat, lb: ?LineBox) CGPoint {
     const box = lb orelse return o[0];
     const top = @as(CGFloat, @floatFromInt(i)) * box.h + (box.h - (box.m.ascent + box.m.descent)) / 2;
     return .{ .x = o[0].x, .y = h - (top + box.m.ascent) };
+}
+
+/// An inline link's ring (Run.ol: its outline, or the focus ring): one box
+/// per line its text is on, the spaces at the line's ends left out, its
+/// runs (a <b> in it) under one box, as gtk.zig's
+/// runRing and browsers draw it (WebKit: as tall as the font's content
+/// area, not a taller line box). In the flipped CoreText space paintText
+/// set up, over the text.
+fn paintRunRings(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, lb: ?LineBox, n: *Node) void {
+    const runs = n.props.runs orelse return;
+    var any = false;
+    for (runs) |r| if (r.ol != null) {
+        any = true;
+        break;
+    };
+    if (!any) return;
+    // The text in UTF-16 units (CoreText's string indexes), for the spaces.
+    var units: [4096]u16 = undefined;
+    var total: usize = 0;
+    var fits = true;
+    for (runs) |r| {
+        const need = std.unicode.calcUtf16LeLen(r.t) catch {
+            fits = false;
+            break;
+        };
+        if (total + need > units.len) {
+            fits = false;
+            break;
+        }
+        total += std.unicode.utf8ToUtf16Le(units[total..], r.t) catch {
+            fits = false;
+            break;
+        };
+    }
+    const space = struct {
+        fn at(u: []const u16, ok: bool, i: c_long) bool {
+            if (!ok or i < 0 or i >= u.len) return false;
+            const c = u[@intCast(i)];
+            return c == ' ' or c == '\n';
+        }
+    }.at;
+    const text = units[0..total];
+    const lines = CTFrameGetLines(frame);
+    const count = CFArrayGetCount(lines);
+    var start: c_long = 0;
+    var i: usize = 0;
+    while (i < runs.len) : (i += 1) {
+        const len: c_long = @intCast(std.unicode.calcUtf16LeLen(runs[i].t) catch 0);
+        var end = start + len;
+        const ol = runs[i].ol orelse {
+            start = end;
+            continue;
+        };
+        while (i + 1 < runs.len and runs[i + 1].ol != null and std.meta.eql(runs[i + 1].ol.?, ol)) : (i += 1)
+            end += @intCast(std.unicode.calcUtf16LeLen(runs[i + 1].t) catch 0);
+        var li: c_long = 0;
+        while (li < count) : (li += 1) {
+            const line = CFArrayGetValueAtIndex(lines, li);
+            const lr = CTLineGetStringRange(line);
+            var a = @max(start, lr.location);
+            var b = @min(end, lr.location + lr.length);
+            while (a < b and space(text, fits, a)) a += 1;
+            while (b > a and space(text, fits, b - 1)) b -= 1;
+            if (a >= b) continue;
+            const xa = CTLineGetOffsetForStringIndex(line, a, null);
+            const xb = CTLineGetOffsetForStringIndex(line, b, null);
+            if (xa == xb) continue;
+            const o = lineOrigin(frame, li, h, lb);
+            // The inline box's content area (y up), as WebKit draws the
+            // ring: the font's ascent and descent around the baseline (the
+            // line box for line-height: normal, inside a taller one).
+            var bottom: CGFloat = undefined;
+            var height: CGFloat = undefined;
+            if (lb) |box| {
+                height = box.m.ascent + box.m.descent;
+                bottom = o.y - box.m.descent;
+            } else {
+                var ascent: CGFloat = 0;
+                var descent: CGFloat = 0;
+                var leading: CGFloat = 0;
+                _ = CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
+                height = ascent + descent + leading;
+                bottom = o.y - descent - leading / 2;
+            }
+            const rect_: Rect = .{ .x = @floatCast(o.x + @min(xa, xb)), .y = @floatCast(bottom), .w = @floatCast(@abs(xb - xa)), .h = @floatCast(height) };
+            paintOutline(cg, rect_, .{}, ol);
+        }
+        start = end;
+    }
 }
 
 /// A run's background (an inline highlight, a <code> amid the text): a box
@@ -1478,7 +1573,16 @@ fn paintImage(cg: CGContextRef, engine: *Engine, n: *Node) void {
     const dh = c_img.h * ky;
     CGContextSaveGState(cg);
     defer CGContextRestoreGState(cg);
-    CGContextClipToRect(cg, rect(c));
+    // Clipped to its content box, rounded as browsers clip a replaced
+    // element: each corner the border radius less the border and padding
+    // on its sides (the content edge's curve).
+    const f = n.frame;
+    const inset = [4]f32{ c.y - f.y, (f.x + f.w) - (c.x + c.w), (f.y + f.h) - (c.y + c.h), c.x - f.x };
+    const edge = tree_mod.paddingBoxXY(f, n.radiusXY(), inset);
+    if (edge.radii.square()) CGContextClipToRect(cg, rect(c)) else {
+        roundRect(cg, c, edge.radii);
+        CGContextClip(cg);
+    }
     // CGContextDrawImage draws with y up: flip around the picture's box.
     CGContextTranslateCTM(cg, c.x + (c.w - dw) / 2, c.y + (c.h - dh) / 2 + dh);
     CGContextScaleCTM(cg, 1, -1);
