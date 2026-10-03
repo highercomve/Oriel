@@ -18,7 +18,9 @@ pub const BorderStyle = enum { dashed, dotted };
 /// CSS outline (render.js outlinePart): `w` wide, `o` out from the border
 /// box, solid unless `s`; drawn around the box (its corners rounded by
 /// radius + o + w), over it and its children, taking no room.
-pub const Outline = struct { w: f32, o: f32 = 0, c: Color = .{ 0, 0, 0, 1 }, s: ?BorderStyle = null };
+/// A focus ring may add a halo (h: a 1px ring outside it, Chromium's) and
+/// a least radius for its outer corners (r).
+pub const Outline = struct { w: f32, o: f32 = 0, c: Color = .{ 0, 0, 0, 1 }, s: ?BorderStyle = null, h: ?Color = null, r: f32 = 0 };
 
 pub const Color = [4]f32; // r, g, b 0-255; a 0-1
 
