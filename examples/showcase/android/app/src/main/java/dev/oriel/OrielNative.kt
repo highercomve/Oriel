@@ -704,6 +704,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     init {
         setWillNotDraw(false)
         isFocusableInTouchMode = true
+        // The page draws its own focus (:focus-visible): no system highlight over the whole view.
+        defaultFocusHighlightEnabled = false
         clipChildren = true
     }
 
@@ -925,7 +927,13 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     }
 
     fun focusField(id: Int) {
-        val f = fields[id] ?: return
+        val f = fields[id]
+        if (f == null) {
+            // The page focused something that isn't a field (a button, a link,
+            // its Tab navigation): the keys come back to the page's view.
+            if (findFocus() is EditText) hideKeyboard() else if (findFocus() !== this) requestFocus()
+            return
+        }
         f.requestFocus()
         if (f is EditText) context.getSystemService(InputMethodManager::class.java)?.showSoftInput(f, 0)
     }
@@ -1362,6 +1370,21 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     // --- Keys -------------------------------------------------------------------
 
+    /** Tab and Shift+Tab in a field go to the page first (its focus order,
+     *  as a browser's), not Android's own focus search. */
+    override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        val focused = findFocus()
+        if (e.keyCode == KeyEvent.KEYCODE_TAB && focused != null && focused !== this) {
+            val used = when (e.action) {
+                KeyEvent.ACTION_DOWN -> onKeyDown(e.keyCode, e)
+                KeyEvent.ACTION_UP -> onKeyUp(e.keyCode, e)
+                else -> false
+            }
+            if (used) return true
+        }
+        return super.dispatchKeyEvent(e)
+    }
+
     /** The page's keydown (with repeat) and keyup; what it prevents is consumed. */
     override fun onKeyDown(keyCode: Int, e: KeyEvent): Boolean {
         val k = keyName(e) ?: return super.onKeyDown(keyCode, e)
@@ -1391,6 +1414,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         KeyEvent.KEYCODE_PAGE_UP -> "PageUp"
         KeyEvent.KEYCODE_PAGE_DOWN -> "PageDown"
         KeyEvent.KEYCODE_SPACE -> " "
+        KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> "Shift"
+        KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT -> "Control"
+        KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT -> "Alt"
+        KeyEvent.KEYCODE_META_LEFT, KeyEvent.KEYCODE_META_RIGHT -> "Meta"
         else -> {
             val c = e.getUnicodeChar(e.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_ALT_MASK or KeyEvent.META_META_MASK).inv())
             if (c > 0 && !Character.isISOControl(c)) String(Character.toChars(c)) else null
