@@ -14731,6 +14731,10 @@ textarea { white-space: pre-wrap; }
    border and none. */
 textarea { padding: 2px; border-width: 1px; }
 select { padding: 0; border-width: 1px; }
+/* Chromium's margins round a checkbox, a radio and a slider (a page's
+   margin: 0 wins). */
+input[type=checkbox], input[type=radio] { margin: 3px 3px 3px 4px; }
+input[type=range] { margin: 2px; }
 hr { border-top: 1px solid #888; margin: .5em 0; }
 table { display: table; border-spacing: 2px; border-collapse: separate; }
 thead { display: table-header-group; } tbody { display: table-row-group; } tfoot { display: table-footer-group; }
@@ -15866,7 +15870,6 @@ textarea { font-family: -webkit-small-control, system-ui; }
             if (acc) props.acc = acc;
             if (props.w === void 0 || props.w === "auto") props.w = 13;
             if (props.h === void 0 || props.h === "auto") props.h = 13;
-            if (!props.m) props.m = [3, 3, 3, 3];
             delete props.pad;
             delete props.bw;
             delete props.bc;
@@ -15904,7 +15907,6 @@ textarea { font-family: -webkit-small-control, system-ui; }
           props.range = [n2("min", 0), n2("max", 100), el.getAttribute("step") === "any" ? 0 : n2("step", 1)];
           if (props.w === void 0 || props.w === "auto") props.w = 129;
           if (props.h === void 0 || props.h === "auto") props.h = 16;
-          if (!props.m) props.m = [2, 2, 2, 2];
           const acc = color(cs["accent-color"] || "");
           if (acc) props.acc = acc;
           delete props.pad;
@@ -16669,13 +16671,35 @@ textarea { font-family: -webkit-small-control, system-ui; }
     return focusRing(cs, el, { ...memoized(cs, key2, () => makeBoxProps(cs, display, fs, button, bb)) });
   }
   var FOCUS_RING = { w: 2, c: [0, 103, 244, 1], o: 1 };
+  var CHROMIUM_RING = (o, r) => ({ w: 2, c: [16, 16, 16, 1], o, h: [255, 255, 255, 1], r });
+  var CHROMIUM_RINGS = { control: CHROMIUM_RING(-2, 3), check: CHROMIUM_RING(1, 3), link: CHROMIUM_RING(0, 4), box: CHROMIUM_RING(-1, 4) };
+  var chromiumRing = false;
+  function setFocusRingOS(os) {
+    chromiumRing = os === "windows" || os === "android";
+  }
   var focusVisible = null;
   function setFocusVisible(el) {
     focusVisible = el;
   }
   function focusRing(cs, el, p) {
-    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = FOCUS_RING;
+    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = chromiumRing ? chromiumRingFor(el) : FOCUS_RING;
     return p;
+  }
+  function chromiumRingFor(el) {
+    switch (el.localName) {
+      case "input": {
+        const type = (el.getAttribute("type") || "").toLowerCase();
+        return type === "checkbox" || type === "radio" ? CHROMIUM_RINGS.check : CHROMIUM_RINGS.control;
+      }
+      case "button":
+      case "select":
+      case "textarea":
+        return CHROMIUM_RINGS.control;
+      case "a":
+        return el.hasAttribute("href") ? CHROMIUM_RINGS.link : CHROMIUM_RINGS.box;
+      default:
+        return CHROMIUM_RINGS.box;
+    }
   }
   function outlinePart(cs, fs, p) {
     const style = cs["outline-style"];
@@ -17882,6 +17906,7 @@ ${a.stack || ""}`;
   g.localStorage = store("local");
   g.sessionStorage = store("session");
   var platform = JSON.parse(host.platform || "{}");
+  setFocusRingOS(platform.os);
   g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: void 0, maxTouchPoints: viewport.coarse ? 5 : 0 };
   Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
   Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
