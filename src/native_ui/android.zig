@@ -61,6 +61,13 @@ pub const Surface = struct {
     /// posted (laidOut).
     node_count: usize = 0,
     trim_posted: bool = false,
+    /// The pointer's last move, sent at the next display frame (moves go
+    /// once per frame, before the page's), with its buttons, modifiers and
+    /// whether it is the mouse.
+    move: ?[2]f32 = null,
+    move_buttons: u32 = 0,
+    move_mods: u32 = 0,
+    move_mouse: bool = false,
 };
 
 /// nuiTimer's id for trimming the tree's pools (the engine's timer ids count
@@ -479,6 +486,11 @@ fn flushLeaves(s: *Surface) void {
 fn requestDisplayFrame(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
     s.frame_wanted = true;
+    postFrame(s);
+}
+
+/// One Choreographer callback for the window's next display frame.
+fn postFrame(s: *Surface) void {
     if (s.frame_posted) return;
     s.frame_posted = true;
     _ = runtime.call(.void, "nuiRequestFrame", "(I)V", .{wid(s.window)});
@@ -685,6 +697,48 @@ fn nHover(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) void {
     _ = s.engine.event(id, "hover", "null");
 }
 
+/// A pointer event for the page (main.js pointerEvent; see "Pointer and key
+/// events" in docs/native-renderer.md). `phase`: 0 down, 1 move, 2 up, 3
+/// cancel; (x, y) in dp (CSS px); `mouse`: the mouse, else a touch. A move
+/// waits for the next display frame; the others go now, after a move still
+/// waiting. True when the page prevented the default (on down: it takes
+/// the drag).
+fn nPointer(_: *Env, _: jclass, win: jint, phase: jint, x: f32, y: f32, buttons: jint, mouse: jboolean, mods: jint) callconv(.c) jboolean {
+    const s = byId(win) orelse return 0;
+    if (!std.math.isFinite(x) or !std.math.isFinite(y)) return 0;
+    if (phase == 1) {
+        s.move = .{ x, y };
+        s.move_buttons = @bitCast(buttons);
+        s.move_mods = @bitCast(mods);
+        s.move_mouse = mouse != 0;
+        postFrame(s);
+        return 0;
+    }
+    if (s.move != null) {
+        flushMove(s);
+        if (byId(win) != s) return 0;
+    }
+    const name = switch (phase) {
+        0 => "down",
+        2 => "up",
+        else => "cancel",
+    };
+    return @intFromBool(sendPointer(s, name, .{ x, y }, @bitCast(buttons), mouse != 0, @bitCast(mods)));
+}
+
+fn flushMove(s: *Surface) void {
+    const p = s.move orelse return;
+    s.move = null;
+    _ = sendPointer(s, "move", p, s.move_buttons, s.move_mouse, s.move_mods);
+}
+
+fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, mouse: bool, mods: u32) bool {
+    const under: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    var buf: [112]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"{s}\",{d}]", .{ phase, p[0], p[1], buttons, if (mouse) "mouse" else "touch", mods }) catch return false;
+    return s.engine.event(under, "pointer", json);
+}
+
 /// A long press: the page's contextmenu.
 fn nLongPress(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) jboolean {
     const s = byId(win) orelse return 0;
@@ -742,6 +796,11 @@ fn nEvent(env: *Env, _: jclass, win: jint, id: jint, kind: jobject, data: jobjec
 fn nDisplayFrame(_: *Env, _: jclass, win: jint, interval_ms: f32) callconv(.c) void {
     const s = byId(win) orelse return; // the window closed
     s.frame_posted = false;
+    // The pointer's move first, as a browser sends it before the frame.
+    if (s.move != null) {
+        flushMove(s);
+        if (byId(win) != s) return;
+    }
     if (!s.frame_wanted) return;
     s.frame_wanted = false;
     s.engine.displayFrame(interval_ms);
@@ -805,6 +864,7 @@ comptime {
     @export(&nDisplayFrame, .{ .name = prefix ++ "displayFrame" });
     @export(&nResize, .{ .name = prefix ++ "resize" });
     @export(&nTap, .{ .name = prefix ++ "tap" });
+    @export(&nPointer, .{ .name = prefix ++ "pointer" });
     @export(&nPress, .{ .name = prefix ++ "press" });
     @export(&nHover, .{ .name = prefix ++ "hover" });
     @export(&nLongPress, .{ .name = prefix ++ "longPress" });
