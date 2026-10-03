@@ -15773,9 +15773,11 @@ col, colgroup { display: none; }
       const flow = [];
       const boxed = childCtx.blockify ? null : this.boxedEnds(el, cs, rematch);
       let runs = [];
-      const flushRuns = () => {
+      const inlineBox = (child) => !childCtx.blockify && (ATOMIC_INLINE.has(this.style(child, cs, rematch).display || "inline") || !!boxed?.has(child));
+      let afterBox = false;
+      const flushRuns = (beforeBox = false) => {
         if (!runs.length) return;
-        const trimmed = trimRuns(runs, cs["white-space"]);
+        const trimmed = trimRuns(runs, cs["white-space"], afterBox, beforeBox);
         runs = [];
         if (!trimmed.length) return;
         flow.push({ text: trimmed });
@@ -15792,8 +15794,10 @@ col, colgroup { display: none; }
           this.inlineRuns(child, cs, fontSize, runs, rematch);
           continue;
         }
-        flushRuns();
+        const box = inlineBox(child);
+        flushRuns(box);
         flow.push({ el: child });
+        afterBox = box;
       }
       flushRuns();
       if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
@@ -16717,9 +16721,9 @@ col, colgroup { display: none; }
     if (src) Object.defineProperty(r, "src", { value: src, enumerable: false });
     return r;
   }
-  function trimRuns(runs) {
+  function trimRuns(runs, _ws, keepStart = false, keepEnd = false) {
     const out = [];
-    let lastSpace = true;
+    let lastSpace = !keepStart;
     for (const r of runs) {
       let t = r.t;
       if (r.ws === "pre" || r.ws === "pre-wrap" || r.ws === "pre-line") {
@@ -16735,7 +16739,8 @@ col, colgroup { display: none; }
       lastSpace = t.endsWith(" ");
       out.push(strip(r, t));
     }
-    if (out.length) {
+    if ((keepStart || keepEnd) && out.every((r) => !r.t.trim() && r.ws === void 0)) return [];
+    if (out.length && !keepEnd) {
       const last = out[out.length - 1];
       if (last.ws !== "pre" && last.ws !== "pre-wrap") last.t = last.t.replace(/ $/, "");
       if (!last.t) out.pop();

@@ -212,6 +212,9 @@ extern fn pango_font_metrics_get_ascent(m: *PangoFontMetrics) c_int;
 extern fn pango_font_metrics_get_descent(m: *PangoFontMetrics) c_int;
 extern fn pango_font_metrics_unref(m: *PangoFontMetrics) void;
 extern fn pango_font_metrics_get_height(m: *PangoFontMetrics) c_int;
+const PangoFontFamily = opaque {};
+extern fn pango_font_map_list_families(map: *anyopaque, families: *?[*]*PangoFontFamily, n: *c_int) void;
+extern fn pango_font_family_get_name(f: *PangoFontFamily) [*:0]const u8;
 extern fn pango_cairo_font_map_get_default() *anyopaque;
 extern fn pango_font_map_create_context(map: *anyopaque) ?*PangoContext;
 extern fn pango_cairo_context_set_font_options(ctx: *PangoContext, opts: ?*const anyopaque) void;
@@ -279,6 +282,10 @@ pub const Surface = struct {
     /// made of (normalLineHeight). By size (1/64 px) and monospace.
     metrics_ctx: ?*PangoContext = null,
     font_metrics: std.AutoHashMapUnmanaged(u64, [3]f32) = .empty,
+    /// The installed families (lowercase), and CSS family lists resolved
+    /// to the one a browser would use (resolveFamily). Keys and values owned.
+    installed_families: std.StringHashMapUnmanaged(void) = .empty,
+    resolved_families: std.StringHashMapUnmanaged([]const u8) = .empty,
     css: *GtkCssProvider,
     css_text: std.ArrayList(u8) = .empty,
     invoke_fn: Invoke,
@@ -425,6 +432,7 @@ pub const Surface = struct {
         if (s.mono) |font| pango_font_description_free(font);
         if (s.metrics_ctx) |c| g_object_unref(c);
         s.font_metrics.deinit(s.gpa);
+        freeFamilies(s);
         s.gpa.destroy(s);
     }
 
@@ -520,12 +528,91 @@ fn familyHash(family: ?[]const u8) u64 {
 
 /// A font description for this text: Sans or Monospace, or its CSS family
 /// list, at `size` px (the surface's own, changed in place: one at a time).
+/// CSS's generic families as fontconfig names them.
+const generic_families = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "serif", "serif" },           .{ "sans-serif", "sans-serif" }, .{ "monospace", "monospace" },
+    .{ "system-ui", "system-ui" },   .{ "ui-sans-serif", "sans-serif" }, .{ "ui-serif", "serif" },
+    .{ "ui-monospace", "monospace" }, .{ "ui-rounded", "sans-serif" }, .{ "cursive", "cursive" },
+    .{ "fantasy", "fantasy" },       .{ "emoji", "emoji" },           .{ "math", "math" },
+});
+
+/// The family a browser draws a CSS font-family list in: the first one
+/// installed, or the first generic name (fontconfig's alias for it). Pango
+/// given the whole list lets fontconfig pick, and a weak alias like
+/// system-ui loses to a real family later in it (Roboto, where WebKit uses
+/// Adwaita Sans).
+fn resolveFamily(s: *Surface, list: []const u8) []const u8 {
+    if (s.resolved_families.get(list)) |name| return name;
+    if (s.installed_families.count() == 0) {
+        var fams: ?[*]*PangoFontFamily = null;
+        var n: c_int = 0;
+        pango_font_map_list_families(pango_cairo_font_map_get_default(), &fams, &n);
+        if (fams) |f| {
+            for (f[0..@intCast(n)]) |fam| {
+                const name = std.mem.span(pango_font_family_get_name(fam));
+                const low = std.ascii.allocLowerString(s.gpa, name) catch continue;
+                const got = s.installed_families.getOrPut(s.gpa, low) catch {
+                    s.gpa.free(low);
+                    continue;
+                };
+                if (got.found_existing) s.gpa.free(low);
+            }
+            g_free(@ptrCast(f));
+        }
+    }
+    var chosen: []const u8 = "sans-serif";
+    var it = std.mem.splitScalar(u8, list, ',');
+    while (it.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " \t\"'");
+        if (name.len == 0 or name.len > 128) continue;
+        var low_buf: [128]u8 = undefined;
+        const low = std.ascii.lowerString(&low_buf, name);
+        if (generic_families.get(low)) |g| {
+            chosen = g;
+            break;
+        }
+        if (s.installed_families.contains(low)) {
+            chosen = name;
+            break;
+        }
+    }
+    const key = s.gpa.dupe(u8, list) catch return chosen;
+    const value = s.gpa.dupe(u8, chosen) catch {
+        s.gpa.free(key);
+        return chosen;
+    };
+    if (s.resolved_families.count() >= 256) freeResolved(s);
+    s.resolved_families.put(s.gpa, key, value) catch {
+        s.gpa.free(key);
+        s.gpa.free(value);
+        return chosen;
+    };
+    return value;
+}
+
+fn freeResolved(s: *Surface) void {
+    var it = s.resolved_families.iterator();
+    while (it.next()) |e| {
+        s.gpa.free(e.key_ptr.*);
+        s.gpa.free(e.value_ptr.*);
+    }
+    s.resolved_families.clearRetainingCapacity();
+}
+
+fn freeFamilies(s: *Surface) void {
+    freeResolved(s);
+    s.resolved_families.deinit(s.gpa);
+    var it = s.installed_families.keyIterator();
+    while (it.next()) |k| s.gpa.free(k.*);
+    s.installed_families.deinit(s.gpa);
+}
+
 fn fontDesc(s: *Surface, size: f32, mono: bool, family: ?[]const u8) *PangoFontDescription {
     const font = if (mono) &s.mono else &s.sans;
     if (font.* == null) font.* = pango_font_description_from_string(if (mono) "Monospace" else "Sans");
     const desc = font.*.?;
     var buf: [256]u8 = undefined;
-    const name: [*:0]const u8 = if (family) |f| (std.fmt.bufPrintZ(&buf, "{s}", .{f}) catch "Sans") else if (mono) "Monospace" else "Sans";
+    const name: [*:0]const u8 = if (family) |f| (std.fmt.bufPrintZ(&buf, "{s}", .{resolveFamily(s, f)}) catch "Sans") else if (mono) "Monospace" else "Sans";
     pango_font_description_set_family(desc, name);
     pango_font_description_set_absolute_size(desc, size * PANGO_SCALE);
     return desc;
@@ -1397,7 +1484,7 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32) ?*PangoLa
         if (r.ff) |ff| {
             // Its CSS family list (Pango copies the name).
             var buf: [256]u8 = undefined;
-            if (std.fmt.bufPrintZ(&buf, "{s}", .{ff})) |name| add(attrs, pango_attr_family_new(name), start, end) else |_| {}
+            if (std.fmt.bufPrintZ(&buf, "{s}", .{resolveFamily(s, ff)})) |name| add(attrs, pango_attr_family_new(name), start, end) else |_| {}
         } else if (r.mono) add(attrs, pango_attr_family_new("Monospace"), start, end);
         if (r.u) add(attrs, pango_attr_underline_new(1), start, end);
         if (r.bg) |bg| if (bg[3] > 0) {
@@ -2484,6 +2571,7 @@ test "shared measurements match fresh Pango layouts after text, width and font c
         if (s.mono) |font| pango_font_description_free(font);
         if (s.metrics_ctx) |c| g_object_unref(c);
         s.font_metrics.deinit(s.gpa);
+        freeFamilies(&s);
     }
     var t = tree_mod.Tree.init(gpa, &s, measure);
     defer t.deinit();
