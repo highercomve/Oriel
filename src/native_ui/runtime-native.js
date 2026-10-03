@@ -2038,12 +2038,20 @@ globalThis.atob ??= (s) => {
       this.index = { id: /* @__PURE__ */ new Map(), cls: /* @__PURE__ */ new Map(), tag: /* @__PURE__ */ new Map(), any: [] };
       this.order = 0;
       this.keyframes = {};
+      this.sheets = [];
     }
     // `cache`: { get(css, path) → JSON | undefined, keep(css, json) } (the
     // native one keeps a sheet's parsed rules for the process: a second
     // window doesn't parse and index them again; and finds the ones the app
     // was built with, by the sheet's asset `path`: tools/qjs_modules.zig).
-    addSheet(css, cache, path) {
+    addSheet(css, cache, path, owner = null) {
+      const sheet = _StyleEngine.parsed(css, cache, path, owner);
+      this.sheets.push(sheet);
+      this.indexSheet(sheet);
+    }
+    // A sheet: its parts (one, read whole, or its top-level rules, for a
+    // sheet that may change), their rules in order, their @keyframes.
+    static parsed(css, cache, path, owner) {
       let parsed = null;
       const kept2 = cache?.get(css, path);
       if (kept2) {
@@ -2060,13 +2068,72 @@ globalThis.atob ??= (s) => {
         } catch {
         }
       }
-      Object.assign(this.keyframes, parsed.keyframes);
-      for (const [sel, pseudo, spec, decls, media, key] of parsed.rules) {
-        const r = { sel, pseudo, spec, decls, media, order: this.order++, match: null };
-        this.rules.push(r);
-        if (key[0] === "any") this.index.any.push(r);
-        else push(this.index[key[0]], key[1], r);
+      return _StyleEngine.sheetOf(owner, css, [_StyleEngine.part(css, parsed)]);
+    }
+    static part(text, parsed = sheetData(text)) {
+      const rules = parsed.rules.map(([sel, pseudo, spec, decls, media, key]) => ({ sel, pseudo, spec, decls, media, key, order: 0, match: null }));
+      return { text, rules, keyframes: parsed.keyframes || {} };
+    }
+    static sheetOf(owner, css, parts) {
+      const keyframes2 = {};
+      for (const p of parts) Object.assign(keyframes2, p.keyframes);
+      return { owner, css, parts, rules: parts.length === 1 ? parts[0].rules : parts.flatMap((p) => p.rules), keyframes: keyframes2 };
+    }
+    // A sheet's new text, rule by rule: a rule whose text it had before
+    // keeps its parsed form (one inserted rule parses one rule).
+    static changed(owner, css, was) {
+      const pool = /* @__PURE__ */ new Map();
+      for (const p of was?.parts || []) {
+        let l = pool.get(p.text);
+        if (!l) pool.set(p.text, l = []);
+        l.push(p);
       }
+      const parts = splitRules(css).map((text) => pool.get(text)?.shift() || _StyleEngine.part(text));
+      return _StyleEngine.sheetOf(owner, css, parts);
+    }
+    indexSheet(sheet) {
+      Object.assign(this.keyframes, sheet.keyframes);
+      for (const r of sheet.rules) {
+        r.order = this.order++;
+        this.rules.push(r);
+        if (r.key[0] === "any") this.index.any.push(r);
+        else push(this.index[r.key[0]], r.key[1], r);
+      }
+    }
+    // The page's sheets now ([{ owner, css, path }], in document order; the
+    // user agent's stay first). A sheet whose owner and text are the same
+    // keeps its parsed rules (and their compiled matchers); the rest are
+    // parsed (with `cache`, as addSheet). Null when nothing changed, else
+    // the rules that came and went and whether @keyframes did.
+    syncSheets(list, cache) {
+      const old = /* @__PURE__ */ new Map();
+      for (const sh of this.sheets) if (sh.owner) old.set(sh.owner, sh);
+      const next = this.sheets.filter((sh) => !sh.owner);
+      for (const { owner, css, path } of list) {
+        const was = old.get(owner);
+        next.push(was && was.css === css ? was : was ? _StyleEngine.changed(owner, css, was) : _StyleEngine.parsed(css, cache, path, owner));
+      }
+      if (next.length === this.sheets.length && next.every((sh, i) => sh === this.sheets[i])) return null;
+      const before = /* @__PURE__ */ new Set();
+      for (const sh of this.sheets) for (const p of sh.parts) before.add(p);
+      const after = /* @__PURE__ */ new Set();
+      for (const sh of next) for (const p of sh.parts) after.add(p);
+      const change = { added: [], removed: [], keyframes: false };
+      for (const p of after) if (!before.has(p)) {
+        change.added.push(...p.rules);
+        if (Object.keys(p.keyframes).length) change.keyframes = true;
+      }
+      for (const p of before) if (!after.has(p)) {
+        change.removed.push(...p.rules);
+        if (Object.keys(p.keyframes).length) change.keyframes = true;
+      }
+      this.sheets = next;
+      this.rules = [];
+      this.index = { id: /* @__PURE__ */ new Map(), cls: /* @__PURE__ */ new Map(), tag: /* @__PURE__ */ new Map(), any: [] };
+      this.order = 0;
+      this.keyframes = {};
+      for (const sh of next) this.indexSheet(sh);
+      return change;
     }
     // Matching rules for an element: { normal: [...], before: [...], after: [...] }.
     matching(el) {
@@ -2117,6 +2184,33 @@ globalThis.atob ??= (s) => {
       for (const d of decls) expand(d.prop, d.value, d.important ? important : normal);
     }
   };
+  function splitRules(css) {
+    const out = [];
+    let depth = 0, start = 0, quote = "";
+    for (let i = 0; i < css.length; i++) {
+      const c = css[i];
+      if (quote) {
+        if (c === "\\") i++;
+        else if (c === quote) quote = "";
+        continue;
+      }
+      if (c === "/" && css[i + 1] === "*") {
+        const end = css.indexOf("*/", i + 2);
+        i = end < 0 ? css.length : end + 1;
+        continue;
+      }
+      if (c === '"' || c === "'") quote = c;
+      else if (c === "{") depth++;
+      else if (c === "}" || c === ";" && depth === 0) {
+        if (c === "}" && --depth > 0) continue;
+        const rule = css.slice(start, i + 1).replace(/^(\s|\/\*[\s\S]*?\*\/)+/, "").trim();
+        if (rule && rule !== ";") out.push(rule);
+        start = i + 1;
+        depth = Math.max(depth, 0);
+      }
+    }
+    return out;
+  }
   function sheetData(css) {
     const rules = parseSheet(css, 0);
     return { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
@@ -3533,6 +3627,8 @@ th { text-align: center; } caption { display: table-caption; text-align: center;
 col, colgroup { display: none; }
 `;
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
+  var SHEET_OWNERS = /* @__PURE__ */ new Set(["style", "link"]);
+  var SHEET_RULES_INCREMENTAL = 64;
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
   function lineHeightPx(v, fs) {
@@ -3651,6 +3747,18 @@ col, colgroup { display: none; }
       this.declined = false;
       this.structural = false;
       this.noCache = false;
+      this.sheetsDirty = false;
+      this.sheetEls = /* @__PURE__ */ new WeakSet();
+      for (const el of document2.querySelectorAll("style, link")) this.sheetEls.add(el);
+      this.syncSheets = null;
+      this.rulesChanged();
+    }
+    // What the engine's rules call for (again, when the page's sheets changed).
+    rulesChanged() {
+      const engine = this.engine;
+      this.structural = false;
+      this.noCache = false;
+      this.styleAttrRules = false;
       this.stateAbove = /* @__PURE__ */ new Map();
       for (const r of engine.rules) {
         const compounds = splitCompounds(r.sel);
@@ -3669,6 +3777,60 @@ col, colgroup { display: none; }
         if (/:has\(/.test(r.sel)) this.noCache = true;
         if (/\[style[\]~|^$*=]/.test(r.sel)) this.styleAttrRules = true;
       }
+    }
+    // An element added or removed that is or holds a <style> or <link>
+    // (noted in sheetEls).
+    holdsSheet(n2, type = n2.nodeType) {
+      if (type !== 1) return false;
+      if (this.sheetEls.has(n2)) return true;
+      if (SHEET_OWNERS.has(n2.localName)) {
+        this.sheetEls.add(n2);
+        return true;
+      }
+      if (!n2.firstElementChild) return false;
+      let found = false;
+      for (const el of n2.querySelectorAll("style, link")) {
+        this.sheetEls.add(el);
+        found = true;
+      }
+      return found;
+    }
+    // A <style> or <link> was added, removed or changed (or its sheet's
+    // rules, CSSOM): the sheets are read again before the next render.
+    sheetChanged() {
+      if (!this.inFrame) this.outside = true;
+      this.sheetsDirty = true;
+      this.textOnly = false;
+      this.dirty = true;
+    }
+    // The page's sheets read again. When they changed, the elements the
+    // rules that came or went match are styled again (and what's below
+    // them); every element when that can't be told (:has(), @keyframes, a
+    // selector the DOM can't query) or would cost more (many rules).
+    applySheets() {
+      this.sheetsDirty = false;
+      const change = this.syncSheets?.();
+      if (!change) return false;
+      this.rulesChanged();
+      this.matchShare.clear();
+      this.cascades.clear();
+      const rules = [...change.added, ...change.removed];
+      let full = this.noCache || change.keyframes || rules.length > SHEET_RULES_INCREMENTAL;
+      const seen = /* @__PURE__ */ new Set();
+      for (const r of full ? [] : rules) {
+        if (seen.has(r.sel)) continue;
+        seen.add(r.sel);
+        let els;
+        try {
+          els = this.doc.querySelectorAll(r.sel);
+        } catch {
+          full = true;
+          break;
+        }
+        for (const el of els) this.mark(el, 2);
+      }
+      if (full) this.full = true;
+      return true;
     }
     // ---------------------------------------------------------------------
     // What changed
@@ -3702,11 +3864,14 @@ col, colgroup { display: none; }
       for (const r of records) {
         if (r.type === "attributes") {
           const el = r.target;
+          if (this.sheetEls.has(el)) this.sheetChanged();
           this.mark(el, r.attributeName === "style" && !this.styleAttrRules ? 1 : 2);
           if (this.structural && el.parentNode) this.mark(el.parentNode, 2);
           continue;
         }
+        if (this.sheetEls.has(r.target)) this.sheetChanged();
         for (const n2 of r.addedNodes || []) {
+          if (this.holdsSheet(n2)) this.sheetChanged();
           this.mark(n2, 2);
           const parent = n2.parentNode;
           if (parent) {
@@ -3715,6 +3880,7 @@ col, colgroup { display: none; }
           }
         }
         for (const n2 of r.removedNodes || []) {
+          if (this.holdsSheet(n2)) this.sheetChanged();
           const parent = n2.parentNode || this.parentOf.get(n2);
           if (parent) {
             this.markFlat(parent, n2.nodeType === 3);
@@ -3729,16 +3895,19 @@ col, colgroup { display: none; }
     // child-list records and their arrays. Page observers remain queued.
     noteChild(node, removedFrom) {
       const parent = removedFrom || node.parentNode || this.parentOf.get(node);
+      const type = node.nodeType;
+      if (type === 1 ? this.holdsSheet(node, type) : this.sheetEls.has(parent)) this.sheetChanged();
       if (!removedFrom) this.mark(node, 2);
       if (parent) {
-        if (node.nodeType === 1) this.noStampList.delete(parent);
-        this.markFlat(parent, node.nodeType === 3);
+        if (type === 1) this.noStampList.delete(parent);
+        this.markFlat(parent, type === 3);
         if (this.structural) this.mark(parent, 2);
       }
-      if (removedFrom && (node.nodeType !== 3 || !parent)) this.markFlat(node, false);
+      if (removedFrom && (type !== 3 || !parent)) this.markFlat(node, false);
       this.dirty = true;
     }
     noteAttribute(el, name) {
+      if (this.sheetEls.has(el)) this.sheetChanged();
       if (STATE_ATTRS.includes(name) && !this.stateMattersBelow(el, name)) {
         this.mark(el, 1.5);
         if (el.parentNode) this.noStampList.delete(el.parentNode);
@@ -3804,7 +3973,8 @@ col, colgroup { display: none; }
       this.outside = false;
       this.rendering = true;
       try {
-        if (!this.canvasOnly() && !this.updateText() && !this.updateBoxes()) this.renderNow();
+        if (this.sheetsDirty && this.applySheets()) this.renderNow();
+        else if (!this.canvasOnly() && !this.updateText() && !this.updateBoxes()) this.renderNow();
         if (this.declined) {
           this.declined = false;
           this.dirty = false;
@@ -7026,6 +7196,188 @@ ${a.stack || ""}`;
       guardDepth--;
     }
   }
+  var linkCss = /* @__PURE__ */ new WeakMap();
+  var sheetOf = /* @__PURE__ */ new WeakMap();
+  function isSheetLink(el) {
+    const rel = el.getAttribute("rel") || "";
+    return /(^|\s)stylesheet(\s|$)/i.test(rel) && !/(^|\s)alternate(\s|$)/i.test(rel) && el.hasAttribute("href");
+  }
+  function ownText(el, booting) {
+    if (el.localName === "style") return el.textContent;
+    const href = el.getAttribute("href");
+    let got = linkCss.get(el);
+    if (!got || got.href !== href) {
+      const css = host.asset(href.replace(/^\.?\//, "")) ?? null;
+      linkCss.set(el, got = { href, css });
+      if (css === null) console.warn(`stylesheet not found: ${href}`);
+      if (!booting) queueMicrotask(() => el.dispatchEvent(new Event(css === null ? "error" : "load")));
+    }
+    return got.css;
+  }
+  function pageSheets(booting) {
+    const out = [];
+    for (const el of document.querySelectorAll("link[rel][href], style")) {
+      if (el.localName === "link" && (!isSheetLink(el) || el.hasAttribute("disabled"))) continue;
+      const sheet = sheetOf.get(el);
+      if (sheet?.disabled) continue;
+      const text = ownText(el, booting);
+      if (text === null) continue;
+      const css = sheet ? sheet.__css(text) : text;
+      if (!css) continue;
+      const path = el.localName === "link" ? el.getAttribute("href").replace(/^\.?\//, "") : void 0;
+      out.push({ owner: el, css, path });
+    }
+    return out;
+  }
+  var sheetsChanged = () => renderer?.sheetChanged();
+  var indexError = (msg) => typeof DOMException === "function" ? new DOMException(msg, "IndexSizeError") : new RangeError(msg);
+  var CSSRule = class {
+    constructor(text, sheet) {
+      this.cssText = text;
+      this.parentStyleSheet = sheet;
+    }
+    get selectorText() {
+      const at = this.cssText.indexOf("{");
+      return at < 0 ? "" : this.cssText.slice(0, at).trim();
+    }
+  };
+  var CSSStyleSheet = class {
+    constructor(owner = null) {
+      this.ownerNode = owner;
+      this.__text = null;
+      this.__rules = null;
+      this.__list = null;
+      this.__disabled = false;
+    }
+    get type() {
+      return "text/css";
+    }
+    get href() {
+      return this.ownerNode?.localName === "link" ? this.ownerNode.getAttribute("href") : null;
+    }
+    get media() {
+      return { mediaText: this.ownerNode?.getAttribute("media") || "", length: 0 };
+    }
+    get disabled() {
+      return this.__disabled;
+    }
+    set disabled(v) {
+      if (this.__disabled !== !!v) {
+        this.__disabled = !!v;
+        sheetsChanged();
+      }
+    }
+    __own() {
+      const text = this.ownerNode ? ownText(this.ownerNode, false) ?? "" : this.__text ?? "";
+      if (this.__rules === null || text !== this.__text) {
+        this.__text = text;
+        this.__rules = splitRules(text);
+        this.__list = null;
+      }
+      return this.__rules;
+    }
+    // The CSS the engine reads: the owner's text while the page hasn't
+    // changed the rules, else the rules.
+    __css(text) {
+      if (this.__rules === null || text !== this.__text) return text;
+      return this.__rules.join("\n");
+    }
+    get cssRules() {
+      const rules = this.__own();
+      if (!this.__list) {
+        this.__list = rules.map((t) => new CSSRule(t, this));
+        this.__list.item = (i) => this.__list[i] ?? null;
+      }
+      return this.__list;
+    }
+    get rules() {
+      return this.cssRules;
+    }
+    insertRule(rule, index = 0) {
+      const rules = this.__own();
+      if (index < 0 || index > rules.length) throw indexError(`insertRule: index ${index} is beyond ${rules.length} rules`);
+      const text = String(rule).trim();
+      if (splitRules(text).length !== 1) throw new SyntaxError(`insertRule: not one rule: ${text.slice(0, 60)}`);
+      rules.splice(index, 0, text);
+      this.__list = null;
+      sheetsChanged();
+      return index;
+    }
+    deleteRule(index) {
+      const rules = this.__own();
+      if (index < 0 || index >= rules.length) throw indexError(`deleteRule: no rule ${index}`);
+      rules.splice(index, 1);
+      this.__list = null;
+      sheetsChanged();
+    }
+    addRule(sel, style, index) {
+      this.insertRule(`${sel} { ${style} }`, index ?? this.__own().length);
+      return -1;
+    }
+    removeRule(index = 0) {
+      this.deleteRule(index);
+    }
+    // Constructed sheets only (new CSSStyleSheet()), as in browsers.
+    replaceSync(text) {
+      if (this.ownerNode) throw new Error("NotAllowedError: replaceSync on a sheet of the document");
+      this.__text = String(text);
+      this.__rules = splitRules(this.__text);
+      this.__list = null;
+    }
+    replace(text) {
+      this.replaceSync(text);
+      return Promise.resolve(this);
+    }
+  };
+  g.CSSStyleSheet = CSSStyleSheet;
+  g.CSSRule = CSSRule;
+  function sheetFor(el) {
+    if (el.localName === "link" && !isSheetLink(el)) return null;
+    let sheet = sheetOf.get(el);
+    if (!sheet) sheetOf.set(el, sheet = new CSSStyleSheet(el));
+    return sheet;
+  }
+  for (const tag of ["style", "link"]) {
+    const proto = Object.getPrototypeOf(document.createElement(tag));
+    Object.defineProperty(proto, "sheet", { get() {
+      return this.isConnected ? sheetFor(this) : null;
+    }, configurable: true });
+    if (tag === "style") {
+      Object.defineProperty(proto, "disabled", {
+        get() {
+          return sheetOf.get(this)?.disabled ?? false;
+        },
+        set(v) {
+          const sheet = sheetFor(this);
+          if (sheet) sheet.disabled = v;
+        },
+        configurable: true
+      });
+    } else {
+      Object.defineProperty(proto, "disabled", {
+        get() {
+          return this.hasAttribute("disabled");
+        },
+        set(v) {
+          if (v) this.setAttribute("disabled", "");
+          else this.removeAttribute("disabled");
+        },
+        configurable: true
+      });
+    }
+  }
+  Object.defineProperty(document, "styleSheets", {
+    get() {
+      const list = [];
+      for (const el of document.querySelectorAll("link[rel][href], style")) {
+        const sheet = sheetFor(el);
+        if (sheet) list.push(sheet);
+      }
+      list.item = (i) => list[i] ?? null;
+      return list;
+    },
+    configurable: true
+  });
   g.__oriel = {
     boot(w, h, dark, coarse) {
       return guard(() => {
@@ -7034,14 +7386,10 @@ ${a.stack || ""}`;
         const engine = new StyleEngine();
         const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
         engine.addSheet(UA_CSS, sheets);
-        for (const link of document.querySelectorAll('link[rel="stylesheet"][href], style')) {
-          const path = link.localName === "style" ? void 0 : link.getAttribute("href").replace(/^\.?\//, "");
-          const css = path === void 0 ? link.textContent : host.asset(path);
-          if (css) engine.addSheet(css, sheets, path);
-          else console.warn(`stylesheet not found: ${link.getAttribute("href")}`);
-        }
+        for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
         const b1 = P && P();
         renderer = new Renderer(document, engine, host);
+        renderer.syncSheets = () => engine.syncSheets(pageSheets(false), null);
         renderer.stateEls = () => {
           const out = [];
           for (const chain of marked.values()) for (const e of chain) out.push(e);

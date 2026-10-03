@@ -451,13 +451,24 @@ export class StyleEngine {
     this.index = { id: new Map(), cls: new Map(), tag: new Map(), any: [] };
     this.order = 0;
     this.keyframes = {};
+    // In cascade order: { owner (the page's <style> or <link>; null for
+    // the user agent's), css, rules, keyframes }.
+    this.sheets = [];
   }
 
   // `cache`: { get(css, path) → JSON | undefined, keep(css, json) } (the
   // native one keeps a sheet's parsed rules for the process: a second
   // window doesn't parse and index them again; and finds the ones the app
   // was built with, by the sheet's asset `path`: tools/qjs_modules.zig).
-  addSheet(css, cache, path) {
+  addSheet(css, cache, path, owner = null) {
+    const sheet = StyleEngine.parsed(css, cache, path, owner);
+    this.sheets.push(sheet);
+    this.indexSheet(sheet);
+  }
+
+  // A sheet: its parts (one, read whole, or its top-level rules, for a
+  // sheet that may change), their rules in order, their @keyframes.
+  static parsed(css, cache, path, owner) {
     let parsed = null;
     const kept = cache?.get(css, path);
     if (kept) { try { parsed = JSON.parse(kept); } catch { parsed = null; } }
@@ -465,13 +476,72 @@ export class StyleEngine {
       parsed = sheetData(css);
       try { cache?.keep(css, JSON.stringify(parsed)); } catch {}
     }
-    Object.assign(this.keyframes, parsed.keyframes);
-    for (const [sel, pseudo, spec, decls, media, key] of parsed.rules) {
-      const r = { sel, pseudo, spec, decls, media, order: this.order++, match: null };
-      this.rules.push(r);
-      if (key[0] === "any") this.index.any.push(r);
-      else push(this.index[key[0]], key[1], r);
+    return StyleEngine.sheetOf(owner, css, [StyleEngine.part(css, parsed)]);
+  }
+
+  static part(text, parsed = sheetData(text)) {
+    const rules = parsed.rules.map(([sel, pseudo, spec, decls, media, key]) => ({ sel, pseudo, spec, decls, media, key, order: 0, match: null }));
+    return { text, rules, keyframes: parsed.keyframes || {} };
+  }
+
+  static sheetOf(owner, css, parts) {
+    const keyframes = {};
+    for (const p of parts) Object.assign(keyframes, p.keyframes);
+    return { owner, css, parts, rules: parts.length === 1 ? parts[0].rules : parts.flatMap((p) => p.rules), keyframes };
+  }
+
+  // A sheet's new text, rule by rule: a rule whose text it had before
+  // keeps its parsed form (one inserted rule parses one rule).
+  static changed(owner, css, was) {
+    const pool = new Map();
+    for (const p of was?.parts || []) {
+      let l = pool.get(p.text);
+      if (!l) pool.set(p.text, (l = []));
+      l.push(p);
     }
+    const parts = splitRules(css).map((text) => pool.get(text)?.shift() || StyleEngine.part(text));
+    return StyleEngine.sheetOf(owner, css, parts);
+  }
+
+  indexSheet(sheet) {
+    Object.assign(this.keyframes, sheet.keyframes);
+    for (const r of sheet.rules) {
+      r.order = this.order++;
+      this.rules.push(r);
+      if (r.key[0] === "any") this.index.any.push(r);
+      else push(this.index[r.key[0]], r.key[1], r);
+    }
+  }
+
+  // The page's sheets now ([{ owner, css, path }], in document order; the
+  // user agent's stay first). A sheet whose owner and text are the same
+  // keeps its parsed rules (and their compiled matchers); the rest are
+  // parsed (with `cache`, as addSheet). Null when nothing changed, else
+  // the rules that came and went and whether @keyframes did.
+  syncSheets(list, cache) {
+    const old = new Map();
+    for (const sh of this.sheets) if (sh.owner) old.set(sh.owner, sh);
+    const next = this.sheets.filter((sh) => !sh.owner);
+    for (const { owner, css, path } of list) {
+      const was = old.get(owner);
+      next.push(was && was.css === css ? was : was ? StyleEngine.changed(owner, css, was) : StyleEngine.parsed(css, cache, path, owner));
+    }
+    if (next.length === this.sheets.length && next.every((sh, i) => sh === this.sheets[i])) return null;
+    // What came and went, part by part.
+    const before = new Set();
+    for (const sh of this.sheets) for (const p of sh.parts) before.add(p);
+    const after = new Set();
+    for (const sh of next) for (const p of sh.parts) after.add(p);
+    const change = { added: [], removed: [], keyframes: false };
+    for (const p of after) if (!before.has(p)) { change.added.push(...p.rules); if (Object.keys(p.keyframes).length) change.keyframes = true; }
+    for (const p of before) if (!after.has(p)) { change.removed.push(...p.rules); if (Object.keys(p.keyframes).length) change.keyframes = true; }
+    this.sheets = next;
+    this.rules = [];
+    this.index = { id: new Map(), cls: new Map(), tag: new Map(), any: [] };
+    this.order = 0;
+    this.keyframes = {};
+    for (const sh of next) this.indexSheet(sh);
+    return change;
   }
 
 
@@ -515,6 +585,29 @@ export class StyleEngine {
   static expandInto(decls, normal, important) {
     for (const d of decls) expand(d.prop, d.value, d.important ? important : normal);
   }
+}
+
+// A sheet's text as its top-level rules (statements and blocks, comments
+// dropped): what CSSOM's cssRules indexes, and the parts a changing sheet
+// is parsed in.
+export function splitRules(css) {
+  const out = [];
+  let depth = 0, start = 0, quote = "";
+  for (let i = 0; i < css.length; i++) {
+    const c = css[i];
+    if (quote) { if (c === "\\") i++; else if (c === quote) quote = ""; continue; }
+    if (c === "/" && css[i + 1] === "*") { const end = css.indexOf("*/", i + 2); i = end < 0 ? css.length : end + 1; continue; }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "{") depth++;
+    else if (c === "}" || (c === ";" && depth === 0)) {
+      if (c === "}" && --depth > 0) continue;
+      const rule = css.slice(start, i + 1).replace(/^(\s|\/\*[\s\S]*?\*\/)+/, "").trim();
+      if (rule && rule !== ";") out.push(rule);
+      start = i + 1;
+      depth = Math.max(depth, 0);
+    }
+  }
+  return out;
 }
 
 // A sheet's rules as addSheet keeps them (and the build compiles them:
