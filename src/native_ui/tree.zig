@@ -1067,6 +1067,10 @@ pub const Node = struct {
     /// Backend natural text size; invalidated on props/text changes. A
     /// backend epoch invalidates it when font context settings change.
     measured_text_size: ?[2]f32 = null,
+    /// A text node's first baseline below its content box's top, as its
+    /// backend measured it (NaN: not given; baselineFn estimates it). Rows
+    /// of inline content line their items up on it (align-items: baseline).
+    baseline: f32 = std.math.nan(f32),
     text_measure_epoch: u64 = 0,
     text_override: ?*TextOverride = null,
     /// A growing text item in a row (flex: 1): its longest word's width,
@@ -1815,6 +1819,7 @@ pub const Tree = struct {
         if (kind == .text or kind == .input or kind == .textarea or kind == .select or kind == .image) {
             yg.YGNodeSetMeasureFunc(n.yn, measureFn);
         }
+        if (kind == .text or kind == .input or kind == .select) yg.YGNodeSetBaselineFunc(n.yn, baselineFn);
         try t.nodes.put(id, n);
     }
 
@@ -2728,6 +2733,28 @@ fn measureFn(node: yg.YGNodeConstRef, width: f32, width_mode: yg.YGMeasureMode, 
         out[0] = @min(out[0], width);
     }
     return .{ .width = out[0], .height = out[1] };
+}
+
+/// A text node's first baseline from its top (Yoga's baseline function):
+/// its top padding and border plus the backend's (`Node.baseline`), or,
+/// from a backend that gives none, the line box's half-leading plus an
+/// ascent of 0.9 em (most fonts' 0.85 to 0.95). A field's: its one line
+/// of text centered in its content box.
+fn baselineFn(node: yg.YGNodeConstRef, width: f32, height: f32) callconv(.c) f32 {
+    _ = width;
+    const n: *const Node = @ptrCast(@alignCast(yg.YGNodeGetContext(node)));
+    const top = yg.YGNodeLayoutGetPadding(@constCast(node), yg.YGEdgeTop) + yg.YGNodeLayoutGetBorder(@constCast(node), yg.YGEdgeTop);
+    const fz = n.props.fz orelse 16;
+    if (n.kind != .text) {
+        // A field (input, select): its text's, one line centered in its
+        // content box (as the native control draws it).
+        const bottom = yg.YGNodeLayoutGetPadding(@constCast(node), yg.YGEdgeBottom) + yg.YGNodeLayoutGetBorder(@constCast(node), yg.YGEdgeBottom);
+        const inner = @max(0, height - top - bottom);
+        return @min(height, top + inner / 2 + fz * (0.9 - 1.15 / 2.0));
+    }
+    if (!std.math.isNan(n.baseline)) return @min(height, top + n.baseline);
+    const line = n.props.lh orelse @round(fz * 1.2);
+    return @min(height, top + (line - fz * 1.15) / 2 + fz * 0.9);
 }
 
 // ---------------------------------------------------------------------------
