@@ -17669,6 +17669,15 @@ ${a.stack || ""}`;
       });
     }
   }
+  function inputEvent(type, inputType, data, cancelable) {
+    const ev = new Event(type, { bubbles: true, cancelable });
+    Object.defineProperties(ev, {
+      inputType: { value: inputType ?? "", configurable: true },
+      data: { value: data ?? null, configurable: true },
+      isComposing: { value: false, configurable: true }
+    });
+    return ev;
+  }
   function setNative(el, prop2, v) {
     for (let p = Object.getPrototypeOf(el); p; p = Object.getPrototypeOf(p)) {
       const d = Object.getOwnPropertyDescriptor(p, prop2);
@@ -17729,6 +17738,60 @@ ${a.stack || ""}`;
     },
     configurable: true
   });
+  var SELECTABLE = /* @__PURE__ */ new Set(["", "text", "search", "url", "tel", "password"]);
+  var selectable = (el) => el.localName === "textarea" || SELECTABLE.has((el.getAttribute("type") || "").toLowerCase());
+  var lastSelection = /* @__PURE__ */ new WeakMap();
+  function selectionOf(el) {
+    const len = String(el.value ?? "").length;
+    if (renderer && host.selection) {
+      const r = host.selection(renderer.idOf(el, "el"));
+      if (r) return [Math.min(r[0], len), Math.min(r[1], len)];
+    }
+    const s = lastSelection.get(el);
+    return s ? [Math.min(s[0], len), Math.min(s[1], len)] : [len, len];
+  }
+  for (const proto of [inputProto, Object.getPrototypeOf(document.createElement("textarea"))]) {
+    Object.defineProperties(proto, {
+      selectionStart: {
+        get() {
+          return selectable(this) ? selectionOf(this)[0] : null;
+        },
+        set(v) {
+          const end = selectionOf(this)[1];
+          this.setSelectionRange(v, Math.max(v, end));
+        },
+        configurable: true
+      },
+      selectionEnd: {
+        get() {
+          return selectable(this) ? selectionOf(this)[1] : null;
+        },
+        set(v) {
+          const start = selectionOf(this)[0];
+          this.setSelectionRange(Math.min(start, v), v);
+        },
+        configurable: true
+      },
+      selectionDirection: { get() {
+        return selectable(this) ? "forward" : null;
+      }, set() {
+      }, configurable: true }
+    });
+    proto.setSelectionRange = function(start, end) {
+      if (!selectable(this)) return;
+      const len = String(this.value ?? "").length;
+      const e = Math.min(Math.max(0, Math.trunc(+end) || 0), len);
+      const s = Math.min(Math.max(0, Math.trunc(+start) || 0), e);
+      lastSelection.set(this, [s, e]);
+      if (renderer && host.setSelection) {
+        renderer.render();
+        host.setSelection(renderer.idOf(this, "el"), s, e);
+      }
+    };
+    proto.select = function() {
+      this.setSelectionRange(0, String(this.value ?? "").length);
+    };
+  }
   Object.defineProperty(inputProto, "disabled", {
     get() {
       return this.hasAttribute("disabled");
@@ -18814,12 +18877,23 @@ ${a.stack || ""}`;
             keyboardFocus = false;
             if (el) activate(el, data | 0);
             return false;
+          // A native field's edit: data its new value, or [value, inputType,
+          // data] (the edit as beforeinput had it, docs/native-renderer.md).
           case "input": {
             if (!el) return false;
-            renderer.native.set(id, data);
-            setNative(el, "value", data);
-            el.dispatchEvent(new Event("input", { bubbles: true }));
+            const [value, inputType, text] = Array.isArray(data) ? data : [data, void 0, void 0];
+            renderer.native.set(id, value);
+            setNative(el, "value", value);
+            el.dispatchEvent(inputEvent("input", inputType, text, false));
             return false;
+          }
+          // An edit a native field is about to make: data [inputType, data].
+          // True when the page prevented it (the field doesn't make it).
+          case "beforeinput": {
+            if (!el || !Array.isArray(data)) return false;
+            const ev = inputEvent("beforeinput", data[0], data[1], true);
+            el.dispatchEvent(ev);
+            return ev.defaultPrevented;
           }
           case "change": {
             if (!el) return false;
