@@ -13318,7 +13318,7 @@ globalThis.atob ??= (s) => {
     m = /^(min|max|clamp|calc)\((.*)\)$/.exec(v);
     if (m) {
       const args = splitTop(m[2], ",").map((a) => a.trim());
-      if (m[1] === "calc") return calc(m[2], fontSize);
+      if (m[1] === "calc") return calc(m[2], fontSize, pctOk);
       const vals = args.map((a) => length(a, fontSize, false)).filter((x) => typeof x === "number");
       if (!vals.length) return length(args.find((a) => a.endsWith("%")), fontSize, pctOk);
       if (m[1] === "min") return Math.min(...vals);
@@ -13327,40 +13327,48 @@ globalThis.atob ??= (s) => {
     }
     return null;
   }
-  function calc(expr, fontSize) {
+  function calc(expr, fontSize, pctOk = true) {
     const toks = expr.match(/-?[\d.]+[a-z%]*|[-+*/()]|calc|min|max/g) || [];
     let i = 0;
+    const bad = [NaN, NaN];
     const num3 = () => {
       const t = toks[i++];
       if (t === "(") {
-        const v2 = add2();
+        const v = add2();
         i++;
-        return v2;
+        return v;
       }
       if (t === "calc") return num3();
-      const l = length(t, fontSize, false);
-      return typeof l === "number" ? l : NaN;
+      const l = length(t, fontSize, true);
+      return typeof l === "number" ? [0, l] : l && typeof l === "object" && l.px === void 0 ? [l.pct, 0] : bad;
     };
     const mul = () => {
-      let v2 = num3();
+      let v = num3();
       while (toks[i] === "*" || toks[i] === "/") {
         const op = toks[i++];
         const r = num3();
-        v2 = op === "*" ? v2 * r : v2 / r;
+        if (op === "*") v = r[0] === 0 ? [v[0] * r[1], v[1] * r[1]] : v[0] === 0 ? [r[0] * v[1], r[1] * v[1]] : bad;
+        else v = r[0] === 0 ? [v[0] / r[1], v[1] / r[1]] : bad;
       }
-      return v2;
+      return v;
     };
     const add2 = () => {
-      let v2 = mul();
+      let v = mul();
       while (toks[i] === "+" || toks[i] === "-") {
         const op = toks[i++];
         const r = mul();
-        v2 = op === "+" ? v2 + r : v2 - r;
+        v = op === "+" ? [v[0] + r[0], v[1] + r[1]] : [v[0] - r[0], v[1] - r[1]];
       }
-      return v2;
+      return v;
     };
-    const v = add2();
-    return Number.isFinite(v) ? v : null;
+    const [pct2, px] = add2();
+    if (!Number.isFinite(pct2) || !Number.isFinite(px)) return null;
+    if (pct2 === 0) return px;
+    if (!pctOk) return null;
+    return px === 0 ? { pct: pct2 } : { pct: pct2, px };
+  }
+  function pctString(l) {
+    return l.px ? `${l.pct}%${l.px >= 0 ? "+" : ""}${l.px}px` : `${l.pct}%`;
   }
   var NAMED = {
     transparent: [0, 0, 0, 0],
@@ -15885,7 +15893,7 @@ col, colgroup { display: none; }
       } else if (props.fd === "column" && this.keepsContentHeight(itemEl, nodes.get(cid))) nodes.get(cid).props.fs = 0;
       else if (props.fd === "column" && props.h === void 0 && props.fg === void 0 && !props.scroll && /flex$/.test(display)) {
         const n2 = nodes.get(cid);
-        if (n2 && typeof n2.props.fb === "string" && n2.props.fb.endsWith("%") && !n2.props.scroll && !n2.props.clip) {
+        if (n2 && typeof n2.props.fb === "string" && n2.props.fb.includes("%") && !n2.props.scroll && !n2.props.clip) {
           delete n2.props.fb;
           n2.props.fs = 0;
         }
@@ -16395,7 +16403,7 @@ col, colgroup { display: none; }
     if (display === "inline-flex") display = "flex";
     if (display === "inline-grid") display = "grid";
     const set = (k, v) => {
-      if (v !== void 0 && v !== null) p[k] = typeof v === "object" ? `${v.pct}%` : v;
+      if (v !== void 0 && v !== null) p[k] = typeof v === "object" ? pctString(v) : v;
     };
     if (display === "flex") {
       p.fd = cs["flex-direction"] || "row";
@@ -16521,7 +16529,7 @@ col, colgroup { display: none; }
     if (bg) p.bg = bg;
   }
   var set1 = (k, v, p) => {
-    if (v !== void 0 && v !== null) p[k] = typeof v === "object" ? `${v.pct}%` : v;
+    if (v !== void 0 && v !== null) p[k] = typeof v === "object" ? pctString(v) : v;
   };
   var PARTS = {
     tr: [["tx", "ty", "sc", "rot"], transformPart],
