@@ -4278,6 +4278,142 @@ fn paintText(p: *Painter, n: *Node) void {
     // Runs without a color of their own (none: each run sets one) use black.
     const origin: c.D2D1_POINT_2F = .{ .x = ct.x, .y = ct.y };
     p.vt().DrawTextLayout.?(p.rt, origin, layout, p.solid(.{ 0, 0, 0, 1 }), draw_text_color_font);
+    // A focused inline link's ring (or an inline element's outline),
+    // around each of its line fragments: its runs (a <b> in it) together.
+    if (n.props.runs) |runs| {
+        var pos: u32 = 0;
+        var i: usize = 0;
+        while (i < runs.len) : (i += 1) {
+            const start = pos;
+            pos += @intCast(std.unicode.calcUtf16LeLen(runs[i].t) catch runs[i].t.len);
+            const ol = runs[i].ol orelse continue;
+            while (i + 1 < runs.len and runs[i + 1].ol != null and std.meta.eql(runs[i + 1].ol.?, ol)) : (i += 1)
+                pos += @intCast(std.unicode.calcUtf16LeLen(runs[i + 1].t) catch runs[i + 1].t.len);
+            runRing(p, layout, runs, ct.x, ct.y, start, pos, ol);
+        }
+    }
+}
+
+/// An outline around the text from UTF-16 position `start` to `end` of a
+/// layout drawn at (x, y): a box per line it's on (the spaces where a line
+/// wraps left out, as tall as that line, its sides on whole pixels), and
+/// around them one outline, as Chromium draws a wrapped link's ring.
+fn runRing(p: *Painter, layout: *c.IDWriteTextLayout, runs: []const tree_mod.Run, x: f32, y: f32, start: u32, end: u32, ol: tree_mod.Outline) void {
+    var lines_buf: [64]c.DWRITE_LINE_METRICS = undefined;
+    var count: u32 = 0;
+    if (layout.lpVtbl.*.GetLineMetrics.?(layout, &lines_buf, lines_buf.len, &count) < 0 and count > lines_buf.len) return;
+    var boxes: [64]Rect = undefined;
+    var nb: usize = 0;
+    var ls: u32 = 0;
+    for (lines_buf[0..@min(count, lines_buf.len)]) |line| {
+        defer ls += line.length;
+        var a = @max(start, ls);
+        var b = @min(end, ls + line.length);
+        while (a < b and isSpaceAt(runs, a)) a += 1;
+        while (b > a and (isSpaceAt(runs, b - 1) or unitAt(runs, b - 1) == 0x0A or unitAt(runs, b - 1) == 0x0D)) b -= 1;
+        if (a >= b) continue;
+        var rects: [16]c.DWRITE_HIT_TEST_METRICS = undefined;
+        var n: u32 = 0;
+        if (layout.lpVtbl.*.HitTestTextRange.?(layout, a, b - a, x, y, &rects, rects.len, &n) < 0) continue;
+        // One box over the pieces (they split where the style does).
+        var x0: f32 = std.math.floatMax(f32);
+        var x1: f32 = -std.math.floatMax(f32);
+        var top: f32 = std.math.floatMax(f32);
+        var bottom: f32 = -std.math.floatMax(f32);
+        for (rects[0..@min(n, rects.len)]) |m| {
+            x0 = @min(x0, m.left);
+            x1 = @max(x1, m.left + m.width);
+            top = @min(top, m.top);
+            bottom = @max(bottom, m.top + m.height);
+        }
+        x0 = @round(x0);
+        x1 = @round(x1);
+        if (x1 > x0 and bottom > top and nb < boxes.len) {
+            boxes[nb] = .{ .x = x0, .y = top, .w = x1 - x0, .h = bottom - top };
+            nb += 1;
+        }
+    }
+    if (nb == 0) return;
+    if (nb == 1 or ol.s != null) {
+        // One line (or dashes, which go per box): the box's own outline.
+        for (boxes[0..nb]) |b| paintOutline(p, b, .{}, ol);
+        return;
+    }
+    // The ring: the boxes grown by offset + width, less them grown by the
+    // offset; the halo 1px around that.
+    const outer = boxesUnion(boxes[0..nb], ol.o + ol.w, ol.r) orelse return;
+    defer releaseCom(@as(?*c.ID2D1PathGeometry, outer));
+    const inner = boxesUnion(boxes[0..nb], ol.o, @max(0, ol.r - ol.w)) orelse return;
+    defer releaseCom(@as(?*c.ID2D1PathGeometry, inner));
+    const vt = p.vt();
+    if (ol.h) |h| if (h[3] > 0) if (boxesUnion(boxes[0..nb], ol.o + ol.w + 1, ol.r + 1)) |halo| {
+        defer releaseCom(@as(?*c.ID2D1PathGeometry, halo));
+        if (combineGeometry(@ptrCast(halo), @ptrCast(outer), c.D2D1_COMBINE_MODE_EXCLUDE)) |edge| {
+            defer releaseCom(@as(?*c.ID2D1PathGeometry, edge));
+            vt.FillGeometry.?(p.rt, @ptrCast(edge), p.solid(h), null);
+        }
+    };
+    if (combineGeometry(@ptrCast(outer), @ptrCast(inner), c.D2D1_COMBINE_MODE_EXCLUDE)) |ring| {
+        defer releaseCom(@as(?*c.ID2D1PathGeometry, ring));
+        vt.FillGeometry.?(p.rt, @ptrCast(ring), p.solid(ol.c), null);
+    }
+}
+
+/// The boxes, each grown by `grow` with corners `r` round, as one shape
+/// (caller releases).
+fn boxesUnion(boxes: []const Rect, grow: f32, r: f32) ?*c.ID2D1PathGeometry {
+    var acc: ?*c.ID2D1PathGeometry = null;
+    for (boxes) |b| {
+        const g: Rect = .{ .x = b.x - grow, .y = b.y - grow, .w = b.w + 2 * grow, .h = b.h + 2 * grow };
+        if (g.w <= 0 or g.h <= 0) continue;
+        const one = roundRectGeometry(g, Radii.circle(.{ r, r, r, r })) orelse continue;
+        if (acc) |a| {
+            defer releaseCom(@as(?*c.ID2D1PathGeometry, a));
+            defer releaseCom(@as(?*c.ID2D1PathGeometry, one));
+            acc = combineGeometry(@ptrCast(a), @ptrCast(one), c.D2D1_COMBINE_MODE_UNION);
+        } else acc = one;
+    }
+    return acc;
+}
+
+/// a and b combined (union, exclude...) as a new geometry (caller
+/// releases).
+fn combineGeometry(a: *c.ID2D1Geometry, b: *c.ID2D1Geometry, mode: c.D2D1_COMBINE_MODE) ?*c.ID2D1PathGeometry {
+    const fac = d2d.?;
+    var geo: ?*c.ID2D1PathGeometry = null;
+    if (fac.lpVtbl.*.CreatePathGeometry.?(fac, &geo) < 0 or geo == null) return null;
+    var sink: ?*c.ID2D1GeometrySink = null;
+    if (geo.?.lpVtbl.*.Open.?(geo, &sink) < 0 or sink == null) {
+        releaseCom(geo);
+        return null;
+    }
+    defer releaseCom(sink);
+    const ok = a.lpVtbl.*.CombineWithGeometry.?(a, b, mode, null, 0.25, @ptrCast(sink)) >= 0;
+    const sk: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sink.?);
+    if (sk.lpVtbl.*.Close.?(sk) < 0 or !ok) {
+        releaseCom(geo);
+        return null;
+    }
+    return geo;
+}
+
+/// The UTF-16 unit at `at` of the runs' text (0 past it).
+fn unitAt(runs: []const tree_mod.Run, at: u32) u16 {
+    var pos: u32 = 0;
+    for (runs) |r| {
+        var it = std.unicode.Utf8View.initUnchecked(r.t).iterator();
+        while (it.nextCodepoint()) |cp| {
+            const units: u32 = if (cp >= 0x10000) 2 else 1;
+            if (at < pos + units) return if (units == 1) @intCast(cp) else 0xD800;
+            pos += units;
+        }
+    }
+    return 0;
+}
+
+fn isSpaceAt(runs: []const tree_mod.Run, at: u32) bool {
+    const u = unitAt(runs, at);
+    return u == ' ' or u == 0xA0 or u == 0x09;
 }
 
 /// Feeds svg_path's commands into a Direct2D geometry sink.
