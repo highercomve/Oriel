@@ -278,6 +278,10 @@ object OrielRuntime {
     @JvmStatic
     fun nuiViewport(id: Int): Long = Nui.viewport(id)
 
+    /** The display's density in thousandths: the page's devicePixelRatio (android.zig withDensity). */
+    @JvmStatic
+    fun nuiDensity(id: Int): Int = Math.round(((Nui.views[id]?.context ?: windows[id]?.activity ?: app).resources.displayMetrics.density) * 1000)
+
     @JvmStatic
     fun nuiMeasure(id: Int, node: Int, max64: Int): Long = Nui.views[id]?.measureText(node, max64) ?: 0
 
