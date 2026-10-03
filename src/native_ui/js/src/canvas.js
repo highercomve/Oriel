@@ -50,15 +50,32 @@ export function onRecord(fn) {
   notify = fn;
 }
 
-// The program for a canvas element, for the flattener ([] before any draw).
+// The program for a canvas element as ops (the JSON `cv` prop, tests):
+// [] before any draw.
 export function commandsOf(el) {
-  return recorders.get(el)?.ops || [];
+  const r = recorders.get(el);
+  if (!r) return [];
+  r.notified = false;
+  return decodeProgram(r.buf, r.n, r.strs);
+}
+
+// The program as host.canvas takes it: [numbers, strings], as recorded
+// (encodeProgram's form; the numbers are a view of the recorder's buffer,
+// good until it records again).
+export function programOf(el) {
+  const r = recorders.get(el);
+  if (!r) return [new Float64Array(0), []];
+  r.notified = false;
+  return [r.buf.subarray(0, r.n), r.strs];
 }
 
 // Its version: changes with every recorded op or restart (the renderer sends
 // a program to the tree when it changed: host.canvas). 0 before any draw.
 export function versionOf(el) {
-  return recorders.get(el)?.version || 0;
+  const r = recorders.get(el);
+  if (!r) return 0;
+  r.notified = false; // the renderer is looking: the next op tells it again
+  return r.version;
 }
 
 // A program as numbers for the tree (host.canvas, tree.decodeCanvas): each
@@ -74,6 +91,33 @@ const WORDS = {
   ta: { left: 0, center: 1, right: 2, start: 0, end: 2 },
   tb: { alphabetic: 0, top: 1, hanging: 2, middle: 3, bottom: 4, ideographic: 4 },
 };
+const CODE_TAGS = [];
+for (const [tag, code] of Object.entries(CANVAS_CODES)) CODE_TAGS[code] = tag;
+const WORD_OF = {};
+for (const [tag, words] of Object.entries(WORDS)) {
+  WORD_OF[tag] = [];
+  for (const [w, n] of Object.entries(words)) WORD_OF[tag][n] ??= w;
+}
+
+// The ops of an encoded program (the recorder keeps only the numbers).
+export function decodeProgram(nums, n, strs) {
+  const ops = [];
+  let i = 0;
+  while (i < n) {
+    const code = nums[i++], tag = CODE_TAGS[code], k = CANVAS_ARGS[code];
+    const a = Array.from(nums.subarray(i, i + k));
+    i += k;
+    switch (tag) {
+      case "tx": case "sx": ops.push([tag, strs[a[0]], a[1], a[2]]); break;
+      case "fo": ops.push([tag, a[0], a[1], a[2], strs[a[3]]]); break;
+      case "sf": case "ss": ops.push([tag, a[0] === 1 ? ["g", a[1]] : a.slice(1)]); break;
+      case "lc": case "lj": case "ta": case "tb": ops.push([tag, WORD_OF[tag][a[0]]]); break;
+      default: ops.push([tag, ...a]);
+    }
+  }
+  return ops;
+}
+
 export function encodeProgram(ops) {
   let size = 0;
   for (const op of ops) size += 1 + (CANVAS_ARGS[CANVAS_CODES[op[0]]] ?? 0);
@@ -153,8 +197,14 @@ class State {
 class Recorder {
   constructor(el) {
     this.canvas = el;
-    this.ops = [];
-    this.version = 0; // bumped with every change to `ops` (versionOf)
+    // The program, as encodeProgram makes it: op codes and their numbers
+    // (`n` of `buf` used), strings by index into `strs`.
+    this.buf = new Float64Array(256);
+    this.cap = 256;
+    this.n = 0;
+    this.strs = [];
+    this.version = 0; // bumped with every change to the program (versionOf)
+    this.notified = false; // told the renderer since it last looked
     this.nGrad = 0;
     // Each live gradient's definition (its creation op and color stops),
     // replayed when the program restarts at a full clear: the page may
@@ -164,15 +214,79 @@ class Recorder {
     this.stack = [];
     this.penX = 0;
     this.penY = 0;
+    // After an arc the pen is at its end, worked out when wanted (pen()).
+    this.arcPen = false;
+    this.arcX = 0; this.arcY = 0; this.arcR = 0; this.arcEnd = 0;
     // Where the transform stands, for the full-clear reset.
     this.tx = 0; this.ty = 0; this.scx = 1; this.scy = 1; this.rot = 0;
     this.clipped = false;
   }
 
-  push(op) { this.ops.push(op); this.version++; notify(); }
+  push(op) { this.emit(op); this.changed(); }
+
+  changed() {
+    this.version++;
+    if (!this.notified) this.tell();
+  }
+
+  tell() { this.notified = true; notify(); }
+
+  // Room for k more numbers.
+  // (`cap`: the buffer's length, which is a getter call in QuickJS.)
+  room(k) {
+    if (this.n + k <= this.cap) return;
+    const b = new Float64Array(Math.max(this.cap * 2, this.n + k));
+    b.set(this.buf.subarray(0, this.n));
+    this.buf = b;
+    this.cap = b.length;
+  }
+
+  // An op into the program (encodeProgram's numbers).
+  emit(op) {
+    const code = CANVAS_CODES[op[0]];
+    if (!code) return;
+    this.room(1 + CANVAS_ARGS[code]);
+    const b = this.buf;
+    let i = this.n;
+    b[i++] = code;
+    switch (op[0]) {
+      case "tx": case "sx": b[i++] = this.strs.push(String(op[1])) - 1; b[i++] = op[2]; b[i++] = op[3]; break;
+      case "fo": b[i++] = op[1]; b[i++] = op[2]; b[i++] = op[3]; b[i++] = this.strs.push(op[4] || "") - 1; break;
+      case "sf": case "ss": i = paintInto(b, i, op[1]); break;
+      case "lc": case "lj": case "ta": case "tb": b[i++] = WORDS[op[0]][op[1]] ?? 0; break;
+      default: for (let k = 1; k <= CANVAS_ARGS[code]; k++) b[i++] = op[k] === true ? 1 : op[k] === false ? 0 : op[k] ?? 0;
+    }
+    this.n = i;
+  }
+
+  // Where the pen is (after an arc: its end).
+  pen() {
+    if (this.arcPen) {
+      this.penX = this.arcX + this.arcR * Math.cos(this.arcEnd);
+      this.penY = this.arcY + this.arcR * Math.sin(this.arcEnd);
+      this.arcPen = false;
+    }
+  }
 
   // ------------------------------------------------------------- state
-  set fillStyle(v) { this.putStyle("sf", "fillStyle", v); }
+  // The hot calls (a game sets a color and draws a shape per sprite, each
+  // frame) write their numbers here, with few calls: each costs in QuickJS.
+  set fillStyle(v) {
+    const p = typeof v === "string" ? paints.get(v) ?? paintOf(v) : paintOf(v);
+    if (!p) return; // an invalid color: ignored, as in a browser
+    const s = this.s, c = s.fillStyle;
+    if (p === c || (p.length === 4 && c.length === 4 && p[0] === c[0] && p[1] === c[1] && p[2] === c[2] && p[3] === c[3])) return;
+    s.fillStyle = p;
+    if (this.n + 6 > this.cap) this.room(6);
+    const b = this.buf;
+    let i = this.n;
+    b[i++] = 21;
+    if (p.length === 4) { b[i++] = 0; b[i++] = p[0]; b[i++] = p[1]; b[i++] = p[2]; b[i++] = p[3]; }
+    else { b[i++] = 1; b[i++] = p[1]; b[i++] = 0; b[i++] = 0; b[i++] = 0; }
+    this.n = i;
+    this.version++;
+    if (!this.notified) this.tell();
+  }
   get fillStyle() { return this.s.fillStyle; }
   set strokeStyle(v) { this.putStyle("ss", "strokeStyle", v); }
   get strokeStyle() { return this.s.strokeStyle; }
@@ -182,7 +296,10 @@ class Recorder {
     if (paint === undefined) return; // an invalid color: ignored, as in a browser
     if (samePaint(this.s[name], paint)) return;
     this.s[name] = paint;
-    this.push([tag, paint]);
+    this.room(6);
+    this.buf[this.n] = tag === "sf" ? 21 : 22;
+    this.n = paintInto(this.buf, this.n + 1, paint);
+    this.changed();
   }
 
   set lineWidth(v) { this.putNum("lineWidth", "lw", v); }
@@ -230,7 +347,8 @@ class Recorder {
   // The program starts over (a full clear or cover): the live gradients'
   // definitions, then the state.
   restart() {
-    this.ops.length = 0;
+    this.n = 0;
+    this.strs = [];
     this.version++;
     if (this.grads.size) {
       const used = new Set();
@@ -239,7 +357,7 @@ class Recorder {
       }
       for (const [id, def] of this.grads) {
         if (def.dead && !used.has(id)) { this.grads.delete(id); continue; }
-        for (const op of def) this.ops.push(op);
+        for (const op of def) this.emit(op);
       }
     }
     this.emitState();
@@ -248,13 +366,13 @@ class Recorder {
   emitState() {
     this.version++;
     const s = this.s;
-    this.ops.push(
-      ["sf", s.fillStyle], ["ss", s.strokeStyle],
-      ["lw", s.lineWidth], ["lc", s.lineCap], ["lj", s.lineJoin], ["ga", s.globalAlpha],
-    );
+    for (const op of [["sf", s.fillStyle], ["ss", s.strokeStyle],
+      ["lw", s.lineWidth], ["lc", s.lineCap], ["lj", s.lineJoin], ["ga", s.globalAlpha]]) this.emit(op);
     const f = fontOf(s.font);
-    if (f) this.ops.push(["fo", f.italic ? 1 : 0, f.weight, f.size, f.family || ""]);
-    this.ops.push(["ta", s.textAlign], ["tb", s.textBaseline]);
+    if (f) this.emit(["fo", f.italic ? 1 : 0, f.weight, f.size, f.family || ""]);
+    this.emit(["ta", s.textAlign]);
+    this.emit(["tb", s.textBaseline]);
+    this.notified = true;
     notify();
   }
 
@@ -299,20 +417,28 @@ class Recorder {
 
   // ------------------------------------------------------------- paths
 
-  beginPath() { this.push(["bp"]); }
+  beginPath() {
+    if (this.n + 1 > this.cap) this.room(1);
+    this.buf[this.n++] = 3;
+    this.version++;
+    if (!this.notified) this.tell();
+  }
   closePath() { this.push(["cp"]); }
 
   moveTo(x, y) {
+    this.arcPen = false;
     this.penX = +x || 0; this.penY = +y || 0;
     this.push(["mv", this.penX, this.penY]);
   }
 
   lineTo(x, y) {
+    this.arcPen = false;
     this.penX = +x || 0; this.penY = +y || 0;
     this.push(["ln", this.penX, this.penY]);
   }
 
   rect(x, y, w, h) {
+    this.arcPen = false;
     this.penX = +x || 0; this.penY = +y || 0;
     this.push(["rc", this.penX, this.penY, +w || 0, +h || 0]);
   }
@@ -325,46 +451,62 @@ class Recorder {
     // Where the pen lands: the sweep the backends normalize to.
     if (!ccw) { if (end < start) end += TWO_PI; }
     else { if (end > start) end -= TWO_PI; }
-    this.penX = x + r * Math.cos(end);
-    this.penY = y + r * Math.sin(end);
-    this.push(["ar", +x || 0, +y || 0, r, start, a1 === undefined ? TWO_PI : +a1, ccw ? 1 : 0]);
+    this.arcPen = true;
+    this.arcX = x; this.arcY = y; this.arcR = r; this.arcEnd = end;
+    if (this.n + 7 > this.cap) this.room(7);
+    const b = this.buf;
+    let i = this.n;
+    b[i++] = 14; b[i++] = +x || 0; b[i++] = +y || 0; b[i++] = r; b[i++] = start;
+    b[i++] = a1 === undefined ? TWO_PI : +a1; b[i++] = ccw ? 1 : 0;
+    this.n = i;
+    this.version++;
+    if (!this.notified) this.tell();
   }
 
   // A canvas ellipse, as the recorder sees one: a scaled circle.
   ellipse(x, y, rx, ry, rot = 0, a0 = 0, a1 = TWO_PI, ccw = false) {
     if (!(rx >= 0 && ry >= 0)) return;
-    this.ops.push(
-      ["sv"], ["tl", +x || 0, +y || 0], ["tr", +rot || 0], ["ts", rx, ry],
-      ["ar", 0, 0, 1, +a0 || 0, a1, ccw ? 1 : 0], ["rs"],
-    );
+    for (const op of [["sv"], ["tl", +x || 0, +y || 0], ["tr", +rot || 0], ["ts", rx, ry],
+      ["ar", 0, 0, 1, +a0 || 0, a1, ccw ? 1 : 0], ["rs"]]) this.emit(op);
+    this.arcPen = false;
     this.penX = x + rx * Math.cos(+a1 || 0);
     this.penY = y + ry * Math.sin(+a1 || 0);
-    this.version++;
-    notify();
+    this.changed();
   }
 
   // Quadratic curves become cubics (cairo has no quadratic: the control
   // points sit 2/3 of the way to it, from each end).
   quadraticCurveTo(cx, cy, x, y) {
+    this.pen();
     const x0 = this.penX, y0 = this.penY, qx = +cx || 0, qy = +cy || 0, ex = +x || 0, ey = +y || 0;
     this.penX = ex; this.penY = ey;
     this.push(["bz", x0 + 2 / 3 * (qx - x0), y0 + 2 / 3 * (qy - y0), ex + 2 / 3 * (qx - ex), ey + 2 / 3 * (qy - ey), ex, ey]);
   }
 
   bezierCurveTo(c1x, c1y, c2x, c2y, x, y) {
+    this.arcPen = false;
     this.penX = +x || 0; this.penY = +y || 0;
     this.push(["bz", +c1x || 0, +c1y || 0, +c2x || 0, +c2y || 0, this.penX, this.penY]);
   }
 
   // ------------------------------------------------------------- drawing
 
-  fill(rule) { this.push(["fl", rule === "evenodd" ? 1 : 0]); }
+  fill(rule) {
+    if (this.n + 2 > this.cap) this.room(2);
+    const b = this.buf;
+    b[this.n] = 6;
+    b[this.n + 1] = rule === "evenodd" ? 1 : 0;
+    this.n += 2;
+    this.version++;
+    if (!this.notified) this.tell();
+  }
   stroke() { this.push(["st"]); }
   clip(rule) { this.clipped = true; this.push(["cl", rule === "evenodd" ? 1 : 0]); }
 
   fillRect(x, y, w, h) {
     x = +x; y = +y; w = +w; h = +h;
-    if (![x, y, w, h].every(Number.isFinite)) return; // ignored, as in a browser
+    if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h))) return; // ignored, as in a browser
+    this.arcPen = false;
     this.penX = x; this.penY = y;
     // An opaque fill of the whole bitmap (no clip, no transform): like a
     // full clearRect, it covers everything before it — the common way a
@@ -379,13 +521,15 @@ class Recorder {
   }
 
   strokeRect(x, y, w, h) {
+    this.arcPen = false;
     this.penX = +x || 0; this.penY = +y || 0;
     this.push(["sr", this.penX, this.penY, +w || 0, +h || 0]);
   }
 
   clearRect(x, y, w, h) {
     x = +x; y = +y; w = +w; h = +h;
-    if (![x, y, w, h].every(Number.isFinite)) return; // ignored, as in a browser
+    if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h))) return; // ignored, as in a browser
+    this.arcPen = false;
     this.penX = x; this.penY = y;
     // A full clear with no clip or transform in effect: everything drawn
     // before it is gone from the bitmap (as in a browser), so the program
@@ -400,12 +544,14 @@ class Recorder {
 
   fillText(t, x, y) {
     if (t === undefined || t === null || t === "") return;
+    this.arcPen = false;
     this.penX = +x || 0; this.penY = +y || 0;
     this.push(["tx", String(t), this.penX, this.penY]);
   }
 
   strokeText(t, x, y) {
     if (t === undefined || t === null || t === "") return;
+    this.arcPen = false;
     this.penX = +x || 0; this.penY = +y || 0;
     this.push(["sx", String(t), this.penX, this.penY]);
   }
@@ -455,7 +601,6 @@ function gradientOf(r, id, def) {
       const op = ["gs", id, Math.max(0, Math.min(1, o)), col[0], col[1], col[2], col[3]];
       def.push(op);
       r.push(op);
-      notify();
     },
   };
 }
@@ -467,14 +612,31 @@ function isColor(p) {
 
 // A color, or a gradient reference; undefined for an invalid color (the
 // assignment is ignored, as in a browser).
+// Colors parsed once (a page sets the same few every frame); the same
+// array each time, so comparing them is cheap.
+const paints = new Map();
 function paintOf(v) {
   if (typeof v === "object" && v !== null && typeof v.__grad === "number") return ["g", v.__grad];
   if (typeof v !== "string") return undefined; // patterns aren't supported
-  const c = color(v);
+  let c = paints.get(v);
+  if (c === undefined) {
+    c = color(v) || null;
+    if (paints.size >= 512) paints.clear();
+    paints.set(v, c);
+  }
   return c ? c : undefined;
 }
 
+// A paint as the program's numbers from b[i]: [kind, a, b, c, d] (0: a
+// color r, g, b, a; 1: gradient id). The index after it.
+function paintInto(b, i, p) {
+  if (p?.[0] === "g") { b[i++] = 1; b[i++] = p[1]; b[i++] = 0; b[i++] = 0; b[i++] = 0; }
+  else { b[i++] = 0; b[i++] = p[0]; b[i++] = p[1]; b[i++] = p[2]; b[i++] = p[3]; }
+  return i;
+}
+
 function samePaint(a, b) {
+  if (a === b) return true;
   if (Array.isArray(a) !== Array.isArray(b)) return false;
   if (Array.isArray(a)) return a.length === b.length && a.every((x, i) => x === b[i]);
   return a === b;
