@@ -180,19 +180,25 @@ Every platform got the same gain:
 | Windows (a 2018 laptop) | 128 ms | 223 ms |
 | Android (a Chromebook) | 194 ms | 290 ms |
 
-These are the native DOM's own gains, measured when it replaced linkedom; the work since then (rows stamped from the DOM) took Linux to the 9 ms above. The JavaScript heap of an idle page went from about 29 MB to about 2 MB. The native DOM is the default; `-Dnative_dom=false` builds the renderer on linkedom, to compare the two or as a fallback while a page needs something the native DOM lacks.
+These are the native DOM's own gains, measured when it replaced linkedom; the work since then (rows stamped from the DOM) took Linux to the 9 ms above, and Android to 13 ms (below). The JavaScript heap of an idle page went from about 29 MB to about 2 MB. The native DOM is the default; `-Dnative_dom=false` builds the renderer on linkedom, to compare the two or as a fallback while a page needs something the native DOM lacks.
 
-## Against React Native on Android
+## On Android, against React Native and plain views
 
-Same Chromebook, the same bench written in each framework (React Native 0.87 with Fabric and Hermes, release builds), timed until the rows are on screen:
+Same Chromebook (arm64, a 60 Hz display), the same bench written for each (release builds; React Native 0.87 with Fabric and Hermes), the median of 3:
 
-| | Plain Android views | Oriel native | React Native |
-|---|---|---|---|
-| Build 1000 rows | 54 ms | 216 ms | 475–514 ms |
-| Build 3000 rows | 183 ms | 1024 ms | 2284–2700 ms |
-| Update 1000 rows | 4.7 ms | 43–51 ms | 127–161 ms |
+| | Plain Android views | Oriel native | Oriel WebView | React Native |
+|---|---|---|---|---|
+| Build 1000 rows | 54 ms | **13–14 ms** (35–37 on screen) | 13 ms | 475–514 ms |
+| Build 3000 rows | 183 ms | **36–40 ms** (108–188 on screen) | 51 ms | 2284–2700 ms |
+| Update 1000 rows | **4.7 ms** | 31 ms (37–38 on screen) | 6.4 ms | 127–161 ms |
+| Update 3000 rows | **15 ms** | 74–78 ms (89–91 on screen) | 17.5 ms | 299–302 ms |
+| Animate 200 boxes | 60 fps | 59 fps | 45 fps | 59 fps |
+| Canvas, 200 / 1000 balls | 60 / 60 fps | 59 / 49 fps | 51 / 48 fps | 60 / 60 fps (Skia) |
+| Memory after the tests | 48 MB | 109–114 MB | about 151 MB | 145–157 MB |
 
-Plain views, with no JavaScript at all, are the floor. Between the two that run web-style JavaScript, Oriel builds the page two to three times faster and updates it about three times faster than React Native.
+What is timed: plain views until measured and laid out; Oriel's page time until the layout read returns, which includes Android's view getting the change ("on screen" adds Android's layout pass and the draw); the WebView's layout inside Chromium; React Native until Fabric has mounted the views on the UI thread. Memory is every process the app runs (the WebView's sandboxed renderer included).
+
+Oriel now builds rows faster than plain Android views: one view draws every row, where plain views make four Android views a row. Counting until the rows are on screen, it builds 1000 rows about 13 times faster than React Native mounts them, and updates them three to four times faster. Updates are where plain views and the WebView still lead: changing 1000 texts goes through JavaScript and the DOM in Oriel, and is a field write for plain views. Animation follows the display: the canvas demo runs at 118 fps on a 120 Hz phone.
 
 # Try it
 
@@ -274,11 +280,33 @@ The same flag works for every target: `-Dtarget=x86_64-windows`, macOS and iOS b
 
 **The style engine** parses each stylesheet once and indexes its rules by their rightmost selector. For every element it runs the cascade (specificity, `!important`, inline styles), resolves custom properties and `calc()`, inherits text properties and evaluates `@media` (width, `prefers-color-scheme`, `pointer`).
 
-**The flattener** turns the styled DOM into as few native nodes as it can (below), and compares them with the previous frame. Only the differences cross over to Zig, as small operations: create a node, set its properties, set its children, remove it.
+**The flattener** turns the styled DOM into as few native nodes as it can (below). It is incremental: the DOM's mutations mark the elements that changed, and only those are restyled and flattened; elements with the same styles share one computed style. Only the differences cross over to Zig, as small operations: create a node, set its properties, set its children, remove it.
 
-**Zig** keeps one node per native view, maps the CSS onto [Yoga](https://www.yogalayout.dev/), the flexbox engine React Native uses, and lays the tree out. Text is measured by the platform's own text engine, so a paragraph wraps where it will be drawn.
+**Three faster paths** skip those operations for the commonest changes. A text that changes its words goes straight to its node (`host.text`). New nodes are made from a style defined once, instead of each carrying its properties (`host.leaf`). And a flex row of simple children, or a list of identical rows, is **stamped**: Zig reads the children straight from the native DOM and makes their nodes itself, with no JavaScript object per child. That is how 1000 rows build in 9 ms on Linux and 13 ms on Android.
+
+**Animation** follows the display: `requestAnimationFrame` runs on the platform's frame clock (GTK's frame clock, CVDisplayLink and CADisplayLink, DWM, Android's Choreographer), so a 120 Hz screen gets 120 frames and a hidden window none. While transitions and animations run, only the animated nodes are sent each frame.
+
+**Zig** keeps one node per native view, maps the CSS onto [Yoga](https://www.yogalayout.dev/), the flexbox engine React Native uses, and lays the tree out, with CSS's paint order (z-index, positioned and sticky boxes), tables, sticky headers and horizontal scrolling on top. Text is measured by the platform's own text engine, so a paragraph wraps where it will be drawn; a text's one-line size is kept on its node and sizes by content and width in a cache, so most layouts measure nothing new.
 
 **The backend** draws. On every platform one view draws the whole page (boxes, gradients, borders, shadows, styled text, SVG icons) and the fields are real platform widgets placed over it: the system keyboard, selection, autocorrect and accessibility of a text field come for free.
+
+## The parts
+
+| Part | What it does | In the source |
+|---|---|---|
+| QuickJS-ng | Runs the page's JavaScript and Oriel's runtime, which is compiled to bytecode at build time | `src/native_ui/vendor/quickjs-ng`, `qjs_shim.c`, `tools/qjs_bytecode.c` |
+| The runtime | What a page expects from a browser: timers, events, `requestAnimationFrame`, `location`, `localStorage`, `window.oriel` | `src/native_ui/js/src/main.js` |
+| The native DOM | The document in a Zig store; `innerHTML` and selectors handled natively | `src/native_ui/dom` |
+| Style engine | The cascade, custom properties, inheritance, `@media`; shared computed styles | `js/src/css.js` |
+| Flattener | The styled DOM as few native nodes, incrementally; operations or the faster paths | `js/src/render.js` |
+| Transitions, animations, canvas | CSS transitions and `@keyframes`; the 2d context as a recorded program | `js/src/transitions.js`, `animations.js`, `canvas.js` |
+| Engine | One per window: the page, the tree and the platform, the frame clock, commands and timers | `src/native_ui/engine.zig` |
+| Node tree | Yoga layout, paint order, sticky, tables, scrolling, hit testing, stamped rows | `tree.zig`, `dom_stamp.zig` |
+| Text sizes | Measured by the platform, cached on the node and by content | `text_measure_cache.zig` and each backend |
+| Backends | One view draws the page; platform widgets for the fields | `gtk.zig`, `win32.zig`, `appkit.zig`, `uikit.zig`, `android.zig` with `OrielNative.kt` |
+| Tools | The render bench, the same tree with and without a change, per-stage timings | `examples/render-bench`, `tools/flatten_diff`, `-Dnative_ui_prof` |
+
+More detail on each, and on Android's and Apple's backends, is in [`docs/native-renderer.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-renderer.md).
 
 ## One frame
 
@@ -316,7 +344,7 @@ The same flag works for every target: `-Dtarget=x86_64-windows`, macOS and iOS b
 </figure>
 ```
 
-On Android the boundary between Zig and Kotlin is crossed a few times per frame, not per element: Kotlin keeps a copy of each node's properties (sent as JSON when they change) and receives all the frames at once, as one packed float array, after each layout. Touches come back as taps, drags with fling and long presses, and are hit-tested in Zig on the node tree.
+On Android the boundary between Zig and Kotlin is crossed a few times per change, not per element. Kotlin keeps a copy of each node's properties: as JSON when the page's operations change them, a run's new words alone when only text changes, and for stamped rows each style once with a small record per node, all in one batch. It receives the frames at once, as one packed array, after each layout, and is asked to measure a text only when Zig's caches don't already know its size. Touches come back as taps, drags with fling and long presses, and are hit-tested in Zig on the node tree.
 
 ## Several elements, one native view
 
@@ -388,4 +416,4 @@ It is not a browser, and it isn't trying to be one: it runs the part of the web 
 
 Verified on a Linux desktop, a Windows 11 laptop, an M1 Mac, the iOS simulator, a Chromebook and a Pixel phone.
 
-Next: accessibility (each node exposed to the screen reader), and the same row stamping on Android. The design notes are in [`docs/native-renderer.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-renderer.md) and [`docs/native-dom.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-dom.md).
+Next: accessibility (each node exposed to the screen reader), and grid areas. The design notes are in [`docs/native-renderer.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-renderer.md) and [`docs/native-dom.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-dom.md).
