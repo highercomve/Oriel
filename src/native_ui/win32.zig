@@ -242,6 +242,11 @@ pub const Surface = struct {
     /// A field the page focused before its control existed (focus() right
     /// after showing it): given the keyboard once syncFields makes it.
     focus_pending: i64 = 0,
+    /// A scrollbar the mouse is holding (onScrollbarDown): its scroller,
+    /// the part, and for the thumb where in it the mouse took it.
+    sb_node: i64 = 0,
+    sb_part: SbPart = .none,
+    sb_grab: f32 = 0,
     /// A WM_FOCUS_CHECK is queued.
     focus_check_posted: bool = false,
 
@@ -289,6 +294,8 @@ pub const Surface = struct {
             .props = propsChanged,
             .text = textChanged,
         }, assets, platform_json, label, url, w, h);
+        // WebView2's classic scrollbars (and thin ones) keep room in the layout.
+        s.engine.tree.scrollbar = .{ 15, 10 };
         // Only now may the canvas reach the surface: before, `s.engine` is
         // undefined (and on failure the canvas goes away without it).
         _ = c.SetWindowLongPtrW(s.hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(s)));
@@ -2000,6 +2007,185 @@ fn onMove(s: *Surface, pt: [2]f32) void {
 /// The wheel (WM_MOUSEWHEEL) or the tilt wheel / a touchpad's sideways
 /// swipe (WM_MOUSEHWHEEL, `sideways`); Shift with the wheel scrolls
 /// sideways too, as in a browser.
+// ---------------------------------------------------------------------------
+// Scrollbars: WebView2's on Windows, in the room a scroller keeps for one
+// (Tree.scrollbar, Node.gutter): a 15px bar (10px thin), arrow buttons at
+// its ends, a pill thumb; light, or dark with a dark color-scheme, or
+// scrollbar-color's. Arrows scroll 40px, the track 87.5% of the view, both
+// repeating while held; the thumb drags.
+
+const SbPart = enum { none, up, down, page_up, page_down, thumb };
+
+/// The SetTimer id of a held arrow's or track's repeat.
+const sb_timer: usize = @as(usize, std.math.maxInt(u32)) + 5;
+
+const Scrollbar = struct {
+    bar: Rect,
+    up: Rect,
+    down: Rect,
+    /// Zero-sized when the scroller can't scroll (overflow-y: scroll on
+    /// short content: arrows only).
+    thumb: Rect,
+    /// Where the thumb's top can go: from `start`, `travel` px.
+    start: f32,
+    travel: f32,
+    /// How far the scroller scrolls.
+    range: f32,
+};
+
+fn scrollbarOf(n: *const Node) ?Scrollbar {
+    const g = n.gutter;
+    if (!(g > 0)) return null;
+    const bw = n.props.bw orelse [4]f32{ 0, 0, 0, 0 };
+    const bar: Rect = .{ .x = n.frame.x + n.frame.w - bw[1] - g, .y = n.frame.y + bw[0], .w = g, .h = n.frame.h - bw[0] - bw[2] };
+    if (bar.h <= 0) return null;
+    const btn = @min(g, bar.h / 2);
+    const start = bar.y + btn;
+    const len = bar.h - 2 * btn;
+    const range = @max(0, n.content_h - n.frame.h);
+    var sb: Scrollbar = .{
+        .bar = bar,
+        .up = .{ .x = bar.x, .y = bar.y, .w = g, .h = btn },
+        .down = .{ .x = bar.x, .y = bar.y + bar.h - btn, .w = g, .h = btn },
+        .thumb = .{ .x = bar.x, .y = start, .w = 0, .h = 0 },
+        .start = start,
+        .travel = 0,
+        .range = range,
+    };
+    if (range > 0.5 and len > 0 and n.content_h > 0) {
+        const thumb_len = @min(len, @max(g + 2, len * n.frame.h / n.content_h));
+        sb.travel = len - thumb_len;
+        sb.thumb = .{ .x = bar.x, .y = start + sb.travel * std.math.clamp(n.scroll_y / range, 0, 1), .w = g, .h = thumb_len };
+    }
+    return sb;
+}
+
+fn paintScrollbar(p: *Painter, n: *Node) void {
+    const sb = scrollbarOf(n) orelse return;
+    const dark = n.props.dk;
+    const track: tree_mod.Color = if (n.props.sbc) |cc| cc[1] else if (dark) .{ 44, 44, 44, 1 } else .{ 252, 252, 252, 1 };
+    const ink: tree_mod.Color = if (n.props.sbc) |cc| cc[0] else if (dark) .{ 159, 159, 159, 1 } else .{ 139, 139, 139, 1 };
+    const vt = p.vt();
+    const bar = rectF(sb.bar);
+    vt.FillRectangle.?(p.rt, &bar, p.solid(track));
+    // The thumb: a pill 60% of the bar's width, 2px in from its ends.
+    const tw = @round(sb.bar.w * 0.6);
+    if (sb.thumb.h > 4) {
+        const rr: c.D2D1_ROUNDED_RECT = .{
+            .rect = .{ .left = sb.thumb.x + (sb.bar.w - tw) / 2, .top = sb.thumb.y + 2, .right = sb.thumb.x + (sb.bar.w + tw) / 2, .bottom = sb.thumb.y + sb.thumb.h - 2 },
+            .radiusX = tw / 2,
+            .radiusY = tw / 2,
+        };
+        vt.FillRoundedRectangle.?(p.rt, &rr, p.solid(ink));
+    }
+    // The arrows: triangles as wide as the thumb, a little above and
+    // below their button's middle.
+    const cx = sb.bar.x + sb.bar.w / 2;
+    for ([2]Rect{ sb.up, sb.down }, 0..) |b, i| {
+        if (b.h < 4) continue;
+        const cy = b.y + b.h / 2;
+        const dir: f32 = if (i == 0) 1 else -1;
+        const tip: c.D2D1_POINT_2F = .{ .x = cx, .y = cy - dir * tw * 0.3 };
+        const base_y = cy + dir * tw * 0.45;
+        const tri = triangleGeometry(tip, .{ .x = cx + tw / 2, .y = base_y }, .{ .x = cx - tw / 2, .y = base_y }) orelse continue;
+        defer releaseCom(@as(?*c.ID2D1PathGeometry, tri));
+        vt.FillGeometry.?(p.rt, @ptrCast(tri), p.solid(ink), null);
+    }
+}
+
+/// The scroller whose scrollbar is at `pt`, and its bar.
+fn scrollbarAt(s: *Surface, pt: [2]f32) ?struct { node: *Node, sb: Scrollbar } {
+    var n = s.engine.tree.hit(pt[0], pt[1]);
+    while (n) |x| : (n = x.parent) {
+        const sb = scrollbarOf(x) orelse continue;
+        if (pt[0] >= sb.bar.x and pt[0] < sb.bar.x + sb.bar.w and pt[1] >= sb.bar.y and pt[1] < sb.bar.y + sb.bar.h) return .{ .node = x, .sb = sb };
+    }
+    return null;
+}
+
+/// A press on a scrollbar: true when it was one (the page doesn't get it).
+fn onScrollbarDown(s: *Surface, pt: [2]f32) bool {
+    const at = scrollbarAt(s, pt) orelse return false;
+    const n = at.node;
+    const sb = at.sb;
+    s.sb_node = n.id;
+    s.sb_part = if (pt[1] < sb.up.y + sb.up.h)
+        .up
+    else if (pt[1] >= sb.down.y)
+        .down
+    else if (sb.thumb.h > 0 and pt[1] >= sb.thumb.y and pt[1] < sb.thumb.y + sb.thumb.h)
+        .thumb
+    else if (sb.thumb.h > 0 and pt[1] < sb.thumb.y)
+        .page_up
+    else
+        .page_down;
+    s.sb_grab = pt[1] - sb.thumb.y;
+    _ = c.SetCapture(s.hwnd);
+    if (s.sb_part != .thumb) {
+        scrollbarStep(s, pt);
+        // Held: again after a pause, then quickly (as Windows' own).
+        _ = c.SetTimer(s.hwnd, sb_timer, 400, null);
+    }
+    return true;
+}
+
+/// One step of the held arrow or track: 40px, or 87.5% of the view; the
+/// track stops once the thumb reaches the mouse.
+fn scrollbarStep(s: *Surface, pt: [2]f32) void {
+    const n = s.engine.tree.get(s.sb_node) orelse return;
+    const sb = scrollbarOf(n) orelse return;
+    const page = sb.bar.h * 0.875;
+    const dy: f32 = switch (s.sb_part) {
+        .up => -40,
+        .down => 40,
+        .page_up => if (pt[1] < sb.thumb.y) -page else return,
+        .page_down => if (pt[1] >= sb.thumb.y + sb.thumb.h) page else return,
+        else => return,
+    };
+    _ = s.engine.scrollBy(n, dy);
+}
+
+fn onScrollbarTimer(s: *Surface) void {
+    if (s.sb_part == .none or s.sb_part == .thumb) return;
+    var cp: c.POINT = undefined;
+    _ = c.GetCursorPos(&cp);
+    _ = c.ScreenToClient(s.hwnd, &cp);
+    scrollbarStep(s, .{ @as(f32, @floatFromInt(cp.x)) / s.scale, @as(f32, @floatFromInt(cp.y)) / s.scale });
+    if (liveSurface(s.hwnd)) |ls| if (ls.sb_part != .none) {
+        _ = c.SetTimer(ls.hwnd, sb_timer, 50, null);
+    };
+}
+
+/// The thumb dragged to `pt`: true while a scrollbar has the mouse.
+fn onScrollbarMove(s: *Surface, pt: [2]f32) bool {
+    if (s.sb_part == .none) return false;
+    if (s.sb_part != .thumb) return true;
+    const n = s.engine.tree.get(s.sb_node) orelse return true;
+    const sb = scrollbarOf(n) orelse return true;
+    if (!(sb.travel > 0)) return true;
+    const frac = std.math.clamp((pt[1] - s.sb_grab - sb.start) / sb.travel, 0, 1);
+    _ = s.engine.scrollBy(n, frac * sb.range - n.scroll_y);
+    return true;
+}
+
+/// The mouse let go of a scrollbar: true when one had it.
+fn onScrollbarUp(s: *Surface) bool {
+    if (s.sb_part == .none) return false;
+    s.sb_part = .none;
+    s.sb_node = 0;
+    _ = c.KillTimer(s.hwnd, sb_timer);
+    if (c.GetCapture() == s.hwnd) _ = c.ReleaseCapture();
+    return true;
+}
+
+/// SPI_GETWHEELSCROLLLINES (3 by default; a page at a time counts as 3).
+fn wheelLines() f32 {
+    var lines: c.UINT = 3;
+    if (c.SystemParametersInfoW(c.SPI_GETWHEELSCROLLLINES, 0, @ptrCast(&lines), 0) == 0) return 3;
+    if (lines == 0 or lines > 100) return 3;
+    return @floatFromInt(lines);
+}
+
 fn onWheel(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM, sideways: bool) void {
     // Wheel positions are in screen coordinates.
     var p: c.POINT = .{
@@ -2009,8 +2195,9 @@ fn onWheel(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM, sideways: bool) void
     _ = c.ScreenToClient(s.hwnd, &p);
     const pt: [2]f32 = .{ @as(f32, @floatFromInt(p.x)) / s.scale, @as(f32, @floatFromInt(p.y)) / s.scale };
     const delta: i16 = @bitCast(@as(u16, @truncate(wparam >> 16)));
-    // 120 per notch; GTK's 48 px per notch, down positive.
-    const dy = -@as(f32, @floatFromInt(delta)) / 120.0 * 48.0;
+    // 120 per notch, down positive; as Chromium on Windows: the system's
+    // lines per notch at 100/3 px a line (3 lines: 100 px).
+    const dy = -@as(f32, @floatFromInt(delta)) / 120.0 * wheelLines() * (100.0 / 3.0);
     const hit = s.engine.tree.hit(pt[0], pt[1]);
     if (sideways or wparam & c.MK_SHIFT != 0) {
         // WM_MOUSEHWHEEL: right positive; Shift+wheel: down scrolls right.
@@ -2070,6 +2257,10 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         },
         c.WM_TIMER => {
             _ = c.KillTimer(hwnd, wparam);
+            if (wparam == sb_timer) {
+                onScrollbarTimer(s);
+                return 0;
+            }
             if (wparam == warm_timer) {
                 onWarmTimer(s, hwnd);
                 return 0;
@@ -2092,6 +2283,8 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         },
         c.WM_LBUTTONDOWN, c.WM_LBUTTONDBLCLK => {
             if (fromTouch()) return 0;
+            // A scrollbar's: not the page's.
+            if (onScrollbarDown(s, pointOf(s, lparam))) return 0;
             _ = c.SetFocus(hwnd);
             const pt = pointOf(s, lparam);
             // :active while the button is down.
@@ -2107,6 +2300,7 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         },
         c.WM_LBUTTONUP => {
             if (fromTouch()) return 0;
+            if (onScrollbarUp(s)) return 0;
             const ls = onButtonUp(s, lparam, 1) orelse return 0;
             _ = ls.engine.event(0, "release", "null");
             const ls2 = liveSurface(hwnd) orelse return 0;
@@ -2137,6 +2331,7 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         c.WM_MOUSEMOVE => {
             if (fromTouch()) return 0;
             const pt = pointOf(s, lparam);
+            if (onScrollbarMove(s, pt)) return 0;
             onMove(s, pt);
             if (liveSurface(hwnd)) |ls| queueMove(ls, pt, buttonsOf(wparam), .mouse, modFlags());
             return 0;
@@ -2144,6 +2339,7 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         // The mouse taken away while a button was down (another window, a
         // menu): the buttons are up as far as the page goes.
         c.WM_CAPTURECHANGED => {
+            if (s.sb_part != .none and toHandle(c.HWND, @bitCast(lparam)) != hwnd) _ = onScrollbarUp(s);
             if (s.buttons != 0 and toHandle(c.HWND, @bitCast(lparam)) != hwnd) {
                 s.buttons = 0;
                 s.move = null;
@@ -4126,6 +4322,8 @@ fn paint(p: *Painter, n: *Node) void {
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paint(p, k);
     if (mask != null) vt.PopLayer.?(p.rt);
+    // Its scrollbar, over its content (in its own clip).
+    if (n.gutter > 0) paintScrollbar(p, n);
     // The outline: over the box and its children, outside its own clip
     // (with its transform and opacity).
     if (props.ol) |ol| paintOutline(p, f, r, ol);

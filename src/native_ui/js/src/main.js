@@ -451,13 +451,41 @@ const frameOf = (el) => {
   if (!renderer.rendering) renderer.render();
   return host.frame(renderer.idOf(el, "el")) || [0, 0, 0, 0];
 };
+// An element's border widths (top, right, bottom, left), for its client box.
+function borderOf(el) {
+  const cs = renderer?.styleOf?.(el);
+  if (!cs) return [0, 0, 0, 0];
+  return ["top", "right", "bottom", "left"].map((s) => {
+    const style = cs[`border-${s}-style`];
+    if (!style || style === "none" || style === "hidden") return 0;
+    const w = cs[`border-${s}-width`] ?? "medium";
+    return ({ thin: 1, medium: 3, thick: 5 })[w] ?? (parseFloat(w) || 0);
+  });
+}
 Object.defineProperties(elProto, {
   offsetWidth: { get() { return frameOf(this)[2]; }, configurable: true },
   offsetHeight: { get() { return frameOf(this)[3]; }, configurable: true },
-  // The root element's client box is the viewport (innerWidth less a
-  // scrollbar, which these pages don't have), as in browsers.
-  clientWidth: { get() { return this === document.documentElement ? viewport.width : frameOf(this)[2]; }, configurable: true },
-  clientHeight: { get() { return this === document.documentElement ? viewport.height : frameOf(this)[3]; }, configurable: true },
+  // The root element's client box is the viewport (innerWidth less the
+  // window's scrollbar), as in browsers; a scroller's leaves its
+  // scrollbar's room out (the frame's sixth value).
+  clientWidth: {
+    get() {
+      if (this === document.documentElement) return viewport.width - ((renderer && host.frame(-1)?.[5]) || 0);
+      const f = frameOf(this);
+      const b = borderOf(this);
+      return Math.max(0, f[2] - b[1] - b[3] - (f[5] || 0));
+    },
+    configurable: true,
+  },
+  // The padding box's height (no horizontal scrollbar here).
+  clientHeight: {
+    get() {
+      if (this === document.documentElement) return viewport.height;
+      const b = borderOf(this);
+      return Math.max(0, frameOf(this)[3] - b[0] - b[2]);
+    },
+    configurable: true,
+  },
   scrollHeight: { get() { const f = frameOf(this); return f[4] ?? f[3]; }, configurable: true },
   offsetTop: { get() { return frameOf(this)[1]; }, configurable: true },
   offsetLeft: { get() { return frameOf(this)[0]; }, configurable: true },
