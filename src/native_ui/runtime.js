@@ -17250,6 +17250,20 @@ input[type="range"] { height: 20px; margin: 2px; }
     if (props.ai === "stretch") props.ai = void 0;
     return JSON.stringify(props);
   }
+  function minmaxMin(track) {
+    const at = track.indexOf("minmax(");
+    if (at < 0) return null;
+    let depth = 0;
+    for (let i = at + 7; i < track.length; i++) {
+      const ch = track[i];
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        if (depth === 0) return null;
+        depth--;
+      } else if (ch === "," && depth === 0) return track.slice(at + 7, i).trim();
+    }
+    return null;
+  }
   function gridToRows(cs, props, kids, nodes, renderer2, el, fs) {
     const tpl = cs["grid-template-columns"];
     if (!tpl || tpl === "none") return;
@@ -17258,13 +17272,15 @@ input[type="range"] { height: 20px; margin: 2px; }
     if (rep) {
       const what = rep[2].trim();
       if (/^auto-(fit|fill)$/.test(rep[1].trim())) {
+        renderer2.volatile.add(el);
+        const frameW = renderer2.host.frame(renderer2.idOf(el, "el"))?.[2] || 0;
+        const pad = props.pad || [0, 0, 0, 0], bw = props.bw || [0, 0, 0, 0];
+        const width = frameW ? Math.max(0, frameW - (+pad[1] || 0) - (+pad[3] || 0) - (+bw[1] || 0) - (+bw[3] || 0)) : 0;
         const minW = (() => {
-          const mm = /minmax\(\s*([^,]+(?:\([^)]*\))?)\s*,/.exec(what);
-          const l = length(mm ? mm[1] : what, fs, false);
+          const track = minmaxMin(what) ?? what;
+          const l = length(width ? track.replace(/(-?[\d.]+)%/g, (_, n3) => `${n3 * width / 100}px`) : track, fs, false);
           return typeof l === "number" ? l : 120;
         })();
-        renderer2.volatile.add(el);
-        const width = renderer2.host.frame(renderer2.idOf(el, "el"))?.[2] || 0;
         const gap = props.cg || 0;
         const n2 = width ? Math.max(1, Math.floor((width + gap) / (minW + gap))) : Math.min(kids.length, 3);
         cols = Array(Math.max(1, Math.min(n2, Math.max(kids.length, 1)))).fill("1fr");
