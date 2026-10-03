@@ -14867,6 +14867,9 @@ tr { display: table-row; } td, th { display: table-cell; padding: 1px; vertical-
 th { text-align: center; } caption { display: table-caption; text-align: center; }
 col, colgroup { display: none; }
 `;
+  var UA_CSS_MAC = `
+button { padding: 2px 6px 3px; background: rgba(239, 239, 239, 0.9999); border-color: rgb(192, 192, 192); border-radius: 0; }
+`;
   var UA_CSS_WEBKIT = `
 button, input, textarea, select { font-size: 11px; }
 textarea { font-family: -webkit-small-control, system-ui; }
@@ -16889,7 +16892,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     const bb = borderBoxByDefault(el);
     const key2 = `b${display}|${fs}|${button}|${bb}`;
     const d = derived.get(cs);
-    if (d?.parts) {
+    if (d?.parts && !(button && pushButtons && d.parts.includes("bg"))) {
       const p = { ...memoized(d.base, key2, () => makeBoxProps(d.base, display, fs, button, bb)) };
       for (const part of d.parts) {
         const [keys2, make] = PARTS[part];
@@ -16918,7 +16921,33 @@ input[type="range"] { height: 20px; margin: 2px; }
     return { control: ring(-2, 5), check: ring(0, 3), link: ring(1, 3), box: ring(1, 3) };
   };
   var osRings = null;
+  function darkColor(c) {
+    const v = Math.max(c[0], c[1], c[2]) / 255;
+    const k = v === 0 ? 0 : Math.max(0, (v - 0.33) / v);
+    return [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k), c[3]];
+  }
+  var pushButtons = false;
+  var PUSH_MARK = "rgba(239, 239, 239, 0.9999)";
+  function pushButton(cs, p) {
+    if (cs.background !== PUSH_MARK || cs["background-color"] && cs["background-color"] !== PUSH_MARK) return;
+    const app = cs.appearance || cs["-webkit-appearance"];
+    const uaBorder = cs["border-top-style"] === "outset" && cs["border-right-style"] === "outset" && cs["border-bottom-style"] === "outset" && cs["border-left-style"] === "outset";
+    if (app === "none" || !uaBorder) {
+      p.bg = { ...p.bg || {}, color: [192, 192, 192, 1] };
+      return;
+    }
+    delete p.bw;
+    delete p.bc;
+    delete p.bs;
+    const pad = p.pad ? p.pad.slice() : [0, 0, 0, 0];
+    for (const i of [1, 3]) if (typeof pad[i] === "number" || pad[i] === void 0) pad[i] = (pad[i] || 0) + 2;
+    p.pad = pad;
+    p.bg = { ...p.bg || {}, color: [255, 255, 255, 1] };
+    if (!p.br) p.br = [4, 4, 4, 4];
+    if (!p.sh) p.sh = { x: 0, y: 0.5, blur: 0, spread: 1, color: [0, 0, 0, 0.075] };
+  }
   function setFocusRingOS(os, accent) {
+    pushButtons = os === "macos";
     osRings = os === "linux" ? webkitGtkRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
   }
   var focusVisible = null;
@@ -17047,6 +17076,11 @@ input[type="range"] { height: 20px; margin: 2px; }
       p.bw = bw;
       const cur2 = color(cs.color);
       p.bc = sides.map((s) => color(cs[`border-${s}-color`] || "currentcolor", cur2) || [0, 0, 0, 0]);
+      p.bc = p.bc.map((c, i) => {
+        const st = cs[`border-${sides[i]}-style`];
+        const shaded = st === "outset" ? i === 1 || i === 2 : st === "inset" ? i === 0 || i === 3 : false;
+        return shaded ? darkColor(c) : c;
+      });
       const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
       if (style) p.bs = style;
     }
@@ -17087,6 +17121,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     if (cs.visibility === "hidden") p.vis = false;
     if (cs.cursor === "pointer") p.click = true;
     if (cs["z-index"] && cs["z-index"] !== "auto") p.z = parseInt(cs["z-index"], 10);
+    if (button && pushButtons) pushButton(cs, p);
     return p;
   }
   function positionPart(cs, fs, p) {
@@ -19156,6 +19191,7 @@ ${a.stack || ""}`;
         const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
         engine.addSheet(UA_CSS, sheets);
         if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
+        if (platform.os === "macos") engine.addSheet(UA_CSS_MAC, sheets);
         else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets);
         for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
         const b1 = P && P();

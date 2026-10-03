@@ -19,7 +19,7 @@
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules } from "./css.js";
-import { Renderer, UA_CSS, UA_CSS_WEBKIT, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
+import { Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
 // The runtime's own weak caches keyed by nodes: marked so their entries
 // don't keep a node's wrapper from being replaced (a page's weak
@@ -1435,6 +1435,7 @@ const oriel = {
       engine.addSheet(UA_CSS, sheets);
       // Where the WebView is WebKit's, its controls' look.
       if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
+      if (platform.os === "macos") engine.addSheet(UA_CSS_MAC, sheets);
       else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets);
       for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
       const b1 = P && P();
