@@ -76,6 +76,13 @@ col, colgroup { display: none; }
 // WebKit's controls (WKWebView, so the native renderer on macOS and iOS):
 // -webkit-small-control is the system font at 11px, a textarea's too
 // (measured against WKWebView: an input 19 tall on macOS, a textarea 32).
+// macOS's buttons (WebKit's html.css there: 2px 6px 3px, a ButtonFace
+// border), their background marked for pushButton (WKWebView's push button
+// while the page keeps it).
+export const UA_CSS_MAC = `
+button { padding: 2px 6px 3px; background: rgba(239, 239, 239, 0.9999); border-color: rgb(192, 192, 192); border-radius: 0; }
+`;
+
 export const UA_CSS_WEBKIT = `
 button, input, textarea, select { font-size: 11px; }
 textarea { font-family: -webkit-small-control, system-ui; }
@@ -2342,7 +2349,8 @@ function boxProps(cs, display, fs, el) {
   const bb = borderBoxByDefault(el);
   const key = `b${display}|${fs}|${button}|${bb}`;
   const d = derived.get(cs);
-  if (d?.parts) {
+  // (A mac button's background decides its whole box: pushButton.)
+  if (d?.parts && !(button && pushButtons && d.parts.includes("bg"))) {
     const p = { ...memoized(d.base, key, () => makeBoxProps(d.base, display, fs, button, bb)) };
     for (const part of d.parts) {
       const [keys, make] = PARTS[part];
@@ -2393,7 +2401,48 @@ const webkitGtkRings = (accent) => {
   return { control: ring(-2, 5), check: ring(0, 3), link: ring(1, 3), box: ring(1, 3) };
 };
 let osRings = null;
+// A color's shade for an outset or inset border's dark sides (WebKit's and
+// Blink's Color::dark).
+function darkColor(c) {
+  const v = Math.max(c[0], c[1], c[2]) / 255;
+  const k = v === 0 ? 0 : Math.max(0, (v - 0.33) / v);
+  return [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k), c[3]];
+}
+
+// macOS: buttons as WKWebView draws them there (measured), AppKit's push
+// button: while the page leaves its background, border and appearance
+// alone (UA_CSS_MAC marks the background), no border (WebKit's computed
+// border is 0: a 14px button is 24 high, not 28; its 2px a side still
+// taken), white, 4px corners and a hairline edge just outside it;
+// otherwise the CSS box on WebKit's ButtonFace (rgb(192, 192, 192)). (A
+// button taller than AppKit's push button, WebKit draws as a square bevel
+// button; here it stays a push button.)
+let pushButtons = false;
+// (A ButtonFace no page writes: its background shorthand as UA_CSS_MAC left it.)
+const PUSH_MARK = "rgba(239, 239, 239, 0.9999)";
+function pushButton(cs, p) {
+  if (cs.background !== PUSH_MARK || (cs["background-color"] && cs["background-color"] !== PUSH_MARK)) return;
+  const app = cs.appearance || cs["-webkit-appearance"];
+  const uaBorder = cs["border-top-style"] === "outset" && cs["border-right-style"] === "outset" &&
+    cs["border-bottom-style"] === "outset" && cs["border-left-style"] === "outset";
+  if (app === "none" || !uaBorder) {
+    // WebKit's ButtonFace on macOS (measured; UA_CSS_MAC's border is it too).
+    p.bg = { ...(p.bg || {}), color: [192, 192, 192, 1] };
+    return;
+  }
+  delete p.bw; delete p.bc; delete p.bs;
+  // The bezel keeps the border's 2px a side (WebKit's computed border is 0
+  // but a push button is that much wider than its padding and text).
+  const pad = p.pad ? p.pad.slice() : [0, 0, 0, 0];
+  for (const i of [1, 3]) if (typeof pad[i] === "number" || pad[i] === undefined) pad[i] = (pad[i] || 0) + 2;
+  p.pad = pad;
+  p.bg = { ...(p.bg || {}), color: [255, 255, 255, 1] };
+  if (!p.br) p.br = [4, 4, 4, 4];
+  if (!p.sh) p.sh = { x: 0, y: 0.5, blur: 0, spread: 1, color: [0, 0, 0, 0.075] };
+}
+
 export function setFocusRingOS(os, accent) {
+  pushButtons = os === "macos";
   osRings = os === "linux" ? webkitGtkRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
 }
 let focusVisible = null;
@@ -2522,6 +2571,15 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
     p.bw = bw;
     const cur = color(cs.color);
     p.bc = sides.map((s) => color(cs[`border-${s}-color`] || "currentcolor", cur) || [0, 0, 0, 0]);
+    // outset and inset: the shaded sides darker, as WebKit and Blink shade
+    // them (Color::dark: each channel × (v - 0.33) / v, v the brightest;
+    // ButtonFace's 192 is 108): outset the bottom and right, inset the top
+    // and left.
+    p.bc = p.bc.map((c, i) => {
+      const st = cs[`border-${sides[i]}-style`];
+      const shaded = st === "outset" ? i === 1 || i === 2 : st === "inset" ? i === 0 || i === 3 : false;
+      return shaded ? darkColor(c) : c;
+    });
     // Dashed or dotted: the first side drawn so (the backends draw one
     // style for the box).
     const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
@@ -2568,6 +2626,7 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
   if (cs.visibility === "hidden") p.vis = false;
   if (cs.cursor === "pointer") p.click = true;
   if (cs["z-index"] && cs["z-index"] !== "auto") p.z = parseInt(cs["z-index"], 10);
+  if (button && pushButtons) pushButton(cs, p);
   return p;
 }
 
