@@ -88,6 +88,14 @@ button, input, textarea, select { font-size: 11px; }
 textarea { font-family: -webkit-small-control, system-ui; }
 `;
 
+// Chrome's controls on Android (the WebView there), as measured: 16px
+// checkboxes and radios, a radio's margin 3px 3px 0 5px. Text fields and
+// selects are sized by the backend's measure (android.zig).
+export const UA_CSS_CHROME_ANDROID = `
+input[type=checkbox], input[type=radio] { width: 16px; height: 16px; }
+input[type=radio] { margin: 3px 3px 0 5px; }
+`;
+
 // WebKitGTK's controls, as measured (Linux: the WebView there): the GTK
 // UI font (gtk-font-name's family, its size in whole px: platform.uiFont)
 // on every control, Adwaita's 1px #cdcdcd border rounded 5px, white text

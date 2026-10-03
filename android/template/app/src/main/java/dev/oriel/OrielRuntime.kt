@@ -323,6 +323,16 @@ object OrielRuntime {
     @JvmStatic
     fun nuiBaseline(id: Int, node: Int): Int = Nui.views[id]?.baselineOf(node) ?: -1
 
+    /** A string's width in 1/64 dp in a font (`ff`, the CSS family list) at
+     *  `size64` / 64 px: a select's options (android.zig longestOption). */
+    @JvmStatic
+    fun nuiTextWidth(text: ByteArray, size64: Int, ff: ByteArray, mono: Boolean): Int {
+        val p = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.SUBPIXEL_TEXT_FLAG or android.graphics.Paint.LINEAR_TEXT_FLAG)
+        p.textSize = size64 / 64f
+        p.typeface = NuiNode.family(ff.utf8(), mono)
+        return Math.round(p.measureText(text.utf8()) * 64)
+    }
+
     /** Texts' unbounded sizes, all of a frame's at once (android.zig's measureTexts). */
     @JvmStatic
     fun nuiMeasureTexts(id: Int, nodes: ByteArray): ByteArray = Nui.views[id]?.measureTexts(nodes) ?: ByteArray(0)
