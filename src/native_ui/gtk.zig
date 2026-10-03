@@ -1777,6 +1777,10 @@ fn border(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) 
         }
         return;
     }
+    if (r[0] > 0 or r[1] > 0 or r[2] > 0 or r[3] > 0) {
+        roundedSides(cr, f, r, bw, colors);
+        return;
+    }
     // Per side (straight edges).
     const sides = [4]Rect{
         .{ .x = f.x, .y = f.y, .w = f.w, .h = bw[0] },
@@ -1791,6 +1795,94 @@ fn border(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) 
         setColor(cr, colors[i]);
         cairo_fill(cr);
     }
+}
+
+/// Rounded corners and sides of different widths (a card's
+/// border-left: 6px): the area between the border box and the padding
+/// box, whose corners are ellipses (the radius less each side's width, as
+/// CSS makes them), each side's color clipped to its wedge: the lines
+/// from its outer corners through its inner corners (where browsers join
+/// two colors), up to the middle.
+fn roundedSides(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, colors: [4]tree_mod.Color) void {
+    const inner: Rect = .{ .x = f.x + bw[3], .y = f.y + bw[0], .w = @max(0, f.w - bw[1] - bw[3]), .h = @max(0, f.h - bw[0] - bw[2]) };
+    const rx = [4]f32{ @max(0, r[0] - bw[3]), @max(0, r[1] - bw[1]), @max(0, r[2] - bw[1]), @max(0, r[3] - bw[3]) };
+    const ry = [4]f32{ @max(0, r[0] - bw[0]), @max(0, r[1] - bw[0]), @max(0, r[2] - bw[2]), @max(0, r[3] - bw[2]) };
+    // One color where every drawn side has the same: one fill.
+    var first: ?tree_mod.Color = null;
+    const same = for (0..4) |i| {
+        if (bw[i] <= 0) continue;
+        if (first) |c| {
+            if (!std.mem.eql(f32, &c, &colors[i])) break false;
+        } else first = colors[i];
+    } else true;
+    const outer = [4][2]f32{ .{ f.x, f.y }, .{ f.x + f.w, f.y }, .{ f.x + f.w, f.y + f.h }, .{ f.x, f.y + f.h } };
+    const in = [4][2]f32{ .{ inner.x, inner.y }, .{ inner.x + inner.w, inner.y }, .{ inner.x + inner.w, inner.y + inner.h }, .{ inner.x, inner.y + inner.h } };
+    const mid = [2]f32{ inner.x + inner.w / 2, inner.y + inner.h / 2 };
+    // Each corner's join, from the outer corner through the inner one,
+    // stopped where it reaches the middle's row or column.
+    var join: [4][2]f32 = undefined;
+    for (0..4) |k| {
+        const dx = in[k][0] - outer[k][0];
+        const dy = in[k][1] - outer[k][1];
+        var t: f32 = std.math.floatMax(f32);
+        if (dx != 0) t = @min(t, (mid[0] - outer[k][0]) / dx);
+        if (dy != 0) t = @min(t, (mid[1] - outer[k][1]) / dy);
+        if (dx == 0 and dy == 0) t = 0;
+        join[k] = .{ outer[k][0] + @max(0, t) * dx, outer[k][1] + @max(0, t) * dy };
+    }
+    for (0..4) |i| {
+        if (bw[i] <= 0 or colors[i][3] <= 0) continue;
+        cairo_save(cr);
+        if (!same) {
+            const j = (i + 1) % 4;
+            cairo_new_path(cr);
+            cairo_move_to(cr, outer[i][0], outer[i][1]);
+            cairo_line_to(cr, outer[j][0], outer[j][1]);
+            cairo_line_to(cr, join[j][0], join[j][1]);
+            cairo_line_to(cr, mid[0], mid[1]);
+            cairo_line_to(cr, join[i][0], join[i][1]);
+            cairo_close_path(cr);
+            cairo_clip(cr);
+        }
+        cairo_new_path(cr);
+        ellipseRect(cr, f, r, r);
+        ellipseRect(cr, inner, rx, ry);
+        cairo_set_fill_rule(cr, 1); // even-odd: the ring
+        setColor(cr, colors[i]);
+        cairo_fill(cr);
+        cairo_restore(cr);
+        if (same) return;
+    }
+}
+
+/// A rectangle with elliptical corners (`rx`, `ry` each: top left, top
+/// right, bottom right, bottom left), added to the current path.
+fn ellipseRect(cr: *cairo_t, f: Rect, rx: [4]f32, ry: [4]f32) void {
+    const pi = std.math.pi;
+    const x: f64 = f.x;
+    const y: f64 = f.y;
+    const w: f64 = f.w;
+    const h: f64 = f.h;
+    cairo_new_sub_path(cr);
+    ellipseArc(cr, x + w - rx[1], y + ry[1], rx[1], ry[1], -pi / 2.0, 0, x + w, y);
+    ellipseArc(cr, x + w - rx[2], y + h - ry[2], rx[2], ry[2], 0, pi / 2.0, x + w, y + h);
+    ellipseArc(cr, x + rx[3], y + h - ry[3], rx[3], ry[3], pi / 2.0, pi, x, y + h);
+    ellipseArc(cr, x + rx[0], y + ry[0], rx[0], ry[0], pi, 3 * pi / 2.0, x, y);
+    cairo_close_path(cr);
+}
+
+/// A quarter ellipse, or its square corner (`px`, `py`) when it has no
+/// radius along either axis.
+fn ellipseArc(cr: *cairo_t, cx: f64, cy: f64, rx: f32, ry: f32, a0: f64, a1: f64, px: f64, py: f64) void {
+    if (rx <= 0 or ry <= 0) {
+        cairo_line_to(cr, px, py);
+        return;
+    }
+    cairo_save(cr);
+    cairo_translate(cr, cx, cy);
+    cairo_scale(cr, rx, ry);
+    cairo_arc(cr, 0, 0, 1, a0, a1);
+    cairo_restore(cr);
 }
 
 /// The dash pattern for one dashed or dotted line of `len` px drawn `w`
