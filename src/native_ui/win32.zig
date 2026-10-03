@@ -3947,34 +3947,43 @@ fn strokeShape(p: *Painter, f: Rect, r: Radii, brush: *c.ID2D1Brush, width: f32,
 /// A brush for a CSS gradient over `f`. Caller releases.
 fn gradientBrush(p: *Painter, f: Rect, g: tree_mod.Gradient) ?*c.ID2D1Brush {
     if (g.stops.len == 0) return null;
-    var stops_buf: [16]c.D2D1_GRADIENT_STOP = undefined;
-    const count = @min(g.stops.len, stops_buf.len);
-    for (g.stops[0..count], 0..) |st, i| stops_buf[i] = .{ .position = st[4], .color = d2dColor(.{ st[0], st[1], st[2], st[3] }) };
-    const vt = p.vt();
-    var coll: ?*c.ID2D1GradientStopCollection = null;
-    if (vt.CreateGradientStopCollection.?(p.rt, &stops_buf, @intCast(count), c.D2D1_GAMMA_2_2, c.D2D1_EXTEND_MODE_CLAMP, &coll) < 0) return null;
-    defer releaseCom(coll);
-    if (g.radialIn(f.w, f.h)) |rad| {
-        const props: c.D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES = .{
-            .center = .{ .x = f.x + rad[0], .y = f.y + rad[1] },
-            .gradientOriginOffset = .{ .x = 0, .y = 0 },
-            .radiusX = rad[2],
-            .radiusY = rad[3],
-        };
-        var b: ?*c.ID2D1RadialGradientBrush = null;
-        if (vt.CreateRadialGradientBrush.?(p.rt, &props, null, coll, &b) < 0) return null;
-        return @ptrCast(b);
-    }
     // CSS angles: 0deg points up, clockwise; the gradient line spans the box.
     const a = g.angle * std.math.pi / 180.0;
     const dx = @sin(a);
     const dy = -@cos(a);
     const len = @abs(f.w * dx) + @abs(f.h * dy);
+    const radial = g.radialIn(f.w, f.h);
+    // Positions in px or missing, and a repeating gradient's period
+    // (tree.zig); a period repeats by the brush wrapping.
+    var resolved_buf: [64]tree_mod.Gradient.Stop = undefined;
+    const res = g.resolve(if (radial) |rad| rad[2] else len, &resolved_buf);
+    if (res.stops.len == 0) return null;
+    var stops_buf: [64]c.D2D1_GRADIENT_STOP = undefined;
+    const count = @min(res.stops.len, stops_buf.len);
+    for (res.stops[0..count], 0..) |st, i| stops_buf[i] = .{ .position = st[4], .color = d2dColor(.{ st[0], st[1], st[2], st[3] }) };
+    const per = res.period orelse 1;
+    const vt = p.vt();
+    var coll: ?*c.ID2D1GradientStopCollection = null;
+    const extend: c.D2D1_EXTEND_MODE = if (res.period != null) c.D2D1_EXTEND_MODE_WRAP else c.D2D1_EXTEND_MODE_CLAMP;
+    if (vt.CreateGradientStopCollection.?(p.rt, &stops_buf, @intCast(count), c.D2D1_GAMMA_2_2, extend, &coll) < 0) return null;
+    defer releaseCom(coll);
+    if (radial) |rad| {
+        const props: c.D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES = .{
+            .center = .{ .x = f.x + rad[0], .y = f.y + rad[1] },
+            .gradientOriginOffset = .{ .x = 0, .y = 0 },
+            .radiusX = rad[2] * per,
+            .radiusY = rad[3] * per,
+        };
+        var b: ?*c.ID2D1RadialGradientBrush = null;
+        if (vt.CreateRadialGradientBrush.?(p.rt, &props, null, coll, &b) < 0) return null;
+        return @ptrCast(b);
+    }
     const cx = f.x + f.w / 2;
     const cy = f.y + f.h / 2;
+    // One period long when it repeats (from the line's start).
     const props: c.D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES = .{
         .startPoint = .{ .x = cx - dx * len / 2, .y = cy - dy * len / 2 },
-        .endPoint = .{ .x = cx + dx * len / 2, .y = cy + dy * len / 2 },
+        .endPoint = .{ .x = cx - dx * len / 2 + dx * len * per, .y = cy - dy * len / 2 + dy * len * per },
     };
     var b: ?*c.ID2D1LinearGradientBrush = null;
     if (vt.CreateLinearGradientBrush.?(p.rt, &props, null, coll, &b) < 0) return null;

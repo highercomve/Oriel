@@ -136,7 +136,8 @@ the width offered); inside fit-content, text that has to wrap takes the
 whole width offered (`fc`)), margins, padding,
 `position: absolute`/`fixed`/`relative`/`sticky` and `inset`,
 `overflow`, transforms (translate moves the box; scale and rotate are drawn
-around its center); for drawing colors, linear and radial gradients,
+around its center); for drawing colors, linear and radial gradients (and
+repeating ones; see "Gradient stops" below),
 borders, `border-radius` (with sides of different widths, the inner
 corners are ellipses and colors meet on the lines from the outer to the
 inner corners, as browsers draw a card's `border-left: 6px`; GTK:
@@ -148,6 +149,26 @@ transitions and `@keyframes` animations on
 opacity, backgrounds, color, transforms, sizes, border colors and shadows
 (src/native_ui/js/src/transitions.js, animations.js: while they run, only
 the animated nodes are sent each frame).
+
+**Gradient stops** (`bg.gradient`, each backend):
+
+- `stops` are `[r, g, b, a, pos]`. With only percentages, `pos` is a
+  fraction of the gradient line (missing ones already filled in) and
+  there is no `su`. Otherwise `su` gives each stop's unit (`%` a
+  fraction, `p` px, `a` none given): call `Gradient.resolve(line, buf)`
+  (tree.zig) with the line's length in px (a linear gradient's
+  `|w sin a| + |h cos a|`, a radial one's x radius from `radialIn`).
+- `rep`: repeating-linear-gradient / repeating-radial-gradient. resolve()
+  then returns one period's stops (0..1 within it, phased so a period
+  starts at the line's start) and `period` (its length as a fraction of
+  the line): draw them with a wrapping gradient one period long (Win32:
+  D2D1_EXTEND_MODE_WRAP, the linear brush's end point and the radial
+  radii times `period`; Cairo: CAIRO_EXTEND_REPEAT). A backend whose
+  gradients can't wrap (CoreGraphics) lays the period out with
+  `Gradient.expand(resolved, extent, buf)` instead (extent: how much of
+  the line to cover, in line lengths). Win32 does this; GTK, Apple and
+  Android still read `stops` as fractions (px positions come out wrong
+  there, and a repeating gradient is drawn once).
 
 **Corner radii** (`br`, each backend):
 
