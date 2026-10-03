@@ -180,6 +180,9 @@ extern fn cairo_pattern_add_color_stop_rgba(p: *cairo_pattern_t, off: f64, r: f6
 extern fn cairo_pattern_destroy(p: *cairo_pattern_t) void;
 extern fn cairo_pattern_create_radial(cx0: f64, cy0: f64, r0: f64, cx1: f64, cy1: f64, r1: f64) *cairo_pattern_t;
 extern fn cairo_pattern_set_matrix(p: *cairo_pattern_t, m: *const CairoMatrix) void;
+extern fn cairo_mask_surface(cr: *cairo_t, surface: *anyopaque, x: f64, y: f64) void;
+extern fn cairo_get_matrix(cr: *cairo_t, m: *CairoMatrix) void;
+extern fn cairo_set_matrix(cr: *cairo_t, m: *const CairoMatrix) void;
 const CairoMatrix = extern struct { xx: f64, yx: f64, xy: f64, yy: f64, x0: f64, y0: f64 };
 
 extern fn pango_layout_set_text(l: *PangoLayout, t: [*]const u8, len: c_int) void;
@@ -243,6 +246,9 @@ pub const Surface = struct {
     images: std.AutoHashMap(i64, Image),
     /// Each canvas's bitmap, kept from frame to frame while its size holds.
     canvases: std.AutoHashMap(i64, CanvasBitmap),
+    /// Filled circles as anti-aliased masks (canvasCircle), by radius and
+    /// sub-pixel position; dropped when there get to be many.
+    circle_masks: CircleMasks = .empty,
     text_measurements: text_measure_cache.Cache = .{},
     /// Per font: each ASCII character's width before each other one, from
     /// Pango (fastTextSize).
@@ -390,6 +396,8 @@ pub const Surface = struct {
         var cvs = s.canvases.valueIterator();
         while (cvs.next()) |cv| cairo_surface_destroy(cv.surf);
         s.canvases.deinit();
+        clearCircleMasks(&s.circle_masks);
+        s.circle_masks.deinit(s.gpa);
         gtk_style_context_remove_provider_for_display(gtk_widget_get_display(s.area), s.css);
         g_object_unref(s.css);
         s.css_text.deinit(s.gpa);
@@ -1701,6 +1709,80 @@ fn paintPlaceholder(s: *Surface, cr: *cairo_t, n: *Node) void {
 
 const CanvasBitmap = struct { surf: *anyopaque, w: c_int, h: c_int };
 
+/// A circle mask's radius (1/16 px) and position within its pixel (1/16 px).
+const CircleKey = struct { r16: u32, qx: u8, qy: u8 };
+const circle_subpixels = 16;
+const max_circle_masks = 2048;
+const max_circle_radius = 64;
+
+/// A path that is one whole circle, in the bitmap's pixels (canvasCircle).
+const PixelCircle = struct { x: f64, y: f64, r: f64 };
+
+const CircleMasks = std.AutoHashMapUnmanaged(CircleKey, *anyopaque);
+
+fn clearCircleMasks(masks: *CircleMasks) void {
+    var it = masks.valueIterator();
+    while (it.next()) |m| cairo_surface_destroy(m.*);
+    masks.clearRetainingCapacity();
+}
+
+/// The circle `arc` draws as a whole path, in pixels (`sf`: the bitmap's
+/// pixels per unit), when the transform keeps circles round and upright;
+/// null otherwise (or too big for a mask).
+fn pixelCircle(cr: *cairo_t, x: f32, y: f32, r: f32, sf: f64) ?PixelCircle {
+    var m: CairoMatrix = undefined;
+    cairo_get_matrix(cr, &m);
+    if (m.xy != 0 or m.yx != 0 or m.xx != m.yy or !(m.xx > 0)) return null;
+    const pr = @as(f64, r) * m.xx * sf;
+    if (!(pr > 0) or pr > max_circle_radius) return null;
+    return .{ .x = (m.xx * x + m.x0) * sf, .y = (m.yy * y + m.y0) * sf, .r = pr };
+}
+
+/// Fill a whole circle with the current source: its mask (anti-aliased by
+/// cairo once per radius and 1/16-pixel position) painted where it goes.
+/// Rasterizing the path every time was most of a game's frame (1000 balls:
+/// 3.1 ms of cairo's fills vs 0.5 ms of masks). False: no mask (no memory).
+fn canvasCircle(gpa: std.mem.Allocator, masks: *CircleMasks, cr: *cairo_t, c: PixelCircle, sf: f64) bool {
+    const left = c.x - c.r - 1;
+    const top = c.y - c.r - 1;
+    const bx = @floor(left);
+    const by = @floor(top);
+    const sub: f64 = circle_subpixels;
+    const key: CircleKey = .{
+        .r16 = @intFromFloat(@round(c.r * 16)),
+        .qx = @intFromFloat(@min(sub - 1, @floor((left - bx) * sub))),
+        .qy = @intFromFloat(@min(sub - 1, @floor((top - by) * sub))),
+    };
+    const mask = masks.get(key) orelse blk: {
+        if (masks.count() >= max_circle_masks) clearCircleMasks(masks);
+        const r = @as(f64, @floatFromInt(key.r16)) / 16;
+        const d: c_int = @intFromFloat(@ceil(2 * r) + 3);
+        const m = cairo_image_surface_create(2, d, d) orelse return false; // A8
+        const mc = cairo_create(m) orelse {
+            cairo_surface_destroy(m);
+            return false;
+        };
+        // Centered in its bucket of positions.
+        const off = 1 + r;
+        cairo_arc(mc, off + (@as(f64, @floatFromInt(key.qx)) + 0.5) / sub, off + (@as(f64, @floatFromInt(key.qy)) + 0.5) / sub, r, 0, 2 * std.math.pi);
+        cairo_fill(mc);
+        cairo_destroy(mc);
+        masks.put(gpa, key, m) catch {
+            cairo_surface_destroy(m);
+            return false;
+        };
+        break :blk m;
+    };
+    // In pixels: the transform for a moment as the bitmap's own.
+    var saved: CairoMatrix = undefined;
+    cairo_get_matrix(cr, &saved);
+    const px: CairoMatrix = .{ .xx = 1 / sf, .yx = 0, .xy = 0, .yy = 1 / sf, .x0 = 0, .y0 = 0 };
+    cairo_set_matrix(cr, &px);
+    cairo_mask_surface(cr, mask, bx, by);
+    cairo_set_matrix(cr, &saved);
+    return true;
+}
+
 const CanvasState = struct {
     fill: tree_mod.CanvasPaint = .{ .color = .{ 0, 0, 0, 1 } },
     stroke: tree_mod.CanvasPaint = .{ .color = .{ 0, 0, 0, 1 } },
@@ -1780,6 +1862,10 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
     }
     // The surface is the element's box; the bitmap's space is scaled to it.
     if (cw > 0 and ch > 0) cairo_scale(cr, f.w / cw, f.h / ch);
+    // The current path when it is one whole circle (a ball, a particle):
+    // filled as a mask (canvasCircle). Anything else added drops it.
+    var circle: ?PixelCircle = null;
+    var path_parts: u32 = 0;
     for (cmds) |cmd| {
         if (st.singular) switch (cmd) {
             .translate, .scale, .rotate, .begin_path, .close_path, .move_to, .line_to, .rect, .arc, .bezier_to, .fill, .stroke, .clip, .fill_rect, .stroke_rect, .clear_rect, .fill_text, .stroke_text => continue,
@@ -1804,12 +1890,27 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
                 st.singular = true;
             } else cairo_scale(cr, t[0], t[1]),
             .rotate => |a| cairo_rotate(cr, a),
-            .begin_path => cairo_new_path(cr),
-            .close_path => cairo_close_path(cr),
-            .move_to => |p| cairo_move_to(cr, p[0], p[1]),
-            .line_to => |p| cairo_line_to(cr, p[0], p[1]),
-            .rect => |r| cairo_rectangle(cr, r[0], r[1], r[2], r[3]),
+            .begin_path => {
+                cairo_new_path(cr);
+                circle = null;
+                path_parts = 0;
+            },
+            .close_path, .move_to, .line_to, .rect, .bezier_to => {
+                circle = null;
+                path_parts += 1;
+                switch (cmd) {
+                    .close_path => cairo_close_path(cr),
+                    .move_to => |p| cairo_move_to(cr, p[0], p[1]),
+                    .line_to => |p| cairo_line_to(cr, p[0], p[1]),
+                    .rect => |r| cairo_rectangle(cr, r[0], r[1], r[2], r[3]),
+                    .bezier_to => |b| cairo_curve_to(cr, b[0], b[1], b[2], b[3], b[4], b[5]),
+                    else => unreachable,
+                }
+            },
             .arc => |a| {
+                const whole = @abs(a.a1 - a.a0) >= 2 * std.math.pi;
+                circle = if (path_parts == 0 and whole) pixelCircle(cr, a.x, a.y, a.r, sf) else null;
+                path_parts += 1;
                 // A sweep from a0 to a1: increasing angles (cairo, in the
                 // y-down user space, draws a canvas's clockwise arc); the
                 // other way round draws the same segment from a1 up to a0.
@@ -1823,9 +1924,9 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
                     cairo_arc(cr, a.x, a.y, a.r, a.a0, a1);
                 }
             },
-            .bezier_to => |b| cairo_curve_to(cr, b[0], b[1], b[2], b[3], b[4], b[5]),
             .fill => |even| {
                 canvasSource(cr, st.fill, st.alpha, &grads);
+                if (circle) |c| if (st.fill == .color and canvasCircle(s.gpa, &s.circle_masks, cr, c, sf)) continue;
                 cairo_set_fill_rule(cr, if (even) cairo_fill_rule_even_odd else cairo_fill_rule_winding);
                 cairo_fill_preserve(cr);
             },
@@ -2266,4 +2367,63 @@ test "shared measurements match fresh Pango layouts after text, width and font c
     pango_context_changed(gtk_widget_get_pango_context(area));
     measure(&s, n, 80, &cached);
     try std.testing.expect(s.text_measurements.entries.count() < old_count);
+}
+
+test "a circle filled from its mask matches cairo's own fill" {
+    const gpa = std.testing.allocator;
+    var masks: CircleMasks = .empty;
+    defer {
+        clearCircleMasks(&masks);
+        masks.deinit(gpa);
+    }
+    const w = 64;
+    var worst: u8 = 0;
+    var diff_sum: u64 = 0;
+    var edge_pixels: u64 = 0;
+    var prng = std.Random.DefaultPrng.init(7);
+    const rnd = prng.random();
+    for (0..200) |_| {
+        const x = 20 + rnd.float(f32) * 24;
+        const y = 20 + rnd.float(f32) * 24;
+        const r = 2 + rnd.float(f32) * 14;
+        const sf: f64 = if (rnd.boolean()) 1 else 2;
+        var out: [2][]const u8 = undefined;
+        var surfs: [2]*anyopaque = undefined;
+        for (0..2) |way| {
+            const px: c_int = @intFromFloat(w * sf);
+            const img = cairo_image_surface_create(0, px, px).?;
+            cairo_surface_set_device_scale(img, sf, sf);
+            const cr = cairo_create(img).?;
+            cairo_set_source_rgba(cr, 0, 0, 0, 1);
+            if (way == 0) {
+                cairo_arc(cr, x, y, r, 0, 2 * std.math.pi);
+                cairo_fill(cr);
+            } else {
+                const c = pixelCircle(cr, x, y, r, sf).?;
+                try std.testing.expect(canvasCircle(gpa, &masks, cr, c, sf));
+            }
+            cairo_destroy(cr);
+            cairo_surface_flush(img);
+            surfs[way] = img;
+            const stride: usize = @intCast(cairo_image_surface_get_stride(img));
+            out[way] = cairo_image_surface_get_data(img).?[0 .. stride * @as(usize, @intCast(px))];
+        }
+        // ARGB32: compare the alpha bytes (coverage).
+        var i: usize = 3;
+        while (i < out[0].len) : (i += 4) {
+            const d = if (out[0][i] > out[1][i]) out[0][i] - out[1][i] else out[1][i] - out[0][i];
+            worst = @max(worst, d);
+            // Edge pixels (partly covered either way).
+            if ((out[0][i] != 0 and out[0][i] != 255) or (out[1][i] != 0 and out[1][i] != 255)) {
+                diff_sum += d;
+                edge_pixels += 1;
+            }
+        }
+        for (surfs) |img| cairo_surface_destroy(img);
+    }
+    // Edge pixels only: a position off by at most 1/32 px, and cairo's
+    // coverage steps (its rasterizer samples a coarse sub-pixel grid; at 2x
+    // the path's own flattening differs too). On average, a few levels.
+    try std.testing.expect(worst <= 100);
+    try std.testing.expect(diff_sum <= edge_pixels * 8);
 }
