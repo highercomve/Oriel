@@ -527,6 +527,10 @@ pub const Props = struct {
     ph: ?[]const u8 = null,
     dis: bool = false,
     pw: bool = false,
+    /// box-sizing: content-box (CSS's default) for a box with a size and
+    /// padding or a border: its sizes don't include them (Yoga's default
+    /// is border-box). render.js sends it only then.
+    cb: bool = false,
     /// A textarea's cols (20 when absent): its natural width.
     cols: ?f32 = null,
     options: ?[]const [2][]const u8 = null,
@@ -1652,7 +1656,7 @@ pub const Tree = struct {
         const word = if (in_row and !k.props.nowrap) textWordWidth(t, k) else null;
         if (word == null or grows) yg.YGNodeStyleSetMinWidth(k.yn, std.math.nan(f32));
         const w = word orelse return;
-        const min = horizontalInset(k) + w;
+        const min = ownInset(k) + w;
         if (grows) k.grow_min = min else yg.YGNodeStyleSetMinWidth(k.yn, min);
     }
 
@@ -1679,7 +1683,7 @@ pub const Tree = struct {
             k.wrap_basis = false;
             return;
         }
-        yg.YGNodeStyleSetFlexBasis(k.yn, horizontalInset(k) + out[0]);
+        yg.YGNodeStyleSetFlexBasis(k.yn, ownInset(k) + out[0]);
         k.wrap_basis = true;
     }
 
@@ -1715,6 +1719,12 @@ pub const Tree = struct {
     /// Yoga's min-width is the border box: a node's own horizontal padding
     /// and border come on top of its content's (a padded label otherwise
     /// wraps its last letters).
+    /// What a size set on `k` itself adds for its padding and border:
+    /// none when its sizes are content-box (Yoga adds them then).
+    fn ownInset(k: *const Node) f32 {
+        return if (k.props.cb) 0 else horizontalInset(k);
+    }
+
     fn horizontalInset(k: *const Node) f32 {
         var inset: f32 = 0;
         if (k.props.pad) |pd| inset += (dimPx(pd[1]) orelse 0) + (dimPx(pd[3]) orelse 0);
@@ -1735,7 +1745,7 @@ pub const Tree = struct {
         const label = k.kids.items[0];
         if (label.kind != .text or label.props.nowrap or k.props.nowrap) return;
         const w = textWordWidth(t, label) orelse return;
-        k.grow_min = horizontalInset(k) + horizontalInset(label) + w;
+        k.grow_min = ownInset(k) + horizontalInset(label) + w;
     }
 
     /// The growing box a text node is the only child of (growBoxMinWidth),
@@ -2227,6 +2237,12 @@ fn applyYogaStyle(y: yg.YGNodeRef, p: Props) void {
     yg.YGNodeStyleSetOverflow(y, if (p.scroll or p.scrollx) yg.YGOverflowScroll else if (p.clip) yg.YGOverflowHidden else yg.YGOverflowVisible);
     if (p.ar) |ar| yg.YGNodeStyleSetAspectRatio(y, ar) else yg.YGNodeStyleSetAspectRatio(y, std.math.nan(f32));
     yg.YGNodeStyleSetDisplay(y, yg.YGDisplayFlex);
+    // Border-box is Yoga's default: set only what differs from it, or was.
+    if (p.cb) {
+        yg.YGNodeStyleSetBoxSizing(y, yg.YGBoxSizingContentBox);
+    } else if (yg.YGNodeStyleGetBoxSizing(y) != yg.YGBoxSizingBorderBox) {
+        yg.YGNodeStyleSetBoxSizing(y, yg.YGBoxSizingBorderBox);
+    }
 }
 
 fn dimPx(v: Dim) ?f32 {
@@ -3379,4 +3395,35 @@ test "a program committed from Zig: found by the element's id, kept over the pag
     );
     try std.testing.expect(t.canvasByEid("game") == null);
     try std.testing.expect(!t.commitCanvas(2, &.{}, &arena));
+}
+
+test "box-sizing: content-box sizes leave out the padding and border (cb)" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    // Breakout's pause card: min-width 220px, padding 18px 22px, a 1px
+    // border: 266 wide in a browser. A width as a percentage of the content
+    // box too; border-box as it was.
+    try t.apply(
+        \\[["c",1,"view"],["p",1,{"fd":"column","ai":"flex-start","w":400}],
+        \\["c",2,"view"],["p",2,{"minw":220,"pad":[18,22,18,22],"bw":[1,1,1,1],"cb":true}],
+        \\["c",3,"view"],["p",3,{"w":"50%","pad":[0,10,0,10],"cb":true}],
+        \\["c",6,"view"],["p",6,{"w":"50%","pad":[0,10,0,10]}],
+        \\["c",4,"view"],["p",4,{"w":100,"ar":2,"pad":[5,5,5,5],"cb":true}],
+        \\["c",5,"view"],["p",5,{"w":100,"pad":[5,5,5,5]}],
+        \\["k",1,[2,3,4,5,6]],["r",1]]
+    );
+    t.width = 800;
+    t.height = 600;
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 266), t.get(2).?.frame.w);
+    // The root is the window's width (800): 50% is 400, plus the padding.
+    try std.testing.expectEqual(@as(f32, 420), t.get(3).?.frame.w);
+    try std.testing.expectEqual(@as(f32, 400), t.get(6).?.frame.w);
+    try std.testing.expectEqual(@as(f32, 110), t.get(4).?.frame.w);
+    // Yoga keeps the aspect ratio of the border box (110x55); CSS, of the
+    // content box (110x60): a ratio with padding is a little off.
+    try std.testing.expectEqual(@as(f32, 55), t.get(4).?.frame.h);
+    try std.testing.expectEqual(@as(f32, 100), t.get(5).?.frame.w);
 }

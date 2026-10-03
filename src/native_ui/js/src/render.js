@@ -1997,21 +1997,49 @@ function memoized(cs, key, make) {
 // Layout and drawing properties of a box (a copy: the caller adds to it).
 function boxProps(cs, display, fs, el) {
   const button = el?.localName === "button";
-  const key = `b${display}|${fs}|${button}`;
+  const bb = borderBoxByDefault(el);
+  const key = `b${display}|${fs}|${button}|${bb}`;
   const d = derived.get(cs);
   if (d?.parts) {
-    const p = { ...memoized(d.base, key, () => makeBoxProps(d.base, display, fs, button)) };
+    const p = { ...memoized(d.base, key, () => makeBoxProps(d.base, display, fs, button, bb)) };
     for (const part of d.parts) {
       const [keys, make] = PARTS[part];
       for (const k of keys) delete p[k];
       make(cs, fs, p);
     }
+    // An inline width or height: the box may have a size now.
+    contentBox(cs, p, bb);
     return p;
   }
-  return { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button)) };
+  return { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button, bb)) };
 }
 
-function makeBoxProps(cs, display, fs, button) {
+// A width, height or basis that sets a size (px or a percentage; not auto).
+function isSize(v) {
+  return typeof v === "number" || (typeof v === "string" && v.endsWith("%"));
+}
+
+// Form controls are border-box unless the page says otherwise, as in
+// browsers' own style sheets (a rule in UA_CSS would cost every element's
+// matching a little).
+const BORDER_BOX_INPUTS = new Set(["button", "submit", "reset", "checkbox", "radio", "color", "file", "range", "image"]);
+function borderBoxByDefault(el) {
+  const t = el?.localName;
+  if (t === "button" || t === "select" || t === "meter" || t === "progress") return true;
+  return t === "input" && BORDER_BOX_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
+}
+
+// box-sizing: content-box (CSS's default; Yoga's is border-box): sizes
+// without the padding and border. Said (cb) only where it matters, a box
+// with a size and padding or a border.
+const SIZE_KEYS = ["w", "h", "minw", "minh", "maxw", "maxh", "fb"];
+function contentBox(cs, p, borderBox) {
+  const sizing = cs["box-sizing"] ?? (borderBox ? "border-box" : "content-box");
+  if ((p.pad || p.bw) && sizing !== "border-box" && SIZE_KEYS.some((k) => isSize(p[k]))) p.cb = true;
+  else delete p.cb;
+}
+
+function makeBoxProps(cs, display, fs, button, borderBox) {
   const p = {};
   if (display === "inline-flex") display = "flex";
   if (display === "inline-grid") display = "grid";
@@ -2065,6 +2093,7 @@ function makeBoxProps(cs, display, fs, button) {
     const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
     if (style) p.bs = style;
   }
+  contentBox(cs, p, borderBox);
   const rg = num(cs["row-gap"], fs), cg = num(cs["column-gap"], fs);
   if (typeof rg === "number" && rg) p.rg = rg;
   if (typeof cg === "number" && cg) p.cg = cg;
