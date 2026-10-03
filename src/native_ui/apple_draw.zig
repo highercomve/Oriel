@@ -31,6 +31,7 @@ const CFTypeRef = *anyopaque;
 const CFStringRef = *anyopaque;
 const CFAttributedStringRef = *anyopaque;
 const CTFontRef = *anyopaque;
+const Radii = tree_mod.Radii;
 const CGColorSpaceRef = *anyopaque;
 const CGColorRef = *anyopaque;
 const CGGradientRef = *anyopaque;
@@ -801,7 +802,7 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
     }
     defer if (alpha < 1) CGContextEndTransparencyLayer(cg);
 
-    const r = n.radius();
+    const r = n.radiusXY();
     if (p.sh) |sh| shadow(cg, f, r, sh);
     if (p.bg) |bg| {
         // The color under the gradient (CSS layers).
@@ -828,7 +829,7 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
     const round_clip = n.roundClips();
     if (round_clip) {
         CGContextSaveGState(cg);
-        const pb = n.paddingClip();
+        const pb = n.paddingClipXY();
         roundRect(cg, pb.rect, pb.radii);
         CGContextClip(cg);
     }
@@ -843,30 +844,27 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
 /// CSS outline: a border of its own around the box grown by offset +
 /// width, its corners the box's radius grown as much (square ones stay
 /// square), solid, dashed or dotted (as gtk.zig's).
-fn paintOutline(cg: CGContextRef, f: Rect, r: [4]f32, ol: tree_mod.Outline) void {
+fn paintOutline(cg: CGContextRef, f: Rect, r: Radii, ol: tree_mod.Outline) void {
     if (!(ol.w > 0) or !(ol.c[3] > 0)) return;
     const grow = ol.o + ol.w;
     const box: Rect = .{ .x = f.x - grow, .y = f.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
     if (box.w <= 2 * ol.w or box.h <= 2 * ol.w) return;
-    var radii: [4]f32 = undefined;
-    for (r, 0..) |x, i| radii[i] = @max(if (x > 0) @max(0, x + grow) else 0, ol.r);
+    var radii = r.grown(grow);
+    for (&radii.x) |*x| x.* = @max(x.*, ol.r);
+    for (&radii.y) |*y| y.* = @max(y.*, ol.r);
     CGContextSaveGState(cg);
     defer CGContextRestoreGState(cg);
     // A focus ring's halo: 1px around it, its corners 1px rounder.
     if (ol.h) |h| if (h[3] > 0) {
         const halo: Rect = .{ .x = box.x - 1, .y = box.y - 1, .w = box.w + 2, .h = box.h + 2 };
-        var hr: [4]f32 = undefined;
-        for (radii, 0..) |x, i| hr[i] = if (x > 0) x + 1 else 0;
-        border(cg, halo, hr, .{ 1, 1, 1, 1 }, .{ h, h, h, h }, null);
+        border(cg, halo, radii.grown(1), .{ 1, 1, 1, 1 }, .{ h, h, h, h }, null);
     };
     if (ol.s == null) {
         // Solid: the ring between the outer edge and the inner one, so a
         // corner rounder outside than the width (a focus ring's) stays round.
         const inner: Rect = .{ .x = box.x + ol.w, .y = box.y + ol.w, .w = box.w - 2 * ol.w, .h = box.h - 2 * ol.w };
-        var ri: [4]f32 = undefined;
-        for (radii, 0..) |x, i| ri[i] = @max(0, x - ol.w);
         roundRect(cg, box, radii);
-        addRoundRect(cg, inner, ri);
+        addRoundRect(cg, inner, radii.grown(-ol.w));
         setFill(cg, ol.c);
         CGContextEOFillPath(cg);
         return;
@@ -909,30 +907,18 @@ fn setStroke(cg: CGContextRef, c: tree_mod.Color) void {
 
 /// A rectangle with per-corner radii (top-left, top-right, bottom-right,
 /// bottom-left) as the current path.
-fn roundRect(cg: CGContextRef, f: Rect, r: [4]f32) void {
+fn roundRect(cg: CGContextRef, f: Rect, r: Radii) void {
     CGContextBeginPath(cg);
     addRoundRect(cg, f, r);
 }
 
 /// roundRect's shape added to the current path.
-fn addRoundRect(cg: CGContextRef, f: Rect, r: [4]f32) void {
-    if (r[0] == 0 and r[1] == 0 and r[2] == 0 and r[3] == 0) {
-        CGContextAddRect(cg, rect(f));
-        return;
-    }
-    const x: CGFloat = f.x;
-    const y: CGFloat = f.y;
-    const w: CGFloat = f.w;
-    const h: CGFloat = f.h;
-    CGContextMoveToPoint(cg, x + r[0], y);
-    CGContextAddArcToPoint(cg, x + w, y, x + w, y + h, r[1]);
-    CGContextAddArcToPoint(cg, x + w, y + h, x, y + h, r[2]);
-    CGContextAddArcToPoint(cg, x, y + h, x, y, r[3]);
-    CGContextAddArcToPoint(cg, x, y, x + w, y, r[0]);
-    CGContextClosePath(cg);
+fn addRoundRect(cg: CGContextRef, f: Rect, r: Radii) void {
+    if (r.square()) return CGContextAddRect(cg, rect(f));
+    addEllipseRect(cg, f, r.x, r.y);
 }
 
-fn gradient(cg: CGContextRef, f: Rect, r: [4]f32, g: tree_mod.Gradient) void {
+fn gradient(cg: CGContextRef, f: Rect, r: Radii, g: tree_mod.Gradient) void {
     if (g.stops.len == 0) return;
     const space = srgb() orelse return;
     var comps: [64 * 4]CGFloat = undefined;
@@ -1003,18 +989,21 @@ fn dashedSide(cg: CGContextRef, sd: Rect, across: bool, w: f32, style: tree_mod.
     }
 }
 
-fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color, bs: ?tree_mod.BorderStyle) void {
+fn border(cg: CGContextRef, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color, bs: ?tree_mod.BorderStyle) void {
     const colors = bc orelse return;
     const uniform = bw[0] == bw[1] and bw[1] == bw[2] and bw[2] == bw[3];
     // Square corners, dashed or dotted: each side's dashes fitted to it
     // (the per-side path below); one pattern around the rectangle would
     // leave a side a stray dash.
-    const square = r[0] <= 0 and r[1] <= 0 and r[2] <= 0 and r[3] <= 0;
+    const square = r.square();
+    // Rounded and solid: the ring between the border box and the padding
+    // box, filled (as WebKit draws it; a stroke along the middle notches
+    // where two quarter ellipses meet), each color in its wedge.
+    if (!square and bs == null) return roundedSides(cg, f, r, bw, colors);
     if (uniform and bw[0] > 0 and !(bs != null and square)) {
         const half = bw[0] / 2;
         const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
-        var ri = r;
-        for (&ri) |*x| x.* = @max(0, x.* - half);
+        const ri = r.grown(-half);
         CGContextSaveGState(cg);
         defer CGContextRestoreGState(cg);
         CGContextSetLineWidth(cg, bw[0]);
@@ -1053,9 +1042,6 @@ fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Col
         }
         return;
     }
-    // Rounded, sides of different widths, solid: the ring between the
-    // border box and the padding box.
-    if (!square and bs == null) return roundedSides(cg, f, r, bw, colors);
     // Per side (straight edges).
     const sides = [4]Rect{
         .{ .x = f.x, .y = f.y, .w = f.w, .h = bw[0] },
@@ -1077,8 +1063,7 @@ fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Col
 /// side's color clipped to its wedge: the lines from its outer corners
 /// through its inner corners (where browsers join two colors), up to the
 /// middle.
-fn roundedSides(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, colors: [4]tree_mod.Color) void {
-    const radii = tree_mod.Radii.circle(r);
+fn roundedSides(cg: CGContextRef, f: Rect, radii: Radii, bw: [4]f32, colors: [4]tree_mod.Color) void {
     const pb = tree_mod.paddingBoxXY(f, radii, bw);
     const inner = pb.rect;
     // One color where every drawn side has the same: one fill.
@@ -1158,22 +1143,26 @@ fn addEllipseRect(cg: CGContextRef, f: Rect, rx: [4]f32, ry: [4]f32) void {
     const y = f.y;
     const w = f.w;
     const h = f.h;
+    // (No line where two corners meet: a zero-length one would show as a
+    // dot where a stroke joins it.)
     CGContextMoveToPoint(cg, x + ax[0], y);
-    CGContextAddLineToPoint(cg, x + w - ax[1], y);
+    if (x + ax[0] < x + w - ax[1]) CGContextAddLineToPoint(cg, x + w - ax[1], y);
     if (ax[1] > 0) CGContextAddCurveToPoint(cg, x + w - ax[1] + k * ax[1], y, x + w, y + ay[1] - k * ay[1], x + w, y + ay[1]);
-    CGContextAddLineToPoint(cg, x + w, y + h - ay[2]);
+    if (y + ay[1] < y + h - ay[2]) CGContextAddLineToPoint(cg, x + w, y + h - ay[2]);
     if (ax[2] > 0) CGContextAddCurveToPoint(cg, x + w, y + h - ay[2] + k * ay[2], x + w - ax[2] + k * ax[2], y + h, x + w - ax[2], y + h);
-    CGContextAddLineToPoint(cg, x + ax[3], y + h);
+    if (x + ax[3] < x + w - ax[2]) CGContextAddLineToPoint(cg, x + ax[3], y + h);
     if (ax[3] > 0) CGContextAddCurveToPoint(cg, x + ax[3] - k * ax[3], y + h, x, y + h - ay[3] + k * ay[3], x, y + h - ay[3]);
-    CGContextAddLineToPoint(cg, x, y + ay[0]);
+    if (y + ay[0] < y + h - ay[3]) CGContextAddLineToPoint(cg, x, y + ay[0]);
     if (ax[0] > 0) CGContextAddCurveToPoint(cg, x, y + ay[0] - k * ay[0], x + ax[0] - k * ax[0], y, x + ax[0], y);
     CGContextClosePath(cg);
 }
 
-fn shadow(cg: CGContextRef, f: Rect, r: [4]f32, sh: tree_mod.Shadow) void {
+fn shadow(cg: CGContextRef, f: Rect, r: Radii, sh: tree_mod.Shadow) void {
     // As on GTK: stacked layers from half the blur inside the box to half
     // outside, so the edge gets half the color and it fades over the blur.
-    const steps: usize = 8;
+    // No blur: one layer, the whole color (stacked ones would all fall on
+    // the same edge and add up to less).
+    const steps: usize = if (sh.blur > 0) 8 else 1;
     var i: usize = 0;
     while (i < steps) : (i += 1) {
         const t: f32 = (@as(f32, @floatFromInt(i)) + 0.5) / @as(f32, @floatFromInt(steps));
@@ -1181,7 +1170,8 @@ fn shadow(cg: CGContextRef, f: Rect, r: [4]f32, sh: tree_mod.Shadow) void {
         const box: Rect = .{ .x = f.x + sh.x - grow, .y = f.y + sh.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
         if (box.w <= 0 or box.h <= 0) continue;
         var rr = r;
-        for (&rr) |*x| x.* = @max(0, x.* + grow);
+        for (&rr.x) |*x| x.* = @max(0, x.* + grow);
+        for (&rr.y) |*y| y.* = @max(0, y.* + grow);
         roundRect(cg, box, rr);
         var c = sh.color;
         c[3] = sh.color[3] / @as(f32, @floatFromInt(steps));
@@ -1267,7 +1257,7 @@ fn paintControl(cg: CGContextRef, n: *const Node) void {
             if (is_radio) {
                 CGContextAddArc(g, ox + sz / 2, oy + sz / 2, sz / 2 - 0.5, 0, 2 * std.math.pi, 0);
                 CGContextClosePath(g);
-            } else roundRect(g, .{ .x = ox + 0.5, .y = oy + 0.5, .w = sz - 1, .h = sz - 1 }, .{ 2.5, 2.5, 2.5, 2.5 });
+            } else roundRect(g, .{ .x = ox + 0.5, .y = oy + 0.5, .w = sz - 1, .h = sz - 1 }, Radii.circle(.{ 2.5, 2.5, 2.5, 2.5 }));
         }
     }.f;
     outline(cg, radio, x, y, size);
@@ -1745,7 +1735,7 @@ fn paintCanvas(comptime font_class: [:0]const u8, cg: CGContextRef, scale: f64, 
     defer CGImageRelease(img);
     CGContextSaveGState(cg);
     defer CGContextRestoreGState(cg);
-    roundRect(cg, f, n.radius());
+    roundRect(cg, f, n.radiusXY());
     CGContextClip(cg);
     CGContextTranslateCTM(cg, f.x, f.y + f.h);
     CGContextScaleCTM(cg, 1, -1);
