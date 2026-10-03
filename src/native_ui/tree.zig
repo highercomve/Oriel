@@ -1259,7 +1259,20 @@ pub const Tree = struct {
     fn create(t: *Tree, id: i64, kind: Kind) !void {
         if (t.nodes.get(id) != null) t.destroy(id);
         const n = try t.node_pool.create(t.gpa);
-        n.* = .{ .id = id, .kind = kind, .yn = yg.YGNodeNewWithConfig(t.config), .arena = .init(t.gpa), .tree = t };
+        // From a blank copied whole, then the fields: assigning the literal
+        // zero-fills the node (1.3 KB) with compiler-rt's memset, a byte at
+        // a time (a third of stamping a row); memcpy moves words.
+        const blank = comptime blk: {
+            var b: Node = .{ .id = 0, .kind = .view, .yn = undefined, .arena = undefined, .tree = undefined };
+            b.arena = .{ .child_allocator = undefined, .state = .{} };
+            break :blk b;
+        };
+        @memcpy(std.mem.asBytes(n), std.mem.asBytes(&blank));
+        n.id = id;
+        n.kind = kind;
+        n.yn = yg.YGNodeNewWithConfig(t.config);
+        n.arena = .init(t.gpa);
+        n.tree = t;
         errdefer {
             yg.YGNodeFree(n.yn);
             n.arena.deinit();
@@ -1351,9 +1364,8 @@ pub const Tree = struct {
         t.dropTextOverride(n);
         // Keep a little for the next props, not an old <img> data: URI's megabytes.
         _ = n.arena.reset(.{ .retain_with_limit = 64 * 1024 });
-        // The old props' slices are gone with the reset: if copying the new
-        // ones fails, the node must not keep pointing into the arena.
-        n.props = .{};
+        // The old props' slices are gone with the reset: the new ones (or
+        // none, if they don't parse) replace them before anything reads them.
         const a = n.arena.allocator();
         // Parsed from the ops' JSON into the node's arena (the ops arena goes
         // away): std.json copies strings and slices; Dims hold no pointers.
