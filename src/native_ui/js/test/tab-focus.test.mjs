@@ -183,5 +183,11 @@ assert.match(lastOps, /"t":"link"[^}]*"ol":\{"w":2/, "the focused link's run has
   assert.equal(vm.runInContext("JSON.stringify([devicePixelRatio, matchMedia('(min-resolution: 2dppx)').matches, document.documentElement.clientWidth, document.documentElement.clientHeight])", c), "[2,true,400,600]");
   const one = bootPage(`<html><body></body></html>`, { os: "linux" }).ctx;
   assert.equal(vm.runInContext("devicePixelRatio", one), 1);
+  // A window moved to a screen with another scale: "dpr", and a resolution
+  // query's listeners hear the change (once; the same scale again is nothing).
+  vm.runInContext("globalThis.heard = []; matchMedia('(min-resolution: 2dppx)').addEventListener('change', (e) => heard.push(e.matches));", one);
+  one.__oriel.event(0, "dpr", 2);
+  one.__oriel.event(0, "dpr", 2);
+  assert.equal(vm.runInContext("JSON.stringify([devicePixelRatio, heard])", one), "[2,[true]]");
 }
 console.log("tab focus: ok");
