@@ -5607,34 +5607,37 @@ textarea { font-family: -webkit-small-control, system-ui; }
     return focusRing(cs, el, { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button, bb)) });
   }
   var FOCUS_RING = { w: 2, c: [0, 103, 244, 1], o: 1 };
-  var CHROMIUM_RING = (o, r) => ({ w: 2, c: [16, 16, 16, 1], o, h: [255, 255, 255, 1], r });
-  var CHROMIUM_RINGS = { control: CHROMIUM_RING(-2, 3), check: CHROMIUM_RING(1, 3), link: CHROMIUM_RING(0, 4), box: CHROMIUM_RING(-1, 4) };
-  var chromiumRing = false;
+  var chromiumRings = (c) => {
+    const ring = (o, r) => ({ w: 2, c, o, h: [255, 255, 255, 1], r });
+    return { control: ring(-2, 3), check: ring(1, 3), link: ring(0, 4), box: ring(-1, 4) };
+  };
+  var RINGS_BY_OS = { windows: chromiumRings([16, 16, 16, 1]), android: chromiumRings([229, 151, 0, 1]) };
+  var chromiumRing = null;
   function setFocusRingOS(os) {
-    chromiumRing = os === "windows" || os === "android";
+    chromiumRing = RINGS_BY_OS[os] || null;
   }
   var focusVisible = null;
   function setFocusVisible(el) {
     focusVisible = el;
   }
   function focusRing(cs, el, p) {
-    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = chromiumRing ? chromiumRingFor(el) : FOCUS_RING;
+    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = chromiumRing ? chromiumRingFor(chromiumRing, el) : FOCUS_RING;
     return p;
   }
-  function chromiumRingFor(el) {
+  function chromiumRingFor(rings, el) {
     switch (el.localName) {
       case "input": {
         const type = (el.getAttribute("type") || "").toLowerCase();
-        return type === "checkbox" || type === "radio" ? CHROMIUM_RINGS.check : CHROMIUM_RINGS.control;
+        return type === "checkbox" || type === "radio" ? rings.check : rings.control;
       }
       case "button":
       case "select":
       case "textarea":
-        return CHROMIUM_RINGS.control;
+        return rings.control;
       case "a":
-        return el.hasAttribute("href") ? CHROMIUM_RINGS.link : CHROMIUM_RINGS.box;
+        return el.hasAttribute("href") ? rings.link : rings.box;
       default:
-        return CHROMIUM_RINGS.box;
+        return rings.box;
     }
   }
   function outlinePart(cs, fs, p) {

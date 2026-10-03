@@ -2263,31 +2263,35 @@ function boxProps(cs, display, fs, el) {
 // main.js says which element matches :focus-visible (one at most).
 // The ring is the platform's browser's (setFocusRingOS, at boot):
 // - WebKit's (macOS, iOS, WebKitGTK): blue, 2px, 1px out.
-// - Chromium's (WebView2, Android's WebView): 2px #101010 inside a 1px
+// - Chromium's (WebView2, Android's WebView): a 2px band inside a 1px
 //   white halo (h), its corners at least r round (its outer edge's). As
 //   WebView2 draws it: over a control's own border (o -2, r 3), 1px over a
 //   box's edge (o -1, r 4), just outside a link (o 0) and 1px off a
-//   checkbox or radio (o 1, r 3).
+//   checkbox or radio (o 1, r 3). The band is #101010 on Windows and
+//   Android's orange #E59700 there (both measured).
 const FOCUS_RING = { w: 2, c: [0, 103, 244, 1], o: 1 };
-const CHROMIUM_RING = (o, r) => ({ w: 2, c: [16, 16, 16, 1], o, h: [255, 255, 255, 1], r });
-const CHROMIUM_RINGS = { control: CHROMIUM_RING(-2, 3), check: CHROMIUM_RING(1, 3), link: CHROMIUM_RING(0, 4), box: CHROMIUM_RING(-1, 4) };
-let chromiumRing = false;
-export function setFocusRingOS(os) { chromiumRing = os === "windows" || os === "android"; }
+const chromiumRings = (c) => {
+  const ring = (o, r) => ({ w: 2, c, o, h: [255, 255, 255, 1], r });
+  return { control: ring(-2, 3), check: ring(1, 3), link: ring(0, 4), box: ring(-1, 4) };
+};
+const RINGS_BY_OS = { windows: chromiumRings([16, 16, 16, 1]), android: chromiumRings([229, 151, 0, 1]) };
+let chromiumRing = null;
+export function setFocusRingOS(os) { chromiumRing = RINGS_BY_OS[os] || null; }
 let focusVisible = null;
 export function setFocusVisible(el) { focusVisible = el; }
 function focusRing(cs, el, p) {
-  if (el === focusVisible && el && !p.ol && cs["outline-style"] === undefined && cs["outline-width"] === undefined) p.ol = chromiumRing ? chromiumRingFor(el) : FOCUS_RING;
+  if (el === focusVisible && el && !p.ol && cs["outline-style"] === undefined && cs["outline-width"] === undefined) p.ol = chromiumRing ? chromiumRingFor(chromiumRing, el) : FOCUS_RING;
   return p;
 }
-function chromiumRingFor(el) {
+function chromiumRingFor(rings, el) {
   switch (el.localName) {
     case "input": {
       const type = (el.getAttribute("type") || "").toLowerCase();
-      return type === "checkbox" || type === "radio" ? CHROMIUM_RINGS.check : CHROMIUM_RINGS.control;
+      return type === "checkbox" || type === "radio" ? rings.check : rings.control;
     }
-    case "button": case "select": case "textarea": return CHROMIUM_RINGS.control;
-    case "a": return el.hasAttribute("href") ? CHROMIUM_RINGS.link : CHROMIUM_RINGS.box;
-    default: return CHROMIUM_RINGS.box;
+    case "button": case "select": case "textarea": return rings.control;
+    case "a": return el.hasAttribute("href") ? rings.link : rings.box;
+    default: return rings.box;
   }
 }
 
