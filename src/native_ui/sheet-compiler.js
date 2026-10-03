@@ -176,6 +176,15 @@
         return box(prop, (side, n) => `${n}-${side}`);
       case "inset":
         return box(prop, (side) => side);
+      // Horizontal writing: inline is left and right, block top and bottom.
+      case "inset-inline":
+      case "inset-block": {
+        const [a, b = a] = splitSpaces(value);
+        const [s, e] = prop === "inset-inline" ? ["left", "right"] : ["top", "bottom"];
+        out[s] = a;
+        out[e] = b;
+        return;
+      }
       case "border-width":
         return box(prop, (side) => `border-${side}-width`);
       case "border-style":
@@ -234,6 +243,12 @@
           out["flex-basis"] = "0%";
           return;
         }
+        if (v.length === 1) {
+          out["flex-grow"] = "1";
+          out["flex-shrink"] = "1";
+          out["flex-basis"] = v[0];
+          return;
+        }
         out["flex-grow"] = v[0] ?? "0";
         if (v.length === 2) {
           if (/^[\d.]+$/.test(v[1])) out["flex-shrink"] = v[1];
@@ -261,6 +276,18 @@
         const [a, j = a] = splitSpaces(value);
         out["align-items"] = a;
         out["justify-items"] = j;
+        return;
+      }
+      case "place-content": {
+        const [a, j = a] = splitSpaces(value);
+        out["align-content"] = a;
+        out["justify-content"] = j;
+        return;
+      }
+      case "place-self": {
+        const [a, j = a] = splitSpaces(value);
+        out["align-self"] = a;
+        out["justify-self"] = j;
         return;
       }
       case "background":

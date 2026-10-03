@@ -441,6 +441,9 @@ export function installNativeDom(g, document) {
         cloneContents() { return document.createDocumentFragment(); }, toString() { return ""; } };
     },
     createTreeWalker(root, whatToShow = 0xffffffff, filter = null) { return new TreeWalker(root, whatToShow, filter); },
+    // One document here: a node from a template's content is already ours.
+    importNode(node, deep = false) { return node.cloneNode(deep); },
+    adoptNode(node) { node.parentNode?.removeChild(node); return node; },
     title: {
       get() { return this.querySelector("title")?.textContent ?? ""; },
       set(v) { let t = this.querySelector("title"); if (!t) { t = this.createElement("title"); this.head?.append(t); } t.textContent = v; },

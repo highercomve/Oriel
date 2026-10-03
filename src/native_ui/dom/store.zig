@@ -1276,3 +1276,39 @@ test "a tree whose last wrapper goes during an observer call is freed by collect
     s.deinit();
     try t.expect(f.balanced());
 }
+
+test "the parser makes comments of <!> and <?…?>, and skips a doctype" {
+    const t = std.testing;
+    const html = @import("html.zig");
+    var f = Fake.new(t.allocator);
+    defer f.deinit();
+    var s = try Store.init(t.allocator, f.js(), 200, 201);
+    f.store = &s;
+    const M = struct {
+        var next_key: i64 = 5000;
+        fn string(c: *anyopaque, _: [*]const u8, _: usize, out: *JsVal) bool {
+            next_key += 1;
+            out.* = Fake.of(c).make(next_key);
+            return true;
+        }
+        // Interned, as QuickJS's: the same name, the same atom.
+        fn atom(c: *anyopaque, bytes: [*]const u8, len: usize) u32 {
+            const a: u32 = 9000 + @as(u32, @truncate(std.hash.Wyhash.hash(0, bytes[0..len]) % 100_000));
+            Fake.dupAtom(c, a);
+            return a;
+        }
+    };
+    var p: html.Parser = .{ .store = &s, .gpa = t.allocator, .make = .{ .ctx = &f, .string = M.string, .atom = M.atom, .free = Fake.free, .freeAtom = Fake.freeAtom } };
+    defer p.deinit();
+    const frag = try s.createFragment();
+    try p.parse(frag, "<!doctype html><b>a</b> <!><?x y?>");
+    var kinds: [8]Kind = undefined;
+    var n: usize = 0;
+    var c = s.get(frag).first;
+    while (c != none and n < kinds.len) : (c = s.get(c).next) {
+        kinds[n] = s.get(c).kind;
+        n += 1;
+    }
+    try t.expectEqualSlices(Kind, &.{ .element, .text, .comment, .comment }, kinds[0..n]);
+    s.deinit();
+}
