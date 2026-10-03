@@ -3659,6 +3659,10 @@ code, kbd, samp, pre, tt { font-family: monospace; }
    textarea in monospace. */
 button, input, select { font-family: -webkit-small-control, system-ui; }
 textarea { font-family: monospace; }
+/* As both browsers' UA sheets (their font shorthand): controls don't
+   inherit the page's line-height or spacing (a 16px button under
+   font: 18px/145% is a normal line high, not 26px). */
+button, input, select, textarea { line-height: normal; letter-spacing: normal; word-spacing: normal; text-transform: none; text-indent: 0; }
 pre { white-space: pre; }
 a { color: #0000ee; text-decoration: underline; cursor: pointer; }
 button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
