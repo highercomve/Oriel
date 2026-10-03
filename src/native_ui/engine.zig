@@ -87,6 +87,9 @@ pub const Backend = struct {
     props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
     /// A single text run changed through the direct bridge.
     text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
+    /// Natural text sizes for many nodes in one go (Tree.measure_texts):
+    /// text updates are then measured together before the layout.
+    measure_texts: ?*const fn (ctx: *anyopaque, nodes: []const *Node) void = null,
     /// A leaf style was defined, and a node made from one (Tree.on_leaf_style,
     /// Tree.on_create; optional: backends that mirror props).
     leaf_style: ?*const fn (ctx: *anyopaque, id: i64, json: []const u8) void = null,
@@ -172,6 +175,7 @@ pub const Engine = struct {
         e.tree.on_remove = backend.removed;
         e.tree.on_props = backend.props;
         e.tree.on_text = backend.text;
+        e.tree.measure_texts = backend.measure_texts;
         e.tree.on_leaf_style = backend.leaf_style;
         e.tree.on_create = backend.leaf;
         e.tree.on_paint = backend.paint;
@@ -334,7 +338,7 @@ pub const Engine = struct {
         _ = oqjs_eval(e.js, render, render.len, "<render>");
         e.in_call -= 1;
         oqjs_run_jobs(e.js);
-        if (e.tree.dirty) {
+        if (e.tree.needsLayout()) {
             const t0 = prof.now();
             e.tree.layout();
             prof.report("layout {d:.2}", .{prof.now() - t0});
@@ -479,7 +483,7 @@ export fn oriel_nui_leaf(p: *anyopaque, id: f64, style_id: f64, text: [*]const u
 
 export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {
     const e = engineOf(p);
-    if (e.tree.dirty) {
+    if (e.tree.needsLayout()) {
         const t0 = prof.now();
         e.tree.layout();
         prof.report("flayout {d:.2}", .{prof.now() - t0});
@@ -492,7 +496,7 @@ export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {
 
 export fn oriel_nui_focus(p: *anyopaque, id: f64) void {
     const e = engineOf(p);
-    if (e.tree.dirty) {
+    if (e.tree.needsLayout()) {
         e.tree.layout();
         e.relaid = true;
     }
@@ -502,7 +506,7 @@ export fn oriel_nui_focus(p: *anyopaque, id: f64) void {
 
 export fn oriel_nui_scroll_into_view(p: *anyopaque, id: f64, block: [*]const u8, len: usize) void {
     const e = engineOf(p);
-    if (e.tree.dirty) {
+    if (e.tree.needsLayout()) {
         e.tree.layout();
         e.relaid = true;
     }
@@ -513,7 +517,7 @@ export fn oriel_nui_scroll_into_view(p: *anyopaque, id: f64, block: [*]const u8,
 
 export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64) void {
     const e = engineOf(p);
-    if (e.tree.dirty) e.tree.layout();
+    if (e.tree.needsLayout()) e.tree.layout();
     const n = e.tree.get(Tree.idOf(id)) orelse return;
     n.scroll_y = std.math.clamp(@as(f32, @floatCast(y)), 0, @max(0, n.content_h - n.frame.h));
     e.tree.replace();

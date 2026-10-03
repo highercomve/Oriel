@@ -1227,7 +1227,7 @@ fn c16(v: f32) u16 {
 
 fn draw(_: *Widget, cr: *cairo_t, _: c_int, _: c_int, data: ?*anyopaque) callconv(.c) void {
     const s = surfaceOf(data);
-    if (s.engine.tree.dirty) s.engine.tree.layout();
+    if (s.engine.tree.needsLayout()) s.engine.tree.layout();
     const root = s.engine.tree.root orelse return;
     // Under the page: white, as in a browser (the root's background, if
     // any, is painted over it); nothing in a transparent window.
