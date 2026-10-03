@@ -51,6 +51,7 @@ const draw_text_color_font: c.D2D1_DRAW_TEXT_OPTIONS = 4;
 const EM_SETCUEBANNER: c.UINT = 0x1501;
 
 const class_name = std.unicode.utf8ToUtf16LeStringLiteral("OrielNativeCanvas");
+const clip_class_name = std.unicode.utf8ToUtf16LeStringLiteral("OrielFieldClip");
 const prop_old_proc = std.unicode.utf8ToUtf16LeStringLiteral("OrielNuiProc");
 const prop_node = std.unicode.utf8ToUtf16LeStringLiteral("OrielNuiNode");
 
@@ -65,14 +66,20 @@ pub const Invoke = *const fn (ctx: ?*anyopaque, engine: *Engine, call_id: u32, c
 
 const Field = struct {
     hwnd: c.HWND,
+    /// The control's parent: a window as large as the part of it the page
+    /// shows (inside its scroll containers, not under boxes painted after
+    /// it), the control placed in it at its offset. Not a window region:
+    /// the canvas's Direct2D present leaves out a child's whole rectangle,
+    /// so a region's cut-away part kept the control's old pixels.
+    clip: c.HWND,
     kind: tree_mod.Kind,
     font: ?c.HFONT = null,
     font_px: c_int = 0,
     brush: ?c.HBRUSH = null,
     bg: c.COLORREF = 0xFFFFFF,
     fg: c.COLORREF = 0,
-    /// A window region limits it to its scroll containers' visible part.
-    clipped: bool = false,
+    /// A select's theme is the dark one (its background is dark).
+    dark_theme: bool = false,
     /// A textarea's placeholder (owned; the cue banner is single-line only),
     /// painted by fieldProc while the field is empty.
     ph: ?[:0]u16 = null,
@@ -385,6 +392,11 @@ fn initShared() !void {
             .hIconSm = null,
         };
         if (c.RegisterClassExW(&wc) == 0 and c.GetLastError() != 1410) return error.RegisterClassFailed; // 1410: already registered
+        var clip_wc = wc;
+        clip_wc.lpfnWndProc = clipProc;
+        clip_wc.style = 0;
+        clip_wc.lpszClassName = clip_class_name;
+        if (c.RegisterClassExW(&clip_wc) == 0 and c.GetLastError() != 1410) return error.RegisterClassFailed;
         class_registered = true;
     }
 }
@@ -716,8 +728,9 @@ fn freeField(s: *Surface, f: *Field) void {
     if (f.ph) |ph| s.gpa.free(ph);
     f.ph = null;
     _ = c.RemovePropW(f.hwnd, prop_node);
-    _ = c.ShowWindow(f.hwnd, c.SW_HIDE);
-    s.doomed.append(s.gpa, .{ .hwnd = f.hwnd, .font = f.font, .brush = f.brush }) catch {
+    _ = c.ShowWindow(f.clip, c.SW_HIDE);
+    // The clip window goes with its control in it.
+    s.doomed.append(s.gpa, .{ .hwnd = f.clip, .font = f.font, .brush = f.brush }) catch {
         // No room to defer it: hidden and orphaned rather than destroyed
         // under the control's feet (the canvas's DestroyWindow takes it).
         f.font = null;
@@ -780,35 +793,35 @@ const PaintOrder = struct {
 /// Fields are child windows, always above the canvas: limit each to what
 /// the page shows of it, inside its scroll containers and not under boxes
 /// painted after it (a footer over scrolled content). Null: all of it.
-fn fieldRegion(s: *Surface, po: *const PaintOrder, n: *Node, r: Rect) c.HRGN {
-    const vis = n.clip.intersect(r);
+fn fieldVisible(po: *const PaintOrder, n: *Node, r: Rect) Rect {
+    var vis = n.clip.intersect(r);
     const order = po.fields.get(n.id) orelse 0;
-    var covered = false;
     for (po.occluders.items) |o| {
-        if (o.order <= order) continue;
-        if (o.rect.intersect(vis).w > 0 and o.rect.intersect(vis).h > 0) covered = true;
-    }
-    if (!covered and vis.w >= r.w - 0.5 and vis.h >= r.h - 0.5) return null;
-    const local = struct {
-        fn rgn(sc: f32, base: Rect, a: Rect) c.HRGN {
-            return c.CreateRectRgn(
-                px((a.x - base.x) * sc),
-                px((a.y - base.y) * sc),
-                px((a.x + a.w - base.x) * sc),
-                px((a.y + a.h - base.y) * sc),
-            );
-        }
-    }.rgn;
-    const region = local(s.scale, r, vis);
-    if (covered) for (po.occluders.items) |o| {
         if (o.order <= order) continue;
         const cut = o.rect.intersect(vis);
         if (cut.w <= 0 or cut.h <= 0) continue;
-        const hole = local(s.scale, r, cut);
-        _ = c.CombineRgn(region, region, hole, c.RGN_DIFF);
-        _ = c.DeleteObject(hole);
-    };
-    return region;
+        // What's left beside the box: the largest of the parts above,
+        // below, left and right of it (a clip window is a rectangle).
+        const parts = [4]Rect{
+            .{ .x = vis.x, .y = vis.y, .w = vis.w, .h = cut.y - vis.y },
+            .{ .x = vis.x, .y = cut.y + cut.h, .w = vis.w, .h = vis.y + vis.h - (cut.y + cut.h) },
+            .{ .x = vis.x, .y = vis.y, .w = cut.x - vis.x, .h = vis.h },
+            .{ .x = cut.x + cut.w, .y = vis.y, .w = vis.x + vis.w - (cut.x + cut.w), .h = vis.h },
+        };
+        var best: Rect = .{ .x = vis.x, .y = vis.y, .w = 0, .h = 0 };
+        for (parts) |p| if (p.w > 0 and p.h > 0 and p.w * p.h > best.w * best.h) {
+            best = p;
+        };
+        vis = best;
+    }
+    return vis;
+}
+
+/// A node's padding box: its frame inside its border.
+fn paddingBox(n: *Node) Rect {
+    const f = n.frame;
+    const bw = n.props.bw orelse return f;
+    return .{ .x = f.x + bw[3], .y = f.y + bw[0], .w = @max(0, f.w - bw[1] - bw[3]), .h = @max(0, f.h - bw[0] - bw[2]) };
 }
 
 fn syncFields(s: *Surface) void {
@@ -837,49 +850,68 @@ fn syncFields(s: *Surface) void {
         styleField(s, f, n);
         if (f.slider) setSliderRange(f.*, n);
         if (f.kind == .textarea) setPlaceholder(s, f, n.props.ph orelse "");
+        const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
+        if (!visible) {
+            _ = c.ShowWindow(f.clip, c.SW_HIDE);
+            continue;
+        }
         // At the node's content box, in the canvas's physical pixels. An
         // unstyled select at its border box: the combobox's own border is
         // its border (not a second one inside the CSS one).
-        const r = if (f.kind == .select and uaBorder(n)) n.frame else n.content();
-        const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
-        if (visible) {
-            const x = px(r.x * s.scale);
-            const y = px(r.y * s.scale);
-            const w: c_int = @max(1, px(r.w * s.scale));
-            var h: c_int = @max(1, px(r.h * s.scale));
-            const box_h = h;
-            if (f.kind == .select) {
-                // The selection field fits the box (else the combobox keeps
-                // its font's height and sticks out below it): a first guess
-                // at its border, corrected below by the closed height.
-                if (f.item_h == 0) setItemHeight(f, box_h - px(6 * s.scale));
-                // A combobox's height includes its drop-down list.
-                h += px(200 * s.scale);
-            }
-            _ = c.SetWindowPos(f.hwnd, null, x, y, w, h, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_SHOWWINDOW);
-            // What the control shows: its box, or, for a combobox that can't
-            // be as short as a styled box (its font's height at least), down
-            // to its closed height, so a box painted over that part (a sticky
-            // footer) or the scroll container's edge cuts it too.
-            var shown = r;
-            if (f.kind == .select) {
-                if (comboClosedHeight(f.hwnd)) |closed| {
-                    const off = box_h - closed;
-                    if (off != 0 and @abs(off) < @divTrunc(box_h, 2)) setItemHeight(f, f.item_h + off);
-                }
-                if (comboClosedHeight(f.hwnd)) |closed| {
-                    shown.h = @max(r.h, @as(f32, @floatFromInt(closed)) / s.scale);
-                }
-            }
-            const rgn = fieldRegion(s, &po, n, shown);
-            if (rgn != null or f.clipped) {
-                // The window owns the region from here on.
-                _ = c.SetWindowRgn(f.hwnd, rgn, c.TRUE);
-                f.clipped = rgn != null;
-            }
-        } else {
-            _ = c.ShowWindow(f.hwnd, c.SW_HIDE);
+        const ua_select = f.kind == .select and uaBorder(n);
+        const box = if (ua_select) n.frame else n.content();
+        // Where the control goes, and the part of the page it may show.
+        var place = box;
+        var limit = box;
+        const w: c_int = @max(1, px(box.w * s.scale));
+        var h: c_int = @max(1, px(box.h * s.scale));
+        const box_h = h;
+        if (f.kind == .select) {
+            // The selection field fits the box (else the combobox keeps
+            // its font's height and sticks out below it): a first guess
+            // at its border, corrected below by the closed height.
+            if (f.item_h == 0) setItemHeight(f, box_h - px(6 * s.scale));
+            // A combobox's height includes its drop-down list.
+            h += px(200 * s.scale);
         }
+        _ = c.SetWindowPos(f.hwnd, null, 0, 0, w, h, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_NOMOVE);
+        if (f.kind == .select) {
+            if (comboClosedHeight(f.hwnd)) |closed| {
+                const off = box_h - closed;
+                if (off != 0 and @abs(off) < @divTrunc(box_h, 2)) setItemHeight(f, f.item_h + off);
+            }
+            // A combobox can't be as short as a padded box's content (its
+            // font's height at least): centered in the padding box, as a
+            // browser centers a select's text, and cut at it.
+            if (comboClosedHeight(f.hwnd)) |closed| {
+                const ch = @as(f32, @floatFromInt(closed)) / s.scale;
+                if (!ua_select and ch > box.h) {
+                    const pb = paddingBox(n);
+                    limit = .{ .x = box.x, .y = pb.y, .w = box.w, .h = pb.h };
+                    place.y = pb.y + @max(0, (pb.h - ch) / 2);
+                } else limit.h = @max(box.h, ch);
+                // No more than the closed combobox covers: the clip window
+                // paints nothing of its own (and the canvas doesn't paint
+                // under it).
+                limit = limit.intersect(.{ .x = place.x, .y = place.y, .w = box.w, .h = ch });
+            }
+        }
+        const vis = fieldVisible(&po, n, limit);
+        // In physical pixels, inside the control's own rectangle (rounding
+        // must not leave the clip window an edge the control doesn't cover).
+        const cx = px(place.x * s.scale);
+        const cy = px(place.y * s.scale);
+        const ch: c_int = if (f.kind == .select) comboClosedHeight(f.hwnd) orelse h else h;
+        const x0 = @max(cx, px(vis.x * s.scale));
+        const y0 = @max(cy, px(vis.y * s.scale));
+        const x1 = @min(cx + w, px((vis.x + vis.w) * s.scale));
+        const y1 = @min(cy + ch, px((vis.y + vis.h) * s.scale));
+        if (x1 <= x0 or y1 <= y0) {
+            _ = c.ShowWindow(f.clip, c.SW_HIDE);
+            continue;
+        }
+        _ = c.SetWindowPos(f.clip, null, x0, y0, x1 - x0, y1 - y0, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_SHOWWINDOW);
+        _ = c.SetWindowPos(f.hwnd, null, cx - x0, cy - y0, 0, 0, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_NOSIZE | c.SWP_SHOWWINDOW);
     }
 }
 
@@ -932,19 +964,12 @@ fn makeSlider(s: *Surface, n: *Node) !Field {
     }
     const cls = std.unicode.utf8ToUtf16LeStringLiteral("msctls_trackbar32");
     const style: c.DWORD = c.WS_CHILD | c.WS_TABSTOP | c.TBS_HORZ | c.TBS_NOTICKS;
-    const hinst = c.GetModuleHandleW(null);
-    // Layered in a transparent window, as the other fields (makeField).
-    const hwnd: c.HWND = blk: {
-        if (s.transparent) {
-            if (c.CreateWindowExW(c.WS_EX_LAYERED, cls, null, style, 0, 0, 1, 1, s.hwnd, null, hinst, null)) |h| {
-                _ = c.SetLayeredWindowAttributes(h, 0, 255, c.LWA_ALPHA);
-                break :blk h;
-            }
-        }
-        break :blk c.CreateWindowExW(0, cls, null, style, 0, 0, 1, 1, s.hwnd, null, hinst, null) orelse return error.CreateWindowFailed;
-    };
+    // In its clip window, as the other fields (makeField).
+    const clip = try makeClip(s);
+    errdefer _ = c.DestroyWindow(clip);
+    const hwnd = c.CreateWindowExW(0, cls, null, style, 0, 0, 1, 1, clip, null, c.GetModuleHandleW(null), null) orelse return error.CreateWindowFailed;
     _ = c.SetPropW(hwnd, prop_node, @ptrFromInt(@as(usize, @intCast(n.id))));
-    const f: Field = .{ .hwnd = hwnd, .kind = n.kind, .slider = true };
+    const f: Field = .{ .hwnd = hwnd, .clip = clip, .kind = n.kind, .slider = true };
     setSliderRange(f, n);
     return f;
 }
@@ -1033,20 +1058,9 @@ fn makeField(s: *Surface, n: *Node) !Field {
         else => unreachable,
     };
     const cls = if (n.kind == .select) std.unicode.utf8ToUtf16LeStringLiteral("COMBOBOX") else class;
-    const hinst = c.GetModuleHandleW(null);
-    // In a transparent window GDI's pixels come out with zero alpha (the
-    // control would show what's behind the window): there a field is a
-    // layered child, composed opaque by DWM (Windows 8+).
-    const hwnd: c.HWND = blk: {
-        if (s.transparent) {
-            if (c.CreateWindowExW(c.WS_EX_LAYERED, cls, null, style, 0, 0, 1, 1, s.hwnd, null, hinst, null)) |h| {
-                _ = c.SetLayeredWindowAttributes(h, 0, 255, c.LWA_ALPHA);
-                break :blk h;
-            }
-        }
-        break :blk c.CreateWindowExW(0, cls, null, style, 0, 0, 1, 1, s.hwnd, null, hinst, null) orelse return error.CreateWindowFailed;
-    };
-    errdefer _ = c.DestroyWindow(hwnd);
+    const clip = try makeClip(s);
+    errdefer _ = c.DestroyWindow(clip);
+    const hwnd = c.CreateWindowExW(0, cls, null, style, 0, 0, 1, 1, clip, null, c.GetModuleHandleW(null), null) orelse return error.CreateWindowFailed;
     _ = c.SetPropW(hwnd, prop_node, @ptrFromInt(@as(usize, @intCast(n.id))));
     switch (n.kind) {
         .input, .textarea => {
@@ -1066,7 +1080,28 @@ fn makeField(s: *Surface, n: *Node) !Field {
         },
         else => {},
     }
-    return .{ .hwnd = hwnd, .kind = n.kind };
+    return .{ .hwnd = hwnd, .clip = clip, .kind = n.kind };
+}
+
+/// A field's clip window (Field.clip), hidden until placed. In a transparent
+/// window GDI's pixels come out with zero alpha (the control would show
+/// what's behind the window): there it's a layered child, composed opaque
+/// by DWM (Windows 8+), with the control drawn into it.
+fn makeClip(s: *Surface) !c.HWND {
+    const hinst = c.GetModuleHandleW(null);
+    const style: c.DWORD = c.WS_CHILD | c.WS_CLIPCHILDREN;
+    const clip: c.HWND = blk: {
+        if (s.transparent) {
+            if (c.CreateWindowExW(c.WS_EX_LAYERED | c.WS_EX_CONTROLPARENT, clip_class_name, null, style, 0, 0, 1, 1, s.hwnd, null, hinst, null)) |h| {
+                _ = c.SetLayeredWindowAttributes(h, 0, 255, c.LWA_ALPHA);
+                break :blk h;
+            }
+        }
+        break :blk c.CreateWindowExW(c.WS_EX_CONTROLPARENT, clip_class_name, null, style, 0, 0, 1, 1, s.hwnd, null, hinst, null) orelse return error.CreateWindowFailed;
+    };
+    // The surface, as the canvas has it: a control finds it from its parent.
+    _ = c.SetWindowLongPtrW(clip, c.GWLP_USERDATA, c.GetWindowLongPtrW(s.hwnd, c.GWLP_USERDATA));
+    return clip;
 }
 
 fn setFieldValue(s: *Surface, f: *Field, n: *Node, v: []const u8) void {
@@ -1135,6 +1170,38 @@ fn styleField(s: *Surface, f: *Field, n: *Node) void {
         f.brush = c.CreateSolidBrush(bg);
         _ = c.InvalidateRect(f.hwnd, null, c.TRUE);
     }
+    // A closed combobox draws with its theme, not WM_CTLCOLOR*: on a dark
+    // background, the dark one (the file dialogs'), else a white box on a
+    // dark page.
+    if (f.kind == .select) {
+        const dark = luminance(bg) < 0.5;
+        if (dark != f.dark_theme) {
+            f.dark_theme = dark;
+            setWindowTheme(f.hwnd, if (dark) std.unicode.utf8ToUtf16LeStringLiteral("DarkMode_CFD") else null);
+        }
+    }
+}
+
+fn luminance(col: c.COLORREF) f32 {
+    const r: f32 = @floatFromInt(col & 0xFF);
+    const g: f32 = @floatFromInt((col >> 8) & 0xFF);
+    const b: f32 = @floatFromInt((col >> 16) & 0xFF);
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+const SetWindowThemeFn = *const fn (c.HWND, ?[*:0]const u16, ?[*:0]const u16) callconv(.winapi) c.HRESULT;
+var set_window_theme: ?SetWindowThemeFn = null;
+var set_window_theme_loaded = false;
+
+/// uxtheme's SetWindowTheme, loaded on first use (no import library).
+fn setWindowTheme(hwnd: c.HWND, app: ?[*:0]const u16) void {
+    if (!set_window_theme_loaded) {
+        set_window_theme_loaded = true;
+        if (c.LoadLibraryW(std.unicode.utf8ToUtf16LeStringLiteral("uxtheme.dll"))) |lib| {
+            if (c.GetProcAddress(lib, "SetWindowTheme")) |p| set_window_theme = @ptrCast(p);
+        }
+    }
+    if (set_window_theme) |f| _ = f(hwnd, app, null);
 }
 
 fn fieldOf(s: *Surface, hwnd: c.HWND) ?struct { field: *Field, node: *Node } {
@@ -1341,6 +1408,19 @@ fn onWheel(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM, sideways: bool) void
     while (target) |t| {
         if (s.engine.scrollBy(t, dy)) return;
         target = s.engine.tree.scroller(t.parent);
+    }
+}
+
+/// A field's clip window (Field.clip): what its control tells its parent
+/// goes to the canvas; it paints nothing itself (the control covers it).
+fn clipProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
+    switch (msg) {
+        c.WM_COMMAND, c.WM_HSCROLL, c.WM_NOTIFY, c.WM_CTLCOLOREDIT, c.WM_CTLCOLORLISTBOX, c.WM_CTLCOLORSTATIC => {
+            const canvas = c.GetParent(hwnd) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            return c.SendMessageW(canvas, msg, wparam, lparam);
+        },
+        c.WM_ERASEBKGND => return 1,
+        else => return c.DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
 
