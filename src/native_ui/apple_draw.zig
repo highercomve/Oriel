@@ -75,6 +75,8 @@ extern fn CGContextSetRGBFillColor(c: CGContextRef, r: CGFloat, g: CGFloat, b: C
 extern fn CGContextSetRGBStrokeColor(c: CGContextRef, r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat) void;
 extern fn CGContextSetLineWidth(c: CGContextRef, w: CGFloat) void;
 extern fn CGContextSetLineCap(c: CGContextRef, cap: c_int) void;
+extern fn CGContextSetLineDash(c: CGContextRef, phase: CGFloat, lengths: ?[*]const CGFloat, count: usize) void;
+extern fn CGContextFillEllipseInRect(c: CGContextRef, r: CGRect) void;
 extern fn CGContextSetLineJoin(c: CGContextRef, join: c_int) void;
 extern fn CGContextTranslateCTM(c: CGContextRef, x: CGFloat, y: CGFloat) void;
 extern fn CGContextScaleCTM(c: CGContextRef, x: CGFloat, y: CGFloat) void;
@@ -600,7 +602,7 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
         }
         if (bg.gradient) |g| gradient(cg, f, r, g);
     }
-    if (p.bw) |bw| border(cg, f, r, bw, p.bc);
+    if (p.bw) |bw| border(cg, f, r, bw, p.bc, p.bs);
     switch (n.kind) {
         .text => paintText(font_class, cg, n),
         .icon => paintIcon(cg, n),
@@ -681,15 +683,56 @@ fn gradient(cg: CGContextRef, f: Rect, r: [4]f32, g: tree_mod.Gradient) void {
     CGContextDrawLinearGradient(cg, grad, .{ .x = cx - dx * len / 2, .y = cy - dy * len / 2 }, .{ .x = cx + dx * len / 2, .y = cy + dy * len / 2 }, kCGGradientDrawsBeforeAndAfter);
 }
 
-fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) void {
+/// A dashed or dotted stroke `w` wide, as Chromium draws a rounded one:
+/// dashes 3 widths long with 3-width gaps, square dots a width apart for
+/// thin borders, round ones from 3 px.
+fn setBorderDash(cg: CGContextRef, bs: ?tree_mod.BorderStyle, w: f32) void {
+    const style = bs orelse return;
+    const d: CGFloat = w;
+    const dashes: [2]CGFloat = switch (style) {
+        .dashed => .{ 3 * d, 3 * d },
+        .dotted => if (w < 3) .{ d, d } else .{ 0, 2 * d },
+    };
+    CGContextSetLineCap(cg, if (style == .dotted and w >= 3) 1 else 0);
+    CGContextSetLineDash(cg, 0, &dashes, dashes.len);
+}
+
+/// One straight side dashed or dotted as Chromium draws it: a dash (3
+/// widths; a dot: 1) at each end and whole ones between, the gaps
+/// stretched to fit. Dots from 3 px are round.
+fn dashedSide(cg: CGContextRef, sd: Rect, across: bool, w: f32, style: tree_mod.BorderStyle) void {
+    const len = if (across) sd.w else sd.h;
+    if (len <= 0 or w <= 0) return;
+    const dash = if (style == .dashed) 3 * w else w;
+    const n = @max(1, @round((len + dash) / (2 * dash)));
+    const gap = if (n > 1) (len - n * dash) / (n - 1) else 0;
+    var k: f32 = 0;
+    while (k < n) : (k += 1) {
+        const at = k * (dash + gap);
+        const d = if (n == 1) len else dash;
+        const rc: Rect = if (across) .{ .x = sd.x + at, .y = sd.y, .w = d, .h = sd.h } else .{ .x = sd.x, .y = sd.y + at, .w = sd.w, .h = d };
+        if (style == .dotted and w >= 3) {
+            CGContextFillEllipseInRect(cg, rect(.{ .x = rc.x + rc.w / 2 - w / 2, .y = rc.y + rc.h / 2 - w / 2, .w = w, .h = w }));
+        } else CGContextFillRect(cg, rect(rc));
+    }
+}
+
+fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color, bs: ?tree_mod.BorderStyle) void {
     const colors = bc orelse return;
     const uniform = bw[0] == bw[1] and bw[1] == bw[2] and bw[2] == bw[3];
-    if (uniform and bw[0] > 0) {
+    // Square corners, dashed or dotted: each side's dashes fitted to it
+    // (the per-side path below); one pattern around the rectangle would
+    // leave a side a stray dash.
+    const square = r[0] <= 0 and r[1] <= 0 and r[2] <= 0 and r[3] <= 0;
+    if (uniform and bw[0] > 0 and !(bs != null and square)) {
         const half = bw[0] / 2;
         const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
         var ri = r;
         for (&ri) |*x| x.* = @max(0, x.* - half);
+        CGContextSaveGState(cg);
+        defer CGContextRestoreGState(cg);
         CGContextSetLineWidth(cg, bw[0]);
+        setBorderDash(cg, bs, bw[0]);
         const same = for (colors[1..]) |c| {
             if (!std.mem.eql(f32, &c, &colors[0])) break false;
         } else true;
@@ -734,7 +777,7 @@ fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Col
     for (sides, 0..) |sd, i| {
         if (bw[i] <= 0 or colors[i][3] <= 0) continue;
         setFill(cg, colors[i]);
-        CGContextFillRect(cg, rect(sd));
+        if (bs) |style| dashedSide(cg, sd, i == 0 or i == 2, bw[i], style) else CGContextFillRect(cg, rect(sd));
     }
 }
 
