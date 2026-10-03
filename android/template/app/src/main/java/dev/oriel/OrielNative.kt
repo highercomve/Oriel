@@ -724,6 +724,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     /** Device pixels per CSS px (Nui.cssScale): the display's density, a
      *  little less where its width in DIPs isn't whole. */
     private var density = resources.displayMetrics.density
+    /** The display's density as the page last heard it (devicePixelRatio). */
+    private var dpr = resources.displayMetrics.density
     private var updating = false
     /** The page prevented the last Enter (its key up is consumed too). */
     private var enterTaken = false
@@ -999,6 +1001,13 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        // Another display (a ChromeOS window moved): the page's devicePixelRatio.
+        val scale = resources.displayMetrics.density
+        if (scale != dpr) {
+            dpr = scale
+            if (width > 0) density = Nui.cssScale(width, scale)
+            NuiNative.event(window, 0, "dpr".bytes(), scale.toString().bytes())
+        }
         val d = Nui.isDark(newConfig)
         if (d != dark) {
             dark = d
