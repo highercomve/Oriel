@@ -637,9 +637,12 @@ export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[8]f64) c_int {
         e.relaid = true;
     }
     const n = e.tree.get(Tree.idOf(id)) orelse return 0;
-    // The scrollbar's room last (clientWidth leaves it out).
-    // Then its scroll offsets (scrollTop, scrollLeft).
-    out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(n.content_h, n.frame.h), n.gutter, n.scroll_y, n.scroll_x };
+    // [x, y, w, h, scrollHeight (the padding box's content: no borders),
+    // the scrollbar's room (clientWidth leaves it out), scrollTop, scrollLeft].
+    const yg = tree_mod.yg;
+    const bt = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeTop);
+    const bb = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeBottom);
+    out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(0, @max(n.content_h, n.frame.h) - bt - bb), n.gutter, n.scroll_y, n.scroll_x };
     return 1;
 }
 
