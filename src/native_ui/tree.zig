@@ -192,6 +192,103 @@ pub fn parseCanvasCmds(a: std.mem.Allocator, v: std.json.Value) ![]CanvasCmd {
     return out.items;
 }
 
+/// Arguments per op code of a program as numbers (decodeCanvas; canvas.js's
+/// CANVAS_ARGS, index = code).
+const canvas_args = [_]u8{ 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 1, 2, 2, 4, 6, 6, 4, 4, 4, 3, 3, 5, 5, 1, 1, 1, 1, 1, 1, 4, 5, 7, 6 };
+
+/// A canvas program as numbers (host.canvas: canvas.js encodeProgram):
+/// each op its code and its fixed arguments, strings by index into
+/// `strs`, paints as kind (0 color, 1 gradient) and four numbers. The same
+/// commands as parseCanvasCmds makes from the JSON form; an op with an
+/// argument that isn't finite is ignored, a malformed tail ends it.
+pub fn decodeCanvas(a: std.mem.Allocator, nums: []const f64, strs: []const []const u8) ![]CanvasCmd {
+    var out: std.ArrayList(CanvasCmd) = .empty;
+    errdefer out.deinit(a);
+    var i: usize = 0;
+    while (i < nums.len) {
+        const code_f = nums[i];
+        if (!(code_f >= 1 and code_f < canvas_args.len)) break;
+        const code: usize = @intFromFloat(code_f);
+        const argc = canvas_args[code];
+        if (i + 1 + argc > nums.len) break;
+        const v = nums[i + 1 ..][0..argc];
+        i += 1 + argc;
+        const finite = for (v) |x| {
+            if (!std.math.isFinite(@as(f32, @floatCast(x)))) break false;
+        } else true;
+        if (!finite) continue;
+        const f = struct {
+            fn at(args: []const f64, k: usize) f32 {
+                return @floatCast(args[k]);
+            }
+        }.at;
+        const str = struct {
+            fn at(alloc: std.mem.Allocator, list: []const []const u8, x: f64) !?[]const u8 {
+                if (!(x >= 0 and x < @as(f64, @floatFromInt(list.len)))) return null;
+                return try alloc.dupe(u8, list[@intFromFloat(x)]);
+            }
+        }.at;
+        const paint = struct {
+            fn at(args: []const f64) ?CanvasPaint {
+                if (args[0] == 1) return .{ .grad = @intCast(@max(0, @min(sat(i64, args[1]), std.math.maxInt(u16)))) };
+                if (args[0] == 0) return .{ .color = .{ @floatCast(args[1]), @floatCast(args[2]), @floatCast(args[3]), @floatCast(args[4]) } };
+                return null;
+            }
+        }.at;
+        const word = struct {
+            fn at(x: f64, max: u8) ?u8 {
+                return if (x >= 0 and x <= @as(f64, @floatFromInt(max))) @intFromFloat(x) else null;
+            }
+        }.at;
+        const c: ?CanvasCmd = switch (code) {
+            1 => .save,
+            2 => .restore,
+            3 => .begin_path,
+            4 => .close_path,
+            5 => .stroke,
+            6 => .{ .fill = v[0] != 0 },
+            7 => .{ .clip = v[0] != 0 },
+            8 => .{ .translate = .{ f(v, 0), f(v, 1) } },
+            9 => .{ .scale = .{ f(v, 0), f(v, 1) } },
+            10 => .{ .rotate = f(v, 0) },
+            11 => .{ .move_to = .{ f(v, 0), f(v, 1) } },
+            12 => .{ .line_to = .{ f(v, 0), f(v, 1) } },
+            13 => .{ .rect = .{ f(v, 0), f(v, 1), f(v, 2), f(v, 3) } },
+            14 => .{ .arc = .{ .x = f(v, 0), .y = f(v, 1), .r = f(v, 2), .a0 = f(v, 3), .a1 = f(v, 4), .ccw = v[5] != 0 } },
+            15 => .{ .bezier_to = .{ f(v, 0), f(v, 1), f(v, 2), f(v, 3), f(v, 4), f(v, 5) } },
+            16 => .{ .fill_rect = .{ f(v, 0), f(v, 1), f(v, 2), f(v, 3) } },
+            17 => .{ .stroke_rect = .{ f(v, 0), f(v, 1), f(v, 2), f(v, 3) } },
+            18 => .{ .clear_rect = .{ f(v, 0), f(v, 1), f(v, 2), f(v, 3) } },
+            19, 20 => blk: {
+                const t = (try str(a, strs, v[0])) orelse break :blk null;
+                if (t.len == 0) break :blk null;
+                break :blk if (code == 19) .{ .fill_text = .{ .t = t, .x = f(v, 1), .y = f(v, 2) } } else .{ .stroke_text = .{ .t = t, .x = f(v, 1), .y = f(v, 2) } };
+            },
+            21, 22 => blk: {
+                const p = paint(v) orelse break :blk null;
+                break :blk if (code == 21) CanvasCmd{ .fill_style = p } else CanvasCmd{ .stroke_style = p };
+            },
+            23 => .{ .line_width = f(v, 0) },
+            24 => .{ .global_alpha = f(v, 0) },
+            25 => if (word(v[0], 2)) |w| CanvasCmd{ .line_cap = @intCast(w) } else null,
+            26 => if (word(v[0], 2)) |w| CanvasCmd{ .line_join = @intCast(w) } else null,
+            27 => if (word(v[0], 2)) |w| CanvasCmd{ .text_align = @intCast(w) } else null,
+            28 => if (word(v[0], 4)) |w| CanvasCmd{ .text_baseline = @intCast(w) } else null,
+            29 => .{ .font = .{ .italic = v[0] != 0, .weight = f(v, 1), .size = f(v, 2), .family = (try str(a, strs, v[3])) orelse "" } },
+            30 => .{ .linear_gradient = .{ .id = gradOf(v[0]), .x0 = f(v, 1), .y0 = f(v, 2), .x1 = f(v, 3), .y1 = f(v, 4) } },
+            31 => .{ .radial_gradient = .{ .id = gradOf(v[0]), .x0 = f(v, 1), .y0 = f(v, 2), .r0 = f(v, 3), .x1 = f(v, 4), .y1 = f(v, 5), .r1 = f(v, 6) } },
+            32 => .{ .color_stop = .{ .id = gradOf(v[0]), .off = f(v, 1), .c = .{ f(v, 2), f(v, 3), f(v, 4), f(v, 5) } } },
+            else => null,
+        };
+        if (c) |cc| try out.append(a, cc);
+    }
+    return out.items;
+}
+
+fn gradOf(x: f64) u16 {
+    return @intCast(@max(0, @min(sat(i64, x), std.math.maxInt(u16))));
+}
+
 /// lineCap, lineJoin, textAlign, textBaseline: the recorder sends the word
 /// ("round"); a number (its index) is taken too, up to `max`. Null: neither.
 fn wordAt(op: []const std.json.Value, words: []const []const u8, max: usize) ?usize {
@@ -575,8 +672,11 @@ pub const Node = struct {
     props: Props = .{},
     /// The value the page last set (fields); null once the backend took it.
     pending_value: ?[]const u8 = null,
-    /// For a canvas node: its drawing program, from props `cv`.
+    /// For a canvas node: its drawing program, from props `cv` (in the
+    /// props arena) or host.canvas (in canvas_arena, kept across props).
     canvas: ?[]const CanvasCmd = null,
+    canvas_from_props: bool = false,
+    canvas_arena: ?*std.heap.ArenaAllocator = null,
     /// After layout: the frame in window coordinates, the visible part.
     frame: Rect = .{},
     clip: Rect = .{},
@@ -677,6 +777,9 @@ pub const Tree = struct {
     /// animation's frame), its other props as they were: backends that
     /// mirror props (Android) send just those, without on_props' JSON.
     on_paint: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
+    /// A canvas node's program changed (host.canvas: setCanvas), not in its
+    /// props: backends that mirror props send node.canvas themselves.
+    on_canvas: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
 
     pub fn init(gpa: std.mem.Allocator, measure_ctx: *anyopaque, measure: Measure) Tree {
         const config = yg.YGConfigNew();
@@ -703,6 +806,10 @@ pub const Tree = struct {
 
     fn freeNode(t: *Tree, n: *Node) void {
         if (t.on_remove) |cb| cb(t.measure_ctx, n);
+        if (n.canvas_arena) |ar| {
+            ar.deinit();
+            t.gpa.destroy(ar);
+        }
         t.dropTextOverride(n);
         yg.YGNodeFree(n.yn);
         n.kids.deinit(t.gpa);
@@ -1030,6 +1137,26 @@ pub const Tree = struct {
         freeNode(t, n);
     }
 
+    /// A canvas node's program as numbers (host.canvas: decodeCanvas), kept
+    /// in an arena of its own, outside its props.
+    pub fn setCanvas(t: *Tree, id: i64, nums: []const f64, strs: []const []const u8) !bool {
+        const n = t.nodes.get(id) orelse return false;
+        const arena = n.canvas_arena orelse blk: {
+            const ar = try t.gpa.create(std.heap.ArenaAllocator);
+            ar.* = .init(t.gpa);
+            n.canvas_arena = ar;
+            break :blk ar;
+        };
+        n.canvas = null; // its old program is in the arena reset below
+        // A game redraws each frame: keep a frame's worth, not a peak's.
+        _ = arena.reset(.{ .retain_with_limit = 1 << 20 });
+        n.canvas = try decodeCanvas(arena.allocator(), nums, strs);
+        n.canvas_from_props = false;
+        t.paint_dirty = true;
+        if (t.on_canvas) |cb| cb(t.measure_ctx, n);
+        return true;
+    }
+
     /// tx, ty, sc, rot, op as given (null: unset): drawing and frames only
     /// (translate moves a box after layout), no Yoga style.
     fn setPaint(t: *Tree, n: *Node, v: []const std.json.Value) void {
@@ -1084,11 +1211,13 @@ pub const Tree = struct {
         } else if (unconsumed) |u| {
             n.pending_value = try a.dupe(u8, u);
         }
-        // A canvas's drawing program (its arena holds the strings).
-        n.canvas = null;
+        // A canvas's drawing program in its props (its arena holds the
+        // strings); one host.canvas sent stays (it isn't in the props).
+        if (n.canvas_from_props) n.canvas = null;
         if (value == .object) if (value.object.get("cv")) |cv| {
             if (parseCanvasCmds(a, cv)) |cmds| {
                 n.canvas = cmds;
+                n.canvas_from_props = true;
             } else |err| log.warn("node {d}: bad canvas ops ({s})", .{ n.id, @errorName(err) });
         };
         styleYoga(n);
@@ -2417,4 +2546,43 @@ test "the x op sets transform and opacity alone and moves the frame" {
     try std.testing.expectEqual(@as(f32, 6), n.frame.y);
     try t.apply("[[\"x\",1,null,null,null,null,null],[\"x\",99,1,1,1,1,1]]");
     try std.testing.expectEqual(@as(?f32, null), n.props.tx);
+}
+
+test "decodeCanvas makes the commands parseCanvasCmds makes from JSON" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const json = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\[["sv"],["sf",[255,0,0,0.5]],["ss",["g",3]],["lw",2],["lc","round"],["lj","bevel"],["ta","end"],["tb","middle"],
+        \\ ["fo",1,700,12,"serif"],["bp"],["ar",10,20,5,0,6.28,1],["fl",0],["tx","hi",1,2],["sx","yo",3,4],
+        \\ ["gl",3,0,0,10,0],["gs",3,0.5,1,2,3,1],["gr",4,1,2,3,4,5,6],["tl",1,2],["ts",2,2],["tr",0.5],
+        \\ ["mv",1,1],["ln",2,2],["rc",0,0,4,4],["bz",1,2,3,4,5,6],["cp"],["cl",1],["st"],["fr",0,0,1,1],
+        \\ ["sr",0,0,2,2],["cr",0,0,3,3],["ga",0.25],["rs"]]
+    , .{});
+    const strs = [_][]const u8{ "serif", "hi", "yo" };
+    const nums = [_]f64{
+        1, 21, 0, 255, 0, 0, 0.5, 22, 1, 3, 0, 0, 0, 23, 2, 25, 1, 26, 2, 27, 2, 28, 3,
+        29, 1, 700, 12, 0, 3, 14, 10, 20, 5, 0, 6.28, 1, 6, 0, 19, 1, 1, 2, 20, 2, 3, 4,
+        30, 3, 0, 0, 10, 0, 32, 3, 0.5, 1, 2, 3, 1, 31, 4, 1, 2, 3, 4, 5, 6, 8, 1, 2, 9, 2, 2, 10, 0.5,
+        11, 1, 1, 12, 2, 2, 13, 0, 0, 4, 4, 15, 1, 2, 3, 4, 5, 6, 4, 7, 1, 5, 16, 0, 0, 1, 1,
+        17, 0, 0, 2, 2, 18, 0, 0, 3, 3, 24, 0.25, 2,
+    };
+    const want = try parseCanvasCmds(a, json);
+    const got = try decodeCanvas(a, &nums, &strs);
+    try std.testing.expectEqual(want.len, got.len);
+    for (want, got) |w, g| {
+        try std.testing.expectEqual(std.meta.activeTag(w), std.meta.activeTag(g));
+        switch (w) {
+            .fill_text => |x| try std.testing.expectEqualStrings(x.t, g.fill_text.t),
+            .stroke_text => |x| try std.testing.expectEqualStrings(x.t, g.stroke_text.t),
+            .font => |x| {
+                try std.testing.expectEqualStrings(x.family, g.font.family);
+                try std.testing.expectEqual(x.size, g.font.size);
+            },
+            else => try std.testing.expect(std.meta.eql(w, g)),
+        }
+    }
+    // A non-finite argument skips that op; a malformed tail ends the program.
+    const bad = [_]f64{ 8, std.math.inf(f64), 1, 99, 1 };
+    try std.testing.expectEqual(@as(usize, 0), (try decodeCanvas(a, &bad, &.{})).len);
 }
