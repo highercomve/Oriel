@@ -355,8 +355,15 @@ box. As browsers draw it (box-decoration-break: slice):
   last, with the letter-spacing), the fragments from HitTestTextRange per
   line around the line's baseline, on whole pixels; checked against
   WebView2 (chips in a sentence, a wrapped one, bordered, margined and
-  rounded ones, on 1.6 lines, with letter-spacing). Android still draws
-  such runs plain.
+  rounded ones, on 1.6 lines, with letter-spacing). Android
+  (OrielNative.kt inlineBox): the room as a word joiner (U+2060: no
+  break) under a ReplacementSpan that wide before the box's first
+  character and after its last, the fragments from the StaticLayout's
+  selection path around each line's baseline; a run's own background (a
+  `<mark>`) is drawn the same way, over the content area, not as a
+  BackgroundColorSpan over the whole line box. Checked against the
+  Android WebView (a chip in a sentence, one that wraps, a bordered span,
+  `<mark>`, a padded highlight with margins that wraps).
 - An inline box at a line's start or end is a node in the line's row
   (Baselines): render.js takes its vertical padding and border off its
   top and bottom margins, so they overflow the line, as an inline box's
