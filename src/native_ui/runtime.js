@@ -14622,12 +14622,20 @@ b, strong, th { font-weight: bold; }
 i, em, cite, var, dfn { font-style: italic; }
 small { font-size: .83em; }
 code, kbd, samp, pre, tt { font-family: monospace; }
-button, input, textarea, select { font-family: system-ui; }
+/* Controls in the platform's control font, as Chromium (-webkit-small-control:
+   Arial on Windows; a backend that doesn't know the name takes system-ui), a
+   textarea in monospace. */
+button, input, select { font-family: -webkit-small-control, system-ui; }
+textarea { font-family: monospace; }
 pre { white-space: pre; }
 a { color: #0645ad; text-decoration: underline; cursor: pointer; }
 button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
 input, textarea, select { padding: 1px 2px; border: 2px inset #ccc; font-size: 13.33px; background: white; }
 textarea { white-space: pre-wrap; }
+/* As Chromium: a textarea has a 1px border and 2px padding, a select a 1px
+   border and none. */
+textarea { padding: 2px; border-width: 1px; }
+select { padding: 0; border-width: 1px; }
 hr { border-top: 1px solid #888; margin: .5em 0; }
 table { display: table; border-spacing: 2px; border-collapse: separate; }
 thead { display: table-header-group; } tbody { display: table-row-group; } tfoot { display: table-footer-group; }
@@ -15706,6 +15714,8 @@ col, colgroup { display: none; }
         if (tag === "textarea") {
           const cols = parseInt(el.getAttribute("cols") || "", 10);
           props.cols = cols > 0 ? Math.min(cols, 1e3) : 20;
+          const rows = parseInt(el.getAttribute("rows") || "", 10);
+          props.rows = rows > 0 ? Math.min(rows, 1e3) : 2;
         }
         if (type === "range") {
           const n2 = (a, d) => {
@@ -17295,6 +17305,34 @@ ${a.stack || ""}`;
     },
     set(v) {
       this.setAttribute("type", v);
+    },
+    configurable: true
+  });
+  var valueDesc = Object.getOwnPropertyDescriptor(inputProto, "value");
+  var rangeValue = (el, raw) => {
+    const num3 = (a, d) => {
+      const v2 = parseFloat(el.getAttribute(a));
+      return Number.isFinite(v2) ? v2 : d;
+    };
+    const min = num3("min", 0), max = Math.max(num3("max", 100), min);
+    const step = el.getAttribute("step")?.toLowerCase() === "any" ? 0 : num3("step", 1) > 0 ? num3("step", 1) : 1;
+    let v = raw.trim() === "" ? NaN : Number(raw);
+    if (!Number.isFinite(v)) v = min + (max - min) / 2;
+    v = Math.min(Math.max(v, min), max);
+    if (step) {
+      v = min + Math.round((v - min) / step) * step;
+      if (v > max) v -= step;
+      v = +v.toFixed(12);
+    }
+    return String(v);
+  };
+  Object.defineProperty(inputProto, "value", {
+    get() {
+      const raw = valueDesc.get.call(this);
+      return this.type === "range" ? rangeValue(this, raw ?? "") : raw;
+    },
+    set(v) {
+      valueDesc.set.call(this, v);
     },
     configurable: true
   });

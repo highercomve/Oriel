@@ -561,6 +561,8 @@ pub const Props = struct {
     cb: bool = false,
     /// A textarea's cols (20 when absent): its natural width.
     cols: ?f32 = null,
+    /// A textarea's rows (2 when absent): its natural height, in lines.
+    rows: ?f32 = null,
     options: ?[]const [2][]const u8 = null,
     /// <input type=range>: min, max, step (0: any).
     range: ?[3]f64 = null,
