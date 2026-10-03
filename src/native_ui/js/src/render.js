@@ -681,6 +681,10 @@ export class Renderer {
     const t1 = P && P();
     const nodes = new Map();
     const paintOps = this.host.paintOps ? [] : null;
+    // The x channel as numbers where the host takes them (host.paint,
+    // Tree.applyPaint): per node [1, id, 5, tx, ty, sc, rot, op], NaN unset.
+    const nums = paintOps && this.host.paint ? new Float64Array((changes.length / 6) * 8) : null;
+    let at = 0;
     for (let i = 0; i < changes.length; i += 6) {
       const fc = changes[i], saved = changes[i + 1], d = changes[i + 2], normal = changes[i + 3], important = changes[i + 4], old = changes[i + 5];
       // The new values in place: as inlineStyle() would make them (a rule's
@@ -703,15 +707,25 @@ export class Renderer {
         for (const k of PAINT_PROPS) delete p[k];
         return Object.assign(p, paint);
       };
+      // In place: the node as made is this element's own copy (renderNow),
+      // and so are the props as sent once this path has sent them (p null);
+      // before that they may be emit's, copied once.
       const r = fc.root;
-      r.props = part({ ...r.props });
-      const sent = part(old.props ? { ...old.props } : JSON.parse(old.p));
+      part(r.props);
+      const sent = part(old.p === null && old.props ? old.props : old.props ? { ...old.props } : JSON.parse(old.p));
       if (paintOps) {
         // Just the transform and opacity (the "x" op); the props kept
         // unencoded (a later diff encodes them if it needs to).
-        const n = (v) => (v === undefined ? "null" : v);
-        paintOps.push(`["x",${fc.id},${n(sent.tx)},${n(sent.ty)},${n(sent.sc)},${n(sent.rot)},${n(sent.op)}]`);
-        this.prev.set(fc.id, { kind: old.kind, p: null, props: sent, k: old.k });
+        if (nums) {
+          nums[at] = 1; nums[at + 1] = fc.id; nums[at + 2] = 5;
+          nums[at + 3] = sent.tx ?? NaN; nums[at + 4] = sent.ty ?? NaN; nums[at + 5] = sent.sc ?? NaN;
+          nums[at + 6] = sent.rot ?? NaN; nums[at + 7] = sent.op ?? NaN;
+          at += 8;
+        } else {
+          const n = (v) => (v === undefined ? "null" : v);
+          paintOps.push(`["x",${fc.id},${n(sent.tx)},${n(sent.ty)},${n(sent.sc)},${n(sent.rot)},${n(sent.op)}]`);
+        }
+        if (old.p === null && old.props === sent) {} else this.prev.set(fc.id, { kind: old.kind, p: null, props: sent, k: old.k });
       } else nodes.set(fc.id, { kind: r.kind, props: sent, kids: r.kids.slice() });
     }
     const t2 = P && P();
@@ -725,7 +739,8 @@ export class Renderer {
     if (paintOps) {
       this.applyMs = 0;
       const a = P && P();
-      if (paintOps.length) this.host.ops(`[${paintOps.join(",")}]`);
+      if (nums) { if (at) this.host.paint(at === nums.length ? nums : nums.subarray(0, at)); }
+      else if (paintOps.length) this.host.ops(`[${paintOps.join(",")}]`);
       if (P) this.applyMs = P() - a;
       this.schedule();
     } else {
@@ -734,7 +749,7 @@ export class Renderer {
       // starts from them without parsing it.
       for (const [id, n] of nodes) { const e = this.prev.get(id); if (e && e.p !== null) e.props = n.props; }
     }
-    if (P) this.host.log(1, `PROF boxes: ${paintOps ? paintOps.length : nodes.size} nodes, prepare ${(P() - t0 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t0).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
+    if (P) this.host.log(1, `PROF boxes: ${nums ? at / 8 : paintOps ? paintOps.length : nodes.size} nodes, prepare ${(P() - t0 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t0).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
     return true;
   }
 
@@ -2588,7 +2603,20 @@ function positionPart(cs, fs, p) {
 }
 
 // Transforms: translate moves the box; scale and rotate are drawn around its center.
+// translate(Xpx, Ypx) alone: what an animation loop writes each frame.
+const TRANSLATE_PX = /^translate\(\s*(-?(?:\d+\.?\d*|\.\d+))px\s*,\s*(-?(?:\d+\.?\d*|\.\d+))px\s*\)$/;
+
 function transformPart(cs, fs, p) {
+  const t = cs.transform;
+  if (t !== undefined && cs.translate === undefined && cs.scale === undefined && cs.rotate === undefined) {
+    const m = TRANSLATE_PX.exec(t);
+    if (m) {
+      const x = +m[1], y = +m[2];
+      if (x) p.tx = x;
+      if (y) p.ty = y;
+      return;
+    }
+  }
   const tr = transformOf(cs, fs);
   if (tr.tx) p.tx = tr.tx;
   if (tr.ty) p.ty = tr.ty;
