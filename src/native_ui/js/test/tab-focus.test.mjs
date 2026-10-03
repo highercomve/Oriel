@@ -150,4 +150,25 @@ for (const [os, band] of [["windows", [16, 16, 16, 1]], ["android", [229, 151, 0
   }
   assert.deepEqual(rings, { b: [4, -1, 5], a: [4, 1, 2], d: [4, 1, 2], k: [4, -1, 5], t: [4, -1, 2] });
 }
+// keypress after a keydown let through: for characters and Enter; WebKit's
+// also for Escape, and on macOS with Command; never with Control; a
+// prevented keypress uses the key.
+{
+  const page = `<html><body><input id="f"></body></html>`;
+  const press = (os) => {
+    const c = bootPage(page, { os }).ctx;
+    vm.runInContext(`globalThis.seen = [];
+      for (const t of ["keydown", "keypress", "keyup"]) document.addEventListener(t, (e) => seen.push(t + " " + e.key));
+      document.addEventListener("keypress", (e) => { if (e.key === "x") e.preventDefault(); });`, c);
+    const used = [];
+    for (const [k, m] of [["a", 0], ["Enter", 0], ["Escape", 0], ["a", 8], ["a", 2], ["ArrowLeft", 0], ["x", 0]]) used.push(c.__oriel.event(0, "key", [k, m, false]));
+    return { seen: vm.runInContext("seen.filter((s) => s.startsWith('keypress')).join(',')", c), used };
+  };
+  const mac = press("macos"), ios = press("ios"), win = press("windows");
+  assert.equal(mac.seen, "keypress a,keypress Enter,keypress Escape,keypress a,keypress x", "WebKit on macOS");
+  assert.equal(ios.seen, "keypress a,keypress Enter,keypress Escape,keypress x", "WebKit on iOS: not with Command");
+  assert.equal(win.seen, "keypress a,keypress Enter,keypress x", "Chromium");
+  assert.equal(mac.used.at(-1), true, "a prevented keypress uses the key");
+  assert.equal(mac.used[0], false);
+}
 console.log("tab focus: ok");
