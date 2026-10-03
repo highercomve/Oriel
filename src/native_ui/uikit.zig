@@ -75,6 +75,9 @@ pub const Surface = struct {
     /// its emptied pool slabs is due (trimPools, 2 s after a big drop).
     node_count: usize = 0,
     trim_queued: bool = false,
+    /// Scroll indicators showing (flash): redrawn each frame until then.
+    flash_queued: bool = false,
+    flash_until: i64 = 0,
     move: ?[2]f32 = null,
 };
 
@@ -1222,7 +1225,7 @@ fn drawRect(self: id, _: SEL, _: CGRect) callconv(.c) void {
     const cg = UIGraphicsGetCurrentContext() orelse return;
     // A canvas's bitmap is as many pixels per point as the screen has.
     const scale: f64 = s.view.msgSend(f64, "contentScaleFactor", .{});
-    draw.paint("UIFont", @ptrCast(cg), s.engine, s.transparent, .{ .ctx = s, .empty = fieldEmpty }, scale);
+    draw.paint("UIFont", @ptrCast(cg), s.engine, s.transparent, .{ .ctx = s, .empty = fieldEmpty, .dark = s.dark }, scale);
 }
 
 extern fn UIGraphicsGetCurrentContext() ?*anyopaque;
@@ -1327,6 +1330,32 @@ fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32) bool {
 /// A layout that dropped many nodes (a list that went): the tree's emptied
 /// pool slabs go back 2 s later, if the window is still there (a list
 /// rebuilt at once reuses them first).
+
+/// The user scrolled `n`: its overlay indicator shows (apple_draw
+/// paintIndicators), the view redrawn each frame until it has faded.
+fn flash(s: *Surface, n: *Node) void {
+    const now = draw.nowMs();
+    n.flashed_at = now;
+    s.flash_until = now + draw.indicator.hold_ms + draw.indicator.fade_ms;
+    if (s.flash_queued) return;
+    const t = std.heap.smp_allocator.create(u64) catch return;
+    t.* = s.token;
+    s.flash_queued = true;
+    apple.afterMain(16, t, onFlash);
+}
+
+fn onFlash(p: ?*anyopaque) callconv(.c) void {
+    const t: *u64 = @ptrCast(@alignCast(p.?));
+    const s = surfaces.get(t.*) orelse {
+        std.heap.smp_allocator.destroy(t);
+        return; // the window is gone
+    };
+    s.view.msgSend(void, "setNeedsDisplay", .{});
+    if (draw.nowMs() < s.flash_until + 16) return apple.afterMain(16, t, onFlash);
+    std.heap.smp_allocator.destroy(t);
+    s.flash_queued = false;
+}
+
 fn queueTrim(s: *Surface) void {
     const count = s.engine.tree.nodes.count();
     defer s.node_count = count;
@@ -1431,7 +1460,10 @@ fn onLongPress(self: id, _: SEL, recognizer: id) callconv(.c) void {
 fn scrollAtX(s: *Surface, at: [2]f32, dx: f32) bool {
     var target = s.engine.tree.scrollerX(s.engine.tree.hit(at[0], at[1]));
     while (target) |t| {
-        if (s.engine.scrollByX(t, dx)) return true;
+        if (s.engine.scrollByX(t, dx)) {
+            flash(s, t);
+            return true;
+        }
         target = s.engine.tree.scrollerX(t.parent);
     }
     return false;
@@ -1441,7 +1473,10 @@ fn scrollAtX(s: *Surface, at: [2]f32, dx: f32) bool {
 fn scrollAt(s: *Surface, at: [2]f32, dy: f32) bool {
     var target = s.engine.tree.scroller(s.engine.tree.hit(at[0], at[1]));
     while (target) |t| {
-        if (s.engine.scrollBy(t, dy)) return true;
+        if (s.engine.scrollBy(t, dy)) {
+            flash(s, t);
+            return true;
+        }
         target = s.engine.tree.scroller(t.parent);
     }
     return false;

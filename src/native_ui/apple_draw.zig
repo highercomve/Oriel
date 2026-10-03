@@ -1041,7 +1041,101 @@ fn cutBy(n: *Node, field: *Node, after: *bool, shown: *Rect) void {
 pub const Fields = struct {
     ctx: *anyopaque,
     empty: *const fn (ctx: *anyopaque, n: *Node) bool,
+    /// The window's color scheme (its scroll indicator's color).
+    dark: bool = false,
 };
+
+/// Overlay scroll indicators, as the platform's scroll views draw them
+/// (WKWebView's are theirs): how wide, how far in from the scroller's edges,
+/// the shortest a thumb gets, and how long one shows after a scroll before
+/// it fades out. iOS (measured in WKWebView): 3 pt, 3 pt in, black (white
+/// when dark) at half alpha. macOS: AppKit's overlay knob, 7 pt, 2 pt in.
+pub const Indicator = struct {
+    w: f32,
+    inset: f32,
+    min: f32,
+    hold_ms: i64,
+    fade_ms: i64,
+};
+pub const indicator: Indicator = if (ios)
+    .{ .w = 3, .inset = 3, .min = 36, .hold_ms = 500, .fade_ms = 300 }
+else
+    .{ .w = 7, .inset = 2, .min = 20, .hold_ms = 1000, .fade_ms = 250 };
+
+/// A scroller's indicators (vertical, and sideways when it scrolls so),
+/// over its content, while recently scrolled.
+fn paintIndicators(cg: CGContextRef, n: *const Node, window_dark: bool) void {
+    const age = nowMs() - n.flashed_at;
+    const ind = indicator;
+    if (age >= ind.hold_ms + ind.fade_ms or age < 0) return;
+    const alpha: f32 = if (age <= ind.hold_ms) 1 else 1 - @as(f32, @floatFromInt(age - ind.hold_ms)) / @as(f32, @floatFromInt(ind.fade_ms));
+    const dark = if (n.id == -1) window_dark else n.props.dk;
+    const c: tree_mod.Color = if (dark) .{ 255, 255, 255, 0.5 * alpha } else .{ 0, 0, 0, 0.5 * alpha };
+    const f = n.frame;
+    const r = Radii.circle(.{ ind.w / 2, ind.w / 2, ind.w / 2, ind.w / 2 });
+    if (n.content_h > f.h + 0.5) {
+        const track = f.h - 2 * ind.inset;
+        const len = @max(@min(ind.min, track), track * f.h / n.content_h);
+        const at = (track - len) * std.math.clamp(n.scroll_y / (n.content_h - f.h), 0, 1);
+        roundRect(cg, .{ .x = f.x + f.w - ind.inset - ind.w, .y = f.y + ind.inset + at, .w = ind.w, .h = len }, r);
+        setFill(cg, c);
+        CGContextFillPath(cg);
+    }
+    if (n.props.scrollx and n.content_w > f.w + 0.5) {
+        const track = f.w - 2 * ind.inset - ind.w;
+        const len = @max(@min(ind.min, track), track * f.w / n.content_w);
+        const at = (track - len) * std.math.clamp(n.scroll_x / (n.content_w - f.w), 0, 1);
+        roundRect(cg, .{ .x = f.x + ind.inset + at, .y = f.y + f.h - ind.inset - ind.w, .w = len, .h = ind.w }, r);
+        setFill(cg, c);
+        CGContextFillPath(cg);
+    }
+}
+
+/// A monotonic clock in ms (scroll indicators' times).
+pub fn nowMs() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+}
+
+/// A classic (legacy) scrollbar in a scroller's gutter, as macOS draws one
+/// when the user has scroll bars always shown (Tree.scrollbar from
+/// NSScroller.preferredScrollerStyle): a light track with a hairline on its
+/// left and a grey pill thumb 4 px in, always there. (Its look is AppKit's
+/// as remembered: WKWebView's scrollers aren't in a snapshot and the system
+/// setting wasn't changed to compare.)
+fn paintLegacyScrollbar(cg: CGContextRef, n: *const Node, window_dark: bool) void {
+    const f = n.frame;
+    const bw = n.props.bw orelse [4]f32{ 0, 0, 0, 0 };
+    const g = n.gutter;
+    const bar: Rect = .{ .x = f.x + f.w - bw[1] - g, .y = f.y + bw[0], .w = g, .h = @max(0, f.h - bw[0] - bw[2]) };
+    if (bar.h <= 0) return;
+    const dark = if (n.id == -1) window_dark else n.props.dk;
+    const track: tree_mod.Color = if (n.props.sbc) |c| c[1] else if (dark) .{ 43, 43, 43, 1 } else .{ 250, 250, 250, 1 };
+    const line: tree_mod.Color = if (dark) .{ 60, 60, 60, 1 } else .{ 232, 232, 232, 1 };
+    const thumb: tree_mod.Color = if (n.props.sbc) |c| c[0] else if (dark) .{ 107, 107, 107, 1 } else .{ 194, 194, 194, 1 };
+    setFill(cg, track);
+    CGContextFillRect(cg, rect(bar));
+    setFill(cg, line);
+    CGContextFillRect(cg, rect(.{ .x = bar.x, .y = bar.y, .w = 1, .h = bar.h }));
+    if (!(n.content_h > f.h + 0.5)) return;
+    const inset: f32 = @round(g * 0.27);
+    const w = g - 2 * inset;
+    const len_track = bar.h - 2 * 2;
+    const len = @max(@min(20, len_track), len_track * f.h / n.content_h);
+    const at = (len_track - len) * std.math.clamp(n.scroll_y / (n.content_h - f.h), 0, 1);
+    roundRect(cg, .{ .x = bar.x + inset, .y = bar.y + 2 + at, .w = w, .h = len }, Radii.circle(.{ w / 2, w / 2, w / 2, w / 2 }));
+    setFill(cg, thumb);
+    CGContextFillPath(cg);
+}
+
+/// Whether a scroll indicator still shows (or fades) on `n`: the backend
+/// keeps redrawing until none do.
+pub fn indicatorShows(n: *const Node) bool {
+    if (n.flashed_at == 0) return false;
+    const age = nowMs() - n.flashed_at;
+    return age >= 0 and age < indicator.hold_ms + indicator.fade_ms;
+}
 
 /// Draw the engine's tree into `cg` (top-left origin). `transparent`:
 /// nothing under the page (a transparent window); else white, as in a browser.
@@ -1124,6 +1218,7 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paintNode(font_class, cg, engine, fields, scale, k);
     if (round_clip) CGContextRestoreGState(cg);
+    if (n.gutter > 0) paintLegacyScrollbar(cg, n, fields.dark) else if (n.flashed_at != 0) paintIndicators(cg, n, fields.dark);
     // Over the box and its children, outside its own clip.
     if (p.ol) |ol| paintOutline(cg, f, r, ol);
 }
