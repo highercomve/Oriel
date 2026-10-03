@@ -375,8 +375,12 @@ the runtime compiles nothing from strings itself (render.js parses a
 `calc()` of numbers: `arithmetic`). Inline event handlers (`onclick="…"`)
 are compiled by the host (`host.compileHandler`), refused when the
 directive has no `'unsafe-inline'` (or a nonce or hash turns it off), as
-in the WebView; and `__host` is gone from the page's global object once
-the runtime has it (its `evalScript` would run any string). Checked
+in the WebView. Nothing hands the page a way to run text: `__host` is
+gone from the page's global object once the runtime has it, it has no
+prototype (a getter on Object.prototype never sees it), and its text
+runners (`evalScript`, `evalModule`, `compileHandler`) are kept in the
+runtime's closure, off it; `__oriel` is a read-only, frozen global and
+its `boot` (which runs the document's scripts) runs once. Checked
 against WKWebView under the default CSP: the same EvalErrors, `eval(42)`,
 no string timer, no inline handler; engine.zig's test covers both a
 refusing and an allowing CSP.

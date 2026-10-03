@@ -17537,6 +17537,10 @@ input[type="range"] { height: 20px; margin: 2px; }
   var internalWeak4 = (m) => (globalThis.__nuiDom?.internal?.(m), m);
   var host = globalThis.__host;
   delete globalThis.__host;
+  var hostRun = { script: host.evalScript, module: host.evalModule, handler: host.compileHandler };
+  delete host.evalScript;
+  delete host.evalModule;
+  delete host.compileHandler;
   var fmt = (args) => args.map((a) => {
     if (a instanceof Error) return `${a.name}: ${a.message}
 ${a.stack || ""}`;
@@ -17565,8 +17569,8 @@ ${a.stack || ""}`;
     return id;
   }
   var timerFn = (fn) => {
-    if (typeof fn !== "string") return fn;
-    const code = fn;
+    if (typeof fn === "function") return fn;
+    const code = String(fn);
     return () => {
       try {
         (0, eval)(code);
@@ -18893,7 +18897,7 @@ ${a.stack || ""}`;
       if (old) el.removeEventListener(type, old.fn);
       let compiled;
       try {
-        compiled = host.compileHandler ? host.compileHandler(name, attr2.value) : new Function("event", attr2.value);
+        compiled = hostRun.handler ? hostRun.handler(name, attr2.value) : new Function("event", attr2.value);
       } catch (e) {
         console.error(`${name}: ${e}`);
         continue;
@@ -19133,8 +19137,11 @@ ${a.stack || ""}`;
     },
     configurable: true
   });
-  g.__oriel = {
+  var booted = false;
+  var oriel = {
     boot(w, h, dark, coarse) {
+      if (booted) return;
+      booted = true;
       return guard(() => {
         Object.assign(viewport, { width: w, height: h, dark: !!dark, coarse: !!coarse });
         const P = host.prof ? host.now : null, b0 = P && P();
@@ -19169,14 +19176,14 @@ ${a.stack || ""}`;
           }
           if (s.getAttribute("type") === "module") {
             try {
-              Promise.resolve(host.evalModule(src ? src.replace(/^\.?\//, "") : "inline.js", code)).catch((e) => console.error(e));
+              Promise.resolve(hostRun.module(src ? src.replace(/^\.?\//, "") : "inline.js", code)).catch((e) => console.error(e));
             } catch (e) {
               console.error(e);
             }
             continue;
           }
           try {
-            host.evalScript(src || "inline", code);
+            hostRun.script(src || "inline", code);
           } catch (e) {
             console.error(e);
           }
@@ -19366,6 +19373,7 @@ ${a.stack || ""}`;
       guard(() => renderer?.markAll());
     }
   };
+  Object.defineProperty(g, "__oriel", { value: Object.freeze(oriel), writable: false, configurable: false, enumerable: false });
   function mediaChanged(before2) {
     for (const ml of mediaLists) {
       const m = ml.matches;

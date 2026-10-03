@@ -103,10 +103,9 @@ static void report(JSContext *ctx) {
     JS_FreeValue(ctx, exc);
 }
 
-// The app's CSP's refusals (one CSP for the app: every window's the same),
-// of the page's eval and of inline event handlers: their messages, or NULL.
-static char *nui_csp_eval;
-static char *nui_csp_handlers;
+// The app's CSP's refusals for this engine (engine.zig): 0 of the page's
+// eval, 1 of inline event handlers; their messages, or NULL (allowed).
+extern const char *oriel_nui_csp(void *opaque, int which);
 
 static JSValue h_log(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
@@ -453,9 +452,10 @@ static JSValue h_compile_handler(JSContext *ctx, JSValueConst this_val, int argc
     const char *name = JS_ToCStringLen(ctx, &nlen, argv[0]);
     const char *code = JS_ToCStringLen(ctx, &clen, argv[1]);
     JSValue r = JS_UNDEFINED;
-    if (nui_csp_handlers) {
+    const char *refusal = oriel_nui_csp(opaque_of(ctx), 1);
+    if (refusal) {
         // Refused by the CSP (no 'unsafe-inline'): noted, and no handler.
-        oriel_nui_log(opaque_of(ctx), 3, nui_csp_handlers, strlen(nui_csp_handlers));
+        oriel_nui_log(opaque_of(ctx), 3, refusal, strlen(refusal));
     } else if (name && code) {
         static const char head[] = "(function (event) {\n";
         static const char tail[] = "\n})";
@@ -818,45 +818,22 @@ static void set_fn(JSContext *ctx, JSValue obj, const char *name, JSCFunction *f
     JS_SetPropertyStr(ctx, obj, name, JS_NewCFunction(ctx, fn, name, len));
 }
 
-// The refusal `*slot` keeps: `s` (a copy), or none.
-static void nui_csp_set(char **slot, const char *s) {
-    if (*slot && s && strcmp(*slot, s) == 0) return;
-    free(*slot);
-    *slot = NULL;
-    if (!s) return;
-    size_t n = strlen(s);
-    *slot = malloc(n + 1);
-    if (*slot) memcpy(*slot, s, n + 1);
-}
-
-// The app's CSP refuses the page's eval of strings: its violation logged,
-// and an EvalError as WebKit and Chromium throw it (the message, with the
-// directive, kept as the runtime's opaque).
-static JSValue nui_eval_refused(JSContext *ctx) {
-    const char *msg = nui_csp_eval;
+// The app's CSP refuses the page's eval of strings: the violation logged,
+// and the message for QuickJS's EvalError (WebKit's, with the directive).
+static const char *nui_eval_refused(JSContext *ctx) {
+    const char *msg = oriel_nui_csp(opaque_of(ctx), 0);
     if (!msg) msg = "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script.";
     oriel_nui_log(opaque_of(ctx), 3, msg, strlen(msg));
-    JSValue global = JS_GetGlobalObject(ctx);
-    JSValue ctor = JS_GetPropertyStr(ctx, global, "EvalError");
-    JSValue text = JS_NewString(ctx, msg);
-    JSValue err = JS_CallConstructor(ctx, ctor, 1, &text);
-    JS_FreeValue(ctx, text);
-    JS_FreeValue(ctx, ctor);
-    JS_FreeValue(ctx, global);
-    if (JS_IsException(err)) return err;
-    return JS_Throw(ctx, err);
+    return msg;
 }
 
-
-void *oqjs_new(void *opaque, const char *platform_json, const char *label, const char *url, const char *eval_refusal, const char *inline_refusal) {
+void *oqjs_new(void *opaque, const char *platform_json, const char *label, const char *url, int refuse_eval) {
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) return NULL;
     JSContext *ctx = JS_NewContext(rt);
     if (!ctx) { JS_FreeRuntime(rt); return NULL; }
-    // The app's CSP: its refusals for this window's page.
-    nui_csp_set(&nui_csp_eval, eval_refusal);
-    nui_csp_set(&nui_csp_handlers, inline_refusal);
-    if (eval_refusal) JS_OrielSetEvalRefused(ctx, nui_eval_refused);
+    // The app's CSP refusing the page's eval (the engine keeps its message).
+    if (refuse_eval) JS_OrielSetEvalRefused(ctx, nui_eval_refused);
     oqjs *self = js_malloc(ctx, sizeof *self);
     self->rt = rt;
     self->ctx = ctx;
@@ -867,7 +844,9 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     JS_SetModuleLoaderFunc(rt, nui_normalize, nui_load_module, NULL);
 
     JSValue global = JS_GetGlobalObject(ctx);
-    JSValue host = JS_NewObject(ctx);
+    // No prototype: a getter the page puts on Object.prototype never sees
+    // it (the runtime reads properties it doesn't have, as host.prof).
+    JSValue host = JS_NewObjectProto(ctx, JS_NULL);
     set_fn(ctx, host, "log", h_log, 2);
     set_fn(ctx, host, "asset", h_asset, 1);
     set_fn(ctx, host, "invoke", h_invoke, 3);

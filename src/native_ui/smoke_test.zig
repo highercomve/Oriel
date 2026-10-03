@@ -5,8 +5,8 @@ const c = @cImport({
     @cInclude("yoga/Yoga.h");
 });
 
-fn refuse(ctx: ?*c.JSContext) callconv(.c) c.JSValue {
-    return c.JS_ThrowTypeError(ctx, "refused");
+fn refuse(_: ?*c.JSContext) callconv(.c) [*c]const u8 {
+    return "refused";
 }
 
 test "a context that refuses eval: eval, indirect eval and Function throw, the host's eval runs" {
@@ -19,7 +19,7 @@ test "a context that refuses eval: eval, indirect eval and Function throw, the h
         \\const r = [];
         \\for (const f of [() => eval("1"), () => (0, eval)("2"), () => new Function("return 3")(),
         \\    () => Function.prototype.constructor("return 4")(), () => (async function () {}).constructor("return 5")]) {
-        \\  try { f(); r.push("ran"); } catch (e) { r.push(e.message); }
+        \\  try { f(); r.push("ran"); } catch (e) { r.push(e instanceof EvalError ? e.message : "not an EvalError"); }
         \\}
         \\r.push(String(eval(42)));
         \\r.join(",")

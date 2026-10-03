@@ -561,8 +561,9 @@ struct JSContext {
     struct list_head link;
     /* Oriel: set when the page may not compile strings (a CSP without
        'unsafe-eval'): eval, indirect eval and the Function constructors
-       return what it returns (an exception) instead (JS_OrielSetEvalRefused) */
-    JSValue (*oriel_eval_refused)(JSContext *ctx);
+       throw an EvalError with the message it returns instead
+       (JS_OrielSetEvalRefused) */
+    const char *(*oriel_eval_refused)(JSContext *ctx);
 
     uint16_t binary_object_count;
     uint32_t binary_object_size : 31;
@@ -1303,6 +1304,8 @@ static JSValue JS_InvokeFree(JSContext *ctx, JSValue this_val, JSAtom atom,
                              int argc, JSValueConst *argv);
 static __exception int JS_ToArrayLengthFree(JSContext *ctx, uint32_t *plen,
                                             JSValue val, bool is_array_ctor);
+static JSValue __attribute__((format(printf, 2, 3)))
+oriel_throw_eval_error(JSContext *ctx, const char *fmt, ...);
 static JSValue JS_EvalObject(JSContext *ctx, JSValueConst this_obj,
                              JSValueConst val, int flags, int scope_idx);
 static JSValue js_new_suppressed_error(JSContext *ctx, JSValueConst error,
@@ -1701,10 +1704,9 @@ int JS_GetRefCount(JSValueConst v)
 }
 
 /* Oriel: the page may not compile strings (eval, new Function): `fn`
-   (NULL: it may) returns what they return instead (JS_ThrowEvalError's
-   exception, after the host notes the CSP violation). The host's own
-   JS_Eval is unaffected. */
-void JS_OrielSetEvalRefused(JSContext *ctx, JSValue (*fn)(JSContext *ctx))
+   (NULL: it may) notes the CSP violation and returns the message of the
+   EvalError they throw instead. The host's own JS_Eval is unaffected. */
+void JS_OrielSetEvalRefused(JSContext *ctx, const char *(*fn)(JSContext *ctx))
 {
     ctx->oriel_eval_refused = fn;
 }
@@ -8536,6 +8538,17 @@ JS_ThrowError(JSContext *ctx, JSErrorEnum error_num,
     add_backtrace = !rt->in_out_of_memory &&
         (!sf || (JS_GetFunctionBytecode(sf->cur_func) == NULL));
     return JS_ThrowError2(ctx, error_num, add_backtrace, fmt, ap);
+}
+
+/* Oriel: an EvalError (JS_OrielSetEvalRefused) */
+static JSValue __attribute__((format(printf, 2, 3)))
+oriel_throw_eval_error(JSContext *ctx, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    JSValue v = JS_ThrowError(ctx, JS_EVAL_ERROR, fmt, ap);
+    va_end(ap);
+    return v;
 }
 
 #define JS_ERROR_MAP(X)     \
@@ -38471,9 +38484,12 @@ static JSValue JS_EvalObject(JSContext *ctx, JSValueConst this_obj,
 
     if (!JS_IsString(val))
         return js_dup(val);
-    /* Oriel: the page's eval of a string, refused by its CSP */
-    if (ctx->oriel_eval_refused)
-        return ctx->oriel_eval_refused(ctx);
+    /* Oriel: the page's eval of a string, refused by its CSP (the
+       intrinsic EvalError, not the page's global) */
+    if (ctx->oriel_eval_refused) {
+        const char *msg = ctx->oriel_eval_refused(ctx);
+        return oriel_throw_eval_error(ctx, "%s", msg ? msg : "Refused to evaluate a string as JavaScript.");
+    }
     str = JS_ToCStringLen(ctx, &len, val);
     if (!str)
         return JS_EXCEPTION;

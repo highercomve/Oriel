@@ -58,7 +58,7 @@ export fn oriel_nui_stamp_plan(p: *anyopaque, v: [*]const f64, len: usize) u32 {
     return engineOf(p).tree.defineStampPlan(v[0..len]) catch 0;
 }
 
-extern fn oqjs_new(opaque_ptr: *anyopaque, platform_json: [*:0]const u8, label: [*:0]const u8, url: [*:0]const u8, eval_refusal: ?[*:0]const u8, inline_refusal: ?[*:0]const u8) ?*anyopaque;
+extern fn oqjs_new(opaque_ptr: *anyopaque, platform_json: [*:0]const u8, label: [*:0]const u8, url: [*:0]const u8, refuse_eval: c_int) ?*anyopaque;
 
 /// The directive governing scripts in a CSP: script-src, else default-src.
 fn scriptDirective(csp: []const u8) ?[]const u8 {
@@ -135,7 +135,8 @@ test "the app's CSP: eval and new Function refused without 'unsafe-eval', the ho
         \\(() => {
         \\  const refuses = (f) => { try { f(); return false; } catch (e) { return e instanceof EvalError && e.message.includes("'unsafe-eval'"); } };
         \\  return refuses(() => eval("1")) && refuses(() => (0, eval)("2")) && refuses(() => new Function("return 3")) &&
-        \\    refuses(() => Function.prototype.constructor("return 4")) && eval(42) === 42 && typeof __host === "undefined";
+        \\    refuses(() => Function.prototype.constructor("return 4")) && eval(42) === 42 && typeof __host === "undefined" &&
+        \\    (() => { try { eval("1"); } catch (e) { return e instanceof EvalError; } })();
         \\})()
     ;
     try std.testing.expect(try underCsp("default-src 'self'; script-src 'self' 'unsafe-inline'", refused));
@@ -143,6 +144,23 @@ test "the app's CSP: eval and new Function refused without 'unsafe-eval', the ho
         \\eval("1 + 1") === 2 && (0, eval)("2") === 2 && new Function("return 3")() === 3 && typeof __host === "undefined"
     ;
     try std.testing.expect(try underCsp("default-src 'self'; script-src 'self' 'unsafe-eval'", allowed));
+    // No way to the host's text runners: a getter on Object.prototype for
+    // what the runtime reads (it never sees the host), boot again (it runs
+    // the document's scripts once), or a replaced __oriel.
+    const sealed =
+        \\(() => {
+        \\  let seen = null;
+        \\  for (const p of ["prof", "paintOps", "canvasOps", "now", "warmFonts", "evalScript"])
+        \\    Object.defineProperty(Object.prototype, p, { configurable: true, get() { if (this && (this.evalScript || this.ops)) seen = this; return undefined; } });
+        \\  __oriel.boot(400, 300, false, false);
+        \\  document.body.append(document.createElement("div"));
+        \\  __oriel.render();
+        \\  const again = __oriel.boot(400, 300, false, false);
+        \\  try { __oriel = {}; } catch {}
+        \\  return seen === null && again === undefined && typeof __oriel.boot === "function" && Object.isFrozen(__oriel);
+        \\})()
+    ;
+    try std.testing.expect(try underCsp("default-src 'self'", sealed));
     try std.testing.expect(try underCsp(null, allowed));
 }
 
@@ -259,6 +277,10 @@ pub const Engine = struct {
     backend: Backend,
     assets: []const Asset,
     script_buf: std.ArrayList(u8) = .empty,
+    /// The app's CSP refusing the page's eval, and inline event handlers:
+    /// the messages (owned), null where it allows them.
+    csp_eval: ?[:0]u8 = null,
+    csp_handlers: ?[:0]u8 = null,
     booted: bool = false,
     in_call: u32 = 0,
     /// The page read its layout (offsetWidth, getBoundingClientRect…) while it
@@ -314,10 +336,12 @@ pub const Engine = struct {
         // The app's CSP: eval and new Function refused, as its WebView would.
         const csp = @import("../core/app.zig").current_security.csp;
         var refusal_buf: [1024]u8 = undefined;
-        const refusal = evalRefusal(&refusal_buf, csp);
+        if (evalRefusal(&refusal_buf, csp)) |r| e.csp_eval = try gpa.dupeZ(u8, r);
+        errdefer if (e.csp_eval) |r| gpa.free(r);
         var inline_buf: [1024]u8 = undefined;
-        const inline_refusal = inlineRefusal(&inline_buf, csp);
-        e.js = oqjs_new(e, platform_json.ptr, label.ptr, url.ptr, if (refusal) |r| r.ptr else null, if (inline_refusal) |r| r.ptr else null) orelse return error.QuickJsInitFailed;
+        if (inlineRefusal(&inline_buf, csp)) |r| e.csp_handlers = try gpa.dupeZ(u8, r);
+        errdefer if (e.csp_handlers) |r| gpa.free(r);
+        e.js = oqjs_new(e, platform_json.ptr, label.ptr, url.ptr, @intFromBool(e.csp_eval != null)) orelse return error.QuickJsInitFailed;
         errdefer oqjs_free(e.js);
         // Transform/opacity-only changes as "x" ops: unless the backend
         // mirrors props (mirrors_props) without a paint hook (it would miss them).
@@ -349,6 +373,8 @@ pub const Engine = struct {
         e.tree.deinit();
         if (e.backend.deinit) |deinit| deinit(e.backend.ctx);
         e.script_buf.deinit(e.gpa);
+        if (e.csp_eval) |r| e.gpa.free(r);
+        if (e.csp_handlers) |r| e.gpa.free(r);
         e.gpa.destroy(e);
     }
 
@@ -616,6 +642,14 @@ pub const Engine = struct {
 
 fn engineOf(p: *anyopaque) *Engine {
     return @ptrCast(@alignCast(p));
+}
+
+/// The app's CSP's refusal for this engine (qjs_shim.c): 0 of the page's
+/// eval, 1 of inline event handlers; null where it allows them.
+export fn oriel_nui_csp(p: *anyopaque, which: c_int) ?[*:0]const u8 {
+    const e = engineOf(p);
+    const r = if (which == 0) e.csp_eval else e.csp_handlers;
+    return if (r) |m| m.ptr else null;
 }
 
 /// Tests that expect the page's errors (a CSP violation) hear them as info.
