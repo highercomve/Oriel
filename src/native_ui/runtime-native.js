@@ -6103,7 +6103,9 @@ ${a.stack || ""}`;
   var isCheckable = (n2) => n2?.localName === "input" && /^(checkbox|radio)$/.test(n2.type);
   function activate(el, flags) {
     const undo = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
-    const ev = new MouseEvent("click", { bubbles: true, cancelable: true, clientX: lastPointer[0], clientY: lastPointer[1], shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
+    const [clientX, clientY] = lastPointer;
+    lastPointer = [0, 0];
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true, clientX, clientY, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
     el.dispatchEvent(ev);
     if (undo) {
       if (ev.defaultPrevented) undo();
@@ -6204,7 +6206,7 @@ ${a.stack || ""}`;
       const touch = { identifier: pointerId, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: 0.5 };
       const on = phase === "down" || phase === "move" ? [touch] : [];
       if (fire(new TouchEvent(names[2], { bubbles: true, cancelable: phase !== "cancel", touches: on, targetTouches: on, changedTouches: [touch], ...mods }))) prevented = true;
-    } else if (names[1] && fire(new MouseEvent(names[1], init))) prevented = true;
+    } else if (names[1] && fire(new MouseEvent(names[1], { ...init, button: 0 }))) prevented = true;
     if (phase === "down" && !prevented) {
       for (let n2 = target; n2 && n2.nodeType === 1; n2 = n2.parentNode) {
         const ta = renderer?.styleOf(n2)?.["touch-action"];
