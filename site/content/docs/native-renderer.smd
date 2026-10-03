@@ -110,6 +110,112 @@ What the numbers say:
 - **The WebView renderer is the smallest download** (0.85 MB): it uses the browser the system already has. The native renderer adds about 2 MB: QuickJS, Yoga and the renderer's JavaScript. React Native ships its engine and framework (18.5 MB).
 - **The trade:** the WebView runs any web code; the native renderer runs the part of the web an app's interface uses, on Linux, Windows, macOS, iOS and Android.
 
+# Three architectures
+
+The same app can be drawn three ways. Oriel's WebView and its native renderer run the same HTML, CSS and JavaScript; React Native runs React components instead.
+
+```=html
+<figure class="nr-fig">
+<svg viewBox="0 0 760 520" role="img" aria-labelledby="nr-arch3-t">
+  <title id="nr-arch3-t">Three architectures. Oriel WebView: your HTML, CSS and JS run in a browser engine in a separate renderer process, and reach Zig commands through IPC messages. Oriel native: the same files run in QuickJS with a native DOM, Oriel styles and Yoga, drawn with the platform, all in the app process, with direct calls to Zig. React Native: React components run in Hermes, Fabric builds a C++ shadow tree laid out by Yoga, and each component becomes a native view.</title>
+  <defs><marker id="nr-arrow4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" class="nr-arrowhead"/></marker></defs>
+  <text class="nr-h" x="18" y="30">Oriel WebView</text>
+  <rect class="nr-group" x="10" y="112" width="244" height="266" rx="10"/>
+  <text class="nr-label" x="18" y="396">RENDERER PROCESS</text>
+  <text class="nr-label" x="18" y="500">APP PROCESS</text>
+  <rect class="nr-box" x="18" y="60" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="30" y="81">HTML, CSS, JS</text>
+  <text class="nr-s" x="30" y="100">any web framework</text>
+  <path class="nr-line" d="M125.0 110 V 122" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box" x="18" y="124" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="30" y="145">V8 / JavaScriptCore</text>
+  <text class="nr-s" x="30" y="164">with a JIT</text>
+  <path class="nr-line" d="M125.0 174 V 186" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box" x="18" y="188" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="30" y="209">The browser's DOM</text>
+  <text class="nr-s" x="30" y="228">C++, every element</text>
+  <path class="nr-line" d="M125.0 238 V 250" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box" x="18" y="252" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="30" y="273">Blink / WebKit</text>
+  <text class="nr-s" x="30" y="292">full CSS layout</text>
+  <path class="nr-line" d="M125.0 302 V 314" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box" x="18" y="316" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="30" y="337">GPU compositor</text>
+  <text class="nr-s" x="30" y="356">the whole page</text>
+  <rect class="nr-box" x="18" y="428" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="30" y="449">Zig commands</text>
+  <text class="nr-s" x="30" y="468">IPC: JSON messages</text>
+  <path class="nr-line nr-back" d="M232 149.0 H 240 V 453.0 H 234" marker-end="url(#nr-arrow4)"/>
+  <text class="nr-h" x="264" y="30">Oriel native</text>
+  <rect class="nr-group" x="256" y="48" width="244" height="442" rx="10"/>
+  <text class="nr-label" x="264" y="508">ONE APP PROCESS</text>
+  <rect class="nr-box nr-acc" x="264" y="60" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="276" y="81">HTML, CSS, JS</text>
+  <text class="nr-s" x="276" y="100">the same files</text>
+  <path class="nr-line" d="M371.0 110 V 122" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box nr-acc" x="264" y="124" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="276" y="145">QuickJS</text>
+  <text class="nr-s" x="276" y="164">bytecode, no JIT</text>
+  <path class="nr-line" d="M371.0 174 V 186" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box nr-acc" x="264" y="188" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="276" y="209">Native DOM</text>
+  <text class="nr-s" x="276" y="228">nodes in a Zig store</text>
+  <path class="nr-line" d="M371.0 238 V 250" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box nr-acc" x="264" y="252" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="276" y="273">Oriel styles + Yoga</text>
+  <text class="nr-s" x="276" y="292">the CSS apps use</text>
+  <path class="nr-line" d="M371.0 302 V 314" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box nr-acc" x="264" y="316" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="276" y="337">Platform drawing</text>
+  <text class="nr-s" x="276" y="356">GTK, Direct2D, CG, Canvas</text>
+  <rect class="nr-box nr-acc" x="264" y="428" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="276" y="449">Zig commands</text>
+  <text class="nr-s" x="276" y="468">direct calls</text>
+  <path class="nr-line" d="M478 149.0 H 486 V 453.0 H 480" marker-end="url(#nr-arrow4)"/>
+  <text class="nr-h" x="510" y="30">React Native</text>
+  <rect class="nr-group" x="502" y="48" width="244" height="442" rx="10"/>
+  <text class="nr-label" x="510" y="508">ONE APP PROCESS</text>
+  <rect class="nr-box" x="510" y="60" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="522" y="81">React components</text>
+  <text class="nr-s" x="522" y="100">JSX, not HTML</text>
+  <path class="nr-line" d="M617.0 110 V 122" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box" x="510" y="124" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="522" y="145">Hermes</text>
+  <text class="nr-s" x="522" y="164">bytecode, no JIT</text>
+  <path class="nr-line" d="M617.0 174 V 186" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box" x="510" y="188" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="522" y="209">React + Fabric</text>
+  <text class="nr-s" x="522" y="228">C++ shadow tree</text>
+  <path class="nr-line" d="M617.0 238 V 250" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box" x="510" y="252" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="522" y="273">Yoga</text>
+  <text class="nr-s" x="522" y="292">flexbox layout</text>
+  <path class="nr-line" d="M617.0 302 V 314" marker-end="url(#nr-arrow4)"/>
+  <rect class="nr-box" x="510" y="316" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="522" y="337">Native views</text>
+  <text class="nr-s" x="522" y="356">one per component</text>
+  <rect class="nr-box" x="510" y="428" width="214" height="50" rx="8"/>
+  <text class="nr-t" x="522" y="449">Native modules</text>
+  <text class="nr-s" x="522" y="468">Kotlin, Swift, JSI</text>
+  <path class="nr-line" d="M724 149.0 H 732 V 453.0 H 726" marker-end="url(#nr-arrow4)"/>
+</svg>
+<figcaption>Down each column: what you write, the JavaScript engine, the document, styles and layout, drawing, and the native code. The line on the right is how the page reaches native code: IPC messages across processes for the WebView, a direct call in the same process for the native renderer, JSI for React Native.</figcaption>
+</figure>
+```
+
+| | Oriel WebView | Oriel native | React Native |
+|---|---|---|---|
+| You write | HTML, CSS, JS (any framework) | The same files | React components (JSX) |
+| JavaScript engine | The system browser's, with a JIT | QuickJS, ahead-of-time bytecode | Hermes, ahead-of-time bytecode |
+| The document | The browser's DOM | The native DOM: a Zig store, thin JS wrappers | React's tree, then Fabric's C++ shadow tree |
+| Styles and layout | The whole of CSS | The CSS app interfaces use, laid out by Yoga | Style props, laid out by Yoga |
+| What draws | The browser's compositor | One platform view draws the page; text fields, selects and sliders are real platform widgets | One platform view per component |
+| Processes | Two: the app and a sandboxed renderer | One | One |
+| Calling native code | IPC messages, serialized | A direct call on the same thread | JSI, a direct call |
+| A text change reaches the screen | Style, layout and paint in the browser | One call into the tree; layout skipped when only that text's width changes | A React render, a Fabric commit, a mount on the UI thread |
+
+The native renderer keeps the WebView's way of writing an app and React Native's footprint: no second process, no browser engine, the page's own files compiled ahead of time. Where React Native makes a platform view for every component, Oriel draws the page with one view and its own layout, so a list of a thousand rows is a thousand records in the tree, not a thousand Android or UIKit views.
+
 # Speed
 
 The [render bench](https://github.com/highercomve/Oriel/tree/main/examples/render-bench) times one page in both renderers: building and updating rows of styled text (each followed by a layout read, as `offsetHeight` forces in a browser), a `requestAnimationFrame` loop moving 200 boxes, and a `<canvas>` game loop.
