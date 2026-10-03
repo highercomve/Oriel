@@ -610,10 +610,13 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     private val leafStyles = HashMap<Int, NuiNode>()
 
     /**
-     * Leaf styles and the nodes the tree made from them (android.zig's
-     * flushLeaves; host.leaf, stamped rows), packed little-endian:
-     * 'S' style id, JSON length, JSON; 'L' node id, kind (0 view, 1 text),
-     * style id, text length, text.
+     * One batch of changes from android.zig (flushLeaves), packed
+     * little-endian, in order:
+     * 'S' style id, JSON length, JSON: a leaf style (host.leaf, stamping);
+     * 'L' node id, kind (0 view, 1 text), style id, text length, text: a
+     * node made from one; 'T' node id, text length, text: a run's new text;
+     * 'X' node id, opacity, scale, rotation: an animation frame's change;
+     * 'C' node id, op count, ops: a canvas's new program.
      */
     fun leaves(bytes: ByteArray) {
         val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -632,10 +635,25 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                     if (style == null) continue // not sent (an id beyond an int): not drawn
                     nodes[id] = NuiNode(id, kind).also { it.fromStyle(style, if (kind == "text") text else null) }
                 }
+                'T' -> {
+                    val text = utf8(b, b.int) ?: return
+                    nodes[id]?.setText(text)
+                }
+                'X' -> {
+                    val op = b.float
+                    val sc = b.float
+                    val rot = b.float
+                    nodes[id]?.let { it.op = op; it.sc = sc; it.rot = rot }
+                }
+                'C' -> {
+                    val ops = CanvasProgram.unpack(b, b.int) ?: return
+                    nodes[id]?.canvasOps = ops
+                }
                 else -> return
             }
         }
         orderDirty = true
+        invalidate()
     }
 
     private fun utf8(b: ByteBuffer, len: Int): String? {
