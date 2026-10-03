@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { parseHTML } from "../vendor/linkedom/esm/index.js";
 import { StyleEngine, viewport } from "../src/css.js";
-import { Renderer, UA_CSS } from "../src/render.js";
+import { Renderer, UA_CSS, arithmetic } from "../src/render.js";
 import { transitionsOf } from "../src/transitions.js";
 
 globalThis.requestAnimationFrame = () => 0;
@@ -612,5 +612,12 @@ for (const css of [
   assert.deepEqual(by("d").br, [[6, 12], 0, 0, 0]);
   assert.equal(by("e").br, undefined);
 }
+
+// A calc() of numbers, parsed (not compiled: the app's CSP may refuse eval).
+assert.equal(arithmetic("1.05"), 1.05);
+assert.equal(arithmetic("(1 + 0.5) * 2"), 3);
+assert.equal(arithmetic("-(2 - 3) / 4"), 0.25);
+assert.ok(Number.isNaN(arithmetic("1 +")));
+assert.ok(Number.isNaN(arithmetic("(1")));
 
 console.log("render: incremental trees, selector sharing, and wire defaults pass");
