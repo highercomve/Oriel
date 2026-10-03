@@ -144,11 +144,15 @@ fn classes() void {
     });
     // The fields: their class's own, telling the page when they take the
     // keyboard (a click into a text field calls no delegate).
+    // An edit in a text field (its field editor's delegate is the field)
+    // asks the page first (beforeinput).
     text_field_class = cocoa.defineSubclass("OrielNuiTextField", "NSTextField", &.{}, .{
         .{ "becomeFirstResponder", textFieldBecomeFirst },
+        .{ "textView:shouldChangeTextInRange:replacementString:", textFieldShouldChange },
     });
     secure_field_class = cocoa.defineSubclass("OrielNuiSecureTextField", "NSSecureTextField", &.{}, .{
         .{ "becomeFirstResponder", secureFieldBecomeFirst },
+        .{ "textView:shouldChangeTextInRange:replacementString:", secureFieldShouldChange },
     });
     text_view_class = cocoa.defineSubclass("OrielNuiTextView", "NSTextView", &.{}, .{
         .{ "becomeFirstResponder", textViewBecomeFirst },
@@ -163,6 +167,7 @@ fn classes() void {
         .{ "control:textView:doCommandBySelector:", controlCommand },
         .{ "textDidChange:", textDidChange },
         .{ "textView:doCommandBySelector:", textViewCommand },
+        .{ "textView:shouldChangeTextInRange:replacementString:", textViewShouldChange },
         .{ "popupChanged:", popupChanged },
         .{ "sliderChanged:", sliderChanged },
     }));
@@ -233,6 +238,8 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .request_display_frame = if (hasDisplayLink(view)) requestDisplayFrame else null,
         .warm_fonts = warmFonts,
         .font_metrics = fontMetrics,
+        .selection = selection,
+        .set_selection = setSelection,
     }, assets, platform, label, url, width, height);
     // Text-only updates that keep a text's size keep the layout (its
     // natural size is kept per node: measureText).
@@ -679,6 +686,8 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             }
             tv.msgSend(void, "setDrawsBackground:", .{cocoa.boolean(false)});
             tv.msgSend(void, "setRichText:", .{cocoa.boolean(false)});
+            // Cmd+Z undoes typing, as in a browser's text area.
+            tv.msgSend(void, "setAllowsUndo:", .{cocoa.boolean(true)});
             tv.msgSend(void, "setAutomaticQuoteSubstitutionEnabled:", .{cocoa.boolean(false)});
             tv.msgSend(void, "setVerticallyResizable:", .{cocoa.boolean(true)});
             tv.msgSend(void, "setHorizontallyResizable:", .{cocoa.boolean(false)});
@@ -777,6 +786,133 @@ fn ownerOf(control: id) ?struct { s: *Surface, n: *Node } {
     return .{ .s = s, .n = n };
 }
 
+// ---------------------------------------------------------------------------
+// Edits: the page hears each one before the field makes it (beforeinput,
+// which it may prevent) and after (input, with the same type and data), as
+// WKWebView's: inputType from the key or command that made it.
+
+const NSRange = extern struct { location: c_ulong, length: c_ulong };
+
+/// The edit the page let through, for the input that follows it.
+var pending_type: ?[]const u8 = null;
+var pending_data: std.ArrayListUnmanaged(u8) = .empty;
+var pending_has_data = false;
+
+/// An edit's inputType (Chromium's names) and data, from the event that
+/// made it: null for one that isn't the user's (the page set the value).
+fn editKind(repl: []const u8, textarea: bool) ?struct { t: []const u8, data: bool } {
+    const app = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{});
+    const ev = app.msgSend(Object, "currentEvent", .{});
+    var code: c_ushort = 0xffff;
+    var flags: c_ulong = 0;
+    var chars: []const u8 = "";
+    if (ev.value != null and ev.msgSend(c_ulong, "type", .{}) == 10) { // a key down
+        code = ev.msgSend(c_ushort, "keyCode", .{});
+        flags = ev.msgSend(c_ulong, "modifierFlags", .{});
+        chars = cocoa.utf8(ev.msgSend(Object, "charactersIgnoringModifiers", .{})) orelse "";
+    }
+    const cmd = flags & (1 << 20) != 0;
+    const alt = flags & (1 << 19) != 0;
+    const shift = flags & (1 << 17) != 0;
+    if (cmd and std.mem.eql(u8, chars, "z")) return .{ .t = if (shift) "historyRedo" else "historyUndo", .data = false };
+    if (cmd and std.mem.eql(u8, chars, "x")) return .{ .t = "deleteByCut", .data = false };
+    if (repl.len > 0) {
+        if (cmd and std.mem.eql(u8, chars, "v")) return .{ .t = "insertFromPaste", .data = true };
+        if (textarea and std.mem.eql(u8, repl, "\n")) return .{ .t = "insertLineBreak", .data = false };
+        return .{ .t = "insertText", .data = true };
+    }
+    return switch (code) {
+        117 => .{ .t = if (alt) "deleteWordForward" else "deleteContentForward", .data = false },
+        51 => .{ .t = if (cmd) "deleteSoftLineBackward" else if (alt) "deleteWordBackward" else "deleteContentBackward", .data = false },
+        else => .{ .t = "deleteContentBackward", .data = false },
+    };
+}
+
+/// Ask the page about an edit of `control`'s text (made by `tv`, replacing
+/// `range` with `repl`): false when it prevented it. While an input method
+/// composes (marked text) the edits are the field's alone.
+fn askEdit(control: id, tv: id, repl_id: id, textarea: bool) bool {
+    const o = ownerOf(control) orelse return true;
+    if (o.s.updating) return true;
+    const t: Object = .{ .value = tv };
+    if (t.value != null and cocoa.isTrue(t.msgSend(BOOL, "hasMarkedText", .{}))) return true;
+    const repl = if (repl_id != null) (cocoa.utf8(.{ .value = repl_id }) orelse "") else "";
+    const kind = editKind(repl, textarea) orelse return true;
+    const gpa = o.s.gpa;
+    const data = std.json.Stringify.valueAlloc(gpa, repl, .{}) catch return true;
+    defer gpa.free(data);
+    const json = std.fmt.allocPrint(gpa, "[\"{s}\",{s}]", .{ kind.t, if (kind.data) data else "null" }) catch return true;
+    defer gpa.free(json);
+    if (o.s.engine.event(o.n.id, "beforeinput", json)) return false;
+    pending_type = kind.t;
+    pending_data.clearRetainingCapacity();
+    pending_has_data = kind.data;
+    if (kind.data) pending_data.appendSlice(std.heap.smp_allocator, repl) catch {
+        pending_has_data = false;
+    };
+    return true;
+}
+
+fn textFieldShouldChange(self: id, _: SEL, tv: id, range: NSRange, repl: id) callconv(.c) BOOL {
+    if (!askEdit(self, tv, repl, false)) return cocoa.boolean(false);
+    return (Object{ .value = self }).msgSendSuper(cocoa.class("NSTextField"), BOOL, "textView:shouldChangeTextInRange:replacementString:", .{ tv, range, repl });
+}
+
+fn secureFieldShouldChange(self: id, _: SEL, tv: id, range: NSRange, repl: id) callconv(.c) BOOL {
+    if (!askEdit(self, tv, repl, false)) return cocoa.boolean(false);
+    return (Object{ .value = self }).msgSendSuper(cocoa.class("NSSecureTextField"), BOOL, "textView:shouldChangeTextInRange:replacementString:", .{ tv, range, repl });
+}
+
+fn textViewShouldChange(_: id, _: SEL, tv: id, _: NSRange, repl: id) callconv(.c) BOOL {
+    return cocoa.boolean(askEdit(tv, tv, repl, true));
+}
+
+/// After an edit: "input" with [value, inputType, data] (the edit the page
+/// heard of), or the value alone.
+fn sendInput(s: *Surface, n: *Node, text: []const u8) void {
+    const kind = pending_type orelse return sendValue(s, n, "input", text);
+    pending_type = null;
+    const gpa = s.gpa;
+    const v = std.json.Stringify.valueAlloc(gpa, text, .{}) catch return;
+    defer gpa.free(v);
+    const d = if (pending_has_data) (std.json.Stringify.valueAlloc(gpa, pending_data.items, .{}) catch return) else null;
+    defer if (d) |x| gpa.free(x);
+    const json = std.fmt.allocPrint(gpa, "[{s},\"{s}\",{s}]", .{ v, kind, d orelse "null" }) catch return;
+    defer gpa.free(json);
+    _ = s.engine.event(n.id, "input", json);
+}
+
+/// Backend.selection: a text field's or text area's selection, [start,
+/// end] in UTF-16 units (none while a text field isn't being edited).
+fn selection(ctx: *anyopaque, n: *Node, out: *[2]u32) bool {
+    const s = surfaceOf(ctx);
+    const f = s.fields.get(n.id) orelse return false;
+    const tv = editorOf(f) orelse return false;
+    const r = tv.msgSend(NSRange, "selectedRange", .{});
+    out.* = .{ @intCast(r.location), @intCast(r.location + r.length) };
+    return true;
+}
+
+/// Backend.set_selection: select [start, end] of a field being edited.
+fn setSelection(ctx: *anyopaque, n: *Node, start: u32, end: u32) void {
+    const s = surfaceOf(ctx);
+    const f = s.fields.get(n.id) orelse return;
+    const tv = editorOf(f) orelse return;
+    const len: u32 = @intCast(@max(0, tv.msgSend(Object, "string", .{}).msgSend(c_long, "length", .{})));
+    const a = @min(start, len);
+    const b = @min(@max(end, a), len);
+    tv.msgSend(void, "setSelectedRange:", .{NSRange{ .location = a, .length = b - a }});
+}
+
+/// The text view with a field's text: a text area's own, a text field's
+/// field editor while it's edited.
+fn editorOf(f: Field) ?Object {
+    if (cocoa.isTrue(f.inner.msgSend(BOOL, "isKindOfClass:", .{cocoa.class("NSTextView").value}))) return f.inner;
+    if (!cocoa.isTrue(f.inner.msgSend(BOOL, "isKindOfClass:", .{cocoa.class("NSTextField").value}))) return null;
+    const ed = f.inner.msgSend(Object, "currentEditor", .{});
+    return if (ed.value != null) ed else null;
+}
+
 /// Nothing of the surface is read after the event: a window's close is
 /// queued today, but a handler that ended the surface would free it.
 fn sendValue(s: *Surface, n: *Node, kind: []const u8, text: []const u8) void {
@@ -871,7 +1007,7 @@ fn controlTextDidChange(_: id, _: SEL, note: id) callconv(.c) void {
     const o = ownerOf(field.value) orelse return;
     if (o.s.updating) return;
     const text = cocoa.utf8(field.msgSend(Object, "stringValue", .{})) orelse "";
-    sendValue(o.s, o.n, "input", text);
+    sendInput(o.s, o.n, text);
 }
 
 /// Enter (and Escape) in a field: the page's keydown; true when it
@@ -907,7 +1043,7 @@ fn textDidChange(_: id, _: SEL, note: id) callconv(.c) void {
     // The placeholder under it comes and goes with the text.
     o.s.view.msgSend(void, "setNeedsDisplay:", .{cocoa.boolean(true)});
     const text = cocoa.utf8(tv.msgSend(Object, "string", .{})) orelse "";
-    sendValue(o.s, o.n, "input", text);
+    sendInput(o.s, o.n, text);
 }
 
 fn textViewCommand(_: id, _: SEL, tv: id, selector: SEL) callconv(.c) BOOL {
@@ -1361,22 +1497,24 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
 fn sendModifier(s: *Surface, nid: i64, ev: Object) void {
     const code = ev.msgSend(c_ushort, "keyCode", .{});
     // Down when its own side's (device-dependent) flag is now set: with
-    // both Shifts held, letting one go is its key up.
-    const name: []const u8, const bit: c_ulong = switch (code) {
-        56 => .{ "Shift", 0x2 },
-        60 => .{ "Shift", 0x4 },
-        59 => .{ "Control", 0x1 },
-        62 => .{ "Control", 0x2000 },
-        58 => .{ "Alt", 0x20 },
-        61 => .{ "Alt", 0x40 },
-        55 => .{ "Meta", 0x8 },
-        54 => .{ "Meta", 0x10 },
+    // both Shifts held, letting one go is its key up. An event without the
+    // side flags (a synthesized one): the modifier's own flag.
+    const name: []const u8, const bit: c_ulong, const sides: c_ulong, const any: c_ulong = switch (code) {
+        56 => .{ "Shift", 0x2, 0x6, 1 << 17 },
+        60 => .{ "Shift", 0x4, 0x6, 1 << 17 },
+        59 => .{ "Control", 0x1, 0x2001, 1 << 18 },
+        62 => .{ "Control", 0x2000, 0x2001, 1 << 18 },
+        58 => .{ "Alt", 0x20, 0x60, 1 << 19 },
+        61 => .{ "Alt", 0x40, 0x60, 1 << 19 },
+        55 => .{ "Meta", 0x8, 0x18, 1 << 20 },
+        54 => .{ "Meta", 0x10, 0x18, 1 << 20 },
         else => return,
     };
     const flags = ev.msgSend(c_ulong, "modifierFlags", .{});
+    const down = if (flags & sides != 0) flags & bit != 0 else flags & any != 0;
     var buf: [48]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d},false]", .{ name, modFlags(flags) }) catch return;
-    _ = s.engine.event(nid, if (flags & bit != 0) "key" else "keyup", json);
+    _ = s.engine.event(nid, if (down) "key" else "keyup", json);
 }
 
 /// The key down a field's keys last sent the page (commandKey doesn't

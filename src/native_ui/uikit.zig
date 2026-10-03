@@ -158,6 +158,7 @@ fn classes() void {
         .{ "nuiSliderMoved:", sliderMoved },
         .{ "nuiSliderDone:", sliderDone },
         .{ "textFieldShouldReturn:", fieldShouldReturn },
+        .{ "textField:shouldChangeCharactersInRange:replacementString:", fieldShouldChange },
         .{ "textFieldDidBeginEditing:", fieldFocused },
         .{ "textFieldDidEndEditing:", fieldBlurred },
         .{ "textViewDidBeginEditing:", fieldFocused },
@@ -237,6 +238,8 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .request_display_frame = if (hasDisplayLink(view)) requestDisplayFrame else null,
         .warm_fonts = warmFonts,
         .font_metrics = fontMetrics,
+        .selection = selection,
+        .set_selection = setSelection,
     }, assets, platform, label, url, width, height);
     // Text-only updates that keep a text's size keep the layout (its
     // natural size is kept per node: measureText).
@@ -959,6 +962,11 @@ fn fieldPresses(self: id, presses: id, kind: []const u8) bool {
             continue;
         };
         const mods = pressModsFor(k, kind);
+        if (down and modifierBit(k) == 0 and name.len <= last_key.name.len) {
+            @memcpy(last_key.name[0..name.len], name);
+            last_key.len = name.len;
+            last_key.mods = mods;
+        }
         if (!down and mods & 8 != 0 and modifierBit(k) == 0) {
             prevented = false;
             continue;
@@ -1173,7 +1181,7 @@ fn fieldChanged(_: id, _: SEL, field: id) callconv(.c) void {
     const o = ownerOf(field) orelse return;
     if (o.s.updating) return;
     const text = apple.utf8((Object{ .value = field }).msgSend(Object, "text", .{})) orelse "";
-    sendValue(o.s, o.n, "input", text);
+    sendInput(o.s, o.n, text);
 }
 
 /// Return in a one-line field: the page's Enter (which submits its form).
@@ -1194,22 +1202,132 @@ fn textViewDidChange(_: id, _: SEL, tv: id) callconv(.c) void {
     o.s.view.msgSend(void, "setNeedsDisplay", .{});
     if (o.s.updating) return;
     const text = apple.utf8((Object{ .value = tv }).msgSend(Object, "text", .{})) orelse "";
-    sendValue(o.s, o.n, "input", text);
+    sendInput(o.s, o.n, text);
 }
 
 /// Return in a text area: the page's Enter first; no newline when it
 /// prevented the default (a chat sends the message).
 fn textViewShouldChange(_: id, _: SEL, tv: id, _: NSRange, text: id) callconv(.c) BOOL {
     const s = apple.utf8(.{ .value = text }) orelse return apple.boolean(true);
-    if (!std.mem.eql(u8, s, "\n")) return apple.boolean(true);
-    const o = ownerOf(tv) orelse return apple.boolean(true);
-    // A hardware Enter the page already heard and let through (fieldPresses).
-    if (press_enter_field == tv) {
-        press_enter_field = null;
-        return apple.boolean(true);
+    if (std.mem.eql(u8, s, "\n")) enter: {
+        const o = ownerOf(tv) orelse break :enter;
+        // A hardware Enter the page already heard and let through (fieldPresses).
+        if (press_enter_field == tv) {
+            press_enter_field = null;
+            break :enter;
+        }
+        if (o.s.engine.event(o.n.id, "key", "[\"Enter\",0]")) return apple.boolean(false);
     }
-    const prevented = o.s.engine.event(o.n.id, "key", "[\"Enter\",0]");
-    return apple.boolean(!prevented);
+    return apple.boolean(askEdit(tv, s, true));
+}
+
+fn fieldShouldChange(_: id, _: SEL, field: id, _: NSRange, text: id) callconv(.c) BOOL {
+    const s = apple.utf8(.{ .value = text }) orelse "";
+    return apple.boolean(askEdit(field, s, false));
+}
+
+// ---------------------------------------------------------------------------
+// Edits: the page hears each one before the field makes it (beforeinput,
+// which it may prevent) and after (input, with the same type and data), as
+// WKWebView's: inputType from the hardware key that made it (the soft
+// keyboard's: typing, or deleting backward).
+
+/// The last hardware key down a field had (fieldPresses), for the edit it makes.
+var last_key: struct { name: [16]u8 = undefined, len: usize = 0, mods: u32 = 0 } = .{};
+
+/// The edit the page let through, for the input that follows it.
+var pending_type: ?[]const u8 = null;
+var pending_data: std.ArrayListUnmanaged(u8) = .empty;
+var pending_has_data = false;
+
+fn editKind(repl: []const u8, textarea: bool) struct { t: []const u8, data: bool } {
+    const k = last_key.name[0..last_key.len];
+    const cmd = last_key.mods & 8 != 0;
+    const alt = last_key.mods & 4 != 0;
+    const shift = last_key.mods & 1 != 0;
+    last_key.len = 0;
+    if (cmd and std.mem.eql(u8, k, "z")) return .{ .t = if (shift) "historyRedo" else "historyUndo", .data = false };
+    if (cmd and std.mem.eql(u8, k, "x")) return .{ .t = "deleteByCut", .data = false };
+    if (repl.len > 0) {
+        if (cmd and std.mem.eql(u8, k, "v")) return .{ .t = "insertFromPaste", .data = true };
+        if (textarea and std.mem.eql(u8, repl, "\n")) return .{ .t = "insertLineBreak", .data = false };
+        return .{ .t = "insertText", .data = true };
+    }
+    if (std.mem.eql(u8, k, "Delete")) return .{ .t = if (alt) "deleteWordForward" else "deleteContentForward", .data = false };
+    if (std.mem.eql(u8, k, "Backspace") and alt) return .{ .t = "deleteWordBackward", .data = false };
+    if (std.mem.eql(u8, k, "Backspace") and cmd) return .{ .t = "deleteSoftLineBackward", .data = false };
+    return .{ .t = "deleteContentBackward", .data = false };
+}
+
+/// Ask the page about an edit of `control`'s text (replacing with `repl`):
+/// false when it prevented it. While an input method composes (marked
+/// text) the edits are the field's alone.
+fn askEdit(control: id, repl: []const u8, textarea: bool) bool {
+    const o = ownerOf(control) orelse return true;
+    if (o.s.updating) return true;
+    if ((Object{ .value = control }).msgSend(Object, "markedTextRange", .{}).value != null) return true;
+    const kind = editKind(repl, textarea);
+    const gpa = o.s.gpa;
+    const data = std.json.Stringify.valueAlloc(gpa, repl, .{}) catch return true;
+    defer gpa.free(data);
+    const json = std.fmt.allocPrint(gpa, "[\"{s}\",{s}]", .{ kind.t, if (kind.data) data else "null" }) catch return true;
+    defer gpa.free(json);
+    if (o.s.engine.event(o.n.id, "beforeinput", json)) return false;
+    pending_type = kind.t;
+    pending_data.clearRetainingCapacity();
+    pending_has_data = kind.data;
+    if (kind.data) pending_data.appendSlice(std.heap.smp_allocator, repl) catch {
+        pending_has_data = false;
+    };
+    return true;
+}
+
+/// After an edit: "input" with [value, inputType, data] (the edit the page
+/// heard of), or the value alone.
+fn sendInput(s: *Surface, n: *Node, text: []const u8) void {
+    const kind = pending_type orelse return sendValue(s, n, "input", text);
+    pending_type = null;
+    const gpa = s.gpa;
+    const v = std.json.Stringify.valueAlloc(gpa, text, .{}) catch return;
+    defer gpa.free(v);
+    const d = if (pending_has_data) (std.json.Stringify.valueAlloc(gpa, pending_data.items, .{}) catch return) else null;
+    defer if (d) |x| gpa.free(x);
+    const json = std.fmt.allocPrint(gpa, "[{s},\"{s}\",{s}]", .{ v, kind, d orelse "null" }) catch return;
+    defer gpa.free(json);
+    _ = s.engine.event(n.id, "input", json);
+}
+
+/// Backend.selection: a field's selection while it's edited, [start, end]
+/// in UTF-16 units (UITextInput's offsets).
+fn selection(ctx: *anyopaque, n: *Node, out: *[2]u32) bool {
+    const s = surfaceOf(ctx);
+    const f = s.fields.get(n.id) orelse return false;
+    const c = f.control;
+    if (!apple.isTrue(c.msgSend(BOOL, "respondsToSelector:", .{apple.objc.sel("selectedTextRange").value}))) return false;
+    if (!apple.isTrue(c.msgSend(BOOL, "isFirstResponder", .{}))) return false;
+    const r = c.msgSend(Object, "selectedTextRange", .{});
+    if (r.value == null) return false;
+    const begin = c.msgSend(Object, "beginningOfDocument", .{});
+    const a = c.msgSend(isize, "offsetFromPosition:toPosition:", .{ begin.value, r.msgSend(Object, "start", .{}).value });
+    const b = c.msgSend(isize, "offsetFromPosition:toPosition:", .{ begin.value, r.msgSend(Object, "end", .{}).value });
+    out.* = .{ @intCast(@max(0, a)), @intCast(@max(0, b)) };
+    return true;
+}
+
+/// Backend.set_selection: select [start, end] of a field being edited.
+fn setSelection(ctx: *anyopaque, n: *Node, start: u32, end: u32) void {
+    const s = surfaceOf(ctx);
+    const f = s.fields.get(n.id) orelse return;
+    const c = f.control;
+    if (!apple.isTrue(c.msgSend(BOOL, "respondsToSelector:", .{apple.objc.sel("setSelectedTextRange:").value}))) return;
+    const begin = c.msgSend(Object, "beginningOfDocument", .{});
+    const p1 = c.msgSend(Object, "positionFromPosition:offset:", .{ begin.value, @as(isize, start) });
+    const p2 = c.msgSend(Object, "positionFromPosition:offset:", .{ begin.value, @as(isize, @max(start, end)) });
+    const endp = c.msgSend(Object, "endOfDocument", .{});
+    const a = if (p1.value != null) p1 else endp;
+    const b = if (p2.value != null) p2 else endp;
+    const r = c.msgSend(Object, "textRangeFromPosition:toPosition:", .{ a.value, b.value });
+    if (r.value != null) c.msgSend(void, "setSelectedTextRange:", .{r.value});
 }
 
 const NSRange = extern struct { location: c_ulong, length: c_ulong };
