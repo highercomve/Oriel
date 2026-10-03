@@ -268,7 +268,10 @@ DPI / 96; Android: the density). main.js makes it `devicePixelRatio` and
 answers `resolution`, `min-resolution`, `max-resolution` (dppx, x, dpi,
 dpcm) and `-webkit-min-device-pixel-ratio` queries with it; without one
 it's 1. Apple passes it (checked against WKWebView: 1 on a 1x Mac, 3 on
-an iPhone); the others add theirs. `document.documentElement`'s
+an iPhone); the others add theirs. When a window goes to a screen with
+another scale, the backend sends `Engine.event(0, "dpr", scale)`:
+devicePixelRatio follows and resolution queries' `change` listeners fire
+(macOS: the view's viewDidChangeBackingProperties). `document.documentElement`'s
 clientWidth and clientHeight are the viewport's, as in browsers.
 
 **Text metrics** (each backend, to match its own WebView):
