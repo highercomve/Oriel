@@ -1,4 +1,4 @@
-﻿//! The native renderer's Win32 backend (docs/native-renderer.md).
+//! The native renderer's Win32 backend (docs/native-renderer.md).
 //!
 //! Boxes, text (DirectWrite) and icons (Direct2D path geometries, from
 //! svg_path.zig) are drawn with Direct2D in one child window, the canvas;
@@ -93,7 +93,7 @@ const Field = struct {
     /// Its font's own (a themed combobox is never shorter than that and
     /// its frame: a smaller one only cuts the text).
     item_nat: c_int = 0,
-    /// <input type=range>: a trackbar, positions 0â€¦steps of the range's step.
+    /// <input type=range>: a trackbar, positions 0…steps of the range's step.
     slider: bool = false,
     /// The position last sent as `input` (a drag sends it once per step).
     sent_pos: isize = -1,
@@ -1014,7 +1014,7 @@ fn paintPlaceholder(hwnd: c.HWND) void {
     _ = c.DrawTextW(hdc, ph.ptr, -1, &rc, c.DT_WORDBREAK | c.DT_NOPREFIX | c.DT_EDITCONTROL);
 }
 
-/// <input type=range>: a trackbar, positions 0â€¦steps (the value snaps to
+/// <input type=range>: a trackbar, positions 0…steps (the value snaps to
 /// the range's step); its WM_HSCROLL goes to the canvas (onSlider).
 fn makeSlider(s: *Surface, n: *Node) !Field {
     if (!common_controls) {
@@ -2734,7 +2734,7 @@ const CanvasPainter = struct {
         cv.cur = pt;
     }
 
-    /// As cubic BÃ©ziers of up to a quarter turn each, from a0 to a1
+    /// As cubic Béziers of up to a quarter turn each, from a0 to a1
     /// (clockwise in the y-down space unless ccw), joined to the current
     /// point by a line.
     fn arc(cv: *CanvasPainter, x: f32, y: f32, r: f32, a0: f32, a1: f32, ccw: bool) void {
@@ -3105,7 +3105,7 @@ fn polygonGeometry(pts: []const P2) ?*c.ID2D1PathGeometry {
     return geo;
 }
 
-/// a âˆ© b as a new geometry (caller releases).
+/// a ∩ b as a new geometry (caller releases).
 fn intersectGeometry(a: *c.ID2D1Geometry, b: *c.ID2D1Geometry) ?*c.ID2D1PathGeometry {
     const fac = d2d.?;
     var geo: ?*c.ID2D1PathGeometry = null;
@@ -3186,7 +3186,7 @@ fn glyphOutline(gpa: std.mem.Allocator, t: []const u8, family: [:0]const u16, we
 }
 
 // ---------------------------------------------------------------------------
-// Images (<img src="data:â€¦"> or an app asset), decoded with WIC
+// Images (<img src="data:…"> or an app asset), decoded with WIC
 
 /// The largest picture decoded: 4096 x 4096 px (64 MB as BGRA). Larger ones
 /// keep their declared size for layout and aren't drawn.
@@ -3395,7 +3395,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
 // itself: width("ab") - width("b"). A pair DirectWrite makes one cluster
 // (a ligature), more than one run, letter spacing, other characters or a
 // text that wraps take the layout. ORIEL_NUI_TEXT_CHECK=1 measures both and
-// logs any difference. A new string was an IDWriteTextLayout (~19 Âµs):
+// logs any difference. A new string was an IDWriteTextLayout (~19 µs):
 // most of render-bench's "update 1000 rows".
 
 const FontKey = struct { mono: bool, italic: bool, weight: u16, size: u32, fz: u32, lh: i32, family: u64 };
@@ -4235,7 +4235,7 @@ fn paintIcon(p: *Painter, n: *Node) void {
     const scale = @min(ct.w / icon.vb[2], ct.h / icon.vb[3]);
     const saved = p.xf;
     defer p.setTransform(saved);
-    // viewBox â†’ the content box, centered.
+    // viewBox → the content box, centered.
     const tx = ct.x + (ct.w - icon.vb[2] * scale) / 2 - icon.vb[0] * scale;
     const ty = ct.y + (ct.h - icon.vb[3] * scale) / 2 - icon.vb[1] * scale;
     p.setTransform(mul(matrix(scale, 0, 0, scale, tx, ty), saved));
