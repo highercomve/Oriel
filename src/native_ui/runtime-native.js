@@ -1420,8 +1420,23 @@ globalThis.atob ??= (s) => {
     }
     return true;
   }
+  var mediaAnswers = /* @__PURE__ */ new Map();
+  var mediaFor = { width: NaN, height: NaN, dark: null, coarse: null, reducedMotion: null };
   function mediaMatches(q) {
     if (!q) return true;
+    const v = viewport, f = mediaFor;
+    if (v.width !== f.width || v.height !== f.height || v.dark !== f.dark || v.coarse !== f.coarse || v.reducedMotion !== f.reducedMotion) {
+      mediaAnswers.clear();
+      Object.assign(f, { width: v.width, height: v.height, dark: v.dark, coarse: v.coarse, reducedMotion: v.reducedMotion });
+    }
+    let answer = mediaAnswers.get(q);
+    if (answer === void 0) {
+      if (mediaAnswers.size > 512) mediaAnswers.clear();
+      mediaAnswers.set(q, answer = evalMedia(q));
+    }
+    return answer;
+  }
+  function evalMedia(q) {
     return splitTop(q, ",").some((alt) => {
       alt = alt.trim();
       let negate = false;

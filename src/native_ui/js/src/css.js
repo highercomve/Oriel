@@ -174,8 +174,29 @@ function rangeMatches(part) {
   return true;
 }
 
+// Each query's answer for the viewport as it is (main.js assigns its
+// fields on resize and theme changes): matching asks for every candidate
+// rule of every element, and parsing the query each time was ~14% of a
+// settings page's JavaScript.
+const mediaAnswers = new Map();
+const mediaFor = { width: NaN, height: NaN, dark: null, coarse: null, reducedMotion: null };
+
 export function mediaMatches(q) {
   if (!q) return true;
+  const v = viewport, f = mediaFor;
+  if (v.width !== f.width || v.height !== f.height || v.dark !== f.dark || v.coarse !== f.coarse || v.reducedMotion !== f.reducedMotion) {
+    mediaAnswers.clear();
+    Object.assign(f, { width: v.width, height: v.height, dark: v.dark, coarse: v.coarse, reducedMotion: v.reducedMotion });
+  }
+  let answer = mediaAnswers.get(q);
+  if (answer === undefined) {
+    if (mediaAnswers.size > 512) mediaAnswers.clear();
+    mediaAnswers.set(q, (answer = evalMedia(q)));
+  }
+  return answer;
+}
+
+function evalMedia(q) {
   return splitTop(q, ",").some((alt) => {
     alt = alt.trim();
     let negate = false;
