@@ -366,7 +366,10 @@ elProto.focus = function () {
   document.__active = this;
   if (renderer) { renderer.render(); host.focus(renderer.idOf(this, "el")); }
 };
-elProto.blur = function () { if (document.__active === this) document.__active = null; };
+// linkedom's HTMLElement.prototype has a blur() that only fires the event.
+Object.getPrototypeOf(document.createElement("div")).blur = elProto.blur = function () {
+  if (document.__active === this) document.__active = null;
+};
 elProto.scrollIntoView = function (opts) {
   if (!renderer) return;
   const block = typeof opts === "object" ? opts.block || "start" : opts === false ? "end" : "start";
@@ -403,15 +406,32 @@ let keyboardFocus = false;
 const TEXT_INPUTS = new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
 const textField = (el) => el?.localName === "textarea" || el?.isContentEditable ||
   (el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase()));
+const focusEvent = (type, bubbles, relatedTarget) => {
+  const ev = new Event(type, { bubbles });
+  Object.defineProperty(ev, "relatedTarget", { value: relatedTarget || null, configurable: true });
+  return ev;
+};
 Object.defineProperty(document, "__active", {
   get() { return active; },
   set(el) {
     if (el === active) return;
-    active?.removeAttribute?.("data-nui-focus");
-    active?.removeAttribute?.("data-nui-focus-visible");
+    const old = active;
+    old?.removeAttribute?.("data-nui-focus");
+    old?.removeAttribute?.("data-nui-focus-visible");
     active = el || null;
     active?.setAttribute?.("data-nui-focus", "");
     if (active && (keyboardFocus || textField(active))) active.setAttribute?.("data-nui-focus-visible", "");
+    // As browsers fire them: blur and focusout on the old one, focus and
+    // focusin on the new one (focus and blur don't bubble).
+    const now = active;
+    if (old?.dispatchEvent) {
+      old.dispatchEvent(focusEvent("blur", false, now));
+      old.dispatchEvent(focusEvent("focusout", true, now));
+    }
+    if (now?.dispatchEvent && now === active) {
+      now.dispatchEvent(focusEvent("focus", false, old));
+      now.dispatchEvent(focusEvent("focusin", true, old));
+    }
   },
   configurable: true,
 });
