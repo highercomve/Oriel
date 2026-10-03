@@ -6,9 +6,11 @@ import { installNativeDom } from "./native.js";
 
 export const NATIVE = true;
 const nd = globalThis.__nuiDom;
+// Taken as the bundle loads: main.js then hides __host from the page.
+const hostDocument = globalThis.__host?.document;
 
 export function openDocument(html) {
-  const document = globalThis.__host.document;
+  const document = hostDocument;
   const out = installNativeDom(globalThis, document);
   document.__writePage(html);
   return out;

@@ -359,6 +359,28 @@ while Yoga sizes a row it reads the child's top from the box's previous
 layout (0 the first time), so a button beside text makes the row a few
 pixels taller than WebKit's (26 + 3 for a 14px button in a 16px line).
 
+**The app's CSP** (shared): the runtime keeps the WebView's rules for
+compiling strings. When `security.csp`'s script directive (`script-src`,
+else `default-src`) lacks `'unsafe-eval'` (Oriel's default), the page's
+`eval` (direct and indirect), `new Function` and every other Function
+constructor (`Function.prototype.constructor`, async and generator ones)
+and a string given to `setTimeout`/`setInterval` are refused, with
+WebKit's `EvalError` message (naming the directive) and the violation
+logged as an error; `eval` of a non-string still returns it. Engine.create
+decides (engine.zig `evalRefusal`) and the QuickJS context refuses it
+itself (an Oriel hook in `JS_EvalObject`, quickjs.c
+`JS_OrielSetEvalRefused`), so a page can't get around it by replacing
+globals; the host's own `JS_Eval` (the runtime, page scripts) runs, and
+the runtime compiles nothing from strings itself (render.js parses a
+`calc()` of numbers: `arithmetic`). Inline event handlers (`onclick="…"`)
+are compiled by the host (`host.compileHandler`), refused when the
+directive has no `'unsafe-inline'` (or a nonce or hash turns it off), as
+in the WebView; and `__host` is gone from the page's global object once
+the runtime has it (its `evalScript` would run any string). Checked
+against WKWebView under the default CSP: the same EvalErrors, `eval(42)`,
+no string timer, no inline handler; engine.zig's test covers both a
+refusing and an allowing CSP.
+
 **Screen scale** (each backend): `platform.dpr` in the platform JSON,
 the screen's pixels per CSS px, read as a window opens (Apple: the main
 screen's backing scale / UIScreen's scale; GTK: the scale factor; Win32:

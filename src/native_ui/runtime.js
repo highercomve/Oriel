@@ -17349,14 +17349,35 @@ input[type="range"] { height: 20px; margin: 2px; }
   function numberOf(v) {
     if (v === void 0 || v === null) return NaN;
     const t = String(v).trim().replace(/calc\(/g, "(");
-    if (/^[\d.+\-*/()\s]+$/.test(t)) {
-      try {
-        return +Function(`return (${t})`)();
-      } catch {
-        return NaN;
-      }
-    }
+    if (/^[\d.+\-*/()\s]+$/.test(t)) return arithmetic(t);
     return parseFloat(t);
+  }
+  function arithmetic(src) {
+    const toks = src.match(/\d*\.?\d+(?:e[+-]?\d+)?|[-+*/()]/gi) || [];
+    let i = 0;
+    const atom = () => {
+      const t = toks[i++];
+      if (t === "(") {
+        const v2 = sum();
+        if (toks[i++] !== ")") return NaN;
+        return v2;
+      }
+      if (t === "-") return -atom();
+      if (t === "+") return atom();
+      return t === void 0 ? NaN : parseFloat(t);
+    };
+    const product = () => {
+      let v2 = atom();
+      while (toks[i] === "*" || toks[i] === "/") v2 = toks[i++] === "*" ? v2 * atom() : v2 / atom();
+      return v2;
+    };
+    const sum = () => {
+      let v2 = product();
+      while (toks[i] === "+" || toks[i] === "-") v2 = toks[i++] === "+" ? v2 + product() : v2 - product();
+      return v2;
+    };
+    const v = sum();
+    return i === toks.length ? v : NaN;
   }
   function angleOf(v) {
     const m = /^(-?[\d.]+)(deg|turn|rad|grad)?$/.exec(String(v || "").trim());
@@ -17515,6 +17536,7 @@ input[type="range"] { height: 20px; margin: 2px; }
   // src/main.js
   var internalWeak4 = (m) => (globalThis.__nuiDom?.internal?.(m), m);
   var host = globalThis.__host;
+  delete globalThis.__host;
   var fmt = (args) => args.map((a) => {
     if (a instanceof Error) return `${a.name}: ${a.message}
 ${a.stack || ""}`;
@@ -17542,8 +17564,19 @@ ${a.stack || ""}`;
     host.timer(id, Math.max(0, +ms || 0));
     return id;
   }
-  globalThis.setTimeout = (fn, ms, ...args) => setTimer(fn, ms, args, false);
-  globalThis.setInterval = (fn, ms, ...args) => setTimer(fn, Math.max(4, +ms || 0), args, true);
+  var timerFn = (fn) => {
+    if (typeof fn !== "string") return fn;
+    const code = fn;
+    return () => {
+      try {
+        (0, eval)(code);
+      } catch (e) {
+        if (!(e instanceof EvalError)) throw e;
+      }
+    };
+  };
+  globalThis.setTimeout = (fn, ms, ...args) => setTimer(timerFn(fn), ms, args, false);
+  globalThis.setInterval = (fn, ms, ...args) => setTimer(timerFn(fn), Math.max(4, +ms || 0), args, true);
   globalThis.clearTimeout = globalThis.clearInterval = (id) => {
     timers.delete(id);
   };
@@ -18860,11 +18893,12 @@ ${a.stack || ""}`;
       if (old) el.removeEventListener(type, old.fn);
       let compiled;
       try {
-        compiled = new Function("event", attr2.value);
+        compiled = host.compileHandler ? host.compileHandler(name, attr2.value) : new Function("event", attr2.value);
       } catch (e) {
         console.error(`${name}: ${e}`);
         continue;
       }
+      if (typeof compiled !== "function") continue;
       const fn = function(event) {
         if (compiled.call(el, event) === false) event.preventDefault();
       };
