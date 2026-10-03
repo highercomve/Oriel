@@ -141,7 +141,10 @@ borders, `border-radius` (with sides of different widths, the inner
 corners are ellipses and colors meet on the lines from the outer to the
 inner corners, as browsers draw a card's `border-left: 6px`; GTK:
 roundedSides in gtk.zig), `box-shadow` (blurred like CSS), `outline`, `opacity`, fonts,
-`text-align`, `white-space`; transitions and `@keyframes` animations on
+`text-align`, `white-space`, `<br>` (in text, in inline elements, and in
+a line of text and inline boxes, where what follows it starts a new line:
+a full-width break in a row that wraps; a last `<br>` adds no line);
+transitions and `@keyframes` animations on
 opacity, backgrounds, color, transforms, sizes, border colors and shadows
 (src/native_ui/js/src/transitions.js, animations.js: while they run, only
 the animated nodes are sent each frame).

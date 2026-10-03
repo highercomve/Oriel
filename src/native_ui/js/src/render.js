@@ -1436,7 +1436,11 @@ export class Renderer {
     const flushRuns = (beforeBox = false) => {
       if (!runs.length) return;
       const trimmed = trimRuns(runs, cs["white-space"], afterBox, beforeBox);
+      // Only a space between two inline boxes: the space stays (the next
+      // box is that much further on: { space }).
+      const spaced = !trimmed.length && afterBox && beforeBox && runs.some((r) => /\s/.test(r.t));
       runs = [];
+      if (spaced) flow.push({ space: true });
       if (!trimmed.length) return;
       flow.push({ text: trimmed });
     };
@@ -1490,7 +1494,10 @@ export class Renderer {
       return ATOMIC_INLINE.has(d) || !!boxed?.has(child);
     };
     const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) &&
-      flow.every((f) => f.text || atomic(f.el));
+      flow.every((f) => f.text || f.space || atomic(f.el));
+    // Spaces between boxes: kept in a line with text; a row of only boxes
+    // spaces them with its column gap (below).
+    if (!inlineLine) for (let i = flow.length - 1; i >= 0; i--) if (flow[i].space) flow.splice(i, 1);
     // One box and its text (a checkbox's label): the text shrinks to the
     // room beside the box and wraps there by words (its min width is the
     // longest word, tree.zig). Several boxes, or a box sized in % (a
@@ -1499,6 +1506,9 @@ export class Renderer {
       props.fd = "row"; props.ai = "center";
       const boxes = flow.filter((f) => f.el);
       if (boxes.length > 1 || boxes.some((f) => /%\s*$/.test(this.style(f.el, cs, rematch).width || ""))) props.fw = "wrap";
+      // A <br> in the line: what follows starts a new line (a full-width
+      // break between the pieces of text, in a row that wraps).
+      if (splitBreaks(flow)) props.fw = "wrap";
     }
     // Only atomic inline boxes (buttons side by side, inline-block chips):
     // one line that wraps, as in a browser, not a column; the whitespace
@@ -1518,7 +1528,16 @@ export class Renderer {
     const flowBlock = !childCtx.blockify && props.fd === "column" && display !== "grid" && !tableHolds(display);
     const inLine = flowBlock ? new Set() : null;
     if (before) inLine?.add(before);
+    let spaceBefore = false;
     for (const [index, item] of flow.entries()) {
+      if (item.space) { spaceBefore = true; continue; }
+      if (item.brk) {
+        const bid = this.idOf(el, "br" + kids.length);
+        this.own(bid, el);
+        this.put(nodes, bid, "view", { w: "100%", h: 0 }, []);
+        kids.push(bid);
+        continue;
+      }
       if (item.text) {
         const tid = this.idOf(el, "t" + kids.length);
         this.own(tid, el);
@@ -1533,6 +1552,12 @@ export class Renderer {
       const cid = this.element(item.el, cs, nodes, childCtx);
       if (cid === null) continue;
       this.adjustKid(nodes, cid, item.el, cs, props, display, childCtx);
+      if (spaceBefore) {
+        spaceBefore = false;
+        const n = nodes.get(cid);
+        const m = n?.props.m ? [...n.props.m] : [0, 0, 0, 0];
+        if (n && typeof m[3] === "number") { m[3] += Math.round(fontSize * 0.28 * 10) / 10; n.props = { ...n.props, m }; }
+      }
       // An image alone between blocks (an icon over a heading): a browser
       // puts it in a line of its own, which reaches below its margin box by
       // the font's descent (imageLine, for the whole content).
@@ -1771,7 +1796,7 @@ export class Renderer {
     if ((cs.display || "inline") === "none") return;
     const fs = fontSizeOf(cs, parentCS);
     cs.__fs = fs;
-    if (el.localName === "br") { runs.push({ t: "\n", ...runStyle(cs, fs) }); return; }
+    if (el.localName === "br") { runs.push({ t: "\n", br: true, ...runStyle(cs, fs) }); return; }
     const bg = (cs.background ? background(cs.background, color(cs.color))?.color : undefined) ?? outerBg;
     const deeper = rematch || this.marks.get(el) === 2;
     for (let child = el.firstChild; child; child = child.nextSibling) {
@@ -2535,11 +2560,50 @@ function runFor(text, cs, fs, src, bg) {
 // Collapse whitespace like HTML (except in pre / pre-wrap) and drop empty runs.
 // `keepStart`, `keepEnd`: an inline box comes before / after these runs on
 // the same line: a space there stays (collapsed to one).
+// A row of inline content (text and inline boxes): its text split at its
+// <br>s into pieces with a break between them ({ brk }), in place; none at
+// the very end (a last <br> starts no line). True when there was one.
+function splitBreaks(flow) {
+  let found = false;
+  const out = [];
+  for (const item of flow) {
+    if (!item.text || !item.text.some((r) => r.t === "\n")) { out.push(item); continue; }
+    found = true;
+    let piece = [];
+    for (const r of item.text) {
+      if (r.t !== "\n") { piece.push(r); continue; }
+      if (piece.length) out.push({ text: piece });
+      out.push({ brk: true });
+      piece = [];
+    }
+    if (piece.length) out.push({ text: piece });
+  }
+  while (out.length && out[out.length - 1].brk) out.pop();
+  flow.length = 0;
+  flow.push(...out);
+  return found;
+}
+
 function trimRuns(runs, _ws, keepStart = false, keepEnd = false) {
   const out = [];
   let lastSpace = !keepStart;
+  let brAt = -1; // the last <br>'s run in out
   for (const r of runs) {
     let t = r.t;
+    // A <br>: the line ends there (a space before it goes, as browsers
+    // hang it; spaces after it start no line).
+    if (r.br) {
+      const prev = out[out.length - 1];
+      if (prev && prev.ws === undefined && prev.t.endsWith(" ")) {
+        prev.t = prev.t.slice(0, -1);
+        if (!prev.t) out.pop();
+      }
+      r.br = undefined;
+      brAt = out.length;
+      out.push(strip(r, "\n"));
+      lastSpace = true;
+      continue;
+    }
     if (r.ws === "pre" || r.ws === "pre-wrap" || r.ws === "pre-line") {
       if (t) { out.push(strip(r, t)); lastSpace = /\s$/.test(t); }
       continue;
@@ -2552,6 +2616,8 @@ function trimRuns(runs, _ws, keepStart = false, keepEnd = false) {
   }
   // Only a space (between two boxes): the row of boxes spaces them itself.
   if ((keepStart || keepEnd) && out.every((r) => !r.t.trim() && r.ws === undefined)) return [];
+  // A <br> that ends the content starts no line.
+  if (!keepEnd && brAt === out.length - 1) out.pop();
   if (out.length && !keepEnd) {
     const last = out[out.length - 1];
     if (last.ws !== "pre" && last.ws !== "pre-wrap") last.t = last.t.replace(/ $/, "");
