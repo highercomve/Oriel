@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
@@ -16,8 +17,11 @@ import org.json.JSONArray
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.tan
 
 /**
  * <canvas> in the native renderer: the program the page recorded
@@ -313,8 +317,11 @@ private class Replay(private val c: Canvas) {
         var baseline: Int = 0, // alphabetic, top, hanging, middle, bottom
         // A scale by 0: nothing drawn until the restore() that undoes it.
         var singular: Boolean = false,
+        // The program's transform so far (translate, scale, rotate), as the
+        // canvas has it on top of the bitmap's own scale.
+        val ctm: Matrix = Matrix(),
     ) {
-        fun copy() = State(fill, stroke, lw, cap, join, alpha, italic, weight, size, family, align, baseline, singular)
+        fun copy() = State(fill, stroke, lw, cap, join, alpha, italic, weight, size, family, align, baseline, singular, Matrix(ctm))
     }
 
     private class Grad(val linear: Boolean, val g: FloatArray) {
@@ -325,8 +332,14 @@ private class Replay(private val c: Canvas) {
     private var st = State()
     private val states = ArrayList<State>()
     private val grads = HashMap<Int, Grad>()
+    /** The path in the bitmap's space: each point mapped by the transform
+     *  in effect when it was added, as a browser keeps it (a path built
+     *  under a transform restored before fill() stays where it was drawn). */
     private val path = Path()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pt = FloatArray(6)
+    private val inverse = Matrix()
+    private val userPath = Path()
 
     fun run(ops: List<CvOp>) {
         for (op in ops) {
@@ -349,25 +362,39 @@ private class Replay(private val c: Canvas) {
             CvOp.Save -> { states += st.copy(); c.save() }
             // Only what this program saved: an extra restore() is ignored.
             CvOp.Restore -> if (states.isNotEmpty()) { st = states.removeAt(states.size - 1); c.restore() }
-            is CvOp.Translate -> c.translate(op.x, op.y)
-            is CvOp.Scale -> if (op.x == 0f || op.y == 0f) st.singular = true else c.scale(op.x, op.y)
-            is CvOp.Rotate -> c.rotate(Math.toDegrees(op.a.toDouble()).toFloat())
+            is CvOp.Translate -> { c.translate(op.x, op.y); st.ctm.preTranslate(op.x, op.y) }
+            is CvOp.Scale -> if (op.x == 0f || op.y == 0f) st.singular = true else { c.scale(op.x, op.y); st.ctm.preScale(op.x, op.y) }
+            is CvOp.Rotate -> Math.toDegrees(op.a.toDouble()).toFloat().let { c.rotate(it); st.ctm.preRotate(it) }
             CvOp.BeginPath -> path.reset()
             CvOp.ClosePath -> path.close()
-            is CvOp.MoveTo -> path.moveTo(op.x, op.y)
-            is CvOp.LineTo -> if (path.isEmpty) path.moveTo(op.x, op.y) else path.lineTo(op.x, op.y)
-            is CvOp.Rect -> path.addRect(op.x, op.y, op.x + op.w, op.y + op.h, Path.Direction.CW)
+            is CvOp.MoveTo -> { map(op.x, op.y); path.moveTo(pt[0], pt[1]) }
+            is CvOp.LineTo -> { map(op.x, op.y); if (path.isEmpty) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1]) }
+            is CvOp.Rect -> {
+                map(op.x, op.y); path.moveTo(pt[0], pt[1])
+                map(op.x + op.w, op.y); path.lineTo(pt[0], pt[1])
+                map(op.x + op.w, op.y + op.h); path.lineTo(pt[0], pt[1])
+                map(op.x, op.y + op.h); path.lineTo(pt[0], pt[1])
+                path.close()
+                map(op.x, op.y); path.moveTo(pt[0], pt[1]) // as a browser: the next subpath starts at the rect's origin
+            }
             is CvOp.Arc -> arc(op)
-            is CvOp.Quad -> { if (path.isEmpty) path.moveTo(op.cx, op.cy); path.quadTo(op.cx, op.cy, op.x, op.y) }
-            is CvOp.Bezier -> { if (path.isEmpty) path.moveTo(op.c1x, op.c1y); path.cubicTo(op.c1x, op.c1y, op.c2x, op.c2y, op.x, op.y) }
+            is CvOp.Quad -> {
+                if (path.isEmpty) { map(op.cx, op.cy); path.moveTo(pt[0], pt[1]) }
+                map(op.cx, op.cy, op.x, op.y); path.quadTo(pt[0], pt[1], pt[2], pt[3])
+            }
+            is CvOp.Bezier -> {
+                if (path.isEmpty) { map(op.c1x, op.c1y); path.moveTo(pt[0], pt[1]) }
+                map(op.c1x, op.c1y, op.c2x, op.c2y, op.x, op.y); path.cubicTo(pt[0], pt[1], pt[2], pt[3], pt[4], pt[5])
+            }
             is CvOp.Fill -> {
                 path.fillType = if (op.evenOdd) Path.FillType.EVEN_ODD else Path.FillType.WINDING
-                if (use(st.fill, Paint.Style.FILL)) c.drawPath(path, paint)
+                if (use(st.fill, Paint.Style.FILL)) inUserSpace()?.let { c.drawPath(it, paint) }
             }
-            CvOp.Stroke -> if (use(st.stroke, Paint.Style.STROKE)) c.drawPath(path, paint)
+            // The line width, dashes and joins in the transform in effect now.
+            CvOp.Stroke -> if (use(st.stroke, Paint.Style.STROKE)) inUserSpace()?.let { c.drawPath(it, paint) }
             is CvOp.Clip -> {
                 path.fillType = if (op.evenOdd) Path.FillType.EVEN_ODD else Path.FillType.WINDING
-                c.clipPath(path) // the path stays, as a canvas keeps it
+                inUserSpace()?.let { c.clipPath(it) } // the path stays, as a canvas keeps it
             }
             is CvOp.FillRect -> if (use(st.fill, Paint.Style.FILL)) c.drawRect(op.x, op.y, op.x + op.w, op.y + op.h, paint)
             is CvOp.StrokeRect -> if (use(st.stroke, Paint.Style.STROKE)) c.drawRect(op.x, op.y, op.x + op.w, op.y + op.h, paint)
@@ -388,10 +415,31 @@ private class Replay(private val c: Canvas) {
         }
     }
 
+    /** Points (x0, y0, x1, y1…) mapped by the transform into `pt`. */
+    private fun map(vararg xy: Float) {
+        for (i in xy.indices) pt[i] = xy[i]
+        st.ctm.mapPoints(pt, 0, pt, 0, xy.size / 2)
+    }
+
+    /**
+     * The path back in the space of the transform in effect now, to draw or
+     * clip under it (the canvas has it): a fill lands where the path was
+     * built, a stroke's width and a gradient follow the transform now, as in
+     * a browser. Null when the transform can't be undone (nothing drawn).
+     */
+    private fun inUserSpace(): Path? {
+        if (!st.ctm.invert(inverse)) return null
+        userPath.set(path)
+        userPath.transform(inverse)
+        return userPath
+    }
+
     /**
      * arc(x, y, r, a0, a1, ccw): clockwise (y down) from a0 to a1, or the
      * other way; a sweep of a whole turn or more is the whole circle. A line
-     * joins the path's current point to the arc's start.
+     * joins the path's current point to the arc's start. Added as cubic
+     * curves (at most a quarter turn each) whose points the transform maps,
+     * so a rotated or scaled arc (an ellipse) keeps its shape.
      */
     private fun arc(a: CvOp.Arc) {
         if (a.r < 0) return
@@ -404,15 +452,23 @@ private class Replay(private val c: Canvas) {
             if (sweep <= -twoPi) sweep = -twoPi
             else if (sweep > 0) sweep = sweep % twoPi - twoPi
         }
-        val oval = RectF(a.x - a.r, a.y - a.r, a.x + a.r, a.y + a.r)
-        val start = Math.toDegrees(a.a0.toDouble()).toFloat()
-        val deg = Math.toDegrees(sweep.toDouble()).toFloat()
-        // Skia treats a 360° arcTo as no arc: a whole circle goes in halves.
-        if (abs(deg) >= 359.99f) {
-            path.arcTo(oval, start, deg / 2, path.isEmpty)
-            path.arcTo(oval, start + deg / 2, deg / 2, false)
-        } else {
-            path.arcTo(oval, start, deg, path.isEmpty)
+        var t = a.a0
+        map(a.x + a.r * cos(t), a.y + a.r * sin(t))
+        if (path.isEmpty) path.moveTo(pt[0], pt[1]) else path.lineTo(pt[0], pt[1])
+        if (a.r == 0f || sweep == 0f) return
+        val n = ceil(abs(sweep) / (PI.toFloat() / 2) - 1e-4f).toInt().coerceAtLeast(1)
+        val step = sweep / n
+        val k = 4f / 3f * tan(step / 4)
+        repeat(n) {
+            val t1 = t + step
+            val c0 = cos(t); val s0 = sin(t); val c1 = cos(t1); val s1 = sin(t1)
+            map(
+                a.x + a.r * (c0 - k * s0), a.y + a.r * (s0 + k * c0),
+                a.x + a.r * (c1 + k * s1), a.y + a.r * (s1 - k * c1),
+                a.x + a.r * c1, a.y + a.r * s1,
+            )
+            path.cubicTo(pt[0], pt[1], pt[2], pt[3], pt[4], pt[5])
+            t = t1
         }
     }
 
