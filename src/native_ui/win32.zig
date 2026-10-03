@@ -2751,7 +2751,7 @@ fn strutExtent(props: *const tree_mod.Props) ?Extent {
 }
 
 fn runExtent(props: *const tree_mod.Props, r: tree_mod.Run) ?Extent {
-    return fontExtent(runFamily(props, r), r.sz, r.w, r.i, props.lh);
+    return fontExtent(runFamily(props, r), r.sz, r.w, r.i, r.lh orelse props.lh);
 }
 
 fn widen(e: ?Extent, x: ?Extent) ?Extent {
