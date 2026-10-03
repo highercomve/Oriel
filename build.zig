@@ -269,7 +269,8 @@ pub fn build(b: *std.Build) void {
         // The bindings with QuickJS: wrapper identity and weak references.
         const js_test = b.addRunArtifact(dom_bench);
         js_test.addFileArg(b.path("tools/dom_bench/wrappers.test.js"));
-        js_test.expectStdOutEqual("wrappers: ok\n");
+        // C stdio's text mode writes CRLF on Windows.
+        js_test.expectStdOutEqual(if (target.result.os.tag == .windows) "wrappers: ok\r\n" else "wrappers: ok\n");
         const dom_js_test_step = b.step("dom-js-test", "Run the native DOM's QuickJS tests (tools/dom_bench)");
         dom_js_test_step.dependOn(&js_test.step);
         dom_js_test = &js_test.step;
