@@ -45,6 +45,7 @@ extern fn gtk_widget_grab_focus(w: *Widget) c_int;
 extern fn gtk_widget_set_visible(w: *Widget, visible: c_int) void;
 extern fn gtk_widget_set_sensitive(w: *Widget, sensitive: c_int) void;
 extern fn gtk_widget_add_controller(w: *Widget, controller: *anyopaque) void;
+extern fn gtk_widget_has_focus(w: *Widget) c_int;
 extern fn gtk_widget_set_cursor_from_name(w: *Widget, name: ?[*:0]const u8) void;
 extern fn gtk_widget_add_css_class(w: *Widget, class: [*:0]const u8) void;
 extern fn gtk_widget_create_pango_layout(w: *Widget, text: ?[*:0]const u8) *PangoLayout;
@@ -292,7 +293,7 @@ pub const Surface = struct {
     invoke_fn: Invoke,
     invoke_ctx: ?*anyopaque,
     /// The area's event controllers (their handlers go in `destroy`).
-    controllers: [4]*anyopaque = undefined,
+    controllers: [5]*anyopaque = undefined,
     /// Names the surface for its timers (`surfaces`): one that fires after
     /// the window closed finds nothing.
     token: u64 = 0,
@@ -380,7 +381,13 @@ pub const Surface = struct {
         _ = g_signal_connect_data(keys, "key-pressed", @ptrCast(&onKey), s, null, 0);
         _ = g_signal_connect_data(keys, "key-released", @ptrCast(&onKeyUp), s, null, 0);
         gtk_widget_add_controller(area, keys);
-        s.controllers = .{ click, scroll, motion, keys };
+        // Tab while a field has the keys: the page moves the focus (the
+        // area's controller doesn't hear a field's keys, and GTK would).
+        const tab = gtk_event_controller_key_new();
+        gtk_event_controller_set_propagation_phase(tab, 1); // capture
+        _ = g_signal_connect_data(tab, "key-pressed", @ptrCast(&onFieldTab), s, null, 0);
+        gtk_widget_add_controller(overlay, tab);
+        s.controllers = .{ click, scroll, motion, keys, tab };
 
         s.token = next_token;
         next_token += 1;
@@ -744,7 +751,9 @@ fn onTick(_: *Widget, clock: *anyopaque, data: ?*anyopaque) callconv(.c) c_int {
 
 fn focus(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
-    if (s.fields.get(node.id)) |w| _ = gtk_widget_grab_focus(w);
+    // A drawn element (a button, a link, tabindex): the keys go to the
+    // page's view, not to the field that had them.
+    _ = gtk_widget_grab_focus(s.fields.get(node.id) orelse s.area);
 }
 
 /// New props: a text node's size is measured again.
@@ -1124,7 +1133,7 @@ fn modFlags(state: c_uint) u32 {
 fn keyName(keyval: c_uint) ?[]const u8 {
     const name = std.mem.span(gdk_keyval_name(keyval) orelse return null);
     const map = .{
-        .{ "Return", "Enter" },        .{ "KP_Enter", "Enter" },     .{ "Escape", "Escape" }, .{ "Tab", "Tab" },
+        .{ "Return", "Enter" },        .{ "KP_Enter", "Enter" },     .{ "Escape", "Escape" }, .{ "Tab", "Tab" }, .{ "ISO_Left_Tab", "Tab" },
         .{ "BackSpace", "Backspace" }, .{ "Delete", "Delete" },      .{ "Up", "ArrowUp" },    .{ "Down", "ArrowDown" },
         .{ "Left", "ArrowLeft" },      .{ "Right", "ArrowRight" },   .{ "Home", "Home" },     .{ "End", "End" },
         .{ "Page_Up", "PageUp" },      .{ "Page_Down", "PageDown" }, .{ "space", " " },
@@ -1269,6 +1278,15 @@ fn onKey(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopa
     const repeat = s.keys_down.contains(keyval);
     s.keys_down.put(s.gpa, keyval, {}) catch {};
     const json = std.fmt.bufPrint(&buf, "[{s},{d},{}]", .{ key, modFlags(state), repeat }) catch return 0;
+    return @intFromBool(s.engine.event(0, "key", json));
+}
+
+fn onFieldTab(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaceOf(data);
+    const name = keyName(keyval) orelse return 0;
+    if (!std.mem.eql(u8, name, "Tab") or gtk_widget_has_focus(s.area) != 0) return 0;
+    var buf: [32]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"Tab\",{d},false]", .{modFlags(state)}) catch return 0;
     return @intFromBool(s.engine.event(0, "key", json));
 }
 
