@@ -107,7 +107,7 @@ a single-line field submits its `form`.
 ## CSS
 
 Supported: selectors (types, classes, ids, attributes, `:not`, `:first-child`,
-`:focus`, `:hover`, `:active`, descendant and child combinators, `::before`/`::after`), the
+`:focus`, `:focus-visible`, `:hover`, `:active`, descendant and child combinators, `::before`/`::after`), the
 cascade and `!important`, `var()` with fallbacks, `calc()`, `color-mix()`,
 inheritance of text properties, `@media` on width, color scheme and pointer;
 for layout `display` (`flex`, `block`, `inline-flex`, `none`, `grid`
@@ -117,11 +117,53 @@ flexbox properties, `gap`, sizes, margins, padding,
 `position: absolute`/`fixed`/`relative`/`sticky` and `inset`,
 `overflow`, transforms (translate moves the box; scale and rotate are drawn
 around its center); for drawing colors, linear and radial gradients,
-borders, `border-radius`, `box-shadow` (blurred like CSS), `opacity`, fonts,
+borders, `border-radius`, `box-shadow` (blurred like CSS), `outline`, `opacity`, fonts,
 `text-align`, `white-space`; transitions and `@keyframes` animations on
 opacity, backgrounds, color, transforms, sizes, border colors and shadows
 (src/native_ui/js/src/transitions.js, animations.js: while they run, only
 the animated nodes are sent each frame).
+
+**Text metrics** (each backend, to match its own WebView):
+
+- `line-height: normal` (no `lh` in the props; the UA sheet sets none) is
+  the font's ascent + descent + line gap, each rounded to whole pixels, as
+  WebKit and Chromium make it (Noto Sans at 16px: 17 + 5 + 0 = 22; at
+  36px: 49). Use the font's own unhinted metrics (GTK: Pango with
+  hint-metrics off; DirectWrite's font metrics; CoreText's ascent, descent
+  and leading; Android's `Paint.FontMetrics`), not the text engine's
+  default line spacing, which may differ (Pango's own lines are 23 at
+  16px). A text node is lines × that tall, the glyphs centered in each
+  line box.
+- An explicit `lh` is a line box exactly that tall (glyphs centered and
+  overflowing when it's shorter than the font): Pango keeps lines no
+  shorter than its own minimum, so GTK sizes and centers them itself.
+  WebKit (WebKitGTK, WKWebView) keeps a computed line-height in whole
+  pixels (145% of 16px is 23); Chromium (WebView2) keeps the fraction: GTK
+  floors `lh`, as its WebView does.
+- `ff` on text props and runs: the CSS font-family list, unquoted (absent:
+  sans-serif). Resolve it as the platform's WebView does (GTK: Pango and
+  fontconfig take the list as is, `system-ui` included).
+- `Backend.font_metrics` (host.fontMetrics): `[ascent, descent, lineGap]`
+  in px, unhinted, for the default sans (or monospace) at a size; the
+  runtime uses it for an image's line (the baseline gap below an inline
+  image). Without it, Noto Sans's proportions.
+- Yoga rounds a text node's width up (it mustn't wrap) but its top and
+  height to the nearest pixel, as browsers' line boxes are
+  (src/native_ui/yoga/PixelGrid.cpp).
+
+**Outline** (`ol` in a node's props, sent only when it has one: a style
+other than none/hidden, a width above 0 and a visible color):
+`{ w, c, o?, s? }`: width in px, color `[r, g, b, a]` (currentColor
+resolved), `o` the outline-offset in px (absent: 0; may be negative), `s`
+`"dashed"` or `"dotted"` (absent: solid; `auto` and the 3D styles draw
+solid). A backend draws it as a border of its own around the border box
+grown by `o + w` on every side, its corner radii the box's grown as much
+(a square corner stays square), with the node's transform and opacity but
+outside its own overflow clip, after its content and children, taking no
+room in the layout. GTK: `outline()` in gtk.zig (it reuses the border and
+dashed-border drawing). `:focus-visible` matches as in browsers: focus
+that came by the keyboard (a key was the last input), or a text field
+(input of a text type, textarea, contenteditable) however it got focus.
 
 Ignored for now (the layout still works): animating `background-position`,
 skew and 3D transforms, `filter`, `backdrop-filter` (a blurred background is

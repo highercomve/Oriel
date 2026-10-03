@@ -396,14 +396,22 @@ g.scrollTo = g.scroll = (x, y) => {
 };
 // The focused element; it carries data-nui-focus, which the style engine
 // matches for :focus (css.js).
+// :focus-visible (data-nui-focus-visible) as browsers decide it: focus
+// that came by the keyboard, or a text field (it shows a caret either way).
 let active = null;
+let keyboardFocus = false;
+const TEXT_INPUTS = new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
+const textField = (el) => el?.localName === "textarea" || el?.isContentEditable ||
+  (el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase()));
 Object.defineProperty(document, "__active", {
   get() { return active; },
   set(el) {
     if (el === active) return;
     active?.removeAttribute?.("data-nui-focus");
+    active?.removeAttribute?.("data-nui-focus-visible");
     active = el || null;
     active?.setAttribute?.("data-nui-focus", "");
+    if (active && (keyboardFocus || textField(active))) active.setAttribute?.("data-nui-focus-visible", "");
   },
   configurable: true,
 });
@@ -886,7 +894,7 @@ g.__oriel = {
     return guard(() => {
       const el = renderer?.elementFor(id);
       switch (type) {
-        case "click": if (el) activate(el, data | 0); return false;
+        case "click": keyboardFocus = false; if (el) activate(el, data | 0); return false;
         case "input": {
           if (!el) return false;
           renderer.native.set(id, data);
@@ -901,13 +909,13 @@ g.__oriel = {
           el.dispatchEvent(new Event("change", { bubbles: true }));
           return false;
         }
-        case "key": return keyEvent(el || document.__active, data);
+        case "key": keyboardFocus = true; return keyEvent(el || document.__active, data);
         case "keyup": return keyEvent(el || document.__active, data, "keyup");
         // A pointer went down, moved, went up or was taken by the system:
         // data [phase, x, y, buttons, pointerId, pointerType, modifiers].
         // True on "down" when the page takes the drag (touch-action: none,
         // or a listener prevented the default): the backend doesn't scroll.
-        case "pointer": return pointerEvent(el, data);
+        case "pointer": if (data?.[0] === "down" || data?.[0] === 0) keyboardFocus = false; return pointerEvent(el, data);
         case "focus": if (el) document.__active = el; return false;
         case "blur": if (el && document.__active === el) document.__active = null; return false;
         case "contextmenu": {

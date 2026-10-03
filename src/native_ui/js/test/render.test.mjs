@@ -569,4 +569,19 @@ for (const css of [
   assert.equal(byText("end").bg, undefined);
 }
 
+// outline: sent only when there is one (none, hidden or 0 wide: no prop).
+{
+  const { document } = parseHTML('<html><body><div class="a">a</div><div class="b">b</div><div class="c">c</div><div class="d">d</div></body></html>');
+  const { renderer, tree } = makeRenderer(document, ".a { outline: 2px dashed red; outline-offset: 3px } .b { outline: thick solid; color: blue } .c { outline: none } .d { outline: 0 solid red }");
+  renderer.render();
+  const boxes = [];
+  const all = (n) => { if (n.props.runs) boxes.push(n); n.kids.forEach(all); };
+  all(tree());
+  const by = (t) => boxes.find((n) => n.props.runs[0].t === t).props;
+  assert.deepEqual(by("a").ol, { w: 2, c: [255, 0, 0, 1], o: 3, s: "dashed" });
+  assert.deepEqual(by("b").ol, { w: 5, c: [0, 0, 255, 1] }, "currentColor; solid without s");
+  assert.equal(by("c").ol, undefined);
+  assert.equal(by("d").ol, undefined);
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");
