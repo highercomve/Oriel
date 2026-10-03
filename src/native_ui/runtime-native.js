@@ -400,7 +400,24 @@ globalThis.atob ??= (s) => {
         this.detail = init.detail;
       }
     }
-    const listeners2 = /* @__PURE__ */ new WeakMap();
+    const ownSlot2 = (name) => {
+      const key = Symbol(name);
+      const aside = /* @__PURE__ */ new WeakMap();
+      return {
+        get: (o) => Object.prototype.hasOwnProperty.call(o, key) ? o[key] : aside.get(o),
+        set: (o, v) => {
+          if (Object.prototype.hasOwnProperty.call(o, key) || Object.isExtensible(o)) {
+            try {
+              Object.defineProperty(o, key, { value: v, writable: true, configurable: true });
+              return;
+            } catch {
+            }
+          }
+          aside.set(o, v);
+        }
+      };
+    };
+    const listeners2 = ownSlot2("listeners");
     function invoke2(event, step) {
       const map = listeners2.get(step.currentTarget);
       if (!map || !map.has(event.type)) return false;
@@ -1196,7 +1213,7 @@ globalThis.atob ??= (s) => {
       return this.parentNode?.closest?.("svg") ?? null;
     } } });
     nd2.setProto("#foreign", SVGElement.prototype);
-    const contents = /* @__PURE__ */ new WeakMap();
+    const contents = ownSlot2("template content");
     def(classes.HTMLTemplateElement.prototype, {
       content: { get() {
         let f = contents.get(this);
@@ -7770,7 +7787,24 @@ ${a.stack || ""}`;
     }
   }
   var linkCss = /* @__PURE__ */ new WeakMap();
-  var sheetOf = /* @__PURE__ */ new WeakMap();
+  var ownSlot = (name) => {
+    const key = Symbol(name);
+    const aside = /* @__PURE__ */ new WeakMap();
+    return {
+      get: (o) => Object.prototype.hasOwnProperty.call(o, key) ? o[key] : aside.get(o),
+      set: (o, v) => {
+        if (Object.prototype.hasOwnProperty.call(o, key) || Object.isExtensible(o)) {
+          try {
+            Object.defineProperty(o, key, { value: v, writable: true, configurable: true });
+            return;
+          } catch {
+          }
+        }
+        aside.set(o, v);
+      }
+    };
+  };
+  var sheetOf = ownSlot("sheet");
   function isSheetLink(el) {
     const rel = el.getAttribute("rel") || "";
     return /(^|\s)stylesheet(\s|$)/i.test(rel) && !/(^|\s)alternate(\s|$)/i.test(rel) && el.hasAttribute("href");

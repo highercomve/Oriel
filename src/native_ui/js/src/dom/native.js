@@ -75,7 +75,26 @@ export function installNativeDom(g, document) {
   class CustomEvent extends Event {
     constructor(type, init = {}) { super(type, init); this.detail = init.detail; }
   }
-  const listeners = new WeakMap();
+  // Per-node state kept on the node's wrapper (a symbol property, not
+  // enumerable) rather than in a WeakMap: a wrapper holding state is one the
+  // native DOM keeps while its tree lives; one without any may be replaced
+  // by an equal new one (dom/store.zig prune).
+  const ownSlot = (name) => {
+    const key = Symbol(name);
+    // A frozen or non-extensible target (a page's own EventTarget) keeps its
+    // state beside it instead.
+    const aside = new WeakMap();
+    return {
+      get: (o) => (Object.prototype.hasOwnProperty.call(o, key) ? o[key] : aside.get(o)),
+      set: (o, v) => {
+        if (Object.prototype.hasOwnProperty.call(o, key) || Object.isExtensible(o)) {
+          try { Object.defineProperty(o, key, { value: v, writable: true, configurable: true }); return; } catch {}
+        }
+        aside.set(o, v);
+      },
+    };
+  };
+  const listeners = ownSlot("listeners");
   function invoke(event, step) {
     const map = listeners.get(step.currentTarget);
     if (!map || !map.has(event.type)) return false;
@@ -431,7 +450,7 @@ export function installNativeDom(g, document) {
   // Alpine's x-for row would be evaluated outside its loop). The boot
   // moves the parsed ones (main.js); markup set later (innerHTML) moves
   // when the content is read.
-  const contents = new WeakMap();
+  const contents = ownSlot("template content");
   def(classes.HTMLTemplateElement.prototype, {
     content: { get() {
       let f = contents.get(this);

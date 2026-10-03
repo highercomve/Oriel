@@ -1215,7 +1215,26 @@ function guard(fn) {
 // document.styleSheets, insertRule/deleteRule, disabled).
 
 const linkCss = new WeakMap(); // <link> → { href, css } (its asset, read once)
-const sheetOf = new WeakMap(); // <style>/<link> → its CSSStyleSheet
+// Per-node state kept on the node's wrapper (a symbol property, not
+// enumerable) rather than in a WeakMap: a wrapper holding state is one the
+// native DOM keeps while its tree lives; one without any may be replaced
+// by an equal new one (dom/store.zig prune).
+const ownSlot = (name) => {
+  const key = Symbol(name);
+  // A frozen or non-extensible target (a page's own EventTarget) keeps its
+  // state beside it instead.
+  const aside = new WeakMap();
+  return {
+    get: (o) => (Object.prototype.hasOwnProperty.call(o, key) ? o[key] : aside.get(o)),
+    set: (o, v) => {
+      if (Object.prototype.hasOwnProperty.call(o, key) || Object.isExtensible(o)) {
+        try { Object.defineProperty(o, key, { value: v, writable: true, configurable: true }); return; } catch {}
+      }
+      aside.set(o, v);
+    },
+  };
+};
+const sheetOf = ownSlot("sheet"); // <style>/<link> → its CSSStyleSheet
 
 function isSheetLink(el) {
   const rel = el.getAttribute("rel") || "";
