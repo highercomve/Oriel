@@ -98,12 +98,31 @@ pub const Commands = struct {
         return std.c.getenv("ORIEL_NUI_TRACE") != null;
     }
 
+    /// The canvas balls in Zig (zig_balls.zig): start `count` balls in
+    /// <canvas id="zigballs"> for `ms`; false without the native renderer.
+    pub fn zig_balls(_: std.mem.Allocator, args: struct { count: u32, ms: f64 }) bool {
+        if (comptime !oriel.options.native_ui) return false else return zig_balls_mod.start(std.heap.smp_allocator, io, args.count, args.ms);
+    }
+
+    /// The Zig run's frame rate and per-frame cost (done: it ended; the
+    /// run is freed then).
+    pub fn zig_balls_result(_: std.mem.Allocator) ZigBallsResult {
+        if (comptime !oriel.options.native_ui) return .{ .done = true, .fps = 0, .frames = 0, .frame_us = 0 } else {
+            const r = zig_balls_mod.result();
+            if (r.done) zig_balls_mod.stop();
+            return .{ .done = r.done, .fps = r.fps, .frames = r.frames, .frame_us = r.frame_us };
+        }
+    }
+
     /// The results as JSON: printed on stdout; in bench mode the app quits.
     pub fn report(_: std.mem.Allocator, args: struct { json: []const u8 }) void {
         std.debug.print("{s}\n", .{args.json});
         if (bench_mode) oriel.App.quit(0);
     }
 };
+
+pub const ZigBallsResult = struct { done: bool, fps: f64, frames: u32, frame_us: f64 };
+const zig_balls_mod = if (oriel.options.native_ui) @import("zig_balls.zig") else struct {};
 
 pub const Events = struct {};
 
