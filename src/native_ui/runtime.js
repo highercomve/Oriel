@@ -16547,18 +16547,47 @@ ${a.stack || ""}`;
   var KeyboardEvent = class extends Event {
     constructor(type, init = {}) {
       super(type, init);
-      for (const k of ["key", "code", "shiftKey", "ctrlKey", "altKey", "metaKey", "repeat"]) this[k] = init[k] ?? (k.endsWith("Key") ? false : "");
+      for (const k of ["key", "code", "shiftKey", "ctrlKey", "altKey", "metaKey", "repeat"]) this[k] = init[k] ?? (k.endsWith("Key") || k === "repeat" ? false : "");
       this.isComposing = false;
     }
   };
   var MouseEvent = class extends Event {
     constructor(type, init = {}) {
       super(type, init);
-      for (const k of ["clientX", "clientY", "button", "shiftKey", "ctrlKey", "altKey", "metaKey"]) this[k] = init[k] ?? 0;
+      for (const k of ["clientX", "clientY", "button", "buttons", "shiftKey", "ctrlKey", "altKey", "metaKey"]) this[k] = init[k] ?? 0;
+      this.pageX = this.screenX = this.x = this.clientX;
+      this.pageY = this.screenY = this.y = this.clientY;
+    }
+    // From the target's box, when asked (a layout read).
+    get offsetX() {
+      return this.clientX - (this.target?.getBoundingClientRect?.().left || 0);
+    }
+    get offsetY() {
+      return this.clientY - (this.target?.getBoundingClientRect?.().top || 0);
+    }
+  };
+  var PointerEvent = class extends MouseEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 1;
+      this.pointerType = init.pointerType ?? "mouse";
+      this.isPrimary = init.isPrimary ?? true;
+      this.width = init.width ?? 1;
+      this.height = init.height ?? 1;
+      this.pressure = init.pressure ?? 0;
+    }
+  };
+  var TouchEvent = class extends Event {
+    constructor(type, init = {}) {
+      super(type, init);
+      for (const k of ["touches", "targetTouches", "changedTouches"]) this[k] = init[k] ?? [];
+      for (const k of ["shiftKey", "ctrlKey", "altKey", "metaKey"]) this[k] = init[k] ?? false;
     }
   };
   g.KeyboardEvent = KeyboardEvent;
-  g.MouseEvent = g.PointerEvent = MouseEvent;
+  g.MouseEvent = MouseEvent;
+  g.PointerEvent = PointerEvent;
+  g.TouchEvent = TouchEvent;
   g.InputEvent = g.FocusEvent = g.UIEvent = Event;
   var winListeners = /* @__PURE__ */ new Map();
   g.addEventListener = (type, fn) => {
@@ -16598,6 +16627,22 @@ ${a.stack || ""}`;
         return orig.call(this, type, fn, opts);
       };
       break;
+    }
+  }
+  {
+    let proto = Object.getPrototypeOf(document.createElement("div"));
+    while (proto && !Object.prototype.hasOwnProperty.call(proto, "getAttribute")) proto = Object.getPrototypeOf(proto);
+    if (proto) {
+      const def = (name, fn) => Object.defineProperty(proto, name, { value: fn, writable: true, configurable: true });
+      def("setPointerCapture", function(id) {
+        if (captured.has(id)) captured.set(id, this);
+      });
+      def("releasePointerCapture", function(id) {
+        if (captured.get(id) === this) captured.delete(id);
+      });
+      def("hasPointerCapture", function(id) {
+        return captured.get(id) === this;
+      });
     }
   }
   if (!STYLE_RECORDS) {
@@ -17178,7 +17223,7 @@ ${a.stack || ""}`;
   var isCheckable = (n2) => n2?.localName === "input" && /^(checkbox|radio)$/.test(n2.type);
   function activate(el, flags) {
     const undo = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
-    const ev = new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true, clientX: lastPointer[0], clientY: lastPointer[1], shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
     el.dispatchEvent(ev);
     if (undo) {
       if (ev.defaultPrevented) undo();
@@ -17238,13 +17283,13 @@ ${a.stack || ""}`;
     const ev = new Event("submit", { bubbles: true, cancelable: true });
     form.dispatchEvent(ev);
   }
-  function keyEvent(el, data) {
-    const [key2, flags] = data;
-    const init = { key: key2, code: key2, bubbles: true, cancelable: true, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
-    const ev = new KeyboardEvent("keydown", init);
+  function keyEvent(el, data, type = "keydown") {
+    const [key2, flags, repeat] = data;
+    const init = { key: key2, code: key2, bubbles: true, cancelable: true, repeat: !!repeat, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
+    const ev = new KeyboardEvent(type, init);
     (el || document.body).dispatchEvent(ev);
     if (!ev.defaultPrevented) fireWindow(ev);
-    if (!ev.defaultPrevented && key2 === "Enter" && el?.localName === "input") {
+    if (type === "keydown" && !ev.defaultPrevented && key2 === "Enter" && el?.localName === "input") {
       const form = el.closest("form");
       if (form) {
         submit(form);
@@ -17254,6 +17299,43 @@ ${a.stack || ""}`;
     return ev.defaultPrevented;
   }
   var renderer = null;
+  var captured = /* @__PURE__ */ new Map();
+  var lastPointer = [0, 0];
+  var POINTER_TYPES = { down: ["pointerdown", "mousedown", "touchstart"], move: ["pointermove", "mousemove", "touchmove"], up: ["pointerup", "mouseup", "touchend"], cancel: ["pointercancel", null, "touchcancel"] };
+  var FORWARDED = /* @__PURE__ */ new Set(["mousedown", "mouseup", "pointerdown", "pointerup"]);
+  function pointerEvent(el, data) {
+    const [phase, x, y, buttons, pointerId, pointerType, flags] = data;
+    const names = POINTER_TYPES[phase];
+    if (!names) return false;
+    lastPointer = [x, y];
+    let target = captured.get(pointerId);
+    if (phase === "down" || !target?.isConnected) target = el || document.body;
+    if (phase === "down") captured.set(pointerId, target);
+    else if (phase === "up" || phase === "cancel") captured.delete(pointerId);
+    const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
+    const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button: phase === "move" ? -1 : 0, buttons, ...mods };
+    const fire = (ev) => {
+      target.dispatchEvent(ev);
+      if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) fireWindow(ev);
+      return ev.defaultPrevented;
+    };
+    let prevented = fire(new PointerEvent(names[0], { ...init, pointerId, pointerType, isPrimary: true, pressure: buttons ? 0.5 : 0 }));
+    if (pointerType === "touch") {
+      const touch = { identifier: pointerId, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: 0.5 };
+      const on = phase === "down" || phase === "move" ? [touch] : [];
+      if (fire(new TouchEvent(names[2], { bubbles: true, cancelable: phase !== "cancel", touches: on, targetTouches: on, changedTouches: [touch], ...mods }))) prevented = true;
+    } else if (names[1] && fire(new MouseEvent(names[1], init))) prevented = true;
+    if (phase === "down" && !prevented) {
+      for (let n2 = target; n2 && n2.nodeType === 1; n2 = n2.parentNode) {
+        const ta = renderer?.styleOf(n2)?.["touch-action"];
+        if (ta === "none" || ta === "pinch-zoom") {
+          prevented = true;
+          break;
+        }
+      }
+    }
+    return prevented;
+  }
   var marked = /* @__PURE__ */ new Map();
   function markChain(attr2, el) {
     const next = [];
@@ -17450,6 +17532,14 @@ ${a.stack || ""}`;
           }
           case "key":
             return keyEvent(el || document.__active, data);
+          case "keyup":
+            return keyEvent(el || document.__active, data, "keyup");
+          // A pointer went down, moved, went up or was taken by the system:
+          // data [phase, x, y, buttons, pointerId, pointerType, modifiers].
+          // True on "down" when the page takes the drag (touch-action: none,
+          // or a listener prevented the default): the backend doesn't scroll.
+          case "pointer":
+            return pointerEvent(el, data);
           case "focus":
             if (el) document.__active = el;
             return false;
