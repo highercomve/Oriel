@@ -129,7 +129,11 @@ inheritance of text properties, `@media` on width, color scheme and pointer;
 for layout `display` (`flex`, `block`, `inline-flex`, `none`, `grid`
 approximated by wrapping rows, and tables: `table`, row groups, rows and
 cells with automatic column widths, `colspan` and `border-spacing`), the
-flexbox properties, `gap`, sizes, margins, padding,
+flexbox properties, `gap`, sizes (`width: max-content` and `fit-content`
+too: the box isn't stretched; inside max-content, text doesn't wrap and
+may overflow the container (the `mc` prop: measureFn doesn't hold it to
+the width offered); inside fit-content, text that has to wrap takes the
+whole width offered (`fc`)), margins, padding,
 `position: absolute`/`fixed`/`relative`/`sticky` and `inset`,
 `overflow`, transforms (translate moves the box; scale and rotate are drawn
 around its center); for drawing colors, linear and radial gradients,

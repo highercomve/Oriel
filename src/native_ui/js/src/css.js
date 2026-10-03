@@ -659,7 +659,26 @@ export function computeStyle(specified, parent) {
     if (v === "initial" || v === "unset") { delete cs[k]; continue; }
     cs[k] = substitute(v, cs, 0);
   }
+  if (maxContent(cs, parent)) cs.__maxc = true;
+  else if (fitContent(cs, parent)) cs.__fitc = true;
   return cs;
+}
+
+// In a width: fit-content box, text that has to wrap takes the whole
+// width it's offered (the box is then that wide, as in browsers), not just
+// its longest line.
+export function fitContent(cs, parent) {
+  const w = cs.width;
+  return INTRINSIC_FIT.has(w) || (!!parent?.__fitc && (w === undefined || w === "auto"));
+}
+const INTRINSIC_FIT = new Set(["fit-content", "-webkit-fit-content", "-moz-fit-content"]);
+
+// In a width: max-content box, lines are as long as their content: they
+// don't wrap at the container (render.js textProps), down to a box with a
+// width of its own.
+export function maxContent(cs, parent) {
+  const w = cs.width;
+  return w === "max-content" || (!!parent?.__maxc && (w === undefined || w === "auto" || w === "fit-content"));
 }
 
 // A length in %, em, ex or ch (by its last characters: this runs for every

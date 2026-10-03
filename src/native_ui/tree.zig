@@ -550,6 +550,12 @@ pub const Props = struct {
     lh: ?f32 = null,
     ta: ?[]const u8 = null,
     nowrap: bool = false,
+    /// In a width: max-content box: its lines are as long as its content,
+    /// past the width it's offered (measureFn doesn't hold it to that).
+    mc: bool = false,
+    /// In a width: fit-content box: when its lines have to wrap, it takes
+    /// the whole width it's offered.
+    fc: bool = false,
     ls: ?f32 = null,
     runs: ?[]const Run = null,
     // Fields
@@ -2330,7 +2336,14 @@ fn measureFn(node: yg.YGNodeConstRef, width: f32, width_mode: yg.YGMeasureMode, 
         out[0] = @min(out[0], cols * fz * 0.6 + 8);
     };
     if (width_mode == yg.YGMeasureModeExactly) out[0] = width;
-    if (width_mode == yg.YGMeasureModeAtMost) out[0] = @min(out[0], width);
+    if (width_mode == yg.YGMeasureModeAtMost and !n.props.mc) {
+        if (n.props.fc and n.kind == .text) {
+            var natural: [2]f32 = .{ 0, 0 };
+            n.tree.measure(n.tree.measure_ctx, n, std.math.inf(f32), &natural);
+            if (natural[0] > width) out[0] = width;
+        }
+        out[0] = @min(out[0], width);
+    }
     return .{ .width = out[0], .height = out[1] };
 }
 
