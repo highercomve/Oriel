@@ -22,6 +22,63 @@ const std = @import("std");
 
 pub const slab_bytes = 128 * 1024;
 
+const builtin = @import("builtin");
+
+/// A slab from the system, aligned to its length.
+fn mapSlab() error{OutOfMemory}![]align(slab_bytes) u8 {
+    if (builtin.os.tag == .windows) return win.map();
+    return std.heap.page_allocator.alignedAlloc(u8, .fromByteUnits(slab_bytes), slab_bytes);
+}
+
+fn unmapSlab(mem: [*]align(slab_bytes) u8) void {
+    if (builtin.os.tag == .windows) return win.unmap(mem);
+    std.heap.page_allocator.free(@as([]align(slab_bytes) u8, mem[0..slab_bytes]));
+}
+
+/// Windows: page_allocator's path for an alignment above the 64 KB
+/// allocation granularity (Zig 0.16: a placeholder reservation, then a
+/// commit that fails on it) gave OutOfMemory whenever VirtualAlloc's
+/// first address wasn't 128 KB-aligned, about every other slab. Twice the
+/// length is reserved instead, the aligned slab inside it committed, and
+/// the whole reservation released with it (address space, not memory).
+const win = struct {
+    const MEM_COMMIT = 0x1000;
+    const MEM_RESERVE = 0x2000;
+    const MEM_RELEASE = 0x8000;
+    const PAGE_NOACCESS = 0x01;
+    const PAGE_READWRITE = 0x04;
+    const MemoryBasicInformation = extern struct {
+        base_address: ?*anyopaque,
+        allocation_base: ?*anyopaque,
+        allocation_protect: u32,
+        partition_id: u16,
+        region_size: usize,
+        state: u32,
+        protect: u32,
+        type: u32,
+    };
+    extern "kernel32" fn VirtualAlloc(addr: ?*anyopaque, size: usize, kind: u32, protect: u32) callconv(.winapi) ?*anyopaque;
+    extern "kernel32" fn VirtualFree(addr: ?*anyopaque, size: usize, kind: u32) callconv(.winapi) c_int;
+    extern "kernel32" fn VirtualQuery(addr: ?*const anyopaque, info: *MemoryBasicInformation, len: usize) callconv(.winapi) usize;
+
+    fn map() error{OutOfMemory}![]align(slab_bytes) u8 {
+        const base = VirtualAlloc(null, 2 * slab_bytes, MEM_RESERVE, PAGE_NOACCESS) orelse return error.OutOfMemory;
+        const aligned = std.mem.alignForward(usize, @intFromPtr(base), slab_bytes);
+        const mem = VirtualAlloc(@ptrFromInt(aligned), slab_bytes, MEM_COMMIT, PAGE_READWRITE) orelse {
+            _ = VirtualFree(base, 0, MEM_RELEASE);
+            return error.OutOfMemory;
+        };
+        const p: [*]align(slab_bytes) u8 = @ptrCast(@alignCast(mem));
+        return p[0..slab_bytes];
+    }
+
+    fn unmap(mem: [*]align(slab_bytes) u8) void {
+        var info: MemoryBasicInformation = undefined;
+        if (VirtualQuery(mem, &info, @sizeOf(MemoryBasicInformation)) == 0) return;
+        _ = VirtualFree(info.allocation_base, 0, MEM_RELEASE);
+    }
+};
+
 pub fn SlabPool(comptime T: type) type {
     return struct {
         const Pool = @This();
@@ -104,7 +161,7 @@ pub fn SlabPool(comptime T: type) type {
         }
 
         fn newSlab(pool: *Pool) error{OutOfMemory}!*Slab {
-            const mem = try std.heap.page_allocator.alignedAlloc(u8, .fromByteUnits(slab_bytes), slab_bytes);
+            const mem = try mapSlab();
             const slab: *Slab = @ptrCast(@alignCast(mem.ptr));
             slab.* = .{ .next = pool.slabs };
             if (pool.slabs) |s| s.prev = slab;
@@ -122,7 +179,7 @@ pub fn SlabPool(comptime T: type) type {
             if (slab.live == 0) pool.empty -|= 1;
             pool.slab_count -= 1;
             const mem: [*]align(slab_bytes) u8 = @ptrCast(@alignCast(slab));
-            std.heap.page_allocator.free(@as([]align(slab_bytes) u8, mem[0..slab_bytes]));
+            unmapSlab(mem);
         }
 
         fn linkPartial(pool: *Pool, slab: *Slab) void {

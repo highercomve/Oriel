@@ -212,6 +212,10 @@ pub const Surface = struct {
     /// Inside a control's notification to the canvas (or a field's own
     /// message): a nested message loop there must not flush `doomed`.
     in_control: u32 = 0,
+    /// The tree's node count after the last layout, and whether trim_timer
+    /// is armed (laidOut: a big drop gives the empty slabs back).
+    node_count: usize = 0,
+    trim_armed: bool = false,
 
     /// The canvas fills `parent`'s client area.
     pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, parent: *anyopaque, transparent: bool, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
@@ -589,6 +593,9 @@ const vsync = struct {
 
 /// The SetTimer id of the warm-up turns (above every page timer id + 1).
 const warm_timer: usize = @as(usize, std.math.maxInt(u32)) + 3;
+/// The SetTimer id of the pools' trim, 2 s after a render removed many
+/// nodes (laidOut), as GTK's onTrim.
+const trim_timer: usize = @as(usize, std.math.maxInt(u32)) + 4;
 
 fn warmFonts(ctx: *anyopaque, specs: []const engine_mod.FontSpec) void {
     const s = surfaceOf(ctx);
@@ -713,6 +720,16 @@ fn removed(ctx: *anyopaque, node: *Node) void {
 
 fn laidOut(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
+    // A render that removed many nodes (a page section rebuilt): the
+    // tree's empty slabs go back 2 s later (trimPools keeps one), unless a
+    // new list took them by then. The canvas's timer: it dies with the
+    // window, and a destroyed surface's canvas no longer reaches it.
+    const count = s.engine.tree.nodes.count();
+    if (s.node_count > count + 1000 and !s.trim_armed) {
+        s.trim_armed = c.SetTimer(s.hwnd, trim_timer, 2000, null) != 0;
+        prof.report("trim armed: {d} -> {d} nodes", .{ s.node_count, count });
+    }
+    s.node_count = count;
     syncFields(s);
     _ = c.InvalidateRect(s.hwnd, null, c.FALSE);
 }
@@ -1452,6 +1469,12 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             _ = c.KillTimer(hwnd, wparam);
             if (wparam == warm_timer) {
                 onWarmTimer(s, hwnd);
+                return 0;
+            }
+            if (wparam == trim_timer) {
+                s.trim_armed = false;
+                const freed = s.engine.tree.trimPools();
+                prof.report("trim pools {d}", .{freed});
                 return 0;
             }
             // Ours are the page's ids + 1 (addTimer): nothing else is.
