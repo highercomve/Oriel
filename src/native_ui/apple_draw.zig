@@ -549,7 +549,7 @@ pub const Fields = struct {
 /// pixels per point).
 pub fn paint(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engine, transparent: bool, fields: Fields, scale: f64) void {
     const tree = &engine.tree;
-    if (tree.dirty) tree.layout();
+    if (tree.needsLayout()) tree.layout();
     const all: CGRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = tree.width, .height = tree.height } };
     if (transparent) {
         CGContextClearRect(cg, all);

@@ -2638,7 +2638,7 @@ const Painter = struct {
 
 fn paintAll(s: *Surface) void {
     const t0 = prof.now();
-    if (s.engine.tree.dirty) s.engine.tree.layout();
+    if (s.engine.tree.needsLayout()) s.engine.tree.layout();
     const t1 = prof.now();
     if (!ensureTarget(s)) return;
     const t2 = prof.now();

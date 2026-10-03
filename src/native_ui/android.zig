@@ -87,6 +87,7 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .focus = focus,
         .props = props,
         .text = textChanged,
+        .measure_texts = measureTexts,
         .leaf_style = leafStyle,
         .paint = paintChanged,
         .canvas = canvasChanged,
@@ -494,6 +495,19 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
         .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), @round(fz * 1.45) },
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, @round(fz * 1.45 * 2) },
         else => out.* = .{ 0, 0 },
+    }
+}
+
+/// The natural sizes of a frame's updated texts (Tree.measure_texts): the
+/// pending leaf records go to Kotlin once, not before each measure.
+/// TODO(ChromeOS): one nuiMeasureTexts call for all of them.
+fn measureTexts(ctx: *anyopaque, nodes: []const *Node) void {
+    const s = surfaceOf(ctx);
+    flushLeaves(s);
+    for (nodes) |n| {
+        if (n.kind != .text) continue;
+        n.measured_text_size = measuredText(s, n, std.math.inf(f32));
+        n.text_measure_epoch = s.text_epoch;
     }
 }
 
