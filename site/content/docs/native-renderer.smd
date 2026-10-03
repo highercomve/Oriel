@@ -261,7 +261,16 @@ The same bench, the native renderer, ReleaseFast (Windows: ReleaseSafe, as `orie
 
 Where a test reaches the display's refresh rate, that is its ceiling.
 
-A canvas can also be drawn from the app's Zig code (`oriel.canvas`): the page keeps its HTML and CSS, and the drawing calls skip the JavaScript engine. With 1000 balls drawn from Zig, every platform reaches its display's rate: 179 fps on Linux (91 from JavaScript), 143 on Windows (64), 120 on macOS and on the phone (91 from JavaScript there). The [Breakout example](https://github.com/highercomve/Oriel/tree/main/examples/breakout) runs the same game both ways.
+A canvas can also be drawn from the app's Zig code (`oriel.canvas`): the page keeps its HTML and CSS, and the drawing calls skip the JavaScript engine. With 1000 balls drawn from Zig, every platform reaches its display's rate: 179 fps on Linux (91 from JavaScript), 143 on Windows (64), 120 on macOS and on the phone (91 from JavaScript there). The [Breakout example](https://github.com/highercomve/Oriel/tree/main/examples/breakout) runs the same game both ways, and in the WebView. At 500 balls:
+
+| | Native, Zig | Native, JavaScript | WebView |
+|---|---|---|---|
+| Windows 11 (a 2018 laptop, 144 Hz) | 142–144 fps | 59–75 fps | 103–116 fps |
+| Android (a 120 Hz phone) | 120 fps, 0.35 ms a frame | 63 fps, 6.6 ms a frame | 120 fps, 1.2 ms a frame |
+
+The browsers' JavaScript engines run the game's own code faster than QuickJS does; moved to Zig, the same game leaves them behind.
+
+[](<$image.siteAsset('screenshots/breakout-desktop.png').alt('Breakout in the native renderer on Linux, Zig mode: bricks, balls and the stats overlay')>)
 
 ## The native DOM
 
@@ -539,14 +548,14 @@ Events go the other way: a tap on a node becomes a `click` on its element, bubbl
 
 - **Selectors:** types, classes, ids, attributes, `:not()`, `:first-child`, `:last-child`, `:nth-child()`, `:focus`, `:hover` (a mouse or trackpad), `:active` (while pressed), descendant and child combinators, `::before` and `::after` with `content`.
 - **The cascade:** specificity, `!important`, inline styles, `var()` with fallbacks, `calc()`, `color-mix()`, inheritance, `@media` on width, `prefers-color-scheme` and `pointer`.
-- **Layout:** `display` (`flex`, `block`, `inline-flex`, `none`; `grid` as wrapping rows), the flexbox properties, `gap`, sizes and their limits, margins (`auto` too), padding, `position: absolute`, `fixed` and `relative`, `inset`, `overflow` (scroll and clip), `aspect-ratio`, transforms (`translate`, `scale`, `rotate`; scale and rotate are drawn, layout keeps the box).
-- **Drawing:** colors (hex, `rgb()`, `hsl()`), linear and radial gradients, borders, `border-radius`, `box-shadow` (blurred like CSS), `opacity`, fonts (size, weight, italic, monospace), `line-height`, `letter-spacing`, `text-align`, `white-space`, underline.
+- **Layout:** `display` (`flex`, `block`, `inline-flex`, `none`; `grid` as wrapping rows), the flexbox properties, `gap`, sizes and their limits (in px, %, or `calc()` mixing both), `box-sizing`, margins (`auto` too), padding, `position: absolute`, `fixed` and `relative`, `inset`, `overflow` (scroll and clip, to the box's rounded corners too), `aspect-ratio`, transforms (`translate`, `scale`, `rotate`; scale and rotate are drawn, layout keeps the box).
+- **Drawing:** colors (hex, `rgb()`, `hsl()`), linear and radial gradients, borders, `border-radius`, `box-shadow` (blurred like CSS), `opacity`, fonts (size, weight, italic, monospace), `line-height` (CSS line boxes: each line exactly that tall, the text centered), `letter-spacing`, `text-align`, `white-space`, underline.
 - **Transitions:** `transition` (and its longhands) on opacity, backgrounds (colors and gradients), color, transforms, width and height, border colors and `box-shadow`, with durations, delays and timing functions (`ease`, `linear`, `cubic-bezier()`, `steps()`).
 - **Animations:** `@keyframes` and `animation` (and its longhands): the same properties, iteration counts and `infinite`, directions (`alternate`, `reverse`), fill modes and delays. Frames that leave out `from` or `to` use the element's own values, as in CSS. While transitions or animations run, only the animated nodes are updated each frame: no styles or flattening.
 - **More elements:** `<canvas>` with a 2d context (shapes, paths, gradients, text, transforms; drawn into a bitmap of its own), `<img>` (data: URIs and app assets, `object-fit`), tables (`colspan`, `border-spacing`), `<input type="range">` as the platform's slider, `position: sticky`, horizontal scrolling (`overflow-x`).
 - **JavaScript:** what DOM-based UI code uses: plain JavaScript, React, Vue, Svelte and Preact (see "Your web stack, unchanged"), ES modules, the app's commands through `window.oriel`, `URL` and `URLSearchParams`, timers, `localStorage`, `matchMedia`.
 
-Not yet: animating `background-position`, `filter` and `backdrop-filter` (a blurred background is drawn opaque), skew and 3D transforms, grid areas and spans, floats, `iframe`, canvas `drawImage` and pixel access, `rowspan`. A page that measures text with `measureText` gets an estimate.
+Not yet: `outline`, animating `background-position`, `filter` and `backdrop-filter` (a blurred background is drawn opaque), skew and 3D transforms, grid areas and spans, floats, `iframe`, canvas `drawImage` and pixel access, `rowspan`. A page that measures text with `measureText` gets an estimate.
 
 It is not a browser, and it isn't trying to be one: it runs the part of the web that an app's interface uses. When a page uses something outside it, the layout still works and the property is ignored.
 

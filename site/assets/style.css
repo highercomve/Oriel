@@ -218,6 +218,10 @@ code, pre { font-family: var(--mono); }
   border: 1px solid var(--border-strong); box-shadow: var(--shadow);
 }
 .smoke-shot figcaption { margin-top: 10px; font-size: 14px; color: var(--muted); }
+/* Breakout: the desktop shot and the phone side by side. */
+.breakout-shots { display: grid; grid-template-columns: 3fr 1fr; gap: 12px; align-items: start; }
+.breakout-shots img.phone { border-radius: 18px; }
+.breakout-shots figcaption { grid-column: 1 / -1; margin-top: 0; }
 
 .platforms { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .platform { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
@@ -283,6 +287,15 @@ tr:last-child td { border-bottom: 0; }
 .prose blockquote p { margin: 6px 0; }
 .prose table { margin: 20px 0; border: 1px solid var(--border); border-radius: var(--radius); border-collapse: separate; border-spacing: 0; width: 100%; }
 .prose .content { overflow-wrap: anywhere; }
+/* Table cells break between words, never inside one (the prose's
+   anywhere-breaking made "Experimental" four lines in a narrow column). */
+.prose th, .prose td { overflow-wrap: normal; word-break: normal; hyphens: auto; }
+@media (max-width: 700px) {
+  /* A wide table scrolls sideways instead of squeezing its columns. */
+  .prose table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; width: auto; max-width: 100%; }
+  .prose th, .prose td { min-width: 6.5em; padding: 10px 12px; }
+  .prose th:first-child, .prose td:first-child { min-width: 7.5em; }
+}
 .prose img { border-radius: var(--radius); border: 1px solid var(--border-strong); }
 .prose pre {
   position: relative; margin: 20px 0; padding: 18px 20px; overflow-x: auto;
@@ -342,6 +355,8 @@ tr:last-child td { border-bottom: 0; }
   .section { padding: 48px 16px; }
   .feature-grid, .platforms, .shots { grid-template-columns: 1fr; }
   .shots.phones { grid-template-columns: 1fr 1fr; }
+  .smoke-row { grid-template-columns: 1fr; gap: 8px; margin-top: 56px; }
+  .smoke-shot { margin: 0; }
   .footer-cols { gap: 40px; }
   .cta { margin: 16px 16px 64px; }
 }
@@ -353,7 +368,11 @@ tr:last-child td { border-bottom: 0; }
 .nr-videos figcaption { font-size: .9rem; font-weight: 600; margin-bottom: 6px; }
 .nr-videos video { width: 100%; height: auto; display: block; border-radius: 8px; background: #111; }
 @media (max-width: 700px) { .nr-videos { grid-template-columns: 1fr; } }
-@media (max-width: 700px) { .nr-fig svg { min-width: 620px; } }
+@media (max-width: 700px) {
+  .nr-fig svg { min-width: 620px; }
+  /* A wide diagram scrolls sideways on a phone: say so. */
+  .nr-fig figcaption::before { content: "Swipe to see the whole diagram. "; font-weight: 600; }
+}
 .nr-fig svg { width: 100%; height: auto; display: block; overflow: visible; }
 .nr-fig figcaption { margin-top: 10px; color: var(--faint); font-size: 0.85rem; }
 .nr-fig text { font-family: var(--font); fill: var(--text); }
