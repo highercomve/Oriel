@@ -87,6 +87,10 @@ pub const Backend = struct {
     props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
     /// A single text run changed through the direct bridge.
     text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
+    /// A leaf style was defined, and a node made from one (Tree.on_leaf_style,
+    /// Tree.on_create; optional: backends that mirror props).
+    leaf_style: ?*const fn (ctx: *anyopaque, id: i64, json: []const u8) void = null,
+    leaf: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
     /// Release backend caches after all native nodes have been removed.
     deinit: ?*const fn (ctx: *anyopaque) void = null,
     /// Optional: call `Engine.frame()` soon (the next display frame). With
@@ -147,6 +151,8 @@ pub const Engine = struct {
         e.tree.on_remove = backend.removed;
         e.tree.on_props = backend.props;
         e.tree.on_text = backend.text;
+        e.tree.on_leaf_style = backend.leaf_style;
+        e.tree.on_create = backend.leaf;
         e.js = oqjs_new(e, platform_json.ptr, label.ptr, url.ptr) orelse return error.QuickJsInitFailed;
         errdefer oqjs_free(e.js);
         if (oqjs_eval_bytecode(e.js, runtime_bytecode.ptr, runtime_bytecode.len) < 0) return error.RuntimeFailed;
