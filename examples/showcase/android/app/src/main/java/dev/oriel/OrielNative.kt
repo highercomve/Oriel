@@ -1064,7 +1064,9 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                     if (ev?.isCtrlPressed == true) mods = mods or 2
                     if (ev?.isAltPressed == true) mods = mods or 4
                     if (ev?.isMetaPressed == true) mods = mods or 8
-                    val prevented = NuiNative.event(window, id, "key".bytes(), "[\"Enter\",$mods]".bytes())
+                    // A hardware Enter's keydown already reached the page (dispatchKeyEvent).
+                    val prevented = if (ev != null && fieldKeySent) false
+                        else NuiNative.event(window, id, "key".bytes(), "[\"Enter\",$mods]".bytes())
                     enterTaken = prevented
                     !multi || prevented
                 }
@@ -1374,6 +1376,32 @@ internal class NuiView(context: Context, val window: Int, private val transparen
      *  as a browser's), not Android's own focus search. */
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
         val focused = findFocus()
+        // A hardware key in a field reaches the page first, on the field (as a
+        // browser's keydown and keyup); what the page prevents the field never
+        // gets. Soft keyboards' keys stay the field's: their text comes as
+        // input events.
+        val field = if (focused != null && focused !== this) fields.entries.firstOrNull { it.value === focused }?.key else null
+        if (field != null && e.flags and KeyEvent.FLAG_SOFT_KEYBOARD == 0) {
+            val k = keyName(e)
+            if (k != null) {
+                when (e.action) {
+                    KeyEvent.ACTION_DOWN -> {
+                        val json = "[${JSONObject.quote(k)},${mods(e.metaState)},${e.repeatCount > 0}]"
+                        val prevented = NuiNative.event(window, field, "key".bytes(), json.bytes())
+                        fieldKeySent = true
+                        if (prevented) { swallowed += e.keyCode; return true }
+                        swallowed -= e.keyCode
+                    }
+                    KeyEvent.ACTION_UP -> {
+                        NuiNative.event(window, field, "keyup".bytes(), "[${JSONObject.quote(k)},${mods(e.metaState)}]".bytes())
+                        if (swallowed.remove(e.keyCode)) return true
+                    }
+                }
+                // Tab the page didn't prevent: its own focus navigation, not Android's.
+                if (e.keyCode == KeyEvent.KEYCODE_TAB) return true
+                return super.dispatchKeyEvent(e).also { fieldKeySent = false }
+            }
+        }
         if (e.keyCode == KeyEvent.KEYCODE_TAB && focused != null && focused !== this) {
             val used = when (e.action) {
                 KeyEvent.ACTION_DOWN -> onKeyDown(e.keyCode, e)
@@ -1384,6 +1412,11 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         }
         return super.dispatchKeyEvent(e)
     }
+
+    /** Key codes whose keydown the page prevented in a field: their keyup stays from the field too. */
+    private val swallowed = HashSet<Int>()
+    /** While a field handles a hardware key, its keydown already reached the page (Enter's editor action). */
+    private var fieldKeySent = false
 
     /** The page's keydown (with repeat) and keyup; what it prevents is consumed. */
     override fun onKeyDown(keyCode: Int, e: KeyEvent): Boolean {
