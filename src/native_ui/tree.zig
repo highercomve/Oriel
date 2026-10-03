@@ -2242,19 +2242,40 @@ pub const Tree = struct {
         var target = node.frame;
         while (n) |s| : (n = s.parent) {
             if (!s.props.scroll) continue;
-            const top_in_content = target.y - s.frame.y + s.scroll_y;
-            const want = if (std.mem.eql(u8, block, "end"))
-                top_in_content + target.h - s.frame.h
-            else if (std.mem.eql(u8, block, "center"))
-                top_in_content + target.h / 2 - s.frame.h / 2
-            else
-                top_in_content;
+            const want = scrollWant(block, target.y - s.frame.y + s.scroll_y, target.h, s.scroll_y, s.frame.h);
             s.scroll_y = std.math.clamp(want, 0, @max(0, s.content_h - s.frame.h));
             target = s.frame;
         }
         t.replace();
     }
 };
+
+/// Where a scroller scrolls to show a box `top`…`top + h` of its content
+/// (scrolled to `scroll_y`, `view_h` tall) at `block`, as
+/// scrollIntoView's: "start" (the default), "end", "center", or "nearest"
+/// (no scroll if it shows, else the nearer edge; a box taller than the view
+/// shows its start).
+fn scrollWant(block: []const u8, top: f32, h: f32, scroll_y: f32, view_h: f32) f32 {
+    if (std.mem.eql(u8, block, "end")) return top + h - view_h;
+    if (std.mem.eql(u8, block, "center")) return top + h / 2 - view_h / 2;
+    if (std.mem.eql(u8, block, "nearest")) {
+        if (top < scroll_y or h > view_h) return top;
+        if (top + h > scroll_y + view_h) return top + h - view_h;
+        return scroll_y;
+    }
+    return top;
+}
+
+test "scrollWant: start, end, center, nearest" {
+    try std.testing.expectEqual(@as(f32, 500), scrollWant("start", 500, 40, 0, 300));
+    try std.testing.expectEqual(@as(f32, 240), scrollWant("end", 500, 40, 0, 300));
+    try std.testing.expectEqual(@as(f32, 370), scrollWant("center", 500, 40, 0, 300));
+    // Showing: stays. Below: its bottom at the view's. Above: its top.
+    try std.testing.expectEqual(@as(f32, 100), scrollWant("nearest", 150, 40, 100, 300));
+    try std.testing.expectEqual(@as(f32, 240), scrollWant("nearest", 500, 40, 0, 300));
+    try std.testing.expectEqual(@as(f32, 50), scrollWant("nearest", 50, 40, 100, 300));
+    try std.testing.expectEqual(@as(f32, 500), scrollWant("nearest", 500, 400, 0, 300));
+}
 
 // Yoga's pixel rounding (src/native_ui/yoga/PixelGrid.cpp), for leafOnly:
 // the same arithmetic, at a point scale factor of 1.

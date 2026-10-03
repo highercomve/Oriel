@@ -2115,9 +2115,21 @@ function boxProps(cs, display, fs, el) {
     }
     // An inline width or height: the box may have a size now.
     contentBox(cs, p, bb);
-    return p;
+    return focusRing(cs, el, p);
   }
-  return { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button, bb)) };
+  return focusRing(cs, el, { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button, bb)) });
+}
+
+// Browsers' own focus ring on :focus-visible (keyboard focus, a text
+// field), unless the page styles the outline. Here rather than a rule in
+// UA_CSS, which every element would be matched against.
+// main.js says which element matches :focus-visible (one at most).
+const FOCUS_RING = { w: 2, c: [0, 103, 244, 1], o: 1 };
+let focusVisible = null;
+export function setFocusVisible(el) { focusVisible = el; }
+function focusRing(cs, el, p) {
+  if (el === focusVisible && el && !p.ol && cs["outline-style"] === undefined && cs["outline-width"] === undefined) p.ol = FOCUS_RING;
+  return p;
 }
 
 // outline: drawn outside the border box (offset + width), around its

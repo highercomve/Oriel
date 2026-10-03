@@ -19,7 +19,7 @@
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs } from "./css.js";
-import { Renderer, UA_CSS } from "./render.js";
+import { Renderer, UA_CSS, setFocusVisible } from "./render.js";
 import * as canvas from "./canvas.js";
 
 const host = globalThis.__host;
@@ -445,7 +445,9 @@ Object.defineProperty(document, "__active", {
     old?.removeAttribute?.("data-nui-focus-visible");
     active = el || null;
     active?.setAttribute?.("data-nui-focus", "");
-    if (active && (keyboardFocus || textField(active))) active.setAttribute?.("data-nui-focus-visible", "");
+    const visible = active && (keyboardFocus || textField(active));
+    if (visible) active.setAttribute?.("data-nui-focus-visible", "");
+    setFocusVisible(visible ? active : null);
     // As browsers fire them: blur and focusout on the old one, focus and
     // focusin on the new one (focus and blur don't bubble).
     const now = active;
@@ -709,12 +711,74 @@ function keyEvent(el, data, type = "keydown") {
   const ev = new KeyboardEvent(type, init);
   (el || document.body).dispatchEvent(ev);
   if (!ev.defaultPrevented) fireWindow(ev);
+  // Tab moves the focus, Shift+Tab back, unless the page took the key.
+  if (type === "keydown" && !ev.defaultPrevented && key === "Tab" && !(init.ctrlKey || init.altKey || init.metaKey)) {
+    return tabFocus(init.shiftKey) || false;
+  }
   // Enter in a one-line field submits its form.
   if (type === "keydown" && !ev.defaultPrevented && key === "Enter" && el?.localName === "input") {
     const form = el.closest("form");
     if (form) { submit(form); return true; }
   }
   return ev.defaultPrevented;
+}
+
+// Sequential focus, as browsers order it: positive tabindex first
+// (ascending, then document order), then the rest in document order.
+// Focusable: links with href, enabled form controls, contenteditable, and
+// anything with tabindex >= 0; shown ones only (rendered, not
+// visibility: hidden). True when the focus moved (the key is used); at the
+// end it wraps, as a page alone in its window has nowhere else to go.
+const FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable]";
+function tabOrder() {
+  const positive = [];
+  const rest = [];
+  for (const el of document.querySelectorAll(FOCUSABLE)) {
+    // A missing or invalid tabindex: 0 if the element is focusable itself.
+    let index = parseInt(el.getAttribute("tabindex"), 10);
+    if (Number.isNaN(index)) {
+      if (!naturallyFocusable(el)) continue;
+      index = 0;
+    }
+    if (index < 0 || (CONTROLS.has(el.localName) && el.hasAttribute("disabled")) || !shown(el)) continue;
+    (index > 0 ? positive : rest).push([index, el]);
+  }
+  positive.sort((a, b) => a[0] - b[0]);
+  return [...positive, ...rest].map((e) => e[1]);
+}
+const CONTROLS = new Set(["input", "button", "select", "textarea"]);
+function naturallyFocusable(el) {
+  switch (el.localName) {
+    case "a": return el.hasAttribute("href");
+    case "input": return (el.getAttribute("type") || "").toLowerCase() !== "hidden";
+    case "button": case "select": case "textarea": return true;
+    case "summary": return el.parentElement?.localName === "details";
+    default: return ["", "true", "plaintext-only"].includes(el.getAttribute("contenteditable"));
+  }
+}
+function shown(el) {
+  if (!renderer) return false;
+  if (!renderer.rendering) renderer.render();
+  if (getComputedStyle(el).visibility === "hidden") return false;
+  if (host.frame(renderer.idOf(el, "el"))) return true;
+  // No box of its own (an inline element is part of its text's runs):
+  // shown unless it or an ancestor is display: none.
+  for (let e = el; e && e !== document.documentElement; e = e.parentElement) {
+    if (getComputedStyle(e).display === "none") return false;
+  }
+  return true;
+}
+function tabFocus(back) {
+  const order = tabOrder();
+  if (!order.length) return false;
+  const at = order.indexOf(active);
+  const next = at < 0
+    ? (back ? order[order.length - 1] : order[0])
+    : order[(at + (back ? -1 : 1) + order.length) % order.length];
+  keyboardFocus = true;
+  next.focus();
+  next.scrollIntoView({ block: "nearest" });
+  return true;
 }
 
 let renderer = null;
