@@ -1346,15 +1346,11 @@ export class Renderer {
     // rest of the content out of flow): a browser's line box reaches below
     // them by the font's descent and half-leading (an image in a <div> is
     // a few px shorter than the <div>), unless the page makes them blocks.
-    const imageLine = !childCtx.blockify && props.fd === "column" && display !== "flex" && display !== "grid" && props.h === undefined &&
+    // The images' bottom margins take it (below): a block of auto height
+    // grows by it, one of a set height (a flex item, a 100%-high canvas in
+    // it) keeps its content box and the gap overflows, as in a browser.
+    const imageLine = !childCtx.blockify && props.fd === "column" && display !== "flex" && display !== "grid" &&
       this.imageLine(flow, cs, rematch);
-    if (imageLine) {
-      const gap = lineDescent(cs, fontSize, this.host);
-      if (gap > 0) {
-        const pad = props.pad ? [...props.pad] : [0, 0, 0, 0];
-        if (typeof pad[2] === "number") { pad[2] += gap; props.pad = pad; }
-      }
-    }
 
     // A line of inline content with an atomic box in it (a checkbox and its
     // label's text): a row that wraps, as an inline formatting context lays
@@ -1377,8 +1373,10 @@ export class Renderer {
     // Only atomic inline boxes (buttons side by side, inline-block chips):
     // one line that wraps, as in a browser, not a column; the whitespace
     // between them collapses to a space's width (none when they touch).
+    // (Positioned ones aside: one box in flow stays a column.)
+    const inFlow = (f) => { const p = this.style(f.el, cs, rematch).position; return p !== "absolute" && p !== "fixed"; };
     if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 &&
-        flow.every((f) => f.el && atomic(f.el))) {
+        flow.every((f) => f.el && atomic(f.el)) && flow.filter(inFlow).length > 1) {
       props.fd = "row"; props.fw = "wrap"; props.ai = imageLine ? "flex-end" : "center"; // images: on one baseline
       const nodesIn = [...el.childNodes];
       const spaced = nodesIn.some((n, i) => n.nodeType === 3 && /^\s+$/.test(n.data) && i > 0 && i < nodesIn.length - 1);
@@ -1408,7 +1406,7 @@ export class Renderer {
       // An image alone between blocks (an icon over a heading): a browser
       // puts it in a line of its own, which reaches below its margin box by
       // the font's descent (imageLine, for the whole content).
-      if (flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch)) {
+      if ((imageLine && this.imageLine([item], cs, childCtx.rematch)) || (flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch))) {
         const n = nodes.get(cid);
         const gap = lineDescent(cs, fontSize, this.host);
         if (n && gap > 0) {

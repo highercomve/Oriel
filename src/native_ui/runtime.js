@@ -15803,17 +15803,7 @@ col, colgroup { display: none; }
         this.putClick(props, el);
         return this.put(nodes, id, "text", props, [], fixedNode);
       }
-      const imageLine = !childCtx.blockify && props.fd === "column" && display !== "flex" && display !== "grid" && props.h === void 0 && this.imageLine(flow, cs, rematch);
-      if (imageLine) {
-        const gap = lineDescent(cs, fontSize, this.host);
-        if (gap > 0) {
-          const pad = props.pad ? [...props.pad] : [0, 0, 0, 0];
-          if (typeof pad[2] === "number") {
-            pad[2] += gap;
-            props.pad = pad;
-          }
-        }
-      }
+      const imageLine = !childCtx.blockify && props.fd === "column" && display !== "flex" && display !== "grid" && this.imageLine(flow, cs, rematch);
       const atomic = (child) => {
         const ccs = this.style(child, cs, rematch), d = ccs.display || "inline";
         return ATOMIC_INLINE.has(d) || !!boxed?.has(child);
@@ -15825,7 +15815,11 @@ col, colgroup { display: none; }
         const boxes = flow.filter((f) => f.el);
         if (boxes.length > 1 || boxes.some((f) => /%\s*$/.test(this.style(f.el, cs, rematch).width || ""))) props.fw = "wrap";
       }
-      if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 && flow.every((f) => f.el && atomic(f.el))) {
+      const inFlow = (f) => {
+        const p = this.style(f.el, cs, rematch).position;
+        return p !== "absolute" && p !== "fixed";
+      };
+      if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 && flow.every((f) => f.el && atomic(f.el)) && flow.filter(inFlow).length > 1) {
         props.fd = "row";
         props.fw = "wrap";
         props.ai = imageLine ? "flex-end" : "center";
@@ -15853,7 +15847,7 @@ col, colgroup { display: none; }
         const cid = this.element(item.el, cs, nodes, childCtx);
         if (cid === null) continue;
         this.adjustKid(nodes, cid, item.el, cs, props, display, childCtx);
-        if (flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch)) {
+        if (imageLine && this.imageLine([item], cs, childCtx.rematch) || flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch)) {
           const n2 = nodes.get(cid);
           const gap = lineDescent(cs, fontSize, this.host);
           if (n2 && gap > 0) {
