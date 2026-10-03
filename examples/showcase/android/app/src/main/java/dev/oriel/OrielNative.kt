@@ -125,7 +125,7 @@ internal object Nui {
         val hp = if (v != null && v.height > 0) v.height else m.heightPixels
         val k = cssScale(wp, m.density)
         val w = Math.round(wp / k).toLong()
-        val h = Math.round(hp / k).toLong()
+        val h = floor(hp / k + 1e-3f).toLong()
         val dark = if (isDark(res.configuration)) 1L else 0L
         return (dark shl 32) or ((h and 0xffff) shl 16) or (w and 0xffff)
     }
@@ -1114,11 +1114,17 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         canvases.clear()
     }
 
+    /** The page's size in whole CSS px, as Chromium's (innerWidth 412,
+     *  not 412.00003): the width rounded (it's whole by cssScale), the
+     *  height rounded down. */
+    private fun cssWidth(px: Int) = Math.round(px / density).toFloat()
+    private fun cssHeight(px: Int) = floor(px / density + 1e-3f)
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         density = Nui.cssScale(w, resources.displayMetrics.density)
         onSize(w, h)
-        if (w > 0 && h > 0) NuiNative.resize(window, w / density, h / density, dark)
+        if (w > 0 && h > 0) NuiNative.resize(window, cssWidth(w), cssHeight(h), dark)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -1133,7 +1139,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         val d = Nui.isDark(newConfig)
         if (d != dark) {
             dark = d
-            if (width > 0) NuiNative.resize(window, width / density, height / density, dark)
+            if (width > 0) NuiNative.resize(window, cssWidth(width), cssHeight(height), dark)
         }
     }
 
