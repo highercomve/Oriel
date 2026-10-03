@@ -515,6 +515,12 @@ all with no clip or transform in effect drops everything recorded before it
 (a game loop's clear-then-redraw then keeps one frame's ops); drawing
 without such a clear accumulates, as in a browser.
 
+A path of many whole circles (a game's balls, eight or more in one path)
+filled nonzero in an opaque color is drawn circle by circle, which gives
+the same pixels (win32.zig and apple_draw.zig fillCircles, OrielCanvas.kt
+fillCircles): one path of hundreds of circles was most of Breakout's frame
+at 500 balls (Android emulator, JS mode: 20 → 55 fps).
+
 Every backend draws canvases. On Android (`OrielCanvas.kt`) the program is
 parsed once per change and replayed into an `android.graphics.Bitmap` of
 the canvas's own (frame size × density, at most 16384 px a side and 16 M
