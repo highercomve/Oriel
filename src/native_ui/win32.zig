@@ -95,6 +95,16 @@ fn sliderSteps(r: tree_mod.Range) isize {
 
 var common_controls = false;
 
+/// A combobox's closed height in pixels: its drop button's rect and the same
+/// inset below it (the window's own rect includes the list).
+fn comboClosedHeight(hwnd: c.HWND) ?c_int {
+    var cbi: c.COMBOBOXINFO = undefined;
+    cbi.cbSize = @sizeOf(c.COMBOBOXINFO);
+    if (c.GetComboBoxInfo(hwnd, &cbi) == 0) return null;
+    const closed = cbi.rcButton.bottom + cbi.rcButton.top;
+    return if (closed > 0) closed else null;
+}
+
 /// A select's selection-field height (CB_SETITEMHEIGHT with -1).
 fn setItemHeight(f: *Field, item_h: c_int) void {
     const v = @max(8, item_h);
@@ -847,19 +857,21 @@ fn syncFields(s: *Surface) void {
                 h += px(200 * s.scale);
             }
             _ = c.SetWindowPos(f.hwnd, null, x, y, w, h, c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_SHOWWINDOW);
+            // What the control shows: its box, or, for a combobox that can't
+            // be as short as a styled box (its font's height at least), down
+            // to its closed height, so a box painted over that part (a sticky
+            // footer) or the scroll container's edge cuts it too.
+            var shown = r;
             if (f.kind == .select) {
-                // The closed control's height: its drop button's rect and
-                // the same inset below it (the window's own rect includes
-                // the list).
-                var cbi: c.COMBOBOXINFO = undefined;
-                cbi.cbSize = @sizeOf(c.COMBOBOXINFO);
-                if (c.GetComboBoxInfo(f.hwnd, &cbi) != 0) {
-                    const closed = cbi.rcButton.bottom + cbi.rcButton.top;
+                if (comboClosedHeight(f.hwnd)) |closed| {
                     const off = box_h - closed;
-                    if (closed > 0 and off != 0 and @abs(off) < @divTrunc(box_h, 2)) setItemHeight(f, f.item_h + off);
+                    if (off != 0 and @abs(off) < @divTrunc(box_h, 2)) setItemHeight(f, f.item_h + off);
+                }
+                if (comboClosedHeight(f.hwnd)) |closed| {
+                    shown.h = @max(r.h, @as(f32, @floatFromInt(closed)) / s.scale);
                 }
             }
-            const rgn = fieldRegion(s, &po, n, r);
+            const rgn = fieldRegion(s, &po, n, shown);
             if (rgn != null or f.clipped) {
                 // The window owns the region from here on.
                 _ = c.SetWindowRgn(f.hwnd, rgn, c.TRUE);
