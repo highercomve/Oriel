@@ -371,6 +371,22 @@ key up 10 ms after UIKit's (it types the character a little after the
 press, and the page hears input before keyup, as in WebKit), and the
 page view passes a field's presses on through UIView's own.
 
+A press focuses what it's on, as a browser's mousedown does (main.js
+pressFocus): the nearest focusable element from its target up, so a press
+in a field's padding or border (outside its native control) focuses the
+field too; on nothing focusable the focus leaves. A mouse or pen on its
+`"down"` when the page didn't prevent it; a touch at its tap, before the
+click (a scroll that starts on a field doesn't focus it). On macOS and iOS
+a press focuses no button, link or checkbox (WebKit's), and a label leaves
+it to its click.
+
+A text field's `change` comes from main.js, as browsers fire it: on blur
+(before `blur`) and on Enter in a one-line field (after Chromium's
+`beforeinput` `insertLineBreak`, before the form's submit), when the user
+edited it (an `"input"` from the backend) and its value differs from the
+one at focus or at the last change. A script's value fires nothing.
+Backends send `"change"` only for sliders and selects.
+
 Focus: a native field that gets or loses the keyboard sends `"focus"` or
 `"blur"` (data `null`) on its node. The page then sets `:focus` and
 `document.activeElement`, and fires `blur` and `focusout` on the old
