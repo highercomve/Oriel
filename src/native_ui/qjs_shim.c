@@ -865,6 +865,13 @@ void oqjs_run_jobs(void *p) {
     leave(self);
 }
 
+// A cycle collection now (idle, after a big removal: detached trees the
+// native DOM's wrappers hold in cycles go, see dom/store.zig).
+void oqjs_run_gc(void *p) {
+    oqjs *self = p;
+    JS_RunGC(self->rt);
+}
+
 size_t oqjs_memory(void *p) {
     oqjs *self = p;
     JSMemoryUsage u;

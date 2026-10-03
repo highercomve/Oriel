@@ -14775,6 +14775,10 @@ input[type="range"] { height: 20px; margin: 2px; }
   }
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var SHEET_OWNERS = /* @__PURE__ */ new Set(["style", "link"]);
+  var NO_PARENTS = { set() {
+  }, get() {
+    return void 0;
+  } };
   var SHEET_RULES_INCREMENTAL = 64;
   var INTRINSIC_WIDTHS = /* @__PURE__ */ new Set(["max-content", "fit-content", "-webkit-fit-content", "-moz-fit-content"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
@@ -14878,7 +14882,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       this.full = true;
       this.sc = /* @__PURE__ */ new WeakMap();
       this.fc = /* @__PURE__ */ new WeakMap();
-      this.parentOf = /* @__PURE__ */ new WeakMap();
+      this.parentOf = nodeIndex ? NO_PARENTS : /* @__PURE__ */ new WeakMap();
       this.volatile = /* @__PURE__ */ new Set();
       this.shared = /* @__PURE__ */ new WeakMap();
       this.cascades = /* @__PURE__ */ new Map();

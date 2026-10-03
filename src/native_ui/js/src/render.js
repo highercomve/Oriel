@@ -93,6 +93,7 @@ input[type="range"] { height: 20px; margin: 2px; }
 const INLINE_DISPLAY = new Set(["inline"]);
 // Elements whose changes can change the page's sheets.
 const SHEET_OWNERS = new Set(["style", "link"]);
+const NO_PARENTS = { set() {}, get() { return undefined; } };
 // Rules changed at once beyond which every element is styled again rather
 // than the ones each rule's selector finds.
 const SHEET_RULES_INCREMENTAL = 64;
@@ -237,7 +238,11 @@ export class Renderer {
     this.full = true;              // everything again (first frame, the viewport changed)
     this.sc = new WeakMap();       // element → { parent cs, cs, matched rules, frame }
     this.fc = new WeakMap();       // element → what it made (element(), below)
-    this.parentOf = new WeakMap(); // node → the element it was last flattened in (removals)
+    // node → the element it was last flattened in (removals). The native
+    // DOM reports a removed node's parent itself (noteChild), and a map
+    // holding parents would keep every removed tree referenced from JS
+    // (released only at the next cycle collection, not when removed).
+    this.parentOf = nodeIndex ? NO_PARENTS : new WeakMap();
     this.volatile = new Set();     // elements whose output can change without a mutation (fields…)
     this.shared = new WeakMap();   // parent cs → Map(specified → cs): siblings with the same rules share one
     this.cascades = new Map();     // matched rules → { normal, important } longhands
