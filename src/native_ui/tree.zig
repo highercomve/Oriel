@@ -13,6 +13,7 @@ const log = std.log.scoped(.native_ui);
 const prof = @import("prof.zig");
 
 pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas };
+pub const BorderStyle = enum { dashed, dotted };
 
 pub const Color = [4]f32; // r, g, b 0-255; a 0-1
 
@@ -426,6 +427,9 @@ pub const Props = struct {
     pad: ?[4]Dim = null,
     bw: ?[4]f32 = null,
     bc: ?[4]Color = null,
+    /// border-style when not solid (every side's: the first side drawn
+    /// dashed or dotted).
+    bs: ?BorderStyle = null,
     rg: ?f32 = null,
     cg: ?f32 = null,
     pos: ?[]const u8 = null,
