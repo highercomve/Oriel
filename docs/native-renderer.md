@@ -424,7 +424,16 @@ clientWidth and clientHeight are the viewport's, as in browsers.
   text field `size` (20) digit widths and 6px, a textarea `cols` digits by
   `rows` lines, a select its longest option and its arrow, a line the
   font's normal height (`Tree.fields_sized`: measureFn keeps a textarea's
-  width).
+  width). On macOS a `<button>` is WKWebView's (measured; render.js
+  UA_CSS_MAC and pushButton): while the page leaves its background,
+  border and `appearance` alone, AppKit's push button — no border
+  (WebKit's computed one is 0), padding `2px 6px 3px` plus the bezel's
+  2px a side, white with 4px corners and a hairline edge (the default
+  11px label: 18px tall); otherwise the CSS box on
+  ButtonFace (rgb(192, 192, 192)), its outset border darkened on the
+  bottom and right as WebKit's Color::dark (inset: top and left; on every
+  platform). WebKit draws a tall button (a 20px font) as a square bevel
+  button; Oriel keeps the push button. iOS buttons keep UA_CSS_WEBKIT's.
 - `Backend.font_metrics` (host.fontMetrics): `[ascent, descent, lineGap]`
   in px, unhinted, for the default sans (or monospace) at a size; the
   runtime uses it for an image's line (the baseline gap below an inline
