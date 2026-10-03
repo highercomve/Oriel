@@ -12,6 +12,23 @@ zig build -Dnative_ui -Dnative_dom=false -Doptimize=ReleaseFast -p zig-out-linke
 RENDER_BENCH=1 ./zig-out-native/bin/oriel-render-bench            # one JSON line, then exits
 ```
 
+Latest (2026-10-03, main c0615af, the Linux desktop at 180 Hz, the median
+of 3 runs of RENDER_BENCH=1, native vs WebView):
+
+| | native | WebView |
+|---|---|---|
+| startup → page script | 19 ms | 349 ms |
+| startup → first frame | 69 ms | 431 ms |
+| build 1000 / 3000 rows | 6.4 / 18.6 ms | 20 / 69 ms |
+| update 1000 / 3000 rows | 2.8 / 8.5 ms | 9 / 40 ms |
+| animate 200 boxes | 165 fps | 62 fps |
+| canvas 200 / 1000 balls | 180 / 91 fps | 62 / 62 fps |
+| memory at start (PSS) | 110 MB | 491 MB |
+| memory after the tests / a second round | 174 / 177 MB | 561 / 563 MB |
+
+Recordings of both runs: site/assets/videos/render-bench-{native,webview}.mp4
+(the native renderer page on the site shows them side by side).
+
 The native DOM against linkedom (2026-10-02, the desktop, one run each):
 
 | | native DOM | linkedom |
