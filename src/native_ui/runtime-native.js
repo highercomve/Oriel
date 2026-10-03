@@ -470,6 +470,16 @@ globalThis.atob ??= (s) => {
       isSameNode(o) {
         return this === o;
       },
+      // `old` out, `node` in its place (Solid's reconciler uses it).
+      replaceChild(node, old) {
+        if (old?.parentNode !== this) throw new Error("NotFoundError: the node to replace is not a child of this node");
+        if (node === old) return old;
+        let ref = old.nextSibling;
+        if (ref === node) ref = node.nextSibling;
+        this.removeChild(old);
+        this.insertBefore(node, ref);
+        return old;
+      },
       isEqualNode(o) {
         if (!o || o.nodeType !== this.nodeType) return false;
         if (this.nodeType === ELEMENT_NODE) return this.outerHTML === o.outerHTML;
@@ -1191,7 +1201,7 @@ globalThis.atob ??= (s) => {
       content: { get() {
         let f = contents.get(this);
         if (!f) contents.set(this, f = document2.createDocumentFragment());
-        if (this.hasChildNodes() && !f.hasChildNodes()) for (let c = this.firstChild; c; c = c.nextSibling) f.appendChild(c.cloneNode(true));
+        while (this.firstChild) f.appendChild(this.firstChild);
         return f;
       } }
     });
@@ -6448,6 +6458,8 @@ ${a.stack || ""}`;
   g.PointerEvent = PointerEvent;
   g.TouchEvent = TouchEvent;
   g.InputEvent = g.FocusEvent = g.UIEvent = Event;
+  g.ShadowRoot ??= class ShadowRoot {
+  };
   var winListeners = /* @__PURE__ */ new Map();
   g.addEventListener = (type, fn) => {
     let s = winListeners.get(type);
@@ -7639,6 +7651,7 @@ ${a.stack || ""}`;
         renderer.observer.__nuiAttribute = (node, name) => renderer.noteAttribute(node, name);
         renderer.observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
         const b2 = P && P();
+        for (const t of document.querySelectorAll("template")) t.content;
         for (const s of document.querySelectorAll("script")) {
           const src = s.getAttribute("src");
           const code = src ? host.asset(src.replace(/^\.?\//, "")) : s.textContent;
