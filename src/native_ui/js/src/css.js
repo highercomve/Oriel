@@ -610,7 +610,7 @@ export function length(v, fontSize, pctOk = true) {
   m = /^(min|max|clamp|calc)\((.*)\)$/.exec(v);
   if (m) {
     const args = splitTop(m[2], ",").map((a) => a.trim());
-    if (m[1] === "calc") return calc(m[2], fontSize);
+    if (m[1] === "calc") return calc(m[2], fontSize, pctOk);
     const vals = args.map((a) => length(a, fontSize, false)).filter((x) => typeof x === "number");
     if (!vals.length) return length(args.find((a) => a.endsWith("%")), fontSize, pctOk);
     if (m[1] === "min") return Math.min(...vals);
@@ -620,21 +620,45 @@ export function length(v, fontSize, pctOk = true) {
   return null;
 }
 
-// calc() with + - * / over lengths (percentages unsupported: null).
-function calc(expr, fontSize) {
+// calc() with + - * / over lengths and percentages: px (a number), or
+// { pct, px } when a percentage stays (calc(50% - 8px)), resolved against
+// the container at layout (tree.zig Dim.calc); null when it can't be
+// (a percentage where none is allowed, % times %).
+function calc(expr, fontSize, pctOk = true) {
   const toks = expr.match(/-?[\d.]+[a-z%]*|[-+*/()]|calc|min|max/g) || [];
   let i = 0;
+  // Each value as [percent, px].
+  const bad = [NaN, NaN];
   const num = () => {
     const t = toks[i++];
     if (t === "(") { const v = add(); i++; return v; }
     if (t === "calc") return num();
-    const l = length(t, fontSize, false);
-    return typeof l === "number" ? l : NaN;
+    const l = length(t, fontSize, true);
+    return typeof l === "number" ? [0, l] : l && typeof l === "object" && l.px === undefined ? [l.pct, 0] : bad;
   };
-  const mul = () => { let v = num(); while (toks[i] === "*" || toks[i] === "/") { const op = toks[i++]; const r = num(); v = op === "*" ? v * r : v / r; } return v; };
-  const add = () => { let v = mul(); while (toks[i] === "+" || toks[i] === "-") { const op = toks[i++]; const r = mul(); v = op === "+" ? v + r : v - r; } return v; };
-  const v = add();
-  return Number.isFinite(v) ? v : null;
+  const mul = () => {
+    let v = num();
+    while (toks[i] === "*" || toks[i] === "/") {
+      const op = toks[i++];
+      const r = num();
+      // One side is a plain number: a length times a percentage isn't one.
+      if (op === "*") v = r[0] === 0 ? [v[0] * r[1], v[1] * r[1]] : v[0] === 0 ? [r[0] * v[1], r[1] * v[1]] : bad;
+      else v = r[0] === 0 ? [v[0] / r[1], v[1] / r[1]] : bad;
+    }
+    return v;
+  };
+  const add = () => { let v = mul(); while (toks[i] === "+" || toks[i] === "-") { const op = toks[i++]; const r = mul(); v = op === "+" ? [v[0] + r[0], v[1] + r[1]] : [v[0] - r[0], v[1] - r[1]]; } return v; };
+  const [pct, px] = add();
+  if (!Number.isFinite(pct) || !Number.isFinite(px)) return null;
+  if (pct === 0) return px;
+  if (!pctOk) return null;
+  return px === 0 ? { pct } : { pct, px };
+}
+
+// A length object as a prop's string: "50%", or "50%-8px" for a calc()
+// with a percentage (tree.zig Dim.fromString).
+export function pctString(l) {
+  return l.px ? `${l.pct}%${l.px >= 0 ? "+" : ""}${l.px}px` : `${l.pct}%`;
 }
 
 const NAMED = {

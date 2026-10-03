@@ -531,4 +531,22 @@ for (const css of [
   assert.deepEqual(gh.props.icon.vb, [0, 0, 16, 16], "the other file's symbol");
 }
 
+// calc() with a percentage: sent as "P%±Npx" for sizes and flex-basis
+// (tree.zig resolves it against the container); without one, px as before.
+{
+  const { document } = parseHTML("<html><body><main></main></body></html>");
+  const css = ".a { flex: calc(50% - 8px) } .b { width: calc(25% + 1rem); max-width: calc(100% / 3 - 2px) } .c { width: calc(10px + 2em); font-size: 10px } .d { height: calc(100% * 50%) }";
+  const { renderer, tree } = makeRenderer(document, css);
+  document.querySelector("main").innerHTML = '<div class="a">a</div><div class="b">b</div><div class="c">c</div><div class="d">d</div>';
+  renderer.render();
+  const find = (n, pred) => pred(n) ? n : n.kids.map((k) => find(k, pred)).find(Boolean);
+  const t = tree();
+  const of = (s) => find(t, (n) => n.props.runs?.[0]?.t.trim() === s).props;
+  assert.equal(of("a").fb, "50%-8px");
+  assert.equal(of("b").w, "25%+16px");
+  assert.ok(/^33\.33\d*%-2px$/.test(of("b").maxw), of("b").maxw);
+  assert.equal(of("c").w, 30, "no percentage: px");
+  assert.equal(of("d").h, undefined, "% times %: not a length");
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");

@@ -419,14 +419,22 @@ fn gradId(v: std.json.Value) u16 {
 pub const Dim = union(enum) {
     px: f32,
     pct: f32,
+    /// calc(P% ± Npx): a percentage of the container plus px. Yoga can't
+    /// take it: resolved against the container's laid-out size
+    /// (Tree.resolveCalcs). Half floats keep a Dim 8 bytes (a percentage
+    /// to 0.05, an offset to a quarter px below 512).
+    calc: Calc,
     auto,
     none,
+
+    pub const Calc = struct { pct: f16, px: f16 };
 
     /// px as is, a percentage of `total`, 0 otherwise.
     pub fn len(d: Dim, total: f32) f32 {
         return switch (d) {
             .px => |x| x,
             .pct => |x| x / 100 * total,
+            .calc => |k| @as(f32, k.pct) / 100 * total + @as(f32, k.px),
             else => 0,
         };
     }
@@ -444,7 +452,18 @@ pub const Dim = union(enum) {
     pub fn fromString(s: []const u8) Dim {
         if (std.mem.eql(u8, s, "auto")) return .auto;
         if (std.mem.endsWith(u8, s, "%")) return .{ .pct = std.fmt.parseFloat(f32, s[0 .. s.len - 1]) catch return .none };
+        // "50%-8px", "33.3%+1.5px" (render.js pctString).
+        if (std.mem.endsWith(u8, s, "px")) if (std.mem.indexOfScalar(u8, s, '%')) |at| {
+            const pct = std.fmt.parseFloat(f32, s[0..at]) catch return .none;
+            const px = std.fmt.parseFloat(f32, s[at + 1 .. s.len - 2]) catch return .none;
+            if (!std.math.isFinite(pct) or !std.math.isFinite(px)) return .none;
+            return .{ .calc = .{ .pct = @floatCast(pct), .px = @floatCast(std.math.clamp(px, -60000, 60000)) } };
+        };
         return .none;
+    }
+
+    fn isCalc(d: ?Dim) bool {
+        return if (d) |x| x == .calc else false;
     }
 
     pub fn jsonParse(a: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Dim {
@@ -1852,9 +1871,15 @@ pub const Tree = struct {
         // Growing labels narrower than their longest word: frozen at it,
         // the others share the rest (a few rounds: freezing one can
         // narrow the others).
+        // And calc() sizes put to px against their container's laid-out
+        // size (Yoga has no calc): again when that size changed.
         var rounds: usize = 0;
-        while (rounds < 4 and freezeGrowMins(root)) : (rounds += 1)
+        while (rounds < 4) : (rounds += 1) {
+            const calcs = resolveCalcs(root);
+            const frozen = freezeGrowMins(root);
+            if (!calcs and !frozen) break;
             yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
+        }
         prof.report("yoga {d:.2}, {d} measures {d:.2}", .{ prof.now() - y0, prof.measures, prof.measure_ms });
         // Tables need the first pass's widths, then fix their cells' widths
         // and lay out again (every layout: a cell's content may have changed).
@@ -2014,6 +2039,56 @@ pub const Tree = struct {
     }
 
     /// Left + right padding and borders (a box's frame minus its content).
+    /// calc(P% ± Npx) sizes under `n` (width, height, their min and max,
+    /// flex-basis) set in px from the container's laid-out content box:
+    /// true if one changed (the layout runs again). A height's calc needs
+    /// a container with a height of its own, as a percentage does; else
+    /// it stays its percentage (Yoga's auto).
+    fn resolveCalcs(n: *Node) bool {
+        var any = false;
+        const p = n.props;
+        if (n.parent) |par| if (Dim.isCalc(p.w) or Dim.isCalc(p.h) or Dim.isCalc(p.minw) or Dim.isCalc(p.minh) or
+            Dim.isCalc(p.maxw) or Dim.isCalc(p.maxh) or Dim.isCalc(p.fb))
+        {
+            const y = n.yn;
+            const cw = yg.YGNodeLayoutGetWidth(par.yn) - edgesX(par.yn);
+            const ch = yg.YGNodeLayoutGetHeight(par.yn) - edgesY(par.yn);
+            const definite_h = if (par.props.h) |h| h == .px or h == .pct or h == .calc else par.parent == null;
+            const row = std.mem.startsWith(u8, par.props.fd orelse "column", "row");
+            if (setCalc(y, p.w, cw, yg.YGNodeStyleGetWidth, yg.YGNodeStyleSetWidth)) any = true;
+            if (setCalc(y, p.minw, cw, yg.YGNodeStyleGetMinWidth, yg.YGNodeStyleSetMinWidth)) any = true;
+            if (setCalc(y, p.maxw, cw, yg.YGNodeStyleGetMaxWidth, yg.YGNodeStyleSetMaxWidth)) any = true;
+            if (definite_h) {
+                if (setCalc(y, p.h, ch, yg.YGNodeStyleGetHeight, yg.YGNodeStyleSetHeight)) any = true;
+                if (setCalc(y, p.minh, ch, yg.YGNodeStyleGetMinHeight, yg.YGNodeStyleSetMinHeight)) any = true;
+                if (setCalc(y, p.maxh, ch, yg.YGNodeStyleGetMaxHeight, yg.YGNodeStyleSetMaxHeight)) any = true;
+            }
+            // flex-basis: a percentage of the container's main size.
+            if (row or definite_h) {
+                if (setCalc(y, p.fb, if (row) cw else ch, yg.YGNodeStyleGetFlexBasis, yg.YGNodeStyleSetFlexBasis)) any = true;
+            }
+        };
+        for (n.kids.items) |k| {
+            if (resolveCalcs(k)) any = true;
+        }
+        return any;
+    }
+
+    fn setCalc(y: yg.YGNodeRef, d: ?Dim, total: f32, read: anytype, set: anytype) bool {
+        const v = d orelse return false;
+        if (v != .calc or !std.math.isFinite(total)) return false;
+        const px = v.len(@max(0, total));
+        const cur = read(y);
+        if (cur.unit == yg.YGUnitPoint and @abs(cur.value - px) < 0.01) return false;
+        set(y, px);
+        return true;
+    }
+
+    fn edgesY(y: yg.YGNodeRef) f32 {
+        return yg.YGNodeLayoutGetPadding(y, yg.YGEdgeTop) + yg.YGNodeLayoutGetPadding(y, yg.YGEdgeBottom) +
+            yg.YGNodeLayoutGetBorder(y, yg.YGEdgeTop) + yg.YGNodeLayoutGetBorder(y, yg.YGEdgeBottom);
+    }
+
     fn edgesX(y: yg.YGNodeRef) f32 {
         return yg.YGNodeLayoutGetPadding(y, yg.YGEdgeLeft) + yg.YGNodeLayoutGetPadding(y, yg.YGEdgeRight) +
             yg.YGNodeLayoutGetBorder(y, yg.YGEdgeLeft) + yg.YGNodeLayoutGetBorder(y, yg.YGEdgeRight);
@@ -2253,6 +2328,7 @@ fn applyYogaStyle(y: yg.YGNodeRef, p: Props) void {
         switch (m) {
             .px => |v| yg.YGNodeStyleSetMargin(y, e, v),
             .pct => |v| yg.YGNodeStyleSetMarginPercent(y, e, v),
+            .calc => |k| yg.YGNodeStyleSetMarginPercent(y, e, k.pct),
             .auto => yg.YGNodeStyleSetMarginAuto(y, e),
             .none => yg.YGNodeStyleSetMargin(y, e, 0),
         }
@@ -2298,6 +2374,9 @@ fn dim(y: yg.YGNodeRef, v: ?Dim, set: anytype, set_pct: anytype, set_auto: anyty
     switch (d) {
         .px => |x| set(y, x),
         .pct => |x| set_pct(y, x),
+        // Its percentage until the layout puts the container's px to it
+        // (Tree.resolveCalcs).
+        .calc => |k| set_pct(y, k.pct),
         else => set_auto(y),
     }
 }
@@ -2307,6 +2386,7 @@ fn dimNoAuto(y: yg.YGNodeRef, v: ?Dim, set: anytype, set_pct: anytype) void {
     switch (d) {
         .px => |x| set(y, x),
         .pct => |x| set_pct(y, x),
+        .calc => |k| set_pct(y, k.pct),
         else => set(y, std.math.nan(f32)),
     }
 }
@@ -3467,4 +3547,56 @@ test "box-sizing: content-box sizes leave out the padding and border (cb)" {
     // content box (110x60): a ratio with padding is a little off.
     try std.testing.expectEqual(@as(f32, 55), t.get(4).?.frame.h);
     try std.testing.expectEqual(@as(f32, 100), t.get(5).?.frame.w);
+}
+
+test "calc(50% - 8px) sizes resolve against the container: the Vite starters' 2x2 links" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try std.testing.expectEqual(@as(usize, 8), @sizeOf(Dim));
+    // #social ul: a wrapping row, 8px gaps; each li `flex: calc(50% - 8px)`
+    // (render.js: grow 1, shrink 1, basis "50%-8px").
+    try t.apply(
+        \\[["c",0,"view"],["p",0,{"fd":"column"}],
+        \\["c",9,"view"],["p",9,{"fd":"row","fw":"wrap","w":400,"rg":8,"cg":8,"pad":[0,10,0,10]}],
+        \\["c",1,"view"],["p",1,{"fg":1,"fs":1,"fb":"50%-8px","h":20}],
+        \\["c",2,"view"],["p",2,{"fg":1,"fs":1,"fb":"50%-8px","h":20}],
+        \\["c",3,"view"],["p",3,{"fg":1,"fs":1,"fb":"50%-8px","h":20}],
+        \\["c",4,"view"],["p",4,{"fg":1,"fs":1,"fb":"50%-8px","h":20}],
+        \\["c",5,"view"],["p",5,{"w":"25%+10px","h":10}],
+        \\["c",6,"view"],["p",6,{"w":"50%","h":10}],
+        \\["k",9,[1,2,3,4]],["k",0,[9,5,6]],["r",0]]
+    );
+    try std.testing.expect(t.get(1).?.props.fb.? == .calc);
+    t.width = 600;
+    t.height = 400;
+    t.layout();
+    const at = struct {
+        fn f(tr: *Tree, id: i64) [3]f32 {
+            const n = tr.get(id).?;
+            return .{ n.frame.x - tr.get(9).?.frame.x, n.frame.y - tr.get(9).?.frame.y, n.frame.w };
+        }
+    }.f;
+    // Two a line: a basis of 50% of 380 less 8 (182), grown to share
+    // the line (186 each, 8 between them).
+    try std.testing.expectEqual([3]f32{ 10, 0, 186 }, at(&t, 1));
+    try std.testing.expectEqual([3]f32{ 204, 0, 186 }, at(&t, 2));
+    try std.testing.expectEqual([3]f32{ 10, 28, 186 }, at(&t, 3));
+    try std.testing.expectEqual([3]f32{ 204, 28, 186 }, at(&t, 4));
+    // A calc width: 25% of the window's 600 plus 10; a plain percentage
+    // as before.
+    try std.testing.expectEqual(@as(f32, 160), t.get(5).?.frame.w);
+    try std.testing.expectEqual(@as(f32, 300), t.get(6).?.frame.w);
+    // The container changes size: resolved again.
+    try t.apply(
+        \\[["p",9,{"fd":"row","fw":"wrap","w":200,"rg":8,"cg":8}]]
+    );
+    t.layout();
+    try std.testing.expectEqual([3]f32{ 0, 0, 96 }, at(&t, 1));
+    try std.testing.expectEqual([3]f32{ 104, 0, 96 }, at(&t, 2));
+    try std.testing.expectEqual([3]f32{ 0, 28, 96 }, at(&t, 3));
+    t.width = 800;
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 210), t.get(5).?.frame.w);
 }
