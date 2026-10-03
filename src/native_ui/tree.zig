@@ -31,6 +31,8 @@ pub const Run = struct {
     mono: bool = false,
     u: bool = false,
     bg: ?Color = null,
+    /// The CSS font-family list (render.js familyOf); null: sans-serif.
+    ff: ?[]const u8 = null,
 };
 
 // A text-only update owns its new string separately from the unchanged
@@ -541,6 +543,8 @@ pub const Props = struct {
     fwt: ?f32 = null,
     it: bool = false,
     mono: bool = false,
+    /// The CSS font-family list for the text (null: sans-serif).
+    ff: ?[]const u8 = null,
     lh: ?f32 = null,
     ta: ?[]const u8 = null,
     nowrap: bool = false,
