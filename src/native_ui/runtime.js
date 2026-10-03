@@ -13364,7 +13364,18 @@ globalThis.atob ??= (s) => {
       }
       cs[k] = substitute(v, cs, 0);
     }
+    if (maxContent(cs, parent)) cs.__maxc = true;
+    else if (fitContent(cs, parent)) cs.__fitc = true;
     return cs;
+  }
+  function fitContent(cs, parent) {
+    const w = cs.width;
+    return INTRINSIC_FIT.has(w) || !!parent?.__fitc && (w === void 0 || w === "auto");
+  }
+  var INTRINSIC_FIT = /* @__PURE__ */ new Set(["fit-content", "-webkit-fit-content", "-moz-fit-content"]);
+  function maxContent(cs, parent) {
+    const w = cs.width;
+    return w === "max-content" || !!parent?.__maxc && (w === void 0 || w === "auto" || w === "fit-content");
   }
   function relativeUnit(v) {
     const last = v.charCodeAt(v.length - 1);
@@ -14749,6 +14760,7 @@ textarea { font-family: -webkit-small-control, system-ui; }
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var SHEET_OWNERS = /* @__PURE__ */ new Set(["style", "link"]);
   var SHEET_RULES_INCREMENTAL = 64;
+  var INTRINSIC_WIDTHS = /* @__PURE__ */ new Set(["max-content", "fit-content", "-webkit-fit-content", "-moz-fit-content"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
   function lineHeightPx(v, fs) {
@@ -15459,6 +15471,13 @@ textarea { font-family: -webkit-small-control, system-ui; }
       };
       for (const k in normal) if (!(k in casc.important)) put(k, normal[k]);
       for (const k in important) put(k, important[k]);
+      const mc = maxContent(cs, parentCS);
+      const fc = !mc && fitContent(cs, parentCS);
+      if (mc !== !!base.__maxc || fc !== !!base.__fitc) parts = null;
+      if (mc) cs.__maxc = true;
+      else delete cs.__maxc;
+      if (fc) cs.__fitc = true;
+      else delete cs.__fitc;
       derived.set(cs, { base, parts: parts && [...parts] });
       return cs;
     }
@@ -15785,7 +15804,9 @@ textarea { font-family: -webkit-small-control, system-ui; }
       const transitions = transitionsOf(cs);
       if (transitions) this.spec(id, transitions);
       this.noteAnimations(id, cs, fontSize);
-      if (!ctx.blockify && ["block", "flex", "grid", "list-item"].includes(blockify(display)) && props.w === void 0 && props.pos !== "absolute" && cs["margin-left"] === "auto" && cs["margin-right"] === "auto") props.w = "100%";
+      const intrinsic = INTRINSIC_WIDTHS.has(cs.width) && props.w === void 0;
+      if (!ctx.blockify && !intrinsic && ["block", "flex", "grid", "list-item"].includes(blockify(display)) && props.w === void 0 && props.pos !== "absolute" && cs["margin-left"] === "auto" && cs["margin-right"] === "auto") props.w = "100%";
+      if (intrinsic && props.pos !== "absolute" && !props.as && !(ctx.blockify && !/^column/.test(parentCS?.["flex-direction"] || "row"))) props.as = "flex-start";
       let fixedNode = false;
       if (cs.position === "fixed") {
         props.pos = "absolute";
@@ -16908,7 +16929,9 @@ textarea { font-family: -webkit-small-control, system-ui; }
     const ta = cs["text-align"];
     if (ta && ta !== "start" && ta !== "left") p.ta = ta === "end" ? "right" : ta;
     const ws = cs["white-space"];
-    if (ws === "nowrap" || ws === "pre") p.nowrap = true;
+    if (ws === "nowrap" || ws === "pre" || cs.__maxc && (!ws || ws === "normal")) p.nowrap = true;
+    if (cs.__maxc) p.mc = true;
+    else if (cs.__fitc) p.fc = true;
     if (cs["letter-spacing"] && cs["letter-spacing"] !== "normal") p.ls = length(cs["letter-spacing"], fs, false) ?? void 0;
     return p;
   }
