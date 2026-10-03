@@ -168,8 +168,9 @@ the animated nodes are sent each frame).
   as the ring between the border box and `paddingBoxXY`), the children's
   clip (`Node.paddingClipXY()`: each inner x radius less the left or right
   border, y less the top or bottom), the outline and box-shadow (each
-  rounded corner grown on both axes: `Radii.grown`). Win32 does all of
-  these; GTK, Apple and Android still use `radius()`.
+  rounded corner grown on both axes: `Radii.grown`). Win32 and GTK
+  (gtk.zig roundRectXY, roundedSides) do all of these; Apple and Android
+  still use `radius()`.
 
 **Text metrics** (each backend, to match its own WebView):
 
@@ -319,7 +320,12 @@ orange) in a white halo; WKWebView's (measured) the system blue at half
 alpha, 4 px on macOS and 3 px on iOS, just off a box or link and over a
 control's edge. Outlines take `r`, a least outer corner radius, and `h`, a
 1 px halo colour. Before any pointer input a script's `focus()` is
-visible too, as in browsers.
+visible too, as in browsers. An inline element has no box of its own: its
+outline (the page's, or the focus ring of a link with `:focus-visible`)
+is set on its text runs (Run `ol`), and the backend draws it around each
+line fragment of them (GTK: runRing, one box per line, the spaces where a
+line wraps left out); a backend that doesn't read `ol` on runs draws no
+ring on an inline link.
 Backends must give Tab to the page, also while a native field has the
 keyboard, and not move the focus themselves when the page used the key;
 when the page focuses an element that isn't a native field, the keyboard

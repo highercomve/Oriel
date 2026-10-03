@@ -150,4 +150,8 @@ for (const [os, band] of [["windows", [16, 16, 16, 1]], ["android", [229, 151, 0
   }
   assert.deepEqual(rings, { b: [4, -1, 5], a: [4, 1, 2], d: [4, 1, 2], k: [4, -1, 5], t: [4, -1, 2] });
 }
+// An inline link has no box: its text run carries the ring.
+vm.runInContext(`document.getElementById("a1").focus()`, ctx);
+ctx.__oriel.render();
+assert.match(lastOps, /"t":"link"[^}]*"ol":\{"w":2/, "the focused link's run has the ring");
 console.log("tab focus: ok");
