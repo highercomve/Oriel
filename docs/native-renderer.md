@@ -151,7 +151,10 @@ the animated nodes are sent each frame).
   (WebView2) and WKWebView use Times. Win32: the first installed name, or
   Chromium's generic families on Windows (system-ui Segoe UI, sans-serif
   Arial, serif Times New Roman, monospace Consolas). Form controls are
-  `system-ui` (UA_CSS), as browsers draw them in the system font.
+  `-webkit-small-control, system-ui` (UA_CSS; a textarea `monospace`), as
+  Chromium draws them: in the platform's control font, which is Arial on
+  Windows (Win32 maps the name so); a backend that doesn't know the name
+  takes the `system-ui` after it.
 - `Backend.font_metrics` (host.fontMetrics): `[ascent, descent, lineGap]`
   in px, unhinted, for the default sans (or monospace) at a size; the
   runtime uses it for an image's line (the baseline gap below an inline
