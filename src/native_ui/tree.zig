@@ -62,6 +62,9 @@ pub const Gradient = struct {
     /// Each stop's position unit when they aren't all fractions (render.js
     /// stopsOf): '%' a fraction of the line, 'p' px, 'a' none given.
     su: ?[]const u8 = null,
+    /// A "c" stop's px part (calc(100% - 20px): its fraction in the stop's
+    /// position, -20 here), one per stop.
+    sp: ?[]const f32 = null,
 
 
     pub const Stop = [5]f32;
@@ -86,6 +89,9 @@ pub const Gradient = struct {
                 const u: u8 = if (i < units.len) units[i] else '%';
                 auto[i] = u == 'a';
                 if (u == 'p') st[4] = if (line > 0) st[4] / line else 0;
+                if (u == 'c') if (g.sp) |sp| if (i < sp.len and line > 0) {
+                    st[4] += sp[i] / line;
+                };
             }
             if (auto[0]) {
                 s[0][4] = 0;
@@ -1146,6 +1152,20 @@ pub fn paddingBoxXY(f: Rect, r: Radii, bw: ?[4]f32) RoundRectXY {
         .x = .{ @max(0, r.x[0] - b[3]), @max(0, r.x[1] - b[1]), @max(0, r.x[2] - b[1]), @max(0, r.x[3] - b[3]) },
         .y = .{ @max(0, r.y[0] - b[0]), @max(0, r.y[1] - b[0]), @max(0, r.y[2] - b[2]), @max(0, r.y[3] - b[2]) },
     } };
+}
+
+test "gradient: a calc() stop is its fraction plus its px over the line" {
+    // linear-gradient(red 20px, blue 50%, green calc(100% - 20px)) on 200px.
+    const stops = [_][5]f32{ .{ 255, 0, 0, 1, 20 }, .{ 0, 0, 255, 1, 0.5 }, .{ 0, 128, 0, 1, 1 } };
+    const g: Gradient = .{ .stops = &stops, .su = "p%c", .sp = &.{ 0, 0, -20 } };
+    var buf: [8]Gradient.Stop = undefined;
+    const r = g.resolve(200, &buf);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.1), r.stops[0][4], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), r.stops[1][4], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.9), r.stops[2][4], 1e-5);
+    // Without sp (an older page's props): just the fraction.
+    const plain: Gradient = .{ .stops = &stops, .su = "p%c" };
+    try std.testing.expectApproxEqAbs(@as(f32, 1), plain.resolve(200, &buf).stops[2][4], 1e-5);
 }
 
 test "radii: per axis, fitted as CSS does, inner ellipses" {

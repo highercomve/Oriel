@@ -180,7 +180,9 @@ the animated nodes are sent each frame).
 - `stops` are `[r, g, b, a, pos]`. With only percentages, `pos` is a
   fraction of the gradient line (missing ones already filled in) and
   there is no `su`. Otherwise `su` gives each stop's unit (`%` a
-  fraction, `p` px, `a` none given): call `Gradient.resolve(line, buf)`
+  fraction, `p` px, `a` none given, `c` a calc() with both: its fraction
+  in `pos` and its px in `sp`, one number per stop, as
+  `calc(100% - 20px)` is 1 and -20): call `Gradient.resolve(line, buf)`
   (tree.zig) with the line's length in px (a linear gradient's
   `|w sin a| + |h cos a|`, a radial one's x radius from `radialIn`).
 - `rep`: repeating-linear-gradient / repeating-radial-gradient. resolve()
@@ -197,7 +199,9 @@ the animated nodes are sent each frame).
   (OrielNative.kt resolveStops, a port of resolve(); Shader.TileMode.REPEAT
   with the linear end point and the radial radius times `period`); GTK
   still reads `stops` as fractions (px positions come out wrong
-  there, and a repeating gradient is drawn once).
+  there, and a repeating gradient is drawn once). resolve() combines a
+  `c` stop's parts, so Win32 and Apple have calc() stops; Android's
+  resolveStops needs `sp` ported.
 
 **Corner radii** (`br`, each backend):
 

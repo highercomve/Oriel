@@ -25,7 +25,7 @@ if (bad) { console.log(`${bad} failed`); process.exit(1); }
 // Stop positions: fractions when they're all percentages (missing ones
 // filled in evenly), else each stop's unit in `su` for tree.zig's
 // Gradient.resolve; repeating gradients carry `rep`; "c 0 10px" is two stops.
-const stops = (v) => { const { stops, su, rep } = background(v).gradient; return JSON.stringify({ pos: stops.map((s) => +s[4].toFixed(4)), su, rep }); };
+const stops = (v) => { const { stops, su, sp, rep } = background(v).gradient; return JSON.stringify({ pos: stops.map((s) => +s[4].toFixed(4)), su, sp, rep }); };
 const stopCases = [
   ["linear-gradient(red, yellow 20%, green, blue)", { pos: [0, 0.2, 0.6, 1] }],
   ["linear-gradient(red 30%, blue 10%)", { pos: [0.3, 0.3] }],
@@ -33,6 +33,11 @@ const stopCases = [
   ["repeating-linear-gradient(45deg, #c55 0 10px, #fc6 10px 20px)", { pos: [0, 10, 10, 20], su: "%ppp", rep: true }],
   ["repeating-linear-gradient(#222, #9cf 20%)", { pos: [0, 0.2], su: "a%", rep: true }],
   ["repeating-radial-gradient(circle, #36c 0 8px, #fff 8px 16px)", { pos: [0, 8, 8, 16], su: "%ppp", rep: true }],
+  // calc(): not split on its spaces; a percentage and px together are "c",
+  // the px part in sp; one that comes out px only is "p".
+  ["linear-gradient(90deg, red 20px, blue 50%, green calc(100% - 20px))", { pos: [20, 0.5, 1], su: "p%c", sp: [0, 0, -20] }],
+  ["linear-gradient(red calc(10px + 5px), blue calc(50%))", { pos: [15, 0.5], su: "p%" }],
+  ["linear-gradient(red 0, blue 100%)", { pos: [0, 1] }],
 ];
 for (const [v, want] of stopCases) { const got = stops(v); if (got !== JSON.stringify(want)) { bad++; console.log("FAIL", v, got); } }
 if (bad) { console.log(`${bad} failed`); process.exit(1); }
