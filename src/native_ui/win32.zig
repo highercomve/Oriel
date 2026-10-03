@@ -2853,8 +2853,11 @@ fn fontExtent(family: [:0]const u16, sz: f32, weight: f32, italic: bool, lh: ?f3
     const a = @round(m[0] * sz);
     const d = @round(m[1] * sz);
     if (lh) |h| if (h > 0) {
-        const half = (h - (a + d)) / 2;
-        return .{ .top = a + half, .bottom = d + half };
+        // Chromium floors the half above (CalculateLeadingSpace); the
+        // rest goes below.
+        const lead = h - (a + d);
+        const up = @floor(lead / 2);
+        return .{ .top = a + up, .bottom = d + lead - up };
     };
     const gap = @round(m[2] * sz);
     const up = @floor(gap / 2);
@@ -2893,8 +2896,9 @@ fn textExtent(props: *const tree_mod.Props) ?Extent {
 
 /// Each line's extent when they differ (a font on some lines only), from
 /// the runs on it; null when every line is textExtent's (the layout's
-/// uniform spacing is then exact).
-fn lineExtents(props: *const tree_mod.Props, layout: *c.IDWriteTextLayout, out: []Extent) ?[]Extent {
+/// uniform spacing is then exact). With `glyphs`, each line's content area
+/// too (its fonts' ascent and descent: where its glyphs are).
+fn lineExtents(props: *const tree_mod.Props, layout: *c.IDWriteTextLayout, out: []Extent, glyphs: ?[]Extent) ?[]Extent {
     const runs = props.runs orelse return null;
     if (runs.len < 2) return null;
     const all = textExtent(props) orelse return null;
@@ -2902,6 +2906,7 @@ fn lineExtents(props: *const tree_mod.Props, layout: *c.IDWriteTextLayout, out: 
     var count: u32 = 0;
     if (layout.lpVtbl.*.GetLineMetrics.?(layout, &lines, lines.len, &count) < 0 or count < 2 or count > lines.len) return null;
     const strut = strutExtent(props);
+    const strut_glyphs = contentExtent(familyOf(props.ff, props.mono), props.fz orelse 16, props.fwt orelse 400, props.it);
     var differ = false;
     var ls: u32 = 0;
     var ri: usize = 0;
@@ -2910,17 +2915,24 @@ fn lineExtents(props: *const tree_mod.Props, layout: *c.IDWriteTextLayout, out: 
         if (k >= out.len) return null;
         const le = ls + line.length;
         var e = strut;
+        var g = strut_glyphs;
         // The runs with a part on this line.
         while (ri < runs.len) {
             const len: u32 = @intCast(std.unicode.calcUtf16LeLen(runs[ri].t) catch runs[ri].t.len);
             const re = rs + len;
-            if (re > ls and rs < le and len > 0) e = widen(e, runExtent(props, runs[ri]));
+            if (re > ls and rs < le and len > 0) {
+                e = widen(e, runExtent(props, runs[ri]));
+                g = widen(g, contentExtent(runFamily(props, runs[ri]), runs[ri].sz, runs[ri].w, runs[ri].i));
+            }
             if (re > le) break; // goes on to the next line
             rs = re;
             ri += 1;
         }
         const x = e orelse all;
         out[k] = x;
+        if (glyphs) |gs| if (k < gs.len) {
+            gs[k] = g orelse x;
+        };
         if (x.top != all.top or x.bottom != all.bottom) differ = true;
         ls = le;
     }
@@ -3023,6 +3035,7 @@ fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32, brushes: 
             _ = x.lpVtbl.*.SetCharacterSpacing.?(x, 0, ls, 0, .{ .startPosition = 0, .length = @intCast(u.text.len) });
         };
     };
+    inlineBoxRoom(l, runs, if (props.ls) |ls| (if (std.math.isFinite(ls)) ls else 0) else 0);
     return l;
 }
 
@@ -4080,7 +4093,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     var size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, textHeight(&n.props, m.height) };
     // Lines of their own heights: theirs added up.
     var ext_buf: [64]Extent = undefined;
-    if (lineExtents(&n.props, layout, &ext_buf)) |xs| {
+    if (lineExtents(&n.props, layout, &ext_buf, null)) |xs| {
         size[1] = 0;
         for (xs) |e| size[1] += e.top + e.bottom;
     }
@@ -4118,7 +4131,7 @@ fn clearGlyphWidths(s: *Surface) void {
 
 fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
     const runs = props.runs orelse return null;
-    if (runs.len != 1 or props.ls != null) return null;
+    if (runs.len != 1 or props.ls != null or runs[0].ib != null) return null;
     const r = runs[0];
     const t = r.t;
     if (t.len == 0 or t.len > 512) return null;
@@ -4234,6 +4247,9 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             // change); at a width it fits in, that's the answer. Yoga asks
             // several times per node and layout: a DirectWrite layout each
             // time was most of a big list's update.
+            // Its first baseline (inline rows line up on it): where
+            // textLayoutOf's uniform lines put it (cssBaseline).
+            if (lineBox(&n.props)) |lh| n.baseline = cssBaseline(&n.props, n.props.runs orelse &.{}, lh);
             const nat = if (n.measured_text_size != null and n.text_measure_epoch == s.text_epoch) n.measured_text_size.? else blk: {
                 const size = measuredText(s, n, std.math.inf(f32)) orelse return;
                 n.measured_text_size = size;
@@ -4965,7 +4981,8 @@ fn paintText(p: *Painter, n: *Node) void {
     // Lines of different heights (a font on some only): each drawn moved
     // to where its own extent puts it (lineShift).
     var ext_buf: [64]Extent = undefined;
-    const exts = lineExtents(&n.props, layout, &ext_buf);
+    var glyph_buf: [64]Extent = undefined;
+    const exts = lineExtents(&n.props, layout, &ext_buf, &glyph_buf);
     const all = textExtent(&n.props);
     const shift = struct {
         fn at(e: ?[]const Extent, a: ?Extent, y0: f32, top: f32) f32 {
@@ -4977,6 +4994,8 @@ fn paintText(p: *Painter, n: *Node) void {
             return lineShift(xs, ae, k);
         }
     }.at;
+    // Inline boxes (a padded <code> chip), behind the text.
+    if (n.props.runs) |runs| paintInlineBoxes(p, &n.props, layout, runs, ct.x, ct.y, .{ .exts = exts, .all = all, .box = null });
     // Run backgrounds (marks, code), behind the text.
     if (n.props.runs) |runs| {
         var pos: u32 = 0;
@@ -4999,10 +5018,21 @@ fn paintText(p: *Painter, n: *Node) void {
     const origin: c.D2D1_POINT_2F = .{ .x = ct.x, .y = ct.y };
     if (exts) |xs| {
         const h = all.?.top + all.?.bottom;
+        // Each copy shows its own line's glyphs: cut, in the layout, midway
+        // between a line's glyphs and the next one's (a big font on a
+        // tight line-height overflows its line box, as in browsers).
+        const gs = glyph_buf[0..xs.len];
+        const cut = struct {
+            fn at(g: []const Extent, a: Extent, lh: f32, k: usize) f32 {
+                const base = @as(f32, @floatFromInt(k)) * lh + a.top;
+                return (base + g[k].bottom + base + lh - g[k + 1].top) / 2;
+            }
+        }.at;
         for (0..xs.len) |k| {
             const dy = lineShift(xs, all.?, k);
-            const top = ct.y + @as(f32, @floatFromInt(k)) * h;
-            const band: c.D2D1_RECT_F = .{ .left = ct.x - 1e4, .top = top + dy, .right = ct.x + ct.w + 1e4, .bottom = top + h + dy };
+            const above: f32 = if (k == 0) -1e4 else cut(gs, all.?, h, k - 1);
+            const below: f32 = if (k + 1 == xs.len) 1e4 else cut(gs, all.?, h, k);
+            const band: c.D2D1_RECT_F = .{ .left = ct.x - 1e4, .top = ct.y + above + dy, .right = ct.x + ct.w + 1e4, .bottom = ct.y + below + dy };
             p.vt().PushAxisAlignedClip.?(p.rt, &band, c.D2D1_ANTIALIAS_MODE_ALIASED);
             p.vt().DrawTextLayout.?(p.rt, .{ .x = ct.x, .y = ct.y + dy }, layout, p.solid(.{ 0, 0, 0, 1 }), draw_text_color_font);
             p.vt().PopAxisAlignedClip.?(p.rt);
@@ -5161,6 +5191,148 @@ fn unitAt(runs: []const tree_mod.Run, at: u32) u16 {
 fn isSpaceAt(runs: []const tree_mod.Run, at: u32) bool {
     const u = unitAt(runs, at);
     return u == ' ' or u == 0xA0 or u == 0x09;
+}
+
+/// Each inline box's run group (docs/native-renderer.md, "Inline boxes"):
+/// its runs' UTF-16 range and its decoration. Consecutive runs with the
+/// same box (`k`) are one.
+const BoxSpan = struct { start: u32, end: u32, first_run: usize, last_run: usize, ib: tree_mod.InlineBox };
+
+fn inlineBoxSpans(runs: []const tree_mod.Run, out: []BoxSpan) []BoxSpan {
+    var k: usize = 0;
+    var start: u32 = 0;
+    var i: usize = 0;
+    while (i < runs.len) : (i += 1) {
+        const len: u32 = @intCast(std.unicode.calcUtf16LeLen(runs[i].t) catch runs[i].t.len);
+        const ib = runs[i].ib orelse {
+            start += len;
+            continue;
+        };
+        const first = i;
+        var end = start + len;
+        while (i + 1 < runs.len and runs[i + 1].ib != null and runs[i + 1].ib.?.k == ib.k) : (i += 1)
+            end += @intCast(std.unicode.calcUtf16LeLen(runs[i + 1].t) catch runs[i + 1].t.len);
+        if (end > start and k < out.len) {
+            out[k] = .{ .start = start, .end = end, .first_run = first, .last_run = i, .ib = ib };
+            k += 1;
+        }
+        start = end;
+    }
+    return out[0..k];
+}
+
+/// The inline boxes' room in the line: their start side (margin, border,
+/// padding) as leading spacing on their first character, their end side
+/// as trailing spacing on their last (IDWriteTextLayout1, with the
+/// letter-spacing `ls` every character has; without it, none).
+fn inlineBoxRoom(l: *c.IDWriteTextLayout, runs: []const tree_mod.Run, ls: f32) void {
+    var spans_buf: [64]BoxSpan = undefined;
+    const spans = inlineBoxSpans(runs, &spans_buf);
+    if (spans.len == 0) return;
+    var l1: ?*c.IDWriteTextLayout1 = null;
+    if (l.lpVtbl.*.QueryInterface.?(l, &iid_text_layout1, @ptrCast(&l1)) < 0) return;
+    const x = l1 orelse return;
+    defer releaseCom(@as(?*c.IDWriteTextLayout1, x));
+    // Per character (a code point: a surrogate pair's two units): the
+    // room before it and after it.
+    const Edge = struct { at: u32, len: u32, lead: f32 = 0, trail: f32 = 0 };
+    var edges: [128]Edge = undefined;
+    var m: usize = 0;
+    const slot = struct {
+        fn f(e: []Edge, cnt: *usize, at: u32, len: u32) ?*Edge {
+            for (e[0..cnt.*]) |*q| if (q.at == at) return q;
+            if (cnt.* >= e.len) return null;
+            e[cnt.*] = .{ .at = at, .len = len };
+            cnt.* += 1;
+            return &e[cnt.* - 1];
+        }
+    }.f;
+    for (spans) |sp| {
+        const head_len: u32 = if (unitAt(runs, sp.start) == 0xD800 and sp.end - sp.start >= 2) 2 else 1;
+        if (slot(&edges, &m, sp.start, head_len)) |e| e.lead += sp.ib.start();
+        const tail_len: u32 = if (unitAt(runs, sp.end - 1) == 0xD800 and sp.end - sp.start >= 2) 2 else 1;
+        if (slot(&edges, &m, sp.end - tail_len, tail_len)) |e| e.trail += sp.ib.end();
+    }
+    for (edges[0..m]) |e| {
+        if (!(e.lead > 0) and !(e.trail > 0)) continue;
+        _ = x.lpVtbl.*.SetCharacterSpacing.?(x, e.lead, ls + e.trail, 0, .{ .startPosition = e.at, .length = e.len });
+    }
+}
+
+/// The inline boxes' decoration (render.js inlineBox) over each line
+/// fragment, under the text: as Chromium slices it, the start side (its
+/// border, padding and corners) on the box's first fragment and the end
+/// side on its last; as tall as its fonts' content area plus the vertical
+/// padding and border (which take no room in the line).
+fn paintInlineBoxes(p: *Painter, props: *const tree_mod.Props, layout: *c.IDWriteTextLayout, runs: []const tree_mod.Run, x: f32, y: f32, at: RingLines) void {
+    var spans_buf: [64]BoxSpan = undefined;
+    const spans = inlineBoxSpans(runs, &spans_buf);
+    if (spans.len == 0) return;
+    var lines_buf: [64]c.DWRITE_LINE_METRICS = undefined;
+    var count: u32 = 0;
+    if (layout.lpVtbl.*.GetLineMetrics.?(layout, &lines_buf, lines_buf.len, &count) < 0 or count > lines_buf.len) return;
+    for (spans) |sp| {
+        const ib = sp.ib;
+        const bw = ib.bw orelse [4]f32{ 0, 0, 0, 0 };
+        // Its content area: its runs' fonts' ascent and descent.
+        var cb: ?Extent = null;
+        for (runs[sp.first_run .. sp.last_run + 1]) |r| cb = widen(cb, contentExtent(runFamily(props, r), r.sz, r.w, r.i));
+        var ls: u32 = 0;
+        for (lines_buf[0..count], 0..) |line, k| {
+            defer ls += line.length;
+            const a = @max(sp.start, ls);
+            var b = @min(sp.end, ls + line.length);
+            if (a >= b) continue;
+            const first = a == sp.start;
+            const last = b == sp.end;
+            // A fragment that wraps: up to the end of the line's text, not
+            // over the space it wraps after.
+            if (!last) while (b > a and (isSpaceAt(runs, b - 1) or unitAt(runs, b - 1) == 0x0A or unitAt(runs, b - 1) == 0x0D)) {
+                b -= 1;
+            };
+            if (a >= b) continue;
+            var rects: [16]c.DWRITE_HIT_TEST_METRICS = undefined;
+            var n: u32 = 0;
+            if (layout.lpVtbl.*.HitTestTextRange.?(layout, a, b - a, x, y, &rects, rects.len, &n) < 0) continue;
+            var x0: f32 = std.math.floatMax(f32);
+            var x1: f32 = -std.math.floatMax(f32);
+            for (rects[0..@min(n, rects.len)]) |hm| {
+                x0 = @min(x0, hm.left);
+                x1 = @max(x1, hm.left + hm.width);
+            }
+            // The room's margins are outside the box.
+            if (first) x0 += ib.m[3];
+            if (last) x1 -= ib.m[1];
+            if (!(x1 > x0)) continue;
+            // Around the line's baseline (runRing's).
+            const all = at.all orelse continue;
+            const ce = cb orelse all;
+            const h = all.top + all.bottom;
+            const dy = if (at.exts) |xs| (if (k < xs.len) lineShift(xs, all, k) else 0) else 0;
+            const base = y + @as(f32, @floatFromInt(k)) * h + all.top + dy;
+            // On whole pixels, as Chromium snaps it.
+            const top = @round(base - ce.top - ib.p[0] - bw[0]);
+            const bottom = @round(base + ce.bottom + ib.p[2] + bw[2]);
+            x0 = @round(x0);
+            x1 = @round(x1);
+            if (!(x1 > x0)) continue;
+            const box: Rect = .{ .x = x0, .y = top, .w = x1 - x0, .h = bottom - top };
+            var radii: Radii = .{};
+            if (ib.br) |r| {
+                const keep = [4]bool{ first, last, last, first };
+                for (0..4) |q| if (keep[q]) {
+                    radii.x[q] = r[q];
+                    radii.y[q] = r[q];
+                };
+                radii = radii.fitted(box.w, box.h);
+            }
+            if (ib.bg) |bg| if (bg[3] > 0) fillShape(p, box, radii, p.solid(bg));
+            if (ib.bw != null) {
+                const sides = [4]f32{ bw[0], if (last) bw[1] else 0, bw[2], if (first) bw[3] else 0 };
+                border(p, box, radii, sides, .{ ib.bc, ib.bc, ib.bc, ib.bc }, null);
+            }
+        }
+    }
 }
 
 /// Feeds svg_path's commands into a Direct2D geometry sink.

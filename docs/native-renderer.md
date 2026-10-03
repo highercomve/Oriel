@@ -349,7 +349,14 @@ box. As browsers draw it (box-decoration-break: slice):
   letter, so the room stays with the text), the fragments from Pango's x
   ranges, the content area from the font's rounded ascent and descent on
   the line's baseline; checked against WebKitGTK (the same cases, and a
-  `<mark>` with padding). Win32 and Android still draw such runs plain.
+  `<mark>` with padding). Win32 (win32.zig inlineBoxRoom,
+  paintInlineBoxes): the room as DirectWrite character spacing
+  (IDWriteTextLayout1: leading on its first character, trailing on its
+  last, with the letter-spacing), the fragments from HitTestTextRange per
+  line around the line's baseline, on whole pixels; checked against
+  WebView2 (chips in a sentence, a wrapped one, bordered, margined and
+  rounded ones, on 1.6 lines, with letter-spacing). Android still draws
+  such runs plain.
 - An inline box at a line's start or end is a node in the line's row
   (Baselines): render.js takes its vertical padding and border off its
   top and bottom margins, so they overflow the line, as an inline box's
@@ -368,8 +375,11 @@ in its content box. Checked on Apple against WKWebView (a chip, a button,
 a checkbox, an input, an inline-block chip in 24px). GTK's measuredText
 sets it to the first line's extent's top, where paintText draws it (every
 text with a line box is drawn line by line on CSS's baselines, not
-Pango's, which sat 0.2 to 1.2px off); checked against WebKitGTK. Win32 and
-Android should set `Node.baseline` in their measure. Known gap (Yoga): a
+Pango's, which sat 0.2 to 1.2px off); checked against WebKitGTK. Win32's
+measure sets it where its uniform lines put the first (cssBaseline);
+checked against WebView2 (a label, button, checkbox, input, select and a
+28px span in one row, each pair alone, a chip after a 28px heading).
+Android should set `Node.baseline` in its measure. Known gap (Yoga): a
 box's baseline is its first child's top plus that child's baseline, and
 while Yoga sizes a row it reads the child's top from the box's previous
 layout (0 the first time), so a button beside text makes the row a few
@@ -796,8 +806,9 @@ display's 180 either way.
    showcase, idle on its first tab: 31 MB private working set in one
    process, against 90 MB in seven processes with WebView2.
 
-   Not yet: color emoji inside the EDIT controls (GDI draws them as
-   outlines), owner-drawn selects (a COMBOBOX keeps the system look), IME
+   Not yet: color emoji inside the fields (RichEdit 5, kept for its
+   multi-level undo, draws them as outlines: msftedit registers no D2D
+   class here and TO_DISPLAYFONTCOLOR has no effect), owner-drawn selects (a COMBOBOX keeps the system look), IME
    composition shown on the canvas (fields get it from Windows), and
    accessibility (UI Automation).
 4. **macOS and iOS** (`src/native_ui/appkit.zig`, `uikit.zig`, sharing
