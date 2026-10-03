@@ -150,6 +150,7 @@ extern fn gdk_pixbuf_loader_close(loader: *anyopaque, err: *?*anyopaque) c_int;
 extern fn cairo_fill(cr: *cairo_t) void;
 extern fn cairo_fill_preserve(cr: *cairo_t) void;
 extern fn cairo_stroke(cr: *cairo_t) void;
+extern fn cairo_set_dash(cr: *cairo_t, dashes: ?[*]const f64, n: c_int, offset: f64) void;
 extern fn cairo_stroke_preserve(cr: *cairo_t) void;
 extern fn cairo_set_source_rgba(cr: *cairo_t, r: f64, g: f64, b: f64, a: f64) void;
 extern fn cairo_set_operator(cr: *cairo_t, op: c_int) void;
@@ -1288,7 +1289,7 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
             cairo_pattern_destroy(pat);
         }
     }
-    if (p.bw) |bw| border(cr, f, r, bw, p.bc);
+    if (p.bw) |bw| if (p.bs) |style| dashedBorder(cr, f, r, bw, p.bc, style) else border(cr, f, r, bw, p.bc);
     switch (n.kind) {
         .text => paintText(s, cr, n),
         .icon => paintIcon(cr, n),
@@ -1410,6 +1411,94 @@ fn border(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color) 
         setColor(cr, colors[i]);
         cairo_fill(cr);
     }
+}
+
+/// The dash pattern for one dashed or dotted line of `len` px drawn `w`
+/// wide, as Chromium draws it (and win32.zig): dashes 3×w (dots 1×w) at
+/// both ends, a whole number of them, the gaps stretched to fit.
+fn dashPattern(len: f64, w: f64, style: tree_mod.BorderStyle) [2]f64 {
+    const d: f64 = if (style == .dotted) w else 3 * w;
+    if (len <= d or d <= 0) return .{ len, 0 };
+    const k = @max(2, @round((len + d) / (2 * d)));
+    const gap = (len - k * d) / (k - 1);
+    // Round dots (3 px and up): a zero-length dash with round caps, the
+    // period unchanged.
+    if (style == .dotted and w >= 3) return .{ 0, d + gap };
+    return .{ d, gap };
+}
+
+/// border-style: dashed or dotted (the first side styled so, Props.bs).
+fn dashedBorder(cr: *cairo_t, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color, style: tree_mod.BorderStyle) void {
+    const colors = bc orelse return;
+    const round_dots = style == .dotted;
+    cairo_save(cr);
+    defer cairo_restore(cr);
+    const uniform = bw[0] == bw[1] and bw[1] == bw[2] and bw[2] == bw[3];
+    const rounded = r[0] > 0 or r[1] > 0 or r[2] > 0 or r[3] > 0;
+    if (uniform and rounded and bw[0] > 0 and colors[0][3] > 0) {
+        // Rounded: one dash pattern along the whole rounded stroke.
+        const w: f64 = bw[0];
+        const half = bw[0] / 2;
+        const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
+        var ri = r;
+        for (&ri) |*x| x.* = @max(0, x.* - half);
+        const d: f64 = if (style == .dotted) w else 3 * w;
+        const pat = if (style == .dotted and w >= 3) [2]f64{ 0, 2 * d } else [2]f64{ d, d };
+        cairo_set_line_width(cr, w);
+        cairo_set_line_cap(cr, if (round_dots and w >= 3) 1 else 0);
+        cairo_set_dash(cr, &pat, 2, 0);
+        roundRect(cr, inner, ri);
+        setColor(cr, colors[0]);
+        cairo_stroke(cr);
+        return;
+    }
+    // Square corners: each side its own line along its middle, with whole
+    // dashes at both ends.
+    for (0..4) |i| {
+        const w: f64 = bw[i];
+        if (w <= 0 or colors[i][3] <= 0) continue;
+        const hw = w / 2;
+        const x0: f64 = f.x;
+        const y0: f64 = f.y;
+        const x1: f64 = f.x + f.w;
+        const y1: f64 = f.y + f.h;
+        const seg: [4]f64 = switch (i) {
+            0 => .{ x0, y0 + hw, x1, y0 + hw },
+            1 => .{ x1 - hw, y0, x1 - hw, y1 },
+            2 => .{ x1, y1 - hw, x0, y1 - hw },
+            else => .{ x0 + hw, y1, x0 + hw, y0 },
+        };
+        const len = @abs(seg[2] - seg[0]) + @abs(seg[3] - seg[1]);
+        var pat = dashPattern(len, w, style);
+        const round = style == .dotted and w >= 3;
+        var a = seg;
+        if (round) {
+            // Dots centred on their slots: the line starts half a dot in.
+            const dx = std.math.sign(seg[2] - seg[0]) * hw;
+            const dy = std.math.sign(seg[3] - seg[1]) * hw;
+            a = .{ seg[0] + dx, seg[1] + dy, seg[2] - dx, seg[3] - dy };
+            pat = dashPattern(len, w, style);
+        }
+        cairo_new_path(cr);
+        cairo_move_to(cr, a[0], a[1]);
+        cairo_line_to(cr, a[2], a[3]);
+        cairo_set_line_width(cr, w);
+        cairo_set_line_cap(cr, if (round) 1 else 0);
+        cairo_set_dash(cr, &pat, 2, 0);
+        setColor(cr, colors[i]);
+        cairo_stroke(cr);
+    }
+}
+
+test "dashPattern: whole dashes at both ends" {
+    // 100 px, 1 px dashed: 3 px dashes, k = round(103/6) = 17, gaps 3.25.
+    const p = dashPattern(100, 1, .dashed);
+    try std.testing.expectEqual(@as(f64, 3), p[0]);
+    try std.testing.expect(@abs(17 * p[0] + 16 * p[1] - 100) < 1e-9);
+    // Too short for two dashes: solid.
+    try std.testing.expectEqual(@as(f64, 0), dashPattern(2, 1, .dashed)[1]);
+    // Round dots from 3 px: zero-length dashes.
+    try std.testing.expectEqual(@as(f64, 0), dashPattern(60, 4, .dotted)[0]);
 }
 
 fn shadow(cr: *cairo_t, f: Rect, r: [4]f32, sh: tree_mod.Shadow) void {
