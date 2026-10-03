@@ -718,6 +718,13 @@ pub const Props = struct {
     scroll: bool = false,
     /// overflow-x: auto/scroll: scrolls sideways.
     scrollx: bool = false,
+    /// A scroller's scrollbar (render.js): always (overflow-y: scroll,
+    /// scrollbar-gutter: stable), its scrollbar-width ("thin", "none"),
+    /// dark (its color-scheme), its scrollbar-color [thumb, track].
+    sbs: bool = false,
+    sbw: ?[]const u8 = null,
+    dk: bool = false,
+    sbc: ?[2]Color = null,
     /// A table (its border-spacing), a table row, a table cell (its colspan):
     /// sizeTables lays the cells out in columns.
     table: ?f32 = null,
@@ -1026,6 +1033,9 @@ pub const Node = struct {
     content_h: f32 = 0,
     scroll_y: f32 = 0,
     scroll_x: f32 = 0,
+    /// The scrollbar's room at the scroller's right (Tree.scrollbar; 0:
+    /// none), taken from its content box as a browser's classic scrollbar.
+    gutter: f32 = 0,
     content_w: f32 = 0,
     /// The backend's widget for this node, if any.
     native: ?*anyopaque = null,
@@ -1228,6 +1238,10 @@ pub const Measure = *const fn (ctx: *anyopaque, node: *Node, max_width: f32, out
 
 pub const Tree = struct {
     deleted_nodes: usize = 0,
+    /// The backend's scrollbar widths, [auto, thin], in CSS px: room a
+    /// scroller that overflows keeps at its right (Win32's classic 15 and
+    /// 10, as WebView2); 0 for overlay scrollbars (no room).
+    scrollbar: [2]f32 = .{ 0, 0 },
     leaf_styles: std.AutoHashMapUnmanaged(i64, *LeafStyle) = .empty,
     leaf_style_bytes: usize = 0,
     /// Row plans for stampRow's callers (defineStampPlan), by id - 1.
@@ -2209,6 +2223,16 @@ pub const Tree = struct {
         if (sizeTables(t, root)) yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
         const window: Rect = .{ .w = t.width, .h = t.height };
         place(root, 0, 0, window, window);
+        // Scrollers that overflow (or always show one) keep their
+        // scrollbar's room: laid out again with it (a few rounds: the room
+        // can make or end an overflow).
+        if (t.scrollbar[0] > 0 or t.scrollbar[1] > 0) {
+            var r: usize = 0;
+            while (r < 3 and t.gutters(root)) : (r += 1) {
+                yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
+                place(root, 0, 0, window, window);
+            }
+        }
         t.dirty = false;
     }
 
@@ -2534,6 +2558,37 @@ pub const Tree = struct {
         return if (n.frame.contains(x, y) and n.props.root == false) n else null;
     }
 
+    /// Each scroller's scrollbar room as its overflow now asks: true when
+    /// one changed (the layout is then done again).
+    fn gutters(t: *Tree, n: *Node) bool {
+        var changed = false;
+        if (n.props.scroll) {
+            const want: f32 = if (n.props.sbs or n.content_h > n.frame.h + 0.5) t.scrollbarOf(n) else 0;
+            if (want != n.gutter) {
+                n.gutter = want;
+                setGutter(n);
+                changed = true;
+            }
+        } else if (n.gutter > 0) {
+            // No longer a scroller.
+            n.gutter = 0;
+            setGutter(n);
+            changed = true;
+        }
+        for (n.kids.items) |k| {
+            if (t.gutters(k)) changed = true;
+        }
+        return changed;
+    }
+
+    /// A scroller's scrollbar width: its scrollbar-width's (none: 0).
+    pub fn scrollbarOf(t: *const Tree, n: *const Node) f32 {
+        const w = n.props.sbw orelse return t.scrollbar[0];
+        if (std.mem.eql(u8, w, "none")) return 0;
+        if (std.mem.eql(u8, w, "thin")) return t.scrollbar[1];
+        return t.scrollbar[0];
+    }
+
     /// The nearest scroll container around a node (or the node itself).
     pub fn scroller(_: *Tree, start: ?*Node) ?*Node {
         var n = start;
@@ -2653,8 +2708,17 @@ fn measureFn(node: yg.YGNodeConstRef, width: f32, width_mode: yg.YGMeasureMode, 
 // ---------------------------------------------------------------------------
 // CSS → Yoga
 
+/// A scroller's right border in Yoga: its own and the scrollbar's room.
+fn setGutter(n: *Node) void {
+    yg.YGNodeStyleSetBorder(n.yn, yg.YGEdgeRight, (if (n.props.bw) |bw| bw[1] else 0) + n.gutter);
+    // A content-box width is the content's: the room comes out of it (as
+    // a browser takes a scrollbar from the content box), not added.
+    if (n.props.cb) if (n.props.w) |w| if (w == .px) yg.YGNodeStyleSetWidth(n.yn, @max(0, w.px - n.gutter));
+}
+
 fn styleYoga(n: *Node) void {
     applyYogaStyle(n.yn, n.props);
+    if (n.gutter > 0) setGutter(n);
 }
 
 fn applyYogaStyle(y: yg.YGNodeRef, p: Props) void {
