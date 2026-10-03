@@ -1688,6 +1688,13 @@ JSValue JS_DupValueRT(JSRuntime *rt, JSValueConst v)
     return js_dup(v);
 }
 
+/* Oriel: a value's reference count (1 for a value without one): the native
+   DOM checks that only it still holds a detached tree's wrappers. */
+int JS_GetRefCount(JSValueConst v)
+{
+    return JS_VALUE_HAS_REF_COUNT(v) ? JS_REF_COUNT(JS_VALUE_GET_PTR(v)) : 1;
+}
+
 static void js_trigger_gc(JSRuntime *rt, size_t size)
 {
     bool force_gc;

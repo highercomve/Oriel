@@ -63,6 +63,7 @@ extern fn oqjs_eval(h: *anyopaque, code: [*]const u8, len: usize, name: [*:0]con
 extern fn oqjs_eval_bytecode(h: *anyopaque, code: [*]const u8, len: usize) c_int;
 extern fn oqjs_run_jobs(h: *anyopaque) void;
 extern fn oqjs_memory(h: *anyopaque) usize;
+extern fn oqjs_run_gc(h: *anyopaque) void;
 extern fn oqjs_free(h: *anyopaque) void;
 
 const App = @import("../core/App.zig");
@@ -435,6 +436,14 @@ pub const Engine = struct {
     pub fn assetData(e: *Engine, path: []const u8) ?[]const u8 {
         const a = App.findAsset(e.assets, path, false) orelse return null;
         return a.data;
+    }
+
+    /// QuickJS's cycle collection now: a backend calls it when idle after a
+    /// big removal, so detached trees held in cycles (their wrappers own
+    /// each other, dom/store.zig) are freed then, not at the next
+    /// allocation-driven collection.
+    pub fn collectGarbage(e: *Engine) void {
+        oqjs_run_gc(e.js);
     }
 
     pub fn jsMemory(e: *Engine) usize {

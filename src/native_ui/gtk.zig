@@ -838,7 +838,10 @@ fn removed(ctx: *anyopaque, node: *Node) void {
 fn onTrim(data: ?*anyopaque) callconv(.c) c_int {
     const s = surfaces.get(@intFromPtr(data)) orelse return 0; // the window is gone
     s.trim_id = 0;
+    // The removed trees still in cycles first, then the memory back.
+    s.engine.collectGarbage();
     _ = s.engine.tree.trimPools();
+    _ = malloc_trim(0);
     return 0;
 }
 
