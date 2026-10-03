@@ -173,7 +173,16 @@ the animated nodes are sent each frame).
   `setSelectionRange()` and `select()` use them (host.selection,
   host.setSelection); without them main.js keeps what the page set.
   Win32 does all of this (IME composition stays the control's: no
-  beforeinput for it).
+  beforeinput for it). Android too (OrielNative.kt beforeInput): an
+  InputFilter on each EditText sees every edit before it lands (hardware
+  keys, the soft keyboard's commits, paste, cut and undo from Ctrl or the
+  context menu), names it from the key or the menu item and puts the old
+  text back when the page prevents it; a composition (the soft keyboard's
+  underlined word) stays the field's. Selection: EditText's, in Java's
+  UTF-16 units. Checked against the Android WebView: the same events,
+  types, data and values for typing, Backspace, Delete, Enter in a
+  textarea, Ctrl+V, Ctrl+X and Ctrl+Z (Chromium also selects what an undo
+  restores; Android leaves the caret).
 
 **Gradient stops** (`bg.gradient`, each backend):
 

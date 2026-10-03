@@ -19,9 +19,11 @@ import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
+import android.text.InputFilter
 import android.text.InputType
 import android.text.Layout
 import android.text.SpannableStringBuilder
+import android.text.Spannable
 import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextPaint
@@ -41,6 +43,7 @@ import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.AdapterView
@@ -946,12 +949,18 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     }
 
     fun value(id: Int, v: String) {
+        // The page set it from its beforeinput, while the field's filter is
+        // still editing: after that edit.
+        if (filtering) { post { value(id, v) }; return }
         val f = fields[id] ?: makeField(id) ?: return
         updating = true
         try {
             when (f) {
                 is SeekBar -> rangeOf(nodes[id])?.let { f.progress = it.progress(v) }
-                is EditText -> if (f.text.toString() != v) { f.setText(v); f.setSelection(v.length) }
+                is EditText -> {
+                    if (f.text.toString() != v) { f.setText(v); f.setSelection(v.length) }
+                    (f as? Field)?.sent = v
+                }
                 is Spinner -> {
                     selectValues[id] = v
                     options(nodes[id])?.indexOfFirst { it.first == v }?.let { if (it >= 0) f.setSelection(it) }
@@ -1066,10 +1075,82 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         return (0 until a.length()).map { val o = a.optJSONArray(it); (o?.optString(0) ?: "") to (o?.optString(1) ?: "") }
     }
 
+    /** A text field: its edit in progress (beforeinput's type and data, for
+     *  the input after it), the value last sent, and a context menu's action. */
+    private class Field(ctx: Context) : EditText(ctx) {
+        var editType: String? = null
+        var editData: String? = null
+        var sent = ""
+        var menu = 0
+        override fun onTextContextMenuItem(id: Int): Boolean {
+            menu = id
+            try { return super.onTextContextMenuItem(id) } finally { menu = 0 }
+        }
+    }
+
+    /** A field's filter is asking the page (its beforeinput). */
+    private var filtering = false
+    /** The hardware key a field is handling (dispatchKeyEvent), for the edit it makes. */
+    private var editKey: KeyEvent? = null
+
+    /**
+     * An edit about to replace dest[dstart, dend) with source[start, end)
+     * (InputFilter): beforeinput on the field, with Chromium's inputType;
+     * prevented, the old text stays. An input method's composition is the
+     * field's own (no beforeinput: docs "Field edits and selection").
+     */
+    private fun beforeInput(f: Field, id: Int, multi: Boolean, source: CharSequence, start: Int, end: Int, dest: Spanned, dstart: Int, dend: Int): CharSequence? {
+        f.editType = null; f.editData = null
+        if (updating || filtering) return null
+        if (source is Spannable && BaseInputConnection.getComposingSpanStart(source) >= 0) return null
+        if (dest is Spannable) {
+            val cs = BaseInputConnection.getComposingSpanStart(dest)
+            val ce = BaseInputConnection.getComposingSpanEnd(dest)
+            if (cs >= 0 && dstart >= min(cs, ce) && dend <= max(cs, ce)) return null
+        }
+        val text = source.subSequence(start, end).toString()
+        if (text.isEmpty() && dstart == dend) return null
+        val key = editKey
+        val ctrl = key?.isCtrlPressed == true
+        val (type, data) = when {
+            f.menu == android.R.id.paste || f.menu == android.R.id.pasteAsPlainText || (ctrl && key?.keyCode == KeyEvent.KEYCODE_V) ->
+                "insertFromPaste" to (if (multi) text else text.replace(Regex("\r\n|\n|\r"), ""))
+            f.menu == android.R.id.cut || (ctrl && key?.keyCode == KeyEvent.KEYCODE_X) -> "deleteByCut" to null
+            f.menu == android.R.id.undo || (ctrl && key?.keyCode == KeyEvent.KEYCODE_Z) -> "historyUndo" to null
+            f.menu == android.R.id.redo -> "historyRedo" to null
+            text.isEmpty() -> (if (key?.keyCode == KeyEvent.KEYCODE_FORWARD_DEL) "deleteContentForward" else "deleteContentBackward") to null
+            multi && text == "\n" -> "insertLineBreak" to null
+            else -> "insertText" to text
+        }
+        filtering = true
+        val prevented = try {
+            NuiNative.event(window, id, "beforeinput".bytes(), JSONArray().put(type).put(data ?: JSONObject.NULL).toString().bytes())
+        } finally { filtering = false }
+        if (prevented) return dest.subSequence(dstart, dend)
+        // As Chromium: a paste's input carries no data.
+        f.editType = type; f.editData = if (type == "insertFromPaste") null else data
+        return null
+    }
+
+    /** A text field's selection, start and end in UTF-16 units (packed), or -1 (android.zig selection). */
+    fun selection(id: Int): Long {
+        val f = fields[id] as? EditText ?: return -1
+        val a = f.selectionStart; val b = f.selectionEnd
+        if (a < 0 || b < 0) return -1
+        return (min(a, b).toLong() shl 32) or max(a, b).toLong()
+    }
+
+    /** Select start..end of a text field (el.setSelectionRange). */
+    fun setSelection(id: Int, start: Int, end: Int) {
+        val f = fields[id] as? EditText ?: return
+        val len = f.text.length
+        f.setSelection(start.coerceIn(0, len), end.coerceIn(0, len))
+    }
+
     private fun makeField(id: Int): View? {
         val n = nodes[id] ?: return null
         val v: View = if (n.kind == "input" && n.p.has("range")) slider(n, id) else when (n.kind) {
-            "input", "textarea" -> EditText(context).apply {
+            "input", "textarea" -> Field(context).apply {
                 background = null
                 setPadding(0, 0, 0, 0)
                 val multi = n.kind == "textarea"
@@ -1080,11 +1161,26 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 }
                 gravity = if (multi) Gravity.TOP or Gravity.START else Gravity.CENTER_VERTICAL or Gravity.START
                 if (!multi) { isSingleLine = true; imeOptions = EditorInfo.IME_ACTION_DONE }
+                sent = n.p.optString("val")
+                val field = this
+                // Every edit (keys, the soft keyboard's commits, paste, cut,
+                // undo) asks the page first: beforeinput, as Chromium names it.
+                filters = arrayOf(InputFilter { source, start, end, dest, dstart, dend -> beforeInput(field, id, multi, source, start, end, dest, dstart, dend) })
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                     override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                     override fun afterTextChanged(s: Editable?) {
-                        if (!updating) NuiNative.event(window, id, "input".bytes(), (s?.toString() ?: "").bytes())
+                        if (updating) return
+                        val v = s?.toString() ?: ""
+                        val type = field.editType
+                        val data = field.editData
+                        field.editType = null; field.editData = null
+                        // A prevented edit puts back what was there: nothing changed.
+                        if (v == field.sent) return
+                        field.sent = v
+                        // [value, inputType, data]; a composition's (no type) as a plain value.
+                        if (type == null) NuiNative.event(window, id, "input".bytes(), v.bytes())
+                        else NuiNative.event(window, id, "edit".bytes(), JSONArray().put(v).put(type).put(data ?: JSONObject.NULL).toString().bytes())
                     }
                 })
                 // Enter: the page's keydown (it may send a chat message). A
@@ -1434,7 +1530,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 }
                 // Tab the page didn't prevent: its own focus navigation, not Android's.
                 if (e.keyCode == KeyEvent.KEYCODE_TAB) return true
-                return super.dispatchKeyEvent(e).also { fieldKeySent = false }
+                editKey = e
+                return try { super.dispatchKeyEvent(e) } finally { fieldKeySent = false; editKey = null }
             }
         }
         if (e.keyCode == KeyEvent.KEYCODE_TAB && focused != null && focused !== this) {
