@@ -49,17 +49,10 @@ pub const Surface = struct {
     /// yet sent to Kotlin: one nuiLeaves call per batch (flushLeaves), before
     /// anything else reaches NuiView.
     leaves: std.ArrayList(u8) = .empty,
-    /// What Kotlin last got as each node's props (props()): a hash of them
-    /// without the paint keys and the canvas program, and the paint. When
-    /// only those changed (an animation frame, a canvas redrawn), compact
-    /// records go in the batch instead of the props as JSON.
-    mirror: std.AutoHashMapUnmanaged(i64, Mirror) = .empty,
+    /// ORIEL_NUI_JSON: props and leaf styles go as JSON (nuiProps, 'S'), as
+    /// before the binary records, to compare the two.
+    json_props: bool = false,
 };
-
-const Mirror = struct { base: u64, paint: [3]f32 };
-
-/// Props Kotlin gets from records when they're all that changed.
-const paint_keys = [_][]const u8{ "tx", "ty", "sc", "rot", "op", "cv" };
 
 /// The native windows by id (UI thread only).
 var surfaces: std.AutoHashMapUnmanaged(u32, *Surface) = .empty;
@@ -78,7 +71,7 @@ pub fn engineOf(window: u32) ?*Engine {
 pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
     const s = try gpa.create(Surface);
     errdefer gpa.destroy(s);
-    s.* = .{ .gpa = gpa, .window = window, .invoke_fn = invoke_fn, .invoke_ctx = invoke_ctx };
+    s.* = .{ .gpa = gpa, .window = window, .invoke_fn = invoke_fn, .invoke_ctx = invoke_ctx, .json_props = std.c.getenv("ORIEL_NUI_JSON") != null };
     // The window's size in dp and the night mode, before its view is laid out.
     const vp: u64 = @bitCast(runtime.call(.long, "nuiViewport", "(I)J", .{wid(window)}) orelse 0);
     const w: f32 = @floatFromInt(vp & 0xffff);
@@ -96,8 +89,8 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .text = textChanged,
         .leaf_style = leafStyle,
         .paint = paintChanged,
-        // Kotlin keeps a copy of every node's props: canvas programs go in
-        // them until this backend has Backend.canvas.
+        .canvas = canvasChanged,
+        // Kotlin keeps a copy of every node's props.
         .mirrors_props = true,
         .leaf = leaf,
         .request_display_frame = requestDisplayFrame,
@@ -115,7 +108,6 @@ pub fn destroy(window: u32) void {
     s.json.deinit(s.gpa);
     s.text_measurements.deinit(s.gpa);
     s.leaves.deinit(s.gpa);
-    s.mirror.deinit(s.gpa);
     s.gpa.destroy(s);
 }
 
@@ -167,45 +159,44 @@ fn focus(ctx: *anyopaque, node: *Node) void {
 
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
-    _ = s.mirror.remove(node.id);
     flushLeaves(s);
     _ = runtime.call(.void, "nuiRemove", "(II)V", .{ wid(s.window), nid(node) });
 }
 
+/// A node's props: a 'P' record in the batch (one JNI call for a change's
+/// nodes), Kotlin reading them without parsing text; JSON with
+/// ORIEL_NUI_JSON.
 fn props(ctx: *anyopaque, node: *Node, value: std.json.Value) void {
     const s = surfaceOf(ctx);
-    // The props without the paint keys and the program: the same as Kotlin
-    // has means only those changed, and records carry them.
-    const base = baseHash(s, node, value) catch null;
-    const paint = paintOf(node);
-    if (base) |b| if (s.mirror.getPtr(node.id)) |m| if (m.base == b) {
-        if (!std.mem.eql(f32, &m.paint, &paint)) {
-            putPaintRecord(s, node, paint) catch return jsonProps(s, node, value, base, paint);
-            m.paint = paint;
-        }
-        if (node.kind == .canvas and value.object.get("cv") != null) {
-            const mark = s.leaves.items.len;
-            putCanvasRecord(s, node) catch {
-                s.leaves.shrinkRetainingCapacity(mark);
-                return jsonProps(s, node, value, base, paint);
-            };
-        }
-        return;
+    if (s.json_props) return jsonProps(s, node, value);
+    const mark = s.leaves.items.len;
+    putPropsRecord(s, node, value) catch {
+        s.leaves.shrinkRetainingCapacity(mark);
+        return jsonProps(s, node, value);
     };
-    jsonProps(s, node, value, base, paint);
+}
+
+/// 'P' node id (i32), kind (string), props (a value: putValue).
+fn putPropsRecord(s: *Surface, node: *const Node, value: std.json.Value) !void {
+    try putByte(s, 'P');
+    try putI32(s, nid(node));
+    try putBytes(s, @tagName(node.kind));
+    try putValue(s, value);
 }
 
 /// A transform or opacity changed alone (the "x" op, an animation frame):
 /// an 'X' record in the batch; its other props, and Kotlin's copy, stay.
 fn paintChanged(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
-    const paint = paintOf(node);
     const mark = s.leaves.items.len;
-    putPaintRecord(s, node, paint) catch {
-        s.leaves.shrinkRetainingCapacity(mark);
-        return;
-    };
-    if (s.mirror.getPtr(node.id)) |m| m.paint = paint;
+    putPaintRecord(s, node, paintOf(node)) catch s.leaves.shrinkRetainingCapacity(mark);
+}
+
+/// A canvas's new program (host.canvas, Tree.on_canvas): a 'C' record.
+fn canvasChanged(ctx: *anyopaque, node: *Node) void {
+    const s = surfaceOf(ctx);
+    const mark = s.leaves.items.len;
+    putCanvasRecord(s, node) catch s.leaves.shrinkRetainingCapacity(mark);
 }
 
 /// opacity, scale and rotation as NuiNode keeps them (translate is in the
@@ -214,18 +205,80 @@ fn paintOf(node: *const Node) [3]f32 {
     return .{ node.props.op orelse 1, node.props.sc orelse 1, node.props.rot orelse 0 };
 }
 
-/// A hash of the node's kind and its props without paint_keys (null: not an
-/// object, always sent whole).
-fn baseHash(s: *Surface, node: *const Node, value: std.json.Value) !?u64 {
-    if (value != .object) return null;
-    s.json.clearRetainingCapacity();
-    try s.json.append(s.gpa, '{');
-    var it = value.object.iterator();
-    outer: while (it.next()) |e| {
-        for (paint_keys) |k| if (std.mem.eql(u8, e.key_ptr.*, k)) continue :outer;
-        try s.json.print(s.gpa, "{f}:{f},", .{ std.json.fmt(std.json.Value{ .string = e.key_ptr.* }, .{}), std.json.fmt(e.value_ptr.*, .{}) });
+// --- Props as binary values ---------------------------------------------------
+// What NuiView reads as JSONObject/JSONArray (OrielNative.kt's readValue),
+// without text to parse: a type byte, then
+//   0 null, 1 false, 2 true, 3 i32, 4 f64, 5 string (u32 length, UTF-8),
+//   6 array (u32 count, values), 7 object (u32 count, key + value each).
+// A key is one byte, its index in `prop_keys` (the same table in Kotlin),
+// or 255 and the key as a string: a key either side doesn't know still
+// works. Little-endian, as every record.
+
+/// Keys by frequency, as Kotlin's PROP_KEYS: append only, never reorder.
+pub const prop_keys = [_][]const u8{
+    "fd",     "w",      "h",      "fs",     "ai",      "runs",  "t",     "c",    "sz",     "wt",
+    "dis",    "click",  "cg",     "rg",     "ar",      "val",   "maxw",  "maxh", "minw",   "minh",
+    "fw",     "fg",     "fb",     "as",     "ac",      "jc",    "acc",   "src",  "range",  "pw",
+    "pos",    "ph",     "pad",    "m",      "options", "on",    "icon",  "fit",  "cw",     "ch",
+    "cv",     "ctl",    "cols",   "trow",   "tcell",   "table", "bc",    "bg",   "br",     "bw",
+    "clip",   "col",    "fwt",    "fz",     "ins",     "it",    "lh",    "ls",   "mono",   "nowrap",
+    "op",     "rel",    "rot",    "sc",     "scroll",  "scrollx", "sh",  "sticky", "ta",   "tx",
+    "ty",     "vis",    "z",      "root",   "color",   "gradient", "angle", "stops", "radial", "spread",
+    "blur",   "x",      "y",      "vb",     "shapes",  "d",     "fill",  "stroke", "sw",   "cap",
+    "join",   "evenodd", "u",     "i",      "label",   "href",  "hover", "radius", "cx",   "cy",
+};
+
+const prop_key_ids = blk: {
+    var kvs: [prop_keys.len]struct { []const u8, u8 } = undefined;
+    for (prop_keys, 0..) |k, n| kvs[n] = .{ k, n };
+    break :blk std.StaticStringMap(u8).initComptime(kvs);
+};
+
+fn putValue(s: *Surface, v: std.json.Value) !void {
+    switch (v) {
+        .null => try putByte(s, 0),
+        .bool => |b| try putByte(s, if (b) 2 else 1),
+        .integer => |i| if (i >= std.math.minInt(i32) and i <= std.math.maxInt(i32)) {
+            try putByte(s, 3);
+            try putI32(s, @intCast(i));
+        } else {
+            try putByte(s, 4);
+            try putF64(s, @floatFromInt(i));
+        },
+        .float => |f| {
+            try putByte(s, 4);
+            try putF64(s, f);
+        },
+        .number_string => |ns| {
+            try putByte(s, 4);
+            try putF64(s, std.fmt.parseFloat(f64, ns) catch 0);
+        },
+        .string => |str| {
+            try putByte(s, 5);
+            try putBytes(s, str);
+        },
+        .array => |a| {
+            try putByte(s, 6);
+            try putU32(s, @intCast(a.items.len));
+            for (a.items) |x| try putValue(s, x);
+        },
+        .object => |o| {
+            try putByte(s, 7);
+            try putU32(s, @intCast(o.count()));
+            var it = o.iterator();
+            while (it.next()) |e| {
+                if (prop_key_ids.get(e.key_ptr.*)) |id| try putByte(s, id) else {
+                    try putByte(s, 255);
+                    try putBytes(s, e.key_ptr.*);
+                }
+                try putValue(s, e.value_ptr.*);
+            }
+        },
     }
-    return std.hash.Wyhash.hash(@intFromEnum(node.kind), s.json.items);
+}
+
+fn putF64(s: *Surface, v: f64) !void {
+    try s.leaves.appendSlice(s.gpa, &std.mem.toBytes(std.mem.nativeToLittle(u64, @bitCast(v))));
 }
 
 /// 'X' node id (i32), opacity, scale, rotation (f32).
@@ -317,10 +370,9 @@ fn putBytes(s: *Surface, b: []const u8) !void {
     try s.leaves.appendSlice(s.gpa, b);
 }
 
-/// The props as JSON (nuiProps): the general path, and what the records'
-/// comparison starts from.
-fn jsonProps(s: *Surface, node: *Node, value: std.json.Value, base: ?u64, paint: [3]f32) void {
-    if (base) |b| s.mirror.put(s.gpa, node.id, .{ .base = b, .paint = paint }) catch {} else _ = s.mirror.remove(node.id);
+/// The props as JSON (nuiProps, its own JNI call): ORIEL_NUI_JSON, or when
+/// a record can't be made.
+fn jsonProps(s: *Surface, node: *Node, value: std.json.Value) void {
     s.json.clearRetainingCapacity();
     s.json.print(s.gpa, "{f}", .{std.json.fmt(value, .{})}) catch return;
     flushLeaves(s);
@@ -355,7 +407,20 @@ fn textChanged(ctx: *anyopaque, node: *Node) void {
 /// table. Record: 'S', style id (i32), JSON length (u32), JSON.
 fn leafStyle(ctx: *anyopaque, id: i64, json: []const u8) void {
     const s = surfaceOf(ctx);
+    if (!s.json_props) {
+        // 'Y' style id (i32), its props as a binary value.
+        const mark = s.leaves.items.len;
+        if (styleRecord(s, id, json)) return else |_| s.leaves.shrinkRetainingCapacity(mark);
+    }
     appendLeafRecord(s, 'S', idOf(id), 0, 0, json);
+}
+
+fn styleRecord(s: *Surface, id: i64, json: []const u8) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, s.gpa, json, .{});
+    defer parsed.deinit();
+    try putByte(s, 'Y');
+    try putI32(s, idOf(id));
+    try putValue(s, parsed.value);
 }
 
 /// A node made from a leaf style (host.leaf, a stamped row or its leaves):
