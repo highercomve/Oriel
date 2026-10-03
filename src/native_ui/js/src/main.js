@@ -689,7 +689,12 @@ function pointerEvent(el, data) {
   const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button: phase === "move" ? -1 : 0, buttons, ...mods };
   const fire = (ev) => {
     target.dispatchEvent(ev);
-    if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) fireWindow(ev);
+    if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
+      // The dispatch is over (the native DOM clears its target then): the
+      // window's listeners still see the element, as in a browser.
+      if (ev.target !== target) Object.defineProperty(ev, "target", { value: target, configurable: true });
+      fireWindow(ev);
+    }
     return ev.defaultPrevented;
   };
   let prevented = fire(new PointerEvent(names[0], { ...init, pointerId, pointerType, isPrimary: true, pressure: buttons ? 0.5 : 0 }));
@@ -907,7 +912,10 @@ g.__oriel = {
         case "blur": if (el && document.__active === el) document.__active = null; return false;
         case "contextmenu": {
           const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1] });
-          (el || document.body).dispatchEvent(ev);
+          const on = el || document.body;
+          on.dispatchEvent(ev);
+          // The window's listeners see the element (as pointerEvent's fire).
+          if (ev.target !== on) Object.defineProperty(ev, "target", { value: on, configurable: true });
           if (!ev.defaultPrevented) fireWindow(ev);
           return ev.defaultPrevented;
         }
