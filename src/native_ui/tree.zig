@@ -738,6 +738,8 @@ pub const Node = struct {
     grow_min: f32 = std.math.nan(f32),
     /// Its min width set and its growth off for this layout.
     grow_frozen: bool = false,
+    /// Its text changed and waits for Tree.settleTexts (measure_texts).
+    text_pending: bool = false,
     /// A leaf made from a leaf style (createLeaf): its id, so a row stamped
     /// again keeps a leaf whose style is the same (0: not a leaf).
     leaf_style: i64 = 0,
@@ -821,6 +823,18 @@ pub const Tree = struct {
     /// A canvas node's program changed (host.canvas: setCanvas), not in its
     /// props: backends that mirror props send node.canvas themselves.
     on_canvas: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
+    /// Natural (unwrapped) text sizes for many nodes at once, into each
+    /// node's measured_text_size and text_measure_epoch. With it, updateText
+    /// doesn't measure: its nodes wait in pending_texts and are measured
+    /// together before the next layout (Android: one trip to Kotlin, not
+    /// one per row).
+    measure_texts: ?*const fn (ctx: *anyopaque, nodes: []const *Node) void = null,
+    pending_texts: std.ArrayList(PendingText) = .empty,
+    settle_nodes: std.ArrayList(*Node) = .empty,
+
+    /// A text changed, before its measure: what it was, for the
+    /// same-layout check.
+    const PendingText = struct { id: i64, size: ?[2]f32, epoch: u64 };
 
     pub fn init(gpa: std.mem.Allocator, measure_ctx: *anyopaque, measure: Measure) Tree {
         const config = yg.YGConfigNew();
@@ -842,6 +856,8 @@ pub const Tree = struct {
             t.gpa.destroy(style.*);
         }
         t.leaf_styles.deinit(t.gpa);
+        t.pending_texts.deinit(t.gpa);
+        t.settle_nodes.deinit(t.gpa);
         t.node_pool.deinit(t.gpa);
         t.text_pool.deinit(t.gpa);
         yg.YGConfigFree(t.config);
@@ -1050,6 +1066,51 @@ pub const Tree = struct {
         n.props.runs = @as(*const [1]Run, @ptrCast(&o.run));
         n.measured_text_size = null;
         if (t.on_text) |cb| cb(t.measure_ctx, n);
+        t.paint_dirty = true;
+        if (t.measure_texts != null) {
+            // Measured with the others before the layout (settleTexts).
+            if (!n.text_pending) {
+                try t.pending_texts.append(t.gpa, .{ .id = id, .size = previous_size, .epoch = previous_epoch });
+                n.text_pending = true;
+            }
+            return true;
+        }
+        t.textMeasured(n, previous_size, previous_epoch);
+        return true;
+    }
+
+    /// Whether a layout is due: the pending texts measured first (their
+    /// sizes decide it).
+    pub fn needsLayout(t: *Tree) bool {
+        t.settleTexts();
+        return t.dirty;
+    }
+
+    /// The texts updateText left for measure_texts: measured in one call,
+    /// then each one's min width and layout as updateText does without it.
+    pub fn settleTexts(t: *Tree) void {
+        if (t.pending_texts.items.len == 0) return;
+        defer t.pending_texts.clearRetainingCapacity();
+        t.settle_nodes.clearRetainingCapacity();
+        for (t.pending_texts.items) |p| {
+            const n = t.nodes.get(p.id) orelse continue;
+            if (!n.text_pending) continue;
+            if (n.measured_text_size == null) t.settle_nodes.append(t.gpa, n) catch {};
+        }
+        if (t.settle_nodes.items.len > 0) if (t.measure_texts) |cb| cb(t.measure_ctx, t.settle_nodes.items);
+        for (t.pending_texts.items) |p| {
+            const n = t.nodes.get(p.id) orelse continue;
+            if (!n.text_pending) continue;
+            n.text_pending = false;
+            t.textMeasured(n, p.size, p.epoch);
+        }
+        if (t.pending_texts.capacity > 4096) t.pending_texts.clearAndFree(t.gpa);
+        if (t.settle_nodes.capacity > 4096) t.settle_nodes.clearAndFree(t.gpa);
+    }
+
+    /// After a text node's text changed: its min width (longest word) and
+    /// whether the layout must run again (`previous`: its size before).
+    fn textMeasured(t: *Tree, n: *Node, previous_size: ?[2]f32, previous_epoch: u64) void {
         // Its longest word changed with it (a min width in a row): else the
         // item keeps the old text's minimum ("1" as wide as "a longer chip").
         const old_min = yg.YGNodeStyleGetMinWidth(n.yn).value;
@@ -1074,8 +1135,6 @@ pub const Tree = struct {
         // resize may wrap these different words at different positions.
         yg.YGNodeMarkDirty(n.yn);
         if (!same_layout or min_changed) t.dirty = true;
-        t.paint_dirty = true;
-        return true;
     }
 
     // -----------------------------------------------------------------
@@ -1412,6 +1471,7 @@ pub const Tree = struct {
     // Layout
 
     pub fn layout(t: *Tree) void {
+        t.settleTexts();
         const root = t.root orelse return;
         yg.YGNodeStyleSetWidth(root.yn, t.width);
         yg.YGNodeStyleSetHeight(root.yn, t.height);
@@ -2235,6 +2295,72 @@ test "direct text updates preserve props, dirty layout, and release overrides" {
         \\[["p",1,{"runs":[{"t":"one"},{"t":"two"}]}]]
     );
     try std.testing.expect(!try t.updateText(1, "mixed"));
+}
+
+test "text updates wait for one measure_texts call before the layout" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const Context = struct {
+        var batches: usize = 0;
+        var batched: usize = 0;
+        var singles: usize = 0;
+        // 10 px a character, unwrapped.
+        fn size(n: *Node) [2]f32 {
+            const c = std.unicode.utf8CountCodepoints(n.props.runs.?[0].t) catch 0;
+            return .{ @floatFromInt(10 * c), 10 };
+        }
+        fn measure(_: *anyopaque, n: *Node, _: f32, out: *[2]f32) void {
+            if (n.measured_text_size) |m| {
+                out.* = m;
+                return;
+            }
+            singles += 1;
+            out.* = size(n);
+        }
+        fn measureTexts(_: *anyopaque, nodes: []const *Node) void {
+            batches += 1;
+            for (nodes) |n| {
+                batched += 1;
+                n.measured_text_size = size(n);
+                n.text_measure_epoch = 1;
+            }
+        }
+    };
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, Context.measure);
+    defer t.deinit();
+    t.measure_texts = Context.measureTexts;
+    try t.apply(
+        \\[["c",0,"view"],["p",0,{"fd":"column"}],
+        \\["c",1,"view"],["p",1,{"fd":"row"}],["c",2,"text"],["p",2,{"runs":[{"t":"a b"}]}],["k",1,[2]],
+        \\["c",3,"view"],["p",3,{"fd":"row"}],["c",4,"text"],["p",4,{"runs":[{"t":"c d"}]}],["k",3,[4]],
+        \\["k",0,[1,3]],["r",0]]
+    );
+    t.width = 300;
+    t.height = 100;
+    t.layout();
+    try std.testing.expect(!t.needsLayout());
+    Context.singles = 0;
+    try std.testing.expect(try t.updateText(2, "longer words"));
+    try std.testing.expect(try t.updateText(4, "x"));
+    try std.testing.expect(try t.updateText(2, "longest wordsss"));
+    // Nothing measured yet: both wait, once each.
+    try std.testing.expectEqual(@as(usize, 0), Context.batches);
+    try std.testing.expectEqual(@as(usize, 2), t.pending_texts.items.len);
+    try std.testing.expect(t.needsLayout());
+    try std.testing.expectEqual(@as(usize, 1), Context.batches);
+    try std.testing.expectEqual(@as(usize, 2), Context.batched);
+    try std.testing.expectEqual(@as(usize, 0), Context.singles);
+    try std.testing.expectEqual(@as(usize, 0), t.pending_texts.items.len);
+    // Its min width is its longest word's share, from the batched size.
+    try std.testing.expect(yg.YGNodeStyleGetMinWidth(t.get(2).?.yn).value > 0);
+    t.layout();
+    try std.testing.expectEqual(@as(f32, 150), yg.YGNodeLayoutGetWidth(t.get(2).?.yn));
+    try std.testing.expectEqual(@as(f32, 10), yg.YGNodeLayoutGetWidth(t.get(4).?.yn));
+    // A pending node that goes before the layout is skipped.
+    try std.testing.expect(try t.updateText(4, "gone"));
+    t.destroy(4);
+    t.layout();
+    try std.testing.expectEqual(@as(usize, 1), Context.batches);
 }
 
 test "a field's pending value survives a props update without one" {
