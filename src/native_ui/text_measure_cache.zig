@@ -48,8 +48,8 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
     if (runs.len > 4) return null;
     var text_len: usize = 0;
     for (runs) |r| text_len += r.t.len;
-    // The text with four runs' fonts, line-heights, colors and boxes (up
-    // to ~116 bytes each) and the props' fit the 1024-byte key.
+    // Long texts keep the per-node cache; a key that still doesn't fit the
+    // 1024 bytes (Key.full) isn't cached either.
     if (text_len > 480) return null;
     var k = Key{ .buf = buf };
     k.float(width);
@@ -65,8 +65,7 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
     k.byte(@intCast(runs.len));
     for (runs, 0..) |r, i| {
         k.integer(@intCast(r.t.len));
-        @memcpy(buf[k.len..][0..r.t.len], r.t);
-        k.len += r.t.len;
+        k.bytes(r.t);
         k.float(r.sz);
         k.float(r.w);
         k.optional(r.lh);
@@ -86,17 +85,35 @@ pub fn keyFor(buf: *[1024]u8, props: *const tree.Props, width: f32) ?[]const u8 
         if (r.bg) |bg| for (bg) |channel| k.float(channel);
         if (!k.family(r.ff)) return null;
     }
+    if (k.full) return null;
     return buf[0..k.len];
 }
 
 const Key = struct {
     buf: *[1024]u8,
     len: usize = 0,
+    /// A write didn't fit: the key is dropped (keyFor returns null), never
+    /// written past the buffer.
+    full: bool = false,
+    fn room(k: *Key, n: usize) bool {
+        if (k.full or k.len + n > k.buf.len) {
+            k.full = true;
+            return false;
+        }
+        return true;
+    }
+    fn bytes(k: *Key, value: []const u8) void {
+        if (!k.room(value.len)) return;
+        @memcpy(k.buf[k.len..][0..value.len], value);
+        k.len += value.len;
+    }
     fn byte(k: *Key, value: u8) void {
+        if (!k.room(1)) return;
         k.buf[k.len] = value;
         k.len += 1;
     }
     fn integer(k: *Key, value: u32) void {
+        if (!k.room(4)) return;
         std.mem.writeInt(u32, k.buf[k.len..][0..4], value, .little);
         k.len += 4;
     }
@@ -110,8 +127,7 @@ const Key = struct {
         };
         if (f.len > 48) return false;
         k.byte(@intCast(f.len + 1));
-        @memcpy(k.buf[k.len..][0..f.len], f);
-        k.len += f.len;
+        k.bytes(f);
         return true;
     }
     fn optional(k: *Key, value: ?f32) void {
@@ -159,4 +175,17 @@ test "measurement cache owns keys and remains bounded" {
     try std.testing.expectEqual(@as(usize, 1), c.entries.count());
     c.clear(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), c.bytes);
+}
+
+test "a key that doesn't fit the buffer is dropped, not written past it" {
+    var a: [1024]u8 = undefined;
+    const long = "f" ** 48;
+    const text = "t" ** 120;
+    var runs = [_]tree.Run{ .{ .t = text, .ff = long }, .{ .t = text, .ff = long }, .{ .t = text, .ff = long }, .{ .t = text, .ff = long } };
+    var props = tree.Props{ .runs = &runs, .ff = long };
+    if (keyFor(&a, &props, 100)) |key| try std.testing.expect(key.len <= a.len);
+    // Many more bytes than fit: no key.
+    var k = Key{ .buf = &a };
+    for (0..300) |_| k.integer(1);
+    try std.testing.expect(k.full and k.len <= a.len);
 }
