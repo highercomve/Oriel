@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #if defined(_WIN32)
 #include <windows.h>
 #else
@@ -46,12 +47,12 @@ extern int oriel_nui_stamp_list(void *opaque, double list_id, void *dom, uint32_
 #endif
 extern int oriel_nui_leaf_style(void *opaque, double id, const char *json, size_t len);
 extern int oriel_nui_leaf(void *opaque, double id, double style_id, const char *text, size_t len, int is_text);
-extern int oriel_nui_frame(void *opaque, double id, double *out6);
+extern int oriel_nui_frame(void *opaque, double id, double *out8);
 extern void oriel_nui_focus(void *opaque, double id);
 extern int oriel_nui_selection(void *opaque, double id, double *out);
 extern void oriel_nui_set_selection(void *opaque, double id, double start, double end);
 extern void oriel_nui_scroll_into_view(void *opaque, double id, const char *block, size_t len);
-extern void oriel_nui_scroll_to(void *opaque, double id, double y);
+extern void oriel_nui_scroll_to(void *opaque, double id, double y, double x);
 
 #if defined(ORIEL_NATIVE_DOM)
 #include "dom_qjs.h"
@@ -363,11 +364,11 @@ static JSValue h_now(JSContext *ctx, JSValueConst this_val, int argc, JSValueCon
 static JSValue h_frame(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1) return JS_UNDEFINED;
-    double id = 0, out[6];
+    double id = 0, out[8];
     JS_ToFloat64(ctx, &id, argv[0]);
     if (!oriel_nui_frame(opaque_of(ctx), id, out)) return JS_UNDEFINED;
     JSValue arr = JS_NewArray(ctx);
-    for (uint32_t i = 0; i < 6; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
+    for (uint32_t i = 0; i < 8; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
     return arr;
 }
 
@@ -413,10 +414,11 @@ static JSValue h_scroll_into_view(JSContext *ctx, JSValueConst this_val, int arg
 
 static JSValue h_scroll_to(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
-    double id = 0, y = 0;
+    double id = 0, y = 0, x = NAN;
     if (argc > 0) JS_ToFloat64(ctx, &id, argv[0]);
     if (argc > 1) JS_ToFloat64(ctx, &y, argv[1]);
-    oriel_nui_scroll_to(opaque_of(ctx), id, y);
+    if (argc > 2) JS_ToFloat64(ctx, &x, argv[2]);
+    oriel_nui_scroll_to(opaque_of(ctx), id, y, x);
     return JS_UNDEFINED;
 }
 
@@ -823,7 +825,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "selection", h_selection, 1);
     set_fn(ctx, host, "setSelection", h_set_selection, 3);
     set_fn(ctx, host, "scrollIntoView", h_scroll_into_view, 2);
-    set_fn(ctx, host, "scrollTo", h_scroll_to, 2);
+    set_fn(ctx, host, "scrollTo", h_scroll_to, 3);
     set_fn(ctx, host, "evalScript", h_eval_script, 2);
     set_fn(ctx, host, "evalModule", h_eval_module, 2);
     JS_SetPropertyStr(ctx, host, "platform", JS_NewString(ctx, platform_json));

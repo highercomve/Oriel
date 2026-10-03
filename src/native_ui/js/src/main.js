@@ -489,8 +489,32 @@ Object.defineProperties(elProto, {
   scrollHeight: { get() { const f = frameOf(this); return f[4] ?? f[3]; }, configurable: true },
   offsetTop: { get() { return frameOf(this)[1]; }, configurable: true },
   offsetLeft: { get() { return frameOf(this)[0]; }, configurable: true },
-  scrollTop: { get() { return 0; }, set(y) { renderer && host.scrollTo(renderer.idOf(this, "el"), +y || 0); }, configurable: true },
+  // The scroll offsets (the frame's seventh and eighth values); the
+  // root's and the scrolling element's are the window's (node -1).
+  scrollTop: {
+    get() { return (renderer && host.frame(scrollIdOf(this))?.[6]) || 0; },
+    set(y) { if (renderer) { renderer.render(); host.scrollTo(scrollIdOf(this), +y || 0); } },
+    configurable: true,
+  },
+  scrollLeft: {
+    get() { return (renderer && host.frame(scrollIdOf(this))?.[7]) || 0; },
+    set(x) { if (renderer) { renderer.render(); host.scrollTo(scrollIdOf(this), NaN, +x || 0); } },
+    configurable: true,
+  },
 });
+const scrollIdOf = (el) => (el === document.documentElement || el === document.scrollingElement ? -1 : renderer.idOf(el, "el"));
+// element.scrollTo / scroll / scrollBy: (x, y) or { top, left }.
+const scrollArgs = (x, y) => (typeof x === "object" && x !== null ? [x.left, x.top] : [x, y]);
+elProto.scrollTo = elProto.scroll = function (x, y) {
+  const [left, top] = scrollArgs(x, y);
+  if (!renderer) return;
+  renderer.render();
+  host.scrollTo(scrollIdOf(this), top === undefined ? NaN : +top || 0, left === undefined ? NaN : +left || 0);
+};
+elProto.scrollBy = function (x, y) {
+  const [left, top] = scrollArgs(x, y);
+  this.scrollTo({ top: this.scrollTop + (+top || 0), left: this.scrollLeft + (+left || 0) });
+};
 elProto.getBoundingClientRect = function () {
   const [x, y, w, h] = frameOf(this);
   return { x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h };
@@ -527,9 +551,18 @@ Object.getPrototypeOf(document.createElement("div")).click = elProto.click = fun
 // The page scrolls in the window's scroll view (node -1, render.js):
 // window.scrollTo(x, y) and scrollTo({ top }).
 g.scrollTo = g.scroll = (x, y) => {
-  const top = typeof x === "object" && x !== null ? x.top : y;
-  if (renderer && top !== undefined) { renderer.render(); host.scrollTo(-1, +top || 0); }
+  const [left, top] = scrollArgs(x, y);
+  if (renderer) { renderer.render(); host.scrollTo(-1, top === undefined ? NaN : +top || 0, left === undefined ? NaN : +left || 0); }
 };
+g.scrollBy = (x, y) => {
+  const [left, top] = scrollArgs(x, y);
+  g.scrollTo({ top: g.scrollY + (+top || 0), left: g.scrollX + (+left || 0) });
+};
+// The window's scroll offsets: node -1's (the page's scroll view).
+for (const [names, i] of [[["scrollY", "pageYOffset"], 6], [["scrollX", "pageXOffset"], 7]]) {
+  for (const name of names) Object.defineProperty(g, name, { get: () => (renderer && host.frame(-1)?.[i]) || 0, configurable: true });
+}
+Object.defineProperty(document, "scrollingElement", { get() { return this.documentElement; }, configurable: true });
 // The focused element; it carries data-nui-focus, which the style engine
 // matches for :focus (css.js).
 // :focus-visible (data-nui-focus-visible) as browsers decide it: focus
@@ -876,7 +909,41 @@ function keyEvent(el, data, type = "keydown") {
     const form = el.closest("form");
     if (form) { submit(form); return true; }
   }
+  // Keys that scroll, as browsers' default: the focused element's nearest
+  // scroller, else the window (never from a field, which uses them).
+  if (type === "keydown" && !ev.defaultPrevented && !(init.ctrlKey || init.altKey || init.metaKey) && scrollKey(el || document.__active, key, init.shiftKey)) return true;
   return ev.defaultPrevented;
+}
+
+// ArrowUp/Down 40px, PageUp/Down and Space (Shift: up) 87.5% of the view,
+// Home/End to the ends, as Chromium. True when a scroller took it.
+function scrollKey(from, key, shift) {
+  if (!renderer || !host.frame) return false;
+  if (from && (textField(from) || from.localName === "select" || from.localName === "textarea" || from.isContentEditable)) return false;
+  if (key === " " && from && (from.localName === "button" || from.localName === "input" || from.localName === "a")) return false;
+  const steps = { ArrowDown: 40, ArrowUp: -40, PageDown: 0.875, PageUp: -0.875, " ": shift ? -0.875 : 0.875, Home: -Infinity, End: Infinity };
+  const step = steps[key];
+  if (step === undefined) return false;
+  renderer.render();
+  // The nearest ancestor that scrolls (overflow-y auto or scroll, taller
+  // inside than it shows), else the window.
+  let target = -1;
+  for (let n = from; n && n.nodeType === 1 && n !== document.body && n !== document.documentElement; n = n.parentNode) {
+    const cs = getComputedStyle(n);
+    const ov = cs["overflow-y"] || cs.overflowY || cs.overflow;
+    if (ov !== "auto" && ov !== "scroll") continue;
+    const f = host.frame(renderer.idOf(n, "el"));
+    if (f && f[4] > f[3] + 0.5) { target = renderer.idOf(n, "el"); break; }
+  }
+  const f = host.frame(target);
+  if (!f) return false;
+  const view = f[3];
+  const top = f[6] || 0;
+  const by = Math.abs(step) <= 1 ? Math.round(step * view) : step;
+  const want = Math.max(0, Math.min(f[4] - view, top + by));
+  if (want === top) return false;
+  host.scrollTo(target, want);
+  return true;
 }
 
 const WEBKIT_KEYPRESS = platform.os === "macos" || platform.os === "ios";
@@ -1444,6 +1511,23 @@ g.__oriel = {
         case "back": if (!history.length) return false; g.history.back(); return true;
       }
       return false;
+    });
+  },
+  // Scrollers moved (the engine, at most once a frame): [[id, top, left]].
+  // "scroll" on each, as browsers fire it (it doesn't bubble; the
+  // window's goes to the document, then the window).
+  scrolled(list) {
+    guard(() => {
+      for (const [id] of list) {
+        if (id === -1) {
+          const ev = new Event("scroll", { bubbles: true });
+          document.dispatchEvent(ev);
+          fireWindow(ev);
+          continue;
+        }
+        const el = renderer?.elementFor(id);
+        if (el) el.dispatchEvent(new Event("scroll", { bubbles: false }));
+      }
     });
   },
   // The display refreshed (host.vsync): the animation frame.

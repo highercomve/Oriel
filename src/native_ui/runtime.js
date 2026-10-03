@@ -18010,12 +18010,45 @@ ${a.stack || ""}`;
     offsetLeft: { get() {
       return frameOf(this)[0];
     }, configurable: true },
-    scrollTop: { get() {
-      return 0;
-    }, set(y) {
-      renderer && host.scrollTo(renderer.idOf(this, "el"), +y || 0);
-    }, configurable: true }
+    // The scroll offsets (the frame's seventh and eighth values); the
+    // root's and the scrolling element's are the window's (node -1).
+    scrollTop: {
+      get() {
+        return renderer && host.frame(scrollIdOf(this))?.[6] || 0;
+      },
+      set(y) {
+        if (renderer) {
+          renderer.render();
+          host.scrollTo(scrollIdOf(this), +y || 0);
+        }
+      },
+      configurable: true
+    },
+    scrollLeft: {
+      get() {
+        return renderer && host.frame(scrollIdOf(this))?.[7] || 0;
+      },
+      set(x) {
+        if (renderer) {
+          renderer.render();
+          host.scrollTo(scrollIdOf(this), NaN, +x || 0);
+        }
+      },
+      configurable: true
+    }
   });
+  var scrollIdOf = (el) => el === document.documentElement || el === document.scrollingElement ? -1 : renderer.idOf(el, "el");
+  var scrollArgs = (x, y) => typeof x === "object" && x !== null ? [x.left, x.top] : [x, y];
+  elProto.scrollTo = elProto.scroll = function(x, y) {
+    const [left, top] = scrollArgs(x, y);
+    if (!renderer) return;
+    renderer.render();
+    host.scrollTo(scrollIdOf(this), top === void 0 ? NaN : +top || 0, left === void 0 ? NaN : +left || 0);
+  };
+  elProto.scrollBy = function(x, y) {
+    const [left, top] = scrollArgs(x, y);
+    this.scrollTo({ top: this.scrollTop + (+top || 0), left: this.scrollLeft + (+left || 0) });
+  };
   elProto.getBoundingClientRect = function() {
     const [x, y, w, h] = frameOf(this);
     return { x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h };
@@ -18050,12 +18083,22 @@ ${a.stack || ""}`;
     }
   };
   g.scrollTo = g.scroll = (x, y) => {
-    const top = typeof x === "object" && x !== null ? x.top : y;
-    if (renderer && top !== void 0) {
+    const [left, top] = scrollArgs(x, y);
+    if (renderer) {
       renderer.render();
-      host.scrollTo(-1, +top || 0);
+      host.scrollTo(-1, top === void 0 ? NaN : +top || 0, left === void 0 ? NaN : +left || 0);
     }
   };
+  g.scrollBy = (x, y) => {
+    const [left, top] = scrollArgs(x, y);
+    g.scrollTo({ top: g.scrollY + (+top || 0), left: g.scrollX + (+left || 0) });
+  };
+  for (const [names, i] of [[["scrollY", "pageYOffset"], 6], [["scrollX", "pageXOffset"], 7]]) {
+    for (const name of names) Object.defineProperty(g, name, { get: () => renderer && host.frame(-1)?.[i] || 0, configurable: true });
+  }
+  Object.defineProperty(document, "scrollingElement", { get() {
+    return this.documentElement;
+  }, configurable: true });
   var active = null;
   var keyboardFocus = true;
   var TEXT_INPUTS = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
@@ -18547,7 +18590,37 @@ ${a.stack || ""}`;
         return true;
       }
     }
+    if (type === "keydown" && !ev.defaultPrevented && !(init.ctrlKey || init.altKey || init.metaKey) && scrollKey(el || document.__active, key2, init.shiftKey)) return true;
     return ev.defaultPrevented;
+  }
+  function scrollKey(from, key2, shift) {
+    if (!renderer || !host.frame) return false;
+    if (from && (textField(from) || from.localName === "select" || from.localName === "textarea" || from.isContentEditable)) return false;
+    if (key2 === " " && from && (from.localName === "button" || from.localName === "input" || from.localName === "a")) return false;
+    const steps = { ArrowDown: 40, ArrowUp: -40, PageDown: 0.875, PageUp: -0.875, " ": shift ? -0.875 : 0.875, Home: -Infinity, End: Infinity };
+    const step = steps[key2];
+    if (step === void 0) return false;
+    renderer.render();
+    let target = -1;
+    for (let n2 = from; n2 && n2.nodeType === 1 && n2 !== document.body && n2 !== document.documentElement; n2 = n2.parentNode) {
+      const cs = getComputedStyle(n2);
+      const ov = cs["overflow-y"] || cs.overflowY || cs.overflow;
+      if (ov !== "auto" && ov !== "scroll") continue;
+      const f2 = host.frame(renderer.idOf(n2, "el"));
+      if (f2 && f2[4] > f2[3] + 0.5) {
+        target = renderer.idOf(n2, "el");
+        break;
+      }
+    }
+    const f = host.frame(target);
+    if (!f) return false;
+    const view = f[3];
+    const top = f[6] || 0;
+    const by = Math.abs(step) <= 1 ? Math.round(step * view) : step;
+    const want = Math.max(0, Math.min(f[4] - view, top + by));
+    if (want === top) return false;
+    host.scrollTo(target, want);
+    return true;
   }
   var WEBKIT_KEYPRESS = platform.os === "macos" || platform.os === "ios";
   function keypressFor(key2, init) {
@@ -19122,6 +19195,23 @@ ${a.stack || ""}`;
             return true;
         }
         return false;
+      });
+    },
+    // Scrollers moved (the engine, at most once a frame): [[id, top, left]].
+    // "scroll" on each, as browsers fire it (it doesn't bubble; the
+    // window's goes to the document, then the window).
+    scrolled(list) {
+      guard(() => {
+        for (const [id] of list) {
+          if (id === -1) {
+            const ev = new Event("scroll", { bubbles: true });
+            document.dispatchEvent(ev);
+            fireWindow(ev);
+            continue;
+          }
+          const el = renderer?.elementFor(id);
+          if (el) el.dispatchEvent(new Event("scroll", { bubbles: false }));
+        }
       });
     },
     // The display refreshed (host.vsync): the animation frame.

@@ -150,6 +150,29 @@ opacity, backgrounds, color, transforms, sizes, border colors and shadows
 (src/native_ui/js/src/transitions.js, animations.js: while they run, only
 the animated nodes are sent each frame).
 
+**Scroll events** (each backend):
+
+- Every change of a scroller's offset goes through the engine:
+  `Engine.scrollBy` / `scrollByX` (wheel, scrollbar, touch), host.scrollTo
+  and scrollIntoView, and a layout that clamps it (content that shrank).
+  Each notes the node (`Tree.noteScroll`, once until the page hears) and
+  asks for a display frame; at the next one, before the page's animation
+  frame, `__oriel.scrolled([[id, scrollTop, scrollLeft], ...])` fires
+  "scroll" on each scroller (it doesn't bubble), the window's (node -1)
+  on the document and then the window: at most once a frame each, as
+  browsers. A backend that scrolls a node itself (its own scroll view)
+  must set `scroll_y`/`scroll_x` through these, or call
+  `Tree.noteScroll` and request a frame.
+- `host.frame(id)[6]`, `[7]` are the offsets: `scrollTop`/`scrollLeft`
+  read them (they were 0) and set them (`host.scrollTo(id, y, x)`, NaN
+  leaving an axis), and so do `scrollY`/`pageYOffset`/`scrollX`, the
+  root's and `document.scrollingElement`'s (node -1), `element.scrollTo`,
+  `scroll` and `scrollBy`.
+- Keys scroll as browsers' default when the page doesn't take them:
+  ArrowUp/Down 40px, PageUp/Down and Space (Shift: up) 87.5% of the view
+  (whole px), Home/End to the ends, on the focused element's nearest
+  scroller, else the window; never from a field.
+
 **Scrollbars** (each backend):
 
 - A backend whose WebView's scrollbars take room (Windows' classic ones)
