@@ -15,6 +15,23 @@ const app = @import("oriel_app");
 var io: std.Io = undefined;
 var started: std.Io.Clock.Timestamp = undefined;
 var bench_mode = false;
+/// RENDER_BENCH_POWER=<seconds>: the page measures power (each scenario
+/// that long) after the tests, and reports it with them.
+var power_seconds: u32 = 0;
+
+pub const Power = struct {
+    ok: bool = false,
+    mw: f64 = 0,
+    ua: f64 = 0,
+    mv: f64 = 0,
+    plugged: bool = false,
+    charge_uah: f64 = -1,
+    /// A cumulative energy counter in µJ (Linux RAPL: the CPU package's),
+    /// -1 without one; the page takes differences.
+    energy_uj: f64 = -1,
+    /// What was read: "battery", "rapl", or why nothing ("rapl: no access").
+    source: []const u8 = "",
+};
 
 pub const Commands = struct {
     /// Milliseconds since main() began: the page's first script calls it.
@@ -111,6 +128,98 @@ pub const Commands = struct {
         return @as(f64, @floatFromInt(total)) / 1024;
     }
 
+    /// The device's power draw now, for the page's power meter: the
+    /// battery's current and voltage (Android's BatteryManager; Linux's
+    /// /sys/class/power_supply), whether a charger is in (then the numbers
+    /// say nothing of the app), and the battery's charge counter (µAh, or
+    /// µWh on Linux batteries that count energy; -1 without one). `ok`
+    /// false: no battery to read here.
+    pub fn power_now(_: std.mem.Allocator) Power {
+        if (comptime @import("builtin").abi.isAndroid()) return androidPower();
+        if (comptime @import("builtin").os.tag == .linux) return linuxPower();
+        return .{};
+    }
+
+    fn androidPower() Power {
+        const rt = oriel.android.runtime;
+        const v = rt.call(.long, "batteryNow", "()J", .{}) orelse return .{};
+        if (v == 0) return .{};
+        var ua: f64 = @floatFromInt(v >> 32);
+        // A few devices report mA, not µA: no phone runs on under 10 mA.
+        if (@abs(ua) > 0 and @abs(ua) < 10_000) ua *= 1000;
+        const mv: f64 = @floatFromInt((v >> 1) & 0x7fffffff);
+        const charge = rt.call(.long, "batteryCharge", "()J", .{}) orelse std.math.minInt(i64);
+        return .{
+            .ok = true,
+            .source = "battery",
+            .mw = @abs(ua) / 1000 * mv / 1000,
+            .ua = ua,
+            .mv = mv,
+            .plugged = v & 1 != 0,
+            .charge_uah = if (charge == std.math.minInt(i64)) -1 else @floatFromInt(charge),
+        };
+    }
+
+    /// The first battery under /sys/class/power_supply: power_now (µW), or
+    /// current_now (µA) times voltage_now (µV).
+    fn linuxPower() Power {
+        var dir = std.Io.Dir.cwd().openDir(io, "/sys/class/power_supply", .{ .iterate = true }) catch return .{};
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch null) |e| {
+            var path: [128]u8 = undefined;
+            var buf: [64]u8 = undefined;
+            const kind = readSys(std.fmt.bufPrint(&path, "/sys/class/power_supply/{s}/type", .{e.name}) catch continue, &buf) orelse continue;
+            if (!std.mem.eql(u8, kind, "Battery")) continue;
+            const field = struct {
+                fn get(name: []const u8, f: []const u8) ?f64 {
+                    var p: [128]u8 = undefined;
+                    var b: [64]u8 = undefined;
+                    const t = readSys(std.fmt.bufPrint(&p, "/sys/class/power_supply/{s}/{s}", .{ name, f }) catch return null, &b) orelse return null;
+                    return std.fmt.parseFloat(f64, t) catch null;
+                }
+            }.get;
+            const mv = (field(e.name, "voltage_now") orelse 0) / 1000;
+            const ua = field(e.name, "current_now") orelse 0;
+            const uw = field(e.name, "power_now") orelse @abs(ua) * mv / 1000;
+            const status = readSys(std.fmt.bufPrint(&path, "/sys/class/power_supply/{s}/status", .{e.name}) catch continue, &buf) orelse "";
+            const counter = field(e.name, "charge_now") orelse field(e.name, "energy_now") orelse -1;
+            return .{
+                .ok = true,
+                .source = "battery",
+                .mw = uw / 1000,
+                .ua = ua,
+                .mv = mv,
+                .plugged = std.mem.eql(u8, status, "Charging") or std.mem.eql(u8, status, "Full") or std.mem.eql(u8, status, "Not charging"),
+                .charge_uah = counter,
+            };
+        }
+        return raplPower();
+    }
+
+    /// No battery (a desktop): the CPU package's energy counter (Intel and
+    /// AMD RAPL through powercap). Root-only by default since the Platypus
+    /// fix; a udev rule (or chmod) on energy_uj opens it.
+    fn raplPower() Power {
+        var buf: [64]u8 = undefined;
+        const name = readSys("/sys/class/powercap/intel-rapl:0/name", &buf) orelse return .{ .source = "none" };
+        if (!std.mem.startsWith(u8, name, "package")) return .{ .source = "none" };
+        var ebuf: [64]u8 = undefined;
+        const t = readSys("/sys/class/powercap/intel-rapl:0/energy_uj", &ebuf) orelse return .{ .source = "rapl: no access (energy_uj is root-only)" };
+        const uj = std.fmt.parseFloat(f64, t) catch return .{ .source = "rapl: unreadable" };
+        return .{ .ok = true, .source = "rapl", .energy_uj = uj };
+    }
+
+    fn readSys(path: []const u8, buf: []u8) ?[]const u8 {
+        const t = std.Io.Dir.cwd().readFile(io, path, buf) catch return null;
+        return std.mem.trim(u8, t, " \n");
+    }
+
+    /// RENDER_BENCH_POWER's seconds per power scenario (0: not set).
+    pub fn power_seconds_set(_: std.mem.Allocator) u32 {
+        return power_seconds;
+    }
+
     /// Whether RENDER_BENCH is set (the page then reports and quits).
     pub fn bench_mode_on(_: std.mem.Allocator) bool {
         return bench_mode;
@@ -156,6 +265,7 @@ pub fn main(init: std.process.Init) !u8 {
     io = init.io;
     started = std.Io.Clock.Timestamp.now(io, .awake);
     bench_mode = init.environ_map.get("RENDER_BENCH") != null;
+    if (init.environ_map.get("RENDER_BENCH_POWER")) |v| power_seconds = std.fmt.parseInt(u32, v, 10) catch 60;
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
         .id = "dev.oriel.RenderBench",
         .title = "Oriel render bench",

@@ -45,6 +45,37 @@ was the default).
 `RENDER_BENCH` is an environment variable because GTK rejects command-line
 options it doesn't know.
 
+## Power
+
+Outside the default run (it takes minutes): the **Measure power** button
+(60 s a scenario), or `RENDER_BENCH_POWER=<seconds>` (with `RENDER_BENCH=1`
+it's in the JSON report as `power`). Scenarios: idle, animate 200 boxes,
+canvas 1000 balls, and (native only) the same balls drawn from Zig. For
+each: the average draw in mW, joules, fps and mJ per frame, and the
+battery's charge counter's drop where there is one.
+
+Where the numbers come from (`power_now` in main.zig):
+
+| Platform | Source |
+|---|---|
+| Android | BatteryManager: the battery's current (`CURRENT_NOW`) times its voltage, sampled every 250 ms and integrated, and `CHARGE_COUNTER` (OrielRuntime.batteryNow / batteryCharge) |
+| Linux laptop | `/sys/class/power_supply/BAT*`: `power_now`, or `current_now` × `voltage_now` |
+| Linux desktop | RAPL (`/sys/class/powercap/intel-rapl:0/energy_uj`, the CPU package's energy counter), which is root-only by default: a udev rule or chmod on it opens it |
+| Windows, macOS | not yet |
+
+They're the whole device's draw (the screen, radios), not the app's: run
+the WebView and the native build through the same scenarios, at the same
+brightness, in airplane mode, on battery (a charger makes them meaningless:
+the page says so), the phone cool, and compare. mJ per frame is fair
+between a renderer that holds 120 fps and one that doesn't. Some phones
+update the current only every few seconds: use 60 s or more a scenario,
+and run each build two or three times. Emulators report a fixed, made-up
+battery.
+
+On Android, set the variable through the system property Oriel reads:
+`adb shell setprop debug.oriel.env "'RENDER_BENCH_POWER=60'"`, or tap the
+button (no adb needed: unplug the phone first).
+
 ## What it measures
 
 Each test runs 3 times; the median is reported.
