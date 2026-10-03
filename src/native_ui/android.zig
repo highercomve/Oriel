@@ -42,6 +42,10 @@ pub const Surface = struct {
     /// Choreographer callback for this window is already posted.
     frame_wanted: bool = false,
     frame_posted: bool = false,
+    /// Leaf styles and natively made nodes (Tree.on_leaf_style, on_leaf) not
+    /// yet sent to Kotlin: one nuiLeaves call per batch (flushLeaves), before
+    /// anything else reaches NuiView.
+    leaves: std.ArrayList(u8) = .empty,
 };
 
 /// The native windows by id (UI thread only).
@@ -77,6 +81,8 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .focus = focus,
         .props = props,
         .text = textChanged,
+        .leaf_style = leafStyle,
+        .leaf = leaf,
         .request_display_frame = requestDisplayFrame,
     }, assets, platform_json, label, url, if (w > 0) w else 400, if (h > 0) h else 800);
     try surfaces.put(gpa, window, s);
@@ -91,6 +97,7 @@ pub fn destroy(window: u32) void {
     s.frames.deinit(s.gpa);
     s.json.deinit(s.gpa);
     s.text_measurements.deinit(s.gpa);
+    s.leaves.deinit(s.gpa);
     s.gpa.destroy(s);
 }
 
@@ -108,11 +115,16 @@ fn surfaceOf(p: *anyopaque) *Surface {
     return @ptrCast(@alignCast(p));
 }
 
+/// An id as the i32 NuiView keys by (no_id when it doesn't fit).
+fn idOf(id: i64) i32 {
+    return if (id > std.math.minInt(i32) and id <= std.math.maxInt(i32)) @intCast(id) else no_id;
+}
+
 /// A node's id across JNI and in the frame records (an int there; the page
 /// never reuses ids, so they grow). One beyond an i32 gets `no_id`, which
 /// Kotlin knows no node by: it's skipped there instead of a panic here.
 fn nid(n: *const Node) i32 {
-    return if (n.id > std.math.minInt(i32) and n.id <= std.math.maxInt(i32)) @intCast(n.id) else no_id;
+    return idOf(n.id);
 }
 const no_id: i32 = std.math.minInt(i32);
 
@@ -131,11 +143,13 @@ fn addTimer(ctx: *anyopaque, _: *Engine, id: u32, ms: u32) void {
 
 fn focus(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
+    flushLeaves(s);
     _ = runtime.call(.void, "nuiFocus", "(II)V", .{ wid(s.window), nid(node) });
 }
 
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
+    flushLeaves(s);
     _ = runtime.call(.void, "nuiRemove", "(II)V", .{ wid(s.window), nid(node) });
 }
 
@@ -143,6 +157,7 @@ fn props(ctx: *anyopaque, node: *Node, value: std.json.Value) void {
     const s = surfaceOf(ctx);
     s.json.clearRetainingCapacity();
     s.json.print(s.gpa, "{f}", .{std.json.fmt(value, .{})}) catch return;
+    flushLeaves(s);
     _ = runtime.call(.void, "nuiProps", "(II[B[B)V", .{ wid(s.window), nid(node), @as([]const u8, @tagName(node.kind)), @as([]const u8, s.json.items) });
     // An <img>'s data: URI can be megabytes: don't keep that much for the
     // window's lifetime.
@@ -155,7 +170,49 @@ fn textChanged(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     const runs = node.props.runs orelse return;
     if (runs.len != 1) return;
+    flushLeaves(s);
     _ = runtime.call(.void, "nuiText", "(II[B)V", .{ wid(s.window), nid(node), @as([]const u8, runs[0].t) });
+}
+
+/// A leaf style (host.leafStyle): its props JSON, once, for NuiView's style
+/// table. Record: 'S', style id (i32), JSON length (u32), JSON.
+fn leafStyle(ctx: *anyopaque, id: i64, json: []const u8) void {
+    const s = surfaceOf(ctx);
+    appendLeafRecord(s, 'S', idOf(id), 0, 0, json);
+}
+
+/// A node made from a leaf style (host.leaf, a stamped row or its leaves):
+/// NuiView makes its node from the style, with its text. Record: 'L', node
+/// id (i32), kind (0 view, 1 text), style id (i32), text length (u32), text.
+fn leaf(ctx: *anyopaque, node: *Node) void {
+    const s = surfaceOf(ctx);
+    const text: []const u8 = if (node.kind == .text) if (node.props.runs) |runs| (if (runs.len == 1) runs[0].t else "") else "" else "";
+    appendLeafRecord(s, 'L', nid(node), @intFromBool(node.kind == .text), idOf(node.leaf_style), text);
+}
+
+fn appendLeafRecord(s: *Surface, tag: u8, id: i32, kind: u8, style: i32, bytes: []const u8) void {
+    putLeafRecord(s, tag, id, kind, style, bytes) catch log.err("native ui: a leaf for Kotlin was dropped (out of memory)", .{});
+}
+
+fn putLeafRecord(s: *Surface, tag: u8, id: i32, kind: u8, style: i32, bytes: []const u8) !void {
+    const b = &s.leaves;
+    try b.append(s.gpa, tag);
+    try b.appendSlice(s.gpa, &std.mem.toBytes(std.mem.nativeToLittle(i32, id)));
+    if (tag == 'L') {
+        try b.append(s.gpa, kind);
+        try b.appendSlice(s.gpa, &std.mem.toBytes(std.mem.nativeToLittle(i32, style)));
+    }
+    try b.appendSlice(s.gpa, &std.mem.toBytes(std.mem.nativeToLittle(u32, @intCast(bytes.len))));
+    try b.appendSlice(s.gpa, bytes);
+}
+
+/// Send the pending leaf records (one JNI call), so NuiView knows every node
+/// the tree names next.
+fn flushLeaves(s: *Surface) void {
+    if (s.leaves.items.len == 0) return;
+    _ = runtime.call(.void, "nuiLeaves", "(I[B)V", .{ wid(s.window), @as([]const u8, s.leaves.items) });
+    s.leaves.clearRetainingCapacity();
+    if (s.leaves.capacity > 1 << 20) s.leaves.clearAndFree(s.gpa);
 }
 
 /// requestAnimationFrame: one Choreographer callback at the next refresh
@@ -214,6 +271,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) [2]f32 {
 /// in 1/64 dp across JNI.
 fn kotlinMeasure(s: *Surface, n: *Node, max_width: f32) [2]f32 {
     const max: i32 = if (std.math.isInf(max_width)) -1 else @intFromFloat(@max(0, @min(max_width, 1e6)) * 64);
+    flushLeaves(s);
     const r: u64 = @bitCast(runtime.call(.long, "nuiMeasure", "(III)J", .{ wid(s.window), nid(n), max }) orelse 0);
     return .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
 }
@@ -225,6 +283,7 @@ fn laidOut(ctx: *anyopaque) void {
     const root = s.engine.tree.root orelse return;
     s.frames.clearRetainingCapacity();
     pack(s, root) catch return;
+    flushLeaves(s);
     _ = runtime.call(.void, "nuiFrames", "(I[B)V", .{ wid(s.window), @as([]const u8, s.frames.items) });
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
@@ -401,8 +460,15 @@ fn nTrace(_: *Env, _: jclass) callconv(.c) jni.jboolean {
     return @intFromBool(std.c.getenv("ORIEL_NUI_TRACE") != null);
 }
 
+/// ORIEL_NUI_DUMP: NuiView logs what it holds after each frames() (tag
+/// OrielNui): what it draws, for comparing renderer changes on a device.
+fn nDump(_: *Env, _: jclass) callconv(.c) jni.jboolean {
+    return @intFromBool(std.c.getenv("ORIEL_NUI_DUMP") != null);
+}
+
 comptime {
     const prefix = "Java_dev_oriel_NuiNative_";
+    @export(&nDump, .{ .name = prefix ++ "dump" });
     @export(&nTrace, .{ .name = prefix ++ "trace" });
     @export(&nDisplayFrame, .{ .name = prefix ++ "displayFrame" });
     @export(&nResize, .{ .name = prefix ++ "resize" });
