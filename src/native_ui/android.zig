@@ -49,7 +49,17 @@ pub const Surface = struct {
     /// yet sent to Kotlin: one nuiLeaves call per batch (flushLeaves), before
     /// anything else reaches NuiView.
     leaves: std.ArrayList(u8) = .empty,
+    /// What Kotlin last got as each node's props (props()): a hash of them
+    /// without the paint keys and the canvas program, and the paint. When
+    /// only those changed (an animation frame, a canvas redrawn), compact
+    /// records go in the batch instead of the props as JSON.
+    mirror: std.AutoHashMapUnmanaged(i64, Mirror) = .empty,
 };
+
+const Mirror = struct { base: u64, paint: [3]f32 };
+
+/// Props Kotlin gets from records when they're all that changed.
+const paint_keys = [_][]const u8{ "tx", "ty", "sc", "rot", "op", "cv" };
 
 /// The native windows by id (UI thread only).
 var surfaces: std.AutoHashMapUnmanaged(u32, *Surface) = .empty;
@@ -85,6 +95,7 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .props = props,
         .text = textChanged,
         .leaf_style = leafStyle,
+        .paint = paintChanged,
         .leaf = leaf,
         .request_display_frame = requestDisplayFrame,
     }, assets, platform_json, label, url, if (w > 0) w else 400, if (h > 0) h else 800);
@@ -101,6 +112,7 @@ pub fn destroy(window: u32) void {
     s.json.deinit(s.gpa);
     s.text_measurements.deinit(s.gpa);
     s.leaves.deinit(s.gpa);
+    s.mirror.deinit(s.gpa);
     s.gpa.destroy(s);
 }
 
@@ -152,12 +164,160 @@ fn focus(ctx: *anyopaque, node: *Node) void {
 
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
+    _ = s.mirror.remove(node.id);
     flushLeaves(s);
     _ = runtime.call(.void, "nuiRemove", "(II)V", .{ wid(s.window), nid(node) });
 }
 
 fn props(ctx: *anyopaque, node: *Node, value: std.json.Value) void {
     const s = surfaceOf(ctx);
+    // The props without the paint keys and the program: the same as Kotlin
+    // has means only those changed, and records carry them.
+    const base = baseHash(s, node, value) catch null;
+    const paint = paintOf(node);
+    if (base) |b| if (s.mirror.getPtr(node.id)) |m| if (m.base == b) {
+        if (!std.mem.eql(f32, &m.paint, &paint)) {
+            putPaintRecord(s, node, paint) catch return jsonProps(s, node, value, base, paint);
+            m.paint = paint;
+        }
+        if (node.kind == .canvas and value.object.get("cv") != null) {
+            const mark = s.leaves.items.len;
+            putCanvasRecord(s, node) catch {
+                s.leaves.shrinkRetainingCapacity(mark);
+                return jsonProps(s, node, value, base, paint);
+            };
+        }
+        return;
+    };
+    jsonProps(s, node, value, base, paint);
+}
+
+/// A transform or opacity changed alone (the "x" op, an animation frame):
+/// an 'X' record in the batch; its other props, and Kotlin's copy, stay.
+fn paintChanged(ctx: *anyopaque, node: *Node) void {
+    const s = surfaceOf(ctx);
+    const paint = paintOf(node);
+    const mark = s.leaves.items.len;
+    putPaintRecord(s, node, paint) catch {
+        s.leaves.shrinkRetainingCapacity(mark);
+        return;
+    };
+    if (s.mirror.getPtr(node.id)) |m| m.paint = paint;
+}
+
+/// opacity, scale and rotation as NuiNode keeps them (translate is in the
+/// frames).
+fn paintOf(node: *const Node) [3]f32 {
+    return .{ node.props.op orelse 1, node.props.sc orelse 1, node.props.rot orelse 0 };
+}
+
+/// A hash of the node's kind and its props without paint_keys (null: not an
+/// object, always sent whole).
+fn baseHash(s: *Surface, node: *const Node, value: std.json.Value) !?u64 {
+    if (value != .object) return null;
+    s.json.clearRetainingCapacity();
+    try s.json.append(s.gpa, '{');
+    var it = value.object.iterator();
+    outer: while (it.next()) |e| {
+        for (paint_keys) |k| if (std.mem.eql(u8, e.key_ptr.*, k)) continue :outer;
+        try s.json.print(s.gpa, "{f}:{f},", .{ std.json.fmt(std.json.Value{ .string = e.key_ptr.* }, .{}), std.json.fmt(e.value_ptr.*, .{}) });
+    }
+    return std.hash.Wyhash.hash(@intFromEnum(node.kind), s.json.items);
+}
+
+/// 'X' node id (i32), opacity, scale, rotation (f32).
+fn putPaintRecord(s: *Surface, node: *const Node, paint: [3]f32) !void {
+    try putByte(s, 'X');
+    try putI32(s, nid(node));
+    for (paint) |v| try putF32(s, v);
+}
+
+/// 'C' node id (i32), op count (u32), then the canvas program packed from
+/// the commands tree.zig parsed (OrielCanvas.kt's CanvasProgram.unpack).
+fn putCanvasRecord(s: *Surface, node: *const Node) !void {
+    const cmds = node.canvas orelse &.{};
+    try putByte(s, 'C');
+    try putI32(s, nid(node));
+    try putU32(s, @intCast(cmds.len));
+    for (cmds) |c| try putCanvasCmd(s, c);
+}
+
+fn putCanvasCmd(s: *Surface, c: tree_mod.CanvasCmd) !void {
+    try putByte(s, @intFromEnum(std.meta.activeTag(c)));
+    switch (c) {
+        .save, .restore, .begin_path, .close_path, .stroke => {},
+        .fill, .clip => |evenodd| try putByte(s, @intFromBool(evenodd)),
+        .translate, .scale, .move_to, .line_to => |v| for (v) |x| try putF32(s, x),
+        .rotate, .line_width, .global_alpha => |v| try putF32(s, v),
+        .rect, .fill_rect, .stroke_rect, .clear_rect => |v| for (v) |x| try putF32(s, x),
+        .bezier_to => |v| for (v) |x| try putF32(s, x),
+        .arc => |a| {
+            for ([_]f32{ a.x, a.y, a.r, a.a0, a.a1 }) |x| try putF32(s, x);
+            try putByte(s, @intFromBool(a.ccw));
+        },
+        .fill_text => |t| try putText(s, t.t, t.x, t.y),
+        .stroke_text => |t| try putText(s, t.t, t.x, t.y),
+        .fill_style, .stroke_style => |paint| switch (paint) {
+            .color => |col| {
+                try putByte(s, 0);
+                for (col) |x| try putF32(s, x);
+            },
+            .grad => |id| {
+                try putByte(s, 1);
+                try putI32(s, id);
+            },
+        },
+        .line_cap, .line_join, .text_align => |v| try putByte(s, v),
+        .text_baseline => |v| try putByte(s, v),
+        .font => |f| {
+            try putByte(s, @intFromBool(f.italic));
+            try putF32(s, f.weight);
+            try putF32(s, f.size);
+            try putBytes(s, f.family);
+        },
+        .linear_gradient => |g| {
+            try putI32(s, g.id);
+            for ([_]f32{ g.x0, g.y0, g.x1, g.y1 }) |x| try putF32(s, x);
+        },
+        .radial_gradient => |g| {
+            try putI32(s, g.id);
+            for ([_]f32{ g.x0, g.y0, g.r0, g.x1, g.y1, g.r1 }) |x| try putF32(s, x);
+        },
+        .color_stop => |g| {
+            try putI32(s, g.id);
+            try putF32(s, g.off);
+            for (g.c) |x| try putF32(s, x);
+        },
+    }
+}
+
+fn putText(s: *Surface, t: []const u8, x: f32, y: f32) !void {
+    try putBytes(s, t);
+    try putF32(s, x);
+    try putF32(s, y);
+}
+
+fn putByte(s: *Surface, v: u8) !void {
+    try s.leaves.append(s.gpa, v);
+}
+fn putI32(s: *Surface, v: i32) !void {
+    try s.leaves.appendSlice(s.gpa, &std.mem.toBytes(std.mem.nativeToLittle(i32, v)));
+}
+fn putU32(s: *Surface, v: u32) !void {
+    try s.leaves.appendSlice(s.gpa, &std.mem.toBytes(std.mem.nativeToLittle(u32, v)));
+}
+fn putF32(s: *Surface, v: f32) !void {
+    try putU32(s, @bitCast(v));
+}
+fn putBytes(s: *Surface, b: []const u8) !void {
+    try putU32(s, @intCast(b.len));
+    try s.leaves.appendSlice(s.gpa, b);
+}
+
+/// The props as JSON (nuiProps): the general path, and what the records'
+/// comparison starts from.
+fn jsonProps(s: *Surface, node: *Node, value: std.json.Value, base: ?u64, paint: [3]f32) void {
+    if (base) |b| s.mirror.put(s.gpa, node.id, .{ .base = b, .paint = paint }) catch {} else _ = s.mirror.remove(node.id);
     s.json.clearRetainingCapacity();
     s.json.print(s.gpa, "{f}", .{std.json.fmt(value, .{})}) catch return;
     flushLeaves(s);
@@ -173,8 +333,19 @@ fn textChanged(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     const runs = node.props.runs orelse return;
     if (runs.len != 1) return;
-    flushLeaves(s);
-    _ = runtime.call(.void, "nuiText", "(II[B)V", .{ wid(s.window), nid(node), @as([]const u8, runs[0].t) });
+    // 'T' node id (i32), text: in the batch, one JNI call for a frame's texts.
+    const mark = s.leaves.items.len;
+    (struct {
+        fn put(sf: *Surface, id: i32, t: []const u8) !void {
+            try putByte(sf, 'T');
+            try putI32(sf, id);
+            try putBytes(sf, t);
+        }
+    }).put(s, nid(node), runs[0].t) catch {
+        s.leaves.shrinkRetainingCapacity(mark);
+        flushLeaves(s);
+        _ = runtime.call(.void, "nuiText", "(II[B)V", .{ wid(s.window), nid(node), @as([]const u8, runs[0].t) });
+    };
 }
 
 /// A leaf style (host.leafStyle): its props JSON, once, for NuiView's style
