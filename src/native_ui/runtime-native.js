@@ -4881,7 +4881,9 @@ textarea { font-family: -webkit-small-control, system-ui; }
       const flushRuns = (beforeBox = false) => {
         if (!runs.length) return;
         const trimmed = trimRuns(runs, cs["white-space"], afterBox, beforeBox);
+        const spaced = !trimmed.length && afterBox && beforeBox && runs.some((r) => /\s/.test(r.t));
         runs = [];
+        if (spaced) flow.push({ space: true });
         if (!trimmed.length) return;
         flow.push({ text: trimmed });
       };
@@ -4915,12 +4917,16 @@ textarea { font-family: -webkit-small-control, system-ui; }
         const ccs = this.style(child, cs, rematch), d = ccs.display || "inline";
         return ATOMIC_INLINE.has(d) || !!boxed?.has(child);
       };
-      const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) && flow.every((f) => f.text || atomic(f.el));
+      const inlineLine = !childCtx.blockify && props.fd === "column" && flow.some((f) => f.text) && flow.some((f) => f.el) && flow.every((f) => f.text || f.space || atomic(f.el));
+      if (!inlineLine) {
+        for (let i = flow.length - 1; i >= 0; i--) if (flow[i].space) flow.splice(i, 1);
+      }
       if (inlineLine) {
         props.fd = "row";
         props.ai = "center";
         const boxes = flow.filter((f) => f.el);
         if (boxes.length > 1 || boxes.some((f) => /%\s*$/.test(this.style(f.el, cs, rematch).width || ""))) props.fw = "wrap";
+        if (splitBreaks(flow)) props.fw = "wrap";
       }
       const inFlow = (f) => {
         const p = this.style(f.el, cs, rematch).position;
@@ -4939,7 +4945,19 @@ textarea { font-family: -webkit-small-control, system-ui; }
       const flowBlock = !childCtx.blockify && props.fd === "column" && display !== "grid" && !tableHolds(display);
       const inLine = flowBlock ? /* @__PURE__ */ new Set() : null;
       if (before) inLine?.add(before);
+      let spaceBefore = false;
       for (const [index, item] of flow.entries()) {
+        if (item.space) {
+          spaceBefore = true;
+          continue;
+        }
+        if (item.brk) {
+          const bid = this.idOf(el, "br" + kids.length);
+          this.own(bid, el);
+          this.put(nodes, bid, "view", { w: "100%", h: 0 }, []);
+          kids.push(bid);
+          continue;
+        }
         if (item.text) {
           const tid = this.idOf(el, "t" + kids.length);
           this.own(tid, el);
@@ -4954,6 +4972,15 @@ textarea { font-family: -webkit-small-control, system-ui; }
         const cid = this.element(item.el, cs, nodes, childCtx);
         if (cid === null) continue;
         this.adjustKid(nodes, cid, item.el, cs, props, display, childCtx);
+        if (spaceBefore) {
+          spaceBefore = false;
+          const n2 = nodes.get(cid);
+          const m = n2?.props.m ? [...n2.props.m] : [0, 0, 0, 0];
+          if (n2 && typeof m[3] === "number") {
+            m[3] += Math.round(fontSize * 0.28 * 10) / 10;
+            n2.props = { ...n2.props, m };
+          }
+        }
         if (imageLine && this.imageLine([item], cs, childCtx.rematch) || flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch)) {
           const n2 = nodes.get(cid);
           const gap = lineDescent(cs, fontSize, this.host);
@@ -5166,7 +5193,7 @@ textarea { font-family: -webkit-small-control, system-ui; }
       const fs = fontSizeOf(cs, parentCS);
       cs.__fs = fs;
       if (el.localName === "br") {
-        runs.push({ t: "\n", ...runStyle(cs, fs) });
+        runs.push({ t: "\n", br: true, ...runStyle(cs, fs) });
         return;
       }
       const bg = (cs.background ? background(cs.background, color(cs.color))?.color : void 0) ?? outerBg;
@@ -5857,11 +5884,50 @@ textarea { font-family: -webkit-small-control, system-ui; }
     if (src) Object.defineProperty(r, "src", { value: src, enumerable: false });
     return r;
   }
+  function splitBreaks(flow) {
+    let found = false;
+    const out = [];
+    for (const item of flow) {
+      if (!item.text || !item.text.some((r) => r.t === "\n")) {
+        out.push(item);
+        continue;
+      }
+      found = true;
+      let piece = [];
+      for (const r of item.text) {
+        if (r.t !== "\n") {
+          piece.push(r);
+          continue;
+        }
+        if (piece.length) out.push({ text: piece });
+        out.push({ brk: true });
+        piece = [];
+      }
+      if (piece.length) out.push({ text: piece });
+    }
+    while (out.length && out[out.length - 1].brk) out.pop();
+    flow.length = 0;
+    flow.push(...out);
+    return found;
+  }
   function trimRuns(runs, _ws, keepStart = false, keepEnd = false) {
     const out = [];
     let lastSpace = !keepStart;
+    let brAt = -1;
     for (const r of runs) {
       let t = r.t;
+      if (r.br) {
+        const prev = out[out.length - 1];
+        if (prev && prev.ws === void 0 && prev.t.endsWith(" ")) {
+          prev.t = prev.t.slice(0, -1);
+          if (!prev.t) out.pop();
+        }
+        r.br = void 0;
+        brAt = out.length;
+        out.push(strip(r, "\n"));
+        lastSpace = true;
+        continue;
+      }
       if (r.ws === "pre" || r.ws === "pre-wrap" || r.ws === "pre-line") {
         if (t) {
           out.push(strip(r, t));
@@ -5876,6 +5942,7 @@ textarea { font-family: -webkit-small-control, system-ui; }
       out.push(strip(r, t));
     }
     if ((keepStart || keepEnd) && out.every((r) => !r.t.trim() && r.ws === void 0)) return [];
+    if (!keepEnd && brAt === out.length - 1) out.pop();
     if (out.length && !keepEnd) {
       const last = out[out.length - 1];
       if (last.ws !== "pre" && last.ws !== "pre-wrap") last.t = last.t.replace(/ $/, "");
