@@ -22,7 +22,7 @@
 
     <div id="stats" class="stats">
       <div><span id="st-fps">-</span> fps · <span id="st-frame">-</span> ms/frame</div>
-      <div>JS <span id="st-js">-</span> ms (physics <span id="st-phys">-</span>, draw <span id="st-draw">-</span>)</div>
+      <div><span id="st-who">JS</span> <span id="st-js">-</span> ms (physics <span id="st-phys">-</span>, draw <span id="st-draw">-</span>)</div>
       <div><span id="st-balls">1</span> balls · <span id="st-parts">0</span> particles</div>
       <div id="st-renderer">-</div>
     </div>
@@ -61,6 +61,14 @@
       <label class="check"><input id="particles" type="checkbox" checked> Particles</label>
       <label class="check"><input id="show-stats" type="checkbox" checked> Stats overlay</label>
       <label class="check"><input id="autoplay" type="checkbox"> Autoplay (the paddle follows the balls)</label>
+      <label id="mode-field" class="field" hidden>
+        <span>Renderer mode</span>
+        <select id="mode">
+          <option value="js">JS (the page draws the canvas)</option>
+          <option value="zig">Zig (the app draws it, no JS per frame)</option>
+        </select>
+        <small class="muted">Native renderer only · starts a new game</small>
+      </label>
       <div class="row"><button id="close-settings" class="primary">Done</button></div>
     </div>
   </main>

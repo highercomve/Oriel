@@ -35,6 +35,26 @@ lives lost, and logs a line every 2 s (`breakout: fps …`). On the simulator:
 dev.oriel.Breakout`. `-Dnative_ui_prof` adds the native renderer's stage
 timings.
 
+`BREAKOUT_MODE=zig` (native renderer) runs the demo in the Zig mode; its
+lines end in `mode zig` (the page's, `mode js`).
+
+## Zig mode (native renderer)
+
+Settings → Renderer mode: **JS** (the page steps `physics.js` and draws
+with `draw.js` each frame) or **Zig** (`game.zig`: the same rules and
+drawing in Zig, through `oriel.canvas`, with no JavaScript per frame). The
+page keeps the HTML and the input: it sends the paddle's target and the keys'
+direction when they change, and launch, pause, settings and the board's
+size (`zig_*` commands in `main.zig`); Zig sends the score, lives and level
+(`breakout:state`) and its stats (`breakout:stats`) back. Switching starts a
+new game. The WebView has no Zig mode (the toggle isn't shown there).
+
+GTK, 180 Hz desktop (`BREAKOUT_DEMO=n BREAKOUT_MODE=js|zig`): 100 balls hold
+180 fps in both modes (0.3–0.9 ms of JS a frame vs 0.004–0.1 ms of Zig);
+500 balls: 88–108 fps in JS (2.9–4.4 ms of JS a frame) vs 180 in Zig
+(0.03–0.22 ms). Zig draws each ball as a path of its own (the GTK backend
+fills a lone circle from a cached mask), the page 16 to a path.
+
 ## Layout
 
 - `web/physics.js`: the rules (`createWorld`, `step(world, dt, input)`,
@@ -42,6 +62,7 @@ timings.
 - `web/draw.js`: `draw(ctx, world, dpr, hint)`, with only the 2d calls the
   native canvas records. Each frame starts with an opaque `fillRect` over the
   bitmap, so the native recorder keeps one frame's program.
+- `game.zig`: the Zig mode (the rules and drawing of the two above).
 - `web/game.js`: the page around them (HUD, overlays, settings, stats),
   input and the `requestAnimationFrame` loop. Steps use the time since the
   last frame, so 60, 120, 144 and 180 Hz displays play the same.
