@@ -190,8 +190,9 @@ grown by `o + w` on every side, its corner radii the box's grown as much
 outside its own overflow clip, after its content and children, taking no
 room in the layout. GTK: `outline()` in gtk.zig (it reuses the border and
 dashed-border drawing). `:focus-visible` matches as in browsers: focus
-that came by the keyboard (a key was the last input), or a text field
-(input of a text type, textarea, contenteditable) however it got focus.
+that came by the keyboard (a key was the last input, or there was no
+pointer press yet), or a text field (input of a text type, textarea,
+contenteditable) however it got focus.
 
 Ignored for now (the layout still works): animating `background-position`,
 skew and 3D transforms, `filter`, `backdrop-filter` (a blurred background is
@@ -261,7 +262,12 @@ enabled form controls, `<summary>` in `<details>`, contenteditable and
 `tabindex >= 0`, if shown (not `display: none` or `visibility: hidden`);
 it wraps at the ends. The element focused is scrolled into view
 (`block: "nearest"`) and matches `:focus-visible`, which draws browsers'
-focus ring (2 px blue, offset 1 px) unless the page styles its outline.
+focus ring unless the page styles its outline: the platform's browser's
+(`setFocusRingOS` in render.js). WebKitGTK's is 2 px blue, offset 1 px;
+Chromium's (Windows, Android) 2 px near-black in a white halo; WKWebView's
+(measured) the system blue at half alpha, 4 px on macOS and 3 px on iOS,
+just off a box or link and over a control's edge. Outlines take `r`, a
+least outer corner radius, and `h`, a 1 px halo colour.
 Backends must give Tab to the page, also while a native field has the
 keyboard, and not move the focus themselves when the page used the key;
 when the page focuses an element that isn't a native field, the keyboard
