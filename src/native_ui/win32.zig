@@ -1,4 +1,4 @@
-﻿//! The native renderer's Win32 backend (docs/native-renderer.md).
+//! The native renderer's Win32 backend (docs/native-renderer.md).
 //!
 //! Boxes, text (DirectWrite) and icons (Direct2D path geometries, from
 //! svg_path.zig) are drawn with Direct2D in one child window, the canvas;
@@ -93,7 +93,7 @@ const Field = struct {
     /// Its font's own (a themed combobox is never shorter than that and
     /// its frame: a smaller one only cuts the text).
     item_nat: c_int = 0,
-    /// <input type=range>: a trackbar, positions 0â€¦steps of the range's step.
+    /// <input type=range>: a trackbar, positions 0…steps of the range's step.
     slider: bool = false,
     /// The position last sent as `input` (a drag sends it once per step).
     sent_pos: isize = -1,
@@ -730,7 +730,14 @@ var timer_due: [64]struct { id: u32 = 0, due: f64 = 0 } = @splat(.{});
 
 fn focus(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
-    if (s.fields.get(node.id)) |f| _ = c.SetFocus(f.hwnd);
+    if (s.fields.get(node.id)) |f| {
+        _ = c.SetFocus(f.hwnd);
+        return;
+    }
+    // Not a field (a button, a link): the keyboard leaves the field that
+    // had it, so typing goes to the page.
+    const had = c.GetFocus() orelse return;
+    if (had != s.hwnd and c.IsChild(s.hwnd, had) != 0) _ = c.SetFocus(s.hwnd);
 }
 
 fn removed(ctx: *anyopaque, node: *Node) void {
@@ -1014,7 +1021,7 @@ fn paintPlaceholder(hwnd: c.HWND) void {
     _ = c.DrawTextW(hdc, ph.ptr, -1, &rc, c.DT_WORDBREAK | c.DT_NOPREFIX | c.DT_EDITCONTROL);
 }
 
-/// <input type=range>: a trackbar, positions 0â€¦steps (the value snaps to
+/// <input type=range>: a trackbar, positions 0…steps (the value snaps to
 /// the range's step); its WM_HSCROLL goes to the canvas (onSlider).
 fn makeSlider(s: *Surface, n: *Node) !Field {
     if (!common_controls) {
@@ -1029,6 +1036,7 @@ fn makeSlider(s: *Surface, n: *Node) !Field {
     errdefer _ = c.DestroyWindow(clip);
     const hwnd = c.CreateWindowExW(0, cls, null, style, 0, 0, 1, 1, clip, null, c.GetModuleHandleW(null), null) orelse return error.CreateWindowFailed;
     _ = c.SetPropW(hwnd, prop_node, @ptrFromInt(@as(usize, @intCast(n.id))));
+    subclass(hwnd, &controlProc);
     const f: Field = .{ .hwnd = hwnd, .clip = clip, .kind = n.kind, .slider = true };
     setSliderRange(f, n);
     return f;
@@ -1129,14 +1137,16 @@ fn makeField(s: *Surface, n: *Node) !Field {
                 defer s.gpa.free(w);
                 _ = c.SendMessageW(hwnd, EM_SETCUEBANNER, c.TRUE, @bitCast(@intFromPtr(w.ptr)));
             }
-            // Enter and Escape go to the page first (a form's submit).
-            const old = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(&fieldProc)));
-            _ = c.SetPropW(hwnd, prop_old_proc, @ptrFromInt(@as(usize, @bitCast(old))));
+            // Enter, Escape and Tab go to the page first (a form's submit).
+            subclass(hwnd, &fieldProc);
         },
-        .select => if (n.props.options) |opts| for (opts) |o| {
-            const w = try std.unicode.utf8ToUtf16LeAllocZ(s.gpa, o[1]);
-            defer s.gpa.free(w);
-            _ = c.SendMessageW(hwnd, c.CB_ADDSTRING, 0, @bitCast(@intFromPtr(w.ptr)));
+        .select => {
+            subclass(hwnd, &controlProc);
+            if (n.props.options) |opts| for (opts) |o| {
+                const w = try std.unicode.utf8ToUtf16LeAllocZ(s.gpa, o[1]);
+                defer s.gpa.free(w);
+                _ = c.SendMessageW(hwnd, c.CB_ADDSTRING, 0, @bitCast(@intFromPtr(w.ptr)));
+            };
         },
         else => {},
     }
@@ -1354,9 +1364,54 @@ fn onFieldCommand(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
     }
 }
 
+/// A field's own window procedure in place of its class's (fieldProc,
+/// controlProc), kept to call on.
+fn subclass(hwnd: c.HWND, proc: c.WNDPROC) void {
+    const old = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(proc)));
+    _ = c.SetPropW(hwnd, prop_old_proc, @ptrFromInt(@as(usize, @bitCast(old))));
+}
+
+/// The field whose Tab the page just had: its WM_CHAR is eaten too (a
+/// textarea would type it; a one-line field beeps).
+var tab_eaten: c.HWND = null;
+
+/// Tab and Shift+Tab in a field go to the page, as keys (it moves the
+/// focus, main.js), and never to the control: a browser's textarea
+/// doesn't type a tab. True when the message was the Tab's.
+fn tabKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM) bool {
+    if (msg == c.WM_CHAR and wparam == '\t' and tab_eaten == hwnd) {
+        tab_eaten = null;
+        return true;
+    }
+    if (msg != c.WM_KEYDOWN or wparam != c.VK_TAB) return false;
+    if (c.GetKeyState(c.VK_CONTROL) < 0 or c.GetKeyState(c.VK_MENU) < 0) return false;
+    const p: ?*anyopaque = @ptrFromInt(@as(usize, @bitCast(c.GetWindowLongPtrW(c.GetParent(hwnd), c.GWLP_USERDATA))));
+    const s = surfaceOf(p orelse return false);
+    const fx = fieldOf(s, hwnd) orelse return false;
+    tab_eaten = hwnd;
+    var buf: [48]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"Tab\",{d}]", .{modFlags()}) catch return true;
+    s.in_control += 1;
+    defer s.in_control -= 1;
+    _ = s.engine.event(fx.node.id, "key", json);
+    return true;
+}
+
+/// A select's and a slider's window procedure: Tab goes to the page.
+fn controlProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
+    const old: c.WNDPROC = @ptrCast(c.GetPropW(hwnd, prop_old_proc) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam));
+    if (tabKey(hwnd, msg, wparam)) return 0;
+    if (msg == c.WM_NCDESTROY) {
+        _ = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(old)));
+        _ = c.RemovePropW(hwnd, prop_old_proc);
+    }
+    return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+}
+
 /// Edit controls' window procedure: Enter and Escape go to the page first.
 fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
     const old: c.WNDPROC = @ptrCast(c.GetPropW(hwnd, prop_old_proc) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam));
+    if (tabKey(hwnd, msg, wparam)) return 0;
     switch (msg) {
         c.WM_KEYDOWN => if (wparam == c.VK_RETURN or wparam == c.VK_ESCAPE) {
             const canvas = c.GetParent(hwnd);
@@ -2734,7 +2789,7 @@ const CanvasPainter = struct {
         cv.cur = pt;
     }
 
-    /// As cubic BÃ©ziers of up to a quarter turn each, from a0 to a1
+    /// As cubic Béziers of up to a quarter turn each, from a0 to a1
     /// (clockwise in the y-down space unless ccw), joined to the current
     /// point by a line.
     fn arc(cv: *CanvasPainter, x: f32, y: f32, r: f32, a0: f32, a1: f32, ccw: bool) void {
@@ -3105,7 +3160,7 @@ fn polygonGeometry(pts: []const P2) ?*c.ID2D1PathGeometry {
     return geo;
 }
 
-/// a âˆ© b as a new geometry (caller releases).
+/// a ∩ b as a new geometry (caller releases).
 fn intersectGeometry(a: *c.ID2D1Geometry, b: *c.ID2D1Geometry) ?*c.ID2D1PathGeometry {
     const fac = d2d.?;
     var geo: ?*c.ID2D1PathGeometry = null;
@@ -3186,7 +3241,7 @@ fn glyphOutline(gpa: std.mem.Allocator, t: []const u8, family: [:0]const u16, we
 }
 
 // ---------------------------------------------------------------------------
-// Images (<img src="data:â€¦"> or an app asset), decoded with WIC
+// Images (<img src="data:…"> or an app asset), decoded with WIC
 
 /// The largest picture decoded: 4096 x 4096 px (64 MB as BGRA). Larger ones
 /// keep their declared size for layout and aren't drawn.
@@ -3395,7 +3450,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
 // itself: width("ab") - width("b"). A pair DirectWrite makes one cluster
 // (a ligature), more than one run, letter spacing, other characters or a
 // text that wraps take the layout. ORIEL_NUI_TEXT_CHECK=1 measures both and
-// logs any difference. A new string was an IDWriteTextLayout (~19 Âµs):
+// logs any difference. A new string was an IDWriteTextLayout (~19 µs):
 // most of render-bench's "update 1000 rows".
 
 const FontKey = struct { mono: bool, italic: bool, weight: u16, size: u32, fz: u32, lh: i32, family: u64 };
@@ -4235,7 +4290,7 @@ fn paintIcon(p: *Painter, n: *Node) void {
     const scale = @min(ct.w / icon.vb[2], ct.h / icon.vb[3]);
     const saved = p.xf;
     defer p.setTransform(saved);
-    // viewBox â†’ the content box, centered.
+    // viewBox → the content box, centered.
     const tx = ct.x + (ct.w - icon.vb[2] * scale) / 2 - icon.vb[0] * scale;
     const ty = ct.y + (ct.h - icon.vb[3] * scale) / 2 - icon.vb[1] * scale;
     p.setTransform(mul(matrix(scale, 0, 0, scale, tx, ty), saved));
