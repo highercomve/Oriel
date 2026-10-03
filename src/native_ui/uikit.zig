@@ -129,6 +129,16 @@ fn classes() void {
         .{ "nuiTap:", onTap },
         .{ "nuiLongPress:", onLongPress },
         .{ "nuiPan:", onPan },
+        // A hardware keyboard: the page hears its keys (keydown, keyup) and
+        // Tab, also from inside a field (a key command over the system's
+        // own focus navigation).
+        .{ "canBecomeFirstResponder", yes },
+        .{ "didMoveToWindow", viewMovedToWindow },
+        .{ "keyCommands", keyCommands },
+        .{ "nuiTab:", onTabCommand },
+        .{ "pressesBegan:withEvent:", pressesBegan },
+        .{ "pressesEnded:withEvent:", pressesEnded },
+        .{ "pressesCancelled:withEvent:", pressesCancelled },
     });
     field_delegate = apple.new(apple.defineClass("OrielNuiFieldDelegate", &.{ "UITextFieldDelegate", "UITextViewDelegate" }, .{
         .{ "nuiFieldChanged:", fieldChanged },
@@ -476,7 +486,15 @@ fn onTimer(p: ?*anyopaque) callconv(.c) void {
 
 fn focus(ctx: *anyopaque, n: *Node) void {
     const s = surfaceOf(ctx);
-    const f = s.fields.get(n.id) orelse return;
+    // Not a native field (a button the page's Tab reached): a field that
+    // had the keyboard gives it up.
+    const f = s.fields.get(n.id) orelse {
+        if (focusedField(s) != 0) {
+            _ = s.view.msgSend(BOOL, "endEditing:", .{apple.boolean(true)});
+            _ = s.view.msgSend(BOOL, "becomeFirstResponder", .{});
+        }
+        return;
+    };
     _ = f.control.msgSend(BOOL, "becomeFirstResponder", .{});
 }
 
@@ -717,6 +735,182 @@ fn style(n: *Node, f: Object) void {
             f.msgSend(void, "setTextColor:", .{color});
             f.msgSend(void, "setTintColor:", .{color}); // the caret
         },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A hardware keyboard. The page view takes the keyboard when it's on screen
+// and whenever a field gives it up, so keys that no field takes reach it
+// (pressesBegan). Tab is a key command with priority over the system's
+// focus navigation: the page gets it from a field too, and moves the focus
+// itself.
+
+fn yes(_: id, _: SEL) callconv(.c) BOOL {
+    return apple.boolean(true);
+}
+
+fn viewMovedToWindow(self: id, _: SEL) callconv(.c) void {
+    const v: Object = .{ .value = self };
+    if (v.msgSend(Object, "window", .{}).value == null) return;
+    // Not from a field the user is typing in (the keyboard would go away).
+    if (by_view.get(key(self))) |s| if (focusedField(s) != 0) return;
+    _ = v.msgSend(BOOL, "becomeFirstResponder", .{});
+}
+
+const key_shift: isize = 1 << 17;
+var key_commands: Object = apple.nil;
+
+fn keyCommands(_: id, _: SEL) callconv(.c) id {
+    if (key_commands.value == null) {
+        const tab = apple.nsString("\t") orelse return null;
+        defer tab.release();
+        var cmds: [2]id = undefined;
+        for ([_]isize{ 0, key_shift }, 0..) |mods, i| {
+            const c = apple.class("UIKeyCommand").msgSend(Object, "keyCommandWithInput:modifierFlags:action:", .{ tab, mods, apple.objc.sel("nuiTab:").value });
+            if (c.value == null) return null;
+            // iOS 15: before the system's own Tab (focus between fields).
+            if (apple.isTrue(c.msgSend(BOOL, "respondsToSelector:", .{apple.objc.sel("setWantsPriorityOverSystemBehavior:").value})))
+                c.msgSend(void, "setWantsPriorityOverSystemBehavior:", .{apple.boolean(true)});
+            cmds[i] = c.value;
+        }
+        key_commands = apple.class("NSArray").msgSend(Object, "arrayWithObjects:count:", .{ @as([*]const id, &cmds), @as(usize, 2) }).retain();
+    }
+    return key_commands.value;
+}
+
+/// The field with the keyboard, if any (its node id), else 0.
+fn focusedField(s: *Surface) i64 {
+    var it = s.fields.iterator();
+    while (it.next()) |e| {
+        if (apple.isTrue(e.value_ptr.control.msgSend(BOOL, "isFirstResponder", .{}))) return e.key_ptr.*;
+    }
+    return 0;
+}
+
+fn onTabCommand(self: id, _: SEL, command: id) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    const shift = (Object{ .value = command }).msgSend(isize, "modifierFlags", .{}) & key_shift != 0;
+    var buf: [32]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"Tab\",{d},false]", .{@as(u32, if (shift) 1 else 0)}) catch return;
+    _ = s.engine.event(focusedField(s), "key", json);
+}
+
+/// A key's name for the page (DOM KeyboardEvent.key), from its HID usage
+/// or its characters.
+fn pressKeyName(k: Object, buf: []u8) ?[]const u8 {
+    const code = k.msgSend(isize, "keyCode", .{});
+    const named: ?[]const u8 = switch (code) {
+        0x28, 0x58 => "Enter",
+        0x29 => "Escape",
+        0x2A => "Backspace",
+        0x2B => "Tab",
+        0x2C => " ",
+        0x4C => "Delete",
+        0x4F => "ArrowRight",
+        0x50 => "ArrowLeft",
+        0x51 => "ArrowDown",
+        0x52 => "ArrowUp",
+        0x4A => "Home",
+        0x4D => "End",
+        0x4B => "PageUp",
+        0x4E => "PageDown",
+        else => null,
+    };
+    if (named) |n| return n;
+    const chars = apple.utf8(k.msgSend(Object, "charactersIgnoringModifiers", .{})) orelse return null;
+    if (chars.len == 0 or chars.len > 4 or chars.len > buf.len) return null;
+    @memcpy(buf[0..chars.len], chars);
+    return buf[0..chars.len];
+}
+
+/// UIKeyModifierFlags to the page's (shift 1, control 2, alt 4, meta 8).
+fn pressMods(k: Object) u32 {
+    const f = k.msgSend(isize, "modifierFlags", .{});
+    var m: u32 = 0;
+    if (f & (1 << 17) != 0) m |= 1;
+    if (f & (1 << 18) != 0) m |= 2;
+    if (f & (1 << 19) != 0) m |= 4;
+    if (f & (1 << 20) != 0) m |= 8;
+    return m;
+}
+
+/// A Tab press that came up from a field: the page's "key"/"keyup", on
+/// the field.
+fn fieldTab(self: id, presses: id, kind: []const u8) void {
+    const s = by_view.get(key(self)) orelse return;
+    const all = (Object{ .value = presses }).msgSend(Object, "allObjects", .{});
+    const count: usize = @intCast(@max(0, all.msgSend(isize, "count", .{})));
+    for (0..count) |i| {
+        const k = all.msgSend(Object, "objectAtIndex:", .{i}).msgSend(Object, "key", .{});
+        if (k.value == null or k.msgSend(isize, "keyCode", .{}) != 0x2B) continue;
+        var buf: [32]u8 = undefined;
+        const json = std.fmt.bufPrint(&buf, "[\"Tab\",{d},false]", .{pressMods(k)}) catch return;
+        _ = s.engine.event(focusedField(s), kind, json);
+        return; // one Tab (the surface may be gone after the event)
+    }
+}
+
+/// The presses' keys to the page ("key" or "keyup"): true when it prevented
+/// every one's default (else UIKit gets them too).
+fn sendPresses(self: id, presses: id, kind: []const u8) bool {
+    const s = by_view.get(key(self)) orelse return false;
+    // Only the page view's own keys: a field's come up the responder chain
+    // too, and the field already tells the page (Enter, its typing).
+    if (!apple.isTrue((Object{ .value = self }).msgSend(BOOL, "isFirstResponder", .{}))) return false;
+    const token = s.token;
+    const gpa = s.gpa; // not read from the surface after an event
+    const all = (Object{ .value = presses }).msgSend(Object, "allObjects", .{});
+    const count: usize = @intCast(@max(0, all.msgSend(isize, "count", .{})));
+    var prevented = count > 0;
+    for (0..count) |i| {
+        const k = all.msgSend(Object, "objectAtIndex:", .{i}).msgSend(Object, "key", .{});
+        if (k.value == null) {
+            prevented = false;
+            continue;
+        }
+        var nbuf: [8]u8 = undefined;
+        const name = pressKeyName(k, &nbuf) orelse {
+            prevented = false;
+            continue;
+        };
+        const q = std.json.Stringify.valueAlloc(gpa, name, .{}) catch return false;
+        defer gpa.free(q);
+        var buf: [64]u8 = undefined;
+        const json = std.fmt.bufPrint(&buf, "[{s},{d},false]", .{ q, pressMods(k) }) catch continue;
+        if (!s.engine.event(0, kind, json)) prevented = false;
+        if (surfaces.get(token) == null) return true; // the page closed its window
+    }
+    return prevented;
+}
+
+fn pressesBegan(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
+    // A field's keys passing up the chain: its own, but Tab is the page's
+    // (its focus navigation; UIKit's key command doesn't fire from a
+    // field). Nothing is forwarded from here (UIKit forwards them).
+    if (!apple.isTrue((Object{ .value = self }).msgSend(BOOL, "isFirstResponder", .{}))) return fieldTab(self, presses, "key");
+    // Not all the page's: on up the responder chain (UIView's own does that).
+    if (!sendPresses(self, presses, "key")) {
+        const next = (Object{ .value = self }).msgSend(Object, "nextResponder", .{});
+        if (next.value != null) next.msgSend(void, "pressesBegan:withEvent:", .{ presses, event });
+    }
+}
+
+fn pressesCancelled(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
+    // A field's keys passing up the chain: UIKit's to forward, not ours.
+    if (!apple.isTrue((Object{ .value = self }).msgSend(BOOL, "isFirstResponder", .{}))) return;
+    // Not all the page's: on up the responder chain (UIView's own does that).
+    if (!sendPresses(self, presses, "keyup")) {
+        const next = (Object{ .value = self }).msgSend(Object, "nextResponder", .{});
+        if (next.value != null) next.msgSend(void, "pressesCancelled:withEvent:", .{ presses, event });
+    }
+}
+
+fn pressesEnded(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
+    if (!apple.isTrue((Object{ .value = self }).msgSend(BOOL, "isFirstResponder", .{}))) return fieldTab(self, presses, "keyup");
+    // Not all the page's: on up the responder chain (UIView's own does that).
+    if (!sendPresses(self, presses, "keyup")) {
+        const next = (Object{ .value = self }).msgSend(Object, "nextResponder", .{});
+        if (next.value != null) next.msgSend(void, "pressesEnded:withEvent:", .{ presses, event });
     }
 }
 
@@ -964,6 +1158,7 @@ fn onTap(self: id, _: SEL, recognizer: id) callconv(.c) void {
     if (r.msgSend(isize, "state", .{}) != state_ended) return;
     // A tap on the page takes the keyboard from a field.
     _ = s.view.msgSend(BOOL, "endEditing:", .{apple.boolean(true)});
+    _ = s.view.msgSend(BOOL, "becomeFirstResponder", .{});
     const p = pointIn(s.view, r);
     // The finger's up before its click (as a browser), though the tap
     // recognizer fires before touchesEnded.
