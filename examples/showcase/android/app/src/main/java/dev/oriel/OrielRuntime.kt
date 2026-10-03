@@ -286,6 +286,12 @@ object OrielRuntime {
         Nui.views[id]?.props(node, kind.utf8(), json.utf8())
     }
 
+    /** Leaf styles and the nodes made from them (android.zig's flushLeaves). */
+    @JvmStatic
+    fun nuiLeaves(id: Int, bytes: ByteArray) {
+        Nui.views[id]?.leaves(bytes)
+    }
+
     /** A text node's single run has new text (the direct text bridge, no props JSON). */
     @JvmStatic
     fun nuiText(id: Int, node: Int, text: ByteArray) {

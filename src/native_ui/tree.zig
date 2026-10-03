@@ -661,6 +661,12 @@ pub const Tree = struct {
     /// that keep their own copy: Android).
     on_props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
     on_text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
+    /// A leaf style was defined (defineLeafStyle), with its props JSON, and a
+    /// node was made from one (on_create: createLeaf, which host.leaf and
+    /// stamped rows and lists all go through). These nodes get no on_props,
+    /// so a backend that mirrors props (Android) learns of them here.
+    on_leaf_style: ?*const fn (ctx: *anyopaque, id: i64, json: []const u8) void = null,
+    on_create: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
 
     pub fn init(gpa: std.mem.Allocator, measure_ctx: *anyopaque, measure: Measure) Tree {
         const config = yg.YGConfigNew();
@@ -714,6 +720,7 @@ pub const Tree = struct {
         applyYogaStyle(style.yn, style.props);
         try t.leaf_styles.put(t.gpa, id, style);
         t.leaf_style_bytes += json.len;
+        if (t.on_leaf_style) |cb| cb(t.measure_ctx, id, json);
         return true;
     }
 
@@ -744,6 +751,7 @@ pub const Tree = struct {
         yg.YGNodeCopyStyle(n.yn, style.yn);
         n.leaf_style = style_id;
         t.dirty = true;
+        if (t.on_create) |cb| cb(t.measure_ctx, n);
         return true;
     }
 
