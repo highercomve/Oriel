@@ -549,4 +549,24 @@ for (const css of [
   assert.equal(of("d").h, undefined, "% times %: not a length");
 }
 
+// Run backgrounds: an inline element's (and what's inside it), never the
+// box that holds the text (it paints its own; a run's band would spill out
+// of a short line box).
+{
+  const { document } = parseHTML('<html><body><h1 class="box">Big title</h1><p>a <mark>marked <b>bold</b></mark> end</p></body></html>');
+  const { renderer, tree } = makeRenderer(document, ".box { background: #224; line-height: 10px; font-size: 36px } mark { background: yellow }");
+  renderer.render();
+  const texts = [];
+  const all = (n) => { if (n.props.runs) texts.push(n); n.kids.forEach(all); };
+  all(tree());
+  const h1 = texts.find((n) => n.props.runs.some((r) => r.t.includes("Big")));
+  assert.ok(h1.props.runs.every((r) => r.bg === undefined), "the h1's own background isn't its run's");
+  const p = texts.find((n) => n.props.runs.some((r) => r.t.includes("marked")));
+  const byText = (t) => p.props.runs.find((r) => r.t.includes(t));
+  assert.equal(byText("a ").bg, undefined);
+  assert.deepEqual(byText("marked").bg, [255, 255, 0, 1]);
+  assert.deepEqual(byText("bold").bg, [255, 255, 0, 1], "inside the mark: its background");
+  assert.equal(byText("end").bg, undefined);
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");
