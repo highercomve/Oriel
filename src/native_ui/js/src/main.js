@@ -492,12 +492,12 @@ Object.defineProperties(elProto, {
   // The scroll offsets (the frame's seventh and eighth values); the
   // root's and the scrolling element's are the window's (node -1).
   scrollTop: {
-    get() { return (renderer && host.frame(scrollIdOf(this))?.[6]) || 0; },
+    get() { return scrollPx((renderer && host.frame(scrollIdOf(this))?.[6]) || 0); },
     set(y) { if (renderer) { renderer.render(); host.scrollTo(scrollIdOf(this), +y || 0); } },
     configurable: true,
   },
   scrollLeft: {
-    get() { return (renderer && host.frame(scrollIdOf(this))?.[7]) || 0; },
+    get() { return scrollPx((renderer && host.frame(scrollIdOf(this))?.[7]) || 0); },
     set(x) { if (renderer) { renderer.render(); host.scrollTo(scrollIdOf(this), NaN, +x || 0); } },
     configurable: true,
   },
@@ -558,9 +558,12 @@ g.scrollBy = (x, y) => {
   const [left, top] = scrollArgs(x, y);
   g.scrollTo({ top: g.scrollY + (+top || 0), left: g.scrollX + (+left || 0) });
 };
+// Scroll offsets as the platform's WebView gives them: WebKit's in whole
+// px (a touch fling or a trackpad leaves the view between pixels).
+function scrollPx(v) { return platform.os === "macos" || platform.os === "ios" ? Math.round(v) : v; }
 // The window's scroll offsets: node -1's (the page's scroll view).
 for (const [names, i] of [[["scrollY", "pageYOffset"], 6], [["scrollX", "pageXOffset"], 7]]) {
-  for (const name of names) Object.defineProperty(g, name, { get: () => (renderer && host.frame(-1)?.[i]) || 0, configurable: true });
+  for (const name of names) Object.defineProperty(g, name, { get: () => scrollPx((renderer && host.frame(-1)?.[i]) || 0), configurable: true });
 }
 Object.defineProperty(document, "scrollingElement", { get() { return this.documentElement; }, configurable: true });
 // The focused element; it carries data-nui-focus, which the style engine
@@ -927,17 +930,20 @@ function scrollKey(from, key, shift) {
   renderer.render();
   // The nearest ancestor that scrolls (overflow-y auto or scroll, taller
   // inside than it shows), else the window.
-  let target = -1;
+  // (f[4] is the scrollHeight: compared with the clientHeight, the frame's
+  // height less the borders.)
+  let target = -1, targetEl = null;
+  const clientH = (f, el) => { const b = el ? borderOf(el) : [0, 0, 0, 0]; return f[3] - b[0] - b[2]; };
   for (let n = from; n && n.nodeType === 1 && n !== document.body && n !== document.documentElement; n = n.parentNode) {
     const cs = getComputedStyle(n);
     const ov = cs["overflow-y"] || cs.overflowY || cs.overflow;
     if (ov !== "auto" && ov !== "scroll") continue;
     const f = host.frame(renderer.idOf(n, "el"));
-    if (f && f[4] > f[3] + 0.5) { target = renderer.idOf(n, "el"); break; }
+    if (f && f[4] > clientH(f, n) + 0.5) { target = renderer.idOf(n, "el"); targetEl = n; break; }
   }
   const f = host.frame(target);
   if (!f) return false;
-  const view = f[3];
+  const view = clientH(f, targetEl);
   const top = f[6] || 0;
   const by = Math.abs(step) <= 1 ? Math.round(step * view) : step;
   const want = Math.max(0, Math.min(f[4] - view, top + by));
