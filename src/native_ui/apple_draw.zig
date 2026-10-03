@@ -279,8 +279,8 @@ fn namedFont(name: []const u8, size: f32, weight: f32) ?CTFontRef {
 /// first family that's installed; system-ui (and -apple-system,
 /// BlinkMacSystemFont, ui-sans-serif) the system font, ui-monospace its
 /// monospaced cut; the generic families WebKit's defaults (sans-serif
-/// Helvetica, serif Times, monospace Courier). Null: sans-serif (or
-/// monospace for `mono`).
+/// Helvetica, serif and "default" — no font-family on the page — Times,
+/// monospace Courier). Null: sans-serif (or monospace for `mono`).
 fn resolveFamily(comptime font_class: [:0]const u8, size: f32, weight: f32, mono: bool, family: ?[]const u8) ?CTFontRef {
     const eq = std.ascii.eqlIgnoreCase;
     var it = std.mem.tokenizeScalar(u8, family orelse "", ',');
@@ -290,7 +290,13 @@ fn resolveFamily(comptime font_class: [:0]const u8, size: f32, weight: f32, mono
         if (eq(name, "system-ui") or eq(name, "-apple-system") or eq(name, "BlinkMacSystemFont") or eq(name, "ui-sans-serif"))
             return systemFont(font_class, size, weight, false);
         if (eq(name, "ui-monospace")) return systemFont(font_class, size, weight, true);
-        const generic: ?[]const u8 = if (eq(name, "sans-serif")) "Helvetica" else if (eq(name, "serif") or eq(name, "ui-serif")) "Times" else if (eq(name, "monospace")) "Courier" else if (eq(name, "cursive")) "Apple Chancery" else if (eq(name, "fantasy")) "Papyrus" else null;
+        // "default": the page sets no font-family (WebKit's standard font).
+        if (eq(name, "serif") or eq(name, "ui-serif") or eq(name, "default")) {
+            // iOS has Times New Roman under Times' name.
+            if (namedFont("Times", size, weight) orelse namedFont("Times New Roman", size, weight)) |f| return f;
+            continue;
+        }
+        const generic: ?[]const u8 = if (eq(name, "sans-serif")) "Helvetica" else if (eq(name, "monospace")) "Courier" else if (eq(name, "cursive")) "Apple Chancery" else if (eq(name, "fantasy")) "Papyrus" else null;
         if (namedFont(generic orelse name, size, weight)) |f| return f;
     }
     return namedFont(if (mono) "Courier" else "Helvetica", size, weight) orelse systemFont(font_class, size, weight, mono);
