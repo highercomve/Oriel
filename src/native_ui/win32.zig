@@ -4117,16 +4117,64 @@ fn borderStroke(bs: ?tree_mod.BorderStyle, width: f32) ?*c.ID2D1StrokeStyle {
     return st;
 }
 
+/// Chromium's dash and gap, in border widths (StyledStrokeData): a dash 3
+/// wide with a 2-wide gap below 3px, 2 and 1 from 3px; a dot and a gap 1.
+fn dashRatio(style: tree_mod.BorderStyle, w: f32) [2]f32 {
+    if (style == .dotted) return .{ 1, 1 };
+    return if (w >= 3) .{ 2, 1 } else .{ 3, 2 };
+}
+
+/// The gap that fits whole dashes to `length` (Chromium's
+/// SelectBestDashGap): a closed path has as many gaps as dashes, an open
+/// one a dash at each end; of the two nearest counts, the gap nearer the
+/// wanted one.
+fn bestDashGap(length: f32, dash: f32, gap: f32, closed: bool) f32 {
+    const available = if (closed) length else length + gap;
+    const min_dashes = @floor(available / @max(1e-3, dash + gap));
+    const max_dashes = min_dashes + 1;
+    const min_gaps = if (closed) min_dashes else min_dashes - 1;
+    const max_gaps = if (closed) max_dashes else max_dashes - 1;
+    const min_gap = if (min_gaps > 0) (length - min_dashes * dash) / min_gaps else gap;
+    const max_gap = if (max_gaps > 0) (length - max_dashes * dash) / max_gaps else gap;
+    return if (max_gap <= 0 or @abs(min_gap - gap) < @abs(max_gap - gap)) min_gap else max_gap;
+}
+
+/// A rounded border dashed or dotted as Chromium strokes it: one closed
+/// path from the top side's start (after the top-left corner), clockwise,
+/// its dashes' gap fitted to the whole length (bestDashGap); round dots
+/// from 3px.
+fn dashedShape(p: *Painter, f: Rect, r: Radii, brush: *c.ID2D1Brush, w: f32, style: tree_mod.BorderStyle) void {
+    if (f.w <= 0 or f.h <= 0 or !(w > 0)) return;
+    const geo = roundRectGeometry(f, r) orelse return;
+    defer releaseCom(@as(?*c.ID2D1PathGeometry, geo));
+    var len: f32 = 0;
+    const g: *c.ID2D1Geometry = @ptrCast(geo);
+    if (g.lpVtbl.*.ComputeLength.?(g, null, 0.25, &len) < 0 or !(len > 0)) return;
+    const ratio = dashRatio(style, w);
+    const dash = ratio[0] * w;
+    const gap = bestDashGap(len, dash, ratio[1] * w, true);
+    const round = style == .dotted and w >= 3;
+    // In stroke widths; a round dot is a 0-long dash with round caps.
+    const dashes = if (round) [2]f32{ 0, (dash + gap) / w } else [2]f32{ dash / w, gap / w };
+    const cap: c.D2D1_CAP_STYLE = if (round) c.D2D1_CAP_STYLE_ROUND else c.D2D1_CAP_STYLE_FLAT;
+    const props: c.D2D1_STROKE_STYLE_PROPERTIES = .{ .startCap = c.D2D1_CAP_STYLE_FLAT, .endCap = c.D2D1_CAP_STYLE_FLAT, .dashCap = cap, .lineJoin = c.D2D1_LINE_JOIN_MITER, .miterLimit = 10, .dashStyle = c.D2D1_DASH_STYLE_CUSTOM, .dashOffset = if (round) -0.5 * dash / w else 0 };
+    var st: ?*c.ID2D1StrokeStyle = null;
+    if (d2d.?.lpVtbl.*.CreateStrokeStyle.?(d2d.?, &props, &dashes, 2, &st) < 0 or st == null) return;
+    defer releaseCom(st);
+    p.vt().DrawGeometry.?(p.rt, @ptrCast(geo), brush, w, st);
+}
+
 /// One straight side dashed or dotted as Chromium draws it: a dash (3
 /// widths; a dot: 1) at each end and whole ones between, the gaps
 /// stretched to fit. Dots from 3 px are round.
 fn dashedSide(p: *Painter, sd: Rect, across: bool, w: f32, style: tree_mod.BorderStyle, brush: *c.ID2D1Brush) void {
     const len = if (across) sd.w else sd.h;
     if (len <= 0 or w <= 0) return;
-    const dash = if (style == .dashed) 3 * w else w;
-    var n = @round((len + dash) / (2 * dash));
+    const ratio = dashRatio(style, w);
+    const dash = ratio[0] * w;
+    const gap = bestDashGap(len, dash, ratio[1] * w, false);
+    var n = @round((len + gap) / @max(1e-3, dash + gap));
     if (n < 1) n = 1;
-    const gap = if (n > 1) (len - n * dash) / (n - 1) else 0;
     const vt = p.vt();
     var k: f32 = 0;
     while (k < n) : (k += 1) {
@@ -4158,7 +4206,7 @@ fn border(p: *Painter, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color, bs
             if (!std.mem.eql(f32, &col, &colors[0])) break false;
         } else true;
         if (same) {
-            strokeShape(p, inner, ri, p.solid(colors[0]), bw[0], st);
+            if (bs) |style| dashedShape(p, inner, ri, p.solid(colors[0]), bw[0], style) else strokeShape(p, inner, ri, p.solid(colors[0]), bw[0], st);
             return;
         }
         // Sides in different colors (a spinner: border-top-color on a grey
@@ -4187,7 +4235,7 @@ fn border(p: *Painter, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color, bs
                 .layerOptions = c.D2D1_LAYER_OPTIONS_NONE,
             };
             vt.PushLayer.?(p.rt, &params, null);
-            strokeShape(p, inner, ri, p.solid(colors[i]), bw[0], st);
+            if (bs) |style| dashedShape(p, inner, ri, p.solid(colors[i]), bw[0], style) else strokeShape(p, inner, ri, p.solid(colors[i]), bw[0], st);
             vt.PopLayer.?(p.rt);
         }
         return;
