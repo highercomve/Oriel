@@ -52,7 +52,20 @@ pub const Surface = struct {
     /// ORIEL_NUI_JSON: props and leaf styles go as JSON (nuiProps, 'S'), as
     /// before the binary records, to compare the two.
     json_props: bool = false,
+    /// measureTexts' texts missing from the cache: their ids for
+    /// nuiMeasureTexts, the nodes, and the sizes Kotlin answers.
+    measure_ids: std.ArrayList(u8) = .empty,
+    measure_nodes: std.ArrayList(*Node) = .empty,
+    measure_sizes: std.ArrayList(u8) = .empty,
+    /// The node count after the last layout, and whether a trim_timer is
+    /// posted (laidOut).
+    node_count: usize = 0,
+    trim_posted: bool = false,
 };
+
+/// nuiTimer's id for trimming the tree's pools (the engine's timer ids count
+/// up from 1 and never reach it).
+const trim_timer: u32 = std.math.maxInt(u32);
 
 /// The native windows by id (UI thread only).
 var surfaces: std.AutoHashMapUnmanaged(u32, *Surface) = .empty;
@@ -109,6 +122,9 @@ pub fn destroy(window: u32) void {
     s.json.deinit(s.gpa);
     s.text_measurements.deinit(s.gpa);
     s.leaves.deinit(s.gpa);
+    s.measure_ids.deinit(s.gpa);
+    s.measure_nodes.deinit(s.gpa);
+    s.measure_sizes.deinit(s.gpa);
     s.gpa.destroy(s);
 }
 
@@ -498,17 +514,56 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
     }
 }
 
-/// The natural sizes of a frame's updated texts (Tree.measure_texts): the
-/// pending leaf records go to Kotlin once, not before each measure.
-/// TODO(ChromeOS): one nuiMeasureTexts call for all of them.
+/// The natural sizes of a frame's updated texts (Tree.measure_texts): those
+/// the cache doesn't know go to Kotlin in one nuiMeasureTexts call.
 fn measureTexts(ctx: *anyopaque, nodes: []const *Node) void {
     const s = surfaceOf(ctx);
+    s.measure_ids.clearRetainingCapacity();
+    s.measure_nodes.clearRetainingCapacity();
+    var buf: [1024]u8 = undefined;
+    for (nodes) |n| {
+        if (n.kind != .text) continue;
+        if (text_measure_cache.keyFor(&buf, &n.props, std.math.inf(f32))) |k| if (s.text_measurements.get(k)) |size| {
+            n.measured_text_size = size;
+            n.text_measure_epoch = s.text_epoch;
+            continue;
+        };
+        s.measure_ids.appendSlice(s.gpa, std.mem.asBytes(&std.mem.nativeToLittle(i32, nid(n)))) catch return measureEach(s, nodes);
+        s.measure_nodes.append(s.gpa, n) catch return measureEach(s, nodes);
+    }
+    if (s.measure_nodes.items.len == 0) return;
     flushLeaves(s);
+    const sizes = kotlinMeasureTexts(s) orelse return measureEach(s, nodes);
+    for (s.measure_nodes.items, 0..) |n, i| {
+        const r = std.mem.readInt(u64, sizes[i * 8 ..][0..8], .little);
+        const size: [2]f32 = .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
+        n.measured_text_size = size;
+        n.text_measure_epoch = s.text_epoch;
+        // Nodes with the same text measured twice in one batch store it twice: harmless.
+        if (text_measure_cache.keyFor(&buf, &n.props, std.math.inf(f32))) |k| s.text_measurements.put(s.gpa, k, size) catch {};
+    }
+}
+
+/// One measure per node: when the batch can't be made or Kotlin fails.
+fn measureEach(s: *Surface, nodes: []const *Node) void {
     for (nodes) |n| {
         if (n.kind != .text) continue;
         n.measured_text_size = measuredText(s, n, std.math.inf(f32));
         n.text_measure_epoch = s.text_epoch;
     }
+}
+
+/// nuiMeasureTexts: the unbounded sizes of measure_ids' nodes, one u64 each
+/// (width << 32 | height, in 1/64 dp, little-endian), in measure_sizes.
+fn kotlinMeasureTexts(s: *Surface) ?[]const u8 {
+    const e = runtime.mainEnv() orelse return null;
+    const arr = runtime.call(.object, "nuiMeasureTexts", "(I[B)[B", .{ wid(s.window), @as([]const u8, s.measure_ids.items) }) orelse return null;
+    defer e.functions.DeleteLocalRef(e, arr);
+    const want = s.measure_nodes.items.len * 8;
+    if (arr == null or e.functions.GetArrayLength(e, arr) != want) return null;
+    s.measure_sizes.resize(s.gpa, want) catch return null;
+    e.functions.GetByteArrayRegion(e, arr, 0, @intCast(want), s.measure_sizes.items.ptr);
+    return s.measure_sizes.items;
 }
 
 /// A text's size at `width` (inf: unbounded): from the content-keyed cache,
@@ -541,6 +596,14 @@ fn laidOut(ctx: *anyopaque) void {
     pack(s, root) catch return;
     flushLeaves(s);
     _ = runtime.call(.void, "nuiFrames", "(I[B)V", .{ wid(s.window), @as([]const u8, s.frames.items) });
+    // A render that removed many nodes (a page section rebuilt): the
+    // tree's empty slabs go back to the system 2 s later, as on GTK.
+    const count = s.engine.tree.nodes.count();
+    if (s.node_count > count + 1000 and !s.trim_posted) {
+        s.trim_posted = true;
+        _ = runtime.call(.void, "nuiTimer", "(III)V", .{ wid(s.window), @as(i32, @bitCast(trim_timer)), @as(i32, 2000) });
+    }
+    s.node_count = count;
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
         const n = np.*;
@@ -685,7 +748,13 @@ fn nDisplayFrame(_: *Env, _: jclass, win: jint, interval_ms: f32) callconv(.c) v
 }
 
 fn nTimer(_: *Env, _: jclass, win: jint, id: jint) callconv(.c) void {
-    const s = byId(win) orelse return;
+    const s = byId(win) orelse return; // the window is gone
+    if (@as(u32, @bitCast(id)) == trim_timer) {
+        s.trim_posted = false;
+        const freed = s.engine.tree.trimPools();
+        if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("nui trim: {d} pool slabs freed", .{freed});
+        return;
+    }
     s.engine.timerFired(@bitCast(id));
 }
 
@@ -722,8 +791,15 @@ fn nDump(_: *Env, _: jclass) callconv(.c) jni.jboolean {
     return @intFromBool(std.c.getenv("ORIEL_NUI_DUMP") != null);
 }
 
+/// ORIEL_NUI_TEXT_CHECK: NuiView measures plain lines both ways (font and
+/// StaticLayout) and logs where they differ ("nui text check").
+fn nTextCheck(_: *Env, _: jclass) callconv(.c) jni.jboolean {
+    return @intFromBool(std.c.getenv("ORIEL_NUI_TEXT_CHECK") != null);
+}
+
 comptime {
     const prefix = "Java_dev_oriel_NuiNative_";
+    @export(&nTextCheck, .{ .name = prefix ++ "textCheck" });
     @export(&nDump, .{ .name = prefix ++ "dump" });
     @export(&nTrace, .{ .name = prefix ++ "trace" });
     @export(&nDisplayFrame, .{ .name = prefix ++ "displayFrame" });
