@@ -19,7 +19,7 @@
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules } from "./css.js";
-import { Renderer, UA_CSS, UA_CSS_WEBKIT, setFocusVisible, setFocusRingOS } from "./render.js";
+import { Renderer, UA_CSS, UA_CSS_WEBKIT, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
 
 const host = globalThis.__host;
@@ -449,8 +449,10 @@ g.scrollTo = g.scroll = (x, y) => {
 // matches for :focus (css.js).
 // :focus-visible (data-nui-focus-visible) as browsers decide it: focus
 // that came by the keyboard, or a text field (it shows a caret either way).
+// Before any pointer input, a script's focus() is visible too (Chromium
+// and WebKit show the ring on a button focused at load).
 let active = null;
-let keyboardFocus = false;
+let keyboardFocus = true;
 const TEXT_INPUTS = new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
 const textField = (el) => el?.localName === "textarea" || el?.isContentEditable ||
   (el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase()));
@@ -574,7 +576,7 @@ const store = (name) => {
 g.localStorage = store("local");
 g.sessionStorage = store("session");
 const platform = JSON.parse(host.platform || "{}");
-setFocusRingOS(platform.os);
+setFocusRingOS(platform.os, platform.accent);
 g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: undefined, maxTouchPoints: viewport.coarse ? 5 : 0 };
 Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
 Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
@@ -1152,6 +1154,7 @@ g.__oriel = {
       engine.addSheet(UA_CSS, sheets);
       // Where the WebView is WebKit's, its controls' look.
       if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
+      else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets);
       for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
       const b1 = P && P();
       renderer = new Renderer(document, engine, host);
