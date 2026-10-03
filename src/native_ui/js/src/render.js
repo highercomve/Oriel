@@ -1208,6 +1208,10 @@ export class Renderer {
     if (tag === "input" || tag === "textarea" || tag === "select") {
       this.volatile.add(el); // its value changes without a mutation
       const type = (el.getAttribute("type") || "text").toLowerCase();
+      // A control without a width keeps its own in a block (display: block
+      // doesn't stretch it to the line, as it does a div); a flex item still
+      // stretches.
+      if (!ctx.blockify && display === "block" && (props.w === undefined || props.w === "auto")) props.as = "flex-start";
       if (tag === "input" && (type === "checkbox" || type === "radio")) {
         // The click goes to the label. With appearance: none the page's CSS
         // draws it; else the native side draws the default control, in the
@@ -1245,12 +1249,19 @@ export class Renderer {
         props.cols = cols > 0 ? Math.min(cols, 1000) : 20;
         const rows = parseInt(el.getAttribute("rows") || "", 10);
         props.rows = rows > 0 ? Math.min(rows, 1000) : 2;
+      } else if (type !== "range") {
+        // A text field is `size` characters wide (20 when absent).
+        const size = parseInt(el.getAttribute("size") || "", 10);
+        props.cols = size > 0 ? Math.min(size, 1000) : 20;
       }
-      // A slider: the native side draws one (SeekBar), the value as text.
+      // A slider: the native side draws one (SeekBar), the value as text,
+      // in Chromium's 129x16 box with its 2px margin.
       if (type === "range") {
         const n = (a, d) => { const v = parseFloat(el.getAttribute(a)); return Number.isFinite(v) ? v : d; };
         props.range = [n("min", 0), n("max", 100), el.getAttribute("step") === "any" ? 0 : n("step", 1)];
-        if (props.h === undefined || props.h === "auto") props.h = 24;
+        if (props.w === undefined || props.w === "auto") props.w = 129;
+        if (props.h === undefined || props.h === "auto") props.h = 16;
+        if (!props.m) props.m = [2, 2, 2, 2];
         const acc = color(cs["accent-color"] || "");
         if (acc) props.acc = acc;
         delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;

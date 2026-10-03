@@ -15681,6 +15681,7 @@ col, colgroup { display: none; }
       if (tag === "input" || tag === "textarea" || tag === "select") {
         this.volatile.add(el);
         const type = (el.getAttribute("type") || "text").toLowerCase();
+        if (!ctx.blockify && display === "block" && (props.w === void 0 || props.w === "auto")) props.as = "flex-start";
         if (tag === "input" && (type === "checkbox" || type === "radio")) {
           props.click = true;
           const app = cs.appearance || cs["-webkit-appearance"];
@@ -15717,6 +15718,9 @@ col, colgroup { display: none; }
           props.cols = cols > 0 ? Math.min(cols, 1e3) : 20;
           const rows = parseInt(el.getAttribute("rows") || "", 10);
           props.rows = rows > 0 ? Math.min(rows, 1e3) : 2;
+        } else if (type !== "range") {
+          const size = parseInt(el.getAttribute("size") || "", 10);
+          props.cols = size > 0 ? Math.min(size, 1e3) : 20;
         }
         if (type === "range") {
           const n2 = (a, d) => {
@@ -15724,7 +15728,9 @@ col, colgroup { display: none; }
             return Number.isFinite(v) ? v : d;
           };
           props.range = [n2("min", 0), n2("max", 100), el.getAttribute("step") === "any" ? 0 : n2("step", 1)];
-          if (props.h === void 0 || props.h === "auto") props.h = 24;
+          if (props.w === void 0 || props.w === "auto") props.w = 129;
+          if (props.h === void 0 || props.h === "auto") props.h = 16;
+          if (!props.m) props.m = [2, 2, 2, 2];
           const acc = color(cs["accent-color"] || "");
           if (acc) props.acc = acc;
           delete props.pad;
