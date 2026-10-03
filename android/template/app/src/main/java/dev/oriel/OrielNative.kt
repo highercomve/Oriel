@@ -261,18 +261,26 @@ internal class NuiNode(val id: Int, var kind: String) {
     private fun spans(fz: Float, mono: Boolean): CharSequence {
         val sb = SpannableStringBuilder()
         val runs = p.optJSONArray("runs") ?: JSONArray()
+        // Each run's start, end and size, for line-height (LineHeight).
+        val sized = ArrayList<Float>()
         for (i in 0 until runs.length()) {
             val r = runs.optJSONObject(i) ?: continue
             val start = sb.length
             sb.append(if (i == 0 && runs.length() == 1) runText ?: r.optString("t") else r.optString("t"))
             val end = sb.length
             if (end == start) continue
+            sized += start.toFloat(); sized += end.toFloat(); sized += r.optDouble("sz", fz.toDouble()).toFloat()
             val flags = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             r.optJSONArray("c")?.let { sb.setSpan(ForegroundColorSpan(color(it)), start, end, flags) }
             sb.setSpan(RelativeSizeSpan(r.optDouble("sz", fz.toDouble()).toFloat() / fz), start, end, flags)
             sb.setSpan(FontSpan(typeface(r.optDouble("w", 400.0).toInt(), r.optBoolean("i"), r.optBoolean("mono") || mono)), start, end, flags)
             if (r.optBoolean("u")) sb.setSpan(UnderlineSpan(), start, end, flags)
             r.optJSONArray("bg")?.let { val c = color(it); if (Color.alpha(c) > 0) sb.setSpan(BackgroundColorSpan(c), start, end, flags) }
+        }
+        // line-height: every line exactly that tall (CSS's, a length here).
+        if (p.has("lh") && sb.isNotEmpty()) {
+            val (a, d) = fontRatios(mono)
+            sb.setSpan(LineHeight(p.optDouble("lh").toFloat(), fz, a, d, sized.toFloatArray()), 0, sb.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
         }
         return sb
     }
@@ -315,12 +323,7 @@ internal class NuiNode(val id: Int, var kind: String) {
     }
 
     private fun builder(t: CharSequence, tp: TextPaint, w: Int): StaticLayout.Builder {
-        val b = StaticLayout.Builder.obtain(t, 0, t.length, tp, w).setIncludePad(false)
-        if (p.has("lh")) {
-            val fz = p.optDouble("fz", 16.0).toFloat()
-            b.setLineSpacing(0f, p.optDouble("lh").toFloat() / (fz * 1.17f))
-        }
-        return b
+        return StaticLayout.Builder.obtain(t, 0, t.length, tp, w).setIncludePad(false)
     }
 
     /** One run of printable ASCII, no letter spacing: as tall as any other
@@ -408,8 +411,72 @@ internal class NuiNode(val id: Int, var kind: String) {
             return Color.argb(alpha, a.optInt(0).coerceIn(0, 255), a.optInt(1).coerceIn(0, 255), a.optInt(2).coerceIn(0, 255))
         }
 
+        /** The text font's ascent and descent per px of size (LineHeight), mono or not. */
+        private val ratios = HashMap<Boolean, Pair<Float, Float>>()
+
+        fun fontRatios(mono: Boolean): Pair<Float, Float> = ratios.getOrPut(mono) {
+            val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            tp.textSize = 100f
+            tp.typeface = typeface(400, false, mono)
+            val fm = tp.fontMetrics
+            -fm.ascent / 100f to fm.descent / 100f
+        }
+
+        /** Ascent (as a positive length) and descent of the text font at `size` px, in 1/64 px, packed. */
+        fun fontMetrics(size: Float, mono: Boolean): Long {
+            val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            tp.textSize = size
+            tp.typeface = typeface(400, false, mono)
+            val fm = tp.fontMetrics
+            return ((-fm.ascent * 64).toLong() shl 32) or (fm.descent * 64).toLong()
+        }
+
         fun typeface(weight: Int, italic: Boolean, mono: Boolean): Typeface =
             Typeface.create(if (mono) Typeface.MONOSPACE else Typeface.DEFAULT, weight.coerceIn(1, 1000), italic)
+    }
+}
+
+/**
+ * CSS line-height on Android's lines. Every text size on a line gets a box
+ * `px` tall with its glyphs centred in it (half-leading: half the
+ * difference above, half below, shorter than the font too), all on one
+ * baseline with the paragraph's own size (the strut); the line covers
+ * them. One size: each line exactly `px`, a fractional one rounded per
+ * line so n lines add up to n × px (23.2: 23, 23, 24…). `a`, `d`: the
+ * font's ascent and descent per px; `runs`: start, end, size of each run.
+ */
+private class LineHeight(private val px: Float, private val fz: Float, private val a: Float, private val d: Float, private val runs: FloatArray) :
+    android.text.style.LineHeightSpan {
+    override fun chooseHeight(text: CharSequence, start: Int, end: Int, spanstartv: Int, lineHeight: Int, fm: Paint.FontMetricsInt) {
+        if (fm.descent - fm.ascent <= 0 || px <= 0) return
+        // Above and below the baseline: the strut's, then each run's on this line.
+        val half = (px - (a + d) * fz) / 2
+        var above = a * fz + half
+        var below = d * fz + half
+        var mixed = false
+        var i = 0
+        while (i + 2 < runs.size) {
+            val sz = runs[i + 2]
+            if (runs[i] < end && runs[i + 1] > start && sz != fz) {
+                val h = (px - (a + d) * sz) / 2
+                above = max(above, a * sz + h)
+                below = max(below, d * sz + h)
+                mixed = true
+            }
+            i += 3
+        }
+        if (mixed) {
+            fm.ascent = -Math.round(above)
+            fm.descent = Math.round(below)
+        } else {
+            // This line's top is `lineHeight` (spanstartv: where the span began).
+            val line = Math.round((lineHeight - spanstartv) / px)
+            val target = Math.round((line + 1) * px) - Math.round(line * px)
+            fm.ascent = -Math.round(above)
+            fm.descent = fm.ascent + target
+        }
+        fm.top = fm.ascent
+        fm.bottom = fm.descent
     }
 }
 
