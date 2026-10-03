@@ -123,6 +123,32 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(embed_assets);
 
+    // Host tool used by `addApp` with -Dnative_ui: the frontend's modules as
+    // QuickJS bytecode, embedded beside them (tools/qjs_modules.zig): the
+    // first window doesn't parse and compile them. Built for the build
+    // machine from the same QuickJS source as the engine (no sysroot or
+    // target settings: see addNativeUi's qjs_bytecode).
+    {
+        const qjs = b.path("src/native_ui/vendor/quickjs-ng");
+        const qjs_modules = b.addExecutable(.{
+            .name = "qjs_modules",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/qjs_modules.zig"),
+                .target = b.graph.host,
+                .optimize = .ReleaseFast,
+                .link_libc = true,
+            }),
+        });
+        qjs_modules.root_module.addIncludePath(qjs);
+        qjs_modules.root_module.addCSourceFiles(.{
+            .root = qjs,
+            .files = &.{ "quickjs.c", "libregexp.c", "libunicode.c", "dtoa.c" },
+            .flags = &.{ "-std=gnu11", "-D_GNU_SOURCE", "-O2", "-fno-sanitize=undefined", "-funsigned-char", "-fwrapv" },
+        });
+        qjs_modules.root_module.addCSourceFile(.{ .file = b.path("tools/qjs_modules.c"), .flags = &.{ "-std=gnu11", "-O2", "-fno-sanitize=undefined" } });
+        b.installArtifact(qjs_modules);
+    }
+
     // Host tool used by `addApp` for dev mode watch + reload.
     const dev_runner = b.addExecutable(.{
         .name = "dev_runner",
@@ -853,6 +879,18 @@ const PermissionKind = @import("src/core/permissions/common.zig").Kind;
 
 /// The declared permissions plus the ones enabled modules need.
 /// A boolean option the app passed to the Oriel dependency (`.native_ui = true`).
+/// -Dnative_ui: the frontend's modules compiled to QuickJS bytecode
+/// (qjs_modules) and embedded with it (embed_assets' extra directory).
+fn addModuleBytecode(b: *std.Build, oriel_dep: *std.Build.Dependency, embed: *std.Build.Step.Run, dist: []const u8, build_fe: ?*std.Build.Step) void {
+    if (!dependencyFlag(oriel_dep, "native_ui")) return;
+    const modules = b.addRunArtifact(oriel_dep.artifact("qjs_modules"));
+    modules.has_side_effects = true; // dist/ is produced outside the build graph
+    modules.addArg(dist);
+    const out = modules.addOutputDirectoryArg("modules");
+    if (build_fe) |st| modules.step.dependOn(st);
+    embed.addDirectoryArg(out);
+}
+
 fn dependencyFlag(oriel_dep: *std.Build.Dependency, name: []const u8) bool {
     const opt = oriel_dep.builder.user_input_options.get(name) orelse return false;
     return switch (opt.value) {
@@ -1031,6 +1069,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     embed.has_side_effects = true; // dist/ is produced outside the build graph
     embed.addArg(b.pathJoin(&.{ fe_dir, fe.dist }));
     const assets_dir = embed.addOutputDirectoryArg("assets");
+    var build_fe_step: ?*std.Build.Step = null;
     if (fe.build_command) |cmd| {
         const build_fe = b.addSystemCommand(cmd);
         build_fe.setCwd(.{ .cwd_relative = fe_dir });
@@ -1038,7 +1077,9 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         if (install_step) |s| build_fe.step.dependOn(s);
         if (types_step) |s| build_fe.step.dependOn(s);
         embed.step.dependOn(&build_fe.step);
+        build_fe_step = &build_fe.step;
     }
+    addModuleBytecode(b, oriel_dep, embed, b.pathJoin(&.{ fe_dir, fe.dist }), build_fe_step);
     const prod_cfg = b.addOptions();
     prod_cfg.addOption(bool, "is_dev", false);
     prod_cfg.addOption([]const u8, "dev_url", "");
@@ -1196,13 +1237,16 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     embed.has_side_effects = true;
     embed.addArg(b.pathJoin(&.{ fe_dir, fe.dist }));
     const assets_dir = embed.addOutputDirectoryArg("assets");
+    var build_fe_step: ?*std.Build.Step = null;
     if (fe.build_command) |cmd| {
         const build_fe = b.addSystemCommand(cmd);
         build_fe.setCwd(.{ .cwd_relative = fe_dir });
         build_fe.has_side_effects = true;
         if (install_step) |st| build_fe.step.dependOn(st);
         embed.step.dependOn(&build_fe.step);
+        build_fe_step = &build_fe.step;
     }
+    addModuleBytecode(b, oriel_dep, embed, b.pathJoin(&.{ fe_dir, fe.dist }), build_fe_step);
     const prod_cfg = b.addOptions();
     prod_cfg.addOption(bool, "is_dev", false);
     prod_cfg.addOption([]const u8, "dev_url", "");
@@ -1486,13 +1530,16 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     embed.has_side_effects = true;
     embed.addArg(b.pathJoin(&.{ fe_dir, fe.dist }));
     const assets_dir = embed.addOutputDirectoryArg("assets");
+    var build_fe_step: ?*std.Build.Step = null;
     if (fe.build_command) |cmd| {
         const build_fe = b.addSystemCommand(cmd);
         build_fe.setCwd(.{ .cwd_relative = fe_dir });
         build_fe.has_side_effects = true;
         if (install_step) |st| build_fe.step.dependOn(st);
         embed.step.dependOn(&build_fe.step);
+        build_fe_step = &build_fe.step;
     }
+    addModuleBytecode(b, oriel_dep, embed, b.pathJoin(&.{ fe_dir, fe.dist }), build_fe_step);
     const prod_cfg = b.addOptions();
     prod_cfg.addOption(bool, "is_dev", false);
     prod_cfg.addOption([]const u8, "dev_url", "");
