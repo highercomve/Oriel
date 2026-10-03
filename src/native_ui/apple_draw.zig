@@ -1053,6 +1053,9 @@ fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Col
         }
         return;
     }
+    // Rounded, sides of different widths, solid: the ring between the
+    // border box and the padding box.
+    if (!square and bs == null) return roundedSides(cg, f, r, bw, colors);
     // Per side (straight edges).
     const sides = [4]Rect{
         .{ .x = f.x, .y = f.y, .w = f.w, .h = bw[0] },
@@ -1065,6 +1068,106 @@ fn border(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Col
         setFill(cg, colors[i]);
         if (bs) |style| dashedSide(cg, sd, i == 0 or i == 2, bw[i], style) else CGContextFillRect(cg, rect(sd));
     }
+}
+
+/// A rounded border whose sides differ in width (border-radius: 12px with
+/// border-left: 6px), as gtk.zig's roundedSides and browsers draw it: the
+/// area between the border box and the padding box, whose corners are
+/// ellipses (the radius less each side's width, as CSS makes them), each
+/// side's color clipped to its wedge: the lines from its outer corners
+/// through its inner corners (where browsers join two colors), up to the
+/// middle.
+fn roundedSides(cg: CGContextRef, f: Rect, r: [4]f32, bw: [4]f32, colors: [4]tree_mod.Color) void {
+    const radii = tree_mod.Radii.circle(r);
+    const pb = tree_mod.paddingBoxXY(f, radii, bw);
+    const inner = pb.rect;
+    // One color where every drawn side has the same: one fill.
+    var first: ?tree_mod.Color = null;
+    const same = for (0..4) |i| {
+        if (bw[i] <= 0) continue;
+        if (first) |c| {
+            if (!std.mem.eql(f32, &c, &colors[i])) break false;
+        } else first = colors[i];
+    } else true;
+    const outer = [4][2]f32{ .{ f.x, f.y }, .{ f.x + f.w, f.y }, .{ f.x + f.w, f.y + f.h }, .{ f.x, f.y + f.h } };
+    const in = [4][2]f32{ .{ inner.x, inner.y }, .{ inner.x + inner.w, inner.y }, .{ inner.x + inner.w, inner.y + inner.h }, .{ inner.x, inner.y + inner.h } };
+    const mid = [2]f32{ inner.x + inner.w / 2, inner.y + inner.h / 2 };
+    // Each corner's join, from the outer corner through the inner one,
+    // stopped where it reaches the middle's row or column.
+    var join: [4][2]f32 = undefined;
+    for (0..4) |k| {
+        const dx = in[k][0] - outer[k][0];
+        const dy = in[k][1] - outer[k][1];
+        var t: f32 = std.math.floatMax(f32);
+        if (dx != 0) t = @min(t, (mid[0] - outer[k][0]) / dx);
+        if (dy != 0) t = @min(t, (mid[1] - outer[k][1]) / dy);
+        if (dx == 0 and dy == 0) t = 0;
+        join[k] = .{ outer[k][0] + @max(0, t) * dx, outer[k][1] + @max(0, t) * dy };
+    }
+    // Neighboring sides of one color share one wedge (no seam where two
+    // clips would meet): a run of them starts after a side of another color.
+    const sameAs = struct {
+        fn eq(c: [4]tree_mod.Color, w: [4]f32, a: usize, b: usize) bool {
+            return w[a] > 0 and w[b] > 0 and std.mem.eql(f32, &c[a], &c[b]);
+        }
+    }.eq;
+    for (0..4) |i| {
+        if (bw[i] <= 0 or colors[i][3] <= 0) continue;
+        if (!same and sameAs(colors, bw, i, (i + 3) % 4)) continue; // in the run before it
+        CGContextSaveGState(cg);
+        defer CGContextRestoreGState(cg);
+        if (!same) {
+            CGContextBeginPath(cg);
+            CGContextMoveToPoint(cg, outer[i][0], outer[i][1]);
+            var last = i;
+            while (sameAs(colors, bw, last, (last + 1) % 4) and (last + 1) % 4 != i) {
+                last = (last + 1) % 4;
+                CGContextAddLineToPoint(cg, outer[last][0], outer[last][1]);
+            }
+            const j = (last + 1) % 4;
+            CGContextAddLineToPoint(cg, outer[j][0], outer[j][1]);
+            CGContextAddLineToPoint(cg, join[j][0], join[j][1]);
+            CGContextAddLineToPoint(cg, mid[0], mid[1]);
+            CGContextAddLineToPoint(cg, join[i][0], join[i][1]);
+            CGContextClosePath(cg);
+            CGContextClip(cg);
+        }
+        CGContextBeginPath(cg);
+        addEllipseRect(cg, f, radii.x, radii.y);
+        addEllipseRect(cg, inner, pb.radii.x, pb.radii.y);
+        setFill(cg, colors[i]);
+        CGContextEOFillPath(cg); // even-odd: the ring
+        if (same) return;
+    }
+}
+
+/// A rectangle with elliptical corners (`rx`, `ry` each: top left, top
+/// right, bottom right, bottom left), added to the current path; a corner
+/// without a radius along either axis is square.
+fn addEllipseRect(cg: CGContextRef, f: Rect, rx: [4]f32, ry: [4]f32) void {
+    // A quarter ellipse as one cubic (the circle's constant).
+    const k: f32 = 0.5522847;
+    var ax: [4]f32 = undefined;
+    var ay: [4]f32 = undefined;
+    for (0..4) |i| {
+        const round = rx[i] > 0 and ry[i] > 0;
+        ax[i] = if (round) rx[i] else 0;
+        ay[i] = if (round) ry[i] else 0;
+    }
+    const x = f.x;
+    const y = f.y;
+    const w = f.w;
+    const h = f.h;
+    CGContextMoveToPoint(cg, x + ax[0], y);
+    CGContextAddLineToPoint(cg, x + w - ax[1], y);
+    if (ax[1] > 0) CGContextAddCurveToPoint(cg, x + w - ax[1] + k * ax[1], y, x + w, y + ay[1] - k * ay[1], x + w, y + ay[1]);
+    CGContextAddLineToPoint(cg, x + w, y + h - ay[2]);
+    if (ax[2] > 0) CGContextAddCurveToPoint(cg, x + w, y + h - ay[2] + k * ay[2], x + w - ax[2] + k * ax[2], y + h, x + w - ax[2], y + h);
+    CGContextAddLineToPoint(cg, x + ax[3], y + h);
+    if (ax[3] > 0) CGContextAddCurveToPoint(cg, x + ax[3] - k * ax[3], y + h, x, y + h - ay[3] + k * ay[3], x, y + h - ay[3]);
+    CGContextAddLineToPoint(cg, x, y + ay[0]);
+    if (ax[0] > 0) CGContextAddCurveToPoint(cg, x, y + ay[0] - k * ay[0], x + ax[0] - k * ax[0], y, x + ax[0], y);
+    CGContextClosePath(cg);
 }
 
 fn shadow(cg: CGContextRef, f: Rect, r: [4]f32, sh: tree_mod.Shadow) void {
