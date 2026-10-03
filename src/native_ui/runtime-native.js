@@ -4912,7 +4912,9 @@ input[type="range"] { height: 20px; margin: 2px; }
         }
         if (child.nodeType !== 1) continue;
         if (!childCtx.blockify && !boxed?.has(child) && this.isInline(child, cs, rematch)) {
+          const from = runs.length;
           this.inlineRuns(child, cs, fontSize, runs, rematch);
+          if (underlined(cs)) for (let i = from; i < runs.length; i++) runs[i].u = true;
           continue;
         }
         const box = inlineBox(child);
@@ -5214,11 +5216,17 @@ input[type="range"] { height: 20px; margin: 2px; }
       }
       const bg = (cs.background ? background(cs.background, color(cs.color))?.color : void 0) ?? outerBg;
       const deeper = rematch || this.marks.get(el) === 2;
+      const first = runs.length;
       for (let child = el.firstChild; child; child = child.nextSibling) {
         this.parentOf.set(child, el);
         if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el, bg));
         else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper, bg);
       }
+      const ol = inlineOutline(cs, fs, el);
+      if (ol) {
+        for (let i = first; i < runs.length; i++) if (!runs[i].br) runs[i].ol = ol;
+      }
+      if (underlined(cs)) for (let i = first; i < runs.length; i++) runs[i].u = true;
     }
     pseudo(el, cs, which, nodes) {
       const rules = cs.__rules[which];
@@ -5646,6 +5654,15 @@ input[type="range"] { height: 20px; margin: 2px; }
   function setFocusVisible(el) {
     focusVisible = el;
   }
+  function inlineOutline(cs, fs, el) {
+    if (cs["outline-style"] !== void 0 || cs["outline-width"] !== void 0) {
+      const p = {};
+      outlinePart(cs, fs, p);
+      return p.ol || null;
+    }
+    if (el !== focusVisible) return null;
+    return osRings ? ringFor(osRings, el) : FOCUS_RING;
+  }
   function focusRing(cs, el, p) {
     if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = osRings ? ringFor(osRings, el) : FOCUS_RING;
     return p;
@@ -5910,9 +5927,10 @@ input[type="range"] { height: 20px; margin: 2px; }
     if (/mono/.test(cs["font-family"] || "")) r.mono = true;
     const ff = familyOf(cs);
     if (ff) r.ff = ff;
-    if ((cs["text-decoration-line"] || "") === "underline") r.u = true;
+    if (underlined(cs)) r.u = true;
     return r;
   }
+  var underlined = (cs) => /\bunderline\b/.test(cs["text-decoration-line"] || "");
   function runFor(text, cs, fs, src, bg) {
     let t = text;
     const tt = cs["text-transform"];
