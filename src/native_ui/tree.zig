@@ -559,7 +559,8 @@ pub const Props = struct {
     /// padding or a border: its sizes don't include them (Yoga's default
     /// is border-box). render.js sends it only then.
     cb: bool = false,
-    /// A textarea's cols (20 when absent): its natural width.
+    /// A textarea's cols, a text input's size (20 when absent): its natural
+    /// width, in characters.
     cols: ?f32 = null,
     /// A textarea's rows (2 when absent): its natural height, in lines.
     rows: ?f32 = null,

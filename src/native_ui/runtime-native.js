@@ -4490,6 +4490,7 @@ col, colgroup { display: none; }
       this.own(id, el);
       const props = boxProps(cs, display, fontSize, el);
       if (!ctx.blockify) delete props.as;
+      if (!ctx.blockify && display === "block" && CONTROLS.has(tag) && (props.w === void 0 || props.w === "auto")) props.as = "flex-start";
       if (isTableDisplay(display) && !tableProps(props, display, cs, fontSize, ctx, el)) return null;
       const transitions = transitionsOf(cs);
       if (transitions) this.spec(id, transitions);
@@ -4605,6 +4606,9 @@ col, colgroup { display: none; }
           props.cols = cols > 0 ? Math.min(cols, 1e3) : 20;
           const rows = parseInt(el.getAttribute("rows") || "", 10);
           props.rows = rows > 0 ? Math.min(rows, 1e3) : 2;
+        } else if (type !== "range") {
+          const size = parseInt(el.getAttribute("size") || "", 10);
+          props.cols = size > 0 ? Math.min(size, 1e3) : 20;
         }
         if (type === "range") {
           const n2 = (a, d) => {
@@ -4612,7 +4616,9 @@ col, colgroup { display: none; }
             return Number.isFinite(v) ? v : d;
           };
           props.range = [n2("min", 0), n2("max", 100), el.getAttribute("step") === "any" ? 0 : n2("step", 1)];
-          if (props.h === void 0 || props.h === "auto") props.h = 24;
+          if (props.w === void 0 || props.w === "auto") props.w = 129;
+          if (props.h === void 0 || props.h === "auto") props.h = 16;
+          if (!props.m) props.m = [2, 2, 2, 2];
           const acc = color(cs["accent-color"] || "");
           if (acc) props.acc = acc;
           delete props.pad;
@@ -5402,6 +5408,7 @@ col, colgroup { display: none; }
   function isSize(v) {
     return typeof v === "number" || typeof v === "string" && v.endsWith("%");
   }
+  var CONTROLS = /* @__PURE__ */ new Set(["input", "textarea", "select", "button"]);
   var BORDER_BOX_INPUTS = /* @__PURE__ */ new Set(["button", "submit", "reset", "checkbox", "radio", "color", "file", "range", "image"]);
   function borderBoxByDefault(el) {
     const t = el?.localName;
@@ -6833,13 +6840,13 @@ ${a.stack || ""}`;
         if (!naturallyFocusable(el)) continue;
         index = 0;
       }
-      if (index < 0 || CONTROLS.has(el.localName) && el.hasAttribute("disabled") || !shown(el)) continue;
+      if (index < 0 || CONTROLS2.has(el.localName) && el.hasAttribute("disabled") || !shown(el)) continue;
       (index > 0 ? positive : rest).push([index, el]);
     }
     positive.sort((a, b) => a[0] - b[0]);
     return [...positive, ...rest].map((e) => e[1]);
   }
-  var CONTROLS = /* @__PURE__ */ new Set(["input", "button", "select", "textarea"]);
+  var CONTROLS2 = /* @__PURE__ */ new Set(["input", "button", "select", "textarea"]);
   function naturallyFocusable(el) {
     switch (el.localName) {
       case "a":
