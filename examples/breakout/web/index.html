@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Breakout</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="top">
+    <b class="title">Breakout</b>
+    <span class="hud">Score <b id="score">0</b></span>
+    <span class="hud">Lives <b id="lives">3</b></span>
+    <span class="hud">Level <b id="level">1</b></span>
+    <span class="spacer"></span>
+    <button id="pause-btn" class="ghost">Pause</button>
+    <button id="settings-btn" class="ghost">Settings</button>
+  </header>
+
+  <main id="board">
+    <canvas id="cv" width="300" height="200"></canvas>
+
+    <div id="stats" class="stats">
+      <div><span id="st-fps">-</span> fps · <span id="st-frame">-</span> ms/frame</div>
+      <div>JS <span id="st-js">-</span> ms (physics <span id="st-phys">-</span>, draw <span id="st-draw">-</span>)</div>
+      <div><span id="st-balls">1</span> balls · <span id="st-parts">0</span> particles</div>
+      <div id="st-renderer">-</div>
+    </div>
+
+    <div id="pause" class="overlay" hidden>
+      <div class="card">
+        <h2>Paused</h2>
+        <div class="row">
+          <button id="resume" class="primary">Resume</button>
+          <button id="restart" class="ghost">Restart</button>
+        </div>
+        <p class="muted">P or Esc to pause and resume</p>
+      </div>
+    </div>
+
+    <div id="over" class="overlay" hidden>
+      <div class="card">
+        <h2>Game over</h2>
+        <p>Score <b id="final">0</b> · level <b id="final-level">1</b></p>
+        <div class="row"><button id="again" class="primary">Play again</button></div>
+      </div>
+    </div>
+
+    <div id="settings" class="panel" hidden>
+      <h3>Settings</h3>
+      <label class="field">
+        <span>Balls per launch <b id="balls-val">1</b></span>
+        <input id="balls" type="range" min="1" max="500" step="1" value="1">
+        <small class="muted">Up to 500: chaos mode</small>
+      </label>
+      <label class="field">
+        <span>Brick rows <b id="rows-val">6</b></span>
+        <input id="rows" type="range" min="2" max="12" step="1" value="6">
+        <small class="muted">Rebuilds the bricks</small>
+      </label>
+      <label class="check"><input id="particles" type="checkbox" checked> Particles</label>
+      <label class="check"><input id="show-stats" type="checkbox" checked> Stats overlay</label>
+      <label class="check"><input id="autoplay" type="checkbox"> Autoplay (the paddle follows the balls)</label>
+      <div class="row"><button id="close-settings" class="primary">Done</button></div>
+    </div>
+  </main>
+
+  <footer id="help" class="muted"></footer>
+
+  <script type="module" src="game.js"></script>
+</body>
+</html>
