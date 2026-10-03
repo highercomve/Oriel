@@ -851,21 +851,24 @@ function hsl(h, s, l) {
 // fraction, "p": px, "a": none given) and tree.zig's Gradient.resolve
 // finishes them; otherwise missing ones are filled in here as CSS does
 // (evenly between their neighbours) and there is no su. A stop with two
-// positions ("red 0 10px") is two stops.
+// positions ("red 0 10px") is two stops. A calc() with both
+// ("calc(100% - 20px)") is unit "c": its fraction in pos and its px in
+// `out.sp` (one per stop, 0 for the others), which resolve adds.
 function stopsOf(parts, current, out = {}, rep = false) {
   const raw = [];
   for (const p of parts) {
     const t = splitSpaces(p);
     const c = color(t[0], current);
     if (!c) continue;
-    const at = t.slice(1, 3).map((v) => /%$/.test(v) ? { f: parseFloat(v) / 100 } : parseFloat(v) === 0 ? { f: 0 } : { px: length(v, 16, false) ?? 0 });
+    const at = t.slice(1, 3).map(stopAt);
     if (!at.length) raw.push({ c, at: null });
     for (const a of at) raw.push({ c: c.slice(), at: a });
   }
   let stops;
   if (rep || raw.some((s) => s.at && "px" in s.at)) {
-    out.su = raw.map((s) => (!s.at ? "a" : "px" in s.at ? "p" : "%")).join("");
-    stops = raw.map((s) => [...s.c, !s.at ? 0 : "px" in s.at ? s.at.px : s.at.f]);
+    out.su = raw.map((s) => (!s.at ? "a" : "f" in s.at && "px" in s.at ? "c" : "px" in s.at ? "p" : "%")).join("");
+    stops = raw.map((s) => [...s.c, !s.at ? 0 : "f" in s.at ? s.at.f : s.at.px]);
+    if (out.su.includes("c")) out.sp = raw.map((s) => (s.at && "f" in s.at && "px" in s.at ? s.at.px : 0));
   } else {
     const pos = raw.map((s) => s.at?.f ?? null);
     if (pos.length && pos[0] == null) pos[0] = 0;
@@ -884,6 +887,16 @@ function stopsOf(parts, current, out = {}, rep = false) {
     if (n) { st[0] = n[0]; st[1] = n[1]; st[2] = n[2]; }
   });
   return stops;
+}
+
+// A stop's position: { f } a fraction of the line, { px }, or both (a
+// calc() with a percentage and px); a length that doesn't parse is 0px.
+function stopAt(v) {
+  const l = length(v, 16, true);
+  if (l === 0) return { f: 0 };
+  if (typeof l === "number") return { px: l };
+  if (l && typeof l === "object") return l.px ? { f: l.pct / 100, px: l.px } : { f: l.pct / 100 };
+  return { px: 0 };
 }
 
 // radial-gradient([<shape> || <size>]? [at <position>]?, stops):
