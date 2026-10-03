@@ -281,6 +281,12 @@ pub const Surface = struct {
     trim_id: c_uint = 0,
     pointer: [2]f32 = .{ 0, 0 },
     hovered: i64 = 0,
+    /// Mouse buttons down, as the DOM's `buttons` (1 primary, 2 secondary, 4 middle).
+    buttons: u32 = 0,
+    /// A pointer move waiting for the next display frame (the latest wins).
+    move: ?PendingMove = null,
+    /// Keys down, for keydown's `repeat` (GTK reports auto-repeat as presses).
+    keys_down: std.AutoHashMapUnmanaged(c_uint, void) = .empty,
     updating: bool = false,
     dark: bool = false,
 
@@ -344,6 +350,7 @@ pub const Surface = struct {
         gtk_widget_add_controller(area, motion);
         const keys = gtk_event_controller_key_new();
         _ = g_signal_connect_data(keys, "key-pressed", @ptrCast(&onKey), s, null, 0);
+        _ = g_signal_connect_data(keys, "key-released", @ptrCast(&onKeyUp), s, null, 0);
         gtk_widget_add_controller(area, keys);
         s.controllers = .{ click, scroll, motion, keys };
 
@@ -369,6 +376,7 @@ pub const Surface = struct {
         if (s.trim_id != 0) _ = g_source_remove(s.trim_id);
         s.trim_id = 0;
         s.warm.deinit(s.gpa);
+        s.keys_down.deinit(s.gpa);
         gtk_drawing_area_set_draw_func(s.area, null, null, null);
         disconnect(s, s.area);
         disconnect(s, s.overlay);
@@ -519,7 +527,13 @@ fn requestDisplayFrame(ctx: *anyopaque) void {
 
 fn onTick(_: *Widget, clock: *anyopaque, data: ?*anyopaque) callconv(.c) c_int {
     const token: u64 = @intFromPtr(data);
-    const s = surfaces.get(token) orelse return 0; // G_SOURCE_REMOVE: the window is gone
+    var s = surfaces.get(token) orelse return 0; // G_SOURCE_REMOVE: the window is gone
+    // Input first, then the frame (as a browser): the page's handler can ask
+    // for the frame that shows it.
+    if (s.move != null) {
+        flushMove(s);
+        s = surfaces.get(token) orelse return 0; // the page closed its window
+    }
     if (!s.frame_wanted) {
         s.tick_id = 0;
         return 0;
@@ -908,18 +922,68 @@ fn onResize(_: *Widget, width: c_int, height: c_int, data: ?*anyopaque) callconv
 }
 
 fn onPressed(gesture: *anyopaque, _: c_int, x: f64, y: f64, data: ?*anyopaque) callconv(.c) void {
-    _ = gesture;
     const s = surfaceOf(data);
     _ = gtk_widget_grab_focus(s.area);
+    const token = s.token;
     // :active while the button is down.
     if (s.engine.tree.hit(@floatCast(x), @floatCast(y))) |n| _ = s.engine.event(n.id, "press", "null");
+    if (surfaces.get(token) == null) return;
+    // A move still waiting goes before the down.
+    if (s.move != null) flushMove(s);
+    if (surfaces.get(token) == null) return;
+    s.buttons |= buttonBit(gtk_gesture_single_get_current_button(gesture));
+    _ = sendPointer(s, "down", .{ @floatCast(x), @floatCast(y) }, s.buttons, modFlags(gtk_event_controller_get_current_event_state(gesture)));
+}
+
+/// GDK's button number as the DOM's `buttons` bit.
+fn buttonBit(button: c_uint) u32 {
+    return switch (button) {
+        1 => 1,
+        3 => 2,
+        2 => 4,
+        else => 0,
+    };
+}
+
+const PendingMove = struct { at: [2]f32, buttons: u32, mods: u32 };
+
+/// A pointer event for the page (main.js pointerEvent; docs/native-renderer.md
+/// "Pointer and key events"): `phase` down, move, up or cancel at `p` (the
+/// widget's coordinates: CSS px), on the node there. True when the page took
+/// it (prevented the default).
+fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, mods: u32) bool {
+    if (!std.math.isFinite(p[0]) or !std.math.isFinite(p[1])) return false;
+    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    var buf: [96]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"mouse\",{d}]", .{ phase, p[0], p[1], buttons, mods }) catch return false;
+    return s.engine.event(nid, "pointer", json);
+}
+
+/// A move waits for the next display frame (the latest one wins), so a
+/// 1000 Hz mouse doesn't flood the page.
+fn queueMove(s: *Surface, p: [2]f32, buttons: u32, mods: u32) void {
+    s.move = .{ .at = p, .buttons = buttons, .mods = mods };
+    if (s.tick_id == 0) s.tick_id = gtk_widget_add_tick_callback(s.area, onTick, @ptrFromInt(s.token), null);
+}
+
+fn flushMove(s: *Surface) void {
+    const m = s.move orelse return;
+    s.move = null;
+    _ = sendPointer(s, "move", m.at, m.buttons, m.mods);
 }
 
 fn onReleased(gesture: *anyopaque, _: c_int, x: f64, y: f64, data: ?*anyopaque) callconv(.c) void {
     const s = surfaceOf(data);
+    const token = s.token;
+    const button = gtk_gesture_single_get_current_button(gesture);
+    // A move still waiting goes first, then the up, then the click.
+    if (s.move != null) flushMove(s);
+    if (surfaces.get(token) == null) return;
+    s.buttons &= ~buttonBit(button);
+    _ = sendPointer(s, "up", .{ @floatCast(x), @floatCast(y) }, s.buttons, modFlags(gtk_event_controller_get_current_event_state(gesture)));
+    if (surfaces.get(token) == null) return;
     _ = s.engine.event(0, "release", "null");
     const n = s.engine.tree.hit(@floatCast(x), @floatCast(y)) orelse return;
-    const button = gtk_gesture_single_get_current_button(gesture);
     if (button == 3) {
         var buf: [64]u8 = undefined;
         const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0}]", .{ x, y }) catch return;
@@ -963,9 +1027,10 @@ fn onLeave(_: *anyopaque, data: ?*anyopaque) callconv(.c) void {
     _ = s.engine.event(0, "hover", "null");
 }
 
-fn onMotion(_: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(.c) void {
+fn onMotion(controller: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(.c) void {
     const s = surfaceOf(data);
     s.pointer = .{ @floatCast(x), @floatCast(y) };
+    queueMove(s, s.pointer, s.buttons, modFlags(gtk_event_controller_get_current_event_state(controller)));
     const n = s.engine.tree.hit(s.pointer[0], s.pointer[1]);
     gtk_widget_set_cursor_from_name(s.area, if (n != null and clickableUp(n.?)) "pointer" else null);
     // :hover: the page hears when the node under the pointer changes.
@@ -982,8 +1047,22 @@ fn onKey(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopa
     var buf: [64]u8 = undefined;
     const key = std.json.Stringify.valueAlloc(s.gpa, name, .{}) catch return 0;
     defer s.gpa.free(key);
-    const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ key, modFlags(state) }) catch return 0;
+    // GTK reports auto-repeat as more presses: a key already down repeats.
+    const repeat = s.keys_down.contains(keyval);
+    s.keys_down.put(s.gpa, keyval, {}) catch {};
+    const json = std.fmt.bufPrint(&buf, "[{s},{d},{}]", .{ key, modFlags(state), repeat }) catch return 0;
     return @intFromBool(s.engine.event(0, "key", json));
+}
+
+fn onKeyUp(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    _ = s.keys_down.remove(keyval);
+    const name = keyName(keyval) orelse return;
+    var buf: [64]u8 = undefined;
+    const key = std.json.Stringify.valueAlloc(s.gpa, name, .{}) catch return;
+    defer s.gpa.free(key);
+    const json = std.fmt.bufPrint(&buf, "[{s},{d}]", .{ key, modFlags(state) }) catch return;
+    _ = s.engine.event(0, "keyup", json);
 }
 
 // ---------------------------------------------------------------------------
