@@ -1534,7 +1534,9 @@ export class Renderer {
     // longest word, tree.zig). Several boxes, or a box sized in % (a
     // `width: 100%` field under its label): they wrap to new lines.
     if (inlineLine) {
-      props.fd = "row"; props.ai = "center";
+      // On one baseline, as an inline formatting context lines them up
+      // (a box's is its first text's: tree.zig baselineFn).
+      props.fd = "row"; props.ai = "baseline";
       const boxes = flow.filter((f) => f.el);
       if (boxes.length > 1 || boxes.some((f) => /%\s*$/.test(this.style(f.el, cs, rematch).width || ""))) props.fw = "wrap";
       // A <br> in the line: what follows starts a new line (a full-width
@@ -1711,8 +1713,9 @@ export class Renderer {
         n.props.fs = 0;
       }
     }
-    // An inline box (button, chip) in a block: as wide as its content, placed by text-align.
-    if (!childCtx.blockify) {
+    // An inline box (button, chip) in a block: as wide as its content, placed by text-align
+    // (in a line of inline content: on the line's baseline, the row's).
+    if (!childCtx.blockify && !(props.fd === "row" && props.ai === "baseline")) {
       const n = nodes.get(cid);
       const d = this.styleOf(itemEl)?.display || "inline";
       if (n && (ATOMIC_INLINE.has(d) || INLINE_DISPLAY.has(d)) && !n.props.as && n.props.pos !== "absolute") {
