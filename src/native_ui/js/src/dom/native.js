@@ -1,3 +1,8 @@
+// The runtime's own weak caches keyed by nodes: marked so their entries
+// don't keep a node's wrapper from being replaced (a page's weak
+// references do: dom/store.zig prune).
+const internalWeak = (m) => (globalThis.__nuiDom?.internal?.(m), m);
+
 // The native DOM's JavaScript side (docs/native-dom.md).
 //
 // The nodes live in Zig (src/native_ui/dom): the tree, attributes, text,
@@ -83,7 +88,7 @@ export function installNativeDom(g, document) {
     const key = Symbol(name);
     // A frozen or non-extensible target (a page's own EventTarget) keeps its
     // state beside it instead.
-    const aside = new WeakMap();
+    const aside = internalWeak(new WeakMap());
     return {
       get: (o) => (Object.prototype.hasOwnProperty.call(o, key) ? o[key] : aside.get(o)),
       set: (o, v) => {
@@ -247,9 +252,9 @@ export function installNativeDom(g, document) {
     values() { return this._get().values(); }
     entries() { return this._get().entries(); }
   }
-  const tokenLists = new WeakMap();
+  const tokenLists = internalWeak(new WeakMap());
   // style: linkedom's CSSStyleDeclaration (a view of the style attribute).
-  const styleOf = new WeakMap();
+  const styleOf = internalWeak(new WeakMap());
   function parseStyle(text) {
     const m = new Map();
     for (const rule of (text || "").split(/\s*;\s*/)) {
@@ -304,7 +309,7 @@ export function installNativeDom(g, document) {
     ownKeys(t) { const out = []; const a = nd.attrs(t._el); for (let i = 0; i < a.length; i += 2) if (a[i].startsWith("data-")) out.push(a[i].slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())); return out; },
     getOwnPropertyDescriptor(t, name) { const v = this.get(t, name); return v === undefined ? undefined : { value: v, enumerable: true, configurable: true, writable: true }; },
   };
-  const datasets = new WeakMap();
+  const datasets = internalWeak(new WeakMap());
   // attributes: Attr-like objects, in order (a snapshot, as linkedom's
   // reads were; their value setter writes through).
   class Attr {

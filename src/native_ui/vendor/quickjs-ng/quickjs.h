@@ -882,6 +882,8 @@ JS_EXTERN int JS_GetRefCount(JSValueConst v);
 /* Oriel: whether an object carries state (properties, a prototype other
    than `proto`, not extensible). */
 JS_EXTERN bool JS_ObjectHasState(JSValueConst v, JSValueConst proto);
+/* Oriel: marks a WeakMap/WeakSet as the runtime's own cache. */
+JS_EXTERN void JS_SetMapInternal(JSValueConst map);
 JS_EXTERN int JS_ToBool(JSContext *ctx, JSValueConst val); /* return -1 for JS_EXCEPTION */
 static inline JSValue JS_ToBoolean(JSContext *ctx, JSValueConst val)
 {
