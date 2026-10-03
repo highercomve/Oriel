@@ -88,6 +88,8 @@ internal object NuiNative {
     @JvmStatic external fun jsMemory(window: Int): Long
     /** ORIEL_NUI_TRACE is set (`debug.oriel.env`): NuiView logs each draw. */
     @JvmStatic external fun trace(): Boolean
+    /** ORIEL_NUI_DUMP is set: NuiView logs what it holds after each frames(). */
+    @JvmStatic external fun dump(): Boolean
     /** The display refreshed: the window's requestAnimationFrame callbacks run. */
     @JvmStatic external fun displayFrame(window: Int, intervalMs: Float)
     /** An app asset's bytes (an <img> src), or null. */
@@ -102,6 +104,7 @@ internal object Nui {
      *  timestamps then give a change's on-screen time against the page's own
      *  log lines (examples/render-bench). */
     val trace by lazy { NuiNative.trace() }
+    val dump by lazy { NuiNative.dump() }
 
     fun viewport(window: Int): Long {
         val res = (views[window]?.context ?: OrielRuntime.app).resources
@@ -158,9 +161,44 @@ internal class NuiNode(val id: Int, var kind: String) {
     var layoutWidth = -1
     var icon: NuiIcon? = null
 
+    /** A single run's text set apart from `p` (setText, a leaf's text):
+     *  `p` may be a leaf style's, shared by every node made from it. */
+    private var runText: String? = null
+
     fun update(json: String, kind: String) {
         this.kind = kind
         p = JSONObject(json)
+        runText = null
+        derive()
+    }
+
+    /** A node made from a leaf style (NuiView.leaves): the style's parsed
+     *  props, shared and read-only, and this node's own text. */
+    fun fromStyle(style: NuiNode, text: String?) {
+        p = style.p
+        runText = text
+        bg = style.bg
+        gradient = style.gradient
+        br = style.br
+        bw = style.bw
+        bc = style.bc
+        op = style.op
+        sc = style.sc
+        rot = style.rot
+        shadow = style.shadow
+        layout = null
+        layoutWidth = -1
+        forgetSize()
+        this.text = null
+        icon = null
+        if (kind == "text") buildText()
+    }
+
+    /** Its text as drawn (ORIEL_NUI_DUMP). */
+    fun textForDump(): String = text?.toString() ?: ""
+
+    /** What `p` gives: colors, borders, transforms, the text's paint. */
+    private fun derive() {
         val b = p.optJSONObject("bg")
         bg = b?.optJSONArray("color")?.let { color(it) }
         gradient = b?.optJSONObject("gradient")
@@ -188,8 +226,7 @@ internal class NuiNode(val id: Int, var kind: String) {
     fun setText(t: String): Boolean {
         val runs = p.optJSONArray("runs") ?: return false
         if (kind != "text" || runs.length() != 1) return false
-        val r = runs.optJSONObject(0) ?: return false
-        r.put("t", t)
+        runText = t
         layout = null
         layoutWidth = -1
         forgetSize()
@@ -217,7 +254,7 @@ internal class NuiNode(val id: Int, var kind: String) {
         for (i in 0 until runs.length()) {
             val r = runs.optJSONObject(i) ?: continue
             val start = sb.length
-            sb.append(r.optString("t"))
+            sb.append(if (i == 0 && runs.length() == 1) runText ?: r.optString("t") else r.optString("t"))
             val end = sb.length
             if (end == start) continue
             val flags = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
@@ -554,6 +591,60 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         if (nodes[id]?.setText(t) == true) invalidate()
     }
 
+    /** ORIEL_NUI_DUMP: each record as NuiView will draw it (ids left out:
+     *  they differ between runtimes), between "nui dump begin" and "end". */
+    private fun dumpFrames() {
+        val f = frames
+        Log.d("OrielNui", "nui dump begin $window")
+        var i = 0
+        while (i + REC <= f.size) {
+            val n = nodes[ids[i]]
+            val t = n?.textForDump() ?: ""
+            Log.d("OrielNui", "nui dump ${n?.kind ?: "?"} ${"%.1f %.1f %.1f %.1f".format(f[i + 1], f[i + 2], f[i + 3], f[i + 4])} bg=${n?.bg} fz=${n?.p?.optDouble("fz", 0.0)} \"$t\"")
+            i += REC
+        }
+        Log.d("OrielNui", "nui dump end $window")
+    }
+
+    /** Leaf styles, parsed once (NuiNode templates), by style id. */
+    private val leafStyles = HashMap<Int, NuiNode>()
+
+    /**
+     * Leaf styles and the nodes the tree made from them (android.zig's
+     * flushLeaves; host.leaf, stamped rows), packed little-endian:
+     * 'S' style id, JSON length, JSON; 'L' node id, kind (0 view, 1 text),
+     * style id, text length, text.
+     */
+    fun leaves(bytes: ByteArray) {
+        val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        while (b.remaining() >= 9) {
+            val tag = b.get().toInt().toChar()
+            val id = b.int
+            when (tag) {
+                'S' -> {
+                    val json = utf8(b, b.int) ?: return
+                    leafStyles[id] = NuiNode(id, "style").also { it.update(json, "style") }
+                }
+                'L' -> {
+                    val kind = if (b.get().toInt() == 1) "text" else "view"
+                    val style = leafStyles[b.int]
+                    val text = utf8(b, b.int) ?: return
+                    if (style == null) continue // not sent (an id beyond an int): not drawn
+                    nodes[id] = NuiNode(id, kind).also { it.fromStyle(style, if (kind == "text") text else null) }
+                }
+                else -> return
+            }
+        }
+        orderDirty = true
+    }
+
+    private fun utf8(b: ByteBuffer, len: Int): String? {
+        if (len < 0 || len > b.remaining()) return null
+        val s = String(b.array(), b.arrayOffset() + b.position(), len, Charsets.UTF_8)
+        b.position(b.position() + len)
+        return s
+    }
+
     fun remove(id: Int) {
         nodes.remove(id)
         canvases.remove(id)?.recycle()
@@ -574,6 +665,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         var i = 0
         while (i + REC <= frames.size) { index[ids[i]] = i; i += REC }
         orderDirty = true
+        if (Nui.dump) dumpFrames()
         syncFields()
         requestLayout()
         invalidate()
