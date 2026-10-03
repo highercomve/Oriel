@@ -282,6 +282,9 @@ pub const Engine = struct {
     /// animation frame. `interval_ms`: the display's refresh interval (0
     /// when unknown).
     pub fn displayFrame(e: *Engine, interval_ms: f64) void {
+        // Scrolls since the last frame: their events first, as a browser
+        // runs scroll steps before animation frames.
+        e.flushScrolls();
         // The app's Zig first (a canvas it draws), then the page's frame.
         e.in_frame_hooks = true;
         var i: usize = 0;
@@ -358,8 +361,10 @@ pub const Engine = struct {
         const before = node.scroll_x;
         node.scroll_x = std.math.clamp(node.scroll_x + dx, 0, @max(0, node.content_w - node.frame.w));
         if (node.scroll_x == before) return false;
+        e.tree.noteScroll(node);
         e.tree.replace();
         e.backend.laid_out(e.backend.ctx);
+        e.scrollsChanged();
         return true;
     }
 
@@ -367,9 +372,42 @@ pub const Engine = struct {
         const before = node.scroll_y;
         node.scroll_y = std.math.clamp(node.scroll_y + dy, 0, @max(0, node.content_h - node.frame.h));
         if (node.scroll_y == before) return false;
+        e.tree.noteScroll(node);
         e.tree.replace();
         e.backend.laid_out(e.backend.ctx);
+        e.scrollsChanged();
         return true;
+    }
+
+/// A scroller's offset changed (Tree.scrolled): the page hears of it at
+    /// the next display frame (at most once a frame), or now when the
+    /// backend has none.
+    fn scrollsChanged(e: *Engine) void {
+        if (e.tree.scrolled.items.len == 0) return;
+        if (e.backend.request_display_frame) |request| request(e.backend.ctx) else e.flushScrolls();
+    }
+
+    /// __oriel.scrolled([[id, scrollTop, scrollLeft], ...]): "scroll" on
+    /// each scroller that moved since the page last heard.
+    pub fn flushScrolls(e: *Engine) void {
+        if (e.tree.scrolled.items.len == 0 or !e.booted) return;
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(e.gpa);
+        buf.appendSlice(e.gpa, "__oriel.scrolled([") catch return;
+        var first = true;
+        for (e.tree.scrolled.items) |id| {
+            const n = e.tree.get(id) orelse continue;
+            n.scroll_noted = false;
+            if (!first) buf.append(e.gpa, ',') catch return;
+            first = false;
+            buf.print(e.gpa, "[{d},{d},{d}]", .{ id, n.scroll_y, n.scroll_x }) catch return;
+        }
+        e.tree.scrolled.clearRetainingCapacity();
+        if (first) return;
+        buf.appendSlice(e.gpa, "])") catch return;
+        const script = e.gpa.dupeZ(u8, buf.items) catch return;
+        defer e.gpa.free(script);
+        _ = e.call(script);
     }
 
     fn callf(e: *Engine, comptime fmt: []const u8, args: anytype) bool {
@@ -437,6 +475,8 @@ pub const Engine = struct {
             e.tree.paint_dirty = false;
             e.backend.laid_out(e.backend.ctx);
         }
+        // A layout that moved a scroller (its content shrank): heard too.
+        e.scrollsChanged();
     }
 
     /// The bytes of an app asset ("assets/x.png"), or null.
@@ -588,7 +628,7 @@ export fn oriel_nui_leaf(p: *anyopaque, id: f64, style_id: f64, text: [*]const u
     return if (engineOf(p).tree.createLeaf(Tree.idOf(id), if (is_text != 0) .text else .view, Tree.idOf(style_id), text[0..len]) catch return 0) 1 else 0;
 }
 
-export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[6]f64) c_int {
+export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[8]f64) c_int {
     const e = engineOf(p);
     if (e.tree.needsLayout()) {
         const t0 = prof.now();
@@ -598,7 +638,8 @@ export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[6]f64) c_int {
     }
     const n = e.tree.get(Tree.idOf(id)) orelse return 0;
     // The scrollbar's room last (clientWidth leaves it out).
-    out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(n.content_h, n.frame.h), n.gutter };
+    // Then its scroll offsets (scrollTop, scrollLeft).
+    out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(n.content_h, n.frame.h), n.gutter, n.scroll_y, n.scroll_x };
     return 1;
 }
 
@@ -645,15 +686,21 @@ export fn oriel_nui_scroll_into_view(p: *anyopaque, id: f64, block: [*]const u8,
     const n = e.tree.get(Tree.idOf(id)) orelse return;
     e.tree.scrollIntoView(n, block[0..len]);
     e.backend.laid_out(e.backend.ctx);
+    e.scrollsChanged();
 }
 
-export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64) void {
+/// host.scrollTo(id, y, x): either NaN leaves that axis.
+export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64, x: f64) void {
     const e = engineOf(p);
     if (e.tree.needsLayout()) e.tree.layout();
     const n = e.tree.get(Tree.idOf(id)) orelse return;
-    n.scroll_y = std.math.clamp(@as(f32, @floatCast(y)), 0, @max(0, n.content_h - n.frame.h));
+    const before = .{ n.scroll_y, n.scroll_x };
+    if (!std.math.isNan(y)) n.scroll_y = std.math.clamp(@as(f32, @floatCast(y)), 0, @max(0, n.content_h - n.frame.h));
+    if (!std.math.isNan(x)) n.scroll_x = std.math.clamp(@as(f32, @floatCast(x)), 0, @max(0, n.content_w - n.frame.w));
+    if (n.scroll_y != before[0] or n.scroll_x != before[1]) e.tree.noteScroll(n);
     e.tree.replace();
     e.backend.laid_out(e.backend.ctx);
+    e.scrollsChanged();
 }
 
 test {
