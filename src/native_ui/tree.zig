@@ -35,6 +35,9 @@ pub const Run = struct {
     bg: ?Color = null,
     /// The CSS font-family list (render.js familyOf); null: sans-serif.
     ff: ?[]const u8 = null,
+    /// A focus ring around this run's line fragments (an inline link with
+    /// :focus-visible: it has no box of its own).
+    ol: ?Outline = null,
 };
 
 // A text-only update owns its new string separately from the unchanged
