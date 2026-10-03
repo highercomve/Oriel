@@ -21,6 +21,7 @@ body { margin: 0; font-size: 14px; }
 .item .k { width: 30px; }
 .item .v { color: #333; text-transform: uppercase; }
 .dense .item { padding: 0; }
+.item:hover { padding-left: 9px; }
 </style></head><body><div id="wrap"><div id="list"></div></div><div id="list2"></div><script>
 const list = document.getElementById("list"), wrap = document.getElementById("wrap");
 const add = (html) => { const r = document.createElement("div"); r.className = "row"; r.innerHTML = html; list.append(r); return r; };
@@ -33,6 +34,8 @@ const pre = add(`<span class="n">p</span><span class="ws">a   b</span>`);
 const click = add(`<span class="n">c</span><span>click me</span>`);
 click.lastElementChild.addEventListener("click", () => {});
 const list2 = document.getElementById("list2");
+// The pointer over an element (null: none), as the native views report it.
+const hover = (el) => __oriel.event(el ? 2 ** 30 + __nuiDom.index(el) : 0, "hover", null);
 const items = [];
 const item = (i) => { const r = document.createElement("div"); r.className = "item"; r.innerHTML = `<span class="k">${i}</span><span class="v">value ${i}</span><span></span>`; return r; };
 for (let i = 0; i < 20; i++) { items.push(item(i)); list2.append(items[i]); }
@@ -52,6 +55,10 @@ steps=[
  'items[9].setAttribute("title", "hovered");',
  'items[9].removeAttribute("title"); items[10].children[0].textContent = "";',
  'list2.textContent = ""; for (let i = 0; i < 5; i++) list2.append(item(100 + i));',
+ 'for (let i = 0; i < 10; i++) list2.append(item(200 + i)); hover(list2.children[3].children[1]);',
+ 'hover(list2.children[6]);',
+ 'hover(list2.children[0].children[0]);',
+ 'list2.children[6].children[1].textContent = "while hovered"; hover(null);',
 ]
 if sys.argv[1] == '--steps':
     print(len(steps))

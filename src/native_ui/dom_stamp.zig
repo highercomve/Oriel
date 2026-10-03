@@ -32,20 +32,23 @@ pub fn stamp(t: *Tree, d: *capi.Dom, row: st.Index, row_id: i64, plan_id: u32) !
     return t.stampRow(row_id, leaves);
 }
 
-/// Stamp list `list` (tree node `list_id`): its first row the runtime
-/// rendered (its node made by the page's ops, its children stamped with
-/// plan `plan_id`); every row after it, the same element as the first (tag,
-/// attributes, children and theirs, no click listener), gets a box leaf of
-/// style `row_style` (the first row's node as made, its parent's
-/// adjustments included) and its children stamped with the plan. All rows
-/// are checked before any is made: false (nothing changed) when one
-/// differs or the list holds anything else but comments.
-pub fn stampList(t: *Tree, d: *capi.Dom, list: st.Index, list_id: i64, row_style: i64, plan_id: u32) !bool {
+/// Stamp list `list` (tree node `list_id`): its row `template_row` (0: its
+/// first) and the
+/// rows in `kept` the runtime made (their nodes made by the page's ops:
+/// the template's children stamped with plan `plan_id`, kept rows the
+/// general way, a hovered one); every other row, the same element as the
+/// template (tag, attributes, children and theirs, no click listener),
+/// gets a box leaf of style `row_style` (the template's node as made, its
+/// parent's adjustments included) and its children stamped with the plan.
+/// All rows are checked before any is made: false (nothing changed) when
+/// one differs or the list holds anything else but comments.
+pub fn stampList(t: *Tree, d: *capi.Dom, list: st.Index, list_id: i64, row_style: i64, plan_id: u32, template_row: st.Index, kept: []const st.Index) !bool {
     const plan = t.stampPlan(plan_id) orelse return false;
     if (!isElement(d, list) or !t.leaf_styles.contains(row_style)) return false;
     const s = &d.store;
-    const first = nextElement(s, s.get(list).first) orelse return false;
-    if (!t.nodes.contains(id_base + @as(i64, first))) return false;
+    // No template given (0): the list's first row.
+    const template = if (template_row != st.none) template_row else nextElement(s, s.get(list).first) orelse return false;
+    if (!isElement(d, template) or s.get(template).parent != list) return false;
 
     var arena: std.heap.ArenaAllocator = .init(t.gpa);
     defer arena.deinit();
@@ -53,15 +56,21 @@ pub fn stampList(t: *Tree, d: *capi.Dom, list: st.Index, list_id: i64, row_style
     const Row = struct { idx: st.Index, leaves: []const Tree.StampLeaf };
     var rows: std.ArrayList(Row) = .empty;
     var ids: std.ArrayList(i64) = .empty;
-    try ids.append(a, id_base + @as(i64, first));
-    var c = s.get(first).next;
+    var c = s.get(list).first;
     while (c != st.none) : (c = s.get(c).next) {
         const node = s.get(c);
         if (node.kind == .comment) continue;
-        if (node.kind != .element or !try sameElement(d, first, c, true)) return false;
-        const leaves = (try rowLeaves(d, a, c, plan)) orelse return false;
-        try rows.append(a, .{ .idx = c, .leaves = leaves });
-        try ids.append(a, id_base + @as(i64, c));
+        if (node.kind != .element) return false;
+        const id = id_base + @as(i64, c);
+        if (c == template or std.mem.indexOfScalar(st.Index, kept, c) != null) {
+            // Made by the page's ops this frame.
+            if (!t.nodes.contains(id)) return false;
+        } else {
+            if (!try sameElement(d, template, c, true)) return false;
+            const leaves = (try rowLeaves(d, a, c, plan)) orelse return false;
+            try rows.append(a, .{ .idx = c, .leaves = leaves });
+        }
+        try ids.append(a, id);
     }
     for (rows.items) |r| {
         const id = id_base + @as(i64, r.idx);
