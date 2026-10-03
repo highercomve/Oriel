@@ -3,6 +3,7 @@
 // embeds and runs in QuickJS. Run `npm install && npm run build` after
 // changing src/ or vendor/.
 import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
 
 // QuickJS has no atob (HTML entity tables are base64).
 const atob = `globalThis.atob ??= (s) => {
@@ -30,6 +31,6 @@ await build({ ...options, outfile: "../runtime.js" });
 // runtime-native.js: the native DOM (-Dnative_dom, docs/native-dom.md).
 const nativeDom = {
   name: "native-dom",
-  setup(b) { b.onResolve({ filter: /^#dom$/ }, () => ({ path: new URL("src/dom/native-backend.js", import.meta.url).pathname })); },
+  setup(b) { b.onResolve({ filter: /^#dom$/ }, () => ({ path: fileURLToPath(new URL("src/dom/native-backend.js", import.meta.url)) })); },
 };
 await build({ ...options, outfile: "../runtime-native.js", plugins: [nativeDom] });

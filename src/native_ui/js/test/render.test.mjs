@@ -445,4 +445,47 @@ for (const css of [
   assert.deepEqual([fixed.props.w, fixed.props.h], [428, 40], "without a max-width: its bitmap's size");
 }
 
+// Block flow's vertical margins collapse as in a browser: adjacent blocks
+// share the larger margin (a negative one subtracts), a first or last
+// block's margin goes through a parent with no padding or border on that
+// side, and nothing collapses in a flex container, through a padded,
+// clipped or flex-item parent, or across a line of text.
+{
+  const f = fixture(".box { padding: 1px } p { margin: 10px 0 } .big { margin-top: 20px } .neg { margin-top: -4px }" +
+    " .wrap { margin: 5px 0 } .pad { padding-top: 2px } .clip { overflow: hidden } .row { display: flex; flex-direction: column }");
+  const main = f.document.querySelector("main");
+  main.innerHTML =
+    '<div class="box"><p>s1</p><p class="big">s2</p><p class="neg">s3</p></div>' +
+    '<div class="box"><div class="wrap" id="w"><p>t1</p></div></div>' +
+    '<div class="box"><div class="wrap pad" id="wp"><p>u1</p></div></div>' +
+    '<div class="box"><div class="wrap clip" id="wc"><p>v1</p></div></div>' +
+    '<div class="box"><p>x1</p>loose text<p>x2</p></div>' +
+    '<div class="box row"><p>y1</p><p>y2</p></div>';
+  f.check();
+  const find = (n, pred) => pred(n) ? n : n.kids.map((k) => find(k, pred)).find(Boolean);
+  const tree = f.tree();
+  const text = (t) => find(tree, (n) => n.kind === "text" && n.props.runs?.length === 1 && n.props.runs[0].t === t);
+  const m = (n) => n.props.m ?? [0, 0, 0, 0];
+  const parentOf = (k) => find(tree, (n) => n.kids.includes(k));
+  assert.deepEqual([m(text("s1"))[2], m(text("s2"))[0]], [20, 0], "adjacent blocks: the larger margin");
+  assert.deepEqual([m(text("s2"))[2], m(text("s3"))[0]], [6, 0], "a negative margin subtracts");
+  const w = parentOf(text("t1"));
+  assert.deepEqual([m(w)[0], m(w)[2], m(text("t1"))[0], m(text("t1"))[2]], [10, 10, 0, 0], "first and last child's margins go through the parent");
+  const wp = parentOf(text("u1"));
+  assert.deepEqual([m(wp)[0], m(text("u1"))[0]], [5, 10], "not through a padded side");
+  assert.deepEqual([m(wp)[2], m(text("u1"))[2]], [10, 0], "the other side still collapses");
+  const wc = parentOf(text("v1"));
+  assert.deepEqual([m(wc)[0], m(text("v1"))[0]], [5, 10], "not through a clipped parent");
+  assert.deepEqual([m(text("x1"))[2], m(text("x2"))[0]], [10, 10], "a line of text between blocks keeps both");
+  assert.deepEqual([m(text("y1"))[2], m(text("y2"))[0]], [10, 10], "a flex container's items don't collapse");
+  // Rendered again after a change elsewhere: the reused blocks collapse
+  // the same (their saved nodes keep the margins as made).
+  main.firstChild.querySelector(".big").textContent = "s2 again";
+  f.check();
+  const again = f.tree();
+  const t1 = find(again, (n) => n.kind === "text" && n.props.runs?.[0]?.t === "t1");
+  assert.equal(m(t1)[0], 0);
+  assert.equal(m(find(again, (n) => n.kids.includes(t1)))[0], 10);
+}
+
 console.log("render: incremental trees, selector sharing, and wire defaults pass");

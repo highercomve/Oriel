@@ -298,6 +298,8 @@ function expand(prop, value, out) {
       return box(prop, (side) => side);
     case "border-width":
       return box(prop, (side) => `border-${side}-width`);
+    case "border-style":
+      return box(prop, (side) => `border-${side}-style`);
     case "border-color":
       return box(prop, (side) => `border-${side}-color`);
     case "border-radius": {
@@ -319,6 +321,7 @@ function expand(prop, value, out) {
       for (const s of sides) {
         out[`border-${s}-width`] = style === "none" ? "0" : width;
         out[`border-${s}-color`] = color;
+        out[`border-${s}-style`] = style;
       }
       return;
     }
