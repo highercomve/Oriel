@@ -187,6 +187,8 @@ pub const Surface = struct {
     /// change starts a new one).
     text_measurements: text_measure_cache.Cache = .{},
     text_epoch: u64 = 1,
+    /// fastTextSize's glyph-pair widths, per font.
+    glyph_widths: std.AutoHashMapUnmanaged(FontKey, *PairWidths) = .empty,
     invoke_fn: Invoke,
     invoke_ctx: ?*anyopaque,
     pointer: [2]f32 = .{ 0, 0 },
@@ -285,6 +287,8 @@ pub const Surface = struct {
         s.images.deinit();
         s.canvases.deinit();
         s.text_measurements.deinit(s.gpa);
+        clearGlyphWidths(s);
+        s.glyph_widths.deinit(s.gpa);
         _ = c.DestroyWindow(s.hwnd);
         s.gpa.destroy(s);
     }
@@ -316,6 +320,7 @@ pub const Surface = struct {
         // Text measured again (in DIPs it shouldn't move, but rounding and
         // hinting may).
         s.text_measurements.clear(s.gpa);
+        clearGlyphWidths(s);
         s.text_epoch +%= 1;
         var it = s.fields.valueIterator();
         while (it.next()) |f| f.font_px = 0; // fonts at the new size
@@ -1609,18 +1614,23 @@ const sans_face = std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI");
 /// unless it has line breaks). With `rt`, each run's color is set as its
 /// drawing effect (brushes released with the layout's caller's list).
 fn textLayout(s: *Surface, n: *Node, width: f32, brushes: ?*std.ArrayList(*c.ID2D1SolidColorBrush)) ?*c.IDWriteTextLayout {
-    const runs = n.props.runs orelse return null;
+    return textLayoutOf(s, &n.props, width, brushes);
+}
+
+/// textLayout for props (a probe's: fastTextSize).
+fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32, brushes: ?*std.ArrayList(*c.ID2D1SolidColorBrush)) ?*c.IDWriteTextLayout {
+    const runs = props.runs orelse return null;
     const u = runsUtf16(s, runs) orelse return null;
     defer {
         s.gpa.free(u.text);
         s.gpa.free(u.ranges);
     }
     const dw = dwrite.?;
-    const fz = n.props.fz orelse 16;
+    const fz = props.fz orelse 16;
     var format: ?*c.IDWriteTextFormat = null;
-    if (dw.lpVtbl.*.CreateTextFormat.?(dw, if (n.props.mono) mono_face else sans_face, null, c.DWRITE_FONT_WEIGHT_NORMAL, c.DWRITE_FONT_STYLE_NORMAL, c.DWRITE_FONT_STRETCH_NORMAL, fz, std.unicode.utf8ToUtf16LeStringLiteral(""), &format) < 0) return null;
+    if (dw.lpVtbl.*.CreateTextFormat.?(dw, if (props.mono) mono_face else sans_face, null, c.DWRITE_FONT_WEIGHT_NORMAL, c.DWRITE_FONT_STYLE_NORMAL, c.DWRITE_FONT_STRETCH_NORMAL, fz, std.unicode.utf8ToUtf16LeStringLiteral(""), &format) < 0) return null;
     defer releaseCom(format);
-    const nowrap = n.props.nowrap or std.math.isInf(width);
+    const nowrap = props.nowrap or std.math.isInf(width);
     const max_w: f32 = if (nowrap) 1e6 else @max(1, width);
     var layout: ?*c.IDWriteTextLayout = null;
     if (dw.lpVtbl.*.CreateTextLayout.?(dw, u.text.ptr, @intCast(u.text.len), format, max_w, 1e6, &layout) < 0) return null;
@@ -1629,12 +1639,12 @@ fn textLayout(s: *Surface, n: *Node, width: f32, brushes: ?*std.ArrayList(*c.ID2
     const fmt: *c.IDWriteTextFormat = @ptrCast(l);
     const fvt = fmt.lpVtbl.*;
     _ = fvt.SetWordWrapping.?(fmt, if (nowrap) c.DWRITE_WORD_WRAPPING_NO_WRAP else c.DWRITE_WORD_WRAPPING_WRAP);
-    if (n.props.ta) |ta| {
+    if (props.ta) |ta| {
         const a: c.DWRITE_TEXT_ALIGNMENT = if (std.mem.eql(u8, ta, "center")) c.DWRITE_TEXT_ALIGNMENT_CENTER else if (std.mem.eql(u8, ta, "right") or std.mem.eql(u8, ta, "end")) c.DWRITE_TEXT_ALIGNMENT_TRAILING else c.DWRITE_TEXT_ALIGNMENT_LEADING;
         // A line wider than nothing can't be aligned: only with a width.
         if (!nowrap) _ = fvt.SetTextAlignment.?(fmt, a);
     }
-    if (n.props.lh) |lh| _ = fvt.SetLineSpacing.?(fmt, c.DWRITE_LINE_SPACING_METHOD_UNIFORM, lh, lh * 0.8);
+    if (props.lh) |lh| _ = fvt.SetLineSpacing.?(fmt, c.DWRITE_LINE_SPACING_METHOD_UNIFORM, lh, lh * 0.8);
     for (runs, u.ranges) |r, range| {
         if (range.length == 0) continue;
         _ = vt.SetFontSize.?(l, r.sz, range);
@@ -2602,6 +2612,11 @@ fn paintControl(p: *Painter, n: *Node) void {
 /// (keyed by the text and every layout input, so equal rows share it).
 fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     const actual_width = if (n.props.nowrap or std.math.isInf(width)) std.math.inf(f32) else @max(1, width);
+    // One line of plain text: its width from its glyph pairs, no layout.
+    if (fastTextSize(s, &n.props)) |size| if (std.math.isInf(actual_width) or size[0] - 1 <= actual_width) {
+        if (textCheck()) checkTextSize(s, n, actual_width, size);
+        return size;
+    };
     var buf: [1024]u8 = undefined;
     const key = text_measure_cache.keyFor(&buf, &n.props, actual_width);
     if (key) |k| if (s.text_measurements.get(k)) |size| return size;
@@ -2612,6 +2627,134 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     const size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, @ceil(m.height) };
     if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
     return size;
+}
+
+// ---------------------------------------------------------------------------
+// Plain text without a layout (gtk.zig's scheme): one run of printable
+// ASCII on one line is as wide as its glyphs, each as wide as DirectWrite
+// makes it before the next one (its advance with the pair's kerning).
+// Those widths are measured once per font and pair, with DirectWrite
+// itself: width("ab") - width("b"). A pair DirectWrite makes one cluster
+// (a ligature), more than one run, letter spacing, other characters or a
+// text that wraps take the layout. ORIEL_NUI_TEXT_CHECK=1 measures both and
+// logs any difference. A new string was an IDWriteTextLayout (~19 µs):
+// most of render-bench's "update 1000 rows".
+
+const FontKey = struct { mono: bool, italic: bool, weight: u16, size: u32, fz: u32, lh: i32 };
+const pair_unknown: f32 = -1e30;
+const pair_ligature: f32 = -2e30;
+const PairWidths = struct {
+    /// Single-line height in DIPs, rounded up as measuredText's (0: not
+    /// measured yet).
+    height: f32 = 0,
+    /// [a][b]: a's width in DIPs before b (b = 128: at the end).
+    w: [128][129]f32 = @splat(@splat(pair_unknown)),
+};
+
+fn clearGlyphWidths(s: *Surface) void {
+    var it = s.glyph_widths.valueIterator();
+    while (it.next()) |t| s.gpa.destroy(t.*);
+    s.glyph_widths.clearRetainingCapacity();
+}
+
+fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
+    const runs = props.runs orelse return null;
+    if (runs.len != 1 or props.ls != null) return null;
+    const r = runs[0];
+    const t = r.t;
+    if (t.len == 0 or t.len > 512) return null;
+    for (t) |ch| if (ch < 0x20 or ch >= 0x7f) return null;
+    const key: FontKey = .{
+        .mono = r.mono or props.mono,
+        .italic = r.i,
+        .weight = tree_mod.sat(u16, r.w),
+        .size = tree_mod.sat(u32, r.sz * 64),
+        .fz = tree_mod.sat(u32, (props.fz orelse 16) * 64),
+        .lh = if (props.lh) |lh| tree_mod.sat(i32, lh * 64) else -1,
+    };
+    const table = s.glyph_widths.get(key) orelse blk: {
+        if (s.glyph_widths.count() >= 64) clearGlyphWidths(s);
+        const tbl = s.gpa.create(PairWidths) catch return null;
+        tbl.* = .{};
+        s.glyph_widths.put(s.gpa, key, tbl) catch {
+            s.gpa.destroy(tbl);
+            return null;
+        };
+        break :blk tbl;
+    };
+    if (table.height == 0) {
+        const p = probe(s, props, r, "A") orelse return null;
+        table.height = @ceil(p.h);
+    }
+    var sum: f64 = 0;
+    for (t, 0..) |ch, i| {
+        const next: u8 = if (i + 1 < t.len) t[i + 1] else 128;
+        sum += pairWidth(s, props, r, table, ch, next) orelse return null;
+    }
+    // As measuredText rounds DirectWrite's width; a sum of pairs may land
+    // a hair over a whole number the layout's own sum lands on.
+    const w: f32 = @floatCast(sum);
+    return .{ @ceil(w - 0.001) + 1, table.height };
+}
+
+fn pairWidth(s: *Surface, props: *const tree_mod.Props, r: tree_mod.Run, table: *PairWidths, a: u8, b: u8) ?f32 {
+    const known = table.w[a][b];
+    if (known == pair_ligature) return null;
+    if (known != pair_unknown) return known;
+    var w: f32 = undefined;
+    if (b == 128) {
+        const one = [1]u8{a};
+        w = (probe(s, props, r, &one) orelse return null).w;
+    } else {
+        const two = [2]u8{ a, b };
+        const pair = probe(s, props, r, &two) orelse return null;
+        const after = pairWidth(s, props, r, table, b, 128) orelse return null;
+        if (pair.clusters != 2) {
+            table.w[a][b] = pair_ligature;
+            return null;
+        }
+        w = pair.w - after;
+    }
+    table.w[a][b] = w;
+    return w;
+}
+
+/// `text` laid out on one line with the run's style: its width (trailing
+/// spaces included), height and clusters.
+fn probe(s: *Surface, props: *const tree_mod.Props, r: tree_mod.Run, text: []const u8) ?struct { w: f32, h: f32, clusters: u32 } {
+    var run = r;
+    run.t = text;
+    var p = props.*;
+    p.runs = @as(*const [1]tree_mod.Run, &run);
+    const layout = textLayoutOf(s, &p, std.math.inf(f32), null) orelse return null;
+    defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
+    var m: c.DWRITE_TEXT_METRICS = undefined;
+    if (layout.lpVtbl.*.GetMetrics.?(layout, &m) < 0) return null;
+    // With no buffer it reports how many there are (and fails).
+    var clusters: u32 = 0;
+    _ = layout.lpVtbl.*.GetClusterMetrics.?(layout, null, 0, &clusters);
+    return .{ .w = m.widthIncludingTrailingWhitespace, .h = m.height, .clusters = clusters };
+}
+
+var text_check: ?bool = null;
+
+/// ORIEL_NUI_TEXT_CHECK is set (read once).
+fn textCheck() bool {
+    if (text_check == null) text_check = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("ORIEL_NUI_TEXT_CHECK"), null, 0) > 0;
+    return text_check.?;
+}
+
+/// ORIEL_NUI_TEXT_CHECK: the fast size against DirectWrite's layout.
+fn checkTextSize(s: *Surface, n: *Node, width: f32, fast: [2]f32) void {
+    const layout = textLayout(s, n, width, null) orelse return;
+    defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
+    var m: c.DWRITE_TEXT_METRICS = undefined;
+    if (layout.lpVtbl.*.GetMetrics.?(layout, &m) < 0) return;
+    const size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, @ceil(m.height) };
+    if (size[0] != fast[0] or size[1] != fast[1]) {
+        const t = if (n.props.runs) |runs| runs[0].t else "";
+        log.warn("text size: fast {d}x{d}, DirectWrite {d}x{d} ({d}): \"{s}\"", .{ fast[0], fast[1], size[0], size[1], m.widthIncludingTrailingWhitespace, t[0..@min(t.len, 60)] });
+    }
 }
 
 /// New props or a new text (the direct bridge): measured again.
