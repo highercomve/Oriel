@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { parseHTML } from "../vendor/linkedom/esm/index.js";
-import { StyleEngine } from "../src/css.js";
+import { StyleEngine, viewport } from "../src/css.js";
 import { Renderer, UA_CSS } from "../src/render.js";
 import { transitionsOf } from "../src/transitions.js";
 
@@ -486,6 +486,49 @@ for (const css of [
   const t1 = find(again, (n) => n.kind === "text" && n.props.runs?.[0]?.t === "t1");
   assert.equal(m(t1)[0], 0);
   assert.equal(m(find(again, (n) => n.kids.includes(t1)))[0], 10);
+}
+
+// Vite's starters: <html>'s color and font reach the text (the UA sheet
+// sets them on html, not body); `flex: <width>` is 1 1 <width>;
+// inset-inline and the small/dynamic viewport units; an SVG picture is an
+// icon sized by its ratio; a <use> of another file's symbol (a sprite).
+{
+  const { document } = parseHTML("<html><body><main></main></body></html>");
+  const css = ":root { --t: #9ca3af; color: var(--t); font: 18px/145% sans-serif } li { flex: calc(50% - 8px) } .tall { display: flex; flex-direction: column; place-content: center } .ab { position: absolute; inset-inline: 0; top: 4px }" +
+    " .tall { min-height: 100svh } .logo { height: 26px; width: auto }";
+  const { renderer, tree } = makeRenderer(document, css);
+  const files = {
+    "icons.svg": '<svg xmlns="http://www.w3.org/2000/svg"><symbol id="gh" viewBox="0 0 16 16"><path d="M0 0h16v16z"/></symbol></svg>',
+    "assets/logo.svg": '<svg xmlns="http://www.w3.org/2000/svg" width="77" height="47" viewBox="0 0 77 47"><mask id="m"><path d="M1 1h2v2z"/></mask><path fill="#9135ff" d="M0 0h77v47z"/><g mask="url(#m)"><path d="M5 5h9v9z"/></g></svg>',
+  };
+  renderer.host.asset = (p) => files[p];
+  document.querySelector("main").innerHTML = '<p>Edit <code>x</code></p><ul><li>a</li><li>b</li></ul><div class="ab">abs</div><div class="tall">t</div>' +
+    '<img class="logo" src="./assets/logo.svg"><svg class="i"><use href="/icons.svg#gh"></use></svg>';
+  renderer.render();
+  const find = (n, pred) => pred(n) ? n : n.kids.map((k) => find(k, pred)).find(Boolean);
+  const t = tree();
+  const edit = find(t, (n) => n.props.runs?.[0]?.t.trim() === "Edit");
+  assert.deepEqual(edit.props.col, [156, 163, 175, 1], "html's color reaches the paragraph");
+  assert.equal(edit.props.fz, 18, "and its font size");
+  const li = find(t, (n) => n.props.runs?.[0]?.t.trim() === "a");
+  assert.equal(li.props.fg, 1, "flex: <width> grows");
+  assert.equal(li.props.fs, 1, "and shrinks");
+  const ab = find(t, (n) => n.props.runs?.[0]?.t.trim() === "abs");
+  assert.deepEqual([ab.props.ins[1], ab.props.ins[3]], [0, 0], "inset-inline: left and right");
+  const tall = find(t, (n) => n.kids.some((k) => k.props.runs?.[0]?.t.trim() === "t"));
+  assert.equal(tall.props.minh, viewport.height, "svh is the viewport's height");
+  assert.equal(tall.props.jc, "center", "place-content: justify-content too");
+  const icons = [];
+  const all = (n) => { if (n.kind === "icon") icons.push(n); n.kids.forEach(all); };
+  all(t);
+  assert.equal(icons.length, 2, "the SVG picture and the sprite's symbol are icons");
+  const [logo, gh] = icons;
+  assert.deepEqual(logo.props.icon.vb, [0, 0, 77, 47]);
+  assert.equal(logo.props.h, 26);
+  assert.equal(logo.props.w, undefined, "width: auto: from the ratio");
+  assert.ok(Math.abs(logo.props.ar - 77 / 47) < 1e-9);
+  assert.equal(logo.props.icon.shapes.length, 1, "the mask and the masked group are left out");
+  assert.deepEqual(gh.props.icon.vb, [0, 0, 16, 16], "the other file's symbol");
 }
 
 console.log("render: incremental trees, selector sharing, and wire defaults pass");

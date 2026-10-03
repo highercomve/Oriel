@@ -4,13 +4,20 @@
 
 import { color } from "./css.js";
 
-export function iconFor(svg, cs, doc) {
+// `doc` finds ids (a <use>'s symbol, a url(#gradient)): the page, or an SVG
+// file's own (svgScope). `files(path)`: an SVG file's scope, for a <use>
+// of another file's symbol (`<use href="icons.svg#github">`, a sprite).
+export function iconFor(svg, cs, doc, files) {
   const current = color(cs.color) || [0, 0, 0, 1];
   let root = svg;
   const use = svg.querySelector("use");
   if (use) {
-    const href = (use.getAttribute("href") || use.getAttribute("xlink:href") || "").replace(/^#/, "");
-    const sym = href && doc.getElementById(href);
+    const href = use.getAttribute("href") || use.getAttribute("xlink:href") || "";
+    const hash = href.indexOf("#");
+    const file = hash < 0 ? href : href.slice(0, hash);
+    const id = hash < 0 ? "" : href.slice(hash + 1);
+    if (file) doc = files?.(file);
+    const sym = id && doc?.getElementById(id);
     if (!sym) return null;
     root = sym;
   }
@@ -25,10 +32,63 @@ export function iconFor(svg, cs, doc) {
   return { vb, shapes };
 }
 
+// An SVG file's text as an element tree of its own (not in the page) and
+// its ids: `{ svg, getElementById }`, or null when it has no <svg>.
+export function svgScope(text, doc) {
+  const holder = doc.createElement("div");
+  holder.innerHTML = text.replace(/^\s*<\?xml[^>]*>/, "");
+  const svg = holder.querySelector("svg");
+  if (!svg) return null;
+  const ids = new Map();
+  const walk = (el) => {
+    const id = el.getAttribute("id");
+    if (id && !ids.has(id)) ids.set(id, el);
+    for (const c of el.children) walk(c);
+  };
+  walk(svg);
+  return { svg, getElementById: (id) => ids.get(id) || null };
+}
+
+// An SVG image's text from a data: URL (base64 or percent-encoded), or null.
+export function svgDataText(src) {
+  const m = /^data:image\/svg\+xml(;[^,]*)?,(.*)$/s.exec(src);
+  if (!m) return null;
+  try {
+    if (/;base64/i.test(m[1] || "")) {
+      // Its bytes as UTF-8 (QuickJS has atob, not TextDecoder).
+      const bin = atob(m[2]);
+      try { return decodeURIComponent(escape(bin)); } catch { return bin; }
+    }
+    return decodeURIComponent(m[2]);
+  } catch {
+    return null;
+  }
+}
+
+// An SVG image's own size (its width and height attributes in px, else
+// its viewBox's), as a browser sizes an <img> of it.
+export function svgSize(svg, vb) {
+  const px = (a) => { const v = svg.getAttribute(a); return v && /^[\d.]+(px)?$/.test(v.trim()) ? parseFloat(v) : undefined; };
+  let w = px("width"), h = px("height");
+  const ratio = vb[2] > 0 && vb[3] > 0 ? vb[2] / vb[3] : 0;
+  if (w === undefined && h !== undefined && ratio) w = h * ratio;
+  if (h === undefined && w !== undefined && ratio) h = w / ratio;
+  if (w === undefined || h === undefined) { w = vb[2] || 300; h = vb[3] || 150; }
+  return { w, h, ratio };
+}
+
+// Not drawn where they are: definitions, and what's only drawn through a
+// reference (masks, clips, filters, patterns, markers), and text.
+const SKIP = new Set(["defs", "symbol", "title", "desc", "style", "metadata", "lineargradient", "linearGradient", "radialgradient",
+  "radialGradient", "mask", "clippath", "clipPath", "filter", "pattern", "marker", "text"]);
+
 function collect(el, inherited, current, doc, out) {
   for (const c of el.children) {
     const tag = c.localName;
-    if (tag === "defs" || tag === "symbol" || tag === "title" || tag === "lineargradient" || tag === "linearGradient") continue;
+    if (SKIP.has(tag)) continue;
+    // Masked: drawn only through its mask (a logo's glow), which an icon
+    // can't do; left out rather than drawn whole over the rest.
+    if (c.hasAttribute("mask")) continue;
     const paint = paintOf(c, inherited);
     if (tag === "g") { collect(c, paint, current, doc, out); continue; }
     const d = pathData(c);

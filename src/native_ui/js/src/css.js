@@ -318,6 +318,13 @@ function expand(prop, value, out) {
       return box(prop, (side, n) => `${n}-${side}`);
     case "inset":
       return box(prop, (side) => side);
+    // Horizontal writing: inline is left and right, block top and bottom.
+    case "inset-inline": case "inset-block": {
+      const [a, b = a] = splitSpaces(value);
+      const [s, e] = prop === "inset-inline" ? ["left", "right"] : ["top", "bottom"];
+      out[s] = a; out[e] = b;
+      return;
+    }
     case "border-width":
       return box(prop, (side) => `border-${side}-width`);
     case "border-style":
@@ -352,6 +359,8 @@ function expand(prop, value, out) {
       if (value === "none") { out["flex-grow"] = "0"; out["flex-shrink"] = "0"; out["flex-basis"] = "auto"; return; }
       if (value === "auto") { out["flex-grow"] = "1"; out["flex-shrink"] = "1"; out["flex-basis"] = "auto"; return; }
       if (v.length === 1 && /^[\d.]+$/.test(v[0])) { out["flex-grow"] = v[0]; out["flex-shrink"] = "1"; out["flex-basis"] = "0%"; return; }
+      // One width (`flex: 200px`, `flex: calc(50% - 8px)`): `1 1 <width>`.
+      if (v.length === 1) { out["flex-grow"] = "1"; out["flex-shrink"] = "1"; out["flex-basis"] = v[0]; return; }
       out["flex-grow"] = v[0] ?? "0";
       if (v.length === 2) { if (/^[\d.]+$/.test(v[1])) out["flex-shrink"] = v[1]; else out["flex-basis"] = v[1]; return; }
       out["flex-shrink"] = v[1] ?? "1"; out["flex-basis"] = v[2] ?? "0%";
@@ -371,6 +380,16 @@ function expand(prop, value, out) {
     case "place-items": {
       const [a, j = a] = splitSpaces(value);
       out["align-items"] = a; out["justify-items"] = j;
+      return;
+    }
+    case "place-content": {
+      const [a, j = a] = splitSpaces(value);
+      out["align-content"] = a; out["justify-content"] = j;
+      return;
+    }
+    case "place-self": {
+      const [a, j = a] = splitSpaces(value);
+      out["align-self"] = a; out["justify-self"] = j;
       return;
     }
     case "background":
@@ -543,7 +562,7 @@ export function length(v, fontSize, pctOk = true) {
   v = String(v).trim();
   if (v === "auto" || v === "none" || v === "normal") return v === "auto" ? "auto" : null;
   if (v === "0") return 0;
-  let m = /^(-?[\d.]+)(px|rem|em|%|vh|vw|vmin|vmax|pt|ch|ex)?$/.exec(v);
+  let m = /^(-?[\d.]+)(px|rem|em|%|[sdl]?vh|[sdl]?vw|vmin|vmax|pt|ch|ex)?$/.exec(v);
   if (m) {
     const n = parseFloat(m[1]);
     switch (m[2]) {
@@ -552,8 +571,9 @@ export function length(v, fontSize, pctOk = true) {
       case "em": return n * fontSize;
       case "ch": case "ex": return n * fontSize * 0.5;
       case "pt": return n * 4 / 3;
-      case "vh": return n * viewport.height / 100;
-      case "vw": return n * viewport.width / 100;
+      // The small, dynamic and large viewport units: a window has one viewport.
+      case "vh": case "svh": case "dvh": case "lvh": return n * viewport.height / 100;
+      case "vw": case "svw": case "dvw": case "lvw": return n * viewport.width / 100;
       case "vmin": return n * Math.min(viewport.width, viewport.height) / 100;
       case "vmax": return n * Math.max(viewport.width, viewport.height) / 100;
       case "%": return pctOk ? { pct: n } : null;
