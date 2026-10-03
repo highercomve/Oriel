@@ -16149,12 +16149,12 @@ col, colgroup { display: none; }
         }
         if (!old || old.kind !== n2.kind) this.tx.forget(id);
         const spec = this.specs.get(id) || null, animSpec = this.animSpecs.get(id) || null;
-        let shown = n2.props;
+        let shown2 = n2.props;
         if (spec || animSpec || this.tx.anims.has(id) || this.anim.state.has(id)) {
           if (spec && old && old.kind === n2.kind && !this.tx.targets.has(id)) this.tx.targets.set(id, JSON.parse(old.p));
-          shown = this.anim.apply(id, this.tx.apply(id, n2.props, spec, now), animSpec, now);
+          shown2 = this.anim.apply(id, this.tx.apply(id, n2.props, spec, now), animSpec, now);
         } else if (this.tx.targets.has(id)) this.tx.forget(id);
-        const p = encodeProps(shown);
+        const p = encodeProps(shown2);
         const k = JSON.stringify(n2.kids);
         if (!old || old.kind !== n2.kind) {
           this.canvasSent.delete(id);
@@ -16274,10 +16274,10 @@ col, colgroup { display: none; }
           this.anim.forget(id);
           continue;
         }
-        const shown = this.anim.apply(id, this.tx.apply(id, target, null, now), void 0, now);
-        const p = encodeProps(shown);
+        const shown2 = this.anim.apply(id, this.tx.apply(id, target, null, now), void 0, now);
+        const p = encodeProps(shown2);
         if (p !== prev.p) {
-          ops.push(["p", id, shown]);
+          ops.push(["p", id, shown2]);
           prev.p = p;
         }
       }
@@ -16473,9 +16473,18 @@ col, colgroup { display: none; }
         make(cs, fs, p);
       }
       contentBox(cs, p, bb);
-      return p;
+      return focusRing(cs, el, p);
     }
-    return { ...memoized(cs, key2, () => makeBoxProps(cs, display, fs, button, bb)) };
+    return focusRing(cs, el, { ...memoized(cs, key2, () => makeBoxProps(cs, display, fs, button, bb)) });
+  }
+  var FOCUS_RING = { w: 2, c: [0, 103, 244, 1], o: 1 };
+  var focusVisible = null;
+  function setFocusVisible(el) {
+    focusVisible = el;
+  }
+  function focusRing(cs, el, p) {
+    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = FOCUS_RING;
+    return p;
   }
   function outlinePart(cs, fs, p) {
     const style = cs["outline-style"];
@@ -17447,7 +17456,9 @@ ${a.stack || ""}`;
       old?.removeAttribute?.("data-nui-focus-visible");
       active = el || null;
       active?.setAttribute?.("data-nui-focus", "");
-      if (active && (keyboardFocus || textField(active))) active.setAttribute?.("data-nui-focus-visible", "");
+      const visible = active && (keyboardFocus || textField(active));
+      if (visible) active.setAttribute?.("data-nui-focus-visible", "");
+      setFocusVisible(visible ? active : null);
       const now = active;
       if (old?.dispatchEvent) {
         old.dispatchEvent(focusEvent("blur", false, now));
@@ -17873,6 +17884,9 @@ ${a.stack || ""}`;
     const ev = new KeyboardEvent(type, init);
     (el || document.body).dispatchEvent(ev);
     if (!ev.defaultPrevented) fireWindow(ev);
+    if (type === "keydown" && !ev.defaultPrevented && key2 === "Tab" && !(init.ctrlKey || init.altKey || init.metaKey)) {
+      return tabFocus(init.shiftKey) || false;
+    }
     if (type === "keydown" && !ev.defaultPrevented && key2 === "Enter" && el?.localName === "input") {
       const form = el.closest("form");
       if (form) {
@@ -17881,6 +17895,59 @@ ${a.stack || ""}`;
       }
     }
     return ev.defaultPrevented;
+  }
+  var FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable]";
+  function tabOrder() {
+    const positive = [];
+    const rest = [];
+    for (const el of document.querySelectorAll(FOCUSABLE)) {
+      let index = parseInt(el.getAttribute("tabindex"), 10);
+      if (Number.isNaN(index)) {
+        if (!naturallyFocusable(el)) continue;
+        index = 0;
+      }
+      if (index < 0 || CONTROLS.has(el.localName) && el.hasAttribute("disabled") || !shown(el)) continue;
+      (index > 0 ? positive : rest).push([index, el]);
+    }
+    positive.sort((a, b) => a[0] - b[0]);
+    return [...positive, ...rest].map((e) => e[1]);
+  }
+  var CONTROLS = /* @__PURE__ */ new Set(["input", "button", "select", "textarea"]);
+  function naturallyFocusable(el) {
+    switch (el.localName) {
+      case "a":
+        return el.hasAttribute("href");
+      case "input":
+        return (el.getAttribute("type") || "").toLowerCase() !== "hidden";
+      case "button":
+      case "select":
+      case "textarea":
+        return true;
+      case "summary":
+        return el.parentElement?.localName === "details";
+      default:
+        return ["", "true", "plaintext-only"].includes(el.getAttribute("contenteditable"));
+    }
+  }
+  function shown(el) {
+    if (!renderer) return false;
+    if (!renderer.rendering) renderer.render();
+    if (getComputedStyle(el).visibility === "hidden") return false;
+    if (host.frame(renderer.idOf(el, "el"))) return true;
+    for (let e = el; e && e !== document.documentElement; e = e.parentElement) {
+      if (getComputedStyle(e).display === "none") return false;
+    }
+    return true;
+  }
+  function tabFocus(back) {
+    const order = tabOrder();
+    if (!order.length) return false;
+    const at = order.indexOf(active);
+    const next = at < 0 ? back ? order[order.length - 1] : order[0] : order[(at + (back ? -1 : 1) + order.length) % order.length];
+    keyboardFocus = true;
+    next.focus();
+    next.scrollIntoView({ block: "nearest" });
+    return true;
   }
   var renderer = null;
   var captured = /* @__PURE__ */ new Map();
