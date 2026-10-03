@@ -36,11 +36,6 @@ pub const Run = struct {
     fn frame(r: *Run, _: canvas.Frame) bool {
         const began = std.Io.Clock.Timestamp.now(r.io, .awake);
         const total = r.sinceMs(r.t0);
-        if (total >= r.ms) {
-            r.elapsed_ms = total;
-            r.done = true;
-            return false;
-        }
         const dt: f32 = @floatCast(@min(0.05, r.sinceMs(r.last) / 1000));
         r.last = began;
         const p = &r.program;
@@ -69,6 +64,13 @@ pub const Run = struct {
         }
         r.frames += 1;
         r.busy_ns += @intCast(began.durationTo(std.Io.Clock.Timestamp.now(r.io, .awake)).raw.toNanoseconds());
+        // As the page's loop counts: this frame too, then stop when the
+        // time is up (fps over the time until now).
+        if (total >= r.ms) {
+            r.elapsed_ms = r.sinceMs(r.t0);
+            r.done = true;
+            return false;
+        }
         return true;
     }
 
