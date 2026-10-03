@@ -38,6 +38,9 @@ pub const Surface = struct {
     display_link: Object = cocoa.nil,
     /// The page asked for an animation frame since the last one.
     frame_wanted: bool = false,
+    /// Fonts to load while idle (warm_fonts), the commonest first.
+    warm: std.ArrayListUnmanaged(engine_mod.FontSpec) = .empty,
+    warm_pending: bool = false,
     /// The drawing view (+1), the window's content view.
     view: Object,
     transparent: bool,
@@ -177,6 +180,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .text = textChanged,
         .request_frame = requestFrame,
         .request_display_frame = if (hasDisplayLink(view)) requestDisplayFrame else null,
+        .warm_fonts = warmFonts,
     }, assets, platform_json, label, url, width, height);
     // Text-only updates that keep a text's size keep the layout (its
     // natural size is kept per node: measureText).
@@ -193,6 +197,7 @@ pub fn destroy(s: *Surface) void {
     }
     _ = surfaces.remove(s.token);
     _ = by_view.remove(key(s.view.value));
+    s.warm.deinit(s.gpa);
     // The engine first: freeing its tree calls `removed` for every node,
     // which drops that node's control from `fields`.
     s.engine.destroy();
@@ -344,6 +349,35 @@ fn onDisplayFrame(self: id, _: SEL, link_id: id) callconv(.c) void {
     // invalidated the link); else the link runs on only if it asked again.
     const still = surfaces.get(token) orelse return;
     if (!still.frame_wanted) link.msgSend(void, "setPaused:", .{cocoa.boolean(true)});
+}
+
+/// Backend.warm_fonts: one font per main-queue turn, after what the page
+/// has queued (input, frames, timers come between them).
+fn warmFonts(ctx: *anyopaque, specs: []const engine_mod.FontSpec) void {
+    const s = surfaceOf(ctx);
+    s.warm.appendSlice(s.gpa, specs) catch return;
+    if (!s.warm_pending) scheduleWarm(s);
+}
+
+fn scheduleWarm(s: *Surface) void {
+    const t = std.heap.smp_allocator.create(u64) catch return;
+    t.* = s.token;
+    s.warm_pending = true;
+    cocoa.afterMain(1, t, onWarm);
+}
+
+fn onWarm(p: ?*anyopaque) callconv(.c) void {
+    const t: *u64 = @ptrCast(@alignCast(p.?));
+    const token = t.*;
+    std.heap.smp_allocator.destroy(t);
+    const s = surfaces.get(token) orelse return; // the window is gone
+    s.warm_pending = false;
+    if (s.warm.items.len == 0) return;
+    const spec = s.warm.orderedRemove(0);
+    const pool = cocoa.objc.AutoreleasePool.init();
+    defer pool.deinit();
+    draw.warmFont("NSFont", spec);
+    if (s.warm.items.len > 0) scheduleWarm(s);
 }
 
 const TimerData = struct { token: u64, id: u32 };

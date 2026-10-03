@@ -343,6 +343,24 @@ pub fn dropNative(n: *Node) void {
     }
 }
 
+/// Load a font the page will use (Backend.warm_fonts): a short line in it,
+/// laid out as the first text in that size and weight would be, so its
+/// match, load and glyph tables aren't paid for when a page or tab first
+/// shows (about 6 ms for the first fonts on iOS).
+pub fn warmFont(comptime font_class: [:0]const u8, spec: @import("engine.zig").FontSpec) void {
+    var run: tree_mod.Run = .{ .t = "Aa", .sz = spec.size, .w = @floatFromInt(spec.weight), .i = spec.italic, .mono = spec.mono };
+    var n: Node = undefined; // attributed() reads only its props
+    n.props = .{};
+    n.props.fz = spec.size;
+    n.props.mono = spec.mono;
+    n.props.runs = @as(*const [1]tree_mod.Run, &run);
+    const str = attributed(font_class, &n) orelse return;
+    defer CFRelease(str);
+    const line = CTLineCreateWithAttributedString(str) orelse return;
+    defer CFRelease(line);
+    _ = CTLineGetTypographicBounds(line, null, null, null);
+}
+
 /// The size a text node needs at `max_width` (inf: one line per paragraph).
 /// Its natural (unwrapped) size is kept in the node under the surface's
 /// text epoch (`epoch`, from 1): a measure at a width it fits in needs no
