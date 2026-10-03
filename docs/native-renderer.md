@@ -288,6 +288,19 @@ box. As browsers draw it (box-decoration-break: slice):
   a sentence, one that wraps over two lines, a bordered one). Win32, GTK
   and Android still draw such runs plain.
 
+**Baselines** (each backend): a line of inline content with boxes in it
+(a code chip at a line's end, a button or checkbox beside its label) is a
+row with `align-items: baseline`, its inline boxes on the row's baseline
+(not placed by text-align). Yoga asks a text node for its first baseline
+(tree.zig baselineFn): its top padding and border plus `Node.baseline`,
+which the backend's measure sets (the first line box's half-leading plus
+the ascent, as it places the line; Apple's measureText does), else an
+estimate (0.9 em of ascent in a line box of `lh` or 1.2 em); a box's is
+its first child's; an input's or select's, its one line of text centered
+in its content box. Checked on Apple against WKWebView (a chip, a button,
+a checkbox, an input, an inline-block chip in 24px); Win32, GTK and
+Android should set `Node.baseline` in their measure.
+
 **Screen scale** (each backend): `platform.dpr` in the platform JSON,
 the screen's pixels per CSS px, read as a window opens (Apple: the main
 screen's backing scale / UIScreen's scale; GTK: the scale factor; Win32:
