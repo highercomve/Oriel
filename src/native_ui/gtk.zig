@@ -105,6 +105,8 @@ extern fn g_object_unref(obj: *anyopaque) void;
 extern fn g_signal_handlers_disconnect_matched(instance: *anyopaque, mask: c_int, signal_id: c_uint, detail: c_uint, closure: ?*anyopaque, func: ?*anyopaque, data: ?*anyopaque) c_uint;
 extern fn gtk_style_context_remove_provider_for_display(display: *anyopaque, provider: *GtkCssProvider) void;
 extern fn g_free(p: ?*anyopaque) void;
+extern fn g_idle_add_full(priority: c_int, func: *const fn (?*anyopaque) callconv(.c) c_int, data: ?*anyopaque, notify: ?*anyopaque) c_uint;
+extern fn g_source_remove(id: c_uint) c_int;
 extern fn g_timeout_add(ms: c_uint, func: *const fn (?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) c_uint;
 extern fn gtk_widget_add_tick_callback(w: *Widget, func: *const fn (*Widget, *anyopaque, ?*anyopaque) callconv(.c) c_int, data: ?*anyopaque, notify: ?*anyopaque) c_uint;
 extern fn gtk_widget_remove_tick_callback(w: *Widget, id: c_uint) void;
@@ -264,6 +266,9 @@ pub const Surface = struct {
     /// clock's tick callback giving it (0: none registered).
     frame_wanted: bool = false,
     tick_id: c_uint = 0,
+    /// Fonts to load while idle (warmFonts), and the idle source doing it.
+    warm: std.ArrayList(engine_mod.FontSpec) = .empty,
+    warm_id: c_uint = 0,
     pointer: [2]f32 = .{ 0, 0 },
     hovered: i64 = 0,
     updating: bool = false,
@@ -307,6 +312,7 @@ pub const Surface = struct {
             .text = textChanged,
             .deinit = releaseTextMeasurements,
             .request_display_frame = requestDisplayFrame,
+            .warm_fonts = warmFonts,
         }, assets, platform_json, label, url, width, height);
         s.engine.tree.reuse_text_layout = true;
 
@@ -348,6 +354,9 @@ pub const Surface = struct {
         _ = surfaces.remove(s.token);
         if (s.tick_id != 0) gtk_widget_remove_tick_callback(s.area, s.tick_id);
         s.tick_id = 0;
+        if (s.warm_id != 0) _ = g_source_remove(s.warm_id);
+        s.warm_id = 0;
+        s.warm.deinit(s.gpa);
         gtk_drawing_area_set_draw_func(s.area, null, null, null);
         disconnect(s, s.area);
         disconnect(s, s.overlay);
@@ -448,6 +457,39 @@ fn onTimer(p: ?*anyopaque) callconv(.c) c_int {
     std.heap.smp_allocator.destroy(d);
     const s = surfaces.get(token) orelse return 0; // the window is gone
     s.engine.timerFired(id);
+    return 0;
+}
+
+/// Backend.warm_fonts: the fonts load one per idle moment (low priority:
+/// after input, drawing and the page's timers), each by laying out a
+/// short text in it, as the first text in that size and weight would.
+fn warmFonts(ctx: *anyopaque, specs: []const engine_mod.FontSpec) void {
+    const s = surfaceOf(ctx);
+    s.warm.appendSlice(s.gpa, specs) catch return;
+    if (s.warm_id == 0) s.warm_id = g_idle_add_full(300, onWarm, @ptrFromInt(s.token), null); // G_PRIORITY_LOW
+}
+
+fn onWarm(data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaces.get(@intFromPtr(data)) orelse return 0; // the window is gone
+    if (s.warm.items.len == 0) {
+        s.warm_id = 0;
+        return 0;
+    }
+    // In the page's order: the commonest first.
+    const spec = s.warm.orderedRemove(0);
+    var run: tree_mod.Run = .{ .t = "Aa", .sz = spec.size, .w = @floatFromInt(spec.weight), .i = spec.italic, .mono = spec.mono };
+    var props: tree_mod.Props = .{};
+    props.fz = spec.size;
+    props.mono = spec.mono;
+    props.runs = @as(*const [1]tree_mod.Run, &run);
+    if (textLayoutOf(s, &props, std.math.inf(f32))) |layout| {
+        var w: c_int = 0;
+        var h: c_int = 0;
+        pango_layout_get_size(layout, &w, &h);
+        g_object_unref(layout);
+    }
+    if (s.warm.items.len > 0) return 1;
+    s.warm_id = 0;
     return 0;
 }
 

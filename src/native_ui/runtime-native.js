@@ -1422,6 +1422,42 @@ globalThis.atob ??= (s) => {
   }
   var mediaAnswers = /* @__PURE__ */ new Map();
   var mediaFor = { width: NaN, height: NaN, dark: null, coarse: null, reducedMotion: null };
+  function fontSpecs(rules, max = 48) {
+    const sizes = /* @__PURE__ */ new Set([16]), weights = /* @__PURE__ */ new Set([400]);
+    let italic = false, mono = false, root = 16;
+    const sizeOf = (v) => {
+      const m = /^([\d.]+)(px|rem|em)$/.exec(String(v || "").trim());
+      if (!m) return null;
+      const n2 = parseFloat(m[1]);
+      return m[2] === "px" ? n2 : m[2] === "rem" ? n2 * root : n2 * 16;
+    };
+    for (const r of rules) {
+      if (r.sel !== "html" && r.sel !== ":root") continue;
+      const d = {};
+      StyleEngine.expandInto(r.decls, d, d);
+      const px = /^[\d.]+px$/.test(d["font-size"] || "") ? parseFloat(d["font-size"]) : null;
+      if (px) root = px;
+    }
+    sizes.add(root);
+    for (const r of rules) {
+      const d = {};
+      StyleEngine.expandInto(r.decls, d, d);
+      const size = sizeOf(d["font-size"]);
+      if (size && size >= 6 && size <= 96) sizes.add(Math.round(size * 2) / 2);
+      const w = d["font-weight"];
+      if (w) weights.add(w === "bold" ? 700 : w === "normal" ? 400 : parseInt(w, 10) || 400);
+      if (/italic|oblique/.test(d["font-style"] || "")) italic = true;
+      if (/mono|courier|consolas|menlo/i.test(d["font-family"] || "")) mono = true;
+    }
+    const out = [];
+    const order = [...sizes].sort((a, b) => (b === root) - (a === root) || (b === 16) - (a === 16) || a - b);
+    for (const size of order) {
+      for (const w of weights) out.push([size, w, 0, 0]);
+      if (italic) out.push([size, 400, 1, 0]);
+      if (mono) out.push([size, 400, 0, 1]);
+    }
+    return out.slice(0, max);
+  }
   function mediaMatches(q) {
     if (!q) return true;
     const v = viewport, f = mediaFor;
@@ -5954,6 +5990,13 @@ ${a.stack || ""}`;
           }
           try {
             host.evalScript(src || "inline", code);
+          } catch (e) {
+            console.error(e);
+          }
+        }
+        if (host.warmFonts) {
+          try {
+            host.warmFonts(fontSpecs(engine.rules));
           } catch (e) {
             console.error(e);
           }
