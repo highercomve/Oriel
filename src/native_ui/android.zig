@@ -68,7 +68,11 @@ pub const Surface = struct {
     move_buttons: u32 = 0,
     move_mods: u32 = 0,
     move_mouse: bool = false,
+    /// fontMetrics' answers by (size in 1/64 px, mono): one trip to Kotlin each.
+    font_metrics: std.AutoHashMapUnmanaged(FontKey, [2]f32) = .empty,
 };
+
+const FontKey = struct { size64: u32, mono: bool };
 
 /// nuiTimer's id for trimming the tree's pools (the engine's timer ids count
 /// up from 1 and never reach it).
@@ -108,6 +112,7 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .props = props,
         .text = textChanged,
         .measure_texts = measureTexts,
+        .font_metrics = fontMetrics,
         .leaf_style = leafStyle,
         .paint = paintChanged,
         .canvas = canvasChanged,
@@ -130,6 +135,7 @@ pub fn destroy(window: u32) void {
     s.text_measurements.deinit(s.gpa);
     s.leaves.deinit(s.gpa);
     s.measure_ids.deinit(s.gpa);
+    s.font_metrics.deinit(s.gpa);
     s.measure_nodes.deinit(s.gpa);
     s.measure_sizes.deinit(s.gpa);
     s.gpa.destroy(s);
@@ -588,6 +594,23 @@ fn measuredText(s: *Surface, n: *Node, width: f32) [2]f32 {
     const size = kotlinMeasure(s, n, actual);
     if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
     return size;
+}
+
+/// host.fontMetrics: the ascent and descent (px) of the font text is drawn
+/// with (NuiNode's typeface) at `size`, from Kotlin's Paint.FontMetrics.
+fn fontMetrics(ctx: *anyopaque, size: f32, mono: bool, out: *[2]f32) bool {
+    const s = surfaceOf(ctx);
+    const key: FontKey = .{ .size64 = @intFromFloat(@round(std.math.clamp(size, 1, 512) * 64)), .mono = mono };
+    if (s.font_metrics.get(key)) |m| {
+        out.* = m;
+        return true;
+    }
+    const r: u64 = @bitCast(runtime.call(.long, "nuiFontMetrics", "(IZ)J", .{ @as(i32, @intCast(key.size64)), mono }) orelse return false);
+    if (r == 0) return false;
+    const m: [2]f32 = .{ @as(f32, @floatFromInt(r >> 32)) / 64, @as(f32, @floatFromInt(r & 0xffffffff)) / 64 };
+    if (s.font_metrics.count() < 256) s.font_metrics.put(s.gpa, key, m) catch {};
+    out.* = m;
+    return true;
 }
 
 /// nuiMeasure: the node's size from Kotlin at `max_width` (inf: unbounded),
