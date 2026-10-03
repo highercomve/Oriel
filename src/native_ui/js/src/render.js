@@ -78,19 +78,23 @@ const STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus"];
 // A selector's compounds, left to right (split at combinators outside
 // brackets and parentheses).
 function splitCompounds(sel) {
+  // A regular expression jumps between the characters that matter
+  // (QuickJS runs it natively; a loop over each character is interpreted).
   const out = [];
-  let depth = 0, cur = "";
-  for (const ch of sel) {
-    if (ch === "(" || ch === "[") depth++;
-    else if (ch === ")" || ch === "]") depth--;
-    if (depth === 0 && (ch === " " || ch === ">" || ch === "+" || ch === "~")) {
-      if (cur.trim()) out.push(cur.trim());
-      cur = "";
-      continue;
+  const re = /[()[\] >+~]/g;
+  let depth = 0, start = 0;
+  for (let m; (m = re.exec(sel)); ) {
+    const c = m[0];
+    if (c === "(" || c === "[") depth++;
+    else if (c === ")" || c === "]") depth--;
+    else if (depth === 0) {
+      const part = sel.slice(start, m.index).trim();
+      if (part) out.push(part);
+      start = m.index + 1;
     }
-    cur += ch;
   }
-  if (cur.trim()) out.push(cur.trim());
+  const last = sel.slice(start).trim();
+  if (last) out.push(last);
   return out;
 }
 
