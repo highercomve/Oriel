@@ -1867,8 +1867,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     private fun border(canvas: Canvas, n: NuiNode, bw: FloatArray, x: Float, y: Float, w: Float, h: Float, r: FloatArray?) {
         val colors = n.bc ?: return
-        if (bw[0] == bw[1] && bw[1] == bw[2] && bw[2] == bw[3]) {
-            if (bw[0] <= 0) return
+        val drawn = (0 until 4).filter { bw[it] > 0 }
+        if (drawn.isEmpty()) return
+        val oneColor = drawn.all { colors[it] == colors[drawn[0]] }
+        if (bw[0] == bw[1] && bw[1] == bw[2] && bw[2] == bw[3] && oneColor) {
             val half = bw[0] / 2
             roundRect(x + half, y + half, w - bw[0], h - bw[0], r?.let { a -> FloatArray(4) { max(0f, a[it] - half) } })
             stroke.color = colors[0]
@@ -1878,16 +1880,62 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             canvas.drawPath(path, stroke)
             return
         }
-        val sides = arrayOf(
-            floatArrayOf(x, y, w, bw[0]),
-            floatArrayOf(x + w - bw[1], y, bw[1], h),
-            floatArrayOf(x, y + h - bw[2], w, bw[2]),
-            floatArrayOf(x, y, bw[3], h),
+        sides(canvas, x, y, w, h, r ?: FloatArray(4), bw, colors, oneColor)
+    }
+
+    private val ring = Path()
+    private val wedge = Path()
+
+    /**
+     * Sides of different widths or colors, as browsers draw them (gtk.zig's
+     * roundedSides): the area between the border box and the padding box,
+     * whose corners are ellipses (the radius less each side's width), each
+     * side's color clipped to its wedge, the lines from its outer corners
+     * through its inner corners (where browsers join two colors) up to the
+     * middle.
+     */
+    private fun sides(canvas: Canvas, x: Float, y: Float, w: Float, h: Float, r: FloatArray, bw: FloatArray, colors: IntArray, oneColor: Boolean) {
+        val ix = x + bw[3]; val iy = y + bw[0]
+        val iw = max(0f, w - bw[1] - bw[3]); val ih = max(0f, h - bw[0] - bw[2])
+        // Inner corners: (rx, ry) each, top left, top right, bottom right, bottom left.
+        val innerRadii = floatArrayOf(
+            max(0f, r[0] - bw[3]), max(0f, r[0] - bw[0]), max(0f, r[1] - bw[1]), max(0f, r[1] - bw[0]),
+            max(0f, r[2] - bw[1]), max(0f, r[2] - bw[2]), max(0f, r[3] - bw[3]), max(0f, r[3] - bw[2]),
         )
+        ring.reset()
+        ring.fillType = Path.FillType.EVEN_ODD
+        ring.addRoundRect(RectF(x, y, x + w, y + h), floatArrayOf(r[0], r[0], r[1], r[1], r[2], r[2], r[3], r[3]), Path.Direction.CW)
+        ring.addRoundRect(RectF(ix, iy, ix + iw, iy + ih), innerRadii, Path.Direction.CW)
+        if (oneColor) {
+            fill.color = colors[(0 until 4).first { bw[it] > 0 }]
+            canvas.drawPath(ring, fill)
+            return
+        }
+        val outer = arrayOf(floatArrayOf(x, y), floatArrayOf(x + w, y), floatArrayOf(x + w, y + h), floatArrayOf(x, y + h))
+        val inner = arrayOf(floatArrayOf(ix, iy), floatArrayOf(ix + iw, iy), floatArrayOf(ix + iw, iy + ih), floatArrayOf(ix, iy + ih))
+        val mx = ix + iw / 2; val my = iy + ih / 2
+        // Each corner's join, from the outer corner through the inner one,
+        // stopped where it reaches the middle's row or column.
+        val join = Array(4) { k ->
+            val dx = inner[k][0] - outer[k][0]; val dy = inner[k][1] - outer[k][1]
+            var t = Float.MAX_VALUE
+            if (dx != 0f) t = min(t, (mx - outer[k][0]) / dx)
+            if (dy != 0f) t = min(t, (my - outer[k][1]) / dy)
+            if (dx == 0f && dy == 0f) t = 0f
+            floatArrayOf(outer[k][0] + max(0f, t) * dx, outer[k][1] + max(0f, t) * dy)
+        }
         for (i in 0 until 4) {
             if (bw[i] <= 0 || Color.alpha(colors[i]) == 0) continue
+            val j = (i + 1) % 4
+            wedge.reset()
+            wedge.moveTo(outer[i][0], outer[i][1]); wedge.lineTo(outer[j][0], outer[j][1])
+            wedge.lineTo(join[j][0], join[j][1]); wedge.lineTo(mx, my); wedge.lineTo(join[i][0], join[i][1])
+            wedge.close()
+            canvas.save()
+            canvas.clipPath(wedge)
             fill.color = colors[i]
-            canvas.drawRect(sides[i][0], sides[i][1], sides[i][0] + sides[i][2], sides[i][1] + sides[i][3], fill)
+            canvas.drawPath(ring, fill)
+            canvas.restore()
         }
     }
 
