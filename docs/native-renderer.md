@@ -180,8 +180,11 @@ Backends: macOS (mouse moves, drags, buttons; key up from a local event monitor,
 AppKit not sending `keyUp:` to the page's view) and iOS (one touch; a drag the
 page doesn't take scrolls as before), GTK (mouse moves, drags and buttons;
 moves coalesced on the frame clock; keyup from the key controller, repeat
-from the keys held). Windows and Android still send only clicks, hover and
-key downs.
+from the keys held), Android (one touch, or the mouse on ChromeOS with its
+buttons and hover moves; a touch the page doesn't take scrolls as before and
+gets a cancel, a mouse drag doesn't scroll; moves coalesced on
+Choreographer's frame; keydown with repeat and keyup from the page's view).
+Windows still sends only clicks, hover and key downs.
 
 ## Canvas
 
