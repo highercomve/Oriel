@@ -568,7 +568,10 @@ canvas bitmap is in the sRGB color space (not the device's, whose values
 would reach a wide-gamut display unmatched), and a macOS window's backing
 store is sRGB too, so translucent colors blend in sRGB as WebKit's layers
 do (checked against WKWebView pixel for pixel: opaque and half-alpha
-swatches, a gradient, text, a border and a canvas fill).
+swatches, a gradient, text, a border and a canvas fill). A rounded border
+whose sides differ in width is the ring between the border box and the
+padding box (elliptical inner corners), each color clipped to its wedge
+and neighboring sides of one color sharing one, as on GTK (`roundedSides`).
 
 | | macOS (AppKit) | iOS (UIKit) |
 |---|---|---|
