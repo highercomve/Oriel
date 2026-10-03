@@ -689,7 +689,7 @@ pub const Store = struct {
             s.js.dup(s.js.ctx, value);
             s.js.free(s.js.ctx, &a.value);
             a.value = value.*;
-            try s.updateIdClasses(idx, name, value);
+            return s.attrChanged(idx, name, value);
         } else {
             if (n.attr_len >= inline_attrs) {
                 const extra = n.attr_len - inline_attrs;
@@ -704,10 +704,20 @@ pub const Store = struct {
             s.js.dupAtom(s.js.ctx, name);
             s.js.dup(s.js.ctx, value);
             a.* = .{ .name = name, .value = value.* };
-            try s.updateIdClasses(idx, name, value);
+            return s.attrChanged(idx, name, value);
         }
+    }
+
+    /// After an attribute is stored: its id/class index, then the renderer
+    /// and observers. The attribute is set either way; if indexing it runs
+    /// out of memory (a partial class list, or no id), the change is still
+    /// marked and reported, so the renderer restyles from the attribute
+    /// rather than missing it, and only then the error goes back to JS.
+    fn attrChanged(s: *Store, idx: Index, name: u32, value: *const JsVal) Error!void {
+        const indexed = s.updateIdClasses(idx, name, value);
         s.markDirty(idx, dirty_attrs);
         s.observe(.attribute, idx, none, name);
+        return indexed;
     }
 
     /// Removes an attribute; true if it was there.
