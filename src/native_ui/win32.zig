@@ -20,6 +20,7 @@ const prof = @import("prof.zig");
 const svg_path = @import("svg_path.zig");
 const Engine = engine_mod.Engine;
 const Node = tree_mod.Node;
+const Radii = tree_mod.Radii;
 const Rect = tree_mod.Rect;
 
 const log = std.log.scoped(.native_ui);
@@ -2515,8 +2516,8 @@ fn paintCanvas(p: *Painter, n: *Node) void {
     const pv = p.vt();
     // Clipped to the box's rounded corners, as a browser clips a replaced
     // element's content to its border-radius.
-    const r = n.radius();
-    const mask = if (r[0] > 0 or r[1] > 0 or r[2] > 0 or r[3] > 0) roundRectGeometry(f, r) else null;
+    const r = n.radiusXY();
+    const mask = if (!r.square()) roundRectGeometry(f, r) else null;
     defer releaseCom(mask);
     if (mask) |m| {
         const params: c.D2D1_LAYER_PARAMETERS = .{
@@ -3779,7 +3780,7 @@ fn paint(p: *Painter, n: *Node) void {
     }
     defer if (alpha < 1) vt.PopLayer.?(p.rt);
 
-    const r = n.radius();
+    const r = n.radiusXY();
     if (props.sh) |sh| shadow(p, f, r, sh);
     if (props.bg) |bg| {
         // The color under the gradient (CSS layers).
@@ -3801,10 +3802,10 @@ fn paint(p: *Painter, n: *Node) void {
     // overflow: hidden (or a scroller) with rounded corners: the children
     // are cut to the rounded padding box (the box's own border isn't),
     // through a layer with that shape as its mask. Only such boxes pay.
-    const mask: ?*c.ID2D1Geometry = if (n.kids.items.len > 0 and n.roundClips()) roundClipGeometry(n.paddingClip()) else null;
+    const mask: ?*c.ID2D1Geometry = if (n.kids.items.len > 0 and n.roundClips()) roundClipGeometry(n.paddingClipXY()) else null;
     defer if (mask) |m| releaseCom(@as(?*c.ID2D1Geometry, m));
     if (mask) |m| {
-        const pb = n.paddingClip().rect;
+        const pb = n.paddingClipXY().rect;
         const params: c.D2D1_LAYER_PARAMETERS = .{
             .contentBounds = rectF(pb),
             .geometricMask = m,
@@ -3828,19 +3829,18 @@ fn paint(p: *Painter, n: *Node) void {
 /// CSS outline: a border of its own around the box grown by offset +
 /// width, its corners the box's radius grown as much (square ones stay
 /// square), solid, dashed or dotted.
-fn paintOutline(p: *Painter, f: Rect, r: [4]f32, ol: tree_mod.Outline) void {
+fn paintOutline(p: *Painter, f: Rect, r: Radii, ol: tree_mod.Outline) void {
     if (!(ol.w > 0) or !(ol.c[3] > 0)) return;
     const grow = ol.o + ol.w;
     const box: Rect = .{ .x = f.x - grow, .y = f.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
     if (box.w <= 2 * ol.w or box.h <= 2 * ol.w) return;
-    var radii: [4]f32 = undefined;
-    for (r, 0..) |x, i| radii[i] = @max(if (x > 0) @max(0, x + grow) else 0, ol.r);
+    var radii = r.grown(grow);
+    for (&radii.x) |*x| x.* = @max(x.*, ol.r);
+    for (&radii.y) |*y| y.* = @max(y.*, ol.r);
     // A focus ring's halo: 1px around it, its corners 1px rounder.
     if (ol.h) |h| if (h[3] > 0) {
         const halo: Rect = .{ .x = box.x - 1, .y = box.y - 1, .w = box.w + 2, .h = box.h + 2 };
-        var hr: [4]f32 = undefined;
-        for (radii, 0..) |x, i| hr[i] = if (x > 0) x + 1 else 0;
-        border(p, halo, hr, .{ 1, 1, 1, 1 }, .{ h, h, h, h }, null);
+        border(p, halo, radii.grown(1), .{ 1, 1, 1, 1 }, .{ h, h, h, h }, null);
     };
     const bw = [4]f32{ ol.w, ol.w, ol.w, ol.w };
     const bc = [4]tree_mod.Color{ ol.c, ol.c, ol.c, ol.c };
@@ -3849,15 +3849,13 @@ fn paintOutline(p: *Painter, f: Rect, r: [4]f32, ol: tree_mod.Outline) void {
 
 /// A rounded rectangle as a geometry (caller releases): Direct2D's own
 /// when the corners are alike, else a path of per-corner arcs.
-fn roundClipGeometry(rr: tree_mod.RoundRect) ?*c.ID2D1Geometry {
+fn roundClipGeometry(rr: tree_mod.RoundRectXY) ?*c.ID2D1Geometry {
     if (rr.rect.w <= 0 or rr.rect.h <= 0) return null;
     // Radii that don't fit are scaled down together, as CSS does.
-    var r = rr.radii;
-    const fit = @min(1, @min(@min(rr.rect.w / @max(1e-3, r[0] + r[1]), rr.rect.w / @max(1e-3, r[3] + r[2])), @min(rr.rect.h / @max(1e-3, r[0] + r[3]), rr.rect.h / @max(1e-3, r[1] + r[2]))));
-    for (&r) |*x| x.* *= fit;
-    if (uniform(r)) {
+    const r = rr.radii.fitted(rr.rect.w, rr.rect.h);
+    if (r.uniform()) {
         const fac = d2d.?;
-        const shape: c.D2D1_ROUNDED_RECT = .{ .rect = rectF(rr.rect), .radiusX = r[0], .radiusY = r[0] };
+        const shape: c.D2D1_ROUNDED_RECT = .{ .rect = rectF(rr.rect), .radiusX = r.x[0], .radiusY = r.y[0] };
         var geo: ?*c.ID2D1RoundedRectangleGeometry = null;
         if (fac.lpVtbl.*.CreateRoundedRectangleGeometry.?(fac, &shape, &geo) < 0 or geo == null) return null;
         return @ptrCast(geo);
@@ -3870,9 +3868,9 @@ fn uniform(r: [4]f32) bool {
     return r[0] == r[1] and r[1] == r[2] and r[2] == r[3];
 }
 
-/// A box with per-corner radii (top-left, top-right, bottom-right,
-/// bottom-left) as a path geometry. Caller releases.
-fn roundRectGeometry(f: Rect, r: [4]f32) ?*c.ID2D1PathGeometry {
+/// A box with per-corner elliptical radii (top-left, top-right,
+/// bottom-right, bottom-left) as a path geometry. Caller releases.
+fn roundRectGeometry(f: Rect, r: Radii) ?*c.ID2D1PathGeometry {
     const fac = d2d.?;
     var geo: ?*c.ID2D1PathGeometry = null;
     if (fac.lpVtbl.*.CreatePathGeometry.?(fac, &geo) < 0) return null;
@@ -3881,35 +3879,9 @@ fn roundRectGeometry(f: Rect, r: [4]f32) ?*c.ID2D1PathGeometry {
         releaseCom(geo);
         return null;
     }
-    const sk = sink.?;
-    const v = sk.lpVtbl.*;
-    const simple: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sk);
-    const sv = simple.lpVtbl.*;
-    const x = f.x;
-    const y = f.y;
-    const w = f.w;
-    const h = f.h;
-    sv.BeginFigure.?(simple, .{ .x = x + r[0], .y = y }, c.D2D1_FIGURE_BEGIN_FILLED);
-    const corner = struct {
-        fn add(s: *c.ID2D1GeometrySink, rad: f32, to: c.D2D1_POINT_2F) void {
-            if (rad <= 0) {
-                s.lpVtbl.*.AddLine.?(s, to);
-                return;
-            }
-            const arc: c.D2D1_ARC_SEGMENT = .{ .point = to, .size = .{ .width = rad, .height = rad }, .rotationAngle = 0, .sweepDirection = c.D2D1_SWEEP_DIRECTION_CLOCKWISE, .arcSize = c.D2D1_ARC_SIZE_SMALL };
-            s.lpVtbl.*.AddArc.?(s, &arc);
-        }
-    }.add;
-    v.AddLine.?(sk, .{ .x = x + w - r[1], .y = y });
-    corner(sk, r[1], .{ .x = x + w, .y = y + r[1] });
-    v.AddLine.?(sk, .{ .x = x + w, .y = y + h - r[2] });
-    corner(sk, r[2], .{ .x = x + w - r[2], .y = y + h });
-    v.AddLine.?(sk, .{ .x = x + r[3], .y = y + h });
-    corner(sk, r[3], .{ .x = x, .y = y + h - r[3] });
-    v.AddLine.?(sk, .{ .x = x, .y = y + r[0] });
-    corner(sk, r[0], .{ .x = x + r[0], .y = y });
-    sv.EndFigure.?(simple, c.D2D1_FIGURE_END_CLOSED);
-    _ = sv.Close.?(simple);
+    roundFigure(sink.?, f, r.x, r.y);
+    const simple: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sink.?);
+    _ = simple.lpVtbl.*.Close.?(simple);
     releaseCom(sink);
     return geo;
 }
@@ -3936,17 +3908,17 @@ fn triangleGeometry(a: c.D2D1_POINT_2F, b: c.D2D1_POINT_2F, d: c.D2D1_POINT_2F) 
     return geo;
 }
 
-fn fillShape(p: *Painter, f: Rect, r: [4]f32, brush: *c.ID2D1Brush) void {
+fn fillShape(p: *Painter, f: Rect, r: Radii, brush: *c.ID2D1Brush) void {
     if (f.w <= 0 or f.h <= 0) return;
     const vt = p.vt();
-    if (uniform(r)) {
-        if (r[0] <= 0) {
-            const rc = rectF(f);
-            vt.FillRectangle.?(p.rt, &rc, brush);
-        } else {
-            const rr: c.D2D1_ROUNDED_RECT = .{ .rect = rectF(f), .radiusX = r[0], .radiusY = r[0] };
-            vt.FillRoundedRectangle.?(p.rt, &rr, brush);
-        }
+    if (r.square()) {
+        const rc = rectF(f);
+        vt.FillRectangle.?(p.rt, &rc, brush);
+        return;
+    }
+    if (r.uniform()) {
+        const rr: c.D2D1_ROUNDED_RECT = .{ .rect = rectF(f), .radiusX = r.x[0], .radiusY = r.y[0] };
+        vt.FillRoundedRectangle.?(p.rt, &rr, brush);
         return;
     }
     const geo = roundRectGeometry(f, r) orelse return;
@@ -3954,17 +3926,17 @@ fn fillShape(p: *Painter, f: Rect, r: [4]f32, brush: *c.ID2D1Brush) void {
     vt.FillGeometry.?(p.rt, @ptrCast(geo), brush, null);
 }
 
-fn strokeShape(p: *Painter, f: Rect, r: [4]f32, brush: *c.ID2D1Brush, width: f32, st: ?*c.ID2D1StrokeStyle) void {
+fn strokeShape(p: *Painter, f: Rect, r: Radii, brush: *c.ID2D1Brush, width: f32, st: ?*c.ID2D1StrokeStyle) void {
     if (f.w <= 0 or f.h <= 0) return;
     const vt = p.vt();
-    if (uniform(r)) {
-        if (r[0] <= 0) {
-            const rc = rectF(f);
-            vt.DrawRectangle.?(p.rt, &rc, brush, width, st);
-        } else {
-            const rr: c.D2D1_ROUNDED_RECT = .{ .rect = rectF(f), .radiusX = r[0], .radiusY = r[0] };
-            vt.DrawRoundedRectangle.?(p.rt, &rr, brush, width, st);
-        }
+    if (r.square()) {
+        const rc = rectF(f);
+        vt.DrawRectangle.?(p.rt, &rc, brush, width, st);
+        return;
+    }
+    if (r.uniform()) {
+        const rr: c.D2D1_ROUNDED_RECT = .{ .rect = rectF(f), .radiusX = r.x[0], .radiusY = r.y[0] };
+        vt.DrawRoundedRectangle.?(p.rt, &rr, brush, width, st);
         return;
     }
     const geo = roundRectGeometry(f, r) orelse return;
@@ -4061,18 +4033,17 @@ fn dashedSide(p: *Painter, sd: Rect, across: bool, w: f32, style: tree_mod.Borde
     }
 }
 
-fn border(p: *Painter, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color, bs: ?tree_mod.BorderStyle) void {
+fn border(p: *Painter, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color, bs: ?tree_mod.BorderStyle) void {
     const colors = bc orelse return;
     // Square corners, dashed or dotted: each side's dashes fitted to it
     // (the per-side path below); one pattern around the rectangle would
     // leave a side a stray dash.
-    const square = uniform(r) and r[0] <= 0;
+    const square = r.square();
     if (uniform(bw) and bw[0] > 0 and !(bs != null and square)) {
         const st = borderStroke(bs, bw[0]);
         const half = bw[0] / 2;
         const inner: Rect = .{ .x = f.x + half, .y = f.y + half, .w = f.w - bw[0], .h = f.h - bw[0] };
-        var ri = r;
-        for (&ri) |*x| x.* = @max(0, x.* - half);
+        const ri = r.grown(-half);
         const same = for (colors[1..]) |col| {
             if (!std.mem.eql(f32, &col, &colors[0])) break false;
         } else true;
@@ -4137,19 +4108,15 @@ fn border(p: *Painter, f: Rect, r: [4]f32, bw: [4]f32, bc: ?[4]tree_mod.Color, b
     }
 }
 
-fn unevenBorder(p: *Painter, f: Rect, radii: [4]f32, bw: [4]f32, colors: [4]tree_mod.Color) void {
+fn unevenBorder(p: *Painter, f: Rect, radii: Radii, bw: [4]f32, colors: [4]tree_mod.Color) void {
     if (f.w <= 0 or f.h <= 0) return;
     if (@max(@max(bw[0], bw[1]), @max(bw[2], bw[3])) <= 0) return;
     // Radii that don't fit are scaled down together, as CSS does.
-    var r = radii;
-    for (&r) |*x| x.* = @max(0, x.*);
-    const fit = @min(1, @min(@min(f.w / @max(1e-3, r[0] + r[1]), f.w / @max(1e-3, r[3] + r[2])), @min(f.h / @max(1e-3, r[0] + r[3]), f.h / @max(1e-3, r[1] + r[2]))));
-    for (&r) |*x| x.* *= fit;
+    const r = radii.fitted(f.w, f.h);
     const inner: Rect = .{ .x = f.x + bw[3], .y = f.y + bw[0], .w = @max(0, f.w - bw[1] - bw[3]), .h = @max(0, f.h - bw[0] - bw[2]) };
     // Inner corners (top-left, top-right, bottom-right, bottom-left): x
     // radius less the left or right side, y less the top or bottom.
-    const irx = [4]f32{ @max(0, r[0] - bw[3]), @max(0, r[1] - bw[1]), @max(0, r[2] - bw[1]), @max(0, r[3] - bw[3]) };
-    const iry = [4]f32{ @max(0, r[0] - bw[0]), @max(0, r[1] - bw[0]), @max(0, r[2] - bw[2]), @max(0, r[3] - bw[2]) };
+    const ir = tree_mod.paddingBoxXY(f, r, bw).radii;
     const fac = d2d.?;
     var geo: ?*c.ID2D1PathGeometry = null;
     if (fac.lpVtbl.*.CreatePathGeometry.?(fac, &geo) < 0 or geo == null) return;
@@ -4158,8 +4125,8 @@ fn unevenBorder(p: *Painter, f: Rect, radii: [4]f32, bw: [4]f32, colors: [4]tree
     if (geo.?.lpVtbl.*.Open.?(geo, &sink) < 0 or sink == null) return;
     const simple: *c.ID2D1SimplifiedGeometrySink = @ptrCast(sink.?);
     simple.lpVtbl.*.SetFillMode.?(simple, c.D2D1_FILL_MODE_ALTERNATE);
-    roundFigure(sink.?, f, r, r);
-    if (inner.w > 0 and inner.h > 0) roundFigure(sink.?, inner, irx, iry);
+    roundFigure(sink.?, f, r.x, r.y);
+    if (inner.w > 0 and inner.h > 0) roundFigure(sink.?, inner, ir.x, ir.y);
     _ = simple.lpVtbl.*.Close.?(simple);
     releaseCom(sink);
     const ring: *c.ID2D1Geometry = @ptrCast(geo.?);
@@ -4192,7 +4159,7 @@ fn unevenBorder(p: *Painter, f: Rect, radii: [4]f32, bw: [4]f32, colors: [4]tree
     var ends: [4]c.D2D1_POINT_2F = undefined;
     const cw = [4][2]f32{ .{ bw[3], bw[0] }, .{ bw[1], bw[0] }, .{ bw[1], bw[2] }, .{ bw[3], bw[2] } };
     for (0..4) |i| {
-        const size = @min(@max(r[i], @max(cw[i][0], cw[i][1])) + 1, @min(f.w, f.h) / 2);
+        const size = @min(@max(@max(r.x[i], r.y[i]), @max(cw[i][0], cw[i][1])) + 1, @min(f.w, f.h) / 2);
         const k = size / @max(1e-3, @max(@abs(dir[i].x), @abs(dir[i].y)));
         ends[i] = .{ .x = outer[i].x + dir[i].x * k, .y = outer[i].y + dir[i].y * k };
     }
@@ -4252,7 +4219,7 @@ fn roundFigure(sink: *c.ID2D1GeometrySink, f: Rect, rx: [4]f32, ry: [4]f32) void
     simple.lpVtbl.*.EndFigure.?(simple, c.D2D1_FIGURE_END_CLOSED);
 }
 
-fn shadow(p: *Painter, f: Rect, r: [4]f32, sh: tree_mod.Shadow) void {
+fn shadow(p: *Painter, f: Rect, r: Radii, sh: tree_mod.Shadow) void {
     // A soft shadow from stacked layers, from half the blur inside the box
     // to half outside (as GTK draws it): the box's edge gets half the color
     // and the shadow fades out over the blur distance.
@@ -4264,7 +4231,8 @@ fn shadow(p: *Painter, f: Rect, r: [4]f32, sh: tree_mod.Shadow) void {
         const rect: Rect = .{ .x = f.x + sh.x - grow, .y = f.y + sh.y - grow, .w = f.w + 2 * grow, .h = f.h + 2 * grow };
         if (rect.w <= 0 or rect.h <= 0) continue;
         var rr = r;
-        for (&rr) |*x| x.* = @max(0, x.* + grow);
+        for (&rr.x) |*x| x.* = @max(0, x.* + grow);
+        for (&rr.y) |*y| y.* = @max(0, y.* + grow);
         var col = sh.color;
         col[3] = sh.color[3] / @as(f32, @floatFromInt(steps));
         fillShape(p, rect, rr, p.solid(col));
