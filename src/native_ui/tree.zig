@@ -1061,6 +1061,8 @@ pub const Node = struct {
     /// The scrollbar's room at the scroller's right (Tree.scrollbar; 0:
     /// none), taken from its content box as a browser's classic scrollbar.
     gutter: f32 = 0,
+    /// Its offset changed since the page last heard (Tree.scrolled).
+    scroll_noted: bool = false,
     content_w: f32 = 0,
     /// The backend's widget for this node, if any.
     native: ?*anyopaque = null,
@@ -1271,6 +1273,9 @@ pub const Tree = struct {
     /// scroller that overflows keeps at its right (Win32's classic 15 and
     /// 10, as WebView2); 0 for overlay scrollbars (no room).
     scrollbar: [2]f32 = .{ 0, 0 },
+    /// Scrollers whose offset changed since the page last heard (a
+    /// "scroll" event each, Engine.flushScrolls), by id.
+    scrolled: std.ArrayListUnmanaged(i64) = .empty,
     leaf_styles: std.AutoHashMapUnmanaged(i64, *LeafStyle) = .empty,
     leaf_style_bytes: usize = 0,
     /// Row plans for stampRow's callers (defineStampPlan), by id - 1.
@@ -1343,6 +1348,7 @@ pub const Tree = struct {
     }
 
     pub fn deinit(t: *Tree) void {
+        t.scrolled.deinit(t.gpa);
         for (t.stamp_plans.items) |plan| t.gpa.free(plan.mem);
         t.stamp_plans.deinit(t.gpa);
         var it = t.nodes.valueIterator();
@@ -2491,13 +2497,17 @@ pub const Tree = struct {
             var bottom: f32 = 0;
             for (n.kids.items) |k| bottom = @max(bottom, overflowBottom(k, 0));
             n.content_h = bottom + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeBottom);
-            n.scroll_y = std.math.clamp(n.scroll_y, 0, @max(0, n.content_h - n.frame.h));
+            const y = std.math.clamp(n.scroll_y, 0, @max(0, n.content_h - n.frame.h));
+            if (y != n.scroll_y) n.tree.noteScroll(n);
+            n.scroll_y = y;
         }
         if (p.scrollx) {
             var right: f32 = 0;
             for (n.kids.items) |k| right = @max(right, overflowRight(k, 0));
             n.content_w = right + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeRight);
-            n.scroll_x = std.math.clamp(n.scroll_x, 0, @max(0, n.content_w - n.frame.w));
+            const x = std.math.clamp(n.scroll_x, 0, @max(0, n.content_w - n.frame.w));
+            if (x != n.scroll_x) n.tree.noteScroll(n);
+            n.scroll_x = x;
         }
         const sy = if (p.scroll) n.scroll_y else 0;
         const sx = if (p.scrollx) n.scroll_x else 0;
@@ -2619,6 +2629,14 @@ pub const Tree = struct {
         return t.scrollbar[0];
     }
 
+    /// A scroller's offset changed: the page hears of it (once until it
+    /// does).
+    pub fn noteScroll(t: *Tree, n: *Node) void {
+        if (n.scroll_noted) return;
+        t.scrolled.append(t.gpa, n.id) catch return;
+        n.scroll_noted = true;
+    }
+
     /// The nearest scroll container around a node (or the node itself).
     pub fn scroller(_: *Tree, start: ?*Node) ?*Node {
         var n = start;
@@ -2640,7 +2658,9 @@ pub const Tree = struct {
         while (n) |s| : (n = s.parent) {
             if (!s.props.scroll) continue;
             const want = scrollWant(block, target.y - s.frame.y + s.scroll_y, target.h, s.scroll_y, s.frame.h);
-            s.scroll_y = std.math.clamp(want, 0, @max(0, s.content_h - s.frame.h));
+            const y = std.math.clamp(want, 0, @max(0, s.content_h - s.frame.h));
+            if (y != s.scroll_y) t.noteScroll(s);
+            s.scroll_y = y;
             target = s.frame;
         }
         t.replace();
