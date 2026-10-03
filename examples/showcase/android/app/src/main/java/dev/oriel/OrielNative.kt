@@ -59,6 +59,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.floor
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -1418,6 +1419,34 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         else -> 0f
     }
 
+    /** A radial gradient's center (from the box's origin) and radii in a w x h box: tree.zig's Gradient.radialIn. */
+    private fun radialIn(g: JSONObject, r: JSONArray, w: Float, h: Float): FloatArray {
+        val cx = boxLen(r.opt(0), w); val cy = boxLen(r.opt(1), h)
+        var rx = boxLen(r.opt(2), w); var ry = boxLen(r.opt(3), h)
+        val circle = g.optBoolean("circle", false)
+        val ext = g.optString("ext", "").let { if (it.isEmpty() || it in EXTENTS) it else "farthest-corner" }
+        if (ext.isNotEmpty()) {
+            // The distances to the nearer and farther side, each axis.
+            val nx = min(abs(cx), abs(w - cx)); val ny = min(abs(cy), abs(h - cy))
+            val fx = max(abs(cx), abs(w - cx)); val fy = max(abs(cy), abs(h - cy))
+            if (circle) {
+                rx = when (ext) {
+                    "closest-side" -> min(nx, ny)
+                    "farthest-side" -> max(fx, fy)
+                    "closest-corner" -> hypot(nx, ny)
+                    else -> hypot(fx, fy)
+                }
+                ry = rx
+            } else {
+                // An ellipse through a corner keeps the sides' aspect ratio: those radii times sqrt(2).
+                val k = if (ext.endsWith("-corner")) sqrt(2f) else 1f
+                val near = ext.startsWith("closest")
+                rx = k * (if (near) nx else fx); ry = k * (if (near) ny else fy)
+            }
+        } else if (circle) ry = rx
+        return floatArrayOf(cx, cy, max(0.01f, rx), max(0.01f, ry))
+    }
+
     private fun gradient(g: JSONObject, x: Float, y: Float, w: Float, h: Float): Shader? {
         val stops = g.optJSONArray("stops") ?: return null
         if (stops.length() < 2) return null
@@ -1430,8 +1459,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         }
         g.optJSONArray("radial")?.let { r ->
             // A circle of radius rx, squeezed to ry vertically.
-            val cx = x + boxLen(r.opt(0), w); val cy = y + boxLen(r.opt(1), h)
-            val rx = max(0.01f, boxLen(r.opt(2), w)); val ry = max(0.01f, boxLen(r.opt(3), h))
+            val (ox, oy, rx, ry) = radialIn(g, r, w, h)
+            val cx = x + ox; val cy = y + oy
             return RadialGradient(cx, cy, rx, colors, pos, Shader.TileMode.CLAMP).also {
                 it.setLocalMatrix(Matrix().apply { setScale(1f, ry / rx, cx, cy) })
             }
@@ -1509,5 +1538,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         val PROP_KEYS = arrayOf("fd","w","h","fs","ai","runs","t","c","sz","wt","dis","click","cg","rg","ar","val","maxw","maxh","minw","minh","fw","fg","fb","as","ac","jc","acc","src","range","pw","pos","ph","pad","m","options","on","icon","fit","cw","ch","cv","ctl","cols","trow","tcell","table","bc","bg","br","bw","clip","col","fwt","fz","ins","it","lh","ls","mono","nowrap","op","rel","rot","sc","scroll","scrollx","sh","sticky","ta","tx","ty","vis","z","root","color","gradient","angle","stops","radial","spread","blur","x","y","vb","shapes","d","fill","stroke","sw","cap","join","evenodd","u","i","label","href","hover","radius","cx","cy")
         /** The largest side an <img> is decoded at (px); larger pictures are downsampled. */
         const val MAX_IMAGE_SIDE = 4096
+        /** radial-gradient sizes (tree.zig Gradient.RadialExtent); another is farthest-corner. */
+        val EXTENTS = setOf("closest-side", "farthest-side", "closest-corner", "farthest-corner")
     }
 }

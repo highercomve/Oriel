@@ -625,23 +625,51 @@ function stopsOf(parts, current) {
   return stops;
 }
 
-// radial-gradient(<size>? at <x> <y>, stops): { radial: [cx, cy, rx, ry],
-// stops }, each length a number (px) or "50%" (of the box's width for x, of
-// its height for y). Ellipses only; sizes other than lengths are the
-// farthest corner.
+// radial-gradient([<shape> || <size>]? [at <position>]?, stops):
+// { radial: [cx, cy, rx, ry], stops }, each length a number (px) or "50%"
+// (of the box's width for x, of its height for y). A size keyword
+// (closest-side, farthest-side, closest-corner, farthest-corner: the
+// default) depends on the box, so it goes as `ext` (with `circle` for a
+// circle) and the painters resolve it (tree.zig's Gradient.radialIn);
+// rx and ry are then placeholders.
 function radial(args, current) {
   const parts = splitTop(args, ",").map((s) => s.trim());
-  let cx = "50%", cy = "50%", rx = "71%", ry = "71%";
+  let cx = "50%", cy = "50%", rx = "71%", ry = "71%", ext = "farthest-corner", circle = false;
   if (!color(splitSpaces(parts[0])[0], current)) {
     const [size, at] = parts.shift().split(/\bat\b/).map((x) => (x || "").trim());
     const len = (v) => /%$/.test(v) ? v : length(v, 16, false);
-    const pos = (v, axis) => ({ left: "0%", top: "0%", center: "50%", right: "100%", bottom: "100%" })[v] ?? len(v) ?? (axis ? cy : cx);
-    const sz = splitSpaces(size.replace(/\b(ellipse|circle)\b/g, "").trim()).filter((v) => /^[\d.]/.test(v));
-    if (sz.length) { rx = len(sz[0]) ?? rx; ry = len(sz[1] ?? sz[0]) ?? ry; }
-    if (at) { const a = splitSpaces(at); cx = pos(a[0], 0); cy = pos(a[1] ?? "center", 1); }
+    const words = splitSpaces(size);
+    const lens = words.filter((v) => /^[-\d.]/.test(v));
+    const kws = words.filter((w) => /^(closest|farthest)-(side|corner)$/.test(w));
+    const shapes = words.filter((w) => w === "circle" || w === "ellipse");
+    // Invalid (the whole background is dropped, as CSS does): anything
+    // else, two shapes or sizes, a size keyword with lengths.
+    if (lens.length + kws.length + shapes.length !== words.length || shapes.length > 1 || kws.length > 1 || (kws.length && lens.length) || lens.length > 2) return null;
+    // One length is a circle's radius (CSS), two an ellipse's.
+    circle = shapes[0] === "circle" || (lens.length === 1 && !shapes.length);
+    if (kws.length) ext = kws[0];
+    else if (lens.length) {
+      // A circle: one length, not a percentage; an ellipse: two. None negative.
+      if (circle ? lens.length !== 1 || /%$/.test(lens[0]) : lens.length !== 2) return null;
+      const a = len(lens[0]), b = circle ? a : len(lens[1]);
+      if (a == null || b == null || parseFloat(a) < 0 || parseFloat(b) < 0) return null;
+      rx = a; ry = b; ext = null;
+    }
+    if (at) {
+      const a = splitSpaces(at);
+      // "top right" as well as "right top": a vertical keyword first swaps.
+      if (/^(top|bottom)$/.test(a[0]) || /^(left|right)$/.test(a[1] ?? "")) a.reverse();
+      if (a.length === 1 && /^(top|bottom)$/.test(a[0])) a.unshift("center");
+      const pos = (v, dflt) => ({ left: "0%", top: "0%", center: "50%", right: "100%", bottom: "100%" })[v] ?? (v == null ? dflt : len(v) ?? dflt);
+      cx = pos(a[0], cx); cy = pos(a[1] ?? "center", cy);
+    }
   }
   const stops = stopsOf(parts, current);
-  return stops.length ? { radial: [cx, cy, rx, ry], stops } : null;
+  if (!stops.length) return null;
+  const g = { radial: [cx, cy, rx, ry], stops };
+  if (ext) g.ext = ext;
+  if (circle) g.circle = true;
+  return g;
 }
 
 // background → { color, gradient } from its layers (the last solid color,
