@@ -16,6 +16,7 @@
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
 
+import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs } from "./css.js";
 import { Renderer, UA_CSS } from "./render.js";
@@ -460,13 +461,7 @@ g.getComputedStyle = (el) => {
 };
 g.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
 g.IntersectionObserver ??= class { observe() {} unobserve() {} disconnect() {} };
-if (typeof g.URLSearchParams === "undefined") {
-  g.URLSearchParams = class {
-    constructor(s = "") { this.m = new Map(String(s).replace(/^\?/, "").split("&").filter(Boolean).map((p) => p.split("=").map(decodeURIComponent))); }
-    has(k) { return this.m.has(k); }
-    get(k) { return this.m.has(k) ? this.m.get(k) : null; }
-  };
-}
+installURL(g);
 
 // ---------------------------------------------------------------------------
 // window.oriel: the same API as the WebView bridge
