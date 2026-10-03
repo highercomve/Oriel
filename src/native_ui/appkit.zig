@@ -67,6 +67,9 @@ pub const Surface = struct {
     /// its emptied pool slabs is due (trimPools, 2 s after a big drop).
     node_count: usize = 0,
     trim_queued: bool = false,
+    /// Scroll indicators showing (flash): redrawn each frame until then.
+    flash_queued: bool = false,
+    flash_until: i64 = 0,
     move: ?PendingMove = null,
     /// The window's label (ORIEL_NUI_SNAPSHOT file names).
     label: []u8 = &.{},
@@ -217,6 +220,10 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     errdefer _ = by_view.remove(key(view.value));
     s.dark = isDark(view);
     const extras = withPlatformExtras(gpa, platform_json);
+    // Scroll bars always shown (System Settings, or a mouse without
+    // gestures): WebKit's classic ones keep room in the layout, 15 px (11
+    // thin); overlay ones (the default) none.
+    const legacy = cocoa.class("NSScroller").msgSend(c_long, "preferredScrollerStyle", .{}) == 0;
     defer if (extras) |j| gpa.free(j);
     const platform = extras orelse platform_json;
     s.engine = try Engine.create(gpa, .{
@@ -234,6 +241,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .warm_fonts = warmFonts,
         .font_metrics = fontMetrics,
     }, assets, platform, label, url, width, height);
+    if (legacy) s.engine.tree.scrollbar = .{ 15, 11 };
     // Text-only updates that keep a text's size keep the layout (its
     // natural size is kept per node: measureText).
     s.engine.tree.reuse_text_layout = true;
@@ -968,7 +976,7 @@ fn drawRect(self: id, _: SEL, _: NSRect) callconv(.c) void {
     // A canvas's bitmap is as many pixels per point as the screen has.
     const win = s.view.msgSend(Object, "window", .{});
     const scale: f64 = if (win.value != null) win.msgSend(f64, "backingScaleFactor", .{}) else 2;
-    draw.paint("NSFont", @ptrCast(cg orelse return), s.engine, s.transparent, .{ .ctx = s, .empty = fieldEmpty }, scale);
+    draw.paint("NSFont", @ptrCast(cg orelse return), s.engine, s.transparent, .{ .ctx = s, .empty = fieldEmpty, .dark = s.dark }, scale);
 }
 
 /// A text area's control is empty: its placeholder is drawn under it.
@@ -1154,14 +1162,20 @@ fn scrollWheel(self: id, _: SEL, event: id) callconv(.c) void {
     if (dy != 0) {
         var target = s.engine.tree.scroller(under);
         while (target) |t| {
-            if (s.engine.scrollBy(t, dy)) break;
+            if (s.engine.scrollBy(t, dy)) {
+                flash(s, t);
+                break;
+            }
             target = s.engine.tree.scroller(t.parent);
         }
     }
     if (dx != 0) {
         var target = s.engine.tree.scrollerX(under);
         while (target) |t| {
-            if (s.engine.scrollByX(t, dx)) break;
+            if (s.engine.scrollByX(t, dx)) {
+                flash(s, t);
+                break;
+            }
             target = s.engine.tree.scrollerX(t.parent);
         }
     }
@@ -1194,6 +1208,32 @@ fn queueMove(s: *Surface, p: [2]f32, buttons: u32, mods: u32) void {
 /// A layout that dropped many nodes (a list that went): the tree's emptied
 /// pool slabs go back 2 s later, if the window is still there (a list
 /// rebuilt at once reuses them first).
+
+/// The user scrolled `n`: its overlay indicator shows (apple_draw
+/// paintIndicators), the view redrawn each frame until it has faded.
+fn flash(s: *Surface, n: *Node) void {
+    const now = draw.nowMs();
+    n.flashed_at = now;
+    s.flash_until = now + draw.indicator.hold_ms + draw.indicator.fade_ms;
+    if (s.flash_queued) return;
+    const t = std.heap.smp_allocator.create(u64) catch return;
+    t.* = s.token;
+    s.flash_queued = true;
+    cocoa.afterMain(16, t, onFlash);
+}
+
+fn onFlash(p: ?*anyopaque) callconv(.c) void {
+    const t: *u64 = @ptrCast(@alignCast(p.?));
+    const s = surfaces.get(t.*) orelse {
+        std.heap.smp_allocator.destroy(t);
+        return; // the window is gone
+    };
+    s.view.msgSend(void, "setNeedsDisplay:", .{cocoa.boolean(true)});
+    if (draw.nowMs() < s.flash_until + 16) return cocoa.afterMain(16, t, onFlash);
+    std.heap.smp_allocator.destroy(t);
+    s.flash_queued = false;
+}
+
 fn queueTrim(s: *Surface) void {
     const count = s.engine.tree.nodes.count();
     defer s.node_count = count;

@@ -1073,6 +1073,9 @@ pub const Node = struct {
     /// backend measured it (NaN: not given; baselineFn estimates it). Rows
     /// of inline content line their items up on it (align-items: baseline).
     baseline: f32 = std.math.nan(f32),
+    /// A scroller: when the user last scrolled it (ms, the backend's clock), for a
+    /// backend that draws overlay scroll indicators a moment after (0: never).
+    flashed_at: i64 = 0,
     text_measure_epoch: u64 = 0,
     text_override: ?*TextOverride = null,
     /// A growing text item in a row (flex: 1): its longest word's width,
@@ -1107,6 +1110,16 @@ pub const Node = struct {
     }
 
     /// The frame minus border and padding: where text and fields go.
+    /// The padding box (the frame less its borders and a scrollbar's
+    /// room): where a scroller's or clipping box's content shows.
+    pub fn paddingRect(n: *const Node) Rect {
+        const l = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeLeft);
+        const t = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeTop);
+        const r = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeRight);
+        const b = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeBottom);
+        return .{ .x = n.frame.x + l, .y = n.frame.y + t, .w = @max(0, n.frame.w - l - r), .h = @max(0, n.frame.h - t - b) };
+    }
+
     pub fn content(n: *const Node) Rect {
         const l = yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeLeft) + yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeLeft);
         const t = yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeTop) + yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeTop);
@@ -2491,12 +2504,15 @@ pub const Tree = struct {
         n.clip = clip;
         var child_clip = clip;
         var child_view = view;
-        if (p.scroll or p.scrollx or p.clip) child_clip = clip.intersect(n.frame);
+        // Overflow is clipped at the padding box (inside the borders).
+        if (p.scroll or p.scrollx or p.clip) child_clip = clip.intersect(n.paddingRect());
         if (p.scroll or p.scrollx) child_view = n.frame;
         if (p.scroll) {
             var bottom: f32 = 0;
             for (n.kids.items) |k| bottom = @max(bottom, overflowBottom(k, 0));
-            n.content_h = bottom + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeBottom);
+            // From the border box's top to below the bottom padding and
+            // border: content_h - frame.h is how far it scrolls.
+            n.content_h = bottom + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeBottom) + yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeBottom);
             const y = std.math.clamp(n.scroll_y, 0, @max(0, n.content_h - n.frame.h));
             if (y != n.scroll_y) n.tree.noteScroll(n);
             n.scroll_y = y;
@@ -2504,7 +2520,7 @@ pub const Tree = struct {
         if (p.scrollx) {
             var right: f32 = 0;
             for (n.kids.items) |k| right = @max(right, overflowRight(k, 0));
-            n.content_w = right + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeRight);
+            n.content_w = right + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeRight) + yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeRight);
             const x = std.math.clamp(n.scroll_x, 0, @max(0, n.content_w - n.frame.w));
             if (x != n.scroll_x) n.tree.noteScroll(n);
             n.scroll_x = x;
@@ -3191,6 +3207,27 @@ test "a padded text in a flex row keeps its word plus its padding and border" {
     // testMeasure: 10 wide; + 6 + 6 padding + 1 + 1 border.
     const mw = yg.YGNodeStyleGetMinWidth(t.get(2).?.yn);
     try std.testing.expectEqual(@as(f32, 24), mw.value);
+}
+
+test "a bordered scroller scrolls to its content's end and clips at its padding box" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    // 200 x 100 inside a 2px border, 400 tall content.
+    try t.apply(
+        \\[["c",1,"view"],["c",2,"view"],["p",2,{"w":204,"h":104,"bw":[2,2,2,2],"scroll":true}],["c",3,"view"],["p",3,{"h":400,"fs":0}],["k",2,[3]],["k",1,[2]],["r",1]]
+    );
+    t.width = 400;
+    t.height = 300;
+    t.layout();
+    const s = t.get(2).?;
+    // content_h - frame.h is the scroll range: 400 - 100, as a browser's
+    // scrollHeight - clientHeight.
+    try std.testing.expectApproxEqAbs(@as(f32, 300), s.content_h - s.frame.h, 1e-3);
+    const kid = t.get(3).?;
+    try std.testing.expectApproxEqAbs(s.frame.y + 2, kid.clip.y, 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 100), kid.clip.h, 1e-3);
 }
 
 test "flex: 1 labels in a row stay equal with room and keep whole words without" {
