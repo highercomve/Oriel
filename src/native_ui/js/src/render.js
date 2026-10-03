@@ -37,12 +37,20 @@ b, strong, th { font-weight: bold; }
 i, em, cite, var, dfn { font-style: italic; }
 small { font-size: .83em; }
 code, kbd, samp, pre, tt { font-family: monospace; }
-button, input, textarea, select { font-family: system-ui; }
+/* Controls in the platform's control font, as Chromium (-webkit-small-control:
+   Arial on Windows; a backend that doesn't know the name takes system-ui), a
+   textarea in monospace. */
+button, input, select { font-family: -webkit-small-control, system-ui; }
+textarea { font-family: monospace; }
 pre { white-space: pre; }
 a { color: #0645ad; text-decoration: underline; cursor: pointer; }
 button { padding: 1px 6px; border: 2px outset #ccc; background: #efefef; font-size: 13.33px; text-align: center; }
 input, textarea, select { padding: 1px 2px; border: 2px inset #ccc; font-size: 13.33px; background: white; }
 textarea { white-space: pre-wrap; }
+/* As Chromium: a textarea has a 1px border and 2px padding, a select a 1px
+   border and none. */
+textarea { padding: 2px; border-width: 1px; }
+select { padding: 0; border-width: 1px; }
 hr { border-top: 1px solid #888; margin: .5em 0; }
 table { display: table; border-spacing: 2px; border-collapse: separate; }
 thead { display: table-header-group; } tbody { display: table-row-group; } tfoot { display: table-footer-group; }
@@ -1235,6 +1243,8 @@ export class Renderer {
       if (tag === "textarea") {
         const cols = parseInt(el.getAttribute("cols") || "", 10);
         props.cols = cols > 0 ? Math.min(cols, 1000) : 20;
+        const rows = parseInt(el.getAttribute("rows") || "", 10);
+        props.rows = rows > 0 ? Math.min(rows, 1000) : 2;
       }
       // A slider: the native side draws one (SeekBar), the value as text.
       if (type === "range") {
@@ -2336,8 +2346,8 @@ function runStyle(cs, fs) {
 
 // The font-family list for the backend (Pango and fontconfig, like the
 // WebView, resolve CSS's generic and system names: system-ui, monospace),
-// unquoted, comma-separated. Form controls are system-ui (UA_CSS), as
-// browsers draw them in the system font.
+// unquoted, comma-separated. Form controls are in the
+// platform's control font (UA_CSS: -webkit-small-control, system-ui).
 // Always sent. "default" (a CSS keyword, never a family's name): the page
 // sets none, and the backend uses its WebView's default face (WebKitGTK's
 // is sans-serif; Chromium's and WKWebView's, Times), not "serif" itself.
