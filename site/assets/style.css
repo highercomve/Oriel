@@ -348,6 +348,11 @@ tr:last-child td { border-bottom: 0; }
 
 /* Native renderer page: diagrams (inline SVG, themed by the site's colors) */
 .nr-fig { margin: 28px 0; overflow-x: auto; }
+.nr-videos { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 24px 0; }
+.nr-videos figure { margin: 0; }
+.nr-videos figcaption { font-size: .9rem; font-weight: 600; margin-bottom: 6px; }
+.nr-videos video { width: 100%; height: auto; display: block; border-radius: 8px; background: #111; }
+@media (max-width: 700px) { .nr-videos { grid-template-columns: 1fr; } }
 @media (max-width: 700px) { .nr-fig svg { min-width: 620px; } }
 .nr-fig svg { width: 100%; height: auto; display: block; overflow: visible; }
 .nr-fig figcaption { margin-top: 10px; color: var(--faint); font-size: 0.85rem; }

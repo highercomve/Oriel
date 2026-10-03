@@ -12,5 +12,8 @@
     .layouts_dir_path = "site/layouts",
     .assets_dir_path = "site/assets",
     .url_path_prefix = "Oriel",
-    .static_assets = [],
+    .static_assets = [
+        "videos/render-bench-native.mp4",
+        "videos/render-bench-webview.mp4",
+    ],
 }),

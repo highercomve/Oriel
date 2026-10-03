@@ -114,26 +114,46 @@ What the numbers say:
 
 The [render bench](https://github.com/highercomve/Oriel/tree/main/examples/render-bench) times one page in both renderers: building and updating rows of styled text (each followed by a layout read, as `offsetHeight` forces in a browser), a `requestAnimationFrame` loop moving 200 boxes, and a `<canvas>` game loop.
 
-[](<$image.siteAsset('screenshots/native-render-bench.png').alt('The render bench results screen on the native renderer')>)
+The same bench running in each renderer on a Linux desktop with a 180 Hz display (two recordings of one run each, at the same speed):
 
-*The bench's own results screen: the native renderer on a Linux desktop with a 180 Hz display (one run; the table below is the median of three).*
+```=html
+<div class="nr-videos">
+<figure><figcaption>Native renderer</figcaption><video src="/Oriel/videos/render-bench-native.mp4" muted loop controls preload="metadata"></video></figure>
+<figure><figcaption>WebView (WebKitGTK)</figcaption><video src="/Oriel/videos/render-bench-webview.mp4" muted loop controls preload="metadata"></video></figure>
+</div>
+```
 
-Linux desktop with a 180 Hz display, ReleaseFast, the median of 3 runs:
+
+Linux desktop with a 180 Hz display, ReleaseFast, the median of 3 runs (2026-10-03):
 
 | | Native renderer | WebView (WebKitGTK) |
 |---|---|---|
-| Build 1000 / 3000 rows | **9.1 / 27 ms** | 19 / 68 ms |
-| Update 1000 / 3000 rows | **3.0 / 9.3 ms** | 10 / 40 ms |
-| Page script runs | **20 ms** after start | 335 ms |
-| First frame | **66 ms** | 417 ms |
-| Animate 200 boxes | **150 fps** (the display's rate) | 62 fps |
-| Canvas, 200 / 1000 balls | **180 / 95 fps** | 62 / 62 fps |
-| Memory at start | **73 MB** | 468 MB |
-| Memory after the tests | **126 MB**, 93 after a second round | 508 MB |
+| Build 1000 / 3000 rows | **6.4 / 18.6 ms** | 20 / 69 ms |
+| Update 1000 / 3000 rows | **2.8 / 8.5 ms** | 9 / 40 ms |
+| Page script runs | **19 ms** after start | 349 ms |
+| First frame | **69 ms** | 431 ms |
+| Animate 200 boxes | **165 fps** | 62 fps |
+| Canvas, 200 / 1000 balls | **180 / 91 fps** (the display's rate is 180) | 62 / 62 fps |
+| Memory at start | **110 MB** | 491 MB |
+| Memory after the tests | **174 MB**, 177 after a second round | 561 MB |
 
-The native renderer now beats the WebView on every test: it runs the page's script about sixteen times sooner and shows its first frame six times sooner, builds and updates rows two to four times faster, animates at the display's refresh rate (the WebView stays at 60), and uses a quarter of the memory.
+The native renderer beats the WebView on every test: it runs the page's script about eighteen times sooner and shows its first frame six times sooner, builds rows three times faster and updates them three to five times faster, animates at the display's refresh rate (the WebView stays at 60), and uses about a third of the memory.
 
-What got it there, in order: an incremental render (only what changed is restyled and flattened), text changes sent straight to the native node, a QuickJS fix (its hash tables were leaving most buckets empty), the renderer's JavaScript compiled to bytecode at build time, the native DOM (below), transform-only animation frames, `requestAnimationFrame` paced by the display, and rows and whole lists of identical rows built by the tree in Zig straight from the native DOM instead of node by node in JavaScript.
+What got it there, in order: an incremental render (only what changed is restyled and flattened), text changes sent straight to the native node, a QuickJS fix (its hash tables were leaving most buckets empty), the renderer's and the app's JavaScript compiled to bytecode at build time, the native DOM (below), transform-only animation frames, `requestAnimationFrame` paced by the display, rows and whole lists of identical rows built by the tree in Zig straight from the native DOM, smaller nodes from pools, text sized from cached glyph widths, a text change that only moves its own edge skipping the layout, and style sheets parsed when the app is built.
+
+## On every platform
+
+The same bench, the native renderer, ReleaseFast (Windows: ReleaseSafe, as `oriel build` makes it), the median of 3:
+
+| | Build 1000 rows | Update 1000 rows | Animate 200 boxes | Canvas 1000 balls |
+|---|---|---|---|---|
+| Linux (desktop, 180 Hz) | 6.4 ms | 2.8 ms | 165 fps | 91 fps |
+| Windows 11 (a 2018 laptop, 144 Hz) | 18.9 ms | 8.2 ms | 72 fps | 64 fps |
+| macOS (M1, 120 Hz display) | 24.9 ms | 15.6 ms | 120 fps | 120 fps |
+| iOS (simulator, 60 Hz) | 22.3 ms | 13.8 ms | 60 fps | 60 fps |
+| Android (a 120 Hz phone) | 13.6 ms | 63.8 ms | 115 fps | 92 fps |
+
+Where a test reaches the display's refresh rate, that is its ceiling. Android updates are the slowest still: each new string is measured with a `StaticLayout`, which the next step replaces with the cached-width sizing the desktop backends use.
 
 ## The native DOM
 
