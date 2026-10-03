@@ -3360,9 +3360,47 @@ fn paint(p: *Painter, n: *Node) void {
         .canvas => paintCanvas(p, n),
         else => {},
     }
+    // overflow: hidden (or a scroller) with rounded corners: the children
+    // are cut to the rounded padding box (the box's own border isn't),
+    // through a layer with that shape as its mask. Only such boxes pay.
+    const mask: ?*c.ID2D1Geometry = if (n.kids.items.len > 0 and n.roundClips()) roundClipGeometry(n.paddingClip()) else null;
+    defer if (mask) |m| releaseCom(@as(?*c.ID2D1Geometry, m));
+    if (mask) |m| {
+        const pb = n.paddingClip().rect;
+        const params: c.D2D1_LAYER_PARAMETERS = .{
+            .contentBounds = rectF(pb),
+            .geometricMask = m,
+            .maskAntialiasMode = c.D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            .maskTransform = identity,
+            .opacity = 1,
+            .opacityBrush = null,
+            .layerOptions = c.D2D1_LAYER_OPTIONS_NONE,
+        };
+        vt.PushLayer.?(p.rt, &params, null);
+    }
+    defer if (mask != null) vt.PopLayer.?(p.rt);
     // CSS paint order: positioned boxes (a sticky header) over the flow.
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paint(p, k);
+}
+
+/// A rounded rectangle as a geometry (caller releases): Direct2D's own
+/// when the corners are alike, else a path of per-corner arcs.
+fn roundClipGeometry(rr: tree_mod.RoundRect) ?*c.ID2D1Geometry {
+    if (rr.rect.w <= 0 or rr.rect.h <= 0) return null;
+    // Radii that don't fit are scaled down together, as CSS does.
+    var r = rr.radii;
+    const fit = @min(1, @min(@min(rr.rect.w / @max(1e-3, r[0] + r[1]), rr.rect.w / @max(1e-3, r[3] + r[2])), @min(rr.rect.h / @max(1e-3, r[0] + r[3]), rr.rect.h / @max(1e-3, r[1] + r[2]))));
+    for (&r) |*x| x.* *= fit;
+    if (uniform(r)) {
+        const fac = d2d.?;
+        const shape: c.D2D1_ROUNDED_RECT = .{ .rect = rectF(rr.rect), .radiusX = r[0], .radiusY = r[0] };
+        var geo: ?*c.ID2D1RoundedRectangleGeometry = null;
+        if (fac.lpVtbl.*.CreateRoundedRectangleGeometry.?(fac, &shape, &geo) < 0 or geo == null) return null;
+        return @ptrCast(geo);
+    }
+    const geo = roundRectGeometry(rr.rect, r) orelse return null;
+    return @ptrCast(geo);
 }
 
 fn uniform(r: [4]f32) bool {
