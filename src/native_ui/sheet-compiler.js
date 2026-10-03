@@ -192,12 +192,15 @@
       case "border-color":
         return box(prop, (side) => `border-${side}-color`);
       case "border-radius": {
-        const v = splitSpaces(value.split("/")[0]);
-        const [a, b = a, c = a, d = b] = v;
-        out["border-top-left-radius"] = a;
-        out["border-top-right-radius"] = b;
-        out["border-bottom-right-radius"] = c;
-        out["border-bottom-left-radius"] = d;
+        const [hv, vv] = value.split("/");
+        const four = (s) => {
+          const [a, b = a, c = a, d = b] = splitSpaces(s.trim());
+          return [a, b, c, d];
+        };
+        const h = four(hv);
+        const v = vv === void 0 ? h : four(vv);
+        const corners = ["top-left", "top-right", "bottom-right", "bottom-left"];
+        for (let i = 0; i < 4; i++) out[`border-${corners[i]}-radius`] = h[i] === v[i] ? h[i] : `${h[i]} ${v[i]}`;
         return;
       }
       case "border":
