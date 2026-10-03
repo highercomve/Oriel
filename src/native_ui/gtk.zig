@@ -206,6 +206,11 @@ extern fn pango_font_description_set_absolute_size(d: *PangoFontDescription, siz
 extern fn pango_font_description_set_weight(d: *PangoFontDescription, w: c_int) void;
 extern fn pango_font_description_set_style(d: *PangoFontDescription, s: c_int) void;
 extern fn pango_font_description_free(d: *PangoFontDescription) void;
+const PangoFontMetrics = opaque {};
+extern fn pango_context_get_metrics(ctx: *PangoContext, desc: ?*const PangoFontDescription, lang: ?*anyopaque) ?*PangoFontMetrics;
+extern fn pango_font_metrics_get_ascent(m: *PangoFontMetrics) c_int;
+extern fn pango_font_metrics_get_descent(m: *PangoFontMetrics) c_int;
+extern fn pango_font_metrics_unref(m: *PangoFontMetrics) void;
 extern fn pango_attr_list_new() *PangoAttrList;
 extern fn pango_attr_list_unref(l: *PangoAttrList) void;
 extern fn pango_attr_list_insert(l: *PangoAttrList, a: *PangoAttribute) void;
@@ -330,6 +335,7 @@ pub const Surface = struct {
             .deinit = releaseTextMeasurements,
             .request_display_frame = requestDisplayFrame,
             .warm_fonts = warmFonts,
+        .font_metrics = fontMetrics,
         }, assets, platform_json, label, url, width, height);
         s.engine.tree.reuse_text_layout = true;
 
@@ -486,6 +492,23 @@ fn onTimer(p: ?*anyopaque) callconv(.c) c_int {
 /// Backend.warm_fonts: the fonts load one per idle moment (low priority:
 /// after input, drawing and the page's timers), each by laying out a
 /// short text in it, as the first text in that size and weight would.
+/// host.fontMetrics: the ascent and descent of the font text is measured
+/// with (textLayout's), at `size` px.
+fn fontMetrics(ctx: *anyopaque, size: f32, mono: bool, out: *[2]f32) bool {
+    const s = surfaceOf(ctx);
+    const font = if (mono) &s.mono else &s.sans;
+    if (font.* == null) font.* = pango_font_description_from_string(if (mono) "Monospace" else "Sans");
+    const desc = font.*.?;
+    pango_font_description_set_absolute_size(desc, size * PANGO_SCALE);
+    const m = pango_context_get_metrics(gtk_widget_get_pango_context(s.area), desc, null) orelse return false;
+    defer pango_font_metrics_unref(m);
+    out.* = .{
+        @as(f32, @floatFromInt(pango_font_metrics_get_ascent(m))) / PANGO_SCALE,
+        @as(f32, @floatFromInt(pango_font_metrics_get_descent(m))) / PANGO_SCALE,
+    };
+    return true;
+}
+
 fn warmFonts(ctx: *anyopaque, specs: []const engine_mod.FontSpec) void {
     const s = surfaceOf(ctx);
     s.warm.appendSlice(s.gpa, specs) catch return;

@@ -3500,6 +3500,26 @@ col, colgroup { display: none; }
 `;
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
+  var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
+  var fontMetricsCache = /* @__PURE__ */ new Map();
+  function lineDescent(cs, fs, host2) {
+    const mono = /mono/.test(cs["font-family"] || "");
+    const key = `${fs}|${mono}`;
+    let m = fontMetricsCache.get(key);
+    if (!m) {
+      try {
+        m = host2?.fontMetrics?.(fs, mono);
+      } catch {
+        m = null;
+      }
+      if (!m) m = [fs * 1.125, fs * 0.3125];
+      fontMetricsCache.set(key, m);
+    }
+    const [ascent, descent] = m;
+    const v = cs["line-height"];
+    const lh = !v || v === "normal" ? ascent + descent : /^[\d.]+$/.test(v) ? parseFloat(v) * fs : length(v, fs, false) ?? ascent + descent;
+    return Math.max(0, lh / 2 - (ascent - descent) / 2);
+  }
   var nonZero = (v) => !!v && (/^(thin|medium|thick)$/.test(v) || parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v)));
   function boxedInline(cs) {
     for (const side of ["top", "right", "bottom", "left"]) {
@@ -4641,6 +4661,17 @@ col, colgroup { display: none; }
         this.putClick(props, el);
         return this.put(nodes, id, "text", props, [], fixedNode);
       }
+      const imageLine = !childCtx.blockify && props.fd === "column" && display !== "flex" && display !== "grid" && props.h === void 0 && this.imageLine(flow, cs, rematch);
+      if (imageLine) {
+        const gap = lineDescent(cs, fontSize, this.host);
+        if (gap > 0) {
+          const pad = props.pad ? [...props.pad] : [0, 0, 0, 0];
+          if (typeof pad[2] === "number") {
+            pad[2] += gap;
+            props.pad = pad;
+          }
+        }
+      }
       const atomic = (child) => {
         const ccs = this.style(child, cs, rematch), d = ccs.display || "inline";
         return ATOMIC_INLINE.has(d) || !!boxed?.has(child);
@@ -4655,7 +4686,7 @@ col, colgroup { display: none; }
       if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 && flow.every((f) => f.el && atomic(f.el))) {
         props.fd = "row";
         props.fw = "wrap";
-        props.ai = "center";
+        props.ai = imageLine ? "flex-end" : "center";
         const nodesIn = [...el.childNodes];
         const spaced = nodesIn.some((n2, i) => n2.nodeType === 3 && /^\s+$/.test(n2.data) && i > 0 && i < nodesIn.length - 1);
         if (spaced && props.cg === void 0) {
@@ -4810,6 +4841,20 @@ col, colgroup { display: none; }
         return null;
       }
       return id;
+    }
+    // Whether the in-flow content is only images on the baseline (imageLine).
+    imageLine(flow, cs, rematch) {
+      let any = false;
+      for (const f of flow) {
+        if (!f.el) return false;
+        const ccs = this.style(f.el, cs, rematch);
+        if (ccs.position === "absolute" || ccs.position === "fixed" || (ccs.display || "inline") === "none") continue;
+        const d = ccs.display || "inline";
+        const va = ccs["vertical-align"];
+        if (!REPLACED.has(f.el.localName) || d !== "inline" && d !== "inline-block" || va && va !== "baseline") return false;
+        any = true;
+      }
+      return any;
     }
     isInline(el, parentCS, rematch = false) {
       if (SKIP2.has(el.localName)) return true;
