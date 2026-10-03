@@ -54,6 +54,128 @@ pub const Gradient = struct {
     ext: ?[]const u8 = null,
     circle: bool = false,
     stops: []const [5]f32 = &.{},
+    /// repeating-linear-gradient / repeating-radial-gradient.
+    rep: bool = false,
+    /// Each stop's position unit when they aren't all fractions (render.js
+    /// stopsOf): '%' a fraction of the line, 'p' px, 'a' none given.
+    su: ?[]const u8 = null,
+
+
+    pub const Stop = [5]f32;
+
+    /// Stops ready to draw over a gradient line (a linear gradient's, or a
+    /// radial one's ray: its x radius) `line` px long, at most buf.len.
+    /// Not repeating: positions 0..1 along the line. Repeating: one
+    /// period's, 0..1 within it, phased so a period starts at the line's
+    /// start (0); `period` is its length as a fraction of the line, for a
+    /// brush that wraps (Direct2D's and Cairo's extend modes) or expand().
+    pub const Resolved = struct { stops: []const Stop, period: ?f32 = null };
+
+    pub fn resolve(g: Gradient, line: f32, buf: []Stop) Resolved {
+        const n = @min(g.stops.len, buf.len);
+        if (n == 0) return .{ .stops = buf[0..0] };
+        @memcpy(buf[0..n], g.stops[0..n]);
+        const s = buf[0..n];
+        if (g.su) |units| {
+            var auto: [256]bool = undefined;
+            const m = @min(n, auto.len);
+            for (s[0..m], 0..) |*st, i| {
+                const u: u8 = if (i < units.len) units[i] else '%';
+                auto[i] = u == 'a';
+                if (u == 'p') st[4] = if (line > 0) st[4] / line else 0;
+            }
+            if (auto[0]) {
+                s[0][4] = 0;
+                auto[0] = false;
+            }
+            if (m > 1 and auto[m - 1]) {
+                s[m - 1][4] = 1;
+                auto[m - 1] = false;
+            }
+            // Missing positions: evenly between the given ones.
+            var i: usize = 1;
+            while (i < m) : (i += 1) {
+                if (!auto[i]) continue;
+                var j = i;
+                while (j < m and auto[j]) j += 1;
+                const a = s[i - 1][4];
+                const b = if (j < m) s[j][4] else a;
+                const steps: f32 = @floatFromInt(j - i + 1);
+                for (i..j) |k| s[k][4] = a + (b - a) * @as(f32, @floatFromInt(k - i + 1)) / steps;
+                i = j;
+            }
+        }
+        // Never back: a position less than one before it is that one.
+        for (1..n) |i| s[i][4] = @max(s[i][4], s[i - 1][4]);
+        if (!g.rep) return .{ .stops = s };
+        const first = s[0][4];
+        const per = s[n - 1][4] - first;
+        if (!(per > 1e-6)) {
+            // No period: the last color everywhere (as browsers draw it).
+            for (s) |*st| st.* = s[n - 1];
+            return .{ .stops = s };
+        }
+        for (s) |*st| st[4] = (st[4] - first) / per;
+        // Phased so a period starts at 0: shift by first's place in one.
+        const shift = 1 - (first / per - @floor(first / per));
+        if (shift > 1e-6 and shift < 1 - 1e-6 and n + 2 <= buf.len) {
+            // The line's 0 is `shift` into a period: the color there starts it.
+            const at = shift;
+            var wrap: Stop = s[n - 1];
+            for (1..n) |i| if (s[i][4] >= at) {
+                const a = s[i - 1];
+                const b = s[i];
+                const t = if (b[4] > a[4]) (at - a[4]) / (b[4] - a[4]) else 0;
+                for (0..4) |c| wrap[c] = a[c] + (b[c] - a[c]) * t;
+                break;
+            };
+            var tmp: [258]Stop = undefined;
+            var k: usize = 0;
+            tmp[k] = wrap;
+            tmp[k][4] = 0;
+            k += 1;
+            for (s) |st| if (st[4] >= at) {
+                tmp[k] = st;
+                tmp[k][4] = st[4] - at;
+                k += 1;
+            };
+            for (s) |st| if (st[4] < at) {
+                tmp[k] = st;
+                tmp[k][4] = st[4] + (1 - at);
+                k += 1;
+            };
+            tmp[k] = wrap;
+            tmp[k][4] = 1;
+            k += 1;
+            const out = buf[0..@min(k, buf.len)];
+            @memcpy(out, tmp[0..out.len]);
+            return .{ .stops = out, .period = per };
+        }
+        return .{ .stops = s, .period = per };
+    }
+
+    /// A repeating gradient's period laid end to end over 0..`extent`
+    /// periods' worth of line, as explicit stops (0..1 over the extent):
+    /// for a backend whose gradients can't wrap (CoreGraphics). At most
+    /// out.len stops; past that the last color holds.
+    pub fn expand(r: Resolved, extent: f32, out: []Stop) []const Stop {
+        const per = r.period orelse {
+            const m = @min(r.stops.len, out.len);
+            @memcpy(out[0..m], r.stops[0..m]);
+            return out[0..m];
+        };
+        const total = extent / per; // periods
+        var k: usize = 0;
+        var copy: f32 = 0;
+        while (copy < total and k + r.stops.len <= out.len) : (copy += 1) {
+            for (r.stops) |st| {
+                out[k] = st;
+                out[k][4] = @min(1, (copy + st[4]) / total);
+                k += 1;
+            }
+        }
+        return out[0..k];
+    }
 
     pub const RadialExtent = enum { @"closest-side", @"farthest-side", @"closest-corner", @"farthest-corner" };
 
@@ -1045,6 +1167,30 @@ test "Corner: one length or [x, y]" {
     try std.testing.expectEqual(Dim{ .px = 20 }, one.value[2].y);
     try std.testing.expectEqual(Dim{ .pct = 50 }, one.value[3].x);
     try std.testing.expectEqual(Dim{ .px = 8 }, one.value[3].y);
+}
+
+test "Gradient.resolve: px stops, missing ones, repeating periods" {
+    var buf: [16]Gradient.Stop = undefined;
+    // red 0 10px, gold 10px 20px over a 200px line: a 20px period (0.1).
+    const stripes: Gradient = .{ .rep = true, .su = "%ppp", .stops = &.{ .{ 255, 0, 0, 1, 0 }, .{ 255, 0, 0, 1, 10 }, .{ 255, 200, 0, 1, 10 }, .{ 255, 200, 0, 1, 20 } } };
+    const r = stripes.resolve(200, &buf);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.1), r.period.?, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), r.stops[1][4], 1e-6);
+    // A period not starting at 0 is phased to: 5px..25px starts at 5.
+    const off: Gradient = .{ .rep = true, .su = "pp", .stops = &.{ .{ 0, 0, 0, 1, 5 }, .{ 255, 255, 255, 1, 25 } } };
+    const o = off.resolve(100, &buf);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), o.stops[0][4], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), o.stops[o.stops.len - 1][4], 1e-6);
+    // At 0 (= 20px, a period on from 5px... 0 is 15px past 5px's start: 0.75 in).
+    try std.testing.expectApproxEqAbs(@as(f32, 191.25), o.stops[0][0], 1e-3);
+    // Missing positions, evenly: red, (green), blue 40px on 100px.
+    const mid: Gradient = .{ .su = "apa", .stops = &.{ .{ 255, 0, 0, 1, 0 }, .{ 0, 255, 0, 1, 40 }, .{ 0, 0, 255, 1, 0 } } };
+    const m = mid.resolve(100, &buf);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.4), m.stops[1][4], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), m.stops[2][4], 1e-6);
+    var big: [64]Gradient.Stop = undefined;
+    const e = Gradient.expand(r, 1, &big);
+    try std.testing.expectEqual(@as(usize, 40), e.len);
 }
 
 test "paddingBox: the border box inset by the border, inner radii" {

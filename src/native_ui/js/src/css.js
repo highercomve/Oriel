@@ -845,13 +845,39 @@ function hsl(h, s, l) {
 // Gradient stops: [r, g, b, a, pos]. A transparent stop takes its
 // neighbour's color, so the fade doesn't go through black (CSS interpolates
 // premultiplied; Cairo and Android don't).
-function stopsOf(parts, current) {
-  const stops = parts.map((p, i) => {
+// Positions: a percentage is a fraction of the gradient line. With a px
+// position anywhere (or `rep`, a repeating gradient) they can't all be
+// resolved without the box: `out.su` then says each stop's unit ("%": a
+// fraction, "p": px, "a": none given) and tree.zig's Gradient.resolve
+// finishes them; otherwise missing ones are filled in here as CSS does
+// (evenly between their neighbours) and there is no su. A stop with two
+// positions ("red 0 10px") is two stops.
+function stopsOf(parts, current, out = {}, rep = false) {
+  const raw = [];
+  for (const p of parts) {
     const t = splitSpaces(p);
     const c = color(t[0], current);
-    const pos = t[1] ? parseFloat(t[1]) / 100 : i / Math.max(parts.length - 1, 1);
-    return c ? [...c, pos] : null;
-  }).filter(Boolean);
+    if (!c) continue;
+    const at = t.slice(1, 3).map((v) => /%$/.test(v) ? { f: parseFloat(v) / 100 } : parseFloat(v) === 0 ? { f: 0 } : { px: length(v, 16, false) ?? 0 });
+    if (!at.length) raw.push({ c, at: null });
+    for (const a of at) raw.push({ c: c.slice(), at: a });
+  }
+  let stops;
+  if (rep || raw.some((s) => s.at && "px" in s.at)) {
+    out.su = raw.map((s) => (!s.at ? "a" : "px" in s.at ? "p" : "%")).join("");
+    stops = raw.map((s) => [...s.c, !s.at ? 0 : "px" in s.at ? s.at.px : s.at.f]);
+  } else {
+    const pos = raw.map((s) => s.at?.f ?? null);
+    if (pos.length && pos[0] == null) pos[0] = 0;
+    if (pos.length && pos[pos.length - 1] == null) pos[pos.length - 1] = 1;
+    for (let i = 1; i < pos.length; i++) {
+      if (pos[i] != null) { pos[i] = Math.max(pos[i], pos[i - 1]); continue; }
+      let j = i;
+      while (pos[j] == null) j++;
+      for (let k = i; k < j; k++) pos[k] = pos[i - 1] + (pos[j] - pos[i - 1]) * (k - i + 1) / (j - i + 1);
+    }
+    stops = raw.map((s, i) => [...s.c, pos[i]]);
+  }
   stops.forEach((st, i) => {
     if (st[3] > 0) return;
     const n = stops[i - 1]?.[3] > 0 ? stops[i - 1] : stops[i + 1]?.[3] > 0 ? stops[i + 1] : null;
@@ -867,7 +893,7 @@ function stopsOf(parts, current) {
 // default) depends on the box, so it goes as `ext` (with `circle` for a
 // circle) and the painters resolve it (tree.zig's Gradient.radialIn);
 // rx and ry are then placeholders.
-function radial(args, current) {
+function radial(args, current, rep = false) {
   const parts = splitTop(args, ",").map((s) => s.trim());
   let cx = "50%", cy = "50%", rx = "71%", ry = "71%", ext = "farthest-corner", circle = false;
   if (!color(splitSpaces(parts[0])[0], current)) {
@@ -899,9 +925,11 @@ function radial(args, current) {
       cx = pos(a[0], cx); cy = pos(a[1] ?? "center", cy);
     }
   }
-  const stops = stopsOf(parts, current);
+  const extra = {};
+  const stops = stopsOf(parts, current, extra, rep);
   if (!stops.length) return null;
-  const g = { radial: [cx, cy, rx, ry], stops };
+  const g = { radial: [cx, cy, rx, ry], stops, ...extra };
+  if (rep) g.rep = true;
   if (ext) g.ext = ext;
   if (circle) g.circle = true;
   return g;
@@ -923,14 +951,15 @@ export function background(v, current) {
         const dir = parts.shift();
         angle = { "to right": 90, "to left": 270, "to top": 0, "to bottom": 180, "to bottom right": 135, "to top right": 45 }[dir] ?? 180;
       }
-      const stops = stopsOf(parts, current);
-      if (stops.length) (out ||= {}).gradient = { angle, stops };
+      const extra = {};
+      const stops = stopsOf(parts, current, extra, !!g[1]);
+      if (stops.length) (out ||= {}).gradient = { angle, stops, ...extra, ...(g[1] ? { rep: true } : {}) };
       continue;
     }
-    const r = /^radial-gradient\((.*)\)/.exec(layer);
+    const r = /^(repeating-)?radial-gradient\((.*)\)/.exec(layer);
     if (r) {
       if (out?.gradient) continue;
-      const gr = radial(r[1], current);
+      const gr = radial(r[2], current, !!r[1]);
       if (gr) (out ||= {}).gradient = gr;
       continue;
     }
