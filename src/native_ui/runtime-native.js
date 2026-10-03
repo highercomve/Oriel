@@ -2122,6 +2122,8 @@ globalThis.atob ??= (s) => {
     const cs = /* @__PURE__ */ Object.create(null);
     if (parent) {
       for (const k in parent) if (INHERITED.has(k) || k.startsWith("--")) cs[k] = parent[k];
+      const lh = parent["line-height"];
+      if (lh && parent.__fs !== void 0 && relativeUnit(lh)) cs["line-height"] = `${relativeLength(lh, parent.__fs)}px`;
     }
     for (const k in specified) if (k.startsWith("--")) cs[k] = specified[k];
     for (const k in cs) if (k.startsWith("--")) cs[k] = substitute(cs[k], cs, 0);
@@ -2140,6 +2142,22 @@ globalThis.atob ??= (s) => {
       cs[k] = substitute(v, cs, 0);
     }
     return cs;
+  }
+  function relativeUnit(v) {
+    const last = v.charCodeAt(v.length - 1);
+    if (last === 37) return true;
+    if (v.length < 3) return false;
+    const prev = v.charCodeAt(v.length - 2);
+    if (last === 109) return prev === 101 && v.charCodeAt(v.length - 3) !== 114;
+    if (last === 120) return prev === 101;
+    if (last === 104) return prev === 99;
+    return false;
+  }
+  function relativeLength(v, fs) {
+    const n2 = parseFloat(v);
+    if (v.endsWith("%")) return n2 / 100 * fs;
+    if (v.endsWith("ex") || v.endsWith("ch")) return n2 * fs * 0.5;
+    return n2 * fs;
   }
   function substitute(v, cs, depth = 0) {
     if (depth > 8 || !v.includes("var(")) return v;

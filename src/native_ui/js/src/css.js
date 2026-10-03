@@ -533,6 +533,13 @@ export function computeStyle(specified, parent) {
   const cs = Object.create(null);
   if (parent) {
     for (const k in parent) if (INHERITED.has(k) || k.startsWith("--")) cs[k] = parent[k];
+    // A line-height in % or em is a length computed where it's declared
+    // (its element's font size) and inherited as that length; only a
+    // number is inherited as a ratio (h1 { font-size: 36px } under
+    // :root { font: 16px/145% } is 23.2px high, not 52). The parent's font
+    // size (__fs, render.js) is resolved before its children's styles.
+    const lh = parent["line-height"];
+    if (lh && parent.__fs !== undefined && relativeUnit(lh)) cs["line-height"] = `${relativeLength(lh, parent.__fs)}px`;
   }
   // Custom properties first (they may refer to inherited ones).
   for (const k in specified) if (k.startsWith("--")) cs[k] = specified[k];
@@ -545,6 +552,27 @@ export function computeStyle(specified, parent) {
     cs[k] = substitute(v, cs, 0);
   }
   return cs;
+}
+
+// A length in %, em, ex or ch (by its last characters: this runs for every
+// element, and most line-heights are a number or px).
+function relativeUnit(v) {
+  const last = v.charCodeAt(v.length - 1);
+  if (last === 37) return true; // %
+  if (v.length < 3) return false;
+  const prev = v.charCodeAt(v.length - 2);
+  if (last === 109) return prev === 101 && v.charCodeAt(v.length - 3) !== 114; // em, not rem
+  if (last === 120) return prev === 101; // ex (not px)
+  if (last === 104) return prev === 99; // ch
+  return false;
+}
+
+// A % or em-like length at font size `fs`, in px.
+function relativeLength(v, fs) {
+  const n = parseFloat(v);
+  if (v.endsWith("%")) return (n / 100) * fs;
+  if (v.endsWith("ex") || v.endsWith("ch")) return n * fs * 0.5;
+  return n * fs;
 }
 
 export function substitute(v, cs, depth = 0) {
