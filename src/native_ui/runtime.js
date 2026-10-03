@@ -17947,6 +17947,16 @@ ${a.stack || ""}`;
   var keyboardFocus = true;
   var TEXT_INPUTS = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
   var textField = (el) => el?.localName === "textarea" || el?.isContentEditable || el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
+  var changeBase = /* @__PURE__ */ new WeakMap();
+  var edited = /* @__PURE__ */ new WeakSet();
+  var changeField = (el) => el?.localName === "textarea" || el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
+  function fireChange(el) {
+    if (!changeField(el) || !edited.has(el)) return;
+    edited.delete(el);
+    if (el.value === changeBase.get(el)) return;
+    changeBase.set(el, el.value);
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
   var focusEvent = (type, bubbles, relatedTarget) => {
     const ev = new Event(type, { bubbles });
     Object.defineProperty(ev, "relatedTarget", { value: relatedTarget || null, configurable: true });
@@ -17960,6 +17970,8 @@ ${a.stack || ""}`;
       if (el === active) return;
       const old = active;
       if (old) {
+        fireChange(old);
+        if (active !== old) return;
         old.removeAttribute?.("data-nui-focus");
         old.removeAttribute?.("data-nui-focus-visible");
         active = null;
@@ -17972,6 +17984,10 @@ ${a.stack || ""}`;
       }
       if (!el) return;
       active = el;
+      if (changeField(el)) {
+        changeBase.set(el, el.value);
+        edited.delete(el);
+      }
       el.setAttribute?.("data-nui-focus", "");
       const visible = keyboardFocus || textField(el);
       if (visible) el.setAttribute?.("data-nui-focus-visible", "");
@@ -18407,6 +18423,10 @@ ${a.stack || ""}`;
       return tabFocus(init.shiftKey) || false;
     }
     if (type === "keydown" && !ev.defaultPrevented && key2 === "Enter" && el?.localName === "input") {
+      if (changeField(el)) {
+        el.dispatchEvent(inputEvent("beforeinput", "insertLineBreak", null, true));
+        fireChange(el);
+      }
       const form = el.closest("form");
       if (form) {
         submit(form);
@@ -18468,6 +18488,18 @@ ${a.stack || ""}`;
     }
     return true;
   }
+  function pressFocus(target) {
+    for (let n2 = target; n2 && n2.nodeType === 1; n2 = n2.parentElement) {
+      if (n2.localName === "label") return;
+      const index = parseInt(n2.getAttribute("tabindex"), 10);
+      const focusable = Number.isNaN(index) ? naturallyFocusable(n2) && (tabRule === "all" || textLike(n2)) : true;
+      if (!focusable || CONTROLS2.has(n2.localName) && n2.hasAttribute("disabled")) continue;
+      if (active !== n2) n2.focus();
+      return;
+    }
+    if (active) active.blur();
+  }
+  var tapFocus = null;
   function tabFocus(back) {
     const order = tabOrder();
     if (!order.length) return false;
@@ -18503,11 +18535,19 @@ ${a.stack || ""}`;
       return ev.defaultPrevented;
     };
     let prevented = fire(new PointerEvent(names[0], { ...init, pointerId, pointerType, isPrimary: true, pressure: buttons ? 0.5 : 0 }));
+    if (phase === "cancel") tapFocus = null;
     if (pointerType === "touch") {
       const touch = { identifier: pointerId, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: 0.5 };
       const on = phase === "down" || phase === "move" ? [touch] : [];
       if (fire(new TouchEvent(names[2], { bubbles: true, cancelable: phase !== "cancel", touches: on, targetTouches: on, changedTouches: [touch], ...mods }))) prevented = true;
     } else if (names[1] && fire(new MouseEvent(names[1], { ...init, button: 0 }))) prevented = true;
+    if (phase === "down" && !prevented) {
+      if (pointerType === "touch") tapFocus = target;
+      else {
+        tapFocus = null;
+        pressFocus(target);
+      }
+    }
     if (phase === "down" && !prevented) {
       for (let n2 = target; n2 && n2.nodeType === 1; n2 = n2.parentNode) {
         const ta = renderer?.styleOf(n2)?.["touch-action"];
@@ -18877,10 +18917,13 @@ ${a.stack || ""}`;
       return guard(() => {
         const el = renderer?.elementFor(id);
         switch (type) {
-          case "click":
+          case "click": {
             keyboardFocus = false;
+            if (tapFocus && el) pressFocus(el);
+            tapFocus = null;
             if (el) activate(el, data | 0);
             return false;
+          }
           // A native field's edit: data its new value, or [value, inputType,
           // data] (the edit as beforeinput had it, docs/native-renderer.md).
           case "input": {
@@ -18888,6 +18931,7 @@ ${a.stack || ""}`;
             const [value, inputType, text] = Array.isArray(data) ? data : [data, void 0, void 0];
             renderer.native.set(id, value);
             setNative(el, "value", value);
+            edited.add(el);
             el.dispatchEvent(inputEvent("input", inputType, text, false));
             return false;
           }
