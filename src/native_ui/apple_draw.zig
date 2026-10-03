@@ -117,6 +117,7 @@ const kCFNumberSInt64Type: c_long = 4;
 extern fn CGBitmapContextCreate(data: ?*anyopaque, w: usize, h: usize, bpc: usize, bpr: usize, space: CGColorSpaceRef, info: u32) ?CGContextRef;
 extern fn CGBitmapContextCreateImage(c: CGContextRef) ?CGImageRef;
 extern fn CGContextRelease(c: CGContextRef) void;
+extern fn CGBitmapContextGetData(c: CGContextRef) ?[*]u8;
 extern fn CGContextAddPath(c: CGContextRef, p: CGPathRef) void;
 extern fn CGContextConcatCTM(c: CGContextRef, t: CGAffineTransform) void;
 extern fn CGContextSetBlendMode(c: CGContextRef, mode: c_int) void;
@@ -1251,8 +1252,20 @@ const Replay = struct {
     /// it survives fill, stroke, fillRect, clearRect and clip.
     path: CGPathRef,
     grads: std.AutoHashMapUnmanaged(u16, CanvasGrad) = .empty,
+    /// The current path as whole circles (base space: cx, cy, radius), while
+    /// it's nothing else: a game's balls in one path. Filled opaque, they're
+    /// drawn one by one (CoreGraphics' rasterizer slows down a lot on one
+    /// path of hundreds of circles: 500 balls went from 120 to ~50 fps).
+    circles: std.ArrayListUnmanaged([3]f64) = .empty,
+    /// The path is only `circles` (each starting fresh or at a moveTo on
+    /// its own start point), all wound the same way.
+    only_circles: bool = true,
+    circles_ccw: bool = false,
+    /// A moveTo not yet followed by anything (base space).
+    pending_move: ?[2]f64 = null,
 
     fn deinit(r: *Replay) void {
+        r.circles.deinit(r.gpa);
         CFRelease(r.path);
         // Balanced: what the program saved and didn't restore.
         for (r.states.items) |_| CGContextRestoreGState(r.ctx);
@@ -1266,6 +1279,45 @@ const Replay = struct {
         const fresh = CGPathCreateMutable() orelse return;
         CFRelease(r.path);
         r.path = fresh;
+        r.circles.clearRetainingCapacity();
+        r.only_circles = true;
+        r.pending_move = null;
+    }
+
+    /// The path gets something other than a whole circle.
+    fn notCircles(r: *Replay) void {
+        r.only_circles = false;
+        r.circles.clearRetainingCapacity();
+    }
+
+    /// An arc was added (canvas units, before the transform): a whole circle
+    /// keeps the path's circles, anything else ends them.
+    fn noteArc(r: *Replay, x: f32, y: f32, radius: f32, a0: f32, a1: f32, ccw: bool) void {
+        if (!r.only_circles) return;
+        const m = r.st.m;
+        const two_pi: f32 = 2.0 * std.math.pi;
+        // (A turn from a0 != 0 may round a hair short in f32.)
+        const whole = (if (ccw) a0 - a1 else a1 - a0) >= two_pi - 1e-4;
+        // A circle stays one: orthogonal columns of the same length.
+        const s2 = m.a * m.a + m.b * m.b;
+        const similar = s2 > 0 and @abs(s2 - (m.c * m.c + m.d * m.d)) <= 1e-9 * s2 and @abs(m.a * m.c + m.b * m.d) <= 1e-9 * s2;
+        // Its winding in base space: a reflection turns it the other way.
+        const winding = ccw != (m.a * m.d - m.b * m.c < 0);
+        if (!whole or !similar or !(radius >= 0) or (r.circles.items.len > 0 and winding != r.circles_ccw)) return r.notCircles();
+        // Its start point: where a moveTo must be, if the path has more.
+        const sx: f64 = x + radius * @cos(a0);
+        const sy: f64 = y + radius * @sin(a0);
+        const start = [2]f64{ m.a * sx + m.c * sy + m.tx, m.b * sx + m.d * sy + m.ty };
+        if (r.pending_move) |p| {
+            const tol = 1e-3 * @max(1.0, @sqrt(s2) * radius);
+            if (@abs(p[0] - start[0]) > tol or @abs(p[1] - start[1]) > tol) return r.notCircles();
+        } else if (!CGPathIsEmpty(r.path)) {
+            // Joined to what came before by a line: not just circles.
+            return r.notCircles();
+        }
+        r.pending_move = null;
+        r.circles_ccw = winding;
+        r.circles.append(r.gpa, .{ m.a * x + m.c * y + m.tx, m.b * x + m.d * y + m.ty, @sqrt(s2) * radius }) catch r.notCircles();
     }
 };
 
@@ -1348,10 +1400,24 @@ fn replay(comptime font_class: [:0]const u8, r: *Replay, cmds: []const tree_mod.
             },
             .rotate => |a| m.* = CGAffineTransformRotate(m.*, a),
             .begin_path => r.newPath(),
-            .close_path => if (!CGPathIsEmpty(r.path)) CGPathCloseSubpath(r.path),
-            .move_to => |p| CGPathMoveToPoint(r.path, m, p[0], p[1]),
-            .line_to => |p| if (CGPathIsEmpty(r.path)) CGPathMoveToPoint(r.path, m, p[0], p[1]) else CGPathAddLineToPoint(r.path, m, p[0], p[1]),
-            .rect => |q| CGPathAddRect(r.path, m, .{ .origin = .{ .x = q[0], .y = q[1] }, .size = .{ .width = q[2], .height = q[3] } }),
+            .close_path => if (!CGPathIsEmpty(r.path)) {
+                CGPathCloseSubpath(r.path);
+                // A closed circle is still one; an open moveTo isn't a figure.
+                if (r.pending_move != null) r.notCircles();
+            },
+            .move_to => |p| {
+                CGPathMoveToPoint(r.path, m, p[0], p[1]);
+                const t = m.*;
+                r.pending_move = .{ t.a * p[0] + t.c * p[1] + t.tx, t.b * p[0] + t.d * p[1] + t.ty };
+            },
+            .line_to => |p| {
+                if (CGPathIsEmpty(r.path)) CGPathMoveToPoint(r.path, m, p[0], p[1]) else CGPathAddLineToPoint(r.path, m, p[0], p[1]);
+                r.notCircles();
+            },
+            .rect => |q| {
+                CGPathAddRect(r.path, m, .{ .origin = .{ .x = q[0], .y = q[1] }, .size = .{ .width = q[2], .height = q[3] } });
+                r.notCircles();
+            },
             .arc => |a| {
                 // Canvas angles grow clockwise on screen (y down); CG's
                 // `clockwise` means decreasing angles, so it's the canvas's
@@ -1360,13 +1426,15 @@ fn replay(comptime font_class: [:0]const u8, r: *Replay, cmds: []const tree_mod.
                 var a1 = a.a1;
                 if (!a.ccw and a1 - a.a0 >= two_pi) a1 = a.a0 + two_pi;
                 if (a.ccw and a.a0 - a1 >= two_pi) a1 = a.a0 - two_pi;
+                r.noteArc(a.x, a.y, @max(0, a.r), a.a0, a1, a.ccw);
                 CGPathAddArc(r.path, m, a.x, a.y, @max(0, a.r), a.a0, a1, a.ccw);
             },
             .bezier_to => |b| {
+                r.notCircles();
                 if (CGPathIsEmpty(r.path)) CGPathMoveToPoint(r.path, m, b[0], b[1]);
                 CGPathAddCurveToPoint(r.path, m, b[0], b[1], b[2], b[3], b[4], b[5]);
             },
-            .fill => |even| fillPath(r, r.path, even),
+            .fill => |even| if (even or !fillCircles(r)) fillPath(r, r.path, even),
             .stroke => strokePath(r, r.path),
             .clip => |even| {
                 // An empty path clips everything (CG would leave the clip as is).
@@ -1468,6 +1536,31 @@ fn drawGrad(r: *Replay, id: u16) void {
 fn setPaintColor(ctx: CGContextRef, c: tree_mod.Color, alpha: f32, stroke: bool) void {
     const comps = .{ c[0] / 255, c[1] / 255, c[2] / 255, c[3] * alpha };
     if (stroke) CGContextSetRGBStrokeColor(ctx, comps[0], comps[1], comps[2], comps[3]) else CGContextSetRGBFillColor(ctx, comps[0], comps[1], comps[2], comps[3]);
+}
+
+/// Off in a test: the same pictures the slow way.
+var circles_one_by_one = true;
+
+/// The current path filled as its circles, one by one, when that's the
+/// same picture: a nonzero fill (even-odd makes holes where they overlap)
+/// of whole circles wound one way (their union), in an opaque color (an
+/// overlap can't blend twice).
+/// Many circles only: a few go the usual way. False: fill the path.
+fn fillCircles(r: *Replay) bool {
+    if (!circles_one_by_one or !r.only_circles or r.circles.items.len < 8 or r.pending_move != null) return false;
+    const c = switch (r.st.fill) {
+        .color => |c| c,
+        .grad => return false,
+    };
+    if (c[3] * r.st.alpha < 1) return false;
+    const ctx = r.ctx;
+    CGContextSaveGState(ctx);
+    defer CGContextRestoreGState(ctx);
+    setPaintColor(ctx, c, r.st.alpha, false);
+    for (r.circles.items) |k| {
+        CGContextFillEllipseInRect(ctx, .{ .origin = .{ .x = k[0] - k[2], .y = k[1] - k[2] }, .size = .{ .width = 2 * k[2], .height = 2 * k[2] } });
+    }
+    return true;
 }
 
 fn fillPath(r: *Replay, path: CGPathRef, even: bool) void {
@@ -1590,4 +1683,80 @@ fn canvasText(comptime font_class: [:0]const u8, r: *Replay, text: []const u8, x
             drawGrad(r, id);
         },
     }
+}
+
+test "canvas: a path of whole circles is filled one by one, with the same pixels" {
+    const C = tree_mod.CanvasCmd;
+    const arcAt = struct {
+        fn f(x: f32, y: f32, rad: f32, ccw: bool) [2]C {
+            const turn: f32 = 2.0 * std.math.pi;
+            return .{ .{ .move_to = .{ x + rad, y } }, .{ .arc = .{ .x = x, .y = y, .r = rad, .a0 = 0, .a1 = if (ccw) -turn else turn, .ccw = ccw } } };
+        }
+    }.f;
+    const space = CGColorSpaceCreateDeviceRGB().?;
+    defer CGColorSpaceRelease(space);
+    const w = 64;
+    const h = 48;
+    const Bmp = struct {
+        fn make(sp: CGColorSpaceRef) CGContextRef {
+            return CGBitmapContextCreate(null, w, h, 8, 0, sp, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big).?;
+        }
+    };
+    // What the replay makes of a program: whole circles, or not.
+    const Probe = struct {
+        fn run(sp: CGColorSpaceRef, cmds: []const C) !struct { only: bool, n: usize } {
+            const ctx = Bmp.make(sp);
+            defer CGContextRelease(ctx);
+            var r: Replay = .{ .gpa = std.testing.allocator, .ctx = ctx, .path = CGPathCreateMutable().? };
+            defer r.deinit();
+            replay("NSFont", &r, cmds);
+            return .{ .only = r.only_circles and r.pending_move == null, .n = r.circles.items.len };
+        }
+    };
+    var many: [40]C = undefined;
+    for (0..20) |i| {
+        const fi: f32 = @floatFromInt(i);
+        const pair = arcAt(6 + @mod(fi * 7, 52), 6 + @mod(fi * 5, 36), 3 + @mod(fi, 4), false);
+        many[2 * i] = pair[0];
+        many[2 * i + 1] = pair[1];
+    }
+    const ok = try Probe.run(space, &many);
+    try std.testing.expect(ok.only);
+    try std.testing.expectEqual(@as(usize, 20), ok.n);
+    // Not just circles: a line, a part of a circle, the other way round, a
+    // moveTo away from the circle's start, a stretched transform.
+    const a = arcAt(20, 20, 5, false);
+    const b = arcAt(30, 20, 5, true);
+    try std.testing.expect(!(try Probe.run(space, &.{ a[0], a[1], .{ .line_to = .{ 1, 1 } } })).only);
+    try std.testing.expect(!(try Probe.run(space, &.{.{ .arc = .{ .x = 9, .y = 9, .r = 4, .a0 = 0, .a1 = 3, .ccw = false } }})).only);
+    try std.testing.expect(!(try Probe.run(space, &.{ a[0], a[1], b[0], b[1] })).only);
+    try std.testing.expect(!(try Probe.run(space, &.{ .{ .move_to = .{ 1, 1 } }, a[1] })).only);
+    try std.testing.expect(!(try Probe.run(space, &.{ .{ .scale = .{ 2, 1 } }, a[0], a[1] })).only);
+    try std.testing.expect((try Probe.run(space, &.{ .{ .rotate = 0.5 }, .{ .scale = .{ 2, 2 } }, a[0], a[1] })).only);
+    // A reflected circle winds the other way: with a plain one, not a union.
+    try std.testing.expect(!(try Probe.run(space, &.{ a[0], a[1], .save, .{ .scale = .{ -1, 1 } }, .{ .move_to = .{ -25, 20 } }, .{ .arc = .{ .x = -30, .y = 20, .r = 5, .a0 = 0, .a1 = 2 * std.math.pi, .ccw = false } }, .restore })).only);
+    // Reflected and drawn the other way round: the same winding, still circles.
+    try std.testing.expect((try Probe.run(space, &.{ a[0], a[1], .save, .{ .scale = .{ -1, 1 } }, .{ .move_to = .{ -25, 20 } }, .{ .arc = .{ .x = -30, .y = 20, .r = 5, .a0 = 0, .a1 = -2 * std.math.pi, .ccw = true } }, .restore })).only);
+    // The same picture both ways: overlapping opaque circles, one fill.
+    var prog: [42]C = undefined;
+    prog[0] = .{ .fill_style = .{ .color = .{ 255, 255, 255, 1 } } };
+    @memcpy(prog[1..41], &many);
+    prog[41] = .{ .fill = false };
+    var pixels: [2][w * h * 4]u8 = undefined;
+    for (0..2) |k| {
+        circles_one_by_one = k == 0;
+        defer circles_one_by_one = true;
+        const ctx = Bmp.make(space);
+        defer CGContextRelease(ctx);
+        var r: Replay = .{ .gpa = std.testing.allocator, .ctx = ctx, .path = CGPathCreateMutable().? };
+        replay("NSFont", &r, &prog);
+        r.deinit();
+        @memcpy(&pixels[k], CGBitmapContextGetData(ctx).?[0 .. w * h * 4]);
+    }
+    // Antialiased edges may round a little differently; the shapes match.
+    var off: usize = 0;
+    for (pixels[0], pixels[1]) |p, q| {
+        if (@abs(@as(i16, p) - @as(i16, q)) > 40) off += 1;
+    }
+    try std.testing.expect(off < 30);
 }
