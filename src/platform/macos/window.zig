@@ -741,6 +741,10 @@ pub fn WindowCreator(
             );
             errdefer native.destroy(surface);
             win.msgSend(void, "setContentView:", .{surface.view});
+            // An sRGB backing store, as WebKit's layers: CSS colors blend in
+            // sRGB (a translucent fill over white as in WKWebView), and the
+            // window server matches the result to the display.
+            win.msgSend(void, "setColorSpace:", .{cocoa.class("NSColorSpace").msgSend(cocoa.Object, "sRGBColorSpace", .{})});
             win.msgSend(void, "setInitialFirstResponder:", .{surface.view});
             _ = win.msgSend(cocoa.c.BOOL, "makeFirstResponder:", .{surface.view});
             win.msgSend(void, "setAcceptsMouseMovedEvents:", .{cocoa.boolean(true)});
