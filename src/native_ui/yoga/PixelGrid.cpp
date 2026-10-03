@@ -6,10 +6,13 @@
  */
 
 // Yoga's algorithm/PixelGrid.cpp (the build's yoga dependency), built in
-// its place by build.zig with one change: fmod(x, 1.0) is x - trunc(x),
+// its place by build.zig with two changes: fmod(x, 1.0) is x - trunc(x),
 // the same value for every double (NaN and infinities included), without
 // a call to compiler-rt's generic fmod, which was 8% of a layout (every
-// node's position and size go through here, every layout).
+// node's position and size go through here, every layout); and each node
+// with a context (the tree's nodes) gets its absolute left and its width
+// before rounding (oriel_yoga_laid: Tree.leafOnly rounds a text's new
+// width as this would).
 
 #include <cmath>
 
@@ -17,6 +20,8 @@
 
 #include <yoga/algorithm/PixelGrid.h>
 #include <yoga/numeric/Comparison.h>
+
+extern "C" void oriel_yoga_laid(void* context, double absolute_left, double width);
 
 namespace facebook::yoga {
 
@@ -88,6 +93,10 @@ void roundLayoutResultsToPixelGrid(
 
   const double absoluteNodeLeft = absoluteLeft + nodeLeft;
   const double absoluteNodeTop = absoluteTop + nodeTop;
+
+  if (void* context = node->getContext()) {
+    oriel_yoga_laid(context, absoluteNodeLeft, nodeWidth);
+  }
 
   const double absoluteNodeRight = absoluteNodeLeft + nodeWidth;
   const double absoluteNodeBottom = absoluteNodeTop + nodeHeight;
