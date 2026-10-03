@@ -588,7 +588,7 @@ export fn oriel_nui_leaf(p: *anyopaque, id: f64, style_id: f64, text: [*]const u
     return if (engineOf(p).tree.createLeaf(Tree.idOf(id), if (is_text != 0) .text else .view, Tree.idOf(style_id), text[0..len]) catch return 0) 1 else 0;
 }
 
-export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {
+export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[6]f64) c_int {
     const e = engineOf(p);
     if (e.tree.needsLayout()) {
         const t0 = prof.now();
@@ -597,7 +597,8 @@ export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[5]f64) c_int {
         e.relaid = true;
     }
     const n = e.tree.get(Tree.idOf(id)) orelse return 0;
-    out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(n.content_h, n.frame.h) };
+    // The scrollbar's room last (clientWidth leaves it out).
+    out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(n.content_h, n.frame.h), n.gutter };
     return 1;
 }
 

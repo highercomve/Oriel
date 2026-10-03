@@ -9,7 +9,7 @@
 //   ["d", id]                destroy (and its subtree)
 //   ["r", id]                the root (the body)
 
-import { StyleEngine, computeStyle, parseInline, length, color, background, shadow, splitSpaces, splitTop, substitute, pctString, maxContent, fitContent } from "./css.js";
+import { StyleEngine, computeStyle, parseInline, length, color, background, shadow, splitSpaces, splitTop, substitute, pctString, maxContent, fitContent, viewport } from "./css.js";
 import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor, svgScope, svgDataText, svgSize } from "./icons.js";
@@ -802,7 +802,16 @@ export class Renderer {
     const bn = nodes.get(bodyNode);
     if (bn && !this.styleOf(body)?.["flex-shrink"]) bn.props.fs = 0;
     // The window: the page scrolls, fixed elements stay over it.
-    nodes.set(-1, { kind: "view", props: { scroll: true, fg: 1, fs: 1, ai: "stretch" }, kids: [bodyNode] });
+    const winProps = { scroll: true, fg: 1, fs: 1, ai: "stretch" };
+    // The window's scrollbar: <html>'s (or <body>'s) overflow and style.
+    const bodyCS = this.styleOf(body);
+    scrollbarPart({ ...(bodyCS || {}), ...rootCS, "overflow-y": rootCS["overflow-y"] || bodyCS?.["overflow-y"] }, winProps, true);
+    // overflow: hidden on <html> (or <body>'s, which goes to the window when
+    // <html>'s is visible): no scrollbar.
+    const rootOv = rootCS["overflow-y"] || rootCS.overflow;
+    const usedOv = rootOv && rootOv !== "visible" ? rootOv : (bodyCS?.["overflow-y"] || bodyCS?.overflow);
+    if (usedOv === "hidden" || usedOv === "clip") { winProps.sbw = "none"; delete winProps.sbs; }
+    nodes.set(-1, { kind: "view", props: winProps, kids: [bodyNode] });
     // The window's background: <html>'s, else <body>'s (a browser paints the
     // whole viewport with it, below a short page too).
     const rootBg = bgOf(rootCS) || (this.styleOf(body) ? bgOf(this.styleOf(body)) : null);
@@ -2255,6 +2264,25 @@ function resolveFontSize(cs, pfs) {
   return typeof l === "number" ? l : pfs;
 }
 
+// A scroller's scrollbar, for backends that draw one (tree.zig's
+// Tree.scrollbar): always (overflow-y: scroll, scrollbar-gutter: stable),
+// its scrollbar-width (thin, none), dark (its color-scheme: dark, or light
+// dark with a dark preference; the window's own also with none, as
+// WebView2's follows the system), its scrollbar-color [thumb, track].
+function scrollbarPart(cs, p, root) {
+  if (cs["overflow-y"] === "scroll" || (!cs["overflow-y"] && cs.overflow === "scroll") || /^stable/.test(cs["scrollbar-gutter"] || "")) p.sbs = true;
+  const sw = cs["scrollbar-width"];
+  if (sw === "thin" || sw === "none") p.sbw = sw;
+  const scheme = cs["color-scheme"] || "normal";
+  const dark = /dark/.test(scheme) ? (!/light/.test(scheme) || viewport.dark) : root && !/light/.test(scheme) && viewport.dark;
+  if (dark) p.dk = true;
+  const sc = cs["scrollbar-color"];
+  if (sc && sc !== "auto") {
+    const [thumb, track] = splitSpaces(sc).map((v) => color(v, color(cs.color)));
+    if (thumb && track) p.sbc = [thumb, track];
+  }
+}
+
 function bgOf(cs) {
   return background(cs.background, color(cs.color)) || null;
 }
@@ -2474,6 +2502,7 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
   positionPart(cs, fs, p);
   const ov = cs["overflow-y"] || cs.overflow;
   if (ov === "auto" || ov === "scroll") p.scroll = true;
+  if (p.scroll) scrollbarPart(cs, p, false);
   const ovx = cs["overflow-x"];
   if (ovx === "auto" || ovx === "scroll") p.scrollx = true;
   if (cs["overflow-x"] === "hidden" || cs["overflow-y"] === "hidden" || cs.overflow === "hidden") p.clip = true;
