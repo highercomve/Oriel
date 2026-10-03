@@ -374,7 +374,7 @@ internal class NuiNode(val id: Int, var kind: String) {
 
     /** A plain line's style: a paint with its run's font and size, and its
      *  line height from a StaticLayout of one character (once per style). */
-    private class LineStyle(val paint: TextPaint, val height: Int)
+    private class LineStyle(val paint: TextPaint, val height: Int, val baseline: Int)
 
     private fun lineStyle(t: CharSequence, tp: TextPaint): LineStyle {
         val r = p.optJSONArray("runs")?.optJSONObject(0)
@@ -389,7 +389,8 @@ internal class NuiNode(val id: Int, var kind: String) {
             val fp = TextPaint(Paint.ANTI_ALIAS_FLAG)
             fp.textSize = sz.toFloat()
             fp.typeface = typeface(w, italic, family(ff, mono))
-            LineStyle(fp, builder(t.subSequence(0, 1), tp, 1 shl 20).build().height)
+            val one = builder(t.subSequence(0, 1), tp, 1 shl 20).build()
+            LineStyle(fp, one.height, one.getLineBaseline(0))
         }
     }
 
@@ -404,6 +405,21 @@ internal class NuiNode(val id: Int, var kind: String) {
         val w = ceil(st.paint.measureText(t, 0, t.length)).toInt() + 1
         if (max64 >= 0 && w > max(1, max64 / 64)) return null // it wraps
         return (w * 64L shl 32) or (st.height * 64L)
+    }
+
+    /**
+     * Its first line's baseline below its top, in 1/64 dp (Node.baseline,
+     * for rows of inline content on a baseline), or -1: a plain line's from
+     * its style's one-character layout, else the unwrapped layout's (the
+     * one measure(-1) made).
+     */
+    fun baseline64(): Int {
+        val t = text ?: return -1
+        val tp = paint ?: return -1
+        if (t.isEmpty()) return -1
+        if (plainLine(t)) return lineStyle(t, tp).baseline * 64
+        val l = textLayout(-1) ?: return -1
+        return if (l.lineCount > 0) l.getLineBaseline(0) * 64 else -1
     }
 
     /** Size for Yoga: width and height in 1/64 dp, packed. */
@@ -927,14 +943,21 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     fun measureText(id: Int, max64: Int): Long = nodes[id]?.measure(max64) ?: 0
 
-    /** Node ids (little-endian ints) to their unbounded sizes (little-endian longs, as measureText). */
+    /** Node ids (little-endian ints) to their unbounded sizes (little-endian
+     *  longs, as measureText) and first baselines (ints, as baseline64). */
     fun measureTexts(ids: ByteArray): ByteArray {
         val n = ids.size / 4
         val inb = ByteBuffer.wrap(ids).order(ByteOrder.LITTLE_ENDIAN)
-        val out = ByteBuffer.allocate(n * 8).order(ByteOrder.LITTLE_ENDIAN)
-        for (i in 0 until n) out.putLong(nodes[inb.getInt()]?.measure(-1) ?: 0)
+        val out = ByteBuffer.allocate(n * 12).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until n) {
+            val node = nodes[inb.getInt()]
+            out.putLong(node?.measure(-1) ?: 0)
+            out.putInt(node?.baseline64() ?: -1)
+        }
         return out.array()
     }
+
+    fun baselineOf(id: Int): Int = nodes[id]?.baseline64() ?: -1
 
     fun frames(bytes: ByteArray) {
         val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
