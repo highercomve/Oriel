@@ -20132,6 +20132,22 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                             sp -= 3;
                             BREAK;
                         }
+                        /* Oriel: a number into a Float64Array (the native
+                           renderer's canvas recorder writes its program so)
+                           without the call to JS_SetPropertyValue. A detached
+                           or out-of-bounds array has count 0 or less than idx:
+                           the general path then. */
+                        if (p->class_id == JS_CLASS_FLOAT64_ARRAY &&
+                            idx < (uint32_t)p->u.array.count &&
+                            !p->u.typed_array->buffer->u.array_buffer->immutable) {
+                            double d;
+                            if (js_arith_to_float64(val, &d)) {
+                                p->u.array.u.double_ptr[idx] = d;
+                                JS_FreeValue(ctx, sp[-3]);
+                                sp -= 3;
+                                BREAK;
+                            }
+                        }
                         if (likely(p->class_id == JS_CLASS_ARRAY &&
                                    idx == (uint32_t)p->u.array.count &&
                                    p->fast_array &&
@@ -20779,10 +20795,13 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             CASE(opcode):                                 \
                 {                                         \
                 JSValue op1, op2;                         \
+                double cmp_d1, cmp_d2;                    \
                 op1 = sp[-2];                             \
                 op2 = sp[-1];                                   \
                 if (likely(JS_VALUE_IS_BOTH_INT(op1, op2))) {           \
                     sp[-2] = js_bool(JS_VALUE_GET_INT(op1) binary_op JS_VALUE_GET_INT(op2)); \
+                    sp--;                                               \
+                } else if (CMP_NUMBERS(op1, op2, binary_op)) {          \
                     sp--;                                               \
                 } else {                                                \
                     sf->cur_pc = pc;                                    \
@@ -20793,6 +20812,17 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 }                                                       \
             BREAK
 
+/* Oriel: two numbers, one or both a float (a page's coordinates), are
+   compared as doubles here instead of in the slow path (its ToPrimitive and
+   ToNumeric round). IEEE comparison is JS's for numbers: NaN compares false
+   (true for !=), -0 equals 0. Leaves the result in sp[-2]. */
+#define CMP_NUMBERS(op1, op2, binary_op)                                \
+            ((JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op1)) ||               \
+              JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(op2))) &&              \
+             js_arith_to_float64(op1, &cmp_d1) &&                       \
+             js_arith_to_float64(op2, &cmp_d2) &&                       \
+             (sp[-2] = js_bool(cmp_d1 binary_op cmp_d2), true))
+
             OP_CMP(OP_lt, <, js_relational_slow(ctx, sp, opcode));
             OP_CMP(OP_lte, <=, js_relational_slow(ctx, sp, opcode));
             OP_CMP(OP_gt, >, js_relational_slow(ctx, sp, opcode));
@@ -20801,6 +20831,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             OP_CMP(OP_neq, !=, js_eq_slow(ctx, sp, 1));
             OP_CMP(OP_strict_eq, ==, js_strict_eq_slow(ctx, sp, 0));
             OP_CMP(OP_strict_neq, !=, js_strict_eq_slow(ctx, sp, 1));
+#undef CMP_NUMBERS
 
         CASE(OP_in):
             sf->cur_pc = pc;
