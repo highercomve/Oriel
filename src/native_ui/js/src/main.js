@@ -143,18 +143,44 @@ const Event = g.Event;
 class KeyboardEvent extends Event {
   constructor(type, init = {}) {
     super(type, init);
-    for (const k of ["key", "code", "shiftKey", "ctrlKey", "altKey", "metaKey", "repeat"]) this[k] = init[k] ?? (k.endsWith("Key") ? false : "");
+    for (const k of ["key", "code", "shiftKey", "ctrlKey", "altKey", "metaKey", "repeat"]) this[k] = init[k] ?? (k.endsWith("Key") || k === "repeat" ? false : "");
     this.isComposing = false;
   }
 }
 class MouseEvent extends Event {
   constructor(type, init = {}) {
     super(type, init);
-    for (const k of ["clientX", "clientY", "button", "shiftKey", "ctrlKey", "altKey", "metaKey"]) this[k] = init[k] ?? 0;
+    for (const k of ["clientX", "clientY", "button", "buttons", "shiftKey", "ctrlKey", "altKey", "metaKey"]) this[k] = init[k] ?? 0;
+    // The page doesn't scroll the window: page and screen coordinates are the client's.
+    this.pageX = this.screenX = this.x = this.clientX;
+    this.pageY = this.screenY = this.y = this.clientY;
+  }
+  // From the target's box, when asked (a layout read).
+  get offsetX() { return this.clientX - (this.target?.getBoundingClientRect?.().left || 0); }
+  get offsetY() { return this.clientY - (this.target?.getBoundingClientRect?.().top || 0); }
+}
+class PointerEvent extends MouseEvent {
+  constructor(type, init = {}) {
+    super(type, init);
+    this.pointerId = init.pointerId ?? 1;
+    this.pointerType = init.pointerType ?? "mouse";
+    this.isPrimary = init.isPrimary ?? true;
+    this.width = init.width ?? 1;
+    this.height = init.height ?? 1;
+    this.pressure = init.pressure ?? 0;
+  }
+}
+class TouchEvent extends Event {
+  constructor(type, init = {}) {
+    super(type, init);
+    for (const k of ["touches", "targetTouches", "changedTouches"]) this[k] = init[k] ?? [];
+    for (const k of ["shiftKey", "ctrlKey", "altKey", "metaKey"]) this[k] = init[k] ?? false;
   }
 }
 g.KeyboardEvent = KeyboardEvent;
-g.MouseEvent = g.PointerEvent = MouseEvent;
+g.MouseEvent = MouseEvent;
+g.PointerEvent = PointerEvent;
+g.TouchEvent = TouchEvent;
 g.InputEvent = g.FocusEvent = g.UIEvent = Event;
 
 // window events (hashchange, resize, keydown, contextmenu…).
@@ -188,6 +214,18 @@ for (let proto = Object.getPrototypeOf(document.body); proto; proto = Object.get
   }
 }
 void ET;
+
+// Pointer capture: the element gets the pointer's moves and up (pointerEvent).
+{
+  let proto = Object.getPrototypeOf(document.createElement("div"));
+  while (proto && !Object.prototype.hasOwnProperty.call(proto, "getAttribute")) proto = Object.getPrototypeOf(proto);
+  if (proto) {
+    const def = (name, fn) => Object.defineProperty(proto, name, { value: fn, writable: true, configurable: true });
+    def("setPointerCapture", function (id) { if (captured.has(id)) captured.set(id, this); });
+    def("releasePointerCapture", function (id) { if (captured.get(id) === this) captured.delete(id); });
+    def("hasPointerCapture", function (id) { return captured.get(id) === this; });
+  }
+}
 
 // el.style.x = … and style.setProperty(…) update the style attribute inside
 // linkedom without a mutation record, so the renderer never saw them (a
@@ -549,7 +587,10 @@ function activate(el, flags) {
   // back if a listener cancels it), as in a browser: React's onChange for
   // them reads the new state during the click.
   const undo = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
-  const ev = new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
+  // Where the pointer went up (the press that made this click), when the backend sends pointers.
+  const [clientX, clientY] = lastPointer;
+  lastPointer = [0, 0]; // one click's (a keyboard's or el.click()'s has none)
+  const ev = new MouseEvent("click", { bubbles: true, cancelable: true, clientX, clientY, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
   el.dispatchEvent(ev);
   if (undo) {
     if (ev.defaultPrevented) undo();
@@ -607,14 +648,16 @@ function submit(form) {
   form.dispatchEvent(ev);
 }
 
-function keyEvent(el, data) {
-  const [key, flags] = data;
-  const init = { key, code: key, bubbles: true, cancelable: true, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
-  const ev = new KeyboardEvent("keydown", init);
+// A key went down (`type` "keydown", data [key, modifiers, repeat]) or up
+// ("keyup", [key, modifiers]).
+function keyEvent(el, data, type = "keydown") {
+  const [key, flags, repeat] = data;
+  const init = { key, code: key, bubbles: true, cancelable: true, repeat: !!repeat, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
+  const ev = new KeyboardEvent(type, init);
   (el || document.body).dispatchEvent(ev);
   if (!ev.defaultPrevented) fireWindow(ev);
   // Enter in a one-line field submits its form.
-  if (!ev.defaultPrevented && key === "Enter" && el?.localName === "input") {
+  if (type === "keydown" && !ev.defaultPrevented && key === "Enter" && el?.localName === "input") {
     const form = el.closest("form");
     if (form) { submit(form); return true; }
   }
@@ -622,6 +665,48 @@ function keyEvent(el, data) {
 }
 
 let renderer = null;
+
+// Pointers (docs/native-renderer.md, "Pointer events"): the element each
+// pointer went down on gets its moves and its up until then, wherever it
+// goes (implicit capture, as a browser does for touch; setPointerCapture
+// keeps the same element).
+const captured = new Map(); // pointerId → element
+let lastPointer = [0, 0]; // the last pointer event's clientX/Y (a click's)
+const POINTER_TYPES = { down: ["pointerdown", "mousedown", "touchstart"], move: ["pointermove", "mousemove", "touchmove"], up: ["pointerup", "mouseup", "touchend"], cancel: ["pointercancel", null, "touchcancel"] };
+// Types the document already forwards to the window (above).
+const FORWARDED = new Set(["mousedown", "mouseup", "pointerdown", "pointerup"]);
+
+function pointerEvent(el, data) {
+  const [phase, x, y, buttons, pointerId, pointerType, flags] = data;
+  const names = POINTER_TYPES[phase];
+  if (!names) return false;
+  lastPointer = [x, y];
+  let target = captured.get(pointerId);
+  if (phase === "down" || !target?.isConnected) target = el || document.body;
+  if (phase === "down") captured.set(pointerId, target);
+  else if (phase === "up" || phase === "cancel") captured.delete(pointerId);
+  const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
+  const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button: phase === "move" ? -1 : 0, buttons, ...mods };
+  const fire = (ev) => {
+    target.dispatchEvent(ev);
+    if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) fireWindow(ev);
+    return ev.defaultPrevented;
+  };
+  let prevented = fire(new PointerEvent(names[0], { ...init, pointerId, pointerType, isPrimary: true, pressure: buttons ? 0.5 : 0 }));
+  if (pointerType === "touch") {
+    const touch = { identifier: pointerId, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: 0.5 };
+    const on = phase === "down" || phase === "move" ? [touch] : [];
+    if (fire(new TouchEvent(names[2], { bubbles: true, cancelable: phase !== "cancel", touches: on, targetTouches: on, changedTouches: [touch], ...mods }))) prevented = true;
+  } else if (names[1] && fire(new MouseEvent(names[1], { ...init, button: 0 }))) prevented = true;
+  // A press: the page takes the drag (no scrolling) when it said so in CSS.
+  if (phase === "down" && !prevented) {
+    for (let n = target; n && n.nodeType === 1; n = n.parentNode) {
+      const ta = renderer?.styleOf(n)?.["touch-action"];
+      if (ta === "none" || ta === "pinch-zoom") { prevented = true; break; }
+    }
+  }
+  return prevented;
+}
 
 // :hover and :active: an attribute on the element and its ancestors.
 const marked = new Map(); // attribute → the elements that have it
@@ -812,6 +897,12 @@ g.__oriel = {
           return false;
         }
         case "key": return keyEvent(el || document.__active, data);
+        case "keyup": return keyEvent(el || document.__active, data, "keyup");
+        // A pointer went down, moved, went up or was taken by the system:
+        // data [phase, x, y, buttons, pointerId, pointerType, modifiers].
+        // True on "down" when the page takes the drag (touch-action: none,
+        // or a listener prevented the default): the backend doesn't scroll.
+        case "pointer": return pointerEvent(el, data);
         case "focus": if (el) document.__active = el; return false;
         case "blur": if (el && document.__active === el) document.__active = null; return false;
         case "contextmenu": {
