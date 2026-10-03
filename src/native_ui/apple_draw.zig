@@ -613,6 +613,17 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
         .canvas => paintCanvas(font_class, cg, scale, n),
         else => {},
     }
+    // A box that clips its content (overflow hidden, or a scroller) with
+    // rounded corners: the children are clipped to its rounded padding box
+    // (only them: its own border and background are already drawn).
+    const round_clip = n.roundClips();
+    if (round_clip) {
+        CGContextSaveGState(cg);
+        const pb = n.paddingClip();
+        roundRect(cg, pb.rect, pb.radii);
+        CGContextClip(cg);
+    }
+    defer if (round_clip) CGContextRestoreGState(cg);
     // CSS paint order: positioned boxes (a sticky header) over the flow.
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paintNode(font_class, cg, engine, fields, scale, k);
