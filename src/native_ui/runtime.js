@@ -18583,6 +18583,7 @@ ${a.stack || ""}`;
     const ev = new Event("submit", { bubbles: true, cancelable: true });
     form.dispatchEvent(ev);
   }
+  var MODIFIER_KEYS = /* @__PURE__ */ new Set(["Shift", "Control", "Alt", "Meta", "AltGraph", "CapsLock"]);
   function keyEvent(el, data, type = "keydown") {
     const [key2, flags, repeat] = data;
     const init = { key: key2, code: key2, bubbles: true, cancelable: true, repeat: !!repeat, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
@@ -19178,9 +19179,15 @@ ${a.stack || ""}`;
             el.dispatchEvent(new Event("change", { bubbles: true }));
             return false;
           }
-          case "key":
+          case "key": {
             keyboardFocus = true;
-            return keyEvent(el || document.__active, data);
+            const a = document.__active;
+            if (a && !MODIFIER_KEYS.has(data?.[0]) && !a.hasAttribute?.("data-nui-focus-visible")) {
+              a.setAttribute?.("data-nui-focus-visible", "");
+              setFocusVisible(a);
+            }
+            return keyEvent(el || a, data);
+          }
           case "keyup":
             return keyEvent(el || document.__active, data, "keyup");
           // A pointer went down, moved, went up or was taken by the system:
