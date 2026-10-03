@@ -580,13 +580,36 @@ static JSValue h_sheet_keep(JSContext *ctx, JSValueConst this_val, int argc, JSV
     return JS_UNDEFINED;
 }
 
+// The module's bytecode compiled with the app (tools/qjs_modules.zig:
+// "<name>.qjsbc", "OQJSMOD1", the source's hash and length, the bytecode),
+// when it was compiled from this source; else NULL.
+static const uint8_t *embedded_module(JSContext *ctx, const char *name, uint64_t hash, size_t len, size_t *size) {
+    char path[512];
+    int n = snprintf(path, sizeof path, "%s.qjsbc", name);
+    if (n <= 0 || (size_t)n >= sizeof path) return NULL;
+    const char *data = NULL;
+    size_t data_len = 0;
+    if (!oriel_nui_asset(opaque_of(ctx), path, (size_t)n, &data, &data_len) || data_len <= 24) return NULL;
+    if (memcmp(data, "OQJSMOD1", 8) != 0) return NULL;
+    uint64_t h = 0, l = 0;
+    for (int i = 7; i >= 0; i--) { h = (h << 8) | (uint8_t)data[8 + i]; l = (l << 8) | (uint8_t)data[16 + i]; }
+    if (h != hash || l != (uint64_t)len) return NULL;
+    *size = data_len - 24;
+    return (const uint8_t *)data + 24;
+}
+
 static JSValue nui_compile_module(JSContext *ctx, const char *name, const char *code, size_t len) {
     const uint64_t hash = fnv1a(code, len);
     const ModuleCode *kept = module_code_find(name, len, hash);
+    size_t embedded_size = 0;
+    const uint8_t *embedded = kept ? NULL : embedded_module(ctx, name, hash, len, &embedded_size);
     JSValue fn;
     if (kept) {
         fn = JS_ReadObject(ctx, kept->bytes, kept->size, JS_READ_OBJ_BYTECODE);
+    } else if (embedded && !JS_IsException(fn = JS_ReadObject(ctx, embedded, embedded_size, JS_READ_OBJ_BYTECODE))) {
+        // Read (else, as when there's none: compiled from the source).
     } else {
+        if (embedded) JS_FreeValue(ctx, JS_GetException(ctx));
         fn = JS_Eval(ctx, code, len, name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
         if (!JS_IsException(fn)) module_code_keep(ctx, name, len, hash, fn);
     }
