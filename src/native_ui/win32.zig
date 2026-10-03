@@ -37,6 +37,7 @@ pub const c = @cImport({
     @cInclude("dwrite_1.h");
     @cInclude("wincodec.h");
     @cInclude("commctrl.h");
+    @cInclude("richedit.h");
 });
 
 // The import libraries don't export these.
@@ -55,6 +56,104 @@ const EM_SETCUEBANNER: c.UINT = 0x1501;
 const class_name = std.unicode.utf8ToUtf16LeStringLiteral("OrielNativeCanvas");
 const clip_class_name = std.unicode.utf8ToUtf16LeStringLiteral("OrielFieldClip");
 const prop_old_proc = std.unicode.utf8ToUtf16LeStringLiteral("OrielNuiProc");
+/// On a text field that is a RichEdit (Field.rich).
+const prop_rich = std.unicode.utf8ToUtf16LeStringLiteral("OrielNuiRich");
+
+/// Text fields as RichEdit 5 (msftedit.dll: DirectWrite's colour emoji,
+/// many undo steps) rather than EDIT (GDI: emoji in black and white, one
+/// undo step). EDIT stays for when it's false or msftedit won't load.
+const rich_edit = true;
+
+var rich_loaded: ?bool = null;
+
+fn loadRichEdit() bool {
+    if (rich_loaded == null) rich_loaded = c.LoadLibraryW(std.unicode.utf8ToUtf16LeStringLiteral("Msftedit.dll")) != null;
+    return rich_loaded.?;
+}
+
+/// TO_DISPLAYFONTCOLOR (richedit.h of newer SDKs): colour fonts' colours.
+const TO_DISPLAYFONTCOLOR: c.LPARAM = 0x0010;
+
+/// A new RichEdit as a page's field: plain text (a paste brings no
+/// formatting), many undo steps, EN_CHANGE, colour emoji.
+fn setupRichEdit(hwnd: c.HWND) void {
+    _ = c.SetPropW(hwnd, prop_rich, @ptrFromInt(1));
+    _ = c.SendMessageW(hwnd, c.EM_SETTEXTMODE, c.TM_PLAINTEXT | c.TM_MULTILEVELUNDO | c.TM_MULTICODEPAGE, 0);
+    _ = c.SendMessageW(hwnd, c.EM_SETEVENTMASK, 0, c.ENM_CHANGE);
+    const typo: c.WPARAM = @intCast(c.TO_ADVANCEDTYPOGRAPHY | TO_DISPLAYFONTCOLOR);
+    _ = c.SendMessageW(hwnd, c.EM_SETTYPOGRAPHYOPTIONS, typo, @intCast(typo));
+}
+
+/// A RichEdit's colours (it asks for no WM_CTLCOLOREDIT): its background
+/// and all its text's colour.
+fn richColors(f: *const Field) void {
+    _ = c.SendMessageW(f.hwnd, c.EM_SETBKGNDCOLOR, 0, @intCast(f.bg));
+    var cf: c.CHARFORMAT2W = std.mem.zeroes(c.CHARFORMAT2W);
+    cf.cbSize = @sizeOf(c.CHARFORMAT2W);
+    cf.dwMask = c.CFM_COLOR;
+    cf.crTextColor = f.fg;
+    _ = c.SendMessageW(f.hwnd, c.EM_SETCHARFORMAT, c.SCF_ALL, @bitCast(@intFromPtr(&cf)));
+}
+
+/// An edit's length in its own positions (a RichEdit counts a line break
+/// once; GetWindowTextLength counts CR LF).
+fn editLength(hwnd: c.HWND, rich: bool) c.DWORD {
+    if (!rich) return @intCast(c.GetWindowTextLengthW(hwnd));
+    var gtl: c.GETTEXTLENGTHEX = .{ .flags = c.GTL_PRECISE | c.GTL_NUMCHARS, .codepage = 1200 };
+    const n = c.SendMessageW(hwnd, c.EM_GETTEXTLENGTHEX, @intFromPtr(&gtl), 0);
+    return if (n < 0) 0 else @intCast(n);
+}
+
+/// A RichEdit's context menu (it has none of its own; an EDIT's): undo,
+/// cut, copy, paste, delete, select all.
+fn richMenu(hwnd: c.HWND, lparam: c.LPARAM) void {
+    const menu = c.CreatePopupMenu() orelse return;
+    defer _ = c.DestroyMenu(menu);
+    var a: c.DWORD = 0;
+    var b: c.DWORD = 0;
+    _ = c.SendMessageW(hwnd, c.EM_GETSEL, @intFromPtr(&a), @bitCast(@intFromPtr(&b)));
+    const selected = a != b;
+    const can_undo = c.SendMessageW(hwnd, c.EM_CANUNDO, 0, 0) != 0;
+    const can_paste = c.IsClipboardFormatAvailable(c.CF_UNICODETEXT) != 0;
+    const items = [_]struct { id: usize, text: [:0]const u16, on: bool }{
+        .{ .id = 1, .text = std.unicode.utf8ToUtf16LeStringLiteral("Undo"), .on = can_undo },
+        .{ .id = 0, .text = std.unicode.utf8ToUtf16LeStringLiteral(""), .on = false },
+        .{ .id = 2, .text = std.unicode.utf8ToUtf16LeStringLiteral("Cut"), .on = selected },
+        .{ .id = 3, .text = std.unicode.utf8ToUtf16LeStringLiteral("Copy"), .on = selected },
+        .{ .id = 4, .text = std.unicode.utf8ToUtf16LeStringLiteral("Paste"), .on = can_paste },
+        .{ .id = 5, .text = std.unicode.utf8ToUtf16LeStringLiteral("Delete"), .on = selected },
+        .{ .id = 0, .text = std.unicode.utf8ToUtf16LeStringLiteral(""), .on = false },
+        .{ .id = 6, .text = std.unicode.utf8ToUtf16LeStringLiteral("Select All"), .on = editLength(hwnd, true) > 0 },
+    };
+    for (items) |it| {
+        if (it.id == 0) {
+            _ = c.AppendMenuW(menu, c.MF_SEPARATOR, 0, null);
+        } else {
+            _ = c.AppendMenuW(menu, @intCast(c.MF_STRING | (if (it.on) @as(c_long, 0) else @as(c_long, c.MF_GRAYED))), it.id, it.text.ptr);
+        }
+    }
+    var x: c_int = @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam))))));
+    var y: c_int = @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)) >> 16))));
+    if (lparam == -1) {
+        // From the keyboard: at the caret.
+        var pt: c.POINT = .{ .x = 0, .y = 0 };
+        _ = c.GetCaretPos(&pt);
+        _ = c.ClientToScreen(hwnd, &pt);
+        x = pt.x;
+        y = pt.y;
+    }
+    _ = c.SetFocus(hwnd);
+    const cmd = c.TrackPopupMenu(menu, c.TPM_RETURNCMD | c.TPM_RIGHTBUTTON, x, y, 0, hwnd, null);
+    switch (cmd) {
+        1 => _ = c.SendMessageW(hwnd, c.EM_UNDO, 0, 0),
+        2 => _ = c.SendMessageW(hwnd, c.WM_CUT, 0, 0),
+        3 => _ = c.SendMessageW(hwnd, c.WM_COPY, 0, 0),
+        4 => _ = c.SendMessageW(hwnd, c.WM_PASTE, 0, 0),
+        5 => _ = c.SendMessageW(hwnd, c.WM_CLEAR, 0, 0),
+        6 => _ = c.SendMessageW(hwnd, c.EM_SETSEL, 0, -1),
+        else => {},
+    }
+}
 const prop_node = std.unicode.utf8ToUtf16LeStringLiteral("OrielNuiNode");
 
 // Shared by every window (all on the UI thread).
@@ -94,6 +193,9 @@ const Field = struct {
     /// Its font's own (a themed combobox is never shorter than that and
     /// its frame: a smaller one only cuts the text).
     item_nat: c_int = 0,
+    /// A RichEdit (rich_edit), not an EDIT: positions count a line break
+    /// once, it paints no cue banner, colors by message.
+    rich: bool = false,
     /// <input type=range>: a trackbar, positions 0…steps of the range's step.
     slider: bool = false,
     /// The position last sent as `input` (a drag sends it once per step).
@@ -796,7 +898,9 @@ fn selection(ctx: *anyopaque, node: *Node, out: *[2]u32) bool {
     var b: c.DWORD = 0;
     _ = c.SendMessageW(f.hwnd, c.EM_GETSEL, @intFromPtr(&a), @bitCast(@intFromPtr(&b)));
     out.* = .{ a, b };
-    if (f.kind == .textarea) {
+    // An EDIT's CR LF counts twice; a RichEdit's line break once, as the
+    // value's LF.
+    if (f.kind == .textarea and !f.rich) {
         const crs = editCrs(s, f.hwnd, @max(a, b)) orelse return true;
         out.* = .{ a - crs[0], b - crs[1] };
     }
@@ -811,7 +915,7 @@ fn setSelection(ctx: *anyopaque, node: *Node, start: u32, end: u32) void {
     if (f.kind != .input and f.kind != .textarea) return;
     var a = start;
     var b = end;
-    if (f.kind == .textarea) {
+    if (f.kind == .textarea and !f.rich) {
         a += valueLineBreaks(s, f.hwnd, start);
         b += valueLineBreaks(s, f.hwnd, end);
     }
@@ -1028,7 +1132,7 @@ fn syncFields(s: *Surface) void {
         _ = c.EnableWindow(f.hwnd, @intFromBool(!n.props.dis));
         styleField(s, f, n);
         if (f.slider) setSliderRange(f.*, n);
-        if (f.kind == .textarea) setPlaceholder(s, f, n.props.ph orelse "");
+        if (f.kind == .textarea or f.rich) setPlaceholder(s, f, n.props.ph orelse "");
         const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
         if (!visible) {
             _ = c.ShowWindow(f.clip, c.SW_HIDE);
@@ -1241,7 +1345,10 @@ fn sliderDraw(s: *Surface, cd: *c.NMCUSTOMDRAW) ?c.LRESULT {
 
 fn makeField(s: *Surface, n: *Node) !Field {
     if (n.kind == .input and n.props.range != null) return makeSlider(s, n);
-    const class = std.unicode.utf8ToUtf16LeStringLiteral("EDIT");
+    // Text fields: RichEdit 5 when it loads (colour emoji, many undo
+    // steps), else EDIT.
+    const rich = rich_edit and (n.kind == .input or n.kind == .textarea) and loadRichEdit();
+    const class = if (rich) std.unicode.utf8ToUtf16LeStringLiteral("RICHEDIT50W") else std.unicode.utf8ToUtf16LeStringLiteral("EDIT");
     const style: c.DWORD = switch (n.kind) {
         .input => @as(c.DWORD, c.WS_CHILD | c.WS_TABSTOP | c.ES_AUTOHSCROLL) | (if (n.props.pw) @as(c.DWORD, c.ES_PASSWORD) else @as(c.DWORD, 0)),
         .textarea => c.WS_CHILD | c.WS_TABSTOP | c.ES_MULTILINE | c.ES_AUTOVSCROLL | c.ES_WANTRETURN,
@@ -1251,15 +1358,21 @@ fn makeField(s: *Surface, n: *Node) !Field {
     const cls = if (n.kind == .select) std.unicode.utf8ToUtf16LeStringLiteral("COMBOBOX") else class;
     const clip = try makeClip(s);
     errdefer _ = c.DestroyWindow(clip);
-    const hwnd = c.CreateWindowExW(0, cls, null, style, 0, 0, 1, 1, clip, null, c.GetModuleHandleW(null), null) orelse return error.CreateWindowFailed;
+    // A RichEdit drawn with Direct2D (Notepad's: colour emoji), else the
+    // GDI one.
+    const d2d_class = std.unicode.utf8ToUtf16LeStringLiteral("RichEditD2DPT");
+    const hwnd = (if (rich) c.CreateWindowExW(0, d2d_class, null, style, 0, 0, 1, 1, clip, null, c.GetModuleHandleW(null), null) else null) orelse
+        c.CreateWindowExW(0, cls, null, style, 0, 0, 1, 1, clip, null, c.GetModuleHandleW(null), null) orelse return error.CreateWindowFailed;
     _ = c.SetPropW(hwnd, prop_node, @ptrFromInt(@as(usize, @intCast(n.id))));
     switch (n.kind) {
         .input, .textarea => {
-            if (n.props.ph) |ph| {
+            if (rich) setupRichEdit(hwnd);
+            if (rich and n.props.pw) _ = c.SendMessageW(hwnd, c.EM_SETPASSWORDCHAR, 0x2022, 0);
+            if (!rich) if (n.props.ph) |ph| {
                 const w = try std.unicode.utf8ToUtf16LeAllocZ(s.gpa, ph);
                 defer s.gpa.free(w);
                 _ = c.SendMessageW(hwnd, EM_SETCUEBANNER, c.TRUE, @bitCast(@intFromPtr(w.ptr)));
-            }
+            };
             // Enter, Escape and Tab go to the page first (a form's submit).
             subclass(hwnd, &fieldProc);
         },
@@ -1273,7 +1386,7 @@ fn makeField(s: *Surface, n: *Node) !Field {
         },
         else => {},
     }
-    return .{ .hwnd = hwnd, .clip = clip, .kind = n.kind };
+    return .{ .hwnd = hwnd, .clip = clip, .kind = n.kind, .rich = rich };
 }
 
 /// A field's clip window (Field.clip), hidden until placed. In a transparent
@@ -1346,6 +1459,7 @@ fn styleField(s: *Surface, f: *Field, n: *Node) void {
     const size = px((n.props.fz orelse 16) * s.scale);
     const face = familyOf(n.props.ff, n.props.mono);
     const weight: c_int = @intFromFloat(@max(1, @min(1000, n.props.fwt orelse 400)));
+    const font_changed = size != f.font_px or face.ptr != f.font_face or weight != f.font_weight;
     if (size != f.font_px or face.ptr != f.font_face or weight != f.font_weight) {
         const font = c.CreateFontW(-size, 0, 0, 0, weight, @intFromBool(n.props.it), 0, 0, c.DEFAULT_CHARSET, c.OUT_DEFAULT_PRECIS, c.CLIP_DEFAULT_PRECIS, c.CLEARTYPE_QUALITY, c.DEFAULT_PITCH, face);
         if (font != null) {
@@ -1362,6 +1476,7 @@ fn styleField(s: *Surface, f: *Field, n: *Node) void {
     }
     const fg = colorRef(n.props.col orelse .{ 0, 0, 0, 1 });
     const bg = backgroundUnder(s, n);
+    const colors_changed = fg != f.fg or bg != f.bg or f.brush == null;
     if (fg != f.fg or bg != f.bg or f.brush == null) {
         f.fg = fg;
         f.bg = bg;
@@ -1369,6 +1484,8 @@ fn styleField(s: *Surface, f: *Field, n: *Node) void {
         f.brush = c.CreateSolidBrush(bg);
         _ = c.InvalidateRect(f.hwnd, null, c.TRUE);
     }
+    // A RichEdit takes its colours by message (WM_SETFONT reset its text's).
+    if (f.rich and (font_changed or colors_changed)) richColors(f);
     // A closed combobox draws with its theme, not WM_CTLCOLOR*: on a dark
     // background, the dark one (the file dialogs'), else a white box on a
     // dark page.
@@ -1530,6 +1647,7 @@ fn fieldKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool 
     const id = fx.node.id;
     const single_line = fx.field.kind == .input;
     const edit = fx.field.kind == .input or fx.field.kind == .textarea;
+    const rich = fx.field.rich;
     s.in_control += 1;
     defer s.in_control -= 1;
     switch (msg) {
@@ -1559,7 +1677,7 @@ fn fieldKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool 
             if (tab or prevented or (wparam == c.VK_RETURN and single_line)) return true;
             // The edit this key makes: beforeinput first; prevented, the
             // field doesn't make it (its WM_CHAR is eaten too).
-            if (edit and !alt) if (keyEdit(hwnd, wparam, ctrl, single_line)) |kind| {
+            if (edit and !alt) if (keyEdit(hwnd, wparam, ctrl, single_line, rich)) |kind| {
                 // A paste's data is the text it inserts.
                 const pasted = if (std.mem.eql(u8, kind, "insertFromPaste")) pasteText(s, hwnd, single_line) else null;
                 defer if (pasted) |t| s.gpa.free(t);
@@ -1594,11 +1712,11 @@ fn fieldKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool 
 /// The edit a key makes in an edit control, as Chromium names it
 /// (InputEvent.inputType), or null (it moves the caret, or does nothing:
 /// a backspace at the start).
-fn keyEdit(hwnd: c.HWND, vk: c.WPARAM, ctrl: bool, single_line: bool) ?[]const u8 {
+fn keyEdit(hwnd: c.HWND, vk: c.WPARAM, ctrl: bool, single_line: bool, rich: bool) ?[]const u8 {
     var a: c.DWORD = 0;
     var b: c.DWORD = 0;
     _ = c.SendMessageW(hwnd, c.EM_GETSEL, @intFromPtr(&a), @bitCast(@intFromPtr(&b)));
-    const len: c.DWORD = @intCast(c.GetWindowTextLengthW(hwnd));
+    const len = editLength(hwnd, rich);
     const selected = a != b;
     return switch (vk) {
         c.VK_BACK => if (!selected and a == 0) null else if (ctrl) "deleteWordBackward" else "deleteContentBackward",
@@ -1669,6 +1787,10 @@ fn controlProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ca
 fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
     const old: c.WNDPROC = @ptrCast(c.GetPropW(hwnd, prop_old_proc) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam));
     if (fieldKey(hwnd, msg, wparam, lparam)) return 0;
+    if (msg == c.WM_CONTEXTMENU and c.GetPropW(hwnd, prop_rich) != null) {
+        richMenu(hwnd, lparam);
+        return 0;
+    }
     switch (msg) {
         c.WM_NCDESTROY => {
             _ = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(old)));
@@ -1677,7 +1799,7 @@ fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
         c.WM_PAINT => {
             const r = c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
             const style: usize = @bitCast(c.GetWindowLongPtrW(hwnd, c.GWL_STYLE));
-            if (style & c.ES_MULTILINE != 0) paintPlaceholder(hwnd);
+            if (style & c.ES_MULTILINE != 0 or c.GetPropW(hwnd, prop_rich) != null) paintPlaceholder(hwnd);
             return r;
         },
         else => {},
