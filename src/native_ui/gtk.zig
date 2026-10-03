@@ -186,6 +186,10 @@ extern fn pango_layout_set_wrap(l: *PangoLayout, wrap: c_int) void;
 extern fn pango_layout_set_alignment(l: *PangoLayout, a: c_int) void;
 extern fn pango_layout_set_font_description(l: *PangoLayout, d: ?*const PangoFontDescription) void;
 extern fn pango_attr_line_height_new_absolute(height: c_int) *PangoAttribute;
+extern fn pango_layout_get_size(l: *PangoLayout, w: *c_int, h: *c_int) void;
+extern fn pango_layout_get_iter(l: *PangoLayout) ?*anyopaque;
+extern fn pango_layout_iter_next_cluster(it: *anyopaque) c_int;
+extern fn pango_layout_iter_free(it: *anyopaque) void;
 extern fn pango_layout_get_pixel_size(l: *PangoLayout, w: *c_int, h: *c_int) void;
 extern fn pango_layout_get_baseline(l: *PangoLayout) c_int;
 extern fn pango_cairo_show_layout(cr: *cairo_t, l: *PangoLayout) void;
@@ -237,6 +241,9 @@ pub const Surface = struct {
     /// Each canvas's bitmap, kept from frame to frame while its size holds.
     canvases: std.AutoHashMap(i64, CanvasBitmap),
     text_measurements: text_measure_cache.Cache = .{},
+    /// Per font: each ASCII character's width before each other one, from
+    /// Pango (fastTextSize).
+    glyph_widths: std.AutoHashMapUnmanaged(FontKey, *PairWidths) = .empty,
     text_context: ?*PangoContext = null,
     text_serial: c_uint = 0,
     text_epoch: u64 = 1,
@@ -414,6 +421,8 @@ fn surfaceOf(p: ?*anyopaque) *Surface {
 fn releaseTextMeasurements(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
     s.text_measurements.deinit(s.gpa);
+    clearGlyphWidths(s);
+    s.glyph_widths.deinit(s.gpa);
 }
 
 // ---------------------------------------------------------------------------
@@ -923,6 +932,7 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             const serial = pango_context_get_serial(context);
             if (s.text_context != context or s.text_serial != serial) {
                 s.text_measurements.clear(s.gpa);
+                clearGlyphWidths(s);
                 s.text_epoch +%= 1;
                 s.text_context = context;
                 s.text_serial = serial;
@@ -955,6 +965,11 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
 
 fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     const actual_width = if (n.props.nowrap or std.math.isInf(width)) std.math.inf(f32) else @max(1, width);
+    // One line of plain text: its width from the glyph widths, no layout.
+    if (fastTextSize(s, &n.props)) |size| if (std.math.isInf(actual_width) or size[0] - 1 <= actual_width) {
+        if (std.c.getenv("ORIEL_NUI_TEXT_CHECK") != null) checkTextSize(s, n, actual_width, size);
+        return size;
+    };
     var buf: [1024]u8 = undefined;
     const key = text_measure_cache.keyFor(&buf, &n.props, actual_width);
     if (key) |k| if (s.text_measurements.get(k)) |size| return size;
@@ -968,7 +983,139 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     return size;
 }
 
+// ---------------------------------------------------------------------------
+// Plain text without a layout: one run of printable ASCII on one line is as
+// wide as its glyphs, each as wide as Pango makes it before the next one
+// (its advance with the pair's kerning, rounded to whole pixels as Pango's
+// positions are by default). Those widths are measured once per font and
+// pair, with Pango itself: width("ab") - width("b"). A pair Pango makes one
+// glyph (a ligature), more than one run, letter spacing, other characters
+// or a text that wraps take Pango's layout. ORIEL_NUI_TEXT_CHECK=1 measures
+// both and logs any difference.
+
+const FontKey = struct { mono: bool, italic: bool, weight: u16, size: u32, fz: u32, lh: i32 };
+const pair_unknown: i32 = -1;
+const pair_ligature: i32 = -2;
+const PairWidths = struct {
+    /// Single-line height in pixels (0: not measured yet).
+    height: c_int = 0,
+    /// [a][b]: a's width in Pango units before b (b = 128: at the end).
+    w: [128][129]i32 = @splat(@splat(pair_unknown)),
+};
+
+fn clearGlyphWidths(s: *Surface) void {
+    var it = s.glyph_widths.valueIterator();
+    while (it.next()) |t| s.gpa.destroy(t.*);
+    s.glyph_widths.clearRetainingCapacity();
+}
+
+fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
+    const runs = props.runs orelse return null;
+    if (runs.len != 1 or props.ls != null) return null;
+    const r = runs[0];
+    const t = r.t;
+    if (t.len == 0 or t.len > 512) return null;
+    for (t) |c| if (c < 0x20 or c >= 0x7f) return null;
+    const key: FontKey = .{
+        .mono = r.mono or props.mono,
+        .italic = r.i,
+        .weight = tree_mod.sat(u16, r.w),
+        .size = tree_mod.sat(u32, r.sz * 64),
+        .fz = tree_mod.sat(u32, (props.fz orelse 16) * 64),
+        .lh = if (props.lh) |lh| tree_mod.sat(i32, lh * 64) else -1,
+    };
+    const table = s.glyph_widths.get(key) orelse blk: {
+        if (s.glyph_widths.count() >= 64) clearGlyphWidths(s);
+        const tbl = s.gpa.create(PairWidths) catch return null;
+        tbl.* = .{};
+        s.glyph_widths.put(s.gpa, key, tbl) catch {
+            s.gpa.destroy(tbl);
+            return null;
+        };
+        break :blk tbl;
+    };
+    if (table.height == 0) {
+        const size = probeTextSize(s, props, r, "A") orelse return null;
+        table.height = @intCast(@divTrunc(size[1] + PANGO_SCALE - 1, PANGO_SCALE));
+    }
+    var units: i64 = 0;
+    for (t, 0..) |c, i| {
+        const next: u8 = if (i + 1 < t.len) t[i + 1] else 128;
+        const w = pairWidth(s, props, r, table, c, next) orelse return null;
+        units += w;
+    }
+    const px = @divTrunc(units + PANGO_SCALE - 1, PANGO_SCALE);
+    return .{ @floatFromInt(px + 1), @floatFromInt(table.height) };
+}
+
+fn pairWidth(s: *Surface, props: *const tree_mod.Props, r: tree_mod.Run, table: *PairWidths, a: u8, b: u8) ?i32 {
+    const known = table.w[a][b];
+    if (known == pair_ligature) return null;
+    if (known != pair_unknown) return known;
+    var w: i32 = undefined;
+    if (b == 128) {
+        const one = [1]u8{a};
+        w = (probeTextSize(s, props, r, &one) orelse return null)[0];
+    } else {
+        const two = [2]u8{ a, b };
+        const pair = probe(s, props, r, &two) orelse return null;
+        const after = pairWidth(s, props, r, table, b, 128) orelse return null;
+        if (pair[2] != 2) {
+            table.w[a][b] = pair_ligature;
+            return null;
+        }
+        w = pair[0] - after;
+    }
+    table.w[a][b] = w;
+    return w;
+}
+
+/// `text` laid out on one line with the run's style: its size in Pango
+/// units.
+fn probeTextSize(s: *Surface, props: *const tree_mod.Props, r: tree_mod.Run, text: []const u8) ?[2]i32 {
+    const p = probe(s, props, r, text) orelse return null;
+    return .{ p[0], p[1] };
+}
+
+/// Width, height (Pango units) and clusters of `text` on one line.
+fn probe(s: *Surface, props: *const tree_mod.Props, r: tree_mod.Run, text: []const u8) ?[3]i32 {
+    var run = r;
+    run.t = text;
+    var p = props.*;
+    p.runs = @as(*const [1]tree_mod.Run, &run);
+    const layout = textLayoutOf(s, &p, std.math.inf(f32)) orelse return null;
+    defer g_object_unref(layout);
+    var w: c_int = 0;
+    var h: c_int = 0;
+    pango_layout_get_size(layout, &w, &h);
+    var clusters: i32 = 0;
+    if (pango_layout_get_iter(layout)) |it| {
+        defer pango_layout_iter_free(it);
+        clusters = 1;
+        while (pango_layout_iter_next_cluster(it) != 0) clusters += 1;
+    }
+    return .{ w, h, clusters };
+}
+
+/// ORIEL_NUI_TEXT_CHECK: the fast size against Pango's layout.
+fn checkTextSize(s: *Surface, n: *Node, width: f32, fast: [2]f32) void {
+    const layout = textLayout(s, n, width) orelse return;
+    defer g_object_unref(layout);
+    var w: c_int = 0;
+    var h: c_int = 0;
+    pango_layout_get_pixel_size(layout, &w, &h);
+    if (@as(f32, @floatFromInt(w + 1)) != fast[0] or @as(f32, @floatFromInt(h)) != fast[1]) {
+        const t = if (n.props.runs) |runs| runs[0].t else "";
+        log.warn("text size: fast {d}x{d}, Pango {d}x{d}: \"{s}\"", .{ fast[0], fast[1], w + 1, h, t[0..@min(t.len, 60)] });
+    }
+}
+
 fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
+    return textLayoutOf(s, &n.props, width);
+}
+
+fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32) ?*PangoLayout {
+    const n = struct { props: *const tree_mod.Props }{ .props = props };
     const runs = n.props.runs orelse return null;
     var text: std.ArrayList(u8) = .empty;
     defer text.deinit(s.gpa);
@@ -1863,6 +2010,8 @@ test "shared measurements match fresh Pango layouts after text, width and font c
         s.images.deinit();
         s.canvases.deinit();
         s.text_measurements.deinit(gpa);
+        clearGlyphWidths(&s);
+        s.glyph_widths.deinit(gpa);
         if (s.sans) |font| pango_font_description_free(font);
         if (s.mono) |font| pango_font_description_free(font);
     }
