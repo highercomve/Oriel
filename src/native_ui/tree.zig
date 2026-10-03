@@ -792,6 +792,9 @@ pub const Node = struct {
     grow_min: f32 = std.math.nan(f32),
     /// Its min width set and its growth off for this layout.
     grow_frozen: bool = false,
+    /// Its flex-basis is its unwrapped width (Tree.wrapBasis), not its
+    /// props'.
+    wrap_basis: bool = false,
     /// Its text changed and waits for Tree.settleTexts (measure_texts).
     text_pending: bool = false,
     /// From the last layout, before Yoga rounded it: its absolute left and
@@ -1556,6 +1559,7 @@ pub const Tree = struct {
         if (k.kind != .text) return growBoxMinWidth(t, k);
         unfreeze(k);
         k.grow_min = std.math.nan(f32);
+        wrapBasis(t, k);
         if (k.props.minw != null) return;
         const in_row = if (k.parent) |p| std.mem.startsWith(u8, p.props.fd orelse "column", "row") else false;
         // A growing item (flex: 1, a segmented control's buttons): CSS
@@ -1568,6 +1572,33 @@ pub const Tree = struct {
         const w = word orelse return;
         const min = horizontalInset(k) + w;
         if (grows) k.grow_min = min else yg.YGNodeStyleSetMinWidth(k.yn, min);
+    }
+
+    /// A text item in a wrapping row starts from its unwrapped width, CSS's
+    /// hypothetical main size (max-content), so a label too wide for the
+    /// rest of a line goes to the next one, and wraps inside only when it's
+    /// wider than a whole line (flex-shrink takes it down to the line).
+    /// Yoga measures the basis at the row's width instead: a backend's
+    /// wrapped text comes back as wide as its widest line, which may fit
+    /// beside the items before it. Not with a width or flex-basis of its
+    /// own; back to auto when the row stops wrapping.
+    fn wrapBasis(t: *Tree, k: *Node) void {
+        const wraps = if (k.parent) |p| p.props.fw != null and std.mem.startsWith(u8, p.props.fd orelse "column", "row") else false;
+        if (!wraps or k.props.fb != null or k.props.w != null) {
+            // The props' own basis is in place (styleYoga) unless ours was.
+            if (k.wrap_basis and k.props.fb == null) yg.YGNodeStyleSetFlexBasisAuto(k.yn);
+            k.wrap_basis = false;
+            return;
+        }
+        var out: [2]f32 = .{ 0, 0 };
+        t.measure(t.measure_ctx, k, std.math.inf(f32), &out);
+        if (!(out[0] > 0) or !std.math.isFinite(out[0])) {
+            if (k.wrap_basis) yg.YGNodeStyleSetFlexBasisAuto(k.yn);
+            k.wrap_basis = false;
+            return;
+        }
+        yg.YGNodeStyleSetFlexBasis(k.yn, horizontalInset(k) + out[0]);
+        k.wrap_basis = true;
     }
 
     /// A text node's longest word, as wide as the backend measures it: the
@@ -3154,4 +3185,66 @@ test "decodeCanvas makes the commands parseCanvasCmds makes from JSON" {
     // A non-finite argument skips that op; a malformed tail ends the program.
     const bad = [_]f64{ 8, std.math.inf(f64), 1, 99, 1 };
     try std.testing.expectEqual(@as(usize, 0), (try decodeCanvas(a, &bad, &.{})).len);
+}
+
+test "a text in a wrapping row starts from its unwrapped width, as CSS's max-content" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    const Context = struct {
+        // 10 px a character; at a narrower width, wrapped lines come back
+        // as wide as the widest one (shorter than the width), as
+        // DirectWrite's and Pango's do.
+        fn measure(_: *anyopaque, n: *Node, width: f32, out: *[2]f32) void {
+            const len: f32 = @floatFromInt(10 * n.props.runs.?[0].t.len);
+            if (width >= len) {
+                out.* = .{ len, 10 };
+            } else {
+                const lines = @ceil(len / @max(1, width * 0.75));
+                out.* = .{ width * 0.75, 10 * lines };
+            }
+        }
+    };
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, Context.measure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",0,"view"],["p",0,{"fd":"column"}],
+        \\["c",9,"view"],["p",9,{"fd":"row","fw":"wrap","w":260,"cg":8}],
+        \\["c",1,"text"],["p",1,{"w":40,"runs":[{"t":"6"}]}],
+        \\["c",2,"text"],["p",2,{"pad":[0,4,0,4],"runs":[{"t":"Now a much longer label in the wrapping row"}]}],
+        \\["c",8,"view"],["p",8,{"fd":"row","fw":"wrap","w":260,"cg":8}],
+        \\["c",3,"text"],["p",3,{"w":40,"runs":[{"t":"7"}]}],
+        \\["c",4,"text"],["p",4,{"runs":[{"t":"Fits beside"}]}],
+        \\["c",7,"view"],["p",7,{"fd":"row","w":260,"cg":8}],
+        \\["c",5,"text"],["p",5,{"w":40,"runs":[{"t":"8"}]}],
+        \\["c",6,"text"],["p",6,{"runs":[{"t":"Now a much longer label in a row that doesn't wrap"}]}],
+        \\["k",9,[1,2]],["k",8,[3,4]],["k",7,[5,6]],["k",0,[9,8,7]],["r",0]]
+    );
+    t.width = 600;
+    t.height = 400;
+    t.layout();
+    // Too wide for the rest of the line: on its own line, as wide as the
+    // line, its text wrapped there (430 + 8 of padding, shrunk to 260).
+    const long = t.get(2).?;
+    try std.testing.expectEqual(@as(f32, 438), yg.YGNodeStyleGetFlexBasis(long.yn).value);
+    try std.testing.expectEqual(@as(f32, 0), long.frame.x - t.get(9).?.frame.x);
+    try std.testing.expect(long.frame.y > t.get(1).?.frame.y);
+    try std.testing.expectEqual(@as(f32, 260), long.frame.w);
+    // One that fits stays beside.
+    try std.testing.expectEqual(@as(f32, 48), t.get(4).?.frame.x - t.get(8).?.frame.x);
+    try std.testing.expectEqual(t.get(3).?.frame.y, t.get(4).?.frame.y);
+    // A row that doesn't wrap: unchanged (an auto basis; the label shrinks
+    // beside the number).
+    const kept = t.get(6).?;
+    try std.testing.expectEqual(@as(yg.YGUnit, yg.YGUnitAuto), yg.YGNodeStyleGetFlexBasis(kept.yn).unit);
+    try std.testing.expectEqual(@as(f32, 48), kept.frame.x - t.get(7).?.frame.x);
+    // The row stops wrapping: back to an auto basis.
+    try t.apply(
+        \\[["p",9,{"fd":"row","w":260,"cg":8}]]
+    );
+    try std.testing.expectEqual(@as(yg.YGUnit, yg.YGUnitAuto), yg.YGNodeStyleGetFlexBasis(long.yn).unit);
+    // Its own width wins.
+    try t.apply(
+        \\[["p",8,{"fd":"row","fw":"wrap","w":260,"cg":8}],["p",4,{"w":90,"runs":[{"t":"Fits beside"}]}]]
+    );
+    try std.testing.expectEqual(@as(yg.YGUnit, yg.YGUnitAuto), yg.YGNodeStyleGetFlexBasis(t.get(4).?.yn).unit);
 }
