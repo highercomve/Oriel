@@ -177,8 +177,7 @@ the animated nodes are sent each frame).
   differ: `border-radius: 50%` on a 120x80 box is `"50%"` (an ellipse
   60x40), `border-radius: 40px / 20px` is `[40, 20]` per corner, and a
   longhand's two values (`border-top-left-radius: 60px 20px`) the same.
-  A backend reading a corner as one number sees an array there (Android's
-  Kotlin takes it as 0, a square corner, until it is ported).
+  A backend reading a corner as one number sees an array there.
 - Resolve with `Node.radiusXY()` (tree.zig): an x percentage is of the
   box's width, a y one of its height, and all corners are scaled down
   together until adjacent ones fit (CSS's overlap rule). A corner with
@@ -192,8 +191,12 @@ the animated nodes are sent each frame).
   rounded corner grown on both axes: `Radii.grown`). Win32, GTK
   (gtk.zig roundRectXY, roundedSides) and Apple (apple_draw.zig
   addEllipseRect, roundedSides: every solid rounded border is the filled
-  ring, as WebKit draws it) do all of these; Android still uses
-  `radius()`.
+  ring, as WebKit draws it) and Android (OrielNative.kt radii(): the same
+  resolution in Kotlin, as Path.addRoundRect's eight values; sides() with
+  one wedge per run of same-colored sides) do all of these. Android also
+  clips an `<img>` to its content edge's curve (each corner less the border
+  and padding on its sides), as browsers clip a replaced element; the
+  other backends clip it to its content box only.
 
 **Text metrics** (each backend, to match its own WebView):
 
