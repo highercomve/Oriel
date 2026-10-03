@@ -15180,6 +15180,7 @@ col, colgroup { display: none; }
         else this.volatile.add(el);
         props.cw = el.width;
         props.ch = el.height;
+        if (el.id) props.eid = el.id;
         const ratio = props.ch > 0 ? props.cw / props.ch : 2;
         const stretched = ctx.blockify && /^column/.test(parentCS?.["flex-direction"] || "") && ["stretch", "normal", void 0].includes(cs["align-self"] && cs["align-self"] !== "auto" ? cs["align-self"] : parentCS?.["align-items"]);
         if (props.w === void 0 && props.h === void 0) {
