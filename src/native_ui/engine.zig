@@ -573,6 +573,13 @@ export fn oriel_nui_ops(p: *anyopaque, json: [*]const u8, len: usize) void {
     e.tree.apply(json[0..len]) catch |err| log.err("native ui: bad ops ({s})", .{@errorName(err)});
 }
 
+/// host.paint(Float64Array): the "x" channel as numbers (Tree.applyPaint):
+/// transform and opacity changes without JSON.
+export fn oriel_nui_paint(p: *anyopaque, nums: [*]const f64, len: usize) void {
+    const e = engineOf(p);
+    e.tree.applyPaint(nums[0..len]);
+}
+
 /// host.canvas(id, Float64Array, [strings]): a canvas node's program
 /// (Tree.setCanvas); 0 when the node is gone.
 export fn oriel_nui_canvas(p: *anyopaque, id: f64, nums: [*]const f64, len: usize, strs: [*]const [*]const u8, lens: [*]const usize, count: usize) c_int {

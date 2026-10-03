@@ -4420,6 +4420,8 @@ input[type="range"] { height: 20px; margin: 2px; }
       const t1 = P && P();
       const nodes = /* @__PURE__ */ new Map();
       const paintOps = this.host.paintOps ? [] : null;
+      const nums = paintOps && this.host.paint ? new Float64Array(changes.length / 6 * 8) : null;
+      let at = 0;
       for (let i = 0; i < changes.length; i += 6) {
         const fc = changes[i], saved = changes[i + 1], d = changes[i + 2], normal = changes[i + 3], important = changes[i + 4], old = changes[i + 5];
         const cs = saved.cs, parts = /* @__PURE__ */ new Set();
@@ -4440,12 +4442,25 @@ input[type="range"] { height: 20px; margin: 2px; }
           return Object.assign(p, paint);
         };
         const r = fc.root;
-        r.props = part({ ...r.props });
-        const sent = part(old.props ? { ...old.props } : JSON.parse(old.p));
+        part(r.props);
+        const sent = part(old.p === null && old.props ? old.props : old.props ? { ...old.props } : JSON.parse(old.p));
         if (paintOps) {
-          const n2 = (v) => v === void 0 ? "null" : v;
-          paintOps.push(`["x",${fc.id},${n2(sent.tx)},${n2(sent.ty)},${n2(sent.sc)},${n2(sent.rot)},${n2(sent.op)}]`);
-          this.prev.set(fc.id, { kind: old.kind, p: null, props: sent, k: old.k });
+          if (nums) {
+            nums[at] = 1;
+            nums[at + 1] = fc.id;
+            nums[at + 2] = 5;
+            nums[at + 3] = sent.tx ?? NaN;
+            nums[at + 4] = sent.ty ?? NaN;
+            nums[at + 5] = sent.sc ?? NaN;
+            nums[at + 6] = sent.rot ?? NaN;
+            nums[at + 7] = sent.op ?? NaN;
+            at += 8;
+          } else {
+            const n2 = (v) => v === void 0 ? "null" : v;
+            paintOps.push(`["x",${fc.id},${n2(sent.tx)},${n2(sent.ty)},${n2(sent.sc)},${n2(sent.rot)},${n2(sent.op)}]`);
+          }
+          if (old.p === null && old.props === sent) {
+          } else this.prev.set(fc.id, { kind: old.kind, p: null, props: sent, k: old.k });
         } else nodes.set(fc.id, { kind: r.kind, props: sent, kids: r.kids.slice() });
       }
       const t2 = P && P();
@@ -4459,7 +4474,9 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (paintOps) {
         this.applyMs = 0;
         const a = P && P();
-        if (paintOps.length) this.host.ops(`[${paintOps.join(",")}]`);
+        if (nums) {
+          if (at) this.host.paint(at === nums.length ? nums : nums.subarray(0, at));
+        } else if (paintOps.length) this.host.ops(`[${paintOps.join(",")}]`);
         if (P) this.applyMs = P() - a;
         this.schedule();
       } else {
@@ -4469,7 +4486,7 @@ input[type="range"] { height: 20px; margin: 2px; }
           if (e && e.p !== null) e.props = n2.props;
         }
       }
-      if (P) this.host.log(1, `PROF boxes: ${paintOps ? paintOps.length : nodes.size} nodes, prepare ${(P() - t02 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t02).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
+      if (P) this.host.log(1, `PROF boxes: ${nums ? at / 8 : paintOps ? paintOps.length : nodes.size} nodes, prepare ${(P() - t02 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t02).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
       return true;
     }
     renderNow() {
@@ -6134,7 +6151,18 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (ins.some((x) => x !== null)) p.rel = ins;
     }
   }
+  var TRANSLATE_PX = /^translate\(\s*(-?(?:\d+\.?\d*|\.\d+))px\s*,\s*(-?(?:\d+\.?\d*|\.\d+))px\s*\)$/;
   function transformPart(cs, fs, p) {
+    const t = cs.transform;
+    if (t !== void 0 && cs.translate === void 0 && cs.scale === void 0 && cs.rotate === void 0) {
+      const m = TRANSLATE_PX.exec(t);
+      if (m) {
+        const x = +m[1], y = +m[2];
+        if (x) p.tx = x;
+        if (y) p.ty = y;
+        return;
+      }
+    }
     const tr = transformOf(cs, fs);
     if (tr.tx) p.tx = tr.tx;
     if (tr.ty) p.ty = tr.ty;

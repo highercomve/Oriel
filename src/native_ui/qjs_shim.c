@@ -34,6 +34,7 @@ extern int oriel_nui_asset(void *opaque, const char *path, size_t len, const cha
 extern void oriel_nui_invoke(void *opaque, uint32_t call_id, const char *cmd, size_t cmd_len, const char *args, size_t args_len);
 extern void oriel_nui_timer(void *opaque, uint32_t timer_id, double ms);
 extern void oriel_nui_ops(void *opaque, const char *json, size_t len);
+extern void oriel_nui_paint(void *opaque, const double *nums, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
 extern int oriel_nui_vsync(void *opaque);
 extern void oriel_nui_warm_fonts(void *opaque, const double *v, size_t count);
@@ -158,6 +159,22 @@ static JSValue h_ops(JSContext *ctx, JSValueConst this_val, int argc, JSValueCon
     size_t len = 0;
     const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
     if (s) { oriel_nui_ops(opaque_of(ctx), s, len); JS_FreeCString(ctx, s); }
+    return JS_UNDEFINED;
+}
+
+// host.paint(Float64Array): transform/opacity entries as numbers
+// (Tree.applyPaint's layout).
+static JSValue h_paint(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    size_t offset = 0, bytes = 0, per = 0;
+    JSValue buffer = JS_GetTypedArrayBuffer(ctx, argv[0], &offset, &bytes, &per);
+    if (JS_IsException(buffer)) return JS_EXCEPTION;
+    size_t size = 0;
+    uint8_t *data = JS_GetArrayBuffer(ctx, &size, buffer);
+    JS_FreeValue(ctx, buffer);
+    if (!data || per != 8 || offset + bytes > size) return JS_ThrowTypeError(ctx, "host.paint: a Float64Array");
+    oriel_nui_paint(opaque_of(ctx), (const double *)(data + offset), bytes / 8);
     return JS_UNDEFINED;
 }
 
@@ -803,6 +820,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "invoke", h_invoke, 3);
     set_fn(ctx, host, "timer", h_timer, 2);
     set_fn(ctx, host, "ops", h_ops, 1);
+    set_fn(ctx, host, "paint", h_paint, 1);
     set_fn(ctx, host, "text", h_text, 2);
     set_fn(ctx, host, "leafStyle", h_leaf_style, 2);
     set_fn(ctx, host, "leaf", h_leaf, 4);
