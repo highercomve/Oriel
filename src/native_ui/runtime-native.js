@@ -1656,7 +1656,7 @@ globalThis.atob ??= (s) => {
                 pseudo = pm[1];
                 sel = sel.slice(0, pm.index).trim() || "*";
               }
-              sel = sel.replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
+              sel = sel.replace(/:focus-visible(?![-\w])/g, "[data-nui-focus-visible]").replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
               if (/::|:hover|:focus|:active|:visited|:empty\b/.test(sel)) continue;
             }
             rules.push({ sel, pseudo, spec: specificity(sel), decls, media, order: order++, match: null });
@@ -1904,6 +1904,22 @@ globalThis.atob ??= (s) => {
           out[`border-${s}-color`] = color2;
           out[`border-${s}-style`] = style;
         }
+        return;
+      }
+      case "outline": {
+        let width = "medium", style = "none", color2 = "currentcolor";
+        for (const t of splitSpaces(value)) {
+          if (/^(none|hidden|auto|solid|dashed|dotted|double|groove|ridge|inset|outset)$/.test(t)) style = t;
+          else if (/^[\d.]|^(thin|medium|thick)$/.test(t)) width = t;
+          else color2 = t;
+        }
+        if (value === "0") {
+          width = "0";
+          style = "none";
+        }
+        out["outline-width"] = width;
+        out["outline-style"] = style;
+        out["outline-color"] = color2;
         return;
       }
       case "flex": {
@@ -3482,7 +3498,7 @@ li { display: list-item; }
 button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
 button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
-html { font-size: 16px; line-height: 1.2; color: black; }
+html { font-size: 16px; color: black; }
 body { margin: 8px; }
 p, ul, ol, dl, blockquote, pre, figure { margin-top: 1em; margin-bottom: 1em; }
 ul, ol { padding-left: 40px; }
@@ -3509,6 +3525,11 @@ col, colgroup { display: none; }
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
+  function lineHeightPx(v, fs) {
+    if (/^[\d.]+$/.test(v)) return parseFloat(v) * fs;
+    if (v.endsWith("%")) return parseFloat(v) / 100 * fs;
+    return length(v, fs, false) ?? void 0;
+  }
   var fontMetricsCache = /* @__PURE__ */ new Map();
   function lineDescent(cs, fs, host2) {
     const mono = /mono/.test(cs["font-family"] || "");
@@ -3520,12 +3541,13 @@ col, colgroup { display: none; }
       } catch {
         m = null;
       }
-      if (!m) m = [fs * 1.125, fs * 0.3125];
+      if (!m) m = [fs * 1.069, fs * 0.293, 0];
       fontMetricsCache.set(key, m);
     }
-    const [ascent, descent] = m;
+    const [ascent, descent, gap = 0] = m;
+    const normal = Math.round(ascent) + Math.round(descent) + Math.round(gap);
     const v = cs["line-height"];
-    const lh = !v || v === "normal" ? ascent + descent : /^[\d.]+$/.test(v) ? parseFloat(v) * fs : length(v, fs, false) ?? ascent + descent;
+    const lh = !v || v === "normal" ? normal : lineHeightPx(v, fs) ?? normal;
     return Math.max(0, lh / 2 - (ascent - descent) / 2);
   }
   var nonZero = (v) => !!v && (/^(thin|medium|thick)$/.test(v) || parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v)));
@@ -3540,7 +3562,7 @@ col, colgroup { display: none; }
   }
   var SKIP2 = /* @__PURE__ */ new Set(["script", "style", "head", "template", "title", "meta", "link", "noscript"]);
   var NATIVE_ID_BASE = 2 ** 30;
-  var STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus"];
+  var STATE_ATTRS = ["data-nui-hover", "data-nui-active", "data-nui-focus", "data-nui-focus-visible"];
   function splitCompounds(sel) {
     const out = [];
     const re = /[()[\] >+~]/g;
@@ -4704,7 +4726,7 @@ col, colgroup { display: none; }
       const flowBlock = !childCtx.blockify && props.fd === "column" && display !== "grid" && !tableHolds(display);
       const inLine = flowBlock ? /* @__PURE__ */ new Set() : null;
       if (before) inLine?.add(before);
-      for (const item of flow) {
+      for (const [index, item] of flow.entries()) {
         if (item.text) {
           const tid = this.idOf(el, "t" + kids.length);
           this.own(tid, el);
@@ -4719,6 +4741,17 @@ col, colgroup { display: none; }
         const cid = this.element(item.el, cs, nodes, childCtx);
         if (cid === null) continue;
         this.adjustKid(nodes, cid, item.el, cs, props, display, childCtx);
+        if (flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch)) {
+          const n2 = nodes.get(cid);
+          const gap = lineDescent(cs, fontSize, this.host);
+          if (n2 && gap > 0) {
+            const m = n2.props.m ? [...n2.props.m] : [0, 0, 0, 0];
+            if (typeof m[2] === "number") {
+              m[2] += gap;
+              n2.props = { ...n2.props, m };
+            }
+          }
+        }
         kids.push(cid);
         if (inLine && (ATOMIC_INLINE.has(this.styleOf(item.el)?.display || "inline") || boxed?.has(item.el))) inLine.add(cid);
         const ord = parseInt(this.styleOf(item.el)?.order, 10);
@@ -4849,6 +4882,20 @@ col, colgroup { display: none; }
         return null;
       }
       return id;
+    }
+    // Whether flow[i] is an image on the baseline with no inline content
+    // beside it (blocks, or nothing, before and after).
+    loneImage(flow, i, cs, rematch) {
+      const f = flow[i];
+      if (!f.el || !this.imageLine([f], cs, rematch)) return false;
+      const inlineAt = (j) => {
+        const g2 = flow[j];
+        if (!g2) return false;
+        if (g2.text) return true;
+        const d = this.style(g2.el, cs, rematch).display || "inline";
+        return d.startsWith("inline");
+      };
+      return !inlineAt(i - 1) && !inlineAt(i + 1);
     }
     // Whether the in-flow content is only images on the baseline (imageLine).
     imageLine(flow, cs, rematch) {
@@ -5319,6 +5366,20 @@ col, colgroup { display: none; }
     }
     return { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button, bb)) };
   }
+  function outlinePart(cs, fs, p) {
+    const style = cs["outline-style"];
+    if (!style || style === "none" || style === "hidden") return;
+    const wv = cs["outline-width"] || "medium";
+    const w = wv === "thin" ? 1 : wv === "medium" ? 3 : wv === "thick" ? 5 : num2(wv, fs);
+    if (typeof w !== "number" || !(w > 0)) return;
+    const c = color(cs["outline-color"] || "currentcolor", color(cs.color));
+    if (!c || c[3] <= 0) return;
+    const o = num2(cs["outline-offset"] || "0", fs);
+    const ol = { w, c };
+    if (typeof o === "number" && o) ol.o = o;
+    if (style === "dashed" || style === "dotted") ol.s = style;
+    p.ol = ol;
+  }
   function isSize(v) {
     return typeof v === "number" || typeof v === "string" && v.endsWith("%");
   }
@@ -5399,6 +5460,7 @@ col, colgroup { display: none; }
       if (style) p.bs = style;
     }
     contentBox(cs, p, borderBox);
+    outlinePart(cs, fs, p);
     const rg = num2(cs["row-gap"], fs), cg = num2(cs["column-gap"], fs);
     if (typeof rg === "number" && rg) p.rg = rg;
     if (typeof cg === "number" && cg) p.cg = cg;
@@ -5503,8 +5565,10 @@ col, colgroup { display: none; }
     p.fwt = weight(cs["font-weight"]);
     if (cs["font-style"] === "italic") p.it = true;
     if (/mono/.test(cs["font-family"] || "")) p.mono = true;
+    const ff = familyOf(cs);
+    if (ff) p.ff = ff;
     const lh = cs["line-height"];
-    if (lh && lh !== "normal") p.lh = /^[\d.]+$/.test(lh) ? parseFloat(lh) * fs : length(lh, fs, false) ?? void 0;
+    if (lh && lh !== "normal") p.lh = lineHeightPx(lh, fs);
     const ta = cs["text-align"];
     if (ta && ta !== "start" && ta !== "left") p.ta = ta === "end" ? "right" : ta;
     const ws = cs["white-space"];
@@ -5521,10 +5585,19 @@ col, colgroup { display: none; }
   function runStyle(cs, fs) {
     return memoized(cs, `r${fs}`, () => makeRunStyle(cs, fs));
   }
+  function familyOf(cs) {
+    const f = cs["font-family"];
+    if (!f) return void 0;
+    const list = splitTop(f, ",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+    if (!list.length || list.length === 1 && list[0] === "sans-serif") return void 0;
+    return list.join(", ");
+  }
   function makeRunStyle(cs, fs) {
     const r = { c: color(cs.color) || [0, 0, 0, 1], sz: fs, w: weight(cs["font-weight"]) };
     if (cs["font-style"] === "italic") r.i = true;
     if (/mono/.test(cs["font-family"] || "")) r.mono = true;
+    const ff = familyOf(cs);
+    if (ff) r.ff = ff;
     if ((cs["text-decoration-line"] || "") === "underline") r.u = true;
     return r;
   }
@@ -6244,6 +6317,9 @@ ${a.stack || ""}`;
     }
   };
   var active = null;
+  var keyboardFocus = false;
+  var TEXT_INPUTS = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
+  var textField = (el) => el?.localName === "textarea" || el?.isContentEditable || el?.localName === "input" && TEXT_INPUTS.has((el.getAttribute("type") || "").toLowerCase());
   Object.defineProperty(document, "__active", {
     get() {
       return active;
@@ -6251,8 +6327,10 @@ ${a.stack || ""}`;
     set(el) {
       if (el === active) return;
       active?.removeAttribute?.("data-nui-focus");
+      active?.removeAttribute?.("data-nui-focus-visible");
       active = el || null;
       active?.setAttribute?.("data-nui-focus", "");
+      if (active && (keyboardFocus || textField(active))) active.setAttribute?.("data-nui-focus-visible", "");
     },
     configurable: true
   });
@@ -6897,6 +6975,7 @@ ${a.stack || ""}`;
         const el = renderer?.elementFor(id);
         switch (type) {
           case "click":
+            keyboardFocus = false;
             if (el) activate(el, data | 0);
             return false;
           case "input": {
@@ -6914,6 +6993,7 @@ ${a.stack || ""}`;
             return false;
           }
           case "key":
+            keyboardFocus = true;
             return keyEvent(el || document.__active, data);
           case "keyup":
             return keyEvent(el || document.__active, data, "keyup");
@@ -6922,6 +7002,7 @@ ${a.stack || ""}`;
           // True on "down" when the page takes the drag (touch-action: none,
           // or a listener prevented the default): the backend doesn't scroll.
           case "pointer":
+            if (data?.[0] === "down" || data?.[0] === 0) keyboardFocus = false;
             return pointerEvent(el, data);
           case "focus":
             if (el) document.__active = el;
