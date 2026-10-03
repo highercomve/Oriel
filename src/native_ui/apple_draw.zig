@@ -110,6 +110,7 @@ extern fn CFDataCreate(alloc: ?*anyopaque, bytes: [*]const u8, len: c_long) ?CFT
 extern fn CGImageSourceCreateWithData(data: CFTypeRef, options: ?*anyopaque) ?CFTypeRef;
 extern fn CGImageSourceCopyPropertiesAtIndex(src: CFTypeRef, index: usize, options: ?*anyopaque) ?CFTypeRef;
 extern fn CFDictionaryGetValue(dict: CFTypeRef, key: *const anyopaque) ?*const anyopaque;
+extern fn CTRunGetAttributes(run: CFTypeRef) CFTypeRef;
 extern fn CFNumberGetValue(num: *const anyopaque, kind: c_long, out: *anyopaque) u8;
 extern const kCGImagePropertyPixelWidth: CFStringRef;
 extern fn CGImageSourceCreateThumbnailAtIndex(src: CFTypeRef, index: usize, options: ?CFTypeRef) ?CGImageRef;
@@ -381,6 +382,76 @@ pub fn fieldLine(comptime font_class: [:0]const u8, n: *const Node) f32 {
 /// gap) and that font's ascent and descent, which place the baseline.
 const LineBox = struct { h: f32, m: LineMetrics };
 
+/// A line's place in a text whose runs use more than one font (y down
+/// from the text's top): as CSS stacks a line's inline boxes on its
+/// baseline, the block's own font (the strut) among them, each its line
+/// box (line-height, or the font's normal one) with half the leading
+/// above its ascent; the line as tall as the most above plus the most
+/// below. WebKit: a 28px span makes only its own line taller.
+const LinePlace = struct { top: f32, base: f32, h: f32 };
+
+/// How a text's lines are placed: each its line box `lb` tall, or, with
+/// several fonts, `places`.
+const Placer = struct { lb: ?LineBox, places: ?[]const LinePlace = null };
+
+/// Whether a text's runs use a font other than its own (the strut), with
+/// line-height: normal. (An explicit one keeps every line that tall: the
+/// props carry it in px, not as the factor each inline box would take,
+/// and WebKit's lines came out uniform then.)
+fn mixedFonts(n: *const Node) bool {
+    if (n.props.lh != null) return false;
+    const runs = n.props.runs orelse return false;
+    const fz = n.props.fz orelse 16;
+    const same = struct {
+        fn eq(a: ?[]const u8, b: ?[]const u8) bool {
+            if (a == null or b == null) return a == null and b == null;
+            return std.mem.eql(u8, a.?, b.?);
+        }
+    }.eq;
+    for (runs) |r| {
+        if (r.t.len == 0) continue;
+        if (r.sz != fz or (r.mono or n.props.mono) != n.props.mono or !same(r.ff orelse n.props.ff, n.props.ff)) return true;
+    }
+    return false;
+}
+
+/// The lines' places of `frame` (as many as fit `out`), from each line's
+/// fonts (its glyph runs') and the strut.
+fn linePlaces(comptime font_class: [:0]const u8, n: *const Node, frame: CTFrameRef, out: []LinePlace) []LinePlace {
+    const strut = font(font_class, n.props.fz orelse 16, 400, false, n.props.mono, n.props.ff) orelse return out[0..0];
+    const lh: ?f32 = if (n.props.lh) |v| (if (v >= 1 and std.math.isFinite(v)) @floor(v) else null) else null;
+    const parts = struct {
+        // Above and below the baseline: the line box, half its leading above the ascent.
+        fn of(m: LineMetrics, line_h: ?f32) [2]f32 {
+            const l = line_h orelse (m.ascent + m.descent + m.gap);
+            const above = (l - (m.ascent + m.descent)) / 2 + m.ascent;
+            return .{ above, l - above };
+        }
+    }.of;
+    const sp = parts(lineMetrics(strut), lh);
+    const lines = CTFrameGetLines(frame);
+    const count: usize = @intCast(@max(0, CFArrayGetCount(lines)));
+    var top: f32 = 0;
+    var k: usize = 0;
+    while (k < count and k < out.len) : (k += 1) {
+        const line = CFArrayGetValueAtIndex(lines, @intCast(k));
+        var above = sp[0];
+        var below = sp[1];
+        const runs = CTLineGetGlyphRuns(line);
+        var g: c_long = 0;
+        while (g < CFArrayGetCount(runs)) : (g += 1) {
+            const run = CFArrayGetValueAtIndex(runs, g);
+            const f = CFDictionaryGetValue(CTRunGetAttributes(run), @ptrCast(kCTFontAttributeName)) orelse continue;
+            const p = parts(lineMetrics(@ptrCast(@constCast(f))), lh);
+            above = @max(above, p[0]);
+            below = @max(below, p[1]);
+        }
+        out[k] = .{ .top = top, .base = top + above, .h = above + below };
+        top += above + below;
+    }
+    return out[0..k];
+}
+
 fn lineBoxOf(comptime font_class: [:0]const u8, n: *const Node) ?LineBox {
     var size: f32 = n.props.fz orelse 16;
     var weight: f32 = 400;
@@ -564,7 +635,7 @@ fn inlineBoxRoom(s: CFAttributedStringRef, runs: []const tree_mod.Run, ls: f32) 
 /// padding and border (which take no room in the line). In the flipped
 /// CoreText space paintText set up; the boxes are drawn in the page's way
 /// up (a frame `h` tall).
-fn paintInlineBoxes(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, lb: ?LineBox, n: *Node) void {
+fn paintInlineBoxes(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, pl: Placer, n: *Node) void {
     const runs = n.props.runs orelse return;
     var spans_buf: [64]BoxSpan = undefined;
     const spans = inlineBoxSpans(runs, &spans_buf);
@@ -588,7 +659,7 @@ fn paintInlineBoxes(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, lb: ?LineBo
             if (a >= b) continue;
             const first = a == sp.start;
             const last = b == sp.end;
-            const o = lineOrigin(frame, li, h, lb);
+            const o = lineOrigin(frame, li, h, pl);
             // Its glyphs' extent (their positions and advances: an advance
             // has the room kerned after a box's last character), and the
             // font's ascent and descent (its glyph runs').
@@ -674,6 +745,9 @@ const TextCache = struct {
     frame: ?CTFrameRef = null,
     frame_w: CGFloat = -1,
     frame_h: CGFloat = -1,
+    /// The lines' places with several fonts (linePlaces), for frame_w.
+    places: ?[]LinePlace = null,
+    places_w: CGFloat = -1,
 };
 
 fn textCache(comptime font_class: [:0]const u8, n: *Node) ?*TextCache {
@@ -696,6 +770,7 @@ pub fn dropText(n: *Node) void {
     const c: *TextCache = @ptrCast(@alignCast(p));
     if (c.frame) |f| CFRelease(f);
     if (c.fs) |fs| CFRelease(fs);
+    if (c.places) |pl| std.heap.smp_allocator.free(pl);
     std.heap.smp_allocator.destroy(c);
 }
 
@@ -747,6 +822,19 @@ fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 
     const cache = textCache(font_class, n) orelse return null;
     const fs = cache.fs orelse return .{ 0, @round((n.props.fz orelse 16) * 1.2) };
     const size = CTFramesetterSuggestFrameSizeWithConstraints(fs, .{ .location = 0, .length = 0 }, null, .{ .width = if (n.props.nowrap) big else w, .height = big }, null);
+    // Several fonts: the lines' own boxes, summed (a frame at this width).
+    if (mixedFonts(n)) mixed: {
+        const path = CGPathCreateWithRect(.{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = if (n.props.nowrap) big else w, .height = big } }, null) orelse break :mixed;
+        defer CGPathRelease(path);
+        const frame = CTFramesetterCreateFrame(fs, .{ .location = 0, .length = 0 }, path, null) orelse break :mixed;
+        defer CFRelease(frame);
+        var buf: [512]LinePlace = undefined;
+        const places = linePlaces(font_class, n, frame, &buf);
+        if (places.len == 0) break :mixed;
+        n.baseline = places[0].base;
+        const last = places[places.len - 1];
+        return .{ @floatCast(@ceil(size.width) + 1), @round(last.top + last.h) };
+    }
     // Lines x the line box (CoreText's own height can be a hair over, a
     // font's leading on top of the fixed line height).
     if (lineBoxOf(font_class, n)) |lb| {
@@ -789,21 +877,31 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
     }
     h = cache.frame_h;
     const frame = cache.frame.?;
+    // Several fonts: each line placed by its own (kept with the frame).
+    const mixed = mixedFonts(n);
+    if (mixed and (cache.places == null or cache.places_w != w)) {
+        var buf: [512]LinePlace = undefined;
+        const got = linePlaces(font_class, n, frame, &buf);
+        if (cache.places) |old| std.heap.smp_allocator.free(old);
+        cache.places = std.heap.smp_allocator.dupe(LinePlace, got) catch null;
+        cache.places_w = w;
+    }
+    const pl: Placer = .{ .lb = lb, .places = if (mixed) cache.places else null };
     // CoreText draws with y up: flip around the text's box.
     CGContextSaveGState(cg);
     defer CGContextRestoreGState(cg);
     CGContextTranslateCTM(cg, c.x, c.y + h);
     CGContextScaleCTM(cg, 1, -1);
     CGContextSetTextMatrix(cg, .{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 });
-    paintInlineBoxes(cg, frame, h, lb, n);
-    paintRunBackgrounds(cg, frame, h, lb, n);
-    defer paintRunRings(cg, frame, h, lb, n);
+    paintInlineBoxes(cg, frame, h, pl, n);
+    paintRunBackgrounds(cg, frame, h, pl, n);
+    defer paintRunRings(cg, frame, h, pl, n);
     if (lb == null) return CTFrameDraw(frame, cg);
     const lines = CTFrameGetLines(frame);
     var i: c_long = 0;
     while (i < CFArrayGetCount(lines)) : (i += 1) {
         const line = CFArrayGetValueAtIndex(lines, i);
-        const o = lineOrigin(frame, i, h, lb);
+        const o = lineOrigin(frame, i, h, pl);
         CGContextSetTextPosition(cg, o.x, o.y);
         CTLineDraw(line, cg);
     }
@@ -814,10 +912,11 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
 /// baseline half the leading under the top plus the ascent, as CSS and
 /// WebKit place it (gtk.zig and win32.zig do the same), the glyphs
 /// overflowing a line box shorter than the font. Without one, CoreText's.
-fn lineOrigin(frame: CTFrameRef, i: c_long, h: CGFloat, lb: ?LineBox) CGPoint {
+fn lineOrigin(frame: CTFrameRef, i: c_long, h: CGFloat, pl: Placer) CGPoint {
     var o: [1]CGPoint = undefined;
     CTFrameGetLineOrigins(frame, .{ .location = i, .length = 1 }, &o);
-    const box = lb orelse return o[0];
+    if (pl.places) |places| if (i >= 0 and i < places.len) return .{ .x = o[0].x, .y = h - places[@intCast(i)].base };
+    const box = pl.lb orelse return o[0];
     const top = @as(CGFloat, @floatFromInt(i)) * box.h + (box.h - (box.m.ascent + box.m.descent)) / 2;
     return .{ .x = o[0].x, .y = h - (top + box.m.ascent) };
 }
@@ -828,7 +927,8 @@ fn lineOrigin(frame: CTFrameRef, i: c_long, h: CGFloat, lb: ?LineBox) CGPoint {
 /// runRing and browsers draw it (WebKit: as tall as the font's content
 /// area, not a taller line box). In the flipped CoreText space paintText
 /// set up, over the text.
-fn paintRunRings(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, lb: ?LineBox, n: *Node) void {
+fn paintRunRings(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, pl: Placer, n: *Node) void {
+    const lb = pl.lb;
     const runs = n.props.runs orelse return;
     var any = false;
     for (runs) |r| if (r.ol != null) {
@@ -887,7 +987,7 @@ fn paintRunRings(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, lb: ?LineBox, 
             const xa = CTLineGetOffsetForStringIndex(line, a, null);
             const xb = CTLineGetOffsetForStringIndex(line, b, null);
             if (xa == xb) continue;
-            const o = lineOrigin(frame, li, h, lb);
+            const o = lineOrigin(frame, li, h, pl);
             // The inline box's content area (y up), as WebKit draws the
             // ring: the font's ascent and descent around the baseline (the
             // line box for line-height: normal, inside a taller one).
@@ -915,7 +1015,7 @@ fn paintRunRings(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, lb: ?LineBox, 
 /// under its glyphs on each line it spans, as a browser paints an inline
 /// box's background. CoreText draws no backgrounds; the frame's lines give
 /// the positions (in the flipped CoreText space paintText set up).
-fn paintRunBackgrounds(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, lb: ?LineBox, n: *Node) void {
+fn paintRunBackgrounds(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, pl: Placer, n: *Node) void {
     const runs = n.props.runs orelse return;
     var any = false;
     for (runs) |r| if (r.bg != null) {
@@ -928,7 +1028,7 @@ fn paintRunBackgrounds(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, lb: ?Lin
     if (count <= 0) return;
     var origins_buf: [256]CGPoint = undefined;
     const shown: usize = @intCast(@min(count, origins_buf.len));
-    for (0..shown) |i| origins_buf[i] = lineOrigin(frame, @intCast(i), h, lb);
+    for (0..shown) |i| origins_buf[i] = lineOrigin(frame, @intCast(i), h, pl);
     // Each run's range in the string (UTF-16 units), as attributed() built it.
     var start: c_long = 0;
     for (runs) |r| {
