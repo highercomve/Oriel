@@ -101,6 +101,10 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
     const w: f32 = @floatFromInt(vp & 0xffff);
     const h: f32 = @floatFromInt((vp >> 16) & 0xffff);
     const dark = (vp >> 32) & 1 != 0;
+    // devicePixelRatio: the display's density, as the WebView's (2.625 on
+    // a 412 dp phone 1080 px wide, though the page is laid out 412 CSS px).
+    const with_dpr = withDensity(gpa, window, platform_json);
+    defer if (with_dpr) |j| gpa.free(j);
     s.engine = try Engine.create(gpa, .{
         .ctx = s,
         .measure = measure,
@@ -122,10 +126,23 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .mirrors_props = true,
         .leaf = leaf,
         .request_display_frame = requestDisplayFrame,
-    }, assets, platform_json, label, url, if (w > 0) w else 400, if (h > 0) h else 800);
+    }, assets, with_dpr orelse platform_json, label, url, if (w > 0) w else 400, if (h > 0) h else 800);
     try surfaces.put(gpa, window, s);
     s.engine.boot(dark, true);
     return s;
+}
+
+/// The platform JSON with `dpr`, the display's density (Kotlin's, in
+/// thousandths). Owned by the caller (the engine copies it); null: as is.
+fn withDensity(gpa: std.mem.Allocator, window: u32, platform_json: [:0]const u8) ?[:0]const u8 {
+    const milli = runtime.call(.int, "nuiDensity", "(I)I", .{wid(window)}) orelse return null;
+    if (milli <= 0) return null;
+    const trimmed = std.mem.trimEnd(u8, platform_json, " \n");
+    if (trimmed.len < 2 or trimmed[trimmed.len - 1] != '}') return null;
+    const body = trimmed[0 .. trimmed.len - 1];
+    const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
+    const dpr = @as(f64, @floatFromInt(milli)) / 1000;
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d}}}", .{ body, sep, dpr }, 0) catch null;
 }
 
 pub fn destroy(window: u32) void {
