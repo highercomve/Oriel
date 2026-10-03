@@ -165,9 +165,11 @@ internal class NuiNode(val id: Int, var kind: String) {
      *  `p` may be a leaf style's, shared by every node made from it. */
     private var runText: String? = null
 
-    fun update(json: String, kind: String) {
+    fun update(json: String, kind: String) = update(JSONObject(json), kind)
+
+    fun update(props: JSONObject, kind: String) {
         this.kind = kind
-        p = JSONObject(json)
+        p = props
         runText = null
         derive()
     }
@@ -535,7 +537,9 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     // --- From Zig ---------------------------------------------------------
 
-    fun props(id: Int, kind: String, json: String) {
+    fun props(id: Int, kind: String, json: String) = props(id, kind, JSONObject(json))
+
+    fun props(id: Int, kind: String, json: JSONObject) {
         val n = nodes.getOrPut(id) { NuiNode(id, kind) }
         n.update(json, kind)
         orderDirty = true // z-index or position may have changed
@@ -600,7 +604,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         while (i + REC <= f.size) {
             val n = nodes[ids[i]]
             val t = n?.textForDump() ?: ""
-            Log.d("OrielNui", "nui dump ${n?.kind ?: "?"} ${"%.1f %.1f %.1f %.1f".format(f[i + 1], f[i + 2], f[i + 3], f[i + 4])} bg=${n?.bg} fz=${n?.p?.optDouble("fz", 0.0)} \"$t\"")
+            Log.d("OrielNui", "nui dump ${n?.kind ?: "?"} ${"%.1f %.1f %.1f %.1f".format(f[i + 1], f[i + 2], f[i + 3], f[i + 4])} bg=${n?.bg} fz=${n?.p?.optDouble("fz", 0.0)} \"$t\" ${n?.p}")
             i += REC
         }
         Log.d("OrielNui", "nui dump end $window")
@@ -616,7 +620,9 @@ internal class NuiView(context: Context, val window: Int, private val transparen
      * 'L' node id, kind (0 view, 1 text), style id, text length, text: a
      * node made from one; 'T' node id, text length, text: a run's new text;
      * 'X' node id, opacity, scale, rotation: an animation frame's change;
-     * 'C' node id, op count, ops: a canvas's new program.
+     * 'C' node id, op count, ops: a canvas's new program;
+     * 'P' node id, kind, props: a node's props (a binary value, readValue);
+     * 'Y' style id, props: a leaf style as a binary value.
      */
     fun leaves(bytes: ByteArray) {
         val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
@@ -627,6 +633,15 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 'S' -> {
                     val json = utf8(b, b.int) ?: return
                     leafStyles[id] = NuiNode(id, "style").also { it.update(json, "style") }
+                }
+                'Y' -> {
+                    val props = readValue(b) as? JSONObject ?: return
+                    leafStyles[id] = NuiNode(id, "style").also { it.update(props, "style") }
+                }
+                'P' -> {
+                    val kind = utf8(b, b.int) ?: return
+                    val props = readValue(b) as? JSONObject ?: return
+                    props(id, kind, props)
                 }
                 'L' -> {
                     val kind = if (b.get().toInt() == 1) "text" else "view"
@@ -654,6 +669,30 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         }
         orderDirty = true
         invalidate()
+    }
+
+    /**
+     * A binary value (android.zig's putValue) as the JSONObject/JSONArray
+     * the JSON would have parsed to: a type byte (0 null, 1 false, 2 true,
+     * 3 int, 4 double, 5 string, 6 array, 7 object), then the value; an
+     * object's keys index PROP_KEYS, or 255 and the key as a string.
+     */
+    private fun readValue(b: ByteBuffer): Any? = when (b.get().toInt()) {
+        0 -> JSONObject.NULL
+        1 -> false
+        2 -> true
+        3 -> b.int
+        4 -> b.double
+        5 -> utf8(b, b.int)
+        6 -> JSONArray().also { a -> repeat(b.int) { a.put(readValue(b)) } }
+        7 -> JSONObject().also { o ->
+            repeat(b.int) {
+                val k = b.get().toInt() and 0xff
+                val key = if (k == 255) utf8(b, b.int) ?: return null else PROP_KEYS.getOrNull(k) ?: return null
+                o.put(key, readValue(b))
+            }
+        }
+        else -> null
     }
 
     private fun utf8(b: ByteBuffer, len: Int): String? {
@@ -1466,6 +1505,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     companion object {
         /** Floats per node in the frames from Zig (android.zig `record_len`). */
         const val REC = 14
+        /** android.zig's prop_keys, index for index (append only). */
+        val PROP_KEYS = arrayOf("fd","w","h","fs","ai","runs","t","c","sz","wt","dis","click","cg","rg","ar","val","maxw","maxh","minw","minh","fw","fg","fb","as","ac","jc","acc","src","range","pw","pos","ph","pad","m","options","on","icon","fit","cw","ch","cv","ctl","cols","trow","tcell","table","bc","bg","br","bw","clip","col","fwt","fz","ins","it","lh","ls","mono","nowrap","op","rel","rot","sc","scroll","scrollx","sh","sticky","ta","tx","ty","vis","z","root","color","gradient","angle","stops","radial","spread","blur","x","y","vb","shapes","d","fill","stroke","sw","cap","join","evenodd","u","i","label","href","hover","radius","cx","cy")
         /** The largest side an <img> is decoded at (px); larger pictures are downsampled. */
         const val MAX_IMAGE_SIDE = 4096
     }
