@@ -1101,6 +1101,10 @@ export class Renderer {
     // align-self applies to flex and grid items only: in a block it does
     // nothing (the box fills the line). Inline boxes get theirs below.
     if (!ctx.blockify) delete props.as;
+    // A form control or button without a width keeps its own in a block
+    // (display: block doesn't stretch it to the line, as it does a div); a
+    // flex item still stretches.
+    if (!ctx.blockify && display === "block" && CONTROLS.has(tag) && (props.w === undefined || props.w === "auto")) props.as = "flex-start";
     if (isTableDisplay(display) && !tableProps(props, display, cs, fontSize, ctx, el)) return null;
     const transitions = transitionsOf(cs);
     if (transitions) this.spec(id, transitions);
@@ -1245,12 +1249,19 @@ export class Renderer {
         props.cols = cols > 0 ? Math.min(cols, 1000) : 20;
         const rows = parseInt(el.getAttribute("rows") || "", 10);
         props.rows = rows > 0 ? Math.min(rows, 1000) : 2;
+      } else if (type !== "range") {
+        // A text field is `size` characters wide (20 when absent).
+        const size = parseInt(el.getAttribute("size") || "", 10);
+        props.cols = size > 0 ? Math.min(size, 1000) : 20;
       }
-      // A slider: the native side draws one (SeekBar), the value as text.
+      // A slider: the native side draws one (SeekBar), the value as text,
+      // in Chromium's 129x16 box with its 2px margin.
       if (type === "range") {
         const n = (a, d) => { const v = parseFloat(el.getAttribute(a)); return Number.isFinite(v) ? v : d; };
         props.range = [n("min", 0), n("max", 100), el.getAttribute("step") === "any" ? 0 : n("step", 1)];
-        if (props.h === undefined || props.h === "auto") props.h = 24;
+        if (props.w === undefined || props.w === "auto") props.w = 129;
+        if (props.h === undefined || props.h === "auto") props.h = 16;
+        if (!props.m) props.m = [2, 2, 2, 2];
         const acc = color(cs["accent-color"] || "");
         if (acc) props.acc = acc;
         delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
@@ -2159,6 +2170,7 @@ function isSize(v) {
 // Form controls are border-box unless the page says otherwise, as in
 // browsers' own style sheets (a rule in UA_CSS would cost every element's
 // matching a little).
+const CONTROLS = new Set(["input", "textarea", "select", "button"]);
 const BORDER_BOX_INPUTS = new Set(["button", "submit", "reset", "checkbox", "radio", "color", "file", "range", "image"]);
 function borderBoxByDefault(el) {
   const t = el?.localName;
