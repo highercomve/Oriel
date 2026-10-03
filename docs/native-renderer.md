@@ -164,7 +164,8 @@ the animated nodes are sent each frame).
   must set `scroll_y`/`scroll_x` through these, or call
   `Tree.noteScroll` and request a frame.
 - `host.frame(id)[6]`, `[7]` are the offsets: `scrollTop`/`scrollLeft`
-  read them (they were 0) and set them (`host.scrollTo(id, y, x)`, NaN
+  read them (they were 0; whole px on macOS and iOS, as WebKit gives
+  them, after a fling between pixels) and set them (`host.scrollTo(id, y, x)`, NaN
   leaving an axis), and so do `scrollY`/`pageYOffset`/`scrollX`, the
   root's and `document.scrollingElement`'s (node -1), `element.scrollTo`,
   `scroll` and `scrollBy`.
@@ -193,6 +194,24 @@ the animated nodes are sent each frame).
   40px, the track 87.5% of the view (both repeating while held), the
   thumb drags, the wheel scrolls the system's lines per notch at 100/3 px
   a line (100px), as Chromium.
+
+- Apple: overlay scrollbars (the default) take no room, as WKWebView's;
+  a scroller the user scrolls (wheel, trackpad, touch) shows an overlay
+  indicator a moment, fading out (apple_draw paintIndicators, from
+  `Node.flashed_at`): iOS's as UIScrollView draws it (measured in
+  WKWebView: 3 pt wide, 3 pt from the edges, black or white at half
+  alpha), macOS's as AppKit's overlay knob (7 pt, 2 pt in; not compared:
+  WKWebView's scrollers aren't in its snapshots). With scroll bars always
+  shown (NSScroller.preferredScrollerStyle legacy: the System Settings
+  choice, or a mouse without gestures), macOS sets `Tree.scrollbar = 15,
+  11` (WebKit's classic widths) and draws a classic bar in the gutter
+  (paintLegacyScrollbar; its look not compared either: the setting
+  wasn't changed). clientWidth, clientHeight and scrollHeight match
+  WKWebView on both (a bordered, overflowing scroller and the root).
+- A scroller's `content_h` (and `content_w`) reaches its bottom (right)
+  border: `content_h - frame.h` is how far it scrolls (to scrollHeight -
+  clientHeight), and its children clip at its padding box, not over its
+  borders. `host.frame[4]` (scrollHeight) is the padding box's content.
 
 **Field edits and selection** (each backend with native text fields):
 

@@ -18014,7 +18014,7 @@ ${a.stack || ""}`;
     // root's and the scrolling element's are the window's (node -1).
     scrollTop: {
       get() {
-        return renderer && host.frame(scrollIdOf(this))?.[6] || 0;
+        return scrollPx(renderer && host.frame(scrollIdOf(this))?.[6] || 0);
       },
       set(y) {
         if (renderer) {
@@ -18026,7 +18026,7 @@ ${a.stack || ""}`;
     },
     scrollLeft: {
       get() {
-        return renderer && host.frame(scrollIdOf(this))?.[7] || 0;
+        return scrollPx(renderer && host.frame(scrollIdOf(this))?.[7] || 0);
       },
       set(x) {
         if (renderer) {
@@ -18093,8 +18093,11 @@ ${a.stack || ""}`;
     const [left, top] = scrollArgs(x, y);
     g.scrollTo({ top: g.scrollY + (+top || 0), left: g.scrollX + (+left || 0) });
   };
+  function scrollPx(v) {
+    return platform.os === "macos" || platform.os === "ios" ? Math.round(v) : v;
+  }
   for (const [names, i] of [[["scrollY", "pageYOffset"], 6], [["scrollX", "pageXOffset"], 7]]) {
-    for (const name of names) Object.defineProperty(g, name, { get: () => renderer && host.frame(-1)?.[i] || 0, configurable: true });
+    for (const name of names) Object.defineProperty(g, name, { get: () => scrollPx(renderer && host.frame(-1)?.[i] || 0), configurable: true });
   }
   Object.defineProperty(document, "scrollingElement", { get() {
     return this.documentElement;
@@ -18601,20 +18604,25 @@ ${a.stack || ""}`;
     const step = steps[key2];
     if (step === void 0) return false;
     renderer.render();
-    let target = -1;
+    let target = -1, targetEl = null;
+    const clientH = (f2, el) => {
+      const b = el ? borderOf(el) : [0, 0, 0, 0];
+      return f2[3] - b[0] - b[2];
+    };
     for (let n2 = from; n2 && n2.nodeType === 1 && n2 !== document.body && n2 !== document.documentElement; n2 = n2.parentNode) {
       const cs = getComputedStyle(n2);
       const ov = cs["overflow-y"] || cs.overflowY || cs.overflow;
       if (ov !== "auto" && ov !== "scroll") continue;
       const f2 = host.frame(renderer.idOf(n2, "el"));
-      if (f2 && f2[4] > f2[3] + 0.5) {
+      if (f2 && f2[4] > clientH(f2, n2) + 0.5) {
         target = renderer.idOf(n2, "el");
+        targetEl = n2;
         break;
       }
     }
     const f = host.frame(target);
     if (!f) return false;
-    const view = f[3];
+    const view = clientH(f, targetEl);
     const top = f[6] || 0;
     const by = Math.abs(step) <= 1 ? Math.round(step * view) : step;
     const want = Math.max(0, Math.min(f[4] - view, top + by));
