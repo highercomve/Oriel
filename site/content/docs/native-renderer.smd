@@ -14,7 +14,7 @@ It is **experimental**: it runs on Linux (GTK 4), Windows (Direct2D), macOS (App
 
 *The showcase on the native renderer (GTK 4): no WebView, the same `index.html`, `style.css` and `app.js`.*
 
-The page's DOM is Oriel's own: a **native DOM**, a document store written in Zig behind QuickJS bindings, replaced the JavaScript DOM library ([linkedom](https://github.com/WebReflection/linkedom)) the renderer started with. It builds a page about twice as fast and keeps memory flat (below).
+The page's DOM is Oriel's own: a **native DOM**, a document store written in Zig behind QuickJS bindings, replaced the JavaScript DOM library ([linkedom](https://github.com/WebReflection/linkedom)) the renderer started with. It builds a page about twice as fast as linkedom did and keeps memory flat (below).
 
 # Why
 
@@ -116,21 +116,24 @@ The [render bench](https://github.com/highercomve/Oriel/tree/main/examples/rende
 
 [](<$image.siteAsset('screenshots/native-render-bench.png').alt('The render bench results screen on the native renderer')>)
 
-*The bench's own results screen, native renderer, Linux.*
+*The bench's own results screen: the native renderer on a Linux desktop with a 180 Hz display (one run; the table below is the median of three).*
 
-Linux desktop, ReleaseFast, the median of 3 runs:
+Linux desktop with a 180 Hz display, ReleaseFast, the median of 3 runs:
 
 | | Native renderer | WebView (WebKitGTK) |
 |---|---|---|
-| Build 1000 / 3000 rows | 40 / 125 ms | 19 / 69 ms |
-| Update 1000 / 3000 rows | **5.6 / 17 ms** | 10 / 40 ms |
-| First frame | **70 ms** | 390 ms |
-| Animate 200 boxes | 60 fps, up to the display's rate | 60 fps |
-| Canvas, 200 / 1000 balls | 60 / 60 fps | 60 / 60 fps |
-| Memory at start | **66 MB** | 284 MB |
-| Memory after the tests | **127 MB**, flat across rounds | 343 MB |
+| Build 1000 / 3000 rows | **9.1 / 27 ms** | 19 / 68 ms |
+| Update 1000 / 3000 rows | **3.0 / 9.3 ms** | 10 / 40 ms |
+| Page script runs | **20 ms** after start | 335 ms |
+| First frame | **66 ms** | 417 ms |
+| Animate 200 boxes | **150 fps** (the display's rate) | 62 fps |
+| Canvas, 200 / 1000 balls | **180 / 95 fps** | 62 / 62 fps |
+| Memory at start | **73 MB** | 468 MB |
+| Memory after the tests | **126 MB**, 93 after a second round | 508 MB |
 
-The native renderer starts several times faster, in under half the memory, updates text faster than the WebView and animates at the display's rate. Building a large page from scratch is still about twice as slow: the WebView's DOM and style engine are native code with a JIT, the native renderer's page JavaScript runs in QuickJS, an interpreter.
+The native renderer now beats the WebView on every test: it runs the page's script about sixteen times sooner and shows its first frame six times sooner, builds and updates rows two to four times faster, animates at the display's refresh rate (the WebView stays at 60), and uses a quarter of the memory.
+
+What got it there, in order: an incremental render (only what changed is restyled and flattened), text changes sent straight to the native node, a QuickJS fix (its hash tables were leaving most buckets empty), the renderer's JavaScript compiled to bytecode at build time, the native DOM (below), transform-only animation frames, `requestAnimationFrame` paced by the display, and rows and whole lists of identical rows built by the tree in Zig straight from the native DOM instead of node by node in JavaScript.
 
 ## The native DOM
 
@@ -177,7 +180,7 @@ Every platform got the same gain:
 | Windows (a 2018 laptop) | 128 ms | 223 ms |
 | Android (a Chromebook) | 194 ms | 290 ms |
 
-The JavaScript heap of an idle page went from about 29 MB to about 2 MB. The native DOM is the default; `-Dnative_dom=false` builds the renderer on linkedom, to compare the two or as a fallback while a page needs something the native DOM lacks.
+These are the native DOM's own gains, measured when it replaced linkedom; the work since then (rows stamped from the DOM) took Linux to the 9 ms above. The JavaScript heap of an idle page went from about 29 MB to about 2 MB. The native DOM is the default; `-Dnative_dom=false` builds the renderer on linkedom, to compare the two or as a fallback while a page needs something the native DOM lacks.
 
 ## Against React Native on Android
 
@@ -385,4 +388,4 @@ It is not a browser, and it isn't trying to be one: it runs the part of the web 
 
 Verified on a Linux desktop, a Windows 11 laptop, an M1 Mac, the iOS simulator, a Chromebook and a Pixel phone.
 
-Next: accessibility (each node exposed to the screen reader) and a faster page build. The design notes are in [`docs/native-renderer.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-renderer.md) and [`docs/native-dom.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-dom.md).
+Next: accessibility (each node exposed to the screen reader), and the same row stamping on Android. The design notes are in [`docs/native-renderer.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-renderer.md) and [`docs/native-dom.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-dom.md).
