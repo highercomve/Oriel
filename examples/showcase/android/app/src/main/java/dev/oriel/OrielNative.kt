@@ -91,6 +91,7 @@ internal object NuiNative {
     @JvmStatic external fun trace(): Boolean
     /** ORIEL_NUI_DUMP is set: NuiView logs what it holds after each frames(). */
     @JvmStatic external fun dump(): Boolean
+    @JvmStatic external fun textCheck(): Boolean
     /** The display refreshed: the window's requestAnimationFrame callbacks run. */
     @JvmStatic external fun displayFrame(window: Int, intervalMs: Float)
     /** An app asset's bytes (an <img> src), or null. */
@@ -106,6 +107,8 @@ internal object Nui {
      *  log lines (examples/render-bench). */
     val trace by lazy { NuiNative.trace() }
     val dump by lazy { NuiNative.dump() }
+    /** ORIEL_NUI_TEXT_CHECK: plain lines measured both ways, differences logged. */
+    val textCheck by lazy { NuiNative.textCheck() }
 
     fun viewport(window: Int): Long {
         val res = (views[window]?.context ?: OrielRuntime.app).resources
@@ -300,15 +303,61 @@ internal class NuiNode(val id: Int, var kind: String) {
             "right", "end" -> Layout.Alignment.ALIGN_OPPOSITE
             else -> Layout.Alignment.ALIGN_NORMAL
         }
-        val b = StaticLayout.Builder.obtain(t, 0, t.length, tp, w).setAlignment(align).setIncludePad(false)
-        if (p.has("lh")) {
-            val fz = p.optDouble("fz", 16.0).toFloat()
-            b.setLineSpacing(0f, p.optDouble("lh").toFloat() / (fz * 1.17f))
-        }
+        val b = builder(t, tp, w).setAlignment(align)
         if (nowrap) b.setMaxLines(1).setEllipsize(TextUtils.TruncateAt.END)
         layout = b.build()
         layoutWidth = w
         return layout
+    }
+
+    private fun builder(t: CharSequence, tp: TextPaint, w: Int): StaticLayout.Builder {
+        val b = StaticLayout.Builder.obtain(t, 0, t.length, tp, w).setIncludePad(false)
+        if (p.has("lh")) {
+            val fz = p.optDouble("fz", 16.0).toFloat()
+            b.setLineSpacing(0f, p.optDouble("lh").toFloat() / (fz * 1.17f))
+        }
+        return b
+    }
+
+    /** One run of printable ASCII, no letter spacing: as tall as any other
+     *  line of its style (no fallback font can make it taller). */
+    private fun plainLine(t: CharSequence): Boolean {
+        if (t.isEmpty() || p.has("ls") || (p.optJSONArray("runs")?.length() ?: 0) != 1) return false
+        for (i in 0 until t.length) if (t[i] < ' ' || t[i] > '~') return false
+        return true
+    }
+
+    /** A plain line's style: a paint with its run's font and size, and its
+     *  line height from a StaticLayout of one character (once per style). */
+    private class LineStyle(val paint: TextPaint, val height: Int)
+
+    private fun lineStyle(t: CharSequence, tp: TextPaint): LineStyle {
+        val r = p.optJSONArray("runs")?.optJSONObject(0)
+        val fz = p.optDouble("fz", 16.0)
+        val mono = p.optBoolean("mono") || (r?.optBoolean("mono") ?: false)
+        val sz = r?.optDouble("sz", fz) ?: fz
+        val w = r?.optDouble("w", 400.0)?.toInt() ?: 400
+        val italic = r?.optBoolean("i") ?: false
+        val key = "$fz $sz $w $italic $mono ${p.optDouble("lh", -1.0)}"
+        return lineStyles.getOrPut(key) {
+            val fp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            fp.textSize = sz.toFloat()
+            fp.typeface = typeface(w, italic, mono)
+            LineStyle(fp, builder(t.subSequence(0, 1), tp, 1 shl 20).build().height)
+        }
+    }
+
+    /**
+     * A plain text that fits on one line at `max64` (or unbounded): its width
+     * from the font (rounded as the StaticLayout path: ceil + 1) and its
+     * style's line height, no layout. Null: the full path measures it.
+     */
+    private fun fastSize(t: CharSequence, tp: TextPaint, max64: Int): Long? {
+        if (!plainLine(t)) return null
+        val st = lineStyle(t, tp)
+        val w = ceil(st.paint.measureText(t, 0, t.length)).toInt() + 1
+        if (max64 >= 0 && w > max(1, max64 / 64)) return null // it wraps
+        return (w * 64L shl 32) or (st.height * 64L)
     }
 
     /** Size for Yoga: width and height in 1/64 dp, packed. */
@@ -322,18 +371,33 @@ internal class NuiNode(val id: Int, var kind: String) {
         val t = text ?: return 0
         val tp = paint ?: return 0
         if (max64 == measuredFor) return measured
+        // A plain line without a StaticLayout (most of a thousand updated
+        // rows are never drawn, so their layouts would go unused).
+        val fast = fastSize(t, tp, max64)
+        if (fast != null && Nui.textCheck) {
+            val full = layoutSize(t, tp, max64)
+            if (full != fast) Log.d("OrielNui", "nui text check \"$t\" at $max64: fast ${fast shr 32}x${fast and 0xffffffff} layout ${full shr 32}x${full and 0xffffffff} (1/64 dp)")
+        }
+        measured = fast ?: layoutSize(t, tp, max64)
+        measuredFor = max64
+        return measured
+    }
+
+    /** The size from a StaticLayout at `max64` (any text). */
+    private fun layoutSize(t: CharSequence, tp: TextPaint, max64: Int): Long {
         val desired = desired(t, tp)
         val width = if (max64 < 0) desired else min(desired, max(1, max64 / 64))
         val l = textLayout(width) ?: return 0
         var w = 0f
         for (i in 0 until l.lineCount) w = max(w, l.getLineWidth(i))
         val wf = min(ceil(w) + 1, width.toFloat())
-        measured = ((wf * 64).toLong() shl 32) or (l.height * 64L)
-        measuredFor = max64
-        return measured
+        return ((wf * 64).toLong() shl 32) or (l.height * 64L)
     }
 
     companion object {
+        /** Plain lines' styles (lineStyle). */
+        private val lineStyles = HashMap<String, LineStyle>()
+
         fun color(a: JSONArray?): Int {
             if (a == null) return Color.TRANSPARENT
             val alpha = (a.optDouble(3, 1.0) * 255).toInt().coerceIn(0, 255)
@@ -711,6 +775,15 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     }
 
     fun measureText(id: Int, max64: Int): Long = nodes[id]?.measure(max64) ?: 0
+
+    /** Node ids (little-endian ints) to their unbounded sizes (little-endian longs, as measureText). */
+    fun measureTexts(ids: ByteArray): ByteArray {
+        val n = ids.size / 4
+        val inb = ByteBuffer.wrap(ids).order(ByteOrder.LITTLE_ENDIAN)
+        val out = ByteBuffer.allocate(n * 8).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until n) out.putLong(nodes[inb.getInt()]?.measure(-1) ?: 0)
+        return out.array()
+    }
 
     fun frames(bytes: ByteArray) {
         val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
