@@ -2711,23 +2711,40 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
 
     // Elliptical corners, as CSS draws them (tree.zig radiusXY).
     const r = n.radiusXY();
-    if (p.sh) |sh| shadow(cr, f, r, sh);
+    // A fieldset with its legend: its box from the legend's middle down,
+    // the top border broken under the legend (Props.lgd).
+    const lg = legendGap(n);
+    const bf = if (lg) |g| g.box else f;
+    if (p.sh) |sh| shadow(cr, bf, r, sh);
     if (p.bg) |bg| {
         // The color under the gradient (CSS layers).
         if (bg.color) |c| {
-            roundRectXY(cr, f, r);
+            roundRectXY(cr, bf, r);
             setColor(cr, c);
             cairo_fill(cr);
         }
         if (bg.gradient) |g| {
-            roundRectXY(cr, f, r);
-            const pat = gradient(f, g);
+            roundRectXY(cr, bf, r);
+            const pat = gradient(bf, g);
             cairo_set_source(cr, pat);
             cairo_fill(cr);
             cairo_pattern_destroy(pat);
         }
     }
-    if (p.bw) |bw| if (p.bs) |style| dashedBorder(cr, f, r, bw, p.bc, style) else border(cr, f, r, bw, p.bc);
+    if (p.bw) |bw| {
+        if (lg) |g| {
+            // The border only, without the gap (even-odd: the box minus it).
+            cairo_save(cr);
+            cairo_new_path(cr);
+            cairo_rectangle(cr, bf.x - 1, bf.y - 1, bf.w + 2, bf.h + 2);
+            cairo_rectangle(cr, g.gap.x, g.gap.y, g.gap.w, g.gap.h);
+            cairo_set_fill_rule(cr, 1); // CAIRO_FILL_RULE_EVEN_ODD
+            cairo_clip(cr);
+            cairo_set_fill_rule(cr, 0);
+        }
+        if (p.bs) |style| dashedBorder(cr, bf, r, bw, p.bc, style) else border(cr, bf, r, bw, p.bc);
+        if (lg != null) cairo_restore(cr);
+    }
     switch (n.kind) {
         .text => paintText(s, cr, n),
         .icon => paintIcon(cr, n),
@@ -3162,6 +3179,19 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
             runRing(cr, layout, c.x, c.y + dy, range[0], end, ol);
         }
     }
+}
+
+/// A fieldset's box with its legend (Props.lgd, as apple_draw.legendGap):
+/// from the line through the legend's middle down, and the gap the legend
+/// cuts in the top border.
+fn legendGap(n: *const Node) ?struct { box: Rect, gap: Rect } {
+    if (!n.props.lgd or n.kids.items.len == 0) return null;
+    const f = n.frame;
+    const lg = n.kids.items[0].frame;
+    const bw = if (n.props.bw) |b| b[0] else 0;
+    const off = std.math.clamp(lg.y + lg.h / 2 - bw / 2 - f.y, 0, f.h);
+    const box: Rect = .{ .x = f.x, .y = f.y + off, .w = f.w, .h = f.h - off };
+    return .{ .box = box, .gap = .{ .x = lg.x, .y = box.y - 1, .w = lg.w, .h = bw + 2 } };
 }
 
 /// The inline boxes' decoration (docs "Inline boxes"), under the text: on
