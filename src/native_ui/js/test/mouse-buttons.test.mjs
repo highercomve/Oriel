@@ -43,6 +43,12 @@ assert.deepEqual([...ctx.seen], ["pointerdown:1/4", "mousedown:1/4", "pointerup:
 ctx.seen.length = 0;
 ev("down", 1); ev("up", 0);
 assert.deepEqual([...ctx.seen], ["pointerdown:0/1", "mousedown:0/1", "pointerup:0/0", "mouseup:0/0"]);
+// macOS's Control-click (measured in WKWebView): the backend's contextmenu
+// says the primary button and the modifiers, between the press and the
+// release, and the click still follows.
+ctx.seen.length = 0;
+ev("down", 1); ctx.__oriel.event(boxId, "contextmenu", [10, 10, 0, 1, 2]); ev("up", 0);
+assert.deepEqual([...ctx.seen], ["pointerdown:0/1", "mousedown:0/1", "contextmenu:0/1", "pointerup:0/0", "mouseup:0/0"]);
 // A touch's long press: contextmenu without a button.
 ctx.seen.length = 0;
 ctx.__oriel.event(boxId, "pointer", ["down", 10, 10, 1, 2, "touch", 0]);

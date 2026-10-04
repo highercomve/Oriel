@@ -1579,9 +1579,13 @@ const oriel = {
         case "focus": if (el) document.__active = el; return false;
         case "blur": if (el && document.__active === el) document.__active = null; return false;
         case "contextmenu": {
-          // From a mouse: the secondary button (a touch's long press has none).
+          // data [x, y, button?, buttons?, modifiers?]: the backend's (macOS's
+          // Control-click is the primary button's), else from a mouse the
+          // secondary button (a touch's long press has none).
           const mouse = lastPointerType !== "touch";
-          const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1], button: mouse ? 2 : 0, buttons: mouse ? 2 : 0 });
+          const [button, buttons] = data.length >= 4 ? [data[2], data[3]] : mouse ? [2, 2] : [0, 0];
+          const f = data[4] | 0;
+          const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1], button, buttons, shiftKey: !!(f & 1), ctrlKey: !!(f & 2), altKey: !!(f & 4), metaKey: !!(f & 8) });
           const on = el || document.body;
           on.dispatchEvent(ev);
           // The window's listeners see the element (as pointerEvent's fire).
