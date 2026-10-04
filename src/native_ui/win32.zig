@@ -2168,7 +2168,7 @@ fn linkAt(s: *Surface, pt: [2]f32) i64 {
         if (r.k != null) break;
     } else return 0;
     const ct = n.content();
-    const layout = textLayout(s, n, ct.w + 1, null) orelse return 0;
+    const layout = textLayout(s, n, paintWidth(ct.w), null) orelse return 0;
     defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
     // Lines of their own heights (a font on some only) are drawn moved
     // (paintText's lineShift): the point back in the layout's spacing.
@@ -2709,6 +2709,14 @@ const sans_face = std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI");
 /// A DirectWrite layout of a text node's runs at `width` (inf: one line
 /// unless it has line breaks). With `rt`, each run's color is set as its
 /// drawing effect (brushes released with the layout's caller's list).
+/// The width a laid-out text is drawn (and hit-tested) at: its box's, as
+/// it was measured, so its lines break where measure broke them (a line
+/// 0.6px over the box wraps, as in Chromium); a LayoutUnit (1/64 px) more
+/// absorbs float error.
+fn paintWidth(box_w: f32) f32 {
+    return box_w + 1.0 / 64.0;
+}
+
 fn textLayout(s: *Surface, n: *Node, width: f32, brushes: ?*std.ArrayList(*c.ID2D1SolidColorBrush)) ?*c.IDWriteTextLayout {
     return textLayoutOf(s, &n.props, width, brushes);
 }
@@ -4368,6 +4376,10 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
                 return;
             }
             out.* = measuredText(s, n, max_width) orelse return;
+            // Broken into lines at max_width: no wider than that (its
+            // widest line + 1 can be), so it's drawn at the width its lines
+            // were broken at.
+            out[0] = @min(out[0], max_width);
         },
         // As Chromium: a line of the field's font (its line-height, else
         // the font's normal one), `rows` of them in a textarea; a select's
@@ -5083,7 +5095,7 @@ fn paintText(p: *Painter, n: *Node) void {
         for (brushes.items) |b| releaseCom(@as(?*c.ID2D1SolidColorBrush, b));
         brushes.deinit(s.gpa);
     }
-    const layout = textLayout(s, n, ct.w + 1, &brushes) orelse return;
+    const layout = textLayout(s, n, paintWidth(ct.w), &brushes) orelse return;
     defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
     // Lines of different heights (a font on some only): each drawn moved
     // to where its own extent puts it (lineShift).
