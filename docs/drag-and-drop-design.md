@@ -233,6 +233,18 @@ now: file-selector, which react-dropzone uses, checks `typeof ... === "function"
 - Add `IDropTargetHelper` (`CLSID_DragDropHelper`) so Explorer's drag image keeps rendering over the window.
 - Note: UIPI blocks drops from non-elevated Explorer into an elevated app.
 - Virtual files (`CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS`, from Outlook) come later.
+- **Done (win32.zig, drop.zig).** OLE is initialized when the first surface is made, and each canvas registers its
+  own target. The target holds only the canvas HWND and looks the surface up on every call, so a window the page
+  closes mid-drag leaves nothing dangling. drop.zig opens files with `CreateFileW` (`GENERIC_READ`, shared
+  read/write/delete, `FILE_FLAG_BACKUP_SEMANTICS`, so a folder opens and is skipped as not regular), takes size and
+  mtime from `GetFileInformationByHandle`, and reads with a positional `ReadFile`. MIME types come from Chromium's
+  common extensions, then the registry's `Content Type`. `HTML Format` gives its fragment. RichEdit fields register
+  their own OLE target and would insert a dropped file's path, so each field's target is revoked; text over a field
+  goes in through the page's drop (dnd.js). Tested with real OLE drags from another process against WebView2: a
+  file gives `types ["Files"]` with its name, size, `text/plain` and `f.text()`; text gives `getData("text/plain")`
+  with effect copy; text over an unhandled textarea is inserted; a file there leaves it empty. One difference is
+  shared: WebView2 fires `drop` on an unhandled textarea for a file, while dnd.js ends that drag with `dragleave`
+  (a field takes only text drags).
 
 **AppKit (phase 2).**
 - `appkit.zig classes()`: add `draggingEntered:`, `draggingUpdated:`, `draggingExited:`, `prepareForDragOperation:`
