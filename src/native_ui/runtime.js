@@ -19076,6 +19076,14 @@ ${a.stack || ""}`;
     for (const [bit, button] of BUTTON_OF_BIT) if (bits & bit) return button;
     return 0;
   }
+  function fireAt(target, ev) {
+    target.dispatchEvent(ev);
+    if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
+      if (ev.target !== target) Object.defineProperty(ev, "target", { value: target, configurable: true });
+      fireWindow(ev);
+    }
+    return ev.defaultPrevented;
+  }
   function pointerEvent(el, data) {
     const [phase, x, y, buttons, pointerId, pointerType, flags] = data;
     const names = POINTER_TYPES[phase];
@@ -19092,14 +19100,7 @@ ${a.stack || ""}`;
     else heldButtons.set(pointerId, buttons);
     lastPointerType = pointerType || "mouse";
     const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button, buttons, ...mods };
-    const fire = (ev) => {
-      target.dispatchEvent(ev);
-      if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
-        if (ev.target !== target) Object.defineProperty(ev, "target", { value: target, configurable: true });
-        fireWindow(ev);
-      }
-      return ev.defaultPrevented;
-    };
+    const fire = (ev) => fireAt(target, ev);
     let prevented = fire(new PointerEvent(names[0], { ...init, pointerId, pointerType, isPrimary: true, pressure: buttons ? 0.5 : 0 }));
     if (phase === "cancel") tapFocus = null;
     if (pointerType === "touch") {
