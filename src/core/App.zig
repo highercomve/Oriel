@@ -380,6 +380,30 @@ pub var current_app_id: ?[:0]const u8 = null;
 pub var current_security: security.Security = .{};
 
 pub var windows_list: std.ArrayList(*Window) = .empty;
+
+/// A theme colour sent before its window was registered: the native
+/// renderer's page boots inside platform.createWindow, before openWindow
+/// adds the window. Applied when it is (one slot; guarded by windows_mutex).
+const PendingTheme = struct {
+    label_buf: [64]u8 = undefined,
+    label_len: usize = 0,
+    color: ?[4]u8,
+    fn label(p: *const PendingTheme) []const u8 {
+        return p.label_buf[0..p.label_len];
+    }
+};
+var pending_theme: ?PendingTheme = null;
+
+/// Keep `color` for window `label`, which isn't registered yet.
+pub fn setPendingThemeColor(label: []const u8, color: ?[4]u8) void {
+    if (label.len > 64) return;
+    var p: PendingTheme = .{ .color = color, .label_len = label.len };
+    @memcpy(p.label_buf[0..label.len], label);
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    defer windows_mutex.unlock();
+    pending_theme = p;
+}
 /// Guards `windows_list`. Never emit (App.emit/emitTo, Window.emit,
 /// platform.evalJs*) while holding it: on the main thread emits evaluate at
 /// once and take this (non-recursive) lock, which would deadlock.
@@ -605,11 +629,16 @@ pub fn openWindow(options: WindowOptions) !*Window {
     errdefer platform.destroyWindow(handle);
     win_inst.handle = handle;
 
-    {
+    const early_theme: ?PendingTheme = blk: {
         windows_mutex.lock();
         defer windows_mutex.unlock();
         windows_list.appendAssumeCapacity(win_inst);
-    }
+        const p = pending_theme orelse break :blk null;
+        if (!std.mem.eql(u8, p.label(), options.label)) break :blk null;
+        pending_theme = null;
+        break :blk p;
+    };
+    if (early_theme) |p| win_inst.setThemeColor(p.color);
 
     if (std.mem.eql(u8, options.label, "main")) {
         if (comptime @hasDecl(platform, "GtkWindow") and platform.GtkWindow != void) {
