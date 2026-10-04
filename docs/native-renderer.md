@@ -490,6 +490,22 @@ and 1.7px are 1px at 1x, and at 3x 1.4px is 1.333px, 2.67px 2.333px and
 none). Chromium (Windows, Android) floors the width itself: a 1px border
 at 2.625 is 0.762, 3px 2.667. clientWidth and clientHeight are whole px.
 
+**UA defaults and controls** (measured against WKWebView on a page of
+forms, flex rows and lists): nested lists have no margins of their own,
+`dd` is indented 40px, a fieldset has both browsers' margin, padding and
+groove border with its legend up in the top border (the border runs along
+the legend's top here, not through its middle), and a grid's
+`align-items` aligns each row's items. macOS (WebKit's html.css there):
+checkboxes and radios 12px with `margin: 3px 2px`, their baseline 2px
+over their bottom (Props.blb); fields sized as WKWebView's
+(apple_draw.fieldSizeMac): a text field `size` widths of its font's "0",
+a textarea `cols` of them and 16px for a scrollbar, a select AppKit's
+pop-up button (its longest option in the 11px system font and 30px, 16px
+tall; 13px and 19px from a 17px font). Not yet: CSS padding on a select
+(WebKit ignores it), inline elements' getBoundingClientRect (none here),
+text widths (a text's measure rounds up a pixel), the baseline of a line
+mixing text and a field (1px).
+
 **Line struts** (render.js lineStrut, shared): a line of only boxes (an
 image, or an inline-block with nothing written in it or overflow other
 than visible: its baseline is its bottom edge) has the block's strut, as
