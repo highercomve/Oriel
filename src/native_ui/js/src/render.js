@@ -34,6 +34,17 @@ html { font-size: 16px; color: black; }
 body { margin: 8px; }
 p, ul, ol, dl, blockquote, pre, figure { margin-top: 1em; margin-bottom: 1em; }
 ul, ol { padding-left: 40px; }
+/* As both browsers' UA sheets: a list in a list has no margins of its own,
+   a definition is indented. */
+ul ul, ul ol, ol ul, ol ol, ul dl, ol dl, dl ul, dl ol { margin-top: 0; margin-bottom: 0; }
+dd { margin-left: 40px; }
+/* A fieldset's box, as both browsers'. Its legend sits in the top border
+   (browsers draw the border through its middle; here the legend overlaps
+   the top padding and border, as wide as its text), the padding below it.
+   (No :first-child here: a structural selector in the UA sheet would make
+   every text edit restyle.) */
+fieldset { margin: 0 2px; padding: .35em .75em .625em; border: 2px groove #c0c0c0; }
+fieldset > legend { display: block; width: fit-content; padding: 0 2px; margin-top: calc(-.35em - 2px); margin-bottom: .35em; }
 h1 { font-size: 2em; margin: .67em 0; font-weight: bold; }
 h2 { font-size: 1.5em; margin: .83em 0; font-weight: bold; }
 h3 { font-size: 1.17em; margin: 1em 0; font-weight: bold; }
@@ -78,9 +89,11 @@ col, colgroup { display: none; }
 // (measured against WKWebView: an input 19 tall on macOS, a textarea 32).
 // macOS's buttons (WebKit's html.css there: 2px 6px 3px, a ButtonFace
 // border), their background marked for pushButton (WKWebView's push button
-// while the page keeps it).
+// while the page keeps it); checkboxes and radios 12px, 3px 2px round
+// (measured).
 export const UA_CSS_MAC = `
 button { padding: 2px 6px 3px; background: rgba(239, 239, 239, 0.9999); border-color: rgb(192, 192, 192); border-radius: 0; }
+input[type="checkbox"], input[type="radio"] { width: 12px; height: 12px; margin: 3px 2px; }
 `;
 
 export const UA_CSS_WEBKIT = `
@@ -1416,6 +1429,10 @@ export class Renderer {
         const app = cs.appearance || cs["-webkit-appearance"];
         if (app !== "none") {
           props.ctl = type;
+          // WebKit's on macOS: its baseline 2px over its bottom (measured:
+          // a 12px box in a 14px system-ui line, its top 4px down, the
+          // line 19px with its 3px margins).
+          if (pushButtons) props.blb = 2;
           if (el.hasAttribute("checked")) props.on = true;
           const acc = color(cs["accent-color"] || "");
           if (acc) props.acc = acc;
@@ -3070,6 +3087,10 @@ function minmaxMin(track) {
 // display: grid → rows of flex items (the column count from the template
 // and, for auto-fit, the container's last width).
 function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
+  // The grid's align-items, for each row (a label centered beside a
+  // taller textarea, as browsers align grid items in their row).
+  const ALIGN = { center: "center", start: "flex-start", "flex-start": "flex-start", "self-start": "flex-start", end: "flex-end", "flex-end": "flex-end", "self-end": "flex-end", baseline: "baseline", "first baseline": "baseline" };
+  const rowAlign = props.ai === "center" ? "center" : ALIGN[cs["align-items"]] || "stretch";
   const tpl = cs["grid-template-columns"];
   if (!tpl || tpl === "none") return; // one column: a flex column with gaps
   let cols = [];
@@ -3119,7 +3140,7 @@ function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
       renderer.put0(nodes, filler, { kind: "view", props: { fg: 1, fb: 0 }, kids: [] });
       rowKids.push(filler);
     }
-    renderer.put0(nodes, rowId, { kind: "view", props: { fd: "row", ai: props.ai === "center" ? "center" : "stretch", cg: props.cg, ...(props.cg ? {} : {}) }, kids: rowKids });
+    renderer.put0(nodes, rowId, { kind: "view", props: { fd: "row", ai: rowAlign, cg: props.cg, ...(props.cg ? {} : {}) }, kids: rowKids });
     rows.push(rowId);
   }
   props.fd = "column";
