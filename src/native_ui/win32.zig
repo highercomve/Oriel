@@ -399,6 +399,7 @@ pub const Surface = struct {
             .font_metrics = fontMetrics,
             .font_metrics_family = fontMetricsFamily,
             .run_rects = runRects,
+            .font_x_height = fontXHeight,
             .invoke = invoke,
             .focus = focus,
             .selection = selection,
@@ -2862,13 +2863,13 @@ fn installed(family: [:0]const u16) bool {
     return coll.?.lpVtbl.*.FindFamilyName.?(coll, family.ptr, &index, &exists) >= 0 and exists != 0;
 }
 
-/// A face's ascent, descent and line gap per em, unhinted (its font
+/// A face's ascent, descent, line gap and x-height per em, unhinted (its font
 /// tables, as DirectWrite's DWRITE_FONT_METRICS has them), cached by
 /// family, weight and italic; null when DirectWrite can't say (remembered
 /// too: a missing face isn't asked for again on every layout).
-var font_ratios: std.AutoHashMapUnmanaged(u64, ?[3]f32) = .empty;
+var font_ratios: std.AutoHashMapUnmanaged(u64, ?[4]f32) = .empty;
 
-fn fontRatios(family: [:0]const u16, weight: f32, italic: bool) ?[3]f32 {
+fn fontRatios(family: [:0]const u16, weight: f32, italic: bool) ?[4]f32 {
     const w: u32 = @intFromFloat(@max(1, @min(999, weight)));
     const key: u64 = std.hash.Wyhash.hash(w | (@as(u64, @intFromBool(italic)) << 10), std.mem.sliceAsBytes(family));
     if (font_ratios.get(key)) |v| return v;
@@ -2877,7 +2878,7 @@ fn fontRatios(family: [:0]const u16, weight: f32, italic: bool) ?[3]f32 {
     return v;
 }
 
-fn queryRatios(name: [:0]const u16, w: u32, italic: bool) ?[3]f32 {
+fn queryRatios(name: [:0]const u16, w: u32, italic: bool) ?[4]f32 {
     const dw = dwrite orelse return null;
     var coll: ?*c.IDWriteFontCollection = null;
     if (dw.lpVtbl.*.GetSystemFontCollection.?(dw, &coll, c.FALSE) < 0 or coll == null) return null;
@@ -2895,7 +2896,7 @@ fn queryRatios(name: [:0]const u16, w: u32, italic: bool) ?[3]f32 {
     font.?.lpVtbl.*.GetMetrics.?(font, &fm);
     if (fm.designUnitsPerEm == 0) return null;
     const em: f32 = @floatFromInt(fm.designUnitsPerEm);
-    return .{ @as(f32, @floatFromInt(fm.ascent)) / em, @as(f32, @floatFromInt(fm.descent)) / em, @as(f32, @floatFromInt(fm.lineGap)) / em };
+    return .{ @as(f32, @floatFromInt(fm.ascent)) / em, @as(f32, @floatFromInt(fm.descent)) / em, @as(f32, @floatFromInt(fm.lineGap)) / em, @as(f32, @floatFromInt(fm.xHeight)) / em };
 }
 
 /// A face's widths per em, as Chromium sizes a text field by them: its
@@ -3006,6 +3007,15 @@ fn fontMetricsFamily(_: *anyopaque, size: f32, mono: bool, family: []const u8, o
     const r = fontRatios(familyOf(family, mono), 400, false) orelse return false;
     out.* = .{ r[0] * size, r[1] * size, r[2] * size };
     return true;
+}
+
+/// Backend.font_x_height: that font's x-height in px (vertical-align:
+/// middle), DWRITE_FONT_METRICS.xHeight per em times the size.
+fn fontXHeight(_: *anyopaque, size: f32, mono: bool, family: []const u8) ?f32 {
+    if (!(size > 0) or !std.math.isFinite(size)) return null;
+    const r = fontRatios(familyOf(family, mono), 400, false) orelse return null;
+    if (!(r[3] > 0)) return null;
+    return r[3] * size;
 }
 
 /// The run a line's box is made from: the largest (its font sets
