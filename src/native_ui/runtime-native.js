@@ -4104,6 +4104,8 @@ input[type="range"] { height: 20px; margin: 2px; }
       this.sc = internalWeak3(/* @__PURE__ */ new WeakMap());
       this.fc = internalWeak3(/* @__PURE__ */ new WeakMap());
       this.parentOf = nodeIndex ? NO_PARENTS : internalWeak3(/* @__PURE__ */ new WeakMap());
+      this.spans = internalWeak3(/* @__PURE__ */ new WeakMap());
+      this.runOwner = internalWeak3(/* @__PURE__ */ new WeakMap());
       this.volatile = /* @__PURE__ */ new Set();
       this.shared = internalWeak3(/* @__PURE__ */ new WeakMap());
       this.cascades = /* @__PURE__ */ new Map();
@@ -5292,6 +5294,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns && !(props.scroll || props.scrollx || props.clip)) {
         Object.assign(props, textProps(cs, fontSize));
         props.runs = flow[0].text;
+        this.ownRuns(id, props.runs);
         this.putClick(props, el);
         return this.put(nodes, id, "text", props, [], fixedNode);
       }
@@ -5345,6 +5348,7 @@ input[type="range"] { height: 20px; margin: 2px; }
           const tid = this.idOf(el, "t" + kids.length);
           this.own(tid, el);
           const tp = { ...textProps(cs, fontSize), runs: item.text };
+          this.ownRuns(tid, item.text);
           if (transitions) this.spec(tid, transitions);
           tp.fs = (childCtx.blockify || inlineLine) && !props.scroll ? 1 : 0;
           this.put(nodes, tid, "text", tp, []);
@@ -5604,6 +5608,30 @@ input[type="range"] { height: 20px; margin: 2px; }
     }
     // `outerBg`: an enclosing inline element's background (it covers the
     // text of the inline elements inside it too).
+    // The text node `id` holds `runs` (for inlineRects).
+    ownRuns(id, runs) {
+      const owner = { id, runs };
+      for (const r of runs) this.runOwner.set(r, owner);
+    }
+    // An inline element's text as [text node id, first run, last run] per
+    // text node it is in (a <span> amid a paragraph: one); null when it made
+    // no runs (not rendered, or not inline). Its runs dropped as collapsed
+    // white space aren't in it.
+    inlineSpans(el) {
+      const span = this.spans.get(el);
+      if (!span) return null;
+      const out = [];
+      for (const r of span) {
+        const o = this.runOwner.get(r);
+        if (!o) continue;
+        const i = o.runs.indexOf(r);
+        if (i < 0) continue;
+        const last = out[out.length - 1];
+        if (last && last[0] === o.id && last[2] === i - 1) last[2] = i;
+        else out.push([o.id, i, i]);
+      }
+      return out.length ? out : null;
+    }
     inlineRuns(el, parentCS, parentFs, runs, rematch = false, outerBg = void 0) {
       if (SKIP2.has(el.localName)) return;
       const cs = this.style(el, parentCS, rematch);
@@ -5622,6 +5650,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el, bg));
         else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper, bg);
       }
+      this.spans.set(el, runs.slice(first));
       if (boxedInline(cs) && runs.length > first) {
         const ownBg = cs.background ? background(cs.background, color(cs.color))?.color : void 0;
         const ib = inlineBox(el, cs, fs, ownBg);
@@ -8047,8 +8076,30 @@ ${a.stack || ""}`;
   var frameOf = (el) => {
     if (!renderer) return [0, 0, 0, 0];
     if (!renderer.rendering) renderer.render();
-    return host.frame(renderer.idOf(el, "el")) || [0, 0, 0, 0];
+    const f = host.frame(renderer.idOf(el, "el"));
+    if (f) return f;
+    const rects = inlineRects(el);
+    if (!rects?.length) return [0, 0, 0, 0];
+    const x0 = Math.min(...rects.map((r) => r[0])), y0 = Math.min(...rects.map((r) => r[1]));
+    const x1 = Math.max(...rects.map((r) => r[0] + r[2])), y1 = Math.max(...rects.map((r) => r[1] + r[3]));
+    return [x0, y0, x1 - x0, y1 - y0];
   };
+  function inlineRects(el) {
+    const spans = renderer?.inlineSpans?.(el);
+    if (!spans) return null;
+    const out = [];
+    for (const [id, first, last] of spans) {
+      const rects = typeof host.runRects === "function" ? host.runRects(id, first, last) : void 0;
+      if (rects) {
+        out.push(...rects);
+        continue;
+      }
+      const f = host.frame(id);
+      if (f) out.push([f[0], f[1], f[2], f[3]]);
+    }
+    return out;
+  }
+  var rectOf = ([x, y, w, h]) => ({ x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h });
   function borderOf(el) {
     const cs = renderer?.styleOf?.(el);
     if (!cs) return [0, 0, 0, 0];
@@ -8145,8 +8196,15 @@ ${a.stack || ""}`;
     this.scrollTo({ top: this.scrollTop + (+top || 0), left: this.scrollLeft + (+left || 0) });
   };
   elProto.getBoundingClientRect = function() {
-    const [x, y, w, h] = frameOf(this);
-    return { x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h };
+    return rectOf(frameOf(this));
+  };
+  elProto.getClientRects = function() {
+    if (!renderer) return [];
+    if (!renderer.rendering) renderer.render();
+    const f = host.frame(renderer.idOf(this, "el"));
+    const list = (f ? [f] : inlineRects(this) || []).map(rectOf);
+    list.item = (i) => list[i] ?? null;
+    return list;
   };
   elProto.focus = function() {
     document.__active = this;
