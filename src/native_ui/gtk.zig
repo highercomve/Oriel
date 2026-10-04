@@ -189,6 +189,8 @@ extern fn cairo_get_matrix(cr: *cairo_t, m: *CairoMatrix) void;
 extern fn cairo_set_matrix(cr: *cairo_t, m: *const CairoMatrix) void;
 const CairoMatrix = extern struct { xx: f64, yx: f64, xy: f64, yy: f64, x0: f64, y0: f64 };
 
+extern fn pango_layout_new(ctx: *anyopaque) ?*PangoLayout;
+extern fn pango_layout_get_extents(l: *PangoLayout, ink: ?*PangoRectangle, logical: ?*PangoRectangle) void;
 extern fn pango_layout_set_text(l: *PangoLayout, t: [*]const u8, len: c_int) void;
 extern fn pango_layout_set_attributes(l: *PangoLayout, attrs: ?*PangoAttrList) void;
 extern fn pango_layout_set_width(l: *PangoLayout, w: c_int) void;
@@ -393,6 +395,7 @@ pub const Surface = struct {
             .font_metrics = fontMetrics,
         .font_metrics_family = fontMetricsFamily,
         .run_rects = runRects,
+        .font_x_height = fontXHeight,
         }, assets, look orelse platform_json, label, url, width, height);
         s.engine.tree.reuse_text_layout = true;
         s.engine.tree.fields_sized = true;
@@ -747,6 +750,22 @@ fn unhintedMetrics(s: *Surface, size: f32, mono: bool, family: ?[]const u8) ?[4]
     if (s.font_metrics.count() >= 256) s.font_metrics.clearRetainingCapacity();
     s.font_metrics.put(s.gpa, key, out) catch {};
     return out;
+}
+
+/// Backend.font_x_height (vertical-align: middle): the ink height of "x"
+/// in that font, unhinted.
+fn fontXHeight(ctx: *anyopaque, size: f32, mono: bool, family: []const u8) ?f32 {
+    const s = surfaceOf(ctx);
+    _ = unhintedMetrics(s, size, mono, family) orelse return null; // makes metrics_ctx
+    const mctx = s.metrics_ctx orelse return null;
+    const layout = pango_layout_new(mctx) orelse return null;
+    defer g_object_unref(layout);
+    pango_layout_set_font_description(layout, fontDesc(s, size, mono, family));
+    pango_layout_set_text(layout, "x", 1);
+    var ink: PangoRectangle = .{};
+    pango_layout_get_extents(layout, &ink, null);
+    if (ink.height <= 0) return null;
+    return @as(f32, @floatFromInt(ink.height)) / PANGO_SCALE;
 }
 
 /// The height of a line of this text, as CSS stacks its inline boxes on
