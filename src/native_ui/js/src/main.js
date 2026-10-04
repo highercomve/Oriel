@@ -1085,6 +1085,16 @@ let lastPointer = [0, 0]; // the last pointer event's clientX/Y (a click's)
 const POINTER_TYPES = { down: ["pointerdown", "mousedown", "touchstart"], move: ["pointermove", "mousemove", "touchmove"], up: ["pointerup", "mouseup", "touchend"], cancel: ["pointercancel", null, "touchcancel"] };
 // Types the document already forwards to the window (above).
 const FORWARDED = new Set(["mousedown", "mouseup", "pointerdown", "pointerup"]);
+// The buttons each pointer held after its last event: a press or release
+// changes one bit, which is the event's `button` (backends send only buttons).
+const heldButtons = new Map(); // pointerId → buttons
+let lastPointerType = "mouse";
+// `buttons` bit → MouseEvent.button: primary 0, secondary 2, auxiliary 1, back 3, forward 4.
+const BUTTON_OF_BIT = [[1, 0], [2, 2], [4, 1], [8, 3], [16, 4]];
+function changedButton(bits) {
+  for (const [bit, button] of BUTTON_OF_BIT) if (bits & bit) return button;
+  return 0;
+}
 
 function pointerEvent(el, data) {
   const [phase, x, y, buttons, pointerId, pointerType, flags] = data;
@@ -1096,7 +1106,12 @@ function pointerEvent(el, data) {
   if (phase === "down") captured.set(pointerId, target);
   else if (phase === "up" || phase === "cancel") captured.delete(pointerId);
   const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
-  const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button: phase === "move" ? -1 : 0, buttons, ...mods };
+  const held = heldButtons.get(pointerId) || 0;
+  const button = phase === "move" ? -1 : changedButton(phase === "down" ? buttons & ~held : held & ~buttons);
+  if (phase === "up" || phase === "cancel") heldButtons.delete(pointerId);
+  else heldButtons.set(pointerId, buttons);
+  lastPointerType = pointerType || "mouse";
+  const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button, buttons, ...mods };
   const fire = (ev) => {
     target.dispatchEvent(ev);
     if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
@@ -1113,7 +1128,12 @@ function pointerEvent(el, data) {
     const touch = { identifier: pointerId, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: 0.5 };
     const on = phase === "down" || phase === "move" ? [touch] : [];
     if (fire(new TouchEvent(names[2], { bubbles: true, cancelable: phase !== "cancel", touches: on, targetTouches: on, changedTouches: [touch], ...mods }))) prevented = true;
-  } else if (names[1] && fire(new MouseEvent(names[1], { ...init, button: 0 }))) prevented = true;
+  } else {
+    if (names[1] && fire(new MouseEvent(names[1], { ...init, button: Math.max(button, 0) }))) prevented = true;
+    // A non-primary button's release: auxclick (the primary's click comes
+    // from the backend as "click").
+    if (phase === "up" && button > 0) fire(new MouseEvent("auxclick", { ...init, cancelable: true }));
+  }
   if (phase === "down" && !prevented) {
     if (pointerType === "touch") tapFocus = target;
     else { tapFocus = null; pressFocus(target); }
@@ -1167,7 +1187,7 @@ function hoverEvents(from, to) {
 // browser has them for every event. React checks for them to tell whether
 // the `input` event exists, and without them falls back to an old-IE path
 // that never sees a field's input (onChange never ran).
-const HANDLER_EVENTS = ("abort animationend beforeinput blur change click contextmenu dblclick error focus focusin focusout " +
+const HANDLER_EVENTS = ("abort animationend auxclick beforeinput blur change click contextmenu dblclick error focus focusin focusout " +
   "input invalid keydown keypress keyup load mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup " +
   "pointercancel pointerdown pointermove pointerup reset resize scroll select submit toggle touchcancel touchend " +
   "touchmove touchstart transitionend wheel").split(" ");
@@ -1558,7 +1578,9 @@ const oriel = {
         case "focus": if (el) document.__active = el; return false;
         case "blur": if (el && document.__active === el) document.__active = null; return false;
         case "contextmenu": {
-          const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1] });
+          // From a mouse: the secondary button (a touch's long press has none).
+          const mouse = lastPointerType !== "touch";
+          const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1], button: mouse ? 2 : 0, buttons: mouse ? 2 : 0 });
           const on = el || document.body;
           on.dispatchEvent(ev);
           // The window's listeners see the element (as pointerEvent's fire).

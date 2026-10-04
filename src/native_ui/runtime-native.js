@@ -7975,6 +7975,13 @@ ${a.stack || ""}`;
   var lastPointer = [0, 0];
   var POINTER_TYPES = { down: ["pointerdown", "mousedown", "touchstart"], move: ["pointermove", "mousemove", "touchmove"], up: ["pointerup", "mouseup", "touchend"], cancel: ["pointercancel", null, "touchcancel"] };
   var FORWARDED = /* @__PURE__ */ new Set(["mousedown", "mouseup", "pointerdown", "pointerup"]);
+  var heldButtons = /* @__PURE__ */ new Map();
+  var lastPointerType = "mouse";
+  var BUTTON_OF_BIT = [[1, 0], [2, 2], [4, 1], [8, 3], [16, 4]];
+  function changedButton(bits) {
+    for (const [bit, button] of BUTTON_OF_BIT) if (bits & bit) return button;
+    return 0;
+  }
   function pointerEvent(el, data) {
     const [phase, x, y, buttons, pointerId, pointerType, flags] = data;
     const names = POINTER_TYPES[phase];
@@ -7985,7 +7992,12 @@ ${a.stack || ""}`;
     if (phase === "down") captured.set(pointerId, target);
     else if (phase === "up" || phase === "cancel") captured.delete(pointerId);
     const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
-    const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button: phase === "move" ? -1 : 0, buttons, ...mods };
+    const held = heldButtons.get(pointerId) || 0;
+    const button = phase === "move" ? -1 : changedButton(phase === "down" ? buttons & ~held : held & ~buttons);
+    if (phase === "up" || phase === "cancel") heldButtons.delete(pointerId);
+    else heldButtons.set(pointerId, buttons);
+    lastPointerType = pointerType || "mouse";
+    const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button, buttons, ...mods };
     const fire = (ev) => {
       target.dispatchEvent(ev);
       if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
@@ -8000,7 +8012,10 @@ ${a.stack || ""}`;
       const touch = { identifier: pointerId, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: 0.5 };
       const on = phase === "down" || phase === "move" ? [touch] : [];
       if (fire(new TouchEvent(names[2], { bubbles: true, cancelable: phase !== "cancel", touches: on, targetTouches: on, changedTouches: [touch], ...mods }))) prevented = true;
-    } else if (names[1] && fire(new MouseEvent(names[1], { ...init, button: 0 }))) prevented = true;
+    } else {
+      if (names[1] && fire(new MouseEvent(names[1], { ...init, button: Math.max(button, 0) }))) prevented = true;
+      if (phase === "up" && button > 0) fire(new MouseEvent("auxclick", { ...init, cancelable: true }));
+    }
     if (phase === "down" && !prevented) {
       if (pointerType === "touch") tapFocus = target;
       else {
@@ -8051,7 +8066,7 @@ ${a.stack || ""}`;
       for (const n2 of [...toChain].reverse()) if (!fromChain.includes(n2)) fire(n2, prefix + "enter", false, from);
     }
   }
-  var HANDLER_EVENTS = "abort animationend beforeinput blur change click contextmenu dblclick error focus focusin focusout input invalid keydown keypress keyup load mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup pointercancel pointerdown pointermove pointerup reset resize scroll select submit toggle touchcancel touchend touchmove touchstart transitionend wheel".split(" ");
+  var HANDLER_EVENTS = "abort animationend auxclick beforeinput blur change click contextmenu dblclick error focus focusin focusout input invalid keydown keypress keyup load mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup pointercancel pointerdown pointermove pointerup reset resize scroll select submit toggle touchcancel touchend touchmove touchstart transitionend wheel".split(" ");
   for (const proto of [elProto, Object.getPrototypeOf(document)]) {
     for (const type of HANDLER_EVENTS) {
       if (Object.getOwnPropertyDescriptor(proto, "on" + type)) continue;
@@ -8469,7 +8484,8 @@ ${a.stack || ""}`;
             if (el && document.__active === el) document.__active = null;
             return false;
           case "contextmenu": {
-            const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1] });
+            const mouse = lastPointerType !== "touch";
+            const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1], button: mouse ? 2 : 0, buttons: mouse ? 2 : 0 });
             const on = el || document.body;
             on.dispatchEvent(ev);
             if (ev.target !== on) Object.defineProperty(ev, "target", { value: on, configurable: true });
