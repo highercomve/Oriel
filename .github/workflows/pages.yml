@@ -7,6 +7,8 @@ on:
       - 'site/**'
       - 'zine.ziggy'
       - '.github/workflows/pages.yml'
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -28,7 +30,7 @@ jobs:
           echo "/tmp" >> $GITHUB_PATH
 
       - name: Read the version from GitHub's latest release
-        run: ./scripts/site-version.sh
+        run: ./scripts/site-version.sh "${{ github.event.release.tag_name || '' }}"
 
       - name: Build site
         run: zine release

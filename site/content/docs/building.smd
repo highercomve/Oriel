@@ -220,8 +220,10 @@ The same Zig and web code builds for phones: `oriel android build --apk --aab` w
 
 ```sh
 oriel android init                 # android/: the Gradle project, generated from build.zig
-oriel android build --apk --aab    # release APK and AAB (arm64-v8a and x86_64)
-oriel ios build                    # zig-out/ios/<Name>.app
+oriel android build --apk --aab -Dnative_ui  # native UI release APK and AAB
+oriel ios build -Dnative_ui                  # native UI app bundle
+oriel ios build                              # zig-out/ios/<Name>.app
+# dev and build accept Zig -D options, e.g. -Doptimize=ReleaseFast
 ```
 
 See [Android and iOS]($link.page('docs/mobile')) for the full workflow (debug runs on a device, installing, what reuses or stands in for the desktop modules, and what was verified on which devices).

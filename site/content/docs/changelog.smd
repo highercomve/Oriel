@@ -1,0 +1,47 @@
+---
+.title = "Changelog",
+.description = "Release notes for Oriel 0.8.0.",
+.date = .date("2026-10-04T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+# Oriel 0.8.0 · October 4, 2026
+
+Oriel 0.8.0 introduces the optional, experimental native UI renderer alongside
+the default system WebView. The same app HTML, CSS and JavaScript run in
+QuickJS and draw through Oriel's native platform backends.
+
+## Added
+
+- Build with `-Dnative_ui` on Linux, Windows, macOS, Android and iOS.
+- `oriel android dev/build` and `oriel ios dev/build` forward Zig `-D` options.
+  For example: `oriel android build --abi arm64 --apk -Dnative_ui
+  -Doptimize=ReleaseFast`.
+- Android projects for the Breakout, Canvas Demo and render-bench examples.
+- Power sampling instructions and support for Android battery readings and
+  Linux battery or RAPL counters.
+
+## Improved
+
+- Android suspends native animation frames while a window is hidden and resumes
+  them when it becomes visible.
+- Android text metrics, controls, scrolling, input and slider endpoints more
+  closely match the platform WebView.
+- Native canvas recording and transform updates do less per-frame work.
+- Inline text, SVG styling, line layout, gradients and DOM cleanup have been
+  improved across platform backends.
+- Breakout bounds long-running ball speed, and its Zig mode applies the ball
+  count selected in Settings.
+
+## Performance notes
+
+The Android x86_64 emulator completed the render bench at about 60 fps for
+animation and canvas workloads. This validates that build; it is not an
+Android before/after comparison and does not measure battery savings. The
+desktop QuickJS dispatch changes reduced isolated callback overhead, while
+the full desktop comparison showed no clear overall speedup. See the
+[benchmark results](https://github.com/highercomve/Oriel/tree/main/examples/render-bench/results).
+
+The native renderer remains experimental and supports a subset of browser
+HTML, CSS and APIs. The default WebView build remains available.

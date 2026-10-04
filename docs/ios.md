@@ -35,10 +35,14 @@ Mac, or xtool's in `~/.swiftpm/swift-sdks/darwin.artifactbundle` on Linux):
 
 ```sh
 oriel ios setup                   # set up the SDK and xtool (below)
-oriel ios build [--simulator] [--ipa]
-oriel ios dev [--simulator] [--url http://192.168.1.20:5173/]
+oriel ios build [--simulator] [--ipa] [-Doption[=value]...]
+oriel ios dev [--simulator] [--url http://192.168.1.20:5173/] [-Doption[=value]...]
 oriel ios install [--simulator] [--dev]
 ```
+
+`oriel ios dev/build` forward Zig build options such as `-Dnative_ui` and
+`-Doptimize=ReleaseFast`. The native UI is experimental; the default remains
+the platform webview.
 
 When something is missing, the commands offer to set it up and ask first
 (Enter accepts, `--yes` accepts without asking; without a terminal nothing

@@ -84,7 +84,10 @@ adb logcat -s Oriel chromium       # logs
 
 `oriel android dev/build` forward Zig `-D` options, for example
 `oriel android dev --abi arm64 -Dnative_ui` or
-`oriel android build --abi arm64 --apk -Dnative_ui -Dggml_vulkan`.
+`oriel android build --abi arm64 --apk -Dnative_ui -Doptimize=ReleaseFast`.
+The native UI APK uses the same app sources, rendered by QuickJS and Oriel's
+native view layer. It remains experimental and implements a subset of browser
+HTML and CSS; see [Native renderer](native-renderer.md).
 Explicit options such as `-Doptimize=ReleaseFast` replace the defaults.
 
 `oriel android dev` builds `zig-out/jniLibs/<abi>/liboriel.so`, installs a
