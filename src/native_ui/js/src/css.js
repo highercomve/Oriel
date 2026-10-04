@@ -492,8 +492,11 @@ export class StyleEngine {
   // native one keeps a sheet's parsed rules for the process: a second
   // window doesn't parse and index them again; and finds the ones the app
   // was built with, by the sheet's asset `path`: tools/qjs_modules.zig).
-  addSheet(css, cache, path, owner = null) {
+  // `ua`: the user agent's sheet, which every page rule overrides whatever
+  // its specificity (the cascade's origins).
+  addSheet(css, cache, path, owner = null, ua = false) {
     const sheet = StyleEngine.parsed(css, cache, path, owner);
+    sheet.ua = ua;
     this.sheets.push(sheet);
     this.indexSheet(sheet);
   }
@@ -539,6 +542,7 @@ export class StyleEngine {
     Object.assign(this.keyframes, sheet.keyframes);
     for (const r of sheet.rules) {
       r.order = this.order++;
+      r.ua = !!sheet.ua;
       this.rules.push(r);
       if (r.key[0] === "any") this.index.any.push(r);
       else push(this.index[r.key[0]], r.key[1], r);
@@ -608,9 +612,10 @@ export class StyleEngine {
     return Object.assign(normal, important);
   }
 
-  // Rules in cascade order: specificity, then source order.
+  // Rules in cascade order: the user agent's before the page's (origin),
+  // then specificity, then source order.
   static sorted(rules) {
-    return rules.slice().sort((x, y) => cmpSpec(x.spec, y.spec) || x.order - y.order);
+    return rules.slice().sort((x, y) => (y.ua ? 1 : 0) - (x.ua ? 1 : 0) || cmpSpec(x.spec, y.spec) || x.order - y.order);
   }
 
   // Declarations → longhands, into `normal` or (!important) `important`.
