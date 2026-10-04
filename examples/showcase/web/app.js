@@ -120,8 +120,9 @@ $("paste").addEventListener("click", () => show("sys-out", async () => `Clipboar
 $("notify").addEventListener("click", () => show("sys-out", async () => {
   if ((await window.oriel.permissions.request("notifications")) !== "granted") throw new Error("notifications aren't allowed");
   await invoke("notify", { text: "Hello from Zig" });
-  return "✓ Notification sent";
+  return "✓ Notification sent: click it or a button";
 }));
+listen("notification:action", (n) => setResult("sys-out", `✓ Notification ${n.id}: ${n.action ?? "clicked"}`, "ok"));
 
 function setupAnywhere() {
   if (!info.anywhere) return;

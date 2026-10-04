@@ -9,6 +9,9 @@ const target = @import("../core/target.zig");
 pub const common = @import("notification/common.zig");
 
 pub const NotificationOptions = common.NotificationOptions;
+pub const Action = common.Action;
+pub const ActionHandler = common.ActionHandler;
+pub const onAction = common.onAction;
 pub const notify = impl.notify;
 pub const check = impl.check;
 

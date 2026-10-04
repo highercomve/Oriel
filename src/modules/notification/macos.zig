@@ -9,13 +9,19 @@
 //! raises an Objective-C exception without a bundle identifier, so the
 //! notification goes through `osascript` ("display notification") instead;
 //! macOS attributes it to Script Editor. Title and body are passed as
-//! arguments, never as script text.
+//! arguments, never as script text. Clicks and buttons are reported only for
+//! the bundled app (osascript notifications open Script Editor).
 
 const std = @import("std");
 const cocoa = @import("../../platform/macos/cocoa.zig");
 const ShellMod = @import("../../platform/macos/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const Actions = @import("apple.zig").Actions(cocoa, complete, .{});
+
+fn complete(handler: cocoa.id) void {
+    cocoa.callBlock(handler, struct {}, .{});
+}
 
 const Object = cocoa.Object;
 const c = std.c;
@@ -65,6 +71,7 @@ fn notifyBundled(params: *Params) void {
         params.err = error.NotificationCenterUnavailable;
         return;
     }
+    Actions.installDelegate(center);
     if (!authorization_requested) {
         authorization_requested = true;
         const UNAuthorizationOptionSound: c_ulong = 1 << 1;
@@ -85,6 +92,10 @@ fn notifyBundled(params: *Params) void {
     if (params.options.body) |b| if (cocoa.nsString(b)) |body| {
         defer body.release();
         content.msgSend(void, "setBody:", .{body});
+    };
+    Actions.apply(center, content, params.options) catch |err| {
+        params.err = err;
+        return;
     };
 
     var id_buf: [32]u8 = undefined;

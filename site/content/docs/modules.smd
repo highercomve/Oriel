@@ -160,7 +160,33 @@ try oriel.notification.notify(.{
 });
 ```
 
-**Platform support:** Linux (`GNotification`) · Windows (balloon tooltips) · macOS (`UNUserNotificationCenter` in an `.app`; `osascript` fallback when unbundled).
+Clicks and buttons: give the notification an `id` and `actions`, then handle
+clicks in Zig with `onAction` or in the page with the `notification:action`
+event. `action` is the button's id, or null when the notification itself was
+clicked; `id` is the notification's id (`""` when it had none).
+
+```zig
+oriel.notification.onAction(struct {
+    fn f(id: []const u8, action: ?[]const u8) void {
+        std.log.info("notification {s}: {s}", .{ id, action orelse "clicked" });
+    }
+}.f);
+
+try oriel.notification.notify(.{
+    .id = "export-42",
+    .title = "Export ready",
+    .body = "notes.pdf was saved.",
+    .actions = &.{ .{ .id = "open", .label = "Open" }, .{ .id = "show", .label = "Show in folder" } },
+});
+```
+
+```js
+listen("notification:action", ({ id, action }) => { /* action === null: the notification was clicked */ });
+```
+
+Buttons show on Linux, macOS (`.app` bundles), iOS and Android (at most 3). Windows balloons report a click on the balloon but have no buttons; the unbundled macOS `osascript` fallback reports nothing.
+
+**Platform support:** Linux (`GNotification`) · Windows (balloon tooltips) · macOS (`UNUserNotificationCenter` in an `.app`; `osascript` fallback when unbundled) · Android · iOS.
 
 # Settings store
 

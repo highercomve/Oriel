@@ -42,6 +42,8 @@ object OrielRuntime {
     private const val LAUNCH_PENDING_MS = 5000L
     private const val TAG = "Oriel"
     const val EXTRA_WINDOW = "dev.oriel.window"
+    const val EXTRA_NOTIFICATION = "dev.oriel.notification"
+    const val EXTRA_NOTIFICATION_CODE = "dev.oriel.notification.code"
     const val EXTRA_ARGS = "dev.oriel.args"
     private const val CHANNEL = "oriel"
 
@@ -72,13 +74,18 @@ object OrielRuntime {
         val args = argsOf(intent)
         when (NativeLib.start(app.filesDir.path.bytes(), app.cacheDir.path.bytes(), (app.getExternalFilesDir(null)?.path ?: "").bytes(), args)) {
             1 -> Log.i(TAG, "started")
-            2 -> if (args.isNotEmpty()) NativeLib.onNewIntent(args)
+            2 -> {
+                if (args.isNotEmpty()) NativeLib.onNewIntent(args)
+                notificationTap(intent)
+            }
             else -> Log.e(TAG, "liboriel.so failed to start (see the log above)")
         }
     }
 
     internal fun onActivityNewIntent(activity: OrielActivity, intent: Intent) {
-        if (activity !is OrielWindowActivity) NativeLib.onNewIntent(argsOf(intent))
+        if (activity is OrielWindowActivity) return
+        NativeLib.onNewIntent(argsOf(intent))
+        notificationTap(intent)
     }
 
     internal fun onActivityDestroyed(activity: OrielActivity) {
@@ -540,23 +547,56 @@ object OrielRuntime {
     @JvmStatic
     fun notificationsEnabled(): Boolean = notificationManager().areNotificationsEnabled()
 
+    /**
+     * A tap opens the app and sends the system event "notification" with
+     * "\u001f<id>"; a button ([actions]: "id\tlabel" lines) sends
+     * "<action>\u001f<id>" without opening it (src/modules/notification/common.zig).
+     */
     @JvmStatic
-    fun notify(id: ByteArray?, title: ByteArray, body: ByteArray?): Boolean {
+    fun notify(id: ByteArray?, title: ByteArray, body: ByteArray?, actions: ByteArray?): Boolean {
         val nm = notificationManager()
         if (!nm.areNotificationsEnabled()) return false
+        val tag = id?.utf8()
+        val code = if (tag == null) (System.currentTimeMillis() and 0x7fffffff).toInt() else 1
+        val key = tag ?: ""
+        // Request codes keep each notification's PendingIntents (and extras) apart.
+        val base = 31 * key.hashCode() + code
+        val open = Intent(app, OrielMainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra(EXTRA_NOTIFICATION, key)
         val builder = android.app.Notification.Builder(app, CHANNEL)
             .setSmallIcon(notificationIcon())
             .setContentTitle(title.utf8())
-            .setContentIntent(openAppIntent())
+            .setContentIntent(PendingIntent.getActivity(app, base, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             .setAutoCancel(true)
         body?.let { builder.setContentText(it.utf8()).setStyle(android.app.Notification.BigTextStyle().bigText(it.utf8())) }
-        val tag = id?.utf8()
+        actions?.utf8()?.lineSequence()?.filter { it.contains('\t') }?.take(3)?.forEachIndexed { i, line ->
+            val tab = line.indexOf('\t')
+            val press = Intent(app, OrielActionReceiver::class.java)
+                .putExtra(OrielActionReceiver.EXTRA_ACTION, line.substring(0, tab))
+                .putExtra(EXTRA_NOTIFICATION, key)
+                .putExtra(EXTRA_NOTIFICATION_CODE, code)
+            val pi = PendingIntent.getBroadcast(app, base + i + 1, press, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            builder.addAction(android.app.Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(app, notificationIcon()), line.substring(tab + 1), pi).build())
+        }
         return try {
-            nm.notify(tag, if (tag == null) (System.currentTimeMillis() and 0x7fffffff).toInt() else 1, builder.build())
+            nm.notify(tag, code, builder.build())
             true
         } catch (e: SecurityException) {
             false
         }
+    }
+
+    /** A button was pressed: dismiss its notification (buttons don't). */
+    internal fun cancelNotification(tag: String, code: Int) {
+        app.getSystemService(NotificationManager::class.java).cancel(tag.ifEmpty { null }, code)
+    }
+
+    /** The main activity was opened by a tap on a notification: report it once. */
+    private fun notificationTap(intent: Intent) {
+        val key = intent.getStringExtra(EXTRA_NOTIFICATION) ?: return
+        intent.removeExtra(EXTRA_NOTIFICATION)
+        OrielSystem.send("notification", "\u001f" + key)
     }
 
     // ---------------------------------------------------------------------

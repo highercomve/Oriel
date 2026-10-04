@@ -24,6 +24,8 @@ import android.widget.TextView
  *
  *   "tile"            the Quick Settings tile was tapped
  *   "action"          a notification action (data: its id)
+ *   "notification"    a tap or button on an `oriel.notification` notification
+ *                     (data: "<action>\u001f<id>", the action empty for a tap)
  *   "media-button"    the headset button, while the foreground service runs
  *   "ime-mic"         the Oriel keyboard's main button
  *   "ime-open"        the Oriel keyboard came up (data: the field's input type)
@@ -84,10 +86,17 @@ class OrielTileService : TileService() {
     }
 }
 
-/** Notification actions of the foreground service. */
+/** Notification buttons: the foreground service's, and `oriel.notification`'s. */
 class OrielActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        OrielSystem.send("action", intent.getStringExtra(EXTRA_ACTION) ?: return)
+        val action = intent.getStringExtra(EXTRA_ACTION) ?: return
+        val notification = intent.getStringExtra(OrielRuntime.EXTRA_NOTIFICATION)
+        if (notification == null) {
+            OrielSystem.send("action", action)
+            return
+        }
+        OrielRuntime.cancelNotification(notification, intent.getIntExtra(OrielRuntime.EXTRA_NOTIFICATION_CODE, 1))
+        OrielSystem.send("notification", action + "\u001f" + notification)
     }
 
     companion object {

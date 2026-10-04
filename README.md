@@ -756,9 +756,40 @@ try oriel.notification.notify(.{
 });
 ```
 
-- **Linux:** Uses GIO `GNotification`.
-- **Windows:** Uses `Shell_NotifyIconW` with balloon notifications (`NOTIFYICON_VERSION_4`). Callbacks route via `Shell.WM_NOTIFY_CALLBACK` and remove the balloon on dismiss/timeout/shutdown. Runtime untested on Windows.
-- **macOS:** `UNUserNotificationCenter` in an `.app` bundle (macOS asks for permission on the first notification). An unbundled executable has no bundle id, which UserNotifications requires, so it falls back to `osascript` ("display notification", shown as Script Editor).
+Clicks and buttons: give the notification an `id` and `actions`, then handle
+clicks in Zig with `onAction` or in the page with the `notification:action`
+event. `action` is the button's id, or null when the notification itself was
+clicked; `id` is the notification's id (`""` when it had none).
+
+```zig
+oriel.notification.onAction(struct {
+    fn f(id: []const u8, action: ?[]const u8) void {
+        std.log.info("notification {s}: {s}", .{ id, action orelse "clicked" });
+    }
+}.f);
+
+try oriel.notification.notify(.{
+    .id = "export-42",
+    .title = "Export ready",
+    .body = "notes.pdf was saved.",
+    .actions = &.{ .{ .id = "open", .label = "Open" }, .{ .id = "show", .label = "Show in folder" } },
+});
+```
+
+```js
+listen("notification:action", ({ id, action }) => { /* action === null: the notification was clicked */ });
+```
+
+Handlers run on the main thread, and only while the app runs. Buttons show on
+Linux, macOS (`.app` bundles), iOS and Android (at most 3). Windows balloons
+report a click on the balloon but have no buttons; the unbundled macOS
+`osascript` fallback reports nothing. On Linux a click on the notification
+also presents the main window, as before.
+
+- **Linux:** Uses GIO `GNotification`; clicks and buttons activate the `app.oriel-notification` action.
+- **Windows:** Uses `Shell_NotifyIconW` with balloon notifications (`NOTIFYICON_VERSION_4`). Callbacks route via `Shell.WM_NOTIFY_CALLBACK` and remove the balloon on dismiss/timeout/shutdown; a click on the balloon (`NIN_BALLOONUSERCLICK`) is reported, buttons are not available. Runtime untested on Windows.
+- **macOS:** `UNUserNotificationCenter` in an `.app` bundle (macOS asks for permission on the first notification); buttons are a `UNNotificationCategory` per distinct set. An unbundled executable has no bundle id, which UserNotifications requires, so it falls back to `osascript` ("display notification", shown as Script Editor), with no click reporting.
+- **Android:** a tap opens the app and reports the click; a button reports its id without opening the app and dismisses the notification.
 
 ### Multiple windows and window options
 

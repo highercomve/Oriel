@@ -107,7 +107,7 @@ options:
 |---|---|
 | permissions | AVCaptureDevice (microphone, camera), CLLocationManager (location, when in use), UNUserNotificationCenter. Screen capture, system audio and accessibility don't exist for iOS apps: `denied`. `openSettings` opens the app's page in Settings. |
 | clipboard | `UIPasteboard` text and PNG (other image types are converted). Reading shows iOS's paste banner. |
-| notification | `UNUserNotificationCenter`; also shown while the app is in front. |
+| notification | `UNUserNotificationCenter`; also shown while the app is in front. Clicks and buttons (`actions`) are reported through the center's delegate. |
 | dialog | `UIDocumentPickerViewController`. `openFile` returns a copy in the app's temporary directory. `saveFile` asks for a folder and returns `<folder>/<name>` (the title when it looks like a file name, else "Untitled"). Call them from async commands: they wait for the user. |
 | audio_capture | `AVAudioSession` (play and record, mixing with other apps) + AudioQueue, mono f32 at the requested rate; sources are "default" and the session's inputs (built-in mic, headset, Bluetooth). |
 | store | As on macOS, under the app's sandbox. |
