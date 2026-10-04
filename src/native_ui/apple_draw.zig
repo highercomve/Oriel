@@ -147,6 +147,7 @@ extern fn CGAffineTransformInvert(t: CGAffineTransform) CGAffineTransform;
 extern fn CTLineCreateWithAttributedString(s: CFAttributedStringRef) ?CFTypeRef;
 extern fn CTLineGetTypographicBounds(line: CFTypeRef, ascent: ?*CGFloat, descent: ?*CGFloat, leading: ?*CGFloat) f64;
 extern fn CTLineDraw(line: CFTypeRef, c: CGContextRef) void;
+extern fn CTFontGetXHeight(f: CTFontRef) CGFloat;
 extern fn CTFontGetAscent(font: CTFontRef) CGFloat;
 extern fn CTFontCopyFamilyName(font: CTFontRef) ?CFStringRef;
 extern fn CFStringCompare(a: CFStringRef, b: CFStringRef, options: u32) isize;
@@ -408,6 +409,13 @@ pub fn fieldSizeMac(n: *const Node, max_width: f32) [2]f32 {
     };
     if (!std.math.isInf(max_width) and n.kind != .textarea) size[0] = @min(size[0], max_width);
     return size;
+}
+
+/// Backend.font_x_height: a font's x-height, px.
+pub fn xHeight(comptime font_class: [:0]const u8, size: f32, mono: bool, family: []const u8) ?f32 {
+    if (!(size > 0) or !std.math.isFinite(size)) return null;
+    const f = font(font_class, size, 400, false, mono, family) orelse return null;
+    return @floatCast(CTFontGetXHeight(f));
 }
 
 /// Backend.font_metrics_family: the same for a CSS font-family list (the

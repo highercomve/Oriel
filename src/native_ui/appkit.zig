@@ -270,6 +270,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .warm_fonts = warmFonts,
         .font_metrics = fontMetrics,
         .font_metrics_family = fontMetricsFamily,
+        .font_x_height = fontXHeight,
         .selection = selection,
         .set_selection = setSelection,
     }, assets, platform, label, url, width, height);
@@ -467,6 +468,11 @@ fn onDisplayFrame(self: id, _: SEL, link_id: id) callconv(.c) void {
 /// Backend.font_metrics: the text font's ascent and descent at a size.
 fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
     return draw.fontMetrics("NSFont", size, mono, out);
+}
+
+/// Backend.font_x_height (vertical-align: middle).
+fn fontXHeight(_: *anyopaque, size: f32, mono: bool, family: []const u8) ?f32 {
+    return draw.xHeight("NSFont", size, mono, family);
 }
 
 fn fontMetricsFamily(_: *anyopaque, size: f32, mono: bool, family: []const u8, out: *[3]f32) bool {
