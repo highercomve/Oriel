@@ -866,6 +866,35 @@ int oqjs_eval(void *p, const char *code, size_t len, const char *name) {
     return truthy > 0 ? 1 : 0;
 }
 
+#include "qjs_dispatch.h"
+
+static int dispatch_result(oqjs *self, JSValue result) {
+    leave(self);
+    if (JS_IsException(result)) { report(self->ctx); return -1; }
+    int truthy = JS_ToBool(self->ctx, result);
+    JS_FreeValue(self->ctx, result);
+    return truthy > 0 ? 1 : 0;
+}
+
+int oqjs_event(void *p, int64_t id, const char *kind, size_t kind_len,
+               const char *json, size_t json_len) {
+    oqjs *self = p;
+    enter(self);
+    return dispatch_result(self, nui_event(self->ctx, id, kind, kind_len, json, json_len));
+}
+
+int oqjs_number_call(void *p, const char *name, double value) {
+    oqjs *self = p;
+    enter(self);
+    return dispatch_result(self, nui_number_call(self->ctx, name, value));
+}
+
+int oqjs_render(void *p) {
+    oqjs *self = p;
+    enter(self);
+    return dispatch_result(self, nui_dispatch(self->ctx, "render", 0, NULL));
+}
+
 // Run a script compiled to bytecode (JS_WriteObject: tools/qjs_bytecode.c);
 // 0, or -1 on an exception (logged) or a bytecode this QuickJS can't read.
 int oqjs_eval_bytecode(void *p, const uint8_t *code, size_t len) {

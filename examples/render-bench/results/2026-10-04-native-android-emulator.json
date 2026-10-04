@@ -1,0 +1,171 @@
+{
+  "metadata": {
+    "date": "2026-10-04",
+    "platform": "Android 35 x86_64 emulator-5554 (oriel35)",
+    "graphics": "software: lavapipe Vulkan / swangle GLES",
+    "build": "-Dnative_ui -Doptimize=ReleaseFast",
+    "method": "One process, two rounds, three trials per timed workload. Reported timing medians are from the second round.",
+    "changes": "Typed QuickJS dispatch, Android visibility scheduling, slider endpoint padding. Android benchmark JSON now sent to logcat.",
+    "limitations": "Current build only; no Android before/after comparison. Emulator timings do not measure physical-device energy use.",
+    "elapsed_seconds": 68.8,
+    "crash": false
+  },
+  "renderer": "native",
+  "results": {
+    "startup \u2192 page script": {
+      "median": 12.38,
+      "runs": [
+        12.38
+      ],
+      "unit": "ms"
+    },
+    "startup \u2192 first frame": {
+      "median": 338.08,
+      "runs": [
+        338.08
+      ],
+      "unit": "ms"
+    },
+    "memory at start (PSS, all processes)": {
+      "median": 22.06,
+      "runs": [
+        22.06
+      ],
+      "unit": "MB"
+    },
+    "private memory at start (all processes)": {
+      "median": 14.75,
+      "runs": [
+        14.75
+      ],
+      "unit": "MB"
+    },
+    "build 1000 rows": {
+      "median": 12.64,
+      "runs": [
+        12.64,
+        10.36,
+        12.71
+      ],
+      "unit": "ms"
+    },
+    "build 3000 rows": {
+      "median": 33.77,
+      "runs": [
+        39.26,
+        33.77,
+        33.53
+      ],
+      "unit": "ms"
+    },
+    "update 1000 rows": {
+      "median": 6.57,
+      "runs": [
+        5.32,
+        6.57,
+        7.25
+      ],
+      "unit": "ms"
+    },
+    "update 3000 rows": {
+      "median": 19.05,
+      "runs": [
+        17.05,
+        20.4,
+        19.05
+      ],
+      "unit": "ms"
+    },
+    "animate 200 boxes": {
+      "median": 60.21,
+      "runs": [
+        60.35,
+        60.06,
+        60.21
+      ],
+      "unit": "fps"
+    },
+    "canvas 200 balls": {
+      "median": 60.09,
+      "runs": [
+        60.19,
+        60.09,
+        60.03
+      ],
+      "unit": "fps"
+    },
+    "canvas 200 balls (Zig)": {
+      "median": 60.02,
+      "runs": [
+        60.02,
+        60,
+        60.04
+      ],
+      "unit": "fps"
+    },
+    "canvas 200 balls (Zig), Zig work per frame": {
+      "median": 21.25,
+      "runs": [
+        21.25,
+        20.89,
+        21.95
+      ],
+      "unit": "\u00b5s"
+    },
+    "canvas 1000 balls": {
+      "median": 59.41,
+      "runs": [
+        59.58,
+        59.41,
+        59.12
+      ],
+      "unit": "fps"
+    },
+    "canvas 1000 balls (Zig)": {
+      "median": 59.62,
+      "runs": [
+        60.01,
+        59.59,
+        59.62
+      ],
+      "unit": "fps"
+    },
+    "canvas 1000 balls (Zig), Zig work per frame": {
+      "median": 78.38,
+      "runs": [
+        75.99,
+        79.59,
+        78.38
+      ],
+      "unit": "\u00b5s"
+    },
+    "memory after the tests (PSS, all processes)": {
+      "median": 47.08,
+      "runs": [
+        47.08
+      ],
+      "unit": "MB"
+    },
+    "private memory after the tests (all processes)": {
+      "median": 39.21,
+      "runs": [
+        39.21
+      ],
+      "unit": "MB"
+    },
+    "memory after a second round (PSS, all processes)": {
+      "median": 48.35,
+      "runs": [
+        48.35
+      ],
+      "unit": "MB"
+    },
+    "private memory after a second round (all processes)": {
+      "median": 40.44,
+      "runs": [
+        40.44
+      ],
+      "unit": "MB"
+    }
+  }
+}

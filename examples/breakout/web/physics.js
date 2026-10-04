@@ -7,6 +7,8 @@ export const ROW_COLORS = ["#ff5d73", "#ff9f43", "#ffd166", "#3ad07a", "#36c5f0"
 const MAX_PARTICLES = 1500;
 const PADDLE_SPEED = 900; // px/s with the keys
 const PADDLE_FOLLOW = 2400; // px/s at most toward a pointer
+// Keep extended autoplay bounded: collision substeps scale with speed.
+const MAX_SPEED_MULTIPLIER = 3;
 
 export function createWorld(w, h, opts = {}) {
   const world = {
@@ -29,7 +31,7 @@ export function createWorld(w, h, opts = {}) {
 /** The ball speed for the world's size and level (px/s). */
 export function ballSpeed(world) {
   const base = Math.min(720, Math.max(320, world.h * 0.8));
-  return base * (1 + 0.08 * (world.level - 1));
+  return base * Math.min(MAX_SPEED_MULTIPLIER, 1 + 0.08 * (world.level - 1));
 }
 
 function brickGeometry(world) {

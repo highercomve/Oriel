@@ -126,6 +126,10 @@ APPLE_SDK=… zig build -Dtarget=aarch64-ios
 oriel ios install
 ```
 
+`oriel ios dev/build` forward Zig `-D` options, including to the IPA build:
+`oriel ios build --ipa -Dnative_ui -Doptimize=ReleaseFast`.
+Regular `oriel build` and `oriel package` also forward these options.
+
 ## Next
 
 - Run on a simulator and a device in CI (macOS runner): the first run will

@@ -1,0 +1,91 @@
+{
+  "metadata": {
+    "platform": "Android 35 x86_64 emulator-5554",
+    "app": "dev.oriel.RenderBench",
+    "renderer": "native_ui ReleaseFast",
+    "baseline": "typed QuickJS dispatch, before window visibility scheduling change",
+    "updated": "callbacks retained while hidden and resumed when visible",
+    "test": "start, foreground 6 seconds, Home, settle 1 second, background 8 seconds, reopen, foreground 5 seconds",
+    "tracing": "ORIEL_NUI_TRACE=1; frame counter logged every 120 callbacks",
+    "limitations": "Callback scheduling check, not a battery or whole-process CPU measurement. JS timers are not suspended."
+  },
+  "before": {
+    "hidden_frame_counter_start": [
+      120,
+      240,
+      360
+    ],
+    "hidden_frame_counter_end": [
+      120,
+      240,
+      360,
+      480,
+      600,
+      720,
+      840
+    ],
+    "resumed_frame_counter_end": [
+      120,
+      240,
+      360,
+      480,
+      600,
+      720,
+      840,
+      960,
+      1080
+    ],
+    "hidden_seconds": 8,
+    "resumed_seconds": 5,
+    "crash": false,
+    "observed_hidden_counter_delta": 480,
+    "observed_resume_counter_delta": 240
+  },
+  "after": {
+    "hidden_frame_counter_start": [
+      120,
+      240
+    ],
+    "hidden_frame_counter_end": [
+      120,
+      240
+    ],
+    "resumed_frame_counter_end": [
+      120,
+      240,
+      360,
+      480,
+      600
+    ],
+    "hidden_seconds": 8,
+    "resumed_seconds": 5,
+    "crash": false,
+    "observed_hidden_counter_delta": 0,
+    "observed_resume_counter_delta": 360
+  },
+  "diagnostic_desktop_breakout": {
+    "metadata": "500-ball JS mode; ReleaseFast native_ui_prof; 12-second visible run at 180 Hz. Profiling affects timing; game randomness is unseeded. Stage medians are not additive frame timings.",
+    "stages": {
+      "call": {
+        "samples": 1919,
+        "median_ms": 1.79,
+        "p90_ms": 2.68
+      },
+      "yoga": {
+        "samples": 416,
+        "median_ms": 0.01,
+        "p90_ms": 0.02
+      },
+      "layout": {
+        "samples": 416,
+        "median_ms": 0.02,
+        "p90_ms": 0.02
+      },
+      "draw": {
+        "samples": 1790,
+        "median_ms": 2.68,
+        "p90_ms": 2.99
+      }
+    }
+  }
+}

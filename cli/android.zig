@@ -4,11 +4,11 @@
 //!         Write android/ (a Gradle project around the Zig library) from
 //!         Oriel's template, with the app's id, name, version, permissions
 //!         and URL schemes from build.zig. --force rewrites edited files.
-//!     oriel android dev [--port 5173] [--abi arm64|x86_64]
+//!     oriel android dev [--port 5173] [--abi arm64|x86_64] [-Doption[=value]...]
 //!         Build the dev library for the connected device's ABI, install a
 //!         debug APK with adb, forward the dev server (`adb reverse`) and
 //!         start the app. Run the frontend's dev server yourself.
-//!     oriel android build [--abi arm64|x86_64|all] [--apk] [--aab]
+//!     oriel android build [--abi arm64|x86_64|all] [--apk] [--aab] [-Doption[=value]...]
 //!         Release libraries for every ABI (default all), then Gradle:
 //!         an APK for sideloading and an AAB for Play (both by default),
 //!         signed with $ORIEL_ANDROID_KEYSTORE if set.
@@ -23,6 +23,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Context = @import("Context.zig");
 const project = @import("project.zig");
+const build_options = @import("build_options.zig");
 const zig_manager = @import("zig_manager.zig");
 
 pub const Command = struct {
@@ -30,12 +31,13 @@ pub const Command = struct {
     pub const forward = "args";
     pub const details =
         \\  oriel android init [--force]                   write android/ (the Gradle project)
-        \\  oriel android dev [--port N] [--abi arm64|x86_64]
+        \\  oriel android dev [--port N] [--abi arm64|x86_64] [-Doption[=value]...]
         \\                                                 debug build on the connected device, with the dev server
-        \\  oriel android build [--abi arm64|x86_64|all] [--apk] [--aab]
+        \\  oriel android build [--abi arm64|x86_64|all] [--apk] [--aab] [-Doption[=value]...]
         \\                                                 release APK (sideloading) and AAB (Play)
         \\  oriel android devices                          devices adb sees
         \\
+        \\dev/build forward Zig -D options, e.g. -Dnative_ui or -Dggml_vulkan.
         \\Needs the Android SDK (adb, Gradle 8.9+ or android/gradlew, a JDK) and the NDK
         \\($ANDROID_NDK_HOME or $ANDROID_HOME/ndk/<version>). See docs/android.md.
     ;
@@ -74,11 +76,11 @@ const Env = struct {
     zig: []const u8,
     android_dir: []const u8,
 
-    fn zigBuild(e: Env, extra: []const []const u8) bool {
+    fn zigBuild(e: Env, extra: []const []const u8, forwarded: []const []const u8) bool {
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(e.ctx.gpa);
         argv.appendSlice(e.ctx.gpa, &.{ e.zig, "build" }) catch return false;
-        argv.appendSlice(e.ctx.gpa, extra) catch return false;
+        build_options.append(e.ctx.gpa, &argv, extra, forwarded) catch return false;
         return run(e.ctx, argv.items, e.root);
     }
 
@@ -153,7 +155,7 @@ fn init(e: Env, args: []const []const u8) !u8 {
             return 1;
         }
     }
-    if (!e.zigBuild(&.{ "android-project", "-Dtarget=aarch64-linux-android", if (force) "-Dandroid_force=true" else "-Dandroid_force=false" })) return 1;
+    if (!e.zigBuild(&.{ "android-project", "-Dtarget=aarch64-linux-android", if (force) "-Dandroid_force=true" else "-Dandroid_force=false" }, &.{})) return 1;
     // A Gradle wrapper, so the project builds without a system Gradle.
     const wrapper = try std.fs.path.join(e.ctx.gpa, &.{ e.android_dir, "gradlew" });
     defer e.ctx.gpa.free(wrapper);
@@ -201,6 +203,8 @@ test parseApplicationId {
 }
 
 fn dev(e: Env, args: []const []const u8) !u8 {
+    var forwarded: std.ArrayList([]const u8) = .empty;
+    defer forwarded.deinit(e.ctx.gpa);
     var port: []const u8 = "5173";
     var abi: ?Abi = null;
     var i: usize = 0;
@@ -214,6 +218,8 @@ fn dev(e: Env, args: []const []const u8) !u8 {
                 try e.ctx.err.print("error: --abi is arm64 or x86_64\n", .{});
                 return 1;
             };
+        } else if (build_options.isOption(args[i])) {
+            try forwarded.append(e.ctx.gpa, args[i]);
         } else {
             try e.ctx.err.print("error: unknown option {s}\n", .{args[i]});
             return 1;
@@ -233,7 +239,7 @@ fn dev(e: Env, args: []const []const u8) !u8 {
     };
     const target_arg = try std.fmt.allocPrint(e.ctx.gpa, "-Dtarget={s}", .{device_abi.target()});
     defer e.ctx.gpa.free(target_arg);
-    if (!e.zigBuild(&.{ "android-dev", target_arg })) return 1;
+    if (!e.zigBuild(&.{ "android-dev", target_arg }, forwarded.items)) return 1;
     const gradle = e.gradle() orelse return 1;
     defer e.ctx.gpa.free(gradle);
     if (!run(e.ctx, &.{ gradle, "installDebug" }, e.android_dir)) return 1;
@@ -253,6 +259,8 @@ fn dev(e: Env, args: []const []const u8) !u8 {
 }
 
 fn build(e: Env, args: []const []const u8) !u8 {
+    var forwarded: std.ArrayList([]const u8) = .empty;
+    defer forwarded.deinit(e.ctx.gpa);
     var abis: []const Abi = &.{ .arm64, .x86_64 };
     var apk = false;
     var aab = false;
@@ -269,6 +277,8 @@ fn build(e: Env, args: []const []const u8) !u8 {
             apk = true;
         } else if (std.mem.eql(u8, args[i], "--aab")) {
             aab = true;
+        } else if (build_options.isOption(args[i])) {
+            try forwarded.append(e.ctx.gpa, args[i]);
         } else {
             try e.ctx.err.print("error: unknown option {s}\n", .{args[i]});
             return 1;
@@ -282,7 +292,7 @@ fn build(e: Env, args: []const []const u8) !u8 {
     for (abis) |abi| {
         const target_arg = try std.fmt.allocPrint(e.ctx.gpa, "-Dtarget={s}", .{abi.target()});
         defer e.ctx.gpa.free(target_arg);
-        if (!e.zigBuild(&.{ target_arg, "-Doptimize=ReleaseSafe" })) return 1;
+        if (!e.zigBuild(&.{ target_arg, "-Doptimize=ReleaseSafe" }, forwarded.items)) return 1;
     }
     const gradle = e.gradle() orelse return 1;
     defer e.ctx.gpa.free(gradle);

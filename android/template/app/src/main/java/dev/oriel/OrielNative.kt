@@ -143,12 +143,13 @@ internal object Nui {
     /** One Choreographer callback for the window's next display frame
      *  (android.zig's requestDisplayFrame posts one at a time). */
     fun requestFrame(window: Int) {
-        Choreographer.getInstance().postFrameCallback {
-            val v = views[window] ?: return@postFrameCallback // the window closed
-            val hz = v.display?.refreshRate?.takeIf { it > 0 } ?: 60f
-            if (trace && ++displayFrames % 120 == 0) Log.d("OrielNui", "nui display frames $displayFrames at $hz Hz")
-            NuiNative.displayFrame(window, 1000f / hz)
-        }
+        views[window]?.requestDisplayFrame()
+    }
+
+    fun displayFrame(v: NuiView) {
+        val hz = v.display?.refreshRate?.takeIf { it > 0 } ?: 60f
+        if (trace && ++displayFrames % 120 == 0) Log.d("OrielNui", "nui display frames $displayFrames at $hz Hz")
+        NuiNative.displayFrame(v.window, 1000f / hz)
     }
     private var displayFrames = 0
 
@@ -734,6 +735,37 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     private val pageDefault = if (transparent) Color.TRANSPARENT else Color.WHITE
     private var background: Int = pageDefault
 
+    // Keep Zig's requested frame pending while the window is hidden. A
+    // background game must not run its rAF/physics loop at display speed.
+    // The same callback is reused, and only one is posted for this view.
+    private var displayRequested = false
+    private var displayPosted = false
+    private val displayCallback = Choreographer.FrameCallback {
+        displayPosted = false
+        if (displayRequested && canDisplayFrame() && Nui.views[window] === this) {
+            displayRequested = false
+            Nui.displayFrame(this)
+        }
+    }
+
+    fun requestDisplayFrame() {
+        displayRequested = true
+        updateDisplayFrame()
+    }
+
+    private fun canDisplayFrame() = isAttachedToWindow && windowVisibility == VISIBLE && isShown
+
+    private fun updateDisplayFrame() {
+        val choreographer = Choreographer.getInstance()
+        if (!canDisplayFrame()) {
+            if (displayPosted) choreographer.removeFrameCallback(displayCallback)
+            displayPosted = false
+        } else if (displayRequested && !displayPosted) {
+            displayPosted = true
+            choreographer.postFrameCallback(displayCallback)
+        }
+    }
+
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -985,8 +1017,25 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     // --- Size ---------------------------------------------------------------
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        updateDisplayFrame()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        updateDisplayFrame()
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (isAttachedToWindow) updateDisplayFrame()
+    }
+
     /** Out of its window: the canvases' bitmaps go (the next paint makes new ones). */
     override fun onDetachedFromWindow() {
+        if (displayPosted) Choreographer.getInstance().removeFrameCallback(displayCallback)
+        displayPosted = false
         super.onDetachedFromWindow()
         for (c in canvases.values) c.recycle()
         canvases.clear()
@@ -1265,7 +1314,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     }
 
     private fun slider(n: NuiNode, id: Int): View = SeekBar(context).apply {
-        setPadding(0, 0, 0, 0)
+        // AbsSeekBar centers its thumb on the track endpoints. Without
+        // this inset, half of the thumb falls outside our clipped field.
+        val inset = ((thumb?.intrinsicWidth ?: 0).coerceAtLeast(0) + 1) / 2
+        setPadding(inset, 0, inset, 0)
         val r = rangeOf(n) ?: Range(0.0, 100.0, 1.0)
         max = r.steps
         setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {

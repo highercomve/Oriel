@@ -126,13 +126,12 @@ oriel android build --abi arm64 --apk # release APK: android/app/build/outputs/a
 adb logcat -s Oriel chromium          # logs
 ```
 
-`oriel android build` runs on the CPU only, since it doesn't take `-D`
-options. For the GPU, build the library with Zig, then package it with
-Gradle:
+`oriel android dev/build` forward Zig `-D` options. Enable the native
+renderer or GPU backends directly:
 
 ```sh
-zig build -Dtarget=aarch64-linux-android -Doptimize=ReleaseSafe -Dggml_vulkan -Dggml_opencl
-(cd android && gradle assembleRelease)
+oriel android dev --abi arm64 -Dnative_ui
+oriel android build --abi arm64 --apk -Dnative_ui -Dggml_vulkan -Dggml_opencl
 ```
 
 Release builds are stripped and minified (R8). The APK is unsigned unless

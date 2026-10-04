@@ -115,6 +115,55 @@ adb shell setprop debug.oriel.env "''"
 
 ## Results
 
+### Android emulator, latest native build (2026-10-04)
+
+The full suite completed without crashes on Android 35, x86_64 `oriel35`,
+with software graphics (lavapipe/swangle), `-Dnative_ui -Doptimize=ReleaseFast`.
+One process ran two rounds; each timed workload reports the second round's
+median of three trials.
+
+| Test | Median |
+|---|---:|
+| Build 1,000 / 3,000 rows | 12.64 / 33.77 ms |
+| Update 1,000 / 3,000 rows | 6.57 / 19.05 ms |
+| Animate 200 boxes | 60.21 fps |
+| Canvas 200 / 1,000 balls, JS | 60.09 / 59.41 fps |
+| Canvas 200 / 1,000 balls, Zig | 60.02 / 59.62 fps |
+| PSS after first / second round | 47.08 / 48.35 MB |
+
+This validates the current build, including visibility scheduling and slider
+padding, but has no Android baseline comparison and measures no battery savings.
+Row timings omit Android's later layout and drawing passes. Android reports
+benchmark-mode JSON through logcat; desktop reports remain on stderr.
+[Full results and trials](results/2026-10-04-native-android-emulator.json).
+
+### Typed QuickJS callbacks (2026-10-04)
+
+Comparing `3e83d4e` with typed native-to-JS dispatch and interval
+self-cancellation changes, both built with `-Dnative_ui -Doptimize=ReleaseFast`:
+
+| Test | Before | Updated |
+|---|---:|---:|
+| Build 1,000 rows | 7.79 ms | 7.93 ms |
+| Build 3,000 rows | 21.76 ms | 21.94 ms |
+| Update 1,000 rows | 3.46 ms | 3.50 ms |
+| Update 3,000 rows | 10.24 ms | 10.53 ms |
+| PSS after two rounds | 121.08 MB | 119.80 MB |
+| Breakout JS, 500 balls, visible desktop | 138.3 fps | 139.0 fps |
+| Breakout process CPU (one core = 100%) | 86.46% | 86.58% |
+
+No clear end-to-end improvement is demonstrated. Render-bench ran one
+process per version, reporting second-round medians of three trials on
+Xvfb at 1280×900 with software rendering; animation and canvas reached
+the display's 60 Hz limit. Breakout also passed in JS and Zig modes there.
+The visible JS game ran twice per version in reversed order on the
+180 Hz desktop, with identical 628×691 windows. Its first logged interval
+was excluded from the pooled FPS median; game randomness remains unseeded.
+Startup was faster in the single updated observation, which is insufficient
+to establish a startup improvement. These are desktop performance checks,
+not Android power measurements.
+[Full results, trials and game logs](results/2026-10-04-native-dispatch-desktop.json).
+
 ### Flattening and emission follow-up
 
 On `2143d84`, row leaves premerge font/layout setup, copy ordinary font fields

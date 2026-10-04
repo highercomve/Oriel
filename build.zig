@@ -157,6 +157,22 @@ pub fn build(b: *std.Build) void {
         );
         qjs_modules.root_module.addAnonymousImport("sheet_compiler", .{ .root_source_file = sheet_src });
         b.installArtifact(qjs_modules);
+
+        const dispatch_test = b.addExecutable(.{
+            .name = "test_qjs_dispatch",
+            .root_module = b.createModule(.{ .target = b.graph.host, .optimize = .ReleaseFast, .link_libc = true }),
+        });
+        dispatch_test.root_module.addIncludePath(qjs);
+        dispatch_test.root_module.addCSourceFiles(.{
+            .root = qjs,
+            .files = &.{ "quickjs.c", "libregexp.c", "libunicode.c", "dtoa.c" },
+            .flags = &.{ "-std=gnu11", "-D_GNU_SOURCE", "-O2", "-fno-sanitize=undefined", "-funsigned-char", "-fwrapv" },
+        });
+        dispatch_test.root_module.addCSourceFile(.{
+            .file = b.path("tools/test_qjs_dispatch.c"),
+            .flags = &.{ "-std=gnu11", "-O2", "-UNDEBUG" },
+        });
+        b.step("test-native-dispatch", "Test and benchmark typed QuickJS renderer calls (POSIX host)").dependOn(&b.addRunArtifact(dispatch_test).step);
     }
 
     // Host tool used by `addApp` for dev mode watch + reload.
@@ -598,9 +614,11 @@ fn addOrielModule(
         // AAudio. Without an NDK only `zig build check` works (no linking).
         if (android_build.ndk(b)) |ndk| {
             android_build.addSysroot(b, oriel, ndk, target);
-            oriel.linkSystemLibrary("log", .{});
-            oriel.linkSystemLibrary("android", .{});
-            if (features.audio_capture) oriel.linkSystemLibrary("aaudio", .{});
+            // JNI libraries allow undefined symbols: retain the NDK stubs
+            // in DT_NEEDED so Android loads their implementations at launch.
+            oriel.linkSystemLibrary("log", .{ .needed = true });
+            oriel.linkSystemLibrary("android", .{ .needed = true });
+            if (features.audio_capture) oriel.linkSystemLibrary("aaudio", .{ .needed = true });
         }
     } else if (target.result.os.tag == .ios) {
         // UIKit + WebKit through the Objective-C runtime (src/platform/apple/

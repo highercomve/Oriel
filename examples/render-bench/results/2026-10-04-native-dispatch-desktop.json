@@ -1,0 +1,814 @@
+{
+  "metadata": {
+    "baseline_revision": "3e83d4e",
+    "updated": "working tree: typed QuickJS callbacks and interval cancellation",
+    "build": "ReleaseFast -Dnative_ui",
+    "display": "Xvfb 1280x900x24, GDK_BACKEND=x11, GSK_RENDERER=cairo, approximately 60 Hz",
+    "render_trials": "one process per version; second round medians of three trials",
+    "breakout": "500 balls, autoplay, 16 seconds per process; CPU sampled from 4 to 16 seconds",
+    "limitations": "Single pair, desktop software rendering, game states vary; no Android battery measurement."
+  },
+  "before": {
+    "render_bench": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 82.02,
+          "runs": [
+            82.02
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 130.35,
+          "runs": [
+            130.35
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 99.63,
+          "runs": [
+            99.63
+          ],
+          "unit": "MB"
+        },
+        "private memory at start (all processes)": {
+          "median": 66.15,
+          "runs": [
+            66.15
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 7.79,
+          "runs": [
+            10.4,
+            7.79,
+            7.62
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 21.76,
+          "runs": [
+            26.96,
+            21.76,
+            20.76
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 3.46,
+          "runs": [
+            3.46,
+            3.65,
+            3.28
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 10.24,
+          "runs": [
+            10.82,
+            10.18,
+            10.24
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 60.15,
+          "runs": [
+            60.16,
+            60.15,
+            60.13
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60.03,
+          "runs": [
+            60.07,
+            60,
+            60.03
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls (Zig)": {
+          "median": 59.99,
+          "runs": [
+            59.98,
+            59.99,
+            60
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls (Zig), Zig work per frame": {
+          "median": 4.42,
+          "runs": [
+            4.53,
+            4.42,
+            4.3
+          ],
+          "unit": "\u00b5s"
+        },
+        "canvas 1000 balls": {
+          "median": 60.01,
+          "runs": [
+            60.44,
+            60.01,
+            60.01
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls (Zig)": {
+          "median": 59.99,
+          "runs": [
+            60.01,
+            59.99,
+            59.99
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls (Zig), Zig work per frame": {
+          "median": 18.34,
+          "runs": [
+            17.35,
+            18.88,
+            18.34
+          ],
+          "unit": "\u00b5s"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 116.87,
+          "runs": [
+            116.87
+          ],
+          "unit": "MB"
+        },
+        "private memory after the tests (all processes)": {
+          "median": 83.15,
+          "runs": [
+            83.15
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 121.08,
+          "runs": [
+            121.08
+          ],
+          "unit": "MB"
+        },
+        "private memory after a second round (all processes)": {
+          "median": 87.36,
+          "runs": [
+            87.36
+          ],
+          "unit": "MB"
+        }
+      }
+    },
+    "breakout": {
+      "js": {
+        "samples": [
+          {
+            "fps": 60.1,
+            "frame_ms": 16.64,
+            "line": "info: breakout: fps 60.1 frame 16.64 ms js 2.603 ms (physics 0.721, draw 1.882) balls 500 particles 372 renderer native mode js",
+            "work_ms": 2.603
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms js 3.401 ms (physics 0.750, draw 2.651) balls 500 particles 376 renderer native mode js",
+            "work_ms": 3.401
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.68,
+            "line": "info: breakout: fps 60.0 frame 16.68 ms js 3.874 ms (physics 1.086, draw 2.788) balls 500 particles 490 renderer native mode js",
+            "work_ms": 3.874
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.66,
+            "line": "info: breakout: fps 60.0 frame 16.66 ms js 3.385 ms (physics 1.139, draw 2.245) balls 482 particles 598 renderer native mode js",
+            "work_ms": 3.385
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms js 2.627 ms (physics 0.950, draw 1.677) balls 500 particles 109 renderer native mode js",
+            "work_ms": 2.627
+          },
+          {
+            "fps": 60.1,
+            "frame_ms": 16.64,
+            "line": "info: breakout: fps 60.1 frame 16.64 ms js 4.290 ms (physics 1.217, draw 3.073) balls 500 particles 992 renderer native mode js",
+            "work_ms": 4.29
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms js 3.590 ms (physics 1.124, draw 2.465) balls 500 particles 517 renderer native mode js",
+            "work_ms": 3.59
+          }
+        ],
+        "median_fps": 60.0,
+        "cpu_percent": 50.9159665339483
+      },
+      "zig": {
+        "samples": [
+          {
+            "fps": 60.0,
+            "frame_ms": 16.66,
+            "line": "info: breakout: fps 60.0 frame 16.66 ms zig 0.190 ms (physics 0.178, draw 0.012) balls 500 particles 369 renderer native mode zig",
+            "work_ms": 0.19
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms zig 0.030 ms (physics 0.014, draw 0.016) balls 500 particles 311 renderer native mode zig",
+            "work_ms": 0.03
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.66,
+            "line": "info: breakout: fps 60.0 frame 16.66 ms zig 0.143 ms (physics 0.127, draw 0.016) balls 500 particles 417 renderer native mode zig",
+            "work_ms": 0.143
+          },
+          {
+            "fps": 59.9,
+            "frame_ms": 16.68,
+            "line": "info: breakout: fps 59.9 frame 16.68 ms zig 0.285 ms (physics 0.274, draw 0.011) balls 500 particles 816 renderer native mode zig",
+            "work_ms": 0.285
+          },
+          {
+            "fps": 59.9,
+            "frame_ms": 16.68,
+            "line": "info: breakout: fps 59.9 frame 16.68 ms zig 0.159 ms (physics 0.142, draw 0.017) balls 500 particles 779 renderer native mode zig",
+            "work_ms": 0.159
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms zig 0.370 ms (physics 0.353, draw 0.017) balls 500 particles 909 renderer native mode zig",
+            "work_ms": 0.37
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms zig 0.154 ms (physics 0.138, draw 0.016) balls 500 particles 483 renderer native mode zig",
+            "work_ms": 0.154
+          }
+        ],
+        "median_fps": 60.0,
+        "cpu_percent": 31.249531650255022
+      }
+    }
+  },
+  "after": {
+    "render_bench": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 55.57,
+          "runs": [
+            55.57
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 102.02,
+          "runs": [
+            102.02
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 100.19,
+          "runs": [
+            100.19
+          ],
+          "unit": "MB"
+        },
+        "private memory at start (all processes)": {
+          "median": 66.2,
+          "runs": [
+            66.2
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 7.93,
+          "runs": [
+            10.68,
+            7.93,
+            7.68
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 21.94,
+          "runs": [
+            26.81,
+            21.94,
+            20.86
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 3.5,
+          "runs": [
+            3.5,
+            3.54,
+            3.32
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 10.53,
+          "runs": [
+            11.02,
+            10.35,
+            10.53
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 60.14,
+          "runs": [
+            60.14,
+            60.15,
+            60.13
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60.04,
+          "runs": [
+            60.05,
+            60.02,
+            60.04
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls (Zig)": {
+          "median": 60,
+          "runs": [
+            60,
+            59.99,
+            60
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls (Zig), Zig work per frame": {
+          "median": 4.07,
+          "runs": [
+            4.64,
+            4.07,
+            4.02
+          ],
+          "unit": "\u00b5s"
+        },
+        "canvas 1000 balls": {
+          "median": 60.03,
+          "runs": [
+            60.15,
+            60.03,
+            60.02
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls (Zig)": {
+          "median": 60,
+          "runs": [
+            60,
+            60,
+            60.01
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls (Zig), Zig work per frame": {
+          "median": 17.62,
+          "runs": [
+            16.72,
+            17.62,
+            17.69
+          ],
+          "unit": "\u00b5s"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 117.25,
+          "runs": [
+            117.25
+          ],
+          "unit": "MB"
+        },
+        "private memory after the tests (all processes)": {
+          "median": 83.04,
+          "runs": [
+            83.04
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 119.8,
+          "runs": [
+            119.8
+          ],
+          "unit": "MB"
+        },
+        "private memory after a second round (all processes)": {
+          "median": 85.6,
+          "runs": [
+            85.6
+          ],
+          "unit": "MB"
+        }
+      }
+    },
+    "breakout": {
+      "js": {
+        "samples": [
+          {
+            "fps": 60.0,
+            "frame_ms": 16.66,
+            "line": "info: breakout: fps 60.0 frame 16.66 ms js 2.697 ms (physics 0.800, draw 1.897) balls 500 particles 417 renderer native mode js",
+            "work_ms": 2.697
+          },
+          {
+            "fps": 59.9,
+            "frame_ms": 16.68,
+            "line": "info: breakout: fps 59.9 frame 16.68 ms js 3.404 ms (physics 0.744, draw 2.659) balls 500 particles 311 renderer native mode js",
+            "work_ms": 3.404
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.68,
+            "line": "info: breakout: fps 60.0 frame 16.68 ms js 3.420 ms (physics 0.988, draw 2.432) balls 500 particles 486 renderer native mode js",
+            "work_ms": 3.42
+          },
+          {
+            "fps": 59.9,
+            "frame_ms": 16.68,
+            "line": "info: breakout: fps 59.9 frame 16.68 ms js 3.372 ms (physics 1.186, draw 2.186) balls 487 particles 665 renderer native mode js",
+            "work_ms": 3.372
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms js 3.224 ms (physics 1.229, draw 1.994) balls 500 particles 723 renderer native mode js",
+            "work_ms": 3.224
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms js 4.180 ms (physics 1.145, draw 3.035) balls 500 particles 944 renderer native mode js",
+            "work_ms": 4.18
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.66,
+            "line": "info: breakout: fps 60.0 frame 16.66 ms js 3.477 ms (physics 1.162, draw 2.316) balls 500 particles 476 renderer native mode js",
+            "work_ms": 3.477
+          }
+        ],
+        "median_fps": 60.0,
+        "cpu_percent": 50.915957691658406
+      },
+      "zig": {
+        "samples": [
+          {
+            "fps": 60.1,
+            "frame_ms": 16.64,
+            "line": "info: breakout: fps 60.1 frame 16.64 ms zig 0.205 ms (physics 0.192, draw 0.013) balls 500 particles 411 renderer native mode zig",
+            "work_ms": 0.205
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms zig 0.103 ms (physics 0.088, draw 0.015) balls 500 particles 269 renderer native mode zig",
+            "work_ms": 0.103
+          },
+          {
+            "fps": 60.1,
+            "frame_ms": 16.64,
+            "line": "info: breakout: fps 60.1 frame 16.64 ms zig 0.298 ms (physics 0.283, draw 0.015) balls 498 particles 582 renderer native mode zig",
+            "work_ms": 0.298
+          },
+          {
+            "fps": 59.9,
+            "frame_ms": 16.68,
+            "line": "info: breakout: fps 59.9 frame 16.68 ms zig 0.387 ms (physics 0.372, draw 0.015) balls 500 particles 908 renderer native mode zig",
+            "work_ms": 0.387
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms zig 0.122 ms (physics 0.105, draw 0.017) balls 500 particles 654 renderer native mode zig",
+            "work_ms": 0.122
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.68,
+            "line": "info: breakout: fps 60.0 frame 16.68 ms zig 0.434 ms (physics 0.415, draw 0.018) balls 492 particles 858 renderer native mode zig",
+            "work_ms": 0.434
+          },
+          {
+            "fps": 60.0,
+            "frame_ms": 16.67,
+            "line": "info: breakout: fps 60.0 frame 16.67 ms zig 0.242 ms (physics 0.231, draw 0.011) balls 500 particles 739 renderer native mode zig",
+            "work_ms": 0.242
+          }
+        ],
+        "median_fps": 60.0,
+        "cpu_percent": 22.499684218808394
+      }
+    }
+  },
+  "visible_breakout": {
+    "metadata": {
+      "display": "Wayland desktop, 2560x1440 at 180 Hz; game window 628x691",
+      "order": [
+        "after-0",
+        "before-0",
+        "before-1",
+        "after-1"
+      ],
+      "warmup": "first logged interval excluded",
+      "workload": "500 balls, JS mode, autoplay; game randomness is not seeded",
+      "measurement": "process CPU sampled from 4 to 16 seconds, one core is 100%"
+    },
+    "before": {
+      "runs": [
+        {
+          "cpu_percent": 86.33202367648653,
+          "geometry": [
+            {
+              "at": [
+                1285,
+                744
+              ],
+              "size": [
+                628,
+                691
+              ],
+              "workspace": {
+                "id": 1,
+                "name": "1"
+              }
+            }
+          ],
+          "samples": [
+            {
+              "fps": 150.5,
+              "frame_ms": 6.64,
+              "js_ms": 2.197,
+              "line": "info: breakout: fps 150.5 frame 6.64 ms js 2.197 ms (physics 0.494, draw 1.704) balls 500 particles 561 renderer native mode js"
+            },
+            {
+              "fps": 149.9,
+              "frame_ms": 6.67,
+              "js_ms": 2.339,
+              "line": "info: breakout: fps 149.9 frame 6.67 ms js 2.339 ms (physics 0.531, draw 1.808) balls 500 particles 601 renderer native mode js"
+            },
+            {
+              "fps": 146.5,
+              "frame_ms": 6.82,
+              "js_ms": 2.603,
+              "line": "info: breakout: fps 146.5 frame 6.82 ms js 2.603 ms (physics 0.451, draw 2.152) balls 500 particles 482 renderer native mode js"
+            },
+            {
+              "fps": 146.5,
+              "frame_ms": 6.83,
+              "js_ms": 2.694,
+              "line": "info: breakout: fps 146.5 frame 6.83 ms js 2.694 ms (physics 0.505, draw 2.189) balls 500 particles 536 renderer native mode js"
+            },
+            {
+              "fps": 129.6,
+              "frame_ms": 7.72,
+              "js_ms": 2.968,
+              "line": "info: breakout: fps 129.6 frame 7.72 ms js 2.968 ms (physics 0.773, draw 2.195) balls 500 particles 634 renderer native mode js"
+            },
+            {
+              "fps": 130.8,
+              "frame_ms": 7.65,
+              "js_ms": 3.083,
+              "line": "info: breakout: fps 130.8 frame 7.65 ms js 3.083 ms (physics 0.777, draw 2.307) balls 500 particles 685 renderer native mode js"
+            },
+            {
+              "fps": 134.1,
+              "frame_ms": 7.46,
+              "js_ms": 3.192,
+              "line": "info: breakout: fps 134.1 frame 7.46 ms js 3.192 ms (physics 0.733, draw 2.459) balls 500 particles 716 renderer native mode js"
+            }
+          ]
+        },
+        {
+          "cpu_percent": 86.58218474850099,
+          "geometry": [
+            {
+              "at": [
+                1285,
+                744
+              ],
+              "size": [
+                628,
+                691
+              ],
+              "workspace": {
+                "id": 1,
+                "name": "1"
+              }
+            }
+          ],
+          "samples": [
+            {
+              "fps": 156.0,
+              "frame_ms": 6.41,
+              "js_ms": 2.149,
+              "line": "info: breakout: fps 156.0 frame 6.41 ms js 2.149 ms (physics 0.479, draw 1.670) balls 500 particles 564 renderer native mode js"
+            },
+            {
+              "fps": 149.8,
+              "frame_ms": 6.67,
+              "js_ms": 2.358,
+              "line": "info: breakout: fps 149.8 frame 6.67 ms js 2.358 ms (physics 0.526, draw 1.831) balls 500 particles 601 renderer native mode js"
+            },
+            {
+              "fps": 149.7,
+              "frame_ms": 6.68,
+              "js_ms": 2.668,
+              "line": "info: breakout: fps 149.7 frame 6.68 ms js 2.668 ms (physics 0.438, draw 2.230) balls 500 particles 434 renderer native mode js"
+            },
+            {
+              "fps": 138.3,
+              "frame_ms": 7.23,
+              "js_ms": 2.955,
+              "line": "info: breakout: fps 138.3 frame 7.23 ms js 2.955 ms (physics 0.596, draw 2.358) balls 500 particles 584 renderer native mode js"
+            },
+            {
+              "fps": 138.3,
+              "frame_ms": 7.23,
+              "js_ms": 3.094,
+              "line": "info: breakout: fps 138.3 frame 7.23 ms js 3.094 ms (physics 0.675, draw 2.419) balls 500 particles 615 renderer native mode js"
+            },
+            {
+              "fps": 123.9,
+              "frame_ms": 8.07,
+              "js_ms": 3.354,
+              "line": "info: breakout: fps 123.9 frame 8.07 ms js 3.354 ms (physics 0.794, draw 2.560) balls 500 particles 754 renderer native mode js"
+            },
+            {
+              "fps": 121.9,
+              "frame_ms": 8.21,
+              "js_ms": 3.499,
+              "line": "info: breakout: fps 121.9 frame 8.21 ms js 3.499 ms (physics 0.782, draw 2.718) balls 500 particles 739 renderer native mode js"
+            }
+          ]
+        }
+      ],
+      "median_fps": 138.3,
+      "median_frame_ms": 7.23,
+      "median_js_ms": 2.9615,
+      "median_cpu_percent": 86.45710421249376
+    },
+    "after": {
+      "runs": [
+        {
+          "cpu_percent": 86.24885098563529,
+          "geometry": [
+            {
+              "at": [
+                1285,
+                744
+              ],
+              "size": [
+                628,
+                691
+              ],
+              "workspace": {
+                "id": 1,
+                "name": "1"
+              }
+            }
+          ],
+          "samples": [
+            {
+              "fps": 152.4,
+              "frame_ms": 6.56,
+              "js_ms": 2.119,
+              "line": "info: breakout: fps 152.4 frame 6.56 ms js 2.119 ms (physics 0.452, draw 1.667) balls 500 particles 571 renderer native mode js"
+            },
+            {
+              "fps": 145.7,
+              "frame_ms": 6.86,
+              "js_ms": 2.323,
+              "line": "info: breakout: fps 145.7 frame 6.86 ms js 2.323 ms (physics 0.508, draw 1.815) balls 500 particles 601 renderer native mode js"
+            },
+            {
+              "fps": 149.9,
+              "frame_ms": 6.67,
+              "js_ms": 2.572,
+              "line": "info: breakout: fps 149.9 frame 6.67 ms js 2.572 ms (physics 0.433, draw 2.139) balls 500 particles 493 renderer native mode js"
+            },
+            {
+              "fps": 140.2,
+              "frame_ms": 7.14,
+              "js_ms": 2.894,
+              "line": "info: breakout: fps 140.2 frame 7.14 ms js 2.894 ms (physics 0.575, draw 2.319) balls 500 particles 525 renderer native mode js"
+            },
+            {
+              "fps": 127.5,
+              "frame_ms": 7.84,
+              "js_ms": 2.987,
+              "line": "info: breakout: fps 127.5 frame 7.84 ms js 2.987 ms (physics 0.747, draw 2.241) balls 500 particles 608 renderer native mode js"
+            },
+            {
+              "fps": 137.8,
+              "frame_ms": 7.26,
+              "js_ms": 3.089,
+              "line": "info: breakout: fps 137.8 frame 7.26 ms js 3.089 ms (physics 0.693, draw 2.396) balls 500 particles 577 renderer native mode js"
+            },
+            {
+              "fps": 129.3,
+              "frame_ms": 7.74,
+              "js_ms": 3.316,
+              "line": "info: breakout: fps 129.3 frame 7.74 ms js 3.316 ms (physics 0.783, draw 2.534) balls 500 particles 950 renderer native mode js"
+            }
+          ]
+        },
+        {
+          "cpu_percent": 86.91544969101759,
+          "geometry": [
+            {
+              "at": [
+                1285,
+                744
+              ],
+              "size": [
+                628,
+                691
+              ],
+              "workspace": {
+                "id": 1,
+                "name": "1"
+              }
+            }
+          ],
+          "samples": [
+            {
+              "fps": 155.9,
+              "frame_ms": 6.41,
+              "js_ms": 2.12,
+              "line": "info: breakout: fps 155.9 frame 6.41 ms js 2.120 ms (physics 0.464, draw 1.656) balls 500 particles 563 renderer native mode js"
+            },
+            {
+              "fps": 148.3,
+              "frame_ms": 6.74,
+              "js_ms": 2.316,
+              "line": "info: breakout: fps 148.3 frame 6.74 ms js 2.316 ms (physics 0.519, draw 1.796) balls 500 particles 601 renderer native mode js"
+            },
+            {
+              "fps": 150.0,
+              "frame_ms": 6.67,
+              "js_ms": 2.632,
+              "line": "info: breakout: fps 150.0 frame 6.67 ms js 2.632 ms (physics 0.454, draw 2.178) balls 500 particles 467 renderer native mode js"
+            },
+            {
+              "fps": 136.7,
+              "frame_ms": 7.32,
+              "js_ms": 2.911,
+              "line": "info: breakout: fps 136.7 frame 7.32 ms js 2.911 ms (physics 0.581, draw 2.330) balls 500 particles 542 renderer native mode js"
+            },
+            {
+              "fps": 140.6,
+              "frame_ms": 7.11,
+              "js_ms": 2.9,
+              "line": "info: breakout: fps 140.6 frame 7.11 ms js 2.900 ms (physics 0.712, draw 2.188) balls 500 particles 593 renderer native mode js"
+            },
+            {
+              "fps": 131.7,
+              "frame_ms": 7.59,
+              "js_ms": 3.156,
+              "line": "info: breakout: fps 131.7 frame 7.59 ms js 3.156 ms (physics 0.755, draw 2.402) balls 500 particles 629 renderer native mode js"
+            },
+            {
+              "fps": 135.4,
+              "frame_ms": 7.39,
+              "js_ms": 3.258,
+              "line": "info: breakout: fps 135.4 frame 7.39 ms js 3.258 ms (physics 0.723, draw 2.534) balls 500 particles 925 renderer native mode js"
+            }
+          ]
+        }
+      ],
+      "median_fps": 139.0,
+      "median_frame_ms": 7.199999999999999,
+      "median_js_ms": 2.9055,
+      "median_cpu_percent": 86.58215033832644
+    }
+  },
+  "conclusion": "No clear end-to-end benefit demonstrated. Row timings and memory are close, virtual-display animation is refresh-limited, visible game frame rates vary and process CPU is effectively unchanged. Unseeded game states and few runs preclude attributing small differences or the single virtual-display Zig CPU difference to this change. Startup is a single cold-start observation per version. No Android battery measurement."
+}

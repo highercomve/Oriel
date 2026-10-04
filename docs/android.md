@@ -82,6 +82,11 @@ oriel android dev --abi x86_64     # emulator; arm64 for a Chromebook or phone
 adb logcat -s Oriel chromium       # logs
 ```
 
+`oriel android dev/build` forward Zig `-D` options, for example
+`oriel android dev --abi arm64 -Dnative_ui` or
+`oriel android build --abi arm64 --apk -Dnative_ui -Dggml_vulkan`.
+Explicit options such as `-Doptimize=ReleaseFast` replace the defaults.
+
 `oriel android dev` builds `zig-out/jniLibs/<abi>/liboriel.so`, installs a
 debug APK and starts it. `oriel android build` makes the release APK and AAB
 for both ABIs (signed with `$ORIEL_ANDROID_KEYSTORE`,

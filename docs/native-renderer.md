@@ -520,6 +520,41 @@ inline blocks flowing in text, `rowspan`, `img`, `iframe`,
 - DOM-based UI libraries that rely on the browser's layout or event details
   may not work.
 
+## Native bridge performance
+
+Input events, timer callbacks, display frames and renderer calls use typed
+QuickJS calls rather than formatting and compiling JavaScript source on
+each call. Argument values and the `__oriel` receiver are preserved; promise
+jobs and rendering still settle at the end of the outermost call.
+
+Run the bridge correctness checks and microbenchmark on a POSIX host:
+
+```sh
+zig build test-native-dispatch
+```
+
+The benchmark compares source evaluation with direct calls to the same
+small functions. It excludes DOM updates, layout and drawing. A Linux
+x86_64 run showed roughly 92–96% less bridge time for events, vsync and
+render calls. That is a reduction in bridge overhead, not an equivalent
+improvement in frame time or a measurement of battery consumption.
+
+The full render-bench and Breakout comparison did not show a clear
+end-to-end gain: row timings and memory were similar; a 500-ball JS game
+on the 180 Hz desktop measured 138.3 versus 139.0 fps, with essentially
+unchanged process CPU. The virtual-display animation tests hit their
+60 Hz limit. See the [measurements and limitations](../examples/render-bench/results/2026-10-04-native-dispatch-desktop.json).
+
+Repeating timers that cancel themselves no longer post an extra native
+timeout. Active intervals keep their cadence (callback time is deducted
+from the next delay) and continue after a callback exception. The runtime
+tests cover cancellation, exceptions, arguments and interval timing:
+
+```sh
+cd src/native_ui/js
+npm test
+```
+
 ## Pointer and key events
 
 A backend reports the pointer through one engine event, `"pointer"`, on the
@@ -914,7 +949,16 @@ boundary is crossed per change, not per element:
 | Leaf styles and leaves, one batch (`nuiLeaves`) | `host.leaf` and stamped rows: each leaf style once (its props JSON, parsed once into a template), then a compact record per node (id, kind, style, text). Sent before anything else names one of them |
 | The frames, one packed array (`nuiFrames`) | After each layout or scroll: per node its id (as int bits, exact for any id), frame, clip, content box and subtree size |
 | Text sizes (`nuiMeasure`) | Only on a miss: a text's natural size is kept on its node, sizes by content and width in a cache, and Kotlin keeps its last answer and one-line width |
-| A display frame (`nuiRequestFrame` → `displayFrame`) | While the page wants animation frames: one `Choreographer` callback per frame at the display's rate (120 on a 120 Hz phone), none when it stops |
+| A display frame (`nuiRequestFrame` → `displayFrame`) | While the visible page wants animation frames: one reused `Choreographer` callback per frame at the display's rate (120 on a 120 Hz phone), none while hidden or when it stops |
+
+Display callbacks suspend when the view or its window becomes hidden or
+detached. The pending request stays intact and resumes on visibility or
+reattachment, so an app need not restart its animation loop. This suspends
+display-driven animation and Zig frame hooks; it does not suspend JavaScript
+timers or background services. Android emulator render-bench checks observed
+480 frame-counter increments during eight hidden seconds before the change,
+none after it, and rendering resumed on reopening.
+[Scheduling checks and desktop stage timings](../examples/render-bench/results/2026-10-04-android-background-frames.json).
 
 The page's CSS px are Chromium's: the view's width in DIPs rounded up to
 whole px (1080 px at density 2.625 is 412 CSS px, not 411.43), the page
