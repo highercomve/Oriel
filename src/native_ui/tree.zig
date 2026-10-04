@@ -44,6 +44,10 @@ pub const Run = struct {
     /// The inline box this run is in (a padded <code> amid the text): its
     /// decoration over each line fragment (docs "Inline boxes").
     ib: ?InlineBox = null,
+    /// The clickable element this run is part of (a link amid the text,
+    /// render.js inlineRuns): its node id. A backend shows the hand over the
+    /// run and sends its clicks ("click", "pointer"…) to that id.
+    k: ?u32 = null,
 };
 
 /// An inline box's decoration, the same on each of its runs (render.js

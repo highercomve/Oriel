@@ -16669,6 +16669,11 @@ input[type="range"] { height: 20px; margin: 2px; }
         for (let i = first; i < runs.length; i++) if (!runs[i].br) runs[i].ol = ol;
       }
       if (underlined(cs)) for (let i = first; i < runs.length; i++) runs[i].u = true;
+      if (runs.length > first && clickableInline(el, cs, parentCS)) {
+        const id = this.idOf(el, "el");
+        this.own(id, el);
+        for (let i = first; i < runs.length; i++) if (!runs[i].br && runs[i].k === void 0) runs[i].k = id;
+      }
     }
     pseudo(el, cs, which, nodes) {
       const rules = cs.__rules[which];
@@ -16911,6 +16916,11 @@ input[type="range"] { height: 20px; margin: 2px; }
   }
   function listens(el) {
     return !!el.__listens;
+  }
+  function clickableInline(el, cs, parentCS) {
+    if (el.hasAttribute("disabled")) return false;
+    const n2 = el.localName;
+    return n2 === "a" && el.hasAttribute("href") || n2 === "button" || n2 === "label" || n2 === "summary" || el.hasAttribute("onclick") || listens(el) || cs.cursor === "pointer" && parentCS?.cursor !== "pointer";
   }
   var TABLE_GROUPS = /* @__PURE__ */ new Set(["table-row-group", "table-header-group", "table-footer-group"]);
   function isTableDisplay(d) {
