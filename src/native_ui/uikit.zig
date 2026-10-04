@@ -1396,7 +1396,8 @@ fn touchesBegan(self: id, _: SEL, touches: id, _: id) callconv(.c) void {
     const p = pointIn(s.view, touch);
     const token = s.token;
     // :active while the finger is down.
-    if (s.engine.tree.hit(p[0], p[1])) |n| _ = s.engine.event(n.id, "press", "null");
+    const under = underTouch(s, p);
+    if (under.id != 0) _ = s.engine.event(under.id, "press", "null");
     if (surfaces.get(token) == null) return;
     s.move = null;
     s.touching = true;
@@ -1447,7 +1448,7 @@ fn touchesCancelled(self: id, _: SEL, touches: id, _: id) callconv(.c) void {
 /// when the page prevented the default (on "down": it takes the drag).
 fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32) bool {
     if (!std.math.isFinite(p[0]) or !std.math.isFinite(p[1])) return false;
-    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    const nid: i64 = underTouch(s, p).id;
     var buf: [96]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"touch\",0]", .{ phase, p[0], p[1], buttons }) catch return false;
     return s.engine.event(nid, "pointer", json);
@@ -1563,11 +1564,21 @@ fn onTap(self: id, _: SEL, recognizer: id) callconv(.c) void {
         if (surfaces.get(token) == null) return;
     }
     // Hit-tested after the up: its handler may have changed the page.
-    const hit = s.engine.tree.hit(p[0], p[1]);
-    if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: tap at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], if (hit) |h| h.id else 0 });
-    const n = hit orelse return;
-    if (disabledUp(n)) return;
-    _ = s.engine.event(n.id, "click", "0");
+    const under = underTouch(s, p);
+    if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: tap at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], under.id });
+    const n = under.node orelse return;
+    if (!under.link and disabledUp(n)) return;
+    _ = s.engine.event(under.id, "click", "0");
+}
+
+/// What a finger at `p` is on, for the page: the node there, or the link
+/// amid its text under it (Run.k: that element's id, as android's linkAt
+/// finds it), 0 for nothing.
+const Under = struct { node: ?*Node, id: i64, link: bool };
+fn underTouch(s: *Surface, p: [2]f32) Under {
+    const n = s.engine.tree.hit(p[0], p[1]) orelse return .{ .node = null, .id = 0, .link = false };
+    if (n.kind == .text) if (draw.linkAt("UIFont", n, p[0], p[1])) |k| return .{ .node = n, .id = k, .link = true };
+    return .{ .node = n, .id = n.id, .link = false };
 }
 
 fn onLongPress(self: id, _: SEL, recognizer: id) callconv(.c) void {
@@ -1576,10 +1587,11 @@ fn onLongPress(self: id, _: SEL, recognizer: id) callconv(.c) void {
     if (r.msgSend(isize, "state", .{}) != state_began) return;
     if (s.drag_owned) return; // the page's drag (a finger held still on a game)
     const p = pointIn(s.view, r);
-    const n = s.engine.tree.hit(p[0], p[1]) orelse return;
+    const under = underTouch(s, p);
+    if (under.id == 0) return;
     var buf: [64]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0}]", .{ p[0], p[1] }) catch return;
-    _ = s.engine.event(n.id, "contextmenu", json);
+    _ = s.engine.event(under.id, "contextmenu", json);
 }
 
 /// Scroll the sideways-scrolling container under `at` (or one around it) by `dx`.
