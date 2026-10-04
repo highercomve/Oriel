@@ -525,6 +525,8 @@ Object.defineProperties(elProto, {
     configurable: true,
   },
   scrollHeight: { get() { const f = frameOf(this); return f[4] ?? f[3]; }, configurable: true },
+  // (The frame's ninth value; a host without it: the box's width.)
+  scrollWidth: { get() { const f = frameOf(this); return f[8] ?? f[2]; }, configurable: true },
   offsetTop: { get() { return frameOf(this)[1]; }, configurable: true },
   offsetLeft: { get() { return frameOf(this)[0]; }, configurable: true },
   // The scroll offsets (the frame's seventh and eighth values); the
