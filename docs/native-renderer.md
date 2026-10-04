@@ -490,6 +490,17 @@ and 1.7px are 1px at 1x, and at 3x 1.4px is 1.333px, 2.67px 2.333px and
 none). Chromium (Windows, Android) floors the width itself: a 1px border
 at 2.625 is 0.762, 3px 2.667. clientWidth and clientHeight are whole px.
 
+**Margin collapsing** (render.js collapseMargins, shared): block flow's
+vertical margins collapse as WKWebView collapses them (measured on 15
+cases): adjacent siblings (the largest positive plus the most negative), a
+parent's with its first and last child's unless padding, a border, a
+height or min-height, `overflow` other than visible, a flex or grid item,
+`display: flow-root` or an inline-block separates them, and through an
+empty block (its own top and bottom margins and those around it, as one;
+it sits at its top margin, as WebKit places it). `<body>`, the root's flex
+item here, collapses with its children as the block it is in a browser:
+`body { margin: 10px }` over a `<p>` with 16px puts the text at 16, not 26.
+
 **Mixed-font line boxes** (each backend): with `line-height: normal`
 (no `lh`), a line's box stacks every inline box on it on the baseline,
 the block's own font (the strut, its `fz`/`ff`/`mono`) among them: each
