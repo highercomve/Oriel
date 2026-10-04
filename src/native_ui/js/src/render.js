@@ -2690,7 +2690,7 @@ function pushButton(cs, p) {
     p.bg = { ...(p.bg || {}), color: [192, 192, 192, 1] };
     return;
   }
-  delete p.bw; delete p.bc; delete p.bs;
+  delete p.bw; delete p.bc; delete p.bs; delete p.bt;
   // The bezel keeps the border's 2px a side (WebKit's computed border is 0
   // but a push button is that much wider than its padding and text).
   const pad = p.pad ? p.pad.slice() : [0, 0, 0, 0];
@@ -2845,6 +2845,10 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
     // style for the box).
     const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
     if (style) p.bs = style;
+    // Groove or ridge on every side with a width: two-tone (the backend's
+    // bands; `bc` stays the base color).
+    const tones = sides.filter((s, i) => bw[i]).map((s) => cs[`border-${s}-style`]);
+    if (tones.length && tones.every((st) => st === tones[0]) && (tones[0] === "groove" || tones[0] === "ridge")) p.bt = tones[0];
   }
   contentBox(cs, p, borderBox);
   outlinePart(cs, fs, p);
