@@ -12,6 +12,9 @@
 //   evalScript(name, code)      run a page script at the top level
 //   evalModule(name, code)      run a module script (imports load from the assets) → promise
 //   focus(id), scrollIntoView(id, block), scrollTo(id, y)
+//   fileRead(reqId, handle, offset, length) → later __oriel.fileData(reqId,
+//                               ArrayBuffer | null, errorName); fileRelease(handle)
+//                               (a dropped file's bytes, blob.js; optional)
 //   platform (JSON), label (the window's label), url (the window's URL)
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
@@ -21,6 +24,8 @@ import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules, color as cssColor } from "./css.js";
 import { Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
+import { installBlob } from "./blob.js";
+import { installDnd } from "./dnd.js";
 // The runtime's own weak caches keyed by nodes: marked so their entries
 // don't keep a node's wrapper from being replaced (a page's weak
 // references do: dom/store.zig prune).
@@ -204,6 +209,10 @@ g.MouseEvent = MouseEvent;
 g.PointerEvent = PointerEvent;
 g.TouchEvent = TouchEvent;
 g.InputEvent = g.FocusEvent = g.UIEvent = Event;
+// Blob, File, FileList, FileReader (blob.js); DragEvent and DataTransfer
+// over the engine's "drag" events (dnd.js).
+const blobs = installBlob(g, host);
+const dnd = installDnd(g, { MouseEvent, fire: fireAt, files: blobs, editable: dropEditable, dropText });
 // No shadow trees here yet: the class pages test against (Alpine checks
 // `el.parentNode instanceof ShadowRoot`).
 g.ShadowRoot ??= class ShadowRoot {};
@@ -613,6 +622,41 @@ function fireChange(el) {
   if (el.value === changeBase.get(el)) return;
   changeBase.set(el, el.value);
   el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+// Where dropped text goes by default (dnd.js): an enabled, writable text
+// field or textarea, or contenteditable.
+const DROP_INPUTS = new Set(["", "text", "search", "url", "tel", "password", "email"]);
+function dropEditable(el) {
+  if (!el || el.nodeType !== 1) return false;
+  if (el.localName === "textarea" || el.localName === "input") {
+    if (el.localName === "input" && !DROP_INPUTS.has((el.getAttribute("type") || "").toLowerCase())) return false;
+    return !el.hasAttribute("disabled") && !el.hasAttribute("readonly");
+  }
+  return !!el.isContentEditable;
+}
+// Text dropped on such an element and not taken by the page: as a native
+// edit, beforeinput (insertFromDrop, cancelable), the new value (a field's
+// at its selection, a one-line field's without line breaks), then input.
+// The field takes the focus first, as in a browser. False when the page
+// prevented it.
+function dropText(el, text) {
+  if (active !== el) el.focus();
+  const before = inputEvent("beforeinput", "insertFromDrop", text, true);
+  el.dispatchEvent(before);
+  if (before.defaultPrevented) return false;
+  if (el.localName === "input" || el.localName === "textarea") {
+    const t = el.localName === "input" ? text.replace(/[\r\n]+/g, "") : text;
+    const value = String(el.value ?? "");
+    const [start, end] = selectionOf(el);
+    setNative(el, "value", value.slice(0, start) + t + value.slice(end));
+    edited.add(el);
+    el.setSelectionRange(start + t.length, start + t.length);
+    el.dispatchEvent(inputEvent("input", "insertFromDrop", t, false));
+    return true;
+  }
+  el.appendChild(document.createTextNode(text));
+  el.dispatchEvent(inputEvent("input", "insertFromDrop", text, false));
+  return true;
 }
 const focusEvent = (type, bubbles, relatedTarget) => {
   const ev = new Event(type, { bubbles });
@@ -1096,6 +1140,20 @@ function changedButton(bits) {
   return 0;
 }
 
+// An engine's event at `target`, then at the window's listeners while it
+// still bubbles (unless the document forwards its type there already).
+// True when it was prevented.
+function fireAt(target, ev) {
+  target.dispatchEvent(ev);
+  if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
+    // The dispatch is over (the native DOM clears its target then): the
+    // window's listeners still see the element, as in a browser.
+    if (ev.target !== target) Object.defineProperty(ev, "target", { value: target, configurable: true });
+    fireWindow(ev);
+  }
+  return ev.defaultPrevented;
+}
+
 function pointerEvent(el, data) {
   const [phase, x, y, buttons, pointerId, pointerType, flags] = data;
   const names = POINTER_TYPES[phase];
@@ -1112,16 +1170,7 @@ function pointerEvent(el, data) {
   else heldButtons.set(pointerId, buttons);
   lastPointerType = pointerType || "mouse";
   const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button, buttons, ...mods };
-  const fire = (ev) => {
-    target.dispatchEvent(ev);
-    if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
-      // The dispatch is over (the native DOM clears its target then): the
-      // window's listeners still see the element, as in a browser.
-      if (ev.target !== target) Object.defineProperty(ev, "target", { value: target, configurable: true });
-      fireWindow(ev);
-    }
-    return ev.defaultPrevented;
-  };
+  const fire = (ev) => fireAt(target, ev);
   let prevented = fire(new PointerEvent(names[0], { ...init, pointerId, pointerType, isPrimary: true, pressure: buttons ? 0.5 : 0 }));
   if (phase === "cancel") tapFocus = null;
   if (pointerType === "touch") {
@@ -1188,7 +1237,8 @@ function hoverEvents(from, to) {
 // the `input` event exists, and without them falls back to an old-IE path
 // that never sees a field's input (onChange never ran).
 const HANDLER_EVENTS = ("abort animationend auxclick beforeinput blur change click contextmenu dblclick error focus focusin focusout " +
-  "input invalid keydown keypress keyup load mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup " +
+  "drag dragend dragenter dragleave dragover dragstart drop input invalid keydown keypress keyup load mousedown " +
+  "mouseenter mouseleave mousemove mouseout mouseover mouseup " +
   "pointercancel pointerdown pointermove pointerup reset resize scroll select submit toggle touchcancel touchend " +
   "touchmove touchstart transitionend wheel").split(" ");
 for (const proto of [elProto, Object.getPrototypeOf(document)]) {
@@ -1605,9 +1655,18 @@ const oriel = {
         case "press": markChain("data-nui-active", el); return false;
         case "release": markChain("data-nui-active", null); return false;
         case "back": if (!history.length) return false; g.history.back(); return true;
+        // A drag from the system over the page, or its drop (dnd.js): an
+        // effect mask (copy 1, move 2, link 4), not a bool.
+        case "drag": {
+          try { return dnd.dragEvent(el, data) | 0; } catch (e) { console.error(e); return 0; }
+        }
       }
       return false;
     });
+  },
+  // The host's answer to fileRead: the bytes, or null and an error name.
+  fileData(reqId, buf, errorName) {
+    guard(() => blobs.fileData(reqId, buf, errorName));
   },
   // Scrollers moved (the engine, at most once a frame): [[id, top, left]].
   // "scroll" on each, as browsers fire it (it doesn't bubble; the
