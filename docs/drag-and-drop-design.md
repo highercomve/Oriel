@@ -245,6 +245,13 @@ now: file-selector, which react-dropzone uses, checks `typeof ... === "function"
 - `performDragOperation:` reads `readObjectsForClasses:@[NSURL] options:@{NSPasteboardURLReadingFileURLsOnlyKey: YES}`,
   opens each file while the sandbox extension is live, and returns the JS result.
 - `NSFilePromiseReceiver` (Photos, Mail) comes later.
+- **Done (2026-10-04, appkit.zig).** drop.zig opens and `fstat`s through libc on Darwin (`std.c.fstat`; its unit
+  tests run on macOS). The source's mask maps Copy to copy, Link to link, and Generic and Move to move; the
+  suggested operation is the first the source allows (it narrows its mask with the modifiers). Tested with real
+  drags from another app: two files and a folder give `types ["Files"]`, the two files' names, sizes, MIME types
+  (UTType's, by extension: `text/plain`, `application/json`) and `f.text()`, the folder skipped; text gives
+  `["text/plain"]` and its `getData`. Both match WKWebView's, except that WKWebView also lists the folder as a File.
+  A drop where the page doesn't take the drag is refused (the source sees no operation).
 
 **UIKit (phase 2, iPad).**
 - Add a `UIDropInteraction` to the NuiView with a delegate class defined via the objc helpers:

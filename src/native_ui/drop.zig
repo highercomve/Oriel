@@ -11,13 +11,15 @@
 //! size and mtime again, and a file that changed since the drop reads as
 //! NotReadable.
 //!
-//! Linux and Android for now (GTK and Android are phase 1). Elsewhere the
-//! table exists, so the engine compiles, but nothing can be added.
+//! Linux and Android (Linux syscalls), macOS and iOS (libc: Zig's std has
+//! no portable fstat). Elsewhere the table exists, so the engine compiles,
+//! but nothing can be added.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
-const supported = builtin.os.tag == .linux;
+const darwin = builtin.os.tag.isDarwin();
+const supported = builtin.os.tag == .linux or darwin;
 const linux = std.os.linux;
 
 /// At most this many bytes per read (JS reads bigger blobs in chunks).
@@ -85,11 +87,7 @@ pub const DropFiles = struct {
     /// it isn't a regular file (a directory, a FIFO: skipped in phase 1).
     pub fn addPath(d: *DropFiles, path: [:0]const u8) Error!?u32 {
         if (!supported) return error.Unsupported;
-        // NONBLOCK: a FIFO dropped by mistake doesn't hang the UI thread in
-        // open (it's then refused as not regular; regular files ignore it).
-        const rc = linux.openat(linux.AT.FDCWD, path.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .NONBLOCK = true, .NOCTTY = true }, 0);
-        if (linux.errno(rc) != .SUCCESS) return error.OpenFailed;
-        const fd: Fd = @intCast(rc);
+        const fd = openRead(path) orelse return error.OpenFailed;
         errdefer closeFd(fd);
         const st = try stat(fd);
         if (!st.regular) {
@@ -152,8 +150,32 @@ pub const DropFiles = struct {
 
 const Stat = struct { regular: bool, size: u64, mtime_ns: i128 };
 
+/// Open `path` read-only (null on failure). NONBLOCK: a FIFO dropped by
+/// mistake doesn't hang the UI thread in open (it's then refused as not
+/// regular; regular files ignore it).
+fn openRead(path: [*:0]const u8) ?Fd {
+    if (darwin) {
+        const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .NONBLOCK = true, .NOCTTY = true });
+        return if (fd < 0) null else fd;
+    }
+    if (!supported) return null;
+    const rc = linux.openat(linux.AT.FDCWD, path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .NONBLOCK = true, .NOCTTY = true }, 0);
+    if (linux.errno(rc) != .SUCCESS) return null;
+    return @intCast(rc);
+}
+
 fn stat(fd: Fd) Error!Stat {
     if (!supported) return error.Unsupported;
+    if (darwin) {
+        var st: std.c.Stat = undefined;
+        if (std.c.fstat(fd, &st) != 0) return error.NotReadable;
+        const m = st.mtime();
+        return .{
+            .regular = st.mode & std.c.S.IFMT == std.c.S.IFREG,
+            .size = @intCast(@max(st.size, 0)),
+            .mtime_ns = @as(i128, m.sec) * std.time.ns_per_s + m.nsec,
+        };
+    }
     var st: linux.Statx = undefined;
     const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .TYPE = true, .SIZE = true, .MTIME = true }, &st);
     if (linux.errno(rc) != .SUCCESS) return error.NotReadable;
@@ -172,6 +194,12 @@ fn check(e: Entry) Error!void {
 
 fn preadFd(fd: Fd, buf: []u8, offset: u64) Error!usize {
     if (!supported) return error.Unsupported;
+    if (darwin) while (true) {
+        const rc = std.c.pread(fd, buf.ptr, buf.len, @intCast(offset));
+        if (rc >= 0) return @intCast(rc);
+        if (std.c.errno(rc) == .INTR) continue;
+        return error.NotReadable;
+    };
     while (true) {
         const rc = linux.pread(fd, buf.ptr, buf.len, @intCast(offset));
         switch (linux.errno(rc)) {
@@ -183,7 +211,7 @@ fn preadFd(fd: Fd, buf: []u8, offset: u64) Error!usize {
 }
 
 fn closeFd(fd: Fd) void {
-    if (supported) _ = linux.close(fd);
+    if (darwin) _ = std.c.close(fd) else if (supported) _ = linux.close(fd);
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +223,17 @@ fn tmpPath(tmp: *testing.TmpDir, name: []const u8) ![:0]u8 {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const len = try tmp.dir.realPath(testing.io, &buf);
     return std.fmt.allocPrintSentinel(testing.allocator, "{s}/{s}", .{ buf[0..len], name }, 0);
+}
+
+/// Set a file's access and modification times to `sec` (the tests).
+fn setMtime(path: [*:0]const u8, sec: i64) !void {
+    if (darwin) {
+        const times = [2]std.c.timespec{ .{ .sec = sec, .nsec = 0 }, .{ .sec = sec, .nsec = 0 } };
+        try testing.expectEqual(@as(c_int, 0), std.c.utimensat(std.c.AT.FDCWD, path, &times, 0));
+        return;
+    }
+    const times = [2]linux.timespec{ .{ .sec = sec, .nsec = 0 }, .{ .sec = sec, .nsec = 0 } };
+    try testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.utimensat(linux.AT.FDCWD, path, &times, 0)));
 }
 
 test "DropFiles: add, read, release" {
@@ -234,9 +273,7 @@ test "DropFiles: add, read, release" {
     try testing.expectEqual(@as(usize, 1), d.count());
 
     // addFd takes a descriptor the OS gave.
-    const rc = linux.openat(linux.AT.FDCWD, path.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
-    try testing.expectEqual(linux.E.SUCCESS, linux.errno(rc));
-    const h3 = try d.addFd(@intCast(rc));
+    const h3 = try d.addFd(openRead(path).?);
     try d.read(h3, 0, 5, &out);
     try testing.expectEqualStrings("hello", out.items);
 }
@@ -268,8 +305,7 @@ test "DropFiles: a file changed since the drop is not readable" {
     try d.read(h, 0, 4, &out);
 
     // Same size, another mtime.
-    const times = [2]linux.timespec{ .{ .sec = 1_000_000, .nsec = 0 }, .{ .sec = 1_000_000, .nsec = 0 } };
-    try testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.utimensat(linux.AT.FDCWD, path.ptr, &times, 0)));
+    try setMtime(path, 1_000_000);
     try testing.expectError(error.NotReadable, d.read(h, 0, 4, &out));
 
     // A size change too.
@@ -290,9 +326,7 @@ test "DropFiles: a directory is not a file" {
     defer d.deinit();
     try testing.expect(try d.addPath(path) == null);
     try testing.expectEqual(@as(usize, 0), d.count());
-    const rc = linux.openat(linux.AT.FDCWD, path.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .DIRECTORY = true }, 0);
-    try testing.expectEqual(linux.E.SUCCESS, linux.errno(rc));
-    try testing.expectError(error.NotAFile, d.addFd(@intCast(rc)));
+    try testing.expectError(error.NotAFile, d.addFd(openRead(path).?));
     // A path that isn't there.
     try testing.expectError(error.OpenFailed, d.addPath("/nonexistent/oriel-drop-test"));
 }
