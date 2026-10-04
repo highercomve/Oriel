@@ -808,7 +808,9 @@ export class Renderer {
     // -Dnative_ui_prof (src/native_ui/prof.zig): each render's stages.
     const P = this.host.prof ? this.host.now : null;
     const t0 = P && P();
-    const bodyNode = this.element(body, rootCS, nodes, { blockify: true, textAlign: "left" });
+    // (rootBody: body is the root's flex item here, but a block in a
+    // browser's flow: its margins collapse with its first and last child's.)
+    const bodyNode = this.element(body, rootCS, nodes, { blockify: true, textAlign: "left", rootBody: true });
     const fixed = this.cur.fixed;
     this.cur = null;
     this.marks.clear();
@@ -2208,10 +2210,20 @@ function isTableDisplay(d) {
 }
 
 // A table box whose children are laid out as flex items (rows, cells).
-// Two adjoining vertical margins as one (CSS 2.2 §8.3.1): the largest
+// Adjoining vertical margins as one (CSS 2.2 §8.3.1): the largest
 // positive plus the most negative.
-function collapsed(a, b) {
-  return Math.max(a, b, 0) + Math.min(a, b, 0);
+function collapsed(...ms) {
+  return Math.max(...ms, 0) + Math.min(...ms, 0);
+}
+
+// A block its margins collapse through: a view with no children, no
+// height, min-height, vertical padding or border (CSS 2.2 §8.3.1).
+function emptyBlock(n) {
+  if (n.kind !== "view" || (n.kids && n.kids.length)) return false;
+  const p = n.props;
+  const zero = (v) => v === undefined || v === 0;
+  return (p.h === undefined || p.h === 0) && !p.minh && zero(p.pad?.[0]) && zero(p.pad?.[2]) && zero(p.bw?.[0]) && zero(p.bw?.[2]) &&
+    !p.scroll && !p.clip && !p.root;
 }
 
 // A margin in px, or null when it can't collapse here (a percentage).
@@ -2236,7 +2248,10 @@ function setMargin(n, side, v) {
 // clipped, positioned, an inline-block or a cell). `inLine`: kids in
 // lines (text, inline boxes, pseudo-elements), which separate blocks.
 function collapseMargins(nodes, kids, inLine, props, display, ctx) {
-  let prev = null, first = null, last = null, lastLine = false, seen = false;
+  // `prev` holds the margin slot below it, the adjoining margins there so
+  // far (`adj`), and how much of their collapse is already placed above
+  // that slot (`placed`: an empty block's own collapsed part, before it).
+  let prev = null, adj = [], placed = 0, first = null, last = null, lastLine = false, seen = false;
   for (const id of kids) {
     const n = nodes.get(id);
     if (!n || n.props.pos === "absolute") continue;
@@ -2245,17 +2260,40 @@ function collapseMargins(nodes, kids, inLine, props, display, ctx) {
     seen = true;
     lastLine = false;
     last = n;
-    if (prev) {
-      const a = pxMargin(prev, 2), b = pxMargin(n, 0);
-      if (a !== null && b !== null && a && b) {
-        setMargin(prev, 2, collapsed(a, b));
+    const t = pxMargin(n, 0), b = pxMargin(n, 2);
+    // An empty block (no content, height, padding or border between its
+    // margins): its own top and bottom margins collapse together, and with
+    // the ones around it (WebKit's: 12px and 18px between two blocks, 18).
+    if (emptyBlock(n) && t !== null && b !== null) {
+      if (prev) {
+        const x = collapsed(...adj, t);
+        setMargin(prev, 2, x - placed);
+        setMargin(n, 0, 0);
+        adj = [...adj, t, b];
+        placed = x;
+      } else {
+        adj = [t, b];
+        placed = t;
+      }
+      setMargin(n, 2, 0);
+      prev = n;
+      continue;
+    }
+    if (prev && t !== null && adj.every((v) => v !== null)) {
+      const total = collapsed(...adj, t);
+      if (total !== placed || t) {
+        setMargin(prev, 2, total - placed);
         setMargin(n, 0, 0);
       }
-    }
+    } else if (prev && emptyBlock(prev)) setMargin(prev, 2, collapsed(...adj) - placed);
     prev = n;
+    adj = [b];
+    placed = 0;
   }
+  // An empty block last: what it carries goes below it.
+  if (prev && emptyBlock(prev) && adj.length > 2) setMargin(prev, 2, collapsed(...adj) - placed);
   const own = { props };
-  const through = (display === "block" || display === "list-item") && !ctx.blockify && !props.scroll && !props.scrollx &&
+  const through = (display === "block" || display === "list-item") && (!ctx.blockify || ctx.rootBody) && !props.scroll && !props.scrollx &&
     !props.clip && props.pos !== "absolute";
   if (!through) return;
   const side = (n, s) => !(props.pad?.[s]) && !(props.bw?.[s]) && n;
