@@ -320,6 +320,9 @@ pub const Backend = struct {
     /// `size`, unhinted (host.fontMetrics: line-height: normal, where an
     /// inline image's line puts its baseline). docs/native-renderer.md.
     font_metrics: ?*const fn (ctx: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool = null,
+    /// Optional: the same for a CSS font-family list (render.js familyOf),
+    /// a line's strut in the block's own font; font_metrics without it.
+    font_metrics_family: ?*const fn (ctx: *anyopaque, size: f32, mono: bool, family: []const u8, out: *[3]f32) bool = null,
     /// Optional, for backends that mirror props (`props`): a node's
     /// transform or opacity changed alone (Tree.on_paint, the "x" op). The
     /// runtime sends such changes as "x" ops only when a backend that
@@ -920,12 +923,19 @@ export fn oriel_nui_canvas(p: *anyopaque, id: f64, nums: [*]const f64, len: usiz
     return @intFromBool(ok);
 }
 
-/// host.fontMetrics(size, mono): 0 when the backend has none.
-export fn oriel_nui_font_metrics(p: *anyopaque, size: f64, mono: c_int, out: *[3]f64) c_int {
+/// host.fontMetrics(size, mono, family?): 0 when the backend has none.
+export fn oriel_nui_font_metrics(p: *anyopaque, size: f64, mono: c_int, family: ?[*]const u8, family_len: usize, out: *[3]f64) c_int {
     const e = engineOf(p);
-    const metrics = e.backend.font_metrics orelse return 0;
     var m: [3]f32 = undefined;
-    if (!metrics(e.backend.ctx, @floatCast(std.math.clamp(size, 1, 512)), mono != 0, &m)) return 0;
+    const sz: f32 = @floatCast(std.math.clamp(size, 1, 512));
+    if (family != null and family_len > 0) if (e.backend.font_metrics_family) |metrics| {
+        if (metrics(e.backend.ctx, sz, mono != 0, family.?[0..family_len], &m)) {
+            out.* = .{ m[0], m[1], m[2] };
+            return 1;
+        }
+    };
+    const metrics = e.backend.font_metrics orelse return 0;
+    if (!metrics(e.backend.ctx, sz, mono != 0, &m)) return 0;
     out.* = .{ m[0], m[1], m[2] };
     return 1;
 }

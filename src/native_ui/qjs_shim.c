@@ -38,7 +38,7 @@ extern void oriel_nui_paint(void *opaque, const double *nums, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
 extern int oriel_nui_vsync(void *opaque);
 extern void oriel_nui_warm_fonts(void *opaque, const double *v, size_t count);
-extern int oriel_nui_font_metrics(void *opaque, double size, int mono, double *out);
+extern int oriel_nui_font_metrics(void *opaque, double size, int mono, const char *family, size_t family_len, double *out);
 extern int oriel_nui_canvas(void *opaque, double id, const double *nums, size_t len, const char *const *strs, const size_t *lens, size_t count);
 extern uint32_t oriel_nui_stamp_plan(void *opaque, const double *v, size_t len);
 #if defined(ORIEL_NATIVE_DOM)
@@ -355,8 +355,13 @@ static JSValue h_font_metrics(JSContext *ctx, JSValueConst this_val, int argc, J
     double size = 16;
     if (argc >= 1 && JS_ToFloat64(ctx, &size, argv[0]) < 0) return JS_EXCEPTION;
     int mono = argc >= 2 ? JS_ToBool(ctx, argv[1]) : 0;
+    // A third argument: the CSS font-family list (the backend may not use it).
+    size_t family_len = 0;
+    const char *family = argc >= 3 && JS_IsString(argv[2]) ? JS_ToCStringLen(ctx, &family_len, argv[2]) : NULL;
     double out[3];
-    if (!oriel_nui_font_metrics(opaque_of(ctx), size, mono, out)) return JS_UNDEFINED;
+    int ok = oriel_nui_font_metrics(opaque_of(ctx), size, mono, family, family_len, out);
+    if (family) JS_FreeCString(ctx, family);
+    if (!ok) return JS_UNDEFINED;
     JSValue arr = JS_NewArray(ctx);
     for (uint32_t i = 0; i < 3; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
     return arr;
@@ -902,7 +907,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "now", h_now, 0);
     set_fn(ctx, host, "vsync", h_vsync, 0);
     set_fn(ctx, host, "warmFonts", h_warm_fonts, 1);
-    set_fn(ctx, host, "fontMetrics", h_font_metrics, 2);
+    set_fn(ctx, host, "fontMetrics", h_font_metrics, 3);
     set_fn(ctx, host, "canvas", h_canvas, 3);
     set_fn(ctx, host, "sheetCache", h_sheet_cache, 2);
     set_fn(ctx, host, "sheetKeep", h_sheet_keep, 2);

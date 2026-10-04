@@ -490,6 +490,17 @@ and 1.7px are 1px at 1x, and at 3x 1.4px is 1.333px, 2.67px 2.333px and
 none). Chromium (Windows, Android) floors the width itself: a 1px border
 at 2.625 is 0.762, 3px 2.667. clientWidth and clientHeight are whole px.
 
+**Line struts** (render.js lineStrut, shared): a line of only boxes (an
+image, or an inline-block with nothing written in it or overflow other
+than visible: its baseline is its bottom edge) has the block's strut, as
+WKWebView lays it out (measured): the line reaches the font's ascent plus
+the half-leading (floored) above the baseline and the rest below, so a
+10px badge in a 12px system-ui line is 2px down and the line 15px; boxes
+side by side line up their bottoms. `host.fontMetrics(size, mono,
+family)` takes the block's CSS family (Backend.font_metrics_family; a
+backend without it gives the default sans-serif's). vertical-align other
+than baseline isn't done for these.
+
 **Margin collapsing** (render.js collapseMargins, shared): block flow's
 vertical margins collapse as WKWebView collapses them (measured on 15
 cases): adjacent siblings (the largest positive plus the most negative), a
