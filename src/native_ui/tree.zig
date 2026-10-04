@@ -1239,6 +1239,27 @@ test "radii: per axis, fitted as CSS does, inner ellipses" {
     try std.testing.expectEqual([4]f32{ 62, 62, 62, 62 }, ell.grown(2).x);
 }
 
+test "applyPaint: the x channel as numbers, unknown codes skipped" {
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",1,"view"],["c",2,"view"],["k",1,[2]],["r",1]]
+    );
+    const nan = std.math.nan(f64);
+    // An unknown code 9 with 6 values (a matrix, say) before node 2's paint.
+    t.applyPaint(&.{ 9, 2, 6, 1, 0, 0, 1, 5, 5, 1, 2, 5, 10, -4.5, nan, 45, 0.5 });
+    const n = t.nodes.get(2).?;
+    try std.testing.expectEqual(@as(?f32, 10), n.props.tx);
+    try std.testing.expectEqual(@as(?f32, -4.5), n.props.ty);
+    try std.testing.expectEqual(@as(?f32, null), n.props.sc);
+    try std.testing.expectEqual(@as(?f32, 45), n.props.rot);
+    try std.testing.expectEqual(@as(?f32, 0.5), n.props.op);
+    // A count past the end stops the read; a gone node is skipped.
+    t.applyPaint(&.{ 1, 99, 5, 1, 1, 1, 1, 1, 1, 2, 50, 1 });
+    try std.testing.expectEqual(@as(?f32, 10), n.props.tx);
+}
+
 test "Corner: one length or [x, y]" {
     const one = try std.json.parseFromSlice([4]Corner, std.testing.allocator, "[12, \"50%\", [10, 20], [\"50%\", 8]]", .{});
     defer one.deinit();
@@ -1954,11 +1975,39 @@ pub const Tree = struct {
     /// tx, ty, sc, rot, op as given (null: unset): drawing and frames only
     /// (translate moves a box after layout), no Yoga style.
     fn setPaint(t: *Tree, n: *Node, v: []const std.json.Value) void {
-        n.props.tx = numF(v[0]);
-        n.props.ty = numF(v[1]);
-        n.props.sc = numF(v[2]);
-        n.props.rot = numF(v[3]);
-        n.props.op = numF(v[4]);
+        t.setPaintValues(n, .{ numF(v[0]), numF(v[1]), numF(v[2]), numF(v[3]), numF(v[4]) });
+    }
+
+    /// The "x" channel as numbers (host.paint): entries of [code, node id,
+    /// count, count values], one after another. Code 1: a node's tx, ty,
+    /// sc, rot, op (5 values, NaN for unset), as the "x" op. An entry with
+    /// another code (or fewer values than its code needs) is skipped by its
+    /// count, so new codes (a 2D matrix) can come without breaking readers.
+    pub fn applyPaint(t: *Tree, nums: []const f64) void {
+        var i: usize = 0;
+        while (i + 3 <= nums.len) {
+            const count_f = nums[i + 2];
+            if (!(count_f >= 0) or count_f > @as(f64, @floatFromInt(nums.len - i - 3))) break;
+            const count: usize = @intFromFloat(count_f);
+            const v = nums[i + 3 .. i + 3 + count];
+            if (nums[i] == 1 and count >= 5) if (t.nodes.get(idOf(nums[i + 1]))) |n| {
+                t.setPaintValues(n, .{ finiteF(v[0]), finiteF(v[1]), finiteF(v[2]), finiteF(v[3]), finiteF(v[4]) });
+            };
+            i += 3 + count;
+        }
+        t.dirty = true;
+    }
+
+    fn finiteF(x: f64) ?f32 {
+        return if (std.math.isFinite(x) and @abs(x) < 1e30) @floatCast(x) else null;
+    }
+
+    fn setPaintValues(t: *Tree, n: *Node, v: [5]?f32) void {
+        n.props.tx = v[0];
+        n.props.ty = v[1];
+        n.props.sc = v[2];
+        n.props.rot = v[3];
+        n.props.op = v[4];
         // Frames are placed again with the new translation (Yoga has
         // nothing to lay out again).
         t.dirty = true;
@@ -1982,6 +2031,8 @@ pub const Tree = struct {
         defer if (unconsumed) |u| t.gpa.free(u);
         n.pending_value = null;
         n.measured_text_size = null;
+        // New props, maybe a new font: the backend measures the baseline again.
+        n.baseline = std.math.nan(f32);
         t.dropTextOverride(n);
         // Keep a little for the next props, not an old <img> data: URI's megabytes.
         _ = n.arena.reset(.{ .retain_with_limit = 64 * 1024 });

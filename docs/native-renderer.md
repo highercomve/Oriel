@@ -100,6 +100,18 @@ and `runtime-native.js` (the native DOM), and the build embeds the one chosen.
 | `canvas` (2d context) | One view that replays the recorded 2d program (see below) |
 | `display: none`, `[hidden]` | Nothing |
 
+An SVG's own `<style>` (Vite's logo: class fills and a
+`prefers-color-scheme` rule on a root with `fill="none"`) paints its
+shapes (icons.js `svgSheet`/`styleOf`): its rules, by specificity and
+order, media queries answered, over presentation attributes, and a shape's
+`style` attribute over both; `fill`, `stroke`, the stroke's width, cap and
+join, `display: none`, `visibility: hidden`, and `opacity`,
+`fill-opacity` and `stroke-opacity` (multiplied into the shape's colors).
+An SVG drawn as an image (`<img src="logo.svg">`) sees a light color
+scheme, as a browser's SVG image does; an inline one follows the page.
+Checked against WKWebView: the same logo inline and as an image, in dark
+mode (white parentheses inline, black in the image).
+
 Events go the other way: a click on a native view becomes a `click` on its
 element (bubbling through the fake DOM); text fields send `input`; Enter in
 a single-line field submits its `form`.
@@ -263,6 +275,20 @@ the animated nodes are sent each frame).
   setSelectionRange then typing over it (macOS). Not checked: paste and
   cut (the user's clipboard was left alone).
 
+**Transform and opacity frames** (the "x" channel): a frame that changes
+only elements' transform or opacity (an animation loop writing
+`style.transform`, a transition) skips the flattener (render.js
+updateBoxes) and goes to Zig as numbers, `host.paint(Float64Array)`
+(Tree.applyPaint): entries of `[code, node id, count, count values]`,
+one after another. Code 1: tx, ty, sc, rot, op (5 values, NaN for unset),
+as the JSON op `["x", id, tx, ty, sc, rot, op]` that a host without
+`paint` still gets. A reader skips an entry it doesn't know by its count,
+so new codes (a 2D matrix's 6 values) can be added without breaking
+older readers; give a new code its own number and value count. Backends
+get each change through `Tree.on_paint`, as before. (GTK desktop, render
+bench "animate 200 boxes": 72 → 82 fps with the numbers and updateBoxes
+updating its props in place.)
+
 **Gradient stops** (`bg.gradient`, each backend):
 
 - `stops` are `[r, g, b, a, pos]`. With only percentages, `pos` is a
@@ -355,8 +381,15 @@ box. As browsers draw it (box-decoration-break: slice):
   last, with the letter-spacing), the fragments from HitTestTextRange per
   line around the line's baseline, on whole pixels; checked against
   WebView2 (chips in a sentence, a wrapped one, bordered, margined and
-  rounded ones, on 1.6 lines, with letter-spacing). Android still draws
-  such runs plain.
+  rounded ones, on 1.6 lines, with letter-spacing). Android
+  (OrielNative.kt inlineBox): the room as a word joiner (U+2060: no
+  break) under a ReplacementSpan that wide before the box's first
+  character and after its last, the fragments from the StaticLayout's
+  selection path around each line's baseline; a run's own background (a
+  `<mark>`) is drawn the same way, over the content area, not as a
+  BackgroundColorSpan over the whole line box. Checked against the
+  Android WebView (a chip in a sentence, one that wraps, a bordered span,
+  `<mark>`, a padded highlight with margins that wraps).
 - An inline box at a line's start or end is a node in the line's row
   (Baselines): render.js takes its vertical padding and border off its
   top and bottom margins, so they overflow the line, as an inline box's
@@ -379,7 +412,12 @@ Pango's, which sat 0.2 to 1.2px off); checked against WebKitGTK. Win32's
 measure sets it where its uniform lines put the first (cssBaseline);
 checked against WebView2 (a label, button, checkbox, input, select and a
 28px span in one row, each pair alone, a chip after a 28px heading).
-Android should set `Node.baseline` in its measure. A box's baseline is
+Android's measure sets it from the StaticLayout's first line
+(getLineBaseline(0), or a plain line's style's one-character layout),
+with each text's natural size in the measure batch, cached beside the
+sizes; checked against the Android WebView (a code chip at a line's end,
+a button and a checkbox beside labels, an input, a 24px inline-block
+chip, a mixed-size line with a button). A box's baseline is
 its first child's top plus that child's baseline; while Yoga sizes a row
 it read the child's top from the box's previous layout (0 the first
 time), so a button beside text made the row a few pixels taller than
@@ -389,6 +427,32 @@ the child's top from the box's top padding and border and how it places
 the child (justify-content in a column, the child's alignment in a row);
 tree.zig's test "a button beside text sits on the text's baseline on
 the first layout" (29 without it, 28 as it should be).
+
+**The app's CSP** (shared): the runtime keeps the WebView's rules for
+compiling strings. When `security.csp`'s script directive (`script-src`,
+else `default-src`) lacks `'unsafe-eval'` (Oriel's default), the page's
+`eval` (direct and indirect), `new Function` and every other Function
+constructor (`Function.prototype.constructor`, async and generator ones)
+and a string given to `setTimeout`/`setInterval` are refused, with
+WebKit's `EvalError` message (naming the directive) and the violation
+logged as an error; `eval` of a non-string still returns it. Engine.create
+decides (engine.zig `evalRefusal`) and the QuickJS context refuses it
+itself (an Oriel hook in `JS_EvalObject`, quickjs.c
+`JS_OrielSetEvalRefused`), so a page can't get around it by replacing
+globals; the host's own `JS_Eval` (the runtime, page scripts) runs, and
+the runtime compiles nothing from strings itself (render.js parses a
+`calc()` of numbers: `arithmetic`). Inline event handlers (`onclick="…"`)
+are compiled by the host (`host.compileHandler`), refused when the
+directive has no `'unsafe-inline'` (or a nonce or hash turns it off), as
+in the WebView. Nothing hands the page a way to run text: `__host` is
+gone from the page's global object once the runtime has it, it has no
+prototype (a getter on Object.prototype never sees it), and its text
+runners (`evalScript`, `evalModule`, `compileHandler`) are kept in the
+runtime's closure, off it; `__oriel` is a read-only, frozen global and
+its `boot` (which runs the document's scripts) runs once. Checked
+against WKWebView under the default CSP: the same EvalErrors, `eval(42)`,
+no string timer, no inline handler; engine.zig's test covers both a
+refusing and an allowing CSP.
 
 **Screen scale** (each backend): `platform.dpr` in the platform JSON,
 the screen's pixels per CSS px, read as a window opens (Apple: the main
@@ -424,6 +488,14 @@ with code): every paragraph's top and height the same.
 
 
 **Text metrics** (each backend, to match its own WebView):
+
+- Android: text paints are linear with subpixel positions (TEXT_FLAGS in
+  OrielNative.kt, and canvas text): the canvas is in dp, and without them
+  Android hints glyph advances at that small size (13.33px Roboto came out
+  7 px short over a sentence, 12px 3 px long). A text's width goes to Yoga
+  to 1/64 px, as Chrome keeps it, not rounded up and 1 px more; the layout
+  drawn is a whole px wider so it doesn't wrap. Widths now match the
+  Android WebView's within Yoga's rounding (10 to 32px, bold, monospace).
 
 - `line-height: normal` (no `lh` in the props; the UA sheet sets none) is
   the font's ascent + descent + line gap, each rounded to whole pixels, as
@@ -475,7 +547,16 @@ with code): every paragraph's top and height the same.
   text field `size` (20) digit widths and 6px, a textarea `cols` digits by
   `rows` lines, a select its longest option and its arrow, a line the
   font's normal height (`Tree.fields_sized`: measureFn keeps a textarea's
-  width).
+  width). On macOS a `<button>` is WKWebView's (measured; render.js
+  UA_CSS_MAC and pushButton): while the page leaves its background,
+  border and `appearance` alone, AppKit's push button — no border
+  (WebKit's computed one is 0), padding `2px 6px 3px` plus the bezel's
+  2px a side, white with 4px corners and a hairline edge (the default
+  11px label: 18px tall); otherwise the CSS box on
+  ButtonFace (rgb(192, 192, 192)), its outset border darkened on the
+  bottom and right as WebKit's Color::dark (inset: top and left; on every
+  platform). WebKit draws a tall button (a 20px font) as a square bevel
+  button; Oriel keeps the push button. iOS buttons keep UA_CSS_WEBKIT's.
 - `Backend.font_metrics` (host.fontMetrics): `[ascent, descent, lineGap]`
   in px, unhinted, for the default sans (or monospace) at a size; the
   runtime uses it for an image's line (the baseline gap below an inline
