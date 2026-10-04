@@ -12,15 +12,21 @@
 //   evalScript(name, code)      run a page script at the top level
 //   evalModule(name, code)      run a module script (imports load from the assets) → promise
 //   focus(id), scrollIntoView(id, block), scrollTo(id, y)
+//   fileRead(reqId, handle, offset, length) → later __oriel.fileData(reqId,
+//                               ArrayBuffer | null, errorName); fileRelease(handle)
+//                               (a dropped file's bytes, blob.js; optional)
 //   platform (JSON), label (the window's label), url (the window's URL)
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
 
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
-import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules } from "./css.js";
-import { Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
+import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules, color as cssColor } from "./css.js";
+import { snapBorder, Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
+import { installBlob } from "./blob.js";
+import { installDnd } from "./dnd.js";
+import { EASES } from "./transitions.js";
 // The runtime's own weak caches keyed by nodes: marked so their entries
 // don't keep a node's wrapper from being replaced (a page's weak
 // references do: dom/store.zig prune).
@@ -120,6 +126,8 @@ globalThis.requestAnimationFrame = (cb) => {
   return id;
 };
 globalThis.cancelAnimationFrame = (id) => { rafCallbacks.delete(id); };
+// The runtime's own frames (a key scroll's glide), out of the page's reach.
+const nextFrame = globalThis.requestAnimationFrame;
 
 // ---------------------------------------------------------------------------
 // The document
@@ -204,6 +212,10 @@ g.MouseEvent = MouseEvent;
 g.PointerEvent = PointerEvent;
 g.TouchEvent = TouchEvent;
 g.InputEvent = g.FocusEvent = g.UIEvent = Event;
+// Blob, File, FileList, FileReader (blob.js); DragEvent and DataTransfer
+// over the engine's "drag" events (dnd.js).
+const blobs = installBlob(g, host);
+const dnd = installDnd(g, { MouseEvent, fire: fireAt, files: blobs, editable: dropEditable, dropText });
 // No shadow trees here yet: the class pages test against (Alpine checks
 // `el.parentNode instanceof ShadowRoot`).
 g.ShadowRoot ??= class ShadowRoot {};
@@ -473,29 +485,33 @@ const frameOf = (el) => {
   if (!renderer.rendering) renderer.render();
   return host.frame(renderer.idOf(el, "el")) || [0, 0, 0, 0];
 };
-// An element's border widths (top, right, bottom, left), for its client box.
+// An element's border widths (top, right, bottom, left), for its client
+// box: as the box has them, snapped to device pixels (render.js snapBorder).
 function borderOf(el) {
   const cs = renderer?.styleOf?.(el);
   if (!cs) return [0, 0, 0, 0];
-  return ["top", "right", "bottom", "left"].map((s) => {
-    const style = cs[`border-${s}-style`];
-    if (!style || style === "none" || style === "hidden") return 0;
-    const w = cs[`border-${s}-width`] ?? "medium";
-    return ({ thin: 1, medium: 3, thick: 5 })[w] ?? (parseFloat(w) || 0);
-  });
+  return ["top", "right", "bottom", "left"].map((s) => borderWidth(cs, s));
 }
+function borderWidth(cs, side) {
+  const style = cs[`border-${side}-style`];
+  if (!style || style === "none" || style === "hidden") return 0;
+  const w = cs[`border-${side}-width`] ?? "medium";
+  return snapBorder(({ thin: 1, medium: 3, thick: 5 })[w] ?? (parseFloat(w) || 0));
+}
+const BORDER_WIDTH = /^border-(top|right|bottom|left)-width$/;
 Object.defineProperties(elProto, {
   offsetWidth: { get() { return frameOf(this)[2]; }, configurable: true },
   offsetHeight: { get() { return frameOf(this)[3]; }, configurable: true },
   // The root element's client box is the viewport (innerWidth less the
   // window's scrollbar), as in browsers; a scroller's leaves its
-  // scrollbar's room out (the frame's sixth value).
+  // scrollbar's room out (the frame's sixth value). Whole px, as browsers
+  // give them (a box 20px wide in a 1/3px border at 3x: 20).
   clientWidth: {
     get() {
       if (this === document.documentElement) return viewport.width - ((renderer && host.frame(-1)?.[5]) || 0);
       const f = frameOf(this);
       const b = borderOf(this);
-      return Math.max(0, f[2] - b[1] - b[3] - (f[5] || 0));
+      return Math.max(0, Math.round(f[2] - b[1] - b[3] - (f[5] || 0)));
     },
     configurable: true,
   },
@@ -504,23 +520,25 @@ Object.defineProperties(elProto, {
     get() {
       if (this === document.documentElement) return viewport.height;
       const b = borderOf(this);
-      return Math.max(0, frameOf(this)[3] - b[0] - b[2]);
+      return Math.max(0, Math.round(frameOf(this)[3] - b[0] - b[2]));
     },
     configurable: true,
   },
   scrollHeight: { get() { const f = frameOf(this); return f[4] ?? f[3]; }, configurable: true },
+  // (The frame's ninth value; a host without it: the box's width.)
+  scrollWidth: { get() { const f = frameOf(this); return f[8] ?? f[2]; }, configurable: true },
   offsetTop: { get() { return frameOf(this)[1]; }, configurable: true },
   offsetLeft: { get() { return frameOf(this)[0]; }, configurable: true },
   // The scroll offsets (the frame's seventh and eighth values); the
   // root's and the scrolling element's are the window's (node -1).
   scrollTop: {
     get() { return scrollPx((renderer && host.frame(scrollIdOf(this))?.[6]) || 0); },
-    set(y) { if (renderer) { renderer.render(); host.scrollTo(scrollIdOf(this), +y || 0); } },
+    set(y) { if (renderer) { renderer.render(); pageScroll(scrollIdOf(this), +y || 0); } },
     configurable: true,
   },
   scrollLeft: {
     get() { return scrollPx((renderer && host.frame(scrollIdOf(this))?.[7]) || 0); },
-    set(x) { if (renderer) { renderer.render(); host.scrollTo(scrollIdOf(this), NaN, +x || 0); } },
+    set(x) { if (renderer) { renderer.render(); pageScroll(scrollIdOf(this), NaN, +x || 0); } },
     configurable: true,
   },
 });
@@ -531,7 +549,7 @@ elProto.scrollTo = elProto.scroll = function (x, y) {
   const [left, top] = scrollArgs(x, y);
   if (!renderer) return;
   renderer.render();
-  host.scrollTo(scrollIdOf(this), top === undefined ? NaN : +top || 0, left === undefined ? NaN : +left || 0);
+  pageScroll(scrollIdOf(this), top === undefined ? NaN : +top || 0, left === undefined ? NaN : +left || 0);
 };
 elProto.scrollBy = function (x, y) {
   const [left, top] = scrollArgs(x, y);
@@ -556,6 +574,7 @@ elProto.scrollIntoView = function (opts) {
   // render now. It returns nothing, so the page can't tell, and a page that
   // keeps scrolling to its newest line (a chat streaming tokens) doesn't
   // render the whole document once per token.
+  glide = null;
   if (renderer.dirty) { renderer.pendingScroll = { el: this, block }; return; }
   host.scrollIntoView(renderer.idOf(this, "el"), block);
 };
@@ -574,7 +593,7 @@ Object.getPrototypeOf(document.createElement("div")).click = elProto.click = fun
 // window.scrollTo(x, y) and scrollTo({ top }).
 g.scrollTo = g.scroll = (x, y) => {
   const [left, top] = scrollArgs(x, y);
-  if (renderer) { renderer.render(); host.scrollTo(-1, top === undefined ? NaN : +top || 0, left === undefined ? NaN : +left || 0); }
+  if (renderer) { renderer.render(); pageScroll(-1, top === undefined ? NaN : +top || 0, left === undefined ? NaN : +left || 0); }
 };
 g.scrollBy = (x, y) => {
   const [left, top] = scrollArgs(x, y);
@@ -613,6 +632,41 @@ function fireChange(el) {
   if (el.value === changeBase.get(el)) return;
   changeBase.set(el, el.value);
   el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+// Where dropped text goes by default (dnd.js): an enabled, writable text
+// field or textarea, or contenteditable.
+const DROP_INPUTS = new Set(["", "text", "search", "url", "tel", "password", "email"]);
+function dropEditable(el) {
+  if (!el || el.nodeType !== 1) return false;
+  if (el.localName === "textarea" || el.localName === "input") {
+    if (el.localName === "input" && !DROP_INPUTS.has((el.getAttribute("type") || "").toLowerCase())) return false;
+    return !el.hasAttribute("disabled") && !el.hasAttribute("readonly");
+  }
+  return !!el.isContentEditable;
+}
+// Text dropped on such an element and not taken by the page: as a native
+// edit, beforeinput (insertFromDrop, cancelable), the new value (a field's
+// at its selection, a one-line field's without line breaks), then input.
+// The field takes the focus first, as in a browser. False when the page
+// prevented it.
+function dropText(el, text) {
+  if (active !== el) el.focus();
+  const before = inputEvent("beforeinput", "insertFromDrop", text, true);
+  el.dispatchEvent(before);
+  if (before.defaultPrevented) return false;
+  if (el.localName === "input" || el.localName === "textarea") {
+    const t = el.localName === "input" ? text.replace(/[\r\n]+/g, "") : text;
+    const value = String(el.value ?? "");
+    const [start, end] = selectionOf(el);
+    setNative(el, "value", value.slice(0, start) + t + value.slice(end));
+    edited.add(el);
+    el.setSelectionRange(start + t.length, start + t.length);
+    el.dispatchEvent(inputEvent("input", "insertFromDrop", t, false));
+    return true;
+  }
+  el.appendChild(document.createTextNode(text));
+  el.dispatchEvent(inputEvent("input", "insertFromDrop", text, false));
+  return true;
 }
 const focusEvent = (type, bubbles, relatedTarget) => {
   const ev = new Event(type, { bubbles });
@@ -747,9 +801,12 @@ Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
 // density), 1 without one; resolution media queries ask the same.
 viewport.dpr = platform.dpr > 0 ? +platform.dpr : 1;
 Object.defineProperty(g, "devicePixelRatio", { get: () => viewport.dpr, configurable: true });
+// (A border width as the box has it: snapped, in px, as WebKit's
+// "0.333333px".)
 g.getComputedStyle = (el) => {
   const cs = renderer?.styleOf(el) || {};
-  return new Proxy({}, { get: (_, k) => (k === "getPropertyValue" ? (p) => cs[p] ?? "" : cs[String(k).replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())] ?? "") });
+  const value = (p) => { const m = BORDER_WIDTH.exec(p); return m && renderer ? `${+borderWidth(cs, m[1]).toFixed(6)}px` : cs[p] ?? ""; };
+  return new Proxy({}, { get: (_, k) => (k === "getPropertyValue" ? value : value(String(k).replace(/[A-Z]/g, (c) => "-" + c.toLowerCase()))) });
 };
 g.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
 g.IntersectionObserver ??= class { observe() {} unobserve() {} disconnect() {} };
@@ -944,7 +1001,8 @@ function keyEvent(el, data, type = "keydown") {
 }
 
 // ArrowUp/Down 40px, PageUp/Down and Space (Shift: up) 87.5% of the view,
-// Home/End to the ends, as Chromium. True when a scroller took it.
+// Home/End to the ends, as Chromium. True when a scroller took it. The
+// scroller glides there (glideTo).
 function scrollKey(from, key, shift) {
   if (!renderer || !host.frame) return false;
   if (from && (textField(from) || from.localName === "select" || from.localName === "textarea" || from.isContentEditable)) return false;
@@ -969,12 +1027,42 @@ function scrollKey(from, key, shift) {
   const f = host.frame(target);
   if (!f) return false;
   const view = clientH(f, targetEl);
-  const top = f[6] || 0;
+  // A key while it glides: on from where that glide was going, as browsers.
+  const top = glide?.target === target ? glide.to : f[6] || 0;
   const by = Math.abs(step) <= 1 ? Math.round(step * view) : step;
   const want = Math.max(0, Math.min(f[4] - view, top + by));
   if (want === top) return false;
-  host.scrollTo(target, want);
+  glideTo(target, f[6] || 0, want, Math.abs(step) === 40 ? "line" : "page");
   return true;
+}
+
+// A key scroll glides as WKWebView's does (measured on macOS, a scroll
+// event a frame): a page, Space, Home or End over 200 ms on CSS's
+// \`ease\`, however far; an arrow's 40px over 256 ms on \`ease-out\`, 20 ms
+// in (to within a pixel). Chromium's (Windows, Android) is to be measured
+// there; until then the same. A page's own scroll (scrollTo, scrollTop,
+// scrollIntoView), a touch or a wheel stops it where it is: the wheel, as
+// the scroller then reports an offset this glide didn't set (scrolled).
+const GLIDES = { page: [200, 0, EASES.ease], line: [256, 20, EASES["ease-out"]] };
+let glide = null; // { target, from, to, t0, ms, delay, ease, set: offsets set lately }
+function glideTo(target, from, to, kind) {
+  const [ms, delay, ease] = GLIDES[kind];
+  const g1 = { target, from, to, t0: performance.now(), ms, delay, ease, set: [from] };
+  glide = g1;
+  const step = (now) => {
+    if (glide !== g1) return;
+    const p = Math.min(1, Math.max(0, (now - g1.t0 - delay) / ms));
+    const y = from + (to - from) * ease(p);
+    g1.set = [...g1.set.slice(-2), y];
+    host.scrollTo(target, y);
+    if (p < 1) nextFrame(step); else glide = null;
+  };
+  nextFrame(step);
+}
+// The page's scrolls: a key scroll's glide stops.
+function pageScroll(id, top, left) {
+  glide = null;
+  host.scrollTo(id, top, left);
 }
 
 const WEBKIT_KEYPRESS = platform.os === "macos" || platform.os === "ios";
@@ -1087,6 +1175,30 @@ let lastPointer = [0, 0]; // the last pointer event's clientX/Y (a click's)
 const POINTER_TYPES = { down: ["pointerdown", "mousedown", "touchstart"], move: ["pointermove", "mousemove", "touchmove"], up: ["pointerup", "mouseup", "touchend"], cancel: ["pointercancel", null, "touchcancel"] };
 // Types the document already forwards to the window (above).
 const FORWARDED = new Set(["mousedown", "mouseup", "pointerdown", "pointerup"]);
+// The buttons each pointer held after its last event: a press or release
+// changes one bit, which is the event's `button` (backends send only buttons).
+const heldButtons = new Map(); // pointerId → buttons
+let lastPointerType = "mouse";
+// `buttons` bit → MouseEvent.button: primary 0, secondary 2, auxiliary 1, back 3, forward 4.
+const BUTTON_OF_BIT = [[1, 0], [2, 2], [4, 1], [8, 3], [16, 4]];
+function changedButton(bits) {
+  for (const [bit, button] of BUTTON_OF_BIT) if (bits & bit) return button;
+  return 0;
+}
+
+// An engine's event at `target`, then at the window's listeners while it
+// still bubbles (unless the document forwards its type there already).
+// True when it was prevented.
+function fireAt(target, ev) {
+  target.dispatchEvent(ev);
+  if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
+    // The dispatch is over (the native DOM clears its target then): the
+    // window's listeners still see the element, as in a browser.
+    if (ev.target !== target) Object.defineProperty(ev, "target", { value: target, configurable: true });
+    fireWindow(ev);
+  }
+  return ev.defaultPrevented;
+}
 
 function pointerEvent(el, data) {
   const [phase, x, y, buttons, pointerId, pointerType, flags] = data;
@@ -1098,24 +1210,25 @@ function pointerEvent(el, data) {
   if (phase === "down") captured.set(pointerId, target);
   else if (phase === "up" || phase === "cancel") captured.delete(pointerId);
   const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
-  const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button: phase === "move" ? -1 : 0, buttons, ...mods };
-  const fire = (ev) => {
-    target.dispatchEvent(ev);
-    if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
-      // The dispatch is over (the native DOM clears its target then): the
-      // window's listeners still see the element, as in a browser.
-      if (ev.target !== target) Object.defineProperty(ev, "target", { value: target, configurable: true });
-      fireWindow(ev);
-    }
-    return ev.defaultPrevented;
-  };
+  const held = heldButtons.get(pointerId) || 0;
+  const button = phase === "move" ? -1 : changedButton(phase === "down" ? buttons & ~held : held & ~buttons);
+  if (phase === "up" || phase === "cancel") heldButtons.delete(pointerId);
+  else heldButtons.set(pointerId, buttons);
+  lastPointerType = pointerType || "mouse";
+  const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button, buttons, ...mods };
+  const fire = (ev) => fireAt(target, ev);
   let prevented = fire(new PointerEvent(names[0], { ...init, pointerId, pointerType, isPrimary: true, pressure: buttons ? 0.5 : 0 }));
   if (phase === "cancel") tapFocus = null;
   if (pointerType === "touch") {
     const touch = { identifier: pointerId, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y, radiusX: 1, radiusY: 1, force: 0.5 };
     const on = phase === "down" || phase === "move" ? [touch] : [];
     if (fire(new TouchEvent(names[2], { bubbles: true, cancelable: phase !== "cancel", touches: on, targetTouches: on, changedTouches: [touch], ...mods }))) prevented = true;
-  } else if (names[1] && fire(new MouseEvent(names[1], { ...init, button: 0 }))) prevented = true;
+  } else {
+    if (names[1] && fire(new MouseEvent(names[1], { ...init, button: Math.max(button, 0) }))) prevented = true;
+    // A non-primary button's release: auxclick (the primary's click comes
+    // from the backend as "click").
+    if (phase === "up" && button > 0) fire(new MouseEvent("auxclick", { ...init, cancelable: true }));
+  }
   if (phase === "down" && !prevented) {
     if (pointerType === "touch") tapFocus = target;
     else { tapFocus = null; pressFocus(target); }
@@ -1169,8 +1282,9 @@ function hoverEvents(from, to) {
 // browser has them for every event. React checks for them to tell whether
 // the `input` event exists, and without them falls back to an old-IE path
 // that never sees a field's input (onChange never ran).
-const HANDLER_EVENTS = ("abort animationend beforeinput blur change click contextmenu dblclick error focus focusin focusout " +
-  "input invalid keydown keypress keyup load mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup " +
+const HANDLER_EVENTS = ("abort animationend auxclick beforeinput blur change click contextmenu dblclick error focus focusin focusout " +
+  "drag dragend dragenter dragleave dragover dragstart drop input invalid keydown keypress keyup load mousedown " +
+  "mouseenter mouseleave mousemove mouseout mouseover mouseup " +
   "pointercancel pointerdown pointermove pointerup reset resize scroll select submit toggle touchcancel touchend " +
   "touchmove touchstart transitionend wheel").split(" ");
 for (const proto of [elProto, Object.getPrototypeOf(document)]) {
@@ -1486,6 +1600,7 @@ const oriel = {
       const b3 = P && P();
       document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
       fireWindow(new Event("load"));
+      watchThemeColor();
       if (P) host.log(1, `PROF boot: styles ${(b1 - b0).toFixed(2)} (${engine.rules.length} rules), renderer ${(b2 - b1).toFixed(2)}, scripts ${(b3 - b2).toFixed(2)}, events ${(P() - b3).toFixed(2)}`);
       return true;
     });
@@ -1545,7 +1660,12 @@ const oriel = {
         // data [phase, x, y, buttons, pointerId, pointerType, modifiers].
         // True on "down" when the page takes the drag (touch-action: none,
         // or a listener prevented the default): the backend doesn't scroll.
-        case "pointer": if (data?.[0] === "down" || data?.[0] === 0) keyboardFocus = false; return pointerEvent(el, data);
+        case "pointer":
+          if (data?.[0] === "down" || data?.[0] === 0) {
+            keyboardFocus = false;
+            if (data[5] === "touch") glide = null;
+          }
+          return pointerEvent(el, data);
         // The window went to a screen with another scale (data: the new
         // devicePixelRatio): resolution queries' listeners hear it.
         case "dpr": {
@@ -1560,7 +1680,13 @@ const oriel = {
         case "focus": if (el) document.__active = el; return false;
         case "blur": if (el && document.__active === el) document.__active = null; return false;
         case "contextmenu": {
-          const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1] });
+          // data [x, y, button?, buttons?, modifiers?]: the backend's (macOS's
+          // Control-click is the primary button's), else from a mouse the
+          // secondary button (a touch's long press has none).
+          const mouse = lastPointerType !== "touch";
+          const [button, buttons] = data.length >= 4 ? [data[2], data[3]] : mouse ? [2, 2] : [0, 0];
+          const f = data[4] | 0;
+          const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1], button, buttons, shiftKey: !!(f & 1), ctrlKey: !!(f & 2), altKey: !!(f & 4), metaKey: !!(f & 8) });
           const on = el || document.body;
           on.dispatchEvent(ev);
           // The window's listeners see the element (as pointerEvent's fire).
@@ -1580,16 +1706,27 @@ const oriel = {
         case "press": markChain("data-nui-active", el); return false;
         case "release": markChain("data-nui-active", null); return false;
         case "back": if (!history.length) return false; g.history.back(); return true;
+        // A drag from the system over the page, or its drop (dnd.js): an
+        // effect mask (copy 1, move 2, link 4), not a bool.
+        case "drag": {
+          try { return dnd.dragEvent(el, data) | 0; } catch (e) { console.error(e); return 0; }
+        }
       }
       return false;
     });
+  },
+  // The host's answer to fileRead: the bytes, or null and an error name.
+  fileData(reqId, buf, errorName) {
+    guard(() => blobs.fileData(reqId, buf, errorName));
   },
   // Scrollers moved (the engine, at most once a frame): [[id, top, left]].
   // "scroll" on each, as browsers fire it (it doesn't bubble; the
   // window's goes to the document, then the window).
   scrolled(list) {
     guard(() => {
-      for (const [id] of list) {
+      for (const [id, top] of list) {
+        // An offset the key scroll's glide didn't set: a wheel took over.
+        if (glide?.target === id && typeof top === "number" && !glide.set.some((y) => Math.abs(y - top) <= 1.5)) glide = null;
         if (id === -1) {
           const ev = new Event("scroll", { bubbles: true });
           document.dispatchEvent(ev);
@@ -1656,9 +1793,29 @@ const oriel = {
 };
 Object.defineProperty(g, "__oriel", { value: Object.freeze(oriel), writable: false, configurable: false, enumerable: false });
 
+// <meta name="theme-color"> (the first whose media matches) → the window's
+// caption, as the WebView bridge does (core/window_commands.zig): [r, g, b, a]
+// 0-255, or null. Sent again only when it changes.
+let themeColorSent = "unset";
+function updateThemeColor() {
+  const meta = [...document.querySelectorAll('meta[name="theme-color"]')].find((m) => !m.getAttribute("media") || mediaMatches(m.getAttribute("media")));
+  const c = cssColor(meta?.getAttribute("content") || "");
+  const value = c ? [c[0], c[1], c[2], c[3] * 255].map((x) => Math.max(0, Math.min(255, Math.round(x)))) : null;
+  const key = JSON.stringify(value);
+  if (key === themeColorSent) return;
+  themeColorSent = key;
+  invoke("oriel:window:setThemeColor", { label: host.label || "main", color: value }).catch(() => {});
+}
+function watchThemeColor() {
+  updateThemeColor();
+  const head = document.head || document.documentElement;
+  new MutationObserver(() => updateThemeColor()).observe(head, { subtree: true, childList: true, attributes: true });
+}
+
 // matchMedia lists whose answer changed since `before` (mediaSnapshot):
 // their change listeners.
 function mediaChanged(before) {
+  if (themeColorSent !== "unset") updateThemeColor();
   for (const ml of mediaLists) {
     const m = ml.matches;
     if (before.get(ml) !== m) for (const fn of ml.listeners) { try { fn({ matches: m, media: ml.media }); } catch (e) { console.error(e); } }

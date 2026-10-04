@@ -38,6 +38,7 @@ pub const postCloseWindow = window.postCloseWindow;
 pub const focusWindow = window.focusWindow;
 pub const destroyWindow = window.destroyWindow;
 pub const setWindowTitle = window.setWindowTitle;
+pub const setWindowThemeColor = window.setWindowThemeColor;
 pub const setWindowFullscreen = window.setWindowFullscreen;
 pub const isWindowFullscreen = window.isWindowFullscreen;
 pub const setWindowMaximized = window.setWindowMaximized;

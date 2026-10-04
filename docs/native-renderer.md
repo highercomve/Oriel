@@ -184,7 +184,14 @@ the animated nodes are sent each frame).
 - Keys scroll as browsers' default when the page doesn't take them:
   ArrowUp/Down 40px, PageUp/Down and Space (Shift: up) 87.5% of the view
   (whole px), Home/End to the ends, on the focused element's nearest
-  scroller, else the window; never from a field.
+  scroller, else the window; never from a field. The scroller glides
+  there as WKWebView's does (measured on macOS; main.js glideTo): a page,
+  Space, Home or End over 200 ms on CSS's `ease`, however far; an arrow's
+  40px over 256 ms on `ease-out`, 20 ms in; one `host.scrollTo` (so one
+  scroll event) a frame. A key while it glides goes on from where it was
+  going; the page's own scroll, a touch, or a wheel (an offset in
+  `scrolled` the glide didn't set) stops it. Chromium's curve is still to
+  be measured; until then every platform glides so.
 
 **Scrollbars** (each backend):
 
@@ -223,7 +230,14 @@ the animated nodes are sent each frame).
 - A scroller's `content_h` (and `content_w`) reaches its bottom (right)
   border: `content_h - frame.h` is how far it scrolls (to scrollHeight -
   clientHeight), and its children clip at its padding box, not over its
-  borders. `host.frame[4]` (scrollHeight) is the padding box's content.
+  borders. `host.frame[4]` (scrollHeight) is the padding box's content,
+  `host.frame[8]` (scrollWidth) likewise, at least the clientWidth. A
+  horizontal scroller's range takes in its right padding where Chromium's
+  does (`Tree.inline_end_padding`); WebKit's ends at the content's edge
+  (measured on macOS; AppKit and UIKit set it false), its bottom padding
+  counted either way. scrollWidth, scrollHeight, clientWidth and
+  scrollLeft match WKWebView for an overflowing, a narrow and a plain box;
+  not yet for `overflow: hidden`, which WebKit lets a script scroll.
 
 **Field edits and selection** (each backend with native text fields):
 
@@ -466,6 +480,15 @@ another scale, the backend sends `Engine.event(0, "dpr", scale)`:
 devicePixelRatio follows and resolution queries' `change` listeners fire
 (macOS: the view's viewDidChangeBackingProperties). `document.documentElement`'s
 clientWidth and clientHeight are the viewport's, as in browsers.
+Border widths snap to its device pixels as the platform's browser snaps
+them (render.js snapBorder; the box's `bw`, an inline box's, clientWidth
+and getComputedStyle): a width under one device pixel is one, any other
+floored to whole device pixels. WebKit (macOS, iOS, Linux) floors the
+width as its 1/64 px layout unit holds it: measured in WKWebView, 0.5px
+and 1.7px are 1px at 1x, and at 3x 1.4px is 1.333px, 2.67px 2.333px and
+0.34px 0 (its unit holds 0.328: not under one device pixel, floored to
+none). Chromium (Windows, Android) floors the width itself: a 1px border
+at 2.625 is 0.762, 3px 2.667. clientWidth and clientHeight are whole px.
 
 **Mixed-font line boxes** (each backend): with `line-height: normal`
 (no `lh`), a line's box stacks every inline box on it on the baseline,
@@ -966,7 +989,7 @@ taller line box. An `<img>` is clipped to its content edge's curve.
 | The page | one flipped NSView, the window's content view | one UIView in the controller's safe area, like a web view |
 | `input` / `textarea` / `select` | NSTextField (NSSecureTextField), NSTextView in an NSScrollView, NSPopUpButton | UITextField, UITextView, a UIButton with a UIMenu |
 | `input type=range` | NSSlider (`accent-color` tints the track) | UISlider |
-| Input | clicks (control-click and right-click: `contextmenu`), hover and the hand cursor, the scroll wheel and trackpad, keys | taps, long presses (`contextmenu`), drags with a fling (gesture recognizers) |
+| Input | clicks; the right, middle, back and forward buttons as pointer downs and ups (`buttons` from `pressedMouseButtons`), `contextmenu` on the right button's press or a Control-click's (button 0, buttons 1, with `ctrlKey`; its click still follows), `auxclick` after a non-primary release, all in WKWebView's order (measured); hover and the hand cursor, the scroll wheel and trackpad, keys | taps, long presses (`contextmenu`), drags with a fling (gesture recognizers) |
 | Dark mode | the view's effective appearance | the trait collection |
 
 Native controls sit above everything the page draws, so each one is held

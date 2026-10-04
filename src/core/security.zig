@@ -174,6 +174,27 @@ pub fn comptimeHeaderLines(comptime headers: []const Header) []const u8 {
 
 /// JavaScript run first in every bridged document (top frame only: the
 /// Windows script also runs in frames).
+/// WebView bridges: a file dropped on a text field the page didn't handle
+/// would be inserted as the file's absolute path (WebKit's default action;
+/// measured in WKWebView and WebKitGTK). Cancels only that default: the page still gets
+/// every drag event, and a page that handles the drop is unaffected.
+/// Spliced into every WebView bridge, inside its closure.
+pub const drop_guard_js =
+    \\  window.addEventListener("drop", (e) => {
+    \\    const dt = e.dataTransfer;
+    \\    if (e.defaultPrevented || !dt) return;
+    \\    // WebKitGTK offers a file drag as text/uri-list, not Files, and hides
+    \\    // its file: URIs (getData gives ""); a web link's URI stays readable.
+    \\    const types = [...dt.types];
+    \\    const uri = types.includes("text/uri-list") ? dt.getData("text/uri-list") || "" : null;
+    \\    const files = types.includes("Files") || (uri !== null && (!uri.trim() || /^file:/im.test(uri)));
+    \\    if (!files) return;
+    \\    const t = e.target instanceof Element ? e.target : null;
+    \\    if (t && t.closest("input, textarea, [contenteditable]:not([contenteditable=false])")) e.preventDefault();
+    \\  });
+    \\
+;
+
 pub fn bridgePrelude(comptime sec: Security) []const u8 {
     return if (sec.freeze_prototype) "if (window === window.top) Object.freeze(Object.prototype);\n" else "";
 }

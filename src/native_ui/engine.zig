@@ -9,6 +9,8 @@
 const std = @import("std");
 const tree_mod = @import("tree.zig");
 const prof = @import("prof.zig");
+/// Files dropped into the page (Engine.drops).
+pub const drop = @import("drop.zig");
 pub const Tree = tree_mod.Tree;
 pub const Node = tree_mod.Node;
 
@@ -164,6 +166,74 @@ test "the app's CSP: eval and new Function refused without 'unsafe-eval', the ho
     try std.testing.expect(try underCsp(null, allowed));
 }
 
+test "drops: host.fileRead is queued for the engine's next turn, drags answer a mask" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    if (comptime !(@import("builtin").os.tag == .linux)) return error.SkipZigTest;
+    const Stub = struct {
+        var timers: std.ArrayList(u32) = .empty;
+        fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 0, 0 };
+        }
+        fn none(_: *anyopaque) void {}
+        fn removed(_: *anyopaque, _: *Node) void {}
+        fn timer(_: *anyopaque, _: *Engine, id: u32, _: u32) void {
+            timers.append(std.testing.allocator, id) catch {};
+        }
+        fn invoke(_: *anyopaque, _: *Engine, _: u32, _: []const u8, _: []const u8) void {}
+        fn focus(_: *anyopaque, _: *Node) void {}
+    };
+    defer Stub.timers.deinit(std.testing.allocator);
+    var ctx: u8 = 0;
+    const e = try Engine.create(std.testing.allocator, .{
+        .ctx = &ctx,
+        .measure = Stub.measure,
+        .laid_out = Stub.none,
+        .removed = Stub.removed,
+        .add_timer = Stub.timer,
+        .invoke = Stub.invoke,
+        .focus = Stub.focus,
+    }, &.{}, "{}", "main", "app://app/index.html", 400, 300);
+    defer e.destroy();
+    e.boot(false, false);
+    Stub.timers.clearRetainingCapacity();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "f.txt", .data = "abc" });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/f.txt", .{path_buf[0..len]}, 0);
+    defer std.testing.allocator.free(path);
+    const handle = (try e.drops.addPath(path)).?;
+
+    // Two reads: one turn, nothing answered inside the calls.
+    oriel_nui_file_read(e, 1, handle, 0, 3);
+    oriel_nui_file_read(e, 2, handle + 100, 0, 3);
+    try std.testing.expectEqual(@as(usize, 2), e.file_reads.items.len);
+    try std.testing.expectEqualSlices(u32, &.{Engine.task_timer_id}, Stub.timers.items);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try std.testing.expect(e.fileReadInto(e.file_reads.items[0], &buf) == null);
+    try std.testing.expectEqualStrings("abc", buf.items);
+    try std.testing.expectEqualStrings("NotFoundError", e.fileReadInto(e.file_reads.items[1], &buf).?);
+    try std.testing.expectEqualStrings("NotReadableError", e.fileReadInto(.{ .req_id = 3, .handle = handle, .offset = null, .len = 3 }, &buf).?);
+    try std.testing.expect(jsIndex(-1) == null and jsIndex(1.5) == null and jsIndex(std.math.inf(f64)) == null and jsIndex(7).? == 7);
+
+    // The turn answers them (once the runtime has __oriel.fileData).
+    const has_file_data = "typeof __oriel.fileData === \"function\"";
+    if (oqjs_eval(e.js, has_file_data, has_file_data.len, "<test>") == 1) {
+        e.timerFired(Engine.task_timer_id);
+        try std.testing.expectEqual(@as(usize, 0), e.file_reads.items.len);
+    }
+    oriel_nui_file_release(e, handle);
+    try std.testing.expectEqual(@as(usize, 0), e.drops.count());
+
+    // A drag's answer is a mask (0 from a runtime without drags).
+    const mask = e.dragEvent(0, "[\"enter\",10,10,7,1,0,1,[[\"file\",\"\"]]]");
+    try std.testing.expect(mask & ~@as(u8, 7) == 0);
+    _ = e.dragEvent(0, "[\"leave\",1]");
+}
+
 test "evalRefusal: script-src, else default-src, without 'unsafe-eval'" {
     var buf: [512]u8 = undefined;
     try std.testing.expect(evalRefusal(&buf, null) == null);
@@ -183,6 +253,8 @@ test "evalRefusal: script-src, else default-src, without 'unsafe-eval'" {
 }
 extern fn oqjs_eval(h: *anyopaque, code: [*]const u8, len: usize, name: [*:0]const u8) c_int;
 extern fn oqjs_event(h: *anyopaque, id: i64, kind: [*]const u8, kind_len: usize, json: [*]const u8, json_len: usize) c_int;
+extern fn oqjs_event_code(h: *anyopaque, id: i64, kind: [*]const u8, kind_len: usize, json: [*]const u8, json_len: usize, out: *i32) c_int;
+extern fn oqjs_file_data(h: *anyopaque, req_id: u32, data: [*]const u8, len: usize, has_data: c_int, err: [*]const u8, err_len: usize) c_int;
 extern fn oqjs_number_call(h: *anyopaque, name: [*:0]const u8, value: f64) c_int;
 extern fn oqjs_render(h: *anyopaque) c_int;
 extern fn oqjs_eval_bytecode(h: *anyopaque, code: [*]const u8, len: usize) c_int;
@@ -305,6 +377,26 @@ pub const Engine = struct {
     frame_hooks: std.ArrayList(FrameHook) = .empty,
     /// Running them: what they commit shows with this frame.
     in_frame_hooks: bool = false,
+    /// Files dropped into the page, by the handles the page holds
+    /// (docs/drag-and-drop-design.md, section 3). Closed with the engine.
+    drops: drop.DropFiles,
+    /// host.fileRead calls waiting for their turn (runFileReads), and
+    /// whether that turn is scheduled.
+    file_reads: std.ArrayList(FileRead) = .empty,
+    file_task_pending: bool = false,
+
+    /// A host.fileRead: `len` bytes of `handle` from `offset`. Null
+    /// `offset` or `len`: the page passed something that isn't an index.
+    pub const FileRead = struct { req_id: u32, handle: u32, offset: ?u64, len: ?u64 };
+
+    /// The timer id of the engine's own turn (runFileReads): the page's
+    /// timers count from 1.
+    pub const task_timer_id: u32 = 0;
+
+    /// Drag effects (the "drag" event's masks), as Win32's DROPEFFECT_*.
+    pub const drag_copy: u8 = 1;
+    pub const drag_move: u8 = 2;
+    pub const drag_link: u8 = 4;
 
     /// A Zig callback at each display frame while it returns true.
     pub const FrameHook = struct {
@@ -321,6 +413,7 @@ pub const Engine = struct {
             .tree = Tree.init(gpa, backend.ctx, backend.measure),
             .backend = backend,
             .assets = assets,
+            .drops = .init(gpa),
         };
         // On failure below: the tree (its Yoga config, and any nodes the
         // runtime already made) and the QuickJS runtime go too, as in destroy.
@@ -372,6 +465,9 @@ pub const Engine = struct {
         _ = live.remove(e.serial);
         e.frame_hooks.deinit(e.gpa);
         oqjs_free(e.js);
+        // After the page: nothing reads them any more.
+        e.drops.deinit();
+        e.file_reads.deinit(e.gpa);
         if (e.page_override) |page| e.gpa.free(page);
         e.tree.deinit();
         if (e.backend.deinit) |deinit| deinit(e.backend.ctx);
@@ -406,6 +502,21 @@ pub const Engine = struct {
         return e.finishDispatch(r, t0, kind);
     }
 
+    /// A drag over the page, or a drop (docs/drag-and-drop-design.md,
+    /// section 1): `__oriel.event(id, "drag", data)` on the hit-tested
+    /// node (0: none), `data` the phase's JSON array. The page's effect
+    /// mask (copy 1, move 2, link 4); 0 when it threw.
+    pub fn dragEvent(e: *Engine, id: i64, data_json: []const u8) u8 {
+        e.in_call += 1;
+        const t0 = prof.now();
+        const kind = "drag";
+        var code: i32 = 0;
+        const r = oqjs_event_code(e.js, id, kind.ptr, kind.len, data_json.ptr, data_json.len, &code);
+        _ = e.finishDispatch(if (r < 0) -1 else 0, t0, kind);
+        if (r < 0) return 0;
+        return @as(u8, @truncate(@as(u32, @bitCast(code)))) & (drag_copy | drag_move | drag_link);
+    }
+
     /// A JSON message for the page (Android's events), see `__oriel.message`.
     pub fn message(e: *Engine, json: []const u8) void {
         _ = e.callf("__oriel.message({s})", .{json});
@@ -417,6 +528,7 @@ pub const Engine = struct {
     }
 
     pub fn timerFired(e: *Engine, id: u32) void {
+        if (id == task_timer_id) return e.runFileReads();
         _ = e.callNumber("timer", @floatFromInt(id));
     }
 
@@ -480,6 +592,55 @@ pub const Engine = struct {
     /// The next display frame, or a 60 Hz timer when the backend has none.
     fn requestDisplayFrame(e: *Engine) void {
         if (e.backend.request_display_frame) |request| request(e.backend.ctx);
+    }
+
+    /// host.fileRead: queued, and answered on the engine's next turn
+    /// (never inside the call: reads are asynchronous, as a browser's are).
+    fn queueFileRead(e: *Engine, read: FileRead) void {
+        e.file_reads.append(e.gpa, read) catch {
+            log.err("native ui: no memory for a file read", .{});
+            return;
+        };
+        if (e.file_task_pending) return;
+        e.file_task_pending = true;
+        e.backend.add_timer(e.backend.ctx, e, task_timer_id, 0);
+    }
+
+    /// The queued reads, each answered through __oriel.fileData. Reads the
+    /// page asks for while these are answered wait for the next turn.
+    fn runFileReads(e: *Engine) void {
+        e.file_task_pending = false;
+        if (e.file_reads.items.len == 0) return;
+        var reads = e.file_reads;
+        e.file_reads = .empty;
+        defer reads.deinit(e.gpa);
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(e.gpa);
+        e.in_call += 1;
+        const t0 = prof.now();
+        var failed = false;
+        for (reads.items) |r| {
+            buf.clearRetainingCapacity();
+            const err_name = fileReadInto(e, r, &buf);
+            const name = err_name orelse "";
+            if (oqjs_file_data(e.js, r.req_id, buf.items.ptr, buf.items.len, @intFromBool(err_name == null), name.ptr, name.len) < 0) failed = true;
+        }
+        _ = e.finishDispatch(if (failed) -1 else 0, t0, "fileData");
+    }
+
+    /// One read into `buf`: null, or the DOMException name the page gets.
+    fn fileReadInto(e: *Engine, r: FileRead, buf: *std.ArrayList(u8)) ?[]const u8 {
+        const offset = r.offset orelse return "NotReadableError";
+        const len = r.len orelse return "NotReadableError";
+        e.drops.read(r.handle, offset, len, buf) catch |err| switch (err) {
+            error.BadHandle => return "NotFoundError",
+            error.NotReadable => return "NotReadableError",
+            else => {
+                log.warn("native ui: a dropped file's read: {s}", .{@errorName(err)});
+                return "NotReadableError";
+            },
+        };
+        return null;
     }
 
     /// A command's answer: `json` is its result, or the error text when !ok.
@@ -806,7 +967,7 @@ export fn oriel_nui_leaf(p: *anyopaque, id: f64, style_id: f64, text: [*]const u
     return if (engineOf(p).tree.createLeaf(Tree.idOf(id), if (is_text != 0) .text else .view, Tree.idOf(style_id), text[0..len]) catch return 0) 1 else 0;
 }
 
-export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[8]f64) c_int {
+export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[9]f64) c_int {
     const e = engineOf(p);
     if (e.tree.needsLayout()) {
         const t0 = prof.now();
@@ -816,11 +977,15 @@ export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[8]f64) c_int {
     }
     const n = e.tree.get(Tree.idOf(id)) orelse return 0;
     // [x, y, w, h, scrollHeight (the padding box's content: no borders),
-    // the scrollbar's room (clientWidth leaves it out), scrollTop, scrollLeft].
+    // the scrollbar's room (clientWidth leaves it out), scrollTop, scrollLeft,
+    // scrollWidth (as scrollHeight; at least the clientWidth)].
     const yg = tree_mod.yg;
     const bt = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeTop);
     const bb = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeBottom);
-    out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(0, @max(n.content_h, n.frame.h) - bt - bb), n.gutter, n.scroll_y, n.scroll_x };
+    const bl = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeLeft);
+    const br = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeRight);
+    const scroll_w = @max(n.content_w - bl - br, n.frame.w - bl - br - n.gutter);
+    out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(0, @max(n.content_h, n.frame.h) - bt - bb), n.gutter, n.scroll_y, n.scroll_x, @max(0, scroll_w) };
     return 1;
 }
 
@@ -882,6 +1047,22 @@ export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64, x: f64) void {
     e.tree.replace();
     e.backend.laid_out(e.backend.ctx);
     e.scrollsChanged();
+}
+
+/// host.fileRead(reqId, handle, offset, length): queued (Engine.queueFileRead).
+export fn oriel_nui_file_read(p: *anyopaque, req_id: u32, handle: u32, offset: f64, length: f64) void {
+    engineOf(p).queueFileRead(.{ .req_id = req_id, .handle = handle, .offset = jsIndex(offset), .len = jsIndex(length) });
+}
+
+/// host.fileRelease(handle): the page holds no File for it any more.
+export fn oriel_nui_file_release(p: *anyopaque, handle: u32) void {
+    engineOf(p).drops.release(handle);
+}
+
+/// A JS number that is a whole, non-negative safe integer; else null.
+fn jsIndex(v: f64) ?u64 {
+    if (!std.math.isFinite(v) or v < 0 or v > 9007199254740991 or @floor(v) != v) return null;
+    return @intFromFloat(v);
 }
 
 test {

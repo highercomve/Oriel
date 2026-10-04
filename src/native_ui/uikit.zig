@@ -247,6 +247,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     // Text-only updates that keep a text's size keep the layout (its
     // natural size is kept per node: measureText).
     s.engine.tree.reuse_text_layout = true;
+    s.engine.tree.inline_end_padding = false;
     s.engine.boot(s.dark, true);
     return s;
 }

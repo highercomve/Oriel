@@ -74,6 +74,13 @@ pub const Surface = struct {
     move_buttons: u32 = 0,
     move_mods: u32 = 0,
     move_mouse: bool = false,
+    move_target: jint = 0,
+    /// A drag over the page (NuiView.onDragEvent): its session, the
+    /// latest "over" point waiting for the next display frame, and the
+    /// page's last answer (copy 1 | move 2 | link 4; 0: not taken there).
+    drag_session: u32 = 0,
+    drag_over: ?[2]f32 = null,
+    drag_effect: u8 = 0,
     /// fontMetrics' answers by (size in 1/64 px, mono): one trip to Kotlin each.
     font_metrics: std.AutoHashMapUnmanaged(FontKey, [3]f32) = .empty,
 };
@@ -842,11 +849,12 @@ fn nHover(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) void {
 /// waits for the next display frame; the others go now, after a move still
 /// waiting. True when the page prevented the default (on down: it takes
 /// the drag).
-fn nPointer(_: *Env, _: jclass, win: jint, phase: jint, x: f32, y: f32, buttons: jint, mouse: jboolean, mods: jint) callconv(.c) jboolean {
+fn nPointer(_: *Env, _: jclass, win: jint, phase: jint, x: f32, y: f32, buttons: jint, mouse: jboolean, mods: jint, target: jint) callconv(.c) jboolean {
     const s = byId(win) orelse return 0;
     if (!std.math.isFinite(x) or !std.math.isFinite(y)) return 0;
     if (phase == 1) {
         s.move = .{ x, y };
+        s.move_target = target;
         s.move_buttons = @bitCast(buttons);
         s.move_mods = @bitCast(mods);
         s.move_mouse = mouse != 0;
@@ -862,29 +870,157 @@ fn nPointer(_: *Env, _: jclass, win: jint, phase: jint, x: f32, y: f32, buttons:
         2 => "up",
         else => "cancel",
     };
-    return @intFromBool(sendPointer(s, name, .{ x, y }, @bitCast(buttons), mouse != 0, @bitCast(mods)));
+    return @intFromBool(sendPointer(s, name, .{ x, y }, @bitCast(buttons), mouse != 0, @bitCast(mods), target));
 }
 
 fn flushMove(s: *Surface) void {
     const p = s.move orelse return;
     s.move = null;
-    _ = sendPointer(s, "move", p, s.move_buttons, s.move_mouse, s.move_mods);
+    _ = sendPointer(s, "move", p, s.move_buttons, s.move_mouse, s.move_mods, s.move_target);
 }
 
-fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, mouse: bool, mods: u32) bool {
-    const under: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+/// `target`: the clickable element a link run under the pointer belongs to
+/// (Run.k, found by Kotlin in its text layout), else 0: the node there.
+fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, mouse: bool, mods: u32, target: jint) bool {
+    const under: i64 = if (target != 0) target else if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
     var buf: [112]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"{s}\",{d}]", .{ phase, p[0], p[1], buttons, if (mouse) "mouse" else "touch", mods }) catch return false;
     return s.engine.event(under, "pointer", json);
 }
 
-/// A long press: the page's contextmenu.
-fn nLongPress(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) jboolean {
+/// Whether the node under (x, y) is clickable (a link, a button, cursor:
+/// pointer, a click handler) and not disabled: the mouse shows a hand
+/// there, as on GTK and Windows.
+fn nClickableAt(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) jboolean {
     const s = byId(win) orelse return 0;
-    const n = s.engine.tree.hit(x, y) orelse return 0;
+    var n: ?*Node = s.engine.tree.hit(x, y) orelse return 0;
+    while (n) |c| : (n = c.parent) if (c.props.click) return @intFromBool(!c.props.dis);
+    return 0;
+}
+
+// Drag and drop (docs/drag-and-drop-design.md §1, §5): Android's DragEvent
+// has no source actions or modifiers: every operation is allowed and copy
+// suggested, as Chrome does for a drag from another app.
+const drag_allowed: u8 = 7;
+const drag_suggested: u8 = 1;
+
+/// A drag over the page: phase 0 enter (`items`: the drag's [[kind, type]…]
+/// as JSON), 1 over (kept for the next display frame), 2 leave, 3 flush (the
+/// waiting over, now: before a drop). The page's last answer (its effect
+/// mask; 0 when it doesn't take the drag there).
+fn nDrag(env: *Env, _: jclass, win: jint, phase: jint, x: f32, y: f32, session: jint, items: jobject) callconv(.c) jint {
+    const s = byId(win) orelse return 0;
+    if (!std.math.isFinite(x) or !std.math.isFinite(y)) return s.drag_effect;
+    switch (phase) {
+        0 => {
+            s.drag_over = null;
+            s.drag_session = @bitCast(session);
+            const list = (env.bytesAlloc(s.gpa, items) catch return 0) orelse return 0;
+            defer s.gpa.free(list);
+            var json: std.ArrayList(u8) = .empty;
+            defer json.deinit(s.gpa);
+            json.print(s.gpa, "[\"enter\",{d:.2},{d:.2},{d},{d},0,{d},{s}]", .{ x, y, drag_allowed, drag_suggested, s.drag_session, list }) catch return 0;
+            const under: i64 = if (s.engine.tree.hit(x, y)) |n| n.id else 0;
+            const mask = s.engine.dragEvent(under, json.items);
+            if (byId(win) != s) return 0;
+            s.drag_effect = mask & drag_allowed;
+        },
+        1 => {
+            s.drag_over = .{ x, y };
+            postFrame(s);
+        },
+        2 => {
+            s.drag_over = null;
+            s.drag_effect = 0;
+            var buf: [32]u8 = undefined;
+            const json = std.fmt.bufPrint(&buf, "[\"leave\",{d}]", .{@as(u32, @bitCast(session))}) catch return 0;
+            _ = s.engine.dragEvent(0, json);
+        },
+        else => if (s.drag_over != null) flushDragOver(s),
+    }
+    return if (byId(win) == s) s.drag_effect else 0;
+}
+
+fn flushDragOver(s: *Surface) void {
+    const p = s.drag_over orelse return;
+    s.drag_over = null;
+    var buf: [128]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"over\",{d:.2},{d:.2},{d},{d},0,{d}]", .{ p[0], p[1], drag_allowed, drag_suggested, s.drag_session }) catch return;
+    const under: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    const window = s.window;
+    const mask = s.engine.dragEvent(under, json);
+    if (get(window) != s) return;
+    s.drag_effect = mask & drag_allowed;
+}
+
+/// A drop's data, read by Kotlin off the UI thread: `items` as JSON, each
+/// ["string", mime, value] or ["file", mime, name, size, mtimeMs, fd], the
+/// fd detached for Oriel to own. Each fd goes into the drop table (a
+/// handle replaces it; one that isn't a regular file is left out), then
+/// "drop" on the node under (x, y). The window gone: the fds are closed.
+fn nDrop(env: *Env, _: jclass, win: jint, session: jint, x: f32, y: f32, items: jobject) callconv(.c) void {
+    const gpa = std.heap.c_allocator;
+    const list = (env.bytesAlloc(gpa, items) catch return) orelse return;
+    defer gpa.free(list);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, a, list, .{}) catch return;
+    if (parsed != .array) return;
+    const s = byId(win) orelse {
+        for (parsed.array.items) |item| if (dropFd(item)) |fd| closeDropFd(fd);
+        return;
+    };
+    var kept: std.json.Array = .init(a);
+    for (parsed.array.items) |item| {
+        const fd = dropFd(item) orelse {
+            kept.append(item) catch {};
+            continue;
+        };
+        const handle = s.engine.drops.addFd(fd) catch continue; // closed by addFd
+        item.array.items[5] = .{ .integer = handle };
+        kept.append(item) catch {};
+    }
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"drop\",{d:.2},{d:.2},{d},{d},0,{d},", .{ x, y, drag_allowed, drag_suggested, @as(u32, @bitCast(session)) }) catch return;
+    const out = std.json.Stringify.valueAlloc(a, std.json.Value{ .array = kept }, .{}) catch return;
+    json.appendSlice(gpa, out) catch return;
+    json.append(gpa, ']') catch return;
+    s.drag_over = null;
+    s.drag_effect = 0;
+    const under: i64 = if (s.engine.tree.hit(x, y)) |n| n.id else 0;
+    _ = s.engine.dragEvent(under, json.items);
+}
+
+/// A "file" item's fd (its sixth value), null for anything else.
+fn dropFd(item: std.json.Value) ?i32 {
+    if (item != .array or item.array.items.len < 6) return null;
+    const kind = item.array.items[0];
+    if (kind != .string or !std.mem.eql(u8, kind.string, "file")) return null;
+    const fd = item.array.items[5];
+    if (fd != .integer or fd.integer < 0 or fd.integer > std.math.maxInt(i32)) return null;
+    return @intCast(fd.integer);
+}
+
+fn closeDropFd(fd: i32) void {
+    _ = std.os.linux.close(fd);
+}
+
+/// A long press: the page's contextmenu.
+fn nLongPress(_: *Env, _: jclass, win: jint, x: f32, y: f32, target: jint) callconv(.c) jboolean {
+    const s = byId(win) orelse return 0;
+    const id: i64 = if (target != 0) target else (s.engine.tree.hit(x, y) orelse return 0).id;
     var buf: [64]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0}]", .{ x, y }) catch return 0;
-    return @intFromBool(s.engine.event(n.id, "contextmenu", json));
+    return @intFromBool(s.engine.event(id, "contextmenu", json));
+}
+
+/// A tap on a link amid the text (Run.k: its element's id, from Kotlin's
+/// text layout): that element's click, as a browser's.
+fn nTapNode(_: *Env, _: jclass, win: jint, id: jint) callconv(.c) void {
+    const s = byId(win) orelse return;
+    _ = s.engine.event(id, "click", "0");
 }
 
 /// Scroll the container under (x, y) by dy dp: true if something moved.
@@ -937,7 +1073,12 @@ fn nEvent(env: *Env, _: jclass, win: jint, id: jint, kind: jobject, data: jobjec
 fn nDisplayFrame(_: *Env, _: jclass, win: jint, interval_ms: f32) callconv(.c) void {
     const s = byId(win) orelse return; // the window closed
     s.frame_posted = false;
-    // The pointer's move first, as a browser sends it before the frame.
+    // A drag's latest position, then the pointer's move, as a browser sends
+    // them before the frame.
+    if (s.drag_over != null) {
+        flushDragOver(s);
+        if (byId(win) != s) return;
+    }
     if (s.move != null) {
         flushMove(s);
         if (byId(win) != s) return;
@@ -1005,6 +1146,10 @@ comptime {
     @export(&nDisplayFrame, .{ .name = prefix ++ "displayFrame" });
     @export(&nResize, .{ .name = prefix ++ "resize" });
     @export(&nTap, .{ .name = prefix ++ "tap" });
+    @export(&nTapNode, .{ .name = prefix ++ "tapNode" });
+    @export(&nDrag, .{ .name = prefix ++ "drag" });
+    @export(&nDrop, .{ .name = prefix ++ "drop" });
+    @export(&nClickableAt, .{ .name = prefix ++ "clickableAt" });
     @export(&nPointer, .{ .name = prefix ++ "pointer" });
     @export(&nPress, .{ .name = prefix ++ "press" });
     @export(&nHover, .{ .name = prefix ++ "hover" });
