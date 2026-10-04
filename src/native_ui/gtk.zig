@@ -2285,9 +2285,23 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             const k: f32 = if (!std.math.isInf(max_width) and max_width < img.w) max_width / img.w else 1;
             out.* = .{ img.w * k, img.h * k };
         },
-        .input, .select, .textarea => out.* = fieldSize(s, n, max_width),
+        .input, .select, .textarea => {
+            out.* = fieldSize(s, n, max_width);
+            // A one-line field's baseline from its middle (tree.zig
+            // baselineFn): its font's line centered there, as WebKitGTK
+            // lays out a text field's line in a line of text.
+            if (n.kind != .textarea) n.baseline = fieldBaseline(s, n) orelse std.math.nan(f32);
+        },
         else => out.* = .{ 0, 0 },
     }
+}
+
+fn fieldBaseline(s: *Surface, n: *const Node) ?f32 {
+    const m = unhintedMetrics(s, n.props.fz orelse 13.333, n.props.mono, n.props.ff) orelse return null;
+    const asc = @round(m[0]);
+    const desc = @round(m[1]);
+    const line = asc + desc + @round(m[2]);
+    return @floor((line - (asc + desc)) / 2) + asc - line / 2;
 }
 
 /// Also sets `Node.baseline`: the first line's, where paintText puts it
