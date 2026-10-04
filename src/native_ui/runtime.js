@@ -19580,7 +19580,9 @@ ${a.stack || ""}`;
             return false;
           case "contextmenu": {
             const mouse = lastPointerType !== "touch";
-            const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1], button: mouse ? 2 : 0, buttons: mouse ? 2 : 0 });
+            const [button, buttons] = data.length >= 4 ? [data[2], data[3]] : mouse ? [2, 2] : [0, 0];
+            const f = data[4] | 0;
+            const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1], button, buttons, shiftKey: !!(f & 1), ctrlKey: !!(f & 2), altKey: !!(f & 4), metaKey: !!(f & 8) });
             const on = el || document.body;
             on.dispatchEvent(ev);
             if (ev.target !== on) Object.defineProperty(ev, "target", { value: on, configurable: true });
