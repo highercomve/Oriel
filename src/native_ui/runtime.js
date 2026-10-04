@@ -15068,6 +15068,7 @@ input[type="range"] { height: 20px; margin: 2px; }
   var INTRINSIC_WIDTHS = /* @__PURE__ */ new Set(["max-content", "fit-content", "-webkit-fit-content", "-moz-fit-content"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
+  var LINE_ALIGNS = /* @__PURE__ */ new Set(["middle", "top", "bottom"]);
   function boxHeight(p) {
     if (typeof p.h !== "number") return null;
     if (!p.cb) return p.h;
@@ -15099,7 +15100,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     const v = cs["line-height"];
     const lh = !v || v === "normal" ? normal : lineHeightPx(v, fs) ?? normal;
     const above = Math.round(ascent) + Math.floor((lh - Math.round(ascent) - Math.round(descent)) / 2);
-    return [above, Math.max(0, lh - above)];
+    return [above, Math.max(0, lh - above), m[3] > 0 ? m[3] : fs / 2];
   }
   var nonZero = (v) => !!v && (/^(thin|medium|thick)$/.test(v) || parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v)));
   function boxedInline(cs) {
@@ -16442,8 +16443,18 @@ input[type="range"] { height: 20px; margin: 2px; }
         }
         if (imageLine && this.imageLine([item], cs, childCtx.rematch) || flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch)) {
           const n2 = nodes.get(cid);
-          const [above, gap] = lineStrut(cs, fontSize, this.host);
-          if (n2 && gap > 0) {
+          const [above, gap, xh] = lineStrut(cs, fontSize, this.host);
+          const va = this.styleOf(item.el)?.["vertical-align"];
+          const hk = n2 && boxHeight(n2.props);
+          const mk = n2?.props.m ? [...n2.props.m] : [0, 0, 0, 0];
+          if (n2 && LINE_ALIGNS.has(va) && hk !== null && typeof mk[0] === "number" && typeof mk[2] === "number") {
+            const H = mk[0] + hk + mk[2];
+            const top = va === "middle" ? above - xh / 2 - H / 2 : va === "bottom" ? above + gap - H : 0;
+            const lineTop = Math.min(0, top), lineBottom = Math.max(above + gap, top + H);
+            mk[0] += top - lineTop;
+            mk[2] += lineBottom - (top + H);
+            n2.props = { ...n2.props, m: mk };
+          } else if (n2 && gap > 0) {
             const m = n2.props.m ? [...n2.props.m] : [0, 0, 0, 0];
             const h = boxHeight(n2.props);
             if (h !== null && typeof m[0] === "number" && typeof m[2] === "number") m[0] += Math.max(0, above - (m[0] + h + m[2]));
@@ -16632,6 +16643,11 @@ input[type="range"] { height: 20px; margin: 2px; }
     // Whether the in-flow content is only images on the baseline (imageLine).
     imageLine(flow, cs, rematch) {
       let any = false;
+      let boxes = 0;
+      for (const f of flow) if (f.el) {
+        const c = this.style(f.el, cs, rematch);
+        if (c.position !== "absolute" && c.position !== "fixed" && (c.display || "inline") !== "none") boxes++;
+      }
       for (const f of flow) {
         if (f.space) continue;
         if (!f.el) return false;
@@ -16640,7 +16656,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         const d = ccs.display || "inline";
         const va = ccs["vertical-align"];
         const replaced = REPLACED.has(f.el.localName) && (d === "inline" || d === "inline-block");
-        if (!replaced && !this.bottomBaseline(f.el, ccs) || va && va !== "baseline") return false;
+        if (!replaced && !this.bottomBaseline(f.el, ccs) || va && va !== "baseline" && !(boxes === 1 && LINE_ALIGNS.has(va))) return false;
         any = true;
       }
       return any;

@@ -535,8 +535,12 @@ side by side line up their bottoms. `host.fontMetrics(size, mono,
 family)` takes the block's CSS family (Backend.font_metrics_family; a
 backend without it gives the default sans-serif's; Win32's resolves the
 list as its text does, checked against WebView2 with Segoe UI, Arial,
-Times New Roman, Consolas, Georgia and a 30px line). vertical-align other
-than baseline isn't done for these.
+Times New Roman, Consolas, Georgia and a 30px line). A box alone on its
+line with vertical-align middle, top or bottom (and a px height) is
+placed as WKWebView places it (measured): middle centers it on the
+baseline less half the x-height (`Backend.font_x_height`, host.fontMetrics'
+fourth value; half the size without it), top and bottom at the line's
+top and bottom, the line holding it and the strut.
 
 **Margin collapsing** (render.js collapseMargins, shared): block flow's
 vertical margins collapse as WKWebView collapses them (measured on 15

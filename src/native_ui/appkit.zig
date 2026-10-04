@@ -271,6 +271,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .font_metrics = fontMetrics,
         .font_metrics_family = fontMetricsFamily,
         .run_rects = runRects,
+        .font_x_height = fontXHeight,
         .selection = selection,
         .set_selection = setSelection,
     }, assets, platform, label, url, width, height);
@@ -473,6 +474,11 @@ fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
 /// Backend.run_rects: an inline element's line fragments (CoreText).
 fn runRects(_: *anyopaque, n: *Node, first: usize, last: usize, out: [][4]f32) usize {
     return draw.runRects("NSFont", n, first, last, out);
+}
+
+/// Backend.font_x_height (vertical-align: middle).
+fn fontXHeight(_: *anyopaque, size: f32, mono: bool, family: []const u8) ?f32 {
+    return draw.xHeight("NSFont", size, mono, family);
 }
 
 fn fontMetricsFamily(_: *anyopaque, size: f32, mono: bool, family: []const u8, out: *[3]f32) bool {
