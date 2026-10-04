@@ -1081,6 +1081,7 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
                 gtk_entry_set_placeholder_text(e, z.ptr);
             }
             _ = g_signal_connect_data(@ptrCast(e), "changed", @ptrCast(&onEntryChanged), s, null, 0);
+            stripDropTargets(e);
             break :blk e;
         },
         .textarea => blk: {
@@ -1089,6 +1090,7 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
             gtk_text_view_set_accepts_tab(v, 0);
             _ = g_signal_connect_data(gtk_text_view_get_buffer(v), "changed", @ptrCast(&onBufferChanged), s, null, 0);
             g_object_set_data(gtk_text_view_get_buffer(v), "oriel-view", v);
+            stripDropTargets(v);
             break :blk v;
         },
         .select => blk: {
@@ -1446,6 +1448,44 @@ fn onMotion(controller: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(
 const GSList = extern struct { data: ?*anyopaque, next: ?*GSList };
 const GError = extern struct { domain: u32, code: c_int, message: ?[*:0]const u8 };
 const GAsyncReadyCallback = *const fn (?*anyopaque, *anyopaque, ?*anyopaque) callconv(.c) void;
+extern fn gtk_widget_observe_controllers(w: *Widget) *anyopaque;
+extern fn gtk_widget_remove_controller(w: *Widget, controller: *anyopaque) void;
+extern fn gtk_widget_get_first_child(w: *Widget) ?*Widget;
+extern fn gtk_widget_get_next_sibling(w: *Widget) ?*Widget;
+extern fn g_list_model_get_n_items(list: *anyopaque) c_uint;
+extern fn g_list_model_get_item(list: *anyopaque, position: c_uint) ?*anyopaque;
+extern fn g_type_check_instance_is_a(instance: *anyopaque, iface_type: usize) c_int;
+extern fn gtk_drop_target_get_type() usize;
+extern fn gtk_drop_target_async_get_type() usize;
+
+/// A native field's own drop targets (GtkText's, GtkTextView's) go: they
+/// took a file drag's text, the file's path, into the field without the
+/// page seeing the drag. Drags over a field now reach the overlay's target,
+/// and a text drop goes in through the page's drop (dnd.js default insert).
+fn stripDropTargets(w: *Widget) void {
+    var found: [8]*anyopaque = undefined;
+    var n: usize = 0;
+    const list = gtk_widget_observe_controllers(w);
+    const count = g_list_model_get_n_items(list);
+    var i: c_uint = 0;
+    while (i < count and n < found.len) : (i += 1) {
+        const c = g_list_model_get_item(list, i) orelse continue;
+        defer g_object_unref(c);
+        if (g_type_check_instance_is_a(c, gtk_drop_target_get_type()) != 0 or
+            g_type_check_instance_is_a(c, gtk_drop_target_async_get_type()) != 0)
+        {
+            found[n] = c;
+            n += 1;
+        }
+    }
+    // Removed after the walk: removing changes the observed list. The
+    // widget still holds them until then, so the pointers stay valid.
+    for (found[0..n]) |c| gtk_widget_remove_controller(w, c);
+    g_object_unref(list);
+    var child = gtk_widget_get_first_child(w);
+    while (child) |ch| : (child = gtk_widget_get_next_sibling(ch)) stripDropTargets(ch);
+}
+
 extern fn gtk_drop_target_async_new(formats: ?*anyopaque, actions: c_uint) *anyopaque;
 extern fn gdk_content_formats_builder_new() *anyopaque;
 extern fn gdk_content_formats_builder_add_gtype(b: *anyopaque, gtype: usize) void;
@@ -1611,14 +1651,17 @@ fn dragOver(s: *Surface, target: *anyopaque, drop: *anyopaque, x: f64, y: f64, e
     const mods = modFlags(gtk_event_controller_get_current_event_state(target));
     const suggested = suggestedAction(allowed, mods);
     const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    // Not s.gpa in the defer: the page may close its window (freeing `s`)
+    // inside dragEvent.
+    const gpa = s.gpa;
     var json: std.ArrayList(u8) = .empty;
-    defer json.deinit(s.gpa);
-    json.print(s.gpa, "[\"{s}\",{d:.2},{d:.2},{d},{d},{d},{d}", .{ if (enter) "enter" else "over", p[0], p[1], allowed, suggested, mods, s.drag_session }) catch return 0;
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"{s}\",{d:.2},{d:.2},{d},{d},{d},{d}", .{ if (enter) "enter" else "over", p[0], p[1], allowed, suggested, mods, s.drag_session }) catch return 0;
     if (enter) {
-        json.append(s.gpa, ',') catch return 0;
-        s.drag_kinds.writeItems(s.gpa, &json) catch return 0;
+        json.append(gpa, ',') catch return 0;
+        s.drag_kinds.writeItems(gpa, &json) catch return 0;
     }
-    json.append(s.gpa, ']') catch return 0;
+    json.append(gpa, ']') catch return 0;
     const mask = s.engine.dragEvent(nid, json.items);
     if (surfaces.get(token) == null) return 0; // the page closed its window
     s.drag_action = pickAction(mask, allowed, suggested);
