@@ -203,6 +203,8 @@ extern fn pango_layout_iter_free(it: *anyopaque) void;
 extern fn pango_layout_iter_next_line(it: *anyopaque) c_int;
 extern fn pango_layout_iter_get_line_readonly(it: *anyopaque) ?*anyopaque;
 extern fn pango_layout_iter_get_line_extents(it: *anyopaque, ink: ?*PangoRectangle, logical: ?*PangoRectangle) void;
+extern fn pango_layout_line_x_to_index(line: *anyopaque, x_pos: c_int, index: *c_int, trailing: *c_int) c_int;
+extern fn pango_layout_iter_get_line_yrange(it: *anyopaque, y0: *c_int, y1: *c_int) void;
 extern fn pango_layout_line_get_x_ranges(line: *anyopaque, start: c_int, end: c_int, ranges: *?[*]c_int, n: *c_int) void;
 const PangoRectangle = extern struct { x: c_int = 0, y: c_int = 0, width: c_int = 0, height: c_int = 0 };
 /// PangoLayoutLine's public head (pango-layout.h): its bytes in the text.
@@ -390,6 +392,7 @@ pub const Surface = struct {
             .warm_fonts = warmFonts,
             .font_metrics = fontMetrics,
         .font_metrics_family = fontMetricsFamily,
+        .run_rects = runRects,
         }, assets, look orelse platform_json, label, url, width, height);
         s.engine.tree.reuse_text_layout = true;
         s.engine.tree.fields_sized = true;
@@ -765,15 +768,18 @@ const Extent = struct { top: f32, bottom: f32 };
 /// An inline box's extent on its line as WebKit lays it out: its font's
 /// ascent and descent (each rounded) and the leading around them: its
 /// line-height (whole pixels) less them, or the font's line gap (rounded)
-/// when normal, split with the smaller half above (line-height: normal of
+/// when normal, split with the smaller (floored) half above (line-height: normal of
 /// Noto Sans at 16px: 17 + 5 + 0 = 22, where Pango's own lines are 23).
 fn fontExtent(s: *Surface, size: f32, mono: bool, family: ?[]const u8, lh: ?f32) ?Extent {
     const m = unhintedMetrics(s, size, mono, family) orelse return null;
     const a = @round(m[0]);
     const d = @round(m[1]);
     if (lh) |h| if (h >= 1) {
-        const half = (@floor(h) - (a + d)) / 2;
-        return .{ .top = a + half, .bottom = d + half };
+        // The half-leading above is floored, as WebKit does (24px over
+        // 14 + 5: 2 above, 3 below).
+        const leading = @floor(h) - (a + d);
+        const up = @floor(leading / 2);
+        return .{ .top = a + up, .bottom = d + leading - up };
     };
     const gap = @round(m[2]);
     const up = @floor(gap / 2);
@@ -1330,7 +1336,8 @@ fn onPressed(gesture: *anyopaque, _: c_int, x: f64, y: f64, data: ?*anyopaque) c
     _ = gtk_widget_grab_focus(s.area);
     const token = s.token;
     // :active while the button is down.
-    if (s.engine.tree.hit(@floatCast(x), @floatCast(y))) |n| _ = s.engine.event(n.id, "press", "null");
+    const at = targetAt(s, @floatCast(x), @floatCast(y));
+    if (at.node != null) _ = s.engine.event(at.id, "press", "null");
     if (surfaces.get(token) == null) return;
     // A move still waiting goes before the down.
     if (s.move != null) flushMove(s);
@@ -1357,7 +1364,7 @@ const PendingMove = struct { at: [2]f32, buttons: u32, mods: u32 };
 /// it (prevented the default).
 fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, mods: u32) bool {
     if (!std.math.isFinite(p[0]) or !std.math.isFinite(p[1])) return false;
-    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    const nid = targetAt(s, p[0], p[1]).id;
     var buf: [96]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"mouse\",{d}]", .{ phase, p[0], p[1], buttons, mods }) catch return false;
     return s.engine.event(nid, "pointer", json);
@@ -1387,18 +1394,19 @@ fn onReleased(gesture: *anyopaque, _: c_int, x: f64, y: f64, data: ?*anyopaque) 
     _ = sendPointer(s, "up", .{ @floatCast(x), @floatCast(y) }, s.buttons, modFlags(gtk_event_controller_get_current_event_state(gesture)));
     if (surfaces.get(token) == null) return;
     _ = s.engine.event(0, "release", "null");
-    const n = s.engine.tree.hit(@floatCast(x), @floatCast(y)) orelse return;
+    const at = targetAt(s, @floatCast(x), @floatCast(y));
+    const n = at.node orelse return;
     if (button == 3) {
         var buf: [64]u8 = undefined;
         const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0}]", .{ x, y }) catch return;
-        _ = s.engine.event(n.id, "contextmenu", json);
+        _ = s.engine.event(at.id, "contextmenu", json);
         return;
     }
     if (button != 1) return;
-    if (disabledUp(n)) return;
+    if (!at.link and disabledUp(n)) return;
     var buf: [16]u8 = undefined;
     const flags = std.fmt.bufPrint(&buf, "{d}", .{modFlags(gtk_event_controller_get_current_event_state(gesture))}) catch return;
-    _ = s.engine.event(n.id, "click", flags);
+    _ = s.engine.event(at.id, "click", flags);
 }
 
 fn disabledUp(start: *Node) bool {
@@ -1411,6 +1419,180 @@ fn clickableUp(start: *Node) bool {
     var n: ?*Node = start;
     while (n) |x| : (n = x.parent) if (x.props.click) return !x.props.dis;
     return false;
+}
+
+/// What the pointer is over: the node hit, or a link amid its text (Run.k,
+/// the link's own id: render.js inlineRuns).
+const Target = struct { node: ?*Node, id: i64, link: bool = false };
+
+fn targetAt(s: *Surface, x: f32, y: f32) Target {
+    const n = s.engine.tree.hit(x, y) orelse return .{ .node = null, .id = 0 };
+    if (n.kind == .text) if (linkAt(s, n, x, y)) |k| return .{ .node = n, .id = k, .link = true };
+    return .{ .node = n, .id = n.id };
+}
+
+/// A text node's layout as paintText places it: its lines (null: Pango's
+/// own, moved down by `dy`).
+const Laid = struct {
+    layout: *PangoLayout,
+    exts: [64]Extent = undefined,
+    lines: ?[]const Extent = null,
+    dy: f32 = 0,
+
+    fn of(s: *Surface, n: *Node, out: *Laid) bool {
+        const c = n.content();
+        out.layout = textLayout(s, n, c.w + 1) orelse return false;
+        out.lines = textLines(s, &n.props, out.layout, &out.exts);
+        if (out.lines == null) if (cssHeight(s, &n.props, pango_layout_get_line_count(out.layout))) |css_h| {
+            var w: c_int = 0;
+            var h: c_int = 0;
+            pango_layout_get_size(out.layout, &w, &h);
+            const pango_h = @as(f32, @floatFromInt(h)) / PANGO_SCALE;
+            if (pango_h > css_h) out.dy = (css_h - pango_h) / 2;
+        };
+        return true;
+    }
+};
+
+/// Each line of a laid text: its Pango line, its top and bottom and its
+/// baseline (y down, the text's coordinates as paintText draws them).
+const LaidLines = struct {
+    laid: *const Laid,
+    it: *anyopaque,
+    y: f32,
+    k: usize = 0,
+    top: f32,
+    done: bool = false,
+
+    const Line = struct { line: *anyopaque, top: f32, bottom: f32, base: f32 };
+
+    fn init(laid: *const Laid, y: f32) ?LaidLines {
+        const it = pango_layout_get_iter(laid.layout) orelse return null;
+        return .{ .laid = laid, .it = it, .y = y + laid.dy, .top = y + laid.dy };
+    }
+    fn deinit(w: *LaidLines) void {
+        pango_layout_iter_free(w.it);
+    }
+    fn next(w: *LaidLines) ?Line {
+        if (w.done) return null;
+        const line = pango_layout_iter_get_line_readonly(w.it) orelse return null;
+        var out: Line = undefined;
+        if (w.laid.lines) |e| {
+            if (w.k >= e.len) return null;
+            out = .{ .line = line, .top = w.top, .bottom = w.top + e[w.k].top + e[w.k].bottom, .base = w.top + e[w.k].top };
+            w.top = out.bottom;
+        } else {
+            var y0: c_int = 0;
+            var y1: c_int = 0;
+            pango_layout_iter_get_line_yrange(w.it, &y0, &y1);
+            const P: f32 = PANGO_SCALE;
+            out = .{ .line = line, .top = w.y + @as(f32, @floatFromInt(y0)) / P, .bottom = w.y + @as(f32, @floatFromInt(y1)) / P, .base = w.y + @as(f32, @floatFromInt(pango_layout_iter_get_baseline(w.it))) / P };
+        }
+        w.k += 1;
+        if (pango_layout_iter_next_line(w.it) == 0) w.done = true;
+        return out;
+    }
+};
+
+/// The link (Run.k) under (x, y) in text node `n`, as paintText lays it out.
+fn linkAt(s: *Surface, n: *Node, x: f32, y: f32) ?u32 {
+    const runs = n.props.runs orelse return null;
+    for (runs) |r| {
+        if (r.k != null) break;
+    } else return null;
+    var laid: Laid = undefined;
+    if (!Laid.of(s, n, &laid)) return null;
+    defer g_object_unref(laid.layout);
+    const c = n.content();
+    var lines = LaidLines.init(&laid, c.y) orelse return null;
+    defer lines.deinit();
+    while (lines.next()) |l| {
+        if (y < l.top or y >= l.bottom) continue;
+        var index: c_int = 0;
+        var trailing: c_int = 0;
+        if (pango_layout_line_x_to_index(l.line, tree_mod.sat(c_int, (x - c.x) * PANGO_SCALE), &index, &trailing) == 0) return null;
+        var walk: RunBytes = .{ .runs = runs };
+        var i: usize = 0;
+        while (walk.next()) |range| : (i += 1) {
+            if (index >= range[0] and index < range[1]) return runs[i].k;
+        }
+        return null;
+    }
+    return null;
+}
+
+/// Backend.run_rects: the line fragments of runs [first..last] of text node
+/// `n` (an inline element's getClientRects): per line, from the first run's
+/// start to the last's end (not the space it wraps at), as tall as the
+/// runs' own fonts there (ascent and descent, rounded), not the line box.
+fn runRects(ctx: *anyopaque, n: *Node, first: usize, last: usize, out: [][4]f32) usize {
+    const s = surfaceOf(ctx);
+    const runs = n.props.runs orelse return 0;
+    if (first > last or last >= runs.len) return 0;
+    var bytes: [2]usize = .{ 0, 0 };
+    var spans: [64][2]usize = undefined; // each run's bytes, first..last
+    {
+        var walk: RunBytes = .{ .runs = runs };
+        var i: usize = 0;
+        while (walk.next()) |range| : (i += 1) {
+            if (i == first) bytes[0] = range[0];
+            if (i >= first and i <= last and i - first < spans.len) spans[i - first] = range;
+            if (i == last) {
+                bytes[1] = range[1];
+                break;
+            }
+        }
+    }
+    if (bytes[1] <= bytes[0]) return 0;
+    var laid: Laid = undefined;
+    if (!Laid.of(s, n, &laid)) return 0;
+    defer g_object_unref(laid.layout);
+    const text = std.mem.span(pango_layout_get_text(laid.layout));
+    const c = n.content();
+    var lines = LaidLines.init(&laid, c.y) orelse return 0;
+    defer lines.deinit();
+    var k: usize = 0;
+    while (lines.next()) |l| {
+        if (k >= out.len) break;
+        const head: *const PangoLayoutLineHead = @ptrCast(@alignCast(l.line));
+        const ls: usize = @intCast(@max(0, head.start_index));
+        const le: usize = @min(text.len, ls + @as(usize, @intCast(@max(0, head.length))));
+        const a = @max(bytes[0], ls);
+        var b = @min(bytes[1], le);
+        if (a >= b) continue;
+        // A fragment that wraps: not the space it wraps after.
+        if (b < bytes[1]) while (b > a and (text[b - 1] == ' ' or text[b - 1] == '\n')) {
+            b -= 1;
+        };
+        if (a >= b) continue;
+        var ranges: ?[*]c_int = null;
+        var count: c_int = 0;
+        pango_layout_line_get_x_ranges(l.line, tree_mod.sat(c_int, a), tree_mod.sat(c_int, b), &ranges, &count);
+        const rs = ranges orelse continue;
+        defer g_free(@ptrCast(rs));
+        var x0: f32 = std.math.floatMax(f32);
+        var x1: f32 = -std.math.floatMax(f32);
+        for (0..@intCast(@max(0, count))) |q| {
+            x0 = @min(x0, @as(f32, @floatFromInt(rs[2 * q])) / PANGO_SCALE);
+            x1 = @max(x1, @as(f32, @floatFromInt(rs[2 * q + 1])) / PANGO_SCALE);
+        }
+        if (!(x1 >= x0)) continue;
+        // The runs' own fonts on this line.
+        var ascent: f32 = 0;
+        var descent: f32 = 0;
+        for (first..last + 1) |ri| {
+            if (ri - first >= spans.len) break;
+            const sp = spans[ri - first];
+            if (sp[1] <= a or sp[0] >= b) continue;
+            const r = runs[ri];
+            const m = unhintedMetrics(s, r.sz, r.mono or n.props.mono, r.ff orelse n.props.ff) orelse continue;
+            ascent = @max(ascent, @round(m[0]));
+            descent = @max(descent, @round(m[1]));
+        }
+        out[k] = .{ c.x + x0, l.base - ascent, x1 - x0, ascent + descent };
+        k += 1;
+    }
+    return k;
 }
 
 fn onScroll(_: *anyopaque, _: f64, dy: f64, data: ?*anyopaque) callconv(.c) c_int {
@@ -1435,10 +1617,11 @@ fn onMotion(controller: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(
     const s = surfaceOf(data);
     s.pointer = .{ @floatCast(x), @floatCast(y) };
     queueMove(s, s.pointer, s.buttons, modFlags(gtk_event_controller_get_current_event_state(controller)));
-    const n = s.engine.tree.hit(s.pointer[0], s.pointer[1]);
-    gtk_widget_set_cursor_from_name(s.area, if (n != null and clickableUp(n.?)) "pointer" else null);
+    const at = targetAt(s, s.pointer[0], s.pointer[1]);
+    const n = at.node;
+    gtk_widget_set_cursor_from_name(s.area, if (at.link or (n != null and clickableUp(n.?))) "pointer" else null);
     // :hover: the page hears when the node under the pointer changes.
-    const id: i64 = if (n) |node| node.id else 0;
+    const id: i64 = at.id;
     if (id != s.hovered) {
         s.hovered = id;
         _ = s.engine.event(id, "hover", "null");
