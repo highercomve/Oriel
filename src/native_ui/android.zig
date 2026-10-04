@@ -74,6 +74,7 @@ pub const Surface = struct {
     move_buttons: u32 = 0,
     move_mods: u32 = 0,
     move_mouse: bool = false,
+    move_target: jint = 0,
     /// fontMetrics' answers by (size in 1/64 px, mono): one trip to Kotlin each.
     font_metrics: std.AutoHashMapUnmanaged(FontKey, [3]f32) = .empty,
 };
@@ -842,11 +843,12 @@ fn nHover(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) void {
 /// waits for the next display frame; the others go now, after a move still
 /// waiting. True when the page prevented the default (on down: it takes
 /// the drag).
-fn nPointer(_: *Env, _: jclass, win: jint, phase: jint, x: f32, y: f32, buttons: jint, mouse: jboolean, mods: jint) callconv(.c) jboolean {
+fn nPointer(_: *Env, _: jclass, win: jint, phase: jint, x: f32, y: f32, buttons: jint, mouse: jboolean, mods: jint, target: jint) callconv(.c) jboolean {
     const s = byId(win) orelse return 0;
     if (!std.math.isFinite(x) or !std.math.isFinite(y)) return 0;
     if (phase == 1) {
         s.move = .{ x, y };
+        s.move_target = target;
         s.move_buttons = @bitCast(buttons);
         s.move_mods = @bitCast(mods);
         s.move_mouse = mouse != 0;
@@ -862,17 +864,19 @@ fn nPointer(_: *Env, _: jclass, win: jint, phase: jint, x: f32, y: f32, buttons:
         2 => "up",
         else => "cancel",
     };
-    return @intFromBool(sendPointer(s, name, .{ x, y }, @bitCast(buttons), mouse != 0, @bitCast(mods)));
+    return @intFromBool(sendPointer(s, name, .{ x, y }, @bitCast(buttons), mouse != 0, @bitCast(mods), target));
 }
 
 fn flushMove(s: *Surface) void {
     const p = s.move orelse return;
     s.move = null;
-    _ = sendPointer(s, "move", p, s.move_buttons, s.move_mouse, s.move_mods);
+    _ = sendPointer(s, "move", p, s.move_buttons, s.move_mouse, s.move_mods, s.move_target);
 }
 
-fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, mouse: bool, mods: u32) bool {
-    const under: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+/// `target`: the clickable element a link run under the pointer belongs to
+/// (Run.k, found by Kotlin in its text layout), else 0: the node there.
+fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, mouse: bool, mods: u32, target: jint) bool {
+    const under: i64 = if (target != 0) target else if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
     var buf: [112]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"{s}\",{d}]", .{ phase, p[0], p[1], buttons, if (mouse) "mouse" else "touch", mods }) catch return false;
     return s.engine.event(under, "pointer", json);
@@ -889,12 +893,19 @@ fn nClickableAt(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) jboo
 }
 
 /// A long press: the page's contextmenu.
-fn nLongPress(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) jboolean {
+fn nLongPress(_: *Env, _: jclass, win: jint, x: f32, y: f32, target: jint) callconv(.c) jboolean {
     const s = byId(win) orelse return 0;
-    const n = s.engine.tree.hit(x, y) orelse return 0;
+    const id: i64 = if (target != 0) target else (s.engine.tree.hit(x, y) orelse return 0).id;
     var buf: [64]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0}]", .{ x, y }) catch return 0;
-    return @intFromBool(s.engine.event(n.id, "contextmenu", json));
+    return @intFromBool(s.engine.event(id, "contextmenu", json));
+}
+
+/// A tap on a link amid the text (Run.k: its element's id, from Kotlin's
+/// text layout): that element's click, as a browser's.
+fn nTapNode(_: *Env, _: jclass, win: jint, id: jint) callconv(.c) void {
+    const s = byId(win) orelse return;
+    _ = s.engine.event(id, "click", "0");
 }
 
 /// Scroll the container under (x, y) by dy dp: true if something moved.
@@ -1015,6 +1026,7 @@ comptime {
     @export(&nDisplayFrame, .{ .name = prefix ++ "displayFrame" });
     @export(&nResize, .{ .name = prefix ++ "resize" });
     @export(&nTap, .{ .name = prefix ++ "tap" });
+    @export(&nTapNode, .{ .name = prefix ++ "tapNode" });
     @export(&nClickableAt, .{ .name = prefix ++ "clickableAt" });
     @export(&nPointer, .{ .name = prefix ++ "pointer" });
     @export(&nPress, .{ .name = prefix ++ "press" });

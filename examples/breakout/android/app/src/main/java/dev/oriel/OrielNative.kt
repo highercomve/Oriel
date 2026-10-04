@@ -40,6 +40,7 @@ import android.view.Choreographer
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
@@ -78,15 +79,19 @@ import kotlin.math.tan
 internal object NuiNative {
     @JvmStatic external fun resize(window: Int, width: Float, height: Float, dark: Boolean)
     @JvmStatic external fun tap(window: Int, x: Float, y: Float)
+    /** Whether the node under (x, y) is clickable and enabled (the mouse's hand). */
+    @JvmStatic external fun clickableAt(window: Int, x: Float, y: Float): Boolean
     /** A pointer event for the page: phase 0 down, 1 move (sent at the next
      *  display frame), 2 up, 3 cancel. True when the page prevented the
      *  default (on down: it takes the drag). */
-    @JvmStatic external fun pointer(window: Int, phase: Int, x: Float, y: Float, buttons: Int, mouse: Boolean, mods: Int): Boolean
+    @JvmStatic external fun pointer(window: Int, phase: Int, x: Float, y: Float, buttons: Int, mouse: Boolean, mods: Int, target: Int): Boolean
+    /** A click on the clickable element `id` (a link amid the text: its run's `k`). */
+    @JvmStatic external fun tapNode(window: Int, id: Int)
     /** A finger or button down on (x, y) (:active), or up. */
     @JvmStatic external fun press(window: Int, x: Float, y: Float, down: Boolean)
     /** A mouse over (x, y) (:hover), or gone (x < 0). */
     @JvmStatic external fun hover(window: Int, x: Float, y: Float)
-    @JvmStatic external fun longPress(window: Int, x: Float, y: Float): Boolean
+    @JvmStatic external fun longPress(window: Int, x: Float, y: Float, target: Int): Boolean
     @JvmStatic external fun scroll(window: Int, x: Float, y: Float, dy: Float): Boolean
     /** Scroll sideways at (x, y) dp: true if a container moved. */
     @JvmStatic external fun scrollX(window: Int, x: Float, y: Float, dx: Float): Boolean
@@ -476,6 +481,30 @@ internal class NuiNode(val id: Int, var kind: String) {
         if (plainLine(t)) return lineStyle(t, tp).baseline * 64
         val l = textLayout(-1) ?: return -1
         return if (l.lineCount > 0) l.getLineBaseline(0) * 64 else -1
+    }
+
+    /**
+     * The `k` of the run at (x, y) in this text's layout `width` dp wide
+     * (a link amid the text: its element's id), 0 for none.
+     */
+    fun linkAt(x: Float, y: Float, width: Int): Int {
+        val runs = p.optJSONArray("runs") ?: return 0
+        if ((0 until runs.length()).none { runs.optJSONObject(it)?.has("k") == true }) return 0
+        val l = textLayout(width) ?: return 0
+        val line = l.getLineForVertical(y.toInt())
+        if (x < l.getLineLeft(line) || x > l.getLineRight(line)) return 0
+        // The character under x (an offset is between two: the one before it when x is left of it).
+        var off = l.getOffsetForHorizontal(line, x)
+        if (off > l.getLineStart(line) && l.getPrimaryHorizontal(off) > x) off--
+        // Runs follow one another in the text as spans() appends them.
+        var pos = 0
+        for (i in 0 until runs.length()) {
+            val r = runs.optJSONObject(i) ?: continue
+            val t = if (i == 0 && runs.length() == 1) runText ?: r.optString("t") else r.optString("t")
+            pos += t.length
+            if (off < pos) return r.optLong("k", 0).toInt()
+        }
+        return 0
     }
 
     /** Size for Yoga: width and height in 1/64 dp, packed. */
@@ -1573,7 +1602,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     private var mouseTouch = false
     private val longPress = Runnable {
         longPressed = true
-        if (NuiNative.longPress(window, downX / density, downY / density)) performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+        if (NuiNative.longPress(window, downX / density, downY / density, linkAt(downX / density, downY / density))) performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
     }
 
     /**
@@ -1614,7 +1643,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     }
 
     private fun pointer(phase: Int, e: MotionEvent, buttons: Int): Boolean =
-        NuiNative.pointer(window, phase, e.x / density, e.y / density, buttons, mouseTouch, mods(e.metaState))
+        NuiNative.pointer(window, phase, e.x / density, e.y / density, buttons, mouseTouch, mods(e.metaState), linkAt(e.x / density, e.y / density))
 
     /** The page's pointer goes: cancelled (a scroll took the touch) or up. */
     private fun endPointer(phase: Int, e: MotionEvent) {
@@ -1636,6 +1665,13 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 NuiNative.press(window, e.x / density, e.y / density, true)
                 pointerDown = true
                 pageDrag = pointer(0, e, buttons(e))
+                // The mouse's secondary button (a right-click, or a two-finger
+                // trackpad click): the page's contextmenu right after the
+                // mousedown, as Chrome on ChromeOS; its release is no tap.
+                if (mouseTouch && !e.isButtonPressed(MotionEvent.BUTTON_PRIMARY) && e.isButtonPressed(MotionEvent.BUTTON_SECONDARY)) {
+                    longPressed = true
+                    NuiNative.longPress(window, e.x / density, e.y / density, linkAt(e.x / density, e.y / density))
+                }
                 if (!pageDrag && !mouseTouch) postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                 if (!hasFocus()) requestFocus()
             }
@@ -1680,7 +1716,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 endPointer(2, e)
                 if (!dragging && !longPressed) {
                     hideKeyboard()
-                    NuiNative.tap(window, e.x / density, e.y / density)
+                    val link = linkAt(e.x / density, e.y / density)
+                    if (link != 0) NuiNative.tapNode(window, link) else NuiNative.tap(window, e.x / density, e.y / density)
                 } else if (dragging && !pageDrag && !mouseTouch) {
                     val v = velocity
                     v?.computeCurrentVelocity(1000)
@@ -1808,13 +1845,47 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         return super.onGenericMotionEvent(e)
     }
 
+    /**
+     * The mouse's cursor (ChromeOS, desktop mode): a field's own first (a
+     * text field's I-beam), then a hand over what the page can click (links,
+     * buttons, cursor: pointer), as browsers and Oriel's desktop backends do.
+     */
+    override fun onResolvePointerIcon(e: MotionEvent, pointerIndex: Int): PointerIcon? {
+        super.onResolvePointerIcon(e, pointerIndex)?.let { return it }
+        if (pointerIndex < 0 || pointerIndex >= e.pointerCount) return null
+        val x = e.getX(pointerIndex) / density
+        val y = e.getY(pointerIndex) / density
+        val clickable = NuiNative.clickableAt(window, x, y) || linkAt(x, y) != 0
+        return if (clickable) PointerIcon.getSystemIcon(context, PointerIcon.TYPE_HAND) else null
+    }
+
+    /**
+     * The clickable element of the text run under (x, y) dp: a link (or
+     * button, label…) amid the text has no node of its own, its runs carry
+     * its id (`k`, render.js); 0 when the point isn't on one.
+     */
+    private fun linkAt(x: Float, y: Float): Int {
+        val f = frames
+        for (j in paintOrder.indices.reversed()) {
+            val r = paintOrder[j]
+            if (r + REC > f.size) continue
+            val n = nodes[ids[r]] ?: continue
+            if (n.kind != "text") continue
+            val cx = f[r + 9]; val cy = f[r + 10]; val cw = f[r + 11]; val ch = f[r + 12]
+            if (x < cx || y < cy || x >= cx + cw || y >= cy + ch) continue
+            if (x < f[r + 5] || y < f[r + 6] || x >= f[r + 5] + f[r + 7] || y >= f[r + 6] + f[r + 8]) continue
+            return n.linkAt(x - cx, y - cy, ceil(cw).toInt() + 1)
+        }
+        return 0
+    }
+
     /** A mouse or trackpad over the page (ChromeOS, desktop mode): :hover. */
     override fun onHoverEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
                 NuiNative.hover(window, e.x / density, e.y / density)
                 // A hover move for the page's pointer (no buttons), once per frame.
-                NuiNative.pointer(window, 1, e.x / density, e.y / density, 0, true, mods(e.metaState))
+                NuiNative.pointer(window, 1, e.x / density, e.y / density, 0, true, mods(e.metaState), linkAt(e.x / density, e.y / density))
             }
             MotionEvent.ACTION_HOVER_EXIT -> NuiNative.hover(window, -1f, -1f)
         }
