@@ -520,8 +520,7 @@ over their bottom (Props.blb); fields sized as WKWebView's
 (apple_draw.fieldSizeMac): a text field `size` widths of its font's "0",
 a textarea `cols` of them and 16px for a scrollbar, a select AppKit's
 pop-up button (its longest option in the 11px system font and 30px, 16px
-tall; 13px and 19px from a 17px font). Not yet: CSS padding on a select
-(WebKit ignores it), inline elements' getBoundingClientRect (none here),
+tall; 13px and 19px from a 17px font). CSS padding on a select is dropped (WebKit's pop-up takes none). Not yet: inline elements' getBoundingClientRect (none here),
 text widths (a text's measure rounds up a pixel), the baseline of a line
 mixing text and a field (1px).
 

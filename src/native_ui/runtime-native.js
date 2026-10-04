@@ -5167,6 +5167,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (tag === "input" || tag === "textarea" || tag === "select") {
         this.volatile.add(el);
         const type = (el.getAttribute("type") || "text").toLowerCase();
+        if (tag === "select" && pushButtons && (cs.appearance || cs["-webkit-appearance"]) !== "none") delete props.pad;
         if (tag === "input" && (type === "checkbox" || type === "radio")) {
           props.click = true;
           const app = cs.appearance || cs["-webkit-appearance"];

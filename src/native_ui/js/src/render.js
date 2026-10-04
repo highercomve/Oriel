@@ -1435,6 +1435,9 @@ export class Renderer {
     if (tag === "input" || tag === "textarea" || tag === "select") {
       this.volatile.add(el); // its value changes without a mutation
       const type = (el.getAttribute("type") || "text").toLowerCase();
+      // macOS: a select is AppKit's pop-up button, as WKWebView draws it,
+      // which takes no CSS padding (measured: 55x18 with padding: 4px too).
+      if (tag === "select" && pushButtons && (cs.appearance || cs["-webkit-appearance"]) !== "none") delete props.pad;
       if (tag === "input" && (type === "checkbox" || type === "radio")) {
         // The click goes to the label. With appearance: none the page's CSS
         // draws it; else the native side draws the default control, in the
