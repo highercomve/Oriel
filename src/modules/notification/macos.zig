@@ -17,10 +17,30 @@ const cocoa = @import("../../platform/macos/cocoa.zig");
 const ShellMod = @import("../../platform/macos/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
-const Actions = @import("apple.zig").Actions(cocoa, complete, .{});
+const Actions = @import("apple.zig").Actions(cocoa, complete, .{
+    .{ "userNotificationCenter:willPresentNotification:withCompletionHandler:", willPresent },
+});
 
 fn complete(handler: cocoa.id) void {
     cocoa.callBlock(handler, struct {}, .{});
+}
+
+// UNNotificationPresentationOptions: show it while the app is in front too.
+const present_sound: c_ulong = 1 << 1;
+const present_list: c_ulong = 1 << 3;
+const present_banner: c_ulong = 1 << 4;
+
+fn willPresent(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, _: cocoa.id, handler: cocoa.id) callconv(.c) void {
+    cocoa.callBlock(handler, struct { c_ulong }, .{present_banner | present_list | present_sound});
+}
+
+/// Called by the shell as the app finishes launching (main thread): a click
+/// on a notification from an earlier run, or one that launched the app,
+/// reaches the delegate only if it is set by then.
+pub fn installAtLaunch() void {
+    if (!bundled()) return;
+    const center = cocoa.class("UNUserNotificationCenter").msgSend(Object, "currentNotificationCenter", .{});
+    if (center.value != null) Actions.installDelegate(center);
 }
 
 const Object = cocoa.Object;

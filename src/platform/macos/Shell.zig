@@ -246,6 +246,7 @@ var finished_launching = false;
 
 fn applicationDidFinishLaunching(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv(.c) void {
     finished_launching = true;
+    if (build_opts.notification) @import("../../modules/notification/macos.zig").installAtLaunch();
 }
 
 // Deep links: Launch Services sends `open myapp://...` (browser links,

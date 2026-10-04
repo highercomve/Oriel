@@ -18,6 +18,14 @@ fn complete(handler: apple.id) void {
     apple.callBlock(handler, &.{}, .{});
 }
 
+/// Called by the shell in didFinishLaunching (main thread): a tap on a
+/// notification that launched the app reaches the delegate only if it is
+/// set by then.
+pub fn installAtLaunch() void {
+    const center = apple.class("UNUserNotificationCenter").msgSend(Object, "currentNotificationCenter", .{});
+    if (center.value != null) Actions.installDelegate(center);
+}
+
 const Object = apple.Object;
 const log = std.log.scoped(.oriel);
 
