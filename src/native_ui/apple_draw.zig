@@ -367,6 +367,49 @@ pub fn fontMetrics(comptime font_class: [:0]const u8, size: f32, mono: bool, out
     return true;
 }
 
+/// A string's width in a font (CoreText's typographic width), px.
+pub fn stringWidth(comptime font_class: [:0]const u8, text: []const u8, size: f32, mono: bool, family: ?[]const u8) f32 {
+    const fnt = font(font_class, size, 400, false, mono, family) orelse return 0;
+    const s = CFAttributedStringCreateMutable(null, 0) orelse return 0;
+    defer CFRelease(s);
+    const str = CFStringCreateWithBytes(null, text.ptr, @intCast(@min(text.len, 1 << 16)), kCFStringEncodingUTF8, 0) orelse return 0;
+    defer CFRelease(str);
+    CFAttributedStringReplaceString(s, .{ .location = 0, .length = 0 }, str);
+    CFAttributedStringSetAttribute(s, .{ .location = 0, .length = CFStringGetLength(str) }, kCTFontAttributeName, fnt);
+    const line = CTLineCreateWithAttributedString(s) orelse return 0;
+    defer CFRelease(line);
+    return @floatCast(CTLineGetTypographicBounds(line, null, null, null));
+}
+
+/// A macOS field's content size as WKWebView gives it (measured): a text
+/// field `size` (20) widths of its font's "0" (WebKit's average character
+/// for the system font), a textarea `cols` of them and 16px kept for a
+/// scrollbar, `rows` lines; a select is AppKit's pop-up button whatever
+/// its CSS font: its longest option in the small control font (11px) and
+/// 30px for its arrow, 16px tall, or the regular ones (13px, 19px tall)
+/// from a 17px font up.
+pub fn fieldSizeMac(n: *const Node, max_width: f32) [2]f32 {
+    const fz = n.props.fz orelse 16;
+    const zero = stringWidth("NSFont", "0", fz, n.props.mono, n.props.ff);
+    const line = fieldLine("NSFont", n);
+    var size: [2]f32 = switch (n.kind) {
+        .textarea => .{ (n.props.cols orelse 20) * zero + 16, line * @max(1, n.props.rows orelse 2) },
+        .select => blk: {
+            const regular = fz >= 17;
+            const tz: f32 = if (regular) 13 else 11;
+            // (In the system font, unrounded; an empty one 36px wide in all.)
+            var widest: f32 = 4;
+            if (n.props.options) |opts| for (opts) |o| {
+                widest = @max(widest, stringWidth("NSFont", o[1], tz, false, "system-ui"));
+            };
+            break :blk .{ widest + 30, if (regular) 19 else 16 };
+        },
+        else => .{ (n.props.cols orelse 20) * zero, line },
+    };
+    if (!std.math.isInf(max_width) and n.kind != .textarea) size[0] = @min(size[0], max_width);
+    return size;
+}
+
 /// Backend.font_metrics_family: the same for a CSS font-family list (the
 /// block's own font, for its lines' strut).
 pub fn fontMetricsFamily(comptime font_class: [:0]const u8, size: f32, mono: bool, family: []const u8, out: *[3]f32) bool {
