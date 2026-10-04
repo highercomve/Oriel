@@ -940,7 +940,12 @@ display's 180 either way.
    `src/native_ui/svg_path.zig`, which parses SVG path data) with
    Direct2D; fields are real EDIT and COMBOBOX controls over it, with
    Enter and Escape sent to the page first. Clicks, the wheel, keys and
-   hover are hit-tested in Zig as on GTK. The render target's DPI is the
+   hover are hit-tested in Zig as on GTK. The right, middle, back and
+   forward buttons are pointer downs and ups with their `buttons` bits,
+   `auxclick` after a non-primary release, and `contextmenu` on the right
+   button's release after it (WebView2's order on Windows, measured); a
+   link amid the text (its runs' `k`) shows the hand and takes its hover,
+   presses and clicks. The render target's DPI is the
    window's, so the tree stays in CSS pixels. A transparent window (overlays)
    clears to transparent and gets the same DWM blur-behind as a WebView2
    one, so only what the page paints shows; always-on-top and placement
