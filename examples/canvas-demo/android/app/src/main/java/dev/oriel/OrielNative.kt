@@ -87,6 +87,10 @@ internal object NuiNative {
     @JvmStatic external fun pointer(window: Int, phase: Int, x: Float, y: Float, buttons: Int, mouse: Boolean, mods: Int, target: Int): Boolean
     /** A click on the clickable element `id` (a link amid the text: its run's `k`). */
     @JvmStatic external fun tapNode(window: Int, id: Int)
+    /** A drag over the page: phase 0 enter (`items`: [[kind, type]…] JSON), 1 over, 2 leave, 3 flush; the page's effect mask. */
+    @JvmStatic external fun drag(window: Int, phase: Int, x: Float, y: Float, session: Int, items: ByteArray): Int
+    /** A drop's items as JSON (["string", mime, value] or ["file", mime, name, size, mtimeMs, fd]), the fds for Oriel to own. */
+    @JvmStatic external fun drop(window: Int, session: Int, x: Float, y: Float, items: ByteArray)
     /** A finger or button down on (x, y) (:active), or up. */
     @JvmStatic external fun press(window: Int, x: Float, y: Float, down: Boolean)
     /** A mouse over (x, y) (:hover), or gone (x < 0). */
@@ -1455,6 +1459,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             val kind = if (has) "focus" else "blur"
             post { if (Nui.views[window] === this) NuiNative.event(window, id, kind.bytes(), ByteArray(0)) }
         }
+        // Every drag over a field is the page's, as in a browser: the page's
+        // drop decides, then dnd.js inserts dropped text. The field's own
+        // would paste a file's content:// URI and hide the drag from the page.
+        if (v is EditText) v.setOnDragListener { f, ev -> handleDrag(ev, f.left.toFloat(), f.top.toFloat()) }
         fields[id] = v
         styleField(n, v)
         addView(v)
@@ -1736,6 +1744,174 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             }
         }
         return true
+    }
+
+    // --- Drag and drop (docs/drag-and-drop-design.md §5) --------------------------
+
+    private val dropWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var dragSession = 0
+    private var dragInside = false
+    private var dragEnterPending = false
+    private var dragDropped = false
+    private var dragItems = "[]"
+    private val noItems = ByteArray(0)
+
+    override fun onDragEvent(e: android.view.DragEvent): Boolean = handleDrag(e, 0f, 0f)
+
+    /**
+     * A drag from another app (or a field's, offset by its position): the
+     * page's dragenter, dragover (each display frame), dragleave and drop.
+     * The page decides where it takes the drag (its dragover's effect); a
+     * drop there reads the dropped files on a worker, then "drop".
+     */
+    internal fun handleDrag(e: android.view.DragEvent, ox: Float, oy: Float): Boolean {
+        when (e.action) {
+            android.view.DragEvent.ACTION_DRAG_STARTED -> {
+                dragDropped = false
+                return true
+            }
+            android.view.DragEvent.ACTION_DRAG_ENTERED -> startDrag(e)
+            android.view.DragEvent.ACTION_DRAG_LOCATION -> {
+                if (!dragInside) startDrag(e)
+                val x = (e.x + ox) / density; val y = (e.y + oy) / density
+                if (dragEnterPending) {
+                    dragEnterPending = false
+                    NuiNative.drag(window, 0, x, y, dragSession, dragItems.bytes())
+                } else NuiNative.drag(window, 1, x, y, dragSession, noItems)
+            }
+            android.view.DragEvent.ACTION_DRAG_EXITED -> leaveDrag()
+            android.view.DragEvent.ACTION_DROP -> {
+                val x = (e.x + ox) / density; val y = (e.y + oy) / density
+                if (!dragInside) startDrag(e)
+                if (dragEnterPending) {
+                    dragEnterPending = false
+                    NuiNative.drag(window, 0, x, y, dragSession, dragItems.bytes())
+                }
+                // The latest position first; the page's answer there decides.
+                val effect = NuiNative.drag(window, 3, x, y, dragSession, noItems)
+                if (effect == 0) {
+                    leaveDrag()
+                    return false
+                }
+                dragInside = false
+                dragDropped = true
+                readDrop(e, x, y, dragSession)
+                return true
+            }
+            android.view.DragEvent.ACTION_DRAG_ENDED -> {
+                if (!dragDropped) leaveDrag()
+                dragInside = false
+            }
+        }
+        return true
+    }
+
+    private fun startDrag(e: android.view.DragEvent) {
+        dragSession++
+        dragInside = true
+        dragEnterPending = true
+        dragItems = dragItemsOf(e.clipDescription)
+    }
+
+    private fun leaveDrag() {
+        if (!dragInside) return
+        dragInside = false
+        dragEnterPending = false
+        NuiNative.drag(window, 2, 0f, 0f, dragSession, noItems)
+    }
+
+    /**
+     * The drag's items before its drop ([[kind, type]…]): text, HTML and URI
+     * lists as strings, anything else a file of that type; a drag with files
+     * lists only its files (its strings would be their paths or URIs).
+     */
+    private fun dragItemsOf(d: android.content.ClipDescription?): String {
+        val strings = JSONArray(); val files = JSONArray()
+        if (d != null) for (i in 0 until d.mimeTypeCount) {
+            val m = d.getMimeType(i)
+            if (isTextMime(m)) strings.put(JSONArray().put("string").put(m)) else files.put(JSONArray().put("file").put(m))
+        }
+        // HTML always comes with its plain text (ClipData.Item.text): a
+        // description that names only text/html still drops text/plain.
+        val types = (0 until strings.length()).map { strings.getJSONArray(it).getString(1) }
+        if ("text/html" in types && "text/plain" !in types) strings.put(JSONArray().put("string").put("text/plain"))
+        return (if (files.length() > 0) files else strings).toString()
+    }
+
+    private fun isTextMime(m: String) = m == "text/plain" || m == "text/html" || m == "text/uri-list" ||
+        m == android.content.ClipDescription.MIMETYPE_TEXT_INTENT
+
+    /**
+     * The dropped data, read off the UI thread: text as strings, each
+     * content:// file opened read-only (a stream that can't seek copied to
+     * the cache first, opened, then unlinked) with its name, size, type and
+     * modification time; its fd detached for Oriel to own. Then "drop".
+     */
+    private fun readDrop(e: android.view.DragEvent, x: Float, y: Float, session: Int) {
+        val clip = e.clipData ?: return
+        val activity = generateSequence(context) { (it as? android.content.ContextWrapper)?.baseContext }.firstOrNull { it is android.app.Activity } as? android.app.Activity
+        val hasUris = (0 until clip.itemCount).any { clip.getItemAt(it).uri != null }
+        val perms = if (hasUris) activity?.requestDragAndDropPermissions(e) else null
+        val resolver = context.contentResolver
+        val cache = java.io.File(context.cacheDir, "oriel-dropped")
+        dropWorker.execute {
+            val files = JSONArray(); val strings = JSONArray()
+            for (i in 0 until clip.itemCount) {
+                val item = clip.getItemAt(i)
+                val uri = item.uri
+                if (uri != null && uri.scheme == "content") {
+                    droppedFile(resolver, uri, cache)?.let { files.put(it) }
+                    continue
+                }
+                item.text?.let { strings.put(JSONArray().put("string").put("text/plain").put(it.toString())) }
+                item.htmlText?.let { strings.put(JSONArray().put("string").put("text/html").put(it)) }
+                if (uri != null) strings.put(JSONArray().put("string").put("text/uri-list").put(uri.toString()))
+            }
+            perms?.release()
+            val items = (if (files.length() > 0) files else strings).toString().bytes()
+            post {
+                if (Nui.views[window] === this) NuiNative.drop(window, session, x, y, items)
+                else closeDropped(files)
+            }
+        }
+    }
+
+    private fun droppedFile(resolver: android.content.ContentResolver, uri: android.net.Uri, cache: java.io.File): JSONArray? {
+        return try {
+            var name = uri.lastPathSegment?.substringAfterLast('/') ?: "file"
+            var size = -1L
+            var mtime = 0L
+            resolver.query(uri, null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 && !c.isNull(it) }?.let { name = c.getString(it).substringAfterLast('/') }
+                    c.getColumnIndex(android.provider.OpenableColumns.SIZE).takeIf { it >= 0 && !c.isNull(it) }?.let { size = c.getLong(it) }
+                    c.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED).takeIf { it >= 0 && !c.isNull(it) }?.let { mtime = c.getLong(it) }
+                }
+            }
+            val mime = resolver.getType(uri) ?: "application/octet-stream"
+            var pfd = resolver.openFileDescriptor(uri, "r") ?: return null
+            if (pfd.statSize < 0) {
+                // Not seekable (a pipe): a copy in the cache, opened and unlinked.
+                cache.mkdirs()
+                val copy = java.io.File.createTempFile("drop", null, cache)
+                android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input -> copy.outputStream().use { input.copyTo(it) } }
+                pfd = android.os.ParcelFileDescriptor.open(copy, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+                copy.delete()
+            }
+            if (pfd.statSize >= 0) size = pfd.statSize
+            JSONArray().put("file").put(mime).put(name).put(size).put(mtime).put(pfd.detachFd())
+        } catch (t: Exception) {
+            Log.w("OrielNui", "drop: $uri unreadable ($t)")
+            null
+        }
+    }
+
+    /** The window went before the drop arrived: its fds closed. */
+    private fun closeDropped(files: JSONArray) {
+        for (i in 0 until files.length()) {
+            val fd = files.optJSONArray(i)?.optInt(5, -1) ?: -1
+            if (fd >= 0) try { android.os.ParcelFileDescriptor.adoptFd(fd).close() } catch (_: Exception) {}
+        }
     }
 
     // --- Keys -------------------------------------------------------------------
