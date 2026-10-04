@@ -1638,6 +1638,22 @@ export class Renderer {
       if (spaced && props.cg === undefined) { props.cg = Math.round(fontSize * 0.28 * 10) / 10; }
     }
 
+    // One control alone on its line (a <button> in a <div>): the line has
+    // the block's strut, as in a browser, a zero-width text in its font
+    // beside the control on one baseline (WKWebView: a button's line 19px
+    // in a 14px font, the button 18px and 1px down). text-align places it.
+    const controls = flow.filter((f) => f.el && inFlow(f));
+    if (!inlineLine && !imageLine && !childCtx.blockify && props.fd === "column" && controls.length === 1 &&
+        flow.every((f) => f.space || f.el) && CONTROLS.has(controls[0].el.localName) && controls[0].el.localName !== "textarea" &&
+        (this.style(controls[0].el, cs, rematch).display || "inline").startsWith("inline")) {
+      props.fd = "row"; props.ai = "baseline";
+      const ta = cs["text-align"];
+      if (ta === "center") props.jc = "center";
+      else if (ta === "right" || ta === "end") props.jc = "flex-end";
+      for (let i = flow.length - 1; i >= 0; i--) if (flow[i].space) flow.splice(i, 1);
+      flow.unshift({ text: [runFor("\u200b", cs, fontSize)], strut: true });
+    }
+
     // Block flow: the kids whose margins don't collapse (lines of text,
     // inline boxes, pseudo-elements), for collapseMargins.
     const flowBlock = !childCtx.blockify && props.fd === "column" && display !== "grid" && !tableHolds(display);
@@ -1657,6 +1673,8 @@ export class Renderer {
         const tid = this.idOf(el, "t" + kids.length);
         this.own(tid, el);
         const tp = { ...textProps(cs, fontSize), runs: item.text };
+        // A line's strut (above): its height, no width.
+        if (item.strut) { tp.w = 0; tp.minw = 0; delete tp.ta; }
         if (transitions) this.spec(tid, transitions);
         tp.fs = (childCtx.blockify || inlineLine) && !props.scroll ? 1 : 0;
         this.put(nodes, tid, "text", tp, []);
