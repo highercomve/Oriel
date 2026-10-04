@@ -174,6 +174,17 @@
       case "margin":
       case "padding":
         return box(prop, (side, n) => `${n}-${side}`);
+      // Omitted parts take their initial values (disc, outside), as in CSS.
+      case "list-style": {
+        let type, position;
+        for (const w of splitSpaces(value)) {
+          if (w === "inside" || w === "outside") position = w;
+          else if (!/^url\(/i.test(w)) type = w;
+        }
+        out["list-style-type"] = type ?? "disc";
+        out["list-style-position"] = position ?? "outside";
+        return;
+      }
       case "inset":
         return box(prop, (side) => side);
       // Horizontal writing: inline is left and right, block top and bottom.
