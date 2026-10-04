@@ -251,8 +251,10 @@ export function installDnd(g, env) {
       // The page took it: its dropEffect, if the source allows it.
       op = OP_NAMES[state.get(dt).dropEffect] & allowed;
     } else {
-      // Not taken: text over a field would be inserted (a copy), else nothing.
-      op = editable(now) && hasText(session.items) ? (allowed & COPY ? COPY : allowed & MOVE) : 0;
+      // Not taken: a field accepts it (text goes in; a file's drop still
+      // reaches the page, as WebKit and Chromium deliver it, but inserts
+      // nothing), else nothing.
+      op = editable(now) && session.items.length ? (allowed & COPY ? COPY : allowed & MOVE) : 0;
     }
     return (session.op = op);
   }
