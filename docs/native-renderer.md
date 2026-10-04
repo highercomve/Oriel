@@ -466,6 +466,15 @@ another scale, the backend sends `Engine.event(0, "dpr", scale)`:
 devicePixelRatio follows and resolution queries' `change` listeners fire
 (macOS: the view's viewDidChangeBackingProperties). `document.documentElement`'s
 clientWidth and clientHeight are the viewport's, as in browsers.
+Border widths snap to its device pixels as the platform's browser snaps
+them (render.js snapBorder; the box's `bw`, an inline box's, clientWidth
+and getComputedStyle): a width under one device pixel is one, any other
+floored to whole device pixels. WebKit (macOS, iOS, Linux) floors the
+width as its 1/64 px layout unit holds it: measured in WKWebView, 0.5px
+and 1.7px are 1px at 1x, and at 3x 1.4px is 1.333px, 2.67px 2.333px and
+0.34px 0 (its unit holds 0.328: not under one device pixel, floored to
+none). Chromium (Windows, Android) floors the width itself: a 1px border
+at 2.625 is 0.762, 3px 2.667. clientWidth and clientHeight are whole px.
 
 **Mixed-font line boxes** (each backend): with `line-height: normal`
 (no `lh`), a line's box stacks every inline box on it on the baseline,
