@@ -40,6 +40,7 @@ import android.view.Choreographer
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
@@ -78,6 +79,8 @@ import kotlin.math.tan
 internal object NuiNative {
     @JvmStatic external fun resize(window: Int, width: Float, height: Float, dark: Boolean)
     @JvmStatic external fun tap(window: Int, x: Float, y: Float)
+    /** Whether the node under (x, y) is clickable and enabled (the mouse's hand). */
+    @JvmStatic external fun clickableAt(window: Int, x: Float, y: Float): Boolean
     /** A pointer event for the page: phase 0 down, 1 move (sent at the next
      *  display frame), 2 up, 3 cancel. True when the page prevented the
      *  default (on down: it takes the drag). */
@@ -1806,6 +1809,18 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             if (moved) return true
         }
         return super.onGenericMotionEvent(e)
+    }
+
+    /**
+     * The mouse's cursor (ChromeOS, desktop mode): a field's own first (a
+     * text field's I-beam), then a hand over what the page can click (links,
+     * buttons, cursor: pointer), as browsers and Oriel's desktop backends do.
+     */
+    override fun onResolvePointerIcon(e: MotionEvent, pointerIndex: Int): PointerIcon? {
+        super.onResolvePointerIcon(e, pointerIndex)?.let { return it }
+        if (pointerIndex < 0 || pointerIndex >= e.pointerCount) return null
+        val clickable = NuiNative.clickableAt(window, e.getX(pointerIndex) / density, e.getY(pointerIndex) / density)
+        return if (clickable) PointerIcon.getSystemIcon(context, PointerIcon.TYPE_HAND) else null
     }
 
     /** A mouse or trackpad over the page (ChromeOS, desktop mode): :hover. */

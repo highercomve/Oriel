@@ -878,6 +878,16 @@ fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, mouse: b
     return s.engine.event(under, "pointer", json);
 }
 
+/// Whether the node under (x, y) is clickable (a link, a button, cursor:
+/// pointer, a click handler) and not disabled: the mouse shows a hand
+/// there, as on GTK and Windows.
+fn nClickableAt(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) jboolean {
+    const s = byId(win) orelse return 0;
+    var n: ?*Node = s.engine.tree.hit(x, y) orelse return 0;
+    while (n) |c| : (n = c.parent) if (c.props.click) return @intFromBool(!c.props.dis);
+    return 0;
+}
+
 /// A long press: the page's contextmenu.
 fn nLongPress(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) jboolean {
     const s = byId(win) orelse return 0;
@@ -1005,6 +1015,7 @@ comptime {
     @export(&nDisplayFrame, .{ .name = prefix ++ "displayFrame" });
     @export(&nResize, .{ .name = prefix ++ "resize" });
     @export(&nTap, .{ .name = prefix ++ "tap" });
+    @export(&nClickableAt, .{ .name = prefix ++ "clickableAt" });
     @export(&nPointer, .{ .name = prefix ++ "pointer" });
     @export(&nPress, .{ .name = prefix ++ "press" });
     @export(&nHover, .{ .name = prefix ++ "hover" });
