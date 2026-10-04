@@ -367,6 +367,16 @@ pub fn fontMetrics(comptime font_class: [:0]const u8, size: f32, mono: bool, out
     return true;
 }
 
+/// Backend.font_metrics_family: the same for a CSS font-family list (the
+/// block's own font, for its lines' strut).
+pub fn fontMetricsFamily(comptime font_class: [:0]const u8, size: f32, mono: bool, family: []const u8, out: *[3]f32) bool {
+    if (!(size > 0) or !std.math.isFinite(size)) return false;
+    const f = font(font_class, size, 400, false, mono, family) orelse return false;
+    const m = lineMetrics(f);
+    out.* = .{ m.ascent, m.descent, m.gap };
+    return true;
+}
+
 /// A field's line (input, select, textarea): its CSS line-height, else
 /// the normal line height of its font, as WebKit sizes a control's text.
 pub fn fieldLine(comptime font_class: [:0]const u8, n: *const Node) f32 {
