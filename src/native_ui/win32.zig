@@ -4189,12 +4189,20 @@ fn paintControl(p: *Painter, n: *Node) void {
     }
 }
 
+/// A text's width as the layout keeps it: DirectWrite's, rounded up to a
+/// LayoutUnit (1/64 px) as Chromium keeps it (a whole pixel more made a
+/// chip or a button 1 to 2px wider than WebView2's). A sum of glyph pairs
+/// may land a hair over the layout's own sum: 0.001 px of slack.
+fn textWidth(w: f32) f32 {
+    return @ceil((w - 0.001) * 64) / 64;
+}
+
 /// A text's size at `width` (inf: unwrapped), through the shared cache
 /// (keyed by the text and every layout input, so equal rows share it).
 fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     const actual_width = if (n.props.nowrap or std.math.isInf(width)) std.math.inf(f32) else @max(1, width);
     // One line of plain text: its width from its glyph pairs, no layout.
-    if (fastTextSize(s, &n.props)) |size| if (std.math.isInf(actual_width) or size[0] - 1 <= actual_width) {
+    if (fastTextSize(s, &n.props)) |size| if (std.math.isInf(actual_width) or size[0] <= actual_width) {
         if (textCheck()) checkTextSize(s, n, actual_width, size);
         return size;
     };
@@ -4205,7 +4213,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
     var m: c.DWRITE_TEXT_METRICS = undefined;
     if (layout.lpVtbl.*.GetMetrics.?(layout, &m) < 0) return null;
-    var size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, textHeight(&n.props, m.height) };
+    var size: [2]f32 = .{ textWidth(m.widthIncludingTrailingWhitespace), textHeight(&n.props, m.height) };
     // Lines of their own heights: theirs added up.
     var ext_buf: [64]Extent = undefined;
     if (lineExtents(&n.props, layout, &ext_buf, null)) |xs| {
@@ -4282,7 +4290,7 @@ fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
     // As measuredText rounds DirectWrite's width; a sum of pairs may land
     // a hair over a whole number the layout's own sum lands on.
     const w: f32 = @floatCast(sum);
-    return .{ @ceil(w - 0.001) + 1, table.height };
+    return .{ textWidth(w), table.height };
 }
 
 fn pairWidth(s: *Surface, props: *const tree_mod.Props, r: tree_mod.Run, table: *PairWidths, a: u8, b: u8) ?f32 {
@@ -4338,7 +4346,7 @@ fn checkTextSize(s: *Surface, n: *Node, width: f32, fast: [2]f32) void {
     defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
     var m: c.DWRITE_TEXT_METRICS = undefined;
     if (layout.lpVtbl.*.GetMetrics.?(layout, &m) < 0) return;
-    const size: [2]f32 = .{ @ceil(m.widthIncludingTrailingWhitespace) + 1, textHeight(&n.props, m.height) };
+    const size: [2]f32 = .{ textWidth(m.widthIncludingTrailingWhitespace), textHeight(&n.props, m.height) };
     if (size[0] != fast[0] or size[1] != fast[1]) {
         const t = if (n.props.runs) |runs| runs[0].t else "";
         log.warn("text size: fast {d}x{d}, DirectWrite {d}x{d} ({d}): \"{s}\"", .{ fast[0], fast[1], size[0], size[1], m.widthIncludingTrailingWhitespace, t[0..@min(t.len, 60)] });
