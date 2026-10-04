@@ -498,7 +498,9 @@ the half-leading (floored) above the baseline and the rest below, so a
 10px badge in a 12px system-ui line is 2px down and the line 15px; boxes
 side by side line up their bottoms. `host.fontMetrics(size, mono,
 family)` takes the block's CSS family (Backend.font_metrics_family; a
-backend without it gives the default sans-serif's). vertical-align other
+backend without it gives the default sans-serif's; Win32's resolves the
+list as its text does, checked against WebView2 with Segoe UI, Arial,
+Times New Roman, Consolas, Georgia and a 30px line). vertical-align other
 than baseline isn't done for these.
 
 **Margin collapsing** (render.js collapseMargins, shared): block flow's

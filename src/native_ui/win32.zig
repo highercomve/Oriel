@@ -397,6 +397,7 @@ pub const Surface = struct {
             .request_display_frame = requestDisplayFrame,
             .warm_fonts = warmFonts,
             .font_metrics = fontMetrics,
+            .font_metrics_family = fontMetricsFamily,
             .invoke = invoke,
             .focus = focus,
             .selection = selection,
@@ -2888,6 +2889,15 @@ const iid_font_face1: c.GUID = .{ .Data1 = 0xa71efdb4, .Data2 = 0x9fdb, .Data3 =
 fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
     if (!(size > 0) or !std.math.isFinite(size)) return false;
     const r = fontRatios(if (mono) mono_face else sans_face, 400, false) orelse return false;
+    out.* = .{ r[0] * size, r[1] * size, r[2] * size };
+    return true;
+}
+
+/// Backend.font_metrics_family: the same for a CSS font-family list (a
+/// line's strut in its block's own font, as familyOf resolves it).
+fn fontMetricsFamily(_: *anyopaque, size: f32, mono: bool, family: []const u8, out: *[3]f32) bool {
+    if (!(size > 0) or !std.math.isFinite(size)) return false;
+    const r = fontRatios(familyOf(family, mono), 400, false) orelse return false;
     out.* = .{ r[0] * size, r[1] * size, r[2] * size };
     return true;
 }
