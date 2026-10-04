@@ -419,7 +419,9 @@ internal class NuiNode(val id: Int, var kind: String) {
             else -> Layout.Alignment.ALIGN_NORMAL
         }
         val b = builder(t, tp, w).setAlignment(align)
-        if (nowrap) b.setMaxLines(1).setEllipsize(TextUtils.TruncateAt.END)
+        // No wrapping: one line, cut with an ellipsis, unless the text has
+        // line breaks of its own (white-space: pre), which stay lines.
+        if (nowrap && !t.contains('\n')) b.setMaxLines(1).setEllipsize(TextUtils.TruncateAt.END)
         layout = b.build()
         layoutWidth = w
         return layout
