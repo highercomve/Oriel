@@ -14,6 +14,7 @@ const page = `<html><body style="font: 12px system-ui">
 <div style="line-height: 30px"><span style="display: inline-block; width: 50px; height: 10px"></span></div>
 <div><span style="display: inline-block; width: 50px; height: 10px"></span><span style="display: inline-block; width: 50px; height: 20px"></span></div>
 <div><span style="display: inline-block">text</span></div>
+<div><span style="display: inline-block; width: 30px; height: 10px"></span> <span style="display: inline-block; width: 30px; height: 10px"></span></div>
 </body></html>`;
 const nodes = new Map();
 const asked = [];
@@ -35,13 +36,17 @@ const ctx = vm.createContext({ __host: host });
 vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();
-const body = [...nodes.values()].find((n) => n.kids.length === 4);
-const [one, tall, row, text] = body.kids.map((id) => nodes.get(id));
+const body = [...nodes.values()].find((n) => n.kids.length === 5);
+const [one, tall, row, text, spaced] = body.kids.map((id) => nodes.get(id));
 const box = (n) => nodes.get(n.kids[0]);
 assert.deepEqual(box(one).props.m, [2, 0, 3, 0], "12 above the baseline, 3 below");
 assert.deepEqual(box(tall).props.m, [9, 0, 11, 0], "30px line: 7 + 12 above, 11 below");
 assert.equal(row.props.fd, "row");
 for (const id of row.kids) assert.equal(nodes.get(id).props.as, "flex-end", "boxes side by side: bottoms on one line");
 assert.equal(box(text).props.m, undefined, "a box with text in it keeps its text's baseline");
+// A space between the boxes (found on Android): still a line of them, on
+// its strut, spaced by the column gap.
+assert.ok(spaced.props.cg > 0, "the space between them");
+for (const id of spaced.kids) assert.deepEqual(nodes.get(id).props.m, [2, 0, 3, 0], "spaced boxes keep the line's strut");
 assert.ok(asked.includes("system-ui"), `the block's family: ${asked}`);
 console.log("inline-block line: ok");

@@ -5557,6 +5557,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     imageLine(flow, cs, rematch) {
       let any = false;
       for (const f of flow) {
+        if (f.space) continue;
         if (!f.el) return false;
         const ccs = this.style(f.el, cs, rematch);
         if (ccs.position === "absolute" || ccs.position === "fixed" || (ccs.display || "inline") === "none") continue;

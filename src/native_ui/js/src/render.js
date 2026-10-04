@@ -1902,6 +1902,7 @@ export class Renderer {
   imageLine(flow, cs, rematch) {
     let any = false;
     for (const f of flow) {
+      if (f.space) continue; // a space between the boxes: still a line of them
       if (!f.el) return false;
       const ccs = this.style(f.el, cs, rematch);
       if (ccs.position === "absolute" || ccs.position === "fixed" || (ccs.display || "inline") === "none") continue;
