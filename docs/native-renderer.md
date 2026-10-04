@@ -512,8 +512,7 @@ line-height put the half-leading above floored, as WebKit (20px over
 **UA defaults and controls** (measured against WKWebView on a page of
 forms, flex rows and lists): nested lists have no margins of their own,
 `dd` is indented 40px, a fieldset has both browsers' margin, padding and
-groove border with its legend up in the top border (the border runs along
-the legend's top here, not through its middle), and a grid's
+groove border with its legend up in the top border (Props.lgd: the backend draws the box from the line through the legend's middle down, the top border broken across the legend, as browsers; Apple: apple_draw.legendGap; groove itself is drawn solid), and a grid's
 `align-items` aligns each row's items. macOS (WebKit's html.css there):
 checkboxes and radios 12px with `margin: 3px 2px`, their baseline 2px
 over their bottom (Props.blb); fields sized as WKWebView's
