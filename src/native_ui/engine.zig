@@ -786,7 +786,7 @@ export fn oriel_nui_leaf(p: *anyopaque, id: f64, style_id: f64, text: [*]const u
     return if (engineOf(p).tree.createLeaf(Tree.idOf(id), if (is_text != 0) .text else .view, Tree.idOf(style_id), text[0..len]) catch return 0) 1 else 0;
 }
 
-export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[8]f64) c_int {
+export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[9]f64) c_int {
     const e = engineOf(p);
     if (e.tree.needsLayout()) {
         const t0 = prof.now();
@@ -796,11 +796,15 @@ export fn oriel_nui_frame(p: *anyopaque, id: f64, out: *[8]f64) c_int {
     }
     const n = e.tree.get(Tree.idOf(id)) orelse return 0;
     // [x, y, w, h, scrollHeight (the padding box's content: no borders),
-    // the scrollbar's room (clientWidth leaves it out), scrollTop, scrollLeft].
+    // the scrollbar's room (clientWidth leaves it out), scrollTop, scrollLeft,
+    // scrollWidth (as scrollHeight; at least the clientWidth)].
     const yg = tree_mod.yg;
     const bt = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeTop);
     const bb = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeBottom);
-    out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(0, @max(n.content_h, n.frame.h) - bt - bb), n.gutter, n.scroll_y, n.scroll_x };
+    const bl = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeLeft);
+    const br = yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeRight);
+    const scroll_w = @max(n.content_w - bl - br, n.frame.w - bl - br - n.gutter);
+    out.* = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h, @max(0, @max(n.content_h, n.frame.h) - bt - bb), n.gutter, n.scroll_y, n.scroll_x, @max(0, scroll_w) };
     return 1;
 }
 
