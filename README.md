@@ -780,7 +780,7 @@ try oriel.notification.notify(.{
 listen("notification:action", ({ id, action }) => { /* action === null: the notification was clicked */ });
 ```
 
-Handlers run on the main thread, and only while the app runs. Buttons show on
+Handlers run on the main thread. A click that came before there was a handler, or before the page listened (a tap that launched the app), is delivered to the first handler set and to the page when it calls `listen("notification:action")`. Buttons show on
 Linux, macOS (`.app` bundles), iOS and Android (at most 3). Windows balloons
 report a click on the balloon but have no buttons; the unbundled macOS
 `osascript` fallback reports nothing. On Linux a click on the notification

@@ -20,8 +20,9 @@ Oriel 0.9.0 lets apps react to notification clicks and buttons. See [Notificatio
   - Linux: GNotification default action and buttons.
   - macOS (`.app` bundles) and iOS: `UNNotificationCategory` buttons and the
     notification center delegate.
-  - Android: a tap opens the app and reports the click; buttons (at most 3)
-    report theirs without opening the app and dismiss the notification.
+  - Android: a tap opens the app and reports the click, also when it
+    launches the app; buttons (at most 3) report theirs without opening the
+    app and dismiss the notification.
   - Windows: a click on the balloon is reported; balloons have no buttons.
 - The showcase's Notify button sends a notification with Like and Later
   buttons and shows which one was clicked.

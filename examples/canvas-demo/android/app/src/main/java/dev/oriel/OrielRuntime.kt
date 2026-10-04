@@ -73,7 +73,12 @@ object OrielRuntime {
         mainWindow?.let { if (!it.destroyed) it.attachTo(activity) }
         val args = argsOf(intent)
         when (NativeLib.start(app.filesDir.path.bytes(), app.cacheDir.path.bytes(), (app.getExternalFilesDir(null)?.path ?: "").bytes(), args)) {
-            1 -> Log.i(TAG, "started")
+            1 -> {
+                Log.i(TAG, "started")
+                // A tap that launched the app: Zig holds it until the app's
+                // handler and page listen (notification/common.zig).
+                notificationTap(intent, direct = true)
+            }
             2 -> {
                 if (args.isNotEmpty()) NativeLib.onNewIntent(args)
                 notificationTap(intent)
@@ -592,11 +597,16 @@ object OrielRuntime {
         app.getSystemService(NotificationManager::class.java).cancel(tag.ifEmpty { null }, code)
     }
 
-    /** The main activity was opened by a tap on a notification: report it once. */
-    private fun notificationTap(intent: Intent) {
+    /**
+     * The main activity was opened by a tap on a notification: report it
+     * once. [direct]: the app is starting, so straight to Zig (OrielSystem.send
+     * would start it again while it isn't running yet).
+     */
+    private fun notificationTap(intent: Intent, direct: Boolean = false) {
         val key = intent.getStringExtra(EXTRA_NOTIFICATION) ?: return
         intent.removeExtra(EXTRA_NOTIFICATION)
-        OrielSystem.send("notification", "\u001f" + key)
+        val data = "\u001f" + key
+        if (direct) NativeLib.onSystemEvent("notification".bytes(), data.bytes()) else OrielSystem.send("notification", data)
     }
 
     // ---------------------------------------------------------------------

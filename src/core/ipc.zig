@@ -290,7 +290,7 @@ test fail {
 
 /// Check if `cmd` is a framework built-in command.
 pub fn isBuiltinCommand(cmd: []const u8) bool {
-    return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "deep_link:ready") or
+    return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "deep_link:ready") or std.mem.eql(u8, cmd, "notification:ready") or
         std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
 }
 
@@ -325,6 +325,10 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         if (std.mem.eql(u8, op, "query")) return std.json.Stringify.valueAlloc(arena, @tagName(permissions.status(kind)), .{});
         if (std.mem.eql(u8, op, "request")) return std.json.Stringify.valueAlloc(arena, @tagName(permissions.request(kind)), .{});
         return std.json.Stringify.valueAlloc(arena, permissions.openSettings(kind), .{});
+    } else if (std.mem.eql(u8, request.cmd, "notification:ready")) {
+        const build_options = @import("build_options");
+        if (build_options.notification) @import("../modules/notification/common.zig").pageReady();
+        return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, request.cmd, "deep_link:ready")) {
         const build_options = @import("build_options");
         if (build_options.deep_link) {
