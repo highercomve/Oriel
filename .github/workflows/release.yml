@@ -224,13 +224,33 @@ jobs:
       - name: Checksums
         run: |
           cd dist && sha256sum oriel-* > SHA256SUMS && cat SHA256SUMS
+      - name: Prepare release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - "$TAG" <<'PY'
+          import pathlib, sys
+          version = sys.argv[1].removeprefix("v")
+          lines = pathlib.Path("CHANGELOG.md").read_text().splitlines()
+          heading = f"## [{version}]"
+          try:
+              start = next(i for i, line in enumerate(lines) if line.startswith(heading))
+          except StopIteration:
+              raise SystemExit(f"CHANGELOG.md has no entry for {version}")
+          end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+          body = "\n".join(lines[start + 1:end]).strip()
+          if not body:
+              raise SystemExit(f"CHANGELOG.md entry for {version} is empty")
+          pathlib.Path("release-notes.md").write_text(f"# Oriel {version}\n\n{body}\n")
+          PY
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           # Only -rc/-beta tags are pre-releases (releases/latest skips those).
           prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
+          body_path: release-notes.md
+          generate_release_notes: false
 
   # A pull request to microsoft/winget-pkgs with this release's manifests.
   # Needs the WINGET_TOKEN secret (a GitHub token with public_repo); skipped

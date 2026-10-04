@@ -1,7 +1,7 @@
 ---
-.title = "Native renderer (experimental)",
+.title = "Native UI (experimental)",
 .description = "Your HTML, CSS and JavaScript drawn with native views instead of a WebView: no browser process, a fraction of the memory, the same web code.",
-.date = .date("2026-10-03T00:00:00"),
+.date = .date("2026-10-04T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
@@ -14,13 +14,13 @@ It is **experimental**: it runs on Linux (GTK 4), Windows (Direct2D), macOS (App
 
 *The showcase on the native renderer (GTK 4): no WebView, the same `index.html`, `style.css` and `app.js`.*
 
-# Latest in main · October 3, 2026
+# What’s new in 0.8.0 · October 4, 2026
 
-The current development build adds Android's fractional text widths, WebView-sized controls and inline text decorations; default AppKit buttons on macOS; SVG styles and baseline alignment fixes. Fields on Windows, Android and Apple platforms report `beforeinput`, input types and selection changes, and scroll events are delivered once per display frame.
+Oriel 0.8.0 ships the optional `-Dnative_ui` path for Linux, Windows, macOS, Android and iOS. This release adds Android WebView-sized controls and fractional text metrics, background frame suspension, slider fixes and Zig build-option forwarding in the mobile CLI. It also includes inline text and SVG styling, improved input events, canvas updates and renderer benchmarking tools.
 
 Canvas recording writes its numeric program directly, while transform and opacity updates travel as numbers without flattening the page again. The render bench can also measure power on Android and Linux where battery or RAPL readings are available (see its [measurement instructions](https://github.com/highercomve/Oriel/tree/main/examples/render-bench#power)). QuickJS enforces the app's CSP for `eval`, Function constructors and string timers.
 
-Build from `main` to try these changes. The benchmark tables below retain their measurement dates and conditions; they are not new measurements of every subsequent commit.
+The renderer remains experimental. The benchmark tables below retain their measurement dates and conditions; they are not new measurements of every subsequent commit. The latest Android emulator run reached about 60 fps in the built-in workloads; no Android before/after comparison or battery saving has been established.
 
 The page's DOM is Oriel's own: a **native DOM**, a document store written in Zig behind QuickJS bindings, replaced the JavaScript DOM library ([linkedom](https://github.com/WebReflection/linkedom)) the renderer started with. It builds a page about twice as fast as linkedom did and keeps memory flat (below).
 
@@ -380,7 +380,7 @@ zig build -Dtarget=aarch64-linux-android -Doptimize=ReleaseSafe -Dnative_ui
 
 Your app's `build.zig` passes the option to Oriel (the showcase does: `.native_ui = b.option(bool, "native_ui", …)`). With it, windows never create a WebView; without it, nothing of the renderer is compiled in. Add `-Dnative_dom=false` to run the page on linkedom instead of the native DOM.
 
-The same flag works for every target: `-Dtarget=x86_64-windows`, macOS and iOS builds (see [Building]($link.page('docs/building'))) draw with Direct2D, AppKit and UIKit.
+The same flag works for every target: `-Dtarget=x86_64-windows`, macOS and iOS builds. `oriel android dev/build` and `oriel ios dev/build` forward Zig `-D` options (see [Building]($link.page('docs/building'))).
 
 # How it works
 

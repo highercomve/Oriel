@@ -34,10 +34,13 @@ cd my-app && oriel dev    # hot reload; `oriel build` for the release binary
 > See [PLAN.md](PLAN.md) for the roadmap, [IDEA.md](IDEA.md) for the background
 > and [LIBRARIES.md](LIBRARIES.md) for the dependencies.
 
-## Latest development (2026-10-03)
+## Native UI in 0.8.0
 
-These features are in `main`; the installer above uses the latest tagged
-release. Build from this checkout to try the current renderer work.
+Oriel 0.8.0 adds the optional, experimental native UI renderer. Add
+`-Dnative_ui` to an app build to render its HTML, CSS and JavaScript with
+QuickJS and platform views instead of a WebView. Android and iOS `oriel dev`
+and `oriel build` commands now forward Zig `-D` options, including
+`-Dnative_ui`. See the [native renderer guide](https://highercomve.github.io/Oriel/docs/native-renderer/) and the [0.8.0 changelog](CHANGELOG.md).
 
 - **Two renderers, one frontend:** the system WebView or `-Dnative_ui`, with
   QuickJS, a DOM written in Zig, Yoga layout and drawing on all five platforms.
@@ -149,7 +152,7 @@ no GTK needed to run it) that scaffolds apps and wraps their build steps,
 like `create-tauri-app` and `tauri dev/build`.
 
 ```sh
-# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.7.0.
+# Linux and macOS: install to ~/.local/bin (or $ORIEL_INSTALL_DIR); pin with ORIEL_VERSION=v0.8.0.
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
 ```
 
@@ -267,7 +270,7 @@ into place atomically under a lock file, so concurrent installs don't clash.
 oriel update --check          # Check whether a newer version is available without installing
 oriel update                  # Update to the latest release (prompts for confirmation on a TTY)
 oriel update --yes            # Update without prompting (required in non-interactive/CI environments)
-oriel update --version v0.7.0 # Update or downgrade to a specific release tag
+oriel update --version v0.8.0 # Update or downgrade to a specific release tag
 ```
 
 The CLI checks GitHub Releases (`highercomve/Oriel`), downloads the release's `latest.json` (one signed entry per platform; releases before v0.3.1 only have `oriel-update-<arch>-<os>.json`, used as a fallback), verifies the Ed25519 signature of the entry for its own platform against the embedded release key, verifies the payload SHA-256 hash, and atomically replaces the running binary (on Windows, where a running exe can't be overwritten, it is renamed to `oriel.exe.old` first and removed on the next run). The manifest endpoint can be overridden for testing via `ORIEL_RELEASES_URL`.
