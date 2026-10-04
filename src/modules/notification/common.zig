@@ -1,12 +1,73 @@
 //! Common types and text truncation helpers for notifications.
 
 const std = @import("std");
+const App = @import("../../core/App.zig");
 
 pub const NotificationOptions = struct {
+    /// Identifies the notification: a later one with the same id replaces
+    /// it, and clicks report it (empty when null).
     id: ?[]const u8 = null,
     title: []const u8,
     body: ?[]const u8 = null,
+    /// Buttons on the notification. Linux, macOS (bundled), iOS and
+    /// Android show them; Windows balloons and the macOS osascript fallback
+    /// have none. Android and macOS show at most a few (3 on Android).
+    actions: []const Action = &.{},
 };
+
+/// A notification button: clicking it reports `id` as the action.
+pub const Action = struct { id: []const u8, label: []const u8 };
+
+/// A notification was clicked. `id` is the notification's id ("" when it
+/// had none); `action` is the button's id, or null for a click on the
+/// notification itself. Runs on the main thread.
+pub const ActionHandler = *const fn (id: []const u8, action: ?[]const u8) void;
+
+var action_handler: std.atomic.Value(?ActionHandler) = .init(null);
+
+/// Set (or clear, with null) the handler for notification clicks. The page
+/// also gets a `notification:action` event with `{ id, action }`.
+pub fn onAction(handler: ?ActionHandler) void {
+    action_handler.store(handler, .release);
+}
+
+/// Report a click from a backend (main thread).
+pub fn dispatch(id: []const u8, action: ?[]const u8) void {
+    if (action_handler.load(.acquire)) |h| h(id, action);
+    App.emit("notification:action", .{ .id = id, .action = action });
+}
+
+/// Pack a notification id and action into one string for platforms that
+/// carry a single value back (`<action>\x1f<id>`; no action = empty).
+pub fn packTarget(buf: []u8, id: []const u8, action: ?[]const u8) ![]u8 {
+    return std.fmt.bufPrint(buf, "{s}\x1f{s}", .{ action orelse "", id });
+}
+
+/// Copy an id into `buf` (truncated to its size) so a handler gets a slice
+/// that outlives the backend state it came from.
+pub fn copyId(buf: []u8, id: []const u8) []const u8 {
+    const n = @min(id.len, buf.len);
+    @memcpy(buf[0..n], id[0..n]);
+    return buf[0..n];
+}
+
+pub const Target = struct { id: []const u8, action: ?[]const u8 };
+
+pub fn unpackTarget(packed_value: []const u8) Target {
+    const sep = std.mem.indexOfScalar(u8, packed_value, 0x1f) orelse return .{ .id = packed_value, .action = null };
+    const action = packed_value[0..sep];
+    return .{ .id = packed_value[sep + 1 ..], .action = if (action.len == 0) null else action };
+}
+
+test "packTarget round trip" {
+    var buf: [64]u8 = undefined;
+    const a = unpackTarget(try packTarget(&buf, "msg-1", "reply"));
+    try std.testing.expectEqualStrings("msg-1", a.id);
+    try std.testing.expectEqualStrings("reply", a.action.?);
+    const b = unpackTarget(try packTarget(&buf, "", null));
+    try std.testing.expectEqualStrings("", b.id);
+    try std.testing.expect(b.action == null);
+}
 
 /// Truncate UTF-8 string `input` so that its UTF-16 representation has at most `max_wchars` WCHARs,
 /// without splitting any UTF-16 surrogate pairs.

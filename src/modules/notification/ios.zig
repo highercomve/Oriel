@@ -3,12 +3,20 @@
 //! asked already (`permissions.request(.notifications)`); a denial makes
 //! later notifications silent, as the system decides. Notifications also
 //! show while the app is in front (the center's delegate asks for a banner).
+//! Clicks and buttons are reported through the same delegate (apple.zig).
 
 const std = @import("std");
 const apple = @import("../../platform/ios/apple.zig");
 const ShellMod = @import("../../platform/ios/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const Actions = @import("apple.zig").Actions(apple, complete, .{
+    .{ "userNotificationCenter:willPresentNotification:withCompletionHandler:", willPresent },
+});
+
+fn complete(handler: apple.id) void {
+    apple.callBlock(handler, &.{}, .{});
+}
 
 const Object = apple.Object;
 const log = std.log.scoped(.oriel);
@@ -28,7 +36,6 @@ const Params = struct {
 
 var authorization_requested = false; // main thread only
 var id_counter: std.atomic.Value(u32) = .init(1);
-var center_delegate: Object = apple.nil;
 
 fn onAuthorization(_: *apple.ContextBlock, granted: apple.c.BOOL, _: apple.id) callconv(.c) void {
     if (!apple.isTrue(granted)) log.warn("notifications are not allowed for this app (Settings > Notifications)", .{});
@@ -51,13 +58,7 @@ fn notifyNow(params: *Params) void {
         params.err = error.NotificationCenterUnavailable;
         return;
     }
-    if (center_delegate.value == null) {
-        // The center's delegate is weak: this one lives for the process.
-        center_delegate = apple.new(apple.defineClass("OrielNotificationDelegate", &.{"UNUserNotificationCenterDelegate"}, .{
-            .{ "userNotificationCenter:willPresentNotification:withCompletionHandler:", willPresent },
-        }));
-        center.msgSend(void, "setDelegate:", .{center_delegate});
-    }
+    Actions.installDelegate(center);
     if (!authorization_requested) {
         authorization_requested = true;
         const UNAuthorizationOptionSound: c_ulong = 1 << 1;
@@ -78,6 +79,10 @@ fn notifyNow(params: *Params) void {
     if (params.options.body) |b| if (apple.nsString(b)) |body| {
         defer body.release();
         content.msgSend(void, "setBody:", .{body});
+    };
+    Actions.apply(center, content, params.options) catch |err| {
+        params.err = err;
+        return;
     };
 
     var id_buf: [32]u8 = undefined;

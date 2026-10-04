@@ -107,7 +107,13 @@ pub const Commands = struct {
     }
 
     pub fn notify(_: std.mem.Allocator, args: struct { title: []const u8 = "Oriel Showcase", text: []const u8 }) !void {
-        try oriel.notification.notify(.{ .id = "showcase", .title = args.title, .body = args.text });
+        // Clicks reach the page as `notification:action` events.
+        try oriel.notification.notify(.{
+            .id = "showcase",
+            .title = args.title,
+            .body = args.text,
+            .actions = &.{ .{ .id = "like", .label = "Like" }, .{ .id = "later", .label = "Later" } },
+        });
     }
 
     // The Chat tab: thin wrappers over oriel.chat.

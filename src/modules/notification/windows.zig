@@ -11,6 +11,8 @@
 //!   (preventing orphaned surrogate halves).
 //! - Main-thread marshalling: marshals through `Shell.runOnMainThread`.
 //! - Documented: balloon-only (WinRT toasts require external packaging and AppUserModelID).
+//! - Clicks: NIN_BALLOONUSERCLICK reports the shown balloon's id (no action). Balloons
+//!   have no buttons, so `actions` are ignored.
 
 const std = @import("std");
 const win32 = @import("../../platform/windows/win32.zig");
@@ -22,8 +24,12 @@ pub const NotificationOptions = common.NotificationOptions;
 
 pub const NOTIFICATION_UID: win32.UINT = 2001;
 var notification_icon_active: bool = false;
+// The id of the balloon on screen (main thread only), reported on a click.
+var balloon_id_buf: [128]u8 = undefined;
+var balloon_id_len: usize = 0;
 
 const NotifyParams = struct {
+    id: ?[]const u8,
     title: []const u8,
     body: ?[]const u8,
     err: ?anyerror = null,
@@ -50,7 +56,13 @@ fn handleNotificationCallback(wParam: win32.WPARAM, lParam: win32.LPARAM) void {
 
     if (icon_id == NOTIFICATION_UID) {
         switch (event) {
-            win32.NIN_BALLOONTIMEOUT, win32.NIN_BALLOONUSERCLICK, win32.NIN_BALLOONHIDE => {
+            win32.NIN_BALLOONUSERCLICK => {
+                var id_buf: [128]u8 = undefined;
+                const id = common.copyId(&id_buf, balloon_id_buf[0..balloon_id_len]);
+                removeNotificationIcon();
+                common.dispatch(id, null);
+            },
+            win32.NIN_BALLOONTIMEOUT, win32.NIN_BALLOONHIDE => {
                 removeNotificationIcon();
             },
             else => {},
@@ -82,6 +94,10 @@ fn sendBalloonDirect(params: *NotifyParams) void {
 
     nid.dwInfoFlags = win32.NIIF_INFO;
 
+    const id = params.id orelse "";
+    balloon_id_len = @min(id.len, balloon_id_buf.len);
+    @memcpy(balloon_id_buf[0..balloon_id_len], id[0..balloon_id_len]);
+
     if (!notification_icon_active) {
         nid.uFlags |= win32.NIF_ICON;
         nid.hIcon = getNotificationIcon();
@@ -102,6 +118,7 @@ fn sendBalloonDirect(params: *NotifyParams) void {
 
 pub fn notify(options: NotificationOptions) !void {
     var params = NotifyParams{
+        .id = options.id,
         .title = options.title,
         .body = options.body,
     };

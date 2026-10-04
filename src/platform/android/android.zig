@@ -14,6 +14,7 @@
 const std = @import("std");
 const heap = @import("../../core/heap.zig");
 const App = @import("../../core/App.zig");
+const notification_common = @import("../../modules/notification/common.zig");
 const log = std.log.scoped(.oriel);
 
 pub const window = @import("window.zig");
@@ -119,6 +120,12 @@ fn nativeSystemEvent(env: *jni.Env, _: jni.jclass, name_arr: jni.jobject, data_a
     const data = (env.bytesAlloc(gpa, data_arr) catch return) orelse &.{};
     defer if (data.len > 0) gpa.free(data);
     if (std.mem.eql(u8, name, "trim-memory")) trimMemory(std.fmt.parseInt(i32, data, 10) catch 0);
+    if (std.mem.eql(u8, name, "notification")) {
+        // oriel.notification: a tap or a button (OrielRuntime.notify).
+        const t = notification_common.unpackTarget(data);
+        notification_common.dispatch(t.id, t.action);
+        return;
+    }
     if (system_event_handler) |h| h(name, data);
     App.emit("android:event", .{ .name = name, .data = data });
 }
