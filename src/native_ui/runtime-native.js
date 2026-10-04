@@ -5210,7 +5210,8 @@ input[type="range"] { height: 20px; margin: 2px; }
       const aligns = layoutBox && (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"])) || // A button centers its label in its height (a row stretches it to
       // its tallest sibling's): a box around the text, not a text view.
       el.localName === "button" && !layoutBox;
-      if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns && display !== "grid" && !isTableDisplay(display)) {
+      const keepsBox = props.scroll || props.scrollx || props.clip;
+      if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns && !keepsBox && display !== "grid" && !isTableDisplay(display)) {
         const raw = [];
         for (let child = el.firstChild; child; child = child.nextSibling) {
           this.parentOf.set(child, el);
@@ -5288,7 +5289,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       }
       flushRuns();
       if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
-      if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns) {
+      if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns && !(props.scroll || props.scrollx || props.clip)) {
         Object.assign(props, textProps(cs, fontSize));
         props.runs = flow[0].text;
         this.putClick(props, el);
