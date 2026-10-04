@@ -8406,6 +8406,7 @@ ${a.stack || ""}`;
         const b3 = P && P();
         document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
         fireWindow(new Event("load"));
+        watchThemeColor();
         if (P) host.log(1, `PROF boot: styles ${(b1 - b0).toFixed(2)} (${engine.rules.length} rules), renderer ${(b2 - b1).toFixed(2)}, scripts ${(b3 - b2).toFixed(2)}, events ${(P() - b3).toFixed(2)}`);
         return true;
       });
@@ -8587,7 +8588,24 @@ ${a.stack || ""}`;
     }
   };
   Object.defineProperty(g, "__oriel", { value: Object.freeze(oriel), writable: false, configurable: false, enumerable: false });
+  var themeColorSent = "unset";
+  function updateThemeColor() {
+    const meta = [...document.querySelectorAll('meta[name="theme-color"]')].find((m) => !m.getAttribute("media") || mediaMatches(m.getAttribute("media")));
+    const c = color(meta?.getAttribute("content") || "");
+    const value = c ? [c[0], c[1], c[2], c[3] * 255].map((x) => Math.max(0, Math.min(255, Math.round(x)))) : null;
+    const key = JSON.stringify(value);
+    if (key === themeColorSent) return;
+    themeColorSent = key;
+    invoke("oriel:window:setThemeColor", { label: host.label || "main", color: value }).catch(() => {
+    });
+  }
+  function watchThemeColor() {
+    updateThemeColor();
+    const head = document.head || document.documentElement;
+    new MutationObserver(() => updateThemeColor()).observe(head, { subtree: true, childList: true, attributes: true });
+  }
   function mediaChanged(before) {
+    if (themeColorSent !== "unset") updateThemeColor();
     for (const ml of mediaLists) {
       const m = ml.matches;
       if (before.get(ml) !== m) for (const fn of ml.listeners) {

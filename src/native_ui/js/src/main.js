@@ -18,7 +18,7 @@
 
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
-import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules } from "./css.js";
+import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules, color as cssColor } from "./css.js";
 import { Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
 // The runtime's own weak caches keyed by nodes: marked so their entries
@@ -1504,6 +1504,7 @@ const oriel = {
       const b3 = P && P();
       document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
       fireWindow(new Event("load"));
+      watchThemeColor();
       if (P) host.log(1, `PROF boot: styles ${(b1 - b0).toFixed(2)} (${engine.rules.length} rules), renderer ${(b2 - b1).toFixed(2)}, scripts ${(b3 - b2).toFixed(2)}, events ${(P() - b3).toFixed(2)}`);
       return true;
     });
@@ -1676,9 +1677,29 @@ const oriel = {
 };
 Object.defineProperty(g, "__oriel", { value: Object.freeze(oriel), writable: false, configurable: false, enumerable: false });
 
+// <meta name="theme-color"> (the first whose media matches) → the window's
+// caption, as the WebView bridge does (core/window_commands.zig): [r, g, b, a]
+// 0-255, or null. Sent again only when it changes.
+let themeColorSent = "unset";
+function updateThemeColor() {
+  const meta = [...document.querySelectorAll('meta[name="theme-color"]')].find((m) => !m.getAttribute("media") || mediaMatches(m.getAttribute("media")));
+  const c = cssColor(meta?.getAttribute("content") || "");
+  const value = c ? [c[0], c[1], c[2], c[3] * 255].map((x) => Math.max(0, Math.min(255, Math.round(x)))) : null;
+  const key = JSON.stringify(value);
+  if (key === themeColorSent) return;
+  themeColorSent = key;
+  invoke("oriel:window:setThemeColor", { label: host.label || "main", color: value }).catch(() => {});
+}
+function watchThemeColor() {
+  updateThemeColor();
+  const head = document.head || document.documentElement;
+  new MutationObserver(() => updateThemeColor()).observe(head, { subtree: true, childList: true, attributes: true });
+}
+
 // matchMedia lists whose answer changed since `before` (mediaSnapshot):
 // their change listeners.
 function mediaChanged(before) {
+  if (themeColorSent !== "unset") updateThemeColor();
   for (const ml of mediaLists) {
     const m = ml.matches;
     if (before.get(ml) !== m) for (const fn of ml.listeners) { try { fn({ matches: m, media: ml.media }); } catch (e) { console.error(e); } }
