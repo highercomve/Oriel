@@ -2170,10 +2170,25 @@ fn linkAt(s: *Surface, pt: [2]f32) i64 {
     const ct = n.content();
     const layout = textLayout(s, n, ct.w + 1, null) orelse return 0;
     defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
+    // Lines of their own heights (a font on some only) are drawn moved
+    // (paintText's lineShift): the point back in the layout's spacing.
+    var y = pt[1] - ct.y;
+    var ext_buf: [64]Extent = undefined;
+    if (lineExtents(&n.props, layout, &ext_buf, null)) |xs| if (textExtent(&n.props)) |all| {
+        var top: f32 = 0;
+        for (xs, 0..) |e, k| {
+            const h = e.top + e.bottom;
+            if (y < top + h or k + 1 == xs.len) {
+                y -= lineShift(xs, all, k);
+                break;
+            }
+            top += h;
+        }
+    };
     var trailing: c.BOOL = 0;
     var inside: c.BOOL = 0;
     var m: c.DWRITE_HIT_TEST_METRICS = undefined;
-    if (layout.lpVtbl.*.HitTestPoint.?(layout, pt[0] - ct.x, pt[1] - ct.y, &trailing, &inside, &m) < 0 or inside == 0) return 0;
+    if (layout.lpVtbl.*.HitTestPoint.?(layout, pt[0] - ct.x, y, &trailing, &inside, &m) < 0 or inside == 0) return 0;
     // The run holding that UTF-16 position.
     var pos: u32 = 0;
     for (runs) |r| {
