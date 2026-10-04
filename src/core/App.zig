@@ -235,6 +235,13 @@ pub const Window = struct {
         platform.setWindowTitle(self.handle, title);
     }
 
+    /// The page's theme colour ([r, g, b, a], or null for none): the
+    /// window's caption takes it where the platform draws one (Android's
+    /// task description on ChromeOS and desktop Android). A no-op elsewhere.
+    pub fn setThemeColor(self: *Window, color: ?[4]u8) void {
+        if (@hasDecl(platform, "setWindowThemeColor")) platform.setWindowThemeColor(self.handle, color);
+    }
+
     pub fn setFullscreen(self: *Window, fullscreen: bool) void {
         platform.setWindowFullscreen(self.handle, fullscreen);
     }

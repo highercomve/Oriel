@@ -7,6 +7,8 @@
 //!     a window declared with App.registerWindow)
 //!   - setTitle/setSize/maximize/fullscreen: update window geometry & state
 //!   - startDragging: move the window with the pointer (button held down)
+//!   - setThemeColor: the page's `<meta name="theme-color">` (or null), for
+//!     the window's caption where the platform draws one
 //!   - get/all/current: query window information
 //!   - emitTo: send events targeted to a specific window
 //!
@@ -43,6 +45,49 @@ pub const WindowInfo = struct {
     label: []const u8,
     title: []const u8,
 };
+
+/// Watches the page's `<meta name="theme-color">` (the first one whose
+/// `media` matches) and reports it as [r, g, b, a] (0-255), or null when
+/// there is none, through `oriel:window:setThemeColor`. Spliced into every
+/// WebView bridge, inside its closure (`invoke`, `windowApi`). The native
+/// renderer does the same in main.js.
+pub const theme_color_js =
+    \\  {
+    \\    let sent = "unset";
+    \\    const pick = () => {
+    \\      const meta = [...document.querySelectorAll('meta[name="theme-color"]')].find((m) => !m.media || matchMedia(m.media).matches);
+    \\      const value = meta?.content?.trim();
+    \\      if (!value) return null;
+    \\      // A canvas normalizes any CSS colour to #rrggbb or rgba(...); an
+    \\      // invalid one leaves the previous value (checked with two).
+    \\      const c = document.createElement("canvas").getContext("2d");
+    \\      if (!c) return null;
+    \\      c.fillStyle = "#010203"; c.fillStyle = value; const a = c.fillStyle;
+    \\      c.fillStyle = "#040506"; c.fillStyle = value;
+    \\      if (a !== c.fillStyle) return null;
+    \\      if (a.startsWith("#")) return [1, 3, 5].map((i) => parseInt(a.slice(i, i + 2), 16)).concat(255);
+    \\      const n = a.match(/[\d.]+/g)?.map(Number);
+    \\      return n && n.length >= 3 ? [n[0], n[1], n[2], Math.round((n[3] ?? 1) * 255)] : null;
+    \\    };
+    \\    const update = () => {
+    \\      const color = pick();
+    \\      const key = JSON.stringify(color);
+    \\      if (key === sent) return;
+    \\      sent = key;
+    \\      Promise.resolve(invoke("oriel:window:setThemeColor", { label: windowApi.current().label, color })).catch(() => {});
+    \\    };
+    \\    const start = () => {
+    \\      update();
+    \\      new MutationObserver(update).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["content", "name", "media"] });
+    \\      matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", update);
+    \\    };
+    \\    if (window === window.top) {
+    \\      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
+    \\      else start();
+    \\    }
+    \\  }
+    \\
+;
 
 pub fn isWindowCommand(cmd: []const u8) bool {
     return std.mem.startsWith(u8, cmd, "oriel:window:");
@@ -140,6 +185,15 @@ pub fn dispatch(
         const win = App.getWindow(args.label) orelse return error.WindowNotFound;
         const title_z = try arena.dupeZ(u8, args.title);
         win.setTitle(title_z);
+        return arena.dupe(u8, "null");
+    } else if (std.mem.eql(u8, action, "setThemeColor")) {
+        const args = try std.json.parseFromValueLeaky(struct { label: []const u8, color: ?[4]u8 = null }, arena, args_val, .{
+            .ignore_unknown_fields = true,
+        });
+        try security.validateLabel(args.label);
+        try security.validateWindowModification(sec, caller_win_label, args.label);
+        const win = App.getWindow(args.label) orelse return error.WindowNotFound;
+        win.setThemeColor(args.color);
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, action, "startDragging")) {
         const args = try std.json.parseFromValueLeaky(struct { label: []const u8 }, arena, args_val, .{

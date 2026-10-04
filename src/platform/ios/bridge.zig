@@ -190,6 +190,8 @@ pub const bridge_js =
     \\    e.preventDefault();
     \\    Promise.resolve(windowApi.current().startDragging()).catch(() => {});
     \\  }, true);
+    \\
+++ @import("../../core/window_commands.zig").theme_color_js ++
     \\})();
 ;
 

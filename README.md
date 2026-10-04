@@ -791,6 +791,8 @@ oriel.App.closeWindow("settings");
 
 Per-window command scoping is supported via `.windows = &.{"main"}` in `Security.capabilities`.
 
+**Theme colour.** A page's `<meta name="theme-color">` (the first whose `media` matches) is reported to the window in both renderers and on every change; the window's caption takes it where the platform draws one (Android's caption on ChromeOS and desktop Android). Elsewhere it is ignored.
+
 ### App menu bar (`oriel.menu`)
 
 Native application menu bar: `GMenuModel` on Linux, Win32 `HMENU` + `HACCEL` on Windows:
