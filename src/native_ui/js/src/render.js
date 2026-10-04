@@ -129,6 +129,15 @@ const REPLACED = new Set(["img", "svg", "canvas", "video", "iframe", "object", "
 
 // A line-height other than normal in px at font size `fs`: a number times
 // it, a percentage of it, a length.
+// A box's margin-box height less its margins, when its props say it (a
+// px height: content-box sizing adds the vertical padding and border).
+function boxHeight(p) {
+  if (typeof p.h !== "number") return null;
+  if (!p.cb) return p.h;
+  const v = (a, i) => (typeof a?.[i] === "number" ? a[i] : 0);
+  return p.h + v(p.pad, 0) + v(p.pad, 2) + v(p.bw, 0) + v(p.bw, 2);
+}
+
 function lineHeightPx(v, fs) {
   if (/^[\d.]+$/.test(v)) return parseFloat(v) * fs;
   if (v.endsWith("%")) return (parseFloat(v) / 100) * fs;
@@ -142,11 +151,17 @@ function lineHeightPx(v, fs) {
 // rounded, as WebKit and Chromium make it.
 const fontMetricsCache = new Map();
 function lineDescent(cs, fs, host) {
+  return lineStrut(cs, fs, host)[1];
+}
+// A line's strut (CSS 2.2 §10.8.1: an empty inline box with the block's
+// font and line-height, in every line): [above, below] its baseline.
+function lineStrut(cs, fs, host) {
   const mono = /mono/.test(cs["font-family"] || "");
-  const key = `${fs}|${mono}`;
+  const family = familyOf(cs) || "";
+  const key = `${fs}|${mono}|${family}`;
   let m = fontMetricsCache.get(key);
   if (!m) {
-    try { m = host?.fontMetrics?.(fs, mono); } catch { m = null; }
+    try { m = host?.fontMetrics?.(fs, mono, family); } catch { m = null; }
     if (!m) m = [fs * 1.069, fs * 0.293, 0];
     fontMetricsCache.set(key, m);
   }
@@ -154,7 +169,10 @@ function lineDescent(cs, fs, host) {
   const normal = Math.round(ascent) + Math.round(descent) + Math.round(gap);
   const v = cs["line-height"];
   const lh = !v || v === "normal" ? normal : lineHeightPx(v, fs) ?? normal;
-  return Math.max(0, lh / 2 - (ascent - descent) / 2);
+  // The half-leading above the baseline floored, as WebKit places it (a
+  // 30px line-height over a 12+3px font: 7 above, 8 below).
+  const above = Math.round(ascent) + Math.floor((lh - Math.round(ascent) - Math.round(descent)) / 2);
+  return [above, Math.max(0, lh - above)];
 }
 // An inline element with a box of its own (padding, a border, rounded
 // corners, a horizontal margin: a "148 MB" badge after a label). At the
@@ -1643,10 +1661,18 @@ export class Renderer {
       // the font's descent (imageLine, for the whole content).
       if ((imageLine && this.imageLine([item], cs, childCtx.rematch)) || (flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch))) {
         const n = nodes.get(cid);
-        const gap = lineDescent(cs, fontSize, this.host);
+        const [above, gap] = lineStrut(cs, fontSize, this.host);
         if (n && gap > 0) {
           const m = n.props.m ? [...n.props.m] : [0, 0, 0, 0];
+          // Its baseline is its bottom margin edge: the line is the
+          // strut's height above it at least (a 10px badge in a 12px
+          // font's line sits 2px down in it, WKWebView's), when its height
+          // is known.
+          const h = boxHeight(n.props);
+          if (h !== null && typeof m[0] === "number" && typeof m[2] === "number") m[0] += Math.max(0, above - (m[0] + h + m[2]));
           if (typeof m[2] === "number") { m[2] += gap; n.props = { ...n.props, m }; }
+          // In a row of them: their bottoms (baselines) line up.
+          if (props.fd === "row") n.props = { ...n.props, as: "flex-end" };
         }
       }
       // An inline box at a line's end (a padded <code> chip): its vertical
@@ -1839,6 +1865,19 @@ export class Renderer {
     return !inlineFrom(i - 1, -1) && !inlineFrom(i + 1, 1);
   }
 
+  // An inline-block whose baseline is its bottom margin edge (CSS 2.2
+  // §10.8.1): no line of text in it, or overflow other than visible. In a
+  // line it sits as an image does (imageLine). Controls have their text's.
+  bottomBaseline(el, ccs) {
+    const d = ccs.display || "inline";
+    if (d !== "inline-block" && d !== "inline-flex" && d !== "inline-grid") return false;
+    if (CONTROLS.has(el.localName) || el.localName === "button" || REPLACED.has(el.localName)) return false;
+    const ov = ccs.overflow || ccs["overflow-y"] || ccs["overflow-x"];
+    if (ov && ov !== "visible") return true;
+    if (/\S/.test(el.textContent || "")) return false;
+    return !el.querySelector?.("img, svg, canvas, video, input, textarea, select, button");
+  }
+
   // Whether the in-flow content is only images on the baseline (imageLine).
   imageLine(flow, cs, rematch) {
     let any = false;
@@ -1848,7 +1887,8 @@ export class Renderer {
       if (ccs.position === "absolute" || ccs.position === "fixed" || (ccs.display || "inline") === "none") continue;
       const d = ccs.display || "inline";
       const va = ccs["vertical-align"];
-      if (!REPLACED.has(f.el.localName) || (d !== "inline" && d !== "inline-block") || (va && va !== "baseline")) return false;
+      const replaced = REPLACED.has(f.el.localName) && (d === "inline" || d === "inline-block");
+      if ((!replaced && !this.bottomBaseline(f.el, ccs)) || (va && va !== "baseline")) return false;
       any = true;
     }
     return any;
