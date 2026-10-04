@@ -1636,6 +1636,13 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 NuiNative.press(window, e.x / density, e.y / density, true)
                 pointerDown = true
                 pageDrag = pointer(0, e, buttons(e))
+                // The mouse's secondary button (a right-click, or a two-finger
+                // trackpad click): the page's contextmenu right after the
+                // mousedown, as Chrome on ChromeOS; its release is no tap.
+                if (mouseTouch && !e.isButtonPressed(MotionEvent.BUTTON_PRIMARY) && e.isButtonPressed(MotionEvent.BUTTON_SECONDARY)) {
+                    longPressed = true
+                    NuiNative.longPress(window, e.x / density, e.y / density)
+                }
                 if (!pageDrag && !mouseTouch) postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                 if (!hasFocus()) requestFocus()
             }
