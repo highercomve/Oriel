@@ -389,6 +389,7 @@ pub const Surface = struct {
             .request_display_frame = requestDisplayFrame,
             .warm_fonts = warmFonts,
             .font_metrics = fontMetrics,
+        .font_metrics_family = fontMetricsFamily,
         }, assets, look orelse platform_json, label, url, width, height);
         s.engine.tree.reuse_text_layout = true;
         s.engine.tree.fields_sized = true;
@@ -570,6 +571,14 @@ fn onTimer(p: ?*anyopaque) callconv(.c) c_int {
 /// measured with (textLayout's), at `size` px, unhinted.
 fn fontMetrics(ctx: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
     const m = unhintedMetrics(surfaceOf(ctx), size, mono, null) orelse return false;
+    out.* = m[0..3].*;
+    return true;
+}
+
+/// Backend.font_metrics_family: the same for a CSS font-family list (a
+/// line's strut in its block's own font).
+fn fontMetricsFamily(ctx: *anyopaque, size: f32, mono: bool, family: []const u8, out: *[3]f32) bool {
+    const m = unhintedMetrics(surfaceOf(ctx), size, mono, family) orelse return false;
     out.* = m[0..3].*;
     return true;
 }
