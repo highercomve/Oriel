@@ -40,6 +40,7 @@ import android.view.Choreographer
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
@@ -78,15 +79,23 @@ import kotlin.math.tan
 internal object NuiNative {
     @JvmStatic external fun resize(window: Int, width: Float, height: Float, dark: Boolean)
     @JvmStatic external fun tap(window: Int, x: Float, y: Float)
+    /** Whether the node under (x, y) is clickable and enabled (the mouse's hand). */
+    @JvmStatic external fun clickableAt(window: Int, x: Float, y: Float): Boolean
     /** A pointer event for the page: phase 0 down, 1 move (sent at the next
      *  display frame), 2 up, 3 cancel. True when the page prevented the
      *  default (on down: it takes the drag). */
-    @JvmStatic external fun pointer(window: Int, phase: Int, x: Float, y: Float, buttons: Int, mouse: Boolean, mods: Int): Boolean
+    @JvmStatic external fun pointer(window: Int, phase: Int, x: Float, y: Float, buttons: Int, mouse: Boolean, mods: Int, target: Int): Boolean
+    /** A click on the clickable element `id` (a link amid the text: its run's `k`). */
+    @JvmStatic external fun tapNode(window: Int, id: Int)
+    /** A drag over the page: phase 0 enter (`items`: [[kind, type]…] JSON), 1 over, 2 leave, 3 flush; the page's effect mask. */
+    @JvmStatic external fun drag(window: Int, phase: Int, x: Float, y: Float, session: Int, items: ByteArray): Int
+    /** A drop's items as JSON (["string", mime, value] or ["file", mime, name, size, mtimeMs, fd]), the fds for Oriel to own. */
+    @JvmStatic external fun drop(window: Int, session: Int, x: Float, y: Float, items: ByteArray)
     /** A finger or button down on (x, y) (:active), or up. */
     @JvmStatic external fun press(window: Int, x: Float, y: Float, down: Boolean)
     /** A mouse over (x, y) (:hover), or gone (x < 0). */
     @JvmStatic external fun hover(window: Int, x: Float, y: Float)
-    @JvmStatic external fun longPress(window: Int, x: Float, y: Float): Boolean
+    @JvmStatic external fun longPress(window: Int, x: Float, y: Float, target: Int): Boolean
     @JvmStatic external fun scroll(window: Int, x: Float, y: Float, dy: Float): Boolean
     /** Scroll sideways at (x, y) dp: true if a container moved. */
     @JvmStatic external fun scrollX(window: Int, x: Float, y: Float, dx: Float): Boolean
@@ -410,7 +419,9 @@ internal class NuiNode(val id: Int, var kind: String) {
             else -> Layout.Alignment.ALIGN_NORMAL
         }
         val b = builder(t, tp, w).setAlignment(align)
-        if (nowrap) b.setMaxLines(1).setEllipsize(TextUtils.TruncateAt.END)
+        // No wrapping: one line, cut with an ellipsis, unless the text has
+        // line breaks of its own (white-space: pre), which stay lines.
+        if (nowrap && !t.contains('\n')) b.setMaxLines(1).setEllipsize(TextUtils.TruncateAt.END)
         layout = b.build()
         layoutWidth = w
         return layout
@@ -476,6 +487,30 @@ internal class NuiNode(val id: Int, var kind: String) {
         if (plainLine(t)) return lineStyle(t, tp).baseline * 64
         val l = textLayout(-1) ?: return -1
         return if (l.lineCount > 0) l.getLineBaseline(0) * 64 else -1
+    }
+
+    /**
+     * The `k` of the run at (x, y) in this text's layout `width` dp wide
+     * (a link amid the text: its element's id), 0 for none.
+     */
+    fun linkAt(x: Float, y: Float, width: Int): Int {
+        val runs = p.optJSONArray("runs") ?: return 0
+        if ((0 until runs.length()).none { runs.optJSONObject(it)?.has("k") == true }) return 0
+        val l = textLayout(width) ?: return 0
+        val line = l.getLineForVertical(y.toInt())
+        if (x < l.getLineLeft(line) || x > l.getLineRight(line)) return 0
+        // The character under x (an offset is between two: the one before it when x is left of it).
+        var off = l.getOffsetForHorizontal(line, x)
+        if (off > l.getLineStart(line) && l.getPrimaryHorizontal(off) > x) off--
+        // Runs follow one another in the text as spans() appends them.
+        var pos = 0
+        for (i in 0 until runs.length()) {
+            val r = runs.optJSONObject(i) ?: continue
+            val t = if (i == 0 && runs.length() == 1) runText ?: r.optString("t") else r.optString("t")
+            pos += t.length
+            if (off < pos) return r.optLong("k", 0).toInt()
+        }
+        return 0
     }
 
     /** Size for Yoga: width and height in 1/64 dp, packed. */
@@ -1426,6 +1461,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             val kind = if (has) "focus" else "blur"
             post { if (Nui.views[window] === this) NuiNative.event(window, id, kind.bytes(), ByteArray(0)) }
         }
+        // Every drag over a field is the page's, as in a browser: the page's
+        // drop decides, then dnd.js inserts dropped text. The field's own
+        // would paste a file's content:// URI and hide the drag from the page.
+        if (v is EditText) v.setOnDragListener { f, ev -> handleDrag(ev, f.left.toFloat(), f.top.toFloat()) }
         fields[id] = v
         styleField(n, v)
         addView(v)
@@ -1453,7 +1492,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     }
 
     private fun slider(n: NuiNode, id: Int): View = SeekBar(context).apply {
-        setPadding(0, 0, 0, 0)
+        // AbsSeekBar centers its thumb on the track endpoints. Without
+        // this inset, half of the thumb falls outside our clipped field.
+        val inset = ((thumb?.intrinsicWidth ?: 0).coerceAtLeast(0) + 1) / 2
+        setPadding(inset, 0, inset, 0)
         val r = rangeOf(n) ?: Range(0.0, 100.0, 1.0)
         max = r.steps
         setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -1570,7 +1612,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     private var mouseTouch = false
     private val longPress = Runnable {
         longPressed = true
-        if (NuiNative.longPress(window, downX / density, downY / density)) performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+        if (NuiNative.longPress(window, downX / density, downY / density, linkAt(downX / density, downY / density))) performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
     }
 
     /**
@@ -1611,7 +1653,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     }
 
     private fun pointer(phase: Int, e: MotionEvent, buttons: Int): Boolean =
-        NuiNative.pointer(window, phase, e.x / density, e.y / density, buttons, mouseTouch, mods(e.metaState))
+        NuiNative.pointer(window, phase, e.x / density, e.y / density, buttons, mouseTouch, mods(e.metaState), linkAt(e.x / density, e.y / density))
 
     /** The page's pointer goes: cancelled (a scroll took the touch) or up. */
     private fun endPointer(phase: Int, e: MotionEvent) {
@@ -1633,6 +1675,13 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 NuiNative.press(window, e.x / density, e.y / density, true)
                 pointerDown = true
                 pageDrag = pointer(0, e, buttons(e))
+                // The mouse's secondary button (a right-click, or a two-finger
+                // trackpad click): the page's contextmenu right after the
+                // mousedown, as Chrome on ChromeOS; its release is no tap.
+                if (mouseTouch && !e.isButtonPressed(MotionEvent.BUTTON_PRIMARY) && e.isButtonPressed(MotionEvent.BUTTON_SECONDARY)) {
+                    longPressed = true
+                    NuiNative.longPress(window, e.x / density, e.y / density, linkAt(e.x / density, e.y / density))
+                }
                 if (!pageDrag && !mouseTouch) postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                 if (!hasFocus()) requestFocus()
             }
@@ -1677,7 +1726,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 endPointer(2, e)
                 if (!dragging && !longPressed) {
                     hideKeyboard()
-                    NuiNative.tap(window, e.x / density, e.y / density)
+                    val link = linkAt(e.x / density, e.y / density)
+                    if (link != 0) NuiNative.tapNode(window, link) else NuiNative.tap(window, e.x / density, e.y / density)
                 } else if (dragging && !pageDrag && !mouseTouch) {
                     val v = velocity
                     v?.computeCurrentVelocity(1000)
@@ -1696,6 +1746,174 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             }
         }
         return true
+    }
+
+    // --- Drag and drop (docs/drag-and-drop-design.md §5) --------------------------
+
+    private val dropWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var dragSession = 0
+    private var dragInside = false
+    private var dragEnterPending = false
+    private var dragDropped = false
+    private var dragItems = "[]"
+    private val noItems = ByteArray(0)
+
+    override fun onDragEvent(e: android.view.DragEvent): Boolean = handleDrag(e, 0f, 0f)
+
+    /**
+     * A drag from another app (or a field's, offset by its position): the
+     * page's dragenter, dragover (each display frame), dragleave and drop.
+     * The page decides where it takes the drag (its dragover's effect); a
+     * drop there reads the dropped files on a worker, then "drop".
+     */
+    internal fun handleDrag(e: android.view.DragEvent, ox: Float, oy: Float): Boolean {
+        when (e.action) {
+            android.view.DragEvent.ACTION_DRAG_STARTED -> {
+                dragDropped = false
+                return true
+            }
+            android.view.DragEvent.ACTION_DRAG_ENTERED -> startDrag(e)
+            android.view.DragEvent.ACTION_DRAG_LOCATION -> {
+                if (!dragInside) startDrag(e)
+                val x = (e.x + ox) / density; val y = (e.y + oy) / density
+                if (dragEnterPending) {
+                    dragEnterPending = false
+                    NuiNative.drag(window, 0, x, y, dragSession, dragItems.bytes())
+                } else NuiNative.drag(window, 1, x, y, dragSession, noItems)
+            }
+            android.view.DragEvent.ACTION_DRAG_EXITED -> leaveDrag()
+            android.view.DragEvent.ACTION_DROP -> {
+                val x = (e.x + ox) / density; val y = (e.y + oy) / density
+                if (!dragInside) startDrag(e)
+                if (dragEnterPending) {
+                    dragEnterPending = false
+                    NuiNative.drag(window, 0, x, y, dragSession, dragItems.bytes())
+                }
+                // The latest position first; the page's answer there decides.
+                val effect = NuiNative.drag(window, 3, x, y, dragSession, noItems)
+                if (effect == 0) {
+                    leaveDrag()
+                    return false
+                }
+                dragInside = false
+                dragDropped = true
+                readDrop(e, x, y, dragSession)
+                return true
+            }
+            android.view.DragEvent.ACTION_DRAG_ENDED -> {
+                if (!dragDropped) leaveDrag()
+                dragInside = false
+            }
+        }
+        return true
+    }
+
+    private fun startDrag(e: android.view.DragEvent) {
+        dragSession++
+        dragInside = true
+        dragEnterPending = true
+        dragItems = dragItemsOf(e.clipDescription)
+    }
+
+    private fun leaveDrag() {
+        if (!dragInside) return
+        dragInside = false
+        dragEnterPending = false
+        NuiNative.drag(window, 2, 0f, 0f, dragSession, noItems)
+    }
+
+    /**
+     * The drag's items before its drop ([[kind, type]…]): text, HTML and URI
+     * lists as strings, anything else a file of that type; a drag with files
+     * lists only its files (its strings would be their paths or URIs).
+     */
+    private fun dragItemsOf(d: android.content.ClipDescription?): String {
+        val strings = JSONArray(); val files = JSONArray()
+        if (d != null) for (i in 0 until d.mimeTypeCount) {
+            val m = d.getMimeType(i)
+            if (isTextMime(m)) strings.put(JSONArray().put("string").put(m)) else files.put(JSONArray().put("file").put(m))
+        }
+        // HTML always comes with its plain text (ClipData.Item.text): a
+        // description that names only text/html still drops text/plain.
+        val types = (0 until strings.length()).map { strings.getJSONArray(it).getString(1) }
+        if ("text/html" in types && "text/plain" !in types) strings.put(JSONArray().put("string").put("text/plain"))
+        return (if (files.length() > 0) files else strings).toString()
+    }
+
+    private fun isTextMime(m: String) = m == "text/plain" || m == "text/html" || m == "text/uri-list" ||
+        m == android.content.ClipDescription.MIMETYPE_TEXT_INTENT
+
+    /**
+     * The dropped data, read off the UI thread: text as strings, each
+     * content:// file opened read-only (a stream that can't seek copied to
+     * the cache first, opened, then unlinked) with its name, size, type and
+     * modification time; its fd detached for Oriel to own. Then "drop".
+     */
+    private fun readDrop(e: android.view.DragEvent, x: Float, y: Float, session: Int) {
+        val clip = e.clipData ?: return
+        val activity = generateSequence(context) { (it as? android.content.ContextWrapper)?.baseContext }.firstOrNull { it is android.app.Activity } as? android.app.Activity
+        val hasUris = (0 until clip.itemCount).any { clip.getItemAt(it).uri != null }
+        val perms = if (hasUris) activity?.requestDragAndDropPermissions(e) else null
+        val resolver = context.contentResolver
+        val cache = java.io.File(context.cacheDir, "oriel-dropped")
+        dropWorker.execute {
+            val files = JSONArray(); val strings = JSONArray()
+            for (i in 0 until clip.itemCount) {
+                val item = clip.getItemAt(i)
+                val uri = item.uri
+                if (uri != null && uri.scheme == "content") {
+                    droppedFile(resolver, uri, cache)?.let { files.put(it) }
+                    continue
+                }
+                item.text?.let { strings.put(JSONArray().put("string").put("text/plain").put(it.toString())) }
+                item.htmlText?.let { strings.put(JSONArray().put("string").put("text/html").put(it)) }
+                if (uri != null) strings.put(JSONArray().put("string").put("text/uri-list").put(uri.toString()))
+            }
+            perms?.release()
+            val items = (if (files.length() > 0) files else strings).toString().bytes()
+            post {
+                if (Nui.views[window] === this) NuiNative.drop(window, session, x, y, items)
+                else closeDropped(files)
+            }
+        }
+    }
+
+    private fun droppedFile(resolver: android.content.ContentResolver, uri: android.net.Uri, cache: java.io.File): JSONArray? {
+        return try {
+            var name = uri.lastPathSegment?.substringAfterLast('/') ?: "file"
+            var size = -1L
+            var mtime = 0L
+            resolver.query(uri, null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 && !c.isNull(it) }?.let { name = c.getString(it).substringAfterLast('/') }
+                    c.getColumnIndex(android.provider.OpenableColumns.SIZE).takeIf { it >= 0 && !c.isNull(it) }?.let { size = c.getLong(it) }
+                    c.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED).takeIf { it >= 0 && !c.isNull(it) }?.let { mtime = c.getLong(it) }
+                }
+            }
+            val mime = resolver.getType(uri) ?: "application/octet-stream"
+            var pfd = resolver.openFileDescriptor(uri, "r") ?: return null
+            if (pfd.statSize < 0) {
+                // Not seekable (a pipe): a copy in the cache, opened and unlinked.
+                cache.mkdirs()
+                val copy = java.io.File.createTempFile("drop", null, cache)
+                android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input -> copy.outputStream().use { input.copyTo(it) } }
+                pfd = android.os.ParcelFileDescriptor.open(copy, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+                copy.delete()
+            }
+            if (pfd.statSize >= 0) size = pfd.statSize
+            JSONArray().put("file").put(mime).put(name).put(size).put(mtime).put(pfd.detachFd())
+        } catch (t: Exception) {
+            Log.w("OrielNui", "drop: $uri unreadable ($t)")
+            null
+        }
+    }
+
+    /** The window went before the drop arrived: its fds closed. */
+    private fun closeDropped(files: JSONArray) {
+        for (i in 0 until files.length()) {
+            val fd = files.optJSONArray(i)?.optInt(5, -1) ?: -1
+            if (fd >= 0) try { android.os.ParcelFileDescriptor.adoptFd(fd).close() } catch (_: Exception) {}
+        }
     }
 
     // --- Keys -------------------------------------------------------------------
@@ -1805,13 +2023,47 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         return super.onGenericMotionEvent(e)
     }
 
+    /**
+     * The mouse's cursor (ChromeOS, desktop mode): a field's own first (a
+     * text field's I-beam), then a hand over what the page can click (links,
+     * buttons, cursor: pointer), as browsers and Oriel's desktop backends do.
+     */
+    override fun onResolvePointerIcon(e: MotionEvent, pointerIndex: Int): PointerIcon? {
+        super.onResolvePointerIcon(e, pointerIndex)?.let { return it }
+        if (pointerIndex < 0 || pointerIndex >= e.pointerCount) return null
+        val x = e.getX(pointerIndex) / density
+        val y = e.getY(pointerIndex) / density
+        val clickable = NuiNative.clickableAt(window, x, y) || linkAt(x, y) != 0
+        return if (clickable) PointerIcon.getSystemIcon(context, PointerIcon.TYPE_HAND) else null
+    }
+
+    /**
+     * The clickable element of the text run under (x, y) dp: a link (or
+     * button, label…) amid the text has no node of its own, its runs carry
+     * its id (`k`, render.js); 0 when the point isn't on one.
+     */
+    private fun linkAt(x: Float, y: Float): Int {
+        val f = frames
+        for (j in paintOrder.indices.reversed()) {
+            val r = paintOrder[j]
+            if (r + REC > f.size) continue
+            val n = nodes[ids[r]] ?: continue
+            if (n.kind != "text") continue
+            val cx = f[r + 9]; val cy = f[r + 10]; val cw = f[r + 11]; val ch = f[r + 12]
+            if (x < cx || y < cy || x >= cx + cw || y >= cy + ch) continue
+            if (x < f[r + 5] || y < f[r + 6] || x >= f[r + 5] + f[r + 7] || y >= f[r + 6] + f[r + 8]) continue
+            return n.linkAt(x - cx, y - cy, ceil(cw).toInt() + 1)
+        }
+        return 0
+    }
+
     /** A mouse or trackpad over the page (ChromeOS, desktop mode): :hover. */
     override fun onHoverEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
                 NuiNative.hover(window, e.x / density, e.y / density)
                 // A hover move for the page's pointer (no buttons), once per frame.
-                NuiNative.pointer(window, 1, e.x / density, e.y / density, 0, true, mods(e.metaState))
+                NuiNative.pointer(window, 1, e.x / density, e.y / density, 0, true, mods(e.metaState), linkAt(e.x / density, e.y / density))
             }
             MotionEvent.ACTION_HOVER_EXIT -> NuiNative.hover(window, -1f, -1f)
         }

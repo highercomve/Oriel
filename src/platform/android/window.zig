@@ -67,6 +67,8 @@ const Op = union(enum) {
     focus,
     close,
     title: [:0]u8,
+    /// The page's theme-color (null: none), for the caption.
+    theme: ?[4]u8,
     fullscreen: bool,
     maximized: bool,
     size: struct { w: c_int, h: c_int },
@@ -80,6 +82,11 @@ fn apply(handle: WindowHandle, op: Op) void {
         .focus => _ = runtime.call(.void, "showWindow", "(I)V", .{id}),
         .close => if (App.getWindowByHandle(handle)) |w| closeNow(w),
         .title => |t| _ = runtime.call(.void, "setTitle", "(I[B)V", .{ id, @as([]const u8, t) }),
+        .theme => |c| {
+            // ARGB, alpha first as Android's Color ints; has: a colour at all.
+            const argb: u32 = if (c) |v| (@as(u32, v[3]) << 24) | (@as(u32, v[0]) << 16) | (@as(u32, v[1]) << 8) | v[2] else 0;
+            _ = runtime.call(.void, "setThemeColor", "(IZI)V", .{ id, c != null, @as(i32, @bitCast(argb)) });
+        },
         .fullscreen => |on| _ = runtime.call(.void, "setFullscreen", "(IZ)V", .{ id, on }),
         .maximized => |on| _ = runtime.call(.void, "setMaximized", "(IZ)V", .{ id, on }),
         .size => |s| _ = runtime.call(.void, "setSize", "(III)V", .{ id, @as(i32, s.w), @as(i32, s.h) }),
@@ -173,6 +180,12 @@ pub fn postCloseWindow(handle: WindowHandle) void {
 pub fn setWindowTitle(handle: WindowHandle, title: [:0]const u8) void {
     const copy = heap.gpa.dupeZ(u8, title) catch return;
     perform(handle, .{ .title = copy });
+}
+
+/// The page's `<meta name="theme-color">` (null: none): the window's task
+/// colour, which ChromeOS paints its caption with (any thread).
+pub fn setWindowThemeColor(handle: WindowHandle, color: ?[4]u8) void {
+    perform(handle, .{ .theme = color });
 }
 
 pub fn setWindowFullscreen(handle: WindowHandle, fullscreen: bool) void {

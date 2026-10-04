@@ -314,7 +314,14 @@ pub const Surface = struct {
     invoke_fn: Invoke,
     invoke_ctx: ?*anyopaque,
     /// The area's event controllers (their handlers go in `destroy`).
-    controllers: [5]*anyopaque = undefined,
+    controllers: [6]*anyopaque = undefined,
+    /// Drags over the page (onDragEnter): one session per drag that
+    /// enters, a drag is over the page now (until it leaves or drops),
+    /// what it carries, and the action GTK was last told (a drop's).
+    drag_session: u32 = 0,
+    drag_inside: bool = false,
+    drag_kinds: DragKinds = .{},
+    drag_action: c_uint = 0,
     /// Names the surface for its timers (`surfaces`): one that fires after
     /// the window closed finds nothing.
     token: u64 = 0,
@@ -413,7 +420,16 @@ pub const Surface = struct {
         _ = g_signal_connect_data(tab, "key-pressed", @ptrCast(&onFieldKey), s, null, 0);
         _ = g_signal_connect_data(tab, "key-released", @ptrCast(&onFieldKeyUp), s, null, 0);
         gtk_widget_add_controller(overlay, tab);
-        s.controllers = .{ click, scroll, motion, keys, tab };
+        // Drops into the page: on the overlay, so drags over a native
+        // field come here too (GtkText's own target takes text first).
+        const dnd = newDropTarget();
+        _ = g_signal_connect_data(dnd, "accept", @ptrCast(&onDragAccept), s, null, 0);
+        _ = g_signal_connect_data(dnd, "drag-enter", @ptrCast(&onDragEnter), s, null, 0);
+        _ = g_signal_connect_data(dnd, "drag-motion", @ptrCast(&onDragMotion), s, null, 0);
+        _ = g_signal_connect_data(dnd, "drag-leave", @ptrCast(&onDragLeave), s, null, 0);
+        _ = g_signal_connect_data(dnd, "drop", @ptrCast(&onDrop), s, null, 0);
+        gtk_widget_add_controller(overlay, dnd);
+        s.controllers = .{ click, scroll, motion, keys, tab, dnd };
 
         s.token = next_token;
         next_token += 1;
@@ -1065,6 +1081,7 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
                 gtk_entry_set_placeholder_text(e, z.ptr);
             }
             _ = g_signal_connect_data(@ptrCast(e), "changed", @ptrCast(&onEntryChanged), s, null, 0);
+            stripDropTargets(e);
             break :blk e;
         },
         .textarea => blk: {
@@ -1073,6 +1090,7 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
             gtk_text_view_set_accepts_tab(v, 0);
             _ = g_signal_connect_data(gtk_text_view_get_buffer(v), "changed", @ptrCast(&onBufferChanged), s, null, 0);
             g_object_set_data(gtk_text_view_get_buffer(v), "oriel-view", v);
+            stripDropTargets(v);
             break :blk v;
         },
         .select => blk: {
@@ -1416,6 +1434,554 @@ fn onMotion(controller: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(
         s.hovered = id;
         _ = s.engine.event(id, "hover", "null");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Drag and drop (docs/drag-and-drop-design.md, sections 1 and 5): drops
+// into the page. The page answers each enter and motion with an effect
+// mask (Engine.dragEvent), which GTK gets as one action. A drop's data
+// comes asynchronously: it's read (files opened into the engine's table,
+// drop.zig), then sent to the page as "drop", and the drop is finished
+// with the last motion's action: on GTK the page can't change its mind
+// at drop time.
+
+const GSList = extern struct { data: ?*anyopaque, next: ?*GSList };
+const GError = extern struct { domain: u32, code: c_int, message: ?[*:0]const u8 };
+const GAsyncReadyCallback = *const fn (?*anyopaque, *anyopaque, ?*anyopaque) callconv(.c) void;
+extern fn gtk_widget_observe_controllers(w: *Widget) *anyopaque;
+extern fn gtk_widget_remove_controller(w: *Widget, controller: *anyopaque) void;
+extern fn gtk_widget_get_first_child(w: *Widget) ?*Widget;
+extern fn gtk_widget_get_next_sibling(w: *Widget) ?*Widget;
+extern fn g_list_model_get_n_items(list: *anyopaque) c_uint;
+extern fn g_list_model_get_item(list: *anyopaque, position: c_uint) ?*anyopaque;
+extern fn g_type_check_instance_is_a(instance: *anyopaque, iface_type: usize) c_int;
+extern fn gtk_drop_target_get_type() usize;
+extern fn gtk_drop_target_async_get_type() usize;
+
+/// A native field's own drop targets (GtkText's, GtkTextView's) go: they
+/// took a file drag's text, the file's path, into the field without the
+/// page seeing the drag. Drags over a field now reach the overlay's target,
+/// and a text drop goes in through the page's drop (dnd.js default insert).
+fn stripDropTargets(w: *Widget) void {
+    var found: [8]*anyopaque = undefined;
+    var n: usize = 0;
+    const list = gtk_widget_observe_controllers(w);
+    const count = g_list_model_get_n_items(list);
+    var i: c_uint = 0;
+    while (i < count and n < found.len) : (i += 1) {
+        const c = g_list_model_get_item(list, i) orelse continue;
+        defer g_object_unref(c);
+        if (g_type_check_instance_is_a(c, gtk_drop_target_get_type()) != 0 or
+            g_type_check_instance_is_a(c, gtk_drop_target_async_get_type()) != 0)
+        {
+            found[n] = c;
+            n += 1;
+        }
+    }
+    // Removed after the walk: removing changes the observed list. The
+    // widget still holds them until then, so the pointers stay valid.
+    for (found[0..n]) |c| gtk_widget_remove_controller(w, c);
+    g_object_unref(list);
+    var child = gtk_widget_get_first_child(w);
+    while (child) |ch| : (child = gtk_widget_get_next_sibling(ch)) stripDropTargets(ch);
+}
+
+extern fn gtk_drop_target_async_new(formats: ?*anyopaque, actions: c_uint) *anyopaque;
+extern fn gdk_content_formats_builder_new() *anyopaque;
+extern fn gdk_content_formats_builder_add_gtype(b: *anyopaque, gtype: usize) void;
+extern fn gdk_content_formats_builder_add_mime_type(b: *anyopaque, mime: [*:0]const u8) void;
+extern fn gdk_content_formats_builder_free_to_formats(b: *anyopaque) *anyopaque;
+extern fn gdk_content_formats_contain_gtype(formats: *anyopaque, gtype: usize) c_int;
+extern fn gdk_content_formats_contain_mime_type(formats: *anyopaque, mime: [*:0]const u8) c_int;
+extern fn gdk_file_list_get_type() usize;
+extern fn gdk_file_list_get_files(list: *anyopaque) ?*GSList;
+extern fn gdk_drop_get_formats(drop: *anyopaque) *anyopaque;
+extern fn gdk_drop_get_actions(drop: *anyopaque) c_uint;
+extern fn gdk_drop_finish(drop: *anyopaque, action: c_uint) void;
+extern fn gdk_drop_read_async(drop: *anyopaque, mime_types: [*]const ?[*:0]const u8, io_priority: c_int, cancellable: ?*anyopaque, callback: GAsyncReadyCallback, data: ?*anyopaque) void;
+extern fn gdk_drop_read_finish(drop: *anyopaque, result: *anyopaque, out_mime_type: ?*?[*:0]const u8, err: *?*GError) ?*anyopaque;
+extern fn gdk_drop_read_value_async(drop: *anyopaque, gtype: usize, io_priority: c_int, cancellable: ?*anyopaque, callback: GAsyncReadyCallback, data: ?*anyopaque) void;
+extern fn gdk_drop_read_value_finish(drop: *anyopaque, result: *anyopaque, err: *?*GError) ?*const anyopaque;
+extern fn g_value_get_boxed(value: *const anyopaque) ?*anyopaque;
+extern fn g_object_ref(obj: *anyopaque) *anyopaque;
+extern fn g_input_stream_read_bytes_async(stream: *anyopaque, count: usize, io_priority: c_int, cancellable: ?*anyopaque, callback: GAsyncReadyCallback, data: ?*anyopaque) void;
+extern fn g_input_stream_read_bytes_finish(stream: *anyopaque, result: *anyopaque, err: *?*GError) ?*anyopaque;
+extern fn g_bytes_get_data(bytes: *anyopaque, size: *usize) ?[*]const u8;
+extern fn g_file_get_path(file: *anyopaque) ?[*:0]u8;
+extern fn g_content_type_guess(filename: ?[*:0]const u8, data: ?[*]const u8, size: usize, uncertain: ?*c_int) ?[*:0]u8;
+extern fn g_content_type_get_mime_type(content_type: [*:0]const u8) ?[*:0]u8;
+extern fn g_slist_free(list: ?*GSList) void;
+
+/// GdkDragAction's bits are the page's (copy 1, move 2, link 4); ask 8.
+const gdk_action_ask: c_uint = 8;
+/// At most this many items in a drop, and this long a string (larger
+/// ones are left out and logged).
+const drag_max_items = 4096;
+const drag_max_string = 16 * 1024 * 1024;
+
+/// The text types a drop target takes besides the file list; each list
+/// is one read (gdk_drop_read_async takes the first the drag has).
+const drop_plain_mimes = [_]?[*:0]const u8{ "text/plain;charset=utf-8", "text/plain", null };
+const drop_uri_mimes = [_]?[*:0]const u8{ "text/uri-list", null };
+const drop_html_mimes = [_]?[*:0]const u8{ "text/html", null };
+
+fn newDropTarget() *anyopaque {
+    const b = gdk_content_formats_builder_new();
+    gdk_content_formats_builder_add_gtype(b, gdk_file_list_get_type());
+    for ([_][*:0]const u8{ "text/plain;charset=utf-8", "text/plain", "text/uri-list", "text/html" }) |m| gdk_content_formats_builder_add_mime_type(b, m);
+    // The target owns the formats.
+    return gtk_drop_target_async_new(gdk_content_formats_builder_free_to_formats(b), 1 | 2 | 4);
+}
+
+/// What a drag carries, as the page's DataTransfer types.
+const DragKinds = struct {
+    files: bool = false,
+    plain: bool = false,
+    uri_list: bool = false,
+    html: bool = false,
+
+    fn of(formats: *anyopaque) DragKinds {
+        const has = struct {
+            fn f(fm: *anyopaque, mime: [*:0]const u8) bool {
+                return gdk_content_formats_contain_mime_type(fm, mime) != 0;
+            }
+        }.f;
+        const uri_list = has(formats, "text/uri-list");
+        // A link dragged out of a browser is a text/uri-list too, with
+        // Mozilla's types beside it (Firefox and Chromium both offer them).
+        const link = has(formats, "text/x-moz-url") or has(formats, "_NETSCAPE_URL");
+        return .{
+            .files = gdk_content_formats_contain_gtype(formats, gdk_file_list_get_type()) != 0 or
+                has(formats, "application/vnd.portal.filetransfer") or has(formats, "application/vnd.portal.files") or
+                (uri_list and !link),
+            .plain = has(formats, "text/plain;charset=utf-8") or has(formats, "text/plain"),
+            .uri_list = uri_list,
+            .html = has(formats, "text/html"),
+        };
+    }
+
+    /// The strings the page sees: none with files, as in Chrome, since a
+    /// file manager's text/plain and text/uri-list are the files' paths.
+    fn strings(k: DragKinds) [3]?[]const u8 {
+        if (k.files) return .{ null, null, null };
+        return .{
+            if (k.plain) "text/plain" else null,
+            if (k.uri_list) "text/uri-list" else null,
+            if (k.html) "text/html" else null,
+        };
+    }
+
+    /// enter's items: [[kind, type], ...].
+    fn writeItems(k: DragKinds, gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
+        try out.append(gpa, '[');
+        var first = true;
+        if (k.files) {
+            try out.appendSlice(gpa, "[\"file\",\"\"]");
+            first = false;
+        }
+        for (k.strings()) |mime| if (mime) |m| {
+            if (!first) try out.append(gpa, ',');
+            first = false;
+            try out.print(gpa, "[\"string\",\"{s}\"]", .{m});
+        };
+        try out.append(gpa, ']');
+    }
+};
+
+/// The drop's allowed actions as the page's mask. GDK reports one action
+/// (the source picked it with the modifiers) unless the source asks.
+fn allowedActions(actions: c_uint) u8 {
+    const m: u8 = @intCast(actions & 7);
+    if (m == 0 and actions & gdk_action_ask != 0) return 7;
+    return m;
+}
+
+/// The OS's preferred operation: the one allowed action, else the
+/// modifiers' (ctrl+shift link, ctrl copy, shift move), else copy, move,
+/// link in that order.
+fn suggestedAction(allowed: u8, mods: u32) u8 {
+    if (allowed == 0) return 0;
+    if (std.math.isPowerOfTwo(allowed)) return allowed;
+    const ctrl = mods & 2 != 0;
+    const shift = mods & 1 != 0;
+    const wanted: u8 = if (ctrl and shift) 4 else if (ctrl) 1 else if (shift) 2 else 0;
+    if (wanted & allowed != 0) return wanted;
+    return firstAction(allowed);
+}
+
+fn firstAction(mask: u8) u8 {
+    inline for (.{ 1, 2, 4 }) |a| if (mask & a != 0) return a;
+    return 0;
+}
+
+/// The page's effect mask as the one action GTK is told: the suggested
+/// one if the page allows it, else its first (0: no drop here).
+fn pickAction(mask: u8, allowed: u8, suggested: u8) c_uint {
+    const m = mask & allowed;
+    if (m & suggested != 0) return suggested;
+    return firstAction(m);
+}
+
+fn onDragAccept(_: *anyopaque, _: *anyopaque, _: ?*anyopaque) callconv(.c) c_int {
+    // Every drag: the page decides (its dragover), not the formats.
+    return 1;
+}
+
+fn onDragEnter(target: *anyopaque, drop: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(.c) c_uint {
+    const s = surfaceOf(data);
+    s.drag_session +%= 1;
+    s.drag_inside = true;
+    s.drag_kinds = DragKinds.of(gdk_drop_get_formats(drop));
+    return dragOver(s, target, drop, x, y, true);
+}
+
+fn onDragMotion(target: *anyopaque, drop: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(.c) c_uint {
+    const s = surfaceOf(data);
+    if (!s.drag_inside) return onDragEnter(target, drop, x, y, data);
+    return dragOver(s, target, drop, x, y, false);
+}
+
+/// "enter" or "over" on the node under the pointer: the page's answer as
+/// GTK's action (0 when it doesn't take the drag there).
+fn dragOver(s: *Surface, target: *anyopaque, drop: *anyopaque, x: f64, y: f64, enter: bool) c_uint {
+    const token = s.token;
+    const p: [2]f32 = .{ @floatCast(x), @floatCast(y) };
+    if (!std.math.isFinite(p[0]) or !std.math.isFinite(p[1])) return s.drag_action;
+    const allowed = allowedActions(gdk_drop_get_actions(drop));
+    const mods = modFlags(gtk_event_controller_get_current_event_state(target));
+    const suggested = suggestedAction(allowed, mods);
+    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    // Not s.gpa in the defer: the page may close its window (freeing `s`)
+    // inside dragEvent.
+    const gpa = s.gpa;
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"{s}\",{d:.2},{d:.2},{d},{d},{d},{d}", .{ if (enter) "enter" else "over", p[0], p[1], allowed, suggested, mods, s.drag_session }) catch return 0;
+    if (enter) {
+        json.append(gpa, ',') catch return 0;
+        s.drag_kinds.writeItems(gpa, &json) catch return 0;
+    }
+    json.append(gpa, ']') catch return 0;
+    const mask = s.engine.dragEvent(nid, json.items);
+    if (surfaces.get(token) == null) return 0; // the page closed its window
+    s.drag_action = pickAction(mask, allowed, suggested);
+    return s.drag_action;
+}
+
+fn onDragLeave(_: *anyopaque, _: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    // GTK emits drag-leave after a drop too: that drag ends with its drop.
+    if (!s.drag_inside) return;
+    s.drag_inside = false;
+    s.drag_action = 0;
+    sendDragLeave(s, s.drag_session);
+}
+
+fn sendDragLeave(s: *Surface, session: u32) void {
+    var buf: [32]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"leave\",{d}]", .{session}) catch return;
+    _ = s.engine.dragEvent(0, json);
+}
+
+fn onDrop(target: *anyopaque, drop: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaceOf(data);
+    if (!s.drag_inside) return 0;
+    s.drag_inside = false;
+    const action = s.drag_action;
+    s.drag_action = 0;
+    // The page took no drop here: the drag just leaves.
+    if (action == 0 or !std.math.isFinite(x) or !std.math.isFinite(y)) {
+        sendDragLeave(s, s.drag_session);
+        return 0;
+    }
+    const allowed = allowedActions(gdk_drop_get_actions(drop));
+    const mods = modFlags(gtk_event_controller_get_current_event_state(target));
+    const job = s.gpa.create(DropJob) catch {
+        sendDragLeave(s, s.drag_session);
+        return 0;
+    };
+    job.* = .{
+        .gpa = s.gpa,
+        .token = s.token,
+        .drop = g_object_ref(drop),
+        .at = .{ @floatCast(x), @floatCast(y) },
+        .allowed = allowed,
+        .suggested = suggestedAction(allowed, mods),
+        .mods = mods,
+        .session = s.drag_session,
+        .action = action,
+        .kinds = s.drag_kinds,
+    };
+    dropNext(job);
+    return 1;
+}
+
+/// A drop being read: the file list, then each string, then "drop" to
+/// the page and gdk_drop_finish. Each callback finds its surface by
+/// token: a window that closed meanwhile gets nothing (the drop is
+/// finished with no action).
+const DropJob = struct {
+    gpa: std.mem.Allocator,
+    token: u64,
+    drop: *anyopaque,
+    at: [2]f32,
+    allowed: u8,
+    suggested: u8,
+    mods: u32,
+    session: u32,
+    action: c_uint,
+    kinds: DragKinds,
+    /// The next step to try, and the string being read (its type).
+    step: Step = .files,
+    reading: []const u8 = "",
+    /// The items' JSON so far, comma-separated, and how many.
+    items: std.ArrayList(u8) = .empty,
+    count: usize = 0,
+    stream: ?*anyopaque = null,
+    text: std.ArrayList(u8) = .empty,
+
+    const Step = enum { files, plain, uri_list, html, done };
+
+    fn deinit(job: *DropJob) void {
+        if (job.stream) |st| g_object_unref(st);
+        job.items.deinit(job.gpa);
+        job.text.deinit(job.gpa);
+        g_object_unref(job.drop);
+        job.gpa.destroy(job);
+    }
+
+    /// Room for one more item (a comma before it).
+    fn startItem(job: *DropJob) !bool {
+        if (job.count >= drag_max_items) {
+            if (job.count == drag_max_items) log.warn("native ui: a drop of more than {d} items: the rest left out", .{drag_max_items});
+            job.count = drag_max_items + 1;
+            return false;
+        }
+        if (job.count > 0) try job.items.append(job.gpa, ',');
+        job.count += 1;
+        return true;
+    }
+};
+
+fn dropNext(job: *DropJob) void {
+    while (true) {
+        const step = job.step;
+        if (step != .done) job.step = @enumFromInt(@intFromEnum(step) + 1);
+        const strings = job.kinds.strings();
+        switch (step) {
+            .files => if (job.kinds.files) {
+                gdk_drop_read_value_async(job.drop, gdk_file_list_get_type(), 0, null, onDropFiles, job);
+                return;
+            },
+            .plain => if (strings[0]) |m| return dropReadText(job, m, &drop_plain_mimes),
+            .uri_list => if (strings[1]) |m| return dropReadText(job, m, &drop_uri_mimes),
+            .html => if (strings[2]) |m| return dropReadText(job, m, &drop_html_mimes),
+            .done => return dropDeliver(job),
+        }
+    }
+}
+
+fn logGError(what: []const u8, err: ?*GError) void {
+    const e = err orelse return;
+    log.warn("native ui: a drop's {s}: {s}", .{ what, if (e.message) |m| std.mem.span(m) else "?" });
+    g_error_free(e);
+}
+
+fn onDropFiles(_: ?*anyopaque, result: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const job: *DropJob = @ptrCast(@alignCast(data.?));
+    var err: ?*GError = null;
+    const value = gdk_drop_read_value_finish(job.drop, result, &err);
+    logGError("files", err);
+    const s = surfaces.get(job.token) orelse return dropAbandon(job);
+    if (value) |v| if (g_value_get_boxed(v)) |list| dropAddFiles(job, s, list);
+    dropNext(job);
+}
+
+/// Each file with a path (gvfs ones without are skipped) opened into the
+/// engine's table: ["file", mime, name, size, lastModifiedMs, handle].
+fn dropAddFiles(job: *DropJob, s: *Surface, list: *anyopaque) void {
+    const files = gdk_file_list_get_files(list);
+    defer g_slist_free(files);
+    var it = files;
+    while (it) |node| : (it = node.next) {
+        const file = node.data orelse continue;
+        const path_c = g_file_get_path(file) orelse continue;
+        defer g_free(path_c);
+        const path = std.mem.span(path_c);
+        const handle = (s.engine.drops.addPath(path) catch |err| {
+            log.warn("native ui: a dropped file: {s}", .{@errorName(err)});
+            continue;
+        }) orelse continue; // not a regular file (a directory)
+        const info = s.engine.drops.info(handle).?;
+        const name = std.fs.path.basename(path);
+        const added = dropFileItem(job, name, info, handle) catch false;
+        if (!added) s.engine.drops.release(handle);
+        if (job.count > drag_max_items) break;
+    }
+}
+
+fn dropFileItem(job: *DropJob, name: []const u8, info: engine_mod.drop.Entry, handle: u32) !bool {
+    if (!try job.startItem()) return false;
+    const mime = try guessMime(job.gpa, name);
+    defer job.gpa.free(mime);
+    try job.items.appendSlice(job.gpa, "[\"file\",");
+    try appendJsonString(job.gpa, &job.items, mime);
+    try job.items.append(job.gpa, ',');
+    try appendJsonString(job.gpa, &job.items, name);
+    try job.items.print(job.gpa, ",{d},{d},{d}]", .{ info.size, info.mtimeMs(), handle });
+    return true;
+}
+
+/// A file's MIME type from its name, as browsers give it ("" when unknown).
+fn guessMime(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
+    const name_z = try gpa.dupeZ(u8, name);
+    defer gpa.free(name_z);
+    var uncertain: c_int = 0;
+    const ct = g_content_type_guess(name_z, null, 0, &uncertain) orelse return gpa.dupe(u8, "");
+    defer g_free(ct);
+    const mime = g_content_type_get_mime_type(ct) orelse return gpa.dupe(u8, "");
+    defer g_free(mime);
+    const m = std.mem.span(mime);
+    if (std.mem.eql(u8, m, "application/octet-stream")) return gpa.dupe(u8, "");
+    return gpa.dupe(u8, m);
+}
+
+fn dropReadText(job: *DropJob, label: []const u8, mimes: [*]const ?[*:0]const u8) void {
+    job.reading = label;
+    gdk_drop_read_async(job.drop, mimes, 0, null, onDropStream, job);
+}
+
+fn onDropStream(_: ?*anyopaque, result: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const job: *DropJob = @ptrCast(@alignCast(data.?));
+    var err: ?*GError = null;
+    job.stream = gdk_drop_read_finish(job.drop, result, null, &err);
+    logGError(job.reading, err);
+    if (surfaces.get(job.token) == null) return dropAbandon(job);
+    if (job.stream == null) return dropNext(job);
+    job.text.clearRetainingCapacity();
+    g_input_stream_read_bytes_async(job.stream.?, 64 * 1024, 0, null, onDropChunk, job);
+}
+
+fn onDropChunk(_: ?*anyopaque, result: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const job: *DropJob = @ptrCast(@alignCast(data.?));
+    var err: ?*GError = null;
+    const bytes = g_input_stream_read_bytes_finish(job.stream.?, result, &err);
+    logGError(job.reading, err);
+    defer if (bytes) |b| g_bytes_unref(b);
+    if (surfaces.get(job.token) == null) return dropAbandon(job);
+    var size: usize = 0;
+    const ptr = if (bytes) |b| g_bytes_get_data(b, &size) else null;
+    const done = bytes == null or size == 0;
+    var keep = bytes != null;
+    if (!done) {
+        if (job.text.items.len + size > drag_max_string) {
+            log.warn("native ui: a dropped {s} over {d} MiB left out", .{ job.reading, drag_max_string >> 20 });
+            keep = false;
+        } else if (job.text.appendSlice(job.gpa, ptr.?[0..size])) |_| {
+            return g_input_stream_read_bytes_async(job.stream.?, 64 * 1024, 0, null, onDropChunk, job);
+        } else |_| keep = false;
+    }
+    g_object_unref(job.stream.?);
+    job.stream = null;
+    if (keep) dropStringItem(job) catch {};
+    dropNext(job);
+}
+
+/// ["string", type, value]: the text as UTF-8 (UTF-16 with a BOM, as
+/// Firefox gives text/html, converted; invalid bytes as U+FFFD).
+fn dropStringItem(job: *DropJob) !void {
+    const text = try dropText(job.gpa, job.text.items);
+    defer job.gpa.free(text);
+    if (!try job.startItem()) return;
+    try job.items.appendSlice(job.gpa, "[\"string\",");
+    try appendJsonString(job.gpa, &job.items, job.reading);
+    try job.items.append(job.gpa, ',');
+    try appendJsonString(job.gpa, &job.items, text);
+    try job.items.append(job.gpa, ']');
+}
+
+/// Dropped text as UTF-8 (owned): UTF-16LE when it starts with its BOM,
+/// a UTF-8 BOM and trailing NULs dropped.
+fn dropText(gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var bytes = raw;
+    if (bytes.len >= 2 and bytes[0] == 0xff and bytes[1] == 0xfe) {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(gpa);
+        var i: usize = 2;
+        while (i + 1 < bytes.len) {
+            const u: u21 = std.mem.readInt(u16, bytes[i..][0..2], .little);
+            i += 2;
+            var cp: u21 = u;
+            if (u >= 0xd800 and u < 0xdc00 and i + 1 < bytes.len) {
+                const lo: u21 = std.mem.readInt(u16, bytes[i..][0..2], .little);
+                if (lo >= 0xdc00 and lo < 0xe000) {
+                    cp = 0x10000 + ((u - 0xd800) << 10) + (lo - 0xdc00);
+                    i += 2;
+                } else cp = 0xfffd;
+            } else if (u >= 0xd800 and u < 0xe000) cp = 0xfffd;
+            if (cp == 0 and i >= bytes.len) break; // a trailing NUL
+            var buf: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(cp, &buf) catch unreachable;
+            try out.appendSlice(gpa, buf[0..n]);
+        }
+        while (out.items.len > 0 and out.items[out.items.len - 1] == 0) out.items.len -= 1;
+        return out.toOwnedSlice(gpa);
+    }
+    if (std.mem.startsWith(u8, bytes, "\xef\xbb\xbf")) bytes = bytes[3..];
+    while (bytes.len > 0 and bytes[bytes.len - 1] == 0) bytes = bytes[0 .. bytes.len - 1];
+    return utf8Lossy(gpa, bytes);
+}
+
+/// A copy of `s` with each invalid UTF-8 sequence as U+FFFD.
+fn utf8Lossy(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
+    if (std.unicode.utf8ValidateSlice(s)) return gpa.dupe(u8, s);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var i: usize = 0;
+    while (i < s.len) {
+        const len = std.unicode.utf8ByteSequenceLength(s[i]) catch 0;
+        if (len > 0 and i + len <= s.len and !std.meta.isError(std.unicode.utf8Decode(s[i .. i + len]))) {
+            try out.appendSlice(gpa, s[i .. i + len]);
+            i += len;
+        } else {
+            try out.appendSlice(gpa, "\u{FFFD}");
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// `s` as a JSON string (valid UTF-8: invalid bytes as U+FFFD).
+fn appendJsonString(gpa: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
+    const clean = try utf8Lossy(gpa, s);
+    defer gpa.free(clean);
+    const quoted = try std.json.Stringify.valueAlloc(gpa, clean, .{});
+    defer gpa.free(quoted);
+    try out.appendSlice(gpa, quoted);
+}
+
+/// Everything read: "drop" on the node under the drop point, then the
+/// drop finished with the action GTK was last told.
+fn dropDeliver(job: *DropJob) void {
+    const s = surfaces.get(job.token) orelse return dropAbandon(job);
+    const gpa = job.gpa; // the job goes before the JSON
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    json.print(gpa,"[\"drop\",{d:.2},{d:.2},{d},{d},{d},{d},[{s}]]", .{ job.at[0], job.at[1], job.allowed, job.suggested, job.mods, job.session, job.items.items }) catch {
+        sendDragLeave(s, job.session);
+        return dropAbandon(job);
+    };
+    const nid: i64 = if (s.engine.tree.hit(job.at[0], job.at[1])) |n| n.id else 0;
+    // Async here: the page's answer can't change the action any more.
+    _ = s.engine.dragEvent(nid, json.items);
+    gdk_drop_finish(job.drop, job.action);
+    job.deinit();
+}
+
+/// The window went (or the drop couldn't be read): finished, no action.
+fn dropAbandon(job: *DropJob) void {
+    gdk_drop_finish(job.drop, 0);
+    job.deinit();
 }
 
 fn onKey(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) c_int {
@@ -3300,4 +3866,57 @@ test "a circle filled from its mask matches cairo's own fill" {
     // the path's own flattening differs too). On average, a few levels.
     try std.testing.expect(worst <= 100);
     try std.testing.expect(diff_sum <= edge_pixels * 8);
+}
+
+test "drag actions: allowed, suggested from the modifiers, the page's mask as one action" {
+    try std.testing.expectEqual(@as(u8, 1), allowedActions(1));
+    try std.testing.expectEqual(@as(u8, 7), allowedActions(gdk_action_ask));
+    try std.testing.expectEqual(@as(u8, 3), allowedActions(3 | gdk_action_ask));
+    // One allowed action is the suggestion whatever the keys.
+    try std.testing.expectEqual(@as(u8, 2), suggestedAction(2, 2));
+    try std.testing.expectEqual(@as(u8, 1), suggestedAction(7, 0));
+    try std.testing.expectEqual(@as(u8, 2), suggestedAction(7, 1)); // shift
+    try std.testing.expectEqual(@as(u8, 1), suggestedAction(7, 2)); // ctrl
+    try std.testing.expectEqual(@as(u8, 4), suggestedAction(7, 3)); // ctrl+shift
+    try std.testing.expectEqual(@as(u8, 2), suggestedAction(6, 2)); // ctrl without copy
+    try std.testing.expectEqual(@as(u8, 0), suggestedAction(0, 0));
+    try std.testing.expectEqual(@as(c_uint, 2), pickAction(3, 7, 2));
+    try std.testing.expectEqual(@as(c_uint, 1), pickAction(1, 7, 2));
+    try std.testing.expectEqual(@as(c_uint, 4), pickAction(4 | 8, 4, 4));
+    try std.testing.expectEqual(@as(c_uint, 0), pickAction(2, 1, 1));
+    try std.testing.expectEqual(@as(c_uint, 0), pickAction(0, 7, 1));
+}
+
+test "drag items: files alone (their paths stay hidden), else the strings" {
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try (DragKinds{ .files = true, .plain = true, .uri_list = true, .html = true }).writeItems(gpa, &out);
+    try std.testing.expectEqualStrings("[[\"file\",\"\"]]", out.items);
+    out.clearRetainingCapacity();
+    try (DragKinds{ .plain = true, .uri_list = true, .html = true }).writeItems(gpa, &out);
+    try std.testing.expectEqualStrings("[[\"string\",\"text/plain\"],[\"string\",\"text/uri-list\"],[\"string\",\"text/html\"]]", out.items);
+    out.clearRetainingCapacity();
+    try (DragKinds{}).writeItems(gpa, &out);
+    try std.testing.expectEqualStrings("[]", out.items);
+}
+
+test "dropped text: UTF-16 with a BOM, a UTF-8 BOM, NULs, invalid bytes" {
+    const gpa = std.testing.allocator;
+    const cases = [_][2][]const u8{
+        .{ "\xff\xfeh\x00\xe9\x00<\x00\x3d\xd8\x00\xde\x00\x00", "hé<\u{1F600}" },
+        .{ "\xff\xfe\x00\xd8x\x00", "\u{FFFD}x" },
+        .{ "\xef\xbb\xbfplain\x00", "plain" },
+        .{ "a\xffb", "a\u{FFFD}b" },
+        .{ "", "" },
+    };
+    for (cases) |c| {
+        const t = try dropText(gpa, c[0]);
+        defer gpa.free(t);
+        try std.testing.expectEqualStrings(c[1], t);
+    }
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try appendJsonString(gpa, &out, "a\"b\n\xff");
+    try std.testing.expectEqualStrings("\"a\\\"b\\n\u{FFFD}\"", out.items);
 }

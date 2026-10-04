@@ -1926,6 +1926,14 @@ export class Renderer {
     if (ol) for (let i = first; i < runs.length; i++) if (!runs[i].br) runs[i].ol = ol;
     // Its underline is drawn under its inline children's text too.
     if (underlined(cs)) for (let i = first; i < runs.length; i++) runs[i].u = true;
+    // A link (or other clickable element) amid the text has no node of its
+    // own: its runs carry its id (`k`), so a backend shows the hand over
+    // them and sends their clicks to it. The innermost one wins.
+    if (runs.length > first && clickableInline(el, cs, parentCS)) {
+      const id = this.idOf(el, "el");
+      this.own(id, el);
+      for (let i = first; i < runs.length; i++) if (!runs[i].br && runs[i].k === undefined) runs[i].k = id;
+    }
   }
 
   pseudo(el, cs, which, nodes) {
@@ -2176,6 +2184,16 @@ function listens(el) {
   return !!el.__listens;
 }
 
+// An inline element whose text takes clicks (render.js inlineRuns' `k`):
+// as putClick, plus its own cursor: pointer (not one inherited from a link
+// around it); never a disabled one.
+function clickableInline(el, cs, parentCS) {
+  if (el.hasAttribute("disabled")) return false;
+  const n = el.localName;
+  return (n === "a" && el.hasAttribute("href")) || n === "button" || n === "label" || n === "summary" ||
+    el.hasAttribute("onclick") || listens(el) || (cs.cursor === "pointer" && parentCS?.cursor !== "pointer");
+}
+
 // ---------------------------------------------------------------------------
 // Tables: the table and its row groups are flex columns, a row is a flex
 // row of cells, and tree.zig sizes the columns (each cell's natural width,
@@ -2382,7 +2400,8 @@ function memoized(cs, key, make) {
 function boxProps(cs, display, fs, el) {
   const button = el?.localName === "button";
   const bb = borderBoxByDefault(el);
-  const key = `b${display}|${fs}|${button}|${bb}`;
+  // (The dpr too: border widths snap to its device pixels.)
+  const key = `b${display}|${fs}|${button}|${bb}|${viewport.dpr}`;
   const d = derived.get(cs);
   // (A mac button's background decides its whole box: pushButton.)
   if (d?.parts && !(button && pushButtons && d.parts.includes("bg"))) {
@@ -2455,6 +2474,21 @@ function darkColor(c) {
 let pushButtons = false;
 // (A ButtonFace no page writes: its background shorthand as UA_CSS_MAC left it.)
 const PUSH_MARK = "rgba(239, 239, 239, 0.9999)";
+// Border widths as browsers snap them to device pixels (measured in
+// WKWebView on macOS at 1x and the iOS simulator at 3x; Chromium's from
+// the Android session): a width under one device pixel is one, any other
+// is floored to whole device pixels (a 1px border at dpr 2.625: 0.762;
+// 3px: 2.667). WebKit floors the width as its layout unit (1/64 px) holds
+// it, so 0.34px at 3x is 0 and 2.67px is 2.333 there.
+let webkitBorders = false;
+export function snapBorder(w) {
+  if (!(w > 0)) return 0;
+  const dpr = viewport.dpr || 1;
+  if (w * dpr < 1) return 1 / dpr;
+  const v = webkitBorders ? Math.trunc(w * 64) / 64 : w;
+  return Math.floor(v * dpr + 1e-6) / dpr;
+}
+
 function pushButton(cs, p) {
   if (cs.background !== PUSH_MARK || (cs["background-color"] && cs["background-color"] !== PUSH_MARK)) return;
   const app = cs.appearance || cs["-webkit-appearance"];
@@ -2478,6 +2512,7 @@ function pushButton(cs, p) {
 
 export function setFocusRingOS(os, accent) {
   pushButtons = os === "macos";
+  webkitBorders = os === "macos" || os === "ios" || os === "linux";
   osRings = os === "linux" ? webkitGtkRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
 }
 let focusVisible = null;
@@ -2601,7 +2636,7 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
   if (m.some((x) => x)) p.m = m;
   const pad = sides.map((s) => { const l = num(cs[`padding-${s}`], fs); return l === undefined || l === "auto" ? 0 : typeof l === "object" ? `${l.pct}%` : l; });
   if (pad.some((x) => x)) p.pad = pad;
-  const bw = sides.map((s) => { const l = num(cs[`border-${s}-width`], fs); return typeof l === "number" ? l : (cs[`border-${s}-width`] === "thin" ? 1 : cs[`border-${s}-width`] === "medium" ? 3 : 0); });
+  const bw = sides.map((s) => { const l = num(cs[`border-${s}-width`], fs); return snapBorder(typeof l === "number" ? l : (cs[`border-${s}-width`] === "thin" ? 1 : cs[`border-${s}-width`] === "medium" ? 3 : 0)); });
   if (bw.some((x) => x)) {
     p.bw = bw;
     const cur = color(cs.color);
@@ -2827,7 +2862,7 @@ function inlineBox(el, cs, fs, bg) {
   const px = (v) => { const n = num(v || "0", fs); return typeof n === "number" && n > 0 ? n : 0; };
   const shown = (side) => { const st = cs[`border-${side}-style`]; return st && st !== "none" && st !== "hidden"; };
   const ib = { k, p: sides.map((d) => px(cs[`padding-${d}`])), m: [0, px(cs["margin-right"]), 0, px(cs["margin-left"])] };
-  const bw = sides.map((d) => (shown(d) ? px(cs[`border-${d}-width`] ?? "medium") || 0 : 0));
+  const bw = sides.map((d) => (shown(d) ? snapBorder(px(cs[`border-${d}-width`] ?? "medium")) : 0));
   if (bw.some((w) => w > 0)) {
     ib.bw = bw;
     const side = sides.find((d, i) => bw[i] > 0);

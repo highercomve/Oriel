@@ -242,7 +242,15 @@ object OrielRuntime {
     fun setTitle(id: Int, title: ByteArray) {
         val w = windows[id] ?: return
         w.title = title.utf8()
-        w.activity?.applyTitle(w.title)
+        w.activity?.applyTitle(w.title, w.themeColor)
+    }
+
+    /** The page's theme-color as ARGB (has: false, none): the window's caption (android/window.zig). */
+    @JvmStatic
+    fun setThemeColor(id: Int, has: Boolean, argb: Int) {
+        val w = windows[id] ?: return
+        w.themeColor = if (has) argb else null
+        w.activity?.applyTitle(w.title, w.themeColor)
     }
 
     @JvmStatic

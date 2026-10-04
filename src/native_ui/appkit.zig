@@ -71,6 +71,13 @@ pub const Surface = struct {
     flash_queued: bool = false,
     flash_until: i64 = 0,
     move: ?PendingMove = null,
+    /// Drags over the page (draggingEntered): one session per drag that
+    /// enters, a drag is over the page now (until it leaves or drops),
+    /// what it carries, and the operation AppKit was last told.
+    drag_session: u32 = 0,
+    drag_inside: bool = false,
+    drag_kinds: DragKinds = .{},
+    drag_op: c_ulong = 0,
     /// The window's label (ORIEL_NUI_SNAPSHOT file names).
     label: []u8 = &.{},
     snapshot_queued: bool = false,
@@ -132,11 +139,22 @@ fn classes() void {
         .{ "resizeSubviewsWithOldSize:", resizeSubviews },
         .{ "mouseDown:", mouseDown },
         .{ "mouseUp:", mouseUp },
-        .{ "rightMouseUp:", rightMouseUp },
+        .{ "rightMouseDown:", otherButtonDown },
+        .{ "rightMouseUp:", otherButtonUp },
+        .{ "rightMouseDragged:", mouseDragged },
+        .{ "otherMouseDown:", otherButtonDown },
+        .{ "otherMouseUp:", otherButtonUp },
+        .{ "otherMouseDragged:", mouseDragged },
         .{ "mouseMoved:", mouseMoved },
         .{ "mouseDragged:", mouseDragged },
         .{ "mouseExited:", mouseExited },
         .{ "scrollWheel:", scrollWheel },
+        // Drops into the page (docs/drag-and-drop-design.md, section 5).
+        .{ "draggingEntered:", draggingEntered },
+        .{ "draggingUpdated:", draggingUpdated },
+        .{ "draggingExited:", draggingExited },
+        .{ "prepareForDragOperation:", prepareForDragOperation },
+        .{ "performDragOperation:", performDragOperation },
         .{ "keyDown:", keyDown },
         .{ "viewDidChangeEffectiveAppearance", appearanceChanged },
         .{ "viewDidChangeBackingProperties", backingChanged },
@@ -157,9 +175,14 @@ fn classes() void {
         .{ "becomeFirstResponder", secureFieldBecomeFirst },
         .{ "textView:shouldChangeTextInRange:replacementString:", secureFieldShouldChange },
     });
+    // No drags of their own (a text view would insert a dropped file's
+    // path): drops over a field reach the page's view, and the page (its
+    // drop, or the default that inserts dropped text) decides.
     text_view_class = cocoa.defineSubclass("OrielNuiTextView", "NSTextView", &.{}, .{
         .{ "becomeFirstResponder", textViewBecomeFirst },
         .{ "resignFirstResponder", textViewResignFirst },
+        .{ "updateDragTypeRegistration", noDragTypes },
+        .{ "acceptableDragTypes", noAcceptableDragTypes },
     });
     field_delegate = cocoa.new(cocoa.defineClass("OrielNuiFieldDelegate", &.{ "NSTextFieldDelegate", "NSTextViewDelegate" }, .{
         .{ "controlTextDidChange:", controlTextDidChange },
@@ -219,6 +242,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     });
     view.msgSend(void, "addTrackingArea:", .{tracking});
     tracking.release();
+    registerDragTypes(view);
     try surfaces.put(gpa, s.token, s);
     errdefer _ = surfaces.remove(s.token);
     try by_view.put(gpa, key(view.value), s);
@@ -252,6 +276,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     // Text-only updates that keep a text's size keep the layout (its
     // natural size is kept per node: measureText).
     s.engine.tree.reuse_text_layout = true;
+    s.engine.tree.inline_end_padding = false;
     s.engine.boot(s.dark, false);
     return s;
 }
@@ -962,14 +987,53 @@ var text_view_class: ?cocoa.objc.Class = null;
 
 fn textFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
     const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSTextField"), BOOL, "becomeFirstResponder", .{});
+    noFieldEditorDrags(self);
     focusChangedNear(self);
     return ok;
 }
 
 fn secureFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
     const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSSecureTextField"), BOOL, "becomeFirstResponder", .{});
+    noFieldEditorDrags(self);
     focusChangedNear(self);
     return ok;
+}
+
+/// A text field's editor (the window's field editor, a text view) takes no
+/// drags: they reach the page's view (see text_view_class). The editor
+/// registers its types again as it edits, so it becomes a subclass of its
+/// class that has none (as KVO subclasses an object), once.
+fn noFieldEditorDrags(field: id) void {
+    const editor = (Object{ .value = field }).msgSend(Object, "currentEditor", .{});
+    if (editor.value == null) return;
+    const cls = editor.getClass() orelse return;
+    if (std.mem.startsWith(u8, editor.getClassName(), "OrielNuiFieldEditor")) return;
+    const sub = fieldEditorClass(cls, editor.getClassName()) orelse return;
+    _ = cocoa.objc.c.object_setClass(editor.value, @ptrCast(sub.value));
+    editor.msgSend(void, "unregisterDraggedTypes", .{});
+}
+
+/// The no-drags subclass of a field editor's class (made once per class).
+var field_editor_subclasses: std.AutoHashMapUnmanaged(usize, cocoa.objc.Class) = .empty;
+fn fieldEditorClass(cls: cocoa.objc.Class, name: [:0]const u8) ?cocoa.objc.Class {
+    const k = @intFromPtr(cls.value);
+    if (field_editor_subclasses.get(k)) |sub| return sub;
+    const gpa = std.heap.smp_allocator;
+    const sub_name = std.fmt.allocPrintSentinel(gpa, "OrielNuiFieldEditor_{s}", .{name}, 0) catch return null;
+    // (The runtime keeps the name for the class's life.)
+    const sub = cocoa.objc.allocateClassPair(cls, sub_name) orelse return null;
+    if (!sub.addMethod("updateDragTypeRegistration", noDragTypes) or !sub.addMethod("acceptableDragTypes", noAcceptableDragTypes)) return null;
+    cocoa.objc.registerClassPair(sub);
+    field_editor_subclasses.put(gpa, k, sub) catch {};
+    return sub;
+}
+
+fn noDragTypes(self: id, _: SEL) callconv(.c) void {
+    (Object{ .value = self }).msgSend(void, "unregisterDraggedTypes", .{});
+}
+
+fn noAcceptableDragTypes(_: id, _: SEL) callconv(.c) id {
+    return cocoa.class("NSArray").msgSend(Object, "array", .{}).value;
 }
 
 fn textViewBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
@@ -1206,7 +1270,55 @@ fn mouseDown(self: id, _: SEL, event: id) callconv(.c) void {
     // A move still waiting goes before the down.
     if (s.move != null) flushMove(s);
     if (surfaces.get(token) == null) return;
-    _ = sendPointer(s, "down", p, 1, mods);
+    _ = sendPointer(s, "down", p, pressedButtons() | 1, mods);
+    if (surfaces.get(token) == null) return;
+    // Control-click: the context menu, as on every Mac; WebKit's comes with
+    // the press, the primary button's (button 0, buttons 1), and the click
+    // still follows the release (measured).
+    if (mods & 2 != 0) if (s.engine.tree.hit(p[0], p[1])) |n| contextMenu(s, n, p, 0, 1, mods);
+}
+
+/// The buttons held now, as the DOM's `buttons` (NSEvent's bits are the
+/// same for the first three: left 1, right 2, other 4; then back 8,
+/// forward 16).
+fn pressedButtons() u32 {
+    return @truncate(cocoa.class("NSEvent").msgSend(c_ulong, "pressedMouseButtons", .{}) & 0x1f);
+}
+
+/// The right or another button went down: the page's pointer down (its
+/// `button` is the bit that changed, main.js), and for the right one
+/// WebKit's context menu right after it, as AppKit opens menus on the
+/// press (measured: pointerdown, mousedown, contextmenu, pointerup,
+/// mouseup, auxclick).
+fn otherButtonDown(self: id, _: SEL, event: id) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    _ = s.view.msgSend(Object, "window", .{}).msgSend(BOOL, "makeFirstResponder:", .{s.view});
+    if (s.focused != 0) queueFocusCheck(s);
+    const token = s.token;
+    const p = point(self, event);
+    if (s.move != null) flushMove(s);
+    if (surfaces.get(token) == null) return;
+    const ev: Object = .{ .value = event };
+    _ = sendPointer(s, "down", p, pressedButtons() | buttonBit(ev), modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})));
+    if (surfaces.get(token) == null) return;
+    if (ev.msgSend(isize, "buttonNumber", .{}) == 1) if (s.engine.tree.hit(p[0], p[1])) |n| contextMenu(s, n, p, 2, pressedButtons() | 2, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})));
+}
+
+/// Its release: the page's pointer up, then auxclick (main.js).
+fn otherButtonUp(self: id, _: SEL, event: id) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    const token = s.token;
+    if (s.move != null) flushMove(s);
+    if (surfaces.get(token) == null) return;
+    const ev: Object = .{ .value = event };
+    _ = sendPointer(s, "up", point(self, event), pressedButtons() & ~buttonBit(ev), modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})));
+}
+
+/// An event's own button as a `buttons` bit (buttonNumber 0 left, 1 right,
+/// 2 middle, 3 back, 4 forward).
+fn buttonBit(ev: Object) u32 {
+    const n = ev.msgSend(isize, "buttonNumber", .{});
+    return if (n >= 0 and n < 5) @as(u32, 1) << @intCast(n) else 0;
 }
 
 fn mouseUp(self: id, _: SEL, event: id) callconv(.c) void {
@@ -1216,31 +1328,23 @@ fn mouseUp(self: id, _: SEL, event: id) callconv(.c) void {
     if (s.move != null) flushMove(s);
     if (surfaces.get(token) == null) return;
     const p = point(self, event);
-    _ = sendPointer(s, "up", p, 0, modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
+    _ = sendPointer(s, "up", p, pressedButtons() & ~@as(u32, 1), modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
     if (surfaces.get(token) == null) return;
     _ = s.engine.event(0, "release", "null");
     const hit = s.engine.tree.hit(p[0], p[1]);
     if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: click at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], if (hit) |h| h.id else 0 });
     const n = hit orelse return;
     const flags = (Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{});
-    // Control-click: the context menu, as on every Mac.
-    if (flags & (1 << 18) != 0) return contextMenu(s, n, p);
     if (disabledUp(n)) return;
     var buf: [16]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "{d}", .{modFlags(flags)}) catch return;
     _ = s.engine.event(n.id, "click", json);
 }
 
-fn rightMouseUp(self: id, _: SEL, event: id) callconv(.c) void {
-    const s = by_view.get(key(self)) orelse return;
-    const p = point(self, event);
-    const n = s.engine.tree.hit(p[0], p[1]) orelse return;
-    contextMenu(s, n, p);
-}
-
-fn contextMenu(s: *Surface, n: *Node, p: [2]f32) void {
+/// The page's contextmenu: [x, y, button, buttons, modifiers].
+fn contextMenu(s: *Surface, n: *Node, p: [2]f32, button: u32, buttons: u32, mods: u32) void {
     var buf: [64]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0}]", .{ p[0], p[1] }) catch return;
+    const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0},{d},{d},{d}]", .{ p[0], p[1], button, buttons, mods }) catch return;
     _ = s.engine.event(n.id, "contextmenu", json);
 }
 
@@ -1257,7 +1361,7 @@ fn clickableUp(start: *Node) bool {
 }
 
 fn mouseDragged(self: id, _: SEL, event: id) callconv(.c) void {
-    pointerMoved(self, event, 1);
+    pointerMoved(self, event, pressedButtons());
 }
 
 fn mouseMoved(self: id, _: SEL, event: id) callconv(.c) void {
@@ -1597,4 +1701,360 @@ fn sendKey(s: *Surface, nid: i64, event: id, kind: []const u8) bool {
 
 test {
     _ = log;
+}
+
+// ---------------------------------------------------------------------------
+// Drag and drop (docs/drag-and-drop-design.md, sections 1 and 5): drops
+// into the page. The page answers each enter and update with an effect
+// mask (Engine.dragEvent), which AppKit gets as one NSDragOperation. A
+// drop's data is on the pasteboard already: performDragOperation opens
+// the files (while the drag's sandbox extension holds) into the engine's
+// table (drop.zig), sends "drop", and returns the page's own answer.
+
+/// At most this many items in a drop, and this long a string (larger
+/// ones are left out and logged).
+const drag_max_items = 4096;
+const drag_max_string = 16 * 1024 * 1024;
+
+const pb_file_url = "public.file-url"; // NSPasteboardTypeFileURL
+const pb_string = "public.utf8-plain-text"; // NSPasteboardTypeString
+const pb_url = "public.url"; // NSPasteboardTypeURL
+const pb_html = "public.html"; // NSPasteboardTypeHTML
+
+fn registerDragTypes(view: Object) void {
+    var types: [4]cocoa.id = undefined;
+    var n: usize = 0;
+    inline for (.{ pb_file_url, pb_string, pb_url, pb_html }) |t| {
+        const str = cocoa.nsString(t) orelse unreachable; // ASCII
+        types[n] = str.value;
+        n += 1;
+    }
+    defer for (types[0..n]) |t| (Object{ .value = t }).release();
+    const array = cocoa.class("NSArray").msgSend(Object, "arrayWithObjects:count:", .{ @as([*]const cocoa.id, &types), @as(c_ulong, n) });
+    view.msgSend(void, "registerForDraggedTypes:", .{array});
+}
+
+/// What a drag carries, as the page's DataTransfer types.
+const DragKinds = struct {
+    files: bool = false,
+    plain: bool = false,
+    uri_list: bool = false,
+    html: bool = false,
+
+    fn of(pb: Object) DragKinds {
+        return .{
+            .files = fileURLs(pb).msgSend(c_ulong, "count", .{}) > 0,
+            .plain = hasType(pb, pb_string),
+            .uri_list = hasType(pb, pb_url),
+            .html = hasType(pb, pb_html),
+        };
+    }
+
+    /// The strings the page sees: none with files, as in Chrome (Finder's
+    /// text and URL are the files' paths).
+    fn strings(k: DragKinds) [3]?[]const u8 {
+        if (k.files) return .{ null, null, null };
+        return .{
+            if (k.plain) "text/plain" else null,
+            if (k.uri_list) "text/uri-list" else null,
+            if (k.html) "text/html" else null,
+        };
+    }
+
+    /// enter's items: [[kind, type], ...].
+    fn writeItems(k: DragKinds, gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
+        try out.append(gpa, '[');
+        var first = true;
+        if (k.files) {
+            try out.appendSlice(gpa, "[\"file\",\"\"]");
+            first = false;
+        }
+        for (k.strings()) |mime| if (mime) |m| {
+            if (!first) try out.append(gpa, ',');
+            first = false;
+            try out.print(gpa, "[\"string\",\"{s}\"]", .{m});
+        };
+        try out.append(gpa, ']');
+    }
+};
+
+fn hasType(pb: Object, comptime t: []const u8) bool {
+    const str = cocoa.nsString(t) orelse unreachable; // ASCII
+    defer str.release();
+    const array = cocoa.class("NSArray").msgSend(Object, "arrayWithObject:", .{str});
+    return pb.msgSend(Object, "availableTypeFromArray:", .{array}).value != null;
+}
+
+/// The pasteboard's file URLs (an autoreleased NSArray, maybe empty).
+fn fileURLs(pb: Object) Object {
+    const classes_ = cocoa.class("NSArray").msgSend(Object, "arrayWithObject:", .{cocoa.class("NSURL")});
+    const key_ = cocoa.nsString("NSPasteboardURLReadingFileURLsOnlyKey") orelse unreachable; // ASCII
+    defer key_.release();
+    const yes_ = cocoa.class("NSNumber").msgSend(Object, "numberWithBool:", .{cocoa.boolean(true)});
+    const options = cocoa.class("NSDictionary").msgSend(Object, "dictionaryWithObject:forKey:", .{ yes_, key_ });
+    const urls = pb.msgSend(Object, "readObjectsForClasses:options:", .{ classes_, options });
+    if (urls.value == null) return cocoa.class("NSArray").msgSend(Object, "array", .{});
+    return urls;
+}
+
+/// NSDragOperation's bits as the page's: Copy 1 → copy 1, Link 2 → link 4,
+/// Generic 4 and Move 16 → move 2.
+fn opsToMask(ops: c_ulong) u8 {
+    var m: u8 = 0;
+    if (ops & 1 != 0) m |= 1;
+    if (ops & 2 != 0) m |= 4;
+    if (ops & (4 | 16) != 0) m |= 2;
+    return m;
+}
+
+/// The page's action as one of the source's operations (move: Move if
+/// it offers that, else Generic, as a Command-drag narrows to).
+fn maskToOp(action: u8, ops: c_ulong) c_ulong {
+    return switch (action) {
+        1 => 1,
+        2 => if (ops & 16 != 0) 16 else 4,
+        4 => 2,
+        else => 0,
+    };
+}
+
+/// The OS's preferred operation: the one allowed (the source narrows its
+/// mask with the modifiers: Option copy, Command move, both link), else
+/// copy, move, link in that order.
+fn suggestedAction(allowed: u8) u8 {
+    return firstAction(allowed);
+}
+
+fn firstAction(mask: u8) u8 {
+    inline for (.{ 1, 2, 4 }) |a| if (mask & a != 0) return a;
+    return 0;
+}
+
+/// The page's effect mask as the one action AppKit is told: the suggested
+/// one if the page allows it, else its first (0: no drop here).
+fn pickAction(mask: u8, allowed: u8, suggested: u8) u8 {
+    const m = mask & allowed;
+    if (m & suggested != 0) return suggested;
+    return firstAction(m);
+}
+
+fn dragPoint(self: id, info: Object) [2]f32 {
+    const p = info.msgSend(NSPoint, "draggingLocation", .{});
+    const q = (Object{ .value = self }).msgSend(NSPoint, "convertPoint:fromView:", .{ p, cocoa.nil });
+    return .{ @floatCast(q.x), @floatCast(q.y) };
+}
+
+fn dragMods() u32 {
+    return modFlags(cocoa.class("NSEvent").msgSend(c_ulong, "modifierFlags", .{}));
+}
+
+fn draggingEntered(self: id, _: SEL, info_id: id) callconv(.c) c_ulong {
+    const s = by_view.get(key(self)) orelse return 0;
+    const info: Object = .{ .value = info_id };
+    s.drag_session +%= 1;
+    s.drag_inside = true;
+    s.drag_kinds = DragKinds.of(info.msgSend(Object, "draggingPasteboard", .{}));
+    return dragOver(s, self, info, true);
+}
+
+fn draggingUpdated(self: id, _: SEL, info_id: id) callconv(.c) c_ulong {
+    const s = by_view.get(key(self)) orelse return 0;
+    const info: Object = .{ .value = info_id };
+    if (!s.drag_inside) return draggingEntered(self, undefined, info_id);
+    return dragOver(s, self, info, false);
+}
+
+/// "enter" or "over" on the node under the pointer: the page's answer as
+/// AppKit's operation (none when it doesn't take the drag there).
+fn dragOver(s: *Surface, self: id, info: Object, enter: bool) c_ulong {
+    const token = s.token;
+    const p = dragPoint(self, info);
+    const ops = info.msgSend(c_ulong, "draggingSourceOperationMask", .{});
+    const allowed = opsToMask(ops);
+    const suggested = suggestedAction(allowed);
+    const mods = dragMods();
+    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    const gpa = s.gpa; // not read from the surface after the event (it may close)
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"{s}\",{d:.2},{d:.2},{d},{d},{d},{d}", .{ if (enter) "enter" else "over", p[0], p[1], allowed, suggested, mods, s.drag_session }) catch return 0;
+    if (enter) {
+        json.append(gpa, ',') catch return 0;
+        s.drag_kinds.writeItems(gpa, &json) catch return 0;
+    }
+    json.append(gpa, ']') catch return 0;
+    const mask = s.engine.dragEvent(nid, json.items);
+    if (surfaces.get(token) == null) return 0; // the page closed its window
+    s.drag_op = maskToOp(pickAction(mask, allowed, suggested), ops);
+    return s.drag_op;
+}
+
+fn draggingExited(self: id, _: SEL, _: id) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    if (!s.drag_inside) return;
+    s.drag_inside = false;
+    s.drag_op = 0;
+    sendDragLeave(s, s.drag_session);
+}
+
+fn sendDragLeave(s: *Surface, session: u32) void {
+    var buf: [32]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"leave\",{d}]", .{session}) catch return;
+    _ = s.engine.dragEvent(0, json);
+}
+
+fn prepareForDragOperation(self: id, _: SEL, _: id) callconv(.c) cocoa.c.BOOL {
+    const s = by_view.get(key(self)) orelse return cocoa.boolean(false);
+    return cocoa.boolean(s.drag_inside and s.drag_op != 0);
+}
+
+/// The drop: its items read now (AppKit's are synchronous), "drop" on the
+/// node under it, and the page's own answer is AppKit's.
+fn performDragOperation(self: id, _: SEL, info_id: id) callconv(.c) cocoa.c.BOOL {
+    const s = by_view.get(key(self)) orelse return cocoa.boolean(false);
+    if (!s.drag_inside) return cocoa.boolean(false);
+    s.drag_inside = false;
+    const op = s.drag_op;
+    s.drag_op = 0;
+    const session = s.drag_session;
+    if (op == 0) {
+        sendDragLeave(s, session);
+        return cocoa.boolean(false);
+    }
+    const pool = cocoa.objc.AutoreleasePool.init();
+    defer pool.deinit();
+    const info: Object = .{ .value = info_id };
+    const token = s.token;
+    const p = dragPoint(self, info);
+    const allowed = opsToMask(info.msgSend(c_ulong, "draggingSourceOperationMask", .{}));
+    const gpa = s.gpa; // not read from the surface after the event (it may close)
+    var items: DropItems = .{ .gpa = gpa };
+    defer items.deinit();
+    const pb = info.msgSend(Object, "draggingPasteboard", .{});
+    if (s.drag_kinds.files) dropFiles(s, pb, &items) else dropStrings(s.drag_kinds, pb, &items);
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"drop\",{d:.2},{d:.2},{d},{d},{d},{d},[{s}]]", .{ p[0], p[1], allowed, suggestedAction(allowed), dragMods(), session, items.json.items }) catch {
+        items.releaseAll(s);
+        sendDragLeave(s, session);
+        return cocoa.boolean(false);
+    };
+    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    const mask = s.engine.dragEvent(nid, json.items);
+    if (surfaces.get(token) == null) return cocoa.boolean(false);
+    return cocoa.boolean(mask & allowed != 0);
+}
+
+/// A drop's items' JSON (comma-separated) and the handles in it.
+const DropItems = struct {
+    gpa: std.mem.Allocator,
+    json: std.ArrayList(u8) = .empty,
+    count: usize = 0,
+    handles: std.ArrayList(u32) = .empty,
+
+    fn deinit(d: *DropItems) void {
+        d.json.deinit(d.gpa);
+        d.handles.deinit(d.gpa);
+    }
+
+    /// Room for one more item (a comma before it).
+    fn start(d: *DropItems) !bool {
+        if (d.count >= drag_max_items) {
+            if (d.count == drag_max_items) log.warn("native ui: a drop of more than {d} items: the rest left out", .{drag_max_items});
+            d.count = drag_max_items + 1;
+            return false;
+        }
+        if (d.count > 0) try d.json.append(d.gpa, ',');
+        d.count += 1;
+        return true;
+    }
+
+    /// The JSON couldn't be sent: its files are let go.
+    fn releaseAll(d: *DropItems, s: *Surface) void {
+        for (d.handles.items) |h| s.engine.drops.release(h);
+    }
+};
+
+/// Each file URL opened into the engine's table (regular files only):
+/// ["file", mime, name, size, lastModifiedMs, handle]. Only the name
+/// reaches the page, never the path.
+fn dropFiles(s: *Surface, pb: Object, items: *DropItems) void {
+    const urls = fileURLs(pb);
+    const n = urls.msgSend(c_ulong, "count", .{});
+    var i: c_ulong = 0;
+    while (i < n and items.count <= drag_max_items) : (i += 1) {
+        const url = urls.msgSend(Object, "objectAtIndex:", .{i});
+        const path_c = url.msgSend(?[*:0]const u8, "fileSystemRepresentation", .{}) orelse continue;
+        const path = std.mem.span(path_c);
+        const handle = (s.engine.drops.addPath(path) catch |err| {
+            log.warn("native ui: a dropped file: {s}", .{@errorName(err)});
+            continue;
+        }) orelse continue; // not a regular file (a folder)
+        const info = s.engine.drops.info(handle).?;
+        // The name as Finder shows it (composed, as WebKit's File.name), not
+        // the file system's decomposed bytes.
+        const last = url.msgSend(Object, "lastPathComponent", .{});
+        const name = (if (last.value != null) cocoa.utf8(last) else null) orelse std.fs.path.basename(path);
+        const added = fileItem(items, name, info, handle) catch false;
+        if (added) items.handles.append(items.gpa, handle) catch {} else s.engine.drops.release(handle);
+    }
+}
+
+fn fileItem(items: *DropItems, name: []const u8, info: engine_mod.drop.Entry, handle: u32) !bool {
+    if (!try items.start()) return false;
+    try items.json.appendSlice(items.gpa, "[\"file\",");
+    try appendJsonString(items.gpa, &items.json, mimeOf(name));
+    try items.json.append(items.gpa, ',');
+    try appendJsonString(items.gpa, &items.json, name);
+    try items.json.print(items.gpa, ",{d},{d},{d}]", .{ info.size, info.mtimeMs(), handle });
+    return true;
+}
+
+/// A file's MIME type from its extension, as WebKit gives File.type
+/// (UTType's preferred one; "" when unknown).
+fn mimeOf(name: []const u8) []const u8 {
+    const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "";
+    if (dot == 0 or dot + 1 == name.len) return "";
+    // (UniformTypeIdentifiers: loaded with AppKit, but not to be counted on.)
+    const ut = cocoa.objc.getClass("UTType") orelse return "";
+    const ext = cocoa.nsString(name[dot + 1 ..]) orelse return "";
+    defer ext.release();
+    const t = ut.msgSend(Object, "typeWithFilenameExtension:", .{ext});
+    if (t.value == null) return "";
+    const mime = t.msgSend(Object, "preferredMIMEType", .{});
+    if (mime.value == null) return "";
+    return cocoa.utf8(mime) orelse "";
+}
+
+/// The drag's strings: ["string", type, value] each.
+fn dropStrings(kinds: DragKinds, pb: Object, items: *DropItems) void {
+    const types = [_][]const u8{ pb_string, pb_url, pb_html };
+    for (kinds.strings(), types) |mime, t| if (mime) |m| {
+        const str = cocoa.nsString(t) orelse continue;
+        defer str.release();
+        const value = pb.msgSend(Object, "stringForType:", .{str});
+        if (value.value == null) continue;
+        const text = cocoa.utf8(value) orelse continue;
+        if (text.len > drag_max_string) {
+            log.warn("native ui: a dropped {s} over {d} MiB left out", .{ m, drag_max_string >> 20 });
+            continue;
+        }
+        stringItem(items, m, text) catch {};
+    };
+}
+
+fn stringItem(items: *DropItems, mime: []const u8, text: []const u8) !void {
+    if (!try items.start()) return;
+    try items.json.appendSlice(items.gpa, "[\"string\",");
+    try appendJsonString(items.gpa, &items.json, mime);
+    try items.json.append(items.gpa, ',');
+    try appendJsonString(items.gpa, &items.json, text);
+    try items.json.append(items.gpa, ']');
+}
+
+/// `s` as a JSON string (NSString's UTF-8 is valid).
+fn appendJsonString(gpa: std.mem.Allocator, out: *std.ArrayList(u8), str: []const u8) !void {
+    const quoted = try std.json.Stringify.valueAlloc(gpa, str, .{});
+    defer gpa.free(quoted);
+    try out.appendSlice(gpa, quoted);
 }
