@@ -571,8 +571,8 @@ internal class NuiNode(val id: Int, var kind: String) {
         }
 
         /** The default sans (or monospace) font's ascent, descent and line gap at `size` px, in 1/64 px, 21 bits each. */
-        fun fontMetrics(size: Float, mono: Boolean): Long {
-            val m = fontRatios("", mono)
+        fun fontMetrics(size: Float, mono: Boolean, ff: String = ""): Long {
+            val m = fontRatios(ff, mono)
             fun q(v: Float) = (v * size * 64).toLong().coerceIn(0, (1L shl 21) - 1)
             return (q(m[0]) shl 42) or (q(m[1]) shl 21) or q(m[2])
         }
