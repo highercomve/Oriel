@@ -3984,19 +3984,26 @@ input[type="range"] { height: 20px; margin: 2px; }
   var INTRINSIC_WIDTHS = /* @__PURE__ */ new Set(["max-content", "fit-content", "-webkit-fit-content", "-moz-fit-content"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
+  function boxHeight(p) {
+    if (typeof p.h !== "number") return null;
+    if (!p.cb) return p.h;
+    const v = (a, i) => typeof a?.[i] === "number" ? a[i] : 0;
+    return p.h + v(p.pad, 0) + v(p.pad, 2) + v(p.bw, 0) + v(p.bw, 2);
+  }
   function lineHeightPx(v, fs) {
     if (/^[\d.]+$/.test(v)) return parseFloat(v) * fs;
     if (v.endsWith("%")) return parseFloat(v) / 100 * fs;
     return length(v, fs, false) ?? void 0;
   }
   var fontMetricsCache = /* @__PURE__ */ new Map();
-  function lineDescent(cs, fs, host2) {
+  function lineStrut(cs, fs, host2) {
     const mono = /mono/.test(cs["font-family"] || "");
-    const key = `${fs}|${mono}`;
+    const family = familyOf(cs) || "";
+    const key = `${fs}|${mono}|${family}`;
     let m = fontMetricsCache.get(key);
     if (!m) {
       try {
-        m = host2?.fontMetrics?.(fs, mono);
+        m = host2?.fontMetrics?.(fs, mono, family);
       } catch {
         m = null;
       }
@@ -4007,7 +4014,8 @@ input[type="range"] { height: 20px; margin: 2px; }
     const normal = Math.round(ascent) + Math.round(descent) + Math.round(gap);
     const v = cs["line-height"];
     const lh = !v || v === "normal" ? normal : lineHeightPx(v, fs) ?? normal;
-    return Math.max(0, lh / 2 - (ascent - descent) / 2);
+    const above = Math.round(ascent) + Math.floor((lh - Math.round(ascent) - Math.round(descent)) / 2);
+    return [above, Math.max(0, lh - above)];
   }
   var nonZero = (v) => !!v && (/^(thin|medium|thick)$/.test(v) || parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v)));
   function boxedInline(cs) {
@@ -5344,13 +5352,16 @@ input[type="range"] { height: 20px; margin: 2px; }
         }
         if (imageLine && this.imageLine([item], cs, childCtx.rematch) || flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch)) {
           const n2 = nodes.get(cid);
-          const gap = lineDescent(cs, fontSize, this.host);
+          const [above, gap] = lineStrut(cs, fontSize, this.host);
           if (n2 && gap > 0) {
             const m = n2.props.m ? [...n2.props.m] : [0, 0, 0, 0];
+            const h = boxHeight(n2.props);
+            if (h !== null && typeof m[0] === "number" && typeof m[2] === "number") m[0] += Math.max(0, above - (m[0] + h + m[2]));
             if (typeof m[2] === "number") {
               m[2] += gap;
               n2.props = { ...n2.props, m };
             }
+            if (props.fd === "row") n2.props = { ...n2.props, as: "flex-end" };
           }
         }
         if (boxed?.has(item.el)) {
@@ -5516,6 +5527,18 @@ input[type="range"] { height: 20px; margin: 2px; }
       };
       return !inlineFrom(i - 1, -1) && !inlineFrom(i + 1, 1);
     }
+    // An inline-block whose baseline is its bottom margin edge (CSS 2.2
+    // §10.8.1): no line of text in it, or overflow other than visible. In a
+    // line it sits as an image does (imageLine). Controls have their text's.
+    bottomBaseline(el, ccs) {
+      const d = ccs.display || "inline";
+      if (d !== "inline-block" && d !== "inline-flex" && d !== "inline-grid") return false;
+      if (CONTROLS.has(el.localName) || el.localName === "button" || REPLACED.has(el.localName)) return false;
+      const ov = ccs.overflow || ccs["overflow-y"] || ccs["overflow-x"];
+      if (ov && ov !== "visible") return true;
+      if (/\S/.test(el.textContent || "")) return false;
+      return !el.querySelector?.("img, svg, canvas, video, input, textarea, select, button");
+    }
     // Whether the in-flow content is only images on the baseline (imageLine).
     imageLine(flow, cs, rematch) {
       let any = false;
@@ -5525,7 +5548,8 @@ input[type="range"] { height: 20px; margin: 2px; }
         if (ccs.position === "absolute" || ccs.position === "fixed" || (ccs.display || "inline") === "none") continue;
         const d = ccs.display || "inline";
         const va = ccs["vertical-align"];
-        if (!REPLACED.has(f.el.localName) || d !== "inline" && d !== "inline-block" || va && va !== "baseline") return false;
+        const replaced = REPLACED.has(f.el.localName) && (d === "inline" || d === "inline-block");
+        if (!replaced && !this.bottomBaseline(f.el, ccs) || va && va !== "baseline") return false;
         any = true;
       }
       return any;
