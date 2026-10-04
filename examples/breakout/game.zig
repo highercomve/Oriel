@@ -21,6 +21,8 @@ const row_colors = [_]canvas.Color{
 const max_particles = 1500;
 const paddle_speed = 900; // px/s with the keys
 const paddle_follow = 2400; // px/s at most toward a pointer
+// Match physics.js: collision substeps must not grow forever in autoplay.
+const max_speed_multiplier: f32 = 3;
 const max_cols = 16;
 const max_rows = 12;
 
@@ -81,7 +83,7 @@ pub const World = struct {
     /// The ball speed for the world's size and level (px/s).
     fn ballSpeed(world: *const World) f32 {
         const base = @min(720, @max(320, world.h * 0.8));
-        return base * (1 + 0.08 * @as(f32, @floatFromInt(world.level - 1)));
+        return base * @min(max_speed_multiplier, 1 + 0.08 * @as(f32, @floatFromInt(world.level - 1)));
     }
 
     fn brickGeometry(world: *World) void {
@@ -509,7 +511,9 @@ pub const Game = struct {
             if (g.settings.autoplay or demo) {
                 var all_stuck = g.world.balls.items.len > 0;
                 for (g.world.balls.items) |b| all_stuck = all_stuck and b.stuck;
-                if (all_stuck) _ = g.world.launch(if (demo) g.settings.demo else g.settings.balls) catch {};
+                // Demo chooses the initial setting; later slider edits use
+                // the current count, as the page's JS mode does.
+                if (all_stuck) _ = g.world.launch(g.settings.balls) catch {};
             }
             if (ev.broken > 0 or ev.lost or ev.cleared or g.world.over) g.sendState();
         }
@@ -666,4 +670,16 @@ test "the rules: a launched ball breaks bricks and the score goes up" {
     }
     try std.testing.expect(broken > 0);
     try std.testing.expect(world.score > 0);
+}
+
+test "extended autoplay keeps ball speed bounded" {
+    var world = try World.init(std.testing.allocator, 412, 850, 12, 1);
+    defer world.deinit();
+    const base = world.ballSpeed();
+    world.level = 2;
+    try std.testing.expectApproxEqAbs(base * 1.08, world.ballSpeed(), 0.001);
+    for ([_]u32{ 26, 100, 4000, 39222, std.math.maxInt(u32) }) |level| {
+        world.level = level;
+        try std.testing.expectEqual(base * max_speed_multiplier, world.ballSpeed());
+    }
 }

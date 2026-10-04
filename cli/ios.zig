@@ -1,9 +1,9 @@
 //! `oriel ios`: build an Oriel app for iOS and put it on a device.
 //!
-//!     oriel ios build [--simulator] [--ipa]
+//!     oriel ios build [--simulator] [--ipa] [-Doption[=value]...]
 //!         The release app: zig-out/ios/<Name>.app (and zig-out/<Name>.ipa
 //!         with --ipa), for a device (arm64) or the simulator.
-//!     oriel ios dev [--simulator] [--url http://<LAN address>:5173/]
+//!     oriel ios dev [--simulator] [--url http://<LAN address>:5173/] [-Doption[=value]...]
 //!         The dev build (loading the dev server) installed and started:
 //!         on the simulator with `xcrun simctl` (a Mac), on a device with
 //!         `xtool install` (Linux or a Mac). Run the frontend's dev server
@@ -21,6 +21,7 @@
 const std = @import("std");
 const Context = @import("Context.zig");
 const project = @import("project.zig");
+const build_options = @import("build_options.zig");
 const zig_manager = @import("zig_manager.zig");
 const tools = @import("ios_tools.zig");
 
@@ -28,11 +29,14 @@ pub const Command = struct {
     pub const summary = "Build the app for iOS and install it (build, dev, install, setup)";
     pub const forward = "args";
     pub const details =
-        \\  oriel ios build [--simulator] [--ipa]          zig-out/ios/<Name>.app (and .ipa)
-        \\  oriel ios dev [--simulator] [--url URL]        dev build, installed and started
+        \\  oriel ios build [--simulator] [--ipa] [-Doption[=value]...]
+        \\                                                 zig-out/ios/<Name>.app (and .ipa)
+        \\  oriel ios dev [--simulator] [--url URL] [-Doption[=value]...]
+        \\                                                 dev build, installed and started
         \\  oriel ios install [--simulator] [--dev]        install the last build
         \\  oriel ios setup                                set up the iOS SDK and xtool
         \\
+        \\dev/build forward Zig -D options, e.g. -Dnative_ui or -Doptimize=ReleaseFast.
         \\Needs the iOS SDK ($APPLE_SDK, Xcode's on a Mac, `xtool setup` on Linux), and
         \\xtool (a device) or Xcode's simctl (the simulator). What's missing is offered
         \\for download or setup, asking first; --yes accepts. See docs/ios.md.
@@ -49,11 +53,17 @@ const Options = struct {
     yes: bool = false,
 };
 
-fn parse(ctx: Context, args: []const []const u8, allowed: []const []const u8) ?Options {
+fn parse(ctx: Context, args: []const []const u8, allowed: []const []const u8, forwarded: ?*std.ArrayList([]const u8)) !?Options {
     var o: Options = .{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const a = args[i];
+        if (forwarded) |options| {
+            if (build_options.isOption(a)) {
+                try options.append(ctx.gpa, a);
+                continue;
+            }
+        }
         const ok = std.mem.eql(u8, a, "--yes") or std.mem.eql(u8, a, "-y") or for (allowed) |name| {
             if (std.mem.eql(u8, a, name)) break true;
         } else false;
@@ -75,6 +85,25 @@ fn parse(ctx: Context, args: []const []const u8, allowed: []const []const u8) ?O
         }
     }
     return o;
+}
+
+test "parse mixes iOS options with forwarded Zig options" {
+    const gpa = std.testing.allocator;
+    var env: std.process.Environ.Map = .init(gpa);
+    defer env.deinit();
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    const ctx: Context = .{ .gpa = gpa, .io = std.testing.io, .environ = &env, .out = &discard.writer, .err = &discard.writer };
+    var forwarded: std.ArrayList([]const u8) = .empty;
+    defer forwarded.deinit(gpa);
+    const o = (try parse(ctx, &.{ "-Dnative_ui", "--simulator", "--url", "http://host:5173/", "-Dnative_dom=false", "--yes" }, &.{ "--simulator", "--url" }, &forwarded)).?;
+    try std.testing.expect(o.simulator and o.yes);
+    try std.testing.expectEqualStrings("http://host:5173/", o.url.?);
+    try std.testing.expectEqual(@as(usize, 2), forwarded.items.len);
+    try std.testing.expectEqualStrings("-Dnative_ui", forwarded.items[0]);
+    try std.testing.expectEqualStrings("-Dnative_dom=false", forwarded.items[1]);
+    // Installation and setup do not build anything and still reject -D options.
+    try std.testing.expectEqual(null, try parse(ctx, &.{"-Dnative_ui"}, &.{}, null));
+    try std.testing.expectEqual(null, try parse(ctx, &.{"--unknown"}, &.{}, &forwarded));
 }
 
 /// The simulator's architecture is the Mac's.
@@ -106,7 +135,7 @@ pub fn runCommand(ctx: Context, cmd: Command) !u8 {
     const zig = resolved.path;
 
     if (std.mem.eql(u8, sub, "setup")) {
-        const o = parse(ctx, rest, &.{}) orelse return 1;
+        const o = try parse(ctx, rest, &.{}, null) orelse return 1;
         const sdk = try tools.ensureSdk(ctx, .device, o.yes) orelse return 1;
         defer ctx.gpa.free(sdk);
         try ctx.out.print("iOS SDK: {s}\n", .{sdk});
@@ -119,21 +148,33 @@ pub fn runCommand(ctx: Context, cmd: Command) !u8 {
         return 0;
     }
     if (std.mem.eql(u8, sub, "build")) {
-        const o = parse(ctx, rest, &.{ "--simulator", "--ipa" }) orelse return 1;
-        const sdk_arg = try sdkArg(ctx, o) orelse return 1;
-        defer ctx.gpa.free(sdk_arg);
-        if (!run(ctx, &.{ zig, "build", targetArg(o.simulator), sdk_arg, "-Doptimize=ReleaseSafe" }, root)) return 1;
-        if (o.ipa and !run(ctx, &.{ zig, "build", "ios-ipa", targetArg(o.simulator), sdk_arg, "-Doptimize=ReleaseSafe" }, root)) return 1;
-        try ctx.out.print("built zig-out/ios/{s}\n", .{if (o.ipa) "<Name>.app and zig-out/<Name>.ipa" else "<Name>.app"});
-        return 0;
-    }
-    if (std.mem.eql(u8, sub, "dev")) {
-        const o = parse(ctx, rest, &.{ "--simulator", "--url" }) orelse return 1;
+        var forwarded: std.ArrayList([]const u8) = .empty;
+        defer forwarded.deinit(ctx.gpa);
+        const o = try parse(ctx, rest, &.{ "--simulator", "--ipa" }, &forwarded) orelse return 1;
         const sdk_arg = try sdkArg(ctx, o) orelse return 1;
         defer ctx.gpa.free(sdk_arg);
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(ctx.gpa);
-        try argv.appendSlice(ctx.gpa, &.{ zig, "build", "ios-dev", targetArg(o.simulator), sdk_arg });
+        try argv.appendSlice(ctx.gpa, &.{ zig, "build" });
+        try build_options.append(ctx.gpa, &argv, &.{ targetArg(o.simulator), sdk_arg, "-Doptimize=ReleaseSafe" }, forwarded.items);
+        if (!run(ctx, argv.items, root)) return 1;
+        if (o.ipa) {
+            try argv.insert(ctx.gpa, 2, "ios-ipa");
+            if (!run(ctx, argv.items, root)) return 1;
+        }
+        try ctx.out.print("built zig-out/ios/{s}\n", .{if (o.ipa) "<Name>.app and zig-out/<Name>.ipa" else "<Name>.app"});
+        return 0;
+    }
+    if (std.mem.eql(u8, sub, "dev")) {
+        var forwarded: std.ArrayList([]const u8) = .empty;
+        defer forwarded.deinit(ctx.gpa);
+        const o = try parse(ctx, rest, &.{ "--simulator", "--url" }, &forwarded) orelse return 1;
+        const sdk_arg = try sdkArg(ctx, o) orelse return 1;
+        defer ctx.gpa.free(sdk_arg);
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(ctx.gpa);
+        try argv.appendSlice(ctx.gpa, &.{ zig, "build", "ios-dev" });
+        try build_options.append(ctx.gpa, &argv, &.{ targetArg(o.simulator), sdk_arg }, forwarded.items);
         const url_arg = if (o.url) |u| try std.fmt.allocPrint(ctx.gpa, "-Dios_dev_url={s}", .{u}) else null;
         defer if (url_arg) |a| ctx.gpa.free(a);
         if (url_arg) |a| try argv.append(ctx.gpa, a);
@@ -143,7 +184,7 @@ pub fn runCommand(ctx: Context, cmd: Command) !u8 {
         return install(ctx, root, o.simulator, true, true, o.yes);
     }
     if (std.mem.eql(u8, sub, "install")) {
-        const o = parse(ctx, rest, &.{ "--simulator", "--dev" }) orelse return 1;
+        const o = try parse(ctx, rest, &.{ "--simulator", "--dev" }, null) orelse return 1;
         return install(ctx, root, o.simulator, o.dev, false, o.yes);
     }
     try ctx.err.print("error: unknown subcommand 'ios {s}' (build, dev, install, setup)\n", .{sub});

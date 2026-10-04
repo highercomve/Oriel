@@ -35,6 +35,12 @@ lives lost, and logs a line every 2 s (`breakout: fps …`). On the simulator:
 dev.oriel.Breakout`. `-Dnative_ui_prof` adds the native renderer's stage
 timings.
 
+Speed increases with levels up to three times the base speed, keeping
+collision substeps bounded during extended autoplay. Both modes use the
+current balls setting after slider edits; the demo sets its initial value.
+Check the physics rules with `node test/physics.test.mjs` and
+`zig build test-game -Dnative_ui`.
+
 `BREAKOUT_MODE=zig` (native renderer) runs the demo in the Zig mode; its
 lines end in `mode zig` (the page's, `mode js`).
 

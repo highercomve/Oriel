@@ -251,7 +251,12 @@ pub const Commands = struct {
 
     /// The results as JSON: printed on stdout; in bench mode the app quits.
     pub fn report(_: std.mem.Allocator, args: struct { json: []const u8 }) void {
-        std.debug.print("{s}\n", .{args.json});
+        if (@import("builtin").abi.isAndroid()) {
+            // Android apps have no terminal stderr; keep the report in logcat.
+            oriel.log.logFn(.info, .render_bench, "{s}", .{args.json});
+        } else {
+            std.debug.print("{s}\n", .{args.json});
+        }
         if (bench_mode) oriel.App.quit(0);
     }
 };

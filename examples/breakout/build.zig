@@ -31,4 +31,11 @@ pub fn build(b: *std.Build) void {
             .version = "0.1.0",
         },
     });
+    const game_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("game.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+        .imports = &.{.{ .name = "oriel", .module = dep.module("oriel") }},
+    }) });
+    b.step("test-game", "Check Breakout's Zig physics rules").dependOn(&b.addRunArtifact(game_tests).step);
 }

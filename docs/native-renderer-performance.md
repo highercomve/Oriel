@@ -1,5 +1,49 @@
 # Native renderer performance: findings and next changes
 
+## Current priorities after callback tuning, 2026-10-04
+
+The typed QuickJS dispatch pass reduced isolated callback overhead but did
+not establish an end-to-end win in render-bench or the 500-ball JS game.
+On a diagnostic 12-second desktop Breakout run, native painting had a
+2.68 ms median, the page call 1.79 ms, and layout 0.02 ms. Profiling adds
+overhead, game states are unseeded, and stage medians must not be added as
+one representative frame. They identify where to investigate next.
+
+Android now retains requested display frames while hidden or detached,
+removes the posted Choreographer callback, and resumes it on visibility
+or reattachment. Render-bench on the Android 35 x86_64 emulator advanced
+its trace counter by 480 during eight hidden seconds before the change,
+and zero after it; both resumed drawing. Timers and services retain their
+existing behavior. This establishes eliminated background frame work,
+not a whole-device energy reduction.
+
+Next experiments, each requiring a new before/after comparison:
+
+1. **Canvas recording and command storage.** Profile recorder writes,
+   native decoding and Android unpacking separately. The Android hardware
+   path already draws directly to the GPU; adding hardware acceleration
+   again would not help. It still creates a `CvOp` object per command and
+   a new `Replay` with paths, matrices, paints and arrays for each replay.
+   Reusable bounded command storage and replay state could reduce GC and
+   per-frame allocation. A native recorder for hot 2d methods could also
+   replace interpreted numeric-buffer writes, while retaining normal
+   canvas semantics and the JavaScript implementation as fallback.
+2. **Retained painting and batched shapes.** GTK replays each canvas
+   program even when an unrelated page edit caused the repaint, and its
+   circle-mask fast path covers only a lone circle. Breakout groups 16
+   circles in each path. Measure retained raster/display-list caching and
+   a batch fast path with correct overlap, alpha, clipping and fill rules.
+   Android's existing circle batching is a useful comparison. Reuse static
+   content without changing canvas persistence or transparent compositing.
+3. **Explicit lazy lists.** Large feeds need a model-backed visible-row
+   list with reuse (RecyclerView or equivalent), rather than allocating
+   and laying out every row. Preserve the full-DOM benchmark and its
+   synchronous geometry guarantees; this is an additional application API,
+   not an invisible replacement for ordinary HTML lists.
+
+[Full desktop comparison](../examples/render-bench/results/2026-10-04-native-dispatch-desktop.json),
+[background scheduling checks and diagnostic stage timings](../examples/render-bench/results/2026-10-04-android-background-frames.json).
+
 The target is to beat the WebView on the same page, including synchronous
 layout reads. Being native does not by itself achieve that: Oriel currently
 runs its DOM, CSS matching, flattening and diff in interpreted JavaScript

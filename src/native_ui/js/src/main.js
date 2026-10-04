@@ -1579,8 +1579,14 @@ g.__oriel = {
     guard(() => {
       const t = timers.get(id);
       if (!t) return;
-      if (t.repeat) host.timer(id, t.ms); else timers.delete(id);
-      t.fn(...(t.args || []));
+      const started = t.repeat ? performance.now() : 0;
+      if (!t.repeat) timers.delete(id);
+      try { t.fn(...(t.args || [])); }
+      finally {
+        // A repeating callback can clear itself. Avoid posting a native
+        // timeout that would wake the app only to find a canceled timer.
+        if (t.repeat && timers.get(id) === t) host.timer(id, Math.max(0, t.ms - (performance.now() - started)));
+      }
     });
   },
   resolve(id, ok, json) {

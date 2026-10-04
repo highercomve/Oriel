@@ -60,6 +60,9 @@ export fn oriel_nui_stamp_plan(p: *anyopaque, v: [*]const f64, len: usize) u32 {
 
 extern fn oqjs_new(opaque_ptr: *anyopaque, platform_json: [*:0]const u8, label: [*:0]const u8, url: [*:0]const u8) ?*anyopaque;
 extern fn oqjs_eval(h: *anyopaque, code: [*]const u8, len: usize, name: [*:0]const u8) c_int;
+extern fn oqjs_event(h: *anyopaque, id: i64, kind: [*]const u8, kind_len: usize, json: [*]const u8, json_len: usize) c_int;
+extern fn oqjs_number_call(h: *anyopaque, name: [*:0]const u8, value: f64) c_int;
+extern fn oqjs_render(h: *anyopaque) c_int;
 extern fn oqjs_eval_bytecode(h: *anyopaque, code: [*]const u8, len: usize) c_int;
 extern fn oqjs_run_jobs(h: *anyopaque) void;
 extern fn oqjs_memory(h: *anyopaque) usize;
@@ -261,7 +264,10 @@ pub const Engine = struct {
 
     /// A native event on a node. True when the page prevented the default.
     pub fn event(e: *Engine, id: i64, kind: []const u8, data_json: []const u8) bool {
-        return e.callf("__oriel.event({d},\"{s}\",{s})", .{ id, kind, data_json });
+        e.in_call += 1;
+        const t0 = prof.now();
+        const r = oqjs_event(e.js, id, kind.ptr, kind.len, data_json.ptr, data_json.len);
+        return e.finishDispatch(r, t0, kind);
     }
 
     /// A JSON message for the page (Android's events), see `__oriel.message`.
@@ -271,11 +277,11 @@ pub const Engine = struct {
 
     /// The system back button: true when the page went back.
     pub fn back(e: *Engine) bool {
-        return e.callf("__oriel.event(0,\"back\",null)", .{});
+        return e.event(0, "back", "null");
     }
 
     pub fn timerFired(e: *Engine, id: u32) void {
-        _ = e.callf("__oriel.timer({d})", .{id});
+        _ = e.callNumber("timer", @floatFromInt(id));
     }
 
     /// The display refreshes (`Backend.request_display_frame`): the page's
@@ -300,7 +306,7 @@ pub const Engine = struct {
         if (e.frame_hooks.items.len > 0) e.requestDisplayFrame();
         if (e.js_frame_wanted) {
             e.js_frame_wanted = false;
-            _ = e.callf("__oriel.vsync({d:.3})", .{interval_ms});
+            _ = e.callNumber("vsync", interval_ms);
         } else if (e.in_call == 0) {
             // Only Zig drew: show it without a JS render.
             e.paintNow();
@@ -430,6 +436,21 @@ pub const Engine = struct {
         return r == 1;
     }
 
+    fn callNumber(e: *Engine, name: [:0]const u8, value: f64) bool {
+        e.in_call += 1;
+        const t0 = prof.now();
+        return e.finishDispatch(oqjs_number_call(e.js, name.ptr, value), t0, name);
+    }
+
+    /// Direct calls keep the same nesting, microtask and rendering semantics.
+    fn finishDispatch(e: *Engine, result: c_int, started: f64, name: []const u8) bool {
+        if (e.in_call == 1) prof.report("call {d:.2} {s}", .{ prof.now() - started, name });
+        e.in_call -= 1;
+        if (result < 0) log.err("native ui: in {s}", .{name});
+        if (e.in_call == 0) e.settle();
+        return result == 1;
+    }
+
     /// After JS ran: microtasks, then the page's render and layout, now or
     /// (`Backend.request_frame`) at the next frame.
     fn settle(e: *Engine) void {
@@ -459,9 +480,8 @@ pub const Engine = struct {
             e.renders += 1;
             if (e.renders % 20 == 0) log.info("native ui mem: render {d}, JS heap {d} KB, {d} nodes", .{ e.renders, e.jsMemory() / 1024, e.tree.nodes.count() });
         }
-        const render = "__oriel.render()";
         e.in_call += 1;
-        _ = oqjs_eval(e.js, render, render.len, "<render>");
+        _ = oqjs_render(e.js);
         e.in_call -= 1;
         oqjs_run_jobs(e.js);
         if (e.tree.needsLayout()) {
