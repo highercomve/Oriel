@@ -88,6 +88,8 @@ internal class OrielWindow(
     /** Messages posted before the document said hello. */
     private val queued = ArrayDeque<String>()
     var fullscreen = false
+    /** The page's theme-color (ARGB), null when it has none: the task's colour (the caption on ChromeOS). */
+    var themeColor: Int? = null
     var maximized = false
     /** The page's size in CSS px (dp), updated on layout. */
     var cssWidth = 0
@@ -188,7 +190,7 @@ internal class OrielWindow(
         context.baseContext = host
         (content.parent as? ViewGroup)?.removeView(content)
         host.setContent(content)
-        host.applyTitle(title)
+        host.applyTitle(title, themeColor)
         host.applyFullscreen(fullscreen)
     }
 

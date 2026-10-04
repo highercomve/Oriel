@@ -146,10 +146,34 @@ open class OrielActivity : Activity() {
         view.requestFocus(View.FOCUS_DOWN)
     }
 
-    internal fun applyTitle(title: String) {
+    /**
+     * The window's title and the page's theme-color as its task description:
+     * ChromeOS paints the window's caption in that colour, as Chrome does an
+     * installed web app's. A task colour must be opaque (a translucent one
+     * is made so); on Android 15+ the caption's icons follow its lightness.
+     */
+    /** The status bar's colour before the page's theme-color first replaced it. */
+    private var themeStatusBar: Int? = null
+
+    internal fun applyTitle(title: String, themeColor: Int?) {
         setTitle(title)
+        val color = themeColor?.let { it or (0xff shl 24) } ?: 0
         @Suppress("DEPRECATION")
-        setTaskDescription(ActivityManager.TaskDescription(title))
+        setTaskDescription(ActivityManager.TaskDescription(title, null, color))
+        // ChromeOS paints an Android window's caption with its status bar's
+        // colour: the theme's own comes back when the page drops its colour.
+        @Suppress("DEPRECATION")
+        run {
+            val base = themeStatusBar ?: window.statusBarColor.also { themeStatusBar = it }
+            window.statusBarColor = if (themeColor != null) color else base
+        }
+        if (Build.VERSION.SDK_INT >= 35) {
+            val light = themeColor != null && android.graphics.Color.luminance(color) > 0.5f
+            window.insetsController?.setSystemBarsAppearance(
+                if (light) WindowInsetsController.APPEARANCE_LIGHT_CAPTION_BARS else 0,
+                WindowInsetsController.APPEARANCE_LIGHT_CAPTION_BARS,
+            )
+        }
     }
 
     internal fun applyFullscreen(on: Boolean) {
