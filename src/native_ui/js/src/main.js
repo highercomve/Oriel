@@ -1178,6 +1178,7 @@ const FORWARDED = new Set(["mousedown", "mouseup", "pointerdown", "pointerup"]);
 // The buttons each pointer held after its last event: a press or release
 // changes one bit, which is the event's `button` (backends send only buttons).
 const heldButtons = new Map(); // pointerId → buttons
+const blankPress = new Map(); // pointerId → went down on blank space with the primary button
 let lastPointerType = "mouse";
 // `buttons` bit → MouseEvent.button: primary 0, secondary 2, auxiliary 1, back 3, forward 4.
 const BUTTON_OF_BIT = [[1, 0], [2, 2], [4, 1], [8, 3], [16, 4]];
@@ -1206,7 +1207,10 @@ function pointerEvent(el, data) {
   if (!names) return false;
   lastPointer = [x, y];
   let target = captured.get(pointerId);
-  if (phase === "down" || !target?.isConnected) target = el || document.body;
+  // Nothing under the pointer (blank space below the content): the root
+  // element, as in a browser.
+  if (phase === "down" || !target?.isConnected) target = el || document.documentElement || document.body;
+  if (phase === "down") blankPress.set(pointerId, !el && buttons === 1);
   if (phase === "down") captured.set(pointerId, target);
   else if (phase === "up" || phase === "cancel") captured.delete(pointerId);
   const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
@@ -1228,6 +1232,13 @@ function pointerEvent(el, data) {
     // A non-primary button's release: auxclick (the primary's click comes
     // from the backend as "click").
     if (phase === "up" && button > 0) fire(new MouseEvent("auxclick", { ...init, cancelable: true }));
+  }
+  // A primary press and release on blank space: a click on the root element
+  // (backends send clicks only for nodes they hit).
+  if (phase === "up" || phase === "cancel") {
+    const blank = blankPress.get(pointerId) && !el && phase === "up" && button === 0;
+    blankPress.delete(pointerId);
+    if (blank) activate(document.documentElement, flags);
   }
   if (phase === "down" && !prevented) {
     if (pointerType === "touch") tapFocus = target;
