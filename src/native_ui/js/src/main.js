@@ -19,7 +19,7 @@
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules } from "./css.js";
-import { Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
+import { snapBorder, Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
 // The runtime's own weak caches keyed by nodes: marked so their entries
 // don't keep a node's wrapper from being replaced (a page's weak
@@ -473,29 +473,33 @@ const frameOf = (el) => {
   if (!renderer.rendering) renderer.render();
   return host.frame(renderer.idOf(el, "el")) || [0, 0, 0, 0];
 };
-// An element's border widths (top, right, bottom, left), for its client box.
+// An element's border widths (top, right, bottom, left), for its client
+// box: as the box has them, snapped to device pixels (render.js snapBorder).
 function borderOf(el) {
   const cs = renderer?.styleOf?.(el);
   if (!cs) return [0, 0, 0, 0];
-  return ["top", "right", "bottom", "left"].map((s) => {
-    const style = cs[`border-${s}-style`];
-    if (!style || style === "none" || style === "hidden") return 0;
-    const w = cs[`border-${s}-width`] ?? "medium";
-    return ({ thin: 1, medium: 3, thick: 5 })[w] ?? (parseFloat(w) || 0);
-  });
+  return ["top", "right", "bottom", "left"].map((s) => borderWidth(cs, s));
 }
+function borderWidth(cs, side) {
+  const style = cs[`border-${side}-style`];
+  if (!style || style === "none" || style === "hidden") return 0;
+  const w = cs[`border-${side}-width`] ?? "medium";
+  return snapBorder(({ thin: 1, medium: 3, thick: 5 })[w] ?? (parseFloat(w) || 0));
+}
+const BORDER_WIDTH = /^border-(top|right|bottom|left)-width$/;
 Object.defineProperties(elProto, {
   offsetWidth: { get() { return frameOf(this)[2]; }, configurable: true },
   offsetHeight: { get() { return frameOf(this)[3]; }, configurable: true },
   // The root element's client box is the viewport (innerWidth less the
   // window's scrollbar), as in browsers; a scroller's leaves its
-  // scrollbar's room out (the frame's sixth value).
+  // scrollbar's room out (the frame's sixth value). Whole px, as browsers
+  // give them (a box 20px wide in a 1/3px border at 3x: 20).
   clientWidth: {
     get() {
       if (this === document.documentElement) return viewport.width - ((renderer && host.frame(-1)?.[5]) || 0);
       const f = frameOf(this);
       const b = borderOf(this);
-      return Math.max(0, f[2] - b[1] - b[3] - (f[5] || 0));
+      return Math.max(0, Math.round(f[2] - b[1] - b[3] - (f[5] || 0)));
     },
     configurable: true,
   },
@@ -504,7 +508,7 @@ Object.defineProperties(elProto, {
     get() {
       if (this === document.documentElement) return viewport.height;
       const b = borderOf(this);
-      return Math.max(0, frameOf(this)[3] - b[0] - b[2]);
+      return Math.max(0, Math.round(frameOf(this)[3] - b[0] - b[2]));
     },
     configurable: true,
   },
@@ -747,9 +751,12 @@ Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
 // density), 1 without one; resolution media queries ask the same.
 viewport.dpr = platform.dpr > 0 ? +platform.dpr : 1;
 Object.defineProperty(g, "devicePixelRatio", { get: () => viewport.dpr, configurable: true });
+// (A border width as the box has it: snapped, in px, as WebKit's
+// "0.333333px".)
 g.getComputedStyle = (el) => {
   const cs = renderer?.styleOf(el) || {};
-  return new Proxy({}, { get: (_, k) => (k === "getPropertyValue" ? (p) => cs[p] ?? "" : cs[String(k).replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())] ?? "") });
+  const value = (p) => { const m = BORDER_WIDTH.exec(p); return m && renderer ? `${+borderWidth(cs, m[1]).toFixed(6)}px` : cs[p] ?? ""; };
+  return new Proxy({}, { get: (_, k) => (k === "getPropertyValue" ? value : value(String(k).replace(/[A-Z]/g, (c) => "-" + c.toLowerCase()))) });
 };
 g.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
 g.IntersectionObserver ??= class { observe() {} unobserve() {} disconnect() {} };
