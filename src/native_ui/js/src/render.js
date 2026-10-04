@@ -1765,6 +1765,10 @@ export class Renderer {
     const after = this.pseudo(el, cs, "after", nodes);
     if (after) { kids.push(after); inLine?.add(after); }
     if (flowBlock) collapseMargins(nodes, kids, inLine, props, display, ctx);
+    // A fieldset's legend (UA_CSS: up in the top border): the backend
+    // breaks the border around it (Props.lgd), as browsers draw it.
+    if (el.localName === "fieldset" && el.firstElementChild?.localName === "legend" && kids.length &&
+        this.idOf(el.firstElementChild, "el") === kids[before ? 1 : 0]) props.lgd = true;
     // CSS order: flex/grid items laid out by it, then by source order.
     if (orders && childCtx.blockify) {
       const pos = new Map(kids.map((k, i) => [k, i]));
