@@ -2714,11 +2714,105 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         return LinearGradient(x0, y0, x0 + dx * end, y0 + dy * end, st.colors, st.pos, mode)
     }
 
+    /**
+     * border-style: dashed or dotted, as Chrome draws them. A rounded border
+     * of one width and colour: one pattern along its whole rounded line.
+     * Otherwise each side on its own, corner to corner (a dash or dot at each
+     * corner), clipped to its wedge where colours meet. Dashes are 2 × the
+     * width (3 × below 3 px) with gaps about the width (twice below 3 px),
+     * evened out to fit; dots are round from 3 px (square below), as many as
+     * fit about two widths apart.
+     */
+    private fun dashedBorder(canvas: Canvas, dotted: Boolean, x: Float, y: Float, w: Float, h: Float, r: FloatArray?, bw: FloatArray, colors: IntArray, oneColor: Boolean) {
+        stroke.strokeJoin = Paint.Join.MITER
+        val uniform = bw[0] == bw[1] && bw[1] == bw[2] && bw[2] == bw[3]
+        val rounded = r != null && r.any { it > 0 }
+        if (rounded && uniform && oneColor) {
+            val t = bw[0]
+            roundRect(x + t / 2, y + t / 2, w - t, h - t, shrunk(r, t / 2))
+            val len = android.graphics.PathMeasure(path, true).length
+            stroke.color = colors[0]
+            stroke.strokeWidth = t
+            setDashes(dotted, t, len, closed = true)
+            canvas.drawPath(path, stroke)
+            stroke.pathEffect = null
+            stroke.strokeCap = Paint.Cap.BUTT
+            return
+        }
+        // Each side's line along its middle, from outer corner to outer corner.
+        val lines = arrayOf(
+            floatArrayOf(x, y + bw[0] / 2, x + w, y + bw[0] / 2),
+            floatArrayOf(x + w - bw[1] / 2, y, x + w - bw[1] / 2, y + h),
+            floatArrayOf(x + w, y + h - bw[2] / 2, x, y + h - bw[2] / 2),
+            floatArrayOf(x + bw[3] / 2, y + h, x + bw[3] / 2, y),
+        )
+        for (i in 0 until 4) {
+            val t = bw[i]
+            if (t <= 0 || Color.alpha(colors[i]) == 0) continue
+            val l = lines[i]
+            canvas.save()
+            if (!oneColor || !uniform) canvas.clipPath(sideWedge(i, x, y, w, h, bw))
+            stroke.color = colors[i]
+            stroke.strokeWidth = t
+            setDashes(dotted, t, abs(l[2] - l[0]) + abs(l[3] - l[1]), closed = false)
+            canvas.drawLine(l[0], l[1], l[2], l[3], stroke)
+            canvas.restore()
+        }
+        stroke.pathEffect = null
+        stroke.strokeCap = Paint.Cap.BUTT
+    }
+
+    /** `stroke`'s dashes for a line `len` long and `t` wide (closed: a loop, no dash at an end to match). */
+    private fun setDashes(dotted: Boolean, t: Float, len: Float, closed: Boolean) {
+        if (dotted && t >= 3) {
+            // Round dots, centred a dot's width in from each end.
+            stroke.strokeCap = Paint.Cap.ROUND
+            val span = if (closed) len else max(0f, len - t)
+            val n = max(if (closed) 1 else 2, Math.round(span / (2 * t)) + if (closed) 0 else 1)
+            val period = if (closed) span / n else span / max(1, n - 1)
+            stroke.pathEffect = android.graphics.DashPathEffect(floatArrayOf(0.001f, max(0.01f, period - 0.001f)), if (closed) 0f else -t / 2)
+            return
+        }
+        stroke.strokeCap = Paint.Cap.BUTT
+        val d = if (dotted) t else if (t >= 3) 2 * t else 3 * t
+        val g0 = if (dotted) t else if (t >= 3) t else 2 * t
+        if (len <= d) { stroke.pathEffect = null; return }
+        // As many dashes as fit, the gaps evened so both ends are dashes.
+        val n = max(if (closed) 1 else 2, Math.round((len + if (closed) 0f else g0) / (d + g0)))
+        val gap = if (closed) len / n - d else (len - n * d) / max(1, n - 1)
+        stroke.pathEffect = if (gap > 0) android.graphics.DashPathEffect(floatArrayOf(d, gap), 0f) else null
+    }
+
+    /** Side `i`'s wedge of the border box: its outer edge, to the joins through the inner corners, to the middle. */
+    private fun sideWedge(i: Int, x: Float, y: Float, w: Float, h: Float, bw: FloatArray): Path {
+        val ix = x + bw[3]; val iy = y + bw[0]
+        val iw = max(0f, w - bw[1] - bw[3]); val ih = max(0f, h - bw[0] - bw[2])
+        val outer = arrayOf(floatArrayOf(x, y), floatArrayOf(x + w, y), floatArrayOf(x + w, y + h), floatArrayOf(x, y + h))
+        val inner = arrayOf(floatArrayOf(ix, iy), floatArrayOf(ix + iw, iy), floatArrayOf(ix + iw, iy + ih), floatArrayOf(ix, iy + ih))
+        val mx = ix + iw / 2; val my = iy + ih / 2
+        fun join(k: Int): FloatArray {
+            val dx = inner[k][0] - outer[k][0]; val dy = inner[k][1] - outer[k][1]
+            var t = Float.MAX_VALUE
+            if (dx != 0f) t = min(t, (mx - outer[k][0]) / dx)
+            if (dy != 0f) t = min(t, (my - outer[k][1]) / dy)
+            if (dx == 0f && dy == 0f) t = 0f
+            return floatArrayOf(outer[k][0] + max(0f, t) * dx, outer[k][1] + max(0f, t) * dy)
+        }
+        val j = (i + 1) % 4
+        val a = join(i); val b = join(j)
+        return Path().apply {
+            moveTo(outer[i][0], outer[i][1]); lineTo(outer[j][0], outer[j][1])
+            lineTo(b[0], b[1]); lineTo(mx, my); lineTo(a[0], a[1]); close()
+        }
+    }
+
     private fun border(canvas: Canvas, n: NuiNode, bw: FloatArray, x: Float, y: Float, w: Float, h: Float, r: FloatArray?) {
         val colors = n.bc ?: return
         val drawn = (0 until 4).filter { bw[it] > 0 }
         if (drawn.isEmpty()) return
         val oneColor = drawn.all { colors[it] == colors[drawn[0]] }
+        val style = n.p.optString("bs")
+        if (style == "dashed" || style == "dotted") return dashedBorder(canvas, style == "dotted", x, y, w, h, r, bw, colors, oneColor)
         if (bw[0] == bw[1] && bw[1] == bw[2] && bw[2] == bw[3] && oneColor) {
             val half = bw[0] / 2
             roundRect(x + half, y + half, w - bw[0], h - bw[0], shrunk(r, half))
