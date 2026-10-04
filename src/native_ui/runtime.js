@@ -18793,6 +18793,8 @@ ${a.stack || ""}`;
       }
       if (event === "deep-link") invoke("deep_link:ready", {}).catch(() => {
       });
+      if (event === "notification:action") invoke("notification:ready", {}).catch(() => {
+      });
       return () => set.delete(callback);
     },
     openExternal(url) {

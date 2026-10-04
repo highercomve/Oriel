@@ -26,15 +26,70 @@ pub const ActionHandler = *const fn (id: []const u8, action: ?[]const u8) void;
 var action_handler: std.atomic.Value(?ActionHandler) = .init(null);
 
 /// Set (or clear, with null) the handler for notification clicks. The page
-/// also gets a `notification:action` event with `{ id, action }`.
+/// also gets a `notification:action` event with `{ id, action }`. A click
+/// that came before there was a handler (one that launched the app) is
+/// handed to the first one set, on the main thread.
 pub fn onAction(handler: ?ActionHandler) void {
     action_handler.store(handler, .release);
+    if (handler != null) App.runOnMain({}, flushHandler);
 }
+
+/// A click nobody heard yet: the last one before a handler was set, and the
+/// last one before the page listened (main thread only).
+const Pending = struct {
+    id_buf: [128]u8 = undefined,
+    action_buf: [128]u8 = undefined,
+    id_len: usize = 0,
+    action_len: ?usize = null,
+    set: bool = false,
+
+    fn store(p: *Pending, id: []const u8, action: ?[]const u8) void {
+        p.id_len = copyId(&p.id_buf, id).len;
+        p.action_len = if (action) |a| copyId(&p.action_buf, a).len else null;
+        p.set = true;
+    }
+
+    /// Take it: copies, so a handler that sets another pending click can't
+    /// change what it was given.
+    fn take(p: *Pending, id_out: *[128]u8, action_out: *[128]u8) ?Target {
+        if (!p.set) return null;
+        p.set = false;
+        const id = copyId(id_out, p.id_buf[0..p.id_len]);
+        const action = if (p.action_len) |n| copyId(action_out, p.action_buf[0..n]) else null;
+        return .{ .id = id, .action = action };
+    }
+};
+var pending_handler: Pending = .{};
+var pending_page: Pending = .{};
+var page_listening = false; // main thread only
 
 /// Report a click from a backend (main thread).
 pub fn dispatch(id: []const u8, action: ?[]const u8) void {
-    if (action_handler.load(.acquire)) |h| h(id, action);
-    App.emit("notification:action", .{ .id = id, .action = action });
+    if (action_handler.load(.acquire)) |h| h(id, action) else pending_handler.store(id, action);
+    if (page_listening) {
+        App.emit("notification:action", .{ .id = id, .action = action });
+    } else pending_page.store(id, action);
+}
+
+fn flushHandler(_: void) void {
+    const h = action_handler.load(.acquire) orelse return;
+    var id_buf: [128]u8 = undefined;
+    var action_buf: [128]u8 = undefined;
+    if (pending_handler.take(&id_buf, &action_buf)) |t| h(t.id, t.action);
+}
+
+/// The page listens for `notification:action` (the bridges' listen() sends
+/// `notification:ready`): from now on clicks are emitted, and one that came
+/// earlier is emitted now.
+pub fn pageReady() void {
+    App.runOnMain({}, flushPage);
+}
+
+fn flushPage(_: void) void {
+    page_listening = true;
+    var id_buf: [128]u8 = undefined;
+    var action_buf: [128]u8 = undefined;
+    if (pending_page.take(&id_buf, &action_buf)) |t| App.emit("notification:action", .{ .id = t.id, .action = t.action });
 }
 
 /// Pack a notification id and action into one string for platforms that

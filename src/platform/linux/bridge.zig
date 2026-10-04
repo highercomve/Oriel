@@ -126,6 +126,9 @@ pub const bridge_js =
     \\      }
     \\      if (event === "deep-link") {
     \\        try { Promise.resolve(invoke("deep_link:ready", {})).catch(() => {}); } catch (_) {}
+    \\      } else if (event === "notification:action") {
+    \\        // A click that came before the page listened (one that launched the app).
+    \\        try { Promise.resolve(invoke("notification:ready", {})).catch(() => {}); } catch (_) {}
     \\      }
     \\      return () => set.delete(callback);
     \\    },

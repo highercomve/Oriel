@@ -800,6 +800,8 @@ g.oriel = Object.freeze({
     const queued = pendingEvents.get(event);
     if (queued?.length) { pendingEvents.delete(event); for (const p of queued) { try { callback(p); } catch (e) { console.error(e); } } }
     if (event === "deep-link") invoke("deep_link:ready", {}).catch(() => {});
+    // A notification click that came before the page listened (one that launched the app).
+    if (event === "notification:action") invoke("notification:ready", {}).catch(() => {});
     return () => set.delete(callback);
   },
   openExternal(url) { return invoke("open_external", { url }); },
