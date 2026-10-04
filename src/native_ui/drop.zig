@@ -12,15 +12,53 @@
 //! NotReadable.
 //!
 //! Linux and Android (Linux syscalls), macOS and iOS (libc: Zig's std has
-//! no portable fstat). Elsewhere the table exists, so the engine compiles,
-//! but nothing can be added.
+//! no portable fstat), Windows (kernel32: a file HANDLE). Elsewhere the
+//! table exists, so the engine compiles, but nothing can be added.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
 const darwin = builtin.os.tag.isDarwin();
-const supported = builtin.os.tag == .linux or darwin;
+const windows = builtin.os.tag == .windows;
+const supported = builtin.os.tag == .linux or darwin or windows;
 const linux = std.os.linux;
+const win = struct {
+    const HANDLE = *anyopaque;
+    const BOOL = c_int;
+    const DWORD = u32;
+    const FILETIME = extern struct { low: DWORD, high: DWORD };
+    const BY_HANDLE_FILE_INFORMATION = extern struct {
+        attributes: DWORD,
+        created: FILETIME,
+        accessed: FILETIME,
+        written: FILETIME,
+        volume_serial: DWORD,
+        size_high: DWORD,
+        size_low: DWORD,
+        links: DWORD,
+        index_high: DWORD,
+        index_low: DWORD,
+    };
+    const OVERLAPPED = extern struct { internal: usize = 0, internal_high: usize = 0, offset: DWORD, offset_high: DWORD, event: ?HANDLE = null };
+    const GENERIC_READ: DWORD = 0x80000000;
+    const FILE_WRITE_ATTRIBUTES: DWORD = 0x100;
+    const FILE_SHARE_ALL: DWORD = 0x1 | 0x2 | 0x4; // read, write, delete
+    const OPEN_EXISTING: DWORD = 3;
+    /// Folders open too (then refused as not regular, not as a failure).
+    const FILE_FLAG_BACKUP_SEMANTICS: DWORD = 0x02000000;
+    const FILE_ATTRIBUTE_DIRECTORY: DWORD = 0x10;
+    const FILE_ATTRIBUTE_DEVICE: DWORD = 0x40;
+    const ERROR_HANDLE_EOF: DWORD = 38;
+    const invalid: usize = std.math.maxInt(usize);
+    /// FILETIME's epoch (1601) to the Unix one, in its 100 ns units.
+    const epoch_delta: i128 = 116444736000000000;
+    extern "kernel32" fn CreateFileW(name: [*:0]const u16, access: DWORD, share: DWORD, sa: ?*anyopaque, disposition: DWORD, flags: DWORD, template: ?HANDLE) callconv(.winapi) usize;
+    extern "kernel32" fn GetFileInformationByHandle(h: HANDLE, info: *BY_HANDLE_FILE_INFORMATION) callconv(.winapi) BOOL;
+    extern "kernel32" fn ReadFile(h: HANDLE, buf: [*]u8, len: DWORD, read: *DWORD, ov: ?*OVERLAPPED) callconv(.winapi) BOOL;
+    extern "kernel32" fn CloseHandle(h: HANDLE) callconv(.winapi) BOOL;
+    extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
+    extern "kernel32" fn SetFileTime(h: HANDLE, created: ?*const FILETIME, accessed: ?*const FILETIME, written: ?*const FILETIME) callconv(.winapi) BOOL;
+};
 
 /// At most this many bytes per read (JS reads bigger blobs in chunks).
 pub const max_read: u64 = 64 * 1024 * 1024;
@@ -53,7 +91,7 @@ pub const Entry = struct {
     }
 };
 
-const Fd = i32;
+const Fd = if (windows) win.HANDLE else i32;
 
 pub const DropFiles = struct {
     gpa: std.mem.Allocator,
@@ -154,6 +192,15 @@ const Stat = struct { regular: bool, size: u64, mtime_ns: i128 };
 /// mistake doesn't hang the UI thread in open (it's then refused as not
 /// regular; regular files ignore it).
 fn openRead(path: [*:0]const u8) ?Fd {
+    if (windows) {
+        // Shared for reading, writing and deleting, as Chromium opens a
+        // dropped file: the user's other programs keep working with it.
+        const wide = std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, std.mem.span(path)) catch return null;
+        defer std.heap.page_allocator.free(wide);
+        const h = win.CreateFileW(wide.ptr, win.GENERIC_READ, win.FILE_SHARE_ALL, null, win.OPEN_EXISTING, win.FILE_FLAG_BACKUP_SEMANTICS, null);
+        if (h == 0 or h == win.invalid) return null;
+        return @ptrFromInt(h);
+    }
     if (darwin) {
         const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .NONBLOCK = true, .NOCTTY = true });
         return if (fd < 0) null else fd;
@@ -166,6 +213,16 @@ fn openRead(path: [*:0]const u8) ?Fd {
 
 fn stat(fd: Fd) Error!Stat {
     if (!supported) return error.Unsupported;
+    if (windows) {
+        var info: win.BY_HANDLE_FILE_INFORMATION = undefined;
+        if (win.GetFileInformationByHandle(fd, &info) == 0) return error.NotReadable;
+        const ft = (@as(i128, info.written.high) << 32) | info.written.low;
+        return .{
+            .regular = info.attributes & (win.FILE_ATTRIBUTE_DIRECTORY | win.FILE_ATTRIBUTE_DEVICE) == 0,
+            .size = (@as(u64, info.size_high) << 32) | info.size_low,
+            .mtime_ns = (ft - win.epoch_delta) * 100,
+        };
+    }
     if (darwin) {
         var st: std.c.Stat = undefined;
         if (std.c.fstat(fd, &st) != 0) return error.NotReadable;
@@ -194,6 +251,18 @@ fn check(e: Entry) Error!void {
 
 fn preadFd(fd: Fd, buf: []u8, offset: u64) Error!usize {
     if (!supported) return error.Unsupported;
+    if (windows) {
+        // At `offset` (OVERLAPPED's, on a synchronous handle): no shared
+        // file position.
+        var ov: win.OVERLAPPED = .{ .offset = @truncate(offset), .offset_high = @truncate(offset >> 32) };
+        var got: win.DWORD = 0;
+        const len: win.DWORD = @intCast(@min(buf.len, std.math.maxInt(win.DWORD)));
+        if (win.ReadFile(fd, buf.ptr, len, &got, &ov) == 0) {
+            if (win.GetLastError() == win.ERROR_HANDLE_EOF) return 0;
+            return error.NotReadable;
+        }
+        return got;
+    }
     if (darwin) while (true) {
         const rc = std.c.pread(fd, buf.ptr, buf.len, @intCast(offset));
         if (rc >= 0) return @intCast(rc);
@@ -211,7 +280,7 @@ fn preadFd(fd: Fd, buf: []u8, offset: u64) Error!usize {
 }
 
 fn closeFd(fd: Fd) void {
-    if (darwin) _ = std.c.close(fd) else if (supported) _ = linux.close(fd);
+    if (windows) _ = win.CloseHandle(fd) else if (darwin) _ = std.c.close(fd) else if (supported) _ = linux.close(fd);
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +296,17 @@ fn tmpPath(tmp: *testing.TmpDir, name: []const u8) ![:0]u8 {
 
 /// Set a file's access and modification times to `sec` (the tests).
 fn setMtime(path: [*:0]const u8, sec: i64) !void {
+    if (windows) {
+        const wide = try std.unicode.utf8ToUtf16LeAllocZ(testing.allocator, std.mem.span(path));
+        defer testing.allocator.free(wide);
+        const h = win.CreateFileW(wide.ptr, win.FILE_WRITE_ATTRIBUTES, win.FILE_SHARE_ALL, null, win.OPEN_EXISTING, 0, null);
+        try testing.expect(h != 0 and h != win.invalid);
+        defer _ = win.CloseHandle(@ptrFromInt(h));
+        const t: u64 = @intCast(@as(i128, sec) * 10_000_000 + win.epoch_delta);
+        const ft: win.FILETIME = .{ .low = @truncate(t), .high = @truncate(t >> 32) };
+        try testing.expect(win.SetFileTime(@ptrFromInt(h), null, &ft, &ft) != 0);
+        return;
+    }
     if (darwin) {
         const times = [2]std.c.timespec{ .{ .sec = sec, .nsec = 0 }, .{ .sec = sec, .nsec = 0 } };
         try testing.expectEqual(@as(c_int, 0), std.c.utimensat(std.c.AT.FDCWD, path, &times, 0));

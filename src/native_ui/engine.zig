@@ -168,7 +168,7 @@ test "the app's CSP: eval and new Function refused without 'unsafe-eval', the ho
 
 test "drops: host.fileRead is queued for the engine's next turn, drags answer a mask" {
     if (!@import("build_options").native_ui) return error.SkipZigTest;
-    if (comptime !(@import("builtin").os.tag == .linux)) return error.SkipZigTest;
+    if (comptime !(@import("builtin").os.tag == .linux or @import("builtin").os.tag == .windows)) return error.SkipZigTest;
     const Stub = struct {
         var timers: std.ArrayList(u32) = .empty;
         fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
