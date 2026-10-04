@@ -1460,7 +1460,7 @@ const Laid = struct {
 
     fn of(s: *Surface, n: *Node, out: *Laid) bool {
         const c = n.content();
-        out.layout = textLayout(s, n, c.w + 1) orelse return false;
+        out.layout = textLayout(s, n, paintWidth(c.w)) orelse return false;
         out.lines = textLines(s, &n.props, out.layout, &out.exts);
         if (out.lines == null) if (cssHeight(s, &n.props, pango_layout_get_line_count(out.layout))) |css_h| {
             var w: c_int = 0;
@@ -2314,7 +2314,7 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     const even = if (all) |e| if (strutExtent(s, &n.props)) |st| st.top == e.top and st.bottom == e.bottom else false else true;
     n.baseline = if (all) |e| e.top else std.math.nan(f32);
     // One line of plain text: its width from the glyph widths, no layout.
-    if (fastTextSize(s, &n.props)) |size| if (std.math.isInf(actual_width) or size[0] - 1 <= actual_width) {
+    if (fastTextSize(s, &n.props)) |size| if (std.math.isInf(actual_width) or size[0] <= actual_width) {
         if (std.c.getenv("ORIEL_NUI_TEXT_CHECK") != null) checkTextSize(s, n, actual_width, size);
         return size;
     };
@@ -2326,12 +2326,15 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
     var w: c_int = 0;
     var h: c_int = 0;
     pango_layout_get_pixel_size(layout, &w, &h);
+    var wu: c_int = 0;
+    var hu: c_int = 0;
+    pango_layout_get_size(layout, &wu, &hu);
     var exts: [64]Extent = undefined;
     const css_h = if (lineExtents(s, &n.props, layout, &exts)) |e| blk: {
         n.baseline = e[0].top;
         break :blk extentsHeight(e);
     } else cssHeight(s, &n.props, pango_layout_get_line_count(layout));
-    const size: [2]f32 = .{ @floatFromInt(w + 1), css_h orelse @floatFromInt(h) };
+    const size: [2]f32 = .{ textWidth(wu), css_h orelse @floatFromInt(h) };
     if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
     return size;
 }
@@ -2445,8 +2448,7 @@ fn fastTextSize(s: *Surface, props: *const tree_mod.Props) ?[2]f32 {
         const w = pairWidth(s, props, r, table, c, next) orelse return null;
         units += w;
     }
-    const px = @divTrunc(units + PANGO_SCALE - 1, PANGO_SCALE);
-    return .{ @floatFromInt(px + 1), cssHeight(s, props, 1) orelse @floatFromInt(table.height) };
+    return .{ textWidth(units), cssHeight(s, props, 1) orelse @floatFromInt(table.height) };
 }
 
 fn pairWidth(s: *Surface, props: *const tree_mod.Props, r: tree_mod.Run, table: *PairWidths, a: u8, b: u8) ?i32 {
@@ -2505,10 +2507,26 @@ fn checkTextSize(s: *Surface, n: *Node, width: f32, fast: [2]f32) void {
     var w: c_int = 0;
     var h: c_int = 0;
     pango_layout_get_pixel_size(layout, &w, &h);
-    if (@as(f32, @floatFromInt(w + 1)) != fast[0] or @as(f32, @floatFromInt(h)) != fast[1]) {
+    var wu: c_int = 0;
+    var hu: c_int = 0;
+    pango_layout_get_size(layout, &wu, &hu);
+    if (textWidth(wu) != fast[0] or @as(f32, @floatFromInt(h)) != fast[1]) {
         const t = if (n.props.runs) |runs| runs[0].t else "";
-        log.warn("text size: fast {d}x{d}, Pango {d}x{d}: \"{s}\"", .{ fast[0], fast[1], w + 1, h, t[0..@min(t.len, 60)] });
+        log.warn("text size: fast {d}x{d}, Pango {d}x{d}: \"{s}\"", .{ fast[0], fast[1], textWidth(wu), h, t[0..@min(t.len, 60)] });
     }
+}
+
+/// A text's width as browsers keep it: rounded up to a LayoutUnit (1/64 px;
+/// 0.001 px of slack for glyph-pair sums), from Pango units.
+fn textWidth(units: i64) f32 {
+    const px = @as(f32, @floatFromInt(units)) / PANGO_SCALE;
+    return @ceil((px - 0.001) * 64) / 64;
+}
+
+/// The width a text is laid out at to draw it: its box's, plus a LayoutUnit
+/// for float error (its lines break where they were measured).
+fn paintWidth(w: f32) f32 {
+    return w + 1.0 / 64.0;
 }
 
 fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
@@ -3110,7 +3128,7 @@ fn shadow(cr: *cairo_t, f: Rect, r: Radii, sh: tree_mod.Shadow) void {
 
 fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
     const c = n.content();
-    const layout = textLayout(s, n, c.w + 1) orelse return;
+    const layout = textLayout(s, n, paintWidth(c.w)) orelse return;
     defer g_object_unref(layout);
     // Lines of different heights (a bigger font on some): each on its own
     // baseline, below the lines before it.
@@ -4012,7 +4030,10 @@ test "shared measurements match fresh Pango layouts after text, width and font c
         var w: c_int = 0;
         var h: c_int = 0;
         pango_layout_get_pixel_size(fresh, &w, &h);
-        try std.testing.expectEqual(@as(f32, @floatFromInt(w + 1)), cached[0]);
+        var wu: c_int = 0;
+        var hu: c_int = 0;
+        pango_layout_get_size(fresh, &wu, &hu);
+        try std.testing.expectEqual(textWidth(wu), cached[0]);
         try std.testing.expectEqual(cssHeight(&s, &n.props, pango_layout_get_line_count(fresh)) orelse @as(f32, @floatFromInt(h)), cached[1]);
     }
     try std.testing.expect(try t.updateText(1, "updated Ω text"));
@@ -4026,7 +4047,10 @@ test "shared measurements match fresh Pango layouts after text, width and font c
     var w: c_int = 0;
     var h: c_int = 0;
     pango_layout_get_pixel_size(fresh, &w, &h);
-    try std.testing.expectEqual(@as(f32, @floatFromInt(w + 1)), cached[0]);
+    var wu: c_int = 0;
+    var hu: c_int = 0;
+    pango_layout_get_size(fresh, &wu, &hu);
+    try std.testing.expectEqual(textWidth(wu), cached[0]);
     try std.testing.expectEqual(cssHeight(&s, &n.props, pango_layout_get_line_count(fresh)) orelse @as(f32, @floatFromInt(h)), cached[1]);
     const old_count = s.text_measurements.entries.count();
     pango_context_changed(gtk_widget_get_pango_context(area));
