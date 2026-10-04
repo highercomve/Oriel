@@ -12975,7 +12975,8 @@ globalThis.atob ??= (s) => {
     "cursor",
     "word-break",
     "overflow-wrap",
-    "list-style",
+    "list-style-type",
+    "list-style-position",
     "color-scheme",
     "text-decoration-color"
   ]);
@@ -12992,6 +12993,17 @@ globalThis.atob ??= (s) => {
       case "margin":
       case "padding":
         return box(prop2, (side, n2) => `${n2}-${side}`);
+      // Omitted parts take their initial values (disc, outside), as in CSS.
+      case "list-style": {
+        let type, position;
+        for (const w of splitSpaces(value)) {
+          if (w === "inside" || w === "outside") position = w;
+          else if (!/^url\(/i.test(w)) type = w;
+        }
+        out["list-style-type"] = type ?? "disc";
+        out["list-style-position"] = position ?? "outside";
+        return;
+      }
       case "inset":
         return box(prop2, (side) => side);
       // Horizontal writing: inline is left and right, block top and bottom.
@@ -14977,6 +14989,10 @@ html, body, div, section, main, header, footer, nav, article, aside, form, field
 h1, h2, h3, h4, h5, h6, pre, blockquote, figure, figcaption, details, summary, address, hr { display: block; }
 head, script, style, template, title, meta, link, noscript, datalist, option, [hidden] { display: none; }
 li { display: list-item; }
+ul { list-style-type: disc; }
+ol { list-style-type: decimal; }
+ul ul, ol ul { list-style-type: circle; }
+ul ul ul, ul ol ul, ol ul ul, ol ol ul { list-style-type: square; }
 button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
 button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
@@ -16285,7 +16301,8 @@ input[type="range"] { height: 20px; margin: 2px; }
       const aligns = layoutBox && (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"])) || // A button centers its label in its height (a row stretches it to
       // its tallest sibling's): a box around the text, not a text view.
       el.localName === "button" && !layoutBox;
-      const keepsBox = props.scroll || props.scrollx || props.clip;
+      const marker = display === "list-item" ? listMarker(el, cs) : null;
+      const keepsBox = props.scroll || props.scrollx || props.clip || !!marker;
       if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns && !keepsBox && display !== "grid" && !isTableDisplay(display)) {
         const raw = [];
         for (let child = el.firstChild; child; child = child.nextSibling) {
@@ -16364,7 +16381,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       }
       flushRuns();
       if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
-      if (flow.length === 1 && flow[0].text && !before2 && !cs.__rules.after.length && !aligns && !(props.scroll || props.scrollx || props.clip)) {
+      if (flow.length === 1 && flow[0].text && !before2 && !cs.__rules.after.length && !aligns && !(props.scroll || props.scrollx || props.clip || marker)) {
         Object.assign(props, textProps(cs, fontSize));
         props.runs = flow[0].text;
         this.ownRuns(id, props.runs);
@@ -16495,8 +16512,19 @@ input[type="range"] { height: 20px; margin: 2px; }
       }
       if (shape) this.saveFlexShape(shape, nodes);
       if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
+      if (marker) kids.push(this.putMarker(nodes, el, cs, fontSize, props, marker));
       this.putClick(props, el);
       return this.put(nodes, id, "view", props, kids, fixedNode);
+    }
+    // A list item's outside marker ("• ", "3. "): a text beside its first
+    // line, its end at the item's start edge, in the item's font.
+    putMarker(nodes, el, cs, fontSize, props, text) {
+      const mid = this.idOf(el, "marker");
+      this.own(mid, el);
+      const top = Array.isArray(props.pad) && typeof props.pad[0] === "number" ? props.pad[0] : 0;
+      const mp = { ...textProps(cs, fontSize), runs: [{ t: text, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
+      this.put(nodes, mid, "text", mp, []);
+      return mid;
     }
     // A list of rows the tree stamps (dom_stamp.stampList): every child an
     // element, the first a row the tree stamps (a flex row of leaves) and the
@@ -17538,6 +17566,53 @@ input[type="range"] { height: 20px; margin: 2px; }
     if (w === "bold" || w === "bolder") return 700;
     if (w === "lighter") return 300;
     return parseInt(w, 10) || 400;
+  }
+  function listMarker(el, cs) {
+    const type = cs["list-style-type"], position = cs["list-style-position"];
+    if (!type || type === "none" || position === "inside") return null;
+    const bullet = { disc: "\u2022", circle: "\u25E6", square: "\u25AA" }[type];
+    if (bullet) return bullet + " ";
+    const list = el.parentNode;
+    const items = list ? [...list.children].filter((c) => c.localName === "li") : [el];
+    const reversed = list?.localName === "ol" && list.hasAttribute("reversed");
+    const start = list?.localName === "ol" && list.hasAttribute("start") ? parseInt(list.getAttribute("start"), 10) : NaN;
+    let n2 = Number.isFinite(start) ? start : reversed ? items.length : 1;
+    for (const li of items) {
+      const v = parseInt(li.getAttribute("value"), 10);
+      if (Number.isFinite(v)) n2 = v;
+      if (li === el) break;
+      n2 += reversed ? -1 : 1;
+    }
+    return counterText(n2, type) + ". ";
+  }
+  function counterText(n2, type) {
+    const alpha = (k, a) => {
+      let s = "";
+      for (; k > 0; k = Math.floor((k - 1) / 26)) s = String.fromCharCode(a + (k - 1) % 26) + s;
+      return s;
+    };
+    const roman = (k) => {
+      if (k <= 0 || k >= 4e3) return String(k);
+      let s = "";
+      for (const [v, r] of [[1e3, "m"], [900, "cm"], [500, "d"], [400, "cd"], [100, "c"], [90, "xc"], [50, "l"], [40, "xl"], [10, "x"], [9, "ix"], [5, "v"], [4, "iv"], [1, "i"]]) for (; k >= v; k -= v) s += r;
+      return s;
+    };
+    switch (type) {
+      case "lower-alpha":
+      case "lower-latin":
+        return n2 > 0 ? alpha(n2, 97) : String(n2);
+      case "upper-alpha":
+      case "upper-latin":
+        return n2 > 0 ? alpha(n2, 65) : String(n2);
+      case "lower-roman":
+        return roman(n2);
+      case "upper-roman":
+        return roman(n2).toUpperCase();
+      case "decimal-leading-zero":
+        return (n2 >= 0 && n2 < 10 ? "0" : "") + n2;
+      default:
+        return String(n2);
+    }
   }
   function runStyle(cs, fs) {
     return memoized(cs, `r${fs}`, () => makeRunStyle(cs, fs));

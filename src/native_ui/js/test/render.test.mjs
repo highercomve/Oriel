@@ -510,7 +510,8 @@ for (const css of [
   const edit = find(t, (n) => n.props.runs?.[0]?.t.trim() === "Edit");
   assert.deepEqual(edit.props.col, [156, 163, 175, 1], "html's color reaches the paragraph");
   assert.equal(edit.props.fz, 18, "and its font size");
-  const li = find(t, (n) => n.props.runs?.[0]?.t.trim() === "a");
+  // The item's box (its text in it, beside its marker).
+  const li = find(t, (n) => n.kids.some((k) => k.props.runs?.[0]?.t.trim() === "a"));
   assert.equal(li.props.fg, 1, "flex: <width> grows");
   assert.equal(li.props.fs, 1, "and shrinks");
   const ab = find(t, (n) => n.props.runs?.[0]?.t.trim() === "abs");
