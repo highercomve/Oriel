@@ -1334,6 +1334,11 @@ pub const Tree = struct {
     /// Backend supplies natural text sizes and context epochs. Equal,
     /// unwrapped metrics can reuse the current frames after a text edit.
     reuse_text_layout: bool = false,
+    /// A horizontal scroller's range ends at its content's right edge plus
+    /// its right padding (Chromium), or at the edge alone (WebKit, measured
+    /// on macOS: a 1000px row in 5px padding scrolls 1005 wide; the bottom
+    /// padding counts either way).
+    inline_end_padding: bool = true,
     /// Backend measures fields as the WebView sizes them (a textarea's
     /// cols): measureFn doesn't narrow a textarea to its own estimate.
     fields_sized: bool = false,
@@ -2574,7 +2579,8 @@ pub const Tree = struct {
         if (p.scrollx) {
             var right: f32 = 0;
             for (n.kids.items) |k| right = @max(right, overflowRight(k, 0));
-            n.content_w = right + yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeRight) + yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeRight);
+            const pad_r = if (n.tree.inline_end_padding) yg.YGNodeLayoutGetPadding(n.yn, yg.YGEdgeRight) else 0;
+            n.content_w = right + pad_r + yg.YGNodeLayoutGetBorder(n.yn, yg.YGEdgeRight);
             const x = std.math.clamp(n.scroll_x, 0, @max(0, n.content_w - n.frame.w));
             if (x != n.scroll_x) n.tree.noteScroll(n);
             n.scroll_x = x;

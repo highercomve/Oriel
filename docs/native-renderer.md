@@ -223,7 +223,14 @@ the animated nodes are sent each frame).
 - A scroller's `content_h` (and `content_w`) reaches its bottom (right)
   border: `content_h - frame.h` is how far it scrolls (to scrollHeight -
   clientHeight), and its children clip at its padding box, not over its
-  borders. `host.frame[4]` (scrollHeight) is the padding box's content.
+  borders. `host.frame[4]` (scrollHeight) is the padding box's content,
+  `host.frame[8]` (scrollWidth) likewise, at least the clientWidth. A
+  horizontal scroller's range takes in its right padding where Chromium's
+  does (`Tree.inline_end_padding`); WebKit's ends at the content's edge
+  (measured on macOS; AppKit and UIKit set it false), its bottom padding
+  counted either way. scrollWidth, scrollHeight, clientWidth and
+  scrollLeft match WKWebView for an overflowing, a narrow and a plain box;
+  not yet for `overflow: hidden`, which WebKit lets a script scroll.
 
 **Field edits and selection** (each backend with native text fields):
 
