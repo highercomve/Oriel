@@ -339,6 +339,10 @@ object OrielRuntime {
     @JvmStatic
     fun nuiFontMetrics(size64: Int, mono: Boolean): Long = NuiNode.fontMetrics(size64 / 64f, mono)
 
+    /** The same in a CSS font-family list's font (as text runs resolve it): a line's strut. */
+    @JvmStatic
+    fun nuiFontMetricsFamily(size64: Int, mono: Boolean, family: ByteArray): Long = NuiNode.fontMetrics(size64 / 64f, mono, family.utf8())
+
     /** A text's first baseline in 1/64 dp, or -1 (android.zig's noteBaseline). */
     @JvmStatic
     fun nuiBaseline(id: Int, node: Int): Int = Nui.views[id]?.baselineOf(node) ?: -1
