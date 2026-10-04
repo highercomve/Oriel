@@ -1488,7 +1488,10 @@ export class Renderer {
       // A button centers its label in its height (a row stretches it to
       // its tallest sibling's): a box around the text, not a text view.
       (el.localName === "button" && !layoutBox);
-    if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns &&
+    // A scroller or a clipping box keeps its box (a text view neither
+    // scrolls, clips nor keeps scrollbar room): its text goes in a child.
+    const keepsBox = props.scroll || props.scrollx || props.clip;
+    if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns && !keepsBox &&
         display !== "grid" && !isTableDisplay(display)) {
       const raw = [];
       for (let child = el.firstChild; child; child = child.nextSibling) {
@@ -1582,7 +1585,7 @@ export class Renderer {
     // A button's label spans its width (its text-align applies: a menu
     // item's left-aligned label) and is centered in its height.
     if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
-    if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns) {
+    if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns && !(props.scroll || props.scrollx || props.clip)) {
       Object.assign(props, textProps(cs, fontSize));
       props.runs = flow[0].text;
       this.putClick(props, el);
