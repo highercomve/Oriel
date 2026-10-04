@@ -398,6 +398,7 @@ pub const Surface = struct {
             .warm_fonts = warmFonts,
             .font_metrics = fontMetrics,
             .font_metrics_family = fontMetricsFamily,
+            .run_rects = runRects,
             .invoke = invoke,
             .focus = focus,
             .selection = selection,
@@ -2196,6 +2197,88 @@ fn linkAt(s: *Surface, pt: [2]f32) i64 {
         if (m.textPosition < pos) return if (r.k) |k| k else 0;
     }
     return 0;
+}
+
+/// Backend.run_rects: an inline element's boxes (getClientRects), one per
+/// line its runs (first..last) are on: across them on that line, less the
+/// space the line wraps at; as tall as their own fonts' content area
+/// (rounded ascent and descent) around the line's baseline, as Chromium
+/// gives an inline box's rects. Laid out as paintText lays it out.
+fn runRects(ctx: *anyopaque, n: *Node, first: usize, last: usize, out: [][4]f32) usize {
+    const s = surfaceOf(ctx);
+    const runs = n.props.runs orelse return 0;
+    if (first > last or last >= runs.len or out.len == 0) return 0;
+    // The runs' UTF-16 ranges.
+    var start: u32 = 0;
+    var end: u32 = 0;
+    var pos: u32 = 0;
+    for (runs, 0..) |r, i| {
+        const len: u32 = @intCast(std.unicode.calcUtf16LeLen(r.t) catch r.t.len);
+        if (i == first) start = pos;
+        pos += len;
+        if (i == last) {
+            end = pos;
+            break;
+        }
+    }
+    if (end <= start) return 0;
+    const ct = n.content();
+    const layout = textLayout(s, n, paintWidth(ct.w), null) orelse return 0;
+    defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
+    var lines_buf: [64]c.DWRITE_LINE_METRICS = undefined;
+    var count: u32 = 0;
+    if (layout.lpVtbl.*.GetLineMetrics.?(layout, &lines_buf, lines_buf.len, &count) < 0 or count > lines_buf.len) return 0;
+    var ext_buf: [64]Extent = undefined;
+    const exts = lineExtents(&n.props, layout, &ext_buf, null);
+    const all = textExtent(&n.props);
+    var k: usize = 0;
+    var ls: u32 = 0;
+    var line_top: f32 = 0; // DirectWrite's own spacing, without a line box
+    for (lines_buf[0..count], 0..) |line, li| {
+        defer {
+            ls += line.length;
+            line_top += line.height;
+        }
+        if (k >= out.len) break;
+        const a = @max(start, ls);
+        var b = @min(end, ls + line.length);
+        if (a >= b) continue;
+        // A fragment that wraps: not the space it wraps after.
+        if (b < end) while (b > a and (isSpaceAt(runs, b - 1) or unitAt(runs, b - 1) == 0x0A or unitAt(runs, b - 1) == 0x0D)) {
+            b -= 1;
+        };
+        if (a >= b) continue;
+        var rects: [16]c.DWRITE_HIT_TEST_METRICS = undefined;
+        var hits: u32 = 0;
+        if (layout.lpVtbl.*.HitTestTextRange.?(layout, a, b - a, ct.x, ct.y, &rects, rects.len, &hits) < 0) continue;
+        var x0: f32 = std.math.floatMax(f32);
+        var x1: f32 = -std.math.floatMax(f32);
+        for (rects[0..@min(hits, rects.len)]) |m| {
+            x0 = @min(x0, m.left);
+            x1 = @max(x1, m.left + m.width);
+        }
+        if (!(x1 >= x0)) continue;
+        // The baseline, where paintText draws this line.
+        const base: f32 = if (all) |e| blk: {
+            const h = e.top + e.bottom;
+            const dy = if (exts) |xs| (if (li < xs.len) lineShift(xs, e, li) else 0) else 0;
+            break :blk ct.y + @as(f32, @floatFromInt(li)) * h + e.top + dy;
+        } else ct.y + line_top + line.baseline;
+        // The runs' own fonts on this line.
+        var box: ?Extent = null;
+        var rs: u32 = 0;
+        for (runs, 0..) |r, i| {
+            const len: u32 = @intCast(std.unicode.calcUtf16LeLen(r.t) catch r.t.len);
+            defer rs += len;
+            if (i < first or i > last or len == 0) continue;
+            if (rs + len <= a or rs >= b) continue;
+            box = widen(box, contentExtent(runFamily(&n.props, r), r.sz, r.w, r.i));
+        }
+        const e = box orelse Extent{ .top = line.baseline, .bottom = line.height - line.baseline };
+        out[k] = .{ x0, base - e.top, x1 - x0, e.top + e.bottom };
+        k += 1;
+    }
+    return k;
 }
 
 /// The node a pointer at `pt` is on: a link run's element, else the node
