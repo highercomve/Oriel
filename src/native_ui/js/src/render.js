@@ -27,6 +27,10 @@ html, body, div, section, main, header, footer, nav, article, aside, form, field
 h1, h2, h3, h4, h5, h6, pre, blockquote, figure, figcaption, details, summary, address, hr { display: block; }
 head, script, style, template, title, meta, link, noscript, datalist, option, [hidden] { display: none; }
 li { display: list-item; }
+ul { list-style-type: disc; }
+ol { list-style-type: decimal; }
+ul ul, ol ul { list-style-type: circle; }
+ul ul ul, ul ol ul, ol ul ul, ol ol ul { list-style-type: square; }
 button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
 button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
@@ -1500,7 +1504,9 @@ export class Renderer {
       (el.localName === "button" && !layoutBox);
     // A scroller or a clipping box keeps its box (a text view neither
     // scrolls, clips nor keeps scrollbar room): its text goes in a child.
-    const keepsBox = props.scroll || props.scrollx || props.clip;
+    // A list item's marker sits beside its box: it keeps its box too.
+    const marker = display === "list-item" ? listMarker(el, cs) : null;
+    const keepsBox = props.scroll || props.scrollx || props.clip || !!marker;
     if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns && !keepsBox &&
         display !== "grid" && !isTableDisplay(display)) {
       const raw = [];
@@ -1595,7 +1601,7 @@ export class Renderer {
     // A button's label spans its width (its text-align applies: a menu
     // item's left-aligned label) and is centered in its height.
     if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
-    if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns && !(props.scroll || props.scrollx || props.clip)) {
+    if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns && !(props.scroll || props.scrollx || props.clip || marker)) {
       Object.assign(props, textProps(cs, fontSize));
       props.runs = flow[0].text;
       this.ownRuns(id, props.runs);
@@ -1749,8 +1755,20 @@ export class Renderer {
     if (shape) this.saveFlexShape(shape, nodes);
 
     if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
+    if (marker) kids.push(this.putMarker(nodes, el, cs, fontSize, props, marker));
     this.putClick(props, el);
     return this.put(nodes, id, "view", props, kids, fixedNode);
+  }
+
+  // A list item's outside marker ("• ", "3. "): a text beside its first
+  // line, its end at the item's start edge, in the item's font.
+  putMarker(nodes, el, cs, fontSize, props, text) {
+    const mid = this.idOf(el, "marker");
+    this.own(mid, el);
+    const top = Array.isArray(props.pad) && typeof props.pad[0] === "number" ? props.pad[0] : 0;
+    const mp = { ...textProps(cs, fontSize), runs: [{ t: text, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
+    this.put(nodes, mid, "text", mp, []);
+    return mid;
   }
 
   // A list of rows the tree stamps (dom_stamp.stampList): every child an
@@ -2960,6 +2978,46 @@ function weight(w) {
 }
 
 // A text run's style (shared: callers copy it).
+// A list item's marker text (outside markers only), or null: its
+// list-style-type, and for numbers its place among its
+// list's items (start, value, reversed), as browsers count them.
+function listMarker(el, cs) {
+  const type = cs["list-style-type"], position = cs["list-style-position"];
+  if (!type || type === "none" || position === "inside") return null;
+  const bullet = { disc: "\u2022", circle: "\u25e6", square: "\u25aa" }[type];
+  if (bullet) return bullet + " ";
+  const list = el.parentNode;
+  const items = list ? [...list.children].filter((c) => c.localName === "li") : [el];
+  const reversed = list?.localName === "ol" && list.hasAttribute("reversed");
+  const start = list?.localName === "ol" && list.hasAttribute("start") ? parseInt(list.getAttribute("start"), 10) : NaN;
+  let n = Number.isFinite(start) ? start : reversed ? items.length : 1;
+  for (const li of items) {
+    const v = parseInt(li.getAttribute("value"), 10);
+    if (Number.isFinite(v)) n = v;
+    if (li === el) break;
+    n += reversed ? -1 : 1;
+  }
+  return counterText(n, type) + ". ";
+}
+
+function counterText(n, type) {
+  const alpha = (k, a) => { let s = ""; for (; k > 0; k = Math.floor((k - 1) / 26)) s = String.fromCharCode(a + ((k - 1) % 26)) + s; return s; };
+  const roman = (k) => {
+    if (k <= 0 || k >= 4000) return String(k);
+    let s = "";
+    for (const [v, r] of [[1000, "m"], [900, "cm"], [500, "d"], [400, "cd"], [100, "c"], [90, "xc"], [50, "l"], [40, "xl"], [10, "x"], [9, "ix"], [5, "v"], [4, "iv"], [1, "i"]]) for (; k >= v; k -= v) s += r;
+    return s;
+  };
+  switch (type) {
+    case "lower-alpha": case "lower-latin": return n > 0 ? alpha(n, 97) : String(n);
+    case "upper-alpha": case "upper-latin": return n > 0 ? alpha(n, 65) : String(n);
+    case "lower-roman": return roman(n);
+    case "upper-roman": return roman(n).toUpperCase();
+    case "decimal-leading-zero": return (n >= 0 && n < 10 ? "0" : "") + n;
+    default: return String(n);
+  }
+}
+
 function runStyle(cs, fs) {
   return memoized(cs, `r${fs}`, () => makeRunStyle(cs, fs));
 }
