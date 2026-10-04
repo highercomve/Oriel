@@ -5987,7 +5987,7 @@ input[type="range"] { height: 20px; margin: 2px; }
   function boxProps(cs, display, fs, el) {
     const button = el?.localName === "button";
     const bb = borderBoxByDefault(el);
-    const key = `b${display}|${fs}|${button}|${bb}`;
+    const key = `b${display}|${fs}|${button}|${bb}|${viewport.dpr}`;
     const d = derived.get(cs);
     if (d?.parts && !(button && pushButtons && d.parts.includes("bg"))) {
       const p = { ...memoized(d.base, key, () => makeBoxProps(d.base, display, fs, button, bb)) };
@@ -6025,6 +6025,14 @@ input[type="range"] { height: 20px; margin: 2px; }
   }
   var pushButtons = false;
   var PUSH_MARK = "rgba(239, 239, 239, 0.9999)";
+  var webkitBorders = false;
+  function snapBorder(w) {
+    if (!(w > 0)) return 0;
+    const dpr = viewport.dpr || 1;
+    if (w * dpr < 1) return 1 / dpr;
+    const v = webkitBorders ? Math.trunc(w * 64) / 64 : w;
+    return Math.floor(v * dpr + 1e-6) / dpr;
+  }
   function pushButton(cs, p) {
     if (cs.background !== PUSH_MARK || cs["background-color"] && cs["background-color"] !== PUSH_MARK) return;
     const app = cs.appearance || cs["-webkit-appearance"];
@@ -6045,6 +6053,7 @@ input[type="range"] { height: 20px; margin: 2px; }
   }
   function setFocusRingOS(os, accent) {
     pushButtons = os === "macos";
+    webkitBorders = os === "macos" || os === "ios" || os === "linux";
     osRings = os === "linux" ? webkitGtkRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
   }
   var focusVisible = null;
@@ -6167,7 +6176,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     if (pad.some((x) => x)) p.pad = pad;
     const bw = sides.map((s) => {
       const l = num2(cs[`border-${s}-width`], fs);
-      return typeof l === "number" ? l : cs[`border-${s}-width`] === "thin" ? 1 : cs[`border-${s}-width`] === "medium" ? 3 : 0;
+      return snapBorder(typeof l === "number" ? l : cs[`border-${s}-width`] === "thin" ? 1 : cs[`border-${s}-width`] === "medium" ? 3 : 0);
     });
     if (bw.some((x) => x)) {
       p.bw = bw;
@@ -6363,7 +6372,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       return st && st !== "none" && st !== "hidden";
     };
     const ib = { k, p: sides.map((d) => px(cs[`padding-${d}`])), m: [0, px(cs["margin-right"]), 0, px(cs["margin-left"])] };
-    const bw = sides.map((d) => shown2(d) ? px(cs[`border-${d}-width`] ?? "medium") || 0 : 0);
+    const bw = sides.map((d) => shown2(d) ? snapBorder(px(cs[`border-${d}-width`] ?? "medium")) : 0);
     if (bw.some((w) => w > 0)) {
       ib.bw = bw;
       const side = sides.find((d, i) => bw[i] > 0);
@@ -7229,13 +7238,15 @@ ${a.stack || ""}`;
   function borderOf(el) {
     const cs = renderer?.styleOf?.(el);
     if (!cs) return [0, 0, 0, 0];
-    return ["top", "right", "bottom", "left"].map((s) => {
-      const style = cs[`border-${s}-style`];
-      if (!style || style === "none" || style === "hidden") return 0;
-      const w = cs[`border-${s}-width`] ?? "medium";
-      return { thin: 1, medium: 3, thick: 5 }[w] ?? (parseFloat(w) || 0);
-    });
+    return ["top", "right", "bottom", "left"].map((s) => borderWidth(cs, s));
   }
+  function borderWidth(cs, side) {
+    const style = cs[`border-${side}-style`];
+    if (!style || style === "none" || style === "hidden") return 0;
+    const w = cs[`border-${side}-width`] ?? "medium";
+    return snapBorder({ thin: 1, medium: 3, thick: 5 }[w] ?? (parseFloat(w) || 0));
+  }
+  var BORDER_WIDTH = /^border-(top|right|bottom|left)-width$/;
   Object.defineProperties(elProto, {
     offsetWidth: { get() {
       return frameOf(this)[2];
@@ -7245,13 +7256,14 @@ ${a.stack || ""}`;
     }, configurable: true },
     // The root element's client box is the viewport (innerWidth less the
     // window's scrollbar), as in browsers; a scroller's leaves its
-    // scrollbar's room out (the frame's sixth value).
+    // scrollbar's room out (the frame's sixth value). Whole px, as browsers
+    // give them (a box 20px wide in a 1/3px border at 3x: 20).
     clientWidth: {
       get() {
         if (this === document.documentElement) return viewport.width - (renderer && host.frame(-1)?.[5] || 0);
         const f = frameOf(this);
         const b = borderOf(this);
-        return Math.max(0, f[2] - b[1] - b[3] - (f[5] || 0));
+        return Math.max(0, Math.round(f[2] - b[1] - b[3] - (f[5] || 0)));
       },
       configurable: true
     },
@@ -7260,7 +7272,7 @@ ${a.stack || ""}`;
       get() {
         if (this === document.documentElement) return viewport.height;
         const b = borderOf(this);
-        return Math.max(0, frameOf(this)[3] - b[0] - b[2]);
+        return Math.max(0, Math.round(frameOf(this)[3] - b[0] - b[2]));
       },
       configurable: true
     },
@@ -7603,7 +7615,11 @@ ${a.stack || ""}`;
   Object.defineProperty(g, "devicePixelRatio", { get: () => viewport.dpr, configurable: true });
   g.getComputedStyle = (el) => {
     const cs = renderer?.styleOf(el) || {};
-    return new Proxy({}, { get: (_, k) => k === "getPropertyValue" ? (p) => cs[p] ?? "" : cs[String(k).replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())] ?? "" });
+    const value = (p) => {
+      const m = BORDER_WIDTH.exec(p);
+      return m && renderer ? `${+borderWidth(cs, m[1]).toFixed(6)}px` : cs[p] ?? "";
+    };
+    return new Proxy({}, { get: (_, k) => k === "getPropertyValue" ? value : value(String(k).replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())) });
   };
   g.ResizeObserver ??= class {
     observe() {
