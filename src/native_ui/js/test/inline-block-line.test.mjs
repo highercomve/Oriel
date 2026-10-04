@@ -4,7 +4,8 @@
 // above the baseline, 3 below) is 2px down, the line 15px; at
 // line-height 30px the half-leading above is floored (19 above, 11 below);
 // boxes side by side line up their bottoms. host.fontMetrics gets the
-// block's font family.
+// block's font family. vertical-align middle, top and bottom place a box
+// alone on its line as WebKit does.
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
@@ -14,6 +15,9 @@ const page = `<html><body style="font: 12px system-ui">
 <div style="line-height: 30px"><span style="display: inline-block; width: 50px; height: 10px"></span></div>
 <div><span style="display: inline-block; width: 50px; height: 10px"></span><span style="display: inline-block; width: 50px; height: 20px"></span></div>
 <div><span style="display: inline-block">text</span></div>
+<div><span style="display: inline-block; width: 50px; height: 10px; vertical-align: middle"></span></div>
+<div><span style="display: inline-block; width: 50px; height: 10px; vertical-align: bottom"></span></div>
+<div><span style="display: inline-block; width: 50px; height: 30px; vertical-align: top"></span></div>
 </body></html>`;
 const nodes = new Map();
 const asked = [];
@@ -21,7 +25,7 @@ const host = {
   log: (lvl, msg) => { if (lvl >= 3) console.log(msg); },
   asset: (p) => (p === "index.html" ? page : undefined),
   invoke: () => {}, timer: () => {}, frame: () => undefined, focus: () => {}, scrollIntoView: () => {}, scrollTo: () => {},
-  fontMetrics: (size, mono, family) => { asked.push(family); return [12, 3, 0]; },
+  fontMetrics: (size, mono, family) => { asked.push(family); return [12, 3, 0, 6]; },
   ops: (json) => {
     for (const [k, id, x] of JSON.parse(json)) {
       if (k === "c") nodes.set(id, { kind: x, props: {}, kids: [] });
@@ -35,8 +39,8 @@ const ctx = vm.createContext({ __host: host });
 vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();
-const body = [...nodes.values()].find((n) => n.kids.length === 4);
-const [one, tall, row, text] = body.kids.map((id) => nodes.get(id));
+const body = [...nodes.values()].find((n) => n.kids.length === 7);
+const [one, tall, row, text, middle, bottom, top] = body.kids.map((id) => nodes.get(id));
 const box = (n) => nodes.get(n.kids[0]);
 assert.deepEqual(box(one).props.m, [2, 0, 3, 0], "12 above the baseline, 3 below");
 assert.deepEqual(box(tall).props.m, [9, 0, 11, 0], "30px line: 7 + 12 above, 11 below");
@@ -44,4 +48,10 @@ assert.equal(row.props.fd, "row");
 for (const id of row.kids) assert.equal(nodes.get(id).props.as, "flex-end", "boxes side by side: bottoms on one line");
 assert.equal(box(text).props.m, undefined, "a box with text in it keeps its text's baseline");
 assert.ok(asked.includes("system-ui"), `the block's family: ${asked}`);
+// vertical-align, alone on its line (x-height 6): middle centers it 3px
+// over the baseline (4 down, the line 15); bottom puts it on the line's
+// bottom (5 down); a 30px box at the top makes the line 30.
+assert.deepEqual(box(middle).props.m, [4, 0, 1, 0]);
+assert.deepEqual(box(bottom).props.m, [5, 0, 0, 0]);
+assert.deepEqual(box(top).props.m ?? [0, 0, 0, 0], [0, 0, 0, 0]);
 console.log("inline-block line: ok");

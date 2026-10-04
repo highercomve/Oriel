@@ -142,6 +142,9 @@ const REPLACED = new Set(["img", "svg", "canvas", "video", "iframe", "object", "
 
 // A line-height other than normal in px at font size `fs`: a number times
 // it, a percentage of it, a length.
+// vertical-align values a box alone on its line is placed by (imageLine).
+const LINE_ALIGNS = new Set(["middle", "top", "bottom"]);
+
 // A box's margin-box height less its margins, when its props say it (a
 // px height: content-box sizing adds the vertical padding and border).
 function boxHeight(p) {
@@ -185,7 +188,9 @@ function lineStrut(cs, fs, host) {
   // The half-leading above the baseline floored, as WebKit places it (a
   // 30px line-height over a 12+3px font: 7 above, 8 below).
   const above = Math.round(ascent) + Math.floor((lh - Math.round(ascent) - Math.round(descent)) / 2);
-  return [above, Math.max(0, lh - above)];
+  // Its x-height third (vertical-align: middle): the backend's, else half
+  // the size.
+  return [above, Math.max(0, lh - above), m[3] > 0 ? m[3] : fs / 2];
 }
 // An inline element with a box of its own (padding, a border, rounded
 // corners, a horizontal margin: a "148 MB" badge after a label). At the
@@ -1678,8 +1683,22 @@ export class Renderer {
       // the font's descent (imageLine, for the whole content).
       if ((imageLine && this.imageLine([item], cs, childCtx.rematch)) || (flowBlock && !imageLine && this.loneImage(flow, index, cs, childCtx.rematch))) {
         const n = nodes.get(cid);
-        const [above, gap] = lineStrut(cs, fontSize, this.host);
-        if (n && gap > 0) {
+        const [above, gap, xh] = lineStrut(cs, fontSize, this.host);
+        const va = this.styleOf(item.el)?.["vertical-align"];
+        const hk = n && boxHeight(n.props);
+        const mk = n?.props.m ? [...n.props.m] : [0, 0, 0, 0];
+        if (n && LINE_ALIGNS.has(va) && hk !== null && typeof mk[0] === "number" && typeof mk[2] === "number") {
+          // Alone on its line, aligned to it (WKWebView's, measured): top
+          // at the line's top, bottom at its bottom, middle centered on
+          // the baseline less half the x-height; the line holds it and the
+          // strut, its margins take the rest.
+          const H = mk[0] + hk + mk[2];
+          const top = va === "middle" ? above - xh / 2 - H / 2 : va === "bottom" ? above + gap - H : 0;
+          const lineTop = Math.min(0, top), lineBottom = Math.max(above + gap, top + H);
+          mk[0] += top - lineTop;
+          mk[2] += lineBottom - (top + H);
+          n.props = { ...n.props, m: mk };
+        } else if (n && gap > 0) {
           const m = n.props.m ? [...n.props.m] : [0, 0, 0, 0];
           // Its baseline is its bottom margin edge: the line is the
           // strut's height above it at least (a 10px badge in a 12px
@@ -1898,6 +1917,9 @@ export class Renderer {
   // Whether the in-flow content is only images on the baseline (imageLine).
   imageLine(flow, cs, rematch) {
     let any = false;
+    // vertical-align other than baseline: one box alone on its line.
+    let boxes = 0;
+    for (const f of flow) if (f.el) { const c = this.style(f.el, cs, rematch); if (c.position !== "absolute" && c.position !== "fixed" && (c.display || "inline") !== "none") boxes++; }
     for (const f of flow) {
       if (!f.el) return false;
       const ccs = this.style(f.el, cs, rematch);
@@ -1905,7 +1927,7 @@ export class Renderer {
       const d = ccs.display || "inline";
       const va = ccs["vertical-align"];
       const replaced = REPLACED.has(f.el.localName) && (d === "inline" || d === "inline-block");
-      if ((!replaced && !this.bottomBaseline(f.el, ccs)) || (va && va !== "baseline")) return false;
+      if ((!replaced && !this.bottomBaseline(f.el, ccs)) || (va && va !== "baseline" && !(boxes === 1 && LINE_ALIGNS.has(va)))) return false;
       any = true;
     }
     return any;
