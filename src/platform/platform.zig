@@ -133,6 +133,10 @@ pub const evalJsByLabel = impl.evalJsByLabel;
 pub const has_emit_event = @hasDecl(impl, "emitEvent");
 pub const emitEvent = if (has_emit_event) impl.emitEvent else void;
 pub const setMenu = impl.setMenu;
+/// Optional: the page's theme-color for the window's caption
+/// (`setWindowThemeColor(handle: WindowHandle, color: ?[4]u8)`).
+pub const has_window_theme_color = @hasDecl(impl, "setWindowThemeColor");
+pub const setWindowThemeColor = if (has_window_theme_color) impl.setWindowThemeColor else void;
 
 // Platform-specific declarations (e.g. for Linux backward compatibility)
 pub const GtkApp = if (@hasDecl(impl, "GtkApp")) impl.GtkApp else void;
