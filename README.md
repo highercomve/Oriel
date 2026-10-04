@@ -3,16 +3,19 @@
 <p align="center">
   <a href="#license"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-F7A41D?style=flat-square"></a>
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-F7A41D?style=flat-square&logo=zig&logoColor=white">
-  <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux%20(GTK4%20%2B%20WebKitGTK)-1B1F2A?style=flat-square">
+  <img alt="Platforms: Linux, Windows, macOS, Android, iOS" src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS%20%C2%B7%20Android%20%C2%B7%20iOS-1B1F2A?style=flat-square">
   <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-1B1F2A?style=flat-square">
 </p>
 
 # Oriel
 
-**Desktop apps with Zig and the web.** Oriel is a Tauri-like framework in
+**Desktop and mobile apps with Zig and the web.** Oriel is a Tauri-like framework in
 Zig 0.16: a native window with the system webview, your frontend (React, Vite,
 plain HTML…) embedded in a small binary, and typed JS ↔ Zig calls generated
-from plain Zig structs. Linux (GTK4 + WebKitGTK 6.0) first.
+from plain Zig structs. It targets Linux, Windows, macOS, Android and iOS
+(iOS is verified in the simulator; device testing is next). An optional
+[native renderer](#native-renderer-experimental) runs the same frontend
+without a WebView.
 
 - **Small:** a release app is a few MB; the build cache is hundreds of MB, not gigabytes.
 - **Typed both ways:** `invoke` and `listen` in TypeScript are generated from your Zig `Commands` and `Events`.
@@ -30,6 +33,30 @@ cd my-app && oriel dev    # hot reload; `oriel build` for the release binary
 > **Status:** experimental; APIs will change. Linux: complete. Windows: every module, verified on Windows 11 (native and cross-compiled builds). macOS: the shell and every module work (verified on macOS 15, Apple Silicon), incl. Metal for whisper/llama, `.app`/`.dmg` packaging and deep links.
 > See [PLAN.md](PLAN.md) for the roadmap, [IDEA.md](IDEA.md) for the background
 > and [LIBRARIES.md](LIBRARIES.md) for the dependencies.
+
+## Latest development (2026-10-03)
+
+These features are in `main`; the installer above uses the latest tagged
+release. Build from this checkout to try the current renderer work.
+
+- **Two renderers, one frontend:** the system WebView or `-Dnative_ui`, with
+  QuickJS, a DOM written in Zig, Yoga layout and drawing on all five platforms.
+  React, Vue, Svelte, Preact and CSS-in-JS apps run on the native renderer;
+  Alpine needs its CSP build or an explicit `unsafe-eval` policy.
+- **Closer to the platform WebView:** mixed-font line boxes, baseline alignment,
+  padded and bordered inline text, SVG styles, native field editing and scroll
+  events. Android now uses fractional text widths and WebView-sized controls;
+  macOS keeps the default AppKit button appearance until CSS customizes it.
+- **Canvas and animation:** draw from JavaScript or Zig (`oriel.canvas`), with
+  numeric canvas recording and transform/opacity updates that skip flattening.
+  Breakout compares both with the WebView; the render bench also measures
+  power on Android and Linux where battery or RAPL readings are available.
+- **Native CSP enforcement:** QuickJS refuses `eval`, Function constructors
+  and string timers when the app's policy disallows them.
+
+The native renderer remains experimental: accessibility, full CSS grid,
+shadow DOM and several browser APIs are still missing. See the
+[support and limits](https://highercomve.github.io/Oriel/docs/native-renderer/).
 
 ## Why "Oriel"?
 
@@ -1759,8 +1786,12 @@ draws 1000 canvas balls at 91 fps from JavaScript and at the display's
 120 fps from Zig. Videos of both renderers running the bench are on the
 site. Pages are laid out as in a browser: `box-sizing`, `calc()` sizes,
 rounded `overflow: hidden`, CSS line boxes, and pointer and key events on
-every platform. `-Dnative_dom=false` builds it on linkedom
-instead.
+every platform. Mixed-font lines and inline decorations keep their baselines,
+SVG files honor their own styles, and fields on Windows, Android and Apple
+platforms send `beforeinput`, input types and selection changes.
+`-Dnative_dom=false` builds it on linkedom
+instead. The performance numbers above are dated runs, not a guarantee for
+every page; the [render bench](examples/render-bench) records the conditions.
 
 Details, numbers on every platform and a comparison with React Native:
 [the native renderer page](https://highercomve.github.io/Oriel/docs/native-renderer/),
@@ -1776,7 +1807,7 @@ Details, numbers on every platform and a comparison with React Native:
 | Events (`emit` / `listen`) | ✅ Zig → JS, type-checked on both sides; targeted (`window.emit`) & broadcast |
 | Capabilities (command scopes) | ✅ per origin, per command, per window (`windows` list) |
 | CSP, navigation limits, external links | ✅ |
-| Isolation pattern | ❌ |
+| Isolation pattern | ✅ opt-in sandboxed frame hook with signed IPC calls (WebView) |
 | Tray icon + menu | ✅ items, checkboxes, separators, submenus, runtime updates |
 | Multiple windows | ✅ open/close, targeted events, geometry persistence, window options |
 | App menu bar | ✅ Linux (`GMenuModel` + `GtkApplication` actions with shortcuts) + Windows (`HMENU` + `HACCEL`); runtime untested on Windows |

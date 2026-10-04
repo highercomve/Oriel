@@ -76,9 +76,24 @@ col, colgroup { display: none; }
 // WebKit's controls (WKWebView, so the native renderer on macOS and iOS):
 // -webkit-small-control is the system font at 11px, a textarea's too
 // (measured against WKWebView: an input 19 tall on macOS, a textarea 32).
+// macOS's buttons (WebKit's html.css there: 2px 6px 3px, a ButtonFace
+// border), their background marked for pushButton (WKWebView's push button
+// while the page keeps it).
+export const UA_CSS_MAC = `
+button { padding: 2px 6px 3px; background: rgba(239, 239, 239, 0.9999); border-color: rgb(192, 192, 192); border-radius: 0; }
+`;
+
 export const UA_CSS_WEBKIT = `
 button, input, textarea, select { font-size: 11px; }
 textarea { font-family: -webkit-small-control, system-ui; }
+`;
+
+// Chrome's controls on Android (the WebView there), as measured: 16px
+// checkboxes and radios, a radio's margin 3px 3px 0 5px. Text fields and
+// selects are sized by the backend's measure (android.zig).
+export const UA_CSS_CHROME_ANDROID = `
+input[type=checkbox], input[type=radio] { width: 16px; height: 16px; }
+input[type=radio] { margin: 3px 3px 0 5px; }
 `;
 
 // WebKitGTK's controls, as measured (Linux: the WebView there): the GTK
@@ -681,6 +696,10 @@ export class Renderer {
     const t1 = P && P();
     const nodes = new Map();
     const paintOps = this.host.paintOps ? [] : null;
+    // The x channel as numbers where the host takes them (host.paint,
+    // Tree.applyPaint): per node [1, id, 5, tx, ty, sc, rot, op], NaN unset.
+    const nums = paintOps && this.host.paint ? new Float64Array((changes.length / 6) * 8) : null;
+    let at = 0;
     for (let i = 0; i < changes.length; i += 6) {
       const fc = changes[i], saved = changes[i + 1], d = changes[i + 2], normal = changes[i + 3], important = changes[i + 4], old = changes[i + 5];
       // The new values in place: as inlineStyle() would make them (a rule's
@@ -703,15 +722,25 @@ export class Renderer {
         for (const k of PAINT_PROPS) delete p[k];
         return Object.assign(p, paint);
       };
+      // In place: the node as made is this element's own copy (renderNow),
+      // and so are the props as sent once this path has sent them (p null);
+      // before that they may be emit's, copied once.
       const r = fc.root;
-      r.props = part({ ...r.props });
-      const sent = part(old.props ? { ...old.props } : JSON.parse(old.p));
+      part(r.props);
+      const sent = part(old.p === null && old.props ? old.props : old.props ? { ...old.props } : JSON.parse(old.p));
       if (paintOps) {
         // Just the transform and opacity (the "x" op); the props kept
         // unencoded (a later diff encodes them if it needs to).
-        const n = (v) => (v === undefined ? "null" : v);
-        paintOps.push(`["x",${fc.id},${n(sent.tx)},${n(sent.ty)},${n(sent.sc)},${n(sent.rot)},${n(sent.op)}]`);
-        this.prev.set(fc.id, { kind: old.kind, p: null, props: sent, k: old.k });
+        if (nums) {
+          nums[at] = 1; nums[at + 1] = fc.id; nums[at + 2] = 5;
+          nums[at + 3] = sent.tx ?? NaN; nums[at + 4] = sent.ty ?? NaN; nums[at + 5] = sent.sc ?? NaN;
+          nums[at + 6] = sent.rot ?? NaN; nums[at + 7] = sent.op ?? NaN;
+          at += 8;
+        } else {
+          const n = (v) => (v === undefined ? "null" : v);
+          paintOps.push(`["x",${fc.id},${n(sent.tx)},${n(sent.ty)},${n(sent.sc)},${n(sent.rot)},${n(sent.op)}]`);
+        }
+        if (old.p === null && old.props === sent) {} else this.prev.set(fc.id, { kind: old.kind, p: null, props: sent, k: old.k });
       } else nodes.set(fc.id, { kind: r.kind, props: sent, kids: r.kids.slice() });
     }
     const t2 = P && P();
@@ -725,7 +754,8 @@ export class Renderer {
     if (paintOps) {
       this.applyMs = 0;
       const a = P && P();
-      if (paintOps.length) this.host.ops(`[${paintOps.join(",")}]`);
+      if (nums) { if (at) this.host.paint(at === nums.length ? nums : nums.subarray(0, at)); }
+      else if (paintOps.length) this.host.ops(`[${paintOps.join(",")}]`);
       if (P) this.applyMs = P() - a;
       this.schedule();
     } else {
@@ -734,7 +764,7 @@ export class Renderer {
       // starts from them without parsing it.
       for (const [id, n] of nodes) { const e = this.prev.get(id); if (e && e.p !== null) e.props = n.props; }
     }
-    if (P) this.host.log(1, `PROF boxes: ${paintOps ? paintOps.length : nodes.size} nodes, prepare ${(P() - t0 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t0).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
+    if (P) this.host.log(1, `PROF boxes: ${nums ? at / 8 : paintOps ? paintOps.length : nodes.size} nodes, prepare ${(P() - t0 - this.applyMs).toFixed(2)}, apply ${this.applyMs.toFixed(2)}, check ${(t1 - t0).toFixed(2)}, props ${(t2 - t1).toFixed(2)}`);
     return true;
   }
 
@@ -1285,7 +1315,7 @@ export class Renderer {
       // An SVG picture (a framework's logo): drawn as an icon, the
       // backends' images being bitmaps.
       const svg = /^data:image\/svg\+xml/.test(src) || /\.svg([?#]|$)/i.test(src) ? this.svgFile(src) : null;
-      const icon = svg && iconFor(svg.svg, { color: "black" }, svg, (file) => this.svgFile(file));
+      const icon = svg && iconFor(svg.svg, { color: "black" }, svg, (file) => this.svgFile(file), { image: true });
       if (icon) {
         props.icon = icon;
         for (const k of ["w", "h"]) if (props[k] === "auto") delete props[k];
@@ -1785,14 +1815,26 @@ export class Renderer {
   loneImage(flow, i, cs, rematch) {
     const f = flow[i];
     if (!f.el || !this.imageLine([f], cs, rematch)) return false;
-    const inlineAt = (j) => {
-      const g = flow[j];
-      if (!g) return false;
-      if (g.text) return true;
-      const d = this.style(g.el, cs, rematch).display || "inline";
-      return d.startsWith("inline");
+    // The nearest neighbor in `step`'s direction that takes room in the
+    // line: a collapsible space (Svelte's templates keep the spaces between
+    // tags) and out-of-flow boxes (position: absolute) don't, as
+    // in a browser, where `<img> <img style="position:absolute">` is still
+    // one image on its line.
+    const collapses = !(cs["white-space"] || "").startsWith("pre") && cs["white-space"] !== "break-spaces";
+    const inlineFrom = (j, step) => {
+      for (; j >= 0 && j < flow.length; j += step) {
+        const g = flow[j];
+        // The space kept between two inline boxes: it collapses away beside
+        // an out-of-flow box or at the line's end.
+        if (g.space && collapses) continue;
+        if (!g.el) return true;
+        const gcs = this.style(g.el, cs, rematch);
+        if (gcs.position === "absolute" || gcs.position === "fixed" || gcs.display === "none") continue;
+        return (gcs.display || "inline").startsWith("inline");
+      }
+      return false;
     };
-    return !inlineAt(i - 1) && !inlineAt(i + 1);
+    return !inlineFrom(i - 1, -1) && !inlineFrom(i + 1, 1);
   }
 
   // Whether the in-flow content is only images on the baseline (imageLine).
@@ -2342,7 +2384,8 @@ function boxProps(cs, display, fs, el) {
   const bb = borderBoxByDefault(el);
   const key = `b${display}|${fs}|${button}|${bb}`;
   const d = derived.get(cs);
-  if (d?.parts) {
+  // (A mac button's background decides its whole box: pushButton.)
+  if (d?.parts && !(button && pushButtons && d.parts.includes("bg"))) {
     const p = { ...memoized(d.base, key, () => makeBoxProps(d.base, display, fs, button, bb)) };
     for (const part of d.parts) {
       const [keys, make] = PARTS[part];
@@ -2393,7 +2436,48 @@ const webkitGtkRings = (accent) => {
   return { control: ring(-2, 5), check: ring(0, 3), link: ring(1, 3), box: ring(1, 3) };
 };
 let osRings = null;
+// A color's shade for an outset or inset border's dark sides (WebKit's and
+// Blink's Color::dark).
+function darkColor(c) {
+  const v = Math.max(c[0], c[1], c[2]) / 255;
+  const k = v === 0 ? 0 : Math.max(0, (v - 0.33) / v);
+  return [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k), c[3]];
+}
+
+// macOS: buttons as WKWebView draws them there (measured), AppKit's push
+// button: while the page leaves its background, border and appearance
+// alone (UA_CSS_MAC marks the background), no border (WebKit's computed
+// border is 0: a 14px button is 24 high, not 28; its 2px a side still
+// taken), white, 4px corners and a hairline edge just outside it;
+// otherwise the CSS box on WebKit's ButtonFace (rgb(192, 192, 192)). (A
+// button taller than AppKit's push button, WebKit draws as a square bevel
+// button; here it stays a push button.)
+let pushButtons = false;
+// (A ButtonFace no page writes: its background shorthand as UA_CSS_MAC left it.)
+const PUSH_MARK = "rgba(239, 239, 239, 0.9999)";
+function pushButton(cs, p) {
+  if (cs.background !== PUSH_MARK || (cs["background-color"] && cs["background-color"] !== PUSH_MARK)) return;
+  const app = cs.appearance || cs["-webkit-appearance"];
+  const uaBorder = cs["border-top-style"] === "outset" && cs["border-right-style"] === "outset" &&
+    cs["border-bottom-style"] === "outset" && cs["border-left-style"] === "outset";
+  if (app === "none" || !uaBorder) {
+    // WebKit's ButtonFace on macOS (measured; UA_CSS_MAC's border is it too).
+    p.bg = { ...(p.bg || {}), color: [192, 192, 192, 1] };
+    return;
+  }
+  delete p.bw; delete p.bc; delete p.bs;
+  // The bezel keeps the border's 2px a side (WebKit's computed border is 0
+  // but a push button is that much wider than its padding and text).
+  const pad = p.pad ? p.pad.slice() : [0, 0, 0, 0];
+  for (const i of [1, 3]) if (typeof pad[i] === "number" || pad[i] === undefined) pad[i] = (pad[i] || 0) + 2;
+  p.pad = pad;
+  p.bg = { ...(p.bg || {}), color: [255, 255, 255, 1] };
+  if (!p.br) p.br = [4, 4, 4, 4];
+  if (!p.sh) p.sh = { x: 0, y: 0.5, blur: 0, spread: 1, color: [0, 0, 0, 0.075] };
+}
+
 export function setFocusRingOS(os, accent) {
+  pushButtons = os === "macos";
   osRings = os === "linux" ? webkitGtkRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
 }
 let focusVisible = null;
@@ -2522,6 +2606,15 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
     p.bw = bw;
     const cur = color(cs.color);
     p.bc = sides.map((s) => color(cs[`border-${s}-color`] || "currentcolor", cur) || [0, 0, 0, 0]);
+    // outset and inset: the shaded sides darker, as WebKit and Blink shade
+    // them (Color::dark: each channel × (v - 0.33) / v, v the brightest;
+    // ButtonFace's 192 is 108): outset the bottom and right, inset the top
+    // and left.
+    p.bc = p.bc.map((c, i) => {
+      const st = cs[`border-${sides[i]}-style`];
+      const shaded = st === "outset" ? i === 1 || i === 2 : st === "inset" ? i === 0 || i === 3 : false;
+      return shaded ? darkColor(c) : c;
+    });
     // Dashed or dotted: the first side drawn so (the backends draw one
     // style for the box).
     const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
@@ -2568,6 +2661,7 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
   if (cs.visibility === "hidden") p.vis = false;
   if (cs.cursor === "pointer") p.click = true;
   if (cs["z-index"] && cs["z-index"] !== "auto") p.z = parseInt(cs["z-index"], 10);
+  if (button && pushButtons) pushButton(cs, p);
   return p;
 }
 
@@ -2588,7 +2682,20 @@ function positionPart(cs, fs, p) {
 }
 
 // Transforms: translate moves the box; scale and rotate are drawn around its center.
+// translate(Xpx, Ypx) alone: what an animation loop writes each frame.
+const TRANSLATE_PX = /^translate\(\s*(-?(?:\d+\.?\d*|\.\d+))px\s*,\s*(-?(?:\d+\.?\d*|\.\d+))px\s*\)$/;
+
 function transformPart(cs, fs, p) {
+  const t = cs.transform;
+  if (t !== undefined && cs.translate === undefined && cs.scale === undefined && cs.rotate === undefined) {
+    const m = TRANSLATE_PX.exec(t);
+    if (m) {
+      const x = +m[1], y = +m[2];
+      if (x) p.tx = x;
+      if (y) p.ty = y;
+      return;
+    }
+  }
   const tr = transformOf(cs, fs);
   if (tr.tx) p.tx = tr.tx;
   if (tr.ty) p.ty = tr.ty;
@@ -2912,8 +3019,27 @@ function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
 function numberOf(v) {
   if (v === undefined || v === null) return NaN;
   const t = String(v).trim().replace(/calc\(/g, "(");
-  if (/^[\d.+\-*/()\s]+$/.test(t)) { try { return +Function(`return (${t})`)(); } catch { return NaN; } }
+  if (/^[\d.+\-*/()\s]+$/.test(t)) return arithmetic(t);
   return parseFloat(t);
+}
+
+// + - * / and parentheses over plain numbers (a calc() of numbers), or NaN.
+// Parsed here, not compiled (the app's CSP may refuse the page's eval, and
+// the runtime runs as the page).
+export function arithmetic(src) {
+  const toks = src.match(/\d*\.?\d+(?:e[+-]?\d+)?|[-+*/()]/gi) || [];
+  let i = 0;
+  const atom = () => {
+    const t = toks[i++];
+    if (t === "(") { const v = sum(); if (toks[i++] !== ")") return NaN; return v; }
+    if (t === "-") return -atom();
+    if (t === "+") return atom();
+    return t === undefined ? NaN : parseFloat(t);
+  };
+  const product = () => { let v = atom(); while (toks[i] === "*" || toks[i] === "/") v = toks[i++] === "*" ? v * atom() : v / atom(); return v; };
+  const sum = () => { let v = product(); while (toks[i] === "+" || toks[i] === "-") v = toks[i++] === "+" ? v + product() : v - product(); return v; };
+  const v = sum();
+  return i === toks.length ? v : NaN;
 }
 
 function angleOf(v) {

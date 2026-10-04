@@ -34,6 +34,7 @@ extern int oriel_nui_asset(void *opaque, const char *path, size_t len, const cha
 extern void oriel_nui_invoke(void *opaque, uint32_t call_id, const char *cmd, size_t cmd_len, const char *args, size_t args_len);
 extern void oriel_nui_timer(void *opaque, uint32_t timer_id, double ms);
 extern void oriel_nui_ops(void *opaque, const char *json, size_t len);
+extern void oriel_nui_paint(void *opaque, const double *nums, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
 extern int oriel_nui_vsync(void *opaque);
 extern void oriel_nui_warm_fonts(void *opaque, const double *v, size_t count);
@@ -103,6 +104,10 @@ static void report(JSContext *ctx) {
     JS_FreeValue(ctx, exc);
 }
 
+// The app's CSP's refusals for this engine (engine.zig): 0 of the page's
+// eval, 1 of inline event handlers; their messages, or NULL (allowed).
+extern const char *oriel_nui_csp(void *opaque, int which);
+
 static JSValue h_log(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     int32_t level = 1;
@@ -158,6 +163,22 @@ static JSValue h_ops(JSContext *ctx, JSValueConst this_val, int argc, JSValueCon
     size_t len = 0;
     const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
     if (s) { oriel_nui_ops(opaque_of(ctx), s, len); JS_FreeCString(ctx, s); }
+    return JS_UNDEFINED;
+}
+
+// host.paint(Float64Array): transform/opacity entries as numbers
+// (Tree.applyPaint's layout).
+static JSValue h_paint(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    size_t offset = 0, bytes = 0, per = 0;
+    JSValue buffer = JS_GetTypedArrayBuffer(ctx, argv[0], &offset, &bytes, &per);
+    if (JS_IsException(buffer)) return JS_EXCEPTION;
+    size_t size = 0;
+    uint8_t *data = JS_GetArrayBuffer(ctx, &size, buffer);
+    JS_FreeValue(ctx, buffer);
+    if (!data || per != 8 || offset + bytes > size) return JS_ThrowTypeError(ctx, "host.paint: a Float64Array");
+    oriel_nui_paint(opaque_of(ctx), (const double *)(data + offset), bytes / 8);
     return JS_UNDEFINED;
 }
 
@@ -436,6 +457,38 @@ static JSValue h_eval_script(JSContext *ctx, JSValueConst this_val, int argc, JS
     if (name) JS_FreeCString(ctx, name);
     if (code) JS_FreeCString(ctx, code);
     return JS_UNDEFINED;
+}
+
+// host.compileHandler(name, code): an inline event handler's function
+// (`function (event) { code }`), compiled by the host (not the page's eval,
+// which its CSP may refuse); a SyntaxError is thrown to the caller.
+static JSValue h_compile_handler(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_UNDEFINED;
+    size_t nlen = 0, clen = 0;
+    const char *name = JS_ToCStringLen(ctx, &nlen, argv[0]);
+    const char *code = JS_ToCStringLen(ctx, &clen, argv[1]);
+    JSValue r = JS_UNDEFINED;
+    const char *refusal = oriel_nui_csp(opaque_of(ctx), 1);
+    if (refusal) {
+        // Refused by the CSP (no 'unsafe-inline'): noted, and no handler.
+        oriel_nui_log(opaque_of(ctx), 3, refusal, strlen(refusal));
+    } else if (name && code) {
+        static const char head[] = "(function (event) {\n";
+        static const char tail[] = "\n})";
+        size_t n = sizeof head - 1 + clen + sizeof tail - 1;
+        char *src = malloc(n + 1);
+        if (src) {
+            memcpy(src, head, sizeof head - 1);
+            memcpy(src + sizeof head - 1, code, clen);
+            memcpy(src + sizeof head - 1 + clen, tail, sizeof tail);
+            r = JS_Eval(ctx, src, n, name, JS_EVAL_TYPE_GLOBAL);
+            free(src);
+        }
+    }
+    if (name) JS_FreeCString(ctx, name);
+    if (code) JS_FreeCString(ctx, code);
+    return r;
 }
 
 // ---- ES modules ---------------------------------------------------------------
@@ -782,11 +835,22 @@ static void set_fn(JSContext *ctx, JSValue obj, const char *name, JSCFunction *f
     JS_SetPropertyStr(ctx, obj, name, JS_NewCFunction(ctx, fn, name, len));
 }
 
-void *oqjs_new(void *opaque, const char *platform_json, const char *label, const char *url) {
+// The app's CSP refuses the page's eval of strings: the violation logged,
+// and the message for QuickJS's EvalError (WebKit's, with the directive).
+static const char *nui_eval_refused(JSContext *ctx) {
+    const char *msg = oriel_nui_csp(opaque_of(ctx), 0);
+    if (!msg) msg = "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script.";
+    oriel_nui_log(opaque_of(ctx), 3, msg, strlen(msg));
+    return msg;
+}
+
+void *oqjs_new(void *opaque, const char *platform_json, const char *label, const char *url, int refuse_eval) {
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) return NULL;
     JSContext *ctx = JS_NewContext(rt);
     if (!ctx) { JS_FreeRuntime(rt); return NULL; }
+    // The app's CSP refusing the page's eval (the engine keeps its message).
+    if (refuse_eval) JS_OrielSetEvalRefused(ctx, nui_eval_refused);
     oqjs *self = js_malloc(ctx, sizeof *self);
     self->rt = rt;
     self->ctx = ctx;
@@ -797,12 +861,15 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     JS_SetModuleLoaderFunc(rt, nui_normalize, nui_load_module, NULL);
 
     JSValue global = JS_GetGlobalObject(ctx);
-    JSValue host = JS_NewObject(ctx);
+    // No prototype: a getter the page puts on Object.prototype never sees
+    // it (the runtime reads properties it doesn't have, as host.prof).
+    JSValue host = JS_NewObjectProto(ctx, JS_NULL);
     set_fn(ctx, host, "log", h_log, 2);
     set_fn(ctx, host, "asset", h_asset, 1);
     set_fn(ctx, host, "invoke", h_invoke, 3);
     set_fn(ctx, host, "timer", h_timer, 2);
     set_fn(ctx, host, "ops", h_ops, 1);
+    set_fn(ctx, host, "paint", h_paint, 1);
     set_fn(ctx, host, "text", h_text, 2);
     set_fn(ctx, host, "leafStyle", h_leaf_style, 2);
     set_fn(ctx, host, "leaf", h_leaf, 4);
@@ -827,6 +894,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "scrollIntoView", h_scroll_into_view, 2);
     set_fn(ctx, host, "scrollTo", h_scroll_to, 3);
     set_fn(ctx, host, "evalScript", h_eval_script, 2);
+    set_fn(ctx, host, "compileHandler", h_compile_handler, 2);
     set_fn(ctx, host, "evalModule", h_eval_module, 2);
     JS_SetPropertyStr(ctx, host, "platform", JS_NewString(ctx, platform_json));
     JS_SetPropertyStr(ctx, host, "label", JS_NewString(ctx, label));

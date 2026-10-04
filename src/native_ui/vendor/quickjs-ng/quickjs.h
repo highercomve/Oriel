@@ -884,6 +884,8 @@ JS_EXTERN int JS_GetRefCount(JSValueConst v);
 JS_EXTERN bool JS_ObjectHasState(JSValueConst v, JSValueConst proto);
 /* Oriel: marks a WeakMap/WeakSet as the runtime's own cache. */
 JS_EXTERN void JS_SetMapInternal(JSValueConst map);
+/* Oriel: refuse the page's eval of strings (a CSP without 'unsafe-eval') */
+JS_EXTERN void JS_OrielSetEvalRefused(JSContext *ctx, const char *(*fn)(JSContext *ctx));
 JS_EXTERN int JS_ToBool(JSContext *ctx, JSValueConst val); /* return -1 for JS_EXCEPTION */
 static inline JSValue JS_ToBoolean(JSContext *ctx, JSValueConst val)
 {

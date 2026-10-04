@@ -10,7 +10,7 @@
 				<img class="hero-mark" src="$site.asset('brand/oriel-icon.svg').link()" alt="Oriel logo" width="96" height="96">
 				<p class="eyebrow">Zig 0.16 · Linux · Windows · macOS · Android · iOS</p>
 				<h1 class="hero-title">Apps in Zig.<br><span class="accent">UI with the web.</span></h1>
-				<p class="hero-lead">Oriel gives your React, Vue, Svelte or plain HTML frontend a native window and the system webview on the desktop, a native app on Android and iOS, and typed Zig commands to call. One codebase, small binaries, secure by default.</p>
+				<p class="hero-lead">Oriel gives your React, Vue, Svelte or plain HTML frontend a native app on desktop and mobile, with typed Zig commands to call. Use the system WebView or try the experimental native renderer with the same web files. One codebase, five platforms.</p>
 				<div class="hero-actions">
 					<a class="btn btn-primary" href="$site.page('docs/getting-started').link()">Get started</a>
 					<a class="btn btn-ghost" href="https://github.com/highercomve/Oriel">View on GitHub</a>
@@ -90,6 +90,29 @@
 					<p><code>oriel package</code> builds deb, rpm, AppImage, <code>.dmg</code> and Windows <code>setup.exe</code> (natively or cross-compiled from Linux); <code>oriel android build</code> an APK and AAB; <code>oriel ios build</code> an <code>.ipa</code>.</p>
 				</article>
 			</div>
+		</section>
+
+		<section class="section" id="latest">
+			<div class="section-head">
+				<h2>Built in main</h2>
+				<p>Development update · October 3, 2026. Build from the repository to try these changes; the installer uses the latest tagged release.</p>
+			</div>
+			<div class="feature-grid">
+				<article class="feature">
+					<h3>Your frontend, drawn natively</h3>
+					<p><code>-Dnative_ui</code> runs the same HTML, CSS and JavaScript with QuickJS, a DOM written in Zig and platform drawing on Linux, Windows, macOS, Android and iOS. React, Vue, Svelte, Preact and CSS-in-JS apps run on it.</p>
+				</article>
+				<article class="feature">
+					<h3>Text and controls that fit</h3>
+					<p>Mixed-font lines, baseline alignment, decorated inline text and styled SVGs. Android text widths and control sizes follow its WebView; macOS buttons keep their default AppKit appearance until styled.</p>
+				</article>
+				<article class="feature">
+					<h3>Canvas from JavaScript or Zig</h3>
+					<p>Breakout runs either way, in both renderers. Numeric canvas recording and transform updates reduce work per frame; the render bench measures rows, animation, memory and power on supported Android and Linux hardware.</p>
+				</article>
+			</div>
+			<p><a class="btn btn-ghost" href="$site.page('docs/native-renderer').link()">Explore the native renderer</a></p>
+			<p>Experimental: accessibility, full CSS grid and shadow DOM are still ahead. iOS testing is in the simulator; real devices are next.</p>
 		</section>
 
 		<section class="section showcase">

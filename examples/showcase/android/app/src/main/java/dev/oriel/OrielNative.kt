@@ -30,7 +30,7 @@ import android.text.TextPaint
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.text.style.RelativeSizeSpan
-import android.text.style.BackgroundColorSpan
+import android.text.style.ReplacementSpan
 import android.text.style.ForegroundColorSpan
 import android.text.style.MetricAffectingSpan
 import android.text.style.UnderlineSpan
@@ -125,7 +125,7 @@ internal object Nui {
         val hp = if (v != null && v.height > 0) v.height else m.heightPixels
         val k = cssScale(wp, m.density)
         val w = Math.round(wp / k).toLong()
-        val h = Math.round(hp / k).toLong()
+        val h = floor(hp / k + 1e-3f).toLong()
         val dark = if (isDark(res.configuration)) 1L else 0L
         return (dark shl 32) or ((h and 0xffff) shl 16) or (w and 0xffff)
     }
@@ -189,6 +189,15 @@ internal class NuiNode(val id: Int, var kind: String) {
     /** Runs `start` until `end` of the text with outline `ol`, their content
      *  area (fonts' ascent and descent, px) `above` and `below` the baseline. */
     class RunRing(val start: Int, val end: Int, val ol: JSONObject, val above: Float, val below: Float)
+
+    /** Inline boxes (a run's `ib`: a padded, bordered or rounded <code> chip
+     *  amid the text): its text from `start` to `end` (the room spacers
+     *  outside it), its decoration, and its font's content area. */
+    var inlineBoxes: List<InlineBox> = emptyList()
+
+    class InlineBox(val start: Int, val end: Int, val ib: JSONObject, val above: Float, val below: Float) {
+        fun side(key: String, i: Int) = ib.optJSONArray(key)?.optDouble(i, 0.0)?.toFloat() ?: 0f
+    }
 
     /** A single run's text set apart from `p` (setText, a leaf's text):
      *  `p` may be a leaf style's, shared by every node made from it. */
@@ -270,7 +279,7 @@ internal class NuiNode(val id: Int, var kind: String) {
         val fz = p.optDouble("fz", 16.0).toFloat()
         val mono = p.optBoolean("mono")
         val ff = p.optString("ff")
-        val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        val tp = TextPaint(TEXT_FLAGS)
         tp.textSize = fz
         tp.typeface = typeface(p.optDouble("fwt", 400.0).toInt(), p.optBoolean("it"), family(ff, mono))
         tp.color = p.optJSONArray("col")?.let { color(it) } ?: Color.BLACK
@@ -286,9 +295,39 @@ internal class NuiNode(val id: Int, var kind: String) {
         // Each run's start, end and size, for line-height (LineHeight).
         val sized = ArrayList<Float>()
         val rings = ArrayList<RunRing>()
+        val boxes = ArrayList<InlineBox>()
         val density = android.content.res.Resources.getSystem().displayMetrics.density
+        // An inline box's runs: one box per `k`, the room before its first
+        // character and after its last (InlineBox.start/end in tree.zig) as
+        // spacers that take that width and don't break the line.
+        var boxK = -1; var boxStart = 0; var boxIb: JSONObject? = null; var boxAbove = 0f; var boxBelow = 0f
+        fun spacer(width: Float) {
+            if (!(width > 0)) return
+            val at = sb.length
+            sb.append('\u2060')
+            sb.setSpan(Spacer(width), at, at + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        fun closeBox() {
+            val ib = boxIb ?: return
+            boxes += InlineBox(boxStart, sb.length, ib, boxAbove, boxBelow)
+            spacer(ib.optJSONArray("m").side(1) + ib.optJSONArray("bw").side(1) + ib.optJSONArray("p").side(1))
+            boxIb = null; boxK = -1
+        }
         for (i in 0 until runs.length()) {
             val r = runs.optJSONObject(i) ?: continue
+            val ib = r.optJSONObject("ib")
+            val k = ib?.optInt("k", -1) ?: -1
+            if (boxIb != null && (ib == null || k != boxK)) closeBox()
+            if (ib != null && boxIb == null) {
+                spacer(ib.optJSONArray("m").side(3) + ib.optJSONArray("bw").side(3) + ib.optJSONArray("p").side(3))
+                boxIb = ib; boxK = k; boxStart = sb.length; boxAbove = 0f; boxBelow = 0f
+            }
+            if (ib != null) {
+                val sz = r.optDouble("sz", fz.toDouble()).toFloat()
+                val m = fontRatios(r.optString("ff").ifEmpty { p.optString("ff") }, r.optBoolean("mono") || mono)
+                boxAbove = max(boxAbove, Math.round(m[0] * sz * density) / density)
+                boxBelow = max(boxBelow, Math.round(m[1] * sz * density) / density)
+            }
             val start = sb.length
             sb.append(if (i == 0 && runs.length() == 1) runText ?: r.optString("t") else r.optString("t"))
             val end = sb.length
@@ -299,7 +338,21 @@ internal class NuiNode(val id: Int, var kind: String) {
             sb.setSpan(RelativeSizeSpan(r.optDouble("sz", fz.toDouble()).toFloat() / fz), start, end, flags)
             sb.setSpan(FontSpan(typeface(r.optDouble("w", 400.0).toInt(), r.optBoolean("i"), family(r.optString("ff").ifEmpty { p.optString("ff") }, r.optBoolean("mono") || mono))), start, end, flags)
             if (r.optBoolean("u")) sb.setSpan(UnderlineSpan(), start, end, flags)
-            r.optJSONArray("bg")?.let { val c = color(it); if (Color.alpha(c) > 0) sb.setSpan(BackgroundColorSpan(c), start, end, flags) }
+            // A run's own background (a <mark>, a span's): over its font's
+            // content area, as browsers paint an inline's, not the whole line
+            // box a BackgroundColorSpan fills; drawn as an inline box without
+            // room (inlineBox). Neighbors in one color are one box.
+            r.optJSONArray("bg")?.let { bgc ->
+                if (Color.alpha(color(bgc)) == 0) return@let
+                val sz = r.optDouble("sz", fz.toDouble()).toFloat()
+                val m = fontRatios(r.optString("ff").ifEmpty { p.optString("ff") }, r.optBoolean("mono") || mono)
+                val above = Math.round(m[0] * sz * density) / density
+                val below = Math.round(m[1] * sz * density) / density
+                val prev = boxes.lastOrNull()
+                if (prev != null && prev.end == start && prev.ib.length() == 1 && prev.ib.optJSONArray("bg")?.toString() == bgc.toString()) {
+                    boxes[boxes.size - 1] = InlineBox(prev.start, end, prev.ib, max(prev.above, above), max(prev.below, below))
+                } else boxes += InlineBox(start, end, JSONObject().put("bg", bgc), above, below)
+            }
             r.optJSONObject("ol")?.let { ol ->
                 // Its box's content area: the run's font's ascent and descent,
                 // rounded in device pixels (win32.zig contentExtent).
@@ -313,7 +366,9 @@ internal class NuiNode(val id: Int, var kind: String) {
                 } else rings += RunRing(start, end, ol, above, below)
             }
         }
+        closeBox()
         this.rings = rings
+        this.inlineBoxes = boxes
         // line-height: every line exactly that tall (CSS's, a length here);
         // normal (no lh): the font's own, as Chrome makes it (LineHeight).
         if (sb.isNotEmpty()) {
@@ -375,7 +430,7 @@ internal class NuiNode(val id: Int, var kind: String) {
 
     /** A plain line's style: a paint with its run's font and size, and its
      *  line height from a StaticLayout of one character (once per style). */
-    private class LineStyle(val paint: TextPaint, val height: Int)
+    private class LineStyle(val paint: TextPaint, val height: Int, val baseline: Int)
 
     private fun lineStyle(t: CharSequence, tp: TextPaint): LineStyle {
         val r = p.optJSONArray("runs")?.optJSONObject(0)
@@ -387,24 +442,40 @@ internal class NuiNode(val id: Int, var kind: String) {
         val ff = r?.optString("ff")?.ifEmpty { null } ?: p.optString("ff")
         val key = "$fz $sz $w $italic $mono ${p.optDouble("lh", -1.0)} $ff"
         return lineStyles.getOrPut(key) {
-            val fp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            val fp = TextPaint(TEXT_FLAGS)
             fp.textSize = sz.toFloat()
             fp.typeface = typeface(w, italic, family(ff, mono))
-            LineStyle(fp, builder(t.subSequence(0, 1), tp, 1 shl 20).build().height)
+            val one = builder(t.subSequence(0, 1), tp, 1 shl 20).build()
+            LineStyle(fp, one.height, one.getLineBaseline(0))
         }
     }
 
     /**
      * A plain text that fits on one line at `max64` (or unbounded): its width
-     * from the font (rounded as the StaticLayout path: ceil + 1) and its
+     * from the font (to 1/64 px, as Chrome keeps fractional widths) and its
      * style's line height, no layout. Null: the full path measures it.
      */
     private fun fastSize(t: CharSequence, tp: TextPaint, max64: Int): Long? {
         if (!plainLine(t)) return null
         val st = lineStyle(t, tp)
-        val w = ceil(st.paint.measureText(t, 0, t.length)).toInt() + 1
-        if (max64 >= 0 && w > max(1, max64 / 64)) return null // it wraps
-        return (w * 64L shl 32) or (st.height * 64L)
+        val w64 = ceil(st.paint.measureText(t, 0, t.length) * 64).toLong()
+        if (max64 >= 0 && w64 > max(64, max64)) return null // it wraps
+        return (w64 shl 32) or (st.height * 64L)
+    }
+
+    /**
+     * Its first line's baseline below its top, in 1/64 dp (Node.baseline,
+     * for rows of inline content on a baseline), or -1: a plain line's from
+     * its style's one-character layout, else the unwrapped layout's (the
+     * one measure(-1) made).
+     */
+    fun baseline64(): Int {
+        val t = text ?: return -1
+        val tp = paint ?: return -1
+        if (t.isEmpty()) return -1
+        if (plainLine(t)) return lineStyle(t, tp).baseline * 64
+        val l = textLayout(-1) ?: return -1
+        return if (l.lineCount > 0) l.getLineBaseline(0) * 64 else -1
     }
 
     /** Size for Yoga: width and height in 1/64 dp, packed. */
@@ -437,8 +508,10 @@ internal class NuiNode(val id: Int, var kind: String) {
         val l = textLayout(width) ?: return 0
         var w = 0f
         for (i in 0 until l.lineCount) w = max(w, l.getLineWidth(i))
-        val wf = min(ceil(w) + 1, width.toFloat())
-        return ((wf * 64).toLong() shl 32) or (l.height * 64L)
+        // The lines' own width (to 1/64 px), as Chrome's; the layout drawn
+        // later is a whole px wider (textLayout's ceil + 1), so it doesn't wrap.
+        val wf = min(w, width.toFloat())
+        return (ceil(wf * 64).toLong() shl 32) or (l.height * 64L)
     }
 
     companion object {
@@ -455,7 +528,7 @@ internal class NuiNode(val id: Int, var kind: String) {
         private val ratios = HashMap<String, FloatArray>()
 
         fun fontRatios(ff: String, mono: Boolean): FloatArray = ratios.getOrPut("$mono $ff") {
-            val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            val tp = TextPaint(TEXT_FLAGS)
             tp.textSize = 100f
             tp.typeface = family(ff, mono)
             val fm = tp.fontMetrics
@@ -551,6 +624,29 @@ private class LineHeight(private val px: Float, private val fz: Float, private v
         fm.bottom = fm.descent
     }
 }
+
+/** An [top, right, bottom, left] array's side `i` (0 without one). */
+private fun JSONArray?.side(i: Int): Float = this?.optDouble(i, 0.0)?.toFloat() ?: 0f
+
+/** An inline box's room in its line: `width` px of nothing (a word joiner
+ *  it replaces, so the line doesn't break there). */
+private class Spacer(val width: Float) : ReplacementSpan() {
+    override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int {
+        // No taller or deeper than the text: the line's metrics stand.
+        if (fm != null) { val f = paint.fontMetricsInt; fm.ascent = f.ascent; fm.descent = f.descent; fm.top = f.top; fm.bottom = f.bottom; fm.leading = f.leading }
+        return Math.round(width)
+    }
+    override fun draw(canvas: Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {}
+}
+
+/**
+ * Text paints' flags: anti-aliased, and linear with subpixel positions, so
+ * glyph advances are the font's at the size, as Chrome lays text out. The
+ * canvas is in dp (CSS px): without them Android hints the metrics at that
+ * small size, and widths came out up to 6% off Chrome's (13.33px Roboto 7 px
+ * short over a sentence, 12px 3 px long).
+ */
+internal const val TEXT_FLAGS = Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG or Paint.LINEAR_TEXT_FLAG
 
 /** A run's font: the typeface with its weight and style. */
 private class FontSpan(val tf: Typeface) : MetricAffectingSpan() {
@@ -871,9 +967,12 @@ internal class NuiView(context: Context, val window: Int, private val transparen
      */
     fun leaves(bytes: ByteArray) {
         val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        // Only paint ('X': opacity, scale, rotation) and text: the paint order stands.
+        var reorder = false
         while (b.remaining() >= 9) {
             val tag = b.get().toInt().toChar()
             val id = b.int
+            if (tag != 'X' && tag != 'T' && tag != 'C') reorder = true
             when (tag) {
                 'S' -> {
                     val json = utf8(b, b.int) ?: return
@@ -912,7 +1011,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 else -> return
             }
         }
-        orderDirty = true
+        if (reorder) orderDirty = true
         invalidate()
     }
 
@@ -956,30 +1055,64 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     fun measureText(id: Int, max64: Int): Long = nodes[id]?.measure(max64) ?: 0
 
-    /** Node ids (little-endian ints) to their unbounded sizes (little-endian longs, as measureText). */
+    /** Node ids (little-endian ints) to their unbounded sizes (little-endian
+     *  longs, as measureText) and first baselines (ints, as baseline64). */
     fun measureTexts(ids: ByteArray): ByteArray {
         val n = ids.size / 4
         val inb = ByteBuffer.wrap(ids).order(ByteOrder.LITTLE_ENDIAN)
-        val out = ByteBuffer.allocate(n * 8).order(ByteOrder.LITTLE_ENDIAN)
-        for (i in 0 until n) out.putLong(nodes[inb.getInt()]?.measure(-1) ?: 0)
+        val out = ByteBuffer.allocate(n * 12).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until n) {
+            val node = nodes[inb.getInt()]
+            out.putLong(node?.measure(-1) ?: 0)
+            out.putInt(node?.baseline64() ?: -1)
+        }
         return out.array()
     }
+
+    fun baselineOf(id: Int): Int = nodes[id]?.baseline64() ?: -1
 
     fun frames(bytes: ByteArray) {
         val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         val fb = bb.asFloatBuffer()
+        val was = frames
         frames = FloatArray(fb.remaining()).also { fb.get(it) }
         // A record's first slot is its node's id as int bits (android.zig's
         // pack): read as an int, not a float, so no id is rounded or a NaN.
-        ids = IntArray(frames.size).also { bb.asIntBuffer().get(it) }
-        index.clear()
-        var i = 0
-        while (i + REC <= frames.size) { index[ids[i]] = i; i += REC }
-        orderDirty = true
+        val newIds = IntArray(frames.size).also { bb.asIntBuffer().get(it) }
+        // The same nodes in the same order (an animation's frame: boxes
+        // moved, nothing made or removed): the index and the paint order
+        // stand, and the View needs no layout pass unless a field moved.
+        val sameNodes = was.size == frames.size && sameRecords(ids, newIds)
+        ids = newIds
+        if (!sameNodes) {
+            index.clear()
+            var i = 0
+            while (i + REC <= frames.size) { index[ids[i]] = i; i += REC }
+            orderDirty = true
+        }
         if (Nui.dump) dumpFrames()
-        syncFields()
-        requestLayout()
+        if (fields.isNotEmpty()) {
+            syncFields()
+            if (!sameNodes || fieldsMoved(was)) requestLayout()
+        } else if (!sameNodes) requestLayout()
         invalidate()
+    }
+
+    /** Both frames list the same node ids, record for record. */
+    private fun sameRecords(a: IntArray, b: IntArray): Boolean {
+        if (a.size != b.size) return false
+        var i = 0
+        while (i + REC <= a.size) { if (a[i] != b[i]) return false; i += REC }
+        return true
+    }
+
+    /** A field's record changed from `was` (same records): its widget needs placing again. */
+    private fun fieldsMoved(was: FloatArray): Boolean {
+        for (id in fields.keys) {
+            val r = index[id] ?: return true
+            for (k in 1 until REC) if (was[r + k] != frames[r + k]) return true
+        }
+        return false
     }
 
     fun value(id: Int, v: String) {
@@ -1041,11 +1174,17 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         canvases.clear()
     }
 
+    /** The page's size in whole CSS px, as Chromium's (innerWidth 412,
+     *  not 412.00003): the width rounded (it's whole by cssScale), the
+     *  height rounded down. */
+    private fun cssWidth(px: Int) = Math.round(px / density).toFloat()
+    private fun cssHeight(px: Int) = floor(px / density + 1e-3f)
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         density = Nui.cssScale(w, resources.displayMetrics.density)
         onSize(w, h)
-        if (w > 0 && h > 0) NuiNative.resize(window, w / density, h / density, dark)
+        if (w > 0 && h > 0) NuiNative.resize(window, cssWidth(w), cssHeight(h), dark)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -1060,7 +1199,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         val d = Nui.isDark(newConfig)
         if (d != dark) {
             dark = d
-            if (width > 0) NuiNative.resize(window, width / density, height / density, dark)
+            if (width > 0) NuiNative.resize(window, cssWidth(width), cssHeight(height), dark)
         }
     }
 
@@ -1823,6 +1962,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 "text" -> n.textLayout(ceil(f[r + 11]).toInt() + 1)?.let {
                     canvas.save()
                     canvas.translate(f[r + 9], f[r + 10])
+                    for (box in n.inlineBoxes) inlineBox(canvas, it, box)
                     it.draw(canvas)
                     for (ring in n.rings) runRing(canvas, it, ring)
                     canvas.restore()
@@ -1996,6 +2136,63 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     }
 
     private val ringPath = Path()
+
+    /**
+     * An inline box's decoration under its text (a run's `ib`, as browsers
+     * draw it with box-decoration-break: slice): over each line fragment of
+     * its text, the background, then the border, as tall as its font's
+     * content area plus the top and bottom padding and border; the start
+     * side (border, padding, corners) on its first fragment only, the end
+     * side on its last; a fragment that wraps stops at the line's text.
+     */
+    private fun inlineBox(canvas: Canvas, l: Layout, box: NuiNode.InlineBox) {
+        val t = l.text
+        val ib = box.ib
+        val bwArr = ib.optJSONArray("bw")
+        for (k in 0 until l.lineCount) {
+            var a = max(box.start, l.getLineStart(k))
+            var b = min(box.end, l.getLineEnd(k))
+            if (a >= b) continue
+            val first = a == box.start
+            val last = b == box.end
+            // A wrapped fragment: not over the spaces it wraps after or before.
+            if (!last) while (b > a && (t[b - 1] == ' ' || t[b - 1] == '\n')) b--
+            if (!first) while (a < b && t[a] == ' ') a++
+            if (a >= b) continue
+            ringPath.reset()
+            l.getSelectionPath(a, b, ringPath)
+            ringPath.computeBounds(rect, true)
+            var x0 = rect.left; var x1 = rect.right
+            if (first) x0 -= bwArr.side(3) + box.side("p", 3)
+            if (last) x1 += bwArr.side(1) + box.side("p", 1)
+            if (x1 <= x0) continue
+            val base = l.getLineBaseline(k).toFloat()
+            val top = base - box.above - box.side("p", 0) - bwArr.side(0)
+            val bottom = base + box.below + box.side("p", 2) + bwArr.side(2)
+            val w = x1 - x0; val h = bottom - top
+            // Circular corners, the start ones on the first fragment, the end ones on the last.
+            val br = ib.optJSONArray("br")
+            val keep = booleanArrayOf(first, last, last, first)
+            val r = FloatArray(8)
+            for (q in 0 until 4) if (keep[q]) { val v = br.side(q); r[2 * q] = v; r[2 * q + 1] = v }
+            val f = min(min(fitR(w, r[0] + r[2]), fitR(w, r[6] + r[4])), min(fitR(h, r[1] + r[7]), fitR(h, r[3] + r[5])))
+            if (f < 1) for (q in r.indices) r[q] *= f
+            val radii = if (square(r)) null else r
+            ib.optJSONArray("bg")?.let { c ->
+                val color = NuiNode.color(c)
+                if (Color.alpha(color) > 0) { roundRect(x0, top, w, h, radii); fill.color = color; canvas.drawPath(path, fill) }
+            }
+            if (bwArr != null) {
+                val bw = floatArrayOf(bwArr.side(0), if (last) bwArr.side(1) else 0f, bwArr.side(2), if (first) bwArr.side(3) else 0f)
+                if (bw.any { it > 0 }) {
+                    val c = NuiNode.color(ib.optJSONArray("bc"))
+                    sides(canvas, x0, top, w, h, radii ?: FloatArray(8), bw, IntArray(4) { c }, true)
+                }
+            }
+        }
+    }
+
+    private fun fitR(len: Float, sum: Float) = if (sum > 0) max(0f, len) / sum else 1f
 
     /** Clip to the box's padding box (tree.zig paddingClipXY): inset by the
      *  borders `bw` (top, right, bottom, left), each corner's ellipse less

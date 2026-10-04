@@ -1,7 +1,7 @@
 ---
 .title = "Native renderer (experimental)",
 .description = "Your HTML, CSS and JavaScript drawn with native views instead of a WebView: no browser process, a fraction of the memory, the same web code.",
-.date = .date("2026-10-02T00:00:00"),
+.date = .date("2026-10-03T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
@@ -13,6 +13,14 @@ It is **experimental**: it runs on Linux (GTK 4), Windows (Direct2D), macOS (App
 [](<$image.siteAsset('screenshots/native-showcase.png').alt('The showcase drawn by the native renderer on Linux')>)
 
 *The showcase on the native renderer (GTK 4): no WebView, the same `index.html`, `style.css` and `app.js`.*
+
+# Latest in main · October 3, 2026
+
+The current development build adds Android's fractional text widths, WebView-sized controls and inline text decorations; default AppKit buttons on macOS; SVG styles and baseline alignment fixes. Fields on Windows, Android and Apple platforms report `beforeinput`, input types and selection changes, and scroll events are delivered once per display frame.
+
+Canvas recording writes its numeric program directly, while transform and opacity updates travel as numbers without flattening the page again. The render bench can also measure power on Android and Linux where battery or RAPL readings are available (see its [measurement instructions](https://github.com/highercomve/Oriel/tree/main/examples/render-bench#power)). QuickJS enforces the app's CSP for `eval`, Function constructors and string timers.
+
+Build from `main` to try these changes. The benchmark tables below retain their measurement dates and conditions; they are not new measurements of every subsequent commit.
 
 The page's DOM is Oriel's own: a **native DOM**, a document store written in Zig behind QuickJS bindings, replaced the JavaScript DOM library ([linkedom](https://github.com/WebReflection/linkedom)) the renderer started with. It builds a page about twice as fast as linkedom did and keeps memory flat (below).
 
@@ -349,7 +357,7 @@ The native renderer runs whatever your web build produces. It isn't a framework 
 | Svelte 5 | Vite's Svelte starter: looks as in the WebView, and its counter updates on click |
 | Preact | Vite's Preact starter: looks as in the WebView, and its counter updates on click |
 | CSS-in-JS (styled-components, emotion) and styles injected at runtime | React apps with each, and a Vue app whose scoped styles arrive from JavaScript: they look as in the WebView, before and after their props change |
-| Alpine.js 3 | A counter, a list with add and remove, and `x-if`: as in the WebView. Alpine compiles its expressions with `new Function`, which Oriel's default CSP forbids in the WebView: allow it (`'unsafe-eval'` in `security.csp`'s `script-src`) or use Alpine's CSP build (`@alpinejs/csp`) |
+| Alpine.js 3 | A counter, a list with add and remove, and `x-if`: as in the WebView. Alpine compiles its expressions with `new Function`, which Oriel's default CSP forbids, natively as in the WebView (an `EvalError`, the violation logged): allow it (`'unsafe-eval'` in `security.csp`'s `script-src`) or use Alpine's CSP build (`@alpinejs/csp`) |
 | Anything else that renders through the DOM (Solid, htmx…) | Being tried |
 | Web components (Lit) | Not yet: shadow DOM and constructed style sheets are missing |
 
@@ -553,10 +561,11 @@ Events go the other way: a tap on a node becomes a `click` on its element, bubbl
 - **The cascade:** specificity, `!important`, inline styles, `var()` with fallbacks, `calc()`, `color-mix()`, inheritance (a `font-size` or `line-height` in `em` or `%` inherited as its computed length, as in browsers), `@media` on width, `prefers-color-scheme` and `pointer`.
 - **Style sheets that change:** `<style>` and `<link>` added, removed, edited or disabled after the page loads, and the CSSOM (`document.styleSheets`, `insertRule`, `deleteRule`). CSS-in-JS works: styled-components and emotion apps look as in the WebView.
 - **Layout:** `display` (`flex`, `block`, `inline-flex`, `none`; `grid` as wrapping rows), the flexbox properties, `gap`, sizes and their limits (in px, %, `calc()` mixing both, `max-content`, `fit-content`), `box-sizing`, margins (`auto` too), padding, `position: absolute`, `fixed` and `relative`, `inset`, `overflow` (scroll and clip, to the box's rounded corners too), `aspect-ratio`, transforms (`translate`, `scale`, `rotate`; scale and rotate are drawn, layout keeps the box).
-- **Text:** fonts by `font-family` (the first installed family of the list, then the generic one: `system-ui`, `sans-serif`, `serif`, `monospace`; a page without one gets its WebView's default face), size, weight and italic; `line-height` as browsers make it (`normal` from the font's own metrics, each line exactly its line box), `letter-spacing`, `text-align`, `white-space`, `<br>`, underline, the spaces around inline elements.
-- **Drawing:** colors (hex, `rgb()`, `hsl()`), linear and radial gradients (repeating ones on Windows so far), borders (sides of different widths and colors joined as in browsers), `border-radius` (elliptical corners on Windows and Linux so far), `box-shadow` (blurred like CSS), `opacity`, `outline` (with `outline-offset`, solid, dashed or dotted).
+- **Text:** fonts by `font-family` (the first installed family of the list, then the generic one: `system-ui`, `sans-serif`, `serif`, `monospace`; a page without one gets its WebView's default face), size, weight and italic; `line-height` from the font's metrics, mixed-font line boxes, baseline alignment, `letter-spacing`, `text-align`, `white-space`, `<br>`, underline and the spaces around inline elements. Inline text such as a `<code>` chip keeps its padding, border, radius and background across line fragments. Android measures fractional text widths with linear, subpixel metrics.
+- **Drawing:** colors (hex, `rgb()`, `hsl()`), linear and radial gradients (including repeating gradients), borders (sides of different widths and colors joined as in browsers), `border-radius` (including elliptical corners on Linux, Windows and Apple), `box-shadow` (blurred like CSS), `opacity`, `outline` (with `outline-offset`, solid, dashed or dotted). SVGs honor their own `<style>` rules, media queries and presentation attributes; an SVG used as an image sees a light color scheme.
 - **Forms and the keyboard:** inputs, text areas, selects, buttons, checkboxes and sliders as the platform's own controls, sized and lettered as its WebView draws them. Each field tells the page when it takes and loses focus (`focus`, `blur`, `focusin`, `focusout`), and its keys reach the page first (`keydown`, `keyup`; a page that prevents one keeps it from the field). Tab and Shift+Tab move the focus in the browser's order, with the platform browser's focus ring on `:focus-visible` (on macOS, as Safari: fields only unless Full Keyboard Access is on).
 - **Pointer events:** `pointerdown`, `pointermove` and `pointerup` from a mouse, a pen or a touch, the touch events and the click that follow, `contextmenu`; moves are delivered once per display frame.
+- **Editing and scrolling:** `beforeinput`, typed `input` events and selection synchronization on Windows, Android and Apple platforms; native text-area undo on Windows and macOS. Scroller offsets and `scroll` events are delivered at most once per display frame. Android controls use the WebView's default sizes. Unstyled macOS buttons use AppKit's default appearance.
 - **Transitions:** `transition` (and its longhands) on opacity, backgrounds (colors and gradients), color, transforms, width and height, border colors and `box-shadow`, with durations, delays and timing functions (`ease`, `linear`, `cubic-bezier()`, `steps()`).
 - **Animations:** `@keyframes` and `animation` (and its longhands): the same properties, iteration counts and `infinite`, directions (`alternate`, `reverse`), fill modes and delays. Frames that leave out `from` or `to` use the element's own values, as in CSS. While transitions or animations run, only the animated nodes are updated each frame: no styles or flattening.
 - **More elements:** `<canvas>` with a 2d context (shapes, paths, gradients, text, transforms; drawn into a bitmap of its own, or from Zig with `oriel.canvas`), `<img>` (data: URIs, app assets and SVG files, `object-fit`), inline `<svg>` and `<use href>`, tables (`colspan`, `border-spacing`), `position: sticky`, horizontal scrolling (`overflow-x`).

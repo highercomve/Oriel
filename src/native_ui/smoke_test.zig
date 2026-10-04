@@ -5,6 +5,32 @@ const c = @cImport({
     @cInclude("yoga/Yoga.h");
 });
 
+fn refuse(_: ?*c.JSContext) callconv(.c) [*c]const u8 {
+    return "refused";
+}
+
+test "a context that refuses eval: eval, indirect eval and Function throw, the host's eval runs" {
+    const rt = c.JS_NewRuntime() orelse return error.NoRuntime;
+    defer c.JS_FreeRuntime(rt);
+    const ctx = c.JS_NewContext(rt) orelse return error.NoContext;
+    defer c.JS_FreeContext(ctx);
+    c.JS_OrielSetEvalRefused(ctx, refuse);
+    const src =
+        \\const r = [];
+        \\for (const f of [() => eval("1"), () => (0, eval)("2"), () => new Function("return 3")(),
+        \\    () => Function.prototype.constructor("return 4")(), () => (async function () {}).constructor("return 5")]) {
+        \\  try { f(); r.push("ran"); } catch (e) { r.push(e instanceof EvalError ? e.message : "not an EvalError"); }
+        \\}
+        \\r.push(String(eval(42)));
+        \\r.join(",")
+    ;
+    const v = c.JS_Eval(ctx, src, src.len, "<test>", c.JS_EVAL_TYPE_GLOBAL);
+    defer c.JS_FreeValue(ctx, v);
+    const s = c.JS_ToCString(ctx, v);
+    defer c.JS_FreeCString(ctx, s);
+    try std.testing.expectEqualStrings("refused,refused,refused,refused,refused,42", std.mem.span(s));
+}
+
 test "quickjs and yoga link" {
     const rt = c.JS_NewRuntime() orelse return error.NoRuntime;
     defer c.JS_FreeRuntime(rt);
