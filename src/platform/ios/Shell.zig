@@ -383,6 +383,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             center.msgSend(void, "addObserver:selector:name:object:", .{ Object{ .value = self_id }, apple.objc.sel("orielWillEnterForeground:"), UIApplicationWillEnterForegroundNotification, apple.nil });
             Creator.init();
             active_create_window_fn = &Creator.createWindow;
+            if (build_opts.notification) @import("../../modules/notification/ios.zig").installAtLaunch();
 
             task_mutex.lock();
             running = true;

@@ -788,7 +788,7 @@ also presents the main window, as before.
 
 - **Linux:** Uses GIO `GNotification`; clicks and buttons activate the `app.oriel-notification` action.
 - **Windows:** Uses `Shell_NotifyIconW` with balloon notifications (`NOTIFYICON_VERSION_4`). Callbacks route via `Shell.WM_NOTIFY_CALLBACK` and remove the balloon on dismiss/timeout/shutdown; a click on the balloon (`NIN_BALLOONUSERCLICK`) is reported, buttons are not available. Runtime untested on Windows.
-- **macOS:** `UNUserNotificationCenter` in an `.app` bundle (macOS asks for permission on the first notification); buttons are a `UNNotificationCategory` per distinct set. An unbundled executable has no bundle id, which UserNotifications requires, so it falls back to `osascript` ("display notification", shown as Script Editor), with no click reporting.
+- **macOS:** `UNUserNotificationCenter` in an `.app` bundle (macOS asks for permission on the first notification); buttons are a `UNNotificationCategory` per distinct set. Notifications also show while the app is in front, and the delegate is set at launch so clicks on earlier notifications are reported. An unbundled executable has no bundle id, which UserNotifications requires, so it falls back to `osascript` ("display notification", shown as Script Editor), with no click reporting.
 - **Android:** a tap opens the app and reports the click; a button reports its id without opening the app and dismisses the notification.
 
 ### Multiple windows and window options
