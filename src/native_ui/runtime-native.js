@@ -7561,6 +7561,7 @@ ${a.stack || ""}`;
   globalThis.cancelAnimationFrame = (id) => {
     rafCallbacks.delete(id);
   };
+  var nextFrame = globalThis.requestAnimationFrame;
   var html = normalizeHtml(host.asset("index.html") || "<!doctype html><html><body></body></html>");
   var { window: dom, document } = openDocument(html);
   function normalizeHtml(src) {
@@ -8030,7 +8031,7 @@ ${a.stack || ""}`;
       set(y) {
         if (renderer) {
           renderer.render();
-          host.scrollTo(scrollIdOf(this), +y || 0);
+          pageScroll(scrollIdOf(this), +y || 0);
         }
       },
       configurable: true
@@ -8042,7 +8043,7 @@ ${a.stack || ""}`;
       set(x) {
         if (renderer) {
           renderer.render();
-          host.scrollTo(scrollIdOf(this), NaN, +x || 0);
+          pageScroll(scrollIdOf(this), NaN, +x || 0);
         }
       },
       configurable: true
@@ -8054,7 +8055,7 @@ ${a.stack || ""}`;
     const [left, top] = scrollArgs(x, y);
     if (!renderer) return;
     renderer.render();
-    host.scrollTo(scrollIdOf(this), top === void 0 ? NaN : +top || 0, left === void 0 ? NaN : +left || 0);
+    pageScroll(scrollIdOf(this), top === void 0 ? NaN : +top || 0, left === void 0 ? NaN : +left || 0);
   };
   elProto.scrollBy = function(x, y) {
     const [left, top] = scrollArgs(x, y);
@@ -8077,6 +8078,7 @@ ${a.stack || ""}`;
   elProto.scrollIntoView = function(opts) {
     if (!renderer) return;
     const block = typeof opts === "object" ? opts.block || "start" : opts === false ? "end" : "start";
+    glide = null;
     if (renderer.dirty) {
       renderer.pendingScroll = { el: this, block };
       return;
@@ -8097,7 +8099,7 @@ ${a.stack || ""}`;
     const [left, top] = scrollArgs(x, y);
     if (renderer) {
       renderer.render();
-      host.scrollTo(-1, top === void 0 ? NaN : +top || 0, left === void 0 ? NaN : +left || 0);
+      pageScroll(-1, top === void 0 ? NaN : +top || 0, left === void 0 ? NaN : +left || 0);
     }
   };
   g.scrollBy = (x, y) => {
@@ -8667,12 +8669,33 @@ ${a.stack || ""}`;
     const f = host.frame(target);
     if (!f) return false;
     const view = clientH(f, targetEl);
-    const top = f[6] || 0;
+    const top = glide?.target === target ? glide.to : f[6] || 0;
     const by = Math.abs(step) <= 1 ? Math.round(step * view) : step;
     const want = Math.max(0, Math.min(f[4] - view, top + by));
     if (want === top) return false;
-    host.scrollTo(target, want);
+    glideTo(target, f[6] || 0, want, Math.abs(step) === 40 ? "line" : "page");
     return true;
+  }
+  var GLIDES = { page: [200, 0, EASES.ease], line: [256, 20, EASES["ease-out"]] };
+  var glide = null;
+  function glideTo(target, from, to, kind) {
+    const [ms, delay, ease] = GLIDES[kind];
+    const g1 = { target, from, to, t0: performance.now(), ms, delay, ease, set: [from] };
+    glide = g1;
+    const step = (now) => {
+      if (glide !== g1) return;
+      const p = Math.min(1, Math.max(0, (now - g1.t0 - delay) / ms));
+      const y = from + (to - from) * ease(p);
+      g1.set = [...g1.set.slice(-2), y];
+      host.scrollTo(target, y);
+      if (p < 1) nextFrame(step);
+      else glide = null;
+    };
+    nextFrame(step);
+  }
+  function pageScroll(id, top, left) {
+    glide = null;
+    host.scrollTo(id, top, left);
   }
   var WEBKIT_KEYPRESS = platform.os === "macos" || platform.os === "ios";
   function keypressFor(key, init) {
@@ -9245,7 +9268,10 @@ ${a.stack || ""}`;
           // True on "down" when the page takes the drag (touch-action: none,
           // or a listener prevented the default): the backend doesn't scroll.
           case "pointer":
-            if (data?.[0] === "down" || data?.[0] === 0) keyboardFocus = false;
+            if (data?.[0] === "down" || data?.[0] === 0) {
+              keyboardFocus = false;
+              if (data[5] === "touch") glide = null;
+            }
             return pointerEvent(el, data);
           // The window went to a screen with another scale (data: the new
           // devicePixelRatio): resolution queries' listeners hear it.
@@ -9317,7 +9343,8 @@ ${a.stack || ""}`;
     // window's goes to the document, then the window).
     scrolled(list) {
       guard(() => {
-        for (const [id] of list) {
+        for (const [id, top] of list) {
+          if (glide?.target === id && typeof top === "number" && !glide.set.some((y) => Math.abs(y - top) <= 1.5)) glide = null;
           if (id === -1) {
             const ev = new Event("scroll", { bubbles: true });
             document.dispatchEvent(ev);
