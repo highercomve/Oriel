@@ -12,6 +12,9 @@
 //   evalScript(name, code)      run a page script at the top level
 //   evalModule(name, code)      run a module script (imports load from the assets) → promise
 //   focus(id), scrollIntoView(id, block), scrollTo(id, y)
+//   fileRead(reqId, handle, offset, length) → later __oriel.fileData(reqId,
+//                               ArrayBuffer | null, errorName); fileRelease(handle)
+//                               (a dropped file's bytes, blob.js; optional)
 //   platform (JSON), label (the window's label), url (the window's URL)
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
@@ -21,6 +24,7 @@ import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules, color as cssColor } from "./css.js";
 import { Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
+import { installBlob } from "./blob.js";
 // The runtime's own weak caches keyed by nodes: marked so their entries
 // don't keep a node's wrapper from being replaced (a page's weak
 // references do: dom/store.zig prune).
@@ -204,6 +208,8 @@ g.MouseEvent = MouseEvent;
 g.PointerEvent = PointerEvent;
 g.TouchEvent = TouchEvent;
 g.InputEvent = g.FocusEvent = g.UIEvent = Event;
+// Blob, File, FileList, FileReader (blob.js).
+const blobs = installBlob(g, host);
 // No shadow trees here yet: the class pages test against (Alpine checks
 // `el.parentNode instanceof ShadowRoot`).
 g.ShadowRoot ??= class ShadowRoot {};
@@ -1609,6 +1615,10 @@ const oriel = {
       }
       return false;
     });
+  },
+  // The host's answer to fileRead: the bytes, or null and an error name.
+  fileData(reqId, buf, errorName) {
+    guard(() => blobs.fileData(reqId, buf, errorName));
   },
   // Scrollers moved (the engine, at most once a frame): [[id, top, left]].
   // "scroll" on each, as browsers fire it (it doesn't bubble; the

@@ -6734,6 +6734,434 @@ input[type="range"] { height: 20px; margin: 2px; }
     return out;
   }
 
+  // src/blob.js
+  var READ_CHUNK = 64 * 1024 * 1024;
+  function domException(g2) {
+    if (typeof g2.DOMException === "function") return g2.DOMException;
+    class DOMException2 extends Error {
+      constructor(message = "", name = "Error") {
+        super(message);
+        Object.defineProperty(this, "name", { value: String(name), configurable: true, writable: true });
+      }
+    }
+    return g2.DOMException = DOMException2;
+  }
+  function utf8Encode(s) {
+    const out = new Uint8Array(s.length * 3);
+    let n2 = 0;
+    for (let i = 0; i < s.length; i++) {
+      let c = s.charCodeAt(i);
+      if (c >= 55296 && c <= 57343) {
+        const d = c <= 56319 && i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+        if (d >= 56320 && d <= 57343) {
+          c = 65536 + (c - 55296 << 10) + (d - 56320);
+          i++;
+        } else c = 65533;
+      }
+      if (c < 128) out[n2++] = c;
+      else if (c < 2048) {
+        out[n2++] = 192 | c >> 6;
+        out[n2++] = 128 | c & 63;
+      } else if (c < 65536) {
+        out[n2++] = 224 | c >> 12;
+        out[n2++] = 128 | c >> 6 & 63;
+        out[n2++] = 128 | c & 63;
+      } else {
+        out[n2++] = 240 | c >> 18;
+        out[n2++] = 128 | c >> 12 & 63;
+        out[n2++] = 128 | c >> 6 & 63;
+        out[n2++] = 128 | c & 63;
+      }
+    }
+    return out.slice(0, n2);
+  }
+  function utf8Decode(b) {
+    let i = b.length >= 3 && b[0] === 239 && b[1] === 187 && b[2] === 191 ? 3 : 0;
+    let out = "";
+    let units = [];
+    const unit = (u) => {
+      units.push(u);
+      if (units.length >= 8192) {
+        out += String.fromCharCode.apply(null, units);
+        units = [];
+      }
+    };
+    const point = (cp) => {
+      if (cp < 65536) unit(cp);
+      else {
+        cp -= 65536;
+        unit(55296 + (cp >> 10));
+        unit(56320 + (cp & 1023));
+      }
+    };
+    while (i < b.length) {
+      const c = b[i];
+      if (c < 128) {
+        unit(c);
+        i++;
+        continue;
+      }
+      let need, cp, lower = 128, upper = 191;
+      if (c >= 194 && c <= 223) {
+        need = 1;
+        cp = c & 31;
+      } else if (c >= 224 && c <= 239) {
+        need = 2;
+        cp = c & 15;
+        if (c === 224) lower = 160;
+        if (c === 237) upper = 159;
+      } else if (c >= 240 && c <= 244) {
+        need = 3;
+        cp = c & 7;
+        if (c === 240) lower = 144;
+        if (c === 244) upper = 143;
+      } else {
+        unit(65533);
+        i++;
+        continue;
+      }
+      let j = i + 1, k = 0;
+      for (; k < need && j < b.length; k++, j++) {
+        const d = b[j];
+        if (d < lower || d > upper) break;
+        lower = 128;
+        upper = 191;
+        cp = cp << 6 | d & 63;
+      }
+      point(k < need ? 65533 : cp);
+      i = j;
+    }
+    return out + String.fromCharCode.apply(null, units);
+  }
+  var isArrayBuffer = (v) => Object.prototype.toString.call(v) === "[object ArrayBuffer]";
+  var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  function base64(b) {
+    let out = "";
+    let chunk = [];
+    let i = 0;
+    for (; i + 2 < b.length; i += 3) {
+      const n2 = b[i] << 16 | b[i + 1] << 8 | b[i + 2];
+      chunk.push(B64[n2 >> 18], B64[n2 >> 12 & 63], B64[n2 >> 6 & 63], B64[n2 & 63]);
+      if (chunk.length >= 32768) {
+        out += chunk.join("");
+        chunk = [];
+      }
+    }
+    if (i < b.length) {
+      const n2 = b[i] << 16 | (b[i + 1] ?? 0) << 8;
+      chunk.push(B64[n2 >> 18], B64[n2 >> 12 & 63], i + 1 < b.length ? B64[n2 >> 6 & 63] : "=", "=");
+    }
+    return out + chunk.join("");
+  }
+  function installBlob(g2, host2) {
+    const DOMException2 = domException(g2);
+    const notReadable = () => new DOMException2("The file could not be read", "NotReadableError");
+    const state = /* @__PURE__ */ new WeakMap();
+    const internal = /* @__PURE__ */ Symbol("internal");
+    const released = new FinalizationRegistry((handle) => {
+      try {
+        host2.fileRelease?.(handle);
+      } catch (e) {
+        console.error(e);
+      }
+    });
+    const reads = /* @__PURE__ */ new Map();
+    let readSeq = 1;
+    function readHandle(ref, offset, length2) {
+      return new Promise((resolve2, reject) => {
+        if (typeof host2.fileRead !== "function") {
+          reject(notReadable());
+          return;
+        }
+        const id = readSeq++;
+        reads.set(id, { resolve: resolve2, reject, ref, length: length2 });
+        try {
+          host2.fileRead(id, ref.handle, offset, length2);
+        } catch (e) {
+          reads.delete(id);
+          console.error(e);
+          reject(notReadable());
+        }
+      });
+    }
+    function fileData(reqId, buf, errorName) {
+      const r = reads.get(reqId);
+      if (!r) return;
+      reads.delete(reqId);
+      const bytes = isArrayBuffer(buf) ? new Uint8Array(buf) : ArrayBuffer.isView(buf) ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) : null;
+      if (!bytes || bytes.length !== r.length) {
+        r.reject(errorName ? new DOMException2("The file could not be read", String(errorName)) : notReadable());
+        return;
+      }
+      r.resolve(bytes);
+    }
+    async function readAll(blob) {
+      const s = state.get(blob);
+      const out = new Uint8Array(s.size);
+      let at = 0;
+      for (const seg of s.segs) {
+        if (seg.bytes) {
+          out.set(seg.bytes, at);
+          at += seg.bytes.length;
+          continue;
+        }
+        for (let off = 0; off < seg.length; off += READ_CHUNK) {
+          const n2 = Math.min(READ_CHUNK, seg.length - off);
+          out.set(await readHandle(seg.ref, seg.offset + off, n2), at);
+          at += n2;
+        }
+      }
+      return out;
+    }
+    const bytesOf = (part) => {
+      if (isArrayBuffer(part)) return new Uint8Array(part.slice(0));
+      if (ArrayBuffer.isView(part)) return new Uint8Array(part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength));
+      return null;
+    };
+    const cleanType = (t) => {
+      const s = t === void 0 ? "" : String(t);
+      return /^[\x20-\x7e]*$/.test(s) ? s.toLowerCase() : "";
+    };
+    function segmentsOf(parts) {
+      const segs = [];
+      if (parts === void 0 || parts === null) return segs;
+      if (typeof parts !== "object" || typeof parts[Symbol.iterator] !== "function") throw new TypeError("Blob: the parts must be a sequence");
+      for (const part of parts) {
+        const own = part && typeof part === "object" ? state.get(part) : void 0;
+        if (own) {
+          segs.push(...own.segs);
+          continue;
+        }
+        const bytes = bytesOf(part) || utf8Encode(String(part));
+        if (bytes.length) segs.push({ bytes });
+      }
+      return segs;
+    }
+    const sizeOf = (segs) => segs.reduce((n2, s) => n2 + (s.bytes ? s.bytes.length : s.length), 0);
+    class Blob {
+      constructor(parts, options = {}) {
+        const segs = parts?.[internal] ? parts.segs : segmentsOf(parts);
+        state.set(this, { segs, size: sizeOf(segs), type: cleanType(options?.type) });
+      }
+      get size() {
+        return state.get(this).size;
+      }
+      get type() {
+        return state.get(this).type;
+      }
+      // Bytes [start, end) as a new Blob: no reading, a dropped file's
+      // segments narrow. Negative offsets count from the end.
+      slice(start, end, type) {
+        const { segs, size } = state.get(this);
+        const rel = (v, d) => {
+          if (v === void 0) return d;
+          const n2 = Math.trunc(+v) || 0;
+          return n2 < 0 ? Math.max(size + n2, 0) : Math.min(n2, size);
+        };
+        const from = rel(start, 0), to = Math.max(rel(end, size), from);
+        const out = [];
+        let at = 0;
+        for (const seg of segs) {
+          const len = seg.bytes ? seg.bytes.length : seg.length;
+          const a = Math.max(from - at, 0), b = Math.min(to - at, len);
+          if (b > a) out.push(seg.bytes ? { bytes: seg.bytes.subarray(a, b) } : { ref: seg.ref, offset: seg.offset + a, length: b - a });
+          at += len;
+          if (at >= to) break;
+        }
+        return new Blob({ [internal]: true, segs: out }, { type });
+      }
+      arrayBuffer() {
+        return readAll(this).then((b) => b.buffer);
+      }
+      bytes() {
+        return readAll(this);
+      }
+      text() {
+        return readAll(this).then(utf8Decode);
+      }
+      get [Symbol.toStringTag]() {
+        return "Blob";
+      }
+    }
+    class File extends Blob {
+      constructor(bits, name, options = {}) {
+        if (arguments.length < 2) throw new TypeError("File: a name is required");
+        super(bits, options);
+        this.name = String(name);
+        const lm = options?.lastModified;
+        this.lastModified = lm === void 0 ? Date.now() : Math.trunc(+lm) || 0;
+        this.webkitRelativePath = "";
+      }
+      get [Symbol.toStringTag]() {
+        return "File";
+      }
+    }
+    function droppedFile(name, type, size, lastModified, handle) {
+      const ref = { handle };
+      released.register(ref, handle);
+      const length2 = Math.max(0, Math.trunc(+size) || 0);
+      const segs = length2 ? [{ ref, offset: 0, length: length2 }] : [];
+      const f = new File({ [internal]: true, segs }, name, { type, lastModified });
+      if (!length2) state.get(f).ref = ref;
+      return f;
+    }
+    const listToken = /* @__PURE__ */ Symbol("FileList");
+    class FileList {
+      constructor(token, files) {
+        if (token !== listToken) throw new TypeError("Illegal constructor");
+        files.forEach((f, i) => Object.defineProperty(this, i, { value: f, enumerable: true }));
+        Object.defineProperty(this, "length", { value: files.length });
+      }
+      item(i) {
+        return this[i >>> 0] ?? null;
+      }
+      *[Symbol.iterator]() {
+        for (let i = 0; i < this.length; i++) yield this[i];
+      }
+      get [Symbol.toStringTag]() {
+        return "FileList";
+      }
+    }
+    const fileList = (files) => new FileList(listToken, files);
+    const Base = typeof g2.EventTarget === "function" ? g2.EventTarget : class {
+    };
+    const EVENTS = ["loadstart", "progress", "load", "abort", "error", "loadend"];
+    class FileReader extends Base {
+      constructor() {
+        super();
+        this.readyState = 0;
+        this.result = null;
+        this.error = null;
+        this.__gen = 0;
+      }
+      readAsArrayBuffer(blob) {
+        this.__read(blob, (b) => b.buffer);
+      }
+      readAsText(blob, _encoding) {
+        this.__read(blob, utf8Decode);
+      }
+      // UTF-8 only
+      readAsDataURL(blob) {
+        this.__read(blob, (b) => `data:${blob.type || "application/octet-stream"};base64,${base64(b)}`);
+      }
+      readAsBinaryString(blob) {
+        this.__read(blob, (b) => {
+          let s = "";
+          for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode.apply(null, b.subarray(i, i + 8192));
+          return s;
+        });
+      }
+      abort() {
+        if (this.readyState !== 1) return;
+        this.__gen++;
+        this.readyState = 2;
+        this.result = null;
+        this.__fire("abort");
+        this.__fire("loadend");
+      }
+      __read(blob, convert) {
+        if (!state.has(blob)) throw new TypeError("FileReader: not a Blob");
+        if (this.readyState === 1) throw new DOMException2("A read is in progress", "InvalidStateError");
+        const gen = ++this.__gen;
+        this.readyState = 1;
+        this.result = null;
+        this.error = null;
+        const total = blob.size;
+        queueMicrotask(() => {
+          if (gen === this.__gen) this.__fire("loadstart", 0, total);
+        });
+        readAll(blob).then((bytes) => {
+          if (gen !== this.__gen) return;
+          let result;
+          try {
+            result = convert(bytes);
+          } catch (e) {
+            result = null;
+            console.error(e);
+          }
+          this.readyState = 2;
+          this.result = result;
+          this.__fire("progress", total, total);
+          this.__fire("load", total, total);
+          if (this.readyState !== 1) this.__fire("loadend", total, total);
+        }, (err) => {
+          if (gen !== this.__gen) return;
+          this.readyState = 2;
+          this.error = err;
+          this.__fire("error");
+          if (this.readyState !== 1) this.__fire("loadend");
+        });
+      }
+      // A ProgressEvent (lengthComputable, loaded, total).
+      __fire(type, loaded = 0, total = 0) {
+        const ev = new g2.Event(type);
+        Object.defineProperties(ev, {
+          lengthComputable: { value: total > 0, configurable: true },
+          loaded: { value: loaded, configurable: true },
+          total: { value: total, configurable: true }
+        });
+        try {
+          this.dispatchEvent(ev);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
+    for (const [i, name] of ["EMPTY", "LOADING", "DONE"].entries()) {
+      Object.defineProperty(FileReader, name, { value: i });
+      Object.defineProperty(FileReader.prototype, name, { value: i });
+    }
+    if (typeof Base.prototype.dispatchEvent !== "function") {
+      Object.assign(FileReader.prototype, {
+        addEventListener(type, fn) {
+          ((this.__listeners ||= /* @__PURE__ */ new Map()).get(type) || this.__listeners.set(type, /* @__PURE__ */ new Set()).get(type)).add(fn);
+        },
+        removeEventListener(type, fn) {
+          this.__listeners?.get(type)?.delete(fn);
+        },
+        dispatchEvent(ev) {
+          Object.defineProperty(ev, "target", { value: this, configurable: true });
+          Object.defineProperty(ev, "currentTarget", { value: this, configurable: true });
+          for (const fn of [...this.__listeners?.get(ev.type) || []]) {
+            try {
+              typeof fn === "function" ? fn.call(this, ev) : fn.handleEvent(ev);
+            } catch (e) {
+              console.error(e);
+            }
+          }
+          return !ev.defaultPrevented;
+        }
+      });
+    }
+    for (const type of EVENTS) {
+      Object.defineProperty(FileReader.prototype, "on" + type, {
+        get() {
+          return this.__on?.get(type)?.fn ?? null;
+        },
+        set(fn) {
+          const on = this.__on ||= /* @__PURE__ */ new Map();
+          const old = on.get(type);
+          if (old) {
+            this.removeEventListener(type, old.listener);
+            on.delete(type);
+          }
+          if (typeof fn !== "function") return;
+          const listener = function(event) {
+            return fn.call(this, event);
+          };
+          this.addEventListener(type, listener);
+          on.set(type, { fn, listener });
+        },
+        configurable: true
+      });
+    }
+    g2.Blob ??= Blob;
+    g2.File ??= File;
+    g2.FileList ??= FileList;
+    g2.FileReader ??= FileReader;
+    return { fileData, droppedFile, fileList, isBlob: (b) => state.has(b) };
+  }
+
   // src/main.js
   var internalWeak4 = (m) => (globalThis.__nuiDom?.internal?.(m), m);
   var host = globalThis.__host;
@@ -6930,6 +7358,7 @@ ${a.stack || ""}`;
   g.PointerEvent = PointerEvent;
   g.TouchEvent = TouchEvent;
   g.InputEvent = g.FocusEvent = g.UIEvent = Event;
+  var blobs = installBlob(g, host);
   g.ShadowRoot ??= class ShadowRoot {
   };
   var winListeners = /* @__PURE__ */ new Map();
@@ -8526,6 +8955,10 @@ ${a.stack || ""}`;
         }
         return false;
       });
+    },
+    // The host's answer to fileRead: the bytes, or null and an error name.
+    fileData(reqId, buf, errorName) {
+      guard(() => blobs.fileData(reqId, buf, errorName));
     },
     // Scrollers moved (the engine, at most once a frame): [[id, top, left]].
     // "scroll" on each, as browsers fire it (it doesn't bubble; the
