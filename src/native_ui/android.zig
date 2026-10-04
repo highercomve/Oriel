@@ -83,6 +83,8 @@ pub const Surface = struct {
     drag_effect: u8 = 0,
     /// fontMetrics' answers by (size in 1/64 px, mono): one trip to Kotlin each.
     font_metrics: std.AutoHashMapUnmanaged(FontKey, [3]f32) = .empty,
+    /// fontMetricsFamily's answers by "size64 mono family" (owned keys).
+    family_metrics: std.StringHashMapUnmanaged([3]f32) = .empty,
 };
 
 const FontKey = struct { size64: u32, mono: bool };
@@ -135,6 +137,7 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .text = textChanged,
         .measure_texts = measureTexts,
         .font_metrics = fontMetrics,
+        .font_metrics_family = fontMetricsFamily,
         .leaf_style = leafStyle,
         .paint = paintChanged,
         .canvas = canvasChanged,
@@ -172,6 +175,8 @@ pub fn destroy(window: u32) void {
     s.leaves.deinit(s.gpa);
     s.measure_ids.deinit(s.gpa);
     s.font_metrics.deinit(s.gpa);
+    clearFamilyMetrics(s);
+    s.family_metrics.deinit(s.gpa);
     s.measure_nodes.deinit(s.gpa);
     s.measure_sizes.deinit(s.gpa);
     s.gpa.destroy(s);
@@ -734,6 +739,43 @@ fn fontMetrics(ctx: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
     if (s.font_metrics.count() < 256) s.font_metrics.put(s.gpa, key, m) catch {};
     out.* = m;
     return true;
+}
+
+/// host.fontMetrics for a CSS font-family list (a line's strut in the
+/// block's own font): the family as text runs resolve it (NuiNode.family),
+/// one trip to Kotlin per size and family.
+fn fontMetricsFamily(ctx: *anyopaque, size: f32, mono: bool, family: []const u8, out: *[3]f32) bool {
+    const s = surfaceOf(ctx);
+    if (family.len > 256) return fontMetrics(ctx, size, mono, out);
+    const size64: i32 = @intFromFloat(@round(std.math.clamp(size, 1, 512) * 64));
+    var buf: [300]u8 = undefined;
+    const key = std.fmt.bufPrint(&buf, "{d} {d} {s}", .{ size64, @intFromBool(mono), family }) catch return false;
+    if (s.family_metrics.get(key)) |m| {
+        out.* = m;
+        return true;
+    }
+    const r: u64 = @bitCast(runtime.call(.long, "nuiFontMetricsFamily", "(IZ[B)J", .{ size64, mono, family }) orelse return false);
+    if (r == 0) return false;
+    const field = (1 << 21) - 1;
+    const m: [3]f32 = .{
+        @as(f32, @floatFromInt((r >> 42) & field)) / 64,
+        @as(f32, @floatFromInt((r >> 21) & field)) / 64,
+        @as(f32, @floatFromInt(r & field)) / 64,
+    };
+    if (s.family_metrics.count() >= 256) clearFamilyMetrics(s);
+    const owned = s.gpa.dupe(u8, key) catch {
+        out.* = m;
+        return true;
+    };
+    s.family_metrics.put(s.gpa, owned, m) catch s.gpa.free(owned);
+    out.* = m;
+    return true;
+}
+
+fn clearFamilyMetrics(s: *Surface) void {
+    var it = s.family_metrics.keyIterator();
+    while (it.next()) |k| s.gpa.free(k.*);
+    s.family_metrics.clearRetainingCapacity();
 }
 
 /// nuiMeasure: the node's size from Kotlin at `max_width` (inf: unbounded),
