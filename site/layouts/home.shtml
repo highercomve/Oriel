@@ -112,7 +112,7 @@
 				</article>
 			</div>
 			<p><a class="btn btn-ghost" href="$site.page('docs/native-renderer').link()">Explore the native renderer</a></p>
-			<p><a href="$site.page('docs/changelog').link()">Read the 0.8.0 changelog</a></p>
+			<p><a href="$site.page('docs/changelog').link()">Read the changelog</a></p>
 			<p>The native renderer is experimental; accessibility, full CSS grid and shadow DOM remain incomplete. See the release changelog for details.</p>
 		</section>
 

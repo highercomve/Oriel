@@ -2,6 +2,26 @@
 
 Notable changes in Oriel releases.
 
+## [0.9.0] — 2026-10-04
+
+Oriel 0.9.0 lets apps react to notification clicks and buttons.
+
+### Added
+
+- Notification click actions: `oriel.notification.notify` takes `.actions`
+  (buttons), and clicks on a notification or one of its buttons reach
+  `oriel.notification.onAction(handler)` in Zig and the page's
+  `notification:action` event as `{ id, action }` (`action` is null when the
+  notification itself was clicked).
+  - Linux: GNotification default action and buttons.
+  - macOS (`.app` bundles) and iOS: `UNNotificationCategory` buttons and the
+    notification center delegate.
+  - Android: a tap opens the app and reports the click; buttons (at most 3)
+    report theirs without opening the app and dismiss the notification.
+  - Windows: a click on the balloon is reported; balloons have no buttons.
+- The showcase's Notify button sends a notification with Like and Later
+  buttons and shows which one was clicked.
+
 ## [0.8.0] — 2026-10-04
 
 Oriel 0.8.0 introduces the optional, experimental native UI renderer as a

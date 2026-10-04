@@ -2,8 +2,8 @@
 // Local fallback; `scripts/site-version.sh` (called by CI before `zine
 // release`) rewrites it with GitHub's latest release, read at build time.
 .custom = .{
-    .version = "v0.8.0",
-    .releases_link = "https://github.com/highercomve/Oriel/releases/tag/v0.8.0",
+    .version = "v0.9.0",
+    .releases_link = "https://github.com/highercomve/Oriel/releases/tag/v0.9.0",
 },
 .site = .simple(.{
     .title = "Oriel",
