@@ -38,7 +38,7 @@ extern void oriel_nui_paint(void *opaque, const double *nums, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
 extern int oriel_nui_vsync(void *opaque);
 extern void oriel_nui_warm_fonts(void *opaque, const double *v, size_t count);
-extern int oriel_nui_font_metrics(void *opaque, double size, int mono, const char *family, size_t family_len, double *out);
+extern int oriel_nui_font_metrics(void *opaque, double size, int mono, const char *family, size_t family_len, double *out4);
 extern int oriel_nui_run_rects(void *opaque, double id, double first, double last, double *out, size_t max);
 extern int oriel_nui_canvas(void *opaque, double id, const double *nums, size_t len, const char *const *strs, const size_t *lens, size_t count);
 extern uint32_t oriel_nui_stamp_plan(void *opaque, const double *v, size_t len);
@@ -359,12 +359,12 @@ static JSValue h_font_metrics(JSContext *ctx, JSValueConst this_val, int argc, J
     // A third argument: the CSS font-family list (the backend may not use it).
     size_t family_len = 0;
     const char *family = argc >= 3 && JS_IsString(argv[2]) ? JS_ToCStringLen(ctx, &family_len, argv[2]) : NULL;
-    double out[3];
-    int ok = oriel_nui_font_metrics(opaque_of(ctx), size, mono, family, family_len, out);
+    double out[4];
+    int n = oriel_nui_font_metrics(opaque_of(ctx), size, mono, family, family_len, out);
     if (family) JS_FreeCString(ctx, family);
-    if (!ok) return JS_UNDEFINED;
+    if (n <= 0) return JS_UNDEFINED;
     JSValue arr = JS_NewArray(ctx);
-    for (uint32_t i = 0; i < 3; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
+    for (uint32_t i = 0; i < (uint32_t)n; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
     return arr;
 }
 
