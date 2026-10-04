@@ -351,6 +351,14 @@ pub const Surface = struct {
     sb_grab: f32 = 0,
     /// A WM_FOCUS_CHECK is queued.
     focus_check_posted: bool = false,
+    /// OLE drops (dropTarget): the canvas's registered target, the drag
+    /// over it now (its counter, what it carries, the last effect the
+    /// page chose) and whether one is inside.
+    drop_target: ?*DropTarget = null,
+    drag_session: u32 = 0,
+    drag_inside: bool = false,
+    drag_kinds: DragKinds = .{},
+    drag_effect: u32 = 0,
 
     /// The canvas fills `parent`'s client area.
     pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, parent: *anyopaque, transparent: bool, invoke_fn: Invoke, invoke_ctx: ?*anyopaque) !*Surface {
@@ -401,6 +409,8 @@ pub const Surface = struct {
         // Only now may the canvas reach the surface: before, `s.engine` is
         // undefined (and on failure the canvas goes away without it).
         _ = c.SetWindowLongPtrW(s.hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(s)));
+        // Drops into the page (OLE: its fields' own targets are revoked).
+        s.drop_target = registerDropTarget(s.hwnd);
         s.engine.boot(s.dark, false);
         return s;
     }
@@ -411,6 +421,9 @@ pub const Surface = struct {
         // fields sends it messages (EN_KILLFOCUS, WM_CTLCOLOR*) while the
         // engine goes away, and its timers die with it below.
         _ = c.SetWindowLongPtrW(s.hwnd, c.GWLP_USERDATA, 0);
+        // No more drops (OLE lets the target go once it's done with it).
+        if (s.drop_target != null) _ = RevokeDragDrop(s.hwnd);
+        s.drop_target = null;
         // No more display frames for this window.
         if (s.ticking) vsync.disarm(s.hwnd);
         s.ticking = false;
@@ -1367,6 +1380,11 @@ fn makeField(s: *Surface, n: *Node) !Field {
     switch (n.kind) {
         .input, .textarea => {
             if (rich) setupRichEdit(hwnd);
+            // A RichEdit takes OLE drops itself: a file's path would go into
+            // the field without the page seeing the drag. Without its
+            // target, drags over it reach the canvas's (dropTarget), and a
+            // text drop goes in through the page's drop (dnd.js insert).
+            if (rich) _ = RevokeDragDrop(hwnd);
             if (rich and n.props.pw) _ = c.SendMessageW(hwnd, c.EM_SETPASSWORDCHAR, 0x2022, 0);
             if (!rich) if (n.props.ph) |ph| {
                 const w = try std.unicode.utf8ToUtf16LeAllocZ(s.gpa, ph);
@@ -1430,6 +1448,9 @@ fn setFieldValue(s: *Surface, f: *Field, n: *Node, v: []const u8) void {
             const w = std.unicode.utf8ToUtf16LeAllocZ(s.gpa, crlf.items) catch return;
             defer s.gpa.free(w);
             _ = c.SetWindowTextW(f.hwnd, w.ptr);
+            // A painted placeholder goes or comes back with the value (a
+            // RichEdit sends no EN_CHANGE for it).
+            if (f.ph != null) _ = c.InvalidateRect(f.hwnd, null, c.TRUE);
         },
         .select => if (n.props.options) |opts| for (opts, 0..) |o, i| {
             if (std.mem.eql(u8, o[0], v)) _ = c.SendMessageW(f.hwnd, c.CB_SETCURSEL, i, 0);
@@ -1589,7 +1610,7 @@ fn onFieldCommand(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
     const fx = fieldOf(s, hwnd) orelse return;
     switch (fx.field.kind) {
         .input, .textarea => if (code == c.EN_CHANGE) {
-            if (fx.field.kind == .textarea and fx.field.ph != null) _ = c.InvalidateRect(hwnd, null, c.TRUE);
+            if (fx.field.ph != null) _ = c.InvalidateRect(hwnd, null, c.TRUE);
             const text = fieldText(s, hwnd) orelse return;
             defer s.gpa.free(text);
             // [value, inputType, data]: the edit its beforeinput announced
@@ -5550,4 +5571,539 @@ fn paintIcon(p: *Painter, n: *Node) void {
             vt.DrawGeometry.?(p.rt, @ptrCast(geo), p.solid(stroke), sh.sw, st);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Drag and drop (docs/drag-and-drop-design.md, sections 1 and 5): drops
+// into the page through OLE. The canvas registers an IDropTarget; the page
+// answers each enter and over with an effect mask (Engine.dragEvent), which
+// OLE gets as one DROPEFFECT (the same bits: copy 1, move 2, link 4). A
+// drop's data is there at once: Drop opens the files into the engine's
+// table (drop.zig), sends "drop", and returns the page's own answer.
+
+/// At most this many items in a drop, and this long a string (larger
+/// ones are left out and logged).
+const drag_max_items = 4096;
+const drag_max_string = 16 * 1024 * 1024;
+
+const POINTL = extern struct { x: i32, y: i32 };
+const FORMATETC = extern struct { cfFormat: u16, ptd: ?*anyopaque = null, dwAspect: u32 = 1, lindex: i32 = -1, tymed: u32 = 1 };
+const STGMEDIUM = extern struct { tymed: u32, data: ?*anyopaque, release: ?*anyopaque };
+const HRESULT = c_long;
+const S_OK: HRESULT = 0;
+const E_NOINTERFACE: HRESULT = @bitCast(@as(u32, 0x80004002));
+const CF_UNICODETEXT: u16 = 13;
+const CF_HDROP: u16 = 15;
+const MK_SHIFT: u32 = 0x4;
+const MK_CONTROL: u32 = 0x8;
+const MK_ALT: u32 = 0x20;
+
+/// IDataObject: only what a drop reads (GetData, QueryGetData).
+const IDataObject = extern struct {
+    vtbl: *const extern struct {
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const anyopaque,
+        GetData: *const fn (*IDataObject, *const FORMATETC, *STGMEDIUM) callconv(.winapi) HRESULT,
+        GetDataHere: *const anyopaque,
+        QueryGetData: *const fn (*IDataObject, *const FORMATETC) callconv(.winapi) HRESULT,
+    },
+
+    fn has(d: *IDataObject, format: u16) bool {
+        if (format == 0) return false;
+        const f: FORMATETC = .{ .cfFormat = format };
+        return d.vtbl.QueryGetData(d, &f) == S_OK;
+    }
+
+    /// The format's HGLOBAL (ReleaseStgMedium when done).
+    fn global(d: *IDataObject, format: u16) ?STGMEDIUM {
+        if (format == 0) return null;
+        const f: FORMATETC = .{ .cfFormat = format };
+        var m: STGMEDIUM = undefined;
+        if (d.vtbl.GetData(d, &f, &m) != S_OK) return null;
+        if (m.tymed != 1 or m.data == null) {
+            ReleaseStgMedium(&m);
+            return null;
+        }
+        return m;
+    }
+};
+
+/// The shell's drag image over the window while a drag from Explorer is
+/// in it (CLSID_DragDropHelper).
+const IDropTargetHelper = extern struct {
+    vtbl: *const extern struct {
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IDropTargetHelper) callconv(.winapi) u32,
+        DragEnter: *const fn (*IDropTargetHelper, c.HWND, *IDataObject, *c.POINT, u32) callconv(.winapi) HRESULT,
+        DragLeave: *const fn (*IDropTargetHelper) callconv(.winapi) HRESULT,
+        DragOver: *const fn (*IDropTargetHelper, *c.POINT, u32) callconv(.winapi) HRESULT,
+        Drop: *const fn (*IDropTargetHelper, *IDataObject, *c.POINT, u32) callconv(.winapi) HRESULT,
+    },
+};
+
+extern "ole32" fn OleInitialize(reserved: ?*anyopaque) callconv(.winapi) HRESULT;
+extern "ole32" fn RegisterDragDrop(hwnd: c.HWND, target: *DropTarget) callconv(.winapi) HRESULT;
+extern "ole32" fn RevokeDragDrop(hwnd: c.HWND) callconv(.winapi) HRESULT;
+extern "ole32" fn ReleaseStgMedium(m: *STGMEDIUM) callconv(.winapi) void;
+extern "shell32" fn DragQueryFileW(drop: ?*anyopaque, index: u32, file: ?[*]u16, len: u32) callconv(.winapi) u32;
+
+const iid_unknown: c.GUID = .{ .Data1 = 0x00000000, .Data2 = 0x0000, .Data3 = 0x0000, .Data4 = .{ 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+const iid_drop_target: c.GUID = .{ .Data1 = 0x00000122, .Data2 = 0x0000, .Data3 = 0x0000, .Data4 = .{ 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+const clsid_drag_drop_helper: c.GUID = .{ .Data1 = 0x4657278A, .Data2 = 0x411B, .Data3 = 0x11D2, .Data4 = .{ 0x83, 0x9A, 0x00, 0xC0, 0x4F, 0xD9, 0x18, 0xD0 } };
+const iid_drop_target_helper: c.GUID = .{ .Data1 = 0x4657278B, .Data2 = 0x411B, .Data3 = 0x11D2, .Data4 = .{ 0x83, 0x9A, 0x00, 0xC0, 0x4F, 0xD9, 0x18, 0xD0 } };
+
+/// The registered clipboard formats a drag can carry (0 until known).
+var cf_url: u16 = 0; // UniformResourceLocatorW
+var cf_html: u16 = 0; // HTML Format
+var ole_ready: ?bool = null;
+
+/// The canvas's IDropTarget: a COM object OLE holds (RegisterDragDrop
+/// adds a reference, RevokeDragDrop drops it). It keeps only the canvas
+/// window: the surface is looked up on each call, so a page that closes
+/// its window during a drag leaves nothing dangling.
+const DropTarget = extern struct {
+    vtbl: *const Vtbl,
+    refs: u32,
+    hwnd: c.HWND,
+    helper: ?*IDropTargetHelper,
+
+    const Vtbl = extern struct {
+        QueryInterface: *const fn (*DropTarget, *const c.GUID, *?*anyopaque) callconv(.winapi) HRESULT,
+        AddRef: *const fn (*DropTarget) callconv(.winapi) u32,
+        Release: *const fn (*DropTarget) callconv(.winapi) u32,
+        DragEnter: *const fn (*DropTarget, *IDataObject, u32, POINTL, *u32) callconv(.winapi) HRESULT,
+        DragOver: *const fn (*DropTarget, u32, POINTL, *u32) callconv(.winapi) HRESULT,
+        DragLeave: *const fn (*DropTarget) callconv(.winapi) HRESULT,
+        Drop: *const fn (*DropTarget, *IDataObject, u32, POINTL, *u32) callconv(.winapi) HRESULT,
+    };
+
+    const vtbl_impl: Vtbl = .{
+        .QueryInterface = queryInterface,
+        .AddRef = addRefTarget,
+        .Release = release,
+        .DragEnter = dragEnter,
+        .DragOver = dragOver,
+        .DragLeave = dragLeave,
+        .Drop = drop,
+    };
+
+    fn queryInterface(t: *DropTarget, iid: *const c.GUID, out: *?*anyopaque) callconv(.winapi) HRESULT {
+        if (std.mem.eql(u8, std.mem.asBytes(iid), std.mem.asBytes(&iid_unknown)) or std.mem.eql(u8, std.mem.asBytes(iid), std.mem.asBytes(&iid_drop_target))) {
+            out.* = t;
+            _ = addRefTarget(t);
+            return S_OK;
+        }
+        out.* = null;
+        return E_NOINTERFACE;
+    }
+
+    fn addRefTarget(t: *DropTarget) callconv(.winapi) u32 {
+        t.refs += 1;
+        return t.refs;
+    }
+
+    fn release(t: *DropTarget) callconv(.winapi) u32 {
+        t.refs -= 1;
+        const left = t.refs;
+        if (left == 0) {
+            if (t.helper) |h| _ = h.vtbl.Release(h);
+            std.heap.page_allocator.destroy(t);
+        }
+        return left;
+    }
+
+    fn dragEnter(t: *DropTarget, data: *IDataObject, keys: u32, pt: POINTL, effect: *u32) callconv(.winapi) HRESULT {
+        const allowed = effect.*;
+        const s = liveSurface(t.hwnd);
+        if (s) |ls| {
+            ls.drag_session +%= 1;
+            ls.drag_inside = true;
+            ls.drag_kinds = DragKinds.of(data);
+        }
+        effect.* = if (s) |ls| dragAnswer(ls, true, keys, pt, allowed) else 0;
+        var sp: c.POINT = .{ .x = pt.x, .y = pt.y };
+        if (t.helper) |h| _ = h.vtbl.DragEnter(h, t.hwnd, data, &sp, effect.*);
+        return S_OK;
+    }
+
+    fn dragOver(t: *DropTarget, keys: u32, pt: POINTL, effect: *u32) callconv(.winapi) HRESULT {
+        const allowed = effect.*;
+        const s = liveSurface(t.hwnd);
+        effect.* = if (s) |ls| (if (ls.drag_inside) dragAnswer(ls, false, keys, pt, allowed) else 0) else 0;
+        var sp: c.POINT = .{ .x = pt.x, .y = pt.y };
+        if (t.helper) |h| _ = h.vtbl.DragOver(h, &sp, effect.*);
+        return S_OK;
+    }
+
+    fn dragLeave(t: *DropTarget) callconv(.winapi) HRESULT {
+        if (t.helper) |h| _ = h.vtbl.DragLeave(h);
+        const s = liveSurface(t.hwnd) orelse return S_OK;
+        if (!s.drag_inside) return S_OK;
+        s.drag_inside = false;
+        s.drag_effect = 0;
+        sendDragLeave(s, s.drag_session);
+        return S_OK;
+    }
+
+    fn drop(t: *DropTarget, data: *IDataObject, keys: u32, pt: POINTL, effect: *u32) callconv(.winapi) HRESULT {
+        const allowed = effect.* & 7;
+        effect.* = dropInto(t.hwnd, data, keys, pt, allowed);
+        var sp: c.POINT = .{ .x = pt.x, .y = pt.y };
+        if (t.helper) |h| _ = h.vtbl.Drop(h, data, &sp, effect.*);
+        return S_OK;
+    }
+};
+
+/// OLE on this (the UI) thread, once, and the canvas's drop target. Null
+/// when OLE can't be had (no drops into the page then).
+fn registerDropTarget(hwnd: c.HWND) ?*DropTarget {
+    if (ole_ready == null) {
+        const hr = OleInitialize(null);
+        ole_ready = hr >= 0;
+        if (hr < 0) log.warn("native ui: OleInitialize failed (0x{x}): no drops", .{@as(u32, @bitCast(hr))});
+        cf_url = @truncate(c.RegisterClipboardFormatW(std.unicode.utf8ToUtf16LeStringLiteral("UniformResourceLocatorW")));
+        cf_html = @truncate(c.RegisterClipboardFormatW(std.unicode.utf8ToUtf16LeStringLiteral("HTML Format")));
+    }
+    if (ole_ready != true) return null;
+    const t = std.heap.page_allocator.create(DropTarget) catch return null;
+    t.* = .{ .vtbl = &DropTarget.vtbl_impl, .refs = 1, .hwnd = hwnd, .helper = null };
+    var helper: ?*IDropTargetHelper = null;
+    if (c.CoCreateInstance(&clsid_drag_drop_helper, null, c.CLSCTX_INPROC_SERVER, &iid_drop_target_helper, @ptrCast(&helper)) >= 0) t.helper = helper;
+    const hr = RegisterDragDrop(hwnd, t);
+    // OLE holds it from here (or no one does): ours goes.
+    _ = DropTarget.release(t);
+    if (hr < 0) {
+        log.warn("native ui: RegisterDragDrop failed (0x{x})", .{@as(u32, @bitCast(hr))});
+        return null;
+    }
+    return t;
+}
+
+/// What a drag carries, as the page's DataTransfer types.
+const DragKinds = struct {
+    files: bool = false,
+    plain: bool = false,
+    uri_list: bool = false,
+    html: bool = false,
+
+    fn of(d: *IDataObject) DragKinds {
+        return .{
+            .files = d.has(CF_HDROP),
+            .plain = d.has(CF_UNICODETEXT),
+            .uri_list = d.has(cf_url),
+            .html = d.has(cf_html),
+        };
+    }
+
+    /// The strings the page sees: none with files, as in Chrome (Explorer
+    /// offers the files' paths as text beside them).
+    fn strings(k: DragKinds) [3]?[]const u8 {
+        if (k.files) return .{ null, null, null };
+        return .{
+            if (k.plain) "text/plain" else null,
+            if (k.uri_list) "text/uri-list" else null,
+            if (k.html) "text/html" else null,
+        };
+    }
+
+    /// enter's items: [[kind, type], ...].
+    fn writeItems(k: DragKinds, gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
+        try out.append(gpa, '[');
+        var first = true;
+        if (k.files) {
+            try out.appendSlice(gpa, "[\"file\",\"\"]");
+            first = false;
+        }
+        for (k.strings()) |mime| if (mime) |m| {
+            if (!first) try out.append(gpa, ',');
+            first = false;
+            try out.print(gpa, "[\"string\",\"{s}\"]", .{m});
+        };
+        try out.append(gpa, ']');
+    }
+};
+
+/// grfKeyState as the pointer flags (shift 1, ctrl 2, alt 4).
+fn dragMods(keys: u32) u32 {
+    var m: u32 = 0;
+    if (keys & MK_SHIFT != 0) m |= 1;
+    if (keys & MK_CONTROL != 0) m |= 2;
+    if (keys & MK_ALT != 0) m |= 4;
+    return m;
+}
+
+/// The operation the keys ask for, as Explorer reads them (Ctrl copy,
+/// Shift move, both a link), else the first the source allows.
+fn suggestedEffect(allowed: u32, mods: u32) u32 {
+    if (allowed == 0) return 0;
+    if (std.math.isPowerOfTwo(allowed)) return allowed;
+    const ctrl = mods & 2 != 0;
+    const shift = mods & 1 != 0;
+    const wanted: u32 = if (ctrl and shift) 4 else if (ctrl) 1 else if (shift) 2 else 0;
+    if (wanted & allowed != 0) return wanted;
+    return firstEffect(allowed);
+}
+
+fn firstEffect(mask: u32) u32 {
+    inline for (.{ 1, 2, 4 }) |a| if (mask & a != 0) return a;
+    return 0;
+}
+
+/// The page's mask as the one effect OLE is told: the suggested one if
+/// the page allows it, else its first (0: no drop here).
+fn pickEffect(mask: u32, allowed: u32, suggested: u32) u32 {
+    const m = mask & allowed;
+    if (m & suggested != 0) return suggested;
+    return firstEffect(m);
+}
+
+/// A screen point as the page's (CSS px in the canvas).
+fn dragPoint(s: *Surface, pt: POINTL) [2]f32 {
+    var p: c.POINT = .{ .x = pt.x, .y = pt.y };
+    _ = c.ScreenToClient(s.hwnd, &p);
+    return .{ @as(f32, @floatFromInt(p.x)) / s.scale, @as(f32, @floatFromInt(p.y)) / s.scale };
+}
+
+/// "enter" or "over" on the node under the pointer: the effect for OLE.
+fn dragAnswer(s: *Surface, enter: bool, keys: u32, pt: POINTL, allowed_in: u32) u32 {
+    const hwnd = s.hwnd;
+    const allowed = allowed_in & 7;
+    const mods = dragMods(keys);
+    const suggested = suggestedEffect(allowed, mods);
+    const p = dragPoint(s, pt);
+    // Not s.gpa in the defer: the page may close its window inside.
+    const gpa = s.gpa;
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"{s}\",{d:.2},{d:.2},{d},{d},{d},{d}", .{ if (enter) "enter" else "over", p[0], p[1], allowed, suggested, mods, s.drag_session }) catch return 0;
+    if (enter) {
+        json.append(gpa, ',') catch return 0;
+        s.drag_kinds.writeItems(gpa, &json) catch return 0;
+    }
+    json.append(gpa, ']') catch return 0;
+    const mask = s.engine.dragEvent(targetAt(s, p), json.items);
+    const ls = liveSurface(hwnd) orelse return 0; // the page closed its window
+    ls.drag_effect = pickEffect(mask, allowed, suggested);
+    return ls.drag_effect;
+}
+
+fn sendDragLeave(s: *Surface, session: u32) void {
+    var buf: [32]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"leave\",{d}]", .{session}) catch return;
+    _ = s.engine.dragEvent(0, json);
+}
+
+/// The drop: its files opened into the engine's table, or its strings,
+/// sent to the page as "drop"; the page's answer as OLE's effect.
+fn dropInto(hwnd: c.HWND, data: *IDataObject, keys: u32, pt: POINTL, allowed: u32) u32 {
+    const s = liveSurface(hwnd) orelse return 0;
+    if (!s.drag_inside) return 0;
+    s.drag_inside = false;
+    const last = s.drag_effect;
+    s.drag_effect = 0;
+    const session = s.drag_session;
+    // The page took no drop here: the drag just leaves.
+    if (last == 0) {
+        sendDragLeave(s, session);
+        return 0;
+    }
+    const mods = dragMods(keys);
+    const suggested = suggestedEffect(allowed, mods);
+    const p = dragPoint(s, pt);
+    const gpa = s.gpa;
+    var items: DropItems = .{ .gpa = gpa };
+    defer items.deinit();
+    if (s.drag_kinds.files) dropFiles(s, data, &items) else dropStrings(s.drag_kinds, data, &items);
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"drop\",{d:.2},{d:.2},{d},{d},{d},{d},[{s}]]", .{ p[0], p[1], allowed, suggested, mods, session, items.json.items }) catch {
+        items.releaseAll(s);
+        sendDragLeave(s, session);
+        return 0;
+    };
+    const mask = s.engine.dragEvent(targetAt(s, p), json.items);
+    if (liveSurface(hwnd) == null) return 0;
+    return pickEffect(mask, allowed, suggested);
+}
+
+/// A drop's items' JSON (comma-separated) and the handles in it.
+const DropItems = struct {
+    gpa: std.mem.Allocator,
+    json: std.ArrayList(u8) = .empty,
+    count: usize = 0,
+    handles: std.ArrayList(u32) = .empty,
+
+    fn deinit(d: *DropItems) void {
+        d.json.deinit(d.gpa);
+        d.handles.deinit(d.gpa);
+    }
+
+    /// Room for one more item (a comma before it).
+    fn start(d: *DropItems) !bool {
+        if (d.count >= drag_max_items) {
+            if (d.count == drag_max_items) log.warn("native ui: a drop of more than {d} items: the rest left out", .{drag_max_items});
+            d.count = drag_max_items + 1;
+            return false;
+        }
+        if (d.count > 0) try d.json.append(d.gpa, ',');
+        d.count += 1;
+        return true;
+    }
+
+    /// The JSON couldn't be sent: its files are let go.
+    fn releaseAll(d: *DropItems, s: *Surface) void {
+        for (d.handles.items) |h| s.engine.drops.release(h);
+    }
+
+    fn string(d: *DropItems, value: []const u8) !void {
+        const quoted = try std.json.Stringify.valueAlloc(d.gpa, value, .{});
+        defer d.gpa.free(quoted);
+        try d.json.appendSlice(d.gpa, quoted);
+    }
+};
+
+/// Each file of the CF_HDROP opened into the engine's table (regular
+/// files only): ["file", mime, name, size, lastModifiedMs, handle]. Only
+/// the name reaches the page, never the path.
+fn dropFiles(s: *Surface, data: *IDataObject, items: *DropItems) void {
+    var m = data.global(CF_HDROP) orelse return;
+    defer ReleaseStgMedium(&m);
+    const hdrop = m.data;
+    const n = DragQueryFileW(hdrop, 0xFFFFFFFF, null, 0);
+    var i: u32 = 0;
+    while (i < n and items.count <= drag_max_items) : (i += 1) {
+        const len = DragQueryFileW(hdrop, i, null, 0);
+        if (len == 0) continue;
+        const wide = s.gpa.alloc(u16, len + 1) catch continue;
+        defer s.gpa.free(wide);
+        if (DragQueryFileW(hdrop, i, wide.ptr, len + 1) != len) continue;
+        const path = std.unicode.utf16LeToUtf8AllocZ(s.gpa, wide[0..len]) catch continue;
+        defer s.gpa.free(path);
+        const handle = (s.engine.drops.addPath(path) catch |err| {
+            log.warn("native ui: a dropped file: {s}", .{@errorName(err)});
+            continue;
+        }) orelse continue; // not a regular file (a folder)
+        const info = s.engine.drops.info(handle).?;
+        const name = std.fs.path.basenameWindows(path);
+        const added = fileItem(items, name, info, handle) catch false;
+        if (added) items.handles.append(items.gpa, handle) catch {} else s.engine.drops.release(handle);
+    }
+}
+
+fn fileItem(items: *DropItems, name: []const u8, info: engine_mod.drop.Entry, handle: u32) !bool {
+    if (!try items.start()) return false;
+    try items.json.appendSlice(items.gpa, "[\"file\",");
+    var mime_buf: [128]u8 = undefined;
+    try items.string(mimeOf(name, &mime_buf));
+    try items.json.append(items.gpa, ',');
+    try items.string(name);
+    try items.json.print(items.gpa, ",{d},{d},{d}]", .{ info.size, info.mtimeMs(), handle });
+    return true;
+}
+
+/// A file's MIME type from its extension, as Chromium gives File.type on
+/// Windows: its own table for the common ones, then the registry's
+/// (HKCR\.ext "Content Type"); "" when unknown.
+fn mimeOf(name: []const u8, buf: []u8) []const u8 {
+    const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "";
+    if (dot == 0 or dot + 1 == name.len) return "";
+    const ext = name[dot + 1 ..];
+    const known = [_][2][]const u8{
+        .{ "html", "text/html" },      .{ "htm", "text/html" },          .{ "css", "text/css" },
+        .{ "js", "text/javascript" },  .{ "mjs", "text/javascript" },    .{ "json", "application/json" },
+        .{ "txt", "text/plain" },      .{ "text", "text/plain" },        .{ "csv", "text/csv" },
+        .{ "xml", "text/xml" },        .{ "md", "text/markdown" },       .{ "png", "image/png" },
+        .{ "jpg", "image/jpeg" },      .{ "jpeg", "image/jpeg" },        .{ "gif", "image/gif" },
+        .{ "webp", "image/webp" },     .{ "svg", "image/svg+xml" },      .{ "ico", "image/x-icon" },
+        .{ "bmp", "image/bmp" },       .{ "avif", "image/avif" },        .{ "pdf", "application/pdf" },
+        .{ "zip", "application/zip" }, .{ "gz", "application/gzip" },   .{ "wasm", "application/wasm" },
+        .{ "mp3", "audio/mpeg" },      .{ "wav", "audio/wav" },          .{ "ogg", "audio/ogg" },
+        .{ "flac", "audio/flac" },     .{ "mp4", "video/mp4" },          .{ "webm", "video/webm" },
+    };
+    for (known) |k| if (std.ascii.eqlIgnoreCase(ext, k[0])) return k[1];
+    // The registry: ".ext" under HKEY_CLASSES_ROOT.
+    var key: [72]u16 = undefined;
+    if (ext.len + 2 > key.len) return "";
+    key[0] = '.';
+    for (ext, 0..) |ch, j| {
+        if (ch >= 0x80) return "";
+        key[j + 1] = ch;
+    }
+    key[ext.len + 1] = 0;
+    var value: [128]u16 = undefined;
+    var size: u32 = @sizeOf(@TypeOf(value));
+    const RRF_RT_REG_SZ: u32 = 0x2;
+    if (c.RegGetValueW(c.HKEY_CLASSES_ROOT, @ptrCast(&key), std.unicode.utf8ToUtf16LeStringLiteral("Content Type"), RRF_RT_REG_SZ, null, &value, &size) != 0) return "";
+    const units = std.mem.sliceTo(&value, 0);
+    var out: usize = 0;
+    for (units) |u| {
+        if (u >= 0x80 or out >= buf.len) return "";
+        buf[out] = std.ascii.toLower(@intCast(u));
+        out += 1;
+    }
+    return buf[0..out];
+}
+
+/// The drag's strings: ["string", type, value] each (text, a link,
+/// HTML's fragment).
+fn dropStrings(kinds: DragKinds, data: *IDataObject, items: *DropItems) void {
+    const formats = [_]u16{ CF_UNICODETEXT, cf_url, cf_html };
+    for (kinds.strings(), formats) |mime, format| if (mime) |m| {
+        var med = data.global(format) orelse continue;
+        defer ReleaseStgMedium(&med);
+        const size = c.GlobalSize(med.data);
+        const ptr = c.GlobalLock(med.data) orelse continue;
+        defer _ = c.GlobalUnlock(med.data);
+        const text = (if (format == cf_html)
+            htmlFragment(items.gpa, @as([*]const u8, @ptrCast(ptr))[0..size])
+        else
+            utf16Text(items.gpa, @as([*]const u16, @ptrCast(@alignCast(ptr)))[0 .. size / 2])) orelse continue;
+        defer items.gpa.free(text);
+        if (text.len > drag_max_string) {
+            log.warn("native ui: a dropped {s} over {d} MiB left out", .{ m, drag_max_string >> 20 });
+            continue;
+        }
+        stringItem(items, m, text) catch {};
+    };
+}
+
+/// UTF-16 up to its NUL as UTF-8 (owned).
+fn utf16Text(gpa: std.mem.Allocator, units: []const u16) ?[]u8 {
+    const end = std.mem.indexOfScalar(u16, units, 0) orelse units.len;
+    return std.unicode.utf16LeToUtf8Alloc(gpa, units[0..end]) catch null;
+}
+
+/// CF_HTML's fragment (StartFragment to EndFragment, UTF-8 byte offsets
+/// in its header), as Chromium reads it (owned).
+fn htmlFragment(gpa: std.mem.Allocator, bytes: []const u8) ?[]u8 {
+    const doc = bytes[0 .. std.mem.indexOfScalar(u8, bytes, 0) orelse bytes.len];
+    const start = headerOffset(doc, "StartFragment:") orelse return null;
+    const end = headerOffset(doc, "EndFragment:") orelse return null;
+    if (start > end or end > doc.len) return null;
+    return gpa.dupe(u8, doc[start..end]) catch null;
+}
+
+/// CF_HTML's header field `name` (its decimal value).
+fn headerOffset(doc: []const u8, name: []const u8) ?usize {
+    const at = std.mem.indexOf(u8, doc, name) orelse return null;
+    var i = at + name.len;
+    var v: usize = 0;
+    var any = false;
+    while (i < doc.len and doc[i] >= '0' and doc[i] <= '9') : (i += 1) {
+        v = std.math.mul(usize, v, 10) catch return null;
+        v = std.math.add(usize, v, doc[i] - '0') catch return null;
+        any = true;
+    }
+    return if (any) v else null;
+}
+
+fn stringItem(items: *DropItems, mime: []const u8, text: []const u8) !void {
+    if (!try items.start()) return;
+    try items.json.appendSlice(items.gpa, "[\"string\",");
+    try items.string(mime);
+    try items.json.append(items.gpa, ',');
+    try items.string(text);
+    try items.json.append(items.gpa, ']');
 }
