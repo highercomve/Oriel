@@ -6734,6 +6734,729 @@ input[type="range"] { height: 20px; margin: 2px; }
     return out;
   }
 
+  // src/blob.js
+  var READ_CHUNK = 64 * 1024 * 1024;
+  function domException(g2) {
+    if (typeof g2.DOMException === "function") return g2.DOMException;
+    class DOMException2 extends Error {
+      constructor(message = "", name = "Error") {
+        super(message);
+        Object.defineProperty(this, "name", { value: String(name), configurable: true, writable: true });
+      }
+    }
+    return g2.DOMException = DOMException2;
+  }
+  function utf8Encode(s) {
+    const out = new Uint8Array(s.length * 3);
+    let n2 = 0;
+    for (let i = 0; i < s.length; i++) {
+      let c = s.charCodeAt(i);
+      if (c >= 55296 && c <= 57343) {
+        const d = c <= 56319 && i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+        if (d >= 56320 && d <= 57343) {
+          c = 65536 + (c - 55296 << 10) + (d - 56320);
+          i++;
+        } else c = 65533;
+      }
+      if (c < 128) out[n2++] = c;
+      else if (c < 2048) {
+        out[n2++] = 192 | c >> 6;
+        out[n2++] = 128 | c & 63;
+      } else if (c < 65536) {
+        out[n2++] = 224 | c >> 12;
+        out[n2++] = 128 | c >> 6 & 63;
+        out[n2++] = 128 | c & 63;
+      } else {
+        out[n2++] = 240 | c >> 18;
+        out[n2++] = 128 | c >> 12 & 63;
+        out[n2++] = 128 | c >> 6 & 63;
+        out[n2++] = 128 | c & 63;
+      }
+    }
+    return out.slice(0, n2);
+  }
+  function utf8Decode(b) {
+    let i = b.length >= 3 && b[0] === 239 && b[1] === 187 && b[2] === 191 ? 3 : 0;
+    let out = "";
+    let units = [];
+    const unit = (u) => {
+      units.push(u);
+      if (units.length >= 8192) {
+        out += String.fromCharCode.apply(null, units);
+        units = [];
+      }
+    };
+    const point = (cp) => {
+      if (cp < 65536) unit(cp);
+      else {
+        cp -= 65536;
+        unit(55296 + (cp >> 10));
+        unit(56320 + (cp & 1023));
+      }
+    };
+    while (i < b.length) {
+      const c = b[i];
+      if (c < 128) {
+        unit(c);
+        i++;
+        continue;
+      }
+      let need, cp, lower = 128, upper = 191;
+      if (c >= 194 && c <= 223) {
+        need = 1;
+        cp = c & 31;
+      } else if (c >= 224 && c <= 239) {
+        need = 2;
+        cp = c & 15;
+        if (c === 224) lower = 160;
+        if (c === 237) upper = 159;
+      } else if (c >= 240 && c <= 244) {
+        need = 3;
+        cp = c & 7;
+        if (c === 240) lower = 144;
+        if (c === 244) upper = 143;
+      } else {
+        unit(65533);
+        i++;
+        continue;
+      }
+      let j = i + 1, k = 0;
+      for (; k < need && j < b.length; k++, j++) {
+        const d = b[j];
+        if (d < lower || d > upper) break;
+        lower = 128;
+        upper = 191;
+        cp = cp << 6 | d & 63;
+      }
+      point(k < need ? 65533 : cp);
+      i = j;
+    }
+    return out + String.fromCharCode.apply(null, units);
+  }
+  var isArrayBuffer = (v) => Object.prototype.toString.call(v) === "[object ArrayBuffer]";
+  var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  function base64(b) {
+    let out = "";
+    let chunk = [];
+    let i = 0;
+    for (; i + 2 < b.length; i += 3) {
+      const n2 = b[i] << 16 | b[i + 1] << 8 | b[i + 2];
+      chunk.push(B64[n2 >> 18], B64[n2 >> 12 & 63], B64[n2 >> 6 & 63], B64[n2 & 63]);
+      if (chunk.length >= 32768) {
+        out += chunk.join("");
+        chunk = [];
+      }
+    }
+    if (i < b.length) {
+      const n2 = b[i] << 16 | (b[i + 1] ?? 0) << 8;
+      chunk.push(B64[n2 >> 18], B64[n2 >> 12 & 63], i + 1 < b.length ? B64[n2 >> 6 & 63] : "=", "=");
+    }
+    return out + chunk.join("");
+  }
+  function installBlob(g2, host2) {
+    const DOMException2 = domException(g2);
+    const notReadable = () => new DOMException2("The file could not be read", "NotReadableError");
+    const state = /* @__PURE__ */ new WeakMap();
+    const internal = /* @__PURE__ */ Symbol("internal");
+    const released = new FinalizationRegistry((handle) => {
+      try {
+        host2.fileRelease?.(handle);
+      } catch (e) {
+        console.error(e);
+      }
+    });
+    const reads = /* @__PURE__ */ new Map();
+    let readSeq = 1;
+    function readHandle(ref, offset, length2) {
+      return new Promise((resolve2, reject) => {
+        if (typeof host2.fileRead !== "function") {
+          reject(notReadable());
+          return;
+        }
+        const id = readSeq++;
+        reads.set(id, { resolve: resolve2, reject, ref, length: length2 });
+        try {
+          host2.fileRead(id, ref.handle, offset, length2);
+        } catch (e) {
+          reads.delete(id);
+          console.error(e);
+          reject(notReadable());
+        }
+      });
+    }
+    function fileData(reqId, buf, errorName) {
+      const r = reads.get(reqId);
+      if (!r) return;
+      reads.delete(reqId);
+      const bytes = isArrayBuffer(buf) ? new Uint8Array(buf) : ArrayBuffer.isView(buf) ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) : null;
+      if (!bytes || bytes.length !== r.length) {
+        r.reject(errorName ? new DOMException2("The file could not be read", String(errorName)) : notReadable());
+        return;
+      }
+      r.resolve(bytes);
+    }
+    async function readAll(blob) {
+      const s = state.get(blob);
+      const out = new Uint8Array(s.size);
+      let at = 0;
+      for (const seg of s.segs) {
+        if (seg.bytes) {
+          out.set(seg.bytes, at);
+          at += seg.bytes.length;
+          continue;
+        }
+        for (let off = 0; off < seg.length; off += READ_CHUNK) {
+          const n2 = Math.min(READ_CHUNK, seg.length - off);
+          out.set(await readHandle(seg.ref, seg.offset + off, n2), at);
+          at += n2;
+        }
+      }
+      return out;
+    }
+    const bytesOf = (part) => {
+      if (isArrayBuffer(part)) return new Uint8Array(part.slice(0));
+      if (ArrayBuffer.isView(part)) return new Uint8Array(part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength));
+      return null;
+    };
+    const cleanType = (t) => {
+      const s = t === void 0 ? "" : String(t);
+      return /^[\x20-\x7e]*$/.test(s) ? s.toLowerCase() : "";
+    };
+    function segmentsOf(parts) {
+      const segs = [];
+      if (parts === void 0 || parts === null) return segs;
+      if (typeof parts !== "object" || typeof parts[Symbol.iterator] !== "function") throw new TypeError("Blob: the parts must be a sequence");
+      for (const part of parts) {
+        const own = part && typeof part === "object" ? state.get(part) : void 0;
+        if (own) {
+          segs.push(...own.segs);
+          continue;
+        }
+        const bytes = bytesOf(part) || utf8Encode(String(part));
+        if (bytes.length) segs.push({ bytes });
+      }
+      return segs;
+    }
+    const sizeOf = (segs) => segs.reduce((n2, s) => n2 + (s.bytes ? s.bytes.length : s.length), 0);
+    class Blob {
+      constructor(parts, options = {}) {
+        const segs = parts?.[internal] ? parts.segs : segmentsOf(parts);
+        state.set(this, { segs, size: sizeOf(segs), type: cleanType(options?.type) });
+      }
+      get size() {
+        return state.get(this).size;
+      }
+      get type() {
+        return state.get(this).type;
+      }
+      // Bytes [start, end) as a new Blob: no reading, a dropped file's
+      // segments narrow. Negative offsets count from the end.
+      slice(start, end, type) {
+        const { segs, size } = state.get(this);
+        const rel = (v, d) => {
+          if (v === void 0) return d;
+          const n2 = Math.trunc(+v) || 0;
+          return n2 < 0 ? Math.max(size + n2, 0) : Math.min(n2, size);
+        };
+        const from = rel(start, 0), to = Math.max(rel(end, size), from);
+        const out = [];
+        let at = 0;
+        for (const seg of segs) {
+          const len = seg.bytes ? seg.bytes.length : seg.length;
+          const a = Math.max(from - at, 0), b = Math.min(to - at, len);
+          if (b > a) out.push(seg.bytes ? { bytes: seg.bytes.subarray(a, b) } : { ref: seg.ref, offset: seg.offset + a, length: b - a });
+          at += len;
+          if (at >= to) break;
+        }
+        return new Blob({ [internal]: true, segs: out }, { type });
+      }
+      arrayBuffer() {
+        return readAll(this).then((b) => b.buffer);
+      }
+      bytes() {
+        return readAll(this);
+      }
+      text() {
+        return readAll(this).then(utf8Decode);
+      }
+      get [Symbol.toStringTag]() {
+        return "Blob";
+      }
+    }
+    class File extends Blob {
+      constructor(bits, name, options = {}) {
+        if (arguments.length < 2) throw new TypeError("File: a name is required");
+        super(bits, options);
+        this.name = String(name);
+        const lm = options?.lastModified;
+        this.lastModified = lm === void 0 ? Date.now() : Math.trunc(+lm) || 0;
+        this.webkitRelativePath = "";
+      }
+      get [Symbol.toStringTag]() {
+        return "File";
+      }
+    }
+    function droppedFile(name, type, size, lastModified, handle) {
+      const ref = { handle };
+      released.register(ref, handle);
+      const length2 = Math.max(0, Math.trunc(+size) || 0);
+      const segs = length2 ? [{ ref, offset: 0, length: length2 }] : [];
+      const f = new File({ [internal]: true, segs }, name, { type, lastModified });
+      if (!length2) state.get(f).ref = ref;
+      return f;
+    }
+    const listToken = /* @__PURE__ */ Symbol("FileList");
+    class FileList {
+      constructor(token, files) {
+        if (token !== listToken) throw new TypeError("Illegal constructor");
+        files.forEach((f, i) => Object.defineProperty(this, i, { value: f, enumerable: true }));
+        Object.defineProperty(this, "length", { value: files.length });
+      }
+      item(i) {
+        return this[i >>> 0] ?? null;
+      }
+      *[Symbol.iterator]() {
+        for (let i = 0; i < this.length; i++) yield this[i];
+      }
+      get [Symbol.toStringTag]() {
+        return "FileList";
+      }
+    }
+    const fileList = (files) => new FileList(listToken, files);
+    const Base = typeof g2.EventTarget === "function" ? g2.EventTarget : class {
+    };
+    const EVENTS = ["loadstart", "progress", "load", "abort", "error", "loadend"];
+    class FileReader extends Base {
+      constructor() {
+        super();
+        this.readyState = 0;
+        this.result = null;
+        this.error = null;
+        this.__gen = 0;
+      }
+      readAsArrayBuffer(blob) {
+        this.__read(blob, (b) => b.buffer);
+      }
+      readAsText(blob, _encoding) {
+        this.__read(blob, utf8Decode);
+      }
+      // UTF-8 only
+      readAsDataURL(blob) {
+        this.__read(blob, (b) => `data:${blob.type || "application/octet-stream"};base64,${base64(b)}`);
+      }
+      readAsBinaryString(blob) {
+        this.__read(blob, (b) => {
+          let s = "";
+          for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode.apply(null, b.subarray(i, i + 8192));
+          return s;
+        });
+      }
+      abort() {
+        if (this.readyState !== 1) return;
+        this.__gen++;
+        this.readyState = 2;
+        this.result = null;
+        this.__fire("abort");
+        this.__fire("loadend");
+      }
+      __read(blob, convert) {
+        if (!state.has(blob)) throw new TypeError("FileReader: not a Blob");
+        if (this.readyState === 1) throw new DOMException2("A read is in progress", "InvalidStateError");
+        const gen = ++this.__gen;
+        this.readyState = 1;
+        this.result = null;
+        this.error = null;
+        const total = blob.size;
+        queueMicrotask(() => {
+          if (gen === this.__gen) this.__fire("loadstart", 0, total);
+        });
+        readAll(blob).then((bytes) => {
+          if (gen !== this.__gen) return;
+          let result;
+          try {
+            result = convert(bytes);
+          } catch (e) {
+            result = null;
+            console.error(e);
+          }
+          this.readyState = 2;
+          this.result = result;
+          this.__fire("progress", total, total);
+          this.__fire("load", total, total);
+          if (this.readyState !== 1) this.__fire("loadend", total, total);
+        }, (err) => {
+          if (gen !== this.__gen) return;
+          this.readyState = 2;
+          this.error = err;
+          this.__fire("error");
+          if (this.readyState !== 1) this.__fire("loadend");
+        });
+      }
+      // A ProgressEvent (lengthComputable, loaded, total).
+      __fire(type, loaded = 0, total = 0) {
+        const ev = new g2.Event(type);
+        Object.defineProperties(ev, {
+          lengthComputable: { value: total > 0, configurable: true },
+          loaded: { value: loaded, configurable: true },
+          total: { value: total, configurable: true }
+        });
+        try {
+          this.dispatchEvent(ev);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
+    for (const [i, name] of ["EMPTY", "LOADING", "DONE"].entries()) {
+      Object.defineProperty(FileReader, name, { value: i });
+      Object.defineProperty(FileReader.prototype, name, { value: i });
+    }
+    if (typeof Base.prototype.dispatchEvent !== "function") {
+      Object.assign(FileReader.prototype, {
+        addEventListener(type, fn) {
+          ((this.__listeners ||= /* @__PURE__ */ new Map()).get(type) || this.__listeners.set(type, /* @__PURE__ */ new Set()).get(type)).add(fn);
+        },
+        removeEventListener(type, fn) {
+          this.__listeners?.get(type)?.delete(fn);
+        },
+        dispatchEvent(ev) {
+          Object.defineProperty(ev, "target", { value: this, configurable: true });
+          Object.defineProperty(ev, "currentTarget", { value: this, configurable: true });
+          for (const fn of [...this.__listeners?.get(ev.type) || []]) {
+            try {
+              typeof fn === "function" ? fn.call(this, ev) : fn.handleEvent(ev);
+            } catch (e) {
+              console.error(e);
+            }
+          }
+          return !ev.defaultPrevented;
+        }
+      });
+    }
+    for (const type of EVENTS) {
+      Object.defineProperty(FileReader.prototype, "on" + type, {
+        get() {
+          return this.__on?.get(type)?.fn ?? null;
+        },
+        set(fn) {
+          const on = this.__on ||= /* @__PURE__ */ new Map();
+          const old = on.get(type);
+          if (old) {
+            this.removeEventListener(type, old.listener);
+            on.delete(type);
+          }
+          if (typeof fn !== "function") return;
+          const listener = function(event) {
+            return fn.call(this, event);
+          };
+          this.addEventListener(type, listener);
+          on.set(type, { fn, listener });
+        },
+        configurable: true
+      });
+    }
+    g2.Blob ??= Blob;
+    g2.File ??= File;
+    g2.FileList ??= FileList;
+    g2.FileReader ??= FileReader;
+    return { fileData, droppedFile, fileList, isBlob: (b) => state.has(b) };
+  }
+
+  // src/dnd.js
+  var COPY = 1;
+  var MOVE = 2;
+  var LINK = 4;
+  var OP_NAMES = { none: 0, copy: COPY, move: MOVE, link: LINK };
+  var opName = (bit) => bit === COPY ? "copy" : bit === MOVE ? "move" : bit === LINK ? "link" : "none";
+  var ALLOWED = { none: 0, copy: COPY, move: MOVE, link: LINK, copyMove: COPY | MOVE, copyLink: COPY | LINK, linkMove: LINK | MOVE, all: COPY | MOVE | LINK, uninitialized: COPY | MOVE | LINK };
+  var allowedName = (mask) => Object.keys(ALLOWED).find((k) => ALLOWED[k] === (mask & 7)) || "none";
+  function installDnd(g2, env) {
+    const { MouseEvent: MouseEvent2, fire, files, editable, dropText: dropText2 } = env;
+    const DOMException2 = g2.DOMException;
+    const state = /* @__PURE__ */ new WeakMap();
+    const token = /* @__PURE__ */ Symbol("DataTransfer");
+    const readable = (s) => s.mode === "rw" || s.mode === "ro";
+    const changed = (s) => {
+      s.version++;
+      s.types = null;
+    };
+    const formatOf = (f) => {
+      const t = String(f).toLowerCase();
+      return t === "text" ? "text/plain" : t === "url" ? "text/uri-list" : t;
+    };
+    class DataTransfer {
+      constructor(own) {
+        const s = own?.[token] ? own.state : { mode: "rw", items: [], dropEffect: "none", effectAllowed: "none" };
+        s.version = 0;
+        s.types = null;
+        state.set(this, s);
+      }
+      get dropEffect() {
+        return state.get(this).dropEffect;
+      }
+      set dropEffect(v) {
+        if (Object.hasOwn(OP_NAMES, v)) state.get(this).dropEffect = v;
+      }
+      get effectAllowed() {
+        return state.get(this).effectAllowed;
+      }
+      set effectAllowed(v) {
+        const s = state.get(this);
+        if (s.mode === "rw" && Object.hasOwn(ALLOWED, v)) s.effectAllowed = v;
+      }
+      // A frozen array, the same one until the items change: each string
+      // item's type, and "Files" when any item is a file.
+      get types() {
+        const s = state.get(this);
+        if (!s.types) {
+          const out = [];
+          if (s.mode !== "disabled") {
+            for (const it of s.items) if (it.kind === "string") out.push(it.type);
+            if (s.items.some((it) => it.kind === "file")) out.push("Files");
+          }
+          s.types = Object.freeze(out);
+        }
+        return s.types;
+      }
+      getData(format) {
+        const s = state.get(this);
+        if (!readable(s)) return "";
+        const type = formatOf(format);
+        const it = s.items.find((i) => i.kind === "string" && i.type === type);
+        if (!it) return "";
+        if (String(format).toLowerCase() === "url") return it.data.split(/\r?\n/).find((l) => l && !l.startsWith("#")) ?? "";
+        return it.data;
+      }
+      setData(format, data) {
+        const s = state.get(this);
+        if (s.mode !== "rw") return;
+        const type = formatOf(format);
+        s.items = s.items.filter((i) => !(i.kind === "string" && i.type === type));
+        s.items.push({ kind: "string", type, data: String(data) });
+        changed(s);
+      }
+      clearData(format) {
+        const s = state.get(this);
+        if (s.mode !== "rw") return;
+        const type = format === void 0 ? null : formatOf(format);
+        s.items = s.items.filter((i) => i.kind !== "string" || type !== null && i.type !== type);
+        changed(s);
+      }
+      // The dropped files (none while the drag is only passing over).
+      get files() {
+        const s = state.get(this);
+        return files.fileList(readable(s) ? s.items.filter((i) => i.kind === "file").map((i) => i.file) : []);
+      }
+      get items() {
+        const s = state.get(this);
+        return s.list ||= new DataTransferItemList(token, this);
+      }
+      setDragImage() {
+      }
+      // no drag image here
+      get [Symbol.toStringTag]() {
+        return "DataTransfer";
+      }
+    }
+    class DataTransferItemList {
+      constructor(t, dt) {
+        if (t !== token) throw new TypeError("Illegal constructor");
+        Object.defineProperty(this, "__dt", { value: dt });
+        Object.defineProperty(this, "__seen", { value: { version: -1, count: 0 }, writable: true });
+        this.__sync();
+      }
+      // The index properties, after a change.
+      __sync() {
+        const s = state.get(this.__dt);
+        if (this.__seen.version === s.version && this.__seen.mode === s.mode) return s;
+        const items = s.mode === "disabled" ? [] : s.items;
+        for (let i = items.length; i < this.__seen.count; i++) delete this[i];
+        items.forEach((it, i) => {
+          it.item ||= new DataTransferItem(token, this.__dt, it);
+          Object.defineProperty(this, i, { value: it.item, enumerable: true, configurable: true });
+        });
+        this.__seen = { version: s.version, mode: s.mode, count: items.length };
+        return s;
+      }
+      get length() {
+        const s = this.__sync();
+        return s.mode === "disabled" ? 0 : s.items.length;
+      }
+      add(data, type) {
+        const s = this.__sync();
+        if (s.mode !== "rw") return null;
+        let entry;
+        if (files.isBlob(data) && data instanceof g2.File) entry = { kind: "file", type: data.type, file: data };
+        else {
+          if (type === void 0) throw new TypeError("DataTransferItemList.add: a string needs its type");
+          const t = String(type).toLowerCase();
+          if (s.items.some((i) => i.kind === "string" && i.type === t)) throw new DOMException2(`An item of type ${t} exists`, "NotSupportedError");
+          entry = { kind: "string", type: t, data: String(data) };
+        }
+        s.items.push(entry);
+        changed(s);
+        this.__sync();
+        return entry.item ||= new DataTransferItem(token, this.__dt, entry);
+      }
+      remove(i) {
+        const s = this.__sync();
+        if (s.mode !== "rw") throw new DOMException2("The DataTransfer is not writable", "InvalidStateError");
+        if (i >= 0 && i < s.items.length) {
+          s.items.splice(i, 1);
+          changed(s);
+          this.__sync();
+        }
+      }
+      clear() {
+        const s = this.__sync();
+        if (s.mode !== "rw") return;
+        s.items = [];
+        changed(s);
+        this.__sync();
+      }
+      *[Symbol.iterator]() {
+        for (let i = 0; i < this.length; i++) yield this[i];
+      }
+      get [Symbol.toStringTag]() {
+        return "DataTransferItemList";
+      }
+    }
+    class DataTransferItem {
+      constructor(t, dt, entry) {
+        if (t !== token) throw new TypeError("Illegal constructor");
+        Object.defineProperty(this, "__dt", { value: dt });
+        Object.defineProperty(this, "__entry", { value: entry });
+      }
+      get kind() {
+        return state.get(this.__dt).mode === "disabled" ? "" : this.__entry.kind;
+      }
+      get type() {
+        return state.get(this.__dt).mode === "disabled" ? "" : this.__entry.type;
+      }
+      // The string, to `cb` as a microtask (nothing while it is protected).
+      getAsString(cb) {
+        if (typeof cb !== "function" || this.__entry.kind !== "string" || !readable(state.get(this.__dt))) return;
+        const data = this.__entry.data;
+        queueMicrotask(() => cb(data));
+      }
+      getAsFile() {
+        return this.__entry.kind === "file" && readable(state.get(this.__dt)) ? this.__entry.file : null;
+      }
+      get [Symbol.toStringTag]() {
+        return "DataTransferItem";
+      }
+    }
+    const transfer = (mode, items, effectAllowed, dropEffect) => new DataTransfer({ [token]: true, state: { mode, items, effectAllowed, dropEffect } });
+    class DragEvent extends MouseEvent2 {
+      constructor(type, init = {}) {
+        super(type, init);
+        this.dataTransfer = init.dataTransfer ?? null;
+        this.relatedTarget = init.relatedTarget ?? null;
+      }
+    }
+    let session = null;
+    function initialEffect(allowed, suggested) {
+      const s = suggested & allowed;
+      if (s === COPY || s === MOVE || s === LINK) return s;
+      for (const bit of [COPY, LINK, MOVE]) if (allowed & bit) return bit;
+      return 0;
+    }
+    const hasText = (items) => items.some((i) => i.kind === "string" && i.type === "text/plain");
+    function dispatch(target, type, init, dt, cancelable) {
+      const ev = new DragEvent(type, { bubbles: true, cancelable, ...init, dataTransfer: dt });
+      try {
+        return fire(target, ev);
+      } finally {
+        state.get(dt).mode = "disabled";
+        changed(state.get(dt));
+      }
+    }
+    function over(el, x, y, allowed, suggested, mods) {
+      const target = el || g2.document.body;
+      const init = { clientX: x, clientY: y, buttons: 1, ...mods };
+      const effectAllowed = allowedName(allowed);
+      const protectedDt = () => transfer("protected", session.items, effectAllowed, opName(initialEffect(allowed, suggested)));
+      const old = session.target;
+      if (target !== old || !old?.isConnected) {
+        session.target = target;
+        dispatch(target, "dragenter", { ...init, relatedTarget: old }, protectedDt(), true);
+        if (old?.isConnected && old !== target) dispatch(old, "dragleave", { ...init, relatedTarget: target }, protectedDt(), false);
+      }
+      const now = session.target;
+      if (!now.isConnected) return session.op = 0;
+      const dt = protectedDt();
+      let op;
+      if (dispatch(now, "dragover", init, dt, true)) {
+        op = OP_NAMES[state.get(dt).dropEffect] & allowed;
+      } else {
+        op = editable(now) && hasText(session.items) ? allowed & COPY ? COPY : allowed & MOVE : 0;
+      }
+      return session.op = op;
+    }
+    function start(id, items) {
+      session = { id, target: null, items, op: 0 };
+    }
+    const kinds = (list) => (Array.isArray(list) ? list : []).map(([kind, type]) => ({ kind: kind === "file" ? "file" : "string", type: String(type ?? "").toLowerCase() }));
+    function payload(list) {
+      const out = [];
+      for (const it of Array.isArray(list) ? list : []) {
+        const type = String(it[1] ?? "").toLowerCase();
+        if (it[0] === "file") out.push({ kind: "file", type, file: files.droppedFile(String(it[2] ?? ""), type, it[3], it[4], it[5]) });
+        else if (!out.some((i) => i.kind === "string" && i.type === type)) out.push({ kind: "string", type, data: String(it[2] ?? "") });
+      }
+      return out;
+    }
+    function dragEvent(el, data) {
+      if (!Array.isArray(data)) return 0;
+      const phase = data[0];
+      if (phase === "leave") {
+        if (!session || session.id !== data[1]) return 0;
+        const { target: target2, items: items2 } = session;
+        session = null;
+        if (target2?.isConnected) dispatch(target2, "dragleave", { buttons: 1 }, transfer("protected", items2, "none", "none"), false);
+        return 0;
+      }
+      const [, x, y, allowed, suggested, flags, id, items] = data;
+      const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
+      const mask = allowed & 7;
+      if (phase === "enter") {
+        if (!session || session.id !== id) start(id, kinds(items));
+        else session.items = kinds(items);
+        return over(el, x, y, mask, suggested, mods);
+      }
+      if (phase === "over") {
+        if (!session || session.id !== id) start(id, []);
+        return over(el, x, y, mask, suggested, mods);
+      }
+      if (phase !== "drop") return 0;
+      const dropped = payload(items);
+      if (!session || session.id !== id || !session.target?.isConnected) {
+        start(id, dropped.map(({ kind, type }) => ({ kind, type })));
+        over(el, x, y, mask, suggested, mods);
+      }
+      const { target, op } = session;
+      session = null;
+      const init = { clientX: x, clientY: y, buttons: 0, ...mods };
+      if (!op) {
+        if (target.isConnected) dispatch(target, "dragleave", init, transfer("protected", dropped, allowedName(mask), "none"), false);
+        return 0;
+      }
+      const dt = transfer("ro", dropped, allowedName(mask), opName(op));
+      let effect = 0;
+      if (dispatch(target, "drop", init, dt, true)) effect = OP_NAMES[state.get(dt).dropEffect] & mask;
+      else if (editable(target) && hasText(dropped)) {
+        const text = dropped.find((i) => i.kind === "string" && i.type === "text/plain").data;
+        if (dropText2(target, text)) effect = mask & COPY ? COPY : mask & MOVE;
+      }
+      return effect;
+    }
+    g2.DragEvent ??= DragEvent;
+    g2.DataTransfer ??= DataTransfer;
+    g2.DataTransferItemList ??= DataTransferItemList;
+    g2.DataTransferItem ??= DataTransferItem;
+    return { dragEvent };
+  }
+
   // src/main.js
   var internalWeak4 = (m) => (globalThis.__nuiDom?.internal?.(m), m);
   var host = globalThis.__host;
@@ -6930,6 +7653,8 @@ ${a.stack || ""}`;
   g.PointerEvent = PointerEvent;
   g.TouchEvent = TouchEvent;
   g.InputEvent = g.FocusEvent = g.UIEvent = Event;
+  var blobs = installBlob(g, host);
+  var dnd = installDnd(g, { MouseEvent, fire: fireAt, files: blobs, editable: dropEditable, dropText });
   g.ShadowRoot ??= class ShadowRoot {
   };
   var winListeners = /* @__PURE__ */ new Map();
@@ -7389,6 +8114,34 @@ ${a.stack || ""}`;
     if (el.value === changeBase.get(el)) return;
     changeBase.set(el, el.value);
     el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  var DROP_INPUTS = /* @__PURE__ */ new Set(["", "text", "search", "url", "tel", "password", "email"]);
+  function dropEditable(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.localName === "textarea" || el.localName === "input") {
+      if (el.localName === "input" && !DROP_INPUTS.has((el.getAttribute("type") || "").toLowerCase())) return false;
+      return !el.hasAttribute("disabled") && !el.hasAttribute("readonly");
+    }
+    return !!el.isContentEditable;
+  }
+  function dropText(el, text) {
+    if (active !== el) el.focus();
+    const before = inputEvent("beforeinput", "insertFromDrop", text, true);
+    el.dispatchEvent(before);
+    if (before.defaultPrevented) return false;
+    if (el.localName === "input" || el.localName === "textarea") {
+      const t = el.localName === "input" ? text.replace(/[\r\n]+/g, "") : text;
+      const value = String(el.value ?? "");
+      const [start, end] = selectionOf(el);
+      setNative(el, "value", value.slice(0, start) + t + value.slice(end));
+      edited.add(el);
+      el.setSelectionRange(start + t.length, start + t.length);
+      el.dispatchEvent(inputEvent("input", "insertFromDrop", t, false));
+      return true;
+    }
+    el.appendChild(document.createTextNode(text));
+    el.dispatchEvent(inputEvent("input", "insertFromDrop", text, false));
+    return true;
   }
   var focusEvent = (type, bubbles, relatedTarget) => {
     const ev = new Event(type, { bubbles });
@@ -7992,6 +8745,14 @@ ${a.stack || ""}`;
     for (const [bit, button] of BUTTON_OF_BIT) if (bits & bit) return button;
     return 0;
   }
+  function fireAt(target, ev) {
+    target.dispatchEvent(ev);
+    if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
+      if (ev.target !== target) Object.defineProperty(ev, "target", { value: target, configurable: true });
+      fireWindow(ev);
+    }
+    return ev.defaultPrevented;
+  }
   function pointerEvent(el, data) {
     const [phase, x, y, buttons, pointerId, pointerType, flags] = data;
     const names = POINTER_TYPES[phase];
@@ -8008,14 +8769,7 @@ ${a.stack || ""}`;
     else heldButtons.set(pointerId, buttons);
     lastPointerType = pointerType || "mouse";
     const init = { bubbles: true, cancelable: phase !== "cancel", clientX: x, clientY: y, button, buttons, ...mods };
-    const fire = (ev) => {
-      target.dispatchEvent(ev);
-      if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
-        if (ev.target !== target) Object.defineProperty(ev, "target", { value: target, configurable: true });
-        fireWindow(ev);
-      }
-      return ev.defaultPrevented;
-    };
+    const fire = (ev) => fireAt(target, ev);
     let prevented = fire(new PointerEvent(names[0], { ...init, pointerId, pointerType, isPrimary: true, pressure: buttons ? 0.5 : 0 }));
     if (phase === "cancel") tapFocus = null;
     if (pointerType === "touch") {
@@ -8076,7 +8830,7 @@ ${a.stack || ""}`;
       for (const n2 of [...toChain].reverse()) if (!fromChain.includes(n2)) fire(n2, prefix + "enter", false, from);
     }
   }
-  var HANDLER_EVENTS = "abort animationend auxclick beforeinput blur change click contextmenu dblclick error focus focusin focusout input invalid keydown keypress keyup load mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup pointercancel pointerdown pointermove pointerup reset resize scroll select submit toggle touchcancel touchend touchmove touchstart transitionend wheel".split(" ");
+  var HANDLER_EVENTS = "abort animationend auxclick beforeinput blur change click contextmenu dblclick error focus focusin focusout drag dragend dragenter dragleave dragover dragstart drop input invalid keydown keypress keyup load mousedown mouseenter mouseleave mousemove mouseout mouseover mouseup pointercancel pointerdown pointermove pointerup reset resize scroll select submit toggle touchcancel touchend touchmove touchstart transitionend wheel".split(" ");
   for (const proto of [elProto, Object.getPrototypeOf(document)]) {
     for (const type of HANDLER_EVENTS) {
       if (Object.getOwnPropertyDescriptor(proto, "on" + type)) continue;
@@ -8524,9 +9278,23 @@ ${a.stack || ""}`;
             if (!history.length) return false;
             g.history.back();
             return true;
+          // A drag from the system over the page, or its drop (dnd.js): an
+          // effect mask (copy 1, move 2, link 4), not a bool.
+          case "drag": {
+            try {
+              return dnd.dragEvent(el, data) | 0;
+            } catch (e) {
+              console.error(e);
+              return 0;
+            }
+          }
         }
         return false;
       });
+    },
+    // The host's answer to fileRead: the bytes, or null and an error name.
+    fileData(reqId, buf, errorName) {
+      guard(() => blobs.fileData(reqId, buf, errorName));
     },
     // Scrollers moved (the engine, at most once a frame): [[id, top, left]].
     // "scroll" on each, as browsers fire it (it doesn't bubble; the
