@@ -4,7 +4,9 @@ Notable changes in Oriel releases.
 
 ## [0.9.0] — 2026-10-04
 
-Oriel 0.9.0 lets apps react to notification clicks and buttons.
+Oriel 0.9.0 lets apps react to notification clicks and buttons, brings
+drag and drop to the native renderer, and closes desktop input gaps for
+ChromeOS and desktop Android. Windows support for these lands in 0.9.1.
 
 ### Added
 
@@ -22,6 +24,35 @@ Oriel 0.9.0 lets apps react to notification clicks and buttons.
   - Windows: a click on the balloon is reported; balloons have no buttons.
 - The showcase's Notify button sends a notification with Like and Later
   buttons and shows which one was clicked.
+- Drag and drop into native-renderer pages (`-Dnative_ui`) on Linux,
+  Android and macOS: `DragEvent`, `DataTransfer`, `Blob`, `File`,
+  `FileReader` and `FileList`. Dropped files are opened read-only when they
+  are dropped and read asynchronously; the page never sees their paths. See
+  `docs/drag-and-drop-design.md`.
+- The page's `<meta name="theme-color">` is reported to its window in both
+  renderers; on ChromeOS and desktop Android it colours the window's caption.
+- Native renderer on Android: a mouse right-click opens the page's context
+  menu, and the pointer shows a hand over clickable elements (links amid text
+  included) and an I-beam over text fields.
+
+### Improved
+
+- Native renderer mouse events report the changed `button` (2 for the
+  secondary, 1 for the middle button), fire `auxclick` after a non-primary
+  release, and give a mouse's `contextmenu` button 2. macOS sends right,
+  middle and other buttons as WKWebView does.
+- Links and other clickable elements inside a line of text take their own
+  clicks in the native renderer.
+- Native renderer border widths snap to device pixels as each platform's
+  browser does; key scrolling glides like WKWebView's; `scrollWidth` matches
+  WebKit's horizontal range.
+- Android: `white-space: pre` text keeps its line breaks.
+
+### Security
+
+- A file dropped on a text field no longer inserts its absolute path: native
+  fields leave drops to the page, and in WebView mode the bridge cancels
+  WebKit's default for a file dropped on an unhandled field.
 
 ## [0.8.0] — 2026-10-04
 
