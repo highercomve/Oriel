@@ -966,7 +966,7 @@ taller line box. An `<img>` is clipped to its content edge's curve.
 | The page | one flipped NSView, the window's content view | one UIView in the controller's safe area, like a web view |
 | `input` / `textarea` / `select` | NSTextField (NSSecureTextField), NSTextView in an NSScrollView, NSPopUpButton | UITextField, UITextView, a UIButton with a UIMenu |
 | `input type=range` | NSSlider (`accent-color` tints the track) | UISlider |
-| Input | clicks (control-click and right-click: `contextmenu`), hover and the hand cursor, the scroll wheel and trackpad, keys | taps, long presses (`contextmenu`), drags with a fling (gesture recognizers) |
+| Input | clicks; the right, middle, back and forward buttons as pointer downs and ups (`buttons` from `pressedMouseButtons`), `contextmenu` on the right button's press or a Control-click's (button 0, buttons 1, with `ctrlKey`; its click still follows), `auxclick` after a non-primary release, all in WKWebView's order (measured); hover and the hand cursor, the scroll wheel and trackpad, keys | taps, long presses (`contextmenu`), drags with a fling (gesture recognizers) |
 | Dark mode | the view's effective appearance | the trait collection |
 
 Native controls sit above everything the page draws, so each one is held

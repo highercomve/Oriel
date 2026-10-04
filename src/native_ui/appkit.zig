@@ -132,7 +132,12 @@ fn classes() void {
         .{ "resizeSubviewsWithOldSize:", resizeSubviews },
         .{ "mouseDown:", mouseDown },
         .{ "mouseUp:", mouseUp },
-        .{ "rightMouseUp:", rightMouseUp },
+        .{ "rightMouseDown:", otherButtonDown },
+        .{ "rightMouseUp:", otherButtonUp },
+        .{ "rightMouseDragged:", mouseDragged },
+        .{ "otherMouseDown:", otherButtonDown },
+        .{ "otherMouseUp:", otherButtonUp },
+        .{ "otherMouseDragged:", mouseDragged },
         .{ "mouseMoved:", mouseMoved },
         .{ "mouseDragged:", mouseDragged },
         .{ "mouseExited:", mouseExited },
@@ -1206,7 +1211,55 @@ fn mouseDown(self: id, _: SEL, event: id) callconv(.c) void {
     // A move still waiting goes before the down.
     if (s.move != null) flushMove(s);
     if (surfaces.get(token) == null) return;
-    _ = sendPointer(s, "down", p, 1, mods);
+    _ = sendPointer(s, "down", p, pressedButtons() | 1, mods);
+    if (surfaces.get(token) == null) return;
+    // Control-click: the context menu, as on every Mac; WebKit's comes with
+    // the press, the primary button's (button 0, buttons 1), and the click
+    // still follows the release (measured).
+    if (mods & 2 != 0) if (s.engine.tree.hit(p[0], p[1])) |n| contextMenu(s, n, p, 0, 1, mods);
+}
+
+/// The buttons held now, as the DOM's `buttons` (NSEvent's bits are the
+/// same for the first three: left 1, right 2, other 4; then back 8,
+/// forward 16).
+fn pressedButtons() u32 {
+    return @truncate(cocoa.class("NSEvent").msgSend(c_ulong, "pressedMouseButtons", .{}) & 0x1f);
+}
+
+/// The right or another button went down: the page's pointer down (its
+/// `button` is the bit that changed, main.js), and for the right one
+/// WebKit's context menu right after it, as AppKit opens menus on the
+/// press (measured: pointerdown, mousedown, contextmenu, pointerup,
+/// mouseup, auxclick).
+fn otherButtonDown(self: id, _: SEL, event: id) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    _ = s.view.msgSend(Object, "window", .{}).msgSend(BOOL, "makeFirstResponder:", .{s.view});
+    if (s.focused != 0) queueFocusCheck(s);
+    const token = s.token;
+    const p = point(self, event);
+    if (s.move != null) flushMove(s);
+    if (surfaces.get(token) == null) return;
+    const ev: Object = .{ .value = event };
+    _ = sendPointer(s, "down", p, pressedButtons() | buttonBit(ev), modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})));
+    if (surfaces.get(token) == null) return;
+    if (ev.msgSend(isize, "buttonNumber", .{}) == 1) if (s.engine.tree.hit(p[0], p[1])) |n| contextMenu(s, n, p, 2, pressedButtons() | 2, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})));
+}
+
+/// Its release: the page's pointer up, then auxclick (main.js).
+fn otherButtonUp(self: id, _: SEL, event: id) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    const token = s.token;
+    if (s.move != null) flushMove(s);
+    if (surfaces.get(token) == null) return;
+    const ev: Object = .{ .value = event };
+    _ = sendPointer(s, "up", point(self, event), pressedButtons() & ~buttonBit(ev), modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})));
+}
+
+/// An event's own button as a `buttons` bit (buttonNumber 0 left, 1 right,
+/// 2 middle, 3 back, 4 forward).
+fn buttonBit(ev: Object) u32 {
+    const n = ev.msgSend(isize, "buttonNumber", .{});
+    return if (n >= 0 and n < 5) @as(u32, 1) << @intCast(n) else 0;
 }
 
 fn mouseUp(self: id, _: SEL, event: id) callconv(.c) void {
@@ -1216,31 +1269,23 @@ fn mouseUp(self: id, _: SEL, event: id) callconv(.c) void {
     if (s.move != null) flushMove(s);
     if (surfaces.get(token) == null) return;
     const p = point(self, event);
-    _ = sendPointer(s, "up", p, 0, modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
+    _ = sendPointer(s, "up", p, pressedButtons() & ~@as(u32, 1), modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
     if (surfaces.get(token) == null) return;
     _ = s.engine.event(0, "release", "null");
     const hit = s.engine.tree.hit(p[0], p[1]);
     if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: click at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], if (hit) |h| h.id else 0 });
     const n = hit orelse return;
     const flags = (Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{});
-    // Control-click: the context menu, as on every Mac.
-    if (flags & (1 << 18) != 0) return contextMenu(s, n, p);
     if (disabledUp(n)) return;
     var buf: [16]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "{d}", .{modFlags(flags)}) catch return;
     _ = s.engine.event(n.id, "click", json);
 }
 
-fn rightMouseUp(self: id, _: SEL, event: id) callconv(.c) void {
-    const s = by_view.get(key(self)) orelse return;
-    const p = point(self, event);
-    const n = s.engine.tree.hit(p[0], p[1]) orelse return;
-    contextMenu(s, n, p);
-}
-
-fn contextMenu(s: *Surface, n: *Node, p: [2]f32) void {
+/// The page's contextmenu: [x, y, button, buttons, modifiers].
+fn contextMenu(s: *Surface, n: *Node, p: [2]f32, button: u32, buttons: u32, mods: u32) void {
     var buf: [64]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0}]", .{ p[0], p[1] }) catch return;
+    const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0},{d},{d},{d}]", .{ p[0], p[1], button, buttons, mods }) catch return;
     _ = s.engine.event(n.id, "contextmenu", json);
 }
 
@@ -1257,7 +1302,7 @@ fn clickableUp(start: *Node) bool {
 }
 
 fn mouseDragged(self: id, _: SEL, event: id) callconv(.c) void {
-    pointerMoved(self, event, 1);
+    pointerMoved(self, event, pressedButtons());
 }
 
 fn mouseMoved(self: id, _: SEL, event: id) callconv(.c) void {
