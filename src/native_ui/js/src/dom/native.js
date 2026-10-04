@@ -40,10 +40,11 @@ export function installNativeDom(g, document) {
   }
 
   // ---------------------------------------------------------------- events
-  // linkedom's semantics, which React and the runtime rely on: the path is
-  // the target and its ancestors (parentNode), listeners run in insertion
-  // order with no separate capture phase, target/currentTarget are only set
-  // during the call.
+  // The path is the target and its ancestors (parentNode). As in a browser:
+  // capture listeners run from the root down to the target's parent, then
+  // the target's own (capture ones first), then the bubble listeners back up
+  // when the event bubbles. A listener is keyed by its function and capture
+  // flag. target/currentTarget are only set during the call.
   const BUBBLING_PHASE = 3, AT_TARGET = 2, CAPTURING_PHASE = 1, NONE = 0;
   class Event {
     static get BUBBLING_PHASE() { return BUBBLING_PHASE; }
@@ -100,16 +101,21 @@ export function installNativeDom(g, document) {
     };
   };
   const listeners = ownSlot("listeners");
-  function invoke(event, step) {
-    const map = listeners.get(step.currentTarget);
-    if (!map || !map.has(event.type)) return false;
-    const list = map.get(event.type);
-    event.eventPhase = step.currentTarget === step.target ? AT_TARGET : BUBBLING_PHASE;
-    event.currentTarget = step.currentTarget;
-    event.target = step.target;
-    for (const [fn, opts] of list) {
+  // A type's capture listeners live under this prefix, its others under the type.
+  const CAPTURE = "\u0001";
+  const isCapture = (opts) => opts === true || !!(opts && typeof opts === "object" && opts.capture);
+  // Run `node`'s listeners of one kind (capture or not) for `event`; true
+  // when propagation stopped.
+  function invoke(event, node, target, capture, phase) {
+    const list = listeners.get(node)?.get(capture ? CAPTURE + event.type : event.type);
+    if (!list) return event.cancelBubble;
+    event.eventPhase = phase;
+    event.currentTarget = node;
+    event.target = target;
+    for (const [fn, opts] of [...list]) {
+      if (!list.has(fn)) continue; // removed by an earlier listener
       if (opts && opts.once) list.delete(fn);
-      if (typeof fn === "function") fn.call(step.target, event); else fn.handleEvent(event);
+      if (typeof fn === "function") fn.call(node, event); else fn.handleEvent(event);
       if (event._stopImmediatePropagationFlag) break;
     }
     delete event.currentTarget;
@@ -121,19 +127,27 @@ export function installNativeDom(g, document) {
       if (!fn) return;
       let map = listeners.get(this);
       if (!map) listeners.set(this, (map = new Map()));
-      let list = map.get(type);
-      if (!list) map.set(type, (list = new Map()));
-      list.set(fn, opts);
+      const key = isCapture(opts) ? CAPTURE + type : type;
+      let list = map.get(key);
+      if (!list) map.set(key, (list = new Map()));
+      if (!list.has(fn)) list.set(fn, opts);
     },
-    removeEventListener(type, fn) {
+    removeEventListener(type, fn, opts) {
       const map = listeners.get(this);
-      const list = map?.get(type);
-      if (list && list.delete(fn) && !list.size) map.delete(type);
+      const key = isCapture(opts) ? CAPTURE + type : type;
+      const list = map?.get(key);
+      if (list && list.delete(fn) && !list.size) map.delete(key);
     },
     dispatchEvent(event) {
-      event.eventPhase = CAPTURING_PHASE;
-      for (let n = this; n; n = event.bubbles ? n._getParent() : null) event._path.push({ currentTarget: n, target: this });
-      event._path.some((step) => invoke(event, step));
+      const path = [];
+      for (let n = this; n; n = n._getParent()) path.push(n);
+      event._path = path.map((n) => ({ currentTarget: n, target: this }));
+      run: {
+        for (let i = path.length - 1; i > 0; i--) if (invoke(event, path[i], this, true, CAPTURING_PHASE)) break run;
+        if (invoke(event, this, this, true, AT_TARGET)) break run;
+        if (invoke(event, this, this, false, AT_TARGET)) break run;
+        if (event.bubbles) for (let i = 1; i < path.length; i++) if (invoke(event, path[i], this, false, BUBBLING_PHASE)) break run;
+      }
       event._path = [];
       event.eventPhase = NONE;
       return !event.defaultPrevented;

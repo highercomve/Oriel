@@ -19869,6 +19869,7 @@ ${a.stack || ""}`;
   var POINTER_TYPES = { down: ["pointerdown", "mousedown", "touchstart"], move: ["pointermove", "mousemove", "touchmove"], up: ["pointerup", "mouseup", "touchend"], cancel: ["pointercancel", null, "touchcancel"] };
   var FORWARDED = /* @__PURE__ */ new Set(["mousedown", "mouseup", "pointerdown", "pointerup"]);
   var heldButtons = /* @__PURE__ */ new Map();
+  var blankPress = /* @__PURE__ */ new Map();
   var lastPointerType = "mouse";
   var BUTTON_OF_BIT = [[1, 0], [2, 2], [4, 1], [8, 3], [16, 4]];
   function changedButton(bits) {
@@ -19889,7 +19890,8 @@ ${a.stack || ""}`;
     if (!names) return false;
     lastPointer = [x, y];
     let target = captured.get(pointerId);
-    if (phase === "down" || !target?.isConnected) target = el || document.body;
+    if (phase === "down" || !target?.isConnected) target = el || document.documentElement || document.body;
+    if (phase === "down") blankPress.set(pointerId, !el && buttons === 1);
     if (phase === "down") captured.set(pointerId, target);
     else if (phase === "up" || phase === "cancel") captured.delete(pointerId);
     const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
@@ -19909,6 +19911,11 @@ ${a.stack || ""}`;
     } else {
       if (names[1] && fire(new MouseEvent(names[1], { ...init, button: Math.max(button, 0) }))) prevented = true;
       if (phase === "up" && button > 0) fire(new MouseEvent("auxclick", { ...init, cancelable: true }));
+    }
+    if (phase === "up" || phase === "cancel") {
+      const blank = blankPress.get(pointerId) && !el && phase === "up" && button === 0;
+      blankPress.delete(pointerId);
+      if (blank) activate(document.documentElement, flags);
     }
     if (phase === "down" && !prevented) {
       if (pointerType === "touch") tapFocus = target;

@@ -419,16 +419,18 @@ globalThis.atob ??= (s) => {
       };
     };
     const listeners2 = ownSlot2("listeners");
-    function invoke2(event, step) {
-      const map = listeners2.get(step.currentTarget);
-      if (!map || !map.has(event.type)) return false;
-      const list = map.get(event.type);
-      event.eventPhase = step.currentTarget === step.target ? AT_TARGET : BUBBLING_PHASE;
-      event.currentTarget = step.currentTarget;
-      event.target = step.target;
-      for (const [fn, opts] of list) {
+    const CAPTURE = "";
+    const isCapture = (opts) => opts === true || !!(opts && typeof opts === "object" && opts.capture);
+    function invoke2(event, node, target, capture, phase) {
+      const list = listeners2.get(node)?.get(capture ? CAPTURE + event.type : event.type);
+      if (!list) return event.cancelBubble;
+      event.eventPhase = phase;
+      event.currentTarget = node;
+      event.target = target;
+      for (const [fn, opts] of [...list]) {
+        if (!list.has(fn)) continue;
         if (opts && opts.once) list.delete(fn);
-        if (typeof fn === "function") fn.call(step.target, event);
+        if (typeof fn === "function") fn.call(node, event);
         else fn.handleEvent(event);
         if (event._stopImmediatePropagationFlag) break;
       }
@@ -441,19 +443,29 @@ globalThis.atob ??= (s) => {
         if (!fn) return;
         let map = listeners2.get(this);
         if (!map) listeners2.set(this, map = /* @__PURE__ */ new Map());
-        let list = map.get(type);
-        if (!list) map.set(type, list = /* @__PURE__ */ new Map());
-        list.set(fn, opts);
+        const key = isCapture(opts) ? CAPTURE + type : type;
+        let list = map.get(key);
+        if (!list) map.set(key, list = /* @__PURE__ */ new Map());
+        if (!list.has(fn)) list.set(fn, opts);
       },
-      removeEventListener(type, fn) {
+      removeEventListener(type, fn, opts) {
         const map = listeners2.get(this);
-        const list = map?.get(type);
-        if (list && list.delete(fn) && !list.size) map.delete(type);
+        const key = isCapture(opts) ? CAPTURE + type : type;
+        const list = map?.get(key);
+        if (list && list.delete(fn) && !list.size) map.delete(key);
       },
       dispatchEvent(event) {
-        event.eventPhase = CAPTURING_PHASE;
-        for (let n2 = this; n2; n2 = event.bubbles ? n2._getParent() : null) event._path.push({ currentTarget: n2, target: this });
-        event._path.some((step) => invoke2(event, step));
+        const path = [];
+        for (let n2 = this; n2; n2 = n2._getParent()) path.push(n2);
+        event._path = path.map((n2) => ({ currentTarget: n2, target: this }));
+        run: {
+          for (let i = path.length - 1; i > 0; i--) if (invoke2(event, path[i], this, true, CAPTURING_PHASE)) break run;
+          if (invoke2(event, this, this, true, AT_TARGET)) break run;
+          if (invoke2(event, this, this, false, AT_TARGET)) break run;
+          if (event.bubbles) {
+            for (let i = 1; i < path.length; i++) if (invoke2(event, path[i], this, false, BUBBLING_PHASE)) break run;
+          }
+        }
         event._path = [];
         event.eventPhase = NONE;
         return !event.defaultPrevented;
@@ -8785,6 +8797,7 @@ ${a.stack || ""}`;
   var POINTER_TYPES = { down: ["pointerdown", "mousedown", "touchstart"], move: ["pointermove", "mousemove", "touchmove"], up: ["pointerup", "mouseup", "touchend"], cancel: ["pointercancel", null, "touchcancel"] };
   var FORWARDED = /* @__PURE__ */ new Set(["mousedown", "mouseup", "pointerdown", "pointerup"]);
   var heldButtons = /* @__PURE__ */ new Map();
+  var blankPress = /* @__PURE__ */ new Map();
   var lastPointerType = "mouse";
   var BUTTON_OF_BIT = [[1, 0], [2, 2], [4, 1], [8, 3], [16, 4]];
   function changedButton(bits) {
@@ -8805,7 +8818,8 @@ ${a.stack || ""}`;
     if (!names) return false;
     lastPointer = [x, y];
     let target = captured.get(pointerId);
-    if (phase === "down" || !target?.isConnected) target = el || document.body;
+    if (phase === "down" || !target?.isConnected) target = el || document.documentElement || document.body;
+    if (phase === "down") blankPress.set(pointerId, !el && buttons === 1);
     if (phase === "down") captured.set(pointerId, target);
     else if (phase === "up" || phase === "cancel") captured.delete(pointerId);
     const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
@@ -8825,6 +8839,11 @@ ${a.stack || ""}`;
     } else {
       if (names[1] && fire(new MouseEvent(names[1], { ...init, button: Math.max(button, 0) }))) prevented = true;
       if (phase === "up" && button > 0) fire(new MouseEvent("auxclick", { ...init, cancelable: true }));
+    }
+    if (phase === "up" || phase === "cancel") {
+      const blank = blankPress.get(pointerId) && !el && phase === "up" && button === 0;
+      blankPress.delete(pointerId);
+      if (blank) activate(document.documentElement, flags);
     }
     if (phase === "down" && !prevented) {
       if (pointerType === "touch") tapFocus = target;
