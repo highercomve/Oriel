@@ -263,7 +263,7 @@ now: file-selector, which react-dropzone uses, checks `typeof ... === "function"
 | WebKitGTK | HTML5 drop with `DataTransfer.files`. An unhandled file drop loads `file://`, which decide-policy blocks (`security.navigation`, logged as a warning). | Verify on webkitgtk-6.0 (GTK4). Check whether an unhandled dropped **https link** counts as a user gesture and so opens the system browser (`.open_external`). |
 | WebView2 | `AllowExternalDrop` (ICoreWebView2Controller4) defaults to TRUE, so files are delivered. An unhandled drop navigates to `file://`, which NavigationStarting/NewWindowRequested block. | Optional `put_AllowExternalDrop(FALSE)` behind a config flag. Same link check as GTK. |
 | WKWebView macOS / iOS (iPad) | Files delivered. `file:` navigation is blocked in decidePolicy. | Verify on iPad. |
-| Android WebView | Chromium handles text and link drops. File drops from other apps most likely do not arrive as Files (WebView cannot call `requestDragAndDropPermissions`). **Unverified, needs a PoC.** | Phase 4 polyfill: an `OnDragListener` on the WebView (`OrielWindow.kt`) takes non-text drags. It opens fds as above and serves them from `NativeLib.serve` at `https://app.localhost/__oriel/drop/<128-bit token>/<n>`. Injected JS fetches each one into a `File`, builds `new DataTransfer()` with `items.add(file)`, and dispatches synthetic dragenter/dragover/drop at `elementFromPoint`. |
+| Android WebView | **Verified on ChromeOS (Android 13, 2026-10-04):** a file dragged from the Files app reaches HTML5 handlers as a real `File` (name, size, MIME); a link dropped where the page has no handlers does nothing (no navigation, no browser). | None. |
 
 Do not inject a global "prevent unhandled drop" guard into WebView pages. A window-level listener registered first
 would set `dropEffect = "none"` before the page's own window listeners run, which breaks pages that only call
@@ -308,7 +308,7 @@ Node tests in `src/native_ui/js/test`, in the `mouse-buttons.test.mjs` style (vm
 JS-only and gets a `dnd-inpage.test.mjs`. Reads move to `core/ThreadPool.zig` with the result posted to the UI
 thread. Possibly blob: URLs for `<img>` previews (open question).
 **Phase 3:** drags out through OS sessions (section 4), Android first: that completes the ChromeOS checklist item.
-**Phase 4:** the Android WebView file-drop polyfill, `webkitGetAsEntry` and directories, file promises
+**Phase 4:** `webkitGetAsEntry` and directories, file promises
 (NSFilePromiseReceiver, CFSTR_FILECONTENTS), and Zig-side access to dropped files.
 
 ## Risks
