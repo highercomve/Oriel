@@ -21,6 +21,7 @@ import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules } from "./css.js";
 import { Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
+import { EASES } from "./transitions.js";
 // The runtime's own weak caches keyed by nodes: marked so their entries
 // don't keep a node's wrapper from being replaced (a page's weak
 // references do: dom/store.zig prune).
@@ -120,6 +121,8 @@ globalThis.requestAnimationFrame = (cb) => {
   return id;
 };
 globalThis.cancelAnimationFrame = (id) => { rafCallbacks.delete(id); };
+// The runtime's own frames (a key scroll's glide), out of the page's reach.
+const nextFrame = globalThis.requestAnimationFrame;
 
 // ---------------------------------------------------------------------------
 // The document
@@ -515,12 +518,12 @@ Object.defineProperties(elProto, {
   // root's and the scrolling element's are the window's (node -1).
   scrollTop: {
     get() { return scrollPx((renderer && host.frame(scrollIdOf(this))?.[6]) || 0); },
-    set(y) { if (renderer) { renderer.render(); host.scrollTo(scrollIdOf(this), +y || 0); } },
+    set(y) { if (renderer) { renderer.render(); pageScroll(scrollIdOf(this), +y || 0); } },
     configurable: true,
   },
   scrollLeft: {
     get() { return scrollPx((renderer && host.frame(scrollIdOf(this))?.[7]) || 0); },
-    set(x) { if (renderer) { renderer.render(); host.scrollTo(scrollIdOf(this), NaN, +x || 0); } },
+    set(x) { if (renderer) { renderer.render(); pageScroll(scrollIdOf(this), NaN, +x || 0); } },
     configurable: true,
   },
 });
@@ -531,7 +534,7 @@ elProto.scrollTo = elProto.scroll = function (x, y) {
   const [left, top] = scrollArgs(x, y);
   if (!renderer) return;
   renderer.render();
-  host.scrollTo(scrollIdOf(this), top === undefined ? NaN : +top || 0, left === undefined ? NaN : +left || 0);
+  pageScroll(scrollIdOf(this), top === undefined ? NaN : +top || 0, left === undefined ? NaN : +left || 0);
 };
 elProto.scrollBy = function (x, y) {
   const [left, top] = scrollArgs(x, y);
@@ -556,6 +559,7 @@ elProto.scrollIntoView = function (opts) {
   // render now. It returns nothing, so the page can't tell, and a page that
   // keeps scrolling to its newest line (a chat streaming tokens) doesn't
   // render the whole document once per token.
+  glide = null;
   if (renderer.dirty) { renderer.pendingScroll = { el: this, block }; return; }
   host.scrollIntoView(renderer.idOf(this, "el"), block);
 };
@@ -574,7 +578,7 @@ Object.getPrototypeOf(document.createElement("div")).click = elProto.click = fun
 // window.scrollTo(x, y) and scrollTo({ top }).
 g.scrollTo = g.scroll = (x, y) => {
   const [left, top] = scrollArgs(x, y);
-  if (renderer) { renderer.render(); host.scrollTo(-1, top === undefined ? NaN : +top || 0, left === undefined ? NaN : +left || 0); }
+  if (renderer) { renderer.render(); pageScroll(-1, top === undefined ? NaN : +top || 0, left === undefined ? NaN : +left || 0); }
 };
 g.scrollBy = (x, y) => {
   const [left, top] = scrollArgs(x, y);
@@ -942,7 +946,8 @@ function keyEvent(el, data, type = "keydown") {
 }
 
 // ArrowUp/Down 40px, PageUp/Down and Space (Shift: up) 87.5% of the view,
-// Home/End to the ends, as Chromium. True when a scroller took it.
+// Home/End to the ends, as Chromium. True when a scroller took it. The
+// scroller glides there (glideTo).
 function scrollKey(from, key, shift) {
   if (!renderer || !host.frame) return false;
   if (from && (textField(from) || from.localName === "select" || from.localName === "textarea" || from.isContentEditable)) return false;
@@ -967,12 +972,42 @@ function scrollKey(from, key, shift) {
   const f = host.frame(target);
   if (!f) return false;
   const view = clientH(f, targetEl);
-  const top = f[6] || 0;
+  // A key while it glides: on from where that glide was going, as browsers.
+  const top = glide?.target === target ? glide.to : f[6] || 0;
   const by = Math.abs(step) <= 1 ? Math.round(step * view) : step;
   const want = Math.max(0, Math.min(f[4] - view, top + by));
   if (want === top) return false;
-  host.scrollTo(target, want);
+  glideTo(target, f[6] || 0, want, Math.abs(step) === 40 ? "line" : "page");
   return true;
+}
+
+// A key scroll glides as WKWebView's does (measured on macOS, a scroll
+// event a frame): a page, Space, Home or End over 200 ms on CSS's
+// \`ease\`, however far; an arrow's 40px over 256 ms on \`ease-out\`, 20 ms
+// in (to within a pixel). Chromium's (Windows, Android) is to be measured
+// there; until then the same. A page's own scroll (scrollTo, scrollTop,
+// scrollIntoView), a touch or a wheel stops it where it is: the wheel, as
+// the scroller then reports an offset this glide didn't set (scrolled).
+const GLIDES = { page: [200, 0, EASES.ease], line: [256, 20, EASES["ease-out"]] };
+let glide = null; // { target, from, to, t0, ms, delay, ease, set: offsets set lately }
+function glideTo(target, from, to, kind) {
+  const [ms, delay, ease] = GLIDES[kind];
+  const g1 = { target, from, to, t0: performance.now(), ms, delay, ease, set: [from] };
+  glide = g1;
+  const step = (now) => {
+    if (glide !== g1) return;
+    const p = Math.min(1, Math.max(0, (now - g1.t0 - delay) / ms));
+    const y = from + (to - from) * ease(p);
+    g1.set = [...g1.set.slice(-2), y];
+    host.scrollTo(target, y);
+    if (p < 1) nextFrame(step); else glide = null;
+  };
+  nextFrame(step);
+}
+// The page's scrolls: a key scroll's glide stops.
+function pageScroll(id, top, left) {
+  glide = null;
+  host.scrollTo(id, top, left);
 }
 
 const WEBKIT_KEYPRESS = platform.os === "macos" || platform.os === "ios";
@@ -1543,7 +1578,12 @@ const oriel = {
         // data [phase, x, y, buttons, pointerId, pointerType, modifiers].
         // True on "down" when the page takes the drag (touch-action: none,
         // or a listener prevented the default): the backend doesn't scroll.
-        case "pointer": if (data?.[0] === "down" || data?.[0] === 0) keyboardFocus = false; return pointerEvent(el, data);
+        case "pointer":
+          if (data?.[0] === "down" || data?.[0] === 0) {
+            keyboardFocus = false;
+            if (data[5] === "touch") glide = null;
+          }
+          return pointerEvent(el, data);
         // The window went to a screen with another scale (data: the new
         // devicePixelRatio): resolution queries' listeners hear it.
         case "dpr": {
@@ -1587,7 +1627,9 @@ const oriel = {
   // window's goes to the document, then the window).
   scrolled(list) {
     guard(() => {
-      for (const [id] of list) {
+      for (const [id, top] of list) {
+        // An offset the key scroll's glide didn't set: a wheel took over.
+        if (glide?.target === id && typeof top === "number" && !glide.set.some((y) => Math.abs(y - top) <= 1.5)) glide = null;
         if (id === -1) {
           const ev = new Event("scroll", { bubbles: true });
           document.dispatchEvent(ev);

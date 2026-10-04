@@ -184,7 +184,14 @@ the animated nodes are sent each frame).
 - Keys scroll as browsers' default when the page doesn't take them:
   ArrowUp/Down 40px, PageUp/Down and Space (Shift: up) 87.5% of the view
   (whole px), Home/End to the ends, on the focused element's nearest
-  scroller, else the window; never from a field.
+  scroller, else the window; never from a field. The scroller glides
+  there as WKWebView's does (measured on macOS; main.js glideTo): a page,
+  Space, Home or End over 200 ms on CSS's `ease`, however far; an arrow's
+  40px over 256 ms on `ease-out`, 20 ms in; one `host.scrollTo` (so one
+  scroll event) a frame. A key while it glides goes on from where it was
+  going; the page's own scroll, a touch, or a wheel (an offset in
+  `scrolled` the glide didn't set) stops it. Chromium's curve is still to
+  be measured; until then every platform glides so.
 
 **Scrollbars** (each backend):
 
