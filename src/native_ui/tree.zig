@@ -826,6 +826,9 @@ pub const Props = struct {
     ch: ?f32 = null,
     // A default checkbox/radio (<input> without appearance: none).
     ctl: ?[]const u8 = null,
+    /// Its baseline this far above its bottom border edge (WebKit's macOS
+    /// checkbox and radio: 2px), where the default for a box isn't.
+    blb: ?f32 = null,
     on: bool = false,
     acc: ?Color = null,
 };
@@ -1474,6 +1477,7 @@ pub const Tree = struct {
         errdefer t.destroy(id);
         const n = t.get(id).?;
         n.props = style.props;
+        if (kind == .view and n.props.blb != null) yg.YGNodeSetBaselineFunc(n.yn, baselineFn);
         if (kind == .text) {
             const owned = try dupeUtf8Lossy(t.gpa, text);
             errdefer t.gpa.free(owned);
@@ -2054,6 +2058,8 @@ pub const Tree = struct {
             log.warn("node {d}: bad props ({s})", .{ n.id, @errorName(err) });
             break :blk .{};
         };
+        // A box with its own baseline (blb: a macOS checkbox) says it.
+        if (n.kind == .view) yg.YGNodeSetBaselineFunc(n.yn, if (n.props.blb != null) baselineFn else null);
         if (n.props.val) |v| {
             n.pending_value = v;
         } else if (unconsumed) |u| {
@@ -2846,6 +2852,7 @@ fn baselineFn(node: yg.YGNodeConstRef, width: f32, height: f32) callconv(.c) f32
     const top = yg.YGNodeLayoutGetPadding(@constCast(node), yg.YGEdgeTop) + yg.YGNodeLayoutGetBorder(@constCast(node), yg.YGEdgeTop);
     const fz = n.props.fz orelse 16;
     if (n.kind != .text) {
+        if (n.props.blb) |b| return @max(0, height - b);
         // A field (input, select): its text's, one line centered in its
         // content box (as the native control draws it).
         const bottom = yg.YGNodeLayoutGetPadding(@constCast(node), yg.YGEdgeBottom) + yg.YGNodeLayoutGetBorder(@constCast(node), yg.YGEdgeBottom);

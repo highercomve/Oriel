@@ -278,6 +278,8 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     // natural size is kept per node: measureText).
     s.engine.tree.reuse_text_layout = true;
     s.engine.tree.inline_end_padding = false;
+    // Fields sized as WKWebView's (draw.fieldSizeMac): a textarea's cols too.
+    s.engine.tree.fields_sized = true;
     s.engine.boot(s.dark, false);
     return s;
 }
@@ -350,8 +352,7 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
         .image => out.* = draw.measureImage(surfaceOf(ctx).engine, n, max_width),
         // One line of the field's font (WebKit's control sizes come from
         // it); a textarea `rows` of them (2 by default).
-        .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), draw.fieldLine("NSFont", n) },
-        .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, draw.fieldLine("NSFont", n) * @max(1, n.props.rows orelse 2) },
+        .input, .select, .textarea => out.* = draw.fieldSizeMac(n, max_width),
         else => out.* = .{ 0, 0 },
     }
 }
