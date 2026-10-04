@@ -4595,7 +4595,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       this.cur = { own: [], kids: [], fixed: [] };
       const P = this.host.prof ? this.host.now : null;
       const t02 = P && P();
-      const bodyNode = this.element(body, rootCS, nodes, { blockify: true, textAlign: "left" });
+      const bodyNode = this.element(body, rootCS, nodes, { blockify: true, textAlign: "left", rootBody: true });
       const fixed = this.cur.fixed;
       this.cur = null;
       this.marks.clear();
@@ -5854,8 +5854,14 @@ input[type="range"] { height: 20px; margin: 2px; }
   function isTableDisplay(d) {
     return d === "table" || d === "inline-table" || d === "table-row" || d === "table-cell" || d === "table-column" || d === "table-column-group" || TABLE_GROUPS.has(d);
   }
-  function collapsed(a, b) {
-    return Math.max(a, b, 0) + Math.min(a, b, 0);
+  function collapsed(...ms) {
+    return Math.max(...ms, 0) + Math.min(...ms, 0);
+  }
+  function emptyBlock(n2) {
+    if (n2.kind !== "view" || n2.kids && n2.kids.length) return false;
+    const p = n2.props;
+    const zero = (v) => v === void 0 || v === 0;
+    return (p.h === void 0 || p.h === 0) && !p.minh && zero(p.pad?.[0]) && zero(p.pad?.[2]) && zero(p.bw?.[0]) && zero(p.bw?.[2]) && !p.scroll && !p.clip && !p.root;
   }
   function pxMargin(n2, side) {
     const v = n2.props.m ? n2.props.m[side] : 0;
@@ -5867,7 +5873,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     n2.props.m = m;
   }
   function collapseMargins(nodes, kids, inLine, props, display, ctx) {
-    let prev = null, first = null, last = null, lastLine = false, seen = false;
+    let prev = null, adj = [], placed = 0, first = null, last = null, lastLine = false, seen = false;
     for (const id of kids) {
       const n2 = nodes.get(id);
       if (!n2 || n2.props.pos === "absolute") continue;
@@ -5881,17 +5887,36 @@ input[type="range"] { height: 20px; margin: 2px; }
       seen = true;
       lastLine = false;
       last = n2;
-      if (prev) {
-        const a = pxMargin(prev, 2), b = pxMargin(n2, 0);
-        if (a !== null && b !== null && a && b) {
-          setMargin(prev, 2, collapsed(a, b));
+      const t = pxMargin(n2, 0), b = pxMargin(n2, 2);
+      if (emptyBlock(n2) && t !== null && b !== null) {
+        if (prev) {
+          const x = collapsed(...adj, t);
+          setMargin(prev, 2, x - placed);
+          setMargin(n2, 0, 0);
+          adj = [...adj, t, b];
+          placed = x;
+        } else {
+          adj = [t, b];
+          placed = t;
+        }
+        setMargin(n2, 2, 0);
+        prev = n2;
+        continue;
+      }
+      if (prev && t !== null && adj.every((v) => v !== null)) {
+        const total = collapsed(...adj, t);
+        if (total !== placed || t) {
+          setMargin(prev, 2, total - placed);
           setMargin(n2, 0, 0);
         }
-      }
+      } else if (prev && emptyBlock(prev)) setMargin(prev, 2, collapsed(...adj) - placed);
       prev = n2;
+      adj = [b];
+      placed = 0;
     }
+    if (prev && emptyBlock(prev) && adj.length > 2) setMargin(prev, 2, collapsed(...adj) - placed);
     const own = { props };
-    const through = (display === "block" || display === "list-item") && !ctx.blockify && !props.scroll && !props.scrollx && !props.clip && props.pos !== "absolute";
+    const through = (display === "block" || display === "list-item") && (!ctx.blockify || ctx.rootBody) && !props.scroll && !props.scrollx && !props.clip && props.pos !== "absolute";
     if (!through) return;
     const side = (n2, s) => !props.pad?.[s] && !props.bw?.[s] && n2;
     if (side(first, 0)) {
