@@ -366,6 +366,7 @@ pub fn build(b: *std.Build) void {
         const check_oriel = b.addTest(.{ .root_module = oriel });
         // iOS: the SDK's libc headers for the C code (SQLite), when there is an SDK.
         if (target.result.os.tag == .ios) ios_build.configure(b, check_oriel);
+        if (is_android) android_build.configure(b, check_oriel, target);
         check_step.dependOn(&check_oriel.step);
     }
 
