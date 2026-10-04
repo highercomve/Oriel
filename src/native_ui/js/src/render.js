@@ -1926,6 +1926,14 @@ export class Renderer {
     if (ol) for (let i = first; i < runs.length; i++) if (!runs[i].br) runs[i].ol = ol;
     // Its underline is drawn under its inline children's text too.
     if (underlined(cs)) for (let i = first; i < runs.length; i++) runs[i].u = true;
+    // A link (or other clickable element) amid the text has no node of its
+    // own: its runs carry its id (`k`), so a backend shows the hand over
+    // them and sends their clicks to it. The innermost one wins.
+    if (runs.length > first && clickableInline(el, cs, parentCS)) {
+      const id = this.idOf(el, "el");
+      this.own(id, el);
+      for (let i = first; i < runs.length; i++) if (!runs[i].br && runs[i].k === undefined) runs[i].k = id;
+    }
   }
 
   pseudo(el, cs, which, nodes) {
@@ -2174,6 +2182,16 @@ function sameStyle(a, b) {
 
 function listens(el) {
   return !!el.__listens;
+}
+
+// An inline element whose text takes clicks (render.js inlineRuns' `k`):
+// as putClick, plus its own cursor: pointer (not one inherited from a link
+// around it); never a disabled one.
+function clickableInline(el, cs, parentCS) {
+  if (el.hasAttribute("disabled")) return false;
+  const n = el.localName;
+  return (n === "a" && el.hasAttribute("href")) || n === "button" || n === "label" || n === "summary" ||
+    el.hasAttribute("onclick") || listens(el) || (cs.cursor === "pointer" && parentCS?.cursor !== "pointer");
 }
 
 // ---------------------------------------------------------------------------
