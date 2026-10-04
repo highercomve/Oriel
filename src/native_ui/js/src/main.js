@@ -1592,12 +1592,12 @@ const oriel = {
       const engine = new StyleEngine();
       // Parsed sheets kept for the process (host.sheetCache/sheetKeep).
       const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
-      engine.addSheet(UA_CSS, sheets);
+      engine.addSheet(UA_CSS, sheets, undefined, null, true);
       // Where the WebView is WebKit's, its controls' look; Chrome's on Android.
-      if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
-      if (platform.os === "macos") engine.addSheet(UA_CSS_MAC, sheets);
-      else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets);
-      else if (platform.os === "android") engine.addSheet(UA_CSS_CHROME_ANDROID, sheets);
+      if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets, undefined, null, true);
+      if (platform.os === "macos") engine.addSheet(UA_CSS_MAC, sheets, undefined, null, true);
+      else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets, undefined, null, true);
+      else if (platform.os === "android") engine.addSheet(UA_CSS_CHROME_ANDROID, sheets, undefined, null, true);
       for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
       const b1 = P && P();
       renderer = new Renderer(document, engine, host);

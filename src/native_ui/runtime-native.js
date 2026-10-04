@@ -2122,8 +2122,11 @@ globalThis.atob ??= (s) => {
     // native one keeps a sheet's parsed rules for the process: a second
     // window doesn't parse and index them again; and finds the ones the app
     // was built with, by the sheet's asset `path`: tools/qjs_modules.zig).
-    addSheet(css, cache, path, owner = null) {
+    // `ua`: the user agent's sheet, which every page rule overrides whatever
+    // its specificity (the cascade's origins).
+    addSheet(css, cache, path, owner = null, ua = false) {
       const sheet = _StyleEngine.parsed(css, cache, path, owner);
+      sheet.ua = ua;
       this.sheets.push(sheet);
       this.indexSheet(sheet);
     }
@@ -2173,6 +2176,7 @@ globalThis.atob ??= (s) => {
       Object.assign(this.keyframes, sheet.keyframes);
       for (const r of sheet.rules) {
         r.order = this.order++;
+        r.ua = !!sheet.ua;
         this.rules.push(r);
         if (r.key[0] === "any") this.index.any.push(r);
         else push(this.index[r.key[0]], r.key[1], r);
@@ -2253,9 +2257,10 @@ globalThis.atob ??= (s) => {
       if (inline) _StyleEngine.expandInto(inline, normal, important);
       return Object.assign(normal, important);
     }
-    // Rules in cascade order: specificity, then source order.
+    // Rules in cascade order: the user agent's before the page's (origin),
+    // then specificity, then source order.
     static sorted(rules) {
-      return rules.slice().sort((x, y) => cmpSpec(x.spec, y.spec) || x.order - y.order);
+      return rules.slice().sort((x, y) => (y.ua ? 1 : 0) - (x.ua ? 1 : 0) || cmpSpec(x.spec, y.spec) || x.order - y.order);
     }
     // Declarations → longhands, into `normal` or (!important) `important`.
     static expandInto(decls, normal, important) {
@@ -9413,11 +9418,11 @@ ${a.stack || ""}`;
         const P = host.prof ? host.now : null, b0 = P && P();
         const engine = new StyleEngine();
         const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
-        engine.addSheet(UA_CSS, sheets);
-        if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets);
-        if (platform.os === "macos") engine.addSheet(UA_CSS_MAC, sheets);
-        else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets);
-        else if (platform.os === "android") engine.addSheet(UA_CSS_CHROME_ANDROID, sheets);
+        engine.addSheet(UA_CSS, sheets, void 0, null, true);
+        if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets, void 0, null, true);
+        if (platform.os === "macos") engine.addSheet(UA_CSS_MAC, sheets, void 0, null, true);
+        else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets, void 0, null, true);
+        else if (platform.os === "android") engine.addSheet(UA_CSS_CHROME_ANDROID, sheets, void 0, null, true);
         for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
         const b1 = P && P();
         renderer = new Renderer(document, engine, host);
