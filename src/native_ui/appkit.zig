@@ -175,9 +175,14 @@ fn classes() void {
         .{ "becomeFirstResponder", secureFieldBecomeFirst },
         .{ "textView:shouldChangeTextInRange:replacementString:", secureFieldShouldChange },
     });
+    // No drags of their own (a text view would insert a dropped file's
+    // path): drops over a field reach the page's view, and the page (its
+    // drop, or the default that inserts dropped text) decides.
     text_view_class = cocoa.defineSubclass("OrielNuiTextView", "NSTextView", &.{}, .{
         .{ "becomeFirstResponder", textViewBecomeFirst },
         .{ "resignFirstResponder", textViewResignFirst },
+        .{ "updateDragTypeRegistration", noDragTypes },
+        .{ "acceptableDragTypes", noAcceptableDragTypes },
     });
     field_delegate = cocoa.new(cocoa.defineClass("OrielNuiFieldDelegate", &.{ "NSTextFieldDelegate", "NSTextViewDelegate" }, .{
         .{ "controlTextDidChange:", controlTextDidChange },
@@ -981,14 +986,53 @@ var text_view_class: ?cocoa.objc.Class = null;
 
 fn textFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
     const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSTextField"), BOOL, "becomeFirstResponder", .{});
+    noFieldEditorDrags(self);
     focusChangedNear(self);
     return ok;
 }
 
 fn secureFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
     const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSSecureTextField"), BOOL, "becomeFirstResponder", .{});
+    noFieldEditorDrags(self);
     focusChangedNear(self);
     return ok;
+}
+
+/// A text field's editor (the window's field editor, a text view) takes no
+/// drags: they reach the page's view (see text_view_class). The editor
+/// registers its types again as it edits, so it becomes a subclass of its
+/// class that has none (as KVO subclasses an object), once.
+fn noFieldEditorDrags(field: id) void {
+    const editor = (Object{ .value = field }).msgSend(Object, "currentEditor", .{});
+    if (editor.value == null) return;
+    const cls = editor.getClass() orelse return;
+    if (std.mem.startsWith(u8, editor.getClassName(), "OrielNuiFieldEditor")) return;
+    const sub = fieldEditorClass(cls, editor.getClassName()) orelse return;
+    _ = cocoa.objc.c.object_setClass(editor.value, @ptrCast(sub.value));
+    editor.msgSend(void, "unregisterDraggedTypes", .{});
+}
+
+/// The no-drags subclass of a field editor's class (made once per class).
+var field_editor_subclasses: std.AutoHashMapUnmanaged(usize, cocoa.objc.Class) = .empty;
+fn fieldEditorClass(cls: cocoa.objc.Class, name: [:0]const u8) ?cocoa.objc.Class {
+    const k = @intFromPtr(cls.value);
+    if (field_editor_subclasses.get(k)) |sub| return sub;
+    const gpa = std.heap.smp_allocator;
+    const sub_name = std.fmt.allocPrintSentinel(gpa, "OrielNuiFieldEditor_{s}", .{name}, 0) catch return null;
+    // (The runtime keeps the name for the class's life.)
+    const sub = cocoa.objc.allocateClassPair(cls, sub_name) orelse return null;
+    if (!sub.addMethod("updateDragTypeRegistration", noDragTypes) or !sub.addMethod("acceptableDragTypes", noAcceptableDragTypes)) return null;
+    cocoa.objc.registerClassPair(sub);
+    field_editor_subclasses.put(gpa, k, sub) catch {};
+    return sub;
+}
+
+fn noDragTypes(self: id, _: SEL) callconv(.c) void {
+    (Object{ .value = self }).msgSend(void, "unregisterDraggedTypes", .{});
+}
+
+fn noAcceptableDragTypes(_: id, _: SEL) callconv(.c) id {
+    return cocoa.class("NSArray").msgSend(Object, "array", .{}).value;
 }
 
 fn textViewBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
@@ -1762,10 +1806,12 @@ fn opsToMask(ops: c_ulong) u8 {
     return m;
 }
 
-fn maskToOp(action: u8) c_ulong {
+/// The page's action as one of the source's operations (move: Move if
+/// it offers that, else Generic, as a Command-drag narrows to).
+fn maskToOp(action: u8, ops: c_ulong) c_ulong {
     return switch (action) {
         1 => 1,
-        2 => 16,
+        2 => if (ops & 16 != 0) 16 else 4,
         4 => 2,
         else => 0,
     };
@@ -1822,21 +1868,23 @@ fn draggingUpdated(self: id, _: SEL, info_id: id) callconv(.c) c_ulong {
 fn dragOver(s: *Surface, self: id, info: Object, enter: bool) c_ulong {
     const token = s.token;
     const p = dragPoint(self, info);
-    const allowed = opsToMask(info.msgSend(c_ulong, "draggingSourceOperationMask", .{}));
+    const ops = info.msgSend(c_ulong, "draggingSourceOperationMask", .{});
+    const allowed = opsToMask(ops);
     const suggested = suggestedAction(allowed);
     const mods = dragMods();
     const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    const gpa = s.gpa; // not read from the surface after the event (it may close)
     var json: std.ArrayList(u8) = .empty;
-    defer json.deinit(s.gpa);
-    json.print(s.gpa, "[\"{s}\",{d:.2},{d:.2},{d},{d},{d},{d}", .{ if (enter) "enter" else "over", p[0], p[1], allowed, suggested, mods, s.drag_session }) catch return 0;
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"{s}\",{d:.2},{d:.2},{d},{d},{d},{d}", .{ if (enter) "enter" else "over", p[0], p[1], allowed, suggested, mods, s.drag_session }) catch return 0;
     if (enter) {
-        json.append(s.gpa, ',') catch return 0;
-        s.drag_kinds.writeItems(s.gpa, &json) catch return 0;
+        json.append(gpa, ',') catch return 0;
+        s.drag_kinds.writeItems(gpa, &json) catch return 0;
     }
-    json.append(s.gpa, ']') catch return 0;
+    json.append(gpa, ']') catch return 0;
     const mask = s.engine.dragEvent(nid, json.items);
     if (surfaces.get(token) == null) return 0; // the page closed its window
-    s.drag_op = maskToOp(pickAction(mask, allowed, suggested));
+    s.drag_op = maskToOp(pickAction(mask, allowed, suggested), ops);
     return s.drag_op;
 }
 
@@ -1878,13 +1926,14 @@ fn performDragOperation(self: id, _: SEL, info_id: id) callconv(.c) cocoa.c.BOOL
     const token = s.token;
     const p = dragPoint(self, info);
     const allowed = opsToMask(info.msgSend(c_ulong, "draggingSourceOperationMask", .{}));
-    var items: DropItems = .{ .gpa = s.gpa };
+    const gpa = s.gpa; // not read from the surface after the event (it may close)
+    var items: DropItems = .{ .gpa = gpa };
     defer items.deinit();
     const pb = info.msgSend(Object, "draggingPasteboard", .{});
     if (s.drag_kinds.files) dropFiles(s, pb, &items) else dropStrings(s.drag_kinds, pb, &items);
     var json: std.ArrayList(u8) = .empty;
-    defer json.deinit(s.gpa);
-    json.print(s.gpa, "[\"drop\",{d:.2},{d:.2},{d},{d},{d},{d},[{s}]]", .{ p[0], p[1], allowed, suggestedAction(allowed), dragMods(), session, items.json.items }) catch {
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"drop\",{d:.2},{d:.2},{d},{d},{d},{d},[{s}]]", .{ p[0], p[1], allowed, suggestedAction(allowed), dragMods(), session, items.json.items }) catch {
         items.releaseAll(s);
         sendDragLeave(s, session);
         return cocoa.boolean(false);
@@ -1941,7 +1990,10 @@ fn dropFiles(s: *Surface, pb: Object, items: *DropItems) void {
             continue;
         }) orelse continue; // not a regular file (a folder)
         const info = s.engine.drops.info(handle).?;
-        const name = std.fs.path.basename(path);
+        // The name as Finder shows it (composed, as WebKit's File.name), not
+        // the file system's decomposed bytes.
+        const last = url.msgSend(Object, "lastPathComponent", .{});
+        const name = (if (last.value != null) cocoa.utf8(last) else null) orelse std.fs.path.basename(path);
         const added = fileItem(items, name, info, handle) catch false;
         if (added) items.handles.append(items.gpa, handle) catch {} else s.engine.drops.release(handle);
     }
@@ -1962,8 +2014,8 @@ fn fileItem(items: *DropItems, name: []const u8, info: engine_mod.drop.Entry, ha
 fn mimeOf(name: []const u8) []const u8 {
     const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "";
     if (dot == 0 or dot + 1 == name.len) return "";
-    const ut = cocoa.class("UTType");
-    if (ut.value == null) return "";
+    // (UniformTypeIdentifiers: loaded with AppKit, but not to be counted on.)
+    const ut = cocoa.objc.getClass("UTType") orelse return "";
     const ext = cocoa.nsString(name[dot + 1 ..]) orelse return "";
     defer ext.release();
     const t = ut.msgSend(Object, "typeWithFilenameExtension:", .{ext});
