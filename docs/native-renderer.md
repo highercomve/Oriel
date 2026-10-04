@@ -490,6 +490,25 @@ and 1.7px are 1px at 1x, and at 3x 1.4px is 1.333px, 2.67px 2.333px and
 none). Chromium (Windows, Android) floors the width itself: a 1px border
 at 2.625 is 0.762, 3px 2.667. clientWidth and clientHeight are whole px.
 
+**Inline element rects** (each backend, optional): an inline element
+(a `<span>` amid text) has no node; render.js keeps its runs
+(Renderer.inlineSpans: [text node id, first run, last run] per text node
+it is in), and `getClientRects()` asks `host.runRects(id, first, last)`
+for their line fragments, `[[x, y, w, h], ...]` in the tree's coordinates
+(as `host.frame`): one per line the runs are on, each as tall as the
+runs' own fonts (ascent + descent, rounded as the backend's line
+metrics), from the first run's start to the last's end, without the space
+a line wraps at. `getBoundingClientRect()` and `offset*` are their union.
+Engine: `Backend.run_rects(ctx, node, first, last, out: [][4]f32) usize`
+(at most 64), `oriel_nui_run_rects`; without it main.js takes the text
+node's frame. Apple: apple_draw.runRects (CoreText lines; equal to
+WKWebView's rects relative to their paragraph, measured: spans, a span
+wrapping onto two lines, a link and its <i>, a form label, line-height
+20px, a 20px span in a 14px line). Not yet: an empty inline element
+(WebKit: a 0-wide rect where it is; here none). Text lines with a CSS
+line-height put the half-leading above floored, as WebKit (20px over
+14+3: 1 above).
+
 **UA defaults and controls** (measured against WKWebView on a page of
 forms, flex rows and lists): nested lists have no margins of their own,
 `dd` is indented 40px, a fieldset has both browsers' margin, padding and
