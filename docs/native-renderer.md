@@ -527,9 +527,9 @@ a <div>) has the block's strut beside it: a row on one baseline with a
 zero-width text in the block's font (render.js; text-align places the
 control), so the line is as tall as WebKit's. A text's trailing space,
 kept before a box on its line ("Name " then an input), counts in its
-width (CoreText's suggested size leaves it out). Not yet: CSS padding on a
-select (WebKit ignores it), text widths (a text's measure rounds up a
-pixel).
+width (CoreText's suggested size leaves it out). CSS padding on a select
+is dropped (WebKit's pop-up takes none). Not yet: text widths on Apple (a
+text's measure rounds up a pixel).
 
 **Line struts** (render.js lineStrut, shared): a line of only boxes (an
 image, or an inline-block with nothing written in it or overflow other
