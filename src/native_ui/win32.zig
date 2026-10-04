@@ -1918,7 +1918,7 @@ fn liveSurface(hwnd: c.HWND) ?*Surface {
 /// on the node there. True when the page took it.
 fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, kind: PointerKind, mods: u32) bool {
     if (!std.math.isFinite(p[0]) or !std.math.isFinite(p[1])) return false;
-    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    const nid = targetAt(s, p);
     var buf: [112]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"{s}\",{d}]", .{ phase, p[0], p[1], buttons, @tagName(kind), mods }) catch return false;
     return s.engine.event(nid, "pointer", json);
@@ -1950,6 +1950,8 @@ fn buttonsOf(wparam: c.WPARAM) u32 {
     if (wparam & c.MK_LBUTTON != 0) b |= 1;
     if (wparam & c.MK_RBUTTON != 0) b |= 2;
     if (wparam & c.MK_MBUTTON != 0) b |= 4;
+    if (wparam & c.MK_XBUTTON1 != 0) b |= 8;
+    if (wparam & c.MK_XBUTTON2 != 0) b |= 16;
     return b;
 }
 
@@ -2014,7 +2016,8 @@ fn onPointer(s: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool 
             if (s.contact != null) return true; // one contact at a time
             _ = c.SetFocus(hwnd);
             // :active while it's down.
-            if (s.engine.tree.hit(pt[0], pt[1])) |n| _ = s.engine.event(n.id, "press", "null");
+            const pressed = targetAt(s, pt);
+            if (pressed != 0) _ = s.engine.event(pressed, "press", "null");
             const ls = liveSurface(hwnd) orelse return true;
             const ls2 = flushMove(ls) orelse return true;
             const taken = sendPointer(ls2, "down", pt, 1, kind, modFlags());
@@ -2067,10 +2070,15 @@ fn onPointer(s: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool 
             _ = ls2.engine.event(0, "release", "null");
             const ls3 = liveSurface(hwnd) orelse return true;
             // The click a tap makes, with the up's coordinates.
-            const n = ls3.engine.tree.hit(pt[0], pt[1]) orelse return true;
-            if (disabledUp(n)) return true;
             var buf: [16]u8 = undefined;
             const fl = std.fmt.bufPrint(&buf, "{d}", .{modFlags()}) catch return true;
+            const link = linkAt(ls3, pt);
+            if (link != 0) {
+                _ = ls3.engine.event(link, "click", fl);
+                return true;
+            }
+            const n = ls3.engine.tree.hit(pt[0], pt[1]) orelse return true;
+            if (disabledUp(n)) return true;
             _ = ls3.engine.event(n.id, "click", fl);
         },
         WM_POINTERCAPTURECHANGED => {
@@ -2117,13 +2125,48 @@ fn onMove(s: *Surface, pt: [2]f32) void {
         s.tracking = c.TrackMouseEvent(&tme) != 0;
     }
     const n = s.engine.tree.hit(pt[0], pt[1]);
-    s.hand = n != null and clickableUp(n.?);
-    // :hover: the page hears when the node under the pointer changes.
-    const id: i64 = if (n) |node| node.id else 0;
+    const link = linkAt(s, pt);
+    s.hand = link != 0 or (n != null and clickableUp(n.?));
+    // :hover: the page hears when the node under the pointer changes (a
+    // link amid the text: its element).
+    const id: i64 = if (link != 0) link else if (n) |node| node.id else 0;
     if (id != s.hovered) {
         s.hovered = id;
         _ = s.engine.event(id, "hover", "null");
     }
+}
+
+/// The clickable element of the text run under `pt` (a link amid the text
+/// has no node of its own: its runs carry its id, Run.k), else 0.
+fn linkAt(s: *Surface, pt: [2]f32) i64 {
+    const n = s.engine.tree.hit(pt[0], pt[1]) orelse return 0;
+    if (n.kind != .text) return 0;
+    const runs = n.props.runs orelse return 0;
+    for (runs) |r| {
+        if (r.k != null) break;
+    } else return 0;
+    const ct = n.content();
+    const layout = textLayout(s, n, ct.w + 1, null) orelse return 0;
+    defer releaseCom(@as(?*c.IDWriteTextLayout, layout));
+    var trailing: c.BOOL = 0;
+    var inside: c.BOOL = 0;
+    var m: c.DWRITE_HIT_TEST_METRICS = undefined;
+    if (layout.lpVtbl.*.HitTestPoint.?(layout, pt[0] - ct.x, pt[1] - ct.y, &trailing, &inside, &m) < 0 or inside == 0) return 0;
+    // The run holding that UTF-16 position.
+    var pos: u32 = 0;
+    for (runs) |r| {
+        pos += @intCast(std.unicode.calcUtf16LeLen(r.t) catch r.t.len);
+        if (m.textPosition < pos) return if (r.k) |k| k else 0;
+    }
+    return 0;
+}
+
+/// The node a pointer at `pt` is on: a link run's element, else the node
+/// there (0: none).
+fn targetAt(s: *Surface, pt: [2]f32) i64 {
+    const link = linkAt(s, pt);
+    if (link != 0) return link;
+    return if (s.engine.tree.hit(pt[0], pt[1])) |n| n.id else 0;
 }
 
 /// The wheel (WM_MOUSEWHEEL) or the tilt wheel / a touchpad's sideways
@@ -2410,7 +2453,8 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             _ = c.SetFocus(hwnd);
             const pt = pointOf(s, lparam);
             // :active while the button is down.
-            if (s.engine.tree.hit(pt[0], pt[1])) |n| _ = s.engine.event(n.id, "press", "null");
+            const pressed = targetAt(s, pt);
+            if (pressed != 0) _ = s.engine.event(pressed, "press", "null");
             if (liveSurface(hwnd)) |ls| onButtonDown(ls, lparam, 1);
             return 0;
         },
@@ -2428,10 +2472,16 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             const ls2 = liveSurface(hwnd) orelse return 0;
             // The click, with the up's coordinates.
             const pt = pointOf(ls2, lparam);
-            const n = ls2.engine.tree.hit(pt[0], pt[1]) orelse return 0;
-            if (disabledUp(n)) return 0;
             var buf: [16]u8 = undefined;
             const flags = std.fmt.bufPrint(&buf, "{d}", .{modFlags()}) catch return 0;
+            // A link amid the text: its element's click.
+            const link = linkAt(ls2, pt);
+            if (link != 0) {
+                _ = ls2.engine.event(link, "click", flags);
+                return 0;
+            }
+            const n = ls2.engine.tree.hit(pt[0], pt[1]) orelse return 0;
+            if (disabledUp(n)) return 0;
             _ = ls2.engine.event(n.id, "click", flags);
             return 0;
         },
@@ -2439,16 +2489,27 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             if (fromTouch()) return 0;
             const ls = onButtonUp(s, lparam, 2) orelse return 0;
             const pt = pointOf(ls, lparam);
-            const n = ls.engine.tree.hit(pt[0], pt[1]) orelse return 0;
+            const target = targetAt(ls, pt);
+            if (target == 0) return 0;
+            // As Chromium on Windows: on the release, after auxclick, the
+            // secondary button's with the buttons still held (measured).
             var buf: [64]u8 = undefined;
-            const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0}]", .{ pt[0], pt[1] }) catch return 0;
-            _ = ls.engine.event(n.id, "contextmenu", json);
+            const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0},2,{d},{d}]", .{ pt[0], pt[1], ls.buttons, modFlags() }) catch return 0;
+            _ = ls.engine.event(target, "contextmenu", json);
             return 0;
         },
         c.WM_MBUTTONUP => {
             if (fromTouch()) return 0;
             _ = onButtonUp(s, lparam, 4);
             return 0;
+        },
+        // Back and forward (buttons 3 and 4, bits 8 and 16): the page's
+        // downs, ups and auxclicks, as Chromium's. TRUE, as the docs ask.
+        c.WM_XBUTTONDOWN, c.WM_XBUTTONDBLCLK, c.WM_XBUTTONUP => {
+            if (fromTouch()) return c.TRUE;
+            const bit: u32 = if ((wparam >> 16) & 0xFFFF == c.XBUTTON2) 16 else 8;
+            if (msg == c.WM_XBUTTONUP) _ = onButtonUp(s, lparam, bit) else onButtonDown(s, lparam, bit);
+            return c.TRUE;
         },
         c.WM_MOUSEMOVE => {
             if (fromTouch()) return 0;
