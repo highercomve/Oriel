@@ -430,6 +430,17 @@ pub fn fieldLine(comptime font_class: [:0]const u8, n: *const Node) f32 {
     return m.ascent + m.descent + m.gap;
 }
 
+/// A text field's baseline from the middle of its content box (its one
+/// line centered there): its font's ascent, less half the line (WebKit's:
+/// an 11px field 19 tall has it 14 down).
+pub fn fieldBaseline(comptime font_class: [:0]const u8, n: *const Node) f32 {
+    const fz = n.props.fz orelse 16;
+    const f = font(font_class, fz, n.props.fwt orelse 400, n.props.it, n.props.mono, n.props.ff) orelse return fz * 0.325;
+    const m = lineMetrics(f);
+    const line = fieldLine(font_class, n);
+    return @floor((line - (m.ascent + m.descent)) / 2) + m.ascent - line / 2;
+}
+
 /// A text node's line box: its height (CSS line-height, whole pixels as
 /// WebKit keeps it, else normal: its largest font's ascent + descent +
 /// gap) and that font's ascent and descent, which place the baseline.
@@ -863,13 +874,33 @@ pub fn warmFont(comptime font_class: [:0]const u8, spec: @import("engine.zig").F
 /// (`Tree.reuse_text_layout`). New props or text clear it.
 pub fn measureText(comptime font_class: [:0]const u8, n: *Node, max_width: f32, epoch: u64) [2]f32 {
     const nat = if (n.measured_text_size != null and n.text_measure_epoch == epoch) n.measured_text_size.? else blk: {
-        const size = suggestText(font_class, n, big) orelse return .{ 0, 0 };
+        var size = suggestText(font_class, n, big) orelse return .{ 0, 0 };
+        size[0] += trailingSpace(font_class, n);
         n.measured_text_size = size;
         n.text_measure_epoch = epoch;
         break :blk size;
     };
     if (n.props.nowrap or std.math.isInf(max_width) or max_width >= nat[0]) return nat;
     return suggestText(font_class, n, @max(1, max_width)) orelse .{ 0, 0 };
+}
+
+/// The width of a text's trailing white space on one line: CoreText's
+/// suggested size leaves it out (it hangs at a line's end), but a text
+/// keeps its last space only before a box on its line ("Name " then an
+/// <input>: render.js trimRuns), where it is a browser's gap.
+fn trailingSpace(comptime font_class: [:0]const u8, n: *Node) f32 {
+    const runs = n.props.runs orelse return 0;
+    if (runs.len == 0 or !std.mem.endsWith(u8, runs[runs.len - 1].t, " ")) return 0;
+    const cache = textCache(font_class, n) orelse return 0;
+    const fs = cache.fs orelse return 0;
+    const path = CGPathCreateWithRect(.{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = big, .height = big } }, null) orelse return 0;
+    defer CGPathRelease(path);
+    const frame = CTFramesetterCreateFrame(fs, .{ .location = 0, .length = 0 }, path, null) orelse return 0;
+    defer CFRelease(frame);
+    const lines = CTFrameGetLines(frame);
+    const count = CFArrayGetCount(lines);
+    if (count == 0) return 0;
+    return @floatCast(CTLineGetTrailingWhitespaceWidth(CFArrayGetValueAtIndex(lines, count - 1)));
 }
 
 fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 {

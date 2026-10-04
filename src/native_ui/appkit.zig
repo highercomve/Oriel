@@ -352,7 +352,13 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
         .image => out.* = draw.measureImage(surfaceOf(ctx).engine, n, max_width),
         // One line of the field's font (WebKit's control sizes come from
         // it); a textarea `rows` of them (2 by default).
-        .input, .select, .textarea => out.* = draw.fieldSizeMac(n, max_width),
+        .input, .select, .textarea => {
+            out.* = draw.fieldSizeMac(n, max_width);
+            // A text field's baseline, from its middle (tree.zig baselineFn);
+            // a pop-up button's 4px under it (WKWebView: 13 down in 18).
+            if (n.kind == .input) n.baseline = draw.fieldBaseline("NSFont", n);
+            if (n.kind == .select) n.baseline = 4;
+        },
         else => out.* = .{ 0, 0 },
     }
 }

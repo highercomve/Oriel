@@ -5324,6 +5324,16 @@ input[type="range"] { height: 20px; margin: 2px; }
           props.cg = Math.round(fontSize * 0.28 * 10) / 10;
         }
       }
+      const controls = flow.filter((f) => f.el && inFlow(f));
+      if (!inlineLine && !imageLine && !childCtx.blockify && props.fd === "column" && controls.length === 1 && flow.every((f) => f.space || f.el) && CONTROLS.has(controls[0].el.localName) && controls[0].el.localName !== "textarea" && (this.style(controls[0].el, cs, rematch).display || "inline").startsWith("inline")) {
+        props.fd = "row";
+        props.ai = "baseline";
+        const ta = cs["text-align"];
+        if (ta === "center") props.jc = "center";
+        else if (ta === "right" || ta === "end") props.jc = "flex-end";
+        for (let i = flow.length - 1; i >= 0; i--) if (flow[i].space) flow.splice(i, 1);
+        flow.unshift({ text: [runFor("\u200B", cs, fontSize)], strut: true });
+      }
       const flowBlock = !childCtx.blockify && props.fd === "column" && display !== "grid" && !tableHolds(display);
       const inLine = flowBlock ? /* @__PURE__ */ new Set() : null;
       if (before) inLine?.add(before);
@@ -5344,6 +5354,11 @@ input[type="range"] { height: 20px; margin: 2px; }
           const tid = this.idOf(el, "t" + kids.length);
           this.own(tid, el);
           const tp = { ...textProps(cs, fontSize), runs: item.text };
+          if (item.strut) {
+            tp.w = 0;
+            tp.minw = 0;
+            delete tp.ta;
+          }
           if (transitions) this.spec(tid, transitions);
           tp.fs = (childCtx.blockify || inlineLine) && !props.scroll ? 1 : 0;
           this.put(nodes, tid, "text", tp, []);

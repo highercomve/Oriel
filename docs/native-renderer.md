@@ -501,10 +501,17 @@ over their bottom (Props.blb); fields sized as WKWebView's
 (apple_draw.fieldSizeMac): a text field `size` widths of its font's "0",
 a textarea `cols` of them and 16px for a scrollbar, a select AppKit's
 pop-up button (its longest option in the 11px system font and 30px, 16px
-tall; 13px and 19px from a 17px font). Not yet: CSS padding on a select
-(WebKit ignores it), inline elements' getBoundingClientRect (none here),
-text widths (a text's measure rounds up a pixel), the baseline of a line
-mixing text and a field (1px).
+tall; 13px and 19px from a 17px font). A text field's baseline is its
+font's ascent from its centered line (apple_draw.fieldBaseline, kept in
+Node.baseline as an offset from the content box's middle), a pop-up's 4px
+under its middle, as WKWebView's. A control alone on its line (a button in
+a <div>) has the block's strut beside it: a row on one baseline with a
+zero-width text in the block's font (render.js; text-align places the
+control), so the line is as tall as WebKit's. A text's trailing space,
+kept before a box on its line ("Name " then an input), counts in its
+width (CoreText's suggested size leaves it out). Not yet: CSS padding on a
+select (WebKit ignores it), text widths (a text's measure rounds up a
+pixel).
 
 **Line struts** (render.js lineStrut, shared): a line of only boxes (an
 image, or an inline-block with nothing written in it or overflow other
