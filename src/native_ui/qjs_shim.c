@@ -54,6 +54,8 @@ extern int oriel_nui_selection(void *opaque, double id, double *out);
 extern void oriel_nui_set_selection(void *opaque, double id, double start, double end);
 extern void oriel_nui_scroll_into_view(void *opaque, double id, const char *block, size_t len);
 extern void oriel_nui_scroll_to(void *opaque, double id, double y, double x);
+extern void oriel_nui_file_read(void *opaque, uint32_t req_id, uint32_t handle, double offset, double length);
+extern void oriel_nui_file_release(void *opaque, uint32_t handle);
 
 #if defined(ORIEL_NATIVE_DOM)
 #include "dom_qjs.h"
@@ -440,6 +442,29 @@ static JSValue h_scroll_to(JSContext *ctx, JSValueConst this_val, int argc, JSVa
     if (argc > 1) JS_ToFloat64(ctx, &y, argv[1]);
     if (argc > 2) JS_ToFloat64(ctx, &x, argv[2]);
     oriel_nui_scroll_to(opaque_of(ctx), id, y, x);
+    return JS_UNDEFINED;
+}
+
+// host.fileRead(reqId, handle, offset, length): read a dropped file
+// (drop.zig). Always answered later, on another turn, through
+// __oriel.fileData(reqId, ArrayBuffer | null, errorName).
+static JSValue h_file_read(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 4) return JS_UNDEFINED;
+    uint32_t req = 0, handle = 0;
+    double offset = 0, length = 0;
+    if (JS_ToUint32(ctx, &req, argv[0]) || JS_ToUint32(ctx, &handle, argv[1]) ||
+        JS_ToFloat64(ctx, &offset, argv[2]) || JS_ToFloat64(ctx, &length, argv[3])) return JS_EXCEPTION;
+    oriel_nui_file_read(opaque_of(ctx), req, handle, offset, length);
+    return JS_UNDEFINED;
+}
+
+// host.fileRelease(handle): the page holds no File for it any more.
+static JSValue h_file_release(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    uint32_t handle = 0;
+    if (argc < 1 || JS_ToUint32(ctx, &handle, argv[0])) return JS_UNDEFINED;
+    oriel_nui_file_release(opaque_of(ctx), handle);
     return JS_UNDEFINED;
 }
 
@@ -896,6 +921,8 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "evalScript", h_eval_script, 2);
     set_fn(ctx, host, "compileHandler", h_compile_handler, 2);
     set_fn(ctx, host, "evalModule", h_eval_module, 2);
+    set_fn(ctx, host, "fileRead", h_file_read, 4);
+    set_fn(ctx, host, "fileRelease", h_file_release, 1);
     JS_SetPropertyStr(ctx, host, "platform", JS_NewString(ctx, platform_json));
     JS_SetPropertyStr(ctx, host, "label", JS_NewString(ctx, label));
     JS_SetPropertyStr(ctx, host, "url", JS_NewString(ctx, url));
@@ -949,6 +976,39 @@ int oqjs_event(void *p, int64_t id, const char *kind, size_t kind_len,
     oqjs *self = p;
     enter(self);
     return dispatch_result(self, nui_event(self->ctx, id, kind, kind_len, json, json_len));
+}
+
+// As oqjs_event, for events whose answer is a number (a drag's effect
+// mask): 0 with the result in *out (JS_ToInt32), or -1 on an exception
+// (logged; *out is 0).
+int oqjs_event_code(void *p, int64_t id, const char *kind, size_t kind_len,
+                    const char *json, size_t json_len, int32_t *out) {
+    oqjs *self = p;
+    *out = 0;
+    enter(self);
+    JSValue result = nui_event(self->ctx, id, kind, kind_len, json, json_len);
+    leave(self);
+    if (JS_IsException(result)) { report(self->ctx); return -1; }
+    int bad = JS_ToInt32(self->ctx, out, result);
+    JS_FreeValue(self->ctx, result);
+    if (bad) { *out = 0; report(self->ctx); return -1; }
+    return 0;
+}
+
+// __oriel.fileData(reqId, ArrayBuffer | null, errorName): a host.fileRead's
+// answer. With data (has_data): a copy of it and a null error; without:
+// null and the error's name ("NotReadableError", "NotFoundError").
+int oqjs_file_data(void *p, uint32_t req_id, const uint8_t *data, size_t len, int has_data,
+                   const char *err, size_t err_len) {
+    oqjs *self = p;
+    JSContext *ctx = self->ctx;
+    enter(self);
+    JSValue args[3] = {
+        JS_NewUint32(ctx, req_id),
+        has_data ? JS_NewArrayBufferCopy(ctx, data, len) : JS_NULL,
+        has_data ? JS_NULL : JS_NewStringLen(ctx, err, err_len),
+    };
+    return dispatch_result(self, nui_dispatch(ctx, "fileData", 3, args));
 }
 
 int oqjs_number_call(void *p, const char *name, double value) {
