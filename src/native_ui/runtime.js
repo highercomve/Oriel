@@ -18531,7 +18531,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (dispatch2(now, "dragover", init, dt, true)) {
         op = OP_NAMES[state.get(dt).dropEffect] & allowed;
       } else {
-        op = editable(now) && hasText(session.items) ? allowed & COPY ? COPY : allowed & MOVE : 0;
+        op = editable(now) && session.items.length ? allowed & COPY ? COPY : allowed & MOVE : 0;
       }
       return session.op = op;
     }

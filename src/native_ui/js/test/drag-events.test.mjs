@@ -173,7 +173,14 @@ assert.equal(vm.runInContext(`typeof document.body.ondrop + " " + ("ondragover" 
 // Text over a textarea: copy by default; the drop inserts it as an edit.
 session++;
 assert.equal(enter(ids.t), COPY, "a field takes text");
-assert.equal(enter(ids.t, [["file", "image/png"]]), 0, "not a file");
+// A file over a field: accepted, so its drop reaches the page (as WebKit and
+// Chromium deliver it), but nothing goes into the field.
+assert.equal(enter(ids.t, [["file", "image/png"]]), COPY, "a field takes a file's drag too");
+take();
+drop(ids.t, [["file", "image/png", "a.png", 3, 0, 1]]);
+assert.ok(take().includes("document drop t"), "the page gets the file's drop");
+assert.equal(vm.runInContext(`document.getElementById("t").value`, ctx), "ab", "nothing inserted");
+session++;
 assert.equal(enter(ids.t), COPY);
 take();
 assert.equal(drop(ids.t, [["string", "text/plain", "XY"]]), COPY);
