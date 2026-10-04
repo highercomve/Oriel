@@ -21,7 +21,7 @@ env:
   ZIG_VERSION: 0.16.0
   ARCH_PACKAGES: >-
     git pkgconf gtk4 webkitgtk-6.0 wayland wayland-protocols libxkbcommon
-    libxtst libx11 xorg-server-xvfb xorg-xauth dbus ttf-dejavu
+    libxtst libx11 xorg-server-xvfb xorg-xauth dbus ttf-dejavu python
 
 jobs:
   test:
