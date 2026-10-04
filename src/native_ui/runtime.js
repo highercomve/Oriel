@@ -16506,6 +16506,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         inLine?.add(after2);
       }
       if (flowBlock) collapseMargins(nodes, kids, inLine, props, display, ctx);
+      if (el.localName === "fieldset" && el.firstElementChild?.localName === "legend" && kids.length && this.idOf(el.firstElementChild, "el") === kids[before2 ? 1 : 0]) props.lgd = true;
       if (orders && childCtx.blockify) {
         const pos = new Map(kids.map((k, i) => [k, i]));
         kids.sort((a, b) => (orders.get(a) || 0) - (orders.get(b) || 0) || pos.get(a) - pos.get(b));

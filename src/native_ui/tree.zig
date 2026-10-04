@@ -824,6 +824,11 @@ pub const Props = struct {
     // <canvas>: the drawing's coordinate space (the bitmap's px size).
     cw: ?f32 = null,
     ch: ?f32 = null,
+    /// A fieldset whose first child is its legend: its top border runs
+    /// through the legend's middle, broken where the legend is, and its
+    /// background starts there (browsers'); a backend draws the box from
+    /// that line down and leaves the gap.
+    lgd: bool = false,
     // A default checkbox/radio (<input> without appearance: none).
     ctl: ?[]const u8 = null,
     /// Its baseline this far above its bottom border edge (WebKit's macOS

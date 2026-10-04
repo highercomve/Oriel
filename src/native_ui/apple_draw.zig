@@ -1459,17 +1459,31 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
     defer if (alpha < 1) CGContextEndTransparencyLayer(cg);
 
     const r = n.radiusXY();
-    if (p.sh) |sh| shadow(cg, f, r, sh);
+    // A fieldset with its legend: its box from the legend's middle down,
+    // the top border broken under the legend (Props.lgd).
+    const lg = legendGap(n);
+    const bf = if (lg) |g| g.box else f;
+    if (p.sh) |sh| shadow(cg, bf, r, sh);
     if (p.bg) |bg| {
         // The color under the gradient (CSS layers).
         if (bg.color) |col| {
-            roundRect(cg, f, r);
+            roundRect(cg, bf, r);
             setFill(cg, col);
             CGContextFillPath(cg);
         }
-        if (bg.gradient) |g| gradient(cg, f, r, g);
+        if (bg.gradient) |g| gradient(cg, bf, r, g);
     }
-    if (p.bw) |bw| border(cg, f, r, bw, p.bc, p.bs);
+    if (p.bw) |bw| {
+        if (lg) |g| {
+            CGContextSaveGState(cg);
+            CGContextBeginPath(cg);
+            CGContextAddRect(cg, rect(.{ .x = bf.x - 1, .y = bf.y - 1, .w = bf.w + 2, .h = bf.h + 2 }));
+            CGContextAddRect(cg, rect(g.gap));
+            CGContextEOClip(cg);
+        }
+        border(cg, bf, r, bw, p.bc, p.bs);
+        if (lg != null) CGContextRestoreGState(cg);
+    }
     switch (n.kind) {
         .text => paintText(font_class, cg, n),
         .icon => paintIcon(cg, n),
@@ -1496,6 +1510,19 @@ fn paintNode(comptime font_class: [:0]const u8, cg: CGContextRef, engine: *Engin
     if (n.gutter > 0) paintLegacyScrollbar(cg, n, fields.dark) else if (n.flashed_at != 0) paintIndicators(cg, n, fields.dark);
     // Over the box and its children, outside its own clip.
     if (p.ol) |ol| paintOutline(cg, f, r, ol);
+}
+
+/// A fieldset's box with its legend (Props.lgd): from the line through
+/// the legend's middle (as thick as the top border) down, and the gap the
+/// legend leaves in that border.
+fn legendGap(n: *const Node) ?struct { box: Rect, gap: Rect } {
+    if (!n.props.lgd or n.kids.items.len == 0) return null;
+    const f = n.frame;
+    const lg = n.kids.items[0].frame;
+    const bw = if (n.props.bw) |b| b[0] else 0;
+    const off = std.math.clamp(lg.y + lg.h / 2 - bw / 2 - f.y, 0, f.h);
+    const box: Rect = .{ .x = f.x, .y = f.y + off, .w = f.w, .h = f.h - off };
+    return .{ .box = box, .gap = .{ .x = lg.x, .y = box.y - 1, .w = lg.w, .h = bw + 2 } };
 }
 
 /// CSS outline: a border of its own around the box grown by offset +
