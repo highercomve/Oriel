@@ -192,7 +192,11 @@ pub fn dispatch(
         });
         try security.validateLabel(args.label);
         try security.validateWindowModification(sec, caller_win_label, args.label);
-        const win = App.getWindow(args.label) orelse return error.WindowNotFound;
+        const win = App.getWindow(args.label) orelse {
+            // The native renderer's page sends it while its window is being made.
+            App.setPendingThemeColor(args.label, args.color);
+            return arena.dupe(u8, "null");
+        };
         win.setThemeColor(args.color);
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, action, "startDragging")) {
