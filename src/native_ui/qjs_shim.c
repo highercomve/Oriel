@@ -48,7 +48,7 @@ extern int oriel_nui_stamp_list(void *opaque, double list_id, void *dom, uint32_
 #endif
 extern int oriel_nui_leaf_style(void *opaque, double id, const char *json, size_t len);
 extern int oriel_nui_leaf(void *opaque, double id, double style_id, const char *text, size_t len, int is_text);
-extern int oriel_nui_frame(void *opaque, double id, double *out8);
+extern int oriel_nui_frame(void *opaque, double id, double *out9);
 extern void oriel_nui_focus(void *opaque, double id);
 extern int oriel_nui_selection(void *opaque, double id, double *out);
 extern void oriel_nui_set_selection(void *opaque, double id, double start, double end);
@@ -387,11 +387,11 @@ static JSValue h_now(JSContext *ctx, JSValueConst this_val, int argc, JSValueCon
 static JSValue h_frame(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (argc < 1) return JS_UNDEFINED;
-    double id = 0, out[8];
+    double id = 0, out[9];
     JS_ToFloat64(ctx, &id, argv[0]);
     if (!oriel_nui_frame(opaque_of(ctx), id, out)) return JS_UNDEFINED;
     JSValue arr = JS_NewArray(ctx);
-    for (uint32_t i = 0; i < 8; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
+    for (uint32_t i = 0; i < 9; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
     return arr;
 }
 
