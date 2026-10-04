@@ -848,6 +848,56 @@ fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 
     return .{ @floatCast(@ceil(size.width) + 1), @floatCast(@ceil(size.height)) };
 }
 
+extern fn CTLineGetStringIndexForPosition(line: CFTypeRef, position: CGPoint) c_long;
+
+/// The clickable element (Run.k: a link amid the text) of the run at
+/// (`x`, `y`), in the tree's coordinates, as the text was last painted;
+/// null for none (no link there, between lines, past a line's end). As
+/// android's linkAt: the line under y, then the character under x (a
+/// caret offset is between two: the one before it when x is left of it).
+pub fn linkAt(comptime font_class: [:0]const u8, n: *Node, x: f32, y: f32) ?u32 {
+    const runs = n.props.runs orelse return null;
+    for (runs) |r| {
+        if (r.k != null) break;
+    } else return null;
+    if (n.native == null) return null;
+    const cache: *TextCache = @ptrCast(@alignCast(n.native.?));
+    const frame = cache.frame orelse return null;
+    const c = n.content();
+    const h = cache.frame_h;
+    const lb = lineBoxOf(font_class, n);
+    const pl: Placer = .{ .lb = lb, .places = if (mixedFonts(n) and cache.places_w == cache.frame_w) cache.places else null };
+    const tx: CGFloat = x - c.x;
+    const ty: CGFloat = y - c.y; // down from the text's top
+    const lines = CTFrameGetLines(frame);
+    const count = CFArrayGetCount(lines);
+    var i: c_long = 0;
+    while (i < count) : (i += 1) {
+        const line = CFArrayGetValueAtIndex(lines, i);
+        const o = lineOrigin(frame, i, h, pl);
+        const base = h - o.y; // the baseline, down from the top
+        var ascent: CGFloat = 0;
+        var descent: CGFloat = 0;
+        const width = CTLineGetTypographicBounds(line, &ascent, &descent, null);
+        // The line box: its place, the fixed line height, else the font's.
+        const top: CGFloat, const bottom: CGFloat = if (pl.places) |places| (if (i < places.len) .{ places[@intCast(i)].top, places[@intCast(i)].top + places[@intCast(i)].h } else .{ base - ascent, base + descent }) else if (lb) |box| .{ @as(CGFloat, @floatFromInt(i)) * box.h, @as(CGFloat, @floatFromInt(i + 1)) * box.h } else .{ base - ascent, base + descent };
+            if (ty < top or ty >= bottom) continue;
+        if (tx < o.x or tx > o.x + width) return null;
+        const range = CTLineGetStringRange(line);
+        var off = CTLineGetStringIndexForPosition(line, .{ .x = tx - o.x, .y = 0 });
+        if (off < 0) return null;
+        if (off > range.location and CTLineGetOffsetForStringIndex(line, off, null) > tx - o.x) off -= 1;
+        // Runs follow one another in the string as attributed() appends them.
+        var pos: c_long = 0;
+        for (runs) |r| {
+            pos += @intCast(std.unicode.calcUtf16LeLen(r.t) catch r.t.len);
+            if (off < pos) return r.k;
+        }
+        return null;
+    }
+    return null;
+}
+
 fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void {
     const c = n.content();
     const cache = textCache(font_class, n) orelse return;

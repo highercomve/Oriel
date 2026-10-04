@@ -1264,8 +1264,8 @@ fn mouseDown(self: id, _: SEL, event: id) callconv(.c) void {
     const token = s.token;
     const mods = modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{}));
     // :active while the button is down.
-    const hit = s.engine.tree.hit(p[0], p[1]);
-    if (hit) |n| _ = s.engine.event(n.id, "press", "null");
+    const under = underPointer(s, p);
+    if (under.id != 0) _ = s.engine.event(under.id, "press", "null");
     if (surfaces.get(token) == null) return;
     // A move still waiting goes before the down.
     if (s.move != null) flushMove(s);
@@ -1275,7 +1275,10 @@ fn mouseDown(self: id, _: SEL, event: id) callconv(.c) void {
     // Control-click: the context menu, as on every Mac; WebKit's comes with
     // the press, the primary button's (button 0, buttons 1), and the click
     // still follows the release (measured).
-    if (mods & 2 != 0) if (s.engine.tree.hit(p[0], p[1])) |n| contextMenu(s, n, p, 0, 1, mods);
+    if (mods & 2 != 0) {
+        const at = underPointer(s, p);
+        if (at.id != 0) contextMenu(s, at.id, p, 0, 1, mods);
+    }
 }
 
 /// The buttons held now, as the DOM's `buttons` (NSEvent's bits are the
@@ -1301,7 +1304,10 @@ fn otherButtonDown(self: id, _: SEL, event: id) callconv(.c) void {
     const ev: Object = .{ .value = event };
     _ = sendPointer(s, "down", p, pressedButtons() | buttonBit(ev), modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})));
     if (surfaces.get(token) == null) return;
-    if (ev.msgSend(isize, "buttonNumber", .{}) == 1) if (s.engine.tree.hit(p[0], p[1])) |n| contextMenu(s, n, p, 2, pressedButtons() | 2, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})));
+    if (ev.msgSend(isize, "buttonNumber", .{}) == 1) {
+        const at = underPointer(s, p);
+        if (at.id != 0) contextMenu(s, at.id, p, 2, pressedButtons() | 2, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})));
+    }
 }
 
 /// Its release: the page's pointer up, then auxclick (main.js).
@@ -1331,21 +1337,31 @@ fn mouseUp(self: id, _: SEL, event: id) callconv(.c) void {
     _ = sendPointer(s, "up", p, pressedButtons() & ~@as(u32, 1), modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
     if (surfaces.get(token) == null) return;
     _ = s.engine.event(0, "release", "null");
-    const hit = s.engine.tree.hit(p[0], p[1]);
-    if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: click at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], if (hit) |h| h.id else 0 });
-    const n = hit orelse return;
+    const under = underPointer(s, p);
+    if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: click at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], under.id });
+    const n = under.node orelse return;
     const flags = (Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{});
-    if (disabledUp(n)) return;
+    if (!under.link and disabledUp(n)) return;
     var buf: [16]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "{d}", .{modFlags(flags)}) catch return;
-    _ = s.engine.event(n.id, "click", json);
+    _ = s.engine.event(under.id, "click", json);
 }
 
 /// The page's contextmenu: [x, y, button, buttons, modifiers].
-fn contextMenu(s: *Surface, n: *Node, p: [2]f32, button: u32, buttons: u32, mods: u32) void {
+fn contextMenu(s: *Surface, target: i64, p: [2]f32, button: u32, buttons: u32, mods: u32) void {
     var buf: [64]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0},{d},{d},{d}]", .{ p[0], p[1], button, buttons, mods }) catch return;
-    _ = s.engine.event(n.id, "contextmenu", json);
+    _ = s.engine.event(target, "contextmenu", json);
+}
+
+/// What the pointer at `p` is over, for the page: the node there, or the
+/// link amid its text under the pointer (Run.k: that element's id, as
+/// android's linkAt finds it), 0 for nothing.
+const Under = struct { node: ?*Node, id: i64, link: bool };
+fn underPointer(s: *Surface, p: [2]f32) Under {
+    const n = s.engine.tree.hit(p[0], p[1]) orelse return .{ .node = null, .id = 0, .link = false };
+    if (n.kind == .text) if (draw.linkAt("NSFont", n, p[0], p[1])) |k| return .{ .node = n, .id = k, .link = true };
+    return .{ .node = n, .id = n.id, .link = false };
 }
 
 fn disabledUp(start: *Node) bool {
@@ -1377,14 +1393,14 @@ fn pointerMoved(self: id, event: id, buttons: u32) void {
     queueMove(s, p, buttons, modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
     // Sent at once (no display link): the page may have closed its window.
     if (surfaces.get(token) == null) return;
-    const n = s.engine.tree.hit(p[0], p[1]);
-    const hand = n != null and clickableUp(n.?);
+    const under = underPointer(s, p);
+    const hand = under.link or (under.node != null and clickableUp(under.node.?));
     if (hand != s.pointer_hand) {
         s.pointer_hand = hand;
         cocoa.class("NSCursor").msgSend(Object, if (hand) "pointingHandCursor" else "arrowCursor", .{}).msgSend(void, "set", .{});
     }
-    // :hover: the page hears when the node under the pointer changes.
-    const nid: i64 = if (n) |node| node.id else 0;
+    // :hover: the page hears when the node (or link) under the pointer changes.
+    const nid: i64 = under.id;
     if (nid != s.hovered) {
         s.hovered = nid;
         _ = s.engine.event(nid, "hover", "null");
@@ -1448,7 +1464,7 @@ const PendingMove = struct { at: [2]f32, buttons: u32, mods: u32 };
 /// True when the page prevented the default.
 fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32, mods: u32) bool {
     if (!std.math.isFinite(p[0]) or !std.math.isFinite(p[1])) return false;
-    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    const nid: i64 = underPointer(s, p).id;
     var buf: [96]u8 = undefined;
     const json = std.fmt.bufPrint(&buf, "[\"{s}\",{d:.2},{d:.2},{d},1,\"mouse\",{d}]", .{ phase, p[0], p[1], buttons, mods }) catch return false;
     return s.engine.event(nid, "pointer", json);
