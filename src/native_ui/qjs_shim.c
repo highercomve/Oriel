@@ -39,6 +39,7 @@ extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len)
 extern int oriel_nui_vsync(void *opaque);
 extern void oriel_nui_warm_fonts(void *opaque, const double *v, size_t count);
 extern int oriel_nui_font_metrics(void *opaque, double size, int mono, const char *family, size_t family_len, double *out);
+extern int oriel_nui_run_rects(void *opaque, double id, double first, double last, double *out, size_t max);
 extern int oriel_nui_canvas(void *opaque, double id, const double *nums, size_t len, const char *const *strs, const size_t *lens, size_t count);
 extern uint32_t oriel_nui_stamp_plan(void *opaque, const double *v, size_t len);
 #if defined(ORIEL_NATIVE_DOM)
@@ -364,6 +365,25 @@ static JSValue h_font_metrics(JSContext *ctx, JSValueConst this_val, int argc, J
     if (!ok) return JS_UNDEFINED;
     JSValue arr = JS_NewArray(ctx);
     for (uint32_t i = 0; i < 3; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
+    return arr;
+}
+
+// host.runRects(id, first, last): [[x, y, w, h], ...] for a text node's
+// runs (an inline element's line fragments); undefined when the backend
+// can't say (main.js takes the node's frame).
+static JSValue h_run_rects(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    double id = 0, first = 0, last = 0;
+    if (argc < 3 || JS_ToFloat64(ctx, &id, argv[0]) < 0 || JS_ToFloat64(ctx, &first, argv[1]) < 0 || JS_ToFloat64(ctx, &last, argv[2]) < 0) return JS_UNDEFINED;
+    double out[64 * 4];
+    int n = oriel_nui_run_rects(opaque_of(ctx), id, first, last, out, 64);
+    if (n < 0) return JS_UNDEFINED;
+    JSValue arr = JS_NewArray(ctx);
+    for (int i = 0; i < n; i++) {
+        JSValue r = JS_NewArray(ctx);
+        for (uint32_t j = 0; j < 4; j++) JS_SetPropertyUint32(ctx, r, j, JS_NewFloat64(ctx, out[i * 4 + j]));
+        JS_SetPropertyUint32(ctx, arr, (uint32_t)i, r);
+    }
     return arr;
 }
 
@@ -908,6 +928,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "vsync", h_vsync, 0);
     set_fn(ctx, host, "warmFonts", h_warm_fonts, 1);
     set_fn(ctx, host, "fontMetrics", h_font_metrics, 3);
+    set_fn(ctx, host, "runRects", h_run_rects, 3);
     set_fn(ctx, host, "canvas", h_canvas, 3);
     set_fn(ctx, host, "sheetCache", h_sheet_cache, 2);
     set_fn(ctx, host, "sheetKeep", h_sheet_keep, 2);
