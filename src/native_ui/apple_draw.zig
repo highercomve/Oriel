@@ -895,7 +895,7 @@ fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 
         const lines = @max(1, @round(size.height / lb.h));
         // The first baseline, as lineOrigin places it: half the leading
         // under the line box's top, then the ascent (inline rows line up on it).
-        n.baseline = (lb.h - (lb.m.ascent + lb.m.descent)) / 2 + lb.m.ascent;
+        n.baseline = @floor((lb.h - (lb.m.ascent + lb.m.descent)) / 2) + lb.m.ascent;
         return .{ @floatCast(@ceil(size.width) + 1), @floatCast(lines * lb.h) };
     }
     return .{ @floatCast(@ceil(size.width) + 1), @floatCast(@ceil(size.height)) };
@@ -908,18 +908,68 @@ extern fn CTLineGetStringIndexForPosition(line: CFTypeRef, position: CGPoint) c_
 /// null for none (no link there, between lines, past a line's end). As
 /// android's linkAt: the line under y, then the character under x (a
 /// caret offset is between two: the one before it when x is left of it).
+/// The line fragments of runs `first`…`last` (an inline element's text,
+/// render.js) as [x, y, w, h] rects in the tree's coordinates, each as tall
+/// as the line's font content area (ascent and descent, as WebKit gives an
+/// inline box's rect), into `out`; how many. Empty runs (a <br>) none.
+pub fn runRects(comptime font_class: [:0]const u8, n: *Node, first: usize, last: usize, out: [][4]f32) usize {
+    const runs = n.props.runs orelse return 0;
+    if (first > last or last >= runs.len) return 0;
+    var start: c_long = 0;
+    for (runs[0..first]) |r| start += @intCast(std.unicode.calcUtf16LeLen(r.t) catch r.t.len);
+    var end = start;
+    for (runs[first .. last + 1]) |r| end += @intCast(std.unicode.calcUtf16LeLen(r.t) catch r.t.len);
+    if (end == start) return 0;
+    const laid = laidText(font_class, n) orelse return 0;
+    const c = n.content();
+    const lines = CTFrameGetLines(laid.frame);
+    const count = CFArrayGetCount(lines);
+    var k: usize = 0;
+    var i: c_long = 0;
+    while (i < count and k < out.len) : (i += 1) {
+        const line = CFArrayGetValueAtIndex(lines, i);
+        const lr = CTLineGetStringRange(line);
+        const a = @max(start, lr.location);
+        const b = @min(end, lr.location + lr.length);
+        if (a >= b) continue;
+        const o = lineOrigin(laid.frame, i, laid.h, laid.pl);
+        // As tall as its own fonts (its glyph runs in the range), as WebKit
+        // rounds them: not the line's height or its other fonts.
+        var ascent: f32 = 0;
+        var descent: f32 = 0;
+        const glyph_runs = CTLineGetGlyphRuns(line);
+        var g: c_long = 0;
+        while (g < CFArrayGetCount(glyph_runs)) : (g += 1) {
+            const run = CFArrayGetValueAtIndex(glyph_runs, g);
+            const rr = CTRunGetStringRange(run);
+            if (rr.location >= b or rr.location + rr.length <= a) continue;
+            const f = CFDictionaryGetValue(CTRunGetAttributes(run), @ptrCast(kCTFontAttributeName)) orelse continue;
+            const m = lineMetrics(@ptrCast(@constCast(f)));
+            ascent = @max(ascent, m.ascent);
+            descent = @max(descent, m.descent);
+        }
+        const xa = CTLineGetOffsetForStringIndex(line, a, null);
+        var xb = CTLineGetOffsetForStringIndex(line, b, null);
+        // Not the space a line wraps at (browsers leave it out of the rect).
+        if (b == lr.location + lr.length) xb = @min(xb, CTLineGetTypographicBounds(line, null, null, null) - CTLineGetTrailingWhitespaceWidth(line));
+        const base: f32 = @floatCast(laid.h - o.y);
+        out[k] = .{ @floatCast(c.x + o.x + xa), c.y + base - ascent, @floatCast(@max(0, xb - xa)), ascent + descent };
+        k += 1;
+    }
+    return k;
+}
+
 pub fn linkAt(comptime font_class: [:0]const u8, n: *Node, x: f32, y: f32) ?u32 {
     const runs = n.props.runs orelse return null;
     for (runs) |r| {
         if (r.k != null) break;
     } else return null;
-    if (n.native == null) return null;
-    const cache: *TextCache = @ptrCast(@alignCast(n.native.?));
-    const frame = cache.frame orelse return null;
+    const laid = laidText(font_class, n) orelse return null;
+    const frame = laid.frame;
     const c = n.content();
-    const h = cache.frame_h;
-    const lb = lineBoxOf(font_class, n);
-    const pl: Placer = .{ .lb = lb, .places = if (mixedFonts(n) and cache.places_w == cache.frame_w) cache.places else null };
+    const h = laid.h;
+    const pl = laid.pl;
+    const lb = pl.lb;
     const tx: CGFloat = x - c.x;
     const ty: CGFloat = y - c.y; // down from the text's top
     const lines = CTFrameGetLines(frame);
@@ -951,10 +1001,14 @@ pub fn linkAt(comptime font_class: [:0]const u8, n: *Node, x: f32, y: f32) ?u32 
     return null;
 }
 
-fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void {
+/// A text node's CoreText frame for its laid-out width (kept in its cache
+/// from one call to the next), how tall it is, and where its lines go.
+const Laid = struct { frame: CTFrameRef, h: CGFloat, pl: Placer };
+
+fn laidText(comptime font_class: [:0]const u8, n: *Node) ?Laid {
     const c = n.content();
-    const cache = textCache(font_class, n) orelse return;
-    const fs = cache.fs orelse return;
+    const cache = textCache(font_class, n) orelse return null;
+    const fs = cache.fs orelse return null;
     // As wide as laid out (+1, as measured), and tall enough for every line:
     // the frame lays text out from its top.
     const w: CGFloat = if (n.props.nowrap) big else c.w + 1;
@@ -971,9 +1025,9 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
             const lines = @ceil(need.height / box.h) + 1;
             h = @max(h, lines * 3 * @as(CGFloat, n.props.fz orelse 16));
         }
-        const path = CGPathCreateWithRect(.{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = if (n.props.nowrap) @ceil(need.width) + 1 else w, .height = h } }, null) orelse return;
+        const path = CGPathCreateWithRect(.{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = if (n.props.nowrap) @ceil(need.width) + 1 else w, .height = h } }, null) orelse return null;
         defer CGPathRelease(path);
-        const created = CTFramesetterCreateFrame(fs, .{ .location = 0, .length = 0 }, path, null) orelse return;
+        const created = CTFramesetterCreateFrame(fs, .{ .location = 0, .length = 0 }, path, null) orelse return null;
         if (cache.frame) |old| CFRelease(old);
         cache.frame = created;
         cache.frame_w = w;
@@ -988,7 +1042,16 @@ fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void
         cache.places = linePlaces(font_class, n, frame);
         cache.places_w = w;
     }
-    const pl: Placer = .{ .lb = lb, .places = if (mixed) cache.places else null };
+    return .{ .frame = frame, .h = h, .pl = .{ .lb = lb, .places = if (mixed) cache.places else null } };
+}
+
+fn paintText(comptime font_class: [:0]const u8, cg: CGContextRef, n: *Node) void {
+    const c = n.content();
+    const laid = laidText(font_class, n) orelse return;
+    const frame = laid.frame;
+    const h = laid.h;
+    const pl = laid.pl;
+    const lb = pl.lb;
     // CoreText draws with y up: flip around the text's box.
     CGContextSaveGState(cg);
     defer CGContextRestoreGState(cg);
@@ -1019,7 +1082,9 @@ fn lineOrigin(frame: CTFrameRef, i: c_long, h: CGFloat, pl: Placer) CGPoint {
     CTFrameGetLineOrigins(frame, .{ .location = i, .length = 1 }, &o);
     if (pl.places) |places| if (i >= 0 and i < places.len) return .{ .x = o[0].x, .y = h - places[@intCast(i)].base };
     const box = pl.lb orelse return o[0];
-    const top = @as(CGFloat, @floatFromInt(i)) * box.h + (box.h - (box.m.ascent + box.m.descent)) / 2;
+    // The half-leading above floored, as WebKit places a line's text (a
+    // 20px line-height over a 14+3px font: 1px above, 2 below).
+    const top = @as(CGFloat, @floatFromInt(i)) * box.h + @floor((box.h - (box.m.ascent + box.m.descent)) / 2);
     return .{ .x = o[0].x, .y = h - (top + box.m.ascent) };
 }
 

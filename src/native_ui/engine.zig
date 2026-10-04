@@ -323,6 +323,12 @@ pub const Backend = struct {
     /// Optional: the same for a CSS font-family list (render.js familyOf),
     /// a line's strut in the block's own font; font_metrics without it.
     font_metrics_family: ?*const fn (ctx: *anyopaque, size: f32, mono: bool, family: []const u8, out: *[3]f32) bool = null,
+    /// Optional: the line fragments of a text node's runs `first`…`last`
+    /// (an inline element's text: getClientRects) as [x, y, w, h] in the
+    /// tree's coordinates (as frames are: scrolled, CSS px), each as tall as
+    /// its line's font (ascent + descent); how many it wrote to `out`.
+    /// Without it the page gets the text node's frame.
+    run_rects: ?*const fn (ctx: *anyopaque, n: *Node, first: usize, last: usize, out: [][4]f32) usize = null,
     /// Optional, for backends that mirror props (`props`): a node's
     /// transform or opacity changed alone (Tree.on_paint, the "x" op). The
     /// runtime sends such changes as "x" ops only when a backend that
@@ -921,6 +927,27 @@ export fn oriel_nui_canvas(p: *anyopaque, id: f64, nums: [*]const f64, len: usiz
     for (list, 0..) |*l, i| l.* = strs[i][0..lens[i]];
     const ok = e.tree.setCanvas(Tree.idOf(id), nums[0..len], list) catch return 0;
     return @intFromBool(ok);
+}
+
+/// host.runRects(id, first, last): the line fragments of a text node's
+/// runs (Backend.run_rects), [x, y, w, h] each into `out` (at most `max`);
+/// how many, -1 when the backend has none (the caller takes the node's
+/// frame).
+export fn oriel_nui_run_rects(p: *anyopaque, id: f64, first: f64, last: f64, out: [*]f64, max: usize) c_int {
+    const e = engineOf(p);
+    const run_rects = e.backend.run_rects orelse return -1;
+    if (e.tree.needsLayout()) {
+        e.tree.layout();
+        e.relaid = true;
+    }
+    const n = e.tree.get(Tree.idOf(id)) orelse return 0;
+    if (n.kind != .text or !(first >= 0) or !(last >= first) or last > 1 << 20) return 0;
+    var buf: [64][4]f32 = undefined;
+    const k = run_rects(e.backend.ctx, n, @intFromFloat(first), @intFromFloat(last), buf[0..@min(max, buf.len)]);
+    for (buf[0..k], 0..) |r, i| for (r, 0..) |v, j| {
+        out[i * 4 + j] = v;
+    };
+    return @intCast(k);
 }
 
 /// host.fontMetrics(size, mono, family?): 0 when the backend has none.

@@ -299,6 +299,11 @@ export class Renderer {
     // holding parents would keep every removed tree referenced from JS
     // (released only at the next cycle collection, not when removed).
     this.parentOf = nodeIndex ? NO_PARENTS : internalWeak(new WeakMap());
+    // An inline element's runs (el → its run objects), and the text node a
+    // run ended up in (run → { id, runs }): its line fragments for
+    // getClientRects (inlineRects).
+    this.spans = internalWeak(new WeakMap());
+    this.runOwner = internalWeak(new WeakMap());
     this.volatile = new Set();     // elements whose output can change without a mutation (fields…)
     this.shared = internalWeak(new WeakMap());   // parent cs → Map(specified → cs): siblings with the same rules share one
     this.cascades = new Map();     // matched rules → { normal, important } longhands
@@ -1588,6 +1593,7 @@ export class Renderer {
     if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns && !(props.scroll || props.scrollx || props.clip)) {
       Object.assign(props, textProps(cs, fontSize));
       props.runs = flow[0].text;
+      this.ownRuns(id, props.runs);
       this.putClick(props, el);
       return this.put(nodes, id, "text", props, [], fixedNode);
     }
@@ -1660,6 +1666,7 @@ export class Renderer {
         const tid = this.idOf(el, "t" + kids.length);
         this.own(tid, el);
         const tp = { ...textProps(cs, fontSize), runs: item.text };
+        this.ownRuns(tid, item.text);
         if (transitions) this.spec(tid, transitions);
         tp.fs = (childCtx.blockify || inlineLine) && !props.scroll ? 1 : 0;
         this.put(nodes, tid, "text", tp, []);
@@ -1956,6 +1963,32 @@ export class Renderer {
 
   // `outerBg`: an enclosing inline element's background (it covers the
   // text of the inline elements inside it too).
+  // The text node `id` holds `runs` (for inlineRects).
+  ownRuns(id, runs) {
+    const owner = { id, runs };
+    for (const r of runs) this.runOwner.set(r, owner);
+  }
+
+  // An inline element's text as [text node id, first run, last run] per
+  // text node it is in (a <span> amid a paragraph: one); null when it made
+  // no runs (not rendered, or not inline). Its runs dropped as collapsed
+  // white space aren't in it.
+  inlineSpans(el) {
+    const span = this.spans.get(el);
+    if (!span) return null;
+    const out = [];
+    for (const r of span) {
+      const o = this.runOwner.get(r);
+      if (!o) continue;
+      const i = o.runs.indexOf(r);
+      if (i < 0) continue;
+      const last = out[out.length - 1];
+      if (last && last[0] === o.id && last[2] === i - 1) last[2] = i;
+      else out.push([o.id, i, i]);
+    }
+    return out.length ? out : null;
+  }
+
   inlineRuns(el, parentCS, parentFs, runs, rematch = false, outerBg = undefined) {
     if (SKIP.has(el.localName)) return;
     const cs = this.style(el, parentCS, rematch);
@@ -1971,6 +2004,7 @@ export class Renderer {
       if (child.nodeType === 3) runs.push(runFor(child.data, cs, fs, el, bg));
       else if (child.nodeType === 1) this.inlineRuns(child, cs, fs, runs, deeper, bg);
     }
+    this.spans.set(el, runs.slice(first));
     // A padded, bordered or rounded inline element amid the text (a <code>
     // chip): its decoration goes on its runs (`ib`), drawn by the backend
     // over each line fragment; its own background goes with it.

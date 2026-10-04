@@ -480,11 +480,35 @@ const elProto = Object.getPrototypeOf(Object.getPrototypeOf(document.createEleme
 }
 // As in a browser, a layout read renders what changed first (the page just
 // added these elements: their size, not 0).
+// An inline element (a <span> amid text: no box of its own) is its line
+// fragments' union.
 const frameOf = (el) => {
   if (!renderer) return [0, 0, 0, 0];
   if (!renderer.rendering) renderer.render();
-  return host.frame(renderer.idOf(el, "el")) || [0, 0, 0, 0];
+  const f = host.frame(renderer.idOf(el, "el"));
+  if (f) return f;
+  const rects = inlineRects(el);
+  if (!rects?.length) return [0, 0, 0, 0];
+  const x0 = Math.min(...rects.map((r) => r[0])), y0 = Math.min(...rects.map((r) => r[1]));
+  const x1 = Math.max(...rects.map((r) => r[0] + r[2])), y1 = Math.max(...rects.map((r) => r[1] + r[3]));
+  return [x0, y0, x1 - x0, y1 - y0];
 };
+// An inline element's line fragments ([x, y, w, h] each, as frames are):
+// the backend's (host.runRects: each line's piece of its text), else the
+// text node they are in, whole. Null when it has no runs.
+function inlineRects(el) {
+  const spans = renderer?.inlineSpans?.(el);
+  if (!spans) return null;
+  const out = [];
+  for (const [id, first, last] of spans) {
+    const rects = typeof host.runRects === "function" ? host.runRects(id, first, last) : undefined;
+    if (rects) { out.push(...rects); continue; }
+    const f = host.frame(id);
+    if (f) out.push([f[0], f[1], f[2], f[3]]);
+  }
+  return out;
+}
+const rectOf = ([x, y, w, h]) => ({ x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h });
 // An element's border widths (top, right, bottom, left), for its client
 // box: as the box has them, snapped to device pixels (render.js snapBorder).
 function borderOf(el) {
@@ -556,8 +580,17 @@ elProto.scrollBy = function (x, y) {
   this.scrollTo({ top: this.scrollTop + (+top || 0), left: this.scrollLeft + (+left || 0) });
 };
 elProto.getBoundingClientRect = function () {
-  const [x, y, w, h] = frameOf(this);
-  return { x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h };
+  return rectOf(frameOf(this));
+};
+// One rect for a box, one per line fragment for an inline element, none
+// for an element not rendered.
+elProto.getClientRects = function () {
+  if (!renderer) return [];
+  if (!renderer.rendering) renderer.render();
+  const f = host.frame(renderer.idOf(this, "el"));
+  const list = (f ? [f] : inlineRects(this) || []).map(rectOf);
+  list.item = (i) => list[i] ?? null;
+  return list;
 };
 elProto.focus = function () {
   document.__active = this;
