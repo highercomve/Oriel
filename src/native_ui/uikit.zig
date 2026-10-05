@@ -626,10 +626,15 @@ fn syncFields(s: *Surface) void {
         const visible = shown.h > 1 and shown.w > 1 and n.props.vis != false;
         field.holder.msgSend(void, "setHidden:", .{apple.boolean(!visible)});
         if (n.kind == .textarea) {
-            // A disabled text area: neither edited nor selected, as a browser's.
-            f.msgSend(void, "setEditable:", .{apple.boolean(!n.props.dis)});
+            // A disabled text area: neither edited nor selected, as a
+            // browser's; a readonly one selected only.
+            f.msgSend(void, "setEditable:", .{apple.boolean(!n.props.dis and !n.props.ro)});
             f.msgSend(void, "setSelectable:", .{apple.boolean(!n.props.dis)});
         } else f.msgSend(void, "setEnabled:", .{apple.boolean(!n.props.dis)});
+        // Its accessible name (Props.al), or none.
+        const label = if (n.props.al) |t| apple.nsString(t) else null;
+        defer if (label) |l| l.release();
+        f.msgSend(void, "setAccessibilityLabel:", .{if (label) |l| l.value else apple.nil.value});
     }
 }
 
@@ -1250,6 +1255,8 @@ fn textViewShouldChange(_: id, _: SEL, tv: id, _: NSRange, text: id) callconv(.c
 }
 
 fn fieldShouldChange(_: id, _: SEL, field: id, _: NSRange, text: id) callconv(.c) BOOL {
+    // readonly: the text can be selected (and copied), not changed.
+    if (ownerOf(field)) |o| if (o.n.props.ro) return apple.boolean(false);
     const s = apple.utf8(.{ .value = text }) orelse "";
     return apple.boolean(askEdit(field, s, false));
 }

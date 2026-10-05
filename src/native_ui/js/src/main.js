@@ -1721,6 +1721,15 @@ const oriel = {
           mediaChanged(before);
           return false;
         }
+        // The system's accent color changed (data: [r, g, b]): the focus
+        // ring and accent-colored controls follow it.
+        case "accent": {
+          if (!Array.isArray(data) || data.length !== 3) return false;
+          platform.accent = data;
+          setFocusRingOS(platform.os, data);
+          renderer?.markAll();
+          return false;
+        }
         case "focus": if (el) document.__active = el; return false;
         case "blur": if (el && document.__active === el) document.__active = null; return false;
         case "contextmenu": {

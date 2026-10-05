@@ -71,6 +71,8 @@ pub const Surface = struct {
     flash_queued: bool = false,
     flash_until: i64 = 0,
     move: ?PendingMove = null,
+    /// The accent color the page last heard (platform.accent, "accent").
+    accent: [3]u8 = .{ 0, 0, 0 },
     /// Drags over the page (draggingEntered): one session per drag that
     /// enters, a drag is over the page now (until it leaves or drops),
     /// what it carries, and the operation AppKit was last told.
@@ -157,6 +159,7 @@ fn classes() void {
         .{ "performDragOperation:", performDragOperation },
         .{ "keyDown:", keyDown },
         .{ "viewDidChangeEffectiveAppearance", appearanceChanged },
+        .{ "nuiSystemColorsChanged:", systemColorsChanged },
         .{ "viewDidChangeBackingProperties", backingChanged },
     });
     // A field's holder: flipped like the page, so frames read top-down.
@@ -213,7 +216,40 @@ fn withPlatformExtras(gpa: std.mem.Allocator, platform_json: [:0]const u8) ?[:0]
     const dpr: f64 = if (screen.value != null) screen.msgSend(f64, "backingScaleFactor", .{}) else 1;
     const body = trimmed[0 .. trimmed.len - 1];
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
-    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"fullKeyboardAccess\":{},\"dpr\":{d}}}", .{ body, sep, fka, dpr }, 0) catch null;
+    const a = systemAccent();
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"fullKeyboardAccess\":{},\"dpr\":{d},\"accent\":[{d},{d},{d}]}}", .{ body, sep, fka, dpr, a[0], a[1], a[2] }, 0) catch null;
+}
+
+/// The user's accent color (System Settings > Appearance) in sRGB 0-255:
+/// platform.accent, the focus ring's and accent-colored controls'.
+fn systemAccent() [3]u8 {
+    const blue: [3]u8 = .{ 0, 122, 255 };
+    const c = cocoa.class("NSColor").msgSend(Object, "controlAccentColor", .{});
+    if (c.value == null) return blue;
+    const space = cocoa.class("NSColorSpace").msgSend(Object, "sRGBColorSpace", .{});
+    const rgb = c.msgSend(Object, "colorUsingColorSpace:", .{space});
+    if (rgb.value == null) return blue;
+    var out: [3]u8 = undefined;
+    inline for (.{ "redComponent", "greenComponent", "blueComponent" }, 0..) |sel, i| {
+        const v = rgb.msgSend(f64, sel, .{});
+        out[i] = @intFromFloat(std.math.clamp(@round(v * 255), 0, 255));
+    }
+    return out;
+}
+
+/// The accent changed (or may have): the page hears the new one.
+fn accentCheck(s: *Surface) void {
+    const a = systemAccent();
+    if (std.mem.eql(u8, &a, &s.accent)) return;
+    s.accent = a;
+    var buf: [32]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[{d},{d},{d}]", .{ a[0], a[1], a[2] }) catch return;
+    _ = s.engine.event(0, "accent", json);
+}
+
+fn systemColorsChanged(self: id, _: SEL, _: id) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    accentCheck(s);
 }
 
 /// Create a window's page at `width`×`height` points and run it.
@@ -242,6 +278,12 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     });
     view.msgSend(void, "addTrackingArea:", .{tracking});
     tracking.release();
+    s.accent = systemAccent();
+    // The accent color (and other system colors) changing.
+    if (cocoa.nsString("NSSystemColorsDidChangeNotification")) |name| {
+        defer name.release();
+        cocoa.class("NSNotificationCenter").msgSend(Object, "defaultCenter", .{}).msgSend(void, "addObserver:selector:name:object:", .{ view, cocoa.objc.sel("nuiSystemColorsChanged:").value, name, cocoa.nil });
+    }
     registerDragTypes(view);
     try surfaces.put(gpa, s.token, s);
     errdefer _ = surfaces.remove(s.token);
@@ -294,6 +336,7 @@ pub fn destroy(s: *Surface) void {
     }
     _ = surfaces.remove(s.token);
     _ = by_view.remove(key(s.view.value));
+    cocoa.class("NSNotificationCenter").msgSend(Object, "defaultCenter", .{}).msgSend(void, "removeObserver:", .{s.view});
     s.warm.deinit(s.gpa);
     s.timer_dues.deinit(s.gpa);
     // The engine first: freeing its tree calls `removed` for every node,
@@ -695,13 +738,24 @@ fn syncFields(s: *Surface) void {
         f.outer.msgSend(void, "setFrame:", .{NSRect{ .origin = .{ .x = r.x - shown.x, .y = r.y - shown.y }, .size = .{ .width = @max(1, r.w), .height = @max(1, r.h) } }});
         const visible = shown.h > 1 and shown.w > 1 and n.props.vis != false;
         f.holder.msgSend(void, "setHidden:", .{cocoa.boolean(!visible)});
-        if (n.kind != .textarea) f.inner.msgSend(void, "setEnabled:", .{cocoa.boolean(!n.props.dis)}) else {
+        if (n.kind != .textarea) {
+            f.inner.msgSend(void, "setEnabled:", .{cocoa.boolean(!n.props.dis)});
+        } else {
             // A disabled text area: neither edited nor selected (nor focused,
-            // as a browser's).
-            f.inner.msgSend(void, "setEditable:", .{cocoa.boolean(!n.props.dis)});
+            // as a browser's); a readonly one selected only.
+            f.inner.msgSend(void, "setEditable:", .{cocoa.boolean(!n.props.dis and !n.props.ro)});
             f.inner.msgSend(void, "setSelectable:", .{cocoa.boolean(!n.props.dis)});
         }
+        setAccessibilityLabel(f.inner, n.props.al);
     }
+}
+
+/// A control's accessibility label: the page's name for it (Props.al), or
+/// none (VoiceOver then reads its placeholder or value).
+fn setAccessibilityLabel(control: Object, al: ?[]const u8) void {
+    const label = if (al) |t| cocoa.nsString(t) else null;
+    defer if (label) |l| l.release();
+    control.msgSend(void, "setAccessibilityLabel:", .{if (label) |l| l.value else cocoa.nil.value});
 }
 
 fn makeField(s: *Surface, n: *Node) ?Field {
@@ -927,17 +981,27 @@ fn askEdit(control: id, tv: id, repl_id: id, textarea: bool) bool {
 }
 
 fn textFieldShouldChange(self: id, _: SEL, tv: id, range: NSRange, repl: id) callconv(.c) BOOL {
+    if (readOnly(self)) return cocoa.boolean(false);
     if (!askEdit(self, tv, repl, false)) return cocoa.boolean(false);
     return superShouldChange(self, cocoa.class("NSTextField"), tv, range, repl);
 }
 
 fn secureFieldShouldChange(self: id, _: SEL, tv: id, range: NSRange, repl: id) callconv(.c) BOOL {
+    if (readOnly(self)) return cocoa.boolean(false);
     if (!askEdit(self, tv, repl, false)) return cocoa.boolean(false);
     return superShouldChange(self, cocoa.class("NSSecureTextField"), tv, range, repl);
 }
 
 /// The field class's own answer (yes when it has none); a no drops the
 /// edit the page was told of.
+/// A readonly field (Props.ro): no edit goes in (typing, paste, a drop),
+/// while it stays a text field (selectable; VoiceOver's text field, which a
+/// non-editable NSTextField isn't).
+fn readOnly(field: id) bool {
+    const o = ownerOf(field) orelse return false;
+    return o.n.props.ro;
+}
+
 fn superShouldChange(self: id, class: cocoa.objc.Class, tv: id, range: NSRange, repl: id) BOOL {
     const sel = cocoa.objc.sel("textView:shouldChangeTextInRange:replacementString:");
     if (!cocoa.isTrue(class.msgSend(BOOL, "instancesRespondToSelector:", .{sel.value}))) return cocoa.boolean(true);
@@ -1253,6 +1317,9 @@ fn resizeSubviews(self: id, _: SEL, _: NSSize) callconv(.c) void {
 
 fn appearanceChanged(self: id, _: SEL) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
+    const token = s.token;
+    accentCheck(s);
+    if (surfaces.get(token) == null) return;
     const dark = isDark(s.view);
     if (dark == s.dark) return;
     s.dark = dark;
