@@ -37,6 +37,12 @@ const Features = struct {
     store: bool,
     menu: bool,
     deep_link: bool,
+    /// The multicast lock and LAN information; also on when the app
+    /// declares `.permissions.local_network`.
+    network: bool,
+    /// Receiving shares and the share sheet; also on when the app declares
+    /// `.share_target`.
+    share: bool,
     // App-specific plugins
     global_shortcut: bool,
     input: bool,
@@ -1012,7 +1018,8 @@ const capability_modules = [_]CapabilityModule{
 /// System libraries a module in `capability_modules` links, when the
 /// dependency's options turn it on and when `appPermissions` does later.
 fn linkCapabilityModule(module: *std.Build.Module, target: std.Build.ResolvedTarget, comptime name: []const u8) void {
-    // network and share link nothing new so far.
+    // network and share link nothing new so far (Network.framework is in
+    // libSystem on Apple).
     _ = module;
     _ = target;
     _ = name;
