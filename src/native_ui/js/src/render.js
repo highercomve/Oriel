@@ -1518,6 +1518,9 @@ export class Renderer {
           delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
         }
         if (el.hasAttribute("disabled")) props.dis = true;
+        // A native checkbox or radio (the backend hosts one): it draws its
+        // own focus ring.
+        if (props.ctl && nativeControls.has("check")) { delete props.ol; return this.put(nodes, id, "check", props, [], fixedNode); }
         return this.put(nodes, id, "view", props, [], fixedNode);
       }
       Object.assign(props, textProps(cs, fontSize));
@@ -2864,6 +2867,12 @@ function pushButton(cs, p) {
   if (!p.br) p.br = [4, 4, 4, 4];
   if (!p.sh) p.sh = { x: 0, y: 0.5, blur: 0, spread: 1, color: [0, 0, 0, 0.075] };
 }
+
+// The controls the backend hosts as native widgets (its platform JSON's
+// `controls`, e.g. ["check", "button"]): render.js sends those kinds only
+// then (docs/native-controls-a11y-design.md 1.1); else they're drawn.
+let nativeControls = new Set();
+export function setNativeControls(list) { nativeControls = new Set(Array.isArray(list) ? list : []); }
 
 export function setFocusRingOS(os, accent) {
   pushButtons = os === "macos";
