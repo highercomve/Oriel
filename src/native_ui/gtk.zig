@@ -3331,7 +3331,17 @@ fn paintControl(cr: *cairo_t, n: *Node) void {
     } else {
         roundRect(cr, .{ .x = x + 0.5, .y = y + 0.5, .w = size - 1, .h = size - 1 }, .{ 2.5, 2.5, 2.5, 2.5 });
     }
-    if (n.props.on) {
+    if (n.props.mix and !radio) {
+        // Indeterminate: the accent box with a dash.
+        setColor(cr, .{ acc[0], acc[1], acc[2], acc[3] * alpha });
+        cairo_fill(cr);
+        setColor(cr, .{ 255, 255, 255, alpha });
+        cairo_set_line_width(cr, @max(1.5, size * 0.13));
+        cairo_set_line_cap(cr, 1);
+        cairo_move_to(cr, x + size * 0.28, y + size / 2);
+        cairo_line_to(cr, x + size * 0.72, y + size / 2);
+        cairo_stroke(cr);
+    } else if (n.props.on) {
         setColor(cr, .{ acc[0], acc[1], acc[2], acc[3] * alpha });
         cairo_fill(cr);
         setColor(cr, .{ 255, 255, 255, alpha });

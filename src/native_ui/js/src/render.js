@@ -1469,6 +1469,24 @@ export class Renderer {
       this.putClick(props, el);
       return this.put(nodes, id, "canvas", props, [], fixedNode);
     }
+    // <input type=button|submit|reset>: a button (its value its label), as
+    // a <button> with that text would be.
+    if (isInputButton(el)) {
+      this.volatile.add(el);
+      const t = el.getAttribute("type").toLowerCase();
+      const label = el.getAttribute("value") ?? (t === "submit" ? "Submit" : t === "reset" ? "Reset" : "");
+      props.click = true;
+      if (el.hasAttribute("disabled")) props.dis = true;
+      const al = accessibleName(el);
+      if (al) props.al = al;
+      const tid = this.idOf(el, "label");
+      this.own(tid, el);
+      const tp = { ...textProps(cs, fontSize), runs: [runFor(label, cs, fontSize)], ta: "center", fs: 0 };
+      this.put(nodes, tid, "text", tp, []);
+      if (props.fd === undefined) props.fd = "column";
+      props.jc = "center";
+      return this.put(nodes, id, "view", props, label ? [tid] : [], fixedNode);
+    }
     if (tag === "input" || tag === "textarea" || tag === "select") {
       this.volatile.add(el); // its value changes without a mutation
       const type = (el.getAttribute("type") || "text").toLowerCase();
@@ -1490,13 +1508,16 @@ export class Renderer {
           // a 12px box in a 14px system-ui line, its top 4px down, the
           // line 19px with its 3px margins).
           if (pushButtons) props.blb = 2;
-          if (el.hasAttribute("checked")) props.on = true;
+          if (el.checked) props.on = true;
+          // Indeterminate: a mixed box (its own state, not an attribute).
+          if (type === "checkbox" && el.indeterminate) props.mix = true;
           const acc = color(cs["accent-color"] || "");
           if (acc) props.acc = acc;
           if (props.w === undefined || props.w === "auto") props.w = 13;
           if (props.h === undefined || props.h === "auto") props.h = 13;
           delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
         }
+        if (el.hasAttribute("disabled")) props.dis = true;
         return this.put(nodes, id, "view", props, [], fixedNode);
       }
       Object.assign(props, textProps(cs, fontSize));
@@ -2705,9 +2726,26 @@ function memoized(cs, key, make) {
   return v;
 }
 
+// <input type=button|submit|reset>: a button, not a text field.
+const INPUT_BUTTONS = new Set(["button", "submit", "reset"]);
+export function isInputButton(el) {
+  return el?.localName === "input" && INPUT_BUTTONS.has((el.getAttribute("type") || "").toLowerCase());
+}
+// A UA sheet with every rule for `button` also for the input buttons (as
+// browsers' sheets style them alike).
+export function withInputButtons(css) {
+  return css.replace(/(^|\})([^{}]*)\{/g, (m, end, sel) => {
+    const parts = sel.split(",");
+    if (!parts.some((p) => p.trim() === "button")) return m;
+    const lead = sel.match(/^\s*/)[0];
+    const extra = ['input[type="button"]', 'input[type="submit"]', 'input[type="reset"]'];
+    return `${end}${lead}${parts.map((p) => p.trim()).concat(extra).join(", ")} {`;
+  });
+}
+
 // Layout and drawing properties of a box (a copy: the caller adds to it).
 function boxProps(cs, display, fs, el) {
-  const button = el?.localName === "button";
+  const button = el?.localName === "button" || isInputButton(el);
   const bb = borderBoxByDefault(el);
   // (The dpr too: border widths snap to its device pixels.)
   const key = `b${display}|${fs}|${button}|${bb}|${viewport.dpr}`;

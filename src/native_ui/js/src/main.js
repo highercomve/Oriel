@@ -22,7 +22,7 @@
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules, color as cssColor } from "./css.js";
-import { snapBorder, Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
+import { snapBorder, isInputButton, withInputButtons, Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
 import { installBlob } from "./blob.js";
 import { installDnd } from "./dnd.js";
@@ -327,11 +327,29 @@ function setNative(el, prop, v) {
   el[prop] = v;
 }
 
-// checked reflects the attribute (so :checked styles follow it).
+// checked reflects the attribute (so :checked styles follow it). The first
+// time the state is set (a click, or the page's .checked), its default (the
+// attribute as authored) is kept: defaultChecked and form reset use it.
 const inputProto = Object.getPrototypeOf(document.createElement("input"));
+const checkedDefaults = new WeakMap(); // input → its default checkedness, once its state changed
 Object.defineProperty(inputProto, "checked", {
   get() { return this.hasAttribute("checked"); },
-  set(v) { if (v) this.setAttribute("checked", ""); else this.removeAttribute("checked"); },
+  set(v) {
+    if (!checkedDefaults.has(this)) checkedDefaults.set(this, this.hasAttribute("checked"));
+    if (v) this.setAttribute("checked", ""); else this.removeAttribute("checked");
+  },
+  configurable: true,
+});
+// indeterminate: a state of its own (no attribute in HTML); kept as a
+// runtime attribute so the box re-renders as mixed.
+Object.defineProperty(inputProto, "indeterminate", {
+  get() { return this.hasAttribute("data-nui-mix"); },
+  set(v) { if (v) this.setAttribute("data-nui-mix", ""); else this.removeAttribute("data-nui-mix"); },
+  configurable: true,
+});
+Object.defineProperty(inputProto, "defaultChecked", {
+  get() { return checkedDefaults.has(this) ? checkedDefaults.get(this) : this.hasAttribute("checked"); },
+  set(v) { if (checkedDefaults.has(this)) checkedDefaults.set(this, !!v); else setNative(this, "checked", !!v), checkedDefaults.delete(this); },
   configurable: true,
 });
 // type: the attribute when it is a known type, else "text", as in a
@@ -360,12 +378,23 @@ const rangeValue = (el, raw) => {
   }
   return String(v);
 };
+// The value as authored, kept the first time the value is set (the DOM may
+// reflect value into its attribute): defaultValue and form reset use it.
+const valueDefaults = new WeakMap();
 Object.defineProperty(inputProto, "value", {
   get() {
     const raw = valueDesc.get.call(this);
     return this.type === "range" ? rangeValue(this, raw ?? "") : raw;
   },
-  set(v) { valueDesc.set.call(this, v); },
+  set(v) {
+    if (!valueDefaults.has(this)) valueDefaults.set(this, this.getAttribute("value") ?? "");
+    valueDesc.set.call(this, v);
+  },
+  configurable: true,
+});
+Object.defineProperty(inputProto, "defaultValue", {
+  get() { return valueDefaults.has(this) ? valueDefaults.get(this) : this.getAttribute("value") ?? ""; },
+  set(v) { if (valueDefaults.has(this)) valueDefaults.set(this, String(v)); else this.setAttribute("value", String(v)); },
   configurable: true,
 });
 // A text field's selection (UTF-16 offsets into its value): the native
@@ -449,9 +478,7 @@ for (const tag of ["button", "textarea", "select"]) {
 const formProto = Object.getPrototypeOf(document.createElement("form"));
 formProto.requestSubmit = function () { submit(this); };
 formProto.submit = function () {};
-formProto.reset = function () {
-  for (const f of this.querySelectorAll("input, textarea")) f.value = f.getAttribute("value") || "";
-};
+formProto.reset = function () { reset(this); };
 
 // Layout reads, from the native layout.
 const elProto = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div")));
@@ -928,11 +955,33 @@ g.oriel = Object.freeze({
 // A click: the event, then the browser's default action.
 const isCheckable = (n) => n?.localName === "input" && /^(checkbox|radio)$/.test(n.type);
 
+// A button's type: <button> (submit by default) and <input type=button|submit|reset|image>.
+function buttonType(el) {
+  if (el.localName === "button") { const t = (el.getAttribute("type") || "submit").toLowerCase(); return t === "reset" || t === "button" ? t : "submit"; }
+  if (el.localName === "input" && /^(button|submit|reset|image)$/.test(el.type)) return el.type === "image" ? "submit" : el.type;
+  return null;
+}
+// A form control that's disabled (itself, or in a disabled fieldset not in its first legend): it takes no clicks.
+function disabledControl(el) {
+  if (!CONTROLS.has(el?.localName)) return false;
+  if (el.hasAttribute("disabled")) return true;
+  for (let f = el.parentNode?.closest?.("fieldset[disabled]"); f; f = f.parentNode?.closest?.("fieldset[disabled]")) {
+    const legend = [...f.children].find((c) => c.localName === "legend");
+    if (!legend || !legend.contains(el)) return true;
+  }
+  return false;
+}
+
 function activate(el, flags) {
+  // A disabled control gets no click (nor from its label), as in a browser.
+  if (disabledControl(el)) return;
   // A checkbox or radio changes before its click is dispatched (and goes
   // back if a listener cancels it), as in a browser: React's onChange for
   // them reads the new state during the click.
-  const undo = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
+  const wasMixed = el.localName === "input" && el.type === "checkbox" && el.indeterminate;
+  if (wasMixed) el.indeterminate = false;
+  const undo0 = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
+  const undo = undo0 && (() => { undo0(); if (wasMixed) el.indeterminate = true; });
   // Where the pointer went up (the press that made this click), when the backend sends pointers.
   const [clientX, clientY] = lastPointer;
   lastPointer = [0, 0]; // one click's (a keyboard's or el.click()'s has none)
@@ -957,18 +1006,19 @@ function activate(el, flags) {
     }
     if (tag === "label") {
       // The label clicks its control (which toggles a checkbox or radio).
-      const ctl = n.htmlFor ? document.getElementById(n.getAttribute("for")) : n.querySelector("input, textarea, select");
-      if (ctl && ctl !== el && !ctl.contains?.(el)) {
+      const ctl = n.htmlFor ? document.getElementById(n.getAttribute("for")) : n.querySelector("input, textarea, select, button");
+      if (ctl && ctl !== el && !ctl.contains?.(el) && !disabledControl(ctl)) {
         if (isCheckable(ctl)) activate(ctl, flags);
         else ctl.focus();
       }
       return;
     }
-    if (tag === "button") {
-      if (n.hasAttribute("disabled")) return;
-      const type = (n.getAttribute("type") || "submit").toLowerCase();
+    const type = buttonType(n);
+    if (type) {
+      if (disabledControl(n)) return;
       const form = n.closest("form");
       if (type === "submit" && form) submit(form);
+      else if (type === "reset" && form) reset(form);
       return;
     }
   }
@@ -993,10 +1043,39 @@ function submit(form) {
   const ev = new Event("submit", { bubbles: true, cancelable: true });
   form.dispatchEvent(ev);
 }
+// Form reset: the "reset" event, then (unless cancelled) each control back
+// to its default: a field's value attribute (a textarea's text), a box's
+// checkedness as authored, a select's selected options.
+function reset(form) {
+  const ev = new Event("reset", { bubbles: true, cancelable: true });
+  form.dispatchEvent(ev);
+  if (ev.defaultPrevented) return;
+  for (const c of form.querySelectorAll("input, textarea, select")) {
+    if (isCheckable(c)) {
+      const d = c.defaultChecked;
+      setNative(c, "checked", d);
+      checkedDefaults.delete(c);
+    } else if (c.localName === "select") {
+      const opts = [...c.querySelectorAll("option")];
+      const sel = opts.findIndex((o) => o.hasAttribute("selected"));
+      setNative(c, "value", (opts[sel < 0 ? 0 : sel] || {}).value ?? "");
+    } else if (c.localName === "textarea") setNative(c, "value", c.textContent);
+    else if (!buttonType(c)) { setNative(c, "value", c.defaultValue); valueDefaults.delete(c); }
+  }
+}
+
 
 // A key went down (`type` "keydown", data [key, modifiers, repeat]) or up
 // ("keyup", [key, modifiers]).
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "AltGraph", "CapsLock"]);
+let spacePress = null; // the control a Space keydown went to, activated by its keyup
+// A radio's group: the radios of its name in its form (or the document).
+function radioGroup(input) {
+  const name = input.getAttribute("name");
+  if (!name) return [input];
+  const scope = input.closest("form") || document;
+  return [...scope.querySelectorAll('input[type="radio"]')].filter((r) => r.getAttribute("name") === name && (r.closest("form") || document) === scope);
+}
 function keyEvent(el, data, type = "keydown") {
   const [key, flags, repeat] = data;
   const init = { key, code: key, bubbles: true, cancelable: true, repeat: !!repeat, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
@@ -1012,6 +1091,30 @@ function keyEvent(el, data, type = "keydown") {
     if (!press.defaultPrevented) fireWindow(press);
     if (press.defaultPrevented) return true;
   }
+  // The browsers' default actions for keys on a focused control: Enter
+  // activates a button, a link or a summary on keydown; Space a button, a
+  // checkbox or a radio on keyup (a keydown prevented cancels it); the
+  // arrows move a radio group's check.
+  const mods = init.ctrlKey || init.altKey || init.metaKey;
+  if (el && !mods && !disabledControl(el)) {
+    if (type === "keydown" && key === " ") spacePress = ev.defaultPrevented ? null : el;
+    if (!ev.defaultPrevented) {
+      if (type === "keydown" && key === "Enter" && !repeat && (buttonType(el) || (el.localName === "a" && el.hasAttribute("href")) || el.localName === "summary")) { activate(el, flags); return true; }
+      if (type === "keyup" && key === " " && spacePress === el && (buttonType(el) || isCheckable(el))) { spacePress = null; activate(el, flags); return true; }
+      if (type === "keydown" && el.type === "radio" && el.localName === "input" && /^Arrow(Up|Down|Left|Right)$/.test(key)) {
+        const group = radioGroup(el).filter((r) => !disabledControl(r) && shown(r));
+        const at = group.indexOf(el);
+        if (group.length > 1 && at >= 0) {
+          const next = group[(at + (key === "ArrowDown" || key === "ArrowRight" ? 1 : -1) + group.length) % group.length];
+          keyboardFocus = true;
+          next.focus();
+          activate(next, flags);
+          return true;
+        }
+      }
+    }
+  }
+  if (type === "keyup" && key === " ") spacePress = null;
   // Tab moves the focus, Shift+Tab back, unless the page took the key.
   if (type === "keydown" && !ev.defaultPrevented && key === "Tab" && !(init.ctrlKey || init.altKey || init.metaKey)) {
     return tabFocus(init.shiftKey) || false;
@@ -1122,7 +1225,14 @@ function tabOrder() {
       if (!naturallyFocusable(el) || (tabRule !== "all" && !textLike(el))) continue;
       index = 0;
     } else if (tabRule === "ios" && CONTROLS.has(el.localName) && !textLike(el)) continue;
-    if (index < 0 || (CONTROLS.has(el.localName) && el.hasAttribute("disabled")) || !shown(el)) continue;
+    if (index < 0 || disabledControl(el) || !shown(el)) continue;
+    // A radio group is one stop: its checked radio (else the one with the
+    // focus, else its first), as in browsers and Windows.
+    if (el.localName === "input" && el.type === "radio" && el.getAttribute("name")) {
+      const group = radioGroup(el).filter((r) => !disabledControl(r) && shown(r));
+      const stop = group.find((r) => r.checked) || group.find((r) => r === active) || group[0];
+      if (stop !== el) continue;
+    }
     (index > 0 ? positive : rest).push([index, el]);
   }
   positive.sort((a, b) => a[0] - b[0]);
@@ -1592,12 +1702,12 @@ const oriel = {
       const engine = new StyleEngine();
       // Parsed sheets kept for the process (host.sheetCache/sheetKeep).
       const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
-      engine.addSheet(UA_CSS, sheets, undefined, null, true);
+      engine.addSheet(withInputButtons(UA_CSS), sheets, undefined, null, true);
       // Where the WebView is WebKit's, its controls' look; Chrome's on Android.
-      if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets, undefined, null, true);
-      if (platform.os === "macos") engine.addSheet(UA_CSS_MAC, sheets, undefined, null, true);
-      else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets, undefined, null, true);
-      else if (platform.os === "android") engine.addSheet(UA_CSS_CHROME_ANDROID, sheets, undefined, null, true);
+      if (platform.os === "macos" || platform.os === "ios") engine.addSheet(withInputButtons(UA_CSS_WEBKIT), sheets, undefined, null, true);
+      if (platform.os === "macos") engine.addSheet(withInputButtons(UA_CSS_MAC), sheets, undefined, null, true);
+      else if (platform.os === "linux") engine.addSheet(withInputButtons(uaCssWebkitGtk(platform.uiFont, platform.accent)), sheets, undefined, null, true);
+      else if (platform.os === "android") engine.addSheet(withInputButtons(UA_CSS_CHROME_ANDROID), sheets, undefined, null, true);
       for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
       const b1 = P && P();
       renderer = new Renderer(document, engine, host);
