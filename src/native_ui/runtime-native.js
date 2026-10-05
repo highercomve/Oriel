@@ -5237,6 +5237,11 @@ input[type="range"] { height: 20px; margin: 2px; }
           if (al) props.al = al;
           Object.assign(props, textProps(cs, fontSize));
           props.runs = [runFor(label, cs, fontSize)];
+          const own = cs.__rules.normal.some((rule) => !rule.ua && rule.decls.some((dc) => dc.prop === "color")) || /(^|;)\s*color\s*:/i.test(el.getAttribute("style") || "");
+          if (!own) {
+            delete props.col;
+            delete props.runs[0].c;
+          }
           delete props.bg;
           delete props.br;
           delete props.bc;

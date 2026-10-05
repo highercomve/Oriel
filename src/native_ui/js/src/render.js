@@ -1516,6 +1516,11 @@ export class Renderer {
         if (al) props.al = al;
         Object.assign(props, textProps(cs, fontSize));
         props.runs = [runFor(label, cs, fontSize)];
+        // Its label in the theme's color unless the page colored the button
+        // itself (an inherited or UA color would fight a dark theme).
+        const own = (cs.__rules.normal.some((rule) => !rule.ua && rule.decls.some((dc) => dc.prop === "color"))) ||
+          /(^|;)\s*color\s*:/i.test(el.getAttribute("style") || "");
+        if (!own) { delete props.col; delete props.runs[0].c; }
         // The native button draws its own bezel, background and focus ring:
         // the CSS border and padding stay as room only.
         delete props.bg; delete props.br; delete props.bc; delete props.ol; delete props.sh;
