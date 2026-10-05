@@ -5345,7 +5345,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 && flow.every((f) => f.el && atomic(f.el)) && flow.filter(inFlow).length > 1) {
         props.fd = "row";
         props.fw = "wrap";
-        props.ai = imageLine ? "flex-end" : "center";
+        props.ai = imageLine ? "flex-end" : "baseline";
         const nodesIn = [...el.childNodes];
         const spaced = nodesIn.some((n2, i) => n2.nodeType === 3 && /^\s+$/.test(n2.data) && i > 0 && i < nodesIn.length - 1);
         if (spaced && props.cg === void 0) {
