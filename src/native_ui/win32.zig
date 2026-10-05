@@ -2009,6 +2009,8 @@ fn onButtonDown(s: *Surface, lparam: c.LPARAM, bit: u32) void {
     const pt = pointOf(s, lparam);
     const ls = flushMove(s) orelse return;
     ls.buttons |= bit;
+    // A theme-drawn checkbox or radio shows its pressed state.
+    if (isThemeControl(ls, ls.hovered)) _ = c.InvalidateRect(hwnd, null, c.FALSE);
     _ = sendPointer(ls, "down", pt, ls.buttons, .mouse, modFlags());
 }
 
@@ -2020,6 +2022,7 @@ fn onButtonUp(s: *Surface, lparam: c.LPARAM, bit: u32) ?*Surface {
     const ls = flushMove(s) orelse return null;
     ls.buttons &= ~bit;
     if (ls.buttons == 0) _ = c.ReleaseCapture();
+    if (isThemeControl(ls, ls.hovered)) _ = c.InvalidateRect(hwnd, null, c.FALSE);
     _ = sendPointer(ls, "up", pt, ls.buttons, .mouse, modFlags());
     return liveSurface(hwnd);
 }
@@ -2171,9 +2174,19 @@ fn onMove(s: *Surface, pt: [2]f32) void {
     // link amid the text: its element).
     const id: i64 = if (link != 0) link else if (n) |node| node.id else 0;
     if (id != s.hovered) {
+        // A theme-drawn checkbox or radio shows its hot state.
+        if (isThemeControl(s, s.hovered) or isThemeControl(s, id)) _ = c.InvalidateRect(s.hwnd, null, c.FALSE);
         s.hovered = id;
         _ = s.engine.event(id, "hover", "null");
     }
+}
+
+/// A default checkbox or radio (drawn by the theme, its state with the
+/// mouse's).
+fn isThemeControl(s: *Surface, id: i64) bool {
+    if (id == 0) return false;
+    const n = s.engine.tree.get(id) orelse return false;
+    return n.props.ctl != null and n.props.acc == null;
 }
 
 /// The clickable element of the text run under `pt` (a link amid the text
@@ -4281,6 +4294,95 @@ fn paintImage(p: *Painter, n: *Node) void {
 // ---------------------------------------------------------------------------
 // Default checkbox and radio (an <input> without appearance: none)
 
+const HTHEME = ?*anyopaque;
+const Uxtheme = struct {
+    open: *const fn (c.HWND, [*:0]const u16) callconv(.winapi) HTHEME,
+    close: *const fn (HTHEME) callconv(.winapi) c.HRESULT,
+    draw: *const fn (HTHEME, c.HDC, c_int, c_int, *const c.RECT, ?*const c.RECT) callconv(.winapi) c.HRESULT,
+};
+var uxtheme_fns: ?Uxtheme = null;
+var uxtheme_loaded = false;
+/// The BUTTON theme, light and dark (opened once per process, by class).
+var button_theme: [2]HTHEME = .{ null, null };
+var button_theme_tried: [2]bool = .{ false, false };
+
+fn uxtheme() ?Uxtheme {
+    if (!uxtheme_loaded) {
+        uxtheme_loaded = true;
+        const lib = c.LoadLibraryW(std.unicode.utf8ToUtf16LeStringLiteral("uxtheme.dll")) orelse return null;
+        const open = c.GetProcAddress(lib, "OpenThemeData") orelse return null;
+        const close = c.GetProcAddress(lib, "CloseThemeData") orelse return null;
+        const draw = c.GetProcAddress(lib, "DrawThemeBackground") orelse return null;
+        uxtheme_fns = .{ .open = @ptrCast(open), .close = @ptrCast(close), .draw = @ptrCast(draw) };
+    }
+    return uxtheme_fns;
+}
+
+/// The BUTTON theme, light or dark (the dark
+/// one is Explorer's), null without visual styles.
+fn buttonTheme(hwnd: c.HWND, dark: bool) HTHEME {
+    const i: usize = @intFromBool(dark);
+    if (!button_theme_tried[i]) {
+        button_theme_tried[i] = true;
+        const ux = uxtheme() orelse return null;
+        const cls = if (dark) std.unicode.utf8ToUtf16LeStringLiteral("DarkMode_Explorer::Button") else std.unicode.utf8ToUtf16LeStringLiteral("Button");
+        button_theme[i] = ux.open(hwnd, cls);
+        if (dark and button_theme[i] == null) button_theme[i] = ux.open(hwnd, std.unicode.utf8ToUtf16LeStringLiteral("Button"));
+    }
+    return button_theme[i];
+}
+
+/// A checkbox or radio as the theme draws it (BP_CHECKBOX / BP_RADIOBUTTON
+/// in its normal, hot, pressed or disabled state, checked or not), into a
+/// premultiplied bitmap at the window's pixel density, drawn in `box`.
+/// False without visual styles (the caller draws its own).
+fn paintThemeControl(p: *Painter, n: *Node, radio: bool, box: Rect) bool {
+    const s = p.s;
+    const ux = uxtheme() orelse return false;
+    // Dark controls on a dark background, as the select picks its theme.
+    const theme = buttonTheme(s.hwnd, luminance(colorBehind(s, n)) < 0.5) orelse return false;
+    const px_size: c_int = @max(1, @as(c_int, @intFromFloat(@round(box.w * s.scale))));
+    // States: unchecked 1-4, checked 5-8 (normal, hot, pressed, disabled).
+    const hot = s.hovered == n.id;
+    const pressed = hot and s.buttons & 1 != 0;
+    const base: c_int = if (n.props.on) 5 else 1;
+    const state: c_int = base + (if (n.props.dis) @as(c_int, 3) else if (pressed) @as(c_int, 2) else if (hot) @as(c_int, 1) else 0);
+    const part: c_int = if (radio) 2 else 3; // BP_RADIOBUTTON, BP_CHECKBOX
+    // A transparent 32-bit DIB the theme draws into (with its alpha).
+    var bmi = std.mem.zeroes(c.BITMAPINFO);
+    bmi.bmiHeader.biSize = @sizeOf(c.BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = px_size;
+    bmi.bmiHeader.biHeight = -px_size; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = c.BI_RGB;
+    var bits: ?*anyopaque = null;
+    const dib = c.CreateDIBSection(null, &bmi, c.DIB_RGB_COLORS, &bits, null, 0) orelse return false;
+    defer _ = c.DeleteObject(dib);
+    const dc = c.CreateCompatibleDC(null) orelse return false;
+    defer _ = c.DeleteDC(dc);
+    const old = c.SelectObject(dc, dib);
+    defer _ = c.SelectObject(dc, old);
+    const pixels: [*]u8 = @ptrCast(bits orelse return false);
+    const len: usize = @intCast(px_size * px_size * 4);
+    @memset(pixels[0..len], 0);
+    const rc: c.RECT = .{ .left = 0, .top = 0, .right = px_size, .bottom = px_size };
+    if (ux.draw(theme, dc, part, state, &rc, null) < 0) return false;
+    _ = c.GdiFlush();
+    const props: c.D2D1_BITMAP_PROPERTIES = .{
+        .pixelFormat = .{ .format = c.DXGI_FORMAT_B8G8R8A8_UNORM, .alphaMode = c.D2D1_ALPHA_MODE_PREMULTIPLIED },
+        .dpiX = 96 * s.scale,
+        .dpiY = 96 * s.scale,
+    };
+    var bmp: ?*c.ID2D1Bitmap = null;
+    const size_u: c.D2D1_SIZE_U = .{ .width = @intCast(px_size), .height = @intCast(px_size) };
+    if (p.vt().CreateBitmap.?(p.rt, size_u, pixels, @intCast(px_size * 4), &props, &bmp) < 0 or bmp == null) return false;
+    defer releaseCom(bmp);
+    const dest: c.D2D1_RECT_F = .{ .left = box.x, .top = box.y, .right = box.x + box.w, .bottom = box.y + box.h };
+    p.vt().DrawBitmap.?(p.rt, bmp, &dest, 1, c.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, null);
+    return true;
+}
+
 /// An outlined box/circle, filled with the accent color (or a blue default)
 /// and a white mark when checked; dimmed when disabled (as gtk.zig draws it).
 fn paintControl(p: *Painter, n: *Node) void {
@@ -4290,6 +4392,9 @@ fn paintControl(p: *Painter, n: *Node) void {
     const x = fr.x + (fr.w - size) / 2;
     const y = fr.y + (fr.h - size) / 2;
     const radio = std.mem.eql(u8, n.props.ctl.?, "radio");
+    // The theme's own checkbox or radio (Windows' look, its high-contrast
+    // and dark ones too), unless the page asked for an accent color.
+    if (n.props.acc == null and paintThemeControl(p, n, radio, .{ .x = x, .y = y, .w = size, .h = size })) return;
     const acc = n.props.acc orelse tree_mod.Color{ 59, 108, 255, 1 };
     const alpha: f32 = if (n.props.dis) 0.45 else 1;
     const vt = p.vt();
