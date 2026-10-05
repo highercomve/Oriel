@@ -18,3 +18,9 @@ pub fn info(gpa: std.mem.Allocator) !common.Info {
 pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     return .{ .module = "network", .ok = true, .detail = try gpa.dupe(u8, "multicast: nothing to hold; info: not implemented yet") };
 }
+
+// mDNS / DNS-SD (network/mdns.zig): not written yet.
+// TODO: DNSServiceRegister / DNSServiceBrowse / DNSServiceResolve +
+// DNSServiceGetAddrInfo (dns_sd.h, in libSystem) or Network.framework
+// nw_listener / nw_browser; iOS needs the types in NSBonjourServices.
+pub const mdns_backend = @import("mdns.zig").Unsupported;
