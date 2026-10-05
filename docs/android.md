@@ -102,8 +102,15 @@ symbols) and R8 shrinks the Kotlin side; a hello world's APK is 0.8 MB.
 R8 can't see what native code calls by name over JNI, so
 `android/app/proguard-rules.pro` keeps Oriel's runtime (`dev.oriel.**`). If
 your Zig code calls classes of your own through JNI, add a `-keep` rule for
-them there. Projects generated before this change keep their old
-`build.gradle.kts`; `oriel android init --force` regenerates it.
+them there, or put the rules in a file and name it in
+`.android = .{ .proguard_rules = b.path("src/android/rules.pro") }`: every
+build writes them into `proguard-rules.pro` between `# oriel:proguard`
+markers. Your own Kotlin or Java files go in
+`.android = .{ .sources = &.{b.path("src/android/Helper.kt")} }`:
+every build copies each to `app/src/main/java/<its package as a path>/`
+(and removes the ones you drop from the list). Projects generated before
+this change keep their old `build.gradle.kts`; `oriel android init --force`
+regenerates it.
 
 The manifest (`android/app/src/main/AndroidManifest.xml`) is yours, except
 for the parts between `<!-- oriel:NAME begin -->` and `<!-- oriel:NAME end -->`
@@ -112,7 +119,12 @@ filters: URL schemes) and `components` (the tile, the keyboard, the audio
 service). Every build rewrites those from build.zig
 (`build/android_manifest.zig`), so a permission declared after the first
 build reaches the APK. An entry you declare yourself outside them (the same
-element and `android:name`) isn't generated a second time. A manifest
+element and `android:name`) isn't generated a second time. Permissions and
+features no `.permissions` kind covers go in `.android = .{ .permissions = &.{.{
+.name = "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" }}, .features =
+&.{...} }`: the build merges them into those regions, one entry per name
+(the kind's entry stays, but an extra without `max_sdk` lifts its
+`maxSdkVersion`). A manifest
 written before the markers existed gets them on its next build, with
 Oriel's old entries moved inside.
 

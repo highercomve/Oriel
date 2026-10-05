@@ -606,6 +606,18 @@ Kinds: `microphone`, `camera`, `screen_capture`, `accessibility`, `location`,
 `notifications`, `system_audio`. Statuses: `granted`, `denied`, `prompt`,
 `unknown`. See the [Permissions guide](https://highercomve.github.io/Oriel/docs/permissions/).
 
+Platform declarations no kind covers go in each platform's options and are
+merged with the generated ones, one entry per name or key (Linux packages
+declare no permissions, so there is nothing for it):
+
+```zig
+.android = .{ .permissions = &.{.{ .name = "android.permission.BLUETOOTH", .max_sdk = 30 }},
+              .features = &.{.{ .name = "android.hardware.bluetooth_le", .required = false }} },
+.ios = .{ .usage_descriptions = &.{.{ .key = "NSMotionUsageDescription", .text = "Counts your steps" }} },
+.macos = .{ .entitlements = &.{"com.apple.security.device.bluetooth"} },  // and .usage_descriptions
+.windows = .{ .capabilities = &.{.{ .name = "proximity", .kind = .device }} },  // MSIX only
+```
+
 ## Tray
 
 ```zig
