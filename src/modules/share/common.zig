@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const App = @import("../../core/App.zig");
+const pending_events = @import("../../core/pending_events.zig");
 
 /// How the share reached the app.
 pub const Source = enum {
@@ -105,13 +106,23 @@ pub const event = "share:received";
 var receive_handler: std.atomic.Value(?ReceiveHandler) = .init(null);
 
 /// Set (or clear, with null) the handler for shares. The page also gets
-/// the `share:received` event with the `Received`.
+/// the `share:received` event with the `Received`. Shares that came before
+/// (the one that launched the app) are handed to the first handler set, and
+/// to the page when it listens: up to 8, then the oldest is dropped.
 pub fn onReceive(handler: ?ReceiveHandler) void {
     receive_handler.store(handler, .release);
+    if (handler != null) shares.handlerSet();
 }
 
-/// Report a share from a backend (main thread).
+fn toHandler(received: *const Received) bool {
+    const h = receive_handler.load(.acquire) orelse return false;
+    h(received);
+    return true;
+}
+
+const shares = pending_events.Queue(Received, event, 8, toHandler);
+
+/// Report a share from a backend (main thread). `received` is copied.
 pub fn dispatch(received: *const Received) void {
-    if (receive_handler.load(.acquire)) |h| h(received);
-    App.emit(event, received.*);
+    shares.deliver(received.*);
 }

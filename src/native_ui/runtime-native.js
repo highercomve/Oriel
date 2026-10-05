@@ -9202,6 +9202,8 @@ ${a.stack || ""}`;
       });
       if (event === "notification:action") invoke("notification:ready", {}).catch(() => {
       });
+      if (event === "share:received") invoke("events:ready", { event }).catch(() => {
+      });
       return () => set.delete(callback);
     },
     openExternal(url) {

@@ -921,6 +921,8 @@ g.oriel = Object.freeze({
     if (event === "deep-link") invoke("deep_link:ready", {}).catch(() => {});
     // A notification click that came before the page listened (one that launched the app).
     if (event === "notification:action") invoke("notification:ready", {}).catch(() => {});
+    // Shares that came before the page listened (one that launched the app).
+    if (event === "share:received") invoke("events:ready", { event }).catch(() => {});
     return () => set.delete(callback);
   },
   openExternal(url) { return invoke("open_external", { url }); },
