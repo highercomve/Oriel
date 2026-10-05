@@ -7,6 +7,12 @@
 //!   when it looks like a file name ("report.txt") and "Untitled" otherwise.
 //!   Access to the folder (security scoped) is kept for the rest of the run.
 //!
+//! - `openFolder`: the user picks a folder; the id is the base64 of its
+//!   bookmark (a picked URL's bookmark carries its security scope), kept
+//!   across launches. `saveToFolder` resolves it and copies inside
+//!   start/stopAccessingSecurityScopedResource and an NSFileCoordinator
+//!   write.
+//!
 //! The picker is presented over the window in front; waiting for it would
 //! freeze the main thread, so call these from an async command (a worker
 //! thread). On the main thread they return error.MainThread.
@@ -17,6 +23,7 @@ const ShellMod = @import("../../platform/ios/Shell.zig");
 const window = @import("../../platform/ios/window.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const path_folder = @import("path_folder.zig");
 
 const Object = apple.Object;
 
@@ -38,6 +45,8 @@ var result: ?[]u8 = null;
 
 var delegate: Object = apple.nil; // main thread; lives for the process
 var picker: Object = apple.nil; // the picker on screen (+1)
+/// What the picker on screen is for (main thread).
+var picking: Kind = .open;
 
 fn finish(path: ?[]const u8) void {
     const copy: ?[]u8 = if (path) |p| std.heap.smp_allocator.dupe(u8, p) catch null else null;
@@ -56,6 +65,8 @@ fn didPick(_: apple.id, _: apple.c.SEL, _: apple.id, urls: apple.id) callconv(.c
     const list: Object = .{ .value = urls };
     if (list.value == null or list.msgSend(c_ulong, "count", .{}) == 0) return finish(null);
     const url = list.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, 0)});
+    // A lasting folder: its bookmark (made while it is accessible), base64.
+    if (picking == .folder) return finish(bookmarkId(url));
     // A folder (save) stays accessible for the run; a copy (open) needs no scope.
     _ = url.msgSend(apple.c.BOOL, "startAccessingSecurityScopedResource", .{});
     finish(apple.utf8(url.msgSend(Object, "path", .{})));
@@ -65,7 +76,7 @@ fn wasCancelled(_: apple.id, _: apple.c.SEL, _: apple.id) callconv(.c) void {
     finish(null);
 }
 
-const Kind = enum { open, save };
+const Kind = enum { open, save, folder };
 
 const Show = struct {
     kind: Kind,
@@ -79,6 +90,7 @@ const Show = struct {
             .{ "documentPicker:didPickDocumentsAtURLs:", didPick },
             .{ "documentPickerWasCancelled:", wasCancelled },
         }));
+        picking = self.kind;
         const types = apple.class("NSArray").msgSend(Object, "arrayWithObject:", .{if (self.kind == .open) UTTypeItem else UTTypeFolder});
         const p = apple.class("UIDocumentPickerViewController").msgSend(Object, "alloc", .{})
             .msgSend(Object, "initForOpeningContentTypes:asCopy:", .{ types, apple.boolean(self.kind == .open) });
@@ -132,45 +144,141 @@ pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
 
 // --- Folders with lasting access ---------------------------------------------
 //
-// TODO(ios): not written yet; every call returns error.Unsupported.
-// - openFolder: present UIDocumentPickerViewController
-//   `initForOpeningContentTypes:@[UTTypeFolder]` (asCopy NO) through `pick`,
-//   then on the picked URL: startAccessingSecurityScopedResource,
-//   `bookmarkDataWithOptions:0 includingResourceValuesForKeys:nil
-//   relativeToURL:nil error:` (iOS has no `withSecurityScope` option: a
-//   picked URL's bookmark carries its scope), stopAccessing. id = the
-//   bookmark's base64 (`base64EncodedStringWithOptions:0`); name =
-//   `lastPathComponent` (or NSURLLocalizedNameKey).
-// - folderName / saveToFolder: decode the id, `URLByResolvingBookmarkData:
-//   options:0 relativeToURL:nil bookmarkDataIsStale:&stale error:`; nil ->
-//   error.FolderUnavailable. Wrap the work in start/stopAccessing...; if
-//   startAccessing returns NO -> error.FolderUnavailable. A stale bookmark
-//   still resolves: the id can't change under the app, so it keeps working
-//   until the next openFolder.
-// - saveToFolder: write `<folder>/<name>` with no-clobber numbering, like
-//   path_folder.saveToFolder (createFile exclusive, `common.numberedName`),
-//   ideally inside an NSFileCoordinator `coordinateWritingItemAtURL:` for
-//   iCloud/provider folders.
-// - forgetFolder: nothing to release (a bookmark isn't a grant the system
-//   counts); the app drops the id.
+// The id is the base64 of the picked folder's bookmark. A stale one (the
+// folder moved or was renamed) still resolves: it is refreshed for the
+// rest of the run (`fresh`), and the id the app stored keeps working.
 
+/// A picked folder URL's bookmark as an id (base64), made inside its
+/// security scope; null when that fails.
+fn bookmarkId(url: Object) ?[]const u8 {
+    const started = apple.isTrue(url.msgSend(apple.c.BOOL, "startAccessingSecurityScopedResource", .{}));
+    defer if (started) url.msgSend(void, "stopAccessingSecurityScopedResource", .{});
+    const data = url.msgSend(Object, "bookmarkDataWithOptions:includingResourceValuesForKeys:relativeToURL:error:", .{ @as(c_ulong, 0), apple.nil, apple.nil, @as(?*apple.id, null) });
+    if (data.value == null) return null;
+    return apple.utf8(data.msgSend(Object, "base64EncodedStringWithOptions:", .{@as(c_ulong, 0)}));
+}
+
+/// Fresh bookmarks for stale ids, this run: id -> base64 (smp_allocator).
+var fresh: std.StringHashMapUnmanaged([]u8) = .empty;
+var fresh_mutex: std.c.pthread_mutex_t = .{};
+
+/// The folder an id names, or error.FolderUnavailable (not an id, or the
+/// folder is gone). Autoreleased: call inside a pool.
+fn resolve(id: []const u8) error{FolderUnavailable}!Object {
+    _ = std.c.pthread_mutex_lock(&fresh_mutex);
+    const current: []const u8 = fresh.get(id) orelse id;
+    const str = apple.nsString(current);
+    _ = std.c.pthread_mutex_unlock(&fresh_mutex);
+    const s = str orelse return error.FolderUnavailable;
+    defer s.release();
+    const data = apple.class("NSData").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithBase64EncodedString:options:", .{ s, @as(c_ulong, 0) });
+    if (data.value == null) return error.FolderUnavailable;
+    defer data.release();
+    var stale: apple.c.BOOL = apple.boolean(false);
+    const url = apple.class("NSURL").msgSend(Object, "URLByResolvingBookmarkData:options:relativeToURL:bookmarkDataIsStale:error:", .{ data, @as(c_ulong, 0), apple.nil, &stale, @as(?*apple.id, null) });
+    if (url.value == null) return error.FolderUnavailable;
+    if (apple.isTrue(stale)) refresh(id, url);
+    return url;
+}
+
+/// A stale bookmark resolved: keep a new one for `id` for this run.
+fn refresh(id: []const u8, url: Object) void {
+    const new = bookmarkId(url) orelse return;
+    const gpa = std.heap.smp_allocator;
+    const val = gpa.dupe(u8, new) catch return;
+    _ = std.c.pthread_mutex_lock(&fresh_mutex);
+    defer _ = std.c.pthread_mutex_unlock(&fresh_mutex);
+    if (fresh.getPtr(id)) |old| {
+        gpa.free(old.*);
+        old.* = val;
+        return;
+    }
+    const key = gpa.dupe(u8, id) catch return gpa.free(val);
+    fresh.put(gpa, key, val) catch {
+        gpa.free(key);
+        gpa.free(val);
+    };
+}
+
+extern const NSURLLocalizedNameKey: apple.id;
+
+/// The name Files shows for a folder ("On My iPhone"), else its last path
+/// component. Autoreleased.
+fn displayName(url: Object) ?[]const u8 {
+    var name: apple.id = null;
+    if (apple.isTrue(url.msgSend(apple.c.BOOL, "getResourceValue:forKey:error:", .{ &name, NSURLLocalizedNameKey, @as(?*apple.id, null) })) and name != null) {
+        if (apple.utf8(.{ .value = name })) |n| return n;
+    }
+    return apple.utf8(url.msgSend(Object, "lastPathComponent", .{}));
+}
+
+/// Let the user pick a folder: its id and name, or null when cancelled.
+/// Off the main thread (as the other pickers).
 pub fn openFolder(gpa: std.mem.Allocator, options: FolderOptions) !?Folder {
-    _ = .{ gpa, options };
-    return error.Unsupported;
+    _ = options; // the Files picker has no title
+    const id = try pick(.folder) orelse return null;
+    defer std.heap.smp_allocator.free(id);
+    const pool = apple.objc.AutoreleasePool.init();
+    defer pool.deinit();
+    const url = try resolve(id);
+    const name = displayName(url) orelse "Folder";
+    const owned_id = try gpa.dupe(u8, id);
+    errdefer gpa.free(owned_id);
+    return .{ .id = owned_id, .name = try gpa.dupe(u8, name) };
 }
 
+/// The folder's name (caller frees); error.FolderUnavailable when gone.
 pub fn folderName(gpa: std.mem.Allocator, io: std.Io, id: []const u8) ![]u8 {
-    _ = .{ gpa, io, id };
-    return error.Unsupported;
+    _ = io;
+    const pool = apple.objc.AutoreleasePool.init();
+    defer pool.deinit();
+    const url = try resolve(id);
+    return gpa.dupe(u8, displayName(url) orelse return error.FolderUnavailable);
 }
 
+/// Copy `src_path` into folder `id` as `name` (or "name (n)": never
+/// replacing a file). Returns the name used (caller frees).
 pub fn saveToFolder(gpa: std.mem.Allocator, io: std.Io, id: []const u8, src_path: []const u8, name: []const u8, mime: ?[]const u8) ![]u8 {
-    _ = .{ gpa, io, id, src_path, name, mime };
-    return error.Unsupported;
+    _ = mime;
+    if (!common.validName(name)) return error.InvalidName;
+    const pool = apple.objc.AutoreleasePool.init();
+    defer pool.deinit();
+    const url = try resolve(id);
+    if (!apple.isTrue(url.msgSend(apple.c.BOOL, "startAccessingSecurityScopedResource", .{}))) return error.FolderUnavailable;
+    defer url.msgSend(void, "stopAccessingSecurityScopedResource", .{});
+
+    // Inside a coordinated write of the folder (iCloud and provider
+    // folders): the accessor runs before the call returns.
+    const Write = struct {
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        src_path: []const u8,
+        name: []const u8,
+        result: anyerror![]u8 = error.FolderUnavailable,
+
+        fn invoke(block: *apple.ContextBlock, new_url: apple.id) callconv(.c) void {
+            const w: *@This() = @ptrCast(@alignCast(block.ctx.?));
+            const dir = apple.utf8((Object{ .value = new_url }).msgSend(Object, "path", .{})) orelse return;
+            w.result = path_folder.saveToFolder(w.gpa, w.io, dir, w.src_path, w.name);
+        }
+    };
+    var write: Write = .{ .gpa = gpa, .io = io, .src_path = src_path, .name = name };
+    var block = apple.contextBlock(Write.invoke, &write);
+    const coordinator = apple.class("NSFileCoordinator").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFilePresenter:", .{apple.nil});
+    defer coordinator.release();
+    coordinator.msgSend(void, "coordinateWritingItemAtURL:options:error:byAccessor:", .{ url, @as(c_ulong, 0), @as(?*apple.id, null), block.ptr() });
+    return write.result;
 }
 
+/// Forget a folder: nothing to release (a bookmark is no grant the
+/// system counts); this run's refreshed bookmark goes.
 pub fn forgetFolder(id: []const u8) void {
-    _ = id;
+    _ = std.c.pthread_mutex_lock(&fresh_mutex);
+    defer _ = std.c.pthread_mutex_unlock(&fresh_mutex);
+    if (fresh.fetchRemove(id)) |kv| {
+        std.heap.smp_allocator.free(kv.key);
+        std.heap.smp_allocator.free(kv.value);
+    }
 }
 
 fn saveName(title: []const u8) []const u8 {
@@ -190,6 +298,6 @@ pub fn check(_: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     return .{
         .module = "dialog",
         .ok = ok,
-        .detail = if (ok) "UIDocumentPickerViewController (open copies into tmp, save picks a folder)" else "UIDocumentPickerViewController missing",
+        .detail = if (ok) "UIDocumentPickerViewController (open copies into tmp, save picks a folder, folders as bookmarks)" else "UIDocumentPickerViewController missing",
     };
 }
