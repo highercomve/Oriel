@@ -20426,6 +20426,7 @@ ${a.stack || ""}`;
   }
   function activate(el, flags) {
     if (disabledControl(el)) return;
+    const radioWasOn = el.localName === "input" && el.type === "radio" && el.checked;
     const wasMixed = el.localName === "input" && el.type === "checkbox" && el.indeterminate;
     if (wasMixed) el.indeterminate = false;
     const undo0 = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
@@ -20439,7 +20440,7 @@ ${a.stack || ""}`;
     el.dispatchEvent(ev);
     if (undo) {
       if (ev.defaultPrevented) undo();
-      else {
+      else if (!radioWasOn) {
         el.dispatchEvent(new Event("input", { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
       }
