@@ -20,7 +20,7 @@ Tauri; its README [compares the two](https://github.com/highercomve/GhostPen#com
 Each example is its own Zig package in [`examples/`](../examples), built on Oriel
 like any app would be.
 
-### [Oriel Showcase](../examples/showcase)
+### Showcase
 
 **[examples/showcase](../examples/showcase)**: every Oriel feature in one app,
 from one codebase, for Linux, Windows, macOS, Android and iOS. Live dictation
@@ -44,7 +44,7 @@ background audio on iOS.
 How to build and package it for each platform, with the GPU options:
 [examples/showcase/README.md](../examples/showcase/README.md).
 
-### [Breakout](../examples/breakout)
+### Breakout
 
 **[examples/breakout](../examples/breakout)**: a Breakout game that runs the same
 page in the WebView and in the [native renderer](renderers.md#native-renderer-experimental).
@@ -63,11 +63,7 @@ run either in JavaScript or in Zig (`BREAKOUT_MODE=zig`, through
   <img src="../assets/screenshots/breakout-phone.png" alt="Breakout in the native renderer on an Android phone, Zig mode, at 120 fps" width="24%">
 </p>
 
-The [render bench](../examples/render-bench) times rows, animation, canvas and
-memory in both renderers, and the [canvas demo](../examples/canvas-demo) draws
-the 2d context's shapes, paths and text.
-
-### [Smoke test](../examples/smoke)
+### Smoke test
 
 **[examples/smoke](../examples/smoke)**: every module gets a pass/fail check
 inside a real webview — one run tells you Oriel works end to end on your
@@ -75,3 +71,22 @@ machine, not just that it compiles. It runs in CI on every platform with each
 check listed, so a red one names the module.
 
 ![Smoke test: every module and security check passing inside the webview](../assets/screenshots/smoke.png)
+
+### Render bench
+
+The [render bench](../examples/render-bench) measures row construction and
+updates, animation, canvas drawing, startup, and memory in both renderers.
+See its [build instructions](../examples/render-bench/README.md) and the
+[performance guide](native-renderer-performance.md) for recorded comparisons.
+
+![Render bench in the WebView: row timing results and animated boxes](../assets/screenshots/render-bench.png)
+
+This screenshot shows the WebView UI during a private-display run; use the
+performance guide for benchmark figures and measurement conditions.
+
+### Canvas demo
+
+The [canvas demo](../examples/canvas-demo) draws shapes, paths, text,
+transforms, and animated balls with the 2D canvas API.
+
+![Canvas demo in the WebView: shapes, text, a curved path, and animated balls](../assets/screenshots/canvas-demo.png)

@@ -15,6 +15,16 @@ One app with everything Oriel does, built from the same `src/main.zig` and
 Models are not in the app: the Dictate and Chat tabs download them on first
 use (or copy them into the folder the App tab shows under "Data").
 
+## Screenshots
+
+<p>
+  <img src="../../assets/screenshots/showcase-dictate.png" alt="Dictation on Android" width="19%">
+  <img src="../../assets/screenshots/showcase-chat.png" alt="Local AI chat on Android" width="19%">
+  <img src="../../assets/screenshots/showcase-notes.png" alt="SQLite notes on Android" width="19%">
+  <img src="../../assets/screenshots/showcase-system.png" alt="System integrations on Android" width="19%">
+  <img src="../../assets/screenshots/showcase-app.png" alt="Windows, IPC, and app information on Android" width="19%">
+</p>
+
 ## What you need everywhere
 
 - [Zig 0.16](https://ziglang.org/download/).
