@@ -625,7 +625,11 @@ fn syncFields(s: *Surface) void {
         f.msgSend(void, "setFrame:", .{CGRect{ .origin = .{ .x = r.x - shown.x, .y = r.y - shown.y }, .size = .{ .width = @max(1, r.w), .height = @max(1, r.h) } }});
         const visible = shown.h > 1 and shown.w > 1 and n.props.vis != false;
         field.holder.msgSend(void, "setHidden:", .{apple.boolean(!visible)});
-        if (n.kind == .textarea) f.msgSend(void, "setEditable:", .{apple.boolean(!n.props.dis)}) else f.msgSend(void, "setEnabled:", .{apple.boolean(!n.props.dis)});
+        if (n.kind == .textarea) {
+            // A disabled text area: neither edited nor selected, as a browser's.
+            f.msgSend(void, "setEditable:", .{apple.boolean(!n.props.dis)});
+            f.msgSend(void, "setSelectable:", .{apple.boolean(!n.props.dis)});
+        } else f.msgSend(void, "setEnabled:", .{apple.boolean(!n.props.dis)});
     }
 }
 
