@@ -2,6 +2,48 @@
 
 Notable changes in Oriel releases.
 
+## [0.9.1] — 2026-10-05
+
+Oriel 0.9.1 adds system sharing, persistent folder access and service discovery,
+and improves native controls, accessibility and platform integration.
+
+### Added
+
+- `oriel.network.mdns` service registration and browsing, with Android's
+  NsdManager backend and the `oriel_mdns_*` C ABI for native libraries.
+- System sharing APIs for sending content, receiving shared files and reading
+  received files from pages, with platform capability reporting.
+- Folder picking with lasting write access, including Android's Storage Access
+  Framework and iOS folder access.
+- `oriel.system.deviceName()` to read the name the user gave their device.
+- Bluetooth and local-network permissions, per-platform permission extras,
+  and support for app-owned Android Kotlin/Java sources and R8 rules.
+- Optional Windows MSIX packaging and packaged Share Target support.
+- Native push buttons, checkboxes and radio controls across supported backends;
+  Apple accessibility trees for VoiceOver and macOS assistive technology.
+- Native renderer forced-colors support, CSS system colors and contrast media
+  queries, including Windows high-contrast settings.
+- Windows native-renderer drag and drop, context menus and pointer handling.
+
+### Improved
+
+- Native controls follow dark mode and system accent changes, with improved
+  keyboard behavior, read-only fields and accessible names.
+- Windows 11 field styling, typography and overlay scrollbars.
+- Native text layout, inline geometry, baselines, lists, fieldsets and borders
+  across Linux, Windows, macOS, Android and iOS.
+- Events received before page listeners are ready are queued for delivery.
+
+### Fixed
+
+- Android mDNS resolution no longer crashes while encoding services with
+  multiple TXT attributes. Attributes are iterated directly rather than copied
+  through Android ArrayMap's unsupported entry-set `toArray()` method.
+- Windows packages fail clearly when WebView2Loader.dll is missing.
+- Windows sharing preserves existing OpenWithProgids registrations.
+- Native controls avoid spurious radio changes, clipped select controls and
+  accidental button taps while scrolling on iOS.
+
 ## [0.9.0] — 2026-10-04
 
 Oriel 0.9.0 lets apps react to notification clicks and buttons, brings
