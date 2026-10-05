@@ -565,6 +565,19 @@ object OrielRuntime {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
+    /** The device's name (src/core/system.zig): Settings' "Device name", else the Bluetooth name, else the model. */
+    @JvmStatic
+    fun deviceName(): ByteArray {
+        val cr = app.contentResolver
+        val named = listOf(
+            { android.provider.Settings.Global.getString(cr, "device_name") },
+            { android.provider.Settings.Secure.getString(cr, "bluetooth_name") },
+        ).firstNotNullOfOrNull { get -> try { get()?.takeIf { it.isNotBlank() } } catch (e: Exception) { null } }
+        val model = android.os.Build.MODEL ?: "Android"
+        val maker = android.os.Build.MANUFACTURER ?: ""
+        return (named ?: if (model.startsWith(maker, ignoreCase = true)) model else "$maker $model".trim()).bytes()
+    }
+
     @JvmStatic
     fun notificationsEnabled(): Boolean = notificationManager().areNotificationsEnabled()
 
