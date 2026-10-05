@@ -225,6 +225,54 @@ The native role and state are kept. Our `al` is applied as its label:
 
 Hit testing for touch exploration and Narrator uses `Tree.hit()`. The first node up the chain with `ax`, or a text node, wins.
 
+### 2.4 As built (2.1 shared + AppKit): the contract other backends follow
+
+- **JS** (`js/src/a11y.js`, bundled): `A11y.set(on)` from main.js's `"a11y"` event (data 1/0). On: it renders,
+  then sends every entry at once from inside that event, so `Engine.setA11y(true)` returns with `Tree.ax`
+  full. Afterwards `Renderer.afterRender` (end of every `render()`, any path) diffs per id by JSON and sends
+  only changes; ids no longer present get `["a", id, null]`. Off: `["a",-2]`.
+- **Ids:** an element's own id (`idOf(el,"el")`). An element gets an entry only if it is placed: it has a
+  node, or it is a link (`a[href]`) whose runs carry `k`. Text nodes never get one.
+- **Entry JSON** (as section 2.2): `{r, n?, d?, s?, l?, v?, rv?, live?, h?}`.
+  - `r` is always present (unknown → generic).
+  - Names come from `accName(el, role)`: for input/textarea/select it is render.js `accessibleName` (the
+    same as Props.al); otherwise labelledby → aria-label → alt / svg title → content (button, link,
+    heading, checkbox, radio, option, tab, menuitem, cell, listitem, tooltip, treeitem, switch) → title.
+  - `d` comes from aria-describedby, or title when the title isn't the name.
+  - `h: 1` (aria-hidden, or img alt="") prunes the subtree; `role=presentation/none` on a non-focusable
+    element gives no entry.
+  - `rv` is `[min, max, now]` for slider/progressbar. `v` is a text field's value (not a password's) or a
+    combobox's selected text.
+- **tree.zig:** `Tree.ax: AutoHashMap(i64, *Ax)`; `Ax{r: AxRole, n, d, s, l, v, rv, live, h}`, with state
+  bit constants `Ax.disabled…multiline`.
+  - The `"a"` op sets, replaces or drops an entry (`null`). `["a",-2]` clears all. `"d"` (node destroyed)
+    drops that id's entry.
+  - `Tree.on_ax(ctx, id)` (engine: `Backend.ax_changed`) fires for each change; -2 for clear.
+  - `Tree.dumpAx()` logs the merged tree after a batch that changed entries when `ORIEL_NUI_AXDUMP` is
+    set: node order, entries, text nodes, and each text's link runs.
+- **Engine:** `Engine.setA11y(on)` sends event(0, "a11y", 1|0).
+- **Backend model (AppKit, `appkit.zig` end):**
+  - The page view is not an element. Its children are a **flat list in node order**:
+    - an element per node with an entry (not `h`, frame not empty);
+    - static text per text node outside a content-named element, followed by elements for its link runs'
+      `k` that have entries;
+    - native fields and checks as their own AX element (`NSAccessibilityUnignoredDescendant`).
+  - Inside an element named by its content (button, link, heading, checkbox, radio, switch, option, tab,
+    menuitem, treeitem, listitem, cell, tooltip, when it has a name), its text nodes are left out (they are
+    the name), and so are list markers. Interactive descendants stay.
+  - The first children or hit-test query turns a11y on.
+  - Elements are made once per id. They hold `(surface token, id, isText)` and read the tree on every
+    query: the frame is the node's frame (a link: its runs' rects, `Backend.run_rects`) converted to the
+    screen each time.
+  - Actions: press → event(id, "click", "0"); set focus → event(id, "focus").
+  - Roles: AXButton, AXLink, AXCheckBox (switch: subrole AXSwitch), AXRadioButton, AXTextField (search:
+    AXSearchField), AXPopUpButton, AXList, AXSlider, AXProgressIndicator, AXHeading (value = level),
+    AXImage, AXSplitter, AXTable/Row/Cell, AXStaticText, else AXGroup. Landmarks and dialogs are AXGroup
+    with AXLandmark*/AXApplication* subroles.
+  - `ax_changed` marks the tree dirty; the next layout posts AXLayoutChanged.
+- **Not yet:** nesting (lists and landmarks as containers: flat for now), the "f" and "n" ops, live
+  regions, scroll-into-view, axstep, iOS.
+
 ## 3. Per-backend work
 
 Every backend gains:

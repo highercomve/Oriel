@@ -178,7 +178,7 @@ function keyboardProps(el, tag, type, props) {
 // common cases of the HTML-AAM rules): aria-labelledby's elements' text,
 // aria-label, its <label>s' text (label[for=id], or the label around it,
 // without the control's own text), then title. "" for none.
-function accessibleName(el) {
+export function accessibleName(el) {
   const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
   const doc = el.ownerDocument;
   const by = el.getAttribute("aria-labelledby");
@@ -640,6 +640,8 @@ export class Renderer {
       // general way now, not a frame later.
       if (this.declined) { this.declined = false; this.dirty = false; this.renderNow(); }
     } finally { this.rendering = false; }
+    // What follows a render (a11y.js: the accessibility tree's changes).
+    this.afterRender?.();
   }
 
   // An animation frame begins (main.js): everything the page changed since
