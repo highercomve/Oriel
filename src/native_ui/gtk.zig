@@ -47,6 +47,8 @@ extern fn gtk_widget_set_visible(w: *Widget, visible: c_int) void;
 extern fn gtk_widget_set_sensitive(w: *Widget, sensitive: c_int) void;
 extern fn gtk_editable_set_editable(w: *Widget, editable: c_int) void;
 extern fn gtk_check_button_new() *Widget;
+extern fn gtk_button_new_with_label(label: [*:0]const u8) *Widget;
+extern fn gtk_button_set_label(w: *Widget, label: [*:0]const u8) void;
 extern fn gtk_check_button_set_active(w: *Widget, active: c_int) void;
 extern fn gtk_check_button_set_inconsistent(w: *Widget, inconsistent: c_int) void;
 extern fn gtk_check_button_set_group(w: *Widget, group: ?*Widget) void;
@@ -615,7 +617,7 @@ fn withLook(gpa: std.mem.Allocator, platform_json: [:0]const u8, w: *Widget) ?[:
     var sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
     out.writer.writeAll(body) catch return null;
     // The controls hosted as native widgets (docs/native-controls-a11y-design.md).
-    out.writer.print("{s}\"controls\":[\"check\"]", .{sep}) catch return null;
+    out.writer.print("{s}\"controls\":[\"check\",\"button\"]", .{sep}) catch return null;
     sep = ",";
     var rgba: GdkRGBA = undefined;
     if (gtk_style_context_lookup_color(gtk_widget_get_style_context(w), "accent_bg_color", &rgba) != 0) {
@@ -1057,7 +1059,7 @@ fn syncFields(s: *Surface) void {
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
         const n = np.*;
-        if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check) continue;
+        if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check and n.kind != .button) continue;
         const w = s.fields.get(n.id) orelse blk: {
             const w = makeField(s, n) catch continue;
             s.fields.put(n.id, w) catch continue;
@@ -1083,6 +1085,13 @@ fn syncFields(s: *Surface) void {
             }
         }
         gtk_widget_set_sensitive(w, @intFromBool(!n.props.dis));
+        // A native button: its label, every sync.
+        if (n.kind == .button) {
+            const label = if (n.props.runs) |runs| (if (runs.len > 0) runs[0].t else "") else "";
+            const z = s.gpa.dupeZ(u8, label) catch continue;
+            defer s.gpa.free(z);
+            gtk_button_set_label(w, z.ptr);
+        }
         // A native check: the page's state (JS owns it), every sync.
         if (n.kind == .check) {
             gtk_check_button_set_active(w, @intFromBool(n.props.on));
@@ -1211,6 +1220,13 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
             _ = g_signal_connect_data(@ptrCast(d), "notify::selected", @ptrCast(&onSelected), s, null, 0);
             break :blk d;
         },
+        // A push button (kind button): a GtkButton with the page's label; a
+        // click goes to the page (activate() submits, resets…).
+        .button => blk: {
+            const b = gtk_button_new_with_label("");
+            _ = g_signal_connect_data(@ptrCast(b), "clicked", @ptrCast(&onButtonClicked), s, null, 0);
+            break :blk b;
+        },
         // A checkbox or radio (kind check): a GtkCheckButton. A radio gets
         // a private group (a hidden anchor) for its look only: the page
         // keeps the group's exclusivity (main.js check()).
@@ -1238,7 +1254,9 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
     var buf: [32]u8 = undefined;
     const cls = try std.fmt.bufPrintSentinel(&buf, "nui-f{d}", .{n.id}, 0);
     gtk_widget_add_css_class(w, cls.ptr);
-    gtk_widget_add_css_class(w, "nui-field");
+    // Fields are drawn by the page (their box) with a bare widget inside;
+    // buttons and checks draw themselves, as the theme does.
+    if (n.kind != .button and n.kind != .check) gtk_widget_add_css_class(w, "nui-field");
     return w;
 }
 
@@ -1256,6 +1274,12 @@ fn updateCss(s: *Surface) void {
     var it = s.fields.iterator();
     while (it.next()) |e| {
         const n = s.engine.tree.get(e.key_ptr.*) orelse continue;
+        if (n.kind == .button) {
+            s.css_text.print(a, ".nui-f{d} {{ padding: 0; margin: 0; min-height: 0; min-width: 0; font-size: {d:.1}px; }}\n", .{ n.id, n.props.fz orelse 13.333 }) catch return;
+            // The page's own color on the label; else the theme's.
+            if (n.props.col) |c| s.css_text.print(a, ".nui-f{d} label {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); }}\n", .{ n.id, c[0], c[1], c[2], c[3] }) catch return;
+            continue;
+        }
         if (n.kind == .check) {
             // The indicator fills the CSS box (13px by default), no padding.
             const c = n.content();
@@ -1290,6 +1314,13 @@ fn sendValue(s: *Surface, n: *Node, kind: []const u8, text: []const u8) void {
     const json = std.json.Stringify.valueAlloc(s.gpa, text, .{}) catch return;
     defer s.gpa.free(json);
     _ = s.engine.event(n.id, kind, json);
+}
+
+fn onButtonClicked(b: *Widget, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    if (s.updating) return;
+    const n = nodeOfWidget(s, b) orelse return;
+    _ = s.engine.event(n.id, "click", "0");
 }
 
 /// A check toggled by the user: back to the page's state, and the click to
@@ -1401,7 +1432,9 @@ fn gtkWidgetOfController(c: *anyopaque) ?*Widget {
 fn onChildPosition(_: *Widget, child: *Widget, alloc: *GdkRectangle, data: ?*anyopaque) callconv(.c) c_int {
     const s = surfaceOf(data);
     const n = nodeOfWidget(s, child) orelse return 0;
-    const r = n.content();
+    // A native button is the whole box (its bezel is the border, its CSS
+    // padding room inside it); fields sit in their content box.
+    const r = if (n.kind == .button) n.frame else n.content();
     alloc.* = .{ .x = @intFromFloat(@round(r.x)), .y = @intFromFloat(@round(r.y)), .width = @max(1, @as(c_int, @intFromFloat(@round(r.w)))), .height = @max(1, @as(c_int, @intFromFloat(@round(r.h)))) };
     return 1;
 }
@@ -2390,6 +2423,8 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             const k: f32 = if (!std.math.isInf(max_width) and max_width < img.w) max_width / img.w else 1;
             out.* = .{ img.w * k, img.h * k };
         },
+        // A native button: its label's size (padding and border are CSS room).
+        .button => out.* = measuredText(s, n, std.math.inf(f32)) orelse .{ 0, 0 },
         .input, .select, .textarea => {
             out.* = fieldSize(s, n, max_width);
             // A one-line field's baseline from its middle (tree.zig
