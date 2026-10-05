@@ -161,7 +161,12 @@ fn withDensity(gpa: std.mem.Allocator, window: u32, platform_json: [:0]const u8)
     const body = trimmed[0 .. trimmed.len - 1];
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
     const dpr = @as(f64, @floatFromInt(milli)) / 1000;
-    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d}}}", .{ body, sep, dpr }, 0) catch null;
+    // The system's accent (Material You's dynamic colour on Android 12+):
+    // platform.accent, the focus ring's and accent-coloured controls', as
+    // macOS and GTK send theirs; 0 when the theme has none.
+    const argb: u32 = @bitCast(runtime.call(.int, "nuiAccent", "(I)I", .{wid(window)}) orelse 0);
+    if (argb >> 24 == 0) return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d}}}", .{ body, sep, dpr }, 0) catch null;
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d},\"accent\":[{d},{d},{d}]}}", .{ body, sep, dpr, (argb >> 16) & 0xff, (argb >> 8) & 0xff, argb & 0xff }, 0) catch null;
 }
 
 pub fn destroy(window: u32) void {
