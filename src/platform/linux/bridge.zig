@@ -426,6 +426,10 @@ pub fn Bridge(
                     log.warn("native page: blocked command \"{f}\" (window: {s})", .{ std.zig.fmtString(cmd[0..@min(cmd.len, 64)]), win.label });
                     break :blk error.Forbidden;
                 }
+                // A dropped file's handle back to a path (native pages only:
+                // only they hold drop handles). Engine.dropPathCommand.
+                if (std.mem.eql(u8, cmd, "drop:path"))
+                    break :blk engine.dropPathCommand(arena, args_json);
                 if (ipc.isBuiltinCommand(cmd)) break :blk ipc.dispatchBuiltin(config.security, arena, request);
                 if (!ipc.isAsync(api.commands, cmd)) break :blk ipc.dispatchRequest(api.commands, arena, request, if (pool) |p| p.io else null);
                 // Async: on the worker pool, answered from the main loop.

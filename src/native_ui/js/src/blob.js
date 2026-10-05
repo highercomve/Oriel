@@ -254,6 +254,8 @@ export function installBlob(g, host) {
     const f = new File({ [internal]: true, segs }, name, { type, lastModified });
     // An empty file still holds its handle until it goes.
     if (!length) state.get(f).ref = ref;
+    // Opaque: only meaningful passed back to the engine (oriel.drop.path).
+    f.handle = handle;
     return f;
   }
 

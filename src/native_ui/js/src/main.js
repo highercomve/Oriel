@@ -940,6 +940,19 @@ g.oriel = Object.freeze({
     return () => set.delete(callback);
   },
   openExternal(url) { return invoke("open_external", { url }); },
+  drop: Object.freeze({
+    // Where a dropped file lives now, for a handler that sends it on. The
+    // handle came in the drop's File (`f.handle`); only the native
+    // renderer has one. Answers a path string, or null when the file is
+    // gone or changed, the handle is unknown, or the platform can't
+    // resolve paths (docs/drag-and-drop-design.md §3, open question #1,
+    // resolved: Electron's webUtils.getPathForFile is the precedent).
+    async path(f) {
+      const handle = f && typeof f.handle === "number" ? f.handle : f;
+      if (typeof handle !== "number") throw new TypeError("drop.path: a dropped file (or its handle)");
+      return invoke("drop:path", { handle });
+    },
+  }),
   permissions: Object.freeze({
     query(name) { return invoke("permissions:query", { name }); },
     request(name) {

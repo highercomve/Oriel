@@ -45,6 +45,7 @@ is the same as Win32 `DROPEFFECT_*`. `mods` uses the pointer flags (shift 1, ctr
   operation (it reflects the modifier keys), which becomes the initial `dropEffect`.
 - **Never expose a file's path.** If the OS offers both a file list and `text/uri-list`/`text/plain` with `file://`
   URIs for the same drag, backends send only the file items. Chrome does the same (types are `["Files"]` only).
+  (2026-10-05: a trusted native page may turn a handle back into a path for `drop:path`, see open question #1.)
 - Caps, enforced by the backend: at most 4096 items, and at most 16 MiB per string (larger strings are dropped and logged).
 
 **Return path.** Add `oqjs_event_code` to `qjs_shim.c`. It is the same as `oqjs_event` but uses `JS_ToInt32`
@@ -343,9 +344,18 @@ thread. Possibly blob: URLs for `<img>` previews (open question).
 
 ## Open questions
 
-1. Should Zig app code get access to dropped files, for example `oriel.drop.read(window, handle)` or a path for
-   trusted Zig commands, so a page can pass a handle to a command? Electron's `webUtils.getPathForFile` is the
-   precedent.
+1. **Resolved (2026-10-05):** Zig app code gets a dropped file's path through the
+   `drop:path` built-in command, answered from the engine's drop table
+   (`Engine.dropPathCommand`; `FileHandles.nativePath`: Linux's
+   `/proc/self/fd/N` readlink, Windows' `GetFinalPathNameByHandleW`, macOS's
+   `F_GETPATH`). The page passes the handle its dropped `File` carries
+   (`f.handle`) through `oriel.drop.path(f)`; the Linux and Windows native
+   bridges dispatch it after the command policy check (other native bridges
+   when their drop targets land). The path never comes from thin air: only
+   an OS drop the user made created the handle, and it dies with the engine.
+   A file deleted or changed since the drop answers `"null"`. A WebView page
+   has no handles and no `drop:path`. The precedent is Electron's
+   `webUtils.getPathForFile`.
 2. Should blob: URLs (`URL.createObjectURL(file)`) work in `<img>`? Image previews in drop zones use them a lot, and
    they need an image source path in each backend.
 3. Should `<input type=file>` be in scope? It would reuse `dialog` plus the handle table. react-dropzone's

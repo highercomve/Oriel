@@ -216,6 +216,42 @@ pub const FileHandles = struct {
             else => return error.NotReadable,
         };
     }
+
+    /// Where a kept file lives now, for a trusted app that forwards it
+    /// (a transfer engine opens the path): Linux reads the kernel's magic
+    /// link, macOS asks the descriptor with F_GETPATH, Windows reuses
+    /// `currentPath`. A file the user deleted after dropping it answers
+    /// NotReadable rather than a path that no longer opens. NotReadable
+    /// when the file changed since it was added, too; the caller frees it.
+    pub fn nativePath(d: *const FileHandles, gpa: std.mem.Allocator, handle: u32) Error![]u8 {
+        if (windows) return d.currentPath(gpa, handle);
+        const e = d.entries.get(handle) orelse return error.BadHandle;
+        try check(e);
+        if (darwin) {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            // Darwin's F_GETPATH (0x32): the descriptor's own path, when the
+            // file system still has it. A deleted file's descriptor has
+            // none: NotReadable, like Linux's marker below.
+            const n = std.c.fcntl(e.fd, 0x32, &buf);
+            if (std.posix.errno(n) != .SUCCESS or n <= 0) return error.NotReadable;
+            return gpa.dupe(u8, buf[0..@intCast(n)]) catch error.OutOfMemory;
+        }
+        // Linux: /proc/self/fd/N is a magic link to the file the descriptor
+        // opened; reading it answers the original path, or the original
+        // path with a marker once the file is gone.
+        var link: [std.fs.max_path_bytes]u8 = undefined;
+        var tmp: [24:0]u8 = undefined;
+        const name = std.fmt.bufPrintZ(&tmp, "/proc/self/fd/{d}", .{e.fd}) catch return error.NotReadable;
+        const n = std.c.readlink(name.ptr, &link, link.len);
+        if (n <= 0 or n > link.len) return error.NotReadable;
+        const w: []u8 = link[0..@intCast(n)];
+        if (std.mem.endsWith(u8, w, " (deleted)")) {
+            // The inode is still open, but its path no longer opens; a
+            // transfer engine would fail on it later anyway.
+            return error.NotReadable;
+        }
+        return gpa.dupe(u8, w) catch error.OutOfMemory;
+    }
 };
 
 const Stat = struct { regular: bool, size: u64, mtime_ns: i128 };
