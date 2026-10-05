@@ -290,7 +290,7 @@ test fail {
 
 /// Check if `cmd` is a framework built-in command.
 pub fn isBuiltinCommand(cmd: []const u8) bool {
-    return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "deep_link:ready") or std.mem.eql(u8, cmd, "notification:ready") or
+    return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "deep_link:ready") or std.mem.eql(u8, cmd, "notification:ready") or std.mem.eql(u8, cmd, "share:read") or
         std.mem.eql(u8, cmd, "events:ready") or
         std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
 }
@@ -335,6 +335,20 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
             deepLinkReady();
         } else if (!@import("pending_events.zig").pageReady(args.event)) return error.UnknownEvent;
         return arena.dupe(u8, "null");
+    } else if (std.mem.eql(u8, request.cmd, "share:read")) {
+        // A received file's bytes, base64, for the page's oriel.share.file
+        // (it reads in chunks; the handle came in share:received).
+        const build_options = @import("build_options");
+        if (!build_options.share) return error.Unsupported;
+        const Args = struct { handle: u32, offset: u64 = 0, length: u64 = 4 << 20 };
+        const args = try std.json.parseFromValueLeaky(Args, arena, request.args, .{ .ignore_unknown_fields = true });
+        var bytes: std.ArrayList(u8) = .empty;
+        try @import("../modules/share.zig").read(args.handle, args.offset, @min(args.length, 16 << 20), &bytes);
+        const enc = std.base64.standard.Encoder;
+        const out = try arena.alloc(u8, enc.calcSize(bytes.items.len));
+        _ = enc.encode(out, bytes.items);
+        bytes.deinit(std.heap.smp_allocator);
+        return std.json.Stringify.valueAlloc(arena, out, .{});
     } else if (std.mem.eql(u8, request.cmd, "notification:ready")) {
         // The bridges' older alias of events:ready {"event":"notification:action"}.
         _ = @import("pending_events.zig").pageReady("notification:action");

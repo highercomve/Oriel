@@ -192,9 +192,9 @@ const State = struct {
 
 var state: State = .{};
 
-/// Files received from other apps (`open`, and `.handle` in `send`).
-/// Nothing adds to it until receiving is written.
-var received: file_handles.FileHandles = .init(gpa);
+/// Files received from other apps: common.zig's table, shared with the
+/// page's reads (`share:read`).
+const received = &common.received;
 
 /// One send, from `send` until `done`.
 const Pending = struct {

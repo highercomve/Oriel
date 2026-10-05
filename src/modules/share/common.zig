@@ -5,6 +5,18 @@
 const std = @import("std");
 const App = @import("../../core/App.zig");
 const pending_events = @import("../../core/pending_events.zig");
+const file_handles = @import("../../core/file_handles.zig");
+
+/// Files received from other apps, opened read-only when they arrived
+/// (every backend adds them here): `open`, `read` (the page's
+/// oriel.share.file) and `.handle` in `send` go through it.
+pub var received: file_handles.FileHandles = .init(std.heap.smp_allocator);
+
+/// Up to `len` bytes of received file `handle` from `offset`, appended to
+/// `out` (the page reads a file in chunks through the `share:read` command).
+pub fn read(handle: u32, offset: u64, len: u64, out: *std.ArrayList(u8)) !void {
+    try received.read(handle, offset, len, out);
+}
 
 /// How the share reached the app.
 pub const Source = enum {
@@ -117,15 +129,15 @@ pub fn onReceive(handler: ?ReceiveHandler) void {
     if (handler != null) shares.handlerSet();
 }
 
-fn toHandler(received: *const Received) bool {
+fn toHandler(share: *const Received) bool {
     const h = receive_handler.load(.acquire) orelse return false;
-    h(received);
+    h(share);
     return true;
 }
 
 const shares = pending_events.Queue(Received, event, 8, toHandler);
 
-/// Report a share from a backend (main thread). `received` is copied.
-pub fn dispatch(received: *const Received) void {
-    shares.deliver(received.*);
+/// Report a share from a backend (main thread). `share` is copied.
+pub fn dispatch(share: *const Received) void {
+    shares.deliver(share.*);
 }
