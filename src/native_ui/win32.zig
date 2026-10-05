@@ -1154,6 +1154,10 @@ fn syncFields(s: *Surface) void {
             _ = c.ShowWindow(f.clip, c.SW_HIDE);
             continue;
         }
+        // A select with its list open stays as it is: resizing a dropped
+        // combobox closes its list (the page's re-render for :focus on the
+        // first click closed the list that click opened).
+        if (f.kind == .select and c.SendMessageW(f.hwnd, c.CB_GETDROPPEDSTATE, 0, 0) != 0) continue;
         // At the node's content box, in the canvas's physical pixels. An
         // unstyled select at its border box: the combobox's own border is
         // its border (not a second one inside the CSS one).
@@ -1549,6 +1553,18 @@ fn fieldOf(s: *Surface, hwnd: c.HWND) ?struct { field: *Field, node: *Node } {
     const f = s.fields.getPtr(id) orelse return null;
     const n = s.engine.tree.get(id) orelse return null;
     return .{ .field = f, .node = n };
+}
+
+/// The page's color behind a node: the nearest box with an opaque
+/// background color, else the canvas's white (what a control without a
+/// background of its own sits on).
+fn colorBehind(s: *Surface, n: *Node) c.COLORREF {
+    _ = s;
+    var it: ?*Node = n.parent;
+    while (it) |a| : (it = a.parent) {
+        if (a.props.bg) |bg| if (bg.color) |col| if (col[3] >= 1) return colorRef(col);
+    }
+    return 0xFFFFFF;
 }
 
 fn sendValue(s: *Surface, n: *Node, kind: []const u8, text: []const u8) void {
@@ -2743,6 +2759,17 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             const hdc = toHandle(c.HDC, wparam);
             // A combobox's list asks for itself: look at its owner.
             const fx = fieldOf(s, field_hwnd) orelse fieldOf(s, c.GetParent(field_hwnd)) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            // A trackbar's background: the page's behind it (else black).
+            if (fx.field.slider) {
+                const behind = colorBehind(s, fx.node);
+                if (fx.field.brush == null or fx.field.bg != behind) {
+                    if (fx.field.brush) |b| _ = c.DeleteObject(b);
+                    fx.field.bg = behind;
+                    fx.field.brush = c.CreateSolidBrush(behind);
+                }
+                _ = c.SetBkColor(hdc, behind);
+                return @bitCast(@intFromPtr(fx.field.brush orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam)));
+            }
             _ = c.SetTextColor(hdc, fx.field.fg);
             _ = c.SetBkColor(hdc, fx.field.bg);
             return @bitCast(@intFromPtr(fx.field.brush orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam)));
@@ -2983,10 +3010,21 @@ fn plainWidth(n: *const Node, text: []const u8) f32 {
 
 /// A select's: its widest option, its inner padding and its arrow
 /// (Chromium on Windows: about 20.6px more; "one" in Arial 13.33px is 43).
+/// A select's width: its widest option in a native combobox, which keeps
+/// its text margin and borders (8) and its drop-down button (17, the
+/// scroll bar's width) beside it.
 fn selectWidth(n: *const Node) f32 {
     var widest: f32 = 0;
     for (n.props.options orelse &.{}) |o| widest = @max(widest, plainWidth(n, o[1]));
-    return @round(widest + 20.6);
+    return @ceil(widest + 25);
+}
+
+/// A closed combobox's height: its font's (the selection field's item
+/// height) and its frame, 3 above and below (24 for 13.33px Segoe UI).
+fn selectHeight(n: *const Node) f32 {
+    const fz = n.props.fz orelse 16;
+    const r = fontRatios(familyOf(n.props.ff, n.props.mono), n.props.fwt orelse 400, n.props.it) orelse return @round(fz * 1.15) + 6;
+    return @ceil((r[0] + r[1]) * fz) + 6;
 }
 
 const iid_font_face1: c.GUID = .{ .Data1 = 0xa71efdb4, .Data2 = 0x9fdb, .Data3 = 0x4838, .Data4 = .{ 0xad, 0x90, 0xcf, 0xc3, 0xbe, 0x8c, 0x3d, 0xaf } };
@@ -4494,7 +4532,8 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
                 else => if (n.props.cols) |size| inputWidth(n, size) else 150,
             };
             const h = switch (n.kind) {
-                .select => line + 2,
+                // The native combobox's own height (it can't be shorter).
+                .select => @max(line + 2, selectHeight(n)),
                 .textarea => line * (n.props.rows orelse 2),
                 else => line,
             };
