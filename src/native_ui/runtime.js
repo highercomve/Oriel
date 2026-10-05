@@ -12818,7 +12818,60 @@ globalThis.atob ??= (s) => {
   function cmpSpec(x, y) {
     return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
   }
-  var viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false, dpr: 1 };
+  var viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false, dpr: 1, forced: null };
+  function systemDark() {
+    return viewport.forced ? !!viewport.forced.dark : viewport.dark;
+  }
+  var SYSTEM_COLORS = {
+    canvas: ["#ffffff", "#121212"],
+    canvastext: ["#000000", "#ffffff"],
+    linktext: ["#0000ee", "#9e9eff"],
+    visitedtext: ["#551a8b", "#d0adf0"],
+    activetext: ["#ff0000", "#ff9e9e"],
+    buttonface: ["#efefef", "#6b6b6b"],
+    buttontext: ["#000000", "#ffffff"],
+    buttonborder: ["#767676", "#6b6b6b"],
+    field: ["#ffffff", "#3b3b3b"],
+    fieldtext: ["#000000", "#ffffff"],
+    highlight: ["#3390ff", "#3390ff"],
+    highlighttext: ["#ffffff", "#ffffff"],
+    selecteditem: ["#3390ff", "#3390ff"],
+    selecteditemtext: ["#ffffff", "#ffffff"],
+    mark: ["#ffff00", "#ffff00"],
+    marktext: ["#000000", "#000000"],
+    graytext: ["#808080", "#8e8e8e"],
+    accentcolor: ["#0075ff", "#99c8ff"],
+    accentcolortext: ["#ffffff", "#000000"]
+  };
+  for (const k in SYSTEM_COLORS) SYSTEM_COLORS[k] = SYSTEM_COLORS[k].map((h) => `rgb(${parseInt(h.slice(1, 3), 16)}, ${parseInt(h.slice(3, 5), 16)}, ${parseInt(h.slice(5, 7), 16)})`);
+  var SYSTEM_NAMES = Object.keys(SYSTEM_COLORS).sort((a, b) => b.length - a.length).join("|");
+  var SYSTEM_ANY = new RegExp(`\\b(?:${SYSTEM_NAMES})\\b`, "i");
+  var SYSTEM_ALL = new RegExp(`\\b(?:${SYSTEM_NAMES})\\b`, "gi");
+  function systemColor(name, dark) {
+    const k = name.toLowerCase();
+    const forced = viewport.forced?.colors?.[k];
+    if (forced) return forced;
+    const d = SYSTEM_COLORS[k];
+    return d ? d[dark ? 1 : 0] : name;
+  }
+  var COLOR_PROPS = [
+    "color",
+    "background",
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+    "outline-color",
+    "text-decoration-color",
+    "caret-color",
+    "column-rule-color",
+    "accent-color",
+    "fill",
+    "stroke",
+    "box-shadow",
+    "text-shadow",
+    "scrollbar-color"
+  ];
   function rangeMatches(part) {
     const inner = /^\(([^()]*)\)$/.exec(part)?.[1];
     if (!inner || !/[<>=]/.test(inner) || inner.includes(":")) return null;
@@ -12889,9 +12942,9 @@ globalThis.atob ??= (s) => {
   function mediaMatches(q) {
     if (!q) return true;
     const v = viewport, f = mediaFor;
-    if (v.width !== f.width || v.height !== f.height || v.dark !== f.dark || v.coarse !== f.coarse || v.reducedMotion !== f.reducedMotion || v.dpr !== f.dpr) {
+    if (v.width !== f.width || v.height !== f.height || v.dark !== f.dark || v.coarse !== f.coarse || v.reducedMotion !== f.reducedMotion || v.dpr !== f.dpr || v.forced !== f.forced) {
       mediaAnswers.clear();
-      Object.assign(f, { width: v.width, height: v.height, dark: v.dark, coarse: v.coarse, reducedMotion: v.reducedMotion, dpr: v.dpr });
+      Object.assign(f, { width: v.width, height: v.height, dark: v.dark, coarse: v.coarse, reducedMotion: v.reducedMotion, dpr: v.dpr, forced: v.forced });
     }
     let answer = mediaAnswers.get(q);
     if (answer === void 0) {
@@ -12930,7 +12983,13 @@ globalThis.atob ??= (s) => {
           case "max-height":
             return viewport.height <= px();
           case "prefers-color-scheme":
-            return val === (viewport.dark ? "dark" : "light");
+            return val === (systemDark() ? "dark" : "light");
+          // High contrast: the system's colors forced (Windows), and a
+          // preference for more contrast while they are.
+          case "forced-colors":
+            return val === (viewport.forced ? "active" : "none");
+          case "prefers-contrast":
+            return val === "more" ? !!viewport.forced : val === "no-preference" ? !viewport.forced : false;
           case "prefers-reduced-motion":
             return val === "reduce" ? viewport.reducedMotion : !viewport.reducedMotion;
           case "pointer":
@@ -13407,9 +13466,15 @@ globalThis.atob ??= (s) => {
       }
       cs[k] = substitute(v, cs, 0);
     }
-    if (/^canvastext$/i.test(cs.color || "")) {
-      const scheme = cs["color-scheme"] || "normal";
-      cs.color = /dark/.test(scheme) && (!/light/.test(scheme) || viewport.dark) ? "rgb(255, 255, 255)" : "rgb(0, 0, 0)";
+    let dark;
+    for (const k of COLOR_PROPS) {
+      const v = cs[k];
+      if (!v || !SYSTEM_ANY.test(v)) continue;
+      if (dark === void 0) {
+        const scheme = cs["color-scheme"] || "normal";
+        dark = viewport.forced ? !!viewport.forced.dark : /dark/.test(scheme) && (!/light/.test(scheme) || viewport.dark);
+      }
+      cs[k] = v.replace(SYSTEM_ALL, (name) => systemColor(name, dark));
     }
     if (maxContent(cs, parent)) cs.__maxc = true;
     else if (fitContent(cs, parent)) cs.__fitc = true;
@@ -15838,6 +15903,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       } else {
         cs = computeStyle(casc.spec, parentCS);
       }
+      if (viewport.forced) cs = forceColors(cs, el, parentCS);
       if (c && c.cs !== cs && sameStyle(c.cs, cs) && c.cs.__fs === fontSizeOf(cs, parentCS)) cs = c.cs;
       cs.__rules = m;
       this.sc.set(el, { parent: parentCS, cs, m, frame: this.frameNo, epoch: this.styleEpoch });
@@ -16058,6 +16124,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     // an equivalent row. Attributes that selectors distinguish, positional
     // rules, inline aggregation, controls and existing rows stay general.
     flexShape(el, cs, props, force = false) {
+      if (viewport.forced) return null;
       if (!this.simpleLeaves || this.structural || this.noCache || !force && this.fc.has(el) && !this.fc.get(el).stamp || props.fd !== "row" || props.scroll || props.scrollx || cs.__rules.before.length || cs.__rules.after.length) return null;
       const share = this.shareKey(el);
       if (share <= 0) return null;
@@ -16454,7 +16521,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         tableSpacing: tableSpacingFor(display, props, ctx),
         rematch
       };
-      const listed = this.host.stampList ? this.listOf(el, cs, props, display, childCtx, nodes, id) : null;
+      const listed = this.host.stampList && !viewport.forced ? this.listOf(el, cs, props, display, childCtx, nodes, id) : null;
       if (listed) {
         this.putClick(props, el);
         return this.put(nodes, id, "view", props, listed, fixedNode);
@@ -17440,7 +17507,42 @@ input[type="range"] { height: 20px; margin: 2px; }
     });
   }
   var CONTROLS_TAGS = /* @__PURE__ */ new Set(["input", "select", "textarea", "button"]);
+  var FORCED_BUTTON_INPUTS = /* @__PURE__ */ new Set(["button", "submit", "reset", "image", "color", "file"]);
+  var FORCED_DISABLEABLE = /* @__PURE__ */ new Set(["button", "input", "select", "textarea", "option", "optgroup", "fieldset"]);
+  function forceColors(cs, el, parentCS) {
+    if ((cs["forced-color-adjust"] || "auto") === "none") return cs;
+    const out = Object.assign(/* @__PURE__ */ Object.create(null), cs);
+    const dark = !!viewport.forced.dark;
+    const sys = (name) => systemColor(name, dark);
+    const tag = el.localName || "";
+    const type = tag === "input" ? (el.getAttribute("type") || "text").toLowerCase() : "";
+    const button = tag === "button" || tag === "input" && FORCED_BUTTON_INPUTS.has(type);
+    const field = !button && (tag === "textarea" || tag === "select" || tag === "input");
+    const disabled = FORCED_DISABLEABLE.has(tag) && el.hasAttribute("disabled");
+    const link = (tag === "a" || tag === "area") && el.hasAttribute("href");
+    const mark = tag === "mark";
+    const root = tag === "html";
+    out.color = disabled ? sys("graytext") : link ? sys("linktext") : button ? sys("buttontext") : field ? sys("fieldtext") : mark ? sys("marktext") : !root && parentCS?.color || sys("canvastext");
+    const layers = out.background ? background(out.background, color(out.color)) : null;
+    const bg = layers?.color;
+    if (root || button || field || mark || bg && bg[3] > 0) {
+      out.background = button ? sys("buttonface") : field ? sys("field") : mark ? sys("mark") : sys("canvas");
+    } else if (layers?.gradient) {
+      delete out.background;
+    }
+    const edge = button || field ? sys("buttontext") : out.color;
+    for (const side of ["top", "right", "bottom", "left"]) out[`border-${side}-color`] = edge;
+    out["outline-color"] = out.color;
+    delete out["text-decoration-color"];
+    delete out["caret-color"];
+    delete out["accent-color"];
+    delete out["scrollbar-color"];
+    out["box-shadow"] = "none";
+    out["text-shadow"] = "none";
+    return out;
+  }
   function usedDark(cs) {
+    if (viewport.forced) return !!viewport.forced.dark;
     const scheme = cs["color-scheme"] || "normal";
     return /dark/.test(scheme) && (!/light/.test(scheme) || viewport.dark);
   }
@@ -17448,6 +17550,7 @@ input[type="range"] { height: 20px; margin: 2px; }
   function darkControl(cs, props, button) {
     if (!usedDark(cs)) return;
     props.dk = true;
+    if (viewport.forced) return;
     const bg = props.bg?.color;
     if (bg && (same2(bg, [255, 255, 255]) || same2(bg, [239, 239, 239]))) props.bg = { ...props.bg, color: button ? [107, 107, 107, 1] : [59, 59, 59, 1] };
     if (!props.col || same2(props.col, [0, 0, 0])) props.col = [255, 255, 255, 1];
@@ -17459,7 +17562,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     const sw = cs["scrollbar-width"];
     if (sw === "thin" || sw === "none") p.sbw = sw;
     const scheme = cs["color-scheme"] || "normal";
-    const dark = /dark/.test(scheme) ? !/light/.test(scheme) || viewport.dark : root && !/light/.test(scheme) && viewport.dark;
+    const dark = viewport.forced ? !!viewport.forced.dark : /dark/.test(scheme) ? !/light/.test(scheme) || viewport.dark : root && !/light/.test(scheme) && viewport.dark;
     if (dark) p.dk = true;
     const sc = cs["scrollbar-color"];
     if (sc && sc !== "auto") {
@@ -20228,6 +20331,17 @@ ${a.stack || ""}`;
   g.localStorage = store("local");
   g.sessionStorage = store("session");
   var platform = JSON.parse(host.platform || "{}");
+  function forcedColorsOf(d) {
+    if (!d || typeof d !== "object" || !d.colors || typeof d.colors !== "object") return null;
+    const colors = {};
+    for (const k in d.colors) {
+      const v = d.colors[k];
+      if (Array.isArray(v) && v.length >= 3) colors[k.toLowerCase()] = `rgb(${v[0] | 0}, ${v[1] | 0}, ${v[2] | 0})`;
+      else if (typeof v === "string") colors[k.toLowerCase()] = v;
+    }
+    return { dark: !!d.dark, colors };
+  }
+  viewport.forced = forcedColorsOf(platform.forcedColors);
   setFocusRingOS(platform.os, platform.accent);
   setNativeControls(platform.controls);
   g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: void 0, maxTouchPoints: viewport.coarse ? 5 : 0 };
@@ -21247,6 +21361,16 @@ ${a.stack || ""}`;
             return false;
           // The system's accent color changed (data: [r, g, b]): the focus
           // ring and accent-colored controls follow it.
+          // High contrast turned on, off or to another theme (data: as
+          // platform.forcedColors, null when off): every style again, and
+          // forced-colors / prefers-color-scheme listeners.
+          case "forcedColors": {
+            const before2 = mediaSnapshot();
+            viewport.forced = forcedColorsOf(data);
+            renderer?.markAll();
+            mediaChanged(before2);
+            return false;
+          }
           case "accent": {
             if (!Array.isArray(data) || data.length !== 3) return false;
             platform.accent = data;

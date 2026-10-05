@@ -171,7 +171,47 @@ function cmpSpec(x, y) {
 // ---------------------------------------------------------------------------
 // Media queries
 
-export const viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false, dpr: 1 };
+// `forced`: forced colors mode (the system's high contrast theme), null
+// when off: { dark, colors: { canvas: "rgb(…)", … } } (platform.forcedColors).
+export const viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false, dpr: 1, forced: null };
+
+// The scheme the system asks for: its high contrast theme's while forced.
+export function systemDark() {
+  return viewport.forced ? !!viewport.forced.dark : viewport.dark;
+}
+
+// CSS system colors (CSS Color 4 §6.2): browsers' defaults, [light, dark]
+// (Chromium's), or the platform's own in forced colors mode.
+export const SYSTEM_COLORS = {
+  canvas: ["#ffffff", "#121212"], canvastext: ["#000000", "#ffffff"],
+  linktext: ["#0000ee", "#9e9eff"], visitedtext: ["#551a8b", "#d0adf0"], activetext: ["#ff0000", "#ff9e9e"],
+  buttonface: ["#efefef", "#6b6b6b"], buttontext: ["#000000", "#ffffff"], buttonborder: ["#767676", "#6b6b6b"],
+  field: ["#ffffff", "#3b3b3b"], fieldtext: ["#000000", "#ffffff"],
+  highlight: ["#3390ff", "#3390ff"], highlighttext: ["#ffffff", "#ffffff"],
+  selecteditem: ["#3390ff", "#3390ff"], selecteditemtext: ["#ffffff", "#ffffff"],
+  mark: ["#ffff00", "#ffff00"], marktext: ["#000000", "#000000"], graytext: ["#808080", "#8e8e8e"],
+  accentcolor: ["#0075ff", "#99c8ff"], accentcolortext: ["#ffffff", "#000000"],
+};
+// As rgb() strings, as computed styles keep colors.
+for (const k in SYSTEM_COLORS) SYSTEM_COLORS[k] = SYSTEM_COLORS[k].map((h) => `rgb(${parseInt(h.slice(1, 3), 16)}, ${parseInt(h.slice(3, 5), 16)}, ${parseInt(h.slice(5, 7), 16)})`);
+// Longest first, so "canvas" doesn't take "canvastext"'s place.
+const SYSTEM_NAMES = Object.keys(SYSTEM_COLORS).sort((a, b) => b.length - a.length).join("|");
+const SYSTEM_ANY = new RegExp(`\\b(?:${SYSTEM_NAMES})\\b`, "i");
+const SYSTEM_ALL = new RegExp(`\\b(?:${SYSTEM_NAMES})\\b`, "gi");
+
+// A system color by name (any case), for a light or dark used scheme: the
+// platform's while forced, else the defaults.
+export function systemColor(name, dark) {
+  const k = name.toLowerCase();
+  const forced = viewport.forced?.colors?.[k];
+  if (forced) return forced;
+  const d = SYSTEM_COLORS[k];
+  return d ? d[dark ? 1 : 0] : name;
+}
+
+// The properties whose values can name a system color.
+const COLOR_PROPS = ["color", "background", "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+  "outline-color", "text-decoration-color", "caret-color", "column-rule-color", "accent-color", "fill", "stroke", "box-shadow", "text-shadow", "scrollbar-color"];
 
 // Media Queries 4 ranges: (width <= 720px), (400px < width <= 720px),
 // (height >= 30em) — what Vite/lightningcss turns max-width/min-width into.
@@ -263,9 +303,9 @@ export function fontSpecs(rules, max = 48) {
 export function mediaMatches(q) {
   if (!q) return true;
   const v = viewport, f = mediaFor;
-  if (v.width !== f.width || v.height !== f.height || v.dark !== f.dark || v.coarse !== f.coarse || v.reducedMotion !== f.reducedMotion || v.dpr !== f.dpr) {
+  if (v.width !== f.width || v.height !== f.height || v.dark !== f.dark || v.coarse !== f.coarse || v.reducedMotion !== f.reducedMotion || v.dpr !== f.dpr || v.forced !== f.forced) {
     mediaAnswers.clear();
-    Object.assign(f, { width: v.width, height: v.height, dark: v.dark, coarse: v.coarse, reducedMotion: v.reducedMotion, dpr: v.dpr });
+    Object.assign(f, { width: v.width, height: v.height, dark: v.dark, coarse: v.coarse, reducedMotion: v.reducedMotion, dpr: v.dpr, forced: v.forced });
   }
   let answer = mediaAnswers.get(q);
   if (answer === undefined) {
@@ -297,7 +337,11 @@ function evalMedia(q) {
         case "max-width": return viewport.width <= px();
         case "min-height": return viewport.height >= px();
         case "max-height": return viewport.height <= px();
-        case "prefers-color-scheme": return val === (viewport.dark ? "dark" : "light");
+        case "prefers-color-scheme": return val === (systemDark() ? "dark" : "light");
+        // High contrast: the system's colors forced (Windows), and a
+        // preference for more contrast while they are.
+        case "forced-colors": return val === (viewport.forced ? "active" : "none");
+        case "prefers-contrast": return val === "more" ? !!viewport.forced : val === "no-preference" ? !viewport.forced : false;
         case "prefers-reduced-motion": return val === "reduce" ? viewport.reducedMotion : !viewport.reducedMotion;
         case "pointer": return val === (viewport.coarse ? "coarse" : "fine");
         case "hover": return val === (viewport.coarse ? "none" : "hover");
@@ -696,12 +740,19 @@ export function computeStyle(specified, parent) {
     if (v === "initial" || v === "unset") { delete cs[k]; continue; }
     cs[k] = substitute(v, cs, 0);
   }
-  // CanvasText (the UA's text color on <html>): black, or white where the
-  // used color-scheme is dark (color-scheme: dark, or light dark with a
-  // dark system), as browsers resolve it; inherited as the resolved color.
-  if (/^canvastext$/i.test(cs.color || "")) {
-    const scheme = cs["color-scheme"] || "normal";
-    cs.color = /dark/.test(scheme) && (!/light/.test(scheme) || viewport.dark) ? "rgb(255, 255, 255)" : "rgb(0, 0, 0)";
+  // System colors (CanvasText, the UA's text color on <html>; Field,
+  // ButtonFace, …): the defaults for the used color-scheme (dark with
+  // color-scheme: dark, or light dark with a dark system), or the system's
+  // own while forced; inherited as the resolved colors.
+  let dark;
+  for (const k of COLOR_PROPS) {
+    const v = cs[k];
+    if (!v || !SYSTEM_ANY.test(v)) continue;
+    if (dark === undefined) {
+      const scheme = cs["color-scheme"] || "normal";
+      dark = viewport.forced ? !!viewport.forced.dark : /dark/.test(scheme) && (!/light/.test(scheme) || viewport.dark);
+    }
+    cs[k] = v.replace(SYSTEM_ALL, (name) => systemColor(name, dark));
   }
   if (maxContent(cs, parent)) cs.__maxc = true;
   else if (fitContent(cs, parent)) cs.__fitc = true;

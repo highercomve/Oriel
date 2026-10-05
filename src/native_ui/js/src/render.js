@@ -9,7 +9,7 @@
 //   ["d", id]                destroy (and its subtree)
 //   ["r", id]                the root (the body)
 
-import { StyleEngine, computeStyle, parseInline, length, color, background, shadow, splitSpaces, splitTop, substitute, pctString, maxContent, fitContent, viewport } from "./css.js";
+import { StyleEngine, computeStyle, parseInline, length, color, background, shadow, splitSpaces, splitTop, substitute, pctString, maxContent, fitContent, viewport, systemColor } from "./css.js";
 import { Transitions, transitionsOf } from "./transitions.js";
 import { Animations, animationsOf } from "./animations.js";
 import { iconFor, svgScope, svgDataText, svgSize } from "./icons.js";
@@ -1004,6 +1004,8 @@ export class Renderer {
     } else {
       cs = computeStyle(casc.spec, parentCS);
     }
+    // High contrast: the system's colors over the page's.
+    if (viewport.forced) cs = forceColors(cs, el, parentCS);
     // The same values as before: the same object, so what's below can
     // still be reused.
     // Equal CSS strings can resolve to a different size under a changed
@@ -1208,6 +1210,8 @@ export class Renderer {
   // an equivalent row. Attributes that selectors distinguish, positional
   // rules, inline aggregation, controls and existing rows stay general.
   flexShape(el, cs, props, force = false) {
+    // Forced colors: each child's style through style() (forceColors).
+    if (viewport.forced) return null;
     if (!this.simpleLeaves || this.structural || this.noCache || (!force && this.fc.has(el) && !this.fc.get(el).stamp) ||
         props.fd !== "row" || props.scroll || props.scrollx ||
         cs.__rules.before.length || cs.__rules.after.length) return null;
@@ -1675,7 +1679,7 @@ export class Renderer {
       tableSpacing: tableSpacingFor(display, props, ctx), rematch };
     // A list of the same row again and again: its first row here, the rest
     // stamped by the tree (host.stampList, after emit).
-    const listed = this.host.stampList ? this.listOf(el, cs, props, display, childCtx, nodes, id) : null;
+    const listed = this.host.stampList && !viewport.forced ? this.listOf(el, cs, props, display, childCtx, nodes, id) : null;
     if (listed) {
       this.putClick(props, el);
       return this.put(nodes, id, "view", props, listed, fixedNode);
@@ -2808,9 +2812,58 @@ function touchesBox(decls) {
 }
 const CONTROLS_TAGS = new Set(["input", "select", "textarea", "button"]);
 
+// Forced colors mode (the system's high contrast theme, viewport.forced),
+// as browsers apply it: an element's colors are the system's for what it
+// is (text CanvasText, links LinkText, disabled controls GrayText, buttons
+// ButtonFace/ButtonText, fields Field/FieldText, <mark> Mark/MarkText), an
+// opaque background its role's, the root on Canvas; borders and outlines
+// in its text color; no gradients, shadows or accent colors. Not with
+// forced-color-adjust: none. A copy: computed styles are shared.
+const FORCED_BUTTON_INPUTS = new Set(["button", "submit", "reset", "image", "color", "file"]);
+const FORCED_DISABLEABLE = new Set(["button", "input", "select", "textarea", "option", "optgroup", "fieldset"]);
+function forceColors(cs, el, parentCS) {
+  if ((cs["forced-color-adjust"] || "auto") === "none") return cs;
+  const out = Object.assign(Object.create(null), cs);
+  const dark = !!viewport.forced.dark;
+  const sys = (name) => systemColor(name, dark);
+  const tag = el.localName || "";
+  const type = tag === "input" ? (el.getAttribute("type") || "text").toLowerCase() : "";
+  const button = tag === "button" || (tag === "input" && FORCED_BUTTON_INPUTS.has(type));
+  const field = !button && (tag === "textarea" || tag === "select" || tag === "input");
+  const disabled = FORCED_DISABLEABLE.has(tag) && el.hasAttribute("disabled");
+  const link = (tag === "a" || tag === "area") && el.hasAttribute("href");
+  const mark = tag === "mark";
+  const root = tag === "html";
+  // Text: its role's; else as its parent (a <b> in a link stays LinkText).
+  out.color = disabled ? sys("graytext") : link ? sys("linktext") : button ? sys("buttontext") : field ? sys("fieldtext")
+    : mark ? sys("marktext") : (!root && parentCS?.color) || sys("canvastext");
+  // Background (the `background` value, layers and color): an opaque color
+  // (or a control's, the root's) the system's; gradients go; an image alone
+  // stays.
+  const layers = out.background ? background(out.background, color(out.color)) : null;
+  const bg = layers?.color;
+  if (root || button || field || mark || (bg && bg[3] > 0)) {
+    out.background = button ? sys("buttonface") : field ? sys("field") : mark ? sys("mark") : sys("canvas");
+  } else if (layers?.gradient) {
+    delete out.background;
+  }
+  const edge = button || field ? sys("buttontext") : out.color;
+  for (const side of ["top", "right", "bottom", "left"]) out[`border-${side}-color`] = edge;
+  out["outline-color"] = out.color;
+  delete out["text-decoration-color"];
+  delete out["caret-color"];
+  delete out["accent-color"];
+  delete out["scrollbar-color"];
+  out["box-shadow"] = "none";
+  out["text-shadow"] = "none";
+  return out;
+}
+
 // Whether an element's used color-scheme is dark: color-scheme dark, or
 // light dark with the system's dark preference.
 function usedDark(cs) {
+  // Forced colors: the system's high contrast theme's scheme.
+  if (viewport.forced) return !!viewport.forced.dark;
   const scheme = cs["color-scheme"] || "normal";
   return /dark/.test(scheme) && (!/light/.test(scheme) || viewport.dark);
 }
@@ -2821,6 +2874,8 @@ const same = (a, b) => Array.isArray(a) && a.length >= 3 && a[0] === b[0] && a[1
 function darkControl(cs, props, button) {
   if (!usedDark(cs)) return;
   props.dk = true;
+  // Forced colors: the system's are already there (forceColors).
+  if (viewport.forced) return;
   const bg = props.bg?.color;
   if (bg && (same(bg, [255, 255, 255]) || same(bg, [239, 239, 239]))) props.bg = { ...props.bg, color: button ? [107, 107, 107, 1] : [59, 59, 59, 1] };
   if (!props.col || same(props.col, [0, 0, 0])) props.col = [255, 255, 255, 1];
@@ -2833,7 +2888,7 @@ function scrollbarPart(cs, p, root) {
   const sw = cs["scrollbar-width"];
   if (sw === "thin" || sw === "none") p.sbw = sw;
   const scheme = cs["color-scheme"] || "normal";
-  const dark = /dark/.test(scheme) ? (!/light/.test(scheme) || viewport.dark) : root && !/light/.test(scheme) && viewport.dark;
+  const dark = viewport.forced ? !!viewport.forced.dark : /dark/.test(scheme) ? (!/light/.test(scheme) || viewport.dark) : root && !/light/.test(scheme) && viewport.dark;
   if (dark) p.dk = true;
   const sc = cs["scrollbar-color"];
   if (sc && sc !== "auto") {

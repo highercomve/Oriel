@@ -161,6 +161,31 @@
     c += (s.match(/(^|[\s>+~])[a-zA-Z][\w-]*/g) || []).length;
     return [a, b, c];
   }
+  var SYSTEM_COLORS = {
+    canvas: ["#ffffff", "#121212"],
+    canvastext: ["#000000", "#ffffff"],
+    linktext: ["#0000ee", "#9e9eff"],
+    visitedtext: ["#551a8b", "#d0adf0"],
+    activetext: ["#ff0000", "#ff9e9e"],
+    buttonface: ["#efefef", "#6b6b6b"],
+    buttontext: ["#000000", "#ffffff"],
+    buttonborder: ["#767676", "#6b6b6b"],
+    field: ["#ffffff", "#3b3b3b"],
+    fieldtext: ["#000000", "#ffffff"],
+    highlight: ["#3390ff", "#3390ff"],
+    highlighttext: ["#ffffff", "#ffffff"],
+    selecteditem: ["#3390ff", "#3390ff"],
+    selecteditemtext: ["#ffffff", "#ffffff"],
+    mark: ["#ffff00", "#ffff00"],
+    marktext: ["#000000", "#000000"],
+    graytext: ["#808080", "#8e8e8e"],
+    accentcolor: ["#0075ff", "#99c8ff"],
+    accentcolortext: ["#ffffff", "#000000"]
+  };
+  for (const k in SYSTEM_COLORS) SYSTEM_COLORS[k] = SYSTEM_COLORS[k].map((h) => `rgb(${parseInt(h.slice(1, 3), 16)}, ${parseInt(h.slice(3, 5), 16)}, ${parseInt(h.slice(5, 7), 16)})`);
+  var SYSTEM_NAMES = Object.keys(SYSTEM_COLORS).sort((a, b) => b.length - a.length).join("|");
+  var SYSTEM_ANY = new RegExp(`\\b(?:${SYSTEM_NAMES})\\b`, "i");
+  var SYSTEM_ALL = new RegExp(`\\b(?:${SYSTEM_NAMES})\\b`, "gi");
   function expand(prop, value, out) {
     const box = (name, fmt) => {
       const v = splitSpaces(value);
