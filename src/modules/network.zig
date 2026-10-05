@@ -60,4 +60,5 @@ test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(impl);
     std.testing.refAllDecls(mdns);
+    std.testing.refAllDecls(@import("network/mdns_c.zig"));
 }
