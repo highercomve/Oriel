@@ -16,6 +16,13 @@ zig build -Dnative_ui -p zig-out-native     # native renderer
 For iOS add `-Dtarget=aarch64-ios-simulator -Dapple_sdk=$(xcrun --sdk
 iphonesimulator --show-sdk-path)` (or `aarch64-ios` and the iPhoneOS SDK).
 
+## Screenshots
+
+<p>
+  <img src="../../assets/screenshots/breakout-desktop.png" alt="Breakout with the native renderer on Linux" width="62%">
+  <img src="../../assets/screenshots/breakout-phone.png" alt="Breakout with the native renderer on Android" width="24%">
+</p>
+
 ## Playing
 
 - Desktop: the mouse moves the paddle (or ← → / A D); click or Space

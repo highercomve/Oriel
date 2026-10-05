@@ -4,6 +4,11 @@ One static page, timed in Oriel's two renderers: the WebView (WebKitGTK on
 Linux) and the experimental native renderer (`-Dnative_ui`: QuickJS, the
 native DOM, Yoga layout, GTK drawing; see `docs/native-renderer.md`).
 
+![Render bench in the WebView: row timing results and animated boxes](../../assets/screenshots/render-bench.png)
+
+The screenshot shows the UI during a private-display run; benchmark results
+below retain their own dates and measurement conditions.
+
 ```sh
 zig build -Doptimize=ReleaseFast                                  # WebView
 zig build -Dnative_ui -Doptimize=ReleaseFast -p zig-out-native    # native (native DOM)
