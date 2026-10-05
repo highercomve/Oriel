@@ -174,6 +174,10 @@ const Field = struct {
     /// so a region's cut-away part kept the control's old pixels.
     clip: c.HWND,
     kind: tree_mod.Kind,
+    /// Readonly as the control was last told (Props.ro), and a hash of the
+    /// accessible name it was given (Props.al; 0: none, an empty name).
+    ro: bool = false,
+    al_hash: u64 = std.math.maxInt(u64), // not yet told
     font: ?c.HFONT = null,
     font_px: c_int = 0,
     /// The font's family and weight (familyOf's, cached for the process).
@@ -1519,7 +1523,55 @@ fn backgroundUnder(s: *Surface, n: *Node) c.COLORREF {
     return if (s.dark) 0x202020 else 0xFFFFFF;
 }
 
+/// Dynamic annotation (oleacc's IAccPropServices): a control's accessible
+/// name, which MSAA and UI Automation's proxy for Win32 controls report.
+const IAccPropServices = extern struct {
+    vtbl: *const extern struct {
+        QueryInterface: *const anyopaque,
+        AddRef: *const anyopaque,
+        Release: *const fn (*IAccPropServices) callconv(.winapi) u32,
+        SetPropValue: *const anyopaque,
+        SetPropServer: *const anyopaque,
+        ClearProps: *const anyopaque,
+        SetHwndProp: *const anyopaque,
+        SetHwndPropStr: *const fn (*IAccPropServices, c.HWND, u32, u32, c.GUID, [*:0]const u16) callconv(.winapi) c.HRESULT,
+        SetHwndPropServer: *const anyopaque,
+    },
+};
+const clsid_acc_prop_services: c.GUID = .{ .Data1 = 0xb5f8350b, .Data2 = 0x0548, .Data3 = 0x48b1, .Data4 = .{ 0xa6, 0xee, 0x88, 0xbd, 0x00, 0xb4, 0xa5, 0xe7 } };
+const iid_acc_prop_services: c.GUID = .{ .Data1 = 0x6e26e776, .Data2 = 0x04f0, .Data3 = 0x495d, .Data4 = .{ 0x80, 0xe4, 0x33, 0x30, 0x35, 0x2e, 0x31, 0x69 } };
+const propid_acc_name: c.GUID = .{ .Data1 = 0x608d3df8, .Data2 = 0x8128, .Data3 = 0x4aa7, .Data4 = .{ 0xa4, 0x28, 0xf5, 0x5e, 0x49, 0x26, 0x72, 0x91 } };
+const objid_client: u32 = 0xFFFFFFFC;
+var acc_props: ?*IAccPropServices = null;
+var acc_props_tried = false;
+
+/// A control's accessible name (null: none, as a browser's unlabeled
+/// field; RichEdit's own default is its class's, "RichEdit Control").
+fn accessibleName(s: *Surface, hwnd: c.HWND, name: ?[]const u8) void {
+    if (!acc_props_tried) {
+        acc_props_tried = true;
+        _ = c.CoInitializeEx(null, c.COINIT_APARTMENTTHREADED);
+        var ps: ?*IAccPropServices = null;
+        if (c.CoCreateInstance(&clsid_acc_prop_services, null, c.CLSCTX_INPROC_SERVER, &iid_acc_prop_services, @ptrCast(&ps)) >= 0) acc_props = ps;
+    }
+    const ps = acc_props orelse return;
+    const w = std.unicode.utf8ToUtf16LeAllocZ(s.gpa, name orelse "") catch return;
+    defer s.gpa.free(w);
+    _ = ps.vtbl.SetHwndPropStr(ps, hwnd, objid_client, 0, propid_acc_name, w.ptr);
+}
+
 fn styleField(s: *Surface, f: *Field, n: *Node) void {
+    // readonly: still focusable and selectable, not editable.
+    if ((f.kind == .input or f.kind == .textarea) and !f.slider and n.props.ro != f.ro) {
+        f.ro = n.props.ro;
+        _ = c.SendMessageW(f.hwnd, c.EM_SETREADONLY, @intFromBool(f.ro), 0);
+    }
+    // Its accessible name (Props.al: its label, aria-label, title).
+    const al_hash: u64 = if (n.props.al) |al| std.hash.Wyhash.hash(1, al) | 1 else 0;
+    if (al_hash != f.al_hash) {
+        f.al_hash = al_hash;
+        accessibleName(s, f.hwnd, n.props.al);
+    }
     const size = px((n.props.fz orelse 16) * s.scale);
     const face = familyOf(n.props.ff, n.props.mono);
     const weight: c_int = @intFromFloat(@max(1, @min(1000, n.props.fwt orelse 400)));
