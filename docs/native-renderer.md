@@ -505,6 +505,29 @@ sends `Engine.event(0, "accent", [r, g, b])` when it changes (macOS:
 NSSystemColorsDidChangeNotification and appearance changes), and the page
 renders again with it.
 
+**Keyboard props** (text fields and areas; render.js keyboardProps):
+`itype` (input type email | url | tel | number | search, null for text;
+not `it`, Props' italic), `im` (inputmode: none | text | decimal | numeric |
+tel | search | email | url, the keyboard over the type), `ek`
+(enterkeyhint: enter | done | go | next | previous | search | send; by
+default search for a search field, go in a <form>), `cap`
+(autocapitalize: none | sentences | words | characters, Safari's default:
+none for email, url, tel, number and password), `cor` (autocorrect,
+Safari's attribute; off where cap defaults to none), `spellcheck` (the
+attribute, inherited; never for a password). UIKit: keyboardType,
+returnKeyType, autocapitalizationType, autocorrectionType,
+spellCheckingType and textContentType (AutoFill for email, url, tel,
+password). AppKit: spellcheck turns continuous spell checking off.
+
+**Native checks (AppKit)**: platform.controls lists "check", so a default
+checkbox or radio is kind check (docs/native-controls-a11y-design.md 1.1):
+an NSButton (Switch or Radio type, small under a 14px box, mini under 12)
+in a clipping holder as a field's, its state the page's (Props on, mix)
+set on every sync and again after each click (the page's click toggles
+or cancels it), radios never grouped (each its own holder). Space and
+Return on a focused one go to the page and stop there (main.js activates
+it); with Full Keyboard Access it takes focus and tells the page.
+
 **Inline element rects** (each backend, optional): an inline element
 (a `<span>` amid text) has no node; render.js keeps its runs
 (Renderer.inlineSpans: [text node id, first run, last run] per text node

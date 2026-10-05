@@ -15089,6 +15089,25 @@ input[type="range"] { height: 20px; margin: 2px; }
   var INTRINSIC_WIDTHS = /* @__PURE__ */ new Set(["max-content", "fit-content", "-webkit-fit-content", "-moz-fit-content"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
+  var TYPED = /* @__PURE__ */ new Set(["email", "url", "tel", "number", "search"]);
+  var INPUT_MODES = /* @__PURE__ */ new Set(["none", "text", "decimal", "numeric", "tel", "search", "email", "url"]);
+  var ENTER_HINTS = /* @__PURE__ */ new Set(["enter", "done", "go", "next", "previous", "search", "send"]);
+  function keyboardProps(el, tag, type, props) {
+    const plain = tag === "textarea" || !["email", "url", "tel", "number", "password"].includes(type);
+    if (tag === "input" && TYPED.has(type)) props.itype = type;
+    const im = (el.getAttribute("inputmode") || "").toLowerCase();
+    if (INPUT_MODES.has(im)) props.im = im;
+    const ek = (el.getAttribute("enterkeyhint") || "").toLowerCase();
+    if (ENTER_HINTS.has(ek)) props.ek = ek;
+    else if (type === "search" && tag === "input") props.ek = "search";
+    else if (tag === "input" && el.closest?.("form")) props.ek = "go";
+    const capAttr = (el.getAttribute("autocapitalize") ?? el.closest?.("form")?.getAttribute("autocapitalize") ?? "").toLowerCase();
+    props.cap = capAttr === "off" || capAttr === "none" ? "none" : capAttr === "words" ? "words" : capAttr === "characters" ? "characters" : capAttr === "on" || capAttr === "sentences" ? "sentences" : plain ? "sentences" : "none";
+    const cor = (el.getAttribute("autocorrect") || "").toLowerCase();
+    props.cor = cor === "off" ? false : cor === "on" ? true : plain;
+    const sc = el.closest?.("[spellcheck]")?.getAttribute("spellcheck");
+    props.spellcheck = type !== "password" && sc !== "false";
+  }
   function accessibleName(el) {
     const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
     const doc = el.ownerDocument;
@@ -16274,6 +16293,22 @@ input[type="range"] { height: 20px; margin: 2px; }
         this.putClick(props, el);
         return this.put(nodes, id, "canvas", props, [], fixedNode);
       }
+      if (isInputButton(el)) {
+        this.volatile.add(el);
+        const t = el.getAttribute("type").toLowerCase();
+        const label = el.getAttribute("value") ?? (t === "submit" ? "Submit" : t === "reset" ? "Reset" : "");
+        props.click = true;
+        if (el.hasAttribute("disabled")) props.dis = true;
+        const al = accessibleName(el);
+        if (al) props.al = al;
+        const tid = this.idOf(el, "label");
+        this.own(tid, el);
+        const tp = { ...textProps(cs, fontSize), runs: [runFor(label, cs, fontSize)], ta: "center", fs: 0 };
+        this.put(nodes, tid, "text", tp, []);
+        if (props.fd === void 0) props.fd = "column";
+        props.jc = "center";
+        return this.put(nodes, id, "view", props, label ? [tid] : [], fixedNode);
+      }
       if (tag === "input" || tag === "textarea" || tag === "select") {
         this.volatile.add(el);
         const type = (el.getAttribute("type") || "text").toLowerCase();
@@ -16286,7 +16321,8 @@ input[type="range"] { height: 20px; margin: 2px; }
           if (app !== "none") {
             props.ctl = type;
             if (pushButtons) props.blb = 2;
-            if (el.hasAttribute("checked")) props.on = true;
+            if (el.checked) props.on = true;
+            if (type === "checkbox" && el.indeterminate) props.mix = true;
             const acc = color(cs["accent-color"] || "");
             if (acc) props.acc = acc;
             if (props.w === void 0 || props.w === "auto") props.w = 13;
@@ -16296,6 +16332,11 @@ input[type="range"] { height: 20px; margin: 2px; }
             delete props.bc;
             delete props.bg;
             delete props.br;
+          }
+          if (el.hasAttribute("disabled")) props.dis = true;
+          if (props.ctl && nativeControls.has("check")) {
+            delete props.ol;
+            return this.put(nodes, id, "check", props, [], fixedNode);
           }
           return this.put(nodes, id, "view", props, [], fixedNode);
         }
@@ -16311,6 +16352,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         props.ph = el.getAttribute("placeholder") || "";
         props.dis = el.hasAttribute("disabled");
         if (el.hasAttribute("readonly") && !props.dis) props.ro = true;
+        keyboardProps(el, tag, type, props);
         props.pw = type === "password";
         if (tag === "textarea") {
           const cols = parseInt(el.getAttribute("cols") || "", 10);
@@ -17342,8 +17384,21 @@ input[type="range"] { height: 20px; margin: 2px; }
     if (v === void 0) m.set(key2, v = make());
     return v;
   }
+  var INPUT_BUTTONS = /* @__PURE__ */ new Set(["button", "submit", "reset"]);
+  function isInputButton(el) {
+    return el?.localName === "input" && INPUT_BUTTONS.has((el.getAttribute("type") || "").toLowerCase());
+  }
+  function withInputButtons(css) {
+    return css.replace(/(^|\})([^{}]*)\{/g, (m, end, sel) => {
+      const parts = sel.split(",");
+      if (!parts.some((p) => p.trim() === "button")) return m;
+      const lead = sel.match(/^\s*/)[0];
+      const extra = ['input[type="button"]', 'input[type="submit"]', 'input[type="reset"]'];
+      return `${end}${lead}${parts.map((p) => p.trim()).concat(extra).join(", ")} {`;
+    });
+  }
   function boxProps(cs, display, fs, el) {
-    const button = el?.localName === "button";
+    const button = el?.localName === "button" || isInputButton(el);
     const bb = borderBoxByDefault(el);
     const key2 = `b${display}|${fs}|${button}|${bb}|${viewport.dpr}`;
     const d = derived.get(cs);
@@ -17414,6 +17469,10 @@ input[type="range"] { height: 20px; margin: 2px; }
     p.bg = { ...p.bg || {}, color: [255, 255, 255, 1] };
     if (!p.br) p.br = [4, 4, 4, 4];
     if (!p.sh) p.sh = { x: 0, y: 0.5, blur: 0, spread: 1, color: [0, 0, 0, 0.075] };
+  }
+  var nativeControls = /* @__PURE__ */ new Set();
+  function setNativeControls(list) {
+    nativeControls = new Set(Array.isArray(list) ? list : []);
   }
   function setFocusRingOS(os, accent) {
     pushButtons = os === "macos";
@@ -19193,13 +19252,35 @@ ${a.stack || ""}`;
     el[prop2] = v;
   }
   var inputProto = Object.getPrototypeOf(document.createElement("input"));
+  var checkedDefaults = /* @__PURE__ */ new WeakMap();
   Object.defineProperty(inputProto, "checked", {
     get() {
       return this.hasAttribute("checked");
     },
     set(v) {
+      if (!checkedDefaults.has(this)) checkedDefaults.set(this, this.hasAttribute("checked"));
       if (v) this.setAttribute("checked", "");
       else this.removeAttribute("checked");
+    },
+    configurable: true
+  });
+  Object.defineProperty(inputProto, "indeterminate", {
+    get() {
+      return this.hasAttribute("data-nui-mix");
+    },
+    set(v) {
+      if (v) this.setAttribute("data-nui-mix", "");
+      else this.removeAttribute("data-nui-mix");
+    },
+    configurable: true
+  });
+  Object.defineProperty(inputProto, "defaultChecked", {
+    get() {
+      return checkedDefaults.has(this) ? checkedDefaults.get(this) : this.hasAttribute("checked");
+    },
+    set(v) {
+      if (checkedDefaults.has(this)) checkedDefaults.set(this, !!v);
+      else setNative(this, "checked", !!v), checkedDefaults.delete(this);
     },
     configurable: true
   });
@@ -19232,13 +19313,25 @@ ${a.stack || ""}`;
     }
     return String(v);
   };
+  var valueDefaults = /* @__PURE__ */ new WeakMap();
   Object.defineProperty(inputProto, "value", {
     get() {
       const raw = valueDesc.get.call(this);
       return this.type === "range" ? rangeValue(this, raw ?? "") : raw;
     },
     set(v) {
+      if (!valueDefaults.has(this)) valueDefaults.set(this, this.getAttribute("value") ?? "");
       valueDesc.set.call(this, v);
+    },
+    configurable: true
+  });
+  Object.defineProperty(inputProto, "defaultValue", {
+    get() {
+      return valueDefaults.has(this) ? valueDefaults.get(this) : this.getAttribute("value") ?? "";
+    },
+    set(v) {
+      if (valueDefaults.has(this)) valueDefaults.set(this, String(v));
+      else this.setAttribute("value", String(v));
     },
     configurable: true
   });
@@ -19348,7 +19441,7 @@ ${a.stack || ""}`;
   formProto.submit = function() {
   };
   formProto.reset = function() {
-    for (const f of this.querySelectorAll("input, textarea")) f.value = f.getAttribute("value") || "";
+    reset(this);
   };
   var elProto = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div")));
   {
@@ -19810,6 +19903,7 @@ ${a.stack || ""}`;
   g.sessionStorage = store("session");
   var platform = JSON.parse(host.platform || "{}");
   setFocusRingOS(platform.os, platform.accent);
+  setNativeControls(platform.controls);
   g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: void 0, maxTouchPoints: viewport.coarse ? 5 : 0 };
   Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
   Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
@@ -19987,8 +20081,32 @@ ${a.stack || ""}`;
     window: Object.freeze(windowApi)
   });
   var isCheckable = (n2) => n2?.localName === "input" && /^(checkbox|radio)$/.test(n2.type);
+  function buttonType(el) {
+    if (el.localName === "button") {
+      const t = (el.getAttribute("type") || "submit").toLowerCase();
+      return t === "reset" || t === "button" ? t : "submit";
+    }
+    if (el.localName === "input" && /^(button|submit|reset|image)$/.test(el.type)) return el.type === "image" ? "submit" : el.type;
+    return null;
+  }
+  function disabledControl(el) {
+    if (!CONTROLS2.has(el?.localName)) return false;
+    if (el.hasAttribute("disabled")) return true;
+    for (let f = el.parentNode?.closest?.("fieldset[disabled]"); f; f = f.parentNode?.closest?.("fieldset[disabled]")) {
+      const legend = [...f.children].find((c) => c.localName === "legend");
+      if (!legend || !legend.contains(el)) return true;
+    }
+    return false;
+  }
   function activate(el, flags) {
-    const undo = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
+    if (disabledControl(el)) return;
+    const wasMixed = el.localName === "input" && el.type === "checkbox" && el.indeterminate;
+    if (wasMixed) el.indeterminate = false;
+    const undo0 = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
+    const undo = undo0 && (() => {
+      undo0();
+      if (wasMixed) el.indeterminate = true;
+    });
     const [clientX, clientY] = lastPointer;
     lastPointer = [0, 0];
     const ev = new MouseEvent("click", { bubbles: true, cancelable: true, clientX, clientY, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
@@ -20012,18 +20130,19 @@ ${a.stack || ""}`;
         return;
       }
       if (tag === "label") {
-        const ctl = n2.htmlFor ? document.getElementById(n2.getAttribute("for")) : n2.querySelector("input, textarea, select");
-        if (ctl && ctl !== el && !ctl.contains?.(el)) {
+        const ctl = n2.htmlFor ? document.getElementById(n2.getAttribute("for")) : n2.querySelector("input, textarea, select, button");
+        if (ctl && ctl !== el && !ctl.contains?.(el) && !disabledControl(ctl)) {
           if (isCheckable(ctl)) activate(ctl, flags);
           else ctl.focus();
         }
         return;
       }
-      if (tag === "button") {
-        if (n2.hasAttribute("disabled")) return;
-        const type = (n2.getAttribute("type") || "submit").toLowerCase();
+      const type = buttonType(n2);
+      if (type) {
+        if (disabledControl(n2)) return;
         const form = n2.closest("form");
         if (type === "submit" && form) submit(form);
+        else if (type === "reset" && form) reset(form);
         return;
       }
     }
@@ -20051,7 +20170,34 @@ ${a.stack || ""}`;
     const ev = new Event("submit", { bubbles: true, cancelable: true });
     form.dispatchEvent(ev);
   }
+  function reset(form) {
+    const ev = new Event("reset", { bubbles: true, cancelable: true });
+    form.dispatchEvent(ev);
+    if (ev.defaultPrevented) return;
+    for (const c of form.querySelectorAll("input, textarea, select")) {
+      if (isCheckable(c)) {
+        const d = c.defaultChecked;
+        setNative(c, "checked", d);
+        checkedDefaults.delete(c);
+      } else if (c.localName === "select") {
+        const opts = [...c.querySelectorAll("option")];
+        const sel = opts.findIndex((o) => o.hasAttribute("selected"));
+        setNative(c, "value", (opts[sel < 0 ? 0 : sel] || {}).value ?? "");
+      } else if (c.localName === "textarea") setNative(c, "value", c.textContent);
+      else if (!buttonType(c)) {
+        setNative(c, "value", c.defaultValue);
+        valueDefaults.delete(c);
+      }
+    }
+  }
   var MODIFIER_KEYS = /* @__PURE__ */ new Set(["Shift", "Control", "Alt", "Meta", "AltGraph", "CapsLock"]);
+  var spacePress = null;
+  function radioGroup(input) {
+    const name = input.getAttribute("name");
+    if (!name) return [input];
+    const scope = input.closest("form") || document;
+    return [...scope.querySelectorAll('input[type="radio"]')].filter((r) => r.getAttribute("name") === name && (r.closest("form") || document) === scope);
+  }
   function keyEvent(el, data, type = "keydown") {
     const [key2, flags, repeat] = data;
     const init = { key: key2, code: key2, bubbles: true, cancelable: true, repeat: !!repeat, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
@@ -20064,6 +20210,33 @@ ${a.stack || ""}`;
       if (!press.defaultPrevented) fireWindow(press);
       if (press.defaultPrevented) return true;
     }
+    const mods = init.ctrlKey || init.altKey || init.metaKey;
+    if (el && !mods && !disabledControl(el)) {
+      if (type === "keydown" && key2 === " ") spacePress = ev.defaultPrevented ? null : el;
+      if (!ev.defaultPrevented) {
+        if (type === "keydown" && key2 === "Enter" && !repeat && (buttonType(el) || el.localName === "a" && el.hasAttribute("href") || el.localName === "summary")) {
+          activate(el, flags);
+          return true;
+        }
+        if (type === "keyup" && key2 === " " && spacePress === el && (buttonType(el) || isCheckable(el))) {
+          spacePress = null;
+          activate(el, flags);
+          return true;
+        }
+        if (type === "keydown" && el.type === "radio" && el.localName === "input" && /^Arrow(Up|Down|Left|Right)$/.test(key2)) {
+          const group = radioGroup(el).filter((r) => !disabledControl(r) && shown(r));
+          const at = group.indexOf(el);
+          if (group.length > 1 && at >= 0) {
+            const next = group[(at + (key2 === "ArrowDown" || key2 === "ArrowRight" ? 1 : -1) + group.length) % group.length];
+            keyboardFocus = true;
+            next.focus();
+            activate(next, flags);
+            return true;
+          }
+        }
+      }
+    }
+    if (type === "keyup" && key2 === " ") spacePress = null;
     if (type === "keydown" && !ev.defaultPrevented && key2 === "Tab" && !(init.ctrlKey || init.altKey || init.metaKey)) {
       return tabFocus(init.shiftKey) || false;
     }
@@ -20152,7 +20325,12 @@ ${a.stack || ""}`;
         if (!naturallyFocusable(el) || tabRule !== "all" && !textLike(el)) continue;
         index = 0;
       } else if (tabRule === "ios" && CONTROLS2.has(el.localName) && !textLike(el)) continue;
-      if (index < 0 || CONTROLS2.has(el.localName) && el.hasAttribute("disabled") || !shown(el)) continue;
+      if (index < 0 || disabledControl(el) || !shown(el)) continue;
+      if (el.localName === "input" && el.type === "radio" && el.getAttribute("name")) {
+        const group = radioGroup(el).filter((r) => !disabledControl(r) && shown(r));
+        const stop = group.find((r) => r.checked) || group.find((r) => r === active) || group[0];
+        if (stop !== el) continue;
+      }
       (index > 0 ? positive : rest).push([index, el]);
     }
     positive.sort((a, b) => a[0] - b[0]);
@@ -20602,11 +20780,11 @@ ${a.stack || ""}`;
         const P = host.prof ? host.now : null, b0 = P && P();
         const engine = new StyleEngine();
         const sheets = host.sheetCache ? { get: (css, path) => host.sheetCache(css, path), keep: (css, json) => host.sheetKeep(css, json) } : null;
-        engine.addSheet(UA_CSS, sheets, void 0, null, true);
-        if (platform.os === "macos" || platform.os === "ios") engine.addSheet(UA_CSS_WEBKIT, sheets, void 0, null, true);
-        if (platform.os === "macos") engine.addSheet(UA_CSS_MAC, sheets, void 0, null, true);
-        else if (platform.os === "linux") engine.addSheet(uaCssWebkitGtk(platform.uiFont, platform.accent), sheets, void 0, null, true);
-        else if (platform.os === "android") engine.addSheet(UA_CSS_CHROME_ANDROID, sheets, void 0, null, true);
+        engine.addSheet(withInputButtons(UA_CSS), sheets, void 0, null, true);
+        if (platform.os === "macos" || platform.os === "ios") engine.addSheet(withInputButtons(UA_CSS_WEBKIT), sheets, void 0, null, true);
+        if (platform.os === "macos") engine.addSheet(withInputButtons(UA_CSS_MAC), sheets, void 0, null, true);
+        else if (platform.os === "linux") engine.addSheet(withInputButtons(uaCssWebkitGtk(platform.uiFont, platform.accent)), sheets, void 0, null, true);
+        else if (platform.os === "android") engine.addSheet(withInputButtons(UA_CSS_CHROME_ANDROID), sheets, void 0, null, true);
         for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
         const b1 = P && P();
         renderer = new Renderer(document, engine, host);

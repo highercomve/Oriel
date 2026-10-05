@@ -146,6 +146,34 @@ const REPLACED = new Set(["img", "svg", "canvas", "video", "iframe", "object", "
 
 // A line-height other than normal in px at font size `fs`: a number times
 // it, a percentage of it, a length.
+// A text field's keyboard and typing aids, as browsers give them to the
+// platform's keyboard (Props itype, im, ek, cap, cor, spellcheck): the input
+// type, inputmode and enterkeyhint as written (enterkeyhint by default
+// "search" for a search field, "go" in a form), autocapitalize (Safari's
+// default: none for email, url, tel, number and password, sentences
+// otherwise), autocorrect (Safari's attribute; off where autocapitalize
+// is), spellcheck (the attribute, inherited; on by default).
+const TYPED = new Set(["email", "url", "tel", "number", "search"]);
+const INPUT_MODES = new Set(["none", "text", "decimal", "numeric", "tel", "search", "email", "url"]);
+const ENTER_HINTS = new Set(["enter", "done", "go", "next", "previous", "search", "send"]);
+function keyboardProps(el, tag, type, props) {
+  const plain = tag === "textarea" || !(["email", "url", "tel", "number", "password"].includes(type));
+  if (tag === "input" && TYPED.has(type)) props.itype = type;
+  const im = (el.getAttribute("inputmode") || "").toLowerCase();
+  if (INPUT_MODES.has(im)) props.im = im;
+  const ek = (el.getAttribute("enterkeyhint") || "").toLowerCase();
+  if (ENTER_HINTS.has(ek)) props.ek = ek;
+  else if (type === "search" && tag === "input") props.ek = "search";
+  else if (tag === "input" && el.closest?.("form")) props.ek = "go";
+  const capAttr = (el.getAttribute("autocapitalize") ?? el.closest?.("form")?.getAttribute("autocapitalize") ?? "").toLowerCase();
+  props.cap = capAttr === "off" || capAttr === "none" ? "none" : capAttr === "words" ? "words" : capAttr === "characters" ? "characters" :
+    capAttr === "on" || capAttr === "sentences" ? "sentences" : plain ? "sentences" : "none";
+  const cor = (el.getAttribute("autocorrect") || "").toLowerCase();
+  props.cor = cor === "off" ? false : cor === "on" ? true : plain;
+  const sc = el.closest?.("[spellcheck]")?.getAttribute("spellcheck");
+  props.spellcheck = type !== "password" && sc !== "false";
+}
+
 // A form control's accessible name, as browsers compute it for one (the
 // common cases of the HTML-AAM rules): aria-labelledby's elements' text,
 // aria-label, its <label>s' text (label[for=id], or the label around it,
@@ -1469,6 +1497,24 @@ export class Renderer {
       this.putClick(props, el);
       return this.put(nodes, id, "canvas", props, [], fixedNode);
     }
+    // <input type=button|submit|reset>: a button (its value its label), as
+    // a <button> with that text would be.
+    if (isInputButton(el)) {
+      this.volatile.add(el);
+      const t = el.getAttribute("type").toLowerCase();
+      const label = el.getAttribute("value") ?? (t === "submit" ? "Submit" : t === "reset" ? "Reset" : "");
+      props.click = true;
+      if (el.hasAttribute("disabled")) props.dis = true;
+      const al = accessibleName(el);
+      if (al) props.al = al;
+      const tid = this.idOf(el, "label");
+      this.own(tid, el);
+      const tp = { ...textProps(cs, fontSize), runs: [runFor(label, cs, fontSize)], ta: "center", fs: 0 };
+      this.put(nodes, tid, "text", tp, []);
+      if (props.fd === undefined) props.fd = "column";
+      props.jc = "center";
+      return this.put(nodes, id, "view", props, label ? [tid] : [], fixedNode);
+    }
     if (tag === "input" || tag === "textarea" || tag === "select") {
       this.volatile.add(el); // its value changes without a mutation
       const type = (el.getAttribute("type") || "text").toLowerCase();
@@ -1490,13 +1536,19 @@ export class Renderer {
           // a 12px box in a 14px system-ui line, its top 4px down, the
           // line 19px with its 3px margins).
           if (pushButtons) props.blb = 2;
-          if (el.hasAttribute("checked")) props.on = true;
+          if (el.checked) props.on = true;
+          // Indeterminate: a mixed box (its own state, not an attribute).
+          if (type === "checkbox" && el.indeterminate) props.mix = true;
           const acc = color(cs["accent-color"] || "");
           if (acc) props.acc = acc;
           if (props.w === undefined || props.w === "auto") props.w = 13;
           if (props.h === undefined || props.h === "auto") props.h = 13;
           delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
         }
+        if (el.hasAttribute("disabled")) props.dis = true;
+        // A native checkbox or radio (the backend hosts one): it draws its
+        // own focus ring.
+        if (props.ctl && nativeControls.has("check")) { delete props.ol; return this.put(nodes, id, "check", props, [], fixedNode); }
         return this.put(nodes, id, "view", props, [], fixedNode);
       }
       Object.assign(props, textProps(cs, fontSize));
@@ -1514,6 +1566,7 @@ export class Renderer {
       props.dis = el.hasAttribute("disabled");
       // readonly: selectable, not editable (a disabled field is neither).
       if (el.hasAttribute("readonly") && !props.dis) props.ro = true;
+      keyboardProps(el, tag, type, props);
       props.pw = type === "password";
       if (tag === "textarea") {
         const cols = parseInt(el.getAttribute("cols") || "", 10);
@@ -2705,9 +2758,26 @@ function memoized(cs, key, make) {
   return v;
 }
 
+// <input type=button|submit|reset>: a button, not a text field.
+const INPUT_BUTTONS = new Set(["button", "submit", "reset"]);
+export function isInputButton(el) {
+  return el?.localName === "input" && INPUT_BUTTONS.has((el.getAttribute("type") || "").toLowerCase());
+}
+// A UA sheet with every rule for `button` also for the input buttons (as
+// browsers' sheets style them alike).
+export function withInputButtons(css) {
+  return css.replace(/(^|\})([^{}]*)\{/g, (m, end, sel) => {
+    const parts = sel.split(",");
+    if (!parts.some((p) => p.trim() === "button")) return m;
+    const lead = sel.match(/^\s*/)[0];
+    const extra = ['input[type="button"]', 'input[type="submit"]', 'input[type="reset"]'];
+    return `${end}${lead}${parts.map((p) => p.trim()).concat(extra).join(", ")} {`;
+  });
+}
+
 // Layout and drawing properties of a box (a copy: the caller adds to it).
 function boxProps(cs, display, fs, el) {
-  const button = el?.localName === "button";
+  const button = el?.localName === "button" || isInputButton(el);
   const bb = borderBoxByDefault(el);
   // (The dpr too: border widths snap to its device pixels.)
   const key = `b${display}|${fs}|${button}|${bb}|${viewport.dpr}`;
@@ -2826,6 +2896,12 @@ function pushButton(cs, p) {
   if (!p.br) p.br = [4, 4, 4, 4];
   if (!p.sh) p.sh = { x: 0, y: 0.5, blur: 0, spread: 1, color: [0, 0, 0, 0.075] };
 }
+
+// The controls the backend hosts as native widgets (its platform JSON's
+// `controls`, e.g. ["check", "button"]): render.js sends those kinds only
+// then (docs/native-controls-a11y-design.md 1.1); else they're drawn.
+let nativeControls = new Set();
+export function setNativeControls(list) { nativeControls = new Set(Array.isArray(list) ? list : []); }
 
 export function setFocusRingOS(os, accent) {
   pushButtons = os === "macos";

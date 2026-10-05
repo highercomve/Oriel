@@ -13,7 +13,10 @@ pub const yg = @cImport({
 const log = std.log.scoped(.native_ui);
 const prof = @import("prof.zig");
 
-pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas };
+/// button and check: native push buttons and checkboxes/radios, sent only to a
+/// backend that lists them in its platform JSON's `controls`
+/// (docs/native-controls-a11y-design.md).
+pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas, button, check };
 pub const BorderStyle = enum { dashed, dotted };
 /// CSS outline (render.js outlinePart): `w` wide, `o` out from the border
 /// box, solid unless `s`; drawn around the box (its corners rounded by
@@ -826,6 +829,18 @@ pub const Props = struct {
     ch: ?f32 = null,
     /// A field that takes no edits but can be selected (readonly).
     ro: bool = false,
+    /// A text field's keyboard and typing aids (render.js keyboardProps):
+    /// its input type (itype: email, url, tel, number, search; null: text), its
+    /// inputmode (none, text, decimal, numeric, tel, search, email, url:
+    /// the keyboard, over the type), the Enter key's label (enter, done,
+    /// go, next, previous, search, send), autocapitalize (none, sentences,
+    /// words, characters), autocorrect and spellcheck.
+    itype: ?[]const u8 = null,
+    im: ?[]const u8 = null,
+    ek: ?[]const u8 = null,
+    cap: ?[]const u8 = null,
+    cor: bool = true,
+    spellcheck: bool = true,
     /// A form control's accessible name (aria-labelledby, aria-label, its
     /// <label>'s text, title: render.js accessibleName), for the native
     /// control's accessibility label.
@@ -836,6 +851,8 @@ pub const Props = struct {
     /// checkbox and radio: 2px), where the default for a box isn't.
     blb: ?f32 = null,
     on: bool = false,
+    /// A checkbox's indeterminate state (.indeterminate): drawn mixed.
+    mix: bool = false,
     acc: ?Color = null,
 };
 
