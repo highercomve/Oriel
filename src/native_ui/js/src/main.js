@@ -854,7 +854,7 @@ g.localStorage = store("local");
 g.sessionStorage = store("session");
 const platform = JSON.parse(host.platform || "{}");
 // Forced colors (the system's high contrast theme): platform.forcedColors,
-// { dark, colors: { Canvas: [r, g, b], CanvasText, … } }, null when off,
+// { dark, colors: { Canvas: [r, g, b], CanvasText, ... } }, null when off,
 // as viewport.forced: names lowercased, colors as rgb() strings.
 function forcedColorsOf(d) {
   if (!d || typeof d !== "object" || !d.colors || typeof d.colors !== "object") return null;

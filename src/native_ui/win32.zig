@@ -4694,7 +4694,7 @@ const ForcedColors = struct {
         return a.?.dark == b.?.dark and std.mem.eql(u8, std.mem.sliceAsBytes(&a.?.colors), std.mem.sliceAsBytes(&b.?.colors));
     }
 
-    /// As platform.forcedColors' JSON ({"dark":…,"colors":{…}}).
+    /// As platform.forcedColors' JSON ({"dark":...,"colors":{...}}).
     fn json(f: ForcedColors, out: *std.ArrayList(u8), gpa: std.mem.Allocator) !void {
         try out.print(gpa, "{{\"dark\":{},\"colors\":{{", .{f.dark});
         for (forced_names, f.colors, 0..) |name, col, i| {

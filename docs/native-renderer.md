@@ -478,7 +478,7 @@ same value (null when turned off) when it changes. main.js keeps it as
 `viewport.forced`.
 - Media: `forced-colors: active`, `prefers-contrast: more`, and
   `prefers-color-scheme` follows the theme's `dark`.
-- CSS system color keywords (Canvas, CanvasText, Field, ButtonFace, …) resolve in
+- CSS system color keywords (Canvas, CanvasText, Field, ButtonFace, ...) resolve in
   any color property (css.js computeStyle): the platform's while forced, else
   the defaults for the element's used color-scheme.
 - render.js forceColors, for every element without `forced-color-adjust: none`:
