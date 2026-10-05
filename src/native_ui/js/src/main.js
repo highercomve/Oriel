@@ -22,7 +22,7 @@
 import { installURL } from "./url.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules, color as cssColor } from "./css.js";
-import { snapBorder, isInputButton, withInputButtons, Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
+import { snapBorder, isInputButton, withInputButtons, setNativeControls, Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
 import * as canvas from "./canvas.js";
 import { installBlob } from "./blob.js";
 import { installDnd } from "./dnd.js";
@@ -853,6 +853,7 @@ g.localStorage = store("local");
 g.sessionStorage = store("session");
 const platform = JSON.parse(host.platform || "{}");
 setFocusRingOS(platform.os, platform.accent);
+setNativeControls(platform.controls);
 g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: undefined, maxTouchPoints: viewport.coarse ? 5 : 0 };
 Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
 Object.defineProperty(g, "innerHeight", { get: () => viewport.height });

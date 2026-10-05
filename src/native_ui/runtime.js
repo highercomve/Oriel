@@ -16315,6 +16315,10 @@ input[type="range"] { height: 20px; margin: 2px; }
             delete props.br;
           }
           if (el.hasAttribute("disabled")) props.dis = true;
+          if (props.ctl && nativeControls.has("check")) {
+            delete props.ol;
+            return this.put(nodes, id, "check", props, [], fixedNode);
+          }
           return this.put(nodes, id, "view", props, [], fixedNode);
         }
         Object.assign(props, textProps(cs, fontSize));
@@ -17445,6 +17449,10 @@ input[type="range"] { height: 20px; margin: 2px; }
     p.bg = { ...p.bg || {}, color: [255, 255, 255, 1] };
     if (!p.br) p.br = [4, 4, 4, 4];
     if (!p.sh) p.sh = { x: 0, y: 0.5, blur: 0, spread: 1, color: [0, 0, 0, 0.075] };
+  }
+  var nativeControls = /* @__PURE__ */ new Set();
+  function setNativeControls(list) {
+    nativeControls = new Set(Array.isArray(list) ? list : []);
   }
   function setFocusRingOS(os, accent) {
     pushButtons = os === "macos";
@@ -19875,6 +19883,7 @@ ${a.stack || ""}`;
   g.sessionStorage = store("session");
   var platform = JSON.parse(host.platform || "{}");
   setFocusRingOS(platform.os, platform.accent);
+  setNativeControls(platform.controls);
   g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: void 0, maxTouchPoints: viewport.coarse ? 5 : 0 };
   Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
   Object.defineProperty(g, "innerHeight", { get: () => viewport.height });

@@ -13,7 +13,10 @@ pub const yg = @cImport({
 const log = std.log.scoped(.native_ui);
 const prof = @import("prof.zig");
 
-pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas };
+/// button and check: native push buttons and checkboxes/radios, sent only to a
+/// backend that lists them in its platform JSON's `controls`
+/// (docs/native-controls-a11y-design.md).
+pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas, button, check };
 pub const BorderStyle = enum { dashed, dotted };
 /// CSS outline (render.js outlinePart): `w` wide, `o` out from the border
 /// box, solid unless `s`; drawn around the box (its corners rounded by
