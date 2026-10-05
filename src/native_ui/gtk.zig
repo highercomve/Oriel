@@ -45,6 +45,14 @@ extern fn gtk_widget_set_focusable(w: *Widget, focusable: c_int) void;
 extern fn gtk_widget_grab_focus(w: *Widget) c_int;
 extern fn gtk_widget_set_visible(w: *Widget, visible: c_int) void;
 extern fn gtk_widget_set_sensitive(w: *Widget, sensitive: c_int) void;
+extern fn gtk_editable_set_editable(w: *Widget, editable: c_int) void;
+extern fn gtk_text_view_set_editable(w: *Widget, editable: c_int) void;
+extern fn gtk_accessible_update_property(w: *Widget, first: c_int, ...) void;
+extern fn gtk_accessible_reset_property(w: *Widget, property: c_int) void;
+extern fn gtk_entry_set_input_purpose(w: *Widget, purpose: c_int) void;
+extern fn gtk_entry_set_input_hints(w: *Widget, hints: c_uint) void;
+extern fn gtk_text_view_set_input_purpose(w: *Widget, purpose: c_int) void;
+extern fn gtk_text_view_set_input_hints(w: *Widget, hints: c_uint) void;
 extern fn gtk_widget_add_controller(w: *Widget, controller: *anyopaque) void;
 extern fn gtk_widget_has_focus(w: *Widget) c_int;
 extern fn gtk_widget_set_cursor_from_name(w: *Widget, name: ?[*:0]const u8) void;
@@ -1066,6 +1074,22 @@ fn syncFields(s: *Surface) void {
             }
         }
         gtk_widget_set_sensitive(w, @intFromBool(!n.props.dis));
+        // readonly: selectable and focusable, not editable.
+        switch (n.kind) {
+            .input => if (n.props.range == null) gtk_editable_set_editable(w, @intFromBool(!n.props.ro)),
+            .textarea => gtk_text_view_set_editable(w, @intFromBool(!n.props.ro)),
+            else => {},
+        }
+        // Its accessible name (Props.al: its label, aria-label, title).
+        accessibleLabel(s, w, n.props.al);
+        // What it takes (an on-screen keyboard's layout, spell checking).
+        if (n.kind == .input and n.props.range == null) {
+            gtk_entry_set_input_purpose(w, inputPurpose(n));
+            gtk_entry_set_input_hints(w, inputHints(n));
+        } else if (n.kind == .textarea) {
+            gtk_text_view_set_input_purpose(w, inputPurpose(n));
+            gtk_text_view_set_input_hints(w, inputHints(n));
+        }
         // The page changes placeholders too ("Select text first…" → "Tell
         // GhostPen what to do…"); a text view's is drawn by paintPlaceholder.
         if (n.kind == .input and n.props.range == null) {
@@ -1085,6 +1109,40 @@ fn syncFields(s: *Surface) void {
         css_changed = true;
     }
     if (css_changed) updateCss(s);
+}
+
+const GTK_ACCESSIBLE_PROPERTY_LABEL: c_int = 4;
+
+fn accessibleLabel(s: *Surface, w: *Widget, al: ?[]const u8) void {
+    const text = al orelse return gtk_accessible_reset_property(w, GTK_ACCESSIBLE_PROPERTY_LABEL);
+    const z = s.gpa.dupeZ(u8, text) catch return;
+    defer s.gpa.free(z);
+    gtk_accessible_update_property(w, GTK_ACCESSIBLE_PROPERTY_LABEL, @as([*:0]const u8, z.ptr), @as(c_int, -1));
+}
+
+/// GtkInputPurpose from the field's type and inputmode (Props itype, im, pw).
+fn inputPurpose(n: *const Node) c_int {
+    if (n.props.pw) return 8; // PASSWORD
+    const t = n.props.im orelse n.props.itype orelse return 0;
+    const eq = std.mem.eql;
+    if (eq(u8, t, "email")) return 6;
+    if (eq(u8, t, "url")) return 5;
+    if (eq(u8, t, "tel")) return 4;
+    if (eq(u8, t, "numeric")) return 2; // DIGITS
+    if (eq(u8, t, "number") or eq(u8, t, "decimal")) return 3;
+    return 0; // FREE_FORM
+}
+
+/// GtkInputHints from spellcheck, autocapitalize and inputmode=none.
+fn inputHints(n: *const Node) c_uint {
+    var h: c_uint = if (n.props.spellcheck) 1 else 2; // SPELLCHECK, NO_SPELLCHECK
+    if (n.props.cap) |c| {
+        if (std.mem.eql(u8, c, "sentences")) h |= 1 << 6 else if (std.mem.eql(u8, c, "words")) h |= 1 << 5 else if (std.mem.eql(u8, c, "characters")) h |= 1 << 4;
+    }
+    if (n.props.im) |m| if (std.mem.eql(u8, m, "none")) {
+        h |= 1 << 7; // INHIBIT_OSK
+    };
+    return h;
 }
 
 fn makeField(s: *Surface, n: *Node) !*Widget {
