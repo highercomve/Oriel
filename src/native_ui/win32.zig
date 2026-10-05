@@ -236,8 +236,9 @@ fn uaBorder(n: *Node) bool {
     const bw = n.props.bw orelse return false;
     const bc = n.props.bc orelse return false;
     for (bw, bc) |w, col| {
-        const ua = ((w == 2 or w == 1) and col[0] == 204 and col[1] == 204 and col[2] == 204) or
-            (w == 1 and col[0] == 118 and col[1] == 118 and col[2] == 118);
+        // #ccc (2px inset: its top and left shaded to 120), or 1px #767676.
+        const grey = col[0] == col[1] and col[1] == col[2];
+        const ua = grey and (((w == 2 or w == 1) and (col[0] == 204 or col[0] == 120)) or (w == 1 and col[0] == 118));
         if (!ua) return false;
     }
     return true;
@@ -1520,8 +1521,11 @@ fn styleField(s: *Surface, f: *Field, n: *Node) void {
             f.font_weight = weight;
         }
     }
-    const fg = colorRef(n.props.col orelse .{ 0, 0, 0, 1 });
-    const bg = backgroundUnder(s, n);
+    // A Windows 11 text box on a dark background: the dark theme's text
+    // (the UA sheet's black would vanish on its fill).
+    const fg = if (fluentField(n) and fluentDark(s, n)) 0xFFFFFF else colorRef(n.props.col orelse .{ 0, 0, 0, 1 });
+    // A Windows 11 text box: its EDIT on the frame's fill.
+    const bg = if (fluentField(n)) colorRef(fluentFill(s, n)) else backgroundUnder(s, n);
     const colors_changed = fg != f.fg or bg != f.bg or f.brush == null;
     if (fg != f.fg or bg != f.bg or f.brush == null) {
         f.fg = fg;
@@ -4330,6 +4334,80 @@ fn paintImage(p: *Painter, n: *Node) void {
 }
 
 // ---------------------------------------------------------------------------
+// Windows 11 text boxes: an unstyled <input> or <textarea> (the UA sheet's
+// border) is drawn as WinUI's TextBox: a 4px-round frame on a light fill,
+// its bottom edge darker, a 2px accent line there while it has the
+// keyboard. The native EDIT inside takes the same fill.
+
+fn fluentField(n: *Node) bool {
+    return (n.kind == .input or n.kind == .textarea) and uaBorder(n);
+}
+
+/// On a dark background: WinUI's dark theme colors.
+fn fluentDark(s: *Surface, n: *Node) bool {
+    return luminance(colorBehind(s, n)) < 0.5;
+}
+
+/// The text box's fill (rest, focused, disabled), also its EDIT's.
+fn fluentFill(s: *Surface, n: *Node) tree_mod.Color {
+    const dark = fluentDark(s, n);
+    // Disabled: the system's disabled face, which a disabled RichEdit paints
+    // whatever background it was given.
+    if (n.props.dis) {
+        if (dark) return .{ 42, 42, 42, 1 };
+        const face = c.GetSysColor(c.COLOR_BTNFACE);
+        return .{ @floatFromInt(face & 0xFF), @floatFromInt((face >> 8) & 0xFF), @floatFromInt((face >> 16) & 0xFF), 1 };
+    }
+    if (s.focused == n.id) return if (dark) .{ 31, 31, 31, 1 } else .{ 255, 255, 255, 1 };
+    return if (dark) .{ 45, 45, 45, 1 } else .{ 251, 251, 251, 1 };
+}
+
+// The registry, its keys as handles (the C header's HKEY_CURRENT_USER is an
+// odd address cast to an aligned pointer, which Zig refuses).
+const hkey_current_user: usize = 0x80000001;
+const key_read: u32 = 0x20019;
+extern "advapi32" fn RegOpenKeyExW(key: usize, sub: [*:0]const u16, options: u32, sam: u32, out: *usize) callconv(.winapi) i32;
+extern "advapi32" fn RegQueryValueExW(key: usize, name: [*:0]const u16, reserved: ?*u32, kind: ?*u32, data: ?[*]u8, size: ?*u32) callconv(.winapi) i32;
+extern "advapi32" fn RegCloseKey(key: usize) callconv(.winapi) i32;
+
+/// The system accent's shade for a control (AccentPalette: Dark1 on a
+/// light background, Light2 on a dark one, as WinUI uses them); Windows'
+/// default blue without one.
+fn accentShade(dark: bool) tree_mod.Color {
+    var key: usize = 0;
+    const sub = std.unicode.utf8ToUtf16LeStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Accent");
+    const fallback: tree_mod.Color = if (dark) .{ 96, 205, 255, 1 } else .{ 0, 95, 184, 1 };
+    if (RegOpenKeyExW(hkey_current_user, sub, 0, key_read, &key) != 0) return fallback;
+    defer _ = RegCloseKey(key);
+    var palette: [32]u8 = undefined;
+    var size: u32 = palette.len;
+    if (RegQueryValueExW(key, std.unicode.utf8ToUtf16LeStringLiteral("AccentPalette"), null, null, &palette, &size) != 0 or size < 32) return fallback;
+    // Eight RGBA entries: light3, light2, light1, base, dark1, dark2, dark3, ...
+    const i: usize = if (dark) 1 else 4;
+    return .{ @floatFromInt(palette[i * 4]), @floatFromInt(palette[i * 4 + 1]), @floatFromInt(palette[i * 4 + 2]), 1 };
+}
+
+fn paintFluentField(p: *Painter, n: *Node, f: Rect) void {
+    const s = p.s;
+    if (f.w <= 2 or f.h <= 2) return;
+    const dark = fluentDark(s, n);
+    const focused = s.focused == n.id and !n.props.dis;
+    const radii = Radii.circle(.{ 4, 4, 4, 4 });
+    fillShape(p, f, radii, p.solid(fluentFill(s, n)));
+    // The frame, then its bottom edge (darker; the accent, 2px, when
+    // focused) clipped to the bottom band so it follows the corners.
+    const edge: tree_mod.Color = if (dark) .{ 58, 58, 58, 1 } else .{ 229, 229, 229, 1 };
+    border(p, f, radii, .{ 1, 1, 1, 1 }, .{ edge, edge, edge, edge }, null);
+    if (n.props.dis) return;
+    const band: f32 = if (focused) 2 else 1;
+    const bottom: tree_mod.Color = if (focused) accentShade(dark) else if (dark) .{ 154, 154, 154, 1 } else .{ 134, 134, 134, 1 };
+    const clip: c.D2D1_RECT_F = .{ .left = f.x, .top = f.y + f.h - band, .right = f.x + f.w, .bottom = f.y + f.h };
+    p.vt().PushAxisAlignedClip.?(p.rt, &clip, c.D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    defer p.vt().PopAxisAlignedClip.?(p.rt);
+    fillShape(p, f, radii, p.solid(bottom));
+}
+
+// ---------------------------------------------------------------------------
 // Default checkbox and radio (an <input> without appearance: none)
 
 const HTHEME = ?*anyopaque;
@@ -4823,15 +4901,20 @@ fn paint(p: *Painter, n: *Node) void {
 
     const r = n.radiusXY();
     if (props.sh) |sh| shadow(p, f, r, sh);
-    if (props.bg) |bg| {
-        // The color under the gradient (CSS layers).
-        if (bg.color) |col| fillShape(p, f, r, p.solid(col));
-        if (bg.gradient) |g| if (gradientBrush(p, f, g)) |gb| {
-            fillShape(p, f, r, gb);
-            releaseCom(@as(?*c.ID2D1Brush, gb));
-        };
+    // An unstyled text field: Windows 11's text box, not the UA CSS box.
+    const fluent = fluentField(n);
+    if (fluent) paintFluentField(p, n, f);
+    if (!fluent) {
+        if (props.bg) |bg| {
+            // The color under the gradient (CSS layers).
+            if (bg.color) |col| fillShape(p, f, r, p.solid(col));
+            if (bg.gradient) |g| if (gradientBrush(p, f, g)) |gb| {
+                fillShape(p, f, r, gb);
+                releaseCom(@as(?*c.ID2D1Brush, gb));
+            };
+        }
+        if (props.bw) |bw| border(p, f, r, bw, props.bc, props.bs);
     }
-    if (props.bw) |bw| border(p, f, r, bw, props.bc, props.bs);
     switch (n.kind) {
         .text => paintText(p, n),
         .icon => paintIcon(p, n),
@@ -4865,8 +4948,9 @@ fn paint(p: *Painter, n: *Node) void {
     // Its scrollbar, over its content (in its own clip).
     if (n.gutter > 0) paintScrollbar(p, n);
     // The outline: over the box and its children, outside its own clip
-    // (with its transform and opacity).
-    if (props.ol) |ol| paintOutline(p, f, r, ol);
+    // (with its transform and opacity). A Windows 11 text box shows its
+    // focus with its accent line instead.
+    if (props.ol) |ol| if (!fluentField(n)) paintOutline(p, f, r, ol);
 }
 
 /// CSS outline: a border of its own around the box grown by offset +
