@@ -105,6 +105,17 @@ your Zig code calls classes of your own through JNI, add a `-keep` rule for
 them there. Projects generated before this change keep their old
 `build.gradle.kts`; `oriel android init --force` regenerates it.
 
+The manifest (`android/app/src/main/AndroidManifest.xml`) is yours, except
+for the parts between `<!-- oriel:NAME begin -->` and `<!-- oriel:NAME end -->`
+comments: `permissions`, `features`, `queries`, `main-activity` (its intent
+filters: URL schemes) and `components` (the tile, the keyboard, the audio
+service). Every build rewrites those from build.zig
+(`build/android_manifest.zig`), so a permission declared after the first
+build reaches the APK. An entry you declare yourself outside them (the same
+element and `android:name`) isn't generated a second time. A manifest
+written before the markers existed gets them on its next build, with
+Oriel's old entries moved inside.
+
 Checks that need no NDK: `zig build check -Dtarget=aarch64-linux-android`,
 `scripts/android/check.sh` (apps with llama/whisper) and
 `scripts/android/check-runtime.sh` (compiles the Kotlin runtime and checks
