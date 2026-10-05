@@ -1,0 +1,32 @@
+// node test/dark-controls.test.mjs: form controls in a dark color-scheme
+// get dark defaults (as Chromium draws them) and dk for the native widget;
+// a light page, or the page's own colors, keep theirs.
+import fs from "node:fs";
+import vm from "node:vm";
+import assert from "node:assert/strict";
+
+function fields(dark, css) {
+  const page = `<html><head><style>:root { color-scheme: light dark } ${css}</style></head><body><input id="i" value="x"><input type="checkbox"></body></html>`;
+  const out = [];
+  const host = {
+    log: () => {}, asset: (p) => (p === "index.html" ? page : undefined),
+    invoke: () => {}, timer: () => {}, frame: () => undefined, focus: () => {}, scrollIntoView: () => {}, scrollTo: () => {},
+    ops: (json) => { const k = new Map(); for (const [op, id, x] of JSON.parse(json)) { if (op === "c") k.set(id, x); else if (op === "p" && (x.ctl || x.ph !== undefined)) out.push(x); } },
+    platform: JSON.stringify({ os: "android" }), label: "main", url: "index.html",
+  };
+  const ctx = vm.createContext({ __host: host });
+  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+  ctx.__oriel.boot(400, 600, dark, false);
+  ctx.__oriel.render();
+  return out;
+}
+const [dIn, dBox] = fields(true, "");
+assert.ok(dIn.dk && dBox.dk, "dark");
+assert.deepEqual(dIn.bg.color, [59, 59, 59, 1]);
+assert.deepEqual(dIn.col, [255, 255, 255, 1]);
+const [lIn] = fields(false, "");
+assert.ok(!lIn.dk && lIn.bg.color[0] === 255, "light keeps white");
+const [own] = fields(true, "input { background: rgb(10, 20, 30); color: rgb(200, 0, 0) }");
+assert.deepEqual(own.bg.color, [10, 20, 30, 1], "the page's own background kept");
+assert.deepEqual(own.col, [200, 0, 0, 1], "and its color");
+console.log("dark controls: ok");
