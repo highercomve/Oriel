@@ -22,6 +22,8 @@ internal object OrielPermissions {
     const val LOCATION = 4
     const val NOTIFICATIONS = 5
     const val SYSTEM_AUDIO = 6
+    const val BLUETOOTH = 7
+    const val LOCAL_NETWORK = 8
 
     private const val GRANTED = 0
     private const val DENIED = 1
@@ -32,11 +34,16 @@ internal object OrielPermissions {
     private const val INTERNAL = 0x4E80
     private var internalDone: ((Boolean) -> Unit)? = null
 
-    private fun permission(kind: Int): String? = when (kind) {
-        MICROPHONE -> Manifest.permission.RECORD_AUDIO
-        CAMERA -> Manifest.permission.CAMERA
-        LOCATION -> Manifest.permission.ACCESS_FINE_LOCATION
-        NOTIFICATIONS -> if (Build.VERSION.SDK_INT >= 33) Manifest.permission.POST_NOTIFICATIONS else null
+    /** The runtime permissions behind `kind`, all asked together (null: none to ask). */
+    private fun permissions(kind: Int): Array<String>? = when (kind) {
+        MICROPHONE -> arrayOf(Manifest.permission.RECORD_AUDIO)
+        CAMERA -> arrayOf(Manifest.permission.CAMERA)
+        LOCATION -> arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        NOTIFICATIONS -> if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else null
+        // "Nearby devices" (API 31+); before that, scanning needs location.
+        BLUETOOTH -> if (Build.VERSION.SDK_INT >= 31) arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT,
+        ) else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         else -> null
     }
 
@@ -50,17 +57,20 @@ internal object OrielPermissions {
             NOTIFICATIONS -> if (Build.VERSION.SDK_INT < 33) {
                 if (OrielRuntime.notificationsEnabled()) GRANTED else DENIED
             } else runtimeStatus(kind)
-            else -> if (permission(kind) == null) 3 else runtimeStatus(kind)
+            // Multicast and Wi-Fi state are install-time permissions.
+            LOCAL_NETWORK -> GRANTED
+            else -> if (permissions(kind) == null) 3 else runtimeStatus(kind)
         }
     }
 
     private fun runtimeStatus(kind: Int): Int {
-        val p = permission(kind) ?: return GRANTED
-        if (OrielRuntime.app.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED) return GRANTED
+        val ps = permissions(kind) ?: return GRANTED
+        val missing = ps.filter { OrielRuntime.app.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) return GRANTED
         // Denied for good: asked before and Android won't show the prompt again.
         val host = OrielRuntime.foreground
         val asked = prefs.getBoolean("asked.$kind", false)
-        if (asked && host != null && !host.shouldShowRequestPermissionRationale(p)) return DENIED
+        if (asked && host != null && missing.any { !host.shouldShowRequestPermissionRationale(it) }) return DENIED
         return PROMPT
     }
 
@@ -81,16 +91,17 @@ internal object OrielPermissions {
         // Without a service the settings page has nothing of the app's to turn on.
         if (kind == ACCESSIBILITY && !hasAccessibilityService()) return false
         if (kind == ACCESSIBILITY) return openSettings(kind).also { if (it) NativeLib.onPermissionResult(kind, status(kind)) }
-        val p = permission(kind) ?: return false
+        if (kind == LOCAL_NETWORK) return false
+        val ps = permissions(kind) ?: return false
         val host = OrielRuntime.foreground ?: return false
         prefs.edit().putBoolean("asked.$kind", true).apply()
-        host.requestPermissions(arrayOf(p), BASE + kind)
+        host.requestPermissions(ps, BASE + kind)
         return true
     }
 
     /** For the webview's own requests: every kind granted, asking as needed. */
     fun ensure(kinds: List<Int>, done: (Boolean) -> Unit) {
-        val missing = kinds.mapNotNull { permission(it) }.filter { OrielRuntime.app.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        val missing = kinds.flatMap { permissions(it)?.toList() ?: emptyList() }.filter { OrielRuntime.app.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isEmpty()) return done(true)
         val host = OrielRuntime.foreground ?: return done(false)
         internalDone?.invoke(false)
@@ -106,7 +117,7 @@ internal object OrielPermissions {
             return
         }
         val kind = requestCode - BASE
-        if (kind !in 0..6) return
+        if (kind !in 0..LOCAL_NETWORK) return
         val granted = results.isNotEmpty() && results.all { it == PackageManager.PERMISSION_GRANTED }
         val st = if (granted) GRANTED else if (permissions.any { !activity.shouldShowRequestPermissionRationale(it) }) DENIED else PROMPT
         NativeLib.onPermissionResult(kind, st)
