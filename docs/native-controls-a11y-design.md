@@ -378,6 +378,9 @@ Every backend gains:
 Decision:
 - `<button>` → `UIButton` with `UIButtonConfiguration.grayButtonConfiguration` (iOS 15+). This is
   iOS Safari's own look: gray fill with tinted text.
+  As built: `UIButtonConfiguration` with zero `contentInsets`, its `attributedTitle` the label in the
+  page's font, `baseForegroundColor` the page's `col` or nil (the tint), `overrideUserInterfaceStyle`
+  from `dk`. TouchUpInside → `"click"`; `gestureShouldReceive` keeps the page's tap (not its pan) off it.
 - **Checkbox and radio stay drawn.** UIKit has no checkbox. `UISwitch` has other semantics and a
   fixed 51×31 size that breaks web layout. The checkbox that WKWebView itself draws is the
   platform's web look. They are made accessible: trait button plus `UIAccessibilityTraitToggleButton`
