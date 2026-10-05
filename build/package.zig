@@ -300,6 +300,22 @@ fn strippedElf(b: *std.Build, package_tool: *std.Build.Step.Compile, src: std.Bu
 }
 
 /// A step failing with why `contents` can't be packaged, or null.
+/// See metadata.webview2LoaderProblem.
+fn webview2LoaderProblem(os_tag: std.Target.Os.Tag, format: Format, has_loader: bool, native_ui: bool) ?[]const u8 {
+    const windows_package = os_tag == .windows and (format == .nsis or format == .msix);
+    return metadata_mod.webview2LoaderProblem(windows_package, has_loader, native_ui);
+}
+
+/// A boolean option given to the Oriel dependency (`.native_ui = true`).
+fn dependencyFlag(oriel_dep: *std.Build.Dependency, name: []const u8) bool {
+    const opt = oriel_dep.builder.user_input_options.get(name) orelse return false;
+    return switch (opt.value) {
+        .flag => true,
+        .scalar => |s| std.mem.eql(u8, s, "true"),
+        else => false,
+    };
+}
+
 fn checkContents(b: *std.Build, contents: Contents) ?*std.Build.Step {
     for (contents.files) |f| {
         metadata_mod.validateRelativePath(f.path) catch {
@@ -708,9 +724,12 @@ pub fn addPackageSteps(
         const fail = b.addFail(b.fmt("no package formats for {s} yet", .{@tagName(os_tag)}));
         package_step.dependOn(&fail.step);
     }
+    const native_ui = dependencyFlag(oriel_dep, "native_ui");
     for (target_formats) |fmt| {
         const step = addFormat(&ctx, fmt);
         if (contents_error) |fail| step.dependOn(fail);
+        if (webview2LoaderProblem(os_tag, fmt, webview2_loader != null, native_ui)) |msg|
+            step.dependOn(&b.addFail(msg).step);
         package_step.dependOn(step);
         getOrCreateStep(b, b.fmt("package-{s}", .{@tagName(fmt)}), b.fmt("Build only the {s} package", .{@tagName(fmt)})).dependOn(step);
     }
