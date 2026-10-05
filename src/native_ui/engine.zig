@@ -290,6 +290,10 @@ pub const Backend = struct {
     set_selection: ?*const fn (ctx: *anyopaque, node: *Node, start: u32, end: u32) void = null,
     /// A node's props changed (optional: backends that mirror them).
     props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
+    /// Optional: an accessibility entry changed or went (Tree.ax, the "a"
+    /// op; id -2: all cleared). A backend with an accessibility tree tells
+    /// its assistive technology.
+    ax_changed: ?*const fn (ctx: *anyopaque, id: i64) void = null,
     /// A single text run changed through the direct bridge.
     text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
     /// Natural text sizes for many nodes in one go (Tree.measure_texts):
@@ -370,6 +374,9 @@ pub const Engine = struct {
     csp_handlers: ?[:0]u8 = null,
     booted: bool = false,
     in_call: u32 = 0,
+    /// The color scheme the page last heard (resize's `dark`): a theme
+    /// switch at the same size still reaches it.
+    dark: ?bool = null,
     /// The page read its layout (offsetWidth, getBoundingClientRect…) while it
     /// rendered: the tree was laid out then, and the backend still has to
     /// draw that layout when the call settles.
@@ -435,6 +442,7 @@ pub const Engine = struct {
         e.tree.height = height;
         e.tree.on_remove = backend.removed;
         e.tree.on_props = backend.props;
+        e.tree.on_ax = backend.ax_changed;
         e.tree.on_text = backend.text;
         e.tree.measure_texts = backend.measure_texts;
         e.tree.on_leaf_style = backend.leaf_style;
@@ -491,6 +499,7 @@ pub const Engine = struct {
 
     /// Load the page: stylesheets, scripts, the first frame.
     pub fn boot(e: *Engine, dark: bool, coarse: bool) void {
+        e.dark = dark;
         _ = e.callf("__oriel.boot({d},{d},{},{})", .{ e.tree.width, e.tree.height, dark, coarse });
         e.booted = true;
         log.info("native ui: page booted, {d} nodes, JS heap {d} KB", .{ e.tree.nodes.count(), oqjs_memory(e.js) / 1024 });
@@ -507,6 +516,13 @@ pub const Engine = struct {
     }
 
     /// A native event on a node. True when the page prevented the default.
+    /// An assistive technology came (or went): the page sends its
+    /// accessibility tree (Tree.ax, the "a" ops) whole, from inside this
+    /// call, and then its changes after each render; off clears it.
+    pub fn setA11y(e: *Engine, on: bool) void {
+        _ = e.event(0, "a11y", if (on) "1" else "0");
+    }
+
     pub fn event(e: *Engine, id: i64, kind: []const u8, data_json: []const u8) bool {
         e.in_call += 1;
         const t0 = prof.now();
@@ -663,7 +679,8 @@ pub const Engine = struct {
     }
 
     pub fn resize(e: *Engine, width: f32, height: f32, dark: bool) void {
-        if (width == e.tree.width and height == e.tree.height) return;
+        if (width == e.tree.width and height == e.tree.height and e.dark == dark) return;
+        e.dark = dark;
         e.tree.width = width;
         e.tree.height = height;
         e.tree.dirty = true;
