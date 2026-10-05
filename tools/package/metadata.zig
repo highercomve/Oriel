@@ -137,6 +137,25 @@ pub fn validAppId(id: []const u8) bool {
     return elements >= 2;
 }
 
+/// Why a Windows package (`windows_package`: NSIS or MSIX) can't be built
+/// without WebView2Loader.dll, or null. The WebView renderer loads it next
+/// to the executable; without it the installed app exits at start.
+/// `oriel package` passes the cached one; a raw `zig build package-*`
+/// needs `-Dwebview2-loader`. The native renderer (-Dnative_ui) doesn't
+/// use it.
+pub fn webview2LoaderProblem(windows_package: bool, has_loader: bool, native_ui: bool) ?[]const u8 {
+    if (!windows_package or has_loader or native_ui) return null;
+    return "Windows packages need WebView2Loader.dll next to the app: pass -Dwebview2-loader=<path> " ++
+        "(`oriel package` passes the cached one; `oriel webview2` downloads it), or set package.webview2_loader";
+}
+
+test "webview2LoaderProblem" {
+    try std.testing.expect(std.mem.indexOf(u8, webview2LoaderProblem(true, false, false).?, "-Dwebview2-loader") != null);
+    try std.testing.expect(webview2LoaderProblem(true, true, false) == null);
+    try std.testing.expect(webview2LoaderProblem(true, false, true) == null);
+    try std.testing.expect(webview2LoaderProblem(false, false, false) == null);
+}
+
 /// Extract the organization component from an application ID:
 /// - If reverse-DNS format with >= 3 segments (e.g. "dev.oriel.ReactNotes"), returns segment 1 ("oriel").
 /// - If 2 segments (e.g. "oriel.ReactNotes"), returns segment 0 ("oriel").
