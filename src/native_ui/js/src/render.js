@@ -1655,7 +1655,11 @@ export class Renderer {
     const inFlow = (f) => { const p = this.style(f.el, cs, rematch).position; return p !== "absolute" && p !== "fixed"; };
     if (!inlineLine && !childCtx.blockify && props.fd === "column" && flow.length > 1 &&
         flow.every((f) => f.el && atomic(f.el)) && flow.filter(inFlow).length > 1) {
-      props.fd = "row"; props.fw = "wrap"; props.ai = imageLine ? "flex-end" : "center"; // images: on one baseline
+      // On one baseline, as an inline formatting context lines them up: a
+      // box's its first text's, one with none its bottom (Yoga's baseline
+      // alignment; WKWebView: a 14px <p> beside a 24px one sits 9px down).
+      // Images: their bottoms, on the strut (imageLine).
+      props.fd = "row"; props.fw = "wrap"; props.ai = imageLine ? "flex-end" : "baseline";
       const nodesIn = [...el.childNodes];
       const spaced = nodesIn.some((n, i) => n.nodeType === 3 && /^\s+$/.test(n.data) && i > 0 && i < nodesIn.length - 1);
       if (spaced && props.cg === undefined) { props.cg = Math.round(fontSize * 0.28 * 10) / 10; }
