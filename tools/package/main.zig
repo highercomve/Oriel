@@ -22,6 +22,7 @@ pub const appimage = @import("appimage.zig");
 pub const icons = @import("icons.zig");
 pub const ico = @import("ico.zig");
 pub const nsis = @import("nsis.zig");
+pub const msix = @import("msix.zig");
 pub const icns = @import("icns.zig");
 pub const macos = @import("macos.zig");
 pub const sign_macos = @import("sign_macos.zig");
@@ -81,6 +82,8 @@ pub fn main(init: std.process.Init) !u8 {
         return packageNfpmCmd(gpa, io, args, .rpm);
     } else if (std.mem.eql(u8, command, "package-appimage")) {
         return packageAppImageCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "package-msix")) {
+        return packageMsixCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "package-nsis")) {
         return packageNsisCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "package-app")) {
@@ -118,6 +121,8 @@ fn printUsage() void {
         \\  package-rpm           Generate nfpm.yaml and build RPM (.rpm) package
         \\  package-appimage      Assemble AppDir, run mksquashfs, prepend runtime
         \\  package-nsis          Generate installer.nsi and build Windows setup.exe via makensis
+        \\  package-msix          Build a Windows .msix (manifest, block map); signed with signtool
+        \\                        when --pfx or --cert-sha1 is given, else unsigned
         \\  package-app           Assemble a macOS .app bundle (Info.plist, icon.icns, ad-hoc signed)
         \\  package-dmg           Build a macOS .dmg with the .app and an Applications link (hdiutil);
         \\                        --identity signs it, --notarize-profile notarizes and staples it
@@ -1559,6 +1564,250 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
 // ---------------------------------------------------------------------------
 
 /// Run a command; print its output and fail when it doesn't exit 0.
+/// `<out-dir>/<filename>.msix` (tools/package/msix.zig), signed with
+/// signtool when `--pfx` or `--cert-sha1` is given (the .pfx password only
+/// from $ORIEL_MSIX_PFX_PASSWORD), else unsigned (`--msix-publisher` must
+/// then be absent: the publisher carries the unsigned OID).
+fn packageMsixCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
+    const what = "package-msix";
+    var out_dir: ?[]const u8 = null;
+    var filename: ?[]const u8 = null;
+    var bin_path: ?[]const u8 = null;
+    var icons_dir: ?[]const u8 = null;
+    var webview2_loader: ?[]const u8 = null;
+    var app_id: ?[]const u8 = null;
+    var name: ?[]const u8 = null;
+    var exe_name: ?[]const u8 = null;
+    var version: []const u8 = "0.1.0";
+    var publisher: ?[]const u8 = null;
+    var description: ?[]const u8 = null;
+    var arch: []const u8 = "x64";
+    var msix_publisher: ?[]const u8 = null;
+    var identity_name: ?[]const u8 = null;
+    var min_version: []const u8 = "10.0.17763.0";
+    var pfx: ?[]const u8 = null;
+    var cert_sha1: ?[]const u8 = null;
+    var timestamp: ?[]const u8 = null;
+    var share_label: ?[]const u8 = null;
+    var permissions: std.ArrayList([]const u8) = .empty;
+    defer permissions.deinit(gpa);
+    var share_types: std.ArrayList([]const u8) = .empty;
+    defer share_types.deinit(gpa);
+    var share_exts: std.ArrayList([]const u8) = .empty;
+    defer share_exts.deinit(gpa);
+    var extras: contents.Contents = .{};
+    defer extras.deinit(gpa);
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (parseContentsArg(&extras, gpa, what, args, &i) orelse return 1) continue;
+        if (i + 1 >= args.len) continue;
+        const v: []const u8 = args[i + 1];
+        const Opt = struct { []const u8, *?[]const u8 };
+        const singles = [_]Opt{
+            .{ "--out-dir", &out_dir },             .{ "--filename", &filename },           .{ "--bin", &bin_path },
+            .{ "--icons-dir", &icons_dir },         .{ "--webview2-loader", &webview2_loader }, .{ "--app-id", &app_id },
+            .{ "--name", &name },                   .{ "--exe-name", &exe_name },           .{ "--publisher", &publisher },
+            .{ "--description", &description },     .{ "--msix-publisher", &msix_publisher }, .{ "--identity-name", &identity_name },
+            .{ "--pfx", &pfx },                     .{ "--cert-sha1", &cert_sha1 },         .{ "--timestamp", &timestamp },
+            .{ "--share-label", &share_label },
+        };
+        const matched = for (singles) |s| {
+            if (std.mem.eql(u8, arg, s[0])) {
+                s[1].* = v;
+                break true;
+            }
+        } else false;
+        if (matched) {
+            i += 1;
+        } else if (std.mem.eql(u8, arg, "--version")) {
+            version = v;
+            i += 1;
+        } else if (std.mem.eql(u8, arg, "--arch")) {
+            arch = v;
+            i += 1;
+        } else if (std.mem.eql(u8, arg, "--min-version")) {
+            min_version = v;
+            i += 1;
+        } else if (std.mem.eql(u8, arg, "--permission")) {
+            try permissions.append(gpa, v);
+            i += 1;
+        } else if (std.mem.eql(u8, arg, "--share-type")) {
+            try share_types.append(gpa, v);
+            i += 1;
+        } else if (std.mem.eql(u8, arg, "--share-ext")) {
+            try share_exts.append(gpa, v);
+            i += 1;
+        }
+    }
+
+    const target_out_dir = out_dir orelse {
+        std.debug.print("error: {s}: missing --out-dir\n", .{what});
+        return 1;
+    };
+    const target_filename = filename orelse {
+        std.debug.print("error: {s}: missing --filename\n", .{what});
+        return 1;
+    };
+    const target_bin = bin_path orelse {
+        std.debug.print("error: {s}: missing --bin\n", .{what});
+        return 1;
+    };
+    const target_icons = icons_dir orelse {
+        std.debug.print("error: {s}: missing --icons-dir\n", .{what});
+        return 1;
+    };
+    const target_name = name orelse "app";
+    const raw_exe = exe_name orelse target_name;
+    const clean_exe_name = if (std.mem.endsWith(u8, raw_exe, ".exe")) raw_exe[0 .. raw_exe.len - 4] else raw_exe;
+    metadata.validateExeName(clean_exe_name) catch |err| {
+        std.debug.print("error: {s}: invalid --exe-name '{s}': {s}\n", .{ what, raw_exe, @errorName(err) });
+        return 1;
+    };
+    const target_app_id = app_id orelse target_name;
+    const display_publisher = publisher orelse metadata.organizationFromAppId(target_app_id);
+    const signing = pfx != null or cert_sha1 != null;
+    if (signing and msix_publisher == null) {
+        std.debug.print("error: {s}: signing needs package.msix.publisher set to the certificate's Subject\n", .{what});
+        return 1;
+    }
+    if (!signing and msix_publisher != null) {
+        std.debug.print("error: {s}: package.msix.publisher is set but nothing signs the package (-Dmsix-pfx or -Dmsix-cert-sha1)\n", .{what});
+        return 1;
+    }
+    var vbuf: [32]u8 = undefined;
+    const pkg_version = msix.packageVersion(&vbuf, version) orelse {
+        std.debug.print("error: {s}: version '{s}' isn't numeric (MSIX needs up to four numbers: 1.2.3)\n", .{ what, version });
+        return 1;
+    };
+    const unsigned_pub = if (msix_publisher == null) msix.unsignedPublisher(gpa, display_publisher) catch {
+        std.debug.print("error: {s}: publisher '{s}' can't be a certificate name (no , = + < > # ; \" \\)\n", .{ what, display_publisher });
+        return 1;
+    } else null;
+    defer if (unsigned_pub) |p| gpa.free(p);
+
+    const exe_file = try std.fmt.allocPrint(gpa, "{s}.exe", .{clean_exe_name});
+    defer gpa.free(exe_file);
+    {
+        const taken = [_][]const u8{ exe_file, "AppxManifest.xml", "WebView2Loader.dll" };
+        if (!validateContents(&extras, what, taken[0..if (webview2_loader != null) taken.len else 2])) return 1;
+    }
+
+    const manifest = msix.generateManifest(gpa, .{
+        .identity_name = identity_name orelse target_app_id,
+        .publisher = msix_publisher orelse unsigned_pub.?,
+        .version = pkg_version,
+        .arch = arch,
+        .display_name = target_name,
+        .publisher_display_name = display_publisher,
+        .description = description orelse target_name,
+        .executable = exe_file,
+        .min_version = min_version,
+        .permissions = permissions.items,
+        .share = if (share_label) |l| .{ .label = l, .types = if (share_types.items.len > 0) share_types.items else &.{"*/*"}, .extensions = share_exts.items } else null,
+    }) catch |err| {
+        std.debug.print("error: {s}: manifest: {s}\n", .{ what, @errorName(err) });
+        return 1;
+    };
+    defer gpa.free(manifest);
+
+    // The payload, read into memory (the block map hashes it).
+    var entries: std.ArrayList(msix.Entry) = .empty;
+    defer {
+        for (entries.items) |e| {
+            if (e.data.ptr != manifest.ptr) gpa.free(e.data);
+        }
+        entries.deinit(gpa);
+    }
+    const limit: std.Io.Limit = .limited(2 * 1024 * 1024 * 1024);
+    const Read = struct {
+        fn file(g: std.mem.Allocator, io_: Io, path: []const u8, l: std.Io.Limit) ?[]u8 {
+            return Dir.cwd().readFileAlloc(io_, path, g, l) catch |err| {
+                std.debug.print("error: package-msix: reading {s}: {s}\n", .{ path, @errorName(err) });
+                return null;
+            };
+        }
+    };
+    try entries.append(gpa, .{ .path = exe_file, .data = Read.file(gpa, io, target_bin, limit) orelse return 1 });
+    if (webview2_loader) |wl| try entries.append(gpa, .{ .path = "WebView2Loader.dll", .data = Read.file(gpa, io, wl, limit) orelse return 1 });
+    for (extras.exes.items) |e| try entries.append(gpa, .{ .path = e.name, .data = Read.file(gpa, io, e.src, limit) orelse return 1 });
+    for (extras.files.items) |f| try entries.append(gpa, .{ .path = f.rel, .data = Read.file(gpa, io, f.src, limit) orelse return 1 });
+    // Logos from resize-icons' PNGs (Windows scales them).
+    const logos = [_]struct { []const u8, []const u8 }{
+        .{ msix.logo_44, "48x48.png" }, .{ msix.logo_150, "256x256.png" }, .{ msix.logo_store, "64x64.png" },
+    };
+    for (logos) |lg| {
+        const src = try std.fs.path.join(gpa, &.{ target_icons, lg[1] });
+        defer gpa.free(src);
+        try entries.append(gpa, .{ .path = lg[0], .data = Read.file(gpa, io, src, limit) orelse return 1 });
+    }
+    try entries.append(gpa, .{ .path = "AppxManifest.xml", .data = manifest });
+
+    try Dir.cwd().createDirPath(io, target_out_dir);
+    const out_path = try std.fs.path.join(gpa, &.{ target_out_dir, target_filename });
+    defer gpa.free(out_path);
+    {
+        var bytes: std.Io.Writer.Allocating = .init(gpa);
+        defer bytes.deinit();
+        msix.writePackage(gpa, &bytes.writer, entries.items) catch |err| {
+            std.debug.print("error: {s}: {s}\n", .{ what, @errorName(err) });
+            return 1;
+        };
+        try Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = bytes.written() });
+    }
+
+    if (signing) {
+        const signtool = findSigntool(gpa, io) orelse {
+            std.debug.print("error: {s}: signtool not found (install the Windows SDK, or set ORIEL_SIGNTOOL)\n", .{what});
+            return 1;
+        };
+        defer gpa.free(signtool);
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(gpa);
+        try argv.appendSlice(gpa, &.{ signtool, "sign", "/fd", "SHA256" });
+        if (pfx) |p| {
+            try argv.appendSlice(gpa, &.{ "/f", p });
+            if (getEnv("ORIEL_MSIX_PFX_PASSWORD")) |pw| try argv.appendSlice(gpa, &.{ "/p", pw });
+        } else try argv.appendSlice(gpa, &.{ "/sha1", cert_sha1.? });
+        if (timestamp) |t| try argv.appendSlice(gpa, &.{ "/tr", t, "/td", "SHA256" });
+        try argv.append(gpa, out_path);
+        runTool(gpa, io, what, argv.items) catch return 1;
+    }
+    // Unsigned: installs with `Add-AppxPackage -AllowUnsigned` (Windows 11).
+    return 0;
+}
+
+/// $ORIEL_SIGNTOOL, signtool on PATH, else the newest Windows Kits 10 one.
+fn findSigntool(gpa: std.mem.Allocator, io: Io) ?[]const u8 {
+    if (getEnv("ORIEL_SIGNTOOL")) |p| return gpa.dupe(u8, p) catch null;
+    if (getEnv("PATH")) |path| {
+        var it = std.mem.tokenizeScalar(u8, path, if (builtin.os.tag == .windows) ';' else ':');
+        while (it.next()) |dir| {
+            const p = std.fs.path.join(gpa, &.{ dir, "signtool.exe" }) catch return null;
+            if (pathExists(io, p)) return p;
+            gpa.free(p);
+        }
+    }
+    const kits = "C:\\Program Files (x86)\\Windows Kits\\10\\bin";
+    var d = Dir.cwd().openDir(io, kits, .{ .iterate = true }) catch return null;
+    defer d.close(io);
+    var best: ?[]u8 = null;
+    var it = d.iterate();
+    while (it.next(io) catch null) |e| {
+        if (e.kind != .directory or !std.mem.startsWith(u8, e.name, "10.")) continue;
+        if (best) |b| if (std.mem.order(u8, e.name, b) != .gt) continue;
+        if (best) |b| gpa.free(b);
+        best = gpa.dupe(u8, e.name) catch return null;
+    }
+    const ver = best orelse return null;
+    defer gpa.free(ver);
+    const p = std.fs.path.join(gpa, &.{ kits, ver, "x64", "signtool.exe" }) catch return null;
+    if (pathExists(io, p)) return p;
+    gpa.free(p);
+    return null;
+}
+
 fn runTool(gpa: std.mem.Allocator, io: Io, what: []const u8, argv: []const []const u8) !void {
     const res = std.process.run(gpa, io, .{ .argv = argv }) catch |err| {
         std.debug.print("error: {s}: failed to execute {s}: {s}\n", .{ what, argv[0], @errorName(err) });
@@ -2039,6 +2288,7 @@ test {
     std.testing.refAllDecls(icons);
     std.testing.refAllDecls(ico);
     std.testing.refAllDecls(nsis);
+    std.testing.refAllDecls(msix);
     std.testing.refAllDecls(icns);
     std.testing.refAllDecls(sign_macos);
     std.testing.refAllDecls(macos);
