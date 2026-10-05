@@ -16,6 +16,12 @@ comptime {
     if (options.native_ui) _ = @import("native_ui/engine.zig");
 }
 
+// The mDNS C ABI (oriel_mdns_*, network/mdns_c.zig) for native code linked
+// into an Android app, which may never call oriel.network from Zig.
+comptime {
+    if (options.network and target.is_android) _ = @import("modules/network/mdns_c.zig");
+}
+
 pub const App = @import("core/App.zig");
 pub const ipc = @import("core/ipc.zig");
 pub const security = @import("core/security.zig");
