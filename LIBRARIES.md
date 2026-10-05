@@ -5,13 +5,14 @@ Driven by what ghostpen and ghostreel actually use.
 
 ## TL;DR
 
-- **Same binding stack as Ghostty:** `zig-gobject` (GTK4/WebKit/GIO),
-  `zig-objc` (macOS), `zig-wayland` (Wayland protocols). All three are ready for
-  Zig 0.16, and Ghostty depends on all three in production.
+- **Two rendering stacks are supported:** system WebViews for compatibility, and
+  QuickJS + Oriel's native DOM + Yoga for `-Dnative_ui`.
+- **The platform stack remains deliberately thin:** GTK/WebKit/GIO on Linux,
+  AppKit/WKWebView on macOS, Win32/WebView2 on Windows, and native mobile shells.
 - **Most app-level needs are already in Zig's standard library (`std`):** JSON,
-  HTTP client, TLS, BLAKE3, `std.Io` async. Only SQLite, TOML, images and the
-  local HTTP server need outside packages.
-- **Decisions (2026-09-23):** use the original `ianprime0509/zig-gobject`
+  HTTP client, TLS, BLAKE3, `std.Io` async, compression, archives, and Ed25519.
+  Outside packages are reserved for rendering/AI/media/SQL and platform bindings.
+- **Decisions (2026-09-23 and follow-up):** use the original `ianprime0509/zig-gobject`
   (it ships WebKit-6.0 bindings; Ghostty's repo only packages the libraries
   Ghostty itself needs), don't use `webview/webview` at all, and write our own
   CLI parser.
@@ -25,41 +26,39 @@ Driven by what ghostpen and ghostreel actually use.
      the GlobalShortcuts portal (available on this Hyprland box) plus Wayland's
      virtual-keyboard protocol, or libei.
 
+## Rendering dependencies
+
+The default WebView path and the native renderer share Oriel's command and module APIs,
+but their runtime dependencies differ:
+
+| Path | Main dependencies | Role |
+|---|---|---|
+| WebView (Linux) | GTK4, WebKitGTK 6.0, JavaScriptCore 6.0, Soup 3, GIO | Window, browser rendering, IPC and `app://` scheme |
+| WebView (macOS) | AppKit, WKWebView, Foundation/WebKit | Window, browser rendering and IPC |
+| WebView (Windows) | Win32, WebView2 COM interfaces and loader | Window, browser rendering and IPC |
+| WebView (Android/iOS) | platform WebView, JNI/UIKit | Mobile compatibility path |
+| Native UI | vendored QuickJS-ng, Oriel native DOM, Yoga, platform drawing backends | JavaScript execution, DOM/layout, and native rendering |
+| Native UI fallback | vendored QuickJS-ng, LinkeDOM, Yoga | Compatibility fallback selected with `-Dnative_dom=false` |
+
+The native renderer has no WebKit/WebView dependency. QuickJS-ng is built from
+`src/native_ui/vendor/quickjs-ng`; Yoga is patched during the build for Oriel's layout
+and baseline behavior. Native UI backends use GTK on Linux, Direct2D/DirectWrite on
+Windows, AppKit on macOS, and UIKit/Android drawing APIs on mobile. `zigimg` is used
+where platform code needs PNG/JPEG pixels, such as clipboard and tray icons.
+
 ## Core, built-in modules, plugins
 
-Three tiers. Decision (2026-09-23): tray, updater, media-server, sql and
-fs-watch are **built into the framework**, because most desktop apps need them.
-They are still switched on per app in `build.zig`, so an app that doesn't use
-`sql` doesn't link SQLite and binaries stay small.
+Three tiers. Tray, updater, media-server, sql and fs-watch are built into the
+framework and switched on per app in `build.zig`; unused heavy modules do not need to
+be linked.
 
-**1. Core (always on):**
-- GTK4 + WebKitGTK 6.0 (+ JavaScriptCore 6.0, Soup 3) + GIO, through zig-gobject
-  (generated locally from system GIR files; see "Second-pass gaps" point 3)
-- Zig's `std`: JSON (IPC), `std.Io`, `@embedFile` (assets)
+**1. Core (mode-dependent platform shell):**
+- WebView stack above, or QuickJS + native DOM + Yoga for `-Dnative_ui`
+- Zig's `std`: JSON (IPC), `std.Io`, `@embedFile` (assets), compression and crypto
 - Our own CLI parser + `comptime` command bindings
-- Free with GTK/GIO: single instance, file dialogs, notifications, open-URL
+- Platform shell services: single instance, file dialogs, notifications, open-URL
 
 **2. Built-in modules (in the framework repo, maintained with the core, opt-in per app):**
-
-| Module | Libraries | Notes |
-|---|---|---|
-| `tray` | GDBus (StatusNotifierItem + DBusMenu), zigimg for icon pixels | Hand-written SNI; ~500–800 lines on Linux |
-| `updater` | `std.http`, `std.compress`, `std.tar`, Ed25519 (`std.crypto`) | Signed update manifests, same model as Tauri's updater |
-| `media-server` | http.zig, or range handling inside the custom scheme | Streams large local files (video/audio) with HTTP range requests |
-| `sql` | SQLite amalgamation (+ optional sqlite-vec) | Compiled from C in `build.zig`; zig-sqlite optional |
-| `sqlite_vec` | sqlite-vec amalgamation (`v0.1.9`) | Opt-in (default OFF: `-Dsqlite_vec`). Requires `sql`. Vector search extension (`vec0`) |
-| `llama` | llama.cpp (`b10809`) via Zig package manager | Opt-in (default OFF: `-Dllama`). Native C/C++ CPU inference backend linked against shared GGML |
-| `whisper` | whisper.cpp (`v1.9.4`) via Zig package manager | Opt-in (default OFF: `-Dwhisper`). Native C/C++ speech-to-text inference linked against shared GGML |
-| `fs-watch` | inotify (`std.os.linux`) / FSEvents / ReadDirectoryChangesW | Own implementation; nothing outside `std` on Linux |
-
-**3. Plugins (app-specific, outside the core):**
-
-| Plugin | Libraries | First user |
-|---|---|---|
-| `global-shortcut` | GlobalShortcuts portal (raw GDBus or libportal), libX11 | ghostpen |
-| `input` (typing into other apps) | zig-wayland + virtual-keyboard XML + libxkbcommon, libei, XTest | ghostpen |
-| `clipboard` (in the background) | zig-wayland + data-control XMLs; GdkClipboard | ghostpen |
-
 ## Zig packages (verified against GitHub)
 
 | Package | Purpose | 0.16 status | Notes |
@@ -178,18 +177,20 @@ runtime itself is preinstalled on Windows 10/11.
 
 ## Recommendations
 
-1. **Use zig-gobject rather than raw `@cImport`** for GTK/WebKit/GIO. It gives
+1. **Keep the two renderers behind one page contract.** WebView remains the broad
+   compatibility path; native UI should add capabilities without making WebView-only
+   apps depend on QuickJS, Yoga, or native drawing code.
+2. **Use zig-gobject rather than raw `@cImport`** for GTK/WebKit/GIO. It gives
    type-safe signals and GObject casting, and Ghostty has proven it in production.
-2. **Keep platform code behind the shell interface** from IDEA.md (`Window`,
-   `WebView`, `dispatchToMain`, `registerScheme`, `Tray`, `Hotkey`, `Clipboard`,
-   `Input`), with one implementation per OS, plus separate Wayland and X11
-   variants on Linux.
-3. **Linux spike order:** GTK4 window + WebKit custom scheme + IPC → tray
-   (SNI/DBusMenu) → GlobalShortcuts portal → virtual-keyboard paste →
-   data-control clipboard. After step 5, ghostpen's "❌ on Wayland" rows are gone.
-4. **Keep the dependency budget small:** zig-gobject, zig-wayland, zig-objc,
-   zigwin32 (maybe), zigimg, and per-app SQLite/TOML/http.zig. Everything else
-   comes from `std` or the OS.
+3. **Keep platform code behind the shell interfaces** from IDEA.md, with one
+   implementation per OS and separate Wayland/X11 variants on Linux. Native drawing
+   should stay behind the same window/runtime boundary.
+4. **Keep the dependency budget small:** vendored QuickJS-ng/Yoga for native UI;
+   zig-gobject, zig-wayland, zig-objc, zigwin32 (if needed), zigimg, and per-app
+   SQLite/TOML/http.zig. Everything else should come from `std` or the OS.
+5. **Prioritize conformance over feature breadth in native UI:** DOM/CSS behavior,
+   controls, accessibility, text metrics, and event ordering need shared tests before
+   adding more widgets or CSS properties.
 
 ## Second-pass gaps (2026-09-23)
 
