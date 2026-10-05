@@ -72,7 +72,7 @@ pub fn status(kind: common.Kind) common.Status {
     if (capability(kind)) |cap| return decide(readConsent(cap));
     return switch (kind) {
         .notifications => decideNotifications(readDword(win32.HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications", "ToastEnabled")),
-        .screen_capture, .accessibility, .system_audio => .granted,
+        .screen_capture, .accessibility, .system_audio, .bluetooth, .local_network => .granted,
         .microphone, .camera, .location => unreachable,
     };
 }
@@ -97,6 +97,8 @@ fn settingsUri(kind: common.Kind) ?[*:0]const u16 {
         .camera => L("ms-settings:privacy-webcam"),
         .location => L("ms-settings:privacy-location"),
         .notifications => L("ms-settings:notifications"),
+        .bluetooth => L("ms-settings:bluetooth"),
+        .local_network => L("ms-settings:network"),
         .screen_capture, .accessibility, .system_audio => null,
     };
 }

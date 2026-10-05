@@ -56,6 +56,9 @@ pub fn status(kind: Kind) Status {
         .location => locationStatus(),
         .notifications => notificationStatus(),
         .screen_capture, .system_audio, .accessibility => .denied,
+        // No status API wired yet (CBManager, the local network probe): the
+        // first use asks.
+        .bluetooth, .local_network => .unknown,
     };
 }
 
@@ -68,6 +71,7 @@ pub fn request(kind: Kind, done: Done) void {
         .location => requestLocation(done),
         .notifications => requestNotifications(done),
         .screen_capture, .system_audio, .accessibility => done(kind, .denied),
+        .bluetooth, .local_network => done(kind, .unknown),
     }
 }
 
