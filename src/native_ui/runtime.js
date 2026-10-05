@@ -16540,11 +16540,23 @@ input[type="range"] { height: 20px; margin: 2px; }
     }
     // A list item's outside marker ("• ", "3. "): a text beside its first
     // line, its end at the item's start edge, in the item's font.
-    putMarker(nodes, el, cs, fontSize, props, text) {
+    putMarker(nodes, el, cs, fontSize, props, marker) {
       const mid = this.idOf(el, "marker");
       this.own(mid, el);
       const top = Array.isArray(props.pad) && typeof props.pad[0] === "number" ? props.pad[0] : 0;
-      const mp = { ...textProps(cs, fontSize), runs: [{ t: text, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
+      if (typeof marker === "object") {
+        const fg = color(cs.color) || [0, 0, 0, 1];
+        const size = Math.max(3, Math.round(fontSize * (marker.shape === "circle" ? 0.5 : 0.375)));
+        const mp2 = { w: size, h: size, pos: "absolute", ins: [top + Math.round(fontSize * 0.5625 - size / 2), "100%", null, null], m: [0, Math.round(fontSize * 0.5 + 6), 0, 0] };
+        if (marker.shape === "circle") {
+          mp2.bw = [1, 1, 1, 1];
+          mp2.bc = [fg, fg, fg, fg];
+        } else mp2.bg = { color: fg };
+        if (marker.shape !== "square") mp2.br = ["50%", "50%", "50%", "50%"];
+        this.put(nodes, mid, "view", mp2, []);
+        return mid;
+      }
+      const mp = { ...textProps(cs, fontSize), runs: [{ t: marker, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
       this.put(nodes, mid, "text", mp, []);
       return mid;
     }
@@ -17592,8 +17604,7 @@ input[type="range"] { height: 20px; margin: 2px; }
   function listMarker(el, cs) {
     const type = cs["list-style-type"], position = cs["list-style-position"];
     if (!type || type === "none" || position === "inside") return null;
-    const bullet = { disc: "\u2022", circle: "\u25E6", square: "\u25AA" }[type];
-    if (bullet) return bullet + " ";
+    if (type === "disc" || type === "circle" || type === "square") return { shape: type };
     const list = el.parentNode;
     const items = list ? [...list.children].filter((c) => c.localName === "li") : [el];
     const reversed = list?.localName === "ol" && list.hasAttribute("reversed");
