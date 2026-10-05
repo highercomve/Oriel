@@ -338,7 +338,7 @@ zig build zjs -Doptimize=ReleaseFast -j4
 Both Zig builds use Zig 0.16.0. Engines are unchanged scratch checkouts;
 no node_modules modifications or new project dependencies are required.
 [Results](results/2026-10-02-rows-alternative-engines.json) and
-[analysis/compatibility limitations](../../docs/native-renderer-performance.md#alternative-engines-tested-2026-10-02).
+[analysis/compatibility limitations](../../docs/native-renderer-performance-history.md#alternative-engines-tested-2026-10-02).
 
 ## Historical results (before synchronous layout reads)
 
