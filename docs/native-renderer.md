@@ -585,6 +585,15 @@ the page's scheme (dk). Measured and baselined as AppKit's. A tap is its
 click (the page's tap recognizer leaves its touches alone; a pan still
 scrolls from it); it never takes the keyboard, so keys stay the page's.
 
+**Native buttons (Win32)**: platform.controls lists "button": a kind
+button is a BUTTON control (BS_PUSHBUTTON, BS_NOTIFY, not auto) over
+the node's whole box, its text the label (runs[0]); measured by the
+label as text. The visual-styles theme draws it, DarkMode_Explorer when
+the page's scheme is dark (dk) and colors are not forced. When the page
+colored the button (props.col), NM_CUSTOMDRAW paints the theme's
+BP_PUSHBUTTON background and the label in that color. A click, Space or
+Enter is its "click"; keys reach the page first, as a check's.
+
 **Inline element rects** (each backend, optional): an inline element
 (a `<span>` amid text) has no node; render.js keeps its runs
 (Renderer.inlineSpans: [text node id, first run, last run] per text node
