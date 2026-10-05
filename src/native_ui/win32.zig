@@ -178,6 +178,8 @@ const Field = struct {
     /// accessible name it was given (Props.al; 0: none, an empty name).
     ro: bool = false,
     al_hash: u64 = std.math.maxInt(u64), // not yet told
+    /// A native button's label as last set (its hash; 0: none yet).
+    label_hash: u64 = 0,
     font: ?c.HFONT = null,
     font_px: c_int = 0,
     /// The font's family and weight (familyOf's, cached for the process).
@@ -1115,7 +1117,7 @@ const PaintOrder = struct {
         if (n.props.vis == false) return;
         po.next += 1;
         const order = po.next;
-        if (n.kind == .input or n.kind == .textarea or n.kind == .select or n.kind == .check) po.fields.put(gpa, n.id, order) catch {};
+        if (n.kind == .input or n.kind == .textarea or n.kind == .select or n.kind == .check or n.kind == .button) po.fields.put(gpa, n.id, order) catch {};
         if (paintsOpaque(n)) po.occluders.append(gpa, .{ .order = order, .rect = n.clip.intersect(n.frame) }) catch {};
         var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
         while (it.next()) |k| po.walk(gpa, k);
@@ -1174,7 +1176,7 @@ fn syncFields(s: *Surface) void {
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
         const n = np.*;
-        if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check) continue;
+        if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check and n.kind != .button) continue;
         const gop = s.fields.getOrPut(n.id) catch continue;
         if (!gop.found_existing) {
             gop.value_ptr.* = makeField(s, n) catch {
@@ -1193,6 +1195,7 @@ fn syncFields(s: *Surface) void {
         styleField(s, f, n);
         if (f.slider) setSliderRange(f.*, n);
         if (f.kind == .check) syncCheck(s, f, n);
+        if (f.kind == .button) syncButton(s, f, n);
         if (f.kind == .textarea or f.rich) setPlaceholder(s, f, n.props.ph orelse "");
         const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
         if (!visible) {
@@ -1207,7 +1210,9 @@ fn syncFields(s: *Surface) void {
         // unstyled select at its border box: the combobox's own border is
         // its border (not a second one inside the CSS one).
         const ua_select = f.kind == .select and uaBorder(n);
-        const box = if (ua_select) n.frame else n.content();
+        // A native button covers its border box (its CSS border and padding
+        // are only room: the button draws its own).
+        const box = if (ua_select or f.kind == .button) n.frame else n.content();
         // Where the control goes, and the part of the page it may show.
         var place = box;
         var limit = box;
@@ -1470,8 +1475,73 @@ fn checkProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
     return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
 }
 
+/// A native push button (kind button, docs/native-controls-a11y-design.md
+/// 1.4): a BUTTON (BS_PUSHBUTTON, its label wrapping, BS_NOTIFY for its
+/// focus) over the box's border box, the CSS border and padding only room.
+/// A click is the page's click; keys go to the page first (checkProc).
+fn makeButton(s: *Surface, n: *Node) !Field {
+    const base: c.DWORD = c.WS_CHILD | c.WS_TABSTOP | c.BS_NOTIFY;
+    const button_style: c.DWORD = c.BS_PUSHBUTTON | c.BS_MULTILINE;
+    const clip = try makeClip(s);
+    errdefer _ = c.DestroyWindow(clip);
+    const hwnd = c.CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral(""), base | button_style, 0, 0, 1, 1, clip, null, c.GetModuleHandleW(null), null) orelse return error.CreateWindowFailed;
+    _ = c.SetPropW(hwnd, prop_node, @ptrFromInt(@as(usize, @intCast(n.id))));
+    subclass(hwnd, &checkProc);
+    return .{ .hwnd = hwnd, .clip = clip, .kind = .button };
+}
+
+/// A native button's label (its run's text, when it changed) and its dark
+/// theme on a dark used color-scheme (not in high contrast).
+fn syncButton(s: *Surface, f: *Field, n: *Node) void {
+    const label: []const u8 = if (n.props.runs) |runs| (if (runs.len > 0) runs[0].t else "") else "";
+    const h = std.hash.Wyhash.hash(7, label);
+    if (h != f.label_hash) {
+        f.label_hash = h;
+        const w = std.unicode.utf8ToUtf16LeAllocZ(s.gpa, label) catch return;
+        defer s.gpa.free(w);
+        _ = c.SetWindowTextW(f.hwnd, w.ptr);
+    }
+    const dark = s.forced == null and n.props.dk;
+    if (dark != f.dark_theme) {
+        f.dark_theme = dark;
+        setWindowTheme(f.hwnd, if (dark) std.unicode.utf8ToUtf16LeStringLiteral("DarkMode_Explorer") else null);
+        _ = c.InvalidateRect(f.hwnd, null, c.TRUE);
+    }
+}
+
+/// A native button whose label the page colored (Props.col): drawn
+/// here at NM_CUSTOMDRAW, the theme's button and the label in that color
+/// (a themed BUTTON ignores the DC's text color). Null: the button's own.
+fn buttonDraw(s: *Surface, cd: *c.NMCUSTOMDRAW) ?c.LRESULT {
+    const fx = fieldOf(s, cd.hdr.hwndFrom) orelse return null;
+    if (fx.field.kind != .button or cd.dwDrawStage != c.CDDS_PREPAINT) return null;
+    // Props.col only when the page colored the button (render.js).
+    const color = fx.node.props.col orelse return null;
+    if (s.forced != null) return null; // high contrast: the system's
+    const ux = uxtheme() orelse return null;
+    const theme = buttonTheme(s.hwnd, fx.field.dark_theme) orelse return null;
+    const st = cd.uItemState;
+    // PBS_NORMAL 1, HOT 2, PRESSED 3, DISABLED 4, DEFAULTED 5.
+    const state: c_int = if (st & c.CDIS_DISABLED != 0) 4 else if (st & c.CDIS_SELECTED != 0) 3 else if (st & c.CDIS_HOT != 0) 2 else if (st & c.CDIS_FOCUS != 0) 5 else 1;
+    var rc = cd.rc;
+    _ = ux.draw(theme, cd.hdc, 1, state, &rc, null); // BP_PUSHBUTTON
+    var text: [512]u16 = undefined;
+    const len = c.GetWindowTextW(fx.field.hwnd, &text, text.len);
+    const old_font = if (fx.field.font) |font| c.SelectObject(cd.hdc, font) else null;
+    defer if (old_font) |o| {
+        _ = c.SelectObject(cd.hdc, o);
+    };
+    _ = c.SetBkMode(cd.hdc, c.TRANSPARENT);
+    _ = c.SetTextColor(cd.hdc, colorRef(color));
+    _ = c.InflateRect(&rc, -4, -2);
+    _ = c.DrawTextW(cd.hdc, &text, len, &rc, c.DT_CENTER | c.DT_VCENTER | c.DT_SINGLELINE | c.DT_NOPREFIX);
+    if (st & c.CDIS_FOCUS != 0 and st & c.CDIS_SHOWKEYBOARDCUES != 0) _ = c.DrawFocusRect(cd.hdc, &rc);
+    return c.CDRF_SKIPDEFAULT;
+}
+
 fn makeField(s: *Surface, n: *Node) !Field {
     if (n.kind == .check) return makeCheck(s, n);
+    if (n.kind == .button) return makeButton(s, n);
     if (n.kind == .input and n.props.range != null) return makeSlider(s, n);
     // Text fields: RichEdit 5 when it loads (colour emoji, many undo
     // steps), else EDIT.
@@ -1806,7 +1876,7 @@ fn onFieldCommand(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
         },
         // A native check clicked (the mouse; its keys are the page's): the
         // page's click, which toggles it or doesn't (syncCheck shows it).
-        .check => if ((code == c.BN_CLICKED or code == c.BN_DOUBLECLICKED) and hwnd != check_focusing) {
+        .check, .button => if ((code == c.BN_CLICKED or code == c.BN_DOUBLECLICKED) and hwnd != check_focusing) {
             var buf: [16]u8 = undefined;
             const flags = std.fmt.bufPrint(&buf, "{d}", .{modFlags()}) catch return;
             _ = s.engine.event(fx.node.id, "click", flags);
@@ -2809,7 +2879,7 @@ fn onWheel(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM, sideways: bool) void
 /// goes to the canvas; it paints nothing itself (the control covers it).
 fn clipProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
     switch (msg) {
-        c.WM_COMMAND, c.WM_HSCROLL, c.WM_NOTIFY, c.WM_CTLCOLOREDIT, c.WM_CTLCOLORLISTBOX, c.WM_CTLCOLORSTATIC => {
+        c.WM_COMMAND, c.WM_HSCROLL, c.WM_NOTIFY, c.WM_CTLCOLOREDIT, c.WM_CTLCOLORLISTBOX, c.WM_CTLCOLORSTATIC, c.WM_CTLCOLORBTN => {
             const canvas = c.GetParent(hwnd) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
             return c.SendMessageW(canvas, msg, wparam, lparam);
         },
@@ -3029,7 +3099,7 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             }
             // A native check's focus (BS_NOTIFY; its codes are a
             // combobox's others, so only from a check).
-            if ((code == c.BN_SETFOCUS or code == c.BN_KILLFOCUS) and lparam != 0) if (fieldOf(s, toHandle(c.HWND, @bitCast(lparam)))) |fx| if (fx.field.kind == .check) {
+            if ((code == c.BN_SETFOCUS or code == c.BN_KILLFOCUS) and lparam != 0) if (fieldOf(s, toHandle(c.HWND, @bitCast(lparam)))) |fx| if (fx.field.kind == .check or fx.field.kind == .button) {
                 queueFocusCheck(s);
                 return 0;
             };
@@ -3053,16 +3123,17 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             // NM_CUSTOMDRAW (NM_FIRST - 12; the header's macro doesn't translate).
             if (hdr.code == @as(c.UINT, @bitCast(@as(i32, -12)))) {
                 if (sliderDraw(s, @ptrFromInt(@as(usize, @bitCast(lparam))))) |r| return r;
+                if (buttonDraw(s, @ptrFromInt(@as(usize, @bitCast(lparam))))) |r| return r;
             }
         },
-        c.WM_CTLCOLOREDIT, c.WM_CTLCOLORLISTBOX, c.WM_CTLCOLORSTATIC => {
+        c.WM_CTLCOLOREDIT, c.WM_CTLCOLORLISTBOX, c.WM_CTLCOLORSTATIC, c.WM_CTLCOLORBTN => {
             const field_hwnd = toHandle(c.HWND, @bitCast(lparam));
             const hdc = toHandle(c.HDC, wparam);
             // A combobox's list asks for itself: look at its owner.
             const fx = fieldOf(s, field_hwnd) orelse fieldOf(s, c.GetParent(field_hwnd)) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
             // A trackbar's or a native check's background: the page's behind it
             // (else black, or the dialog grey).
-            if (fx.field.slider or fx.field.kind == .check) {
+            if (fx.field.slider or fx.field.kind == .check or fx.field.kind == .button) {
                 const behind = colorBehind(s, fx.node);
                 if (fx.field.brush == null or fx.field.bg != behind) {
                     if (fx.field.brush) |b| _ = c.DeleteObject(b);
@@ -4680,7 +4751,7 @@ fn withAccent(gpa: std.mem.Allocator, platform_json: [:0]const u8, a: [3]u8, for
     const body = body_buf.items;
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
     // controls: the kinds made native here (docs/native-controls-a11y-design.md 1.1).
-    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"accent\":[{d},{d},{d}],\"controls\":[\"check\"]}}", .{ body, sep, a[0], a[1], a[2] }, 0) catch null;
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"accent\":[{d},{d},{d}],\"controls\":[\"check\",\"button\"]}}", .{ body, sep, a[0], a[1], a[2] }, 0) catch null;
 }
 
 /// Forced colors (Windows high contrast, platform.forcedColors): the
@@ -5136,6 +5207,8 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             };
             out.* = .{ @min(max_width, w), h };
         },
+        // A native button: its label's size (padding and border are CSS room).
+        .button => out.* = measuredText(s, n, max_width) orelse .{ 0, 0 },
         .image => {
             // Its natural size, scaled down to the width it may take.
             const img = imageOf(s, n) orelse return;
