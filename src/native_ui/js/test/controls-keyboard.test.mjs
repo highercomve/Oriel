@@ -71,6 +71,12 @@ const order = run(`(() => { const out = []; document.getElementById("name").focu
 assert.ok(order.includes("r2") && !order.includes("r1") && !order.includes("r3"), `one stop per group: ${order}`);
 key("r2", "ArrowDown");
 assert.equal(run(`document.activeElement.id + " " + document.getElementById("r3").checked + " " + document.getElementById("r2").checked`), "r3 true false");
+// Clicking the checked radio again: a click, no change.
+run(`globalThis.changes = 0; document.getElementById("r3").addEventListener("change", () => changes++)`);
+ctx.__oriel.event(0, "key", ["Tab", 0, 0]);
+run(`document.getElementById("r3").click ? 0 : 0`);
+key("r3", " "); key("r3", " ", "keyup");
+assert.equal(run("changes"), 0, "no change for an already checked radio");
 // Indeterminate: mixed until clicked.
 run(`document.getElementById("mix").indeterminate = true`);
 ctx.__oriel.render();

@@ -980,6 +980,8 @@ function activate(el, flags) {
   // A checkbox or radio changes before its click is dispatched (and goes
   // back if a listener cancels it), as in a browser: React's onChange for
   // them reads the new state during the click.
+  // A radio that's already checked stays so: no input or change for it.
+  const radioWasOn = el.localName === "input" && el.type === "radio" && el.checked;
   const wasMixed = el.localName === "input" && el.type === "checkbox" && el.indeterminate;
   if (wasMixed) el.indeterminate = false;
   const undo0 = isCheckable(el) && !el.hasAttribute("disabled") ? check(el) : null;
@@ -991,7 +993,7 @@ function activate(el, flags) {
   el.dispatchEvent(ev);
   if (undo) {
     if (ev.defaultPrevented) undo();
-    else {
+    else if (!radioWasOn) {
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
     }
