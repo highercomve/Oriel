@@ -438,6 +438,38 @@ pub fn fieldLine(comptime font_class: [:0]const u8, n: *const Node) f32 {
     return m.ascent + m.descent + m.gap;
 }
 
+/// A native button's label (kind button: its runs, one line): its text,
+/// owned by the caller.
+pub fn buttonLabel(gpa: std.mem.Allocator, n: *const Node) ?[]u8 {
+    const runs = n.props.runs orelse return null;
+    var out: std.ArrayList(u8) = .empty;
+    for (runs) |r| out.appendSlice(gpa, r.t) catch {
+        out.deinit(gpa);
+        return null;
+    };
+    return out.toOwnedSlice(gpa) catch null;
+}
+
+/// A native button's content size: its label on one line in the page's
+/// font (the bezel is drawn around it in the padding and border room).
+pub fn buttonLabelSize(comptime font_class: [:0]const u8, n: *const Node) [2]f32 {
+    const fz = n.props.fz orelse 16; // (as buttonLook's title)
+    const line = fieldLine(font_class, n);
+    const text = buttonLabel(std.heap.smp_allocator, n) orelse return .{ 0, line };
+    defer std.heap.smp_allocator.free(text);
+    const fnt = font(font_class, fz, n.props.fwt orelse 400, n.props.it, n.props.mono, n.props.ff) orelse return .{ 0, line };
+    const s = CFAttributedStringCreateMutable(null, 0) orelse return .{ 0, line };
+    defer CFRelease(s);
+    const str = CFStringCreateWithBytes(null, text.ptr, @intCast(@min(text.len, 1 << 16)), kCFStringEncodingUTF8, 0) orelse return .{ 0, line };
+    defer CFRelease(str);
+    CFAttributedStringReplaceString(s, .{ .location = 0, .length = 0 }, str);
+    CFAttributedStringSetAttribute(s, .{ .location = 0, .length = CFStringGetLength(str) }, kCTFontAttributeName, fnt);
+    const ln = CTLineCreateWithAttributedString(s) orelse return .{ 0, line };
+    defer CFRelease(ln);
+    const w: f32 = @floatCast(CTLineGetTypographicBounds(ln, null, null, null));
+    return .{ @ceil(w), line };
+}
+
 /// A text field's baseline from the middle of its content box (its one
 /// line centered there): its font's ascent, less half the line (WebKit's:
 /// an 11px field 19 tall has it 14 down).
@@ -1315,7 +1347,14 @@ fn paintRunBackgrounds(cg: CGContextRef, frame: CTFrameRef, h: CGFloat, pl: Plac
 pub const Range = tree_mod.Range;
 
 pub fn visiblePart(tree: *tree_mod.Tree, field: *Node) Rect {
-    var shown = field.clip.intersect(field.content());
+    return visibleRect(tree, field, field.content());
+}
+
+/// The part of `area` (a control drawn for `field`, past its content box:
+/// a native button's bezel, shadow and focus ring) its clip and the boxes
+/// painted over it leave.
+pub fn visibleRect(tree: *tree_mod.Tree, field: *Node, area: Rect) Rect {
+    var shown = field.clip.intersect(area);
     const root = tree.root orelse return shown;
     var after = false;
     cutBy(root, field, &after, &shown);

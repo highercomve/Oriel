@@ -528,6 +528,20 @@ or cancels it), radios never grouped (each its own holder). Space and
 Return on a focused one go to the page and stop there (main.js activates
 it); with Full Keyboard Access it takes focus and tells the page.
 
+**Native buttons (AppKit)**: platform.controls lists "button", so a
+text-only button the page left to the UA (rule 1.4) is kind button: an
+NSButton push button in a clipping holder, its bezel (alignment rect)
+over the node's whole box, padding and border only room. The rounded
+bezel where the box is within 2px of a control size's height (regular 20,
+large 28, small 16, mini 13), centered in it; else the flexible push
+bezel, stretched to the box. The title is the label in the page's font,
+in the page's color only when it colored the button (col), else the
+system's label color; the appearance the page's scheme (dk), not the
+system's. It measures as its label on one line, its baseline centered as
+a text field's. A click is the page's (activate(): submit, reset,
+disabled); Space and Return on a focused one go to the page and stop
+there, as a check's.
+
 **Inline element rects** (each backend, optional): an inline element
 (a `<span>` amid text) has no node; render.js keeps its runs
 (Renderer.inlineSpans: [text node id, first run, last run] per text node
