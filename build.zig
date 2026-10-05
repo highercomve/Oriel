@@ -16,6 +16,7 @@ const Scanner = @import("wayland").Scanner;
 const ggml = @import("build/ggml.zig");
 const android_build = @import("build/android.zig");
 const ios_build = @import("build/ios.zig");
+const android_manifest = @import("build/android_manifest.zig");
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
@@ -188,12 +189,16 @@ pub fn build(b: *std.Build) void {
 
     // Host tool used by `addApp` for packaging (deb, rpm, AppImage, NSIS, desktop-entry).
     const zigimg_dep = b.dependency("zigimg", .{ .target = b.graph.host, .optimize = .ReleaseSafe });
+    // The Android manifest's generated regions (android-project), shared with
+    // this build script.
+    const android_manifest_mod = b.createModule(.{ .root_source_file = b.path("build/android_manifest.zig") });
     const package_tool_mod = b.createModule(.{
         .root_source_file = b.path("tools/package/main.zig"),
         .target = b.graph.host,
         .optimize = .ReleaseSafe,
         .imports = &.{
             .{ .name = "zigimg", .module = zigimg_dep.module("zigimg") },
+            .{ .name = "android_manifest", .module = android_manifest_mod },
         },
     });
     const package_tool = b.addExecutable(.{
@@ -338,6 +343,18 @@ pub fn build(b: *std.Build) void {
     });
     if (runs_tests) test_step.dependOn(&b.addRunArtifact(deep_link_queue_tests).step);
 
+    // The Android manifest's regions, as build.zig and package_tool use them.
+    const android_manifest_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build/android_manifest.zig"),
+            .target = if (runs_tests) target else b.graph.host,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+        .use_lld = useLld(if (runs_tests) target else b.graph.host),
+    });
+    if (runs_tests) test_step.dependOn(&b.addRunArtifact(android_manifest_tests).step);
+
     const dev_runner_tests = b.addTest(.{
         .root_module = dev_runner.root_module,
         .use_llvm = true,
@@ -359,7 +376,7 @@ pub fn build(b: *std.Build) void {
     // and linking. The fast inner loop for editors and coding agents.
     const check_step = b.step("check", "Type-check the framework, tests and tools (no binaries)");
     if (runs_tests) {
-        for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module, patch_httpz_tests.root_module }) |m| {
+        for ([_]*std.Build.Module{ oriel, package_tool_mod, tool_tests.root_module, patch_httpz_tests.root_module, android_manifest_tests.root_module }) |m| {
             check_step.dependOn(&b.addTest(.{ .root_module = m }).step);
         }
     } else {
@@ -379,7 +396,10 @@ pub fn build(b: *std.Build) void {
     const host_tools = [_]struct { []const u8, []const std.Build.Module.Import }{
         .{ "tools/dev_runner.zig", &.{} },
         .{ "tools/embed_assets.zig", &.{.{ .name = "csp", .module = b.createModule(.{ .root_source_file = b.path("src/core/csp.zig") }) }} },
-        .{ "tools/package/main.zig", &.{.{ .name = "zigimg", .module = zigimg_target.module("zigimg") }} },
+        .{ "tools/package/main.zig", &.{
+            .{ .name = "zigimg", .module = zigimg_target.module("zigimg") },
+            .{ .name = "android_manifest", .module = b.createModule(.{ .root_source_file = b.path("build/android_manifest.zig") }) },
+        } },
         .{ "tools/update_tool.zig", &.{.{ .name = "update_manifest", .module = update_manifest_target }} },
     };
     // Not for Android or iOS: the host tools never run on a phone.
@@ -1441,19 +1461,10 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
     for (0..3) |_| code = code * 100 + (std.fmt.parseInt(u32, it.next() orelse "0", 10) catch 0);
     if (code == 0) code = 1;
 
-    var perms: std.ArrayList(u8) = .empty;
-    const line = "    <uses-permission android:name=\"android.permission.{s}\" />\n";
-    if (permissions.microphone != null) {
-        perms.appendSlice(b.allocator, b.fmt(line, .{"RECORD_AUDIO"})) catch @panic("OOM");
-        perms.appendSlice(b.allocator, b.fmt(line, .{"FOREGROUND_SERVICE"})) catch @panic("OOM");
-        perms.appendSlice(b.allocator, b.fmt(line, .{"FOREGROUND_SERVICE_MICROPHONE"})) catch @panic("OOM");
-    }
-    if (permissions.camera != null) perms.appendSlice(b.allocator, b.fmt(line, .{"CAMERA"})) catch @panic("OOM");
-    if (permissions.location != null) {
-        perms.appendSlice(b.allocator, b.fmt(line, .{"ACCESS_COARSE_LOCATION"})) catch @panic("OOM");
-        perms.appendSlice(b.allocator, b.fmt(line, .{"ACCESS_FINE_LOCATION"})) catch @panic("OOM");
-    }
-    if (permissions.notifications != null) perms.appendSlice(b.allocator, b.fmt(line, .{"POST_NOTIFICATIONS"})) catch @panic("OOM");
+    // The manifest's generated regions (build/android_manifest.zig), rewritten
+    // on every build by the `--runtime-only` sync.
+    const perms = android_manifest.permissionsXml(b.allocator, permissions) catch @panic("OOM");
+    const features = android_manifest.featuresXml(b.allocator, permissions) catch @panic("OOM");
 
     var schemes: std.ArrayList(u8) = .empty;
     for (url_schemes) |scheme| schemes.appendSlice(b.allocator, b.fmt(
@@ -1472,7 +1483,6 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         \\            android:exported="false"
         \\            android:foregroundServiceType="microphone" />
         \\
-        \\
     else
         "";
 
@@ -1489,7 +1499,6 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         \\            </intent-filter>
         \\        </service>
         \\
-        \\
     , .{xmlEscape(b, label)})) catch @panic("OOM");
     if (options.android.input_method) |label| components.appendSlice(b.allocator, b.fmt(
         \\        <service
@@ -1502,7 +1511,6 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         \\            </intent-filter>
         \\            <meta-data android:name="android.view.im" android:resource="@xml/oriel_input_method" />
         \\        </service>
-        \\
         \\
     , .{xmlEscape(b, label)})) catch @panic("OOM");
 
@@ -1517,7 +1525,8 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         b.fmt("version={s}", .{version}),
         b.fmt("version_code={d}", .{code}),
         b.fmt("lib_dir={s}", .{lib_dir}),
-        b.fmt("permissions={s}", .{perms.items}),
+        b.fmt("permissions={s}", .{perms}),
+        b.fmt("features={s}", .{features}),
         b.fmt("url_schemes={s}", .{schemes.items}),
         b.fmt("audio_service={s}", .{audio_service}),
         b.fmt("android_components={s}", .{components.items}),
