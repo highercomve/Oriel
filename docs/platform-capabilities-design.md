@@ -71,6 +71,12 @@ Anything unmapped goes through typed per-platform lists, merged after the genera
 `PlistValue = union(enum) { string, boolean, integer, strings: []const []const u8, raw_xml }`.
 This is shared by `tools/package/{ios,macos}.zig`, passed as `--plist key=json` args.
 
+*Implemented (0.9.1), a narrower first step:* `.android.permissions`/`.features` (merged into the
+manifest regions), `.android.sources`/`.proguard_rules`, `.ios`/`.macos.usage_descriptions`
+(`--usage-key KEY=TEXT`), `.macos.entitlements` (boolean, `--entitlement`) and
+`.windows.capabilities` (MSIX, `--capability kind:name`). Not yet: `remove_permissions`, raw XML,
+typed plist values, iOS entitlements, Linux desktop keys.
+
 ### ADR-0.3 (blocking) The Android manifest must be regenerated on every build
 Today any new declaration never reaches an existing `android/` project, which is why GhostShare
 needed its patch tool. The template gets marked regions, `<!-- oriel:permissions begin/end -->`,
