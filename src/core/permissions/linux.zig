@@ -7,7 +7,7 @@ const common = @import("common.zig");
 
 pub fn status(kind: common.Kind) common.Status {
     return switch (kind) {
-        .microphone, .accessibility, .notifications, .system_audio => .granted,
+        .microphone, .accessibility, .notifications, .system_audio, .bluetooth, .local_network => .granted,
         .camera, .screen_capture, .location => .prompt,
     };
 }

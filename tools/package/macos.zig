@@ -41,6 +41,8 @@ pub fn usageKeys(kind: []const u8) []const []const u8 {
         .{ "camera", &[_][]const u8{"NSCameraUsageDescription"} },
         .{ "location", &[_][]const u8{ "NSLocationWhenInUseUsageDescription", "NSLocationUsageDescription" } },
         .{ "system_audio", &[_][]const u8{"NSAudioCaptureUsageDescription"} },
+        .{ "bluetooth", &[_][]const u8{"NSBluetoothAlwaysUsageDescription"} },
+        .{ "local_network", &[_][]const u8{"NSLocalNetworkUsageDescription"} },
     };
     inline for (map) |m| if (std.mem.eql(u8, kind, m[0])) return m[1];
     return &.{};

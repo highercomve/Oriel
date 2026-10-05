@@ -68,7 +68,9 @@ pub fn status(kind: Kind) Status {
         .screen_capture => if (CGPreflightScreenCaptureAccess()) .granted else .prompt,
         .accessibility => if (AXIsProcessTrusted() != 0) .granted else .prompt,
         .notifications => notificationStatus(),
-        .location, .system_audio => .unknown,
+        // Bluetooth (CBManager) and the local network have no status API
+        // here yet: the first use asks.
+        .location, .system_audio, .bluetooth, .local_network => .unknown,
     };
 }
 
@@ -86,7 +88,7 @@ pub fn request(kind: Kind, done: Done) void {
         },
         .accessibility => requestAccessibility(done),
         .notifications => requestNotifications(done),
-        .location, .system_audio => done(kind, .unknown),
+        .location, .system_audio, .bluetooth, .local_network => done(kind, .unknown),
     }
 }
 
@@ -107,6 +109,8 @@ pub fn settingsUrl(kind: Kind) ?[:0]const u8 {
         .accessibility => privacy ++ "Accessibility",
         .location => privacy ++ "LocationServices",
         .notifications => "x-apple.systempreferences:com.apple.preference.notifications",
+        .bluetooth => privacy ++ "Bluetooth",
+        .local_network => privacy ++ "LocalNetwork",
     };
 }
 
