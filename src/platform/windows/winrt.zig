@@ -195,6 +195,7 @@ pub const generic = struct {
     pub const async_operation_completed = GUID.parse("{FCDCF02C-E5D8-4478-915A-4D90B74B83A5}");
     pub const iterable = GUID.parse("{FAA585EA-6214-4217-AFDA-7F46DE5869B3}");
     pub const iterator = GUID.parse("{6A79E863-4300-459A-9966-CBB660963EE1}");
+    pub const vector_view = GUID.parse("{BBE1FA4C-B0E3-4583-BAEF-1F1B2E483E56}");
 };
 
 /// "{xxxxxxxx-xxxx-...}" in lower case, as signatures spell IIDs.
@@ -332,6 +333,52 @@ pub fn AsyncOperation(comptime result_sig: []const u8) type {
             const h = try H.create(ctx, Glue.completed);
             defer release(h);
             try check(op.vtbl.put_Completed(op, h), "IAsyncOperation.put_Completed");
+        }
+
+        /// Blocks until the operation ends (up to `timeout_ms`) and returns
+        /// its raw result: an interface pointer (a new reference) or, for
+        /// IAsyncOperation<String>, an HSTRING the caller owns. Null when it
+        /// failed, was canceled or timed out. Only where blocking is fine
+        /// (startup, before any window): the completion comes on another
+        /// thread, so this thread's apartment needn't pump messages.
+        pub fn wait(op: *Self, timeout_ms: u32) ?*anyopaque {
+            const Waiter = struct {
+                event: win32.HANDLE,
+                status: std.atomic.Value(i32) = .init(@intFromEnum(AsyncStatus.started)),
+                fn completed(w: *@This(), _: *Self, status: AsyncStatus) void {
+                    w.status.store(@intFromEnum(status), .release);
+                    _ = win32.SetEvent(w.event);
+                }
+            };
+            const event = win32.CreateEventW(null, win32.TRUE, win32.FALSE, null) orelse return null;
+            // The handler may still run after a timeout: it's freed only
+            // when the operation lets go of it, and the event stays open.
+            const w = std.heap.smp_allocator.create(Waiter) catch return null;
+            w.* = .{ .event = event };
+            const H = Delegate(handler_iid, *Self, AsyncStatus, Waiter);
+            const h = H.create(w, Waiter.completed) catch {
+                std.heap.smp_allocator.destroy(w);
+                _ = win32.CloseHandle(event);
+                return null;
+            };
+            defer release(h);
+            if (op.vtbl.put_Completed(op, h) < 0) {
+                std.heap.smp_allocator.destroy(w);
+                _ = win32.CloseHandle(event);
+                return null;
+            }
+            if (win32.WaitForSingleObject(event, timeout_ms) != win32.WAIT_OBJECT_0) {
+                std.log.scoped(.winrt).warn("an async operation took over {d} ms", .{timeout_ms});
+                return null;
+            }
+            defer {
+                _ = win32.CloseHandle(event);
+                std.heap.smp_allocator.destroy(w);
+            }
+            if (w.status.load(.acquire) != @intFromEnum(AsyncStatus.completed)) return null;
+            var r: ?*anyopaque = null;
+            if (op.vtbl.GetResults(op, &r) < 0) return null;
+            return r;
         }
     };
 }

@@ -19,6 +19,13 @@
 //! (platform/windows/Shell.zig). Each file is opened read-only into
 //! `received` (core/file_handles.zig); the share carries handles, never
 //! paths, and goes out through common.dispatch (`share:received`).
+//!
+//! Packaged (MSIX, tools/package/msix.zig) the app is also a Share
+//! Target: Windows launches it with no arguments, and `packagedShare` reads
+//! the ShareOperation at startup (text, web link, the files' paths) into
+//! the same argument form (`--oriel-share-target ...`), which a second
+//! instance forwards like the others; `finishPackaged` reports it done
+//! once the files are open.
 
 const std = @import("std");
 const oriel = @import("../../oriel.zig");
@@ -573,6 +580,12 @@ pub fn capabilities() common.Capabilities {
 pub const send_to_flag = "--oriel-send-to";
 /// The "Open with" command's argument: the file follows it.
 pub const open_with_flag = "--oriel-open-with";
+/// A packaged app's Share Target activation, as arguments (`packagedShare`,
+/// and what a second instance forwards): `text_prefix`/`url_prefix`
+/// arguments and file paths follow it.
+pub const share_target_flag = "--oriel-share-target";
+const text_prefix = "--oriel-share-text=";
+const url_prefix = "--oriel-share-url=";
 
 /// Shares received and not released: id -> its files' handles. UI thread.
 var shares: std.AutoHashMapUnmanaged(u32, []u32) = .empty;
@@ -587,7 +600,17 @@ pub fn receiveArgs(args: []const []const u8) bool {
     defer files.deinit(gpa);
     var handles: std.ArrayList(u32) = .empty;
     defer handles.deinit(gpa);
+    var text: ?[]const u8 = null;
+    var url: ?[]const u8 = null;
     for (args[at.first..]) |path| {
+        if (at.source == .share and std.mem.startsWith(u8, path, text_prefix)) {
+            text = path[text_prefix.len..];
+            continue;
+        }
+        if (at.source == .share and std.mem.startsWith(u8, path, url_prefix)) {
+            url = path[url_prefix.len..];
+            continue;
+        }
         const f = keepFile(path) catch |e| {
             log.warn("share: a received file can't be opened: {s}", .{@errorName(e)});
             continue;
@@ -601,7 +624,7 @@ pub fn receiveArgs(args: []const []const u8) bool {
             received.release(f.handle);
         };
     }
-    if (files.items.len == 0) return true;
+    if (files.items.len == 0 and text == null and url == null) return true;
     const id = next_share;
     next_share +%= 1;
     if (next_share == 0) next_share = 1;
@@ -615,7 +638,7 @@ pub fn receiveArgs(args: []const []const u8) bool {
         return true;
     };
     shares.putAssumeCapacity(id, owned);
-    const r: common.Received = .{ .id = id, .source = at.source, .files = files.items };
+    const r: common.Received = .{ .id = id, .source = at.source, .text = text, .url = url, .files = files.items };
     common.dispatch(&r);
     return true;
 }
@@ -633,8 +656,281 @@ fn parseLaunch(args: []const []const u8) ?Launch {
     for (args, 0..) |a, i| {
         if (std.mem.eql(u8, a, send_to_flag)) return .{ .source = .send_to, .first = i + 1 };
         if (std.mem.eql(u8, a, open_with_flag)) return .{ .source = .open_with, .first = i + 1 };
+        if (std.mem.eql(u8, a, share_target_flag)) return .{ .source = .share, .first = i + 1 };
     }
     return null;
+}
+
+// ------------------------------------------- packaged: Share Target
+
+const AppInstanceStatics = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        get_RecommendedInstance: Slot,
+        GetActivatedEventArgs: *const fn (*AppInstanceStatics, *?*ActivatedEventArgs) callconv(.winapi) HRESULT,
+    },
+    pub const iid = GUID.parse("{9D11E77F-9EA6-47AF-A6EC-46784C5BA254}");
+};
+
+const ActivatedEventArgs = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        get_Kind: *const fn (*ActivatedEventArgs, *i32) callconv(.winapi) HRESULT,
+    },
+    /// ActivationKind.ShareTarget.
+    const share_target: i32 = 2;
+};
+
+const ShareTargetActivatedEventArgs = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        get_ShareOperation: *const fn (*ShareTargetActivatedEventArgs, *?*ShareOperation) callconv(.winapi) HRESULT,
+    },
+    pub const iid = GUID.parse("{4BDAF9C8-CDB2-4ACB-BFC3-6648563378EC}");
+};
+
+pub const ShareOperation = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        get_Data: *const fn (*ShareOperation, *?*DataPackageView) callconv(.winapi) HRESULT,
+        get_QuickLinkId: Slot,
+        RemoveThisQuickLink: Slot,
+        ReportStarted: Slot,
+        ReportDataRetrieved: Slot,
+        ReportSubmittedBackgroundTask: Slot,
+        ReportCompletedWithQuickLink: Slot,
+        ReportCompleted: *const fn (*ShareOperation) callconv(.winapi) HRESULT,
+    },
+};
+
+const DataPackageView = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        get_Properties: Slot,
+        get_RequestedOperation: Slot,
+        ReportOperationCompleted: Slot,
+        get_AvailableFormats: Slot,
+        Contains: *const fn (*DataPackageView, HSTRING, *u8) callconv(.winapi) HRESULT,
+        GetDataAsync: Slot,
+        GetTextAsync: *const fn (*DataPackageView, *?*TextOp) callconv(.winapi) HRESULT,
+        GetCustomTextAsync: Slot,
+        GetUriAsync: Slot,
+        GetHtmlFormatAsync: Slot,
+        GetResourceMapAsync: Slot,
+        GetRtfAsync: Slot,
+        GetBitmapAsync: Slot,
+        GetStorageItemsAsync: *const fn (*DataPackageView, *?*ItemsOp) callconv(.winapi) HRESULT,
+    },
+};
+
+const DataPackageView2 = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        GetApplicationLinkAsync: Slot,
+        GetWebLinkAsync: *const fn (*DataPackageView2, *?*UriOp) callconv(.winapi) HRESULT,
+    },
+    pub const iid = GUID.parse("{40ECBA95-2450-4C1D-B6B4-ED45463DEE9C}");
+};
+
+const StandardDataFormats = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        get_Text: *const fn (*StandardDataFormats, *HSTRING) callconv(.winapi) HRESULT,
+        get_Uri: Slot,
+        get_Html: Slot,
+        get_Rtf: Slot,
+        get_Bitmap: Slot,
+        get_StorageItems: *const fn (*StandardDataFormats, *HSTRING) callconv(.winapi) HRESULT,
+    },
+    pub const iid = GUID.parse("{7ED681A1-A880-40C9-B4ED-0BEE1E15F549}");
+};
+
+const StandardDataFormats2 = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        get_WebLink: *const fn (*StandardDataFormats2, *HSTRING) callconv(.winapi) HRESULT,
+    },
+    pub const iid = GUID.parse("{42A254F4-9D76-42E8-861B-47C25DD0CF71}");
+};
+
+const StorageItemView = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        GetAt: *const fn (*StorageItemView, u32, *?*StorageItemFull) callconv(.winapi) HRESULT,
+        get_Size: *const fn (*StorageItemView, *u32) callconv(.winapi) HRESULT,
+    },
+};
+
+/// IStorageItem, up to get_Path.
+const StorageItemFull = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        RenameAsync: Slot,
+        RenameAsyncOverload: Slot,
+        DeleteAsync: Slot,
+        DeleteAsyncOverload: Slot,
+        GetBasicPropertiesAsync: Slot,
+        get_Name: Slot,
+        get_Path: *const fn (*StorageItemFull, *HSTRING) callconv(.winapi) HRESULT,
+    },
+};
+
+const UriClass = extern struct {
+    vtbl: *const extern struct {
+        base: Inspectable.Vtbl,
+        get_AbsoluteUri: *const fn (*UriClass, *HSTRING) callconv(.winapi) HRESULT,
+    },
+    pub const iid = GUID.parse("{9E365E57-48B2-4160-956F-C7385120BBFC}");
+};
+
+const TextOp = winrt.AsyncOperation(winrt.sig.string);
+const UriOp = winrt.AsyncOperation(winrt.sig.class("Windows.Foundation.Uri", UriClass.iid));
+const ItemsOp = winrt.AsyncOperation(winrt.sig.pinterface(winrt.generic.vector_view, &.{winrt.sig.iface(StorageItem.iid)}));
+
+extern "kernel32" fn GetCurrentPackageFullName(len: *u32, name: ?[*]u16) callconv(.winapi) i32;
+
+/// Whether this process has package identity (an installed MSIX).
+pub fn isPackaged() bool {
+    var len: u32 = 0;
+    // ERROR_INSUFFICIENT_BUFFER (122) with identity; APPMODEL_ERROR_NO_PACKAGE without.
+    return GetCurrentPackageFullName(&len, null) == 122;
+}
+
+/// A Share Target activation: the operation (`finishPackaged` reports it
+/// done) and its share as launch arguments (`share_target_flag` first).
+pub const Packaged = struct {
+    op: *ShareOperation,
+    args: [][]u8,
+};
+
+/// Reading a share waits at most this long for each part.
+const read_timeout_ms = 10_000;
+
+/// A packaged app launched as a Share Target: its share, read now (text,
+/// web link, the files' paths). Null for any other launch. Runs before
+/// any window, with COM initialized on this thread; blocks while the data
+/// is fetched from the sharing app.
+pub fn packagedShare(alloc: std.mem.Allocator) ?Packaged {
+    if (!isPackaged()) return null;
+    const statics = winrt.factory(AppInstanceStatics, "Windows.ApplicationModel.AppInstance") catch return null;
+    defer winrt.release(statics);
+    var args_opt: ?*ActivatedEventArgs = null;
+    if (statics.vtbl.GetActivatedEventArgs(statics, &args_opt) < 0) return null;
+    const act = args_opt orelse return null;
+    defer winrt.release(act);
+    var kind: i32 = 0;
+    if (act.vtbl.get_Kind(act, &kind) < 0 or kind != ActivatedEventArgs.share_target) return null;
+    const st = winrt.query(ShareTargetActivatedEventArgs, act) catch return null;
+    defer winrt.release(st);
+    var op_opt: ?*ShareOperation = null;
+    if (st.vtbl.get_ShareOperation(st, &op_opt) < 0) return null;
+    const op = op_opt orelse return null;
+
+    var list: std.ArrayList([]u8) = .empty;
+    readShare(alloc, op, &list) catch |e| log.warn("share: reading the shared data: {s}", .{@errorName(e)});
+    const args = list.toOwnedSlice(alloc) catch {
+        for (list.items) |a| alloc.free(a);
+        list.deinit(alloc);
+        _ = op.vtbl.ReportCompleted(op);
+        winrt.release(op);
+        return null;
+    };
+    return .{ .op = op, .args = args };
+}
+
+fn readShare(alloc: std.mem.Allocator, op: *ShareOperation, list: *std.ArrayList([]u8)) !void {
+    try list.append(alloc, try alloc.dupe(u8, share_target_flag));
+    var view_opt: ?*DataPackageView = null;
+    try winrt.check(op.vtbl.get_Data(op, &view_opt), "ShareOperation.get_Data");
+    const view = view_opt orelse return error.WinRT;
+    defer winrt.release(view);
+    const formats = try winrt.factory(StandardDataFormats, "Windows.ApplicationModel.DataTransfer.StandardDataFormats");
+    defer winrt.release(formats);
+
+    if (has(view, formats.vtbl.get_Text, formats)) {
+        var t: ?*TextOp = null;
+        if (view.vtbl.GetTextAsync(view, &t) >= 0) if (t) |o| {
+            defer winrt.release(o);
+            if (o.wait(read_timeout_ms)) |h| {
+                var s = winrt.String.adopt(@ptrCast(h));
+                defer s.deinit();
+                try list.append(alloc, try prefixed(alloc, text_prefix, s));
+            }
+        };
+    }
+    if (winrt.query(StandardDataFormats2, formats)) |f2| {
+        defer winrt.release(f2);
+        if (has(view, f2.vtbl.get_WebLink, f2)) if (winrt.query(DataPackageView2, view)) |v2| {
+            defer winrt.release(v2);
+            var u: ?*UriOp = null;
+            if (v2.vtbl.GetWebLinkAsync(v2, &u) >= 0) if (u) |o| {
+                defer winrt.release(o);
+                if (o.wait(read_timeout_ms)) |p| {
+                    const uri: *Inspectable = @ptrCast(@alignCast(p));
+                    defer winrt.release(uri);
+                    if (winrt.query(UriClass, uri)) |uc| {
+                        defer winrt.release(uc);
+                        var h: HSTRING = null;
+                        if (uc.vtbl.get_AbsoluteUri(uc, &h) >= 0) {
+                            var s = winrt.String.adopt(h);
+                            defer s.deinit();
+                            try list.append(alloc, try prefixed(alloc, url_prefix, s));
+                        }
+                    } else |_| {}
+                }
+            };
+        } else |_| {};
+    } else |_| {}
+    if (has(view, formats.vtbl.get_StorageItems, formats)) {
+        var i_op: ?*ItemsOp = null;
+        if (view.vtbl.GetStorageItemsAsync(view, &i_op) >= 0) if (i_op) |o| {
+            defer winrt.release(o);
+            if (o.wait(read_timeout_ms)) |p| {
+                const items: *StorageItemView = @ptrCast(@alignCast(p));
+                defer winrt.release(items);
+                var n: u32 = 0;
+                _ = items.vtbl.get_Size(items, &n);
+                for (0..n) |k| {
+                    var it: ?*StorageItemFull = null;
+                    if (items.vtbl.GetAt(items, @intCast(k), &it) < 0) continue;
+                    const item = it orelse continue;
+                    defer winrt.release(item);
+                    var h: HSTRING = null;
+                    if (item.vtbl.get_Path(item, &h) < 0) continue;
+                    var s = winrt.String.adopt(h);
+                    defer s.deinit();
+                    // Items without a file system path (virtual ones) are left out.
+                    if (s.utf16().len == 0) continue;
+                    try list.append(alloc, try s.toUtf8(alloc));
+                }
+            }
+        };
+    }
+}
+
+/// Whether the shared data has the format a StandardDataFormats getter names.
+fn has(view: *DataPackageView, getter: anytype, statics: anytype) bool {
+    var h: HSTRING = null;
+    if (getter(statics, &h) < 0) return false;
+    var name = winrt.String.adopt(h);
+    defer name.deinit();
+    var yes: u8 = 0;
+    return view.vtbl.Contains(view, name.h, &yes) >= 0 and yes != 0;
+}
+
+fn prefixed(alloc: std.mem.Allocator, prefix: []const u8, s: winrt.String) ![]u8 {
+    const utf8 = try s.toUtf8(alloc);
+    defer alloc.free(utf8);
+    return std.mem.concat(alloc, u8, &.{ prefix, utf8 });
+}
+
+/// The share was taken (its files are open, or forwarded to the running
+/// instance, which opened them): the sharing app's sheet may close.
+pub fn finishPackaged(alloc: std.mem.Allocator, p: Packaged) void {
+    _ = p.op.vtbl.ReportCompleted(p.op);
+    winrt.release(p.op);
+    for (p.args) |a| alloc.free(a);
+    alloc.free(p.args);
 }
 
 /// Open `path` into `received`: its File (name and type for the page, no
@@ -698,6 +994,9 @@ test "parseLaunch" {
     const o = parseLaunch(&.{ "--x", open_with_flag, "C:\\a.txt" }).?;
     try t.expectEqual(common.Source.open_with, o.source);
     try t.expectEqual(@as(usize, 2), o.first);
+    const st = parseLaunch(&.{ share_target_flag, text_prefix ++ "hi", "C:\\a.txt" }).?;
+    try t.expectEqual(common.Source.share, st.source);
+    try t.expectEqual(@as(usize, 1), st.first);
 }
 
 test "mimeOf" {
