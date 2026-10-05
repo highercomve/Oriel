@@ -4017,6 +4017,25 @@ input[type="range"] { height: 20px; margin: 2px; }
   var INTRINSIC_WIDTHS = /* @__PURE__ */ new Set(["max-content", "fit-content", "-webkit-fit-content", "-moz-fit-content"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
+  var TYPED = /* @__PURE__ */ new Set(["email", "url", "tel", "number", "search"]);
+  var INPUT_MODES = /* @__PURE__ */ new Set(["none", "text", "decimal", "numeric", "tel", "search", "email", "url"]);
+  var ENTER_HINTS = /* @__PURE__ */ new Set(["enter", "done", "go", "next", "previous", "search", "send"]);
+  function keyboardProps(el, tag, type, props) {
+    const plain = tag === "textarea" || !["email", "url", "tel", "number", "password"].includes(type);
+    if (tag === "input" && TYPED.has(type)) props.itype = type;
+    const im = (el.getAttribute("inputmode") || "").toLowerCase();
+    if (INPUT_MODES.has(im)) props.im = im;
+    const ek = (el.getAttribute("enterkeyhint") || "").toLowerCase();
+    if (ENTER_HINTS.has(ek)) props.ek = ek;
+    else if (type === "search" && tag === "input") props.ek = "search";
+    else if (tag === "input" && el.closest?.("form")) props.ek = "go";
+    const capAttr = (el.getAttribute("autocapitalize") ?? el.closest?.("form")?.getAttribute("autocapitalize") ?? "").toLowerCase();
+    props.cap = capAttr === "off" || capAttr === "none" ? "none" : capAttr === "words" ? "words" : capAttr === "characters" ? "characters" : capAttr === "on" || capAttr === "sentences" ? "sentences" : plain ? "sentences" : "none";
+    const cor = (el.getAttribute("autocorrect") || "").toLowerCase();
+    props.cor = cor === "off" ? false : cor === "on" ? true : plain;
+    const sc = el.closest?.("[spellcheck]")?.getAttribute("spellcheck");
+    props.spellcheck = type !== "password" && sc !== "false";
+  }
   function accessibleName(el) {
     const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
     const doc = el.ownerDocument;
@@ -5261,6 +5280,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         props.ph = el.getAttribute("placeholder") || "";
         props.dis = el.hasAttribute("disabled");
         if (el.hasAttribute("readonly") && !props.dis) props.ro = true;
+        keyboardProps(el, tag, type, props);
         props.pw = type === "password";
         if (tag === "textarea") {
           const cols = parseInt(el.getAttribute("cols") || "", 10);
