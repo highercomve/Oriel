@@ -209,6 +209,76 @@ escape hatch if anyone ever asks for it.
 Ref-count unit tests in `common.zig` (acquire ×2 / release ×1 keeps the lock; window close releases)
 with a fake backend; `check()` prints `info()`; a manual ChromeOS run (Q5).
 
+### mDNS / DNS-SD: `oriel.network.mdns`
+
+Service registration and browsing through the platform's own mDNS responder, so an app needs no
+multicast sockets, no multicast lock and no Apple multicast entitlement. GhostShare's Rust
+`mdns-sd` neither advertises nor discovers on Android (Google's Quick Share, on NsdManager, works on
+the same phone), so on Android GhostShare uses this instead. Code: `network/mdns.zig` (API, validation,
+the Kotlin wire format), `network/android.zig` + `OrielMdns.kt` (backend), `network/mdns_c.zig` (C ABI).
+
+```zig
+// oriel.network.mdns
+pub const Txt = struct { key: []const u8, value: []const u8 }; // value: any bytes
+pub const Service = struct { type: []const u8, name: []const u8, port: u16, txt: []const Txt = &.{} };
+pub fn register(service: Service) Error!Registration; // reg.name(): the final name; reg.unregister()
+pub const Found = struct { name: []const u8, type: []const u8, host: ?[]const u8,
+                           addresses: []const []const u8, port: u16, txt: []const Txt }; // + txtValue(key)
+pub const Lost = struct { name: []const u8, type: []const u8 };
+pub const Event = union(enum) { found: Found, lost: Lost };
+pub const Handler = *const fn (ctx: ?*anyopaque, event: *const Event) void;
+pub fn browse(service_type: []const u8, handler: Handler, ctx: ?*anyopaque) Error!Browser; // browser.stop()
+pub fn supported() bool;
+// Error: Unsupported, NotDeclared, InvalidServiceType, InvalidName, InvalidTxt, Failed, Timeout, TooMany, OutOfMemory
+```
+
+Rules, the same on every backend:
+- **Types** are `_name._tcp` or `_name._udp` (optional trailing dot; no subtypes or domain), `name` per
+  RFC 6335: 1-15 letters, digits and hyphens with at least one letter (Quick Share's
+  `_FC9F5ED42C8A._tcp` passes). That is the intersection NsdManager, dns_sd, Avahi and windns accept.
+  **Names** are 1-63 bytes of UTF-8. **TXT**: printable-ASCII keys without `=`, distinct; each
+  `key=value` ≤ 255 bytes and the record ≤ 1300 (Android's limit; RFC 6763 6.2's advice).
+- `local_network` must be declared (`NotDeclared`), as for the multicast lock.
+- **Threads**: `register` and `browse` work on any thread (the main thread and handlers included)
+  and block until the OS answers (≤ 10 s, `Timeout`), so refusals come back as errors.
+  `unregister`/`stop` work anywhere; after `stop` returns no handler call starts (called from inside
+  the handler: after it returns). Handlers run on the backend's mDNS thread (Android: the
+  `oriel-mdns` Java thread), never the main thread, one at a time across browsers; events may
+  start before `browse` returns. Event data lives only during the call. A handler must not wait for
+  the main thread while the main thread may be in `stop`.
+- `found` comes once the service is resolved and again when its data changes; `lost` only for a
+  name that was found. Addresses are text (`"192.168.1.20"`, `"fe80::1%wlan0"`).
+
+| | register | browse |
+|---|---|---|
+| Android (`OrielMdns.kt`) | `NsdServiceInfo` + `setAttribute` (a value that isn't UTF-8 goes through the hidden `byte[]` overload, else `InvalidTxt`), `registerService`; the final name from `onServiceRegistered` | `discoverServices(type, PROTOCOL_DNS_SD)`; per service, API 34+ `registerServiceInfoCallback` (all addresses, updates), older `resolveService` serialized app-wide with retries on `FAILURE_ALREADY_ACTIVE`/`FAILURE_MAX_LIMIT`. No host name (NsdServiceInfo has none) |
+| Apple | TODO: `DNSServiceRegister` (dns_sd.h, libSystem) or `nw_listener`; types in NSBonjourServices | TODO: `DNSServiceBrowse` + `DNSServiceResolve` + `DNSServiceGetAddrInfo`, or `nw_browser` |
+| Linux | TODO: Avahi over D-Bus (`EntryGroup`) | TODO: Avahi `ServiceBrowser` + `ServiceResolver` |
+| Windows | TODO: `DnsServiceRegister` (windns.h, 10 1809+) | TODO: `DnsServiceBrowse` + `DnsServiceResolve` |
+
+Android permissions: none beyond INTERNET. NsdManager hands the work to the system's responder, so
+the app's process receives no multicast (no `MulticastLock`, no CHANGE_WIFI_MULTICAST_STATE), and
+NEARBY_WIFI_DEVICES (API 33+) gates Wi-Fi Direct/Aware and Wi-Fi scans, not NSD. Android 17's
+ACCESS_LOCAL_NETWORK (Q4) will gate NSD when the template targets SDK 37.
+
+Kotlin ↔ Zig: Zig calls `OrielRuntime.mdnsRegister/mdnsUnregister/mdnsBrowse/mdnsStopBrowse` (on
+the UI thread, or directly from a handler with the `oriel-mdns` thread's env). Kotlin answers
+`NativeLib.onMdnsResult(kind, id, ok, code, name)` from NsdManager's thread, so a Zig thread blocked in
+`register` never waits on a thread it blocks, and sends events as `NativeLib.onMdnsEvent(id, bytes)`
+from `oriel-mdns` in the wire format of `mdns.zig` (big-endian, `u16`-length strings: kind, name, then
+for found host, port, addresses, TXT).
+
+**C ABI** (Android only, exported from liboriel.so for a Rust/C engine linked into the app; the
+header is in `network/mdns_c.zig`): `oriel_mdns_supported()`, `oriel_mdns_register(type, name, port,
+txt, txt_count, &handle, out_name, out_name_size)`, `oriel_mdns_unregister(handle)`,
+`oriel_mdns_browse(type, cb, ctx, &handle)`, `oriel_mdns_browse_stop(handle)`. Returns 0 or a negative
+`ORIEL_MDNS_E_*`. `cb(ctx, const oriel_mdns_event *)` gets kind, NUL-terminated name/type/host,
+an array of address strings, the port and `{key, value, value_len}` TXT entries, valid during the call.
+
+Tests: type, name and TXT validation, the TXT and event wire formats (binary-safe round trips,
+malformed input), and the C conversions, all on the host. On a device: register and browse
+GhostShare's Quick Share type next to Google's Quick Share.
+
 ---
 
 ## 3. Bluetooth LE: advertising and scanning
@@ -477,6 +547,8 @@ workarounds after **phase 0 + the Android multicast lock**, about a week in.
 2. **GhostShare on iOS uses mdns-sd (raw multicast)**, which requires Apple's approved multicast
    entitlement. Request it, or should Oriel later offer DNS-SD (`DNSServiceBrowse`, which needs only
    NSBonjourServices) as `oriel.network.dnssd`?
+   *Since then:* `oriel.network.mdns` (section 2) has the API, with an Android backend; the Apple
+   backend (DNSServiceRegister/Browse) is the TODO that answers this.
 3. Is the iOS/macOS local-network probe (browse your own service) acceptable, or should `request`
    simply return `unknown` and leave the prompt to the first real use?
 4. Android 17 local network protection (`ACCESS_LOCAL_NETWORK`, enforced at targetSdk 37): confirm
