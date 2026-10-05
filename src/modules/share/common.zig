@@ -15,7 +15,11 @@ pub var received: file_handles.FileHandles = .init(std.heap.smp_allocator);
 /// Up to `len` bytes of received file `handle` from `offset`, appended to
 /// `out` (the page reads a file in chunks through the `share:read` command).
 pub fn read(handle: u32, offset: u64, len: u64, out: *std.ArrayList(u8)) !void {
-    try received.read(handle, offset, len, out);
+    received.read(handle, offset, len, out) catch |err| return switch (err) {
+        // The page sees the same name as `open`'s.
+        error.BadHandle => error.InvalidHandle,
+        else => err,
+    };
 }
 
 /// How the share reached the app.
