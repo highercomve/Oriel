@@ -1684,11 +1684,36 @@ export class Renderer {
     // Block flow: the kids whose margins don't collapse (lines of text,
     // inline boxes, pseudo-elements), for collapseMargins.
     const flowBlock = !childCtx.blockify && props.fd === "column" && display !== "grid" && !tableHolds(display);
+    // Inline content beside blocks (a <div>, then buttons): CSS wraps each
+    // run of it in an anonymous block, one line box that wraps, so the
+    // buttons share a line instead of each taking a row of the column.
+    if (flowBlock && !inlineLine && flow.some((f) => f.el && !atomic(f.el))) {
+      const out = [];
+      let run = [];
+      const flush = () => {
+        const boxes = run.filter((f) => f.el).length;
+        if (boxes >= 2 || (boxes >= 1 && run.some((f) => f.text))) out.push({ anon: run });
+        else out.push(...run);
+        run = [];
+      };
+      for (const f of flow) {
+        if ((f.text && !f.strut) || (f.el && atomic(f.el) && inFlow(f))) run.push(f);
+        else { flush(); out.push(f); }
+      }
+      flush();
+      flow.length = 0;
+      flow.push(...out);
+    }
     const inLine = flowBlock ? new Set() : null;
     if (before) inLine?.add(before);
     let spaceBefore = false;
     for (const [index, item] of flow.entries()) {
       if (item.space) { spaceBefore = true; continue; }
+      if (item.anon) {
+        kids.push(this.anonLine(nodes, el, cs, fontSize, item.anon, childCtx, kids.length));
+        inLine?.add(kids[kids.length - 1]);
+        continue;
+      }
       if (item.brk) {
         const bid = this.idOf(el, "br" + kids.length);
         this.own(bid, el);
@@ -1864,6 +1889,50 @@ export class Renderer {
 
   // What a parent makes of a child element's node in its general flow
   // (its flex-shrink, basis, alignment), as build's children loop does.
+  // An anonymous line box (inline content beside blocks): a row that wraps,
+  // its items on one baseline, the white space between two boxes a space's
+  // width (none when they touch).
+  anonLine(nodes, el, cs, fontSize, items, childCtx, at) {
+    const aid = this.idOf(el, "anon" + at);
+    this.own(aid, el);
+    const ap = { fd: "row", fw: "wrap", ai: "baseline", fs: 0 };
+    const ta = cs["text-align"];
+    if (ta === "center") ap.jc = "center";
+    else if (ta === "right" || ta === "end") ap.jc = "flex-end";
+    const space = Math.round(fontSize * 0.28 * 10) / 10;
+    const akids = [];
+    let prev = null;
+    for (const item of items) {
+      if (item.text) {
+        const tid = this.idOf(el, "t" + at + "." + akids.length);
+        this.own(tid, el);
+        const tp = { ...textProps(cs, fontSize), runs: item.text, fs: 1 };
+        this.ownRuns(tid, item.text);
+        this.put(nodes, tid, "text", tp, []);
+        akids.push(tid);
+        prev = null;
+        continue;
+      }
+      const cid = this.element(item.el, cs, nodes, childCtx);
+      if (cid === null) continue;
+      this.adjustKid(nodes, cid, item.el, cs, ap, "flex", childCtx);
+      // Two boxes with white space between them: a space apart.
+      if (prev) {
+        let spaced = false;
+        for (let n = prev.nextSibling; n && n !== item.el; n = n.nextSibling) if (n.nodeType === 3 && /\s/.test(n.data)) spaced = true;
+        const n = nodes.get(cid);
+        if (spaced && n) {
+          const m = n.props.m ? [...n.props.m] : [0, 0, 0, 0];
+          if (typeof m[3] === "number") { m[3] += space; n.props = { ...n.props, m }; }
+        }
+      }
+      akids.push(cid);
+      prev = item.el;
+    }
+    this.put(nodes, aid, "view", ap, akids);
+    return aid;
+  }
+
   adjustKid(nodes, cid, itemEl, cs, props, display, childCtx) {
     // Block layout: children keep their size (a flex column would shrink them).
     if (!childCtx.blockify) { const n = nodes.get(cid); if (n && n.props.fs === undefined) n.props.fs = 0; }
