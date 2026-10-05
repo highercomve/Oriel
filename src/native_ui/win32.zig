@@ -633,6 +633,23 @@ fn releaseTarget(s: *Surface) void {
     s.rt = null;
 }
 
+/// Text as Windows 11 apps draw it: grayscale antialiasing (no ClearType
+/// color fringes) with DirectWrite's natural symmetric rendering, at the
+/// system's gamma and contrast (the user's ClearType tuning).
+fn textLook(rt: *c.ID2D1RenderTarget) void {
+    rt.lpVtbl.*.SetTextAntialiasMode.?(rt, c.D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    const dw = dwrite orelse return;
+    var sys: ?*c.IDWriteRenderingParams = null;
+    if (dw.lpVtbl.*.CreateRenderingParams.?(dw, &sys) < 0 or sys == null) return;
+    defer releaseCom(sys);
+    const gamma = sys.?.lpVtbl.*.GetGamma.?(sys);
+    const contrast = sys.?.lpVtbl.*.GetEnhancedContrast.?(sys);
+    var params: ?*c.IDWriteRenderingParams = null;
+    if (dw.lpVtbl.*.CreateCustomRenderingParams.?(dw, gamma, contrast, 0, c.DWRITE_PIXEL_GEOMETRY_FLAT, c.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, &params) < 0 or params == null) return;
+    defer releaseCom(params);
+    rt.lpVtbl.*.SetTextRenderingParams.?(rt, params);
+}
+
 fn ensureTarget(s: *Surface) bool {
     if (s.rt != null) return true;
     var rc: c.RECT = undefined;
@@ -661,6 +678,7 @@ fn ensureTarget(s: *Surface) bool {
     var brush: ?*c.ID2D1SolidColorBrush = null;
     const black: c.D2D1_COLOR_F = .{ .r = 0, .g = 0, .b = 0, .a = 1 };
     const base = baseRt(rt.?);
+    textLook(base);
     if (base.lpVtbl.*.CreateSolidColorBrush.?(base, &black, null, &brush) < 0) {
         releaseTarget(s);
         return false;
@@ -814,7 +832,7 @@ fn warmFace(spec: engine_mod.FontSpec) void {
     const style: c.DWRITE_FONT_STYLE = if (spec.italic) c.DWRITE_FONT_STYLE_ITALIC else c.DWRITE_FONT_STYLE_NORMAL;
     const size = if (std.math.isFinite(spec.size) and spec.size > 0) spec.size else 16;
     var format: ?*c.IDWriteTextFormat = null;
-    if (dw.lpVtbl.*.CreateTextFormat.?(dw, if (spec.mono) mono_face else sans_face, null, weight, style, c.DWRITE_FONT_STRETCH_NORMAL, size, std.unicode.utf8ToUtf16LeStringLiteral(""), &format) < 0 or format == null) return;
+    if (dw.lpVtbl.*.CreateTextFormat.?(dw, if (spec.mono) mono_face else sansFace(), null, weight, style, c.DWRITE_FONT_STRETCH_NORMAL, size, std.unicode.utf8ToUtf16LeStringLiteral(""), &format) < 0 or format == null) return;
     defer releaseCom(format);
     const text = std.unicode.utf8ToUtf16LeStringLiteral("Aa");
     var layout: ?*c.IDWriteTextLayout = null;
@@ -2828,7 +2846,21 @@ fn runsUtf16(s: *Surface, runs: []const tree_mod.Run) ?Utf16Text {
 }
 
 const mono_face = std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
-const sans_face = std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI");
+const segoe_face = std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI");
+/// Windows 11's UI font, its optical sizes as named instances: Text for
+/// body sizes, Display from 20px (as WinUI's type ramp switches).
+const variable_text = std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI Variable Text");
+const variable_display = std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI Variable Display");
+var sans_cached: ?[:0]const u16 = null;
+
+/// The system UI face (system-ui, Oriel's default sans): Segoe UI Variable
+/// where Windows has it (11), else Segoe UI.
+fn sansFace() [:0]const u16 {
+    if (sans_cached) |f| return f;
+    const f = if (installed(variable_text)) variable_text else segoe_face;
+    if (dwrite != null) sans_cached = f;
+    return f;
+}
 
 /// A DirectWrite layout of a text node's runs at `width` (inf: one line
 /// unless it has line breaks). With `rt`, each run's color is set as its
@@ -2858,9 +2890,9 @@ fn textLayout(s: *Surface, n: *Node, width: f32, brushes: ?*std.ArrayList(*c.ID2
 var families: std.StringHashMapUnmanaged([:0]const u16) = .empty;
 
 fn familyOf(list: ?[]const u8, mono: bool) [:0]const u16 {
-    const l = list orelse return if (mono) mono_face else sans_face;
+    const l = list orelse return if (mono) mono_face else sansFace();
     if (families.get(l)) |f| return f;
-    const f = resolveFamily(l) orelse (if (mono) mono_face else sans_face);
+    const f = resolveFamily(l) orelse (if (mono) mono_face else sansFace());
     const key = std.heap.page_allocator.dupe(u8, l) catch return f;
     families.put(std.heap.page_allocator, key, f) catch {};
     return f;
@@ -2868,15 +2900,15 @@ fn familyOf(list: ?[]const u8, mono: bool) [:0]const u16 {
 
 fn resolveFamily(list: []const u8) ?[:0]const u16 {
     const generics = .{
-        .{ "system-ui", "Segoe UI" },     .{ "-apple-system", "Segoe UI" },     .{ "blinkmacsystemfont", "Segoe UI" },
-        .{ "ui-sans-serif", "Segoe UI" }, .{ "sans-serif", "Arial" },           .{ "serif", "Times New Roman" },
+        .{ "system-ui", "@system" },     .{ "-apple-system", "@system" },     .{ "blinkmacsystemfont", "@system" },
+        .{ "ui-sans-serif", "@system" }, .{ "sans-serif", "Arial" },           .{ "serif", "Times New Roman" },
         .{ "ui-serif", "Times New Roman" }, .{ "monospace", "Consolas" },     .{ "ui-monospace", "Consolas" },
         .{ "cursive", "Comic Sans MS" },  .{ "fantasy", "Impact" },             .{ "math", "Cambria Math" },
-        .{ "emoji", "Segoe UI Emoji" },   .{ "ui-rounded", "Segoe UI" },
+        .{ "emoji", "Segoe UI Emoji" },   .{ "ui-rounded", "@system" },
         // Chromium's control font (render.js's UA sheet for fields).
         .{ "-webkit-small-control", "Arial" },
-        // The page set no font-family: WebView2's default face.
-        .{ "default", "Times New Roman" },
+        // The page set no font-family: the system UI face (native look).
+        .{ "default", "@system" },
     };
     var it = std.mem.splitScalar(u8, list, ',');
     while (it.next()) |raw| {
@@ -2884,7 +2916,10 @@ fn resolveFamily(list: []const u8) ?[:0]const u16 {
         if (name.len == 0 or name.len > 120) continue;
         var lower_buf: [120]u8 = undefined;
         const lower = std.ascii.lowerString(&lower_buf, name);
-        inline for (generics) |g| if (std.mem.eql(u8, lower, g[0])) return std.unicode.utf8ToUtf16LeStringLiteral(g[1]);
+        inline for (generics) |g| if (std.mem.eql(u8, lower, g[0])) {
+            if (comptime std.mem.eql(u8, g[1], "@system")) return sansFace();
+            return std.unicode.utf8ToUtf16LeStringLiteral(g[1]);
+        };
         // A named family, when it's installed.
         const w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, name) catch continue;
         if (installed(w)) return w;
@@ -3046,7 +3081,7 @@ const iid_font_face1: c.GUID = .{ .Data1 = 0xa71efdb4, .Data2 = 0x9fdb, .Data3 =
 /// descent and line gap in px at `size`, unhinted.
 fn fontMetrics(_: *anyopaque, size: f32, mono: bool, out: *[3]f32) bool {
     if (!(size > 0) or !std.math.isFinite(size)) return false;
-    const r = fontRatios(if (mono) mono_face else sans_face, 400, false) orelse return false;
+    const r = fontRatios(if (mono) mono_face else sansFace(), 400, false) orelse return false;
     out.* = .{ r[0] * size, r[1] * size, r[2] * size };
     return true;
 }
@@ -3080,7 +3115,10 @@ fn largestRun(runs: []const tree_mod.Run) ?tree_mod.Run {
 }
 
 fn runFamily(props: *const tree_mod.Props, r: tree_mod.Run) [:0]const u16 {
-    return familyOf(r.ff orelse props.ff, r.mono or props.mono);
+    const f = familyOf(r.ff orelse props.ff, r.mono or props.mono);
+    // Segoe UI Variable's Display optical size for large text.
+    if (f.ptr == variable_text.ptr and r.sz >= 20) return variable_display;
+    return f;
 }
 
 /// line-height: normal as Chromium makes it: the font's ascent, descent
@@ -4103,7 +4141,7 @@ fn glyphOutline(gpa: std.mem.Allocator, t: []const u8, family: [:0]const u16, we
     var index: u32 = 0;
     var exists: c.BOOL = c.FALSE;
     if (cl.lpVtbl.*.FindFamilyName.?(cl, family.ptr, &index, &exists) < 0 or exists == c.FALSE) {
-        if (cl.lpVtbl.*.FindFamilyName.?(cl, sans_face, &index, &exists) < 0 or exists == c.FALSE) return null;
+        if (cl.lpVtbl.*.FindFamilyName.?(cl, sansFace(), &index, &exists) < 0 or exists == c.FALSE) return null;
     }
     var fam: ?*c.IDWriteFontFamily = null;
     if (cl.lpVtbl.*.GetFontFamily.?(cl, index, &fam) < 0 or fam == null) return null;
