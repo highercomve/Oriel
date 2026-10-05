@@ -1838,6 +1838,8 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     var sign = true;
     var url_schemes: std.ArrayList([]const u8) = .empty;
     defer url_schemes.deinit(gpa);
+    var document_types: std.ArrayList([]const u8) = .empty;
+    defer document_types.deinit(gpa);
     var extras: contents.Contents = .{};
     defer extras.deinit(gpa);
 
@@ -1874,6 +1876,10 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
         } else if (std.mem.eql(u8, arg, "--url-scheme") and has_value) {
             i += 1;
             try url_schemes.append(gpa, args[i]);
+        } else if (std.mem.eql(u8, arg, "--document-type") and has_value) {
+            // A MIME type (`.share_target.types`).
+            i += 1;
+            try document_types.append(gpa, args[i]);
         } else if (std.mem.eql(u8, arg, "--permission") and has_value) {
             // `<kind>=<usage text>`
             i += 1;
@@ -1962,6 +1968,7 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
         .icon_name = if (has_icon) "icon" else null,
         .url_schemes = url_schemes.items,
         .permissions = permissions.items,
+        .document_types = document_types.items,
     }) catch |err| {
         std.debug.print("error: package-app: Info.plist: {s} (package metadata must be UTF-8 without control characters; URL schemes must match [A-Za-z][A-Za-z0-9+.-]*)\n", .{@errorName(err)});
         return 1;

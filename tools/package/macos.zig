@@ -27,6 +27,9 @@ pub const PlistOptions = struct {
     /// usage text macOS shows. Kinds without an Info.plist key (accessibility,
     /// screen_capture, notifications) are skipped.
     permissions: []const Permission = &.{},
+    /// CFBundleDocumentTypes (Finder's "Open With", drops on the Dock icon):
+    /// `.share_target.types`, MIME types mapped to UTIs (`utiForMime`).
+    document_types: []const []const u8 = &.{},
 };
 
 pub const Permission = struct { kind: []const u8, reason: []const u8 };
@@ -111,6 +114,7 @@ pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
     for (o.permissions) |p| {
         for (usageKeys(p.kind)) |key| try entry(w, key, p.reason);
     }
+    try documentTypes(w, o.document_types);
     if (o.url_schemes.len > 0) {
         try w.writeAll("\t<key>CFBundleURLTypes</key>\n\t<array>\n\t\t<dict>\n");
         try w.writeAll("\t\t\t<key>CFBundleURLName</key>\n\t\t\t<string>");
@@ -125,6 +129,54 @@ pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
     }
     try w.writeAll("</dict>\n</plist>\n");
     return out.toOwnedSlice();
+}
+
+/// The UTI for a MIME type (`*/*`, `image/*`, or a known one; a subtype
+/// UTIs don't name falls back to its family's), or null for none.
+pub fn utiForMime(mime: []const u8) ?[]const u8 {
+    const exact = .{
+        .{ "*/*", "public.data" },                  .{ "text/plain", "public.plain-text" },
+        .{ "text/html", "public.html" },            .{ "text/csv", "public.comma-separated-values-text" },
+        .{ "application/json", "public.json" },     .{ "application/pdf", "com.adobe.pdf" },
+        .{ "application/zip", "public.zip-archive" }, .{ "application/xml", "public.xml" },
+        .{ "image/png", "public.png" },             .{ "image/jpeg", "public.jpeg" },
+        .{ "image/gif", "com.compuserve.gif" },     .{ "image/heic", "public.heic" },
+        .{ "image/svg+xml", "public.svg-image" },   .{ "video/mp4", "public.mpeg-4" },
+        .{ "video/quicktime", "com.apple.quicktime-movie" }, .{ "audio/mpeg", "public.mp3" },
+    };
+    inline for (exact) |e| if (std.ascii.eqlIgnoreCase(mime, e[0])) return e[1];
+    const slash = std.mem.indexOfScalar(u8, mime, '/') orelse return null;
+    const family = .{
+        .{ "image", "public.image" }, .{ "video", "public.movie" }, .{ "audio", "public.audio" },
+        .{ "text", "public.text" },   .{ "application", "public.data" },
+    };
+    inline for (family) |f| if (std.ascii.eqlIgnoreCase(mime[0..slash], f[0])) return f[1];
+    return null;
+}
+
+/// CFBundleDocumentTypes for MIME `types`: one Viewer entry, ranked
+/// Alternate (the app is offered, not made the default), with their UTIs.
+fn documentTypes(w: *std.Io.Writer, types: []const []const u8) !void {
+    var utis: [32][]const u8 = undefined;
+    var n: usize = 0;
+    for (types) |t| {
+        const u = utiForMime(t) orelse continue;
+        if (n == utis.len) break;
+        const seen = for (utis[0..n]) |v| {
+            if (std.mem.eql(u8, v, u)) break true;
+        } else false;
+        if (seen) continue;
+        utis[n] = u;
+        n += 1;
+    }
+    if (n == 0) return;
+    try w.writeAll("\t<key>CFBundleDocumentTypes</key>\n\t<array>\n\t\t<dict>\n");
+    try w.writeAll("\t\t\t<key>CFBundleTypeName</key>\n\t\t\t<string>Shared item</string>\n");
+    try w.writeAll("\t\t\t<key>CFBundleTypeRole</key>\n\t\t\t<string>Viewer</string>\n");
+    try w.writeAll("\t\t\t<key>LSHandlerRank</key>\n\t\t\t<string>Alternate</string>\n");
+    try w.writeAll("\t\t\t<key>LSItemContentTypes</key>\n\t\t\t<array>\n");
+    for (utis[0..n]) |u| try w.print("\t\t\t\t<string>{s}</string>\n", .{u});
+    try w.writeAll("\t\t\t</array>\n\t\t</dict>\n\t</array>\n");
 }
 
 pub fn entry(w: *std.Io.Writer, key: []const u8, value: []const u8) !void {
@@ -343,4 +395,27 @@ test machoMinOs {
     // Not Mach-O / truncated.
     try std.testing.expect(machoMinOs("#!/bin/sh\n") == null);
     try std.testing.expect(machoMinOs(buf[0..40]) == null);
+}
+
+test "document types: MIME types as UTIs, once each" {
+    const gpa = std.testing.allocator;
+    const plist = try generateInfoPlist(gpa, .{
+        .id = "dev.oriel.Share",
+        .name = "Share",
+        .exe_name = "share",
+        .version = "1.0",
+        .min_os = "13.0",
+        .document_types = &.{ "image/*", "image/png", "text/plain", "*/*", "image/x-unknown", "nonsense" },
+    });
+    defer gpa.free(plist);
+    try std.testing.expect(std.mem.indexOf(u8, plist, "<key>CFBundleDocumentTypes</key>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plist, "<string>Alternate</string>") != null);
+    for ([_][]const u8{ "public.image", "public.png", "public.plain-text", "public.data" }) |u| {
+        const tag = try std.fmt.allocPrint(gpa, "<string>{s}</string>", .{u});
+        defer gpa.free(tag);
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, plist, tag));
+    }
+    const none = try generateInfoPlist(gpa, .{ .id = "a.b", .name = "n", .exe_name = "n", .version = "1", .min_os = "13.0" });
+    defer gpa.free(none);
+    try std.testing.expect(std.mem.indexOf(u8, none, "CFBundleDocumentTypes") == null);
 }

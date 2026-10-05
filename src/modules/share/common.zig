@@ -145,3 +145,28 @@ const shares = pending_events.Queue(Received, event, 8, toHandler);
 pub fn dispatch(share: *const Received) void {
     shares.deliver(share.*);
 }
+
+/// A MIME type from a file name's extension (the page's File.type), for
+/// backends whose OS gives a path, not a type.
+pub fn mimeOf(name: []const u8) []const u8 {
+    const ext = std.fs.path.extension(name);
+    const table = [_]struct { []const u8, []const u8 }{
+        .{ ".txt", "text/plain" },        .{ ".md", "text/markdown" },     .{ ".csv", "text/csv" },
+        .{ ".html", "text/html" },        .{ ".htm", "text/html" },        .{ ".json", "application/json" },
+        .{ ".xml", "application/xml" },   .{ ".pdf", "application/pdf" },  .{ ".zip", "application/zip" },
+        .{ ".png", "image/png" },         .{ ".jpg", "image/jpeg" },       .{ ".jpeg", "image/jpeg" },
+        .{ ".gif", "image/gif" },         .{ ".webp", "image/webp" },      .{ ".svg", "image/svg+xml" },
+        .{ ".bmp", "image/bmp" },         .{ ".heic", "image/heic" },      .{ ".mp3", "audio/mpeg" },
+        .{ ".wav", "audio/wav" },         .{ ".ogg", "audio/ogg" },        .{ ".m4a", "audio/mp4" },
+        .{ ".flac", "audio/flac" },       .{ ".mp4", "video/mp4" },        .{ ".mov", "video/quicktime" },
+        .{ ".webm", "video/webm" },       .{ ".mkv", "video/x-matroska" }, .{ ".avi", "video/x-msvideo" },
+    };
+    for (table) |t| if (std.ascii.eqlIgnoreCase(ext, t[0])) return t[1];
+    return "application/octet-stream";
+}
+
+test "mimeOf" {
+    try std.testing.expectEqualStrings("image/png", mimeOf("Photo.PNG"));
+    try std.testing.expectEqualStrings("text/plain", mimeOf("notes.txt"));
+    try std.testing.expectEqualStrings("application/octet-stream", mimeOf("noext"));
+}

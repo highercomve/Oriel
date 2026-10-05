@@ -15,6 +15,7 @@ const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
 const single_instance = @import("single_instance.zig");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
+const share = if (build_opts.share) @import("../../modules/share/apple.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
 
@@ -258,6 +259,28 @@ const keyDirectObject: u32 = 0x2D2D_2D2D; // '----'
 
 extern "c" fn _NSGetArgc() *c_int;
 extern "c" fn _NSGetArgv() *[*][*:0]u8;
+
+/// Files Launch Services opens with the app (Finder's "Open With", a drop
+/// on the Dock icon: kAEOpenDocuments, which NSApplication hands here;
+/// URLs of the app's schemes come as kAEGetURL instead). With the share
+/// module they are a share from `open_with`; a running app's window comes
+/// forward.
+fn applicationOpenURLs(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, urls: cocoa.id) callconv(.c) void {
+    if (!build_opts.share) return;
+    const arr: Object = .{ .value = urls };
+    const n = arr.msgSend(c_ulong, "count", .{});
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer paths.deinit(std.heap.smp_allocator);
+    for (0..n) |i| {
+        const url = arr.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, i)});
+        if (!cocoa.isTrue(url.msgSend(cocoa.c.BOOL, "isFileURL", .{}))) continue;
+        const path = cocoa.utf8(url.msgSend(Object, "path", .{})) orelse continue;
+        paths.append(std.heap.smp_allocator, path) catch return;
+    }
+    if (paths.items.len == 0) return;
+    if (finished_launching) App.showWindow();
+    share.receivePaths(paths.items, .open_with);
+}
 
 /// Clicking the Dock icon while every window is hidden (`on_close = .hide`)
 /// brings the main window back. With `on_second_instance`, a reopen (a Dock
@@ -538,6 +561,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 .{ "applicationShouldHandleReopen:hasVisibleWindows:", applicationShouldHandleReopen },
                 .{ "applicationDidFinishLaunching:", applicationDidFinishLaunching },
                 .{ "handleGetURLEvent:withReplyEvent:", handleGetURL },
+                .{ "application:openURLs:", applicationOpenURLs },
             });
             // NSApp's delegate is a weak reference: keep ours for the whole run.
             const delegate = cocoa.new(delegate_class);

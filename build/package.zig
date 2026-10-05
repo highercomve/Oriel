@@ -466,6 +466,7 @@ fn addAppBundle(
     payload: Payload,
     icons_dir: std.Build.LazyPath,
     permissions: anytype,
+    document_types: []const []const u8,
 ) AppBundle {
     const min = target.result.os.version_range.semver.min;
     const run = b.addRunArtifact(package_tool);
@@ -478,6 +479,7 @@ fn addAppBundle(
     run.addArgs(&.{ "--version", metadata.version });
     run.addArgs(&.{ "--min-os", b.fmt("{d}.{d}", .{ min.major, min.minor }) });
     for (metadata.url_schemes) |s| run.addArgs(&.{ "--url-scheme", s });
+    for (document_types) |t| run.addArgs(&.{ "--document-type", t });
     // Usage texts for Info.plist (`--permission <kind>=<reason>`).
     inline for (@typeInfo(@TypeOf(permissions)).@"struct".fields) |f| {
         if (@field(permissions, f.name)) |reason| {
@@ -636,7 +638,7 @@ pub fn addPackageSteps(
     const mac_signing_opts = macSigningOptions(b);
     const mac_signing: MacSigning = if (os_tag == .macos) mac_signing_opts else .{};
     if (os_tag == .macos) {
-        const bundle = addAppBundle(b, package_tool, metadata, target, exe, payload, icons_dir, permissions);
+        const bundle = addAppBundle(b, package_tool, metadata, target, exe, payload, icons_dir, permissions, shareTypes(options));
         b.getInstallStep().dependOn(installAppBundle(b, package_tool, bundle, bundle.name));
         app_bundle = bundle;
     }
