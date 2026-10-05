@@ -4649,12 +4649,7 @@ fn paint(p: *Painter, n: *Node) void {
             releaseCom(@as(?*c.ID2D1Brush, gb));
         };
     }
-    if (props.bw) |bw| {
-        if (props.bt != null and props.bc != null)
-            twoToneBorder(p, f, r, bw, props.bc.?, props.bt.?)
-        else
-            border(p, f, r, bw, props.bc, props.bs);
-    }
+    if (props.bw) |bw| border(p, f, r, bw, props.bc, props.bs);
     switch (n.kind) {
         .text => paintText(p, n),
         .icon => paintIcon(p, n),
@@ -4954,67 +4949,6 @@ fn dashedSide(p: *Painter, sd: Rect, across: bool, w: f32, style: tree_mod.Borde
             vt.FillRectangle.?(p.rt, &rf, brush);
         }
     }
-}
-
-/// A groove or ridge, as Blink paints it: each side in two bands, the
-/// outer one the larger half (3px: 2 and 1). A groove's outer band is an
-/// inset's (top and left dark, bottom and right light) and its inner one
-/// an outset's; a ridge the other way round. Dark and light are Blink's
-/// Color::Dark and Color::Light of the side's color (measured in WebView2:
-/// #c0c0c0 is 6c6c6c and ffffff).
-fn twoToneBorder(p: *Painter, f: Rect, r: Radii, bw: [4]f32, bc: [4]tree_mod.Color, tone: tree_mod.BorderTone) void {
-    var dark: [4]tree_mod.Color = undefined;
-    var light: [4]tree_mod.Color = undefined;
-    for (bc, 0..) |col, i| {
-        dark[i] = darkColor(col);
-        light[i] = lightColor(col);
-    }
-    // Inset: top (0) and left (3) dark; outset: bottom (2) and right (1).
-    const inset_colors = [4]tree_mod.Color{ dark[0], light[1], light[2], dark[3] };
-    const outset_colors = [4]tree_mod.Color{ light[0], dark[1], dark[2], light[3] };
-    const outer_colors = if (tone == .groove) inset_colors else outset_colors;
-    const inner_colors = if (tone == .groove) outset_colors else inset_colors;
-    var outer: [4]f32 = undefined;
-    var inner: [4]f32 = undefined;
-    for (bw, 0..) |w, i| {
-        outer[i] = @ceil(w / 2);
-        inner[i] = w - outer[i];
-    }
-    border(p, f, r, outer, outer_colors, null);
-    // The inner band inside the outer one, its corners that much less round.
-    const in_f: Rect = .{ .x = f.x + outer[3], .y = f.y + outer[0], .w = f.w - outer[1] - outer[3], .h = f.h - outer[0] - outer[2] };
-    if (in_f.w <= 0 or in_f.h <= 0) return;
-    var in_r = r;
-    for (0..4) |q| {
-        const hx = if (q == 0 or q == 3) outer[3] else outer[1];
-        const vy = if (q == 0 or q == 1) outer[0] else outer[2];
-        in_r.x[q] = @max(0, r.x[q] - hx);
-        in_r.y[q] = @max(0, r.y[q] - vy);
-    }
-    border(p, in_f, in_r, inner, inner_colors, null);
-}
-
-/// Blink's Color::Dark: each channel * (v - 0.33) / v, v the brightest
-/// (0 to 1), truncated as Blink scales it (by 256 less a hair).
-fn darkColor(col: tree_mod.Color) tree_mod.Color {
-    const v = @max(col[0], @max(col[1], col[2])) / 255;
-    const k: f32 = if (v == 0) 0 else @max(0, (v - 0.33) / v);
-    return scaled(col, k);
-}
-
-/// Blink's Color::Light: each channel * min(1, v + 0.33) / v; black is
-/// 0x545454.
-fn lightColor(col: tree_mod.Color) tree_mod.Color {
-    const v = @max(col[0], @max(col[1], col[2])) / 255;
-    if (v == 0) return .{ 0x54, 0x54, 0x54, col[3] };
-    return scaled(col, @min(1, v + 0.33) / v);
-}
-
-fn scaled(col: tree_mod.Color, k: f32) tree_mod.Color {
-    const scale: f32 = 255.99998;
-    var out = col;
-    for (0..3) |i| out[i] = @min(255, @floor(col[i] / 255 * k * scale));
-    return out;
 }
 
 fn border(p: *Painter, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color, bs: ?tree_mod.BorderStyle) void {
