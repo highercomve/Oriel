@@ -361,6 +361,8 @@ pub const Surface = struct {
     /// its thin bar (until sb_show_until, GetTickCount64 ms) and the one
     /// whose bar the mouse is over (drawn wide, with arrows).
     overlay_sb: bool = false,
+    /// The accent the page last heard (platform.accent, "accent").
+    accent: [3]u8 = .{ 0, 0, 0 },
     sb_show: i64 = 0,
     sb_show_until: u64 = 0,
     sb_hot: i64 = 0,
@@ -397,6 +399,10 @@ pub const Surface = struct {
         errdefer _ = c.DestroyWindow(s.hwnd);
         const w = cssPx(rc.right - rc.left, s.scale);
         const h = cssPx(rc.bottom - rc.top, s.scale);
+        // platform.accent: the system's, as the window opens.
+        s.accent = systemAccent(s.dark);
+        const extras = withAccent(gpa, platform_json, s.accent);
+        defer if (extras) |j| gpa.free(j);
         s.engine = try Engine.create(gpa, .{
             .ctx = s,
             .measure = measure,
@@ -415,7 +421,7 @@ pub const Surface = struct {
             .set_selection = setSelection,
             .props = propsChanged,
             .text = textChanged,
-        }, assets, platform_json, label, url, w, h);
+        }, assets, extras orelse platform_json, label, url, w, h);
         // Windows 11's overlay scrollbars take no room; "Always show
         // scrollbars" keeps the classic 15px bars (10 thin) in the layout.
         s.overlay_sb = overlayScrollbars();
@@ -4506,6 +4512,35 @@ fn accentShade(dark: bool) tree_mod.Color {
     // Eight RGBA entries: light3, light2, light1, base, dark1, dark2, dark3, ...
     const i: usize = if (dark) 1 else 4;
     return .{ @floatFromInt(palette[i * 4]), @floatFromInt(palette[i * 4 + 1]), @floatFromInt(palette[i * 4 + 2]), 1 };
+}
+
+/// platform.accent: the accent shade Windows 11's controls use in the
+/// system's app mode (Dark1 light, Light2 dark), 0-255.
+fn systemAccent(dark: bool) [3]u8 {
+    const a = accentShade(dark);
+    return .{ @intFromFloat(a[0]), @intFromFloat(a[1]), @intFromFloat(a[2]) };
+}
+
+/// The platform JSON with the accent read as the window opens (owned by
+/// the caller; the engine copies it). Null: as is.
+fn withAccent(gpa: std.mem.Allocator, platform_json: [:0]const u8, a: [3]u8) ?[:0]const u8 {
+    const trimmed = std.mem.trimEnd(u8, platform_json, " \n");
+    if (trimmed.len < 2 or trimmed[trimmed.len - 1] != '}') return null;
+    const body = trimmed[0 .. trimmed.len - 1];
+    const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"accent\":[{d},{d},{d}]}}", .{ body, sep, a[0], a[1], a[2] }, 0) catch null;
+}
+
+/// The accent or app mode changed (WM_SETTINGCHANGE "ImmersiveColorSet",
+/// from the top-level window): the page hears the new accent.
+pub fn accentCheck(s: *Surface) void {
+    const a = systemAccent(Surface.prefersDark());
+    if (std.mem.eql(u8, &a, &s.accent)) return;
+    s.accent = a;
+    var buf: [32]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[{d},{d},{d}]", .{ a[0], a[1], a[2] }) catch return;
+    _ = s.engine.event(0, "accent", json);
+    _ = c.InvalidateRect(s.hwnd, null, c.FALSE);
 }
 
 fn paintFluentField(p: *Painter, n: *Node, f: Rect) void {
