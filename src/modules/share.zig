@@ -8,8 +8,9 @@
 //! turns this module on). Received files are handles: `open(handle)`
 //! reads one, `release(id)` lets a share's files go.
 //!
-//! No backend is written yet: `send` and `open` return `error.Unsupported`,
-//! `capabilities()` reports nothing, and nothing is received.
+//! Written so far: sending on Windows (DataTransferManager). Elsewhere
+//! `send` and `open` return `error.Unsupported`, `capabilities()` reports
+//! nothing, and nothing is received.
 
 const std = @import("std");
 const target = @import("../core/target.zig");
