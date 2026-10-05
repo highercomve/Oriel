@@ -1,4 +1,5 @@
-//! Native file dialogs via GtkFileDialog.
+//! Native file dialogs via GtkFileDialog (which uses the FileChooser portal
+//! where there is one). Folders: `selectFolder`; the id is the path.
 
 const std = @import("std");
 const gtk = @import("gtk");
@@ -7,9 +8,14 @@ const glib = @import("glib");
 const gobject = @import("gobject");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const path_folder = @import("path_folder.zig");
 
 pub const OpenOptions = common.OpenOptions;
 pub const SaveOptions = common.SaveOptions;
+pub const FolderOptions = common.FolderOptions;
+pub const Folder = common.Folder;
+
+pub const folderName = path_folder.folderName;
 
 pub fn openFile(gpa: std.mem.Allocator, options: OpenOptions) !?[]u8 {
     return run(gpa, .open, options.title, options.modal);
@@ -19,7 +25,24 @@ pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
     return run(gpa, .save, options.title, options.modal);
 }
 
-const Kind = enum { open, save };
+/// Ask for a folder: its path is the id. Null if cancelled.
+pub fn openFolder(gpa: std.mem.Allocator, options: FolderOptions) !?Folder {
+    const path = try run(gpa, .folder, options.title, options.modal) orelse return null;
+    errdefer gpa.free(path);
+    return .{ .id = path, .name = try gpa.dupe(u8, common.pathName(path)) };
+}
+
+pub fn saveToFolder(gpa: std.mem.Allocator, io: std.Io, id: []const u8, src_path: []const u8, name: []const u8, mime: ?[]const u8) ![]u8 {
+    _ = mime;
+    return path_folder.saveToFolder(gpa, io, id, src_path, name);
+}
+
+/// Nothing to release: a path grants nothing by itself.
+pub fn forgetFolder(id: []const u8) void {
+    _ = id;
+}
+
+const Kind = enum { open, save, folder };
 
 /// One dialog, from show to answer. GTK must only be touched on the thread
 /// that runs the GLib main loop: from there it runs a nested loop until the
@@ -48,6 +71,7 @@ const Call = struct {
         switch (self.kind) {
             .open => dialog.open(parent, null, &finish, self),
             .save => dialog.save(parent, null, &finish, self),
+            .folder => dialog.selectFolder(parent, null, &finish, self),
         }
     }
 
@@ -64,6 +88,7 @@ const Call = struct {
         const file = switch (self.kind) {
             .open => gtk.FileDialog.openFinish(d, res, &err),
             .save => gtk.FileDialog.saveFinish(d, res, &err),
+            .folder => gtk.FileDialog.selectFolderFinish(d, res, &err),
         };
         var result: ?[]u8 = null;
         if (file) |f| {

@@ -22,6 +22,8 @@ const Object = apple.Object;
 
 pub const OpenOptions = common.OpenOptions;
 pub const SaveOptions = common.SaveOptions;
+pub const FolderOptions = common.FolderOptions;
+pub const Folder = common.Folder;
 
 extern const UTTypeItem: apple.id;
 extern const UTTypeFolder: apple.id;
@@ -126,6 +128,49 @@ pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
     const folder = try pick(.save) orelse return null;
     defer std.heap.smp_allocator.free(folder);
     return try std.fs.path.join(gpa, &.{ folder, saveName(options.title) });
+}
+
+// --- Folders with lasting access ---------------------------------------------
+//
+// TODO(ios): not written yet; every call returns error.Unsupported.
+// - openFolder: present UIDocumentPickerViewController
+//   `initForOpeningContentTypes:@[UTTypeFolder]` (asCopy NO) through `pick`,
+//   then on the picked URL: startAccessingSecurityScopedResource,
+//   `bookmarkDataWithOptions:0 includingResourceValuesForKeys:nil
+//   relativeToURL:nil error:` (iOS has no `withSecurityScope` option: a
+//   picked URL's bookmark carries its scope), stopAccessing. id = the
+//   bookmark's base64 (`base64EncodedStringWithOptions:0`); name =
+//   `lastPathComponent` (or NSURLLocalizedNameKey).
+// - folderName / saveToFolder: decode the id, `URLByResolvingBookmarkData:
+//   options:0 relativeToURL:nil bookmarkDataIsStale:&stale error:`; nil ->
+//   error.FolderUnavailable. Wrap the work in start/stopAccessing...; if
+//   startAccessing returns NO -> error.FolderUnavailable. A stale bookmark
+//   still resolves: the id can't change under the app, so it keeps working
+//   until the next openFolder.
+// - saveToFolder: write `<folder>/<name>` with no-clobber numbering, like
+//   path_folder.saveToFolder (createFile exclusive, `common.numberedName`),
+//   ideally inside an NSFileCoordinator `coordinateWritingItemAtURL:` for
+//   iCloud/provider folders.
+// - forgetFolder: nothing to release (a bookmark isn't a grant the system
+//   counts); the app drops the id.
+
+pub fn openFolder(gpa: std.mem.Allocator, options: FolderOptions) !?Folder {
+    _ = .{ gpa, options };
+    return error.Unsupported;
+}
+
+pub fn folderName(gpa: std.mem.Allocator, io: std.Io, id: []const u8) ![]u8 {
+    _ = .{ gpa, io, id };
+    return error.Unsupported;
+}
+
+pub fn saveToFolder(gpa: std.mem.Allocator, io: std.Io, id: []const u8, src_path: []const u8, name: []const u8, mime: ?[]const u8) ![]u8 {
+    _ = .{ gpa, io, id, src_path, name, mime };
+    return error.Unsupported;
+}
+
+pub fn forgetFolder(id: []const u8) void {
+    _ = id;
 }
 
 fn saveName(title: []const u8) []const u8 {

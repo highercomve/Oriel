@@ -4,23 +4,34 @@
 //! threads are marshalled with `Shell.runOnMainThread`, like on Windows.
 //! Returns null when the user cancels. (`modal` has no separate meaning
 //! here: a running panel always blocks the app's other windows.)
+//!
+//! Folders (`openFolder`): an open panel that only chooses directories; the
+//! id is the path. Oriel apps aren't sandboxed, so the path is enough. A
+//! sandboxed app would need a security-scoped bookmark instead (as on iOS).
 
 const std = @import("std");
 const cocoa = @import("../../platform/macos/cocoa.zig");
 const ShellMod = @import("../../platform/macos/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const path_folder = @import("path_folder.zig");
 
 const Object = cocoa.Object;
 
 pub const OpenOptions = common.OpenOptions;
 pub const SaveOptions = common.SaveOptions;
+pub const FolderOptions = common.FolderOptions;
+pub const Folder = common.Folder;
+
+pub const folderName = path_folder.folderName;
+
+const Kind = enum { open, save, folder };
 
 const NSModalResponseOK: isize = 1;
 
 const Params = struct {
     gpa: std.mem.Allocator,
-    is_save: bool,
+    kind: Kind,
     title: []const u8,
     result: ?[]u8 = null,
     err: ?anyerror = null,
@@ -30,7 +41,7 @@ fn runPanel(params: *Params) void {
     const pool = cocoa.objc.AutoreleasePool.init();
     defer pool.deinit();
 
-    const panel = if (params.is_save)
+    const panel = if (params.kind == .save)
         cocoa.class("NSSavePanel").msgSend(Object, "savePanel", .{})
     else
         cocoa.class("NSOpenPanel").msgSend(Object, "openPanel", .{});
@@ -38,10 +49,12 @@ fn runPanel(params: *Params) void {
         params.err = error.DialogCreateFailed;
         return;
     }
-    if (!params.is_save) {
-        panel.msgSend(void, "setCanChooseFiles:", .{cocoa.boolean(true)});
-        panel.msgSend(void, "setCanChooseDirectories:", .{cocoa.boolean(false)});
+    if (params.kind != .save) {
+        const folder = params.kind == .folder;
+        panel.msgSend(void, "setCanChooseFiles:", .{cocoa.boolean(!folder)});
+        panel.msgSend(void, "setCanChooseDirectories:", .{cocoa.boolean(folder)});
         panel.msgSend(void, "setAllowsMultipleSelection:", .{cocoa.boolean(false)});
+        if (folder) panel.msgSend(void, "setCanCreateDirectories:", .{cocoa.boolean(true)});
     }
     if (cocoa.nsString(params.title)) |title| {
         defer title.release();
@@ -64,8 +77,8 @@ fn runPanel(params: *Params) void {
     };
 }
 
-fn run(gpa: std.mem.Allocator, is_save: bool, title: []const u8) !?[]u8 {
-    var params: Params = .{ .gpa = gpa, .is_save = is_save, .title = title };
+fn run(gpa: std.mem.Allocator, kind: Kind, title: []const u8) !?[]u8 {
+    var params: Params = .{ .gpa = gpa, .kind = kind, .title = title };
     try ShellMod.runOnMainThread(Params, &params, runPanel);
     if (params.err) |err| return err;
     return params.result;
@@ -73,13 +86,30 @@ fn run(gpa: std.mem.Allocator, is_save: bool, title: []const u8) !?[]u8 {
 
 /// Ask for an existing file. Caller frees the path; null if cancelled.
 pub fn openFile(gpa: std.mem.Allocator, options: OpenOptions) !?[]u8 {
-    return run(gpa, false, options.title);
+    return run(gpa, .open, options.title);
 }
 
 /// Ask for a file to save to (the panel confirms overwrites). Caller frees
 /// the path; null if cancelled.
 pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
-    return run(gpa, true, options.title);
+    return run(gpa, .save, options.title);
+}
+
+/// Ask for a folder: its path is the id. Null if cancelled.
+pub fn openFolder(gpa: std.mem.Allocator, options: FolderOptions) !?Folder {
+    const path = try run(gpa, .folder, options.title) orelse return null;
+    errdefer gpa.free(path);
+    return .{ .id = path, .name = try gpa.dupe(u8, common.pathName(path)) };
+}
+
+pub fn saveToFolder(gpa: std.mem.Allocator, io: std.Io, id: []const u8, src_path: []const u8, name: []const u8, mime: ?[]const u8) ![]u8 {
+    _ = mime;
+    return path_folder.saveToFolder(gpa, io, id, src_path, name);
+}
+
+/// Nothing to release: a path grants nothing by itself.
+pub fn forgetFolder(id: []const u8) void {
+    _ = id;
 }
 
 /// Inside a running app: show an open panel and abort it from a timer

@@ -2,6 +2,7 @@
 //!
 //! Features:
 //! - IFileOpenDialog / IFileSaveDialog with FOS_FORCEFILESYSTEM, path validation, and overwrite prompt
+//! - Folders: IFileOpenDialog with FOS_PICKFOLDERS (`openFolder`; the id is the path)
 //! - Returns null on user cancellation (HRESULT_FROM_WIN32(ERROR_CANCELLED) = 0x800704C7)
 //! - Main-thread marshalling: marshals via `Shell.runOnMainThread`.
 //! - Clean resource management: Release called on all COM objects, CoTaskMemFree on display name.
@@ -11,13 +12,20 @@ const win32 = @import("../../platform/windows/win32.zig");
 const ShellMod = @import("../../platform/windows/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const path_folder = @import("path_folder.zig");
 
 pub const OpenOptions = common.OpenOptions;
 pub const SaveOptions = common.SaveOptions;
+pub const FolderOptions = common.FolderOptions;
+pub const Folder = common.Folder;
+
+pub const folderName = path_folder.folderName;
+
+const Kind = enum { open, save, folder };
 
 const DialogParams = struct {
     gpa: std.mem.Allocator,
-    is_save: bool,
+    kind: Kind,
     title: []const u8,
     modal: bool,
     result: ?[]u8 = null,
@@ -25,8 +33,9 @@ const DialogParams = struct {
 };
 
 fn runDialogDirect(params: *DialogParams) void {
-    const clsid = if (params.is_save) &win32.CLSID_FileSaveDialog else &win32.CLSID_FileOpenDialog;
-    const iid = if (params.is_save) &win32.IID_IFileSaveDialog else &win32.IID_IFileOpenDialog;
+    const is_save = params.kind == .save;
+    const clsid = if (is_save) &win32.CLSID_FileSaveDialog else &win32.CLSID_FileOpenDialog;
+    const iid = if (is_save) &win32.IID_IFileSaveDialog else &win32.IID_IFileOpenDialog;
 
     var dialog_opt: ?*anyopaque = null;
     const hr = win32.CoCreateInstance(clsid, null, win32.CLSCTX_INPROC_SERVER, iid, &dialog_opt);
@@ -54,10 +63,11 @@ fn runDialogDirect(params: *DialogParams) void {
         params.err = error.DialogGetOptionsFailed;
         return;
     }
-    const extra_opts: win32.DWORD = if (params.is_save)
-        win32.FOS_FORCEFILESYSTEM | win32.FOS_PATHMUSTEXIST | win32.FOS_OVERWRITEPROMPT
-    else
-        win32.FOS_FORCEFILESYSTEM | win32.FOS_FILEMUSTEXIST | win32.FOS_PATHMUSTEXIST;
+    const extra_opts: win32.DWORD = switch (params.kind) {
+        .save => win32.FOS_FORCEFILESYSTEM | win32.FOS_PATHMUSTEXIST | win32.FOS_OVERWRITEPROMPT,
+        .open => win32.FOS_FORCEFILESYSTEM | win32.FOS_FILEMUSTEXIST | win32.FOS_PATHMUSTEXIST,
+        .folder => win32.FOS_FORCEFILESYSTEM | win32.FOS_PICKFOLDERS | win32.FOS_PATHMUSTEXIST,
+    };
     if (dialog.lpVtbl.SetOptions(dialog, current_opts | extra_opts) < 0) {
         params.err = error.DialogSetOptionsFailed;
         return;
@@ -100,10 +110,10 @@ fn runDialogDirect(params: *DialogParams) void {
     };
 }
 
-fn runDialog(gpa: std.mem.Allocator, is_save: bool, title: []const u8, modal: bool) !?[]u8 {
+fn runDialog(gpa: std.mem.Allocator, kind: Kind, title: []const u8, modal: bool) !?[]u8 {
     var params = DialogParams{
         .gpa = gpa,
-        .is_save = is_save,
+        .kind = kind,
         .title = title,
         .modal = modal,
     };
@@ -115,11 +125,28 @@ fn runDialog(gpa: std.mem.Allocator, is_save: bool, title: []const u8, modal: bo
 }
 
 pub fn openFile(gpa: std.mem.Allocator, options: OpenOptions) !?[]u8 {
-    return runDialog(gpa, false, options.title, options.modal);
+    return runDialog(gpa, .open, options.title, options.modal);
 }
 
 pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
-    return runDialog(gpa, true, options.title, options.modal);
+    return runDialog(gpa, .save, options.title, options.modal);
+}
+
+/// Ask for a folder: its path is the id. Null if cancelled.
+pub fn openFolder(gpa: std.mem.Allocator, options: FolderOptions) !?Folder {
+    const path = try runDialog(gpa, .folder, options.title, options.modal) orelse return null;
+    errdefer gpa.free(path);
+    return .{ .id = path, .name = try gpa.dupe(u8, common.pathName(path)) };
+}
+
+pub fn saveToFolder(gpa: std.mem.Allocator, io: std.Io, id: []const u8, src_path: []const u8, name: []const u8, mime: ?[]const u8) ![]u8 {
+    _ = mime;
+    return path_folder.saveToFolder(gpa, io, id, src_path, name);
+}
+
+/// Nothing to release: a path grants nothing by itself.
+pub fn forgetFolder(id: []const u8) void {
+    _ = id;
 }
 
 pub fn check(_: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
