@@ -12,6 +12,8 @@
 //! - notifications: UNUserNotificationCenter (a bundled app only: without a
 //!   bundle identifier it raises an exception; unbundled apps notify through
 //!   osascript, so the status is `unknown`).
+//! - bluetooth: CBManager.authorization; `request` asks through a
+//!   CBCentralManager (bluetooth_apple.zig).
 //! - location, system_audio: no public status API: `unknown` (the first use
 //!   asks).
 //!
@@ -22,6 +24,7 @@
 const std = @import("std");
 const common = @import("common.zig");
 const cocoa = @import("../../platform/macos/cocoa.zig");
+const bluetooth = @import("bluetooth_apple.zig").Bluetooth(cocoa);
 
 const Object = cocoa.Object;
 const Kind = common.Kind;
@@ -68,9 +71,9 @@ pub fn status(kind: Kind) Status {
         .screen_capture => if (CGPreflightScreenCaptureAccess()) .granted else .prompt,
         .accessibility => if (AXIsProcessTrusted() != 0) .granted else .prompt,
         .notifications => notificationStatus(),
-        // Bluetooth (CBManager) and the local network have no status API
-        // here yet: the first use asks.
-        .location, .system_audio, .bluetooth, .local_network => .unknown,
+        .bluetooth => bluetooth.status(),
+        // The local network has no status API here yet: the first use asks.
+        .location, .system_audio, .local_network => .unknown,
     };
 }
 
@@ -88,7 +91,8 @@ pub fn request(kind: Kind, done: Done) void {
         },
         .accessibility => requestAccessibility(done),
         .notifications => requestNotifications(done),
-        .location, .system_audio, .bluetooth, .local_network => done(kind, .unknown),
+        .bluetooth => bluetooth.request(done),
+        .location, .system_audio, .local_network => done(kind, .unknown),
     }
 }
 
