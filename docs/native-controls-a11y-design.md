@@ -342,6 +342,12 @@ Every backend gains:
   - `appearance` is darkAqua when `dk`. `attributedTitle` carries the font and color.
   - target/action → `"click"`, then mark stale.
   - Keys: a runtime subclass `OrielButton` overrides `keyDown:`/`keyUp:` and forwards to the surface's key path.
+  - As built (push buttons): in `makeField` (the fields map, so a11y finds them), class `OrielNuiCheck`.
+    Rounded within 2px of a natural bezel height (regular 20, large 28, small 16, mini 13, the alignment
+    rect's), else FlexiblePush. The frame is `frameForAlignmentRect:` of the box, so the bezel fills it and
+    the shadow and focus ring hang out (the holder grows unless the box is cut). Appearance aqua or
+    darkAqua from `dk`; no `col` → `controlTextColor`. Keys go through the window's key path (no
+    `keyDown:` override): `activationKey` swallows Space/Return/Enter after the page saw them.
 - The UA_CSS_MAC push-button imitation (`pushButton()`, `PUSH_MARK`) becomes the fallback mark
   only. Keep `mac-buttons.test.mjs` for `controls: []`.
 - a11y: the surface view overrides `accessibilityChildren` and `accessibilityHitTest:`.

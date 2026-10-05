@@ -109,6 +109,11 @@ const Field = struct {
     /// An NSButton checkbox or radio (kind check): its state is the page's
     /// (Props on/mix), set again after each click.
     check: bool = false,
+    /// An NSButton push button (kind button): the page's label, font and
+    /// color in its title, the bezel the platform's.
+    button: bool = false,
+    /// A push button's look as last set (buttonLook's hash of it).
+    look: u64 = 0,
 };
 
 /// Live surfaces by token, and which surface and node a view or control
@@ -203,8 +208,8 @@ fn classes() void {
         .{ "becomeFirstResponder", textFieldBecomeFirst },
         .{ "textView:shouldChangeTextInRange:replacementString:", textFieldShouldChange },
     });
-    // A native checkbox or radio: it tells the page when it takes the
-    // keyboard (with Full Keyboard Access; without it NSButton doesn't).
+    // A native checkbox, radio or push button: it tells the page when it
+    // takes the keyboard (with Full Keyboard Access; without it NSButton doesn't).
     check_class = cocoa.defineSubclass("OrielNuiCheck", "NSButton", &.{}, .{
         .{ "becomeFirstResponder", checkBecomeFirst },
     });
@@ -234,6 +239,7 @@ fn classes() void {
         .{ "popupChanged:", popupChanged },
         .{ "checkClicked:", checkClicked },
         .{ "checkResync:", checkResync },
+        .{ "buttonClicked:", buttonClicked },
         .{ "sliderChanged:", sliderChanged },
     }));
 }
@@ -253,7 +259,7 @@ fn withPlatformExtras(gpa: std.mem.Allocator, platform_json: [:0]const u8) ?[:0]
     const body = trimmed[0 .. trimmed.len - 1];
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
     const a = systemAccent();
-    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"fullKeyboardAccess\":{},\"dpr\":{d},\"accent\":[{d},{d},{d}],\"controls\":[\"check\"]}}", .{ body, sep, fka, dpr, a[0], a[1], a[2] }, 0) catch null;
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"fullKeyboardAccess\":{},\"dpr\":{d},\"accent\":[{d},{d},{d}],\"controls\":[\"check\",\"button\"]}}", .{ body, sep, fka, dpr, a[0], a[1], a[2] }, 0) catch null;
 }
 
 /// The user's accent color (System Settings > Appearance) in sRGB 0-255:
@@ -446,6 +452,11 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
             // a pop-up button's 4px under it (WKWebView: 13 down in 18).
             if (n.kind == .input) n.baseline = draw.fieldBaseline("NSFont", n);
             if (n.kind == .select) n.baseline = 4;
+        },
+        // Its label on one line; its baseline centered as a text field's.
+        .button => {
+            out.* = draw.buttonLabelSize("NSFont", n);
+            n.baseline = draw.fieldBaseline("NSFont", n);
         },
         else => out.* = .{ 0, 0 },
     }
@@ -757,7 +768,7 @@ fn syncFields(s: *Surface) void {
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
         const n = np.*;
-        if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check) continue;
+        if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check and n.kind != .button) continue;
         const f = s.fields.get(n.id) orelse blk: {
             const f = makeField(s, n) orelse continue;
             s.fields.put(s.gpa, n.id, f) catch {
@@ -774,6 +785,7 @@ fn syncFields(s: *Surface) void {
         }
         style(n, f);
         if (f.check) checkState(n, f.inner);
+        if (f.button) if (s.fields.getPtr(n.id)) |fp| buttonLook(n, fp);
         // The page changes placeholders ("Select text first…" → "Tell
         // GhostPen what to do…"); a text area's is drawn under it.
         if (n.kind == .input and !f.slider) if (cocoa.nsString(n.props.ph orelse "")) |ph| {
@@ -783,9 +795,12 @@ fn syncFields(s: *Surface) void {
         // The holder covers the visible part of the field; the control sits
         // at the field's place inside it.
         const r = n.content();
-        const shown = draw.visiblePart(&s.engine.tree, n);
+        // (A push button's bezel fills its box; its shadow and focus ring
+        // hang out of it, cut as the box would be.)
+        const ctl = if (f.button) buttonFrame(n, f.inner) else r;
+        const shown = draw.visibleRect(&s.engine.tree, n, ctl);
         f.holder.msgSend(void, "setFrame:", .{NSRect{ .origin = .{ .x = shown.x, .y = shown.y }, .size = .{ .width = shown.w, .height = shown.h } }});
-        f.outer.msgSend(void, "setFrame:", .{NSRect{ .origin = .{ .x = r.x - shown.x, .y = r.y - shown.y }, .size = .{ .width = @max(1, r.w), .height = @max(1, r.h) } }});
+        f.outer.msgSend(void, "setFrame:", .{NSRect{ .origin = .{ .x = ctl.x - shown.x, .y = ctl.y - shown.y }, .size = .{ .width = @max(1, ctl.w), .height = @max(1, ctl.h) } }});
         const visible = shown.h > 1 and shown.w > 1 and n.props.vis != false;
         f.holder.msgSend(void, "setHidden:", .{cocoa.boolean(!visible)});
         if (n.kind != .textarea) {
@@ -911,6 +926,16 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             b.msgSend(void, "setAction:", .{cocoa.objc.sel("checkClicked:").value});
             break :blk .{ .holder = cocoa.nil, .outer = b, .inner = b, .check = true };
         },
+        // A push button (kind button: rule 1.4 left its box to the
+        // platform): its title and bezel set on every sync (buttonLook).
+        .button => blk: {
+            const b = check_class.?.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+            if (b.value == null) return null;
+            b.msgSend(void, "setButtonType:", .{@as(c_ulong, 7)}); // NSButtonTypeMomentaryPushIn
+            b.msgSend(void, "setTarget:", .{field_delegate});
+            b.msgSend(void, "setAction:", .{cocoa.objc.sel("buttonClicked:").value});
+            break :blk .{ .holder = cocoa.nil, .outer = b, .inner = b, .button = true };
+        },
         else => return null,
     };
     const holder = holder_class.?.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
@@ -948,6 +973,7 @@ fn setValue(n: *Node, f: Field, v: []const u8) void {
 
 fn style(n: *Node, f: Field) void {
     if (f.check) return; // the platform's look
+    if (f.button) return; // buttonLook
     if (f.slider) {
         // The page's min/max/step may change; accent-color tints the track.
         const r = draw.Range.of(n);
@@ -1353,6 +1379,99 @@ fn checkClicked(_: id, _: SEL, sender: id) callconv(.c) void {
     checkState(n, .{ .value = sender });
     // And after the page's render (its new props, if any).
     field_delegate.msgSend(void, "performSelector:withObject:afterDelay:", .{ cocoa.objc.sel("checkResync:").value, sender, @as(f64, 0) });
+}
+
+/// A click on a native push button: the page's click (activate(): a
+/// submit button submits its form, a reset one resets it).
+fn buttonClicked(_: id, _: SEL, sender: id) callconv(.c) void {
+    const o = ownerOf(sender) orelse return;
+    if (o.s.updating) return;
+    const app = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{});
+    const ev = app.msgSend(Object, "currentEvent", .{});
+    const flags: c_ulong = if (ev.value != null) ev.msgSend(c_ulong, "modifierFlags", .{}) else 0;
+    var buf: [16]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "{d}", .{modFlags(flags)}) catch return;
+    _ = o.s.engine.event(o.n.id, "click", json);
+}
+
+extern const NSAppearanceNameAqua: id;
+extern const NSAppearanceNameDarkAqua: id;
+extern const NSFontAttributeName: id;
+extern const NSForegroundColorAttributeName: id;
+extern const NSParagraphStyleAttributeName: id;
+
+/// The bezels' heights (their alignment rects) by control size: regular,
+/// small, mini, large (NSControlSize 0-3).
+const bezel_heights = [_]f32{ 20, 16, 13, 28 };
+
+/// A push button's bezel and size for its box: the rounded one where the
+/// box is within 2px of a control size's height (centered in it), else
+/// the flexible push bezel, which stretches to any height.
+fn bezelFor(h: f32) struct { style: c_ulong, size: c_ulong } {
+    for (bezel_heights, 0..) |bh, i| if (@abs(h - bh) <= 2) return .{ .style = 1, .size = i }; // NSBezelStyleRounded
+    return .{ .style = 2, .size = if (h >= 20) 0 else if (h >= 16) 1 else 2 }; // NSBezelStyleFlexiblePush
+}
+
+/// A push button's look: bezel, size, appearance and title (its label in
+/// the page's font; its color if the page set one, dimmed when disabled).
+fn buttonLook(n: *const Node, f: *Field) void {
+    const b = f.inner;
+    const bz = bezelFor(n.frame.h);
+    const text = draw.buttonLabel(std.heap.smp_allocator, n) orelse return;
+    defer std.heap.smp_allocator.free(text);
+    // Set again only when something it shows changed (a sync per layout).
+    var h = std.hash.Wyhash.init(0);
+    h.update(text);
+    h.update(n.props.ff orelse "");
+    const col = n.props.col orelse tree_mod.Color{ -1, -1, -1, -1 };
+    const nums = [_]f32{ n.props.fz orelse -1, n.props.fwt orelse -1, col[0], col[1], col[2], col[3] };
+    h.update(std.mem.asBytes(&nums));
+    h.update(&.{ @intCast(bz.style), @intCast(bz.size), @intFromBool(n.props.it), @intFromBool(n.props.mono), @intFromBool(n.props.dis), @intFromBool(n.props.dk) });
+    const look = h.final() | 1;
+    if (look == f.look) return;
+    f.look = look;
+    b.msgSend(void, "setBezelStyle:", .{bz.style});
+    b.msgSend(void, "setControlSize:", .{bz.size});
+    // (The page's scheme, not the system's: a light page in dark mode.)
+    b.msgSend(void, "setAppearance:", .{cocoa.class("NSAppearance").msgSend(Object, "appearanceNamed:", .{if (n.props.dk) NSAppearanceNameDarkAqua else NSAppearanceNameAqua})});
+    const str = cocoa.nsString(text) orelse return;
+    defer str.release();
+    const fz = n.props.fz orelse 16;
+    const fnt: Object = .{ .value = @ptrCast(@alignCast(draw.font("NSFont", fz, n.props.fwt orelse 400, n.props.it, n.props.mono, n.props.ff) orelse return)) };
+    // The page's color only when it colored the button (render.js sends
+    // col then), else the system's label color for the bezel.
+    const NSColor = cocoa.class("NSColor");
+    const color = if (n.props.col) |c|
+        NSColor.msgSend(Object, "colorWithSRGBRed:green:blue:alpha:", .{ @as(f64, c[0] / 255), @as(f64, c[1] / 255), @as(f64, c[2] / 255), @as(f64, c[3]) * @as(f64, if (n.props.dis) 0.4 else 1) })
+    else
+        NSColor.msgSend(Object, if (n.props.dis) "disabledControlTextColor" else "controlTextColor", .{});
+    const para = cocoa.class("NSMutableParagraphStyle").msgSend(Object, "new", .{});
+    defer para.release();
+    para.msgSend(void, "setAlignment:", .{@as(c_long, 1)}); // centered (NSTextAlignmentCenter)
+    para.msgSend(void, "setLineBreakMode:", .{@as(c_ulong, 4)}); // truncated at the end
+    const attrs = cocoa.class("NSDictionary").msgSend(Object, "dictionaryWithObjects:forKeys:count:", .{
+        &[_]id{ fnt.value, color.value, para.value },
+        &[_]id{ NSFontAttributeName, NSForegroundColorAttributeName, NSParagraphStyleAttributeName },
+        @as(c_ulong, 3),
+    });
+    const title = cocoa.class("NSAttributedString").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithString:attributes:", .{ str, attrs });
+    defer title.release();
+    b.msgSend(void, "setAttributedTitle:", .{title});
+}
+
+/// Where a push button goes: its bezel (alignment rect) over the node's
+/// box, a rounded one vertically centered at its own height; the frame
+/// takes in the shadow and focus ring around it.
+fn buttonFrame(n: *const Node, b: Object) tree_mod.Rect {
+    var box = n.frame;
+    const bz = bezelFor(box.h);
+    if (bz.style == 1) {
+        const bh = bezel_heights[bz.size];
+        box.y += @round((box.h - bh) / 2);
+        box.h = bh;
+    }
+    const fr = b.msgSend(NSRect, "frameForAlignmentRect:", .{NSRect{ .origin = .{ .x = box.x, .y = box.y }, .size = .{ .width = box.w, .height = box.h } }});
+    return .{ .x = @floatCast(fr.origin.x), .y = @floatCast(fr.origin.y), .w = @floatCast(fr.size.width), .h = @floatCast(fr.size.height) };
 }
 
 fn checkResync(_: id, _: SEL, sender: id) callconv(.c) void {
@@ -1897,10 +2016,11 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
     return if (prevented or surfaces.get(token) == null) null else event;
 }
 
-/// Space, Return or Enter on a native check (kind check).
+/// Space, Return or Enter on a native check or button (kind check or
+/// button): the page activates them (main.js), the control doesn't.
 fn activationKey(s: *Surface, nid: i64, ev: Object) bool {
     const n = s.engine.tree.get(nid) orelse return false;
-    if (n.kind != .check) return false;
+    if (n.kind != .check and n.kind != .button) return false;
     const code = ev.msgSend(c_ushort, "keyCode", .{});
     return code == 49 or code == 36 or code == 76;
 }

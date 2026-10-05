@@ -3042,7 +3042,7 @@ fn baselineFn(node: yg.YGNodeConstRef, width: f32, height: f32) callconv(.c) f32
         const inner = @max(0, height - top - bottom);
         // The backend's, from the middle (a text field: its font's ascent
         // less half its line), else an estimate from the font size.
-        if ((n.kind == .input or n.kind == .select) and !std.math.isNan(n.baseline)) return @min(height, top + inner / 2 + n.baseline);
+        if ((n.kind == .input or n.kind == .select or n.kind == .button) and !std.math.isNan(n.baseline)) return @min(height, top + inner / 2 + n.baseline);
         return @min(height, top + inner / 2 + fz * (0.9 - 1.15 / 2.0));
     }
     if (!std.math.isNan(n.baseline)) return @min(height, top + n.baseline);
