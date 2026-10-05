@@ -5,6 +5,8 @@
 //!   `permissions.request` guarantees by only asking for declared kinds).
 //! - location: CLLocationManager ("when in use").
 //! - notifications: UNUserNotificationCenter.
+//! - bluetooth: CBManager.authorization; `request` asks through a
+//!   CBCentralManager (bluetooth_apple.zig).
 //! - screen_capture, system_audio, accessibility: not available to iOS
 //!   apps: `denied`.
 //!
@@ -13,6 +15,7 @@
 const std = @import("std");
 const common = @import("common.zig");
 const apple = @import("../../platform/ios/apple.zig");
+const bluetooth = @import("bluetooth_apple.zig").Bluetooth(apple);
 
 const Object = apple.Object;
 const Kind = common.Kind;
@@ -56,9 +59,10 @@ pub fn status(kind: Kind) Status {
         .location => locationStatus(),
         .notifications => notificationStatus(),
         .screen_capture, .system_audio, .accessibility => .denied,
-        // No status API wired yet (CBManager, the local network probe): the
-        // first use asks.
-        .bluetooth, .local_network => .unknown,
+        .bluetooth => bluetooth.status(),
+        // No status API wired yet (the local network probe): the first use
+        // asks.
+        .local_network => .unknown,
     };
 }
 
@@ -71,7 +75,8 @@ pub fn request(kind: Kind, done: Done) void {
         .location => requestLocation(done),
         .notifications => requestNotifications(done),
         .screen_capture, .system_audio, .accessibility => done(kind, .denied),
-        .bluetooth, .local_network => done(kind, .unknown),
+        .bluetooth => bluetooth.request(done),
+        .local_network => done(kind, .unknown),
     }
 }
 
