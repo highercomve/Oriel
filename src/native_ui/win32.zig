@@ -368,6 +368,8 @@ pub const Surface = struct {
     overlay_sb: bool = false,
     /// The accent the page last heard (platform.accent, "accent").
     accent: [3]u8 = .{ 0, 0, 0 },
+    /// High contrast's colors as the page last heard them (null: off).
+    forced: ?ForcedColors = null,
     sb_show: i64 = 0,
     sb_show_until: u64 = 0,
     sb_hot: i64 = 0,
@@ -404,9 +406,11 @@ pub const Surface = struct {
         errdefer _ = c.DestroyWindow(s.hwnd);
         const w = cssPx(rc.right - rc.left, s.scale);
         const h = cssPx(rc.bottom - rc.top, s.scale);
-        // platform.accent: the system's, as the window opens.
+        // platform.accent and platform.forcedColors: the system's, as the
+        // window opens.
         s.accent = systemAccent(s.dark);
-        const extras = withAccent(gpa, platform_json, s.accent);
+        s.forced = forcedColors();
+        const extras = withAccent(gpa, platform_json, s.accent, s.forced);
         defer if (extras) |j| gpa.free(j);
         s.engine = try Engine.create(gpa, .{
             .ctx = s,
@@ -1429,7 +1433,7 @@ fn makeCheck(s: *Surface, n: *Node) !Field {
 fn syncCheck(s: *Surface, f: *Field, n: *Node) void {
     const want: c.WPARAM = if (n.props.mix) c.BST_INDETERMINATE else if (n.props.on) c.BST_CHECKED else c.BST_UNCHECKED;
     if (@as(c.WPARAM, @intCast(c.SendMessageW(f.hwnd, c.BM_GETCHECK, 0, 0))) != want) _ = c.SendMessageW(f.hwnd, c.BM_SETCHECK, want, 0);
-    const dark = n.props.dk or luminance(colorBehind(s, n)) < 0.5;
+    const dark = s.forced == null and (n.props.dk or luminance(colorBehind(s, n)) < 0.5);
     if (dark != f.dark_theme) {
         f.dark_theme = dark;
         setWindowTheme(f.hwnd, if (dark) std.unicode.utf8ToUtf16LeStringLiteral("DarkMode_Explorer") else null);
@@ -1656,9 +1660,9 @@ fn styleField(s: *Surface, f: *Field, n: *Node) void {
     }
     // A Windows 11 text box on a dark background: the dark theme's text
     // (the UA sheet's black would vanish on its fill).
-    const fg = if (fluentField(n) and fluentDark(s, n)) 0xFFFFFF else colorRef(n.props.col orelse .{ 0, 0, 0, 1 });
+    const fg = if (fluentField(s, n) and fluentDark(s, n)) 0xFFFFFF else colorRef(n.props.col orelse .{ 0, 0, 0, 1 });
     // A Windows 11 text box: its EDIT on the frame's fill.
-    const bg = if (fluentField(n)) colorRef(fluentFill(s, n)) else backgroundUnder(s, n);
+    const bg = if (fluentField(s, n)) colorRef(fluentFill(s, n)) else backgroundUnder(s, n);
     const colors_changed = fg != f.fg or bg != f.bg or f.brush == null;
     if (fg != f.fg or bg != f.bg or f.brush == null) {
         f.fg = fg;
@@ -1673,7 +1677,7 @@ fn styleField(s: *Surface, f: *Field, n: *Node) void {
     // background, the dark one (the file dialogs'), else a white box on a
     // dark page.
     if (f.kind == .select) {
-        const dark = luminance(bg) < 0.5;
+        const dark = s.forced == null and luminance(bg) < 0.5;
         if (dark != f.dark_theme) {
             f.dark_theme = dark;
             setWindowTheme(f.hwnd, if (dark) std.unicode.utf8ToUtf16LeStringLiteral("DarkMode_CFD") else null);
@@ -2570,8 +2574,8 @@ fn paintScrollbar(p: *Painter, n: *Node) void {
     const sb = scrollbarOf(s, n) orelse return;
     if (!(n.gutter > 0)) return paintOverlayScrollbar(p, n, sb);
     const dark = n.props.dk;
-    const track: tree_mod.Color = if (n.props.sbc) |cc| cc[1] else if (dark) .{ 44, 44, 44, 1 } else .{ 252, 252, 252, 1 };
-    const ink: tree_mod.Color = if (n.props.sbc) |cc| cc[0] else if (dark) .{ 159, 159, 159, 1 } else .{ 139, 139, 139, 1 };
+    const track: tree_mod.Color = if (s.forced) |f| forcedColor(f, 10) else if (n.props.sbc) |cc| cc[1] else if (dark) .{ 44, 44, 44, 1 } else .{ 252, 252, 252, 1 };
+    const ink: tree_mod.Color = if (s.forced) |f| forcedColor(f, 11) else if (n.props.sbc) |cc| cc[0] else if (dark) .{ 159, 159, 159, 1 } else .{ 139, 139, 139, 1 };
     const vt = p.vt();
     const bar = rectF(sb.bar);
     vt.FillRectangle.?(p.rt, &bar, p.solid(track));
@@ -2608,10 +2612,11 @@ fn paintOverlayScrollbar(p: *Painter, n: *Node, sb: Scrollbar) void {
     const wide = s.sb_hot == n.id or (s.sb_part != .none and s.sb_node == n.id);
     if (!wide and s.sb_show != n.id) return;
     const dark = n.props.dk or luminance(colorBehind(s, n)) < 0.5;
-    const ink: tree_mod.Color = if (n.props.sbc) |cc| cc[0] else if (dark) .{ 159, 159, 159, 1 } else .{ 134, 134, 134, 1 };
+    // High contrast: ButtonText on ButtonFace (forced_names 11, 10).
+    const ink: tree_mod.Color = if (s.forced) |f| forcedColor(f, 11) else if (n.props.sbc) |cc| cc[0] else if (dark) .{ 159, 159, 159, 1 } else .{ 134, 134, 134, 1 };
     const vt = p.vt();
     if (wide) {
-        const track: tree_mod.Color = if (n.props.sbc) |cc| cc[1] else if (dark) .{ 44, 44, 44, 0.9 } else .{ 249, 249, 249, 0.9 };
+        const track: tree_mod.Color = if (s.forced) |f| forcedColor(f, 10) else if (n.props.sbc) |cc| cc[1] else if (dark) .{ 44, 44, 44, 0.9 } else .{ 249, 249, 249, 0.9 };
         const rr_track: c.D2D1_ROUNDED_RECT = .{ .rect = rectF(sb.bar), .radiusX = 4, .radiusY = 4 };
         vt.FillRoundedRectangle.?(p.rt, &rr_track, p.solid(track));
     }
@@ -4601,7 +4606,9 @@ fn paintImage(p: *Painter, n: *Node) void {
 // its bottom edge darker, a 2px accent line there while it has the
 // keyboard. The native EDIT inside takes the same fill.
 
-fn fluentField(n: *Node) bool {
+fn fluentField(s: *const Surface, n: *Node) bool {
+    // High contrast: the plain box in the system's colors (forced).
+    if (s.forced != null) return false;
     return (n.kind == .input or n.kind == .textarea) and uaBorder(n);
 }
 
@@ -4658,13 +4665,90 @@ fn systemAccent(dark: bool) [3]u8 {
 
 /// The platform JSON with the accent read as the window opens (owned by
 /// the caller; the engine copies it). Null: as is.
-fn withAccent(gpa: std.mem.Allocator, platform_json: [:0]const u8, a: [3]u8) ?[:0]const u8 {
+fn withAccent(gpa: std.mem.Allocator, platform_json: [:0]const u8, a: [3]u8, forced: ?ForcedColors) ?[:0]const u8 {
     const trimmed = std.mem.trimEnd(u8, platform_json, " \n");
     if (trimmed.len < 2 or trimmed[trimmed.len - 1] != '}') return null;
-    const body = trimmed[0 .. trimmed.len - 1];
+    var body_buf: std.ArrayList(u8) = .empty;
+    defer body_buf.deinit(gpa);
+    body_buf.appendSlice(gpa, trimmed[0 .. trimmed.len - 1]) catch return null;
+    // forcedColors: high contrast's colors (platform.forcedColors).
+    if (forced) |f| {
+        const first = std.mem.trimEnd(u8, body_buf.items, " \n").len <= 1;
+        body_buf.appendSlice(gpa, if (first) "\"forcedColors\":" else ",\"forcedColors\":") catch return null;
+        f.json(&body_buf, gpa) catch return null;
+    }
+    const body = body_buf.items;
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
     // controls: the kinds made native here (docs/native-controls-a11y-design.md 1.1).
     return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"accent\":[{d},{d},{d}],\"controls\":[\"check\"]}}", .{ body, sep, a[0], a[1], a[2] }, 0) catch null;
+}
+
+/// Forced colors (Windows high contrast, platform.forcedColors): the
+/// system's colors by CSS system color name, and whether the theme is dark.
+const ForcedColors = struct {
+    dark: bool,
+    colors: [forced_names.len][3]u8,
+
+    fn eql(a: ?ForcedColors, b: ?ForcedColors) bool {
+        if (a == null or b == null) return a == null and b == null;
+        return a.?.dark == b.?.dark and std.mem.eql(u8, std.mem.sliceAsBytes(&a.?.colors), std.mem.sliceAsBytes(&b.?.colors));
+    }
+
+    /// As platform.forcedColors' JSON ({"dark":…,"colors":{…}}).
+    fn json(f: ForcedColors, out: *std.ArrayList(u8), gpa: std.mem.Allocator) !void {
+        try out.print(gpa, "{{\"dark\":{},\"colors\":{{", .{f.dark});
+        for (forced_names, f.colors, 0..) |name, col, i| {
+            try out.print(gpa, "{s}\"{s}\":[{d},{d},{d}]", .{ if (i > 0) "," else "", name, col[0], col[1], col[2] });
+        }
+        try out.appendSlice(gpa, "}}");
+    }
+};
+const forced_names = [_][]const u8{ "Canvas", "CanvasText", "LinkText", "VisitedText", "ActiveText", "GrayText", "Highlight", "HighlightText", "SelectedItem", "SelectedItemText", "ButtonFace", "ButtonText", "ButtonBorder", "Field", "FieldText" };
+const forced_sys = [forced_names.len]c_int{ c.COLOR_WINDOW, c.COLOR_WINDOWTEXT, c.COLOR_HOTLIGHT, c.COLOR_HOTLIGHT, c.COLOR_HOTLIGHT, c.COLOR_GRAYTEXT, c.COLOR_HIGHLIGHT, c.COLOR_HIGHLIGHTTEXT, c.COLOR_HIGHLIGHT, c.COLOR_HIGHLIGHTTEXT, c.COLOR_BTNFACE, c.COLOR_BTNTEXT, c.COLOR_BTNTEXT, c.COLOR_WINDOW, c.COLOR_WINDOWTEXT };
+
+/// The system's forced colors: high contrast on (SPI_GETHIGHCONTRAST),
+/// its colors from GetSysColor; null when off. ORIEL_FORCED_COLORS=dark or
+/// light fakes a theme (Windows' Night sky and Desert), for testing.
+fn forcedColors() ?ForcedColors {
+    if (std.c.getenv("ORIEL_FORCED_COLORS")) |v| {
+        const dark = std.mem.eql(u8, std.mem.span(v), "dark");
+        const night = [_]u32{ 0x000000, 0xFFFFFF, 0xFFFF00, 0xFFFF00, 0xFFFF00, 0x3FF23F, 0x1AEBFF, 0x000000, 0x1AEBFF, 0x000000, 0x000000, 0xFFFFFF, 0xFFFFFF, 0x000000, 0xFFFFFF };
+        const desert = [_]u32{ 0xFFFAEF, 0x3D3D3D, 0x1C5E75, 0x1C5E75, 0x1C5E75, 0x676767, 0x903909, 0xFFF5E3, 0x903909, 0xFFF5E3, 0xFFFAEF, 0x202020, 0x202020, 0xFFFAEF, 0x3D3D3D };
+        var f: ForcedColors = .{ .dark = dark, .colors = undefined };
+        for (if (dark) night else desert, 0..) |rgb, i| f.colors[i] = .{ @truncate(rgb >> 16), @truncate(rgb >> 8), @truncate(rgb) };
+        return f;
+    }
+    var hc = std.mem.zeroes(c.HIGHCONTRASTW);
+    hc.cbSize = @sizeOf(c.HIGHCONTRASTW);
+    if (c.SystemParametersInfoW(c.SPI_GETHIGHCONTRAST, hc.cbSize, &hc, 0) == 0) return null;
+    if (hc.dwFlags & c.HCF_HIGHCONTRASTON == 0) return null;
+    var f: ForcedColors = .{ .dark = false, .colors = undefined };
+    for (forced_sys, 0..) |index, i| {
+        const ref = c.GetSysColor(index);
+        f.colors[i] = .{ @truncate(ref), @truncate(ref >> 8), @truncate(ref >> 16) };
+    }
+    const canvas = f.colors[0];
+    f.dark = luminance(@as(c.COLORREF, canvas[0]) | (@as(c.COLORREF, canvas[1]) << 8) | (@as(c.COLORREF, canvas[2]) << 16)) < 0.5;
+    return f;
+}
+
+/// A forced color by its index in forced_names, as the tree's colors.
+fn forcedColor(f: ForcedColors, i: usize) tree_mod.Color {
+    return .{ @floatFromInt(f.colors[i][0]), @floatFromInt(f.colors[i][1]), @floatFromInt(f.colors[i][2]), 1 };
+}
+
+/// High contrast turned on, off or changed (WM_SYSCOLORCHANGE, or
+/// WM_SETTINGCHANGE with SPI_SETHIGHCONTRAST, from the top-level window):
+/// the page hears its colors ("forcedColors", null when off).
+pub fn forcedColorsCheck(s: *Surface) void {
+    const f = forcedColors();
+    if (ForcedColors.eql(f, s.forced)) return;
+    s.forced = f;
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(s.gpa);
+    if (f) |fc| fc.json(&json, s.gpa) catch return else json.appendSlice(s.gpa, "null") catch return;
+    _ = s.engine.event(0, "forcedColors", json.items);
+    if (liveSurface(s.hwnd)) |ls| _ = c.InvalidateRect(ls.hwnd, null, c.FALSE);
 }
 
 /// The accent or app mode changed (WM_SETTINGCHANGE "ImmersiveColorSet",
@@ -4748,7 +4832,7 @@ fn paintThemeControl(p: *Painter, n: *Node, radio: bool, box: Rect) bool {
     const s = p.s;
     const ux = uxtheme() orelse return false;
     // Dark controls on a dark background, as the select picks its theme.
-    const theme = buttonTheme(s.hwnd, n.props.dk or luminance(colorBehind(s, n)) < 0.5) orelse return false;
+    const theme = buttonTheme(s.hwnd, s.forced == null and (n.props.dk or luminance(colorBehind(s, n)) < 0.5)) orelse return false;
     const px_size: c_int = @max(1, @as(c_int, @intFromFloat(@round(box.w * s.scale))));
     // States: unchecked 1-4, checked 5-8 (normal, hot, pressed, disabled).
     const hot = s.hovered == n.id;
@@ -5194,7 +5278,7 @@ fn paint(p: *Painter, n: *Node) void {
     const r = n.radiusXY();
     if (props.sh) |sh| shadow(p, f, r, sh);
     // An unstyled text field: Windows 11's text box, not the UA CSS box.
-    const fluent = fluentField(n);
+    const fluent = fluentField(p.s, n);
     if (fluent) paintFluentField(p, n, f);
     if (!fluent) {
         if (props.bg) |bg| {
@@ -5242,7 +5326,7 @@ fn paint(p: *Painter, n: *Node) void {
     // The outline: over the box and its children, outside its own clip
     // (with its transform and opacity). A Windows 11 text box shows its
     // focus with its accent line instead.
-    if (props.ol) |ol| if (!fluentField(n)) paintOutline(p, f, r, ol);
+    if (props.ol) |ol| if (!fluentField(p.s, n)) paintOutline(p, f, r, ol);
 }
 
 /// CSS outline: a border of its own around the box grown by offset +
