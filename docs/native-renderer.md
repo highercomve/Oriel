@@ -468,6 +468,39 @@ against WKWebView under the default CSP: the same EvalErrors, `eval(42)`,
 no string timer, no inline handler; engine.zig's test covers both a
 refusing and an allowing CSP.
 
+**Forced colors** (high contrast; shared, Win32): a backend whose system
+has a high contrast theme on puts `platform.forcedColors` in the platform
+JSON, `{ dark, colors: { Canvas: [r, g, b], CanvasText, LinkText,
+VisitedText, ActiveText, GrayText, Highlight, HighlightText, SelectedItem,
+SelectedItemText, ButtonFace, ButtonText, ButtonBorder, Field, FieldText } }`
+(absent or null when off), and sends the `"forcedColors"` event with the
+same value (null when turned off) when it changes. main.js keeps it as
+`viewport.forced`.
+- Media: `forced-colors: active`, `prefers-contrast: more`, and
+  `prefers-color-scheme` follows the theme's `dark`.
+- CSS system color keywords (Canvas, CanvasText, Field, ButtonFace, …) resolve in
+  any color property (css.js computeStyle): the platform's while forced, else
+  the defaults for the element's used color-scheme.
+- render.js forceColors, for every element without `forced-color-adjust: none`:
+  - text in its role's color (LinkText, GrayText for a disabled control,
+    ButtonText, FieldText, MarkText, else its parent's, CanvasText at the root);
+  - an opaque background, a control's, `<mark>`'s and the root's in Canvas,
+    ButtonFace, Field or Mark; gradients dropped;
+  - borders and outlines in the text color;
+  - no shadows, accent-color or scrollbar-color.
+  Flex shape plans and stamped rows are skipped while forced, so every child
+  goes through it.
+- Win32: SPI_GETHIGHCONTRAST and GetSysColor (COLOR_WINDOW, WINDOWTEXT,
+  HOTLIGHT, GRAYTEXT, HIGHLIGHT, HIGHLIGHTTEXT, BTNFACE, BTNTEXT), read at
+  boot and on WM_SYSCOLORCHANGE or WM_SETTINGCHANGE (SPI_SETHIGHCONTRAST). While forced:
+  - fields are plain boxes (no Windows 11 text box), in the CSS's (forced) colors;
+  - theme-drawn and native checks use the plain (high-contrast-aware) BUTTON theme;
+  - selects aren't switched to the dark theme;
+  - scrollbars are ButtonText on ButtonFace.
+  `ORIEL_FORCED_COLORS=dark|light` fakes a theme (Night sky, Desert) for testing.
+  The native controls then still draw in the real system colors.
+- Tested: js/test/forced-colors.test.mjs; Win32 with the override (dark and light).
+
 **Screen scale** (each backend): `platform.dpr` in the platform JSON,
 the screen's pixels per CSS px, read as a window opens (Apple: the main
 screen's backing scale / UIScreen's scale; GTK: the scale factor; Win32:

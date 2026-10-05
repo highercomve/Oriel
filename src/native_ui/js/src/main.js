@@ -853,6 +853,20 @@ const store = (name) => {
 g.localStorage = store("local");
 g.sessionStorage = store("session");
 const platform = JSON.parse(host.platform || "{}");
+// Forced colors (the system's high contrast theme): platform.forcedColors,
+// { dark, colors: { Canvas: [r, g, b], CanvasText, … } }, null when off,
+// as viewport.forced: names lowercased, colors as rgb() strings.
+function forcedColorsOf(d) {
+  if (!d || typeof d !== "object" || !d.colors || typeof d.colors !== "object") return null;
+  const colors = {};
+  for (const k in d.colors) {
+    const v = d.colors[k];
+    if (Array.isArray(v) && v.length >= 3) colors[k.toLowerCase()] = `rgb(${v[0] | 0}, ${v[1] | 0}, ${v[2] | 0})`;
+    else if (typeof v === "string") colors[k.toLowerCase()] = v;
+  }
+  return { dark: !!d.dark, colors };
+}
+viewport.forced = forcedColorsOf(platform.forcedColors);
 setFocusRingOS(platform.os, platform.accent);
 setNativeControls(platform.controls);
 g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: undefined, maxTouchPoints: viewport.coarse ? 5 : 0 };
@@ -1846,6 +1860,16 @@ const oriel = {
         case "a11y": a11y?.set(data === 1 || data === true || data === "1"); return false;
         // The system's accent color changed (data: [r, g, b]): the focus
         // ring and accent-colored controls follow it.
+        // High contrast turned on, off or to another theme (data: as
+        // platform.forcedColors, null when off): every style again, and
+        // forced-colors / prefers-color-scheme listeners.
+        case "forcedColors": {
+          const before = mediaSnapshot();
+          viewport.forced = forcedColorsOf(data);
+          renderer?.markAll();
+          mediaChanged(before);
+          return false;
+        }
         case "accent": {
           if (!Array.isArray(data) || data.length !== 3) return false;
           platform.accent = data;
