@@ -20,6 +20,8 @@ pub const targetToAppImageArch = metadata_mod.targetToAppImageArch;
 /// - `nsis`: Windows installer (`setup.exe`) generated via `makensis` (cross-builds from Linux).
 /// - `app`: macOS application bundle (`<Name>.app`: Info.plist, icon.icns; ad-hoc signed on a Mac).
 /// - `dmg`: macOS disk image with the .app and an Applications link (`hdiutil`, macOS hosts).
+/// - `msix`: Windows MSIX package (tools/package/msix.zig; no SDK needed to
+///   build it, signtool to sign it). Opt-in: see `PackageOptions.msix`.
 ///
 /// Future formats:
 /// - `msi`: Windows installer MSI generated via WiX toolset.
@@ -30,6 +32,7 @@ pub const Format = enum {
     nsis,
     app,
     dmg,
+    msix,
 };
 
 /// Return default package formats for a given operating system.
@@ -138,6 +141,28 @@ pub const PackageOptions = struct {
     /// to `zig-out/package/winget/` (the three files `wingetcreate submit`
     /// takes). Needs `license`.
     winget: ?Winget = null,
+
+    /// Windows: the `.msix` format's settings (add `.msix` to `formats`).
+    /// Signing is never set here: `-Dmsix-pfx=<file>` (password in
+    /// $ORIEL_MSIX_PFX_PASSWORD) or `-Dmsix-cert-sha1=<thumbprint>` (a
+    /// certificate in the user's store), or $ORIEL_MSIX_PFX /
+    /// $ORIEL_MSIX_CERT_SHA1; `-Dmsix-timestamp=<url>` timestamps it.
+    msix: Msix = .{},
+};
+
+/// See `PackageOptions.msix` and tools/package/msix.zig.
+pub const Msix = struct {
+    /// Identity Publisher: the signing certificate's Subject, exactly
+    /// ("CN=Contoso Ltd, O=Contoso Ltd, C=US"). Null: an unsigned package
+    /// (publisher "CN=<package.publisher>" plus Windows 11's unsigned OID;
+    /// `Add-AppxPackage -AllowUnsigned`, for development and testing).
+    publisher: ?[]const u8 = null,
+    /// PublisherDisplayName (default: `package.publisher`).
+    publisher_display_name: ?[]const u8 = null,
+    /// Identity Name (default: `package.id`): [A-Za-z0-9.-], 3-50 characters.
+    identity_name: ?[]const u8 = null,
+    /// The oldest Windows it installs on (TargetDeviceFamily MinVersion).
+    min_version: []const u8 = "10.0.17763.0",
 };
 
 /// See `PackageOptions.winget` and tools/package/winget.zig.
@@ -312,7 +337,28 @@ pub const Context = struct {
     /// and the "Open with" extensions (Windows installer).
     share_send_to: ?[]const u8 = null,
     share_extensions: []const []const u8 = &.{},
+    /// `.share_target.types` (the MSIX Share Target's data formats).
+    share_types: []const []const u8 = &.{},
+    /// The declared permissions' kinds (MSIX capabilities).
+    permission_kinds: []const []const u8 = &.{},
+    msix: Msix = .{},
 };
+
+fn shareTypes(options: anytype) []const []const u8 {
+    if (!@hasField(@TypeOf(options), "share_target")) return &.{};
+    const st = options.share_target orelse return &.{};
+    return st.types;
+}
+
+/// The names of the permissions declared in `permissions` (a
+/// `Permissions`: a field per kind, set when declared).
+fn declaredKinds(b: *std.Build, permissions: anytype) []const []const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    inline for (@typeInfo(@TypeOf(permissions)).@"struct".fields) |f| {
+        if (@field(permissions, f.name) != null) list.append(b.allocator, f.name) catch @panic("OOM");
+    }
+    return list.items;
+}
 
 /// The Send To name for `options.share_target`: its label, else the app's
 /// name. Null without a share target.
@@ -613,6 +659,9 @@ pub fn addPackageSteps(
         .mac_signing = mac_signing,
         .share_send_to = shareSendTo(options, display_name),
         .share_extensions = shareExtensions(options),
+        .share_types = shareTypes(options),
+        .permission_kinds = declaredKinds(b, permissions),
+        .msix = pkg_opts.msix,
     };
 
     // Determine target formats
@@ -712,7 +761,57 @@ fn addFormat(ctx: *const Context, format: Format) *std.Build.Step {
         .nsis => addNsis(ctx),
         .app => addApp(ctx),
         .dmg => addDmg(ctx),
+        .msix => addMsix(ctx),
     };
+}
+
+/// Windows .msix (see `PackageOptions.msix`).
+fn addMsix(ctx: *const Context) *std.Build.Step {
+    const b = ctx.b;
+    const filename = b.fmt("{s}-{s}.msix", .{ ctx.metadata.exe_name, ctx.metadata.version });
+    const run = b.addRunArtifact(ctx.package_tool);
+    run.addArg("package-msix");
+    run.addArg("--out-dir");
+    const out_dir = run.addOutputDirectoryArg("msix");
+    run.addArgs(&.{ "--filename", filename });
+    run.addArgs(&.{ "--name", ctx.metadata.name });
+    run.addArgs(&.{ "--exe-name", ctx.metadata.exe_name });
+    run.addArgs(&.{ "--version", ctx.metadata.version });
+    run.addArgs(&.{ "--publisher", ctx.msix.publisher_display_name orelse ctx.metadata.publisher });
+    run.addArgs(&.{ "--app-id", ctx.metadata.id });
+    run.addArgs(&.{ "--description", ctx.metadata.summary });
+    run.addArgs(&.{ "--arch", switch (ctx.target.result.cpu.arch) {
+        .aarch64 => "arm64",
+        .x86 => "x86",
+        else => "x64",
+    } });
+    run.addArgs(&.{ "--min-version", ctx.msix.min_version });
+    if (ctx.msix.publisher) |p| run.addArgs(&.{ "--msix-publisher", p });
+    if (ctx.msix.identity_name) |n| run.addArgs(&.{ "--identity-name", n });
+    for (ctx.permission_kinds) |k| run.addArgs(&.{ "--permission", k });
+    if (ctx.share_send_to) |label| {
+        run.addArgs(&.{ "--share-label", label });
+        for (ctx.share_types) |t| run.addArgs(&.{ "--share-type", t });
+        for (ctx.share_extensions) |e| run.addArgs(&.{ "--share-ext", e });
+    }
+    const env = &b.graph.environ_map;
+    const pfx = getOrDeclareStringOption(b, "msix-pfx", "MSIX: sign with this .pfx (password in $ORIEL_MSIX_PFX_PASSWORD)") orelse env.get("ORIEL_MSIX_PFX");
+    const sha1 = getOrDeclareStringOption(b, "msix-cert-sha1", "MSIX: sign with this certificate (thumbprint) from the user's store") orelse env.get("ORIEL_MSIX_CERT_SHA1");
+    const ts = getOrDeclareStringOption(b, "msix-timestamp", "MSIX: RFC 3161 timestamp server URL");
+    if (pfx) |p| run.addArgs(&.{ "--pfx", p });
+    if (sha1) |s| run.addArgs(&.{ "--cert-sha1", s });
+    if (ts) |t| run.addArgs(&.{ "--timestamp", t });
+    run.addArg("--bin");
+    run.addFileArg(ctx.payload.exe);
+    ctx.payload.addArgs(b, run);
+    run.addArg("--icons-dir");
+    run.addDirectoryArg(ctx.icons_dir);
+    if (ctx.webview2_loader) |loader| {
+        run.addArg("--webview2-loader");
+        run.addFileArg(loader);
+    }
+    const install = b.addInstallFileWithDir(out_dir.path(b, filename), .prefix, b.fmt("package/{s}", .{filename}));
+    return &install.step;
 }
 
 /// Build Debian (.deb) package.
