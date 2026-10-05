@@ -45,6 +45,19 @@ extern fn gtk_widget_set_focusable(w: *Widget, focusable: c_int) void;
 extern fn gtk_widget_grab_focus(w: *Widget) c_int;
 extern fn gtk_widget_set_visible(w: *Widget, visible: c_int) void;
 extern fn gtk_widget_set_sensitive(w: *Widget, sensitive: c_int) void;
+extern fn gtk_editable_set_editable(w: *Widget, editable: c_int) void;
+extern fn gtk_check_button_new() *Widget;
+extern fn gtk_check_button_set_active(w: *Widget, active: c_int) void;
+extern fn gtk_check_button_set_inconsistent(w: *Widget, inconsistent: c_int) void;
+extern fn gtk_check_button_set_group(w: *Widget, group: ?*Widget) void;
+extern fn g_object_set_data_full(obj: *anyopaque, key: [*:0]const u8, data: ?*anyopaque, destroy: ?*const fn (?*anyopaque) callconv(.c) void) void;
+extern fn gtk_text_view_set_editable(w: *Widget, editable: c_int) void;
+extern fn gtk_accessible_update_property(w: *Widget, first: c_int, ...) void;
+extern fn gtk_accessible_reset_property(w: *Widget, property: c_int) void;
+extern fn gtk_entry_set_input_purpose(w: *Widget, purpose: c_int) void;
+extern fn gtk_entry_set_input_hints(w: *Widget, hints: c_uint) void;
+extern fn gtk_text_view_set_input_purpose(w: *Widget, purpose: c_int) void;
+extern fn gtk_text_view_set_input_hints(w: *Widget, hints: c_uint) void;
 extern fn gtk_widget_add_controller(w: *Widget, controller: *anyopaque) void;
 extern fn gtk_widget_has_focus(w: *Widget) c_int;
 extern fn gtk_widget_set_cursor_from_name(w: *Widget, name: ?[*:0]const u8) void;
@@ -601,9 +614,13 @@ fn withLook(gpa: std.mem.Allocator, platform_json: [:0]const u8, w: *Widget) ?[:
     const body = trimmed[0 .. trimmed.len - 1];
     var sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
     out.writer.writeAll(body) catch return null;
+    // The controls hosted as native widgets (docs/native-controls-a11y-design.md).
+    out.writer.print("{s}\"controls\":[\"check\"]", .{sep}) catch return null;
+    sep = ",";
     var rgba: GdkRGBA = undefined;
     if (gtk_style_context_lookup_color(gtk_widget_get_style_context(w), "accent_bg_color", &rgba) != 0) {
         out.writer.print("{s}\"accent\":[{d},{d},{d}]", .{ sep, @round(rgba.red * 255), @round(rgba.green * 255), @round(rgba.blue * 255) }) catch return null;
+        sep = ",";
         sep = ",";
     }
     if (gtk_settings_get_default()) |settings| {
@@ -1040,7 +1057,7 @@ fn syncFields(s: *Surface) void {
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
         const n = np.*;
-        if (n.kind != .input and n.kind != .textarea and n.kind != .select) continue;
+        if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check) continue;
         const w = s.fields.get(n.id) orelse blk: {
             const w = makeField(s, n) catch continue;
             s.fields.put(n.id, w) catch continue;
@@ -1066,6 +1083,27 @@ fn syncFields(s: *Surface) void {
             }
         }
         gtk_widget_set_sensitive(w, @intFromBool(!n.props.dis));
+        // A native check: the page's state (JS owns it), every sync.
+        if (n.kind == .check) {
+            gtk_check_button_set_active(w, @intFromBool(n.props.on));
+            gtk_check_button_set_inconsistent(w, @intFromBool(n.props.mix));
+        }
+        // readonly: selectable and focusable, not editable.
+        switch (n.kind) {
+            .input => if (n.props.range == null) gtk_editable_set_editable(w, @intFromBool(!n.props.ro)),
+            .textarea => gtk_text_view_set_editable(w, @intFromBool(!n.props.ro)),
+            else => {},
+        }
+        // Its accessible name (Props.al: its label, aria-label, title).
+        accessibleLabel(s, w, n.props.al);
+        // What it takes (an on-screen keyboard's layout, spell checking).
+        if (n.kind == .input and n.props.range == null) {
+            gtk_entry_set_input_purpose(w, inputPurpose(n));
+            gtk_entry_set_input_hints(w, inputHints(n));
+        } else if (n.kind == .textarea) {
+            gtk_text_view_set_input_purpose(w, inputPurpose(n));
+            gtk_text_view_set_input_hints(w, inputHints(n));
+        }
         // The page changes placeholders too ("Select text first…" → "Tell
         // GhostPen what to do…"); a text view's is drawn by paintPlaceholder.
         if (n.kind == .input and n.props.range == null) {
@@ -1085,6 +1123,40 @@ fn syncFields(s: *Surface) void {
         css_changed = true;
     }
     if (css_changed) updateCss(s);
+}
+
+const GTK_ACCESSIBLE_PROPERTY_LABEL: c_int = 4;
+
+fn accessibleLabel(s: *Surface, w: *Widget, al: ?[]const u8) void {
+    const text = al orelse return gtk_accessible_reset_property(w, GTK_ACCESSIBLE_PROPERTY_LABEL);
+    const z = s.gpa.dupeZ(u8, text) catch return;
+    defer s.gpa.free(z);
+    gtk_accessible_update_property(w, GTK_ACCESSIBLE_PROPERTY_LABEL, @as([*:0]const u8, z.ptr), @as(c_int, -1));
+}
+
+/// GtkInputPurpose from the field's type and inputmode (Props itype, im, pw).
+fn inputPurpose(n: *const Node) c_int {
+    if (n.props.pw) return 8; // PASSWORD
+    const t = n.props.im orelse n.props.itype orelse return 0;
+    const eq = std.mem.eql;
+    if (eq(u8, t, "email")) return 6;
+    if (eq(u8, t, "url")) return 5;
+    if (eq(u8, t, "tel")) return 4;
+    if (eq(u8, t, "numeric")) return 2; // DIGITS
+    if (eq(u8, t, "number") or eq(u8, t, "decimal")) return 3;
+    return 0; // FREE_FORM
+}
+
+/// GtkInputHints from spellcheck, autocapitalize and inputmode=none.
+fn inputHints(n: *const Node) c_uint {
+    var h: c_uint = if (n.props.spellcheck) 1 else 2; // SPELLCHECK, NO_SPELLCHECK
+    if (n.props.cap) |c| {
+        if (std.mem.eql(u8, c, "sentences")) h |= 1 << 6 else if (std.mem.eql(u8, c, "words")) h |= 1 << 5 else if (std.mem.eql(u8, c, "characters")) h |= 1 << 4;
+    }
+    if (n.props.im) |m| if (std.mem.eql(u8, m, "none")) {
+        h |= 1 << 7; // INHIBIT_OSK
+    };
+    return h;
 }
 
 fn makeField(s: *Surface, n: *Node) !*Widget {
@@ -1139,6 +1211,20 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
             _ = g_signal_connect_data(@ptrCast(d), "notify::selected", @ptrCast(&onSelected), s, null, 0);
             break :blk d;
         },
+        // A checkbox or radio (kind check): a GtkCheckButton. A radio gets
+        // a private group (a hidden anchor) for its look only: the page
+        // keeps the group's exclusivity (main.js check()).
+        .check => blk: {
+            const c = gtk_check_button_new();
+            if (n.props.ctl) |ctl| if (std.mem.eql(u8, ctl, "radio")) {
+                const anchor = gtk_check_button_new();
+                _ = g_object_ref_sink(anchor);
+                gtk_check_button_set_group(c, anchor);
+                g_object_set_data_full(@ptrCast(c), "oriel-anchor", anchor, @ptrCast(&g_object_unref));
+            };
+            _ = g_signal_connect_data(@ptrCast(c), "toggled", @ptrCast(&onCheckToggled), s, null, 0);
+            break :blk c;
+        },
         else => unreachable,
     };
     g_object_set_data(@ptrCast(w), "oriel-node", @ptrFromInt(@as(usize, @intCast(n.id))));
@@ -1170,6 +1256,13 @@ fn updateCss(s: *Surface) void {
     var it = s.fields.iterator();
     while (it.next()) |e| {
         const n = s.engine.tree.get(e.key_ptr.*) orelse continue;
+        if (n.kind == .check) {
+            // The indicator fills the CSS box (13px by default), no padding.
+            const c = n.content();
+            const side = @max(8, @min(c.w, c.h) - 2);
+            s.css_text.print(a, ".nui-f{d} {{ padding: 0; margin: 0; min-height: 0; min-width: 0; }} .nui-f{d} check, .nui-f{d} radio {{ margin: 0; padding: 0; min-width: {d:.0}px; min-height: {d:.0}px; -gtk-icon-size: {d:.0}px; }}\n", .{ n.id, n.id, n.id, side, side, side - 2 }) catch return;
+            continue;
+        }
         if (n.props.range != null) {
             // A slider: the page's accent-color on the filled part and knob.
             const ac = n.props.acc orelse tree_mod.Color{ 59, 108, 255, 1 };
@@ -1197,6 +1290,18 @@ fn sendValue(s: *Surface, n: *Node, kind: []const u8, text: []const u8) void {
     const json = std.json.Stringify.valueAlloc(s.gpa, text, .{}) catch return;
     defer s.gpa.free(json);
     _ = s.engine.event(n.id, kind, json);
+}
+
+/// A check toggled by the user: back to the page's state, and the click to
+/// the page (activate() toggles it, or not, and the next sync shows that).
+fn onCheckToggled(c: *Widget, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    if (s.updating) return;
+    const n = nodeOfWidget(s, c) orelse return;
+    s.updating = true;
+    gtk_check_button_set_active(c, @intFromBool(n.props.on));
+    s.updating = false;
+    _ = s.engine.event(n.id, "click", "0");
 }
 
 fn onEntryChanged(e: *Widget, data: ?*anyopaque) callconv(.c) void {
@@ -3331,7 +3436,17 @@ fn paintControl(cr: *cairo_t, n: *Node) void {
     } else {
         roundRect(cr, .{ .x = x + 0.5, .y = y + 0.5, .w = size - 1, .h = size - 1 }, .{ 2.5, 2.5, 2.5, 2.5 });
     }
-    if (n.props.on) {
+    if (n.props.mix and !radio) {
+        // Indeterminate: the accent box with a dash.
+        setColor(cr, .{ acc[0], acc[1], acc[2], acc[3] * alpha });
+        cairo_fill(cr);
+        setColor(cr, .{ 255, 255, 255, alpha });
+        cairo_set_line_width(cr, @max(1.5, size * 0.13));
+        cairo_set_line_cap(cr, 1);
+        cairo_move_to(cr, x + size * 0.28, y + size / 2);
+        cairo_line_to(cr, x + size * 0.72, y + size / 2);
+        cairo_stroke(cr);
+    } else if (n.props.on) {
         setColor(cr, .{ acc[0], acc[1], acc[2], acc[3] * alpha });
         cairo_fill(cr);
         setColor(cr, .{ 255, 255, 255, alpha });
