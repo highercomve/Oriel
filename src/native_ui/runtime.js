@@ -18685,6 +18685,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       const segs = length2 ? [{ ref, offset: 0, length: length2 }] : [];
       const f = new File({ [internal]: true, segs }, name, { type, lastModified });
       if (!length2) state.get(f).ref = ref;
+      f.handle = handle;
       return f;
     }
     const listToken = /* @__PURE__ */ Symbol("FileList");
@@ -20480,6 +20481,19 @@ ${a.stack || ""}`;
     openExternal(url) {
       return invoke("open_external", { url });
     },
+    drop: Object.freeze({
+      // Where a dropped file lives now, for a handler that sends it on. The
+      // handle came in the drop's File (`f.handle`); only the native
+      // renderer has one. Answers a path string, or null when the file is
+      // gone or changed, the handle is unknown, or the platform can't
+      // resolve paths (docs/drag-and-drop-design.md §3, open question #1,
+      // resolved: Electron's webUtils.getPathForFile is the precedent).
+      async path(f) {
+        const handle = f && typeof f.handle === "number" ? f.handle : f;
+        if (typeof handle !== "number") throw new TypeError("drop.path: a dropped file (or its handle)");
+        return invoke("drop:path", { handle });
+      }
+    }),
     permissions: Object.freeze({
       query(name) {
         return invoke("permissions:query", { name });

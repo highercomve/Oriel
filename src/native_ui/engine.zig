@@ -234,6 +234,59 @@ test "drops: host.fileRead is queued for the engine's next turn, drags answer a 
     _ = e.dragEvent(0, "[\"leave\",1]");
 }
 
+test "drops: drop:path answers the file's path, then null once it is gone" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    if (comptime !(@import("builtin").os.tag == .linux or @import("builtin").os.tag == .windows)) return error.SkipZigTest;
+    const Stub = struct {
+        fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 0, 0 };
+        }
+        fn none(_: *anyopaque) void {}
+        fn removed(_: *anyopaque, _: *Node) void {}
+        fn timer(_: *anyopaque, _: *Engine, _: u32, _: u32) void {}
+        fn invoke(_: *anyopaque, _: *Engine, _: u32, _: []const u8, _: []const u8) void {}
+        fn focus(_: *anyopaque, _: *Node) void {}
+    };
+    var ctx: u8 = 0;
+    const e = try Engine.create(std.testing.allocator, .{
+        .ctx = &ctx,
+        .measure = Stub.measure,
+        .laid_out = Stub.none,
+        .removed = Stub.removed,
+        .add_timer = Stub.timer,
+        .invoke = Stub.invoke,
+        .focus = Stub.focus,
+    }, &.{}, "{}", "main", "app://app/index.html", 400, 300);
+    defer e.destroy();
+    e.boot(false, false);
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "f.txt", .data = "abc" });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/f.txt", .{path_buf[0..len]}, 0);
+    defer std.testing.allocator.free(path);
+    const handle = (try e.drops.addPath(path)).?;
+
+    const args_known = try std.fmt.allocPrint(arena, "{{\"handle\":{d}}}", .{handle});
+    const answer = try e.dropPathCommand(arena, args_known);
+    try std.testing.expect(std.mem.startsWith(u8, answer, "{\"path\":\""));
+    try std.testing.expect(std.mem.endsWith(u8, answer, "/f.txt\"}"));
+
+    // Unknown, malformed and released handles answer null, not an error.
+    try std.testing.expectEqualStrings("null", try e.dropPathCommand(arena, "{\"handle\":99}"));
+    try std.testing.expectEqualStrings("null", try e.dropPathCommand(arena, "{}"));
+    try std.testing.expectEqualStrings("null", try e.dropPathCommand(arena, "nonsense"));
+    e.drops.release(handle);
+    const args_released = try std.fmt.allocPrint(arena, "{{\"handle\":{d}}}", .{handle});
+    try std.testing.expectEqualStrings("null", try e.dropPathCommand(arena, args_released));
+}
+
 test "evalRefusal: script-src, else default-src, without 'unsafe-eval'" {
     var buf: [512]u8 = undefined;
     try std.testing.expect(evalRefusal(&buf, null) == null);
@@ -545,6 +598,21 @@ pub const Engine = struct {
         return @as(u8, @truncate(@as(u32, @bitCast(code)))) & (drag_copy | drag_move | drag_link);
     }
 
+    /// The page asks where a dropped file lives now (`drop:path`, the
+    /// drop-table handle it got in `drop`'s File). Answers a JSON object
+    /// `{"path": "…"}`, or `"null"` when the handle is unknown, its file
+    /// was deleted or changed, or the platform can't resolve paths. Built
+    /// for a trusted app that sends dropped files on (the design's open
+    /// question #1, Electron's webUtils.getPathForFile being the
+    /// precedent); the bridges call it after their command policy check.
+    pub fn dropPathCommand(e: *Engine, arena: std.mem.Allocator, args_json: []const u8) ![]u8 {
+        const Args = struct { handle: u32 };
+        const value = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch return arena.dupe(u8, "null");
+        const parsed = std.json.parseFromValueLeaky(Args, arena, value, .{}) catch return arena.dupe(u8, "null");
+        const path = e.drops.nativePath(arena, parsed.handle) catch return arena.dupe(u8, "null");
+        return std.fmt.allocPrint(arena, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})}) catch error.OutOfMemory;
+    }
+
     /// A JSON message for the page (Android's events), see `__oriel.message`.
     pub fn message(e: *Engine, json: []const u8) void {
         _ = e.callf("__oriel.message({s})", .{json});
@@ -711,7 +779,7 @@ pub const Engine = struct {
         return true;
     }
 
-/// A scroller's offset changed (Tree.scrolled): the page hears of it at
+    /// A scroller's offset changed (Tree.scrolled): the page hears of it at
     /// the next display frame (at most once a frame), or now when the
     /// backend has none.
     fn scrollsChanged(e: *Engine) void {
