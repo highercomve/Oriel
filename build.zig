@@ -910,6 +910,12 @@ pub const AppOptions = struct {
     /// declaring a capability turns its module on (`capability_modules`:
     /// local_network → oriel.network, bluetooth → oriel.bluetooth) unless
     /// the oriel dependency's options set that module's flag.
+    /// Platform declarations no kind covers go in each platform's options
+    /// (`android.permissions`/`features`, `ios.usage_descriptions`,
+    /// `macos.usage_descriptions`/`entitlements`, `windows.capabilities`),
+    /// merged with the ones the kinds write, e.g.
+    /// `.android = .{ .permissions = &.{.{ .name = "android.permission.VIBRATE" }} }`.
+    /// Linux has none: nothing there declares permissions in the package.
     permissions: Permissions = .{},
     /// Extra modules for the app's code (third-party packages), added to every
     /// executable addApp builds (production, dev, `zig build check`):
@@ -924,6 +930,10 @@ pub const AppOptions = struct {
     android: Android = .{},
     /// iOS-only bundle settings (see docs/ios.md).
     ios: Ios = .{},
+    /// macOS-only bundle settings.
+    macos: Macos = .{},
+    /// Windows-only package settings.
+    windows: Windows = .{},
     /// Receive what other apps share (`oriel.share.onReceive`): declaring it
     /// turns on the share module. Each platform's declaration (Android intent
     /// filters, document types, ...) comes with its receive support.
@@ -944,6 +954,25 @@ pub const AppOptions = struct {
         /// UIBackgroundModes `audio`: keep capturing (audio_capture) or
         /// playing while the app is in the background.
         background_audio: bool = false,
+        /// Info.plist usage keys no `.permissions` kind writes, e.g.
+        /// `.{ .key = "NSMotionUsageDescription", .text = "Counts your steps" }`.
+        /// A key a kind writes too takes this text.
+        usage_descriptions: []const UsageDescription = &.{},
+    };
+
+    pub const Macos = struct {
+        /// Info.plist usage keys no `.permissions` kind writes (as `Ios`'s).
+        usage_descriptions: []const UsageDescription = &.{},
+        /// Boolean hardened-runtime entitlements added to `<Name>.entitlements`
+        /// (used when signing), e.g. "com.apple.security.device.bluetooth".
+        entitlements: []const []const u8 = &.{},
+    };
+
+    /// An Info.plist usage-description key and the text the OS shows.
+    /// The key ends in "UsageDescription" ([A-Za-z0-9_.~-]); the text isn't empty.
+    pub const UsageDescription = struct {
+        key: []const u8,
+        text: []const u8,
     };
 
     pub const Android = struct {
@@ -953,6 +982,32 @@ pub const AppOptions = struct {
         /// The Oriel keyboard, with this name in the system's keyboard list:
         /// `oriel.android.commitText` types into any app's focused field.
         input_method: ?[]const u8 = null,
+        /// `<uses-permission>`s no `.permissions` kind declares, e.g.
+        /// `.{ .name = "android.permission.BLUETOOTH", .max_sdk = 30 }`. One
+        /// entry per name: a name a kind declares keeps that entry, but
+        /// without `max_sdk` here it holds on every API level.
+        permissions: []const Permission = &.{},
+        /// `<uses-feature>`s, one per name (required if any declaration
+        /// requires it).
+        features: []const Feature = &.{},
+
+        pub const Permission = android_manifest.Permission;
+        pub const Feature = android_manifest.Feature;
+    };
+
+    pub const Windows = struct {
+        /// MSIX capabilities no `.permissions` kind declares, e.g.
+        /// `.{ .name = "bluetooth", .kind = .device }`; the NSIS installer
+        /// has no capabilities and ignores them.
+        capabilities: []const Capability = &.{},
+
+        pub const Capability = struct {
+            name: []const u8,
+            kind: Kind = .general,
+            /// `<Capability>`, `<uap:Capability>`, `<rescap:Capability>`
+            /// (restricted: Store review) or `<DeviceCapability>`.
+            pub const Kind = enum { general, uap, restricted, device };
+        };
     };
 
     pub const Isolation = struct {
@@ -1165,7 +1220,33 @@ pub fn addUpdaterSteps(b: *std.Build, update_tool: *std.Build.Step.Compile) void
 /// plus the packaging steps (`package`, `package-<format>`, `desktop-entry`).
 /// Calling it more than once is allowed: top-level steps are shared, so
 /// e.g. `zig build run` or `zig build package` acts on every app added.
+/// Panics on a platform declaration (`AppOptions.android`, `.ios`, `.macos`,
+/// `.windows`) that the generated manifests can't carry, for any target, so
+/// a bad entry shows up on the developer's machine rather than in CI.
+fn checkPlatformExtras(b: *std.Build, options: AppOptions) void {
+    const macos_plist = @import("tools/package/macos.zig");
+    const msix = @import("tools/package/msix.zig");
+    for (options.android.permissions) |p| {
+        if (!android_manifest.validName(p.name)) @panic(b.fmt("AppOptions.android.permissions: invalid name \"{s}\" (it can't be empty or have quotes, '<', '>', '&' or whitespace)", .{p.name}));
+        if (p.flags) |f| if (!android_manifest.validName(f)) @panic(b.fmt("AppOptions.android.permissions: invalid flags \"{s}\" for {s}", .{ f, p.name }));
+    }
+    for (options.android.features) |f| {
+        if (!android_manifest.validName(f.name)) @panic(b.fmt("AppOptions.android.features: invalid name \"{s}\" (it can't be empty or have quotes, '<', '>', '&' or whitespace)", .{f.name}));
+    }
+    inline for (.{ "ios", "macos" }) |os| for (@field(options, os).usage_descriptions) |u| {
+        if (!macos_plist.validUsageKey(u.key)) @panic(b.fmt("AppOptions." ++ os ++ ".usage_descriptions: invalid key \"{s}\" (a usage key: [A-Za-z0-9_.~-], ending in UsageDescription)", .{u.key}));
+        macos_plist.checkText(u.text) catch @panic(b.fmt("AppOptions." ++ os ++ ".usage_descriptions: {s} needs a text (UTF-8, no control characters)", .{u.key}));
+    };
+    for (options.macos.entitlements) |e| {
+        if (!macos_plist.validPlistKey(e)) @panic(b.fmt("AppOptions.macos.entitlements: invalid key \"{s}\" ([A-Za-z0-9_.~-])", .{e}));
+    }
+    for (options.windows.capabilities) |c| {
+        if (!msix.validCapabilityName(c.name)) @panic(b.fmt("AppOptions.windows.capabilities: invalid name \"{s}\" ([A-Za-z0-9._-] or {{GUID}})", .{c.name}));
+    }
+}
+
 pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) App {
+    checkPlatformExtras(b, options);
     if (oriel_dep.module("oriel").resolved_target.?.result.abi.isAndroid()) return addAndroidApp(b, oriel_dep, options);
     if (oriel_dep.module("oriel").resolved_target.?.result.os.tag == .ios) return addIosApp(b, oriel_dep, options);
     addUpdaterSteps(b, oriel_dep.artifact("update_tool"));
@@ -1587,8 +1668,11 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
 
     // The manifest's generated regions (build/android_manifest.zig), rewritten
     // on every build by the `--runtime-only` sync.
-    const perms = android_manifest.permissionsXml(b.allocator, permissions) catch @panic("OOM");
-    const features = android_manifest.featuresXml(b.allocator, permissions) catch @panic("OOM");
+    // The app's own entries are merged in (checked by checkPlatformExtras).
+    const perms = android_manifest.permissionsXmlWithExtras(b.allocator, permissions, options.android.permissions) catch |err|
+        @panic(b.fmt("AndroidManifest.xml permissions: {s}", .{@errorName(err)}));
+    const features = android_manifest.featuresXmlWithExtras(b.allocator, permissions, options.android.features) catch |err|
+        @panic(b.fmt("AndroidManifest.xml features: {s}", .{@errorName(err)}));
 
     var schemes: std.ArrayList(u8) = .empty;
     for (url_schemes) |scheme| schemes.appendSlice(b.allocator, b.fmt(
@@ -1780,6 +1864,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
                 run.addArgs(&.{ "--permission", b.fmt("{s}={s}", .{ f.name, text }) });
             }
         }
+        for (options.ios.usage_descriptions) |u| run.addArgs(&.{ "--usage-key", b.fmt("{s}={s}", .{ u.key, u.text }) });
         made[idx] = .{ .step = run, .dir = out };
     }
     b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = made[0].dir, .install_dir = .prefix, .install_subdir = "ios" }).step);
