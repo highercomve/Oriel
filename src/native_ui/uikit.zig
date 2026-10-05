@@ -97,6 +97,11 @@ const Field = struct {
     control: Object,
     /// A UISlider (<input type=range>): no text, placeholder or font.
     slider: bool = false,
+    /// A push button (kind button): a UIButton with the gray configuration,
+    /// the page's label, font and color in its title.
+    button: bool = false,
+    /// A push button's look as last set (buttonLook's hash of it).
+    look: u64 = 0,
 };
 
 /// Live surfaces by token, and which surface and node a view or control
@@ -184,6 +189,7 @@ fn classes() void {
         .{ "nuiFieldChanged:", fieldChanged },
         .{ "nuiSliderMoved:", sliderMoved },
         .{ "nuiSliderDone:", sliderDone },
+        .{ "nuiButtonTapped:", buttonTapped },
         .{ "textFieldShouldReturn:", fieldShouldReturn },
         .{ "textField:shouldChangeCharactersInRange:replacementString:", fieldShouldChange },
         .{ "textFieldDidBeginEditing:", fieldFocused },
@@ -208,7 +214,7 @@ fn withScale(gpa: std.mem.Allocator, platform_json: [:0]const u8) ?[:0]const u8 
     const dpr: f64 = if (screen.value != null) screen.msgSend(f64, "scale", .{}) else 1;
     const body = trimmed[0 .. trimmed.len - 1];
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
-    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d}}}", .{ body, sep, dpr }, 0) catch null;
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d},\"controls\":[\"button\"]}}", .{ body, sep, dpr }, 0) catch null;
 }
 
 /// Create a window's page at `width`×`height` points and run it.
@@ -344,6 +350,11 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
         // it); a textarea `rows` of them (2 by default).
         .input, .select => out.* = .{ if (std.math.isInf(max_width)) 150 else @min(max_width, 150), draw.fieldLine("UIFont", n) },
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, draw.fieldLine("UIFont", n) * @max(1, n.props.rows orelse 2) },
+        // Its label on one line; its baseline centered as a text field's.
+        .button => {
+            out.* = draw.buttonLabelSize("UIFont", n);
+            n.baseline = draw.fieldBaseline("UIFont", n);
+        },
         else => out.* = .{ 0, 0 },
     }
 }
@@ -633,7 +644,7 @@ fn syncFields(s: *Surface) void {
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
         const n = np.*;
-        if (n.kind != .input and n.kind != .textarea and n.kind != .select) continue;
+        if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .button) continue;
         const field = s.fields.get(n.id) orelse blk: {
             const f = makeField(s, n) orelse continue;
             s.fields.put(s.gpa, n.id, f) catch {
@@ -645,7 +656,9 @@ fn syncFields(s: *Surface) void {
         const f = field.control;
         s.updating = true;
         defer s.updating = false;
-        if (field.slider) {
+        if (field.button) {
+            if (s.fields.getPtr(n.id)) |fp| buttonLook(n, fp);
+        } else if (field.slider) {
             styleSlider(n, f);
             if (n.pending_value) |v| f.msgSend(void, "setValue:", .{@as(f32, @floatCast(draw.Range.of(n).parse(v)))});
             n.pending_value = null;
@@ -663,8 +676,9 @@ fn syncFields(s: *Surface) void {
         };
         // The holder covers the visible part of the field; the control sits
         // at the field's place inside it.
-        const r = n.content();
-        const shown = draw.visiblePart(&s.engine.tree, n);
+        // (A push button fills its whole box: padding and border are room.)
+        const r = if (field.button) n.frame else n.content();
+        const shown = draw.visibleRect(&s.engine.tree, n, r);
         field.holder.msgSend(void, "setFrame:", .{CGRect{ .origin = .{ .x = shown.x, .y = shown.y }, .size = .{ .width = shown.w, .height = shown.h } }});
         f.msgSend(void, "setFrame:", .{CGRect{ .origin = .{ .x = r.x - shown.x, .y = r.y - shown.y }, .size = .{ .width = @max(1, r.w), .height = @max(1, r.h) } }});
         const visible = shown.h > 1 and shown.w > 1 and n.props.vis != false;
@@ -770,6 +784,19 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             b.msgSend(void, "setShowsMenuAsPrimaryAction:", .{apple.boolean(true)});
             break :blk b;
         },
+        // A push button (kind button: rule 1.4 left its box to the
+        // platform): iOS Safari's own look, gray with tinted text; its
+        // title set on every sync (buttonLook).
+        .button => blk: {
+            const b = apple.class("UIButton").msgSend(Object, "buttonWithType:", .{@as(isize, 1)}).retain(); // system
+            if (b.value == null) return null;
+            const config = apple.class("UIButtonConfiguration").msgSend(Object, "grayButtonConfiguration", .{});
+            // No insets: the CSS padding is the room around the label.
+            config.msgSend(void, "setContentInsets:", .{NSDirectionalEdgeInsets{}});
+            b.msgSend(void, "setConfiguration:", .{config});
+            b.msgSend(void, "addTarget:action:forControlEvents:", .{ field_delegate, apple.objc.sel("nuiButtonTapped:").value, UIControlEventTouchUpInside });
+            break :blk b;
+        },
         else => return null,
     };
     const holder = apple.new(apple.class("UIView"));
@@ -782,7 +809,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
     f.release(); // the holder keeps it
     by_control.put(s.gpa, key(f.value), .{ .token = s.token, .node = n.id }) catch {};
     s.view.msgSend(void, "addSubview:", .{holder});
-    return .{ .holder = holder, .control = f, .slider = slider };
+    return .{ .holder = holder, .control = f, .slider = slider, .button = n.kind == .button };
 }
 
 /// The page's min/max (they may change) and accent-color on a UISlider.
@@ -816,6 +843,56 @@ fn sliderDone(_: id, _: SEL, sender: id) callconv(.c) void {
     if (o.s.updating) return;
     var buf: [48]u8 = undefined;
     sendValue(o.s, o.n, "change", sliderText(o.n, .{ .value = sender }, &buf));
+}
+
+const UIControlEventTouchUpInside: c_ulong = 1 << 6;
+const NSDirectionalEdgeInsets = extern struct { top: f64 = 0, leading: f64 = 0, bottom: f64 = 0, trailing: f64 = 0 };
+extern var NSFontAttributeName: ?*anyopaque;
+
+/// A tap on a native push button: the page's click (activate(): a submit
+/// button submits its form, a reset one resets it).
+fn buttonTapped(_: id, _: SEL, sender: id) callconv(.c) void {
+    const o = ownerOf(sender) orelse return;
+    if (o.s.updating) return;
+    _ = o.s.engine.event(o.n.id, "click", "0");
+}
+
+/// A push button's look: its title (the label in the page's font; in its
+/// color if the page set one, dimmed when disabled, else the tint) and the
+/// page's scheme (dk). Set again only when something it shows changed.
+fn buttonLook(n: *const Node, f: *Field) void {
+    const b = f.control;
+    const text = draw.buttonLabel(std.heap.smp_allocator, n) orelse return;
+    defer std.heap.smp_allocator.free(text);
+    var h = std.hash.Wyhash.init(0);
+    h.update(text);
+    h.update(n.props.ff orelse "");
+    const col = n.props.col orelse tree_mod.Color{ -1, -1, -1, -1 };
+    const nums = [_]f32{ n.props.fz orelse -1, n.props.fwt orelse -1, col[0], col[1], col[2], col[3] };
+    h.update(std.mem.asBytes(&nums));
+    h.update(&.{ @intFromBool(n.props.it), @intFromBool(n.props.mono), @intFromBool(n.props.dis), @intFromBool(n.props.dk) });
+    const look = h.final() | 1;
+    if (look == f.look) return;
+    f.look = look;
+    // UIUserInterfaceStyle light 1, dark 2: the page's, not the system's.
+    b.msgSend(void, "setOverrideUserInterfaceStyle:", .{@as(isize, if (n.props.dk) 2 else 1)});
+    const str = apple.nsString(text) orelse return;
+    defer str.release();
+    const fz = n.props.fz orelse 16;
+    const fnt = draw.font("UIFont", fz, n.props.fwt orelse 400, n.props.it, n.props.mono, n.props.ff) orelse return;
+    const attrs = apple.class("NSDictionary").msgSend(Object, "dictionaryWithObject:forKey:", .{ @as(id, @ptrCast(@alignCast(fnt))), @as(id, @ptrCast(@alignCast(NSFontAttributeName))) });
+    const title = apple.class("NSAttributedString").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithString:attributes:", .{ str, attrs });
+    defer title.release();
+    const config = b.msgSend(Object, "configuration", .{}).msgSend(Object, "copy", .{});
+    defer config.release();
+    config.msgSend(void, "setAttributedTitle:", .{title});
+    // The page's color when it colored the button; else the tint (and
+    // UIKit's own disabled look).
+    const color = if (n.props.col) |c| apple.class("UIColor").msgSend(Object, "colorWithRed:green:blue:alpha:", .{
+        @as(f64, c[0] / 255), @as(f64, c[1] / 255), @as(f64, c[2] / 255), @as(f64, c[3]) * @as(f64, if (n.props.dis) 0.4 else 1),
+    }) else apple.nil;
+    config.msgSend(void, "setBaseForegroundColor:", .{color});
+    b.msgSend(void, "setConfiguration:", .{config});
 }
 
 const UIEdgeInsets = extern struct { top: f64 = 0, left: f64 = 0, bottom: f64 = 0, right: f64 = 0 };
@@ -1633,6 +1710,8 @@ fn gestureShouldReceive(_: id, _: SEL, recognizer: id, touch: id) callconv(.c) B
         if (apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UISlider").value}))) return apple.boolean(false);
         if (!pan and (apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextField").value})) or
             apple.isTrue(v.msgSend(BOOL, "isKindOfClass:", .{apple.class("UITextView").value})))) return apple.boolean(false);
+        // A native push button's tap is its own click (buttonTapped).
+        if (!pan) if (ownerOf(v.value)) |o| if (o.n.kind == .button) return apple.boolean(false);
     }
     return apple.boolean(true);
 }
