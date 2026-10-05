@@ -745,6 +745,7 @@ fn syncFields(s: *Surface) void {
             // as a browser's); a readonly one selected only.
             f.inner.msgSend(void, "setEditable:", .{cocoa.boolean(!n.props.dis and !n.props.ro)});
             f.inner.msgSend(void, "setSelectable:", .{cocoa.boolean(!n.props.dis)});
+            f.inner.msgSend(void, "setContinuousSpellCheckingEnabled:", .{cocoa.boolean(n.props.spellcheck)});
         }
         setAccessibilityLabel(f.inner, n.props.al);
     }
@@ -1103,9 +1104,11 @@ fn secureFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
 fn noFieldEditorDrags(field: id) void {
     const editor = (Object{ .value = field }).msgSend(Object, "currentEditor", .{});
     if (editor.value == null) return;
-    // Spelling checked as typed in a text field (a password's isn't).
+    // Spelling checked as typed in a text field (a password's isn't, nor
+    // one with spellcheck="false": Props.spellcheck).
     const secure = cocoa.isTrue((Object{ .value = field }).msgSend(BOOL, "isKindOfClass:", .{cocoa.class("NSSecureTextField").value}));
-    editor.msgSend(void, "setContinuousSpellCheckingEnabled:", .{cocoa.boolean(!secure)});
+    const wanted = if (ownerOf(field)) |o| o.n.props.spellcheck else true;
+    editor.msgSend(void, "setContinuousSpellCheckingEnabled:", .{cocoa.boolean(!secure and wanted)});
     // Only spelling: no capitalizing or correcting as typed (a browser's
     // fields don't). NSTextCheckingTypeSpelling.
     editor.msgSend(void, "setEnabledTextCheckingTypes:", .{@as(u64, 1 << 1)});

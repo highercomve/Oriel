@@ -635,12 +635,52 @@ fn syncFields(s: *Surface) void {
         const label = if (n.props.al) |t| apple.nsString(t) else null;
         defer if (label) |l| l.release();
         f.msgSend(void, "setAccessibilityLabel:", .{if (label) |l| l.value else apple.nil.value});
+        if ((n.kind == .input and n.props.range == null) or n.kind == .textarea) textTraits(f, n);
     }
 }
 
 const UIControlEventEditingChanged: c_ulong = 1 << 17;
 const UIControlEventValueChanged: c_ulong = 1 << 12;
 const UIControlEventTouchUp: c_ulong = (1 << 6) | (1 << 7) | (1 << 8); // inside, outside, cancel
+
+// The UIKit values of a field's keyboard props.
+const UIKeyboardType = struct {
+    const default: isize = 0;
+    const url: isize = 3;
+    const number_pad: isize = 4;
+    const phone_pad: isize = 5;
+    const email: isize = 7;
+    const decimal_pad: isize = 8;
+    const web_search: isize = 10;
+};
+extern var UITextContentTypeEmailAddress: ?*anyopaque;
+extern var UITextContentTypeURL: ?*anyopaque;
+extern var UITextContentTypeTelephoneNumber: ?*anyopaque;
+extern var UITextContentTypePassword: ?*anyopaque;
+
+fn eq(a: ?[]const u8, b: []const u8) bool {
+    return if (a) |v| std.mem.eql(u8, v, b) else false;
+}
+
+/// A text field's or area's keyboard as the page asks for it (Props itype,
+/// im, ek, cap, cor, spellcheck): its type, its Return key, capitalizing,
+/// autocorrect, spelling and what AutoFill offers.
+fn textTraits(f: Object, n: *const Node) void {
+    const mode = n.props.im orelse n.props.itype;
+    const kb: isize = if (eq(mode, "email")) UIKeyboardType.email else if (eq(mode, "url")) UIKeyboardType.url else if (eq(mode, "tel")) UIKeyboardType.phone_pad else if (eq(mode, "numeric")) UIKeyboardType.number_pad else if (eq(mode, "decimal") or eq(mode, "number")) UIKeyboardType.decimal_pad else if (eq(mode, "search")) UIKeyboardType.web_search else UIKeyboardType.default;
+    f.msgSend(void, "setKeyboardType:", .{kb});
+    // UIReturnKeyType: default 0, go 1, next 4, search 6, send 7, done 9.
+    const ret: isize = if (eq(n.props.ek, "go")) 1 else if (eq(n.props.ek, "next")) 4 else if (eq(n.props.ek, "search")) 6 else if (eq(n.props.ek, "send")) 7 else if (eq(n.props.ek, "done")) 9 else 0;
+    f.msgSend(void, "setReturnKeyType:", .{ret});
+    // UITextAutocapitalizationType: none 0, words 1, sentences 2, all 3.
+    const cap: isize = if (eq(n.props.cap, "words")) 1 else if (eq(n.props.cap, "characters")) 3 else if (eq(n.props.cap, "none")) 0 else 2;
+    f.msgSend(void, "setAutocapitalizationType:", .{cap});
+    // UITextAutocorrectionType and UITextSpellCheckingType: no 1, yes 2.
+    f.msgSend(void, "setAutocorrectionType:", .{@as(isize, if (n.props.cor) 2 else 1)});
+    f.msgSend(void, "setSpellCheckingType:", .{@as(isize, if (n.props.spellcheck) 2 else 1)});
+    const content: ?*anyopaque = if (n.props.pw) UITextContentTypePassword else if (eq(n.props.itype, "email")) UITextContentTypeEmailAddress else if (eq(n.props.itype, "url")) UITextContentTypeURL else if (eq(n.props.itype, "tel")) UITextContentTypeTelephoneNumber else null;
+    f.msgSend(void, "setTextContentType:", .{content});
+}
 
 fn makeField(s: *Surface, n: *Node) ?Field {
     const zero: CGRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 10, .height = 10 } };
