@@ -10,8 +10,15 @@
 //! foreground, so the window being in front again with no target chosen
 //! means it was dismissed (`completed: false`).
 //!
-//! Receiving (Send To and "Open with"; a Share Target needs package
-//! identity, MSIX) is not written yet.
+//! Receiving: Send To and "Open with" (a Share Target needs package
+//! identity, MSIX). The installer (tools/package/nsis.zig) creates a Send
+//! To shortcut running `<exe> --oriel-send-to` (Explorer appends the
+//! files) and "Open with" entries running `<exe> --oriel-open-with "%1"`.
+//! Such a launch's arguments reach `receiveArgs`: in this process when
+//! it's the first, else through the single-instance WM_COPYDATA path
+//! (platform/windows/Shell.zig). Each file is opened read-only into
+//! `received` (core/file_handles.zig); the share carries handles, never
+//! paths, and goes out through common.dispatch (`share:received`).
 
 const std = @import("std");
 const oriel = @import("../../oriel.zig");
@@ -277,7 +284,10 @@ fn start(item: common.Outgoing, done: ?common.DoneHandler) common.SendError!void
     for (item.files) |f| {
         paths[n_paths] = filePath(f) catch |e| {
             log.warn("share: a file can't be sent: {s}", .{@errorName(e)});
-            return error.Unsupported;
+            return switch (e) {
+                error.BadHandle, error.NotReadable => error.InvalidHandle,
+                else => error.Unsupported,
+            };
         };
         n_paths += 1;
     }
@@ -554,20 +564,146 @@ fn sweepTemp() void {
 // --------------------------------------------------------------- the rest
 
 pub fn capabilities() common.Capabilities {
-    return .{ .send = .{ .supported = true, .files = true, .text = true, .url = true, .multiple = true } };
+    return .{ .receive = .send_to, .send = .{ .supported = true, .files = true, .text = true, .url = true, .multiple = true } };
 }
 
+// --------------------------------------------------------------- receive
+
+/// The Send To shortcut's argument: the files follow it.
+pub const send_to_flag = "--oriel-send-to";
+/// The "Open with" command's argument: the file follows it.
+pub const open_with_flag = "--oriel-open-with";
+
+/// Shares received and not released: id -> its files' handles. UI thread.
+var shares: std.AutoHashMapUnmanaged(u32, []u32) = .empty;
+var next_share: u32 = 1;
+
+/// A launch's arguments (without argv[0]), on the UI thread: when they
+/// carry a share (Send To, "Open with"), deliver it. Returns whether they
+/// did. Files that can't be opened (gone, a folder) are left out.
+pub fn receiveArgs(args: []const []const u8) bool {
+    const at = parseLaunch(args) orelse return false;
+    var files: std.ArrayList(common.File) = .empty;
+    defer files.deinit(gpa);
+    var handles: std.ArrayList(u32) = .empty;
+    defer handles.deinit(gpa);
+    for (args[at.first..]) |path| {
+        const f = keepFile(path) catch |e| {
+            log.warn("share: a received file can't be opened: {s}", .{@errorName(e)});
+            continue;
+        } orelse continue;
+        handles.append(gpa, f.handle) catch {
+            received.release(f.handle);
+            continue;
+        };
+        files.append(gpa, f) catch {
+            _ = handles.pop();
+            received.release(f.handle);
+        };
+    }
+    if (files.items.len == 0) return true;
+    const id = next_share;
+    next_share +%= 1;
+    if (next_share == 0) next_share = 1;
+    // Out of memory: the share is dropped, its files closed.
+    shares.ensureUnusedCapacity(gpa, 1) catch {
+        for (files.items) |f| received.release(f.handle);
+        return true;
+    };
+    const owned = handles.toOwnedSlice(gpa) catch {
+        for (files.items) |f| received.release(f.handle);
+        return true;
+    };
+    shares.putAssumeCapacity(id, owned);
+    const r: common.Received = .{ .id = id, .source = at.source, .files = files.items };
+    common.dispatch(&r);
+    return true;
+}
+
+const Launch = struct { source: common.Source, first: usize };
+
+/// Whether a launch's arguments carry a share (Shell: forward it to the
+/// running instance).
+pub fn isShareLaunch(args: []const []const u8) bool {
+    return parseLaunch(args) != null;
+}
+
+/// Where a share launch's files start, and how it came.
+fn parseLaunch(args: []const []const u8) ?Launch {
+    for (args, 0..) |a, i| {
+        if (std.mem.eql(u8, a, send_to_flag)) return .{ .source = .send_to, .first = i + 1 };
+        if (std.mem.eql(u8, a, open_with_flag)) return .{ .source = .open_with, .first = i + 1 };
+    }
+    return null;
+}
+
+/// Open `path` into `received`: its File (name and type for the page, no
+/// path), or null when it isn't a regular file. Absolute paths only.
+fn keepFile(path: []const u8) !?common.File {
+    if (!std.fs.path.isAbsoluteWindows(path)) return error.NotAbsolute;
+    const z = try gpa.dupeZ(u8, path);
+    defer gpa.free(z);
+    const handle = try received.addPath(z) orelse return null;
+    const e = received.info(handle).?;
+    const name = std.fs.path.basenameWindows(path);
+    return .{ .handle = handle, .name = name, .mime = mimeOf(name), .size = e.size };
+}
+
+/// A MIME type from the file name's extension (the page's File.type).
+fn mimeOf(name: []const u8) []const u8 {
+    const ext = std.fs.path.extension(name);
+    const table = [_]struct { []const u8, []const u8 }{
+        .{ ".txt", "text/plain" },        .{ ".md", "text/markdown" },     .{ ".csv", "text/csv" },
+        .{ ".html", "text/html" },        .{ ".htm", "text/html" },        .{ ".json", "application/json" },
+        .{ ".xml", "application/xml" },   .{ ".pdf", "application/pdf" },  .{ ".zip", "application/zip" },
+        .{ ".png", "image/png" },         .{ ".jpg", "image/jpeg" },       .{ ".jpeg", "image/jpeg" },
+        .{ ".gif", "image/gif" },         .{ ".webp", "image/webp" },      .{ ".svg", "image/svg+xml" },
+        .{ ".bmp", "image/bmp" },         .{ ".heic", "image/heic" },      .{ ".mp3", "audio/mpeg" },
+        .{ ".wav", "audio/wav" },         .{ ".ogg", "audio/ogg" },        .{ ".m4a", "audio/mp4" },
+        .{ ".flac", "audio/flac" },       .{ ".mp4", "video/mp4" },        .{ ".mov", "video/quicktime" },
+        .{ ".webm", "video/webm" },       .{ ".mkv", "video/x-matroska" }, .{ ".avi", "video/x-msvideo" },
+    };
+    for (table) |t| if (std.ascii.eqlIgnoreCase(ext, t[0])) return t[1];
+    return "application/octet-stream";
+}
+
+/// A received file, read-only: a new handle to the file `handle` names
+/// (the caller closes it). InvalidHandle once released or changed.
 pub fn open(handle: u32) common.OpenError!std.Io.File {
-    _ = handle;
-    return error.Unsupported;
+    const e = received.info(handle) orelse return error.InvalidHandle;
+    var dup: win32.HANDLE = undefined;
+    const self = win32.GetCurrentProcess();
+    if (win32.DuplicateHandle(self, e.fd, self, &dup, 0, win32.FALSE, win32.DUPLICATE_SAME_ACCESS) == win32.FALSE)
+        return error.InvalidHandle;
+    return .{ .handle = dup, .flags = .{ .nonblocking = false } };
 }
 
+/// Let a share's files go: their handles close.
 pub fn release(id: u32) void {
-    _ = id;
+    const kv = shares.fetchRemove(id) orelse return;
+    for (kv.value) |h| received.release(h);
+    gpa.free(kv.value);
 }
 
 pub fn check(alloc: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
-    return .{ .module = "share", .ok = true, .detail = try alloc.dupe(u8, "send: DataTransferManager; receive: not implemented yet") };
+    return .{ .module = "share", .ok = true, .detail = try alloc.dupe(u8, "send: DataTransferManager; receive: Send To, Open with") };
+}
+
+test "parseLaunch" {
+    const t = std.testing;
+    try t.expectEqual(@as(?Launch, null), parseLaunch(&.{ "a", "b" }));
+    const s = parseLaunch(&.{ send_to_flag, "C:\\a.txt", "C:\\b.png" }).?;
+    try t.expectEqual(common.Source.send_to, s.source);
+    try t.expectEqual(@as(usize, 1), s.first);
+    const o = parseLaunch(&.{ "--x", open_with_flag, "C:\\a.txt" }).?;
+    try t.expectEqual(common.Source.open_with, o.source);
+    try t.expectEqual(@as(usize, 2), o.first);
+}
+
+test "mimeOf" {
+    try std.testing.expectEqualStrings("image/png", mimeOf("Photo.PNG"));
+    try std.testing.expectEqualStrings("text/plain", mimeOf("notes.txt"));
+    try std.testing.expectEqualStrings("application/octet-stream", mimeOf("noext"));
 }
 
 test {

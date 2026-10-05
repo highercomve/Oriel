@@ -1308,6 +1308,9 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
     var homepage: ?[]const u8 = null;
     var url_schemes: std.ArrayList([]const u8) = .empty;
     defer url_schemes.deinit(gpa);
+    var send_to: ?[]const u8 = null;
+    var open_with_exts: std.ArrayList([]const u8) = .empty;
+    defer open_with_exts.deinit(gpa);
     var extras: contents.Contents = .{};
     defer extras.deinit(gpa);
 
@@ -1355,6 +1358,12 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         } else if (std.mem.eql(u8, arg, "--url-scheme") and i + 1 < args.len) {
             i += 1;
             try url_schemes.append(gpa, args[i]);
+        } else if (std.mem.eql(u8, arg, "--send-to") and i + 1 < args.len) {
+            i += 1;
+            send_to = args[i];
+        } else if (std.mem.eql(u8, arg, "--open-with-ext") and i + 1 < args.len) {
+            i += 1;
+            try open_with_exts.append(gpa, args[i]);
         }
     }
 
@@ -1510,6 +1519,8 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         .webview2_loader = abs_wv2_loader,
         .homepage = homepage,
         .url_schemes = url_schemes.items,
+        .send_to = send_to,
+        .open_with_extensions = open_with_exts.items,
         .estimated_size_kb = estimated_size_kb,
         .extra_exes = abs_exes.items,
         .extra_files = abs_files.items,

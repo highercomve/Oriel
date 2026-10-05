@@ -25,6 +25,13 @@ pub const NsisOptions = struct {
     webview2_loader: ?[]const u8 = null,
     homepage: ?[]const u8 = null,
     url_schemes: []const []const u8 = &.{},
+    /// Receiving shares (`.share_target`): a Send To shortcut with this
+    /// name, running the app with `--oriel-send-to` (Explorer appends the
+    /// files). Null: none.
+    send_to: ?[]const u8 = null,
+    /// "Open with" for these extensions (".txt" or "txt"), running the app
+    /// with `--oriel-open-with "%1"`.
+    open_with_extensions: []const []const u8 = &.{},
     estimated_size_kb: ?u64 = null,
     /// Other executables, installed into `$INSTDIR` under `name`.
     extra_exes: []const contents.Exe = &.{},
@@ -329,6 +336,8 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         try w.print("  WriteRegStr HKCU \"Software\\Classes\\{s}\\shell\\open\\command\" \"\" \"$\\\"$INSTDIR\\${{EXE_NAME}}.exe$\\\" $\\\"%1$\\\"\"\n", .{esc_s});
     }
 
+    try writeShareTarget(allocator, w, opts, .install);
+
     try w.writeAll(
         \\SectionEnd
         \\
@@ -411,6 +420,8 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         try w.print("  DeleteRegKey HKCU \"Software\\Classes\\{s}\"\n", .{esc_s});
     }
 
+    try writeShareTarget(allocator, w, opts, .uninstall);
+
     try w.writeAll(
         \\  RMDir "$INSTDIR"
         \\
@@ -422,6 +433,76 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
     );
 
     return try allocator.dupe(u8, out.written());
+}
+
+/// The share target's entries (src/modules/share/windows.zig reads the
+/// launches): a Send To shortcut, and "Open with" through a ProgID
+/// (`<id>.share`) listed in each extension's OpenWithProgids plus the
+/// exe's Applications key. All per user (HKCU), removed by the uninstaller.
+fn writeShareTarget(allocator: std.mem.Allocator, w: *std.Io.Writer, opts: NsisOptions, comptime part: enum { install, uninstall }) !void {
+    if (opts.send_to) |label| {
+        if (!validSendToLabel(label)) return error.InvalidSendToLabel;
+        const esc = try metadata.escapeNsisString(allocator, label);
+        defer allocator.free(esc);
+        if (part == .install) {
+            try w.print("  ; Share target: Send To\n", .{});
+            try w.print("  CreateShortcut \"$SENDTO\\{s}.lnk\" \"$INSTDIR\\${{EXE_NAME}}.exe\" \"--oriel-send-to\" \"$INSTDIR\\${{EXE_NAME}}.exe\" 0\n", .{esc});
+        } else {
+            try w.print("  Delete \"$SENDTO\\{s}.lnk\"\n", .{esc});
+        }
+    }
+    if (opts.open_with_extensions.len == 0) return;
+    const command = "$\\\"$INSTDIR\\${EXE_NAME}.exe$\\\" --oriel-open-with $\\\"%1$\\\"";
+    if (part == .install) {
+        try w.writeAll("  ; Share target: Open with\n");
+        try w.writeAll("  WriteRegStr HKCU \"Software\\Classes\\${APP_ID}.share\" \"\" \"${NAME}\"\n");
+        try w.writeAll("  WriteRegStr HKCU \"Software\\Classes\\${APP_ID}.share\\DefaultIcon\" \"\" \"$INSTDIR\\${EXE_NAME}.exe,0\"\n");
+        try w.writeAll("  WriteRegStr HKCU \"Software\\Classes\\${APP_ID}.share\\shell\\open\\command\" \"\" \"" ++ command ++ "\"\n");
+        try w.writeAll("  WriteRegStr HKCU \"Software\\Classes\\Applications\\${EXE_NAME}.exe\" \"FriendlyAppName\" \"${NAME}\"\n");
+        try w.writeAll("  WriteRegStr HKCU \"Software\\Classes\\Applications\\${EXE_NAME}.exe\\shell\\open\\command\" \"\" \"" ++ command ++ "\"\n");
+    }
+    for (opts.open_with_extensions) |raw| {
+        var buf: [40]u8 = undefined;
+        const ext = normalizeExtension(&buf, raw) orelse return error.InvalidExtension;
+        if (part == .install) {
+            try w.print("  WriteRegStr HKCU \"Software\\Classes\\{s}\\OpenWithProgids\" \"${{APP_ID}}.share\" \"\"\n", .{ext});
+            try w.print("  WriteRegStr HKCU \"Software\\Classes\\Applications\\${{EXE_NAME}}.exe\\SupportedTypes\" \"{s}\" \"\"\n", .{ext});
+        } else {
+            try w.print("  DeleteRegValue HKCU \"Software\\Classes\\{s}\\OpenWithProgids\" \"${{APP_ID}}.share\"\n", .{ext});
+            try w.print("  DeleteRegKey /ifempty HKCU \"Software\\Classes\\{s}\\OpenWithProgids\"\n", .{ext});
+        }
+    }
+    if (part == .uninstall) {
+        try w.writeAll("  DeleteRegKey HKCU \"Software\\Classes\\${APP_ID}.share\"\n");
+        try w.writeAll("  DeleteRegKey HKCU \"Software\\Classes\\Applications\\${EXE_NAME}.exe\"\n");
+    }
+    // Explorer rereads associations.
+    try w.writeAll("  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'\n");
+}
+
+/// A Send To shortcut's name: a file name (no path or reserved characters,
+/// nothing NSIS would expand), 1-64 bytes.
+fn validSendToLabel(label: []const u8) bool {
+    if (label.len == 0 or label.len > 64) return false;
+    if (label[0] == ' ' or label[label.len - 1] == ' ' or label[label.len - 1] == '.') return false;
+    for (label) |c| {
+        if (c < 0x20 or c == 0x7f) return false;
+        if (std.mem.indexOfScalar(u8, "\\/:*?\"<>|$`", c) != null) return false;
+    }
+    return true;
+}
+
+/// ".txt" from "txt" or ".TXT" (lower case), or null when it isn't a
+/// plain extension (letters, digits, `_+-`, up to 32).
+fn normalizeExtension(buf: *[40]u8, raw: []const u8) ?[]const u8 {
+    const bare = if (raw.len > 0 and raw[0] == '.') raw[1..] else raw;
+    if (bare.len == 0 or bare.len > 32) return null;
+    buf[0] = '.';
+    for (bare, 1..) |c, i| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '+' or c == '-')) return null;
+        buf[i] = std.ascii.toLower(c);
+    }
+    return buf[0 .. bare.len + 1];
 }
 
 /// One block of ORIEL_REQUIRE_NOT_RUNNING: if `$INSTDIR\<file>` exists and
@@ -715,4 +796,61 @@ test "generateNsisScript installs and uninstalls extra executables and files" {
         .out_file = "s.exe",
         .extra_files = &.{.{ .rel = "m.bin", .src = "C:\\$PROGRAMFILES\\m.bin" }},
     }));
+}
+
+test "generateNsisScript with a share target: Send To and Open with" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const script = try generateNsisScript(allocator, .{
+        .name = "Ghost Share",
+        .version = "1.0.0",
+        .publisher = "P",
+        .id = "com.example.GhostShare",
+        .exe_name = "ghostshare",
+        .binary_src = "bin/ghostshare.exe",
+        .out_file = "dist/setup.exe",
+        .send_to = "Send with Ghost Share",
+        .open_with_extensions = &.{ "txt", ".PNG" },
+    });
+    defer allocator.free(script);
+    const uninstall = script[std.mem.indexOf(u8, script, "Section \"Uninstall\"").?..];
+    const install = script[0 .. script.len - uninstall.len];
+
+    const expectIn = struct {
+        fn f(hay: []const u8, needle: []const u8) !void {
+            if (std.mem.indexOf(u8, hay, needle) == null) {
+                std.debug.print("missing: {s}\n", .{needle});
+                return error.TestExpectedEqual;
+            }
+        }
+    }.f;
+    try expectIn(install, "CreateShortcut \"$SENDTO\\Send with Ghost Share.lnk\" \"$INSTDIR\\${EXE_NAME}.exe\" \"--oriel-send-to\"");
+    try expectIn(install, "WriteRegStr HKCU \"Software\\Classes\\${APP_ID}.share\\shell\\open\\command\" \"\" \"$\\\"$INSTDIR\\${EXE_NAME}.exe$\\\" --oriel-open-with $\\\"%1$\\\"\"");
+    try expectIn(install, "WriteRegStr HKCU \"Software\\Classes\\.txt\\OpenWithProgids\" \"${APP_ID}.share\" \"\"");
+    try expectIn(install, "WriteRegStr HKCU \"Software\\Classes\\.png\\OpenWithProgids\" \"${APP_ID}.share\" \"\"");
+    try expectIn(install, "WriteRegStr HKCU \"Software\\Classes\\Applications\\${EXE_NAME}.exe\\SupportedTypes\" \".txt\" \"\"");
+    try expectIn(uninstall, "Delete \"$SENDTO\\Send with Ghost Share.lnk\"");
+    try expectIn(uninstall, "DeleteRegValue HKCU \"Software\\Classes\\.png\\OpenWithProgids\" \"${APP_ID}.share\"");
+    try expectIn(uninstall, "DeleteRegKey HKCU \"Software\\Classes\\${APP_ID}.share\"");
+    try expectIn(uninstall, "DeleteRegKey HKCU \"Software\\Classes\\Applications\\${EXE_NAME}.exe\"");
+    // Without a share target: none of it.
+    const plain = try generateNsisScript(allocator, .{ .name = "A", .version = "1", .publisher = "P", .id = "com.example.A", .exe_name = "a", .binary_src = "a.exe", .out_file = "s.exe" });
+    defer allocator.free(plain);
+    try testing.expect(std.mem.indexOf(u8, plain, "SENDTO") == null);
+    try testing.expect(std.mem.indexOf(u8, plain, "OpenWithProgids") == null);
+}
+
+test "generateNsisScript rejects a bad Send To label or extension" {
+    const testing = std.testing;
+    const base: NsisOptions = .{ .name = "A", .version = "1", .publisher = "P", .id = "com.example.A", .exe_name = "a", .binary_src = "a.exe", .out_file = "s.exe" };
+    for ([_][]const u8{ "", "..\\evil", "a/b", "$PROFILE", "x\"y", "trailing.", "new\nline" }) |label| {
+        var o = base;
+        o.send_to = label;
+        try testing.expectError(error.InvalidSendToLabel, generateNsisScript(testing.allocator, o));
+    }
+    for ([_][]const u8{ "", ".", "t xt", "a\\b", "x\"", "$ext" }) |ext| {
+        var o = base;
+        o.open_with_extensions = &.{ext};
+        try testing.expectError(error.InvalidExtension, generateNsisScript(testing.allocator, o));
+    }
 }
