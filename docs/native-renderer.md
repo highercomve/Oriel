@@ -531,6 +531,8 @@ width (CoreText's suggested size leaves it out). CSS padding on a select
 is dropped (WebKit's pop-up takes none). Not yet: text widths on Apple (a
 text's measure rounds up a pixel).
 
+**Text widths** (Apple, as GTK and Win32): a text's natural width is CoreText's rounded up to a LayoutUnit (1/64 px, 0.001 px of slack), not a pixel more, and it is laid out to draw at its box's width plus 1/64 px, so its lines break where they were measured (apple_draw.textWidth; a row of five chips within 0.5px of WKWebView's, was 5.4px).
+
 **Line struts** (render.js lineStrut, shared): a line of only boxes (an
 image, or an inline-block with nothing written in it or overflow other
 than visible: its baseline is its bottom edge) has the block's strut, as
