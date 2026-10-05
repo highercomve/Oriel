@@ -1787,11 +1787,24 @@ export class Renderer {
 
   // A list item's outside marker ("• ", "3. "): a text beside its first
   // line, its end at the item's start edge, in the item's font.
-  putMarker(nodes, el, cs, fontSize, props, text) {
+  putMarker(nodes, el, cs, fontSize, props, marker) {
     const mid = this.idOf(el, "marker");
     this.own(mid, el);
     const top = Array.isArray(props.pad) && typeof props.pad[0] === "number" ? props.pad[0] : 0;
-    const mp = { ...textProps(cs, fontSize), runs: [{ t: text, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
+    if (typeof marker === "object") {
+      // A bullet: a shape, as browsers draw it (measured in Chromium: a
+      // 6px disc at 16px, 9px at 24px, centered about 0.56em down the
+      // line, its edge 14px before the text at 16px), not a glyph.
+      const fg = color(cs.color) || [0, 0, 0, 1];
+      const size = Math.max(3, Math.round(fontSize * (marker.shape === "circle" ? 0.5 : 0.375)));
+      const mp = { w: size, h: size, pos: "absolute", ins: [top + Math.round(fontSize * 0.5625 - size / 2), "100%", null, null], m: [0, Math.round(fontSize * 0.5 + 6), 0, 0] };
+      if (marker.shape === "circle") { mp.bw = [1, 1, 1, 1]; mp.bc = [fg, fg, fg, fg]; }
+      else mp.bg = { color: fg };
+      if (marker.shape !== "square") mp.br = ["50%", "50%", "50%", "50%"];
+      this.put(nodes, mid, "view", mp, []);
+      return mid;
+    }
+    const mp = { ...textProps(cs, fontSize), runs: [{ t: marker, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
     this.put(nodes, mid, "text", mp, []);
     return mid;
   }
@@ -3003,14 +3016,14 @@ function weight(w) {
 }
 
 // A text run's style (shared: callers copy it).
-// A list item's marker text (outside markers only), or null: its
+// A list item's marker (outside markers only): a bullet's shape
+// ({ shape }), a number's text, or null: its
 // list-style-type, and for numbers its place among its
 // list's items (start, value, reversed), as browsers count them.
 function listMarker(el, cs) {
   const type = cs["list-style-type"], position = cs["list-style-position"];
   if (!type || type === "none" || position === "inside") return null;
-  const bullet = { disc: "\u2022", circle: "\u25e6", square: "\u25aa" }[type];
-  if (bullet) return bullet + " ";
+  if (type === "disc" || type === "circle" || type === "square") return { shape: type };
   const list = el.parentNode;
   const items = list ? [...list.children].filter((c) => c.localName === "li") : [el];
   const reversed = list?.localName === "ol" && list.hasAttribute("reversed");
