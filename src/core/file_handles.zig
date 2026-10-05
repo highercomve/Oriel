@@ -58,6 +58,7 @@ const win = struct {
     extern "kernel32" fn ReadFile(h: HANDLE, buf: [*]u8, len: DWORD, read: *DWORD, ov: ?*OVERLAPPED) callconv(.winapi) BOOL;
     extern "kernel32" fn CloseHandle(h: HANDLE) callconv(.winapi) BOOL;
     extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
+    extern "kernel32" fn GetFinalPathNameByHandleW(h: HANDLE, buf: [*]u16, len: DWORD, flags: DWORD) callconv(.winapi) DWORD;
     extern "kernel32" fn SetFileTime(h: HANDLE, created: ?*const FILETIME, accessed: ?*const FILETIME, written: ?*const FILETIME) callconv(.winapi) BOOL;
 };
 
@@ -185,6 +186,35 @@ pub const FileHandles = struct {
 
     pub fn count(d: *const FileHandles) usize {
         return d.entries.count();
+    }
+
+    /// Where a kept file is now (it may have moved since it was added),
+    /// for an OS API that takes only paths: Windows' share sheet
+    /// (StorageFile.GetFileFromPathAsync). Never for the page. UTF-8, no
+    /// `\\?\` prefix; the caller frees it. NotReadable when the file
+    /// changed since it was added; Unsupported off Windows.
+    pub fn currentPath(d: *const FileHandles, gpa: std.mem.Allocator, handle: u32) Error![]u8 {
+        if (!windows) return error.Unsupported;
+        const e = d.entries.get(handle) orelse return error.BadHandle;
+        try check(e);
+        var buf: [32768]u16 = undefined;
+        const n = win.GetFinalPathNameByHandleW(e.fd, &buf, buf.len, 0);
+        if (n == 0 or n >= buf.len) return error.NotReadable;
+        var w: []const u16 = buf[0..n];
+        const unc = std.unicode.utf8ToUtf16LeStringLiteral("\\\\?\\UNC\\");
+        const local = std.unicode.utf8ToUtf16LeStringLiteral("\\\\?\\");
+        if (std.mem.startsWith(u16, w, unc)) {
+            // \\?\UNC\server\share -> \\server\share
+            w = buf[unc.len - 2 .. n];
+            buf[unc.len - 2] = '\\';
+            buf[unc.len - 1] = '\\';
+        } else if (std.mem.startsWith(u16, w, local)) {
+            w = w[local.len..];
+        }
+        return std.unicode.utf16LeToUtf8Alloc(gpa, w) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.NotReadable,
+        };
     }
 };
 
@@ -411,4 +441,28 @@ test "FileHandles: a directory is not a file" {
     try testing.expectError(error.NotAFile, d.addFd(openRead(path).?));
     // A path that isn't there.
     try testing.expectError(error.OpenFailed, d.addPath("/nonexistent/oriel-drop-test"));
+}
+
+test "FileHandles: path follows a kept file (Windows)" {
+    if (!windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "c.txt", .data = "share me" });
+    const path = try tmpPath(&tmp, "c.txt");
+    defer testing.allocator.free(path);
+
+    var d: FileHandles = .init(testing.allocator);
+    defer d.deinit();
+    const h = (try d.addPath(path)).?;
+    const got = try d.currentPath(testing.allocator, h);
+    defer testing.allocator.free(got);
+    try testing.expect(!std.mem.startsWith(u8, got, "\\\\?\\"));
+    try testing.expect(std.mem.endsWith(u8, got, "\\c.txt"));
+    try testing.expectError(error.BadHandle, d.currentPath(testing.allocator, h + 1));
+
+    // Renamed while kept: the new name.
+    try tmp.dir.rename("c.txt", tmp.dir, "d.txt", testing.io);
+    const moved = try d.currentPath(testing.allocator, h);
+    defer testing.allocator.free(moved);
+    try testing.expect(std.mem.endsWith(u8, moved, "\\d.txt"));
 }
