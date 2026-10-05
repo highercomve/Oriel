@@ -149,6 +149,12 @@ internal object Nui {
 
     fun isDark(c: Configuration) = c.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
 
+    /** The theme's accent (android:colorAccent: Material You's dynamic colour on Android 12+, for light or dark), ARGB; 0 for none. */
+    fun accent(ctx: Context): Int {
+        val a = ctx.obtainStyledAttributes(intArrayOf(android.R.attr.colorAccent))
+        try { return a.getColor(0, 0) } finally { a.recycle() }
+    }
+
     /** One Choreographer callback for the window's next display frame
      *  (android.zig's requestDisplayFrame posts one at a time). */
     fun requestFrame(window: Int) {
@@ -1238,7 +1244,18 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             dark = d
             if (width > 0) NuiNative.resize(window, cssWidth(width), cssHeight(height), dark)
         }
+        // The system's accent changed (a new wallpaper's palette, light/dark):
+        // the page's platform.accent and its "accent" event, as on macOS.
+        val a = accent()
+        if (a != lastAccent) {
+            lastAccent = a
+            if (Color.alpha(a) != 0) NuiNative.event(window, 0, "accent".bytes(), "[${Color.red(a)},${Color.green(a)},${Color.blue(a)}]".bytes())
+        }
     }
+
+    /** The accent this window's theme gives now (Nui.accent), and the one the page last heard. */
+    fun accent(): Int = Nui.accent(context)
+    private var lastAccent = Nui.accent(context)
 
     // --- Fields ---------------------------------------------------------------
 
