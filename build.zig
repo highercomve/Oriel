@@ -783,6 +783,11 @@ fn addOrielModule(
     if (is_linux and (features.global_shortcut or features.input)) {
         oriel.linkSystemLibrary("x11", .{});
     }
+    inline for (capability_modules) |cm| {
+        if (comptime !cm.enables or !@hasField(Features, cm.module)) continue;
+        if (@field(features, cm.module)) linkCapabilityModule(oriel, target, cm.module);
+    }
+    oriel_builds.append(b.allocator, .{ .builder = b, .features = features, .options = options, .module = oriel, .target = target }) catch @panic("OOM");
     return oriel;
 }
 
@@ -895,7 +900,10 @@ pub const AppOptions = struct {
     /// `.permissions = .{ .microphone = "Dictation turns your speech into text", .accessibility = "" }`.
     /// Written into the packages (Info.plist usage keys on macOS) and passed to
     /// the app as `app.permissions` (give it to `App.Config.permissions`).
-    /// Modules that need one (audio_capture) declare it themselves.
+    /// Modules that need one (audio_capture) declare it themselves, and
+    /// declaring a capability turns its module on (`capability_modules`:
+    /// local_network → oriel.network, bluetooth → oriel.bluetooth) unless
+    /// the oriel dependency's options set that module's flag.
     permissions: Permissions = .{},
     /// Extra modules for the app's code (third-party packages), added to every
     /// executable addApp builds (production, dev, `zig build check`):
@@ -910,6 +918,21 @@ pub const AppOptions = struct {
     android: Android = .{},
     /// iOS-only bundle settings (see docs/ios.md).
     ios: Ios = .{},
+    /// Receive what other apps share (`oriel.share.onReceive`): declaring it
+    /// turns on the share module. Each platform's declaration (Android intent
+    /// filters, document types, ...) comes with its receive support.
+    share_target: ?ShareTarget = null,
+
+    pub const ShareTarget = struct {
+        /// MIME types; `text/plain` also means text and URL shares.
+        types: []const []const u8 = &.{"*/*"},
+        /// Several items at once (Android ACTION_SEND_MULTIPLE).
+        multiple: bool = false,
+        /// The label in the share sheet (default: the app's name).
+        label: ?[]const u8 = null,
+        /// Windows: also "Open with" for these extensions.
+        windows_extensions: []const []const u8 = &.{},
+    };
 
     pub const Ios = struct {
         /// UIBackgroundModes `audio`: keep capturing (audio_capture) or
@@ -959,13 +982,107 @@ fn dependencyFlag(oriel_dep: *std.Build.Dependency, name: []const u8) bool {
     };
 }
 
-fn effectivePermissions(oriel_dep: *std.Build.Dependency, declared: Permissions) Permissions {
-    var p = declared;
-    if (@import("build/package.zig").isFeatureEnabledDefault(oriel_dep, "audio_capture", false)) {
-        if (p.microphone == null) p.microphone = "";
-        if (p.system_audio == null) p.system_audio = "";
+/// Modules that follow the app's configuration: declaring a capability (a
+/// `Permissions` kind, or an `AppOptions` field like `share_target`) turns
+/// its module on, so there is no -D flag to keep in sync with it; and a
+/// module that is on declares the capabilities it needs (with the default
+/// reason). Entries whose capability or module doesn't exist are skipped.
+const CapabilityModule = struct {
+    /// A `Permissions` field or an `AppOptions` field.
+    capability: []const u8,
+    /// The `Features` field (`-D<module>`).
+    module: []const u8,
+    /// Declaring the capability turns the module on, unless the app set the
+    /// module's flag itself (that wins).
+    enables: bool = true,
+    /// The module, on, declares the capability.
+    implies: bool = false,
+};
+
+const capability_modules = [_]CapabilityModule{
+    .{ .capability = "bluetooth", .module = "bluetooth", .implies = true },
+    .{ .capability = "local_network", .module = "network" },
+    .{ .capability = "share_target", .module = "share" },
+    // audio_capture records these; declaring them doesn't build it (whisper's
+    // apps opt in to it).
+    .{ .capability = "microphone", .module = "audio_capture", .enables = false, .implies = true },
+    .{ .capability = "system_audio", .module = "audio_capture", .enables = false, .implies = true },
+};
+
+/// System libraries a module in `capability_modules` links, when the
+/// dependency's options turn it on and when `appPermissions` does later.
+fn linkCapabilityModule(module: *std.Build.Module, target: std.Build.ResolvedTarget, comptime name: []const u8) void {
+    // network and share link nothing new so far.
+    _ = module;
+    _ = target;
+    _ = name;
+}
+
+/// The `oriel` module of each Oriel dependency instance in this build,
+/// with what `appPermissions` may still change before anything is built:
+/// its feature options.
+const OrielBuild = struct {
+    builder: *std.Build,
+    features: Features,
+    options: *std.Build.Step.Options,
+    module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+};
+var oriel_builds: std.ArrayList(OrielBuild) = .empty;
+
+fn orielBuild(oriel_dep: *std.Build.Dependency) *OrielBuild {
+    for (oriel_builds.items) |*ob| if (ob.builder == oriel_dep.builder) return ob;
+    @panic("addApp: the dependency isn't Oriel's (b.dependency(\"oriel\", ...))");
+}
+
+fn capabilityDeclared(options: AppOptions, comptime capability: []const u8) bool {
+    if (@hasField(Permissions, capability)) return @field(options.permissions, capability) != null;
+    if (@hasField(AppOptions, capability)) return @field(options, capability) != null;
+    return false;
+}
+
+/// Turn on the modules the app's capabilities need (`capability_modules`),
+/// and return its permissions plus the ones its modules need.
+/// Every app built with the dependency shares its `oriel` module, so a
+/// module one of them turns on is on for all of them.
+fn appPermissions(oriel_dep: *std.Build.Dependency, options: AppOptions) Permissions {
+    const ob = orielBuild(oriel_dep);
+    inline for (capability_modules) |cm| {
+        if (comptime cm.enables and @hasField(Features, cm.module)) followCapability(oriel_dep, ob, options, cm);
+    }
+    var p = options.permissions;
+    inline for (capability_modules) |cm| {
+        if (comptime cm.implies and @hasField(Features, cm.module) and @hasField(Permissions, cm.capability)) {
+            if (@field(ob.features, cm.module) and @field(p, cm.capability) == null) @field(p, cm.capability) = "";
+        }
     }
     return p;
+}
+
+/// Turn `cm.module` on if the app declares `cm.capability`.
+fn followCapability(oriel_dep: *std.Build.Dependency, ob: *OrielBuild, options: AppOptions, comptime cm: CapabilityModule) void {
+    if (!capabilityDeclared(options, cm.capability) or @field(ob.features, cm.module)) return;
+    if (oriel_dep.builder.user_input_options.contains(cm.module)) {
+        std.log.warn("{s}: `{s}` is declared, but the oriel dependency has {s} = false: oriel.{s} stays off", .{ options.name, cm.capability, cm.module, cm.module });
+        return;
+    }
+    const ios_off = comptime for (Features.unavailable_on_ios) |n| {
+        if (std.mem.eql(u8, n, cm.module)) break true;
+    } else false;
+    if (ios_off and ob.target.result.os.tag == .ios) return;
+    enableFeature(ob, cm.module);
+}
+
+/// Set a feature option of an `oriel` module after its dependency's build
+/// ran (the options file is written later, when the build runs).
+fn enableFeature(ob: *OrielBuild, comptime name: []const u8) void {
+    const from = "pub const " ++ name ++ ": bool = false;\n";
+    const to = "pub const " ++ name ++ ": bool = true;\n";
+    const text = &ob.options.contents;
+    const at = std.mem.indexOf(u8, text.items, from) orelse @panic("oriel build options: no " ++ name ++ " = false");
+    text.replaceRange(ob.builder.allocator, at, from.len, to) catch @panic("OOM");
+    @field(ob.features, name) = true;
+    linkCapabilityModule(ob.module, ob.target, name);
 }
 
 fn addPermissionOptions(cfg: *std.Build.Step.Options, p: Permissions) void {
@@ -1056,7 +1173,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     const fe_dir = b.pathFromRoot(fe.dir);
     const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
 
-    const permissions = effectivePermissions(oriel_dep, options.permissions);
+    const permissions = appPermissions(oriel_dep, options);
 
     const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
 
@@ -1278,7 +1395,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     const fe = options.frontend;
     const fe_dir = b.pathFromRoot(fe.dir);
     const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
-    const permissions = effectivePermissions(oriel_dep, options.permissions);
+    const permissions = appPermissions(oriel_dep, options);
     const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
     const install_dir: std.Build.InstallDir = .{ .custom = b.fmt("jniLibs/{s}", .{android_build.abiDir(target.result)}) };
 
@@ -1559,7 +1676,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     const fe = options.frontend;
     const fe_dir = b.pathFromRoot(fe.dir);
     const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
-    const permissions = effectivePermissions(oriel_dep, options.permissions);
+    const permissions = appPermissions(oriel_dep, options);
     const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
     const sdk = ios_build.sdk(b);
     const audio_capture = @import("build/package.zig").isFeatureEnabledDefault(oriel_dep, "audio_capture", false);
