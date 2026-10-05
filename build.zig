@@ -990,6 +990,14 @@ pub const AppOptions = struct {
         /// `<uses-feature>`s, one per name (required if any declaration
         /// requires it).
         features: []const Feature = &.{},
+        /// Kotlin or Java files (helpers your Zig code calls over JNI, ...)
+        /// copied on every build into the Gradle project's
+        /// `app/src/main/java/<path of the file's package line>/`; a file
+        /// dropped from the list is removed from there.
+        sources: []const std.Build.LazyPath = &.{},
+        /// R8 rules for release builds, kept in `app/proguard-rules.pro`
+        /// between `# oriel:proguard` markers (rewritten on every build).
+        proguard_rules: ?std.Build.LazyPath = null,
 
         pub const Permission = android_manifest.Permission;
         pub const Feature = android_manifest.Feature;
@@ -1620,6 +1628,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     write_project.addArgs(&.{ "--out", project_dir, "--icons" });
     write_project.addDirectoryArg(icons_dir);
     for (android_vars) |v| write_project.addArgs(&.{ "--var", v });
+    addAndroidAppFiles(write_project, options.android);
     if (force) write_project.addArg("--force");
     write_project.has_side_effects = true;
     @import("build/package.zig").getOrCreateStep(b, "android-project", "Write the Android (Gradle) project into android/ (-Dandroid_force rewrites edited files)").dependOn(&write_project.step);
@@ -1628,6 +1637,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     sync_runtime.addDirectoryArg(oriel_dep.path("android/template"));
     sync_runtime.addArgs(&.{ "--out", project_dir });
     for (android_vars) |v| sync_runtime.addArgs(&.{ "--var", v });
+    addAndroidAppFiles(sync_runtime, options.android);
     sync_runtime.has_side_effects = true;
     b.getInstallStep().dependOn(&sync_runtime.step);
 
@@ -1640,6 +1650,19 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
         @import("build/package.zig").getOrCreateStep(b, "types", "Generate TypeScript types for the Zig commands").dependOn(&fail.step);
     }
     return .{ .exe = lib, .dev_exe = dev_lib };
+}
+
+/// `--source`/`--proguard` arguments for `android-project`: the app's own
+/// Kotlin/Java files and R8 rules (`AppOptions.android`).
+fn addAndroidAppFiles(run: *std.Build.Step.Run, android: AppOptions.Android) void {
+    for (android.sources) |src| {
+        run.addArg("--source");
+        run.addFileArg(src);
+    }
+    if (android.proguard_rules) |rules| {
+        run.addArg("--proguard");
+        run.addFileArg(rules);
+    }
 }
 
 fn xmlEscape(b: *std.Build, text: []const u8) []const u8 {
