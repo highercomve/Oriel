@@ -42,7 +42,7 @@ Platform contract mapping:
 | Size & placement | `ActivityOptions.setLaunchBounds`, manifest `<layout>` min size, resize from WindowMetrics. |
 | Drag, click-through, always-on-top | No-ops; caption bar handles dragging. |
 | IPC bridge | Mirrors `linux/bridge.zig`; token and isolation checks (`ipc.zig`) must behave identically. |
-| Dialogs | AlertDialog + Storage Access Framework picker. |
+| Dialogs | AlertDialog + Storage Access Framework picker. Folders: `ACTION_OPEN_DOCUMENT_TREE` with a persisted read/write grant (`oriel.dialog.openFolder`, `saveToFolder` through `DocumentsContract.createDocument`). |
 | Clipboard, paths | ClipboardManager; `getFilesDir` / `getExternalFilesDir` over JNI. |
 | Single instance | Launcher Activity `singleTask`, `onNewIntent` → `on_second_instance`. |
 | Permissions | New `permissions/android.zig` → runtime permissions (mic, camera, notifications). |

@@ -757,6 +757,33 @@ const file = try oriel.dialog.openFile(gpa, .{
 - **Windows:** Uses COM `IFileOpenDialog` / `IFileSaveDialog` (with `FOS_PICKFOLDERS` for folder pickers, `FOS_ALLOWMULTISELECT` for multiple files) marshaled to the main thread via `Shell.runOnMainThread`. Runtime untested on Windows.
 - **macOS:** `NSOpenPanel` / `NSSavePanel`, run modally on the main thread (the save panel confirms overwrites).
 
+#### Folders with lasting write access
+
+For apps that save into a folder the user chose once (e.g. received files), `openFolder` returns a
+`Folder` whose `id` is an opaque string: store it, and it keeps working after restarts.
+
+```zig
+const folder = try oriel.dialog.openFolder(gpa, .{ .title = "Save received files to" }) orelse return; // null: cancelled
+defer folder.deinit(gpa);
+try store.put("save_dir", folder.id);
+
+// Later, in any run, with the stored id: copies the file in, never replacing one ("photo (1).jpg" on a clash).
+const saved_as = try oriel.dialog.saveToFolder(gpa, io, id, tmp_path, "photo.jpg", null); // mime: null = from the extension
+const label = try oriel.dialog.folderName(gpa, io, id); // error.FolderUnavailable: revoked or gone, ask again
+oriel.dialog.forgetFolder(id); // let the access go
+```
+
+| Platform | Picker | `id` | Access |
+|---|---|---|---|
+| Linux | `GtkFileDialog.selectFolder` (the portal where there is one) | absolute path | the user's |
+| Windows | `IFileOpenDialog` + `FOS_PICKFOLDERS` | absolute path | the user's |
+| macOS | `NSOpenPanel` choosing directories | absolute path | the user's (Oriel apps aren't sandboxed; a sandboxed app would need a security-scoped bookmark) |
+| Android | `ACTION_OPEN_DOCUMENT_TREE` | SAF tree URI | `takePersistableUriPermission` (read + write); `forgetFolder` releases it. `saveToFolder` uses `DocumentsContract.createDocument`, so the provider picks the " (1)" name, and returns it |
+| iOS | not written yet (`error.Unsupported`); planned: `UIDocumentPickerViewController` for `.folder`, id = a base64 security-scoped bookmark | | |
+
+These are Zig-only, like `openFile`/`saveFile` (expose them to the page through your own commands). On
+Android and iOS `openFolder` waits for an Activity/view controller: call it from an async command.
+
 ### Notifications (`oriel.notification`)
 
 Desktop notifications via GIO `GNotification` (`GApplication.send_notification`) on Linux and `Shell_NotifyIconW` balloon tooltips on Windows:
