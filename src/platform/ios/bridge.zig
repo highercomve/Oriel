@@ -185,6 +185,30 @@ pub const bridge_js =
     \\        }
     \\        return new File(parts, info.name || "file", { type: info.mime || "" });
     \\      },
+    \\      // Opens the system share sheet: { title, text, url, files: [File | Blob |
+    \\      // a received file | its handle], anchor }. Resolves { completed, target }.
+    \\      async send(item = {}) {
+    \\        const files = [];
+    \\        for (const f of item.files || []) {
+    \\          if (typeof f === "number") { files.push({ handle: f }); continue; }
+    \\          if (!(f instanceof Blob)) { files.push({ handle: f.handle }); continue; }
+    \\          const u = new Uint8Array(await f.arrayBuffer());
+    \\          let bin = "";
+    \\          for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+    \\          files.push({ name: f.name || "file", data: btoa(bin) });
+    \\        }
+    \\        return new Promise((resolve, reject) => {
+    \\          let set = listeners.get("share:sent");
+    \\          if (!set) listeners.set("share:sent", (set = new Set()));
+    \\          const cb = (r) => { set.delete(cb); resolve(r); };
+    \\          set.add(cb);
+    \\          Promise.resolve(invoke("share:send", { title: item.title, text: item.text, url: item.url, files, anchor: item.anchor }))
+    \\            .catch((err) => { set.delete(cb); reject(err); });
+    \\        });
+    \\      },
+    \\      capabilities() {
+    \\        return invoke("share:capabilities", {});
+    \\      },
     \\    }),
     \\    __emit(event, payload) {
     \\      const set = listeners.get(event);

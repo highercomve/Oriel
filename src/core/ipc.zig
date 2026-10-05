@@ -290,7 +290,7 @@ test fail {
 
 /// Check if `cmd` is a framework built-in command.
 pub fn isBuiltinCommand(cmd: []const u8) bool {
-    return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "deep_link:ready") or std.mem.eql(u8, cmd, "notification:ready") or std.mem.eql(u8, cmd, "share:read") or
+    return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "deep_link:ready") or std.mem.eql(u8, cmd, "notification:ready") or std.mem.eql(u8, cmd, "share:read") or std.mem.eql(u8, cmd, "share:send") or std.mem.eql(u8, cmd, "share:capabilities") or
         std.mem.eql(u8, cmd, "events:ready") or
         std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
 }
@@ -335,6 +335,48 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
             deepLinkReady();
         } else if (!@import("pending_events.zig").pageReady(args.event)) return error.UnknownEvent;
         return arena.dupe(u8, "null");
+    } else if (std.mem.eql(u8, request.cmd, "share:send")) {
+        // The page's oriel.share.send: the sheet opens now, and its result
+        // comes as the "share:sent" event.
+        const build_options = @import("build_options");
+        if (!build_options.share) return error.Unsupported;
+        const share = @import("../modules/share.zig");
+        const OutArg = struct { handle: ?u32 = null, name: ?[]const u8 = null, data: ?[]const u8 = null };
+        const Args = struct {
+            title: ?[]const u8 = null,
+            text: ?[]const u8 = null,
+            url: ?[]const u8 = null,
+            files: []const OutArg = &.{},
+            anchor: ?App.Rect = null,
+        };
+        const args = try std.json.parseFromValueLeaky(Args, arena, request.args, .{ .ignore_unknown_fields = true });
+        const files = try arena.alloc(share.OutFile, args.files.len);
+        var total: usize = 0;
+        for (args.files, files) |f, *out| {
+            if (f.handle) |h| {
+                out.* = .{ .handle = h };
+                continue;
+            }
+            const data = f.data orelse return error.InvalidArgs;
+            const dec = std.base64.standard.Decoder;
+            const len = dec.calcSizeForSlice(data) catch return error.InvalidArgs;
+            total += len;
+            // Bigger files should come from Zig paths or received handles.
+            if (total > 16 << 20) return error.TooLarge;
+            const bytes = try arena.alloc(u8, len);
+            dec.decode(bytes, data) catch return error.InvalidArgs;
+            out.* = .{ .bytes = .{ .name = f.name orelse "file", .bytes = bytes } };
+        }
+        try share.send(.{ .title = args.title, .text = args.text, .url = args.url, .files = files }, args.anchor, &struct {
+            fn done(result: share.Result) void {
+                App.emit("share:sent", result);
+            }
+        }.done);
+        return arena.dupe(u8, "null");
+    } else if (std.mem.eql(u8, request.cmd, "share:capabilities")) {
+        const build_options = @import("build_options");
+        if (!build_options.share) return arena.dupe(u8, "{\"receive\":null,\"send\":{\"supported\":false}}");
+        return std.json.Stringify.valueAlloc(arena, @import("../modules/share.zig").capabilities(), .{});
     } else if (std.mem.eql(u8, request.cmd, "share:read")) {
         // A received file's bytes, base64, for the page's oriel.share.file
         // (it reads in chunks; the handle came in share:received).

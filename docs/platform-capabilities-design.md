@@ -394,6 +394,9 @@ flushes it, so shares that launched the app aren't lost.
   `{handle, offset, length}` → base64 (≤16 MB per call; `oriel.share.file` asks for 4 MB chunks),
   over the table in `share/common.zig`. It works the same on every bridge without scheme-handler
   work. The `/__oriel/share/<token>` route above remains the optimisation for large files.
+- **Sending from the page (as built):** `share:send` `{title, text, url, files: [{handle} | {name, data}], anchor}`
+  opens the sheet (Blobs as base64, 16 MB in all) and the result comes as the `share:sent` event;
+  `oriel.share.send(item)` resolves with it. `share:capabilities` returns `capabilities()`.
 - Outbound page Blobs: `{name, bytes}` through IPC, capped (16 MB) and written to the cache before
   sending; bigger files should come from Zig paths or received handles.
 

@@ -5,13 +5,23 @@
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
 
-// QuickJS has no atob (HTML entity tables are base64).
+// QuickJS has no atob/btoa (HTML entity tables, oriel.share's bytes).
 const atob = `globalThis.atob ??= (s) => {
   const abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   let out = "", buf = 0, bits = 0;
   for (const ch of String(s).replace(/[^A-Za-z0-9+/]/g, "")) {
     buf = (buf << 6) | abc.indexOf(ch); bits += 6;
     if (bits >= 8) { bits -= 8; out += String.fromCharCode((buf >> bits) & 255); }
+  }
+  return out;
+};
+globalThis.btoa ??= (s) => {
+  const abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  s = String(s);
+  let out = "";
+  for (let i = 0; i < s.length; i += 3) {
+    const n = (s.charCodeAt(i) << 16) | ((s.charCodeAt(i + 1) & 255) << 8) | (s.charCodeAt(i + 2) & 255);
+    out += abc[(n >> 18) & 63] + abc[(n >> 12) & 63] + (i + 1 < s.length ? abc[(n >> 6) & 63] : "=") + (i + 2 < s.length ? abc[n & 63] : "=");
   }
   return out;
 };`;
