@@ -836,6 +836,8 @@ pub const Props = struct {
     /// checkbox and radio: 2px), where the default for a box isn't.
     blb: ?f32 = null,
     on: bool = false,
+    /// A checkbox's indeterminate state (.indeterminate): drawn mixed.
+    mix: bool = false,
     acc: ?Color = null,
 };
 
