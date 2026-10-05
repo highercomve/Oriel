@@ -16,6 +16,7 @@ const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const build_opts = @import("build_options");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
+const share = if (build_opts.share) @import("../../modules/share/apple.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
 
@@ -487,12 +488,17 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         }
 
         /// Deep links (`myapp://...`, declared in Info.plist's
-        /// CFBundleURLTypes) arrive as UIOpenURLContexts.
+        /// CFBundleURLTypes) arrive as UIOpenURLContexts; so do files
+        /// opened with the app (CFBundleDocumentTypes: copies in
+        /// Documents/Inbox), which with the share module are one share.
         fn handleUrlContexts(contexts: Object, cold: bool) void {
+            if (build_opts.share) receiveFiles(contexts, cold);
             if (!build_opts.deep_link) return;
             const Each = struct {
                 fn each(ctx: Object, is_cold: bool) void {
-                    const url = apple.urlString(ctx.msgSend(Object, "URL", .{})) orelse return;
+                    const u = ctx.msgSend(Object, "URL", .{});
+                    if (u.value != null and apple.isTrue(u.msgSend(apple.c.BOOL, "isFileURL", .{}))) return;
+                    const url = apple.urlString(u) orelse return;
                     _ = deep_link.validate(url, config.deep_link_schemes) catch |err| {
                         log.warn("deep link rejected: {s}", .{@errorName(err)});
                         return;
@@ -502,6 +508,23 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 }
             };
             setItems(contexts, Each.each, .{cold});
+        }
+
+        fn receiveFiles(contexts: Object, cold: bool) void {
+            if (contexts.value == null) return;
+            const all = contexts.msgSend(Object, "allObjects", .{});
+            const n = all.msgSend(c_ulong, "count", .{});
+            var paths: std.ArrayList([]const u8) = .empty;
+            defer paths.deinit(std.heap.smp_allocator);
+            for (0..n) |i| {
+                const u = all.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, i)}).msgSend(Object, "URL", .{});
+                if (u.value == null or !apple.isTrue(u.msgSend(apple.c.BOOL, "isFileURL", .{}))) continue;
+                const path = apple.utf8(u.msgSend(Object, "path", .{})) orelse continue;
+                paths.append(std.heap.smp_allocator, path) catch return;
+            }
+            if (paths.items.len == 0) return;
+            if (!cold) App.showWindow();
+            share.receivePaths(paths.items, .open_with, true);
         }
 
         pub fn run(io: std.Io) u8 {

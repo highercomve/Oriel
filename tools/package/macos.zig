@@ -156,7 +156,7 @@ pub fn utiForMime(mime: []const u8) ?[]const u8 {
 
 /// CFBundleDocumentTypes for MIME `types`: one Viewer entry, ranked
 /// Alternate (the app is offered, not made the default), with their UTIs.
-fn documentTypes(w: *std.Io.Writer, types: []const []const u8) !void {
+pub fn documentTypes(w: *std.Io.Writer, types: []const []const u8) !void {
     var utis: [32][]const u8 = undefined;
     var n: usize = 0;
     for (types) |t| {

@@ -9,8 +9,9 @@
 //! reads one, `release(id)` lets a share's files go.
 //!
 //! Written so far: Windows, sending (DataTransferManager) and receiving
-//! (Send To and "Open with", from the installer's entries); macOS,
-//! receiving "Open With" (CFBundleDocumentTypes from the types). Elsewhere
+//! (Send To and "Open with", from the installer's entries); macOS and
+//! iOS, receiving "Open With" / "Open in" (CFBundleDocumentTypes from the
+//! types). Elsewhere
 //! `send` and `open` return `error.Unsupported`, `capabilities()` reports
 //! nothing, and nothing is received.
 
