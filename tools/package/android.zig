@@ -6,13 +6,19 @@
 //! written once, or again with `--force`. The Kotlin runtime
 //! (`app/src/main/java/dev/oriel/`) is Oriel's and must match the library it
 //! talks to over JNI: it is rewritten whenever it changed, and on every build
-//! (`--runtime-only`).
+//! (`--runtime-only`). So are the manifest's generated regions (permissions,
+//! features, queries, the main activity's intent filters, components:
+//! build/android_manifest.zig): only those, the rest of the manifest stays
+//! the developer's.
 
 const std = @import("std");
+const android_manifest = @import("android_manifest");
 const Io = std.Io;
 const Dir = Io.Dir;
 
 pub const runtime_prefix = "app/src/main/java/dev/oriel/";
+/// Rewritten by regions (`android_manifest.sync`) when it exists.
+pub const manifest_path = "app/src/main/AndroidManifest.xml";
 
 pub const Var = struct { key: []const u8, value: []const u8 };
 
@@ -72,6 +78,35 @@ fn writeIfChanged(gpa: std.mem.Allocator, io: Io, path: []const u8, data: []cons
     if (std.fs.path.dirname(path)) |dir| try Dir.cwd().createDirPath(io, dir);
     try Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
     return true;
+}
+
+/// Rewrite the generated regions of the project's manifest `dest` from the
+/// template's: true if it changed, null after an error (printed).
+fn syncManifest(gpa: std.mem.Allocator, io: Io, template_dir: Dir, basename: []const u8, dest: []const u8, vars: []const Var) !?bool {
+    const raw = try template_dir.readFileAlloc(io, basename, gpa, .limited(16 << 20));
+    defer gpa.free(raw);
+    const template = render(gpa, raw, vars) catch |err| {
+        std.debug.print("error: android-project: {s}: {s} (a template placeholder without a value?)\n", .{ manifest_path, @errorName(err) });
+        return null;
+    };
+    defer gpa.free(template);
+    const current = try Dir.cwd().readFileAlloc(io, dest, gpa, .limited(16 << 20));
+    defer gpa.free(current);
+    const synced = android_manifest.sync(gpa, current, template) catch |err| {
+        const why = switch (err) {
+            error.MalformedRegion => "an oriel:NAME begin or end comment is missing, repeated or out of order",
+            error.NoAnchor => "no place for the generated parts (it needs the OrielMainActivity element and <application>)",
+            error.MalformedXml => "an element without its end tag",
+            error.TemplateMissingRegion => "Oriel's template lacks a region (a bug in Oriel)",
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        std.debug.print("error: android-project: {s}: {s}. Fix it, or rewrite it from the template with " ++
+            "`zig build android-project -Dandroid_force=true` (that rewrites the other edited files too)\n", .{ dest, why });
+        return null;
+    };
+    defer gpa.free(synced.text);
+    if (synced.migrated) std.debug.print("android project: {s}: Oriel's generated parts now sit between oriel:NAME begin/end comments, rewritten on every build\n", .{dest});
+    return try writeIfChanged(gpa, io, dest, synced.text);
 }
 
 pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
@@ -134,9 +169,17 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
         defer gpa.free(rel);
         std.mem.replaceScalar(u8, rel, '\\', '/');
         const is_runtime = std.mem.startsWith(u8, rel, runtime_prefix);
-        if (runtime_only and !is_runtime) continue;
+        const is_manifest = std.mem.eql(u8, rel, manifest_path);
+        if (runtime_only and !is_runtime and !is_manifest) continue;
         const dest = try std.fs.path.join(gpa, &.{ out, destPath(rel) });
         defer gpa.free(dest);
+        if (is_manifest and !force and exists(io, dest)) {
+            if (try syncManifest(gpa, io, entry.dir, entry.basename, dest, vars.items)) |changed| {
+                if (changed) written += 1;
+            } else return 1;
+            continue;
+        }
+        if (runtime_only and !is_runtime) continue;
         if (!is_runtime and !force and exists(io, dest)) {
             kept += 1;
             continue;
@@ -169,7 +212,7 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
     if (!runtime_only) {
         std.debug.print("android project: {s} ({d} files written, {d} kept; --force rewrites them)\n", .{ out, written, kept });
     } else if (written > 0) {
-        std.debug.print("android project: updated the Oriel runtime in {s} ({d} files)\n", .{ out, written });
+        std.debug.print("android project: updated the Oriel runtime or the manifest's generated parts in {s} ({d} files)\n", .{ out, written });
     }
     return 0;
 }
