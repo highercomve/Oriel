@@ -829,6 +829,18 @@ pub const Props = struct {
     ch: ?f32 = null,
     /// A field that takes no edits but can be selected (readonly).
     ro: bool = false,
+    /// A text field's keyboard and typing aids (render.js keyboardProps):
+    /// its input type (itype: email, url, tel, number, search; null: text), its
+    /// inputmode (none, text, decimal, numeric, tel, search, email, url:
+    /// the keyboard, over the type), the Enter key's label (enter, done,
+    /// go, next, previous, search, send), autocapitalize (none, sentences,
+    /// words, characters), autocorrect and spellcheck.
+    itype: ?[]const u8 = null,
+    im: ?[]const u8 = null,
+    ek: ?[]const u8 = null,
+    cap: ?[]const u8 = null,
+    cor: bool = true,
+    spellcheck: bool = true,
     /// A form control's accessible name (aria-labelledby, aria-label, its
     /// <label>'s text, title: render.js accessibleName), for the native
     /// control's accessibility label.
