@@ -824,6 +824,12 @@ pub const Props = struct {
     // <canvas>: the drawing's coordinate space (the bitmap's px size).
     cw: ?f32 = null,
     ch: ?f32 = null,
+    /// A field that takes no edits but can be selected (readonly).
+    ro: bool = false,
+    /// A form control's accessible name (aria-labelledby, aria-label, its
+    /// <label>'s text, title: render.js accessibleName), for the native
+    /// control's accessibility label.
+    al: ?[]const u8 = null,
     // A default checkbox/radio (<input> without appearance: none).
     ctl: ?[]const u8 = null,
     /// Its baseline this far above its bottom border edge (WebKit's macOS
