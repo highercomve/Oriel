@@ -8,6 +8,16 @@ globalThis.atob ??= (s) => {
   }
   return out;
 };
+globalThis.btoa ??= (s) => {
+  const abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  s = String(s);
+  let out = "";
+  for (let i = 0; i < s.length; i += 3) {
+    const n = (s.charCodeAt(i) << 16) | ((s.charCodeAt(i + 1) & 255) << 8) | (s.charCodeAt(i + 2) & 255);
+    out += abc[(n >> 18) & 63] + abc[(n >> 12) & 63] + (i + 1 < s.length ? abc[(n >> 6) & 63] : "=") + (i + 2 < s.length ? abc[n & 63] : "=");
+  }
+  return out;
+};
 (() => {
   // src/url.js
   var SPECIAL = { "http:": "80", "https:": "443", "ws:": "80", "wss:": "443", "ftp:": "21", "file:": "", "app:": "" };
@@ -9445,6 +9455,41 @@ ${a.stack || ""}`;
           if (bytes.length < chunk) break;
         }
         return new g.File(parts, info.name || "file", { type: info.mime || "" });
+      },
+      // Opens the system share sheet: { title, text, url, files: [File | Blob |
+      // a received file | its handle], anchor }. Resolves { completed, target }.
+      async send(item = {}) {
+        const files = [];
+        for (const f of item.files || []) {
+          if (typeof f === "number") {
+            files.push({ handle: f });
+            continue;
+          }
+          if (!(f instanceof g.Blob)) {
+            files.push({ handle: f.handle });
+            continue;
+          }
+          const u = new Uint8Array(await f.arrayBuffer());
+          let bin = "";
+          for (let i = 0; i < u.length; i += 32768) bin += String.fromCharCode.apply(null, u.subarray(i, i + 32768));
+          files.push({ name: f.name || "file", data: btoa(bin) });
+        }
+        return new Promise((resolve2, reject) => {
+          let set = listeners.get("share:sent");
+          if (!set) listeners.set("share:sent", set = /* @__PURE__ */ new Set());
+          const cb = (r) => {
+            set.delete(cb);
+            resolve2(r);
+          };
+          set.add(cb);
+          invoke("share:send", { title: item.title, text: item.text, url: item.url, files, anchor: item.anchor }).catch((err) => {
+            set.delete(cb);
+            reject(err);
+          });
+        });
+      },
+      capabilities() {
+        return invoke("share:capabilities", {});
       }
     }),
     __emit(event, payload) {
