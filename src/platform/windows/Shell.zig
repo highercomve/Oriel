@@ -409,9 +409,10 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     const single_instance = build_opts.deep_link or config.on_second_instance != null;
 
     return struct {
-        /// A second launch: send this launch's arguments to the running
-        /// instance (found by its host window) and let it handle them.
-        fn forwardToPrimary(gpa: std.mem.Allocator, app_id: []const u8) void {
+        /// A second launch: send this launch's arguments (or `override`: a
+        /// packaged Share Target activation's) to the running instance
+        /// (found by its host window) and let it handle them.
+        fn forwardToPrimary(gpa: std.mem.Allocator, app_id: []const u8, override: ?[]const []const u8) void {
             const host_title_w = getHostWindowTitleW(gpa, app_id) catch return;
             defer gpa.free(host_title_w);
 
@@ -427,8 +428,9 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 return;
             };
 
-            const args = launchArgs(gpa) catch return;
-            defer freeArgs(gpa, args);
+            const own = if (override == null) (launchArgs(gpa) catch return) else null;
+            defer if (own) |a| freeArgs(gpa, a);
+            const args: []const []const u8 = override orelse own.?;
             const json = encodeArgs(gpa, args) catch return;
             defer gpa.free(json);
             if (json.len > max_forwarded_bytes) {
@@ -504,13 +506,30 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             // second launch themselves (`on_second_instance`). With the
             // share module, a share launch (Send To, "Open with") goes to
             // the running instance too; other launches keep their own.
+            //
+            // A packaged app (MSIX) launched as a Share Target reads its
+            // share now (COM for this thread; the main apartment below joins
+            // it) and keeps the operation until the share is taken.
+            var com_early = false;
+            defer if (com_early) win32.CoUninitialize();
+            var packaged: if (build_opts.share) ?share_win.Packaged else ?void = null;
+            if (build_opts.share and share_win.isPackaged()) {
+                const hr0 = win32.CoInitializeEx(null, win32.COINIT_APARTMENTTHREADED | win32.COINIT_DISABLE_OLE1DDE);
+                com_early = hr0 == win32.S_OK or hr0 == win32.S_FALSE;
+                if (com_early) packaged = share_win.packagedShare(gpa);
+            }
+            defer if (build_opts.share) if (packaged) |p| share_win.finishPackaged(gpa, p);
+
             if (single_instance or build_opts.share) {
                 const mutex_name_w = getAppMutexNameW(gpa, app_id) catch return 1;
                 defer gpa.free(mutex_name_w);
 
                 single_instance_mutex.mutex = win32.CreateMutexW(null, win32.FALSE, mutex_name_w);
-                if (win32.GetLastError() == win32.ERROR_ALREADY_EXISTS and (single_instance or isShareLaunch(gpa))) {
-                    forwardToPrimary(gpa, app_id);
+                // Read before anything else can reset it.
+                const another = win32.GetLastError() == win32.ERROR_ALREADY_EXISTS;
+                if (another and (single_instance or packaged != null or isShareLaunch(gpa))) {
+                    const override: ?[]const []const u8 = if (build_opts.share) (if (packaged) |p| p.args else null) else null;
+                    forwardToPrimary(gpa, app_id, override);
                     return 0;
                 }
             }
@@ -599,7 +618,12 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             // A share that launched the app: queued until the app's handler
             // and the page listen (core/pending_events.zig).
             if (build_opts.share) {
-                if (launchArgs(gpa)) |args| {
+                if (packaged) |p| {
+                    // Its files are open now: the sharing app may go on.
+                    _ = share_win.receiveArgs(p.args);
+                    share_win.finishPackaged(gpa, p);
+                    packaged = null;
+                } else if (launchArgs(gpa)) |args| {
                     defer freeArgs(gpa, args);
                     _ = share_win.receiveArgs(args);
                 } else |_| {}
