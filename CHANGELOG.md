@@ -2,6 +2,22 @@
 
 Notable changes in Oriel releases.
 
+## [0.9.2] — 2026-10-05
+
+Oriel 0.9.2 lets a page find out where a dropped file lives now, so a handler
+can send it on to the system.
+
+### Added
+
+- `oriel.drop.path(file)` for native-renderer pages: where a dropped file lives
+  now, for a handler that forwards it (a transfer engine opens the path). The
+  `File` a drop delivers carries an opaque `handle`; the answer is a path
+  string, or `null` when the file was deleted or changed since the drop, the
+  handle is unknown, or the platform can't resolve paths. The Linux and Windows
+  native bridges answer it after the command policy check; a WebView page has
+  no handles and no `drop:path`. Electron's `webUtils.getPathForFile` is the
+  precedent. See `docs/drag-and-drop-design.md`.
+
 ## [0.9.1] — 2026-10-05
 
 Oriel 0.9.1 adds system sharing, persistent folder access and service discovery,
