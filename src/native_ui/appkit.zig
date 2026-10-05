@@ -695,7 +695,12 @@ fn syncFields(s: *Surface) void {
         f.outer.msgSend(void, "setFrame:", .{NSRect{ .origin = .{ .x = r.x - shown.x, .y = r.y - shown.y }, .size = .{ .width = @max(1, r.w), .height = @max(1, r.h) } }});
         const visible = shown.h > 1 and shown.w > 1 and n.props.vis != false;
         f.holder.msgSend(void, "setHidden:", .{cocoa.boolean(!visible)});
-        if (n.kind != .textarea) f.inner.msgSend(void, "setEnabled:", .{cocoa.boolean(!n.props.dis)}) else f.inner.msgSend(void, "setEditable:", .{cocoa.boolean(!n.props.dis)});
+        if (n.kind != .textarea) f.inner.msgSend(void, "setEnabled:", .{cocoa.boolean(!n.props.dis)}) else {
+            // A disabled text area: neither edited nor selected (nor focused,
+            // as a browser's).
+            f.inner.msgSend(void, "setEditable:", .{cocoa.boolean(!n.props.dis)});
+            f.inner.msgSend(void, "setSelectable:", .{cocoa.boolean(!n.props.dis)});
+        }
     }
 }
 
@@ -746,6 +751,10 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             // Cmd+Z undoes typing, as in a browser's text area.
             tv.msgSend(void, "setAllowsUndo:", .{cocoa.boolean(true)});
             tv.msgSend(void, "setAutomaticQuoteSubstitutionEnabled:", .{cocoa.boolean(false)});
+            // Spelling checked as typed, as a browser's text area (and the
+            // system's own text views) do by default.
+            tv.msgSend(void, "setContinuousSpellCheckingEnabled:", .{cocoa.boolean(true)});
+            tv.msgSend(void, "setEnabledTextCheckingTypes:", .{@as(u64, 1 << 1)});
             tv.msgSend(void, "setVerticallyResizable:", .{cocoa.boolean(true)});
             tv.msgSend(void, "setHorizontallyResizable:", .{cocoa.boolean(false)});
             tv.msgSend(void, "setAutoresizingMask:", .{@as(c_ulong, 2)}); // width sizable
@@ -1030,6 +1039,12 @@ fn secureFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
 fn noFieldEditorDrags(field: id) void {
     const editor = (Object{ .value = field }).msgSend(Object, "currentEditor", .{});
     if (editor.value == null) return;
+    // Spelling checked as typed in a text field (a password's isn't).
+    const secure = cocoa.isTrue((Object{ .value = field }).msgSend(BOOL, "isKindOfClass:", .{cocoa.class("NSSecureTextField").value}));
+    editor.msgSend(void, "setContinuousSpellCheckingEnabled:", .{cocoa.boolean(!secure)});
+    // Only spelling: no capitalizing or correcting as typed (a browser's
+    // fields don't). NSTextCheckingTypeSpelling.
+    editor.msgSend(void, "setEnabledTextCheckingTypes:", .{@as(u64, 1 << 1)});
     const cls = editor.getClass() orelse return;
     if (std.mem.startsWith(u8, editor.getClassName(), "OrielNuiFieldEditor")) return;
     const sub = fieldEditorClass(cls, editor.getClassName()) orelse return;
