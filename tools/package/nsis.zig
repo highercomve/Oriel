@@ -468,8 +468,9 @@ fn writeShareTarget(allocator: std.mem.Allocator, w: *std.Io.Writer, opts: NsisO
             try w.print("  WriteRegStr HKCU \"Software\\Classes\\{s}\\OpenWithProgids\" \"${{APP_ID}}.share\" \"\"\n", .{ext});
             try w.print("  WriteRegStr HKCU \"Software\\Classes\\Applications\\${{EXE_NAME}}.exe\\SupportedTypes\" \"{s}\" \"\"\n", .{ext});
         } else {
+            // Only our value: the key may have been there before (empty
+            // too), so it stays.
             try w.print("  DeleteRegValue HKCU \"Software\\Classes\\{s}\\OpenWithProgids\" \"${{APP_ID}}.share\"\n", .{ext});
-            try w.print("  DeleteRegKey /ifempty HKCU \"Software\\Classes\\{s}\\OpenWithProgids\"\n", .{ext});
         }
     }
     if (part == .uninstall) {
@@ -832,6 +833,8 @@ test "generateNsisScript with a share target: Send To and Open with" {
     try expectIn(uninstall, "Delete \"$SENDTO\\Send with Ghost Share.lnk\"");
     try expectIn(uninstall, "DeleteRegValue HKCU \"Software\\Classes\\.png\\OpenWithProgids\" \"${APP_ID}.share\"");
     try expectIn(uninstall, "DeleteRegKey HKCU \"Software\\Classes\\${APP_ID}.share\"");
+    // An extension's OpenWithProgids key may predate the app: only our value goes.
+    try testing.expect(std.mem.indexOf(u8, uninstall, "OpenWithProgids\"\n") == null);
     try expectIn(uninstall, "DeleteRegKey HKCU \"Software\\Classes\\Applications\\${EXE_NAME}.exe\"");
     // Without a share target: none of it.
     const plain = try generateNsisScript(allocator, .{ .name = "A", .version = "1", .publisher = "P", .id = "com.example.A", .exe_name = "a", .binary_src = "a.exe", .out_file = "s.exe" });
