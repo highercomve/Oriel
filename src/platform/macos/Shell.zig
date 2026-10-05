@@ -279,7 +279,7 @@ fn applicationOpenURLs(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, urls: cocoa.id)
     }
     if (paths.items.len == 0) return;
     if (finished_launching) App.showWindow();
-    share.receivePaths(paths.items, .open_with);
+    share.receivePaths(paths.items, .open_with, false);
 }
 
 /// Clicking the Dock icon while every window is hidden (`on_close = .hide`)

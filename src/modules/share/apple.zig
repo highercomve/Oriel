@@ -1,11 +1,11 @@
 //! oriel.share on macOS and iOS. Receiving: files the system opens with the
-//! app (macOS Finder's "Open With" and drops on the Dock icon, through the
-//! app delegate's application:openURLs:, from CFBundleDocumentTypes).
-//! Not written yet: macOS Services, iOS document types, sending through
+//! app, from CFBundleDocumentTypes (macOS Finder's "Open With" and drops on
+//! the Dock icon, through the app delegate's application:openURLs:; iOS's
+//! "Open in" and Files, through the scene's URL contexts, as copies in
+//! Documents/Inbox). Not written yet: macOS Services, sending through
 //! NSSharingServicePicker / UIActivityViewController.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
 
@@ -19,14 +19,18 @@ var next_share: u32 = 1;
 
 /// Files the system handed the app (absolute paths), as one share from
 /// `source`, on the main thread. Each is opened in place, read-only;
-/// those that can't be (gone, a folder) are left out.
-pub fn receivePaths(paths: []const []const u8, source: common.Source) void {
+/// those that can't be (gone, a folder) are left out. `copies`: the files
+/// may be the app's own copies (iOS's Documents/Inbox): those are unlinked
+/// once open (the descriptor keeps them readable until released).
+pub fn receivePaths(paths: []const []const u8, source: common.Source, copies: bool) void {
     var files: std.ArrayList(common.File) = .empty;
     defer files.deinit(gpa);
     var handles: std.ArrayList(u32) = .empty;
     defer handles.deinit(gpa);
     for (paths) |path| {
-        const f = keepFile(path) catch |e| {
+        const kept = keepFile(path);
+        if (copies) removeCopy(path);
+        const f = kept catch |e| {
             log.warn("share: a received file can't be opened: {s}", .{@errorName(e)});
             continue;
         } orelse continue;
@@ -69,13 +73,21 @@ fn keepFile(path: []const u8) !?common.File {
     return .{ .handle = handle, .name = name, .mime = common.mimeOf(name), .size = e.size };
 }
 
+/// Unlink an iOS Inbox copy (the app owns those; nothing else is removed).
+fn removeCopy(path: []const u8) void {
+    if (std.mem.indexOf(u8, path, "/Documents/Inbox/") == null) return;
+    const z = gpa.dupeZ(u8, path) catch return;
+    defer gpa.free(z);
+    _ = std.c.unlink(z);
+}
+
 pub fn send(item: common.Outgoing, anchor: ?common.Rect, done: ?common.DoneHandler) common.SendError!void {
     _ = .{ item, anchor, done };
     return error.Unsupported;
 }
 
 pub fn capabilities() common.Capabilities {
-    return .{ .receive = if (builtin.os.tag == .macos) .open_with else null };
+    return .{ .receive = .open_with };
 }
 
 /// A received file, read-only: a new descriptor for the file `handle`
@@ -95,6 +107,6 @@ pub fn release(id: u32) void {
 }
 
 pub fn check(alloc: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
-    const detail = if (builtin.os.tag == .macos) "receive: Open with (document types); send: not implemented yet" else "receive and send: not implemented yet";
+    const detail = "receive: Open with (document types); send: not implemented yet";
     return .{ .module = "share", .ok = true, .detail = try alloc.dupe(u8, detail) };
 }

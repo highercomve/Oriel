@@ -1773,6 +1773,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         if (options.ios.background_audio) run.addArg("--background-audio");
         if (is_dev) run.addArg("--allow-http");
         for (url_schemes) |scheme| run.addArgs(&.{ "--url-scheme", scheme });
+        if (options.share_target) |st| for (st.types) |t| run.addArgs(&.{ "--document-type", t });
         inline for (@typeInfo(Permissions).@"struct".fields) |f| {
             if (@field(permissions, f.name)) |reason| {
                 const text = if (reason.len > 0) reason else b.fmt("{s} {s}", .{ display_name, Permissions.defaultReasonFor(f.name) });

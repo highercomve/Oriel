@@ -36,6 +36,10 @@ pub const PlistOptions = struct {
     background_audio: bool = false,
     /// Allow plain-HTTP loads (the dev build's dev server on the LAN).
     allow_http: bool = false,
+    /// CFBundleDocumentTypes (the share sheet's "Open in" row, Files'
+    /// share): `.share_target.types` as UTIs (macos.utiForMime). The app
+    /// gets copies (LSSupportsOpeningDocumentsInPlace false).
+    document_types: []const []const u8 = &.{},
 };
 
 /// The icon files and their sizes in pixels.
@@ -112,6 +116,10 @@ pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
     }
     if (o.background_audio) try w.writeAll("\t<key>UIBackgroundModes</key>\n\t<array>\n\t\t<string>audio</string>\n\t</array>\n");
     if (o.allow_http) try w.writeAll("\t<key>NSAppTransportSecurity</key>\n\t<dict>\n\t\t<key>NSAllowsArbitraryLoads</key>\n\t\t<true/>\n\t\t<key>NSAllowsLocalNetworking</key>\n\t\t<true/>\n\t</dict>\n");
+    if (o.document_types.len > 0) {
+        try macos.documentTypes(w, o.document_types);
+        try w.writeAll("\t<key>LSSupportsOpeningDocumentsInPlace</key>\n\t<false/>\n");
+    }
     if (o.url_schemes.len > 0) {
         try w.writeAll("\t<key>CFBundleURLTypes</key>\n\t<array>\n\t\t<dict>\n");
         try w.writeAll("\t\t\t<key>CFBundleURLName</key>\n\t\t\t<string>");
@@ -166,6 +174,8 @@ pub fn iosAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     defer permissions.deinit(gpa);
     var url_schemes: std.ArrayList([]const u8) = .empty;
     defer url_schemes.deinit(gpa);
+    var document_types: std.ArrayList([]const u8) = .empty;
+    defer document_types.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -207,6 +217,8 @@ pub fn iosAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
             o.min_os = v;
         } else if (std.mem.eql(u8, arg, "--url-scheme")) {
             try url_schemes.append(gpa, v);
+        } else if (std.mem.eql(u8, arg, "--document-type")) {
+            try document_types.append(gpa, v);
         } else if (std.mem.eql(u8, arg, "--permission")) {
             const eq = std.mem.indexOfScalar(u8, v, '=') orelse {
                 std.debug.print("error: ios-app: --permission expects <kind>=<reason>, got {s}\n", .{v});
@@ -228,6 +240,7 @@ pub fn iosAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
         return 1;
     };
     o.url_schemes = url_schemes.items;
+    o.document_types = document_types.items;
     o.permissions = permissions.items;
 
     const bundle_name = macos.bundleDirName(gpa, o.name) catch |err| {
