@@ -519,6 +519,15 @@ returnKeyType, autocapitalizationType, autocorrectionType,
 spellCheckingType and textContentType (AutoFill for email, url, tel,
 password). AppKit: spellcheck turns continuous spell checking off.
 
+**Native checks (AppKit)**: platform.controls lists "check", so a default
+checkbox or radio is kind check (docs/native-controls-a11y-design.md 1.1):
+an NSButton (Switch or Radio type, small under a 14px box, mini under 12)
+in a clipping holder as a field's, its state the page's (Props on, mix)
+set on every sync and again after each click (the page's click toggles
+or cancels it), radios never grouped (each its own holder). Space and
+Return on a focused one go to the page and stop there (main.js activates
+it); with Full Keyboard Access it takes focus and tells the page.
+
 **Inline element rects** (each backend, optional): an inline element
 (a `<span>` amid text) has no node; render.js keeps its runs
 (Renderer.inlineSpans: [text node id, first run, last run] per text node
