@@ -128,6 +128,7 @@ jobs:
     container: archlinux:latest
     permissions:
       contents: write
+      actions: write
     steps:
       - name: System packages
         run: pacman -Syu --noconfirm --needed $ARCH_PACKAGES
@@ -228,3 +229,17 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           body_path: release-notes.md
           generate_release_notes: false
+
+      # Publishing with GITHUB_TOKEN does not trigger a release-event workflow.
+      # Explicit workflow_dispatch events can trigger the Pages workflow.
+      - name: Refresh documentation after publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/pages.yml/dispatches" \
+            -d '{"ref":"main"}'
