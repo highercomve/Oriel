@@ -2711,40 +2711,23 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
 
     // Elliptical corners, as CSS draws them (tree.zig radiusXY).
     const r = n.radiusXY();
-    // A fieldset with its legend: its box from the legend's middle down,
-    // the top border broken under the legend (Props.lgd).
-    const lg = legendGap(n);
-    const bf = if (lg) |g| g.box else f;
-    if (p.sh) |sh| shadow(cr, bf, r, sh);
+    if (p.sh) |sh| shadow(cr, f, r, sh);
     if (p.bg) |bg| {
         // The color under the gradient (CSS layers).
         if (bg.color) |c| {
-            roundRectXY(cr, bf, r);
+            roundRectXY(cr, f, r);
             setColor(cr, c);
             cairo_fill(cr);
         }
         if (bg.gradient) |g| {
-            roundRectXY(cr, bf, r);
-            const pat = gradient(bf, g);
+            roundRectXY(cr, f, r);
+            const pat = gradient(f, g);
             cairo_set_source(cr, pat);
             cairo_fill(cr);
             cairo_pattern_destroy(pat);
         }
     }
-    if (p.bw) |bw| {
-        if (lg) |g| {
-            // The border only, without the gap (even-odd: the box minus it).
-            cairo_save(cr);
-            cairo_new_path(cr);
-            cairo_rectangle(cr, bf.x - 1, bf.y - 1, bf.w + 2, bf.h + 2);
-            cairo_rectangle(cr, g.gap.x, g.gap.y, g.gap.w, g.gap.h);
-            cairo_set_fill_rule(cr, 1); // CAIRO_FILL_RULE_EVEN_ODD
-            cairo_clip(cr);
-            cairo_set_fill_rule(cr, 0);
-        }
-        if (p.bs) |style| dashedBorder(cr, bf, r, bw, p.bc, style) else if (p.bt) |tone| twoToneBorder(cr, bf, r, bw, p.bc, tone) else border(cr, bf, r, bw, p.bc);
-        if (lg != null) cairo_restore(cr);
-    }
+    if (p.bw) |bw| if (p.bs) |style| dashedBorder(cr, f, r, bw, p.bc, style) else border(cr, f, r, bw, p.bc);
     switch (n.kind) {
         .text => paintText(s, cr, n),
         .icon => paintIcon(cr, n),
@@ -2876,59 +2859,6 @@ fn gradient(f: Rect, g: tree_mod.Gradient) *cairo_pattern_t {
 fn addStops(pat: *cairo_pattern_t, res: tree_mod.Gradient.Resolved) void {
     for (res.stops) |st| cairo_pattern_add_color_stop_rgba(pat, st[4], st[0] / 255, st[1] / 255, st[2] / 255, st[3]);
     if (res.period != null) cairo_pattern_set_extend(pat, 1); // CAIRO_EXTEND_REPEAT
-}
-
-/// groove and ridge (Props.bt, as win32.zig's): two bands, the outer the
-/// larger half; a groove's outer band shaded as inset (top and left dark),
-/// its inner as outset, a ridge the reverse, in Blink's Color::Dark and
-/// Color::Light of each side's color.
-fn twoToneBorder(cr: *cairo_t, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color, tone: tree_mod.BorderTone) void {
-    const colors = bc orelse return;
-    var dark: [4]tree_mod.Color = undefined;
-    var light: [4]tree_mod.Color = undefined;
-    for (colors, 0..) |col, i| {
-        dark[i] = darkColor(col);
-        light[i] = lightColor(col);
-    }
-    const inset_colors = [4]tree_mod.Color{ dark[0], light[1], light[2], dark[3] };
-    const outset_colors = [4]tree_mod.Color{ light[0], dark[1], dark[2], light[3] };
-    var outer: [4]f32 = undefined;
-    var inner: [4]f32 = undefined;
-    for (bw, 0..) |w, i| {
-        outer[i] = @ceil(w / 2);
-        inner[i] = w - outer[i];
-    }
-    border(cr, f, r, outer, if (tone == .groove) inset_colors else outset_colors);
-    const in_f: Rect = .{ .x = f.x + outer[3], .y = f.y + outer[0], .w = f.w - outer[1] - outer[3], .h = f.h - outer[0] - outer[2] };
-    if (in_f.w <= 0 or in_f.h <= 0) return;
-    var in_r = r;
-    for (0..4) |q| {
-        const hx = if (q == 0 or q == 3) outer[3] else outer[1];
-        const vy = if (q == 0 or q == 1) outer[0] else outer[2];
-        in_r.x[q] = @max(0, r.x[q] - hx);
-        in_r.y[q] = @max(0, r.y[q] - vy);
-    }
-    border(cr, in_f, in_r, inner, if (tone == .groove) outset_colors else inset_colors);
-}
-
-/// Blink's Color::Dark: each channel * (v - 0.33) / v, v the brightest.
-fn darkColor(col: tree_mod.Color) tree_mod.Color {
-    const v = @max(col[0], @max(col[1], col[2])) / 255;
-    const k: f32 = if (v == 0) 0 else @max(0, (v - 0.33) / v);
-    return scaledColor(col, k);
-}
-
-/// Blink's Color::Light: each channel * min(1, v + 0.33) / v; black is 0x545454.
-fn lightColor(col: tree_mod.Color) tree_mod.Color {
-    const v = @max(col[0], @max(col[1], col[2])) / 255;
-    if (v == 0) return .{ 0x54, 0x54, 0x54, col[3] };
-    return scaledColor(col, @min(1, v + 0.33) / v);
-}
-
-fn scaledColor(col: tree_mod.Color, k: f32) tree_mod.Color {
-    var out = col;
-    for (0..3) |i| out[i] = @min(255, @floor(col[i] / 255 * k * 255.99998));
-    return out;
 }
 
 fn border(cr: *cairo_t, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color) void {
@@ -3232,19 +3162,6 @@ fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
             runRing(cr, layout, c.x, c.y + dy, range[0], end, ol);
         }
     }
-}
-
-/// A fieldset's box with its legend (Props.lgd, as apple_draw.legendGap):
-/// from the line through the legend's middle down, and the gap the legend
-/// cuts in the top border.
-fn legendGap(n: *const Node) ?struct { box: Rect, gap: Rect } {
-    if (!n.props.lgd or n.kids.items.len == 0) return null;
-    const f = n.frame;
-    const lg = n.kids.items[0].frame;
-    const bw = if (n.props.bw) |b| b[0] else 0;
-    const off = std.math.clamp(lg.y + lg.h / 2 - bw / 2 - f.y, 0, f.h);
-    const box: Rect = .{ .x = f.x, .y = f.y + off, .w = f.w, .h = f.h - off };
-    return .{ .box = box, .gap = .{ .x = lg.x, .y = box.y - 1, .w = lg.w, .h = bw + 2 } };
 }
 
 /// The inline boxes' decoration (docs "Inline boxes"), under the text: on

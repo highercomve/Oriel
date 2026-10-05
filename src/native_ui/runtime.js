@@ -16527,7 +16527,6 @@ input[type="range"] { height: 20px; margin: 2px; }
         inLine?.add(after2);
       }
       if (flowBlock) collapseMargins(nodes, kids, inLine, props, display, ctx);
-      if (el.localName === "fieldset" && el.firstElementChild?.localName === "legend" && kids.length && this.idOf(el.firstElementChild, "el") === kids[before2 ? 1 : 0]) props.lgd = true;
       if (orders && childCtx.blockify) {
         const pos = new Map(kids.map((k, i) => [k, i]));
         kids.sort((a, b) => (orders.get(a) || 0) - (orders.get(b) || 0) || pos.get(a) - pos.get(b));
@@ -16540,23 +16539,11 @@ input[type="range"] { height: 20px; margin: 2px; }
     }
     // A list item's outside marker ("• ", "3. "): a text beside its first
     // line, its end at the item's start edge, in the item's font.
-    putMarker(nodes, el, cs, fontSize, props, marker) {
+    putMarker(nodes, el, cs, fontSize, props, text) {
       const mid = this.idOf(el, "marker");
       this.own(mid, el);
       const top = Array.isArray(props.pad) && typeof props.pad[0] === "number" ? props.pad[0] : 0;
-      if (typeof marker === "object") {
-        const fg = color(cs.color) || [0, 0, 0, 1];
-        const size = Math.max(3, Math.round(fontSize * (marker.shape === "circle" ? 0.5 : 0.375)));
-        const mp2 = { w: size, h: size, pos: "absolute", ins: [top + Math.round(fontSize * 0.5625 - size / 2), "100%", null, null], m: [0, Math.round(fontSize * 0.5 + 6), 0, 0] };
-        if (marker.shape === "circle") {
-          mp2.bw = [1, 1, 1, 1];
-          mp2.bc = [fg, fg, fg, fg];
-        } else mp2.bg = { color: fg };
-        if (marker.shape !== "square") mp2.br = ["50%", "50%", "50%", "50%"];
-        this.put(nodes, mid, "view", mp2, []);
-        return mid;
-      }
-      const mp = { ...textProps(cs, fontSize), runs: [{ t: marker, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
+      const mp = { ...textProps(cs, fontSize), runs: [{ t: text, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
       this.put(nodes, mid, "text", mp, []);
       return mid;
     }
@@ -17309,7 +17296,6 @@ input[type="range"] { height: 20px; margin: 2px; }
     delete p.bw;
     delete p.bc;
     delete p.bs;
-    delete p.bt;
     const pad = p.pad ? p.pad.slice() : [0, 0, 0, 0];
     for (const i of [1, 3]) if (typeof pad[i] === "number" || pad[i] === void 0) pad[i] = (pad[i] || 0) + 2;
     p.pad = pad;
@@ -17455,8 +17441,6 @@ input[type="range"] { height: 20px; margin: 2px; }
       });
       const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
       if (style) p.bs = style;
-      const tones = sides.filter((s, i) => bw[i]).map((s) => cs[`border-${s}-style`]);
-      if (tones.length && tones.every((st) => st === tones[0]) && (tones[0] === "groove" || tones[0] === "ridge")) p.bt = tones[0];
     }
     contentBox(cs, p, borderBox);
     outlinePart(cs, fs, p);
@@ -17607,7 +17591,8 @@ input[type="range"] { height: 20px; margin: 2px; }
   function listMarker(el, cs) {
     const type = cs["list-style-type"], position = cs["list-style-position"];
     if (!type || type === "none" || position === "inside") return null;
-    if (type === "disc" || type === "circle" || type === "square") return { shape: type };
+    const bullet = { disc: "\u2022", circle: "\u25E6", square: "\u25AA" }[type];
+    if (bullet) return bullet + " ";
     const list = el.parentNode;
     const items = list ? [...list.children].filter((c) => c.localName === "li") : [el];
     const reversed = list?.localName === "ol" && list.hasAttribute("reversed");

@@ -15,10 +15,6 @@ const prof = @import("prof.zig");
 
 pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas };
 pub const BorderStyle = enum { dashed, dotted };
-/// A two-tone border (groove, ridge): each side in an outer and an inner
-/// band of half its width, one in the side's color and one darker. A
-/// backend that doesn't draw it draws the border solid.
-pub const BorderTone = enum { groove, ridge };
 /// CSS outline (render.js outlinePart): `w` wide, `o` out from the border
 /// box, solid unless `s`; drawn around the box (its corners rounded by
 /// radius + o + w), over it and its children, taking no room.
@@ -746,8 +742,6 @@ pub const Props = struct {
     /// border-style when not solid (every side's: the first side drawn
     /// dashed or dotted).
     bs: ?BorderStyle = null,
-    /// border-style groove or ridge (every side with a width's).
-    bt: ?BorderTone = null,
     rg: ?f32 = null,
     cg: ?f32 = null,
     pos: ?[]const u8 = null,
@@ -830,11 +824,6 @@ pub const Props = struct {
     // <canvas>: the drawing's coordinate space (the bitmap's px size).
     cw: ?f32 = null,
     ch: ?f32 = null,
-    /// A fieldset whose first child is its legend: its top border runs
-    /// through the legend's middle, broken where the legend is, and its
-    /// background starts there (browsers'); a backend draws the box from
-    /// that line down and leaves the gap.
-    lgd: bool = false,
     // A default checkbox/radio (<input> without appearance: none).
     ctl: ?[]const u8 = null,
     /// Its baseline this far above its bottom border edge (WebKit's macOS

@@ -1768,10 +1768,6 @@ export class Renderer {
     const after = this.pseudo(el, cs, "after", nodes);
     if (after) { kids.push(after); inLine?.add(after); }
     if (flowBlock) collapseMargins(nodes, kids, inLine, props, display, ctx);
-    // A fieldset's legend (UA_CSS: up in the top border): the backend
-    // breaks the border around it (Props.lgd), as browsers draw it.
-    if (el.localName === "fieldset" && el.firstElementChild?.localName === "legend" && kids.length &&
-        this.idOf(el.firstElementChild, "el") === kids[before ? 1 : 0]) props.lgd = true;
     // CSS order: flex/grid items laid out by it, then by source order.
     if (orders && childCtx.blockify) {
       const pos = new Map(kids.map((k, i) => [k, i]));
@@ -1787,24 +1783,11 @@ export class Renderer {
 
   // A list item's outside marker ("• ", "3. "): a text beside its first
   // line, its end at the item's start edge, in the item's font.
-  putMarker(nodes, el, cs, fontSize, props, marker) {
+  putMarker(nodes, el, cs, fontSize, props, text) {
     const mid = this.idOf(el, "marker");
     this.own(mid, el);
     const top = Array.isArray(props.pad) && typeof props.pad[0] === "number" ? props.pad[0] : 0;
-    if (typeof marker === "object") {
-      // A bullet: a shape, as browsers draw it (measured in Chromium: a
-      // 6px disc at 16px, 9px at 24px, centered about 0.56em down the
-      // line, its edge 14px before the text at 16px), not a glyph.
-      const fg = color(cs.color) || [0, 0, 0, 1];
-      const size = Math.max(3, Math.round(fontSize * (marker.shape === "circle" ? 0.5 : 0.375)));
-      const mp = { w: size, h: size, pos: "absolute", ins: [top + Math.round(fontSize * 0.5625 - size / 2), "100%", null, null], m: [0, Math.round(fontSize * 0.5 + 6), 0, 0] };
-      if (marker.shape === "circle") { mp.bw = [1, 1, 1, 1]; mp.bc = [fg, fg, fg, fg]; }
-      else mp.bg = { color: fg };
-      if (marker.shape !== "square") mp.br = ["50%", "50%", "50%", "50%"];
-      this.put(nodes, mid, "view", mp, []);
-      return mid;
-    }
-    const mp = { ...textProps(cs, fontSize), runs: [{ t: marker, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
+    const mp = { ...textProps(cs, fontSize), runs: [{ t: text, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
     this.put(nodes, mid, "text", mp, []);
     return mid;
   }
@@ -2710,7 +2693,7 @@ function pushButton(cs, p) {
     p.bg = { ...(p.bg || {}), color: [192, 192, 192, 1] };
     return;
   }
-  delete p.bw; delete p.bc; delete p.bs; delete p.bt;
+  delete p.bw; delete p.bc; delete p.bs;
   // The bezel keeps the border's 2px a side (WebKit's computed border is 0
   // but a push button is that much wider than its padding and text).
   const pad = p.pad ? p.pad.slice() : [0, 0, 0, 0];
@@ -2865,10 +2848,6 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
     // style for the box).
     const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
     if (style) p.bs = style;
-    // Groove or ridge on every side with a width: two-tone (the backend's
-    // bands; `bc` stays the base color).
-    const tones = sides.filter((s, i) => bw[i]).map((s) => cs[`border-${s}-style`]);
-    if (tones.length && tones.every((st) => st === tones[0]) && (tones[0] === "groove" || tones[0] === "ridge")) p.bt = tones[0];
   }
   contentBox(cs, p, borderBox);
   outlinePart(cs, fs, p);
@@ -3020,14 +2999,14 @@ function weight(w) {
 }
 
 // A text run's style (shared: callers copy it).
-// A list item's marker (outside markers only): a bullet's shape
-// ({ shape }), a number's text, or null: its
+// A list item's marker text (outside markers only), or null: its
 // list-style-type, and for numbers its place among its
 // list's items (start, value, reversed), as browsers count them.
 function listMarker(el, cs) {
   const type = cs["list-style-type"], position = cs["list-style-position"];
   if (!type || type === "none" || position === "inside") return null;
-  if (type === "disc" || type === "circle" || type === "square") return { shape: type };
+  const bullet = { disc: "\u2022", circle: "\u25e6", square: "\u25aa" }[type];
+  if (bullet) return bullet + " ";
   const list = el.parentNode;
   const items = list ? [...list.children].filter((c) => c.localName === "li") : [el];
   const reversed = list?.localName === "ol" && list.hasAttribute("reversed");
