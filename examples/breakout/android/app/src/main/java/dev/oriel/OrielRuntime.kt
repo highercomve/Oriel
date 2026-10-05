@@ -25,11 +25,14 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import android.util.Log
 import android.view.WindowManager
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileNotFoundException
 
 /**
  * The Android side of Oriel. Zig (src/platform/android) calls the
@@ -690,6 +693,126 @@ object OrielRuntime {
         val pfd = app.contentResolver.openFileDescriptor(uri, "rwt")!!
         return "/proc/self/fd/${pfd.detachFd()}"
     }
+
+    // ---------------------------------------------------------------------
+    // Folders with lasting access (src/modules/dialog/android.zig). Each call
+    // answers once through NativeLib.onFolderResult(request, status, data),
+    // from a thread of its own; returning false means it won't.
+    // ---------------------------------------------------------------------
+
+    private const val FOLDER_OK = 0
+    private const val FOLDER_UNAVAILABLE = 1
+    private const val FOLDER_FAILED = 2
+    private const val FOLDER_NOT_FOUND = 3
+    private const val GRANT_RW = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+
+    /** The folder picker's pending request (one at a time: Zig's `busy`). */
+    private var folderRequest = 0L
+
+    @JvmStatic
+    fun showFolderDialog(request: Long, title: ByteArray): Boolean {
+        val host = foreground ?: mainActivity ?: return false
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+            .addFlags(GRANT_RW or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            .putExtra("android.provider.extra.PROMPT", title.utf8())
+        folderRequest = request
+        return host.pickFolder(intent).also { if (!it) folderRequest = 0L }
+    }
+
+    /** The tree picker's answer (null: cancelled): keep the grant, report "uri\nname". */
+    internal fun onFolderPicked(data: Intent?) {
+        val request = folderRequest
+        if (request == 0L) return
+        folderRequest = 0L
+        val uri = data?.data ?: return NativeLib.onFolderResult(request, FOLDER_OK, null)
+        Thread {
+            try {
+                app.contentResolver.takePersistableUriPermission(uri, data.flags and GRANT_RW)
+                val name = documentName(treeDocument(uri)) ?: uri.lastPathSegment ?: "folder"
+                NativeLib.onFolderResult(request, FOLDER_OK, "$uri\n$name".bytes())
+            } catch (e: Exception) {
+                Log.w(TAG, "cannot keep access to the picked folder", e)
+                NativeLib.onFolderResult(request, FOLDER_FAILED, null)
+            }
+        }.start()
+    }
+
+    @JvmStatic
+    fun folderName(request: Long, id: ByteArray): Boolean {
+        val tree = Uri.parse(id.utf8())
+        Thread {
+            val name = try {
+                if (held(tree)) documentName(treeDocument(tree)) else null
+            } catch (e: Exception) {
+                null // revoked, or the folder is gone
+            }
+            if (name != null) NativeLib.onFolderResult(request, FOLDER_OK, name.bytes())
+            else NativeLib.onFolderResult(request, FOLDER_UNAVAILABLE, null)
+        }.start()
+        return true
+    }
+
+    @JvmStatic
+    fun saveToFolder(request: Long, id: ByteArray, src: ByteArray, name: ByteArray, mime: ByteArray?): Boolean {
+        val tree = Uri.parse(id.utf8())
+        val source = File(src.utf8())
+        val displayName = name.utf8()
+        Thread {
+            val (status, data) = try {
+                saveDocument(tree, source, displayName, mime?.utf8())
+            } catch (e: Exception) {
+                Log.w(TAG, "cannot save into the folder", e)
+                FOLDER_FAILED to null
+            }
+            NativeLib.onFolderResult(request, status, data?.bytes())
+        }.start()
+        return true
+    }
+
+    private fun saveDocument(tree: Uri, source: File, name: String, mime: String?): Pair<Int, String?> {
+        if (!source.isFile) return FOLDER_NOT_FOUND to null
+        if (!held(tree)) return FOLDER_UNAVAILABLE to null
+        val resolver = app.contentResolver
+        val type = mime ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
+            ?: "application/octet-stream"
+        val doc = try {
+            DocumentsContract.createDocument(resolver, treeDocument(tree), type, name)
+        } catch (e: FileNotFoundException) {
+            return FOLDER_UNAVAILABLE to null // the folder is gone
+        } catch (e: SecurityException) {
+            return FOLDER_UNAVAILABLE to null
+        } ?: return FOLDER_FAILED to null
+        try {
+            source.inputStream().use { input -> resolver.openOutputStream(doc, "w")!!.use { input.copyTo(it) } }
+        } catch (e: Exception) {
+            try { DocumentsContract.deleteDocument(resolver, doc) } catch (_: Exception) {}
+            throw e
+        }
+        return FOLDER_OK to (documentName(doc) ?: name)
+    }
+
+    @JvmStatic
+    fun forgetFolder(id: ByteArray) {
+        try {
+            app.contentResolver.releasePersistableUriPermission(Uri.parse(id.utf8()), GRANT_RW)
+        } catch (e: SecurityException) {
+            // Not held (any more).
+        }
+    }
+
+    /** Whether the app still holds the persisted write grant for `tree`. */
+    private fun held(tree: Uri): Boolean =
+        app.contentResolver.persistedUriPermissions.any { it.uri == tree && it.isWritePermission }
+
+    /** The document URI of a tree's root folder. */
+    private fun treeDocument(tree: Uri): Uri =
+        DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+
+    /** A document's display name, or null when it can't be read (gone). */
+    private fun documentName(doc: Uri): String? =
+        app.contentResolver.query(doc, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0) else null
+        }
 
     // ---------------------------------------------------------------------
     // Audio (src/modules/audio_capture/android.zig) and the foreground service
