@@ -1503,6 +1503,25 @@ export class Renderer {
     }
     // <input type=button|submit|reset>: a button (its value its label), as
     // a <button> with that text would be.
+    // A native push button (the backend hosts one; rule 1.4 of
+    // docs/native-controls-a11y-design.md): the page left its box to the UA.
+    if ((tag === "button" || isInputButton(el)) && nativeControls.has("button")) {
+      const label = this.nativeButtonLabel(el, cs);
+      if (label !== null) {
+        this.volatile.add(el);
+        props.click = true;
+        if (el.hasAttribute("disabled")) props.dis = true;
+        if (usedDark(cs)) props.dk = true;
+        const al = accessibleName(el);
+        if (al) props.al = al;
+        Object.assign(props, textProps(cs, fontSize));
+        props.runs = [runFor(label, cs, fontSize)];
+        // The native button draws its own bezel, background and focus ring:
+        // the CSS border and padding stay as room only.
+        delete props.bg; delete props.br; delete props.bc; delete props.ol; delete props.sh;
+        return this.put(nodes, id, "button", props, [], fixedNode);
+      }
+    }
     if (isInputButton(el)) {
       this.volatile.add(el);
       const t = el.getAttribute("type").toLowerCase();
@@ -2034,6 +2053,47 @@ export class Renderer {
     }
     this.put(nodes, aid, "view", ap, akids);
     return aid;
+  }
+
+  // Rule 1.4: the label a native button would show, or null when the button
+  // must stay drawn: hidden or `appearance: none`, a box the page styled
+  // (background, border, appearance: in a rule or inline, or in a :hover,
+  // :active or :focus rule, so the first hover never swaps the kind),
+  // content other than text and box-less inline elements, ::before or
+  // ::after, or no text at all.
+  nativeButtonLabel(el, cs) {
+    const d = cs.display || "inline-block";
+    if (d === "none" || d === "contents") return null;
+    if ((cs.appearance || cs["-webkit-appearance"]) === "none") return null;
+    const m = cs.__rules;
+    if (m.before.length || m.after.length) return null;
+    if (m.normal.some((rule) => !rule.ua && touchesBox(rule.decls))) return null;
+    const inline = el.getAttribute("style");
+    if (inline && /(^|;)\s*(background|border(?!-(top-|right-|bottom-|left-)?width)|appearance|-webkit-appearance)[\w-]*\s*:/i.test(inline)) return null;
+    for (const rule of this.engine.rules) {
+      if (rule.ua || !rule.sel.includes("data-nui-") || !touchesBox(rule.decls)) continue;
+      rule.stateSel ??= rule.sel.replace(/\[data-nui-(hover|active|focus|focus-visible)\]/g, "").replace(/([>+~\s])\s*$/, "$1*").trim() || "*";
+      try { if (el.matches(rule.stateSel)) return null; } catch {}
+    }
+    if (isInputButton(el)) {
+      const t = el.getAttribute("type").toLowerCase();
+      const v = el.getAttribute("value") ?? (t === "submit" ? "Submit" : t === "reset" ? "Reset" : "");
+      return v.trim() ? v : null;
+    }
+    const plain = (n, ncs) => {
+      for (let c = n.firstChild; c; c = c.nextSibling) {
+        if (c.nodeType !== 1) continue;
+        if (REPLACED.has(c.localName) || CONTROLS_TAGS.has(c.localName)) return false;
+        const ccs = this.style(c, ncs);
+        if ((ccs.display || "inline") !== "inline" || boxedInline(ccs) || ccs.__rules.before.length || ccs.__rules.after.length) return false;
+        if (ccs.background && bgOf(ccs)) return false;
+        if (!plain(c, ccs)) return false;
+      }
+      return true;
+    };
+    if (!plain(el, cs)) return null;
+    const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+    return text || null;
   }
 
   adjustKid(nodes, cid, itemEl, cs, props, display, childCtx) {
@@ -2732,6 +2792,17 @@ function resolveFontSize(cs, pfs) {
 // its scrollbar-width (thin, none), dark (its color-scheme: dark, or light
 // dark with a dark preference; the window's own also with none, as
 // WebView2's follows the system), its scrollbar-color [thumb, track].
+// A rule's declarations that draw a button's box (rule 1.4): background,
+// border (its widths are only room), appearance.
+function touchesBox(decls) {
+  return decls.some((dc) => {
+    const p = (dc.prop || dc.name || "").toLowerCase();
+    if (/^border(-(top|right|bottom|left))?-width$/.test(p)) return false;
+    return p.startsWith("background") || p.startsWith("border") || p === "appearance" || p === "-webkit-appearance";
+  });
+}
+const CONTROLS_TAGS = new Set(["input", "select", "textarea", "button"]);
+
 // Whether an element's used color-scheme is dark: color-scheme dark, or
 // light dark with the system's dark preference.
 function usedDark(cs) {
