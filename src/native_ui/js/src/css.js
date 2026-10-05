@@ -172,7 +172,7 @@ function cmpSpec(x, y) {
 // Media queries
 
 // `forced`: forced colors mode (the system's high contrast theme), null
-// when off: { dark, colors: { canvas: "rgb(…)", … } } (platform.forcedColors).
+// when off: { dark, colors: { canvas: "rgb(...)", ... } } (platform.forcedColors).
 export const viewport = { width: 1024, height: 768, dark: true, coarse: false, reducedMotion: false, dpr: 1, forced: null };
 
 // The scheme the system asks for: its high contrast theme's while forced.
@@ -180,7 +180,7 @@ export function systemDark() {
   return viewport.forced ? !!viewport.forced.dark : viewport.dark;
 }
 
-// CSS system colors (CSS Color 4 §6.2): browsers' defaults, [light, dark]
+// CSS system colors (CSS Color 4, section 6.2): browsers' defaults, [light, dark]
 // (Chromium's), or the platform's own in forced colors mode.
 export const SYSTEM_COLORS = {
   canvas: ["#ffffff", "#121212"], canvastext: ["#000000", "#ffffff"],
@@ -741,7 +741,7 @@ export function computeStyle(specified, parent) {
     cs[k] = substitute(v, cs, 0);
   }
   // System colors (CanvasText, the UA's text color on <html>; Field,
-  // ButtonFace, …): the defaults for the used color-scheme (dark with
+  // ButtonFace, ...): the defaults for the used color-scheme (dark with
   // color-scheme: dark, or light dark with a dark system), or the system's
   // own while forced; inherited as the resolved colors.
   let dark;
