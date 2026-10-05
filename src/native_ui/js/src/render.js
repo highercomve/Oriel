@@ -146,6 +146,34 @@ const REPLACED = new Set(["img", "svg", "canvas", "video", "iframe", "object", "
 
 // A line-height other than normal in px at font size `fs`: a number times
 // it, a percentage of it, a length.
+// A text field's keyboard and typing aids, as browsers give them to the
+// platform's keyboard (Props itype, im, ek, cap, cor, spellcheck): the input
+// type, inputmode and enterkeyhint as written (enterkeyhint by default
+// "search" for a search field, "go" in a form), autocapitalize (Safari's
+// default: none for email, url, tel, number and password, sentences
+// otherwise), autocorrect (Safari's attribute; off where autocapitalize
+// is), spellcheck (the attribute, inherited; on by default).
+const TYPED = new Set(["email", "url", "tel", "number", "search"]);
+const INPUT_MODES = new Set(["none", "text", "decimal", "numeric", "tel", "search", "email", "url"]);
+const ENTER_HINTS = new Set(["enter", "done", "go", "next", "previous", "search", "send"]);
+function keyboardProps(el, tag, type, props) {
+  const plain = tag === "textarea" || !(["email", "url", "tel", "number", "password"].includes(type));
+  if (tag === "input" && TYPED.has(type)) props.itype = type;
+  const im = (el.getAttribute("inputmode") || "").toLowerCase();
+  if (INPUT_MODES.has(im)) props.im = im;
+  const ek = (el.getAttribute("enterkeyhint") || "").toLowerCase();
+  if (ENTER_HINTS.has(ek)) props.ek = ek;
+  else if (type === "search" && tag === "input") props.ek = "search";
+  else if (tag === "input" && el.closest?.("form")) props.ek = "go";
+  const capAttr = (el.getAttribute("autocapitalize") ?? el.closest?.("form")?.getAttribute("autocapitalize") ?? "").toLowerCase();
+  props.cap = capAttr === "off" || capAttr === "none" ? "none" : capAttr === "words" ? "words" : capAttr === "characters" ? "characters" :
+    capAttr === "on" || capAttr === "sentences" ? "sentences" : plain ? "sentences" : "none";
+  const cor = (el.getAttribute("autocorrect") || "").toLowerCase();
+  props.cor = cor === "off" ? false : cor === "on" ? true : plain;
+  const sc = el.closest?.("[spellcheck]")?.getAttribute("spellcheck");
+  props.spellcheck = type !== "password" && sc !== "false";
+}
+
 // A form control's accessible name, as browsers compute it for one (the
 // common cases of the HTML-AAM rules): aria-labelledby's elements' text,
 // aria-label, its <label>s' text (label[for=id], or the label around it,
@@ -1514,6 +1542,7 @@ export class Renderer {
       props.dis = el.hasAttribute("disabled");
       // readonly: selectable, not editable (a disabled field is neither).
       if (el.hasAttribute("readonly") && !props.dis) props.ro = true;
+      keyboardProps(el, tag, type, props);
       props.pw = type === "password";
       if (tag === "textarea") {
         const cols = parseInt(el.getAttribute("cols") || "", 10);
