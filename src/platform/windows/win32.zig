@@ -1229,6 +1229,9 @@ pub extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, attribute: DWORD, value
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE: DWORD = 20;
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE_OLD: DWORD = 19;
 pub const WM_SETTINGCHANGE: UINT = 0x001A;
+pub const WM_SYSCOLORCHANGE: UINT = 0x0015;
+/// WM_SETTINGCHANGE's wParam when high contrast was turned on or off.
+pub const SPI_SETHIGHCONTRAST: WPARAM = 0x0043;
 pub extern "dwmapi" fn DwmEnableBlurBehindWindow(hWnd: HWND, pBlurBehind: *const DWM_BLURBEHIND) callconv(.winapi) HRESULT;
 
 // Per-monitor DPI awareness (PerMonitorV2): window sizes are physical pixels,

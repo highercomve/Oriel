@@ -27,6 +27,7 @@ const native_win32 = if (build_opts.native_ui) @import("../../native_ui/win32.zi
         pub fn wheel(_: *Surface, _: u32, _: usize, _: isize) void {}
     };
     pub fn accentCheck(_: *Surface) void {}
+    pub fn forcedColorsCheck(_: *Surface) void {}
 };
 
 const log = std.log.scoped(.oriel);
@@ -1527,7 +1528,14 @@ pub fn WindowCreator(
                     return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
                 },
                 // The app mode changed (dark or light): the title bar follows.
+                // High contrast on, off or changed: the native page hears its
+                // colors (platform.forcedColors).
+                win32.WM_SYSCOLORCHANGE => {
+                    if (win) |w| if (nativeSurface(w)) |s| native_win32.forcedColorsCheck(s);
+                    return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
+                },
                 win32.WM_SETTINGCHANGE => {
+                    if (wParam == win32.SPI_SETHIGHCONTRAST) if (win) |w| if (nativeSurface(w)) |s| native_win32.forcedColorsCheck(s);
                     if (lParam != 0) {
                         const area: [*:0]const u16 = @ptrFromInt(@as(usize, @bitCast(lParam)));
                         if (std.mem.eql(u16, std.mem.span(area), std.unicode.utf8ToUtf16LeStringLiteral("ImmersiveColorSet"))) {
