@@ -1509,7 +1509,9 @@ export class Renderer {
       if (al) props.al = al;
       const tid = this.idOf(el, "label");
       this.own(tid, el);
+      darkControl(cs, props, true);
       const tp = { ...textProps(cs, fontSize), runs: [runFor(label, cs, fontSize)], ta: "center", fs: 0 };
+      if (props.dk) darkControl(cs, tp, true);
       this.put(nodes, tid, "text", tp, []);
       if (props.fd === undefined) props.fd = "column";
       props.jc = "center";
@@ -1546,12 +1548,14 @@ export class Renderer {
           delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
         }
         if (el.hasAttribute("disabled")) props.dis = true;
+        if (usedDark(cs)) props.dk = true;
         // A native checkbox or radio (the backend hosts one): it draws its
         // own focus ring.
         if (props.ctl && nativeControls.has("check")) { delete props.ol; return this.put(nodes, id, "check", props, [], fixedNode); }
         return this.put(nodes, id, "view", props, [], fixedNode);
       }
       Object.assign(props, textProps(cs, fontSize));
+      darkControl(cs, props, false);
       if (tag === "select") {
         props.options = [...el.querySelectorAll("option")].map((o) => [o.getAttribute("value") ?? o.textContent, o.textContent]);
         props.val = el.value ?? "";
@@ -2724,6 +2728,26 @@ function resolveFontSize(cs, pfs) {
 // its scrollbar-width (thin, none), dark (its color-scheme: dark, or light
 // dark with a dark preference; the window's own also with none, as
 // WebView2's follows the system), its scrollbar-color [thumb, track].
+// Whether an element's used color-scheme is dark: color-scheme dark, or
+// light dark with the system's dark preference.
+function usedDark(cs) {
+  const scheme = cs["color-scheme"] || "normal";
+  return /dark/.test(scheme) && (!/light/.test(scheme) || viewport.dark);
+}
+// A form control in a dark color-scheme: the UA's light defaults swapped
+// for dark ones (as Chromium draws its controls then), what the page set
+// kept; dk tells the backend to style its native widget dark.
+const same = (a, b) => Array.isArray(a) && a.length >= 3 && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+function darkControl(cs, props, button) {
+  if (!usedDark(cs)) return;
+  props.dk = true;
+  const bg = props.bg?.color;
+  if (bg && (same(bg, [255, 255, 255]) || same(bg, [239, 239, 239]))) props.bg = { ...props.bg, color: button ? [107, 107, 107, 1] : [59, 59, 59, 1] };
+  if (!props.col || same(props.col, [0, 0, 0])) props.col = [255, 255, 255, 1];
+  if (Array.isArray(props.bc)) props.bc = props.bc.map((c) => (same(c, [118, 118, 118]) ? [133, 133, 133, 1] : c));
+  if (Array.isArray(props.runs)) props.runs = props.runs.map((r) => (!r.c || same(r.c, [0, 0, 0]) ? { ...r, c: [255, 255, 255, 1] } : r));
+}
+
 function scrollbarPart(cs, p, root) {
   if (cs["overflow-y"] === "scroll" || (!cs["overflow-y"] && cs.overflow === "scroll") || /^stable/.test(cs["scrollbar-gutter"] || "")) p.sbs = true;
   const sw = cs["scrollbar-width"];

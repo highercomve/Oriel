@@ -370,6 +370,9 @@ pub const Engine = struct {
     csp_handlers: ?[:0]u8 = null,
     booted: bool = false,
     in_call: u32 = 0,
+    /// The color scheme the page last heard (resize's `dark`): a theme
+    /// switch at the same size still reaches it.
+    dark: ?bool = null,
     /// The page read its layout (offsetWidth, getBoundingClientRect…) while it
     /// rendered: the tree was laid out then, and the backend still has to
     /// draw that layout when the call settles.
@@ -491,6 +494,7 @@ pub const Engine = struct {
 
     /// Load the page: stylesheets, scripts, the first frame.
     pub fn boot(e: *Engine, dark: bool, coarse: bool) void {
+        e.dark = dark;
         _ = e.callf("__oriel.boot({d},{d},{},{})", .{ e.tree.width, e.tree.height, dark, coarse });
         e.booted = true;
         log.info("native ui: page booted, {d} nodes, JS heap {d} KB", .{ e.tree.nodes.count(), oqjs_memory(e.js) / 1024 });
@@ -663,7 +667,8 @@ pub const Engine = struct {
     }
 
     pub fn resize(e: *Engine, width: f32, height: f32, dark: bool) void {
-        if (width == e.tree.width and height == e.tree.height) return;
+        if (width == e.tree.width and height == e.tree.height and e.dark == dark) return;
+        e.dark = dark;
         e.tree.width = width;
         e.tree.height = height;
         e.tree.dirty = true;

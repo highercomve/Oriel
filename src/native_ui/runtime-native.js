@@ -5231,7 +5231,9 @@ input[type="range"] { height: 20px; margin: 2px; }
         if (al) props.al = al;
         const tid = this.idOf(el, "label");
         this.own(tid, el);
+        darkControl(cs, props, true);
         const tp = { ...textProps(cs, fontSize), runs: [runFor(label, cs, fontSize)], ta: "center", fs: 0 };
+        if (props.dk) darkControl(cs, tp, true);
         this.put(nodes, tid, "text", tp, []);
         if (props.fd === void 0) props.fd = "column";
         props.jc = "center";
@@ -5262,6 +5264,7 @@ input[type="range"] { height: 20px; margin: 2px; }
             delete props.br;
           }
           if (el.hasAttribute("disabled")) props.dis = true;
+          if (usedDark(cs)) props.dk = true;
           if (props.ctl && nativeControls.has("check")) {
             delete props.ol;
             return this.put(nodes, id, "check", props, [], fixedNode);
@@ -5269,6 +5272,7 @@ input[type="range"] { height: 20px; margin: 2px; }
           return this.put(nodes, id, "view", props, [], fixedNode);
         }
         Object.assign(props, textProps(cs, fontSize));
+        darkControl(cs, props, false);
         if (tag === "select") {
           props.options = [...el.querySelectorAll("option")].map((o) => [o.getAttribute("value") ?? o.textContent, o.textContent]);
           props.val = el.value ?? "";
@@ -6283,6 +6287,20 @@ input[type="range"] { height: 20px; margin: 2px; }
     if (map[v]) return map[v];
     const l = length(v, pfs, false);
     return typeof l === "number" ? l : pfs;
+  }
+  function usedDark(cs) {
+    const scheme = cs["color-scheme"] || "normal";
+    return /dark/.test(scheme) && (!/light/.test(scheme) || viewport.dark);
+  }
+  var same2 = (a, b) => Array.isArray(a) && a.length >= 3 && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+  function darkControl(cs, props, button) {
+    if (!usedDark(cs)) return;
+    props.dk = true;
+    const bg = props.bg?.color;
+    if (bg && (same2(bg, [255, 255, 255]) || same2(bg, [239, 239, 239]))) props.bg = { ...props.bg, color: button ? [107, 107, 107, 1] : [59, 59, 59, 1] };
+    if (!props.col || same2(props.col, [0, 0, 0])) props.col = [255, 255, 255, 1];
+    if (Array.isArray(props.bc)) props.bc = props.bc.map((c) => same2(c, [118, 118, 118]) ? [133, 133, 133, 1] : c);
+    if (Array.isArray(props.runs)) props.runs = props.runs.map((r) => !r.c || same2(r.c, [0, 0, 0]) ? { ...r, c: [255, 255, 255, 1] } : r);
   }
   function scrollbarPart(cs, p, root) {
     if (cs["overflow-y"] === "scroll" || !cs["overflow-y"] && cs.overflow === "scroll" || /^stable/.test(cs["scrollbar-gutter"] || "")) p.sbs = true;
