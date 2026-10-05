@@ -1,44 +1,66 @@
 # Oriel — a Tauri-like framework in Zig
 
-Status: **scaffolded** (2026-09-23): core + all modules build and pass smoke checks on Linux. See README.md.
-See [LIBRARIES.md](./LIBRARIES.md) for the dependency investigation.
+Status: **working framework** (release-0.9.1 line). Oriel builds desktop and mobile
+applications with a WebView shell or its experimental native renderer. The core,
+platform shells, modules, plugins, CLI, packaging paths, and native renderer are
+implemented in this repository; see `README.md` for the current verification matrix.
+`LIBRARIES.md` records the dependency choices and platform constraints.
 
 ## Motivation
 
-- Existing Tauri apps: **ghostpen** (AI text editing anywhere on the desktop) and
-  **ghostreel** (local video search + AI-assisted editing).
-- Rust build footprint is painful: ghostreel's `target/` reached **157 GB**
-  (69 GB was stale incremental data). Mitigated for now with `~/.cargo/config.toml`
-  (`debug = "line-tables-only"`, no debuginfo for deps) + `cargo sweep`, bringing
-  it down to ~3 GB — but the itch remains.
-- Zig 0.16: trivial C interop, `comptime` reflection, small binaries, tiny build cache.
+Oriel started from two application needs:
 
-## Architecture inspiration: libghostty
+- **ghostpen** — AI text editing anywhere on the desktop: tray, global shortcuts,
+  input injection, clipboard, single-instance behavior, and network calls.
+- **ghostreel** — local video search and AI-assisted editing: media streaming,
+  dialogs, SQLite/vector search, whisper.cpp, llama.cpp, and packaging.
 
-Ghostty keeps all real logic in a Zig core exposed via a **C ABI**, with thin
-**native shells per OS** (Swift/AppKit on macOS, GTK on Linux). oriel would follow
-the same split:
+Rust build size and iteration cost were the original motivation. Zig 0.16 gives Oriel
+small binaries, direct C interop, `comptime` reflection, and a single build system
+for desktop and mobile targets.
 
-- **Core (Zig, C ABI):** IPC/command dispatch, asset serving, security policy,
-  app state, plugin APIs.
-- **Shells (per platform):** window, event loop, webview, tray, menus, global
-  hotkeys, dialogs, clipboard, input injection.
+## Two rendering modes
 
-## What Tauri is, and the Zig equivalent
+Oriel has one page/runtime contract with two implementations:
 
-| Layer | Tauri (Rust) | oriel |
-|---|---|---|
-| Windowing / event loop | `tao` | GTK4 / Cocoa / Win32 |
-| Webview | `wry` | WebKitGTK 6.0 / WKWebView / WebView2 (COM) |
-| JS ↔ native IPC | `invoke()` + serde | JSON over webview message handler, `comptime`-generated dispatch |
-| Asset serving | `tauri://` custom scheme | custom URI scheme + `@embedFile` |
-| Plugins | tauri-plugin-* | hand-written per platform |
-| CLI / bundling / signing | tauri-cli | `build.zig` steps + external tools |
+- **WebView mode (default):** the platform WebView renders the frontend. Linux uses
+  WebKitGTK, macOS uses WKWebView, Windows uses WebView2, and Android uses Android
+  WebView. This is the compatibility path for normal web applications.
+- **Native UI (`-Dnative_ui`):** QuickJS executes the page JavaScript, Oriel's native
+  DOM stores the document, Yoga performs flexbox layout, and platform backends draw
+  the result with GTK, Direct2D/DirectWrite, AppKit, UIKit, or Android views. There
+  is no browser process. `-Dnative_dom=false` keeps the native renderer but uses the
+  LinkeDOM compatibility path instead of Oriel's native DOM.
 
-## Killer feature idea
+The native renderer is more than a prototype: it includes CSS/layout, text and SVG
+rendering, canvas, pointer and keyboard events, fields and selection, native buttons,
+checkboxes and radios, forced-colors handling, drag and drop, and platform-specific
+window backends. It remains experimental because browser compatibility is narrower
+than WebView mode and the API surface is still growing. See `docs/native-renderer.md`,
+`docs/native-dom.md`, and `docs/native-controls-a11y-design.md`.
 
-Declare commands as a plain Zig struct; `comptime` reflection generates the JSON
-dispatch **and** TypeScript type declarations. No macros, no serde.
+The important product idea is **web layout with native platform rendering**: existing
+HTML/CSS/JS can be reused, while apps that need a browser can stay on the WebView
+path and apps that need lower overhead can opt into native UI.
+
+## Architecture
+
+The split is inspired by libghostty:
+
+- **Core (Zig):** command and event dispatch, asset serving, security policy,
+  application state, window management, generated TypeScript bindings, and module
+  interfaces.
+- **Page runtimes:** WebView bridge in compatibility mode; QuickJS, native DOM, and
+  Yoga in native UI mode.
+- **Native shells (per platform):** window/event loop, renderer, WebView where
+  applicable, tray/menu, dialogs, notifications, clipboard, global shortcuts, input,
+  and filesystem integration.
+- **Modules and plugins:** shared APIs with platform backends for tray, menu, dialog,
+  store, notification, updater, media server, SQL, vector search, AI inference,
+  dictation/audio capture, filesystem watch, global shortcuts, input, and clipboard.
+
+Commands are declared as Zig functions. `comptime` reflection generates JSON dispatch
+and TypeScript declarations without a proc-macro or serde layer:
 
 ```zig
 pub const commands = struct {
@@ -46,63 +68,60 @@ pub const commands = struct {
 };
 ```
 
-## Difficulty estimate
+## What Tauri is, and the Zig equivalent
 
-1. **Linux MVP** (1–2 weeks): GTK4 + WebKitGTK 6.0 window, custom scheme with
-   embedded assets, bidirectional IPC. Local machine already has `webkitgtk-6.0`
-   2.52.6 and `gtk4` 4.22.5.
-2. **Cross-platform desktop** (2–4 months): macOS via objc runtime (see
-   `zig-objc`), Windows WebView2 via hand-declared COM vtables. Cross-compiling
-   gets harder once system SDKs (WebKitGTK, macOS SDK) must be available.
-3. **Tauri parity** (team-years): tray, menus, dialogs, updater, installers
-   (AppImage/deb/dmg/msi), signing, mobile.
+| Layer | Tauri | Oriel |
+|---|---|---|
+| Window/event loop | `tao` | GTK4 / AppKit / UIKit / Win32 / Android |
+| Web UI | `wry` | WebKitGTK / WKWebView / WebView2 / Android WebView, or native UI |
+| JS ↔ native IPC | `invoke` + serde | JSON bridge + `comptime`-generated dispatch |
+| Native rendering | platform WebView | optional QuickJS + native DOM + Yoga renderer |
+| Asset serving | `tauri://` | custom `app://` scheme + embedded assets |
+| Plugins | `tauri-plugin-*` | built-in modules and hand-written platform plugins |
+| CLI/bundling | `tauri-cli` | `oriel` CLI + `build.zig` + platform tools |
 
-## Risks
+## Current strengths
 
-- **Zig 0.16 churn:** new `std.Io` interface; ecosystem breaks each release.
-  (0.16.0 is installed via zvm. Set `minimum_zig_version = "0.16.0"` in
-  `build.zig.zon` and the zvm cd hook switches this shell to 0.16.0 inside the
-  project, leaving the global default alone.)
-- **Main-thread affinity:** webviews live on the UI thread; async commands must
-  marshal results back (`g_idle_add` / `dispatch_async` / `PostMessage`). Key
-  design problem: integrating this cleanly with `std.Io`.
-- **Security model:** per-window command permissions and a content security
-  policy (CSP) must be designed in early, not bolted on.
-- **Linux desktop fragmentation:** X11 vs Wayland; global hotkeys on Wayland go
-  through the XDG GlobalShortcuts portal; tray via StatusNotifierItem/D-Bus.
+- One API across Linux, Windows, macOS, Android, and iOS targets.
+- WebView compatibility mode plus a native renderer for controlled deployments and
+  lower process/memory overhead.
+- Typed command/event bindings, per-origin and per-window capabilities, CSP and
+  navigation policy, embedded assets, and a media scheme with range support.
+- Desktop integrations that motivated the project: Wayland/X11 shortcuts and input,
+  background clipboard, tray/menu, dialogs, notifications, single instance, and
+  updater support.
+- Optional C/C++ modules for SQLite, sqlite-vec, llama.cpp, and whisper.cpp without
+  making those dependencies mandatory for every app.
 
-## Prior art (checked 2026-09-23)
+## Risks and boundaries
 
-- **Native SDK** — https://github.com/vercel-labs/native (formerly
-  `zero-native`). Requires Zig 0.16. ~7.7k stars, Apache-2.0, "Labs experiment".
-  Pivoted to its own native renderer (`.native` markup + TS/Zig); webview mode
-  still exists (`.frontend` in `app.zon`, React/Vue/Svelte/Next examples, but
-  the React example only targets macOS and Linux). macOS is primary.
-  **Gaps relevant to our apps:** no tray on Linux, no global hotkeys, no input
-  injection, no single-instance, weaker Windows webview story.
-- **Verve** — solo pure-Zig Tauri/Wails alternative, young.
-  https://dev.to/sirhco/why-i-built-verve-crafting-a-pure-zig-full-stack-alternative-to-tauri-and-wails-4e3c
-- **Ziew** — Zig framework on system webviews (WebKit, WebView2), "desktop apps in
-  kilobytes" (220 KB hello world). https://github.com/ziews/ziew
-- **Electrobun 2.0** — TS-first, but the native side can be Zig. https://electrobun.dev/
-- **Bindings:** `happystraw/zig-webview`, `thechampagne/webview-zig`
-  (webview/webview), `webui-dev/zig-webui`.
+- Native UI intentionally does not promise full browser compatibility. Unsupported
+  CSS, DOM, accessibility, and JavaScript behavior belongs on the WebView path until
+  implemented and tested.
+- Native renderers must preserve UI-thread affinity while commands and model work run
+  asynchronously; results are marshalled back to the platform main loop.
+- Linux still spans GTK/Wayland/X11 and portal implementations. macOS, Windows, and
+  mobile require their own SDKs and runtime verification.
+- Zig 0.16 and several ecosystem packages are moving targets; dependency versions
+  should remain pinned and tested in CI.
+- Security policy is part of the framework contract: capabilities, asset origins,
+  navigation, and IPC validation must evolve together with new modules.
 
-## Could it host our apps?
+## Prior art
 
-- **ghostpen** needs: tray, global hotkey, input injection (enigo), clipboard
-  incl. images, single-instance, HTTP to OpenAI-compatible endpoints. Tray,
-  hotkey, input injection and single-instance on Linux are exactly what Native
-  SDK lacks — oriel's differentiator.
-- **ghostreel** needs: Windows + Linux, dialogs, updater, local HTTP server with
-  video range requests, and a large Rust backend (whisper.cpp, llama.cpp,
-  SQLite + sqlite-vec — all C, easy from Zig; reqwest/tokio/axum/notify/blake3/
-  toml/quick-xml — need Zig replacements). Porting it is a multi-month effort.
+- **Vercel Native** — a Zig native renderer and web frontend experiment. Oriel differs
+  by keeping a complete WebView compatibility path and focusing on desktop integrations
+  such as tray, global shortcuts, input injection, clipboard, and single instance.
+- **Verve**, **Ziew**, **Electrobun**, and Zig WebView bindings — useful references for
+  pure-Zig or system-WebView approaches, but none covers Oriel's combined renderer,
+  module, and cross-platform scope.
+- **libghostty/Ghostty** — the model for a Zig core with thin native platform shells.
 
-## Suggested first step (when resumed)
+## Next work
 
-A **ghostpen-core spike on Linux**: GTK4 + WebKitGTK 6.0 window, tray icon,
-global hotkey (portal on Wayland), clipboard read, text replace/paste, with the
-existing React frontend. Keep the platform code behind a small interface
-(`Window`, `WebView`, `dispatchToMain`, `registerScheme`, `Tray`, `Hotkey`) so
-macOS/Windows shells can be added libghostty-style later.
+Priorities are no longer a first Linux WebView spike; that path is in place. The next
+steps are to expand native-DOM and native-control coverage, accessibility semantics,
+renderer conformance tests, and performance/regression tests across all backends,
+while keeping WebView mode stable. In parallel, continue runtime verification and
+packaging on Windows, macOS, Android, and iOS, and keep the optional AI/media modules
+isolated from the minimal core.
