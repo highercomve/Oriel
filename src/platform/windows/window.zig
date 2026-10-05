@@ -26,6 +26,7 @@ const native_win32 = if (build_opts.native_ui) @import("../../native_ui/win32.zi
         pub fn dpiChanged(_: *Surface) void {}
         pub fn wheel(_: *Surface, _: u32, _: usize, _: isize) void {}
     };
+    pub fn accentCheck(_: *Surface) void {}
 };
 
 const log = std.log.scoped(.oriel);
@@ -1529,7 +1530,11 @@ pub fn WindowCreator(
                 win32.WM_SETTINGCHANGE => {
                     if (lParam != 0) {
                         const area: [*:0]const u16 = @ptrFromInt(@as(usize, @bitCast(lParam)));
-                        if (std.mem.eql(u16, std.mem.span(area), std.unicode.utf8ToUtf16LeStringLiteral("ImmersiveColorSet"))) applyTitleTheme(hwnd);
+                        if (std.mem.eql(u16, std.mem.span(area), std.unicode.utf8ToUtf16LeStringLiteral("ImmersiveColorSet"))) {
+                            applyTitleTheme(hwnd);
+                            // The native page hears the accent (platform.accent).
+                            if (win) |w| if (nativeSurface(w)) |s| native_win32.accentCheck(s);
+                        }
                     }
                     return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
                 },
