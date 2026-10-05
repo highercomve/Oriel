@@ -34,7 +34,7 @@ ul ul ul, ul ol ul, ol ul ul, ol ol ul { list-style-type: square; }
 button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
 button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
-html { font-size: 16px; color: black; }
+html { font-size: 16px; color: CanvasText; }
 body { margin: 8px; }
 p, ul, ol, dl, blockquote, pre, figure { margin-top: 1em; margin-bottom: 1em; }
 ul, ol { padding-left: 40px; }
@@ -178,7 +178,7 @@ function keyboardProps(el, tag, type, props) {
 // common cases of the HTML-AAM rules): aria-labelledby's elements' text,
 // aria-label, its <label>s' text (label[for=id], or the label around it,
 // without the control's own text), then title. "" for none.
-function accessibleName(el) {
+export function accessibleName(el) {
   const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
   const doc = el.ownerDocument;
   const by = el.getAttribute("aria-labelledby");
@@ -640,6 +640,8 @@ export class Renderer {
       // general way now, not a frame later.
       if (this.declined) { this.declined = false; this.dirty = false; this.renderNow(); }
     } finally { this.rendering = false; }
+    // What follows a render (a11y.js: the accessibility tree's changes).
+    this.afterRender?.();
   }
 
   // An animation frame begins (main.js): everything the page changed since
@@ -962,7 +964,9 @@ export class Renderer {
     nodes.set(-1, { kind: "view", props: winProps, kids: [bodyNode] });
     // The window's background: <html>'s, else <body>'s (a browser paints the
     // whole viewport with it, below a short page too).
-    const rootBg = bgOf(rootCS) || (this.styleOf(body) ? bgOf(this.styleOf(body)) : null);
+    // Neither: the canvas, dark in a dark color-scheme (Canvas: Chromium's
+    // #121212), else the backend's default.
+    const rootBg = bgOf(rootCS) || (this.styleOf(body) ? bgOf(this.styleOf(body)) : null) || (usedDark(rootCS) ? { color: [18, 18, 18, 1] } : null);
     nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: [-1, ...fixed] });
     const t1 = P && P();
     this.emit(nodes, full);
@@ -1509,7 +1513,9 @@ export class Renderer {
       if (al) props.al = al;
       const tid = this.idOf(el, "label");
       this.own(tid, el);
+      darkControl(cs, props, true);
       const tp = { ...textProps(cs, fontSize), runs: [runFor(label, cs, fontSize)], ta: "center", fs: 0 };
+      if (props.dk) darkControl(cs, tp, true);
       this.put(nodes, tid, "text", tp, []);
       if (props.fd === undefined) props.fd = "column";
       props.jc = "center";
@@ -1546,12 +1552,14 @@ export class Renderer {
           delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
         }
         if (el.hasAttribute("disabled")) props.dis = true;
+        if (usedDark(cs)) props.dk = true;
         // A native checkbox or radio (the backend hosts one): it draws its
         // own focus ring.
         if (props.ctl && nativeControls.has("check")) { delete props.ol; return this.put(nodes, id, "check", props, [], fixedNode); }
         return this.put(nodes, id, "view", props, [], fixedNode);
       }
       Object.assign(props, textProps(cs, fontSize));
+      darkControl(cs, props, false);
       if (tag === "select") {
         props.options = [...el.querySelectorAll("option")].map((o) => [o.getAttribute("value") ?? o.textContent, o.textContent]);
         props.val = el.value ?? "";
@@ -2724,6 +2732,26 @@ function resolveFontSize(cs, pfs) {
 // its scrollbar-width (thin, none), dark (its color-scheme: dark, or light
 // dark with a dark preference; the window's own also with none, as
 // WebView2's follows the system), its scrollbar-color [thumb, track].
+// Whether an element's used color-scheme is dark: color-scheme dark, or
+// light dark with the system's dark preference.
+function usedDark(cs) {
+  const scheme = cs["color-scheme"] || "normal";
+  return /dark/.test(scheme) && (!/light/.test(scheme) || viewport.dark);
+}
+// A form control in a dark color-scheme: the UA's light defaults swapped
+// for dark ones (as Chromium draws its controls then), what the page set
+// kept; dk tells the backend to style its native widget dark.
+const same = (a, b) => Array.isArray(a) && a.length >= 3 && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+function darkControl(cs, props, button) {
+  if (!usedDark(cs)) return;
+  props.dk = true;
+  const bg = props.bg?.color;
+  if (bg && (same(bg, [255, 255, 255]) || same(bg, [239, 239, 239]))) props.bg = { ...props.bg, color: button ? [107, 107, 107, 1] : [59, 59, 59, 1] };
+  if (!props.col || same(props.col, [0, 0, 0])) props.col = [255, 255, 255, 1];
+  if (Array.isArray(props.bc)) props.bc = props.bc.map((c) => (same(c, [118, 118, 118]) ? [133, 133, 133, 1] : c));
+  if (Array.isArray(props.runs)) props.runs = props.runs.map((r) => (!r.c || same(r.c, [0, 0, 0]) ? { ...r, c: [255, 255, 255, 1] } : r));
+}
+
 function scrollbarPart(cs, p, root) {
   if (cs["overflow-y"] === "scroll" || (!cs["overflow-y"] && cs.overflow === "scroll") || /^stable/.test(cs["scrollbar-gutter"] || "")) p.sbs = true;
   const sw = cs["scrollbar-width"];

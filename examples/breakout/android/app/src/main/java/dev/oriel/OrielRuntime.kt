@@ -358,6 +358,10 @@ object OrielRuntime {
     }
 
     /** Texts' unbounded sizes, all of a frame's at once (android.zig's measureTexts). */
+    /** The system's accent colour (ARGB; 0: none) for window `id`'s theme: Material You's on Android 12+. */
+    @JvmStatic
+    fun nuiAccent(id: Int): Int = Nui.views[id]?.accent() ?: Nui.accent(app)
+
     @JvmStatic
     fun nuiMeasureTexts(id: Int, nodes: ByteArray): ByteArray = Nui.views[id]?.measureTexts(nodes) ?: ByteArray(0)
 

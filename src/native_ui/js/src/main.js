@@ -27,6 +27,7 @@ import * as canvas from "./canvas.js";
 import { installBlob } from "./blob.js";
 import { installDnd } from "./dnd.js";
 import { EASES } from "./transitions.js";
+import { A11y } from "./a11y.js";
 // The runtime's own weak caches keyed by nodes: marked so their entries
 // don't keep a node's wrapper from being replaced (a page's weak
 // references do: dom/store.zig prune).
@@ -1309,6 +1310,7 @@ function tabFocus(back) {
 }
 
 let renderer = null;
+let a11y = null; // a11y.js: the accessibility tree (on while an assistive technology asks)
 
 // Pointers (docs/native-renderer.md, "Pointer events"): the element each
 // pointer went down on gets its moves and its up until then, wherever it
@@ -1712,6 +1714,9 @@ const oriel = {
       for (const { owner, css, path } of pageSheets(true)) engine.addSheet(css, sheets, path, owner);
       const b1 = P && P();
       renderer = new Renderer(document, engine, host);
+      // The accessibility tree, sent while an assistive technology asks.
+      a11y = new A11y(renderer, host, document);
+      renderer.afterRender = () => a11y.update();
       // A <style> or <link> added, removed or changed later (CSS-in-JS,
       // a dev server's styles): read at the next render. Only the boot's
       // sheets go through the process's parsed-sheet cache.
@@ -1832,6 +1837,9 @@ const oriel = {
           mediaChanged(before);
           return false;
         }
+        // An assistive technology came (1) or went (0): the page's
+        // accessibility tree, whole now, then its changes (a11y.js).
+        case "a11y": a11y?.set(data === 1 || data === true || data === "1"); return false;
         // The system's accent color changed (data: [r, g, b]): the focus
         // ring and accent-colored controls follow it.
         case "accent": {
