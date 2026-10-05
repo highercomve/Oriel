@@ -911,6 +911,12 @@ fn trailingSpace(comptime font_class: [:0]const u8, n: *Node) f32 {
     return @floatCast(CTLineGetTrailingWhitespaceWidth(CFArrayGetValueAtIndex(lines, count - 1)));
 }
 
+/// A text's width as browsers keep it: rounded up to a LayoutUnit (1/64 px;
+/// 0.001 px of slack for float error), not a pixel more (as gtk.zig's).
+fn textWidth(w: CGFloat) f32 {
+    return @floatCast(@ceil((w - 0.001) * 64) / 64);
+}
+
 fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 {
     const cache = textCache(font_class, n) orelse return null;
     const fs = cache.fs orelse return .{ 0, @round((n.props.fz orelse 16) * 1.2) };
@@ -926,7 +932,7 @@ fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 
         if (places.len == 0) break :mixed;
         n.baseline = places[0].base;
         const last = places[places.len - 1];
-        return .{ @floatCast(@ceil(size.width) + 1), @round(last.top + last.h) };
+        return .{ textWidth(size.width), @round(last.top + last.h) };
     }
     // Lines x the line box (CoreText's own height can be a hair over, a
     // font's leading on top of the fixed line height).
@@ -935,9 +941,9 @@ fn suggestText(comptime font_class: [:0]const u8, n: *Node, w: CGFloat) ?[2]f32 
         // The first baseline, as lineOrigin places it: half the leading
         // under the line box's top, then the ascent (inline rows line up on it).
         n.baseline = @floor((lb.h - (lb.m.ascent + lb.m.descent)) / 2) + lb.m.ascent;
-        return .{ @floatCast(@ceil(size.width) + 1), @floatCast(lines * lb.h) };
+        return .{ textWidth(size.width), @floatCast(lines * lb.h) };
     }
-    return .{ @floatCast(@ceil(size.width) + 1), @floatCast(@ceil(size.height)) };
+    return .{ textWidth(size.width), @floatCast(@ceil(size.height)) };
 }
 
 extern fn CTLineGetStringIndexForPosition(line: CFTypeRef, position: CGPoint) c_long;
@@ -1050,7 +1056,9 @@ fn laidText(comptime font_class: [:0]const u8, n: *Node) ?Laid {
     const fs = cache.fs orelse return null;
     // As wide as laid out (+1, as measured), and tall enough for every line:
     // the frame lays text out from its top.
-    const w: CGFloat = if (n.props.nowrap) big else c.w + 1;
+    // Its box's width and a LayoutUnit for float error: its lines break
+    // where they were measured.
+    const w: CGFloat = if (n.props.nowrap) big else c.w + 1.0 / 64.0;
     var h: CGFloat = c.h;
     // A CSS line-height: the lines are placed here (cssLineOrigin), so the
     // frame only breaks them, in a frame tall enough to keep every one (a
@@ -1064,7 +1072,7 @@ fn laidText(comptime font_class: [:0]const u8, n: *Node) ?Laid {
             const lines = @ceil(need.height / box.h) + 1;
             h = @max(h, lines * 3 * @as(CGFloat, n.props.fz orelse 16));
         }
-        const path = CGPathCreateWithRect(.{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = if (n.props.nowrap) @ceil(need.width) + 1 else w, .height = h } }, null) orelse return null;
+        const path = CGPathCreateWithRect(.{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = if (n.props.nowrap) need.width + 1 else w, .height = h } }, null) orelse return null;
         defer CGPathRelease(path);
         const created = CTFramesetterCreateFrame(fs, .{ .location = 0, .length = 0 }, path, null) orelse return null;
         if (cache.frame) |old| CFRelease(old);
