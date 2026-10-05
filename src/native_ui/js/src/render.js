@@ -146,6 +146,43 @@ const REPLACED = new Set(["img", "svg", "canvas", "video", "iframe", "object", "
 
 // A line-height other than normal in px at font size `fs`: a number times
 // it, a percentage of it, a length.
+// A form control's accessible name, as browsers compute it for one (the
+// common cases of the HTML-AAM rules): aria-labelledby's elements' text,
+// aria-label, its <label>s' text (label[for=id], or the label around it,
+// without the control's own text), then title. "" for none.
+function accessibleName(el) {
+  const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
+  const doc = el.ownerDocument;
+  const by = el.getAttribute("aria-labelledby");
+  if (by && doc) {
+    const t = clean(by.split(/\s+/).map((id) => doc.getElementById(id)?.textContent || "").join(" "));
+    if (t) return t;
+  }
+  const aria = clean(el.getAttribute("aria-label"));
+  if (aria) return aria;
+  // A label's text, the control itself (a <select>'s options) left out.
+  const textOf = (label) => {
+    let out = "";
+    const walk = (n) => {
+      for (let c = n.firstChild; c; c = c.nextSibling) {
+        if (c === el) continue;
+        if (c.nodeType === 3) out += c.data;
+        else if (c.nodeType === 1 && !SKIP.has(c.localName) && !CONTROLS.has(c.localName)) walk(c);
+      }
+    };
+    walk(label);
+    return out;
+  };
+  const parts = [];
+  const id = el.getAttribute("id");
+  if (id && doc) for (const l of doc.querySelectorAll("label[for]")) if (l.getAttribute("for") === id) parts.push(textOf(l));
+  const around = el.closest?.("label");
+  if (around && !parts.length) parts.push(textOf(around));
+  const label = clean(parts.join(" "));
+  if (label) return label;
+  return clean(el.getAttribute("title"));
+}
+
 // vertical-align values a box alone on its line is placed by (imageLine).
 const LINE_ALIGNS = new Set(["middle", "top", "bottom"]);
 
@@ -1435,6 +1472,9 @@ export class Renderer {
     if (tag === "input" || tag === "textarea" || tag === "select") {
       this.volatile.add(el); // its value changes without a mutation
       const type = (el.getAttribute("type") || "text").toLowerCase();
+      // Its accessible name, for the native control (VoiceOver, Narrator…).
+      const al = accessibleName(el);
+      if (al) props.al = al;
       // macOS: a select is AppKit's pop-up button, as WKWebView draws it,
       // which takes no CSS padding (measured: 55x18 with padding: 4px too).
       if (tag === "select" && pushButtons && (cs.appearance || cs["-webkit-appearance"]) !== "none") delete props.pad;
@@ -1472,6 +1512,8 @@ export class Renderer {
       if (this.native.get(id) !== value) props.val = value;
       props.ph = el.getAttribute("placeholder") || "";
       props.dis = el.hasAttribute("disabled");
+      // readonly: selectable, not editable (a disabled field is neither).
+      if (el.hasAttribute("readonly") && !props.dis) props.ro = true;
       props.pw = type === "password";
       if (tag === "textarea") {
         const cols = parseInt(el.getAttribute("cols") || "", 10);
@@ -2640,10 +2682,18 @@ const chromiumRings = (c) => {
 };
 const WINDOWS_RINGS = chromiumRings([16, 16, 16, 1]);
 const ANDROID_RINGS = chromiumRings([229, 151, 0, 1]);
-const MAC_RING = (o, r) => ({ w: 4, c: [0, 103, 244, 0.5], o, r });
-const MAC_RINGS = { field: MAC_RING(-1, 2), control: MAC_RING(-1, 5), check: MAC_RING(-1, 5), link: MAC_RING(1, 2), box: MAC_RING(1, 2) };
-const IOS_RING = (o, r) => ({ w: 3, c: [0, 122, 255, 0.5], o, r });
-const IOS_RINGS = { field: IOS_RING(-2, 8), control: IOS_RING(-2, 8), check: IOS_RING(-2, 8), link: IOS_RING(0, 0), box: IOS_RING(0, 0) };
+// (In the system's accent color, platform.accent, at half alpha; its
+// default blue without one.)
+function macRings(accent) {
+  const c = Array.isArray(accent) && accent.length === 3 ? [...accent.map((v) => +v || 0), 0.5] : [0, 103, 244, 0.5];
+  const ring = (o, r) => ({ w: 4, c, o, r });
+  return { field: ring(-1, 2), control: ring(-1, 5), check: ring(-1, 5), link: ring(1, 2), box: ring(1, 2) };
+}
+function iosRings(accent) {
+  const c = Array.isArray(accent) && accent.length === 3 ? [...accent.map((v) => +v || 0), 0.5] : [0, 122, 255, 0.5];
+  const ring = (o, r) => ({ w: 3, c, o, r });
+  return { field: ring(-2, 8), control: ring(-2, 8), check: ring(-2, 8), link: ring(0, 0), box: ring(0, 0) };
+}
 // WebKitGTK (Linux): 2px in the theme's accent color at 0.8 alpha (WebKit's
 // own blue without one), over a control's border (its 5px corners), just
 // outside a link or another box (measured). No halo.
@@ -2711,7 +2761,7 @@ function pushButton(cs, p) {
 export function setFocusRingOS(os, accent) {
   pushButtons = os === "macos";
   webkitBorders = os === "macos" || os === "ios" || os === "linux";
-  osRings = os === "linux" ? webkitGtkRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
+  osRings = os === "linux" ? webkitGtkRings(accent) : os === "macos" ? macRings(accent) : os === "ios" ? iosRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS }[os] || null;
 }
 let focusVisible = null;
 export function setFocusVisible(el) { focusVisible = el; }

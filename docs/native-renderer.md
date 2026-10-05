@@ -490,6 +490,21 @@ and 1.7px are 1px at 1x, and at 3x 1.4px is 1.333px, 2.67px 2.333px and
 none). Chromium (Windows, Android) floors the width itself: a 1px border
 at 2.625 is 0.762, 3px 2.667. clientWidth and clientHeight are whole px.
 
+**Fields: readonly, accessible names, accent** (each backend): `Props.ro`
+(readonly on an input or textarea, never with disabled): the field keeps
+its role, focus and selection but takes no edit (AppKit: its editor's
+delegate refuses every change, as a non-editable NSTextField would become
+static text to VoiceOver; NSTextView editable:NO; UIKit: the delegate
+refuses changes, UITextView editable:NO). `Props.al` (render.js
+accessibleName: aria-labelledby's text, aria-label, its <label>'s text
+without the control's own, title): the native control's accessibility
+label (setAccessibilityLabel). `platform.accent` [r, g, b] (sRGB 0-255):
+the system's accent color (macOS: NSColor.controlAccentColor), the focus
+ring's on macOS (and iOS, the app tint's default without one); a backend
+sends `Engine.event(0, "accent", [r, g, b])` when it changes (macOS:
+NSSystemColorsDidChangeNotification and appearance changes), and the page
+renders again with it.
+
 **Inline element rects** (each backend, optional): an inline element
 (a `<span>` amid text) has no node; render.js keeps its runs
 (Renderer.inlineSpans: [text node id, first run, last run] per text node
