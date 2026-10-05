@@ -1329,6 +1329,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     /** A text field: its edit in progress (beforeinput's type and data, for
      *  the input after it), the value last sent, and a context menu's action. */
     private class Field(ctx: Context) : EditText(ctx) {
+        /** readonly (ro): focusable and selectable, no edits from the user. */
+        var readOnly = false
         var editType: String? = null
         var editData: String? = null
         var sent = ""
@@ -1419,7 +1421,11 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 val field = this
                 // Every edit (keys, the soft keyboard's commits, paste, cut,
                 // undo) asks the page first: beforeinput, as Chromium names it.
-                filters = arrayOf(InputFilter { source, start, end, dest, dstart, dend -> beforeInput(field, id, multi, source, start, end, dest, dstart, dend) })
+                filters = arrayOf(InputFilter { source, start, end, dest, dstart, dend ->
+                    // readonly: the user's edits are refused (the page's own values still apply).
+                    if (field.readOnly && !updating) dest.subSequence(dstart, dend)
+                    else beforeInput(field, id, multi, source, start, end, dest, dstart, dend)
+                })
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                     override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -1442,7 +1448,9 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 // the down counts. In a text area, Enter the page doesn't
                 // prevent (or Shift+Enter) is a new line.
                 setOnEditorActionListener { _, action, ev ->
-                    if (action != EditorInfo.IME_ACTION_DONE && action != EditorInfo.IME_NULL) return@setOnEditorActionListener false
+                    // Every action key (Done, Go, Search, Send… from enterkeyhint) is
+                    // the page's Enter, as in a browser; only none is the keyboard's.
+                    if (action == EditorInfo.IME_ACTION_NONE) return@setOnEditorActionListener false
                     if (ev != null && ev.action != KeyEvent.ACTION_DOWN) return@setOnEditorActionListener multi.not() || enterTaken
                     var mods = 0
                     if (ev?.isShiftPressed == true) mods = mods or 1
@@ -1489,6 +1497,21 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         // Every drag over a field is the page's, as in a browser: the page's
         // drop decides, then dnd.js inserts dropped text. The field's own
         // would paste a file's content:// URI and hide the drag from the page.
+        // Its accessible name (al: aria-labelledby, aria-label, its <label>,
+        // title) for TalkBack: the field's hint (with its placeholder) or,
+        // for a select, its description; a readonly field isn't editable.
+        v.accessibilityDelegate = object : View.AccessibilityDelegate() {
+            override fun onInitializeAccessibilityNodeInfo(host: View, info: android.view.accessibility.AccessibilityNodeInfo) {
+                super.onInitializeAccessibilityNodeInfo(host, info)
+                val p = nodes[id]?.p ?: return
+                val al = p.optString("al")
+                if (al.isNotEmpty()) {
+                    if (host is EditText) info.hintText = listOf(al, p.optString("ph")).filter { it.isNotEmpty() }.joinToString(", ")
+                    else info.contentDescription = listOf(al, ((host as? Spinner)?.selectedView as? TextView)?.text?.toString() ?: "").filter { it.isNotEmpty() }.joinToString(", ")
+                }
+                if (p.optBoolean("ro")) info.isEditable = false
+            }
+        }
         if (v is EditText) v.setOnDragListener { f, ev -> handleDrag(ev, f.left.toFloat(), f.top.toFloat()) }
         fields[id] = v
         styleField(n, v)
@@ -1580,6 +1603,70 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         }
     }
 
+    /**
+     * A text field's keyboard (render.js keyboardProps): its kind from
+     * inputmode, else the input's type (email, url, tel, number, search);
+     * capitalization, auto-correction and suggestions; enterkeyhint's
+     * action key; autofill hints; inputmode none: no soft keyboard;
+     * readonly: no edits, still focusable and selectable.
+     */
+    private fun keyboard(n: NuiNode, v: Field) {
+        val p = n.p
+        val multi = n.kind == "textarea"
+        val type = if (p.optBoolean("pw")) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD else {
+            val mode = p.optString("im").ifEmpty {
+                when (p.optString("itype")) { "email" -> "email"; "url" -> "url"; "tel" -> "tel"; "number" -> "number"; else -> "text" }
+            }
+            var t = when (mode) {
+                "numeric" -> InputType.TYPE_CLASS_NUMBER
+                "decimal" -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                "number" -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
+                "tel" -> InputType.TYPE_CLASS_PHONE
+                "email" -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+                "url" -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                else -> InputType.TYPE_CLASS_TEXT
+            }
+            if (t and InputType.TYPE_MASK_CLASS == InputType.TYPE_CLASS_TEXT) {
+                if (multi) t = t or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                t = t or when (p.optString("cap")) {
+                    "sentences" -> InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                    "words" -> InputType.TYPE_TEXT_FLAG_CAP_WORDS
+                    "characters" -> InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                    else -> 0
+                }
+                if (p.optBoolean("cor", true)) t = t or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+                else if (!p.optBoolean("spellcheck", true)) t = t or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            }
+            t
+        }
+        if (v.inputType != type) {
+            val sel = v.selectionStart to v.selectionEnd
+            v.inputType = type
+            if (!multi) v.isSingleLine = true
+            if (sel.first >= 0 && sel.second <= v.length()) v.setSelection(sel.first, sel.second)
+        }
+        val action = when (p.optString("ek")) {
+            "go" -> EditorInfo.IME_ACTION_GO
+            "search" -> EditorInfo.IME_ACTION_SEARCH
+            "send" -> EditorInfo.IME_ACTION_SEND
+            "next" -> EditorInfo.IME_ACTION_NEXT
+            "previous" -> EditorInfo.IME_ACTION_PREVIOUS
+            "done" -> EditorInfo.IME_ACTION_DONE
+            "enter" -> EditorInfo.IME_ACTION_UNSPECIFIED
+            else -> if (multi) EditorInfo.IME_ACTION_UNSPECIFIED else EditorInfo.IME_ACTION_DONE
+        }
+        if (v.imeOptions != action) v.imeOptions = action
+        val hint = when {
+            p.optBoolean("pw") -> View.AUTOFILL_HINT_PASSWORD
+            p.optString("itype") == "email" || p.optString("im") == "email" -> View.AUTOFILL_HINT_EMAIL_ADDRESS
+            p.optString("itype") == "tel" || p.optString("im") == "tel" -> View.AUTOFILL_HINT_PHONE
+            else -> null
+        }
+        if (hint != null) v.setAutofillHints(hint)
+        v.readOnly = p.optBoolean("ro")
+        v.showSoftInputOnFocus = !v.readOnly && p.optString("im") != "none"
+    }
+
     private fun styleField(n: NuiNode, v: View) {
         val color = n.p.optJSONArray("col")?.let { NuiNode.color(it) } ?: Color.BLACK
         val fz = n.p.optDouble("fz", 16.0).toFloat()
@@ -1618,6 +1705,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         // The page's font, as its text runs have it (not the system theme's).
         val face = NuiNode.typeface(n.p.optDouble("fwt", 400.0).toInt(), n.p.optBoolean("it"), NuiNode.family(n.p.optString("ff"), n.p.optBoolean("mono")))
         if (v is Spinner) (v.background as? Caret)?.let { it.color = color; it.invalidateSelf() }
+        if (v is Field && !n.p.has("range")) keyboard(n, v)
         if (v is EditText) {
             v.typeface = face
             v.setTextColor(color)
