@@ -1601,6 +1601,15 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             v.ellipsize = TextUtils.TruncateAt.END
             return v
         }
+
+        /** The popup's rows in the field's color-scheme (dk): light text on its dark popup. */
+        override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+            val v = super.getDropDownView(position, convertView, parent) as TextView
+            val p = nodes[id]?.p
+            v.setTextColor(if (p?.optBoolean("dk") == true) Color.WHITE else Color.BLACK)
+            if (p != null) v.typeface = NuiNode.typeface(p.optDouble("fwt", 400.0).toInt(), p.optBoolean("it"), NuiNode.family(p.optString("ff"), p.optBoolean("mono")))
+            return v
+        }
     }
 
     /**
@@ -1704,8 +1713,22 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         }
         // The page's font, as its text runs have it (not the system theme's).
         val face = NuiNode.typeface(n.p.optDouble("fwt", 400.0).toInt(), n.p.optBoolean("it"), NuiNode.family(n.p.optString("ff"), n.p.optBoolean("mono")))
-        if (v is Spinner) (v.background as? Caret)?.let { it.color = color; it.invalidateSelf() }
+        if (v is Spinner) {
+            (v.background as? Caret)?.let { it.color = color; it.invalidateSelf() }
+            // Its popup follows the field's color-scheme (dk), not the system's.
+            v.setPopupBackgroundDrawable(android.graphics.drawable.ColorDrawable(if (n.p.optBoolean("dk")) Color.rgb(43, 43, 43) else Color.WHITE))
+        }
         if (v is Field && !n.p.has("range")) keyboard(n, v)
+        if (v is EditText && android.os.Build.VERSION.SDK_INT >= 29) {
+            // The caret in the field's text colour (light on a dark field), the
+            // selection's handles and highlight in the system accent.
+            v.textCursorDrawable = android.graphics.drawable.GradientDrawable().apply { setColor(color); setSize(max(1, (2 * density).toInt()), 0) }
+            val acc = Nui.accent(context).takeIf { Color.alpha(it) != 0 } ?: color
+            v.textSelectHandle?.let { v.setTextSelectHandle(it.mutate().apply { setTint(acc) }) }
+            v.textSelectHandleLeft?.let { v.setTextSelectHandleLeft(it.mutate().apply { setTint(acc) }) }
+            v.textSelectHandleRight?.let { v.setTextSelectHandleRight(it.mutate().apply { setTint(acc) }) }
+            v.highlightColor = (acc and 0x00ffffff) or 0x66000000
+        }
         if (v is EditText) {
             v.typeface = face
             v.setTextColor(color)
