@@ -575,6 +575,16 @@ a text field's. A click is the page's (activate(): submit, reset,
 disabled); Space and Return on a focused one go to the page and stop
 there, as a check's.
 
+**Native buttons (UIKit)**: platform.controls lists "button": a kind
+button is a UIButton with the gray configuration (iOS Safari's look:
+gray fill, tinted text), no content insets (the CSS padding is room),
+over the node's whole box in a clipping holder. Its attributedTitle is
+the label in the page's font; the page's color only when it colored the
+button (dimmed when disabled), else the tint; overrideUserInterfaceStyle
+the page's scheme (dk). Measured and baselined as AppKit's. A tap is its
+click (the page's tap recognizer leaves its touches alone; a pan still
+scrolls from it); it never takes the keyboard, so keys stay the page's.
+
 **Inline element rects** (each backend, optional): an inline element
 (a `<span>` amid text) has no node; render.js keeps its runs
 (Renderer.inlineSpans: [text node id, first run, last run] per text node
