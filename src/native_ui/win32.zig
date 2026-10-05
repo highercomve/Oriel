@@ -1111,7 +1111,7 @@ const PaintOrder = struct {
         if (n.props.vis == false) return;
         po.next += 1;
         const order = po.next;
-        if (n.kind == .input or n.kind == .textarea or n.kind == .select) po.fields.put(gpa, n.id, order) catch {};
+        if (n.kind == .input or n.kind == .textarea or n.kind == .select or n.kind == .check) po.fields.put(gpa, n.id, order) catch {};
         if (paintsOpaque(n)) po.occluders.append(gpa, .{ .order = order, .rect = n.clip.intersect(n.frame) }) catch {};
         var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
         while (it.next()) |k| po.walk(gpa, k);
@@ -1170,7 +1170,7 @@ fn syncFields(s: *Surface) void {
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
         const n = np.*;
-        if (n.kind != .input and n.kind != .textarea and n.kind != .select) continue;
+        if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check) continue;
         const gop = s.fields.getOrPut(n.id) catch continue;
         if (!gop.found_existing) {
             gop.value_ptr.* = makeField(s, n) catch {
@@ -1188,6 +1188,7 @@ fn syncFields(s: *Surface) void {
         _ = c.EnableWindow(f.hwnd, @intFromBool(!n.props.dis));
         styleField(s, f, n);
         if (f.slider) setSliderRange(f.*, n);
+        if (f.kind == .check) syncCheck(s, f, n);
         if (f.kind == .textarea or f.rich) setPlaceholder(s, f, n.props.ph orelse "");
         const visible = n.clip.intersect(n.frame).h > 1 and n.frame.w > 1 and n.props.vis != false;
         if (!visible) {
@@ -1403,7 +1404,70 @@ fn sliderDraw(s: *Surface, cd: *c.NMCUSTOMDRAW) ?c.LRESULT {
     }
 }
 
+/// A native checkbox or radio (kind check, docs/native-controls-a11y-design.md
+/// 1.5): a BUTTON that never changes itself (BS_3STATE or BS_RADIOBUTTON,
+/// not the auto styles; BS_NOTIFY for its focus). Its state is the page's
+/// (syncCheck); a click (each of a double click too) is
+/// the page's click, which toggles it (or doesn't); radios aren't grouped
+/// natively (main.js keeps a group exclusive).
+fn makeCheck(s: *Surface, n: *Node) !Field {
+    const radio = if (n.props.ctl) |ctl| std.mem.eql(u8, ctl, "radio") else false;
+    const base: c.DWORD = c.WS_CHILD | c.WS_TABSTOP | c.BS_NOTIFY;
+    const button_style: c.DWORD = if (radio) c.BS_RADIOBUTTON else c.BS_3STATE;
+    const style = base | button_style;
+    const clip = try makeClip(s);
+    errdefer _ = c.DestroyWindow(clip);
+    const hwnd = c.CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral(""), style, 0, 0, 1, 1, clip, null, c.GetModuleHandleW(null), null) orelse return error.CreateWindowFailed;
+    _ = c.SetPropW(hwnd, prop_node, @ptrFromInt(@as(usize, @intCast(n.id))));
+    subclass(hwnd, &checkProc);
+    return .{ .hwnd = hwnd, .clip = clip, .kind = .check };
+}
+
+/// The page's state on its native check, every sync (a cancelled click, or
+/// a controlled box that ends where it began, sends no change), and its
+/// dark theme on a dark background.
+fn syncCheck(s: *Surface, f: *Field, n: *Node) void {
+    const want: c.WPARAM = if (n.props.mix) c.BST_INDETERMINATE else if (n.props.on) c.BST_CHECKED else c.BST_UNCHECKED;
+    if (@as(c.WPARAM, @intCast(c.SendMessageW(f.hwnd, c.BM_GETCHECK, 0, 0))) != want) _ = c.SendMessageW(f.hwnd, c.BM_SETCHECK, want, 0);
+    const dark = n.props.dk or luminance(colorBehind(s, n)) < 0.5;
+    if (dark != f.dark_theme) {
+        f.dark_theme = dark;
+        setWindowTheme(f.hwnd, if (dark) std.unicode.utf8ToUtf16LeStringLiteral("DarkMode_Explorer") else null);
+        _ = c.InvalidateRect(f.hwnd, null, c.TRUE);
+    }
+}
+
+/// The native check whose WM_SETFOCUS is running (its own click then is
+/// none of the user's).
+var check_focusing: c.HWND = null;
+
+/// A native check's window procedure: keys go to the page first (its
+/// Space keyup activates it, as a browser's), and the button's own
+/// Space and Enter activation is eaten (it would be a second click).
+fn checkProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
+    const old: c.WNDPROC = @ptrCast(c.GetPropW(hwnd, prop_old_proc) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam));
+    if (fieldKey(hwnd, msg, wparam, lparam)) return 0;
+    switch (msg) {
+        c.WM_KEYDOWN, c.WM_KEYUP => if (wparam == c.VK_SPACE or wparam == c.VK_RETURN) return 0,
+        c.WM_CHAR => if (wparam == ' ' or wparam == '\r') return 0,
+        // A radio clicks itself as it takes the focus from the keyboard (a
+        // second click after main.js's own arrow-key activation): not one.
+        c.WM_SETFOCUS => {
+            check_focusing = hwnd;
+            defer check_focusing = null;
+            return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+        },
+        c.WM_NCDESTROY => {
+            _ = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(old)));
+            _ = c.RemovePropW(hwnd, prop_old_proc);
+        },
+        else => {},
+    }
+    return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+}
+
 fn makeField(s: *Surface, n: *Node) !Field {
+    if (n.kind == .check) return makeCheck(s, n);
     if (n.kind == .input and n.props.range != null) return makeSlider(s, n);
     // Text fields: RichEdit 5 when it loads (colour emoji, many undo
     // steps), else EDIT.
@@ -1736,6 +1800,14 @@ fn onFieldCommand(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
             defer s.gpa.free(json);
             _ = s.engine.event(fx.node.id, "input", json);
         },
+        // A native check clicked (the mouse; its keys are the page's): the
+        // page's click, which toggles it or doesn't (syncCheck shows it).
+        .check => if ((code == c.BN_CLICKED or code == c.BN_DOUBLECLICKED) and hwnd != check_focusing) {
+            var buf: [16]u8 = undefined;
+            const flags = std.fmt.bufPrint(&buf, "{d}", .{modFlags()}) catch return;
+            _ = s.engine.event(fx.node.id, "click", flags);
+            if (liveSurface(s.hwnd)) |ls| requestDisplayFrame(ls);
+        },
         .select => if (code == c.CBN_SELCHANGE) {
             const i = c.SendMessageW(hwnd, c.CB_GETCURSEL, 0, 0);
             const opts = fx.node.props.options orelse return;
@@ -1823,13 +1895,16 @@ fn fieldKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool 
         c.WM_CHAR => {
             if (key_eaten == hwnd) return true;
             if (wparam < 0x20 or wparam == 0x7F) return false; // control characters: WM_KEYDOWN's
-            if (key_ime or !edit) return false;
+            if (key_ime) return false;
             if (c.GetKeyState(c.VK_CONTROL) < 0 and c.GetKeyState(c.VK_MENU) >= 0) return false;
             var units: [2]u16 = .{ @intCast(wparam & 0xFFFF), 0 };
             var buf: [8]u8 = undefined;
             const len = std.unicode.utf16LeToUtf8(&buf, units[0..1]) catch return false;
+            // A character's keydown, on any control (a check's Space, a
+            // select's letter); only an edit makes an edit of it.
             const prevented = sendKey(s, id, buf[0..len], s.char_vk, repeated(lparam));
             if (prevented or c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null) return true;
+            if (!edit) return false;
             // Then the edit: insertText, the character.
             return beforeInput(s, id, hwnd, "insertText", buf[0..len]) or c.IsWindow(hwnd) == 0 or c.GetPropW(hwnd, prop_node) == null;
         },
@@ -2947,6 +3022,12 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
                 queueFocusCheck(s);
                 return 0;
             }
+            // A native check's focus (BS_NOTIFY; its codes are a
+            // combobox's others, so only from a check).
+            if ((code == c.BN_SETFOCUS or code == c.BN_KILLFOCUS) and lparam != 0) if (fieldOf(s, toHandle(c.HWND, @bitCast(lparam)))) |fx| if (fx.field.kind == .check) {
+                queueFocusCheck(s);
+                return 0;
+            };
             if (lparam != 0) onFieldCommand(s, code, toHandle(c.HWND, @bitCast(lparam)));
             return 0;
         },
@@ -2974,8 +3055,9 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             const hdc = toHandle(c.HDC, wparam);
             // A combobox's list asks for itself: look at its owner.
             const fx = fieldOf(s, field_hwnd) orelse fieldOf(s, c.GetParent(field_hwnd)) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
-            // A trackbar's background: the page's behind it (else black).
-            if (fx.field.slider) {
+            // A trackbar's or a native check's background: the page's behind it
+            // (else black, or the dialog grey).
+            if (fx.field.slider or fx.field.kind == .check) {
                 const behind = colorBehind(s, fx.node);
                 if (fx.field.brush == null or fx.field.bg != behind) {
                     if (fx.field.brush) |b| _ = c.DeleteObject(b);
@@ -4581,7 +4663,8 @@ fn withAccent(gpa: std.mem.Allocator, platform_json: [:0]const u8, a: [3]u8) ?[:
     if (trimmed.len < 2 or trimmed[trimmed.len - 1] != '}') return null;
     const body = trimmed[0 .. trimmed.len - 1];
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
-    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"accent\":[{d},{d},{d}]}}", .{ body, sep, a[0], a[1], a[2] }, 0) catch null;
+    // controls: the kinds made native here (docs/native-controls-a11y-design.md 1.1).
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"accent\":[{d},{d},{d}],\"controls\":[\"check\"]}}", .{ body, sep, a[0], a[1], a[2] }, 0) catch null;
 }
 
 /// The accent or app mode changed (WM_SETTINGCHANGE "ImmersiveColorSet",
