@@ -8,7 +8,8 @@
 //! turns this module on). Received files are handles: `open(handle)`
 //! reads one, `release(id)` lets a share's files go.
 //!
-//! Written so far: sending on Windows (DataTransferManager). Elsewhere
+//! Written so far: Windows, sending (DataTransferManager) and receiving
+//! (Send To and "Open with", from the installer's entries). Elsewhere
 //! `send` and `open` return `error.Unsupported`, `capabilities()` reports
 //! nothing, and nothing is received.
 

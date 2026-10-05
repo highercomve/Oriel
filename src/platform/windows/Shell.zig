@@ -288,6 +288,8 @@ fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam:
 
 const build_opts = @import("build_options");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
+/// Receiving shares (Send To, "Open with"): their launches' arguments.
+const share_win = if (build_opts.share) @import("../../modules/share/windows.zig") else struct {};
 
 /// WM_COPYDATA from a second launch: its arguments (without argv[0]) as a
 /// JSON array of strings.
@@ -316,6 +318,15 @@ fn launchArgs(gpa: std.mem.Allocator) ![][]u8 {
 fn freeArgs(gpa: std.mem.Allocator, args: []const []u8) void {
     for (args) |a| gpa.free(a);
     gpa.free(args);
+}
+
+/// This launch carries a share (Send To, "Open with").
+fn isShareLaunch(gpa: std.mem.Allocator) bool {
+    if (build_opts.share) {
+        const args = launchArgs(gpa) catch return false;
+        defer freeArgs(gpa, args);
+        return share_win.isShareLaunch(args);
+    } else return false;
 }
 
 pub fn encodeArgs(gpa: std.mem.Allocator, args: []const []const u8) ![]u8 {
@@ -465,6 +476,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             defer parsed.deinit();
             const args = parsed.value;
 
+            if (build_opts.share) _ = share_win.receiveArgs(args);
+
             if (build_opts.deep_link) {
                 for (args) |a| {
                     if (deep_link.validate(a, config.deep_link_schemes)) |_| {
@@ -488,13 +501,15 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             defer single_instance_mutex.release();
 
             // Single instance: for deep links, and for apps that handle a
-            // second launch themselves (`on_second_instance`).
-            if (single_instance) {
+            // second launch themselves (`on_second_instance`). With the
+            // share module, a share launch (Send To, "Open with") goes to
+            // the running instance too; other launches keep their own.
+            if (single_instance or build_opts.share) {
                 const mutex_name_w = getAppMutexNameW(gpa, app_id) catch return 1;
                 defer gpa.free(mutex_name_w);
 
                 single_instance_mutex.mutex = win32.CreateMutexW(null, win32.FALSE, mutex_name_w);
-                if (win32.GetLastError() == win32.ERROR_ALREADY_EXISTS) {
+                if (win32.GetLastError() == win32.ERROR_ALREADY_EXISTS and (single_instance or isShareLaunch(gpa))) {
                     forwardToPrimary(gpa, app_id);
                     return 0;
                 }
@@ -580,6 +595,15 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             }
             // Tasks queued before the host window existed.
             processDispatchQueue();
+
+            // A share that launched the app: queued until the app's handler
+            // and the page listen (core/pending_events.zig).
+            if (build_opts.share) {
+                if (launchArgs(gpa)) |args| {
+                    defer freeArgs(gpa, args);
+                    _ = share_win.receiveArgs(args);
+                } else |_| {}
+            }
 
             const main_win = App.openWindow(.{
                 .label = "main",

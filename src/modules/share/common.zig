@@ -78,6 +78,9 @@ pub const SendError = error{
     Unsupported,
     /// A share sheet is already open.
     Busy,
+    /// An `OutFile.handle` that names no received file (any more), or a
+    /// received file that changed since it arrived.
+    InvalidHandle,
 };
 
 pub const SendCapabilities = struct {

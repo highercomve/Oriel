@@ -308,7 +308,25 @@ pub const Context = struct {
     /// (for the package steps: signed for distribution when asked to).
     app_bundle: ?AppBundle,
     mac_signing: MacSigning = .{},
+    /// `.share_target`: the Send To shortcut's name (null: no share target)
+    /// and the "Open with" extensions (Windows installer).
+    share_send_to: ?[]const u8 = null,
+    share_extensions: []const []const u8 = &.{},
 };
+
+/// The Send To name for `options.share_target`: its label, else the app's
+/// name. Null without a share target.
+fn shareSendTo(options: anytype, display_name: []const u8) ?[]const u8 {
+    if (!@hasField(@TypeOf(options), "share_target")) return null;
+    const st = options.share_target orelse return null;
+    return st.label orelse display_name;
+}
+
+fn shareExtensions(options: anytype) []const []const u8 {
+    if (!@hasField(@TypeOf(options), "share_target")) return &.{};
+    const st = options.share_target orelse return &.{};
+    return st.windows_extensions;
+}
 
 /// macOS distribution signing (see tools/package/sign_macos.zig).
 pub const MacSigning = struct {
@@ -593,6 +611,8 @@ pub fn addPackageSteps(
         .webview2_loader = webview2_loader,
         .app_bundle = if (app_bundle) |bundle| (if (mac_signing.active()) addSignedBundle(b, package_tool, bundle, mac_signing) else bundle) else null,
         .mac_signing = mac_signing,
+        .share_send_to = shareSendTo(options, display_name),
+        .share_extensions = shareExtensions(options),
     };
 
     // Determine target formats
@@ -843,6 +863,8 @@ fn addNsis(ctx: *const Context) *std.Build.Step {
     for (ctx.metadata.url_schemes) |s| {
         run.addArgs(&.{ "--url-scheme", s });
     }
+    if (ctx.share_send_to) |label| run.addArgs(&.{ "--send-to", label });
+    for (ctx.share_extensions) |e| run.addArgs(&.{ "--open-with-ext", e });
     run.addArg("--bin");
     run.addFileArg(ctx.payload.exe);
     ctx.payload.addArgs(ctx.b, run);
