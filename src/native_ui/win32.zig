@@ -356,6 +356,14 @@ pub const Surface = struct {
     /// over it now (its counter, what it carries, the last effect the
     /// page chose) and whether one is inside.
     drop_target: ?*DropTarget = null,
+    /// Windows 11's overlay scrollbars (no room in the layout, shown while
+    /// in use) unless "Always show scrollbars" is on: the scroller showing
+    /// its thin bar (until sb_show_until, GetTickCount64 ms) and the one
+    /// whose bar the mouse is over (drawn wide, with arrows).
+    overlay_sb: bool = false,
+    sb_show: i64 = 0,
+    sb_show_until: u64 = 0,
+    sb_hot: i64 = 0,
     drag_session: u32 = 0,
     drag_inside: bool = false,
     drag_kinds: DragKinds = .{},
@@ -408,8 +416,10 @@ pub const Surface = struct {
             .props = propsChanged,
             .text = textChanged,
         }, assets, platform_json, label, url, w, h);
-        // WebView2's classic scrollbars (and thin ones) keep room in the layout.
-        s.engine.tree.scrollbar = .{ 15, 10 };
+        // Windows 11's overlay scrollbars take no room; "Always show
+        // scrollbars" keeps the classic 15px bars (10 thin) in the layout.
+        s.overlay_sb = overlayScrollbars();
+        s.engine.tree.scrollbar = if (s.overlay_sb) .{ 0, 0 } else .{ 15, 10 };
         // Only now may the canvas reach the surface: before, `s.engine` is
         // undefined (and on failure the canvas goes away without it).
         _ = c.SetWindowLongPtrW(s.hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(s)));
@@ -2189,6 +2199,7 @@ fn onMove(s: *Surface, pt: [2]f32) void {
         var tme: c.TRACKMOUSEEVENT = .{ .cbSize = @sizeOf(c.TRACKMOUSEEVENT), .dwFlags = c.TME_LEAVE, .hwndTrack = s.hwnd, .dwHoverTime = 0 };
         s.tracking = c.TrackMouseEvent(&tme) != 0;
     }
+    overlayTouch(s, pt);
     const n = s.engine.tree.hit(pt[0], pt[1]);
     const link = linkAt(s, pt);
     s.hand = link != 0 or (n != null and clickableUp(n.?));
@@ -2370,9 +2381,32 @@ const Scrollbar = struct {
     range: f32,
 };
 
-fn scrollbarOf(n: *const Node) ?Scrollbar {
-    const g = n.gutter;
-    if (!(g > 0)) return null;
+/// The width of an overlay scrollbar's bar: where the mouse takes it, and
+/// how wide it's drawn when the mouse is over it.
+const overlay_bar: f32 = 12;
+
+/// A scroller's scrollbar: the classic one in its gutter, or an overlay
+/// one over its right edge when it can scroll (overlay_sb).
+fn scrollbarOf(s: *const Surface, n: *const Node) ?Scrollbar {
+    if (n.gutter > 0) return scrollbarIn(n, n.gutter);
+    if (!s.overlay_sb or !n.props.scroll) return null;
+    if (!(n.content_h > n.frame.h + 0.5)) return null;
+    return scrollbarIn(n, overlay_bar);
+}
+
+/// Overlay scrollbars: Windows' "Always show scrollbars" is off
+/// (HKCU\Control Panel\Accessibility DynamicScrollbars, 1 or missing).
+fn overlayScrollbars() bool {
+    var key: usize = 0;
+    if (RegOpenKeyExW(hkey_current_user, std.unicode.utf8ToUtf16LeStringLiteral("Control Panel\\Accessibility"), 0, key_read, &key) != 0) return true;
+    defer _ = RegCloseKey(key);
+    var value: [4]u8 = undefined;
+    var size: u32 = value.len;
+    if (RegQueryValueExW(key, std.unicode.utf8ToUtf16LeStringLiteral("DynamicScrollbars"), null, null, &value, &size) != 0 or size != 4) return true;
+    return std.mem.readInt(u32, &value, .little) != 0;
+}
+
+fn scrollbarIn(n: *const Node, g: f32) ?Scrollbar {
     const bw = n.props.bw orelse [4]f32{ 0, 0, 0, 0 };
     const bar: Rect = .{ .x = n.frame.x + n.frame.w - bw[1] - g, .y = n.frame.y + bw[0], .w = g, .h = n.frame.h - bw[0] - bw[2] };
     if (bar.h <= 0) return null;
@@ -2398,7 +2432,9 @@ fn scrollbarOf(n: *const Node) ?Scrollbar {
 }
 
 fn paintScrollbar(p: *Painter, n: *Node) void {
-    const sb = scrollbarOf(n) orelse return;
+    const s = p.s;
+    const sb = scrollbarOf(s, n) orelse return;
+    if (!(n.gutter > 0)) return paintOverlayScrollbar(p, n, sb);
     const dark = n.props.dk;
     const track: tree_mod.Color = if (n.props.sbc) |cc| cc[1] else if (dark) .{ 44, 44, 44, 1 } else .{ 252, 252, 252, 1 };
     const ink: tree_mod.Color = if (n.props.sbc) |cc| cc[0] else if (dark) .{ 159, 159, 159, 1 } else .{ 139, 139, 139, 1 };
@@ -2430,11 +2466,86 @@ fn paintScrollbar(p: *Painter, n: *Node) void {
     }
 }
 
+/// Windows 11's overlay scrollbar: while the scroller is in use, a 2px
+/// line at its edge; with the mouse over it (or dragging it), a 6px thumb
+/// on a light track with small arrows. Nothing otherwise.
+fn paintOverlayScrollbar(p: *Painter, n: *Node, sb: Scrollbar) void {
+    const s = p.s;
+    const wide = s.sb_hot == n.id or (s.sb_part != .none and s.sb_node == n.id);
+    if (!wide and s.sb_show != n.id) return;
+    const dark = n.props.dk or luminance(colorBehind(s, n)) < 0.5;
+    const ink: tree_mod.Color = if (n.props.sbc) |cc| cc[0] else if (dark) .{ 159, 159, 159, 1 } else .{ 134, 134, 134, 1 };
+    const vt = p.vt();
+    if (wide) {
+        const track: tree_mod.Color = if (n.props.sbc) |cc| cc[1] else if (dark) .{ 44, 44, 44, 0.9 } else .{ 249, 249, 249, 0.9 };
+        const rr_track: c.D2D1_ROUNDED_RECT = .{ .rect = rectF(sb.bar), .radiusX = 4, .radiusY = 4 };
+        vt.FillRoundedRectangle.?(p.rt, &rr_track, p.solid(track));
+    }
+    if (sb.thumb.h > 4) {
+        const tw: f32 = if (wide) 6 else 2;
+        // Thin: at the bar's outer edge; wide: in its middle.
+        const x = if (wide) sb.bar.x + (sb.bar.w - tw) / 2 else sb.bar.x + sb.bar.w - tw - 2;
+        const rr: c.D2D1_ROUNDED_RECT = .{
+            .rect = .{ .left = x, .top = sb.thumb.y + 2, .right = x + tw, .bottom = sb.thumb.y + sb.thumb.h - 2 },
+            .radiusX = tw / 2,
+            .radiusY = tw / 2,
+        };
+        vt.FillRoundedRectangle.?(p.rt, &rr, p.solid(ink));
+    }
+    if (!wide) return;
+    // Small arrows, as Windows 11's.
+    const cx = sb.bar.x + sb.bar.w / 2;
+    for ([2]Rect{ sb.up, sb.down }, 0..) |b, i| {
+        if (b.h < 4) continue;
+        const cy = b.y + b.h / 2;
+        const dir: f32 = if (i == 0) 1 else -1;
+        const tip: c.D2D1_POINT_2F = .{ .x = cx, .y = cy - dir * 2 };
+        const base_y = cy + dir * 2;
+        const tri = triangleGeometry(tip, .{ .x = cx + 3, .y = base_y }, .{ .x = cx - 3, .y = base_y }) orelse continue;
+        defer releaseCom(@as(?*c.ID2D1PathGeometry, tri));
+        vt.FillGeometry.?(p.rt, @ptrCast(tri), p.solid(ink), null);
+    }
+}
+
+/// Overlay scrollbars: the scroller under the mouse (or just scrolled)
+/// shows its bar for a while, wide when the mouse is on it.
+const sb_fade_timer: usize = @as(usize, std.math.maxInt(u32)) + 6;
+const sb_show_ms: u64 = 1500;
+
+fn overlayTouch(s: *Surface, pt: [2]f32) void {
+    if (!s.overlay_sb) return;
+    var show: i64 = 0;
+    if (s.engine.tree.scroller(s.engine.tree.hit(pt[0], pt[1]))) |sc| {
+        if (sc.content_h > sc.frame.h + 0.5) show = sc.id;
+    }
+    const hot: i64 = if (scrollbarAt(s, pt)) |at| at.node.id else 0;
+    const changed = show != s.sb_show or hot != s.sb_hot;
+    if (show != 0) {
+        s.sb_show = show;
+        s.sb_show_until = c.GetTickCount64() + sb_show_ms;
+        _ = c.SetTimer(s.hwnd, sb_fade_timer, @intCast(sb_show_ms + 50), null);
+    }
+    s.sb_hot = hot;
+    if (changed) _ = c.InvalidateRect(s.hwnd, null, c.FALSE);
+}
+
+/// The overlay bar fades once it's been idle (not while the mouse is on it
+/// or holds it).
+fn onOverlayFade(s: *Surface) void {
+    if (s.sb_show == 0) return;
+    if (s.sb_hot != 0 or s.sb_part != .none or c.GetTickCount64() < s.sb_show_until) {
+        _ = c.SetTimer(s.hwnd, sb_fade_timer, @intCast(sb_show_ms), null);
+        return;
+    }
+    s.sb_show = 0;
+    _ = c.InvalidateRect(s.hwnd, null, c.FALSE);
+}
+
 /// The scroller whose scrollbar is at `pt`, and its bar.
 fn scrollbarAt(s: *Surface, pt: [2]f32) ?struct { node: *Node, sb: Scrollbar } {
     var n = s.engine.tree.hit(pt[0], pt[1]);
     while (n) |x| : (n = x.parent) {
-        const sb = scrollbarOf(x) orelse continue;
+        const sb = scrollbarOf(s, x) orelse continue;
         if (pt[0] >= sb.bar.x and pt[0] < sb.bar.x + sb.bar.w and pt[1] >= sb.bar.y and pt[1] < sb.bar.y + sb.bar.h) return .{ .node = x, .sb = sb };
     }
     return null;
@@ -2470,7 +2581,7 @@ fn onScrollbarDown(s: *Surface, pt: [2]f32) bool {
 /// track stops once the thumb reaches the mouse.
 fn scrollbarStep(s: *Surface, pt: [2]f32) void {
     const n = s.engine.tree.get(s.sb_node) orelse return;
-    const sb = scrollbarOf(n) orelse return;
+    const sb = scrollbarOf(s, n) orelse return;
     const page = @round(sb.bar.h * 0.875);
     const dy: f32 = switch (s.sb_part) {
         .up => -40,
@@ -2498,7 +2609,7 @@ fn onScrollbarMove(s: *Surface, pt: [2]f32) bool {
     if (s.sb_part == .none) return false;
     if (s.sb_part != .thumb) return true;
     const n = s.engine.tree.get(s.sb_node) orelse return true;
-    const sb = scrollbarOf(n) orelse return true;
+    const sb = scrollbarOf(s, n) orelse return true;
     if (!(sb.travel > 0)) return true;
     const frac = std.math.clamp((pt[1] - s.sb_grab - sb.start) / sb.travel, 0, 1);
     _ = s.engine.scrollBy(n, frac * sb.range - n.scroll_y);
@@ -2535,6 +2646,8 @@ fn onWheel(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM, sideways: bool) void
     // 120 per notch, down positive; as Chromium on Windows: the system's
     // lines per notch at 100/3 px a line (3 lines: 100 px).
     const dy = -@as(f32, @floatFromInt(delta)) / 120.0 * wheelLines() * (100.0 / 3.0);
+    // The scroller's overlay bar shows while it's wheeled.
+    overlayTouch(s, pt);
     const hit = s.engine.tree.hit(pt[0], pt[1]);
     if (sideways or wparam & c.MK_SHIFT != 0) {
         // WM_MOUSEHWHEEL: right positive; Shift+wheel: down scrolls right.
@@ -2596,6 +2709,10 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             _ = c.KillTimer(hwnd, wparam);
             if (wparam == sb_timer) {
                 onScrollbarTimer(s);
+                return 0;
+            }
+            if (wparam == sb_fade_timer) {
+                onOverlayFade(s);
                 return 0;
             }
             if (wparam == warm_timer) {
@@ -2708,6 +2825,10 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         },
         c.WM_MOUSELEAVE => {
             s.tracking = false;
+            if (s.sb_hot != 0) {
+                s.sb_hot = 0;
+                _ = c.InvalidateRect(hwnd, null, c.FALSE);
+            }
             if (s.hovered != 0) {
                 s.hovered = 0;
                 _ = s.engine.event(0, "hover", "null");
@@ -4946,7 +5067,7 @@ fn paint(p: *Painter, n: *Node) void {
     while (it.next()) |k| paint(p, k);
     if (mask != null) vt.PopLayer.?(p.rt);
     // Its scrollbar, over its content (in its own clip).
-    if (n.gutter > 0) paintScrollbar(p, n);
+    if (n.gutter > 0 or (p.s.overlay_sb and n.props.scroll)) paintScrollbar(p, n);
     // The outline: over the box and its children, outside its own clip
     // (with its transform and opacity). A Windows 11 text box shows its
     // focus with its accent line instead.
