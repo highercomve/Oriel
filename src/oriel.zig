@@ -32,6 +32,8 @@ pub const android = if (target.is_android) @import("platform/android/android.zig
 pub const ios = if (target.is_ios) @import("platform/ios/ios.zig") else struct {};
 /// OS permissions: declared in build.zig, queried and requested at runtime.
 pub const permissions = @import("core/permissions.zig");
+/// Facts about the device: its name (what a sharing app announces).
+pub const system = @import("core/system.zig");
 /// -Dnative_ui: the app's Zig code draws into a page's <canvas>
 /// (native_ui/zig_canvas.zig; docs/native-renderer.md, "Canvas from Zig").
 /// Without it there is no native canvas: check `oriel.options.native_ui`.
@@ -185,6 +187,7 @@ test {
     std.testing.refAllDecls(@import("core/isolation.zig"));
     std.testing.refAllDecls(@import("core/csp.zig"));
     std.testing.refAllDecls(permissions);
+    std.testing.refAllDecls(system);
     std.testing.refAllDecls(@import("core/window_commands.zig"));
     std.testing.refAllDecls(log);
     std.testing.refAllDecls(platform);
