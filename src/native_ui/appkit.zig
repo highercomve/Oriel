@@ -100,6 +100,9 @@ const Field = struct {
     inner: Object,
     /// An NSSlider (<input type=range>): no text, placeholder or font.
     slider: bool = false,
+    /// An NSButton checkbox or radio (kind check): its state is the page's
+    /// (Props on/mix), set again after each click.
+    check: bool = false,
 };
 
 /// Live surfaces by token, and which surface and node a view or control
@@ -174,6 +177,11 @@ fn classes() void {
         .{ "becomeFirstResponder", textFieldBecomeFirst },
         .{ "textView:shouldChangeTextInRange:replacementString:", textFieldShouldChange },
     });
+    // A native checkbox or radio: it tells the page when it takes the
+    // keyboard (with Full Keyboard Access; without it NSButton doesn't).
+    check_class = cocoa.defineSubclass("OrielNuiCheck", "NSButton", &.{}, .{
+        .{ "becomeFirstResponder", checkBecomeFirst },
+    });
     secure_field_class = cocoa.defineSubclass("OrielNuiSecureTextField", "NSSecureTextField", &.{}, .{
         .{ "becomeFirstResponder", secureFieldBecomeFirst },
         .{ "textView:shouldChangeTextInRange:replacementString:", secureFieldShouldChange },
@@ -198,6 +206,8 @@ fn classes() void {
         .{ "textView:doCommandBySelector:", textViewCommand },
         .{ "textView:shouldChangeTextInRange:replacementString:", textViewShouldChange },
         .{ "popupChanged:", popupChanged },
+        .{ "checkClicked:", checkClicked },
+        .{ "checkResync:", checkResync },
         .{ "sliderChanged:", sliderChanged },
     }));
 }
@@ -217,7 +227,7 @@ fn withPlatformExtras(gpa: std.mem.Allocator, platform_json: [:0]const u8) ?[:0]
     const body = trimmed[0 .. trimmed.len - 1];
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
     const a = systemAccent();
-    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"fullKeyboardAccess\":{},\"dpr\":{d},\"accent\":[{d},{d},{d}]}}", .{ body, sep, fka, dpr, a[0], a[1], a[2] }, 0) catch null;
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"fullKeyboardAccess\":{},\"dpr\":{d},\"accent\":[{d},{d},{d}],\"controls\":[\"check\"]}}", .{ body, sep, fka, dpr, a[0], a[1], a[2] }, 0) catch null;
 }
 
 /// The user's accent color (System Settings > Appearance) in sRGB 0-255:
@@ -708,7 +718,7 @@ fn syncFields(s: *Surface) void {
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
         const n = np.*;
-        if (n.kind != .input and n.kind != .textarea and n.kind != .select) continue;
+        if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check) continue;
         const f = s.fields.get(n.id) orelse blk: {
             const f = makeField(s, n) orelse continue;
             s.fields.put(s.gpa, n.id, f) catch {
@@ -724,6 +734,7 @@ fn syncFields(s: *Surface) void {
             setValue(n, f, v);
         }
         style(n, f);
+        if (f.check) checkState(n, f.inner);
         // The page changes placeholders ("Select text first…" → "Tell
         // GhostPen what to do…"); a text area's is drawn under it.
         if (n.kind == .input and !f.slider) if (cocoa.nsString(n.props.ph orelse "")) |ph| {
@@ -739,6 +750,8 @@ fn syncFields(s: *Surface) void {
         const visible = shown.h > 1 and shown.w > 1 and n.props.vis != false;
         f.holder.msgSend(void, "setHidden:", .{cocoa.boolean(!visible)});
         if (n.kind != .textarea) {
+            // (A check sized to its box: small under 14px, mini under 12.)
+            if (f.check) f.inner.msgSend(void, "setControlSize:", .{@as(c_ulong, if (r.h >= 14) 0 else if (r.h >= 12) 1 else 2)});
             f.inner.msgSend(void, "setEnabled:", .{cocoa.boolean(!n.props.dis)});
         } else {
             // A disabled text area: neither edited nor selected (nor focused,
@@ -841,6 +854,24 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             pb.msgSend(void, "setAction:", .{cocoa.objc.sel("popupChanged:").value});
             break :blk .{ .holder = cocoa.nil, .outer = pb, .inner = pb };
         },
+        // A checkbox or radio (kind check: the backend lists "check" in
+        // its controls): an NSButton, non-auto in effect (its state is set
+        // from the page's after every click, design 1.5), radios never
+        // grouped (each in its own holder: exclusivity is the page's).
+        .check => blk: {
+            const b = check_class.?.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+            if (b.value == null) return null;
+            const radio = if (n.props.ctl) |c| std.mem.eql(u8, c, "radio") else false;
+            b.msgSend(void, "setButtonType:", .{@as(c_ulong, if (radio) 4 else 3)}); // NSButtonTypeRadio, Switch
+            if (cocoa.nsString("")) |empty| {
+                defer empty.release();
+                b.msgSend(void, "setTitle:", .{empty});
+            }
+            b.msgSend(void, "setAllowsMixedState:", .{cocoa.boolean(!radio)});
+            b.msgSend(void, "setTarget:", .{field_delegate});
+            b.msgSend(void, "setAction:", .{cocoa.objc.sel("checkClicked:").value});
+            break :blk .{ .holder = cocoa.nil, .outer = b, .inner = b, .check = true };
+        },
         else => return null,
     };
     const holder = holder_class.?.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
@@ -877,6 +908,7 @@ fn setValue(n: *Node, f: Field, v: []const u8) void {
 }
 
 fn style(n: *Node, f: Field) void {
+    if (f.check) return; // the platform's look
     if (f.slider) {
         // The page's min/max/step may change; accent-color tints the track.
         const r = draw.Range.of(n);
@@ -1080,6 +1112,13 @@ fn sendValue(s: *Surface, n: *Node, kind: []const u8, text: []const u8) void {
 // editor's delegate. Checked once things settle after a change.
 
 var text_field_class: ?cocoa.objc.Class = null;
+var check_class: ?cocoa.objc.Class = null;
+
+fn checkBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
+    const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSButton"), BOOL, "becomeFirstResponder", .{});
+    focusChangedNear(self);
+    return ok;
+}
 var secure_field_class: ?cocoa.objc.Class = null;
 var text_view_class: ?cocoa.objc.Class = null;
 
@@ -1246,6 +1285,40 @@ fn textDidChange(_: id, _: SEL, note: id) callconv(.c) void {
 
 fn textViewCommand(_: id, _: SEL, tv: id, selector: SEL) callconv(.c) BOOL {
     return cocoa.boolean(commandKey(tv, selector) orelse false);
+}
+
+/// A check's state as the page has it (NSControlStateValueOn 1, Off 0,
+/// Mixed -1).
+fn checkState(n: *const Node, b: Object) void {
+    const state: c_long = if (n.props.mix) -1 else if (n.props.on) 1 else 0;
+    if (b.msgSend(c_long, "state", .{}) != state) b.msgSend(void, "setState:", .{state});
+}
+
+/// A click on a native check: the page's click (activate(): it toggles,
+/// or a handler cancels it), then the button shows the page's state again
+/// (a cancelled click or a controlled box that ends where it began sends
+/// no props).
+fn checkClicked(_: id, _: SEL, sender: id) callconv(.c) void {
+    const o = ownerOf(sender) orelse return;
+    if (o.s.updating) return;
+    const token = o.s.token;
+    const nid = o.n.id;
+    const app = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{});
+    const ev = app.msgSend(Object, "currentEvent", .{});
+    const flags: c_ulong = if (ev.value != null) ev.msgSend(c_ulong, "modifierFlags", .{}) else 0;
+    var buf: [16]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "{d}", .{modFlags(flags)}) catch return;
+    _ = o.s.engine.event(nid, "click", json);
+    const s = surfaces.get(token) orelse return; // the page closed its window
+    const n = s.engine.tree.get(nid) orelse return;
+    checkState(n, .{ .value = sender });
+    // And after the page's render (its new props, if any).
+    field_delegate.msgSend(void, "performSelector:withObject:afterDelay:", .{ cocoa.objc.sel("checkResync:").value, sender, @as(f64, 0) });
+}
+
+fn checkResync(_: id, _: SEL, sender: id) callconv(.c) void {
+    const o = ownerOf(sender) orelse return;
+    checkState(o.n, .{ .value = sender });
 }
 
 fn popupChanged(_: id, _: SEL, sender: id) callconv(.c) void {
@@ -1757,7 +1830,8 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
         // a key let go while Command is down: WebKit fires no keyup for it.
         11 => {
             if (!composing and ev.msgSend(c_ulong, "modifierFlags", .{}) & (1 << 20) == 0) _ = sendKey(s, nid, event, "keyup");
-            return if (surfaces.get(token) == null) null else event;
+            if (surfaces.get(token) == null) return null;
+            return if (page == null and activationKey(s, nid, ev)) null else event;
         },
         else => {},
     }
@@ -1778,7 +1852,18 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
     if (composing) return event;
     if (page == null) field_key = event;
     const prevented = sendKeyDown(s, nid, event);
+    // A native check: Space and Return are the page's (its activation,
+    // main.js keyEvent), never the button's own click.
+    if (page == null and activationKey(s, nid, ev)) return null;
     return if (prevented or surfaces.get(token) == null) null else event;
+}
+
+/// Space, Return or Enter on a native check (kind check).
+fn activationKey(s: *Surface, nid: i64, ev: Object) bool {
+    const n = s.engine.tree.get(nid) orelse return false;
+    if (n.kind != .check) return false;
+    const code = ev.msgSend(c_ushort, "keyCode", .{});
+    return code == 49 or code == 36 or code == 76;
 }
 
 /// Shift, Control, Option or Command (either side) as the page's key down
