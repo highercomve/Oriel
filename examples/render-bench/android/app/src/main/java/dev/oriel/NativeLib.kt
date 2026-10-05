@@ -28,6 +28,10 @@ internal object NativeLib {
     @JvmStatic external fun onShortcut(id: ByteArray)
     /** The system speech recognizer (OrielSpeech): kind 0 partial, 1 final, 2 level, 3 error, 4 ended. */
     @JvmStatic external fun onSpeech(kind: Int, text: ByteArray)
+    /** OrielMdns: the answer to mdnsRegister (kind 0; `name` is the announced name) or mdnsBrowse (kind 1). */
+    @JvmStatic external fun onMdnsResult(kind: Int, id: Int, ok: Boolean, code: Int, name: ByteArray?)
+    /** OrielMdns: a browser's found/lost event, in src/modules/network/mdns.zig's wire format. */
+    @JvmStatic external fun onMdnsEvent(id: Int, event: ByteArray)
 }
 
 internal fun ByteArray.utf8(): String = String(this, Charsets.UTF_8)
