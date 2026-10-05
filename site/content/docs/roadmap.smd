@@ -119,7 +119,7 @@ See [Native renderer]($link.page('docs/native-renderer')) for measured results, 
 
 Oriel is open source on [GitHub](https://github.com/highercomve/Oriel). File issues, open pull requests, or discuss ideas there. Some guidance:
 
-1. **Read PLAN.md** first for architecture and coding rules (memory safety, testing, platform coverage).
+1. **Read [the contributor guide](https://github.com/highercomve/Oriel/blob/main/docs/contributing.md)** first for architecture and coding rules (memory safety, testing, platform coverage).
 2. **Check open issues** to see what work is needed or in progress.
 3. **Test Windows builds** under Wine before committing (see `docs/windows-testing.md`).
 4. **Run headless checks:** `scripts/headless.sh ./zig-out/bin/oriel-smoke --auto-quit` verifies every module.

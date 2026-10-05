@@ -134,7 +134,7 @@ Replace `$PID` with the app's process ID.
 Oriel's platform layer is designed for memory safety. The framework uses:
 - `defer` and `errdefer` for cleanup on all error paths.
 - Thread-safe command dispatch (async commands run on a worker pool, replies go back on the main thread).
-- No manual pointer casting except where justified (see PLAN.md rules).
+- No manual pointer casting except where justified (see `docs/memory-safety-review.md`).
 
 If you see unexpected crashes or memory issues, check:
 1. All SQL prepared statements are finalized.

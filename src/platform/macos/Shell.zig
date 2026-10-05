@@ -219,7 +219,7 @@ pub fn sharedApplication() Object {
     return cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{});
 }
 
-/// Global shortcut, tray and menu backends (PLAN.md Milestone 7, step 2)
+/// Global shortcut, tray and menu backends
 /// can hook shutdown here, like on Windows.
 pub var on_shutdown_fn: ?*const fn () void = null;
 
