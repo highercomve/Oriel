@@ -591,6 +591,8 @@ internal class NuiNode(val id: Int, var kind: String) {
                         "serif", "ui-serif" -> return@getOrPut Typeface.SERIF
                         "" -> continue
                     }
+                    // -webkit-small-control and the like: the system UI font, as Chrome has them.
+                    if (name.startsWith("-webkit-")) return@getOrPut Typeface.DEFAULT
                     // A family the system knows (fonts.xml: cursive, casual, …); an unknown name gives the default.
                     val tf = Typeface.create(name, Typeface.NORMAL)
                     if (tf !== Typeface.DEFAULT) return@getOrPut tf
@@ -1385,6 +1387,9 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             "input", "textarea" -> Field(context).apply {
                 background = null
                 setPadding(0, 0, 0, 0)
+                // The page sized the box for the text's line: no extra font
+                // padding above and below it (it pushed the text out of view).
+                includeFontPadding = false
                 val multi = n.kind == "textarea"
                 inputType = when {
                     n.p.optBoolean("pw") -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -1435,8 +1440,11 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 }
             }
             "select" -> Spinner(context).apply {
-                background = null
-                setPadding(0, 0, 0, 0)
+                // Material's dropdown caret at the end (the device theme's own
+                // can resolve to nothing here), in the field's text colour;
+                // room for it on the right, the page sized the rest of the box.
+                background = Caret()
+                setPadding(0, 0, (20 * density).toInt(), 0)
                 onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, rowId: Long) {
                         if (updating) return
@@ -1513,6 +1521,30 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     }
 
     /** A select's options, drawn with the node's font size and color. */
+    /** A select's dropdown caret (Material's 10 × 5 dp triangle), end-aligned and centred. */
+    private inner class Caret : android.graphics.drawable.Drawable() {
+        var color = Color.BLACK
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val tri = Path()
+
+        override fun draw(canvas: Canvas) {
+            val b = bounds
+            val w = 10 * density; val h = 5 * density
+            val cx = b.right - 10 * density; val cy = b.exactCenterY()
+            tri.reset()
+            tri.moveTo(cx - w / 2, cy - h / 2); tri.lineTo(cx + w / 2, cy - h / 2); tri.lineTo(cx, cy + h / 2); tri.close()
+            p.color = if (state.contains(android.R.attr.state_enabled)) color else (color and 0x00ffffff) or 0x61000000
+            canvas.drawPath(tri, p)
+        }
+
+        override fun isStateful() = true
+        override fun onStateChange(state: IntArray): Boolean { invalidateSelf(); return true }
+        override fun setAlpha(alpha: Int) { p.alpha = alpha }
+        override fun setColorFilter(f: android.graphics.ColorFilter?) { p.colorFilter = f }
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
+    }
+
     private inner class Options(val id: Int, val labels: List<String>) : ArrayAdapter<String>(context, android.R.layout.simple_spinner_item, labels) {
         init { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
 
@@ -1521,7 +1553,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             val p = nodes[id]?.p
             v.setTextColor(p?.optJSONArray("col")?.let { NuiNode.color(it) } ?: Color.BLACK)
             v.setTextSize(TypedValue.COMPLEX_UNIT_DIP, p?.optDouble("fz", 16.0)?.toFloat() ?: 16f)
+            if (p != null) v.typeface = NuiNode.typeface(p.optDouble("fwt", 400.0).toInt(), p.optBoolean("it"), NuiNode.family(p.optString("ff"), p.optBoolean("mono")))
             v.setPadding(0, 0, 0, 0)
+            v.includeFontPadding = false
+            v.gravity = Gravity.CENTER_VERTICAL or Gravity.START
             v.isSingleLine = true
             v.ellipsize = TextUtils.TruncateAt.END
             return v
@@ -1563,7 +1598,11 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 if (i >= 0 && i != v.selectedItemPosition) v.setSelection(i, false)
             } finally { updating = false }
         }
+        // The page's font, as its text runs have it (not the system theme's).
+        val face = NuiNode.typeface(n.p.optDouble("fwt", 400.0).toInt(), n.p.optBoolean("it"), NuiNode.family(n.p.optString("ff"), n.p.optBoolean("mono")))
+        if (v is Spinner) (v.background as? Caret)?.let { it.color = color; it.invalidateSelf() }
         if (v is EditText) {
+            v.typeface = face
             v.setTextColor(color)
             v.setHintTextColor((color and 0x00ffffff) or 0x80000000.toInt())
             v.setTextSize(TypedValue.COMPLEX_UNIT_DIP, fz)
