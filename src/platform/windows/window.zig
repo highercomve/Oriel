@@ -212,6 +212,26 @@ test "logical and physical pixels" {
     try std.testing.expectEqual(@as(c_int, 800), toLogical(toPhysical(800, 168), 168));
 }
 
+/// Apps use the dark theme (Settings > Personalization > Colors: "Choose
+/// your app mode"): AppsUseLightTheme = 0.
+fn appsUseDarkTheme() bool {
+    var key: win32.HKEY = undefined;
+    const sub = std.unicode.utf8ToUtf16LeStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+    if (win32.RegOpenKeyExW(win32.HKEY_CURRENT_USER, sub, 0, win32.KEY_READ, &key) != 0) return false;
+    defer _ = win32.RegCloseKey(key);
+    var value: [4]u8 = undefined;
+    var size: win32.DWORD = value.len;
+    if (win32.RegQueryValueExW(key, std.unicode.utf8ToUtf16LeStringLiteral("AppsUseLightTheme"), null, null, &value, &size) != 0 or size != 4) return false;
+    return std.mem.readInt(u32, &value, .little) == 0;
+}
+
+/// The title bar follows the app mode, dark or light, as Windows' own apps'.
+fn applyTitleTheme(hwnd: win32.HWND) void {
+    const dark: win32.BOOL = if (appsUseDarkTheme()) win32.TRUE else win32.FALSE;
+    if (win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, @sizeOf(win32.BOOL)) < 0)
+        _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, &dark, @sizeOf(win32.BOOL));
+}
+
 /// The outer size of a window whose client area is `width`×`height` logical
 /// pixels at `dpi`.
 fn outerSize(width: c_int, height: c_int, style: win32.DWORD, has_menu: bool, ex_style: win32.DWORD, dpi: u32) struct { w: c_int, h: c_int } {
@@ -1108,6 +1128,7 @@ pub fn WindowCreator(
                 null,
             ) orelse return error.CreateWindowFailed;
             errdefer _ = win32.DestroyWindow(hwnd);
+            applyTitleTheme(hwnd);
             if (windowDpi(hwnd) != win32.GetDpiForSystem()) {
                 const size = outerSize(options.width, options.height, style, false, ex_style, windowDpi(hwnd));
                 _ = win32.SetWindowPos(hwnd, null, 0, 0, size.w, size.h, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
@@ -1501,6 +1522,14 @@ pub fn WindowCreator(
                             _ = ctl.lpVtbl.MoveFocus(ctl, .PROGRAMMATIC);
                             return 0;
                         };
+                    }
+                    return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
+                },
+                // The app mode changed (dark or light): the title bar follows.
+                win32.WM_SETTINGCHANGE => {
+                    if (lParam != 0) {
+                        const area: [*:0]const u16 = @ptrFromInt(@as(usize, @bitCast(lParam)));
+                        if (std.mem.eql(u16, std.mem.span(area), std.unicode.utf8ToUtf16LeStringLiteral("ImmersiveColorSet"))) applyTitleTheme(hwnd);
                     }
                     return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
                 },
