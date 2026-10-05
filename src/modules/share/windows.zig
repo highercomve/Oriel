@@ -942,25 +942,7 @@ fn keepFile(path: []const u8) !?common.File {
     const handle = try received.addPath(z) orelse return null;
     const e = received.info(handle).?;
     const name = std.fs.path.basenameWindows(path);
-    return .{ .handle = handle, .name = name, .mime = mimeOf(name), .size = e.size };
-}
-
-/// A MIME type from the file name's extension (the page's File.type).
-fn mimeOf(name: []const u8) []const u8 {
-    const ext = std.fs.path.extension(name);
-    const table = [_]struct { []const u8, []const u8 }{
-        .{ ".txt", "text/plain" },        .{ ".md", "text/markdown" },     .{ ".csv", "text/csv" },
-        .{ ".html", "text/html" },        .{ ".htm", "text/html" },        .{ ".json", "application/json" },
-        .{ ".xml", "application/xml" },   .{ ".pdf", "application/pdf" },  .{ ".zip", "application/zip" },
-        .{ ".png", "image/png" },         .{ ".jpg", "image/jpeg" },       .{ ".jpeg", "image/jpeg" },
-        .{ ".gif", "image/gif" },         .{ ".webp", "image/webp" },      .{ ".svg", "image/svg+xml" },
-        .{ ".bmp", "image/bmp" },         .{ ".heic", "image/heic" },      .{ ".mp3", "audio/mpeg" },
-        .{ ".wav", "audio/wav" },         .{ ".ogg", "audio/ogg" },        .{ ".m4a", "audio/mp4" },
-        .{ ".flac", "audio/flac" },       .{ ".mp4", "video/mp4" },        .{ ".mov", "video/quicktime" },
-        .{ ".webm", "video/webm" },       .{ ".mkv", "video/x-matroska" }, .{ ".avi", "video/x-msvideo" },
-    };
-    for (table) |t| if (std.ascii.eqlIgnoreCase(ext, t[0])) return t[1];
-    return "application/octet-stream";
+    return .{ .handle = handle, .name = name, .mime = common.mimeOf(name), .size = e.size };
 }
 
 /// A received file, read-only: a new handle to the file `handle` names
@@ -999,11 +981,6 @@ test "parseLaunch" {
     try t.expectEqual(@as(usize, 1), st.first);
 }
 
-test "mimeOf" {
-    try std.testing.expectEqualStrings("image/png", mimeOf("Photo.PNG"));
-    try std.testing.expectEqualStrings("text/plain", mimeOf("notes.txt"));
-    try std.testing.expectEqualStrings("application/octet-stream", mimeOf("noext"));
-}
 
 test {
     std.testing.refAllDecls(winrt);
