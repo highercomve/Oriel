@@ -32,6 +32,8 @@ pub const PlistOptions = struct {
     icons: bool = true,
     url_schemes: []const []const u8 = &.{},
     permissions: []const macos.Permission = &.{},
+    /// The app's own usage keys (`AppOptions.ios.usage_descriptions`).
+    usage_descriptions: []const macos.UsageDescription = &.{},
     /// UIBackgroundModes `audio`: keep capturing or playing in the background.
     background_audio: bool = false,
     /// Allow plain-HTTP loads (the dev build's dev server on the LAN).
@@ -63,7 +65,7 @@ fn usageKeys(kind: []const u8) []const []const u8 {
 pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
     for ([_][]const u8{ o.id, o.name, o.exe_name, o.version, o.min_os }) |v| try macos.checkText(v);
     for (o.url_schemes) |scheme| if (!macos.isValidSchemeFormat(scheme)) return error.InvalidUrlScheme;
-    for (o.permissions) |p| try macos.checkText(p.reason);
+    try macos.checkUsageDescriptions(o.permissions, o.usage_descriptions);
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     const w = &out.writer;
@@ -111,9 +113,7 @@ pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
         try w.writeAll("\t<key>CFBundleIcons</key>\n\t<dict>\n\t\t<key>CFBundlePrimaryIcon</key>\n\t\t<dict>\n\t\t\t<key>CFBundleIconFiles</key>\n\t\t\t<array>\n\t\t\t\t<string>AppIcon60x60</string>\n\t\t\t</array>\n\t\t</dict>\n\t</dict>\n");
         try w.writeAll("\t<key>CFBundleIcons~ipad</key>\n\t<dict>\n\t\t<key>CFBundlePrimaryIcon</key>\n\t\t<dict>\n\t\t\t<key>CFBundleIconFiles</key>\n\t\t\t<array>\n\t\t\t\t<string>AppIcon60x60</string>\n\t\t\t\t<string>AppIcon76x76</string>\n\t\t\t\t<string>AppIcon83.5x83.5</string>\n\t\t\t</array>\n\t\t</dict>\n\t</dict>\n");
     }
-    for (o.permissions) |p| {
-        for (usageKeys(p.kind)) |key| try macos.entry(w, key, p.reason);
-    }
+    try macos.writeUsageDescriptions(w, o.permissions, o.usage_descriptions, usageKeys);
     if (o.background_audio) try w.writeAll("\t<key>UIBackgroundModes</key>\n\t<array>\n\t\t<string>audio</string>\n\t</array>\n");
     if (o.allow_http) try w.writeAll("\t<key>NSAppTransportSecurity</key>\n\t<dict>\n\t\t<key>NSAllowsArbitraryLoads</key>\n\t\t<true/>\n\t\t<key>NSAllowsLocalNetworking</key>\n\t\t<true/>\n\t</dict>\n");
     if (o.document_types.len > 0) {
@@ -176,6 +176,8 @@ pub fn iosAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     defer url_schemes.deinit(gpa);
     var document_types: std.ArrayList([]const u8) = .empty;
     defer document_types.deinit(gpa);
+    var usage_descriptions: std.ArrayList(macos.UsageDescription) = .empty;
+    defer usage_descriptions.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -225,6 +227,12 @@ pub fn iosAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
                 return 1;
             };
             try permissions.append(gpa, .{ .kind = v[0..eq], .reason = v[eq + 1 ..] });
+        } else if (std.mem.eql(u8, arg, "--usage-key")) {
+            const eq = std.mem.indexOfScalar(u8, v, '=') orelse {
+                std.debug.print("error: ios-app: --usage-key expects <key>=<text>, got {s}\n", .{v});
+                return 1;
+            };
+            try usage_descriptions.append(gpa, .{ .key = v[0..eq], .text = v[eq + 1 ..] });
         } else {
             std.debug.print("error: ios-app: unknown argument {s}\n", .{arg});
             return 1;
@@ -242,6 +250,7 @@ pub fn iosAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     o.url_schemes = url_schemes.items;
     o.document_types = document_types.items;
     o.permissions = permissions.items;
+    o.usage_descriptions = usage_descriptions.items;
 
     const bundle_name = macos.bundleDirName(gpa, o.name) catch |err| {
         std.debug.print("error: ios-app: the app name \"{s}\" can't be a bundle name ({s})\n", .{ o.name, @errorName(err) });
@@ -264,7 +273,7 @@ pub fn iosAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     };
 
     const plist = generateInfoPlist(gpa, o) catch |err| {
-        std.debug.print("error: ios-app: Info.plist: {s} (package metadata must be UTF-8 without control characters; URL schemes must match [A-Za-z][A-Za-z0-9+.-]*)\n", .{@errorName(err)});
+        std.debug.print("error: ios-app: Info.plist: {s} (package metadata must be UTF-8 without control characters; URL schemes must match [A-Za-z][A-Za-z0-9+.-]*; extra usage keys [A-Za-z0-9_.~-]* ending in UsageDescription, with a text)\n", .{@errorName(err)});
         return 1;
     };
     defer gpa.free(plist);
@@ -290,12 +299,19 @@ test generateInfoPlist {
             .{ .kind = "microphone", .reason = "Dictation" },
             .{ .kind = "system_audio", .reason = "not on iOS" },
         },
+        .usage_descriptions = &.{
+            .{ .key = "NSMotionUsageDescription", .text = "Counts steps" },
+            .{ .key = "NSMicrophoneUsageDescription", .text = "Records memos" },
+        },
         .background_audio = true,
     });
     defer a.free(xml);
+    // The extra overrides the permission's text; each key once.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, xml, "NSMicrophoneUsageDescription"));
     for ([_][]const u8{
         "<key>MinimumOSVersion</key>\n\t<string>15.0</string>",
-        "<key>NSMicrophoneUsageDescription</key>\n\t<string>Dictation</string>",
+        "<key>NSMicrophoneUsageDescription</key>\n\t<string>Records memos</string>",
+        "<key>NSMotionUsageDescription</key>\n\t<string>Counts steps</string>",
         "<key>NSSpeechRecognitionUsageDescription</key>\n\t<string>Dictation</string>",
         "<string>iPhoneOS</string>",
         "<key>UIApplicationSupportsMultipleScenes</key>",

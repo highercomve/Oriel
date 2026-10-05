@@ -8,7 +8,8 @@
 //! -AllowUnsigned` (developer and test use).
 //!
 //! The manifest: a full-trust desktop app (Windows.FullTrustApplication,
-//! rescap:runFullTrust), capabilities from the declared permissions, and
+//! rescap:runFullTrust), capabilities from the declared permissions and
+//! the app's own (`AppOptions.windows.capabilities`), and
 //! for `.share_target` a Share Target plus a FileTypeAssociation whose
 //! launches (`--oriel-open-with "%1"`) src/modules/share/windows.zig reads.
 
@@ -47,6 +48,9 @@ pub const Manifest = struct {
     /// Declared permission kinds (src/core/permissions/common.zig Kind
     /// names): `capabilitiesFor` maps them.
     permissions: []const []const u8 = &.{},
+    /// The app's own capabilities (`AppOptions.windows.capabilities`),
+    /// merged with the permissions' (`capabilities`).
+    capabilities: []const Capability = &.{},
     share: ?Share = null,
 };
 
@@ -64,6 +68,7 @@ pub const Error = error{
     InvalidPublisher,
     InvalidExtension,
     InvalidArch,
+    InvalidCapability,
     EmptyShareTarget,
     OutOfMemory,
     WriteFailed,
@@ -114,8 +119,62 @@ pub fn capabilitiesFor(kind: []const u8) []const Capability {
 pub const Capability = struct {
     kind: Kind,
     name: []const u8,
-    pub const Kind = enum { general, restricted, device };
+    /// The element and namespace, in the order the schema wants them:
+    /// `<Capability>`, `<uap:Capability>`, `<rescap:Capability>`,
+    /// `<DeviceCapability>`.
+    pub const Kind = enum {
+        general,
+        uap,
+        restricted,
+        device,
+
+        fn element(k: Kind) []const u8 {
+            return switch (k) {
+                .general => "Capability",
+                .uap => "uap:Capability",
+                .restricted => "rescap:Capability",
+                .device => "DeviceCapability",
+            };
+        }
+    };
+
+    /// `<kind>:<name>` (the `--capability` argument).
+    pub fn parse(s: []const u8) ?Capability {
+        const colon = std.mem.indexOfScalar(u8, s, ':') orelse return null;
+        const kind = std.meta.stringToEnum(Kind, s[0..colon]) orelse return null;
+        const c: Capability = .{ .kind = kind, .name = s[colon + 1 ..] };
+        return if (validCapabilityName(c.name)) c else null;
+    }
 };
+
+/// A capability name: `[A-Za-z0-9._-]`, or a device interface's
+/// `{GUID}`-style braces.
+pub fn validCapabilityName(s: []const u8) bool {
+    if (s.len == 0 or s.len > 200) return false;
+    for (s) |c| if (!(std.ascii.isAlphanumeric(c) or std.mem.indexOfScalar(u8, "._-{}", c) != null)) return false;
+    return true;
+}
+
+/// Every capability the manifest declares, once each, in schema order:
+/// internetClient and runFullTrust (always), the permissions' and then the
+/// app's extras within each kind.
+pub fn capabilities(gpa: std.mem.Allocator, permissions: []const []const u8, extras: []const Capability) Error![]Capability {
+    for (extras) |c| if (!validCapabilityName(c.name)) return error.InvalidCapability;
+    var out: std.ArrayList(Capability) = .empty;
+    errdefer out.deinit(gpa);
+    for (std.enums.values(Capability.Kind)) |kind| {
+        if (kind == .general) try appendCapability(gpa, &out, .{ .kind = .general, .name = "internetClient" });
+        if (kind == .restricted) try appendCapability(gpa, &out, .{ .kind = .restricted, .name = "runFullTrust" });
+        for (permissions) |p| for (capabilitiesFor(p)) |c| if (c.kind == kind) try appendCapability(gpa, &out, c);
+        for (extras) |c| if (c.kind == kind) try appendCapability(gpa, &out, c);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn appendCapability(gpa: std.mem.Allocator, list: *std.ArrayList(Capability), c: Capability) error{OutOfMemory}!void {
+    for (list.items) |have| if (have.kind == c.kind and std.mem.eql(u8, have.name, c.name)) return;
+    try list.append(gpa, c);
+}
 
 pub fn generateManifest(gpa: std.mem.Allocator, m: Manifest) Error![]u8 {
     if (!validIdentityName(m.identity_name)) return error.InvalidIdentityName;
@@ -166,18 +225,11 @@ pub fn generateManifest(gpa: std.mem.Allocator, m: Manifest) Error![]u8 {
         \\    </Application>
         \\  </Applications>
         \\  <Capabilities>
-        \\    <Capability Name="internetClient" />
         \\
     );
-    // The schema's order: general, then restricted, then device ones.
-    inline for ([_]Capability.Kind{ .general, .restricted, .device }) |kind| {
-        if (kind == .restricted) try w.writeAll("    <rescap:Capability Name=\"runFullTrust\" />\n");
-        for (m.permissions) |p| for (capabilitiesFor(p)) |c| if (c.kind == kind) switch (kind) {
-            .general => try w.print("    <Capability Name=\"{s}\" />\n", .{c.name}),
-            .restricted => try w.print("    <rescap:Capability Name=\"{s}\" />\n", .{c.name}),
-            .device => try w.print("    <DeviceCapability Name=\"{s}\" />\n", .{c.name}),
-        };
-    }
+    const caps = try capabilities(gpa, m.permissions, m.capabilities);
+    defer gpa.free(caps);
+    for (caps) |c| try w.print("    <{s} Name=\"{f}\" />\n", .{ c.kind.element(), X(c.name) });
     try w.writeAll(
         \\  </Capabilities>
         \\</Package>
@@ -580,6 +632,46 @@ test "generateManifest" {
     const bt = std.mem.indexOf(u8, xml, "<DeviceCapability Name=\"bluetooth\" />").?;
     try testing.expect(general < full_trust and full_trust < capture and capture < bt);
     try testing.expect(std.mem.indexOf(u8, xml, "SupportsAnyFileType") == null);
+}
+
+test "generateManifest: the app's capabilities, merged in schema order" {
+    var m = testManifest();
+    m.permissions = &.{ "bluetooth", "local_network" };
+    m.capabilities = &.{
+        .{ .kind = .device, .name = "proximity" },
+        .{ .kind = .restricted, .name = "broadFileSystemAccess" },
+        .{ .kind = .uap, .name = "picturesLibrary" },
+        .{ .kind = .general, .name = "internetClientServer" },
+        // Already there: once.
+        .{ .kind = .device, .name = "bluetooth" },
+        .{ .kind = .general, .name = "internetClient" },
+        .{ .kind = .restricted, .name = "runFullTrust" },
+        .{ .kind = .uap, .name = "picturesLibrary" },
+    };
+    const xml = try generateManifest(testing.allocator, m);
+    defer testing.allocator.free(xml);
+    const start = std.mem.indexOf(u8, xml, "  <Capabilities>\n").?;
+    const end = std.mem.indexOf(u8, xml, "  </Capabilities>\n").?;
+    try testing.expectEqualStrings(
+        \\  <Capabilities>
+        \\    <Capability Name="internetClient" />
+        \\    <Capability Name="privateNetworkClientServer" />
+        \\    <Capability Name="internetClientServer" />
+        \\    <uap:Capability Name="picturesLibrary" />
+        \\    <rescap:Capability Name="runFullTrust" />
+        \\    <rescap:Capability Name="broadFileSystemAccess" />
+        \\    <DeviceCapability Name="bluetooth" />
+        \\    <DeviceCapability Name="proximity" />
+        \\
+    , xml[start..end]);
+
+    m.capabilities = &.{.{ .kind = .general, .name = "bad\"name" }};
+    try testing.expectError(error.InvalidCapability, generateManifest(testing.allocator, m));
+    try testing.expectEqual(Capability.Kind.uap, Capability.parse("uap:picturesLibrary").?.kind);
+    try testing.expectEqualStrings("{6bdd1fc6-810f-11d0-bec7-08002be2092f}", Capability.parse("device:{6bdd1fc6-810f-11d0-bec7-08002be2092f}").?.name);
+    try testing.expect(Capability.parse("picturesLibrary") == null);
+    try testing.expect(Capability.parse("other:x") == null);
+    try testing.expect(Capability.parse("general:a<b") == null);
 }
 
 test "generateManifest: any file, no share, bad input" {
