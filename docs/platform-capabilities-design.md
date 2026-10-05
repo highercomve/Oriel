@@ -384,6 +384,10 @@ flushes it, so shares that launched the app aren't lost.
   WebResourceRequested, macOS/iOS scheme.zig, Android `shouldInterceptRequest`) with Range support
   from `media/range.zig`, and it is same-origin with the app only. This avoids base64 over IPC. The
   bridge wraps the response in a `File` with name and type.
+- **As built (0.9.1):** both renderers read through one built-in IPC command, `share:read`
+  `{handle, offset, length}` → base64 (≤16 MB per call; `oriel.share.file` asks for 4 MB chunks),
+  over the table in `share/common.zig`. It works the same on every bridge without scheme-handler
+  work. The `/__oriel/share/<token>` route above remains the optimisation for large files.
 - Outbound page Blobs: `{name, bytes}` through IPC, capped (16 MB) and written to the cache before
   sending; bigger files should come from Zig paths or received handles.
 

@@ -20503,6 +20503,22 @@ ${a.stack || ""}`;
     deepLink: Object.freeze({ current() {
       return invoke("deep_link:current", {});
     } }),
+    share: Object.freeze({
+      // A received file (from share:received's files, or its handle) as a File.
+      async file(f) {
+        const info = typeof f === "number" ? { handle: f } : f;
+        const chunk = 4 << 20, parts = [];
+        for (let offset = 0; ; ) {
+          const bin = atob(await invoke("share:read", { handle: info.handle, offset, length: chunk }));
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          parts.push(bytes);
+          offset += bytes.length;
+          if (bytes.length < chunk) break;
+        }
+        return new g.File(parts, info.name || "file", { type: info.mime || "" });
+      }
+    }),
     __emit(event, payload) {
       const set = listeners.get(event);
       if (set?.size) {

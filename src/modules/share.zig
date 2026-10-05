@@ -50,6 +50,9 @@ pub fn open(handle: u32) OpenError!std.Io.File {
     return impl.open(handle);
 }
 
+/// Up to `len` bytes of a received file from `offset` (appended to `out`).
+pub const read = common.read;
+
 /// Let go of a share: its files' handles close and cached copies go.
 pub fn release(id: u32) void {
     impl.release(id);
