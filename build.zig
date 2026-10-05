@@ -1454,6 +1454,23 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         perms.appendSlice(b.allocator, b.fmt(line, .{"ACCESS_FINE_LOCATION"})) catch @panic("OOM");
     }
     if (permissions.notifications != null) perms.appendSlice(b.allocator, b.fmt(line, .{"POST_NOTIFICATIONS"})) catch @panic("OOM");
+    // Bluetooth LE ("Nearby devices" on Android 12+, one prompt for scan,
+    // advertise and connect; the old two before, without location).
+    if (permissions.bluetooth != null) perms.appendSlice(b.allocator,
+        \\    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+        \\    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+        \\    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+        \\    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+        \\    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+        \\    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+        \\
+    ) catch @panic("OOM");
+    // The local network: Wi-Fi state and the multicast lock (mDNS).
+    if (permissions.local_network != null) {
+        perms.appendSlice(b.allocator, b.fmt(line, .{"ACCESS_NETWORK_STATE"})) catch @panic("OOM");
+        perms.appendSlice(b.allocator, b.fmt(line, .{"ACCESS_WIFI_STATE"})) catch @panic("OOM");
+        perms.appendSlice(b.allocator, b.fmt(line, .{"CHANGE_WIFI_MULTICAST_STATE"})) catch @panic("OOM");
+    }
 
     var schemes: std.ArrayList(u8) = .empty;
     for (url_schemes) |scheme| schemes.appendSlice(b.allocator, b.fmt(

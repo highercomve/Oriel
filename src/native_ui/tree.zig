@@ -2052,10 +2052,12 @@ pub const Tree = struct {
             t.node_pool.destroy(n);
         }
         yg.YGNodeSetContext(n.yn, n);
-        if (kind == .text or kind == .input or kind == .textarea or kind == .select or kind == .image) {
+        // A native button (kind button): measured by its label (props.runs),
+        // its baseline the label's, centered as a field's line.
+        if (kind == .text or kind == .input or kind == .textarea or kind == .select or kind == .image or kind == .button) {
             yg.YGNodeSetMeasureFunc(n.yn, measureFn);
         }
-        if (kind == .text or kind == .input or kind == .select) yg.YGNodeSetBaselineFunc(n.yn, baselineFn);
+        if (kind == .text or kind == .input or kind == .select or kind == .button) yg.YGNodeSetBaselineFunc(n.yn, baselineFn);
         try t.nodes.put(id, n);
     }
 

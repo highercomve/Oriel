@@ -14,6 +14,13 @@ pub const Kind = enum {
     notifications,
     /// Recording the audio other apps play (macOS 14.4+ audio capture).
     system_audio,
+    /// Bluetooth LE: finding, waking and connecting to nearby devices
+    /// (Android "Nearby devices"; Apple's Bluetooth usage). Appended: Kotlin
+    /// uses the positions.
+    bluetooth,
+    /// The local network: discovery and multicast (mDNS) on the LAN
+    /// (iOS/macOS Local Network; Android's multicast permission).
+    local_network,
 };
 
 pub const Status = enum {
@@ -37,6 +44,8 @@ pub const Declared = struct {
     location: ?[]const u8 = null,
     notifications: ?[]const u8 = null,
     system_audio: ?[]const u8 = null,
+    bluetooth: ?[]const u8 = null,
+    local_network: ?[]const u8 = null,
 
     pub fn has(self: Declared, kind: Kind) bool {
         return self.reason(kind) != null;
@@ -71,6 +80,8 @@ pub fn defaultReason(kind: Kind) []const u8 {
         .location => "uses your location.",
         .notifications => "shows notifications.",
         .system_audio => "records the audio other apps play.",
+        .bluetooth => "finds and wakes nearby devices.",
+        .local_network => "finds devices on your local network.",
     };
 }
 
