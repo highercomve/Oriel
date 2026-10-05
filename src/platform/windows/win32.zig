@@ -1224,6 +1224,11 @@ pub const DWM_BLURBEHIND = extern struct {
     hRgnBlur: ?HRGN,
     fTransitionOnMaximized: BOOL,
 };
+pub extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, attribute: DWORD, value: *const anyopaque, size: DWORD) callconv(.winapi) HRESULT;
+/// The title bar in the dark theme (Windows 10 20H1+; 19 before that).
+pub const DWMWA_USE_IMMERSIVE_DARK_MODE: DWORD = 20;
+pub const DWMWA_USE_IMMERSIVE_DARK_MODE_OLD: DWORD = 19;
+pub const WM_SETTINGCHANGE: UINT = 0x001A;
 pub extern "dwmapi" fn DwmEnableBlurBehindWindow(hWnd: HWND, pBlurBehind: *const DWM_BLURBEHIND) callconv(.winapi) HRESULT;
 
 // Per-monitor DPI awareness (PerMonitorV2): window sizes are physical pixels,
