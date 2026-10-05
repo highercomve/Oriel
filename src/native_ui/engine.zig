@@ -290,6 +290,10 @@ pub const Backend = struct {
     set_selection: ?*const fn (ctx: *anyopaque, node: *Node, start: u32, end: u32) void = null,
     /// A node's props changed (optional: backends that mirror them).
     props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
+    /// Optional: an accessibility entry changed or went (Tree.ax, the "a"
+    /// op; id -2: all cleared). A backend with an accessibility tree tells
+    /// its assistive technology.
+    ax_changed: ?*const fn (ctx: *anyopaque, id: i64) void = null,
     /// A single text run changed through the direct bridge.
     text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
     /// Natural text sizes for many nodes in one go (Tree.measure_texts):
@@ -438,6 +442,7 @@ pub const Engine = struct {
         e.tree.height = height;
         e.tree.on_remove = backend.removed;
         e.tree.on_props = backend.props;
+        e.tree.on_ax = backend.ax_changed;
         e.tree.on_text = backend.text;
         e.tree.measure_texts = backend.measure_texts;
         e.tree.on_leaf_style = backend.leaf_style;
@@ -511,6 +516,13 @@ pub const Engine = struct {
     }
 
     /// A native event on a node. True when the page prevented the default.
+    /// An assistive technology came (or went): the page sends its
+    /// accessibility tree (Tree.ax, the "a" ops) whole, from inside this
+    /// call, and then its changes after each render; off clears it.
+    pub fn setA11y(e: *Engine, on: bool) void {
+        _ = e.event(0, "a11y", if (on) "1" else "0");
+    }
+
     pub fn event(e: *Engine, id: i64, kind: []const u8, data_json: []const u8) bool {
         e.in_call += 1;
         const t0 = prof.now();
