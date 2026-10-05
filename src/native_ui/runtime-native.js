@@ -4017,6 +4017,39 @@ input[type="range"] { height: 20px; margin: 2px; }
   var INTRINSIC_WIDTHS = /* @__PURE__ */ new Set(["max-content", "fit-content", "-webkit-fit-content", "-moz-fit-content"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
+  function accessibleName(el) {
+    const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
+    const doc = el.ownerDocument;
+    const by = el.getAttribute("aria-labelledby");
+    if (by && doc) {
+      const t = clean(by.split(/\s+/).map((id2) => doc.getElementById(id2)?.textContent || "").join(" "));
+      if (t) return t;
+    }
+    const aria = clean(el.getAttribute("aria-label"));
+    if (aria) return aria;
+    const textOf = (label2) => {
+      let out = "";
+      const walk = (n2) => {
+        for (let c = n2.firstChild; c; c = c.nextSibling) {
+          if (c === el) continue;
+          if (c.nodeType === 3) out += c.data;
+          else if (c.nodeType === 1 && !SKIP2.has(c.localName) && !CONTROLS.has(c.localName)) walk(c);
+        }
+      };
+      walk(label2);
+      return out;
+    };
+    const parts = [];
+    const id = el.getAttribute("id");
+    if (id && doc) {
+      for (const l of doc.querySelectorAll("label[for]")) if (l.getAttribute("for") === id) parts.push(textOf(l));
+    }
+    const around = el.closest?.("label");
+    if (around && !parts.length) parts.push(textOf(around));
+    const label = clean(parts.join(" "));
+    if (label) return label;
+    return clean(el.getAttribute("title"));
+  }
   var LINE_ALIGNS = /* @__PURE__ */ new Set(["middle", "top", "bottom"]);
   function boxHeight(p) {
     if (typeof p.h !== "number") return null;
@@ -5172,6 +5205,8 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (tag === "input" || tag === "textarea" || tag === "select") {
         this.volatile.add(el);
         const type = (el.getAttribute("type") || "text").toLowerCase();
+        const al = accessibleName(el);
+        if (al) props.al = al;
         if (tag === "select" && pushButtons && (cs.appearance || cs["-webkit-appearance"]) !== "none") delete props.pad;
         if (tag === "input" && (type === "checkbox" || type === "radio")) {
           props.click = true;
@@ -5203,6 +5238,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         if (this.native.get(id) !== value) props.val = value;
         props.ph = el.getAttribute("placeholder") || "";
         props.dis = el.hasAttribute("disabled");
+        if (el.hasAttribute("readonly") && !props.dis) props.ro = true;
         props.pw = type === "password";
         if (tag === "textarea") {
           const cols = parseInt(el.getAttribute("cols") || "", 10);
@@ -6188,10 +6224,16 @@ input[type="range"] { height: 20px; margin: 2px; }
   };
   var WINDOWS_RINGS = chromiumRings([16, 16, 16, 1]);
   var ANDROID_RINGS = chromiumRings([229, 151, 0, 1]);
-  var MAC_RING = (o, r) => ({ w: 4, c: [0, 103, 244, 0.5], o, r });
-  var MAC_RINGS = { field: MAC_RING(-1, 2), control: MAC_RING(-1, 5), check: MAC_RING(-1, 5), link: MAC_RING(1, 2), box: MAC_RING(1, 2) };
-  var IOS_RING = (o, r) => ({ w: 3, c: [0, 122, 255, 0.5], o, r });
-  var IOS_RINGS = { field: IOS_RING(-2, 8), control: IOS_RING(-2, 8), check: IOS_RING(-2, 8), link: IOS_RING(0, 0), box: IOS_RING(0, 0) };
+  function macRings(accent) {
+    const c = Array.isArray(accent) && accent.length === 3 ? [...accent.map((v) => +v || 0), 0.5] : [0, 103, 244, 0.5];
+    const ring = (o, r) => ({ w: 4, c, o, r });
+    return { field: ring(-1, 2), control: ring(-1, 5), check: ring(-1, 5), link: ring(1, 2), box: ring(1, 2) };
+  }
+  function iosRings(accent) {
+    const c = Array.isArray(accent) && accent.length === 3 ? [...accent.map((v) => +v || 0), 0.5] : [0, 122, 255, 0.5];
+    const ring = (o, r) => ({ w: 3, c, o, r });
+    return { field: ring(-2, 8), control: ring(-2, 8), check: ring(-2, 8), link: ring(0, 0), box: ring(0, 0) };
+  }
   var webkitGtkRings = (accent) => {
     const c = [...Array.isArray(accent) && accent.length === 3 ? accent : [52, 132, 228], 0.8];
     const ring = (o, r) => ({ w: 2, c, o, r });
@@ -6234,7 +6276,7 @@ input[type="range"] { height: 20px; margin: 2px; }
   function setFocusRingOS(os, accent) {
     pushButtons = os === "macos";
     webkitBorders = os === "macos" || os === "ios" || os === "linux";
-    osRings = os === "linux" ? webkitGtkRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS, macos: MAC_RINGS, ios: IOS_RINGS }[os] || null;
+    osRings = os === "linux" ? webkitGtkRings(accent) : os === "macos" ? macRings(accent) : os === "ios" ? iosRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS }[os] || null;
   }
   var focusVisible = null;
   function setFocusVisible(el) {
@@ -9544,6 +9586,15 @@ ${a.stack || ""}`;
             viewport.dpr = dpr;
             renderer?.markAll();
             mediaChanged(before);
+            return false;
+          }
+          // The system's accent color changed (data: [r, g, b]): the focus
+          // ring and accent-colored controls follow it.
+          case "accent": {
+            if (!Array.isArray(data) || data.length !== 3) return false;
+            platform.accent = data;
+            setFocusRingOS(platform.os, data);
+            renderer?.markAll();
             return false;
           }
           case "focus":
