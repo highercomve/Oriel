@@ -476,3 +476,10 @@ workarounds after **phase 0 + the Android multicast lock**, about a week in.
     or `Unsupported`? Should the decided API also get the additive `non_connectable`, `scan`,
     `powered` and `max_bytes` capability fields and the `bluetooth:advertise` state event, before
     the Android implementation freezes the shape?
+
+## Decisions (user, 2026-10-04)
+
+1. Apple's BLE limit (no service data in advertisements) is a platform limit: `capabilities().service_data = false` there; apps (GhostShare) hide the feature.
+2. No paid Apple team for now: iOS gets document types only (no Share extension), no multicast entitlement, and the generic device name.
+3. Windows: add MSIX packaging to `oriel package` (needs a code-signing certificate), for a Share Target and MSIX capabilities.
+4. Modules follow the app's configuration: declaring a capability (e.g. `.permissions = .{ .bluetooth = "..." }`, `.share_target = ...`) makes the build include its module and its platform declarations; no separate `-D` flag to keep in sync.
