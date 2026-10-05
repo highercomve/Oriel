@@ -437,3 +437,11 @@ Decision:
 - Q5 Is undocumented `DarkMode_Explorer` on Win32 BUTTON acceptable, or should dark pages fall back to drawn buttons on Windows?
 - Q6 GTK minimum 4.10 (4.14 for announce and text): acceptable for target distros?
 - Q7 Opt-out granularity: one window option, or a CSS hook (`appearance: none` is already standard)?
+
+## Decisions (user, 2026-10-04)
+
+1. Sizes: native buttons and checkboxes keep today's CSS sizes (no layout change).
+2. iOS: checkboxes and radios stay drawn; buttons use UIButton.
+3. `.checked` follows the browser model: it separates from the `checked` attribute after user interaction; form reset restores the default; `:checked` matches the live state.
+4. Win32 dark-mode controls may use the undocumented DarkMode_Explorer theme.
+5. (coordinator) `al` is the shared name function: aria-labelledby, then aria-label, then label text, then title (mac/field-a11y, merged as 9c07978). GTK 4.10 is an acceptable minimum. Opt-out is one window option, no CSS hook for now.
