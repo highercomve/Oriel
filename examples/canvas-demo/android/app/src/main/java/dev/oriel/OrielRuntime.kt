@@ -895,6 +895,22 @@ object OrielRuntime {
     @JvmStatic
     fun speechStop() = OrielSpeech.stop()
 
+    // mDNS / DNS-SD (src/modules/network/android.zig, OrielMdns)
+    // ---------------------------------------------------------------------
+
+    @JvmStatic
+    fun mdnsRegister(id: Int, name: ByteArray, type: ByteArray, port: Int, txt: ByteArray): Boolean =
+        OrielMdns.register(id, name, type, port, txt)
+
+    @JvmStatic
+    fun mdnsUnregister(id: Int) = OrielMdns.unregister(id)
+
+    @JvmStatic
+    fun mdnsBrowse(id: Int, type: ByteArray): Boolean = OrielMdns.browse(id, type)
+
+    @JvmStatic
+    fun mdnsStopBrowse(id: Int) = OrielMdns.stopBrowse(id)
+
     // Keyboard shortcuts (src/plugins/global_shortcut/android.zig)
     // ---------------------------------------------------------------------
 

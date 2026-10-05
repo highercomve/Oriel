@@ -1,4 +1,4 @@
-//! The device's network: a multicast lock and LAN information
+//! The device's network: a multicast lock, LAN information and mDNS/DNS-SD
 //! (docs/platform-capabilities-design.md, section 2).
 //!
 //!     const lock = try oriel.network.acquireMulticast(); // mDNS on Android
@@ -13,6 +13,8 @@
 //!   Apple's prompt and entitlement are the real gates); Android:
 //!   `error.Unsupported` until its Wi-Fi MulticastLock lands.
 //! - `info`: `error.Unsupported` everywhere; `onChange` never fires yet.
+//! - `mdns` (service registration and browsing, network/mdns.zig): Android
+//!   (NsdManager); `error.Unsupported` elsewhere for now.
 
 const std = @import("std");
 const target = @import("../core/target.zig");
@@ -23,6 +25,10 @@ pub const Info = common.Info;
 pub const MulticastLock = common.MulticastLock;
 pub const MulticastError = common.MulticastError;
 pub const ChangeHandler = common.ChangeHandler;
+
+/// DNS-SD service registration and browsing through the platform's mDNS
+/// responder: `mdns.register`, `mdns.browse`, `mdns.supported`.
+pub const mdns = @import("network/mdns.zig");
 
 /// Hold the platform's multicast reception (any thread) until
 /// `lock.release()`.
@@ -53,4 +59,6 @@ test {
     std.testing.refAllDecls(common);
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(impl);
+    std.testing.refAllDecls(mdns);
+    std.testing.refAllDecls(@import("network/mdns_c.zig"));
 }
