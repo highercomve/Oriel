@@ -225,6 +225,14 @@ open class OrielActivity : Activity() {
         false
     }
 
+    internal fun pickFolder(intent: Intent): Boolean = try {
+        @Suppress("DEPRECATION")
+        startActivityForResult(intent, REQ_FOLDER)
+        true
+    } catch (e: Exception) {
+        false
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         when (requestCode) {
@@ -241,6 +249,7 @@ open class OrielActivity : Activity() {
                 if (requestCode == REQ_OPEN) 0 else 1,
                 if (resultCode == RESULT_OK) data?.data else null,
             )
+            REQ_FOLDER -> OrielRuntime.onFolderPicked(if (resultCode == RESULT_OK) data else null)
             else -> @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)
         }
     }
@@ -253,6 +262,7 @@ open class OrielActivity : Activity() {
         private const val REQ_CHOOSER = 0x4F01
         private const val REQ_OPEN = 0x4F02
         private const val REQ_SAVE = 0x4F03
+        private const val REQ_FOLDER = 0x4F04
     }
 }
 
