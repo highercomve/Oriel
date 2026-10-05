@@ -79,6 +79,13 @@ pub const Surface = struct {
     flash_queued: bool = false,
     flash_until: i64 = 0,
     move: ?[2]f32 = null,
+    /// Accessibility: on since VoiceOver asked (the page sends its tree),
+    /// the elements made for it by id (+1 each), the list last given, and
+    /// whether to tell VoiceOver the layout changed after the next layout.
+    a11y: bool = false,
+    ax_elements: std.AutoHashMapUnmanaged(i64, Object) = .empty,
+    ax_list: Object = apple.nil,
+    ax_dirty: bool = false,
 };
 
 const Field = struct {
@@ -144,6 +151,23 @@ fn classes() void {
         .{ "pressesBegan:withEvent:", pressesBegan },
         .{ "pressesEnded:withEvent:", pressesEnded },
         .{ "pressesCancelled:withEvent:", pressesCancelled },
+        // Its accessibility (docs/native-controls-a11y-design.md 2.4, 3.5):
+        // a container whose elements are the page's, a flat list in
+        // reading order, made on demand.
+        .{ "isAccessibilityElement", no },
+        .{ "accessibilityElements", axElements },
+        .{ "accessibilityElementCount", axCount },
+        .{ "accessibilityElementAtIndex:", axAtIndex },
+        .{ "indexOfAccessibilityElement:", axIndexOf },
+    });
+    ax_class = apple.defineSubclass("OrielAxElement", "UIAccessibilityElement", &.{}, .{
+        .{ "isAccessibilityElement", yes },
+        .{ "accessibilityLabel", axLabel },
+        .{ "accessibilityHint", axHint },
+        .{ "accessibilityValue", axValue },
+        .{ "accessibilityTraits", axTraits },
+        .{ "accessibilityFrame", axFrame },
+        .{ "accessibilityActivate", axActivate },
     });
     // A field's hardware keys reach the page before the field acts on them.
     text_field_class = apple.defineSubclass("OrielNuiTextField", "UITextField", &.{}, .{
@@ -231,6 +255,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         .ctx = s,
         .measure = measure,
         .laid_out = laidOut,
+        .ax_changed = axChanged,
         .removed = removed,
         .add_timer = addTimer,
         .invoke = invoke,
@@ -263,6 +288,13 @@ pub fn destroy(s: *Surface) void {
     }
     _ = surfaces.remove(s.token);
     _ = by_view.remove(key(s.view.value));
+    var axs = s.ax_elements.valueIterator();
+    while (axs.next()) |e| {
+        _ = ax_refs.remove(key(e.value));
+        e.release();
+    }
+    s.ax_elements.deinit(s.gpa);
+    if (s.ax_list.value != null) s.ax_list.release();
     s.warm.deinit(s.gpa);
     s.timer_dues.deinit(s.gpa);
     // The engine first: freeing its tree calls `removed` for every node,
@@ -578,6 +610,18 @@ fn laidOut(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
     queueTrim(s);
     syncFields(s);
+    if (s.a11y) {
+        // The list again at the next query (text nodes come and go too);
+        // VoiceOver told when the page's entries changed.
+        if (s.ax_list.value != null) {
+            s.ax_list.release();
+            s.ax_list = apple.nil;
+        }
+        if (s.ax_dirty) {
+            s.ax_dirty = false;
+            UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, null);
+        }
+    }
     s.view.msgSend(void, "setNeedsDisplay", .{});
 }
 
@@ -1756,4 +1800,231 @@ fn onFling(p: ?*anyopaque) callconv(.c) void {
 
 test {
     _ = log;
+}
+
+// ---------------------------------------------------------------------------
+// Accessibility (docs/native-controls-a11y-design.md 2.4 and 3.5, UIKit):
+// the page view is a container; its elements are the page's in reading
+// order, one flat list (VoiceOver moves through it linearly; its rotor
+// uses the traits): a UIAccessibilityElement per node with an entry
+// (Tree.ax), static text per text node with the links in it, the native
+// fields as themselves. The first query turns the page's tree on.
+// Elements hold only (surface token, id) and read the tree each query.
+
+extern fn UIAccessibilityPostNotification(notification: u32, argument: ?*anyopaque) void;
+extern var UIAccessibilityLayoutChangedNotification: u32;
+extern fn UIAccessibilityConvertFrameToScreenCoordinates(rect: CGRect, view: id) CGRect;
+
+var ax_class: ?apple.objc.Class = null;
+const AxRef = struct { token: u64, id: i64, text: bool };
+var ax_refs: std.AutoHashMapUnmanaged(usize, AxRef) = .empty;
+
+fn no(_: id, _: SEL) callconv(.c) BOOL {
+    return apple.boolean(false);
+}
+
+fn axChanged(ctx: *anyopaque, _: i64) void {
+    surfaceOf(ctx).ax_dirty = true;
+}
+
+fn axElement(s: *Surface, nid: i64, text: bool) ?Object {
+    if (s.ax_elements.get(nid)) |e| return e;
+    const e = ax_class.?.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithAccessibilityContainer:", .{s.view});
+    if (e.value == null) return null;
+    s.ax_elements.put(s.gpa, nid, e) catch {
+        e.release();
+        return null;
+    };
+    ax_refs.put(std.heap.smp_allocator, key(e.value), .{ .token = s.token, .id = nid, .text = text }) catch {};
+    return e;
+}
+
+/// The list VoiceOver reads (kept until the layout changes).
+fn axList(s: *Surface) Object {
+    if (!s.a11y) {
+        s.a11y = true;
+        s.engine.setA11y(true);
+    }
+    if (s.ax_list.value != null) return s.ax_list;
+    const arr = apple.class("NSMutableArray").msgSend(Object, "array", .{});
+    if (s.engine.tree.root) |root| axCollect(s, root, arr, false);
+    s.ax_list = arr.retain();
+    return s.ax_list;
+}
+
+fn axElements(self: id, _: SEL) callconv(.c) id {
+    const s = by_view.get(key(self)) orelse return null;
+    return axList(s).value;
+}
+
+fn axCount(self: id, _: SEL) callconv(.c) isize {
+    const s = by_view.get(key(self)) orelse return 0;
+    return @intCast(axList(s).msgSend(c_ulong, "count", .{}));
+}
+
+fn axAtIndex(self: id, _: SEL, i: isize) callconv(.c) id {
+    const s = by_view.get(key(self)) orelse return null;
+    const l = axList(s);
+    if (i < 0 or i >= l.msgSend(isize, "count", .{})) return null;
+    return l.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, @intCast(i))}).value;
+}
+
+fn axIndexOf(self: id, _: SEL, el: id) callconv(.c) isize {
+    const s = by_view.get(key(self)) orelse return std.math.maxInt(isize);
+    return axList(s).msgSend(isize, "indexOfObject:", .{el});
+}
+
+/// `n` and what's under it, in node order (as appkit.zig's axCollect).
+fn axCollect(s: *Surface, n: *Node, arr: Object, named: bool) void {
+    if (n.props.vis == false) return;
+    const t = &s.engine.tree;
+    var inner = named;
+    if (s.fields.get(n.id)) |f| {
+        arr.msgSend(void, "addObject:", .{f.control});
+        return;
+    }
+    if (t.ax.get(n.id)) |entry| {
+        if (entry.h) return;
+        if (n.frame.w > 0 and n.frame.h > 0) if (axElement(s, n.id, false)) |e| arr.msgSend(void, "addObject:", .{e});
+        if (entry.n != null) switch (entry.r) {
+            .button, .link, .heading, .checkbox, .radio, .@"switch", .option, .tab, .menuitem, .treeitem, .listitem, .cell, .tooltip => inner = true,
+            else => {},
+        };
+    } else if (n.kind == .text and !named) if (n.props.runs) |runs| {
+        if (n.frame.w > 0 and n.frame.h > 0) if (axElement(s, n.id, true)) |e| arr.msgSend(void, "addObject:", .{e});
+        var last: ?u32 = null;
+        for (runs) |r| if (r.k) |k| if (k != last) {
+            last = k;
+            if (t.ax.get(k)) |le| if (!le.h) if (axElement(s, k, false)) |e| arr.msgSend(void, "addObject:", .{e});
+        };
+    };
+    for (n.kids.items) |k| axCollect(s, k, arr, inner);
+}
+
+const AxAt = struct { s: *Surface, ref: AxRef, entry: ?*tree_mod.Ax, node: ?*Node };
+fn axAt(self: id) ?AxAt {
+    const ref = ax_refs.get(key(self)) orelse return null;
+    const s = surfaces.get(ref.token) orelse return null;
+    return .{ .s = s, .ref = ref, .entry = s.engine.tree.ax.get(ref.id), .node = s.engine.tree.get(ref.id) };
+}
+
+fn nsAuto(text: []const u8) id {
+    const str = apple.nsString(text) orelse return null;
+    return str.msgSend(Object, "autorelease", .{}).value;
+}
+
+fn axLabel(self: id, _: SEL) callconv(.c) id {
+    const a = axAt(self) orelse return null;
+    if (a.ref.text) {
+        const n = a.node orelse return null;
+        const runs = n.props.runs orelse return null;
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(std.heap.smp_allocator);
+        for (runs) |r| buf.appendSlice(std.heap.smp_allocator, r.t) catch break;
+        return nsAuto(buf.items);
+    }
+    const e = a.entry orelse return null;
+    return if (e.n) |t| nsAuto(t) else null;
+}
+
+fn axHint(self: id, _: SEL) callconv(.c) id {
+    const a = axAt(self) orelse return null;
+    const e = a.entry orelse return null;
+    return if (e.d) |t| nsAuto(t) else null;
+}
+
+fn axValue(self: id, _: SEL) callconv(.c) id {
+    const a = axAt(self) orelse return null;
+    const e = a.entry orelse return null;
+    switch (e.r) {
+        // Drawn on iOS (design decision 2): a button whose value says it.
+        .checkbox, .radio, .@"switch" => return nsAuto(if (e.s & tree_mod.Ax.mixed != 0) "mixed" else if (e.s & tree_mod.Ax.checked != 0) "checked" else "unchecked"),
+        .slider, .progressbar => if (e.v == null) if (e.rv) |rv| {
+            var buf: [32]u8 = undefined;
+            return nsAuto(std.fmt.bufPrint(&buf, "{d}", .{rv[2]}) catch return null);
+        },
+        else => {},
+    }
+    return if (e.v) |t| nsAuto(t) else null;
+}
+
+// UIAccessibilityTraits.
+const trait = struct {
+    const button: u64 = 1 << 0;
+    const link: u64 = 1 << 1;
+    const image: u64 = 1 << 2;
+    const selected: u64 = 1 << 3;
+    const static_text: u64 = 1 << 6;
+    const not_enabled: u64 = 1 << 8;
+    const updates_frequently: u64 = 1 << 9;
+    const search_field: u64 = 1 << 10;
+    const header: u64 = 1 << 16;
+};
+
+fn axTraits(self: id, _: SEL) callconv(.c) u64 {
+    const a = axAt(self) orelse return 0;
+    if (a.ref.text) return trait.static_text;
+    const e = a.entry orelse return 0;
+    var t: u64 = switch (e.r) {
+        .button, .checkbox, .radio, .@"switch", .tab, .menuitem, .option => trait.button,
+        .link => trait.link,
+        .img => trait.image,
+        .heading => trait.header,
+        .searchbox => trait.search_field,
+        .progressbar => trait.updates_frequently,
+        .text => trait.static_text,
+        else => 0,
+    };
+    if (e.s & tree_mod.Ax.disabled != 0) t |= trait.not_enabled;
+    if (e.s & (tree_mod.Ax.selected | tree_mod.Ax.pressed) != 0) t |= trait.selected;
+    return t;
+}
+
+fn axFrame(self: id, _: SEL) callconv(.c) CGRect {
+    const zero: CGRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
+    const a = axAt(self) orelse return zero;
+    var r: [4]f32 = undefined;
+    if (a.node) |n| {
+        r = .{ n.frame.x, n.frame.y, n.frame.w, n.frame.h };
+    } else blk: {
+        // A link amid text: its runs' line fragments' union.
+        var it = a.s.engine.tree.nodes.valueIterator();
+        while (it.next()) |np| {
+            const n = np.*;
+            if (n.kind != .text) continue;
+            const runs = n.props.runs orelse continue;
+            var first: ?usize = null;
+            var last: usize = 0;
+            for (runs, 0..) |run, i| if (run.k == @as(?u32, @intCast(@max(0, a.ref.id)))) {
+                if (first == null) first = i;
+                last = i;
+            };
+            const f0 = first orelse continue;
+            var rects: [64][4]f32 = undefined;
+            const k = draw.runRects("UIFont", n, f0, last, &rects);
+            if (k == 0) continue;
+            var x0 = rects[0][0];
+            var y0 = rects[0][1];
+            var x1 = rects[0][0] + rects[0][2];
+            var y1 = rects[0][1] + rects[0][3];
+            for (rects[1..k]) |q| {
+                x0 = @min(x0, q[0]);
+                y0 = @min(y0, q[1]);
+                x1 = @max(x1, q[0] + q[2]);
+                y1 = @max(y1, q[1] + q[3]);
+            }
+            r = .{ x0, y0, x1 - x0, y1 - y0 };
+            break :blk;
+        }
+        return zero;
+    }
+    return UIAccessibilityConvertFrameToScreenCoordinates(.{ .origin = .{ .x = r[0], .y = r[1] }, .size = .{ .width = r[2], .height = r[3] } }, a.s.view.value);
+}
+
+/// VoiceOver's double tap: the element's click, as a tap's.
+fn axActivate(self: id, _: SEL) callconv(.c) BOOL {
+    const a = axAt(self) orelse return apple.boolean(false);
+    if (a.ref.text) return apple.boolean(false);
+    _ = a.s.engine.event(a.ref.id, "click", "0");
+    return apple.boolean(true);
 }
