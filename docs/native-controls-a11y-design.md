@@ -270,8 +270,20 @@ Hit testing for touch exploration and Narrator uses `Tree.hit()`. The first node
     AXImage, AXSplitter, AXTable/Row/Cell, AXStaticText, else AXGroup. Landmarks and dialogs are AXGroup
     with AXLandmark*/AXApplication* subroles.
   - `ax_changed` marks the tree dirty; the next layout posts AXLayoutChanged.
+- **UIKit** (`uikit.zig` end): the same flat list, given as the page view's `accessibilityElements`
+  (and count, element-at-index, index-of; the view isn't an element).
+  - Elements: `UIAccessibilityElement` subclasses with label, hint (`d`), value, traits and screen frame
+    (`UIAccessibilityConvertFrameToScreenCoordinates`). Activate → "click".
+  - Traits: button (also for checkbox, radio, switch, tab, menuitem, option), link, image, header,
+    searchField, updatesFrequently, staticText (text nodes); notEnabled, and selected when selected or
+    pressed.
+  - Checkboxes and radios stay drawn (decision 2): a button whose value is "checked", "unchecked" or
+    "mixed". The iOS 17 toggle trait isn't used (iOS 15 minimum).
+  - Native fields go in as themselves.
+  - The list is rebuilt at the first query after each layout. `UIAccessibilityLayoutChangedNotification`
+    is posted when entries changed.
 - **Not yet:** nesting (lists and landmarks as containers: flat for now), the "f" and "n" ops, live
-  regions, scroll-into-view, axstep, iOS.
+  regions, scroll-into-view, axstep, slider adjust on iOS.
 
 ## 3. Per-backend work
 
