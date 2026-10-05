@@ -1994,6 +1994,8 @@ fn appConfigModule(
         \\    .location = cfg.permission_location,
         \\    .notifications = cfg.permission_notifications,
         \\    .system_audio = cfg.permission_system_audio,
+        \\    .bluetooth = cfg.permission_bluetooth,
+        \\    .local_network = cfg.permission_local_network,
         \\};
         \\
         \\/// The isolation hook (`.isolation` in build.zig): pass to
