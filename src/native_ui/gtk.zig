@@ -2742,7 +2742,7 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
             cairo_clip(cr);
             cairo_set_fill_rule(cr, 0);
         }
-        if (p.bs) |style| dashedBorder(cr, bf, r, bw, p.bc, style) else border(cr, bf, r, bw, p.bc);
+        if (p.bs) |style| dashedBorder(cr, bf, r, bw, p.bc, style) else if (p.bt) |tone| twoToneBorder(cr, bf, r, bw, p.bc, tone) else border(cr, bf, r, bw, p.bc);
         if (lg != null) cairo_restore(cr);
     }
     switch (n.kind) {
@@ -2876,6 +2876,59 @@ fn gradient(f: Rect, g: tree_mod.Gradient) *cairo_pattern_t {
 fn addStops(pat: *cairo_pattern_t, res: tree_mod.Gradient.Resolved) void {
     for (res.stops) |st| cairo_pattern_add_color_stop_rgba(pat, st[4], st[0] / 255, st[1] / 255, st[2] / 255, st[3]);
     if (res.period != null) cairo_pattern_set_extend(pat, 1); // CAIRO_EXTEND_REPEAT
+}
+
+/// groove and ridge (Props.bt, as win32.zig's): two bands, the outer the
+/// larger half; a groove's outer band shaded as inset (top and left dark),
+/// its inner as outset, a ridge the reverse, in Blink's Color::Dark and
+/// Color::Light of each side's color.
+fn twoToneBorder(cr: *cairo_t, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color, tone: tree_mod.BorderTone) void {
+    const colors = bc orelse return;
+    var dark: [4]tree_mod.Color = undefined;
+    var light: [4]tree_mod.Color = undefined;
+    for (colors, 0..) |col, i| {
+        dark[i] = darkColor(col);
+        light[i] = lightColor(col);
+    }
+    const inset_colors = [4]tree_mod.Color{ dark[0], light[1], light[2], dark[3] };
+    const outset_colors = [4]tree_mod.Color{ light[0], dark[1], dark[2], light[3] };
+    var outer: [4]f32 = undefined;
+    var inner: [4]f32 = undefined;
+    for (bw, 0..) |w, i| {
+        outer[i] = @ceil(w / 2);
+        inner[i] = w - outer[i];
+    }
+    border(cr, f, r, outer, if (tone == .groove) inset_colors else outset_colors);
+    const in_f: Rect = .{ .x = f.x + outer[3], .y = f.y + outer[0], .w = f.w - outer[1] - outer[3], .h = f.h - outer[0] - outer[2] };
+    if (in_f.w <= 0 or in_f.h <= 0) return;
+    var in_r = r;
+    for (0..4) |q| {
+        const hx = if (q == 0 or q == 3) outer[3] else outer[1];
+        const vy = if (q == 0 or q == 1) outer[0] else outer[2];
+        in_r.x[q] = @max(0, r.x[q] - hx);
+        in_r.y[q] = @max(0, r.y[q] - vy);
+    }
+    border(cr, in_f, in_r, inner, if (tone == .groove) outset_colors else inset_colors);
+}
+
+/// Blink's Color::Dark: each channel * (v - 0.33) / v, v the brightest.
+fn darkColor(col: tree_mod.Color) tree_mod.Color {
+    const v = @max(col[0], @max(col[1], col[2])) / 255;
+    const k: f32 = if (v == 0) 0 else @max(0, (v - 0.33) / v);
+    return scaledColor(col, k);
+}
+
+/// Blink's Color::Light: each channel * min(1, v + 0.33) / v; black is 0x545454.
+fn lightColor(col: tree_mod.Color) tree_mod.Color {
+    const v = @max(col[0], @max(col[1], col[2])) / 255;
+    if (v == 0) return .{ 0x54, 0x54, 0x54, col[3] };
+    return scaledColor(col, @min(1, v + 0.33) / v);
+}
+
+fn scaledColor(col: tree_mod.Color, k: f32) tree_mod.Color {
+    var out = col;
+    for (0..3) |i| out[i] = @min(255, @floor(col[i] / 255 * k * 255.99998));
+    return out;
 }
 
 fn border(cr: *cairo_t, f: Rect, r: Radii, bw: [4]f32, bc: ?[4]tree_mod.Color) void {
