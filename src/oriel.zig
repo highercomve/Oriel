@@ -50,6 +50,10 @@ pub const notification = if (options.notification) @import("modules/notification
 pub const store = if (options.store) @import("modules/store.zig") else struct {};
 pub const menu = if (options.menu) @import("modules/menu.zig") else struct {};
 pub const deep_link = if (options.deep_link) @import("modules/deep_link.zig") else struct {};
+/// The multicast lock (mDNS on Android) and LAN information.
+pub const network = if (options.network) @import("modules/network.zig") else struct {};
+/// Receiving what other apps share, and the system share sheet.
+pub const share = if (options.share) @import("modules/share.zig") else struct {};
 pub const sqlite_vec = if (options.sqlite_vec) @import("modules/sqlite_vec.zig") else struct {};
 pub const llama = if (options.llama) @import("modules/llama.zig") else struct {};
 pub const whisper = if (options.whisper) @import("modules/whisper.zig") else struct {};
@@ -158,6 +162,8 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
         .{ .name = "store", .enabled = options.store },
         .{ .name = "menu", .enabled = options.menu },
         .{ .name = "deep_link", .enabled = options.deep_link },
+        .{ .name = "network", .enabled = options.network },
+        .{ .name = "share", .enabled = options.share },
         .{ .name = "global_shortcut", .enabled = options.global_shortcut },
         .{ .name = "input", .enabled = options.input },
         .{ .name = "clipboard", .enabled = options.clipboard },
@@ -208,6 +214,8 @@ test {
     if (options.store) std.testing.refAllDecls(store);
     if (options.menu) std.testing.refAllDecls(menu);
     if (options.deep_link) std.testing.refAllDecls(deep_link);
+    if (options.network) std.testing.refAllDecls(network);
+    if (options.share) std.testing.refAllDecls(share);
     if (options.global_shortcut) std.testing.refAllDecls(global_shortcut);
     if (options.input) std.testing.refAllDecls(input);
     // The native renderer's own tests: its tree everywhere, the GTK backend
