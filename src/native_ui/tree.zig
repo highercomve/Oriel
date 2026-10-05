@@ -27,6 +27,39 @@ pub const Outline = struct { w: f32, o: f32 = 0, c: Color = .{ 0, 0, 0, 1 }, s: 
 
 pub const Color = [4]f32; // r, g, b 0-255; a 0-1
 
+/// An element's accessibility entry (a11y.js, the "a" op; docs/native-
+/// controls-a11y-design.md 2.2): its role, name, description, state bits,
+/// heading level, value text and range, live region, aria-hidden. Kept in
+/// `Tree.ax` by the element's id (a node's, or a link run's `k`), apart
+/// from the node: nothing about layout.
+pub const AxRole = enum { button, link, checkbox, radio, @"switch", textbox, searchbox, combobox, listbox, option, slider, progressbar, heading, img, list, listitem, separator, dialog, alertdialog, alert, status, navigation, main, banner, contentinfo, region, form, table, row, cell, columnheader, tab, tablist, tabpanel, menu, menuitem, menubar, toolbar, tooltip, tree, treeitem, group, generic, text };
+pub const Ax = struct {
+    r: AxRole = .generic,
+    n: ?[]const u8 = null,
+    d: ?[]const u8 = null,
+    s: u32 = 0,
+    l: u8 = 0,
+    v: ?[]const u8 = null,
+    rv: ?[3]f64 = null,
+    live: u8 = 0,
+    h: bool = false,
+    /// Its strings' memory.
+    arena: std.heap.ArenaAllocator,
+
+    pub const disabled: u32 = 1;
+    pub const checked: u32 = 2;
+    pub const mixed: u32 = 4;
+    pub const expanded: u32 = 8;
+    pub const collapsed: u32 = 16;
+    pub const selected: u32 = 32;
+    pub const pressed: u32 = 64;
+    pub const required: u32 = 128;
+    pub const invalid: u32 = 256;
+    pub const readonly: u32 = 512;
+    pub const focusable: u32 = 1024;
+    pub const multiline: u32 = 2048;
+};
+
 pub const Run = struct {
     t: []const u8,
     c: Color = .{ 0, 0, 0, 1 },
@@ -1379,6 +1412,10 @@ pub const Tree = struct {
     /// Called after a node's props changed, with the props as sent (backends
     /// that keep their own copy: Android).
     on_props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
+    /// The accessibility entries (the "a" op), by element id, and a hook
+    /// told when one changed or went (id -2: all cleared).
+    ax: std.AutoHashMapUnmanaged(i64, *Ax) = .empty,
+    on_ax: ?*const fn (ctx: *anyopaque, id: i64) void = null,
     on_text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
     /// A leaf style was defined (defineLeafStyle), with its props JSON, and a
     /// node was made from one (on_create: createLeaf, which host.leaf and
@@ -1420,6 +1457,8 @@ pub const Tree = struct {
     }
 
     pub fn deinit(t: *Tree) void {
+        t.clearAx();
+        t.ax.deinit(t.gpa);
         t.scrolled.deinit(t.gpa);
         for (t.stamp_plans.items) |plan| t.gpa.free(plan.mem);
         t.stamp_plans.deinit(t.gpa);
@@ -1823,6 +1862,8 @@ pub const Tree = struct {
         if (ops != .array) return error.BadOps;
         // Ops come from the page's runtime (and `__host.ops` is reachable from
         // the page): skip any that doesn't have the expected shape.
+        var ax_changed = false;
+        defer if (ax_changed and std.c.getenv("ORIEL_NUI_AXDUMP") != null) t.dumpAx();
         for (ops.array.items) |op| {
             if (op != .array or op.array.items.len < 2) continue;
             const a = op.array.items;
@@ -1843,6 +1884,17 @@ pub const Tree = struct {
                 // ["x", id, tx, ty, sc, rot, op] (each a number or null):
                 // a node's transform and opacity alone.
                 'x' => if (t.nodes.get(id)) |n| if (a.len >= 7) t.setPaint(n, a[2..7]),
+                // ["a", id, ax | null]: an element's accessibility entry;
+                // ["a", -2]: all of them gone (no assistive technology).
+                'a' => {
+                    if (id == -2) {
+                        t.clearAx();
+                        if (t.on_ax) |f| f(t.measure_ctx, -2);
+                    } else if (arg) |x| {
+                        if (x == .object) try t.setAx(id, x) else t.dropAx(id);
+                    } else t.dropAx(id);
+                    ax_changed = true;
+                },
                 else => {},
             }
         }
@@ -1853,6 +1905,111 @@ pub const Tree = struct {
             t.deleted_nodes = 0;
         }
         t.dirty = true;
+    }
+
+    /// An element's accessibility entry from its "a" op's object.
+    fn setAx(t: *Tree, id: i64, v: std.json.Value) !void {
+        const entry = try t.gpa.create(Ax);
+        entry.* = .{ .arena = .init(t.gpa) };
+        errdefer {
+            entry.arena.deinit();
+            t.gpa.destroy(entry);
+        }
+        const a = entry.arena.allocator();
+        const o = v.object;
+        const str = struct {
+            fn of(al: std.mem.Allocator, x: ?std.json.Value) !?[]const u8 {
+                const y = x orelse return null;
+                return if (y == .string) try al.dupe(u8, y.string) else null;
+            }
+        }.of;
+        const int = struct {
+            fn of(x: ?std.json.Value) i64 {
+                const y = x orelse return 0;
+                return switch (y) {
+                    .integer => |i| i,
+                    .float => |f| if (std.math.isFinite(f)) @intFromFloat(std.math.clamp(f, -1e9, 1e9)) else 0,
+                    else => 0,
+                };
+            }
+        }.of;
+        const flt = struct {
+            fn of(x: std.json.Value) f64 {
+                return switch (x) {
+                    .integer => |i| @floatFromInt(i),
+                    .float => |f| f,
+                    else => 0,
+                };
+            }
+        }.of;
+        if (o.get("r")) |r| if (r == .string) {
+            entry.r = std.meta.stringToEnum(AxRole, r.string) orelse .generic;
+        };
+        entry.n = try str(a, o.get("n"));
+        entry.d = try str(a, o.get("d"));
+        entry.v = try str(a, o.get("v"));
+        entry.s = @intCast(std.math.clamp(int(o.get("s")), 0, std.math.maxInt(u32)));
+        entry.l = @intCast(std.math.clamp(int(o.get("l")), 0, 9));
+        entry.live = @intCast(std.math.clamp(int(o.get("live")), 0, 2));
+        entry.h = int(o.get("h")) != 0;
+        if (o.get("rv")) |rv| if (rv == .array and rv.array.items.len == 3) {
+            entry.rv = .{ flt(rv.array.items[0]), flt(rv.array.items[1]), flt(rv.array.items[2]) };
+        };
+        const gop = try t.ax.getOrPut(t.gpa, id);
+        if (gop.found_existing) {
+            gop.value_ptr.*.arena.deinit();
+            t.gpa.destroy(gop.value_ptr.*);
+        }
+        gop.value_ptr.* = entry;
+        if (t.on_ax) |f| f(t.measure_ctx, id);
+    }
+
+    fn dropAx(t: *Tree, id: i64) void {
+        const kv = t.ax.fetchRemove(id) orelse return;
+        kv.value.arena.deinit();
+        t.gpa.destroy(kv.value);
+        if (t.on_ax) |f| f(t.measure_ctx, id);
+    }
+
+    fn clearAx(t: *Tree) void {
+        var it = t.ax.valueIterator();
+        while (it.next()) |e| {
+            e.*.arena.deinit();
+            t.gpa.destroy(e.*);
+        }
+        t.ax.clearRetainingCapacity();
+    }
+
+    /// ORIEL_NUI_AXDUMP: the accessibility tree as a backend would build it
+    /// (node order; a node with an entry, a text node and the link runs in
+    /// it), logged after the ops that changed it.
+    pub fn dumpAx(t: *Tree) void {
+        const root = t.root orelse return;
+        log.info("ax tree ({d} entries):", .{t.ax.count()});
+        dumpAxNode(t, root, 0);
+    }
+
+    fn dumpAxNode(t: *Tree, n: *Node, depth: usize) void {
+        var d = depth;
+        const pad = "                                                ";
+        if (t.ax.get(n.id)) |e| {
+            if (e.h) return;
+            log.info("{s}{s} \"{s}\" s={d}{s}{s} @{d:.0},{d:.0} {d:.0}x{d:.0}", .{ pad[0..@min(pad.len, d * 2)], @tagName(e.r), e.n orelse "", e.s, if (e.v != null) " v=" else "", e.v orelse "", n.frame.x, n.frame.y, n.frame.w, n.frame.h });
+            d += 1;
+        } else if (n.kind == .text) if (n.props.runs) |runs| {
+            var buf: [80]u8 = undefined;
+            var len: usize = 0;
+            for (runs) |r| {
+                const k = @min(r.t.len, buf.len - len);
+                @memcpy(buf[len..][0..k], r.t[0..k]);
+                len += k;
+            }
+            log.info("{s}text \"{s}\"", .{ pad[0..@min(pad.len, d * 2)], buf[0..len] });
+            for (runs) |r| if (r.k) |k| if (t.ax.get(k)) |e| {
+                log.info("{s}  {s} \"{s}\" (run)", .{ pad[0..@min(pad.len, d * 2)], @tagName(e.r), e.n orelse "" });
+            };
+        };
+        for (n.kids.items) |k| dumpAxNode(t, k, d);
     }
 
     /// A node id from a JS number: NaN, infinities and values outside i64
@@ -1903,6 +2060,7 @@ pub const Tree = struct {
     }
 
     pub fn destroy(t: *Tree, id: i64) void {
+        t.dropAx(id);
         const n = t.nodes.get(id) orelse return;
         _ = t.nodes.remove(id);
         t.deleted_nodes += 1;
@@ -4268,4 +4426,37 @@ test "a margin in a wrapping row moves its item down (align-items: flex-start)" 
     t.layout();
     try std.testing.expectEqual(@as(f32, 10), t.get(2).?.frame.y);
     try std.testing.expectEqual(@as(f32, 10), t.get(2).?.frame.x);
+}
+
+test "the a op keeps accessibility entries apart from the nodes" {
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",1,"view"],["c",2,"text"],["p",2,{"runs":[{"t":"Help"}]}],["k",1,[2]],["r",1],
+        \\ ["a",1,{"r":"heading","n":"Title","l":2,"s":1024}],["a",77,{"r":"link","n":"Help"}],["a",3,{"r":"nonsense","rv":[0,10,5]}]]
+    );
+    const h = t.ax.get(1).?;
+    try std.testing.expectEqual(AxRole.heading, h.r);
+    try std.testing.expectEqualStrings("Title", h.n.?);
+    try std.testing.expectEqual(@as(u8, 2), h.l);
+    try std.testing.expectEqual(Ax.focusable, h.s);
+    // A link run's id (no node) has its entry too; an unknown role is generic.
+    try std.testing.expectEqualStrings("Help", t.ax.get(77).?.n.?);
+    try std.testing.expectEqual(AxRole.generic, t.ax.get(3).?.r);
+    try std.testing.expectEqual(@as(f64, 5), t.ax.get(3).?.rv.?[2]);
+    // Replaced, cleared by null, dropped with its node, all gone with -2.
+    try t.apply(
+        \\[["a",1,{"r":"heading","n":"New"}],["a",77,null]]
+    );
+    try std.testing.expectEqualStrings("New", t.ax.get(1).?.n.?);
+    try std.testing.expect(t.ax.get(77) == null);
+    try t.apply(
+        \\[["d",1]]
+    );
+    try std.testing.expect(t.ax.get(1) == null);
+    try t.apply(
+        \\[["a",-2]]
+    );
+    try std.testing.expectEqual(@as(u32, 0), t.ax.count());
 }
