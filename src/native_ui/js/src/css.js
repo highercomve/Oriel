@@ -696,6 +696,13 @@ export function computeStyle(specified, parent) {
     if (v === "initial" || v === "unset") { delete cs[k]; continue; }
     cs[k] = substitute(v, cs, 0);
   }
+  // CanvasText (the UA's text color on <html>): black, or white where the
+  // used color-scheme is dark (color-scheme: dark, or light dark with a
+  // dark system), as browsers resolve it; inherited as the resolved color.
+  if (/^canvastext$/i.test(cs.color || "")) {
+    const scheme = cs["color-scheme"] || "normal";
+    cs.color = /dark/.test(scheme) && (!/light/.test(scheme) || viewport.dark) ? "rgb(255, 255, 255)" : "rgb(0, 0, 0)";
+  }
   if (maxContent(cs, parent)) cs.__maxc = true;
   else if (fitContent(cs, parent)) cs.__fitc = true;
   return cs;

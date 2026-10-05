@@ -34,7 +34,7 @@ ul ul ul, ul ol ul, ol ul ul, ol ol ul { list-style-type: square; }
 button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
 button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
-html { font-size: 16px; color: black; }
+html { font-size: 16px; color: CanvasText; }
 body { margin: 8px; }
 p, ul, ol, dl, blockquote, pre, figure { margin-top: 1em; margin-bottom: 1em; }
 ul, ol { padding-left: 40px; }
@@ -962,7 +962,9 @@ export class Renderer {
     nodes.set(-1, { kind: "view", props: winProps, kids: [bodyNode] });
     // The window's background: <html>'s, else <body>'s (a browser paints the
     // whole viewport with it, below a short page too).
-    const rootBg = bgOf(rootCS) || (this.styleOf(body) ? bgOf(this.styleOf(body)) : null);
+    // Neither: the canvas, dark in a dark color-scheme (Canvas: Chromium's
+    // #121212), else the backend's default.
+    const rootBg = bgOf(rootCS) || (this.styleOf(body) ? bgOf(this.styleOf(body)) : null) || (usedDark(rootCS) ? { color: [18, 18, 18, 1] } : null);
     nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: [-1, ...fixed] });
     const t1 = P && P();
     this.emit(nodes, full);
