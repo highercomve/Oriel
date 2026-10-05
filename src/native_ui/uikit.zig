@@ -873,7 +873,6 @@ fn buttonLook(n: *const Node, f: *Field) void {
     h.update(&.{ @intFromBool(n.props.it), @intFromBool(n.props.mono), @intFromBool(n.props.dis), @intFromBool(n.props.dk) });
     const look = h.final() | 1;
     if (look == f.look) return;
-    f.look = look;
     // UIUserInterfaceStyle light 1, dark 2: the page's, not the system's.
     b.msgSend(void, "setOverrideUserInterfaceStyle:", .{@as(isize, if (n.props.dk) 2 else 1)});
     const str = apple.nsString(text) orelse return;
@@ -886,6 +885,8 @@ fn buttonLook(n: *const Node, f: *Field) void {
     const config = b.msgSend(Object, "configuration", .{}).msgSend(Object, "copy", .{});
     defer config.release();
     config.msgSend(void, "setAttributedTitle:", .{title});
+    // One line, cut at its end as AppKit's (it's measured on one).
+    config.msgSend(void, "setTitleLineBreakMode:", .{@as(isize, 4)}); // NSLineBreakByTruncatingTail
     // The page's color when it colored the button; else the tint (and
     // UIKit's own disabled look).
     const color = if (n.props.col) |c| apple.class("UIColor").msgSend(Object, "colorWithRed:green:blue:alpha:", .{
@@ -893,6 +894,7 @@ fn buttonLook(n: *const Node, f: *Field) void {
     }) else apple.nil;
     config.msgSend(void, "setBaseForegroundColor:", .{color});
     b.msgSend(void, "setConfiguration:", .{config});
+    f.look = look;
 }
 
 const UIEdgeInsets = extern struct { top: f64 = 0, left: f64 = 0, bottom: f64 = 0, right: f64 = 0 };
@@ -1818,6 +1820,12 @@ fn onPan(self: id, _: SEL, recognizer: id) callconv(.c) void {
     // The page's drag: it gets the finger's moves, nothing scrolls.
     if (st == state_began) s.pan_owned = s.drag_owned;
     if (s.pan_owned) return;
+    // The page scrolls: a native button the finger started on lets go of
+    // it (its touch up would be a click).
+    if (st == state_began) {
+        var it = s.fields.valueIterator();
+        while (it.next()) |f| if (f.button and apple.isTrue(f.control.msgSend(BOOL, "isTracking", .{}))) f.control.msgSend(void, "cancelTrackingWithEvent:", .{apple.nil});
+    }
     if (st == state_began and s.touching) {
         // The page scrolls: the page's pointer is cancelled, as in a browser.
         const token = s.token;
