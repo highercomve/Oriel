@@ -129,6 +129,9 @@ pub const bridge_js =
     \\      } else if (event === "notification:action") {
     \\        // A click that came before the page listened (one that launched the app).
     \\        try { Promise.resolve(invoke("notification:ready", {})).catch(() => {}); } catch (_) {}
+    \\      } else if (event === "share:received") {
+    \\        // Shares that came before the page listened (one that launched the app).
+    \\        try { Promise.resolve(invoke("events:ready", { event })).catch(() => {}); } catch (_) {}
     \\      }
     \\      return () => set.delete(callback);
     \\    },

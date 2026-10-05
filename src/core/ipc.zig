@@ -291,6 +291,7 @@ test fail {
 /// Check if `cmd` is a framework built-in command.
 pub fn isBuiltinCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "deep_link:ready") or std.mem.eql(u8, cmd, "notification:ready") or
+        std.mem.eql(u8, cmd, "events:ready") or
         std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
 }
 
@@ -325,19 +326,33 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         if (std.mem.eql(u8, op, "query")) return std.json.Stringify.valueAlloc(arena, @tagName(permissions.status(kind)), .{});
         if (std.mem.eql(u8, op, "request")) return std.json.Stringify.valueAlloc(arena, @tagName(permissions.request(kind)), .{});
         return std.json.Stringify.valueAlloc(arena, permissions.openSettings(kind), .{});
+    } else if (std.mem.eql(u8, request.cmd, "events:ready")) {
+        // The page listens for a queued event (pending_events.queued): what
+        // came before is emitted now.
+        const ReadyArgs = struct { event: []const u8 };
+        const args = try std.json.parseFromValueLeaky(ReadyArgs, arena, request.args, .{ .ignore_unknown_fields = true });
+        if (std.mem.eql(u8, args.event, "deep-link")) {
+            deepLinkReady();
+        } else if (!@import("pending_events.zig").pageReady(args.event)) return error.UnknownEvent;
+        return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, request.cmd, "notification:ready")) {
-        const build_options = @import("build_options");
-        if (build_options.notification) @import("../modules/notification/common.zig").pageReady();
+        // The bridges' older alias of events:ready {"event":"notification:action"}.
+        _ = @import("pending_events.zig").pageReady("notification:action");
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, request.cmd, "deep_link:ready")) {
-        const build_options = @import("build_options");
-        if (build_options.deep_link) {
-            const deep_link = @import("../modules/deep_link.zig");
-            deep_link.setReady(true);
-        }
+        deepLinkReady();
         return arena.dupe(u8, "null");
     }
     return error.UnknownCommand;
+}
+
+/// deep_link keeps its own queue (deep_link/queue.zig).
+fn deepLinkReady() void {
+    const build_options = @import("build_options");
+    if (build_options.deep_link) {
+        const deep_link = @import("../modules/deep_link.zig");
+        deep_link.setReady(true);
+    }
 }
 
 /// Dispatch one JSON request (`{"cmd": ..., "args": ...}`) to `Commands` and

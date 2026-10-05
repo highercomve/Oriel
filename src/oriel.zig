@@ -194,6 +194,7 @@ test {
     std.testing.refAllDecls(@import("core/csp.zig"));
     std.testing.refAllDecls(permissions);
     std.testing.refAllDecls(system);
+    std.testing.refAllDecls(@import("core/pending_events.zig"));
     std.testing.refAllDecls(@import("core/window_commands.zig"));
     std.testing.refAllDecls(log);
     std.testing.refAllDecls(platform);
