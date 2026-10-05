@@ -236,9 +236,10 @@ fn uaBorder(n: *Node) bool {
     const bw = n.props.bw orelse return false;
     const bc = n.props.bc orelse return false;
     for (bw, bc) |w, col| {
-        // #ccc (2px inset: its top and left shaded to 120), or 1px #767676.
+        // #ccc (2px inset: its top and left shaded to 120), or 1px #767676
+        // (#858585 in a dark color-scheme, render.js darkControl).
         const grey = col[0] == col[1] and col[1] == col[2];
-        const ua = grey and (((w == 2 or w == 1) and (col[0] == 204 or col[0] == 120)) or (w == 1 and col[0] == 118));
+        const ua = grey and (((w == 2 or w == 1) and (col[0] == 204 or col[0] == 120)) or (w == 1 and (col[0] == 118 or col[0] == 133)));
         if (!ua) return false;
     }
     return true;
@@ -4472,7 +4473,7 @@ fn fluentField(n: *Node) bool {
 
 /// On a dark background: WinUI's dark theme colors.
 fn fluentDark(s: *Surface, n: *Node) bool {
-    return luminance(colorBehind(s, n)) < 0.5;
+    return n.props.dk or luminance(colorBehind(s, n)) < 0.5;
 }
 
 /// The text box's fill (rest, focused, disabled), also its EDIT's.
@@ -4612,7 +4613,7 @@ fn paintThemeControl(p: *Painter, n: *Node, radio: bool, box: Rect) bool {
     const s = p.s;
     const ux = uxtheme() orelse return false;
     // Dark controls on a dark background, as the select picks its theme.
-    const theme = buttonTheme(s.hwnd, luminance(colorBehind(s, n)) < 0.5) orelse return false;
+    const theme = buttonTheme(s.hwnd, n.props.dk or luminance(colorBehind(s, n)) < 0.5) orelse return false;
     const px_size: c_int = @max(1, @as(c_int, @intFromFloat(@round(box.w * s.scale))));
     // States: unchecked 1-4, checked 5-8 (normal, hot, pressed, disabled).
     const hot = s.hovered == n.id;
