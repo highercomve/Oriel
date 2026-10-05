@@ -11,7 +11,8 @@
 //! Written so far: Windows, sending (DataTransferManager) and receiving
 //! (Send To and "Open with", from the installer's entries); macOS and
 //! iOS, receiving "Open With" / "Open in" (CFBundleDocumentTypes from the
-//! types). Elsewhere
+//! types) and sending (NSSharingServicePicker, UIActivityViewController).
+//! Elsewhere
 //! `send` and `open` return `error.Unsupported`, `capabilities()` reports
 //! nothing, and nothing is received.
 
