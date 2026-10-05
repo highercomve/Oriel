@@ -79,6 +79,7 @@ options:
 |---|---|
 | `CFBundleIdentifier`, `CFBundleDisplayName`, versions | `.package` (`id`, `name`, `version`) |
 | `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`, `NSLocationWhenInUseUsageDescription` | `.permissions` (iOS terminates an app that uses one of them without its key) |
+| Other `NS...UsageDescription` keys | `.ios = .{ .usage_descriptions = &.{.{ .key = "NSMotionUsageDescription", .text = "Counts your steps" }} }` (one entry per key; it overrides a kind's text) |
 | `CFBundleURLTypes` | `.url_schemes` (deep links) |
 | `UIBackgroundModes: audio` | `.ios = .{ .background_audio = true }` |
 | `UIApplicationSceneManifest` (multiple scenes), `NSUserActivityTypes` | always: windows are scenes on iPad |

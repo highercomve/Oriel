@@ -30,9 +30,75 @@ pub const PlistOptions = struct {
     /// CFBundleDocumentTypes (Finder's "Open With", drops on the Dock icon):
     /// `.share_target.types`, MIME types mapped to UTIs (`utiForMime`).
     document_types: []const []const u8 = &.{},
+    /// The app's own usage keys (`AppOptions.macos.usage_descriptions`),
+    /// written with the permissions' (`writeUsageDescriptions`).
+    usage_descriptions: []const UsageDescription = &.{},
 };
 
 pub const Permission = struct { kind: []const u8, reason: []const u8 };
+
+/// An Info.plist usage-description key the permission kinds don't cover
+/// (`NSMotionUsageDescription`, ...) and its text.
+pub const UsageDescription = struct { key: []const u8, text: []const u8 };
+
+/// A usage key Oriel writes as given: `[A-Za-z0-9_.~-]` ending in
+/// "UsageDescription" (so it can't collide with the bundle keys Oriel
+/// writes itself).
+pub fn validUsageKey(key: []const u8) bool {
+    return std.mem.endsWith(u8, key, "UsageDescription") and validPlistKey(key);
+}
+
+/// A plist key written as is (no escaping needed): `[A-Za-z0-9_.~-]+`.
+pub fn validPlistKey(key: []const u8) bool {
+    if (key.len == 0 or key.len > 200) return false;
+    for (key) |ch| if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, "_.~-", ch) == null) return false;
+    return true;
+}
+
+/// The usage-description entries: each permission's keys (`keysFor`, its
+/// kind's), then the app's extra keys, one entry per key. An extra key a
+/// permission also has keeps the permission's place with the extra's text
+/// (the last extra's when several name it).
+pub fn writeUsageDescriptions(
+    w: *std.Io.Writer,
+    permissions: []const Permission,
+    extras: []const UsageDescription,
+    comptime keysFor: fn ([]const u8) []const []const u8,
+) !void {
+    for (permissions, 0..) |p, pi| for (keysFor(p.kind)) |key| {
+        if (permissionHasKey(permissions[0..pi], key, keysFor)) continue;
+        try entry(w, key, extraText(extras, key) orelse p.reason);
+    };
+    for (extras, 0..) |e, ei| {
+        if (permissionHasKey(permissions, e.key, keysFor)) continue;
+        if (extraText(extras[0..ei], e.key) != null) continue;
+        try entry(w, e.key, extraText(extras, e.key).?);
+    }
+}
+
+fn permissionHasKey(permissions: []const Permission, key: []const u8, comptime keysFor: fn ([]const u8) []const []const u8) bool {
+    for (permissions) |p| for (keysFor(p.kind)) |k| if (std.mem.eql(u8, k, key)) return true;
+    return false;
+}
+
+/// The text of the last extra naming `key`.
+fn extraText(extras: []const UsageDescription, key: []const u8) ?[]const u8 {
+    var i = extras.len;
+    while (i > 0) {
+        i -= 1;
+        if (std.mem.eql(u8, extras[i].key, key)) return extras[i].text;
+    }
+    return null;
+}
+
+/// Checks what `writeUsageDescriptions` writes: the texts, and the extra keys.
+pub fn checkUsageDescriptions(permissions: []const Permission, extras: []const UsageDescription) !void {
+    for (permissions) |p| try checkText(p.reason);
+    for (extras) |e| {
+        if (!validUsageKey(e.key)) return error.InvalidUsageKey;
+        try checkText(e.text);
+    }
+}
 
 /// Info.plist usage-description keys per permission kind (macOS terminates
 /// an app that uses a protected resource without its key).
@@ -52,8 +118,11 @@ pub fn usageKeys(kind: []const u8) []const []const u8 {
 }
 
 /// macOS hardened-runtime entitlements for the declared permissions (for
-/// Developer ID signing / notarization; ad-hoc signing doesn't need them).
-pub fn generateEntitlements(gpa: std.mem.Allocator, permissions: []const Permission) ![]u8 {
+/// Developer ID signing / notarization; ad-hoc signing doesn't need them),
+/// plus the app's own boolean entitlements (`AppOptions.macos.entitlements`,
+/// keys as `validPlistKey`), each once.
+pub fn generateEntitlements(gpa: std.mem.Allocator, permissions: []const Permission, extras: []const []const u8) ![]u8 {
+    for (extras) |k| if (!validPlistKey(k)) return error.InvalidEntitlement;
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     const w = &out.writer;
@@ -73,12 +142,19 @@ pub fn generateEntitlements(gpa: std.mem.Allocator, permissions: []const Permiss
             "com.apple.security.personal-information.location"
         else
             null;
-        const k = key orelse continue;
-        if (std.mem.indexOf(u8, out.written(), k) != null) continue;
-        try w.print("\t<key>{s}</key>\n\t<true/>\n", .{k});
+        try writeEntitlement(w, out.written(), key orelse continue);
     }
+    for (extras) |k| try writeEntitlement(w, out.written(), k);
     try w.writeAll("</dict>\n</plist>\n");
     return out.toOwnedSlice();
+}
+
+/// `<key>` with `<true/>`, unless `written` has the key already.
+fn writeEntitlement(w: *std.Io.Writer, written: []const u8, key: []const u8) !void {
+    var buf: [256]u8 = undefined;
+    const tag = std.fmt.bufPrint(&buf, "<key>{s}</key>", .{key}) catch return error.InvalidEntitlement;
+    if (std.mem.indexOf(u8, written, tag) != null) return;
+    try w.print("\t{s}\n\t<true/>\n", .{tag});
 }
 
 /// Info.plist XML; the caller owns the result. Values that XML 1.0 can't
@@ -87,7 +163,7 @@ pub fn generateEntitlements(gpa: std.mem.Allocator, permissions: []const Permiss
 pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
     for ([_][]const u8{ o.id, o.name, o.exe_name, o.version, o.min_os }) |v| try checkText(v);
     for (o.url_schemes) |scheme| if (!isValidSchemeFormat(scheme)) return error.InvalidUrlScheme;
-    for (o.permissions) |p| try checkText(p.reason);
+    try checkUsageDescriptions(o.permissions, o.usage_descriptions);
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     const w = &out.writer;
@@ -111,9 +187,7 @@ pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
     try entry(w, "LSMinimumSystemVersion", o.min_os);
     try w.writeAll("\t<key>NSHighResolutionCapable</key>\n\t<true/>\n");
     try entry(w, "NSPrincipalClass", "NSApplication");
-    for (o.permissions) |p| {
-        for (usageKeys(p.kind)) |key| try entry(w, key, p.reason);
-    }
+    try writeUsageDescriptions(w, o.permissions, o.usage_descriptions, usageKeys);
     try documentTypes(w, o.document_types);
     if (o.url_schemes.len > 0) {
         try w.writeAll("\t<key>CFBundleURLTypes</key>\n\t<array>\n\t\t<dict>\n");
@@ -251,9 +325,12 @@ test generateInfoPlist {
         .{ .kind = "system_audio", .reason = "x" },
         .{ .kind = "camera", .reason = "x" },
         .{ .kind = "accessibility", .reason = "x" },
-    });
+    }, &.{ "com.apple.security.device.bluetooth", "com.apple.security.device.camera", "com.apple.security.device.bluetooth" });
     defer a.free(ent);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, ent, "com.apple.security.device.audio-input"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, ent, "com.apple.security.device.camera"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, ent, "<key>com.apple.security.device.bluetooth</key>\n\t<true/>"));
+    try std.testing.expectError(error.InvalidEntitlement, generateEntitlements(a, &.{}, &.{"a<b"}));
     try std.testing.expect(std.mem.indexOf(u8, ent, "com.apple.security.device.camera") != null);
     try std.testing.expect(std.mem.endsWith(u8, xml, "</dict>\n</plist>\n"));
 
@@ -261,6 +338,53 @@ test generateInfoPlist {
     defer a.free(plain);
     try std.testing.expect(std.mem.indexOf(u8, plain, "CFBundleURLTypes") == null);
     try std.testing.expect(std.mem.indexOf(u8, plain, "UsageDescription") == null);
+}
+
+test "generateInfoPlist: extra usage keys, one entry per key" {
+    const a = std.testing.allocator;
+    const xml = try generateInfoPlist(a, .{
+        .id = "x.y",
+        .name = "Y",
+        .exe_name = "y",
+        .version = "1",
+        .min_os = "13.0",
+        .permissions = &.{
+            .{ .kind = "microphone", .reason = "Y uses the microphone" },
+            .{ .kind = "bluetooth", .reason = "Y uses Bluetooth" },
+        },
+        .usage_descriptions = &.{
+            .{ .key = "NSMotionUsageDescription", .text = "Counts steps & <stairs>" },
+            // A permission's key: the extra's text, in the permission's place.
+            .{ .key = "NSSpeechRecognitionUsageDescription", .text = "first" },
+            .{ .key = "NSSpeechRecognitionUsageDescription", .text = "Transcribes notes" },
+            .{ .key = "NSMotionUsageDescription", .text = "Counts steps" },
+        },
+    });
+    defer a.free(xml);
+    const expected =
+        "\t<key>NSMicrophoneUsageDescription</key>\n\t<string>Y uses the microphone</string>\n" ++
+        "\t<key>NSSpeechRecognitionUsageDescription</key>\n\t<string>Transcribes notes</string>\n" ++
+        "\t<key>NSBluetoothAlwaysUsageDescription</key>\n\t<string>Y uses Bluetooth</string>\n" ++
+        "\t<key>NSMotionUsageDescription</key>\n\t<string>Counts steps</string>\n";
+    try std.testing.expect(std.mem.indexOf(u8, xml, expected) != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, xml, "NSMotionUsageDescription"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, xml, "NSSpeechRecognitionUsageDescription"));
+
+    // Escaped text; keys must be usage keys plists can carry as is.
+    const escaped = try generateInfoPlist(a, .{ .id = "x.y", .name = "Y", .exe_name = "y", .version = "1", .min_os = "13.0", .usage_descriptions = &.{
+        .{ .key = "NSMotionUsageDescription", .text = "Steps & <stairs>" },
+    } });
+    defer a.free(escaped);
+    try std.testing.expect(std.mem.indexOf(u8, escaped, "<string>Steps &amp; &lt;stairs&gt;</string>") != null);
+    const base: PlistOptions = .{ .id = "x.y", .name = "Y", .exe_name = "y", .version = "1", .min_os = "13.0" };
+    for ([_][]const u8{ "CFBundleIdentifier", "NS<Motion>UsageDescription", "UsageDescription\"", "" }) |bad| {
+        var o = base;
+        o.usage_descriptions = &.{.{ .key = bad, .text = "x" }};
+        try std.testing.expectError(error.InvalidUsageKey, generateInfoPlist(a, o));
+    }
+    var o = base;
+    o.usage_descriptions = &.{.{ .key = "NSMotionUsageDescription", .text = "" }};
+    try std.testing.expectError(error.InvalidPlistValue, generateInfoPlist(a, o));
 }
 
 test bundleDirName {

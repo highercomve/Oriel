@@ -9,7 +9,10 @@
 //! (`--runtime-only`). So are the manifest's generated regions (permissions,
 //! features, queries, the main activity's intent filters, components:
 //! build/android_manifest.zig): only those, the rest of the manifest stays
-//! the developer's.
+//! the developer's. The app's own sources (`AppOptions.android.sources`) are
+//! copied to `app/src/main/java/<package>/` and its R8 rules
+//! (`.proguard_rules`) set between the oriel:proguard markers of
+//! `app/proguard-rules.pro`, on every run too.
 
 const std = @import("std");
 const android_manifest = @import("android_manifest");
@@ -109,6 +112,245 @@ fn syncManifest(gpa: std.mem.Allocator, io: Io, template_dir: Dir, basename: []c
     return try writeIfChanged(gpa, io, dest, synced.text);
 }
 
+// ---------------------------------------------------------------------------
+// The app's own sources and R8 rules (`AppOptions.android.sources`,
+// `.proguard_rules`), copied in on every build
+// ---------------------------------------------------------------------------
+
+pub const java_prefix = "app/src/main/java/";
+/// The sources the last run copied (project-relative, one per line), so a
+/// source the build no longer lists is removed.
+pub const sources_list_path = "app/.oriel-sources";
+pub const proguard_path = "app/proguard-rules.pro";
+pub const proguard_begin = "# oriel:proguard begin (AppOptions.android.proguard_rules; rewritten on every build)";
+pub const proguard_end = "# oriel:proguard end";
+
+/// The package a Kotlin or Java file declares (its `package` line, after
+/// comments and file annotations), null when it has none or it isn't a
+/// dotted identifier.
+pub fn sourcePackage(text: []const u8) ?[]const u8 {
+    var in_comment = false;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw| {
+        var line = std.mem.trim(u8, raw, " \t\r");
+        if (in_comment) {
+            const end = std.mem.indexOf(u8, line, "*/") orelse continue;
+            in_comment = false;
+            line = std.mem.trim(u8, line[end + 2 ..], " \t\r");
+        }
+        if (std.mem.startsWith(u8, line, "/*")) {
+            const end = std.mem.indexOfPos(u8, line, 2, "*/") orelse {
+                in_comment = true;
+                continue;
+            };
+            line = std.mem.trim(u8, line[end + 2 ..], " \t\r");
+        }
+        if (line.len == 0 or std.mem.startsWith(u8, line, "//") or std.mem.startsWith(u8, line, "@file:")) continue;
+        if (!std.mem.startsWith(u8, line, "package ")) return null;
+        var name = std.mem.trim(u8, line["package ".len..], " \t");
+        if (std.mem.indexOfAny(u8, name, "; \t/")) |end| name = name[0..end];
+        return if (validPackage(name)) name else null;
+    }
+    return null;
+}
+
+fn validPackage(name: []const u8) bool {
+    var parts = std.mem.splitScalar(u8, name, '.');
+    while (parts.next()) |p| {
+        if (p.len == 0 or std.ascii.isDigit(p[0])) return false;
+        for (p) |c| if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+    }
+    return name.len > 0;
+}
+
+/// Where a source goes in the project: `app/src/main/java/<package as
+/// path>/<file name>`.
+pub fn sourceDest(gpa: std.mem.Allocator, package: []const u8, basename: []const u8) ![]u8 {
+    const dir = try gpa.dupe(u8, package);
+    defer gpa.free(dir);
+    std.mem.replaceScalar(u8, dir, '.', '/');
+    return std.fmt.allocPrint(gpa, java_prefix ++ "{s}/{s}", .{ dir, basename });
+}
+
+/// `current` (the project's proguard-rules.pro) with the block between the
+/// oriel:proguard markers set to `rules`: added at the end when there is
+/// none, removed when `rules` is empty.
+pub fn withProguardRules(gpa: std.mem.Allocator, current: []const u8, rules: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var head = current;
+    var tail: []const u8 = "";
+    if (std.mem.indexOf(u8, current, proguard_begin)) |b| {
+        const e = std.mem.indexOfPos(u8, current, b, proguard_end) orelse return error.MalformedRegion;
+        var after = e + proguard_end.len;
+        if (after < current.len and current[after] == '\n') after += 1;
+        head = current[0..b];
+        tail = current[after..];
+    }
+    try out.appendSlice(gpa, head);
+    if (rules.len > 0) {
+        if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') try out.append(gpa, '\n');
+        try out.appendSlice(gpa, proguard_begin ++ "\n");
+        try out.appendSlice(gpa, rules);
+        if (rules[rules.len - 1] != '\n') try out.append(gpa, '\n');
+        try out.appendSlice(gpa, proguard_end ++ "\n");
+    }
+    try out.appendSlice(gpa, tail);
+    return out.toOwnedSlice(gpa);
+}
+
+/// Copy `sources` into the project `out`, remove the ones a previous run
+/// copied that are no longer listed, and set the R8 rules block. Returns
+/// the files written or removed, null after an error (printed).
+fn syncAppFiles(gpa: std.mem.Allocator, io: Io, template: []const u8, out: []const u8, sources: []const []const u8, proguard: ?[]const u8) !?usize {
+    var changed: usize = 0;
+    var dests: std.ArrayList([]u8) = .empty;
+    defer {
+        for (dests.items) |d| gpa.free(d);
+        dests.deinit(gpa);
+    }
+    for (sources) |src| {
+        const base = std.fs.path.basename(src);
+        if (!std.mem.endsWith(u8, base, ".kt") and !std.mem.endsWith(u8, base, ".java")) {
+            std.debug.print("error: android-project: {s}: AppOptions.android.sources takes .kt and .java files\n", .{src});
+            return null;
+        }
+        const text = Dir.cwd().readFileAlloc(io, src, gpa, .limited(16 << 20)) catch |err| {
+            std.debug.print("error: android-project: {s}: {s}\n", .{ src, @errorName(err) });
+            return null;
+        };
+        defer gpa.free(text);
+        const package = sourcePackage(text) orelse {
+            std.debug.print("error: android-project: {s}: no `package` line (it decides where the file goes in app/src/main/java/)\n", .{src});
+            return null;
+        };
+        try dests.ensureUnusedCapacity(gpa, 1);
+        const rel = try sourceDest(gpa, package, base);
+        dests.appendAssumeCapacity(rel);
+        // Oriel's runtime files are the template's.
+        const in_template = try std.fs.path.join(gpa, &.{ template, rel });
+        defer gpa.free(in_template);
+        if (exists(io, in_template)) {
+            std.debug.print("error: android-project: {s}: {s} is Oriel's runtime file; rename the source\n", .{ src, rel });
+            return null;
+        }
+        for (dests.items[0 .. dests.items.len - 1]) |d| if (std.mem.eql(u8, d, rel)) {
+            std.debug.print("error: android-project: {s}: two sources go to {s}\n", .{ src, rel });
+            return null;
+        };
+        const dest = try std.fs.path.join(gpa, &.{ out, rel });
+        defer gpa.free(dest);
+        if (try writeIfChanged(gpa, io, dest, text)) changed += 1;
+    }
+
+    // The previous run's sources that aren't listed any more.
+    const list_path = try std.fs.path.join(gpa, &.{ out, sources_list_path });
+    defer gpa.free(list_path);
+    if (Dir.cwd().readFileAlloc(io, list_path, gpa, .limited(1 << 20))) |old| {
+        defer gpa.free(old);
+        var it = std.mem.tokenizeAny(u8, old, "\r\n");
+        while (it.next()) |rel| {
+            if (!std.mem.startsWith(u8, rel, java_prefix) or std.mem.indexOf(u8, rel, "..") != null) continue;
+            const still = for (dests.items) |d| {
+                if (std.mem.eql(u8, d, rel)) break true;
+            } else false;
+            if (still) continue;
+            const stale = try std.fs.path.join(gpa, &.{ out, rel });
+            defer gpa.free(stale);
+            Dir.cwd().deleteFile(io, stale) catch continue;
+            changed += 1;
+            // Its package directories, while empty (not java/ itself).
+            var dir = std.fs.path.dirname(rel);
+            while (dir) |d| : (dir = std.fs.path.dirname(d)) {
+                if (d.len <= java_prefix.len - 1) break;
+                const abs = try std.fs.path.join(gpa, &.{ out, d });
+                defer gpa.free(abs);
+                Dir.cwd().deleteDir(io, abs) catch break;
+            }
+        }
+    } else |_| {}
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(gpa);
+    for (dests.items) |d| {
+        try list.appendSlice(gpa, d);
+        try list.append(gpa, '\n');
+    }
+    if (dests.items.len > 0) {
+        _ = try writeIfChanged(gpa, io, list_path, list.items);
+    } else Dir.cwd().deleteFile(io, list_path) catch {};
+
+    // R8 rules: the block in proguard-rules.pro.
+    const pro_path = try std.fs.path.join(gpa, &.{ out, proguard_path });
+    defer gpa.free(pro_path);
+    const rules: []u8 = if (proguard) |p| Dir.cwd().readFileAlloc(io, p, gpa, .limited(1 << 20)) catch |err| {
+        std.debug.print("error: android-project: {s}: {s}\n", .{ p, @errorName(err) });
+        return null;
+    } else try gpa.alloc(u8, 0);
+    defer gpa.free(rules);
+    const current: []u8 = Dir.cwd().readFileAlloc(io, pro_path, gpa, .limited(1 << 20)) catch |err| switch (err) {
+        error.FileNotFound => if (rules.len == 0) return changed else try gpa.alloc(u8, 0),
+        else => return err,
+    };
+    defer gpa.free(current);
+    const updated = withProguardRules(gpa, current, rules) catch |err| switch (err) {
+        error.MalformedRegion => {
+            std.debug.print("error: android-project: {s}: \"{s}\" without \"{s}\"\n", .{ pro_path, proguard_begin, proguard_end });
+            return null;
+        },
+        else => return err,
+    };
+    defer gpa.free(updated);
+    if (!std.mem.eql(u8, updated, current) and try writeIfChanged(gpa, io, pro_path, updated)) changed += 1;
+    return changed;
+}
+
+test sourcePackage {
+    try std.testing.expectEqualStrings("com.example.ghost", sourcePackage(
+        \\/*
+        \\ * License.
+        \\ */
+        \\// A helper.
+        \\@file:JvmName("Helper")
+        \\
+        \\package com.example.ghost
+        \\
+        \\import android.content.Context
+    ).?);
+    try std.testing.expectEqualStrings("com.example", sourcePackage("/* x */ package com.example;\nclass A {}").?);
+    try std.testing.expectEqualStrings("a.b_c.d1", sourcePackage("package a.b_c.d1 // trailing").?);
+    try std.testing.expect(sourcePackage("import x.y\nclass A") == null);
+    try std.testing.expect(sourcePackage("package ../evil") == null);
+    try std.testing.expect(sourcePackage("package a..b") == null);
+    try std.testing.expect(sourcePackage("") == null);
+
+    const gpa = std.testing.allocator;
+    const dest = try sourceDest(gpa, "com.example.ghost", "Helper.kt");
+    defer gpa.free(dest);
+    try std.testing.expectEqualStrings("app/src/main/java/com/example/ghost/Helper.kt", dest);
+}
+
+test withProguardRules {
+    const gpa = std.testing.allocator;
+    const base = "-keep class dev.oriel.** { *; }\n\n# Mine\n-keep class x.Y\n";
+    const added = try withProguardRules(gpa, base, "-keep class com.example.** { *; }");
+    defer gpa.free(added);
+    try std.testing.expectEqualStrings(base ++ proguard_begin ++ "\n-keep class com.example.** { *; }\n" ++ proguard_end ++ "\n", added);
+    // Rewritten in place, not appended again; the developer's lines after it stay.
+    const edited = try std.mem.concat(gpa, u8, &.{ added, "-keep class z.Z\n" });
+    defer gpa.free(edited);
+    const again = try withProguardRules(gpa, edited, "-dontwarn com.example.**\n");
+    defer gpa.free(again);
+    try std.testing.expectEqualStrings(base ++ proguard_begin ++ "\n-dontwarn com.example.**\n" ++ proguard_end ++ "\n-keep class z.Z\n", again);
+    // No rules: the block goes.
+    const removed = try withProguardRules(gpa, again, "");
+    defer gpa.free(removed);
+    try std.testing.expectEqualStrings(base ++ "-keep class z.Z\n", removed);
+    const unchanged = try withProguardRules(gpa, base, "");
+    defer gpa.free(unchanged);
+    try std.testing.expectEqualStrings(base, unchanged);
+    try std.testing.expectError(error.MalformedRegion, withProguardRules(gpa, proguard_begin ++ "\nx\n", "y"));
+}
+
 pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
     var template_dir: ?[]const u8 = null;
     var out_dir: ?[]const u8 = null;
@@ -117,6 +359,9 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
     var runtime_only = false;
     var vars: std.ArrayList(Var) = .empty;
     defer vars.deinit(gpa);
+    var sources: std.ArrayList([]const u8) = .empty;
+    defer sources.deinit(gpa);
+    var proguard: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -137,6 +382,12 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
                 return 1;
             };
             try vars.append(gpa, .{ .key = args[i][0..eq], .value = args[i][eq + 1 ..] });
+        } else if (std.mem.eql(u8, arg, "--source") and i + 1 < args.len) {
+            i += 1;
+            try sources.append(gpa, args[i]);
+        } else if (std.mem.eql(u8, arg, "--proguard") and i + 1 < args.len) {
+            i += 1;
+            proguard = args[i];
         } else if (std.mem.eql(u8, arg, "--force")) {
             force = true;
         } else if (std.mem.eql(u8, arg, "--runtime-only")) {
@@ -194,6 +445,9 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
         if (try writeIfChanged(gpa, io, dest, data)) written += 1;
     }
 
+    // The app's own Kotlin/Java sources and R8 rules, on every run.
+    written += (try syncAppFiles(gpa, io, template, out, sources.items, proguard)) orelse return 1;
+
     // Launcher icons from the app's icon (the sizes resize-icons makes).
     if (!runtime_only) if (icons_dir) |icons| {
         const densities = [_]struct { []const u8, u32 }{ .{ "mdpi", 48 }, .{ "xhdpi", 128 }, .{ "xxxhdpi", 256 } };
@@ -212,7 +466,7 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
     if (!runtime_only) {
         std.debug.print("android project: {s} ({d} files written, {d} kept; --force rewrites them)\n", .{ out, written, kept });
     } else if (written > 0) {
-        std.debug.print("android project: updated the Oriel runtime or the manifest's generated parts in {s} ({d} files)\n", .{ out, written });
+        std.debug.print("android project: updated the Oriel runtime, the manifest's generated parts or the app's sources and R8 rules in {s} ({d} files)\n", .{ out, written });
     }
     return 0;
 }

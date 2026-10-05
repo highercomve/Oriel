@@ -120,11 +120,29 @@ fn isDeclared(declared: anytype, comptime kind: []const u8) bool {
 /// merged: it is unrestricted (no maxSdkVersion, no flags) if either needs
 /// it so.
 pub fn permissionsFor(gpa: Allocator, declared: anytype) ![]Permission {
+    return permissionsWithExtras(gpa, declared, &.{});
+}
+
+/// `permissionsFor` plus the app's own entries (`AppOptions.android.permissions`),
+/// after the generated ones. An extra whose name is already there keeps the
+/// entry that is (its flags and position), except that an extra without
+/// max_sdk lifts the entry's maxSdkVersion: the app needs it on every API
+/// level. Names must pass `validName`.
+pub fn permissionsWithExtras(gpa: Allocator, declared: anytype, extras: []const Permission) ![]Permission {
     var out: std.ArrayList(Permission) = .empty;
     errdefer out.deinit(gpa);
     inline for (requirements) |req| if (isDeclared(declared, req.kind)) {
         for (req.permissions) |p| try mergePermission(gpa, &out, p);
     };
+    for (extras) |p| {
+        try checkPermission(p);
+        for (out.items) |*have| {
+            if (std.mem.eql(u8, have.name, p.name)) {
+                if (p.max_sdk == null) have.max_sdk = null;
+                break;
+            }
+        } else try out.append(gpa, p);
+    }
     return out.toOwnedSlice(gpa);
 }
 
@@ -140,24 +158,58 @@ fn mergePermission(gpa: Allocator, list: *std.ArrayList(Permission), p: Permissi
 /// The `<uses-feature>` entries `declared` needs, one per name (required
 /// if any capability requires it).
 pub fn featuresFor(gpa: Allocator, declared: anytype) ![]Feature {
+    return featuresWithExtras(gpa, declared, &.{});
+}
+
+/// `featuresFor` plus the app's own entries (`AppOptions.android.features`),
+/// one per name: a name already there stays where it is, required if
+/// either declaration requires it. Names must pass `validName`.
+pub fn featuresWithExtras(gpa: Allocator, declared: anytype, extras: []const Feature) ![]Feature {
     var out: std.ArrayList(Feature) = .empty;
     errdefer out.deinit(gpa);
     inline for (requirements) |req| if (isDeclared(declared, req.kind)) {
-        for (req.features) |f| {
-            for (out.items) |*have| {
-                if (std.mem.eql(u8, have.name, f.name)) {
-                    have.required = have.required or f.required;
-                    break;
-                }
-            } else try out.append(gpa, f);
-        }
+        for (req.features) |f| try mergeFeature(gpa, &out, f);
     };
+    for (extras) |f| {
+        if (!validName(f.name)) return error.InvalidName;
+        try mergeFeature(gpa, &out, f);
+    }
     return out.toOwnedSlice(gpa);
+}
+
+fn mergeFeature(gpa: Allocator, list: *std.ArrayList(Feature), f: Feature) !void {
+    for (list.items) |*have| if (std.mem.eql(u8, have.name, f.name)) {
+        have.required = have.required or f.required;
+        return;
+    };
+    try list.append(gpa, f);
+}
+
+/// A name (or flags value) that can go in an XML attribute as is: not
+/// empty, no quotes, `<`, `>`, `&`, whitespace or control characters.
+pub fn validName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name) |ch| {
+        if (ch <= ' ' or ch == 0x7F) return false;
+        if (std.mem.indexOfScalar(u8, "\"'<>&", ch) != null) return false;
+    }
+    return true;
+}
+
+fn checkPermission(p: Permission) error{InvalidName}!void {
+    if (!validName(p.name)) return error.InvalidName;
+    if (p.flags) |f| if (!validName(f)) return error.InvalidName;
 }
 
 /// The permissions region's lines for `declared`.
 pub fn permissionsXml(gpa: Allocator, declared: anytype) ![]u8 {
-    const perms = try permissionsFor(gpa, declared);
+    return permissionsXmlWithExtras(gpa, declared, &.{});
+}
+
+/// The permissions region's lines for `declared` and the app's extras
+/// (`permissionsWithExtras`).
+pub fn permissionsXmlWithExtras(gpa: Allocator, declared: anytype, extras: []const Permission) ![]u8 {
+    const perms = try permissionsWithExtras(gpa, declared, extras);
     defer gpa.free(perms);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -172,7 +224,13 @@ pub fn permissionsXml(gpa: Allocator, declared: anytype) ![]u8 {
 
 /// The features region's lines for `declared`.
 pub fn featuresXml(gpa: Allocator, declared: anytype) ![]u8 {
-    const features = try featuresFor(gpa, declared);
+    return featuresXmlWithExtras(gpa, declared, &.{});
+}
+
+/// The features region's lines for `declared` and the app's extras
+/// (`featuresWithExtras`).
+pub fn featuresXmlWithExtras(gpa: Allocator, declared: anytype, extras: []const Feature) ![]u8 {
+    const features = try featuresWithExtras(gpa, declared, extras);
     defer gpa.free(features);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -728,6 +786,66 @@ test "permissionsFor: local_network's normal permissions; kinds the struct lacks
     const old = try permissionsFor(gpa, Old{ .microphone = "" });
     defer gpa.free(old);
     try testing.expectEqual(@as(usize, 3), old.len);
+}
+
+test "permissionsXmlWithExtras: extras after the generated entries, one per name" {
+    const gpa = testing.allocator;
+    const xml = try permissionsXmlWithExtras(gpa, TestDeclared{ .bluetooth = "" }, &.{
+        .{ .name = "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" },
+        // Already there with maxSdkVersion 30: the extra lifts it.
+        .{ .name = "android.permission.BLUETOOTH" },
+        // Already there: the generated entry stays (its flags too).
+        .{ .name = "android.permission.BLUETOOTH_SCAN", .max_sdk = 32 },
+        // Already there with the same max_sdk: unchanged.
+        .{ .name = "android.permission.BLUETOOTH_ADMIN", .max_sdk = 30 },
+        // Twice among the extras: once.
+        .{ .name = "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE", .max_sdk = 33 },
+        .{ .name = "android.permission.WAKE_LOCK", .max_sdk = 28, .flags = "x" },
+    });
+    defer gpa.free(xml);
+    try testing.expectEqualStrings(
+        \\    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+        \\    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+        \\    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+        \\    <uses-permission android:name="android.permission.BLUETOOTH" />
+        \\    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+        \\    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+        \\    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+        \\    <uses-permission android:name="android.permission.WAKE_LOCK" android:maxSdkVersion="28" android:usesPermissionFlags="x" />
+        \\
+    , xml);
+
+    // Nothing declared: only the extras.
+    const only = try permissionsXmlWithExtras(gpa, TestDeclared{}, &.{.{ .name = "android.permission.VIBRATE" }});
+    defer gpa.free(only);
+    try testing.expectEqualStrings("    <uses-permission android:name=\"android.permission.VIBRATE\" />\n", only);
+}
+
+test "featuresXmlWithExtras: merged by name, required if either requires it" {
+    const gpa = testing.allocator;
+    const xml = try featuresXmlWithExtras(gpa, TestDeclared{ .bluetooth = "" }, &.{
+        .{ .name = "android.hardware.bluetooth_le", .required = true },
+        .{ .name = "android.hardware.camera.any" },
+        .{ .name = "android.hardware.camera.any", .required = false },
+    });
+    defer gpa.free(xml);
+    try testing.expectEqualStrings(
+        \\    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+        \\    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+        \\
+    , xml);
+}
+
+test "extras: names that would break the XML are rejected" {
+    const gpa = testing.allocator;
+    for ([_][]const u8{ "", "a\"b", "a<b", "a>b", "a&b", "a'b", "a b", "a\nb" }) |bad| {
+        try testing.expect(!validName(bad));
+        try testing.expectError(error.InvalidName, permissionsXmlWithExtras(gpa, TestDeclared{}, &.{.{ .name = bad }}));
+        try testing.expectError(error.InvalidName, featuresXmlWithExtras(gpa, TestDeclared{}, &.{.{ .name = bad }}));
+    }
+    try testing.expectError(error.InvalidName, permissionsXmlWithExtras(gpa, TestDeclared{}, &.{.{ .name = "a.b", .flags = "x\"" }}));
+    try testing.expect(validName("android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"));
+    try testing.expect(validName("com.example.permission.C2D_MESSAGE"));
 }
 
 /// A template like android/template's, rendered.

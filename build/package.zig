@@ -341,6 +341,9 @@ pub const Context = struct {
     share_types: []const []const u8 = &.{},
     /// The declared permissions' kinds (MSIX capabilities).
     permission_kinds: []const []const u8 = &.{},
+    /// `AppOptions.windows.capabilities` as `--capability` values
+    /// (`<kind>:<name>`), for MSIX.
+    msix_capabilities: []const []const u8 = &.{},
     msix: Msix = .{},
 };
 
@@ -349,6 +352,30 @@ fn shareTypes(options: anytype) []const []const u8 {
     const st = options.share_target orelse return &.{};
     return st.types;
 }
+
+/// `options.windows.capabilities` as `<kind>:<name>` (none when the
+/// options have no `windows`).
+fn msixCapabilities(b: *std.Build, options: anytype) []const []const u8 {
+    if (!@hasField(@TypeOf(options), "windows")) return &.{};
+    var list: std.ArrayList([]const u8) = .empty;
+    for (options.windows.capabilities) |c| list.append(b.allocator, b.fmt("{s}:{s}", .{ @tagName(c.kind), c.name })) catch @panic("OOM");
+    return list.items;
+}
+
+/// `options.macos` (empty when the options have none).
+fn macosExtras(b: *std.Build, options: anytype) MacosExtras {
+    if (!@hasField(@TypeOf(options), "macos")) return .{};
+    var keys: std.ArrayList([]const u8) = .empty;
+    for (options.macos.usage_descriptions) |u| keys.append(b.allocator, b.fmt("{s}={s}", .{ u.key, u.text })) catch @panic("OOM");
+    return .{ .usage_keys = keys.items, .entitlements = options.macos.entitlements };
+}
+
+/// `AppOptions.macos`: what the bundle gets besides the permissions' keys.
+const MacosExtras = struct {
+    /// `--usage-key` values (`<key>=<text>`).
+    usage_keys: []const []const u8 = &.{},
+    entitlements: []const []const u8 = &.{},
+};
 
 /// The names of the permissions declared in `permissions` (a
 /// `Permissions`: a field per kind, set when declared).
@@ -467,6 +494,7 @@ fn addAppBundle(
     icons_dir: std.Build.LazyPath,
     permissions: anytype,
     document_types: []const []const u8,
+    extras: MacosExtras,
 ) AppBundle {
     const min = target.result.os.version_range.semver.min;
     const run = b.addRunArtifact(package_tool);
@@ -487,6 +515,9 @@ fn addAppBundle(
             run.addArgs(&.{ "--permission", b.fmt("{s}={s}", .{ f.name, text }) });
         }
     }
+    // `AppOptions.macos`: usage keys no kind writes, extra entitlements.
+    for (extras.usage_keys) |u| run.addArgs(&.{ "--usage-key", u });
+    for (extras.entitlements) |e| run.addArgs(&.{ "--entitlement", e });
     run.addArg("--bin");
     run.addFileArg(payload.exe);
     payload.addArgs(b, run);
@@ -638,7 +669,7 @@ pub fn addPackageSteps(
     const mac_signing_opts = macSigningOptions(b);
     const mac_signing: MacSigning = if (os_tag == .macos) mac_signing_opts else .{};
     if (os_tag == .macos) {
-        const bundle = addAppBundle(b, package_tool, metadata, target, exe, payload, icons_dir, permissions, shareTypes(options));
+        const bundle = addAppBundle(b, package_tool, metadata, target, exe, payload, icons_dir, permissions, shareTypes(options), macosExtras(b, options));
         b.getInstallStep().dependOn(installAppBundle(b, package_tool, bundle, bundle.name));
         app_bundle = bundle;
     }
@@ -663,6 +694,7 @@ pub fn addPackageSteps(
         .share_extensions = shareExtensions(options),
         .share_types = shareTypes(options),
         .permission_kinds = declaredKinds(b, permissions),
+        .msix_capabilities = msixCapabilities(b, options),
         .msix = pkg_opts.msix,
     };
 
@@ -791,6 +823,7 @@ fn addMsix(ctx: *const Context) *std.Build.Step {
     if (ctx.msix.publisher) |p| run.addArgs(&.{ "--msix-publisher", p });
     if (ctx.msix.identity_name) |n| run.addArgs(&.{ "--identity-name", n });
     for (ctx.permission_kinds) |k| run.addArgs(&.{ "--permission", k });
+    for (ctx.msix_capabilities) |c| run.addArgs(&.{ "--capability", c });
     if (ctx.share_send_to) |label| {
         run.addArgs(&.{ "--share-label", label });
         for (ctx.share_types) |t| run.addArgs(&.{ "--share-type", t });

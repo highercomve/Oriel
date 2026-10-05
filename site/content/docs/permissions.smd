@@ -60,6 +60,30 @@ return oriel.main(init, api, .{
 });
 ```
 
+### Platform-specific declarations
+
+Some platforms need declarations that no kind covers. Put them in that platform's options. Each build merges them with the ones the kinds generate, one entry per name or key:
+
+```zig
+_ = oriel.addApp(b, dep, .{
+    // ...
+    .android = .{
+        .permissions = &.{.{ .name = "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" }},
+        .features = &.{.{ .name = "android.hardware.bluetooth_le", .required = false }},
+    },
+    .ios = .{ .usage_descriptions = &.{.{ .key = "NSMotionUsageDescription", .text = "Counts your steps" }} },
+    .macos = .{ .entitlements = &.{"com.apple.security.device.bluetooth"} },
+    .windows = .{ .capabilities = &.{.{ .name = "proximity", .kind = .device }} },
+});
+```
+
+- **Android**: `<uses-permission>` and `<uses-feature>` in the manifest's generated regions. When a kind already declares the name, its entry stays, but an extra without `max_sdk` makes it apply on every API level.
+- **iOS, macOS**: `usage_descriptions` adds `Info.plist` keys (ending in `UsageDescription`). If a kind writes the same key, your text replaces the kind's. `macos.entitlements` adds boolean entitlements to `<Name>.entitlements`.
+- **Windows**: MSIX capabilities (`.general`, `.uap`, `.restricted` or `.device`), written in the order the schema requires. The NSIS installer has no capabilities, so it ignores them.
+- **Linux**: nothing. Linux packages don't declare permissions.
+
+These are package declarations only: the runtime `status`/`request` still covers just the kinds above.
+
 A permission that is **not declared** is always `denied`, and is never requested. On macOS, using a protected resource without its `Info.plist` key terminates the app, so this also keeps you from shipping that crash.
 
 ## 2. Request and check

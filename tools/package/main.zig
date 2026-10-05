@@ -1591,6 +1591,8 @@ fn packageMsixCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
     var share_label: ?[]const u8 = null;
     var permissions: std.ArrayList([]const u8) = .empty;
     defer permissions.deinit(gpa);
+    var capabilities: std.ArrayList(msix.Capability) = .empty;
+    defer capabilities.deinit(gpa);
     var share_types: std.ArrayList([]const u8) = .empty;
     defer share_types.deinit(gpa);
     var share_exts: std.ArrayList([]const u8) = .empty;
@@ -1632,6 +1634,14 @@ fn packageMsixCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
             i += 1;
         } else if (std.mem.eql(u8, arg, "--permission")) {
             try permissions.append(gpa, v);
+            i += 1;
+        } else if (std.mem.eql(u8, arg, "--capability")) {
+            // `<general|uap|restricted|device>:<name>`
+            const c = msix.Capability.parse(v) orelse {
+                std.debug.print("error: {s}: --capability expects <general|uap|restricted|device>:<name> ([A-Za-z0-9._-{{}}]), got {s}\n", .{ what, v });
+                return 1;
+            };
+            try capabilities.append(gpa, c);
             i += 1;
         } else if (std.mem.eql(u8, arg, "--share-type")) {
             try share_types.append(gpa, v);
@@ -1705,6 +1715,7 @@ fn packageMsixCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         .executable = exe_file,
         .min_version = min_version,
         .permissions = permissions.items,
+        .capabilities = capabilities.items,
         .share = if (share_label) |l| .{ .label = l, .types = if (share_types.items.len > 0) share_types.items else &.{"*/*"}, .extensions = share_exts.items } else null,
     }) catch |err| {
         std.debug.print("error: {s}: manifest: {s}\n", .{ what, @errorName(err) });
@@ -1835,6 +1846,10 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     var min_os: []const u8 = "13.0";
     var permissions: std.ArrayList(macos.Permission) = .empty;
     defer permissions.deinit(gpa);
+    var usage_descriptions: std.ArrayList(macos.UsageDescription) = .empty;
+    defer usage_descriptions.deinit(gpa);
+    var entitlements: std.ArrayList([]const u8) = .empty;
+    defer entitlements.deinit(gpa);
     var sign = true;
     var url_schemes: std.ArrayList([]const u8) = .empty;
     defer url_schemes.deinit(gpa);
@@ -1888,6 +1903,22 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
                 return 1;
             };
             try permissions.append(gpa, .{ .kind = args[i][0..eq], .reason = args[i][eq + 1 ..] });
+        } else if (std.mem.eql(u8, arg, "--usage-key") and has_value) {
+            // `<key>=<usage text>`: an Info.plist key no kind covers.
+            i += 1;
+            const eq = std.mem.indexOfScalar(u8, args[i], '=') orelse {
+                std.debug.print("error: package-app: --usage-key expects <key>=<text>, got {s}\n", .{args[i]});
+                return 1;
+            };
+            try usage_descriptions.append(gpa, .{ .key = args[i][0..eq], .text = args[i][eq + 1 ..] });
+        } else if (std.mem.eql(u8, arg, "--entitlement") and has_value) {
+            // A boolean entitlement for the hardened runtime.
+            i += 1;
+            if (!macos.validPlistKey(args[i])) {
+                std.debug.print("error: package-app: --entitlement {s}: keys are [A-Za-z0-9_.~-]+\n", .{args[i]});
+                return 1;
+            }
+            try entitlements.append(gpa, args[i]);
         } else if (std.mem.eql(u8, arg, "--no-sign")) {
             sign = false;
         } else {
@@ -1969,8 +2000,9 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
         .url_schemes = url_schemes.items,
         .permissions = permissions.items,
         .document_types = document_types.items,
+        .usage_descriptions = usage_descriptions.items,
     }) catch |err| {
-        std.debug.print("error: package-app: Info.plist: {s} (package metadata must be UTF-8 without control characters; URL schemes must match [A-Za-z][A-Za-z0-9+.-]*)\n", .{@errorName(err)});
+        std.debug.print("error: package-app: Info.plist: {s} (package metadata must be UTF-8 without control characters; URL schemes must match [A-Za-z][A-Za-z0-9+.-]*; extra usage keys [A-Za-z0-9_.~-]* ending in UsageDescription, with a text)\n", .{@errorName(err)});
         return 1;
     };
     defer gpa.free(plist);
@@ -1983,7 +2015,7 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
 
     // Next to the bundle, for Developer ID signing with the hardened runtime:
     // `codesign --options runtime --entitlements <Name>.entitlements ...`.
-    const ent = try macos.generateEntitlements(gpa, permissions.items);
+    const ent = try macos.generateEntitlements(gpa, permissions.items, entitlements.items);
     defer gpa.free(ent);
     const ent_path = try std.fmt.allocPrint(gpa, "{s}.entitlements", .{bundle[0 .. bundle.len - ".app".len]});
     defer gpa.free(ent_path);
