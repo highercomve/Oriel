@@ -6237,6 +6237,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     delete p.bw;
     delete p.bc;
     delete p.bs;
+    delete p.bt;
     const pad = p.pad ? p.pad.slice() : [0, 0, 0, 0];
     for (const i of [1, 3]) if (typeof pad[i] === "number" || pad[i] === void 0) pad[i] = (pad[i] || 0) + 2;
     p.pad = pad;
@@ -6382,6 +6383,8 @@ input[type="range"] { height: 20px; margin: 2px; }
       });
       const style = sides.map((s, i) => bw[i] ? cs[`border-${s}-style`] : null).find((st) => st === "dashed" || st === "dotted");
       if (style) p.bs = style;
+      const tones = sides.filter((s, i) => bw[i]).map((s) => cs[`border-${s}-style`]);
+      if (tones.length && tones.every((st) => st === tones[0]) && (tones[0] === "groove" || tones[0] === "ridge")) p.bt = tones[0];
     }
     contentBox(cs, p, borderBox);
     outlinePart(cs, fs, p);
