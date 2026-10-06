@@ -8,12 +8,12 @@ plugins {
 
 android {
     namespace = "dev.oriel.RenderBench"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "dev.oriel.RenderBench"
         minSdk = 29
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 100
         versionName = "0.1.0"
     }

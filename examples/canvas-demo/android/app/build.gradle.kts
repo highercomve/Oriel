@@ -8,12 +8,12 @@ plugins {
 
 android {
     namespace = "dev.oriel.CanvasDemo"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "dev.oriel.CanvasDemo"
         minSdk = 29
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 100
         versionName = "0.1.0"
     }

@@ -2,6 +2,12 @@
 
 Notable changes in Oriel releases.
 
+## [0.9.3] — 2026-10-05
+
+- Android templates and examples now compile and target API 36, meeting the
+  current Google Play target requirement. Updated AGP to 8.9.3 and generated
+  Gradle wrappers to 8.14.3; minimum Gradle is 8.11.1. Android 10 remains supported.
+
 ## [0.9.2] — 2026-10-05
 
 Oriel 0.9.2 lets a page find out where a dropped file lives now, so a handler

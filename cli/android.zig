@@ -15,7 +15,7 @@
 //!     oriel android devices
 //!         The devices adb sees.
 //!
-//! Needs the Android SDK (adb, a JDK, Gradle 8.9+ or android/gradlew) and
+//! Needs the Android SDK (adb, a JDK, Gradle 8.11.1+ or android/gradlew) and
 //! the NDK ($ANDROID_NDK_HOME, or $ANDROID_HOME/ndk/<version>). See
 //! docs/android.md.
 
@@ -38,7 +38,7 @@ pub const Command = struct {
         \\  oriel android devices                          devices adb sees
         \\
         \\dev/build forward Zig -D options, e.g. -Dnative_ui or -Dggml_vulkan.
-        \\Needs the Android SDK (adb, Gradle 8.9+ or android/gradlew, a JDK) and the NDK
+        \\Needs the Android SDK (adb, Gradle 8.11.1+ or android/gradlew, a JDK) and the NDK
         \\($ANDROID_NDK_HOME or $ANDROID_HOME/ndk/<version>). See docs/android.md.
     ;
     args: []const []const u8 = &.{},
@@ -91,7 +91,7 @@ const Env = struct {
         if (exists(e.ctx.io, wrapper)) return wrapper;
         e.ctx.gpa.free(wrapper);
         if (e.ctx.hasExecutable("gradle") catch false) return e.ctx.gpa.dupe(u8, "gradle") catch null;
-        e.ctx.err.print("error: no Gradle: install Gradle 8.9+ (or run `gradle wrapper` in android/)\n", .{}) catch {};
+        e.ctx.err.print("error: no Gradle: install Gradle 8.11.1+ (or run `gradle wrapper` in android/)\n", .{}) catch {};
         return null;
     }
 };
@@ -160,7 +160,7 @@ fn init(e: Env, args: []const []const u8) !u8 {
     const wrapper = try std.fs.path.join(e.ctx.gpa, &.{ e.android_dir, "gradlew" });
     defer e.ctx.gpa.free(wrapper);
     if (!exists(e.ctx.io, wrapper) and (e.ctx.hasExecutable("gradle") catch false)) {
-        const code = e.ctx.run(&.{ "gradle", "-q", "wrapper", "--gradle-version", "8.10.2" }, e.android_dir);
+        const code = e.ctx.run(&.{ "gradle", "-q", "wrapper", "--gradle-version", "8.14.3" }, e.android_dir);
         if (code == null or code.? != 0) try e.ctx.out.print("note: `gradle wrapper` failed; the commands use Gradle from PATH instead\n", .{});
     }
     try e.ctx.out.print(
