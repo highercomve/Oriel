@@ -8,12 +8,12 @@ plugins {
 
 android {
     namespace = "dev.oriel.Breakout"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "dev.oriel.Breakout"
         minSdk = 29
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 100
         versionName = "0.1.0"
     }

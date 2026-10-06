@@ -27,7 +27,7 @@ The same `main.zig`, `Commands`, `Events` and web frontend build for Android and
 
 ## Android
 
-Needs a JDK 17, the Android SDK (platform-tools, Gradle 8.9+) and the NDK (`$ANDROID_NDK_HOME`).
+Needs a JDK 17, the Android SDK (platform-tools, Gradle 8.11.1+) and the NDK (`$ANDROID_NDK_HOME`).
 
 ```sh
 oriel android init                 # android/: the Gradle project, generated from build.zig
@@ -84,3 +84,7 @@ The showcase's "dictate anywhere" puts either into any app: tap the tile, the ke
 - **Models** live in the app's external files directory, where `adb push` can reach them.
 
 The full notes, including what was verified on which device, are in [docs/android.md](https://github.com/highercomve/Oriel/blob/main/docs/android.md) and [docs/ios.md](https://github.com/highercomve/Oriel/blob/main/docs/ios.md).
+
+# Google Play baseline
+
+New Android projects compile and target API 36 (Android 16), with Android Gradle Plugin 8.9.3 and a Gradle 8.14.3 wrapper. Install `platforms;android-36` in the SDK. Android 10 remains the minimum device version. Existing generated projects keep edited Gradle files; update those settings or regenerate with `oriel android init --force` after saving your edits.

@@ -72,7 +72,7 @@ Selectors (paths under `src/`):
 
 ## Running it on a device
 
-Needs a JDK 17, the Android SDK (platform-tools, Gradle 8.9+ or Android
+Needs a JDK 17, the Android SDK (platform-tools, Gradle 8.11.1+ or Android
 Studio) and the NDK (`$ANDROID_NDK_HOME`, or `$ANDROID_HOME/ndk/<version>`).
 
 ```sh
@@ -145,6 +145,23 @@ GPU/NPU: `-Dggml_vulkan` (any GPU), `-Dggml_opencl` (Adreno),
 `libggml-htp-v*.so` from llama.cpp's Snapdragon build at the vendored commit,
 made in `ghcr.io/snapdragon-toolchain/arm64-android`). `ORIEL_GGML_CPU=1`
 forces the CPU; `ORIEL_GGML_BLOCKLIST=Mali-G57,...` skips devices.
+
+## Google Play build baseline
+
+New Android projects compile and target Android 16 (API 36), the minimum for
+new Google Play submissions since August 31, 2026. Templates use Android
+Gradle Plugin 8.9.3, which requires Gradle 8.11.1+; `oriel android init` creates
+a Gradle 8.14.3 wrapper. Install `platforms;android-36` in your Android SDK.
+The minimum supported device API remains 29 (Android 10).
+
+Project generation preserves existing edited Gradle files. For an existing
+project, update its compile/target SDK and plugin versions, or use
+`oriel android init --force` to regenerate the templates after saving your edits.
+Play submission still requires app signing, a valid store listing, privacy
+and data disclosures, and testing; targeting API 36 alone does not complete it.
+
+References: [target API requirements](https://support.google.com/googleplay/android-developer/answer/11926878)
+and [Android Gradle Plugin compatibility](https://developer.android.com/build/releases/about-agp).
 
 ## Status
 
