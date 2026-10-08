@@ -88,6 +88,10 @@
             .url = "https://github.com/espeak-ng/espeak-ng/archive/refs/tags/1.52.0.tar.gz",
             .hash = "N-V-__8AACwimgOHy4hKeXBdrIu-hBGDy6Bmw5NjWwB6tEkc",
         },
+        .miniaudio = .{
+            .url = "https://github.com/mackron/miniaudio/archive/refs/tags/0.11.25.tar.gz",
+            .hash = "N-V-__8AAHNWwAASlNuYbrP1-3UqXdwbYvZ_6nIJhpAcRMfi",
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand", "android/template", "LICENSE", "README.md" },
 }

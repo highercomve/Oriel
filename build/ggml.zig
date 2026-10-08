@@ -434,6 +434,30 @@ pub fn addGgml(
             .flags = kokoro_flags,
         });
 
+        // miniaudio (MIT): the app plays the synthesis through it (the
+        // backend — PulseAudio/ALSA/WASAPI/CoreAudio — is dlopen'd at
+        // runtime, so nothing to link here).
+        if (b.lazyDependency("miniaudio", .{})) |ma| {
+            const impl = b.addWriteFiles();
+            const impl_file = impl.add("miniaudio_impl.c",
+                \\#define MINIAUDIO_IMPLEMENTATION
+                \\#include "miniaudio.h"
+                \\
+            );
+            const miniaudio_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{
+                "-std=c11",
+                "-D_GNU_SOURCE",
+                "-D_XOPEN_SOURCE=600",
+                "-fno-sanitize=undefined",
+                "-w",
+            }, darwin }) catch @panic("OOM");
+            oriel.addIncludePath(ma.path("miniaudio"));
+            oriel.addCSourceFile(.{
+                .file = impl_file,
+                .flags = miniaudio_flags,
+            });
+        }
+
         // libespeak-ng (GPL-3): phonemization only, so the optional audio
         // backends stay off. Its own config.h is generated here (espeak-ng's
         // CMake builds it from configure); our flags keep it minimal.
