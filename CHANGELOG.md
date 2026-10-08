@@ -2,6 +2,38 @@
 
 Notable changes in Oriel releases.
 
+## [0.9.4] — 2026-10-08
+
+Oriel 0.9.4 adds desktop wrappers for web apps, app-owned Android extensions,
+and searchable documentation.
+
+### Added
+
+- `oriel wrap <url>` (alias `oriel pake`) scaffolds a desktop app for a website,
+  with tray controls, close-to-tray behavior, automatic favicon fetching,
+  optional Linux user-agent overrides, and AppImage packaging.
+- App-owned Android extensions can handle Activity and WebView lifecycles,
+  permissions, activity results, and file selection without editing generated
+  runtime sources. Configure extension classes, Maven SDK dependencies, and
+  repositories in the app's build configuration.
+- Android app manifests can declare vendor native libraries with
+  `uses-native-library` entries.
+- Pagefind search on the documentation site, with keyboard navigation and
+  indexed article content.
+
+### Improved
+
+- Android templates now use Android Gradle Plugin 8.13.2 and Kotlin 2.3.21,
+  with the typed Kotlin JVM target configuration.
+- Native-renderer documentation describes renderer capabilities independently
+  of individual release versions.
+
+### Fixed
+
+- Linux disables WebKitGTK DMABUF rendering when the proprietary NVIDIA driver
+  is detected, avoiding compositor-related high CPU usage. An explicit
+  `WEBKIT_DISABLE_DMABUF_RENDERER` setting remains respected.
+
 ## [0.9.3] — 2026-10-05
 
 - Android templates and examples now compile and target API 36, meeting the
