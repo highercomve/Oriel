@@ -16,6 +16,7 @@ Commands in these guides run from your app directory unless a guide explicitly s
 - [Apps and examples](examples.md)
 - [WebView and native rendering](renderers.md)
 - [Android](android.md) and [iOS](ios.md)
+- [App-owned Android extensions](android-extensions.md)
 
 ## Framework development
 

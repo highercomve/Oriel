@@ -37,6 +37,19 @@ oriel android build --apk --aab    # release APK and AAB (arm64-v8a and x86_64)
 
 Or with Zig directly: `zig build -Dtarget=aarch64-linux-android` writes `zig-out/jniLibs/arm64-v8a/liboriel.so`, which Gradle packages.
 
+## App-owned Android extensions
+
+Implement `OrielAndroidExtension` in app-owned Kotlin or Java sources to
+configure WebViews, receive Activity and WebView lifecycle callbacks, handle
+native results and permissions, or supply a custom file picker. Register those
+classes with `.android.extensions` in `build.zig`; Oriel regenerates the
+internal `OrielAppExtensions` registry on each Android build.
+
+The [Android extensions guide]($link.page('docs/android-extensions')) covers
+source registration, pinned Maven SDK dependencies, request-code namespaces,
+and callback ownership. WebView hooks apply to the WebView renderer; Activity
+hooks also run with native UI.
+
 ## iOS
 
 Needs Apple's SDK: on a Mac, `xcrun --sdk iphoneos --show-sdk-path`; on Linux, [xtool](https://github.com/xtool-org/xtool) extracts it from `Xcode.xip`.

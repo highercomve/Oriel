@@ -319,6 +319,26 @@ declare no permissions, so there is nothing for it):
 .windows = .{ .capabilities = &.{.{ .name = "proximity", .kind = .device }} },  // MSIX only
 ```
 
+## App-owned Android extensions
+
+Use `.android.sources` for app-owned Kotlin or Java files and
+`.android.extensions` for fully qualified classes implementing
+`OrielAndroidExtension` with public zero-argument constructors:
+
+```zig
+.android = .{
+    .sources = &.{b.path("src/android/MyExtension.kt")},
+    .extensions = &.{"dev.example.MyExtension"},
+},
+```
+
+Oriel regenerates the internal `OrielAppExtensions` registry on each Android
+build. Hooks cover Activity and WebView lifecycles, native results, permissions,
+and file selection. `.android.dependencies` adds pinned Maven SDK coordinates;
+`.android.proguard_rules` supplies app-owned R8 rules. See
+[Android extensions](android-extensions.md) for the implementation example,
+request-code allocation, and cleanup responsibilities.
+
 ## Tray
 
 ```zig

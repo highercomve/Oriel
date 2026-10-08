@@ -112,6 +112,14 @@ every build copies each to `app/src/main/java/<its package as a path>/`
 this change keep their old `build.gradle.kts`; `oriel android init --force`
 regenerates it.
 
+For behavior beyond JNI helpers, register app-owned classes with
+`.android.extensions`. Oriel regenerates the internal `OrielAppExtensions`
+registry on every Android build; implement `OrielAndroidExtension` in your own
+Kotlin or Java sources. The generated runtime dispatches lifecycle, WebView,
+file-picker, permission and activity-result hooks without requiring edits to
+Oriel's files. See [Android extensions](android-extensions.md) for registration,
+request-code namespaces and callback ownership.
+
 The manifest (`android/app/src/main/AndroidManifest.xml`) is yours, except
 for the parts between `<!-- oriel:NAME begin -->` and `<!-- oriel:NAME end -->`
 comments: `permissions`, `features`, `queries`, `main-activity` (its intent
