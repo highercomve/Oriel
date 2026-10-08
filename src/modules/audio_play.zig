@@ -40,7 +40,7 @@ fn deviceDataCallback(dev: ?*c.ma_device, output: ?*anyopaque, input: ?*const an
     const n: usize = @intCast(frames);
     session.mutex.lockUncancelable(session.io);
     if (session.stopped or session.samples.len == 0 or session.pos >= session.samples.len) {
-        session.mutex.unlock(io);
+        session.mutex.unlock(session.io);
         return;
     }
     const remaining = session.samples[session.pos..];
@@ -89,9 +89,10 @@ pub fn stop() void {
 /// utterance frees its device. The gaf: samples must outlive the play
 /// (the owner frees them after `on_done`).
 pub fn start(io: std.Io, gpa: std.mem.Allocator, samples: []const f32, rate: u32) !void {
+    const E = error{ DeviceInitFailed, DeviceStartFailed, OutOfMemory };
+
     session.mutex.lockUncancelable(io);
-    // New run's plumbing; a running one stops.
-    teardown(io);
+    teardown(session.io); // the running one (may be unset locals-wise)
     session.io = io;
     session.gpa = gpa;
     session.samples = samples;
@@ -101,7 +102,7 @@ pub fn start(io: std.Io, gpa: std.mem.Allocator, samples: []const f32, rate: u32
 
     const dev = gpa.create(c.ma_device) catch {
         session.mutex.unlock(io);
-        return Error.OutOfMemory;
+        return E.OutOfMemory;
     };
     var config = c.ma_device_config_init(c.ma_device_type_playback);
     config.playback.format = c.ma_format_f32;
@@ -112,7 +113,7 @@ pub fn start(io: std.Io, gpa: std.mem.Allocator, samples: []const f32, rate: u32
         gpa.destroy(dev);
         session.stopped = true;
         session.mutex.unlock(io);
-        return Error.DeviceInitFailed;
+        return E.DeviceInitFailed;
     }
     session.device = dev;
     session.mutex.unlock(io);
@@ -123,11 +124,11 @@ pub fn start(io: std.Io, gpa: std.mem.Allocator, samples: []const f32, rate: u32
         session.device = null;
         session.stopped = true;
         session.mutex.unlock(io);
-        return Error.DeviceStartFailed;
+        return E.DeviceStartFailed;
     }
 }
 
 /// For the app's exit paths.
-pub fn shutdown(io: std.Io) void {
+pub fn shutdown() void {
     stop();
 }
