@@ -150,7 +150,7 @@ forces the CPU; `ORIEL_GGML_BLOCKLIST=Mali-G57,...` skips devices.
 
 New Android projects compile and target Android 16 (API 36), the minimum for
 new Google Play submissions since August 31, 2026. Templates use Android
-Gradle Plugin 8.9.3, which requires Gradle 8.11.1+; `oriel android init` creates
+Gradle Plugin 8.13.2 and Kotlin 2.3.21; `oriel android init` creates
 a Gradle 8.14.3 wrapper. Install `platforms;android-36` in your Android SDK.
 The minimum supported device API remains 29 (Android 10).
 
