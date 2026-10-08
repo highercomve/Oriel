@@ -31,6 +31,8 @@ fn embedBinary(comptime dest: []const u8, comptime src: []const u8) File {
     return .{ .path = dest, .text = @embedFile("templates/" ++ src), .is_template = false };
 }
 
+pub const default_icon_bytes = @embedFile("templates/common/icon.png");
+
 const common = [_]File{
     embed("build.zig", "common/build.zig"),
     embed("build.zig.zon", "common/build.zig.zon"),

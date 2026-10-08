@@ -443,6 +443,7 @@ fn addCli(
     options.addOption([]const u8, "version", version);
     options.addOption([]const u8, "oriel_ref", oriel_ref);
     options.addOption(?[]const u8, "update_public_key", update_public_key);
+    options.addOption(?[]const u8, "checkout_path", b.build_root.path);
 
     // Linux builds use musl so the binary is fully static and runs on any
     // distro (the CLI needs no libc anyway). The CLI is a desktop tool: an

@@ -26,11 +26,14 @@ const setup_cmd = @import("setup.zig");
 const signing_cmd = @import("signing.zig");
 const android_cmd = @import("android.zig");
 const ios_cmd = @import("ios.zig");
+const wrap_cmd = @import("wrap.zig");
 
 const program = "oriel";
 
 pub const Commands = union(enum) {
     init: init_cmd.Command,
+    wrap: wrap_cmd.Command,
+    pake: wrap_cmd.Command,
     doctor: doctor.Command,
     setup: setup_cmd.Command,
     update: update_cmd.Command,
@@ -102,6 +105,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
         },
         .command => |cmd| switch (cmd) {
             .init => |c| return init_cmd.run(ctx, c),
+            .wrap, .pake => |c| return wrap_cmd.run(ctx, c),
             .doctor => |c| return doctor.run(ctx, c),
             .setup => |c| return setup_cmd.run(ctx, c),
             .update => |c| return update_cmd.run(ctx, c),
@@ -122,6 +126,7 @@ test {
     _ = args;
     _ = Context;
     _ = init_cmd;
+    _ = wrap_cmd;
     _ = doctor;
     _ = setup_cmd;
     _ = update_cmd;
