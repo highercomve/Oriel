@@ -467,6 +467,7 @@ pub fn addGgml(
                 .root = espeak_dep.path("src/libespeak-ng"),
                 .files = &.{
                     "common.c",
+                    "compiledict.c",
                     "espeak_api.c",
                     "error.c",
                     "ieee80.c",
