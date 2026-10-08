@@ -94,8 +94,8 @@
 
 		<section class="section" id="latest">
 			<div class="section-head">
-				<h2>In this release</h2>
-				<p>Oriel 0.8.0 · October 4, 2026. The native UI renderer is available as an experimental, opt-in build mode.</p>
+				<h2>Native UI renderer</h2>
+				<p>Render your frontend with native views using the experimental, opt-in native UI renderer.</p>
 			</div>
 			<div class="feature-grid">
 				<article class="feature">
