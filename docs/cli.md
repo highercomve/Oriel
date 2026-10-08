@@ -144,6 +144,7 @@ Wrapped apps use the host operating system's native WebView (WebKitGTK on Linux,
 - **Custom User-Agent**: Some web applications (such as WhatsApp Web) require a standard desktop browser User-Agent to render their desktop interface. On Linux, pass `--user-agent chrome` (or `safari`, `firefox`, or a custom User-Agent string); other platforms currently keep their default User-Agent.
 - **Permissions and Capabilities**: Oriel automatically configures `.allowed_origins` and `.capabilities` for the target domain and its subdomains, so declared notification and microphone permissions can be requested by those pages. The operating system and WebView still control access.
 - **Optimized Packaging**: On Linux, passing `--package` automatically builds a `ReleaseSafe` AppImage in `zig-out/package/`.
+- **Linux GPU Optimization**: On systems with proprietary NVIDIA drivers, WebKitGTK's DMABUF renderer has a known driver issue causing high CPU usage. Oriel automatically detects NVIDIA drivers and sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` at launch, ensuring smooth rendering without CPU busy-loops.
 
 #### Options
 
