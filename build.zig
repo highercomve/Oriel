@@ -935,6 +935,10 @@ pub const AppOptions = struct {
     /// embeds the hook and exposes it as `oriel_app.isolation`; pass that to
     /// `App.Config.security.isolation` (see `security.Isolation`).
     isolation: ?Isolation = null,
+    /// C include directories for the app's own root module (its Zig code's
+    /// `@cImport` and its C sources): the oriel module's include paths only
+    /// cover the oriel module's own compilation.
+    include_paths: []const std.Build.LazyPath = &.{},
     /// Android-only system entry points (see docs/android.md), declared in
     /// the generated manifest.
     android: Android = .{},
@@ -1322,7 +1326,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
         cfg.addOption([]const []const u8, "url_schemes", url_schemes);
         addPermissionOptions(cfg, permissions);
-        const d = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon, options.isolation));
+        const d = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon, options.isolation), options.include_paths);
         for (options.imports) |imp| d.root_module.addImport(imp.name, imp.module);
         // Most of a Debug rebuild is LLVM writing debug info: without it an
         // edit rebuilds in well under the time, but crashes print no
@@ -1378,7 +1382,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(prod_cfg, permissions);
-    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation));
+    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation), options.include_paths);
     for (options.imports) |imp| exe.root_module.addImport(imp.name, imp.module);
     b.installArtifact(exe);
 
@@ -1482,7 +1486,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     check_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     check_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(check_cfg, permissions);
-    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null, app_icon, options.isolation));
+    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null, app_icon, options.isolation), options.include_paths);
     for (options.imports) |imp| check_exe.root_module.addImport(imp.name, imp.module);
     @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_exe.step);
 
@@ -1870,7 +1874,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(prod_cfg, permissions);
-    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation));
+    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation), options.include_paths);
     for (options.imports) |imp| exe.root_module.addImport(imp.name, imp.module);
 
     // Development: the dev server's URL (reached over the network).
@@ -1887,7 +1891,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     dev_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     dev_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(dev_cfg, permissions);
-    const dev_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation));
+    const dev_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation), options.include_paths);
     for (options.imports) |imp| dev_exe.root_module.addImport(imp.name, imp.module);
 
     for ([_]*std.Build.Step.Compile{ exe, dev_exe }) |c| {
@@ -1948,7 +1952,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         .dependOn(&b.addInstallFile(ipa, b.fmt("{s}.ipa", .{display_name})).step);
 
     // Type-check only: nothing requests the binary.
-    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation));
+    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation), options.include_paths);
     for (options.imports) |imp| check_exe.root_module.addImport(imp.name, imp.module);
     // With an SDK, C dependencies (sql, whisper, ...) type-check too.
     ios_build.configure(b, check_exe);
@@ -2061,6 +2065,7 @@ fn typesGenerator(
             .{ .name = "oriel_app", .module = appConfigModule(b, oriel, cfg, null, app_icon, options.isolation) },
         },
     });
+    for (options.include_paths) |p| app_root.addIncludePath(p);
     for (options.imports) |imp| app_root.addImport(imp.name, imp.module);
     const files = b.addWriteFiles();
     const root = files.add("oriel_types.zig",
@@ -2178,6 +2183,7 @@ fn addExe(
     name: []const u8,
     root_source_file: std.Build.LazyPath,
     app_config: *std.Build.Module,
+    include_paths: []const std.Build.LazyPath,
 ) *std.Build.Step.Compile {
     const exe = b.addExecutable(.{
         .name = name,
@@ -2194,6 +2200,7 @@ fn addExe(
         .use_llvm = true,
         .use_lld = useLld(target),
     });
+    for (include_paths) |p| exe.root_module.addIncludePath(p);
     if (target.result.os.tag == .windows) {
         exe.subsystem = .Windows;
     }
