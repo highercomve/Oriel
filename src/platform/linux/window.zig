@@ -27,6 +27,7 @@ extern fn webkit_user_media_permission_is_for_display_device(req: *webkit.UserMe
 extern fn webkit_permission_request_allow(req: *webkit.PermissionRequest) void;
 extern fn webkit_permission_request_deny(req: *webkit.PermissionRequest) void;
 extern fn webkit_web_view_get_uri(view: *webkit.WebView) ?[*:0]const u8;
+extern fn webkit_settings_set_user_agent(settings: *webkit.Settings, user_agent: ?[*:0]const u8) void;
 
 /// The permissions a WebKit permission request needs (null: a request type
 /// Oriel leaves to WebKit's default, which denies).
@@ -246,6 +247,9 @@ pub fn WindowCreator(
             settings.setAllowUniversalAccessFromFileUrls(0);
             // getUserMedia exists only when the app may use a microphone or camera.
             settings.setEnableMediaStream(@intFromBool(config.permissions.has(.microphone) or config.permissions.has(.camera) or config.permissions.has(.screen_capture)));
+            if (config.user_agent) |ua| {
+                webkit_settings_set_user_agent(settings, ua.ptr);
+            }
 
             BridgeImpl.setupUserContent(view, options.label);
 

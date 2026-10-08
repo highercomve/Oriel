@@ -20,7 +20,7 @@ without a WebView.
 - **Small:** a release app is a few MB; the build cache is hundreds of MB, not gigabytes.
 - **Typed both ways:** `invoke` and `listen` in TypeScript are generated from your Zig `Commands` and `Events`.
 - **Secure by default:** navigation limits, per-origin command capabilities, a strict CSP.
-- **Batteries included, opt-in:** tray, updater, SQLite & sqlite-vec, llama.cpp & whisper.cpp, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage).
+- **Batteries included, opt-in:** tray, updater, SQLite & sqlite-vec, llama.cpp & whisper.cpp, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage), and web wrapping (`oriel wrap`).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh     # Linux, macOS
@@ -29,6 +29,8 @@ oriel doctor              # checks Zig 0.16, the platform webview SDK, Node.js
 oriel init my-app         # React + Vite (or --template vue|svelte|vanilla)
 cd my-app && oriel dev    # hot reload; `oriel build` for the release binary
 
+# Or wrap any website into a standalone desktop app with system tray & AppImage:
+oriel wrap https://web.whatsapp.com --tray --user-agent chrome --package
 ```
 
 ## Renderers

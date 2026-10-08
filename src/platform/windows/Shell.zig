@@ -632,6 +632,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             const main_win = App.openWindow(.{
                 .label = "main",
                 .title = config.title,
+                .url = config.url,
                 .width = config.width,
                 .height = config.height,
                 .min_width = config.min_width,

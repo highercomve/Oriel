@@ -495,7 +495,7 @@ fn createProjectDir(io: std.Io, parent: std.Io.Dir, name: []const u8) !bool {
     return true;
 }
 
-fn isOrielCheckout(arena: std.mem.Allocator, io: std.Io, dir: []const u8) !bool {
+pub fn isOrielCheckout(arena: std.mem.Allocator, io: std.Io, dir: []const u8) !bool {
     const zon_path = try std.fs.path.join(arena, &.{ dir, "build.zig.zon" });
     const zon = std.Io.Dir.cwd().readFileAlloc(io, zon_path, arena, .limited(1 << 20)) catch return false;
     return std.mem.indexOf(u8, zon, ".name = .oriel,") != null;

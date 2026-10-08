@@ -54,7 +54,11 @@ pub const Config = struct {
     fullscreen: bool = false,
     maximized: bool = false,
     remember_geometry: bool = false,
-    assets: []const Asset,
+    assets: []const Asset = &.{},
+    /// Remote URL to load at startup instead of embedded assets.
+    url: ?[:0]const u8 = null,
+    /// Custom User-Agent string for the webview.
+    user_agent: ?[:0]const u8 = null,
     /// Path + query loaded at startup, relative to `app://app/`.
     start: [:0]const u8 = "index.html",
     /// Unknown extension-less paths serve `index.html` (client-side routing).

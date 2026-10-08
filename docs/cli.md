@@ -26,6 +26,7 @@ downloads (minisign-verified) on first use. See [Zig versions](#zig-versions-ori
 | Command | What it does |
 |---|---|
 | `oriel init <name>` | New app in `./<name>`: `build.zig`, `build.zig.zon`, `src/main.zig` with sample `Commands`/`Events`, the frontend, and README. Adds Oriel, fetches dependencies and runs `npm install`, so the first build works offline |
+| `oriel wrap <url>` | Wrap any web page or web app into a lightweight desktop application with system tray, close-to-tray, auto-favicon, and AppImage packaging (alias: `oriel pake`) |
 | `oriel doctor` | Checks requirements for building and running Oriel apps (`--fix` installs non-admin tools and prints exact system commands) |
 | `oriel setup [tool]` | Installs managed tools into `~/.oriel/<tool>` without admin rights (`node`, `nsis`, `webview2`, `zig`, `all`) |
 | `oriel dev` | Runs the frontend dev server (Vite) and rebuilds + restarts the app when a `.zig` file changes (hot reload; inotify on Linux, polling on macOS and Windows) |
@@ -118,6 +119,48 @@ into place atomically under a lock file, so concurrent installs don't clash.
   `npm install`.
 - `--no-webview2`: skip downloading `WebView2Loader.dll` for Windows builds.
 - `--yes`: skip confirmation prompt when installing missing Node.js for Vite templates.
+
+### Wrapping web apps (`oriel wrap`, `oriel pake`)
+
+`oriel wrap` (aliased as `oriel pake`, inspired by [tw93/Pake](https://github.com/tw93/Pake)) turns any website or web application into a lightweight, native desktop application:
+
+```sh
+# Package WhatsApp Web into a ~2.7 MB AppImage with tray and notifications:
+oriel wrap https://web.whatsapp.com \
+  --name whatsapp \
+  --title "WhatsApp" \
+  --id com.whatsapp.desktop \
+  --tray \
+  --user-agent chrome \
+  --package
+```
+
+Wrapped apps use the host operating system's native WebView (WebKitGTK on Linux, WebView2 on Windows, WKWebView on macOS) rather than bundling a heavy Chromium distribution. A release AppImage is typically only ~2–3 MB.
+
+#### Key Features
+
+- **System Tray Integration**: `--tray` (default) generates a native system tray icon with a Show/Hide toggle and Quit action. When closed via the window titlebar, the application hides to the system tray (`on_close = .hide`) rather than terminating. Use `--no-tray` to disable.
+- **Automatic Favicon Resolution**: If `--icon` is omitted or points to a non-existent file path, Oriel automatically fetches the target site's high-resolution RGBA PNG favicon (up to 256×256 with transparency) from Google's favicon service (with DuckDuckGo fallback). If you specified an icon path like `--icon ./whatsapp.png`, it downloads the favicon and saves it to that path. The favicon is embedded into `assets/icon.png` and used across the system tray, window titlebar, Linux `.desktop` entry, and AppImage bundle.
+- **Custom User-Agent**: Some web applications (such as WhatsApp Web) require a standard desktop browser User-Agent to render their desktop interface. On Linux, pass `--user-agent chrome` (or `safari`, `firefox`, or a custom User-Agent string); other platforms currently keep their default User-Agent.
+- **Permissions and Capabilities**: Oriel automatically configures `.allowed_origins` and `.capabilities` for the target domain and its subdomains, so declared notification and microphone permissions can be requested by those pages. The operating system and WebView still control access.
+- **Optimized Packaging**: On Linux, passing `--package` automatically builds a `ReleaseSafe` AppImage in `zig-out/package/`.
+
+#### Options
+
+| Option | Description |
+|---|---|
+| `<url>` | Target web URL (e.g. `https://web.whatsapp.com`) |
+| `--name <name>` | Application name: directory and binary name (auto-derived from host if omitted) |
+| `--title <title>` | Window title and package display name (default: title-cased name) |
+| `--id <app-id>` | Reverse-DNS app identifier (e.g. `com.whatsapp.desktop`) |
+| `--icon <path>` | Path to PNG icon file (auto-fetches site favicon if omitted or missing) |
+| `--tray` / `--no-tray` | Enable (default) or disable system tray icon and minimize-to-tray |
+| `--user-agent <ua>` | Custom User-Agent: `chrome`, `safari`, `firefox`, or custom string |
+| `--package` | Linux: build a `ReleaseSafe` AppImage immediately |
+| `--run` | Run the application immediately after scaffolding |
+| `--devtools` | Enable Web Developer Tools and forward console messages to stdout |
+| `--oriel-ref <ref>` | Git tag or commit of Oriel to depend on |
+| `--oriel-path <dir>` | Depend on a local Oriel checkout instead of a git dependency |
 
 ### Updating the CLI
 
