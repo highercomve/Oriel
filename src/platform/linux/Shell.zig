@@ -14,6 +14,7 @@ const dev_server = @import("dev_server.zig");
 const window = @import("window.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
 const WindowHandle = window.WindowHandle;
 
 const log = std.log.scoped(.oriel);
@@ -151,6 +152,12 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             // one cost ~120 ms before the first frame and ~60 MB (render
             // bench). Cairo, unless the user chose one (GSK_RENDERER).
             if (comptime build_opts.native_ui) _ = setenv("GSK_RENDERER", "cairo", 0);
+            // WebKitGTK's DMABUF renderer has a well-known issue on NVIDIA proprietary
+            // drivers where compositing between UI and WebProcess causes high CPU usage.
+            // Disabling the DMABUF renderer avoids busy loops and excessive CPU usage.
+            if (access("/proc/driver/nvidia", 0) == 0) {
+                _ = setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
+            }
             const id = if (config.dev != null) config.id ++ ".Dev" else config.id;
             const app_flags = if (uses_command_line)
                 gio.ApplicationFlags{ .handles_command_line = true }
