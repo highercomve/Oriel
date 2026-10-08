@@ -1,415 +1,78 @@
-# Oriel Comprehensive Security & Memory Safety Review
+# Validated security and memory-safety review
 
-**Date**: 2026-10-08  
-**Scope**: Full codebase audit across Memory Allocations, Concurrency & Threading, IPC & Webview Bridges, Custom URI Schemes, File Operations, and the Auto-Updater.  
-**Platform Coverage**: Linux (WebKitGTK / GTK4), Windows (WebView2 / Win32), macOS (WKWebView / AppKit), Android (android.webkit.WebView / JNI), iOS (WKWebView / UIKit).
+Validated on 2026-10-08 against `56b360e` (Oriel 0.9.4 plus website documentation).
+The original report's blanket “CONFIRMED” labels and severity ratings were not
+accepted as evidence. Each finding was checked against its callers, ownership
+contracts, the installed Zig 0.16.0 standard library, and platform APIs.
 
----
+All confirmed implementation defects below are addressed for **0.9.5**.
+“Not confirmed” means the reported mechanism is contradicted by the current
+code or lacks a working exploit; it does not claim the subsystem is free of
+other bugs. This is a targeted validation of the supplied findings, not a new
+full-codebase security audit.
 
-## Executive Summary Matrix
+## Finding results
 
-| ID | Severity | Status | Location | Bug Class | Vulnerability Summary |
-|:---|:---|:---|:---|:---|:---|
-| **MEM-01** | **CRITICAL** | **CONFIRMED** | `src/platform/linux/bridge.zig:649-670` | Use-After-Free / Use-After-Unref | Accessing `WebKitScriptMessageReply` after dropping reference on OOM/dispatch error paths. |
-| **CONC-01** | **CRITICAL** | **CONFIRMED** | `src/core/file_handles.zig:98-185` | Concurrency / Use-After-Free | Unsynchronized `FileHandles` table causing data race and descriptor hijacking across threads. |
-| **CONC-02** | **CRITICAL** | **CONFIRMED** | `src/core/App.zig:864-872`, `ThreadPool.zig:57-69` | Concurrency / Use-After-Free | `worker_pool` destroyed prior to pointer nullification; post-shutdown task loss and memory leak. |
-| **SEC-01** | **CRITICAL** | **CONFIRMED** | `src/modules/share/apple.zig:88-104` | Path Traversal / Arbitrary Deletion | `removeCopy` substring match permits `..` traversal out of `/Documents/Inbox/` to delete files. |
-| **SEC-02** | **HIGH** | **CONFIRMED** | `src/platform/linux/bridge.zig:625-640` | Origin Confusion / Privilege Escalation | Linux WebKitGTK bridge retrieves top-level URL rather than sender subframe origin. |
-| **SEC-03** | **HIGH** | **CONFIRMED** | `src/core/isolation.zig:280-360` | Isolation Bypass / Cross-Origin Leak | `location.ancestorOrigins` is undefined on WebKit/Safari, bypassing origin checks and leaking via `postMessage("*")`. |
-| **SEC-04** | **HIGH** | **CONFIRMED** | `src/core/ipc.zig:134-178` | Token Exposure | Bridge scripts statically embed `"local"` HMAC secret token into all webview documents and frames. |
-| **CONC-03** | **HIGH** | **CONFIRMED** | `src/core/App.zig:478-489` | Concurrency / Use-After-Free | `ensureWindow` releases `windows_mutex` while holding raw slices into registered window strings. |
-| **CONC-04** | **HIGH** | **CONFIRMED** | `src/core/ipc.zig:510-545` | Concurrency / Dangling Pointer | Async IPC error text points to worker thread-local `fail_buf`, read concurrently after thread reuse. |
-| **DOS-01** | **HIGH** | **CONFIRMED** | `src/updater_core.zig:393-402, 474` | Denial of Service / Decompression Bomb | Uncapped disk streaming and `.unlimited` heap allocation during gzip update decompression. |
-| **SEC-05** | **MEDIUM** | **CONFIRMED** | `src/core/window_commands.zig:100-115` | Privilege Escalation / Spoofing | `oriel:window:emitTo` completely omits `validateWindowModification` permissions check. |
-| **SEC-06** | **MEDIUM** | **CONFIRMED** | `src/modules/updater/macos.zig:185-230` | Tar Path Traversal Bypass | `LinkGuard` ignores `std.tar.FileKind.hard_link` during `.app` bundle update extraction. |
-| **SEC-07** | **MEDIUM** | **CONFIRMED** | `src/modules/model_download.zig:49-65` | SSRF / Cleartext Downgrade | Unchecked HTTP 301/302 redirects allow redirection to internal loopback addresses or HTTP. |
-| **MEM-02** | **MEDIUM** | **CONFIRMED** | `src/core/ipc.zig:383-395` | Memory Leak | Up to 16 MiB heap payload leaked if `share:read` fails during base64 arena allocation. |
-| **MEM-03** | **MEDIUM** | **CONFIRMED** | `src/platform/linux/scheme.zig:52`, `media_scheme/linux.zig:173` | Memory Leak | `SoupMessageHeaders` referenced by WebKitGTK is never unreferenced by the caller. |
-| **MEM-04** | **MEDIUM** | **CONFIRMED** | `src/platform/linux/window.zig:360`, `windows/window.zig:1608` | Allocator Mismatch | Hardcoded `std.heap.smp_allocator` frees window structs allocated via `heap.gpa`. |
-| **CONC-05** | **MEDIUM** | **CONFIRMED** | `src/modules/media_scheme/windows.zig:176-205` | Concurrency / Data Race | Speculative `fetchSub` offset rollback in Windows `FileWindowStream` corrupts concurrent reads. |
-| **SEC-08** | **MEDIUM** | **CONFIRMED** | `src/modules/media_server.zig:33-70` | DNS Rebinding / Port Scanning | Missing `Host` header validation and `Access-Control-Allow-Origin: *` on local media streaming server. |
-| **SEC-09** | **LOW-MEDIUM** | **CONFIRMED** | `src/updater_core.zig:220-225` | Replay Attack | Optional `expires` timestamp in manifests allows indefinite validity and rollback replays. |
-| **MEM-05** | **LOW** | **CONFIRMED** | `src/platform/linux/dev_server.zig:23-28` | Memory Leak | `defer` statement declared after argument loop leaks earlier elements on allocation failure. |
-| **BUG-01** | **LOW** | **CONFIRMED** | `src/modules/updater/linux.zig:44-48` | I/O Buffer Truncation | Single `readSliceShort` truncates Linux `/proc/self/cmdline` past 2048 bytes on restart. |
+| ID | Validation | Result / evidence |
+|---|---|---|
+| MEM-01 | Not confirmed as a use-after-free | Linux adds a reply reference, then releases only that added reference on setup failure. WebKit retains the callback's borrowed reply until the handler returns. The reply is therefore still alive; this is not the claimed sole-reference scenario. |
+| CONC-01 | Confirmed; fixed | `FileHandles` now serializes map access and holds its lock through descriptor reads, checks and path lookup. Descriptor duplication is performed under the same lock; Apple/Windows sharing no longer duplicate a descriptor returned by an unlocked `info()` call. |
+| CONC-02 | Confirmed; fixed | App pool publication and borrowing are synchronized. Shutdown withdraws the pointer, waits for outstanding borrows, then drains/destroys the pool. Posting after shutdown is rejected and callers release rejected jobs. Merely atomically exchanging the pointer would leave already-loaded pointers unprotected. Pool initialization allocation failure is also cleaned up. |
+| SEC-01 | Unsafe deletion guard confirmed; fixed | iOS Inbox cleanup now canonicalizes the app container's actual Inbox and file, requires a direct child, and unlinks through a directory descriptor. macOS never performs Inbox cleanup. The path comes from OS sharing / trusted Zig code, not a page-supplied arbitrary deletion command; the original remote exploit severity was overstated. |
+| SEC-02 | Origin metadata limitation confirmed; exploit not established | WebKit's reply signal does not expose a sender frame. Linux's bridge is injected only into top frames on permitted origins, and native dispatch verifies the scoped token before using the top-level URL. An untrusted child receives no bridge token; directly posting without it is refused. Existing smoke checks exercise that refusal. No untrusted-frame token extraction was demonstrated. |
+| SEC-03 | Missing fallback validation confirmed; fixed | Isolation messages now require the actual `MessageEvent.origin` to match a local parent and require a direct top-level parent. Responses target the validated origin; readiness targets only configured local origins. CSP `frame-ancestors` already existed. The fix does not depend on the report's inaccurate blanket claim that all WebKit engines lack `ancestorOrigins`. |
+| SEC-04 | Token-extraction claim not confirmed | Injected values are derived scope tokens, not the HMAC master key. Tokens remain in a document-start closure; `__orielNative` is not an exported token container. Native authorization checks both token scope and page origin/capabilities. Apple scripts are main-frame-only and Apple handlers reject subframes. Linux uses top-frame injection and an origin allowlist. Windows/Android shared bridge now exits immediately in subframes for consistency. Reading a native user script's source from an arbitrary page was asserted, not demonstrated. |
+| CONC-03 | Confirmed; fixed | `ensureWindow` snapshots the registered label, title and URL while holding the registration lock; the snapshot survives concurrent replacement and is freed after opening. Window creation itself remains a main-thread API. |
+| CONC-04 | Confirmed; fixed | Async error text is copied into the job arena before handing it to UI callbacks, including custom `ipc.fail` text. A regression test retains two errors after the same worker is reused and destroyed. |
+| DOS-01 | Unbounded expansion confirmed; fixed | Expanded gzip output is limited to 512 MiB for disk streaming and heap unpacking. macOS bundle verification and extraction are bounded too. The compressed payload must already pass signed-manifest/hash checks; an unsigned network payload cannot directly trigger the described expansion. |
+| SEC-05 | Confirmed; fixed | `oriel:window:emitTo` now applies `validateWindowModification`, matching other window mutation commands. Cross-window emission requires `allow_modify_other_windows`; self-targeted events retain existing behavior. |
+| SEC-06 | Not confirmed | Zig 0.16.0 `std.tar.FileKind` has only directory, symlink and file. The iterator skips unsupported entries, including hard links; extraction never creates them. Adding `.hard_link` to `LinkGuard` would not compile. Existing symlink checks remain in place. |
+| SEC-07 | HTTPS downgrade confirmed; fixed; SSRF claim not established | The Zig downloader requires HTTPS before every request, including resolved redirects, and refuses URL credentials. Initial model URLs come from compiled Hugging Face catalogue entries, not page-supplied URLs; downloaded response bytes are stored as model files, not returned to a remote caller. iOS uses NSURLSession/system TLS and App Transport Security for redirects. This is not a general SSRF-safe downloader: arbitrary private-address/DNS destinations are not comprehensively filtered, so trusted catalogue/CDN endpoints remain part of its trust model. |
+| MEM-02 | Confirmed; fixed | The share-read buffer is deferred immediately, covering read errors and base64 allocation errors. The received-file table and its output buffer cleanup use the same internal allocator. |
+| MEM-03 | Not confirmed; proposed fix would be unsafe | `webkit_uri_scheme_response_set_http_headers` takes full ownership. The installed GIR and WebKit documentation specify transfer-full. Adding `headers.unref()` after transferring ownership would risk double-unref/use-after-free. |
+| MEM-04 | Not confirmed in current builds; ownership made explicit | `heap.gpa` is `smp_allocator` on Linux/Windows/macOS; Android uses its own backend and allocator. There is no configurable allocator override in the reviewed allocation path. Desktop window destruction now names `heap.gpa` explicitly to preserve the ownership contract if that implementation changes. |
+| CONC-05 | Confirmed; fixed | Windows stream Read and Seek are serialized. Reads advance by actual bytes read after success, so a failed/short read cannot roll back another request's offset. |
+| SEC-08 | Confirmed; fixed | All local media endpoints validate Host against the configured loopback address/port before serving. `/ping` now uses the configured application CORS origin. File CORS was already scoped; only ping had the wildcard. Real TCP tests reject rebinding Host values on GET, HEAD and OPTIONS. |
+| SEC-09 | Optional freshness policy, not a signature/downgrade bypass; clock edge fixed | Expiration remains optional for compatibility with published manifests and offline release lifetimes. Signatures and newer-than-current version checks still apply; intentional `force` is the explicit downgrade path. A valid older-but-newer-than-installed signed manifest can remain usable without expiry, so strict freshness requires a publisher policy. When an expiry is present, a non-positive clock now fails closed. |
+| MEM-05 | Confirmed; fixed | Dev-server argv elements are initialized to null and cleanup is registered before duplication, so partial allocation failure releases prior strings. |
+| BUG-01 | Not confirmed | The 2048-byte array is the reader's internal buffer, not the destination bound. `readSliceShort` loops to fill the 16385-byte destination or EOF, and the existing length check rejects oversized command lines. |
 
----
+## API and behavior changes
 
-## Detailed Findings
+- `App.getWorkerPool()` returns a borrow that must be paired with
+  `App.releaseWorkerPool()` when non-null. All internal bridge callers are
+  updated. `App.spawn()` manages this automatically.
+- `ThreadPool.post()` returns whether it accepted the task. On rejection the
+  caller retains task ownership and must clean it up.
+- Cross-window `emitTo` requires the same modification permission as other
+  cross-window operations.
+- Gzip-based update payloads larger than 512 MiB after expansion are refused.
+  This includes macOS bundle archives. Raw update formats retain their signed
+  size bounds. Publishers of larger compressed bundles must account for this
+  limit.
+- Model catalogue URLs and Zig-followed redirects must use HTTPS.
+- Media-server clients must use `127.0.0.1:<port>` or `localhost:<port>` as Host.
 
-### 1. Memory Safety & Lifecycle (Use-After-Free, Double-Free, Leaks)
+## Validation
 
-#### [CRITICAL] MEM-01: Use-After-Free in Linux WebKit IPC Bridge
-- **Location**: `src/platform/linux/bridge.zig:649-653` and `664-670`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. Frontend dispatches an async command via `window.webkit.messageHandlers.oriel.postMessage(...)`.
-  2. In `onMessage`, references are incremented: `reply.ref()` and `context.ref()`.
-  3. Memory allocation for `GtkReply` fails (`OutOfMemory`) or worker dispatch fails (`ipc.dispatchAsync` returns an error).
-  4. The error handler calls `reply.unref()` and `context.unref()`. If the caller's reference was the sole remaining reference, the underlying GObject / WebKit structure is destroyed.
-  5. Immediately following, the handler calls `reply.returnErrorMessage("OutOfMemory")` on the deallocated object, causing a segmentation fault or memory corruption.
-- **Code Trace**:
-  ```zig
-  // src/platform/linux/bridge.zig:649
-  const gtk_reply = std.heap.smp_allocator.create(GtkReply) catch {
-      reply.unref();
-      context.unref();
-      reply.returnErrorMessage("OutOfMemory"); // <-- USE-AFTER-FREE
-      return 1;
-  };
-  ```
-- **Remediation**:
-  Invoke `reply.returnErrorMessage(...)` *before* dropping references:
-  ```zig
-  const gtk_reply = std.heap.smp_allocator.create(GtkReply) catch {
-      reply.returnErrorMessage("OutOfMemory");
-      reply.unref();
-      context.unref();
-      return 1;
-  };
-  ```
+Regression tests cover table contention and descriptor duplication, pool
+withdrawal/draining/rejection, retained async error text, cross-window event
+permissions, Inbox path restrictions, real-TCP Host rejection, HTTPS URL
+validation, and bounded gzip writes. `tools/test_isolation_runtime.mjs`
+executes the embedded runtime without `ancestorOrigins`, checks untrusted
+origins/sources, and verifies explicit reply origins. The release workflow
+runs this test along with the existing unit and WebView smoke checks.
 
----
+Linux unit tests and Windows cross-target type checks pass locally. The real
+Linux smoke app is checked in a private Xvfb/D-Bus session. macOS framework
+verification runs on the macOS release runner because this Linux host lacks
+Apple frameworks. No iOS device run or Windows IStream runtime concurrency
+stress test is claimed by this validation.
 
-#### [MEDIUM] MEM-02: Permanent Heap Leak on Error Path in `share:read`
-- **Location**: `src/core/ipc.zig:383-395`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. A webview client calls `share:read` with a valid file handle.
-  2. `var bytes: std.ArrayList(u8) = .empty;` is initialized.
-  3. `share.read(args.handle, args.offset, len, &bytes)` reads up to 16 MiB from disk into heap-allocated `bytes`.
-  4. `arena.alloc(u8, enc.calcSize(bytes.items.len))` fails with `error.OutOfMemory`.
-  5. The function exits immediately. Because `bytes.deinit(std.heap.smp_allocator)` is located *after* the `try arena.alloc`, `bytes` is never freed, leaking up to 16 MiB of system memory per failed call.
-- **Remediation**:
-  Use `defer bytes.deinit(heap.gpa);` immediately following the declaration of `bytes`. Note that `heap.gpa` must be used instead of hardcoded `smp_allocator` to preserve Android compatibility (`c_allocator`).
+## Ownership and library references
 
----
-
-#### [MEDIUM] MEM-03: `SoupMessageHeaders` Leaked on All Asset & Media Loads
-- **Location**: `src/platform/linux/scheme.zig:52` and `src/modules/media_scheme/linux.zig:173, 212, 227`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. WebKitGTK requests an embedded asset or media chunk.
-  2. The handler creates response headers: `const headers = soup.MessageHeaders.new(.response);`.
-  3. The handler associates the headers: `response.setHttpHeaders(headers);`.
-  4. Code comments assume `setHttpHeaders` sinks ownership. However, in libwebkitgtk (`webkit_uri_scheme_response_set_http_headers`), the C code calls `soup_message_headers_ref(headers)`.
-  5. Because Oriel never calls `headers.unref()`, every web resource load permanently leaks a `SoupMessageHeaders` instance and its allocated string table.
-- **Remediation**:
-  Add `defer headers.unref();` immediately after creating `soup.MessageHeaders.new(.response)`.
-
----
-
-#### [MEDIUM] MEM-04: Cross-Allocator Mismatch on Window Deallocation
-- **Location**:
-  - Allocation: `src/core/App.zig:600-610` (`heap.gpa`)
-  - Deallocation: `src/platform/linux/window.zig:360`, `src/platform/windows/window.zig:1608`, `src/platform/macos/window.zig:518` (`std.heap.smp_allocator`)
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. An application window is created via `openWindow`, which allocates `win_inst`, `label`, `title`, and `url` using `heap.gpa`.
-  2. When built with a non-default allocator (e.g. testing with `std.testing.allocator`, or on Android where `heap.gpa` is `std.heap.c_allocator`), destroying the window calls `std.heap.smp_allocator.free(...)` and `std.heap.smp_allocator.destroy(...)`.
-  3. The memory block is returned to an allocator that never allocated it, triggering heap corruption or immediate panics.
-- **Remediation**:
-  Standardize all platform window deallocations to use `heap.gpa` rather than hardcoding `std.heap.smp_allocator`.
-
----
-
-#### [LOW] MEM-05: Argument Vector Defer Leak in Linux Dev Server
-- **Location**: `src/platform/linux/dev_server.zig:23-28`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. `startDevServer` allocates an argument array `argv` of length `N`.
-  2. A loop duplicates each string using `gpa.dupeZ(u8, arg)`.
-  3. If iteration `i > 0` fails with `OutOfMemory`, `return null` executes immediately.
-  4. Because the `defer for (argv[0..command.len])` cleanup is placed *after* the loop, it does not execute, leaking all previously duplicated arguments `0..i-1`.
-- **Remediation**:
-  Initialize elements of `argv` to `null` and declare the `defer` before the loop.
-
----
-
-### 2. Concurrency, Race Conditions & Thread Safety
-
-#### [CRITICAL] CONC-01: Data Race & Use-After-Free in `FileHandles` Table
-- **Location**: `src/core/file_handles.zig:98-185`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. `FileHandles` stores file descriptors in `entries: std.AutoHashMapUnmanaged(u32, Entry)`.
-  2. No mutex or synchronization primitive protects `FileHandles`.
-  3. Worker Thread 1 runs an async IPC command executing `handles.read(..., handle, ...)`.
-  4. Worker Thread 2 concurrently executes `share:release` for the same handle, calling `entries.remove(handle)` and `std.posix.close(entry.fd)`.
-  5. The hash map's internal bucket array undergoes a data race (read and write without synchronization).
-  6. Thread 1 proceeds to call `std.posix.pread(e.fd, ...)`. In a multithreaded server, another thread may have opened a separate file or socket and received the recycled descriptor, causing Thread 1 to read arbitrary private data from the wrong file.
-- **Remediation**:
-  Add a `std.Thread.RwLock` to `FileHandles`. Acquire a read lock during `read` / `nativePath` operations, and a write lock during `addPath` / `release`.
-
----
-
-#### [CRITICAL] CONC-02: `worker_pool` Teardown Use-After-Free & Orphaned Tasks
-- **Location**: `src/core/App.zig:19-23, 864-872` and `src/core/ThreadPool.zig:57-69, 92-104`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. `App.run` cleanup executes:
-     ```zig
-     defer {
-         pool.deinit();
-         worker_pool = null;
-     }
-     ```
-  2. `pool.deinit()` sets `shutdown = true`, joins threads, and calls `pool.allocator.destroy(pool)`.
-  3. While `deinit()` is executing or immediately after `destroy(pool)`, a concurrent event or UI thread calls `App.spawn()` or `App.getWorkerPool()`.
-  4. Because `worker_pool` has not yet been set to `null`, it returns the deallocated pointer and calls `pool.post(&job.task)`, corrupting the freed memory.
-  5. Furthermore, `ThreadPool.post` does not check `pool.shutdown`. Any task posted during shutdown is queued into `pool.head` and never processed or freed.
-- **Remediation**:
-  Store `worker_pool` as `std.atomic.Value(?*ThreadPool)`. Atomically exchange it with `null` *before* calling `pool.deinit()`. In `ThreadPool.post`, check `shutdown` under the lock and reject new tasks.
-
----
-
-#### [HIGH] CONC-03: Use-After-Free Race Condition in `App.ensureWindow`
-- **Location**: `src/core/App.zig:478-489`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. Thread 1 calls `ensureWindow("main")`. It finds the window configuration in `registered_windows` under `windows_mutex`.
-  2. The block completes, unlocking `windows_mutex`, and returns `opts: WindowOptions` by value. Slices such as `opts.label` and `opts.url` still point to memory inside `registered_windows`.
-  3. Thread 2 concurrently calls `registerWindow("main", new_opts)`. Under the mutex, it calls `freeRegistered(r.*)`, freeing the string memory.
-  4. Thread 1 calls `openWindow(opts)`, which invokes `gpa.dupeZ(u8, opts.label)` on the freed memory, reading invalid memory.
-- **Remediation**:
-  Either perform window opening while holding `windows_mutex`, or duplicate string slices into temporary buffers before releasing the mutex.
-
----
-
-#### [HIGH] CONC-04: Thread-Local Storage Dangling Pointer Across Threads in Async IPC
-- **Location**: `src/core/ipc.zig:246-260, 510-545`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. An async IPC command fails on a worker thread using `ipc.fail("error details")`.
-  2. The error message is formatted into worker thread-local storage: `threadlocal var fail_buf: [2048:0]u8`.
-  3. `errorText(err)` returns a slice pointing directly into this worker thread's `fail_buf`.
-  4. In `Job.run()`, `on_done(context, arena, result, err_z)` is called with this pointer.
-  5. In `linux/bridge.zig`, `onWorkerDone` saves `self.err_name = err_name;` and schedules an idle callback on the main GTK loop.
-  6. The worker thread finishes `Job.run()` and returns to `ThreadPool`. It immediately executes another task that fails and overwrites `fail_buf`.
-  7. When the main loop runs `idleReply`, it reads corrupted or overwritten error text.
-- **Remediation**:
-  Duplicate `err_z` into the job's `arena` on the worker thread before calling `on_done`:
-  ```zig
-  const err_z = if (res_z == null) (alloc.dupeZ(u8, errorText(err)) catch @errorName(err)) else null;
-  ```
-
----
-
-#### [MEDIUM] CONC-05: Windows `FileWindowStream` Offset Rollback Data Race
-- **Location**: `src/modules/media_scheme/windows.zig:176-205`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. `FileWindowStream.Read` handles byte range streaming in WebView2.
-  2. When a read is requested, it atomically increments `current_offset` via `cmpxchgWeak`.
-  3. If a short read occurs (fewer bytes returned than requested), it rolls back the offset:
-     ```zig
-     const short_fall = to_read - bytes_read;
-     _ = self.current_offset.fetchSub(short_fall, .seq_cst);
-     ```
-  4. If Thread A and Thread B perform concurrent reads, and Thread A experiences a short read while Thread B has already advanced `current_offset`, Thread A's `fetchSub` decrements Thread B's offset. Subsequent reads retrieve corrupted, out-of-order chunks.
-- **Remediation**:
-  Serialize reads using a mutex or track per-request stream offsets instead of atomic subtraction on a shared counter.
-
----
-
-### 3. Webview Bridge, IPC & Isolation Security
-
-#### [HIGH] SEC-02: Subframe Origin Spoofing on Linux WebKitGTK
-- **Location**: `src/platform/linux/bridge.zig:625-640`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. A window loads `app://app/index.html`.
-  2. The page embeds an `iframe` pointing to an external domain or untrusted content.
-  3. The child frame calls `window.webkit.messageHandlers.oriel.postMessage(...)`.
-  4. `onMessage` receives the call and checks permissions:
-     ```zig
-     const page_url = webkit.webkit_web_view_get_uri(view);
-     ```
-  5. `webkit_web_view_get_uri(view)` returns the URI of the **top-level document** (`app://app/index.html`), rather than the iframe's origin.
-  6. The untrusted iframe inherits top-level permissions, allowing it to dispatch privileged IPC commands.
-- **Remediation**:
-  Inspect the message sender frame in WebKitGTK and reject messages whose sender frame is not the main frame.
-
----
-
-#### [HIGH] SEC-03: Isolation Frame Origin Bypass on Safari / WebKit
-- **Location**: `src/core/isolation.zig:280-360`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. In the isolation frame runtime JavaScript:
-     ```javascript
-     const ao = location.ancestorOrigins;
-     if (ao && (ao.length !== 1 || !parents.includes(ao[0]))) return;
-     ```
-  2. `location.ancestorOrigins` is a Chromium-only proprietary API. On WebKit (macOS, iOS, Linux), `ancestorOrigins` is `undefined`.
-  3. The check evaluates to `false` and is completely bypassed. Any site can embed the isolation endpoint.
-  4. When an isolated command resolves, it executes:
-     ```javascript
-     parentWin.postMessage({ id: msg.id, res: result }, "*");
-     ```
-  5. The wildcard target `*` broadcasts sealed command responses to whichever origin embedded the frame.
-- **Remediation**:
-  Enforce frame restrictions via HTTP headers (`Content-Security-Policy: frame-ancestors 'self' app://app;`) and replace `postMessage(..., "*")` with the explicit parent origin.
-
----
-
-#### [HIGH] SEC-04: Plaintext IPC Secret Token Exposure in Bridge Scripts
-- **Location**: `src/core/ipc.zig:134-178`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. `ipc.tokenScript()` embeds HMAC secret tokens as literal strings in injected JavaScript.
-  2. On Windows (`AddScriptToExecuteOnDocumentCreated`) and macOS (`WKUserScript`), this script is injected into all navigations and frames.
-  3. Navigating to an external page or injecting a cross-origin frame allows the page to inspect the script source or extract the token from `globalThis.__orielNative` / bridge closures.
-  4. With the `"local"` token, an attacker can forge authorized IPC messages.
-- **Remediation**:
-  Only inject bridge scripts into authorized, matching origins, and scope tokens per window/frame origin.
-
----
-
-#### [MEDIUM] SEC-05: Privilege Escalation / Spoofing via `oriel:window:emitTo`
-- **Location**: `src/core/window_commands.zig:100-115`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. Window commands like `close`, `show`, `setTitle`, and `setSize` validate permissions with:
-     ```zig
-     try security.validateWindowModification(sec, caller_win_label, args.label);
-     ```
-  2. `oriel:window:emitTo` completely omits `validateWindowModification`.
-  3. An untrusted window or restricted capability origin granted basic `window_api` can emit arbitrary events to other windows (such as `main`), spoofing system events like `deep-link` or `permission-changed`.
-- **Remediation**:
-  Add `try security.validateWindowModification(sec, caller_win_label, args.label);` inside `emitTo`.
-
----
-
-### 4. File System & Path Traversal
-
-#### [CRITICAL] SEC-01: Arbitrary File Deletion in Apple Share Target
-- **Location**: `src/modules/share/apple.zig:88-104`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. When handling shared items on macOS/iOS, `removeCopy(path)` cleans up copied items:
-     ```zig
-     pub fn removeCopy(path: []const u8) void {
-         if (std.mem.indexOf(u8, path, "/Documents/Inbox/") == null) return;
-         var buf: [std.fs.max_path_bytes]u8 = undefined;
-         const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return;
-         _ = std.c.unlink(z);
-     }
-     ```
-  2. A crafted path containing traversal segments (e.g. `/path/to/Documents/Inbox/../../Library/Application Support/database.sqlite`) contains the substring `"/Documents/Inbox/"`.
-  3. `unlink` executes on the traversed path, deleting sensitive files outside the inbox directory.
-- **Remediation**:
-  Canonicalize the path with `std.fs.realpath` and verify that `std.mem.startsWith(u8, resolved, inbox_dir)` holds without traversal.
-
----
-
-#### [MEDIUM] SEC-06: Tarball Hard Link Bypass in macOS Updater
-- **Location**: `src/modules/updater/macos.zig:185-230`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. During macOS `.app` bundle updates, `LinkGuard.entry` inspects archive entries to prevent extraction attacks.
-  2. It only checks `file.kind == .sym_link`, completely ignoring `file.kind == .hard_link`.
-  3. A crafted update tarball can specify hard links pointing outside the bundle, allowing extraction to modify or overwrite arbitrary files owned by the user.
-- **Remediation**:
-  Inspect `file.kind == .hard_link` in `LinkGuard` and reject hard links or validate that their targets remain within the bundle root.
-
----
-
-### 5. Network & Auto-Updater Security
-
-#### [HIGH] DOS-01: Unbounded Gzip Decompression (Zip-Bomb) in Updater
-- **Location**: `src/updater_core.zig:393-402, 474`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. `updater_core.zig` verifies downloaded byte count against `update.size` (`downloaded_bytes > update.size`).
-  2. In `downloadInternal`, it decompresses the payload to disk:
-     ```zig
-     while (true) {
-         const n = try decompress.reader.readSliceShort(&out_buf);
-         if (n == 0) break;
-         try out_writer.interface.writeAll(out_buf[0..n]);
-     }
-     ```
-     The decompression loop has no limit on the number of uncompressed bytes written to disk. A 10 MiB compressed payload that expands to 1 TB will write until the disk is full.
-  3. In `unpack`, it decompresses in memory using `decompress.reader.allocRemaining(gpa, .unlimited)`, allowing memory exhaustion.
-- **Remediation**:
-  Enforce a maximum decompression threshold (e.g. 5x `update.size` or a hard limit like 500 MiB) across both disk streaming and memory extraction.
-
----
-
-#### [MEDIUM] SEC-07: Unvalidated HTTP Redirects & SSRF in Model Downloader
-- **Location**: `src/modules/model_download.zig:49-65`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. `model_download.fetch` follows up to 5 HTTP 301/302 redirects.
-  2. When resolving `Location` headers, it does not check if the scheme is downgraded from `https` to `http`.
-  3. It does not prevent redirection to private or loopback IP ranges (`127.0.0.1`, `169.254.169.254`), exposing internal endpoints to SSRF.
-- **Remediation**:
-  Ensure the scheme remains `https` upon redirect, and block resolutions to private/loopback IP addresses.
-
----
-
-#### [MEDIUM] SEC-08: DNS Rebinding & CORS Port Scanning on Embedded Media Server
-- **Location**: `src/modules/media_server.zig:33-70`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. The embedded HTTP streaming server does not validate the `Host` header.
-  2. The `/ping` endpoint responds with `Access-Control-Allow-Origin: *`.
-  3. An external website visited by the user in a regular browser can scan loopback ports to detect active Oriel instances.
-  4. Via DNS rebinding, external sites can read files served by the media server.
-- **Remediation**:
-  Enforce that the `Host` header matches `127.0.0.1:{port}` or `localhost:{port}`, and restrict CORS origins to the application origin.
-
----
-
-#### [LOW-MEDIUM] SEC-09: Updater Manifest Expiration & Replay Attacks
-- **Location**: `src/updater_core.zig:220-225`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. The `expires` timestamp field in `Manifest` is optional (`?u64 = null`).
-  2. If omitted, manifests are considered valid indefinitely.
-  3. A network attacker can replay an older, legitimately signed manifest (e.g. v1.1.0 containing known vulnerabilities) to a victim running v1.0.0, even after v1.2.0 has been released.
-  4. The check `now_ts > 0 and @as(u64, @intCast(now_ts)) > exp` skips expiration checks if system time is negative or zero.
-- **Remediation**:
-  Require a mandatory `expires` field on production manifests with a maximum validity window, and alert on non-positive system timestamps.
-
----
-
-#### [LOW] BUG-01: Linux Command-Line Truncation on Updater Restart
-- **Location**: `src/modules/updater/linux.zig:44-48`
-- **Status**: **CONFIRMED**
-- **Concrete Failure Scenario**:
-  1. On restart after an update, `linux.zig` reads `/proc/self/cmdline`.
-  2. It performs a single `readSliceShort` into a 2048-byte buffer.
-  3. If command-line arguments exceed 2048 bytes (up to `MAX_CMDLINE_LEN` = 16384 bytes), arguments are truncated, causing corrupt argument parsing when the new executable starts.
-- **Remediation**:
-  Read in a loop until EOF or until `MAX_CMDLINE_LEN` is reached.
-
----
-
-## Prioritized Remediation Plan
-
-### Phase 1: Critical Fixes (Immediate)
-1. **Fix Use-After-Unref in `src/platform/linux/bridge.zig`**:
-   Ensure `reply.returnErrorMessage(...)` is invoked before `reply.unref()`.
-2. **Add Mutex to `src/core/file_handles.zig`**:
-   Protect hash map operations and descriptor accesses against concurrent mutation.
-3. **Atomicize `worker_pool` in `src/core/App.zig`**:
-   Set `worker_pool` to `null` before invoking `pool.deinit()`.
-4. **Fix Directory Traversal in `src/modules/share/apple.zig`**:
-   Canonicalize paths before invoking `unlink`.
-5. **Duplicate Error Strings in `src/core/ipc.zig`**:
-   Duplicate `err_z` into `arena` to prevent cross-thread dangling pointers.
-
-### Phase 2: High & Medium Security Hardening
-1. **Validate Subframe Origins in `src/platform/linux/bridge.zig`**:
-   Reject IPC messages originating from non-main frames.
-2. **Harden Isolation Frame in `src/core/isolation.zig`**:
-   Use CSP `frame-ancestors` and specify parent origin in `postMessage`.
-3. **Add Permission Validation to `emitTo` in `src/core/window_commands.zig`**:
-   Invoke `validateWindowModification`.
-4. **Enforce Decompression Limits in `src/updater_core.zig`**:
-   Bound uncompressed size during gzip expansion.
-5. **Fix Memory Leaks**:
-   Add `defer headers.unref()` for `SoupMessageHeaders` in WebKitGTK, and `defer bytes.deinit(...)` in `share:read`.
-6. **Standardize Allocator Usage**:
-   Use `heap.gpa` consistently across window destruction routines.
+- [WebKit response header ownership](https://webkitgtk.org/reference/webkit2gtk/unstable/method.URISchemeResponse.set_http_headers.html): full ownership transfer; also checked in `/usr/share/gir-1.0/WebKit-6.0.gir`.
+- [WebKit reply signal](https://webkitgtk.org/reference/webkitgtk/stable/signal.UserContentManager.script-message-with-reply-received.html): borrowed callback reply and async retention contract.
+- Installed Zig 0.16.0: `lib/std/Io/Reader.zig` (`readSliceShort`),
+  `lib/std/tar.zig` (`FileKind`, iterator and extraction), and
+  `lib/std/Io/Threaded.zig` (blocking mutex implementation).
