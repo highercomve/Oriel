@@ -240,6 +240,20 @@ pub fn featuresXmlWithExtras(gpa: Allocator, declared: anytype, extras: []const 
     return out.toOwnedSlice(gpa);
 }
 
+/// Vendor SDK libraries declared inside the generated application components.
+/// Merge repeated names, requiring a library when any declaration requires it.
+pub fn nativeLibrariesXml(gpa: Allocator, extras: []const Feature) ![]u8 {
+    if (extras.len > 64) return error.TooManyLibraries;
+    const libraries = try featuresWithExtras(gpa, struct {}{}, extras);
+    defer gpa.free(libraries);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    for (libraries) |library| try out.print(gpa, "        <uses-native-library android:name=\"{s}\" android:required=\"{s}\" />\n", .{
+        library.name, if (library.required) "true" else "false",
+    });
+    return out.toOwnedSlice(gpa);
+}
+
 // ---------------------------------------------------------------------------
 // Rewriting the regions
 // ---------------------------------------------------------------------------
@@ -554,7 +568,7 @@ fn attribute(tag: []const u8, name: []const u8) ?[]const u8 {
 
 /// Elements one per android:name: the developer's declaration of one makes
 /// a generated one redundant.
-const named_tags = [_][]const u8{ "uses-permission", "uses-permission-sdk-23", "uses-feature", "activity", "activity-alias", "service", "receiver", "provider" };
+const named_tags = [_][]const u8{ "uses-native-library", "uses-permission", "uses-permission-sdk-23", "uses-feature", "activity", "activity-alias", "service", "receiver", "provider" };
 
 fn isNamedTag(tag: []const u8) bool {
     for (named_tags) |n| if (std.mem.eql(u8, n, tag)) return true;
@@ -1178,4 +1192,31 @@ test "Maven coordinates exclude Gradle code and floating versions" {
     try std.testing.expect(mavenCoordinateValid("com.google.mlkit:genai-prompt:1.0.0-beta4"));
     for ([_][]const u8{ "a:b", "a::c", "a:b:c:d", "a:b:1.+", "a:b:1\"", "a:b:1\n" }) |value|
         try std.testing.expect(!mavenCoordinateValid(value));
+}
+
+test "native SDK libraries merge requirements and reject XML injection" {
+    const gpa = testing.allocator;
+    const xml = try nativeLibrariesXml(gpa, &.{
+        .{ .name = "libOpenCL.so" },
+        .{ .name = "libOpenCL.so", .required = true },
+        .{ .name = "libvndksupport.so" },
+    });
+    defer gpa.free(xml);
+    try testing.expectEqualStrings("        <uses-native-library android:name=\"libOpenCL.so\" android:required=\"true\" />\n        <uses-native-library android:name=\"libvndksupport.so\" android:required=\"false\" />\n", xml);
+    try testing.expectError(error.InvalidName, nativeLibrariesXml(gpa, &.{.{ .name = "lib\"/>" }}));
+}
+
+test "native library sync preserves manual declarations and removes unused generated ones" {
+    const gpa = testing.allocator;
+    const generated = try std.mem.replaceOwned(u8, gpa, test_template, "<!-- oriel:components begin -->", "<!-- oriel:components begin -->\n        <uses-native-library android:name=\"libVendor.so\" android:required=\"false\" />");
+    defer gpa.free(generated);
+    const manual = try std.mem.replaceOwned(u8, gpa, generated, "</application>", "<uses-native-library android:name=\"libVendor.so\" android:required=\"true\" />\n    </application>");
+    defer gpa.free(manual);
+    const out = try sync(gpa, manual, generated);
+    defer gpa.free(out.text);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.text, "libVendor.so"));
+    try testing.expect(std.mem.indexOf(u8, out.text, "libVendor.so\" android:required=\"true") != null);
+    const removed = try sync(gpa, generated, test_template);
+    defer gpa.free(removed.text);
+    try testing.expectEqualStrings(test_template, removed.text);
 }

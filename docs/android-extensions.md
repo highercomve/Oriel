@@ -177,3 +177,26 @@ upgrade. Native methods called through JNI need app-owned R8 keep rules,
 because shrinking cannot infer those calls from Zig. `.proguard_rules` updates
 only the region between `# oriel:proguard` markers in
 `android/app/proguard-rules.pro`; manual rules outside it are preserved.
+
+## Vendor native libraries
+
+Some Android SDKs load optional device/vendor libraries, such as a GPU driver.
+Declare these in `build.zig` alongside their SDK dependencies:
+
+```zig
+.android = .{
+    .native_libraries = &.{
+        .{ .name = "libOpenCL.so" },
+        .{ .name = "libvndksupport.so" },
+    },
+},
+```
+
+Oriel regenerates `<uses-native-library>` entries in the manifest's managed
+application components on every build. `required` defaults to `false`, so a
+missing vendor library does not prevent installation; the SDK should check
+backend support at runtime. Set `required = true` only when installation must
+require the library. Repeated names merge their requirements. Names are checked
+for XML safety and at most 64 declarations are accepted. Developer declarations
+outside the managed region are preserved and take precedence by library name.
+Removing a declaration removes its generated entry on the next build.
