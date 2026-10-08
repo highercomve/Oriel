@@ -449,6 +449,7 @@ pub fn addGgml(
             \\#define USE_MBROLA 0
             \\#define USE_SPEECHPLAYER 0
             \\#define PACKAGE_VERSION "1.52.0"
+            \\#define PATH_ESPEAK_DATA "."
             \\
         );
         oriel.addIncludePath(espeak_config.getDirectory());
