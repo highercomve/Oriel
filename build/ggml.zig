@@ -437,7 +437,11 @@ pub fn addGgml(
         // miniaudio: llama.cpp's vendor copy compiles with mtmd (one global
         // implementation per binary, MINIAUDIO_IMPLEMENTATION lives there);
         // the app plays the synthesis through it (the backend —
-        // PulseAudio/ALSA/WASAPI/CoreAudio — is dlopen'd at runtime).
+        // PulseAudio/ALSA/WASAPI/CoreAudio — is dlopen'd at runtime). The
+        // include path here so the app's Zig code can @cImport the header.
+        if (features.llama) {
+            if (llama_dep) |l| oriel.addIncludePath(l.path("vendor/miniaudio"));
+        }
 
         // libespeak-ng (GPL-3): phonemization only, so the optional audio
         // backends stay off. Its own config.h is generated here (espeak-ng's
