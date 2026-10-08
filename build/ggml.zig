@@ -176,13 +176,14 @@ pub fn addGgml(
     metal: bool,
     arm: ArmLevel,
 ) void {
-    if (!features.llama and !features.whisper) return;
-
+    if (!features.llama and !features.whisper and !features.kokoro) return;
     const llama_dep = if (features.llama) b.lazyDependency("llama", .{}) else null;
     const whisper_dep = if (features.whisper) b.lazyDependency("whisper", .{}) else null;
+    const kokoro_dep = if (features.kokoro) b.lazyDependency("kokoro", .{}) else null;
 
     if (features.llama and llama_dep == null) return;
     if (features.whisper and whisper_dep == null) return;
+    if (features.kokoro and kokoro_dep == null) return;
 
     // Link C++ runtime for ggml/llama/whisper
     oriel.link_libcpp = true;
@@ -386,6 +387,155 @@ pub fn addGgml(
         // Silero VAD v6.2.0 in ggml format (whisper.VadModel): 885 KB, the
         // same bytes as ggml-org/whisper-vad's ggml-silero-v6.2.0.bin.
         oriel.addAnonymousImport("whisper_vad_model", .{ .root_source_file = w.path("models/for-tests-silero-v6.2.0-ggml.bin") });
+    }
+
+    // kokoro.cpp TTS sources (Kokoro-82M synthesis), with espeak-ng for
+    // phonemization and Highway for the CPU synthesis SIMD. The data dir
+    // espeak-ng needs at runtime is not a build artifact: the app passes its
+    // own directory through KOKORO_ESPEAK_DATA_PATH at init.
+    if (features.kokoro) {
+        const k = kokoro_dep.?;
+        const hwy_dep = b.lazyDependency("highway", .{}) orelse return;
+        const espeak_dep = b.lazyDependency("espeak_ng", .{}) orelse return;
+
+        const kokoro_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{
+            "-std=c++17",
+            "-D_GNU_SOURCE",
+            "-D_XOPEN_SOURCE=600",
+            "-DGGML_USE_CPU",
+            "-fno-sanitize=undefined",
+            "-DKOKORO_BUILD",
+        }, darwin }) catch @panic("OOM");
+
+        oriel.addIncludePath(k.path("include"));
+        oriel.addIncludePath(k.path("src"));
+        oriel.addCSourceFiles(.{
+            .root = k.path("src"),
+            .files = &.{ "kokoro.cpp", "core/gguf_loader.cpp", "core/simd_math.cpp" },
+            .flags = kokoro_flags,
+        });
+
+        // Highway's runtime library (used through simd_math.cpp): headers
+        // only for the SIMD ops, these nine sources for targets/dispatch.
+        oriel.addIncludePath(hwy_dep.path("."));
+        oriel.addCSourceFiles(.{
+            .root = hwy_dep.path("hwy"),
+            .files = &.{
+                "abort.cc",
+                "aligned_allocator.cc",
+                "nanobenchmark.cc",
+                "per_target.cc",
+                "perf_counters.cc",
+                "print.cc",
+                "profiler.cc",
+                "targets.cc",
+                "timer.cc",
+            },
+            .flags = kokoro_flags,
+        });
+
+        // miniaudio: llama.cpp's vendor copy is already in the binary with
+        // mtmd, but with MA_NO_DEVICE_IO and static functions — the device
+        // API doesn't exist in it. Compile the playback one here (needs
+        // llama for the vendored header; a feature we require anyway): the
+        // functions are static (file-local), the one global data symbol is
+        // renamed so the two implementations don't collide at link time.
+        // Used through oriel.audio_play (its backend — PulseAudio, ALSA,
+        // WASAPI, CoreAudio — dlopens at runtime).
+        if (llama_dep) |l| {
+            const impl = b.addWriteFiles();
+            const impl_file = impl.add("miniaudio_playback.c",
+                \\#define MINIAUDIO_IMPLEMENTATION
+                \\#define ma_atomic_global_lock ma_atomic_global_lock_playback
+                \\#include "miniaudio.h"
+                \\
+            );
+            const miniaudio_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{
+                "-std=c11",
+                "-D_GNU_SOURCE",
+                "-D_XOPEN_SOURCE=600",
+                "-fno-sanitize=undefined",
+                "-w",
+            }, darwin }) catch @panic("OOM");
+            oriel.addIncludePath(l.path("vendor/miniaudio"));
+            oriel.addCSourceFile(.{ .file = impl_file, .flags = miniaudio_flags });
+        }
+
+        // libespeak-ng (GPL-3): phonemization only, so the optional audio
+        // backends stay off. Its own config.h is generated here (espeak-ng's
+        // CMake builds it from configure); our flags keep it minimal.
+        const espeak_config = b.addWriteFiles();
+        _ = espeak_config.add("config.h",
+            \\#pragma once
+            \\#define LIBESPEAK_NG_EXPORT 1
+            \\#define HAVE_MKSTEMP 1
+            \\#define USE_ASYNC 0
+            \\#define USE_KLATT 1
+            \\#define USE_LIBPCAUDIO 0
+            \\#define USE_LIBSONIC 0
+            \\#define USE_MBROLA 0
+            \\#define USE_SPEECHPLAYER 0
+            \\#define PACKAGE_VERSION "1.52.0"
+            \\#define PATH_ESPEAK_DATA "."
+            \\
+        );
+        oriel.addIncludePath(espeak_config.getDirectory());
+        oriel.addIncludePath(espeak_dep.path("src/include"));
+        oriel.addIncludePath(espeak_dep.path("src/libespeak-ng"));
+        oriel.addIncludePath(espeak_dep.path("src/ucd-tools/src/include"));
+        {
+            const espeak_cflags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{
+                "-std=c11",
+                "-D_GNU_SOURCE",
+                "-D_XOPEN_SOURCE=600",
+                "-fno-sanitize=undefined",
+            }, darwin }) catch @panic("OOM");
+            oriel.addCSourceFiles(.{
+                .root = espeak_dep.path("src/libespeak-ng"),
+                .files = &.{
+                    "common.c",
+                    "compiledict.c",
+                    "espeak_api.c",
+                    "error.c",
+                    "ieee80.c",
+                    "intonation.c",
+                    "langopts.c",
+                    "mnemonics.c",
+                    "numbers.c",
+                    "phoneme.c",
+                    "phonemelist.c",
+                    "readclause.c",
+                    "setlengths.c",
+                    "soundicon.c",
+                    "spect.c",
+                    "ssml.c",
+                    "synthdata.c",
+                    "synthesize.c",
+                    "speech.c",
+                    "tr_languages.c",
+                    "translate.c",
+                    "translateword.c",
+                    "voices.c",
+                    "wavegen.c",
+                    "klatt.c",
+                    "dictionary.c",
+                    "encoding.c",
+                },
+                .flags = espeak_cflags,
+            });
+            oriel.addCSourceFiles(.{
+                .root = espeak_dep.path("src/ucd-tools/src"),
+                .files = &.{
+                    "case.c",
+                    "categories.c",
+                    "ctype.c",
+                    "proplist.c",
+                    "scripts.c",
+                    "tostring.c",
+                },
+                .flags = espeak_cflags,
+            });
+        }
     }
 }
 
