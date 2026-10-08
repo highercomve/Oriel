@@ -990,6 +990,8 @@ pub const AppOptions = struct {
         /// `<uses-feature>`s, one per name (required if any declaration
         /// requires it).
         features: []const Feature = &.{},
+        /// Additional vendor libraries loaded by app-owned native SDKs.
+        native_libraries: []const Feature = &.{},
         /// Kotlin or Java files (helpers your Zig code calls over JNI, ...)
         /// copied on every build into the Gradle project's
         /// `app/src/main/java/<path of the file's package line>/`; a file
@@ -1750,6 +1752,10 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         \\        </service>
         \\
     , .{xmlEscape(b, label)})) catch @panic("OOM");
+
+    const native_libraries_xml = android_manifest.nativeLibrariesXml(b.allocator, options.android.native_libraries) catch |err|
+        @panic(b.fmt("android.native_libraries: {s}", .{@errorName(err)}));
+    components.appendSlice(b.allocator, native_libraries_xml) catch @panic("OOM");
 
     // android/app to the installed libraries, relative so the project moves.
     const app_dir = b.pathFromRoot("android/app");
