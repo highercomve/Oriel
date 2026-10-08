@@ -12,8 +12,8 @@
 		<link rel="preconnect" href="https://fonts.googleapis.com">
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
-		<link type="text/css" rel="stylesheet" href="$site.asset('style.css').link().suffix('?v=20261003a')">
-		<link type="text/css" rel="stylesheet" href="$site.asset('highlight.css').link().suffix('?v=20261003a')">
+		<link type="text/css" rel="stylesheet" href="$site.asset('style.css').link().suffix('?v=20261008a')">
+		<link type="text/css" rel="stylesheet" href="$site.asset('highlight.css').link().suffix('?v=20261008a')">
 		<style>[hidden] { display: none !important; }</style>
 		<super>
 	</head>
@@ -24,6 +24,10 @@
 					<img class="brand-mark" src="$site.asset('brand/oriel-icon.svg').link()" alt="" width="28" height="28">
 					<span class="brand-name">oriel</span>
 				</a>
+				<button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="docs-search" aria-label="Search documentation" hidden>
+					<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 4.5 4.5"></path></svg>
+					<span>Search docs</span><kbd aria-hidden="true">Ctrl K</kbd>
+				</button>
 				<button class="menu-toggle" type="button" aria-label="Menu" aria-expanded="false">
 					<span></span><span></span><span></span>
 				</button>
@@ -38,6 +42,17 @@
 			</div>
 		</header>
 		<super>
+		<dialog id="docs-search" class="search-dialog" aria-labelledby="search-title" data-search-root="$site.page('').link()">
+			<div class="search-header">
+				<h2 id="search-title">Search documentation</h2>
+				<button class="search-close" type="button" aria-label="Close search">Esc</button>
+			</div>
+			<label class="search-label" for="search-input">Find a guide, API, or build option</label>
+			<input id="search-input" type="search" placeholder="Try Android extensions or permissions…" autocomplete="off" spellcheck="false" aria-describedby="search-status" autofocus>
+			<p id="search-status" class="search-status" role="status" aria-live="polite">Type to search the documentation.</p>
+			<ol id="search-results" class="search-results" aria-label="Search results"></ol>
+			<div class="search-footer"><span>↑ ↓ to browse · Enter to open</span><span>Oriel docs</span></div>
+		</dialog>
 		<footer class="site-footer">
 			<div class="footer-inner">
 				<div class="footer-brand">
@@ -66,6 +81,7 @@
 			</div>
 			<p class="footer-legal">MIT license · Built with Zig and <a href="https://zine-ssg.io">Zine</a></p>
 		</footer>
-		<script src="$site.asset('site.js').link().suffix('?v=20261003a')" defer></script>
+		<script src="$site.asset('search.js').link().suffix('?v=20261008a')" defer></script>
+		<script src="$site.asset('site.js').link().suffix('?v=20261008a')" defer></script>
 	</body>
 </html>

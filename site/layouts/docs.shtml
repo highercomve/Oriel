@@ -25,8 +25,8 @@
 			</nav>
 		</aside>
 		<main class="doc">
-			<article class="prose">
-				<h1 :text="$page.title"></h1>
+			<article class="prose" data-pagefind-body>
+				<h1 data-pagefind-meta="title" :text="$page.title"></h1>
 				<p class="doc-lead" :if="$page.description.len().gt(0)" :text="$page.description"></p>
 				<div class="content" :html="$page.content()"></div>
 			</article>
