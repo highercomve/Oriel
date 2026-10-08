@@ -128,6 +128,15 @@ pub fn start(io: std.Io, gpa: std.mem.Allocator, samples: []const f32, rate: u32
     }
 }
 
+/// True when there is a device and it finished its buffer (or nothing is
+/// playing at all): the synthesize loop uses it to chain utterances.
+pub fn finished() bool {
+    session.mutex.lockUncancelable(session.io);
+    defer session.mutex.unlock(session.io);
+    if (session.device == null) return true;
+    return session.stopped or session.pos >= session.samples.len;
+}
+
 /// For the app's exit paths.
 pub fn shutdown() void {
     stop();
