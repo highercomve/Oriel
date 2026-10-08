@@ -7,6 +7,7 @@ on:
       - 'site/**'
       - 'zine.ziggy'
       - 'scripts/site-version.sh'
+      - 'scripts/build-site.sh'
       - '.github/workflows/pages.yml'
   release:
     types: [published]
@@ -33,8 +34,12 @@ jobs:
       - name: Read the version from GitHub's latest release
         run: ./scripts/site-version.sh "${{ github.event.release.tag_name || '' }}"
 
-      - name: Build site
-        run: zine release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build site and search index
+        run: bash scripts/build-site.sh
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
