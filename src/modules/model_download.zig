@@ -26,6 +26,7 @@ pub fn fetch(
     ctx: anytype,
     comptime progress: fn (@TypeOf(ctx), u32, u32) void,
 ) !void {
+    try validateUrl(try std.Uri.parse(url));
     var dir = try std.Io.Dir.cwd().createDirPathOpen(io, dir_path, .{});
     defer dir.close(io);
     const part = try std.fmt.allocPrint(gpa, "{s}.part", .{file_name});
@@ -51,6 +52,7 @@ pub fn fetch(
     var hops: u8 = 0;
     while (true) : (hops += 1) {
         if (hops == 6) return error.TooManyHttpRedirects;
+        try validateUrl(uri);
         if (builtin.abi.isAndroid()) try oriel.android.preconnect(&client, uri);
         req = try client.request(.GET, uri, .{
             .headers = .{ .accept_encoding = .{ .override = "identity" } },
@@ -103,6 +105,17 @@ pub fn fetch(
     file_open = false;
     try dir.rename(part, dir, file_name, io);
     log.info("downloaded {s} ({d} MB)", .{ file_name, done >> 20 });
+}
+
+fn validateUrl(uri: std.Uri) !void {
+    if (!std.ascii.eqlIgnoreCase(uri.scheme, "https")) return error.InsecureModelUrl;
+    if (uri.host == null or uri.user != null or uri.password != null) return error.InvalidModelUrl;
+}
+
+test "model downloads reject cleartext redirects and URL credentials" {
+    try validateUrl(try std.Uri.parse("https://cdn.example/model.gguf"));
+    try std.testing.expectError(error.InsecureModelUrl, validateUrl(try std.Uri.parse("http://cdn.example/model.gguf")));
+    try std.testing.expectError(error.InvalidModelUrl, validateUrl(try std.Uri.parse("https://user:password@cdn.example/model.gguf")));
 }
 
 /// Remove `<dir>/<file>` and a download of it that stopped half way.

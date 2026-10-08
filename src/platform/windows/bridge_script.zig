@@ -12,6 +12,7 @@ pub const isolation_placeholder = "/*__ORIEL_ISOLATION__*/";
 /// Injected into allowed pages before their own scripts run.
 pub const bridge_js =
     \\(() => {
+    \\  if (window !== window.top) return;
     \\  const listeners = new Map();
     \\  const pending = new Map();
     \\  const pendingEvents = new Map();

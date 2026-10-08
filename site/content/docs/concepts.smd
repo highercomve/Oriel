@@ -83,7 +83,8 @@ Listen in TypeScript:
 listen("notes_changed", (notes) => setNotes(notes));
 ```
 
-Events are type-checked on both sides. Targeted events can be sent to specific windows with `window.emitTo(label, event, data)`.
+Events are type-checked on both sides. Targeted events can be sent to specific windows with `window.emitTo(label, event, data)`. Sending to another window requires
+`security.window_api.allow_modify_other_windows = true` in `App.Config`.
 
 # Security model
 
@@ -183,7 +184,7 @@ Window creation is opt-in and scoped:
 - Only app-local URLs are allowed by default; remote URLs must pass `allowed_origins`
 - Dangerous schemes (`javascript:`, `file:`, `data:`) are always rejected
 - Labels are validated (alphanumeric, underscores, dashes; max 64 chars)
-- Windows can only modify themselves by default; `allow_modify_other_windows` allows otherwise
+- Windows can only modify themselves and emit events to themselves by default; `allow_modify_other_windows` allows otherwise
 - Cap the concurrent window count with `max_windows` (default 16)
 
 # Routes and Single-Page Apps

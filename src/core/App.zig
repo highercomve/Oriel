@@ -17,9 +17,37 @@ const log = std.log.scoped(.oriel);
 /// Worker pool for async commands; owned by `run`. It also carries the
 /// `std.Io` passed to `run`, which the IPC handlers hand to commands.
 var worker_pool: ?*ThreadPool = null;
+var pool_mutex: std.Io.Mutex = .init;
+var pool_borrowers: usize = 0;
 
+/// Borrow the pool until `releaseWorkerPool`. The borrow protects its Io and
+/// task queue during shutdown; callers must not retain it after release.
 pub fn getWorkerPool() ?*ThreadPool {
-    return worker_pool;
+    std.Io.Threaded.mutexLock(&pool_mutex);
+    defer std.Io.Threaded.mutexUnlock(&pool_mutex);
+    const pool = worker_pool orelse return null;
+    pool_borrowers += 1;
+    return pool;
+}
+
+pub fn releaseWorkerPool() void {
+    std.Io.Threaded.mutexLock(&pool_mutex);
+    defer std.Io.Threaded.mutexUnlock(&pool_mutex);
+    std.debug.assert(pool_borrowers > 0);
+    pool_borrowers -= 1;
+}
+
+fn stopWorkerPool(pool: *ThreadPool) void {
+    std.Io.Threaded.mutexLock(&pool_mutex);
+    worker_pool = null;
+    // No new borrows. Existing callers finish enqueueing before teardown.
+    while (pool_borrowers != 0) {
+        std.Io.Threaded.mutexUnlock(&pool_mutex);
+        std.Thread.yield() catch {};
+        std.Io.Threaded.mutexLock(&pool_mutex);
+    }
+    std.Io.Threaded.mutexUnlock(&pool_mutex);
+    pool.deinit();
 }
 
 pub const Asset = struct {
@@ -481,10 +509,19 @@ pub fn ensureWindow(label: []const u8) !*Window {
         ensureWindowsMutex();
         windows_mutex.lock();
         defer windows_mutex.unlock();
-        for (registered_windows.items) |r| if (std.mem.eql(u8, r.label, label)) break :blk r;
+        for (registered_windows.items) |r| if (std.mem.eql(u8, r.label, label)) {
+            var copy = r;
+            copy.label = try heap.gpa.dupeZ(u8, r.label);
+            errdefer heap.gpa.free(copy.label);
+            copy.title = try heap.gpa.dupeZ(u8, r.title);
+            errdefer heap.gpa.free(copy.title);
+            copy.url = if (r.url) |u| try heap.gpa.dupeZ(u8, u) else null;
+            break :blk copy;
+        };
         return error.WindowNotFound;
     };
-    // openWindow copies the options' strings; the registration keeps its own.
+    defer freeRegistered(opts);
+    // openWindow copies this snapshot; registration can change concurrently.
     return openWindow(opts);
 }
 
@@ -729,7 +766,8 @@ pub fn toggleWindow() void {
 }
 
 pub fn spawn(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !void {
-    const pool = worker_pool orelse return error.AppNotRunning;
+    const pool = getWorkerPool() orelse return error.AppNotRunning;
+    defer releaseWorkerPool();
     const Job = struct {
         task: ThreadPool.Task,
         args: @TypeOf(args),
@@ -744,8 +782,9 @@ pub fn spawn(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !v
         }
     };
     const job = try heap.gpa.create(Job);
+    errdefer heap.gpa.destroy(job);
     job.* = .{ .task = .{ .run_fn = &Job.run }, .args = args };
-    pool.post(&job.task);
+    if (!pool.post(&job.task)) return error.AppNotRunning;
 }
 
 /// Run `func(ctx)` on the main (UI) thread, from any thread: windows, the
@@ -860,11 +899,12 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
         log.err("failed to initialize worker thread pool: {s}", .{@errorName(err)});
         return 1;
     };
+    std.Io.Threaded.mutexLock(&pool_mutex);
     worker_pool = pool;
+    std.Io.Threaded.mutexUnlock(&pool_mutex);
     current_app_id = config.id;
     defer {
-        pool.deinit();
-        worker_pool = null;
+        stopWorkerPool(pool);
         // Dictation owns threads outside the command pool. They must finish
         // while this run's Io and allocator are still alive (Android restarts).
         if (build_opts.whisper and build_opts.audio_capture)
@@ -873,4 +913,40 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     }
 
     return platform.run(io, api, config);
+}
+
+test "pool shutdown withdraws publication and waits for outstanding borrows" {
+    const pool = try ThreadPool.init(std.testing.allocator, std.testing.io, 1);
+    std.Io.Threaded.mutexLock(&pool_mutex);
+    worker_pool = pool;
+    std.Io.Threaded.mutexUnlock(&pool_mutex);
+    const borrowed = getWorkerPool().?;
+    var finished: std.atomic.Value(bool) = .init(false);
+    const Stopper = struct {
+        fn run(p: *ThreadPool, done: *std.atomic.Value(bool)) void {
+            stopWorkerPool(p);
+            done.store(true, .release);
+        }
+    };
+    const thread = std.Thread.spawn(.{}, Stopper.run, .{ pool, &finished }) catch |err| {
+        releaseWorkerPool();
+        stopWorkerPool(pool);
+        return err;
+    };
+    while (true) {
+        std.Io.Threaded.mutexLock(&pool_mutex);
+        const withdrawn = worker_pool == null;
+        std.Io.Threaded.mutexUnlock(&pool_mutex);
+        if (withdrawn) break;
+        std.Thread.yield() catch {};
+    }
+    const still_alive = !finished.load(.acquire);
+    const io_is_valid = borrowed.io.vtable == std.testing.io.vtable;
+    const no_new_borrow = getWorkerPool() == null;
+    releaseWorkerPool();
+    thread.join();
+    try std.testing.expect(still_alive);
+    try std.testing.expect(io_is_valid);
+    try std.testing.expect(no_new_borrow);
+    try std.testing.expect(finished.load(.acquire));
 }

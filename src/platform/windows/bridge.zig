@@ -378,6 +378,7 @@ pub fn Bridge(
                 const args = std.json.parseFromSliceLeaky(std.json.Value, arena, self.args, .{}) catch .null;
                 const request: ipc.Request = .{ .cmd = self.cmd, .args = args };
                 const pool = App.getWorkerPool();
+                defer if (pool != null) App.releaseWorkerPool();
 
                 const result: anyerror![]const u8 = blk: {
                     if (window_commands.isWindowCommand(self.cmd))
@@ -520,6 +521,7 @@ pub fn Bridge(
             }
 
             const pool = App.getWorkerPool();
+            defer if (pool != null) App.releaseWorkerPool();
 
             if (!ipc.isAsync(api.commands, call.cmd)) {
                 // Run sync commands from the message loop, not inside this

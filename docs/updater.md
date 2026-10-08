@@ -6,6 +6,11 @@
 
 Built-in self-updater featuring Ed25519 signature verification, atomic file replacement, throttled download progress streaming, and in-place restart.
 
+Gzip payloads (including macOS bundle archives) are limited to 512 MiB after
+expansion. Manifests may include a signed `expires` Unix timestamp; when present,
+expired manifests and non-positive system clocks are rejected. Without expiry,
+normal update checks still require a version newer than the installed one.
+
 ### 1. Key generation
 
 Generate a new Ed25519 keypair using the app build step registered by `oriel.addApp` (run inside your app project):
