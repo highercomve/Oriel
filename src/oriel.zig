@@ -65,6 +65,8 @@ pub const llama = if (options.llama) @import("modules/llama.zig") else struct {}
 pub const whisper = if (options.whisper) @import("modules/whisper.zig") else struct {};
 /// Text to speech with the built-in Kokoro voice (src/modules/kokoro.zig): `-Dkokoro`.
 pub const kokoro = if (options.kokoro) @import("modules/kokoro.zig") else struct {};
+/// Playback of the built-in voice (miniaudio; see modules/audio_play.zig).
+pub const audio_play = if (options.kokoro) @import("modules/audio_play.zig") else struct {};
 pub const audio_capture = if (options.audio_capture) @import("modules/audio_capture.zig") else struct {};
 /// GPU backends (libggml-cuda.so, libggml-vulkan.so) for llama and whisper: `ggml_gpu.load(io)` before loading a model.
 pub const ggml_gpu = if (options.llama or options.whisper) @import("modules/ggml_gpu.zig") else struct {};
