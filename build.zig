@@ -54,6 +54,11 @@ const Features = struct {
     /// models with their projector (mmproj GGUF). Needs `llama`.
     llama_mtmd: bool,
     whisper: bool,
+    /// kokoro.cpp (text to speech): Kokoro-82M synthesis. Compiled into the
+    /// shared ggml build with espeak-ng phonemization (GPL-3: the binary that
+    /// links it carries espeak-ng's license, see NOTICE) and Highway SIMD.
+    /// Needs `llama` or `whisper` (it shares their ggml tree).
+    kokoro: bool,
     audio_capture: bool,
     /// Linux/Wayland: overlay windows as layer surfaces (gtk4-layer-shell).
     layer_shell: bool,
@@ -79,6 +84,7 @@ const Features = struct {
                 std.mem.eql(u8, field.name, "llama") or
                 std.mem.eql(u8, field.name, "llama_mtmd") or
                 std.mem.eql(u8, field.name, "whisper") or
+                std.mem.eql(u8, field.name, "kokoro") or
                 std.mem.eql(u8, field.name, "audio_capture") or
                 std.mem.eql(u8, field.name, "layer_shell") or
                 std.mem.eql(u8, field.name, "native_ui"));
@@ -102,6 +108,9 @@ const Features = struct {
         }
         if (f.llama_mtmd and !f.llama) {
             fatal("llama_mtmd requires llama (-Dllama)", .{});
+        }
+        if (f.kokoro and !(f.llama or f.whisper)) {
+            fatal("kokoro needs llama or whisper (it shares their ggml tree): -Dkokoro with -Dllama or -Dwhisper", .{});
         }
         if (f.sqlite_vec and !f.sql) {
             fatal("sqlite_vec requires sql to be enabled (cannot use -Dsqlite_vec with -Dsql=false)", .{});
@@ -734,9 +743,9 @@ fn addOrielModule(
         }
     }
     const cuda = cudaOptions(b, target);
-    if (cuda != null and !features.llama and !features.whisper) fatal("-Dggml_cuda needs -Dllama or -Dwhisper", .{});
+    if (cuda != null and !features.llama and !features.whisper and !features.kokoro) fatal("-Dggml_cuda needs -Dllama, -Dwhisper or -Dkokoro", .{});
     const vulkan = vulkanOptions(b, target);
-    if (vulkan != null and !features.llama and !features.whisper) fatal("-Dggml_vulkan needs -Dllama or -Dwhisper", .{});
+    if (vulkan != null and !features.llama and !features.whisper and !features.kokoro) fatal("-Dggml_vulkan needs -Dllama, -Dwhisper or -Dkokoro", .{});
     // Windows and Android compile Vulkan in; ggml_gpu.load() registers it at runtime.
     options.addOption(bool, "ggml_vulkan_static", vulkan != null and (target.result.os.tag == .windows or is_android));
     const opencl: ?ggml.OpenClOptions = if (b.option(bool, "ggml_opencl", "Build the OpenCL backend for llama/whisper (Android: Adreno GPUs)") orelse false) blk: {
@@ -746,7 +755,7 @@ fn addOrielModule(
         break :blk .{ .headers = headers.path(".") };
     } else null;
     options.addOption(bool, "ggml_opencl_static", opencl != null);
-    if (features.llama or features.whisper) {
+    if (features.llama or features.whisper or features.kokoro) {
         // Metal: on by default for macOS and iOS devices (Apple GPUs; the
         // shader sources are embedded and compiled by ggml at startup). Off
         // for the iOS simulator, whose Metal lacks what ggml's kernels need
