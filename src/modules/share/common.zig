@@ -10,7 +10,7 @@ const file_handles = @import("../../core/file_handles.zig");
 /// Files received from other apps, opened read-only when they arrived
 /// (every backend adds them here): `open`, `read` (the page's
 /// oriel.share.file) and `.handle` in `send` go through it.
-pub var received: file_handles.FileHandles = .init(std.heap.smp_allocator);
+pub var received: file_handles.FileHandles = .init(@import("../../core/heap.zig").gpa);
 
 /// Up to `len` bytes of received file `handle` from `offset`, appended to
 /// `out` (the page reads a file in chunks through the `share:read` command).
@@ -151,15 +151,15 @@ pub fn dispatch(share: *const Received) void {
 pub fn mimeOf(name: []const u8) []const u8 {
     const ext = std.fs.path.extension(name);
     const table = [_]struct { []const u8, []const u8 }{
-        .{ ".txt", "text/plain" },        .{ ".md", "text/markdown" },     .{ ".csv", "text/csv" },
-        .{ ".html", "text/html" },        .{ ".htm", "text/html" },        .{ ".json", "application/json" },
-        .{ ".xml", "application/xml" },   .{ ".pdf", "application/pdf" },  .{ ".zip", "application/zip" },
-        .{ ".png", "image/png" },         .{ ".jpg", "image/jpeg" },       .{ ".jpeg", "image/jpeg" },
-        .{ ".gif", "image/gif" },         .{ ".webp", "image/webp" },      .{ ".svg", "image/svg+xml" },
-        .{ ".bmp", "image/bmp" },         .{ ".heic", "image/heic" },      .{ ".mp3", "audio/mpeg" },
-        .{ ".wav", "audio/wav" },         .{ ".ogg", "audio/ogg" },        .{ ".m4a", "audio/mp4" },
-        .{ ".flac", "audio/flac" },       .{ ".mp4", "video/mp4" },        .{ ".mov", "video/quicktime" },
-        .{ ".webm", "video/webm" },       .{ ".mkv", "video/x-matroska" }, .{ ".avi", "video/x-msvideo" },
+        .{ ".txt", "text/plain" },      .{ ".md", "text/markdown" },     .{ ".csv", "text/csv" },
+        .{ ".html", "text/html" },      .{ ".htm", "text/html" },        .{ ".json", "application/json" },
+        .{ ".xml", "application/xml" }, .{ ".pdf", "application/pdf" },  .{ ".zip", "application/zip" },
+        .{ ".png", "image/png" },       .{ ".jpg", "image/jpeg" },       .{ ".jpeg", "image/jpeg" },
+        .{ ".gif", "image/gif" },       .{ ".webp", "image/webp" },      .{ ".svg", "image/svg+xml" },
+        .{ ".bmp", "image/bmp" },       .{ ".heic", "image/heic" },      .{ ".mp3", "audio/mpeg" },
+        .{ ".wav", "audio/wav" },       .{ ".ogg", "audio/ogg" },        .{ ".m4a", "audio/mp4" },
+        .{ ".flac", "audio/flac" },     .{ ".mp4", "video/mp4" },        .{ ".mov", "video/quicktime" },
+        .{ ".webm", "video/webm" },     .{ ".mkv", "video/x-matroska" }, .{ ".avi", "video/x-msvideo" },
     };
     for (table) |t| if (std.ascii.eqlIgnoreCase(ext, t[0])) return t[1];
     return "application/octet-stream";
@@ -169,4 +169,24 @@ test "mimeOf" {
     try std.testing.expectEqualStrings("image/png", mimeOf("Photo.PNG"));
     try std.testing.expectEqualStrings("text/plain", mimeOf("notes.txt"));
     try std.testing.expectEqualStrings("application/octet-stream", mimeOf("noext"));
+}
+
+/// A canonical file directly inside the app's canonical Inbox, never a
+/// traversal or an arbitrary directory containing "Documents/Inbox".
+pub fn inboxBasename(inbox: []const u8, path: []const u8) ?[]const u8 {
+    const parent = std.fs.path.dirnamePosix(path) orelse return null;
+    if (!std.mem.eql(u8, parent, inbox)) return null;
+    const name = std.fs.path.basenamePosix(path);
+    if (name.len == 0 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return null;
+    return name;
+}
+
+test "Inbox cleanup requires a direct child of the owned canonical directory" {
+    const inbox = "/container/Documents/Inbox";
+    try std.testing.expectEqualStrings("file.txt", inboxBasename(inbox, inbox ++ "/file.txt").?);
+    for ([_][]const u8{
+        "/other/Documents/Inbox/file.txt", inbox ++ "/../../Library/file.txt",
+        inbox ++ "/nested/file.txt",       inbox ++ "/..",
+        inbox ++ "/.",                     inbox ++ "-other/file.txt",
+    }) |path| try std.testing.expect(inboxBasename(inbox, path) == null);
 }

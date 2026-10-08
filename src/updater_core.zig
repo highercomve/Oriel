@@ -31,6 +31,8 @@ pub const DEFAULT_TIMEOUT_MS: u32 = 15_000;
 /// Overall deadline for the artifact download (an AppImage can be 100+ MiB).
 pub const DEFAULT_DOWNLOAD_TIMEOUT_MS: u32 = 10 * 60_000;
 pub const MAX_CMDLINE_LEN = 16 * 1024;
+/// Maximum expanded update payload, on disk and in memory.
+pub const MAX_UNPACKED_SIZE: usize = 512 * 1024 * 1024;
 pub const MAX_ARGV_COUNT = 256;
 
 // ---------------------------------------------------------------------------
@@ -313,13 +315,7 @@ pub fn checkForUpdate(
         return error.TargetMismatch;
     }
 
-    // Validate manifest expiration if specified
-    if (manifest.expires) |exp| {
-        const now_ts = std.Io.Timestamp.now(io, .real).toSeconds();
-        if (now_ts > 0 and @as(u64, @intCast(now_ts)) > exp) {
-            return error.ManifestExpired;
-        }
-    }
+    try validateExpiration(manifest.expires, std.Io.Timestamp.now(io, .real).toSeconds());
 
     const remote_ver = try Semver.parse(manifest.version);
     const local_ver = try Semver.parse(config.current_version);
@@ -588,15 +584,9 @@ fn downloadInternal(
         var window: [std.compress.flate.max_window_len]u8 = undefined;
         var decompress = std.compress.flate.Decompress.init(&gz_reader.interface, .gzip, &window);
 
-        var out_buf: [32768]u8 = undefined;
         var out_writer_buf: [32768]u8 = undefined;
         var out_writer = decomp_file.writerStreaming(io, &out_writer_buf);
-
-        while (true) {
-            const n = try decompress.reader.readSliceShort(&out_buf);
-            if (n == 0) break;
-            try out_writer.interface.writeAll(out_buf[0..n]);
-        }
+        try writeExpanded(&decompress.reader, &out_writer.interface, MAX_UNPACKED_SIZE);
         try out_writer.interface.flush();
         try decomp_file.sync(io);
 
@@ -677,7 +667,7 @@ pub fn unpack(gpa: std.mem.Allocator, manifest: Manifest, payload_gz: []const u8
     var in: std.Io.Reader = .fixed(payload_gz);
     var window: [std.compress.flate.max_window_len]u8 = undefined;
     var decompress: std.compress.flate.Decompress = .init(&in, .gzip, &window);
-    return decompress.reader.allocRemaining(gpa, .unlimited);
+    return decompress.reader.allocRemaining(gpa, .limited(MAX_UNPACKED_SIZE));
 }
 
 pub const test_payload_gz = [_]u8{
@@ -1257,4 +1247,40 @@ test "pure splitCmdline logic" {
 test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(backend);
+}
+
+fn writeExpanded(reader: *std.Io.Reader, writer: *std.Io.Writer, max_size: usize) !void {
+    var buf: [32768]u8 = undefined;
+    var expanded: usize = 0;
+    while (true) {
+        const n = try reader.readSliceShort(&buf);
+        if (n == 0) return;
+        if (n > max_size - expanded) return error.UpdateTooLarge;
+        expanded += n;
+        try writer.writeAll(buf[0..n]);
+    }
+}
+
+test "gzip expansion stops before writing beyond its limit" {
+    var input: std.Io.Reader = .fixed(&test_payload_gz);
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var decompress: std.compress.flate.Decompress = .init(&input, .gzip, &window);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try std.testing.expectError(error.UpdateTooLarge, writeExpanded(&decompress.reader, &output.writer, 8));
+    try std.testing.expect(output.written().len <= 8);
+}
+
+fn validateExpiration(expires: ?u64, now_ts: i64) !void {
+    const exp = expires orelse return;
+    if (now_ts <= 0) return error.InvalidSystemTime;
+    if (@as(u64, @intCast(now_ts)) > exp) return error.ManifestExpired;
+}
+
+test "manifest expiry fails closed on invalid clocks" {
+    try validateExpiration(null, 0);
+    try validateExpiration(100, 100);
+    try std.testing.expectError(error.InvalidSystemTime, validateExpiration(100, 0));
+    try std.testing.expectError(error.InvalidSystemTime, validateExpiration(100, -1));
+    try std.testing.expectError(error.ManifestExpired, validateExpiration(100, 101));
 }

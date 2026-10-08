@@ -522,6 +522,8 @@ pub fn main(init: std.process.Init) !u8 {
         // The probe origin may be framed (the `ipc frame` check).
         .security = .{
             .external_links = .deny,
+            // The round-trip checks intentionally exchange events across windows.
+            .window_api = .{ .allow_modify_other_windows = true },
             .allowed_origins = &.{probe_origin},
             .csp = oriel.security.default_csp ++ "; frame-src " ++ probe_origin ++ (if (app.isolation != null) " " ++ oriel.isolation.origin else ""),
             // Security 3 (the `isolation` checks): every call from the page

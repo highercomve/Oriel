@@ -93,12 +93,26 @@ fn keepFile(path: []const u8) !?common.File {
     return .{ .handle = handle, .name = name, .mime = common.mimeOf(name), .size = e.size };
 }
 
-/// Unlink an iOS Inbox copy (the app owns those; nothing else is removed).
+extern "c" fn NSHomeDirectory() rt.id;
+
+/// Unlink only a canonical direct child of this app's iOS Inbox.
 fn removeCopy(path: []const u8) void {
-    if (std.mem.indexOf(u8, path, "/Documents/Inbox/") == null) return;
+    if (is_macos) return; // Inbox copies belong to the iOS application container.
+    const home = rt.utf8(.{ .value = NSHomeDirectory() }) orelse return;
+    const inbox = std.fmt.allocPrintSentinel(gpa, "{s}/Documents/Inbox", .{home}, 0) catch return;
+    defer gpa.free(inbox);
     const z = gpa.dupeZ(u8, path) catch return;
     defer gpa.free(z);
-    _ = std.c.unlink(z);
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_root = std.mem.span(std.c.realpath(inbox, &root_buf) orelse return);
+    const real_file = std.mem.span(std.c.realpath(z, &path_buf) orelse return);
+    const name = common.inboxBasename(real_root, real_file) orelse return;
+    const fd = std.c.open(@ptrCast(real_root.ptr), .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
+    if (fd < 0) return;
+    defer _ = std.c.close(fd);
+    // A rename or symlink replacement cannot redirect unlink out of this fd.
+    _ = std.c.unlinkat(fd, @ptrCast(name.ptr), 0);
 }
 
 // --------------------------------------------------------------- send
@@ -416,10 +430,7 @@ pub fn capabilities() common.Capabilities {
 /// A received file, read-only: a new descriptor for the file `handle`
 /// names (the caller closes it). InvalidHandle once released.
 pub fn open(handle: u32) common.OpenError!std.Io.File {
-    const e = received.info(handle) orelse return error.InvalidHandle;
-    const fd = std.c.dup(e.fd);
-    if (fd < 0) return error.InvalidHandle;
-    return .{ .handle = fd, .flags = .{ .nonblocking = false } };
+    return received.duplicate(handle) catch error.InvalidHandle;
 }
 
 /// Let a share's files go: their descriptors close.

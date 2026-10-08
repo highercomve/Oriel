@@ -21,13 +21,14 @@ pub fn startDevServer(dev: anytype) ?*gio.Subprocess {
     const argv = gpa.alloc(?[*:0]const u8, command.len + 1) catch return null;
     defer gpa.free(argv);
 
+    @memset(argv, null);
+    defer for (argv[0..command.len]) |arg_ptr| {
+        if (arg_ptr) |p| gpa.free(std.mem.span(p));
+    };
     for (command, 0..) |arg, i| {
         const arg_z = gpa.dupeZ(u8, arg) catch return null;
         argv[i] = arg_z.ptr;
     }
-    defer for (argv[0..command.len]) |arg_ptr| {
-        if (arg_ptr) |p| gpa.free(std.mem.span(p));
-    };
     argv[command.len] = null;
 
     const launcher = gio.SubprocessLauncher.new(.{});

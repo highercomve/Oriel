@@ -495,6 +495,8 @@ pub fn main(init: std.process.Init) !u8 {
         .icon = app.icon_bytes,
         .permissions = app.permissions,
         .deep_link_schemes = app.url_schemes,
+        // The demo and its UI tests coordinate the app's own windows.
+        .security = .{ .window_api = .{ .allow_modify_other_windows = true } },
         .setup = setup,
     });
 }

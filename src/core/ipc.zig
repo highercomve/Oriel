@@ -385,11 +385,11 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         const Args = struct { handle: u32, offset: u64 = 0, length: u64 = 4 << 20 };
         const args = try std.json.parseFromValueLeaky(Args, arena, request.args, .{ .ignore_unknown_fields = true });
         var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(@import("heap.zig").gpa);
         try @import("../modules/share.zig").read(args.handle, args.offset, @min(args.length, 16 << 20), &bytes);
         const enc = std.base64.standard.Encoder;
         const out = try arena.alloc(u8, enc.calcSize(bytes.items.len));
         _ = enc.encode(out, bytes.items);
-        bytes.deinit(std.heap.smp_allocator);
         return std.json.Stringify.valueAlloc(arena, out, .{});
     } else if (std.mem.eql(u8, request.cmd, "notification:ready")) {
         // The bridges' older alias of events:ready {"event":"notification:action"}.
@@ -496,7 +496,7 @@ pub fn dispatchAsync(
                 res_z = alloc.dupeZ(u8, json) catch null;
                 if (res_z == null) err_z = "OutOfMemory";
             } else |err| {
-                err_z = errorText(err);
+                err_z = alloc.dupeZ(u8, errorText(err)) catch "OutOfMemory";
             }
 
             on_done(self.callback_context, self.arena_state, res_z, err_z);
@@ -511,7 +511,7 @@ pub fn dispatchAsync(
         .io = io,
         .callback_context = context,
     };
-    pool.post(&job.task);
+    if (!pool.post(&job.task)) return error.WorkerPoolNotRunning;
 }
 
 fn commandArgsType(comptime F: type) ?type {
@@ -934,4 +934,37 @@ test "typescript generation with deep_link" {
 
     const ts_disabled = comptime typescriptWithOptions(Commands, Events, false);
     try std.testing.expect(std.mem.indexOf(u8, ts_disabled, "\"deep-link\": { url: string };") == null);
+}
+
+test "async error text survives reuse and destruction of its worker thread" {
+    const io = std.testing.io;
+    const pool = try ThreadPool.init(std.testing.allocator, io, 1);
+    const Commands = struct {
+        pub fn fail_with(args: struct { message: []const u8 }) !void {
+            return fail("{s}", .{args.message});
+        }
+    };
+    const Reply = struct {
+        arena: ?std.heap.ArenaAllocator = null,
+        text: ?[:0]const u8 = null,
+        fn done(self: *@This(), arena: std.heap.ArenaAllocator, _: ?[:0]const u8, err: ?[:0]const u8) void {
+            self.arena = arena;
+            self.text = err;
+        }
+    };
+    var first: Reply = .{};
+    var second: Reply = .{};
+    defer if (first.arena) |*a| a.deinit();
+    defer if (second.arena) |*a| a.deinit();
+    dispatchAsync(Commands, pool, std.testing.allocator, "{\"cmd\":\"fail_with\",\"args\":{\"message\":\"first failure\"}}", io, &first, Reply.done) catch |err| {
+        pool.deinit();
+        return err;
+    };
+    dispatchAsync(Commands, pool, std.testing.allocator, "{\"cmd\":\"fail_with\",\"args\":{\"message\":\"second failure\"}}", io, &second, Reply.done) catch |err| {
+        pool.deinit();
+        return err;
+    };
+    pool.deinit(); // joins the worker, like a delayed UI callback after shutdown
+    try std.testing.expectEqualStrings("first failure", first.text.?);
+    try std.testing.expectEqualStrings("second failure", second.text.?);
 }
