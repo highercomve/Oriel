@@ -995,6 +995,12 @@ pub const AppOptions = struct {
         /// `app/src/main/java/<path of the file's package line>/`; a file
         /// dropped from the list is removed from there.
         sources: []const std.Build.LazyPath = &.{},
+        /// Fully qualified Kotlin/Java classes implementing OrielAndroidExtension
+        /// with a public zero-argument constructor. Sources are app-owned;
+        /// registration is regenerated on every Android build, in this order.
+        extensions: []const []const u8 = &.{},
+        /// Maven coordinates (group:artifact:version), regenerated on every build.
+        dependencies: []const []const u8 = &.{},
         /// R8 rules for release builds, kept in `app/proguard-rules.pro`
         /// between `# oriel:proguard` markers (rewritten on every build).
         proguard_rules: ?std.Build.LazyPath = null,
@@ -1750,7 +1756,28 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
     const libs = b.pathJoin(&.{ b.install_prefix, "jniLibs" });
     const lib_dir = std.fs.path.relative(b.allocator, b.build_root.path orelse "/", null, app_dir, libs) catch libs;
 
+    var extensions: std.ArrayList(u8) = .empty;
+    if (options.android.extensions.len > 64) @panic("android.extensions: at most 64 extensions are supported");
+    for (options.android.extensions, 0..) |class_name, index| {
+        for (options.android.extensions[0..index]) |previous| {
+            if (std.mem.eql(u8, previous, class_name)) @panic(b.fmt("android.extensions: duplicate class '{s}'", .{class_name}));
+        }
+        if (!android_manifest.extensionClassValid(class_name))
+            @panic(b.fmt("android.extensions: invalid class name '{s}'", .{class_name}));
+        extensions.appendSlice(b.allocator, b.fmt("{s}(),", .{class_name})) catch @panic("OOM");
+    }
+
+    var dependencies: std.ArrayList(u8) = .empty;
+    if (options.android.dependencies.len > 64) @panic("android.dependencies: at most 64 dependencies");
+    for (options.android.dependencies) |coordinate| {
+        if (!android_manifest.mavenCoordinateValid(coordinate))
+            @panic(b.fmt("android.dependencies: invalid Maven coordinate '{s}'", .{coordinate}));
+        dependencies.appendSlice(b.allocator, b.fmt("    add(\"implementation\", \"{s}\")\n", .{coordinate})) catch @panic("OOM");
+    }
+
     return b.allocator.dupe([]const u8, &.{
+        b.fmt("android_extensions={s}", .{extensions.items}),
+        b.fmt("android_dependencies={s}", .{dependencies.items}),
         b.fmt("app_id={s}", .{app_id}),
         b.fmt("name={s}", .{name}),
         b.fmt("version={s}", .{version}),
@@ -2233,11 +2260,10 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool, native_dom: 
         oriel.addCSourceFiles(.{
             .root = yoga.path("yoga"),
             .files = &.{
-                "YGConfig.cpp",           "YGEnums.cpp",         "YGNode.cpp",             "YGNodeLayout.cpp",
-                "YGNodeStyle.cpp",        "YGPixelGrid.cpp",     "YGValue.cpp",            "algorithm/AbsoluteLayout.cpp",
-                "algorithm/Cache.cpp",    "algorithm/FlexLine.cpp", "config/Config.cpp",
-                "debug/AssertFatal.cpp",  "debug/Log.cpp",       "event/event.cpp",        "node/LayoutResults.cpp",
-                "node/Node.cpp",
+                "YGConfig.cpp",        "YGEnums.cpp",            "YGNode.cpp",             "YGNodeLayout.cpp",
+                "YGNodeStyle.cpp",     "YGPixelGrid.cpp",        "YGValue.cpp",            "algorithm/AbsoluteLayout.cpp",
+                "algorithm/Cache.cpp", "algorithm/FlexLine.cpp", "config/Config.cpp",      "debug/AssertFatal.cpp",
+                "debug/Log.cpp",       "event/event.cpp",        "node/LayoutResults.cpp", "node/Node.cpp",
             },
             .flags = &.{ "-std=c++20", "-O2", no_ubsan, "-fno-exceptions" },
         });

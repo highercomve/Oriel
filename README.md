@@ -28,6 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh |
 oriel doctor              # checks Zig 0.16, the platform webview SDK, Node.js
 oriel init my-app         # React + Vite (or --template vue|svelte|vanilla)
 cd my-app && oriel dev    # hot reload; `oriel build` for the release binary
+
 ```
 
 ## Renderers
@@ -36,6 +37,17 @@ Use the system WebView, or build with `-Dnative_ui` to render HTML, CSS and
 JavaScript with QuickJS, Oriel’s native DOM, Yoga, and platform drawing.
 The native renderer is experimental; see its [support and limits](docs/native-renderer.md)
 and [performance measurements](docs/native-renderer-performance.md).
+
+## Android extensions
+
+Add app-owned Kotlin or Java behavior with `OrielAndroidExtension`: configure
+WebViews, receive Activity and WebView lifecycle callbacks, handle native
+results and permissions, or supply a custom file picker. Declare sources,
+extension classes, and Maven SDK dependencies in `build.zig`; Oriel regenerates
+the `OrielAppExtensions` registry on each Android build.
+
+See [Android extensions](docs/android-extensions.md) for a complete example,
+request-code namespaces, and callback ownership.
 
 ## Examples
 
@@ -61,6 +73,7 @@ Start with the [documentation index](docs/README.md), or go straight to a guide:
 | [Packaging](docs/packaging.md) | Linux packages, Windows installers, macOS bundles, and signing |
 | [Platforms](docs/platforms.md) | Desktop support, prerequisites, and cross-compilation |
 | [Android](docs/android.md) · [iOS](docs/ios.md) | Mobile setup, builds, and platform behavior |
+| [Android extensions](docs/android-extensions.md) | App-owned Kotlin/Java hooks, generated registration, and native SDK dependencies |
 | [Native rendering](docs/renderers.md) | Renderer overview, implementation guides, and limits |
 | [Contributing](docs/contributing.md) | Repository layout, builds, tests, development rules, and releases |
 | [Background and comparisons](docs/overview.md) | The Oriel name and comparisons with other frameworks |

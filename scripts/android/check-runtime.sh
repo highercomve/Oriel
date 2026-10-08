@@ -38,9 +38,16 @@ rm -rf stubs out
 mkdir -p stubs out
 javac -nowarn -d stubs -cp "$android" $(find "$root/scripts/android/androidx-stubs" -name '*.java')
 cp=$(ls lib/*.jar | grep -v android-all | tr '\n' ':')
+# The registration template is rendered by build.zig. Check the empty registry
+# here; downstream Android builds type-check their actual extension classes.
+mkdir -p generated
+sed 's/@@android_extensions@@//' "$root/android/template/app/src/main/java/dev/oriel/OrielAppExtensions.kt" > generated/OrielAppExtensions.kt
+mapfile -t runtime_sources < <(find "$root/android/template/app/src/main/java/dev/oriel" -name '*.kt' ! -name OrielAppExtensions.kt | sort)
 java -cp "$cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler -no-stdlib -Werror=false \
   -classpath "$android:stubs:$(ls lib/kotlin-stdlib-*.jar)" -jvm-target 17 -d out \
-  "$root"/android/template/app/src/main/java/dev/oriel/*.kt
+  "${runtime_sources[@]}" generated/OrielAppExtensions.kt
+javac -cp "out:$(ls lib/kotlin-stdlib-*.jar)" -d out "$root/scripts/android/ExtensionContextTest.java"
+java -cp "out:$(ls lib/kotlin-stdlib-*.jar)" dev.oriel.ExtensionContextTest
 javap -s -p -cp out dev.oriel.OrielRuntime > runtime.txt
 javap -s -p -cp out dev.oriel.NativeLib > natives.txt
 javap -s -p -cp out dev.oriel.NuiNative > nui-natives.txt

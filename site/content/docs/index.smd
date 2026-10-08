@@ -7,3 +7,7 @@
 ---
 
 Start with [Getting started]($link.page('docs/getting-started')), then build a complete app in the [tutorial]($link.page('docs/tutorial')).
+
+For mobile apps, see [Android and iOS]($link.page('docs/mobile')). Add native
+Android behavior and SDK integrations with
+[app-owned Android extensions]($link.page('docs/android-extensions')).

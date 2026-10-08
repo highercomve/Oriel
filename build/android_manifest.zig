@@ -1132,3 +1132,50 @@ test sameXml {
     try testing.expect(!sameXml("<a x=\"1\"/>", "<a x=\"2\"/>"));
     try testing.expect(!sameXml("<a b c/>", "<a bc/>"));
 }
+
+/// Safe qualified class references for generated Kotlin extension registration.
+/// Constructors are invoked directly, so R8 sees the references without rules.
+pub fn extensionClassValid(name: []const u8) bool {
+    if (name.len == 0 or name.len > 512) return false;
+    var parts = std.mem.splitScalar(u8, name, '.');
+    var count: usize = 0;
+    while (parts.next()) |part| {
+        if (part.len == 0 or part.len > 128) return false;
+        if (!std.ascii.isAlphabetic(part[0]) and part[0] != '_') return false;
+        for (part[1..]) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '_') return false;
+        count += 1;
+    }
+    return count >= 2;
+}
+
+test "Android extension class references cannot inject Kotlin" {
+    try std.testing.expect(extensionClassValid("dev.example.CameraExtension"));
+    try std.testing.expect(extensionClassValid("dev.example.Outer.NestedExtension"));
+    inline for (.{ "", "Extension", ".dev.Extension", "dev..Extension", "dev.Extension.", "dev.123", "dev.Extension()", "dev.Extension);evil()", "dev.Extension\n", "dev.foo/bar" }) |name| {
+        try std.testing.expect(!extensionClassValid(name));
+    }
+}
+
+/// Bounded Maven coordinates safe to embed in a generated Kotlin string.
+pub fn mavenCoordinateValid(value: []const u8) bool {
+    if (value.len == 0 or value.len > 256) return false;
+    var parts: usize = 1;
+    var length: usize = 0;
+    for (value) |ch| {
+        if (ch == ':') {
+            if (length == 0) return false;
+            parts += 1;
+            length = 0;
+        } else {
+            if (!std.ascii.isAlphanumeric(ch) and ch != '.' and ch != '_' and ch != '-') return false;
+            length += 1;
+        }
+    }
+    return parts == 3 and length > 0;
+}
+
+test "Maven coordinates exclude Gradle code and floating versions" {
+    try std.testing.expect(mavenCoordinateValid("com.google.mlkit:genai-prompt:1.0.0-beta4"));
+    for ([_][]const u8{ "a:b", "a::c", "a:b:c:d", "a:b:1.+", "a:b:1\"", "a:b:1\n" }) |value|
+        try std.testing.expect(!mavenCoordinateValid(value));
+}
