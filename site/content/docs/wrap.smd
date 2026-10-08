@@ -1,0 +1,135 @@
+---
+.title = "Wrap a web app",
+.description = "Turn an existing website into a desktop app with a tray icon and Linux AppImage packaging.",
+.date = .date("2026-10-08T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+`oriel wrap <url>` creates an editable Oriel project that opens a website in
+a desktop window. `oriel pake` is an alias for the same command. Available
+since Oriel 0.9.4.
+
+The app uses the system WebView: WebKitGTK on Linux, WebView2 on Windows,
+and WKWebView on macOS. It loads the live website, so it needs the same
+network access and account as the browser version.
+
+# Create and run
+
+First [install the CLI and platform dependencies]($link.page('docs/getting-started'))
+and run `oriel doctor --fix`. Wrapped apps need no Node.js or npm: their
+generated frontend is a static loading page.
+
+```sh
+oriel wrap https://web.whatsapp.com --name whatsapp --title "WhatsApp"
+cd whatsapp
+oriel run
+```
+
+The command creates `./whatsapp` and fetches its Zig dependencies. Without
+`--name`, it derives a name from the URL's hostname. Use a new or empty
+directory; it refuses to overwrite a non-empty one.
+
+To launch immediately after creating the project:
+
+```sh
+oriel wrap https://example.com --name example --run
+```
+
+# Tray and window behavior
+
+The tray is **enabled by default**. Its menu has **Show / Hide** and **Quit**.
+Closing the window hides it while the app keeps running; choose Quit to exit.
+
+Use `--no-tray` for an app that exits when its window closes:
+
+```sh
+oriel wrap https://example.com --name example --no-tray
+```
+
+On Linux, your desktop needs system tray support to show the icon.
+
+# Icon and browser identity
+
+Pass `--icon ./icon.png` to use a local PNG. Otherwise Oriel tries Google's
+favicon service, then DuckDuckGo, and falls back to its own icon if no PNG
+is available. If the supplied icon path does not exist, it also tries to
+save the fetched favicon there. The project stores its icon in `assets/icon.png`.
+
+Some sites require a particular browser identity. On **Linux**, use
+`--user-agent chrome`, `safari`, `firefox`, or a quoted custom string.
+WhatsApp URLs automatically select the Chrome preset when this option is
+omitted. Windows and macOS currently retain the WebView's default user agent.
+Changing the user agent does not change the WebView engine or its features.
+
+# Package on Linux
+
+Create a ReleaseSafe AppImage in one command:
+
+```sh
+oriel wrap https://web.whatsapp.com \
+  --name whatsapp \
+  --title "WhatsApp" \
+  --id com.whatsapp.desktop \
+  --tray \
+  --user-agent chrome \
+  --package
+```
+
+The output is in `whatsapp/zig-out/package/`. `--package` currently invokes
+the Linux `package-appimage` build step. The AppImage relies on the host's
+GTK 4 and WebKitGTK 6.0 runtime libraries; it does not bundle them.
+
+For an existing project:
+
+```sh
+cd whatsapp
+oriel build
+oriel package
+```
+
+The generated `build.zig` selects `.appimage` as its package format.
+For Windows or macOS distribution, edit that packaging configuration for
+the target platform and follow [Building & packaging]($link.page('docs/building'))
+and [Code signing]($link.page('docs/signing')).
+
+# Options
+
+| Option | Meaning |
+|---|---|
+| `<url>` | Website to open; `https://` is added if omitted |
+| `--name <name>` | Project directory and executable name; start with a letter, use letters, digits, `-` and `_`, at most 32 characters |
+| `--title <title>` | Window title and package display name; derived from the name by default |
+| `--id <app-id>` | Application identifier in reverse-DNS form |
+| `--icon <path>` | Local PNG, or a destination for a fetched favicon if missing |
+| `--tray` / `--no-tray` | Enable (default) or disable tray and close-to-tray behavior |
+| `--user-agent <ua>` | Linux: `chrome`, `safari`, `firefox`, or a custom string |
+| `--devtools` | Enable developer tools and forward console messages to stdout |
+| `--package` | Build a ReleaseSafe Linux AppImage after creating the project |
+| `--run` | Build and run after creating the project |
+| `--oriel-ref <ref>` | Oriel Git tag or commit to depend on; defaults to the CLI's bundled reference |
+| `--oriel-path <dir>` | Use a local Oriel checkout |
+
+Run `oriel wrap --help` for the installed CLI's options.
+
+# Customize the generated app
+
+The project is ordinary Zig source that you can edit and rebuild:
+
+| File | What to change |
+|---|---|
+| `src/main.zig` | URL, window size, tray menu, user agent, navigation and capabilities |
+| `build.zig` | Package metadata, formats, enabled modules and OS permission descriptions |
+| `build.zig.zon` | Oriel dependency |
+| `assets/icon.png` | App icon |
+| `frontend/index.html` | Embedded loading page |
+
+The generated app declares notification and microphone permissions and
+configures allowed origins and capability rules using HTTPS hostnames.
+For most sites, its wildcard rule uses the last two hostname labels;
+WhatsApp gets dedicated `.whatsapp.com` and `.whatsapp.net` rules.
+Review these rules in `src/main.zig` for HTTP URLs, custom ports, domains
+such as `example.co.uk`, or additional login and service domains.
+Other links open in the default browser.
+The operating system and WebView still decide whether to grant access.
+See [Permissions]($link.page('docs/permissions')) for the security model.

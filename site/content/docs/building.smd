@@ -8,6 +8,10 @@
 
 # Linux
 
+Packaging an existing website? [`oriel wrap <url> --package`]($link.page('docs/wrap'))
+creates a desktop project and builds its Linux AppImage, with tray support
+enabled by default.
+
 ## Build a binary
 
 The simplest way is to use the `oriel` CLI:

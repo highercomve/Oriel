@@ -8,6 +8,7 @@
 			<nav>
 				<h4>Guide</h4>
 				<a href="$site.page('docs/getting-started').link()">Getting started</a>
+				<a href="$site.page('docs/wrap').link()">Wrap a web app</a>
 				<a href="$site.page('docs/tutorial').link()">Tutorial: a notes app</a>
 				<a href="$site.page('docs/development').link()">Development</a>
 				<a href="$site.page('docs/building').link()">Building &amp; packaging</a>

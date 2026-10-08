@@ -90,6 +90,10 @@ features, limitations and benchmark conditions.
 
 # Create an app
 
+To turn an existing website into a desktop app, use
+[`oriel wrap <url>`]($link.page('docs/wrap')). For a new app with your own
+frontend, use `init`:
+
 ```sh
 oriel init my-app
 cd my-app
@@ -157,6 +161,7 @@ Projects created with `oriel init` include a default `icon.png`. At build time, 
 
 | Command | What it does |
 |---|---|
+| `oriel wrap <url>` | Create a desktop app for a website, with tray support and Linux AppImage packaging (alias: `oriel pake`) |
 | `oriel types` | Regenerate the frontend's TypeScript types for the Zig commands |
 | `oriel check` | Type-check the app's Zig code without building (about a second) |
 | `oriel package` | Build packages into `zig-out/package` (deb, rpm, AppImage on Linux; setup.exe on Windows; .app and .dmg on macOS) |
@@ -165,7 +170,7 @@ Projects created with `oriel init` include a default `icon.png`. At build time, 
 | `oriel zig` | Manage the Zig versions the CLI uses (`install`, `uninstall`, `list`, `which`) in `~/.oriel/zig` |
 | `oriel webview2` | Download and cache Microsoft Edge `WebView2Loader.dll` for Windows |
 
-Every command is a thin wrapper around `zig build <step>`, run from anywhere inside the project, and extra arguments are passed on: `oriel build -Doptimize=ReleaseFast` works, and so does plain `zig build`.
+Project build commands are thin wrappers around `zig build <step>`, run from anywhere inside the project, and extra arguments are passed on: `oriel build -Doptimize=ReleaseFast` works, and so does plain `zig build`.
 
 > Using Oriel without the CLI? Add it with the Zig package manager, `zig fetch --save git+https://github.com/highercomve/Oriel`, and call `oriel.addApp()` from your `build.zig`. The generated project shows the exact wiring.
 
