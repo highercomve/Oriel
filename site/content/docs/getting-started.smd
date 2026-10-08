@@ -76,7 +76,7 @@ Release manifests are Ed25519-signed and verified against the public key embedde
 
 # Native UI (experimental)
 
-Oriel 0.8.0 adds an optional renderer that draws a supported subset of your
+Oriel includes an optional renderer that draws a supported subset of your
 HTML and CSS with native platform views. Keep the default WebView or opt in
 per build:
 
