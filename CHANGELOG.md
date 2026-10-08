@@ -2,6 +2,51 @@
 
 Notable changes in Oriel releases.
 
+## [0.9.5] — 2026-10-08
+
+Oriel 0.9.5 fixes the validated concurrency, memory-lifetime and security
+issues from `REVIEW.md`, and documents which reported findings were not
+supported by the current code.
+
+### Fixed
+
+- File-handle tables synchronize access through reads and descriptor
+  duplication, preventing release from recycling a descriptor in use.
+- Worker-pool shutdown withdraws the pool, waits for borrowed references,
+  drains accepted jobs, and rejects later submissions without leaking them.
+- Async command errors retain their own text until the UI consumes the reply.
+- Lazy window creation snapshots registered options before releasing the lock.
+- Cross-window `emitTo` now checks the same modification permission as other
+  window mutations. Smoke and Showcase explicitly opt into cross-window events.
+- Isolation frames validate message origins and send replies only to explicit
+  local origins; the Windows/Android bridge skips subframes.
+- iOS Inbox cleanup only removes canonical files directly inside the app's own
+  Inbox, using directory-relative deletion.
+- Gzip update expansion is capped at 512 MiB in memory, on disk, and during
+  macOS bundle verification/extraction. Expiring manifests reject invalid clocks.
+- Windows media streams serialize Read and Seek and advance by actual bytes read.
+- The local media server validates loopback Host headers on every route and
+  scopes its ping response's CORS header to the configured app origin.
+- Zig model downloads require HTTPS on initial URLs and redirects.
+- Share-read and dev-server allocation failures release intermediate buffers;
+  internal window and received-file cleanup consistently follows its allocator.
+
+### Documentation and validation
+
+- Added the website's **Wrap a web app** guide and navigation links.
+- Validated every finding in `REVIEW.md`, correcting ownership, tar extraction,
+  token exposure, command-line reader, and optional expiration claims.
+- Added regression tests for concurrency, error lifetimes, window permissions,
+  path guards, Host validation, HTTPS URLs, gzip limits, and isolation messages.
+
+### Compatibility
+
+- Cross-window events require
+  `security.window_api.allow_modify_other_windows = true`.
+- `App.getWorkerPool()` borrows must be paired with `App.releaseWorkerPool()`;
+  `ThreadPool.post()` returns whether it accepted ownership of a task.
+- Publishers must keep expanded gzip update payloads within the 512 MiB limit.
+
 ## [0.9.4] — 2026-10-08
 
 Oriel 0.9.4 adds desktop wrappers for web apps, app-owned Android extensions,

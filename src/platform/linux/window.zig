@@ -357,10 +357,10 @@ pub fn WindowCreator(
             // it's off the list that events and answers are sent through.
             if (comptime build_opts.native_ui) if (win.handle.native) |e| native_gtk.Surface.destroyFor(e);
 
-            std.heap.smp_allocator.free(win.label);
-            std.heap.smp_allocator.free(win.options.title);
-            if (win.options.url) |u| std.heap.smp_allocator.free(u);
-            std.heap.smp_allocator.destroy(win);
+            @import("../../core/heap.zig").gpa.free(win.label);
+            @import("../../core/heap.zig").gpa.free(win.options.title);
+            if (win.options.url) |u| @import("../../core/heap.zig").gpa.free(u);
+            @import("../../core/heap.zig").gpa.destroy(win);
 
             if (remaining == 0) {
                 App.quit(0);

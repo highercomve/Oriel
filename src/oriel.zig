@@ -246,5 +246,6 @@ test {
     // dictation's Apple engine needs no whisper: checked on every Apple
     // target (whisper's C sources need the SDK even to type-check).
     if (target.is_ios or target.os == .macos) std.testing.refAllDecls(@import("modules/dictation/apple.zig"));
+    std.testing.refAllDecls(@import("modules/model_download.zig"));
     if (target.is_ios) std.testing.refAllDecls(@import("modules/model_download/ios.zig"));
 }

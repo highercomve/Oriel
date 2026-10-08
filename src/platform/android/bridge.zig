@@ -209,6 +209,7 @@ pub fn Bridge(
             const args = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch .null;
             const request: ipc.Request = .{ .cmd = cmd, .args = args };
             const pool = App.getWorkerPool();
+            defer if (pool != null) App.releaseWorkerPool();
 
             const result: anyerror![]const u8 = blk: {
                 if (window_commands.isWindowCommand(cmd))
@@ -315,6 +316,7 @@ pub fn Bridge(
             }
 
             const pool = App.getWorkerPool();
+            defer if (pool != null) App.releaseWorkerPool();
             if (ipc.isBuiltinCommand(call.cmd) or !ipc.isAsync(api.commands, call.cmd)) {
                 return SyncCall.queue(id, req.id, call.cmd, call.args, page_url, win_label, if (pool) |p| p.io else null);
             }

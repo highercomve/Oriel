@@ -63,6 +63,7 @@ pub const FileWindowStream = struct {
     window_start: u64,
     window_length: u64,
     current_offset: std.atomic.Value(u64),
+    position_mutex: std.Io.Mutex = .init,
 
     const vtable = win32.IStream.IStreamVtbl{
         .QueryInterface = &queryInterface,
@@ -150,24 +151,15 @@ pub const FileWindowStream = struct {
             return win32.S_FALSE;
         }
 
-        var cur_offset = self.current_offset.load(.acquire);
-        var to_read: u32 = 0;
-        var file_offset: u64 = 0;
-
-        while (true) {
-            to_read = computeReadSlice(cur_offset, self.window_length, cb);
-            if (to_read == 0) {
-                if (pcbRead) |pr| pr.* = 0;
-                return win32.S_FALSE;
-            }
-            file_offset = self.window_start + cur_offset;
-            const next_offset = cur_offset + to_read;
-            if (self.current_offset.cmpxchgWeak(cur_offset, next_offset, .release, .acquire)) |actual| {
-                cur_offset = actual;
-            } else {
-                break;
-            }
+        std.Io.Threaded.mutexLock(&self.position_mutex);
+        defer std.Io.Threaded.mutexUnlock(&self.position_mutex);
+        const cur_offset = self.current_offset.load(.acquire);
+        const to_read = computeReadSlice(cur_offset, self.window_length, cb);
+        if (to_read == 0) {
+            if (pcbRead) |pr| pr.* = 0;
+            return win32.S_FALSE;
         }
+        const file_offset = self.window_start + cur_offset;
 
         var ov = win32.OVERLAPPED{
             .Offset = @truncate(file_offset),
@@ -176,8 +168,7 @@ pub const FileWindowStream = struct {
 
         var bytes_read: win32.DWORD = 0;
         if (win32.ReadFile(self.handle, pv, to_read, &bytes_read, @ptrCast(&ov)) == win32.FALSE) {
-            // Nothing was read: undo the advance reserved above.
-            _ = self.current_offset.fetchSub(to_read, .release);
+            if (pcbRead) |pr| pr.* = 0;
             const err = win32.GetLastError();
             if (err == 38) { // ERROR_HANDLE_EOF
                 if (pcbRead) |pr| pr.* = 0;
@@ -186,10 +177,7 @@ pub const FileWindowStream = struct {
             return win32.E_FAIL;
         }
 
-        if (bytes_read < to_read) {
-            const short_fall = to_read - bytes_read;
-            _ = self.current_offset.fetchSub(short_fall, .release);
-        }
+        self.current_offset.store(cur_offset + bytes_read, .release);
 
         if (pcbRead) |pr| pr.* = bytes_read;
         return if (bytes_read == cb) win32.S_OK else win32.S_FALSE;
@@ -206,6 +194,8 @@ pub const FileWindowStream = struct {
         plibNewPosition: ?*win32.ULARGE_INTEGER,
     ) callconv(.winapi) win32.HRESULT {
         const self = fromStream(This);
+        std.Io.Threaded.mutexLock(&self.position_mutex);
+        defer std.Io.Threaded.mutexUnlock(&self.position_mutex);
         const cur_pos = self.current_offset.load(.acquire);
         const new_pos = computeSeekPosition(dwOrigin, dlibMove, cur_pos, self.window_length) orelse return win32.E_INVALIDARG;
 

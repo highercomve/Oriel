@@ -513,7 +513,7 @@ fn closeNow(win: *App.Window) void {
 }
 
 fn freeWindow(win: *App.Window) void {
-    const gpa = std.heap.smp_allocator;
+    const gpa = @import("../../core/heap.zig").gpa;
     gpa.free(win.label);
     gpa.free(win.options.title);
     if (win.options.url) |u| gpa.free(u);

@@ -1605,10 +1605,10 @@ pub fn WindowCreator(
 
                         w.handle.deinit();
 
-                        std.heap.smp_allocator.free(w.label);
-                        std.heap.smp_allocator.free(w.options.title);
-                        if (w.options.url) |u| std.heap.smp_allocator.free(u);
-                        std.heap.smp_allocator.destroy(w);
+                        @import("../../core/heap.zig").gpa.free(w.label);
+                        @import("../../core/heap.zig").gpa.free(w.options.title);
+                        if (w.options.url) |u| @import("../../core/heap.zig").gpa.free(u);
+                        @import("../../core/heap.zig").gpa.destroy(w);
 
                         _ = win32.DestroyWindow(hwnd);
                         if (ShellMod.main_hwnd == hwnd) ShellMod.main_hwnd = null;

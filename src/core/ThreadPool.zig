@@ -26,6 +26,7 @@ pub const ThreadPool = struct {
             break :blk @max(2, @min(cpus, 16));
         };
         const pool = try allocator.create(ThreadPool);
+        errdefer allocator.destroy(pool);
         pool.* = .{
             .io = io,
             .allocator = allocator,
@@ -44,7 +45,6 @@ pub const ThreadPool = struct {
             pool.mutex.unlock(io);
             for (pool.threads[0..spawned]) |t| t.join();
             allocator.free(pool.threads);
-            allocator.destroy(pool);
         }
         for (pool.threads) |*t| {
             t.* = try std.Thread.spawn(.{}, workerLoop, .{pool});
@@ -54,10 +54,11 @@ pub const ThreadPool = struct {
     }
 
     /// Enqueue a task to be run on one of the worker threads.
-    pub fn post(pool: *ThreadPool, task: *Task) void {
+    pub fn post(pool: *ThreadPool, task: *Task) bool {
         task.next = null;
         pool.mutex.lockUncancelable(pool.io);
         defer pool.mutex.unlock(pool.io);
+        if (pool.shutdown) return false;
         if (pool.tail) |tail| {
             tail.next = task;
             pool.tail = task;
@@ -66,6 +67,7 @@ pub const ThreadPool = struct {
             pool.tail = task;
         }
         pool.cond.signal(pool.io);
+        return true;
     }
 
     fn workerLoop(pool: *ThreadPool) void {
@@ -88,14 +90,18 @@ pub const ThreadPool = struct {
         }
     }
 
-    /// Signal all workers to shut down and wait for all threads to finish.
-    pub fn deinit(pool: *ThreadPool) void {
+    /// Refuse new tasks and let workers drain the accepted queue.
+    pub fn stop(pool: *ThreadPool) void {
         const io = pool.io;
         pool.mutex.lockUncancelable(io);
         pool.shutdown = true;
         pool.cond.broadcast(io);
         pool.mutex.unlock(io);
+    }
 
+    /// Stop, wait for the accepted queue to drain, and free the pool.
+    pub fn deinit(pool: *ThreadPool) void {
+        pool.stop();
         for (pool.threads) |t| {
             t.join();
         }
@@ -125,10 +131,32 @@ test "ThreadPool execution" {
         .done = &done,
     };
 
-    pool.post(&job.task);
+    try std.testing.expect(pool.post(&job.task));
 
     while (!done.load(.acquire)) {
         std.Thread.yield() catch {};
     }
     try std.testing.expect(done.load(.acquire));
+}
+
+test "shutdown drains accepted tasks and rejects new tasks" {
+    const pool = try ThreadPool.init(std.testing.allocator, std.testing.io, 1);
+    var count: std.atomic.Value(u32) = .init(0);
+    const Job = struct {
+        task: ThreadPool.Task = .{ .run_fn = run },
+        count: *std.atomic.Value(u32),
+        fn run(task: *ThreadPool.Task) void {
+            const self: *@This() = @fieldParentPtr("task", task);
+            _ = self.count.fetchAdd(1, .release);
+        }
+    };
+    var first: Job = .{ .count = &count };
+    var rejected: Job = .{ .count = &count };
+    const accepted = pool.post(&first.task);
+    pool.stop();
+    const late = pool.post(&rejected.task);
+    pool.deinit();
+    try std.testing.expect(accepted);
+    try std.testing.expect(!late);
+    try std.testing.expectEqual(@as(u32, 1), count.load(.acquire));
 }

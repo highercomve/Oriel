@@ -31,12 +31,14 @@ pub const Handler = struct {
     root: open.Root,
     io: std.Io,
 
-    pub fn ping(_: *Handler, _: *httpz.Request, res: *httpz.Response) !void {
-        res.header("Access-Control-Allow-Origin", "*");
+    pub fn ping(self: *Handler, req: *httpz.Request, res: *httpz.Response) !void {
+        if (!self.validateHost(req, res)) return;
+        res.header("Access-Control-Allow-Origin", self.options.allowed_origin);
         try res.json(.{ .pong = true, .server = "http.zig" }, .{});
     }
 
-    pub fn handleOptions(self: *Handler, _: *httpz.Request, res: *httpz.Response) !void {
+    pub fn handleOptions(self: *Handler, req: *httpz.Request, res: *httpz.Response) !void {
+        if (!self.validateHost(req, res)) return;
         res.header("Access-Control-Allow-Origin", self.options.allowed_origin);
         res.header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
         res.header("Access-Control-Allow-Headers", "Range, Content-Type, Accept");
@@ -45,7 +47,15 @@ pub const Handler = struct {
         res.status = 204;
     }
 
+    fn validateHost(self: *Handler, req: *httpz.Request, res: *httpz.Response) bool {
+        if (hostAllowed(req.header("host"), self.options.port)) return true;
+        res.status = 403;
+        res.body = "Forbidden";
+        return false;
+    }
+
     pub fn handleFile(self: *Handler, req: *httpz.Request, res: *httpz.Response) !void {
+        if (!self.validateHost(req, res)) return;
         // CORS headers for file routes
         res.header("Access-Control-Allow-Origin", self.options.allowed_origin);
         res.header("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
@@ -131,6 +141,16 @@ pub const Handler = struct {
         }
     }
 };
+
+/// Reject DNS-rebinding hostnames before exposing any local endpoint.
+fn hostAllowed(host: ?[]const u8, port: u16) bool {
+    const value = host orelse return false;
+    var buf: [32]u8 = undefined;
+    const ip = std.fmt.bufPrint(&buf, "127.0.0.1:{d}", .{port}) catch unreachable;
+    if (std.mem.eql(u8, value, ip)) return true;
+    const local = std.fmt.bufPrint(&buf, "localhost:{d}", .{port}) catch unreachable;
+    return std.ascii.eqlIgnoreCase(value, local);
+}
 
 /// Send the response headers. Header values must outlive the handler (httpz
 /// may serialize them again, e.g. for an error response), so they are
@@ -276,6 +296,25 @@ test "media_server: streaming over TCP with std.http.Client" {
 
     var client: std.http.Client = .{ .allocator = ally, .io = test_io };
     defer client.deinit();
+
+    for ([_]struct { method: std.http.Method, path: []const u8 }{
+        .{ .method = .GET, .path = "/ping" },
+        .{ .method = .GET, .path = "/sample.mp4" },
+        .{ .method = .HEAD, .path = "/sample.mp4" },
+        .{ .method = .OPTIONS, .path = "/sample.mp4" },
+    }) |request| {
+        const url = try std.fmt.allocPrint(ally, "http://127.0.0.1:19874{s}", .{request.path});
+        defer ally.free(url);
+        var body: std.Io.Writer.Allocating = .init(ally);
+        defer body.deinit();
+        const response = try client.fetch(.{
+            .location = .{ .url = url },
+            .method = request.method,
+            .headers = .{ .host = .{ .override = "attacker.example:19874" } },
+            .response_writer = &body.writer,
+        });
+        try std.testing.expectEqual(std.http.Status.forbidden, response.status);
+    }
 
     // 1. GET 200 full body: verify exact byte match
     {

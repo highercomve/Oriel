@@ -195,13 +195,17 @@ listen("window:created", (p) => console.log("Window created:", p.label));
 listen("window:closed", (p) => console.log("Window closed:", p.label));
 ```
 
+To send events to another window, configure
+`.security.window_api.allow_modify_other_windows = true` in `App.Config`.
+The same permission controls cross-window modification and closure.
+
 #### Window Security & Policy
 
 Window creation and control are governed by `Config.security.window_api`:
 - **Opt-in:** enabled by default for app-local origins (`app://app` and dev server). Remote origins are blocked by default unless granted by capability (`.window_api = true`) or `.allow_remote = true`.
 - **URL validation:** only app-local URLs are allowed by default (`allow_remote_urls = false`). Dangerous schemes (`javascript:`, `file:`, `data:`) are rejected.
 - **Label validation:** labels must be 1–64 characters containing only alphanumeric characters, underscores (`_`), and dashes (`-`).
-- **Window modification:** windows can only modify and close themselves by default (`allow_modify_other_windows = false`).
+- **Window modification:** windows can only modify, close, and send events to themselves by default (`allow_modify_other_windows = false`).
 - **Max window cap:** defaults to a maximum of 16 concurrent windows (`max_windows = 16`).
 
 #### Config `window_open`

@@ -81,15 +81,21 @@ pub fn installBundle(io: std.Io, gpa: std.mem.Allocator, payload_dir: std.Io.Dir
         var file_reader = payload.readerStreaming(io, &read_buf);
         var window: [std.compress.flate.max_window_len]u8 = undefined;
         var gz: std.compress.flate.Decompress = .init(&file_reader.interface, .gzip, &window);
+        var limit_buf: [4096]u8 = undefined;
+        var bounded = gz.reader.limited(.limited(updater.MAX_UNPACKED_SIZE), &limit_buf);
         var file_name_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
         var link_name_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        var tar_it: std.tar.Iterator = .init(&gz.reader, .{
+        var tar_it: std.tar.Iterator = .init(&bounded.interface, .{
             .file_name_buffer = &file_name_buffer,
             .link_name_buffer = &link_name_buffer,
         });
         var guard: LinkGuard = .init(gpa);
         defer guard.deinit();
-        while (try tar_it.next()) |file| try guard.entry(file.kind, file.name, file.link_name);
+        while (try tar_it.next()) |file| {
+            if (file.size > updater.MAX_UNPACKED_SIZE) return error.UpdateTooLarge;
+            try guard.entry(file.kind, file.name, file.link_name);
+        }
+        if (bounded.remaining == .nothing) return error.UpdateTooLarge;
     }
 
     {
@@ -99,7 +105,10 @@ pub fn installBundle(io: std.Io, gpa: std.mem.Allocator, payload_dir: std.Io.Dir
         var file_reader = payload.readerStreaming(io, &read_buf);
         var window: [std.compress.flate.max_window_len]u8 = undefined;
         var gz: std.compress.flate.Decompress = .init(&file_reader.interface, .gzip, &window);
-        try std.tar.extract(io, staging, &gz.reader, .{ .mode_mode = .executable_bit_only });
+        var limit_buf: [4096]u8 = undefined;
+        var bounded = gz.reader.limited(.limited(updater.MAX_UNPACKED_SIZE), &limit_buf);
+        try std.tar.extract(io, staging, &bounded.interface, .{ .mode_mode = .executable_bit_only });
+        if (bounded.remaining == .nothing) return error.UpdateTooLarge;
     }
 
     // Exactly one top-level `<Name>.app` directory.

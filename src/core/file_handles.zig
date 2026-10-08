@@ -57,6 +57,8 @@ const win = struct {
     extern "kernel32" fn GetFileInformationByHandle(h: HANDLE, info: *BY_HANDLE_FILE_INFORMATION) callconv(.winapi) BOOL;
     extern "kernel32" fn ReadFile(h: HANDLE, buf: [*]u8, len: DWORD, read: *DWORD, ov: ?*OVERLAPPED) callconv(.winapi) BOOL;
     extern "kernel32" fn CloseHandle(h: HANDLE) callconv(.winapi) BOOL;
+    extern "kernel32" fn GetCurrentProcess() callconv(.winapi) HANDLE;
+    extern "kernel32" fn DuplicateHandle(src: HANDLE, h: HANDLE, dst: HANDLE, out: *HANDLE, access: DWORD, inherit: BOOL, options: DWORD) callconv(.winapi) BOOL;
     extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
     extern "kernel32" fn GetFinalPathNameByHandleW(h: HANDLE, buf: [*]u16, len: DWORD, flags: DWORD) callconv(.winapi) DWORD;
     extern "kernel32" fn SetFileTime(h: HANDLE, created: ?*const FILETIME, accessed: ?*const FILETIME, written: ?*const FILETIME) callconv(.winapi) BOOL;
@@ -99,6 +101,7 @@ pub const FileHandles = struct {
     gpa: std.mem.Allocator,
     entries: std.AutoHashMapUnmanaged(u32, Entry) = .empty,
     next: u32 = 1,
+    mutex: std.Io.Mutex = .init,
 
     pub fn init(gpa: std.mem.Allocator) FileHandles {
         return .{ .gpa = gpa };
@@ -106,10 +109,12 @@ pub const FileHandles = struct {
 
     /// Closes every descriptor (the engine, or the app, goes).
     pub fn deinit(d: *FileHandles) void {
+        std.Io.Threaded.mutexLock(@constCast(&d.mutex));
+        defer std.Io.Threaded.mutexUnlock(@constCast(&d.mutex));
         var it = d.entries.valueIterator();
         while (it.next()) |e| closeFd(e.fd);
         d.entries.deinit(d.gpa);
-        d.* = undefined;
+        d.entries = .empty;
     }
 
     /// Keep `fd` (a descriptor the OS gave: Android's ParcelFileDescriptor
@@ -138,6 +143,8 @@ pub const FileHandles = struct {
     }
 
     fn keep(d: *FileHandles, fd: Fd, st: Stat) Error!u32 {
+        std.Io.Threaded.mutexLock(@constCast(&d.mutex));
+        defer std.Io.Threaded.mutexUnlock(@constCast(&d.mutex));
         try d.entries.ensureUnusedCapacity(d.gpa, 1);
         // Sequential, skipping 0 and handles still in use after a wrap.
         var tries: u32 = 0;
@@ -151,14 +158,36 @@ pub const FileHandles = struct {
         return handle;
     }
 
-    /// What the page is told about a handle (size, mtime).
+    /// An owned duplicate, acquired while release cannot recycle the descriptor.
+    pub fn duplicate(d: *FileHandles, handle: u32) Error!std.Io.File {
+        std.Io.Threaded.mutexLock(&d.mutex);
+        defer std.Io.Threaded.mutexUnlock(&d.mutex);
+        const e = d.entries.get(handle) orelse return error.BadHandle;
+        try check(e);
+        if (windows) {
+            const process = win.GetCurrentProcess();
+            var copy: win.HANDLE = undefined;
+            if (win.DuplicateHandle(process, e.fd, process, &copy, 0, 0, 2) == 0) return error.NotReadable;
+            return .{ .handle = @ptrCast(copy), .flags = .{ .nonblocking = false } };
+        }
+        if (!supported) return error.Unsupported;
+        const copy = std.c.dup(e.fd);
+        if (copy < 0) return error.NotReadable;
+        return .{ .handle = copy, .flags = .{ .nonblocking = false } };
+    }
+
+    /// What the page is told about a handle (size, mtime); fd remains borrowed.
     pub fn info(d: *const FileHandles, handle: u32) ?Entry {
+        std.Io.Threaded.mutexLock(@constCast(&d.mutex));
+        defer std.Io.Threaded.mutexUnlock(@constCast(&d.mutex));
         return d.entries.get(handle);
     }
 
     /// Append up to `len` bytes from `offset` to `out` (fewer at the end of
     /// the file). NotReadable when the file changed since it was added.
     pub fn read(d: *FileHandles, handle: u32, offset: u64, len: u64, out: *std.ArrayList(u8)) Error!void {
+        std.Io.Threaded.mutexLock(@constCast(&d.mutex));
+        defer std.Io.Threaded.mutexUnlock(@constCast(&d.mutex));
         const e = d.entries.get(handle) orelse return error.BadHandle;
         if (len > max_read) return error.TooLarge;
         try check(e);
@@ -180,11 +209,15 @@ pub const FileHandles = struct {
     /// released). Unknown
     /// handles are ignored.
     pub fn release(d: *FileHandles, handle: u32) void {
+        std.Io.Threaded.mutexLock(@constCast(&d.mutex));
+        defer std.Io.Threaded.mutexUnlock(@constCast(&d.mutex));
         const kv = d.entries.fetchRemove(handle) orelse return;
         closeFd(kv.value.fd);
     }
 
     pub fn count(d: *const FileHandles) usize {
+        std.Io.Threaded.mutexLock(@constCast(&d.mutex));
+        defer std.Io.Threaded.mutexUnlock(@constCast(&d.mutex));
         return d.entries.count();
     }
 
@@ -194,6 +227,8 @@ pub const FileHandles = struct {
     /// `\\?\` prefix; the caller frees it. NotReadable when the file
     /// changed since it was added; Unsupported off Windows.
     pub fn currentPath(d: *const FileHandles, gpa: std.mem.Allocator, handle: u32) Error![]u8 {
+        std.Io.Threaded.mutexLock(@constCast(&d.mutex));
+        defer std.Io.Threaded.mutexUnlock(@constCast(&d.mutex));
         if (!windows) return error.Unsupported;
         const e = d.entries.get(handle) orelse return error.BadHandle;
         try check(e);
@@ -225,6 +260,8 @@ pub const FileHandles = struct {
     /// when the file changed since it was added, too; the caller frees it.
     pub fn nativePath(d: *const FileHandles, gpa: std.mem.Allocator, handle: u32) Error![]u8 {
         if (windows) return d.currentPath(gpa, handle);
+        std.Io.Threaded.mutexLock(@constCast(&d.mutex));
+        defer std.Io.Threaded.mutexUnlock(@constCast(&d.mutex));
         const e = d.entries.get(handle) orelse return error.BadHandle;
         try check(e);
         if (darwin) {
@@ -501,4 +538,50 @@ test "FileHandles: path follows a kept file (Windows)" {
     const moved = try d.currentPath(testing.allocator, h);
     defer testing.allocator.free(moved);
     try testing.expect(std.mem.endsWith(u8, moved, "\\d.txt"));
+}
+
+test "FileHandles serialize concurrent insertion, reads and release" {
+    if (!supported) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "concurrent.txt", .data = "stable bytes" });
+    const path = try tmpPath(&tmp, "concurrent.txt");
+    defer testing.allocator.free(path);
+    var table: FileHandles = .init(testing.allocator);
+    defer table.deinit();
+    const Worker = struct {
+        fn run(d: *FileHandles, name: [:0]const u8, failed: *std.atomic.Value(bool)) void {
+            for (0..128) |_| {
+                const h = (d.addPath(name) catch {
+                    failed.store(true, .release);
+                    return;
+                }) orelse return;
+                defer d.release(h);
+                var out: std.ArrayList(u8) = .empty;
+                defer out.deinit(testing.allocator);
+                d.read(h, 0, 12, &out) catch {
+                    failed.store(true, .release);
+                    return;
+                };
+                if (!std.mem.eql(u8, out.items, "stable bytes")) failed.store(true, .release);
+                const copy = d.duplicate(h) catch {
+                    failed.store(true, .release);
+                    return;
+                };
+                copy.close(testing.io);
+            }
+        }
+    };
+    var failed: std.atomic.Value(bool) = .init(false);
+    var threads: [4]std.Thread = undefined;
+    var spawned: usize = 0;
+    defer for (threads[0..spawned]) |thread| thread.join();
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, Worker.run, .{ &table, path, &failed });
+        spawned += 1;
+    }
+    for (threads) |thread| thread.join();
+    spawned = 0;
+    try testing.expect(!failed.load(.acquire));
+    try testing.expectEqual(@as(usize, 0), table.count());
 }
