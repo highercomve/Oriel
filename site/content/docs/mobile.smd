@@ -87,4 +87,4 @@ The full notes, including what was verified on which device, are in [docs/androi
 
 # Google Play baseline
 
-New Android projects compile and target API 36 (Android 16), with Android Gradle Plugin 8.9.3 and a Gradle 8.14.3 wrapper. Install `platforms;android-36` in the SDK. Android 10 remains the minimum device version. Existing generated projects keep edited Gradle files; update those settings or regenerate with `oriel android init --force` after saving your edits.
+New Android projects compile and target API 36 (Android 16), with Android Gradle Plugin 8.13.2, Kotlin 2.3.21, and a Gradle 8.14.3 wrapper. Install `platforms;android-36` in the SDK. Android 10 remains the minimum device version. Existing generated projects keep edited Gradle files; update those settings or regenerate with `oriel android init --force` after saving your edits.
