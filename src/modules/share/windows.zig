@@ -948,12 +948,7 @@ fn keepFile(path: []const u8) !?common.File {
 /// A received file, read-only: a new handle to the file `handle` names
 /// (the caller closes it). InvalidHandle once released or changed.
 pub fn open(handle: u32) common.OpenError!std.Io.File {
-    const e = received.info(handle) orelse return error.InvalidHandle;
-    var dup: win32.HANDLE = undefined;
-    const self = win32.GetCurrentProcess();
-    if (win32.DuplicateHandle(self, e.fd, self, &dup, 0, win32.FALSE, win32.DUPLICATE_SAME_ACCESS) == win32.FALSE)
-        return error.InvalidHandle;
-    return .{ .handle = dup, .flags = .{ .nonblocking = false } };
+    return received.duplicate(handle) catch error.InvalidHandle;
 }
 
 /// Let a share's files go: their handles close.
@@ -980,7 +975,6 @@ test "parseLaunch" {
     try t.expectEqual(common.Source.share, st.source);
     try t.expectEqual(@as(usize, 1), st.first);
 }
-
 
 test {
     std.testing.refAllDecls(winrt);

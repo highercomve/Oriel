@@ -260,7 +260,7 @@ const runtime_js =
     \\  const [kid, b64] = String(meta.content).split(".");
     \\  meta.remove();
     \\  const parentWin = window.parent;
-    \\  if (parentWin === window) return;
+    \\  if (parentWin === window || parentWin !== window.top) return;
     \\  // Only a direct child of the app's own top page: WebKit doesn't enforce
     \\  // this page's frame-ancestors for custom schemes.
     \\  const ao = location.ancestorOrigins;
@@ -270,12 +270,13 @@ const runtime_js =
     \\  raw.fill(0);
     \\  const enc = new TextEncoder();
     \\  const hex = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, "0")).join("");
-    \\  const reply = (m) => parentWin.postMessage(Object.assign({ __oriel_iso: true }, m), "*");
-    \\  const failed = (id, err) => reply({ id, error: String((err && err.message) || err) });
+    \\  const reply = (m, origin) => parentWin.postMessage(Object.assign({ __oriel_iso: true }, m), origin);
+    \\  const failed = (id, err, origin) => reply({ id, error: String((err && err.message) || err) }, origin);
     \\  let seq = 0;
     \\  let chain = Promise.resolve();
     \\  addEventListener("message", (e) => {
-    \\    if (e.source !== parentWin) return;
+    \\    if (e.source !== parentWin || !parents.includes(e.origin)) return;
+    \\    const parentOrigin = e.origin;
     \\    const m = e.data;
     \\    if (!m || typeof m !== "object" || typeof m.id !== "string" || typeof m.cmd !== "string" || typeof m.a !== "string") return;
     \\    (async () => {
@@ -289,11 +290,11 @@ const runtime_js =
     \\      chain = chain.then(async () => {
     \\        const s = JSON.stringify({ seq: ++seq, cmd: call.cmd, args: call.args === undefined ? null : call.args });
     \\        const mac = hex(await crypto.subtle.sign("HMAC", await keyP, enc.encode(s)));
-    \\        reply({ id: m.id, kid, s, mac });
-    \\      }).catch((err) => failed(m.id, err));
-    \\    }, (err) => failed(m.id, err));
+    \\        reply({ id: m.id, kid, s, mac }, parentOrigin);
+    \\      }).catch((err) => failed(m.id, err, parentOrigin));
+    \\    }, (err) => failed(m.id, err, parentOrigin));
     \\  });
-    \\  reply({ ready: true, kid });
+    \\  for (const origin of parents) reply({ ready: true, kid }, origin);
     \\})();
     \\
 ;

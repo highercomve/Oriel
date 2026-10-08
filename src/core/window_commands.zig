@@ -274,6 +274,7 @@ pub fn dispatch(
             .ignore_unknown_fields = true,
         });
         try security.validateLabel(args.label);
+        try security.validateWindowModification(sec, caller_win_label, args.label);
         try App.emitTo(args.label, args.event, args.payload);
         return arena.dupe(u8, "null");
     }
@@ -302,4 +303,12 @@ test "dispatch rejects forbidden origins and invalid commands" {
 
     // Unknown action
     try std.testing.expectError(error.UnknownCommand, dispatch(sec, local, arena, security.app_origin, null, "oriel:window:nonexistent", .null));
+}
+
+test "emitTo rejects cross-window events without modification permission" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const args = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"label\":\"main\",\"event\":\"deep-link\"}", .{});
+    try std.testing.expectError(error.PermissionDenied, dispatch(.{}, .{}, a, security.app_origin, "child", "oriel:window:emitTo", args));
 }

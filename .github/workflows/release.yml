@@ -21,7 +21,7 @@ env:
   ZIG_VERSION: 0.16.0
   ARCH_PACKAGES: >-
     git pkgconf gtk4 webkitgtk-6.0 wayland wayland-protocols libxkbcommon
-    libxtst libx11 xorg-server-xvfb xorg-xauth dbus ttf-dejavu python
+    libxtst libx11 xorg-server-xvfb xorg-xauth dbus ttf-dejavu python nodejs
 
 jobs:
   test:
@@ -36,6 +36,8 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: Unit tests (framework, tools, CLI)
         run: zig build test --summary all
+      - name: Isolation runtime sender validation
+        run: node tools/test_isolation_runtime.mjs
       - name: Smoke app, module checks (no GUI)
         working-directory: examples/smoke
         run: zig build && ./zig-out/bin/oriel-smoke --check
@@ -57,6 +59,10 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: Unit tests (framework, tools, CLI)
         run: zig build test --summary all
+      - name: Type-check iOS device and simulator
+        run: |
+          zig build check -Dtarget=aarch64-ios -Dsql=false
+          zig build check -Dtarget=aarch64-ios-simulator -Dsql=false
       - name: dev_runner cleanup
         run: zig build test-dev-cleanup
       - name: Smoke app, in-webview checks (AppKit + WKWebView)
