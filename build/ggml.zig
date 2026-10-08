@@ -451,7 +451,7 @@ pub fn addGgml(
                 "-fno-sanitize=undefined",
                 "-w",
             }, darwin }) catch @panic("OOM");
-            oriel.addIncludePath(ma.path("miniaudio"));
+            oriel.addIncludePath(ma.path("."));
             oriel.addCSourceFile(.{
                 .file = impl_file,
                 .flags = miniaudio_flags,
