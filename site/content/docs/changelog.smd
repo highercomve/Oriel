@@ -1,10 +1,48 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.9.2 and earlier.",
-.date = .date("2026-10-05T00:00:00"),
+.description = "Release notes for Oriel 0.9.4 and earlier.",
+.date = .date("2026-10-08T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# Oriel 0.9.4 · October 8, 2026
+
+Oriel 0.9.4 adds desktop wrappers for web apps, app-owned Android extensions,
+and searchable documentation.
+
+## Added
+
+- `oriel wrap <url>` (alias `oriel pake`) scaffolds a desktop app for a website,
+  with tray controls, close-to-tray behavior, automatic favicon fetching,
+  optional Linux user-agent overrides, and AppImage packaging.
+- App-owned Android extensions can handle Activity and WebView lifecycles,
+  permissions, activity results, and file selection without editing generated
+  runtime sources. Configure extension classes, Maven SDK dependencies, and
+  repositories in the app's build configuration.
+- Android app manifests can declare vendor native libraries with
+  `uses-native-library` entries.
+- Pagefind search on the documentation site, with keyboard navigation and
+  indexed article content.
+
+## Improved
+
+- Android templates now use Android Gradle Plugin 8.13.2 and Kotlin 2.3.21,
+  with the typed Kotlin JVM target configuration.
+- Native-renderer documentation describes renderer capabilities independently
+  of individual release versions.
+
+## Fixed
+
+- Linux disables WebKitGTK DMABUF rendering when the proprietary NVIDIA driver
+  is detected, avoiding compositor-related high CPU usage. An explicit
+  `WEBKIT_DISABLE_DMABUF_RENDERER` setting remains respected.
+
+# Oriel 0.9.3 · October 5, 2026
+
+- Android templates and examples now compile and target API 36, meeting the
+  current Google Play target requirement. Updated AGP to 8.9.3 and generated
+  Gradle wrappers to 8.14.3; minimum Gradle is 8.11.1. Android 10 remains supported.
 
 # Oriel 0.9.2 · October 5, 2026
 
