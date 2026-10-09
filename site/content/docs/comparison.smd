@@ -60,35 +60,35 @@ a web page drawn by Oriel's native renderer (`-Dnative_ui`: QuickJS, the
 native DOM, Yoga and GTK 4, no WebView) with a Zig sampler.
 
 Both were built `ReleaseFast` (native from its repository at commit
-`2bdd8eb8`, CLI 0.10.1; Oriel 0.9.10) and run one at a time on the same machine
+`2bdd8eb8`, CLI 0.10.1; Oriel 0.9.11) and run one at a time on the same machine
 (Arch Linux, kernel 6.18, Hyprland on Wayland, GTK 4.24, Ryzen 7 7800X3D,
 RTX 4070, 787 processes running), each left to settle for 5 s and then
-sampled every second for 60 s, two to four times each. Memory and CPU include every process
+sampled every second for 60 s, twice each, alternating. Memory and CPU include every process
 the app starts.
 
 | | Oriel (`native_ui`) | native v0.10.1 |
 |---|---|---|
-| Memory, RSS (average) | 203–204 MB | 255–264 MB |
-| Memory, PSS (average) | 140–141 MB | 175–184 MB |
-| CPU (average, one core) | 6.5–6.9%¹ | 5.3–5.6% |
-| Threads | 22 | 13–16 |
+| Memory, RSS (average) | 178–184 MB | 233 MB |
+| Memory, PSS (average) | 108–121 MB | 154 MB |
+| CPU (average, one core) | 1.1–2.5% | 5.6% |
+| Threads | 22 | 14 |
 | Executable, stripped | 4.2 MB | 7.0 MB |
 | Shared libraries loaded | 113 (GTK 4) | 113 (GTK 4) |
 | Processes started per sample | 0 (reads `/proc` in Zig) | 2 (`/bin/ps`, `/bin/cat`) |
 | One sampling round | 6.0 ms | 18.9 ms |
-
-1. One of four runs measured 9.8%; the machine had other work running.
-   Oriel's runs varied more than native's.
+| Table rows kept up to date | 256 | 128 |
 
 What the numbers say:
 
 - **Oriel uses less memory.** Both sit on GTK 4 and a GPU-backed renderer:
   the graphics driver's mappings alone were 52 MB of Oriel's resident
-  memory and 75 MB of native's. Oriel used about 20% less in total (PSS,
+  memory and 75 MB of native's. Oriel used about 25% less in total (PSS,
   which splits shared pages fairly between processes).
-- **native uses slightly less CPU.** Oriel runs the page's JavaScript in
-  QuickJS; native runs its TypeScript compiled to native code but starts
-  two processes per sample. The gap is about one percent of one core.
+- **Oriel uses less CPU, while updating twice as many rows.** Each sample
+  changes the text of a few hundred table cells. Oriel's renderer updates
+  that text in place in the native views (about 2–3 ms a sample) instead of
+  rebuilding the rows, and its sampler starts no processes; native starts
+  two per sample.
 - **Sampling differs most.** Oriel's sampler reads `/proc` directly and
   takes about a third of the time of native's `ps` and `cat` round. The
   sampling round was timed on its own: the sampler compiled alone for Oriel,

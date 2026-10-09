@@ -20,7 +20,8 @@ and size numbers are on the [comparison page](https://highercomve.github.io/Orie
 | **Data Parsing** | Pure byte-slicing and binary long-division in TypeScript subset | Compiled native Zig structs, registers, in-place sorting (`std.mem.sort`) |
 | **Rendering** | Native SDK layout compiler | **Oriel `native_ui`**: QuickJS bytecode + Oriel Native DOM (Zig store) + Yoga flexbox + GTK4/Cairo / Direct2D |
 | **Process Termination** | Spawns `/bin/kill -TERM <pid>` | Direct `std.posix.kill(pid, SIG.TERM)` syscall in Zig |
-| **Memory Footprint** | 255–264 MB RSS, 175–184 MB PSS | 203–204 MB RSS, 140–141 MB PSS (native_ui, Oriel 0.9.10) |
+| **Memory Footprint** | 233 MB RSS, 154 MB PSS | 178–184 MB RSS, 108–121 MB PSS (native_ui, Oriel 0.9.11) |
+| **CPU** | 5.6% of one core | 1.1–2.5% of one core (256 rows updated in place) |
 
 ---
 
