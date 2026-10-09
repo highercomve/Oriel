@@ -1983,6 +1983,7 @@ fn addAndroidLib(
             .{ .name = "oriel_app", .module = app_config },
         },
     });
+    for (options.include_paths) |p| app_root.addIncludePath(p);
     for (options.imports) |imp| app_root.addImport(imp.name, imp.module);
     const files = b.addWriteFiles();
     const root = files.add("oriel_android.zig",

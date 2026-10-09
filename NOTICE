@@ -1,0 +1,18 @@
+Optional text-to-speech dependencies
+====================================
+
+Oriel's own code is licensed under the MIT license in LICENSE.
+Enabling kokoro links these upstream components:
+
+* kokoro.cpp, pinned at a9e31430838c8bdc3d4beaaab62753681b9f7839:
+  MIT, copyright the ggml authors and kokoro.cpp contributors.
+* Google Highway, pinned at 2607d3b5b0113992fe84d3848859eae13b3b52c1:
+  BSD-3-Clause / Apache-2.0 dual license; see licenses/tts/highway.txt.
+* espeak-ng 1.52.0: GPL-3.0-or-later. Its ucd-tools / Unicode data
+  notices are included separately in licenses/tts.
+* miniaudio: the license and copyright notices are included at the end of
+  src/modules/miniaudio/miniaudio.h (public-domain or MIT-0 choice).
+
+Model files, voice packs, and espeak-ng runtime data are supplied by the app;
+this repository does not distribute them. Their upstream licenses are separate.
+The optional espeak-ng component's GPL license is not Oriel's MIT license.

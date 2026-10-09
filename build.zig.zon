@@ -1,6 +1,6 @@
 .{
     .name = .oriel,
-    .version = "0.9.5",
+    .version = "0.9.6",
     .fingerprint = 0x7fe3da8e54e532b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
@@ -79,19 +79,18 @@
         .kokoro = .{
             .url = "https://github.com/simonfxr/kokoro.cpp/archive/a9e31430838c8bdc3d4beaaab62753681b9f7839.tar.gz",
             .hash = "N-V-__8AAM9KCAAqFdC_LKX4-mlNf_snnwVFI3Kv8nfrXB8L",
+            .lazy = true,
         },
         .highway = .{
             .url = "https://github.com/google/highway/archive/2607d3b5b0113992fe84d3848859eae13b3b52c1.tar.gz",
             .hash = "N-V-__8AAD_MkACxo3rELIYCI7ap_7GsxHN1WH6AsMLDYp6L",
+            .lazy = true,
         },
         .espeak_ng = .{
             .url = "https://github.com/espeak-ng/espeak-ng/archive/refs/tags/1.52.0.tar.gz",
             .hash = "N-V-__8AACwimgOHy4hKeXBdrIu-hBGDy6Bmw5NjWwB6tEkc",
-        },
-        .miniaudio = .{
-            .url = "https://github.com/mackron/miniaudio/archive/refs/tags/0.11.25.tar.gz",
-            .hash = "N-V-__8AAHNWwAASlNuYbrP1-3UqXdwbYvZ_6nIJhpAcRMfi",
+            .lazy = true,
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand", "android/template", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "build", "src", "tools", "protocols", "assets/brand", "android/template", "LICENSE", "NOTICE", "licenses", "README.md" },
 }

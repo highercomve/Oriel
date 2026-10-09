@@ -434,32 +434,22 @@ pub fn addGgml(
             .flags = kokoro_flags,
         });
 
-        // miniaudio: llama.cpp's vendor copy is already in the binary with
-        // mtmd, but with MA_NO_DEVICE_IO and static functions — the device
-        // API doesn't exist in it. Compile the playback one here (needs
-        // llama for the vendored header; a feature we require anyway): the
-        // functions are static (file-local), the one global data symbol is
-        // renamed so the two implementations don't collide at link time.
-        // Used through oriel.audio_play (its backend — PulseAudio, ALSA,
-        // WASAPI, CoreAudio — dlopens at runtime).
-        if (llama_dep) |l| {
-            const impl = b.addWriteFiles();
-            const impl_file = impl.add("miniaudio_playback.c",
-                \\#define MINIAUDIO_IMPLEMENTATION
-                \\#define ma_atomic_global_lock ma_atomic_global_lock_playback
-                \\#include "miniaudio.h"
-                \\
-            );
-            const miniaudio_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{
-                "-std=c11",
-                "-D_GNU_SOURCE",
-                "-D_XOPEN_SOURCE=600",
-                "-fno-sanitize=undefined",
-                "-w",
-            }, darwin }) catch @panic("OOM");
-            oriel.addIncludePath(l.path("vendor/miniaudio"));
-            oriel.addCSourceFile(.{ .file = impl_file, .flags = miniaudio_flags });
-        }
+        // Compile the device API against the same vendored header used by
+        // audio_play's cImport. Works with either ggml source tree, including
+        // whisper-only builds. llama's mtmd copy has file-local functions.
+        const impl = b.addWriteFiles();
+        const impl_file = impl.add("miniaudio_playback.c",
+            \\#define MINIAUDIO_IMPLEMENTATION
+            \\#define ma_atomic_global_lock ma_atomic_global_lock_playback
+            \\#include "miniaudio.h"
+            \\
+        );
+        const miniaudio_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{
+            "-std=c11",                "-D_GNU_SOURCE", "-D_XOPEN_SOURCE=600",
+            "-fno-sanitize=undefined", "-w",
+        }, darwin }) catch @panic("OOM");
+        oriel.addIncludePath(b.path("src/modules/miniaudio"));
+        oriel.addCSourceFile(.{ .file = impl_file, .flags = miniaudio_flags });
 
         // libespeak-ng (GPL-3): phonemization only, so the optional audio
         // backends stay off. Its own config.h is generated here (espeak-ng's

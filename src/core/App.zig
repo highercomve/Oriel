@@ -905,6 +905,8 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     current_app_id = config.id;
     defer {
         stopWorkerPool(pool);
+        // No queued command can restart playback after the pool drained.
+        if (build_opts.kokoro) @import("../modules/audio_play.zig").shutdown();
         // Dictation owns threads outside the command pool. They must finish
         // while this run's Io and allocator are still alive (Android restarts).
         if (build_opts.whisper and build_opts.audio_capture)
