@@ -14,3 +14,9 @@ Already have a website? [Wrap a web app]($link.page('docs/wrap')) with
 For mobile apps, see [Android and iOS]($link.page('docs/mobile')). Add native
 Android behavior and SDK integrations with
 [app-owned Android extensions]($link.page('docs/android-extensions')).
+
+# Capabilities and local AI
+
+- [Modules and plugins]($link.page('docs/modules')): tray, updater, dialogs, notifications, shortcuts, clipboard, SQLite, deep links, and network mDNS.
+- [Offline text to speech]($link.page('docs/tts')): `oriel.tts` with Kokoro-82M voices, verified downloads, and streaming playback on CPU or GPU.
+- [Android and iOS]($link.page('docs/mobile')): camera, microphone, SAF, and mobile-specific modules.

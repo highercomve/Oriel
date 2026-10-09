@@ -62,7 +62,7 @@
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
 					<h3>Batteries, opt-in</h3>
-					<p>Tray, updater, SQLite and sqlite-vec, dialogs, notifications, global shortcuts, clipboard, file watching, deep links, audio capture, media server.</p>
+					<p>Tray, updater, SQLite and sqlite-vec, offline text to speech, dialogs, notifications, global shortcuts, clipboard, file watching, deep links, audio capture, media server.</p>
 				</article>
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/><rect x="10" y="10" width="4" height="4"/></svg></div>
@@ -78,6 +78,11 @@
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-8 8H4l2-3a8 8 0 1 1 15-5z"/></svg></div>
 					<h3>Chat, tuned</h3>
 					<p><code>oriel.chat</code> is a local LLM in a module: models, the chat template, streamed tokens and a reused KV cache, on the CPU or the GPU, per device.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></div>
+					<h3>Speech, offline</h3>
+					<p><code>oriel.tts</code>: Kokoro-82M text to speech out of the box. Verified voice downloads, bundled phoneme data, and streaming playback on the CPU or GPU.</p>
 				</article>
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg></div>
