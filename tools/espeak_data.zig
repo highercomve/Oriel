@@ -50,9 +50,13 @@ pub fn main(init: std.process.Init) !void {
     try std.process.setCurrentDir(io, out);
     var context: c.espeak_ng_ERROR_CONTEXT = null;
     c.espeak_ng_InitializePath(".");
-    // These two compilers close the log they're given: one file each.
-    // The intonation source is "<source_path>/../phsource/intonation".
-    check("intonations", c.espeak_ng_CompileIntonationPath(stage ++ "/phsource", ".", openLog("intonations"), &context), context);
+    // The phoneme compiler closes the log it's given; the intonation one
+    // only on errors, and an open log keeps Windows from removing the
+    // staging directory. The intonation source is
+    // "<source_path>/../phsource/intonation".
+    const intonations_log = openLog("intonations");
+    check("intonations", c.espeak_ng_CompileIntonationPath(stage ++ "/phsource", ".", intonations_log, &context), context);
+    _ = fclose(intonations_log);
     check("phonemes", c.espeak_ng_CompilePhonemeDataPath(22050, stage ++ "/phsource", ".", openLog("phonemes"), &context), context);
 
     // Dictionaries need the compiled phoneme tables and the language's

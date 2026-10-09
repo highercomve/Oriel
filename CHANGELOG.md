@@ -2,6 +2,14 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Fixed
+
+- Windows builds with `-Dkokoro`: the build-time espeak-ng data compiler
+  failed with `FileBusy` removing its staging directory, because the
+  intonation compiler's log was left open.
+
 ## [0.9.11] — 2026-10-09
 
 Oriel 0.9.11 adds `location.reload()` to the native renderer, makes live
