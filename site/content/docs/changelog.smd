@@ -8,8 +8,9 @@
 
 # Oriel 0.9.11 · October 9, 2026
 
-Oriel 0.9.11 adds `location.reload()` to the native renderer and fixes the
-macOS and iOS builds of apps with text to speech.
+Oriel 0.9.11 adds `location.reload()` to the native renderer, makes live
+tables much cheaper to update, and fixes the macOS and iOS builds of apps
+with text to speech.
 
 ## Added
 
@@ -17,6 +18,17 @@ macOS and iOS builds of apps with text to speech.
   with a new JavaScript runtime and DOM. It runs on a turn of its own, after
   the calling script returns; answers to the old page's commands and its
   pending timers are dropped instead of reaching the new page.
+
+## Improved
+
+- Native renderer: text changes in place more often. A text cell whose box
+  clips its text (`overflow: hidden`), a native button elsewhere on the
+  page, and canvas programs that change in the same frame no longer force
+  the page's rows to be rebuilt. The system monitor example went from
+  1,000–2,400 rebuilt nodes (20–45 ms) per sample to a few hundred text
+  updates (2–3 ms), and from about 6% to 1–2.5% of one core.
+- The system monitor example reuses its table rows and writes text only
+  when it changed.
 
 ## Fixed
 

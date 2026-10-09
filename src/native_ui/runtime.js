@@ -15608,12 +15608,16 @@ input[type="range"] { height: 20px; margin: 2px; }
     // unchanged row, siblings and ancestors need no JS traversal or diff.
     updateText() {
       if (!this.textOnly || this.full || this.noCache || this.structural || this.marks.size || !this.flatMarks.size || this.pendingScroll) return false;
-      for (const el of this.volatile) if (el.isConnected) return false;
       const leaves = /* @__PURE__ */ new Set();
       for (const n2 of this.flatMarks) {
         const el = n2.nodeType === 3 ? n2.parentNode || this.parentOf.get(n2) : n2;
         if (!el || el.nodeType !== 1 || !el.isConnected) return false;
         leaves.add(el);
+      }
+      if (this.volatile.size) {
+        for (const el of leaves) {
+          for (let a = el; a; a = a.parentNode) if (this.volatile.has(a)) return false;
+        }
       }
       const P = this.host.prof ? this.host.now : null, t02 = P && P();
       const nodes = /* @__PURE__ */ new Map(), updates = [], restamp = [], restamped = /* @__PURE__ */ new Set();
@@ -15634,12 +15638,20 @@ input[type="range"] { height: 20px; margin: 2px; }
           }
           continue;
         }
-        if (!fc || !cs || fc.root.kind !== "text" || fc.rootSpec || fc.rootAnim || el.firstElementChild || this.tx.targets.has(fc.id) || this.anim.state.has(fc.id)) return false;
-        const old = this.prev.get(fc.id);
+        if (!fc || !cs || fc.rootSpec || fc.rootAnim || el.firstElementChild) return false;
+        let tid = fc.id, holder = fc.root.props;
+        if (fc.root.kind === "view" && fc.root.kids.length === 1 && !fc.root.props.click && !cs.__rules?.before?.length && !cs.__rules?.after?.length && cs.display !== "list-item") {
+          tid = fc.root.kids[0];
+          const k = this.prev.get(tid);
+          if (!k || k.kind !== "text") return false;
+          holder = k.props || (k.props = JSON.parse(k.p));
+        } else if (fc.root.kind !== "text") return false;
+        if (!holder.runs || this.tx.targets.has(tid) || this.anim.state.has(tid)) return false;
+        const old = this.prev.get(tid);
         if (!old || old.kind !== "text") return false;
         const child = el.firstChild, ws = cs["white-space"] || "normal";
         let runs;
-        if (child?.nodeType === 3 && !child.nextSibling && fc.root.props.runs.length === 1 && ws !== "pre" && ws !== "pre-wrap" && ws !== "pre-line") {
+        if (child?.nodeType === 3 && !child.nextSibling && holder.runs.length === 1 && ws !== "pre" && ws !== "pre-wrap" && ws !== "pre-line") {
           let t = child.data;
           if (cs["text-transform"] === "uppercase") t = t.toUpperCase();
           else if (cs["text-transform"] === "lowercase") t = t.toLowerCase();
@@ -15654,7 +15666,7 @@ input[type="range"] { height: 20px; margin: 2px; }
           runs = trimRuns(raw);
         }
         if (!runs || !runs.length) return false;
-        updates.push(el, fc, runs, old);
+        updates.push(el, holder, runs, old, tid);
       }
       for (let i = 0; i < restamp.length; i += 3) {
         const row = restamp[i];
@@ -15668,13 +15680,13 @@ input[type="range"] { height: 20px; margin: 2px; }
         }
       }
       let direct = 0, nativeMs = 0;
-      for (let i = 0; i < updates.length; i += 4) {
-        const el = updates[i], fc = updates[i + 1], value = updates[i + 2], old = updates[i + 3];
+      for (let i = 0; i < updates.length; i += 5) {
+        const el = updates[i], holder = updates[i + 1], value = updates[i + 2], old = updates[i + 3], tid = updates[i + 4];
         const str = typeof value === "string";
-        const cur = fc.root.props.runs;
+        const cur = holder.runs;
         const single = (str || value.length === 1) && cur.length === 1;
         const a = P && P();
-        const sent = single && this.host.text && this.host.text(fc.id, str ? value : value[0].t);
+        const sent = single && this.host.text && this.host.text(tid, str ? value : value[0].t);
         if (P) nativeMs += P() - a;
         let runs = value;
         if (str) {
@@ -15692,9 +15704,9 @@ input[type="range"] { height: 20px; margin: 2px; }
         } else {
           const props = old.props ? { ...old.props } : JSON.parse(old.p);
           props.runs = runs;
-          nodes.set(fc.id, { kind: "text", props, kids: [] });
+          nodes.set(tid, { kind: "text", props, kids: [] });
         }
-        fc.root.props.runs = runs;
+        holder.runs = runs;
         for (let child = el.firstChild; child; child = child.nextSibling) this.parentOf.set(child, el);
       }
       this.frameNo++;
@@ -15708,7 +15720,8 @@ input[type="range"] { height: 20px; margin: 2px; }
         this.applyMs = 0;
         this.schedule();
       }
-      if (P) this.host.log(1, `PROF text: ${updates.length / 4} leaves, ${direct} direct, prepare ${(P() - t02 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
+      if (this.host.canvasOps && this.canvasEls.size) this.sendCanvases();
+      if (P) this.host.log(1, `PROF text: ${updates.length / 5} leaves, ${direct} direct, prepare ${(P() - t02 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
       return true;
     }
     // An animation loop writing transform or opacity (el.style.transform = …)

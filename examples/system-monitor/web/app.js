@@ -167,38 +167,39 @@
 
     // 1. Update engine & latency badges
     if (sample.sample_time_ms != null) {
-      elPerfBadge.textContent = `⚡ ${sample.sample_time_ms.toFixed(2)} ms`;
+      setText(elPerfBadge, `⚡ ${sample.sample_time_ms.toFixed(2)} ms`);
     }
     if (sample.engine) {
-      elFooterEngine.textContent = sample.engine;
+      setText(elFooterEngine, sample.engine);
     }
 
     // 2. CPU
     const cpuPct = sample.cpu.percent || 0;
-    elCpuValue.textContent = `${cpuPct.toFixed(1)}%`;
+    setText(elCpuValue, `${cpuPct.toFixed(1)}%`);
     const cleanModel = sample.cpu.model
       ? sample.cpu.model.replace(/Processor|8-Core|16-Core|Processor/gi, "").trim()
       : "Host CPU";
-    elCpuDetail.textContent = `${sample.cpu.cores} cores · ${cleanModel}`;
-    elCpuDetail.title = `${sample.cpu.cores} cores · ${sample.cpu.model || ""}`;
+    setText(elCpuDetail, `${sample.cpu.cores} cores · ${cleanModel}`);
+    const cpuTitle = `${sample.cpu.cores} cores · ${sample.cpu.model || ""}`;
+    if (elCpuDetail.title !== cpuTitle) elCpuDetail.title = cpuTitle;
     cpuHistory.push(cpuPct);
     if (cpuHistory.length > HISTORY_LEN) cpuHistory.shift();
     drawSparkline("cpu-chart", cpuHistory, 0, 100, "#39c5bb", false);
 
     // 3. Memory
     const memPct = sample.mem.percent || 0;
-    elMemValue.textContent = `${memPct.toFixed(1)}%`;
+    setText(elMemValue, `${memPct.toFixed(1)}%`);
     const memUsedStr = formatBytes(sample.mem.used_bytes);
     const memTotalStr = formatBytes(sample.mem.total_bytes);
-    elMemDetail.textContent = `${memUsedStr} / ${memTotalStr}`;
+    setText(elMemDetail, `${memUsedStr} / ${memTotalStr}`);
     memHistory.push(memPct);
     if (memHistory.length > HISTORY_LEN) memHistory.shift();
     drawSparkline("mem-chart", memHistory, 0, 100, "#58a6ff", false);
 
     // 4. Processes Count
     const totalCount = sample.total_processes || sample.processes.length || 0;
-    elProcValue.textContent = String(totalCount);
-    elProcDetail.textContent = `top ${sample.processes.length} shown`;
+    setText(elProcValue, String(totalCount));
+    setText(elProcDetail, `top ${sample.processes.length} shown`);
     procHistory.push(totalCount);
     if (procHistory.length > HISTORY_LEN) procHistory.shift();
     const minProcs = Math.min(...procHistory) * 0.9;
@@ -206,12 +207,12 @@
     drawSparkline("proc-chart", procHistory, minProcs, maxProcs, "#39c5bb", true);
 
     // 5. Uptime
-    elUptimeValue.textContent = formatUptime(sample.uptime_seconds);
+    setText(elUptimeValue, formatUptime(sample.uptime_seconds));
 
     // 6. Header & Status
-    elHeaderStatus.textContent = samplingActive
+    setText(elHeaderStatus, samplingActive
       ? `Sampling every 2.0s · Last sample at ${formatClock(now)}`
-      : `Sampling paused · Last sample at ${formatClock(now)}`;
+      : `Sampling paused · Last sample at ${formatClock(now)}`);
 
     // 7. Render Process Table
     renderTable();
@@ -245,7 +246,7 @@
       return sortAscending ? diff : -diff;
     });
 
-    elCountBadge.textContent = `${rows.length} of ${lastSampleData.total_processes}`;
+    setText(elCountBadge, `${rows.length} of ${lastSampleData.total_processes}`);
 
     if (rows.length === 0) {
       elProcTbody.innerHTML = "";
@@ -255,75 +256,84 @@
 
     elEmptyState.classList.add("hidden");
 
-    // Build rows HTML
-    const frag = document.createDocumentFragment();
-    for (const r of rows) {
-      const row = document.createElement("div");
-      row.className = "table-row";
-
-      // Right-click context menu with submenus
-      row.oncontextmenu = (e) => {
-        showContextMenu(e, r);
-      };
-
-      const elPid = document.createElement("div");
-      elPid.className = "col-pid";
-      elPid.textContent = String(r.pid);
-
-      const elName = document.createElement("div");
-      elName.className = "col-name";
-      elName.textContent = r.name || "unknown";
-      elName.title = r.name || "";
-
-      const elState = document.createElement("div");
-      elState.className = "col-state";
-      elState.textContent = r.state || "?";
-
-      const elCpu = document.createElement("div");
-      elCpu.className = "col-cpu";
-      elCpu.textContent = `${r.cpu_percent.toFixed(1)}%`;
-
-      const elMem = document.createElement("div");
-      elMem.className = "col-mem";
-      elMem.textContent = formatBytes(r.mem_rss_bytes);
-
-      const elActions = document.createElement("div");
-      elActions.className = "col-actions";
-
-      // Terminate Button
-      const btnKill = document.createElement("button");
-      btnKill.className = "row-btn btn-kill-row";
-      btnKill.textContent = "Terminate…";
-      btnKill.title = `Send SIGTERM to ${r.name} (${r.pid})`;
-      btnKill.onclick = (e) => {
-        e.stopPropagation();
-        openKillModal(r.pid, r.name);
-      };
-
-      // Copy Name Button
-      const btnCopy = document.createElement("button");
-      btnCopy.className = "row-btn";
-      btnCopy.textContent = "Copy";
-      btnCopy.title = "Copy process name";
-      btnCopy.onclick = (e) => {
-        e.stopPropagation();
-        copyText(r.name, "process name");
-      };
-
-      elActions.appendChild(btnKill);
-      elActions.appendChild(btnCopy);
-
-      row.appendChild(elPid);
-      row.appendChild(elName);
-      row.appendChild(elState);
-      row.appendChild(elCpu);
-      row.appendChild(elMem);
-      row.appendChild(elActions);
-
-      frag.appendChild(row);
+    // Rows are made once and kept: each sample only changes the text that
+    // changed (a CPU figure, a name moving up), instead of rebuilding a few
+    // thousand nodes and two buttons per row every 2 s.
+    while (rowPool.length < rows.length) rowPool.push(makeRow());
+    for (let i = 0; i < rows.length; i++) {
+      const row = rowPool[i];
+      const r = rows[i];
+      row.proc = r;
+      setText(row.cells.pid, String(r.pid));
+      setText(row.cells.name, r.name || "unknown");
+      setText(row.cells.state, r.state || "?");
+      setText(row.cells.cpu, `${r.cpu_percent.toFixed(1)}%`);
+      setText(row.cells.mem, formatBytes(r.mem_rss_bytes));
+      if (row.el.parentNode !== elProcTbody) elProcTbody.appendChild(row.el);
     }
+    // Fewer rows than last time (a filter): the rest leave the table but
+    // stay in the pool for the next sample.
+    for (let i = rows.length; i < rowPool.length; i++) {
+      if (rowPool[i].el.parentNode) rowPool[i].el.remove();
+    }
+  }
 
-    elProcTbody.replaceChildren(frag);
+  const rowPool = [];
+
+  /** A table row with its cells and buttons; `proc` is the process it shows. */
+  function makeRow() {
+    const row = { el: document.createElement("div"), cells: {}, proc: null };
+    row.el.className = "table-row";
+    // Right-click context menu with submenus
+    row.el.oncontextmenu = (e) => {
+      if (row.proc) showContextMenu(e, row.proc);
+    };
+    // Tooltips name the row's current process. Set on hover, not on every
+    // sample: an attribute change restyles its element.
+    row.el.onmouseenter = () => {
+      if (!row.proc) return;
+      row.cells.name.title = row.proc.name || "";
+      row.btnKill.title = `Send SIGTERM to ${row.proc.name} (${row.proc.pid})`;
+    };
+    for (const [key, cls] of [["pid", "col-pid"], ["name", "col-name"], ["state", "col-state"], ["cpu", "col-cpu"], ["mem", "col-mem"]]) {
+      const cell = document.createElement("div");
+      cell.className = cls;
+      row.cells[key] = cell;
+      row.el.appendChild(cell);
+    }
+    const elActions = document.createElement("div");
+    elActions.className = "col-actions";
+
+    // Terminate Button
+    row.btnKill = document.createElement("button");
+    row.btnKill.className = "row-btn btn-kill-row";
+    row.btnKill.textContent = "Terminate…";
+    row.btnKill.onclick = (e) => {
+      e.stopPropagation();
+      if (row.proc) openKillModal(row.proc.pid, row.proc.name);
+    };
+
+    // Copy Name Button
+    const btnCopy = document.createElement("button");
+    btnCopy.className = "row-btn";
+    btnCopy.textContent = "Copy";
+    btnCopy.title = "Copy process name";
+    btnCopy.onclick = (e) => {
+      e.stopPropagation();
+      if (row.proc) copyText(row.proc.name, "process name");
+    };
+
+    elActions.appendChild(row.btnKill);
+    elActions.appendChild(btnCopy);
+    row.el.appendChild(elActions);
+    return row;
+  }
+
+  /** Set an element's text only when it differs; true when it changed. */
+  function setText(el, text) {
+    if (el.textContent === text) return false;
+    el.textContent = text;
+    return true;
   }
 
   // Actions

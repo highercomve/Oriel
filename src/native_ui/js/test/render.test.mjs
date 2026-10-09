@@ -287,6 +287,10 @@ for (const css of [
   "div { display: block } span { display: inline }",
   "div { display: flex } span:empty { width: 50px }",
   "div { display: flex } span::before { content: 'prefix' }",
+  // A clipped cell (overflow: hidden keeps a box around its text): its
+  // text child is updated in place; with generated content it isn't.
+  "div { display: flex } span { overflow: hidden; padding-right: 8px }",
+  "div { display: flex } span { overflow: hidden } span::before { content: 'prefix' }",
 ]) {
   const f = fixture(css, true);
   const main = f.document.querySelector("main");
@@ -622,3 +626,21 @@ assert.ok(Number.isNaN(arithmetic("1 +")));
 assert.ok(Number.isNaN(arithmetic("(1")));
 
 console.log("render: incremental trees, selector sharing, and wire defaults pass");
+
+// A native button elsewhere on the page (volatile: made again every render)
+// doesn't stop a text cell's in-place update, and the result matches a full
+// render; text inside the button still goes the general way.
+{
+  const f = fixture("div { display: flex } span { overflow: hidden }", true);
+  const main = f.document.querySelector("main");
+  main.innerHTML = '<div><span>Old</span><button>Act</button></div>';
+  f.check();
+  const label = main.querySelector("span"), button = main.querySelector("button");
+  for (const text of ["New", "Newer"]) {
+    label.textContent = text;
+    f.check();
+  }
+  button.textContent = "Done";
+  f.check();
+  console.log("render: text cells update in place beside native buttons");
+}
