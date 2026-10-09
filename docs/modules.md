@@ -109,7 +109,7 @@ oriel.dialog.forgetFolder(id); // let the access go
 | Platform | Picker | `id` | Access |
 |---|---|---|---|
 | Linux | `GtkFileDialog.selectFolder` (the portal where there is one) | absolute path | the user's |
-| Windows | `IFileOpenDialog` + `FOS_PICKFOLDERS` | absolute path | the user's |
+| Windows | `IFileOpenDialog` + `FOS_PICKFOLDERS` | absolute path | the user's. `saveToFolder` refuses names Win32 programs couldn't open or delete afterwards (device names such as `CON` or `nul.txt`, a trailing dot or space, `<>:"\|?*` and control characters) with `error.InvalidName`, creating nothing; name clashes are case-insensitive |
 | macOS | `NSOpenPanel` choosing directories | absolute path | the user's (Oriel apps aren't sandboxed; a sandboxed app would need a security-scoped bookmark) |
 | Android | `ACTION_OPEN_DOCUMENT_TREE` | SAF tree URI | `takePersistableUriPermission` (read + write); `forgetFolder` releases it. `saveToFolder` uses `DocumentsContract.createDocument`, so the provider picks the " (1)" name, and returns it |
 | iOS | not written yet (`error.Unsupported`); planned: `UIDocumentPickerViewController` for `.folder`, id = a base64 security-scoped bookmark | | |
@@ -444,3 +444,64 @@ All incoming URLs are validated before delivery:
 - Maximum length is 2048 bytes (longer URLs are rejected).
 - URLs containing control characters (ASCII `< 0x20` or `0x7F`) are rejected.
 - URLs must parse successfully with `std.Uri.parse`.
+
+### Text to speech (`oriel.tts`, `oriel.kokoro`, `oriel.audio_play`)
+
+Reads text aloud offline using Kokoro-82M neural voices:
+
+```zig
+oriel.tts.init(init.io, init.gpa, models_dir);           // once, at startup
+try oriel.tts.download("kokoro-82m-q8_0");                // model
+try oriel.tts.download("af_heart");                       // voice pack
+const r = try oriel.tts.speak(gpa, markdown_text, .{});   // from an async command
+oriel.tts.stop();                                         // stop from any thread
+```
+
+- **Features:** offline synthesis, SHA-256 verified downloads, automatic language detection (`lang = "auto"`), Markdown read as prose, streaming playback via `audio_play.Stream`, warm-up ahead of first utterance (`oriel.tts.warmUp`), and GPU acceleration (`-Dggml_cuda`, `-Dggml_vulkan`, `-Dggml_metal`).
+- **Phoneme data:** bundled espeak-ng runtime data compiled at build time into every `.kokoro = true` app across all desktop and mobile platforms.
+- Complete documentation: [Offline text to speech](tts.md).
+
+### Network and mDNS (`oriel.network`, `oriel.network.mdns`)
+
+Service registration and browsing (DNS-SD / mDNS on the local link) through the platform's own responder, without multicast sockets, multicast locks, or special entitlements:
+
+```zig
+// Register a local service
+const reg = try oriel.network.mdns.register(.{
+    .type = "_my-service._tcp",
+    .name = "MyDevice",
+    .port = 8080,
+    .txt = &.{.{ .key = "version", .value = "1.0" }},
+});
+defer reg.unregister();
+
+// Browse services on the local network
+const browser = try oriel.network.mdns.browse("_my-service._tcp", onServiceEvent, null);
+defer browser.stop();
+
+fn onServiceEvent(ctx: ?*anyopaque, event: *const oriel.network.mdns.Event) void {
+    switch (event.*) {
+        .found => |found| std.log.info("found: {s} at {s}:{d}", .{ found.name, found.addresses[0], found.port }),
+        .lost => |lost| std.log.info("lost: {s}", .{ lost.name }),
+    }
+}
+```
+
+- **Android:** Uses `NsdManager` (`OrielMdns.kt`).
+- **Windows:** Uses dnsapi's `DnsServiceRegister`, `DnsServiceBrowse`, and `DnsServiceResolve` (Windows 10 1809+). TXT values must be valid UTF-8.
+- Requires `.permissions = .{ .local_network = "Find local devices" }` in `build.zig`.
+
+### System sharing (`oriel.share`)
+
+Receive shared files and text from other applications, and trigger the native system share sheet:
+
+```zig
+// Listen for incoming shares (also emits "share:received" event to webview)
+oriel.share.onReceive(onShareReceived);
+
+// Open system share sheet
+try oriel.share.send(.{ .title = "Report", .text = "Sharing content" }, null, null);
+```
+
+- **Supported platforms:** Windows (`DataTransferManager`, "Send to", "Open with"), macOS/iOS (`NSSharingServicePicker`, `UIActivityViewController`, `CFBundleDocumentTypes`), and Android share targets.
+- Receiving requires declaring `.share_target` in `build.zig`.

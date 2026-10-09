@@ -11,7 +11,9 @@
 //                 on test.wav in the models directory (no microphone in CI).
 //   tour          every tab (a screenshot each), IPC echo, events from a
 //                 worker, a note, and a second window opened and closed:
-//                 the native renderer's run (docs/native-renderer.md).
+//                 the native renderer's run (docs/native-renderer.md). The
+//                 Speak tab's controls; with the voice model and a voice on
+//                 the device (nothing is downloaded), a sentence read aloud.
 (async () => {
   const name = await invoke("ui_test");
   if (!name) return;
@@ -149,13 +151,14 @@
   }
 
   async function tour() {
-    for (const tab of ["dictate", "chat", "notes", "files", "system", "app"]) {
+    for (const tab of ["dictate", "chat", "speak", "notes", "files", "system", "app"]) {
       location.hash = "#" + tab;
       await sleep(800);
       check($(tab).classList.contains("active"), `tab ${tab} not shown`);
       await log(`tab ${tab} shown`);
       await shot(`tour-${tab}`);
     }
+    await speak();
     // IPC: text to Zig and back, byte for byte.
     const text = "héllo 👋 ✓ 世界 \"q\" <b>";
     $("echo-input").value = text;
@@ -189,6 +192,45 @@
     await window.oriel.window.emitTo(label, "ui-test:close", null);
     await until(() => /Closed/.test($("windows-out").textContent), 15000, "the close");
     await log(`closed ${label}`);
+  }
+
+  // The Speak tab: its controls render; with the model and a voice present,
+  // a short sentence is read and its result measured.
+  async function speak() {
+    location.hash = "#speak";
+    await until(() => tts.status, 60000, "tts_status");
+    await sleep(500);
+    const st = tts.status;
+    check($("tts-model").querySelectorAll("button").length === st.models.length, "the model picker is empty");
+    check($("tts-voice").querySelectorAll("option").length === st.voices.length + 1, "the voice picker is incomplete");
+    check($("tts-speed").querySelectorAll("button").length === 4, "no speeds");
+    await log(`speak: ${$("tts-backend").textContent.trim()}; espeak data ${st.espeak_data || "missing"}; ${$("tts-state").textContent}`);
+    const model = st.models.find((m) => m.present);
+    const voice = st.voices.find((v) => v.present && v.lang === "en-us") || st.voices.find((v) => v.present);
+    if (!model || !voice || !st.espeak_data) {
+      check($("tts-speak").disabled || !st.espeak_data, "Speak enabled without a model or voice");
+      await log("speak: no model or voice on the device: not speaking (the test downloads nothing)");
+      return;
+    }
+    $("tts-model").querySelector(`button[data-value="${model.id}"]`).click();
+    $("tts-voice").value = voice.id;
+    $("tts-voice").dispatchEvent(new Event("change"));
+    $("tts-text").value = "Oriel tour check.";
+    tts.last = null;
+    const phases = [];
+    const off = listen("tts:state", (s) => phases.push(s.phase));
+    await until(() => !$("tts-speak").disabled, 5000, "Speak to be enabled");
+    $("tts-speak").click();
+    await until(() => tts.busy, 5000, "speaking to start");
+    await until(() => !tts.busy, 120000, "the utterance to end");
+    if (typeof off === "function") off();
+    const r = tts.last;
+    check(r, `no result: ${$("tts-state").textContent}`);
+    await log(`speak: ${r.voice} (${r.lang}) on ${r.backend}: first audio ${r.first_audio_ms} ms, load ${r.load_ms} ms, ${r.chunks} chunks, ${r.audio_s.toFixed(1)} s in ${r.synth_ms} ms, gaps ${r.gap_ms} ms; phases ${phases.join(",")}`);
+    check(r.first_audio_ms > 0 && !r.stopped, "no audio");
+    check(phases.includes("playing") && phases[phases.length - 1] === "idle", "tts:state didn't go through playing to idle");
+    check($("tts-out").querySelector(".spoken"), "no result card");
+    await shot("tour-speak-done");
   }
 
   try {

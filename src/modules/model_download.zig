@@ -1,5 +1,6 @@
-//! Model downloads for `dictation` and `chat`: an HTTPS GET into a `.part`
-//! file, renamed when complete, with progress per megabyte. Redirects are
+//! Model downloads for `dictation`, `chat` and `tts`: an HTTPS GET into a
+//! `.part` file, renamed when complete (and, with `fetchVerified`, only
+//! when its SHA-256 matches), with progress per megabyte. Redirects are
 //! followed by hand (Hugging Face sends to its CDN), and on Android each
 //! host is resolved by `oriel.android.preconnect` first (Zig's resolver
 //! needs /etc/resolv.conf, which Android doesn't have). On iOS the download
@@ -26,6 +27,24 @@ pub fn fetch(
     ctx: anytype,
     comptime progress: fn (@TypeOf(ctx), u32, u32) void,
 ) !void {
+    return fetchVerified(io, gpa, url, dir_path, file_name, expected_mb, null, ctx, progress);
+}
+
+/// `fetch`, and when `sha256` (64 hex digits) is given the file's SHA-256
+/// must match it: a mismatching download is deleted (nothing is renamed
+/// into place) and `error.ChecksumMismatch` returned.
+pub fn fetchVerified(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    url: []const u8,
+    dir_path: []const u8,
+    file_name: []const u8,
+    expected_mb: u32,
+    sha256: ?[]const u8,
+    ctx: anytype,
+    comptime progress: fn (@TypeOf(ctx), u32, u32) void,
+) !void {
+    if (sha256) |want| if (want.len != 64) return error.InvalidChecksum;
     try validateUrl(try std.Uri.parse(url));
     var dir = try std.Io.Dir.cwd().createDirPathOpen(io, dir_path, .{});
     defer dir.close(io);
@@ -35,6 +54,14 @@ pub fn fetch(
         const part_path = try std.fs.path.join(gpa, &.{ dir_path, part });
         defer gpa.free(part_path);
         try @import("model_download/ios.zig").fetch(io, url, part_path, expected_mb, ctx, progress);
+        if (sha256) |want| {
+            errdefer dir.deleteFile(io, part) catch {};
+            const got = try sha256File(io, dir, part);
+            if (!std.ascii.eqlIgnoreCase(&got, want)) {
+                log.err("download {s}: SHA-256 mismatch", .{file_name});
+                return error.ChecksumMismatch;
+            }
+        }
         try dir.rename(part, dir, file_name, io);
         log.info("downloaded {s}", .{file_name});
         return;
@@ -89,6 +116,7 @@ pub fn fetch(
     const reader = response.reader(&transfer_buf);
 
     var chunk: [64 * 1024]u8 = undefined;
+    var sha: std.crypto.hash.sha2.Sha256 = .init(.{});
     var done: u64 = 0;
     var last_mb: u64 = std.math.maxInt(u64);
     while (true) {
@@ -96,6 +124,7 @@ pub fn fetch(
         if (n == 0) break;
         if (done + n > limit) return error.DownloadTooLarge;
         try writer.interface.writeAll(chunk[0..n]);
+        if (sha256 != null) sha.update(chunk[0..n]);
         done += n;
         if (done >> 20 != last_mb) {
             last_mb = done >> 20;
@@ -104,10 +133,42 @@ pub fn fetch(
     }
     try writer.interface.flush();
     if (response.head.content_length) |len| if (done != len) return error.Truncated;
+    if (sha256) |want| {
+        const got = std.fmt.bytesToHex(sha.finalResult(), .lower);
+        if (!std.ascii.eqlIgnoreCase(&got, want)) {
+            log.err("download {s}: SHA-256 mismatch", .{file_name});
+            return error.ChecksumMismatch;
+        }
+    }
     file.close(io);
     file_open = false;
     try dir.rename(part, dir, file_name, io);
     log.info("downloaded {s} ({d} MB)", .{ file_name, done >> 20 });
+}
+
+/// The SHA-256 of `<dir>/<name>`, as lowercase hex.
+pub fn sha256File(io: std.Io, dir: std.Io.Dir, name: []const u8) ![64]u8 {
+    const file = try dir.openFile(io, name, .{});
+    defer file.close(io);
+    var read_buf: [64 * 1024]u8 = undefined;
+    var reader = file.readerStreaming(io, &read_buf);
+    var sha: std.crypto.hash.sha2.Sha256 = .init(.{});
+    var chunk: [64 * 1024]u8 = undefined;
+    while (true) {
+        const n = try reader.interface.readSliceShort(&chunk);
+        if (n == 0) break;
+        sha.update(chunk[0..n]);
+    }
+    return std.fmt.bytesToHex(sha.finalResult(), .lower);
+}
+
+test sha256File {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "abc", .data = "abc" });
+    const got = try sha256File(io, tmp.dir, "abc");
+    try std.testing.expectEqualStrings("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", &got);
 }
 
 fn validateUrl(uri: std.Uri) !void {

@@ -654,6 +654,21 @@ pub extern "user32" fn CreateAcceleratorTableW(pactbl: [*]const ACCEL, cAccel: c
 pub extern "user32" fn DestroyAcceleratorTable(hAccel: HACCEL) callconv(.winapi) BOOL;
 pub extern "user32" fn TranslateAcceleratorW(hWnd: HWND, hAccTable: HACCEL, lpMsg: *MSG) callconv(.winapi) c_int;
 pub extern "user32" fn GetAncestor(hwnd: HWND, gaFlags: UINT) callconv(.winapi) ?HWND;
+/// GUITHREADINFO.flags: the thread is in a menu's modal loop.
+pub const GUI_INMENUMODE: DWORD = 0x0004;
+pub const GUITHREADINFO = extern struct {
+    cbSize: DWORD,
+    flags: DWORD = 0,
+    hwndActive: ?HWND = null,
+    hwndFocus: ?HWND = null,
+    hwndCapture: ?HWND = null,
+    hwndMenuOwner: ?HWND = null,
+    hwndMoveSize: ?HWND = null,
+    hwndCaret: ?HWND = null,
+    rcCaret: RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
+};
+pub extern "user32" fn GetGUIThreadInfo(idThread: DWORD, pgui: *GUITHREADINFO) callconv(.winapi) BOOL;
+pub extern "user32" fn EndMenu() callconv(.winapi) BOOL;
 pub extern "user32" fn GetCursorPos(lpPoint: *POINT) callconv(.winapi) BOOL;
 pub extern "user32" fn CreateIconIndirect(piconinfo: *const ICONINFO) callconv(.winapi) ?HICON;
 pub extern "user32" fn CreateIconFromResourceEx(

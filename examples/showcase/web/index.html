@@ -30,6 +30,7 @@
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 9h8M8 12h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12 20 4l-6 16-3-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
   </svg>
 
@@ -46,6 +47,7 @@
   <nav id="tabs" role="tablist" aria-label="Sections">
     <a href="#dictate" role="tab"><svg><use href="#i-mic"/></svg><span>Dictate</span></a>
     <a href="#chat" role="tab"><svg><use href="#i-chat"/></svg><span>Chat</span></a>
+    <a href="#speak" role="tab"><svg><use href="#i-speaker"/></svg><span>Speak</span></a>
     <a href="#notes" role="tab"><svg><use href="#i-note"/></svg><span>Notes</span></a>
     <a href="#files" role="tab"><svg><use href="#i-folder"/></svg><span>Files</span></a>
     <a href="#system" role="tab"><svg><use href="#i-bell"/></svg><span>System</span></a>
@@ -172,6 +174,75 @@
       </div>
     </section>
 
+    <!-- Speak: text to speech through oriel.tts (Kokoro 82M), streamed. -->
+    <section id="speak" role="tabpanel">
+      <div class="main-col">
+      <div class="card hero speak-hero">
+        <span id="tts-backend" class="chip status"><i></i><b>Checking the voice model…</b></span>
+        <textarea id="tts-text" rows="6" aria-label="Text to read aloud">Hello! This is Oriel reading aloud, right on this device: nothing leaves it. Pick a voice, or leave it on Auto, which follows the language of the text.</textarea>
+        <div id="tts-samples" class="chips samples" aria-label="Sample texts">
+          <button class="chip" data-lang="en">English</button>
+          <button class="chip" data-lang="es">Español</button>
+          <button class="chip" data-lang="fr">Français</button>
+          <button class="chip" data-lang="md">Markdown</button>
+        </div>
+        <div class="speak-bar">
+          <button id="tts-speak" class="btn filled" disabled><svg><use href="#i-speaker"/></svg><span>Speak</span></button>
+        </div>
+        <p id="tts-state" class="state">…</p>
+      </div>
+      <div id="tts-out" class="stack"></div>
+      </div>
+
+      <div class="card">
+        <div class="field">
+          <span class="label">Model</span>
+          <div id="tts-model" class="segmented" role="radiogroup" aria-label="Voice model"></div>
+        </div>
+        <div id="tts-have" class="have-row" hidden>
+          <span id="tts-have-text"></span>
+          <button id="tts-delete" class="btn danger"><svg><use href="#i-trash"/></svg><span>Delete</span></button>
+        </div>
+        <div id="tts-get" class="getmodel" hidden>
+          <button id="tts-download" class="btn tonal"><svg><use href="#i-down"/></svg><span>Download</span></button>
+          <div class="progress" hidden><div id="tts-progress"></div></div>
+          <p id="tts-missing" class="hint"></p>
+        </div>
+        <div class="field">
+          <span class="label">Voice</span>
+          <select id="tts-voice" aria-label="Voice"><option value="auto">Auto: the text's language</option></select>
+          <p id="tts-voice-note" class="hint"></p>
+        </div>
+        <div id="tts-voice-have" class="have-row" hidden>
+          <span id="tts-voice-have-text"></span>
+          <button id="tts-voice-delete" class="btn danger"><svg><use href="#i-trash"/></svg><span>Delete</span></button>
+        </div>
+        <div id="tts-voice-get" class="getmodel" hidden>
+          <button id="tts-voice-download" class="btn tonal"><svg><use href="#i-down"/></svg><span>Download the voice</span></button>
+          <div class="progress" hidden><div id="tts-voice-progress"></div></div>
+        </div>
+        <div class="field">
+          <span class="label">Speed</span>
+          <div id="tts-speed" class="segmented" role="radiogroup" aria-label="Speed">
+            <button data-value="0.75">0.75×</button>
+            <button data-value="1" aria-checked="true">1×</button>
+            <button data-value="1.25">1.25×</button>
+            <button data-value="1.5">1.5×</button>
+          </div>
+        </div>
+        <div id="tts-proc-field" class="field" hidden>
+          <span class="label">Processor</span>
+          <div id="tts-proc" class="segmented" role="radiogroup" aria-label="Processor">
+            <button data-value="auto" aria-checked="true">Auto</button>
+            <button data-value="cpu">CPU</button>
+          </div>
+          <p id="tts-proc-note" class="hint"></p>
+        </div>
+        <label class="switch"><span><b>Read Markdown</b><small>Headings, lists and links read as prose, not symbols</small></span><input type="checkbox" id="tts-markdown" checked><i></i></label>
+        <p id="tts-espeak" class="hint"></p>
+      </div>
+    </section>
+
     <!-- Notes: SQLite through oriel.sql; deep links add notes. -->
     <section id="notes" role="tabpanel">
       <div class="card">
@@ -183,6 +254,7 @@
         </form>
         <button id="note-dictation" class="btn ghost" hidden><svg><use href="#i-mic"/></svg><span>Add the last dictation</span></button>
         <ul id="note-list" class="notes"></ul>
+        <p id="note-out" class="result"></p>
       </div>
       <div class="card">
         <h2><svg class="h-icon"><use href="#i-link"/></svg> Deep links</h2>
@@ -266,6 +338,7 @@
         <div class="row"><span>Launches (the store)</span><b id="launches">—</b></div>
         <div class="row"><span>Whisper backend</span><b id="dev-backend">—</b></div>
         <div class="row"><span>System speech</span><b id="dev-speech">—</b></div>
+        <div class="row"><span>Voice (Kokoro)</span><b id="dev-tts">—</b></div>
         <div class="row"><span>Tray, menu, hotkeys</span><b id="dev-desktop">—</b></div>
         <div class="row"><span>Data</span><b id="dev-data" class="wrap">—</b></div>
       </div>

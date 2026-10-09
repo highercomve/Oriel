@@ -29,7 +29,7 @@ downloads (minisign-verified) on first use. See [Zig versions](#zig-versions-ori
 | `oriel wrap <url>` | Wrap any web page or web app into a lightweight desktop application with system tray, close-to-tray, auto-favicon, and AppImage packaging (alias: `oriel pake`) |
 | `oriel doctor` | Checks requirements for building and running Oriel apps (`--fix` installs non-admin tools and prints exact system commands) |
 | `oriel setup [tool]` | Installs managed tools into `~/.oriel/<tool>` without admin rights (`node`, `nsis`, `webview2`, `zig`, `all`) |
-| `oriel dev` | Runs the frontend dev server (Vite) and rebuilds + restarts the app when a `.zig` file changes (hot reload; inotify on Linux, polling on macOS and Windows) |
+| `oriel dev` | Runs the frontend dev server (Vite) and rebuilds + restarts the app when a `.zig` file changes (hot reload; inotify on Linux, polling on macOS and Windows). A Zig `--fork=<path>` given to it applies to those rebuilds too |
 | `oriel build` | Builds the production app (frontend embedded) into `zig-out/bin/` (`ReleaseSafe` by default) |
 | `oriel run` | Builds and runs the production app |
 | `oriel package` | Builds distribution packages into `zig-out/package/` (deb, rpm, AppImage on Linux; NSIS `setup.exe` on Windows; `.app` and `.dmg` on macOS) |

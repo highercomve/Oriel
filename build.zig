@@ -17,6 +17,7 @@ const ggml = @import("build/ggml.zig");
 const android_build = @import("build/android.zig");
 const ios_build = @import("build/ios.zig");
 const android_manifest = @import("build/android_manifest.zig");
+const espeak_data = @import("build/espeak_data.zig");
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
@@ -126,6 +127,15 @@ pub fn build(b: *std.Build) void {
     const features = Features.fromOptions(b, target);
 
     const oriel = addOrielModule(b, target, optimize, features);
+
+    // -Dkokoro: espeak-ng's compiled runtime data (build/espeak_data.zig),
+    // shipped by `addApp`; `zig build espeak-data` installs it alone.
+    const tts_languages = b.option([]const u8, "tts_languages", "-Dkokoro: espeak-ng dictionaries compiled into the shipped espeak-ng-data, comma-separated (default: " ++ espeak_data.default_languages ++ ")") orelse espeak_data.default_languages;
+    if (features.kokoro) if (b.lazyDependency("espeak_ng", .{})) |espeak_dep| {
+        const data = espeak_data.addData(b, espeak_dep, tts_languages);
+        b.step("espeak-data", "Compile espeak-ng's runtime data for -Dkokoro (zig-out/espeak-ng-data)")
+            .dependOn(&b.addInstallDirectory(.{ .source_dir = data.dir, .install_dir = .prefix, .install_subdir = espeak_data.name }).step);
+    };
 
     // Host tool used by `addApp` to embed built frontends.
     const embed_assets = b.addExecutable(.{
@@ -314,7 +324,18 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     if (runs_tests) {
-        test_step.dependOn(&b.addRunArtifact(tests).step);
+        const run_tests = b.addRunArtifact(tests);
+        // -Dggml_cuda / -Dggml_vulkan: the tests load the GPU backend from
+        // zig-out/lib (ggml_gpu.load looks in $ORIEL_GGML_LIB_DIR in tests),
+        // so the GPU paths (oriel.tts's) run too.
+        for (gpu_backend_libraries) |name| {
+            const lib = b.named_lazy_paths.get(name) orelse continue;
+            const install = b.addInstallFileWithDir(lib, .lib, b.fmt("{s}.so", .{name}));
+            run_tests.step.dependOn(&install.step);
+            run_tests.setEnvironmentVariable("ORIEL_GGML_LIB_DIR", b.getInstallPath(.lib, ""));
+            tests.rdynamic = true;
+        }
+        test_step.dependOn(&run_tests.step);
         if (dom_js_test) |t| test_step.dependOn(t);
         test_step.dependOn(&b.addRunArtifact(package_tests).step);
     }
@@ -1418,6 +1439,15 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         if (dev_exe) |d| d.rdynamic = true;
     }
 
+    // -Dkokoro: espeak-ng's compiled data next to the executable
+    // (zig-out/bin/espeak-ng-data; oriel.tts finds it there). The dev build
+    // (`build-dev`, `dev`) runs from the same directory.
+    if (espeak_data.fromDependency(b, oriel_dep.builder)) |data| {
+        const install_data = b.addInstallDirectory(.{ .source_dir = data.dir, .install_dir = .bin, .install_subdir = espeak_data.name });
+        b.getInstallStep().dependOn(&install_data.step);
+        if (dev_exe) |d| d.step.dependOn(&install_data.step);
+    }
+
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
     if (b.args) |args| run.addArgs(args);
@@ -1504,6 +1534,10 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
 ///                          (reached from the device through `adb reverse`)
 ///   zig build check        type-check the app (no binaries)
 /// The APK itself is built by Gradle (`oriel android build`).
+/// Under the install prefix: Oriel's files for the APK's assets (the
+/// Gradle project's `assets.srcDirs`).
+const android_assets_dir = "android-assets";
+
 fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) App {
     const oriel = oriel_dep.module("oriel");
     const target = android_build.resolveTarget(b, oriel.resolved_target.?);
@@ -1516,6 +1550,18 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     const permissions = appPermissions(oriel_dep, options);
     const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
     const install_dir: std.Build.InstallDir = .{ .custom = b.fmt("jniLibs/{s}", .{android_build.abiDir(target.result)}) };
+
+    // -Dkokoro: espeak-ng's compiled data as APK assets
+    // (zig-out/android-assets/espeak-ng-data, the Gradle project's assets
+    // dir); the Kotlin runtime extracts it to filesDir, where oriel.tts
+    // finds it.
+    if (espeak_data.fromDependency(b, oriel_dep.builder)) |data| {
+        b.getInstallStep().dependOn(&b.addInstallDirectory(.{
+            .source_dir = data.dir,
+            .install_dir = .{ .custom = android_assets_dir },
+            .install_subdir = espeak_data.name,
+        }).step);
+    }
 
     var install_step: ?*std.Build.Step = null;
     if (fe.install_command) |cmd| {
@@ -1775,6 +1821,8 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
     const app_dir = b.pathFromRoot("android/app");
     const libs = b.pathJoin(&.{ b.install_prefix, "jniLibs" });
     const lib_dir = std.fs.path.relative(b.allocator, b.build_root.path orelse "/", null, app_dir, libs) catch libs;
+    const assets = b.pathJoin(&.{ b.install_prefix, android_assets_dir });
+    const assets_dir = std.fs.path.relative(b.allocator, b.build_root.path orelse "/", null, app_dir, assets) catch assets;
 
     var extensions: std.ArrayList(u8) = .empty;
     if (options.android.extensions.len > 64) @panic("android.extensions: at most 64 extensions are supported");
@@ -1803,6 +1851,7 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         b.fmt("version={s}", .{version}),
         b.fmt("version_code={d}", .{code}),
         b.fmt("lib_dir={s}", .{lib_dir}),
+        b.fmt("assets_dir={s}", .{assets_dir}),
         b.fmt("permissions={s}", .{perms}),
         b.fmt("features={s}", .{features}),
         b.fmt("url_schemes={s}", .{schemes.items}),
@@ -1936,6 +1985,14 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         }
         for (options.ios.usage_descriptions) |u| run.addArgs(&.{ "--usage-key", b.fmt("{s}={s}", .{ u.key, u.text }) });
         made[idx] = .{ .step = run, .dir = out };
+        // -Dkokoro: espeak-ng's compiled data at the bundle's root, its
+        // resource directory (<Name>.app/espeak-ng-data; oriel.tts finds it).
+        if (espeak_data.fromDependency(b, oriel_dep.builder)) |data| {
+            const with_data = b.addWriteFiles();
+            _ = with_data.addCopyDirectory(out.path(b, bundle_dir), bundle_dir, .{});
+            _ = with_data.addCopyDirectory(data.dir, b.fmt("{s}/{s}", .{ bundle_dir, espeak_data.name }), .{});
+            made[idx].dir = with_data.getDirectory();
+        }
     }
     b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = made[0].dir, .install_dir = .prefix, .install_subdir = "ios" }).step);
     @import("build/package.zig").getOrCreateStep(b, "ios-dev", "Build the iOS app against the dev server (zig-out/ios-dev)")

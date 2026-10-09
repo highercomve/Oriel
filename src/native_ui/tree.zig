@@ -931,14 +931,69 @@ pub const Range = struct {
     /// `x` on the nearest step, inside min…max.
     pub fn snap(r: Range, x: f64) f64 {
         if (!std.math.isFinite(x)) return r.min;
-        const steps = @round((std.math.clamp(x, r.min, r.max) - r.min) / r.step);
+        const v = std.math.clamp(x, r.min, r.max);
+        const steps = @round((v - r.min) / r.step);
+        // More steps than an f64 counts exactly (or than it holds: the span
+        // overflowed): every value there is as near a step as f64 can tell.
+        if (!(steps <= max_exact)) return v;
         return std.math.clamp(r.min + steps * r.step, r.min, r.max);
+    }
+
+    /// The integers an f64 holds exactly: 0…2^53.
+    const max_exact: f64 = 9007199254740992;
+
+    /// A native slider's positions 0…last (Win32's trackbar holds 0…`cap`):
+    /// one per step, or, when the steps don't fit in `cap`, `cap` positions
+    /// spread evenly over min…max (a coarser step, still snapped to the
+    /// real one) so that 0 is min and the last is max.
+    pub fn track(r: Range, cap: u32) Track {
+        const steps = (r.max - r.min) / r.step; // +inf if the span overflows
+        if (!(steps >= 0)) return .{ .last = 0, .exact = true };
+        const rounded = @round(steps);
+        if (rounded <= @as(f64, @floatFromInt(cap))) return .{ .last = @intFromFloat(rounded), .exact = true };
+        return .{ .last = cap, .exact = false };
+    }
+
+    pub const Track = struct {
+        /// The last position (the trackbar's maximum).
+        last: u32,
+        /// One position per step (else coarser: `last` spans min…max).
+        exact: bool,
+    };
+
+    /// The value at a slider position (see `track`), on a step.
+    pub fn trackValue(r: Range, cap: u32, pos: i64) f64 {
+        const t = r.track(cap);
+        const p: f64 = @floatFromInt(std.math.clamp(pos, 0, @as(i64, t.last)));
+        if (t.exact) return r.snap(r.min + p * r.step);
+        if (p >= @as(f64, @floatFromInt(t.last))) return r.snap(r.max);
+        // min…max at p/last, without forming max - min (it can overflow).
+        const f = p / @as(f64, @floatFromInt(t.last));
+        return r.snap(r.min * (1 - f) + r.max * f);
+    }
+
+    /// A value's slider position (see `track`): its step's, or the nearest
+    /// coarse position.
+    pub fn trackPos(r: Range, cap: u32, x: f64) u32 {
+        const t = r.track(cap);
+        const v = r.snap(x);
+        const last: f64 = @floatFromInt(t.last);
+        const p = if (t.exact)
+            @round((v - r.min) / r.step)
+        else
+            // Halved, so neither difference overflows.
+            @round((v / 2 - r.min / 2) / (r.max / 2 - r.min / 2) * last);
+        if (!(p >= 0)) return 0;
+        return @intFromFloat(@min(p, last));
     }
 
     /// The page's text for a value ("3", "0.25"), the input's value attribute.
     pub fn text(r: Range, buf: []u8, x: f64) []const u8 {
         const v = r.snap(x);
         if (v == @floor(v) and @abs(v) < 1e15) return std.fmt.bufPrint(buf, "{d}", .{@as(i64, @intFromFloat(v))}) catch "0";
+        // As JavaScript prints it: an exponent from 1e21 on (all digits
+        // wouldn't fit a slider's buffer).
+        if (@abs(v) >= 1e21) return std.fmt.bufPrint(buf, "{e}", .{v}) catch "0";
         const s = std.fmt.bufPrint(buf, "{d:.6}", .{v}) catch return "0";
         var end = s.len;
         while (end > 0 and s[end - 1] == '0') end -= 1;
@@ -967,6 +1022,72 @@ test "Range snaps and prints like Android" {
     try std.testing.expectEqualStrings("50", d.text(&buf, 49.6));
     n.props = .{ .range = .{ 5, 1, 0 } }; // max below min: pinned at min
     try std.testing.expectEqualStrings("5", Range.of(&n).text(&buf, 3));
+}
+
+test "Range.track: one position per step, else min…max over the cap" {
+    const cap: u32 = std.math.maxInt(i32); // Win32's trackbar
+    var n: Node = undefined;
+    var buf: [48]u8 = undefined;
+
+    // A normal range: exact steps, the last one under max.
+    n.props = .{ .range = .{ -3, 7, 0.7 } };
+    const r = Range.of(&n);
+    try std.testing.expectEqual(Range.Track{ .last = 14, .exact = true }, r.track(cap));
+    try std.testing.expectEqual(@as(f64, -3), r.trackValue(cap, 0));
+    try std.testing.expectApproxEqAbs(@as(f64, 6.8), r.trackValue(cap, 14), 1e-12);
+    try std.testing.expectEqualStrings("6.8", r.text(&buf, r.trackValue(cap, 14)));
+    try std.testing.expectEqual(@as(u32, 14), r.trackPos(cap, 7));
+    try std.testing.expectEqual(@as(u32, 5), r.trackPos(cap, 0.6));
+    try std.testing.expectEqual(@as(u32, 0), r.trackPos(cap, -100));
+
+    // step=any: a thousandth of the span, as before.
+    n.props = .{ .range = .{ 0, 50, 0 } };
+    const any = Range.of(&n);
+    try std.testing.expectEqual(Range.Track{ .last = 1000, .exact = true }, any.track(cap));
+    try std.testing.expectEqual(@as(f64, 25), any.trackValue(cap, 500));
+    try std.testing.expectEqual(@as(u32, 500), any.trackPos(cap, 25));
+
+    // More steps than positions: 0 is min, the last is max, values between
+    // on the real step.
+    n.props = .{ .range = .{ -1e9, 1e9, 0.001 } };
+    const big = Range.of(&n);
+    try std.testing.expectEqual(Range.Track{ .last = cap, .exact = false }, big.track(cap));
+    try std.testing.expectEqual(@as(f64, -1e9), big.trackValue(cap, 0));
+    try std.testing.expectEqual(@as(f64, 1e9), big.trackValue(cap, cap));
+    try std.testing.expectEqual(@as(f64, 1e9), big.trackValue(cap, std.math.maxInt(i64)));
+    try std.testing.expectEqual(cap, big.trackPos(cap, 1e9));
+    try std.testing.expectEqual(@as(u32, 0), big.trackPos(cap, -1e9));
+    const mid = big.trackValue(cap, cap / 2);
+    try std.testing.expect(@abs(mid) < 1);
+    // On a 0.001 step (as near as f64 gets at 1e9 from min).
+    try std.testing.expectApproxEqAbs(@round(mid * 1000) / 1000, mid, 1e-6);
+    // A position's value maps back to that position.
+    try std.testing.expectEqual(@as(u32, 123456789), big.trackPos(cap, big.trackValue(cap, 123456789)));
+
+    // A tiny step on a vast span: the values move with the thumb.
+    n.props = .{ .range = .{ 0, 1e308, 1e-300 } };
+    const vast = Range.of(&n);
+    try std.testing.expectEqual(Range.Track{ .last = cap, .exact = false }, vast.track(cap));
+    try std.testing.expectEqual(@as(f64, 0), vast.trackValue(cap, 0));
+    try std.testing.expectEqual(@as(f64, 1e308), vast.trackValue(cap, cap));
+    const half = vast.trackValue(cap, cap / 2);
+    try std.testing.expect(half > 4e307 and half < 6e307);
+    try std.testing.expectEqual(cap / 2, vast.trackPos(cap, half));
+    try std.testing.expectEqualStrings("1e308", vast.text(&buf, 1e308));
+
+    // A span past f64's range (max - min overflows): still min…max.
+    n.props = .{ .range = .{ -1e308, 1e308, 1 } };
+    const huge = Range.of(&n);
+    try std.testing.expectEqual(@as(f64, -1e308), huge.trackValue(cap, 0));
+    try std.testing.expectEqual(@as(f64, 1e308), huge.trackValue(cap, cap));
+    try std.testing.expectEqual(cap / 2 + 1, huge.trackPos(cap, 0));
+
+    // An empty span: one position.
+    n.props = .{ .range = .{ 4, 4, 1 } };
+    const empty = Range.of(&n);
+    try std.testing.expectEqual(Range.Track{ .last = 0, .exact = true }, empty.track(cap));
+    try std.testing.expectEqual(@as(f64, 4), empty.trackValue(cap, 9));
+    try std.testing.expectEqual(@as(u32, 0), empty.trackPos(cap, 9));
 }
 
 /// A node's children in CSS paint order: negative z-index first, then the

@@ -54,6 +54,25 @@ pub fn setLanguage(ctx: *Context, espeak_lang: []const u8) !void {
     if (c.kokoro_set_language(ctx, buf.ptr) != c.KOKORO_STATUS_OK) return error.LanguageFailed;
 }
 
+/// Speech duration multiplier (1 = normal, 2 = half as fast), clamped by
+/// the engine to 0.25-4. Takes effect on the next synthesis.
+pub fn setLengthScale(ctx: *Context, scale: f32) void {
+    c.kokoro_set_length_scale(ctx, scale);
+}
+
+/// CPU threads for the next synthesis (the CPU backend's, and the CPU
+/// parts of a GPU run).
+pub fn setThreads(ctx: *Context, n: c_int) void {
+    c.kokoro_set_n_threads(ctx, n);
+}
+
+/// The backend the context runs on ("CPU", "Vulkan", "Metal", "CUDA"...).
+pub fn backendName(ctx: *Context) []const u8 {
+    const n: [*c]const u8 = c.kokoro_backend_name(ctx);
+    if (n == null) return "";
+    return std.mem.span(n);
+}
+
 pub fn voiceName(ctx: *Context) []const u8 {
     const n: [*c]const u8 = c.kokoro_voice_name(ctx);
     if (n == null) return "";

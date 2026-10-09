@@ -56,7 +56,7 @@ The installer is per-user (`%LOCALAPPDATA%\Programs\<name>`, no admin), adds Sta
 | **WebView Engine** | ✅ Implemented | Microsoft Edge WebView2 (Evergreen) via hand-declared COM vtables matching `WebView2.h` |
 | **Embedded Assets** | ✅ Implemented | `https://app.localhost/*` intercept via `AddWebResourceRequestedFilter` + `SHCreateMemStream` |
 | **JS ↔ Zig IPC** | ✅ Implemented | `window.chrome.webview.postMessage` + `add_WebMessageReceived`, sync and async worker commands |
-| **System Tray (`tray`)** | ✅ Implemented | `Shell_NotifyIconW` + `TrackPopupMenu` context menu; icons decoded via `zigimg` |
+| **System Tray (`tray`)** | ✅ Implemented | `Shell_NotifyIconW` + `TrackPopupMenu` context menu; PNG icons decoded with `zigimg` (no kernel handles leaked per tray created); quitting while the menu is open ends it |
 | **Database (`sql`)** | ✅ Implemented | Embedded SQLite3 C amalgamation linked with Windows threading |
 | **Vector Search (`sqlite_vec`)** | ✅ Implemented | Embedded `sqlite-vec` C amalgamation |
 | **Packaging (`package-nsis`)** | ✅ Implemented | Per-user NSIS installer (`setup.exe`) generated via `makensis` with WebView2 bootstrapper detection |
@@ -71,6 +71,8 @@ The installer is per-user (`%LOCALAPPDATA%\Programs\<name>`, no admin), adds Sta
 | **Input Injection (`input`)** | ✅ Implemented | Win32 `SendInput` (UTF-16 Unicode down/up pairs, VK combo mapping); runtime untested on Windows |
 | **Clipboard (`clipboard`)** | ✅ Implemented | Win32 `OpenClipboard` (CF_UNICODETEXT, CF_DIB, registered PNG via `zigimg`); runtime untested on Windows |
 | **llama.cpp / whisper.cpp (`llama`, `whisper`)** | ✅ Builds | Same opt-in `-Dllama` / `-Dwhisper` CPU builds, cross-compiled (links; runtime untested on Windows) |
+| **Text to speech (`kokoro`, `tts`)** | ✅ Builds | Opt-in `-Dkokoro`; espeak-ng linked statically, its phoneme data installed next to the `.exe` and by the NSIS installer; Vulkan through the registered ggml backend. See [Offline text to speech](tts.md) |
+| **mDNS / DNS-SD (`network.mdns`)** | ✅ Implemented | dnsapi `DnsServiceRegister` / `DnsServiceBrowse` / `DnsServiceResolve` (Windows 10 1809+): the system's responder, no sockets in the app. TXT values must be UTF-8 text (`error.InvalidTxt` otherwise) |
 
 *Note*: Windows builds use the same defaults as Linux: every module and plugin is on unless disabled with `-D<name>=false`; `sqlite_vec`, `llama` and `whisper` are opt-in on both. Nothing in this table has been run on Windows yet: it cross-compiles, links and packages, and the platform-neutral logic (key and accelerator parsing, DIB conversion, path validation, notify-record parsing) is unit-tested on Linux.
 

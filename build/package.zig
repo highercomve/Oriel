@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const metadata_mod = @import("../tools/package/metadata.zig");
+const espeak_data = @import("espeak_data.zig");
 
 pub const targetToDebArch = metadata_mod.targetToDebArch;
 pub const targetToRpmArch = metadata_mod.targetToRpmArch;
@@ -205,8 +206,10 @@ pub const Contents = struct {
     /// macOS bundle, files that aren't Mach-O code go to Contents/Resources,
     /// reached from Contents/MacOS through a symlink of their top-level name.
     files: []const File = &.{},
-    /// Oriel's runtime libraries the app was built with (libggml-cuda.so with
-    /// -Dggml_cuda, libggml-vulkan.so with -Dggml_vulkan). Default on. A `files` entry of the same path replaces it.
+    /// Oriel's runtime libraries and data the app was built with
+    /// (libggml-cuda.so with -Dggml_cuda, libggml-vulkan.so with
+    /// -Dggml_vulkan, espeak-ng-data/ with -Dkokoro). Default on. A `files`
+    /// entry of the same path replaces it.
     runtime_libraries: bool = true,
     /// Strip debug info and symbols from ELF executables/libraries in packages
     /// (Linux): the app, `executables` and the runtime libraries (the dynamic
@@ -278,6 +281,17 @@ fn resolvePayload(
             } else false;
             if (own) continue;
             files.append(b.allocator, .{ .path = name, .source = if (strip) strippedElf(b, package_tool, lib, name) else lib }) catch @panic("OOM");
+        }
+        // -Dkokoro: espeak-ng's compiled data (build/espeak_data.zig), as
+        // espeak-ng-data/ next to the executable (macOS: Contents/Resources).
+        if (espeak_data.fromDependency(b, oriel_dep.builder)) |data| {
+            for (data.files) |rel| {
+                const path = b.fmt("{s}/{s}", .{ espeak_data.name, rel });
+                const own = for (contents.files) |f| {
+                    if (std.ascii.eqlIgnoreCase(f.path, path)) break true;
+                } else false;
+                if (!own) files.append(b.allocator, .{ .path = path, .source = espeak_data.filePath(oriel_dep.builder, rel) }) catch @panic("OOM");
+            }
         }
     }
     const bin = exe.getEmittedBin();

@@ -437,6 +437,17 @@ pub fn main(init: std.process.Init) !u8 {
         }
     }
 
+    // Zig's own flags `oriel dev` got (--fork=<path>), which build.zig never
+    // sees: without them the rebuild would use the pinned dependencies.
+    // Our own copy: the variable is removed, so the app and the frontend dev
+    // server don't inherit it.
+    if (init.environ_map.get("ORIEL_DEV_ZIG_ARGS")) |zig_args| {
+        const owned = try init.arena.allocator().dupe(u8, zig_args);
+        _ = init.environ_map.orderedRemove("ORIEL_DEV_ZIG_ARGS");
+        var it = std.mem.tokenizeScalar(u8, owned, '\n');
+        while (it.next()) |a| try build_args.append(gpa, a);
+    }
+
     const bin_path = app_bin orelse {
         std.debug.print("dev_runner: error: --app-bin required\n", .{});
         return 1;

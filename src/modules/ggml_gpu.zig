@@ -103,7 +103,7 @@ var load_mutex: std.Io.Mutex = .init;
 
 fn loadLibraries(io: std.Io) usize {
     var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = std.process.executableDirPath(io, &dir_buf) catch |err| {
+    const n = testLibDir(&dir_buf) orelse std.process.executableDirPath(io, &dir_buf) catch |err| {
         std.log.warn("ggml: cannot find the executable directory ({s}); CPU only", .{@errorName(err)});
         return gpuCount();
     };
@@ -117,6 +117,16 @@ fn loadLibraries(io: std.Io) usize {
         _ = c.ggml_backend_load(path.ptr);
     }
     return gpuCount();
+}
+
+/// Unit tests: `zig build test -Dggml_vulkan` (or -Dggml_cuda) installs the
+/// library in zig-out/lib and points $ORIEL_GGML_LIB_DIR there.
+fn testLibDir(buf: []u8) ?usize {
+    if (!@import("builtin").is_test or @import("builtin").os.tag == .windows) return null;
+    const dir = std.mem.span(std.c.getenv("ORIEL_GGML_LIB_DIR") orelse return null);
+    if (dir.len > buf.len) return null;
+    @memcpy(buf[0..dir.len], dir);
+    return dir.len;
 }
 
 /// Keep a backend library mapped for the life of the process. When its
@@ -297,7 +307,9 @@ test "GPU count and name agree" {
     // Metal backend (default on) registers the GPU by itself.
     const n = gpuCount();
     try std.testing.expectEqual(n == 0, gpuName() == null);
-    if (@import("builtin").os.tag != .macos) try std.testing.expectEqual(@as(usize, 0), n);
+    // (Unless a GPU library was installed for the tests and a test loaded it.)
+    const test_lib = if (@import("builtin").os.tag == .windows) false else std.c.getenv("ORIEL_GGML_LIB_DIR") != null;
+    if (@import("builtin").os.tag != .macos and !test_lib) try std.testing.expectEqual(@as(usize, 0), n);
 }
 
 test "selfTest passes on the CPU" {

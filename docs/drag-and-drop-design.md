@@ -275,6 +275,11 @@ now: file-selector, which react-dropzone uses, checks `typeof ... === "function"
     and **open the fd inside the completion handler** (the temp file is deleted when it returns). The name comes
     from `suggestedName`. A dispatch group then hops to the main queue and sends JS "drop".
 - The point is `[session locationInView:view]`. iPhone only gets in-app drops.
+- **Done (uikit.zig).** Files are told apart by data type: an item with data that isn't text (an image, a PDF),
+  or text that is named and comes as a file (a `.txt` from Files), is a File; Photos images arrive as files; other
+  text is `text/plain`, and a link is given as both `text/uri-list` and `text/plain`, as a browser gives a dropped
+  link. The page's answer to the last update decides the drop (UIKit takes no answer at drop time), matching the
+  AppKit backend's types and data.
 
 **WebView mode.** Every WebView handles drops itself, and Oriel's navigation policy already contains the fallout:
 

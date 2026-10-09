@@ -44,11 +44,13 @@
 //!
 //! Backends:
 //! - Android: NsdManager (OrielMdns.kt). See network/android.zig.
-//! - Linux, Windows, macOS, iOS: `error.Unsupported` for now (`supported()`
-//!   is false). TODO: Apple DNSServiceRegister/DNSServiceBrowse (dns_sd.h,
+//! - Windows: dnsapi's DnsServiceRegister/DnsServiceBrowse/DnsServiceResolve
+//!   (Windows 10 1809+). See network/mdns_windows.zig. TXT values must be
+//!   UTF-8 text there (the API takes strings).
+//! - Linux, macOS, iOS: `error.Unsupported` for now (`supported()` is
+//!   false). TODO: Apple DNSServiceRegister/DNSServiceBrowse (dns_sd.h,
 //!   libSystem) or NWListener/NWBrowser; Linux Avahi over D-Bus
-//!   (org.freedesktop.Avahi EntryGroup and ServiceBrowser); Windows
-//!   DnsServiceRegister/DnsServiceBrowse/DnsServiceResolve (windns.h, 10+).
+//!   (org.freedesktop.Avahi EntryGroup and ServiceBrowser).
 //!
 //! A C ABI over this for native code linked into the app (a Rust engine):
 //! network/mdns_c.zig, exported on Android.

@@ -20,7 +20,7 @@ without a WebView.
 - **Small:** a release app is a few MB; the build cache is hundreds of MB, not gigabytes.
 - **Typed both ways:** `invoke` and `listen` in TypeScript are generated from your Zig `Commands` and `Events`.
 - **Secure by default:** navigation limits, per-origin command capabilities, a strict CSP.
-- **Batteries included, opt-in:** tray, updater, SQLite & sqlite-vec, llama.cpp, whisper.cpp & Kokoro TTS, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage), and web wrapping (`oriel wrap`).
+- **Batteries included, opt-in:** tray, updater, SQLite & sqlite-vec, llama.cpp, whisper.cpp, offline text to speech (Kokoro), file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage), and web wrapping (`oriel wrap`).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh     # Linux, macOS
@@ -53,7 +53,7 @@ request-code namespaces, and callback ownership.
 
 ## Examples
 
-- [Showcase](docs/examples.md#showcase): windows, local AI, dictation, SQLite, notifications, and more on desktop and mobile.
+- [Showcase](docs/examples.md#showcase): windows, local AI, dictation, text to speech, SQLite, notifications, and more on desktop and mobile.
 - [Breakout](docs/examples.md#breakout): the same canvas game in the WebView and native renderer, with JavaScript or Zig physics.
 - [Smoke test](docs/examples.md#smoke-test): end-to-end checks for modules and security.
 - [Render bench](docs/examples.md#render-bench) and [canvas demo](docs/examples.md#canvas-demo): rendering measurements and 2D drawing.
@@ -71,6 +71,7 @@ Start with the [documentation index](docs/README.md), or go straight to a guide:
 | [Building apps](docs/app-development.md) | Build configuration, typed IPC, events, security, permissions, tray, and windows |
 | [Modules and plugins](docs/modules.md) | Shortcuts, clipboard, dialogs, notifications, storage, SQL, and deep links |
 | [Local AI](docs/local-ai.md) | llama.cpp, whisper.cpp, GPU backends, chat, and dictation |
+| [Text to speech](docs/tts.md) | `oriel.tts`: Kokoro voices offline, verified downloads, streaming playback, CPU or GPU |
 | [Application updates](docs/updater.md) | Signed manifests, update payloads, and runtime APIs |
 | [Packaging](docs/packaging.md) | Linux packages, Windows installers, macOS bundles, and signing |
 | [Platforms](docs/platforms.md) | Desktop support, prerequisites, and cross-compilation |

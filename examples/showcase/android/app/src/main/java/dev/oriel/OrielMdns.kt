@@ -339,11 +339,18 @@ internal object OrielMdns {
             val addrs = addresses(si).mapNotNull { it.hostAddress }.take(255)
             out.writeByte(addrs.size)
             for (a in addrs) out.writeBytes16(a.bytes())
-            val attrs = (si.attributes ?: emptyMap()).entries.take(255)
-            out.writeByte(attrs.size)
+            // Android's ArrayMap entry set does not implement toArray.
+            // Kotlin take() copies small collections through that method,
+            // throwing on Android 12 when there is more than one TXT entry.
+            val attrs = si.attributes ?: emptyMap()
+            val count = minOf(attrs.size, 255)
+            out.writeByte(count)
+            var written = 0
             for ((k, v) in attrs) {
+                if (written == count) break
                 out.writeBytes16(k.bytes())
                 out.writeBytes16(v ?: ByteArray(0))
+                written++
             }
         }
         return bytes.toByteArray()

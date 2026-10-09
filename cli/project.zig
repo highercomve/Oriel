@@ -204,6 +204,22 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
     var child_env = try ctx.environ.clone(ctx.gpa);
     defer child_env.deinit();
 
+    // `oriel dev` rebuilds after an edit with its own `zig build build-dev`
+    // (tools/dev_runner.zig). Zig's --fork=<path> never reaches build.zig, so
+    // it goes to the rebuild through the environment (as given: Zig resolves a
+    // relative one against the project root, where the rebuild runs too).
+    if (step != null and std.mem.eql(u8, step.?, "dev")) {
+        var zig_args: std.ArrayList(u8) = .empty;
+        defer zig_args.deinit(ctx.gpa);
+        for (effective_args) |a| {
+            if (std.mem.eql(u8, a, "--")) break;
+            if (!std.mem.startsWith(u8, a, "--fork=")) continue;
+            if (zig_args.items.len != 0) try zig_args.append(ctx.gpa, '\n');
+            try zig_args.appendSlice(ctx.gpa, a);
+        }
+        if (zig_args.items.len != 0) try child_env.put("ORIEL_DEV_ZIG_ARGS", zig_args.items);
+    }
+
     // Check Node.js & npm
     const needs_node = projectNeedsNode(ctx.io, root);
     const system_node = try ctx.findExecutable("node");

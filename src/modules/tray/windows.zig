@@ -266,51 +266,59 @@ fn handleTrayCallback(wParam: win32.WPARAM, lParam: win32.LPARAM) void {
 fn createIcon(gpa: std.mem.Allocator, icon: Icon) !win32.HICON {
     switch (icon) {
         .png => |bytes| {
-            // First try direct PNG creation supported in Windows Vista+
-            if (win32.CreateIconFromResourceEx(bytes.ptr, @intCast(bytes.len), win32.TRUE, 0x00030000, 0, 0, 0)) |h| {
-                return h;
+            // Decoded here first. CreateIconFromResourceEx decodes a PNG
+            // through WIC, and a tray create/deinit cycle with it grew the
+            // process's kernel handles by 3-4 each time (Windows 11).
+            if (pngIcon(gpa, bytes)) |h| return h else |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => {},
             }
-            // Fallback: decode PNG with zigimg and create HICON via CreateIconIndirect
-            var img = zigimg.Image.fromMemory(gpa, bytes) catch return error.InvalidIcon;
-            defer img.deinit(gpa);
-
-            img.convert(gpa, .rgba32) catch return error.InvalidIcon;
-            const width: c_int = @intCast(img.width);
-            const height: c_int = @intCast(img.height);
-            const pixels = img.pixels.rgba32;
-
-            var bgra = try gpa.alloc(u8, pixels.len * 4);
-            defer gpa.free(bgra);
-            for (pixels, 0..) |p, i| {
-                bgra[i * 4 + 0] = p.b;
-                bgra[i * 4 + 1] = p.g;
-                bgra[i * 4 + 2] = p.r;
-                bgra[i * 4 + 3] = p.a;
-            }
-
-            const hbmColor = win32.CreateBitmap(width, height, 1, 32, bgra.ptr) orelse return error.CreateBitmapFailed;
-            defer _ = win32.DeleteObject(hbmColor);
-
-            const mask_pitch = ((@as(usize, @intCast(width)) + 31) / 32) * 4;
-            const mask_bytes = try gpa.alloc(u8, mask_pitch * @as(usize, @intCast(height)));
-            defer gpa.free(mask_bytes);
-            @memset(mask_bytes, 0);
-
-            const hbmMask = win32.CreateBitmap(width, height, 1, 1, mask_bytes.ptr) orelse return error.CreateBitmapFailed;
-            defer _ = win32.DeleteObject(hbmMask);
-
-            var ii = win32.ICONINFO{
-                .fIcon = win32.TRUE,
-                .xHotspot = 0,
-                .yHotspot = 0,
-                .hbmMask = hbmMask,
-                .hbmColor = hbmColor,
-            };
-
-            return win32.CreateIconIndirect(&ii) orelse error.CreateIconFailed;
+            // What zigimg can't decode (or a GDI failure): Windows' own.
+            return win32.CreateIconFromResourceEx(bytes.ptr, @intCast(bytes.len), win32.TRUE, 0x00030000, 0, 0, 0) orelse error.InvalidIcon;
         },
         .name => return error.NamedIconsNotSupportedOnWindows,
     }
+}
+
+/// A PNG decoded with zigimg, as an HICON (CreateIconIndirect, 32-bit with alpha).
+fn pngIcon(gpa: std.mem.Allocator, bytes: []const u8) !win32.HICON {
+    var img = zigimg.Image.fromMemory(gpa, bytes) catch return error.InvalidIcon;
+    defer img.deinit(gpa);
+
+    img.convert(gpa, .rgba32) catch return error.InvalidIcon;
+    const width: c_int = @intCast(img.width);
+    const height: c_int = @intCast(img.height);
+    const pixels = img.pixels.rgba32;
+
+    var bgra = try gpa.alloc(u8, pixels.len * 4);
+    defer gpa.free(bgra);
+    for (pixels, 0..) |p, i| {
+        bgra[i * 4 + 0] = p.b;
+        bgra[i * 4 + 1] = p.g;
+        bgra[i * 4 + 2] = p.r;
+        bgra[i * 4 + 3] = p.a;
+    }
+
+    const hbmColor = win32.CreateBitmap(width, height, 1, 32, bgra.ptr) orelse return error.CreateBitmapFailed;
+    defer _ = win32.DeleteObject(hbmColor);
+
+    const mask_pitch = ((@as(usize, @intCast(width)) + 31) / 32) * 4;
+    const mask_bytes = try gpa.alloc(u8, mask_pitch * @as(usize, @intCast(height)));
+    defer gpa.free(mask_bytes);
+    @memset(mask_bytes, 0);
+
+    const hbmMask = win32.CreateBitmap(width, height, 1, 1, mask_bytes.ptr) orelse return error.CreateBitmapFailed;
+    defer _ = win32.DeleteObject(hbmMask);
+
+    var ii = win32.ICONINFO{
+        .fIcon = win32.TRUE,
+        .xHotspot = 0,
+        .yHotspot = 0,
+        .hbmMask = hbmMask,
+        .hbmColor = hbmColor,
+    };
+
+    return win32.CreateIconIndirect(&ii) orelse error.CreateIconFailed;
 }
 
 pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check {

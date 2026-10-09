@@ -41,6 +41,9 @@ android {
     }
 
     sourceSets["main"].jniLibs.srcDirs("@@lib_dir@@")
+    // Oriel's runtime data (zig-out/android-assets: espeak-ng-data/ with
+    // -Dkokoro), extracted to filesDir by the Kotlin runtime.
+    sourceSets["main"].assets.srcDirs("@@assets_dir@@")
 
     packaging {
         // Release libraries come stripped from Zig, Debug ones keep their

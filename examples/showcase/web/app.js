@@ -44,6 +44,7 @@ function route() {
   }
   current = index;
   if (id === "chat" && !matchMedia("(pointer: coarse)").matches) $("chat-input").focus();
+  if (id === "speak" && !matchMedia("(pointer: coarse)").matches) $("tts-text").focus();
   if (id === "notes") {
     loadNotes();
     // A keyboard and mouse: type right away (a touch screen would pop the keyboard up).
@@ -65,6 +66,7 @@ function renderNotes(list) {
     li.innerHTML = "<div><p></p><small></small></div>";
     li.querySelector("p").textContent = n.text;
     li.querySelector("small").textContent = n.created_at;
+    li.append(readButton(n.text, false, (m) => setResult("note-out", m, "err")));
     const del = document.createElement("button");
     del.className = "btn ghost icon";
     del.setAttribute("aria-label", "Delete the note");
@@ -145,7 +147,7 @@ listen("anywhere", (a) => {
 function setupKeys() {
   const keys = [];
   if (info.hotkeys && !info.android) keys.push([info.hotkey.toUpperCase(), "Dictate into any app (system-wide)"]);
-  if (info.android || info.menu) keys.push(["CTRL+SHIFT+D", "Start or stop dictation"], ["CTRL+1 … 6", "Switch tabs"]);
+  if (info.android || info.menu) keys.push(["CTRL+SHIFT+D", "Start or stop dictation"], ["CTRL+1 … 7", "Switch tabs"]);
   keys.push(["ENTER", "Send a chat message (Shift+Enter: new line)"]);
   if (info.android) keys.push(["META+/", "List this app's shortcuts (Android)"]);
   if (!keys.length) keys.push(["—", "No keyboard shortcuts on this platform"]);
@@ -406,8 +408,22 @@ const friendly = {
   ContextFailed: "Not enough memory for the model's context.",
   Cancelled: "Stopped.",
   UnknownModel: "Pick a model first.",
+  // oriel.tts
+  NoVoice: "No voice for this language on the device: download one on the Speak tab.",
+  UnknownVoice: "Pick a voice first.",
+  EspeakDataMissing: "The phoneme data (espeak-ng-data) is missing: reinstall the app.",
+  VoiceFailed: "That voice file didn't load: delete it and download it again.",
+  LanguageFailed: "The phonemizer doesn't know this language.",
+  ModelLoadFailed: "The voice model didn't load (not enough memory, or a damaged file).",
+  SynthesisFailed: "Nothing in that text could be read aloud.",
+  ChecksumMismatch: "The download was damaged: try again.",
+  AlreadyDownloading: "Another download is running: wait for it.",
+  Downloading: "It's still downloading.",
+  Speaking: "Stop speaking first.",
 };
 const why = (e) => { const n = String(e?.message || e); return friendly[n] || `Error: ${n}`; };
+// Speech errors: NoModel is the voice model here.
+const speakWhy = (e) => (String(e?.message || e) === "NoModel" ? "Download the voice model on the Speak tab first." : why(e));
 
 function resetRec() {
   const btn = $("dict-rec");
@@ -751,6 +767,8 @@ $("chat-form").addEventListener("submit", async (e) => {
       (r.reused_tokens ? ` · ${r.reused_tokens} of ${r.prompt_tokens} prompt tokens reused` : "") +
       (r.load_ms ? ` · loaded in ${(r.load_ms / 1000).toFixed(1)} s` : "") + (r.stop === "cancelled" ? " · stopped" : "");
     chatState.bubble.append(meta);
+    // Replies are Markdown: read as prose.
+    if (r.text.trim()) chatState.bubble.append(readButton(r.text, true, (m) => { $("chat-state").textContent = m; }));
     $("chat-state").textContent = "";
   } catch (err) {
     chatState.messages.pop();
@@ -854,6 +872,316 @@ function dictMaybeInit() {
 }
 addEventListener("hashchange", dictMaybeInit);
 dictMaybeInit();
+
+
+// ---------------------------------------------------------------------------
+// Speak: oriel.tts, Kokoro 82M on this device. The text is cut into chunks
+// and sound starts as soon as the first is ready; "tts:state" follows the
+// utterance. "Read aloud" on chat replies and notes uses the same command.
+
+const tts = { status: null, model: null, voice: "auto", speed: 1, backend: "auto", lang: "en-us", busy: false, btn: null, seq: 0, note: "" };
+
+const ttsSamples = {
+  en: "Hello! This is Oriel reading aloud, right on this device: nothing leaves it. Pick a voice, or leave it on Auto, which follows the language of the text.",
+  es: "¡Hola! Soy Oriel y leo en voz alta en este dispositivo, sin enviar nada a internet. Elige una voz, o deja Auto, que sigue el idioma del texto.",
+  fr: "Bonjour ! C'est Oriel qui lit à voix haute, directement sur cet appareil : rien n'en sort. Choisissez une voix, ou laissez Auto suivre la langue du texte.",
+  md: "# What's new\n\n- **Speak**: text to speech with [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), offline.\n- *Read aloud* on chat replies and notes.\n\nMarkdown is read as prose: no asterisks, no web addresses spelled out.",
+};
+const langNames = { "en-us": "English (US)", "en-gb": "English (UK)", es: "Español", fr: "Français", "pt-br": "Português", it: "Italiano", ja: "日本語", zh: "中文", hi: "हिन्दी", ru: "Русский" };
+const langName = (l) => langNames[l] || l;
+const family = (l) => l.split("-")[0];
+const ttsFile = (id) => (id.startsWith("kokoro-") ? `${id}.gguf` : `kokoro-voice-${id}.gguf`);
+const voiceById = (id) => tts.status?.voices.find((v) => v.id === id);
+
+function setTtsState(text) { $("tts-state").textContent = text; }
+
+async function ttsRefresh() {
+  const st = await invoke("tts_status");
+  tts.status = st;
+  if (!tts.model || !st.models.some((m) => m.id === tts.model)) tts.model = (st.models.find((m) => m.present) || st.models[0]).id;
+  const seg = $("tts-model");
+  seg.innerHTML = "";
+  for (const m of st.models) {
+    const b = document.createElement("button");
+    b.dataset.value = m.id;
+    b.innerHTML = `${m.id.split("-").pop().toUpperCase()}<small>${m.present ? '<span class="have">✓ ready</span>' : `${m.mb} MB`}</small>`;
+    b.title = m.label;
+    seg.append(b);
+  }
+  // Voices grouped by language (the catalog lists them so).
+  const sel = $("tts-voice");
+  sel.innerHTML = '<option value="auto">Auto: the language of the text</option>';
+  let group = null;
+  for (const v of st.voices) {
+    const [lang, name] = v.label.split(" · ");
+    if (group?.label !== lang) {
+      group = document.createElement("optgroup");
+      group.label = lang;
+      sel.append(group);
+    }
+    const o = document.createElement("option");
+    o.value = v.id;
+    o.textContent = `${name || v.id}${v.present ? " ✓" : " (download)"}`;
+    group.append(o);
+  }
+  if (tts.voice !== "auto" && !voiceById(tts.voice)) tts.voice = "auto";
+  sel.value = tts.voice;
+  const voicesHere = st.voices.filter((v) => v.present).length;
+  $("dev-tts").textContent = `${st.loaded ? `${st.loaded} on ${st.backend}` : st.gpu ? `${st.backend} (${st.gpu})` : "CPU"} · ${voicesHere} voice${voicesHere === 1 ? "" : "s"}`;
+  ttsRender();
+}
+
+// What Auto reads with: a voice of the language on the device, else one of
+// its family, else any (oriel.tts's own order). `missing`: one to download.
+function autoVoice(lang) {
+  const vs = tts.status.voices;
+  const here = vs.find((v) => v.present && v.lang === lang) || vs.find((v) => v.present && family(v.lang) === family(lang));
+  const missing = here ? null : vs.find((v) => v.lang === lang) || vs.find((v) => family(v.lang) === family(lang)) || null;
+  return { voice: here || vs.find((v) => v.present) || null, missing };
+}
+
+function ttsRender() {
+  const st = tts.status;
+  if (!st) return;
+  const m = st.models.find((x) => x.id === tts.model);
+  for (const b of $("tts-model").querySelectorAll("button")) b.setAttribute("aria-checked", String(b.dataset.value === m.id));
+  // Where it runs: the loaded model's backend, else what Auto would use.
+  const where = st.loaded === m.id ? st.backend : st.gpu && tts.backend === "auto" ? `${st.backend} · ${st.gpu}` : "CPU";
+  const chipEl = $("tts-backend");
+  chipEl.className = "chip status " + (where.startsWith("CPU") ? "cpu" : "gpu");
+  chipEl.querySelector("b").textContent = `${m.label} · ${where}`;
+  $("tts-get").hidden = m.present;
+  $("tts-have").hidden = !m.present;
+  $("tts-have-text").textContent = `${m.mb} MB on this device`;
+  $("tts-missing").textContent = `Or copy ${ttsFile(m.id)} to ${st.models_dir}${info?.os === "windows" ? "\\" : "/"}`;
+  $("tts-download").disabled = !!st.downloading;
+  $("tts-delete").disabled = tts.busy;
+
+  // The voice: picked, or what Auto reads this text with.
+  let target = null; // a voice to offer for download
+  let ready;
+  const picked = tts.voice === "auto" ? null : voiceById(tts.voice);
+  if (picked) {
+    ready = picked.present;
+    if (!picked.present) target = picked;
+    $("tts-voice-note").textContent = `Reads in ${langName(picked.lang)}, whatever the text's language.`;
+  } else {
+    const a = autoVoice(tts.lang);
+    ready = !!a.voice;
+    target = a.missing;
+    $("tts-voice-note").textContent = !a.voice ? `This text looks ${langName(tts.lang)}: download a voice for it.`
+      : a.missing ? `This text looks ${langName(tts.lang)}, but there's no voice for it here: ${a.voice.label} reads it.`
+      : `This text looks ${langName(tts.lang)}: ${a.voice.label} reads it.`;
+  }
+  $("tts-voice-have").hidden = !picked?.present;
+  $("tts-voice-have-text").textContent = picked ? `${picked.label} on this device` : "";
+  $("tts-voice-delete").disabled = tts.busy;
+  $("tts-voice-get").hidden = !target;
+  if (target) {
+    $("tts-voice-get").dataset.id = target.id;
+    $("tts-voice-download").querySelector("span").textContent = `Download ${target.label} (0.5 MB)`;
+    $("tts-voice-download").disabled = !!st.downloading;
+  }
+
+  for (const b of $("tts-speed").querySelectorAll("button")) b.setAttribute("aria-checked", String(+b.dataset.value === tts.speed));
+  $("tts-proc-field").hidden = !st.gpu;
+  for (const b of $("tts-proc").querySelectorAll("button")) b.setAttribute("aria-checked", String(b.dataset.value === tts.backend));
+  $("tts-proc-note").textContent = st.gpu ? `Auto: the GPU (${st.gpu}); a model it can't take runs on the CPU.` : "";
+  $("tts-espeak").textContent = st.espeak_data ? `Phonemes: espeak-ng data in ${st.espeak_data}` : "No espeak-ng data found: speech can't start.";
+
+  const mine = tts.busy && tts.btn === $("tts-speak");
+  const btn = $("tts-speak");
+  btn.disabled = !mine && (!m.present || !ready);
+  btn.classList.toggle("speaking", mine);
+  btn.querySelector("use").setAttribute("href", mine ? "#i-stop" : "#i-speaker");
+  btn.querySelector("span").textContent = mine ? "Stop" : "Speak";
+  if (!tts.busy) {
+    setTtsState(!m.present ? `Download ${m.label} (${m.mb} MB) to speak`
+      : !ready ? "Download a voice to speak"
+      : !st.espeak_data ? why("EspeakDataMissing")
+      : tts.note || "Ready");
+  }
+}
+
+// The language Auto would read the text in (oriel.tts.guessLanguage).
+let guessTimer = null;
+function ttsGuess() {
+  clearTimeout(guessTimer);
+  guessTimer = setTimeout(async () => {
+    try { tts.lang = await invoke("tts_guess", { text: $("tts-text").value }); } catch { /* keep the last one */ }
+    ttsRender();
+  }, 250);
+}
+$("tts-text").addEventListener("input", ttsGuess);
+$("tts-text").addEventListener("keydown", (e) => {
+  // Ctrl+Enter (Cmd+Enter): Speak or Stop.
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); if (!$("tts-speak").disabled) $("tts-speak").click(); }
+});
+$("tts-samples").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  $("tts-text").value = ttsSamples[b.dataset.lang];
+  ttsGuess();
+});
+segmented($("tts-model"), (v) => { tts.model = v; ttsRender(); });
+segmented($("tts-speed"), (v) => { tts.speed = +v; ttsRender(); });
+segmented($("tts-proc"), (v) => { tts.backend = v; ttsRender(); });
+$("tts-voice").addEventListener("change", () => { tts.voice = $("tts-voice").value; ttsRender(); });
+
+// A speaker button shows a stop square while its utterance plays.
+function markSpeaking(btn, on) {
+  if (!btn || btn.id === "tts-speak") return;
+  btn.classList.toggle("speaking", on);
+  btn.querySelector("use").setAttribute("href", on ? "#i-stop" : "#i-speaker");
+  btn.setAttribute("aria-label", on ? "Stop reading" : "Read aloud");
+}
+
+// Read `text` aloud for `btn` (the same button again: stop). A new one
+// stops the current one (oriel.tts plays one utterance at a time); the
+// replaced call returns with `stopped`. Null when this click only stopped.
+async function say(text, options, btn) {
+  if (tts.busy && tts.btn === btn) { await invoke("tts_stop"); return null; }
+  const seq = ++tts.seq;
+  markSpeaking(tts.btn, false);
+  tts.busy = true;
+  tts.btn = btn;
+  markSpeaking(btn, true);
+  ttsRender();
+  try {
+    return await invoke("tts_speak", { text, options: { speed: tts.speed, backend: tts.backend, ...options } });
+  } finally {
+    if (seq === tts.seq) {
+      markSpeaking(btn, false);
+      tts.busy = false;
+      tts.btn = null;
+      ttsRender();
+    }
+  }
+}
+
+function readButton(text, markdown, report) {
+  const b = document.createElement("button");
+  b.className = "btn ghost icon read";
+  b.title = "Read aloud";
+  b.setAttribute("aria-label", "Read aloud");
+  b.innerHTML = '<svg><use href="#i-speaker"/></svg>';
+  b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    try { await say(text, { markdown }, b); } catch (err) { report(speakWhy(err)); }
+  });
+  return b;
+}
+
+$("tts-speak").addEventListener("click", async () => {
+  const btn = $("tts-speak");
+  if (tts.busy && tts.btn === btn) return invoke("tts_stop");
+  const text = $("tts-text").value.trim();
+  if (!text) return setTtsState("Write something to read first.");
+  const picked = tts.voice === "auto" ? null : voiceById(tts.voice);
+  tts.note = "";
+  setTtsState("Starting…");
+  try {
+    // A picked voice reads in its own language; Auto guesses it.
+    const r = await say(text, { model: tts.model, voice: tts.voice, lang: picked ? picked.lang : "auto", markdown: $("tts-markdown").checked }, btn);
+    if (r) { addSpoken(text, r); tts.note = r.stopped ? "Stopped" : "Finished"; }
+  } catch (e) {
+    tts.note = speakWhy(e);
+  }
+  ttsRender();
+  ttsRefresh().catch(() => {}); // the backend it loaded on
+});
+
+listen("tts:state", (s) => {
+  if (s.phase === "idle" && !tts.busy) return; // the page's own render says it
+  const v = voiceById(s.voice);
+  const label = { loading: "Loading the voice model…", generating: "Reading…", playing: `Speaking${v ? ` · ${v.label}` : ""}`,
+    idle: s.message === "Stopped" ? "Stopped" : "Finished", error: speakWhy(s.message) }[s.phase] || s.phase;
+  setTtsState(label);
+});
+
+// After each utterance: what it measured.
+function addSpoken(text, r) {
+  const card = document.createElement("div");
+  card.className = "card transcript spoken";
+  const p = document.createElement("p");
+  p.textContent = text.length > 160 ? text.slice(0, 157) + "…" : text;
+  const rtf = r.audio_s > 0 ? r.synth_ms / 1000 / r.audio_s : 0;
+  const chips = document.createElement("div");
+  chips.className = "chips";
+  chips.append(
+    chip(r.backend, r.backend !== "CPU" ? "gpu" : "cpu"),
+    chip(voiceById(r.voice)?.label || r.voice),
+    chip(`first audio ${r.first_audio_ms} ms`),
+    chip(rtf ? `RTF ${rtf.toFixed(2)} · ${(1 / rtf).toFixed(1)}× real time` : "no audio"),
+    chip(`${r.chunks} chunk${r.chunks === 1 ? "" : "s"} · ${r.audio_s.toFixed(1)} s`),
+    chip(r.gap_ms ? `${r.gap_ms} ms of gaps` : "no gaps", r.gap_ms ? "cpu" : ""),
+  );
+  if (r.load_ms) chips.append(chip(`loaded in ${r.load_ms} ms`));
+  if (r.stopped) chips.append(chip("stopped"));
+  card.append(p, chips);
+  $("tts-out").prepend(card);
+  while ($("tts-out").children.length > 5) $("tts-out").lastChild.remove();
+  tts.last = r;
+}
+
+async function ttsDownload(id, getEl, bar) {
+  const btn = getEl.querySelector(".btn");
+  btn.disabled = true;
+  getEl.querySelector(".progress").hidden = false;
+  $(bar).style.width = "0";
+  tts.note = "";
+  try { await invoke("tts_download", { id }); } catch (e) { tts.note = `Download failed: ${why(e)}`; }
+  getEl.querySelector(".progress").hidden = true;
+  await ttsRefresh();
+}
+$("tts-download").addEventListener("click", () => ttsDownload(tts.model, $("tts-get"), "tts-progress"));
+$("tts-voice-download").addEventListener("click", () => ttsDownload($("tts-voice-get").dataset.id, $("tts-voice-get"), "tts-voice-progress"));
+listen("tts:download", (p) => {
+  const bar = p.id === tts.model ? "tts-progress" : "tts-voice-progress";
+  $(bar).style.width = `${Math.round((100 * p.done_mb) / Math.max(1, p.total_mb))}%`;
+  setTtsState(`Downloading ${p.id}: ${p.done_mb} of ${p.total_mb} MB`);
+});
+
+// Delete: a second tap within 3 s confirms.
+function confirmTap(btn, run) {
+  const label = btn.querySelector("span");
+  if (!btn.classList.contains("confirm")) {
+    btn.classList.add("confirm");
+    label.textContent = "Tap to confirm";
+    btn._disarm = setTimeout(() => { btn.classList.remove("confirm"); label.textContent = "Delete"; }, 3000);
+    return;
+  }
+  clearTimeout(btn._disarm);
+  btn.classList.remove("confirm");
+  label.textContent = "Delete";
+  run();
+}
+async function ttsDelete(id) {
+  tts.note = "";
+  try { await invoke("tts_delete", { id }); } catch (e) { tts.note = `Couldn't delete ${id}: ${speakWhy(e)}`; }
+  await ttsRefresh();
+}
+$("tts-delete").addEventListener("click", () => confirmTap($("tts-delete"), () => ttsDelete(tts.model)));
+$("tts-voice-delete").addEventListener("click", () => confirmTap($("tts-voice-delete"), () => ttsDelete(tts.voice)));
+
+// With a model and a voice on the device, load them now (on a GPU, also
+// its pipelines): the first Speak then starts in well under a second.
+// Quietly: a missing model is the download row's to explain.
+function ttsWarmUp() {
+  const st = tts.status;
+  if (!st?.models.some((m) => m.present) || !st.voices.some((v) => v.present)) return;
+  invoke("tts_warm_up", { model: tts.model, voice: tts.voice, backend: tts.backend }).catch(() => {});
+}
+
+// The first visit to the tab (or the App tab) asks for the status, which
+// loads the GPU backend (a self-test): not at startup.
+function ttsMaybeInit() {
+  if (!tts.status && (location.hash === "#speak" || location.hash === "#app")) {
+    ttsRefresh().then(ttsGuess).then(ttsWarmUp).catch((e) => setTtsState(why(e)));
+  }
+}
+addEventListener("hashchange", ttsMaybeInit);
+ttsMaybeInit();
 
 // Keyboard shortcuts (Android, hardware keyboard): registered in Zig, so
 // they're listed in the system's Meta+/ helper.

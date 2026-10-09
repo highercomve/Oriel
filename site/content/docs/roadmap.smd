@@ -92,6 +92,14 @@ A local LLM in the app, tuned the same way: models (Qwen2.5 0.5B/1.5B, Llama 3.2
 
 `examples/showcase` replaces the per-platform and per-feature examples: one app using every feature, for Linux, Windows, macOS, Android and iOS.
 
+## Offline text to speech (`oriel.tts`)
+
+Offline neural text to speech with Kokoro-82M voices: verified SHA-256 downloads, bundled espeak-ng phoneme data compiled at build time for all platforms, adaptive chunking with quick initial audio, and streaming playback on CPU or GPU (CUDA, Vulkan, Metal).
+
+## Windows mDNS and system capabilities
+
+Native mDNS service discovery and registration on Windows using `dnsapi`, drag-and-drop support on the iOS native renderer, and safe file dialog validation.
+
 ## Native renderer (experimental, in main)
 
 An optional renderer for the same HTML, CSS and JavaScript, without a WebView: QuickJS, a DOM written in Zig, Yoga layout and platform drawing on Linux, Windows, macOS, Android and iOS. React, Vue, Svelte, Preact, CSS-in-JS and Alpine (with its CSP build or an explicit policy) run on it. The showcase runs in both renderers.

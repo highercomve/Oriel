@@ -1,6 +1,7 @@
 //! Oriel Showcase: one app for Linux, Windows, macOS, Android and iOS that
 //! uses every Oriel feature. Each tab of the page is a feature area:
-//! Dictate (oriel.dictation), Chat (oriel.chat), Notes (sql, deep links),
+//! Dictate (oriel.dictation), Chat (oriel.chat), Speak (oriel.tts),
+//! Notes (sql, deep links),
 //! Files (dialog), System (clipboard, notifications, shortcuts, dictate
 //! anywhere) and App (windows, IPC, events, the store, the device).
 
@@ -11,6 +12,7 @@ const app = @import("oriel_app");
 
 const dictation = oriel.dictation;
 const chat = oriel.chat;
+const tts = oriel.tts;
 const notes = @import("notes.zig");
 const anywhere = @import("anywhere.zig");
 
@@ -31,6 +33,9 @@ pub const Events = struct {
     @"chat:download": @FieldType(chat.Events, "chat:download"),
     @"chat:token": @FieldType(chat.Events, "chat:token"),
     @"chat:compare": @FieldType(chat.Events, "chat:compare"),
+    // oriel.tts's events: download progress, and what the utterance is doing.
+    @"tts:download": @FieldType(tts.Events, "tts:download"),
+    @"tts:state": @FieldType(tts.Events, "tts:state"),
     /// A keyboard shortcut or a menu item (Android: a hardware keyboard,
     /// the Meta+/ list; desktop: the window menu).
     shortcut: struct { id: []const u8 },
@@ -49,7 +54,8 @@ pub const Commands = struct {
         "dictation_status", "dictation_download", "dictation_start",   "dictation_stop", "dictation_compare",
         "dictation_delete", "dictation_file",     "dictation_sources", "open_file",      "save_file",
         "paste",            "chat_status",        "chat_download",     "chat_delete",    "chat_send",
-        "chat_compare",
+        "chat_compare",     "tts_status",         "tts_download",      "tts_delete",     "tts_warm_up",
+        "tts_speak",
     };
 
     /// The IPC round trip of the pass criteria.
@@ -142,6 +148,45 @@ pub const Commands = struct {
 
     pub fn chat_compare(_: std.mem.Allocator, args: chat.Options) !chat.Comparison {
         return chat.compare(args);
+    }
+
+    // The Speak tab and "Read aloud": thin wrappers over oriel.tts.
+
+    pub fn tts_status(_: std.mem.Allocator) tts.Status {
+        return tts.status();
+    }
+
+    /// A model or a voice id; progress arrives as `tts:download`.
+    pub fn tts_download(_: std.mem.Allocator, args: struct { id: []const u8 }) !void {
+        try tts.download(args.id);
+    }
+
+    pub fn tts_delete(_: std.mem.Allocator, args: struct { id: []const u8 }) !void {
+        try tts.delete(args.id);
+    }
+
+    /// Reads the text aloud and returns when it has been played (or
+    /// stopped); `tts:state` follows it. A new one stops the current one.
+    pub fn tts_speak(gpa: std.mem.Allocator, args: struct { text: []const u8, options: tts.Options = .{} }) !tts.Result {
+        return tts.speak(gpa, args.text, args.options);
+    }
+
+    /// Loads the model and voice `tts_speak` would use, without speaking
+    /// (on a GPU it also compiles the pipelines): the Speak tab calls it on
+    /// its first visit, so the first sentence starts sooner.
+    pub fn tts_warm_up(_: std.mem.Allocator, args: tts.Options) !void {
+        try tts.warmUp(args);
+    }
+
+    /// Not async: it must run while tts_speak is busy on a worker.
+    pub fn tts_stop(_: std.mem.Allocator) void {
+        tts.stop();
+    }
+
+    /// The language "auto" reads the text in ("en-us", "es"...), for the
+    /// page to name the voice Auto picks.
+    pub fn tts_guess(_: std.mem.Allocator, args: struct { text: []const u8 }) []const u8 {
+        return tts.guessLanguage(args.text);
     }
 
     // Files: the platform's pickers (GTK, Win32, AppKit, Android's
@@ -271,6 +316,7 @@ fn onIosEvent(name: []const u8, _: []const u8) void {
     if (std.mem.eql(u8, name, "background") or std.mem.eql(u8, name, "memory-warning")) {
         dictation.unloadIdle();
         chat.unloadIdle();
+        tts.unloadIdle();
     }
 }
 
@@ -283,6 +329,7 @@ fn onSystemEvent(name: []const u8, data: []const u8) void {
         if (level >= 40) {
             oriel.App.spawn(dictation.unloadIdle, .{}) catch {};
             oriel.App.spawn(chat.unloadIdle, .{}) catch {};
+            oriel.App.spawn(tts.unloadIdle, .{}) catch {};
         }
         return;
     }
@@ -294,10 +341,11 @@ fn onSystemEvent(name: []const u8, data: []const u8) void {
 const tabs = [_]struct { id: []const u8, label: []const u8, key: []const u8 }{
     .{ .id = "tab:dictate", .label = "Dictate", .key = "ctrl+1" },
     .{ .id = "tab:chat", .label = "Chat", .key = "ctrl+2" },
-    .{ .id = "tab:notes", .label = "Notes", .key = "ctrl+3" },
-    .{ .id = "tab:files", .label = "Files", .key = "ctrl+4" },
-    .{ .id = "tab:system", .label = "System", .key = "ctrl+5" },
-    .{ .id = "tab:app", .label = "App", .key = "ctrl+6" },
+    .{ .id = "tab:speak", .label = "Speak", .key = "ctrl+3" },
+    .{ .id = "tab:notes", .label = "Notes", .key = "ctrl+4" },
+    .{ .id = "tab:files", .label = "Files", .key = "ctrl+5" },
+    .{ .id = "tab:system", .label = "System", .key = "ctrl+6" },
+    .{ .id = "tab:app", .label = "App", .key = "ctrl+7" },
 };
 
 fn onShortcut(id: []const u8) void {
@@ -416,6 +464,31 @@ fn headlessTranscribe(gpa: std.mem.Allocator, path: []const u8) !u8 {
     return 0;
 }
 
+/// The Speak tab's defaults on `text`: the voice and language guessed, the
+/// model and voice must be on the device (`--tts-download`).
+fn headlessSay(gpa: std.mem.Allocator, text: []const u8) !u8 {
+    const r = tts.speak(gpa, text, .{}) catch |err| {
+        switch (err) {
+            error.NoModel => std.debug.print("No Kokoro model in {s}: --tts-download {s}\n", .{ tts.status().models_dir, tts.models[0].id }),
+            error.NoVoice => std.debug.print("No voice for {s} in {s}: --tts-download <voice> (e.g. af_heart, ef_dora)\n", .{ tts.guessLanguage(text), tts.status().models_dir }),
+            error.EspeakDataMissing => std.debug.print("No espeak-ng data: espeak-ng-data/ next to the executable, in the models directory, or $KOKORO_ESPEAK_DATA_PATH\n", .{}),
+            else => std.debug.print("error: {s}\n", .{@errorName(err)}),
+        }
+        return 1;
+    };
+    std.debug.print("[{s} ({s}) on {s}: first audio in {d} ms (load {d} ms); {d} chunks, {d:.1} s of audio in {d} ms, {d:.2}x real time (RTF {d:.3}); gaps {d} ms{s}]\n", .{
+        r.voice,                                                         r.lang,                                                              r.backend, r.first_audio_ms,                   r.load_ms, r.chunks, r.audio_s, r.synth_ms,
+        r.audio_s * 1000 / @as(f32, @floatFromInt(@max(r.synth_ms, 1))), @as(f32, @floatFromInt(r.synth_ms)) / 1000 / @max(r.audio_s, 0.001), r.gap_ms,  if (r.stopped) "; stopped" else "",
+    });
+    return 0;
+}
+
+fn headlessTtsDownload(id: []const u8) !u8 {
+    try tts.download(id);
+    std.debug.print("{s}: present\n", .{id});
+    return 0;
+}
+
 fn printUsage() void {
     std.debug.print(
         \\Oriel Showcase: with no arguments, opens the app.
@@ -424,6 +497,8 @@ fn printUsage() void {
         \\  --download <model>    download a chat model (e.g. qwen2.5-0.5b)
         \\  --compare <model>     the Chat tab's GPU vs CPU comparison
         \\  --transcribe <wav>    transcribe a file (the whisper model must be downloaded)
+        \\  --say "<text>"        read it aloud with the Speak tab's defaults (model and voice must be downloaded)
+        \\  --tts-download <id>   download a voice model or a voice (kokoro-82m-q8_0, af_heart, ef_dora...)
         \\  --ui-test <name>      the page drives its own controls (web/uitest.js)
         \\  -h, --help            this help
         \\
@@ -442,6 +517,7 @@ pub fn main(init: std.process.Init) !u8 {
     defer init.gpa.free(models_dir);
     dictation.init(init.io, init.gpa, models_dir);
     chat.init(init.io, init.gpa, models_dir);
+    tts.init(init.io, init.gpa, models_dir);
     notes.init(init.io, app_id);
     anywhere.init(init.io);
     if (oriel.target.is_android) oriel.android.onSystemEvent(onSystemEvent);
@@ -451,7 +527,8 @@ pub fn main(init: std.process.Init) !u8 {
     // follow-up (the second turn reuses the KV cache), `--transcribe <wav>`
     // prints the text (the models must be in the models directory);
     // `--download <model>` fetches a chat model, `--compare <model>` runs
-    // the Chat tab's GPU/CPU comparison.
+    // the Chat tab's GPU/CPU comparison; `--say "<text>"` reads it aloud
+    // (`--tts-download <id>` fetches a voice model or a voice).
     if (!oriel.target.is_android and !oriel.target.is_ios) {
         var it = try init.minimal.args.iterateAllocator(init.gpa);
         defer it.deinit();
@@ -466,6 +543,8 @@ pub fn main(init: std.process.Init) !u8 {
                 if (std.mem.eql(u8, flag, "--download")) return headlessDownload(arg);
                 if (std.mem.eql(u8, flag, "--compare")) return headlessCompare(arg);
                 if (std.mem.eql(u8, flag, "--transcribe")) return headlessTranscribe(init.gpa, arg);
+                if (std.mem.eql(u8, flag, "--say")) return headlessSay(init.gpa, arg);
+                if (std.mem.eql(u8, flag, "--tts-download")) return headlessTtsDownload(arg);
             }
         }
     }
