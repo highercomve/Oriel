@@ -26,12 +26,9 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Logged in: anonymous pulls share the runners' Docker Hub rate limit.
-    container:
-      image: archlinux:latest
-      credentials:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    # Arch's own image on GitHub's registry: Docker Hub's shared rate limit
+    # (and its login service) kept failing these pulls.
+    container: ghcr.io/archlinux/archlinux:latest
     steps:
       - name: System packages
         run: pacman -Syu --noconfirm --needed $ARCH_PACKAGES
@@ -140,12 +137,9 @@ jobs:
   release:
     needs: [test, test-macos, test-windows]
     runs-on: ubuntu-latest
-    # Logged in: anonymous pulls share the runners' Docker Hub rate limit.
-    container:
-      image: archlinux:latest
-      credentials:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    # Arch's own image on GitHub's registry: Docker Hub's shared rate limit
+    # (and its login service) kept failing these pulls.
+    container: ghcr.io/archlinux/archlinux:latest
     permissions:
       contents: write
       actions: write
