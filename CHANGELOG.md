@@ -2,9 +2,9 @@
 
 Notable changes in Oriel releases.
 
-## [0.9.6] — 2026-10-08
+## [0.9.7] — 2026-10-08
 
-Oriel 0.9.6 adds opt-in offline text-to-speech with Kokoro-82M and
+Oriel 0.9.7 adds opt-in offline text-to-speech with Kokoro-82M and
 built-in PCM playback.
 
 ### Added
@@ -31,6 +31,7 @@ built-in PCM playback.
   including whisper-only TTS builds and coexistence with llama's mtmd audio code.
 - Optional TTS dependencies are downloaded lazily, keeping default builds lean.
 - Invalid synthesis output is rejected before converting C sample counts/rates.
+- macOS TTS builds use espeak-ng's upstream endian compatibility header.
 
 ### Validation and dependencies
 
@@ -43,6 +44,10 @@ built-in PCM playback.
 - The optional TTS stack includes espeak-ng (GPL-3.0-or-later). Oriel's framework
   remains MIT; upstream component license texts are included in `NOTICE` and
   `licenses/tts`. Model assets are supplied separately by apps.
+
+## [0.9.6] — Not released
+
+The macOS TTS build did not pass; v0.9.7 includes the portability fix.
 
 ## [0.9.5] — 2026-10-08
 

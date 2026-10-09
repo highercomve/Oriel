@@ -455,6 +455,9 @@ pub fn addGgml(
         // backends stay off. Its own config.h is generated here (espeak-ng's
         // CMake builds it from configure); our flags keep it minimal.
         const espeak_config = b.addWriteFiles();
+        // macOS has no system endian.h; upstream's shim handles Apple
+        // byte order and forwards to the native header on Linux.
+        _ = espeak_config.addCopyFile(espeak_dep.path("src/include/compat/endian.h"), "endian.h");
         _ = espeak_config.add("config.h",
             \\#pragma once
             \\#define LIBESPEAK_NG_EXPORT 1
