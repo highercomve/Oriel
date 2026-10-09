@@ -86,7 +86,10 @@ for name, ret, params in funcs:
     print(f"    *(void **)&fwd_{name} = dlsym(m, \"{name}\");")
 cond = " || ".join(f"!fwd_{n}" for n, _, _ in funcs)
 print(f"""    if ({cond}) {{
-        dlclose(m);
+        // No pointer may outlive the library.""")
+for name, ret, params in funcs:
+    print(f"        fwd_{name} = NULL;")
+print(f"""        dlclose(m);
         return;
     }}
     lib = m;

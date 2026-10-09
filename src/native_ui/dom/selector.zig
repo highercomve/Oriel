@@ -88,6 +88,12 @@ pub const Selector = struct {
 // ---------------------------------------------------------------------
 // Parsing
 
+/// Limits on a selector's shape: compiling recurses per nested :not/:is/
+/// :has, and matching per compound and nesting level (native stack frames
+/// the page's JS stack limit doesn't count).
+const max_nesting = 16;
+const max_compounds = 32;
+
 const Parser = struct {
     s: []const u8,
     i: usize = 0,
@@ -95,6 +101,8 @@ const Parser = struct {
     gpa: std.mem.Allocator,
     host: Host,
     atoms: *std.ArrayList(u32),
+    /// :not/:is/:has levels open.
+    nesting: u8 = 0,
 
     fn peek(p: *Parser) u8 {
         return if (p.i < p.s.len) p.s[p.i] else 0;
@@ -210,6 +218,7 @@ const Parser = struct {
                 _ = p.ws();
             }
             try combs.append(p.a, comb);
+            if (parts.items.len == max_compounds) return error.Syntax;
             try parts.append(p.a, try p.compound());
         }
         return .{ .parts = parts.items, .combs = combs.items };
@@ -344,6 +353,9 @@ const Parser = struct {
         if (has_args) p.i += 1;
         const P = Pseudo;
         if (has_args) {
+            if (p.nesting == max_nesting) return error.Syntax;
+            p.nesting += 1;
+            defer p.nesting -= 1;
             if (eq(u8, name, "not") or eq(u8, name, "is") or eq(u8, name, "where") or eq(u8, name, "matches")) {
                 const inner = try p.list(false);
                 try out.append(p.a, if (eq(u8, name, "not")) P{ .not = inner } else P{ .is = inner });
@@ -478,13 +490,14 @@ fn containsLower(hay: []const u8, needle: []const u8) bool {
 
 fn nthMatches(s: *Store, idx: Index, n: Nth) bool {
     // Position among siblings (1-based), counting elements (of the type).
-    var pos: i32 = 1;
+    var pos: i64 = 1;
     const name = s.get(idx).name;
     var sib = if (n.last) nextElement(s, idx) else prevElement(s, idx);
     while (sib != none) : (sib = if (n.last) nextElement(s, sib) else prevElement(s, sib)) {
         if (!n.of_type or s.get(sib).name == name) pos += 1;
     }
     if (n.a == 0) return pos == n.b;
+    // In i64: a and b are any i32 (`n-2147483648`, `-n+…`).
     const diff = pos - n.b;
     return @rem(diff, n.a) == 0 and @divTrunc(diff, n.a) >= 0;
 }
@@ -784,6 +797,9 @@ test "selectors" {
         .{ .sel = "li:nth-child(odd)", .idx = li3, .want = true },
         .{ .sel = "li:nth-child(2n)", .idx = li3, .want = false },
         .{ .sel = "li:nth-last-child(1)", .idx = li3, .want = true },
+        .{ .sel = "li:nth-child(n-2147483648)", .idx = li1, .want = true },
+        .{ .sel = "li:nth-child(-n-2147483648)", .idx = li1, .want = false },
+        .{ .sel = "li:nth-child(-n+2147483647)", .idx = li3, .want = true },
         .{ .sel = "p:first-of-type", .idx = p1, .want = true },
         .{ .sel = "p:last-of-type", .idx = p2, .want = true },
         .{ .sel = "p:empty", .idx = p1, .want = true },
@@ -829,4 +845,63 @@ test "selectors" {
     defer destroy(ta.allocator, all);
     m.query(main, all, &found, Found.add);
     try ta.expectEqualSlices(Index, &.{ li1, li2, li3, p1, p2 }, found.list.items);
+}
+
+test "a tree of any depth serializes and clones without recursion; selectors are bounded" {
+    const ta = std.testing;
+    const serialize = @import("serialize.zig");
+    var tj: TestJs = .{ .gpa = ta.allocator };
+    defer tj.deinit();
+    var s = try Store.init(ta.allocator, tj.js(), tj.atomOf("class"), tj.atomOf("id"));
+    defer s.deinit();
+    const Names = struct {
+        fn latin1(c: *anyopaque, atom: u32, len: *usize) ?[*]const u8 {
+            const n = TestJs.of(c).names.items[atom - 1];
+            len.* = n.len;
+            return n.ptr;
+        }
+        fn utf8(_: *anyopaque, _: u32, _: *usize) ?[*]const u8 {
+            return null;
+        }
+    };
+    var z: serialize.Serializer = .{ .store = &s, .gpa = ta.allocator, .host = .{ .ctx = &tj, .atomLatin1 = Names.latin1, .atomUtf8 = Names.utf8, .strings = tj.host() } };
+    defer z.deinit();
+    // <div><div>…<script>a<b</script>…</div>&lt;br&gt;</div>, 20000 levels deep (the
+    // recursive walks took a native frame or more per level).
+    const depth = 20_000;
+    const top = try s.createElement(tj.atomOf("div"));
+    var leaf = top;
+    for (1..depth) |_| {
+        const e = try s.createElement(tj.atomOf("div"));
+        try s.appendChild(leaf, e);
+        leaf = e;
+    }
+    const script = try s.createElement(tj.atomOf("script"));
+    try s.appendChild(leaf, script);
+    var code = tj.str("a<b");
+    try s.appendChild(script, try s.createData(.text, &code));
+    var br = tj.str("<br>");
+    try s.appendChild(top, try s.createData(.text, &br));
+    const copy = try s.clone(top, true);
+    for ([_]Index{ top, copy }) |root| {
+        const out = try z.serialize(root, true);
+        try ta.expectEqual(depth * "<div></div>".len + "<script>a<b</script>&lt;br&gt;".len, out.len);
+        try ta.expect(std.mem.startsWith(u8, out, "<div><div>"));
+        try ta.expect(std.mem.indexOf(u8, out, "<script>a<b</script></div>") != null);
+        try ta.expect(std.mem.endsWith(u8, out, "</div>&lt;br&gt;</div>"));
+    }
+    try ta.expectEqualStrings("a<b", try z.serialize(script, false));
+    s.dropIfUnused(copy);
+    s.dropIfUnused(top);
+    // Nesting and length past the limits don't compile.
+    var deep: std.ArrayList(u8) = .empty;
+    defer deep.deinit(ta.allocator);
+    for (0..max_nesting + 1) |_| try deep.appendSlice(ta.allocator, ":not(");
+    try deep.append(ta.allocator, 'a');
+    for (0..max_nesting + 1) |_| try deep.append(ta.allocator, ')');
+    try ta.expectError(error.Syntax, compile(ta.allocator, tj.host(), deep.items));
+    deep.clearRetainingCapacity();
+    for (0..max_compounds + 1) |_| try deep.appendSlice(ta.allocator, "a ");
+    try ta.expectError(error.Syntax, compile(ta.allocator, tj.host(), deep.items));
+    destroy(ta.allocator, try compile(ta.allocator, tj.host(), deep.items[0 .. 2 * max_compounds - 1]));
 }

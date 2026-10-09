@@ -82,9 +82,11 @@ fn menuLayout(menu: *Menu, id: i32, depth: i32) *glib.Variant {
     var children: std.ArrayList(*glib.Variant) = .empty;
     defer children.deinit(std.heap.smp_allocator);
     if (depth != 0) {
+        // `depth` comes from any session-bus caller: any negative means all.
+        const next = if (depth < 0) -1 else depth - 1;
         if (menu.node(id)) |n| {
             for (n.children) |child| {
-                children.append(std.heap.smp_allocator, glib.Variant.newVariant(menuLayout(menu, child, depth - 1))) catch break;
+                children.append(std.heap.smp_allocator, glib.Variant.newVariant(menuLayout(menu, child, next))) catch break;
             }
         }
     }
@@ -106,6 +108,7 @@ pub const Tray = struct {
     menu: Menu,
     strings: std.heap.ArenaAllocator,
     id: [:0]const u8,
+    /// `title`, `tooltip` and `icon_name` are owned by `gpa` (see common.replaceString).
     title: [:0]const u8,
     tooltip: [:0]const u8,
     icon_name: [:0]const u8,
@@ -146,10 +149,11 @@ pub const Tray = struct {
         };
         errdefer self.menu.deinit();
         errdefer self.strings.deinit();
+        errdefer self.freeOwned();
         const a = self.strings.allocator();
         self.id = try a.dupeZ(u8, options.id);
-        self.title = try a.dupeZ(u8, options.title);
-        self.tooltip = try a.dupeZ(u8, options.tooltip);
+        try common.replaceString(gpa, &self.title, options.title);
+        try common.replaceString(gpa, &self.tooltip, options.tooltip);
         self.service = try std.fmt.allocPrintSentinel(a, "org.kde.StatusNotifierItem-{d}-{d}", .{ std.os.linux.getpid(), instances }, 0);
         try self.applyIcon(options.icon);
         try self.menu.set(options.menu);
@@ -157,6 +161,8 @@ pub const Tray = struct {
         const info = try nodeInfo();
         self.item_reg = conn.registerObject(item_path, info.lookupInterface(item_iface).?, &vtable, self, &noFree, &err);
         if (self.item_reg == 0) return dbusError(err, error.RegisterObjectFailed);
+        // Unregister before `self` is freed, or D-Bus calls would reach freed memory.
+        errdefer _ = conn.unregisterObject(self.item_reg);
         self.menu_reg = conn.registerObject(menu_path, info.lookupInterface(menu_iface).?, &vtable, self, &noFree, &err);
         if (self.menu_reg == 0) return dbusError(err, error.RegisterObjectFailed);
 
@@ -171,10 +177,18 @@ pub const Tray = struct {
         _ = self.conn.unregisterObject(self.item_reg);
         _ = self.conn.unregisterObject(self.menu_reg);
         self.conn.unref();
-        if (self.pixmap) |p| p.deinit(self.gpa);
+        self.freeOwned();
         self.menu.deinit();
         self.strings.deinit();
         self.gpa.destroy(self);
+    }
+
+    fn freeOwned(self: *Tray) void {
+        if (self.pixmap) |p| p.deinit(self.gpa);
+        self.pixmap = null;
+        common.freeString(self.gpa, self.title);
+        common.freeString(self.gpa, self.tooltip);
+        common.freeString(self.gpa, self.icon_name);
     }
 
     /// Replace the whole menu.
@@ -196,12 +210,12 @@ pub const Tray = struct {
     }
 
     pub fn setTooltip(self: *Tray, tooltip: []const u8) !void {
-        self.tooltip = try self.strings.allocator().dupeZ(u8, tooltip);
+        try common.replaceString(self.gpa, &self.tooltip, tooltip);
         self.signal(item_path, item_iface, "NewToolTip", null);
     }
 
     pub fn setTitle(self: *Tray, title: []const u8) !void {
-        self.title = try self.strings.allocator().dupeZ(u8, title);
+        try common.replaceString(self.gpa, &self.title, title);
         self.signal(item_path, item_iface, "NewTitle", null);
     }
 
@@ -213,10 +227,10 @@ pub const Tray = struct {
     fn applyIcon(self: *Tray, icon: Icon) !void {
         if (self.pixmap) |p| p.deinit(self.gpa);
         self.pixmap = null;
-        self.icon_name = "";
+        try common.replaceString(self.gpa, &self.icon_name, "");
         switch (icon) {
             .png => |bytes| self.pixmap = try pixmapFromImage(self.gpa, bytes),
-            .name => |name| self.icon_name = try self.strings.allocator().dupeZ(u8, name),
+            .name => |name| try common.replaceString(self.gpa, &self.icon_name, name),
         }
     }
 
@@ -357,7 +371,11 @@ pub const Tray = struct {
                 defer ev.unref();
                 const event = ev.getChildValue(1);
                 defer event.unref();
-                if (std.mem.eql(u8, std.mem.span(event.getString(null)), "clicked")) self.click(childInt(ev, 0));
+                if (std.mem.eql(u8, std.mem.span(event.getString(null)), "clicked")) {
+                    // on_menu may deinit the tray (a "Quit" item): don't touch `self` again.
+                    self.click(childInt(ev, 0));
+                    break;
+                }
             }
         } else if (std.mem.eql(u8, method, "AboutToShow")) {
             var out = [_]*glib.Variant{glib.Variant.newBoolean(0)};

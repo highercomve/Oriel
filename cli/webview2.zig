@@ -512,6 +512,26 @@ pub const BoundedWriter = struct {
     }
 };
 
+/// Upper bound for the NuGet JSON documents `fetch` reads.
+pub const max_json_bytes = 16 * 1024 * 1024;
+
+/// `client.fetch(options)` with the body appended to `body`, failing with
+/// `error.ResponseTooLarge` past `limit` bytes.
+pub fn fetchBounded(
+    client: *std.http.Client,
+    options: std.http.Client.FetchOptions,
+    body: *std.Io.Writer.Allocating,
+    limit: usize,
+) !std.http.Client.FetchResult {
+    var buf: [1024]u8 = undefined;
+    var bounded = BoundedWriter.init(&body.writer, limit, &buf);
+    var opts = options;
+    opts.response_writer = &bounded.writer;
+    const res = client.fetch(opts) catch |err| return if (bounded.exceeded) error.ResponseTooLarge else err;
+    bounded.writer.flush() catch return if (bounded.exceeded) error.ResponseTooLarge else error.WriteFailed;
+    return res;
+}
+
 // ---------------------------------------------------------------------------
 // High-level fetch & run
 // ---------------------------------------------------------------------------
@@ -541,11 +561,10 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
         defer body.deinit();
 
         const index_url = ctx.environ.get("ORIEL_WEBVIEW2_INDEX_URL") orelse default_index_url;
-        const res = client.fetch(.{
+        const res = fetchBounded(&client, .{
             .location = .{ .url = index_url },
             .headers = .{ .user_agent = .{ .override = "oriel-cli" } },
-            .response_writer = &body.writer,
-        }) catch |err| {
+        }, &body, max_json_bytes) catch |err| {
             try ctx.err.print("error: failed to fetch NuGet package versions: {s}\n", .{@errorName(err)});
             return err;
         };
@@ -600,11 +619,10 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
     var reg_body: std.Io.Writer.Allocating = .init(arena);
     defer reg_body.deinit();
 
-    const reg_res = client.fetch(.{
+    const reg_res = fetchBounded(&client, .{
         .location = .{ .url = reg_url },
         .headers = .{ .user_agent = .{ .override = "oriel-cli" } },
-        .response_writer = &reg_body.writer,
-    }) catch |err| {
+    }, &reg_body, max_json_bytes) catch |err| {
         try ctx.err.print("error: failed to fetch registration catalog for version {s}: {s}\n", .{ version, @errorName(err) });
         return err;
     };
@@ -640,11 +658,10 @@ pub fn fetch(ctx: Context, arch: Arch, version_opt: ?[]const u8, out_dir: ?[]con
 
             var item_body: std.Io.Writer.Allocating = .init(arena);
             defer item_body.deinit();
-            const item_res = client.fetch(.{
+            const item_res = fetchBounded(&client, .{
                 .location = .{ .url = item_url },
                 .headers = .{ .user_agent = .{ .override = "oriel-cli" } },
-                .response_writer = &item_body.writer,
-            }) catch |err| {
+            }, &item_body, max_json_bytes) catch |err| {
                 try ctx.err.print("error: failed to fetch catalog item at {s}: {s}\n", .{ item_url, @errorName(err) });
                 return err;
             };
@@ -970,6 +987,19 @@ test "BoundedWriter enforces size limit" {
 
     // Writing 1 more byte exceeds limit
     try std.testing.expectError(error.WriteFailed, bounded.writer.writeAll("!"));
+    try std.testing.expect(bounded.exceeded);
+}
+
+test "BoundedWriter with a buffer checks the limit on flush" {
+    var body: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer body.deinit();
+    var buf: [8]u8 = undefined;
+    var bounded = BoundedWriter.init(&body.writer, 10, &buf);
+    try bounded.writer.writeAll("hello");
+    try bounded.writer.flush();
+    try std.testing.expectEqualStrings("hello", body.written());
+    try bounded.writer.writeAll("world!");
+    try std.testing.expectError(error.WriteFailed, bounded.writer.flush());
     try std.testing.expect(bounded.exceeded);
 }
 

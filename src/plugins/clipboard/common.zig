@@ -31,7 +31,8 @@ fn extractChannel(val: u32, mask: u32) u8 {
     const max_val = mask >> @intCast(shift);
     if (max_val == 0) return 0;
     if (max_val == 255) return @intCast(shifted);
-    return @intCast((shifted * 255 + max_val / 2) / max_val);
+    // u64: a mask wider than 24 bits overflows `shifted * 255` in u32.
+    return @intCast((@as(u64, shifted) * 255 + max_val / 2) / max_val);
 }
 
 /// Convert Windows DIB bytes (CF_DIB or CF_DIBV5) into standard RGBA32 pixels.
@@ -264,19 +265,21 @@ pub fn rgbaToDib(gpa: std.mem.Allocator, width: u32, height: u32, rgba_pixels: [
 /// - 4 bytes length (0)
 /// - 4 bytes chunk type ("IEND")
 /// - 4 bytes CRC
-/// This function finds the "IEND" marker and trims the slice to end after the CRC (8 bytes after "IEND").
-/// If no valid IEND marker is found or the data is not a PNG, returns the original slice.
+/// This function walks the chunk list to the IEND chunk (the bytes "IEND" can also
+/// occur inside compressed IDAT data) and trims the slice to end after its CRC.
+/// If no valid IEND chunk is found or the data is not a PNG, returns the original slice.
 pub fn trimPngPadding(data: []const u8) []const u8 {
     const png_magic = "\x89PNG\r\n\x1a\n";
     if (data.len < png_magic.len or !std.mem.startsWith(u8, data, png_magic)) {
         return data;
     }
-    const marker = "IEND";
-    if (std.mem.indexOf(u8, data, marker)) |idx| {
-        const end = idx + marker.len + 4; // 4 bytes marker + 4 bytes CRC
-        if (end <= data.len) {
-            return data[0..end];
-        }
+    var off: usize = png_magic.len;
+    while (data.len - off >= 12) { // 4 bytes length + 4 bytes type + 4 bytes CRC
+        const len = std.mem.readInt(u32, data[off..][0..4], .big);
+        if (len > data.len - off - 12) break;
+        const end = off + 12 + len;
+        if (std.mem.eql(u8, data[off + 4 .. off + 8], "IEND")) return data[0..end];
+        off = end;
     }
     return data;
 }
@@ -377,6 +380,15 @@ test "trimPngPadding trims trailing padding past IEND chunk" {
     // Non-PNG data stays unchanged
     const not_png = "just some text";
     try std.testing.expectEqualStrings(not_png, trimPngPadding(not_png));
+
+    // "IEND" bytes inside an earlier chunk's data don't cut the image short
+    const idat_png = "\x89PNG\r\n\x1a\n" ++ "\x00\x00\x00\x04IDATIEND\x00\x00\x00\x00" ++ "\x00\x00\x00\x00IEND\xaeB`\x82";
+    try std.testing.expectEqualStrings(idat_png, trimPngPadding(idat_png ++ "\x00\x00"));
+}
+
+test "extractChannel handles masks wider than 24 bits" {
+    try std.testing.expectEqual(@as(u8, 255), extractChannel(0xFFFFFFFF, 0xFFFFFFFF));
+    try std.testing.expectEqual(@as(u8, 128), extractChannel(0x80000000, 0xFFFFFFFF));
 }
 
 test "dibToRgba top-down 32 bpp" {

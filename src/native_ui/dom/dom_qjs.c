@@ -110,6 +110,15 @@ struct DomCtx {
     JSValue tag_protos, element_proto, foreign_proto;
     // The mutation hook (the JS side's observers), or undefined.
     JSValue hook;
+    // Page observers are on (not just the renderer's): records carry the
+    // added node's siblings.
+    bool page_observing;
+    // The mutations a binding's store operations reported, for the hook once
+    // the binding is done with the store (page JS never runs inside an
+    // operation): REC values per record, wrappers held so removed nodes live.
+    JSValue *pending;
+    uint32_t pending_head, pending_len, pending_cap;
+    bool delivering;
 };
 
 static JSClassID node_class_id;
@@ -244,9 +253,20 @@ static JSValue wrap(JSContext *ctx, DomCtx *dc, Index idx) {
         obj = JS_NewObjectProtoClass(ctx, dc->protos[which], node_class_id);
     }
     if (JS_IsException(obj)) return obj;
+    // The allocation may have run the cycle collector, whose finalizers can
+    // free a detached tree (no record is reused meanwhile): then there's no
+    // node any more (__nuiDom.nodeAt's index).
+    if (!nui_dom_alive(dc->dom, idx)) { JS_FreeValue(ctx, obj); return JS_NULL; }
     JS_SetOpaque(obj, (void *)(uintptr_t)idx);
     nui_dom_set_wrapper(dc->dom, idx, &obj);
     return obj;
+}
+
+// The wrapper for a node just made, which is dropped if that fails.
+static JSValue wrap_new(JSContext *ctx, DomCtx *dc, Index idx) {
+    JSValue w = wrap(ctx, dc, idx);
+    if (JS_IsException(w)) nui_dom_drop_if_unused(dc->dom, idx);
+    return w;
 }
 
 // Whether a node's wrapper carries state of its own: expandos, a changed
@@ -309,6 +329,18 @@ static JSAtom name_atom(JSContext *ctx, JSValueConst v) {
 
 // --- Node ----------------------------------------------------------------------
 
+// The bindings that change the tree: the mutation hook sees what they did
+// once they're done with the store (`deliver`).
+static JSValue deliver(JSContext *ctx, DomCtx *dc, JSValue ret);
+#define MUTATOR(fname)                                                                         \
+    static JSValue fname(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) { \
+        return deliver(ctx, dc_of(ctx), fname##_op(ctx, this_val, argc, argv));               \
+    }
+#define MUTATOR_SET(fname)                                                     \
+    static JSValue fname(JSContext *ctx, JSValueConst this_val, JSValueConst v) { \
+        return deliver(ctx, dc_of(ctx), fname##_op(ctx, this_val, v));          \
+    }
+
 #define THIS_NODE()                                   \
     DomCtx *dc = dc_of(ctx);                          \
     Index self = this_node(ctx, this_val);            \
@@ -367,12 +399,13 @@ static JSValue insert(JSContext *ctx, DomCtx *dc, Index parent, JSValueConst chi
     return JS_DupValue(ctx, child_v);
 }
 
-static JSValue node_append_child(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue node_append_child_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     return insert(ctx, dc, self, argv[0], 0);
 }
+MUTATOR(node_append_child)
 
-static JSValue node_insert_before(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue node_insert_before_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     Index ref = 0;
     if (argc > 1 && !JS_IsNull(argv[1]) && !JS_IsUndefined(argv[1])) {
@@ -381,8 +414,9 @@ static JSValue node_insert_before(JSContext *ctx, JSValueConst this_val, int arg
     }
     return insert(ctx, dc, self, argv[0], ref);
 }
+MUTATOR(node_insert_before)
 
-static JSValue node_remove_child(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue node_remove_child_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     Index child = arg_node(ctx, argv[0]);
     if (!child) return JS_EXCEPTION;
@@ -391,12 +425,14 @@ static JSValue node_remove_child(JSContext *ctx, JSValueConst this_val, int argc
     nui_dom_remove(dc->dom, child);
     return ret;
 }
+MUTATOR(node_remove_child)
 
-static JSValue node_remove(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue node_remove_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     nui_dom_remove(dc->dom, self);
     return JS_UNDEFINED;
 }
+MUTATOR(node_remove)
 
 static JSValue node_contains(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
@@ -436,15 +472,17 @@ static JSValue append_args(JSContext *ctx, DomCtx *dc, Index parent, Index ref, 
     return JS_UNDEFINED;
 }
 
-static JSValue node_append(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue node_append_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     return append_args(ctx, dc, self, 0, argc, argv);
 }
+MUTATOR(node_append)
 
-static JSValue node_prepend(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue node_prepend_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     return append_args(ctx, dc, self, nui_dom_first(dc->dom, self), argc, argv);
 }
+MUTATOR(node_prepend)
 
 // textContent: the descendants' text, concatenated (text and comment nodes:
 // their data; the document: null).
@@ -475,7 +513,7 @@ static JSValue node_get_text(JSContext *ctx, JSValueConst this_val) {
     return acc;
 }
 
-static JSValue node_set_text(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
+static JSValue node_set_text_op(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
     THIS_NODE();
     uint8_t k = nui_dom_kind(dc->dom, self);
     if (k == K_TEXT || k == K_COMMENT) {
@@ -500,6 +538,7 @@ static JSValue node_set_text(JSContext *ctx, JSValueConst this_val, JSValueConst
     JS_FreeValue(ctx, s);
     return JS_UNDEFINED;
 }
+MUTATOR_SET(node_set_text)
 
 // --- CharacterData (text, comments) ----------------------------------------------
 
@@ -509,7 +548,7 @@ static JSValue data_get(JSContext *ctx, JSValueConst this_val) {
     return d ? JS_DupValue(ctx, *d) : JS_NewString(ctx, "");
 }
 
-static JSValue data_set(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
+static JSValue data_set_op(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
     THIS_NODE();
     JSValue s = JS_ToString(ctx, v);
     if (JS_IsException(s)) return s;
@@ -517,6 +556,7 @@ static JSValue data_set(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
     JS_FreeValue(ctx, s);
     return JS_UNDEFINED;
 }
+MUTATOR_SET(data_set)
 
 // --- Element ----------------------------------------------------------------------
 
@@ -575,7 +615,7 @@ static JSValue el_has_attribute(JSContext *ctx, JSValueConst this_val, int argc,
     return JS_NewBool(ctx, has);
 }
 
-static JSValue el_set_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue el_set_attribute_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     JSAtom a = attr_atom(ctx, dc, self, argv[0]);
     if (a == JS_ATOM_NULL) return JS_EXCEPTION;
@@ -583,8 +623,9 @@ static JSValue el_set_attribute(JSContext *ctx, JSValueConst this_val, int argc,
     JS_FreeAtom(ctx, a);
     return r;
 }
+MUTATOR(el_set_attribute)
 
-static JSValue el_remove_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue el_remove_attribute_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     JSAtom a = attr_atom(ctx, dc, self, argv[0]);
     if (a == JS_ATOM_NULL) return JS_EXCEPTION;
@@ -592,27 +633,30 @@ static JSValue el_remove_attribute(JSContext *ctx, JSValueConst this_val, int ar
     JS_FreeAtom(ctx, a);
     return JS_UNDEFINED;
 }
+MUTATOR(el_remove_attribute)
 
 static JSValue el_get_class(JSContext *ctx, JSValueConst this_val) {
     THIS_NODE();
     JSValue r = get_attr_atom(ctx, dc, self, dc->a_class);
     return JS_IsNull(r) ? JS_NewString(ctx, "") : r;
 }
-static JSValue el_set_class(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
+static JSValue el_set_class_op(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
     THIS_NODE();
     return set_attr_atom(ctx, dc, self, dc->a_class, v);
 }
+MUTATOR_SET(el_set_class)
 static JSValue el_get_id(JSContext *ctx, JSValueConst this_val) {
     THIS_NODE();
     JSValue r = get_attr_atom(ctx, dc, self, dc->a_id);
     return JS_IsNull(r) ? JS_NewString(ctx, "") : r;
 }
-static JSValue el_set_id(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
+static JSValue el_set_id_op(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
     THIS_NODE();
     return set_attr_atom(ctx, dc, self, dc->a_id, v);
 }
+MUTATOR_SET(el_set_id)
 
-static JSValue el_set_inner_html(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
+static JSValue el_set_inner_html_op(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
     THIS_NODE();
     size_t len;
     const char *s = JS_ToCStringLen(ctx, &len, v);
@@ -628,6 +672,7 @@ static JSValue el_set_inner_html(JSContext *ctx, JSValueConst this_val, JSValueC
     nui_dom_drop_if_unused(dc->dom, f);
     return r ? throw_code(ctx, r) : JS_UNDEFINED;
 }
+MUTATOR_SET(el_set_inner_html)
 
 #define ELEM_WALK(fname, start, step)                                             \
     static JSValue fname(JSContext *ctx, JSValueConst this_val) {                 \
@@ -760,7 +805,7 @@ static Index fragment_of(JSContext *ctx, DomCtx *dc, JSValueConst v) {
     return f;
 }
 
-static JSValue el_set_outer_html(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
+static JSValue el_set_outer_html_op(JSContext *ctx, JSValueConst this_val, JSValueConst v) {
     THIS_NODE();
     Index parent = nui_dom_parent(dc->dom, self);
     if (!parent) return JS_UNDEFINED; // a detached element: nothing to replace (as browsers, minus the error)
@@ -772,6 +817,7 @@ static JSValue el_set_outer_html(JSContext *ctx, JSValueConst this_val, JSValueC
     nui_dom_remove(dc->dom, self);
     return JS_UNDEFINED;
 }
+MUTATOR_SET(el_set_outer_html)
 
 // insertAdjacent{HTML,Element,Text}: where the node goes for a position.
 static int adjacent(JSContext *ctx, DomCtx *dc, Index self, JSValueConst where, Index *parent, Index *ref) {
@@ -789,7 +835,7 @@ static int adjacent(JSContext *ctx, DomCtx *dc, Index self, JSValueConst where, 
     return ok;
 }
 
-static JSValue el_insert_adjacent_html(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue el_insert_adjacent_html_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     Index parent = 0, ref = 0;
     if (adjacent(ctx, dc, self, argv[0], &parent, &ref)) return JS_EXCEPTION;
@@ -799,15 +845,17 @@ static JSValue el_insert_adjacent_html(JSContext *ctx, JSValueConst this_val, in
     nui_dom_drop_if_unused(dc->dom, f);
     return r ? throw_code(ctx, r) : JS_UNDEFINED;
 }
+MUTATOR(el_insert_adjacent_html)
 
-static JSValue el_insert_adjacent_element(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue el_insert_adjacent_element_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     Index parent = 0, ref = 0;
     if (adjacent(ctx, dc, self, argv[0], &parent, &ref)) return JS_EXCEPTION;
     return insert(ctx, dc, parent, argc > 1 ? argv[1] : JS_UNDEFINED, ref);
 }
+MUTATOR(el_insert_adjacent_element)
 
-static JSValue el_insert_adjacent_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue el_insert_adjacent_text_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     Index parent = 0, ref = 0;
     if (adjacent(ctx, dc, self, argv[0], &parent, &ref)) return JS_EXCEPTION;
@@ -817,13 +865,15 @@ static JSValue el_insert_adjacent_text(JSContext *ctx, JSValueConst this_val, in
     if (r) { nui_dom_drop_if_unused(dc->dom, t); return throw_code(ctx, r); }
     return JS_UNDEFINED;
 }
+MUTATOR(el_insert_adjacent_text)
 
-static JSValue node_clone(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue node_clone_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     bool deep = argc > 0 && JS_ToBool(ctx, argv[0]);
     Index c = nui_dom_clone(dc->dom, self, deep);
-    return c ? wrap(ctx, dc, c) : JS_ThrowOutOfMemory(ctx);
+    return c ? wrap_new(ctx, dc, c) : JS_ThrowOutOfMemory(ctx);
 }
+MUTATOR(node_clone)
 
 // --- Document ---------------------------------------------------------------------
 
@@ -846,7 +896,7 @@ static JSValue doc_body(JSContext *ctx, JSValueConst this_val) {
 
 // Parses a whole page (index.html) into the document: its markup as the
 // document's children (<html> with <head> and <body>).
-static JSValue doc_write_page(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue doc_write_page_op(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     THIS_NODE();
     size_t len;
     const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
@@ -856,6 +906,7 @@ static JSValue doc_write_page(JSContext *ctx, JSValueConst this_val, int argc, J
     JS_FreeCString(ctx, s);
     return r ? throw_code(ctx, r) : JS_UNDEFINED;
 }
+MUTATOR(doc_write_page)
 
 static JSValue doc_create_element(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     DomCtx *dc = dc_of(ctx);
@@ -864,13 +915,13 @@ static JSValue doc_create_element(JSContext *ctx, JSValueConst this_val, int arg
     Index n = nui_dom_create_element(dc->dom, a);
     JS_FreeAtom(ctx, a);
     if (!n) return JS_ThrowOutOfMemory(ctx);
-    return wrap(ctx, dc, n);
+    return wrap_new(ctx, dc, n);
 }
 
 static JSValue doc_create_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     DomCtx *dc = dc_of(ctx);
     Index n = text_from(ctx, dc, argc > 0 ? argv[0] : JS_UNDEFINED);
-    return n ? wrap(ctx, dc, n) : JS_EXCEPTION;
+    return n ? wrap_new(ctx, dc, n) : JS_EXCEPTION;
 }
 
 static JSValue doc_create_comment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -879,37 +930,86 @@ static JSValue doc_create_comment(JSContext *ctx, JSValueConst this_val, int arg
     if (JS_IsException(s)) return s;
     Index n = nui_dom_create_data(dc->dom, K_COMMENT, &s);
     JS_FreeValue(ctx, s);
-    return n ? wrap(ctx, dc, n) : JS_ThrowOutOfMemory(ctx);
+    return n ? wrap_new(ctx, dc, n) : JS_ThrowOutOfMemory(ctx);
 }
 
 static JSValue doc_create_fragment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     DomCtx *dc = dc_of(ctx);
     Index n = nui_dom_create_fragment(dc->dom);
-    return n ? wrap(ctx, dc, n) : JS_ThrowOutOfMemory(ctx);
+    return n ? wrap_new(ctx, dc, n) : JS_ThrowOutOfMemory(ctx);
 }
 
 // --- The JS side's hooks (__nuiDom) -------------------------------------------------------
 
+// [kind, target, node, name, previousSibling, nextSibling]
+enum { REC = 6 };
+
+static void free_values(JSContext *ctx, JSValue *v, int n) {
+    for (int i = 0; i < n; i++) JS_FreeValue(ctx, v[i]);
+}
+
+// Called by the store inside an operation: only records the mutation (the
+// wrappers it makes run no page code). `deliver` calls the hook.
 static void h_mutation(void *c, uint8_t kind, Index target, Index node, uint32_t name) {
     JSContext *ctx = c;
     DomCtx *dc = dc_of(ctx);
     if (!dc || dc->closing || !JS_IsFunction(ctx, dc->hook)) return;
-    JSValue args[4];
-    args[0] = JS_NewInt32(ctx, kind);
-    args[1] = wrap(ctx, dc, target);
-    args[2] = node ? wrap(ctx, dc, node) : JS_NULL;
-    args[3] = name ? JS_AtomToString(ctx, name) : JS_UNDEFINED;
-    JSValue hook = JS_DupValue(ctx, dc->hook);
-    JSValue r = JS_Call(ctx, hook, JS_UNDEFINED, 4, args);
-    JS_FreeValue(ctx, hook);
-    if (JS_IsException(r)) {
-        // An observer's error doesn't stop the mutation (as in browsers):
-        // it's reported when the page's console runs.
-        JSValue e = JS_GetException(ctx);
-        JS_FreeValue(ctx, e);
+    JSValue rec[REC];
+    rec[0] = JS_NewInt32(ctx, kind);
+    rec[1] = wrap(ctx, dc, target);
+    rec[2] = node ? wrap(ctx, dc, node) : JS_NULL;
+    rec[3] = name ? JS_AtomToString(ctx, name) : JS_UNDEFINED;
+    // The siblings as they are now (later mutations in the operation move them).
+    bool siblings = kind == 1 && node && dc->page_observing;
+    rec[4] = siblings ? wrap(ctx, dc, nui_dom_prev(dc->dom, node)) : JS_NULL;
+    rec[5] = siblings ? wrap(ctx, dc, nui_dom_next(dc->dom, node)) : JS_NULL;
+    bool ok = true;
+    for (int i = 0; i < REC; i++) ok = ok && !JS_IsException(rec[i]);
+    if (ok && dc->pending_len + REC > dc->pending_cap) {
+        uint32_t cap = dc->pending_cap ? dc->pending_cap * 2 : 16 * REC;
+        JSValue *p = js_realloc(ctx, dc->pending, cap * sizeof *p);
+        if (p) { dc->pending = p; dc->pending_cap = cap; } else ok = false;
     }
-    JS_FreeValue(ctx, r);
-    for (int i = 0; i < 4; i++) JS_FreeValue(ctx, args[i]);
+    if (!ok) {
+        // Out of memory: the record is lost (as an observer's own error).
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        free_values(ctx, rec, REC);
+        return;
+    }
+    memcpy(dc->pending + dc->pending_len, rec, sizeof rec);
+    dc->pending_len += REC;
+}
+
+// Calls the hook with the recorded mutations, in order: at the end of a
+// binding that changed the tree, once the store is consistent. The hook's
+// page code may change the tree again; its records are delivered by this
+// same loop. Returns `ret` (an exception pending for it is kept).
+static JSValue deliver(JSContext *ctx, DomCtx *dc, JSValue ret) {
+    if (!dc || dc->delivering || dc->pending_head == dc->pending_len) return ret;
+    JSValue err = JS_IsException(ret) ? JS_GetException(ctx) : JS_UNDEFINED;
+    dc->delivering = true;
+    while (dc->pending_head < dc->pending_len) {
+        JSValue rec[REC];
+        memcpy(rec, dc->pending + dc->pending_head, sizeof rec);
+        dc->pending_head += REC;
+        if (!dc->closing && JS_IsFunction(ctx, dc->hook)) {
+            JSValue hook = JS_DupValue(ctx, dc->hook);
+            JSValue r = JS_Call(ctx, hook, JS_UNDEFINED, REC, rec);
+            JS_FreeValue(ctx, hook);
+            if (JS_IsException(r)) {
+                // An observer's error doesn't stop the mutation (as in browsers):
+                // it's reported when the page's console runs.
+                JSValue e = JS_GetException(ctx);
+                JS_FreeValue(ctx, e);
+            }
+            JS_FreeValue(ctx, r);
+        }
+        free_values(ctx, rec, REC);
+    }
+    dc->pending_head = dc->pending_len = 0;
+    dc->delivering = false;
+    if (JS_IsException(ret)) JS_Throw(ctx, err);
+    return ret;
 }
 
 // __nuiDom.setProto(tag, proto): "" for other tags, "#foreign" for SVG/MathML.
@@ -932,7 +1032,9 @@ static JSValue nd_observe(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     DomCtx *dc = dc_of(ctx);
     JS_FreeValue(ctx, dc->hook);
     dc->hook = JS_IsFunction(ctx, argv[0]) ? JS_DupValue(ctx, argv[0]) : JS_UNDEFINED;
-    nui_dom_observe(dc->dom, JS_IsFunction(ctx, dc->hook), argc > 1 ? JS_ToBool(ctx, argv[1]) : true);
+    bool connected_only = argc > 1 ? JS_ToBool(ctx, argv[1]) : true;
+    dc->page_observing = !connected_only;
+    nui_dom_observe(dc->dom, JS_IsFunction(ctx, dc->hook), connected_only);
     return JS_UNDEFINED;
 }
 
@@ -1004,7 +1106,7 @@ static JSValue nd_attrs(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 static JSValue nd_create_document(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     DomCtx *dc = dc_of(ctx);
     Index d = nui_dom_create_document(dc->dom);
-    return d ? wrap(ctx, dc, d) : JS_ThrowOutOfMemory(ctx);
+    return d ? wrap_new(ctx, dc, d) : JS_ThrowOutOfMemory(ctx);
 }
 
 static JSValue nd_set_foreign(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -1027,7 +1129,7 @@ static JSValue nd_create_element(JSContext *ctx, JSValueConst this_val, int argc
     JS_FreeAtom(ctx, a);
     if (!n) return JS_ThrowOutOfMemory(ctx);
     nui_dom_set_foreign(dc->dom, n, foreign);
-    return wrap(ctx, dc, n);
+    return wrap_new(ctx, dc, n);
 }
 
 // __nuiDom.index(node): its store index (the renderer's node ids, which
@@ -1229,6 +1331,12 @@ void nui_dom_uninstall(DomCtx *dc) {
     JSContext *ctx = dc->ctx;
     dc->closing = true;
     if (dc->dom) nui_dom_observe(dc->dom, false, true);
+    if (dc->pending) {
+        free_values(ctx, dc->pending + dc->pending_head, (int)(dc->pending_len - dc->pending_head));
+        js_free(ctx, dc->pending);
+    }
+    dc->pending = NULL;
+    dc->pending_head = dc->pending_len = dc->pending_cap = 0;
     JS_FreeValue(ctx, dc->hook);
     JS_FreeValue(ctx, dc->tag_protos);
     JS_FreeValue(ctx, dc->element_proto);

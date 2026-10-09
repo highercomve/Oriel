@@ -151,10 +151,13 @@ pub fn decideDestPath(
 /// True when this process runs from a mounted AppImage: `$APPIMAGE` is set
 /// and `/proc/self/exe` resolves under `$APPDIR` (both captured by `init`).
 pub fn runningAsAppImage(io: std.Io, gpa: std.mem.Allocator) !bool {
-    state_mutex.lockUncancelable(io);
-    const has_ai = captured_appimage != null;
-    const ad = captured_appdir;
-    state_mutex.unlock(io);
+    // Copied under the lock: deinit may free the captured strings.
+    const has_ai, const ad = blk: {
+        state_mutex.lockUncancelable(io);
+        defer state_mutex.unlock(io);
+        break :blk .{ captured_appimage != null, if (captured_appdir) |d| try gpa.dupe(u8, d) else null };
+    };
+    defer if (ad) |d| gpa.free(d);
     return backend.runningAsAppImage(io, gpa, has_ai, ad);
 }
 
@@ -164,11 +167,18 @@ pub fn resolveDestPath(io: std.Io, gpa: std.mem.Allocator, dest_path: ?[]const u
         if (!std.fs.path.isAbsolute(p)) return error.DestinationPathNotAbsolute;
         if (p.len > 0) return try gpa.dupe(u8, p);
     }
-    state_mutex.lockUncancelable(io);
-    const override = if (builtin.is_test) test_dest_override else null;
-    const ai = captured_appimage;
-    const ad = captured_appdir;
-    state_mutex.unlock(io);
+    // Copied under the lock: deinit may free the captured strings.
+    var ai: ?[]u8 = null;
+    defer if (ai) |v| gpa.free(v);
+    var ad: ?[]u8 = null;
+    defer if (ad) |v| gpa.free(v);
+    const override = blk: {
+        state_mutex.lockUncancelable(io);
+        defer state_mutex.unlock(io);
+        if (captured_appimage) |v| ai = try gpa.dupe(u8, v);
+        if (captured_appdir) |v| ad = try gpa.dupe(u8, v);
+        break :blk if (builtin.is_test) test_dest_override else null;
+    };
 
     if (override) |ov| {
         return try gpa.dupe(u8, ov);
@@ -413,8 +423,20 @@ pub fn downloadWithOptions(
     try sel.concurrent(.downloaded, Runner.run, .{ io, gpa, update, dest_path, progress_callback });
     try sel.concurrent(.timeout, Runner.sleepTimeout, .{ io, timeout_ms });
 
-    const awaited = try sel.await();
-    sel.cancelDiscard();
+    // cancel, not cancelDiscard: the download returns an allocated path.
+    var awaited = sel.await() catch |err| {
+        while (sel.cancel()) |late| switch (late) {
+            .downloaded => |res| if (res) |p| gpa.free(p) else |_| {},
+            .timeout => {},
+        };
+        return err;
+    };
+    while (sel.cancel()) |late| switch (late) {
+        // Finished just as the timeout won: the binary is already
+        // replaced, so report that rather than a timeout.
+        .downloaded => awaited = late,
+        .timeout => {},
+    };
 
     switch (awaited) {
         .downloaded => |res| return res,
@@ -484,16 +506,15 @@ fn downloadInternal(
         .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o755),
         .exclusive = true,
     });
-    // Explicit mode, independent of the umask.
-    if (builtin.os.tag != .windows) {
-        try temp_file.setPermissions(io, .fromMode(0o755));
-    }
-
     var temp_open: bool = true;
     var temp_exists: bool = true;
     defer {
         if (temp_open) temp_file.close(io);
         if (temp_exists) parent_dir.deleteFile(io, temp_dl_name) catch {};
+    }
+    // Explicit mode, independent of the umask.
+    if (builtin.os.tag != .windows) {
+        try temp_file.setPermissions(io, .fromMode(0o755));
     }
 
     var file_writer_buf: [32768]u8 = undefined;
@@ -567,15 +588,14 @@ fn downloadInternal(
             .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o755),
             .exclusive = true,
         });
-        if (builtin.os.tag != .windows) {
-            try decomp_file.setPermissions(io, .fromMode(0o755));
-        }
-
         var decomp_open: bool = true;
         var decomp_exists: bool = true;
         defer {
             if (decomp_open) decomp_file.close(io);
             if (decomp_exists) parent_dir.deleteFile(io, temp_decomp_name) catch {};
+        }
+        if (builtin.os.tag != .windows) {
+            try decomp_file.setPermissions(io, .fromMode(0o755));
         }
 
         var gz_read_buf: [65536]u8 = undefined;

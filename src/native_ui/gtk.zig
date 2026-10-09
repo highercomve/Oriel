@@ -351,6 +351,11 @@ pub const Surface = struct {
     /// Fonts to load while idle (warmFonts), and the idle source doing it.
     warm: std.ArrayList(engine_mod.FontSpec) = .empty,
     warm_id: c_uint = 0,
+    /// Focus changes a sync caused (GTK moves the focus off a field it
+    /// hides or disables): heard on the next idle, not while syncFields
+    /// walks the tree (the page's handler may change it).
+    focus_events: std.ArrayList(FocusEvent) = .empty,
+    focus_id: c_uint = 0,
     /// After a big removal: the tree's empty slabs released a while later
     /// (onTrim), if no new list took them.
     trim_id: c_uint = 0,
@@ -373,6 +378,11 @@ pub const Surface = struct {
         const s = try gpa.create(Surface);
         errdefer gpa.destroy(s);
         const overlay = gtk_overlay_new();
+        // A failed create: the floating overlay (and the area in it) goes.
+        errdefer {
+            _ = g_object_ref_sink(overlay);
+            g_object_unref(overlay);
+        }
         const area = gtk_drawing_area_new();
         gtk_widget_set_hexpand(area, 1);
         gtk_widget_set_vexpand(area, 1);
@@ -391,6 +401,10 @@ pub const Surface = struct {
             .dark = prefersDark(),
         };
         gtk_style_context_add_provider_for_display(gtk_widget_get_display(area), s.css, 800);
+        errdefer {
+            gtk_style_context_remove_provider_for_display(gtk_widget_get_display(area), s.css);
+            g_object_unref(s.css);
+        }
         // The engine copies the platform JSON.
         const look = withLook(gpa, platform_json, area);
         defer if (look) |l| gpa.free(l);
@@ -474,6 +488,9 @@ pub const Surface = struct {
         s.warm_id = 0;
         if (s.trim_id != 0) _ = g_source_remove(s.trim_id);
         s.trim_id = 0;
+        if (s.focus_id != 0) _ = g_source_remove(s.focus_id);
+        s.focus_id = 0;
+        s.focus_events.deinit(s.gpa);
         s.warm.deinit(s.gpa);
         s.keys_down.deinit(s.gpa);
         gtk_drawing_area_set_draw_func(s.area, null, null, null);
@@ -544,6 +561,7 @@ fn disconnect(s: *Surface, instance: *anyopaque) void {
 fn disconnectField(s: *Surface, id: i64, w: *Widget) void {
     disconnect(s, w);
     if (g_object_get_data(w, "oriel-focus")) |c| disconnect(s, c);
+    if (g_object_get_data(w, "oriel-legacy")) |c| disconnect(s, c);
     const n = s.engine.tree.get(id) orelse return;
     if (n.kind == .textarea) disconnect(s, gtk_text_view_get_buffer(w));
 }
@@ -1060,15 +1078,20 @@ fn syncFields(s: *Surface) void {
     while (it.next()) |np| {
         const n = np.*;
         if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check and n.kind != .button) continue;
+        s.updating = true;
+        defer s.updating = false;
         const w = s.fields.get(n.id) orelse blk: {
             const w = makeField(s, n) catch continue;
-            s.fields.put(n.id, w) catch continue;
+            s.fields.put(n.id, w) catch {
+                disconnectField(s, n.id, w);
+                _ = g_object_ref_sink(w);
+                g_object_unref(w);
+                continue;
+            };
             gtk_overlay_add_overlay(s.overlay, w);
             css_changed = true;
             break :blk w;
         };
-        s.updating = true;
-        defer s.updating = false;
         if (n.pending_value) |v| {
             n.pending_value = null;
             const z = s.gpa.dupeZ(u8, v) catch continue;
@@ -1169,6 +1192,8 @@ fn inputHints(n: *const Node) c_uint {
 }
 
 fn makeField(s: *Surface, n: *Node) !*Widget {
+    // Its id rides in object data as a pointer (nodeOfWidget).
+    const key = std.math.cast(usize, n.id) orelse return error.BadId;
     const w: *Widget = switch (n.kind) {
         .input => if (n.props.range != null) blk: {
             // <input type=range>: a GtkScale on the page's min/max/step;
@@ -1184,9 +1209,14 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
             gtk_event_controller_set_propagation_phase(legacy, 1); // capture
             _ = g_signal_connect_data(legacy, "event", @ptrCast(&onSliderEvent), s, null, 0);
             gtk_widget_add_controller(sc, legacy);
+            g_object_set_data(@ptrCast(sc), "oriel-legacy", legacy);
             break :blk sc;
         } else blk: {
             const e = gtk_entry_new();
+            errdefer {
+                _ = g_object_ref_sink(e);
+                g_object_unref(e);
+            }
             gtk_entry_set_has_frame(e, 0);
             gtk_editable_set_width_chars(e, 1);
             if (n.props.pw) gtk_entry_set_visibility(e, 0);
@@ -1214,8 +1244,10 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
                 for (labels.items) |l| if (l) |p| s.gpa.free(std.mem.span(p));
                 labels.deinit(s.gpa);
             }
-            if (n.props.options) |opts| for (opts) |o| try labels.append(s.gpa, (try s.gpa.dupeZ(u8, o[1])).ptr);
-            try labels.append(s.gpa, null);
+            // Room first: a label duplicated is in the list (freed above).
+            try labels.ensureTotalCapacity(s.gpa, (if (n.props.options) |opts| opts.len else 0) + 1);
+            if (n.props.options) |opts| for (opts) |o| labels.appendAssumeCapacity((try s.gpa.dupeZ(u8, o[1])).ptr);
+            labels.appendAssumeCapacity(null);
             const d = gtk_drop_down_new_from_strings(labels.items.ptr);
             _ = g_signal_connect_data(@ptrCast(d), "notify::selected", @ptrCast(&onSelected), s, null, 0);
             break :blk d;
@@ -1243,7 +1275,7 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
         },
         else => unreachable,
     };
-    g_object_set_data(@ptrCast(w), "oriel-node", @ptrFromInt(@as(usize, @intCast(n.id))));
+    g_object_set_data(@ptrCast(w), "oriel-node", @ptrFromInt(key));
     // The page hears which field has the keyboard (:focus, :focus-visible,
     // document.activeElement), as on the other backends.
     const focus_ctrl = gtk_event_controller_focus_new();
@@ -1306,7 +1338,7 @@ fn updateCss(s: *Surface) void {
 }
 
 fn nodeOfWidget(s: *Surface, w: *anyopaque) ?*Node {
-    const id: i64 = @intCast(@intFromPtr(g_object_get_data(w, "oriel-node") orelse return null));
+    const id = std.math.cast(i64, @intFromPtr(g_object_get_data(w, "oriel-node") orelse return null)) orelse return null;
     return s.engine.tree.get(id);
 }
 
@@ -1350,6 +1382,8 @@ fn onFieldBlur(ctrl: *anyopaque, data: ?*anyopaque) callconv(.c) void {
     fieldFocus(ctrl, data, "blur");
 }
 
+const FocusEvent = struct { id: i64, blur: bool };
+
 fn fieldFocus(ctrl: *anyopaque, data: ?*anyopaque, what: []const u8) void {
     const s = surfaceOf(data);
     const w = gtk_event_controller_get_widget(ctrl) orelse return;
@@ -1357,7 +1391,31 @@ fn fieldFocus(ctrl: *anyopaque, data: ?*anyopaque, what: []const u8) void {
     // Not while the field goes (`removed` takes it out first): the page
     // isn't called back in the middle of its own change.
     if (s.fields.get(n.id) != w) return;
+    // During a sync (a hidden or disabled field losing the focus): later,
+    // as the page's handler could change the tree syncFields is walking.
+    if (s.updating) {
+        s.focus_events.append(s.gpa, .{ .id = n.id, .blur = std.mem.eql(u8, what, "blur") }) catch return;
+        if (s.focus_id == 0) s.focus_id = g_idle_add_full(200, onFocusIdle, @ptrFromInt(s.token), null); // G_PRIORITY_DEFAULT_IDLE
+        return;
+    }
     _ = s.engine.event(n.id, what, "null");
+}
+
+fn onFocusIdle(data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaces.get(@intFromPtr(data)) orelse return 0; // the window is gone
+    s.focus_id = 0;
+    const gpa = s.gpa;
+    var events = s.focus_events;
+    s.focus_events = .empty;
+    defer events.deinit(gpa);
+    const token = s.token;
+    for (events.items) |ev| {
+        // A handler may have closed the window or removed the field.
+        if (surfaces.get(token) != s) return 0;
+        if (s.fields.get(ev.id) == null) continue;
+        _ = s.engine.event(ev.id, if (ev.blur) "blur" else "focus", "null");
+    }
+    return 0;
 }
 
 fn onBufferChanged(buffer: *anyopaque, data: ?*anyopaque) callconv(.c) void {
@@ -1435,7 +1493,15 @@ fn onChildPosition(_: *Widget, child: *Widget, alloc: *GdkRectangle, data: ?*any
     // A native button is the whole box (its bezel is the border, its CSS
     // padding room inside it); fields sit in their content box.
     const r = if (n.kind == .button) n.frame else n.content();
-    alloc.* = .{ .x = @intFromFloat(@round(r.x)), .y = @intFromFloat(@round(r.y)), .width = @max(1, @as(c_int, @intFromFloat(@round(r.w)))), .height = @max(1, @as(c_int, @intFromFloat(@round(r.h)))) };
+    // Page geometry can be huge (a 1e10px width, a far transform) or NaN.
+    const px = struct {
+        fn f(v: f32) c_int {
+            const lim = 1 << 30;
+            if (std.math.isNan(v)) return 0;
+            return tree_mod.sat(c_int, std.math.clamp(@round(v), -lim, lim));
+        }
+    }.f;
+    alloc.* = .{ .x = px(r.x), .y = px(r.y), .width = @max(1, px(r.w)), .height = @max(1, px(r.h)) };
     return 1;
 }
 
@@ -1467,7 +1533,8 @@ fn keyName(keyval: c_uint, buf: *[8]u8) ?[]const u8 {
     // F1 … F24.
     if (name.len >= 2 and name.len <= 3 and name[0] == 'F' and std.ascii.isDigit(name[1])) return name;
     const cp = gdk_keyval_to_unicode(keyval);
-    if (cp >= 0x20 and cp != 0x7f) {
+    // A 0x01xxxxxx keysym maps past Unicode (up to 0xFFFFFF).
+    if (cp >= 0x20 and cp != 0x7f and cp <= 0x10FFFF) {
         const len = std.unicode.utf8Encode(@intCast(cp), buf) catch return null;
         return buf[0..len];
     }
@@ -1600,6 +1667,7 @@ const Laid = struct {
         const c = n.content();
         out.layout = textLayout(s, n, paintWidth(c.w)) orelse return false;
         out.lines = textLines(s, &n.props, out.layout, &out.exts);
+        out.dy = 0; // callers pass an undefined Laid (its exts are large)
         if (out.lines == null) if (cssHeight(s, &n.props, pango_layout_get_line_count(out.layout))) |css_h| {
             var w: c_int = 0;
             var h: c_int = 0;

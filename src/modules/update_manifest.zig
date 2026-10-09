@@ -79,13 +79,21 @@ pub const VerifyOptions = struct {
 // Base64 Helpers
 // ---------------------------------------------------------------------------
 
+/// Decode standard base64 into exactly `N` bytes. `Decoder.decode` does not
+/// check `dest` capacity, so unpadded input of the right length would write
+/// past `out` without the size check.
+fn decodeExact(comptime N: usize, trimmed: []const u8) ![N]u8 {
+    if (try std.base64.standard.Decoder.calcSizeForSlice(trimmed) != N) return error.InvalidPadding;
+    var out: [N]u8 = undefined;
+    try std.base64.standard.Decoder.decode(&out, trimmed);
+    return out;
+}
+
 /// Decode a 32-byte Ed25519 public key from standard base64 (44 chars).
 pub fn parsePublicKey(b64: []const u8) ![Ed25519.PublicKey.encoded_length]u8 {
     const trimmed = std.mem.trim(u8, b64, " \t\r\n");
     if (trimmed.len != PUBLIC_KEY_B64_LEN) return error.InvalidPublicKeyLength;
-    var out: [32]u8 = undefined;
-    try std.base64.standard.Decoder.decode(&out, trimmed);
-    return out;
+    return decodeExact(32, trimmed);
 }
 
 /// Encode a 32-byte Ed25519 public key into standard base64.
@@ -97,9 +105,7 @@ pub fn encodePublicKey(pk_bytes: [Ed25519.PublicKey.encoded_length]u8, out: *[PU
 pub fn parseSignature(b64: []const u8) ![Ed25519.Signature.encoded_length]u8 {
     const trimmed = std.mem.trim(u8, b64, " \t\r\n");
     if (trimmed.len != SIGNATURE_B64_LEN) return error.InvalidSignatureLength;
-    var out: [64]u8 = undefined;
-    try std.base64.standard.Decoder.decode(&out, trimmed);
-    return out;
+    return decodeExact(64, trimmed);
 }
 
 /// Encode a 64-byte Ed25519 signature into standard base64.
@@ -111,9 +117,7 @@ pub fn encodeSignature(sig_bytes: [Ed25519.Signature.encoded_length]u8, out: *[S
 pub fn parsePrivateKeySeed(b64: []const u8) ![Ed25519.KeyPair.seed_length]u8 {
     const trimmed = std.mem.trim(u8, b64, " \t\r\n");
     if (trimmed.len != PRIVATE_KEY_SEED_B64_LEN) return error.InvalidPrivateKeyLength;
-    var out: [32]u8 = undefined;
-    try std.base64.standard.Decoder.decode(&out, trimmed);
-    return out;
+    return decodeExact(32, trimmed);
 }
 
 /// Encode a 32-byte Ed25519 seed into standard base64.
@@ -613,6 +617,29 @@ test "Manifest v2 sign, format, and verify with all fields" {
 
     // 11. Bad public key base64 rejected
     try std.testing.expectError(error.InvalidPublicKeyLength, verify(arena.allocator(), manifest_json, "invalid"));
+}
+
+test "unpadded base64 of the right length is rejected, not decoded past the buffer" {
+    try std.testing.expectError(error.InvalidPadding, parseSignature("A" ** 88));
+    try std.testing.expectError(error.InvalidPadding, parsePublicKey("A" ** 44));
+    try std.testing.expectError(error.InvalidPadding, parsePrivateKeySeed("A" ** 44));
+
+    // Same input reaching the decoders through verify() and combine().
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"app_id":"com.example.app","version":"1.0.0","target":"x86_64-linux","format":"raw","size":1,"sha256":"0000000000000000000000000000000000000000000000000000000000000000","url":"https://example.com/a.bin","signature":"
+    ++ "A" ** 88 ++
+        \\"}
+    ;
+    var pk_buf: [PUBLIC_KEY_B64_LEN]u8 = undefined;
+    const kp = try Ed25519.KeyPair.generateDeterministic([_]u8{7} ** 32);
+    const pk_b64 = encodePublicKey(kp.public_key.toBytes(), &pk_buf);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.InvalidPublicKeyLength, verify(arena.allocator(), json, "A" ** 43));
+    try std.testing.expectError(error.InvalidPadding, verify(arena.allocator(), json, "A" ** 44));
+    try std.testing.expectError(error.InvalidPadding, verify(arena.allocator(), json, pk_b64));
+    try std.testing.expectError(error.InvalidPadding, combine(allocator, &.{json}, .{}));
 }
 
 test "Field validation: control chars, sha256, urls, format" {

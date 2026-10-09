@@ -35,4 +35,39 @@ __nuiDom.collect();
 body.appendChild(copy);
 check(copy.lastChild.marked === "click", "an expando on a detached clone");
 
+// The mutation hook runs page code: only once the store's operation is
+// complete, so what that code changes can't break the operation.
+const once = (kind, f) => { let done = false; return (k, target, node) => { if (k === kind && !done) { done = true; f(target, node); } }; };
+{
+  // insertBefore: the move's removal clears the destination.
+  const P = document.createElement("div"), Q = document.createElement("div");
+  const X = Q.appendChild(document.createElement("i"));
+  P.appendChild(document.createElement("a"));
+  const R = P.appendChild(document.createElement("b"));
+  __nuiDom.observe(once(2, () => { P.textContent = ""; }), false);
+  P.insertBefore(X, R);
+  __nuiDom.observe(null, true);
+  check(P.firstChild === null && P.lastChild === null, "insertBefore: the hook's clearing applies after the insertion");
+  check(X.parentNode === null && R.parentNode === null && Q.firstChild === null, "insertBefore: no node left half-linked");
+}
+{
+  // A deep clone: the copy's first insertion clears the source.
+  const src = document.createElement("div");
+  src.innerHTML = "<p>1</p><p>2</p><p>3</p>";
+  __nuiDom.observe(once(1, () => { src.textContent = ""; }), false);
+  const c = src.cloneNode(true);
+  __nuiDom.observe(null, true);
+  check(src.firstChild === null && c.childNodes.length === 3 && c.lastChild.textContent === "3", "a deep clone the hook empties the source of");
+}
+{
+  // The parser: the first insertion removes the element being filled.
+  const host = document.createElement("div");
+  __nuiDom.observe(once(1, (target) => { if (target.parentNode) target.remove(); }), false);
+  host.innerHTML = "<section><p><b>x</b><i>y</i></p></section>";
+  __nuiDom.observe(null, true);
+  gc();
+  __nuiDom.collect();
+  check(host.firstChild.localName === "section", "markup parsed while the hook removes what it fills");
+}
+
 print("wrappers: ok");

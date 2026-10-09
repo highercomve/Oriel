@@ -120,6 +120,11 @@ pub const setWindowAlwaysOnTop = impl.setWindowAlwaysOnTop;
 pub const getWindowWorkArea = impl.getWindowWorkArea;
 pub const startWindowDrag = impl.startWindowDrag;
 pub const dispatchWithCleanup = impl.dispatchWithCleanup;
+/// Optional: run what the last worker jobs queued for the UI thread after
+/// the event loop returned (`drainMainQueue() void`).
+pub const drainMainQueue = if (@hasDecl(impl, "drainMainQueue")) impl.drainMainQueue else struct {
+    fn noop() void {}
+}.noop;
 pub const createWindow = impl.createWindow;
 pub const destroyWindow = impl.destroyWindow;
 pub const run = impl.run;

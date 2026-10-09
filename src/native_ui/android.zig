@@ -123,6 +123,8 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         if (milli > 0) s.density = @as(f32, @floatFromInt(milli)) / 1000;
     }
     defer if (with_dpr) |j| gpa.free(j);
+    // Room for it first: nothing may fail once the engine exists.
+    try surfaces.ensureUnusedCapacity(gpa, 1);
     s.engine = try Engine.create(gpa, .{
         .ctx = s,
         .measure = measure,
@@ -146,7 +148,7 @@ pub fn create(gpa: std.mem.Allocator, window: u32, assets: []const engine_mod.As
         .leaf = leaf,
         .request_display_frame = requestDisplayFrame,
     }, assets, with_dpr orelse platform_json, label, url, if (w > 0) w else 400, if (h > 0) h else 800);
-    try surfaces.put(gpa, window, s);
+    surfaces.putAssumeCapacity(window, s);
     s.engine.boot(dark, true);
     return s;
 }
@@ -1018,15 +1020,29 @@ fn nDrop(env: *Env, _: jclass, win: jint, session: jint, x: f32, y: f32, items: 
         for (parsed.array.items) |item| if (dropFd(item)) |fd| closeDropFd(fd);
         return;
     };
+    const count = parsed.array.items.len;
     var kept: std.json.Array = .init(a);
+    // The handles made, released unless the page gets them in its event.
+    var added: std.ArrayList(u32) = .empty;
+    var sent = false;
+    defer if (!sent) for (added.items) |h| s.engine.drops.release(h);
+    kept.ensureTotalCapacity(count) catch {
+        for (parsed.array.items) |item| if (dropFd(item)) |fd| closeDropFd(fd);
+        return;
+    };
+    added.ensureTotalCapacity(a, count) catch {
+        for (parsed.array.items) |item| if (dropFd(item)) |fd| closeDropFd(fd);
+        return;
+    };
     for (parsed.array.items) |item| {
         const fd = dropFd(item) orelse {
-            kept.append(item) catch {};
+            kept.appendAssumeCapacity(item);
             continue;
         };
         const handle = s.engine.drops.addFd(fd) catch continue; // closed by addFd
+        added.appendAssumeCapacity(handle);
         item.array.items[5] = .{ .integer = handle };
-        kept.append(item) catch {};
+        kept.appendAssumeCapacity(item);
     }
     var json: std.ArrayList(u8) = .empty;
     defer json.deinit(gpa);
@@ -1037,6 +1053,8 @@ fn nDrop(env: *Env, _: jclass, win: jint, session: jint, x: f32, y: f32, items: 
     s.drag_over = null;
     s.drag_effect = 0;
     const under: i64 = if (s.engine.tree.hit(x, y)) |n| n.id else 0;
+    // The page's now (the event may free the window).
+    sent = true;
     _ = s.engine.dragEvent(under, json.items);
 }
 

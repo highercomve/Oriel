@@ -69,7 +69,19 @@ pub fn dispatchWithCleanup(
         return;
     };
     task.* = .{ .func = func, .ctx = ctx };
-    _ = glib.idleAdd(&Task.run, task);
+    if (glib.idleAdd(&Task.run, task) == 0) {
+        std.heap.smp_allocator.destroy(task);
+        if (cleanup) |c| c(ctx);
+    }
+}
+
+/// After the main loop returned and the worker pool drained: run the idle
+/// tasks those last jobs queued (IPC replies, runOnMain), which would
+/// otherwise never run and leak. Bounded, in case a source keeps re-arming.
+pub fn drainMainQueue() void {
+    const ctx = glib.MainContext.default();
+    var i: usize = 0;
+    while (i < 1024 and ctx.iteration(0) != 0) : (i += 1) {}
 }
 
 pub fn quit(code: u8) void {
@@ -230,7 +242,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 gio.Application.run(app.as(gio.Application), @intCast(argc), @ptrCast(argv_ptrs.items.ptr))
             else
                 gio.Application.run(app.as(gio.Application), 0, null);
-            App.main_window = null;
+            // Windows open or hidden at quit got no close request.
+            window.destroyRemainingWindows();
             return if (status != 0) @truncate(@as(u32, @bitCast(status))) else exit_code;
         }
 
@@ -241,7 +254,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             const n: usize = @intCast(@max(argc, 0));
 
             var maybe_url: ?[]const u8 = null;
-            if (build_opts.deep_link) {
+            // argc can be 0 (an empty CommandLine call over D-Bus).
+            if (build_opts.deep_link and n > 1) {
                 for (1..n) |idx| {
                     const arg_slice = std.mem.span(argv[idx]);
                     if (deep_link.validate(arg_slice, config.deep_link_schemes)) |_| {

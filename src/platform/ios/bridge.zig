@@ -681,12 +681,14 @@ pub fn Bridge(
                 }
             }
 
-            /// Not queued (out of memory, or after shutdown): no reply.
+            /// Not queued (out of memory, or after shutdown).
             fn discardReply(ctx: ?*anyopaque) void {
                 const self: *@This() = @ptrCast(@alignCast(ctx.?));
                 // WebKit objects captured by the block may only be released on
                 // the main thread; from a worker, leak the one reference instead.
                 if (apple.isMainThread()) {
+                    // WebKit raises if its reply block is freed uncalled.
+                    replyError(self.reply, "AppNotRunning");
                     finish(self);
                 } else {
                     var a = self.arena_state;

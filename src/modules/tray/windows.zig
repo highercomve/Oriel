@@ -22,6 +22,7 @@ pub const Tray = struct {
     menu: Menu,
     strings: std.heap.ArenaAllocator,
     id: [:0]const u8,
+    /// `title` and `tooltip` are owned by `gpa` (see common.replaceString).
     title: [:0]const u8,
     tooltip: [:0]const u8,
     hicon: ?win32.HICON,
@@ -49,11 +50,13 @@ pub const Tray = struct {
         };
         errdefer self.menu.deinit();
         errdefer self.strings.deinit();
+        errdefer common.freeString(gpa, self.title);
+        errdefer common.freeString(gpa, self.tooltip);
 
         const a = self.strings.allocator();
         self.id = try a.dupeZ(u8, options.id);
-        self.title = try a.dupeZ(u8, options.title);
-        self.tooltip = try a.dupeZ(u8, options.tooltip);
+        try common.replaceString(gpa, &self.title, options.title);
+        try common.replaceString(gpa, &self.tooltip, options.tooltip);
 
         self.hicon = createIcon(gpa, options.icon) catch |err| {
             return err;
@@ -107,6 +110,8 @@ pub const Tray = struct {
             ShellMod.on_tray_message_fn = null;
         }
         self.menu.deinit();
+        common.freeString(self.gpa, self.title);
+        common.freeString(self.gpa, self.tooltip);
         self.strings.deinit();
         self.gpa.destroy(self);
     }
@@ -127,9 +132,9 @@ pub const Tray = struct {
     }
 
     pub fn setTooltip(self: *Tray, tooltip: []const u8) !void {
-        const a = self.strings.allocator();
-        self.tooltip = try a.dupeZ(u8, tooltip);
-        const tip_w = try std.unicode.utf8ToUtf16LeAllocZ(a, self.tooltip);
+        const tip_w = try std.unicode.utf8ToUtf16LeAllocZ(self.gpa, tooltip);
+        defer self.gpa.free(tip_w);
+        try common.replaceString(self.gpa, &self.tooltip, tooltip);
         @memset(&self.nid.szTip, 0);
         const copy_len = @min(tip_w.len, self.nid.szTip.len - 1);
         @memcpy(self.nid.szTip[0..copy_len], tip_w[0..copy_len]);
@@ -140,7 +145,7 @@ pub const Tray = struct {
     }
 
     pub fn setTitle(self: *Tray, title: []const u8) !void {
-        self.title = try self.strings.allocator().dupeZ(u8, title);
+        try common.replaceString(self.gpa, &self.title, title);
     }
 
     pub fn setIcon(self: *Tray, icon: Icon) !void {
@@ -194,7 +199,9 @@ pub const Tray = struct {
 
     fn populateMenu(self: *Tray, hmenu: win32.HMENU, parent_id: i32) void {
         const parent = self.menu.node(parent_id) orelse return;
-        const a = self.strings.allocator();
+        // Not the arena: the submenu label is freed after the recursion, which
+        // an arena can't reclaim, so every menu shown would grow it.
+        const a = self.gpa;
         for (parent.children) |child_id| {
             const child = self.menu.node(child_id) orelse continue;
             switch (child.kind) {

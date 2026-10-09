@@ -23,15 +23,21 @@ pub const Globals = struct {
         self.* = .{ .display = try wl.Display.connect(null), .registry = undefined, .gpa = gpa };
         errdefer self.display.disconnect();
         self.registry = try self.display.getRegistry();
+        errdefer self.registry.destroy();
         self.registry.setListener(*Globals, listener, self);
+        errdefer self.freeList();
         if (self.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
     }
 
     pub fn deinit(self: *Globals) void {
-        for (self.list.items) |g| self.gpa.free(g.interface);
-        self.list.deinit(self.gpa);
+        self.freeList();
         self.registry.destroy();
         self.display.disconnect();
+    }
+
+    fn freeList(self: *Globals) void {
+        for (self.list.items) |g| self.gpa.free(g.interface);
+        self.list.deinit(self.gpa);
     }
 
     pub fn find(self: *const Globals, interface: []const u8) ?Global {

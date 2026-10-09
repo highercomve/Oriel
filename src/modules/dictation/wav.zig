@@ -7,6 +7,9 @@ const std = @import("std");
 
 pub const Error = error{ NotWav, BadWav, UnsupportedWav, OutOfMemory };
 
+/// Lower header rates are rejected (telephone audio is 8 kHz).
+const min_rate = 4000;
+
 /// Mono samples at `rate` Hz, allocated with `gpa`.
 pub fn decode(gpa: std.mem.Allocator, data: []const u8, rate: u32) Error![]f32 {
     if (data.len < 12 or !std.mem.eql(u8, data[0..4], "RIFF") or !std.mem.eql(u8, data[8..12], "WAVE")) return error.NotWav;
@@ -33,6 +36,9 @@ pub fn decode(gpa: std.mem.Allocator, data: []const u8, rate: u32) Error![]f32 {
         } else if (std.mem.eql(u8, id, "data")) {
             const f = fmt orelse return error.BadWav;
             if (f.channels == 0 or f.rate == 0) return error.BadWav;
+            // The output is sized by the rate ratio: a tiny header rate
+            // would ask for many times the file's size.
+            if (f.rate < min_rate) return error.UnsupportedWav;
             const pcm = f.format == 1 and (f.bits == 8 or f.bits == 16 or f.bits == 24 or f.bits == 32);
             const float = f.format == 3 and f.bits == 32;
             if (!pcm and !float) return error.UnsupportedWav;
@@ -67,7 +73,7 @@ fn sample(b: []const u8, bits: u16, float: bool) f32 {
 /// copy when the rates match.
 pub fn resample(gpa: std.mem.Allocator, in: []const f32, from: u32, to: u32) Error![]f32 {
     if (from == to) return gpa.dupe(f32, in);
-    const n: usize = @intCast(@as(u64, in.len) * to / from);
+    const n = std.math.cast(usize, @as(u64, in.len) * to / from) orelse return error.OutOfMemory;
     const out = try gpa.alloc(f32, n);
     const step = @as(f64, @floatFromInt(from)) / @as(f64, @floatFromInt(to));
     for (out, 0..) |*o, i| {
@@ -125,6 +131,12 @@ test "decode: stereo float at 32 kHz is mixed down and halved" {
 test "decode: unsupported format" {
     var wav: [44]u8 = undefined;
     _ = header(&wav, 2, 1, 16000, 4, 0); // ADPCM
+    try std.testing.expectError(error.UnsupportedWav, decode(std.testing.allocator, &wav, 16000));
+}
+
+test "decode: implausibly low sample rate" {
+    var wav: [48]u8 = undefined;
+    _ = header(&wav, 1, 1, 1, 16, 4);
     try std.testing.expectError(error.UnsupportedWav, decode(std.testing.allocator, &wav, 16000));
 }
 

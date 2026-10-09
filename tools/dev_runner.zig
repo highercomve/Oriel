@@ -69,7 +69,13 @@ const pgroup = if (is_windows) struct {} else struct {
     }
 
     pub fn reapZombies() void {
-        while (waitPid(-1, false) != null) {}
+        while (waitPid(-1, false)) |r| {
+            // The dev server reaped here: forget its pid, which may be
+            // recycled, so shutdown doesn't signal someone else's group.
+            if (global_dev_child) |*dc| if (dc.id == r.pid) {
+                dc.id = null;
+            };
+        }
     }
 
     pub fn checkChildExit(pid: posix.pid_t) ?u8 {
@@ -515,6 +521,7 @@ pub fn main(init: std.process.Init) !u8 {
     std.debug.print("\x1b[36m[oriel dev]\x1b[0m Watching for changes in {s}...\n", .{watch_dir});
 
     var event_buf: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
+    var changed_name_buf: [256]u8 = undefined;
 
     while (!global_should_exit.load(.acquire)) {
         var changed_name: []const u8 = "";
@@ -585,6 +592,11 @@ pub fn main(init: std.process.Init) !u8 {
         }
 
         if (!has_zig_change) continue;
+
+        // The debounce below overwrites the buffer the name points into.
+        const name_len = @min(changed_name.len, changed_name_buf.len);
+        @memcpy(changed_name_buf[0..name_len], changed_name[0..name_len]);
+        changed_name = changed_name_buf[0..name_len];
 
         // Debounce: sleep 100ms and drain any remaining events
         sleepMs(io, 100);

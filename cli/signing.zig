@@ -138,8 +138,10 @@ fn create(ctx: Context, cmd: Command) !u8 {
 
     // The password: 32 random hex characters, passed to openssl in a file.
     var pw_bytes: [16]u8 = undefined;
+    defer std.crypto.secureZero(u8, &pw_bytes);
     ctx.io.random(&pw_bytes);
     const password = try std.fmt.allocPrint(arena, "{x}", .{pw_bytes});
+    defer std.crypto.secureZero(u8, password);
     const pass_file = try std.fs.path.join(arena, &.{ tmp, "pass" });
     try writePrivate(ctx.io, pass_file, password);
     const tmp_p12 = try std.fs.path.join(arena, &.{ tmp, "out.p12" });
@@ -149,6 +151,7 @@ fn create(ctx: Context, cmd: Command) !u8 {
 
     const info = try certInfo(ctx, arena, openssl, cert) orelse return 1;
     const p12 = try cwd.readFileAlloc(ctx.io, tmp_p12, arena, .limited(1 << 20));
+    defer std.crypto.secureZero(u8, p12);
     // The password first: a .p12 without its password would be useless.
     try writePrivate(ctx.io, pw_path, password);
     try writePrivate(ctx.io, p12_path, p12);
@@ -203,8 +206,10 @@ fn import(ctx: Context, cmd: Command) !u8 {
     defer cwd.deleteTree(ctx.io, tmp) catch {};
     cwd.setFilePermissions(ctx.io, tmp, .fromMode(0o700), .{}) catch {};
     var once_bytes: [16]u8 = undefined;
+    defer std.crypto.secureZero(u8, &once_bytes);
     ctx.io.random(&once_bytes);
     const once = try std.fmt.allocPrint(arena, "{x}", .{once_bytes});
+    defer std.crypto.secureZero(u8, once);
     const copy = try reencrypt(ctx, arena, openssl, file, password, tmp, once) orelse return 1;
 
     const custom = cmd.keychain != null and !std.mem.eql(u8, cmd.keychain.?, "login");
@@ -215,8 +220,10 @@ fn import(ctx: Context, cmd: Command) !u8 {
         // deleted and recreated; a keychain named with --keychain must not
         // exist yet (it would be someone's, with their passwords).
         var rnd: [16]u8 = undefined;
+        defer std.crypto.secureZero(u8, &rnd);
         ctx.io.random(&rnd);
         const kc_pass = try std.fmt.allocPrint(arena, "{x}", .{rnd});
+        defer std.crypto.secureZero(u8, kc_pass);
         if (custom) {
             if (try keychainExists(ctx, arena, keychain)) {
                 try ctx.err.print("error: the keychain {s} already exists: pass a new name, or --keychain login for yours\n", .{keychain});

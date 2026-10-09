@@ -141,6 +141,10 @@ var running = false;
 /// Set under `task_mutex` at shutdown: tasks queued from other threads after
 /// that are cleaned up at once instead of queued (nothing would run them).
 var shutting_down = false;
+/// Set under `task_mutex` once the shutdown drain is done: from then on the
+/// UI thread's own late tasks (JNI callbacks) are cleaned up at once too,
+/// rather than waiting for a later `start` in the same process.
+var drained = false;
 
 pub fn isMainThread() bool {
     return runtime.isMainThread();
@@ -153,7 +157,8 @@ pub fn dispatchToMainThread(func: *const fn (ctx: ?*anyopaque) void, ctx: ?*anyo
 
 /// Queue `func(ctx)` on the UI thread. `cleanup(ctx)` runs instead when the
 /// task can't be queued (out of memory, or queued from another thread after
-/// shutdown; then on the calling thread, so it must only free memory) or is
+/// shutdown, or from the UI thread after its drain; then on the calling
+/// thread, so it must only free memory) or is
 /// still queued at shutdown.
 pub fn dispatchWithCleanup(
     func: *const fn (ctx: ?*anyopaque) void,
@@ -161,7 +166,7 @@ pub fn dispatchWithCleanup(
     cleanup: ?*const fn (ctx: ?*anyopaque) void,
 ) void {
     task_mutex.lock();
-    if (shutting_down and !isMainThread()) {
+    if (shutting_down and (drained or !isMainThread())) {
         task_mutex.unlock();
         if (cleanup) |c| c(ctx) else log.warn("dispatchToMainThread: dropped a task queued after shutdown", .{});
         return;
@@ -307,6 +312,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             task_mutex.lock();
             running = true;
             shutting_down = false;
+            drained = false;
             task_mutex.unlock();
 
             dispatchToMainThread(&start, null);
@@ -378,6 +384,9 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             shutting_down = true;
             task_mutex.unlock();
             drainAtShutdown();
+            task_mutex.lock();
+            drained = true;
+            task_mutex.unlock();
         }
     };
 }

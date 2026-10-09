@@ -194,8 +194,8 @@ pub fn editBuildZig(allocator: std.mem.Allocator, source: []const u8, scheme: []
             const schemes_text = stage1[array_brace_open .. array_brace_close + 1];
 
             // Check if scheme is already in schemes_text
-            var target_buf: [128]u8 = undefined;
-            const target_str = std.fmt.bufPrint(&target_buf, "\"{s}\"", .{scheme}) catch return error.OutOfMemory;
+            const target_str = try std.fmt.allocPrint(allocator, "\"{s}\"", .{scheme});
+            defer allocator.free(target_str);
             if (std.mem.indexOf(u8, schemes_text, target_str) != null) {
                 // Already present!
                 return try allocator.dupe(u8, stage1);
@@ -796,6 +796,15 @@ test "editBuildZig modifies existing package and flips false deep_link" {
     const res2 = try editBuildZig(std.testing.allocator, res, "new-scheme");
     defer std.testing.allocator.free(res2);
     try std.testing.expectEqualStrings(res, res2);
+
+    // A scheme longer than any fixed buffer is added too.
+    const long_scheme = "a" ** 200;
+    const res3 = try editBuildZig(std.testing.allocator, fixture, long_scheme);
+    defer std.testing.allocator.free(res3);
+    try std.testing.expect(std.mem.indexOf(u8, res3, "\"" ++ long_scheme ++ "\"") != null);
+    const res4 = try editBuildZig(std.testing.allocator, res3, long_scheme);
+    defer std.testing.allocator.free(res4);
+    try std.testing.expectEqualStrings(res3, res4);
 }
 
 test "editBuildZig error when anchors missing" {

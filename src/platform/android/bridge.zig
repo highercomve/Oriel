@@ -197,41 +197,88 @@ pub fn Bridge(
         /// The native renderer's `invoke` (-Dnative_ui): the same dispatch as
         /// `onMessage`, for the app's own page. No IPC token or isolation: the
         /// page is the app's embedded code running in its own engine, not web
-        /// content. `ctx` is the window (*App.Window). Answers arrive from the
-        /// task queue, never inside the call that asked.
+        /// content. Every call runs from the task queue, never inside the
+        /// page's JavaScript (a command may close the window and so its
+        /// engine), and finds its window again by id (ids aren't reused).
         pub fn nativeInvoke(ctx: ?*anyopaque, window: u32, call_id: u32, cmd: []const u8, args_json: []const u8) void {
-            const win: *App.Window = @ptrCast(@alignCast(ctx.?));
+            _ = ctx; // the window is found again by id when the call runs
             const gpa = heap.gpa;
-            var arena_state = std.heap.ArenaAllocator.init(gpa);
-            defer arena_state.deinit();
-            const arena = arena_state.allocator();
-            const page_url = security.resolveWindowUrl(arena, config.security, local, null, win.options.url, config.start) catch "https://app.localhost/index.html";
-            const args = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch .null;
-            const request: ipc.Request = .{ .cmd = cmd, .args = args };
-            const pool = App.getWorkerPool();
-            defer if (pool != null) App.releaseWorkerPool();
-
-            const result: anyerror![]const u8 = blk: {
-                if (window_commands.isWindowCommand(cmd))
-                    break :blk window_commands.dispatch(config.security, local, arena, page_url, win.label, cmd, args);
-                if (!security.commandAllowedForWindow(config.security, local, page_url, cmd, win.label)) {
-                    log.warn("native page: blocked command \"{f}\" (window: {s})", .{ std.zig.fmtString(cmd[0..@min(cmd.len, 64)]), win.label });
-                    break :blk error.Forbidden;
-                }
-                if (ipc.isBuiltinCommand(cmd)) break :blk ipc.dispatchBuiltin(config.security, arena, request);
-                if (!ipc.isAsync(api.commands, cmd)) break :blk ipc.dispatchRequest(api.commands, arena, request, if (pool) |p| p.io else null);
-                const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
-                const req_json = std.json.Stringify.valueAlloc(arena, request, .{}) catch break :blk error.OutOfMemory;
-                const job = gpa.create(NativeReply) catch break :blk error.OutOfMemory;
-                job.* = .{ .window = window, .call_id = call_id };
-                ipc.dispatchAsync(api.commands, worker_pool, gpa, req_json, worker_pool.io, job, NativeReply.onWorkerDone) catch |err| {
-                    gpa.destroy(job);
-                    break :blk err;
-                };
-                return;
-            };
-            if (result) |json| NativeReply.send(window, call_id, true, json) else |err| NativeReply.send(window, call_id, false, ipc.errorText(err));
+            const call = gpa.create(NativeCall) catch return;
+            call.* = .{ .window = window, .call_id = call_id, .arena_state = .init(gpa) };
+            const a = call.arena_state.allocator();
+            call.cmd = a.dupe(u8, cmd) catch return call.free();
+            call.args_json = a.dupe(u8, args_json) catch return call.free();
+            ShellMod.dispatchWithCleanup(&NativeCall.run, call, &NativeCall.discard);
         }
+
+        const NativeCall = struct {
+            window: u32,
+            call_id: u32,
+            arena_state: std.heap.ArenaAllocator,
+            cmd: []const u8 = "",
+            args_json: []const u8 = "",
+
+            fn free(self: *NativeCall) void {
+                self.arena_state.deinit();
+                heap.gpa.destroy(self);
+            }
+
+            fn discard(ctx: ?*anyopaque) void {
+                free(@ptrCast(@alignCast(ctx.?)));
+            }
+
+            fn run(ctx: ?*anyopaque) void {
+                const self: *NativeCall = @ptrCast(@alignCast(ctx.?));
+                defer self.free();
+                if (comptime !build_opts.native_ui) return;
+                const window = self.window;
+                const call_id = self.call_id;
+                const cmd = self.cmd;
+                if (native.get(window) == null) return; // the window closed
+                const gpa = heap.gpa;
+                const arena = self.arena_state.allocator();
+                // The window's label and URL, copied (it may close during the command).
+                var label: []const u8 = "";
+                var url: ?[]const u8 = null;
+                {
+                    App.ensureWindowsMutex();
+                    App.windows_mutex.lock();
+                    defer App.windows_mutex.unlock();
+                    for (App.windows_list.items) |w| if (w.handle.id == window) {
+                        label = arena.dupe(u8, w.label) catch return;
+                        url = if (w.options.url) |u| (arena.dupe(u8, u) catch return) else null;
+                        break;
+                    };
+                }
+                if (label.len == 0) return NativeReply.send(window, call_id, false, "WindowNotFound");
+                const page_url = security.resolveWindowUrl(arena, config.security, local, null, url, config.start) catch "https://app.localhost/index.html";
+                const args = std.json.parseFromSliceLeaky(std.json.Value, arena, self.args_json, .{}) catch .null;
+                const request: ipc.Request = .{ .cmd = cmd, .args = args };
+                const pool = App.getWorkerPool();
+                defer if (pool != null) App.releaseWorkerPool();
+
+                const result: anyerror![]const u8 = blk: {
+                    if (window_commands.isWindowCommand(cmd))
+                        break :blk window_commands.dispatch(config.security, local, arena, page_url, label, cmd, args);
+                    if (!security.commandAllowedForWindow(config.security, local, page_url, cmd, label)) {
+                        log.warn("native page: blocked command \"{f}\" (window: {s})", .{ std.zig.fmtString(cmd[0..@min(cmd.len, 64)]), label });
+                        break :blk error.Forbidden;
+                    }
+                    if (ipc.isBuiltinCommand(cmd)) break :blk ipc.dispatchBuiltin(config.security, arena, request);
+                    if (!ipc.isAsync(api.commands, cmd)) break :blk ipc.dispatchRequest(api.commands, arena, request, if (pool) |p| p.io else null);
+                    const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
+                    const req_json = std.json.Stringify.valueAlloc(arena, request, .{}) catch break :blk error.OutOfMemory;
+                    const job = gpa.create(NativeReply) catch break :blk error.OutOfMemory;
+                    job.* = .{ .window = window, .call_id = call_id };
+                    ipc.dispatchAsync(api.commands, worker_pool, gpa, req_json, worker_pool.io, job, NativeReply.onWorkerDone) catch |err| {
+                        gpa.destroy(job);
+                        break :blk err;
+                    };
+                    return;
+                };
+                if (result) |json| NativeReply.send(window, call_id, true, json) else |err| NativeReply.send(window, call_id, false, ipc.errorText(err));
+            }
+        };
 
         const NativeReply = struct {
             window: u32,

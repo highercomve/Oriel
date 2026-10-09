@@ -51,6 +51,7 @@ fn pick(gpa: std.mem.Allocator, kind: Kind, title: []const u8) !?[]u8 {
 
     _ = std.c.pthread_mutex_lock(&result_mutex);
     result_ready = false;
+    if (result) |stale| heap.gpa.free(stale);
     result = null;
     _ = std.c.pthread_mutex_unlock(&result_mutex);
 
@@ -93,6 +94,8 @@ pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
 fn onFileDialogResult(env: *jni.Env, _: jni.jclass, path: jni.jobject) callconv(.c) void {
     const copy = (env.bytesAlloc(heap.gpa, path) catch null) orelse null;
     _ = std.c.pthread_mutex_lock(&result_mutex);
+    // A duplicate or unsolicited result replaces one nobody took.
+    if (result) |stale| heap.gpa.free(stale);
     result = copy;
     result_ready = true;
     _ = std.c.pthread_cond_broadcast(&result_cond);

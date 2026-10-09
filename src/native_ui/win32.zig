@@ -210,10 +210,16 @@ const Field = struct {
 
 /// A slider's position for a value, and the number of steps (its maximum).
 fn sliderPos(r: tree_mod.Range, v: f64) isize {
-    return @intFromFloat(@round((r.snap(v) - r.min) / r.step));
+    return @min(sliderIndex((r.snap(v) - r.min) / r.step), sliderSteps(r));
 }
 fn sliderSteps(r: tree_mod.Range) isize {
-    return @intFromFloat(@min(@round((r.max - r.min) / r.step), std.math.maxInt(i32)));
+    return sliderIndex((r.max - r.min) / r.step);
+}
+/// A step count as a trackbar position, 0…maxInt(i32) (an infinite span
+/// makes it NaN or infinite).
+fn sliderIndex(steps: f64) isize {
+    if (!(steps >= 0)) return 0;
+    return @intFromFloat(@min(@round(steps), std.math.maxInt(i32)));
 }
 
 var common_controls = false;
@@ -463,8 +469,9 @@ pub const Surface = struct {
         var it = s.fields.valueIterator();
         while (it.next()) |f| freeField(s, f);
         s.fields.deinit();
-        // Not inside any control now: their windows and GDI objects go.
-        flushDoomed(s);
+        // Their windows and GDI objects go, unless a control's code is on
+        // the stack (a WM_CLOSE in its context menu's loop): then later.
+        if (control_depth > 0) parkDoomed(s) else flushDoomed(s);
         s.doomed.deinit(s.gpa);
         s.warm.deinit(s.gpa);
         // The target first: it walks the images to drop their bitmaps, and
@@ -762,7 +769,12 @@ const vsync = struct {
         if (!started) {
             wake = c.CreateEventW(null, c.FALSE, c.FALSE, null);
             if (wake == null) return;
-            const t = std.Thread.spawn(.{}, run, .{}) catch return;
+            const t = std.Thread.spawn(.{}, run, .{}) catch {
+                // The next arm makes a new one.
+                _ = c.CloseHandle(wake);
+                wake = null;
+                return;
+            };
             t.detach();
             started = true;
         }
@@ -1062,6 +1074,50 @@ fn laidOut(ctx: *anyopaque) void {
 const Doomed = struct { hwnd: c.HWND, font: ?c.HFONT, brush: ?c.HBRUSH };
 
 const WM_FREE_FIELDS: c.UINT = c.WM_APP + 0x53;
+/// WM_FREE_FIELDS again later: a nested message loop inside a control
+/// (a context menu's) can last.
+const doomed_timer: usize = @as(usize, std.math.maxInt(u32)) + 7;
+
+/// A field control's own code is on the stack (callControl: its window
+/// procedure, a context menu's modal loop in it): a nested message loop
+/// there must not destroy any field's control. Not on the surface: a
+/// WM_CLOSE in that loop frees the surface.
+var control_depth: u32 = 0;
+/// Destroyed surfaces' field controls, destroyed once no control's code
+/// runs (orphanTimer): parked under HWND_MESSAGE meanwhile, out of reach
+/// of the window's DestroyWindow.
+var orphans: std.ArrayListUnmanaged(Doomed) = .empty;
+var orphan_timer: usize = 0;
+
+/// A subclassed control's own window procedure (control_depth raised).
+fn callControl(old: c.WNDPROC, hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
+    control_depth += 1;
+    defer control_depth -= 1;
+    return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+}
+
+/// The surface goes inside a control's code: its removed fields' controls
+/// wait for orphanTimer (hidden, and no longer the surface's).
+fn parkDoomed(s: *Surface) void {
+    const hwnd_message = toHandle(c.HWND, @bitCast(@as(isize, -3)));
+    for (s.doomed.items) |d| {
+        _ = c.SetParent(d.hwnd, hwnd_message);
+        // No room: left alive (leaked) rather than destroyed under the control.
+        orphans.append(std.heap.smp_allocator, d) catch {};
+    }
+    s.doomed.clearRetainingCapacity();
+    if (orphan_timer == 0) orphan_timer = c.SetTimer(null, 0, 50, orphanTimer);
+}
+
+fn orphanTimer(_: c.HWND, _: c.UINT, _: c.UINT_PTR, _: c.DWORD) callconv(.winapi) void {
+    if (control_depth > 0) return;
+    _ = c.KillTimer(null, orphan_timer);
+    orphan_timer = 0;
+    var list = orphans;
+    orphans = .empty;
+    defer list.deinit(std.heap.smp_allocator);
+    for (list.items) |d| freeDoomed(d);
+}
 
 /// The field leaves the page now: no node (so no more events to the page)
 /// and hidden. Its window goes later (WM_FREE_FIELDS): this may run inside
@@ -1090,12 +1146,14 @@ fn freeField(s: *Surface, f: *Field) void {
 /// Destroys the removed fields' controls and frees their GDI objects
 /// (outside any control's notification).
 fn flushDoomed(s: *Surface) void {
-    for (s.doomed.items) |d| {
-        _ = c.DestroyWindow(d.hwnd);
-        if (d.font) |h| _ = c.DeleteObject(h);
-        if (d.brush) |b| _ = c.DeleteObject(b);
-    }
+    for (s.doomed.items) |d| freeDoomed(d);
     s.doomed.clearRetainingCapacity();
+}
+
+fn freeDoomed(d: Doomed) void {
+    _ = c.DestroyWindow(d.hwnd);
+    if (d.font) |h| _ = c.DeleteObject(h);
+    if (d.brush) |b| _ = c.DeleteObject(b);
 }
 
 /// A box the page paints over what came before it (an opaque background),
@@ -1179,6 +1237,12 @@ fn syncFields(s: *Surface) void {
         if (n.kind != .input and n.kind != .textarea and n.kind != .select and n.kind != .check and n.kind != .button) continue;
         const gop = s.fields.getOrPut(n.id) catch continue;
         if (!gop.found_existing) {
+            // Room in `doomed` for every field, so freeField's append
+            // can't fail (and leak the field's window and GDI objects).
+            s.doomed.ensureTotalCapacity(s.gpa, s.fields.count() + s.doomed.items.len) catch {
+                s.fields.removeByPtr(gop.key_ptr);
+                continue;
+            };
             gop.value_ptr.* = makeField(s, n) catch {
                 s.fields.removeByPtr(gop.key_ptr);
                 continue;
@@ -1464,7 +1528,7 @@ fn checkProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
         c.WM_SETFOCUS => {
             check_focusing = hwnd;
             defer check_focusing = null;
-            return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+            return callControl(old, hwnd, msg, wparam, lparam);
         },
         c.WM_NCDESTROY => {
             _ = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(old)));
@@ -1472,7 +1536,7 @@ fn checkProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
         },
         else => {},
     }
-    return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+    return callControl(old, hwnd, msg, wparam, lparam);
 }
 
 /// A native push button (kind button, docs/native-controls-a11y-design.md
@@ -2020,8 +2084,8 @@ var edit_text: ?[]u8 = null;
 fn beforeInput(s: *Surface, id: i64, hwnd: c.HWND, kind: []const u8, data: ?[]const u8) bool {
     edit_hwnd = hwnd;
     edit_type = kind;
-    if (edit_text) |t| std.heap.page_allocator.free(t);
-    edit_text = if (data) |d| std.heap.page_allocator.dupe(u8, d) catch null else null;
+    if (edit_text) |t| std.heap.smp_allocator.free(t);
+    edit_text = if (data) |d| std.heap.smp_allocator.dupe(u8, d) catch null else null;
     const quoted = if (data) |d| std.json.Stringify.valueAlloc(s.gpa, d, .{}) catch return false else null;
     defer if (quoted) |q| s.gpa.free(q);
     const json = std.fmt.allocPrint(s.gpa, "[\"{s}\",{s}]", .{ kind, quoted orelse "null" }) catch return false;
@@ -2038,9 +2102,11 @@ fn pasteText(s: *Surface, hwnd: c.HWND, single_line: bool) ?[]u8 {
     if (c.OpenClipboard(hwnd) == 0) return null;
     defer _ = c.CloseClipboard();
     const h = c.GetClipboardData(c.CF_UNICODETEXT) orelse return null;
-    const p: [*:0]const u16 = @ptrCast(@alignCast(c.GlobalLock(h) orelse return null));
+    // Bounded by the allocation: another process's text needn't end in a NUL.
+    const size = c.GlobalSize(h);
+    const p: [*]const u16 = @ptrCast(@alignCast(c.GlobalLock(h) orelse return null));
     defer _ = c.GlobalUnlock(h);
-    const utf8 = std.unicode.utf16LeToUtf8Alloc(s.gpa, std.mem.span(p)) catch return null;
+    const utf8 = utf16Text(s.gpa, p[0 .. size / 2]) orelse return null;
     defer s.gpa.free(utf8);
     var out: std.ArrayList(u8) = .empty;
     for (utf8) |ch| {
@@ -2059,7 +2125,7 @@ fn controlProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ca
         _ = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(old)));
         _ = c.RemovePropW(hwnd, prop_old_proc);
     }
-    return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+    return callControl(old, hwnd, msg, wparam, lparam);
 }
 
 /// Edit controls' window procedure: keys go to the page first; a
@@ -2068,6 +2134,8 @@ fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
     const old: c.WNDPROC = @ptrCast(c.GetPropW(hwnd, prop_old_proc) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam));
     if (fieldKey(hwnd, msg, wparam, lparam)) return 0;
     if (msg == c.WM_CONTEXTMENU and c.GetPropW(hwnd, prop_rich) != null) {
+        control_depth += 1;
+        defer control_depth -= 1;
         richMenu(hwnd, lparam);
         return 0;
     }
@@ -2077,14 +2145,14 @@ fn fieldProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
             _ = c.RemovePropW(hwnd, prop_old_proc);
         },
         c.WM_PAINT => {
-            const r = c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+            const r = callControl(old, hwnd, msg, wparam, lparam);
             const style: usize = @bitCast(c.GetWindowLongPtrW(hwnd, c.GWL_STYLE));
             if (style & c.ES_MULTILINE != 0 or c.GetPropW(hwnd, prop_rich) != null) paintPlaceholder(hwnd);
             return r;
         },
         else => {},
     }
-    return c.CallWindowProcW(old, hwnd, msg, wparam, lparam);
+    return callControl(old, hwnd, msg, wparam, lparam);
 }
 
 // ---------------------------------------------------------------------------
@@ -2924,6 +2992,10 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
                 onOverlayFade(s);
                 return 0;
             }
+            if (wparam == doomed_timer) {
+                s.doomed_posted = c.PostMessageW(hwnd, WM_FREE_FIELDS, 0, 0) != 0;
+                return 0;
+            }
             if (wparam == warm_timer) {
                 onWarmTimer(s, hwnd);
                 return 0;
@@ -3080,9 +3152,10 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         // Removed fields' controls: now that no control's code is running.
         WM_FREE_FIELDS => {
             s.doomed_posted = false;
-            if (s.in_control > 0) {
-                // A nested message loop inside a control's notification.
-                s.doomed_posted = c.PostMessageW(hwnd, WM_FREE_FIELDS, 0, 0) != 0;
+            if (s.in_control > 0 or control_depth > 0) {
+                // A nested message loop inside a control's notification or
+                // its own code (a context menu's): again in a moment.
+                s.doomed_posted = c.SetTimer(hwnd, doomed_timer, 50, null) != 0;
                 return 0;
             }
             flushDoomed(s);
@@ -3228,15 +3301,27 @@ fn textLayout(s: *Surface, n: *Node, width: f32, brushes: ?*std.ArrayList(*c.ID2
 /// first installed name, or generic family (system-ui: Segoe UI,
 /// sans-serif: Arial, serif: Times New Roman, monospace: Consolas;
 /// "default", no font-family set: Times New Roman, as WebView2).
-/// Null-terminated UTF-16, cached by list (owned for the process).
+/// Null-terminated UTF-16, cached by list (at most families_max lists:
+/// a page making up many starts it over). The names are owned for the
+/// process, one per installed family (`installed_names`).
 var families: std.StringHashMapUnmanaged([:0]const u16) = .empty;
+const families_max = 256;
+/// Installed families' names by lower-case name (bounded by the fonts
+/// installed: DirectWrite's lookup ignores case).
+var installed_names: std.StringHashMapUnmanaged([:0]const u16) = .empty;
 
 fn familyOf(list: ?[]const u8, mono: bool) [:0]const u16 {
     const l = list orelse return if (mono) mono_face else sansFace();
     if (families.get(l)) |f| return f;
     const f = resolveFamily(l) orelse (if (mono) mono_face else sansFace());
-    const key = std.heap.page_allocator.dupe(u8, l) catch return f;
-    families.put(std.heap.page_allocator, key, f) catch {};
+    const gpa = std.heap.smp_allocator;
+    if (families.count() >= families_max) {
+        var keys = families.keyIterator();
+        while (keys.next()) |k| gpa.free(k.*);
+        families.clearRetainingCapacity();
+    }
+    const key = gpa.dupe(u8, l) catch return f;
+    families.put(gpa, key, f) catch gpa.free(key);
     return f;
 }
 
@@ -3262,10 +3347,17 @@ fn resolveFamily(list: []const u8) ?[:0]const u16 {
             if (comptime std.mem.eql(u8, g[1], "@system")) return sansFace();
             return std.unicode.utf8ToUtf16LeStringLiteral(g[1]);
         };
-        // A named family, when it's installed.
-        const w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, name) catch continue;
-        if (installed(w)) return w;
-        std.heap.page_allocator.free(w);
+        // A named family, when it's installed (one copy of its name).
+        if (installed_names.get(lower)) |w| return w;
+        const gpa = std.heap.smp_allocator;
+        const w = std.unicode.utf8ToUtf16LeAllocZ(gpa, name) catch continue;
+        if (!installed(w)) {
+            gpa.free(w);
+            continue;
+        }
+        const key = gpa.dupe(u8, lower) catch return w;
+        installed_names.put(gpa, key, w) catch gpa.free(key);
+        return w;
     }
     return null;
 }
@@ -4904,7 +4996,8 @@ fn paintThemeControl(p: *Painter, n: *Node, radio: bool, box: Rect) bool {
     const ux = uxtheme() orelse return false;
     // Dark controls on a dark background, as the select picks its theme.
     const theme = buttonTheme(s.hwnd, s.forced == null and (n.props.dk or luminance(colorBehind(s, n)) < 0.5)) orelse return false;
-    const px_size: c_int = @max(1, @as(c_int, @intFromFloat(@round(box.w * s.scale))));
+    // At most 1024 px (drawn scaled to the box): its pixels fit a c_int.
+    const px_size: c_int = std.math.clamp(px(box.w * s.scale), 1, 1024);
     // States: unchecked 1-4, checked 5-8 (normal, hot, pressed, disabled).
     const hot = s.hovered == n.id;
     const pressed = hot and s.buttons & 1 != 0;
@@ -4927,7 +5020,7 @@ fn paintThemeControl(p: *Painter, n: *Node, radio: bool, box: Rect) bool {
     const old = c.SelectObject(dc, dib);
     defer _ = c.SelectObject(dc, old);
     const pixels: [*]u8 = @ptrCast(bits orelse return false);
-    const len: usize = @intCast(px_size * px_size * 4);
+    const len = @as(usize, @intCast(px_size)) * @as(usize, @intCast(px_size)) * 4;
     @memset(pixels[0..len], 0);
     const rc: c.RECT = .{ .left = 0, .top = 0, .right = px_size, .bottom = px_size };
     if (ux.draw(theme, dc, part, state, &rc, null) < 0) return false;

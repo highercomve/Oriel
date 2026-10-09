@@ -354,14 +354,21 @@ fn showTask(ctx: ?*anyopaque) void {
 
 fn show(p: *Pending) common.SendError!void {
     const hwnd = state.hwnd orelse return error.Unsupported;
-    winrt.check(state.interop.?.vtbl.ShowShareUIForWindow(state.interop.?, hwnd), "ShowShareUIForWindow") catch return error.Unsupported;
+    // Set first: DataRequested may arrive from inside ShowShareUIForWindow.
     p.shown = true;
+    winrt.check(state.interop.?.vtbl.ShowShareUIForWindow(state.interop.?, hwnd), "ShowShareUIForWindow") catch {
+        p.shown = false;
+        return error.Unsupported;
+    };
     p.timer = win32.SetTimer(null, 0, tick_ms, @ptrCast(&onTick));
 }
 
 /// DataRequested: fill the package from the pending send (UI thread).
 fn onDataRequested(_: *State, _: *DataTransferManager, args: *DataRequestedEventArgs) void {
     const p = state.pending orelse return;
+    // A late event from an earlier sheet while this send's lookups still
+    // run: `p.items` isn't filled yet.
+    if (!p.shown) return;
     fill(p, args) catch |e| log.warn("share: DataRequested: {s}", .{@errorName(e)});
 }
 
@@ -404,7 +411,10 @@ fn fill(p: *Pending, args: *DataRequestedEventArgs) winrt.Error!void {
 
 /// TargetApplicationChosen: the send completed.
 fn onTargetChosen(_: *State, _: *DataTransferManager, args: *TargetApplicationChosenEventArgs) void {
-    if (state.pending == null) return;
+    const p = state.pending orelse return;
+    // A late event from an earlier sheet: finishing now would free `p` under
+    // this send's in-flight lookups. Once shown, every lookup has ended.
+    if (!p.shown) return;
     var h: HSTRING = null;
     if (args.vtbl.get_ApplicationName(args, &h) < 0) h = null;
     var name = winrt.String.adopt(h);

@@ -327,10 +327,13 @@ pub fn sync(gpa: Allocator, current: []const u8, template: []const u8) Error!Syn
         collapseBlankLines(&text);
     }
 
-    // The developer's own declarations, outside the regions.
+    // The developer's own declarations, outside the regions. The keys slice
+    // a snapshot: replacing the regions below shifts and reallocates `text`.
+    const snapshot = try gpa.dupe(u8, text.items);
+    defer gpa.free(snapshot);
     var outside: std.ArrayList(Key) = .empty;
     defer outside.deinit(gpa);
-    try collectOutsideKeys(gpa, text.items, &outside);
+    try collectOutsideKeys(gpa, snapshot, &outside);
 
     inline for (regions, 0..) |name, i| {
         const span = (try findRegion(text.items, name)).?;
@@ -1016,6 +1019,36 @@ test "sync: a permission the developer declares outside the regions isn't genera
     defer gpa.free(out.text);
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.text, "android.permission.CAMERA"));
     try testing.expect(std.mem.indexOf(u8, out.text, "android:required=\"false\"") != null);
+}
+
+test "sync: a declaration after a region that grows still wins" {
+    const gpa = testing.allocator;
+    const current =
+        \\<?xml version="1.0" encoding="utf-8"?>
+        \\<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+        \\    <!-- oriel:permissions begin -->
+        \\    <!-- oriel:permissions end -->
+        \\    <!-- oriel:features begin -->
+        \\    <!-- oriel:features end -->
+        \\    <!-- oriel:queries begin -->
+        \\    <!-- oriel:queries end -->
+        \\    <application android:label="mine">
+        \\        <activity android:name="dev.oriel.OrielMainActivity">
+        \\            <!-- oriel:main-activity begin -->
+        \\            <!-- oriel:main-activity end -->
+        \\        </activity>
+        \\        <!-- oriel:components begin -->
+        \\        <!-- oriel:components end -->
+        \\        <service android:name="dev.oriel.OrielTileService" android:label="mine" />
+        \\    </application>
+        \\</manifest>
+        \\
+    ;
+    const out = try sync(gpa, current, test_template);
+    defer gpa.free(out.text);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.text, "dev.oriel.OrielTileService"));
+    try testing.expect(std.mem.indexOf(u8, out.text, "android:label=\"mine\" />") != null);
+    try testing.expect(std.mem.indexOf(u8, out.text, "android.permission.POST_NOTIFICATIONS") != null);
 }
 
 test "sync: broken markers are an error" {

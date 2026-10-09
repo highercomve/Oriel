@@ -553,9 +553,14 @@ fn onX11Data(_: *glib.IOChannel, _: glib.IOCondition, _: ?*anyopaque) callconv(.
         if (ev.type == x11.KeyPress) {
             const keycode = @as(u8, @intCast(ev.xkey.keycode));
             const state = ev.xkey.state & (x11.ControlMask | x11.Mod1Mask | x11.ShiftMask | x11.Mod4Mask);
-            for (shortcuts.items) |entry_| {
+            // By index, re-reading the list: a callback may register or
+            // unregister (reallocating `shortcuts`) or deinit (closing `disp`).
+            var i: usize = 0;
+            while (i < shortcuts.items.len) : (i += 1) {
+                const entry_ = shortcuts.items[i];
                 if (entry_.keycode == keycode and entry_.mask == state) {
                     entry_.callback(entry_.shortcut.id);
+                    if (x11_display != disp) return 0;
                 }
             }
         }

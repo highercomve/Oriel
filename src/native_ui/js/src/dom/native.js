@@ -550,7 +550,8 @@ export function installNativeDom(g, document) {
   }
 
   // ---------------------------------------------------------------- MutationObserver
-  // Fed by the store's mutations (__nuiDom.observe). Page observers get
+  // Fed by the store's mutations (__nuiDom.observe), once the DOM call that
+  // made them is done (the added node's siblings as they were). Page observers get
   // records by microtask, as in browsers; an observer with the runtime's
   // private hooks (__nuiChild / __nuiAttribute, the renderer's) is called
   // directly, for connected nodes only, as with linkedom's hooks.
@@ -561,7 +562,7 @@ export function installNativeDom(g, document) {
     if (reg.target === node) return true;
     return !!reg.options.subtree && reg.target.contains(node);
   }
-  function hook(kind, target, node, name) {
+  function hook(kind, target, node, name, prev, next) {
     for (const mo of observers) {
       if (mo.__nuiChild || mo.__nuiAttribute) {
         // The renderer's: connected nodes only (target is the parent for
@@ -586,7 +587,7 @@ export function installNativeDom(g, document) {
           if (!o.childList || !covers(reg, target)) continue;
           mo._queue({ type: "childList", target, attributeName: null, oldValue: null,
             addedNodes: kind === ADDED ? [node] : [], removedNodes: kind === REMOVED ? [node] : [],
-            previousSibling: kind === ADDED ? node.previousSibling : null, nextSibling: kind === ADDED ? node.nextSibling : null });
+            previousSibling: kind === ADDED ? prev : null, nextSibling: kind === ADDED ? next : null });
         }
         break; // one record per observer per mutation
       }

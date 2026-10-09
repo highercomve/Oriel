@@ -25,6 +25,11 @@ static void load_loader(void) {
     fwd_vkGetPhysicalDeviceFeatures2 = (PFN_vkGetPhysicalDeviceFeatures2)dlsym(m, "vkGetPhysicalDeviceFeatures2");
     fwd_vkCmdCopyBuffer = (PFN_vkCmdCopyBuffer)dlsym(m, "vkCmdCopyBuffer");
     if (!fwd_vkGetInstanceProcAddr || !fwd_vkGetDeviceProcAddr || !fwd_vkGetPhysicalDeviceFeatures2 || !fwd_vkCmdCopyBuffer) {
+        // No pointer may outlive the library.
+        fwd_vkGetInstanceProcAddr = NULL;
+        fwd_vkGetDeviceProcAddr = NULL;
+        fwd_vkGetPhysicalDeviceFeatures2 = NULL;
+        fwd_vkCmdCopyBuffer = NULL;
         dlclose(m);
         return;
     }
@@ -51,9 +56,9 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, co
 }
 
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice device, VkPhysicalDeviceFeatures2 *features) {
-    fwd_vkGetPhysicalDeviceFeatures2(device, features);
+    if (oriel_vulkan_loader_available()) fwd_vkGetPhysicalDeviceFeatures2(device, features);
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer dst, uint32_t count, const VkBufferCopy *regions) {
-    fwd_vkCmdCopyBuffer(cmd, src, dst, count, regions);
+    if (oriel_vulkan_loader_available()) fwd_vkCmdCopyBuffer(cmd, src, dst, count, regions);
 }

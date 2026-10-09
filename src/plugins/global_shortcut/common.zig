@@ -10,6 +10,8 @@ pub const Modifiers = struct {
     super: bool = false,
 };
 
+/// `register` keeps the struct as is, without copying the strings: they must
+/// stay valid until the shortcut is unregistered (string literals are fine).
 pub const Shortcut = struct {
     id: []const u8,
     description: []const u8 = "",

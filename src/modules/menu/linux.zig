@@ -26,10 +26,28 @@ pub const MenuItem = common.MenuItem;
 pub const ActionCallback = common.ActionCallback;
 
 const ActionData = struct {
+    gpa: std.mem.Allocator,
     id: [:0]const u8,
     is_check: bool,
     on_action: ActionCallback,
+
+    fn create(gpa: std.mem.Allocator, id: []const u8, is_check: bool, on_action: ActionCallback) !*ActionData {
+        const act = try gpa.create(ActionData);
+        errdefer gpa.destroy(act);
+        act.* = .{ .gpa = gpa, .id = try gpa.dupeZ(u8, id), .is_check = is_check, .on_action = on_action };
+        return act;
+    }
+
+    /// GClosureNotify: runs when the action is finalized (replaced by the
+    /// next `set`, or the app goes away).
+    fn destroy(data: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+        const act: *ActionData = @ptrCast(@alignCast(data));
+        act.gpa.free(act.id);
+        act.gpa.destroy(act);
+    }
 };
+
+extern fn g_signal_connect_data(instance: *anyopaque, signal: [*:0]const u8, handler: *const anyopaque, data: ?*anyopaque, destroy: ?*const fn (?*anyopaque, ?*anyopaque) callconv(.c) void, flags: c_int) c_ulong;
 
 fn onActionActivate(_: *gio.SimpleAction, _: ?*glib.Variant, data: ?*anyopaque) callconv(.c) void {
     const act: *ActionData = @ptrCast(@alignCast(data));
@@ -112,30 +130,32 @@ test gtkAccelerator {
     try std.testing.expectEqualStrings("<Control>q", c);
 }
 
+/// Returns a new reference: the caller unrefs it once handed off.
 pub fn buildMenu(gpa: std.mem.Allocator, app: *gtk.Application, items: []const MenuItem, on_action: ActionCallback) !*gio.Menu {
     const menu = gio.Menu.new();
+    errdefer menu.unref();
     for (items) |item| {
         switch (item) {
             .item => |it| {
                 const action_name = try actionName(gpa, it.id);
+                defer gpa.free(action_name);
                 const detailed_action = try std.fmt.allocPrintSentinel(gpa, "app.{s}", .{action_name}, 0);
+                defer gpa.free(detailed_action);
                 const label_z = try gpa.dupeZ(u8, it.label);
+                defer gpa.free(label_z);
+                const act_data = try ActionData.create(gpa, it.id, false, on_action);
 
                 const action = gio.SimpleAction.new(action_name, null);
+                defer action.unref(); // the action map keeps its own reference
                 action.setEnabled(@intFromBool(it.enabled));
-
-                const act_data = try gpa.create(ActionData);
-                act_data.* = .{
-                    .id = try gpa.dupeZ(u8, it.id),
-                    .is_check = false,
-                    .on_action = on_action,
-                };
-                _ = gio.SimpleAction.signals.activate.connect(action, ?*anyopaque, &onActionActivate, act_data, .{});
+                // ActionData is freed with the action, when the next `set` replaces it.
+                _ = g_signal_connect_data(action, "activate", @ptrCast(&onActionActivate), act_data, &ActionData.destroy, 0);
 
                 gio.ActionMap.addAction(app.as(gio.ActionMap), action.as(gio.Action));
 
                 if (it.shortcut) |sc| {
                     const sc_z = try gtkAccelerator(gpa, sc);
+                    defer gpa.free(sc_z);
                     const accels = [_]?[*:0]const u8{ sc_z.ptr, null };
                     gtk.Application.setAccelsForAction(app, detailed_action, @ptrCast(&accels));
                 }
@@ -144,20 +164,19 @@ pub fn buildMenu(gpa: std.mem.Allocator, app: *gtk.Application, items: []const M
             },
             .check => |chk| {
                 const action_name = try actionName(gpa, chk.id);
+                defer gpa.free(action_name);
                 const detailed_action = try std.fmt.allocPrintSentinel(gpa, "app.{s}", .{action_name}, 0);
+                defer gpa.free(detailed_action);
                 const label_z = try gpa.dupeZ(u8, chk.label);
+                defer gpa.free(label_z);
+                const act_data = try ActionData.create(gpa, chk.id, true, on_action);
 
                 const init_state = glib.Variant.newBoolean(@intFromBool(chk.checked));
                 const action = gio.SimpleAction.newStateful(action_name, null, init_state);
+                defer action.unref(); // the action map keeps its own reference
                 action.setEnabled(@intFromBool(chk.enabled));
-
-                const act_data = try gpa.create(ActionData);
-                act_data.* = .{
-                    .id = try gpa.dupeZ(u8, chk.id),
-                    .is_check = true,
-                    .on_action = on_action,
-                };
-                _ = gio.SimpleAction.signals.change_state.connect(action, ?*anyopaque, &onActionChangeState, act_data, .{});
+                // ActionData is freed with the action, when the next `set` replaces it.
+                _ = g_signal_connect_data(action, "change-state", @ptrCast(&onActionChangeState), act_data, &ActionData.destroy, 0);
 
                 gio.ActionMap.addAction(app.as(gio.ActionMap), action.as(gio.Action));
 
@@ -165,11 +184,14 @@ pub fn buildMenu(gpa: std.mem.Allocator, app: *gtk.Application, items: []const M
             },
             .separator => {
                 const section = gio.Menu.new();
+                defer section.unref(); // the menu item holds its own reference
                 menu.appendSection(null, section.as(gio.MenuModel));
             },
             .submenu => |sub| {
                 const sub_menu = try buildMenu(gpa, app, sub.items, on_action);
+                defer sub_menu.unref(); // the menu item holds its own reference
                 const label_z = try gpa.dupeZ(u8, sub.label);
+                defer gpa.free(label_z);
                 menu.appendSubmenu(label_z, sub_menu.as(gio.MenuModel));
             },
         }
@@ -180,6 +202,7 @@ pub fn buildMenu(gpa: std.mem.Allocator, app: *gtk.Application, items: []const M
 /// Set the application menubar.
 pub fn set(app: *gtk.Application, items: []const MenuItem, on_action: ActionCallback) !void {
     const root_menu = try buildMenu(std.heap.smp_allocator, app, items, on_action);
+    defer root_menu.unref(); // the application keeps its own reference
     gtk.Application.setMenubar(app, root_menu.as(gio.MenuModel));
 }
 

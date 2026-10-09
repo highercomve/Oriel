@@ -37,6 +37,30 @@ pub fn copyKey(buf: []u8, key: []const u8) []const u8 {
     return buf[0..n];
 }
 
+/// Replace a `gpa`-owned string, freeing the previous one, so repeated
+/// setTitle/setTooltip/setIcon calls don't grow memory. "" is never allocated.
+pub fn replaceString(gpa: std.mem.Allocator, field: *[:0]const u8, value: []const u8) !void {
+    const new: [:0]const u8 = if (value.len == 0) "" else try gpa.dupeZ(u8, value);
+    freeString(gpa, field.*);
+    field.* = new;
+}
+
+pub fn freeString(gpa: std.mem.Allocator, s: [:0]const u8) void {
+    if (s.len > 0) gpa.free(s);
+}
+
+test "replaceString frees the previous value" {
+    const gpa = std.testing.allocator;
+    var s: [:0]const u8 = "";
+    try replaceString(gpa, &s, "one");
+    try replaceString(gpa, &s, "two");
+    try std.testing.expectEqualStrings("two", s);
+    try replaceString(gpa, &s, "");
+    try std.testing.expectEqualStrings("", s);
+    try replaceString(gpa, &s, "three");
+    freeString(gpa, s);
+}
+
 test "copyKey copies and truncates" {
     var buf: [4]u8 = undefined;
     const short = "ab";

@@ -454,6 +454,9 @@ pub fn ensureWindowsMutex() void {
     }
 }
 
+/// The window `label`. The pointer is freed when the window closes (on the
+/// main thread), so use it on the main thread only; from another thread, go
+/// by label (emitTo, closeWindow) or use it inside `runOnMain`.
 pub fn getWindow(label: []const u8) ?*Window {
     ensureWindowsMutex();
     windows_mutex.lock();
@@ -551,6 +554,7 @@ test "registerWindow: declared, replaced, not created" {
     try std.testing.expectEqual(@as(usize, 1), n);
 }
 
+/// Main thread only for the same reason as `getWindow`.
 pub fn getWindowByHandle(handle: platform.WindowHandle) ?*Window {
     ensureWindowsMutex();
     windows_mutex.lock();
@@ -673,7 +677,10 @@ pub fn openWindow(options: WindowOptions) !*Window {
     const early_theme: ?PendingTheme = blk: {
         windows_mutex.lock();
         defer windows_mutex.unlock();
-        windows_list.appendAssumeCapacity(win_inst);
+        // Again under the lock: another openWindow may have added one since
+        // the check above (and used the capacity reserved for this one).
+        try security.validateWindowCount(current_security, windows_list.items.len);
+        try windows_list.append(gpa, win_inst);
         const p = pending_theme orelse break :blk null;
         if (!std.mem.eql(u8, p.label(), options.label)) break :blk null;
         pending_theme = null;
@@ -905,6 +912,9 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     current_app_id = config.id;
     defer {
         stopWorkerPool(pool);
+        // The loop has returned: replies and runOnMain tasks the drained
+        // jobs queued would never run (and leak) otherwise.
+        platform.drainMainQueue();
         // No queued command can restart playback after the pool drained.
         if (build_opts.kokoro) @import("../modules/audio_play.zig").shutdown();
         // Dictation owns threads outside the command pool. They must finish

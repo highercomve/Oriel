@@ -112,13 +112,15 @@ pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.
 
     var args_list: std.ArrayList([]const u8) = .empty;
     defer args_list.deinit(init.gpa);
+    defer {
+        for (args_list.items) |arg| init.gpa.free(arg);
+    }
     var it2 = try init.minimal.args.iterateAllocator(init.gpa);
     defer it2.deinit();
     while (it2.next()) |arg| {
-        try args_list.append(init.gpa, try init.gpa.dupe(u8, arg));
-    }
-    defer {
-        for (args_list.items) |arg| init.gpa.free(arg);
+        const dup = try init.gpa.dupe(u8, arg);
+        errdefer init.gpa.free(dup);
+        try args_list.append(init.gpa, dup);
     }
     App.setProcessArgs(args_list.items);
 

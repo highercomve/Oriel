@@ -34,6 +34,7 @@ const log = std.log.scoped(.oriel);
 const main_thread_timeout_ms = 5000;
 /// How long a data-control read waits for the selection owner to send data.
 const pipe_timeout_ms = 2000;
+const max_read_bytes = 256 * 1024 * 1024;
 
 /// `G_TYPE_STRING` (a fundamental type: 16 << G_TYPE_FUNDAMENTAL_SHIFT).
 const g_type_string: usize = 16 << 2;
@@ -215,13 +216,15 @@ pub fn readImageAsync(callback: ImageCallback, user_data: ?*anyopaque) void {
 // ---------------------------------------------------------------------------
 
 /// A clipboard operation a worker hands to the main loop. Reference counted
-/// (worker + main side) so a worker that times out can leave while the main
-/// side finishes later.
+/// (worker, idle source, and the operation once started) so a worker that
+/// times out can leave while the main side finishes later.
 const MainCall = struct {
     refs: std.atomic.Value(u32) = .init(2),
     mutex: glib.Mutex = undefined,
     cond: glib.Cond = undefined,
     done: bool = false,
+    /// The worker timed out before `start` ran: don't start.
+    canceled: bool = false,
     op: Op,
     /// Input of writes; result of reads (smp_allocator).
     data: ?[]u8 = null,
@@ -249,8 +252,20 @@ const MainCall = struct {
         self.release();
     }
 
+    /// The idle source's reference, dropped when the source is destroyed
+    /// (after `start`, or by a worker that timed out).
+    fn releaseSource(ptr: ?*anyopaque) callconv(.c) void {
+        const self: *MainCall = @ptrCast(@alignCast(ptr));
+        self.release();
+    }
+
     fn start(ptr: ?*anyopaque) callconv(.c) c_int {
         const self: *MainCall = @ptrCast(@alignCast(ptr));
+        self.mutex.lock();
+        const canceled = self.canceled;
+        self.mutex.unlock();
+        if (canceled) return 0;
+        _ = self.refs.fetchAdd(1, .monotonic); // released by complete()
         switch (self.op) {
             .write_text => self.complete(null, if (writeTextMain(self.data.?)) null else |e| e),
             .write_image => self.complete(null, if (writeImageMain(self.data.?)) null else |e| e),
@@ -290,7 +305,12 @@ const MainCall = struct {
                 return e;
             };
         }
-        _ = glib.idleAdd(&start, self);
+        // A GSource we keep a ref to (not idleAdd): on timeout it can be
+        // destroyed even if no main loop ever runs, freeing the call.
+        const source = glib.idleSourceNew();
+        defer source.unref();
+        source.setCallback(&start, self, &releaseSource);
+        _ = source.attach(null);
 
         self.mutex.lock();
         const deadline = glib.getMonotonicTime() + main_thread_timeout_ms * std.time.us_per_ms;
@@ -301,8 +321,10 @@ const MainCall = struct {
         const err = self.err;
         const data = self.data;
         if (done) self.data = null; // taken
+        if (!done) self.canceled = true;
         self.mutex.unlock();
         defer self.release();
+        if (!done) source.destroy();
 
         if (!done) return error.MainThreadTimeout;
         const owned = data orelse {
@@ -437,6 +459,8 @@ fn readWayland(gpa: std.mem.Allocator, kind: Kind) !WaylandRead {
     errdefer list.deinit(gpa);
     var buf: [4096]u8 = undefined;
     while (true) {
+        // Any client can own the selection: don't let it fill memory.
+        if (list.items.len > max_read_bytes) return error.ClipboardTooLarge;
         var pfd = [_]std.c.pollfd{.{ .fd = fds[0], .events = std.c.POLL.IN, .revents = 0 }};
         const ready = std.c.poll(&pfd, 1, pipe_timeout_ms);
         if (ready == 0) return error.ClipboardTimeout;

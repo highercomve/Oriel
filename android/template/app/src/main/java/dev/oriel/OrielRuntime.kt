@@ -295,7 +295,7 @@ object OrielRuntime {
         val context: Context = windows[id]?.activity ?: app
         val wm = context.getSystemService(WindowManager::class.java)
         val bounds = if (Build.VERSION.SDK_INT >= 30) wm.maximumWindowMetrics.bounds else Rect(0, 0, context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
-        return (context.dp(bounds.width()).toLong() shl 32) or context.dp(bounds.height()).toLong()
+        return (context.dp(bounds.width()).toLong() shl 32) or (context.dp(bounds.height()).toLong() and 0xffffffffL)
     }
 
     // --- The battery, for power meters (render-bench's power_now) ---

@@ -87,11 +87,14 @@ pub fn GenericStore(comptime Backend: type) type {
             };
             self.mutex.init();
             errdefer self.mutex.deinit();
+            errdefer self.arena.deinit();
+            errdefer self.map.deinit(gpa);
 
             if (try Backend.readFile(gpa, path_z)) |content| {
                 defer gpa.free(content);
                 if (std.mem.trim(u8, content, " \t\r\n").len > 0) {
-                    var parsed = std.json.parseFromSlice(std.json.Value, self.arena.allocator(), content, .{}) catch |parse_err| {
+                    // alloc_always: strings must not point into `content`.
+                    var parsed = std.json.parseFromSlice(std.json.Value, self.arena.allocator(), content, .{ .allocate = .alloc_always }) catch |parse_err| {
                         // Keep the user's data: the next save would replace it.
                         const backup = try std.fmt.allocPrintSentinel(gpa, "{s}.corrupt", .{path}, 0);
                         defer gpa.free(backup);
@@ -183,25 +186,27 @@ pub fn GenericStore(comptime Backend: type) type {
             defer self.mutex.unlock();
 
             const arena_alloc = self.arena.allocator();
+            // Round-trip every value, `std.json.Value` included, so the store
+            // never borrows the caller's strings, arrays or maps.
             const json_val: std.json.Value = blk: {
-                if (@TypeOf(value) == std.json.Value) {
-                    break :blk value;
-                } else {
-                    var buf: [1024]u8 = undefined;
-                    var fba = std.heap.FixedBufferAllocator.init(&buf);
-                    const str = std.json.Stringify.valueAlloc(fba.allocator(), value, .{}) catch {
-                        const dynamic_str = try std.json.Stringify.valueAlloc(self.gpa, value, .{});
-                        defer self.gpa.free(dynamic_str);
-                        const parsed = try std.json.parseFromSlice(std.json.Value, arena_alloc, dynamic_str, .{});
-                        break :blk parsed.value;
-                    };
-                    const parsed = try std.json.parseFromSlice(std.json.Value, arena_alloc, str, .{});
-                    break :blk parsed.value;
-                }
+                var buf: [1024]u8 = undefined;
+                var fba = std.heap.FixedBufferAllocator.init(&buf);
+                const str = std.json.Stringify.valueAlloc(fba.allocator(), value, .{}) catch {
+                    const dynamic_str = try std.json.Stringify.valueAlloc(self.gpa, value, .{});
+                    defer self.gpa.free(dynamic_str);
+                    break :blk try std.json.parseFromSliceLeaky(std.json.Value, arena_alloc, dynamic_str, .{ .allocate = .alloc_always });
+                };
+                break :blk try std.json.parseFromSliceLeaky(std.json.Value, arena_alloc, str, .{ .allocate = .alloc_always });
             };
 
-            const key_copy = try arena_alloc.dupe(u8, key);
-            try self.map.put(self.gpa, key_copy, json_val);
+            const gop = try self.map.getOrPut(self.gpa, key);
+            if (!gop.found_existing) {
+                gop.key_ptr.* = arena_alloc.dupe(u8, key) catch |err| {
+                    self.map.swapRemoveAt(gop.index);
+                    return err;
+                };
+            }
+            gop.value_ptr.* = json_val;
 
             if (self.auto_save) {
                 try self.saveInternal();
@@ -376,4 +381,45 @@ test "GenericStore: basic operations, auto-save, and reopening" {
 
     try reopened.clear();
     try std.testing.expect(!reopened.has("version"));
+}
+
+test "GenericStore: set copies values instead of borrowing them" {
+    const gpa = std.testing.allocator;
+    defer MockBackend.reset();
+    MockBackend.reset();
+
+    const TestStore = GenericStore(MockBackend);
+    var store = try TestStore.openPath(gpa, "/test/store.json");
+    defer store.deinit();
+
+    // A std.json.Value pointing at caller memory that changes afterwards.
+    var buf = "borrowed".*;
+    try store.set("value", std.json.Value{ .string = &buf });
+    @memset(&buf, 'x');
+    try std.testing.expectEqualStrings("borrowed", store.getString("value").?);
+
+    // Strings must not point into set()'s scratch buffer either.
+    try store.set("a", "first");
+    try store.set("b", "second value, long enough to overwrite the first");
+    try std.testing.expectEqualStrings("first", store.getString("a").?);
+
+    // Overwriting a key keeps a single entry.
+    try store.set("a", "again");
+    try std.testing.expectEqualStrings("again", store.getString("a").?);
+    try std.testing.expectEqual(@as(usize, 3), store.map.count());
+}
+
+test "GenericStore: openPath frees everything on allocation failure" {
+    defer MockBackend.reset();
+    MockBackend.reset();
+    try MockBackend.writeFileAtomic("/test/store.json", "{\"a\":\"x\",\"b\":[1,2],\"c\":{\"d\":true}}");
+
+    const TestStore = GenericStore(MockBackend);
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = i });
+        const store = TestStore.openPath(failing.allocator(), "/test/store.json") catch continue;
+        store.auto_save = false;
+        store.deinit();
+    }
 }

@@ -24,8 +24,9 @@ pub const Db = struct {
         return .{ .handle = handle.? };
     }
 
+    /// Statements still open keep the connection alive until finalized.
     pub fn close(self: Db) void {
-        _ = c.sqlite3_close(self.handle);
+        _ = c.sqlite3_close_v2(self.handle);
     }
 
     pub fn exec(self: Db, sql: [:0]const u8) !void {
@@ -37,7 +38,8 @@ pub const Db = struct {
     pub fn prepare(self: Db, sql: [:0]const u8) !Stmt {
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(self.handle, sql.ptr, -1, &stmt, null) != c.SQLITE_OK) return error.SqlitePrepare;
-        return .{ .handle = stmt.? };
+        // Empty, blank or comment-only SQL prepares to no statement.
+        return .{ .handle = stmt orelse return error.SqliteEmptyStatement };
     }
 
     pub fn lastInsertRowId(self: Db) i64 {
@@ -48,9 +50,10 @@ pub const Db = struct {
     pub fn scalarInt(self: Db, sql: [:0]const u8) !i64 {
         var stmt: ?*c.sqlite3_stmt = null;
         if (c.sqlite3_prepare_v2(self.handle, sql.ptr, -1, &stmt, null) != c.SQLITE_OK) return error.SqlitePrepare;
-        defer _ = c.sqlite3_finalize(stmt);
-        if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return error.SqliteNoRow;
-        return c.sqlite3_column_int64(stmt, 0);
+        const h = stmt orelse return error.SqliteEmptyStatement;
+        defer _ = c.sqlite3_finalize(h);
+        if (c.sqlite3_step(h) != c.SQLITE_ROW) return error.SqliteNoRow;
+        return c.sqlite3_column_int64(h, 0);
     }
 };
 
@@ -148,4 +151,12 @@ test "bound text and blobs are copied (SQLITE_TRANSIENT)" {
     defer gpa.free(b);
     try std.testing.expectEqualStrings("hello", s);
     try std.testing.expectEqualStrings("010203", b);
+}
+
+test "blank SQL is an error, not a null statement" {
+    const db = try Db.open(":memory:");
+    defer db.close();
+    try std.testing.expectError(error.SqliteEmptyStatement, db.prepare("  -- nothing\n"));
+    try std.testing.expectError(error.SqliteEmptyStatement, db.scalarInt(""));
+    try std.testing.expectEqual(@as(i64, 2), try db.scalarInt("SELECT 2"));
 }

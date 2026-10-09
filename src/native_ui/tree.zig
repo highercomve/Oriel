@@ -136,6 +136,8 @@ pub const Gradient = struct {
 
 
     pub const Stop = [5]f32;
+    /// Stops past this many are dropped (resolve's scratch is sized by it).
+    pub const max_stops = 256;
 
     /// Stops ready to draw over a gradient line (a linear gradient's, or a
     /// radial one's ray: its x radius) `line` px long, at most buf.len.
@@ -146,13 +148,13 @@ pub const Gradient = struct {
     pub const Resolved = struct { stops: []const Stop, period: ?f32 = null };
 
     pub fn resolve(g: Gradient, line: f32, buf: []Stop) Resolved {
-        const n = @min(g.stops.len, buf.len);
+        const n = @min(g.stops.len, buf.len, max_stops);
         if (n == 0) return .{ .stops = buf[0..0] };
         @memcpy(buf[0..n], g.stops[0..n]);
         const s = buf[0..n];
         if (g.su) |units| {
-            var auto: [256]bool = undefined;
-            const m = @min(n, auto.len);
+            var auto: [max_stops]bool = undefined;
+            const m = n;
             for (s[0..m], 0..) |*st, i| {
                 const u: u8 = if (i < units.len) units[i] else '%';
                 auto[i] = u == 'a';
@@ -206,7 +208,7 @@ pub const Gradient = struct {
                 for (0..4) |c| wrap[c] = a[c] + (b[c] - a[c]) * t;
                 break;
             };
-            var tmp: [258]Stop = undefined;
+            var tmp: [max_stops + 2]Stop = undefined;
             var k: usize = 0;
             tmp[k] = wrap;
             tmp[k][4] = 0;
@@ -411,6 +413,7 @@ pub fn parseCanvasCmds(a: std.mem.Allocator, v: std.json.Value) ![]CanvasCmd {
             else
                 .{ .stroke_text = .{ .t = t, .x = numAt(op, 2), .y = numAt(op, 3) } };
         } else if (std.mem.eql(u8, tag, "sf") or std.mem.eql(u8, tag, "ss")) {
+            if (op.len < 2) continue;
             const paint = paintAt(op[1]) orelse continue;
             c = if (std.mem.eql(u8, tag, "sf")) CanvasCmd{ .fill_style = paint } else CanvasCmd{ .stroke_style = paint };
         } else if (std.mem.eql(u8, tag, "lw")) {
@@ -427,7 +430,7 @@ pub fn parseCanvasCmds(a: std.mem.Allocator, v: std.json.Value) ![]CanvasCmd {
         } else if (std.mem.eql(u8, tag, "tb")) {
             const i = wordAt(op, &.{ "alphabetic", "top", "hanging", "middle", "bottom", "ideographic" }, 4) orelse continue;
             c = .{ .text_baseline = @intCast(@min(4, i)) };
-        } else if (std.mem.eql(u8, tag, "fo") and op.len > 4) {
+        } else if (std.mem.eql(u8, tag, "fo") and op.len > 4 and op[4] == .string) {
             c = .{ .font = .{ .italic = numAt(op, 1) != 0, .weight = numAt(op, 2), .size = numAt(op, 3), .family = try a.dupe(u8, op[4].string) } };
         } else if (std.mem.eql(u8, tag, "gl") and op.len > 5) {
             // ["gl",id,x0,y0,x1,y1]: the points after the id.
@@ -1357,6 +1360,18 @@ test "Gradient.resolve: px stops, missing ones, repeating periods" {
     try std.testing.expectEqual(@as(usize, 40), e.len);
 }
 
+test "Gradient.resolve: a repeating gradient with more stops than fit is capped" {
+    // 258 stops, the first not at 0 (so the period is phased and wrapped),
+    // into a buffer room for 258 + 2: the wrap must stay in bounds.
+    var stops: [258]Gradient.Stop = undefined;
+    for (&stops, 0..) |*st, i| st.* = .{ 0, 0, 0, 1, 5 + @as(f32, @floatFromInt(i)) };
+    const g: Gradient = .{ .rep = true, .su = "", .stops = &stops };
+    var buf: [260]Gradient.Stop = undefined;
+    const r = g.resolve(1000, &buf);
+    try std.testing.expect(r.stops.len <= Gradient.max_stops + 2);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), r.stops[r.stops.len - 1][4], 1e-6);
+}
+
 test "paddingBox: the border box inset by the border, inner radii" {
     const pb = paddingBox(.{ .x = 10, .y = 20, .w = 100, .h = 50 }, .{ 12, 12, 4, 0 }, .{ 1, 2, 3, 4 });
     try std.testing.expectEqual(Rect{ .x = 14, .y = 21, .w = 94, .h = 46 }, pb.rect);
@@ -1615,7 +1630,11 @@ pub const Tree = struct {
     /// row or a style is unknown (nothing changed then).
     pub fn stampRow(t: *Tree, row_id: i64, leaves: []const StampLeaf) !bool {
         const row = t.nodes.get(row_id) orelse return false;
-        for (leaves) |l| if (!t.leaf_styles.contains(l.style) or l.id == row_id) return false;
+        // A leaf naming the row or one above it would destroy (or nest) the row.
+        for (leaves) |l| {
+            if (!t.leaf_styles.contains(l.style)) return false;
+            if (t.nodes.get(l.id)) |old| if (isAncestorOrSelf(old, row)) return false;
+        }
         for (leaves) |l| {
             if (t.nodes.get(l.id)) |old| {
                 if (old.kind == l.kind and old.leaf_style == l.style and old.leaf_style != 0) {
@@ -1683,6 +1702,9 @@ pub const Tree = struct {
         if (std.mem.eql(u8, runs[0].t, text)) return true;
         const previous_size = n.measured_text_size;
         const previous_epoch = n.text_measure_epoch;
+        // Room for the pending entry first: nothing below may fail once
+        // `owned` is installed on the node.
+        if (t.measure_texts != null and !n.text_pending) try t.pending_texts.ensureUnusedCapacity(t.gpa, 1);
         const owned = try dupeUtf8Lossy(t.gpa, text);
         errdefer t.gpa.free(owned);
         const o = n.text_override orelse try t.text_pool.create();
@@ -1698,7 +1720,7 @@ pub const Tree = struct {
         if (t.measure_texts != null) {
             // Measured with the others before the layout (settleTexts).
             if (!n.text_pending) {
-                try t.pending_texts.append(t.gpa, .{ .id = id, .size = previous_size, .epoch = previous_epoch });
+                t.pending_texts.appendAssumeCapacity(.{ .id = id, .size = previous_size, .epoch = previous_epoch });
                 n.text_pending = true;
             }
             return true;
@@ -2214,7 +2236,8 @@ pub const Tree = struct {
     fn numF(v: std.json.Value) ?f32 {
         return switch (v) {
             .integer => |i| @floatFromInt(i),
-            .float => |f| if (std.math.isFinite(f)) @floatCast(f) else null,
+            // Past f32's range it would be inf: none, as finiteF.
+            .float => |f| finiteF(f),
             else => null,
         };
     }
@@ -2496,9 +2519,34 @@ pub const Tree = struct {
     // -----------------------------------------------------------------
     // Layout
 
+    /// Levels of nesting laid out and drawn (an HTML parser's limit too):
+    /// the walks below (Yoga's, place, paint, hit) recurse once per level,
+    /// so a deeper page would overflow the UI thread's stack.
+    pub const max_depth = 512;
+
+    /// Children deeper than max_depth detached (still in `nodes`: the
+    /// page names them; just not laid out or drawn). Iterative.
+    fn capDepth(t: *Tree, root: *Node) void {
+        const At = struct { n: *Node, depth: u32 };
+        var stack: std.ArrayList(At) = .empty;
+        defer stack.deinit(t.gpa);
+        stack.append(t.gpa, .{ .n = root, .depth = 1 }) catch return;
+        while (stack.pop()) |at| {
+            if (at.n.kids.items.len == 0) continue;
+            if (at.depth >= max_depth) {
+                yg.YGNodeRemoveAllChildren(at.n.yn);
+                for (at.n.kids.items) |k| k.parent = null;
+                at.n.kids.clearRetainingCapacity();
+                continue;
+            }
+            for (at.n.kids.items) |k| stack.append(t.gpa, .{ .n = k, .depth = at.depth + 1 }) catch return;
+        }
+    }
+
     pub fn layout(t: *Tree) void {
         t.settleTexts();
         const root = t.root orelse return;
+        t.capDepth(root);
         yg.YGNodeStyleSetWidth(root.yn, t.width);
         yg.YGNodeStyleSetHeight(root.yn, t.height);
         prof.measures = 0;
@@ -3961,7 +4009,7 @@ test "canvas ops parse" {
     try t.expectEqual(@as(f32, 4), wc[6].radial_gradient.x1);
     try t.expectEqual(@as(f32, 7), wc[6].radial_gradient.r1);
     // Junk ops are dropped, not fatal.
-    const junk = try std.json.parseFromSliceLeaky(std.json.Value, a, "[[42],[\"zz\",1],[\"fr\",1,2,3,4]]", .{});
+    const junk = try std.json.parseFromSliceLeaky(std.json.Value, a, "[[42],[\"zz\",1],[\"sf\"],[\"ss\"],[\"fo\",0,400,12,7],[\"fr\",1,2,3,4]]", .{});
     const ok = try parseCanvasCmds(a, junk);
     try t.expectEqual(1, ok.len);
     // Arguments that overflow f32 (a browser ignores non-finite calls).
@@ -4140,6 +4188,10 @@ test "stampRow makes, keeps, updates and drops a row's leaves" {
     const bad = [_]Tree.StampLeaf{.{ .id = 12, .kind = .view, .style = 9, .text = "" }};
     try std.testing.expect(!try t.stampRow(5, &bad));
     try std.testing.expect(t.get(10) != null);
+    // A leaf naming an ancestor of the row (the root) changes nothing.
+    const up = [_]Tree.StampLeaf{.{ .id = 0, .kind = .view, .style = 2, .text = "" }};
+    try std.testing.expect(!try t.stampRow(5, &up));
+    try std.testing.expect(t.get(0) != null and t.get(5).?.parent == t.get(0).?);
 
     // The page's ops set its children: the stamped ones go.
     try t.apply("[[\"c\",20,\"view\"],[\"k\",5,[20]]]");
@@ -4151,6 +4203,25 @@ test "stampRow makes, keeps, updates and drops a row's leaves" {
     try std.testing.expect(t.get(20).?.parent == null);
     try t.apply("[[\"d\",5]]");
     try std.testing.expect(t.get(10) == null and t.get(11) == null);
+}
+
+test "layout: nesting deeper than max_depth is detached, not recursed into" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    const depth = Tree.max_depth + 20;
+    var ops: std.ArrayList(u8) = .empty;
+    defer ops.deinit(std.testing.allocator);
+    try ops.append(std.testing.allocator, '[');
+    for (0..depth) |i| try ops.print(std.testing.allocator, "[\"c\",{d},\"view\"],", .{i});
+    for (1..depth) |i| try ops.print(std.testing.allocator, "[\"k\",{d},[{d}]],", .{ i - 1, i });
+    try ops.appendSlice(std.testing.allocator, "[\"r\",0]]");
+    try t.apply(ops.items);
+    t.layout();
+    try std.testing.expectEqual(@as(usize, 0), t.get(Tree.max_depth - 1).?.kids.items.len);
+    try std.testing.expect(t.get(Tree.max_depth).?.parent == null);
+    try std.testing.expect(t.get(depth - 1) != null);
 }
 
 test "the x op sets transform and opacity alone and moves the frame" {

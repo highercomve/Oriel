@@ -253,13 +253,12 @@ fn listen(path: [:0]const u8) !void {
 }
 
 /// Stop listening (a later launch then retries the lock and takes over
-/// once this process exits), remove the socket and drop the lock.
+/// once this process exits), remove the socket and drop the lock. The
+/// listening socket belongs to the accept thread, which closes it when it
+/// stops: closing it here could let `accept` run on a reused fd number. With
+/// the path gone no launch reaches it, and it goes away with the process.
 pub fn release() void {
-    const fd = listen_fd.swap(-1, .acq_rel);
-    if (fd >= 0) {
-        _ = c.shutdown(fd, c.SHUT.RDWR);
-        _ = c.close(fd);
-    }
+    _ = listen_fd.swap(-1, .acq_rel);
     if (sock_path) |p| _ = c.unlink(p.ptr);
     sock_path = null;
     if (lock_fd >= 0) {
@@ -269,6 +268,7 @@ pub fn release() void {
 }
 
 fn acceptLoop(fd: c_int) void {
+    defer _ = c.close(fd);
     while (listen_fd.load(.acquire) == fd) {
         const conn = c.accept(fd, null, null);
         if (conn < 0) {
@@ -278,8 +278,16 @@ fn acceptLoop(fd: c_int) void {
                     sleepMs(100);
                     continue;
                 },
-                else => return, // closed by release
+                else => {
+                    // Not listening any more: release must not touch the fd.
+                    _ = listen_fd.cmpxchgStrong(fd, -1, .acq_rel, .acquire);
+                    return;
+                },
             }
+        }
+        if (listen_fd.load(.acquire) != fd) { // released while accepting
+            _ = c.close(conn);
+            return;
         }
         _ = c.fcntl(conn, c.F.SETFD, @as(c_int, c.FD_CLOEXEC));
         hardenSocket(conn);
