@@ -2,6 +2,25 @@
 
 Notable changes in Oriel releases.
 
+## [0.9.11] — 2026-10-09
+
+Oriel 0.9.11 adds `location.reload()` to the native renderer and fixes the
+macOS and iOS builds of apps with text to speech.
+
+### Added
+
+- Native renderer: `location.reload()` starts the page again in its window,
+  with a new JavaScript runtime and DOM. It runs on a turn of its own, after
+  the calling script returns; answers to the old page's commands and its
+  pending timers are dropped instead of reaching the new page.
+
+### Fixed
+
+- The build-time espeak-ng data compiler builds on macOS and with Apple's
+  SDK (it used stdio macros that translate-c turns into inline functions).
+- iOS builds with `-Dkokoro`: espeak-ng gets its endian helpers on Apple
+  targets, and miniaudio's playback compiles as Objective-C (AVFoundation).
+
 ## [0.9.10] — 2026-10-09
 
 Oriel 0.9.10 makes `-Dnative_ui` apps on Linux free of WebKitGTK, and fixes

@@ -74,11 +74,11 @@ pub fn main(init: std.process.Init) !void {
         restoreStderr(saved);
         if (!voice_ok) fail("no espeak-ng voice for dictionary '{s}'", .{name});
         check(name, c.espeak_ng_CompileDictionary(stage ++ "/dictsource/", name_z.ptr, log, 0, &context), context);
-        _ = c.fflush(log);
+        _ = fflush(log);
         const dict = try std.fmt.allocPrint(arena, "{s}_dict", .{name});
         Dir.cwd().access(io, dict, .{}) catch fail("compiling '{s}' wrote no {s}", .{ name, dict });
     }
-    _ = c.fclose(log);
+    _ = fclose(log);
 
     Dir.cwd().deleteFile(io, "phondata-manifest") catch {};
     try Dir.cwd().deleteTree(io, stage);
@@ -93,19 +93,29 @@ const crt = if (@import("builtin").os.tag == .windows) struct {
     extern "c" fn _dup(fd: c_int) c_int;
     extern "c" fn _dup2(fd: c_int, fd2: c_int) c_int;
     extern "c" fn _fileno(f: *c.FILE) c_int;
+    extern "c" fn _fdopen(fd: c_int, mode: [*:0]const u8) ?*c.FILE;
     const dup = _dup;
     const dup2 = _dup2;
     const fileno = _fileno;
+    const fdopen = _fdopen;
 } else struct {
     extern "c" fn dup(fd: c_int) c_int;
     extern "c" fn dup2(fd: c_int, fd2: c_int) c_int;
     extern "c" fn fileno(f: *c.FILE) c_int;
+    extern "c" fn fdopen(fd: c_int, mode: [*:0]const u8) ?*c.FILE;
 };
+
+// stdio by its plain symbols: Apple's SDK defines `stderr`, `fopen` and
+// friends through macros and aliases that translate-c turns into inline
+// functions, which didn't compile there. fd 2 is unbuffered, so pointing it
+// at a log with dup2 needs no flush of C's stderr.
+extern "c" fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*c.FILE;
+extern "c" fn fflush(f: ?*c.FILE) c_int;
+extern "c" fn fclose(f: *c.FILE) c_int;
 
 /// Point the C library's stderr (fd 2) at `log`; returns the saved fd.
 fn redirectStderr(log: *c.FILE) c_int {
-    _ = c.fflush(c.stderr);
-    _ = c.fflush(log);
+    _ = fflush(log);
     const saved = crt.dup(2);
     if (saved >= 0) _ = crt.dup2(crt.fileno(log), 2);
     return saved;
@@ -113,13 +123,12 @@ fn redirectStderr(log: *c.FILE) c_int {
 
 fn restoreStderr(saved: c_int) void {
     if (saved < 0) return;
-    _ = c.fflush(c.stderr);
     _ = crt.dup2(saved, 2);
 }
 
 /// `<stage>/<what>.log`, for one compiler's messages.
 fn openLog(comptime what: []const u8) *c.FILE {
-    return c.fopen(stage ++ "/" ++ what ++ ".log", "w") orelse fail("cannot write {s}/{s}.log", .{ stage, what });
+    return fopen(stage ++ "/" ++ what ++ ".log", "w") orelse fail("cannot write {s}/{s}.log", .{ stage, what });
 }
 
 /// Exit with espeak-ng's message unless `status` is OK (the logs stay in
@@ -127,7 +136,7 @@ fn openLog(comptime what: []const u8) *c.FILE {
 fn check(what: []const u8, status: c.espeak_ng_STATUS, context: c.espeak_ng_ERROR_CONTEXT) void {
     if (status == c.ENS_OK) return;
     std.debug.print("espeak_data: compiling {s} failed (logs: {s}/*.log in the output directory):\n", .{ what, stage });
-    c.espeak_ng_PrintStatusCodeMessage(status, c.stderr, context);
+    c.espeak_ng_PrintStatusCodeMessage(status, crt.fdopen(2, "w"), context);
     std.process.exit(1);
 }
 

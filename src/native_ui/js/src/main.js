@@ -811,7 +811,8 @@ g.location = {
   get host() { return "localhost"; },
   replace(v) { const i = String(v).indexOf("#"); if (i >= 0) { const nv = String(v).slice(i); if (nv !== hash) { hash = nv; fireHash(); } } },
   assign(v) { this.href = v; },
-  reload() {},
+  // The page starts again in this window (a new runtime and DOM).
+  reload() { host.reload?.(); },
   toString() { return this.href; },
 };
 const history = [];
