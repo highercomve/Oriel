@@ -26,7 +26,12 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    # Logged in: anonymous pulls share the runners' Docker Hub rate limit.
+    container:
+      image: archlinux:latest
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - name: System packages
         run: pacman -Syu --noconfirm --needed $ARCH_PACKAGES
@@ -135,7 +140,12 @@ jobs:
   release:
     needs: [test, test-macos, test-windows]
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    # Logged in: anonymous pulls share the runners' Docker Hub rate limit.
+    container:
+      image: archlinux:latest
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
     permissions:
       contents: write
       actions: write
