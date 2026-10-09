@@ -1,0 +1,10 @@
+.{
+    .name = .oriel_system_monitor,
+    .version = "0.1.0",
+    .fingerprint = 0x50183278a3338d82,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .oriel = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "main.zig", "sampler.zig", "web" },
+}

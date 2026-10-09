@@ -91,3 +91,12 @@ The [canvas demo](../examples/canvas-demo) draws shapes, paths, text,
 transforms, and animated balls with the 2D canvas API.
 
 ![Canvas demo in the WebView: shapes, text, a curved path, and animated balls](../assets/screenshots/canvas-demo.png)
+
+### System monitor
+
+The [system monitor](../examples/system-monitor) provides live CPU, memory,
+uptime, and process telemetry with 60-sample sparklines, search/sort, and polite
+process termination. It features direct `/proc` telemetry in Zig (sub-millisecond
+sampling with zero subprocess spawning) rendered via the native renderer
+(`-Dnative_ui`) or system WebView.
+

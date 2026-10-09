@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Oriel System Monitor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Header Bar -->
+    <header class="header">
+      <div class="header-left">
+        <div class="logo-mark">⚡</div>
+        <h1 class="app-title">Oriel System Monitor</h1>
+        <div class="badge badge-native" id="engine-badge">native_ui</div>
+        <div class="badge badge-perf" id="perf-badge">-- ms</div>
+      </div>
+      <div class="header-right">
+        <span class="status-indicator live"></span>
+        <span class="header-status" id="header-status">Initializing telemetry...</span>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="content">
+      <!-- 4 Stat Tiles -->
+      <section class="tiles-grid">
+        <!-- CPU Tile -->
+        <div class="tile" id="tile-cpu">
+          <div class="tile-header">
+            <span class="tile-label">CPU</span>
+            <span class="tile-sublabel" id="cpu-detail">-- cores</span>
+          </div>
+          <div class="tile-value" id="cpu-value">0.0%</div>
+          <div class="chart-container">
+            <canvas id="cpu-chart" width="240" height="34"></canvas>
+          </div>
+        </div>
+
+        <!-- Memory Tile -->
+        <div class="tile" id="tile-mem">
+          <div class="tile-header">
+            <span class="tile-label">Memory</span>
+            <span class="tile-sublabel" id="mem-detail">-- / --</span>
+          </div>
+          <div class="tile-value" id="mem-value">0.0%</div>
+          <div class="chart-container">
+            <canvas id="mem-chart" width="240" height="34"></canvas>
+          </div>
+        </div>
+
+        <!-- Processes Tile -->
+        <div class="tile" id="tile-proc">
+          <div class="tile-header">
+            <span class="tile-label">Processes</span>
+            <span class="tile-sublabel" id="proc-detail">top 128 shown</span>
+          </div>
+          <div class="tile-value" id="proc-value">0</div>
+          <div class="chart-container">
+            <canvas id="proc-chart" width="240" height="34"></canvas>
+          </div>
+        </div>
+
+        <!-- Uptime Tile -->
+        <div class="tile" id="tile-uptime">
+          <div class="tile-header">
+            <span class="tile-label">Uptime</span>
+            <span class="tile-sublabel">since boot</span>
+          </div>
+          <div class="tile-value" id="uptime-value">0m</div>
+          <div class="tile-footer-note">
+            <span>60 samples kept · 2 s cadence</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Toolbar -->
+      <section class="toolbar">
+        <div class="toolbar-left">
+          <button class="btn btn-primary" id="btn-pause" title="Pause or resume live sampling">
+            <span id="pause-icon">⏸</span>
+            <span id="pause-label">Pause</span>
+          </button>
+          <button class="btn btn-secondary" id="btn-refresh" title="Sample immediately">
+            <span>⟳</span>
+            <span>Refresh</span>
+          </button>
+
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="search-input" placeholder="Filter by name or pid..." autocomplete="off">
+            <button class="search-clear hidden" id="search-clear" title="Clear filter">×</button>
+          </div>
+        </div>
+
+        <div class="toolbar-right">
+          <span class="sort-label">Sort:</span>
+          <div class="sort-group">
+            <button class="btn-toggle active" data-sort="cpu">CPU</button>
+            <button class="btn-toggle" data-sort="mem">Memory</button>
+            <button class="btn-toggle" data-sort="pid">PID</button>
+            <button class="btn-toggle" data-sort="name">Name</button>
+          </div>
+          <button class="btn-dir" id="btn-sort-dir" title="Toggle sort direction">
+            <span id="sort-dir-icon">▼</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Table Section -->
+      <section class="table-section">
+        <div class="table-header-row">
+          <div class="table-title-area">
+            <span class="table-title">Processes</span>
+            <span class="badge badge-secondary" id="count-badge">0 of 0</span>
+          </div>
+          <span class="table-hint">Right-click or click Terminate for polite SIGTERM (confirmed first)</span>
+        </div>
+
+        <div class="table-container">
+          <div class="table-header">
+            <div class="col-pid">PID</div>
+            <div class="col-name">Command</div>
+            <div class="col-state">State</div>
+            <div class="col-cpu">CPU %</div>
+            <div class="col-mem">Memory</div>
+            <div class="col-actions">Actions</div>
+          </div>
+          <div class="table-scroll" id="table-scroll">
+            <div class="table-body" id="proc-tbody">
+              <!-- Dynamically populated rows -->
+            </div>
+            <div class="empty-state hidden" id="empty-state">
+              <div class="empty-title">No matching processes found</div>
+              <div class="empty-hint">Try adjusting your search filter.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Status Bar -->
+    <footer class="footer">
+      <span class="footer-left" id="footer-status">Ready</span>
+      <span class="footer-right" id="footer-engine">Oriel 0.16.0</span>
+    </footer>
+  </div>
+
+  <!-- Custom Context Menu with Submenus -->
+  <div id="context-menu" class="context-menu hidden">
+    <div class="menu-item menu-item-danger" id="ctx-terminate">
+      <span class="menu-icon">⚠️</span>
+      <span class="menu-label">Terminate (SIGTERM)…</span>
+    </div>
+    <div class="menu-separator"></div>
+    <div class="menu-item menu-has-submenu" id="ctx-copy-parent">
+      <span class="menu-icon">📋</span>
+      <span class="menu-label">Copy</span>
+      <span class="menu-arrow">▸</span>
+      <div class="context-submenu">
+        <div class="menu-item" id="ctx-copy-name">
+          <span class="menu-label">Copy Name</span>
+        </div>
+        <div class="menu-item" id="ctx-copy-pid">
+          <span class="menu-label">Copy PID</span>
+        </div>
+        <div class="menu-item" id="ctx-copy-line">
+          <span class="menu-label">Copy Full Row</span>
+        </div>
+      </div>
+    </div>
+    <div class="menu-item" id="ctx-filter">
+      <span class="menu-icon">🔍</span>
+      <span class="menu-label">Filter by this Process</span>
+    </div>
+    <div class="menu-separator"></div>
+    <div class="menu-item" id="ctx-refresh">
+      <span class="menu-icon">⟳</span>
+      <span class="menu-label">Refresh Now</span>
+    </div>
+  </div>
+
+  <!-- Modal Dialog for SIGTERM Confirmation -->
+  <div class="modal-scrim hidden" id="kill-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span class="modal-icon">⚠️</span>
+        <h2 class="modal-title">Send SIGTERM?</h2>
+      </div>
+      <p class="modal-body" id="kill-prompt">
+        Are you sure you want to terminate process <strong id="kill-proc-name"></strong> (PID <span id="kill-proc-pid"></span>)?
+      </p>
+      <p class="modal-subtext">
+        SIGTERM is a polite request that gives the process an opportunity to save state and clean up. This monitor never issues SIGKILL.
+      </p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="kill-cancel">Cancel</button>
+        <button class="btn btn-danger" id="kill-confirm">Send SIGTERM</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
