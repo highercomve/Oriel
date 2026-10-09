@@ -6,17 +6,21 @@ Inspired by `native/examples/system-monitor/`, this version takes full advantage
 
 ---
 
-## Why Oriel's version is so much faster
+## How the two compare
+
+Measured on one Linux machine (Ryzen 7 7800X3D, RTX 4070, Hyprland, 787
+processes), both built `ReleaseFast`; the full method and the CPU, thread
+and size numbers are on the [comparison page](https://highercomve.github.io/Oriel/docs/comparison/).
 
 | Metric / Mechanism | Native SDK (`native/examples/system-monitor`) | Oriel (`oriel/examples/system-monitor`) |
 |---|---|---|
 | **Telemetry Collection** | Spawns external processes (`ps axo pid=,pcpu=,pmem=,rss=,etime=,comm=` + `vm_stat`/`sysctl`) on every 2s tick | **Direct Linux `/proc` reads in Zig**: opens `/proc/stat`, `/proc/meminfo`, `/proc/uptime`, and iterates `/proc/[pid]/stat` directly |
 | **Subprocess Overhead** | `fork()`, `execve("ps")`, dynamic linker, stdout pipe IPC, context switches | **0 subprocess spawns**; direct kernel procfs filesystem reads in pure Zig |
-| **Collection Latency** | ~40 ms – 90 ms per sample | **0.8 ms – 2.5 ms** per sample (~30x–60x faster) |
+| **Collection Latency** | 18.9 ms per sample (`ps` + `cat`, run from a shell) | **6.0 ms** per sample (about 3× faster) |
 | **Data Parsing** | Pure byte-slicing and binary long-division in TypeScript subset | Compiled native Zig structs, registers, in-place sorting (`std.mem.sort`) |
 | **Rendering** | Native SDK layout compiler | **Oriel `native_ui`**: QuickJS bytecode + Oriel Native DOM (Zig store) + Yoga flexbox + GTK4/Cairo / Direct2D |
 | **Process Termination** | Spawns `/bin/kill -TERM <pid>` | Direct `std.posix.kill(pid, SIG.TERM)` syscall in Zig |
-| **Memory Footprint** | ~50–70 MB | ~28–35 MB (native_ui) |
+| **Memory Footprint** | 255–264 MB RSS, 175–184 MB PSS | 203–204 MB RSS, 140–141 MB PSS (native_ui, Oriel 0.9.10) |
 
 ---
 

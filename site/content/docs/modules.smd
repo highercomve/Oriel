@@ -11,27 +11,35 @@
 | Module | Flag | Default | Linux | Windows | macOS | Android | iOS |
 |---|---|---|---|---|---|---|---|
 | Tray | `tray` | on | ✓ | ✓ | ✓ | — | — |
-| Updater | `updater` | on | ✓ | ✓ | ✓ | — (stores) | — (App Store) |
+| Updater | `updater` | on | ✓ | ✓ | ✓ | —¹ | —¹ |
 | Media server | `media_server` | on | ✓ | ✓ | ✓ | — | — |
 | SQL | `sql` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
 | File watching | `fs_watch` | on | ✓ | ✓ | ✓ | ✓ | — |
-| Dialogs | `dialog` | on | ✓ | ✓ | ✓ | ✓ (SAF) | ✓ (document picker) |
+| Dialogs | `dialog` | on | ✓ | ✓ | ✓ | ✓² | ✓² |
 | Notifications | `notification` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Settings store | `store` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
 | App menu | `menu` | on | ✓ | ✓ | ✓ | — | — |
-| Global shortcuts | `global_shortcut` | on | ✓ | ✓ | ✓ | in-app (Meta+/ list) | — |
-| Input injection | `input` | on | ✓ | ✓ | ✓ | — (the Oriel keyboard) | — |
+| Global shortcuts | `global_shortcut` | on | ✓ | ✓ | ✓ | in-app³ | — |
+| Input injection | `input` | on | ✓ | ✓ | ✓ | —⁴ | — |
 | Clipboard | `clipboard` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Deep links | `deep_link` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Vector search | `sqlite_vec` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LLM inference | `llama` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Speech-to-text | `whisper` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Audio capture | `audio_capture` | **off** | ✓ | ✓ | ✓ | ✓ (AAudio) | ✓ |
-| Dictation | `whisper` + `audio_capture` | **off** | ✓ | ✓ | ✓ | ✓ (+ system recognizer) | ✓ |
+| Audio capture | `audio_capture` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Dictation | `whisper` `audio_capture` | **off** | ✓ | ✓ | ✓ | ✓⁵ | ✓⁵ |
 | Chat (LLM) | `llama` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Text to speech | `kokoro` (+ `llama` or `whisper`) | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Network / mDNS | `network` | on | ✓ | ✓ (Win 10 1809+) | ✓ | ✓ (NsdManager) | ✓ |
+| Text to speech | `kokoro`⁶ | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Network / mDNS | `network` | on | ✓ | ✓⁷ | ✓ | ✓ | ✓ |
 | Sharing | `share` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+1. Updates come from Google Play and the App Store.
+2. Android's Storage Access Framework; iOS's document picker.
+3. Shortcuts inside the app, listed by the system's Meta+/ helper.
+4. The Oriel keyboard (an input method) types into other apps instead.
+5. Android and iOS can also use the system's own recognizer.
+6. Also needs `llama` or `whisper`, which provide the shared ggml tree.
+7. Windows 10 1809 or later.
 
 On Android and iOS, a module marked — is off by default and a build error when turned on: the platform has no such thing (a tray, system-wide hotkeys) or forbids it. [Android and iOS]($link.page('docs/mobile')) has what replaces them.
 

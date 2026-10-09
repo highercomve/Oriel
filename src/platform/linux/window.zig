@@ -6,7 +6,10 @@
 
 const std = @import("std");
 const gtk = @import("gtk");
-const webkit = @import("webkit");
+const build_opts = @import("build_options");
+/// -Dnative_ui links no WebKitGTK: a window's `web_view` is always null
+/// there, so its type only needs a name.
+const webkit = if (build_opts.native_ui) @import("no_webkit.zig") else @import("webkit");
 const glib = @import("glib");
 const gio = @import("gio");
 const App = @import("../../core/App.zig");
@@ -15,7 +18,6 @@ const isolation = @import("../../core/isolation.zig");
 const dev_server = @import("dev_server.zig");
 const permissions = @import("../../core/permissions.zig");
 const overlay = @import("overlay.zig");
-const build_opts = @import("build_options");
 const build_target = @import("../../core/target.zig");
 /// -Dnative_ui: pages drawn with native views instead of WebKit (docs/native-renderer.md).
 const native_gtk = if (build_opts.native_ui) @import("../../native_ui/gtk.zig") else struct {};

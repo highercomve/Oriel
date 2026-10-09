@@ -268,6 +268,8 @@ tr:last-child td { border-bottom: 0; }
 .toc ul { list-style: none; margin: 0; padding: 0; }
 .toc ul ul { padding-left: 12px; }
 .toc a { display: block; color: var(--faint); font-size: 13.5px; padding: 4px 0; }
+/* A heading's flag (`-Dllama`) is a code chip: keep it small and whole. */
+.toc code { font-size: 11.5px; padding: 0 3px; white-space: nowrap; }
 .toc a:hover { color: var(--text); }
 
 .doc { padding: 40px 0 72px; min-width: 0; }
@@ -285,14 +287,20 @@ tr:last-child td { border-bottom: 0; }
   background: var(--surface); border-radius: 0 10px 10px 0; color: var(--muted);
 }
 .prose blockquote p { margin: 6px 0; }
-.prose table { margin: 20px 0; border: 1px solid var(--border); border-radius: var(--radius); border-collapse: separate; border-spacing: 0; width: 100%; }
+/* As wide as its content, at most the column: a wide table (the module
+   overview's nine columns) scrolls sideways instead of spilling under the
+   table of contents. */
+.prose table { margin: 20px 0; border: 1px solid var(--border); border-radius: var(--radius); border-collapse: separate; border-spacing: 0; display: block; width: max-content; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .prose .content { overflow-wrap: anywhere; }
 /* Table cells break between words, never inside one (the prose's
    anywhere-breaking made "Experimental" four lines in a narrow column). */
 .prose th, .prose td { overflow-wrap: normal; word-break: normal; hyphens: auto; }
+/* Docs tables are dense (the module overview has nine columns): tighter
+   cells than the home page's, so they fit the column before scrolling. */
+.prose table { font-size: 13.5px; }
+.prose th, .prose td { padding: 8px 10px; }
 @media (max-width: 700px) {
-  /* A wide table scrolls sideways instead of squeezing its columns. */
-  .prose table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; width: auto; max-width: 100%; }
+  /* Narrow screens: columns keep a readable width and the table scrolls. */
   .prose th, .prose td { min-width: 6.5em; padding: 10px 12px; }
   .prose th:first-child, .prose td:first-child { min-width: 7.5em; }
 }

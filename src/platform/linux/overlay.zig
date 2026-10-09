@@ -18,9 +18,10 @@
 
 const std = @import("std");
 const gtk = @import("gtk");
-const webkit = @import("webkit");
 const glib = @import("glib");
 const build_options = @import("build_options");
+/// -Dnative_ui links no WebKitGTK (no_webkit.zig names the null web view).
+const webkit = if (build_options.native_ui) @import("no_webkit.zig") else @import("webkit");
 const App = @import("../../core/App.zig");
 
 const log = std.log.scoped(.oriel);

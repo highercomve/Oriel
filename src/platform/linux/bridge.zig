@@ -7,8 +7,10 @@
 const std = @import("std");
 const glib = @import("glib");
 const gobject = @import("gobject");
-const webkit = @import("webkit");
-const jsc = @import("jsc");
+const build_opts = @import("build_options");
+/// -Dnative_ui links no WebKitGTK (no_webkit.zig names the null web view).
+const webkit = if (build_opts.native_ui) @import("no_webkit.zig") else @import("webkit");
+const jsc = if (build_opts.native_ui) struct {} else @import("jsc");
 const App = @import("../../core/App.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
@@ -16,7 +18,6 @@ const build_target = @import("../../core/target.zig");
 const isolation = @import("../../core/isolation.zig");
 
 const log = std.log.scoped(.oriel);
-const build_opts = @import("build_options");
 /// -Dnative_ui: pages drawn with native views (docs/native-renderer.md).
 const native = if (build_opts.native_ui) @import("../../native_ui/engine.zig") else struct {};
 

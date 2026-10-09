@@ -1,7 +1,7 @@
 ---
 .title = "Oriel and Vercel native",
 .description = "How Oriel compares with Vercel Labs' native (formerly zero-native), measured against what GhostPen needs.",
-.date = .date("2026-09-27T00:00:00"),
+.date = .date("2026-10-09T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
@@ -46,6 +46,61 @@ pre-1.0 and moves fast, so check its
 | Packages | deb, rpm, AppImage, NSIS `setup.exe`, `.app`/`.dmg`, WinGet manifests | `.app`/`.dmg`; Linux and Windows installers are "future work" |
 | Self-update | ✅ Linux (AppImage), Windows, macOS; Ed25519 | macOS only |
 | Code signing | macOS Developer ID or self-signed (`oriel signing`) | macOS |
+
+# Measured: the same app in both
+
+Both repositories ship a live system monitor (CPU and memory tiles with
+sparklines, a sortable and filterable table of the top 128 processes,
+SIGTERM with confirmation, a 2 s sampling cadence):
+[native's](https://github.com/vercel-labs/native/tree/main/examples/system-monitor),
+written in TypeScript and `.native` markup and drawn by native's own
+renderer, and
+[Oriel's](https://github.com/highercomve/Oriel/tree/main/examples/system-monitor),
+a web page drawn by Oriel's native renderer (`-Dnative_ui`: QuickJS, the
+native DOM, Yoga and GTK 4, no WebView) with a Zig sampler.
+
+Both were built `ReleaseFast` (native from its repository at commit
+`2bdd8eb8`, CLI 0.10.1; Oriel 0.9.10) and run one at a time on the same machine
+(Arch Linux, kernel 6.18, Hyprland on Wayland, GTK 4.24, Ryzen 7 7800X3D,
+RTX 4070, 787 processes running), each left to settle for 5 s and then
+sampled every second for 60 s, two to four times each. Memory and CPU include every process
+the app starts.
+
+| | Oriel (`native_ui`) | native v0.10.1 |
+|---|---|---|
+| Memory, RSS (average) | 203–204 MB | 255–264 MB |
+| Memory, PSS (average) | 140–141 MB | 175–184 MB |
+| CPU (average, one core) | 6.5–6.9%¹ | 5.3–5.6% |
+| Threads | 22 | 13–16 |
+| Executable, stripped | 4.2 MB | 7.0 MB |
+| Shared libraries loaded | 113 (GTK 4) | 113 (GTK 4) |
+| Processes started per sample | 0 (reads `/proc` in Zig) | 2 (`/bin/ps`, `/bin/cat`) |
+| One sampling round | 6.0 ms | 18.9 ms |
+
+1. One of four runs measured 9.8%; the machine had other work running.
+   Oriel's runs varied more than native's.
+
+What the numbers say:
+
+- **Oriel uses less memory.** Both sit on GTK 4 and a GPU-backed renderer:
+  the graphics driver's mappings alone were 52 MB of Oriel's resident
+  memory and 75 MB of native's. Oriel used about 20% less in total (PSS,
+  which splits shared pages fairly between processes).
+- **native uses slightly less CPU.** Oriel runs the page's JavaScript in
+  QuickJS; native runs its TypeScript compiled to native code but starts
+  two processes per sample. The gap is about one percent of one core.
+- **Sampling differs most.** Oriel's sampler reads `/proc` directly and
+  takes about a third of the time of native's `ps` and `cat` round. The
+  sampling round was timed on its own: the sampler compiled alone for Oriel,
+  and the same two commands run from a shell for native. Starting them
+  from a 250 MB process costs more than from a shell.
+- **Same libraries.** Since Oriel 0.9.10 a `native_ui` app links no
+  WebKitGTK: the same 113 libraries load as for native. Before, it linked
+  WebKitGTK unused, which cost 14 MB of memory and 45 more libraries.
+
+These are one machine and one app. GPU drivers, the compositor and the
+number of processes all move the absolute numbers. Startup time and GPU
+use were not measured.
 
 # Where native is ahead
 

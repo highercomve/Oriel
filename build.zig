@@ -663,9 +663,14 @@ fn addOrielModule(
             oriel.addImport("gio", gobject.module("gio2"));
             oriel.addImport("gdk", gobject.module("gdk4"));
             oriel.addImport("gtk", gobject.module("gtk4"));
-            oriel.addImport("webkit", gobject.module("webkit6"));
-            oriel.addImport("jsc", gobject.module("javascriptcore6"));
-            oriel.addImport("soup", gobject.module("soup3"));
+            // -Dnative_ui draws every window itself: no WebView, so
+            // WebKitGTK (and with it JavaScriptCore, libsoup, ICU,
+            // GStreamer) is neither linked nor loaded.
+            if (!features.native_ui) {
+                oriel.addImport("webkit", gobject.module("webkit6"));
+                oriel.addImport("jsc", gobject.module("javascriptcore6"));
+                oriel.addImport("soup", gobject.module("soup3"));
+            }
         }
     } else if (is_android) {
         // The NDK's libraries: logcat, ALooper (the main-thread dispatch),
