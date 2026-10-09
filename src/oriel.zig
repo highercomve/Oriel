@@ -247,6 +247,10 @@ test {
     if (options.audio_capture) std.testing.refAllDecls(audio_capture);
     if (options.whisper and options.audio_capture) std.testing.refAllDecls(dictation);
     if (options.llama) std.testing.refAllDecls(chat);
+    if (options.kokoro) {
+        std.testing.refAllDecls(kokoro);
+        std.testing.refAllDecls(audio_play);
+    }
     // dictation's Apple engine needs no whisper: checked on every Apple
     // target (whisper's C sources need the SDK even to type-check).
     if (target.is_ios or target.os == .macos) std.testing.refAllDecls(@import("modules/dictation/apple.zig"));

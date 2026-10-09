@@ -356,6 +356,14 @@ ggml, llama.cpp and whisper.cpp are compiled optimized in every build mode, and 
 
 On macOS and iOS, ggml's Metal backend is built in by default (`-Dggml_metal=false` turns it off); the kernel sources are embedded, so no Xcode `metal` compiler is needed. Measured on an Apple M1 (5.9 s clip, tiny.en, incl. model load): 7.3 s on CPU → about 1 s on Metal.
 
+# Text to speech
+
+`oriel.kokoro` synthesizes speech with Kokoro-82M; `oriel.audio_play` plays
+its mono float32 PCM. Enable `.kokoro = true` with `.llama = true` or
+`.whisper = true`. Supply a model GGUF, a voice-pack GGUF and compatible
+espeak-ng phoneme data. See [Offline text to speech]($link.page('docs/tts'))
+for the API, sample ownership, callback behavior and dependency notices.
+
 # Audio capture
 
 Record microphones and system audio as mono `f32` samples (16 kHz for whisper).

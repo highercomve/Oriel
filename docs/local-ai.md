@@ -2,6 +2,9 @@
 
 [Back to Oriel](../README.md) · [Documentation](README.md)
 
+Offline speech output is covered in [Text to speech](tts.md): `oriel.kokoro`
+for synthesis and `oriel.audio_play` for PCM playback.
+
 ## Local AI inference (`oriel.llama` and `oriel.whisper`)
 
 Oriel provides opt-in native C/C++ inference bindings for [llama.cpp](https://github.com/ggml-org/llama.cpp) (text LLMs) and [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (speech recognition).

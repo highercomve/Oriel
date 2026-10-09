@@ -1,10 +1,52 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.9.5 and earlier.",
+.description = "Release notes for Oriel 0.9.6 and earlier.",
 .date = .date("2026-10-08T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# Oriel 0.9.6 · October 8, 2026
+
+Oriel 0.9.6 adds opt-in offline text-to-speech with Kokoro-82M and
+built-in PCM playback.
+
+## Added
+
+- `oriel.kokoro`: typed C-ABI bindings for model initialization, voice loading,
+  language selection, synthesis, error reporting and PCM cleanup.
+- `oriel.audio_play`: mono float32 playback through miniaudio, with progress,
+  natural-completion callbacks, stop/shutdown, and `finished()` polling.
+- Enable TTS with `.kokoro = true` alongside `.llama = true` or `.whisper = true`.
+  Kokoro shares Oriel's GGML build and adds espeak-ng phonemization and Highway
+  SIMD. Apps supply model/voice GGUF files and compatible espeak-ng runtime data.
+- `AppOptions.include_paths` forwards app-owned C include directories to desktop,
+  iOS, Android and TypeScript-generation root modules.
+- Repository and website guides for offline speech synthesis, asset setup,
+  playback ownership, callback behavior and dependency notices.
+
+## Fixed
+
+- Playback teardown detaches sample state before joining the device thread,
+  preventing stop/start deadlocks with audio callbacks.
+- Lifecycle operations are serialized; stop and finished are safe before
+  initialization, and stopped/completed audio buffers are filled with silence.
+- Playback implementation and Zig declarations use the same vendored header,
+  including whisper-only TTS builds and coexistence with llama's mtmd audio code.
+- Optional TTS dependencies are downloaded lazily, keeping default builds lean.
+- Invalid synthesis output is rejected before converting C sample counts/rates.
+
+## Validation and dependencies
+
+- TTS-enabled tests exercise ABI defaults, PCM buffer completion, and repeated
+  start/stop against miniaudio's silent null backend. Linux CPU synthesis is
+  verified with the local Kokoro Q8_0 model and English voice pack.
+- Release CI enables TTS tests on Linux and macOS in addition to the existing
+  framework, CLI, Windows and iOS checks. GPU synthesis and physical audio-device
+  behavior are not claimed as verified across every platform.
+- The optional TTS stack includes espeak-ng (GPL-3.0-or-later). Oriel's framework
+  remains MIT; upstream component license texts are included in `NOTICE` and
+  `licenses/tts`. Model assets are supplied separately by apps.
 
 # Oriel 0.9.5 · October 8, 2026
 

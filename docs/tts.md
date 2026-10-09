@@ -1,0 +1,114 @@
+# Offline text to speech
+
+[Back to Oriel](../README.md) · [Documentation](README.md)
+
+Oriel provides offline speech synthesis through `oriel.kokoro` and mono
+PCM playback through `oriel.audio_play`. Both modules are opt-in and disabled
+in default builds. The Kokoro-82M model and voice pack are separate runtime
+files supplied by your app.
+
+## Enable TTS
+
+In your app's `build.zig`, enable Kokoro alongside one of the existing GGML
+engines. Either llama or whisper supplies the shared GGML source tree:
+
+```zig
+const dep = b.dependency("oriel", .{
+    .target = target,
+    .optimize = optimize,
+    .kokoro = true,
+    .whisper = true, // or .llama = true
+});
+```
+
+From the Oriel checkout, the TTS-enabled regression suite runs with:
+
+```sh
+zig build test -Dkokoro -Dwhisper -Daudio_capture=false
+```
+
+Kokoro, espeak-ng phonemization, Highway SIMD, and miniaudio are compiled
+into enabled apps. Models and runtime phoneme data are not embedded or
+installed automatically. Optional TTS dependencies are fetched lazily.
+
+## Provide runtime assets
+
+Supply these files before initializing the engine:
+
+- A Kokoro model GGUF, such as `kokoro-82m-q8_0.gguf`.
+- A matching voice-pack GGUF, such as `kokoro-voice-af_heart.gguf`.
+- A compatible compiled `espeak-ng-data` directory containing `phondata`,
+  `phonindex`, `phontab`, language dictionaries and voices.
+
+Set `KOKORO_ESPEAK_DATA_PATH` to the data directory before the first engine
+initialization. The build uses espeak-ng 1.52.0; compatible runtime data can
+come from your system installation or be packaged with the app. Upstream
+model and voice downloads are listed in
+[kokoro.cpp](https://github.com/simonfxr/kokoro.cpp/tree/a9e31430838c8bdc3d4beaaab62753681b9f7839).
+
+## Synthesize and play
+
+Run model loading and synthesis on a worker. Serialize operations on a
+context, and retain it until synthesis has finished.
+
+```zig
+const params = oriel.kokoro.defaultParams();
+const ctx = oriel.kokoro.init("models/kokoro-82m-q8_0.gguf", params)
+    orelse return error.ModelLoadFailed;
+defer oriel.kokoro.free(ctx);
+try oriel.kokoro.loadVoice(ctx, "models/kokoro-voice-af_heart.gguf");
+try oriel.kokoro.setLanguage(ctx, "en-us");
+
+const audio = try oriel.kokoro.synthesize(ctx, "Hello from Oriel.");
+defer oriel.kokoro.freePcm(audio.samples);
+try oriel.audio_play.start(io, gpa, audio.samples, audio.rate);
+// Registered after freePcm so stop joins callbacks before PCM is freed.
+defer oriel.audio_play.stop();
+while (!oriel.audio_play.finished()) {
+    try io.sleep(.fromMilliseconds(20), .awake);
+}
+```
+
+Output is mono float32 PCM at 24 kHz. Free it with `freePcm`, which uses the
+engine's allocator. `lastError()` returns the C engine's error text after
+model-loading failure. Stop playback before freeing its samples or the
+allocator used for its device.
+
+Playback has one active utterance at a time. `start` stops and joins the
+previous device, and `finished` can be polled before initialization and after
+shutdown. `stop` and `shutdown` are idempotent on a control thread.
+`App.run` also shuts playback down after its queued commands drain.
+
+Set `on_progress` and `on_done` before starting playback; change them only
+after stopping. They run on the audio thread, and `on_done` reports natural
+completion rather than an explicit stop. Queue UI or lifecycle work to
+another thread. `start` rejects calls from an audio callback. A callback's
+`stop` only silences output; a later control-thread stop/shutdown releases
+the device.
+
+## Backend selection and validation
+
+Kokoro's context parameters expose CPU and AUTO backend selection. Call
+`oriel.ggml_gpu.load(io)` before loading a model when using Oriel's dynamic
+GPU backends. GPU availability depends on your build flags and runtime;
+CPU synthesis is verified on Linux with the Q8_0 model and an English voice.
+Playback lifecycle tests use miniaudio's silent null backend, which does not
+open the user's audio device. This does not claim device or synthesis
+validation on every supported platform.
+
+To include a real synthesis check in the regression suite, provide local
+assets explicitly:
+
+```sh
+KOKORO_ESPEAK_DATA_PATH=/path/to/espeak-ng-data \
+ORIEL_TTS_MODEL=/path/to/kokoro-82m-q8_0.gguf \
+ORIEL_TTS_VOICE=/path/to/kokoro-voice-af_heart.gguf \
+zig build test -Dkokoro -Dwhisper -Daudio_capture=false
+```
+
+## Dependency notices
+
+The optional TTS stack includes espeak-ng, licensed GPL-3.0-or-later.
+Kokoro, Highway, miniaudio, ucd-tools and model assets have their own notices.
+Oriel's framework license remains MIT; dependency texts are in `NOTICE` and
+`licenses/tts`.

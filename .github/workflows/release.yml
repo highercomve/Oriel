@@ -36,6 +36,8 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: Unit tests (framework, tools, CLI)
         run: zig build test --summary all
+      - name: TTS CPU and playback lifecycle tests
+        run: zig build test -Dkokoro -Dwhisper -Daudio_capture=false --summary all
       - name: Isolation runtime sender validation
         run: node tools/test_isolation_runtime.mjs
       - name: Smoke app, module checks (no GUI)
@@ -59,6 +61,8 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: Unit tests (framework, tools, CLI)
         run: zig build test --summary all
+      - name: TTS CPU and playback lifecycle tests
+        run: zig build test -Dkokoro -Dwhisper -Daudio_capture=false -Dggml_metal=false --summary all
       - name: Type-check iOS device and simulator
         run: |
           zig build check -Dtarget=aarch64-ios -Dsql=false

@@ -15,6 +15,7 @@ pub const c = @cImport({
 });
 
 pub const sample_rate: u32 = 24_000;
+pub const Audio = struct { samples: []f32, rate: u32 };
 pub const status = c.enum_kokoro_status;
 pub const error_ok: c_int = c.KOKORO_STATUS_OK;
 
@@ -61,14 +62,19 @@ pub fn voiceName(ctx: *Context) []const u8 {
 
 /// Text to mono float32 PCM (espeak phonemes → Kokoro). The samples are the
 /// C library's until `freePcm`.
-pub fn synthesize(ctx: *Context, text: []const u8) !struct { samples: []f32, rate: u32 } {
+pub fn synthesize(ctx: *Context, text: []const u8) !Audio {
     const buf = try std.heap.page_allocator.dupeZ(u8, text);
     defer std.heap.page_allocator.free(buf);
     var n: c_int = 0;
     const pcm = c.kokoro_synthesize(ctx, buf.ptr, &n);
     if (pcm == null) return error.SynthesisFailed;
+    const raw_rate = c.kokoro_sample_rate(ctx);
+    if (n <= 0 or raw_rate <= 0) {
+        c.kokoro_pcm_free(pcm);
+        return error.InvalidAudio;
+    }
     const len: usize = @intCast(n);
-    const rate: u32 = @intCast(c.kokoro_sample_rate(ctx));
+    const rate: u32 = @intCast(raw_rate);
     return .{ .samples = @as([*]f32, @ptrCast(pcm))[0..len], .rate = rate };
 }
 
@@ -76,4 +82,34 @@ pub fn synthesize(ctx: *Context, text: []const u8) !struct { samples: []f32, rat
 pub fn freePcm(samples: []f32) void {
     if (samples.len == 0) return;
     c.kokoro_pcm_free(@ptrCast(samples.ptr));
+}
+
+test "Kokoro context defaults match the pinned C ABI" {
+    const params = defaultParams();
+    try std.testing.expectEqual(c.KOKORO_ABI_VERSION, params.abi_version);
+    try std.testing.expect(params.length_scale > 0);
+}
+
+test "Kokoro synthesizes finite mono PCM from supplied model and voice" {
+    const gpa = std.testing.allocator;
+    const model = std.testing.environ.getAlloc(gpa, "ORIEL_TTS_MODEL") catch return error.SkipZigTest;
+    defer gpa.free(model);
+    const voice = try std.testing.environ.getAlloc(gpa, "ORIEL_TTS_VOICE");
+    defer gpa.free(voice);
+    const model_z = try gpa.dupeZ(u8, model);
+    defer gpa.free(model_z);
+    const voice_z = try gpa.dupeZ(u8, voice);
+    defer gpa.free(voice_z);
+    var params = defaultParams();
+    params.backend = c.KOKORO_BACKEND_CPU;
+    params.n_threads = 2;
+    const ctx = init(model_z, params) orelse return error.ModelLoadFailed;
+    defer free(ctx);
+    try loadVoice(ctx, voice_z);
+    try setLanguage(ctx, "en-us");
+    const audio = try synthesize(ctx, "Hello from Oriel.");
+    defer freePcm(audio.samples);
+    try std.testing.expectEqual(sample_rate, audio.rate);
+    try std.testing.expect(audio.samples.len > 0);
+    for (audio.samples) |value| try std.testing.expect(std.math.isFinite(value));
 }
