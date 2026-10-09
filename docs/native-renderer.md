@@ -795,6 +795,9 @@ inline blocks flowing in text, `rowspan`, `img`, `iframe`,
 
 - The fake DOM and style engine cost memory (a few MB), still far below a
   WebView renderer.
+- On Linux a `-Dnative_ui` app links no WebKitGTK (nor JavaScriptCore,
+  libsoup and their dependencies), and its packages don't depend on it:
+  about 14 MB less memory and 45 fewer libraries than a WebView app.
 - Code that measures layout or draws (`getBoundingClientRect`
   beyond sizes Yoga knows) does not work.
 - DOM-based UI libraries that rely on the browser's layout or event details

@@ -2,6 +2,33 @@
 
 Notable changes in Oriel releases.
 
+## [0.9.10] — 2026-10-09
+
+Oriel 0.9.10 makes `-Dnative_ui` apps on Linux free of WebKitGTK, and fixes
+wide tables on the documentation site.
+
+### Improved
+
+- Linux apps built with `-Dnative_ui` no longer link or load WebKitGTK,
+  JavaScriptCore or libsoup: every window is drawn by the native renderer.
+  The system monitor example uses 14 MB less memory, loads 45 fewer shared
+  libraries, and its stripped binary is 1.2 MB smaller.
+- Their `.deb` and `.rpm` packages no longer depend on
+  `libwebkitgtk-6.0-4` / `webkitgtk6.0`.
+- The comparison with Vercel native now has measured numbers for the same
+  system monitor app built with both frameworks.
+
+### Fixed
+
+- Documentation tables wider than the page column scroll sideways instead of
+  spilling under the table of contents; the module overview fits again.
+
+### Compatibility
+
+- On Linux with `-Dnative_ui`, `media_scheme.setRoot` returns
+  `error.NoWebView`: there is no WebView to serve media to. The HTTP media
+  server is unaffected. WebView builds are unchanged.
+
 ## [0.9.9] — 2026-10-09
 
 Oriel 0.9.9 adds `oriel.tts`: offline text to speech that works out of the
