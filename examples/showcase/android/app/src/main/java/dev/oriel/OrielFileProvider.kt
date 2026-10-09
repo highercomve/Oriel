@@ -62,7 +62,7 @@ class OrielFileProvider : ContentProvider() {
         val file = fileFor(uri) ?: return null
         val cols = projection ?: arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
         val cursor = MatrixCursor(cols)
-        cursor.addRow(cols.map { if (it == OpenableColumns.SIZE) file.length() else if (it == OpenableColumns.DISPLAY_NAME) file.name else null }.toTypedArray())
+        cursor.addRow(cols.map { if (it == OpenableColumns.SIZE) file.length() else if (it == OpenableColumns.DISPLAY_NAME) file.name else null }.toTypedArray<Any?>())
         return cursor
     }
 

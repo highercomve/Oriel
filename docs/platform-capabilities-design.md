@@ -215,7 +215,8 @@ Service registration and browsing through the platform's own mDNS responder, so 
 multicast sockets, no multicast lock and no Apple multicast entitlement. GhostShare's Rust
 `mdns-sd` neither advertises nor discovers on Android (Google's Quick Share, on NsdManager, works on
 the same phone), so on Android GhostShare uses this instead. Code: `network/mdns.zig` (API, validation,
-the Kotlin wire format), `network/android.zig` + `OrielMdns.kt` (backend), `network/mdns_c.zig` (C ABI).
+the Kotlin wire format), `network/android.zig` + `OrielMdns.kt` (Android backend), `network/mdns_windows.zig`
+(Windows backend), `network/mdns_c.zig` (C ABI).
 
 ```zig
 // oriel.network.mdns
@@ -254,7 +255,7 @@ Rules, the same on every backend:
 | Android (`OrielMdns.kt`) | `NsdServiceInfo` + `setAttribute` (a value that isn't UTF-8 goes through the hidden `byte[]` overload, else `InvalidTxt`), `registerService`; the final name from `onServiceRegistered` | `discoverServices(type, PROTOCOL_DNS_SD)`; per service, API 34+ `registerServiceInfoCallback` (all addresses, updates), older `resolveService` serialized app-wide with retries on `FAILURE_ALREADY_ACTIVE`/`FAILURE_MAX_LIMIT`. No host name (NsdServiceInfo has none) |
 | Apple | TODO: `DNSServiceRegister` (dns_sd.h, libSystem) or `nw_listener`; types in NSBonjourServices | TODO: `DNSServiceBrowse` + `DNSServiceResolve` + `DNSServiceGetAddrInfo`, or `nw_browser` |
 | Linux | TODO: Avahi over D-Bus (`EntryGroup`) | TODO: Avahi `ServiceBrowser` + `ServiceResolver` |
-| Windows | TODO: `DnsServiceRegister` (windns.h, 10 1809+) | TODO: `DnsServiceBrowse` + `DnsServiceResolve` |
+| Windows (`mdns_windows.zig`) | `DnsServiceRegister` (windns.h, Windows 10 1809+) with an instance from `DnsServiceConstructInstance`; waits for its callback. TXT values travel as UTF-16 strings, so they must be UTF-8 text without NUL (else `InvalidTxt`) | `DnsServiceBrowse` (a PTR per instance; TTL 0 = `lost`) + `DnsServiceResolve` per instance, addresses merged across interfaces; callbacks on the DNS client's thread pool, handlers one at a time |
 
 Android permissions: none beyond INTERNET. NsdManager hands the work to the system's responder, so
 the app's process receives no multicast (no `MulticastLock`, no CHANGE_WIFI_MULTICAST_STATE), and

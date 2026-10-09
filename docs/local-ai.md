@@ -2,8 +2,9 @@
 
 [Back to Oriel](../README.md) · [Documentation](README.md)
 
-Offline speech output is covered in [Text to speech](tts.md): `oriel.kokoro`
-for synthesis and `oriel.audio_play` for PCM playback.
+Offline speech output is covered in [Text to speech](tts.md): `oriel.tts`
+reads text aloud with Kokoro-82M (voices, downloads, streaming playback),
+built on `oriel.kokoro` for synthesis and `oriel.audio_play` for playback.
 
 ## Local AI inference (`oriel.llama` and `oriel.whisper`)
 
@@ -262,3 +263,24 @@ const t = try oriel.dictation.transcribeFile(gpa, "talk.wav", .{});
 - **Building blocks:** `oriel.whisper`, `oriel.audio_capture` and `oriel.ggml_gpu` stay public
   for pipelines of your own.
 - `examples/showcase`'s Dictate tab uses all of it (and its System tab dictates into other apps).
+
+## Text to speech (`oriel.tts`)
+
+Reading text aloud with the tuning built in: enable `.kokoro = true` (with `.llama` or `.whisper`), then
+
+```zig
+oriel.tts.init(init.io, init.gpa, models_dir);                 // once, at startup
+try oriel.tts.download("kokoro-82m-q8_0");                      // and a voice: "af_heart"
+const r = try oriel.tts.speak(gpa, markdown_text, .{});         // from an async command
+oriel.tts.stop();                                               // Stop, from any thread
+```
+
+- **Models and voices:** Kokoro 82M (q8_0, f16) and curated voices for English, Spanish, French,
+  Portuguese, Italian, Japanese, Chinese and Hindi, SHA-256-checked on download.
+- **Out of the box:** Markdown read as prose, the language guessed from the text (`lang = "auto"`),
+  playback that starts after the first sentence and streams the rest, the model kept loaded
+  between utterances, the GPU where ggml has one (CUDA, Vulkan, Metal), and espeak-ng's phoneme
+  data bundled with the app on every platform.
+- **Building blocks:** `oriel.kokoro` and `oriel.audio_play` (one-shot and streaming playback).
+- `examples/showcase`'s Speak tab, and Read aloud on chat replies and notes, use it. See
+  [Offline text to speech](tts.md).

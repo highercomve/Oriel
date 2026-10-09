@@ -2,6 +2,95 @@
 
 Notable changes in Oriel releases.
 
+## [0.9.9] — 2026-10-09
+
+Oriel 0.9.9 adds `oriel.tts`: offline text to speech that works out of the
+box, with Kokoro-82M voices, verified downloads, bundled phoneme data and
+streaming playback on the CPU or the GPU. It also brings mDNS to Windows,
+drag and drop to the iOS native renderer, and Windows fixes.
+
+### Added
+
+- `oriel.tts`: Kokoro-82M text to speech, the counterpart of `oriel.chat`
+  and `oriel.dictation`. A catalog of models (`kokoro-82m-q8_0`, the
+  default, and `kokoro-82m-f16`) and curated voices for English, Spanish,
+  French, Portuguese, Italian, Japanese, Chinese and Hindi, downloaded from
+  Hugging Face and checked against their SHA-256 (`download`, `delete`,
+  `status`). `speak` reads Markdown as prose, guesses the language
+  (`lang = "auto"`) and picks a voice for it, and streams playback in
+  adaptive chunks: the first audio comes quickly and there are no gaps
+  when synthesis is faster than real time. `stop` works from any thread;
+  `warmUp` loads the model (and compiles GPU pipelines) ahead of the first
+  utterance; `unloadIdle` frees it under memory pressure. Options cover
+  model, voice, language, speed, Markdown, backend and threads; results
+  report first-audio time, synthesis time, real-time factor and gaps.
+  Events: "tts:download" and "tts:state".
+- `audio_play.Stream`: streaming playback through a bounded ring, one device
+  per utterance (`append`, `seal`, `finished`, `stop` from any thread,
+  `playedSeconds`/`queuedSeconds`/`starvedSeconds`), next to the one-shot API.
+- `model_download.fetchVerified`: downloads checked against a SHA-256; a
+  mismatching file is deleted and `error.ChecksumMismatch` returned.
+- espeak-ng's phoneme data is compiled at build time from the espeak-ng
+  1.52.0 sources and shipped by `addApp` with every `.kokoro = true` app:
+  next to the executable on Linux and Windows (and in their packages), in
+  `Contents/Resources` on macOS, in the iOS `.app`, and in the Android APK's
+  assets (extracted on first start). The `tts_languages` option picks the
+  dictionaries (default `en,es,fr,pt,it,ja,cmn,hi`); `zig build
+  espeak-data` writes the directory alone.
+- Kokoro on the GPU with `-Dggml_cuda`, `-Dggml_vulkan` or `-Dggml_metal`,
+  through ggml's backend registry, falling back to the CPU. Measured on an
+  RTX 4070: first audio ~54 ms warm on CUDA, real-time factor ~0.02-0.03 on
+  CUDA and Vulkan (Vulkan compiles its pipelines for 1-4 s on first use);
+  8 threads of a Ryzen 7 7800X3D: ~0.36. Metal compiles in but hasn't been
+  measured.
+- Windows `oriel.network.mdns` backend on dnsapi's `DnsServiceRegister`,
+  `DnsServiceBrowse` and `DnsServiceResolve` (Windows 10 1809+). TXT values
+  must be UTF-8 text there.
+- iOS native renderer: drag and drop into the page through
+  `UIDropInteraction`: files (by data type), Photos images, text, and links
+  (`text/uri-list` and `text/plain`), matching AppKit's.
+- Showcase: a Speak tab (voices, models, speed, CPU/GPU, Markdown, live
+  state, a result card with first audio, real-time factor and gaps), Read
+  aloud on chat replies and notes, a warm-up on the tab's first visit, and
+  the `--say` and `--tts-download` headless flags.
+
+### Improved
+
+- Phones run Kokoro on their fast cores only and shorten the first chunk to
+  the measured speed. Low-end phones still synthesize slower than real
+  time: a Snapdragon 732G (2 threads) reaches a real-time factor of ~2.75,
+  with first audio after ~4 s and pauses between chunks.
+- `oriel dev` rebuilds keep a Zig `--fork=<path>` option.
+- Windows tray icons are decoded with zigimg instead of WIC, so creating and
+  destroying trays no longer grows the process's kernel handles.
+
+### Fixed
+
+- Windows: closing a window or quitting while a native-renderer context menu
+  or the tray menu is open no longer hangs; a native page that closes its
+  own window from a control's handler is closed once that handler returns.
+- Native-renderer sliders with huge ranges reach their min and max on
+  Windows, and the page-side value no longer becomes `Infinity`.
+- Windows `dialog.saveToFolder` refuses names Win32 programs can't open
+  (device names such as `CON` or `nul.txt`, a trailing dot or space,
+  `<>:"|?*`) with `error.InvalidName`.
+- Android: `audio_play` builds with NDK 28 (nullability qualifiers in its
+  headers).
+- Windows: Kokoro links espeak-ng statically (`LIBESPEAK_NG_EXPORT`), so
+  its API is no longer declared as imported from a DLL.
+
+### Compatibility
+
+- `KOKORO_ESPEAK_DATA_PATH` is now optional: apps no longer supply
+  espeak-ng data. Set it only to use other data than the bundled copy.
+- Android projects generated before this release need one line in
+  `app/build.gradle.kts`, inside `android { }`:
+  `sourceSets["main"].assets.srcDirs("../../zig-out/android-assets")`
+  (the path from the app module to `zig-out`). The Kotlin runtime is
+  updated by the build.
+- Apps built with `.kokoro = true` now ship espeak-ng's data
+  (GPL-3.0-or-later, about 2.9 MB with the default languages); see `NOTICE`.
+
 ## [0.9.8] — 2026-10-09
 
 Oriel 0.9.8 is a memory-safety release. It fixes use-after-free, out-of-bounds,

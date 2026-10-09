@@ -90,6 +90,13 @@ pub const Surface = struct {
     ax_elements: std.AutoHashMapUnmanaged(i64, Object) = .empty,
     ax_list: Object = apple.nil,
     ax_dirty: bool = false,
+    /// Drags over the page (dropEntered): one session per drag that
+    /// enters, a drag is over the page now (until it leaves or drops),
+    /// what it carries, and the action UIKit was last told (a drop's).
+    drag_session: u32 = 0,
+    drag_inside: bool = false,
+    drag_kinds: DragKinds = .{},
+    drag_action: u8 = 0,
 };
 
 const Field = struct {
@@ -203,6 +210,13 @@ fn classes() void {
         .{ "textViewDidChange:", textViewDidChange },
         .{ "textView:shouldChangeTextInRange:replacementText:", textViewShouldChange },
     }));
+    drop_delegate = apple.new(apple.defineClass("OrielNuiDropDelegate", &.{"UIDropInteractionDelegate"}, .{
+        .{ "dropInteraction:canHandleSession:", dropCanHandle },
+        .{ "dropInteraction:sessionDidEnter:", dropEntered },
+        .{ "dropInteraction:sessionDidUpdate:", dropUpdated },
+        .{ "dropInteraction:sessionDidExit:", dropExited },
+        .{ "dropInteraction:performDrop:", dropPerform },
+    }));
     gesture_delegate = apple.new(apple.defineClass("OrielNuiGestureDelegate", &.{"UIGestureRecognizerDelegate"}, .{
         .{ "gestureRecognizer:shouldReceiveTouch:", gestureShouldReceive },
         .{ "gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:", gestureAlongside },
@@ -253,6 +267,10 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         view.msgSend(void, "addGestureRecognizer:", .{r});
         r.release();
     }
+    // Drops into the page (iPad: from other apps; iPhone: in-app only).
+    const drops = apple.class("UIDropInteraction").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithDelegate:", .{drop_delegate});
+    view.msgSend(void, "addInteraction:", .{drops});
+    drops.release();
     try surfaces.put(std.heap.smp_allocator, s.token, s);
     errdefer _ = surfaces.remove(s.token);
     try by_view.put(std.heap.smp_allocator, key(view.value), s);
@@ -2176,4 +2194,430 @@ fn axActivate(self: id, _: SEL) callconv(.c) BOOL {
     if (a.ref.text) return apple.boolean(false);
     _ = a.s.engine.event(a.ref.id, "click", "0");
     return apple.boolean(true);
+}
+
+// ---------------------------------------------------------------------------
+// Drag and drop (docs/drag-and-drop-design.md, sections 1 and 5): drops
+// into the page through a UIDropInteraction. The page answers each enter
+// and update with an effect mask (Engine.dragEvent), which UIKit gets as a
+// UIDropProposal (copy, move or cancel). A drop's data loads
+// asynchronously: each file is opened in its load's completion handler
+// (the temporary copy goes when it returns), then on the main queue the
+// descriptors go into the engine's table (drop.zig) and the page gets
+// "drop"; UIKit was answered by the last update, so on iOS the page can't
+// change its mind at drop time.
+
+var drop_delegate: Object = apple.nil;
+
+/// At most this many items in a drop, and this long a string.
+const drag_max_items = 4096;
+const drag_max_string = 16 * 1024 * 1024;
+
+/// An item's type identifiers that are text, not a file's content.
+const text_types = [_][]const u8{
+    "public.plain-text",        "public.utf8-plain-text", "public.utf16-plain-text", "public.utf16-external-plain-text",
+    "public.text",              "public.html",            "public.url",              "public.rtf",
+    "com.apple.flat-rtfd",      "com.apple.webarchive",   "public.url-name",         "com.apple.uikit.attributedstring",
+    "com.apple.notes.richtext", "public.rtfd",
+};
+
+fn isTextType(t: []const u8) bool {
+    for (text_types) |x| if (std.mem.eql(u8, x, t)) return true;
+    return false;
+}
+
+const ItemKind = enum { file, plain, url, none };
+
+/// Whether type identifier `t` is data (UTType conforms to public.data):
+/// not a provider's private description of an item (Files' FPItem.File).
+fn isDataType(t: []const u8) bool {
+    const ut = apple.objc.getClass("UTType") orelse return true;
+    const str = apple.nsString(t) orelse return false;
+    defer str.release();
+    const ty = ut.msgSend(Object, "typeWithIdentifier:", .{str});
+    if (ty.value == null) return false;
+    const data_str = apple.nsString("public.data") orelse return true;
+    defer data_str.release();
+    const data = ut.msgSend(Object, "typeWithIdentifier:", .{data_str});
+    return data.value != null and apple.isTrue(ty.msgSend(BOOL, "conformsToType:", .{data}));
+}
+
+/// An item is a file when it has data that isn't text (an image, a PDF),
+/// or when its data is text but it is named and comes as a file (a file
+/// provider's item, as a .txt from Files, or a name with an extension);
+/// else its text, or its URL (text/uri-list). `file_type` is the type to
+/// load: the first one that is data, never a private description.
+fn itemKind(provider: Object, file_type: *[]const u8) ItemKind {
+    const types = provider.msgSend(Object, "registeredTypeIdentifiers", .{});
+    const n = types.msgSend(c_ulong, "count", .{});
+    var first_data: ?[]const u8 = null;
+    var foreign = false;
+    var plain = false;
+    var url = false;
+    var i: c_ulong = 0;
+    while (i < n) : (i += 1) {
+        const t = apple.utf8(types.msgSend(Object, "objectAtIndex:", .{i})) orelse continue;
+        if (isTextType(t)) {
+            if (first_data == null) first_data = t;
+            if (std.mem.eql(u8, t, "public.url")) url = true else if (std.mem.endsWith(u8, t, "plain-text") or std.mem.eql(u8, t, "public.text")) plain = true;
+        } else if (isDataType(t)) {
+            file_type.* = t;
+            return .file;
+        } else foreign = true;
+    }
+    const name_obj = provider.msgSend(Object, "suggestedName", .{});
+    const name: ?[]const u8 = if (name_obj.value != null) apple.utf8(name_obj) else null;
+    const has_ext = if (name) |nm| std.mem.indexOfScalar(u8, nm, '.') != null else false;
+    if (!url and name != null and (foreign or has_ext)) if (first_data) |t| {
+        file_type.* = t;
+        return .file;
+    };
+    // A link (Safari's carry plain text too): its URL, given as both
+    // text/uri-list and text/plain, as a browser gives a dropped link.
+    if (url) return .url;
+    if (plain) return .plain;
+    return .none;
+}
+
+/// The extension a type's files take ("png"; "" when none).
+fn extensionOfType(t: []const u8) []const u8 {
+    const ut = apple.objc.getClass("UTType") orelse return "";
+    const str = apple.nsString(t) orelse return "";
+    defer str.release();
+    const ty = ut.msgSend(Object, "typeWithIdentifier:", .{str});
+    if (ty.value == null) return "";
+    const ext = ty.msgSend(Object, "preferredFilenameExtension", .{});
+    if (ext.value == null) return "";
+    return apple.utf8(ext) orelse "";
+}
+
+/// What a session carries, as the page's DataTransfer types.
+const DragKinds = struct {
+    files: bool = false,
+    plain: bool = false,
+    url: bool = false,
+
+    fn of(session: Object) DragKinds {
+        var k: DragKinds = .{};
+        const items = session.msgSend(Object, "items", .{});
+        const n = items.msgSend(c_ulong, "count", .{});
+        var i: c_ulong = 0;
+        while (i < n) : (i += 1) {
+            var t: []const u8 = "";
+            switch (itemKind(items.msgSend(Object, "objectAtIndex:", .{i}).msgSend(Object, "itemProvider", .{}), &t)) {
+                .file => k.files = true,
+                .plain => k.plain = true,
+                .url => k.url = true,
+                .none => {},
+            }
+        }
+        return k;
+    }
+
+    /// enter's items: [[kind, type], ...]; no strings with files, as in Chrome.
+    fn writeItems(k: DragKinds, gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
+        if (k.files) return out.appendSlice(gpa, "[[\"file\",\"\"]]");
+        try out.append(gpa, '[');
+        // (A URL is text/plain too.)
+        if (k.plain or k.url) try out.appendSlice(gpa, "[\"string\",\"text/plain\"]");
+        if (k.url) try out.appendSlice(gpa, ",[\"string\",\"text/uri-list\"]");
+        try out.append(gpa, ']');
+    }
+};
+
+/// The session's operations as the page's mask: copy always, move when the
+/// session allows it (in-app drags).
+fn sessionAllowed(session: Object) u8 {
+    return 1 | @as(u8, if (apple.isTrue(session.msgSend(BOOL, "allowsMoveOperation", .{}))) 2 else 0);
+}
+
+fn surfaceOfInteraction(interaction: id) ?*Surface {
+    const view = (Object{ .value = interaction }).msgSend(Object, "view", .{});
+    return by_view.get(key(view.value));
+}
+
+fn dropCanHandle(_: id, _: SEL, _: id, _: id) callconv(.c) BOOL {
+    // Every drag: the page decides (its dragover), not the types.
+    return apple.boolean(true);
+}
+
+fn dropEntered(_: id, _: SEL, interaction: id, session_id: id) callconv(.c) void {
+    const s = surfaceOfInteraction(interaction) orelse return;
+    const session: Object = .{ .value = session_id };
+    s.drag_session +%= 1;
+    s.drag_inside = true;
+    s.drag_kinds = DragKinds.of(session);
+    _ = dragOver(s, session, true);
+}
+
+/// UIDropOperation: cancel 0, copy 2, move 3.
+fn dropUpdated(_: id, _: SEL, interaction: id, session_id: id) callconv(.c) id {
+    const session: Object = .{ .value = session_id };
+    var op: isize = 0;
+    if (surfaceOfInteraction(interaction)) |s| {
+        if (!s.drag_inside) {
+            s.drag_session +%= 1;
+            s.drag_inside = true;
+            s.drag_kinds = DragKinds.of(session);
+            op = dragOver(s, session, true);
+        } else op = dragOver(s, session, false);
+    }
+    const proposal = apple.class("UIDropProposal").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithDropOperation:", .{op});
+    return proposal.msgSend(Object, "autorelease", .{}).value;
+}
+
+/// "enter" or "over" on the node under the touch: the page's answer as
+/// UIKit's operation (cancel when it doesn't take the drop there).
+fn dragOver(s: *Surface, session: Object, enter: bool) isize {
+    const token = s.token;
+    const q = session.msgSend(CGPoint, "locationInView:", .{s.view});
+    const p: [2]f32 = .{ @floatCast(q.x), @floatCast(q.y) };
+    const allowed = sessionAllowed(session);
+    const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
+    const gpa = s.gpa; // not read from the surface after the event (it may close)
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"{s}\",{d:.2},{d:.2},{d},1,0,{d}", .{ if (enter) "enter" else "over", p[0], p[1], allowed, s.drag_session }) catch return 0;
+    if (enter) {
+        json.append(gpa, ',') catch return 0;
+        s.drag_kinds.writeItems(gpa, &json) catch return 0;
+    }
+    json.append(gpa, ']') catch return 0;
+    const mask = s.engine.dragEvent(nid, json.items);
+    if (surfaces.get(token) == null) return 0; // the page closed its window
+    const m = mask & allowed;
+    s.drag_action = if (m & 1 != 0) 1 else if (m & 2 != 0) 2 else 0;
+    return switch (s.drag_action) {
+        1 => 2,
+        2 => 3,
+        else => 0,
+    };
+}
+
+fn dropExited(_: id, _: SEL, interaction: id, _: id) callconv(.c) void {
+    const s = surfaceOfInteraction(interaction) orelse return;
+    if (!s.drag_inside) return;
+    s.drag_inside = false;
+    s.drag_action = 0;
+    sendDragLeave(s, s.drag_session);
+}
+
+fn sendDragLeave(s: *Surface, session: u32) void {
+    var buf: [32]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[\"leave\",{d}]", .{session}) catch return;
+    _ = s.engine.dragEvent(0, json);
+}
+
+/// One item being loaded (its completion handler fills it, on any thread).
+const DropSlot = struct {
+    job: *DropJob,
+    kind: ItemKind,
+    /// A file's descriptor (-1: none), name and MIME type, or the text.
+    fd: i32 = -1,
+    name: []u8 = &.{},
+    mime: []u8 = &.{},
+    text: []u8 = &.{},
+};
+
+const DropJob = struct {
+    gpa: std.mem.Allocator,
+    token: u64,
+    at: [2]f32,
+    allowed: u8,
+    session: u32,
+    files: bool,
+    slots: []DropSlot,
+    pending: std.atomic.Value(usize),
+
+    fn deinit(job: *DropJob) void {
+        for (job.slots) |sl| {
+            if (sl.fd >= 0) _ = std.c.close(sl.fd);
+            job.gpa.free(sl.name);
+            job.gpa.free(sl.mime);
+            job.gpa.free(sl.text);
+        }
+        job.gpa.free(job.slots);
+        job.gpa.destroy(job);
+    }
+
+    /// One load finished: the last delivers on the main queue.
+    fn done(job: *DropJob) void {
+        if (job.pending.fetchSub(1, .acq_rel) == 1) apple.asyncMain(job, dropDeliver);
+    }
+};
+
+fn dropPerform(_: id, _: SEL, interaction: id, session_id: id) callconv(.c) void {
+    const s = surfaceOfInteraction(interaction) orelse return;
+    if (!s.drag_inside) return;
+    s.drag_inside = false;
+    const action = s.drag_action;
+    s.drag_action = 0;
+    const session: Object = .{ .value = session_id };
+    if (action == 0) return sendDragLeave(s, s.drag_session);
+    const q = session.msgSend(CGPoint, "locationInView:", .{s.view});
+    const items = session.msgSend(Object, "items", .{});
+    const n: usize = @min(items.msgSend(c_ulong, "count", .{}), drag_max_items);
+    // Its loads finish on other threads: a thread-safe allocator, whatever
+    // the surface's.
+    const gpa = std.heap.smp_allocator;
+    const job = gpa.create(DropJob) catch return sendDragLeave(s, s.drag_session);
+    job.* = .{
+        .gpa = gpa,
+        .token = s.token,
+        .at = .{ @floatCast(q.x), @floatCast(q.y) },
+        .allowed = sessionAllowed(session),
+        .session = s.drag_session,
+        .files = s.drag_kinds.files,
+        .slots = gpa.alloc(DropSlot, n) catch {
+            gpa.destroy(job);
+            return sendDragLeave(s, s.drag_session);
+        },
+        // One for this loop: nothing is delivered before every load started.
+        .pending = .init(n + 1),
+    };
+    for (job.slots, 0..) |*sl, i| {
+        const provider = items.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, i)}).msgSend(Object, "itemProvider", .{});
+        var file_type: []const u8 = "";
+        sl.* = .{ .job = job, .kind = itemKind(provider, &file_type) };
+        // With files, only the files (Chrome's rule).
+        if (job.files and sl.kind != .file) sl.kind = .none;
+        switch (sl.kind) {
+            .file => {
+                // Its name as the provider suggests it, with the type's
+                // extension when it has none (Photos' and Files' names
+                // leave it out): "photo.png", as a browser names it.
+                const name = provider.msgSend(Object, "suggestedName", .{});
+                if (name.value != null) if (apple.utf8(name)) |nm| {
+                    const ext = extensionOfType(file_type);
+                    sl.name = (if (std.mem.indexOfScalar(u8, nm, '.') == null and ext.len > 0)
+                        std.fmt.allocPrint(gpa, "{s}.{s}", .{ nm, ext })
+                    else
+                        gpa.dupe(u8, nm)) catch &.{};
+                };
+                sl.mime = gpa.dupe(u8, mimeOfType(file_type)) catch &.{};
+                const t = apple.nsString(file_type) orelse {
+                    job.done();
+                    continue;
+                };
+                defer t.release();
+                var block = apple.contextBlock(onFileLoaded, sl);
+                _ = provider.msgSend(Object, "loadFileRepresentationForTypeIdentifier:completionHandler:", .{ t, block.ptr() });
+            },
+            .plain, .url => {
+                var block = apple.contextBlock(onObjectLoaded, sl);
+                const cls = apple.class(if (sl.kind == .url) "NSURL" else "NSString");
+                _ = provider.msgSend(Object, "loadObjectOfClass:completionHandler:", .{ cls, block.ptr() });
+            },
+            .none => job.done(),
+        }
+    }
+    job.done();
+}
+
+/// A type identifier's MIME type (UTType's preferred one; "" when none).
+fn mimeOfType(t: []const u8) []const u8 {
+    // (UniformTypeIdentifiers: loaded with UIKit, but not to be counted on.)
+    const ut = apple.objc.getClass("UTType") orelse return "";
+    const str = apple.nsString(t) orelse return "";
+    defer str.release();
+    const ty = ut.msgSend(Object, "typeWithIdentifier:", .{str});
+    if (ty.value == null) return "";
+    const mime = ty.msgSend(Object, "preferredMIMEType", .{});
+    if (mime.value == null) return "";
+    return apple.utf8(mime) orelse "";
+}
+
+/// A file's temporary copy: opened now (it's deleted when this returns).
+fn onFileLoaded(block: *apple.ContextBlock, url_id: id, _: id) callconv(.c) void {
+    const sl: *DropSlot = @ptrCast(@alignCast(block.ctx.?));
+    defer sl.job.done();
+    if (url_id == null) return;
+    const url: Object = .{ .value = url_id };
+    const path = url.msgSend(?[*:0]const u8, "fileSystemRepresentation", .{}) orelse return;
+    const fd = std.c.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .NONBLOCK = true, .NOCTTY = true });
+    if (fd < 0) return;
+    sl.fd = fd;
+    if (sl.name.len == 0) if (std.mem.span(path).len > 0) {
+        sl.name = sl.job.gpa.dupe(u8, std.fs.path.basename(std.mem.span(path))) catch &.{};
+    };
+}
+
+/// A string or URL item's text.
+fn onObjectLoaded(block: *apple.ContextBlock, obj_id: id, _: id) callconv(.c) void {
+    const sl: *DropSlot = @ptrCast(@alignCast(block.ctx.?));
+    defer sl.job.done();
+    if (obj_id == null) return;
+    var obj: Object = .{ .value = obj_id };
+    if (sl.kind == .url) obj = obj.msgSend(Object, "absoluteString", .{});
+    const text = apple.utf8(obj) orelse return;
+    if (text.len > drag_max_string) {
+        log.warn("native ui: a dropped string over {d} MiB left out", .{drag_max_string >> 20});
+        return;
+    }
+    sl.text = sl.job.gpa.dupe(u8, text) catch &.{};
+}
+
+/// Every item loaded (main queue): the files into the engine's table, then
+/// "drop" on the node under the drop point.
+fn dropDeliver(ctx: ?*anyopaque) callconv(.c) void {
+    const job: *DropJob = @ptrCast(@alignCast(ctx.?));
+    defer job.deinit();
+    const s = surfaces.get(job.token) orelse return; // the window closed
+    const gpa = job.gpa;
+    var items: std.ArrayList(u8) = .empty;
+    defer items.deinit(gpa);
+    var handles: std.ArrayList(u32) = .empty;
+    defer handles.deinit(gpa);
+    var count: usize = 0;
+    for (job.slots) |*sl| {
+        switch (sl.kind) {
+            .file => {
+                if (sl.fd < 0) continue;
+                const fd = sl.fd;
+                sl.fd = -1; // addFd owns it now (closed on failure too)
+                const handle = s.engine.drops.addFd(fd) catch |err| {
+                    if (err != error.NotAFile) log.warn("native ui: a dropped file: {s}", .{@errorName(err)});
+                    continue;
+                };
+                const info = s.engine.drops.info(handle).?;
+                if (count > 0) items.append(gpa, ',') catch {};
+                items.appendSlice(gpa, "[\"file\",") catch {};
+                appendJsonString(gpa, &items, sl.mime) catch {};
+                items.append(gpa, ',') catch {};
+                appendJsonString(gpa, &items, sl.name) catch {};
+                items.print(gpa, ",{d},{d},{d}]", .{ info.size, info.mtimeMs(), handle }) catch {};
+                handles.append(gpa, handle) catch {};
+                count += 1;
+            },
+            .plain, .url => {
+                if (sl.text.len == 0) continue;
+                // A URL as text/uri-list, and as text/plain too.
+                for ([_]bool{ true, false }) |plain_entry| {
+                    if (!plain_entry and sl.kind != .url) continue;
+                    if (count > 0) items.append(gpa, ',') catch {};
+                    items.appendSlice(gpa, if (plain_entry) "[\"string\",\"text/plain\"," else "[\"string\",\"text/uri-list\",") catch {};
+                    appendJsonString(gpa, &items, sl.text) catch {};
+                    items.append(gpa, ']') catch {};
+                    count += 1;
+                }
+            },
+            .none => {},
+        }
+    }
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(gpa);
+    json.print(gpa, "[\"drop\",{d:.2},{d:.2},{d},1,0,{d},[{s}]]", .{ job.at[0], job.at[1], job.allowed, job.session, items.items }) catch {
+        for (handles.items) |h| s.engine.drops.release(h);
+        return sendDragLeave(s, job.session);
+    };
+    const nid: i64 = if (s.engine.tree.hit(job.at[0], job.at[1])) |n| n.id else 0;
+    // Async here: the page's answer can't change the operation any more.
+    _ = s.engine.dragEvent(nid, json.items);
+}
+
+/// `str` as a JSON string (NSString's UTF-8, or a name, is valid UTF-8).
+fn appendJsonString(gpa: std.mem.Allocator, out: *std.ArrayList(u8), str: []const u8) !void {
+    const quoted = try std.json.Stringify.valueAlloc(gpa, if (std.unicode.utf8ValidateSlice(str)) str else "", .{});
+    defer gpa.free(quoted);
+    try out.appendSlice(gpa, quoted);
 }

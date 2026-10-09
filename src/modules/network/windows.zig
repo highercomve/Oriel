@@ -18,7 +18,9 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     return .{ .module = "network", .ok = true, .detail = try gpa.dupe(u8, "multicast: nothing to hold; info: not implemented yet") };
 }
 
-// mDNS / DNS-SD (network/mdns.zig): not written yet.
-// TODO: DnsServiceRegister / DnsServiceBrowse / DnsServiceResolve
-// (windns.h, dnsapi.dll, Windows 10 1809+).
-pub const mdns_backend = @import("mdns.zig").Unsupported;
+// mDNS / DNS-SD (network/mdns.zig): dnsapi's DnsService* (mdns_windows.zig).
+pub const mdns_backend = @import("mdns_windows.zig").backend;
+
+test {
+    std.testing.refAllDecls(@import("mdns_windows.zig"));
+}

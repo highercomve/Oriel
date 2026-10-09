@@ -208,18 +208,20 @@ const Field = struct {
     sent_pos: isize = -1,
 };
 
-/// A slider's position for a value, and the number of steps (its maximum).
+/// A trackbar's positions are LONGs: 0…maxInt(i32) (Range.track maps a
+/// range with more steps onto that many).
+const slider_cap: u32 = std.math.maxInt(i32);
+
+/// A slider's position for a value, its value at a position, and its last
+/// position (the trackbar's maximum).
 fn sliderPos(r: tree_mod.Range, v: f64) isize {
-    return @min(sliderIndex((r.snap(v) - r.min) / r.step), sliderSteps(r));
+    return r.trackPos(slider_cap, v);
+}
+fn sliderValue(r: tree_mod.Range, pos: isize) f64 {
+    return r.trackValue(slider_cap, pos);
 }
 fn sliderSteps(r: tree_mod.Range) isize {
-    return sliderIndex((r.max - r.min) / r.step);
-}
-/// A step count as a trackbar position, 0…maxInt(i32) (an infinite span
-/// makes it NaN or infinite).
-fn sliderIndex(steps: f64) isize {
-    if (!(steps >= 0)) return 0;
-    return @intFromFloat(@min(@round(steps), std.math.maxInt(i32)));
+    return r.track(slider_cap).last;
 }
 
 var common_controls = false;
@@ -486,6 +488,14 @@ pub const Surface = struct {
         s.glyph_widths.deinit(s.gpa);
         _ = c.DestroyWindow(s.hwnd);
         s.gpa.destroy(s);
+    }
+
+    /// The surface's own code is on the stack below a nested message loop
+    /// (a field's notification or key, the page's handler for it): destroy
+    /// must wait, or that code returns into a freed surface. The window's
+    /// WM_CLOSE retries until this is false.
+    pub fn busy(s: *const Surface) bool {
+        return s.in_control > 0;
     }
 
     /// For WindowHandle.deinit_fn.
@@ -1422,7 +1432,7 @@ fn onSlider(s: *Surface, code: c.WORD, hwnd: c.HWND) void {
     const r = tree_mod.Range.of(fx.node);
     const pos: isize = c.SendMessageW(hwnd, c.TBM_GETPOS, 0, 0);
     var buf: [48]u8 = undefined;
-    const text = r.text(&buf, r.min + @as(f64, @floatFromInt(pos)) * r.step);
+    const text = r.text(&buf, sliderValue(r, pos));
     if (pos != fx.field.sent_pos) {
         fx.field.sent_pos = pos;
         sendValue(s, fx.node, "input", text);

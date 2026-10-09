@@ -1,20 +1,22 @@
 ---
 .title = "Offline text to speech",
-.description = "Synthesize speech with Kokoro-82M and play mono PCM through miniaudio.",
-.date = .date("2026-10-08T00:00:00"),
+.description = "Read text aloud offline with oriel.tts: Kokoro-82M voices, verified downloads, streaming playback on the CPU or GPU.",
+.date = .date("2026-10-09T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
 
-Oriel provides offline speech synthesis through `oriel.kokoro` and mono
-PCM playback through `oriel.audio_play`. Both modules are opt-in and disabled
-in default builds. The Kokoro-82M model and voice pack are separate runtime
-files supplied by your app.
+`oriel.tts` reads text aloud offline with Kokoro-82M, on every platform:
+a catalog of models and voices with verified downloads, Markdown read as
+prose, the language guessed from the text, and streaming playback that
+starts after the first sentence. It is the counterpart of
+[`oriel.chat` and `oriel.dictation`]($link.page('docs/modules')). The building blocks,
+`oriel.kokoro` (synthesis) and `oriel.audio_play` (playback), stay public.
 
-# Enable TTS
+# Quick start
 
-In your app's `build.zig`, enable Kokoro alongside one of the existing GGML
-engines. Either llama or whisper supplies the shared GGML source tree:
+Enable Kokoro in your app's `build.zig`, alongside llama or whisper (they
+supply the shared GGML source tree):
 
 ```zig
 const dep = b.dependency("oriel", .{
@@ -25,38 +27,226 @@ const dep = b.dependency("oriel", .{
 });
 ```
 
-From the Oriel checkout, the TTS-enabled regression suite runs with:
-
-```sh
-zig build test -Dkokoro -Dwhisper -Daudio_capture=false
-```
-
-Kokoro, espeak-ng phonemization, Highway SIMD, and miniaudio are compiled
-into enabled apps. Models and runtime phoneme data are not embedded or
-installed automatically. Optional TTS dependencies are fetched lazily.
-
-# Provide runtime assets
-
-Supply these files before initializing the engine:
-
-- A Kokoro model GGUF, such as `kokoro-82m-q8_0.gguf`.
-- A matching voice-pack GGUF, such as `kokoro-voice-af_heart.gguf`.
-- A compatible compiled `espeak-ng-data` directory containing `phondata`,
-  `phonindex`, `phontab`, language dictionaries and voices.
-
-Set `KOKORO_ESPEAK_DATA_PATH` to the data directory before the first engine
-initialization. The build uses espeak-ng 1.52.0; compatible runtime data can
-come from your system installation or be packaged with the app. Upstream
-model and voice downloads are listed in
-[kokoro.cpp](https://github.com/simonfxr/kokoro.cpp/tree/a9e31430838c8bdc3d4beaaab62753681b9f7839).
-
-# Synthesize and play
-
-Run model loading and synthesis on a worker. Serialize operations on a
-context, and retain it until synthesis has finished.
+Then, in `main`:
 
 ```zig
-const params = oriel.kokoro.defaultParams();
+oriel.tts.init(init.io, init.gpa, models_dir);   // once, at startup (e.g. store.dataDir + "tts")
+try oriel.tts.download("kokoro-82m-q8_0");        // from a worker; once per device
+try oriel.tts.download("af_heart");               // a voice (0.5 MB)
+const r = try oriel.tts.speak(gpa, "# Hello\nRead **this** aloud.", .{}); // from a worker
+// r.first_audio_ms, r.synth_ms / 1000 / r.audio_s (the real-time factor), r.gap_ms...
+oriel.tts.stop();                                 // Stop, from any thread
+```
+
+Expose it to the page with commands of your own, and forward the module's
+events through your app's `Events` struct:
+
+```zig
+pub const Events = struct {
+    @"tts:download": @FieldType(oriel.tts.Events, "tts:download"),
+    @"tts:state": @FieldType(oriel.tts.Events, "tts:state"),
+};
+
+pub const Commands = struct {
+    pub const async_commands = .{ "speak", "tts_download", "tts_warm_up" };
+    pub fn speak(gpa: std.mem.Allocator, args: struct { text: []const u8, options: oriel.tts.Options = .{} }) !oriel.tts.Result {
+        return oriel.tts.speak(gpa, args.text, args.options);
+    }
+    pub fn tts_download(_: std.mem.Allocator, args: struct { id: []const u8 }) !void {
+        try oriel.tts.download(args.id);
+    }
+    pub fn tts_warm_up(_: std.mem.Allocator, args: oriel.tts.Options) !void {
+        try oriel.tts.warmUp(args);
+    }
+    // Not async: it must run while `speak` is busy on a worker.
+    pub fn tts_stop(_: std.mem.Allocator) void {
+        oriel.tts.stop();
+    }
+};
+```
+
+`examples/showcase`'s Speak tab and its "Read aloud" buttons are built this
+way; see [its README](https://github.com/highercomve/Oriel/blob/main/examples/showcase/README.md#speak-text-to-speech).
+
+# Build options
+
+| Option | Effect |
+| --- | --- |
+| `.kokoro = true` / `-Dkokoro` | Kokoro (kokoro.cpp), espeak-ng phonemization, Highway SIMD and miniaudio; `oriel.tts`, `oriel.kokoro`, `oriel.audio_play`. Needs `.llama` or `.whisper`. Its dependencies are fetched lazily. |
+| `.tts_languages = "en,es,..."` | The espeak-ng dictionaries compiled into the bundled phoneme data (default `en,es,fr,pt,it,ja,cmn,hi`; see Bundled phoneme data below). |
+| `-Dggml_cuda` | Kokoro on NVIDIA GPUs (Linux; with llama/whisper's `libggml-cuda.so`). |
+| `-Dggml_vulkan` | Kokoro on Vulkan GPUs (with `libggml-vulkan.so`; on Windows and Android, a backend registered only when a Vulkan loader exists). |
+| `-Dggml_metal` | Kokoro on Metal (on by default for macOS and iOS devices, off for the simulator). |
+
+The GPU flags are the same ones that put llama and whisper on the GPU
+([GPU backends]($link.page('docs/modules'))). Kokoro's
+calls into the CUDA and Vulkan backends go through ggml's backend registry,
+so an app without a GPU, or without the backend library, stays on the CPU.
+
+From the Oriel checkout, the TTS-enabled regression suite runs with
+`zig build test -Dkokoro -Dwhisper -Daudio_capture=false`
+(see Validation below).
+
+# Models, voices and downloads
+
+| Catalog | |
+| --- | --- |
+| Models (`oriel.tts.models`) | `kokoro-82m-q8_0` (135 MB, the default) and `kokoro-82m-f16` (156 MB) |
+| Voices (`oriel.tts.voices`, 0.5 MB each) | English (US): `af_heart`, `af_bella`, `af_nicole`, `am_michael`, `am_fenrir`; English (UK): `bf_emma`; Spanish: `ef_dora`, `em_alex`; French: `ff_siwis`; Portuguese (Brazil): `pf_dora`; Italian: `if_sara`; Japanese: `jf_alpha`; Chinese: `zf_xiaobei`; Hindi: `hf_alpha` |
+
+Phones get the same catalog. Files come from
+[simonfxr/kokoro.cpp-GGUF](https://huggingface.co/simonfxr/kokoro.cpp-GGUF)
+on Hugging Face into the directory given to `init`, named as in the catalog
+(`kokoro-82m-q8_0.gguf`, `kokoro-voice-af_heart.gguf`); copying them there
+works too.
+
+- `download(id)`: a model or a voice id. Blocks (call it from a worker),
+  emits "tts:download" (`{ id, done_mb, total_mb }`, `done_mb == total_mb`
+  at the end) and returns at once when the file is already there. The file
+  is checked against its SHA-256 before it is renamed into place; a
+  mismatch deletes it and returns `error.ChecksumMismatch`.
+- `delete(id)`: removes a model or voice (and a half-finished download of
+  it); a loaded model is unloaded first, `error.Speaking` while it is in use.
+- `status()`: the catalog with what is on the device, the loaded model,
+  where it runs (`backend`, `gpu`), the phoneme-data directory, the
+  download in progress, and the current phase.
+
+# Speaking
+
+`speak(a, text, opts)` reads `text` aloud and returns when it has been
+played or stopped. It blocks: call it from an async command. A new `speak`
+or a `stop` (from any thread) silences the current utterance at once, and
+its `speak` returns promptly with `stopped = true`.
+
+`Options`:
+
+| Field | Default | |
+| --- | --- | --- |
+| `model` | `"auto"` | A `models` id; `"auto"`: the default if downloaded, else any. |
+| `voice` | `"auto"` | A `voices` id; `"auto"`: the first voice on the device for the language (then one of the same family, then any). |
+| `lang` | `"auto"` | An espeak-ng language (`"en-us"`, `"es"`, `"fr"`...); `"auto"`: guessed from the text (`guessLanguage`). |
+| `speed` | `1.0` | 0.25-4 (2 = twice as fast). |
+| `markdown` | `true` | Read Markdown as prose (`prepareText`: headings, lists, emphasis, code fences and link targets removed). |
+| `backend` | `.auto` | `.auto`: the GPU when ggml has one (CUDA, Vulkan, Metal), else the CPU; `.cpu`. |
+| `threads` | `0` | CPU threads; 0: `defaultThreads()` (up to 8 on desktops, a phone's fast cores, 2 to 4). |
+
+`Result`: `voice`, `lang` and `backend` it was read with (allocated with
+`a`), `chunks`, `first_audio_ms` (from the call to the first sound, model
+loading included), `synth_ms`, `load_ms` (0 when the model was loaded),
+`audio_s` (`synth_ms / 1000 / audio_s` is the real-time factor), `gap_ms`
+(silence heard because synthesis fell behind) and `stopped`.
+
+"tts:state" follows each utterance: `{ phase, message, voice }`, with
+`phase` one of `"loading"`, `"generating"`, `"playing"`, `"idle"` (message
+`"Stopped"` or `"Finished"`) or `"error"` (message: the error's name).
+
+Errors include `error.NotInitialized`, `error.NoModel` / `error.NoVoice`
+(nothing downloaded), `error.UnknownModel` / `error.UnknownVoice`,
+`error.EspeakDataMissing` and `error.ModelLoadFailed`.
+
+How it streams: the text is cut into chunks at sentence, clause or word
+boundaries (`oriel.tts.chunks`): a short first one so sound starts quickly,
+then chunks of up to ~220 bytes sized to the audio already queued. One
+`audio_play.Stream` plays the whole utterance while the next chunk is
+synthesized, so there are no gaps when synthesis is faster than real time,
+and no false "finished" between chunks.
+
+The Kokoro context stays loaded between utterances: another voice or
+language reuses it, another model or backend reloads it.
+
+- `warmUp(opts)`: loads the model and voice `speak` would use with `opts`
+  without speaking; on a GPU it also synthesizes a word, so pipelines
+  compile before the first utterance. Call it from a worker when a reading
+  screen opens. `speak` waits for a warm-up in progress.
+- `unloadIdle()`: frees the context unless speaking (safe on the main
+  thread); call it on memory pressure or when the app goes to the
+  background. The next utterance loads it again.
+- `deinit()`: releases the context; `App.run` calls it after its queued
+  commands drain.
+- `guessLanguage(text)`, `prepareText(a, text)` and `defaultThreads()` are
+  public for pages that show what Auto will pick.
+- `audio_context`: a miniaudio context to play through (null: the default
+  device); tests and headless runs point it at miniaudio's null backend.
+
+# Bundled phoneme data
+
+Kokoro phonemizes with espeak-ng, which reads its compiled runtime data
+(`espeak-ng-data/`: `phontab`, `phonindex`, `phondata`, `intonations`, one
+`<name>_dict` per language and the `lang/` voice definitions). Oriel
+compiles it at build time from the espeak-ng 1.52.0 sources with a host tool
+(`tools/espeak_data.zig`, wired by `build/espeak_data.zig`), and `addApp`
+ships it with every `.kokoro = true` app, about 2.9 MB with the default
+languages (half of it Mandarin):
+
+| Platform | Location |
+| --- | --- |
+| Linux, Windows | `espeak-ng-data/` next to the executable (`zig-out/bin`, the deb/rpm's `/usr/lib/<app>/`, the AppImage, the NSIS installer) |
+| macOS | `<App>.app/Contents/Resources/espeak-ng-data` (linked from `Contents/MacOS`) |
+| iOS | `<App>.app/espeak-ng-data` |
+| Android | APK assets (`zig-out/android-assets`), copied to `<filesDir>/espeak-ng-data` on first start and after each app update |
+
+The default dictionaries are `en` (en-us, en-gb), `es`, `fr`, `pt` (pt-br),
+`it`, `ja`, `cmn` (Mandarin: espeak's `zh`/`cmn` voices) and `hi`. Add
+others with the dependency option `tts_languages`, a comma-separated list
+of espeak-ng dictionary names (`dictsource/<name>_rules`):
+
+```zig
+.tts_languages = "en,es,fr,pt,it,ja,cmn,hi,de,ko",
+```
+
+`zig build espeak-data -Dkokoro -Dwhisper` in the Oriel checkout writes the
+same directory to `zig-out/espeak-ng-data`.
+
+At run time `oriel.tts` looks for the data once, before the first engine
+init: `$KOKORO_ESPEAK_DATA_PATH`, then `<models_dir>/espeak-ng-data`, then
+the bundled copy, then the system's (Linux packages, Homebrew). Without any
+of them `speak` returns `error.EspeakDataMissing`. Setting
+`KOKORO_ESPEAK_DATA_PATH` is optional; use it to point at other data in
+espeak-ng 1.52.0's format. On Windows espeak-ng opens the files through
+ANSI paths, so the directory's path must be representable in the system's
+code page.
+
+**Android projects created before this release** need one line in
+`app/build.gradle.kts` (new projects get it from the template; the Kotlin
+runtime that extracts the assets is updated on every build), inside
+`android { }`, with the path from the app module to your `zig-out`:
+
+```kotlin
+sourceSets["main"].assets.srcDirs("../../zig-out/android-assets")
+```
+
+# Performance
+
+Measured with the Q8_0 model, streaming (`speak`), warm (model loaded):
+
+| Device | Backend | First audio | Real-time factor |
+| --- | --- | --- | --- |
+| RTX 4070 | CUDA | ~54 ms | ~0.02-0.03 |
+| RTX 4070 | Vulkan | similar to CUDA | ~0.02-0.03; 1-4 s pipeline compile on a context's first use (`warmUp` hides it) |
+| Ryzen 7 7800X3D | CPU, 8 threads | ~0.6 s | ~0.36 |
+| Snapdragon 732G | CPU, 2 fast cores | ~4 s | ~2.75: gaps |
+
+A real-time factor under 1 means synthesis runs faster than playback, so
+the utterance plays without gaps after the first chunk. Low-end phones
+synthesize slower than real time: on a Snapdragon 732G speech comes with
+pauses between chunks (`Result.gap_ms` reports them). Phones run Kokoro on
+the CPU where Vulkan 1.2 isn't usable (older Adrenos) and Kokoro has no
+OpenCL path; there `oriel.tts` uses only the fast cores (a thread on a
+little core holds every step back) and shortens the first chunk to what the
+measured speed makes in ~1.5 s. Build phone apps with the default
+`-Dggml_arm=dotprod`; without it the 732G's RTF was ~7.5. Metal compiles in
+on Apple platforms but hasn't been measured yet.
+
+# Building blocks: `oriel.kokoro` and `oriel.audio_play`
+
+For pipelines of your own (writing WAV files, other playback), use the
+modules `oriel.tts` is built on. Run model loading and synthesis on a
+worker; serialize operations on a context, and keep it until synthesis has
+finished. Before the first `kokoro.init`, make the phoneme data reachable:
+`oriel.tts` does it for you; without it, set `KOKORO_ESPEAK_DATA_PATH`.
+
+```zig
+const params = oriel.kokoro.defaultParams(); // .backend: CPU or AUTO
 const ctx = oriel.kokoro.init("models/kokoro-82m-q8_0.gguf", params)
     orelse return error.ModelLoadFailed;
 defer oriel.kokoro.free(ctx);
@@ -74,14 +264,18 @@ while (!oriel.audio_play.finished()) {
 ```
 
 Output is mono float32 PCM at 24 kHz. Free it with `freePcm`, which uses the
-engine's allocator. `lastError()` returns the C engine's error text after
-model-loading failure. Stop playback before freeing its samples or the
-allocator used for its device.
+engine's allocator. `lastError()` returns the C engine's error text after a
+model-loading failure. With AUTO, call `oriel.ggml_gpu.load(io)` before
+loading a model to register the CUDA or Vulkan backend.
 
-Playback has one active utterance at a time. `start` stops and joins the
-previous device, and `finished` can be polled before initialization and after
-shutdown. `stop` and `shutdown` are idempotent on a control thread.
-`App.run` also shuts playback down after its queued commands drain.
+## One-shot playback
+
+`audio_play.start` plays caller-owned PCM; stop playback before freeing its
+samples or the allocator used for its device. There is one active
+utterance at a time: `start` stops and joins the previous device, and
+`finished` can be polled before initialization and after shutdown. `stop`
+and `shutdown` are idempotent on a control thread. `App.run` also shuts
+playback down after its queued commands drain.
 
 Set `on_progress` and `on_done` before starting playback; change them only
 after stopping. They run on the audio thread, and `on_done` reports natural
@@ -90,29 +284,62 @@ another thread. `start` rejects calls from an audio callback. A callback's
 `stop` only silences output; a later control-thread stop/shutdown releases
 the device.
 
-# Backend selection and validation
+## Streaming playback: `audio_play.Stream`
 
-Kokoro's context parameters expose CPU and AUTO backend selection. Call
-`oriel.ggml_gpu.load(io)` before loading a model when using Oriel's dynamic
-GPU backends. GPU availability depends on your build flags and runtime;
-CPU synthesis is verified on Linux with the Q8_0 model and an English voice.
-Playback lifecycle tests use miniaudio's silent null backend, which does not
-open the user's audio device. This does not claim device or synthesis
-validation on every supported platform.
+One device for a whole utterance, fed chunk by chunk while it plays,
+through a bounded ring (`Stream.buffer_seconds`, 30 s):
 
-To include a real synthesis check in the regression suite, provide local
-assets explicitly:
+```zig
+const s = try oriel.audio_play.Stream.init(io, gpa, 24000);
+defer s.deinit();          // releases the device: never in its callback
+try s.start();             // or startWithContext(ctx): a miniaudio context of yours
+try s.append(chunk1);      // copied; blocks while the ring is full
+try s.append(chunk2);      // error.Cancelled once stopped
+s.seal();                  // no more audio: finished() after the drain
+while (!s.finished()) try io.sleep(.fromMilliseconds(20), .awake);
+```
+
+`stop` works from any thread, the audio callback included: output turns
+silent at once, `append` returns `error.Cancelled` and `finished` is true.
+`deinit` stops the stream, releases the device and frees it, on the owning
+thread after other threads are done calling `stop`. `playedSeconds`,
+`queuedSeconds` and `starvedSeconds` (silence inserted because appends fell
+behind) report progress. A `Stream` is independent of the one-shot API.
+
+# Validation
+
+The numbers above come from the devices in the table: Linux on the CPU,
+CUDA and Vulkan, and an Android phone's CPU. Playback lifecycle tests use
+miniaudio's silent null backend, which does not open the user's audio
+device. This does not claim device or synthesis validation on every
+supported platform.
+
+To include real synthesis checks in the regression suite, provide local
+assets explicitly. The test runner has no bundled phoneme data next to it,
+so point `KOKORO_ESPEAK_DATA_PATH` at a copy (`zig build espeak-data
+-Dkokoro -Dwhisper` writes one to `zig-out/espeak-ng-data`) unless the
+system has espeak-ng's:
 
 ```sh
-KOKORO_ESPEAK_DATA_PATH=/path/to/espeak-ng-data \
+KOKORO_ESPEAK_DATA_PATH=$PWD/zig-out/espeak-ng-data \
 ORIEL_TTS_MODEL=/path/to/kokoro-82m-q8_0.gguf \
 ORIEL_TTS_VOICE=/path/to/kokoro-voice-af_heart.gguf \
 zig build test -Dkokoro -Dwhisper -Daudio_capture=false
 ```
 
-# Dependency notices
+`ORIEL_TTS_DIR=<dir with kokoro-82m-q8_0.gguf, kokoro-voice-af_heart.gguf
+and kokoro-voice-ef_dora.gguf>` adds the streaming test (first audio, RTF
+and gaps per backend, English and Spanish; silent unless
+`ORIEL_TTS_SPEAKERS=1`). With `-Dggml_vulkan` or `-Dggml_cuda` the test step
+installs the GPU library in `zig-out/lib` and the tests load it from there,
+so the GPU is measured too (`-Doptimize=ReleaseFast` for real numbers).
 
-The optional TTS stack includes espeak-ng, licensed GPL-3.0-or-later.
-Kokoro, Highway, miniaudio, ucd-tools and model assets have their own notices.
-Oriel's framework license remains MIT; dependency texts are in `NOTICE` and
-`licenses/tts`.
+# Licenses
+
+The optional TTS stack includes espeak-ng and the runtime data compiled
+from it, licensed GPL-3.0-or-later; apps built with `.kokoro = true` ship
+that data. Kokoro (kokoro.cpp), Highway, miniaudio and ucd-tools have their
+own notices. Oriel's framework license remains MIT; dependency texts are in
+`NOTICE` and `licenses/tts`. The model and voice files are downloaded by
+the app at run time, not distributed with Oriel; their licenses are
+upstream's.

@@ -58,21 +58,25 @@ open class OrielActivity : Activity() {
         }
         setContentView(root)
         OrielRuntime.onActivityCreated(this, intent)
+        OrielAppExtensions.registered.forEach { it.onActivityCreated(this, savedInstanceState) }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         OrielRuntime.onActivityNewIntent(this, intent)
+        OrielAppExtensions.registered.forEach { it.onNewIntent(this, intent) }
     }
 
     override fun onStart() {
         super.onStart()
         started = true
+        OrielAppExtensions.registered.forEach { it.onActivityStarted(this) }
     }
 
     override fun onStop() {
         started = false
+        OrielAppExtensions.registered.forEach { it.onActivityStopped(this) }
         super.onStop()
     }
 
@@ -85,6 +89,12 @@ open class OrielActivity : Activity() {
     override fun onResume() {
         super.onResume()
         OrielRuntime.foreground = this
+        OrielAppExtensions.registered.forEach { it.onActivityResumed(this) }
+    }
+
+    override fun onPause() {
+        OrielAppExtensions.registered.forEach { it.onActivityPaused(this) }
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -94,7 +104,13 @@ open class OrielActivity : Activity() {
         // Recents): the window closes (or hides, with hide-on-close).
         if (w != null && isFinishing && !closingByRuntime && !isChangingConfigurations) NativeLib.onCloseRequested(w.id)
         OrielRuntime.onActivityDestroyed(this)
+        OrielAppExtensions.registered.forEach { it.onActivityDestroyed(this) }
         super.onDestroy()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        OrielAppExtensions.registered.forEach { it.onSaveInstanceState(this, outState) }
+        super.onSaveInstanceState(outState)
     }
 
     @Deprecated("Deprecated in Java")
@@ -136,6 +152,7 @@ open class OrielActivity : Activity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig) // the WebView relayouts; the page gets `resize`
+        OrielAppExtensions.registered.forEach { it.onConfigurationChanged(this, newConfig) }
     }
 
     internal fun hasWindowFocusOrVisible(): Boolean = started
@@ -250,11 +267,15 @@ open class OrielActivity : Activity() {
                 if (resultCode == RESULT_OK) data?.data else null,
             )
             REQ_FOLDER -> OrielRuntime.onFolderPicked(if (resultCode == RESULT_OK) data else null)
-            else -> @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)
+            else -> {
+                if (OrielAppExtensions.activityResult(this, requestCode, resultCode, data)) return
+                @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)
+            }
         }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        if (requestCode !in 0x4F00..0x4FFF && OrielAppExtensions.permissionResult(this, requestCode, permissions, grantResults)) return
         OrielPermissions.onResult(this, requestCode, permissions, grantResults)
     }
 

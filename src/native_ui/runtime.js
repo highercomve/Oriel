@@ -19746,8 +19746,9 @@ ${a.stack || ""}`;
     let v = raw.trim() === "" ? NaN : Number(raw);
     if (!Number.isFinite(v)) v = min + (max - min) / 2;
     v = Math.min(Math.max(v, min), max);
-    if (step) {
-      v = min + Math.round((v - min) / step) * step;
+    const steps = step ? (v - min) / step : NaN;
+    if (Number.isFinite(steps) && steps <= 2 ** 53) {
+      v = min + Math.round(steps) * step;
       if (v > max) v -= step;
       v = +v.toFixed(12);
     }

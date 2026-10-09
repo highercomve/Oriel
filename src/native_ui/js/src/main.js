@@ -372,8 +372,12 @@ const rangeValue = (el, raw) => {
   let v = raw.trim() === "" ? NaN : Number(raw);
   if (!Number.isFinite(v)) v = min + (max - min) / 2;
   v = Math.min(Math.max(v, min), max);
-  if (step) {
-    v = min + Math.round((v - min) / step) * step;
+  // More steps than a double counts exactly (or an infinite count: a tiny
+  // step on a vast span): every value there is as near a step as it can be,
+  // as Range.snap on the native side.
+  const steps = step ? (v - min) / step : NaN;
+  if (Number.isFinite(steps) && steps <= 2 ** 53) {
+    v = min + Math.round(steps) * step;
     if (v > max) v -= step;
     v = +v.toFixed(12);
   }

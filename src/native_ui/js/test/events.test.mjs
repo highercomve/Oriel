@@ -70,7 +70,9 @@ console.log("events: focus, blur, focusin and focusout follow the active element
 vm.runInContext(`
   const r = (attrs) => { const el = document.createElement('input'); el.setAttribute('type', 'range');
     for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el.value; };
-  globalThis.ranges = [r({}), r({ min: 0, max: 10, step: 3 }), r({ value: 70 }), r({ value: 170 }), r({ min: 10, max: 5 }), r({ value: 'x', step: 'any', max: 1 })];
+  globalThis.ranges = [r({}), r({ min: 0, max: 10, step: 3 }), r({ value: 70 }), r({ value: 170 }), r({ min: 10, max: 5 }), r({ value: 'x', step: 'any', max: 1 }),
+    // More steps than a double counts: the value stays as given, not Infinity.
+    r({ min: 0, max: '1e308', step: '1e-300', value: '1e308' }), r({ min: '-1e9', max: '1e9', step: '0.001', value: '1e9' })];
 `, ctx);
-assert.deepEqual(Array.from(ctx.ranges), ["50", "6", "70", "100", "10", "0.5"]);
+assert.deepEqual(Array.from(ctx.ranges), ["50", "6", "70", "100", "10", "0.5", "1e+308", "1000000000"]);
 console.log("events: a range's value is halfway when missing, else clamped and on a step");

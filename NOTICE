@@ -9,10 +9,13 @@ Enabling kokoro links these upstream components:
 * Google Highway, pinned at 2607d3b5b0113992fe84d3848859eae13b3b52c1:
   BSD-3-Clause / Apache-2.0 dual license; see licenses/tts/highway.txt.
 * espeak-ng 1.52.0: GPL-3.0-or-later. Its ucd-tools / Unicode data
-  notices are included separately in licenses/tts.
+  notices are included separately in licenses/tts. Apps built with kokoro
+  also ship espeak-ng's runtime data (espeak-ng-data/: phoneme tables,
+  dictionaries, language files), compiled at build time from the same
+  espeak-ng 1.52.0 sources and under the same GPL-3.0-or-later license.
 * miniaudio: the license and copyright notices are included at the end of
   src/modules/miniaudio/miniaudio.h (public-domain or MIT-0 choice).
 
-Model files, voice packs, and espeak-ng runtime data are supplied by the app;
-this repository does not distribute them. Their upstream licenses are separate.
+Model files and voice packs are supplied by the app; this repository does
+not distribute them. Their upstream licenses are separate.
 The optional espeak-ng component's GPL license is not Oriel's MIT license.

@@ -6,14 +6,46 @@ One app with everything Oriel does, built from the same `src/main.zig` and
 | Tab | What it shows |
 |---|---|
 | Dictate | Voice to text (`oriel.dictation`): whisper on the CPU or the GPU, or the system recognizer; live text, file transcription, "dictate anywhere" |
-| Chat | A local LLM (`oriel.chat`, llama.cpp): streamed replies, Stop, KV-cache reuse, Compare GPU and CPU, a mic that dictates the message |
-| Notes | SQLite (`oriel.sql`) and deep links (`oriel-showcase://note/<text>`) |
+| Chat | A local LLM (`oriel.chat`, llama.cpp): streamed replies, Stop, KV-cache reuse, Compare GPU and CPU, a mic that dictates the message, Read aloud on replies |
+| Speak | Text to speech (`oriel.tts`, Kokoro 82M): Speak/Stop, voices by language or Auto (guessed from the text), speed, Markdown read as prose, model and voice downloads, and per utterance the first-audio time, real-time factor, chunks, backend and gaps |
+| Notes | SQLite (`oriel.sql`) and deep links (`oriel-showcase://note/<text>`); Read aloud on each note |
 | Files | Open and save dialogs, transcribing a WAV file |
 | System | Clipboard, notifications, keyboard shortcuts; the tray, menus and typing into other apps on desktops; the Quick Settings tile and the keyboard on Android |
 | App | Windows, IPC, events from a worker thread, device info |
 
-Models are not in the app: the Dictate and Chat tabs download them on first
-use (or copy them into the folder the App tab shows under "Data").
+Models are not in the app: the Dictate, Chat and Speak tabs download them on
+first use (or copy them into the folder the App tab shows under "Data").
+
+## Speak (text to speech)
+
+The build enables `.kokoro = true` (next to whisper and llama, whose ggml it
+shares). Synthesis is Kokoro 82M through kokoro.cpp, on the GPU where ggml
+has one (`-Dggml_cuda`, `-Dggml_vulkan`, Metal) and else on the CPU (the
+Speak tab's CPU/GPU choice); the text is cut into chunks and sound starts
+after the first. On its first visit the Speak tab warms the engine up
+(`tts_warm_up`: loads the model and voice and, on a GPU, compiles the
+pipelines), so the first sentence starts sooner. Phones read on the CPU;
+low-end ones synthesize slower than real time, so speech comes with pauses
+between chunks. The Speak tab downloads the model
+(Q8_0, 135 MB, or F16, 156 MB) and voices (0.5 MB each: English, Spanish,
+French, Portuguese, Italian, Japanese, Chinese, Hindi), checked against their
+SHA-256. "Read aloud" on chat replies (as Markdown) and notes uses the same
+command with the voice picked from the text's language.
+
+Where the files live:
+
+| Platform | Model and voices (`models/`) | espeak-ng phoneme data (bundled by the build) |
+|---|---|---|
+| Linux | `~/.local/share/dev.oriel.Showcase/models/` | `espeak-ng-data/` next to the executable (`zig-out/bin/`, the deb/rpm's `/usr/lib/<app>/`, the AppImage) |
+| Windows | `%LOCALAPPDATA%\dev.oriel.Showcase\models\` | `espeak-ng-data\` next to the `.exe` (the installer copies it) |
+| macOS | `~/Library/Application Support/dev.oriel.Showcase/models/` | `Oriel Showcase.app/Contents/Resources/espeak-ng-data` |
+| Android | `/sdcard/Android/data/dev.oriel.Showcase/files/dev.oriel.Showcase/models/` (adb can write there) | APK assets (`zig-out/android-assets`), extracted to the app's files dir on first start |
+| iOS | the app's data directory, `models/` | `Oriel Showcase.app/espeak-ng-data` |
+
+The models are named as in the catalog: `kokoro-82m-q8_0.gguf`,
+`kokoro-voice-af_heart.gguf`, `kokoro-voice-ef_dora.gguf`... An
+`espeak-ng-data/` in the models folder, or `$KOKORO_ESPEAK_DATA_PATH`, takes
+precedence over the bundled copy. More in [docs/tts.md](../../docs/tts.md).
 
 ## Screenshots
 
@@ -82,6 +114,9 @@ zig-out/bin/oriel-showcase --download qwen2.5-0.5b
 zig-out/bin/oriel-showcase --chat "Hello"          # a reply and a follow-up, with tokens/s
 zig-out/bin/oriel-showcase --compare qwen2.5-0.5b  # GPU against CPU
 zig-out/bin/oriel-showcase --transcribe talk.wav   # needs a whisper model downloaded
+zig-out/bin/oriel-showcase --tts-download kokoro-82m-q8_0   # the voice model; then a voice:
+zig-out/bin/oriel-showcase --tts-download af_heart
+zig-out/bin/oriel-showcase --say "Hello from Oriel."  # read aloud; prints first audio, RTF, chunks, gaps
 ```
 
 ## Windows

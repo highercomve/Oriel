@@ -14,7 +14,7 @@
 //!   `error.Unsupported` until its Wi-Fi MulticastLock lands.
 //! - `info`: `error.Unsupported` everywhere; `onChange` never fires yet.
 //! - `mdns` (service registration and browsing, network/mdns.zig): Android
-//!   (NsdManager); `error.Unsupported` elsewhere for now.
+//!   (NsdManager) and Windows (dnsapi); `error.Unsupported` elsewhere for now.
 
 const std = @import("std");
 const target = @import("../core/target.zig");

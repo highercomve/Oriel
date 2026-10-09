@@ -112,6 +112,14 @@ every build copies each to `app/src/main/java/<its package as a path>/`
 this change keep their old `build.gradle.kts`; `oriel android init --force`
 regenerates it.
 
+Apps built with `.kokoro = true` ship espeak-ng's phoneme data as APK assets
+(`zig-out/android-assets`), which the Kotlin runtime copies to
+`<filesDir>/espeak-ng-data` on first start and after each update. New
+projects point Gradle at that directory; a project generated earlier needs
+`sourceSets["main"].assets.srcDirs("../../zig-out/android-assets")` (the
+path from the app module to `zig-out`) inside `android { }` in
+`app/build.gradle.kts`. See [Offline text to speech](tts.md).
+
 For behavior beyond JNI helpers, register app-owned classes with
 `.android.extensions`. Oriel regenerates the internal `OrielAppExtensions`
 registry on every Android build; implement `OrielAndroidExtension` in your own

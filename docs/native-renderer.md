@@ -95,7 +95,7 @@ and `runtime-native.js` (the native DOM), and the build embeds the one chosen.
 | `button` (with an icon and a label) | One native button |
 | `input`, `textarea` | One native text field |
 | `input type=checkbox` | One native switch |
-| `input type=range` | One native slider (min, max, step; GtkScale on GTK, a trackbar on Windows, SeekBar on Android, NSSlider/UISlider on Apple): dragging sends `input`, letting go `change` |
+| `input type=range` | One native slider (min, max, step; GtkScale on GTK, a trackbar on Windows, SeekBar on Android, NSSlider/UISlider on Apple): dragging sends `input`, letting go `change`. A range with more steps than the trackbar has positions (or than a double counts exactly) is spread over them so the ends are still min and max, values snapped to the real step; the page's value stays finite |
 | `svg` with `<use href="#symbol">`, `img` | One image (the SVG rasterized at its size and color) |
 | `canvas` (2d context) | One view that replays the recorded 2d program (see below) |
 | `display: none`, `[hidden]` | Nothing |

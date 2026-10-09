@@ -269,14 +269,16 @@ test "drops: drop:path answers the file's path, then null once it is gone" {
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "f.txt", .data = "abc" });
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const len = try tmp.dir.realPath(std.testing.io, &path_buf);
-    const path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/f.txt", .{path_buf[0..len]}, 0);
+    const path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}" ++ std.fs.path.sep_str ++ "f.txt", .{path_buf[0..len]}, 0);
     defer std.testing.allocator.free(path);
     const handle = (try e.drops.addPath(path)).?;
 
     const args_known = try std.fmt.allocPrint(arena, "{{\"handle\":{d}}}", .{handle});
     const answer = try e.dropPathCommand(arena, args_known);
     try std.testing.expect(std.mem.startsWith(u8, answer, "{\"path\":\""));
-    try std.testing.expect(std.mem.endsWith(u8, answer, "/f.txt\"}"));
+    // The platform's separator, JSON-escaped on Windows ("C:\\...\\f.txt").
+    const tail = if (comptime @import("builtin").os.tag == .windows) "\\\\f.txt\"}" else "/f.txt\"}";
+    try std.testing.expect(std.mem.endsWith(u8, answer, tail));
 
     // Unknown, malformed and released handles answer null, not an error.
     try std.testing.expectEqualStrings("null", try e.dropPathCommand(arena, "{\"handle\":99}"));

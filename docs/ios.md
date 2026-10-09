@@ -99,7 +99,7 @@ options:
 | JS `alert` / `confirm` / `prompt` | `UIAlertController`. |
 | Deep links | `scene:willConnectToSession:options:` (cold start) and `scene:openURLContexts:`; also a link among the launch arguments (`xcrun simctl launch <device> <id> myapp://...`), since `simctl openurl` makes iOS ask before opening the app. |
 | Quitting | `quit` cleans up and calls `exit` (Apple discourages quitting outside fatal errors). |
-| Lifecycle | `oriel.ios.onSystemEvent(handler)`: "background" (every window left the screen), "foreground" and "memory-warning", on the main thread. The showcase frees its whisper and llama models on the first and the last (`dictation.unloadIdle`, `chat.unloadIdle`), as it does on Android's trim-memory. |
+| Lifecycle | `oriel.ios.onSystemEvent(handler)`: "background" (every window left the screen), "foreground" and "memory-warning", on the main thread. The showcase frees its whisper and llama models on the first and the last (`dictation.unloadIdle`, `chat.unloadIdle`) and its Kokoro voice (`tts.unloadIdle`), as it does on Android's trim-memory. |
 | Logs | stderr (Xcode's console, `xcrun simctl launch --console-pty`) and, as on macOS, `Library/Logs/<id>/` in the app's sandbox. |
 
 ## Modules
@@ -115,6 +115,8 @@ options:
 | deep_link | See above. |
 | llama, whisper | ggml with Metal (on by default for devices, `-Dggml_metal=false` to leave it out; off for the simulator, whose Metal can't run ggml's kernels: there both use the CPU; CI runs Metal and Compare on macOS instead, which shares the backend). `chat` and `dictation` use the CPU on phones until their Compare measures the GPU (Metal must be 1.3× faster to be picked). |
 | dictation (system engine) | Apple's Speech framework (`dictation/apple.zig`, iOS and macOS): `SFSpeechRecognizer` on an `AVAudioEngine` input tap, on the device when `supportsOnDeviceRecognition`, with punctuation. Each phrase is its own recognition task (ended after a pause or 50 s, since Apple stops a task after about a minute), so events match Android's; a phrase that ends without a final result keeps its last partial. When the language's on-device model isn't installed (error 300: the simulator, or a phone that hasn't fetched it), it goes on with Apple's servers, and its finals say `on_device: false`. `.auto` picks it on iOS when it runs on the device. Needs the microphone and speech recognition permissions: the Info.plist gets `NSSpeechRecognitionUsageDescription` with the microphone's text, and authorization is asked on the first start. |
+| tts, kokoro, audio_play | espeak-ng's phoneme data is bundled at `<App>.app/espeak-ng-data`; models and voices download into the directory given to `tts.init`. Kokoro uses Metal on devices (`-Dggml_metal`, compiled in, not measured yet) or the CPU with the fast cores (`tts.defaultThreads`). Playback through miniaudio. See [Offline text to speech](tts.md). |
+| Native renderer drops (`-Dnative_ui`) | A `UIDropInteraction` on the page: files (by data type; a Files item that is text still arrives as a file), images from Photos, text, and links (as `text/uri-list` and `text/plain`, as a browser gives a dropped link), the same `DragEvent`/`DataTransfer` the AppKit backend gives. iPad takes drops from other apps; iPhone only within the app. The page's answer to the last `dragover` decides the drop. |
 | tray, menu, global_shortcut, input, updater, media_server, fs_watch | Not available on iOS: off by default for iOS targets, and a build error when enabled. |
 
 ## Example

@@ -3,7 +3,8 @@ const oriel = @import("oriel");
 
 /// Oriel Showcase: every feature Oriel has, in one app that builds for
 /// Linux, Windows, macOS, Android and iOS. Dictation (whisper or the
-/// system recognizer, live, files), windows, events, the clipboard,
+/// system recognizer, live, files), a local chat (llama.cpp), text to
+/// speech (Kokoro), windows, events, the clipboard,
 /// notifications, dialogs, the store and SQLite, deep links, keyboard
 /// shortcuts, and per platform: the tray, menus and typing into other apps
 /// (desktop), the Quick Settings tile, notification actions and the
@@ -14,7 +15,7 @@ const oriel = @import("oriel");
 ///   zig build -Dtarget=x86_64-linux-android      zig-out/jniLibs/x86_64/liboriel.so (emulator)
 ///   zig build -Dtarget=aarch64-ios -Dapple_sdk=… zig-out/ios/Oriel Showcase.app (docs/ios.md)
 ///   zig build -Dtarget=aarch64-ios-simulator …   for the simulator
-///   -Dggml_vulkan -Dggml_opencl                  whisper on the GPU (Linux, Windows, Android)
+///   -Dggml_vulkan -Dggml_opencl                  whisper, chat and speech on the GPU (Linux, Windows, Android)
 ///   -Dggml_arm=i8mm                              faster CPU kernels (Armv8.6/v9 phones only)
 const ArmLevel = enum { baseline, dotprod, i8mm };
 
@@ -45,9 +46,14 @@ pub fn build(b: *std.Build) void {
         .whisper = true,
         // The Chat tab: llama.cpp (oriel.chat), same GPU backends as whisper.
         .llama = true,
+        // The Speak tab and "Read aloud": Kokoro 82M (oriel.tts). Shares
+        // ggml with whisper and llama; espeak-ng's phoneme data is compiled
+        // at build time and addApp ships it (zig-out/bin/espeak-ng-data,
+        // the .app's Resources, APK assets).
+        .kokoro = true,
         .audio_capture = true,
-        .ggml_vulkan = b.option(bool, "ggml_vulkan", "Run whisper on the GPU through Vulkan") orelse false,
-        .ggml_opencl = b.option(bool, "ggml_opencl", "Run whisper on Adreno GPUs through OpenCL") orelse false,
+        .ggml_vulkan = b.option(bool, "ggml_vulkan", "Run whisper, chat and speech on the GPU through Vulkan") orelse false,
+        .ggml_opencl = b.option(bool, "ggml_opencl", "Run whisper, chat and speech on Adreno GPUs through OpenCL") orelse false,
         // Desktop Linux with an NVIDIA GPU: builds ggml's CUDA backend with
         // nvcc into libggml-cuda.so, installed next to the executable by
         // addApp. Needs the CUDA toolkit (-Dcuda_path, default $CUDA_PATH or
@@ -83,7 +89,7 @@ pub fn build(b: *std.Build) void {
             .id = "dev.oriel.Showcase",
             .name = "Oriel Showcase",
             .summary = "Everything Oriel does, on every platform",
-            .description = "Dictation, windows, the clipboard, notifications, files, storage, deep links and shortcuts: one app for Linux, Windows, macOS, Android and iOS.",
+            .description = "Dictation, a local chat, text to speech, windows, the clipboard, notifications, files, storage, deep links and shortcuts: one app for Linux, Windows, macOS, Android and iOS.",
             .categories = "Utility;Development;",
             .version = "0.1.0",
             .url_schemes = &.{"oriel-showcase"},

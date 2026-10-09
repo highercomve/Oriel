@@ -10,7 +10,7 @@ Commands in these guides run from your app directory unless a guide explicitly s
 - [Building apps](app-development.md)
 - [System modules and plugins](modules.md)
 - [Local AI, chat, and dictation](local-ai.md)
-- [Offline text to speech](tts.md): Kokoro synthesis, PCM playback, and runtime assets.
+- [Offline text to speech](tts.md): `oriel.tts` (Kokoro voices, downloads, streaming playback), bundled phoneme data, and the `kokoro`/`audio_play` building blocks.
 - [Application updates](updater.md)
 - [Packaging apps](packaging.md)
 - [Platform support](platforms.md)

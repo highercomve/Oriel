@@ -26,7 +26,8 @@ like any app would be.
 from one codebase, for Linux, Windows, macOS, Android and iOS. Live dictation
 (`oriel.dictation`: whisper on the CPU or GPU, or the platform's recognizer),
 chat with a local LLM (`oriel.chat`: models, the chat template, streamed
-tokens, a reused KV cache), notes in SQLite with deep links
+tokens, a reused KV cache), text to speech (`oriel.tts`: Kokoro voices,
+streaming playback, Read aloud on chat replies and notes), notes in SQLite with deep links
 (`oriel-showcase://note/…`), file pickers, the clipboard, notifications,
 windows, events and the store; per platform, "dictate anywhere" into other
 apps (a system-wide hotkey, the tray and the window menu on the desktop; a

@@ -41,6 +41,9 @@ android {
     }
 
     sourceSets["main"].jniLibs.srcDirs("../../zig-out/jniLibs")
+    // Oriel's runtime data (zig-out/android-assets: espeak-ng-data/ for the
+    // Speak tab, -Dkokoro), extracted to filesDir by the Kotlin runtime.
+    sourceSets["main"].assets.srcDirs("../../zig-out/android-assets")
 
     packaging {
         // Release libraries come stripped from Zig, Debug ones keep their
@@ -63,3 +66,6 @@ android {
 dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
 }
+// oriel:dependencies begin
+apply(from = "oriel-dependencies.gradle")
+// oriel:dependencies end

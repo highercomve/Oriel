@@ -67,6 +67,8 @@ pub const whisper = if (options.whisper) @import("modules/whisper.zig") else str
 pub const kokoro = if (options.kokoro) @import("modules/kokoro.zig") else struct {};
 /// Playback of the built-in voice (miniaudio; see modules/audio_play.zig).
 pub const audio_play = if (options.kokoro) @import("modules/audio_play.zig") else struct {};
+/// Text to speech out of the box: voices, downloads, streaming playback (Kokoro): `-Dkokoro`.
+pub const tts = if (options.kokoro) @import("modules/tts.zig") else struct {};
 pub const audio_capture = if (options.audio_capture) @import("modules/audio_capture.zig") else struct {};
 /// GPU backends (libggml-cuda.so, libggml-vulkan.so) for llama and whisper: `ggml_gpu.load(io)` before loading a model.
 pub const ggml_gpu = if (options.llama or options.whisper) @import("modules/ggml_gpu.zig") else struct {};
@@ -252,6 +254,8 @@ test {
     if (options.kokoro) {
         std.testing.refAllDecls(kokoro);
         std.testing.refAllDecls(audio_play);
+        std.testing.refAllDecls(tts);
+        std.testing.refAllDecls(@import("modules/tts/espeak_data.zig"));
     }
     // dictation's Apple engine needs no whisper: checked on every Apple
     // target (whisper's C sources need the SDK even to type-check).

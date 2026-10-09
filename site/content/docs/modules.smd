@@ -29,10 +29,13 @@
 | Audio capture | `audio_capture` | **off** | ✓ | ✓ | ✓ | ✓ (AAudio) | ✓ |
 | Dictation | `whisper` + `audio_capture` | **off** | ✓ | ✓ | ✓ | ✓ (+ system recognizer) | ✓ |
 | Chat (LLM) | `llama` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Text to speech | `kokoro` (+ `llama` or `whisper`) | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Network / mDNS | `network` | on | ✓ | ✓ (Win 10 1809+) | ✓ | ✓ (NsdManager) | ✓ |
+| Sharing | `share` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 On Android and iOS, a module marked — is off by default and a build error when turned on: the platform has no such thing (a tray, system-wide hotkeys) or forbids it. [Android and iOS]($link.page('docs/mobile')) has what replaces them.
 
-All modules build for Linux, Windows and macOS. Native dependencies (`sqlite_vec`, `llama`, `whisper`, `audio_capture`) are **off by default** and opt-in via `-D` flags. To disable a default-on module, pass `-D<name>=false`.
+All modules build for Linux, Windows and macOS. Native dependencies (`sqlite_vec`, `llama`, `whisper`, `kokoro`, `audio_capture`) are **off by default** and opt-in via `-D` flags. To disable a default-on module, pass `-D<name>=false`.
 
 # Tray icon
 
@@ -358,11 +361,21 @@ On macOS and iOS, ggml's Metal backend is built in by default (`-Dggml_metal=fal
 
 # Text to speech
 
-`oriel.kokoro` synthesizes speech with Kokoro-82M; `oriel.audio_play` plays
-its mono float32 PCM. Enable `.kokoro = true` with `.llama = true` or
-`.whisper = true`. Supply a model GGUF, a voice-pack GGUF and compatible
-espeak-ng phoneme data. See [Offline text to speech]($link.page('docs/tts'))
-for the API, sample ownership, callback behavior and dependency notices.
+`oriel.tts` reads text aloud offline with Kokoro-82M: enable `.kokoro = true` with `.llama = true` or `.whisper = true`, then
+
+```zig
+oriel.tts.init(init.io, init.gpa, models_dir);           // once, at startup
+try oriel.tts.download("kokoro-82m-q8_0");                // and a voice: "af_heart"
+const r = try oriel.tts.speak(gpa, markdown_text, .{});   // from an async command
+oriel.tts.stop();                                         // Stop, from any thread
+```
+
+- **Models and voices:** Kokoro 82M (q8_0, f16) and curated voices for English, Spanish, French, Portuguese, Italian, Japanese, Chinese and Hindi, downloaded from Hugging Face and checked against their SHA-256 ("tts:download" events).
+- **Out of the box:** Markdown read as prose, the language guessed from the text, playback that starts after the first sentence and streams the rest ("tts:state" events), the model kept loaded between utterances, `warmUp` before the first one, and the GPU where ggml has one (CUDA, Vulkan, Metal), else the CPU.
+- **Phoneme data:** espeak-ng's runtime data is compiled at build time and shipped by `addApp` on every platform (`tts_languages` picks the dictionaries).
+- **Building blocks:** `oriel.kokoro` (synthesis) and `oriel.audio_play` (one-shot and streaming playback).
+
+See [Offline text to speech]($link.page('docs/tts')) for the API, platform notes, measured speeds and dependency notices.
 
 # Audio capture
 
@@ -443,3 +456,48 @@ const r = try oriel.chat.generate(gpa, &.{
 **Result:** the text, the stop reason (`eos`, `length`, `cancelled`), the prompt and reply token counts, the tokens reused from the cache, and the tokens per second.
 
 **Building blocks:** `oriel.llama` (the C API and JSON-schema grammars) and `oriel.ggml_gpu`.
+
+# Network and mDNS
+
+Service registration and browsing (DNS-SD / mDNS on the local link) through the platform's native responder, without opening multicast sockets or needing multicast entitlements:
+
+```zig
+// Register a local service
+const reg = try oriel.network.mdns.register(.{
+    .type = "_my-service._tcp",
+    .name = "MyDevice",
+    .port = 8080,
+    .txt = &.{.{ .key = "version", .value = "1.0" }},
+});
+defer reg.unregister();
+
+// Browse services on the local link
+const browser = try oriel.network.mdns.browse("_my-service._tcp", onServiceEvent, null);
+defer browser.stop();
+
+fn onServiceEvent(ctx: ?*anyopaque, event: *const oriel.network.mdns.Event) void {
+    switch (event.*) {
+        .found => |found| std.log.info("found: {s} at {s}:{d}", .{ found.name, found.addresses[0], found.port }),
+        .lost => |lost| std.log.info("lost: {s}", .{ lost.name }),
+    }
+}
+```
+
+- **Android:** Handled via `NsdManager` (`OrielMdns.kt`).
+- **Windows:** Handled via dnsapi's `DnsServiceRegister`, `DnsServiceBrowse`, and `DnsServiceResolve` (Windows 10 1809+). TXT values must be UTF-8 text strings.
+- Requires `.permissions = .{ .local_network = "Find local devices" }` declared in `build.zig`.
+
+# System sharing
+
+Send content to the system share sheet, and receive shares (files, text, URLs) from other apps:
+
+```zig
+// Handle received shares (also broadcast as "share:received" to webviews)
+oriel.share.onReceive(onShareReceived);
+
+// Trigger native share sheet
+try oriel.share.send(.{ .title = "Report", .text = "Sharing content" }, null, null);
+```
+
+- **Platforms:** Windows (`DataTransferManager`, "Send to", "Open with"), macOS/iOS (`NSSharingServicePicker`, `UIActivityViewController`), and Android share target intents.
+- Receiving incoming shares requires declaring `.share_target` in `build.zig`.

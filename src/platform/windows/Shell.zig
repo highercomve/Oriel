@@ -19,6 +19,10 @@ const log = std.log.scoped(.oriel);
 pub const WM_DISPATCH: win32.UINT = win32.WM_APP + 1;
 pub const WM_TRAY_CALLBACK: win32.UINT = win32.WM_APP + 2;
 pub const WM_NOTIFY_CALLBACK: win32.UINT = win32.WM_APP + 3;
+/// `quit` from another thread (wParam: the exit code).
+const WM_QUIT_REQUEST: win32.UINT = win32.WM_APP + 4;
+/// The host window's timer posting WM_QUIT again (quitHere).
+const QUIT_TIMER_ID: win32.UINT_PTR = 0x4F52_5154; // 'ORQT'
 
 var exit_code: u8 = 0;
 /// The "main" app window, or null once it has been destroyed. Use it as a
@@ -197,15 +201,30 @@ pub var main_thread_id: win32.DWORD = 0;
 
 pub fn quit(code: u8) void {
     exit_code = code;
-    if (main_thread_id != 0) {
-        if (win32.GetCurrentThreadId() == main_thread_id) {
-            win32.PostQuitMessage(@intCast(code));
-        } else {
-            _ = win32.PostThreadMessageW(main_thread_id, win32.WM_QUIT, @intCast(code), 0);
-        }
-    } else {
-        win32.PostQuitMessage(@intCast(code));
+    if (main_thread_id == 0 or win32.GetCurrentThreadId() == main_thread_id) {
+        quitHere(code);
+        return;
     }
+    // Through the host window: a thread message reaching a nested modal
+    // loop (a context menu's) has no window to go to and is dropped.
+    win32.AcquireSRWLockExclusive(&task_mutex);
+    const target = host_hwnd;
+    win32.ReleaseSRWLockExclusive(&task_mutex);
+    if (target) |hwnd| {
+        if (win32.PostMessageW(hwnd, WM_QUIT_REQUEST, code, 0) != win32.FALSE) return;
+    }
+    _ = win32.PostThreadMessageW(main_thread_id, win32.WM_QUIT, @intCast(code), 0);
+}
+
+/// Quit, on the main thread. A nested modal loop running now (a menu's
+/// TrackPopupMenu, a dialog's) may take the WM_QUIT and drop it instead of
+/// posting it again: QUIT_TIMER_ID posts it again until the main loop has it.
+fn quitHere(code: u8) void {
+    // A menu still tracking (a field's context menu, the tray's) ends: its
+    // loop would otherwise keep the app up until it's dismissed.
+    _ = win32.EndMenu();
+    win32.PostQuitMessage(@intCast(code));
+    if (host_hwnd) |hwnd| _ = win32.SetTimer(hwnd, QUIT_TIMER_ID, 100, null);
 }
 
 // Global shortcut hook
@@ -245,6 +264,15 @@ fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam:
     switch (uMsg) {
         WM_DISPATCH => {
             processDispatchQueue();
+            return 0;
+        },
+        WM_QUIT_REQUEST => {
+            quitHere(@truncate(wParam));
+            return 0;
+        },
+        win32.WM_TIMER => {
+            if (wParam != QUIT_TIMER_ID) return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
+            win32.PostQuitMessage(exit_code);
             return 0;
         },
         win32.WM_HOTKEY => {
@@ -669,6 +697,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 const res = win32.GetMessageW(&msg, null, 0, 0);
                 if (@intFromEnum(res) == 0) {
                     exit_code = @truncate(msg.wParam);
+                    _ = win32.KillTimer(host, QUIT_TIMER_ID);
                     break;
                 } else if (@intFromEnum(res) < 0) {
                     break;

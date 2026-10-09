@@ -89,6 +89,10 @@ The showcase's "dictate anywhere" puts either into any app: tap the tile, the ke
 
 [Chat]($link.page('docs/modules')) runs a local LLM on the phone: Qwen2.5 0.5B and 1.5B or Llama 3.2 1B in q4_0, which ggml runs with its ARM dotprod/i8mm kernels. As with dictation, the CPU is the default on phones until Compare measures the GPU. The showcase's Chat tab has a mic that dictates the message.
 
+# Text to speech on phones
+
+[Text to speech]($link.page('docs/tts')) (`oriel.tts`, Kokoro-82M) uses the same catalog as desktops; espeak-ng's phoneme data travels in the APK's assets (extracted on first start) or the iOS bundle. Phones run Kokoro on the CPU with their fast cores only, and low-end ones synthesize slower than real time: a Snapdragon 732G reads at a real-time factor of about 2.75, so the first audio takes about 4 s and speech pauses between chunks. Android projects created before Oriel 0.9.9 need one assets line in `app/build.gradle.kts` (see the TTS guide).
+
 # Also on Android
 
 - **Deep links** open the app from a URL (`oriel-showcase://note/Hello` in the showcase) and reach `deep_link.onOpen`, cold or running.

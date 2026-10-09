@@ -25,12 +25,31 @@ const native_win32 = if (build_opts.native_ui) @import("../../native_ui/win32.zi
         pub fn takeFocus(_: *Surface) void {}
         pub fn dpiChanged(_: *Surface) void {}
         pub fn wheel(_: *Surface, _: u32, _: usize, _: isize) void {}
+        pub fn busy(_: *const Surface) bool {
+            return false;
+        }
     };
     pub fn accentCheck(_: *Surface) void {}
     pub fn forcedColorsCheck(_: *Surface) void {}
 };
 
 const log = std.log.scoped(.oriel);
+
+/// Window timer: a WM_CLOSE that had to wait (the native page busy) is
+/// tried again.
+const CLOSE_RETRY_TIMER_ID: win32.UINT_PTR = 0x4F52_434C; // 'ORCL'
+
+/// A menu's modal loop this window owns (a field's context menu, the menu
+/// bar, the system menu) ends: closing must not leave it tracking for a
+/// window that is gone. Its loop dispatched the posted WM_CLOSE that got
+/// here; TrackPopupMenu returns once that message's handling returns.
+fn endOwnedMenu(hwnd: win32.HWND) void {
+    var gti: win32.GUITHREADINFO = .{ .cbSize = @sizeOf(win32.GUITHREADINFO) };
+    if (win32.GetGUIThreadInfo(win32.GetCurrentThreadId(), &gti) == win32.FALSE) return;
+    if (gti.flags & win32.GUI_INMENUMODE == 0) return;
+    const owner = gti.hwndMenuOwner orelse return;
+    if (owner == hwnd or win32.GetAncestor(owner, win32.GA_ROOT) == hwnd) _ = win32.EndMenu();
+}
 
 /// The native renderer's surface of a window (-Dnative_ui), else null.
 fn nativeSurface(w: *App.Window) ?*native_win32.Surface {
@@ -1479,6 +1498,11 @@ pub fn WindowCreator(
                     return win32.DefWindowProcW(hwnd, uMsg, wParam, lParam);
                 },
                 win32.WM_TIMER => {
+                    if (wParam == CLOSE_RETRY_TIMER_ID) {
+                        _ = win32.KillTimer(hwnd, CLOSE_RETRY_TIMER_ID);
+                        _ = win32.SendMessageW(hwnd, win32.WM_CLOSE, 0, 0);
+                        return 0;
+                    }
                     if (has_dev and wParam == DEV_RETRY_TIMER_ID) {
                         // Before the window is registered `win` is null: the
                         // timer stays and fires again.
@@ -1596,10 +1620,25 @@ pub fn WindowCreator(
                             w.pending_close = true;
                             return 0;
                         }
+                        // Its open menu goes first, hidden or closed.
+                        endOwnedMenu(hwnd);
                         if ((std.mem.eql(u8, w.label, "main") and config.on_close == .hide) or w.options.hide_on_close) {
                             _ = win32.ShowWindow(hwnd, win32.SW_HIDE);
                             return 0;
                         }
+                        // Inside the native page's own code (a field's
+                        // notification whose handler closed the window, or a
+                        // nested loop under it): freeing the surface now
+                        // would return into freed memory. Hidden now, closed
+                        // once that code has returned.
+                        if (nativeSurface(w)) |s| if (s.busy()) {
+                            _ = win32.ShowWindow(hwnd, win32.SW_HIDE);
+                            if (win32.SetTimer(hwnd, CLOSE_RETRY_TIMER_ID, 20, null) == 0) {
+                                _ = win32.PostMessageW(hwnd, win32.WM_CLOSE, 0, 0);
+                            }
+                            return 0;
+                        };
+                        _ = win32.KillTimer(hwnd, CLOSE_RETRY_TIMER_ID);
 
                         w.saveGeometry();
 

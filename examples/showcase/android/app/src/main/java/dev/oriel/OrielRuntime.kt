@@ -49,6 +49,8 @@ object OrielRuntime {
     const val EXTRA_NOTIFICATION_CODE = "dev.oriel.notification.code"
     const val EXTRA_ARGS = "dev.oriel.args"
     private const val CHANNEL = "oriel"
+    /** espeak-ng's compiled data (-Dkokoro), shipped as assets. */
+    private const val ESPEAK_DATA = "espeak-ng-data"
 
     internal lateinit var app: Application
         private set
@@ -75,6 +77,7 @@ object OrielRuntime {
         mainActivity = activity
         mainWindow?.let { if (!it.destroyed) it.attachTo(activity) }
         val args = argsOf(intent)
+        extractAssetDir(ESPEAK_DATA)
         when (NativeLib.start(app.filesDir.path.bytes(), app.cacheDir.path.bytes(), (app.getExternalFilesDir(null)?.path ?: "").bytes(), args)) {
             1 -> {
                 Log.i(TAG, "started")
@@ -99,6 +102,48 @@ object OrielRuntime {
     internal fun onActivityDestroyed(activity: OrielActivity) {
         if (mainActivity === activity) mainActivity = null
         if (foreground === activity) foreground = null
+    }
+
+    /**
+     * Copy the APK's `assets/<name>/` to `<filesDir>/<name>/` for native code
+     * that reads files (espeak-ng-data with -Dkokoro:
+     * src/modules/tts/espeak_data.zig). Once per install or update (the
+     * package's lastUpdateTime, kept in a marker file); apps without the
+     * assets skip it. Copied to a temporary directory first, so an
+     * interrupted copy is redone on the next start.
+     */
+    private fun extractAssetDir(name: String) {
+        val names = try { app.assets.list(name) } catch (e: java.io.IOException) { null }
+        if (names.isNullOrEmpty()) return
+        val stamp = try {
+            @Suppress("DEPRECATION")
+            app.packageManager.getPackageInfo(app.packageName, 0).lastUpdateTime.toString()
+        } catch (e: Exception) { "0" }
+        val dest = File(app.filesDir, name)
+        val marker = File(dest, ".oriel-assets")
+        if (marker.isFile && marker.readText() == stamp) return
+        val tmp = File(app.filesDir, "$name.tmp")
+        try {
+            tmp.deleteRecursively()
+            copyAssets(name, tmp)
+            File(tmp, ".oriel-assets").writeText(stamp)
+            dest.deleteRecursively()
+            if (!tmp.renameTo(dest)) throw java.io.IOException("cannot rename $tmp")
+        } catch (e: Exception) {
+            Log.e(TAG, "extracting assets/$name: $e")
+            tmp.deleteRecursively()
+        }
+    }
+
+    /** An asset file or directory (`list` is empty for a file) to `to`. */
+    private fun copyAssets(path: String, to: File) {
+        val children = app.assets.list(path) ?: emptyArray()
+        if (children.isEmpty()) {
+            app.assets.open(path).use { input -> to.outputStream().use { input.copyTo(it) } }
+            return
+        }
+        if (!to.isDirectory && !to.mkdirs()) throw java.io.IOException("cannot create $to")
+        for (child in children) copyAssets("$path/$child", File(to, child))
     }
 
     private fun ensureLoaded(context: Context) {
@@ -295,7 +340,7 @@ object OrielRuntime {
         val context: Context = windows[id]?.activity ?: app
         val wm = context.getSystemService(WindowManager::class.java)
         val bounds = if (Build.VERSION.SDK_INT >= 30) wm.maximumWindowMetrics.bounds else Rect(0, 0, context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
-        return (context.dp(bounds.width()).toLong() shl 32) or context.dp(bounds.height()).toLong()
+        return (context.dp(bounds.width()).toLong() shl 32) or (context.dp(bounds.height()).toLong() and 0xffffffffL)
     }
 
     // --- The battery, for power meters (render-bench's power_now) ---
