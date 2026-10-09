@@ -69,11 +69,24 @@ pub const WindowHandle = struct {
     web_view: ?*webkit.WebView,
     /// The native renderer's engine (-Dnative_ui), else null.
     native: ?*anyopaque = null,
+    /// Never reused, unlike the GtkWindow's address: a handle queued for a
+    /// window that closed must not match a new window allocated there.
+    serial: u64 = 0,
 
     pub fn eql(self: WindowHandle, other: WindowHandle) bool {
-        return self.gtk_window == other.gtk_window;
+        return self.gtk_window == other.gtk_window and self.serial == other.serial;
     }
 };
+
+var next_serial = std.atomic.Value(u64).init(1);
+
+test "WindowHandle.eql: a reused GtkWindow address is a different window" {
+    const a: WindowHandle = .{ .gtk_window = @ptrFromInt(0x1000), .app_window = @ptrFromInt(0x1000), .web_view = null, .serial = 1 };
+    var b = a;
+    try std.testing.expect(a.eql(b));
+    b.serial = 2;
+    try std.testing.expect(!a.eql(b));
+}
 
 pub fn showWindow(handle: WindowHandle) void {
     handle.gtk_window.present();
@@ -139,9 +152,34 @@ pub fn focusWindow(handle: WindowHandle) void {
 }
 
 pub fn destroyWindow(handle: WindowHandle) void {
+    overlay.forget(handle.gtk_window);
     if (handle.web_view) |v| isolation.forget(@intFromPtr(v));
     if (comptime build_opts.native_ui) if (handle.native) |e| native_gtk.Surface.destroyFor(e);
     handle.gtk_window.destroy();
+}
+
+/// Free the core's `App.Window` (already off `windows_list`).
+fn freeWindow(win: *App.Window) void {
+    const gpa = @import("../../core/heap.zig").gpa;
+    gpa.free(win.label);
+    gpa.free(win.options.title);
+    if (win.options.url) |u| gpa.free(u);
+    gpa.destroy(win);
+}
+
+/// After the main loop returned: tear down the windows still open (or
+/// hidden) at quit, which never got a close request.
+pub fn destroyRemainingWindows() void {
+    while (true) {
+        App.ensureWindowsMutex();
+        App.windows_mutex.lock();
+        const win = App.windows_list.pop();
+        App.windows_mutex.unlock();
+        const w = win orelse break;
+        destroyWindow(w.handle);
+        freeWindow(w);
+    }
+    App.main_window = null;
 }
 
 pub fn setWindowTitle(handle: WindowHandle, title: [:0]const u8) void {
@@ -220,9 +258,23 @@ pub fn WindowCreator(
 
         pub fn createWindow(options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle {
             const app = App.gtk_app orelse return error.AppNotRunning;
+            const gpa = std.heap.smp_allocator;
+
+            // Resolve before any GTK object exists: a rejected URL must not
+            // leave a window behind with a close handler on a freed win_inst.
+            const target_uri = if (comptime build_opts.native_ui) "" else try security.resolveWindowUrl(
+                gpa,
+                config.security,
+                local,
+                if (config.dev) |d| d.url else null,
+                options.url,
+                config.start,
+            );
+            defer if (comptime !build_opts.native_ui) gpa.free(target_uri);
 
             const app_window = gtk.ApplicationWindow.new(app);
             const window = app_window.as(gtk.Window);
+            errdefer window.destroy();
             window.setTitle(options.title);
             const id_z = (config.id ++ "\x00")[0..config.id.len :0];
             window.setIconName(id_z);
@@ -259,22 +311,11 @@ pub fn WindowCreator(
 
             _ = gtk.Window.signals.close_request.connect(window, *App.Window, &onWindowCloseRequest, win_inst, .{});
 
-            const gpa = std.heap.smp_allocator;
-
             if (config.dev) |dev| {
                 DevRetry.initRetries(dev.timeout_ms);
                 _ = webkit.WebView.signals.load_failed.connect(view, ?*anyopaque, &DevRetry.onLoadFailed, null, .{});
             }
 
-            const target_uri = try security.resolveWindowUrl(
-                gpa,
-                config.security,
-                local,
-                if (config.dev) |d| d.url else null,
-                options.url,
-                config.start,
-            );
-            defer gpa.free(target_uri);
             view.loadUri(target_uri);
 
             overlay.setup(window, view, options, (config.id ++ "\x00")[0..config.id.len :0]);
@@ -284,6 +325,7 @@ pub fn WindowCreator(
                 .gtk_window = window,
                 .app_window = app_window,
                 .web_view = view,
+                .serial = next_serial.fetchAdd(1, .monotonic),
             };
         }
 
@@ -316,6 +358,7 @@ pub fn WindowCreator(
                 .app_window = app_window,
                 .web_view = null,
                 .native = surface.engine,
+                .serial = next_serial.fetchAdd(1, .monotonic),
             };
         }
 
@@ -357,10 +400,7 @@ pub fn WindowCreator(
             // it's off the list that events and answers are sent through.
             if (comptime build_opts.native_ui) if (win.handle.native) |e| native_gtk.Surface.destroyFor(e);
 
-            @import("../../core/heap.zig").gpa.free(win.label);
-            @import("../../core/heap.zig").gpa.free(win.options.title);
-            if (win.options.url) |u| @import("../../core/heap.zig").gpa.free(u);
-            @import("../../core/heap.zig").gpa.destroy(win);
+            freeWindow(win);
 
             if (remaining == 0) {
                 App.quit(0);

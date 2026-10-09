@@ -31,6 +31,11 @@ static BOOL CALLBACK load_loader(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     fwd_vkGetPhysicalDeviceFeatures2 = (PFN_vkGetPhysicalDeviceFeatures2)(void *)GetProcAddress(m, "vkGetPhysicalDeviceFeatures2");
     fwd_vkCmdCopyBuffer = (PFN_vkCmdCopyBuffer)(void *)GetProcAddress(m, "vkCmdCopyBuffer");
     if (!fwd_vkGetInstanceProcAddr || !fwd_vkGetDeviceProcAddr || !fwd_vkGetPhysicalDeviceFeatures2 || !fwd_vkCmdCopyBuffer) {
+        // No pointer may outlive the library.
+        fwd_vkGetInstanceProcAddr = NULL;
+        fwd_vkGetDeviceProcAddr = NULL;
+        fwd_vkGetPhysicalDeviceFeatures2 = NULL;
+        fwd_vkCmdCopyBuffer = NULL;
         FreeLibrary(m);
         return TRUE;
     }
@@ -65,8 +70,9 @@ void oriel_vulkan_layers_end(void) {
 }
 
 // The forwarders: ggml calls these only after the backend was registered,
-// which needs oriel_vulkan_loader_available() (every pointer found). The
-// two ProcAddr functions check anyway: returning NULL is their way to fail.
+// which needs oriel_vulkan_loader_available() (every pointer found). They
+// check anyway: the ProcAddr functions fail by returning NULL, the others
+// do nothing.
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char *name) {
     if (!oriel_vulkan_loader_available()) return NULL;
     return fwd_vkGetInstanceProcAddr(instance, name);
@@ -78,9 +84,9 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, co
 }
 
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice device, VkPhysicalDeviceFeatures2 *features) {
-    fwd_vkGetPhysicalDeviceFeatures2(device, features);
+    if (oriel_vulkan_loader_available()) fwd_vkGetPhysicalDeviceFeatures2(device, features);
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer dst, uint32_t count, const VkBufferCopy *regions) {
-    fwd_vkCmdCopyBuffer(cmd, src, dst, count, regions);
+    if (oriel_vulkan_loader_available()) fwd_vkCmdCopyBuffer(cmd, src, dst, count, regions);
 }

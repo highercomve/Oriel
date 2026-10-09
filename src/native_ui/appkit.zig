@@ -117,7 +117,7 @@ const Field = struct {
 };
 
 /// Live surfaces by token, and which surface and node a view or control
-/// belongs to.
+/// belongs to. Process-wide: grown with smp_allocator, never a surface's.
 var surfaces: std.AutoHashMapUnmanaged(u64, *Surface) = .empty;
 var by_view: std.AutoHashMapUnmanaged(usize, *Surface) = .empty;
 const Owner = struct { token: u64, node: i64 };
@@ -327,9 +327,9 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         cocoa.class("NSNotificationCenter").msgSend(Object, "defaultCenter", .{}).msgSend(void, "addObserver:selector:name:object:", .{ view, cocoa.objc.sel("nuiSystemColorsChanged:").value, name, cocoa.nil });
     }
     registerDragTypes(view);
-    try surfaces.put(gpa, s.token, s);
+    try surfaces.put(std.heap.smp_allocator, s.token, s);
     errdefer _ = surfaces.remove(s.token);
-    try by_view.put(gpa, key(view.value), s);
+    try by_view.put(std.heap.smp_allocator, key(view.value), s);
     errdefer _ = by_view.remove(key(view.value));
     s.dark = isDark(view);
     const extras = withPlatformExtras(gpa, platform_json);
@@ -385,6 +385,7 @@ pub fn destroy(s: *Surface) void {
         e.release();
     }
     s.ax_elements.deinit(s.gpa);
+    s.ax_elements = .empty; // the engine's teardown below calls `removed`
     cocoa.class("NSNotificationCenter").msgSend(Object, "defaultCenter", .{}).msgSend(void, "removeObserver:", .{s.view});
     s.warm.deinit(s.gpa);
     s.timer_dues.deinit(s.gpa);
@@ -403,6 +404,11 @@ pub fn destroy(s: *Surface) void {
 fn dropField(f: Field) void {
     _ = by_control.remove(key(f.outer.value));
     _ = by_control.remove(key(f.inner.value));
+    // Its pending edit: a control made later may land at its address.
+    if (pending_control == f.outer.value or pending_control == f.inner.value) {
+        pending_control = null;
+        pending_type = null;
+    }
     // A delegate outlives nothing: clear it before the control goes.
     if (f.inner.getClass()) |cls| if (cls.respondsToSelector(cocoa.objc.sel("setDelegate:"))) f.inner.msgSend(void, "setDelegate:", .{cocoa.nil});
     // A text field being edited: end it, so the window's field editor
@@ -703,6 +709,12 @@ fn removed(ctx: *anyopaque, n: *Node) void {
     const s = surfaceOf(ctx);
     draw.dropNative(n);
     if (s.fields.fetchRemove(n.id)) |kv| dropField(kv.value);
+    // Its accessibility element: an assistive app may still hold it (it
+    // then reads as gone) or be in one of its callbacks.
+    if (s.ax_elements.fetchRemove(n.id)) |kv| {
+        _ = ax_refs.remove(key(kv.value.value));
+        releaseLater(kv.value);
+    }
 }
 
 /// New props: a text node's CoreText objects are stale.
@@ -947,8 +959,8 @@ fn makeField(s: *Surface, n: *Node) ?Field {
     holder.msgSend(void, "addSubview:", .{f.outer});
     f.outer.release(); // the holder keeps it
     f.holder = holder;
-    by_control.put(s.gpa, key(f.outer.value), .{ .token = s.token, .node = n.id }) catch {};
-    by_control.put(s.gpa, key(f.inner.value), .{ .token = s.token, .node = n.id }) catch {};
+    by_control.put(std.heap.smp_allocator, key(f.outer.value), .{ .token = s.token, .node = n.id }) catch {};
+    by_control.put(std.heap.smp_allocator, key(f.inner.value), .{ .token = s.token, .node = n.id }) catch {};
     s.view.msgSend(void, "addSubview:", .{holder});
     return f;
 }
@@ -1231,8 +1243,15 @@ fn fieldEditorClass(cls: cocoa.objc.Class, name: [:0]const u8) ?cocoa.objc.Class
     const gpa = std.heap.smp_allocator;
     const sub_name = std.fmt.allocPrintSentinel(gpa, "OrielNuiFieldEditor_{s}", .{name}, 0) catch return null;
     // (The runtime keeps the name for the class's life.)
-    const sub = cocoa.objc.allocateClassPair(cls, sub_name) orelse return null;
-    if (!sub.addMethod("updateDragTypeRegistration", noDragTypes) or !sub.addMethod("acceptableDragTypes", noAcceptableDragTypes)) return null;
+    const sub = cocoa.objc.allocateClassPair(cls, sub_name) orelse {
+        gpa.free(sub_name);
+        return null;
+    };
+    if (!sub.addMethod("updateDragTypeRegistration", noDragTypes) or !sub.addMethod("acceptableDragTypes", noAcceptableDragTypes)) {
+        cocoa.objc.c.objc_disposeClassPair(@ptrCast(sub.value));
+        gpa.free(sub_name);
+        return null;
+    }
     cocoa.objc.registerClassPair(sub);
     field_editor_subclasses.put(gpa, k, sub) catch {};
     return sub;
@@ -1325,7 +1344,7 @@ fn commandKey(control: id, selector: SEL) ?bool {
     const event = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{}).msgSend(Object, "currentEvent", .{});
     // The page heard this key as it came (onKeyEvent) and let it through.
     if (event.value != null and event.value == field_key) {
-        field_key = null;
+        holdEvent(&field_key, null);
         return false;
     }
     const flags = if (event.value != null) modFlags(event.msgSend(c_ulong, "modifierFlags", .{})) else 0;
@@ -1677,6 +1696,7 @@ fn mouseUp(self: id, _: SEL, event: id) callconv(.c) void {
     _ = sendPointer(s, "up", p, pressedButtons() & ~@as(u32, 1), modFlags((Object{ .value = event }).msgSend(c_ulong, "modifierFlags", .{})));
     if (surfaces.get(token) == null) return;
     _ = s.engine.event(0, "release", "null");
+    if (surfaces.get(token) == null) return;
     const under = underPointer(s, p);
     if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: click at {d:.0},{d:.0} on node {d}", .{ p[0], p[1], under.id });
     const n = under.node orelse return;
@@ -1905,7 +1925,7 @@ fn keyDown(self: id, _: SEL, event: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     // A Tab the monitor already gave the page (onKeyEvent).
     if (event == tab_sent) {
-        tab_sent = null;
+        holdEvent(&tab_sent, null);
         return;
     }
     _ = sendKeyDown(s, 0, event);
@@ -1919,6 +1939,14 @@ fn sendKeyDown(s: *Surface, nid: i64, event: id) bool {
 
 /// The last Tab key down the monitor sent the page (keyDown skips it).
 var tab_sent: id = null;
+
+/// Keep `event` (+1) in `slot`, letting go of the one it held: compared by
+/// address, a freed event's could come back as another's.
+fn holdEvent(slot: *id, event: id) void {
+    if (slot.* == event) return;
+    if (slot.* != null) (Object{ .value = slot.* }).release();
+    slot.* = if (event != null) (Object{ .value = event }).retain().value else null;
+}
 
 // Key releases: AppKit doesn't send keyUp: to the page's view (the key
 // window's first responder) here, so a local event monitor, one for the
@@ -1998,22 +2026,23 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
     // hears it first (its focus navigation); the loop only gets what it
     // doesn't handle. The page's other keys come to its keyDown:.
     const tab = ev.msgSend(c_ushort, "keyCode", .{}) == tab_key_code;
-    field_key = null;
+    holdEvent(&field_key, null);
     if (page != null and !tab) {
-        tab_sent = null;
+        holdEvent(&tab_sent, null);
         return event;
     }
-    if (page != null) tab_sent = event;
+    if (page != null) holdEvent(&tab_sent, event);
     // A field's keys reach the page before the field acts on them, and one
     // it prevents never reaches the field (no character, no caret move, no
     // select-all).
     if (composing) return event;
-    if (page == null) field_key = event;
+    if (page == null) holdEvent(&field_key, event);
     const prevented = sendKeyDown(s, nid, event);
+    if (surfaces.get(token) == null) return null;
     // A native check: Space and Return are the page's (its activation,
     // main.js keyEvent), never the button's own click.
     if (page == null and activationKey(s, nid, ev)) return null;
-    return if (prevented or surfaces.get(token) == null) null else event;
+    return if (prevented) null else event;
 }
 
 /// Space, Return or Enter on a native check or button (kind check or

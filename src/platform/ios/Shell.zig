@@ -470,6 +470,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             const ui_window = if (extra) null else window.attachToScene(scene, serial);
             if (ui_window) |w| {
                 scenes.append(std.heap.smp_allocator, .{ .scene = scene_id, .ui_window = w.value }) catch {
+                    // The window's state must not keep the UIWindow it frees.
+                    window.detachFromScene(w.value);
                     w.release();
                     destroySession(session);
                     return;

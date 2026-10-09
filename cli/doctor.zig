@@ -299,9 +299,8 @@ fn runFix(ctx: Context, cmd: Command, items: []const Item, plan: FixPlan, want_z
 
             var line_buf: [64]u8 = undefined;
             var line_reader = stdin_file.readerStreaming(ctx.io, &line_buf);
-            var ans_buf: [16]u8 = undefined;
-            const n = line_reader.interface.readSliceShort(&ans_buf) catch 0;
-            const trimmed = std.mem.trim(u8, ans_buf[0..n], " \t\r\n");
+            const answer = (line_reader.interface.takeDelimiter('\n') catch null) orelse "";
+            const trimmed = std.mem.trim(u8, answer, " \t\r\n");
             if (!std.ascii.eqlIgnoreCase(trimmed, "y") and !std.ascii.eqlIgnoreCase(trimmed, "yes")) {
                 try ctx.out.writeAll("Installation cancelled.\n");
                 return 0;

@@ -295,13 +295,6 @@ static JSValue h_canvas(JSContext *ctx, JSValueConst this_val, int argc, JSValue
     (void)this_val;
     double id;
     if (argc < 3 || JS_ToFloat64(ctx, &id, argv[0])) return JS_EXCEPTION;
-    size_t offset = 0, bytes = 0, per = 0;
-    JSValue buffer = JS_GetTypedArrayBuffer(ctx, argv[1], &offset, &bytes, &per);
-    if (JS_IsException(buffer)) return JS_EXCEPTION;
-    size_t size = 0;
-    uint8_t *data = JS_GetArrayBuffer(ctx, &size, buffer);
-    JS_FreeValue(ctx, buffer);
-    if (!data || per != 8 || offset + bytes > size) return JS_ThrowTypeError(ctx, "host.canvas: a Float64Array");
     int64_t count = 0;
     if (JS_GetLength(ctx, argv[2], &count) < 0) return JS_EXCEPTION;
     if (count < 0 || count > 1 << 20) return JS_FALSE;
@@ -316,8 +309,20 @@ static JSValue h_canvas(JSContext *ctx, JSValueConst this_val, int argc, JSValue
         JS_FreeValue(ctx, v);
         if (!strs[made]) { ok = 0; break; }
     }
-    // The doubles in place (a Float64Array's storage is 8-byte aligned).
-    int r = ok ? oriel_nui_canvas(opaque_of(ctx), id, (const double *)(data + offset), bytes / 8, strs, lens, (size_t)count) : 0;
+    // The doubles in place (a Float64Array's storage is 8-byte aligned),
+    // looked up after the strings: their getters and toString run page JS,
+    // which could detach or resize the buffer.
+    int r = 0;
+    if (ok) {
+        size_t offset = 0, bytes = 0, per = 0, size = 0;
+        JSValue buffer = JS_GetTypedArrayBuffer(ctx, argv[1], &offset, &bytes, &per);
+        uint8_t *data = JS_IsException(buffer) ? NULL : JS_GetArrayBuffer(ctx, &size, buffer);
+        JS_FreeValue(ctx, buffer);
+        if (!data || per != 8 || offset + bytes > size) {
+            if (!JS_IsException(buffer)) JS_ThrowTypeError(ctx, "host.canvas: a Float64Array");
+            ok = 0;
+        } else r = oriel_nui_canvas(opaque_of(ctx), id, (const double *)(data + offset), bytes / 8, strs, lens, (size_t)count);
+    }
     for (int64_t i = 0; i < made; i++) JS_FreeCString(ctx, strs[i]);
     js_free(ctx, strs);
     js_free(ctx, lens);
@@ -902,6 +907,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     // The app's CSP refusing the page's eval (the engine keeps its message).
     if (refuse_eval) JS_OrielSetEvalRefused(ctx, nui_eval_refused);
     oqjs *self = js_malloc(ctx, sizeof *self);
+    if (!self) { JS_FreeContext(ctx); JS_FreeRuntime(rt); return NULL; }
     self->rt = rt;
     self->ctx = ctx;
     self->opaque = opaque;

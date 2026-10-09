@@ -593,10 +593,11 @@ fn feed(audio: []const f32) void {
         const n = blk: {
             samples_mutex.lockUncancelable(io);
             defer samples_mutex.unlock(io);
-            samples.appendSlice(gpa, part) catch {};
+            if (samples.items.len < max_seconds * rate) samples.appendSlice(gpa, part) catch {};
             break :blk samples.items.len;
         };
         emit("dictation:level", .{ .seconds = @as(f32, @floatFromInt(n)) / rate, .level = @min(1, rms(part) * 8) });
+        if (n >= max_seconds * rate) recording.store(false, .release);
     }
 }
 
@@ -796,6 +797,8 @@ pub fn deinit() void {
     samples = .empty;
     finals.deinit(gpa);
     finals = .empty;
+    if (vad_path) |p| gpa.free(p);
+    vad_path = null;
     models_dir = "";
     initialized = false;
     ever_init.store(false, .release);
@@ -961,7 +964,8 @@ fn transcribe(a: std.mem.Allocator, audio: []const f32, lang: [:0]const u8, opts
     return .{ .text = text, .backend = where, .transcribe_ms = ms };
 }
 
-/// Silero VAD (built into Oriel), written next to the models once.
+/// Silero VAD (built into Oriel), written next to the models once (per
+/// `init`: `deinit` frees it). Guarded by `mutex`.
 var vad_path: ?[:0]u8 = null;
 fn vadPath() ![:0]const u8 {
     if (vad_path) |p| return p;

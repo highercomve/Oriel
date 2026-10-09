@@ -131,10 +131,13 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
             const maybe_cached = try webview2.findNewestCached(ctx.gpa, ctx.io, ctx.environ, arch_name);
             if (maybe_cached) |cached| {
                 defer cached.deinit(ctx.gpa);
+                // Room first: an append failing after an allocation would leak it.
+                try injected_strings.ensureUnusedCapacity(ctx.gpa, 1);
+                try allocated_slices.ensureUnusedCapacity(ctx.gpa, 1);
                 const arg_str = try std.fmt.allocPrint(ctx.gpa, "-Dwebview2-loader={s}", .{cached.path});
-                try injected_strings.append(ctx.gpa, arg_str);
+                injected_strings.appendAssumeCapacity(arg_str);
                 const new_args = try injectBuildArg(ctx.gpa, effective_args, arg_str);
-                try allocated_slices.append(ctx.gpa, new_args);
+                allocated_slices.appendAssumeCapacity(new_args);
                 effective_args = new_args;
             } else {
                 const no_fetch = if (ctx.environ.get("ORIEL_NO_WEBVIEW2_FETCH")) |v|
@@ -152,10 +155,12 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
                     };
                     if (try webview2.findNewestCached(ctx.gpa, ctx.io, ctx.environ, arch_name)) |newly_cached| {
                         defer newly_cached.deinit(ctx.gpa);
+                        try injected_strings.ensureUnusedCapacity(ctx.gpa, 1);
+                        try allocated_slices.ensureUnusedCapacity(ctx.gpa, 1);
                         const arg_str = try std.fmt.allocPrint(ctx.gpa, "-Dwebview2-loader={s}", .{newly_cached.path});
-                        try injected_strings.append(ctx.gpa, arg_str);
+                        injected_strings.appendAssumeCapacity(arg_str);
                         const new_args = try injectBuildArg(ctx.gpa, effective_args, arg_str);
-                        try allocated_slices.append(ctx.gpa, new_args);
+                        allocated_slices.appendAssumeCapacity(new_args);
                         effective_args = new_args;
                     }
                 }
@@ -171,10 +176,12 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
         true;
 
     if (is_prod_step and !hasOptimizeArg(effective_args)) {
+        try injected_strings.ensureUnusedCapacity(ctx.gpa, 1);
+        try allocated_slices.ensureUnusedCapacity(ctx.gpa, 1);
         const opt_arg = try ctx.gpa.dupe(u8, "-Doptimize=ReleaseSafe");
-        try injected_strings.append(ctx.gpa, opt_arg);
+        injected_strings.appendAssumeCapacity(opt_arg);
         const new_args = try injectBuildArg(ctx.gpa, effective_args, opt_arg);
-        try allocated_slices.append(ctx.gpa, new_args);
+        allocated_slices.appendAssumeCapacity(new_args);
         effective_args = new_args;
     }
 
@@ -183,10 +190,12 @@ pub fn exec(ctx: Context, step: ?[]const u8, args: []const []const u8) !u8 {
     // newer CPU (a CI runner) dies with "illegal instruction" on older ones.
     if (is_prod_step and !hasTargetOrCpuArg(effective_args)) {
         if (defaultCpu(builtin.cpu.arch, builtin.os.tag)) |cpu| {
+            try injected_strings.ensureUnusedCapacity(ctx.gpa, 1);
+            try allocated_slices.ensureUnusedCapacity(ctx.gpa, 1);
             const cpu_arg = try std.fmt.allocPrint(ctx.gpa, "-Dcpu={s}", .{cpu});
-            try injected_strings.append(ctx.gpa, cpu_arg);
+            injected_strings.appendAssumeCapacity(cpu_arg);
             const new_args = try injectBuildArg(ctx.gpa, effective_args, cpu_arg);
-            try allocated_slices.append(ctx.gpa, new_args);
+            allocated_slices.appendAssumeCapacity(new_args);
             effective_args = new_args;
         }
     }

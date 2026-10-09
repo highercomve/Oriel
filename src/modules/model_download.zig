@@ -76,6 +76,8 @@ pub fn fetch(
         return error.BadHttpStatus;
     }
     const total: u64 = response.head.content_length orelse @as(u64, expected_mb) << 20;
+    // Without a length, a server that never stops would fill the disk.
+    const limit: u64 = response.head.content_length orelse @max(total, 1 << 20) * 4;
 
     const file = try dir.createFile(io, part, .{});
     var file_open = true;
@@ -92,11 +94,12 @@ pub fn fetch(
     while (true) {
         const n = try reader.readSliceShort(&chunk);
         if (n == 0) break;
+        if (done + n > limit) return error.DownloadTooLarge;
         try writer.interface.writeAll(chunk[0..n]);
         done += n;
         if (done >> 20 != last_mb) {
             last_mb = done >> 20;
-            progress(ctx, @intCast(last_mb), @intCast(total >> 20));
+            progress(ctx, std.math.lossyCast(u32, last_mb), std.math.lossyCast(u32, total >> 20));
         }
     }
     try writer.interface.flush();

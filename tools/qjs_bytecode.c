@@ -38,7 +38,12 @@ int main(int argc, char **argv) {
     if (!code) { perror(argv[1]); return 1; }
     JSRuntime *rt = JS_NewRuntime();
     JSContext *ctx = rt ? JS_NewContext(rt) : NULL;
-    if (!ctx) { fprintf(stderr, "qjs_bytecode: out of memory\n"); return 1; }
+    if (!ctx) {
+        fprintf(stderr, "qjs_bytecode: out of memory\n");
+        if (rt) JS_FreeRuntime(rt);
+        free(code);
+        return 1;
+    }
     int status = 1;
     // The name is what stack traces show, as when the engine evaluated the source.
     JSValue fn = JS_Eval(ctx, code, len, "runtime.js", JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
@@ -58,7 +63,9 @@ int main(int argc, char **argv) {
             FILE *out = fopen(argv[2], "wb");
             if (!out) perror(argv[2]);
             else {
-                if (fwrite(bc, 1, size, out) == size && fclose(out) == 0) status = 0;
+                int written = fwrite(bc, 1, size, out) == size;
+                // Close even after a short write.
+                if (fclose(out) == 0 && written) status = 0;
                 else perror(argv[2]);
             }
             js_free(ctx, bc);

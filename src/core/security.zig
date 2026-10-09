@@ -385,6 +385,11 @@ pub fn validateWindowUrl(sec: Security, local: Local, url: ?[]const u8) !void {
     const u = url orelse return;
     if (u.len == 0) return;
 
+    // Same rule as resolveWindowUrlWithOrigin, so both validators agree.
+    for (u) |c| {
+        if (c < 0x20 or c == 0x7f) return error.ControlCharactersNotAllowed;
+    }
+
     // Reject backslashes anywhere
     if (std.mem.indexOfScalar(u8, u, '\\') != null) return error.InvalidUrl;
 
@@ -819,6 +824,10 @@ test validateWindowUrl {
     try validateWindowUrl(sec_remote, local, "https://docs.example.com/guide");
     try validateWindowUrl(sec_remote, local, "https://partner.example/");
     try std.testing.expectError(error.DisallowedOrigin, validateWindowUrl(sec_remote, local, "https://evil.example/"));
+
+    // Control characters rejected (resolveWindowUrlWithOrigin rejects them too)
+    try std.testing.expectError(error.ControlCharactersNotAllowed, validateWindowUrl(sec, local, "a.html\x01"));
+    try std.testing.expectError(error.ControlCharactersNotAllowed, validateWindowUrl(sec, local, "/settings\x7f"));
 
     // Backslashes anywhere rejected
     try std.testing.expectError(error.InvalidUrl, validateWindowUrl(sec, local, "sub\\page.html"));

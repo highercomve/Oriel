@@ -188,16 +188,30 @@ pub const Watcher = struct {
         var real_buf: [std.fs.max_path_bytes]u8 = undefined;
         const real = c.realpath(path.ptr, &real_buf) orelse return error.WatchPathNotFound;
         const canonical = try gpa.dupe(u8, std.mem.span(real));
-        errdefer gpa.free(canonical);
         const s = self.state;
         s.lock();
         s.dirs.append(gpa, canonical) catch |err| {
             s.unlock();
+            gpa.free(canonical);
             return err;
         };
         s.unlock();
         // The callback never runs while the stream is being replaced.
-        try s.startStream();
+        s.startStream() catch |err| {
+            // `dirs` owns `canonical` now: take it back out before freeing it,
+            // then restore the stream for the directories already watched.
+            s.lock();
+            for (s.dirs.items, 0..) |d, i| {
+                if (d.ptr == canonical.ptr) {
+                    _ = s.dirs.orderedRemove(i);
+                    break;
+                }
+            }
+            s.unlock();
+            gpa.free(canonical);
+            if (s.dirs.items.len > 0) s.startStream() catch {};
+            return err;
+        };
     }
 
     /// Return pending events without blocking. Names point into `buf`;

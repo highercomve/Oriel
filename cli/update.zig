@@ -5,8 +5,12 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const Context = @import("Context.zig");
 const core = @import("updater_core");
+const webview2 = @import("webview2.zig");
 
 pub const default_releases_url = "https://github.com/highercomve/Oriel/releases";
+
+/// Upper bound for the GitHub releases API response.
+const max_release_json_bytes = 4 * 1024 * 1024;
 
 pub const Command = struct {
     pub const summary = "Update the oriel CLI in place";
@@ -133,9 +137,8 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
 
         var line_buf: [64]u8 = undefined;
         var line_reader = stdin_file.readerStreaming(ctx.io, &line_buf);
-        var ans_buf: [16]u8 = undefined;
-        const n = line_reader.interface.readSliceShort(&ans_buf) catch 0;
-        const trimmed = std.mem.trim(u8, ans_buf[0..n], " \t\r\n");
+        const answer = (line_reader.interface.takeDelimiter('\n') catch null) orelse "";
+        const trimmed = std.mem.trim(u8, answer, " \t\r\n");
         if (!std.ascii.eqlIgnoreCase(trimmed, "y") and !std.ascii.eqlIgnoreCase(trimmed, "yes")) {
             try ctx.out.writeAll("Update cancelled.\n");
             return 0;
@@ -162,7 +165,7 @@ fn fetchLatestReleaseTag(ctx: Context) ![]const u8 {
     defer body.deinit();
 
     const req_url = "https://api.github.com/repos/highercomve/Oriel/releases?per_page=1";
-    const res = client.fetch(.{
+    const res = webview2.fetchBounded(&client, .{
         .location = .{ .url = req_url },
         .headers = .{
             .user_agent = .{ .override = "oriel-cli" },
@@ -170,8 +173,7 @@ fn fetchLatestReleaseTag(ctx: Context) ![]const u8 {
         .extra_headers = &.{
             .{ .name = "accept", .value = "application/vnd.github+json" },
         },
-        .response_writer = &body.writer,
-    }) catch |err| {
+    }, &body, max_release_json_bytes) catch |err| {
         try ctx.err.print("error: could not look up latest release: {s}\n", .{@errorName(err)});
         return error.FetchFailed;
     };

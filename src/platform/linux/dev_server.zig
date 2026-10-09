@@ -63,6 +63,13 @@ pub fn stopDevServer(process: *gio.Subprocess) void {
     process.unref();
 }
 
+// GWeakRef (no GIR binding used here).
+const WeakRef = extern struct { p: ?*anyopaque = null };
+extern fn g_weak_ref_init(weak_ref: *WeakRef, object: ?*anyopaque) void;
+extern fn g_weak_ref_get(weak_ref: *WeakRef) ?*anyopaque;
+extern fn g_weak_ref_clear(weak_ref: *WeakRef) void;
+extern fn g_object_unref(object: *anyopaque) void;
+
 pub fn DevRetryContext(comptime dev_url_fn: *const fn () [:0]const u8) type {
     return struct {
         pub var dev_retries_left: u32 = 0;
@@ -74,12 +81,25 @@ pub fn DevRetryContext(comptime dev_url_fn: *const fn () [:0]const u8) type {
         pub fn onLoadFailed(view: *webkit.WebView, _: webkit.LoadEvent, _: [*:0]u8, _: *glib.Error, _: ?*anyopaque) callconv(.c) c_int {
             if (dev_retries_left == 0) return 0; // show WebKit's error page
             dev_retries_left -= 1;
-            _ = glib.timeoutAdd(retry_interval_ms, &retryLoad, view);
+            // Weak: the window may close before the timer fires.
+            const weak = std.heap.smp_allocator.create(WeakRef) catch return 0;
+            g_weak_ref_init(weak, view);
+            if (glib.timeoutAdd(retry_interval_ms, &retryLoad, weak) == 0) {
+                g_weak_ref_clear(weak);
+                std.heap.smp_allocator.destroy(weak);
+                return 0;
+            }
             return 1;
         }
 
         fn retryLoad(data: ?*anyopaque) callconv(.c) c_int {
-            const view: *webkit.WebView = @ptrCast(@alignCast(data));
+            const weak: *WeakRef = @ptrCast(@alignCast(data));
+            const obj = g_weak_ref_get(weak);
+            g_weak_ref_clear(weak);
+            std.heap.smp_allocator.destroy(weak);
+            const o = obj orelse return 0;
+            defer g_object_unref(o);
+            const view: *webkit.WebView = @ptrCast(@alignCast(o));
             view.loadUri(dev_url_fn());
             return 0; // one-shot
         }

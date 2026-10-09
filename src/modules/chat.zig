@@ -490,6 +490,7 @@ pub fn generate(a: std.mem.Allocator, messages: []const Message, opts: Options) 
         if (prompt.items.len + opts.max_tokens <= l.n_ctx) break;
         first = nextDroppable(messages, first) orelse return error.PromptTooLong;
     }
+    if (prompt.items.len == 0) return error.EmptyPrompt;
 
     // Reuse the KV cache's common prefix; always evaluate at least one token
     // (the logits for the first reply token come from the last one).
@@ -564,7 +565,7 @@ pub fn generate(a: std.mem.Allocator, messages: []const Message, opts: Options) 
             break;
         }
         var tok = if (grammar != null and answering)
-            sampleWithGrammar(l.ctx, sampler, grammar.?, candidates)
+            try sampleWithGrammar(l.ctx, sampler, grammar.?, candidates)
         else
             c.llama_sampler_sample(sampler, l.ctx, -1);
         if (c.llama_vocab_is_eog(vocab, tok)) {
@@ -618,12 +619,12 @@ pub fn generate(a: std.mem.Allocator, messages: []const Message, opts: Options) 
 /// checked against the grammar; only when it breaks it does the grammar
 /// filter the whole vocabulary before drawing again (much faster than
 /// filtering every time). Both samplers accept the token.
-fn sampleWithGrammar(ctx: *c.llama_context, chain: *c.llama_sampler, grammar: *c.llama_sampler, candidates: []c.llama_token_data) c.llama_token {
+fn sampleWithGrammar(ctx: *c.llama_context, chain: *c.llama_sampler, grammar: *c.llama_sampler, candidates: []c.llama_token_data) !c.llama_token {
     const logits = c.llama_get_logits_ith(ctx, -1);
     for (candidates, 0..) |*cd, i| cd.* = .{ .id = @intCast(i), .logit = logits[i], .p = 0 };
     var all: c.llama_token_data_array = .{ .data = candidates.ptr, .size = candidates.len, .selected = -1, .sorted = false };
     c.llama_sampler_apply(chain, &all);
-    var tok = all.data[@intCast(all.selected)].id;
+    var tok = try selectedToken(all);
 
     var one = [1]c.llama_token_data{.{ .id = tok, .logit = 1, .p = 0 }};
     var single: c.llama_token_data_array = .{ .data = &one, .size = 1, .selected = -1, .sorted = false };
@@ -633,11 +634,19 @@ fn sampleWithGrammar(ctx: *c.llama_context, chain: *c.llama_sampler, grammar: *c
         all = .{ .data = candidates.ptr, .size = candidates.len, .selected = -1, .sorted = false };
         c.llama_sampler_apply(grammar, &all);
         c.llama_sampler_apply(chain, &all);
-        tok = all.data[@intCast(all.selected)].id;
+        tok = try selectedToken(all);
     }
     c.llama_sampler_accept(grammar, tok);
     c.llama_sampler_accept(chain, tok);
     return tok;
+}
+
+/// The token the samplers picked; none (`selected` -1) when every candidate
+/// was ruled out.
+fn selectedToken(all: c.llama_token_data_array) !c.llama_token {
+    const i = std.math.cast(usize, all.selected) orelse return error.SampleFailed;
+    if (i >= all.size) return error.SampleFailed;
+    return all.data[i].id;
 }
 
 /// `messages[first..]` (plus a leading system message, always kept) in the
@@ -655,11 +664,12 @@ fn tokenizeChat(l: *const Loaded, vocab: ?*const c.llama_vocab, messages: []cons
     // The template writes the special tokens as text: parse them; the BOS
     // too, when the vocabulary adds one and the template didn't.
     const add_bos = c.llama_vocab_get_add_bos(vocab);
+    const text_len = std.math.cast(i32, text.len) orelse return error.PromptTooLong;
     try out.ensureTotalCapacity(gpa, text.len + 8);
-    var count = c.llama_tokenize(vocab, text.ptr, @intCast(text.len), out.items.ptr, @intCast(out.capacity), add_bos, true);
+    var count = c.llama_tokenize(vocab, text.ptr, text_len, out.items.ptr, std.math.cast(i32, out.capacity) orelse std.math.maxInt(i32), add_bos, true);
     if (count < 0) {
-        try out.ensureTotalCapacity(gpa, @intCast(-count));
-        count = c.llama_tokenize(vocab, text.ptr, @intCast(text.len), out.items.ptr, @intCast(out.capacity), add_bos, true);
+        try out.ensureTotalCapacity(gpa, @intCast(-@as(i64, count)));
+        count = c.llama_tokenize(vocab, text.ptr, text_len, out.items.ptr, std.math.cast(i32, out.capacity) orelse std.math.maxInt(i32), add_bos, true);
     }
     if (count < 0) return error.TokenizeFailed;
     out.items.len = @intCast(count);
@@ -677,9 +687,10 @@ fn applyTemplate(arena: std.mem.Allocator, model: *c.llama_model, turns: []const
     const own = c.llama_model_chat_template(model, null);
     while (true) {
         const buf = try arena.alloc(u8, size);
+        const len = std.math.cast(i32, buf.len) orelse return error.PromptTooLong;
         var n: i32 = -1;
-        if (own != null) n = c.llama_chat_apply_template(own, msgs.ptr, msgs.len, true, buf.ptr, @intCast(buf.len));
-        if (n < 0) n = c.llama_chat_apply_template("chatml", msgs.ptr, msgs.len, true, buf.ptr, @intCast(buf.len));
+        if (own != null) n = c.llama_chat_apply_template(own, msgs.ptr, msgs.len, true, buf.ptr, len);
+        if (n < 0) n = c.llama_chat_apply_template("chatml", msgs.ptr, msgs.len, true, buf.ptr, len);
         if (n < 0) return error.ChatTemplateFailed;
         if (@as(usize, @intCast(n)) <= buf.len) return buf[0..@intCast(n)];
         size = @intCast(n);
@@ -780,6 +791,13 @@ test nextDroppable {
     };
     try std.testing.expectEqual(@as(?usize, 3), nextDroppable(&msgs, 0));
     try std.testing.expectEqual(@as(?usize, null), nextDroppable(&msgs, 3));
+}
+
+test selectedToken {
+    var data = [_]c.llama_token_data{ .{ .id = 7, .logit = 0, .p = 0 }, .{ .id = 9, .logit = 0, .p = 0 } };
+    try std.testing.expectEqual(@as(c.llama_token, 9), try selectedToken(.{ .data = &data, .size = 2, .selected = 1, .sorted = false }));
+    try std.testing.expectError(error.SampleFailed, selectedToken(.{ .data = &data, .size = 2, .selected = -1, .sorted = false }));
+    try std.testing.expectError(error.SampleFailed, selectedToken(.{ .data = &data, .size = 2, .selected = 2, .sorted = false }));
 }
 
 test {

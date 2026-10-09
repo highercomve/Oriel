@@ -245,6 +245,12 @@ pub fn start(app_io: std.Io, language: []const u8, on_device: bool, audio: ?[]f3
         if (audio) |a| audio_gpa.free(a);
         return error.AlreadyRecording;
     }
+    // A session that ended on its own (`finish`) left the test feeder and
+    // its audio behind: `active` is false, so the feeder is exiting.
+    if (feeder) |t| t.join();
+    feeder = null;
+    if (test_audio) |t| test_audio_gpa.free(t);
+    test_audio = null;
     authorize() catch |e| {
         log.warn("Apple speech: {s}", .{@errorName(e)});
         if (audio) |a| audio_gpa.free(a);

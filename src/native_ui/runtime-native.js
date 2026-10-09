@@ -1435,7 +1435,7 @@ globalThis.btoa ??= (s) => {
       if (reg.target === node) return true;
       return !!reg.options.subtree && reg.target.contains(node);
     }
-    function hook(kind, target, node, name) {
+    function hook(kind, target, node, name, prev, next) {
       for (const mo of observers) {
         if (mo.__nuiChild || mo.__nuiAttribute) {
           if (!target.isConnected && kind !== REMOVED) continue;
@@ -1463,8 +1463,8 @@ globalThis.btoa ??= (s) => {
               oldValue: null,
               addedNodes: kind === ADDED ? [node] : [],
               removedNodes: kind === REMOVED ? [node] : [],
-              previousSibling: kind === ADDED ? node.previousSibling : null,
-              nextSibling: kind === ADDED ? node.nextSibling : null
+              previousSibling: kind === ADDED ? prev : null,
+              nextSibling: kind === ADDED ? next : null
             });
           }
           break;

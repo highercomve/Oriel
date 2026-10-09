@@ -1,10 +1,70 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.9.7 and earlier.",
-.date = .date("2026-10-08T00:00:00"),
+.description = "Release notes for Oriel 0.9.8 and earlier.",
+.date = .date("2026-10-09T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# Oriel 0.9.8 · October 9, 2026
+
+Oriel 0.9.8 is a memory-safety release. It fixes use-after-free, out-of-bounds,
+overflow and leak defects across the native UI, platform layers, modules and
+CLI tooling.
+
+## Fixed
+
+- Update manifests: base64 signatures, public keys and seeds must decode to
+  exactly their expected size, closing a stack overflow reachable from an
+  untrusted manifest before signature verification.
+- Native DOM: mutation observer hooks no longer run page code in the middle of
+  a store operation, so observers can no longer corrupt or free nodes still in
+  use. `host.canvas` re-reads its buffer after page code can run, wrappers are
+  re-validated after allocation, `:nth-child` arithmetic no longer overflows,
+  and serialization and deep cloning no longer recurse per tree level.
+- Native UI: repeating gradients with many stops no longer write past a stack
+  buffer, focus and blur no longer run page code while fields are being
+  synchronized (GTK, UIKit), page geometry and slider values are clamped before
+  integer conversion, and uninitialized text layout offsets, error-path leaks,
+  stale event pointers and unreleased accessibility elements are fixed.
+- Win32: clipboard paste is bounded by the clipboard allocation, controls are
+  no longer destroyed under an open context menu, and GDI, font-cache and event
+  handle leaks are fixed.
+- Android: native-page commands are queued instead of running inside the
+  page's own JavaScript, so a command that closes its window can no longer free
+  the running engine. Dropped-file descriptors and window sizes are handled
+  safely.
+- Linux: a rejected window URL no longer leaks a window with a dangling close
+  handler, an empty second-instance command line no longer crashes the primary
+  instance, and windows, queued replies and timers are released at shutdown.
+- macOS and iOS: pending WebKit replies are answered before release at
+  shutdown, and single-instance and scene teardown no longer reuse closed
+  descriptors or freed windows. Windows `showWindow` no longer reads window
+  state off the main thread.
+- Modules and plugins: fixes for the macOS file watcher, the store keeping
+  borrowed JSON values, Linux menu and tray leaks, tray D-Bus depth handling,
+  clipboard image decoding, X11 shortcut re-entry, Windows share events and
+  the Wayland keymap.
+- AI and audio: empty SQL statements, WAV sample rates, prompt and download
+  sizes, grammar sampling and empty prompts are validated; GPU loaders clear
+  their function pointers when a library fails to load.
+- CLI and tooling: `oriel wrap` no longer returns a name from freed memory,
+  Android manifest sync no longer reads stale keys, confirmation prompts accept
+  Enter, long deep-link schemes work, and network responses are size-bounded.
+
+## Compatibility
+
+- Unpadded or otherwise mis-sized base64 signatures and keys in update
+  manifests are rejected with `error.InvalidPadding`.
+- Native pages: layout stops at 512 levels of nesting, gradients use at most
+  256 stops, and selectors are limited to 16 nested `:not`/`:is`/`:has` and 32
+  compound parts (longer ones throw `SyntaxError`).
+- Window URLs containing control characters are rejected when the window is
+  opened. `App.getWindow` and `App.getWindowByHandle` are main-thread only.
+- New errors: `error.SqliteEmptyStatement` (`oriel.sql`),
+  `error.PromptTooLong`, `error.EmptyPrompt` and `error.SampleFailed` (chat),
+  `error.DownloadTooLarge` (model downloads). WAV input below 4000 Hz is
+  rejected.
 
 # Oriel 0.9.7 · October 8, 2026
 
@@ -52,8 +112,8 @@ built-in PCM playback.
 # Oriel 0.9.5 · October 8, 2026
 
 Oriel 0.9.5 fixes the validated concurrency, memory-lifetime and security
-issues from [the validated review](https://github.com/highercomve/Oriel/blob/main/REVIEW.md), and documents which reported findings were not
-supported by the current code.
+issues from a security and memory-safety review, and documents which reported
+findings were not supported by the current code.
 
 ## Fixed
 
@@ -81,7 +141,7 @@ supported by the current code.
 ## Documentation and validation
 
 - Added the website's **Wrap a web app** guide and navigation links.
-- Validated every finding in [the validated review](https://github.com/highercomve/Oriel/blob/main/REVIEW.md), correcting ownership, tar extraction,
+- Validated every finding in the security and memory-safety review, correcting ownership, tar extraction,
   token exposure, command-line reader, and optional expiration claims.
 - Added regression tests for concurrency, error lifetimes, window permissions,
   path guards, Host validation, HTTPS URLs, gzip limits, and isolation messages.

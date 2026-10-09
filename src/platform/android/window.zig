@@ -227,7 +227,11 @@ fn sizeNow(handle: WindowHandle) WindowSize {
 
 fn unpack(v: i64) WindowSize {
     const u: u64 = @bitCast(v);
-    return .{ .width = @intCast(@as(u32, @truncate(u >> 32))), .height = @intCast(@as(u32, @truncate(u))) };
+    // Out of c_int range (a -1 sentinel from Kotlin, say): 0.
+    return .{
+        .width = std.math.cast(c_int, @as(u32, @truncate(u >> 32))) orelse 0,
+        .height = std.math.cast(c_int, @as(u32, @truncate(u))) orelse 0,
+    };
 }
 
 /// The page's size in CSS pixels (dp).

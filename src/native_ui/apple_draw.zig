@@ -723,7 +723,11 @@ fn inlineBoxRoom(s: CFAttributedStringRef, runs: []const tree_mod.Run, ls: f32) 
         if (sp.start == 0) head += before else add(&at, &extra, &m, sp.start - 1, before);
         add(&at, &extra, &m, sp.end - 1, sp.ib.end());
     }
+    // Span offsets are counted from the run bytes; never kern past the
+    // string attributed() actually built.
+    const len = CFAttributedStringGetLength(s);
     for (at[0..m], extra[0..m]) |idx, v| {
+        if (idx < 0 or idx >= len) continue;
         const k: f64 = ls + v;
         if (CFNumberCreate(null, kCFNumberFloat64Type, &k)) |num| {
             CFAttributedStringSetAttribute(s, .{ .location = idx, .length = 1 }, kCTKernAttributeName, num);

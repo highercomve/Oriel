@@ -238,15 +238,18 @@ pub const bridge_js =
 // the first load.
 extern fn webkit_web_view_get_uri(view: *webkit.WebView) ?[*:0]const u8;
 
+/// One type for the producer and the idle callback (it's cast back from
+/// `?*anyopaque`; two identical auto-layout structs needn't share a layout).
+const EvalTask = struct {
+    target: ?@import("window.zig").WindowHandle,
+    script: [:0]u8,
+};
+
 pub fn evalJs(target: ?@import("window.zig").WindowHandle, script: [:0]const u8) void {
     const gpa = std.heap.smp_allocator;
     const script_copy = gpa.dupeZ(u8, script) catch return;
 
-    const Task = struct {
-        target: ?@import("window.zig").WindowHandle,
-        script: [:0]u8,
-    };
-    const task = gpa.create(Task) catch {
+    const task = gpa.create(EvalTask) catch {
         gpa.free(script_copy);
         return;
     };
@@ -256,13 +259,14 @@ pub fn evalJs(target: ?@import("window.zig").WindowHandle, script: [:0]const u8)
     // threads queue it (FIFO with their command's reply).
     if (glib.MainContext.default().isOwner() != 0) {
         _ = evalScriptTask(task);
-    } else {
-        _ = glib.idleAdd(&evalScriptTask, task);
+    } else if (glib.idleAdd(&evalScriptTask, task) == 0) {
+        gpa.free(script_copy);
+        gpa.destroy(task);
     }
 }
 
 fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
-    const task: *struct { target: ?@import("window.zig").WindowHandle, script: [:0]u8 } = @ptrCast(@alignCast(data));
+    const task: *EvalTask = @ptrCast(@alignCast(data));
     defer {
         std.heap.smp_allocator.free(task.script);
         std.heap.smp_allocator.destroy(task);
@@ -310,6 +314,11 @@ fn engineListed(e: *anyopaque) bool {
     return false;
 }
 
+const EvalByLabelTask = struct {
+    label: [:0]u8,
+    script: [:0]u8,
+};
+
 pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
     const gpa = std.heap.smp_allocator;
     const label_copy = gpa.dupeZ(u8, label) catch return;
@@ -318,11 +327,7 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
         return;
     };
 
-    const Task = struct {
-        label: [:0]u8,
-        script: [:0]u8,
-    };
-    const task = gpa.create(Task) catch {
+    const task = gpa.create(EvalByLabelTask) catch {
         gpa.free(label_copy);
         gpa.free(script_copy);
         return;
@@ -331,13 +336,15 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
     // See evalJs: in order with a sync command's reply.
     if (glib.MainContext.default().isOwner() != 0) {
         _ = evalScriptByLabelTask(task);
-    } else {
-        _ = glib.idleAdd(&evalScriptByLabelTask, task);
+    } else if (glib.idleAdd(&evalScriptByLabelTask, task) == 0) {
+        gpa.free(label_copy);
+        gpa.free(script_copy);
+        gpa.destroy(task);
     }
 }
 
 fn evalScriptByLabelTask(data: ?*anyopaque) callconv(.c) c_int {
-    const task: *struct { label: [:0]u8, script: [:0]u8 } = @ptrCast(@alignCast(data));
+    const task: *EvalByLabelTask = @ptrCast(@alignCast(data));
     defer {
         std.heap.smp_allocator.free(task.label);
         std.heap.smp_allocator.free(task.script);

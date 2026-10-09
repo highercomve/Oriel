@@ -52,6 +52,10 @@ pub const Surface = struct {
     fields: std.AutoHashMapUnmanaged(i64, Field) = .empty,
     updating: bool = false,
     dark: bool = false,
+    /// The field node that has the keyboard (0: none), as the page last
+    /// heard it ("focus"/"blur"), and whether a check is queued.
+    focused: i64 = 0,
+    focus_check_queued: bool = false,
     /// The text measures kept in the nodes (apple_draw.measureText) hold
     /// while this holds; bumped when the text may measure differently.
     text_epoch: u64 = 1,
@@ -105,7 +109,7 @@ const Field = struct {
 };
 
 /// Live surfaces by token, and which surface and node a view or control
-/// belongs to.
+/// belongs to. Process-wide: grown with smp_allocator, never a surface's.
 var surfaces: std.AutoHashMapUnmanaged(u64, *Surface) = .empty;
 var by_view: std.AutoHashMapUnmanaged(usize, *Surface) = .empty;
 const Owner = struct { token: u64, node: i64 };
@@ -249,9 +253,9 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
         view.msgSend(void, "addGestureRecognizer:", .{r});
         r.release();
     }
-    try surfaces.put(gpa, s.token, s);
+    try surfaces.put(std.heap.smp_allocator, s.token, s);
     errdefer _ = surfaces.remove(s.token);
-    try by_view.put(gpa, key(view.value), s);
+    try by_view.put(std.heap.smp_allocator, key(view.value), s);
     errdefer _ = by_view.remove(key(view.value));
     s.dark = isDark(view);
     const with_scale = withScale(gpa, platform_json);
@@ -300,6 +304,7 @@ pub fn destroy(s: *Surface) void {
         e.release();
     }
     s.ax_elements.deinit(s.gpa);
+    s.ax_elements = .empty; // the engine's teardown below calls `removed`
     if (s.ax_list.value != null) s.ax_list.release();
     s.warm.deinit(s.gpa);
     s.timer_dues.deinit(s.gpa);
@@ -316,6 +321,12 @@ pub fn destroy(s: *Surface) void {
 
 fn dropField(f: Field) void {
     _ = by_control.remove(key(f.control.value));
+    // What's kept of it by address: a control made later may land there.
+    if (press_enter_field == f.control.value) press_enter_field = null;
+    if (pending_control == f.control.value) {
+        pending_control = null;
+        pending_type = null;
+    }
     if (f.control.getClass()) |cls| if (cls.respondsToSelector(apple.objc.sel("setDelegate:"))) f.control.msgSend(void, "setDelegate:", .{apple.nil});
     f.holder.msgSend(void, "removeFromSuperview", .{});
     // Released later, not now: the page may drop a field from inside that
@@ -582,19 +593,22 @@ fn onTimer(p: ?*anyopaque) callconv(.c) void {
 
 fn focus(ctx: *anyopaque, n: *Node) void {
     const s = surfaceOf(ctx);
+    const token = s.token;
     // Not a native field (a button the page's Tab reached): a field that
     // had the keyboard gives it up.
     const f = s.fields.get(n.id) orelse {
         if (focusedField(s) != 0) {
             _ = s.view.msgSend(BOOL, "endEditing:", .{apple.boolean(true)});
+            if (surfaces.get(token) == null) return;
             _ = s.view.msgSend(BOOL, "becomeFirstResponder", .{});
         }
         return;
     };
     // A control that can't take the keyboard (a select's button): the
     // field that had it gives it up.
-    if (!apple.isTrue(f.control.msgSend(BOOL, "becomeFirstResponder", .{})) and focusedField(s) != 0) {
+    if (!apple.isTrue(f.control.msgSend(BOOL, "becomeFirstResponder", .{})) and surfaces.get(token) != null and focusedField(s) != 0) {
         _ = s.view.msgSend(BOOL, "endEditing:", .{apple.boolean(true)});
+        if (surfaces.get(token) == null) return;
         _ = s.view.msgSend(BOOL, "becomeFirstResponder", .{});
     }
 }
@@ -603,6 +617,12 @@ fn removed(ctx: *anyopaque, n: *Node) void {
     const s = surfaceOf(ctx);
     draw.dropNative(n);
     if (s.fields.fetchRemove(n.id)) |kv| dropField(kv.value);
+    // Its accessibility element: an assistive app may still hold it (it
+    // then reads as gone) or be in one of its callbacks.
+    if (s.ax_elements.fetchRemove(n.id)) |kv| {
+        _ = ax_refs.remove(key(kv.value.value));
+        releaseLater(kv.value);
+    }
 }
 
 /// New props: a text node's CoreText objects are stale.
@@ -807,7 +827,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
     holder.msgSend(void, "setClipsToBounds:", .{apple.boolean(true)});
     holder.msgSend(void, "addSubview:", .{f});
     f.release(); // the holder keeps it
-    by_control.put(s.gpa, key(f.value), .{ .token = s.token, .node = n.id }) catch {};
+    by_control.put(std.heap.smp_allocator, key(f.value), .{ .token = s.token, .node = n.id }) catch {};
     s.view.msgSend(void, "addSubview:", .{holder});
     return .{ .holder = holder, .control = f, .slider = slider, .button = n.kind == .button };
 }
@@ -1093,18 +1113,26 @@ fn pressModsFor(k: Object, kind: []const u8) u32 {
 var press_enter_field: id = null;
 
 /// Presses whose key down the page prevented: their end isn't UIKit's
-/// either (it never saw them begin).
+/// either (it never saw them begin). Each held (+1), so a later press
+/// can't come at a freed one's address; when all are taken (ends that
+/// never came), the oldest goes.
 var prevented_presses: [8]id = .{null} ** 8;
+var prevented_next: usize = 0;
 
 fn notePrevented(presses: id) void {
     const all = (Object{ .value = presses }).msgSend(Object, "allObjects", .{});
     const count: usize = @intCast(@max(0, all.msgSend(isize, "count", .{})));
     for (0..count) |i| {
-        const p = all.msgSend(Object, "objectAtIndex:", .{i}).value;
-        for (&prevented_presses) |*slot| if (slot.* == null) {
-            slot.* = p;
-            break;
+        const p = all.msgSend(Object, "objectAtIndex:", .{i});
+        const slot = for (&prevented_presses) |*sl| {
+            if (sl.* == null) break sl;
+        } else blk: {
+            const sl = &prevented_presses[prevented_next];
+            prevented_next = (prevented_next + 1) % prevented_presses.len;
+            (Object{ .value = sl.* }).release();
+            break :blk sl;
         };
+        slot.* = p.retain().value;
     }
 }
 
@@ -1117,6 +1145,7 @@ fn wasPrevented(presses: id) bool {
         const p = all.msgSend(Object, "objectAtIndex:", .{i}).value;
         var found = false;
         for (&prevented_presses) |*slot| if (slot.* == p) {
+            (Object{ .value = slot.* }).release();
             slot.* = null;
             found = true;
         };
@@ -1346,15 +1375,47 @@ fn pressesEnded(self: id, _: SEL, presses: id, event: id) callconv(.c) void {
 
 /// A field took the keyboard (UIKit's editing is its focus) or gave it up:
 /// the page's "focus" and "blur" (:focus, :focus-visible, activeElement).
+/// Queued, as AppKit's: UIKit ends editing synchronously from inside
+/// layout (syncFields disabling the field) and host calls (focus), where
+/// the page's handlers must not run.
 fn fieldFocused(_: id, _: SEL, control: id) callconv(.c) void {
-    const o = ownerOf(control) orelse return;
-    _ = o.s.engine.event(o.n.id, "focus", "null");
+    focusChangedNear(control);
 }
 
 fn fieldBlurred(_: id, _: SEL, control: id) callconv(.c) void {
     if (press_enter_field == control) press_enter_field = null;
-    const o = ownerOf(control) orelse return;
-    _ = o.s.engine.event(o.n.id, "blur", "null");
+    focusChangedNear(control);
+}
+
+fn focusChangedNear(control: id) void {
+    const o = by_control.get(key(control)) orelse return;
+    const s = surfaces.get(o.token) orelse return;
+    queueFocusCheck(s);
+}
+
+fn queueFocusCheck(s: *Surface) void {
+    if (s.focus_check_queued) return;
+    const t = std.heap.smp_allocator.create(u64) catch return;
+    t.* = s.token;
+    s.focus_check_queued = true;
+    apple.afterMain(0, t, onFocusCheck);
+}
+
+fn onFocusCheck(p: ?*anyopaque) callconv(.c) void {
+    const t: *u64 = @ptrCast(@alignCast(p.?));
+    const token = t.*;
+    std.heap.smp_allocator.destroy(t);
+    const s = surfaces.get(token) orelse return;
+    s.focus_check_queued = false;
+    const nid = focusedField(s);
+    if (nid == s.focused) return;
+    const old = s.focused;
+    s.focused = nid;
+    if (old != 0) {
+        _ = s.engine.event(old, "blur", "null");
+        if (surfaces.get(token) == null) return; // the page closed its window
+    }
+    if (nid != 0) _ = s.engine.event(nid, "focus", "null");
 }
 
 fn ownerOf(control: id) ?struct { s: *Surface, n: *Node } {
@@ -1742,14 +1803,15 @@ fn onTap(self: id, _: SEL, recognizer: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const r: Object = .{ .value = recognizer };
     if (r.msgSend(isize, "state", .{}) != state_ended) return;
+    const token = s.token;
     // A tap on the page takes the keyboard from a field.
     _ = s.view.msgSend(BOOL, "endEditing:", .{apple.boolean(true)});
+    if (surfaces.get(token) == null) return;
     _ = s.view.msgSend(BOOL, "becomeFirstResponder", .{});
     const p = pointIn(s.view, r);
     // The finger's up before its click (as a browser), though the tap
     // recognizer fires before touchesEnded.
     if (s.touching) {
-        const token = s.token;
         if (s.move != null) flushMove(s);
         if (surfaces.get(token) == null) return;
         s.touching = false;

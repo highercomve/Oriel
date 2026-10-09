@@ -96,7 +96,9 @@ pub const Serializer = struct {
         return z.name_buf.items;
     }
 
-    fn node(z: *Serializer, idx: Index, raw_parent: bool) anyerror!void {
+    /// Writes a node's start: an element's start tag, a text's or a
+    /// comment's whole markup. True when its children and end tag follow.
+    fn open(z: *Serializer, idx: Index, raw_parent: bool) !bool {
         const s = z.store;
         const n = s.get(idx);
         switch (n.kind) {
@@ -120,30 +122,67 @@ pub const Serializer = struct {
                     try z.out.append(z.gpa, '"');
                 }
                 try z.out.append(z.gpa, '>');
-                if (isIn(&void_elements, tag)) return;
-                try z.children(idx, isIn(&raw_text, tag));
-                try z.out.appendSlice(z.gpa, "</");
-                try z.out.appendSlice(z.gpa, tag);
-                try z.out.append(z.gpa, '>');
+                return !isIn(&void_elements, tag);
             },
-            .document, .fragment => try z.children(idx, false),
+            .document, .fragment => return true,
             .free => {},
         }
+        return false;
     }
 
-    fn children(z: *Serializer, idx: Index, raw: bool) anyerror!void {
-        var c = z.store.get(idx).first;
-        while (c != none) : (c = z.store.get(c).next) try z.node(c, raw);
+    /// An element's end tag (others have none).
+    fn close(z: *Serializer, idx: Index) !void {
+        const n = z.store.get(idx);
+        if (n.kind != .element) return;
+        try z.out.appendSlice(z.gpa, "</");
+        try z.out.appendSlice(z.gpa, try z.name(n.name));
+        try z.out.append(z.gpa, '>');
+    }
+
+    /// Whether a text node's parent is a raw text element (script, style…).
+    fn rawParent(z: *Serializer, idx: Index) !bool {
+        const p = z.store.get(idx).parent;
+        if (p == none) return false;
+        const n = z.store.get(p);
+        return n.kind == .element and isIn(&raw_text, try z.name(n.name));
+    }
+
+    /// `root` (outer) or its children, in document order without recursion
+    /// (the page can make a tree of any depth).
+    fn walk(z: *Serializer, root: Index, outer: bool) !void {
+        const s = z.store;
+        var idx = if (outer) root else s.get(root).first;
+        if (idx == none) return;
+        while (true) {
+            // The outer node is written as if it had no parent.
+            const raw = s.get(idx).kind == .text and !(outer and idx == root) and try z.rawParent(idx);
+            if (try z.open(idx, raw)) {
+                const first = s.get(idx).first;
+                if (first != none) {
+                    idx = first;
+                    continue;
+                }
+                try z.close(idx);
+            }
+            // Done with idx: its next sibling, else the parents it ends.
+            while (true) {
+                if (outer and idx == root) return;
+                const next = s.get(idx).next;
+                if (next != none) {
+                    idx = next;
+                    break;
+                }
+                idx = s.get(idx).parent;
+                if (!outer and idx == root) return;
+                try z.close(idx);
+            }
+        }
     }
 
     /// The markup of a node (outer) or of its children (inner), in `out`.
     pub fn serialize(z: *Serializer, idx: Index, outer: bool) ![]const u8 {
         z.out.clearRetainingCapacity();
-        if (outer) try z.node(idx, false) else {
-            const n = z.store.get(idx);
-            const raw = n.kind == .element and isIn(&raw_text, try z.name(n.name));
-            try z.children(idx, raw);
-        }
+        try z.walk(idx, outer);
         return z.out.items;
     }
 };

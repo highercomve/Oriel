@@ -490,7 +490,7 @@ fn deriveNameFromUrl(arena: std.mem.Allocator, raw_url: []const u8) ![]const u8 
         return "web-app";
     }
     if (clean.items.len > init_cmd.max_name_len) {
-        return clean.items[0..init_cmd.max_name_len];
+        return try arena.dupe(u8, clean.items[0..init_cmd.max_name_len]);
     }
     return try arena.dupe(u8, clean.items);
 }

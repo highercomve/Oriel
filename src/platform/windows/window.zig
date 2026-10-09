@@ -70,11 +70,24 @@ pub const WindowSize = struct {
 
 /// Show the window: placed first when it has a `placement` and was hidden,
 /// and without taking focus when `focus_on_show` is false (overlays).
+/// Any thread: the two options are read under windows_mutex, since the window
+/// may close on the main thread meanwhile.
 pub fn showWindow(handle: WindowHandle) void {
-    const opts: ?App.WindowOptions = if (windowFromUserData(handle.hwnd)) |w| w.options else null;
+    var placement: ?App.Placement = null;
+    var focus = true;
+    {
+        const ptr = win32.GetWindowLongPtrW(handle.hwnd, win32.GWLP_USERDATA);
+        App.ensureWindowsMutex();
+        App.windows_mutex.lock();
+        defer App.windows_mutex.unlock();
+        if (ptr != 0) for (App.windows_list.items) |w| if (@intFromPtr(w) == @as(usize, @bitCast(ptr))) {
+            placement = w.options.placement;
+            focus = w.options.focus_on_show;
+            break;
+        };
+    }
     const was_visible = win32.IsWindowVisible(handle.hwnd) != .FALSE;
-    if (opts) |o| if (o.placement) |p| if (!was_visible) overlay.setWindowPlacement(handle, p);
-    const focus = if (opts) |o| o.focus_on_show else true;
+    if (placement) |p| if (!was_visible) overlay.setWindowPlacement(handle, p);
     _ = win32.ShowWindow(handle.hwnd, if (focus) win32.SW_SHOW else win32.SW_SHOWNOACTIVATE);
     if (focus) _ = win32.SetForegroundWindow(handle.hwnd);
 }
@@ -1204,7 +1217,10 @@ pub fn WindowCreator(
                 return err;
             }
 
-            // Pump modal messages until WebView2 environment and controller are initialized
+            // Pump modal messages until WebView2 environment and controller are initialized.
+            // This runs queued tasks and every window's messages re-entrantly
+            // (even from inside NewWindowRequested): callers into openWindow
+            // must copy what they need before calling, never hold it across.
             var msg: win32.MSG = undefined;
             var early_exit = false;
             while (!state.completed.load(.acquire)) {

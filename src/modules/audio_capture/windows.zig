@@ -179,6 +179,9 @@ pub fn parseMixFormat(bytes: []const u8) !MixFormat {
         else => return error.UnsupportedFormat,
     };
     if (channels == 0 or rate == 0 or block_align == 0) return error.UnsupportedFormat;
+    // `monoFrame` reads every channel's sample inside its frame.
+    const sample_bytes: u32 = if (sample == .i16) 2 else 4;
+    if (block_align < @as(u32, channels) * sample_bytes) return error.UnsupportedFormat;
     return .{ .sample = sample, .channels = channels, .rate = rate, .block_align = block_align };
 }
 
@@ -252,6 +255,10 @@ test parseMixFormat {
     std.mem.writeInt(u16, pcm[12..14], 2, .little);
     std.mem.writeInt(u16, pcm[14..16], 16, .little);
     try std.testing.expectEqual(SampleType.i16, (try parseMixFormat(&pcm)).sample);
+
+    // A frame too small for its channels' samples.
+    std.mem.writeInt(u16, pcm[2..4], 2, .little);
+    try std.testing.expectError(error.UnsupportedFormat, parseMixFormat(&pcm));
 
     std.mem.writeInt(u16, pcm[14..16], 24, .little);
     try std.testing.expectError(error.UnsupportedFormat, parseMixFormat(&pcm));

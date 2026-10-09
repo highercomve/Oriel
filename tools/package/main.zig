@@ -628,7 +628,10 @@ fn writeDestinationIcns(gpa: std.mem.Allocator, io: Io, dest_dir: []const u8, sr
             img.deinit(gpa);
             continue;
         }
-        try images.append(gpa, img);
+        images.append(gpa, img) catch |err| {
+            img.deinit(gpa);
+            return err;
+        };
         try rgbas.append(gpa, .{ .size = size, .rgba = std.mem.sliceAsBytes(img.pixels.rgba32) });
     }
     const bytes = try icns.writeIcns(gpa, entries.items, rgbas.items);

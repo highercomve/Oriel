@@ -79,7 +79,7 @@ pub fn fetch(
         const want = task.msgSend(i64, "countOfBytesExpectedToReceive", .{});
         if (got != last_mb) {
             last_mb = got;
-            progress(ctx, @intCast(got), if (want > 0) @intCast(want >> 20) else expected_mb);
+            progress(ctx, std.math.lossyCast(u32, got), if (want > 0) std.math.lossyCast(u32, want >> 20) else expected_mb);
         }
     }
     if (done.error_code != 0) {

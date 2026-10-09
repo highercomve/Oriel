@@ -98,6 +98,44 @@ static void load(void) {
     *(void **)&fwd_clSetKernelArg = dlsym(m, "clSetKernelArg");
     *(void **)&fwd_clWaitForEvents = dlsym(m, "clWaitForEvents");
     if (!fwd_clBuildProgram || !fwd_clCreateBuffer || !fwd_clCreateBufferWithProperties || !fwd_clCreateCommandQueue || !fwd_clCreateContext || !fwd_clCreateImage || !fwd_clCreateKernel || !fwd_clCreateProgramWithBinary || !fwd_clCreateProgramWithSource || !fwd_clCreateSubBuffer || !fwd_clEnqueueBarrierWithWaitList || !fwd_clEnqueueCopyBuffer || !fwd_clEnqueueFillBuffer || !fwd_clEnqueueMapBuffer || !fwd_clEnqueueMarkerWithWaitList || !fwd_clEnqueueNDRangeKernel || !fwd_clEnqueueReadBuffer || !fwd_clEnqueueUnmapMemObject || !fwd_clEnqueueWriteBuffer || !fwd_clFinish || !fwd_clFlush || !fwd_clGetDeviceIDs || !fwd_clGetDeviceInfo || !fwd_clGetEventProfilingInfo || !fwd_clGetKernelInfo || !fwd_clGetKernelSubGroupInfo || !fwd_clGetKernelWorkGroupInfo || !fwd_clGetPlatformIDs || !fwd_clGetPlatformInfo || !fwd_clGetProgramBuildInfo || !fwd_clGetProgramInfo || !fwd_clReleaseEvent || !fwd_clReleaseKernel || !fwd_clReleaseMemObject || !fwd_clReleaseProgram || !fwd_clSetKernelArg || !fwd_clWaitForEvents) {
+        // No pointer may outlive the library.
+        fwd_clBuildProgram = NULL;
+        fwd_clCreateBuffer = NULL;
+        fwd_clCreateBufferWithProperties = NULL;
+        fwd_clCreateCommandQueue = NULL;
+        fwd_clCreateContext = NULL;
+        fwd_clCreateImage = NULL;
+        fwd_clCreateKernel = NULL;
+        fwd_clCreateProgramWithBinary = NULL;
+        fwd_clCreateProgramWithSource = NULL;
+        fwd_clCreateSubBuffer = NULL;
+        fwd_clEnqueueBarrierWithWaitList = NULL;
+        fwd_clEnqueueCopyBuffer = NULL;
+        fwd_clEnqueueFillBuffer = NULL;
+        fwd_clEnqueueMapBuffer = NULL;
+        fwd_clEnqueueMarkerWithWaitList = NULL;
+        fwd_clEnqueueNDRangeKernel = NULL;
+        fwd_clEnqueueReadBuffer = NULL;
+        fwd_clEnqueueUnmapMemObject = NULL;
+        fwd_clEnqueueWriteBuffer = NULL;
+        fwd_clFinish = NULL;
+        fwd_clFlush = NULL;
+        fwd_clGetDeviceIDs = NULL;
+        fwd_clGetDeviceInfo = NULL;
+        fwd_clGetEventProfilingInfo = NULL;
+        fwd_clGetKernelInfo = NULL;
+        fwd_clGetKernelSubGroupInfo = NULL;
+        fwd_clGetKernelWorkGroupInfo = NULL;
+        fwd_clGetPlatformIDs = NULL;
+        fwd_clGetPlatformInfo = NULL;
+        fwd_clGetProgramBuildInfo = NULL;
+        fwd_clGetProgramInfo = NULL;
+        fwd_clReleaseEvent = NULL;
+        fwd_clReleaseKernel = NULL;
+        fwd_clReleaseMemObject = NULL;
+        fwd_clReleaseProgram = NULL;
+        fwd_clSetKernelArg = NULL;
+        fwd_clWaitForEvents = NULL;
         dlclose(m);
         return;
     }

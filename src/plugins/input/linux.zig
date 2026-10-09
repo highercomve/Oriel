@@ -102,14 +102,14 @@ pub const EVDEV = struct {
 };
 
 /// The default XKB keymap as text, ready to hand to the virtual keyboard.
-pub fn defaultKeymap(gpa: std.mem.Allocator) ![]u8 {
+pub fn defaultKeymap(gpa: std.mem.Allocator) ![:0]u8 {
     const ctx = xkb.xkb_context_new(xkb.XKB_CONTEXT_NO_FLAGS) orelse return error.XkbContext;
     defer xkb.xkb_context_unref(ctx);
     const keymap = xkb.xkb_keymap_new_from_names(ctx, null, xkb.XKB_KEYMAP_COMPILE_NO_FLAGS) orelse return error.XkbKeymap;
     defer xkb.xkb_keymap_unref(keymap);
     const text = xkb.xkb_keymap_get_as_string(keymap, xkb.XKB_KEYMAP_FORMAT_TEXT_V1) orelse return error.XkbKeymapString;
     defer std.c.free(text);
-    return gpa.dupe(u8, std.mem.span(text));
+    return gpa.dupeZ(u8, std.mem.span(text));
 }
 
 /// Whether the X server (or XWayland) supports XTest.
@@ -201,10 +201,20 @@ pub const WaylandInput = struct {
 
         const fd = try std.posix.memfd_create("oriel-keymap", 0);
         defer _ = std.c.close(fd);
-        const written = std.c.write(fd, keymap_str.ptr, keymap_str.len);
-        if (written < 0) return error.KeymapWriteFailed;
+        // With the NUL: compositors map it and parse it as a C string.
+        const bytes = keymap_str[0 .. keymap_str.len + 1];
+        var off: usize = 0;
+        while (off < bytes.len) {
+            const written = std.c.write(fd, bytes[off..].ptr, bytes.len - off);
+            if (written < 0) {
+                if (std.posix.errno(written) == .INTR) continue;
+                return error.KeymapWriteFailed;
+            }
+            if (written == 0) return error.KeymapWriteFailed;
+            off += @intCast(written);
+        }
 
-        self.vk.keymap(.xkb_v1, fd, @intCast(keymap_str.len));
+        self.vk.keymap(.xkb_v1, fd, @intCast(bytes.len));
         if (self.globals.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
     }
 

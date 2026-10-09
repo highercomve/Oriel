@@ -261,7 +261,8 @@ pub const Store = struct {
     }
 
     pub fn get(s: *Store, idx: Index) *Node {
-        std.debug.assert(idx != none and idx < s.used);
+        // Checked in every build: past `used` would read outside the slabs.
+        if (idx == none or idx >= s.used) @panic("dom: node index out of range");
         return &s.slabs.items[idx >> slab_bits][idx & (slab_len - 1)];
     }
 
@@ -436,6 +437,36 @@ pub const Store = struct {
     /// share the original's string values and atoms (references taken,
     /// nothing copied). The copy is detached and has no wrapper.
     pub fn clone(s: *Store, idx: Index, deep: bool) Error!Index {
+        const copy = try s.cloneOne(idx);
+        if (!deep) return copy;
+        errdefer s.dropIfUnused(copy);
+        // The subtree in document order, without recursion (a page can make
+        // it any depth): each node's copy appended to its parent's copy.
+        var c = s.get(idx).first;
+        var parent = copy;
+        while (c != none) {
+            const cc = try s.cloneOne(c);
+            s.appendChild(parent, cc) catch |e| {
+                s.dropIfUnused(cc);
+                return e;
+            };
+            if (s.get(c).first != none) {
+                c = s.get(c).first;
+                parent = cc;
+                continue;
+            }
+            while (c != idx and s.get(c).next == none) {
+                c = s.get(c).parent;
+                parent = s.get(parent).parent;
+            }
+            if (c == idx) break;
+            c = s.get(c).next;
+        }
+        return copy;
+    }
+
+    /// A copy of one node (no children).
+    fn cloneOne(s: *Store, idx: Index) Error!Index {
         const src = s.get(idx);
         const kind = if (src.kind == .document) Kind.fragment else src.kind;
         const copy = try s.alloc(kind, src.name);
@@ -469,16 +500,6 @@ pub const Store = struct {
             s.js.dupAtom(s.js.ctx, c);
             if (d.class_len < inline_classes) d.classes[d.class_len] = c else d.more_classes[d.class_len - inline_classes] = c;
             d.class_len += 1;
-        }
-        if (deep) {
-            var c = s.get(idx).first;
-            while (c != none) : (c = s.get(c).next) {
-                const cc = try s.clone(c, true);
-                s.appendChild(copy, cc) catch |e| {
-                    s.dropIfUnused(cc);
-                    return e;
-                };
-            }
         }
         return copy;
     }
@@ -1013,8 +1034,10 @@ pub const Store = struct {
         s.notify(o, kind, target, node, name);
     }
 
-    /// Calls the observer. The bindings' hook makes wrappers for the nodes
-    /// and drops them before returning; a wrapper's finalizer frees a
+    /// Calls the observer. The bindings' hook only records the mutation
+    /// (the page's JS sees it once the binding is done with the store), but
+    /// makes wrappers for the nodes: an allocation, which may run the cycle
+    /// collector, whose finalizers drop other wrappers; one frees a
     /// detached subtree left without wrappers, which may be one this
     /// operation still uses (a removed node it's about to free itself, a
     /// moved one, a parser's fragment). The detached trees are pinned for

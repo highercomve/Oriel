@@ -31,8 +31,9 @@ const android_paths = if (is_android) @import("../platform/android/paths.zig") e
 const glib = if (is_linux) @import("glib") else struct {};
 const win32 = if (is_windows) @import("../platform/windows/win32.zig") else struct {};
 
-var log_mutex: if (is_linux) glib.Mutex else void = if (is_linux) undefined else {};
-var log_mutex_initialized = false;
+/// Zeroed: a static GMutex needs no g_mutex_init, so threads that log before
+/// (or without) `init` can't race to initialize it.
+var log_mutex: if (is_linux) glib.Mutex else void = if (is_linux) std.mem.zeroes(glib.Mutex) else {};
 var log_srw: if (is_windows) win32.SRWLOCK else void = if (is_windows) .{} else {};
 var log_pthread: if (is_pthread) std.c.pthread_mutex_t else void = if (is_pthread) .{} else {};
 var log_fd: c_int = -1;
@@ -40,18 +41,8 @@ var log_handle: ?win32.HANDLE = null;
 var log_path_buf: [1024]u8 = undefined;
 var log_path_len: usize = 0;
 
-fn ensureMutex() void {
-    if (is_linux) {
-        if (!log_mutex_initialized) {
-            log_mutex.init();
-            log_mutex_initialized = true;
-        }
-    }
-}
-
 fn lock() void {
     if (is_linux) {
-        ensureMutex();
         log_mutex.lock();
     } else if (is_windows) {
         win32.AcquireSRWLockExclusive(&log_srw);
@@ -68,6 +59,11 @@ fn unlock() void {
     } else if (is_pthread) {
         _ = std.c.pthread_mutex_unlock(&log_pthread);
     }
+}
+
+test "the log lock works before init" {
+    lock();
+    unlock();
 }
 
 /// Initialize logging for `app_id`.
@@ -200,7 +196,6 @@ fn initInDir(dir: [:0]const u8) void {
 /// Close the log file.
 pub fn deinit() void {
     if (is_posix) {
-        if (is_linux and !log_mutex_initialized) return;
         lock();
         defer unlock();
 
