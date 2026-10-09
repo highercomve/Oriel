@@ -78,11 +78,36 @@ pub const cflags = [_][]const u8{
 };
 
 /// The generated `config.h` (espeak-ng's CMake writes it from configure)
-/// and upstream's `endian.h` shim (macOS has no system endian.h; it handles
-/// Apple byte order and forwards to the native header on Linux).
+/// and an `endian.h`: upstream's shim (forwards to the native header on
+/// Linux, handles Windows), except on Apple targets, where it would
+/// `#include_next` an SDK <endian.h> if one exists (the iOS SDK's lacks
+/// le16toh and friends), so the macros come from compiler builtins.
 pub fn configDir(b: *std.Build, dep: *std.Build.Dependency) std.Build.LazyPath {
     const files = b.addWriteFiles();
-    _ = files.addCopyFile(dep.path("src/include/compat/endian.h"), "endian.h");
+    _ = files.addCopyFile(dep.path("src/include/compat/endian.h"), "endian_compat.h");
+    _ = files.add("endian.h",
+        \\#pragma once
+        \\#ifndef __APPLE__
+        \\#include "endian_compat.h"
+        \\#else
+        \\#if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+        \\#error big-endian Apple targets are not supported
+        \\#endif
+        \\#undef le16toh
+        \\#undef le32toh
+        \\#undef le64toh
+        \\#undef be16toh
+        \\#undef be32toh
+        \\#undef be64toh
+        \\#define le16toh(x) ((uint16_t)(x))
+        \\#define le32toh(x) ((uint32_t)(x))
+        \\#define le64toh(x) ((uint64_t)(x))
+        \\#define be16toh(x) __builtin_bswap16(x)
+        \\#define be32toh(x) __builtin_bswap32(x)
+        \\#define be64toh(x) __builtin_bswap64(x)
+        \\#endif
+        \\
+    );
     _ = files.add("config.h",
         \\#pragma once
         \\#define LIBESPEAK_NG_EXPORT 1

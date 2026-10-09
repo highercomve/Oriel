@@ -463,8 +463,11 @@ pub fn addGgml(
         // Compile the device API against the same vendored header used by
         // audio_play's cImport. Works with either ggml source tree, including
         // whisper-only builds. llama's mtmd copy has file-local functions.
+        // On iOS the implementation includes <AVFoundation/AVFoundation.h>
+        // (for AVAudioSession), so it is compiled as Objective-C there.
+        const ios = oriel.resolved_target.?.result.os.tag == .ios;
         const impl = b.addWriteFiles();
-        const impl_file = impl.add("miniaudio_playback.c",
+        const impl_file = impl.add(if (ios) "miniaudio_playback.m" else "miniaudio_playback.c",
             \\#define MINIAUDIO_IMPLEMENTATION
             \\#define ma_atomic_global_lock ma_atomic_global_lock_playback
             \\#include "miniaudio.h"

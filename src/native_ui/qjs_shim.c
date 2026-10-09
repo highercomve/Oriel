@@ -37,6 +37,7 @@ extern void oriel_nui_ops(void *opaque, const char *json, size_t len);
 extern void oriel_nui_paint(void *opaque, const double *nums, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
 extern int oriel_nui_vsync(void *opaque);
+extern void oriel_nui_reload(void *opaque);
 extern void oriel_nui_warm_fonts(void *opaque, const double *v, size_t count);
 extern int oriel_nui_font_metrics(void *opaque, double size, int mono, const char *family, size_t family_len, double *out4);
 extern int oriel_nui_run_rects(void *opaque, double id, double first, double last, double *out, size_t max);
@@ -397,6 +398,14 @@ static JSValue h_run_rects(JSContext *ctx, JSValueConst this_val, int argc, JSVa
 static JSValue h_vsync(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
     return JS_NewBool(ctx, oriel_nui_vsync(opaque_of(ctx)));
+}
+
+// host.reload(): location.reload(): the page starts again, on a turn of
+// its own.
+static JSValue h_reload(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    oriel_nui_reload(opaque_of(ctx));
+    return JS_UNDEFINED;
 }
 
 // host.now(): a monotonic clock in ms, sub-millisecond (performance.now).
@@ -932,6 +941,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "frame", h_frame, 1);
     set_fn(ctx, host, "now", h_now, 0);
     set_fn(ctx, host, "vsync", h_vsync, 0);
+    set_fn(ctx, host, "reload", h_reload, 0);
     set_fn(ctx, host, "warmFonts", h_warm_fonts, 1);
     set_fn(ctx, host, "fontMetrics", h_font_metrics, 3);
     set_fn(ctx, host, "runRects", h_run_rects, 3);

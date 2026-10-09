@@ -9182,7 +9182,9 @@ ${a.stack || ""}`;
     assign(v) {
       this.href = v;
     },
+    // The page starts again in this window (a new runtime and DOM).
     reload() {
+      host.reload?.();
     },
     toString() {
       return this.href;

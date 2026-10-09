@@ -166,6 +166,71 @@ test "the app's CSP: eval and new Function refused without 'unsafe-eval', the ho
     try std.testing.expect(try underCsp(null, allowed));
 }
 
+test "location.reload starts the page again on its own turn; the old page's timers stay out" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    if (comptime !(@import("builtin").os.tag == .linux or @import("builtin").os.tag == .windows)) return error.SkipZigTest;
+    const Stub = struct {
+        var timers: std.ArrayList(u32) = .empty;
+        var removed_count: usize = 0;
+        fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 0, 0 };
+        }
+        fn none(_: *anyopaque) void {}
+        fn removed(_: *anyopaque, _: *Node) void {
+            removed_count += 1;
+        }
+        fn timer(_: *anyopaque, _: *Engine, id: u32, _: u32) void {
+            timers.append(std.testing.allocator, id) catch {};
+        }
+        fn invoke(_: *anyopaque, _: *Engine, _: u32, _: []const u8, _: []const u8) void {}
+        fn focus(_: *anyopaque, _: *Node) void {}
+    };
+    defer Stub.timers.deinit(std.testing.allocator);
+    var ctx: u8 = 0;
+    const e = try Engine.create(std.testing.allocator, .{
+        .ctx = &ctx,
+        .measure = Stub.measure,
+        .laid_out = Stub.none,
+        .removed = Stub.removed,
+        .add_timer = Stub.timer,
+        .invoke = Stub.invoke,
+        .focus = Stub.focus,
+    }, &.{}, "{}", "main", "app://app/index.html", 400, 300);
+    defer e.destroy();
+    e.boot(false, false);
+
+    // The old page: state, nodes, and a timer still pending.
+    Stub.timers.clearRetainingCapacity();
+    try std.testing.expect(e.call("globalThis.mark = 1; for (let i = 0; i < 5; i++) document.body.append(document.createElement('div')); setTimeout(() => { globalThis.fired = 1; }, 10); true"));
+    try std.testing.expect(Stub.timers.items.len >= 1);
+    const old_timer = Stub.timers.items[Stub.timers.items.len - 1];
+    const old_serial = e.serial;
+
+    // Asked from inside the page: nothing happens until its own turn.
+    Stub.timers.clearRetainingCapacity();
+    _ = e.call("location.reload()");
+    try std.testing.expect(e.call("globalThis.mark === 1"));
+    try std.testing.expectEqual(Engine.reload_timer_id, Stub.timers.items[Stub.timers.items.len - 1]);
+
+    Stub.removed_count = 0;
+    e.timerFired(Engine.reload_timer_id);
+    try std.testing.expect(e.serial != old_serial);
+    try std.testing.expect(Stub.removed_count > 0); // the old views went
+    try std.testing.expect(e.call("typeof globalThis.mark === 'undefined'"));
+    try std.testing.expect(e.call("document.body.children.length === 0"));
+
+    // The old page's timer fires after the reload: not the new page's.
+    e.timerFired(old_timer);
+    try std.testing.expect(e.call("typeof globalThis.fired === 'undefined'"));
+    // The new page's own timers still work.
+    Stub.timers.clearRetainingCapacity();
+    try std.testing.expect(e.call("setTimeout(() => { globalThis.fired2 = 1; }, 10); true"));
+    const new_timer = Stub.timers.items[Stub.timers.items.len - 1];
+    try std.testing.expect(new_timer > old_timer);
+    e.timerFired(new_timer);
+    try std.testing.expect(e.call("globalThis.fired2 === 1"));
+}
+
 test "drops: host.fileRead is queued for the engine's next turn, drags answer a mask" {
     if (!@import("build_options").native_ui) return error.SkipZigTest;
     if (comptime !(@import("builtin").os.tag == .linux or @import("builtin").os.tag == .windows)) return error.SkipZigTest;
@@ -458,6 +523,19 @@ pub const Engine = struct {
     /// whether that turn is scheduled.
     file_reads: std.ArrayList(FileRead) = .empty,
     file_task_pending: bool = false,
+    /// What the page was started with, for location.reload() (owned).
+    start_platform: [:0]const u8 = "",
+    start_label: [:0]const u8 = "",
+    start_url: [:0]const u8 = "",
+    coarse: bool = false,
+    /// location.reload() asked for a new page: it starts on its own turn
+    /// (reload_timer_id), never inside the call that asked.
+    reload_pending: bool = false,
+    /// The page's timer ids reach the backend offset by this: a reload
+    /// moves it past every id the old page used, so an old timer that
+    /// fires afterwards is told apart from the new page's.
+    timer_base: u32 = 0,
+    timer_next: u32 = 1,
 
     /// A host.fileRead: `len` bytes of `handle` from `offset`. Null
     /// `offset` or `len`: the page passed something that isn't an index.
@@ -466,6 +544,8 @@ pub const Engine = struct {
     /// The timer id of the engine's own turn (runFileReads): the page's
     /// timers count from 1.
     pub const task_timer_id: u32 = 0;
+    /// The timer id of a reload's turn (reloadNow).
+    pub const reload_timer_id: u32 = std.math.maxInt(u32);
 
     /// Drag effects (the "drag" event's masks), as Win32's DROPEFFECT_*.
     pub const drag_copy: u8 = 1;
@@ -493,6 +573,30 @@ pub const Engine = struct {
         // runtime already made) and the QuickJS runtime go too, as in destroy.
         errdefer e.tree.deinit();
         e.serial = @as(u64, next_serial.fetchAdd(1, .monotonic)) + 1;
+        e.hookTree(width, height);
+        e.start_platform = try gpa.dupeZ(u8, platform_json);
+        errdefer gpa.free(e.start_platform);
+        e.start_label = try gpa.dupeZ(u8, label);
+        errdefer gpa.free(e.start_label);
+        e.start_url = try gpa.dupeZ(u8, url);
+        errdefer gpa.free(e.start_url);
+        // The app's CSP: eval and new Function refused, as its WebView would.
+        const csp = @import("../core/App.zig").current_security.csp;
+        var refusal_buf: [1024]u8 = undefined;
+        if (evalRefusal(&refusal_buf, csp)) |r| e.csp_eval = try gpa.dupeZ(u8, r);
+        errdefer if (e.csp_eval) |r| gpa.free(r);
+        var inline_buf: [1024]u8 = undefined;
+        if (inlineRefusal(&inline_buf, csp)) |r| e.csp_handlers = try gpa.dupeZ(u8, r);
+        errdefer if (e.csp_handlers) |r| gpa.free(r);
+        e.js = try e.newRuntime();
+        errdefer oqjs_free(e.js);
+        try live.put(std.heap.smp_allocator, e.serial, e);
+        return e;
+    }
+
+    /// The tree's size and the backend's hooks (create, and a reload's new tree).
+    fn hookTree(e: *Engine, width: f32, height: f32) void {
+        const backend = e.backend;
         e.tree.width = width;
         e.tree.height = height;
         e.tree.on_remove = backend.removed;
@@ -504,30 +608,65 @@ pub const Engine = struct {
         e.tree.on_create = backend.leaf;
         e.tree.on_paint = backend.paint;
         e.tree.on_canvas = backend.canvas;
-        // The app's CSP: eval and new Function refused, as its WebView would.
-        const csp = @import("../core/App.zig").current_security.csp;
-        var refusal_buf: [1024]u8 = undefined;
-        if (evalRefusal(&refusal_buf, csp)) |r| e.csp_eval = try gpa.dupeZ(u8, r);
-        errdefer if (e.csp_eval) |r| gpa.free(r);
-        var inline_buf: [1024]u8 = undefined;
-        if (inlineRefusal(&inline_buf, csp)) |r| e.csp_handlers = try gpa.dupeZ(u8, r);
-        errdefer if (e.csp_handlers) |r| gpa.free(r);
-        e.js = oqjs_new(e, platform_json.ptr, label.ptr, url.ptr, @intFromBool(e.csp_eval != null)) orelse return error.QuickJsInitFailed;
-        errdefer oqjs_free(e.js);
+    }
+
+    /// A QuickJS runtime with Oriel's runtime loaded, for this window.
+    fn newRuntime(e: *Engine) !*anyopaque {
+        const js = oqjs_new(e, e.start_platform.ptr, e.start_label.ptr, e.start_url.ptr, @intFromBool(e.csp_eval != null)) orelse return error.QuickJsInitFailed;
+        errdefer oqjs_free(js);
         // Transform/opacity-only changes as "x" ops: unless the backend
         // mirrors props (mirrors_props) without a paint hook (it would miss them).
-        if (!backend.mirrors_props or backend.paint != null) {
+        if (!e.backend.mirrors_props or e.backend.paint != null) {
             const flag = "__host.paintOps = true";
-            _ = oqjs_eval(e.js, flag, flag.len, "<native>");
+            _ = oqjs_eval(js, flag, flag.len, "<native>");
         }
         // Canvas programs as numbers (host.canvas), likewise.
-        if (!backend.mirrors_props or backend.canvas != null) {
+        if (!e.backend.mirrors_props or e.backend.canvas != null) {
             const flag = "__host.canvasOps = true";
-            _ = oqjs_eval(e.js, flag, flag.len, "<native>");
+            _ = oqjs_eval(js, flag, flag.len, "<native>");
         }
-        if (oqjs_eval_bytecode(e.js, runtime_bytecode.ptr, runtime_bytecode.len) < 0) return error.RuntimeFailed;
-        try live.put(std.heap.smp_allocator, e.serial, e);
-        return e;
+        if (oqjs_eval_bytecode(js, runtime_bytecode.ptr, runtime_bytecode.len) < 0) return error.RuntimeFailed;
+        return js;
+    }
+
+    /// location.reload(): the page starts again in this window, from a turn
+    /// of its own. The old page's runtime, nodes (the backend drops their
+    /// views through `removed`), dropped files and frame hooks go; the
+    /// engine takes a new serial, so answers to the old page's calls are
+    /// dropped, and old timers are told apart by `timer_base`.
+    fn reloadNow(e: *Engine) void {
+        if (e.in_call > 0) {
+            e.backend.add_timer(e.backend.ctx, e, reload_timer_id, 0);
+            return;
+        }
+        e.reload_pending = false;
+        // The new runtime first: if it can't start, the old page stays.
+        const js = e.newRuntime() catch |err| {
+            log.err("native ui: reload failed ({s}); the page stays", .{@errorName(err)});
+            return;
+        };
+        _ = live.remove(e.serial);
+        oqjs_free(e.js);
+        e.js = js;
+        e.frame_hooks.clearRetainingCapacity();
+        e.js_frame_wanted = false;
+        e.frame_pending = false;
+        e.relaid = false;
+        e.booted = false;
+        e.drops.deinit();
+        e.drops = .init(e.gpa);
+        e.file_reads.clearRetainingCapacity();
+        e.file_task_pending = false;
+        const width = e.tree.width;
+        const height = e.tree.height;
+        e.tree.deinit();
+        e.tree = Tree.init(e.gpa, e.backend.ctx, e.backend.measure);
+        e.hookTree(width, height);
+        e.serial = @as(u64, next_serial.fetchAdd(1, .monotonic)) + 1;
+        e.timer_base = e.timer_next;
+        live.put(std.heap.smp_allocator, e.serial, e) catch {};
+        log.info("native ui: reloading the page", .{});
+        e.boot(e.dark orelse false, e.coarse);
     }
 
     /// The engine with this serial, if its window is still open (UI
@@ -549,12 +688,16 @@ pub const Engine = struct {
         e.script_buf.deinit(e.gpa);
         if (e.csp_eval) |r| e.gpa.free(r);
         if (e.csp_handlers) |r| e.gpa.free(r);
+        e.gpa.free(e.start_platform);
+        e.gpa.free(e.start_label);
+        e.gpa.free(e.start_url);
         e.gpa.destroy(e);
     }
 
     /// Load the page: stylesheets, scripts, the first frame.
     pub fn boot(e: *Engine, dark: bool, coarse: bool) void {
         e.dark = dark;
+        e.coarse = coarse;
         _ = e.callf("__oriel.boot({d},{d},{},{})", .{ e.tree.width, e.tree.height, dark, coarse });
         e.booted = true;
         log.info("native ui: page booted, {d} nodes, JS heap {d} KB", .{ e.tree.nodes.count(), oqjs_memory(e.js) / 1024 });
@@ -627,7 +770,10 @@ pub const Engine = struct {
 
     pub fn timerFired(e: *Engine, id: u32) void {
         if (id == task_timer_id) return e.runFileReads();
-        _ = e.callNumber("timer", @floatFromInt(id));
+        if (id == reload_timer_id) return e.reloadNow();
+        // Set by a page this window had before a reload: not this one's.
+        if (id < e.timer_base) return;
+        _ = e.callNumber("timer", @floatFromInt(id - e.timer_base));
     }
 
     /// The display refreshes (`Backend.request_display_frame`): the page's
@@ -992,7 +1138,20 @@ export fn oriel_nui_invoke(p: *anyopaque, call_id: u32, cmd: [*]const u8, cmd_le
 
 export fn oriel_nui_timer(p: *anyopaque, id: u32, ms: f64) void {
     const e = engineOf(p);
-    e.backend.add_timer(e.backend.ctx, e, id, @intFromFloat(@max(0, @min(ms, 1e9))));
+    // Past the ids every earlier page used (timer_base), clear of the
+    // engine's own (task_timer_id, reload_timer_id).
+    const backend_id = std.math.add(u32, e.timer_base, id) catch return;
+    if (backend_id == Engine.reload_timer_id) return;
+    if (backend_id >= e.timer_next) e.timer_next = backend_id + 1;
+    e.backend.add_timer(e.backend.ctx, e, backend_id, @intFromFloat(@max(0, @min(ms, 1e9))));
+}
+
+/// host.reload(): location.reload(), on a turn of its own (reloadNow).
+export fn oriel_nui_reload(p: *anyopaque) void {
+    const e = engineOf(p);
+    if (e.reload_pending) return;
+    e.reload_pending = true;
+    e.backend.add_timer(e.backend.ctx, e, Engine.reload_timer_id, 0);
 }
 
 export fn oriel_nui_ops(p: *anyopaque, json: [*]const u8, len: usize) void {
