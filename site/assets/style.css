@@ -202,7 +202,7 @@ code, pre { font-family: var(--mono); }
 .shots figcaption { margin-top: 10px; font-size: 14px; color: var(--muted); }
 .shots figcaption strong { color: var(--text); }
 /* Phone screenshots: whole, tall, five across on wide screens. */
-.shots.phones { grid-template-columns: repeat(5, 1fr); align-items: start; }
+.shots.phones { grid-template-columns: repeat(3, 1fr); align-items: start; }
 .shots.phones img { aspect-ratio: 540 / 1101; height: auto; object-fit: contain; object-position: top; border-radius: 22px;
   background: #0e0f14; /* the app's own background, below a shorter shot */ }
 

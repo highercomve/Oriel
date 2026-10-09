@@ -170,7 +170,7 @@
 		<section class="section">
 			<div class="section-head">
 				<h2>The showcase</h2>
-				<p><a href="https://github.com/highercomve/Oriel/tree/main/examples/showcase">examples/showcase</a>: every Oriel feature in one app, from one codebase, for Linux, Windows, macOS, Android and iOS. Below, on a Pixel phone.</p>
+				<p><a href="https://github.com/highercomve/Oriel/tree/main/examples/showcase">examples/showcase</a>: every Oriel feature in one app, from one codebase, for Linux, Windows, macOS, Android and iOS. Below, on Android: Dictate and Chat on a Pixel, the rest on a Poco X3.</p>
 			</div>
 			<div class="shots phones">
 				<figure>
@@ -182,8 +182,12 @@
 					<figcaption><strong>Chat</strong> · Llama 3.2 1B on Vulkan on a Pixel: streamed tokens, per-device model and CPU/GPU choice</figcaption>
 				</figure>
 				<figure>
-					<img src="$site.asset('screenshots/showcase-notes.png').link()" alt="The showcase's Notes tab: notes in SQLite, added by a deep link" loading="lazy">
-					<figcaption><strong>Notes</strong> · SQLite, and deep links that add a note from anywhere</figcaption>
+					<img src="$site.asset('screenshots/showcase-speak.png').link()" alt="The showcase's Speak tab on a Poco X3: Kokoro 82M reading aloud on the CPU, with first-audio time, real-time factor and gaps" loading="lazy">
+					<figcaption><strong>Speak</strong> · Kokoro 82M offline, streamed in chunks; on this phone's CPU, first audio in about 4 s</figcaption>
+				</figure>
+				<figure>
+					<img src="$site.asset('screenshots/showcase-notes.png').link()" alt="The showcase's Notes tab: notes in SQLite, added by a deep link, each read aloud on a tap" loading="lazy">
+					<figcaption><strong>Notes</strong> · SQLite, deep links that add a note from anywhere, and read aloud</figcaption>
 				</figure>
 				<figure>
 					<img src="$site.asset('screenshots/showcase-system.png').link()" alt="The showcase's System tab: dictate anywhere, clipboard, notifications and keyboard shortcuts" loading="lazy">
