@@ -53,6 +53,27 @@ aren't updated or drawn.
 - **Responsive**: a fullscreen window gives the cores four columns and the
   table the rest of the height; a narrow one stacks the panels.
 
+### Platforms
+
+The page is the same everywhere; a sampler per OS fills it
+(`sampler.zig` picks one), and the page hides what an OS doesn't report:
+
+| | Linux | Windows | macOS |
+|---|---|---|---|
+| Sampler | `sampler_linux.zig`: /proc, /sys | `sampler_windows.zig`: NT and Win32 calls (no WMI) | `sampler_macos.zig`: Mach, libproc, sysctl |
+| CPU per core, frequency | ✓ ✓ | ✓ ✓ | ✓, frequency on Intel only |
+| Load average, iowait | ✓ ✓ | — | load ✓, no iowait |
+| Memory, swap | ✓ | ✓ (page file) | ✓ (as Activity Monitor) |
+| Disks, I/O rates | ✓ ✓ | ✓ ✓ | ✓, no I/O rates yet |
+| Network | ✓ | ✓ (hardware adapters) | ✓ |
+| Sensors | ✓ (hwmon) | — | — |
+| Processes: user, threads, command line | ✓ | ✓ (others' only as admin) | ✓ (root's only as root) |
+| Ending a process | SIGTERM | WM_CLOSE to its windows | SIGTERM |
+
+`.github/workflows/system-monitor.yml` runs each sampler's test on its OS
+and builds the packages: `.deb`, `.rpm`, `.AppImage`; an NSIS `setup.exe`
+and a zip; a `.dmg` (unsigned).
+
 ### What it costs
 
 Measured on the machine above (16 threads, ~500 processes), sampling every

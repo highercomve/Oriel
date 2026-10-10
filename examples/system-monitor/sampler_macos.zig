@@ -5,7 +5,8 @@
 //!                     counts it (app + wired + compressed used; file-backed cached)
 //!   processes         proc_listallpids, proc_pidinfo(PROC_PIDTASKALLINFO); the
 //!                     command line (KERN_PROCARGS2) and user read once per process
-//!   disks             getmntinfo: /, the Data volume, /Volumes/*
+//!   disks             getmntinfo: / (its APFS container: the Data volume
+//!                     shares it, and its numbers), /Volumes/*
 //!   network           sysctl NET_RT_IFLIST2 (64-bit counters)
 //!   system            sysctl (model, OS version, Darwin release)
 //!
@@ -481,7 +482,8 @@ pub const Sampler = struct {
             for (stale.items) |pid| if (s.meta.fetchRemove(pid)) |kv| freeMeta(s.gpa, kv.value);
         }
 
-        // Disks: the system and data volumes, and what's under /Volumes.
+        // Disks: / (the APFS container's use, the Data volume's too) and
+        // what's under /Volumes.
         var disks: std.ArrayList(tm.DiskSample) = .empty;
         {
             var mounts: ?[*]Statfs = null;
@@ -493,8 +495,6 @@ pub const Sampler = struct {
                 if (std.mem.eql(u8, fs, "devfs") or std.mem.eql(u8, fs, "autofs")) continue;
                 const name = if (std.mem.eql(u8, on, "/"))
                     "root"
-                else if (std.mem.eql(u8, on, "/System/Volumes/Data"))
-                    "data"
                 else if (std.mem.startsWith(u8, on, "/Volumes/"))
                     std.fs.path.basename(on)
                 else
@@ -657,9 +657,10 @@ fn stateOf(status: u32) []const u8 {
     };
 }
 
-/// The interfaces macOS makes for itself (tunnels, AirDrop, bridges).
+/// The interfaces macOS makes for itself (tunnels, AirDrop, bridges, USB
+/// host controllers' debug links).
 fn virtualInterface(name: []const u8) bool {
-    const prefixes = [_][]const u8{ "lo", "utun", "awdl", "llw", "bridge", "ap", "anpi", "gif", "stf", "ipsec" };
+    const prefixes = [_][]const u8{ "lo", "utun", "awdl", "llw", "bridge", "ap", "anpi", "gif", "stf", "ipsec", "XHC" };
     for (prefixes) |p| if (std.mem.startsWith(u8, name, p)) return true;
     return false;
 }
