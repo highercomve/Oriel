@@ -6,6 +6,9 @@ const builtin = @import("builtin");
 const tm = @import("telemetry.zig");
 
 pub const Sampler = struct {
+    /// The page's process filter (no processes here).
+    filter: []const u8 = "",
+
     pub fn init(_: std.mem.Allocator, _: ?std.Io) Sampler {
         return .{};
     }

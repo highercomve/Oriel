@@ -319,7 +319,9 @@
     if (sampling) return;
     sampling = true;
     try {
-      const sample = await window.oriel.invoke("sample");
+      // The filter goes along: matching processes are sent even when idle
+      // (only the busiest rows reach the page otherwise).
+      const sample = await window.oriel.invoke("sample", { filter: filterText.trim() });
       if (!sample) return;
 
       lastSampleData = sample;
@@ -448,13 +450,17 @@
     const cores = cpu.per_core || [];
     if (coreRows.length !== cores.length) buildCores(cores.length);
     setText($("cpu-model"), cpu.model || "Host CPU");
+    // No frequency or temperature (Apple Silicon): no chip, as the load
+    // chip and the iowait legend.
+    setClass($("cpu-freq"), "hidden", !(cpu.freq_mhz > 0));
     setText($("cpu-freq"), formatGhz(cpu.freq_mhz));
     const temp = $("cpu-temp");
+    setClass(temp, "hidden", cpu.temp_c == null);
     if (cpu.temp_c != null) {
       setText(temp, `${Math.round(cpu.temp_c)}°C`);
       setClass(temp, "hot", cpu.temp_c >= 75 && cpu.temp_c < 90);
       setClass(temp, "critical", cpu.temp_c >= 90);
-    } else setText(temp, "--°C");
+    }
     const la = cpu.load_avg || [0, 0, 0];
     // No load average on Windows, no iowait on Windows or macOS.
     setClass($("cpu-load"), "hidden", !cpu.load_avg);
@@ -969,6 +975,9 @@
   };
   elSettings.onclick = (e) => e.stopPropagation();
 
+  // A new filter samples soon (not at the next tick): its matches may
+  // be idle processes the last sample didn't send.
+  let filterSampleTimer = null;
   elSearchInput.oninput = () => {
     filterText = elSearchInput.value;
     if (filterText.length > 0) {
@@ -977,6 +986,8 @@
       elSearchClear.classList.add("hidden");
     }
     renderTable();
+    clearTimeout(filterSampleTimer);
+    filterSampleTimer = setTimeout(performSample, 250);
   };
 
   elSearchClear.onclick = () => {
