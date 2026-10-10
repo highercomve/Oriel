@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const oriel = @import("oriel");
 const app = @import("oriel_app");
 const sampler_mod = @import("sampler.zig");
+const tm = @import("telemetry.zig");
 
 pub const std_options: std.Options = .{
     .logFn = oriel.log.logFn,
@@ -19,14 +20,17 @@ pub const Commands = struct {
     pub const async_commands = .{ "sample", "system_info", "command_line" };
 
     /// Samples live CPU (per core), memory, disks, network, sensors and the
-    /// busiest processes.
-    pub fn sample(gpa: std.mem.Allocator, actual_io: std.Io) !sampler_mod.SystemSample {
+    /// busiest processes; those matching the page's `filter` first, so an
+    /// idle one it searches for is among the rows sent.
+    pub fn sample(gpa: std.mem.Allocator, actual_io: std.Io, args: struct { filter: []const u8 = "" }) !sampler_mod.SystemSample {
         sampler_lock.lockUncancelable(actual_io);
         defer sampler_lock.unlock(actual_io);
         if (!sampler_initialized) {
             sampler = sampler_mod.Sampler.init(std.heap.smp_allocator, actual_io);
             sampler_initialized = true;
         }
+        sampler.filter = std.mem.trim(u8, args.filter[0..@min(args.filter.len, tm.max_filter)], " \t");
+        defer sampler.filter = "";
         return sampler.sample(actual_io, gpa);
     }
 

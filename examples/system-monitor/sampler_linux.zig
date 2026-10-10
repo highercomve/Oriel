@@ -78,6 +78,8 @@ const drive_every = 15;
 
 pub const Sampler = struct {
     gpa: std.mem.Allocator,
+    /// The page's process filter for the next sample (borrowed; main.zig).
+    filter: []const u8 = "",
     proc_dir: ?Io.Dir = null,
     prev: Ticks = .{},
     prev_cores: std.ArrayList(Ticks) = .empty,
@@ -555,7 +557,7 @@ pub const Sampler = struct {
         std.mem.swap(std.AutoHashMap(u32, u64), &s.prev_proc_ticks, &s.curr_proc_ticks);
         const total_procs: u32 = @intCast(procs.items.len);
 
-        tm.busiestFirst(procs.items);
+        tm.orderRows(procs.items, s.filter);
         const top = procs.items[0..@min(procs.items.len, max_rows)];
 
         // The top rows' names, command lines and users: read once per process.
@@ -896,6 +898,9 @@ test "sampler: 50 samples" {
     std.debug.print("\nsampler: avg {d:.2} ms, p50 {d:.2}, p90 {d:.2}, min {d:.2}, max {d:.2} ({d} rows)\n", .{
         sum / 50, times[25], times[45], times[0], times[49], last_rows,
     });
+    // The printed sample's CPU over half a second: back to back the tick
+    // counters may not move, and it reads 0%.
+    io.sleep(.fromMilliseconds(500), .awake) catch {};
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();

@@ -2,6 +2,21 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Fixed
+
+- System monitor example: the process filter reaches the sampler, so a
+  match (by name, pid or, on macOS, user) is among the rows sent even
+  when idle; filtering for `sleep` finds and can terminate it. Before,
+  only the 256 busiest processes reached the page.
+- System monitor example: the CPU header hides its frequency and
+  temperature chips when there is no value (Apple Silicon), and macOS
+  leaves out interfaces that never carried a byte (idle Thunderbolt and
+  bridge ports); one that starts carrying traffic appears.
+- System monitor example: the sampler tests print a sample taken half a
+  second after the last, not a 0% CPU read 1.5 ms later.
+
 ## [0.9.12] — 2026-10-10
 
 Oriel 0.9.12 keeps the native renderer's `localStorage` across runs, adds
