@@ -506,8 +506,6 @@ pub const Surface = struct {
         s.focus_id = 0;
         if (s.settle_id != 0) _ = g_source_remove(s.settle_id);
         s.settle_id = 0;
-        clearPaintLayouts(s);
-        s.paint_layouts.deinit(s.gpa);
         s.focus_events.deinit(s.gpa);
         s.warm.deinit(s.gpa);
         s.keys_down.deinit(s.gpa);
@@ -519,8 +517,11 @@ pub const Surface = struct {
         var fit = s.fields.iterator();
         while (fit.next()) |e| disconnectField(s, e.key_ptr.*, e.value_ptr.*);
         // The engine: freeing its tree calls `removed` for every node,
-        // which drops the fields, pictures and canvases.
+        // which drops the fields, pictures, canvases and text layouts (so
+        // those maps go after it).
         s.engine.destroy();
+        clearPaintLayouts(s);
+        s.paint_layouts.deinit(s.gpa);
         var rest = s.fields.valueIterator();
         while (rest.next()) |w| gtk_overlay_remove_overlay(s.overlay, w.*);
         s.fields.deinit();

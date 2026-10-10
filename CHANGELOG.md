@@ -2,6 +2,16 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Fixed
+
+- Native renderer on Linux: closing a window no longer aborts the app
+  (SIGABRT). The text layouts kept per node (0.9.12) were freed before the
+  page, whose nodes then removed themselves from the freed map; a release
+  build caught it as a misaligned pointer. Every `-Dnative_ui` app on
+  Linux crashed as its window closed.
+
 ## [0.9.13] — 2026-10-10
 
 Oriel 0.9.13 lets VoiceOver reach the share picker in the native renderer
