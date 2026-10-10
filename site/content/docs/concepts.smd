@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Architecture
+# [Architecture]($heading.id('architecture'))
 
 Oriel separates platform-neutral application logic from operating-system-specific implementations.
 
@@ -22,7 +22,7 @@ Oriel separates platform-neutral application logic from operating-system-specifi
 
 Each module and plugin can have platform-specific backends (e.g. `clipboard.zig` facade + `clipboard/{linux,windows}.zig` implementations).
 
-# Commands and IPC
+# [Commands and IPC]($heading.id('commands-and-ipc'))
 
 The Zig side defines a `Commands` struct with public functions. Each function becomes an IPC endpoint:
 
@@ -40,7 +40,7 @@ The TypeScript side gets a typed `invoke` function:
 const msg = await invoke("greet", { name: "Ada" });
 ```
 
-## Synchronous vs. asynchronous
+## [Synchronous vs. asynchronous]($heading.id('synchronous-vs-asynchronous'))
 
 By default, commands run on the main thread. To avoid blocking the UI:
 
@@ -58,7 +58,7 @@ pub const Commands = struct {
 
 Async commands receive their own arena allocator (freed after the reply). Each command invocation gets a worker thread from the pool; replies are sent back on the main thread.
 
-# Events
+# [Events]($heading.id('events'))
 
 Events flow from Zig to JavaScript. Declare them in `Events`:
 
@@ -86,11 +86,11 @@ listen("notes_changed", (notes) => setNotes(notes));
 Events are type-checked on both sides. Targeted events can be sent to specific windows with `window.emitTo(label, event, data)`. Sending to another window requires
 `security.window_api.allow_modify_other_windows = true` in `App.Config`.
 
-# Security model
+# [Security model]($heading.id('security-model'))
 
 Oriel follows Tauri's security architecture.
 
-## Navigation policy
+## [Navigation policy]($heading.id('navigation-policy'))
 
 The webview is confined to:
 - `app://app` (embedded assets, only in production)
@@ -99,7 +99,7 @@ The webview is confined to:
 
 All other navigation (iframes, redirects, popups, links) is blocked. External http(s)/mailto/tel links open in the system browser via `openExternal`.
 
-## Command capabilities
+## [Command capabilities]($heading.id('command-capabilities'))
 
 Apps own all commands by default. Remote origins (e.g. a page from `https://docs.example.com`) must be granted specific commands via capabilities:
 
@@ -113,7 +113,7 @@ Apps own all commands by default. Remote origins (e.g. a page from `https://docs
 
 Capabilities are matched against the exact origin of the currently-loaded page. Wildcards are supported in the origin (`https://*.example.com`).
 
-## Content Security Policy
+## [Content Security Policy]($heading.id('content-security-policy'))
 
 Every `app://` response includes a strict CSP header:
 
@@ -123,11 +123,11 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 
 No inline scripts, no `eval`. Dev builds (from the Vite server) set no CSP.
 
-## Bridge injection
+## [Bridge injection]($heading.id('bridge-injection'))
 
 The `window.oriel` object is only injected on pages allowed to use IPC. Remote origins without the `oriel` command capability cannot call anything.
 
-# Windows and multi-window apps
+# [Windows and multi-window apps]($heading.id('windows-and-multi-window-apps'))
 
 Open windows from Zig:
 
@@ -176,7 +176,7 @@ import { emit } from "./oriel";
 emit("global_update", { version: "1.2.0" });
 ```
 
-## Window security
+## [Window security]($heading.id('window-security'))
 
 Window creation is opt-in and scoped:
 - App-local origins can open windows by default
@@ -187,7 +187,7 @@ Window creation is opt-in and scoped:
 - Windows can only modify themselves and emit events to themselves by default; `allow_modify_other_windows` allows otherwise
 - Cap the concurrent window count with `max_windows` (default 16)
 
-# Routes and Single-Page Apps
+# [Routes and Single-Page Apps]($heading.id('routes-and-single-page-apps'))
 
 In `WindowOptions.url`, relative paths like `"/settings"` are resolved to:
 - **Dev mode:** the Vite server (e.g. `http://localhost:5173/settings`)
@@ -195,13 +195,13 @@ In `WindowOptions.url`, relative paths like `"/settings"` are resolved to:
 
 Absolute URLs with schemes are checked against `allowed_origins` and `capabilities`.
 
-## SPA Fallback caveat
+## [SPA Fallback caveat]($heading.id('spa-fallback-caveat'))
 
 With `config.spa_fallback = true` (default), deep links and 404s serve `index.html` for client-side routers. However, paths whose last segment contains a dot (e.g. `/users/john.doe` or `/report.pdf`) are treated as asset files and will return 404 if not found.
 
 This is intentional: it prevents `/api/data.json` from loading `index.html` when the API endpoint doesn't exist.
 
-# External links
+# [External links]($heading.id('external-links'))
 
 The `openExternal(url)` function opens a URL in the user's default application:
 

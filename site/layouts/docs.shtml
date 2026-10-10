@@ -10,6 +10,7 @@
 				<a href="$site.page('docs/getting-started').link()">Getting started</a>
 				<a href="$site.page('docs/wrap').link()">Wrap a web app</a>
 				<a href="$site.page('docs/tutorial').link()">Tutorial: a notes app</a>
+				<a href="$site.page('docs/examples').link()">Examples</a>
 				<a href="$site.page('docs/development').link()">Development</a>
 				<a href="$site.page('docs/building').link()">Building &amp; packaging</a>
 				<a href="$site.page('docs/signing').link()">Code signing</a>
@@ -23,7 +24,6 @@
 				<a href="$site.page('docs/modules').link()">Modules</a>
 				<a href="$site.page('docs/tts').link()">Offline text to speech</a>
 				<a href="$site.page('docs/comparison').link()">Oriel and Vercel native</a>
-				<a href="$site.page('docs/roadmap').link()">Roadmap</a>
 			</nav>
 		</aside>
 		<main class="doc">

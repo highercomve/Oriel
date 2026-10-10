@@ -8,17 +8,17 @@
 
 Oriel has no built-in code-signing step in the build process. Signing is a separate operation you perform after packaging. These are the manual steps to sign Windows Authenticode and self-update manifests.
 
-# Windows Authenticode signing
+# [Windows Authenticode signing]($heading.id('windows-authenticode-signing'))
 
 Sign both the main app executable and the installer to build user trust and comply with SmartScreen reputation systems.
 
-## Prerequisites
+## [Prerequisites]($heading.id('prerequisites'))
 
 - A code-signing certificate (`.pfx` file with private key and certificate chain)
 - The certificate password
 - `osslsigncode` (for signing on Linux) or `signtool` (on Windows)
 
-## Signing on Linux
+## [Signing on Linux]($heading.id('signing-on-linux'))
 
 Install `osslsigncode`:
 
@@ -59,7 +59,7 @@ osslsigncode verify zig-out/bin/my-app-signed.exe
 osslsigncode verify zig-out/package/my-app-setup-signed.exe
 ```
 
-## Signing on Windows
+## [Signing on Windows]($heading.id('signing-on-windows'))
 
 Use `signtool` (part of the Windows SDK):
 
@@ -75,18 +75,18 @@ Verify:
 signtool verify /pa zig-out\bin\my-app.exe
 ```
 
-## Certificate types
+## [Certificate types]($heading.id('certificate-types'))
 
 - **OV (Organization Validated):** Standard code-signing certificate. SmartScreen reputation builds over time.
 - **EV (Extended Validation):** Premium certificate with stricter validation. SmartScreen recognizes it immediately upon first run, avoiding reputation warnings. Requires a hardware token or cloud HSM for the private key.
 
 For maximum compatibility, sign the executable *before* building the installer, then sign the installer separately.
 
-# macOS code signing and notarization
+# [macOS code signing and notarization]($heading.id('macos-code-signing-and-notarization'))
 
 `oriel package` ad-hoc signs the `.app` (`codesign --sign -`), which runs on the Mac that built it. Two better options:
 
-## A self-signed certificate (free)
+## [A self-signed certificate (free)]($heading.id('a-self-signed-certificate-free'))
 
 Ad-hoc signed, macOS identifies the app by the hash of that exact build: after every update the user's permission grants (Accessibility, Microphone, Screen Recording) stop applying. Signed with the same certificate every release, even a self-signed one, the app keeps its identity and the grants survive updates. Gatekeeper still asks once on first launch (**Privacy & Security → Open Anyway**).
 
@@ -98,7 +98,7 @@ oriel package -Dmacos-sign-identity=<SHA-1>
 
 Keep the certificate and reuse it for every release: a new certificate is a new identity to macOS. In CI, store the `.p12` (base64) and its password as secrets and run `oriel signing import <file> --password-env MACOS_CERT_PASSWORD` before `oriel package`.
 
-## Developer ID and notarization
+## [Developer ID and notarization]($heading.id('developer-id-and-notarization'))
 
 For no Gatekeeper prompt at all, sign with a Developer ID and notarize (needs an Apple developer account). `oriel package` does both:
 
@@ -110,11 +110,11 @@ oriel package -Dmacos-sign-identity="Developer ID Application: Your Name (AB12CD
 
 Check the result with `spctl -a -vv App.app`.
 
-# Self-update signing with Ed25519
+# [Self-update signing with Ed25519]($heading.id('self-update-signing-with-ed25519'))
 
 Oriel's built-in updater uses Ed25519 to verify update manifests. Generate a signing key, sign your release artifacts, and embed the public key in your app.
 
-## 1. Generate a keypair
+## [1. Generate a keypair]($heading.id('1-generate-a-keypair'))
 
 ```sh
 zig build keygen -- --name myapp --out-dir ~/.config/myapp/keys
@@ -126,7 +126,7 @@ This creates:
 
 Keep the private key secure; the public key goes into your app.
 
-## 2. Sign an update artifact
+## [2. Sign an update artifact]($heading.id('2-sign-an-update-artifact'))
 
 After building a release binary or AppImage:
 
@@ -162,7 +162,7 @@ zig build combine-manifests -- manifest-*.json --out latest.json
 
 `latest.json` has a `platforms` map (`"x86_64-linux"`, `"aarch64-macos"`, `"x86_64-windows"`, ...), each entry a complete signed manifest. Publish it at one stable URL (e.g. `https://github.com/you/app/releases/latest/download/latest.json`) and use that as `manifest_url` in every build: each app picks and verifies the entry for its own target, and an entry filed under the wrong platform is refused. A single-platform manifest still works as `manifest_url`.
 
-## 3. Embed the public key in your app
+## [3. Embed the public key in your app]($heading.id('3-embed-the-public-key-in-your-app'))
 
 In `build.zig`, pass the public key to `addApp`:
 
@@ -175,7 +175,7 @@ _ = oriel.addApp(b, dep, .{
 });
 ```
 
-## 4. Implement updater commands
+## [4. Implement updater commands]($heading.id('4-implement-updater-commands'))
 
 In `src/main.zig`:
 
@@ -198,7 +198,7 @@ pub const Commands = struct {
 };
 ```
 
-## 5. Call from the frontend
+## [5. Call from the frontend]($heading.id('5-call-from-the-frontend'))
 
 ```ts
 import { invoke, listen } from "./oriel";
@@ -215,7 +215,7 @@ if (update?.available) {
 
 The updater downloads the new binary, verifies the Ed25519 signature, replaces the running executable atomically, and restarts the app.
 
-# Security notes
+# [Security notes]($heading.id('security-notes'))
 
 - **Never commit private keys** to version control. Store them securely outside the repo (e.g. `~/.config/`).
 - **Use HTTPS** for manifest and payload URLs in production.

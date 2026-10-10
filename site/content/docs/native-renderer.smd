@@ -14,7 +14,7 @@ It is **experimental**: it runs on Linux (GTK 4), Windows (Direct2D), macOS (App
 
 *The showcase on the native renderer (GTK 4): no WebView, the same `index.html`, `style.css` and `app.js`.*
 
-# Renderer features
+# [Renderer features]($heading.id('renderer-features'))
 
 The optional `-Dnative_ui` path supports Linux, Windows, macOS, Android and iOS. Features include Android WebView-sized controls and fractional text metrics, background frame suspension, sliders and Zig build-option forwarding in the mobile CLI. The renderer also supports inline text and SVG styling, input events, canvas drawing and renderer benchmarking tools.
 
@@ -24,7 +24,7 @@ The renderer remains experimental. The benchmark tables below retain their measu
 
 The page's DOM is Oriel's own: a **native DOM**, a document store written in Zig behind QuickJS bindings, replaced the JavaScript DOM library ([linkedom](https://github.com/WebReflection/linkedom)) the renderer started with. It builds a page about twice as fast as linkedom did and keeps memory flat (below).
 
-# Why
+# [Why]($heading.id('why'))
 
 A webview is a browser. On Android, every WebView app starts Chromium's renderer in a sandboxed process of its own, and the app process carries Chromium's code too. For a small app that is most of the memory it uses.
 
@@ -94,7 +94,7 @@ Measured with `adb shell dumpsys meminfo` on a Chromebook (Android 15 in ARC). T
 
 The native build costs about 2 MB of APK: QuickJS, Yoga and the renderer's JavaScript. Speed where it matters is the same: the showcase's chat streams Llama 3.2 1B at 43 tokens/s on the CPU, against 40 with the WebView.
 
-# Compared with Tauri and React Native
+# [Compared with Tauri and React Native]($heading.id('compared-with-tauri-and-react-native'))
 
 | | Oriel native | Oriel WebView | Tauri 2 | React Native |
 |---|---|---|---|---|
@@ -118,7 +118,7 @@ What the numbers say:
 - **The WebView renderer is the smallest download** (0.85 MB): it uses the browser the system already has. The native renderer adds about 2 MB: QuickJS, Yoga and the renderer's JavaScript. React Native ships its engine and framework (18.5 MB).
 - **The trade:** the WebView runs any web code; the native renderer runs the part of the web an app's interface uses, on Linux, Windows, macOS, iOS and Android.
 
-# Three architectures
+# [Three architectures]($heading.id('three-architectures'))
 
 The same app can be drawn three ways. Oriel's WebView and its native renderer run the same HTML, CSS and JavaScript; React Native runs React components instead.
 
@@ -224,7 +224,7 @@ The same app can be drawn three ways. Oriel's WebView and its native renderer ru
 
 The native renderer keeps the WebView's way of writing an app and React Native's footprint: no second process, no browser engine, the page's own files compiled ahead of time. Where React Native makes a platform view for every component, Oriel draws the page with one view and its own layout, so a list of a thousand rows is a thousand records in the tree, not a thousand Android or UIKit views.
 
-# Speed
+# [Speed]($heading.id('speed'))
 
 The [render bench](https://github.com/highercomve/Oriel/tree/main/examples/render-bench) times one page in both renderers: building and updating rows of styled text (each followed by a layout read, as `offsetHeight` forces in a browser), a `requestAnimationFrame` loop moving 200 boxes, and a `<canvas>` game loop.
 
@@ -255,7 +255,7 @@ The native renderer beats the WebView on every test: it runs the page's script a
 
 What got it there, in order: an incremental render (only what changed is restyled and flattened), text changes sent straight to the native node, a QuickJS fix (its hash tables were leaving most buckets empty), the renderer's and the app's JavaScript compiled to bytecode at build time, the native DOM (below), transform-only animation frames, `requestAnimationFrame` paced by the display, rows and whole lists of identical rows built by the tree in Zig straight from the native DOM, smaller nodes from pools, text sized from cached glyph widths, a text change that only moves its own edge skipping the layout, and style sheets parsed when the app is built.
 
-## On every platform
+## [On every platform]($heading.id('on-every-platform'))
 
 The same bench, the native renderer, ReleaseFast (Windows: ReleaseSafe, as `oriel build` makes it), the median of 3:
 
@@ -280,7 +280,7 @@ The browsers' JavaScript engines run the game's own code faster than QuickJS doe
 
 [](<$image.siteAsset('screenshots/breakout-desktop.png').alt('Breakout in the native renderer on Linux, Zig mode: bricks, balls and the stats overlay')>)
 
-## The native DOM
+## [The native DOM]($heading.id('the-native-dom'))
 
 The renderer started on [linkedom](https://github.com/WebReflection/linkedom), a DOM written in JavaScript. Every element, attribute and text node was a JavaScript object, and building a page meant allocating thousands of them in the interpreter. The native DOM keeps the document in a Zig store instead: nodes are records in slabs, ids and classes are interned, selectors are matched natively, and JavaScript only holds small wrappers for the nodes it touches.
 
@@ -327,7 +327,7 @@ Every platform got the same gain:
 
 These are the native DOM's own gains, measured when it replaced linkedom; the work since then (rows stamped from the DOM) took Linux to the 9 ms above, and Android to 13 ms (below). The JavaScript heap of an idle page went from about 29 MB to about 2 MB. The native DOM is the default; `-Dnative_dom=false` builds the renderer on linkedom, to compare the two or as a fallback while a page needs something the native DOM lacks.
 
-## On Android, against React Native and plain views
+## [On Android, against React Native and plain views]($heading.id('on-android-against-react-native-and-plain-views'))
 
 Same Chromebook (arm64, a 60 Hz display), the same bench written for each (release builds; React Native 0.87 with Fabric and Hermes), the median of 3:
 
@@ -345,7 +345,7 @@ What is timed: plain views until measured and laid out; Oriel's page time until 
 
 Oriel now builds rows faster than plain Android views: one view draws every row, where plain views make four Android views a row. Counting until the rows are on screen, it builds 1000 rows about 13 times faster than React Native mounts them, and updates them three to four times faster. Updates are where plain views and the WebView still lead: changing 1000 texts goes through JavaScript and the DOM in Oriel, and is a field write for plain views. Animation follows the display: the canvas demo runs at 118 fps on a 120 Hz phone.
 
-# Your web stack, unchanged
+# [Your web stack, unchanged]($heading.id('your-web-stack-unchanged'))
 
 The native renderer runs whatever your web build produces. It isn't a framework of its own and has no component API to learn: it gives the page a DOM, CSS and the usual browser APIs, so anything that renders through the DOM works.
 
@@ -365,7 +365,7 @@ Use your usual tools: Vite, esbuild or any bundler, TypeScript, JSX, ES modules 
 
 The limits are the renderer's, not the framework's: the CSS it supports (below), and browser APIs a page may use that aren't there yet (for example `iframe` and Blob URLs). A page that uses something missing still runs; that part is ignored. The WebView build stays available for anything that needs the whole web platform: the same app builds both ways, with or without `-Dnative_ui`.
 
-# Try it
+# [Try it]($heading.id('try-it'))
 
 Add `-Dnative_ui` to the build. Nothing else changes: the same `main.zig`, commands, events and web files.
 
@@ -382,7 +382,7 @@ Your app's `build.zig` passes the option to Oriel (the showcase does: `.native_u
 
 The same flag works for every target: `-Dtarget=x86_64-windows`, macOS and iOS builds. `oriel android dev/build` and `oriel ios dev/build` forward Zig `-D` options (see [Building]($link.page('docs/building'))).
 
-# How it works
+# [How it works]($heading.id('how-it-works'))
 
 ```=html
 <figure class="nr-fig">
@@ -455,7 +455,7 @@ The same flag works for every target: `-Dtarget=x86_64-windows`, macOS and iOS b
 
 **The backend** draws. On every platform one view draws the whole page (boxes, gradients, borders, shadows, styled text, SVG icons) and the fields are real platform widgets placed over it: the system keyboard, selection, autocorrect and accessibility of a text field come for free.
 
-## The parts
+## [The parts]($heading.id('the-parts'))
 
 | Part | What it does | In the source |
 |---|---|---|
@@ -473,7 +473,7 @@ The same flag works for every target: `-Dtarget=x86_64-windows`, macOS and iOS b
 
 More detail on each, and on Android's and Apple's backends, is in [`docs/native-renderer.md`](https://github.com/highercomve/Oriel/blob/main/docs/native-renderer.md).
 
-## One frame
+## [One frame]($heading.id('one-frame'))
 
 ```=html
 <figure class="nr-fig">
@@ -511,7 +511,7 @@ More detail on each, and on Android's and Apple's backends, is in [`docs/native-
 
 On Android the boundary between Zig and Kotlin is crossed a few times per change, not per element. Kotlin keeps a copy of each node's properties: as JSON when the page's operations change them, a run's new words alone when only text changes, and for stamped rows each style once with a small record per node, all in one batch. It receives the frames at once, as one packed array, after each layout, and is asked to measure a text only when Zig's caches don't already know its size. Touches come back as taps, drags with fling and long presses, and are hit-tested in Zig on the node tree.
 
-## Several elements, one native view
+## [Several elements, one native view]($heading.id('several-elements-one-native-view'))
 
 A browser keeps a box for every element. The flattener doesn't: most elements only group or style their children, and a native view per element would cost memory and time for nothing.
 
@@ -555,7 +555,7 @@ A browser keeps a box for every element. The flattener doesn't: most elements on
 
 Events go the other way: a tap on a node becomes a `click` on its element, bubbling through the DOM, with the browser's default actions (a link's `href="#…"`, a label's control, a form's submit button). Text fields send `input`, selects `change`, and Enter in a field reaches the page's `keydown` before it submits the form.
 
-# What it supports
+# [What it supports]($heading.id('what-it-supports'))
 
 - **Selectors:** types, classes, ids, attributes, `:not()`, `:has()`, `:first-child`, `:last-child`, `:nth-child()`, `:focus`, `:focus-visible`, `:hover` (a mouse or trackpad), `:active` (while pressed), descendant and child combinators, `::before` and `::after` with `content`.
 - **The cascade:** specificity, `!important`, inline styles, `var()` with fallbacks, `calc()`, `color-mix()`, inheritance (a `font-size` or `line-height` in `em` or `%` inherited as its computed length, as in browsers), `@media` on width, `prefers-color-scheme` and `pointer`.
@@ -575,7 +575,7 @@ Not yet: shadow DOM and constructed style sheets (`adoptedStyleSheets`, so web c
 
 It is not a browser, and it isn't trying to be one: it runs the part of the web that an app's interface uses. When a page uses something outside it, the layout still works and the property is ignored.
 
-# Status
+# [Status]($heading.id('status'))
 
 | | Linux | Windows | macOS | iOS | Android |
 |---|---|---|---|---|---|

@@ -13,7 +13,7 @@ starts after the first sentence. It is the counterpart of
 [`oriel.chat` and `oriel.dictation`]($link.page('docs/modules')). The building blocks,
 `oriel.kokoro` (synthesis) and `oriel.audio_play` (playback), stay public.
 
-# Quick start
+# [Quick start]($heading.id('quick-start'))
 
 Enable Kokoro in your app's `build.zig`, alongside llama or whisper (they
 supply the shared GGML source tree):
@@ -68,7 +68,7 @@ pub const Commands = struct {
 `examples/showcase`'s Speak tab and its "Read aloud" buttons are built this
 way; see [its README](https://github.com/highercomve/Oriel/blob/main/examples/showcase/README.md#speak-text-to-speech).
 
-# Build options
+# [Build options]($heading.id('build-options'))
 
 | Option | Effect |
 | --- | --- |
@@ -87,7 +87,7 @@ From the Oriel checkout, the TTS-enabled regression suite runs with
 `zig build test -Dkokoro -Dwhisper -Daudio_capture=false`
 (see Validation below).
 
-# Models, voices and downloads
+# [Models, voices and downloads]($heading.id('models-voices-and-downloads'))
 
 | Catalog | |
 | --- | --- |
@@ -111,7 +111,7 @@ works too.
   where it runs (`backend`, `gpu`), the phoneme-data directory, the
   download in progress, and the current phase.
 
-# Speaking
+# [Speaking]($heading.id('speaking'))
 
 `speak(a, text, opts)` reads `text` aloud and returns when it has been
 played or stopped. It blocks: call it from an async command. A new `speak`
@@ -168,7 +168,7 @@ language reuses it, another model or backend reloads it.
 - `audio_context`: a miniaudio context to play through (null: the default
   device); tests and headless runs point it at miniaudio's null backend.
 
-# Bundled phoneme data
+# [Bundled phoneme data]($heading.id('bundled-phoneme-data'))
 
 Kokoro phonemizes with espeak-ng, which reads its compiled runtime data
 (`espeak-ng-data/`: `phontab`, `phonindex`, `phondata`, `intonations`, one
@@ -215,7 +215,7 @@ runtime that extracts the assets is updated on every build), inside
 sourceSets["main"].assets.srcDirs("../../zig-out/android-assets")
 ```
 
-# Performance
+# [Performance]($heading.id('performance'))
 
 Measured with the Q8_0 model, streaming (`speak`), warm (model loaded):
 
@@ -237,7 +237,7 @@ measured speed makes in ~1.5 s. Build phone apps with the default
 `-Dggml_arm=dotprod`; without it the 732G's RTF was ~7.5. Metal compiles in
 on Apple platforms but hasn't been measured yet.
 
-# Building blocks: `oriel.kokoro` and `oriel.audio_play`
+# [Building blocks: `oriel.kokoro` and `oriel.audio_play`]($heading.id('building-blocks-oriel-kokoro-and-oriel-audio-play'))
 
 For pipelines of your own (writing WAV files, other playback), use the
 modules `oriel.tts` is built on. Run model loading and synthesis on a
@@ -268,7 +268,7 @@ engine's allocator. `lastError()` returns the C engine's error text after a
 model-loading failure. With AUTO, call `oriel.ggml_gpu.load(io)` before
 loading a model to register the CUDA or Vulkan backend.
 
-## One-shot playback
+## [One-shot playback]($heading.id('one-shot-playback'))
 
 `audio_play.start` plays caller-owned PCM; stop playback before freeing its
 samples or the allocator used for its device. There is one active
@@ -284,7 +284,7 @@ another thread. `start` rejects calls from an audio callback. A callback's
 `stop` only silences output; a later control-thread stop/shutdown releases
 the device.
 
-## Streaming playback: `audio_play.Stream`
+## [Streaming playback: `audio_play.Stream`]($heading.id('streaming-playback-audio-play-stream'))
 
 One device for a whole utterance, fed chunk by chunk while it plays,
 through a bounded ring (`Stream.buffer_seconds`, 30 s):
@@ -306,7 +306,7 @@ thread after other threads are done calling `stop`. `playedSeconds`,
 `queuedSeconds` and `starvedSeconds` (silence inserted because appends fell
 behind) report progress. A `Stream` is independent of the one-shot API.
 
-# Validation
+# [Validation]($heading.id('validation'))
 
 The numbers above come from the devices in the table: Linux on the CPU,
 CUDA and Vulkan, and an Android phone's CPU. Playback lifecycle tests use
@@ -334,7 +334,7 @@ and gaps per backend, English and Spanish; silent unless
 installs the GPU library in `zig-out/lib` and the tests load it from there,
 so the GPU is measured too (`-Doptimize=ReleaseFast` for real numbers).
 
-# Licenses
+# [Licenses]($heading.id('licenses'))
 
 The optional TTS stack includes espeak-ng and the runtime data compiled
 from it, licensed GPL-3.0-or-later; apps built with `.kokoro = true` ship

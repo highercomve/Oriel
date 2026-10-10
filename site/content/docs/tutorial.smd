@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Step 1: Create the project
+# [Step 1: Create the project]($heading.id('step-1-create-the-project'))
 
 ```sh
 oriel init notes
@@ -15,7 +15,7 @@ cd notes
 
 This scaffolds a React + Vite frontend, a Zig application, and the build files. The Zig side is empty; let's add a command to save notes.
 
-# Step 2: Add a command
+# [Step 2: Add a command]($heading.id('step-2-add-a-command'))
 
 Edit `src/main.zig`. The app needs a place to store notes and a command to add them. Start with a simple in-memory list:
 
@@ -84,7 +84,7 @@ oriel dev
 
 The dev server starts on `localhost:5173` and auto-reloads. In the Zig terminal, type a note and click Add.
 
-# Step 3: Add list command and events
+# [Step 3: Add list command and events]($heading.id('step-3-add-list-command-and-events'))
 
 Commands can return data; let's track notes in memory and emit an event when they change. Update `src/main.zig`:
 
@@ -175,7 +175,7 @@ export function App() {
 }
 ```
 
-# Step 4: Store in SQLite
+# [Step 4: Store in SQLite]($heading.id('step-4-store-in-sqlite'))
 
 In-memory data is lost when the app restarts. Use the `sql` module to keep notes in a SQLite file. Modules are opt-in, so first enable it in `build.zig`, in the options passed to the `oriel` dependency:
 
@@ -257,7 +257,7 @@ pub fn main(init: std.process.Init) !u8 {
 
 Run `oriel dev` again. Notes now persist across app restarts (within the same session; using `:memory:` means they are lost when the process exits; use a file path like `~/.local/share/notes/data.db` for persistent storage).
 
-# Step 5: Add a tray icon
+# [Step 5: Add a tray icon]($heading.id('step-5-add-a-tray-icon'))
 
 The app should keep running in the tray when the window closes. Enable the module in `build.zig` next to `.sql`:
 
@@ -369,7 +369,7 @@ pub fn main(init: std.process.Init) !u8 {
 
 Now closing the window hides it, and the tray icon remains. Click the icon to show the window again.
 
-# Build the release app
+# [Build the release app]($heading.id('build-the-release-app'))
 
 When you are happy, build the production binary:
 

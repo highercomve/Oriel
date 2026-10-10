@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-Start with [Getting started]($link.page('docs/getting-started')), then build a complete app in the [tutorial]($link.page('docs/tutorial')).
+Start with [Getting started]($link.page('docs/getting-started')), then build a complete app in the [tutorial]($link.page('docs/tutorial')). The [examples]($link.page('docs/examples')) show each part of Oriel in a working app.
 
 Already have a website? [Wrap a web app]($link.page('docs/wrap')) with
 `oriel wrap` to give it a desktop window, tray icon and Linux AppImage.
@@ -15,7 +15,7 @@ For mobile apps, see [Android and iOS]($link.page('docs/mobile')). Add native
 Android behavior and SDK integrations with
 [app-owned Android extensions]($link.page('docs/android-extensions')).
 
-# Capabilities and local AI
+# [Capabilities and local AI]($heading.id('capabilities-and-local-ai'))
 
 - [Modules and plugins]($link.page('docs/modules')): tray, updater, dialogs, notifications, shortcuts, clipboard, SQLite, deep links, and network mDNS.
 - [Offline text to speech]($link.page('docs/tts')): `oriel.tts` with Kokoro-82M voices, verified downloads, and streaming playback on CPU or GPU.

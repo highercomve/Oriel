@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Requirements
+# [Requirements]($heading.id('requirements'))
 
 Oriel apps are built with **Zig 0.16** and run on the system webview:
 
@@ -19,7 +19,7 @@ Oriel apps are built with **Zig 0.16** and run on the system webview:
 
 `oriel doctor --fix` checks all of this and installs what it can without administrator rights.
 
-# Install the CLI
+# [Install the CLI]($heading.id('install-the-cli'))
 
 The `oriel` CLI is a single static binary. It scaffolds apps and wraps their build steps, like `create-tauri-app` and `tauri dev` / `tauri build`.
 
@@ -54,7 +54,7 @@ Both installers read the same environment variables:
 | `ORIEL_VERSION` | newest release | Tag to install, e.g. `v0.9.0` |
 | `ORIEL_INSTALL_DIR` | `~/.local/bin` or `%LOCALAPPDATA%\Programs\oriel` | Where to put the binary |
 
-## First-run workflow
+## [First-run workflow]($heading.id('first-run-workflow'))
 
 The standard first-run workflow on a clean machine:
 
@@ -62,7 +62,7 @@ The standard first-run workflow on a clean machine:
 2. **Run `oriel doctor --fix`** to verify your environment, install non-admin dependencies automatically (Zig, Node.js LTS, WebView2Loader.dll, and portable NSIS on Windows), and print commands for any missing system packages.
 3. **Create an app** with `oriel init <name>`.
 
-# Updating the CLI
+# [Updating the CLI]($heading.id('updating-the-cli'))
 
 The CLI can update itself in place using Oriel's built-in self-updater:
 
@@ -74,7 +74,7 @@ oriel update --version v0.9.0 # target a specific release tag
 
 Release manifests are Ed25519-signed and verified against the public key embedded in the binary. For non-interactive scripts and CI environments, pass `--yes` to proceed without a confirmation prompt.
 
-# Native UI (experimental)
+# [Native UI (experimental)]($heading.id('native-ui-experimental'))
 
 Oriel includes an optional renderer that draws a supported subset of your
 HTML and CSS with native platform views. Keep the default WebView or opt in
@@ -88,7 +88,7 @@ oriel ios build -Dnative_ui
 See the [native UI guide]($link.page('docs/native-renderer')) for supported
 features, limitations and benchmark conditions.
 
-# Create an app
+# [Create an app]($heading.id('create-an-app'))
 
 To turn an existing website into a desktop app, use
 [`oriel wrap <url>`]($link.page('docs/wrap')). For a new app with your own
@@ -120,7 +120,7 @@ The new project looks like this:
 | `build.zig.zon` | Package manifest; Oriel is a dependency |
 | `icon.png` | Application icon (1024×1024 PNG recommended) |
 
-# Run it
+# [Run it]($heading.id('run-it'))
 
 ```sh
 oriel dev
@@ -139,7 +139,7 @@ oriel run              # build and run
 
 Arguments after `--` go to the app, not to the build: `oriel run -- --verbose`.
 
-# App icon
+# [App icon]($heading.id('app-icon'))
 
 Apps configure their icon with a single source PNG (1024×1024 recommended) in `build.zig`:
 
@@ -157,7 +157,7 @@ Projects created with `oriel init` include a default `icon.png`. At build time, 
 - **Linux**: Hicolor theme icons and `.desktop` entry.
 - **macOS**: `.icns` for the `.app` bundle and dynamic Dock icon.
 
-# The other commands
+# [The other commands]($heading.id('the-other-commands'))
 
 | Command | What it does |
 |---|---|
@@ -174,6 +174,6 @@ Project build commands are thin wrappers around `zig build <step>`, run from any
 
 > Using Oriel without the CLI? Add it with the Zig package manager, `zig fetch --save git+https://github.com/highercomve/Oriel`, and call `oriel.addApp()` from your `build.zig`. The generated project shows the exact wiring.
 
-# Next
+# [Next]($heading.id('next'))
 
 Build a complete app in the [tutorial]($link.page('docs/tutorial')): a Zig command called from the page, an event, SQLite storage and a tray icon. The same app builds for phones: see [Building & packaging]($link.page('docs/building')) and [Android and iOS]($link.page('docs/mobile')).

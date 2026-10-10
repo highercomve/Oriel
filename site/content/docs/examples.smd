@@ -1,0 +1,168 @@
+---
+.title = "Examples",
+.description = "The example apps in the repository: what each one shows, how to run it, and what it looks like.",
+.date = .date("2026-10-10T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+Each example is a complete Oriel app under [`examples/`](https://github.com/highercomve/Oriel/tree/main/examples), with its own `build.zig`. Build one from its directory with `zig build` (or `oriel run`); add `-Dnative_ui` for the [native renderer]($link.page('docs/native-renderer')).
+
+| Example | What it shows |
+|---|---|
+| [showcase](#showcase) | Every module in one app, on Linux, Windows, macOS, Android and iOS |
+| [smoke](#smoke) | A pass/fail check of every module, run in CI |
+| [breakout](#breakout) | A canvas game in both renderers, its loop in JavaScript or in Zig |
+| [system-monitor](#system-monitor) | Live CPU, memory and processes read from `/proc` in Zig |
+| [render-bench](#render-bench) | One page timed in the WebView and the native renderer |
+| [canvas-demo](#canvas-demo) | The 2d canvas: shapes, text, animation and calls that must not break the window |
+
+# [showcase]($heading.id('showcase'))
+
+[`examples/showcase`](https://github.com/highercomve/Oriel/tree/main/examples/showcase): everything Oriel does, in one app built from the same `src/main.zig` and `web/` for every platform. Each tab covers one area:
+
+- **Dictate**: voice to text with `oriel.dictation` (whisper on the CPU or the GPU, or the system recognizer), live text, file transcription and "dictate anywhere".
+- **Chat**: a local LLM with `oriel.chat` (llama.cpp): streamed replies, Stop, KV-cache reuse, a GPU against CPU comparison, and Read aloud.
+- **Speak**: offline text to speech with `oriel.tts` (Kokoro 82M): voices by language, speed, and per utterance the first-audio time, real-time factor and gaps.
+- **Notes**: SQLite (`oriel.sql`) and deep links (`oriel-showcase://note/<text>`).
+- **Files**: open and save dialogs, transcribing a WAV file.
+- **System**: clipboard, notifications, shortcuts; the tray, menus and typing into other apps on desktops; the Quick Settings tile and the keyboard on Android.
+- **App**: windows, IPC, events from a worker thread, device info.
+
+Models are not in the app: Dictate, Chat and Speak download them on first use.
+
+```sh
+cd examples/showcase
+zig build run                          # Linux, macOS
+oriel package                          # deb, rpm, AppImage / .app, .dmg / NSIS installer
+oriel android dev --abi arm64          # on a connected phone
+```
+
+```=html
+<div class="shots phones">
+<figure><img src="/Oriel/screenshots/showcase-dictate.png" alt="The showcase's Dictate tab on a Pixel" loading="lazy"><figcaption><strong>Dictate</strong> · whisper small on Vulkan, drafted by base on the CPU</figcaption></figure>
+<figure><img src="/Oriel/screenshots/showcase-chat.png" alt="The showcase's Chat tab on a Pixel" loading="lazy"><figcaption><strong>Chat</strong> · Llama 3.2 1B on Vulkan, streamed tokens</figcaption></figure>
+<figure><img src="/Oriel/screenshots/showcase-speak.png" alt="The showcase's Speak tab on a Poco X3" loading="lazy"><figcaption><strong>Speak</strong> · Kokoro 82M on the phone's CPU</figcaption></figure>
+<figure><img src="/Oriel/screenshots/showcase-notes.png" alt="The showcase's Notes tab" loading="lazy"><figcaption><strong>Notes</strong> · SQLite, deep links, read aloud</figcaption></figure>
+<figure><img src="/Oriel/screenshots/showcase-system.png" alt="The showcase's System tab" loading="lazy"><figcaption><strong>System</strong> · dictate anywhere, clipboard, notifications</figcaption></figure>
+<figure><img src="/Oriel/screenshots/showcase-app.png" alt="The showcase's App tab" loading="lazy"><figcaption><strong>App</strong> · windows, IPC, worker events</figcaption></figure>
+</div>
+```
+
+*On Android: Dictate and Chat on a Pixel, the rest on a Poco X3.*
+
+The same app on the native renderer, on Linux:
+
+[](<$image.siteAsset('screenshots/native-showcase.png').alt('The showcase drawn by the native renderer on Linux')>)
+
+The [showcase README](https://github.com/highercomve/Oriel/tree/main/examples/showcase) has the build steps for each platform, the GPU options and the headless checks (`--chat`, `--transcribe`, `--say`).
+
+# [smoke]($heading.id('smoke'))
+
+[`examples/smoke`](https://github.com/highercomve/Oriel/tree/main/examples/smoke): opens a window whose page calls into Zig to check every enabled module, then lists each check with what it verified. One run tells you Oriel works end to end on your machine, not just that it compiles.
+
+- **Tray and menus**: dbusmenu icons, layout and actions.
+- **Updater**: Ed25519-verified manifests; tampered copies rejected.
+- **Data**: SQLite (with sqlite-vec), the JSON store, file watching.
+- **Desktop**: dialogs, notifications, global shortcuts, clipboard, typed input into other apps.
+- **Webview and IPC**: page fetch, `invoke` round trips, async commands from worker threads, and an iframe from another origin that must not reach IPC.
+
+```sh
+cd examples/smoke
+zig build
+./zig-out/bin/oriel-smoke              # the window
+./zig-out/bin/oriel-smoke --auto-quit  # quits once the page reports; exit 1 on failure
+./zig-out/bin/oriel-smoke --check      # headless: run the checks, print them, exit
+```
+
+CI runs it on every platform, so a red row names the module that broke.
+
+[](<$image.siteAsset('screenshots/smoke.png').alt('The smoke test app: a table of green OK rows, one per module, each with what it verified')>)
+
+# [breakout]($heading.id('breakout'))
+
+[`examples/breakout`](https://github.com/highercomve/Oriel/tree/main/examples/breakout): Breakout for comparing the two renderers. The board is a `<canvas>` drawn at the display's pixel ratio; the score, overlays, settings and stats around it are HTML and CSS, so the native widgets get exercised too.
+
+- **Two modes** on the native renderer (Settings → Renderer mode): **JS** steps `physics.js` and draws with `draw.js` each frame; **Zig** runs the same rules and drawing in `game.zig` through `oriel.canvas`, with no JavaScript per frame. The page keeps the HTML and the input.
+- **Settings**: balls per launch (1 to 500), brick rows, particles, autoplay and a stats overlay with the frame rate, frame time and JavaScript time per frame.
+- **Controls**: mouse or arrow keys on the desktop; drag on a phone.
+
+With 500 balls on a 120 Hz phone: 120 fps from Zig (0.35 ms a frame), 63 fps from JavaScript, 120 in the WebView. On a 180 Hz desktop: 180 fps from Zig, 88 to 108 from JavaScript.
+
+```sh
+cd examples/breakout
+zig build                                   # WebView
+zig build -Dnative_ui -p zig-out-native     # native renderer
+BREAKOUT_DEMO=500 BREAKOUT_MODE=zig ./zig-out-native/bin/oriel-breakout   # autoplay, logs fps
+```
+
+```=html
+<figure class="smoke-shot breakout-shots doc-shot">
+<img src="/Oriel/screenshots/breakout-desktop.png" alt="Breakout in the native renderer on Linux, Zig mode: bricks, balls and the stats overlay" loading="lazy">
+<img class="phone" src="/Oriel/screenshots/breakout-phone.png" alt="Breakout in the native renderer on an Android phone, Zig mode, at 120 fps" loading="lazy">
+<figcaption>The native renderer in Zig mode, on Linux and an Android phone</figcaption>
+</figure>
+```
+
+# [system-monitor]($heading.id('system-monitor'))
+
+[`examples/system-monitor`](https://github.com/highercomve/Oriel/tree/main/examples/system-monitor): a live CPU, memory and process monitor. The Zig side reads `/proc` directly, with no subprocess, and the page renders it in the WebView or the native renderer.
+
+- **Stat tiles**: CPU, memory and process count with 60-sample sparklines, and uptime.
+- **Toolbar**: pause and resume, filter by name or PID, sort by CPU, memory, PID or name.
+- **Process table**: the top processes, with Terminate (a `SIGTERM` sent from Zig after a confirmation) and Copy (through the clipboard module).
+- **Badges**: the renderer in use and how long each Zig sample took.
+
+The page talks to Zig through four typed commands: `sample`, `terminate_process`, `copy_to_clipboard` and `get_meta`. Measured against the same app built with another native SDK, sampling is about three times faster and the native renderer build uses less memory and CPU; the numbers and method are on the [comparison page]($link.page('docs/comparison')).
+
+```sh
+cd examples/system-monitor
+oriel run -Dnative_ui     # native renderer
+oriel run                 # WebView
+```
+
+[](<$image.siteAsset('screenshots/system-monitor.png').alt('The system monitor on the native renderer: CPU, memory, processes and uptime tiles above a sortable process table')>)
+
+*The native renderer on Linux, sampling every 2 s.*
+
+# [render-bench]($heading.id('render-bench'))
+
+[`examples/render-bench`](https://github.com/highercomve/Oriel/tree/main/examples/render-bench): one static page, timed in the WebView and in the native renderer. It builds and updates rows of styled text (each followed by a layout read), animates 200 boxes with `requestAnimationFrame`, runs a `<canvas>` game loop, and records memory. A **Measure power** button times idle, animation and canvas scenarios against the battery.
+
+On a 180 Hz Linux desktop (median of 3 runs):
+
+| | native | WebView |
+|---|---|---|
+| startup → first frame | 69 ms | 431 ms |
+| build 1000 / 3000 rows | 6.4 / 18.6 ms | 20 / 69 ms |
+| update 1000 / 3000 rows | 2.8 / 8.5 ms | 9 / 40 ms |
+| animate 200 boxes | 165 fps | 62 fps |
+| canvas 200 / 1000 balls | 180 / 91 fps | 62 / 62 fps |
+| memory at start (PSS) | 110 MB | 491 MB |
+
+```sh
+cd examples/render-bench
+zig build -Doptimize=ReleaseFast                                 # WebView
+zig build -Dnative_ui -Doptimize=ReleaseFast -p zig-out-native   # native renderer
+RENDER_BENCH=1 ./zig-out-native/bin/oriel-render-bench           # one JSON line, then exits
+```
+
+[](<$image.siteAsset('screenshots/render-bench.png').alt('Render bench in the WebView: row timing results and animated boxes')>)
+
+Recordings of both renderers running it side by side are on the [native renderer page]($link.page('docs/native-renderer')).
+
+# [canvas-demo]($heading.id('canvas-demo'))
+
+[`examples/canvas-demo`](https://github.com/highercomve/Oriel/tree/main/examples/canvas-demo): a small page for the 2d canvas, with no commands on the Zig side. Three canvases:
+
+- **Static**: filled and stroked shapes, a rotated rectangle, a curve and centered text.
+- **Animated**: balls moving on a `requestAnimationFrame` loop, with the renderer and frame rate shown above.
+- **Hostile**: calls a browser shrugs off (extra `restore()`, `scale(0)`, a coordinate that overflows f32, a `clearRect` over a red background). They must not break the window, and the text after it must still draw.
+
+```sh
+cd examples/canvas-demo
+zig build && ./zig-out/bin/oriel-canvas-demo
+zig build -Dnative_ui -p zig-out-native && ./zig-out-native/bin/oriel-canvas-demo
+```
+
+[](<$image.siteAsset('screenshots/canvas-demo.png').alt('The canvas demo in the WebView: shapes and text, moving balls, and the hostile canvas still drawing')>)

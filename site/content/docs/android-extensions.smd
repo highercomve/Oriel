@@ -20,7 +20,7 @@ constructs the classes listed in `.android.extensions` and dispatches their
 callbacks. Configure registration in `build.zig`; edits to the generated
 `OrielAppExtensions.kt` are overwritten on the next Android build.
 
-# Register an extension
+# [Register an extension]($heading.id('register-an-extension'))
 
 Keep the implementation outside the generated `android/app/src/main/java/`
 directory, for example in `src/android/MyExtension.kt`:
@@ -75,7 +75,7 @@ and declare extra permissions with `.android.permissions` or the appropriate
 `.permissions` kind. `-Dandroid_force=true` intentionally rewrites developer
 project files from the template; it is not needed to update extensions.
 
-# Lifecycle and WebView hooks
+# [Lifecycle and WebView hooks]($heading.id('lifecycle-and-webview-hooks'))
 
 Extension instances are created once per process. Callbacks run on the UI
 thread, in registration order. Activity creation/start/resume/pause/stop/destroy,
@@ -91,7 +91,7 @@ Oriel's clients, JavaScript bridge, and navigation restrictions; use the provide
 hooks to intercept behavior instead of replacing `webViewClient` or
 `webChromeClient`. WebView hooks are not called for the native UI renderer.
 
-# Native requests without request-code collisions
+# [Native requests without request-code collisions]($heading.id('native-requests-without-request-code-collisions'))
 
 `onRegistered` supplies an `OrielAndroidExtensionContext`. Allocate local codes
 from 0 through 255; Oriel assigns each extension a separate namespace:
@@ -136,7 +136,7 @@ visit extensions in declaration order until one returns `true`; unhandled
 activity results reach the Activity superclass. Unhandled permission results
 reach Oriel's permission handler, which ignores codes outside its own range.
 
-# Intercept file selection
+# [Intercept file selection]($heading.id('intercept-file-selection'))
 
 Override `onShowFileChooser(activity, view, callback, params)` to provide a
 custom picker, capture workflow, or document SDK. Return `false` without touching
@@ -153,7 +153,7 @@ use an app-owned content provider with a scoped URI write grant and
 `MediaStore.EXTRA_OUTPUT`; the activity-result hook can return that URI even
 when Android returns a null result Intent.
 
-# Third-party SDK dependencies
+# [Third-party SDK dependencies]($heading.id('third-party-sdk-dependencies'))
 
 Declare pinned Maven coordinates in the same build configuration as the extension:
 
@@ -184,7 +184,7 @@ because shrinking cannot infer those calls from Zig. `.proguard_rules` updates
 only the region between `# oriel:proguard` markers in
 `android/app/proguard-rules.pro`; manual rules outside it are preserved.
 
-# Vendor native libraries
+# [Vendor native libraries]($heading.id('vendor-native-libraries'))
 
 Some Android SDKs load optional device/vendor libraries, such as a GPU driver.
 Declare these in `build.zig` alongside their SDK dependencies:
