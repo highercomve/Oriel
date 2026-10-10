@@ -9,7 +9,8 @@
 #   macOS    .dmg with the .app (arm64; unsigned: right-click > Open)
 #
 # Run by hand (Actions > System monitor > Run workflow), or on a push that
-# touches the example or the native renderer.
+# touches the example or the native renderer. On a v* tag the packages are
+# also attached to that tag's GitHub release (the attach job).
 name: System monitor
 
 on:
@@ -121,3 +122,44 @@ jobs:
           name: system-monitor-macos-arm64
           path: examples/system-monitor/zig-out/package/*.dmg
           if-no-files-found: error
+
+  # On a release tag: the packages, named by OS and arch, and their
+  # SYSTEM-MONITOR-SHA256SUMS, attached to that tag's GitHub release. The
+  # release workflow publishes it (~15 min, this one takes ~4): wait for it.
+  attach:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Name by OS and arch, and checksum
+        run: |
+          mkdir up
+          cp artifacts/system-monitor-linux-x86_64/* up/
+          for f in artifacts/system-monitor-macos-arm64/*.dmg; do
+            b=$(basename "$f" .dmg); cp "$f" "up/$b-macos-arm64.dmg"
+          done
+          for f in artifacts/system-monitor-windows-x86_64/*-setup.exe; do
+            b=$(basename "$f" -setup.exe); cp "$f" "up/$b-windows-x86_64-setup.exe"
+          done
+          # The zip has no version in its name: the installer's gives it.
+          version=$(basename up/*-windows-x86_64-setup.exe -windows-x86_64-setup.exe)
+          cp artifacts/system-monitor-windows-x86_64/*.zip "up/$version-windows-x86_64.zip"
+          cd up && sha256sum oriel-system-monitor* > SYSTEM-MONITOR-SHA256SUMS && cat SYSTEM-MONITOR-SHA256SUMS
+      - name: Wait for the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 90); do
+            gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+            sleep 30
+          done
+          echo "no release for $GITHUB_REF_NAME after 45 minutes" >&2; exit 1
+      - name: Attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" up/* --clobber -R "$GITHUB_REPOSITORY"
