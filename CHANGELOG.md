@@ -2,10 +2,19 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.9.13] — 2026-10-10
+
+Oriel 0.9.13 lets VoiceOver reach the share picker in the native renderer
+on macOS, and fixes what testing 0.9.12 on a Mac found in the system
+monitor example: idle processes can be found and terminated, empty CPU
+chips are hidden, and idle macOS network ports are left out.
 
 ### Fixed
 
+- Native renderer on macOS: a popover or sheet AppKit shows over the
+  page (the share picker of `oriel.share.send`) is in the window's
+  accessibility tree, so VoiceOver reaches it. The page view listed only
+  the page's elements and left it out.
 - System monitor example: the process filter reaches the sampler, so a
   match (by name, pid or, on macOS, user) is among the rows sent even
   when idle; filtering for `sleep` finds and can terminate it. Before,
@@ -16,10 +25,6 @@ Notable changes in Oriel releases.
   bridge ports); one that starts carrying traffic appears.
 - System monitor example: the sampler tests print a sample taken half a
   second after the last, not a 0% CPU read 1.5 ms later.
-- Native renderer on macOS: a popover or sheet AppKit shows over the
-  page (the share picker of `oriel.share.send`) is in the window's
-  accessibility tree, so VoiceOver reaches it. The page view listed only
-  the page's elements and left it out.
 
 ## [0.9.12] — 2026-10-10
 
