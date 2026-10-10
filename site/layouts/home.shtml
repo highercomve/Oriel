@@ -90,6 +90,16 @@
 					<p>The same app on Android (phones, desktop mode, ChromeOS) and iOS. Tiles, a keyboard, notification actions and deep links stand in for the tray and hotkeys.</p>
 				</article>
 				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M8 16h8"/></svg></div>
+					<h3>Reach past the window</h3>
+					<p>System-wide hotkeys, typing and pasting into other apps, image clipboard, and microphone or system audio capture, on X11, Wayland, Windows and macOS.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3z"/></svg></div>
+					<h3>Wrap any web app</h3>
+					<p><code>oriel wrap &lt;url&gt;</code> turns a site into a desktop app on the system webview, with a tray icon, close to tray and its own favicon. WhatsApp Web packs into a ~2.7 MB AppImage.</p>
+				</article>
+				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
 					<h3>Ship it</h3>
 					<p><code>oriel package</code> builds deb, rpm, AppImage, <code>.dmg</code> and Windows <code>setup.exe</code> (natively or cross-compiled from Linux); <code>oriel android build</code> an APK and AAB; <code>oriel ios build</code> an <code>.ipa</code>.</p>
