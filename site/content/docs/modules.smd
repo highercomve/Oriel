@@ -507,5 +507,5 @@ oriel.share.onReceive(onShareReceived);
 try oriel.share.send(.{ .title = "Report", .text = "Sharing content" }, null, null);
 ```
 
-- **Platforms:** Windows (`DataTransferManager`, "Send to", "Open with"), macOS/iOS (`NSSharingServicePicker`, `UIActivityViewController`), and Android share target intents.
+- **Platforms:** Windows (`DataTransferManager`, "Send to", "Open with"), macOS/iOS (`NSSharingServicePicker`, `UIActivityViewController`; receiving on macOS also through the Services menu), and Android share target intents.
 - Receiving incoming shares requires declaring `.share_target` in `build.zig`.
