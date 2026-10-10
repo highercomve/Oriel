@@ -503,5 +503,5 @@ oriel.share.onReceive(onShareReceived);
 try oriel.share.send(.{ .title = "Report", .text = "Sharing content" }, null, null);
 ```
 
-- **Supported platforms:** Windows (`DataTransferManager`, "Send to", "Open with"), macOS/iOS (`NSSharingServicePicker`, `UIActivityViewController`, `CFBundleDocumentTypes`), and Android share targets.
+- **Supported platforms:** Windows (`DataTransferManager`, "Send to", "Open with"), macOS/iOS (`NSSharingServicePicker`, `UIActivityViewController`, `CFBundleDocumentTypes`; on macOS also a Services menu item, `NSServices`), and Android share targets.
 - Receiving requires declaring `.share_target` in `build.zig`.

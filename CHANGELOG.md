@@ -2,7 +2,41 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.9.12] — 2026-10-10
+
+Oriel 0.9.12 keeps the native renderer's `localStorage` across runs, adds
+macOS Services to share targets, and turns the system monitor example into
+a btop-style monitor for Linux, Windows and macOS. Native renderer frames
+on Linux are cheaper, and `JSON.parse` no longer depends on the locale.
+
+### Added
+
+- Share targets on macOS: `.share_target` also gives the `.app` an entry
+  in the Services menu, titled with the share label (else the app's name),
+  shown without the user enabling it. It sends the selection's files of the
+  declared types and, when the types take text, plain text and URLs; the app
+  receives them as one share with source `service`, its files readable
+  through `oriel.share.file`, and comes forward.
+
+### Changed
+
+- Native renderer: `localStorage` lasts beyond the run, as in a WebView.
+  One store per app, shared by its windows, saved as JSON in
+  `~/.config/<app id>/data/localStorage.json` (`$XDG_CONFIG_HOME` when
+  set; `~/Library/Application Support/<app id>/data` on macOS,
+  `%APPDATA%\<app id>\data` on Windows). Writes are batched (saved
+  300 ms after a change, and when a window closes), and a 5 MB quota throws
+  `QuotaExceededError` as browsers do. It was an in-memory map before, gone
+  at exit. On Android and iOS it still lasts the run.
+- The system-monitor example grew into a btop-style monitor: per-core CPU
+  with frequencies and temperature, load, memory and swap, disks with I/O
+  rates, network, sensors, system information, process user, threads and
+  command line, a responsive layout, and Settings to show or hide each
+  part (kept in `localStorage`). It runs on Linux, Windows and macOS (a
+  sampler per OS; the page hides what an OS doesn't report), and a CI
+  workflow tests each sampler and builds the packages (.deb, .rpm,
+  .AppImage, setup.exe, .dmg). It costs less than btop and the terminal
+  drawing it: a sampler at ~1.6 ms a sample and a virtual process table.
 
 ### Fixed
 
@@ -30,26 +64,6 @@ Notable changes in Oriel releases.
   a mask). With the fix above, scrolling the system monitor's process
   table went from about 80% of a core to about 15%; a frame's paint
   takes about half as long.
-
-### Changed
-
-- Native renderer: `localStorage` lasts beyond the run, as in a WebView.
-  One store per app, shared by its windows, saved as JSON in
-  `~/.config/<app id>/data/localStorage.json` (`$XDG_CONFIG_HOME` when
-  set; `~/Library/Application Support/<app id>/data` on macOS,
-  `%APPDATA%\<app id>\data` on Windows). Writes are batched (saved
-  300 ms after a change, and when a window closes), and a 5 MB quota throws
-  `QuotaExceededError` as browsers do. It was an in-memory map before, gone
-  at exit. On Android and iOS it still lasts the run.
-- The system-monitor example grew into a btop-style monitor: per-core CPU
-  with frequencies and temperature, load, memory and swap, disks with I/O
-  rates, network, sensors, system information, process user, threads and
-  command line, a responsive layout, and Settings to show or hide each
-  part (kept in `localStorage`). It runs on Linux, Windows and macOS (a
-  sampler per OS; the page hides what an OS doesn't report), and a CI
-  workflow tests each sampler and builds the packages (.deb, .rpm,
-  .AppImage, setup.exe, .dmg). It costs less than btop and the terminal
-  drawing it: a sampler at ~1.6 ms a sample and a virtual process table.
 
 ## [0.9.11] — 2026-10-09
 

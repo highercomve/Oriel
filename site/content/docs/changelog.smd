@@ -1,10 +1,73 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.9.11, 0.9.10 and earlier.",
-.date = .date("2026-10-09T00:00:00"),
+.description = "Release notes for Oriel 0.9.12, 0.9.11 and earlier.",
+.date = .date("2026-10-10T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.9.12 · October 10, 2026]($heading.id('oriel-0-9-12-october-10-2026'))
+
+Oriel 0.9.12 keeps the native renderer's `localStorage` across runs, adds
+macOS Services to share targets, and turns the system monitor example into
+a btop-style monitor for Linux, Windows and macOS. Native renderer frames
+on Linux are cheaper, and `JSON.parse` no longer depends on the locale.
+
+## [Added]($heading.id('added'))
+
+- Share targets on macOS: `.share_target` also gives the `.app` an entry
+  in the Services menu, titled with the share label (else the app's name),
+  shown without the user enabling it. It sends the selection's files of the
+  declared types and, when the types take text, plain text and URLs; the app
+  receives them as one share with source `service`, its files readable
+  through `oriel.share.file`, and comes forward.
+
+## [Changed]($heading.id('changed'))
+
+- Native renderer: `localStorage` lasts beyond the run, as in a WebView.
+  One store per app, shared by its windows, saved as JSON in
+  `~/.config/<app id>/data/localStorage.json` (`$XDG_CONFIG_HOME` when
+  set; `~/Library/Application Support/<app id>/data` on macOS,
+  `%APPDATA%\<app id>\data` on Windows). Writes are batched (saved
+  300 ms after a change, and when a window closes), and a 5 MB quota throws
+  `QuotaExceededError` as browsers do. It was an in-memory map before, gone
+  at exit. On Android and iOS it still lasts the run.
+- The system-monitor example grew into a btop-style monitor: per-core CPU
+  with frequencies and temperature, load, memory and swap, disks with I/O
+  rates, network, sensors, system information, process user, threads and
+  command line, a responsive layout, and Settings to show or hide each
+  part (kept in `localStorage`). It runs on Linux, Windows and macOS (a
+  sampler per OS; the page hides what an OS doesn't report), and a CI
+  workflow tests each sampler and builds the packages (.deb, .rpm,
+  .AppImage, setup.exe, .dmg). It costs less than btop and the terminal
+  drawing it: a sampler at ~1.6 ms a sample and a virtual process table.
+
+## [Fixed]($heading.id('fixed'))
+
+- Native renderer: `JSON.parse` dropped the fraction of every number
+  (`0.43` became `0`) under a locale whose decimal separator is a comma
+  (`LC_NUMERIC=es_CL`, `de_DE`...): QuickJS read JSON numbers with
+  `strtod`, which follows the locale GTK sets. It reads them with its own
+  locale-independent `js_atod` now. Every command result reaching a page
+  went through it.
+- Windows builds with `-Dkokoro`: the build-time espeak-ng data compiler
+  failed with `FileBusy` removing its staging directory, because the
+  intonation compiler's log was left open.
+- Native renderer on Linux: wheel scrolling no longer re-hovers a new
+  element at every step. The compositor's motion after each step (the
+  pointer still) hovered the row now under it, a restyle and a second
+  redraw per step; `:hover` now waits until the scroll settles, as in
+  browsers. The system-monitor example also drops its row hover
+  transition, which kept the window redrawing every display frame while
+  scrolling.
+- Native renderer on Linux: cheaper frames. Each text keeps its Pango
+  layout from frame to frame instead of being shaped again on every
+  draw, and a box with rounded corners that clips its content clips it
+  to a rectangle, with the rounded path only on what reaches into a
+  corner (a path clip made Cairo composite everything under it through
+  a mask). With the fix above, scrolling the system monitor's process
+  table went from about 80% of a core to about 15%; a frame's paint
+  takes about half as long.
 
 # [Oriel 0.9.11 · October 9, 2026]($heading.id('oriel-0-9-11-october-9-2026'))
 
@@ -12,7 +75,7 @@ Oriel 0.9.11 adds `location.reload()` to the native renderer, makes live
 tables much cheaper to update, and fixes the macOS and iOS builds of apps
 with text to speech.
 
-## [Added]($heading.id('added'))
+## [Added]($heading.id('added-2'))
 
 - Native renderer: `location.reload()` starts the page again in its window,
   with a new JavaScript runtime and DOM. It runs on a turn of its own, after
@@ -30,7 +93,7 @@ with text to speech.
 - The system monitor example reuses its table rows and writes text only
   when it changed.
 
-## [Fixed]($heading.id('fixed'))
+## [Fixed]($heading.id('fixed-2'))
 
 - The build-time espeak-ng data compiler builds on macOS and with Apple's
   SDK (it used stdio macros that translate-c turns into inline functions).
@@ -53,7 +116,7 @@ wide tables on the documentation site.
 - The comparison with Vercel native now has measured numbers for the same
   system monitor app built with both frameworks.
 
-## [Fixed]($heading.id('fixed-2'))
+## [Fixed]($heading.id('fixed-3'))
 
 - Documentation tables wider than the page column scroll sideways instead of
   spilling under the table of contents; the module overview fits again.
@@ -71,7 +134,7 @@ box, with Kokoro-82M voices, verified downloads, bundled phoneme data and
 streaming playback on the CPU or the GPU. It also brings mDNS to Windows,
 drag and drop to the iOS native renderer, and Windows fixes.
 
-## [Added]($heading.id('added-2'))
+## [Added]($heading.id('added-3'))
 
 - `oriel.tts`: Kokoro-82M text to speech, the counterpart of `oriel.chat`
   and `oriel.dictation`. A catalog of models (`kokoro-82m-q8_0`, the
@@ -126,7 +189,7 @@ drag and drop to the iOS native renderer, and Windows fixes.
 - Windows tray icons are decoded with zigimg instead of WIC, so creating and
   destroying trays no longer grows the process's kernel handles.
 
-## [Fixed]($heading.id('fixed-3'))
+## [Fixed]($heading.id('fixed-4'))
 
 - Windows: closing a window or quitting while a native-renderer context menu
   or the tray menu is open no longer hangs; a native page that closes its
@@ -159,7 +222,7 @@ Oriel 0.9.8 is a memory-safety release. It fixes use-after-free, out-of-bounds,
 overflow and leak defects across the native UI, platform layers, modules and
 CLI tooling.
 
-## [Fixed]($heading.id('fixed-4'))
+## [Fixed]($heading.id('fixed-5'))
 
 - Update manifests: base64 signatures, public keys and seeds must decode to
   exactly their expected size, closing a stack overflow reachable from an
@@ -218,7 +281,7 @@ CLI tooling.
 Oriel 0.9.7 adds opt-in offline text-to-speech with Kokoro-82M and
 built-in PCM playback.
 
-## [Added]($heading.id('added-3'))
+## [Added]($heading.id('added-4'))
 
 - `oriel.kokoro`: typed C-ABI bindings for model initialization, voice loading,
   language selection, synthesis, error reporting and PCM cleanup.
@@ -232,7 +295,7 @@ built-in PCM playback.
 - Repository and website guides for offline speech synthesis, asset setup,
   playback ownership, callback behavior and dependency notices.
 
-## [Fixed]($heading.id('fixed-5'))
+## [Fixed]($heading.id('fixed-6'))
 
 - Playback teardown detaches sample state before joining the device thread,
   preventing stop/start deadlocks with audio callbacks.
@@ -262,7 +325,7 @@ Oriel 0.9.5 fixes the validated concurrency, memory-lifetime and security
 issues from a security and memory-safety review, and documents which reported
 findings were not supported by the current code.
 
-## [Fixed]($heading.id('fixed-6'))
+## [Fixed]($heading.id('fixed-7'))
 
 - File-handle tables synchronize access through reads and descriptor
   duplication, preventing release from recycling a descriptor in use.
@@ -306,7 +369,7 @@ findings were not supported by the current code.
 Oriel 0.9.4 adds desktop wrappers for web apps, app-owned Android extensions,
 and searchable documentation.
 
-## [Added]($heading.id('added-4'))
+## [Added]($heading.id('added-5'))
 
 - `oriel wrap <url>` (alias `oriel pake`) scaffolds a desktop app for a website,
   with tray controls, close-to-tray behavior, automatic favicon fetching,
@@ -327,7 +390,7 @@ and searchable documentation.
 - Native-renderer documentation describes renderer capabilities independently
   of individual release versions.
 
-## [Fixed]($heading.id('fixed-7'))
+## [Fixed]($heading.id('fixed-8'))
 
 - Linux disables WebKitGTK DMABUF rendering when the proprietary NVIDIA driver
   is detected, avoiding compositor-related high CPU usage. An explicit
@@ -344,7 +407,7 @@ and searchable documentation.
 Oriel 0.9.2 lets a page find out where a dropped file lives now, so a handler
 can send it on to the system.
 
-## [Added]($heading.id('added-5'))
+## [Added]($heading.id('added-6'))
 
 - `oriel.drop.path(file)` for native-renderer pages: where a dropped file lives
   now, for a handler that forwards it (a transfer engine opens the path). The
@@ -360,7 +423,7 @@ can send it on to the system.
 Oriel 0.9.1 adds system sharing, persistent folder access and service discovery,
 and improves native controls, accessibility and platform integration.
 
-## [Added]($heading.id('added-6'))
+## [Added]($heading.id('added-7'))
 
 - `oriel.network.mdns` service registration and browsing, with Android's
   NsdManager backend and the `oriel_mdns_*` C ABI for native libraries.
@@ -387,7 +450,7 @@ and improves native controls, accessibility and platform integration.
   across Linux, Windows, macOS, Android and iOS.
 - Events received before page listeners are ready are queued for delivery.
 
-## [Fixed]($heading.id('fixed-8'))
+## [Fixed]($heading.id('fixed-9'))
 
 - Android mDNS resolution no longer crashes while encoding services with
   multiple TXT attributes. Attributes are iterated directly rather than copied
@@ -403,7 +466,7 @@ Oriel 0.9.0 lets apps react to notification clicks and buttons, brings
 drag and drop to the native renderer, and closes desktop input gaps for
 ChromeOS and desktop Android. Windows support for these lands in 0.9.1. See [Notifications]($link.page('docs/modules')) for the notification API.
 
-## [Added]($heading.id('added-7'))
+## [Added]($heading.id('added-8'))
 
 - Notification click actions: `oriel.notification.notify` takes `.actions`
   (buttons), and clicks on a notification or one of its buttons reach
@@ -455,7 +518,7 @@ Oriel 0.8.0 introduces the optional, experimental native UI renderer alongside
 the default system WebView. The same app HTML, CSS and JavaScript run in
 QuickJS and draw through Oriel's native platform backends.
 
-## [Added]($heading.id('added-8'))
+## [Added]($heading.id('added-9'))
 
 - Build with `-Dnative_ui` on Linux, Windows, macOS, Android and iOS.
 - `oriel android dev/build` and `oriel ios dev/build` forward Zig `-D` options.
