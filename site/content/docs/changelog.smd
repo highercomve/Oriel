@@ -1,10 +1,23 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.9.13, 0.9.12 and earlier.",
+.description = "Release notes for Oriel 0.9.14, 0.9.13 and earlier.",
 .date = .date("2026-10-10T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.9.14 · October 10, 2026]($heading.id('oriel-0-9-14-october-10-2026'))
+
+Oriel 0.9.14 fixes a crash: since 0.9.12, every app built with the native
+renderer on Linux aborted as its window closed.
+
+## [Fixed]($heading.id('fixed'))
+
+- Native renderer on Linux: closing a window no longer aborts the app
+  (SIGABRT). The text layouts kept per node (0.9.12) were freed before the
+  page, whose nodes then removed themselves from the freed map; a release
+  build caught it as a misaligned pointer. Every `-Dnative_ui` app on
+  Linux crashed as its window closed.
 
 # [Oriel 0.9.13 · October 10, 2026]($heading.id('oriel-0-9-13-october-10-2026'))
 
@@ -13,7 +26,7 @@ on macOS, and fixes what testing 0.9.12 on a Mac found in the system
 monitor example: idle processes can be found and terminated, empty CPU
 chips are hidden, and idle macOS network ports are left out.
 
-## [Fixed]($heading.id('fixed'))
+## [Fixed]($heading.id('fixed-2'))
 
 - Native renderer on macOS: a popover or sheet AppKit shows over the
   page (the share picker of `oriel.share.send`) is in the window's
@@ -66,7 +79,7 @@ on Linux are cheaper, and `JSON.parse` no longer depends on the locale.
   .AppImage, setup.exe, .dmg). It costs less than btop and the terminal
   drawing it: a sampler at ~1.6 ms a sample and a virtual process table.
 
-## [Fixed]($heading.id('fixed-2'))
+## [Fixed]($heading.id('fixed-3'))
 
 - Native renderer: `JSON.parse` dropped the fraction of every number
   (`0.43` became `0`) under a locale whose decimal separator is a comma
@@ -117,7 +130,7 @@ with text to speech.
 - The system monitor example reuses its table rows and writes text only
   when it changed.
 
-## [Fixed]($heading.id('fixed-3'))
+## [Fixed]($heading.id('fixed-4'))
 
 - The build-time espeak-ng data compiler builds on macOS and with Apple's
   SDK (it used stdio macros that translate-c turns into inline functions).
@@ -140,7 +153,7 @@ wide tables on the documentation site.
 - The comparison with Vercel native now has measured numbers for the same
   system monitor app built with both frameworks.
 
-## [Fixed]($heading.id('fixed-4'))
+## [Fixed]($heading.id('fixed-5'))
 
 - Documentation tables wider than the page column scroll sideways instead of
   spilling under the table of contents; the module overview fits again.
@@ -213,7 +226,7 @@ drag and drop to the iOS native renderer, and Windows fixes.
 - Windows tray icons are decoded with zigimg instead of WIC, so creating and
   destroying trays no longer grows the process's kernel handles.
 
-## [Fixed]($heading.id('fixed-5'))
+## [Fixed]($heading.id('fixed-6'))
 
 - Windows: closing a window or quitting while a native-renderer context menu
   or the tray menu is open no longer hangs; a native page that closes its
@@ -246,7 +259,7 @@ Oriel 0.9.8 is a memory-safety release. It fixes use-after-free, out-of-bounds,
 overflow and leak defects across the native UI, platform layers, modules and
 CLI tooling.
 
-## [Fixed]($heading.id('fixed-6'))
+## [Fixed]($heading.id('fixed-7'))
 
 - Update manifests: base64 signatures, public keys and seeds must decode to
   exactly their expected size, closing a stack overflow reachable from an
@@ -319,7 +332,7 @@ built-in PCM playback.
 - Repository and website guides for offline speech synthesis, asset setup,
   playback ownership, callback behavior and dependency notices.
 
-## [Fixed]($heading.id('fixed-7'))
+## [Fixed]($heading.id('fixed-8'))
 
 - Playback teardown detaches sample state before joining the device thread,
   preventing stop/start deadlocks with audio callbacks.
@@ -349,7 +362,7 @@ Oriel 0.9.5 fixes the validated concurrency, memory-lifetime and security
 issues from a security and memory-safety review, and documents which reported
 findings were not supported by the current code.
 
-## [Fixed]($heading.id('fixed-8'))
+## [Fixed]($heading.id('fixed-9'))
 
 - File-handle tables synchronize access through reads and descriptor
   duplication, preventing release from recycling a descriptor in use.
@@ -414,7 +427,7 @@ and searchable documentation.
 - Native-renderer documentation describes renderer capabilities independently
   of individual release versions.
 
-## [Fixed]($heading.id('fixed-9'))
+## [Fixed]($heading.id('fixed-10'))
 
 - Linux disables WebKitGTK DMABUF rendering when the proprietary NVIDIA driver
   is detected, avoiding compositor-related high CPU usage. An explicit
@@ -474,7 +487,7 @@ and improves native controls, accessibility and platform integration.
   across Linux, Windows, macOS, Android and iOS.
 - Events received before page listeners are ready are queued for delivery.
 
-## [Fixed]($heading.id('fixed-10'))
+## [Fixed]($heading.id('fixed-11'))
 
 - Android mDNS resolution no longer crashes while encoding services with
   multiple TXT attributes. Attributes are iterated directly rather than copied

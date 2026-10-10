@@ -2,7 +2,10 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.9.14] — 2026-10-10
+
+Oriel 0.9.14 fixes a crash: since 0.9.12, every app built with the native
+renderer on Linux aborted as its window closed.
 
 ### Fixed
 
