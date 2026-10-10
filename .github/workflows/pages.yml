@@ -18,6 +18,15 @@ permissions:
   pages: write
   id-token: write
 
+# One build/deploy at a time, in order. A release's tag push to main builds
+# the site before the release is published (it still reads the previous
+# version); release.yml then dispatches this workflow again. Without this the
+# two can overlap and the older build may deploy last, putting the previous
+# version back on the site.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
