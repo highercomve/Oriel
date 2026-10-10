@@ -37,6 +37,14 @@ extern void oriel_nui_ops(void *opaque, const char *json, size_t len);
 extern void oriel_nui_paint(void *opaque, const double *nums, size_t len);
 extern int oriel_nui_text(void *opaque, double id, const char *text, size_t len);
 extern int oriel_nui_vsync(void *opaque);
+extern int oriel_nui_storage_get(void *opaque, const char *key, size_t key_len, char **out, size_t *out_len);
+extern int oriel_nui_storage_key(void *opaque, uint32_t index, char **out, size_t *out_len);
+extern void oriel_nui_storage_free(void *opaque, char *ptr, size_t len);
+extern int oriel_nui_storage_set(void *opaque, const char *key, size_t key_len, const char *value, size_t value_len);
+extern void oriel_nui_storage_remove(void *opaque, const char *key, size_t key_len);
+extern void oriel_nui_storage_clear(void *opaque);
+extern uint32_t oriel_nui_storage_length(void *opaque);
+extern void oriel_nui_storage_flush(void *opaque);
 extern void oriel_nui_reload(void *opaque);
 extern void oriel_nui_warm_fonts(void *opaque, const double *v, size_t count);
 extern int oriel_nui_font_metrics(void *opaque, double size, int mono, const char *family, size_t family_len, double *out4);
@@ -391,6 +399,80 @@ static JSValue h_run_rects(JSContext *ctx, JSValueConst this_val, int argc, JSVa
         JS_SetPropertyUint32(ctx, arr, (uint32_t)i, r);
     }
     return arr;
+}
+
+// localStorage (web_storage.zig): host.storageGet(key) → string or null,
+// storageSet(key, value) → false past the quota, storageRemove(key),
+// storageClear(), storageLength(), storageKey(i) → string or null,
+// storageFlush().
+static JSValue storage_string(JSContext *ctx, int ok, char *out, size_t out_len) {
+    if (!ok) return JS_NULL;
+    JSValue v = JS_NewStringLen(ctx, out, out_len);
+    oriel_nui_storage_free(opaque_of(ctx), out, out_len);
+    return v;
+}
+
+static JSValue h_storage_get(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_NULL;
+    size_t len = 0;
+    const char *k = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!k) return JS_EXCEPTION;
+    char *out = NULL;
+    size_t out_len = 0;
+    int ok = oriel_nui_storage_get(opaque_of(ctx), k, len, &out, &out_len);
+    JS_FreeCString(ctx, k);
+    return storage_string(ctx, ok, out, out_len);
+}
+
+static JSValue h_storage_key(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    uint32_t i = 0;
+    if (argc < 1 || JS_ToUint32(ctx, &i, argv[0])) return JS_NULL;
+    char *out = NULL;
+    size_t out_len = 0;
+    return storage_string(ctx, oriel_nui_storage_key(opaque_of(ctx), i, &out, &out_len), out, out_len);
+}
+
+static JSValue h_storage_set(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 2) return JS_FALSE;
+    size_t klen = 0, vlen = 0;
+    const char *k = JS_ToCStringLen(ctx, &klen, argv[0]);
+    const char *v = JS_ToCStringLen(ctx, &vlen, argv[1]);
+    int ok = k && v ? oriel_nui_storage_set(opaque_of(ctx), k, klen, v, vlen) : 0;
+    if (k) JS_FreeCString(ctx, k);
+    if (v) JS_FreeCString(ctx, v);
+    if (!k || !v) return JS_EXCEPTION;
+    return JS_NewBool(ctx, ok);
+}
+
+static JSValue h_storage_remove(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    size_t len = 0;
+    const char *k = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!k) return JS_EXCEPTION;
+    oriel_nui_storage_remove(opaque_of(ctx), k, len);
+    JS_FreeCString(ctx, k);
+    return JS_UNDEFINED;
+}
+
+static JSValue h_storage_clear(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    oriel_nui_storage_clear(opaque_of(ctx));
+    return JS_UNDEFINED;
+}
+
+static JSValue h_storage_length(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    return JS_NewUint32(ctx, oriel_nui_storage_length(opaque_of(ctx)));
+}
+
+static JSValue h_storage_flush(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    oriel_nui_storage_flush(opaque_of(ctx));
+    return JS_UNDEFINED;
 }
 
 // host.vsync(): __oriel.vsync(interval) at the display's next refresh;
@@ -941,6 +1023,13 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "frame", h_frame, 1);
     set_fn(ctx, host, "now", h_now, 0);
     set_fn(ctx, host, "vsync", h_vsync, 0);
+    set_fn(ctx, host, "storageGet", h_storage_get, 1);
+    set_fn(ctx, host, "storageKey", h_storage_key, 1);
+    set_fn(ctx, host, "storageSet", h_storage_set, 2);
+    set_fn(ctx, host, "storageRemove", h_storage_remove, 1);
+    set_fn(ctx, host, "storageClear", h_storage_clear, 0);
+    set_fn(ctx, host, "storageLength", h_storage_length, 0);
+    set_fn(ctx, host, "storageFlush", h_storage_flush, 0);
     set_fn(ctx, host, "reload", h_reload, 0);
     set_fn(ctx, host, "warmFonts", h_warm_fonts, 1);
     set_fn(ctx, host, "fontMetrics", h_font_metrics, 3);
