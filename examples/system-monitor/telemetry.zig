@@ -120,12 +120,48 @@ pub fn pct(part: u64, whole: u64) f64 {
     return round1(@as(f64, @floatFromInt(part)) / @as(f64, @floatFromInt(whole)) * 100.0);
 }
 
-/// The busiest processes first: CPU, then memory.
-pub fn busiestFirst(rows: []ProcessRow) void {
-    std.mem.sort(ProcessRow, rows, {}, struct {
-        fn lessThan(_: void, x: ProcessRow, y: ProcessRow) bool {
+/// Whether a row matches the page's filter (case-insensitive): its name,
+/// user or command line contains it, or its pid starts with it. Before a
+/// sample's cut only the name and pid (and the user on macOS) are known:
+/// those are what keep an idle process in the rows the page gets.
+pub fn matches(row: ProcessRow, filter: []const u8) bool {
+    if (filter.len == 0) return true;
+    if (std.ascii.indexOfIgnoreCase(row.name, filter) != null) return true;
+    if (std.ascii.indexOfIgnoreCase(row.user, filter) != null) return true;
+    if (std.ascii.indexOfIgnoreCase(row.command, filter) != null) return true;
+    var buf: [10]u8 = undefined;
+    const pid = std.fmt.bufPrint(&buf, "{d}", .{row.pid}) catch return false;
+    return std.mem.startsWith(u8, pid, filter);
+}
+
+/// The rows a sample sends first: those matching `filter` (busiest
+/// first), then the rest, busiest first. With a filter, a match ranks
+/// ahead of any busier process, so it survives the `max_rows` cut.
+pub fn orderRows(rows: []ProcessRow, filter: []const u8) void {
+    std.mem.sort(ProcessRow, rows, filter, struct {
+        fn lessThan(f: []const u8, x: ProcessRow, y: ProcessRow) bool {
+            const mx = matches(x, f);
+            if (mx != matches(y, f)) return mx;
             if (x.cpu_percent != y.cpu_percent) return x.cpu_percent > y.cpu_percent;
             return x.mem_rss_bytes > y.mem_rss_bytes;
         }
     }.lessThan);
+}
+
+/// At most this much of the page's filter is used.
+pub const max_filter = 64;
+
+test orderRows {
+    var rows = [_]ProcessRow{
+        .{ .pid = 1, .name = "busy", .command = "", .user = "", .state = "", .threads = 1, .cpu_percent = 90, .mem_rss_bytes = 0 },
+        .{ .pid = 42, .name = "sleep", .command = "", .user = "", .state = "", .threads = 1, .cpu_percent = 0, .mem_rss_bytes = 0 },
+        .{ .pid = 7, .name = "other", .command = "", .user = "", .state = "", .threads = 1, .cpu_percent = 50, .mem_rss_bytes = 0 },
+    };
+    orderRows(&rows, "SLE");
+    try std.testing.expectEqualStrings("sleep", rows[0].name);
+    try std.testing.expectEqualStrings("busy", rows[1].name);
+    orderRows(&rows, "");
+    try std.testing.expectEqualStrings("busy", rows[0].name);
+    try std.testing.expect(matches(rows[2], "4")); // pid 42
+    try std.testing.expect(!matches(rows[2], "2"));
 }

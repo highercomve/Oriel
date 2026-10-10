@@ -285,6 +285,8 @@ const NetPrev = struct { luid: u64, rx: u64, tx: u64 };
 
 pub const Sampler = struct {
     gpa: std.mem.Allocator,
+    /// The page's process filter for the next sample (borrowed; main.zig).
+    filter: []const u8 = "",
     cores: u32 = 1,
     cpu_model_buf: [128]u8 = undefined,
     cpu_model_len: usize = 0,
@@ -557,7 +559,7 @@ pub const Sampler = struct {
         }
         std.mem.swap(std.AutoHashMap(u32, ProcPrev), &s.prev_procs, &s.curr_procs);
         const total_procs: u32 = @intCast(procs.items.len);
-        tm.busiestFirst(procs.items);
+        tm.orderRows(procs.items, s.filter);
         const top = procs.items[0..@min(procs.items.len, tm.max_rows)];
         for (top) |*p| {
             const create = creates.get(p.pid) orelse 0;
@@ -823,6 +825,9 @@ test "sampler: 20 samples, and what one holds" {
     }
     std.mem.sort(f64, &times, {}, std.sort.asc(f64));
     std.debug.print("\nsampler: p50 {d:.2} ms, max {d:.2} ms\n", .{ times[10], times[19] });
+    // The printed sample's CPU over half a second: back to back (1.5 ms)
+    // the tick counters rarely move, and it reads 0%.
+    io.sleep(.fromMilliseconds(500), .awake) catch {};
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
