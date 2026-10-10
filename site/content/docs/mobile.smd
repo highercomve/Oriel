@@ -13,7 +13,7 @@ The same `main.zig`, `Commands`, `Events` and web frontend build for Android and
 
 [`examples/showcase`](https://github.com/highercomve/Oriel/tree/main/examples/showcase) is one app that uses every feature and builds for all five platforms.
 
-# Status
+# [Status]($heading.id('status'))
 
 | | Android | iOS |
 |---|---|---|
@@ -23,9 +23,9 @@ The same `main.zig`, `Commands`, `Events` and web frontend build for Android and
 | Local AI | ggml on the CPU (ARM dotprod / i8mm kernels), Vulkan, OpenCL (Adreno), Hexagon (Snapdragon NPU) | ggml on Metal |
 | Status | Verified | Preview: not yet run on a device |
 
-# Building
+# [Building]($heading.id('building'))
 
-## Android
+## [Android]($heading.id('android'))
 
 Needs a JDK 17, the Android SDK (platform-tools, Gradle 8.11.1+) and the NDK (`$ANDROID_NDK_HOME`).
 
@@ -37,7 +37,7 @@ oriel android build --apk --aab    # release APK and AAB (arm64-v8a and x86_64)
 
 Or with Zig directly: `zig build -Dtarget=aarch64-linux-android` writes `zig-out/jniLibs/arm64-v8a/liboriel.so`, which Gradle packages.
 
-## App-owned Android extensions
+## [App-owned Android extensions]($heading.id('app-owned-android-extensions'))
 
 Implement `OrielAndroidExtension` in app-owned Kotlin or Java sources to
 configure WebViews, receive Activity and WebView lifecycle callbacks, handle
@@ -50,7 +50,7 @@ source registration, pinned Maven SDK dependencies, request-code namespaces,
 and callback ownership. WebView hooks apply to the WebView renderer; Activity
 hooks also run with native UI.
 
-## iOS
+## [iOS]($heading.id('ios'))
 
 Needs Apple's SDK: on a Mac, `xcrun --sdk iphoneos --show-sdk-path`; on Linux, [xtool](https://github.com/xtool-org/xtool) extracts it from `Xcode.xip`.
 
@@ -62,7 +62,7 @@ oriel ios install [--simulator]
 
 `zig build check -Dtarget=aarch64-ios` type-checks without the SDK.
 
-# What replaces the desktop-only parts
+# [What replaces the desktop-only parts]($heading.id('what-replaces-the-desktop-only-parts'))
 
 Phones have no tray, no menu bar and no system-wide hotkeys. On Android and iOS those modules are off by default, and turning one on is a build error that says what to use instead:
 
@@ -76,7 +76,7 @@ Phones have no tray, no menu bar and no system-wide hotkeys. On Android and iOS 
 
 Android also sends *system events* (`oriel.android.onSystemEvent`): a tile tap, a notification action, the headset button, the keyboard's mic button, and `trim-memory`, the cue to free large models when the app goes to the background.
 
-# Voice to text on phones
+# [Voice to text on phones]($heading.id('voice-to-text-on-phones'))
 
 [Dictation]($link.page('docs/modules')) works on both platforms. On Android it has two engines:
 
@@ -85,15 +85,15 @@ Android also sends *system events* (`oriel.android.onSystemEvent`): a tile tap, 
 
 The showcase's "dictate anywhere" puts either into any app: tap the tile, the keyboard's mic or the headset button, talk, tap again, and the text lands in the focused field.
 
-# Chat on phones
+# [Chat on phones]($heading.id('chat-on-phones'))
 
 [Chat]($link.page('docs/modules')) runs a local LLM on the phone: Qwen2.5 0.5B and 1.5B or Llama 3.2 1B in q4_0, which ggml runs with its ARM dotprod/i8mm kernels. As with dictation, the CPU is the default on phones until Compare measures the GPU. The showcase's Chat tab has a mic that dictates the message.
 
-# Text to speech on phones
+# [Text to speech on phones]($heading.id('text-to-speech-on-phones'))
 
 [Text to speech]($link.page('docs/tts')) (`oriel.tts`, Kokoro-82M) uses the same catalog as desktops; espeak-ng's phoneme data travels in the APK's assets (extracted on first start) or the iOS bundle. Phones run Kokoro on the CPU with their fast cores only, and low-end ones synthesize slower than real time: a Snapdragon 732G reads at a real-time factor of about 2.75, so the first audio takes about 4 s and speech pauses between chunks. Android projects created before Oriel 0.9.9 need one assets line in `app/build.gradle.kts` (see the TTS guide).
 
-# Also on Android
+# [Also on Android]($heading.id('also-on-android'))
 
 - **Deep links** open the app from a URL (`oriel-showcase://note/Hello` in the showcase) and reach `deep_link.onOpen`, cold or running.
 - **Files** go through the Storage Access Framework. `dialog.openFile` returns a copy in the app's cache. Save with `dialog.writeFile(io, path, data)`, which writes through the picked document's descriptor.
@@ -102,6 +102,6 @@ The showcase's "dictate anywhere" puts either into any app: tap the tile, the ke
 
 The full notes, including what was verified on which device, are in [docs/android.md](https://github.com/highercomve/Oriel/blob/main/docs/android.md) and [docs/ios.md](https://github.com/highercomve/Oriel/blob/main/docs/ios.md).
 
-# Google Play baseline
+# [Google Play baseline]($heading.id('google-play-baseline'))
 
 New Android projects compile and target API 36 (Android 16), with Android Gradle Plugin 8.13.2, Kotlin 2.3.21, and a Gradle 8.14.3 wrapper. Install `platforms;android-36` in the SDK. Android 10 remains the minimum device version. Existing generated projects keep edited Gradle files; update those settings or regenerate with `oriel android init --force` after saving your edits.

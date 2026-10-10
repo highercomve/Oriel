@@ -15,7 +15,7 @@ reflects native v0.10.1 (commit `6b05318`, September 2026). native is
 pre-1.0 and moves fast, so check its
 [platform support page](https://github.com/vercel-labs/native) for changes.
 
-# Different starting points
+# [Different starting points]($heading.id('different-starting-points'))
 
 - **native draws its own UI.** Views are `.native` markup with logic in
   TypeScript compiled to native code, or in Zig. Its engine draws every
@@ -28,7 +28,7 @@ pre-1.0 and moves fast, so check its
   events, and the modules that reach outside the window: global shortcuts,
   input injection, clipboard, tray, audio capture, llama.cpp and whisper.cpp.
 
-# Feature by feature
+# [Feature by feature]($heading.id('feature-by-feature'))
 
 | GhostPen needs | Oriel | native v0.10.1 |
 |---|---|---|
@@ -47,7 +47,7 @@ pre-1.0 and moves fast, so check its
 | Self-update | ✅ Linux (AppImage), Windows, macOS; Ed25519 | macOS only |
 | Code signing | macOS Developer ID or self-signed (`oriel signing`) | macOS |
 
-# Measured: the same app in both
+# [Measured: the same app in both]($heading.id('measured-the-same-app-in-both'))
 
 Both repositories ship a live system monitor (CPU and memory tiles with
 sparklines, a sortable and filterable table of the top 128 processes,
@@ -102,7 +102,7 @@ These are one machine and one app. GPU drivers, the compositor and the
 number of processes all move the absolute numbers. Startup time and GPU
 use were not measured.
 
-# Where native is ahead
+# [Where native is ahead]($heading.id('where-native-is-ahead'))
 
 - It runs without a WebView: its own renderer, UI written in TypeScript
   compiled to native code, and experimental iOS and Android targets.
@@ -111,7 +111,7 @@ use were not measured.
   reload that keeps state, and `native check` validation in milliseconds.
 - macOS is its primary platform and the most complete.
 
-# What a GhostPen port would take
+# [What a GhostPen port would take]($heading.id('what-a-ghostpen-port-would-take'))
 
 GhostPen's windows and screens map directly onto native's WebView mode.
 The parts that make it a system-wide tool don't: global hotkeys, pasting

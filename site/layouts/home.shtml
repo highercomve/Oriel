@@ -243,6 +243,7 @@
 					<figcaption>The native renderer, Zig mode: Linux and an Android phone</figcaption>
 				</figure>
 			</div>
+			<p style="margin-top:32px"><a class="btn btn-ghost" href="$site.page('docs/examples').link()">All the examples, explained</a></p>
 		</section>
 
 		<section class="section">

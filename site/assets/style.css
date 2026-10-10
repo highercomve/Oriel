@@ -222,6 +222,7 @@ code, pre { font-family: var(--mono); }
 .breakout-shots { display: grid; grid-template-columns: 3fr 1fr; gap: 12px; align-items: start; }
 .breakout-shots img.phone { border-radius: 18px; }
 .breakout-shots figcaption { grid-column: 1 / -1; margin-top: 0; }
+.smoke-shot.doc-shot { margin: 20px 0; }
 
 .platforms { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .platform { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }

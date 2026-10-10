@@ -6,13 +6,13 @@
 .layout = "docs.shtml",
 ---
 
-# Linux
+# [Linux]($heading.id('linux'))
 
 Packaging an existing website? [`oriel wrap <url> --package`]($link.page('docs/wrap'))
 creates a desktop project and builds its Linux AppImage, with tray support
 enabled by default.
 
-## Build a binary
+## [Build a binary]($heading.id('build-a-binary'))
 
 The simplest way is to use the `oriel` CLI:
 
@@ -36,7 +36,7 @@ Run directly:
 oriel run   # build and run
 ```
 
-## Package for distribution
+## [Package for distribution]($heading.id('package-for-distribution'))
 
 Create the packages for the target OS: `.deb`, `.rpm` and `.AppImage` on Linux, `setup.exe` on Windows, `.app` and `.dmg` on macOS:
 
@@ -46,7 +46,7 @@ oriel package
 
 All packages are written to `zig-out/package/`.
 
-### Debian and RPM
+### [Debian and RPM]($heading.id('debian-and-rpm'))
 
 These are built with `nfpm` and use the metadata from `build.zig`:
 
@@ -68,14 +68,14 @@ Packages include:
 - An uninstall entry for the package manager
 - Auto-derived runtime dependencies based on enabled modules
 
-### AppImage
+### [AppImage]($heading.id('appimage'))
 
 An AppImage is a self-contained, relocatable package. It does **not** bundle GTK4 or WebKitGTK; it relies on the system having them installed. This keeps AppImages small (~10 MB) but means they only run on distros with WebKitGTK 6.0.
 
 To run the AppImage on another machine, the system must have:
 - GTK4 and WebKitGTK 6.0 development packages installed (or runtime packages if available)
 
-### Replacing an older package
+### [Replacing an older package]($heading.id('replacing-an-older-package'))
 
 `.replaces` and `.conflicts` (deb and rpm) name packages this one takes
 over, such as the app's earlier package name: installing the new package
@@ -89,7 +89,7 @@ for the Tauri version's `ghost-pen` package:
 },
 ```
 
-### Package contents
+### [Package contents]($heading.id('package-contents'))
 
 By default a package holds the app's executable (plus its desktop entry and icons). `.contents` adds more, to every format:
 
@@ -114,11 +114,11 @@ _ = oriel.addApp(b, dep, .{
 
 Where they go: next to the app's executable in each format. On Debian and RPM, a package with extras installs everything into `/usr/lib/<app-name>/` and links the executables into `/usr/bin`, so each program finds its companions next to its own path; the AppImage uses `usr/bin/`, the Windows installer `%LOCALAPPDATA%\Programs\<name>` (the uninstaller removes them), and macOS `<Name>.app/Contents/MacOS/` for executables and libraries (signed with the bundle), with other files in `Contents/Resources/` behind a symlink from `Contents/MacOS/`, since code signing allows only code in `Contents/MacOS`.
 
-# Windows
+# [Windows]($heading.id('windows'))
 
 Oriel apps use Win32 and Microsoft Edge WebView2 on Windows. You can build them **natively on Windows** or **cross-compile from Linux**; both are verified on real Windows 11, including the installer.
 
-## Requirements
+## [Requirements]($heading.id('requirements'))
 
 - **Zig 0.16.0**, and **Node.js** for the React, Vue and Svelte templates (`vanilla` requires no Node).
 - **`WebView2Loader.dll`**: Downloaded and cached automatically by the CLI (`oriel init`, `oriel webview2`, or during `oriel build` / `oriel package`).
@@ -128,7 +128,7 @@ Oriel apps use Win32 and Microsoft Edge WebView2 on Windows. You can build them 
 
 The WebView2 runtime itself ships with Windows 11 and current Windows 10; the installer checks for it.
 
-## Build on Windows
+## [Build on Windows]($heading.id('build-on-windows'))
 
 ```sh
 oriel build
@@ -137,7 +137,7 @@ oriel package
 
 The CLI automatically passes `-Dwebview2-loader=<cached path>`. `zig-out\bin` gets the app with `WebView2Loader.dll` next to it; `zig-out\package` gets the installer.
 
-## Cross-compile from Linux
+## [Cross-compile from Linux]($heading.id('cross-compile-from-linux'))
 
 ```sh
 oriel build -Dtarget=x86_64-windows
@@ -146,7 +146,7 @@ oriel package -Dtarget=x86_64-windows
 
 The CLI detects the Windows target and supplies the cached `WebView2Loader.dll` automatically.
 
-## Managing WebView2Loader.dll
+## [Managing WebView2Loader.dll]($heading.id('managing-webview2loader-dll'))
 
 Use `oriel webview2` to download, verify, and cache the loader:
 
@@ -161,14 +161,14 @@ The download is verified by computing the package SHA-512 digest and matching it
 
 To disable automatic network fetching in CI or air-gapped environments, set `ORIEL_NO_WEBVIEW2_FETCH=1` or use `--no-webview2` during `oriel init`.
 
-### Manual download
+### [Manual download]($heading.id('manual-download'))
 
 If you prefer to supply the loader manually:
 1. Download the [Microsoft.Web.WebView2 NuGet package](https://www.nuget.org/packages/Microsoft.Web.WebView2/) (the `.nupkg` is a ZIP archive).
 2. Extract `runtimes/win-x64/native/WebView2Loader.dll` (or `win-arm64`).
 3. Pass `-Dwebview2-loader=/path/to/WebView2Loader.dll` to `oriel build` or `oriel package` (a user-passed option always wins).
 
-## The installer
+## [The installer]($heading.id('the-installer'))
 
 `oriel package` produces a per-user NSIS installer, `<app-name>-<version>-setup.exe`. It:
 
@@ -179,7 +179,7 @@ If you prefer to supply the loader manually:
 
 It is not code-signed, so Windows SmartScreen warns on first run; see [Code signing]($link.page('docs/signing')).
 
-## Test under Wine
+## [Test under Wine]($heading.id('test-under-wine'))
 
 For testing the Windows build on Linux before releasing, use Wine or Proton:
 
@@ -192,7 +192,7 @@ timeout 180 ../../scripts/wine.sh run .wine-test/smoke/bin/oriel-smoke.exe --aut
 
 This runs the app in a headless Wine environment. See `docs/windows-testing.md` for full instructions and known limitations.
 
-# macOS
+# [macOS]($heading.id('macos'))
 
 Oriel runs on macOS with AppKit and `WKWebView`, through the Objective-C runtime ([zig-objc](https://github.com/mitchellh/zig-objc)). Build on the Mac itself (Apple Silicon or Intel) with Xcode or the command-line tools installed:
 
@@ -205,7 +205,7 @@ What works today, verified on macOS 15 (arm64): windows and multiple windows, th
 
 **Permissions:** input injection needs Accessibility, audio capture needs the Microphone permission (or System Audio Recording for system audio). macOS grants them per app bundle; an unbundled binary is attributed to the app that started it, so test these from an `.app`.
 
-## App bundle and disk image
+## [App bundle and disk image]($heading.id('app-bundle-and-disk-image'))
 
 `oriel build` also writes `zig-out/<Name>.app`, and `oriel package` writes `zig-out/package/<Name>.app` and `zig-out/package/<exe>-<version>.dmg` (the app and an `Applications` link to drag it to). The bundle's `Info.plist` comes from the `.package` metadata:
 
@@ -218,7 +218,7 @@ Start the bundle with `open zig-out/<Name>.app`: notifications then go through N
 
 The bundle is ad-hoc signed, enough for the Mac that built it. To distribute it, sign it with a Developer ID and notarize it: see [Code signing]($link.page('docs/signing')).
 
-# Android and iOS
+# [Android and iOS]($heading.id('android-and-ios'))
 
 The same Zig and web code builds for phones: `oriel android build --apk --aab` writes an APK and AAB through a generated Gradle project, and `oriel ios build [--ipa]` writes an `.app` / `.ipa`. On Android it needs a JDK 17, the Android SDK and NDK; on iOS, Apple's SDK (on a Mac via `xcrun`, on Linux via [xtool](https://github.com/xtool-org/xtool)).
 
@@ -237,11 +237,11 @@ For app-owned Kotlin/Java hooks and third-party Android SDKs, declare
 `build.zig`. See [Android extensions]($link.page('docs/android-extensions'))
 for the generated registry, R8 rules, and manifest integration.
 
-# Native dependencies
+# [Native dependencies]($heading.id('native-dependencies'))
 
 Some features require native C libraries, opt-in behind build flags.
 
-## SQLite vector search (`-Dsqlite_vec`)
+## [SQLite vector search (`-Dsqlite_vec`)]($heading.id('sqlite-vector-search-dsqlite-vec'))
 
 Enable vector search in SQLite:
 
@@ -251,7 +251,7 @@ oriel build -Dsqlite_vec
 
 Default: off. Requires `sql` to be enabled.
 
-## Local AI (`-Dllama` and `-Dwhisper`)
+## [Local AI (`-Dllama` and `-Dwhisper`)]($heading.id('local-ai-dllama-and-dwhisper'))
 
 ```sh
 oriel build -Dllama -Dwhisper
@@ -265,9 +265,9 @@ oriel build -Dllama -Dwhisper -Dcpu=x86_64_v2
 
 Use `-Dcpu=baseline` for maximum portability.
 
-## GPU acceleration
+## [GPU acceleration]($heading.id('gpu-acceleration'))
 
-### CUDA (Linux)
+### [CUDA (Linux)]($heading.id('cuda-linux'))
 
 Compile with CUDA support for whisper and llama:
 
@@ -293,7 +293,7 @@ The library links cuBLAS dynamically: users need the CUDA runtime installed, or 
 
 Measured speedup (11 s audio clip on RTX 4070): 3.2 s on CPU → 0.8 s on CUDA.
 
-### Metal (macOS)
+### [Metal (macOS)]($heading.id('metal-macos'))
 
 Built in by default on macOS (`-Dggml_metal=false` to disable). The Metal kernel sources are embedded in the executable, so no Xcode `metal` compiler step is needed; ggml compiles them for the GPU when a model loads.
 
@@ -303,7 +303,7 @@ oriel build -Dwhisper
 
 Measured on an Apple M1 (5.9 s clip, whisper tiny.en, incl. model load): 7.3 s on CPU → about 1 s on Metal.
 
-### Vulkan (Linux)
+### [Vulkan (Linux)]($heading.id('vulkan-linux'))
 
 Runs llama and whisper on any GPU vendor (NVIDIA, AMD, Intel):
 
@@ -315,7 +315,7 @@ This requires the Vulkan headers, SPIRV-Headers, the Vulkan loader and `glslc` (
 
 The backend is compiled as `libggml-vulkan.so` (its shaders compiled to SPIR-V and embedded) and loaded at runtime from the app's directory. Without a Vulkan driver it doesn't load and the app runs on the CPU, so it is safe to ship to everyone. Built together with CUDA, CUDA is preferred and Vulkan is only loaded when CUDA finds no GPU.
 
-# App icon
+# [App icon]($heading.id('app-icon'))
 
 Every app uses a single source PNG (1024×1024 recommended) configured in `build.zig`:
 

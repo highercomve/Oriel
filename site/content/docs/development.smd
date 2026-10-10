@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Dev mode
+# [Dev mode]($heading.id('dev-mode'))
 
 ```sh
 oriel dev
@@ -16,7 +16,7 @@ This starts the Vite dev server on `http://localhost:5173`, opens the app agains
 
 Press Ctrl-C to stop everything: the `dev_runner` manages Vite and the Zig app in a process group, so stopping the Zig build also stops the dev server.
 
-# Type generation and `oriel types`
+# [Type generation and `oriel types`]($heading.id('type-generation-and-oriel-types'))
 
 The Zig side defines `Commands` and `Events` as structs. The `oriel types` command regenerates the TypeScript types automatically:
 
@@ -35,7 +35,7 @@ const off = listen("notes_changed", (notes) => ...);  // type-checked
 
 If you add a new command `pub fn export_data(...)` to `Commands`, run `oriel types` and the TypeScript import gains the new function.
 
-# Type checking with `oriel check`
+# [Type checking with `oriel check`]($heading.id('type-checking-with-oriel-check'))
 
 Without building the full app:
 
@@ -45,7 +45,7 @@ oriel check
 
 This type-checks your Zig code in about a second without building binaries. Handy while iterating.
 
-# Logging
+# [Logging]($heading.id('logging'))
 
 The app logs to stderr, and also to a file once `src/main.zig` routes `std.log` through Oriel:
 
@@ -77,7 +77,7 @@ log.debug("Loading notes", .{});
 
 In debug and dev builds, JavaScript `console.log()`, `console.error()`, etc. are forwarded to stdout, so you can monitor them alongside the Zig logs.
 
-# Testing GUI apps headlessly
+# [Testing GUI apps headlessly]($heading.id('testing-gui-apps-headlessly'))
 
 For CI or automated testing, run the app without a real display:
 
@@ -96,9 +96,9 @@ SHOT=/tmp/shot.png scripts/headless.sh ./zig-out/bin/my-app
 
 This is how the [examples/smoke]($link.page('docs/modules')) test runs on every push.
 
-# Debugging tips
+# [Debugging tips]($heading.id('debugging-tips'))
 
-## Zig panics and backtraces
+## [Zig panics and backtraces]($heading.id('zig-panics-and-backtraces'))
 
 In a debug or dev build, panics print a stack trace. Set the environment variable to get more detail:
 
@@ -106,11 +106,11 @@ In a debug or dev build, panics print a stack trace. Set the environment variabl
 ZIG_BACKTRACE=1 oriel dev
 ```
 
-## WebView debug mode
+## [WebView debug mode]($heading.id('webview-debug-mode'))
 
 In debug builds, the WebKit inspector is enabled. On Linux (X11), press F12 to open it (Wayland: check your desktop environment's keybindings).
 
-## GTK debug output
+## [GTK debug output]($heading.id('gtk-debug-output'))
 
 For GTK-specific issues:
 
@@ -118,7 +118,7 @@ For GTK-specific issues:
 G_MESSAGES_DEBUG=all oriel dev 2>&1 | grep -i gtk
 ```
 
-## Tray menu introspection
+## [Tray menu introspection]($heading.id('tray-menu-introspection'))
 
 Inside a headless session, query the tray menu structure via D-Bus:
 
@@ -129,7 +129,7 @@ gdbus call --session --dest org.kde.StatusNotifierItem-$PID-1 --object-path /Men
 
 Replace `$PID` with the app's process ID.
 
-## Memory and threads
+## [Memory and threads]($heading.id('memory-and-threads'))
 
 Oriel's platform layer is designed for memory safety. The framework uses:
 - `defer` and `errdefer` for cleanup on all error paths.
@@ -142,7 +142,7 @@ If you see unexpected crashes or memory issues, check:
 3. Events and commands receive allocated data (not stack or temporary allocations).
 4. The app doesn't block the main thread (use async commands for I/O or slow operations).
 
-# Global hotkeys and the app menu on Linux
+# [Global hotkeys and the app menu on Linux]($heading.id('global-hotkeys-and-the-app-menu-on-linux'))
 
 A build running from `zig-out` isn't installed, so the desktop doesn't know it: on Wayland the GlobalShortcuts portal refuses to register its hotkeys, and it isn't in the app menu. Install a desktop entry for it:
 

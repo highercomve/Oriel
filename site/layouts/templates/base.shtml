@@ -12,8 +12,8 @@
 		<link rel="preconnect" href="https://fonts.googleapis.com">
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
-		<link type="text/css" rel="stylesheet" href="$site.asset('style.css').link().suffix('?v=20261009b')">
-		<link type="text/css" rel="stylesheet" href="$site.asset('highlight.css').link().suffix('?v=20261009b')">
+		<link type="text/css" rel="stylesheet" href="$site.asset('style.css').link().suffix('?v=20261010a')">
+		<link type="text/css" rel="stylesheet" href="$site.asset('highlight.css').link().suffix('?v=20261010a')">
 		<style>[hidden] { display: none !important; }</style>
 		<super>
 	</head>
@@ -35,7 +35,7 @@
 					<a href="$site.page('docs/getting-started').link()">Docs</a>
 					<a href="$site.page('docs/tutorial').link()">Tutorial</a>
 					<a href="$site.page('docs/modules').link()">Modules</a>
-					<a href="$site.page('docs/roadmap').link()">Roadmap</a>
+					<a href="$site.page('docs/examples').link()">Examples</a>
 					<a class="topnav-gh" href="https://github.com/highercomve/Oriel">GitHub</a>
 					<a class="version-badge" href="$site.custom.get('releases_link')" :text="$site.custom.get('version')"></a>
 				</nav>
@@ -74,14 +74,14 @@
 						<h4>Project</h4>
 						<a href="https://github.com/highercomve/Oriel">GitHub</a>
 						<a href="https://github.com/highercomve/Oriel/releases">Releases</a>
-						<a href="$site.page('docs/roadmap').link()">Roadmap</a>
+						<a href="$site.page('docs/examples').link()">Examples</a>
 						<a href="https://github.com/highercomve/Oriel/issues">Issues</a>
 					</div>
 				</div>
 			</div>
 			<p class="footer-legal">MIT license · Built with Zig and <a href="https://zine-ssg.io">Zine</a></p>
 		</footer>
-		<script src="$site.asset('search.js').link().suffix('?v=20261009b')" defer></script>
-		<script src="$site.asset('site.js').link().suffix('?v=20261009b')" defer></script>
+		<script src="$site.asset('search.js').link().suffix('?v=20261010a')" defer></script>
+		<script src="$site.asset('site.js').link().suffix('?v=20261010a')" defer></script>
 	</body>
 </html>

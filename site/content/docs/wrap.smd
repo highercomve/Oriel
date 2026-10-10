@@ -14,7 +14,7 @@ The app uses the system WebView: WebKitGTK on Linux, WebView2 on Windows,
 and WKWebView on macOS. It loads the live website, so it needs the same
 network access and account as the browser version.
 
-# Create and run
+# [Create and run]($heading.id('create-and-run'))
 
 First [install the CLI and platform dependencies]($link.page('docs/getting-started'))
 and run `oriel doctor --fix`. Wrapped apps need no Node.js or npm: their
@@ -36,7 +36,7 @@ To launch immediately after creating the project:
 oriel wrap https://example.com --name example --run
 ```
 
-# Tray and window behavior
+# [Tray and window behavior]($heading.id('tray-and-window-behavior'))
 
 The tray is **enabled by default**. Its menu has **Show / Hide** and **Quit**.
 Closing the window hides it while the app keeps running; choose Quit to exit.
@@ -49,7 +49,7 @@ oriel wrap https://example.com --name example --no-tray
 
 On Linux, your desktop needs system tray support to show the icon.
 
-# Icon and browser identity
+# [Icon and browser identity]($heading.id('icon-and-browser-identity'))
 
 Pass `--icon ./icon.png` to use a local PNG. Otherwise Oriel tries Google's
 favicon service, then DuckDuckGo, and falls back to its own icon if no PNG
@@ -62,7 +62,7 @@ WhatsApp URLs automatically select the Chrome preset when this option is
 omitted. Windows and macOS currently retain the WebView's default user agent.
 Changing the user agent does not change the WebView engine or its features.
 
-# Package on Linux
+# [Package on Linux]($heading.id('package-on-linux'))
 
 Create a ReleaseSafe AppImage in one command:
 
@@ -93,7 +93,7 @@ For Windows or macOS distribution, edit that packaging configuration for
 the target platform and follow [Building & packaging]($link.page('docs/building'))
 and [Code signing]($link.page('docs/signing')).
 
-# Options
+# [Options]($heading.id('options'))
 
 | Option | Meaning |
 |---|---|
@@ -112,7 +112,7 @@ and [Code signing]($link.page('docs/signing')).
 
 Run `oriel wrap --help` for the installed CLI's options.
 
-# Customize the generated app
+# [Customize the generated app]($heading.id('customize-the-generated-app'))
 
 The project is ordinary Zig source that you can edit and rebuild:
 

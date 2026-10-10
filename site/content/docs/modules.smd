@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Module overview
+# [Module overview]($heading.id('module-overview'))
 
 | Module | Flag | Default | Linux | Windows | macOS | Android | iOS |
 |---|---|---|---|---|---|---|---|
@@ -45,7 +45,7 @@ On Android and iOS, a module marked — is off by default and a build error when
 
 All modules build for Linux, Windows and macOS. Native dependencies (`sqlite_vec`, `llama`, `whisper`, `kokoro`, `audio_capture`) are **off by default** and opt-in via `-D` flags. To disable a default-on module, pass `-D<name>=false`.
 
-# Tray icon
+# [Tray icon]($heading.id('tray-icon'))
 
 System tray icon with a clickable menu. Left-click toggles the app window visibility.
 
@@ -66,7 +66,7 @@ tray = try oriel.tray.Tray.create(gpa, .{
 
 **Platform support:** Linux (StatusNotifierItem + DBusMenu) · Windows (Shell_NotifyIconW) · macOS (`NSStatusItem`; right-click opens the menu).
 
-# Updater
+# [Updater]($heading.id('updater'))
 
 Built-in self-updater with Ed25519 signature verification and atomic binary replacement. Emits progress events and restarts the app.
 
@@ -89,7 +89,7 @@ See [Code signing]($link.page('docs/signing')) for key generation and signing up
 
 **Platform support:** Linux · Windows (tested under Wine) · macOS (plain executables, and whole `.app` bundles with the `app.tar.gz` format, swapped atomically).
 
-# Media server
+# [Media server]($heading.id('media-server'))
 
 HTTP server streaming large video and audio files with range-request support (RFC 9110). No need to load multi-GB files into memory.
 
@@ -107,7 +107,7 @@ Also available at `app://app/media/<path>` for fetch requests (WebKitGTK's media
 
 **Platform support:** Linux · Windows (tested under Wine) · macOS (`app://app/media/` streamed through `WKURLSchemeHandler`).
 
-# SQL and SQLite
+# [SQL and SQLite]($heading.id('sql-and-sqlite'))
 
 Embedded SQLite database with optional vector search (`sqlite_vec`). Thread-safe, persistent storage.
 
@@ -122,7 +122,7 @@ _ = try stmt.step();
 
 **Platform support:** Linux · Windows · macOS.
 
-## Vector search (`-Dsqlite_vec`)
+## [Vector search (`-Dsqlite_vec`)]($heading.id('vector-search-dsqlite-vec'))
 
 Adds the `sqlite-vec` extension for k-nearest-neighbor (KNN) vector search:
 
@@ -137,7 +137,7 @@ _ = try insert.step();
 
 **Status:** Opt-in with `-Dsqlite_vec` (requires `-Dsql`). Default: off.
 
-# File watching
+# [File watching]($heading.id('file-watching'))
 
 Monitor directories for file changes and receive events:
 
@@ -147,7 +147,7 @@ try oriel.fs_watch.watch(gpa, "/home/me/Documents", onFileChange);
 
 **Platform support:** Linux (inotify) · Windows (`ReadDirectoryChangesW`) · macOS (FSEvents).
 
-# Dialogs
+# [Dialogs]($heading.id('dialogs'))
 
 Native file open/save dialogs:
 
@@ -160,7 +160,7 @@ const file = try oriel.dialog.openFile(gpa, .{
 
 **Platform support:** Linux (`GtkFileDialog`) · Windows (`IFileOpenDialog`) · macOS (`NSOpenPanel` / `NSSavePanel`).
 
-# Notifications
+# [Notifications]($heading.id('notifications'))
 
 System desktop notifications:
 
@@ -199,7 +199,7 @@ Buttons show on Linux, macOS (`.app` bundles), iOS and Android (at most 3). Wind
 
 **Platform support:** Linux (`GNotification`) · Windows (balloon tooltips) · macOS (`UNUserNotificationCenter` in an `.app`; `osascript` fallback when unbundled) · Android · iOS.
 
-# Settings store
+# [Settings store]($heading.id('settings-store'))
 
 Thread-safe JSON key-value store with atomic writes. Standard directories per OS (XDG on Linux, Known Folders on Windows, `~/Library/Application Support` and `~/Library/Caches` on macOS):
 
@@ -216,7 +216,7 @@ Also provides `configDir`, `dataDir`, `cacheDir` helpers.
 
 **Platform support:** Linux · Windows · macOS.
 
-# App menu bar
+# [App menu bar]($heading.id('app-menu-bar'))
 
 Native application menu bar:
 
@@ -232,7 +232,7 @@ try oriel.App.setMenu(&.{
 
 **Platform support:** Linux (`GMenuModel`) · Windows (Win32 menus; tested under Wine) · macOS (`NSMenu`, between the default App and Edit/Window menus; `<Ctrl>` becomes ⌘).
 
-# Global shortcuts
+# [Global shortcuts]($heading.id('global-shortcuts'))
 
 Register system-wide keyboard shortcuts that trigger even when the app is unfocused:
 
@@ -246,7 +246,7 @@ try oriel.global_shortcut.register(gpa, .{
 
 **Platform support:** Linux (Wayland GlobalShortcuts portal + X11 XGrabKey) · Windows (`RegisterHotKey`; tested under Wine) · macOS (Carbon `RegisterEventHotKey`, no permission needed).
 
-# Input injection
+# [Input injection]($heading.id('input-injection'))
 
 Simulate keyboard input and clipboard operations:
 
@@ -257,7 +257,7 @@ try oriel.input.keyCombo("ctrl+v");
 
 **Platform support:** Linux (Wayland virtual-keyboard + X11 XTest) · Windows (`SendInput`; tested under Wine) · macOS (`CGEvent`; needs the Accessibility permission, else `error.AccessibilityNotGranted`).
 
-# Clipboard
+# [Clipboard]($heading.id('clipboard'))
 
 Background clipboard read/write for text and PNG images:
 
@@ -268,7 +268,7 @@ try oriel.clipboard.writeText("New content");
 
 **Platform support:** Linux (Wayland data-control + X11 GdkClipboard) · Windows · macOS (`NSPasteboard`).
 
-# Deep links
+# [Deep links]($heading.id('deep-links'))
 
 Handle custom URL schemes (e.g. `myapp://note/123`), delivering links to both cold-starting and already-running app instances.
 
@@ -307,9 +307,9 @@ oriel deep-link add myapp
 
 **Status:** Opt-in with `-Ddeep_link`. Default: off.
 
-# Local AI inference
+# [Local AI inference]($heading.id('local-ai-inference'))
 
-## LLM text generation (`-Dllama`)
+## [LLM text generation (`-Dllama`)]($heading.id('llm-text-generation-dllama'))
 
 Embedded llama.cpp for local text generation. Use quantized models (GGUF format):
 
@@ -327,7 +327,7 @@ Build time: ~45 seconds cold; cached builds are fast. CPU features auto-detected
 
 **GPU:** CUDA on Linux with `-Dggml_cuda`; Metal on macOS (on by default).
 
-## Speech recognition (`-Dwhisper`)
+## [Speech recognition (`-Dwhisper`)]($heading.id('speech-recognition-dwhisper'))
 
 Embedded whisper.cpp for speech-to-text:
 
@@ -347,7 +347,7 @@ Same build-time and distribution considerations as llama.
 
 For live dictation and transcription with the tuning done for you, use Dictation (below), built on top of it.
 
-## CUDA acceleration
+## [CUDA acceleration]($heading.id('cuda-acceleration'))
 
 Compile with `-Dggml_cuda` (Linux only) to offload to NVIDIA GPUs:
 
@@ -359,15 +359,15 @@ Measured speedup on RTX 4070 (11 s audio): 3.2 s on CPU → 0.8 s on CUDA.
 
 Requires the CUDA toolkit and an NVIDIA GPU at runtime; CPU fallback works.
 
-## Phones: ARM CPU kernels (`-Dggml_arm`)
+## [Phones: ARM CPU kernels (`-Dggml_arm`)]($heading.id('phones-arm-cpu-kernels-dggml-arm'))
 
 ggml, llama.cpp and whisper.cpp are compiled optimized in every build mode, and for ARM phones with the instructions their fast kernels need: `-Dggml_arm=dotprod` (the Android default: every phone since 2018) or `i8mm` (Armv8.6/v9: Tensor G3+, Snapdragon 8 Gen 1+, Dimensity 9000+). A CPU without them is refused at model load (`error.CpuUnsupported`), not crashed. Mobile GPU drivers often lose to these kernels, per model: on a Pixel's Mali-G715, whisper base ran 1.8× faster on the CPU, small 1.6× faster on Vulkan.
 
-## Metal acceleration (macOS, iOS)
+## [Metal acceleration (macOS, iOS)]($heading.id('metal-acceleration-macos-ios'))
 
 On macOS and iOS, ggml's Metal backend is built in by default (`-Dggml_metal=false` turns it off); the kernel sources are embedded, so no Xcode `metal` compiler is needed. Measured on an Apple M1 (5.9 s clip, tiny.en, incl. model load): 7.3 s on CPU → about 1 s on Metal.
 
-# Text to speech
+# [Text to speech]($heading.id('text-to-speech'))
 
 `oriel.tts` reads text aloud offline with Kokoro-82M: enable `.kokoro = true` with `.llama = true` or `.whisper = true`, then
 
@@ -385,7 +385,7 @@ oriel.tts.stop();                                         // Stop, from any thre
 
 See [Offline text to speech]($link.page('docs/tts')) for the API, platform notes, measured speeds and dependency notices.
 
-# Audio capture
+# [Audio capture]($heading.id('audio-capture'))
 
 Record microphones and system audio as mono `f32` samples (16 kHz for whisper).
 
@@ -403,7 +403,7 @@ try stream.read(&buf); // blocks until full
 
 **Status:** Opt-in with `-Daudio_capture`. Default: off.
 
-# Dictation
+# [Dictation]($heading.id('dictation'))
 
 Voice to text with the tuning built in: live dictation from the microphone (or system audio, for captions), and transcription of recordings. Needs `-Dwhisper -Daudio_capture`.
 
@@ -437,7 +437,7 @@ const t = try oriel.dictation.transcribeFile(gpa, "talk.wav", .{});
 
 The showcase's Dictate tab uses all of it, and its System tab dictates into other apps.
 
-# Chat
+# [Chat]($heading.id('chat'))
 
 Chat and completion with a local LLM, the llama.cpp counterpart of Dictation. Needs `-Dllama`.
 
@@ -465,7 +465,7 @@ const r = try oriel.chat.generate(gpa, &.{
 
 **Building blocks:** `oriel.llama` (the C API and JSON-schema grammars) and `oriel.ggml_gpu`.
 
-# Network and mDNS
+# [Network and mDNS]($heading.id('network-and-mdns'))
 
 Service registration and browsing (DNS-SD / mDNS on the local link) through the platform's native responder, without opening multicast sockets or needing multicast entitlements:
 
@@ -495,7 +495,7 @@ fn onServiceEvent(ctx: ?*anyopaque, event: *const oriel.network.mdns.Event) void
 - **Windows:** Handled via dnsapi's `DnsServiceRegister`, `DnsServiceBrowse`, and `DnsServiceResolve` (Windows 10 1809+). TXT values must be UTF-8 text strings.
 - Requires `.permissions = .{ .local_network = "Find local devices" }` declared in `build.zig`.
 
-# System sharing
+# [System sharing]($heading.id('system-sharing'))
 
 Send content to the system share sheet, and receive shares (files, text, URLs) from other apps:
 

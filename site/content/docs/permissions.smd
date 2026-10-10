@@ -6,7 +6,7 @@
 .layout = "docs.shtml",
 ---
 
-# Permissions
+# [Permissions]($heading.id('permissions'))
 
 Apps need different things from the operating system: a dictation app needs the microphone, a screen recorder needs screen capture, a text tool that types into other apps needs accessibility. Oriel gives you one way to handle them on Linux, Windows and macOS:
 
@@ -15,7 +15,7 @@ Apps need different things from the operating system: a dictation app needs the 
 3. **Request and check** at runtime, from Zig or JavaScript.
 4. The webview's own requests (`getUserMedia`, geolocation, notifications) are **allowed only for declared permissions**, and only for your app's pages.
 
-## Kinds
+## [Kinds]($heading.id('kinds'))
 
 | Kind | What it covers |
 | --- | --- |
@@ -27,7 +27,7 @@ Apps need different things from the operating system: a dictation app needs the 
 | `notifications` | Showing notifications |
 | `system_audio` | Recording the audio other apps play |
 
-## 1. Declare
+## [1. Declare]($heading.id('1-declare'))
 
 ```sh
 oriel permission add microphone "Dictation turns your speech into text"
@@ -60,7 +60,7 @@ return oriel.main(init, api, .{
 });
 ```
 
-### Platform-specific declarations
+### [Platform-specific declarations]($heading.id('platform-specific-declarations'))
 
 Some platforms need declarations that no kind covers. Put them in that platform's options. Each build merges them with the ones the kinds generate, one entry per name or key:
 
@@ -86,7 +86,7 @@ These are package declarations only: the runtime `status`/`request` still covers
 
 A permission that is **not declared** is always `denied`, and is never requested. On macOS, using a protected resource without its `Info.plist` key terminates the app, so this also keeps you from shipping that crash.
 
-## 2. Request and check
+## [2. Request and check]($heading.id('2-request-and-check'))
 
 From JavaScript:
 
@@ -121,7 +121,7 @@ permissions.onChange(struct {
 
 `request` returns at once (`prompt` while the OS dialog is open); the outcome arrives through `onChange` and the `permission-changed` event. In JavaScript, `permissions.request()` resolves with that outcome.
 
-## What each OS does
+## [What each OS does]($heading.id('what-each-os-does'))
 
 | | Linux | Windows | macOS |
 | --- | --- | --- | --- |
@@ -134,7 +134,7 @@ permissions.onChange(struct {
 
 "Not gated" means the status is `granted`. Windows never asks a desktop app: each permission is `granted` or `denied` from the user's Privacy settings (and policies), and `request` just reports that. When it's `denied`, send the user to `openSettings`. On macOS, run the app as a bundle (`zig-out/<Name>.app`, which `zig build` creates) so macOS knows which app is asking.
 
-## Webview requests
+## [Webview requests]($heading.id('webview-requests'))
 
 When a page calls `navigator.mediaDevices.getUserMedia()`, the Geolocation API or `Notification.requestPermission()`, Oriel allows it only when:
 
@@ -145,7 +145,7 @@ Everything else is denied without a prompt, and logged with the permission to ad
 
 On macOS, WKWebView hides `navigator.mediaDevices` from custom-scheme pages. When the app declares the microphone or camera, Oriel turns it on with WebKit's private `_setMediaDevicesEnabled:` preference. That's fine for apps you distribute yourself; the Mac App Store may reject private API use.
 
-## macOS signing
+## [macOS signing]($heading.id('macos-signing'))
 
 `zig build` and `oriel package` write `<Name>.entitlements` next to the `.app` (in `zig-out/` and `zig-out/package/`), with the hardened-runtime entitlements for the declared permissions (`com.apple.security.device.audio-input`, `...camera`, `...location`). Pass it when signing with a Developer ID:
 
