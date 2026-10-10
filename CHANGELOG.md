@@ -16,6 +16,10 @@ Notable changes in Oriel releases.
   bridge ports); one that starts carrying traffic appears.
 - System monitor example: the sampler tests print a sample taken half a
   second after the last, not a 0% CPU read 1.5 ms later.
+- Native renderer on macOS: a popover or sheet AppKit shows over the
+  page (the share picker of `oriel.share.send`) is in the window's
+  accessibility tree, so VoiceOver reaches it. The page view listed only
+  the page's elements and left it out.
 
 ## [0.9.12] — 2026-10-10
 

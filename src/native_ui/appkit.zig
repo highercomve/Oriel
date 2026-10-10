@@ -2510,7 +2510,27 @@ fn axChildren(self: id, _: SEL) callconv(.c) id {
     axOn(s);
     const arr = cocoa.class("NSMutableArray").msgSend(Object, "array", .{});
     if (s.engine.tree.root) |root| axCollect(s, root, arr, false);
+    axSystemChildren(self, arr);
     return arr.value;
+}
+
+/// What AppKit shows over the page, after the page's elements: a popover
+/// (oriel.share.send's NSSharingServicePicker) or a sheet lives in a
+/// child window of the view's, which VoiceOver finds through the view
+/// that showed it (as WKWebView's lists it); the page's own list would
+/// leave it out.
+fn axSystemChildren(self: id, arr: Object) void {
+    const win = (Object{ .value = self }).msgSend(Object, "window", .{});
+    if (win.value == null) return;
+    const kids = win.msgSend(Object, "childWindows", .{});
+    if (kids.value == null) return;
+    const n = kids.msgSend(c_ulong, "count", .{});
+    for (0..n) |i| {
+        const w = kids.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, i)});
+        if (!cocoa.isTrue(w.msgSend(BOOL, "isVisible", .{}))) continue;
+        const role = cocoa.utf8(w.msgSend(Object, "accessibilityRole", .{})) orelse continue;
+        if (std.mem.eql(u8, role, "AXPopover") or std.mem.eql(u8, role, "AXSheet")) arr.msgSend(void, "addObject:", .{w});
+    }
 }
 
 /// `n` and what's under it, in node order, into `arr`. `named`: inside an
