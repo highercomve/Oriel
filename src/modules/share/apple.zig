@@ -2,9 +2,9 @@
 //! app, from CFBundleDocumentTypes (macOS Finder's "Open With" and drops on
 //! the Dock icon, through the app delegate's application:openURLs:; iOS's
 //! "Open in" and Files, through the scene's URL contexts, as copies in
-//! Documents/Inbox). Sending: NSSharingServicePicker (macOS) and
-//! UIActivityViewController (iOS), from the main window. Not written yet:
-//! macOS Services.
+//! Documents/Inbox; and macOS Services, through `receiveService`, the services
+//! provider's handler). Sending: NSSharingServicePicker (macOS) and
+//! UIActivityViewController (iOS), from the main window.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -34,6 +34,12 @@ var names: std.AutoHashMapUnmanaged(u32, []u8) = .empty;
 /// may be the app's own copies (iOS's Documents/Inbox): those are unlinked
 /// once open (the descriptor keeps them readable until released).
 pub fn receivePaths(paths: []const []const u8, source: common.Source, copies: bool) void {
+    receive(paths, null, null, source, copies);
+}
+
+/// A share of files (as `receivePaths`), text and a URL; nothing is sent
+/// when none of them came.
+pub fn receive(paths: []const []const u8, text: ?[]const u8, url: ?[]const u8, source: common.Source, copies: bool) void {
     var files: std.ArrayList(common.File) = .empty;
     defer files.deinit(gpa);
     var handles: std.ArrayList(u32) = .empty;
@@ -58,7 +64,7 @@ pub fn receivePaths(paths: []const []const u8, source: common.Source, copies: bo
             names.put(gpa, f.handle, n) catch gpa.free(n);
         } else |_| {}
     }
-    if (files.items.len == 0) return;
+    if (files.items.len == 0 and text == null and url == null) return;
     const id = next_share;
     next_share +%= 1;
     if (next_share == 0) next_share = 1;
@@ -72,9 +78,48 @@ pub fn receivePaths(paths: []const []const u8, source: common.Source, copies: bo
         return;
     };
     shares.putAssumeCapacity(id, owned);
-    const r: common.Received = .{ .id = id, .source = source, .files = files.items };
+    const r: common.Received = .{ .id = id, .source = source, .text = text, .url = url, .files = files.items };
     common.dispatch(&r);
 }
+
+/// macOS Services: the selection another app sent through the app's
+/// Services menu item (Info.plist NSServices, NSMessage orielShare) as a
+/// `service` share: its files, else its text and URL.
+pub fn receiveService(pboard: Object) void {
+    if (!is_macos) return;
+    const pool = rt.objc.AutoreleasePool.init();
+    defer pool.deinit();
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer paths.deinit(gpa);
+    const url_class = rt.class("NSURL");
+    const classes = rt.class("NSArray").msgSend(Object, "arrayWithObject:", .{url_class.value});
+    const only_files = rt.class("NSDictionary").msgSend(Object, "dictionaryWithObject:forKey:", .{
+        rt.class("NSNumber").msgSend(Object, "numberWithBool:", .{rt.boolean(true)}), NSPasteboardURLReadingFileURLsOnlyKey,
+    });
+    const urls = pboard.msgSend(Object, "readObjectsForClasses:options:", .{ classes, only_files });
+    if (urls.value != null) {
+        const n = urls.msgSend(c_ulong, "count", .{});
+        for (0..n) |i| {
+            const u = urls.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, i)});
+            if (rt.utf8(u.msgSend(Object, "path", .{}))) |p| paths.append(gpa, p) catch {};
+        }
+    }
+    var text: ?[]const u8 = null;
+    var url: ?[]const u8 = null;
+    if (paths.items.len == 0) {
+        // A link's URL (public.url), else plain text (which may itself be one).
+        const link = url_class.msgSend(Object, "URLFromPasteboard:", .{pboard});
+        if (link.value != null and !rt.isTrue(link.msgSend(rt.c.BOOL, "isFileURL", .{}))) url = rt.urlString(link);
+        if (rt.nsString("public.utf8-plain-text")) |ty| {
+            defer ty.release();
+            text = rt.utf8(pboard.msgSend(Object, "stringForType:", .{ty}));
+        }
+        if (url != null and text != null and std.mem.eql(u8, url.?, text.?)) text = null;
+    }
+    receive(paths.items, text, url, .service, false);
+}
+
+extern const NSPasteboardURLReadingFileURLsOnlyKey: rt.id;
 
 fn dropFile(h: u32) void {
     received.release(h);
