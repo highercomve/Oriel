@@ -120,13 +120,19 @@ body {
 }
 
 /* Main Content */
+/* The page scrolls when every part is shown; each part keeps its height. */
 .content {
   flex: 1;
   display: flex;
   flex-direction: column;
   padding: 16px;
   gap: 14px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.content > * {
+  flex-shrink: 0;
 }
 
 /* 4 Tiles Grid */
@@ -232,7 +238,6 @@ canvas {
   font-weight: 500;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: all 0.1s ease;
   user-select: none;
 }
 
@@ -357,6 +362,7 @@ canvas {
 /* Table Section */
 .table-section {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background-color: var(--bg-surface);
@@ -421,12 +427,17 @@ canvas {
   position: relative;
 }
 
+/* Virtual list (app.js syncRows): as tall as every row, each row placed
+   at its index. */
 .table-body {
-  display: flex;
-  flex-direction: column;
+  position: relative;
+  flex-shrink: 0;
 }
 
 .table-row {
+  position: absolute;
+  left: 0;
+  right: 0;
   display: flex;
   align-items: center;
   padding: 0 16px;
@@ -434,7 +445,8 @@ canvas {
   border-bottom: 1px solid rgba(48, 54, 61, 0.4);
   font-size: 12px;
   color: var(--text-main);
-  transition: background-color 0.1s ease;
+  /* No hover transition: scrolling slides rows under the pointer, and a
+     fade on each would keep the window redrawing every display frame. */
   user-select: none;
 }
 
@@ -450,7 +462,8 @@ canvas {
 }
 
 .col-name {
-  flex: 1;
+  width: 190px;
+  flex-shrink: 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -461,7 +474,7 @@ canvas {
 }
 
 .col-state {
-  width: 60px;
+  width: 50px;
   flex-shrink: 0;
   text-align: center;
   color: var(--text-dim);
@@ -484,7 +497,7 @@ canvas {
 }
 
 .col-actions {
-  width: 150px;
+  width: 140px;
   flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
@@ -629,7 +642,6 @@ canvas {
   color: var(--text-main);
   cursor: pointer;
   position: relative;
-  transition: background-color 0.1s ease;
 }
 
 .menu-item:hover {
@@ -691,4 +703,654 @@ canvas {
 
 .menu-has-submenu:hover > .context-submenu {
   display: block;
+}
+
+/* Processes: toolbar and table, together shown or hidden. With every part
+   shown the table keeps a useful height and the page scrolls; alone it
+   fills what's left. */
+.proc-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* At least 460px; what's left of a tall window (fullscreen) too. */
+  flex: 1 0 460px;
+  min-height: 460px;
+}
+
+.proc-section.fill {
+  height: auto;
+  flex: 1 1 0;
+  min-height: 280px;
+}
+
+.col-user {
+  width: 90px;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  padding-right: 8px;
+}
+
+.col-threads {
+  width: 48px;
+  flex-shrink: 0;
+  text-align: right;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.col-cmd {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding-left: 16px;
+}
+
+/* CPU tile: opens the CPU details */
+.tile-clickable {
+  cursor: pointer;
+}
+
+.tile-clickable:hover {
+  border-color: var(--text-dim);
+}
+
+.tile-toggle {
+  color: var(--text-dim);
+  margin-left: 4px;
+}
+
+/* Panels */
+.panel {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.panel-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.panel-spacer {
+  flex: 1;
+}
+
+.stat-chip {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background-color: var(--bg-app);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 1px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.stat-chip.hot {
+  color: var(--accent-warn);
+}
+
+.stat-chip.critical {
+  color: var(--accent-danger);
+}
+
+/* System */
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px 18px;
+}
+
+.kv {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.kv-key {
+  width: 52px;
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.kv-val {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-main);
+}
+
+/* CPU details */
+/* Graph and cores split under the tiles' middle edge: two columns with
+   the tiles' gap inside the panel's padding. */
+.cpu-body {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  min-width: 0;
+}
+
+.cpu-graph {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cpu-graph-canvas {
+  flex: 1;
+  min-height: 96px;
+  background-color: var(--bg-app);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.legend {
+  display: flex;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-item b {
+  font-family: var(--font-mono);
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.sw-user { background-color: #39c5bb; }
+.sw-system { background-color: #58a6ff; }
+.sw-iowait { background-color: #d29922; }
+
+.core-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 3px 16px;
+  min-width: 0;
+  align-content: start;
+}
+
+.core-grid.one-col {
+  grid-template-columns: 1fr;
+}
+
+.core-grid.four-col {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.core-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 18px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  min-width: 0;
+}
+
+.core-label {
+  width: 30px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* A faint track: at a few percent the bars are a pixel tall, and without
+   it they read as stray dashes. */
+.core-chart {
+  flex: 1;
+  min-width: 0;
+  height: 14px;
+  background-color: rgba(139, 148, 158, 0.08);
+  border-radius: 2px;
+}
+
+.core-pct {
+  width: 38px;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--text-main);
+}
+
+.core-freq {
+  width: 46px;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--text-dim);
+}
+
+/* Memory, disks, network, sensors */
+.panels-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+/* Panel edges fall on the tiles' column edges (the 4-column grid above):
+   four panels one column each (or two by two), two half each, and three
+   as 1 + 2 + 1, the middle one two columns and the gap between them wide.
+   A flex basis can't go below a box's padding and border (Yoga, as
+   browsers: 2 × 14px + 2 × 1px), so the sides start from that, the middle
+   from twice it plus the gap, and the free space is shared 1 : 2 : 1. */
+.panels-row.cols-3 {
+  display: flex;
+  flex-direction: row;
+}
+
+.panels-row.cols-3 > .panel {
+  flex: 1 1 30px;
+}
+
+.panels-row.cols-3 > .panel.span-2 {
+  flex: 2 1 72px;
+}
+
+.panels-row.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.panels-row.cols-1 { grid-template-columns: 1fr; }
+
+.meter-list, .disk-list, .sensor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.meter-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+
+.meter-val {
+  font-family: var(--font-mono);
+  color: var(--text-main);
+  white-space: nowrap;
+}
+
+.bar {
+  height: 6px;
+  background-color: var(--bg-app);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+}
+
+.fill-blue { background-color: #58a6ff; }
+.fill-cyan { background-color: #39c5bb; }
+.fill-violet { background-color: #a371f7; }
+.fill-green { background-color: #3fb950; }
+.fill-warn { background-color: #d29922; }
+.fill-danger { background-color: #f85149; }
+
+.disk-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.disk-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.disk-name {
+  font-weight: 600;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.disk-size {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.disk-sub {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+
+.disk-mount {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.disk-rw {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.icon-btn {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  border-radius: 4px;
+  width: 20px;
+  height: 20px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  color: var(--text-main);
+  background-color: var(--bg-surface-hover);
+}
+
+.net-iface {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-main);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.net-iface.down {
+  color: var(--text-dim);
+}
+
+.net-chart {
+  height: 96px;
+  background-color: var(--bg-app);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.net-stats {
+  display: flex;
+  gap: 12px;
+}
+
+.net-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.net-dir {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.net-down { color: #39c5bb; }
+.net-up { color: #a371f7; }
+
+.net-rate {
+  font-size: 16px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text-main);
+  white-space: nowrap;
+}
+
+.net-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.net-sub span {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+/* Many sensors (a board's, each NVMe drive's): the list scrolls instead
+   of stretching the row. */
+.sensor-list {
+  gap: 4px;
+  max-height: 228px;
+  overflow-y: auto;
+}
+
+.sensor-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.sensor-name {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.sensor-temp {
+  font-family: var(--font-mono);
+  color: #39c5bb;
+  white-space: nowrap;
+}
+
+.sensor-temp.warm { color: var(--text-main); }
+.sensor-temp.hot { color: var(--accent-warn); }
+.sensor-temp.critical { color: var(--accent-danger); }
+
+/* Settings popover */
+.settings {
+  position: fixed;
+  top: 52px;
+  right: 16px;
+  z-index: 900;
+  width: 260px;
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 6px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.setting-row:hover {
+  background-color: var(--bg-surface-hover);
+}
+
+.setting-row.unavailable {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.switch {
+  width: 30px;
+  height: 16px;
+  border-radius: 8px;
+  background-color: var(--border-subtle);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 6px;
+  background-color: var(--text-muted);
+}
+
+.switch.on {
+  background-color: rgba(57, 197, 187, 0.45);
+}
+
+.switch.on .switch-knob {
+  left: 16px;
+  background-color: var(--accent-cyan);
+}
+
+.interval-group {
+  align-self: flex-start;
+}
+
+.settings-note {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* Responsive: wide screens give the cores room; narrow windows stack. */
+@media (min-width: 1800px) {
+  .core-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .core-grid.one-col {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 1400px) {
+  /* Four panels: two by two (three keep 1 + 2 + 1). */
+  .panels-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+
+  .kv-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 1000px) {
+  .tiles-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .cpu-body {
+    grid-template-columns: 1fr;
+  }
+
+  .cpu-graph-canvas {
+    height: 110px;
+    flex: none;
+  }
+
+  .panels-row, .panels-row.cols-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .panels-row.cols-3 {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .kv-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .col-cmd, .col-user, .table-hint, .sort-label {
+    display: none;
+  }
+
+  .col-name {
+    flex: 1;
+    width: auto;
+  }
+
+  .search-box {
+    width: 180px;
+  }
 }

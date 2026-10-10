@@ -361,6 +361,20 @@ pub const Surface = struct {
     trim_id: c_uint = 0,
     pointer: [2]f32 = .{ 0, 0 },
     hovered: i64 = 0,
+    /// A wheel scroll is moving the page: :hover waits until it settles
+    /// (onScrollSettled), as in browsers. The compositor's motion after
+    /// each wheel step (same point) would hover a new row each step: a
+    /// restyle and a second draw per step.
+    settle_id: c_uint = 0,
+    /// The rounded clips the boxes being painted put on their children,
+    /// not yet applied (paint): each child is clipped to the rectangle,
+    /// and to the rounded path only where it reaches into a corner.
+    round_clips: [16]tree_mod.RoundRectXY = undefined,
+    round_clip_count: usize = 0,
+    /// Each text's layout as last drawn (paintLayout): shaping every
+    /// visible text again each frame was most of a scroll frame's time.
+    /// Dropped when its node's props or text change, or it goes.
+    paint_layouts: std.AutoHashMapUnmanaged(i64, PaintLayout) = .empty,
     /// Mouse buttons down, as the DOM's `buttons` (1 primary, 2 secondary, 4 middle).
     buttons: u32 = 0,
     /// A pointer move waiting for the next display frame (the latest wins).
@@ -490,6 +504,10 @@ pub const Surface = struct {
         s.trim_id = 0;
         if (s.focus_id != 0) _ = g_source_remove(s.focus_id);
         s.focus_id = 0;
+        if (s.settle_id != 0) _ = g_source_remove(s.settle_id);
+        s.settle_id = 0;
+        clearPaintLayouts(s);
+        s.paint_layouts.deinit(s.gpa);
         s.focus_events.deinit(s.gpa);
         s.warm.deinit(s.gpa);
         s.keys_down.deinit(s.gpa);
@@ -1000,12 +1018,13 @@ fn propsChanged(ctx: *anyopaque, node: *Node, _: std.json.Value) void {
 }
 
 fn textChanged(ctx: *anyopaque, node: *Node) void {
-    _ = ctx;
     node.measured_text_size = null;
+    dropPaintLayout(surfaceOf(ctx), node.id);
 }
 
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
+    dropPaintLayout(s, node.id);
     if (s.fields.fetchRemove(node.id)) |kv| gtk_overlay_remove_overlay(s.overlay, kv.value);
     if (s.images.fetchRemove(node.id)) |kv| kv.value.deinit();
     if (s.canvases.fetchRemove(node.id)) |kv| cairo_surface_destroy(kv.value.surf);
@@ -1665,7 +1684,7 @@ const Laid = struct {
 
     fn of(s: *Surface, n: *Node, out: *Laid) bool {
         const c = n.content();
-        out.layout = textLayout(s, n, paintWidth(c.w)) orelse return false;
+        out.layout = paintLayout(s, n, paintWidth(c.w)) orelse return false;
         out.lines = textLines(s, &n.props, out.layout, &out.exts);
         out.dy = 0; // callers pass an undefined Laid (its exts are large)
         if (out.lines == null) if (cssHeight(s, &n.props, pango_layout_get_line_count(out.layout))) |css_h| {
@@ -1825,9 +1844,21 @@ fn onScroll(_: *anyopaque, _: f64, dy: f64, data: ?*anyopaque) callconv(.c) c_in
     const n = s.engine.tree.hit(s.pointer[0], s.pointer[1]);
     var target = s.engine.tree.scroller(n);
     while (target) |t| {
-        if (s.engine.scrollBy(t, @as(f32, @floatCast(dy)) * 48)) return 1;
+        if (s.engine.scrollBy(t, @as(f32, @floatCast(dy)) * 48)) {
+            if (s.settle_id != 0) _ = g_source_remove(s.settle_id);
+            s.settle_id = g_timeout_add(100, onScrollSettled, @ptrFromInt(s.token));
+            return 1;
+        }
         target = s.engine.tree.scroller(t.parent);
     }
+    return 0;
+}
+
+/// The wheel stopped: :hover and the cursor for what's under the pointer now.
+fn onScrollSettled(data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaces.get(@intFromPtr(data)) orelse return 0; // the window is gone
+    s.settle_id = 0;
+    hoverAt(s);
     return 0;
 }
 
@@ -1840,12 +1871,21 @@ fn onLeave(_: *anyopaque, data: ?*anyopaque) callconv(.c) void {
 
 fn onMotion(controller: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(.c) void {
     const s = surfaceOf(data);
-    s.pointer = .{ @floatCast(x), @floatCast(y) };
+    const p: [2]f32 = .{ @floatCast(x), @floatCast(y) };
+    // The motion the compositor sends after a wheel step: the pointer
+    // didn't move (no pointermove), and :hover waits for the scroll to settle.
+    if (s.settle_id != 0 and p[0] == s.pointer[0] and p[1] == s.pointer[1]) return;
+    s.pointer = p;
     queueMove(s, s.pointer, s.buttons, modFlags(gtk_event_controller_get_current_event_state(controller)));
+    hoverAt(s);
+}
+
+/// :hover and the cursor for the node under the pointer: the page hears
+/// when that node changes.
+fn hoverAt(s: *Surface) void {
     const at = targetAt(s, s.pointer[0], s.pointer[1]);
     const n = at.node;
     gtk_widget_set_cursor_from_name(s.area, if (at.link or (n != null and clickableUp(n.?))) "pointer" else null);
-    // :hover: the page hears when the node under the pointer changes.
     const id: i64 = at.id;
     if (id != s.hovered) {
         s.hovered = id;
@@ -2741,6 +2781,35 @@ fn textLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
     return textLayoutOf(s, &n.props, width);
 }
 
+const PaintLayout = struct { layout: *PangoLayout, width: f32, context: *PangoContext, serial: c_uint };
+
+/// A text's layout at the width it's drawn at, kept from frame to frame
+/// (Surface.paint_layouts) while its props, text, width and the widget's
+/// fonts hold. The caller unrefs it, as textLayout's.
+fn paintLayout(s: *Surface, n: *Node, width: f32) ?*PangoLayout {
+    const context = gtk_widget_get_pango_context(s.area);
+    const serial = pango_context_get_serial(context);
+    if (s.paint_layouts.get(n.id)) |e| {
+        if (e.width == width and e.context == context and e.serial == serial) return @ptrCast(g_object_ref(e.layout));
+        dropPaintLayout(s, n.id);
+    }
+    const layout = textLayout(s, n, width) orelse return null;
+    // Bounded: a long list scrolled through starts over.
+    if (s.paint_layouts.count() >= 8192) clearPaintLayouts(s);
+    s.paint_layouts.put(s.gpa, n.id, .{ .layout = layout, .width = width, .context = context, .serial = serial }) catch return layout;
+    return @ptrCast(g_object_ref(layout));
+}
+
+fn dropPaintLayout(s: *Surface, id: i64) void {
+    if (s.paint_layouts.fetchRemove(id)) |kv| g_object_unref(kv.value.layout);
+}
+
+fn clearPaintLayouts(s: *Surface) void {
+    var it = s.paint_layouts.valueIterator();
+    while (it.next()) |e| g_object_unref(e.layout);
+    s.paint_layouts.clearRetainingCapacity();
+}
+
 fn textLayoutOf(s: *Surface, props: *const tree_mod.Props, width: f32) ?*PangoLayout {
     const n = struct { props: *const tree_mod.Props }{ .props = props };
     const runs = n.props.runs orelse return null;
@@ -2906,7 +2975,13 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
     // scale and rotate: around the box's center, for it and its children.
     const sc = p.sc orelse 1;
     const rot = p.rot orelse 0;
+    // A transformed box: the rounded clips waiting are applied here, in
+    // the space they were made in (its own frame is no longer theirs).
+    const waiting = s.round_clip_count;
+    defer s.round_clip_count = waiting;
     if (sc != 1 or rot != 0) {
+        applyRoundClips(s, cr, null);
+        s.round_clip_count = 0;
         const cx = f.x + f.w / 2;
         const cy = f.y + f.h / 2;
         cairo_translate(cr, cx, cy);
@@ -2919,6 +2994,14 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
 
     // Elliptical corners, as CSS draws them (tree.zig radiusXY).
     const r = n.radiusXY();
+    // The box itself, clipped to the rounded corners it reaches into (a
+    // shadow or outline paints past its frame: every waiting clip).
+    const own_base = s.round_clip_count;
+    const own_clipped = own_base > 0;
+    if (own_clipped) {
+        cairo_save(cr);
+        applyRoundClips(s, cr, if (p.sh != null or p.ol != null) null else f);
+    }
     if (p.sh) |sh| shadow(cr, f, r, sh);
     if (p.bg) |bg| {
         // The color under the gradient (CSS layers).
@@ -2945,24 +3028,71 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         .view => if (n.props.ctl != null) paintControl(cr, n),
         else => {},
     }
+    if (own_clipped) cairo_restore(cr);
     // A box that clips its content (overflow hidden, or a scroller) with
     // rounded corners: the children are clipped to its rounded padding box.
+    // To its rectangle here; the rounded path waits for the children that
+    // reach into a corner. A path clip is a mask Cairo composites
+    // everything under through, every row of a list each scroll frame.
     const round_clip = n.roundClips();
     if (round_clip) {
         cairo_save(cr);
         const pb = n.paddingClipXY();
-        roundRectXY(cr, pb.rect, pb.radii);
+        if (s.round_clip_count < s.round_clips.len) {
+            s.round_clips[s.round_clip_count] = pb;
+            s.round_clip_count += 1;
+            cairo_rectangle(cr, pb.rect.x, pb.rect.y, pb.rect.w, pb.rect.h);
+        } else roundRectXY(cr, pb.rect, pb.radii);
         cairo_clip(cr);
     }
     // CSS paint order: a sticky header over the rows scrolled under it.
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paint(s, cr, k);
-    if (round_clip) cairo_restore(cr);
-    if (p.ol) |ol| outline(cr, f, r, ol);
+    if (round_clip) {
+        cairo_restore(cr);
+        s.round_clip_count = own_base;
+    }
+    if (p.ol) |ol| {
+        if (own_clipped) {
+            cairo_save(cr);
+            applyRoundClips(s, cr, null);
+        }
+        outline(cr, f, r, ol);
+        if (own_clipped) cairo_restore(cr);
+    }
     if (alpha < 1) {
         cairo_pop_group_to_source(cr);
         cairo_paint_with_alpha(cr, alpha);
     }
+}
+
+/// The waiting rounded clips (Surface.round_clips) as clips now: those
+/// whose corners `bounds` reaches into, or all of them (null).
+fn applyRoundClips(s: *Surface, cr: *cairo_t, bounds: ?Rect) void {
+    for (s.round_clips[0..s.round_clip_count]) |rc| {
+        if (bounds) |b| if (!inCorner(rc, b)) continue;
+        roundRectXY(cr, rc.rect, rc.radii);
+        cairo_clip(cr);
+    }
+}
+
+/// Whether `b` overlaps one of the rounded rectangle's corner areas (each
+/// corner's radii: past them its edges are straight, the rectangle's clip).
+fn inCorner(rc: tree_mod.RoundRectXY, b: Rect) bool {
+    const f = rc.rect;
+    const x = rc.radii.x;
+    const y = rc.radii.y;
+    const corners = [4]Rect{
+        .{ .x = f.x, .y = f.y, .w = x[0], .h = y[0] },
+        .{ .x = f.x + f.w - x[1], .y = f.y, .w = x[1], .h = y[1] },
+        .{ .x = f.x + f.w - x[2], .y = f.y + f.h - y[2], .w = x[2], .h = y[2] },
+        .{ .x = f.x, .y = f.y + f.h - y[3], .w = x[3], .h = y[3] },
+    };
+    for (corners) |c| {
+        if (!(c.w > 0 and c.h > 0)) continue;
+        if (b.x < c.x + c.w and b.x + b.w > c.x and b.y < c.y + c.h and b.y + b.h > c.y) return true;
+    }
+    return false;
 }
 
 /// CSS outline: a border of its own around the box grown by offset +
@@ -3336,7 +3466,7 @@ fn shadow(cr: *cairo_t, f: Rect, r: Radii, sh: tree_mod.Shadow) void {
 
 fn paintText(s: *Surface, cr: *cairo_t, n: *Node) void {
     const c = n.content();
-    const layout = textLayout(s, n, paintWidth(c.w)) orelse return;
+    const layout = paintLayout(s, n, paintWidth(c.w)) orelse return;
     defer g_object_unref(layout);
     // Lines of different heights (a bigger font on some): each on its own
     // baseline, below the lines before it.

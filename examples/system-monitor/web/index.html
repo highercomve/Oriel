@@ -17,19 +17,23 @@
         <div class="badge badge-perf" id="perf-badge">-- ms</div>
       </div>
       <div class="header-right">
-        <span class="status-indicator live"></span>
+        <span class="status-indicator live" id="status-dot"></span>
         <span class="header-status" id="header-status">Initializing telemetry...</span>
+        <button class="btn btn-secondary" id="btn-settings" title="Choose what to show">
+          <span>⚙</span>
+          <span>Settings</span>
+        </button>
       </div>
     </header>
 
     <!-- Main Content -->
-    <main class="content">
+    <main class="content" id="content">
       <!-- 4 Stat Tiles -->
-      <section class="tiles-grid">
-        <!-- CPU Tile -->
-        <div class="tile" id="tile-cpu">
+      <section class="tiles-grid" id="sec-tiles">
+        <!-- CPU Tile: a click opens or closes the CPU details -->
+        <div class="tile tile-clickable" id="tile-cpu" title="Show or hide the per-core details">
           <div class="tile-header">
-            <span class="tile-label">CPU</span>
+            <span class="tile-label">CPU <span class="tile-toggle" id="cpu-toggle">▾</span></span>
             <span class="tile-sublabel" id="cpu-detail">-- cores</span>
           </div>
           <div class="tile-value" id="cpu-value">0.0%</div>
@@ -54,7 +58,7 @@
         <div class="tile" id="tile-proc">
           <div class="tile-header">
             <span class="tile-label">Processes</span>
-            <span class="tile-sublabel" id="proc-detail">top 128 shown</span>
+            <span class="tile-sublabel" id="proc-detail">-- threads</span>
           </div>
           <div class="tile-value" id="proc-value">0</div>
           <div class="chart-container">
@@ -66,92 +70,216 @@
         <div class="tile" id="tile-uptime">
           <div class="tile-header">
             <span class="tile-label">Uptime</span>
-            <span class="tile-sublabel">since boot</span>
+            <span class="tile-sublabel" id="boot-detail">since boot</span>
           </div>
           <div class="tile-value" id="uptime-value">0m</div>
           <div class="tile-footer-note">
-            <span>60 samples kept · 2 s cadence</span>
+            <span id="cadence-note">60 samples kept · 2 s cadence</span>
           </div>
         </div>
       </section>
 
-      <!-- Toolbar -->
-      <section class="toolbar">
-        <div class="toolbar-left">
-          <button class="btn btn-primary" id="btn-pause" title="Pause or resume live sampling">
-            <span id="pause-icon">⏸</span>
-            <span id="pause-label">Pause</span>
-          </button>
-          <button class="btn btn-secondary" id="btn-refresh" title="Sample immediately">
-            <span>⟳</span>
-            <span>Refresh</span>
-          </button>
-
-          <div class="search-box">
-            <span class="search-icon">🔍</span>
-            <input type="text" id="search-input" placeholder="Filter by name or pid..." autocomplete="off">
-            <button class="search-clear hidden" id="search-clear" title="Clear filter">×</button>
-          </div>
+      <!-- System -->
+      <section class="panel" id="sec-system">
+        <div class="panel-header">
+          <span class="panel-title">System</span>
+          <span class="panel-hint" id="sys-host">--</span>
         </div>
-
-        <div class="toolbar-right">
-          <span class="sort-label">Sort:</span>
-          <div class="sort-group">
-            <button class="btn-toggle active" data-sort="cpu">CPU</button>
-            <button class="btn-toggle" data-sort="mem">Memory</button>
-            <button class="btn-toggle" data-sort="pid">PID</button>
-            <button class="btn-toggle" data-sort="name">Name</button>
-          </div>
-          <button class="btn-dir" id="btn-sort-dir" title="Toggle sort direction">
-            <span id="sort-dir-icon">▼</span>
-          </button>
+        <div class="kv-grid">
+          <div class="kv"><span class="kv-key">OS</span><span class="kv-val" id="sys-os">--</span></div>
+          <div class="kv"><span class="kv-key">Kernel</span><span class="kv-val" id="sys-kernel">--</span></div>
+          <div class="kv"><span class="kv-key">Board</span><span class="kv-val" id="sys-board">--</span></div>
+          <div class="kv"><span class="kv-key">BIOS</span><span class="kv-val" id="sys-bios">--</span></div>
+          <div class="kv"><span class="kv-key">CPU</span><span class="kv-val" id="sys-cpu">--</span></div>
+          <div class="kv"><span class="kv-key">Booted</span><span class="kv-val" id="sys-boot">--</span></div>
         </div>
       </section>
 
-      <!-- Table Section -->
-      <section class="table-section">
-        <div class="table-header-row">
-          <div class="table-title-area">
-            <span class="table-title">Processes</span>
-            <span class="badge badge-secondary" id="count-badge">0 of 0</span>
-          </div>
-          <span class="table-hint">Right-click or click Terminate for polite SIGTERM (confirmed first)</span>
+      <!-- CPU details -->
+      <section class="panel" id="sec-cpu">
+        <div class="panel-header">
+          <span class="panel-title">CPU</span>
+          <span class="panel-hint" id="cpu-model">--</span>
+          <span class="panel-spacer"></span>
+          <span class="stat-chip" id="cpu-freq">-- GHz</span>
+          <span class="stat-chip" id="cpu-temp">--°C</span>
+          <span class="stat-chip" id="cpu-load">Load --</span>
+          <span class="stat-chip" id="cpu-tasks">-- threads</span>
         </div>
-
-        <div class="table-container">
-          <div class="table-header">
-            <div class="col-pid">PID</div>
-            <div class="col-name">Command</div>
-            <div class="col-state">State</div>
-            <div class="col-cpu">CPU %</div>
-            <div class="col-mem">Memory</div>
-            <div class="col-actions">Actions</div>
-          </div>
-          <div class="table-scroll" id="table-scroll">
-            <div class="table-body" id="proc-tbody">
-              <!-- Dynamically populated rows -->
+        <div class="cpu-body">
+          <div class="cpu-graph">
+            <div class="cpu-graph-canvas">
+              <canvas id="cpu-big" width="480" height="132"></canvas>
             </div>
-            <div class="empty-state hidden" id="empty-state">
-              <div class="empty-title">No matching processes found</div>
-              <div class="empty-hint">Try adjusting your search filter.</div>
+            <div class="legend">
+              <span class="legend-item"><span class="swatch sw-user"></span>user <b id="cpu-user">0%</b></span>
+              <span class="legend-item"><span class="swatch sw-system"></span>system <b id="cpu-system">0%</b></span>
+              <span class="legend-item"><span class="swatch sw-iowait"></span>iowait <b id="cpu-iowait">0%</b></span>
             </div>
           </div>
+          <div class="core-grid" id="core-grid"></div>
         </div>
       </section>
+
+      <!-- Memory, disks, network, sensors -->
+      <div class="panels-row" id="panels-row">
+        <section class="panel" id="sec-mem">
+          <div class="panel-header">
+            <span class="panel-title">Memory</span>
+            <span class="panel-hint" id="mem-total">--</span>
+          </div>
+          <div class="meter-list">
+            <div class="meter" id="m-used"><div class="meter-top"><span>Used</span><span class="meter-val">--</span></div><div class="bar"><div class="fill fill-blue"></div></div></div>
+            <div class="meter" id="m-avail"><div class="meter-top"><span>Available</span><span class="meter-val">--</span></div><div class="bar"><div class="fill fill-cyan"></div></div></div>
+            <div class="meter" id="m-cached"><div class="meter-top"><span>Cached</span><span class="meter-val">--</span></div><div class="bar"><div class="fill fill-violet"></div></div></div>
+            <div class="meter" id="m-free"><div class="meter-top"><span>Free</span><span class="meter-val">--</span></div><div class="bar"><div class="fill fill-green"></div></div></div>
+            <div class="meter" id="m-swap"><div class="meter-top"><span>Swap</span><span class="meter-val">--</span></div><div class="bar"><div class="fill fill-warn"></div></div></div>
+          </div>
+        </section>
+
+        <section class="panel" id="sec-disks">
+          <div class="panel-header">
+            <span class="panel-title">Disks</span>
+            <span class="panel-hint" id="disk-io">R -- · W --</span>
+          </div>
+          <div class="disk-list" id="disk-list"></div>
+        </section>
+
+        <section class="panel" id="sec-net">
+          <div class="panel-header">
+            <span class="panel-title">Network</span>
+            <span class="panel-spacer"></span>
+            <button class="icon-btn" id="net-prev" title="Previous interface">‹</button>
+            <span class="net-iface" id="net-iface">--</span>
+            <button class="icon-btn" id="net-next" title="Next interface">›</button>
+          </div>
+          <div class="net-chart">
+            <canvas id="net-chart" width="320" height="96"></canvas>
+          </div>
+          <div class="net-stats">
+            <div class="net-col">
+              <div class="net-dir net-down">▼ Download</div>
+              <div class="net-rate" id="net-rx">0 B/s</div>
+              <div class="net-sub">Top <span id="net-rx-top">0 B/s</span></div>
+              <div class="net-sub">Total <span id="net-rx-total">0 B</span></div>
+            </div>
+            <div class="net-col">
+              <div class="net-dir net-up">▲ Upload</div>
+              <div class="net-rate" id="net-tx">0 B/s</div>
+              <div class="net-sub">Top <span id="net-tx-top">0 B/s</span></div>
+              <div class="net-sub">Total <span id="net-tx-total">0 B</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" id="sec-sensors">
+          <div class="panel-header">
+            <span class="panel-title">Sensors</span>
+            <span class="panel-hint" id="sensor-count">--</span>
+          </div>
+          <div class="sensor-list" id="sensor-list"></div>
+        </section>
+      </div>
+
+      <!-- Processes -->
+      <div class="proc-section" id="sec-proc">
+        <!-- Toolbar -->
+        <section class="toolbar">
+          <div class="toolbar-left">
+            <button class="btn btn-primary" id="btn-pause" title="Pause or resume live sampling">
+              <span id="pause-icon">⏸</span>
+              <span id="pause-label">Pause</span>
+            </button>
+            <button class="btn btn-secondary" id="btn-refresh" title="Sample immediately">
+              <span>⟳</span>
+              <span>Refresh</span>
+            </button>
+
+            <div class="search-box">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="search-input" placeholder="Filter by name, user, command or pid..." autocomplete="off">
+              <button class="search-clear hidden" id="search-clear" title="Clear filter">×</button>
+            </div>
+          </div>
+
+          <div class="toolbar-right">
+            <span class="sort-label">Sort:</span>
+            <div class="sort-group">
+              <button class="btn-toggle active" data-sort="cpu">CPU</button>
+              <button class="btn-toggle" data-sort="mem">Memory</button>
+              <button class="btn-toggle" data-sort="threads">Threads</button>
+              <button class="btn-toggle" data-sort="pid">PID</button>
+              <button class="btn-toggle" data-sort="name">Name</button>
+            </div>
+            <button class="btn-dir" id="btn-sort-dir" title="Toggle sort direction">
+              <span id="sort-dir-icon">▼</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- Table Section -->
+        <section class="table-section">
+          <div class="table-header-row">
+            <div class="table-title-area">
+              <span class="table-title">Processes</span>
+              <span class="badge badge-secondary" id="count-badge">0 of 0</span>
+            </div>
+            <span class="table-hint" id="table-hint">Right-click or click Terminate for polite SIGTERM (confirmed first)</span>
+          </div>
+
+          <div class="table-container">
+            <div class="table-header">
+              <div class="col-pid">PID</div>
+              <div class="col-name">Name</div>
+              <div class="col-user">User</div>
+              <div class="col-state">State</div>
+              <div class="col-threads">Thr</div>
+              <div class="col-cpu">CPU %</div>
+              <div class="col-mem">Memory</div>
+              <div class="col-cmd">Command line</div>
+              <div class="col-actions">Actions</div>
+            </div>
+            <div class="table-scroll" id="table-scroll">
+              <div class="table-body" id="proc-tbody">
+                <!-- Dynamically populated rows -->
+              </div>
+              <div class="empty-state hidden" id="empty-state">
+                <div class="empty-title">No matching processes found</div>
+                <div class="empty-hint">Try adjusting your search filter.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
 
     <!-- Status Bar -->
     <footer class="footer">
       <span class="footer-left" id="footer-status">Ready</span>
-      <span class="footer-right" id="footer-engine">Oriel 0.16.0</span>
+      <span class="footer-right" id="footer-engine">Oriel</span>
     </footer>
+  </div>
+
+  <!-- Settings -->
+  <div class="settings hidden" id="settings">
+    <div class="settings-title">Show</div>
+    <div class="settings-list" id="settings-list">
+      <!-- One row per section (app.js SECTIONS) -->
+    </div>
+    <div class="settings-title">Sample every</div>
+    <div class="sort-group interval-group" id="interval-group">
+      <button class="btn-toggle" data-ms="1000">1 s</button>
+      <button class="btn-toggle" data-ms="2000">2 s</button>
+      <button class="btn-toggle" data-ms="5000">5 s</button>
+    </div>
+    <div class="settings-note">Hidden parts cost nothing: they aren't drawn or updated.</div>
   </div>
 
   <!-- Custom Context Menu with Submenus -->
   <div id="context-menu" class="context-menu hidden">
     <div class="menu-item menu-item-danger" id="ctx-terminate">
       <span class="menu-icon">⚠️</span>
-      <span class="menu-label">Terminate (SIGTERM)…</span>
+      <span class="menu-label" id="ctx-terminate-label">Terminate (SIGTERM)…</span>
     </div>
     <div class="menu-separator"></div>
     <div class="menu-item menu-has-submenu" id="ctx-copy-parent">
@@ -164,6 +292,9 @@
         </div>
         <div class="menu-item" id="ctx-copy-pid">
           <span class="menu-label">Copy PID</span>
+        </div>
+        <div class="menu-item" id="ctx-copy-cmd">
+          <span class="menu-label">Copy Command Line</span>
         </div>
         <div class="menu-item" id="ctx-copy-line">
           <span class="menu-label">Copy Full Row</span>
@@ -186,12 +317,12 @@
     <div class="modal-card">
       <div class="modal-header">
         <span class="modal-icon">⚠️</span>
-        <h2 class="modal-title">Send SIGTERM?</h2>
+        <h2 class="modal-title" id="kill-title">Send SIGTERM?</h2>
       </div>
       <p class="modal-body" id="kill-prompt">
         Are you sure you want to terminate process <strong id="kill-proc-name"></strong> (PID <span id="kill-proc-pid"></span>)?
       </p>
-      <p class="modal-subtext">
+      <p class="modal-subtext" id="kill-subtext">
         SIGTERM is a polite request that gives the process an opportunity to save state and clean up. This monitor never issues SIGKILL.
       </p>
       <div class="modal-actions">

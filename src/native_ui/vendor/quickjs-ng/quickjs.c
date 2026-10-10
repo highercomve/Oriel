@@ -23908,7 +23908,12 @@ static int json_parse_number(JSParseState *s, const uint8_t **pp)
             p++;
     }
     s->token.val = TOK_NUMBER;
-    s->token.u.num.val = js_float64(strtod((const char *)p_start, NULL));
+    /* Oriel: js_atod, not strtod: strtod follows the process locale, and a
+       GTK app's is the user's (LC_NUMERIC=es_CL reads "0.43" as 0). */
+    {
+        JSATODTempMem atod_mem;
+        s->token.u.num.val = js_float64(js_atod((const char *)p_start, NULL, 10, 0, &atod_mem));
+    }
     *pp = p;
     return 0;
 }

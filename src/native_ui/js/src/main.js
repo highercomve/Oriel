@@ -855,7 +855,43 @@ const store = (name) => {
     name,
   };
 };
-g.localStorage = store("local");
+// localStorage: the host's (web_storage.zig), one store for the app's
+// windows, saved in its config directory; it outlives the process as a
+// WebView's does. A change asks for a save a moment later, so a burst of
+// them is one write. Without the host functions (tests), the run's only.
+const persistentStore = () => {
+  let flushQueued = false;
+  const changed = () => {
+    if (flushQueued) return;
+    flushQueued = true;
+    setTimer(() => {
+      flushQueued = false;
+      host.storageFlush();
+    }, 300, [], false);
+  };
+  return {
+    getItem: (k) => host.storageGet(String(k)),
+    setItem: (k, v) => {
+      if (!host.storageSet(String(k), String(v))) {
+        const msg = "The quota has been exceeded.";
+        throw typeof DOMException === "function" ? new DOMException(msg, "QuotaExceededError") : Object.assign(new Error(msg), { name: "QuotaExceededError" });
+      }
+      changed();
+    },
+    removeItem: (k) => {
+      host.storageRemove(String(k));
+      changed();
+    },
+    clear: () => {
+      host.storageClear();
+      changed();
+    },
+    key: (i) => host.storageKey(Number(i) >>> 0),
+    get length() { return host.storageLength(); },
+    name: "local",
+  };
+};
+g.localStorage = typeof host.storageGet === "function" ? persistentStore() : store("local");
 g.sessionStorage = store("session");
 const platform = JSON.parse(host.platform || "{}");
 // Forced colors (the system's high contrast theme): platform.forcedColors,

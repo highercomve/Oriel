@@ -9,6 +9,7 @@
 const std = @import("std");
 const tree_mod = @import("tree.zig");
 const prof = @import("prof.zig");
+const web_storage = @import("web_storage.zig");
 /// Files dropped into the page (Engine.drops).
 pub const drop = @import("drop.zig");
 pub const Tree = tree_mod.Tree;
@@ -677,6 +678,8 @@ pub const Engine = struct {
 
     pub fn destroy(e: *Engine) void {
         _ = live.remove(e.serial);
+        // The page's last localStorage changes, if its flush hadn't come.
+        web_storage.flush();
         e.frame_hooks.deinit(e.gpa);
         oqjs_free(e.js);
         // After the page: nothing reads them any more.
@@ -1247,6 +1250,54 @@ export fn oriel_nui_vsync(p: *anyopaque) c_int {
     return 1;
 }
 
+// localStorage (web_storage.zig): the page's calls, synchronous. A value
+// handed out is the engine's copy, freed by oriel_nui_storage_free.
+
+/// host.storageGet(key): 1 and the value, or 0 when there's no such key.
+export fn oriel_nui_storage_get(p: *anyopaque, key: [*]const u8, key_len: usize, out: *[*]u8, out_len: *usize) c_int {
+    const v = web_storage.get(engineOf(p).gpa, key[0..key_len]) orelse return 0;
+    out.* = v.ptr;
+    out_len.* = v.len;
+    return 1;
+}
+
+/// host.storageKey(i): 1 and the i-th key, or 0 past the end.
+export fn oriel_nui_storage_key(p: *anyopaque, index: u32, out: *[*]u8, out_len: *usize) c_int {
+    const k = web_storage.keyAt(engineOf(p).gpa, index) orelse return 0;
+    out.* = k.ptr;
+    out_len.* = k.len;
+    return 1;
+}
+
+export fn oriel_nui_storage_free(p: *anyopaque, ptr: [*]u8, len: usize) void {
+    engineOf(p).gpa.free(ptr[0..len]);
+}
+
+/// host.storageSet(key, value): 0 past the quota (the page throws
+/// QuotaExceededError, as a browser does).
+export fn oriel_nui_storage_set(_: *anyopaque, key: [*]const u8, key_len: usize, value: [*]const u8, value_len: usize) c_int {
+    web_storage.set(key[0..key_len], value[0..value_len]) catch return 0;
+    return 1;
+}
+
+export fn oriel_nui_storage_remove(_: *anyopaque, key: [*]const u8, key_len: usize) void {
+    web_storage.remove(key[0..key_len]);
+}
+
+export fn oriel_nui_storage_clear(_: *anyopaque) void {
+    web_storage.clear();
+}
+
+export fn oriel_nui_storage_length(_: *anyopaque) u32 {
+    return @intCast(web_storage.count());
+}
+
+/// host.storageFlush(): the changes saved (the page asks a moment after
+/// a change, so a burst of them is one write).
+export fn oriel_nui_storage_flush(_: *anyopaque) void {
+    web_storage.flush();
+}
+
 export fn oriel_nui_text(p: *anyopaque, id: f64, text: [*]const u8, len: usize) c_int {
     const e = engineOf(p);
     return if (e.tree.updateText(Tree.idOf(id), text[0..len]) catch return 0) 1 else 0;
@@ -1360,6 +1411,7 @@ fn jsIndex(v: f64) ?u64 {
 
 test {
     _ = @import("prof.zig");
+    _ = @import("web_storage.zig");
     // Pure Zig, used by the Apple backends (apple_draw.zig): tested everywhere.
     _ = @import("svg_path.zig");
     _ = @import("tree.zig");
