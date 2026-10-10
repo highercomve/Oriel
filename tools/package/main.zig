@@ -1858,6 +1858,7 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
     defer url_schemes.deinit(gpa);
     var document_types: std.ArrayList([]const u8) = .empty;
     defer document_types.deinit(gpa);
+    var service: ?[]const u8 = null;
     var extras: contents.Contents = .{};
     defer extras.deinit(gpa);
 
@@ -1898,6 +1899,10 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
             // A MIME type (`.share_target.types`).
             i += 1;
             try document_types.append(gpa, args[i]);
+        } else if (std.mem.eql(u8, arg, "--service") and has_value) {
+            // The Services menu item's title (`.share_target.label`).
+            i += 1;
+            service = args[i];
         } else if (std.mem.eql(u8, arg, "--permission") and has_value) {
             // `<kind>=<usage text>`
             i += 1;
@@ -2004,6 +2009,7 @@ fn packageAppCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8
         .permissions = permissions.items,
         .document_types = document_types.items,
         .usage_descriptions = usage_descriptions.items,
+        .service = service,
     }) catch |err| {
         std.debug.print("error: package-app: Info.plist: {s} (package metadata must be UTF-8 without control characters; URL schemes must match [A-Za-z][A-Za-z0-9+.-]*; extra usage keys [A-Za-z0-9_.~-]* ending in UsageDescription, with a text)\n", .{@errorName(err)});
         return 1;

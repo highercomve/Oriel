@@ -258,6 +258,7 @@ const kAEGetURL: u32 = 0x4755_524C; // 'GURL'
 const keyDirectObject: u32 = 0x2D2D_2D2D; // '----'
 
 extern "c" fn _NSGetArgc() *c_int;
+extern "c" fn NSUpdateDynamicServices() void;
 extern "c" fn _NSGetArgv() *[*][*:0]u8;
 
 /// Files Launch Services opens with the app (Finder's "Open With", a drop
@@ -280,6 +281,15 @@ fn applicationOpenURLs(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, urls: cocoa.id)
     if (paths.items.len == 0) return;
     if (finished_launching) App.showWindow();
     share.receivePaths(paths.items, .open_with, false);
+}
+
+/// macOS Services (Info.plist NSServices, NSMessage orielShare): another
+/// app's selection, sent from its Services menu, as a share from
+/// `service`. The window comes forward.
+fn orielShareService(_: cocoa.id, _: cocoa.c.SEL, pboard: cocoa.id, _: cocoa.id, _: ?*cocoa.id) callconv(.c) void {
+    if (!build_opts.share) return;
+    App.showWindow();
+    share.receiveService(.{ .value = pboard });
 }
 
 /// Clicking the Dock icon while every window is hidden (`on_close = .hide`)
@@ -562,6 +572,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 .{ "applicationDidFinishLaunching:", applicationDidFinishLaunching },
                 .{ "handleGetURLEvent:withReplyEvent:", handleGetURL },
                 .{ "application:openURLs:", applicationOpenURLs },
+                .{ "orielShare:userData:error:", orielShareService },
             });
             // NSApp's delegate is a weak reference: keep ours for the whole run.
             const delegate = cocoa.new(delegate_class);
@@ -571,6 +582,11 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             }
             app.msgSend(void, "setDelegate:", .{delegate});
             installDefaultMenu(app, config.title);
+            // The delegate answers the app's Services item (share module).
+            if (build_opts.share) {
+                app.msgSend(void, "setServicesProvider:", .{delegate});
+                NSUpdateDynamicServices();
+            }
 
             // Before `run`: the launch URL arrives while it finishes launching.
             finished_launching = false;
