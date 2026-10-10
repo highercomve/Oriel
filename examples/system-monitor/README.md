@@ -27,24 +27,56 @@ and size numbers are on the [comparison page](https://highercomve.github.io/Orie
 
 ## Features
 
-- **4 Stat Tiles**:
-  - **CPU**: Real-time aggregate usage across all cores, hardware CPU model, 60-sample sparkline history.
-  - **Memory**: Memory utilization percentage, Used / Total GB, 60-sample sparkline history.
-  - **Processes**: Total running processes count, 60-sample area trend sparkline.
-  - **Uptime**: Time elapsed since boot (days, hours, minutes).
-- **Interactive Toolbar**:
-  - **Pause / Resume** sampling toggle.
-  - **Filter Field**: Real-time filtering by process name or PID with one-click clear.
-  - **Sort Controls**: Sort by CPU %, Memory, PID, or Name with ascending/descending toggle.
-  - **Manual Refresh**: Trigger instantaneous sample.
-- **Process Table**:
-  - PID, Command name, State, CPU %, and Memory RSS columns.
-  - Top 128 processes sorted and displayed.
-  - **Terminate (SIGTERM)**: Polite termination request protected by a confirmation modal (no accidental kills, no SIGKILL).
-  - **Copy Name**: Instant copy to clipboard.
-- **Latency & Performance Badges**:
-  - Live indicator displaying the exact Zig collection duration in milliseconds (e.g., `⚡ 0.95 ms`).
-  - Active renderer badge (`native_ui` vs `WebView`).
+Every part below can be shown or hidden from **Settings** (⚙ in the header),
+along with the sampling interval (1, 2 or 5 s). The choice is kept in
+`localStorage`, which the native renderer saves under
+`~/.config/dev.oriel.SystemMonitor/data/`. Hidden parts cost nothing: they
+aren't updated or drawn.
+
+- **Summary tiles**: CPU, memory, processes (and threads), uptime, each with
+  a 60-sample sparkline. A click on the CPU tile opens or closes the CPU details.
+- **System**: host, OS, kernel, board, BIOS, CPU, boot time.
+- **CPU details** (like btop's): the total as user / system / iowait stacked
+  over the last 60 samples, and a row per core with its own history,
+  usage and current frequency; package temperature, load average, threads
+  running and total.
+- **Memory**: used, available, cached, free and swap, as bars.
+- **Disks**: each mounted block device with its size, use and read/write rates.
+- **Network**: download and upload rates mirrored on one graph, peaks and
+  totals; ‹ › switches interface (the busiest one first).
+- **Sensors**: every hwmon temperature (CPU, GPU, drives, board).
+- **Processes**: PID, name, user, state, threads, CPU %, memory and command
+  line for the 256 busiest; filter by name, user, command or PID; sort by
+  CPU, memory, threads, PID or name. Right-click or **Terminate…** sends a
+  confirmed `SIGTERM` (never `SIGKILL`); copy the name, PID, whole command
+  line or row.
+- **Responsive**: a fullscreen window gives the cores four columns and the
+  table the rest of the height; a narrow one stacks the panels.
+
+### What it costs
+
+Measured on the machine above (16 threads, ~500 processes), sampling every
+second with every part shown, each monitor visible on screen:
+
+| Monitor | CPU (of one core) | Memory (RSS) |
+|---|---|---|
+| **Oriel System Monitor** (`native_ui`) | **1.4%** | **174 MB** |
+| btop, and the terminal drawing it | 2.5% | 401 MB |
+| dgop, and the terminal drawing it | 17.8% | 326 MB |
+
+How it stays cheap:
+
+- **The sampler** (`sampler.zig`) reads /proc and /sys straight from Zig,
+  no subprocesses: ~1.6 ms a sample. Each process's `/proc/<pid>/stat`
+  stays open and is read again with `pread`; a process's name, command line
+  and user (one `statx`) are read once while it lives; the mounts every 15
+  samples. Sensors that cost a firmware call (ACPI, WMI) are read every 5th
+  sample, a drive's (a command to the drive, which can wake it) every 15th.
+- **The process table is virtual**: only the rows in view exist, so a
+  sample updates ~35 rows, not 256, and a scroll step adds or drops one.
+- **Only what changed is touched**: texts are set when they differ, bars
+  when their whole percentage does; numbers arrive rounded, command lines
+  cut at 200 bytes (copying asks for the whole).
 
 ---
 
@@ -52,7 +84,11 @@ and size numbers are on the [comparison page](https://highercomve.github.io/Orie
 
 The frontend communicates with the backend strictly through typed Oriel commands via `window.oriel.invoke`:
 
-- **`sample`**: Invoked every 2 s (or on manual refresh) to retrieve live CPU, memory, uptime, and sorted process telemetry.
+- **`sample`**: every interval (or on Refresh): CPU (total, per core,
+  frequencies, temperature, load), memory, disks, network, sensors and the
+  busiest processes.
+- **`system_info`**: the static description (host, OS, kernel, board, BIOS), once.
+- **`command_line`**: `{ pid }`: a process's whole command line.
 - **`terminate_process`**: `window.oriel.invoke("terminate_process", { pid })` sends `SIGTERM` politely without running external shell commands.
 - **`copy_to_clipboard`**: `window.oriel.invoke("copy_to_clipboard", { text })` uses Oriel's native clipboard module (`oriel.clipboard.writeText`).
 - **`get_meta`**: `window.oriel.invoke("get_meta")` reports runtime flags, OS, arch, and active renderer state.

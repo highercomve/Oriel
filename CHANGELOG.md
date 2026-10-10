@@ -6,9 +6,47 @@ Notable changes in Oriel releases.
 
 ### Fixed
 
+- Native renderer: `JSON.parse` dropped the fraction of every number
+  (`0.43` became `0`) under a locale whose decimal separator is a comma
+  (`LC_NUMERIC=es_CL`, `de_DE`...): QuickJS read JSON numbers with
+  `strtod`, which follows the locale GTK sets. It reads them with its own
+  locale-independent `js_atod` now. Every command result reaching a page
+  went through it.
 - Windows builds with `-Dkokoro`: the build-time espeak-ng data compiler
   failed with `FileBusy` removing its staging directory, because the
   intonation compiler's log was left open.
+- Native renderer on Linux: wheel scrolling no longer re-hovers a new
+  element at every step. The compositor's motion after each step (the
+  pointer still) hovered the row now under it, a restyle and a second
+  redraw per step; `:hover` now waits until the scroll settles, as in
+  browsers. The system-monitor example also drops its row hover
+  transition, which kept the window redrawing every display frame while
+  scrolling.
+- Native renderer on Linux: cheaper frames. Each text keeps its Pango
+  layout from frame to frame instead of being shaped again on every
+  draw, and a box with rounded corners that clips its content clips it
+  to a rectangle, with the rounded path only on what reaches into a
+  corner (a path clip made Cairo composite everything under it through
+  a mask). With the fix above, scrolling the system monitor's process
+  table went from about 80% of a core to about 15%; a frame's paint
+  takes about half as long.
+
+### Changed
+
+- Native renderer: `localStorage` lasts beyond the run, as in a WebView.
+  One store per app, shared by its windows, saved as JSON in
+  `~/.config/<app id>/data/localStorage.json` (`$XDG_CONFIG_HOME` when
+  set; `~/Library/Application Support/<app id>/data` on macOS,
+  `%APPDATA%\<app id>\data` on Windows). Writes are batched (saved
+  300 ms after a change, and when a window closes), and a 5 MB quota throws
+  `QuotaExceededError` as browsers do. It was an in-memory map before, gone
+  at exit. On Android and iOS it still lasts the run.
+- The system-monitor example grew into a btop-style monitor: per-core CPU
+  with frequencies and temperature, load, memory and swap, disks with I/O
+  rates, network, sensors, system information, process user, threads and
+  command line, a responsive layout, and Settings to show or hide each
+  part (kept in `localStorage`). It costs less than btop and the terminal
+  drawing it: a sampler at ~1.6 ms a sample and a virtual process table.
 
 ## [0.9.11] — 2026-10-09
 
