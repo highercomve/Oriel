@@ -95,9 +95,9 @@
 					<p>System-wide hotkeys, typing and pasting into other apps, image clipboard, and microphone or system audio capture, on X11, Wayland, Windows and macOS.</p>
 				</article>
 				<article class="feature">
-					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3z"/></svg></div>
-					<h3>Wrap any web app</h3>
-					<p><code>oriel wrap &lt;url&gt;</code> turns a site into a desktop app on the system webview, with a tray icon, close to tray and its own favicon. WhatsApp Web packs into a ~2.7 MB AppImage.</p>
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/><path d="m9 12 2 2 4-4"/></svg></div>
+					<h3>Signed updates</h3>
+					<p><code>oriel.updater</code> checks Ed25519-signed manifests, swaps the binary, AppImage or <code>.app</code> atomically and restarts in place on Linux, Windows and macOS. The page can't change the URL or the key.</p>
 				</article>
 				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
