@@ -33,6 +33,10 @@ pub const PlistOptions = struct {
     /// The app's own usage keys (`AppOptions.macos.usage_descriptions`),
     /// written with the permissions' (`writeUsageDescriptions`).
     usage_descriptions: []const UsageDescription = &.{},
+    /// NSServices: a Services menu item with this title that sends the
+    /// selection (files of `document_types`; text and URLs when they take
+    /// text) to the app's `orielShare:userData:error:` (share/apple.zig).
+    service: ?[]const u8 = null,
 };
 
 pub const Permission = struct { kind: []const u8, reason: []const u8 };
@@ -189,6 +193,7 @@ pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
     try entry(w, "NSPrincipalClass", "NSApplication");
     try writeUsageDescriptions(w, o.permissions, o.usage_descriptions, usageKeys);
     try documentTypes(w, o.document_types);
+    if (o.service) |label| try services(w, label, o.name, o.document_types);
     if (o.url_schemes.len > 0) {
         try w.writeAll("\t<key>CFBundleURLTypes</key>\n\t<array>\n\t\t<dict>\n");
         try w.writeAll("\t\t\t<key>CFBundleURLName</key>\n\t\t\t<string>");
@@ -251,6 +256,42 @@ pub fn documentTypes(w: *std.Io.Writer, types: []const []const u8) !void {
     try w.writeAll("\t\t\t<key>LSItemContentTypes</key>\n\t\t\t<array>\n");
     for (utis[0..n]) |u| try w.print("\t\t\t\t<string>{s}</string>\n", .{u});
     try w.writeAll("\t\t\t</array>\n\t\t</dict>\n\t</array>\n");
+}
+
+/// The NSServices entry: shown without the user enabling it
+/// (NSRequiredContext), for files of `types` (as UTIs) and, when a type
+/// takes text (text/plain, text/*, */*), plain text and URLs.
+fn services(w: *std.Io.Writer, label: []const u8, port: []const u8, types: []const []const u8) !void {
+    var text = false;
+    for (types) |t| {
+        if (std.ascii.eqlIgnoreCase(t, "*/*") or std.ascii.eqlIgnoreCase(t, "text/plain") or std.ascii.eqlIgnoreCase(t, "text/*")) text = true;
+    }
+    try w.writeAll("\t<key>NSServices</key>\n\t<array>\n\t\t<dict>\n");
+    try w.writeAll("\t\t\t<key>NSMenuItem</key>\n\t\t\t<dict>\n\t\t\t\t<key>default</key>\n\t\t\t\t<string>");
+    try escape(w, label);
+    try w.writeAll("</string>\n\t\t\t</dict>\n");
+    try w.writeAll("\t\t\t<key>NSMessage</key>\n\t\t\t<string>orielShare</string>\n");
+    try w.writeAll("\t\t\t<key>NSPortName</key>\n\t\t\t<string>");
+    try escape(w, port);
+    try w.writeAll("</string>\n\t\t\t<key>NSRequiredContext</key>\n\t\t\t<dict/>\n");
+    var utis: [32][]const u8 = undefined;
+    var n: usize = 0;
+    for (types) |t| {
+        const u = utiForMime(t) orelse continue;
+        const seen = for (utis[0..n]) |v| {
+            if (std.mem.eql(u8, v, u)) break true;
+        } else false;
+        if (seen or n == utis.len) continue;
+        utis[n] = u;
+        n += 1;
+    }
+    if (n > 0) {
+        try w.writeAll("\t\t\t<key>NSSendFileTypes</key>\n\t\t\t<array>\n");
+        for (utis[0..n]) |u| try w.print("\t\t\t\t<string>{s}</string>\n", .{u});
+        try w.writeAll("\t\t\t</array>\n");
+    }
+    if (text) try w.writeAll("\t\t\t<key>NSSendTypes</key>\n\t\t\t<array>\n\t\t\t\t<string>public.utf8-plain-text</string>\n\t\t\t\t<string>public.url</string>\n\t\t\t</array>\n");
+    try w.writeAll("\t\t</dict>\n\t</array>\n");
 }
 
 pub fn entry(w: *std.Io.Writer, key: []const u8, value: []const u8) !void {
@@ -542,4 +583,25 @@ test "document types: MIME types as UTIs, once each" {
     const none = try generateInfoPlist(gpa, .{ .id = "a.b", .name = "n", .exe_name = "n", .version = "1", .min_os = "13.0" });
     defer gpa.free(none);
     try std.testing.expect(std.mem.indexOf(u8, none, "CFBundleDocumentTypes") == null);
+}
+
+test "services: the label, file UTIs, text and URLs" {
+    const gpa = std.testing.allocator;
+    const plist = try generateInfoPlist(gpa, .{
+        .id = "dev.oriel.Share",
+        .name = "Share",
+        .exe_name = "share",
+        .version = "1.0",
+        .min_os = "13.0",
+        .document_types = &.{ "image/*", "text/plain" },
+        .service = "Send with Share & Co",
+    });
+    defer gpa.free(plist);
+    for ([_][]const u8{ "<key>NSServices</key>", "<string>Send with Share &amp; Co</string>", "<string>orielShare</string>", "<key>NSRequiredContext</key>", "<string>public.utf8-plain-text</string>" }) |want| {
+        try std.testing.expect(std.mem.indexOf(u8, plist, want) != null);
+    }
+    const files_only = try generateInfoPlist(gpa, .{ .id = "a.b", .name = "n", .exe_name = "n", .version = "1", .min_os = "13.0", .document_types = &.{"image/png"}, .service = "x" });
+    defer gpa.free(files_only);
+    try std.testing.expect(std.mem.indexOf(u8, files_only, "NSSendTypes") == null);
+    try std.testing.expect(std.mem.indexOf(u8, files_only, "<string>public.png</string>") != null);
 }
