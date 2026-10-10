@@ -1,0 +1,123 @@
+# The system-monitor example (examples/system-monitor) on each OS it
+# supports: its sampler's test run natively (one full sample printed, so a
+# run's log shows what Linux, Windows and macOS report), the app built
+# with the native renderer, and its packages, attached to the run as
+# artifacts for testing distribution:
+#
+#   Linux    .deb, .rpm, .AppImage (x86_64)
+#   Windows  NSIS setup.exe, and the bare .exe in a zip (x86_64)
+#   macOS    .dmg with the .app (arm64; unsigned: right-click > Open)
+#
+# Run by hand (Actions > System monitor > Run workflow), or on a push that
+# touches the example or the native renderer.
+name: System monitor
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "examples/system-monitor/**"
+      - "src/native_ui/**"
+      - ".github/workflows/system-monitor.yml"
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.16.0
+  # As release.yml: the GTK/WebKit bindings target GNOME 50, which Arch ships.
+  ARCH_PACKAGES: >-
+    git pkgconf gtk4 webkitgtk-6.0 wayland wayland-protocols libxkbcommon
+    libxtst libx11 dbus ttf-dejavu squashfs-tools desktop-file-utils go
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: ghcr.io/archlinux/archlinux:latest
+    defaults:
+      run:
+        working-directory: examples/system-monitor
+    steps:
+      - name: System packages
+        working-directory: /
+        run: pacman -Syu --noconfirm --needed $ARCH_PACKAGES
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: nfpm (for .deb and .rpm)
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      - name: Sampler test (one full sample)
+        # Zig's own glibc: the container's crt files can be newer than its linker reads.
+        run: zig test sampler_linux.zig -lc -target x86_64-linux-gnu -OReleaseFast
+      - name: Build
+        run: zig build -Dnative_ui -Doptimize=ReleaseFast --summary all
+      - name: Packages (.deb, .rpm, .AppImage)
+        run: zig build package-deb package-rpm package-appimage -Dnative_ui -Doptimize=ReleaseFast
+      - run: ls -la zig-out/package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: system-monitor-linux-x86_64
+          path: |
+            examples/system-monitor/zig-out/package/*.deb
+            examples/system-monitor/zig-out/package/*.rpm
+            examples/system-monitor/zig-out/package/*.AppImage
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: examples/system-monitor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: NSIS
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { choco install nsis -y --no-progress }
+      - name: Sampler test (one full sample)
+        run: zig test sampler_windows.zig -OReleaseFast
+      - name: Build
+        run: zig build -Dnative_ui -Doptimize=ReleaseFast --summary all
+      - name: Installer (setup.exe) and portable zip
+        shell: pwsh
+        run: |
+          zig build package-nsis -Dnative_ui -Doptimize=ReleaseFast
+          Compress-Archive -Path zig-out/bin/* -DestinationPath zig-out/package/oriel-system-monitor-windows-x86_64.zip -Force
+          Get-ChildItem zig-out/package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: system-monitor-windows-x86_64
+          path: |
+            examples/system-monitor/zig-out/package/*.exe
+            examples/system-monitor/zig-out/package/*.zip
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: examples/system-monitor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Sampler test (one full sample)
+        run: zig test sampler_macos.zig -OReleaseFast
+      - name: Build
+        run: zig build -Dnative_ui -Doptimize=ReleaseFast --summary all
+      - name: Disk image (.app in a .dmg, unsigned)
+        run: |
+          zig build package-dmg -Dnative_ui -Doptimize=ReleaseFast
+          ls -la zig-out/package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: system-monitor-macos-arm64
+          path: examples/system-monitor/zig-out/package/*.dmg
+          if-no-files-found: error
