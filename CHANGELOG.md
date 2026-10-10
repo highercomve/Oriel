@@ -45,7 +45,10 @@ Notable changes in Oriel releases.
   with frequencies and temperature, load, memory and swap, disks with I/O
   rates, network, sensors, system information, process user, threads and
   command line, a responsive layout, and Settings to show or hide each
-  part (kept in `localStorage`). It costs less than btop and the terminal
+  part (kept in `localStorage`). It runs on Linux, Windows and macOS (a
+  sampler per OS; the page hides what an OS doesn't report), and a CI
+  workflow tests each sampler and builds the packages (.deb, .rpm,
+  .AppImage, setup.exe, .dmg). It costs less than btop and the terminal
   drawing it: a sampler at ~1.6 ms a sample and a virtual process table.
 
 ## [0.9.11] — 2026-10-09
