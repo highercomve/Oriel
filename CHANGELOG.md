@@ -2,7 +2,10 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.9.15] — 2026-10-11
+
+Oriel 0.9.15 makes Android mDNS discovery reliable on phones older than
+Android 14, which could miss devices on the network.
 
 ### Fixed
 
