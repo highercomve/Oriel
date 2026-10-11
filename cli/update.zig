@@ -45,6 +45,11 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
         return 1;
     }
 
+    if (cmd.version) |v| if (!isReleaseTag(v)) {
+        try ctx.err.print("error: --version wants a release tag like v1.2.3 or 1.2.3-rc.1, not '{s}'\n", .{v});
+        return 1;
+    };
+
     const arch_str = switch (builtin.cpu.arch) {
         .x86_64 => "x86_64",
         .aarch64 => "aarch64",
@@ -80,6 +85,8 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
     const allow_test_http = std.mem.startsWith(u8, releases_url, "http://127.0.0.1") or
         std.mem.startsWith(u8, releases_url, "http://localhost");
 
+    // An explicit version is installed even when older or the same; the
+    // manifest must then name exactly that version (checked below).
     const is_forced = cmd.version != null;
     var update_cfg = core.Config{
         .app_id = "dev.oriel.cli",
@@ -89,6 +96,7 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
         .target = core.DEFAULT_TARGET,
         .allow_http_for_test = allow_test_http,
         .force = is_forced,
+        .allow_downgrade = is_forced,
     };
 
     var maybe_update: ?core.Update = null;
@@ -104,6 +112,16 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
         };
         break;
     }
+
+    // A signed manifest for another version (e.g. an old one replayed under
+    // this tag) must not install it.
+    if (cmd.version) |v| if (maybe_update) |*up| {
+        if (!sameVersion(up.version, v)) {
+            try ctx.err.print("error: the release manifest for {s} names version {s}\n", .{ v, up.version });
+            up.deinit();
+            return 1;
+        }
+    };
 
     if (cmd.check) {
         if (maybe_update) |*up| {
@@ -155,6 +173,57 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
 
     try ctx.out.print("Updated oriel {s} -> {s} at {s}\n", .{ build_options.version, update.version, installed_path });
     return 0;
+}
+
+/// A release tag: `v?MAJOR.MINOR.PATCH(-prerelease)?` (it goes into the URL).
+pub fn isReleaseTag(tag: []const u8) bool {
+    const t = if (std.mem.startsWith(u8, tag, "v")) tag[1..] else tag;
+    const dash = std.mem.indexOfScalar(u8, t, '-');
+    const core_part = t[0 .. dash orelse t.len];
+    var parts = std.mem.splitScalar(u8, core_part, '.');
+    var n: usize = 0;
+    while (parts.next()) |p| : (n += 1) {
+        if (n == 3 or p.len == 0) return false;
+        for (p) |c| if (!std.ascii.isDigit(c)) return false;
+    }
+    if (n != 3) return false;
+    if (dash) |d| {
+        const pre = t[d + 1 ..];
+        if (pre.len == 0) return false;
+        var ids = std.mem.splitScalar(u8, pre, '.');
+        while (ids.next()) |id| {
+            if (id.len == 0) return false;
+            for (id) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') return false;
+        }
+    }
+    return true;
+}
+
+test isReleaseTag {
+    try std.testing.expect(isReleaseTag("v1.2.3"));
+    try std.testing.expect(isReleaseTag("0.9.15"));
+    try std.testing.expect(isReleaseTag("v1.0.0-rc.1"));
+    try std.testing.expect(!isReleaseTag("v1.2"));
+    try std.testing.expect(!isReleaseTag("1.2.3.4"));
+    try std.testing.expect(!isReleaseTag("1.2.3-"));
+    try std.testing.expect(!isReleaseTag("1.2.3+build"));
+    try std.testing.expect(!isReleaseTag("../v1.2.3"));
+    try std.testing.expect(!isReleaseTag("v1.2.3/../../x"));
+    try std.testing.expect(!isReleaseTag("v1.2.3-a/b"));
+    try std.testing.expect(!isReleaseTag(""));
+}
+
+/// Whether the manifest's version is the requested tag (a `v` aside).
+fn sameVersion(manifest_version: []const u8, tag: []const u8) bool {
+    const a = core.Semver.parse(manifest_version) catch return false;
+    const b = core.Semver.parse(tag) catch return false;
+    return a.order(b) == .eq;
+}
+
+test sameVersion {
+    try std.testing.expect(sameVersion("1.2.3", "v1.2.3"));
+    try std.testing.expect(!sameVersion("1.2.2", "v1.2.3"));
+    try std.testing.expect(!sameVersion("1.2.3-rc.1", "1.2.3"));
 }
 
 fn fetchLatestReleaseTag(ctx: Context) ![]const u8 {
@@ -316,6 +385,16 @@ test "oriel update end-to-end against local HTTP server" {
     // 5. Test --check reports available update
     const check_res = try runWithKey(ctx, .{ .check = true }, &pk_b64);
     try std.testing.expectEqual(@as(u8, 0), check_res);
+    try std.testing.expect(std.mem.indexOf(u8, out_buf.written(), "99.0.0 is available") != null);
+
+    // 5b. --version: the manifest must name that version; the tag is validated
+    out_buf.clearRetainingCapacity();
+    err_buf.clearRetainingCapacity();
+    try std.testing.expectEqual(@as(u8, 1), try runWithKey(ctx, .{ .check = true, .version = "v1.0.0" }, &pk_b64));
+    try std.testing.expect(std.mem.indexOf(u8, err_buf.written(), "names version 99.0.0") != null);
+    try std.testing.expectEqual(@as(u8, 1), try runWithKey(ctx, .{ .check = true, .version = "../v99.0.0" }, &pk_b64));
+    out_buf.clearRetainingCapacity();
+    try std.testing.expectEqual(@as(u8, 0), try runWithKey(ctx, .{ .check = true, .version = "v99.0.0" }, &pk_b64));
     try std.testing.expect(std.mem.indexOf(u8, out_buf.written(), "99.0.0 is available") != null);
 
     // 6. Test non-TTY without --yes fails with error

@@ -28,6 +28,17 @@
 #define NUI_MAX_STACK (4 * 1024 * 1024)
 #endif
 
+// The page's JS heap, at most: past it an allocation fails (the page gets
+// an out-of-memory InternalError), not the process.
+#define NUI_MEMORY_LIMIT ((size_t)1024 * 1024 * 1024)
+// How long one call from Zig may run the page's JS before it's stopped (an
+// uncatchable InternalError, as a browser stops a script that hangs it):
+// `while (true) {}` must not freeze the UI thread for good.
+#define NUI_RUN_LIMIT_MS 10000.0
+// Promise jobs run per settle (oqjs_run_jobs): a chain that requeues
+// itself goes on in the next turn, between which the UI thread breathes.
+#define NUI_JOBS_PER_TURN 10000
+
 // Implemented in engine.zig.
 extern void oriel_nui_log(void *opaque, int level, const char *msg, size_t len);
 extern int oriel_nui_asset(void *opaque, const char *path, size_t len, const char **out, size_t *out_len);
@@ -81,14 +92,50 @@ typedef struct {
     // Calls from Zig in progress (eval and jobs nest when a host function
     // calls back into the page).
     int depth;
+    // When the outermost call must have returned (monotonic ms, see
+    // NUI_RUN_LIMIT_MS); 0 outside the page's JS, -1 once it was stopped.
+    double deadline;
 } oqjs;
 
-// The outermost call from Zig: the stack limit counts from here (the
-// runtime was created at another depth, and calls come from many).
-static void enter(oqjs *self) {
-    if (self->depth++ == 0) JS_UpdateStackTop(self->rt);
+static double now_ms(void) {
+#if defined(_WIN32)
+    LARGE_INTEGER t, f;
+    QueryPerformanceCounter(&t);
+    QueryPerformanceFrequency(&f);
+    return (double)t.QuadPart * 1e3 / (double)f.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6;
+#endif
 }
-static void leave(oqjs *self) { self->depth--; }
+
+// The outermost call from Zig: the stack limit and the run limit count
+// from here (the runtime was created at another depth, and calls come
+// from many).
+static void enter(oqjs *self) {
+    if (self->depth++ == 0) {
+        JS_UpdateStackTop(self->rt);
+        self->deadline = now_ms() + NUI_RUN_LIMIT_MS;
+    }
+}
+static void leave(oqjs *self) {
+    if (--self->depth == 0) self->deadline = 0;
+}
+
+// QuickJS's interrupt poll (every 10000 branches or calls, so a clock read
+// each time costs nothing to speak of): nonzero stops the script past the
+// call's deadline (and again, unlogged, until the call returns: -1).
+static int nui_interrupt(JSRuntime *rt, void *opaque) {
+    (void)rt;
+    oqjs *self = opaque;
+    if (self->deadline < 0) return 1;
+    if (self->deadline == 0 || now_ms() < self->deadline) return 0;
+    static const char msg[] = "script ran too long (10 s without returning): stopped";
+    oriel_nui_log(self->opaque, 3, msg, sizeof msg - 1);
+    self->deadline = -1;
+    return 1;
+}
 
 static void *opaque_of(JSContext *ctx) { return JS_GetContextOpaque(ctx); }
 
@@ -493,16 +540,7 @@ static JSValue h_reload(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 // host.now(): a monotonic clock in ms, sub-millisecond (performance.now).
 static JSValue h_now(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
-#if defined(_WIN32)
-    LARGE_INTEGER t, f;
-    QueryPerformanceCounter(&t);
-    QueryPerformanceFrequency(&f);
-    return JS_NewFloat64(ctx, (double)t.QuadPart * 1e3 / (double)f.QuadPart);
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return JS_NewFloat64(ctx, (double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6);
-#endif
+    return JS_NewFloat64(ctx, now_ms());
 }
 
 static JSValue h_frame(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -1003,8 +1041,11 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     self->ctx = ctx;
     self->opaque = opaque;
     self->depth = 0;
+    self->deadline = 0;
     JS_SetContextOpaque(ctx, opaque);
     JS_SetMaxStackSize(rt, NUI_MAX_STACK);
+    JS_SetMemoryLimit(rt, NUI_MEMORY_LIMIT);
+    JS_SetInterruptHandler(rt, nui_interrupt, self);
     JS_SetModuleLoaderFunc(rt, nui_normalize, nui_load_module, NULL);
 
     JSValue global = JS_GetGlobalObject(ctx);
@@ -1167,17 +1208,21 @@ int oqjs_eval_bytecode(void *p, const uint8_t *code, size_t len) {
     return 0;
 }
 
-// Run the pending promise jobs (microtasks).
-void oqjs_run_jobs(void *p) {
+// Run the pending promise jobs (microtasks), up to NUI_JOBS_PER_TURN: 1
+// when some are left (the engine runs them on its next turn), else 0.
+int oqjs_run_jobs(void *p) {
     oqjs *self = p;
     JSContext *job_ctx;
     enter(self);
-    for (;;) {
+    int left = 0;
+    for (int n = 0;; n++) {
+        if (n == NUI_JOBS_PER_TURN) { left = JS_IsJobPending(self->rt) ? 1 : 0; break; }
         int r = JS_ExecutePendingJob(self->rt, &job_ctx);
         if (r == 0) break;
         if (r < 0) report(job_ctx);
     }
     leave(self);
+    return left;
 }
 
 // A cycle collection now (idle, after a big removal: detached trees the

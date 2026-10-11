@@ -320,6 +320,14 @@ const Reader = struct {
         defer self.pos += n;
         return self.bytes[self.pos..][0..n];
     }
+
+    /// A string C callers get NUL-terminated (a name, host, address or TXT
+    /// key): one with a NUL inside would be silently cut there.
+    fn text(self: *Reader) DecodeError![]const u8 {
+        const s = try self.str();
+        if (std.mem.indexOfScalar(u8, s, 0) != null) return error.Malformed;
+        return s;
+    }
 };
 
 /// Decode a TXT record from the wire format (slices point into `bytes`;
@@ -339,15 +347,15 @@ pub fn decodeTxt(arena: Allocator, bytes: []const u8) DecodeError![]Txt {
 pub fn decodeEvent(arena: Allocator, bytes: []const u8, service_type: []const u8) DecodeError!Event {
     var r: Reader = .{ .bytes = bytes };
     const kind = try r.u8_();
-    const name = try r.str();
+    const name = try r.text();
     const event: Event = switch (kind) {
         0 => blk: {
-            const host = try r.str();
+            const host = try r.text();
             const port = try r.u16_();
             const addresses = try arena.alloc([]const u8, try r.u8_());
-            for (addresses) |*a| a.* = try r.str();
+            for (addresses) |*a| a.* = try r.text();
             const txt = try arena.alloc(Txt, try r.u8_());
-            for (txt) |*t| t.* = .{ .key = try r.str(), .value = try r.str() };
+            for (txt) |*t| t.* = .{ .key = try r.text(), .value = try r.str() };
             break :blk .{ .found = .{
                 .name = name,
                 .type = service_type,
@@ -504,6 +512,25 @@ test "Event: malformed input is refused" {
     const a = arena.allocator();
     const cases = [_][]const u8{ "", "\x02\x00\x00", "\x01\x00\x05abc", "\x01\x00\x01ab", "\x00\x00\x01x\x00\x00\x00", "\x00\x00\x01x\x00\x00\x00\x01\x02\x00" };
     for (cases) |c| try testing.expectError(error.Malformed, decodeEvent(a, c, "_x._tcp"));
+}
+
+test "Event: a NUL inside a name, address or TXT key is refused" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ok: Found = .{ .name = "n", .type = "", .host = null, .addresses = &.{"10.0.0.1"}, .port = 1, .txt = &.{.{ .key = "k", .value = "\x00v" }} };
+    _ = try decodeEvent(a, try encodeEvent(a, .{ .found = ok }), "_x._tcp"); // a NUL in a value is fine
+    var bad_name = ok;
+    bad_name.name = "a\x00b";
+    var bad_host = ok;
+    bad_host.host = "h\x00.local";
+    var bad_address = ok;
+    bad_address.addresses = &.{"10.0.0.1\x00evil"};
+    var bad_key = ok;
+    bad_key.txt = &.{.{ .key = "k\x00", .value = "v" }};
+    for ([_]Found{ bad_name, bad_host, bad_address, bad_key }) |f|
+        try testing.expectError(error.Malformed, decodeEvent(a, try encodeEvent(a, .{ .found = f }), "_x._tcp"));
+    try testing.expectError(error.Malformed, decodeEvent(a, try encodeEvent(a, .{ .lost = .{ .name = "\x00", .type = "" } }), "_x._tcp"));
 }
 
 test "Registration.name" {

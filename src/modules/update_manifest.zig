@@ -68,10 +68,12 @@ pub const SignParameters = struct {
     sha256: []const u8,
     url: []const u8,
     expires: ?u64 = null,
+    /// Accept a loopback `http://` URL; ignored outside test builds.
     allow_test_http: bool = false,
 };
 
 pub const VerifyOptions = struct {
+    /// Accept a loopback `http://` URL; ignored outside test builds.
     allow_test_http: bool = false,
 };
 
@@ -194,7 +196,7 @@ pub fn validateSha256(hex: []const u8) !void {
 pub fn validateUrl(url: []const u8, allow_test_http: bool) !void {
     try validateNoControlChars(url);
     if (std.mem.startsWith(u8, url, "https://")) return;
-    if (allow_test_http) {
+    if (builtin.is_test and allow_test_http) {
         if (std.mem.startsWith(u8, url, "http://127.0.0.1:") or
             std.mem.startsWith(u8, url, "http://127.0.0.1/") or
             std.mem.startsWith(u8, url, "http://localhost:") or

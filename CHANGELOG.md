@@ -2,6 +2,63 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+Fixes from a code review against the NASA/JPL "Power of 10" rules.
+
+### Fixed
+
+- Native renderer: `localStorage` could lose everything. A key or value
+  with a lone surrogate (valid in JavaScript) was saved as invalid UTF-8,
+  the next launch couldn't read the file and started empty, and the next
+  save overwrote it. Keys and values are stored as valid UTF-8 now, the
+  read limit allows for JSON escaping, and a file that fails to load is
+  moved aside (`localStorage.json.corrupt-<time>`) instead of overwritten.
+- Native renderer: closing a window from a frame hook or a promise job
+  freed the page while it was still running; the close now waits until the
+  page is idle, on every backend.
+- Native renderer: a script that never returns (`while (true) {}`, or a
+  promise chain that keeps requeuing itself) no longer hangs the window for
+  good. A call into JavaScript is stopped after 10 seconds, promise jobs
+  run at most 10,000 per turn (the rest on the next), and the JavaScript
+  heap is limited to 1 GiB.
+- Native renderer on Linux and Windows: above 256 MB of decoded images the
+  image cache was emptied and every image decoded again each frame; it now
+  evicts the least recently used images.
+- Windows mDNS: stopping a browse while lookups were finishing could use
+  freed memory (lookups are reference-counted now) and race on the found
+  services; lookups, names and addresses per browse are capped. Names,
+  addresses and TXT keys with a NUL byte are refused.
+- Events and replies reached only the page that should get them: on Windows
+  and Android, an asynchronous reply or event could reach the next page
+  after a navigation, and on every platform events went to whatever page a
+  window showed, bridge or not.
+- Windows: a failed request-filter registration, or an early error while
+  serving an asset, let `https://app.localhost` requests reach the network;
+  window creation fails, or the request gets a 500. macOS and iOS fail the
+  request when a security header (CSP, nosniff) can't be set.
+- macOS and iOS: `nativePath` always failed (the `F_GETPATH` result was
+  misread).
+- IPC: requests over 32 MiB are refused, the async job queue is capped
+  (1024; extra calls answer `WorkerPoolBusy`), a message that can't be
+  decoded gets an `InvalidRequest` reply instead of never settling, and
+  window sizes from the page must be 1..32767.
+- Updates: a manifest older than the running version is never installed by
+  `force`; `oriel update --version` checks the tag's form and that the
+  signed manifest is that version. Plain-HTTP manifest URLs only work in
+  tests. A raw payload's size is capped, the replaced binary keeps its
+  mode, and on Windows the single-instance lock is released only once the
+  new process has started.
+- `oriel` CLI: the iOS `xtool` download is pinned to 1.21.0 and its SHA-256
+  checked (it was GitHub's unpinned latest release, run with your Apple
+  ID). `oriel wrap` escapes the title, user agent and URL in the code and
+  HTML it writes, and allows only the exact origin unless
+  `--allow-subdomains` is given. Signing keys' temporary folders are
+  created private (0700) from the start.
+- Android builds: a version part that isn't a number or is 100 or more,
+  and app names with `" $ \ & < > '`, are build errors instead of a wrong
+  version code or a broken project.
+
 ## [0.9.15] — 2026-10-11
 
 Oriel 0.9.15 makes Android mDNS discovery reliable on phones older than

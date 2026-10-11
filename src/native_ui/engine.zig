@@ -379,7 +379,7 @@ extern fn oqjs_file_data(h: *anyopaque, req_id: u32, data: [*]const u8, len: usi
 extern fn oqjs_number_call(h: *anyopaque, name: [*:0]const u8, value: f64) c_int;
 extern fn oqjs_render(h: *anyopaque) c_int;
 extern fn oqjs_eval_bytecode(h: *anyopaque, code: [*]const u8, len: usize) c_int;
-extern fn oqjs_run_jobs(h: *anyopaque) void;
+extern fn oqjs_run_jobs(h: *anyopaque) c_int;
 extern fn oqjs_memory(h: *anyopaque) usize;
 extern fn oqjs_run_gc(h: *anyopaque) void;
 extern fn oqjs_free(h: *anyopaque) void;
@@ -532,6 +532,8 @@ pub const Engine = struct {
     /// location.reload() asked for a new page: it starts on its own turn
     /// (reload_timer_id), never inside the call that asked.
     reload_pending: bool = false,
+    /// Promise jobs are left for a turn of their own (jobs_timer_id).
+    jobs_pending: bool = false,
     /// The page's timer ids reach the backend offset by this: a reload
     /// moves it past every id the old page used, so an old timer that
     /// fires afterwards is told apart from the new page's.
@@ -547,6 +549,8 @@ pub const Engine = struct {
     pub const task_timer_id: u32 = 0;
     /// The timer id of a reload's turn (reloadNow).
     pub const reload_timer_id: u32 = std.math.maxInt(u32);
+    /// The timer id of a turn for the promise jobs one settle left (runJobs).
+    pub const jobs_timer_id: u32 = std.math.maxInt(u32) - 1;
 
     /// Drag effects (the "drag" event's masks), as Win32's DROPEFFECT_*.
     pub const drag_copy: u8 = 1;
@@ -676,6 +680,13 @@ pub const Engine = struct {
         return live.get(serial);
     }
 
+    /// The page's JS or the app's frame hooks are on the stack: the engine
+    /// can't go yet (they'd return into it). A window closed from there
+    /// closes once they've returned (the backends' busy, or destroy).
+    pub fn busy(e: *const Engine) bool {
+        return e.in_call > 0 or e.in_frame_hooks;
+    }
+
     pub fn destroy(e: *Engine) void {
         _ = live.remove(e.serial);
         // The page's last localStorage changes, if its flush hadn't come.
@@ -774,6 +785,11 @@ pub const Engine = struct {
     pub fn timerFired(e: *Engine, id: u32) void {
         if (id == task_timer_id) return e.runFileReads();
         if (id == reload_timer_id) return e.reloadNow();
+        if (id == jobs_timer_id) {
+            e.jobs_pending = false;
+            if (e.in_call == 0) e.settle(); // else that call's settle runs them
+            return;
+        }
         // Set by a page this window had before a reload: not this one's.
         if (id < e.timer_base) return;
         _ = e.callNumber("timer", @floatFromInt(id - e.timer_base));
@@ -999,7 +1015,7 @@ pub const Engine = struct {
     /// After JS ran: microtasks, then the page's render and layout, now or
     /// (`Backend.request_frame`) at the next frame.
     fn settle(e: *Engine) void {
-        oqjs_run_jobs(e.js);
+        e.runJobs();
         if (e.booted) if (e.backend.request_frame) |request| {
             if (!e.frame_pending) {
                 e.frame_pending = true;
@@ -1008,6 +1024,19 @@ pub const Engine = struct {
             return;
         };
         e.renderNow();
+    }
+
+    /// The pending promise jobs, as a call into the page (in_call: a job
+    /// that closes the window waits for it, see busy). A chain that keeps
+    /// requeuing itself goes on in a turn of its own (oqjs_run_jobs stops
+    /// after so many), so the UI thread isn't held forever.
+    fn runJobs(e: *Engine) void {
+        e.in_call += 1;
+        const left = oqjs_run_jobs(e.js) != 0;
+        e.in_call -= 1;
+        if (!left or e.jobs_pending) return;
+        e.jobs_pending = true;
+        e.backend.add_timer(e.backend.ctx, e, jobs_timer_id, 0);
     }
 
     /// A frame (`Backend.request_frame`): render what changed since the last.
@@ -1028,7 +1057,7 @@ pub const Engine = struct {
         e.in_call += 1;
         _ = oqjs_render(e.js);
         e.in_call -= 1;
-        oqjs_run_jobs(e.js);
+        e.runJobs();
         if (e.tree.needsLayout()) {
             const t0 = prof.now();
             e.tree.layout();
@@ -1142,9 +1171,9 @@ export fn oriel_nui_invoke(p: *anyopaque, call_id: u32, cmd: [*]const u8, cmd_le
 export fn oriel_nui_timer(p: *anyopaque, id: u32, ms: f64) void {
     const e = engineOf(p);
     // Past the ids every earlier page used (timer_base), clear of the
-    // engine's own (task_timer_id, reload_timer_id).
+    // engine's own (task_timer_id, jobs_timer_id, reload_timer_id).
     const backend_id = std.math.add(u32, e.timer_base, id) catch return;
-    if (backend_id == Engine.reload_timer_id) return;
+    if (backend_id >= Engine.jobs_timer_id) return;
     if (backend_id >= e.timer_next) e.timer_next = backend_id + 1;
     e.backend.add_timer(e.backend.ctx, e, backend_id, @intFromFloat(@max(0, @min(ms, 1e9))));
 }
