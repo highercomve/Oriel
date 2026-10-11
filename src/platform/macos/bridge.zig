@@ -243,7 +243,13 @@ pub const bridge_js =
     \\})();
 ;
 
-fn evaluate(view: cocoa.id, script: []const u8) void {
+/// Evaluate an event's script in `view`, only when its page is one the
+/// bridge serves (App.pageGetsEvents): any other page could define its own
+/// `window.oriel.__emit` and read the event. (webView.URL is the provisional
+/// URL during a navigation, so a page being left may miss an event.)
+fn evaluateEvent(view: cocoa.id, label: []const u8, script: []const u8) void {
+    const url = cocoa.urlString((Object{ .value = view }).msgSend(Object, "URL", .{})) orelse return;
+    if (!App.pageGetsEvents(url, label)) return;
     const str = cocoa.nsString(script) orelse return;
     defer str.release();
     (Object{ .value = view }).msgSend(void, "evaluateJavaScript:completionHandler:", .{ str, cocoa.nil });
@@ -299,7 +305,7 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
                 // not the (possibly stale) copy queued with the task.
                 for (App.windows_list.items) |win| {
                     if (self.target != null and !win.handle.eql(self.target.?)) continue;
-                    if (win.handle.webview != null) evaluate(win.handle.webview, self.script) else engines.add(win.handle);
+                    if (win.handle.webview != null) evaluateEvent(win.handle.webview, win.label, self.script) else engines.add(win.handle);
                 }
             }
             engines.eval(self.script);
@@ -350,7 +356,7 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
                 defer App.windows_mutex.unlock();
                 for (App.windows_list.items) |win| {
                     if (!std.mem.eql(u8, win.label, self.label)) continue;
-                    if (win.handle.webview != null) evaluate(win.handle.webview, self.script) else engines.add(win.handle);
+                    if (win.handle.webview != null) evaluateEvent(win.handle.webview, win.label, self.script) else engines.add(win.handle);
                 }
             }
             engines.eval(self.script);
@@ -579,6 +585,10 @@ pub fn Bridge(
                 replyError(reply, "InvalidRequest");
                 return;
             };
+            if (req_slice.len > ipc.max_request_len) {
+                replyError(reply, "RequestTooLarge");
+                return;
+            }
 
             var parse_arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
             defer parse_arena.deinit();

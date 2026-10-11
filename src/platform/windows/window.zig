@@ -71,7 +71,10 @@ pub const WindowHandle = struct {
     deinit_fn: ?*const fn (ctx: *anyopaque) void = null,
 
     pub fn deinit(self: WindowHandle) void {
-        if (self.webview) |v| isolation.forget(@intFromPtr(v));
+        if (self.webview) |v| {
+            isolation.forget(@intFromPtr(v));
+            bridge_mod.forgetView(v);
+        }
         if (self.deinit_fn) |f| {
             if (self.data) |d| f(d);
         }
@@ -553,7 +556,7 @@ pub fn WindowCreator(
             fn releaseNav(_: *webview2.ICoreWebView2NavigationStartingEventHandler) callconv(.winapi) win32.ULONG {
                 return 1;
             }
-            fn invokeNav(n_this: *webview2.ICoreWebView2NavigationStartingEventHandler, _: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2NavigationStartingEventArgs) callconv(.winapi) win32.HRESULT {
+            fn invokeNav(n_this: *webview2.ICoreWebView2NavigationStartingEventHandler, sender: ?*webview2.ICoreWebView2, args: ?*webview2.ICoreWebView2NavigationStartingEventArgs) callconv(.winapi) win32.HRESULT {
                 const n_self: *@This() = @fieldParentPtr("handler", n_this);
                 if (args) |a| {
                     var uri_w: ?win32.LPWSTR = null;
@@ -584,7 +587,9 @@ pub fn WindowCreator(
 
                     const verdict = security.navigation(config.security, local, uri_u8, user_init != .FALSE);
                     switch (verdict) {
-                        .allow => {},
+                        // A new top-level document: replies to the old one's
+                        // calls are dropped from now on (bridge.navSerial).
+                        .allow => if (!n_self.frame) if (sender) |v| bridge_mod.navigationStarted(v),
                         .open_external => {
                             _ = a.lpVtbl.put_Cancel(a, win32.TRUE);
                             const uri_z = std.heap.smp_allocator.dupeZ(u8, uri_u8) catch return win32.S_OK;
@@ -1295,10 +1300,16 @@ pub fn WindowCreator(
             // Register asset filter for "https://app.localhost/*"
             const filter_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, scheme_mod.filter_pattern);
             defer gpa.free(filter_w);
-            _ = view.addWebResourceRequestedFilter(filter_w.ptr, webview2.COREWEBVIEW2_WEB_RESOURCE_CONTEXT.ALL);
+            // Without the filter, app.localhost requests would go to the
+            // real network: no window then, like a failed handler below.
+            if (view.addWebResourceRequestedFilter(filter_w.ptr, webview2.COREWEBVIEW2_WEB_RESOURCE_CONTEXT.ALL) < 0) {
+                return error.WebView2AddEventHandlerFailed;
+            }
             if (comptime config.security.isolation != null) {
                 const iso_filter_w = std.unicode.utf8ToUtf16LeStringLiteral(scheme_mod.isolation_filter_pattern);
-                _ = view.addWebResourceRequestedFilter(iso_filter_w, webview2.COREWEBVIEW2_WEB_RESOURCE_CONTEXT.ALL);
+                if (view.addWebResourceRequestedFilter(iso_filter_w, webview2.COREWEBVIEW2_WEB_RESOURCE_CONTEXT.ALL) < 0) {
+                    return error.WebView2AddEventHandlerFailed;
+                }
             }
 
             // Allocate WindowData

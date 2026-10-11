@@ -18,6 +18,15 @@ pub const ThreadPool = struct {
     head: ?*Task = null,
     tail: ?*Task = null,
     shutdown: bool = false,
+    /// Tasks accepted and not yet taken by a worker.
+    queued: usize = 0,
+    /// `post` refuses a task beyond this many waiting ones: pages can queue
+    /// async commands faster than workers run them, and each holds memory.
+    max_queued: usize = default_max_queued,
+
+    pub const default_max_queued = 1024;
+
+    pub const PostError = error{ WorkerPoolNotRunning, WorkerPoolBusy };
 
     /// Create and start a worker pool with `count` threads (defaults to CPU count clamped [2, 16]).
     pub fn init(allocator: std.mem.Allocator, io: std.Io, count: ?usize) !*ThreadPool {
@@ -36,6 +45,8 @@ pub const ThreadPool = struct {
             .head = null,
             .tail = null,
             .shutdown = false,
+            .queued = 0,
+            .max_queued = default_max_queued,
         };
         var spawned: usize = 0;
         errdefer {
@@ -53,12 +64,22 @@ pub const ThreadPool = struct {
         return pool;
     }
 
-    /// Enqueue a task to be run on one of the worker threads.
+    /// Enqueue a task to be run on one of the worker threads. False when
+    /// the pool is stopping or already holds `max_queued` waiting tasks.
     pub fn post(pool: *ThreadPool, task: *Task) bool {
+        pool.submit(task) catch return false;
+        return true;
+    }
+
+    /// `post`, telling a stopped pool (WorkerPoolNotRunning) from a full
+    /// queue (WorkerPoolBusy).
+    pub fn submit(pool: *ThreadPool, task: *Task) PostError!void {
         task.next = null;
         pool.mutex.lockUncancelable(pool.io);
         defer pool.mutex.unlock(pool.io);
-        if (pool.shutdown) return false;
+        if (pool.shutdown) return error.WorkerPoolNotRunning;
+        if (pool.queued >= pool.max_queued) return error.WorkerPoolBusy;
+        pool.queued += 1;
         if (pool.tail) |tail| {
             tail.next = task;
             pool.tail = task;
@@ -67,7 +88,6 @@ pub const ThreadPool = struct {
             pool.tail = task;
         }
         pool.cond.signal(pool.io);
-        return true;
     }
 
     fn workerLoop(pool: *ThreadPool) void {
@@ -84,6 +104,7 @@ pub const ThreadPool = struct {
             const task = pool.head.?;
             pool.head = task.next;
             if (pool.head == null) pool.tail = null;
+            pool.queued -= 1;
             pool.mutex.unlock(io);
 
             task.run_fn(task);
@@ -137,6 +158,37 @@ test "ThreadPool execution" {
         std.Thread.yield() catch {};
     }
     try std.testing.expect(done.load(.acquire));
+}
+
+test "a full queue refuses tasks" {
+    const pool = try ThreadPool.init(std.testing.allocator, std.testing.io, 1);
+    defer pool.deinit();
+    const Job = struct {
+        task: ThreadPool.Task = .{ .run_fn = run },
+        gate: *std.atomic.Value(bool),
+        fn run(task: *ThreadPool.Task) void {
+            const self: *@This() = @fieldParentPtr("task", task);
+            while (!self.gate.load(.acquire)) std.Thread.yield() catch {};
+        }
+    };
+    var gate: std.atomic.Value(bool) = .init(false);
+    var jobs: [3]Job = .{ .{ .gate = &gate }, .{ .gate = &gate }, .{ .gate = &gate } };
+    // Set before the first post: the worker reads it under the same lock.
+    pool.mutex.lockUncancelable(pool.io);
+    pool.max_queued = 1;
+    pool.mutex.unlock(pool.io);
+    try pool.submit(&jobs[0].task);
+    // Wait for the worker to take the first (blocking on the gate).
+    while (true) {
+        pool.mutex.lockUncancelable(pool.io);
+        const n = pool.queued;
+        pool.mutex.unlock(pool.io);
+        if (n == 0) break;
+        std.Thread.yield() catch {};
+    }
+    try pool.submit(&jobs[1].task);
+    try std.testing.expectError(error.WorkerPoolBusy, pool.submit(&jobs[2].task));
+    gate.store(true, .release);
 }
 
 test "shutdown drains accepted tasks and rejects new tasks" {

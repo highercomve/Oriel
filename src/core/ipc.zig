@@ -297,6 +297,7 @@ pub fn isBuiltinCommand(cmd: []const u8) bool {
 
 /// Dispatch a built-in framework command.
 pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request: Request) ![]u8 {
+    fail_len = null; // see dispatchRequest
     if (std.mem.eql(u8, request.cmd, "open_external")) {
         const OpenExternalArgs = struct {
             url: []const u8,
@@ -417,12 +418,41 @@ pub fn dispatch(comptime Commands: type, arena: std.mem.Allocator, request_json:
     return dispatchRequest(Commands, arena, try parseRequest(arena, request_json), io);
 }
 
+/// The longest request JSON accepted (every platform's calls end up in
+/// `parseRequest`): a page could otherwise make the app parse, and hold in
+/// an arena, as much as it can send.
+pub const max_request_len = 32 << 20;
+
 pub fn parseRequest(arena: std.mem.Allocator, request_json: []const u8) !Request {
+    if (request_json.len > max_request_len) return error.RequestTooLarge;
     return std.json.parseFromSliceLeaky(Request, arena, request_json, .{});
+}
+
+/// The `id` of a bridge message that can't be parsed (malformed, or over
+/// `max_request_len`), so its `invoke()` is still rejected rather than left
+/// pending. The bridges put it first (`{"id":N,...`): only the start is read.
+pub fn requestIdLenient(msg: []const u8) ?u64 {
+    const head = msg[0..@min(msg.len, 64)];
+    const key = std.mem.indexOf(u8, head, "\"id\"") orelse return null;
+    var i = key + 4;
+    while (i < head.len and (head[i] == ' ' or head[i] == ':')) : (i += 1) {}
+    var end = i;
+    while (end < head.len and std.ascii.isDigit(head[end])) : (end += 1) {}
+    return std.fmt.parseInt(u64, head[i..end], 10) catch null;
+}
+
+test requestIdLenient {
+    try std.testing.expectEqual(@as(?u64, 42), requestIdLenient("{\"id\":42,\"token\":\"x\",\"cmd\":"));
+    try std.testing.expectEqual(@as(?u64, 7), requestIdLenient("{\"id\" : 7, broken"));
+    try std.testing.expectEqual(@as(?u64, null), requestIdLenient("{\"cmd\":\"x\"}"));
+    try std.testing.expectEqual(@as(?u64, null), requestIdLenient("{\"id\":\"a\"}"));
 }
 
 /// Dispatch an already-parsed request (e.g. after a permission check).
 pub fn dispatchRequest(comptime Commands: type, arena: std.mem.Allocator, request: Request, io: ?std.Io) ![]u8 {
+    // A message an earlier command left behind (it failed with `fail` but
+    // its error was never turned into text) must not label this one's.
+    fail_len = null;
     inline for (@typeInfo(Commands).@"struct".decls) |decl| {
         const field = @field(Commands, decl.name);
         if (@typeInfo(@TypeOf(field)) == .@"fn" and std.mem.eql(u8, decl.name, request.cmd)) {
@@ -470,6 +500,8 @@ pub fn dispatchAsync(
     context: anytype,
     comptime on_done: fn (@TypeOf(context), arena_state: std.heap.ArenaAllocator, result_json: ?[:0]const u8, err_name: ?[:0]const u8) void,
 ) !void {
+    // Before copying it: parseRequest would refuse it anyway.
+    if (request_json.len > max_request_len) return error.RequestTooLarge;
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     errdefer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -511,7 +543,8 @@ pub fn dispatchAsync(
         .io = io,
         .callback_context = context,
     };
-    if (!pool.post(&job.task)) return error.WorkerPoolNotRunning;
+    // A full queue answers WorkerPoolBusy: the page may retry later.
+    try pool.submit(&job.task);
 }
 
 fn commandArgsType(comptime F: type) ?type {

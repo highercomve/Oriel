@@ -168,17 +168,32 @@ fn open(arena: std.mem.Allocator, view: usize, sealed: Sealed) !Inner {
     var mac: [HmacSha256.mac_length]u8 = undefined;
     _ = std.fmt.hexToBytes(&mac, sealed.mac) catch return error.BadSeal;
 
-    lock();
-    defer unlock();
-    const slot = for (&slots) |*s| {
-        if (s.live and s.view == view and std.mem.eql(u8, &s.kid, sealed.kid)) break s;
-    } else return error.UnknownKey;
+    // Copy the key under the spinlock; verify and parse outside it (a call
+    // can be large, and every other call spins meanwhile).
+    var key: [key_len]u8 = undefined;
+    defer std.crypto.secureZero(u8, &key);
+    const index = blk: {
+        lock();
+        defer unlock();
+        for (&slots, 0..) |*s, i| {
+            if (s.live and s.view == view and std.mem.eql(u8, &s.kid, sealed.kid)) {
+                key = s.key;
+                break :blk i;
+            }
+        }
+        return error.UnknownKey;
+    };
     var want: [HmacSha256.mac_length]u8 = undefined;
-    HmacSha256.create(&want, sealed.s, &slot.key);
+    HmacSha256.create(&want, sealed.s, &key);
     if (!std.crypto.timing_safe.eql([HmacSha256.mac_length]u8, want, mac)) return error.BadSeal;
     // Signed by the frame holding this key: parse it (arena only), then
     // accept each sequence number once, in order.
     const inner = std.json.parseFromSliceLeaky(Inner, arena, sealed.s, .{}) catch return error.BadSeal;
+    lock();
+    defer unlock();
+    // The slot may have been evicted (or re-keyed) while unlocked.
+    const slot = &slots[index];
+    if (!slot.live or slot.view != view or !std.mem.eql(u8, &slot.kid, sealed.kid)) return error.UnknownKey;
     if (inner.seq <= slot.last_seq) return error.Replayed;
     slot.last_seq = inner.seq;
     clock += 1;

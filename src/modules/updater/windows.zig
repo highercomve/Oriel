@@ -5,6 +5,9 @@ const win32 = @import("../../platform/windows/win32.zig");
 const single_instance = @import("../../platform/windows/single_instance.zig");
 const log = std.log.scoped(.oriel);
 
+const CREATE_SUSPENDED: win32.DWORD = 0x00000004;
+extern "kernel32" fn TerminateProcess(hProcess: win32.HANDLE, uExitCode: c_uint) callconv(.winapi) win32.BOOL;
+
 pub fn processId() u32 {
     return win32.GetCurrentProcessId();
 }
@@ -122,10 +125,18 @@ pub fn restart(io: std.Io, exe_path: []const u8) !noreturn {
     si.cb = @sizeOf(win32.STARTUPINFOW);
     var pi: win32.PROCESS_INFORMATION = undefined;
 
-    // Before the new process checks for a running instance: this one can
-    // take a second to exit (see single_instance.release).
+    // Started suspended, so the lock is released only once the new process
+    // exists (a failed start keeps this one the single instance) but before
+    // it checks for a running instance: this one can take a second to exit
+    // (see single_instance.release).
+    if (win32.CreateProcessW(exe_w.ptr, cmdline_copy.ptr, null, null, win32.FALSE, CREATE_SUSPENDED, null, null, &si, &pi) == win32.FALSE) {
+        return error.RestartFailed;
+    }
     single_instance.release();
-    if (win32.CreateProcessW(exe_w.ptr, cmdline_copy.ptr, null, null, win32.FALSE, 0, null, null, &si, &pi) == win32.FALSE) {
+    if (win32.ResumeThread(pi.hThread) == std.math.maxInt(win32.DWORD)) {
+        _ = TerminateProcess(pi.hProcess, 1);
+        _ = win32.CloseHandle(pi.hProcess);
+        _ = win32.CloseHandle(pi.hThread);
         return error.RestartFailed;
     }
     // We don't wait for the child: nothing to undo if closing our handles fails.

@@ -62,10 +62,12 @@ pub const bridge_js = blk: {
     break :blk out;
 };
 
-/// Post `json` to window `id`'s page (UI thread).
-fn post(id: u32, json: []const u8) void {
+/// Post `json` to window `id`'s page (UI thread). `load` is the page load
+/// (OrielWindow's counter) a reply is for: Kotlin drops it once another
+/// page has started. 0 for events, which go to whichever page is current.
+fn post(id: u32, load: u32, json: []const u8) void {
     if (comptime build_opts.native_ui) if (native.engineOf(id)) |e| return e.message(json);
-    _ = runtime.call(.void, "postMessage", "(I[B)V", .{ @as(i32, @intCast(id)), json });
+    _ = runtime.call(.void, "postMessage", "(II[B)V", .{ @as(i32, @intCast(id)), @as(i32, @bitCast(load)), json });
 }
 
 fn evaluate(id: u32, script: []const u8) void {
@@ -124,7 +126,7 @@ const EvalTask = struct {
             }
         }
         App.windows_mutex.unlock();
-        for (ids[0..n]) |id| if (self.as_message) post(id, self.text) else evaluate(id, self.text);
+        for (ids[0..n]) |id| if (self.as_message) post(id, 0, self.text) else evaluate(id, self.text);
     }
 
     /// Now on the UI thread (in order with a sync command's reply), else queued.
@@ -154,22 +156,22 @@ pub fn emitEvent(target: ?window_mod.WindowHandle, label: ?[]const u8, name_json
     task.submit();
 }
 
-fn sendSuccessReply(id: u32, req_id: ?u64, result_json: []const u8) void {
+fn sendSuccessReply(id: u32, load: u32, req_id: ?u64, result_json: []const u8) void {
     const rid = req_id orelse return;
     const gpa = heap.gpa;
     const reply = std.fmt.allocPrint(gpa, "{{\"__oriel_reply\":true,\"id\":{d},\"result\":{s}}}", .{ rid, result_json }) catch return;
     defer gpa.free(reply);
-    post(id, reply);
+    post(id, load, reply);
 }
 
-fn sendErrorReply(id: u32, req_id: ?u64, err_name: []const u8) void {
+fn sendErrorReply(id: u32, load: u32, req_id: ?u64, err_name: []const u8) void {
     const rid = req_id orelse return;
     const gpa = heap.gpa;
     const err_json = std.json.Stringify.valueAlloc(gpa, err_name, .{}) catch return;
     defer gpa.free(err_json);
     const reply = std.fmt.allocPrint(gpa, "{{\"__oriel_reply\":true,\"id\":{d},\"error\":{s}}}", .{ rid, err_json }) catch return;
     defer gpa.free(reply);
-    post(id, reply);
+    post(id, load, reply);
 }
 
 pub fn Bridge(
@@ -327,26 +329,30 @@ pub fn Bridge(
         };
 
         /// A message from window `id`'s main frame (UI thread). `origin` is
-        /// the sending document's origin ("https://app.localhost").
-        pub fn onMessage(id: u32, data: []const u8, origin: []const u8) void {
+        /// the sending document's origin ("https://app.localhost"); `load`
+        /// the window's page load it came from (replies carry it back).
+        pub fn onMessage(id: u32, data: []const u8, origin: []const u8, load: u32) void {
             const gpa = heap.gpa;
+            // Too large to take: answer by the id at its start.
+            if (data.len > ipc.max_request_len) return sendErrorReply(id, load, ipc.requestIdLenient(data), "RequestTooLarge");
             var parse_arena = std.heap.ArenaAllocator.init(gpa);
             defer parse_arena.deinit();
             const temp = parse_arena.allocator();
 
             const req = std.json.parseFromSliceLeaky(Message, temp, data, .{ .ignore_unknown_fields = true }) catch |err| {
                 log.warn("invalid IPC message: {s}", .{@errorName(err)});
-                return;
+                // Still settle the page's invoke(), if its id can be read.
+                return sendErrorReply(id, load, ipc.requestIdLenient(data), "InvalidRequest");
             };
-            const page_url = std.fmt.allocPrint(temp, "{s}/", .{origin}) catch return sendErrorReply(id, req.id, "OutOfMemory");
+            const page_url = std.fmt.allocPrint(temp, "{s}/", .{origin}) catch return sendErrorReply(id, load, req.id, "OutOfMemory");
 
             // The call must carry the token of the document that sent it.
             if (!ipc.tokenValid(req.token, config.security, local, page_url)) {
                 log.warn("refused an IPC call without this page's token (\"{f}\")", .{std.zig.fmtString(req.cmd[0..@min(req.cmd.len, 64)])});
-                return sendErrorReply(id, req.id, "Forbidden");
+                return sendErrorReply(id, load, req.id, "Forbidden");
             }
             const checked = isolation.check(temp, config.security, local, page_url, id, .{ .cmd = req.cmd, .args = req.args, .token = req.token, .iso = req.iso }, data) catch |err| {
-                return sendErrorReply(id, req.id, isolation.errorText(err));
+                return sendErrorReply(id, load, req.id, isolation.errorText(err));
             };
             const call = checked.request;
             const cmd_log = std.zig.fmtString(call.cmd[0..@min(call.cmd.len, 64)]);
@@ -355,34 +361,35 @@ pub fn Bridge(
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
 
             if (window_commands.isWindowCommand(call.cmd)) {
-                return SyncCall.queue(id, req.id, call.cmd, call.args, page_url, win_label, null);
+                return SyncCall.queue(id, load, req.id, call.cmd, call.args, page_url, win_label, null);
             }
             if (!security.commandAllowedForWindow(config.security, local, page_url, call.cmd, win_label)) {
                 log.warn("blocked command \"{f}\" from {s} (window: {?s})", .{ cmd_log, page_url, win_label });
-                return sendErrorReply(id, req.id, "Forbidden");
+                return sendErrorReply(id, load, req.id, "Forbidden");
             }
 
             const pool = App.getWorkerPool();
             defer if (pool != null) App.releaseWorkerPool();
             if (ipc.isBuiltinCommand(call.cmd) or !ipc.isAsync(api.commands, call.cmd)) {
-                return SyncCall.queue(id, req.id, call.cmd, call.args, page_url, win_label, if (pool) |p| p.io else null);
+                return SyncCall.queue(id, load, req.id, call.cmd, call.args, page_url, win_label, if (pool) |p| p.io else null);
             }
 
-            const worker_pool = pool orelse return sendErrorReply(id, req.id, "WorkerPoolNotRunning");
+            const worker_pool = pool orelse return sendErrorReply(id, load, req.id, "WorkerPoolNotRunning");
             // The worker gets just `{cmd, args}` (ipc.Request has no `id`).
             const request_json = std.json.Stringify.valueAlloc(temp, ipc.Request{ .cmd = call.cmd, .args = call.args }, .{}) catch |err| {
-                return sendErrorReply(id, req.id, ipc.errorText(err));
+                return sendErrorReply(id, load, req.id, ipc.errorText(err));
             };
-            const async_ctx = gpa.create(AsyncReply) catch return sendErrorReply(id, req.id, "OutOfMemory");
-            async_ctx.* = .{ .window = id, .req_id = req.id, .arena_state = undefined, .result = null, .err_name = null };
+            const async_ctx = gpa.create(AsyncReply) catch return sendErrorReply(id, load, req.id, "OutOfMemory");
+            async_ctx.* = .{ .window = id, .load = load, .req_id = req.id, .arena_state = undefined, .result = null, .err_name = null };
             ipc.dispatchAsync(api.commands, worker_pool, gpa, request_json, worker_pool.io, async_ctx, AsyncReply.onWorkerDone) catch |err| {
                 gpa.destroy(async_ctx);
-                return sendErrorReply(id, req.id, ipc.errorText(err));
+                return sendErrorReply(id, load, req.id, ipc.errorText(err));
             };
         }
 
         const AsyncReply = struct {
             window: u32,
+            load: u32,
             req_id: ?u64,
             arena_state: std.heap.ArenaAllocator,
             result: ?[:0]const u8,
@@ -400,9 +407,9 @@ pub fn Bridge(
                 const self: *@This() = @ptrCast(@alignCast(ctx.?));
                 defer drop(self);
                 if (self.err_name) |err| {
-                    sendErrorReply(self.window, self.req_id, err);
+                    sendErrorReply(self.window, self.load, self.req_id, err);
                 } else {
-                    sendSuccessReply(self.window, self.req_id, self.result orelse "null");
+                    sendSuccessReply(self.window, self.load, self.req_id, self.result orelse "null");
                 }
             }
 
@@ -419,6 +426,7 @@ pub fn Bridge(
         /// (including its own). Replies keep the order of the requests.
         const SyncCall = struct {
             window: u32,
+            load: u32,
             req_id: ?u64,
             arena_state: std.heap.ArenaAllocator,
             request: ipc.Request,
@@ -426,11 +434,12 @@ pub fn Bridge(
             win_label: ?[]const u8,
             io: ?std.Io,
 
-            fn queue(window: u32, req_id: ?u64, cmd: []const u8, args: std.json.Value, page_url: []const u8, win_label: ?[]const u8, io: ?std.Io) void {
+            fn queue(window: u32, load: u32, req_id: ?u64, cmd: []const u8, args: std.json.Value, page_url: []const u8, win_label: ?[]const u8, io: ?std.Io) void {
                 const gpa = heap.gpa;
-                const self = gpa.create(SyncCall) catch return sendErrorReply(window, req_id, "OutOfMemory");
+                const self = gpa.create(SyncCall) catch return sendErrorReply(window, load, req_id, "OutOfMemory");
                 self.* = .{
                     .window = window,
+                    .load = load,
                     .req_id = req_id,
                     .arena_state = .init(gpa),
                     .request = undefined,
@@ -448,7 +457,7 @@ pub fn Bridge(
             }
 
             fn fail(self: *SyncCall, err_name: []const u8) void {
-                sendErrorReply(self.window, self.req_id, err_name);
+                sendErrorReply(self.window, self.load, self.req_id, err_name);
                 self.arena_state.deinit();
                 heap.gpa.destroy(self);
             }
@@ -463,16 +472,16 @@ pub fn Bridge(
                     ipc.dispatchBuiltin(config.security, arena, self.request)
                 else
                     ipc.dispatchRequest(api.commands, arena, self.request, self.io)) catch |err| {
-                    sendErrorReply(self.window, self.req_id, ipc.errorText(err));
+                    sendErrorReply(self.window, self.load, self.req_id, ipc.errorText(err));
                     return;
                 };
-                sendSuccessReply(self.window, self.req_id, result);
+                sendSuccessReply(self.window, self.load, self.req_id, result);
             }
 
             /// Shutdown: reject the call so the page's Promise settles.
             fn discard(ctx: ?*anyopaque) void {
                 const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
-                if (ShellMod.isMainThread()) sendErrorReply(self.window, self.req_id, "AppNotRunning");
+                if (ShellMod.isMainThread()) sendErrorReply(self.window, self.load, self.req_id, "AppNotRunning");
                 finish(self);
             }
 

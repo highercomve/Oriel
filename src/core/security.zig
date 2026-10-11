@@ -199,6 +199,21 @@ pub fn bridgePrelude(comptime sec: Security) []const u8 {
     return if (sec.freeze_prototype) "if (window === window.top) Object.freeze(Object.prototype);\n" else "";
 }
 
+test bridgeAllowedForWindow {
+    const sec: Security = .{ .capabilities = &.{
+        .{ .origin = "https://*.example.com" },
+        .{ .origin = "https://admin.test", .windows = &.{"admin"} },
+    } };
+    const local: Local = .{ .dev_origin = "http://localhost:5173" };
+    try std.testing.expect(bridgeAllowedForWindow(sec, local, app_origin ++ "/index.html", "main"));
+    try std.testing.expect(bridgeAllowedForWindow(sec, local, "http://localhost:5173/x", null));
+    try std.testing.expect(bridgeAllowedForWindow(sec, local, "https://a.example.com/", "main"));
+    try std.testing.expect(bridgeAllowedForWindow(sec, local, "https://admin.test/", "admin"));
+    try std.testing.expect(!bridgeAllowedForWindow(sec, local, "https://admin.test/", "main"));
+    try std.testing.expect(!bridgeAllowedForWindow(sec, local, "https://evil.test/", "main"));
+    try std.testing.expect(!bridgeAllowedForWindow(sec, local, "about:blank", "main"));
+}
+
 test headerLines {
     const a = std.testing.allocator;
     const lines = try headerLines(a, &.{
@@ -350,6 +365,22 @@ pub fn commandAllowedForWindow(sec: Security, local: Local, page_url: []const u8
     return false;
 }
 
+/// Whether a page at `page_url` in window `window_label` gets the bridge:
+/// the app's own origins, or a capability origin (scoped to its windows).
+/// Events go only to these pages (`App.pageGetsEvents`).
+pub fn bridgeAllowedForWindow(sec: Security, local: Local, page_url: []const u8, window_label: ?[]const u8) bool {
+    var buf: [512]u8 = undefined;
+    const o = origin(&buf, page_url) orelse return false;
+    if (local.contains(o)) return true;
+    for (sec.capabilities) |c| {
+        if (!originMatches(c.origin, o)) continue;
+        const allowed_windows = c.windows orelse return true;
+        const w = window_label orelse continue;
+        for (allowed_windows) |aw| if (std.mem.eql(u8, aw, w)) return true;
+    }
+    return false;
+}
+
 /// Whether a page at `page_url` may call `command`.
 pub fn commandAllowed(sec: Security, local: Local, page_url: []const u8, command: []const u8) bool {
     return commandAllowedForWindow(sec, local, page_url, command, null);
@@ -373,6 +404,15 @@ fn containsPercentEncodedDot(u: []const u8) bool {
             return true;
         }
     }
+    return false;
+}
+
+/// Schemes no window may load: one list for validateWindowUrl and
+/// resolveWindowUrlWithOrigin, so the two validators agree.
+const blocked_window_schemes = [_][]const u8{ "javascript", "file", "data", "blob", "about" };
+
+fn blockedWindowScheme(scheme: []const u8) bool {
+    for (blocked_window_schemes) |b| if (std.ascii.eqlIgnoreCase(scheme, b)) return true;
     return false;
 }
 
@@ -407,8 +447,8 @@ pub fn validateWindowUrl(sec: Security, local: Local, url: ?[]const u8) !void {
     if (containsPercentEncodedDot(u)) return error.InvalidUrl;
 
     // Check for dangerous schemes
-    inline for (.{ "javascript:", "file:", "data:" }) |scheme| {
-        if (std.ascii.startsWithIgnoreCase(u, scheme)) return error.BlockedScheme;
+    if (std.mem.indexOfScalar(u8, u, ':')) |colon| {
+        if (blockedWindowScheme(u[0..colon])) return error.BlockedScheme;
     }
 
     // Relative URLs (no valid scheme) are app-local
@@ -647,9 +687,7 @@ pub fn resolveWindowUrlWithOrigin(
             const uri = std.Uri.parse(u) catch return error.InvalidUrl;
 
             // Dangerous schemes rejected
-            inline for (.{ "file", "javascript", "data", "blob", "about" }) |forbidden| {
-                if (std.ascii.eqlIgnoreCase(uri.scheme, forbidden)) return error.DisallowedScheme;
-            }
+            if (blockedWindowScheme(uri.scheme)) return error.DisallowedScheme;
 
             var buf: [512]u8 = undefined;
             const o = origin(&buf, u) orelse return error.DisallowedOrigin;

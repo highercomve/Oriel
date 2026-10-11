@@ -190,19 +190,40 @@ fn takeTasks() ?std.ArrayList(Task) {
     return tasks;
 }
 
+/// Batches `processDispatchQueue` runs per wake-up: tasks that keep queueing
+/// more (a flood of IPC replies) must not hold the looper forever; the rest
+/// run on the next wake-up, after the looper's other work.
+const max_batches_per_wake = 8;
+
 /// Run the queued tasks (UI thread). Each runs in its own JNI local frame,
 /// so references made by Java calls don't pile up in the looper callback.
 pub fn processDispatchQueue() void {
     const e = runtime.mainEnv();
-    while (takeTasks()) |taken| {
-        var tasks = taken;
+    for (0..max_batches_per_wake) |_| {
+        var tasks = takeTasks() orelse return;
         defer tasks.deinit(heap.gpa);
         for (tasks.items) |t| {
             const framed = if (e) |env| env.functions.PushLocalFrame(env, 32) == 0 else false;
+            if (e != null and !framed) {
+                // Out of JVM memory: PushLocalFrame left an exception, and
+                // no JNI call may run with one pending. Clear it; a task
+                // with a cleanup is dropped, the others (which must run
+                // once, to free memory or release a waiter) run unframed.
+                _ = e.?.clearException();
+                if (t.cleanup_fn) |c| {
+                    c(t.ctx);
+                    continue;
+                }
+            }
             t.run_fn(t.ctx);
             if (framed) _ = e.?.functions.PopLocalFrame(e.?, null);
         }
     }
+    // Still more: re-arm the looper for them.
+    task_mutex.lock();
+    const more = task_queue.items.len > 0;
+    task_mutex.unlock();
+    if (more) wake();
 }
 
 /// At shutdown (UI thread): tasks with a cleanup are cleaned up, the others

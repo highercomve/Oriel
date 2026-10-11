@@ -579,7 +579,11 @@ fn runRegister(ctx: Context) !u8 {
         for (schemes) |s| {
             const mime = try std.fmt.allocPrint(ctx.gpa, "x-scheme-handler/{s}", .{s});
             defer ctx.gpa.free(mime);
-            _ = ctx.run(&.{ "xdg-mime", "default", desktop_file_name, mime }, null);
+            const code = ctx.run(&.{ "xdg-mime", "default", desktop_file_name, mime }, null);
+            if (code == null or code.? != 0) {
+                try ctx.err.print("error: xdg-mime default {s} {s} failed; is xdg-utils installed?\n", .{ desktop_file_name, mime });
+                return 1;
+            }
         }
 
         try ctx.out.print("Registered scheme(s) [{s}] for '{s}' ({s})\n", .{ schemes_str, bin_path, desktop_file_path });
@@ -605,9 +609,22 @@ fn runRegister(ctx: Context) !u8 {
             const cmd_val = try std.fmt.allocPrint(ctx.gpa, "\"{s}\" \"%1\"", .{bin_path});
             defer ctx.gpa.free(cmd_val);
 
-            if (ctx.capture(&.{ "reg", "add", root_key, "/ve", "/d", url_desc, "/f" }, 30_000)) |r| r.deinit(ctx.gpa);
-            if (ctx.capture(&.{ "reg", "add", root_key, "/v", "URL Protocol", "/d", "", "/f" }, 30_000)) |r| r.deinit(ctx.gpa);
-            if (ctx.capture(&.{ "reg", "add", cmd_key, "/ve", "/d", cmd_val, "/f" }, 30_000)) |r| r.deinit(ctx.gpa);
+            const adds = [_][]const []const u8{
+                &.{ "reg", "add", root_key, "/ve", "/d", url_desc, "/f" },
+                &.{ "reg", "add", root_key, "/v", "URL Protocol", "/d", "", "/f" },
+                &.{ "reg", "add", cmd_key, "/ve", "/d", cmd_val, "/f" },
+            };
+            for (adds) |argv| {
+                const r = ctx.capture(argv, 30_000) orelse {
+                    try ctx.err.print("error: could not run reg add {s}\n", .{argv[2]});
+                    return 1;
+                };
+                defer r.deinit(ctx.gpa);
+                if (r.code != 0) {
+                    try ctx.err.print("error: reg add {s} failed: {s}\n", .{ argv[2], std.mem.trim(u8, r.stderr, " \r\n") });
+                    return 1;
+                }
+            }
         }
 
         try ctx.out.print("Registered Windows HKCU classes for scheme(s) [{s}] -> '{s}'\n", .{ schemes_str, bin_path });
@@ -909,4 +926,3 @@ test "desktop entry escaping handles spaces and special characters" {
     defer allocator.free(escaped_name);
     try std.testing.expectEqualStrings("My\\nApp", escaped_name);
 }
-

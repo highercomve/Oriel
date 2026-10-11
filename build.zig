@@ -1750,17 +1750,81 @@ fn xmlEscape(b: *std.Build, text: []const u8) []const u8 {
     return out.items;
 }
 
+/// versionCode from major.minor.patch (a -prerelease or +build suffix
+/// ignored): 1.2.3 -> 10203; missing parts are 0; 0.0.0 is 1.
+fn androidVersionCode(version: []const u8) !u32 {
+    const core_end = std.mem.indexOfAny(u8, version, "-+") orelse version.len;
+    var code: u32 = 0;
+    var it = std.mem.splitScalar(u8, version[0..core_end], '.');
+    for (0..3) |i| {
+        const part = it.next() orelse "0";
+        if (part.len == 0) return error.EmptyVersionPart;
+        for (part) |c| if (!std.ascii.isDigit(c)) return error.NonNumericVersionPart;
+        const n = std.fmt.parseInt(u32, part, 10) catch return error.VersionPartTooLarge;
+        if (i > 0 and n >= 100) return error.VersionPartTooLarge;
+        code = std.math.mul(u32, code, 100) catch return error.VersionPartTooLarge;
+        code = std.math.add(u32, code, n) catch return error.VersionPartTooLarge;
+    }
+    if (it.next() != null) return error.TooManyVersionParts;
+    // Google Play's ceiling.
+    if (code > 2_100_000_000) return error.VersionPartTooLarge;
+    return if (code == 0) 1 else code;
+}
+
+test androidVersionCode {
+    try std.testing.expectEqual(@as(u32, 10203), try androidVersionCode("1.2.3"));
+    try std.testing.expectEqual(@as(u32, 10203), try androidVersionCode("1.2.3-rc.1"));
+    try std.testing.expectEqual(@as(u32, 10000), try androidVersionCode("1"));
+    try std.testing.expectEqual(@as(u32, 1), try androidVersionCode("0.0.0"));
+    try std.testing.expectError(error.VersionPartTooLarge, androidVersionCode("1.100.0"));
+    try std.testing.expectError(error.VersionPartTooLarge, androidVersionCode("1.2.100"));
+    try std.testing.expectError(error.NonNumericVersionPart, androidVersionCode("1.x.3"));
+    try std.testing.expectError(error.EmptyVersionPart, androidVersionCode("1..3"));
+    try std.testing.expectError(error.TooManyVersionParts, androidVersionCode("1.2.3.4"));
+}
+
+/// Panics when `text` (substituted into the Android template's Kotlin
+/// strings and strings.xml) holds a character either would interpret:
+/// `"` `$` `\` (Kotlin), `&` `<` `>` `'` (XML / aapt), a leading `@` or `?`
+/// (an aapt resource reference), or a control character.
+fn androidCheckTemplateText(b: *std.Build, field: []const u8, text: []const u8) void {
+    if (androidTemplateTextValid(text)) return;
+    @panic(b.fmt("{s} '{s}': the Android project can't hold \" $ \\ & < > ' or control characters, nor a leading @ or ?", .{ field, text }));
+}
+
+fn androidTemplateTextValid(text: []const u8) bool {
+    if (text.len == 0) return false;
+    if (text[0] == '@' or text[0] == '?') return false;
+    for (text) |c| switch (c) {
+        '"', '$', '\\', '&', '<', '>', '\'' => return false,
+        else => if (c < 0x20 or c == 0x7f) return false,
+    };
+    return true;
+}
+
+test androidTemplateTextValid {
+    try std.testing.expect(androidTemplateTextValid("My App 2"));
+    try std.testing.expect(!androidTemplateTextValid("Say \"hi\""));
+    try std.testing.expect(!androidTemplateTextValid("${'$'}evil"));
+    try std.testing.expect(!androidTemplateTextValid("Tom & Jerry"));
+    try std.testing.expect(!androidTemplateTextValid("@string/x"));
+}
+
 /// `--var key=value` arguments for the Android template (android/template).
 fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissions, url_schemes: []const []const u8) []const []const u8 {
     const pkg = options.package orelse PackageOptions{};
     const app_id = pkg.id orelse b.fmt("dev.oriel.{s}", .{options.name});
     const name = pkg.name orelse options.name;
     const version = pkg.version orelse "0.1.0";
-    // versionCode from major.minor.patch: 1.2.3 -> 10203.
-    var code: u32 = 0;
-    var it = std.mem.splitScalar(u8, version, '.');
-    for (0..3) |_| code = code * 100 + (std.fmt.parseInt(u32, it.next() orelse "0", 10) catch 0);
-    if (code == 0) code = 1;
+    // One value goes into settings.gradle.kts / build.gradle.kts ("..."
+    // Kotlin strings) and res/values/strings.xml: what either would read as
+    // markup is refused rather than escaped (the template has one @@name@@).
+    androidCheckTemplateText(b, "package.name", name);
+    androidCheckTemplateText(b, "package.version", version);
+    const code = androidVersionCode(version) catch |err| @panic(b.fmt(
+        "package.version '{s}': {s} (Android's versionCode is MAJOR*10000 + MINOR*100 + PATCH: numeric parts, minor and patch below 100)",
+        .{ version, @errorName(err) },
+    ));
 
     // The manifest's generated regions (build/android_manifest.zig), rewritten
     // on every build by the `--runtime-only` sync.

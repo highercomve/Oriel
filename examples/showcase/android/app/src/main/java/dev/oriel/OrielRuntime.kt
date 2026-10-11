@@ -470,9 +470,10 @@ object OrielRuntime {
         windows[id]?.eval(script.utf8())
     }
 
+    /** `load`: the page load a reply is for (OrielWindow.post); 0 for events. */
     @JvmStatic
-    fun postMessage(id: Int, json: ByteArray) {
-        windows[id]?.post(json.utf8())
+    fun postMessage(id: Int, load: Int, json: ByteArray) {
+        windows[id]?.post(json.utf8(), load)
     }
 
     @JvmStatic

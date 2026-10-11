@@ -87,6 +87,10 @@ internal class OrielWindow(
     private var replyProxy: JavaScriptReplyProxy? = null
     /** Messages posted before the document said hello. */
     private val queued = ArrayDeque<String>()
+    /** Counts main-frame page loads: a call carries the load it came from
+     *  (through Zig and back with its reply), and a reply for an earlier
+     *  load is dropped instead of reaching the page shown now. */
+    private var load = 1
     var fullscreen = false
     /** The page's theme-color (ARGB), null when it has none: the task's colour (the caption on ChromeOS). */
     var themeColor: Int? = null
@@ -157,11 +161,13 @@ internal class OrielWindow(
             while (queued.isNotEmpty()) proxy.postMessage(queued.removeFirst())
             return
         }
-        NativeLib.onMessage(id, data.bytes(), origin.toString().trimEnd('/').bytes())
+        NativeLib.onMessage(id, data.bytes(), origin.toString().trimEnd('/').bytes(), load)
     }
 
-    /** A reply or event for the current document (queued until its hello). */
-    fun post(json: String) {
+    /** A reply or event for the current document (queued until its hello).
+     *  `forLoad` is the page load a reply is for (0 for events). */
+    fun post(json: String, forLoad: Int) {
+        if (forLoad != 0 && forLoad != load) return // that page is gone
         val proxy = replyProxy
         if (proxy != null) {
             proxy.postMessage(json)
@@ -169,6 +175,14 @@ internal class OrielWindow(
             if (queued.size >= MAX_QUEUED) queued.removeFirst()
             queued.addLast(json)
         }
+    }
+
+    /** A new document replaces the current one: nothing meant for the old
+     *  one (queued messages, replies still to come) reaches it. */
+    private fun newLoad() {
+        replyProxy = null
+        queued.clear()
+        load = if (load == Int.MAX_VALUE) 1 else load + 1
     }
 
     fun eval(script: String) = webView?.evaluateJavascript(script, null)
@@ -228,7 +242,7 @@ internal class OrielWindow(
         (old.parent as? ViewGroup)?.removeView(old)
         OrielAppExtensions.registered.forEach { it.onWebViewDestroyed(old, label) }
         old.destroy()
-        replyProxy = null
+        newLoad()
         webView = createWebView()
         host?.let { attachTo(it) }
         load(url)
@@ -250,7 +264,7 @@ internal class OrielWindow(
         }
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-            replyProxy = null // a new document: it says hello again
+            newLoad() // a new document: it says hello again
             if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) view.evaluateJavascript(bridgeScript, null)
         }
 

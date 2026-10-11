@@ -27,19 +27,30 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             sender: ?*webview2.ICoreWebView2,
             args: *webview2.ICoreWebView2WebResourceRequestedEventArgs,
         ) void {
+            // Every request for these hosts gets an answer: one left without
+            // a response goes to the real network.
+            if (!serve(env, sender, args)) respondError(env, args);
+        }
+
+        /// Whether a response was set.
+        fn serve(
+            env: *webview2.ICoreWebView2Environment,
+            sender: ?*webview2.ICoreWebView2,
+            args: *webview2.ICoreWebView2WebResourceRequestedEventArgs,
+        ) bool {
             var req_opt: ?*webview2.ICoreWebView2WebResourceRequest = null;
-            if (args.lpVtbl.get_Request(args, &req_opt) < 0) return;
-            const req = req_opt orelse return;
+            if (args.lpVtbl.get_Request(args, &req_opt) < 0) return false;
+            const req = req_opt orelse return false;
             defer _ = req.lpVtbl.Release(req);
 
             var uri_w: ?win32.LPWSTR = null;
-            if (req.lpVtbl.get_Uri(req, @ptrCast(&uri_w)) < 0 or uri_w == null) return;
+            if (req.lpVtbl.get_Uri(req, @ptrCast(&uri_w)) < 0 or uri_w == null) return false;
             defer win32.CoTaskMemFree(uri_w);
 
             const uri_len = std.mem.indexOfScalar(u16, std.mem.span(uri_w.?), 0) orelse std.mem.span(uri_w.?).len;
             const gpa = std.heap.smp_allocator;
 
-            const uri = std.unicode.utf16LeToUtf8Alloc(gpa, uri_w.?[0..uri_len]) catch return;
+            const uri = std.unicode.utf16LeToUtf8Alloc(gpa, uri_w.?[0..uri_len]) catch return false;
             defer gpa.free(uri);
 
             if (comptime config.security.isolation != null) {
@@ -62,7 +73,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
                 if (std.mem.startsWith(u8, clean_path, "media/")) {
                     const media_scheme = @import("../../modules/media_scheme.zig");
                     if (media_scheme.handle(env, args, req, clean_path["media/".len..])) {
-                        return;
+                        return true;
                     }
                 }
             }
@@ -70,7 +81,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             const asset = App.findAsset(config.assets, clean_path, config.spa_fallback);
 
             if (asset) |a| {
-                const stream = win32.SHCreateMemStream(a.data.ptr, @intCast(a.data.len)) orelse return;
+                const stream = win32.SHCreateMemStream(a.data.ptr, @intCast(a.data.len)) orelse return false;
                 defer stream.release();
 
                 // Format HTTP response headers (matching Linux: Content-Type, nosniff, CSP)
@@ -80,35 +91,50 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
                 const page_csp: ?[:0]u8 = if (csp_z) |c| csp_mod.withHashes(gpa, c, a.script_hashes, a.style_hashes) catch null else null;
                 defer if (page_csp) |p| gpa.free(p);
                 const hdr_str = if (page_csp orelse csp_z) |csp|
-                    std.fmt.allocPrint(gpa, "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: {s}\r\n{s}", .{ a.mime, csp, extra }) catch return
+                    std.fmt.allocPrint(gpa, "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: {s}\r\n{s}", .{ a.mime, csp, extra }) catch return false
                 else
-                    std.fmt.allocPrint(gpa, "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\n{s}", .{ a.mime, extra }) catch return;
+                    std.fmt.allocPrint(gpa, "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\n{s}", .{ a.mime, extra }) catch return false;
                 defer gpa.free(hdr_str);
 
-                const hdr_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, hdr_str) catch return;
+                const hdr_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, hdr_str) catch return false;
                 defer gpa.free(hdr_w);
 
                 const ok_w = std.unicode.utf8ToUtf16LeStringLiteral("OK");
 
-                var resp_opt: ?*webview2.ICoreWebView2WebResourceResponse = null;
-                if (env.createWebResourceResponse(stream, 200, ok_w, hdr_w.ptr, &resp_opt) >= 0) {
-                    if (resp_opt) |resp| {
-                        defer resp.release();
-                        _ = args.lpVtbl.put_Response(args, resp);
-                    }
-                }
+                return putResponse(env, args, stream, 200, ok_w, hdr_w.ptr);
             } else {
                 const not_found_w = std.unicode.utf8ToUtf16LeStringLiteral("Not Found");
                 const err_hdr_w = std.unicode.utf8ToUtf16LeStringLiteral("Content-Type: text/plain\r\n");
 
-                var resp_opt: ?*webview2.ICoreWebView2WebResourceResponse = null;
-                if (env.createWebResourceResponse(null, 404, not_found_w, err_hdr_w, &resp_opt) >= 0) {
-                    if (resp_opt) |resp| {
-                        defer resp.release();
-                        _ = args.lpVtbl.put_Response(args, resp);
-                    }
-                }
+                return putResponse(env, args, null, 404, not_found_w, err_hdr_w);
             }
+        }
+
+        /// Create a response and set it on the request; false if either fails.
+        fn putResponse(
+            env: *webview2.ICoreWebView2Environment,
+            args: *webview2.ICoreWebView2WebResourceRequestedEventArgs,
+            stream: ?*win32.IStream,
+            status: c_int,
+            reason: win32.LPCWSTR,
+            headers: win32.LPCWSTR,
+        ) bool {
+            var resp_opt: ?*webview2.ICoreWebView2WebResourceResponse = null;
+            if (env.createWebResourceResponse(stream, status, reason, headers, &resp_opt) < 0) return false;
+            const resp = resp_opt orelse return false;
+            defer resp.release();
+            return args.lpVtbl.put_Response(args, resp) >= 0;
+        }
+
+        /// A request the handler couldn't answer (out of memory, a failed
+        /// COM call): a 500 rather than nothing.
+        fn respondError(
+            env: *webview2.ICoreWebView2Environment,
+            args: *webview2.ICoreWebView2WebResourceRequestedEventArgs,
+        ) void {
+            const reason_w = std.unicode.utf8ToUtf16LeStringLiteral("Internal Server Error");
+            const hdr_w = std.unicode.utf8ToUtf16LeStringLiteral("Content-Type: text/plain\r\nX-Content-Type-Options: nosniff\r\n");
+            _ = putResponse(env, args, null, 500, reason_w, hdr_w);
         }
 
         /// The isolation page, with a fresh key for this webview; nothing
@@ -118,7 +144,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             args: *webview2.ICoreWebView2WebResourceRequestedEventArgs,
             path: []const u8,
             view: usize,
-        ) void {
+        ) bool {
             const gpa = std.heap.smp_allocator;
             const page: ?[]u8 = if (path.len == 0 or std.mem.eql(u8, path, "index.html"))
                 isolation.servePage(gpa, config.security, local, view) catch null
@@ -137,28 +163,15 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             if (page == null or hdr == null) {
                 const not_found_w = std.unicode.utf8ToUtf16LeStringLiteral("Not Found");
                 const err_hdr_w = std.unicode.utf8ToUtf16LeStringLiteral("Content-Type: text/plain\r\n");
-                var resp_opt: ?*webview2.ICoreWebView2WebResourceResponse = null;
-                if (env.createWebResourceResponse(null, 404, not_found_w, err_hdr_w, &resp_opt) >= 0) {
-                    if (resp_opt) |resp| {
-                        defer resp.release();
-                        _ = args.lpVtbl.put_Response(args, resp);
-                    }
-                }
-                return;
+                return putResponse(env, args, null, 404, not_found_w, err_hdr_w);
             }
             // SHCreateMemStream copies the page.
-            const stream = win32.SHCreateMemStream(page.?.ptr, @intCast(page.?.len)) orelse return;
+            const stream = win32.SHCreateMemStream(page.?.ptr, @intCast(page.?.len)) orelse return false;
             defer stream.release();
-            const hdr_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, hdr.?) catch return;
+            const hdr_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, hdr.?) catch return false;
             defer gpa.free(hdr_w);
             const ok_w = std.unicode.utf8ToUtf16LeStringLiteral("OK");
-            var resp_opt: ?*webview2.ICoreWebView2WebResourceResponse = null;
-            if (env.createWebResourceResponse(stream, 200, ok_w, hdr_w.ptr, &resp_opt) >= 0) {
-                if (resp_opt) |resp| {
-                    defer resp.release();
-                    _ = args.lpVtbl.put_Response(args, resp);
-                }
-            }
+            return putResponse(env, args, stream, 200, ok_w, hdr_w.ptr);
         }
     };
 }

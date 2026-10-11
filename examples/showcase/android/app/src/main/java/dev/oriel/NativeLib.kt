@@ -9,7 +9,8 @@ internal object NativeLib {
     /** 1 = started, 2 = already running, 0 = failed. */
     @JvmStatic external fun start(files: ByteArray, cache: ByteArray, external: ByteArray, args: Array<ByteArray>): Int
     @JvmStatic external fun isRunning(): Boolean
-    @JvmStatic external fun onMessage(window: Int, data: ByteArray, origin: ByteArray)
+    /** `load`: the window's page-load counter, returned with each reply (OrielRuntime.postMessage). */
+    @JvmStatic external fun onMessage(window: Int, data: ByteArray, origin: ByteArray, load: Int)
     /** The encoded response ("status\nmime\nheaders\n\nbody"), or null for the network. */
     @JvmStatic external fun serve(window: Int, url: ByteArray): ByteArray?
     /** Whether the webview may load `url` (a top-level navigation). */

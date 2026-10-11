@@ -17,7 +17,7 @@ pub const Response = struct {
 
 pub var create_window: ?*const fn (App.WindowOptions, *App.Window) anyerror!window.WindowHandle = null;
 /// A message from a page (UI thread).
-pub var on_message: ?*const fn (id: u32, data: []const u8, origin: []const u8) void = null;
+pub var on_message: ?*const fn (id: u32, data: []const u8, origin: []const u8, load: u32) void = null;
 /// An `https://app.localhost/...` (or isolation) request, on a WebView IO
 /// thread. The response is written into `arena`.
 pub var serve: ?*const fn (arena: std.mem.Allocator, id: u32, url: []const u8) ?Response = null;
