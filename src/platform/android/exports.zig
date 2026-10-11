@@ -62,14 +62,15 @@ fn importDebugEnv() void {
 extern "c" fn __system_property_get(name: [*:0]const u8, value: [*]u8) c_int;
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-fn onMessage(env: *Env, _: jclass, win: jint, data: jobject, origin: jobject) callconv(.c) void {
+/// `load`: the window's page-load counter when the message came (OrielWindow).
+fn onMessage(env: *Env, _: jclass, win: jint, data: jobject, origin: jobject, load: jint) callconv(.c) void {
     const f = handlers.on_message orelse return;
     const gpa = heap.gpa;
     const d = bytes(env, data) orelse return;
     defer gpa.free(d);
     const o = bytes(env, origin) orelse return;
     defer gpa.free(o);
-    f(id(win), d, o);
+    f(id(win), d, o, @bitCast(load));
 }
 
 /// `shouldInterceptRequest` (a WebView IO thread): the encoded response
@@ -149,7 +150,15 @@ pub fn argsAlloc(env: *Env, gpa: std.mem.Allocator, arr: jobject) ?std.ArrayList
     for (0..n) |i| {
         const item = env.functions.GetObjectArrayElement(env, arr, @intCast(i));
         defer if (item != null) env.functions.DeleteLocalRef(env, item);
-        const s = (env.bytesAlloc(gpa, item) catch null) orelse continue;
+        // An element that can't be copied (out of memory): no list, rather
+        // than one missing an argument.
+        const s = (env.bytesAlloc(gpa, item) catch {
+            freeArgs(gpa, &list);
+            return null;
+        }) orelse {
+            freeArgs(gpa, &list);
+            return null;
+        };
         list.append(gpa, s) catch {
             gpa.free(s);
             freeArgs(gpa, &list);

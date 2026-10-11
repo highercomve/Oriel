@@ -302,6 +302,9 @@ pub const Surface = struct {
     /// Decoded <img> pictures, one per image node (a clipboard preview is a
     /// new data: URI each time: keyed by node, replaced when its src changes).
     images: std.AutoHashMap(i64, Image),
+    /// Counts draws: an image's `used` is the draw that last looked at it
+    /// (imageOf evicts the least recently used, never this draw's).
+    draw_serial: u64 = 0,
     /// Each canvas's bitmap, kept from frame to frame while its size holds.
     canvases: std.AutoHashMap(i64, CanvasBitmap),
     /// Filled circles as anti-aliased masks (canvasCircle), by radius and
@@ -544,11 +547,11 @@ pub const Surface = struct {
         s.gpa.destroy(s);
     }
 
-    /// The page's JS is running (a command it called closes its window):
-    /// the close waits for the call to end.
+    /// The page's JS or a frame hook of the app's is running (a command it
+    /// called closes its window): the close waits for it to end.
     pub fn busy(engine: *anyopaque) bool {
         const e: *Engine = @ptrCast(@alignCast(engine));
-        return e.in_call > 0;
+        return e.busy();
     }
 
     /// `destroy` for the surface whose engine this is (WindowHandle.native),
@@ -2943,6 +2946,7 @@ fn c16(v: f32) u16 {
 
 fn draw(_: *Widget, cr: *cairo_t, _: c_int, _: c_int, data: ?*anyopaque) callconv(.c) void {
     const s = surfaceOf(data);
+    s.draw_serial += 1;
     if (s.engine.tree.needsLayout()) s.engine.tree.layout();
     const root = s.engine.tree.root orelse return;
     // Under the page: white, as in a browser (the root's background, if
@@ -4118,6 +4122,8 @@ const Image = struct {
     surface: ?*anyopaque,
     w: f32,
     h: f32,
+    /// The draw that last used it (Surface.draw_serial).
+    used: u64 = 0,
 
     fn deinit(img: Image) void {
         if (img.surface) |sf| cairo_surface_destroy(sf);
@@ -4130,15 +4136,19 @@ const Image = struct {
     }
 };
 
-/// All of a window's decoded pictures together: past it, the others go
-/// before a new one is kept (they're decoded again when painted).
+/// All of a window's decoded pictures together: past it, the least
+/// recently drawn go before a new one is kept (they're decoded again when
+/// painted), never one this draw uses.
 const max_image_cache_bytes: u64 = 256 * 1024 * 1024;
 
 /// The node's decoded picture (decoded on first use and when src changes).
 fn imageOf(s: *Surface, n: *Node) ?Image {
     const src = n.props.src orelse return null;
     const hash = std.hash.Wyhash.hash(0, src);
-    if (s.images.get(n.id)) |img| if (img.src_hash == hash) return img;
+    if (s.images.getPtr(n.id)) |img| if (img.src_hash == hash) {
+        img.used = s.draw_serial;
+        return img.*;
+    };
     if (s.images.fetchRemove(n.id)) |kv| kv.value.deinit();
     const img = decodeImage(s, src) catch |err| blk: {
         log.warn("native ui: image {s}: {s}", .{ src[0..@min(src.len, 48)], @errorName(err) });
@@ -4146,13 +4156,22 @@ fn imageOf(s: *Surface, n: *Node) ?Image {
     };
     var stored = img;
     stored.src_hash = hash;
+    stored.used = s.draw_serial;
     var total = stored.bytes();
     var it = s.images.valueIterator();
     while (it.next()) |other| total += other.bytes();
-    if (total > max_image_cache_bytes) {
-        var rest = s.images.valueIterator();
-        while (rest.next()) |other| other.deinit();
-        s.images.clearRetainingCapacity();
+    while (total > max_image_cache_bytes) {
+        var lru: ?*const i64 = null;
+        var oldest: u64 = s.draw_serial;
+        var keys = s.images.iterator();
+        while (keys.next()) |e| if (e.value_ptr.bytes() > 0 and e.value_ptr.used < oldest) {
+            oldest = e.value_ptr.used;
+            lru = e.key_ptr;
+        };
+        const id = (lru orelse break).*; // the rest are this draw's: kept
+        const kv = s.images.fetchRemove(id).?;
+        total -= kv.value.bytes();
+        kv.value.deinit();
     }
     s.images.put(n.id, stored) catch {
         stored.deinit();

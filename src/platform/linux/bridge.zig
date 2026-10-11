@@ -239,6 +239,14 @@ pub const bridge_js =
 // the first load.
 extern fn webkit_web_view_get_uri(view: *webkit.WebView) ?[*:0]const u8;
 
+/// Whether `view`'s current page may receive events (App.pageGetsEvents):
+/// the bridge's own origins only, not whatever page the window shows now.
+fn viewGetsEvents(view: *webkit.WebView, label: []const u8) bool {
+    if (comptime build_opts.native_ui) return false; // links no WebKit
+    const uri = webkit_web_view_get_uri(view) orelse return false;
+    return App.pageGetsEvents(std.mem.span(uri), label);
+}
+
 /// One type for the producer and the idle callback (it's cast back from
 /// `?*anyopaque`; two identical auto-layout structs needn't share a layout).
 const EvalTask = struct {
@@ -275,12 +283,16 @@ fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
     if (task.target) |v| {
         App.ensureWindowsMutex();
         App.windows_mutex.lock();
+        var allowed = false;
         const web_view: ?*webkit.WebView = for (App.windows_list.items) |win| {
-            if (win.handle.eql(v)) break win.handle.web_view;
+            if (win.handle.eql(v)) {
+                if (win.handle.web_view) |view| allowed = viewGetsEvents(view, win.label);
+                break win.handle.web_view;
+            }
         } else null;
         App.windows_mutex.unlock();
         if (web_view) |view| {
-            view.evaluateJavascript(task.script, -1, null, null, null, null, null);
+            if (allowed) view.evaluateJavascript(task.script, -1, null, null, null, null, null);
         } else if (comptime build_opts.native_ui) {
             if (nativeEngine(v)) |e| e.evalScript(task.script);
         }
@@ -290,7 +302,10 @@ fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
         var engines: [16]*anyopaque = undefined;
         var n_engines: usize = 0;
         for (App.windows_list.items) |win| {
-            if (win.handle.web_view) |view| view.evaluateJavascript(task.script, -1, null, null, null, null, null);
+            // Only to pages the bridge serves (any other could read it).
+            if (win.handle.web_view) |view| if (viewGetsEvents(view, win.label)) {
+                view.evaluateJavascript(task.script, -1, null, null, null, null, null);
+            };
             if (comptime build_opts.native_ui) if (win.handle.native) |e| if (n_engines < engines.len) {
                 engines[n_engines] = e;
                 n_engines += 1;
@@ -359,7 +374,9 @@ fn evalScriptByLabelTask(data: ?*anyopaque) callconv(.c) c_int {
     var engine: ?*anyopaque = null;
     for (App.windows_list.items) |win| {
         if (!std.mem.eql(u8, win.label, task.label)) continue;
-        web_view = win.handle.web_view;
+        if (win.handle.web_view) |view| if (viewGetsEvents(view, win.label)) {
+            web_view = view;
+        };
         if (comptime build_opts.native_ui) engine = win.handle.native;
         break;
     }
@@ -526,6 +543,11 @@ pub fn Bridge(
             const request_ptr = value.toString();
             defer glib.free(request_ptr);
             const req_slice = std.mem.span(request_ptr);
+            // Refused before parsing (ipc.parseRequest would, too).
+            if (req_slice.len > ipc.max_request_len) {
+                reply.returnErrorMessage("RequestTooLarge");
+                return 1;
+            }
 
             var parse_arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
             defer parse_arena.deinit();

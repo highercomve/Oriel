@@ -356,15 +356,15 @@ pub const Window = struct {
 
         var key_w_buf: [128]u8 = undefined;
         const key_w = std.fmt.bufPrint(&key_w_buf, "{s}_width", .{self.label}) catch return;
-        store.set(key_w, size.width) catch {};
+        store.set(key_w, size.width) catch |err| log.warn("saving {s}: {s}", .{ key_w, @errorName(err) });
 
         var key_h_buf: [128]u8 = undefined;
         const key_h = std.fmt.bufPrint(&key_h_buf, "{s}_height", .{self.label}) catch return;
-        store.set(key_h, size.height) catch {};
+        store.set(key_h, size.height) catch |err| log.warn("saving {s}: {s}", .{ key_h, @errorName(err) });
 
         var key_m_buf: [128]u8 = undefined;
         const key_m = std.fmt.bufPrint(&key_m_buf, "{s}_maximized", .{self.label}) catch return;
-        store.set(key_m, self.isMaximized()) catch {};
+        store.set(key_m, self.isMaximized()) catch |err| log.warn("saving {s}: {s}", .{ key_m, @errorName(err) });
     }
 
     pub fn restoreGeometry(self: *Window) void {
@@ -410,6 +410,16 @@ pub var main_window: if (@hasDecl(platform, "GtkWindow") and platform.GtkWindow 
 
 pub var current_app_id: ?[:0]const u8 = null;
 pub var current_security: security.Security = .{};
+/// The app's own origins (with the dev server's in dev builds); set with
+/// `current_security` in `run`.
+pub var current_local: security.Local = .{};
+
+/// Whether window `label`'s page at `page_url` may receive events: it is
+/// one the bridge serves (the app's origins or a capability's). Any other
+/// page could define its own `window.oriel.__emit` and read them.
+pub fn pageGetsEvents(page_url: []const u8, label: ?[]const u8) bool {
+    return security.bridgeAllowedForWindow(current_security, current_local, page_url, label);
+}
 
 pub var windows_list: std.ArrayList(*Window) = .empty;
 
@@ -880,6 +890,12 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     comptime security.checkHeaders(config.security.headers);
     comptime @import("isolation.zig").checkHook(config.security);
     current_security = config.security;
+    current_local = comptime .{ .dev_origin = if (config.dev) |d| blk: {
+        var buf: [512]u8 = undefined;
+        const o = security.origin(&buf, d.url) orelse @compileError("invalid dev URL: " ++ d.url);
+        const copy = o[0..o.len].*;
+        break :blk &copy;
+    } else null };
     @import("permissions.zig").setDeclared(config.permissions);
     ipc.initToken(io); // before any window (and bridge script) exists
 

@@ -90,15 +90,21 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             defer headers.release();
             var len_buf: [24]u8 = undefined;
             const len = std.fmt.bufPrint(&len_buf, "{d}", .{body.len}) catch unreachable; // 24 digits fit any usize
-            setHeader(headers, "Content-Type", mime);
-            setHeader(headers, "Content-Length", len);
-            setHeader(headers, "X-Content-Type-Options", "nosniff");
+            // A header that can't be set (out of memory) fails the load: an
+            // asset must not go out without its CSP or nosniff.
+            var ok = setHeader(headers, "Content-Type", mime);
+            ok = ok and setHeader(headers, "Content-Length", len);
+            ok = ok and setHeader(headers, "X-Content-Type-Options", "nosniff");
             if (extra) |list| {
-                for (list) |h| setHeader(headers, h[0], h[1]);
+                for (list) |h| ok = ok and setHeader(headers, h[0], h[1]);
             } else inline for (config.security.headers) |h| {
-                if (comptime security.headerUsable(h)) setHeader(headers, h.name, h.value);
+                if (comptime security.headerUsable(h)) ok = ok and setHeader(headers, h.name, h.value);
             }
-            if (csp) |c| setHeader(headers, "Content-Security-Policy", c);
+            if (csp) |c| ok = ok and setHeader(headers, "Content-Security-Policy", c);
+            if (!ok) {
+                failTask(task); // every task gets an answer
+                return;
+            }
 
             const version = cocoa.nsString("HTTP/1.1") orelse {
                 failTask(task); // every task gets an answer
@@ -124,12 +130,14 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             task.msgSend(void, "didFinish", .{});
         }
 
-        fn setHeader(headers: Object, name: []const u8, value: []const u8) void {
-            const key = cocoa.nsString(name) orelse return;
+        /// False when the strings couldn't be made (the header is missing).
+        fn setHeader(headers: Object, name: []const u8, value: []const u8) bool {
+            const key = cocoa.nsString(name) orelse return false;
             defer key.release();
-            const val = cocoa.nsString(value) orelse return;
+            const val = cocoa.nsString(value) orelse return false;
             defer val.release();
             headers.msgSend(void, "setObject:forKey:", .{ val, key });
+            return true;
         }
 
         /// Out of memory building the response: fail the load instead of

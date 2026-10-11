@@ -237,13 +237,18 @@ fn browse(type_z: ?[*:0]const u8, cb: ?Callback, ctx: ?*anyopaque, out_handle: ?
         return errorCode(err);
     };
     // Set before any event can reach a stop for this handle (the caller
-    // learns the handle from us).
+    // learns the handle from us), under the lock browseStop reads it with.
+    lockAdapters();
     adapter.handle = b.id;
+    unlockAdapters();
     if (out_handle) |h| h.* = b.id;
     return 0;
 }
 
 fn browseStop(handle: u32) callconv(.c) void {
+    // 0 is no browser, and would match an adapter whose browse is still
+    // starting.
+    if (handle == 0) return;
     (mdns.Browser{ .id = handle }).stop();
     const adapter = blk: {
         lockAdapters();

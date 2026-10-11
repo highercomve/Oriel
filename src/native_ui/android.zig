@@ -18,6 +18,7 @@ const tree_mod = @import("tree.zig");
 const text_measure_cache = @import("text_measure_cache.zig");
 const jni = @import("../platform/android/jni.zig");
 const runtime = @import("../platform/android/runtime.zig");
+const Shell = @import("../platform/android/Shell.zig");
 const Engine = engine_mod.Engine;
 const Node = tree_mod.Node;
 const Rect = tree_mod.Rect;
@@ -171,7 +172,12 @@ fn withDensity(gpa: std.mem.Allocator, window: u32, platform_json: [:0]const u8)
     return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d},\"accent\":[{d},{d},{d}]}}", .{ body, sep, dpr, (argb >> 16) & 0xff, (argb >> 8) & 0xff, argb & 0xff }, 0) catch null;
 }
 
+/// Tear a window's surface down. From inside the page's call or a frame
+/// hook (a close on the UI thread is synchronous): again from the task
+/// queue, once that code has returned into a live engine.
 pub fn destroy(window: u32) void {
+    const live_s = surfaces.get(window) orelse return;
+    if (live_s.engine.busy()) return Shell.dispatchToMainThread(&destroyLater, @ptrFromInt(window));
     const kv = surfaces.fetchRemove(window) orelse return;
     const s = kv.value;
     s.engine.destroy();
@@ -187,6 +193,10 @@ pub fn destroy(window: u32) void {
     s.measure_nodes.deinit(s.gpa);
     s.measure_sizes.deinit(s.gpa);
     s.gpa.destroy(s);
+}
+
+fn destroyLater(ctx: ?*anyopaque) void {
+    destroy(@intCast(@intFromPtr(ctx)));
 }
 
 /// A command's answer, on the UI thread (the window may be gone by then).

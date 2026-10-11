@@ -13,9 +13,13 @@
 //! and then waits out a handler running on another thread.
 //!
 //! Every OS request keeps its memory in a static slot (or, for a resolve, a
-//! heap block freed by its own callback), and every callback finds its
-//! browser or registration by id: a late callback after a stop finds
+//! reference-counted heap block: see `Resolve`), and every callback finds
+//! its browser or registration by id: a late callback after a stop finds
 //! nothing and does nothing.
+//!
+//! What a browse keeps is bounded, since anyone on the LAN can announce
+//! names: `max_resolves` in flight (one per name), `max_names` reported
+//! and `max_addresses` per name.
 //!
 //! TXT values travel as UTF-16 strings here, so they must be UTF-8 text
 //! without NUL (Quick Share's are base64): `register` returns
@@ -125,6 +129,8 @@ const RegSlot = struct {
     status: DWORD = 0,
     name_buf: [mdns.max_name_bytes]u8 = undefined,
     name_len: u8 = 0,
+    /// An `unregister` is running (it uses the slot unlocked).
+    unregistering: bool = false,
 };
 
 const BrowseSlot = struct {
@@ -136,7 +142,8 @@ const BrowseSlot = struct {
     query: [max_query:0]WCHAR = @splat(0),
     req: BrowseRequest = .{},
     cancel: Cancel = .{},
-    /// Resolves in flight (freed by their callbacks).
+    /// Resolves in flight, one per name (each holds a reference for being
+    /// here). Under `table_mutex`.
     resolves: std.ArrayList(*Resolve) = .empty,
     /// Names reported `found`, and a hash of what was reported (an update
     /// repeats `found`, an identical answer doesn't). Under `call_mutex`.
@@ -147,12 +154,33 @@ const BrowseSlot = struct {
     }
 };
 
+/// A resolve in flight. Its memory has up to three owners, counted in
+/// `refs` under `table_mutex`; whoever drops the last frees it:
+/// - `startResolve`, while it runs;
+/// - its browser's `resolves` list, while it is in it. `stopBrowse` takes
+///   the list out and with it these references, and drops each after
+///   DnsServiceResolveCancel returns (or at once for one not `started`);
+/// - the pending callback, from before DnsServiceResolve: `onResolved`
+///   drops it when it returns (`startResolve` when the call fails, as no
+///   callback comes).
+/// Exactly one party cancels: `stopBrowse` the `started` ones, and
+/// `startResolve` one whose browser stopped before it was `started` (and
+/// that isn't `done`).
 const Resolve = struct {
     browser: u32,
     name: [:0]WCHAR,
     req: ResolveRequest = .{},
     cancel: Cancel = .{},
+    refs: u8 = 1,
+    /// DnsServiceResolve accepted it while its browser ran.
+    started: bool = false,
+    /// Its callback came.
+    done: bool = false,
 };
+
+const max_resolves = 64;
+const max_names = 256;
+const max_addresses = 16;
 
 var table_mutex: ShellMod.Mutex = .{};
 var regs: [mdns.max_handles]RegSlot = @splat(.{});
@@ -164,6 +192,10 @@ var call_mutex: ShellMod.Mutex = .{};
 /// The thread running a handler (0: none): `stopBrowse` from inside a
 /// handler mustn't wait for itself.
 var handler_tid: std.atomic.Value(DWORD) = .init(0);
+/// `found` maps a `stopBrowse` inside a handler took out: the event being
+/// handled may point into one, so `call` frees them once the handler
+/// returns. Under `call_mutex`.
+var retired: std.ArrayList(std.StringHashMapUnmanaged(Known)) = .empty;
 
 fn newId() u32 {
     const id = next_id;
@@ -269,7 +301,10 @@ pub const backend = struct {
         const slot = blk: {
             table_mutex.lock();
             defer table_mutex.unlock();
-            break :blk findReg(id) orelse return;
+            const s = findReg(id) orelse return;
+            if (s.unregistering) return; // another call is at it
+            s.unregistering = true;
+            break :blk s;
         };
         _ = win32.ResetEvent(slot.event.?);
         const rc = DnsServiceDeRegister(&slot.req, null);
@@ -308,10 +343,20 @@ pub const backend = struct {
     }
 
     pub fn stopBrowse(id: u32) void {
+        // Inside a handler this thread already holds call_mutex.
+        const in_handler = handler_tid.load(.acquire) == GetCurrentThreadId();
         var resolves: std.ArrayList(*Resolve) = .empty;
         var found: std.StringHashMapUnmanaged(Known) = .empty;
         var cancel: Cancel = .{};
         {
+            // call_mutex then table_mutex, as in deliverFound and lost.
+            // Taking call_mutex waits out a handler running on another
+            // thread, and `found` is under it; deliver re-checks the
+            // browser under it, so no handler starts after this. It isn't
+            // held over the cancels below: they may wait for a callback
+            // that waits for it.
+            if (!in_handler) call_mutex.lock();
+            defer if (!in_handler) call_mutex.unlock();
             table_mutex.lock();
             defer table_mutex.unlock();
             const s = findBrowser(id) orelse return;
@@ -323,18 +368,30 @@ pub const backend = struct {
             s.handler = null;
             s.resolves = .empty;
             s.found = .empty;
+            // Keep, with the list's reference, the resolves to cancel; one
+            // not started yet startResolve cancels itself.
+            var n: usize = 0;
+            for (resolves.items) |r| {
+                if (r.started) {
+                    resolves.items[n] = r;
+                    n += 1;
+                } else unrefLocked(r);
+            }
+            resolves.shrinkRetainingCapacity(n);
         }
         _ = DnsServiceBrowseCancel(&cancel);
-        // Each resolve's callback frees it (with a cancelled status).
+        // Each still completes through its callback (cancelled status).
         for (resolves.items) |r| _ = DnsServiceResolveCancel(&r.cancel);
-        resolves.deinit(gpa);
-        // Wait out a handler running on another thread; deliver re-checks
-        // the browser under call_mutex, so none starts after this.
-        if (handler_tid.load(.acquire) != GetCurrentThreadId()) {
-            call_mutex.lock();
-            call_mutex.unlock();
+        {
+            table_mutex.lock();
+            defer table_mutex.unlock();
+            for (resolves.items) |r| unrefLocked(r);
         }
-        freeFound(&found);
+        resolves.deinit(gpa);
+        if (in_handler) {
+            // The event being handled may point into it: call frees it.
+            retired.append(gpa, found) catch {}; // out of memory: leak it
+        } else freeFound(&found);
     }
 };
 
@@ -359,9 +416,10 @@ const Known = struct {
         k.addresses.deinit(gpa);
     }
 
-    /// Adds the addresses it doesn't have yet.
+    /// Adds the addresses it doesn't have yet, up to `max_addresses`.
     fn merge(k: *Known, addresses: []const []const u8) !void {
         outer: for (addresses) |a| {
+            if (k.addresses.items.len >= max_addresses) return;
             for (k.addresses.items) |have| if (std.mem.eql(u8, have, a)) continue :outer;
             const copy = try gpa.dupe(u8, a);
             k.addresses.append(gpa, copy) catch |e| {
@@ -432,24 +490,54 @@ fn startResolve(browser: u32, name_w: []const WCHAR) void {
         table_mutex.lock();
         defer table_mutex.unlock();
         const s = findBrowser(browser) orelse return freeResolve(r);
+        // One in flight per name (a re-announcement doesn't start another),
+        // and a bounded number.
+        if (s.resolves.items.len >= max_resolves) return freeResolve(r);
+        for (s.resolves.items) |x| if (std.mem.eql(WCHAR, x.name, r.name)) return freeResolve(r);
         s.resolves.append(gpa, r) catch return freeResolve(r);
+        r.refs = 3; // ours, the list's, the callback's
     }
     const rc = DnsServiceResolve(&r.req, &r.cancel);
-    if (rc != request_pending) {
-        log.warn("resolve: DnsServiceResolve: {d}", .{rc});
-        forgetResolve(r);
-        freeResolve(r);
-    }
+    if (rc != request_pending) log.warn("resolve: DnsServiceResolve: {d}", .{rc});
+    const cancel_here = blk: {
+        table_mutex.lock();
+        defer table_mutex.unlock();
+        if (rc != request_pending) {
+            if (findBrowser(browser)) |s| removeResolve(s, r);
+            r.refs -= 1; // the callback's: none comes
+            break :blk false;
+        }
+        if (findBrowser(browser) != null) {
+            r.started = true;
+            break :blk false;
+        }
+        // stopBrowse ran in between and left it to us.
+        break :blk !r.done;
+    };
+    if (cancel_here) _ = DnsServiceResolveCancel(&r.cancel);
+    unref(r);
 }
 
-fn forgetResolve(r: *Resolve) void {
-    table_mutex.lock();
-    defer table_mutex.unlock();
-    const s = findBrowser(r.browser) orelse return;
+/// Takes `r` off its browser's list, with the list's reference (it holds
+/// another, so it isn't freed). Under `table_mutex`.
+fn removeResolve(s: *BrowseSlot, r: *Resolve) void {
     for (s.resolves.items, 0..) |x, i| if (x == r) {
         _ = s.resolves.swapRemove(i);
+        r.refs -= 1;
         return;
     };
+}
+
+/// Drops a reference to `r`, freeing it with the last. Under `table_mutex`.
+fn unrefLocked(r: *Resolve) void {
+    r.refs -= 1;
+    if (r.refs == 0) freeResolve(r);
+}
+
+fn unref(r: *Resolve) void {
+    table_mutex.lock();
+    defer table_mutex.unlock();
+    unrefLocked(r);
 }
 
 fn freeResolve(r: *Resolve) void {
@@ -460,11 +548,17 @@ fn freeResolve(r: *Resolve) void {
 /// A resolve finished (DNS client thread): the `found` event.
 fn onResolved(status: DWORD, ctx: ?*anyopaque, instance: ?*ServiceInstance) callconv(.winapi) void {
     const r: *Resolve = @ptrCast(@alignCast(ctx.?));
+    // Holds the callback's reference until it returns.
     defer {
         if (instance) |i| DnsServiceFreeInstance(i);
-        freeResolve(r);
+        unref(r);
     }
-    forgetResolve(r);
+    {
+        table_mutex.lock();
+        defer table_mutex.unlock();
+        r.done = true;
+        if (findBrowser(r.browser)) |s| removeResolve(s, r);
+    }
     if (status != 0) {
         if (status != 1223) log.warn("resolve: status {d}", .{status});
         return;
@@ -520,6 +614,7 @@ fn deliverFound(browser: u32, found_full: mdns.Found) void {
     f.name = instanceLabel(f.name, service_type);
     const known = blk: {
         if (slot.found.getPtr(f.name)) |k| break :blk k;
+        if (slot.found.count() >= max_names) return; // a flood of names
         const key = gpa.dupe(u8, f.name) catch return;
         const gop = slot.found.getOrPut(gpa, key) catch {
             gpa.free(key);
@@ -566,6 +661,9 @@ fn call(handler: mdns.Handler, ctx: ?*anyopaque, event: *const mdns.Event) void 
     handler_tid.store(GetCurrentThreadId(), .release);
     defer handler_tid.store(0, .release);
     handler(ctx, event);
+    // What a stop inside the handler took out (the event may point into it).
+    for (retired.items) |*f| freeFound(f);
+    retired.clearRetainingCapacity();
 }
 
 // ---------------------------------------------------------------- helpers

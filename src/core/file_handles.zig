@@ -160,20 +160,30 @@ pub const FileHandles = struct {
 
     /// An owned duplicate, acquired while release cannot recycle the descriptor.
     pub fn duplicate(d: *FileHandles, handle: u32) Error!std.Io.File {
+        const e = try d.dupEntry(handle);
+        return .{ .handle = if (windows) @ptrCast(e.fd) else e.fd, .flags = .{ .nonblocking = false } };
+    }
+
+    /// The handle's entry with a duplicate descriptor (the caller closes
+    /// it), taken under the lock, so release can't recycle the original
+    /// meanwhile; the caller then works on it without holding the lock.
+    fn dupEntry(d: *FileHandles, handle: u32) Error!Entry {
         std.Io.Threaded.mutexLock(&d.mutex);
         defer std.Io.Threaded.mutexUnlock(&d.mutex);
-        const e = d.entries.get(handle) orelse return error.BadHandle;
+        var e = d.entries.get(handle) orelse return error.BadHandle;
         try check(e);
         if (windows) {
             const process = win.GetCurrentProcess();
             var copy: win.HANDLE = undefined;
             if (win.DuplicateHandle(process, e.fd, process, &copy, 0, 0, 2) == 0) return error.NotReadable;
-            return .{ .handle = @ptrCast(copy), .flags = .{ .nonblocking = false } };
+            e.fd = copy;
+            return e;
         }
         if (!supported) return error.Unsupported;
         const copy = std.c.dup(e.fd);
         if (copy < 0) return error.NotReadable;
-        return .{ .handle = copy, .flags = .{ .nonblocking = false } };
+        e.fd = copy;
+        return e;
     }
 
     /// What the page is told about a handle (size, mtime); fd remains borrowed.
@@ -185,12 +195,12 @@ pub const FileHandles = struct {
 
     /// Append up to `len` bytes from `offset` to `out` (fewer at the end of
     /// the file). NotReadable when the file changed since it was added.
+    /// Reads a duplicate descriptor outside the lock: a read of up to
+    /// `max_read` must not stall every other handle's calls.
     pub fn read(d: *FileHandles, handle: u32, offset: u64, len: u64, out: *std.ArrayList(u8)) Error!void {
-        std.Io.Threaded.mutexLock(@constCast(&d.mutex));
-        defer std.Io.Threaded.mutexUnlock(@constCast(&d.mutex));
-        const e = d.entries.get(handle) orelse return error.BadHandle;
         if (len > max_read) return error.TooLarge;
-        try check(e);
+        const e = try d.dupEntry(handle);
+        defer closeFd(e.fd);
         const want: usize = @intCast(if (offset >= e.size) 0 else @min(len, e.size - offset));
         try out.ensureUnusedCapacity(d.gpa, want);
         var done: usize = 0;
@@ -269,9 +279,12 @@ pub const FileHandles = struct {
             // Darwin's F_GETPATH (0x32): the descriptor's own path, when the
             // file system still has it. A deleted file's descriptor has
             // none: NotReadable, like Linux's marker below.
-            const n = std.c.fcntl(e.fd, 0x32, &buf);
-            if (std.posix.errno(n) != .SUCCESS or n <= 0) return error.NotReadable;
-            return gpa.dupe(u8, buf[0..@intCast(n)]) catch error.OutOfMemory;
+            // It answers 0 (not a length) and a NUL-terminated path.
+            const rc = std.c.fcntl(e.fd, 0x32, &buf);
+            if (rc == -1) return error.NotReadable;
+            const path = std.mem.sliceTo(&buf, 0);
+            if (path.len == 0 or path.len == buf.len) return error.NotReadable;
+            return gpa.dupe(u8, path) catch error.OutOfMemory;
         }
         // Linux: /proc/self/fd/N is a magic link to the file the descriptor
         // opened; reading it answers the original path, or the original
