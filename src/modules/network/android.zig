@@ -15,7 +15,9 @@
 //!   resolved: on API 34+ with registerServiceInfoCallback (all addresses,
 //!   and updates while it lives), before that with resolveService, one at a
 //!   time (older Androids refuse concurrent resolves with
-//!   FAILURE_ALREADY_ACTIVE: OrielMdns queues them and retries).
+//!   FAILURE_ALREADY_ACTIVE: OrielMdns queues them and retries; a resolve
+//!   unanswered for 10 s is given up so it can't stall the queue, and a
+//!   failed one is tried again with backoff while the service is listed).
 //!
 //! Threads: Zig calls Kotlin on the UI thread (`runOnMainThread`), or
 //! directly from inside an event handler (the `oriel-mdns` Java thread has

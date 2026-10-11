@@ -2,6 +2,18 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Fixed
+
+- Android mDNS browsing before Android 14: a resolve the system never
+  answered blocked every service queued after it (one runs at a time), and
+  a resolve that failed for any reason other than "busy" was never tried
+  again, so the service stayed unlisted until browsing restarted. A
+  resolve is now given up after 10 seconds, and failed ones are tried
+  again after 1, 2, 4... seconds (up to 30) while the service is listed.
+  Older phones could miss other devices on the network because of either.
+
 ## [0.9.14] — 2026-10-10
 
 Oriel 0.9.14 fixes a crash: since 0.9.12, every app built with the native
