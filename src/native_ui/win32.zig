@@ -272,6 +272,8 @@ const Image = struct {
     bitmap: ?*c.ID2D1Bitmap = null,
     w: f32 = 0,
     h: f32 = 0,
+    /// The paint that last used it (Surface.paint_serial).
+    used: u64 = 0,
 
     /// What its decoded pixels take (BGRA; the GPU bitmap made from them
     /// is the same again, released with the render target).
@@ -305,6 +307,9 @@ pub const Surface = struct {
     fields: std.AutoHashMap(i64, Field),
     /// Decoded pictures by node id (released with the node or a new src).
     images: std.AutoHashMap(i64, Image),
+    /// Counts paints: an image's `used` is the paint that last looked at
+    /// it (imageOf evicts the least recently used, never this paint's).
+    paint_serial: u64 = 0,
     /// Each <canvas>'s bitmap by node id, kept from frame to frame while its
     /// size holds (released with the node or the render target).
     canvases: std.AutoHashMap(i64, CanvasBitmap),
@@ -493,9 +498,10 @@ pub const Surface = struct {
     /// The surface's own code is on the stack below a nested message loop
     /// (a field's notification or key, the page's handler for it): destroy
     /// must wait, or that code returns into a freed surface. The window's
-    /// WM_CLOSE retries until this is false.
+    /// WM_CLOSE retries until this is false. So with the page's JS or a
+    /// frame hook of the app's on the stack (Engine.busy).
     pub fn busy(s: *const Surface) bool {
-        return s.in_control > 0;
+        return s.in_control > 0 or s.engine.busy();
     }
 
     /// For WindowHandle.deinit_fn.
@@ -4657,7 +4663,10 @@ fn imageOf(s: *Surface, n: *Node) ?*Image {
     const src = n.props.src orelse return null;
     const hash = std.hash.Wyhash.hash(0, src);
     if (s.images.getPtr(n.id)) |img| {
-        if (img.src_hash == hash) return img;
+        if (img.src_hash == hash) {
+            img.used = s.paint_serial;
+            return img;
+        }
         img.deinit();
         _ = s.images.remove(n.id);
     }
@@ -4666,16 +4675,25 @@ fn imageOf(s: *Surface, n: *Node) ?*Image {
         break :blk .{ .src_hash = 0 };
     };
     img.src_hash = hash;
+    img.used = s.paint_serial;
     // All of the window's pictures together at most max_image_cache_bytes:
-    // past it the others go before this one is kept (they decode again
-    // when painted).
+    // past it the least recently painted go before this one is kept (they
+    // decode again when painted), never one this paint uses.
     var total = img.bytes();
     var it = s.images.valueIterator();
     while (it.next()) |other| total += other.bytes();
-    if (total > max_image_cache_bytes) {
-        var rest = s.images.valueIterator();
-        while (rest.next()) |other| other.deinit();
-        s.images.clearRetainingCapacity();
+    while (total > max_image_cache_bytes) {
+        var lru: ?*const i64 = null;
+        var oldest: u64 = s.paint_serial;
+        var keys = s.images.iterator();
+        while (keys.next()) |e| if (e.value_ptr.bytes() > 0 and e.value_ptr.used < oldest) {
+            oldest = e.value_ptr.used;
+            lru = e.key_ptr;
+        };
+        const id = (lru orelse break).*; // the rest are this paint's: kept
+        var victim = s.images.fetchRemove(id).?.value;
+        total -= victim.bytes();
+        victim.deinit();
     }
     const gop = s.images.getOrPut(n.id) catch {
         img.deinit();
@@ -5384,6 +5402,7 @@ const Painter = struct {
 
 fn paintAll(s: *Surface) void {
     const t0 = prof.now();
+    s.paint_serial += 1;
     if (s.engine.tree.needsLayout()) s.engine.tree.layout();
     const t1 = prof.now();
     if (!ensureTarget(s)) return;

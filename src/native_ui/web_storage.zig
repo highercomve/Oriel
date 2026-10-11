@@ -83,16 +83,28 @@ fn ensureLoaded() void {
     loadFile(path);
 }
 
-/// The entries of a saved store (a JSON object of strings), added.
+/// The entries of a saved store (a JSON object of strings), added. A file
+/// that can't be read back (unreadable, not JSON, not an object) is moved
+/// aside, to localStorage.json.corrupt-<unix seconds>, and the store starts
+/// empty: the next save writes a fresh file instead of replacing the only
+/// copy of the data.
 fn loadFile(path: []const u8) void {
-    const text = std.Io.Dir.cwd().readFileAlloc(io(), path, gpa(), .limited(quota * 2 + 64 * 1024)) catch return;
+    // Saved as JSON, a byte can take up to six (\u0001), keys and values
+    // alike: room for a full store of the worst case, and the punctuation.
+    const text = std.Io.Dir.cwd().readFileAlloc(io(), path, gpa(), .limited(quota * 6 + 64 * 1024)) catch |err| {
+        if (err != error.FileNotFound) moveAside(path, @errorName(err));
+        return;
+    };
     defer gpa().free(text);
     const parsed = std.json.parseFromSlice(std.json.Value, gpa(), text, .{}) catch {
-        std.log.scoped(.native_ui).warn("localStorage: {s} isn't valid JSON, starting empty", .{path});
+        moveAside(path, "not valid JSON");
         return;
     };
     defer parsed.deinit();
-    if (parsed.value != .object) return;
+    if (parsed.value != .object) {
+        moveAside(path, "not a JSON object");
+        return;
+    }
     var it = parsed.value.object.iterator();
     while (it.next()) |e| {
         const v = switch (e.value_ptr.*) {
@@ -101,6 +113,63 @@ fn loadFile(path: []const u8) void {
         };
         putLocked(e.key_ptr.*, v) catch break;
     }
+}
+
+/// Rename an unreadable store file out of the way (see loadFile).
+fn moveAside(path: []const u8, why: []const u8) void {
+    const log = std.log.scoped(.native_ui);
+    const secs = std.Io.Timestamp.now(io(), .real).toSeconds();
+    var buf: [32]u8 = undefined;
+    const suffix = std.fmt.bufPrint(&buf, ".corrupt-{d}", .{secs}) catch unreachable;
+    const aside = std.mem.concat(gpa(), u8, &.{ path, suffix }) catch {
+        forgetDir(); // can't keep the file: don't overwrite it either
+        log.warn("localStorage: {s} unreadable ({s}), not saving this run", .{ path, why });
+        return;
+    };
+    defer gpa().free(aside);
+    const cwd = std.Io.Dir.cwd();
+    cwd.rename(path, cwd, aside, io()) catch |err| {
+        forgetDir();
+        log.warn("localStorage: {s} unreadable ({s}) and not moved aside ({s}), not saving this run", .{ path, why, @errorName(err) });
+        return;
+    };
+    // (Not in tests: the test that makes one would read as failed.)
+    if (!builtin.is_test) log.warn("localStorage: {s} unreadable ({s}), moved to {s}, starting empty", .{ path, why, aside });
+}
+
+/// The store lasts the run from here on (nowhere it may be saved).
+fn forgetDir() void {
+    if (dir_path) |d| gpa().free(d);
+    dir_path = null;
+}
+
+/// A copy of `s` with each invalid UTF-8 sequence as U+FFFD, or `s` itself
+/// when it's valid (`copied` says which). QuickJS hands over a lone
+/// surrogate as its WTF-8 bytes, which std.json writes out raw (or as a
+/// number array): the file wouldn't parse back. As tree.zig's
+/// dupeUtf8Lossy.
+fn utf8Lossy(s: []const u8, copied: *bool) error{OutOfMemory}![]const u8 {
+    copied.* = false;
+    if (std.unicode.utf8ValidateSlice(s)) return s;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa());
+    var i: usize = 0;
+    while (i < s.len) {
+        const len = std.unicode.utf8ByteSequenceLength(s[i]) catch 0;
+        if (len > 0 and i + len <= s.len and std.meta.isError(std.unicode.utf8Decode(s[i .. i + len])) == false) {
+            try out.appendSlice(gpa(), s[i .. i + len]);
+            i += len;
+        } else if (len == 3 and i + 3 <= s.len and s[i] == 0xed and s[i + 1] >= 0xa0 and s[i + 1] <= 0xbf) {
+            // A surrogate, one U+FFFD as String.prototype.toWellFormed.
+            try out.appendSlice(gpa(), "\u{FFFD}");
+            i += 3;
+        } else {
+            try out.appendSlice(gpa(), "\u{FFFD}");
+            i += 1;
+        }
+    }
+    copied.* = true;
+    return out.toOwnedSlice(gpa());
 }
 
 fn putLocked(key: []const u8, value: []const u8) error{ Quota, OutOfMemory }!void {
@@ -127,24 +196,37 @@ pub fn get(a: std.mem.Allocator, key: []const u8) ?[]u8 {
     lock();
     defer unlock();
     ensureLoaded();
-    const v = map.get(key) orelse return null;
+    var kc: bool = undefined;
+    const k = utf8Lossy(key, &kc) catch return null;
+    defer if (kc) gpa().free(k);
+    const v = map.get(k) orelse return null;
     return a.dupe(u8, v) catch null;
 }
 
-/// Set a key: error.Quota past the quota (nothing changed then).
-pub fn set(key: []const u8, value: []const u8) error{ Quota, OutOfMemory }!void {
+/// Set a key: error.Quota past the quota (nothing changed then). Keys and
+/// values are kept as valid UTF-8 (see utf8Lossy), so the file reads back.
+pub fn set(key_in: []const u8, value_in: []const u8) error{ Quota, OutOfMemory }!void {
     lock();
     defer unlock();
     ensureLoaded();
+    var kc: bool = undefined;
+    var vc: bool = undefined;
+    const key = try utf8Lossy(key_in, &kc);
+    defer if (kc) gpa().free(key);
+    const value = try utf8Lossy(value_in, &vc);
+    defer if (vc) gpa().free(value);
     if (map.get(key)) |old| if (std.mem.eql(u8, old, value)) return;
     try putLocked(key, value);
     dirty = true;
 }
 
-pub fn remove(key: []const u8) void {
+pub fn remove(key_in: []const u8) void {
     lock();
     defer unlock();
     ensureLoaded();
+    var kc: bool = undefined;
+    const key = utf8Lossy(key_in, &kc) catch return;
+    defer if (kc) gpa().free(key);
     const kv = map.fetchOrderedRemove(key) orelse return;
     used -= kv.key.len + kv.value.len;
     gpa().free(kv.key);
@@ -282,4 +364,82 @@ test "localStorage: set, get, remove, quota, and the file it's saved to" {
     const again = get(t.allocator, "theme").?;
     defer t.allocator.free(again);
     try t.expectEqualStrings("dark", again);
+}
+
+test "localStorage: a lone surrogate (WTF-8) in a key or value saves and reads back" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(t.io, &buf)];
+
+    defer resetForTest();
+    resetForTest();
+    loaded = true;
+    dir_path = try std.fs.path.join(gpa(), &.{ root, "data" });
+
+    // U+D800 alone, as QuickJS encodes it.
+    try set("k\xed\xa0\x80", "v\xed\xa0\x80");
+    {
+        const v = get(t.allocator, "k\xed\xa0\x80").?;
+        defer t.allocator.free(v);
+        try t.expectEqualStrings("v\u{FFFD}", v);
+    }
+    flush();
+    try t.expect(!dirty);
+
+    clearLocked();
+    const path = try std.fs.path.join(gpa(), &.{ dir_path.?, file_name });
+    defer gpa().free(path);
+    loadFile(path);
+    try t.expectEqual(@as(usize, 1), count());
+    const v = get(t.allocator, "k\u{FFFD}").?;
+    defer t.allocator.free(v);
+    try t.expectEqualStrings("v\u{FFFD}", v);
+    // Read back, so not moved aside.
+    try t.expect(dir_path != null);
+    const saved = try tmp.dir.readFileAlloc(t.io, "data/" ++ file_name, t.allocator, .limited(4096));
+    t.allocator.free(saved);
+}
+
+test "localStorage: a corrupt file is moved aside, not overwritten" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = buf[0..try tmp.dir.realPath(t.io, &buf)];
+
+    defer resetForTest();
+    resetForTest();
+    loaded = true;
+    dir_path = try std.fs.path.join(gpa(), &.{ root, "data" });
+    try tmp.dir.createDirPath(t.io, "data");
+    const bad = "{\"theme\":\"da";
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "data/" ++ file_name, .data = bad });
+
+    const path = try std.fs.path.join(gpa(), &.{ dir_path.?, file_name });
+    defer gpa().free(path);
+    loadFile(path);
+    try t.expectEqual(@as(usize, 0), count());
+
+    // The bad file is kept beside, whole.
+    var dir = try tmp.dir.openDir(t.io, "data", .{ .iterate = true });
+    defer dir.close(t.io);
+    var it = dir.iterate();
+    var found = false;
+    while (try it.next(t.io)) |e| {
+        if (!std.mem.startsWith(u8, e.name, file_name ++ ".corrupt-")) continue;
+        const kept = try dir.readFileAlloc(t.io, e.name, t.allocator, .limited(4096));
+        defer t.allocator.free(kept);
+        try t.expectEqualStrings(bad, kept);
+        found = true;
+    }
+    try t.expect(found);
+
+    // And saving writes a fresh file.
+    try set("theme", "light");
+    flush();
+    const saved = try tmp.dir.readFileAlloc(t.io, "data/" ++ file_name, t.allocator, .limited(4096));
+    defer t.allocator.free(saved);
+    try t.expectEqualStrings("{\"theme\":\"light\"}", saved);
 }

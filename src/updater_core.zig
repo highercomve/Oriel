@@ -220,9 +220,15 @@ pub const Config = struct {
     target: []const u8 = DEFAULT_TARGET,
     timeout_ms: u32 = DEFAULT_TIMEOUT_MS,
     download_timeout_ms: u32 = DEFAULT_DOWNLOAD_TIMEOUT_MS,
+    /// Accept loopback `http://` URLs; ignored outside test builds.
     allow_http_for_test: bool = false,
     allocator: ?std.mem.Allocator = null,
+    /// Also offer the current version (a reinstall); an older one still isn't.
     force: bool = false,
+    /// Offer whatever version the manifest names, older included: only for an
+    /// explicit request for one version, whose manifest the caller then checks
+    /// names exactly that version (else a replayed old manifest downgrades).
+    allow_downgrade: bool = false,
 };
 
 /// Waits before retrying a request the server answered with a 5xx: right
@@ -237,6 +243,9 @@ pub fn checkForUpdate(
     gpa: std.mem.Allocator,
     config: Config,
 ) !?Update {
+    // TLS only (loopback http only in test builds).
+    try update_manifest.validateUrl(config.manifest_url, config.allow_http_for_test);
+
     var manifest_buf: [64 * 1024]u8 = undefined;
 
     const FetchResult = struct {
@@ -330,10 +339,7 @@ pub fn checkForUpdate(
     const remote_ver = try Semver.parse(manifest.version);
     const local_ver = try Semver.parse(config.current_version);
 
-    const has_update = if (config.force)
-        true
-    else
-        remote_ver.isNewerThan(local_ver);
+    const has_update = offersVersion(remote_ver, local_ver, config.force, config.allow_downgrade);
 
     if (has_update) {
         return Update{
@@ -352,6 +358,27 @@ pub fn checkForUpdate(
 
     arena_state.deinit();
     return null;
+}
+
+/// Whether `remote` is offered over `local`: newer, or also the same with
+/// `force`, or any version with `allow_downgrade`.
+pub fn offersVersion(remote: Semver, local: Semver, force: bool, allow_downgrade: bool) bool {
+    if (allow_downgrade) return true;
+    return switch (remote.order(local)) {
+        .gt => true,
+        .eq => force,
+        .lt => false,
+    };
+}
+
+test offersVersion {
+    const v1 = try Semver.parse("1.0.0");
+    const v2 = try Semver.parse("2.0.0");
+    try std.testing.expect(offersVersion(v2, v1, false, false));
+    try std.testing.expect(!offersVersion(v1, v1, false, false));
+    try std.testing.expect(offersVersion(v1, v1, true, false));
+    try std.testing.expect(!offersVersion(v1, v2, true, false));
+    try std.testing.expect(offersVersion(v1, v2, false, true));
 }
 
 pub const ProgressCallback = struct {
@@ -451,6 +478,17 @@ fn downloadInternal(
     dest_path: ?[]const u8,
     progress_callback: ?ProgressCallback,
 ) ![]u8 {
+    // The signed size bounds what is written; past the unpacked cap it is refused.
+    if (update.size > MAX_UNPACKED_SIZE) return error.PayloadTooLarge;
+
+    // Replacing this copy: the signed format must match how it is installed
+    // (an AppImage only by an AppImage, a raw binary by a raw one). An
+    // explicit destination is the caller's choice.
+    if (dest_path == null and !update_manifest.isAppBundleFormat(update.format)) {
+        const as_appimage = try runningAsAppImage(io, gpa);
+        if (update_manifest.isAppImageFormat(update.format) != as_appimage) return error.FormatMismatch;
+    }
+
     const target_path = try resolveDestPath(io, gpa, dest_path);
     defer gpa.free(target_path);
 
@@ -469,6 +507,12 @@ fn downloadInternal(
 
     const parent_dir_path = std.fs.path.dirname(real_dest_path) orelse if (builtin.os.tag == .windows) "." else "/";
     const target_file_name = std.fs.path.basename(real_dest_path);
+
+    // The replaced binary keeps its mode (0o755 when there is none yet).
+    const install_mode: std.posix.mode_t = if (builtin.os.tag == .windows) 0 else if (cwd.statFile(io, real_dest_path, .{})) |st|
+        st.permissions.toMode() & 0o777
+    else |_|
+        0o755;
 
     // `.iterate` opens a real (non-O_PATH) descriptor, which fsync needs below.
     var parent_dir = try cwd.openDir(io, parent_dir_path, .{ .iterate = true });
@@ -503,7 +547,7 @@ fn downloadInternal(
     defer gpa.free(temp_dl_name);
 
     const temp_file = try parent_dir.createFile(io, temp_dl_name, .{
-        .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o755),
+        .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(install_mode),
         .exclusive = true,
     });
     var temp_open: bool = true;
@@ -514,7 +558,7 @@ fn downloadInternal(
     }
     // Explicit mode, independent of the umask.
     if (builtin.os.tag != .windows) {
-        try temp_file.setPermissions(io, .fromMode(0o755));
+        try temp_file.setPermissions(io, .fromMode(install_mode));
     }
 
     var file_writer_buf: [32768]u8 = undefined;
@@ -585,7 +629,7 @@ fn downloadInternal(
         defer gz_file.close(io);
 
         const decomp_file = try parent_dir.createFile(io, temp_decomp_name, .{
-            .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o755),
+            .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(install_mode),
             .exclusive = true,
         });
         var decomp_open: bool = true;
@@ -595,7 +639,7 @@ fn downloadInternal(
             if (decomp_exists) parent_dir.deleteFile(io, temp_decomp_name) catch {};
         }
         if (builtin.os.tag != .windows) {
-            try decomp_file.setPermissions(io, .fromMode(0o755));
+            try decomp_file.setPermissions(io, .fromMode(install_mode));
         }
 
         var gz_read_buf: [65536]u8 = undefined;
@@ -920,6 +964,24 @@ test "core end-to-end update flow" {
     older_cfg.current_version = "3.0.0";
     const no_update_older = try checkForUpdate(io, allocator, older_cfg);
     try std.testing.expect(no_update_older == null);
+
+    // force reinstalls the same version but still refuses an older one
+    var force_same_cfg = base_cfg;
+    force_same_cfg.force = true;
+    var reinstall = (try checkForUpdate(io, allocator, force_same_cfg)).?;
+    reinstall.deinit();
+    var force_older_cfg = older_cfg;
+    force_older_cfg.force = true;
+    try std.testing.expect(try checkForUpdate(io, allocator, force_older_cfg) == null);
+    // allow_downgrade (an explicitly requested version) offers the older one
+    force_older_cfg.allow_downgrade = true;
+    var downgrade = (try checkForUpdate(io, allocator, force_older_cfg)).?;
+    downgrade.deinit();
+
+    // A plain http:// manifest URL needs allow_http_for_test (test builds only)
+    var insecure_cfg = base_cfg;
+    insecure_cfg.allow_http_for_test = false;
+    try std.testing.expectError(error.InsecureUrl, checkForUpdate(io, allocator, insecure_cfg));
 
     // Manifest signed with another key is rejected
     var wrong_key_cfg = base_cfg;

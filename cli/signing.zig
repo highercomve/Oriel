@@ -105,17 +105,16 @@ fn create(ctx: Context, cmd: Command) !u8 {
     // Private when this command creates it; an existing --out stays as it is.
     const new_dir = !exists(ctx.io, dir);
     try cwd.createDirPath(ctx.io, dir);
-    if (new_dir and builtin.os.tag != .windows) cwd.setFilePermissions(ctx.io, dir, .fromMode(0o700), .{}) catch {};
+    if (new_dir and builtin.os.tag != .windows) try cwd.setFilePermissions(ctx.io, dir, .fromMode(0o700), .{});
 
     // Work in a private temporary directory next to the output: the key
     // never lands anywhere world-readable.
     var rnd: [8]u8 = undefined;
     ctx.io.random(&rnd);
     const tmp = try std.fs.path.join(arena, &.{ dir, try std.fmt.allocPrint(arena, ".signing-{x}", .{rnd}) });
-    try cwd.createDirPath(ctx.io, tmp);
+    try createPrivateDir(ctx.io, tmp);
     defer cwd.deleteTree(ctx.io, tmp) catch |err|
         ctx.err.print("warning: could not remove {s} ({s}): delete it, it holds the private key\n", .{ tmp, @errorName(err) }) catch {};
-    if (builtin.os.tag != .windows) cwd.setFilePermissions(ctx.io, tmp, .fromMode(0o700), .{}) catch {};
 
     const config = try std.fs.path.join(arena, &.{ tmp, "req.cnf" });
     try cwd.writeFile(ctx.io, .{ .sub_path = config, .data = try std.fmt.allocPrint(arena,
@@ -202,9 +201,8 @@ fn import(ctx: Context, cmd: Command) !u8 {
     ctx.io.random(&rnd_dir);
     const tmp = try std.fmt.allocPrint(arena, "{s}/oriel-signing-{x}", .{ ctx.environ.get("TMPDIR") orelse "/tmp", rnd_dir });
     const cwd = std.Io.Dir.cwd();
-    try cwd.createDirPath(ctx.io, tmp);
+    try createPrivateDir(ctx.io, tmp);
     defer cwd.deleteTree(ctx.io, tmp) catch {};
-    cwd.setFilePermissions(ctx.io, tmp, .fromMode(0o700), .{}) catch {};
     var once_bytes: [16]u8 = undefined;
     defer std.crypto.secureZero(u8, &once_bytes);
     ctx.io.random(&once_bytes);
@@ -363,6 +361,21 @@ fn certInfo(ctx: Context, arena: std.mem.Allocator, openssl: []const u8, cert_pe
     return try parseInfo(arena, got.stdout);
 }
 
+/// Create the new directory `path` (random-named by the caller) private to
+/// this user: mode 0700 from the start, failing if it already exists (someone
+/// else's, or a symlink). On error nothing is left behind.
+fn createPrivateDir(io: std.Io, path: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDir(io, path, if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700));
+    // Exactly 0700 whatever the umask; failing that, the key can't go in.
+    if (builtin.os.tag != .windows) {
+        cwd.setFilePermissions(io, path, .fromMode(0o700), .{}) catch |err| {
+            cwd.deleteDir(io, path) catch {};
+            return err;
+        };
+    }
+}
+
 /// Name, SHA-1 and expiry of the certificate in a .p12.
 fn p12Info(ctx: Context, arena: std.mem.Allocator, openssl: []const u8, p12: []const u8, password: []const u8) !?Info {
     // The password goes through the environment, not argv (visible in ps).
@@ -373,9 +386,8 @@ fn p12Info(ctx: Context, arena: std.mem.Allocator, openssl: []const u8, p12: []c
     ctx.io.random(&rnd);
     const dir = try std.fmt.allocPrint(arena, "{s}{c}oriel-cert-{x}", .{ ctx.environ.get("TMPDIR") orelse ctx.environ.get("TEMP") orelse "/tmp", std.fs.path.sep, rnd });
     const cwd = std.Io.Dir.cwd();
-    try cwd.createDirPath(ctx.io, dir);
+    try createPrivateDir(ctx.io, dir);
     defer cwd.deleteTree(ctx.io, dir) catch {};
-    if (builtin.os.tag != .windows) cwd.setFilePermissions(ctx.io, dir, .fromMode(0o700), .{}) catch {};
     const pem = try std.fs.path.join(arena, &.{ dir, "cert.pem" });
     // OpenSSL 3 reads SHA1-3DES files only with the legacy provider in some
     // builds: retry with it.

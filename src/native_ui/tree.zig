@@ -2646,28 +2646,40 @@ pub const Tree = struct {
     pub const max_depth = 512;
 
     /// Children deeper than max_depth detached (still in `nodes`: the
-    /// page names them; just not laid out or drawn). Iterative.
-    fn capDepth(t: *Tree, root: *Node) void {
-        const At = struct { n: *Node, depth: u32 };
-        var stack: std.ArrayList(At) = .empty;
-        defer stack.deinit(t.gpa);
-        stack.append(t.gpa, .{ .n = root, .depth = 1 }) catch return;
-        while (stack.pop()) |at| {
-            if (at.n.kids.items.len == 0) continue;
-            if (at.depth >= max_depth) {
-                yg.YGNodeRemoveAllChildren(at.n.yn);
-                for (at.n.kids.items) |k| k.parent = null;
-                at.n.kids.clearRetainingCapacity();
+    /// page names them; just not laid out or drawn). Iterative, on a stack
+    /// of max_depth frames (the walk never goes deeper): nothing to
+    /// allocate, so it can't fail and leave a deep tree to the recursive
+    /// walks.
+    fn capDepth(root: *Node) void {
+        const At = struct { n: *Node, next: usize };
+        var stack: [max_depth]At = undefined;
+        stack[0] = .{ .n = root, .next = 0 };
+        var len: usize = 1; // the top's depth
+        while (len > 0) {
+            const at = &stack[len - 1];
+            if (len >= max_depth) {
+                if (at.n.kids.items.len > 0) {
+                    yg.YGNodeRemoveAllChildren(at.n.yn);
+                    for (at.n.kids.items) |k| k.parent = null;
+                    at.n.kids.clearRetainingCapacity();
+                }
+                len -= 1;
                 continue;
             }
-            for (at.n.kids.items) |k| stack.append(t.gpa, .{ .n = k, .depth = at.depth + 1 }) catch return;
+            if (at.next == at.n.kids.items.len) {
+                len -= 1;
+                continue;
+            }
+            stack[len] = .{ .n = at.n.kids.items[at.next], .next = 0 };
+            at.next += 1;
+            len += 1;
         }
     }
 
     pub fn layout(t: *Tree) void {
         t.settleTexts();
         const root = t.root orelse return;
-        t.capDepth(root);
+        capDepth(root);
         yg.YGNodeStyleSetWidth(root.yn, t.width);
         yg.YGNodeStyleSetHeight(root.yn, t.height);
         prof.measures = 0;

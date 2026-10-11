@@ -59,6 +59,47 @@ pub fn nativeEngineAlive(e: *native.Engine, serial: u64) bool {
     return false;
 }
 
+/// Each view's navigation serial: bumped when a top-level navigation starts
+/// (window.zig's NavHandler). A call keeps the serial it was made under and
+/// its reply is dropped once the view has moved on, so the next page never
+/// gets another page's answer. Main thread only, like the navigation and
+/// message events and the replies (all run from the message loop).
+var nav_serials: std.AutoHashMapUnmanaged(usize, u64) = .empty;
+var nav_counter: u64 = 0;
+
+pub fn navigationStarted(view: *webview2.ICoreWebView2) void {
+    nav_counter += 1;
+    // Only a view's first navigation allocates; until it has an entry it
+    // shows no page that a reply could be for (serial 0).
+    const entry = nav_serials.getOrPut(std.heap.smp_allocator, @intFromPtr(view)) catch {
+        log.err("navigation serial: out of memory", .{});
+        return;
+    };
+    entry.value_ptr.* = nav_counter;
+}
+
+/// The view is gone (WindowHandle.deinit).
+pub fn forgetView(view: *webview2.ICoreWebView2) void {
+    _ = nav_serials.remove(@intFromPtr(view));
+}
+
+fn navSerial(view: *webview2.ICoreWebView2) u64 {
+    return nav_serials.get(@intFromPtr(view)) orelse 0;
+}
+
+/// Whether `view`'s current page may receive events (App.pageGetsEvents):
+/// the bridge's own origins only, not whatever page the window shows now.
+/// Main thread (COM).
+fn viewGetsEvents(view: *webview2.ICoreWebView2, label: []const u8) bool {
+    var src_w: ?win32.LPWSTR = null;
+    if (view.lpVtbl.get_Source(view, @ptrCast(&src_w)) < 0 or src_w == null) return false;
+    defer win32.CoTaskMemFree(src_w);
+    const gpa = std.heap.smp_allocator;
+    const src = std.unicode.utf16LeToUtf8Alloc(gpa, std.mem.span(src_w.?)) catch return false;
+    defer gpa.free(src);
+    return App.pageGetsEvents(src, label);
+}
+
 /// Replaced by `ipc.tokenScript` (which defines `const ipcToken`) in each
 /// window's copy of `bridge_js`.
 const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
@@ -107,7 +148,9 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
                 App.windows_mutex.lock();
                 var webview: ?*webview2.ICoreWebView2 = null;
                 for (App.windows_list.items) |win| if (win.handle.eql(v)) {
-                    webview = win.handle.webview;
+                    if (win.handle.webview) |view| if (viewGetsEvents(view, win.label)) {
+                        webview = view;
+                    };
                     engines.add(win);
                     break;
                 };
@@ -120,7 +163,9 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
                 App.ensureWindowsMutex();
                 App.windows_mutex.lock();
                 for (App.windows_list.items) |win| {
-                    if (win.handle.webview) |view| _ = view.executeScript(script_w.ptr, null);
+                    if (win.handle.webview) |view| if (viewGetsEvents(view, win.label)) {
+                        _ = view.executeScript(script_w.ptr, null);
+                    };
                     engines.add(win);
                 }
                 App.windows_mutex.unlock();
@@ -186,7 +231,10 @@ pub fn emitEvent(target: ?window_mod.WindowHandle, label: ?[]const u8, name_json
                 // Handles match by HWND: the live window's webview, not a stale copy.
                 if (self.target) |t| if (!win.handle.eql(t)) continue;
                 if (self.label) |l| if (!std.mem.eql(u8, win.label, l)) continue;
-                if (win.handle.webview) |view| _ = view.postWebMessageAsJson(self.msg_w.ptr);
+                // Only to pages the bridge serves (any other could read it).
+                if (win.handle.webview) |view| if (viewGetsEvents(view, win.label)) {
+                    _ = view.postWebMessageAsJson(self.msg_w.ptr);
+                };
                 engines.add(win);
             }
             App.windows_mutex.unlock();
@@ -247,7 +295,9 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
             // view: targeted events (App.emitTo) must reach it too.
             var engines: NativeEngines = .{};
             for (App.windows_list.items) |win| if (std.mem.eql(u8, win.label, self.label)) {
-                webview = win.handle.webview;
+                if (win.handle.webview) |view| if (viewGetsEvents(view, win.label)) {
+                    webview = view;
+                };
                 engines.add(win);
                 break;
             };
@@ -452,12 +502,24 @@ pub fn Bridge(
             hwnd: win32.HWND,
         ) void {
             var msg_w: ?win32.LPWSTR = null;
+            // Not a string: not from the bridge (it sends JSON text), so no
+            // invoke() waits for an answer.
             if (args.lpVtbl.TryGetWebMessageAsString(args, @ptrCast(&msg_w)) < 0 or msg_w == null) return;
             defer win32.CoTaskMemFree(msg_w);
 
             const gpa = std.heap.smp_allocator;
-            const msg_len = std.mem.indexOfScalar(u16, std.mem.span(msg_w.?), 0) orelse std.mem.span(msg_w.?).len;
-            const msg_u8 = std.unicode.utf16LeToUtf8Alloc(gpa, msg_w.?[0..msg_len]) catch return;
+            const msg_all = std.mem.span(msg_w.?);
+            if (msg_all.len > ipc.max_request_len) {
+                // Too large to take: answer by the id at its start.
+                var head: [64]u8 = undefined;
+                const n = @min(msg_all.len, head.len);
+                for (msg_all[0..n], head[0..n]) |c, *h| h.* = if (c < 0x80) @intCast(c) else '?';
+                sendErrorReply(view, ipc.requestIdLenient(head[0..n]), "RequestTooLarge");
+                return;
+            }
+            // WTF-8: a lone surrogate doesn't fail here; the JSON parser
+            // below refuses it, and the call is still answered.
+            const msg_u8 = std.unicode.wtf16LeToWtf8Alloc(gpa, msg_all) catch return;
             defer gpa.free(msg_u8);
 
             var parse_arena = std.heap.ArenaAllocator.init(gpa);
@@ -475,7 +537,8 @@ pub fn Bridge(
             const req = std.json.parseFromSliceLeaky(WinReq, temp_alloc, msg_u8, .{
                 .ignore_unknown_fields = true,
             }) catch |err| {
-                sendErrorReply(view, null, ipc.errorText(err));
+                log.warn("invalid IPC message: {s}", .{@errorName(err)});
+                sendErrorReply(view, ipc.requestIdLenient(msg_u8), "InvalidRequest");
                 return;
             };
 
@@ -553,6 +616,8 @@ pub fn Bridge(
             const AsyncReplyContext = struct {
                 view: *webview2.ICoreWebView2,
                 id: ?u64,
+                /// The view's navigation serial when the call came.
+                nav: u64,
                 arena_state: std.heap.ArenaAllocator,
                 result: ?[:0]const u8,
                 err_name: ?[:0]const u8,
@@ -586,6 +651,8 @@ pub fn Bridge(
                         std.heap.smp_allocator.destroy(self);
                     }
 
+                    // The page that asked is gone: not for the one shown now.
+                    if (navSerial(self.view) != self.nav) return;
                     if (self.err_name) |err| {
                         sendErrorReply(self.view, self.id, err);
                     } else if (self.result) |res| {
@@ -602,6 +669,7 @@ pub fn Bridge(
             async_ctx.* = .{
                 .view = view,
                 .id = req.id,
+                .nav = navSerial(view),
                 .arena_state = undefined,
                 .result = null,
                 .err_name = null,
@@ -620,6 +688,8 @@ pub fn Bridge(
         const SyncCall = struct {
             view: *webview2.ICoreWebView2,
             id: ?u64,
+            /// The view's navigation serial when the call came.
+            nav: u64,
             arena_state: std.heap.ArenaAllocator,
             request: ipc.Request,
             page_url: []const u8,
@@ -643,6 +713,7 @@ pub fn Bridge(
                 self.* = .{
                     .view = view,
                     .id = id,
+                    .nav = navSerial(view),
                     .arena_state = .init(gpa),
                     .request = undefined,
                     .page_url = "",
@@ -683,29 +754,19 @@ pub fn Bridge(
             fn run(ctx: ?*anyopaque) void {
                 const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
                 defer finish(self);
-                if (window_commands.isWindowCommand(self.request.cmd)) {
-                    const result = window_commands.dispatch(
-                        config.security,
-                        local,
-                        self.arena_state.allocator(),
-                        self.page_url,
-                        self.win_label,
-                        self.request.cmd,
-                        self.request.args,
-                    ) catch |err| {
-                        sendErrorReply(self.view, self.id, ipc.errorText(err));
-                        return;
-                    };
-                    sendSuccessReply(self.view, self.id, result);
-                    return;
-                }
-                const result = (if (ipc.isBuiltinCommand(self.request.cmd))
-                    ipc.dispatchBuiltin(config.security, self.arena_state.allocator(), self.request)
+                const arena = self.arena_state.allocator();
+                const result = (if (window_commands.isWindowCommand(self.request.cmd))
+                    window_commands.dispatch(config.security, local, arena, self.page_url, self.win_label, self.request.cmd, self.request.args)
+                else if (ipc.isBuiltinCommand(self.request.cmd))
+                    ipc.dispatchBuiltin(config.security, arena, self.request)
                 else
-                    ipc.dispatchRequest(api.commands, self.arena_state.allocator(), self.request, self.io)) catch |err| {
-                    sendErrorReply(self.view, self.id, ipc.errorText(err));
+                    ipc.dispatchRequest(api.commands, arena, self.request, self.io)) catch |err| {
+                    if (navSerial(self.view) == self.nav) sendErrorReply(self.view, self.id, ipc.errorText(err));
                     return;
                 };
+                // The view navigated while the call waited or ran: the page
+                // shown now didn't ask.
+                if (navSerial(self.view) != self.nav) return;
                 sendSuccessReply(self.view, self.id, result);
             }
 

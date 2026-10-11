@@ -89,6 +89,20 @@ pub const theme_color_js =
     \\
 ;
 
+/// The largest window dimension a page may ask for (px).
+const max_dim = 32767;
+
+/// A page-supplied width or height: 1..max_dim, else InvalidArgs (zero,
+/// negative or huge sizes would reach the platforms' size arithmetic).
+fn dim(v: c_int) error{InvalidArgs}!c_int {
+    if (v < 1 or v > max_dim) return error.InvalidArgs;
+    return v;
+}
+
+fn optDim(v: ?c_int) error{InvalidArgs}!?c_int {
+    return if (v) |x| try dim(x) else null;
+}
+
 pub fn isWindowCommand(cmd: []const u8) bool {
     return std.mem.startsWith(u8, cmd, "oriel:window:");
 }
@@ -127,12 +141,12 @@ pub fn dispatch(
             .label = label_z,
             .title = title_z,
             .url = url_z,
-            .width = args.width orelse 800,
-            .height = args.height orelse 600,
-            .min_width = args.min_width orelse args.minWidth,
-            .min_height = args.min_height orelse args.minHeight,
-            .max_width = args.max_width orelse args.maxWidth,
-            .max_height = args.max_height orelse args.maxHeight,
+            .width = try dim(args.width orelse 800),
+            .height = try dim(args.height orelse 600),
+            .min_width = try optDim(args.min_width orelse args.minWidth),
+            .min_height = try optDim(args.min_height orelse args.minHeight),
+            .max_width = try optDim(args.max_width orelse args.maxWidth),
+            .max_height = try optDim(args.max_height orelse args.maxHeight),
             .resizable = args.resizable orelse true,
             .decorations = args.decorations orelse true,
             .fullscreen = args.fullscreen orelse false,
@@ -215,7 +229,7 @@ pub fn dispatch(
         try security.validateLabel(args.label);
         try security.validateWindowModification(sec, caller_win_label, args.label);
         const win = App.getWindow(args.label) orelse return error.WindowNotFound;
-        win.setSize(args.width, args.height);
+        win.setSize(try dim(args.width), try dim(args.height));
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, action, "maximize")) {
         const args = try std.json.parseFromValueLeaky(struct { label: []const u8, maximized: ?bool = null }, arena, args_val, .{
@@ -303,6 +317,14 @@ test "dispatch rejects forbidden origins and invalid commands" {
 
     // Unknown action
     try std.testing.expectError(error.UnknownCommand, dispatch(sec, local, arena, security.app_origin, null, "oriel:window:nonexistent", .null));
+}
+
+test "window sizes from the page are bounded" {
+    try std.testing.expectEqual(@as(c_int, 800), try dim(800));
+    try std.testing.expectError(error.InvalidArgs, dim(0));
+    try std.testing.expectError(error.InvalidArgs, dim(-5));
+    try std.testing.expectError(error.InvalidArgs, dim(max_dim + 1));
+    try std.testing.expectEqual(@as(?c_int, null), try optDim(null));
 }
 
 test "emitTo rejects cross-window events without modification permission" {

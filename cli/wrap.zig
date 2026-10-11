@@ -21,6 +21,7 @@ pub const Command = struct {
         .no_tray = "Disable system tray icon",
         .user_agent = "Custom User-Agent: 'chrome', 'safari', 'firefox', or a custom string",
         .devtools = "Enable web developer tools and forward console messages to stdout",
+        .allow_subdomains = "Also allow the subdomains of the URL's host (https://*.<host>) as origins",
         .package = "Build distribution packages (AppImage on Linux) immediately",
         .run = "Run the wrapped application immediately",
         .oriel_ref = "Oriel git tag or commit to depend on (default: " ++ build_options.oriel_ref ++ ")",
@@ -35,6 +36,11 @@ pub const Command = struct {
         .oriel_ref = "ref",
         .oriel_path = "dir",
     };
+    pub const details =
+        \\The app may only navigate to and grant capabilities to the URL's exact
+        \\origin (https://<host>). --allow-subdomains also allows https://*.<host>
+        \\(a leading www. dropped); pages on other domains open in the browser.
+    ;
 
     url: []const u8,
     name: ?[]const u8 = null,
@@ -45,6 +51,7 @@ pub const Command = struct {
     no_tray: bool = false,
     user_agent: ?[]const u8 = null,
     devtools: bool = false,
+    allow_subdomains: bool = false,
     package: bool = false,
     run: bool = false,
     oriel_ref: ?[]const u8 = null,
@@ -192,7 +199,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
         \\    }});
         \\
         \\    _ = oriel.addApp(b, dep, .{{
-        \\        .name = "{s}",
+        \\        .name = "{f}",
         \\        .root_source_file = b.path("src/main.zig"),
         \\        .icon = b.path("assets/icon.png"),
         \\        .permissions = .{{
@@ -208,24 +215,24 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
         \\            .types_path = null,
         \\        }},
         \\        .package = .{{
-        \\            .id = "{s}",
-        \\            .name = "{s}",
-        \\            .summary = "{s} Desktop Client",
-        \\            .publisher = "{s}",
+        \\            .id = "{f}",
+        \\            .name = "{f}",
+        \\            .summary = "{f} Desktop Client",
+        \\            .publisher = "{f}",
         \\            .categories = "Network;InstantMessaging;",
         \\            .version = "0.1.0",
-        \\            .formats = &.{{ .appimage }},
+        \\            .formats = &.{{.appimage}},
         \\        }},
         \\    }});
         \\}}
         \\
     , .{
         if (use_tray) "true" else "false",
-        app_name,
-        app_id,
-        app_title,
-        app_title,
-        app_title,
+        std.zig.fmtString(app_name),
+        std.zig.fmtString(app_id),
+        std.zig.fmtString(app_title),
+        std.zig.fmtString(app_title),
+        std.zig.fmtString(app_title),
     });
     try target_dir.writeFile(io, .{ .sub_path = "build.zig", .data = build_zig_content });
 
@@ -236,7 +243,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
         \\<html>
         \\<head>
         \\  <meta charset="utf-8">
-        \\  <title>{s}</title>
+        \\  <title>{f}</title>
         \\  <style>
         \\    html, body {{
         \\      margin: 0; padding: 0; width: 100%; height: 100%;
@@ -246,27 +253,22 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
         \\  </style>
         \\</head>
         \\<body>
-        \\  <p>Loading {s}...</p>
+        \\  <p>Loading {f}...</p>
         \\</body>
         \\</html>
         \\
-    , .{ app_title, app_title });
+    , .{ HtmlEscaped{ .text = app_title }, HtmlEscaped{ .text = app_title } });
     try target_dir.writeFile(io, .{ .sub_path = "frontend/index.html", .data = html_content });
 
     // Derive allowed origins and capabilities for remote web app
-    const origins = try deriveAllowedOrigins(arena, full_url);
+    const origins = try deriveAllowedOrigins(arena, full_url, cmd.allow_subdomains);
     var origins_buf: std.ArrayList(u8) = .empty;
     defer origins_buf.deinit(arena);
     var cap_buf: std.ArrayList(u8) = .empty;
     defer cap_buf.deinit(arena);
     for (origins) |o| {
-        try origins_buf.appendSlice(arena, "                \"");
-        try origins_buf.appendSlice(arena, o);
-        try origins_buf.appendSlice(arena, "\",\n");
-
-        try cap_buf.appendSlice(arena, "                .{ .origin = \"");
-        try cap_buf.appendSlice(arena, o);
-        try cap_buf.appendSlice(arena, "\" },\n");
+        try origins_buf.print(arena, "                \"{f}\",\n", .{std.zig.fmtString(o)});
+        try cap_buf.print(arena, "                .{{ .origin = \"{f}\" }},\n", .{std.zig.fmtString(o)});
     }
 
     // Build src/main.zig
@@ -280,9 +282,9 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
         \\fn setup() !void {{
         \\    const gpa = std.heap.smp_allocator;
         \\    tray = try oriel.tray.Tray.create(gpa, .{{
-        \\        .id = "{s}",
-        \\        .title = "{s}",
-        \\        .tooltip = "{s}",
+        \\        .id = "{f}",
+        \\        .title = "{f}",
+        \\        .tooltip = "{f}",
         \\        .icon = .{{ .png = app.icon_bytes }},
         \\        .menu = &.{{
         \\            .{{ .item = .{{ .id = "toggle", .label = "Show / Hide" }} }},
@@ -293,10 +295,10 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
         \\    }});
         \\}}
         \\
-    , .{ app_id, app_title, app_title }) else "";
+    , .{ std.zig.fmtString(app_id), std.zig.fmtString(app_title), std.zig.fmtString(app_title) }) else "";
 
     const user_agent_line = if (resolved_ua) |ua|
-        try std.fmt.allocPrint(arena, "        .user_agent = \"{s}\",\n", .{ua})
+        try std.fmt.allocPrint(arena, "        .user_agent = \"{f}\",\n", .{std.zig.fmtString(ua)})
     else
         "";
 
@@ -312,14 +314,14 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
         \\{s}
         \\pub fn main(init: std.process.Init) !u8 {{
         \\    return oriel.main(init, .{{ .commands = struct {{}} }}, .{{
-        \\        .id = "{s}",
-        \\        .title = "{s}",
+        \\        .id = "{f}",
+        \\        .title = "{f}",
         \\        .width = 1100,
         \\        .height = 750,
         \\        .icon = app.icon_bytes,
         \\        .permissions = app.permissions,
         \\        .assets = app.assets,
-        \\        .url = "{s}",
+        \\        .url = "{f}",
         \\        .devtools = {s},
         \\{s}{s}{s}        .security = .{{
         \\            .csp = null,
@@ -335,9 +337,9 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
     , .{
         tray_globals,
         tray_funcs,
-        app_id,
-        app_title,
-        full_url,
+        std.zig.fmtString(app_id),
+        std.zig.fmtString(app_title),
+        std.zig.fmtString(full_url),
         if (cmd.devtools) "true" else "false",
         user_agent_line,
         on_close_line,
@@ -365,8 +367,11 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
             try ctx.out.print("Icon '{s}' not found on disk; fetching favicon for {s}...\n", .{ icon_path, full_url });
             if (fetchFavicon(ctx, arena, full_url)) |fav| {
                 icon_bytes_to_write = fav;
-                cwd.writeFile(io, .{ .sub_path = icon_path, .data = fav }) catch {};
-                try ctx.out.print("Saved favicon to '{s}'\n", .{icon_path});
+                if (cwd.writeFile(io, .{ .sub_path = icon_path, .data = fav })) {
+                    try ctx.out.print("Saved favicon to '{s}'\n", .{icon_path});
+                } else |e| {
+                    try err.print("warning: could not save the favicon to '{s}': {s}\n", .{ icon_path, @errorName(e) });
+                }
             }
         }
     } else {
@@ -507,7 +512,11 @@ fn deriveAppId(arena: std.mem.Allocator, raw_url: []const u8, app_name: []const 
     return try init_cmd.defaultAppId(arena, app_name);
 }
 
-fn deriveAllowedOrigins(arena: std.mem.Allocator, raw_url: []const u8) ![]const []const u8 {
+/// The origins the wrapped app may use: the URL's exact origin, plus
+/// `https://*.<host>` (a leading `www.` dropped) with `allow_subdomains`.
+/// No wildcard is derived from the last two labels: that turns foo.co.uk into
+/// *.co.uk and x.github.io into *.github.io.
+fn deriveAllowedOrigins(arena: std.mem.Allocator, raw_url: []const u8, allow_subdomains: bool) ![]const []const u8 {
     var list: std.ArrayList([]const u8) = .empty;
     errdefer list.deinit(arena);
 
@@ -528,16 +537,50 @@ fn deriveAllowedOrigins(arena: std.mem.Allocator, raw_url: []const u8) ![]const 
     if (std.mem.indexOf(u8, host, "whatsapp") != null) {
         try list.append(arena, "https://*.whatsapp.net");
         try list.append(arena, "https://*.whatsapp.com");
-    } else {
-        var it = std.mem.splitBackwardsScalar(u8, host, '.');
-        const tld = it.next();
-        const sld = it.next();
-        if (tld != null and sld != null) {
-            const wildcard = try std.fmt.allocPrint(arena, "https://*.{s}.{s}", .{ sld.?, tld.? });
-            try list.append(arena, wildcard);
+    }
+    if (allow_subdomains) {
+        const base = if (std.ascii.startsWithIgnoreCase(host, "www.")) host[4..] else host;
+        if (std.mem.indexOfScalar(u8, base, '.') != null) {
+            try list.append(arena, try std.fmt.allocPrint(arena, "https://*.{s}", .{base}));
         }
     }
     return list.toOwnedSlice(arena);
+}
+
+test deriveAllowedOrigins {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const exact = try deriveAllowedOrigins(arena, "https://foo.co.uk/app", false);
+    try std.testing.expectEqual(1, exact.len);
+    try std.testing.expectEqualStrings("https://foo.co.uk", exact[0]);
+    const gh = try deriveAllowedOrigins(arena, "https://x.github.io", true);
+    try std.testing.expectEqual(2, gh.len);
+    try std.testing.expectEqualStrings("https://*.x.github.io", gh[1]);
+    const www = try deriveAllowedOrigins(arena, "https://www.example.com", true);
+    try std.testing.expectEqualStrings("https://*.example.com", www[1]);
+}
+
+/// `{f}`: `text` with HTML's special characters escaped.
+const HtmlEscaped = struct {
+    text: []const u8,
+
+    pub fn format(self: HtmlEscaped, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        for (self.text) |c| switch (c) {
+            '&' => try w.writeAll("&amp;"),
+            '<' => try w.writeAll("&lt;"),
+            '>' => try w.writeAll("&gt;"),
+            '"' => try w.writeAll("&quot;"),
+            '\'' => try w.writeAll("&#39;"),
+            else => try w.writeByte(c),
+        };
+    }
+};
+
+test HtmlEscaped {
+    var buf: [64]u8 = undefined;
+    const out = try std.fmt.bufPrint(&buf, "{f}", .{HtmlEscaped{ .text = "<a href=\"x\">&'" }});
+    try std.testing.expectEqualStrings("&lt;a href=&quot;x&quot;&gt;&amp;&#39;", out);
 }
 
 fn step(ctx: Context, argv: []const []const u8, dir: []const u8) bool {

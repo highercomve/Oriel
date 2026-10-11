@@ -20,10 +20,16 @@ const builtin = @import("builtin");
 const Context = @import("Context.zig");
 const zig_manager = @import("zig_manager.zig");
 const doctor = @import("doctor.zig");
+const setup = @import("setup.zig");
 
 const Dir = std.Io.Dir;
 
-pub const xtool_releases = "https://github.com/xtool-org/xtool/releases/latest";
+pub const xtool_releases = "https://github.com/xtool-org/xtool/releases";
+/// The xtool release `oriel ios setup` downloads, pinned with the SHA-256
+/// of each AppImage (bump all three together).
+pub const xtool_pinned_version = "1.21.0";
+const xtool_x86_64_sha256 = "e2277e59bb2fda9b487cbc77ad080ea2b0370bb740ac0f02cc42fa28a272d3a5";
+const xtool_aarch64_sha256 = "470d55880379de9696a048f4293a0b05a7fc43beba423ffe6c294a4975dcebf7";
 const max_xtool_download: usize = 400 << 20;
 
 /// Ask a yes/no question on the terminal; Enter means yes. `yes` answers
@@ -89,10 +95,21 @@ pub fn xtoolAsset(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 
     };
 }
 
+/// The pinned SHA-256 (lowercase hex) of `xtoolAsset`'s AppImage.
+fn xtoolAssetSha256(arch: std.Target.Cpu.Arch) ?[]const u8 {
+    return switch (arch) {
+        .x86_64 => xtool_x86_64_sha256,
+        .aarch64 => xtool_aarch64_sha256,
+        else => null,
+    };
+}
+
 test xtoolAsset {
     try std.testing.expectEqualStrings("xtool-x86_64.AppImage", xtoolAsset(.linux, .x86_64).?);
     try std.testing.expectEqualStrings("xtool-aarch64.AppImage", xtoolAsset(.linux, .aarch64).?);
     try std.testing.expect(xtoolAsset(.macos, .aarch64) == null);
+    try std.testing.expectEqual(64, xtoolAssetSha256(.x86_64).?.len);
+    try std.testing.expectEqual(64, xtoolAssetSha256(.aarch64).?.len);
 }
 
 /// xtool, asking to download it when it is missing (caller frees), or null.
@@ -104,7 +121,8 @@ pub fn ensureXtool(ctx: Context, yes: bool) !?[]u8 {
     };
     const dest = try managedXtool(ctx);
     defer ctx.gpa.free(dest);
-    const question = try std.fmt.allocPrint(ctx.gpa, "xtool signs the app with your Apple ID and installs it on your device, and isn't installed.\nDownload {s} (latest release, {s}) into {s}?", .{ asset, xtool_releases, dest });
+    const want_sha256 = xtoolAssetSha256(builtin.cpu.arch).?;
+    const question = try std.fmt.allocPrint(ctx.gpa, "xtool signs the app with your Apple ID and installs it on your device, and isn't installed.\nDownload {s} (release {s}, {s}) into {s}?", .{ asset, xtool_pinned_version, xtool_releases, dest });
     defer ctx.gpa.free(question);
     if (!confirm(ctx, yes, question)) return null;
 
@@ -112,7 +130,7 @@ pub fn ensureXtool(ctx: Context, yes: bool) !?[]u8 {
     try Dir.cwd().createDirPath(ctx.io, dir);
     const part = try std.fmt.allocPrint(ctx.gpa, "{s}.part", .{dest});
     defer ctx.gpa.free(part);
-    const url = try std.fmt.allocPrint(ctx.gpa, "{s}/download/{s}", .{ xtool_releases, asset });
+    const url = try std.fmt.allocPrint(ctx.gpa, "{s}/download/{s}/{s}", .{ xtool_releases, xtool_pinned_version, asset });
     defer ctx.gpa.free(url);
     try ctx.err.print("downloading {s}\n", .{url});
     ctx.flush();
@@ -125,11 +143,24 @@ pub fn ensureXtool(ctx: Context, yes: bool) !?[]u8 {
         try ctx.err.print("error: downloading xtool failed ({s}); get it from {s}\n", .{ @errorName(err), xtool_releases });
         return null;
     };
-    const file = try Dir.cwd().openFile(ctx.io, part, .{});
-    if (builtin.os.tag != .windows) {
-        file.setPermissions(ctx.io, std.Io.File.Permissions.fromMode(0o755)) catch {};
+    // Pinned SHA-256: the AppImage runs with the user's Apple ID.
+    const digest = setup.hashFileSha256(ctx.io, part) catch |err| {
+        Dir.cwd().deleteFile(ctx.io, part) catch {};
+        return err;
+    };
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    if (!std.mem.eql(u8, &hex, want_sha256)) {
+        Dir.cwd().deleteFile(ctx.io, part) catch {};
+        try ctx.err.print("error: SHA-256 checksum mismatch for {s} {s} (got {s}, want {s})\n", .{ asset, xtool_pinned_version, &hex, want_sha256 });
+        return null;
     }
-    file.close(ctx.io);
+    {
+        const file = try Dir.cwd().openFile(ctx.io, part, .{});
+        defer file.close(ctx.io);
+        if (builtin.os.tag != .windows) {
+            try file.setPermissions(ctx.io, std.Io.File.Permissions.fromMode(0o755));
+        }
+    }
     try Dir.rename(Dir.cwd(), part, Dir.cwd(), dest, ctx.io);
     try ctx.out.print("installed xtool in {s}\n", .{dest});
     return try ctx.gpa.dupe(u8, dest);

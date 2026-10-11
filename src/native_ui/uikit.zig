@@ -15,6 +15,7 @@ const apple = @import("../platform/ios/apple.zig");
 const engine_mod = @import("engine.zig");
 const tree_mod = @import("tree.zig");
 const draw = @import("apple_draw.zig");
+const Shell = @import("../platform/ios/Shell.zig");
 const Engine = engine_mod.Engine;
 const Node = tree_mod.Node;
 const Object = apple.Object;
@@ -308,8 +309,11 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     return s;
 }
 
-/// Tear a surface down (its window is closing).
+/// Tear a surface down (its window is closing). From inside the page's
+/// call or a frame hook (a close on the main thread is synchronous): again
+/// from the main queue, once that code has returned into a live engine.
 pub fn destroy(s: *Surface) void {
+    if (s.engine.busy()) return Shell.dispatchToMainThread(&destroyLater, s);
     if (s.display_link.value != null) {
         s.display_link.msgSend(void, "invalidate", .{});
         releaseLater(s.display_link); // it may be in its own callback
@@ -335,6 +339,10 @@ pub fn destroy(s: *Surface) void {
     s.view.msgSend(void, "removeFromSuperview", .{});
     releaseLater(s.view); // it may be in one of its own callbacks
     s.gpa.destroy(s);
+}
+
+fn destroyLater(ctx: ?*anyopaque) void {
+    destroy(@ptrCast(@alignCast(ctx.?)));
 }
 
 fn dropField(f: Field) void {
