@@ -1,17 +1,78 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.9.15, 0.9.14 and earlier.",
+.description = "Release notes for Oriel 0.9.16, 0.9.15 and earlier.",
 .date = .date("2026-10-11T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.9.16 · October 11, 2026]($heading.id('oriel-0-9-16-october-11-2026'))
+
+Oriel 0.9.16 fixes what a code review against the NASA/JPL "Power of 10"
+rules found: a way for `localStorage` to lose its data, use-after-free bugs
+on window close and in Windows mDNS, pages that could hang their window,
+replies reaching the wrong page, an unpinned download in the CLI, and
+downgrades through `force`.
+
+## [Fixed]($heading.id('fixed'))
+
+- Native renderer: `localStorage` could lose everything. A key or value
+  with a lone surrogate (valid in JavaScript) was saved as invalid UTF-8,
+  the next launch couldn't read the file and started empty, and the next
+  save overwrote it. Keys and values are stored as valid UTF-8 now, the
+  read limit allows for JSON escaping, and a file that fails to load is
+  moved aside (`localStorage.json.corrupt-<time>`) instead of overwritten.
+- Native renderer: closing a window from a frame hook or a promise job
+  freed the page while it was still running; the close now waits until the
+  page is idle, on every backend.
+- Native renderer: a script that never returns (`while (true) {}`, or a
+  promise chain that keeps requeuing itself) no longer hangs the window for
+  good. A call into JavaScript is stopped after 10 seconds, promise jobs
+  run at most 10,000 per turn (the rest on the next), and the JavaScript
+  heap is limited to 1 GiB.
+- Native renderer on Linux and Windows: above 256 MB of decoded images the
+  image cache was emptied and every image decoded again each frame; it now
+  evicts the least recently used images.
+- Windows mDNS: stopping a browse while lookups were finishing could use
+  freed memory (lookups are reference-counted now) and race on the found
+  services; lookups, names and addresses per browse are capped. Names,
+  addresses and TXT keys with a NUL byte are refused.
+- Events and replies reached only the page that should get them: on Windows
+  and Android, an asynchronous reply or event could reach the next page
+  after a navigation, and on every platform events went to whatever page a
+  window showed, bridge or not.
+- Windows: a failed request-filter registration, or an early error while
+  serving an asset, let `https://app.localhost` requests reach the network;
+  window creation fails, or the request gets a 500. macOS and iOS fail the
+  request when a security header (CSP, nosniff) can't be set.
+- macOS and iOS: `nativePath` always failed (the `F_GETPATH` result was
+  misread).
+- IPC: requests over 32 MiB are refused, the async job queue is capped
+  (1024; extra calls answer `WorkerPoolBusy`), a message that can't be
+  decoded gets an `InvalidRequest` reply instead of never settling, and
+  window sizes from the page must be 1..32767.
+- Updates: a manifest older than the running version is never installed by
+  `force`; `oriel update --version` checks the tag's form and that the
+  signed manifest is that version. Plain-HTTP manifest URLs only work in
+  tests. A raw payload's size is capped, the replaced binary keeps its
+  mode, and on Windows the single-instance lock is released only once the
+  new process has started.
+- `oriel` CLI: the iOS `xtool` download is pinned to 1.21.0 and its SHA-256
+  checked (it was GitHub's unpinned latest release, run with your Apple
+  ID). `oriel wrap` escapes the title, user agent and URL in the code and
+  HTML it writes, and allows only the exact origin unless
+  `--allow-subdomains` is given. Signing keys' temporary folders are
+  created private (0700) from the start.
+- Android builds: a version part that isn't a number or is 100 or more,
+  and app names with `" $ \ & < > '`, are build errors instead of a wrong
+  version code or a broken project.
 
 # [Oriel 0.9.15 · October 11, 2026]($heading.id('oriel-0-9-15-october-11-2026'))
 
 Oriel 0.9.15 makes Android mDNS discovery reliable on phones older than
 Android 14, which could miss devices on the network.
 
-## [Fixed]($heading.id('fixed'))
+## [Fixed]($heading.id('fixed-2'))
 
 - Android mDNS browsing before Android 14: a resolve the system never
   answered blocked every service queued after it (one runs at a time), and
@@ -26,7 +87,7 @@ Android 14, which could miss devices on the network.
 Oriel 0.9.14 fixes a crash: since 0.9.12, every app built with the native
 renderer on Linux aborted as its window closed.
 
-## [Fixed]($heading.id('fixed-2'))
+## [Fixed]($heading.id('fixed-3'))
 
 - Native renderer on Linux: closing a window no longer aborts the app
   (SIGABRT). The text layouts kept per node (0.9.12) were freed before the
@@ -41,7 +102,7 @@ on macOS, and fixes what testing 0.9.12 on a Mac found in the system
 monitor example: idle processes can be found and terminated, empty CPU
 chips are hidden, and idle macOS network ports are left out.
 
-## [Fixed]($heading.id('fixed-3'))
+## [Fixed]($heading.id('fixed-4'))
 
 - Native renderer on macOS: a popover or sheet AppKit shows over the
   page (the share picker of `oriel.share.send`) is in the window's
@@ -94,7 +155,7 @@ on Linux are cheaper, and `JSON.parse` no longer depends on the locale.
   .AppImage, setup.exe, .dmg). It costs less than btop and the terminal
   drawing it: a sampler at ~1.6 ms a sample and a virtual process table.
 
-## [Fixed]($heading.id('fixed-4'))
+## [Fixed]($heading.id('fixed-5'))
 
 - Native renderer: `JSON.parse` dropped the fraction of every number
   (`0.43` became `0`) under a locale whose decimal separator is a comma
@@ -145,7 +206,7 @@ with text to speech.
 - The system monitor example reuses its table rows and writes text only
   when it changed.
 
-## [Fixed]($heading.id('fixed-5'))
+## [Fixed]($heading.id('fixed-6'))
 
 - The build-time espeak-ng data compiler builds on macOS and with Apple's
   SDK (it used stdio macros that translate-c turns into inline functions).
@@ -168,7 +229,7 @@ wide tables on the documentation site.
 - The comparison with Vercel native now has measured numbers for the same
   system monitor app built with both frameworks.
 
-## [Fixed]($heading.id('fixed-6'))
+## [Fixed]($heading.id('fixed-7'))
 
 - Documentation tables wider than the page column scroll sideways instead of
   spilling under the table of contents; the module overview fits again.
@@ -241,7 +302,7 @@ drag and drop to the iOS native renderer, and Windows fixes.
 - Windows tray icons are decoded with zigimg instead of WIC, so creating and
   destroying trays no longer grows the process's kernel handles.
 
-## [Fixed]($heading.id('fixed-7'))
+## [Fixed]($heading.id('fixed-8'))
 
 - Windows: closing a window or quitting while a native-renderer context menu
   or the tray menu is open no longer hangs; a native page that closes its
@@ -274,7 +335,7 @@ Oriel 0.9.8 is a memory-safety release. It fixes use-after-free, out-of-bounds,
 overflow and leak defects across the native UI, platform layers, modules and
 CLI tooling.
 
-## [Fixed]($heading.id('fixed-8'))
+## [Fixed]($heading.id('fixed-9'))
 
 - Update manifests: base64 signatures, public keys and seeds must decode to
   exactly their expected size, closing a stack overflow reachable from an
@@ -347,7 +408,7 @@ built-in PCM playback.
 - Repository and website guides for offline speech synthesis, asset setup,
   playback ownership, callback behavior and dependency notices.
 
-## [Fixed]($heading.id('fixed-9'))
+## [Fixed]($heading.id('fixed-10'))
 
 - Playback teardown detaches sample state before joining the device thread,
   preventing stop/start deadlocks with audio callbacks.
@@ -377,7 +438,7 @@ Oriel 0.9.5 fixes the validated concurrency, memory-lifetime and security
 issues from a security and memory-safety review, and documents which reported
 findings were not supported by the current code.
 
-## [Fixed]($heading.id('fixed-10'))
+## [Fixed]($heading.id('fixed-11'))
 
 - File-handle tables synchronize access through reads and descriptor
   duplication, preventing release from recycling a descriptor in use.
@@ -442,7 +503,7 @@ and searchable documentation.
 - Native-renderer documentation describes renderer capabilities independently
   of individual release versions.
 
-## [Fixed]($heading.id('fixed-11'))
+## [Fixed]($heading.id('fixed-12'))
 
 - Linux disables WebKitGTK DMABUF rendering when the proprietary NVIDIA driver
   is detected, avoiding compositor-related high CPU usage. An explicit
@@ -502,7 +563,7 @@ and improves native controls, accessibility and platform integration.
   across Linux, Windows, macOS, Android and iOS.
 - Events received before page listeners are ready are queued for delivery.
 
-## [Fixed]($heading.id('fixed-12'))
+## [Fixed]($heading.id('fixed-13'))
 
 - Android mDNS resolution no longer crashes while encoding services with
   multiple TXT attributes. Attributes are iterated directly rather than copied
