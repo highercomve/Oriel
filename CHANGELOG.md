@@ -2,9 +2,13 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.9.16] — 2026-10-11
 
-Fixes from a code review against the NASA/JPL "Power of 10" rules.
+Oriel 0.9.16 fixes what a code review against the NASA/JPL "Power of 10"
+rules found: a way for `localStorage` to lose its data, use-after-free bugs
+on window close and in Windows mDNS, pages that could hang their window,
+replies reaching the wrong page, an unpinned download in the CLI, and
+downgrades through `force`.
 
 ### Fixed
 
