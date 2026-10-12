@@ -58,7 +58,7 @@ pub fn run(io: std.Io, comptime api: anytype, comptime config: anytype) u8 {
 
 test {
     _ = &run;
-    const S = ShellMod.Shell(.{ .commands = struct {} }, .{ .id = "dev.oriel.Check", .title = "check", .assets = &.{} });
+    const S = ShellMod.Shell(.{ .commands = struct {} }, .{ .app = .{ .id = "dev.oriel.Check" }, .window = .{ .title = "check" } });
     _ = &S.run;
     std.testing.refAllDecls(apple);
     std.testing.refAllDecls(window);

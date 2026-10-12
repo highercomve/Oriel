@@ -175,7 +175,7 @@ const build_opts = @import("build_options");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
 
 pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
-    const dev_url: ?[]const u8 = if (config.dev) |d| d.url else null;
+    const dev_url: ?[]const u8 = if (config.app.dev) |d| d.url else null;
     const local: security.Local = comptime .{ .dev_origin = if (dev_url) |u| blk: {
         var buf: [512]u8 = undefined;
         const o = security.origin(&buf, u) orelse @compileError("invalid dev URL: " ++ u);
@@ -189,7 +189,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         break :blk a;
     };
     // strict_styles and isolation adjust the app's CSP (security.effectiveCsp).
-    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security)) |c| (c ++ "\x00")[0..c.len :0] else null;
+    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security, config.app.isolation)) |c| (c ++ "\x00")[0..c.len :0] else null;
 
     const Creator = window.WindowCreator(api, config, local, bridge_patterns, csp_z);
 
@@ -213,7 +213,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             if (access("/proc/driver/nvidia", 0) == 0) {
                 _ = setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
             }
-            const id = if (config.dev != null) config.id ++ ".Dev" else config.id;
+            const id = if (config.app.dev != null) config.app.id ++ ".Dev" else config.app.id;
             const app_flags = if (uses_command_line)
                 gio.ApplicationFlags{ .handles_command_line = true }
             else
@@ -223,10 +223,10 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             App.gtk_app = app;
             defer App.gtk_app = null;
 
-            const id_z = (config.id ++ "\x00")[0..config.id.len :0];
+            const id_z = (config.app.id ++ "\x00")[0..config.app.id.len :0];
             gtk.Window.setDefaultIconName(id_z);
 
-            const dev_server_proc = if (config.dev) |dev| dev_server.startDevServer(dev) else null;
+            const dev_server_proc = if (config.app.dev) |dev| dev_server.startDevServer(dev) else null;
             defer if (dev_server_proc) |p| dev_server.stopDevServer(p);
 
             _ = g_unix_signal_add(@intFromEnum(std.posix.SIG.TERM), &onQuitSignal, null);
@@ -265,7 +265,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                     };
                 }
             } else {
-                if (gpa.dupeZ(u8, config.id)) |ez| {
+                if (gpa.dupeZ(u8, config.app.id)) |ez| {
                     argv_ptrs.append(gpa, ez.ptr) catch gpa.free(ez);
                 } else |_| {}
             }
@@ -302,7 +302,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             if (build_opts.deep_link and n > 1) {
                 for (1..n) |idx| {
                     const arg_slice = std.mem.span(argv[idx]);
-                    if (deep_link.validate(arg_slice, config.deep_link_schemes)) |_| {
+                    if (deep_link.validate(arg_slice, config.app.url_schemes)) |_| {
                         maybe_url = arg_slice;
                         break;
                     } else |_| {}
@@ -346,34 +346,14 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 return;
             }
 
-            const main_win = App.openWindow(.{
-                .label = "main",
-                .title = config.title,
-                .url = config.url,
-                .width = config.width,
-                .height = config.height,
-                .min_width = config.min_width,
-                .min_height = config.min_height,
-                .max_width = config.max_width,
-                .max_height = config.max_height,
-                .resizable = config.resizable,
-                .decorations = config.decorations,
-                .fullscreen = config.fullscreen,
-                .maximized = config.maximized,
-                .remember_geometry = config.remember_geometry,
-                .visible = config.show_main_window,
-                .transparent = config.transparent,
-                .always_on_top = config.always_on_top,
-                .skip_taskbar = config.skip_taskbar,
-                .placement = config.placement,
-            }) catch |err| {
+            const main_win = App.openWindow(config.window) catch |err| {
                 log.err("failed to open main window: {s}", .{@errorName(err)});
                 return;
             };
 
             App.main_window = main_win.handle.gtk_window;
 
-            if (config.on_close == .hide or !config.show_main_window) {
+            if (config.window.hide_on_close or !config.window.visible) {
                 holdApp();
             }
 

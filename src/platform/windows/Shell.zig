@@ -464,7 +464,7 @@ pub fn setMenu(items: anytype, on_action: anytype) !void {
 }
 
 pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
-    const dev_url: ?[]const u8 = if (config.dev) |d| d.url else null;
+    const dev_url: ?[]const u8 = if (config.app.dev) |d| d.url else null;
     const local: security.Local = comptime .{ .dev_origin = if (dev_url) |u| blk: {
         var buf: [512]u8 = undefined;
         const o = security.origin(&buf, u) orelse @compileError("invalid dev URL: " ++ u);
@@ -473,7 +473,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     } else null };
 
     // strict_styles and isolation adjust the app's CSP (security.effectiveCsp).
-    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security)) |c| (c ++ "\x00")[0..c.len :0] else null;
+    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security, config.app.isolation)) |c| (c ++ "\x00")[0..c.len :0] else null;
     const Creator = window.WindowCreator(api, config, local, csp_z);
 
     const single_instance = build_opts.deep_link or config.on_second_instance != null;
@@ -552,7 +552,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
             if (build_opts.deep_link) {
                 for (args) |a| {
-                    if (deep_link.validate(a, config.deep_link_schemes)) |_| {
+                    if (deep_link.validate(a, config.app.url_schemes)) |_| {
                         deep_link.deliver(a);
                         break;
                     } else |_| {}
@@ -569,7 +569,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
         pub fn run(io: std.Io) u8 {
             const gpa = std.heap.smp_allocator;
-            const app_id = if (config.dev != null) config.id ++ ".Dev" else config.id;
+            const app_id = if (config.app.dev != null) config.app.id ++ ".Dev" else config.app.id;
             defer single_instance_mutex.release();
 
             // Single instance: for deep links, and for apps that handle a
@@ -621,7 +621,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                             const w_slice = std.mem.span(w_argv[idx]);
                             const u8_arg = std.unicode.utf16LeToUtf8Alloc(gpa, w_slice) catch continue;
                             defer gpa.free(u8_arg);
-                            if (deep_link.validate(u8_arg, config.deep_link_schemes)) |_| {
+                            if (deep_link.validate(u8_arg, config.app.url_schemes)) |_| {
                                 cold_url = gpa.dupe(u8, u8_arg) catch null;
                                 break;
                             } else |_| {}
@@ -635,7 +635,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
             // After the single-instance check above: an instance that only
             // forwards a deep link must not start a second dev server.
-            var dev_server_proc: ?dev_server.DevServer = if (config.dev) |dev| dev_server.startDevServer(io, dev) else null;
+            var dev_server_proc: ?dev_server.DevServer = if (config.app.dev) |dev| dev_server.startDevServer(io, dev) else null;
             defer if (dev_server_proc) |*p| dev_server.stopDevServer(io, p);
 
             // Sharp on every monitor: per-monitor DPI aware (V2) before any
@@ -698,27 +698,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 } else |_| {}
             }
 
-            const main_win = App.openWindow(.{
-                .label = "main",
-                .title = config.title,
-                .url = config.url,
-                .width = config.width,
-                .height = config.height,
-                .min_width = config.min_width,
-                .min_height = config.min_height,
-                .max_width = config.max_width,
-                .max_height = config.max_height,
-                .resizable = config.resizable,
-                .decorations = config.decorations,
-                .fullscreen = config.fullscreen,
-                .maximized = config.maximized,
-                .remember_geometry = config.remember_geometry,
-                .visible = config.show_main_window,
-                .transparent = config.transparent,
-                .always_on_top = config.always_on_top,
-                .skip_taskbar = config.skip_taskbar,
-                .placement = config.placement,
-            }) catch |err| {
+            const main_win = App.openWindow(config.window) catch |err| {
                 log.err("failed to open main window: {s}", .{@errorName(err)});
                 return 1;
             };

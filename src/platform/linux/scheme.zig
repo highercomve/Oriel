@@ -32,7 +32,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
 
         fn serveAsset(request: *webkit.URISchemeRequest, _: ?*anyopaque) callconv(.c) void {
             const path = std.mem.span(request.getPath());
-            if (comptime config.security.isolation != null) {
+            if (comptime config.app.isolation != null) {
                 const uri = std.Uri.parse(std.mem.span(request.getUri())) catch null;
                 var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
                 const host: []const u8 = if (uri) |u| (if (u.host) |h| (h.toRaw(&host_buf) catch "") else "") else "";
@@ -41,7 +41,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             if (@import("../../oriel.zig").options.media_server and std.mem.startsWith(u8, path, "/media/")) {
                 return @import("../../modules/media_scheme.zig").handle(request, path["/media/".len..]);
             }
-            const asset = App.findAsset(config.assets, path, config.spa_fallback);
+            const asset = App.findAsset(config.app.assets, path, config.spa_fallback);
             if (asset) |a| {
                 const stream = gio.MemoryInputStream.newFromData(@constCast(a.data.ptr), @intCast(a.data.len), null);
                 defer stream.unref();
@@ -76,11 +76,11 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
         fn serveIsolation(request: *webkit.URISchemeRequest, path: []const u8) void {
             const gpa = std.heap.smp_allocator;
             const page: ?[]u8 = if (isolation.isPagePath(path))
-                isolation.servePage(gpa, config.security, local, @intFromPtr(request.getWebView())) catch null
+                isolation.servePage(gpa, config.app.isolation, local, @intFromPtr(request.getWebView())) catch null
             else
                 null;
             const csp: ?[:0]u8 = if (page != null) blk: {
-                const c = isolation.pageCsp(gpa, config.security, local) catch break :blk null;
+                const c = isolation.pageCsp(gpa, config.app.isolation, local) catch break :blk null;
                 defer gpa.free(c);
                 break :blk gpa.dupeZ(u8, c) catch null;
             } else null;

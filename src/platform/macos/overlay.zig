@@ -12,7 +12,7 @@
 //! - skip_taskbar: collectionBehavior canJoinAllSpaces | transient |
 //!   ignoresCycle | fullScreenAuxiliary (shown on every Space, over
 //!   full-screen apps, left out of ⌘` cycling and Mission Control). An app
-//!   without a Dock icon is `show_main_window = false` (Shell.zig: accessory
+//!   without a Dock icon has `.window = .{ .visible = false }` (Shell.zig: accessory
 //!   activation policy).
 //! - placement / workArea: the NSScreen `visibleFrame` (without the menu bar
 //!   and Dock), flipped to top-left coordinates like the other platforms.

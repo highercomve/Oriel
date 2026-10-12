@@ -170,7 +170,7 @@ pub fn Bridge(
             defer gpa.free(label_json);
             const token_js = try ipc.tokenScript(gpa, config.security, local);
             defer gpa.free(token_js);
-            const with_iso = try std.mem.replaceOwned(u8, gpa, bridge_js, isolation_placeholder, comptime isolation.bridgeScript(config.security, local));
+            const with_iso = try std.mem.replaceOwned(u8, gpa, bridge_js, isolation_placeholder, comptime isolation.bridgeScript(config.app.isolation, local));
             defer gpa.free(with_iso);
             const with_token = try std.mem.replaceOwned(u8, gpa, with_iso, token_placeholder, token_js);
             defer gpa.free(with_token);
@@ -332,7 +332,7 @@ pub fn Bridge(
                 log.warn("refused an IPC call without this page's token (\"{f}\")", .{std.zig.fmtString(req.cmd[0..@min(req.cmd.len, 64)])});
                 return sendErrorReply(id, load, req.id, "Forbidden");
             }
-            const checked = isolation.check(temp, config.security, local, page_url, id, .{ .cmd = req.cmd, .args = req.args, .token = req.token, .iso = req.iso }, data) catch |err| {
+            const checked = isolation.check(temp, config.app.isolation, local, page_url, id, .{ .cmd = req.cmd, .args = req.args, .token = req.token, .iso = req.iso }, data) catch |err| {
                 return sendErrorReply(id, load, req.id, isolation.errorText(err));
             };
             const call = checked.request;

@@ -313,12 +313,10 @@ pub fn destroyWindow(handle: WindowHandle) void {
     if (ShellMod.isMainThread()) teardown(handle);
 }
 
-var current_on_close_hide = false;
-
 /// The close sequence: the Activity's close (caption X, swiped away),
 /// `closeWindow` and JS. With hide-on-close the window only hides.
 pub fn closeNow(win: *App.Window) void {
-    if (win.options.hide_on_close or (std.mem.eql(u8, win.label, "main") and current_on_close_hide)) {
+    if (win.options.hide_on_close) {
         _ = runtime.call(.void, "hideWindow", "(I)V", .{@as(i32, @intCast(win.handle.id))});
         return;
     }
@@ -391,7 +389,7 @@ pub fn WindowCreator(
     const SchemeImpl = scheme_mod.Scheme(config, local, csp_z);
     const BridgeImpl = bridge_mod.Bridge(api, config, local);
     const rules = comptime originRules(config.security, local);
-    const media = comptime (config.permissions.has(.microphone) or config.permissions.has(.camera));
+    const media = comptime (config.app.permissions.has(.microphone) or config.app.permissions.has(.camera));
 
     return struct {
         var window_open_counter = std.atomic.Value(u32).init(1);
@@ -399,8 +397,7 @@ pub fn WindowCreator(
         const dev_retry_interval_ms = 250;
 
         pub fn init() void {
-            current_on_close_hide = config.on_close == .hide;
-            if (config.dev) |dev| dev_retries_left = dev.timeout_ms / dev_retry_interval_ms;
+            if (config.app.dev) |dev| dev_retries_left = dev.timeout_ms / dev_retry_interval_ms;
             handlers.create_window = &createWindow;
             handlers.on_message = &BridgeImpl.onMessage;
             handlers.serve = &SchemeImpl.serve;
@@ -422,7 +419,7 @@ pub fn WindowCreator(
                 gpa,
                 config.security,
                 local,
-                if (config.dev) |d| d.url else null,
+                if (config.app.dev) |d| d.url else null,
                 options.url,
                 config.start,
             );
@@ -457,7 +454,7 @@ pub fn WindowCreator(
             }) orelse false;
             if (!ok) return error.CreateWindowFailed;
             if (comptime build_opts.native_ui) {
-                _ = native.create(std.heap.smp_allocator, id, config.assets, @import("../../core/features.zig").platform_json, options.label, options.url orelse "index.html", BridgeImpl.nativeInvoke, win_inst) catch |err| {
+                _ = native.create(std.heap.smp_allocator, id, config.app.assets, @import("../../core/features.zig").platform_json, options.label, options.url orelse "index.html", BridgeImpl.nativeInvoke, win_inst) catch |err| {
                     log.err("native ui: cannot start the page ({s})", .{@errorName(err)});
                     _ = runtime.call(.void, "destroyWindow", "(I)V", .{@as(i32, @intCast(id))});
                     return err;
@@ -469,7 +466,7 @@ pub fn WindowCreator(
         /// A top-level navigation (link, form, script) of window `id`.
         fn navigation(id: u32, url: []const u8, user_gesture: bool) bool {
             _ = id;
-            if (comptime config.security.isolation != null) {
+            if (comptime config.app.isolation != null) {
                 var buf: [512]u8 = undefined;
                 if (security.origin(&buf, url)) |o| if (std.mem.eql(u8, o, isolation.origin)) return false; // never top-level
             }
@@ -524,9 +521,9 @@ pub fn WindowCreator(
         /// Dev mode: the dev server (through `adb reverse`) may still be
         /// starting; retry its URL until `dev.timeout_ms` is used up.
         fn loadFailed(id: u32) void {
-            if (config.dev == null or dev_retries_left == 0) return;
+            if (config.app.dev == null or dev_retries_left == 0) return;
             dev_retries_left -= 1;
-            _ = runtime.call(.void, "retryLoad", "(I[BI)V", .{ @as(i32, @intCast(id)), @as([]const u8, config.dev.?.url), @as(i32, dev_retry_interval_ms) });
+            _ = runtime.call(.void, "retryLoad", "(I[BI)V", .{ @as(i32, @intCast(id)), @as([]const u8, config.app.dev.?.url), @as(i32, dev_retry_interval_ms) });
         }
 
         /// getUserMedia: granted only when the app declares every requested

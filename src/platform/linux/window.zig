@@ -267,7 +267,7 @@ pub fn WindowCreator(
 
     return struct {
         fn devUrl() [:0]const u8 {
-            const url = config.dev.?.url;
+            const url = config.app.dev.?.url;
             return (url ++ "\x00")[0..url.len :0];
         }
 
@@ -283,7 +283,7 @@ pub fn WindowCreator(
                 gpa,
                 config.security,
                 local,
-                if (config.dev) |d| d.url else null,
+                if (config.app.dev) |d| d.url else null,
                 options.url,
                 config.start,
             );
@@ -293,7 +293,7 @@ pub fn WindowCreator(
             const window = app_window.as(gtk.Window);
             errdefer window.destroy();
             window.setTitle(options.title);
-            const id_z = (config.id ++ "\x00")[0..config.id.len :0];
+            const id_z = (config.app.id ++ "\x00")[0..config.app.id.len :0];
             window.setIconName(id_z);
             window.setDefaultSize(options.width, options.height);
             window.setResizable(@intFromBool(options.resizable));
@@ -315,7 +315,7 @@ pub fn WindowCreator(
             settings.setAllowFileAccessFromFileUrls(0);
             settings.setAllowUniversalAccessFromFileUrls(0);
             // getUserMedia exists only when the app may use a microphone or camera.
-            settings.setEnableMediaStream(@intFromBool(config.permissions.has(.microphone) or config.permissions.has(.camera) or config.permissions.has(.screen_capture)));
+            settings.setEnableMediaStream(@intFromBool(config.app.permissions.has(.microphone) or config.app.permissions.has(.camera) or config.app.permissions.has(.screen_capture)));
             if (config.user_agent) |ua| {
                 webkit_settings_set_user_agent(settings, ua.ptr);
             }
@@ -328,7 +328,7 @@ pub fn WindowCreator(
 
             _ = gtk.Window.signals.close_request.connect(window, *App.Window, &onWindowCloseRequest, win_inst, .{});
 
-            if (config.dev) |dev| {
+            if (config.app.dev) |dev| {
                 DevRetry.initRetries(dev.timeout_ms);
                 _ = webkit.WebView.signals.load_failed.connect(view, ?*anyopaque, &DevRetry.onLoadFailed, null, .{});
             }
@@ -346,7 +346,7 @@ pub fn WindowCreator(
 
             view.loadUri(target_uri);
 
-            overlay.setup(window, view, options, (config.id ++ "\x00")[0..config.id.len :0]);
+            overlay.setup(window, view, options, (config.app.id ++ "\x00")[0..config.app.id.len :0]);
             if (options.visible) window.present();
 
             return handle;
@@ -360,7 +360,7 @@ pub fn WindowCreator(
             // keeps every page it ever had.
             const surface = try native_gtk.Surface.create(
                 std.heap.c_allocator,
-                config.assets,
+                config.app.assets,
                 @import("../../core/features.zig").platform_json,
                 options.label,
                 options.url orelse "index.html",
@@ -373,7 +373,7 @@ pub fn WindowCreator(
             window.setChild(surface.widget());
             // Transparency and overlay placement (layer-shell, always on top),
             // as for a web view window.
-            overlay.setup(window, null, options, (config.id ++ "\x00")[0..config.id.len :0]);
+            overlay.setup(window, null, options, (config.app.id ++ "\x00")[0..config.app.id.len :0]);
             _ = gtk.Window.signals.close_request.connect(window, *App.Window, &onWindowCloseRequest, win_inst, .{});
             const handle = WindowHandle{
                 .gtk_window = window,
@@ -389,7 +389,7 @@ pub fn WindowCreator(
         }
 
         fn onWindowCloseRequest(window: *gtk.Window, win: *App.Window) callconv(.c) c_int {
-            if ((std.mem.eql(u8, win.label, "main") and config.on_close == .hide) or win.options.hide_on_close) {
+            if (win.options.hide_on_close) {
                 window.as(gtk.Widget).setVisible(0);
                 return 1;
             }
@@ -468,7 +468,7 @@ pub fn WindowCreator(
             // The bridge's isolation frame. WebKitGTK doesn't say which frame
             // navigates; a top-level isolation page is inert (it only runs
             // as a direct child of the app's page, and gets no IPC token).
-            if (comptime config.security.isolation != null) {
+            if (comptime config.app.isolation != null) {
                 var obuf: [512]u8 = undefined;
                 if (decision_type == .navigation_action) if (security.origin(&obuf, std.mem.span(uri))) |o| if (std.mem.eql(u8, o, isolation.origin)) {
                     decision.use();

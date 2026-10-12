@@ -598,7 +598,7 @@ pub fn WindowCreator(
 
                     // The bridge's isolation frame (iframes only; a top-level
                     // navigation to it stays blocked).
-                    if (comptime config.security.isolation != null) {
+                    if (comptime config.app.isolation != null) {
                         var obuf: [512]u8 = undefined;
                         if (n_self.frame) if (security.origin(&obuf, uri_u8)) |o| if (std.mem.eql(u8, o, isolation.origin)) return win32.S_OK;
                     }
@@ -803,7 +803,7 @@ pub fn WindowCreator(
             }
         };
 
-        const has_dev = config.dev != null;
+        const has_dev = config.app.dev != null;
         /// Window timer for the next attempt to load the dev server's page.
         const DEV_RETRY_TIMER_ID: win32.UINT_PTR = 0x4F52_4456; // 'ORDV'
 
@@ -877,9 +877,9 @@ pub fn WindowCreator(
                 if (a.lpVtbl.get_WebErrorStatus(a, &status) < 0 or !isConnectError(status)) return win32.S_OK;
                 if (!onDevOrigin(view)) return win32.S_OK;
                 const now = win32.GetTickCount64();
-                if (self.deadline_ms == 0) self.deadline_ms = now + config.dev.?.timeout_ms;
+                if (self.deadline_ms == 0) self.deadline_ms = now + config.app.dev.?.timeout_ms;
                 if (now >= self.deadline_ms) {
-                    log.err("the dev server at {s} did not answer within {d} ms; check that it starts (e.g. run `npm install` in the frontend directory)", .{ config.dev.?.url, config.dev.?.timeout_ms });
+                    log.err("the dev server at {s} did not answer within {d} ms; check that it starts (e.g. run `npm install` in the frontend directory)", .{ config.app.dev.?.url, config.app.dev.?.timeout_ms });
                     self.deadline_ms = 0; // a later reload starts a new wait
                     return win32.S_OK; // WebView2's error page stays
                 }
@@ -1229,7 +1229,7 @@ pub fn WindowCreator(
                 if (len > 0 and len < buf.len) {
                     const base_u8 = std.unicode.utf16LeToUtf8Alloc(gpa, buf[0..len]) catch break :blk null;
                     defer gpa.free(base_u8);
-                    const folder_path = std.fmt.allocPrint(gpa, "{s}\\{s}\\WebView2", .{ base_u8, config.id }) catch break :blk null;
+                    const folder_path = std.fmt.allocPrint(gpa, "{s}\\{s}\\WebView2", .{ base_u8, config.app.id }) catch break :blk null;
                     defer gpa.free(folder_path);
                     break :blk std.unicode.utf8ToUtf16LeAllocZ(gpa, folder_path) catch null;
                 }
@@ -1326,7 +1326,7 @@ pub fn WindowCreator(
             if (view.addWebResourceRequestedFilter(filter_w.ptr, webview2.COREWEBVIEW2_WEB_RESOURCE_CONTEXT.ALL) < 0) {
                 return error.WebView2AddEventHandlerFailed;
             }
-            if (comptime config.security.isolation != null) {
+            if (comptime config.app.isolation != null) {
                 const iso_filter_w = std.unicode.utf8ToUtf16LeStringLiteral(scheme_mod.isolation_filter_pattern);
                 if (view.addWebResourceRequestedFilter(iso_filter_w, webview2.COREWEBVIEW2_WEB_RESOURCE_CONTEXT.ALL) < 0) {
                     return error.WebView2AddEventHandlerFailed;
@@ -1433,7 +1433,7 @@ pub fn WindowCreator(
                 gpa,
                 config.security,
                 local,
-                if (config.dev) |d| d.url else null,
+                if (config.app.dev) |d| d.url else null,
                 options.url,
                 config.start,
             );
@@ -1501,7 +1501,7 @@ pub fn WindowCreator(
             defer gpa.free(url_z);
             const surface = try native_win32.Surface.create(
                 gpa,
-                config.assets,
+                config.app.assets,
                 @import("../../core/features.zig").platform_json,
                 options.label,
                 url_z,
@@ -1663,7 +1663,7 @@ pub fn WindowCreator(
                         }
                         // Its open menu goes first, hidden or closed.
                         endOwnedMenu(hwnd);
-                        if ((std.mem.eql(u8, w.label, "main") and config.on_close == .hide) or w.options.hide_on_close) {
+                        if (w.options.hide_on_close) {
                             _ = win32.ShowWindow(hwnd, win32.SW_HIDE);
                             return 0;
                         }

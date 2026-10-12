@@ -56,14 +56,15 @@ test {
     // Instantiate the generic shell so `zig build check -Dtarget=x86_64-windows`
     // compiles the message loop, window creation and WebView2 wiring too.
     _ = &run;
-    const S = ShellMod.Shell(.{ .commands = struct {} }, .{ .id = "dev.oriel.Check", .title = "check", .assets = &.{} });
+    const S = ShellMod.Shell(.{ .commands = struct {} }, .{ .app = .{ .id = "dev.oriel.Check" }, .window = .{ .title = "check" } });
     _ = &S.run;
     // A dev build too: the dev server and the load retry only exist there.
     const SDev = ShellMod.Shell(.{ .commands = struct {} }, .{
-        .id = "dev.oriel.Check",
-        .title = "check",
-        .assets = &.{},
-        .dev = .{ .url = "http://localhost:5173", .command = &.{ "node_modules/.bin/vite", "--strictPort" }, .cwd = "frontend" },
+        .app = .{
+            .id = "dev.oriel.Check",
+            .dev = .{ .url = "http://localhost:5173", .command = &.{ "node_modules/.bin/vite", "--strictPort" }, .cwd = "frontend" },
+        },
+        .window = .{ .title = "check" },
     });
     _ = &SDev.run;
     const Probe = struct {

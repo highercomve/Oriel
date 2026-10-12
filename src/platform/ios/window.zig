@@ -488,13 +488,11 @@ pub fn destroyWindow(handle: WindowHandle) void {
     teardown(handle);
 }
 
-var current_on_close_hide = false;
-
 /// The close sequence. The main window can't be closed on iOS (the system
 /// owns the app's lifecycle): it only hides what's presented over it.
 pub fn closeNow(win: *App.Window) void {
     const is_main = std.mem.eql(u8, win.label, "main");
-    if (is_main or win.options.hide_on_close or current_on_close_hide) {
+    if (is_main or win.options.hide_on_close) {
         if (!is_main) hide(win.handle);
         return;
     }
@@ -600,8 +598,7 @@ pub fn WindowCreator(
         const dev_retry_interval_ms = 250;
 
         pub fn init() void {
-            current_on_close_hide = config.on_close == .hide;
-            if (config.dev) |dev| dev_retries_left = dev.timeout_ms / dev_retry_interval_ms;
+            if (config.app.dev) |dev| dev_retries_left = dev.timeout_ms / dev_retry_interval_ms;
             nav_delegate = apple.new(apple.defineClass("OrielNavigationDelegate", &.{ "WKNavigationDelegate", "WKUIDelegate" }, .{
                 .{ "webView:decidePolicyForNavigationAction:decisionHandler:", decidePolicy },
                 .{ "webView:didFailProvisionalNavigation:withError:", didFailProvisionalNavigation },
@@ -689,7 +686,7 @@ pub fn WindowCreator(
                 controller.msgSend(void, "setTitle:", .{t});
             }
 
-            const target_uri = try security.resolveWindowUrl(gpa, config.security, local, if (config.dev) |d| d.url else null, options.url, config.start);
+            const target_uri = try security.resolveWindowUrl(gpa, config.security, local, if (config.app.dev) |d| d.url else null, options.url, config.start);
             defer gpa.free(target_uri);
             apple_hooks.webViewCreated(view.value, options.label);
             errdefer apple_hooks.webViewDestroyed(view.value);
@@ -713,7 +710,7 @@ pub fn WindowCreator(
             const screen = apple.class("UIScreen").msgSend(Object, "mainScreen", .{}).msgSend(apple.CGRect, "bounds", .{});
             const surface = try native.create(
                 gpa,
-                config.assets,
+                config.app.assets,
                 @import("../../core/features.zig").platform_json,
                 options.label,
                 options.url orelse "index.html",
@@ -777,7 +774,7 @@ pub fn WindowCreator(
             if (apple_hooks.intercept(.decide_policy, .{ webview, action_id, handler })) return;
             const action: Object = .{ .value = action_id };
             const uri = actionUrl(action) orelse return apple.callBlock(handler, &.{isize}, .{policy_cancel});
-            if (comptime config.security.isolation != null) {
+            if (comptime config.app.isolation != null) {
                 const frame = action.msgSend(Object, "targetFrame", .{});
                 if (frame.value != null and !apple.isTrue(frame.msgSend(apple.c.BOOL, "isMainFrame", .{}))) {
                     var buf: [512]u8 = undefined;
@@ -858,7 +855,7 @@ pub fn WindowCreator(
 
         fn didFailProvisionalNavigation(_: apple.id, _: apple.c.SEL, view: apple.id, _: apple.id, err: apple.id) callconv(.c) void {
             const code = (Object{ .value = err }).msgSend(isize, "code", .{});
-            if (config.dev == null or dev_retries_left == 0) {
+            if (config.app.dev == null or dev_retries_left == 0) {
                 if (code != -999) log.warn("load failed (NSURLError {d})", .{code});
                 return;
             }
@@ -871,7 +868,7 @@ pub fn WindowCreator(
             const view: Object = .{ .value = @ptrCast(@alignCast(ctx)) };
             defer view.release();
             if (getWindowByView(view.value) == null) return;
-            load(view, config.dev.?.url) catch |err| log.err("dev reload failed: {s}", .{@errorName(err)});
+            load(view, config.app.dev.?.url) catch |err| log.err("dev reload failed: {s}", .{@errorName(err)});
         }
     };
 }

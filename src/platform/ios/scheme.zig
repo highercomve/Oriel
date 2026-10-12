@@ -34,7 +34,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
         fn startTask(_: apple.id, _: apple.c.SEL, view: apple.id, task_id: apple.id) callconv(.c) void {
             const task: Object = .{ .value = task_id };
             const url = task.msgSend(Object, "request", .{}).msgSend(Object, "URL", .{});
-            if (comptime config.security.isolation != null) {
+            if (comptime config.app.isolation != null) {
                 const host = apple.utf8(url.msgSend(Object, "host", .{})) orelse "";
                 if (std.ascii.eqlIgnoreCase(host, isolation.host)) return serveIsolation(task, url, if (view) |v| @intFromPtr(v) else 0);
             }
@@ -46,7 +46,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             }
             // `path` is percent-decoded and excludes the query and fragment.
             const path = apple.utf8(url.msgSend(Object, "path", .{})) orelse "";
-            if (App.findAsset(config.assets, path, config.spa_fallback)) |asset| {
+            if (App.findAsset(config.app.assets, path, config.spa_fallback)) |asset| {
                 // The page's own inline scripts (and styles) are allowed by hash.
                 const gpa = std.heap.smp_allocator;
                 const page_csp: ?[:0]u8 = if (csp_z) |c| csp_mod.withHashes(gpa, c, asset.script_hashes, asset.style_hashes) catch null else null;
@@ -63,12 +63,12 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             const path = apple.utf8(url.msgSend(Object, "path", .{})) orelse "";
             if (!isolation.isPagePath(path)) return respondWith(task, url, 404, "text/plain", "Not Found", null, &.{});
             const gpa = std.heap.smp_allocator;
-            const page = (isolation.servePage(gpa, config.security, local, view) catch null) orelse return failTask(task);
+            const page = (isolation.servePage(gpa, config.app.isolation, local, view) catch null) orelse return failTask(task);
             defer {
                 std.crypto.secureZero(u8, page);
                 gpa.free(page);
             }
-            const csp = isolation.pageCsp(gpa, config.security, local) catch return failTask(task);
+            const csp = isolation.pageCsp(gpa, config.app.isolation, local) catch return failTask(task);
             defer gpa.free(csp);
             respondWith(task, url, 200, "text/html", page, csp, comptime isolation.pageHeaders(config.security));
         }

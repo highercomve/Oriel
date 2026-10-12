@@ -1002,7 +1002,7 @@ pub const AppOptions = struct {
     /// Executable name.
     name: []const u8,
     /// The app's main.zig. It can `@import("oriel")` and `@import("oriel_app")`
-    /// (build-time config: `assets`, `dev`, `types_path`).
+    /// (build-time config: `build`, for `App.Config.app`).
     root_source_file: std.Build.LazyPath,
     /// Application icon (PNG format, 1024x1024 recommended).
     /// Used for window icon, Windows taskbar/exe/installer, Linux desktop entry, macOS dock/bundle.
@@ -1020,7 +1020,7 @@ pub const AppOptions = struct {
     /// user ("" for a default text), e.g.
     /// `.permissions = .{ .microphone = "Dictation turns your speech into text", .accessibility = "" }`.
     /// Written into the packages (Info.plist usage keys on macOS) and passed to
-    /// the app as `app.permissions` (give it to `App.Config.permissions`).
+    /// the app in `oriel_app.build` (`App.Config.app`).
     /// Modules that need one (audio_capture) declare it themselves, and
     /// declaring a capability turns its module on (`capability_modules`:
     /// local_network → oriel.network, bluetooth → oriel.bluetooth) unless
@@ -1037,8 +1037,8 @@ pub const AppOptions = struct {
     /// `.imports = &.{.{ .name = "zigimg", .module = zigimg_dep.module("zigimg") }}`.
     imports: []const std.Build.Module.Import = &.{},
     /// The isolation pattern: `.isolation = .{ .hook = b.path("isolation/hook.js") }`
-    /// embeds the hook and exposes it as `oriel_app.isolation`; pass that to
-    /// `App.Config.security.isolation` (see `security.Isolation`).
+    /// embeds the hook into `oriel_app.build` (`App.Config.app`; see
+    /// `security.Isolation`).
     isolation: ?Isolation = null,
     /// C include directories for the app's own root module (its Zig code's
     /// `@cImport` and its C sources): the oriel module's include paths only
@@ -1845,7 +1845,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
         cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
         cfg.addOption([]const []const u8, "url_schemes", url_schemes);
         addPermissionOptions(cfg, permissions);
-        const d = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon, options.isolation), options.include_paths);
+        const d = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, cfg, null, app_icon, options), options.include_paths);
         for (options.imports) |imp| d.root_module.addImport(imp.name, imp.module);
         // Most of a Debug rebuild is LLVM writing debug info: without it an
         // edit rebuilds in well under the time, but crashes print no
@@ -1901,7 +1901,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(prod_cfg, permissions);
-    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation), options.include_paths);
+    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options), options.include_paths);
     for (options.imports) |imp| exe.root_module.addImport(imp.name, imp.module);
     b.installArtifact(exe);
 
@@ -2021,7 +2021,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     check_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     check_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(check_cfg, permissions);
-    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null, app_icon, options.isolation), options.include_paths);
+    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, check_cfg, null, app_icon, options), options.include_paths);
     for (options.imports) |imp| check_exe.root_module.addImport(imp.name, imp.module);
     @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_exe.step);
 
@@ -2101,7 +2101,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(prod_cfg, permissions);
-    const lib = addAndroidLib(b, oriel, target, prod_optimize, options, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation));
+    const lib = addAndroidLib(b, oriel, target, prod_optimize, options, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options));
     android_build.requireNdk(b, lib);
     b.getInstallStep().dependOn(&b.addInstallArtifact(lib, .{ .dest_dir = .{ .override = install_dir } }).step);
 
@@ -2174,7 +2174,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     dev_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     dev_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(dev_cfg, permissions);
-    const dev_lib = addAndroidLib(b, oriel, target, dev_optimize, options, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation));
+    const dev_lib = addAndroidLib(b, oriel, target, dev_optimize, options, appConfigModule(b, oriel, dev_cfg, null, app_icon, options));
     android_build.requireNdk(b, dev_lib);
     @import("build/package.zig").getOrCreateStep(b, "android-dev", "Build the Android library against the dev server (zig-out/jniLibs)")
         .dependOn(&b.addInstallArtifact(dev_lib, .{ .dest_dir = .{ .override = install_dir } }).step);
@@ -2216,7 +2216,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     b.getInstallStep().dependOn(&sync_runtime.step);
 
     // Type-check only: nothing requests the binary.
-    const check_lib = addAndroidLib(b, oriel, target, dev_optimize, options, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation));
+    const check_lib = addAndroidLib(b, oriel, target, dev_optimize, options, appConfigModule(b, oriel, dev_cfg, null, app_icon, options));
     @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_lib.step);
 
     if (fe.types_path != null) {
@@ -2564,7 +2564,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     prod_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     prod_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(prod_cfg, permissions);
-    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation), options.include_paths);
+    const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options), options.include_paths);
     for (options.imports) |imp| exe.root_module.addImport(imp.name, imp.module);
 
     // Development: the dev server's URL (reached over the network).
@@ -2581,7 +2581,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     dev_cfg.addOption(?[]const u8, "update_public_key", options.update_public_key);
     dev_cfg.addOption([]const []const u8, "url_schemes", url_schemes);
     addPermissionOptions(dev_cfg, permissions);
-    const dev_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation), options.include_paths);
+    const dev_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options), options.include_paths);
     for (options.imports) |imp| dev_exe.root_module.addImport(imp.name, imp.module);
 
     // Simulator builds carry their entitlements in __TEXT sections, as
@@ -2680,7 +2680,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         .dependOn(&b.addInstallFile(ipa, b.fmt("{s}.ipa", .{display_name})).step);
 
     // Type-check only: nothing requests the binary.
-    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation), options.include_paths);
+    const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options), options.include_paths);
     for (options.imports) |imp| check_exe.root_module.addImport(imp.name, imp.module);
     // C dependencies (sql, whisper, ...) type-check too: against the SDK, else Zig's Darwin headers.
     ios_build.configureCheck(b, check_exe);
@@ -3014,7 +3014,7 @@ fn typesGenerator(
         .optimize = .Debug,
         .imports = &.{
             .{ .name = "oriel", .module = oriel },
-            .{ .name = "oriel_app", .module = appConfigModule(b, oriel, cfg, null, app_icon, options.isolation) },
+            .{ .name = "oriel_app", .module = appConfigModule(b, oriel, cfg, null, app_icon, options) },
         },
     });
     for (options.include_paths) |p| app_root.addIncludePath(p);
@@ -3065,37 +3065,57 @@ fn appConfigModule(
     cfg: *std.Build.Step.Options,
     assets: ?std.Build.LazyPath,
     icon: std.Build.LazyPath,
-    isolation: ?AppOptions.Isolation,
+    options: AppOptions,
 ) *std.Build.Module {
+    const isolation = options.isolation;
+    const pkg = options.package orelse PackageOptions{};
+    const app_id = pkg.id orelse b.fmt("dev.oriel.{s}", .{options.name});
     const files = b.addWriteFiles();
     _ = files.addCopyFile(icon, "icon.png");
     if (isolation) |iso| _ = files.addCopyFile(iso.hook, "isolation_hook.js");
-    const root = files.add("oriel_app.zig", b.fmt("{s}{s}", .{
+    const root = files.add("oriel_app.zig", b.fmt("{s}{f}{s}{s}", .{
         \\const oriel = @import("oriel");
         \\const cfg = @import("cfg");
         \\
+        \\/// Everything build.zig declares: pass to `App.Config.app`.
+        \\pub const build: oriel.App.Build = .{
+        \\    .id = id,
+        \\    .assets = assets,
+        \\    .dev = dev,
+        \\    .icon = icon_bytes,
+        \\    .url_schemes = url_schemes,
+        \\    .permissions = permissions,
+        \\    .isolation = isolation,
+        \\};
+        \\
+        \\/// Base64-encoded Ed25519 public key for verifying updates.
+        \\pub const update_public_key: ?[]const u8 = cfg.update_public_key;
+        \\
+        \\/// The app id (`.package.id`, else "dev.oriel.<name>").
+        \\const id: [:0]const u8 = "
+        ,
+        std.zig.fmtString(app_id),
+        \\";
+        \\
         \\/// Embedded frontend files (empty in dev builds).
-        \\pub const assets: []const oriel.App.Asset = if (cfg.is_dev) &.{} else @import("assets").files;
+        \\const assets: []const oriel.App.Asset = if (cfg.is_dev) &.{} else @import("assets").files;
         \\
         \\/// Dev-server settings (null in production builds).
-        \\pub const dev: ?oriel.App.Dev = if (cfg.is_dev) .{
+        \\const dev: ?oriel.App.Dev = if (cfg.is_dev) .{
         \\    .url = cfg.dev_url,
         \\    .command = cfg.dev_command,
         \\    .cwd = cfg.frontend_dir,
         \\} else null;
         \\
         \\/// Embedded application icon (PNG bytes).
-        \\pub const icon_bytes: []const u8 = @embedFile("icon.png");
-        \\
-        \\/// Base64-encoded Ed25519 public key for verifying updates.
-        \\pub const update_public_key: ?[]const u8 = cfg.update_public_key;
+        \\const icon_bytes: []const u8 = @embedFile("icon.png");
         \\
         \\/// Declared URL schemes handled by the application.
-        \\pub const url_schemes: []const []const u8 = cfg.url_schemes;
+        \\const url_schemes: []const []const u8 = cfg.url_schemes;
         \\
         \\/// Declared OS permissions (`.permissions` in build.zig, plus the ones
-        \\/// enabled modules need): pass to `App.Config.permissions`.
-        \\pub const permissions: oriel.permissions.Declared = .{
+        \\/// enabled modules need): only these can be requested.
+        \\const permissions: oriel.permissions.Declared = .{
         \\    .microphone = cfg.permission_microphone,
         \\    .camera = cfg.permission_camera,
         \\    .screen_capture = cfg.permission_screen_capture,
@@ -3107,14 +3127,13 @@ fn appConfigModule(
         \\    .local_network = cfg.permission_local_network,
         \\};
         \\
-        \\/// The isolation hook (`.isolation` in build.zig): pass to
-        \\/// `App.Config.security.isolation`. Null without one.
+        \\/// The isolation hook (`.isolation` in build.zig). Null without one.
         \\
         ,
         if (isolation != null)
-            "pub const isolation: ?oriel.security.Isolation = .{ .hook = @embedFile(\"isolation_hook.js\") };\n"
+            "const isolation: ?oriel.security.Isolation = .{ .hook = @embedFile(\"isolation_hook.js\") };\n"
         else
-            "pub const isolation: ?oriel.security.Isolation = null;\n",
+            "const isolation: ?oriel.security.Isolation = null;\n",
     }));
     const mod = b.createModule(.{ .root_source_file = root });
     mod.addImport("oriel", oriel);

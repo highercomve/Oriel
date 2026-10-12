@@ -224,7 +224,6 @@ pub fn sharedApplication() Object {
 
 /// Global shortcut, tray and menu backends
 /// can hook shutdown here, like on Windows.
-
 pub fn setMenu(items: anytype, on_action: anytype) !void {
     const menu_mod = @import("../../modules/menu.zig");
     try menu_mod.set(items, on_action);
@@ -372,7 +371,7 @@ fn orielShareService(_: cocoa.id, _: cocoa.c.SEL, pboard: cocoa.id, _: cocoa.id,
     share.receiveService(.{ .value = pboard });
 }
 
-/// Clicking the Dock icon while every window is hidden (`on_close = .hide`)
+/// Clicking the Dock icon while every window is hidden (`hide_on_close`)
 /// brings the main window back. With `on_second_instance`, a reopen (a Dock
 /// click, or the app launched again through Launch Services, e.g. from
 /// Finder) also calls the handler, with no arguments.
@@ -535,7 +534,7 @@ const NSApplicationActivationPolicyRegular: isize = 0;
 const NSApplicationActivationPolicyAccessory: isize = 1;
 
 pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
-    const dev_url: ?[]const u8 = if (config.dev) |d| d.url else null;
+    const dev_url: ?[]const u8 = if (config.app.dev) |d| d.url else null;
     const local: security.Local = comptime .{ .dev_origin = if (dev_url) |u| blk: {
         var buf: [512]u8 = undefined;
         const o = security.origin(&buf, u) orelse @compileError("invalid dev URL: " ++ u);
@@ -544,7 +543,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     } else null };
 
     // strict_styles and isolation adjust the app's CSP (security.effectiveCsp).
-    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security)) |c| (c ++ "\x00")[0..c.len :0] else null;
+    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security, config.app.isolation)) |c| (c ++ "\x00")[0..c.len :0] else null;
     const Creator = window.WindowCreator(api, config, local, csp_z);
 
     return struct {
@@ -560,7 +559,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 const ns_url = cocoa.class("NSURL").msgSend(Object, "URLWithString:", .{text});
                 if (ns_url.value != null and apple_hooks.intercept(.open_url, .{raw(ns_url.value)})) return;
             }
-            _ = deep_link.validate(url, config.deep_link_schemes) catch |err| {
+            _ = deep_link.validate(url, config.app.url_schemes) catch |err| {
                 log.warn("deep link rejected: {s}", .{@errorName(err)});
                 return;
             };
@@ -580,7 +579,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             const argv = _NSGetArgv().*;
             for (1..argc) |i| {
                 const arg = std.mem.span(argv[i]);
-                if (deep_link.validate(arg, config.deep_link_schemes)) |_| return arg else |_| {}
+                if (deep_link.validate(arg, config.app.url_schemes)) |_| return arg else |_| {}
             }
             return null;
         }
@@ -591,7 +590,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             if (config.on_second_instance) |h| h(args);
             if (build_opts.deep_link) {
                 for (args) |arg| {
-                    if (deep_link.validate(arg, config.deep_link_schemes)) |_| {
+                    if (deep_link.validate(arg, config.app.url_schemes)) |_| {
                         deep_link.deliver(arg);
                         break;
                     } else |_| {}
@@ -612,10 +611,10 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 if (gpa.alloc([]const u8, argc -| 1)) |args| {
                     defer gpa.free(args);
                     for (args, 1..) |*a, i| a.* = std.mem.span(argv[i]);
-                    switch (single_instance.acquire(config.id, args, &onSecondInstance)) {
+                    switch (single_instance.acquire(config.app.id, args, &onSecondInstance)) {
                         .primary => {},
                         .forwarded => {
-                            log.info("{s} is already running: this launch's arguments were handed to it", .{config.id});
+                            log.info("{s} is already running: this launch's arguments were handed to it", .{config.app.id});
                             return 0;
                         },
                         .failed => return 1,
@@ -634,13 +633,13 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             const app = sharedApplication();
             // A plain executable (no .app bundle) is a background app by
             // default: no Dock icon, no menu bar, windows behind others.
-            // A background app (tray, global shortcut: show_main_window =
+            // A background app (tray, global shortcut: main window visible =
             // false) stays out of the Dock and the app switcher (accessory
             // policy): no Dock icon, no ⌘Tab, no menu bar, even once its
             // main window is shown; showing a window still activates it.
-            _ = app.msgSend(cocoa.c.BOOL, "setActivationPolicy:", .{if (config.show_main_window) NSApplicationActivationPolicyRegular else NSApplicationActivationPolicyAccessory});
+            _ = app.msgSend(cocoa.c.BOOL, "setActivationPolicy:", .{if (config.window.visible) NSApplicationActivationPolicyRegular else NSApplicationActivationPolicyAccessory});
 
-            if (config.icon) |icon_data| {
+            if (config.app.icon) |icon_data| {
                 const ns_data_cls = cocoa.class("NSData");
                 const data = ns_data_cls.msgSend(Object, "dataWithBytes:length:", .{ icon_data.ptr, @as(c_ulong, icon_data.len) });
                 if (data.value != null) {
@@ -676,7 +675,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             app.msgSend(void, "setDelegate:", .{delegate});
             const lifecycle_watch = LifecycleWatch.install(delegate);
             defer lifecycle_watch.uninstall();
-            installDefaultMenu(app, config.title);
+            installDefaultMenu(app, config.window.title);
             // The delegate answers the app's Services item (share module).
             if (build_opts.share) {
                 app.msgSend(void, "setServicesProvider:", .{delegate});
@@ -697,7 +696,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
             // Before QuitSignals: children inherit ignored signals across exec,
             // and a dev server ignoring SIGTERM couldn't be stopped.
-            var dev_server_proc: ?std.process.Child = if (config.dev) |dev| dev_server.startDevServer(io, dev) else null;
+            var dev_server_proc: ?std.process.Child = if (config.app.dev) |dev| dev_server.startDevServer(io, dev) else null;
             defer if (dev_server_proc) |*p| dev_server.stopDevServer(io, p);
 
             var quit_signals = QuitSignals.install();
@@ -723,27 +722,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             // Tasks queued before the run loop existed.
             processDispatchQueue();
 
-            _ = App.openWindow(.{
-                .label = "main",
-                .title = config.title,
-                .url = config.url,
-                .width = config.width,
-                .height = config.height,
-                .min_width = config.min_width,
-                .min_height = config.min_height,
-                .max_width = config.max_width,
-                .max_height = config.max_height,
-                .resizable = config.resizable,
-                .decorations = config.decorations,
-                .fullscreen = config.fullscreen,
-                .maximized = config.maximized,
-                .remember_geometry = config.remember_geometry,
-                .visible = config.show_main_window,
-                .transparent = config.transparent,
-                .always_on_top = config.always_on_top,
-                .skip_taskbar = config.skip_taskbar,
-                .placement = config.placement,
-            }) catch |err| {
+            _ = App.openWindow(config.window) catch |err| {
                 log.err("failed to open main window: {s}", .{@errorName(err)});
                 return 1;
             };
@@ -753,7 +732,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
             // A background app (no main window at startup) leaves the focus
             // where it is.
-            if (config.show_main_window) app.msgSend(void, "activateIgnoringOtherApps:", .{cocoa.boolean(true)});
+            if (config.window.visible) app.msgSend(void, "activateIgnoringOtherApps:", .{cocoa.boolean(true)});
             if (!quit_requested) app.msgSend(void, "run", .{});
             return exit_code.load(.monotonic);
         }

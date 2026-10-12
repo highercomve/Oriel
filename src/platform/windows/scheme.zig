@@ -53,7 +53,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             const uri = std.unicode.utf16LeToUtf8Alloc(gpa, uri_w.?[0..uri_len]) catch return false;
             defer gpa.free(uri);
 
-            if (comptime config.security.isolation != null) {
+            if (comptime config.app.isolation != null) {
                 const iso_prefix = isolation.origin ++ "/";
                 if (std.ascii.startsWithIgnoreCase(uri, iso_prefix)) {
                     const rest = uri[iso_prefix.len..];
@@ -78,7 +78,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
                 }
             }
 
-            const asset = App.findAsset(config.assets, clean_path, config.spa_fallback);
+            const asset = App.findAsset(config.app.assets, clean_path, config.spa_fallback);
 
             if (asset) |a| {
                 const stream = win32.SHCreateMemStream(a.data.ptr, @intCast(a.data.len)) orelse return false;
@@ -147,7 +147,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
         ) bool {
             const gpa = std.heap.smp_allocator;
             const page: ?[]u8 = if (path.len == 0 or std.mem.eql(u8, path, "index.html"))
-                isolation.servePage(gpa, config.security, local, view) catch null
+                isolation.servePage(gpa, config.app.isolation, local, view) catch null
             else
                 null;
             defer if (page) |p| {
@@ -155,7 +155,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
                 gpa.free(p);
             };
             const hdr: ?[]u8 = if (page != null) blk: {
-                const csp = isolation.pageCsp(gpa, config.security, local) catch break :blk null;
+                const csp = isolation.pageCsp(gpa, config.app.isolation, local) catch break :blk null;
                 defer gpa.free(csp);
                 break :blk std.fmt.allocPrint(gpa, "Content-Type: text/html\r\nContent-Security-Policy: {s}\r\n{s}", .{ csp, comptime isolation.pageHeaderLines(config.security) }) catch null;
             } else null;
