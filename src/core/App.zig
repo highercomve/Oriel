@@ -71,22 +71,10 @@ pub const Api = struct {
 };
 
 pub const Config = struct {
-    id: [:0]const u8,
-    title: [:0]const u8,
-    width: c_int = 960,
-    height: c_int = 720,
-    min_width: ?c_int = null,
-    min_height: ?c_int = null,
-    max_width: ?c_int = null,
-    max_height: ?c_int = null,
-    resizable: bool = true,
-    decorations: bool = true,
-    fullscreen: bool = false,
-    maximized: bool = false,
-    remember_geometry: bool = false,
-    assets: []const Asset = &.{},
-    /// Remote URL to load at startup instead of embedded assets.
-    url: ?[:0]const u8 = null,
+    /// Everything build.zig declares: pass `oriel_app.build`.
+    app: Build,
+    /// The main window. Its label is always "main".
+    window: WindowOptions = .{},
     /// Custom User-Agent string for the webview.
     user_agent: ?[:0]const u8 = null,
     /// Path + query loaded at startup, relative to `app://app/`.
@@ -95,37 +83,42 @@ pub const Config = struct {
     spa_fallback: bool = true,
     devtools: bool = @import("builtin").mode == .Debug,
     security: security.Security = .{},
-    /// Closing the window quits the app, or only hides it (e.g. when a tray
-    /// icon can bring it back).
-    on_close: enum { quit, hide } = .quit,
     /// What happens when `window.open()` or `target="_blank"` navigates to an allowed app-local URL.
     /// Defaults to `.main_view` (load in main view). When `.new_window`, opens a new Oriel window.
     window_open: WindowOpenMode = .main_view,
     /// Called once the window exists, on the main thread: create the tray,
     /// register shortcuts, start background work.
     setup: ?*const fn () anyerror!void = null,
-    /// Development mode: load the frontend from a dev server (e.g. Vite with
-    /// hot reload) instead of the embedded assets.
-    dev: ?Dev = null,
-    /// Application icon in PNG format (e.g. from `app.icon_bytes`).
-    icon: ?[]const u8 = null,
-    /// Declared URL schemes handled by the application (e.g. &.{ "oriel-notes" }).
-    deep_link_schemes: []const []const u8 = &.{},
-    /// OS permissions the app declares (`app.permissions`, from `.permissions`
-    /// in build.zig): only these can be requested, by Zig or by the page.
-    permissions: @import("permissions.zig").Declared = .{},
-    /// Show the main window at startup. False for background apps (tray,
-    /// global shortcut): the main window is created hidden; `show()` it later.
-    show_main_window: bool = true,
-    /// Main-window options for overlay-style apps (see WindowOptions).
-    transparent: bool = false,
-    always_on_top: bool = false,
-    skip_taskbar: bool = false,
-    placement: ?Placement = null,
     /// Single instance: a second launch of the app forwards its arguments
     /// (without argv[0]) here, on the main thread of the running instance,
     /// and exits. Null keeps the platform default.
     on_second_instance: ?*const fn (args: []const []const u8) void = null,
+};
+
+/// What build.zig declares for the app (`addApp`), generated into the
+/// `oriel_app` module as `oriel_app.build`.
+pub const Build = struct {
+    /// The app id (`.package.id`, else "dev.oriel.<name>").
+    id: [:0]const u8,
+    /// Embedded frontend files (empty in dev builds).
+    assets: []const Asset = &.{},
+    /// Development mode: load the frontend from a dev server (e.g. Vite with
+    /// hot reload) instead of the embedded assets.
+    dev: ?Dev = null,
+    /// Application icon in PNG format.
+    icon: ?[]const u8 = null,
+    /// URL schemes handled by the application (`.url_schemes`), delivered
+    /// by `oriel.deep_link`.
+    url_schemes: []const []const u8 = &.{},
+    /// OS permissions the app declares (`.permissions`): only these can be
+    /// requested, by Zig or by the page.
+    permissions: @import("permissions.zig").Declared = .{},
+    /// The isolation pattern (`.isolation`, see `isolation.zig`): every IPC
+    /// call from the app's own pages (app:// and the dev server) must be
+    /// approved by the hook, which runs in a sandboxed frame the page can't
+    /// reach, and is signed there. Remote capability origins are not
+    /// covered: they keep the token check and their capabilities. Null: off.
+    isolation: ?security.Isolation = null,
 };
 
 /// The process arguments, for the platform shell (deep links, second-launch
@@ -883,27 +876,29 @@ fn lookupAsset(assets: []const Asset, path: []const u8) ?Asset {
 
 pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     ensureWindowsMutex();
+    comptime if (!std.mem.eql(u8, config.window.label, "main"))
+        @compileError("App.Config.window is the main window: its label is \"main\", not \"" ++ config.window.label ++ "\"");
     comptime security.checkHeaders(config.security.headers);
-    comptime @import("isolation.zig").checkHook(config.security);
+    comptime @import("isolation.zig").checkHook(config.app.isolation);
     current_security = config.security;
-    current_local = comptime .{ .dev_origin = if (config.dev) |d| blk: {
+    current_local = comptime .{ .dev_origin = if (config.app.dev) |d| blk: {
         var buf: [512]u8 = undefined;
         const o = security.origin(&buf, d.url) orelse @compileError("invalid dev URL: " ++ d.url);
         const copy = o[0..o.len].*;
         break :blk &copy;
     } else null };
-    @import("permissions.zig").setDeclared(config.permissions);
+    @import("permissions.zig").setDeclared(config.app.permissions);
     ipc.initToken(io); // before any window (and bridge script) exists
 
     const app_log = @import("log.zig");
-    app_log.init(config.id);
+    app_log.init(config.app.id);
     defer app_log.deinit();
 
     if (build_opts.deep_link) {
         const deep_link = @import("../modules/deep_link.zig");
-        deep_link.setDeclaredSchemes(config.deep_link_schemes);
-        if (config.deep_link_schemes.len == 0)
-            std.log.warn("deep links are enabled but no scheme is accepted: pass `.deep_link_schemes = app.url_schemes` to App.run", .{});
+        deep_link.setDeclaredSchemes(config.app.url_schemes);
+        if (config.app.url_schemes.len == 0)
+            std.log.warn("deep links are enabled but no scheme is accepted: declare `.url_schemes` in addApp (build.zig)", .{});
     }
 
     defer {
@@ -921,7 +916,7 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     std.Io.Threaded.mutexLock(&pool_mutex);
     worker_pool = pool;
     std.Io.Threaded.mutexUnlock(&pool_mutex);
-    current_app_id = config.id;
+    current_app_id = config.app.id;
     defer {
         stopWorkerPool(pool);
         // The loop has returned: replies and runOnMain tasks the drained

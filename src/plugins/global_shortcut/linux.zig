@@ -357,7 +357,7 @@ fn openPortalConnection() !*gio.DBusConnection {
 }
 
 /// The app id to register with the portal: the running GApplication's id
-/// (`App.Config.id`), else the program name.
+/// (`App.Build.id`), else the program name.
 fn defaultAppId() ?[*:0]const u8 {
     if (gio.Application.getDefault()) |app| {
         if (app.getApplicationId()) |id| return id;

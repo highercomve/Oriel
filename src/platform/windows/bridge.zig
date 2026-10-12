@@ -337,7 +337,7 @@ pub fn Bridge(
             // frame from another origin, which also gets this script, has none).
             const token_js = ipc.tokenScript(gpa, config.security, local) catch return false;
             defer gpa.free(token_js);
-            const with_iso = std.mem.replaceOwned(u8, gpa, bridge_js, isolation_placeholder, comptime isolation.bridgeScript(config.security, local)) catch return false;
+            const with_iso = std.mem.replaceOwned(u8, gpa, bridge_js, isolation_placeholder, comptime isolation.bridgeScript(config.app.isolation, local)) catch return false;
             defer gpa.free(with_iso);
             const with_token = std.mem.replaceOwned(u8, gpa, with_iso, token_placeholder, token_js) catch return false;
             defer gpa.free(with_token);
@@ -556,7 +556,7 @@ pub fn Bridge(
             }
             // With isolation on, the app's pages send only calls the
             // isolation hook signed; `call` is the call inside.
-            const checked = isolation.check(temp_alloc, config.security, local, page_url, @intFromPtr(view), .{ .cmd = req.cmd, .args = req.args, .token = req.token, .iso = req.iso }, msg_u8) catch |err| {
+            const checked = isolation.check(temp_alloc, config.app.isolation, local, page_url, @intFromPtr(view), .{ .cmd = req.cmd, .args = req.args, .token = req.token, .iso = req.iso }, msg_u8) catch |err| {
                 sendErrorReply(view, req.id, isolation.errorText(err));
                 return;
             };

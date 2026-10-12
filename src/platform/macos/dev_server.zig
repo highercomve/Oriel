@@ -1,4 +1,4 @@
-//! Dev server lifecycle for macOS dev builds: start `config.dev.command`
+//! Dev server lifecycle for macOS dev builds: start `config.app.dev.command`
 //! (e.g. Vite) with the app and stop it when the app exits, like the Linux
 //! backend. `zig build dev`'s runner (tools/dev_runner.zig) is Linux-only,
 //! so on macOS run the dev executable (`zig build build-dev`) directly.

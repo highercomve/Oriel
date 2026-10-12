@@ -293,7 +293,6 @@ pub fn setMenu(items: anytype, on_action: anytype) !void {
 }
 
 /// Hook for modules that must clean up at shutdown (UI thread).
-
 var exit_code: std.atomic.Value(u8) = .init(0);
 var quit_event: Event = .{};
 
@@ -308,14 +307,14 @@ pub fn quit(code: u8) void {
 // ---------------------------------------------------------------------------
 
 pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
-    const dev_url: ?[]const u8 = if (config.dev) |d| d.url else null;
+    const dev_url: ?[]const u8 = if (config.app.dev) |d| d.url else null;
     const local: security.Local = comptime .{ .dev_origin = if (dev_url) |u| blk: {
         var buf: [512]u8 = undefined;
         const o = security.origin(&buf, u) orelse @compileError("invalid dev URL: " ++ u);
         const copy = o[0..o.len].*;
         break :blk &copy;
     } else null };
-    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security)) |c| (c ++ "\x00")[0..c.len :0] else null;
+    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security, config.app.isolation)) |c| (c ++ "\x00")[0..c.len :0] else null;
     const Creator = window.WindowCreator(api, config, local, csp_z);
 
     return struct {
@@ -349,27 +348,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
         /// UI thread: the main window, the app's setup, the launch deep link.
         fn start(_: ?*anyopaque) void {
-            _ = App.openWindow(.{
-                .label = "main",
-                .title = config.title,
-                .url = config.url,
-                .width = config.width,
-                .height = config.height,
-                .min_width = config.min_width,
-                .min_height = config.min_height,
-                .max_width = config.max_width,
-                .max_height = config.max_height,
-                .resizable = config.resizable,
-                .decorations = config.decorations,
-                .fullscreen = config.fullscreen,
-                .maximized = config.maximized,
-                .remember_geometry = config.remember_geometry,
-                .visible = config.show_main_window,
-                .transparent = config.transparent,
-                .always_on_top = config.always_on_top,
-                .skip_taskbar = config.skip_taskbar,
-                .placement = config.placement,
-            }) catch |err| {
+            _ = App.openWindow(config.window) catch |err| {
                 log.err("failed to open main window: {s}", .{@errorName(err)});
                 quit(1);
                 return;
@@ -389,7 +368,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             }
             if (build_opts.deep_link) {
                 for (args) |arg| {
-                    if (deep_link.validate(arg, config.deep_link_schemes)) |_| {
+                    if (deep_link.validate(arg, config.app.url_schemes)) |_| {
                         if (first) deep_link.setColdStartUrl(arg);
                         deep_link.deliver(arg);
                         break;

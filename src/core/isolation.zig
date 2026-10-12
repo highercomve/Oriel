@@ -1,4 +1,4 @@
-//! The isolation pattern (`Security.isolation`): every IPC call from the
+//! The isolation pattern (`App.Build.isolation`): every IPC call from the
 //! app's own pages is approved by the app's isolation hook, running in a
 //! sandboxed frame the page can't reach, and signed there with a key the page
 //! never sees. A script injected into the page (an XSS, a compromised
@@ -215,14 +215,14 @@ pub const Checked = struct {
 /// Errors are logged here; bridges answer with `errorText`.
 pub fn check(
     arena: std.mem.Allocator,
-    comptime sec: security.Security,
+    comptime iso: ?security.Isolation,
     local: security.Local,
     page_url: []const u8,
     view: usize,
     request: ipc.Request,
     json: []const u8,
 ) error{ Forbidden, StaleKey, OutOfMemory }!Checked {
-    if (comptime sec.isolation == null) return .{ .request = request, .json = json };
+    if (comptime iso == null) return .{ .request = request, .json = json };
     var buf: [512]u8 = undefined;
     const o = security.origin(&buf, page_url) orelse return error.Forbidden;
     const sealed_shape = std.mem.eql(u8, request.cmd, sealed_cmd) or request.iso != null;
@@ -315,8 +315,8 @@ const runtime_js =
 ;
 
 /// The isolation page's single inline script: the runtime, then the hook.
-pub fn script(comptime sec: security.Security, comptime local: security.Local) []const u8 {
-    const iso = sec.isolation orelse return "";
+pub fn script(comptime isolation: ?security.Isolation, comptime local: security.Local) []const u8 {
+    const iso = isolation orelse return "";
     return runtime_head ++ " " ++ localOrigins(local) ++ runtime_js ++ ";\n" ++ lfOnly(iso.hook) ++ "\n";
 }
 
@@ -353,14 +353,14 @@ fn localOrigins(comptime local: security.Local) []const u8 {
 }
 
 /// Compile error for a hook that could end or confuse the inline `<script>`.
-pub fn checkHook(comptime sec: security.Security) void {
+pub fn checkHook(comptime isolation: ?security.Isolation) void {
     comptime {
-        const hook = if (sec.isolation) |iso| iso.hook else "";
+        const hook = if (isolation) |iso| iso.hook else "";
         @setEvalBranchQuota(10_000 + hook.len * 40);
         for (0..hook.len) |i| {
             const rest = hook[i..];
             if (startsWithIgnoreCase(rest, "</script") or startsWithIgnoreCase(rest, "<!--"))
-                @compileError("security.isolation.hook: must not contain \"</script\" or \"<!--\" (it is inlined into the isolation page); write e.g. \"<\\/script\"");
+                @compileError("isolation.hook: must not contain \"</script\" or \"<!--\" (it is inlined into the isolation page); write e.g. \"<\\/script\"");
         }
     }
 }
@@ -371,9 +371,9 @@ fn startsWithIgnoreCase(s: []const u8, prefix: []const u8) bool {
 
 /// The CSP of the isolation page: only its own inline script, and only the
 /// app's own pages may frame it.
-pub fn pageCsp(gpa: std.mem.Allocator, comptime sec: security.Security, comptime local: security.Local) ![]u8 {
+pub fn pageCsp(gpa: std.mem.Allocator, comptime iso: ?security.Isolation, comptime local: security.Local) ![]u8 {
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(comptime script(sec, local), &digest, .{});
+    std.crypto.hash.sha2.Sha256.hash(comptime script(iso, local), &digest, .{});
     var b64: [std.base64.standard.Encoder.calcSize(digest.len)]u8 = undefined;
     _ = std.base64.standard.Encoder.encode(&b64, &digest);
     return std.fmt.allocPrint(gpa, "default-src 'none'; script-src 'sha256-{s}'; base-uri 'none'; form-action 'none'; frame-ancestors {s}{s}{s}", .{
@@ -416,7 +416,7 @@ pub fn isPagePath(path: []const u8) bool {
 /// The isolation page for a request from `view`, with a key minted for it.
 /// Null if no key can be minted (before `init`). Caller frees; the key only
 /// lives in the returned page (and the key table).
-pub fn servePage(gpa: std.mem.Allocator, comptime sec: security.Security, comptime local: security.Local, view: usize) !?[]u8 {
+pub fn servePage(gpa: std.mem.Allocator, comptime iso: ?security.Isolation, comptime local: security.Local, view: usize) !?[]u8 {
     var minted = mint(view) orelse return null;
     defer std.crypto.secureZero(u8, &minted.key);
     var key_b64: [std.base64.standard.Encoder.calcSize(key_len)]u8 = undefined;
@@ -424,7 +424,7 @@ pub fn servePage(gpa: std.mem.Allocator, comptime sec: security.Security, compti
     _ = std.base64.standard.Encoder.encode(&key_b64, &minted.key);
     return try std.fmt.allocPrint(gpa,
         \\<!doctype html><html><head><meta charset="utf-8"><meta name="oriel-isolation" content="{s}.{s}"><script>{s}</script></head><body></body></html>
-    , .{ &minted.kid, &key_b64, comptime script(sec, local) });
+    , .{ &minted.kid, &key_b64, comptime script(iso, local) });
 }
 
 // --- The page side (bridge) ----------------------------------------------------------
@@ -433,8 +433,8 @@ pub fn servePage(gpa: std.mem.Allocator, comptime sec: security.Security, compti
 /// isolation, on remote origins and in frames; otherwise calls go through the
 /// isolation frame and are forwarded with `sendSealed(iso)`. Both functions
 /// are defined by each bridge before this script.
-pub fn bridgeScript(comptime sec: security.Security, comptime local: security.Local) []const u8 {
-    if (sec.isolation == null) return "  const invoke = rawInvoke;\n";
+pub fn bridgeScript(comptime iso: ?security.Isolation, comptime local: security.Local) []const u8 {
+    if (iso == null) return "  const invoke = rawInvoke;\n";
     return "  const isoOrigin = \"" ++ origin ++ "\";\n  const isoLocal = " ++ localOrigins(local) ++ ";\n" ++ bridge_js;
 }
 
@@ -555,9 +555,9 @@ const bridge_js =
 /// `origin` (derived from `default-src` when the CSP has no `frame-src`).
 /// A `child-src` without `frame-src`, or a `frame-src` without the isolation
 /// origin, is a compile error: Oriel doesn't rewrite a policy the app wrote.
-pub fn appCsp(comptime sec: security.Security) ?[]const u8 {
-    const csp = sec.csp orelse return null;
-    if (sec.isolation == null) return csp;
+pub fn appCsp(comptime app_csp: ?[]const u8, comptime iso: ?security.Isolation) ?[]const u8 {
+    const csp = app_csp orelse return null;
+    if (iso == null) return csp;
     @setEvalBranchQuota(100_000);
     if (directive(csp, "frame-src")) |v| {
         if (!hasSource(v, origin)) @compileError("security.csp: with isolation on, frame-src must allow " ++ origin);
@@ -661,33 +661,30 @@ test check {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const sec: security.Security = comptime .{
-        .isolation = .{ .hook = "globalThis.__ORIEL_ISOLATION_HOOK__ = (c) => c;" },
-        .capabilities = &.{.{ .origin = "https://partner.example", .commands = &.{"ping"} }},
-    };
+    const iso: ?security.Isolation = comptime .{ .hook = "globalThis.__ORIEL_ISOLATION_HOOK__ = (c) => c;" };
     const local: security.Local = .{};
     const app_page = security.app_origin ++ "/index.html";
 
     // Unsealed from the app's page: refused, even a built-in.
-    try std.testing.expectError(error.Forbidden, check(arena, sec, local, app_page, 9, .{ .cmd = "open_external" }, "{}"));
+    try std.testing.expectError(error.Forbidden, check(arena, iso, local, app_page, 9, .{ .cmd = "open_external" }, "{}"));
     // Remote capability origin: token path, unchanged; a sealed shape is refused there.
-    const remote = try check(arena, sec, local, "https://partner.example/", 9, .{ .cmd = "ping" }, "{\"cmd\":\"ping\"}");
+    const remote = try check(arena, iso, local, "https://partner.example/", 9, .{ .cmd = "ping" }, "{\"cmd\":\"ping\"}");
     try std.testing.expectEqualStrings("ping", remote.request.cmd);
-    try std.testing.expectError(error.Forbidden, check(arena, sec, local, "https://partner.example/", 9, .{ .cmd = sealed_cmd }, "{}"));
+    try std.testing.expectError(error.Forbidden, check(arena, iso, local, "https://partner.example/", 9, .{ .cmd = sealed_cmd }, "{}"));
 
     const m = mint(9).?;
     var mb: [64]u8 = undefined;
     const s = "{\"seq\":1,\"cmd\":\"greet\",\"args\":{\"name\":\"x\"}}";
     const req: ipc.Request = .{ .cmd = sealed_cmd, .token = "t", .iso = .{ .kid = &m.kid, .s = s, .mac = sealFor(&mb, m.key, s) } };
-    const ok = try check(arena, sec, local, app_page, 9, req, "{}");
+    const ok = try check(arena, iso, local, app_page, 9, req, "{}");
     try std.testing.expectEqualStrings("greet", ok.request.cmd);
     try std.testing.expectEqualStrings("t", ok.request.token.?);
     const again = try ipc.parseRequest(arena, ok.json);
     try std.testing.expectEqualStrings("greet", again.cmd);
     try std.testing.expect(again.iso == null);
-    try std.testing.expectError(error.Forbidden, check(arena, sec, local, app_page, 9, req, "{}"));
+    try std.testing.expectError(error.Forbidden, check(arena, iso, local, app_page, 9, req, "{}"));
     // Without isolation nothing changes.
-    const plain = try check(arena, .{}, local, app_page, 9, .{ .cmd = "ping" }, "{\"cmd\":\"ping\"}");
+    const plain = try check(arena, null, local, app_page, 9, .{ .cmd = "ping" }, "{\"cmd\":\"ping\"}");
     try std.testing.expectEqualStrings("{\"cmd\":\"ping\"}", plain.json);
 }
 
@@ -695,32 +692,32 @@ test appCsp {
     const hook: security.Isolation = .{ .hook = "" };
     try std.testing.expectEqualStrings(
         "default-src 'self'; frame-src 'self' " ++ origin,
-        comptime appCsp(.{ .csp = "default-src 'self';", .isolation = hook }).?,
+        comptime appCsp("default-src 'self';", hook).?,
     );
     try std.testing.expectEqualStrings(
         "default-src 'none'; frame-src " ++ origin,
-        comptime appCsp(.{ .csp = "default-src 'none'", .isolation = hook }).?,
+        comptime appCsp("default-src 'none'", hook).?,
     );
     const own = "default-src 'self'; frame-src 'self' " ++ origin ++ "/";
-    try std.testing.expectEqualStrings(own, comptime appCsp(.{ .csp = own, .isolation = hook }).?);
-    try std.testing.expectEqualStrings("script-src 'self'", comptime appCsp(.{ .csp = "script-src 'self'", .isolation = hook }).?);
-    try std.testing.expectEqualStrings(security.default_csp, comptime appCsp(.{}).?);
-    try std.testing.expect(comptime appCsp(.{ .csp = null, .isolation = hook }) == null);
+    try std.testing.expectEqualStrings(own, comptime appCsp(own, hook).?);
+    try std.testing.expectEqualStrings("script-src 'self'", comptime appCsp("script-src 'self'", hook).?);
+    try std.testing.expectEqualStrings(security.default_csp, comptime appCsp(security.default_csp, null).?);
+    try std.testing.expect(comptime appCsp(null, hook) == null);
     // The default CSP gets a frame-src from its default-src.
-    try std.testing.expect(comptime directive(appCsp(.{ .isolation = hook }).?, "frame-src") != null);
+    try std.testing.expect(comptime directive(appCsp(security.default_csp, hook).?, "frame-src") != null);
 }
 
 test "isolation page" {
     init(@splat(4));
     defer forget(11);
-    const sec: security.Security = comptime .{ .isolation = .{ .hook = "globalThis.__ORIEL_ISOLATION_HOOK__ = (c) => c;" } };
+    const iso: ?security.Isolation = comptime .{ .hook = "globalThis.__ORIEL_ISOLATION_HOOK__ = (c) => c;" };
     const local: security.Local = .{ .dev_origin = "http://localhost:5173" };
-    const page = (try servePage(std.testing.allocator, sec, local, 11)).?;
+    const page = (try servePage(std.testing.allocator, iso, local, 11)).?;
     defer std.testing.allocator.free(page);
     try std.testing.expect(std.mem.indexOf(u8, page, "<meta name=\"oriel-isolation\" content=\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "__ORIEL_ISOLATION_HOOK__ = (c) => c;") != null);
     try std.testing.expect(std.mem.indexOf(u8, page, "const parents = [\"" ++ security.app_origin ++ "\", \"http://localhost:5173\"];") != null);
-    const csp = try pageCsp(std.testing.allocator, sec, local);
+    const csp = try pageCsp(std.testing.allocator, iso, local);
     defer std.testing.allocator.free(csp);
     try std.testing.expect(std.mem.startsWith(u8, csp, "default-src 'none'; script-src 'sha256-"));
     try std.testing.expect(std.mem.endsWith(u8, csp, "frame-ancestors " ++ security.app_origin ++ " http://localhost:5173"));
@@ -733,12 +730,12 @@ test "isolation page" {
     _ = std.base64.standard.Encoder.encode(&b64, &digest);
     try std.testing.expect(std.mem.indexOf(u8, csp, &b64) != null);
     try std.testing.expect(isPagePath("/") and !isPagePath("/x.js"));
-    checkHook(sec);
+    checkHook(iso);
 }
 
 test "hook line endings and COEP" {
     // The HTML parser turns CRLF into LF before CSP hashes the script.
-    const crlf: security.Security = comptime .{ .isolation = .{ .hook = "const a = 1;\r\nconst b = 2;\rconst c = 3;\r\n" } };
+    const crlf: ?security.Isolation = comptime .{ .hook = "const a = 1;\r\nconst b = 2;\rconst c = 3;\r\n" };
     const s = comptime script(crlf, .{});
     try std.testing.expect(std.mem.indexOfScalar(u8, s, '\r') == null);
     try std.testing.expect(std.mem.indexOf(u8, s, "const a = 1;\nconst b = 2;\nconst c = 3;\n") != null);
@@ -755,9 +752,9 @@ test "an evicted key asks the bridge for a fresh frame" {
     defer forget(13);
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    const sec: security.Security = comptime .{ .isolation = .{ .hook = "" } };
+    const iso: ?security.Isolation = comptime .{ .hook = "" };
     const s = "{\"seq\":1,\"cmd\":\"x\"}";
     const req: ipc.Request = .{ .cmd = sealed_cmd, .iso = .{ .kid = "0123456789abcdef", .s = s, .mac = "00" ** 32 } };
-    try std.testing.expectError(error.StaleKey, check(arena_state.allocator(), sec, .{}, security.app_origin ++ "/", 13, req, "{}"));
+    try std.testing.expectError(error.StaleKey, check(arena_state.allocator(), iso, .{}, security.app_origin ++ "/", 13, req, "{}"));
     try std.testing.expectEqualStrings("IsolationStale", errorText(error.StaleKey));
 }

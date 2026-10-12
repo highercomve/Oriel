@@ -56,12 +56,6 @@ pub const Security = struct {
     /// `.valueOf`) throws in strict code (the "override mistake"); use
     /// Object.defineProperty for those.
     freeze_prototype: bool = false,
-    /// The isolation pattern (see `isolation.zig`): every IPC call from the
-    /// app's own pages (app:// and the dev server) must be approved by
-    /// `hook`, which runs in a sandboxed frame the page can't reach, and is
-    /// signed there. Remote capability origins are not covered: they keep
-    /// the token check and their capabilities. Null (default): off.
-    isolation: ?Isolation = null,
     /// Drop `'unsafe-inline'` from `style-src` (`csp.strictStyles`): the
     /// app's own `<style>` blocks still apply (their hashes are added to each
     /// page's CSP at build time), but `style="..."` attributes in the HTML
@@ -81,9 +75,9 @@ pub const Security = struct {
     headers: []const Header = &.{},
 };
 
-/// `Security.isolation`. `hook` is JavaScript (e.g.
-/// `@embedFile("isolation/hook.js")`, or `oriel_app.isolation` from
-/// `addApp(.{ .isolation = .{ .hook = b.path("isolation/hook.js") } })`) that sets
+/// `App.Build.isolation`, from
+/// `addApp(.{ .isolation = .{ .hook = b.path("isolation/hook.js") } })`.
+/// `hook` is JavaScript that sets
 /// `globalThis.__ORIEL_ISOLATION_HOOK__ = (call) => call`: it gets
 /// `{ cmd, args }` for every call and returns it (or a modified one), or
 /// throws to reject it; it may be async. It runs in an opaque-origin frame
@@ -266,16 +260,15 @@ pub const default_csp = "default-src 'self'; " ++
 
 /// The CSP the app's pages get (before per-page hashes, `csp.withHashes`):
 /// `csp`, without `'unsafe-inline'` styles under `strict_styles`, and with
-/// the isolation frame allowed under `isolation`.
-pub fn effectiveCsp(comptime sec: Security) ?[]const u8 {
+/// the isolation frame allowed under `isolation` (`App.Build.isolation`).
+pub fn effectiveCsp(comptime sec: Security, comptime isolation: ?Isolation) ?[]const u8 {
     comptime {
         const base = sec.csp orelse {
             if (sec.strict_styles) @compileError("security.strict_styles needs a CSP (security.csp is null)");
             return null;
         };
-        var s = sec;
-        s.csp = if (sec.strict_styles) @import("csp.zig").strictStyles(base) else base;
-        return @import("isolation.zig").appCsp(s);
+        const csp = if (sec.strict_styles) @import("csp.zig").strictStyles(base) else base;
+        return @import("isolation.zig").appCsp(csp, isolation);
     }
 }
 

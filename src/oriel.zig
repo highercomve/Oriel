@@ -124,7 +124,8 @@ pub const ThreadPool = @import("core/ThreadPool.zig").ThreadPool;
 ///
 ///     pub fn main(init: std.process.Init) !u8 {
 ///         return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-///             .id = "com.example.App", .title = "App", .assets = app.assets, .dev = app.dev,
+///             .app = app.build, // `@import("oriel_app")`: what build.zig declares
+///             .window = .{ .title = "App", .width = 800, .height = 600 },
 ///         });
 ///     }
 ///

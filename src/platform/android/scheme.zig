@@ -21,7 +21,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
         const not_found: handlers.Response = .{ .status = 404, .mime = "text/plain", .headers = "", .body = "Not Found" };
 
         pub fn serve(arena: std.mem.Allocator, id: u32, url: []const u8) ?handlers.Response {
-            if (comptime config.security.isolation != null) {
+            if (comptime config.app.isolation != null) {
                 const iso_prefix = isolation.origin ++ "/";
                 if (std.ascii.startsWithIgnoreCase(url, iso_prefix) or std.ascii.eqlIgnoreCase(url, isolation.origin)) {
                     const rest = if (url.len > iso_prefix.len) url[iso_prefix.len..] else "";
@@ -34,7 +34,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             const rest = url[prefix.len..];
             const path = if (std.mem.indexOfAny(u8, rest, "?#")) |i| rest[0..i] else rest;
 
-            const asset = App.findAsset(config.assets, path, config.spa_fallback) orelse return not_found;
+            const asset = App.findAsset(config.app.assets, path, config.spa_fallback) orelse return not_found;
             const page_csp: ?[:0]u8 = if (csp_z) |c| csp_mod.withHashes(arena, c, asset.script_hashes, asset.style_hashes) catch null else null;
             const extra = comptime headerLines(security.comptimeHeaderLines(config.security.headers));
             const headers = if (page_csp orelse csp_z) |csp|
@@ -48,8 +48,8 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
         /// on that host.
         fn serveIsolation(arena: std.mem.Allocator, path: []const u8, id: u32) handlers.Response {
             if (!isolation.isPagePath(path)) return not_found;
-            const page = (isolation.servePage(arena, config.security, local, id) catch null) orelse return not_found;
-            const csp = isolation.pageCsp(arena, config.security, local) catch return not_found;
+            const page = (isolation.servePage(arena, config.app.isolation, local, id) catch null) orelse return not_found;
+            const csp = isolation.pageCsp(arena, config.app.isolation, local) catch return not_found;
             const headers = std.fmt.allocPrint(arena, "Content-Security-Policy: {s}\n{s}", .{ csp, comptime headerLines(isolation.pageHeaderLines(config.security)) }) catch return not_found;
             return .{ .status = 200, .mime = "text/html", .headers = headers, .body = page };
         }

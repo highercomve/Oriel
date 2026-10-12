@@ -505,7 +505,7 @@ pub fn destroyWindow(handle: WindowHandle) void {
 /// The close sequence shared by the close button, `closeWindow` and JS.
 fn closeNow(win: *App.Window) void {
     const was_key = cocoa.isTrue(win.handle.nsWindow().msgSend(cocoa.c.BOOL, "isKeyWindow", .{}));
-    if (win.options.hide_on_close or (std.mem.eql(u8, win.label, "main") and current_on_close_hide)) {
+    if (win.options.hide_on_close) {
         win.handle.nsWindow().msgSend(void, "orderOut:", .{cocoa.nil});
         if (was_key) returnFocus();
         return;
@@ -558,10 +558,6 @@ pub fn destroyAllWindows() void {
 
 var next_serial: std.atomic.Value(u64) = .init(1);
 
-/// `config.on_close == .hide`, captured by `WindowCreator.init` for the
-/// non-generic close path.
-var current_on_close_hide = false;
-
 // ---------------------------------------------------------------------------
 // Window creation and delegates
 // ---------------------------------------------------------------------------
@@ -600,8 +596,7 @@ pub fn WindowCreator(
         var dev_retries_left: u32 = 0;
 
         pub fn init() void {
-            current_on_close_hide = config.on_close == .hide;
-            if (config.dev) |dev| dev_retries_left = dev.timeout_ms / dev_retry_interval_ms;
+            if (config.app.dev) |dev| dev_retries_left = dev.timeout_ms / dev_retry_interval_ms;
 
             window_delegate = cocoa.new(cocoa.defineClass("OrielWindowDelegate", &.{"NSWindowDelegate"}, .{
                 .{ "windowShouldClose:", windowShouldClose },
@@ -707,7 +702,7 @@ pub fn WindowCreator(
             // this (private, long-standing) preference on. Enabled only for
             // apps that declare the microphone or camera; every request still
             // goes through requestMediaCapture (allowForPage), then TCC.
-            if (comptime (config.permissions.has(.microphone) or config.permissions.has(.camera))) {
+            if (comptime (config.app.permissions.has(.microphone) or config.app.permissions.has(.camera))) {
                 const prefs = wk_config.msgSend(Object, "preferences", .{});
                 if (prefs.getClass().?.respondsToSelector(objc.sel("_setMediaDevicesEnabled:"))) {
                     prefs.msgSend(void, "_setMediaDevicesEnabled:", .{cocoa.boolean(true)});
@@ -735,7 +730,7 @@ pub fn WindowCreator(
                 gpa,
                 config.security,
                 local,
-                if (config.dev) |d| d.url else null,
+                if (config.app.dev) |d| d.url else null,
                 options.url,
                 config.start,
             );
@@ -757,7 +752,7 @@ pub fn WindowCreator(
         fn createNativeWindow(win: Object, options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle {
             const surface = try native.create(
                 std.heap.smp_allocator,
-                config.assets,
+                config.app.assets,
                 @import("../../core/features.zig").platform_json,
                 options.label,
                 options.url orelse "index.html",
@@ -871,7 +866,7 @@ pub fn WindowCreator(
                 cocoa.callBlock(handler, struct { isize }, .{policy_cancel});
                 return;
             };
-            if (comptime config.security.isolation != null) {
+            if (comptime config.app.isolation != null) {
                 if (isIsolationFrame(action, uri)) {
                     cocoa.callBlock(handler, struct { isize }, .{policy_allow});
                     return;
@@ -1002,7 +997,7 @@ pub fn WindowCreator(
         fn didFailProvisionalNavigation(_: cocoa.id, _: cocoa.c.SEL, view: cocoa.id, _: cocoa.id, err: cocoa.id) callconv(.c) void {
             const failure: Object = .{ .value = err };
             const code = failure.msgSend(isize, "code", .{});
-            if (config.dev == null or dev_retries_left == 0) {
+            if (config.app.dev == null or dev_retries_left == 0) {
                 if (code != -999) log.warn("load failed (NSURLError {d})", .{code}); // -999: cancelled by our policy
                 return;
             }
@@ -1020,7 +1015,7 @@ pub fn WindowCreator(
             const pool = objc.AutoreleasePool.init();
             defer pool.deinit();
             if (getWindowByView(view.value) == null) return; // closed while waiting
-            load(view, config.dev.?.url) catch |err| log.err("dev reload failed: {s}", .{@errorName(err)});
+            load(view, config.app.dev.?.url) catch |err| log.err("dev reload failed: {s}", .{@errorName(err)});
         }
     };
 }

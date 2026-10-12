@@ -212,7 +212,6 @@ pub fn sharedApplication() Object {
     return apple.class("UIApplication").msgSend(Object, "sharedApplication", .{});
 }
 
-
 /// Set by the first background: UIKit also sends willEnterForeground while
 /// launching, and, as on Android, `foreground` means "back from background".
 var was_background = false;
@@ -409,7 +408,7 @@ extern fn UIApplicationMain(argc: c_int, argv: [*][*:0]u8, principal: apple.id, 
 // ---------------------------------------------------------------------------
 
 pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
-    const dev_url: ?[]const u8 = if (config.dev) |d| d.url else null;
+    const dev_url: ?[]const u8 = if (config.app.dev) |d| d.url else null;
     const local: security.Local = comptime .{ .dev_origin = if (dev_url) |u| blk: {
         var buf: [512]u8 = undefined;
         const o = security.origin(&buf, u) orelse @compileError("invalid dev URL: " ++ u);
@@ -417,7 +416,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         break :blk &copy;
     } else null };
 
-    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security)) |c| (c ++ "\x00")[0..c.len :0] else null;
+    const csp_z: ?[:0]const u8 = if (comptime security.effectiveCsp(config.security, config.app.isolation)) |c| (c ++ "\x00")[0..c.len :0] else null;
     const Creator = window.WindowCreator(api, config, local, csp_z);
 
     return struct {
@@ -443,17 +442,11 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             // Tasks queued before the app finished launching.
             processDispatchQueue();
 
-            // The main window's size is the scene's: only the options that
-            // mean something on iOS matter here.
-            _ = App.openWindow(.{
-                .label = "main",
-                .title = config.title,
-                .url = config.url,
-                .width = config.width,
-                .height = config.height,
-                .fullscreen = config.fullscreen,
-                .visible = true,
-            }) catch |err| {
+            // The main window is the scene's: its size is the scene's, and
+            // it is always shown.
+            var main_window: App.WindowOptions = config.window;
+            main_window.visible = true;
+            _ = App.openWindow(main_window) catch |err| {
                 log.err("failed to open main window: {s}", .{@errorName(err)});
                 quit(1);
                 return apple.boolean(false);
@@ -475,7 +468,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             const argv = _NSGetArgv().*;
             for (1..argc) |i| {
                 const arg = std.mem.span(argv[i]);
-                if (deep_link.validate(arg, config.deep_link_schemes)) |_| return arg else |_| {}
+                if (deep_link.validate(arg, config.app.url_schemes)) |_| return arg else |_| {}
             }
             return null;
         }
@@ -564,7 +557,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                     if (apple_hooks.intercept(.open_url, .{u.value})) return;
                     if (!build_opts.deep_link) return;
                     const url = apple.urlString(u) orelse return;
-                    _ = deep_link.validate(url, config.deep_link_schemes) catch |err| {
+                    _ = deep_link.validate(url, config.app.url_schemes) catch |err| {
                         log.warn("deep link rejected: {s}", .{@errorName(err)});
                         return;
                     };
@@ -598,7 +591,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             defer pool.deinit();
             exit_code.store(0, .monotonic);
             shutdown_fn = &shutdown;
-            if (config.dev) |dev| log.info("dev URL {s}: the device must reach it (not the device's own localhost)", .{dev.url});
+            if (config.app.dev) |dev| log.info("dev URL {s}: the device must reach it (not the device's own localhost)", .{dev.url});
 
             scene_delegate_class = apple.defineSubclass("OrielSceneDelegate", "UIResponder", &.{"UIWindowSceneDelegate"}, .{
                 .{ "scene:willConnectToSession:options:", sceneWillConnect },

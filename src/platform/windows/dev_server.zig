@@ -1,4 +1,4 @@
-//! Dev server lifecycle for Windows dev builds: start `config.dev.command`
+//! Dev server lifecycle for Windows dev builds: start `config.app.dev.command`
 //! (e.g. Vite) with the app and stop it when the app exits, like the Linux
 //! and macOS backends. Under `oriel dev` / `zig build dev` dev_runner already
 //! runs the server and sets ORIEL_DEV_EXTERNAL, so nothing is started here.

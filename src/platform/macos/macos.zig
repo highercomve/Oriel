@@ -57,7 +57,7 @@ test {
     // Instantiate the generic shell so `zig build check` compiles the run
     // loop, window creation and the WebKit delegates too.
     _ = &run;
-    const S = ShellMod.Shell(.{ .commands = struct {} }, .{ .id = "dev.oriel.Check", .title = "check", .assets = &.{} });
+    const S = ShellMod.Shell(.{ .commands = struct {} }, .{ .app = .{ .id = "dev.oriel.Check" }, .window = .{ .title = "check" } });
     _ = &S.run;
     const Probe = struct {
         fn touch(_: *u8) void {}
