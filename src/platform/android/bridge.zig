@@ -6,7 +6,7 @@
 //! `addDocumentStartJavaScript`) keeps it in its closure and talks JSON over
 //! it: requests carry an `id`, replies and events come back on the same
 //! channel (`JavaScriptReplyProxy`), so a command's events arrive before its
-//! reply, like the WebView2 bridge whose script this one is derived from.
+//! reply, like the WebView2 bridge (both are core/bridge_js.zig's channelTransport).
 //!
 //! Every call is checked like on the other platforms: the page's IPC token,
 //! the isolation seal, then `commandAllowedForWindow`. Only main frames are
@@ -31,36 +31,17 @@ const log = std.log.scoped(.oriel);
 /// document's reply channel for replies and events.
 pub const hello = "__oriel_hello__";
 
-const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
-const isolation_placeholder = "/*__ORIEL_ISOLATION__*/";
+const bridge = @import("../../core/bridge_js.zig");
+const token_placeholder = bridge.token_placeholder;
+const isolation_placeholder = bridge.isolation_placeholder;
 
-/// The WebView2 bridge script with the Android transport.
-pub const bridge_js = blk: {
-    @setEvalBranchQuota(1_000_000);
-    const base = @import("../windows/bridge_script.zig").bridge_js;
-    const replacements = [_][2][]const u8{
-        .{
-            "(() => {\n",
-            "(() => {\n  const native = globalThis.__orielNative;\n  if (!native) return;\n  native.postMessage(\"" ++ hello ++ "\");\n",
-        },
-        .{
-            "  window.chrome.webview.addEventListener('message', (event) => {\n    const data = event.data;\n",
-            "  native.addEventListener('message', (event) => {\n    let data;\n    try { data = JSON.parse(event.data); } catch (_) { return; }\n",
-        },
-        .{
-            "window.chrome.webview.postMessage(",
-            "native.postMessage(",
-        },
-    };
-    var out: []const u8 = base;
-    for (replacements) |r| {
-        if (std.mem.count(u8, out, r[0]) != 1) @compileError("Android bridge: the WebView2 bridge script changed; update the transport replacements");
-        const i = std.mem.indexOf(u8, out, r[0]).?;
-        out = out[0..i] ++ r[1] ++ out[i + r[0].len ..];
-    }
-    if (std.mem.indexOf(u8, out, "chrome.webview") != null) @compileError("Android bridge: WebView2 transport left in the script");
-    break :blk out;
-};
+/// The shared script over the `__orielNative` channel (JSON strings both
+/// ways); a document without the channel gets no bridge.
+pub const bridge_js = bridge.script(bridge.channelTransport(.{
+    .setup = "  const native = globalThis.__orielNative;\n  if (!native) return;\n  native.postMessage(\"" ++ hello ++ "\");\n",
+    .port = "native",
+    .decode = "    let data;\n    try { data = JSON.parse(event.data); } catch (_) { return; }\n",
+}));
 
 /// Post `json` to window `id`'s page (UI thread). `load` is the page load
 /// (OrielWindow's counter) a reply is for: Kotlin drops it once another

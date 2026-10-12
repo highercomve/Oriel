@@ -100,21 +100,16 @@ fn viewGetsEvents(view: *webview2.ICoreWebView2, label: []const u8) bool {
     return App.pageGetsEvents(src, label);
 }
 
-/// Replaced by `ipc.tokenScript` (which defines `const ipcToken`) in each
-/// window's copy of `bridge_js`.
-const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
-/// Replaced by `isolation.bridgeScript` (which defines `invoke`).
-const isolation_placeholder = "/*__ORIEL_ISOLATION__*/";
+const bridge = @import("../../core/bridge_js.zig");
+const token_placeholder = bridge.token_placeholder;
+const isolation_placeholder = bridge.isolation_placeholder;
 
-comptime {
-    @setEvalBranchQuota(100_000); // the scan covers the whole script
-    std.debug.assert(std.mem.count(u8, bridge_js, token_placeholder) == 1);
-    std.debug.assert(std.mem.count(u8, bridge_js, isolation_placeholder) == 1);
-}
-
-/// Injected into allowed pages before their own scripts run (shared with
-/// the Android bridge, which swaps the transport).
-pub const bridge_js = @import("bridge_script.zig").bridge_js;
+/// Injected into allowed pages before their own scripts run: the shared
+/// script over WebView2's message channel.
+pub const bridge_js = bridge.script(bridge.channelTransport(.{
+    .port = "window.chrome.webview",
+    .decode = "    const data = event.data;\n",
+}));
 
 pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
     const gpa = std.heap.smp_allocator;
