@@ -654,6 +654,19 @@ pub const EventHandler = *const fn (event: Event) void;
 
 var handlers: [count]std.atomic.Value(?EventHandler) = @splat(.init(null));
 
+/// Oriel's own modules on extensions (`oriel.*`, e.g. oriel.system_ai's
+/// streamed tokens): the extension's events on the thread that emits them,
+/// instead of `onEvent` and `extension:<name>`. Keep it short.
+pub const Sink = *const fn (event: []const u8, data: []const u8) void;
+
+var sinks: [count]std.atomic.Value(?Sink) = @splat(.init(null));
+
+/// Route extension `name`'s events to `sink` (Oriel's own extensions only).
+pub fn setSink(comptime name: []const u8, sink: Sink) void {
+    comptime if (!spec.reserved(name)) @compileError("oriel.extensions.setSink is for Oriel's own extensions (oriel.*)");
+    sinks[comptime indexOf(name)].store(sink, .release);
+}
+
 /// JSON as is (pending_events copies it like any struct of slices).
 const RawJson = struct {
     json: []const u8,
@@ -694,6 +707,7 @@ fn emitIndex(i: usize, event: []const u8, data: []const u8) void {
     const name = runners[i].name;
     if (!spec.validEventName(event)) return log.warn("{s}: dropped an event with an invalid name", .{name});
     if (data.len > spec.max_event_bytes) return log.warn("{s}: dropped event {s}: {d} bytes, over {d}", .{ name, event, data.len, spec.max_event_bytes });
+    if (sinks[i].load(.acquire)) |sink| return sink(event, data);
     const gpa = heap.gpa;
     const json = dataJson(gpa, data) catch return log.err("{s}: dropped event {s}: out of memory", .{ name, event });
     const value: PageEvent = .{ .index = i, .name = event, .data = .{ .json = json }, .bytes = data };
@@ -804,6 +818,7 @@ var exposed: [count]Exposed = @splat(.init(null));
 /// usually setup). A second call replaces the first.
 pub fn expose(comptime name: []const u8, comptime options: Expose) void {
     comptime {
+        if (spec.reserved(name)) @compileError("oriel.extensions.expose(\"" ++ name ++ "\"): Oriel's own extensions reach the page through their module's API");
         if (options.methods.len > spec.max_exposed_methods) @compileError("oriel.extensions.expose: at most 32 methods");
         for (options.methods) |m| if (!spec.validMethod(m)) @compileError("oriel.extensions.expose: invalid method name \"" ++ m ++ "\"");
     }
