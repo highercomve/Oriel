@@ -1781,6 +1781,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     const permissions = appPermissions(oriel_dep, options);
     const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
     const install_dir: std.Build.InstallDir = .{ .custom = b.fmt("jniLibs/{s}", .{android_build.abiDir(target.result)}) };
+    installExtensionAssets(b, options);
 
     // -Dkokoro: espeak-ng's compiled data as APK assets
     // (zig-out/android-assets/espeak-ng-data, the Gradle project's assets
@@ -1927,7 +1928,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     write_project.addArgs(&.{ "--out", project_dir, "--icons" });
     write_project.addDirectoryArg(icons_dir);
     for (android_vars) |v| write_project.addArgs(&.{ "--var", v });
-    addAndroidAppFiles(write_project, options.android);
+    addAndroidAppFiles(write_project, options);
     if (force) write_project.addArg("--force");
     write_project.has_side_effects = true;
     @import("build/package.zig").getOrCreateStep(b, "android-project", "Write the Android (Gradle) project into android/ (-Dandroid_force rewrites edited files)").dependOn(&write_project.step);
@@ -1936,7 +1937,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     sync_runtime.addDirectoryArg(oriel_dep.path("android/template"));
     sync_runtime.addArgs(&.{ "--out", project_dir });
     for (android_vars) |v| sync_runtime.addArgs(&.{ "--var", v });
-    addAndroidAppFiles(sync_runtime, options.android);
+    addAndroidAppFiles(sync_runtime, options);
     sync_runtime.has_side_effects = true;
     b.getInstallStep().dependOn(&sync_runtime.step);
 
@@ -1951,17 +1952,55 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     return .{ .exe = lib, .dev_exe = dev_lib };
 }
 
-/// `--source`/`--proguard` arguments for `android-project`: the app's own
-/// Kotlin/Java files and R8 rules (`AppOptions.android`).
-fn addAndroidAppFiles(run: *std.Build.Step.Run, android: AppOptions.Android) void {
-    for (android.sources) |src| {
+/// `--source`/`--proguard`/`--keep-class` arguments for `android-project`:
+/// the app's own Kotlin/Java files and R8 rules (`AppOptions.android`), and
+/// its extensions' sources and classes (constructed by name in the
+/// generated registry, so R8 must keep them).
+fn addAndroidAppFiles(run: *std.Build.Step.Run, options: AppOptions) void {
+    for (options.android.sources) |src| {
         run.addArg("--source");
         run.addFileArg(src);
     }
-    if (android.proguard_rules) |rules| {
+    for (options.extensions) |e| {
+        const a = e.android orelse continue;
+        for (a.sources) |src| {
+            run.addArg("--source");
+            run.addFileArg(src);
+        }
+        run.addArgs(&.{ "--keep-class", a.class });
+    }
+    if (options.android.proguard_rules) |rules| {
         run.addArg("--proguard");
         run.addFileArg(rules);
     }
+}
+
+/// App extensions' `.android.assets` under the APK's assets
+/// (zig-out/android-assets/<to>). A `from` in the source tree that is a
+/// file is installed as one; anything else as a directory.
+fn installExtensionAssets(b: *std.Build, options: AppOptions) void {
+    for (options.extensions) |e| {
+        const a = e.android orelse continue;
+        for (a.assets) |asset| {
+            if (lazyPathIsFile(b, asset.from)) {
+                b.getInstallStep().dependOn(&b.addInstallFileWithDir(asset.from, .{ .custom = android_assets_dir }, asset.to).step);
+            } else {
+                b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = asset.from, .install_dir = .{ .custom = android_assets_dir }, .install_subdir = asset.to }).step);
+            }
+        }
+    }
+}
+
+/// Whether `path` is a regular file now: only paths in the source tree can
+/// be looked at while configuring (generated ones count as directories).
+fn lazyPathIsFile(b: *std.Build, path: std.Build.LazyPath) bool {
+    const p = switch (path) {
+        .src_path => |s| s.owner.pathFromRoot(s.sub_path),
+        .cwd_relative => |c| c,
+        else => return false,
+    };
+    const stat = std.Io.Dir.cwd().statFile(b.graph.io, p, .{}) catch return false;
+    return stat.kind == .file;
 }
 
 fn xmlEscape(b: *std.Build, text: []const u8) []const u8 {
@@ -2137,9 +2176,21 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
             @panic(b.fmt("android.dependencies: invalid Maven coordinate '{s}'", .{coordinate}));
         dependencies.appendSlice(b.allocator, b.fmt("    add(\"implementation\", \"{s}\")\n", .{coordinate})) catch @panic("OOM");
     }
+    // App extensions' dependencies join the app's (each once); their
+    // classes go into the generated registry (OrielExtensions.kt).
+    var app_extensions: std.ArrayList(u8) = .empty;
+    for (options.extensions) |e| {
+        const a = e.android orelse continue;
+        for (a.dependencies) |coordinate| {
+            const line = b.fmt("    add(\"implementation\", \"{s}\")\n", .{coordinate});
+            if (std.mem.indexOf(u8, dependencies.items, line) == null) dependencies.appendSlice(b.allocator, line) catch @panic("OOM");
+        }
+        app_extensions.appendSlice(b.allocator, b.fmt("        \"{s}\" -> {s}()\n", .{ e.name, a.class })) catch @panic("OOM");
+    }
 
     return b.allocator.dupe([]const u8, &.{
         b.fmt("android_extensions={s}", .{extensions.items}),
+        b.fmt("app_extensions={s}", .{app_extensions.items}),
         b.fmt("android_dependencies={s}", .{dependencies.items}),
         b.fmt("app_id={s}", .{app_id}),
         b.fmt("name={s}", .{name}),

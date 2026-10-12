@@ -6,3 +6,6 @@
 -keep class dev.oriel.** { *; }
 
 # Add your own rules below, e.g. for classes your Zig code reaches over JNI.
+# oriel:proguard begin (AppOptions.android.proguard_rules; rewritten on every build)
+-keep class dev.oriel.showcase.EchoExtension { *; }
+# oriel:proguard end

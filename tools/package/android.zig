@@ -209,7 +209,7 @@ fn withGeneratedBlock(gpa: std.mem.Allocator, current: []const u8, rules: []cons
 /// Copy `sources` into the project `out`, remove the ones a previous run
 /// copied that are no longer listed, and set the R8 rules block. Returns
 /// the files written or removed, null after an error (printed).
-fn syncAppFiles(gpa: std.mem.Allocator, io: Io, template: []const u8, out: []const u8, sources: []const []const u8, proguard: ?[]const u8) !?usize {
+fn syncAppFiles(gpa: std.mem.Allocator, io: Io, template: []const u8, out: []const u8, sources: []const []const u8, proguard: ?[]const u8, keep_classes: []const []const u8) !?usize {
     var changed: usize = 0;
     var dests: std.ArrayList([]u8) = .empty;
     defer {
@@ -289,10 +289,12 @@ fn syncAppFiles(gpa: std.mem.Allocator, io: Io, template: []const u8, out: []con
     // R8 rules: the block in proguard-rules.pro.
     const pro_path = try std.fs.path.join(gpa, &.{ out, proguard_path });
     defer gpa.free(pro_path);
-    const rules: []u8 = if (proguard) |p| Dir.cwd().readFileAlloc(io, p, gpa, .limited(1 << 20)) catch |err| {
+    const app_rules: []u8 = if (proguard) |p| Dir.cwd().readFileAlloc(io, p, gpa, .limited(1 << 20)) catch |err| {
         std.debug.print("error: android-project: {s}: {s}\n", .{ p, @errorName(err) });
         return null;
     } else try gpa.alloc(u8, 0);
+    defer gpa.free(app_rules);
+    const rules = try withKeepRules(gpa, app_rules, keep_classes);
     defer gpa.free(rules);
     const current: []u8 = Dir.cwd().readFileAlloc(io, pro_path, gpa, .limited(1 << 20)) catch |err| switch (err) {
         error.FileNotFound => if (rules.len == 0) return changed else try gpa.alloc(u8, 0),
@@ -309,6 +311,27 @@ fn syncAppFiles(gpa: std.mem.Allocator, io: Io, template: []const u8, out: []con
     defer gpa.free(updated);
     if (!std.mem.eql(u8, updated, current) and try writeIfChanged(gpa, io, pro_path, updated)) changed += 1;
     return changed;
+}
+
+/// The app's R8 rules plus a `-keep` per app extension class (the generated
+/// registry constructs them; R8 must keep their methods too). Caller frees.
+pub fn withKeepRules(gpa: std.mem.Allocator, rules: []const u8, classes: []const []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, rules);
+    if (classes.len > 0 and rules.len > 0 and rules[rules.len - 1] != '\n') try out.append(gpa, '\n');
+    for (classes) |c| try out.print(gpa, "-keep class {s} {{ *; }}\n", .{c});
+    return out.toOwnedSlice(gpa);
+}
+
+test withKeepRules {
+    const gpa = std.testing.allocator;
+    const both = try withKeepRules(gpa, "-dontwarn x.**", &.{ "dev.a.Echo", "dev.a.Vision" });
+    defer gpa.free(both);
+    try std.testing.expectEqualStrings("-dontwarn x.**\n-keep class dev.a.Echo { *; }\n-keep class dev.a.Vision { *; }\n", both);
+    const none = try withKeepRules(gpa, "", &.{});
+    defer gpa.free(none);
+    try std.testing.expectEqualStrings("", none);
 }
 
 test sourcePackage {
@@ -369,6 +392,8 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
     var sources: std.ArrayList([]const u8) = .empty;
     defer sources.deinit(gpa);
     var proguard: ?[]const u8 = null;
+    var keep_classes: std.ArrayList([]const u8) = .empty;
+    defer keep_classes.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -395,6 +420,9 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
         } else if (std.mem.eql(u8, arg, "--proguard") and i + 1 < args.len) {
             i += 1;
             proguard = args[i];
+        } else if (std.mem.eql(u8, arg, "--keep-class") and i + 1 < args.len) {
+            i += 1;
+            try keep_classes.append(gpa, args[i]);
         } else if (std.mem.eql(u8, arg, "--force")) {
             force = true;
         } else if (std.mem.eql(u8, arg, "--runtime-only")) {
@@ -479,7 +507,7 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
     };
 
     // The app's own Kotlin/Java sources and R8 rules, on every run.
-    written += (try syncAppFiles(gpa, io, template, out, sources.items, proguard)) orelse return 1;
+    written += (try syncAppFiles(gpa, io, template, out, sources.items, proguard, keep_classes.items)) orelse return 1;
 
     // Launcher icons from the app's icon (the sizes resize-icons makes).
     if (!runtime_only) if (icons_dir) |icons| {
