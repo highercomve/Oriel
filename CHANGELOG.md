@@ -2,6 +2,105 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased] — 0.12.0
+
+Oriel 0.12.0 keeps one implementation and one API per feature: every second
+way of doing something is gone, the generic, multiplatform form stays. Apps
+declare everything once, in `build.zig`, and `App.Config` takes it from there.
+The docs are rewritten as one page per feature, each with where it works, a
+quick start, how it works (with a diagram), examples and the full reference.
+**Breaking** throughout: each feature page has a "Migrating from 0.11"
+section, and the table below lists every change.
+
+### Changed
+
+- **`App.Config` takes `.app = oriel_app.build` and `.window`.** Everything
+  `build.zig` declares (id, embedded assets, dev server, icon, URL schemes,
+  permissions, isolation) comes from `app.build`; the main window is a
+  `WindowOptions` (`.window = .{ .title, .width, .height, ... }`, default
+  800×600). `oriel_app` exports `build` and `update_public_key` only.
+  `oriel.main` is the one entry point.
+- **Android platform hooks are declared like the Apple ones:**
+  `.android.hooks = &.{ .{ .class, .sources, .dependencies } }`, implementing
+  `OrielAndroidHooks` (Kotlin and Java). The generated registry is
+  `OrielHooksRegistry.kt`; runtime files a newer Oriel no longer ships are
+  deleted from the app's Gradle project on the next build.
+- **Events are typed:** `App.events(Events).emit` and `.emitTo(label, ...)`
+  (any thread) are the app's way; the untyped `App.emit`/`emitTo` and
+  `Window.emit` are Oriel-internal.
+- **`oriel.paths` is the one place for app directories:** `appData`,
+  `appCache`, `appConfig` and `appExternal` (Android's external files dir).
+- **One `window.oriel` for both renderers** (`src/core/bridge_api.js`), one
+  bridge script for every web view (`src/core/bridge_js.zig`), one dispatch
+  for native pages' commands (`src/core/native_commands.zig`).
+- **Shutdown cleanup runs on `oriel.lifecycle`'s `terminating`**, sent by
+  every shell before its windows go (Oriel's own modules included).
+- **Deep links are delivered through the same queue as notification clicks,
+  shares and lifecycle events**: links that arrive before `onOpen` is set are
+  handed to it once it is.
+- **chat:** a reply holds its own lock: `status`, `delete` and `compare` no
+  longer wait for it, and `Status.generating` is true while one runs;
+  `chat.deinit` frees the model at exit; a `cancel()` sent before the reply
+  starts stops it.
+- **Catalogs** in chat, dictation and tts use `findModel(name) ?*const Model`
+  and `modelPresent(m)`.
+- Module namespaces show only their documented API: backends, shells' entry
+  points and test hooks moved out of reach.
+
+### Removed (each with its one replacement)
+
+| Removed | Use |
+|---|---|
+| `App.Config.id`, `.title`, `.width`… `.placement`, `.show_main_window`, `.on_close`, `.icon`, `.deep_link_schemes`, `.permissions`, `.assets`, `.dev`, `.security.isolation` | `.app = app.build`, `.window = .{ ... }` (`.visible`, `.hide_on_close`) |
+| `App.Config.on_session_end` | `oriel.lifecycle` `.terminating` |
+| `App.run`, `App.setProcessArgs` | `oriel.main` |
+| `App.showWindow`/`hideWindow`/`toggleWindow`, `App.closeWindow`/`postCloseWindow` | `App.getWindow(label)` and the `Window`'s methods; `Window.close()` |
+| `App.setMenu` | `oriel.menu.set` |
+| `App.gtk_app`, `App.main_window` and other App internals | `oriel.hooks` (native handles) |
+| `.android.extensions`, `OrielAndroidExtension(Context)` | `.android.hooks` entries, `OrielAndroidHooks(Context)` |
+| `oriel.ios.onSystemEvent`; Android `trim-memory` in `onSystemEvent` | `oriel.lifecycle` |
+| `oriel.android.preconnect` | nothing: the app's `io` resolves through bionic |
+| `PackageOptions.icon`, `PackageOptions.url_schemes` | `AppOptions.icon`, `AppOptions.url_schemes` |
+| `oriel.store.configDir`/`dataDir`/`cacheDir`, `oriel.android.paths` | `oriel.paths` |
+| `oriel.network.info`, `onChange` (never implemented) | — |
+| `oriel.deep_link.validateUrl` | `validate` |
+| `oriel.share.read` | `oriel.share.open` |
+| `oriel.input.keyComboX11`, `typeTextX11` | `keyCombo`, `typeText` |
+| `oriel.updater.init`/`deinit`, `downloadWithOptions`, `verifyManifestWithOptions`, test hooks | `oriel.main` does init; `download(io, gpa, u, .{ ... })` |
+| `audio_play` one-shot `start`/`stop`/`finished` | `audio_play.Stream` |
+| `dictation.sources` | `oriel.audio_capture.listSources` |
+| `chat`/`dictation` `find`/`present` | `findModel`/`modelPresent` |
+| `system_ai.download`/`generate` `io` parameter | — |
+| `oriel.canvas.openIn`/`onFrameIn`/`engineOf` | `open`, `onFrame` |
+| `window.oriel.native` | `oriel.features.nativeUi` |
+| `-Dnative_dom=false` (linkedom in apps) | the native DOM |
+| `oriel:window:open` `min_width` spelling | `minWidth` |
+| IPC `notification:ready`, `deep_link:ready` | `events:ready` (the bridge's `listen()`) |
+| `oriel pake`, `oriel setup zig`, `oriel setup webview2`, `oriel wrap --tray` | `oriel wrap`, `oriel zig install`, `oriel webview2` (`oriel setup all` installs both); the tray is the default |
+
+### Fixed
+
+- Windows and Android: `const { openExternal } = oriel` threw (the WebView2
+  bridge used `this.invoke`).
+- `oriel.drop.path` works on macOS, iOS and Android (only Linux and Windows
+  routed it) and resolves a string or null.
+- `fs_watch` on Linux and Android: `poll` into `oriel.fs_watch.Event` didn't
+  compile.
+- `oriel deep-link add` writes `AppOptions.url_schemes`; `oriel permission`
+  accepts `bluetooth` and `local_network`; `--help` shows the full usage of
+  `permission`, `deep-link` and `desktop-entry`.
+- The generated TypeScript has `WindowHandle.startDragging()`, the
+  `window:created`/`window:closed` events and `oriel.drop`.
+
+### Docs
+
+- One page per feature (`site/content/docs/*.smd`, the website), with a
+  Mermaid diagram on each; `docs/*.md` is generated from them
+  (`tools/docs/gen-md.mjs`, checked in CI). Design records are in
+  `docs/design/`, contributor notes in `docs/internal/` (the page template is
+  `docs/internal/writing-docs.md`).
+- The examples no longer commit Oriel's generated Kotlin runtime.
+
 ## [0.11.0] — 2026-10-12
 
 Oriel 0.11.0 brings platform hooks to every platform: an app's own Kotlin,
