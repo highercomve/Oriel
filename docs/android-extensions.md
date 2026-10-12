@@ -147,12 +147,20 @@ selected URI array, or `null` for cancellation/failure. Clean up an outstanding
 callback when its Activity or WebView is destroyed. Honour the supplied accept
 types, capture flag and selection mode; do not request unrelated permissions.
 
-For Android gallery/file inputs, selected files arrive as `content://` URIs.
-An app that needs those can opt in with `view.settings.allowContentAccess = true`
-in `onWebViewCreated`. Oriel keeps this disabled by default. Camera capture can
-use an app-owned content provider with a scoped URI write grant and
-`MediaStore.EXTRA_OUTPUT`; the activity-result hook can return that URI even
-when Android returns a null result Intent.
+Apps no longer need their own camera extension: with the camera module on
+(`.permissions.camera` in `build.zig`, [modules.md](modules.md#camera-orielcamera)),
+Oriel handles `<input type="file" accept="image/*">` itself, opening the camera
+app (with `capture`, into Oriel's own capture provider) or the system photo
+picker, and transcoding HEIC/AVIF picks to JPEG. An extension that returns
+`true` from `onShowFileChooser` still takes precedence, so a custom capture flow
+(a document scanner, a vendor SDK) keeps working.
+
+Files picked for an input arrive as `content://` URIs; the WebView uploads them
+with `allowContentAccess` left off (Oriel's default), which only governs pages
+loading `content://` URLs. A custom capture flow can use an app-owned content
+provider with a scoped URI write grant and `MediaStore.EXTRA_OUTPUT`; the
+activity-result hook can return that URI even when Android returns a null
+result Intent.
 
 ## Third-party SDK dependencies
 

@@ -76,6 +76,9 @@ input:not([type]), input[type=text] { flex: 1; min-width: 0; font: inherit; colo
   border: 1px solid var(--line); border-radius: 12px; padding: 11px 14px; outline: none; }
 input:focus { border-color: var(--accent); }
 .inline { display: flex; gap: 10px; }
+.inline + .inline { margin-top: 10px; }
+/* Camera: the last photo */
+.photo { display: block; max-width: 100%; max-height: 260px; margin-top: 12px; border-radius: 12px; }
 
 /* Chips */
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem; font-weight: 600; padding: 5px 10px;

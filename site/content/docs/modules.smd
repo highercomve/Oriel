@@ -34,6 +34,7 @@
 | Network / mDNS | `network` | on | ✓ | ✓⁷ | ✓ | ✓ | ✓ |
 | Sharing | `share` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
 | System AI | `system_ai` | **off** | — | — | —⁸ | ✓ | ✓⁹ |
+| Camera | `camera`¹⁰ | **off** | library | library | library | ✓ | ✓ |
 
 1. Updates come from Google Play and the App Store. On Android the updater is off by default; on, it checks for a release, and installing one fails with `error.Unsupported`.
 2. Android's Storage Access Framework; iOS's document picker.
@@ -44,6 +45,7 @@
 7. Windows 10 1809 or later.
 8. Later: Windows AI APIs and macOS Foundation Models.
 9. iOS 26 with Apple Intelligence at run time; building it raises the minimum to iOS 18.
+10. On when the app declares `.permissions.camera`. The desktop picks from files; only phones take photos.
 
 # [Availability]($heading.id('availability'))
 
@@ -208,11 +210,36 @@ Native file open/save dialogs:
 ```zig
 const file = try oriel.dialog.openFile(gpa, .{
     .title = "Select a file",
-    .filters = &.{ .{ .name = "Text", .patterns = &.{ "*.txt" } } },
+    .filter = .{ .name = "Text", .extensions = &.{"txt"} }, // desktop only
 });
 ```
 
 **Platform support:** Linux (`GtkFileDialog`) · Windows (`IFileOpenDialog`) · macOS (`NSOpenPanel` / `NSSavePanel`).
+
+# [Camera]($heading.id('camera'))
+
+Photos from the camera or the photo library. Declaring `.permissions.camera` in `addApp` turns the module on; the same text is iOS's camera prompt and Android's `CAMERA` permission.
+
+Image inputs just work: `<input type="file" accept="image/*" capture>` opens the camera, and without `capture` the photo library. On Android, Oriel starts the camera app (asking for `CAMERA` first) or the system photo picker, and transcodes HEIC and AVIF picks to JPEG (`.camera = .{ .transcode = false }` turns that off). On iOS, WKWebView shows its own Take Photo / Photo Library menu. App extensions still see Android's file chooser first.
+
+For bytes, call it from an async command (it waits for the user):
+
+```zig
+const photo = try oriel.camera.capturePhoto(io, arena, .{
+    .source = .camera, // or .library
+    .max_side = 1600,
+    .format = .jpeg,
+    .quality = 85,
+});
+// photo.bytes, photo.width, photo.height, photo.mime
+```
+
+The page gets `oriel.camera.capturePhoto({ source, maxSide })`, which resolves to `{ dataUrl, width, height, mime }`.
+
+- `error.Cancelled` when the user backs out, `error.Unsupported` where there's no camera (the desktop, the iOS simulator), `error.PermissionDenied`, `error.TooLarge`.
+- **Android:** the camera app writes into Oriel's own capture provider (`<app id>.oriel.capture`, only Oriel's files, deleted after a day); the photo is decoded, scaled and encoded in Kotlin.
+- **iOS:** `UIImagePickerController` for the camera, `PHPickerViewController` for the library (no photo library permission needed).
+- **Desktop:** `.library` opens a file dialog filtered to images, and zigimg scales and encodes the photo. What zigimg can't decode (HEIC, WebP) comes back as it was picked.
 
 # [Notifications]($heading.id('notifications'))
 

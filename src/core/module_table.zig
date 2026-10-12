@@ -69,6 +69,7 @@ pub const namespaces = [_]Namespace{
     ns("deep_link", "src/modules/deep_link.zig"),
     ns("network", "src/modules/network.zig"),
     ns("share", "src/modules/share.zig"),
+    ns("camera", "src/modules/camera.zig"),
     ns("sqlite_vec", "src/modules/sqlite_vec.zig"),
     ns("llama", "src/modules/llama.zig"),
     ns("whisper", "src/modules/whisper.zig"),

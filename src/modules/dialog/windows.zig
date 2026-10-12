@@ -28,6 +28,7 @@ const DialogParams = struct {
     kind: Kind,
     title: []const u8,
     modal: bool,
+    filter: ?common.Filter = null,
     result: ?[]u8 = null,
     err: ?anyerror = null,
 };
@@ -73,6 +74,29 @@ fn runDialogDirect(params: *DialogParams) void {
         return;
     }
 
+    // Only the filter's files (open): one entry, "Images (*.jpg;*.png)".
+    if (params.filter) |f| {
+        var spec_buf: [common.max_filter_extensions * 20]u8 = undefined;
+        const spec = common.filterPattern(&spec_buf, f) catch "";
+        if (spec.len > 0) {
+            const name_w = std.unicode.utf8ToUtf16LeAllocZ(params.gpa, f.name) catch {
+                params.err = error.OutOfMemory;
+                return;
+            };
+            defer params.gpa.free(name_w);
+            const spec_w = std.unicode.utf8ToUtf16LeAllocZ(params.gpa, spec) catch {
+                params.err = error.OutOfMemory;
+                return;
+            };
+            defer params.gpa.free(spec_w);
+            const entry: win32.COMDLG_FILTERSPEC = .{ .pszName = name_w.ptr, .pszSpec = spec_w.ptr };
+            if (dialog.lpVtbl.SetFileTypes(dialog, 1, &entry) < 0) {
+                params.err = error.DialogSetFileTypesFailed;
+                return;
+            }
+        }
+    }
+
     // Parent window
     const parent_hwnd: ?win32.HWND = if (params.modal) ShellMod.main_hwnd else null;
 
@@ -110,12 +134,13 @@ fn runDialogDirect(params: *DialogParams) void {
     };
 }
 
-fn runDialog(gpa: std.mem.Allocator, kind: Kind, title: []const u8, modal: bool) !?[]u8 {
+fn runDialog(gpa: std.mem.Allocator, kind: Kind, title: []const u8, modal: bool, filter: ?common.Filter) !?[]u8 {
     var params = DialogParams{
         .gpa = gpa,
         .kind = kind,
         .title = title,
         .modal = modal,
+        .filter = filter,
     };
 
     try ShellMod.runOnMainThread(DialogParams, &params, runDialogDirect);
@@ -125,16 +150,16 @@ fn runDialog(gpa: std.mem.Allocator, kind: Kind, title: []const u8, modal: bool)
 }
 
 pub fn openFile(gpa: std.mem.Allocator, options: OpenOptions) !?[]u8 {
-    return runDialog(gpa, .open, options.title, options.modal);
+    return runDialog(gpa, .open, options.title, options.modal, options.filter);
 }
 
 pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
-    return runDialog(gpa, .save, options.title, options.modal);
+    return runDialog(gpa, .save, options.title, options.modal, null);
 }
 
 /// Ask for a folder: its path is the id. Null if cancelled.
 pub fn openFolder(gpa: std.mem.Allocator, options: FolderOptions) !?Folder {
-    const path = try runDialog(gpa, .folder, options.title, options.modal) orelse return null;
+    const path = try runDialog(gpa, .folder, options.title, options.modal, null) orelse return null;
     errdefer gpa.free(path);
     return .{ .id = path, .name = try gpa.dupe(u8, common.pathName(path)) };
 }

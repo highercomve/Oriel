@@ -9,7 +9,7 @@ One app with everything Oriel does, built from the same `src/main.zig` and
 | Chat | A local LLM (`oriel.chat`, llama.cpp): streamed replies, Stop, KV-cache reuse, Compare GPU and CPU, a mic that dictates the message, Read aloud on replies |
 | Speak | Text to speech (`oriel.tts`, Kokoro 82M): Speak/Stop, voices by language or Auto (guessed from the text), speed, Markdown read as prose, model and voice downloads, and per utterance the first-audio time, real-time factor, chunks, backend and gaps |
 | Notes | SQLite (`oriel.sql`) and deep links (`oriel-showcase://note/<text>`); Read aloud on each note |
-| Files | Open and save dialogs, transcribing a WAV file |
+| Files | Open and save dialogs, photos (`oriel.camera`: image inputs and `capturePhoto`), transcribing a WAV file |
 | System | Clipboard, notifications, keyboard shortcuts; the tray, menus and typing into other apps on desktops; the Quick Settings tile and the keyboard on Android |
 | App | Windows, IPC, events from a worker thread, device info |
 

@@ -6,7 +6,39 @@ const std = @import("std");
 pub const OpenOptions = struct {
     title: []const u8 = "Open File",
     modal: bool = true,
+    /// Only offer these files (desktop; the phones' pickers ignore it).
+    filter: ?Filter = null,
 };
+
+/// The files an open dialog offers: `.{ .name = "Images", .extensions =
+/// &.{ "jpg", "png" } }`. Extensions without the dot, 1..16 letters or
+/// digits each (`validExtension`); others, and any past
+/// `max_filter_extensions`, are skipped.
+pub const Filter = struct {
+    name: []const u8,
+    extensions: []const []const u8,
+};
+
+pub const max_filter_extensions = 32;
+
+pub fn validExtension(ext: []const u8) bool {
+    if (ext.len == 0 or ext.len > 16) return false;
+    for (ext) |c| if (!std.ascii.isAlphanumeric(c)) return false;
+    return true;
+}
+
+/// "*.jpg;*.png" (Windows' filter spec) for `filter`'s valid extensions,
+/// in `buf`; error.NoSpaceLeft when it doesn't fit.
+pub fn filterPattern(buf: []u8, filter: Filter) error{NoSpaceLeft}![]u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    var n: usize = 0;
+    for (filter.extensions[0..@min(filter.extensions.len, max_filter_extensions)]) |ext| {
+        if (!validExtension(ext)) continue;
+        w.print("{s}*.{s}", .{ if (n > 0) ";" else "", ext }) catch return error.NoSpaceLeft;
+        n += 1;
+    }
+    return w.buffered();
+}
 
 pub const SaveOptions = struct {
     title: []const u8 = "Save File",
@@ -104,6 +136,23 @@ test validName {
     try std.testing.expect(!validName("dir/x"));
     try std.testing.expect(!validName("dir\\x"));
     try std.testing.expect(!validName("x\x00y"));
+}
+
+test validExtension {
+    try std.testing.expect(validExtension("jpg"));
+    try std.testing.expect(validExtension("HEIC"));
+    try std.testing.expect(!validExtension(""));
+    try std.testing.expect(!validExtension(".jpg"));
+    try std.testing.expect(!validExtension("*"));
+    try std.testing.expect(!validExtension("a;b"));
+}
+
+test filterPattern {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("*.jpg;*.png", try filterPattern(&buf, .{ .name = "Images", .extensions = &.{ "jpg", "*", "png" } }));
+    try std.testing.expectEqualStrings("", try filterPattern(&buf, .{ .name = "None", .extensions = &.{} }));
+    var tiny: [4]u8 = undefined;
+    try std.testing.expectError(error.NoSpaceLeft, filterPattern(&tiny, .{ .name = "Images", .extensions = &.{"jpeg"} }));
 }
 
 test numberedName {

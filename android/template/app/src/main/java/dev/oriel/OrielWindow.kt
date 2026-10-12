@@ -323,6 +323,8 @@ internal class OrielWindow(
         override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
             val host = activity ?: return false
             if (OrielAppExtensions.registered.any { it.onShowFileChooser(host, view, callback, params) }) return true
+            // oriel.camera on: image inputs get the camera or the photo picker.
+            if (OrielCamera.onShowFileChooser(host, callback, params)) return true
             return host.chooseFiles(params.createIntent(), params.mode == FileChooserParams.MODE_OPEN_MULTIPLE, callback)
         }
 

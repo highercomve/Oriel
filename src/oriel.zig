@@ -72,6 +72,9 @@ pub const deep_link = if (options.deep_link) @import("modules/deep_link.zig") el
 pub const network = if (options.network) @import("modules/network.zig") else unavailable("network");
 /// Receiving what other apps share, and the system share sheet.
 pub const share = if (options.share) @import("modules/share.zig") else unavailable("share");
+/// Photos from the camera or the photo library (`capturePhoto`); on when
+/// the app declares `.permissions.camera`.
+pub const camera = if (options.camera) @import("modules/camera.zig") else unavailable("camera");
 pub const sqlite_vec = if (options.sqlite_vec) @import("modules/sqlite_vec.zig") else unavailable("sqlite_vec");
 pub const llama = if (options.llama) @import("modules/llama.zig") else unavailable("llama");
 pub const whisper = if (options.whisper) @import("modules/whisper.zig") else unavailable("whisper");
@@ -202,6 +205,7 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
         .{ .name = "deep_link", .enabled = options.deep_link },
         .{ .name = "network", .enabled = options.network },
         .{ .name = "share", .enabled = options.share },
+        .{ .name = "camera", .enabled = options.camera },
         .{ .name = "global_shortcut", .enabled = options.global_shortcut },
         .{ .name = "input", .enabled = options.input },
         .{ .name = "clipboard", .enabled = options.clipboard },
@@ -290,6 +294,7 @@ test {
     if (options.deep_link) std.testing.refAllDecls(deep_link);
     if (options.network) std.testing.refAllDecls(network);
     if (options.share) std.testing.refAllDecls(share);
+    if (options.camera) std.testing.refAllDecls(camera);
     if (options.global_shortcut) std.testing.refAllDecls(global_shortcut);
     if (options.input) std.testing.refAllDecls(input);
     // The native renderer's own tests: its tree everywhere, the GTK backend

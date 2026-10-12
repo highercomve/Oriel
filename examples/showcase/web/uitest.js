@@ -11,6 +11,9 @@
 //                 on test.wav in the models directory (no microphone in CI).
 //   extension     the App tab's app extension: the page's call, its event,
 //                 an unexposed method refused, the call from Zig.
+//   camera        the Files tab's Camera card: features.camera, bad options
+//                 refused; off the phones capturePhoto({ source: "camera" })
+//                 is Unsupported (the pickers need a person).
 //   tour          every tab (a screenshot each), IPC echo, events from a
 //                 worker, a note, and a second window opened and closed:
 //                 the native renderer's run (docs/native-renderer.md). The
@@ -254,10 +257,30 @@
     await log(`unexposed: ${refused}`);
   }
 
+  // oriel.camera: what runs without a person (the camera and the pickers
+  // wait for one).
+  async function camera() {
+    location.hash = "#files";
+    check(window.oriel.features.camera === true && !$("camera-card").hidden, "features.camera and the Camera card");
+    const refusal = async (options) => {
+      try { await window.oriel.camera.capturePhoto(options); } catch (e) { return String(e.message || e); }
+      return "resolved";
+    };
+    const bad = await refusal({ maxSide: 0 });
+    check(bad === "InvalidOptions", `maxSide 0: ${bad}`);
+    let camera = "(not tried on a phone)";
+    if (!["android", "ios"].includes(window.oriel.platform.os)) {
+      camera = await refusal({ source: "camera" });
+      check(camera === "Unsupported", `source camera: ${camera}`);
+    }
+    await log(`camera: maxSide 0 -> ${bad}, source camera -> ${camera}`);
+  }
+
   try {
     await log(`start ${name}`);
     if (name === "chat") await chat();
     else if (name === "extension") await extension();
+    else if (name === "camera") await camera();
     else if (name === "tour") await tour();
     else if (name.startsWith("dictate-")) await dictate(name.slice("dictate-".length));
     else throw new Error(`unknown test ${name}`);

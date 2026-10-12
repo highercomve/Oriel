@@ -106,6 +106,7 @@ open class OrielActivity : Activity() {
         // Recents): the window closes (or hides, with hide-on-close).
         if (w != null && isFinishing && !closingByRuntime && !isChangingConfigurations) NativeLib.onCloseRequested(w.id)
         OrielRuntime.onActivityDestroyed(this)
+        OrielCamera.onActivityDestroyed(this)
         OrielAppExtensions.registered.forEach { it.onActivityDestroyed(this) }
         super.onDestroy()
     }
@@ -269,6 +270,7 @@ open class OrielActivity : Activity() {
                 if (resultCode == RESULT_OK) data?.data else null,
             )
             REQ_FOLDER -> OrielRuntime.onFolderPicked(if (resultCode == RESULT_OK) data else null)
+            in OrielCamera.REQ_CHOOSER_CAMERA..OrielCamera.REQ_PHOTO_LIBRARY -> OrielCamera.onActivityResult(this, requestCode, resultCode, data)
             else -> {
                 if (OrielAppExtensions.activityResult(this, requestCode, resultCode, data)) return
                 @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)

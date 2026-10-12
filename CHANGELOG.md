@@ -29,6 +29,28 @@ Notable changes in Oriel releases.
   are reserved: an app can't declare or expose them. `.ios.weak_frameworks`
   weak-links frameworks newer than the app's minimum, only when the SDK has
   them.
+- `oriel.camera` (`-Dcamera`, and on when the app declares
+  `.permissions.camera`; docs/modules.md, "Camera"):
+  `capturePhoto(io, arena, .{ .source = .camera | .library, .max_side,
+  .format, .quality })` returns the photo scaled and encoded (`bytes`,
+  `width`, `height`, `mime`), with `error.Cancelled`, `Unsupported`,
+  `PermissionDenied` and `TooLarge`. Android: the camera app into Oriel's
+  capture provider and the system photo picker, scaled in Kotlin. iOS:
+  `UIImagePickerController` and `PHPickerViewController`. Desktop:
+  `.library` through the file dialog (filtered to images) and zigimg,
+  `.camera` Unsupported. The page: `oriel.camera.capturePhoto({ source,
+  maxSide })` → `{ dataUrl, width, height, mime }` (TypeScript `CameraApi`).
+- Android, with the camera module on: `<input type="file"
+  accept="image/*">` opens the camera app (`capture`; CAMERA asked first)
+  or the system photo picker (`ACTION_PICK_IMAGES` on 13+, several with
+  `multiple`), and HEIC/AVIF picks are transcoded to JPEG
+  (`AppOptions.camera.transcode`, default true). The generated
+  `<app id>.oriel.capture` provider serves only Oriel's own captures.
+  Apps no longer need their own camera extension; extensions still see
+  the chooser first. Declaring `.permissions.camera` also declares
+  `android.hardware.camera` as not required.
+- `oriel.dialog.openFile`'s `.filter = .{ .name, .extensions }` (desktop).
+- Showcase: a Camera card on the Files tab and a `camera` UI test.
 - App extensions (`oriel.extensions`, docs/extensions.md): an app's own
   native code, declared by name in `AppOptions.extensions` with an
   implementation per platform: Kotlin (`.android`: `OrielAppExtension`,
