@@ -83,6 +83,14 @@ Notable changes in Oriel releases.
 
 ### Fixed
 
+- **iOS simulator builds carry entitlements like Xcode's.** The executable
+  embeds `application-identifier` (`<team>.<bundle id>`, or `.<bundle id>`
+  without `.ios.team_id`), `get-task-allow` and the keychain access group
+  in its `__TEXT,__entitlements` and `__TEXT,__ents_der` sections, and on a
+  Mac the bundle is signed ad hoc as a whole. Before, the simulator's
+  daemons saw no bundle ID: nsurlsessiond refused background URLSessions
+  ("does not have a bundle ID") and the keychain failed. New option:
+  `.ios.team_id`.
 - Docs: the site's "Intercept file selection" still told apps to build their
   own camera capture route; since 0.10 `oriel.camera` handles
   `<input type="file" accept="image/*" capture>` (Oriel's capture provider,
