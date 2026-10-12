@@ -39,6 +39,7 @@ const audio_capture = @import("audio_capture.zig");
 const App = @import("../core/App.zig");
 pub const wav = @import("dictation/wav.zig");
 const model_download = @import("model_download.zig");
+const lifecycle = @import("../core/lifecycle.zig");
 
 const is_android = builtin.abi.isAndroid();
 const is_apple = builtin.os.tag == .ios or builtin.os.tag == .macos;
@@ -183,6 +184,7 @@ pub fn init(app_io: std.Io, app_gpa: std.mem.Allocator, dir: []const u8) void {
     initialized = true;
     ever_init.store(true, .release);
     whisper.silenceLogs();
+    subscribeLifecycle();
     // Android's system recognizer must be cancelled while the UI thread's
     // dispatch queue still runs; deinit() itself is past that point.
     if (comptime is_android) {
@@ -333,9 +335,24 @@ pub fn delete(name: []const u8) !void {
     log.info("deleted {s}", .{m.file});
 }
 
-/// Memory pressure (e.g. Android's trim-memory at 40, the app in the
-/// background): free the models unless listening; the next session loads
-/// them again. The last recording stays (`compare` reruns it). Returns at
+/// When the module frees its models by itself (`unloadIdle` on an
+/// `oriel.lifecycle` event): critical memory pressure by default. Set it any
+/// time; `.{ .memory_pressure = null }` turns it off.
+pub var unload_on: lifecycle.UnloadOn = .{};
+var lifecycle_subscribed = false;
+
+fn subscribeLifecycle() void {
+    if (lifecycle_subscribed) return;
+    lifecycle_subscribed = true;
+    lifecycle.subscribe(&onLifecycle) catch log.warn("lifecycle: no room to unload on memory pressure", .{});
+}
+
+fn onLifecycle(event: lifecycle.Event) void {
+    if (unload_on.wants(event)) unloadIdle();
+}
+
+/// Memory pressure (`unload_on`): free the models unless listening; the
+/// next session loads them again. The last recording stays (`compare` reruns it). Returns at
 /// once while a model is in use (safe to call on the main thread).
 pub fn unloadIdle() void {
     if (!ever_init.load(.acquire)) return;

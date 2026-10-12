@@ -45,6 +45,7 @@ const audio_play = @import("audio_play.zig");
 const ggml_gpu = @import("ggml_gpu.zig");
 const App = @import("../core/App.zig");
 const model_download = @import("model_download.zig");
+const lifecycle = @import("../core/lifecycle.zig");
 const espeak_data = @import("tts/espeak_data.zig");
 const text = @import("tts/text.zig");
 const lang_guess = @import("tts/lang.zig");
@@ -236,6 +237,7 @@ pub fn init(app_io: std.Io, app_gpa: std.mem.Allocator, dir: []const u8) void {
     gpa = app_gpa;
     models_dir = dir;
     ever_init.store(true, .release);
+    subscribeLifecycle();
 }
 
 /// Load the GPU backends once (a Vulkan instance and a self-test: not at
@@ -491,9 +493,25 @@ pub fn delete(id: []const u8) !void {
     log.info("deleted {s}", .{item.file});
 }
 
-/// Memory pressure (the app in the background): free the Kokoro context
-/// unless speaking (then it returns at once: safe on the main thread);
-/// the next utterance loads it again.
+/// When the module frees its voice model by itself (`unloadIdle` on an
+/// `oriel.lifecycle` event): critical memory pressure by default. Set it any
+/// time; `.{ .memory_pressure = null }` turns it off.
+pub var unload_on: lifecycle.UnloadOn = .{};
+var lifecycle_subscribed = false;
+
+fn subscribeLifecycle() void {
+    if (lifecycle_subscribed) return;
+    lifecycle_subscribed = true;
+    lifecycle.subscribe(&onLifecycle) catch log.warn("lifecycle: no room to unload on memory pressure", .{});
+}
+
+fn onLifecycle(event: lifecycle.Event) void {
+    if (unload_on.wants(event)) unloadIdle();
+}
+
+/// Memory pressure (`unload_on`): free the Kokoro context unless speaking
+/// (then it returns at once: safe on the main thread); the next utterance
+/// loads it again.
 pub fn unloadIdle() void {
     if (!ever_init.load(.acquire)) return;
     if (speaking.load(.acquire)) return;
