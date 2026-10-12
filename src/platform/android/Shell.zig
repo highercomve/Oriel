@@ -20,6 +20,7 @@ const jni = @import("jni.zig");
 const runtime = @import("runtime.zig");
 const window = @import("window.zig");
 const handlers = @import("handlers.zig");
+const lifecycle = @import("../../core/lifecycle.zig");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
@@ -292,7 +293,6 @@ pub fn setMenu(items: anytype, on_action: anytype) !void {
 }
 
 /// Hook for modules that must clean up at shutdown (UI thread).
-pub var on_shutdown_fn: ?*const fn () void = null;
 
 var exit_code: std.atomic.Value(u8) = .init(0);
 var quit_event: Event = .{};
@@ -399,7 +399,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         }
 
         fn shutdown(_: *u8) void {
-            if (on_shutdown_fn) |f| f();
+            // Subscribers clean up while the UI thread's queue still runs.
+            lifecycle.dispatch(.terminating);
             window.destroyAllWindows();
             task_mutex.lock();
             running = false;

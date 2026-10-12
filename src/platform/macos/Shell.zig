@@ -224,7 +224,6 @@ pub fn sharedApplication() Object {
 
 /// Global shortcut, tray and menu backends
 /// can hook shutdown here, like on Windows.
-pub var on_shutdown_fn: ?*const fn () void = null;
 
 pub fn setMenu(items: anytype, on_action: anytype) !void {
     const menu_mod = @import("../../modules/menu.zig");
@@ -760,7 +759,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         }
 
         fn shutdown() void {
-            if (on_shutdown_fn) |f| f();
+            lifecycle.dispatch(.terminating);
             task_mutex.lock();
             running = false;
             shutting_down = true; // later tasks from other threads are cleaned up, not queued

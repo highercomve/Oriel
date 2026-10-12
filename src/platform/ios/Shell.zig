@@ -212,7 +212,6 @@ pub fn sharedApplication() Object {
     return apple.class("UIApplication").msgSend(Object, "sharedApplication", .{});
 }
 
-pub var on_shutdown_fn: ?*const fn () void = null;
 
 /// Set by the first background: UIKit also sends willEnterForeground while
 /// launching, and, as on Android, `foreground` means "back from background".
@@ -638,7 +637,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             shutting_down = true; // later tasks from other threads are cleaned up, not queued
             task_mutex.unlock();
             if (!was_running) return;
-            if (on_shutdown_fn) |f| f();
+            lifecycle.dispatch(.terminating);
             window.destroyAllWindows();
             for (scenes.items) |e| (Object{ .value = e.ui_window }).release();
             scenes.clearAndFree(std.heap.smp_allocator);

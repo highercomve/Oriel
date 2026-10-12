@@ -19,6 +19,8 @@ const win32 = @import("../../platform/windows/win32.zig");
 const ShellMod = @import("../../platform/windows/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const lifecycle = @import("../../core/lifecycle.zig");
+const log = std.log.scoped(.notification);
 
 pub const NotificationOptions = common.NotificationOptions;
 
@@ -77,7 +79,10 @@ fn sendBalloonDirect(params: *NotifyParams) void {
     };
 
     ShellMod.on_notify_message_fn = &handleNotificationCallback;
-    ShellMod.on_shutdown_fn = &deinit;
+    if (!lifecycle_subscribed) {
+        lifecycle_subscribed = true;
+        lifecycle.subscribe(&onLifecycle) catch log.warn("lifecycle: no room to remove the notification icon at exit", .{});
+    }
 
     var nid = std.mem.zeroes(win32.NOTIFYICONDATAW);
     nid.cbSize = @sizeOf(win32.NOTIFYICONDATAW);
@@ -144,6 +149,13 @@ pub fn removeNotificationIcon() void {
 
 pub fn deinit() void {
     removeNotificationIcon();
+}
+
+var lifecycle_subscribed = false;
+
+/// The balloon's tray icon goes before the host window does.
+fn onLifecycle(event: lifecycle.Event) void {
+    if (event == .terminating) removeNotificationIcon();
 }
 
 pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
