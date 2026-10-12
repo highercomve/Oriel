@@ -334,6 +334,18 @@
         <p id="ext-out" class="result"></p>
         <p id="ext-event" class="result"></p>
       </div>
+      <div class="card" id="sysai-card" hidden>
+        <h2>System AI</h2>
+        <p class="hint">The phone's own model: Gemini Nano on Android, Apple Intelligence on iOS 26. Nothing to ship with the app (oriel.system_ai).</p>
+        <p id="sysai-status" class="result">Checking…</p>
+        <button id="sysai-download" class="btn" hidden>Download the model</button>
+        <form id="sysai-form" class="inline">
+          <input id="sysai-prompt" value="Name three herbs that grow on a windowsill." aria-label="Prompt for the system model">
+          <button class="btn filled">Ask</button>
+        </form>
+        <button id="sysai-cancel" class="btn" hidden>Stop</button>
+        <p id="sysai-out" class="result"></p>
+      </div>
       <div class="card">
         <h2>Events from a worker</h2>
         <p class="hint">A Zig worker thread emits five <code>tick</code> events.</p>

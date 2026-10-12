@@ -16,6 +16,7 @@ pub fn build(b: *std.Build) void {
         .input = true,
         .global_shortcut = true,
         .fs_watch = true,
+        .system_ai = true,
         .sql = false,
     });
     const opts = b.addOptions();
