@@ -179,20 +179,184 @@ and vendor libraries.
 
 # [iOS and macOS]($heading.id('ios-and-macos'))
 
-```=html
-<!-- apple-hooks: filled in from docs/platform-hooks-apple.md -->
+Objective-C or Swift classes declared with `.ios.hooks` and `.macos.hooks`
+adopt `@protocol OrielPlatformHooks` from `oriel_hooks.h`
+(`src/platform/apple/include`, on the include path of the hook sources).
+They take part in Oriel's app delegate, scene delegate (iOS), windows and
+WebKit delegates without replacing them, with the same model as Android:
+notifications, and interceptions that return `YES` to own a request.
+
+## [Declare]($heading.id('apple-declare'))
+
+```zig
+_ = oriel.addApp(b, dep, .{
+    // ...
+    .ios = .{ .hooks = &.{
+        .{
+            .class = "AppHooks", // conforms to OrielPlatformHooks, plain -init
+            .sources = &.{b.path("ios/AppHooks.m")}, // zig cc -fobjc-arc
+            .frameworks = &.{"SafariServices"},
+        },
+        .{ .class = "PushHooks", .swift_sources = &.{b.path("apple/PushHooks.swift")} },
+    } },
+    .macos = .{ .hooks = &.{
+        .{ .class = "AppHooks", .sources = &.{b.path("macos/AppHooks.m")} },
+    } },
+});
 ```
 
-Objective-C or Swift classes declared with `.ios.hooks` and `.macos.hooks`
-adopt `@protocol OrielPlatformHooks` from `oriel_hooks.h`. Every method is
-optional:
+Each entry is `.class`, `.sources` (Objective-C, compiled with ARC),
+`.swift_sources` (one `swiftc` object per hook) and `.frameworks` (SDK
+frameworks to link). Up to 16 hooks per platform; an invalid or duplicate
+class name, more than 16 hooks, or an invalid framework name is a build
+error on any host. A class whose sources come from elsewhere (an app
+extension's `.ios.sources`, say) can be listed without sources.
 
-- `registered:`, once, with the hook's context.
-- `webViewConfiguration:window:`, to adjust the `WKWebViewConfiguration`
-  before the web view is made; `webViewCreated:window:` (bridge installed,
-  before the first navigation) and `webViewDestroyed:window:`.
-- Navigation policy and media capture: return `YES` to own the decision
-  (and call the decision handler yourself); `NO` leaves it to Oriel.
-- `openURL:` and `continueUserActivity:` (universal links, Handoff).
-- Push notifications: the device token, and registration failures.
-- iOS scene and app callbacks; macOS app and window callbacks.
+## [Write a hook]($heading.id('apple-write-a-hook'))
+
+```objc
+// ios/AppHooks.m
+#import <SafariServices/SafariServices.h>
+#import "oriel_hooks.h"
+
+@interface AppHooks : NSObject <OrielPlatformHooks>
+@property (nonatomic, strong) OrielHooksContext *context;
+@end
+
+@implementation AppHooks
+
+- (void)registered:(OrielHooksContext *)context {
+    self.context = context; // keep it: its properties are read live
+}
+
+- (void)webViewCreated:(WKWebView *)webView window:(NSString *)label {
+    NSLog(@"web view for %@", label); // Oriel's delegates and bridge are in place
+}
+
+- (BOOL)webView:(WKWebView *)webView
+    decidePolicyForNavigationAction:(WKNavigationAction *)action
+                    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+    if (![action.request.URL.host isEqualToString:@"help.example.com"]) return NO; // Oriel decides
+    decisionHandler(WKNavigationActionPolicyCancel); // exactly once
+    UIViewController *front = self.context.presentingViewController;
+    [front presentViewController:[[SFSafariViewController alloc] initWithURL:action.request.URL]
+                        animated:YES completion:nil];
+    return YES; // owned: no later hook, nor Oriel, sees it
+}
+
+@end
+```
+
+In Swift, the class needs `@objc(Name)` so Oriel finds it under the declared
+name. The bridging header is `oriel_swift.h`, which imports both
+`oriel_hooks.h` and `oriel_extension.h`:
+
+```swift
+// apple/PushHooks.swift
+import Foundation
+import UserNotifications
+
+@objc(PushHooks)
+final class PushHooks: NSObject, OrielPlatformHooks {
+    func registered(_ context: OrielHooksContext) {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { granted, _ in
+            guard granted else { return }
+            DispatchQueue.main.async { UIApplication.shared.registerForRemoteNotifications() }
+        }
+    }
+
+    func didRegisterForRemoteNotifications(withDeviceToken token: Data) {
+        NSLog("APNs token: %@", token.map { String(format: "%02x", $0) }.joined())
+    }
+}
+```
+
+## [The model]($heading.id('apple-the-model'))
+
+- Oriel constructs each class once (`alloc`/`init`), in declaration order,
+  at launch: on iOS in `application:didFinishLaunchingWithOptions:`, before
+  the first scene; on macOS before the main window. The object lives as
+  long as the process.
+- Every method is optional and runs on the main thread. Oriel asks
+  `respondsToSelector:` once per method, at construction.
+- Notifications go to every hook implementing them, in declaration order.
+- Interceptions return `BOOL`. `YES`: the hook owns the request and calls
+  the handler it was given exactly once (now or later, on the main thread);
+  later hooks and Oriel don't see it. `NO`: the next hook decides, then
+  Oriel, as if there were no hooks. The first `YES` wins.
+- A class listed both as a hook and as an [app extension]($link.page('docs/extensions'))
+  (`.extensions[].ios`, or `.macos = .{ .objc = ... }`) is constructed once;
+  both get the same object. List its sources in one place only.
+- Don't throw Objective-C exceptions: nothing catches them.
+
+## [Methods]($heading.id('apple-methods'))
+
+| Method | Platform | Kind | When |
+|---|---|---|---|
+| `registered:(OrielHooksContext *)` | both | notify | right after `init` |
+| `webViewConfiguration:(WKWebViewConfiguration *) window:(NSString *)` | both | notify | before the `WKWebView` is created; Oriel's scheme handler and bridge are already set (don't replace the `userContentController` or Oriel's handlers) |
+| `webViewCreated:(WKWebView *) window:(NSString *)` | both | notify | after Oriel installs its delegates and bridge, before the first navigation (with `oriel.hooks`' `webview_created` on macOS) |
+| `webViewDestroyed:(WKWebView *) window:(NSString *)` | both | notify | the window is being destroyed |
+| `webView:decidePolicyForNavigationAction:decisionHandler:` | both | intercept | before Oriel's navigation policy |
+| `webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:` | both | intercept | getUserMedia, before Oriel's rule |
+| `openURL:(NSURL *)` | both | intercept | a URL of the app's schemes (not file URLs); `NO` leaves it to `oriel.deep_link` |
+| `continueUserActivity:(NSUserActivity *)` | both | intercept | universal links, Handoff (iOS: `scene:continueUserActivity:` and a connecting scene's activities; macOS: `application:continueUserActivity:restorationHandler:`) |
+| `didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)` | both | notify | forwarded from Oriel's app delegate |
+| `didFailToRegisterForRemoteNotificationsWithError:(NSError *)` | both | notify | forwarded from Oriel's app delegate |
+| `applicationDidFinishLaunching:(UIApplication *) options:(NSDictionary *)` | iOS | notify | after `registered:`, before the main window and the app's `setup` |
+| `sceneWillConnect:(UIScene *) options:(UISceneConnectionOptions *)` | iOS | notify | after Oriel shows its window in the scene, before the scene's URLs and activities |
+| `sceneDidDisconnect:`, `sceneDidBecomeActive:`, `sceneWillResignActive:`, `sceneWillEnterForeground:`, `sceneDidEnterBackground:` | iOS | notify | the scene delegate's own events |
+| `applicationDidFinishLaunching:(NSNotification *)` | macOS | notify | when the run loop starts: after the main window opened and `setup` ran |
+| `windowCreated:(NSWindow *) label:(NSString *)` | macOS | notify | an Oriel window exists, before its page loads |
+| `windowWillClose:(NSWindow *) label:(NSString *)` | macOS | notify | the window closes (not when it is only hidden) |
+| `applicationShouldHandleReopen:hasVisibleWindows:` | macOS | intercept | a Dock click or relaunch; `YES` skips Oriel's (showing the main window, `on_second_instance`) |
+
+`oriel_hooks.h` documents each method. Windows drawn by `-Dnative_ui` have
+no web view: only their window methods are called.
+
+`OrielHooksContext` (passed to `registered:`) has `name` (the class name)
+and, read live, `presentingViewController` on iOS (the controller in front,
+to present native UI from; nil before the first scene shows the main
+window) or `keyWindow` on macOS (the key window, else Oriel's main window).
+
+Allowing a navigation Oriel would block bypasses its navigation rules; the
+bridge still checks every call's origin against the app's own.
+
+## [Building]($heading.id('apple-building'))
+
+- **Objective-C sources** compile with Zig's clang (`-fobjc-arc`) against
+  the platform SDK. iOS builds need the iOS SDK anyway ([iOS]($link.page('docs/mobile'))). On
+  macOS the SDK is `-Dmacos_sdk=<MacOSX.sdk>`, else `$SDKROOT` when it is a
+  MacOSX SDK, else `xcrun --sdk macosx --show-sdk-path`: a Mac with Xcode
+  or the Command Line Tools. Without one, a macOS build with hook sources
+  is a build error naming what to install. `zig build check` never compiles
+  hook sources, so it works without an SDK.
+- **Swift sources** compile with `swiftc` (`$SWIFTC`, else Xcode's, else
+  `swiftc` on `PATH`) for `arm64-apple-ios18.0` (or `-simulator`) or
+  `arm64-apple-macos15.0` / `x86_64-apple-macos15.0`, one object per hook,
+  linked with the OS's Swift runtime (/usr/lib/swift). iOS Swift can be
+  built on Linux with xtool's SDK ([App extensions]($link.page('docs/extensions'))); macOS
+  Swift needs a Mac.
+- **Swift overlays link by themselves.** `swiftc` records the libraries a
+  module needs (`import CoreML` → `libswiftCoreML`, `-framework CoreML`) as
+  autolink entries, which Zig's linker ignores. So Oriel links the frameworks
+  the Swift sources `import`, every `libswift*.tbd` of the SDK, and turns on
+  `dead_strip_dylibs`: the executable loads only the libraries it uses, and
+  every framework the app and Oriel link otherwise is kept (marked needed).
+  Frameworks that only an Objective-C source uses still go in `.frameworks`.
+- **Minimum versions with Swift.** iOS 18 and macOS 15 split the Swift
+  Darwin overlay into new libraries (`libswift_errno`, …); Apple's linker
+  records the old `libswiftDarwin` for older targets, Zig's doesn't. So an
+  app with Swift hooks (or Swift app extensions) targets iOS 18 / macOS 15:
+  the minimum is raised when the target names no version, and an explicit
+  lower one (`-Dtarget=aarch64-ios.17.0`, `-Dtarget=aarch64-macos.14.0`)
+  is a build error. Without Swift, Oriel's minimums stay (iOS 15,
+  macOS 13).
+
+The showcase declares `ShowcaseHooks` for both (Objective-C,
+`examples/showcase/extensions/ios/` and `.../macos/`): it logs what it sees
+(`showcase.hooks: ...`) and owns navigation to example.com (the App tab's
+"Platform hooks" link): an in-app Safari sheet on iOS, the browser on
+macOS. `-Dswift_example` adds `ShowcaseSwiftHooks`
+(`extensions/apple/SwiftHooks.swift`), which imports CoreML, CoreGraphics
+and Metal.

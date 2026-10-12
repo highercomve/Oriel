@@ -1,4 +1,4 @@
-// Oriel platform hooks on iOS and macOS (docs/platform-hooks-apple.md): the
+// Oriel platform hooks on iOS and macOS (docs/platform-hooks.md): the
 // protocol an app's Objective-C (or @objc Swift) class conforms to, to take
 // part in Oriel's app delegate, scene delegate, windows and WebKit delegates
 // without replacing them. The Android counterpart is OrielAndroidExtension.

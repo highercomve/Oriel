@@ -36,7 +36,8 @@ _ = oriel.addApp(b, dep, .{
             .resources = &.{b.path("models/yoloe.mlmodelc")}, // the bundle's root
         },
         .desktop = .{ .zig = b.path("src/vision_desktop.zig") }, // any desktop OS
-        // .linux / .macos / .windows override .desktop per OS.
+        // .linux / .macos / .windows override .desktop per OS; .macos can also be
+        // Objective-C or Swift: .macos = .{ .objc = .{ .class = ..., .sources = ... } }.
         .max_bytes = 32 << 20, // input and reply cap (default 32 MiB, at most 256 MiB)
         .concurrency = 1, // calls at once on the extension's workers (1..8)
     }},
@@ -212,7 +213,8 @@ class VisionExtension : OrielAppExtension {
 ## [Swift]($heading.id('swift'))
 
 `.ios.swift_sources` (opt-in) are compiled by `swiftc` into one object per
-extension, with `oriel_extension.h` as the bridging header, and linked with
+extension, with `oriel_swift.h` as the bridging header (it imports
+`oriel_extension.h` and `oriel_hooks.h`), and linked with
 the Swift runtime of the OS (/usr/lib/swift):
 
 ```swift
@@ -250,6 +252,41 @@ new names, which iOS 15–17 don't have. So an app with `.ios.swift_sources`
 targets iOS 18 or later: its minimum is raised to 18.0 when the target names
 no version, and an explicit lower one (`-Dtarget=aarch64-ios.16.0`) is a
 build error. Apps without Swift keep Oriel's iOS 15 minimum.
+
+Swift imports link by themselves: `import CoreML`, `Metal`, `Accelerate`
+and the like need no declaration (Oriel links the imported frameworks and
+the SDK's Swift overlays, and drops the unused ones with
+`dead_strip_dylibs`; [Platform hooks]($link.page('docs/platform-hooks').ref('ios-and-macos'))).
+
+# [macOS (Objective-C or Swift)]($heading.id('macos-objective-c-or-swift'))
+
+An extension's `.macos` is either a Zig module, as `.desktop`, or native
+code that uses the iOS protocol and runtime above (`OrielAppExtension`,
+`oriel_extension.h`, one instance per class, calls on the extension's
+workers):
+
+```zig
+.macos = .{ .objc = .{
+    .class = "GPVisionExtension", // or an @objc(GPVisionExtension) Swift class
+    .sources = &.{b.path("macos/VisionExtension.m")}, // zig cc -fobjc-arc
+    .swift_sources = &.{}, // or Swift instead
+    .frameworks = &.{ "Vision", "CoreML" },
+    .weak_frameworks = &.{}, // newer than the minimum macOS
+} },
+// .macos = .{ .zig = b.path("src/vision_desktop.zig") }, // Zig, as .desktop
+```
+
+`.macos` overrides `.desktop` on macOS either way. The sources build
+against the macOS SDK: `-Dmacos_sdk=<MacOSX.sdk>`, else `$SDKROOT` when it
+is a MacOSX SDK, else Xcode's or the Command Line Tools' (`xcrun`), so on a
+Mac; without one the build fails naming what to install. Swift compiles for
+`arm64-apple-macos15.0` / `x86_64-apple-macos15.0` with the same bridging
+header, and raises the app's minimum to macOS 15 (an explicit lower
+`-Dtarget=aarch64-macos.14.0` is a build error), for the reason given for
+iOS 18 above. `zig build check` compiles no native sources. The class can
+also be a platform hook (`.macos.hooks`): one object serves both. The
+showcase's `-Dobjc_echo` builds `showcase.echo` this way
+(`examples/showcase/extensions/macos/EchoExtension.m`).
 
 # [Limits]($heading.id('limits'))
 
