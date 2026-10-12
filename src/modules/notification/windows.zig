@@ -19,7 +19,7 @@ const win32 = @import("../../platform/windows/win32.zig");
 const ShellMod = @import("../../platform/windows/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
-const lifecycle = @import("../../core/lifecycle.zig");
+const lifecycle = @import("../../core/lifecycle/backend.zig");
 const log = std.log.scoped(.notification);
 
 pub const NotificationOptions = common.NotificationOptions;

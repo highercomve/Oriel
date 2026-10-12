@@ -1,4 +1,6 @@
-//! App extensions (`oriel.extensions`): an app's own native code, named in
+//! The runtime of `oriel.extensions` (internal: the facade, core/extensions.zig,
+//! re-exports the API; the backends, ipc and App reach the rest here). App
+//! extensions: an app's own native code, named in
 //! build.zig (`AppOptions.extensions`) and implemented per platform in
 //! Kotlin (Android), Objective-C or Swift (iOS), or Zig (desktop). Zig calls
 //! them by name; the page reaches them only through Zig, via an app command
@@ -18,13 +20,13 @@
 //! declared is a build error, and `available()` is comptime.
 
 const std = @import("std");
-const spec = @import("extension_spec.zig");
-const lifecycle = @import("lifecycle.zig");
-const heap = @import("heap.zig");
-const target = @import("target.zig");
-const pending_events = @import("pending_events.zig");
-const App = @import("App.zig");
-const ipc = @import("ipc.zig");
+const spec = @import("../extension_spec.zig");
+const lifecycle = @import("../lifecycle/backend.zig");
+const heap = @import("../heap.zig");
+const target = @import("../target.zig");
+const pending_events = @import("../pending_events.zig");
+const App = @import("../App.zig");
+const ipc = @import("../ipc.zig");
 const registry = @import("oriel_extensions");
 
 const log = std.log.scoped(.extensions);
@@ -532,8 +534,8 @@ fn implOf(comptime i: usize) Impl {
     return switch (backendOf(i)) {
         .none => .{ .call = unavailableCall },
         .zig => ZigImpl(entries[i].impl).impl,
-        .android => if (target.is_android) @import("../platform/android/extensions.zig").impl else @compileError("android backend off Android"),
-        .objc => if (target.is_ios or target.os == .macos) @import("../platform/apple/extensions.zig").impl else @compileError("Objective-C backend off iOS and macOS"),
+        .android => if (target.is_android) @import("../../platform/android/extensions.zig").impl else @compileError("android backend off Android"),
+        .objc => if (target.is_ios or target.os == .macos) @import("../../platform/apple/extensions.zig").impl else @compileError("Objective-C backend off iOS and macOS"),
     };
 }
 
@@ -656,7 +658,7 @@ var sinks: [count]std.atomic.Value(?Sink) = @splat(.init(null));
 
 /// Route extension `name`'s events to `sink` (Oriel's own extensions only).
 pub fn setSink(comptime name: []const u8, sink: Sink) void {
-    comptime if (!spec.reserved(name)) @compileError("oriel.extensions.setSink is for Oriel's own extensions (oriel.*)");
+    comptime if (!spec.reserved(name)) @compileError("setSink is for Oriel's own extensions (oriel.*)");
     sinks[comptime indexOf(name)].store(sink, .release);
 }
 

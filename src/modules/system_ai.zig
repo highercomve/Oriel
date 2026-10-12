@@ -33,7 +33,7 @@ pub const available = true;
 
 const std = @import("std");
 const core = @import("system_ai/core.zig");
-const extensions = @import("../core/extensions.zig");
+const extensions = @import("../core/extensions/runtime.zig");
 const App = @import("../core/App.zig");
 
 pub const State = core.State;

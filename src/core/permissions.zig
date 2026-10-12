@@ -11,7 +11,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const target = @import("target.zig");
-pub const common = @import("permissions/common.zig");
+const common = @import("permissions/common.zig");
+const gate = @import("permissions/gate.zig");
 
 pub const Kind = common.Kind;
 pub const Status = common.Status;
@@ -26,7 +27,7 @@ const log = struct {
     }
 };
 
-pub const impl = switch (target.os) {
+const impl = switch (target.os) {
     .linux => @import("permissions/linux.zig"),
     .windows => @import("permissions/windows.zig"),
     .macos => @import("permissions/macos.zig"),
@@ -35,16 +36,11 @@ pub const impl = switch (target.os) {
     .other => @compileError("permissions are not supported on " ++ target.name),
 };
 
-var declared_set: Declared = .{};
 var on_change: ?*const fn (Kind, Status) void = null;
 
-/// Set by App.run from the app's config.
-pub fn setDeclared(d: Declared) void {
-    declared_set = d;
-}
-
+/// What the app declares in build.zig (`AppOptions.permissions`).
 pub fn declared() Declared {
-    return declared_set;
+    return gate.declared_set;
 }
 
 /// Called (on any thread) when a `request` resolves. The page also gets a
@@ -56,7 +52,7 @@ pub fn onChange(callback: ?*const fn (Kind, Status) void) void {
 /// Current status. An undeclared permission is `denied`: on macOS, using one
 /// without its Info.plist key would terminate the app.
 pub fn status(kind: Kind) Status {
-    if (!declared_set.has(kind)) return .denied;
+    if (!gate.declared_set.has(kind)) return .denied;
     return impl.status(kind);
 }
 
@@ -64,7 +60,7 @@ pub fn status(kind: Kind) Status {
 /// through `onChange` and the `permission-changed` event; returns the status
 /// at the time of the call (`prompt` while the OS dialog is open).
 pub fn request(kind: Kind) Status {
-    if (!declared_set.has(kind)) {
+    if (!gate.declared_set.has(kind)) {
         log.warn("permission '{s}' requested but not declared: add `.permissions = .{{ .{s} = \"why\" }}` to addApp in build.zig (or `oriel permission add {s}`)", .{ @tagName(kind), @tagName(kind), @tagName(kind) });
         resolved(kind, .denied);
         return .denied;
@@ -81,7 +77,7 @@ pub fn request(kind: Kind) Status {
 /// Open the OS settings page for `kind`. False when there is none, or when
 /// the app doesn't declare `kind` (no settings entry could exist for it).
 pub fn openSettings(kind: Kind) bool {
-    if (!declared_set.has(kind)) return false;
+    if (!gate.declared_set.has(kind)) return false;
     return impl.openSettings(kind);
 }
 
@@ -91,29 +87,12 @@ fn resolved(kind: Kind, s: Status) void {
     App.emit("permission-changed", .{ .name = @tagName(kind), .status = @tagName(s) });
 }
 
-/// Whether the webview may grant a page's request for `kind`: the app
-/// declared it, and the page is the app's own (`local`) or an origin with a
-/// capability allowing the `permissions:webview` command.
-pub fn allowForPage(kind: Kind, local: @import("security.zig").Local, page_url: []const u8) bool {
-    if (!declared_set.has(kind)) {
-        log.warn("page {s} asked for '{s}', which the app doesn't declare: denied", .{ page_url, @tagName(kind) });
-        return false;
-    }
-    const App = @import("App.zig");
-    const security = @import("security.zig");
-    if (!security.commandAllowed(App.current_security, local, page_url, "permissions:webview")) {
-        log.warn("page {s} asked for '{s}' but its origin is not allowed: denied", .{ page_url, @tagName(kind) });
-        return false;
-    }
-    return true;
-}
-
 /// Smoke check: every status query answers (and never prompts).
 pub fn check(gpa: std.mem.Allocator) !@import("../oriel.zig").Check {
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     for (std.enums.values(Kind), 0..) |k, i| {
-        const s = if (declared_set.has(k)) impl.status(k) else Status.denied;
+        const s = if (gate.declared_set.has(k)) impl.status(k) else Status.denied;
         try out.writer.print("{s}{s}={s}", .{ if (i == 0) "" else " ", @tagName(k), @tagName(s) });
     }
     return .{ .module = "permissions", .ok = true, .detail = try out.toOwnedSlice() };
@@ -121,26 +100,12 @@ pub fn check(gpa: std.mem.Allocator) !@import("../oriel.zig").Check {
 
 test {
     std.testing.refAllDecls(common);
+    std.testing.refAllDecls(gate);
 }
 
 test "undeclared permissions are denied" {
-    setDeclared(.{ .microphone = "" });
-    defer setDeclared(.{});
+    gate.setDeclared(.{ .microphone = "" });
+    defer gate.setDeclared(.{});
     try std.testing.expectEqual(Status.denied, status(.camera));
     try std.testing.expect(status(.microphone) != .denied or builtin.os.tag != .linux);
-}
-
-test allowForPage {
-    const security = @import("security.zig");
-    const App = @import("App.zig");
-    setDeclared(.{ .microphone = "" });
-    defer setDeclared(.{});
-    const saved = App.current_security;
-    defer App.current_security = saved;
-    App.current_security = .{ .capabilities = &.{.{ .origin = "https://partner.example" }} };
-    const local: security.Local = .{};
-    try std.testing.expect(allowForPage(.microphone, local, security.app_origin ++ "/index.html"));
-    try std.testing.expect(allowForPage(.microphone, local, "https://partner.example/call"));
-    try std.testing.expect(!allowForPage(.microphone, local, "https://evil.example/"));
-    try std.testing.expect(!allowForPage(.camera, local, security.app_origin ++ "/index.html"));
 }

@@ -22,7 +22,7 @@ pub const ThreadPool = @import("ThreadPool.zig").ThreadPool;
 const security = @import("security.zig");
 const isolation = @import("isolation.zig");
 const App = @import("App.zig");
-const extensions = @import("extensions.zig");
+const extensions = @import("extensions/runtime.zig");
 const system_ai_bridge = @import("../modules/system_ai/bridge.zig");
 const camera_page = @import("../modules/camera/page.zig");
 
@@ -321,7 +321,7 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
     } else if (std.mem.eql(u8, request.cmd, "deep_link:current")) {
         const build_options = @import("build_options");
         if (build_options.deep_link) {
-            const deep_link = @import("../modules/deep_link.zig");
+            const deep_link = @import("../modules/deep_link/delivery.zig");
             if (deep_link.current()) |curr| {
                 return std.json.Stringify.valueAlloc(arena, curr, .{});
             }
@@ -341,9 +341,7 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         // came before is emitted now.
         const ReadyArgs = struct { event: []const u8 };
         const args = try std.json.parseFromValueLeaky(ReadyArgs, arena, request.args, .{ .ignore_unknown_fields = true });
-        if (std.mem.eql(u8, args.event, "deep-link")) {
-            deepLinkReady();
-        } else if (!@import("pending_events.zig").pageReady(args.event) and !extensions.pageReady(args.event)) return error.UnknownEvent;
+        if (!@import("pending_events.zig").pageReady(args.event) and !extensions.pageReady(args.event)) return error.UnknownEvent;
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, request.cmd, "share:send")) {
         // The page's oriel.share.send: the sheet opens now, and its result
@@ -396,22 +394,13 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         const args = try std.json.parseFromValueLeaky(Args, arena, request.args, .{ .ignore_unknown_fields = true });
         var bytes: std.ArrayList(u8) = .empty;
         defer bytes.deinit(@import("heap.zig").gpa);
-        try @import("../modules/share.zig").read(args.handle, args.offset, @min(args.length, 16 << 20), &bytes);
+        try @import("../modules/share/common.zig").read(args.handle, args.offset, @min(args.length, 16 << 20), &bytes);
         const enc = std.base64.standard.Encoder;
         const out = try arena.alloc(u8, enc.calcSize(bytes.items.len));
         _ = enc.encode(out, bytes.items);
         return std.json.Stringify.valueAlloc(arena, out, .{});
     }
     return error.UnknownCommand;
-}
-
-/// deep_link keeps its own queue (deep_link/queue.zig).
-fn deepLinkReady() void {
-    const build_options = @import("build_options");
-    if (build_options.deep_link) {
-        const deep_link = @import("../modules/deep_link.zig");
-        deep_link.setReady(true);
-    }
 }
 
 /// Dispatch one JSON request (`{"cmd": ..., "args": ...}`) to `Commands` and

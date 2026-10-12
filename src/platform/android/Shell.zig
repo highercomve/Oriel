@@ -20,8 +20,8 @@ const jni = @import("jni.zig");
 const runtime = @import("runtime.zig");
 const window = @import("window.zig");
 const handlers = @import("handlers.zig");
-const lifecycle = @import("../../core/lifecycle.zig");
-const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
+const lifecycle = @import("../../core/lifecycle/backend.zig");
+const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link/delivery.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
 

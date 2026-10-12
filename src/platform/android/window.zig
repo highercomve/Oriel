@@ -21,7 +21,7 @@ const ShellMod = @import("Shell.zig");
 const handlers = @import("handlers.zig");
 const bridge_mod = @import("bridge.zig");
 const scheme_mod = @import("scheme.zig");
-const permissions = @import("../../core/permissions.zig");
+const permissions = @import("../../core/permissions/gate.zig");
 const build_opts = @import("build_options");
 const build_target = @import("../../core/target.zig");
 /// -Dnative_ui: pages drawn with native views instead of a WebView (docs/native-renderer.md).
