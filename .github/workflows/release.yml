@@ -44,6 +44,10 @@ jobs:
         run: node tools/test_isolation_runtime.mjs
       - name: docs/ matches the site's pages
         run: node tools/docs/gen-md.mjs --check
+      - name: Type-check macOS without an SDK
+        run: |
+          zig build check -Dtarget=aarch64-macos
+          zig build check -Dtarget=x86_64-macos -Dnative_ui
       - name: Smoke app, module checks (no GUI)
         working-directory: examples/smoke
         run: zig build && ./zig-out/bin/oriel-smoke --check

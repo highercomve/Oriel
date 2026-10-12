@@ -64,7 +64,7 @@ be linked.
 | Package | Purpose | 0.16 status | Notes |
 |---|---|---|---|
 | **[ianprime0509/zig-gobject](https://github.com/ianprime0509/zig-gobject)** (chosen) | GIR binding generator + prebuilt bindings: GTK4, WebKit 6.0, JavaScriptCore 6.0, Soup 3, GIO, libportal (Xdp) | ✅ `minimum_zig_version = 0.16.0`; README: "tested on Zig 0.16"; release v0.3.2 (2026-07-19) | The prebuilt `bindings-gnome50.tar.zst` already contains `webkit6`, `javascriptcore6`, `soup3`, and its automated tests generate WebKit-6.0. **Maintenance:** 37 commits in the last 12 months, essentially one maintainer (Ian Johnson), 147★, 46 open issues, 1–2 releases a year following each Zig and GNOME release. Bus-factor risk is softened because Ghostty's GTK app depends on this generator. |
-| **[mitchellh/zig-objc](https://github.com/mitchellh/zig-objc)** (chosen, macOS) | Objective-C runtime (AppKit, WKWebView) | ✅ pinned `c8de82f`: works with Zig 0.16.0 unpatched (its build patches the one `objc/runtime.h` block declarator Zig 0.16's translate-c can't parse); its 50 tests pass on macOS 15 arm64 | Lazy dependency, only fetched for macOS targets; needs the Xcode SDK (`xcrun`). Used by Ghostty. License: MIT. |
+| [mitchellh/zig-objc](https://github.com/mitchellh/zig-objc) (dropped in 0.12) | Objective-C runtime (AppKit, WKWebView) | ✅ pinned `c8de82f` until 0.11 | Replaced by `src/platform/apple/objc.zig`, the part of its API Oriel uses declared with `extern` libobjc functions (no translated SDK headers): macOS and iOS share one layer, and both type-check without an SDK. |
 | [ifreund/zig-wayland](https://github.com/ifreund/zig-wayland) (canonical home is Codeberg) | libwayland bindings + protocol scanner | ✅ "Zig 0.16 bindings" | For the virtual-keyboard and data-control protocols. Used by Ghostty. |
 | [marlersoft/zigwin32](https://github.com/marlersoft/zigwin32) | Win32 API bindings | ⚠️ min 0.14.0, active (2026-07) | Needs a test on 0.16. Alternative: hand-written `extern` declarations for the ~50 functions we need. |
 | [karlseguin/http.zig](https://github.com/karlseguin/http.zig) | HTTP server | ✅ master = 0.16 ("experimental") | Only for ghostreel-style local media serving with HTTP range requests. Windows builds apply `tools/patch_httpz.zig` (Winsock shutdown errors it treats as `unreachable`; upstream candidate). |
@@ -120,7 +120,7 @@ Not in `std`: **file watching** (write it ourselves: inotify on Linux via
 | Notifications | `GNotification` (GIO) | built in | libnotify 0.8.8 isn't needed |
 | Open URL / file | `GtkUriLauncher` / `g_app_info_launch_default_for_uri` | built in | |
 
-### macOS (via zig-objc)
+### macOS (via src/platform/apple/objc.zig)
 
 | Feature | API |
 |---|---|
@@ -186,7 +186,7 @@ runtime itself is preinstalled on Windows 10/11.
    implementation per OS and separate Wayland/X11 variants on Linux. Native drawing
    should stay behind the same window/runtime boundary.
 4. **Keep the dependency budget small:** vendored QuickJS-ng/Yoga for native UI;
-   zig-gobject, zig-wayland, zig-objc, zigwin32 (if needed), zigimg, and per-app
+   zig-gobject, zig-wayland, zigwin32 (if needed), zigimg, and per-app
    SQLite/TOML/http.zig. Everything else should come from `std` or the OS.
 5. **Prioritize conformance over feature breadth in native UI:** DOM/CSS behavior,
    controls, accessibility, text metrics, and event ordering need shared tests before
