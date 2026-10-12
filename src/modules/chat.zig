@@ -125,14 +125,21 @@ var io: std.Io = undefined;
 var gpa: std.mem.Allocator = undefined;
 var models_dir: []const u8 = "";
 
-/// Guards everything below except `cancelled`.
+/// Held by `generate` for a whole reply: one reply at a time, the next
+/// waits. Never taken while holding `mutex`.
+var reply_mutex: std.Io.Mutex = .init;
+/// Guards the state below (held briefly: never for a whole reply). While
+/// `generating` is set, nothing but the reply touches `loaded`: `delete`
+/// and `unloadIdle` check it under this mutex.
 var mutex: std.Io.Mutex = .init;
 var backend_ready = false;
 var backend_name: []const u8 = "CPU";
 var gpu_name: ?[]const u8 = null;
 var downloading: ?*const Model = null;
 var generating = std.atomic.Value(bool).init(false);
+/// Set by `cancel`; cleared when a reply ends.
 var cancelled = std.atomic.Value(bool).init(false);
+var ever_init = std.atomic.Value(bool).init(false);
 
 const Loaded = struct {
     model: *const Model,
@@ -164,8 +171,26 @@ pub fn init(app_io: std.Io, app_gpa: std.mem.Allocator, dir: []const u8) void {
     io = app_io;
     gpa = app_gpa;
     models_dir = dir;
+    ever_init.store(true, .release);
     llama.silenceLogs();
     subscribeLifecycle();
+}
+
+/// Free the loaded model. `App.run` calls it once its commands have
+/// finished, while this run's Io and allocator still live; safe twice or
+/// without `init`.
+pub fn deinit() void {
+    if (!ever_init.load(.acquire)) return;
+    reply_mutex.lockUncancelable(io);
+    defer reply_mutex.unlock(io);
+    mutex.lockUncancelable(io);
+    defer mutex.unlock(io);
+    if (loaded) |*l| {
+        l.deinit();
+        loaded = null;
+    }
+    cancelled.store(false, .release);
+    ever_init.store(false, .release);
 }
 
 /// llama.cpp's backend and the GPU backends, once. Caller holds `mutex`.
@@ -180,19 +205,21 @@ fn ensureBackend() void {
     log.info("llama backend: {s}{s}{s}", .{ backend_name, if (gpu_name != null) " on " else "", gpu_name orelse "" });
 }
 
-pub fn find(name: []const u8) !*const Model {
+/// The `models` entry named `name`, or null.
+pub fn findModel(name: []const u8) ?*const Model {
     for (&models) |*m| if (std.mem.eql(u8, m.name, name)) return m;
-    return error.UnknownModel;
+    return null;
 }
 
-pub fn present(m: *const Model) bool {
+/// Whether `m`'s file is in the models directory, complete.
+pub fn modelPresent(m: *const Model) bool {
     return model_download.present(io, models_dir, m.file);
 }
 
 fn resolveModel(name: []const u8) !*const Model {
-    if (!std.mem.eql(u8, name, "auto")) return find(name);
+    if (!std.mem.eql(u8, name, "auto")) return findModel(name) orelse error.UnknownModel;
     var best: ?*const Model = null;
-    for (device_models) |m| if (present(m)) {
+    for (device_models) |m| if (modelPresent(m)) {
         best = m;
     };
     return best orelse error.NoModel;
@@ -229,7 +256,7 @@ pub fn status() Status {
         .name = m.name,
         .label = m.label,
         .mb = m.mb,
-        .present = present(m),
+        .present = modelPresent(m),
         .faster = if (prefs.get(io, models_dir, m.name)) |g| (if (g) "gpu" else "cpu") else null,
     };
     return .{
@@ -246,7 +273,7 @@ pub fn status() Status {
 /// Fetch a model from Hugging Face, emitting "chat:download". Blocks:
 /// call it from a worker.
 pub fn download(name: []const u8) !void {
-    const m = try find(name);
+    const m = findModel(name) orelse return error.UnknownModel;
     {
         mutex.lockUncancelable(io);
         defer mutex.unlock(io);
@@ -269,7 +296,7 @@ pub fn download(name: []const u8) !void {
 
 /// Remove a model from the device (unloading it first).
 pub fn delete(name: []const u8) !void {
-    const m = try find(name);
+    const m = findModel(name) orelse return error.UnknownModel;
     mutex.lockUncancelable(io);
     defer mutex.unlock(io);
     if (downloading == m) return error.Downloading;
@@ -304,6 +331,8 @@ pub fn unloadIdle() void {
     if (generating.load(.acquire)) return;
     if (!mutex.tryLock()) return;
     defer mutex.unlock(io);
+    // Again under the lock: a reply may have started meanwhile.
+    if (generating.load(.acquire)) return;
     if (loaded) |*l| {
         l.deinit();
         loaded = null;
@@ -481,25 +510,43 @@ pub const Result = struct {
     tokens_per_s: f32,
 };
 
-/// Stop the reply being written (any thread). It returns what it has, with
-/// `stop = "cancelled"`.
+/// Stop the reply being written (any thread): it returns what it has, with
+/// `stop = "cancelled"`. With no reply running, the next `generate` to
+/// start is cancelled (a Stop pressed before the request reached a worker).
 pub fn cancel() void {
     cancelled.store(true, .release);
 }
 
 /// The assistant's reply to `messages`, streamed as "chat:token" events
 /// and returned whole (allocated with `a`). Blocks: call it from a worker.
+/// Replies run one at a time; another `generate` waits for this one.
 pub fn generate(a: std.mem.Allocator, messages: []const Message, opts: Options) !Result {
+    return reply(a, messages, opts, false);
+}
+
+/// `generate`; `fresh`: drop the KV cache first (`compare`'s timed runs).
+fn reply(a: std.mem.Allocator, messages: []const Message, opts: Options, fresh: bool) !Result {
     if (messages.len == 0) return error.NoMessages;
     const m = try resolveModel(opts.model);
-    mutex.lockUncancelable(io);
-    defer mutex.unlock(io);
-    if (generating.swap(true, .acq_rel)) return error.Generating;
-    defer generating.store(false, .release);
-    cancelled.store(false, .release);
+    reply_mutex.lockUncancelable(io);
+    defer reply_mutex.unlock(io);
+    generating.store(true, .release);
+    defer {
+        cancelled.store(false, .release);
+        generating.store(false, .release);
+    }
 
-    const load_ms = try ensureModel(m, useGpu(m, opts.backend), opts.context);
+    const load_ms = blk: {
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
+        break :blk try ensureModel(m, useGpu(m, opts.backend), opts.context);
+    };
+    // `generating` keeps `delete` and `unloadIdle` off `loaded` until this returns.
     const l = &loaded.?;
+    if (fresh) {
+        c.llama_memory_clear(c.llama_get_memory(l.ctx), true);
+        l.cache.clearRetainingCapacity();
+    }
     const vocab = c.llama_model_get_vocab(l.handle);
 
     // The prompt, dropping the oldest turns until it fits with the reply.
@@ -790,17 +837,9 @@ fn ensureBackendLocked() void {
 
 /// One fresh reply (no KV reuse), timed.
 fn timed(messages: []const Message, o: Options) !Run {
-    {
-        mutex.lockUncancelable(io);
-        defer mutex.unlock(io);
-        if (loaded) |*l| {
-            c.llama_memory_clear(c.llama_get_memory(l.ctx), true);
-            l.cache.clearRetainingCapacity();
-        }
-    }
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
-    const r = try generate(arena.allocator(), messages, o);
+    const r = try reply(arena.allocator(), messages, o, true);
     return .{ .tokens_per_s = r.tokens_per_s, .prompt_ms = r.prompt_ms, .tokens = r.tokens };
 }
 

@@ -318,32 +318,15 @@ async function dictRefresh() {
   // The system recognizer, where there is one (Android).
   $("dict-engine-field").hidden = !st.system;
   $("dict-system-sub").textContent = st.system_on_device ? "on-device, fast" : "may use the network";
-  const current = st.models.filter((m) => !m.legacy);
-  if (!dict.model || !current.some((m) => m.name === dict.model)) dict.model = ([...current].reverse().find((m) => m.present) || current[1]).name;
+  if (!dict.model || !st.models.some((m) => m.name === dict.model)) dict.model = ([...st.models].reverse().find((m) => m.present) || st.models[1]).name;
   const seg = $("dict-model");
   seg.innerHTML = "";
-  for (const m of current) {
+  for (const m of st.models) {
     const b = document.createElement("button");
     b.dataset.value = m.name;
     b.setAttribute("aria-checked", String(m.name === dict.model));
     b.innerHTML = `${m.name}<small>${m.present ? '<span class="have">✓ ready</span>' : `${m.mb} MB`}</small>`;
     seg.append(b);
-  }
-  // Files from earlier versions: only to delete them.
-  const legacy = st.models.filter((m) => m.legacy && m.present);
-  const box = $("dict-legacy");
-  box.hidden = legacy.length === 0;
-  box.innerHTML = legacy.length ? '<span class="label">Older models on this device</span>' : "";
-  for (const m of legacy) {
-    const row = document.createElement("div");
-    row.className = "have-row";
-    row.innerHTML = `<span>${m.name} · ${m.mb} MB</span>`;
-    const del = document.createElement("button");
-    del.className = "btn danger";
-    del.innerHTML = '<svg><use href="#i-trash"/></svg><span>Delete</span>';
-    del.addEventListener("click", () => armDelete(del, m.name));
-    row.append(del);
-    box.append(row);
   }
   dictRender();
 }
@@ -369,8 +352,7 @@ function dictRender() {
   $("dict-get").hidden = m.present;
   $("dict-have").hidden = !m.present;
   // Live text drafts with the next smaller model on the device.
-  const current = st.models.filter((x) => !x.legacy);
-  const smaller = current.slice(0, current.findIndex((x) => x.name === m.name));
+  const smaller = st.models.slice(0, st.models.findIndex((x) => x.name === m.name));
   const noDraft = smaller.length > 0 && !smaller.some((x) => x.present);
   $("dict-have-text").textContent = `${m.mb} MB on this device` +
     (noDraft ? ` · download ${smaller[smaller.length - 1].name} too for faster live text` : "");

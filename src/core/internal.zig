@@ -285,6 +285,8 @@ pub fn run(io: std.Io, comptime api: App.Api, comptime config: App.Config) u8 {
         // while this run's Io and allocator are still alive (Android restarts).
         if (build_opts.whisper and build_opts.audio_capture)
             @import("../modules/dictation.zig").deinit();
+        // The chat model, likewise.
+        if (build_opts.llama) @import("../modules/chat.zig").deinit();
         current_app_id = null;
     }
 
