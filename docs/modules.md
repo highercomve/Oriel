@@ -290,6 +290,42 @@ try oriel.media_server.scheme.setRoot("/home/me/Videos", .inside_root);
 - **Windows support:** on Windows, the media root is opened safely beneath the root directory via `CreateFileW` with heap-allocated UTF-16 path conversions, intermediate symlink/reparse point traversal rejection (`GetFinalPathNameByHandleW` lexical path comparison under `SymlinkPolicy.refuse_all`), and non-blocking traversal checks. WebView2 intercepts `https://app.localhost/media/*` requests and serves ranged media streams via a custom read-only COM `IStream` (`FileWindowStream`) over a duplicated handle using `OVERLAPPED` reads (no shared file pointer, no 16 MiB truncation cap, RFC-compliant 200/206 status codes, and checked COM calls). Runtime untested on Windows.
 - **macOS support:** files are opened relative to the root's fd and the kernel's path of the opened file (`F_GETPATH`) must lie below the root (macOS 15 accepts `O_RESOLVE_BENEATH` but doesn't enforce it); `refuse_all` adds `O_NOFOLLOW_ANY`. `app://app/media/` streams through the `WKURLSchemeHandler`: a worker reads 256 KiB chunks, one in flight, delivered on the main thread; `<audio>`/`<video>` from the TCP server seek normally.
 
+### Lifecycle (`oriel.lifecycle`)
+
+Background and foreground, memory pressure, sleep and wake, and the end of the app, with one API on every platform (core, always on):
+
+```zig
+fn onLifecycle(event: oriel.lifecycle.Event) void {
+    switch (event) {
+        .memory_pressure => |level| if (level == .critical) cache.clear(),
+        .background => saveDraft(),
+        .terminating => flush(),
+        else => {},
+    }
+}
+// In main or setup: up to 16 subscribers (Oriel's modules included), called
+// on the main thread in registration order.
+try oriel.lifecycle.subscribe(onLifecycle);
+```
+
+```js
+// The page: { type, level }, queued until the page listens.
+oriel.lifecycle.on((e) => { if (e.type === "memory_pressure") dropCaches(); });
+```
+
+| Event | Android | iOS | macOS | Windows | Linux |
+| --- | --- | --- | --- | --- | --- |
+| `background` / `foreground` | the last Oriel Activity stopped / one started again | didEnterBackground / willEnterForeground | — | — | — |
+| `memory_pressure` | onTrimMemory: RUNNING_LOW (10) `moderate`; RUNNING_CRITICAL (15), BACKGROUND (40) and above `critical` | memory warning: `critical` | memory-pressure dispatch source: warn `moderate`, critical `critical` | low-memory resource notification: `critical` (once per episode) | GMemoryMonitor: LOW and MEDIUM `moderate`, CRITICAL `critical` |
+| `suspend_` / `resume_` | — | — | NSWorkspace will sleep / did wake | WM_POWERBROADCAST (PBT_APMSUSPEND / PBT_APMRESUMEAUTOMATIC) | logind PrepareForSleep (system bus) |
+| `terminating` | — (Android ends processes without warning) | applicationWillTerminate, `App.quit` | quit (⌘Q, SIGTERM, `App.quit`) | quit, WM_ENDSESSION | quit (SIGTERM, `App.quit`) |
+
+- **Once per run:** `terminating` comes at most once, before the windows close where the platform allows it; a desktop run that ends otherwise (the last window closed) still sends it to Zig subscribers when the loop returns.
+- **Modules use it:** `oriel.chat`, `oriel.dictation` and `oriel.tts` subscribe when initialized and free their models (`unloadIdle`) on critical memory pressure. Change that with `oriel.chat.unload_on = .{ .background = true }` (also unload in the background) or `.{ .memory_pressure = null }` (never).
+- **Android:** Oriel purges bionic's malloc caches on memory pressure and in the background. `oriel.android.onSystemEvent` still gets `"trim-memory"` with the raw level, and the Android-only events (tile, notification action, keyboard, media button).
+- **Deprecated:** `oriel.ios.onSystemEvent` (now a lifecycle subscriber under the old names) and `App.Config.on_session_end` (still called on Windows, after `terminating`).
+- **Threads:** `subscribe` works from any thread; handlers run on the main thread and should return quickly (iOS suspends the app soon after `background`).
+
 ### Logging (`oriel.log`)
 
 Thread-safe routing of `std.log` to stderr and a log file, once the app sets `pub const std_options: std.Options = .{ .logFn = oriel.log.logFn };` in its `main.zig`:
