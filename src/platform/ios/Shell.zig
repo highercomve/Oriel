@@ -15,7 +15,7 @@ const WindowHandle = window.WindowHandle;
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const lifecycle = @import("../../core/lifecycle.zig");
-const hooks = @import("../apple/hooks.zig");
+const apple_hooks = @import("../apple/hooks.zig");
 const build_opts = @import("build_options");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
 const share = if (build_opts.share) @import("../../modules/share/apple.zig") else struct {};
@@ -362,7 +362,7 @@ fn setItems(set: Object, comptime f: anytype, extra: anytype) void {
 }
 
 fn sceneDidDisconnect(_: apple.id, _: apple.c.SEL, scene: apple.id) callconv(.c) void {
-    hooks.notify(.scene_did_disconnect, .{scene});
+    apple_hooks.notify(.scene_did_disconnect, .{scene});
     if (scene == main_scene) main_scene = null;
     for (scenes.items, 0..) |e, i| {
         if (e.scene != scene) continue;
@@ -377,19 +377,19 @@ fn sceneDidDisconnect(_: apple.id, _: apple.c.SEL, scene: apple.id) callconv(.c)
 // activities and remote notification registration, which Oriel itself
 // doesn't use.
 fn sceneDidBecomeActive(_: apple.id, _: apple.c.SEL, scene: apple.id) callconv(.c) void {
-    hooks.notify(.scene_did_become_active, .{scene});
+    apple_hooks.notify(.scene_did_become_active, .{scene});
 }
 
 fn sceneWillResignActive(_: apple.id, _: apple.c.SEL, scene: apple.id) callconv(.c) void {
-    hooks.notify(.scene_will_resign_active, .{scene});
+    apple_hooks.notify(.scene_will_resign_active, .{scene});
 }
 
 fn sceneWillEnterForeground(_: apple.id, _: apple.c.SEL, scene: apple.id) callconv(.c) void {
-    hooks.notify(.scene_will_enter_foreground, .{scene});
+    apple_hooks.notify(.scene_will_enter_foreground, .{scene});
 }
 
 fn sceneDidEnterBackground(_: apple.id, _: apple.c.SEL, scene: apple.id) callconv(.c) void {
-    hooks.notify(.scene_did_enter_background, .{scene});
+    apple_hooks.notify(.scene_did_enter_background, .{scene});
 }
 
 fn sceneContinueUserActivity(_: apple.id, _: apple.c.SEL, _: apple.id, activity: apple.id) callconv(.c) void {
@@ -402,15 +402,15 @@ fn offerActivity(activity: Object) void {
     if (activity.value == null) return;
     const kind = apple.utf8(activity.msgSend(Object, "activityType", .{})) orelse "";
     if (std.mem.eql(u8, kind, window_activity_type)) return;
-    if (!hooks.intercept(.continue_user_activity, .{activity.value}) and hooks.active()) log.info("user activity {s}: no hook handled it", .{kind});
+    if (!apple_hooks.intercept(.continue_user_activity, .{activity.value}) and apple_hooks.active()) log.info("user activity {s}: no hook handled it", .{kind});
 }
 
 fn didRegisterForRemoteNotifications(_: apple.id, _: apple.c.SEL, _: apple.id, token: apple.id) callconv(.c) void {
-    hooks.notify(.did_register_push, .{token});
+    apple_hooks.notify(.did_register_push, .{token});
 }
 
 fn didFailToRegisterForRemoteNotifications(_: apple.id, _: apple.c.SEL, _: apple.id, err: apple.id) callconv(.c) void {
-    hooks.notify(.did_fail_push, .{err});
+    apple_hooks.notify(.did_fail_push, .{err});
 }
 
 /// OrielHooksContext.presentingViewController.
@@ -446,8 +446,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
         fn didFinishLaunching(self_id: apple.id, _: apple.c.SEL, app_id: apple.id, launch_options: apple.id) callconv(.c) apple.c.BOOL {
             // Platform hooks first: before any scene or window.
-            hooks.start(&hooksFront);
-            hooks.notify(.did_finish_launching, .{ app_id, launch_options });
+            apple_hooks.start(&hooksFront);
+            apple_hooks.notify(.did_finish_launching, .{ app_id, launch_options });
             const center = apple.class("NSNotificationCenter").msgSend(Object, "defaultCenter", .{});
             center.msgSend(void, "addObserver:selector:name:object:", .{ Object{ .value = self_id }, apple.objc.sel("orielDidEnterBackground:"), UIApplicationDidEnterBackgroundNotification, apple.nil });
             center.msgSend(void, "addObserver:selector:name:object:", .{ Object{ .value = self_id }, apple.objc.sel("orielWillEnterForeground:"), UIApplicationWillEnterForegroundNotification, apple.nil });
@@ -551,13 +551,13 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 destroySession(session);
             }
 
-            hooks.notify(.scene_will_connect, .{ scene_id, options_id });
+            apple_hooks.notify(.scene_will_connect, .{ scene_id, options_id });
             const Offer = struct {
                 fn each(activity: Object) void {
                     offerActivity(activity);
                 }
             };
-            if (hooks.active()) setItems(options.msgSend(Object, "userActivities", .{}), Offer.each, .{});
+            if (apple_hooks.active()) setItems(options.msgSend(Object, "userActivities", .{}), Offer.each, .{});
 
             const cold = !connected_once;
             connected_once = true;
@@ -574,13 +574,13 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         /// Documents/Inbox), which with the share module are one share.
         fn handleUrlContexts(contexts: Object, cold: bool) void {
             if (build_opts.share) receiveFiles(contexts, cold);
-            if (!build_opts.deep_link and !hooks.active()) return;
+            if (!build_opts.deep_link and !apple_hooks.active()) return;
             const Each = struct {
                 fn each(ctx: Object, is_cold: bool) void {
                     const u = ctx.msgSend(Object, "URL", .{});
                     if (u.value == null or apple.isTrue(u.msgSend(apple.c.BOOL, "isFileURL", .{}))) return;
                     // A hook may consume it (platform hooks: openURL:).
-                    if (hooks.intercept(.open_url, .{u.value})) return;
+                    if (apple_hooks.intercept(.open_url, .{u.value})) return;
                     if (!build_opts.deep_link) return;
                     const url = apple.urlString(u) orelse return;
                     _ = deep_link.validate(url, config.deep_link_schemes) catch |err| {

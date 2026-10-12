@@ -19,6 +19,7 @@ const dev_server = @import("dev_server.zig");
 const permissions = @import("../../core/permissions.zig");
 const overlay = @import("overlay.zig");
 const build_target = @import("../../core/target.zig");
+const hooks = @import("../../core/hooks.zig");
 /// -Dnative_ui: pages drawn with native views instead of WebKit (docs/native-renderer.md).
 const native_gtk = if (build_opts.native_ui) @import("../../native_ui/gtk.zig") else struct {};
 
@@ -74,6 +75,9 @@ pub const WindowHandle = struct {
     /// Never reused, unlike the GtkWindow's address: a handle queued for a
     /// window that closed must not match a new window allocated there.
     serial: u64 = 0,
+    /// The window's label, owned by its `App.Window` (for the destroyed
+    /// hooks of `destroyWindow`).
+    label: []const u8 = "",
 
     pub fn eql(self: WindowHandle, other: WindowHandle) bool {
         return self.gtk_window == other.gtk_window and self.serial == other.serial;
@@ -153,7 +157,18 @@ pub fn focusWindow(handle: WindowHandle) void {
     handle.gtk_window.present();
 }
 
+/// The platform hooks' view of a window (hooks.zig).
+fn hookWindow(handle: WindowHandle) hooks.NativeWindow {
+    return .{ .gtk = handle.gtk_window };
+}
+
+fn hookView(handle: WindowHandle) ?hooks.NativeWebView {
+    const v = handle.web_view orelse return null;
+    return .{ .webkitgtk = v };
+}
+
 pub fn destroyWindow(handle: WindowHandle) void {
+    hooks.destroyed(handle.label, hookWindow(handle), hookView(handle));
     overlay.forget(handle.gtk_window);
     if (handle.web_view) |v| isolation.forget(@intFromPtr(v));
     if (comptime build_opts.native_ui) if (handle.native) |e| native_gtk.Surface.destroyFor(e);
@@ -318,17 +333,23 @@ pub fn WindowCreator(
                 _ = webkit.WebView.signals.load_failed.connect(view, ?*anyopaque, &DevRetry.onLoadFailed, null, .{});
             }
 
+            const handle = WindowHandle{
+                .gtk_window = window,
+                .app_window = app_window,
+                .web_view = view,
+                .serial = next_serial.fetchAdd(1, .monotonic),
+                .label = options.label,
+            };
+            // Nothing fails past this point: every window the hooks saw
+            // created is seen destroyed.
+            hooks.created(options.label, hookWindow(handle), hookView(handle));
+
             view.loadUri(target_uri);
 
             overlay.setup(window, view, options, (config.id ++ "\x00")[0..config.id.len :0]);
             if (options.visible) window.present();
 
-            return WindowHandle{
-                .gtk_window = window,
-                .app_window = app_window,
-                .web_view = view,
-                .serial = next_serial.fetchAdd(1, .monotonic),
-            };
+            return handle;
         }
 
         /// -Dnative_ui: the page's HTML, CSS and JS run on the native renderer
@@ -354,14 +375,17 @@ pub fn WindowCreator(
             // as for a web view window.
             overlay.setup(window, null, options, (config.id ++ "\x00")[0..config.id.len :0]);
             _ = gtk.Window.signals.close_request.connect(window, *App.Window, &onWindowCloseRequest, win_inst, .{});
-            if (options.visible) window.present();
-            return WindowHandle{
+            const handle = WindowHandle{
                 .gtk_window = window,
                 .app_window = app_window,
                 .web_view = null,
                 .native = surface.engine,
                 .serial = next_serial.fetchAdd(1, .monotonic),
+                .label = options.label,
             };
+            hooks.created(options.label, hookWindow(handle), null);
+            if (options.visible) window.present();
+            return handle;
         }
 
         fn onWindowCloseRequest(window: *gtk.Window, win: *App.Window) callconv(.c) c_int {
@@ -376,6 +400,7 @@ pub fn WindowCreator(
                     return 1;
                 }
             };
+            hooks.destroyed(win.label, hookWindow(win.handle), hookView(win.handle));
             overlay.forget(window);
             if (win.handle.web_view) |v| isolation.forget(@intFromPtr(v));
 

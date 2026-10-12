@@ -10,7 +10,9 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 
 /**
- * App-owned Android behavior registered by AppOptions.android.extensions.
+ * Android platform hooks: app-owned behavior registered by
+ * AppOptions.android.hooks (or its deprecated alias, .android.extensions).
+ * New code can use the name [OrielAndroidHooks], the same interface.
  *
  * Extensions are constructed once per process, in declaration order. Callbacks
  * run on the UI thread. An extension must key Activity/window-specific state by
@@ -57,3 +59,9 @@ class OrielAndroidExtensionContext internal constructor(private val index: Int) 
         return 0x8000 + index * 256 + localCode
     }
 }
+
+/** The platform hooks interface by its Oriel 0.11 name (Kotlin; Java uses OrielAndroidExtension). */
+typealias OrielAndroidHooks = OrielAndroidExtension
+
+/** [OrielAndroidExtensionContext] by its Oriel 0.11 name. */
+typealias OrielAndroidHooksContext = OrielAndroidExtensionContext

@@ -49,13 +49,14 @@ desktop, declared in `build.zig`. Zig calls it with bytes in and out; the page
 reaches the methods Zig exposes (`oriel.extensions.call`). Oriel's own
 `oriel.system_ai` is built this way.
 
-For deeper Android integration, add app-owned Kotlin or Java behavior with `OrielAndroidExtension`: configure
-WebViews, receive Activity and WebView lifecycle callbacks, handle native
-results and permissions, or supply a custom file picker. Declare sources,
-extension classes, and Maven SDK dependencies in `build.zig`; Oriel regenerates
-the `OrielAppExtensions` registry on each Android build.
+Platform hooks react to or take over the platform's own app, window and web
+view events: `oriel.hooks` in Zig on Linux, macOS and Windows (each window and
+web view with its native handle), Kotlin or Java on Android (`.android.hooks`,
+`OrielAndroidHooks`: WebView and Activity lifecycles, native results and
+permissions, a custom file picker), Objective-C or Swift on iOS and macOS.
 
-See [Android extensions](docs/android-extensions.md) for a complete example,
+See [Platform hooks](docs/platform-hooks.md), and
+[Android platform hooks](docs/android-extensions.md) for a complete example,
 request-code namespaces, and callback ownership.
 
 ## Examples
@@ -85,7 +86,8 @@ Start with the [documentation index](docs/README.md), or go straight to a guide:
 | [Platforms](docs/platforms.md) | Desktop support, prerequisites, and cross-compilation |
 | [Android](docs/android.md) · [iOS](docs/ios.md) | Mobile setup, builds, and platform behavior |
 | [App extensions](docs/extensions.md) | Your own Kotlin, Objective-C, Swift or Zig code, called by name from Zig and the page |
-| [Android extensions](docs/android-extensions.md) | App-owned Kotlin/Java hooks, generated registration, and native SDK dependencies |
+| [Platform hooks](docs/platform-hooks.md) | React to or take over the platform's app, window and web view events, on every platform |
+| [Android platform hooks](docs/android-extensions.md) | App-owned Kotlin/Java hooks, generated registration, and native SDK dependencies |
 | [Native rendering](docs/renderers.md) | Renderer overview, implementation guides, and limits |
 | [Contributing](docs/contributing.md) | Repository layout, builds, tests, development rules, and releases |
 | [Background and comparisons](docs/overview.md) | The Oriel name and comparisons with other frameworks |

@@ -176,7 +176,7 @@ without it the photo library:
 
 On Android, images the WebView can't decode (HEIC, AVIF) are transcoded to JPEG (quality 90, the long
 side kept or halved while it stays at least 1600 px) off the UI thread, unless
-`.camera = .{ .transcode = false }` in `addApp`. App extensions (`OrielAndroidExtension.onShowFileChooser`)
+`.camera = .{ .transcode = false }` in `addApp`. Android platform hooks (`OrielAndroidHooks.onShowFileChooser`)
 still see every chooser first. The capture provider serves only the `capture-<digits>.jpg` files Oriel
 creates in `<cacheDir>/oriel-captures/`, and files older than a day are deleted.
 

@@ -1,38 +1,45 @@
-# App-owned Android extensions
+# Android platform hooks
 
-[Back to Oriel](../README.md) · [Documentation](README.md) · [Android](android.md)
+[Back to Oriel](../README.md) · [Documentation](README.md) · [Android](android.md) · [Platform hooks](platform-hooks.md)
 
-Use `OrielAndroidExtension` to add native Android behavior without editing
-Oriel's generated Kotlin runtime. Extensions can configure WebViews, react to
-Activity and WebView lifecycles, launch native workflows, handle permissions
-and activity results, and intercept file selection. The API is independent of
-any particular app, camera implementation, or third-party SDK.
+Android platform hooks let app-owned Kotlin or Java code react to, and take
+over, the Android app's own events without editing Oriel's generated Kotlin
+runtime. Hooks can configure WebViews, react to Activity and WebView
+lifecycles, launch native workflows, handle permissions and activity results,
+and intercept file selection. The API is independent of any particular app,
+camera implementation, or third-party SDK. This is the Android part of
+[platform hooks](platform-hooks.md); iOS and macOS have Objective-C/Swift hooks, and Linux,
+Windows and macOS have `oriel.hooks` in Zig.
 
-`OrielAndroidExtension` is the public interface your Kotlin or Java class
-implements. `OrielAppExtensions` is Oriel's internal, generated registry: it
-constructs the classes listed in `.android.extensions` and dispatches their
-callbacks. Configure registration in `build.zig`; edits to the generated
-`OrielAppExtensions.kt` are overwritten on the next Android build.
+`OrielAndroidHooks` is the public interface your Kotlin class implements
+(declared in `.android.hooks`). It is a Kotlin `typealias` of
+`OrielAndroidExtension`, the interface's name before Oriel 0.11, which keeps
+working and is the name Java classes implement; `OrielAndroidHooksContext`
+is likewise `OrielAndroidExtensionContext`. `OrielAppExtensions` is Oriel's
+internal, generated registry: it constructs the registered classes and
+dispatches their callbacks. Configure registration in `build.zig`; edits to
+the generated `OrielAppExtensions.kt` are overwritten on the next Android
+build.
 
 To call your own native code from Zig (and, through Zig, from the page) on
 every platform, use [app extensions](extensions.md) (`AppOptions.extensions`,
 `OrielAppExtension`): Oriel handles the JNI transport, threads,
 cancellation and keep rules, with Objective-C/Swift and Zig counterparts on
-iOS and the desktop. Keep `OrielAndroidExtension` for Activity and WebView
-hooks; one class may implement both interfaces.
+iOS and the desktop. Keep platform hooks for Activity and WebView events;
+one class may implement both interfaces.
 
-## Register an extension
+## Register a hook class
 
 Keep the implementation outside the generated `android/app/src/main/java/`
-directory, for example in `src/android/MyExtension.kt`:
+directory, for example in `src/android/MyHooks.kt`:
 
 ```kotlin
 package dev.example
 
 import android.webkit.WebView
-import dev.oriel.OrielAndroidExtension
+import dev.oriel.OrielAndroidHooks
 
-class MyExtension : OrielAndroidExtension {
+class MyHooks : OrielAndroidHooks {
     override fun onWebViewCreated(view: WebView, windowLabel: String) {
         // Apply an app-specific setting after Oriel installs its clients and
         // bridge, before the page loads. Other windows can use other settings.
@@ -48,16 +55,21 @@ _ = oriel.addApp(b, dep, .{
     .name = "my-app",
     .root_source_file = b.path("src/main.zig"),
     .android = .{
-        .sources = &.{b.path("src/android/MyExtension.kt")},
-        .extensions = &.{"dev.example.MyExtension"},
+        .sources = &.{b.path("src/android/MyHooks.kt")},
+        .hooks = &.{"dev.example.MyHooks"},
     },
 });
 ```
 
-A registered class must implement `OrielAndroidExtension` and have a public
-zero-argument constructor. Register multiple classes in the order they should
-run. Duplicate registrations, invalid class names, and more than 64 extensions
-are rejected by the build. Kotlin compilation checks the interface and
+A registered class must implement `OrielAndroidHooks` (or, in Java,
+`OrielAndroidExtension`) and have a public zero-argument constructor.
+Register multiple classes in the order they should run. Duplicate
+registrations, invalid class names, and more than 64 classes are rejected by
+the build.
+
+`.android.extensions` is the deprecated name of `.android.hooks` and still
+works: its classes are registered after the `.android.hooks` classes, and a
+class named in both lists is registered once, in its `.hooks` position. Kotlin compilation checks the interface and
 constructor; registration uses direct constructor calls, not reflection, so
 R8 can follow those references.
 
@@ -66,19 +78,19 @@ Every Android build copies the listed sources and regenerates
 removing a source removes its generated copy. The original source remains
 owned by the developer. Each source needs a `package` declaration, which
 selects its destination under `app/src/main/java/`. Listing a source does not
-register it as an extension: both `.sources` and `.extensions` are needed for
-an app-owned implementation. A class supplied by a Maven SDK can instead come
+register it as a hook: both `.sources` and `.hooks` are needed for an
+app-owned implementation. A class supplied by a Maven SDK can instead come
 from `.dependencies`.
 
 Normal builds keep developer manifest entries outside
 Oriel's generated regions. Add custom Activities, providers, or services there,
 and declare extra permissions with `.android.permissions` or the appropriate
 `.permissions` kind. `-Dandroid_force=true` intentionally rewrites developer
-project files from the template; it is not needed to update extensions.
+project files from the template; it is not needed to update hooks.
 
 ## Lifecycle and WebView hooks
 
-Extension instances are created once per process. Callbacks run on the UI
+Hook instances are created once per process. Callbacks run on the UI
 thread, in registration order. Activity creation/start/resume/pause/stop/destroy,
 new intents, saved instance state, and configuration changes are available.
 WebView creation, attachment, detachment, and destruction callbacks include the
@@ -94,13 +106,14 @@ hooks to intercept behavior instead of replacing `webViewClient` or
 
 ## Native requests without request-code collisions
 
-`onRegistered` supplies an `OrielAndroidExtensionContext`. Allocate local codes
-from 0 through 255; Oriel assigns each extension a separate namespace:
+`onRegistered` supplies an `OrielAndroidHooksContext` (`OrielAndroidExtensionContext`).
+Allocate local codes from 0 through 255; Oriel assigns each hook class a
+separate namespace:
 
 ```kotlin
-private lateinit var context: OrielAndroidExtensionContext
+private lateinit var context: OrielAndroidHooksContext
 
-override fun onRegistered(context: OrielAndroidExtensionContext) {
+override fun onRegistered(context: OrielAndroidHooksContext) {
     this.context = context
 }
 
@@ -109,7 +122,7 @@ override fun onRegistered(context: OrielAndroidExtensionContext) {
 // activity.requestPermissions(arrayOf(permission), context.requestCode(2))
 ```
 
-Oriel routes results for those codes directly to the owning extension. The
+Oriel routes results for those codes directly to the owning hook class. The
 callback receives the full allocated code, not the local `0..255` value.
 Compare it with the same `context.requestCode(...)` used to launch the request:
 
@@ -132,8 +145,8 @@ Keep `0x4E00..0x4FFF` for Oriel: permission requests use `0x4E00` plus the
 permission kind and `0x4E80`; Activity workflows use `0x4Fxx`. Return `false`
 for Oriel's permission results so its permission handler receives them.
 For third-party SDKs with fixed codes, use codes outside those ranges and the
-extension-managed range (`0x8000..0xBFFF`). Results outside the managed range
-visit extensions in declaration order until one returns `true`; unhandled
+hook-managed range (`0x8000..0xBFFF`). Results outside the managed range
+visit hook classes in declaration order until one returns `true`; unhandled
 activity results reach the Activity superclass. Unhandled permission results
 reach Oriel's permission handler, which ignores codes outside its own range.
 
@@ -141,19 +154,21 @@ reach Oriel's permission handler, which ignores codes outside its own range.
 
 Override `onShowFileChooser(activity, view, callback, params)` to provide a
 custom picker, capture workflow, or document SDK. Return `false` without touching
-the callback to let the next extension, then Oriel's built-in picker, handle it.
+the callback to let the next hook class, then Oriel's built-in picker, handle it.
 Return `true` to take ownership and complete the callback exactly once with the
 selected URI array, or `null` for cancellation/failure. Clean up an outstanding
 callback when its Activity or WebView is destroyed. Honour the supplied accept
 types, capture flag and selection mode; do not request unrelated permissions.
 
-Apps no longer need their own camera extension: with the camera module on
-(`.permissions.camera` in `build.zig`, [modules.md](modules.md#camera-orielcamera)),
-Oriel handles `<input type="file" accept="image/*">` itself, opening the camera
-app (with `capture`, into Oriel's own capture provider) or the system photo
-picker, and transcoding HEIC/AVIF picks to JPEG. An extension that returns
-`true` from `onShowFileChooser` still takes precedence, so a custom capture flow
-(a document scanner, a vendor SDK) keeps working.
+Apps don't need their own camera hook: since Oriel 0.10, with the camera
+module on (`.permissions.camera` in `build.zig`, see [the camera module](modules.md#camera-orielcamera)),
+`oriel.camera` handles `<input type="file" accept="image/*">` itself. With
+`capture` it asks for `CAMERA` and opens the camera app writing into Oriel's
+own capture provider (`<app id>.oriel.capture`); without it, the system photo
+picker. Pictures the WebView can't decode (HEIC, AVIF) are transcoded to JPEG.
+A hook that returns `true` from `onShowFileChooser` still sees every chooser
+first, so the route below is only for apps that need their own capture flow
+(a document scanner, a vendor SDK).
 
 Files picked for an input arrive as `content://` URIs; the WebView uploads them
 with `allowContentAccess` left off (Oriel's default), which only governs pages
@@ -164,12 +179,12 @@ result Intent.
 
 ## Third-party SDK dependencies
 
-Declare pinned Maven coordinates in the same build configuration as the extension:
+Declare pinned Maven coordinates in the same build configuration as the hooks:
 
 ```zig
 .android = .{
-    .sources = &.{b.path("src/android/MyExtension.kt")},
-    .extensions = &.{"dev.example.MyExtension"},
+    .sources = &.{b.path("src/android/MyHooks.kt")},
+    .hooks = &.{"dev.example.MyHooks"},
     .dependencies = &.{"com.example:example-sdk:1.2.3"},
     .proguard_rules = b.path("src/android/proguard-rules.pro"),
 },

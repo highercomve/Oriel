@@ -325,16 +325,22 @@ declare no permissions, so there is nothing for it):
 .windows = .{ .capabilities = &.{.{ .name = "proximity", .kind = .device }} },  // MSIX only
 ```
 
-## App-owned Android extensions
+## Platform hooks
 
-Use `.android.sources` for app-owned Kotlin or Java files and
-`.android.extensions` for fully qualified classes implementing
-`OrielAndroidExtension` with public zero-argument constructors:
+[Platform hooks](platform-hooks.md) let the app's own code react to or take
+over the platform's app, window and web view events. On Linux, macOS and
+Windows, `oriel.hooks.subscribe` hands Zig each window and web view with its
+native handle (GtkWindow/WebKitWebView, NSWindow/WKWebView,
+HWND/ICoreWebView2). On Android, use `.android.sources` for app-owned Kotlin
+or Java files and `.android.hooks` for fully qualified classes implementing
+`OrielAndroidHooks` (`OrielAndroidExtension` in Java) with public
+zero-argument constructors (`.android.extensions` is the deprecated name of
+`.android.hooks`):
 
 ```zig
 .android = .{
-    .sources = &.{b.path("src/android/MyExtension.kt")},
-    .extensions = &.{"dev.example.MyExtension"},
+    .sources = &.{b.path("src/android/MyHooks.kt")},
+    .hooks = &.{"dev.example.MyHooks"},
 },
 ```
 
@@ -342,7 +348,7 @@ Oriel regenerates the internal `OrielAppExtensions` registry on each Android
 build. Hooks cover Activity and WebView lifecycles, native results, permissions,
 and file selection. `.android.dependencies` adds pinned Maven SDK coordinates;
 `.android.proguard_rules` supplies app-owned R8 rules. See
-[Android extensions](android-extensions.md) for the implementation example,
+[Android platform hooks](android-extensions.md) for the implementation example,
 request-code allocation, and cleanup responsibilities.
 
 ## Tray

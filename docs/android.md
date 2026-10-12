@@ -123,11 +123,12 @@ path from the app module to `zig-out`) inside `android { }` in
 `app/build.gradle.kts`. See [Offline text to speech](tts.md).
 
 For behavior beyond JNI helpers, register app-owned classes with
-`.android.extensions`. Oriel regenerates the internal `OrielAppExtensions`
-registry on every Android build; implement `OrielAndroidExtension` in your own
+`.android.hooks` (formerly `.android.extensions`, which still works). Oriel
+regenerates the internal `OrielAppExtensions` registry on every Android build;
+implement `OrielAndroidHooks` (`OrielAndroidExtension` in Java) in your own
 Kotlin or Java sources. The generated runtime dispatches lifecycle, WebView,
 file-picker, permission and activity-result hooks without requiring edits to
-Oriel's files. See [Android extensions](android-extensions.md) for registration,
+Oriel's files. See [Android platform hooks](android-extensions.md) for registration,
 request-code namespaces and callback ownership.
 
 The manifest (`android/app/src/main/AndroidManifest.xml`) is yours, except

@@ -17,6 +17,7 @@ const permissions = @import("../../core/permissions.zig");
 const overlay = @import("overlay.zig");
 const build_opts = @import("build_options");
 const build_target = @import("../../core/target.zig");
+const hooks = @import("../../core/hooks.zig");
 /// -Dnative_ui: pages drawn with Direct2D instead of WebView2 (docs/native-renderer.md).
 const native_win32 = if (build_opts.native_ui) @import("../../native_ui/win32.zig") else struct {
     /// Never created without -Dnative_ui (nativeSurface returns null).
@@ -69,6 +70,25 @@ pub const WindowHandle = struct {
     native: ?*anyopaque = null,
     data: ?*anyopaque = null,
     deinit_fn: ?*const fn (ctx: *anyopaque) void = null,
+    /// The window's label, owned by its `App.Window` (for the destroyed
+    /// hooks of `destroyWindow`).
+    label: []const u8 = "",
+
+    /// The platform hooks' view of the window (hooks.zig).
+    fn hookWindow(self: WindowHandle) hooks.NativeWindow {
+        return .{ .win32 = self.hwnd };
+    }
+
+    fn hookView(self: WindowHandle) ?hooks.NativeWebView {
+        const core = self.webview orelse return null;
+        const controller = self.controller orelse return null;
+        return .{ .webview2 = .{ .core = core, .controller = controller } };
+    }
+
+    /// The destroyed hooks, before `deinit` releases the web view.
+    fn hooksDestroyed(self: WindowHandle) void {
+        hooks.destroyed(self.label, self.hookWindow(), self.hookView());
+    }
 
     pub fn deinit(self: WindowHandle) void {
         if (self.webview) |v| {
@@ -150,6 +170,7 @@ pub fn focusWindow(handle: WindowHandle) void {
 }
 
 pub fn destroyWindow(handle: WindowHandle) void {
+    handle.hooksDestroyed();
     _ = win32.SetWindowLongPtrW(handle.hwnd, win32.GWLP_USERDATA, 0);
     handle.deinit();
     _ = win32.DestroyWindow(handle.hwnd);
@@ -1421,7 +1442,8 @@ pub fn WindowCreator(
             defer gpa.free(target_uri_w);
             const nav = try NavigateWhenReady.create(view, target_uri_w);
             defer _ = NavigateWhenReady.release(&nav.handler);
-            if (!BridgeImpl.setupUserContent(view, options.label, &nav.handler)) nav.navigate();
+            // The page loads once the bridge script applies (true) or now.
+            const deferred = BridgeImpl.setupUserContent(view, options.label, &nav.handler);
 
             if (ShellMod.on_window_created_fn) |hook| {
                 hook(hwnd);
@@ -1448,7 +1470,13 @@ pub fn WindowCreator(
                 .webview = view,
                 .data = data,
                 .deinit_fn = &WindowData.deinitTypeErased,
+                .label = options.label,
             };
+            // Bridge installed, first navigation not started (it waits for
+            // the bridge script's completion, a message this thread has not
+            // pumped yet, or starts below); nothing fails past this point.
+            hooks.created(options.label, handle.hookWindow(), handle.hookView());
+            if (!deferred) nav.navigate();
             win_inst.handle = handle;
             _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @bitCast(@intFromPtr(win_inst)));
 
@@ -1489,7 +1517,9 @@ pub fn WindowCreator(
                 .native = surface.engine,
                 .data = surface,
                 .deinit_fn = &native_win32.Surface.destroyErased,
+                .label = options.label,
             };
+            hooks.created(options.label, handle.hookWindow(), null);
             win_inst.handle = handle;
             _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @bitCast(@intFromPtr(win_inst)));
             // Shown (placed, focused or not) by App.openWindow when `visible`.
@@ -1669,6 +1699,7 @@ pub fn WindowCreator(
                         // Clear GWLP_USERDATA before freeing w or destroying window
                         _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, 0);
 
+                        w.handle.hooksDestroyed();
                         w.handle.deinit();
 
                         @import("../../core/heap.zig").gpa.free(w.label);
