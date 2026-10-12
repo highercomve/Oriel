@@ -238,6 +238,14 @@ on `PATH`. It compiles for `arm64-apple-ios15.0` (or the
 A missing `swiftc`, SDK or Darwin standard library is a build error naming
 what to install. Apps without Swift sources never need `swiftc`.
 
+**Minimum iOS 18 with Swift.** iOS 18 split the Swift Darwin overlay into
+separate libraries (`libswift_errno`, `_math`, …). Apple's linker records the
+old `libswiftDarwin` for older deployment targets; Zig's linker records the
+new names, which iOS 15–17 don't have. So an app with `.ios.swift_sources`
+targets iOS 18 or later: its minimum is raised to 18.0 when the target names
+no version, and an explicit lower one (`-Dtarget=aarch64-ios.16.0`) is a
+build error. Apps without Swift keep Oriel's iOS 15 minimum.
+
 ## Limits
 
 | | |

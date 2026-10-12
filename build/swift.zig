@@ -190,12 +190,18 @@ pub fn compile(
     return obj;
 }
 
+/// The lowest iOS an app with Swift sources can target. iOS 18 split the
+/// Darwin overlay into libswift_errno, _math, … whose SDK stubs tell Apple's
+/// ld (`$ld$previous`) to record libswiftDarwin below 18.0; Zig's linker
+/// records the new names, which iOS 15–17 don't have.
+pub const min_ios: std.SemanticVersion = .{ .major = 18, .minor = 0, .patch = 0 };
+
 /// Link the Swift runtime libraries an extension's object needs: the SDK's
 /// stubs, the OS's libraries at run time.
 pub fn linkRuntime(module: *std.Build.Module, sdk: []const u8) void {
     const b = module.owner;
     module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib/swift" }) });
-    for ([_][]const u8{ "swiftCore", "swiftFoundation", "swiftObjectiveC", "swiftDarwin", "swiftDispatch", "swiftCoreFoundation" }) |lib|
+    for ([_][]const u8{ "swiftCore", "swiftFoundation", "swiftObjectiveC", "swiftDarwin", "swiftDispatch", "swiftCoreFoundation", "swiftXPC" }) |lib|
         module.linkSystemLibrary(lib, .{});
     module.addRPathSpecial("/usr/lib/swift");
 }
