@@ -205,9 +205,9 @@ simulator, a phone without a camera app), `error.PermissionDenied` (refused, or 
 
 | Platform | `.camera` | `.library` | Scaling and encoding |
 |---|---|---|---|
-| Android | `ACTION_IMAGE_CAPTURE` into the capture provider | the system photo picker | `ImageDecoder` (orientation applied; `BitmapFactory` for files it refuses), `Bitmap.compress` |
+| Android | `ACTION_IMAGE_CAPTURE` into the capture provider | the system photo picker | `ImageDecoder` (orientation applied; `BitmapFactory` for files it refuses, turned by their EXIF orientation), `Bitmap.compress` |
 | iOS | `UIImagePickerController` (`isSourceTypeAvailable` checked; Unsupported on the simulator) | `PHPickerViewController` (PhotosUI) | `UIGraphicsImageRenderer` (orientation applied) |
-| Linux, Windows, macOS | `error.Unsupported` | the dialog module's file dialog, filtered to images (used whether or not `dialog` is on) | zigimg: decoded, box-filtered, encoded. What zigimg can't decode (HEIC, WebP, progressive JPEG) comes back as it was picked, `mime` from its bytes and the size from its header (0 x 0 when unknown); EXIF orientation isn't applied |
+| Linux, Windows, macOS | `error.Unsupported` | the dialog module's file dialog, filtered to images (used whether or not `dialog` is on) | zigimg: decoded, box-filtered, encoded. What zigimg can't decode (HEIC, WebP, progressive JPEG) comes back as it was picked, `mime` from its bytes and the size from its header (0 x 0 when unknown). A JPEG's EXIF orientation is applied before scaling |
 
 ### Notifications (`oriel.notification`)
 
