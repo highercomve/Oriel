@@ -35,7 +35,9 @@ That provides the app developer workflow:
 
 Every module and plugin is on by default. Pass `.<name> = false` to
 `b.dependency("oriel", ...)` to leave one out: it is then neither compiled
-nor linked.
+nor linked. The flags hold for every target: where a module doesn't exist
+(a tray on phones), `oriel.<module>.available` is false, so guard its calls
+with `if (oriel.tray.available)` (see [Availability](modules.md#availability)).
 
 ### App icon
 

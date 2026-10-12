@@ -64,7 +64,7 @@ oriel ios install [--simulator]
 
 # [What replaces the desktop-only parts]($heading.id('what-replaces-the-desktop-only-parts'))
 
-Phones have no tray, no menu bar and no system-wide hotkeys. On Android and iOS those modules are off by default, and turning one on is a build error that says what to use instead:
+Phones have no tray, no menu bar and no system-wide hotkeys. An app still asks for them once, for every target (`.tray = true`): on Android and iOS they resolve to `oriel.tray.available = false`, the code under `if (oriel.tray.available)` isn't built, and a call outside that guard is a build error naming it ([Availability]($link.page('docs/modules'))). What to use instead:
 
 | Desktop | Android | iOS |
 |---|---|---|
