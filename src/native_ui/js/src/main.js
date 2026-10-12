@@ -28,6 +28,7 @@ import { installBlob } from "./blob.js";
 import { installDnd } from "./dnd.js";
 import { EASES } from "./transitions.js";
 import { A11y } from "./a11y.js";
+import { orielApi } from "../../../core/bridge_api.js";
 // The runtime's own weak caches keyed by nodes: marked so their entries
 // don't keep a node's wrapper from being replaced (a page's weak
 // references do: dom/store.zig prune).
@@ -933,7 +934,8 @@ g.IntersectionObserver ??= class { observe() {} unobserve() {} disconnect() {} }
 installURL(g);
 
 // ---------------------------------------------------------------------------
-// window.oriel: the same API as the WebView bridge
+// window.oriel: the WebView bridge's API (src/core/bridge_api.js) on the
+// engine's transport
 
 const pending = new Map();
 let callSeq = 1;
@@ -944,163 +946,14 @@ function invoke(cmd, args) {
     host.invoke(id, String(cmd), JSON.stringify(args ?? null));
   });
 }
-const listeners = new Map();
-const pendingEvents = new Map();
-class WindowHandle {
-  constructor(label) { this.label = label; }
-  close() { return invoke("oriel:window:close", { label: this.label }); }
-  show() { return invoke("oriel:window:show", { label: this.label }); }
-  hide() { return invoke("oriel:window:hide", { label: this.label }); }
-  focus() { return invoke("oriel:window:focus", { label: this.label }); }
-  setTitle(title) { return invoke("oriel:window:setTitle", { label: this.label, title }); }
-  setSize(width, height) { return invoke("oriel:window:setSize", { label: this.label, width, height }); }
-  maximize(maximized = true) { return invoke("oriel:window:maximize", { label: this.label, maximized }); }
-  fullscreen(fullscreen = true) { return invoke("oriel:window:fullscreen", { label: this.label, fullscreen }); }
-  startDragging() { return invoke("oriel:window:startDragging", { label: this.label }); }
-  emit(event, payload) { return windowApi.emitTo(this.label, event, payload); }
-}
-const windowApi = {
-  async open(options) { const res = await invoke("oriel:window:open", options); return new WindowHandle(res.label); },
-  current() { return new WindowHandle(host.label || "main"); },
-  async get(label) { const res = await invoke("oriel:window:get", { label }); return res ? new WindowHandle(res.label) : null; },
-  async all() { const list = await invoke("oriel:window:all", {}); return (list || []).map((w) => new WindowHandle(w.label)); },
-  emitTo(label, event, payload) { return invoke("oriel:window:emitTo", { label, event, payload: payload ?? null }); },
-};
-g.oriel = Object.freeze({
-  platform: Object.freeze(platform),
-  features,
-  native: true,
+Object.defineProperty(g, "oriel", { value: orielApi({
   invoke,
-  listen(event, callback) {
-    let set = listeners.get(event);
-    if (!set) listeners.set(event, (set = new Set()));
-    set.add(callback);
-    const queued = pendingEvents.get(event);
-    if (queued?.length) { pendingEvents.delete(event); for (const p of queued) { try { callback(p); } catch (e) { console.error(e); } } }
-    // Deep links, notification clicks and shares that came before the page
-    // listened (one that launched the app); lifecycle events (oriel.lifecycle)
-    // and app extension events from before it loaded.
-    if (event === "deep-link" || event === "notification:action" || event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) invoke("events:ready", { event }).catch(() => {});
-    return () => set.delete(callback);
-  },
-  openExternal(url) { return invoke("open_external", { url }); },
-  drop: Object.freeze({
-    // Where a dropped file lives now, for a handler that sends it on. The
-    // handle came in the drop's File (`f.handle`); only the native
-    // renderer has one. Answers a path string, or null when the file is
-    // gone or changed, the handle is unknown, or the platform can't
-    // resolve paths (docs/drag-and-drop-design.md §3, open question #1,
-    // resolved: Electron's webUtils.getPathForFile is the precedent).
-    async path(f) {
-      const handle = f && typeof f.handle === "number" ? f.handle : f;
-      if (typeof handle !== "number") throw new TypeError("drop.path: a dropped file (or its handle)");
-      return invoke("drop:path", { handle });
-    },
-  }),
-  permissions: Object.freeze({
-    query(name) { return invoke("permissions:query", { name }); },
-    request(name) {
-      return new Promise((resolve, reject) => {
-        let set = listeners.get("permission-changed");
-        if (!set) listeners.set("permission-changed", (set = new Set()));
-        const cb = (e) => { if (e && e.name === name) { set.delete(cb); resolve(e.status); } };
-        set.add(cb);
-        invoke("permissions:request", { name }).then((s) => { if (s !== "prompt") { set.delete(cb); resolve(s); } }, (err) => { set.delete(cb); reject(err); });
-      });
-    },
-    openSettings(name) { return invoke("permissions:open_settings", { name }); },
-  }),
-  // { type: "background" | "foreground" | "memory_pressure" | "suspend" |
-  // "resume" | "terminating", level: "moderate" | "critical" | null }.
-  lifecycle: Object.freeze({ on(callback) { return g.oriel.listen("lifecycle", callback); } }),
-  // The app's extensions, as far as Zig exposes them (oriel.extensions.expose):
-  // JSON in, JSON out; native events come as `extension:<name>`.
-  extensions: Object.freeze({
-    call(name, method, payload) { return invoke("extensions:call", { name, method, payload: payload === undefined ? null : payload }); },
-    on(name, callback) { return g.oriel.listen("extension:" + name, callback); },
-  }),
-  // The device's own model (oriel.system_ai, features.systemAi), as in the
-  // webview bridges (src/modules/system_ai/bridge.zig). Tokens stream as
-  // "system_ai:token" ({ text }), download progress as "system_ai:download".
-  systemAi: Object.freeze({
-    status() { return invoke("system_ai:status", {}); },
-    capabilities() { return invoke("system_ai:capabilities", {}); },
-    download(onProgress) {
-      const off = onProgress ? g.oriel.listen("system_ai:download", onProgress) : null;
-      return Promise.resolve(invoke("system_ai:download", {})).finally(() => off && off());
-    },
-    async generate(request, onToken) {
-      const b64 = async (data) => {
-        if (typeof data === "string") return data;
-        const bytes = data instanceof g.Blob ? new Uint8Array(await data.arrayBuffer()) : data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-        let bin = "";
-        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-        return btoa(bin);
-      };
-      const images = [];
-      for (const img of request.images || []) images.push({ data: await b64(img.data), mime: img.mime || (img.data && img.data.type) || "image/jpeg" });
-      const schema = request.schema == null || typeof request.schema === "string" ? request.schema : JSON.stringify(request.schema);
-      const off = onToken ? g.oriel.listen("system_ai:token", (e) => onToken(e.text)) : null;
-      try {
-        return await invoke("system_ai:generate", { system: request.system || "", prompt: request.prompt, images, temperature: request.temperature, maxTokens: request.maxTokens, schema });
-      } finally {
-        if (off) off();
-      }
-    },
-    cancel() { return invoke("system_ai:cancel", {}); },
-  }),
-  // oriel.camera (features.camera): resolves to { dataUrl, width, height, mime }.
-  camera: Object.freeze({ capturePhoto(options) { return invoke("camera:capture", options || {}); } }),
-  deepLink: Object.freeze({ current() { return invoke("deep_link:current", {}); } }),
-  share: Object.freeze({
-    // A received file (from share:received's files, or its handle) as a File.
-    async file(f) {
-      const info = typeof f === "number" ? { handle: f } : f;
-      const chunk = 4 << 20, parts = [];
-      for (let offset = 0; ;) {
-        const bin = atob(await invoke("share:read", { handle: info.handle, offset, length: chunk }));
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        parts.push(bytes);
-        offset += bytes.length;
-        if (bytes.length < chunk) break;
-      }
-      return new g.File(parts, info.name || "file", { type: info.mime || "" });
-    },
-    // Opens the system share sheet: { title, text, url, files: [File | Blob |
-    // a received file | its handle], anchor }. Resolves { completed, target }.
-    async send(item = {}) {
-      const files = [];
-      for (const f of item.files || []) {
-        if (typeof f === "number") { files.push({ handle: f }); continue; }
-        if (!(f instanceof g.Blob)) { files.push({ handle: f.handle }); continue; }
-        const u = new Uint8Array(await f.arrayBuffer());
-        let bin = "";
-        for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
-        files.push({ name: f.name || "file", data: btoa(bin) });
-      }
-      return new Promise((resolve, reject) => {
-        let set = listeners.get("share:sent");
-        if (!set) listeners.set("share:sent", (set = new Set()));
-        const cb = (r) => { set.delete(cb); resolve(r); };
-        set.add(cb);
-        invoke("share:send", { title: item.title, text: item.text, url: item.url, files, anchor: item.anchor }).catch((err) => { set.delete(cb); reject(err); });
-      });
-    },
-    capabilities() { return invoke("share:capabilities", {}); },
-  }),
-  __emit(event, payload) {
-    const set = listeners.get(event);
-    if (set?.size) { for (const cb of set) { try { cb(payload); } catch (e) { console.error(e); } } }
-    else if (event === "deep-link") {
-      let q = pendingEvents.get(event);
-      if (!q) pendingEvents.set(event, (q = []));
-      q.push(payload);
-      if (q.length > 16) q.shift();
-    }
-  },
-  window: Object.freeze(windowApi),
-});
+  listeners: new Map(),
+  pendingEvents: new Map(),
+  platform: Object.freeze({ os: platform.os, arch: platform.arch }),
+  features,
+  label: () => host.label,
+}) });
 
 // ---------------------------------------------------------------------------
 // Events from the native views

@@ -18,7 +18,7 @@
   <div class="hostile-wrap"><canvas id="hostile" width="428" height="40"></canvas></div>
   <div id="after">The page still draws after the hostile canvas.</div>
   <script>
-    document.getElementById("renderer").textContent = window.oriel.native ? "native" : "webview";
+    document.getElementById("renderer").textContent = window.oriel.features.nativeUi ? "native" : "webview";
 
     // --- static: shapes, gradient, path, text, clip, alpha ---
     const s = document.getElementById("static").getContext("2d");
