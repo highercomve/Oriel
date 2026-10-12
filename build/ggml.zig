@@ -17,6 +17,17 @@
 //! one it doesn't load and ggml stays on the CPU.
 
 const std = @import("std");
+const ios_build = @import("ios.zig");
+
+/// iOS without an SDK (`zig build check` on Linux): there are no framework
+/// headers to compile Objective-C against and nothing links, so the sources
+/// that need Apple frameworks (Metal's, miniaudio's AVFoundation playback)
+/// are left out and the frameworks aren't linked. The portable C and C++
+/// still type-check (build/ios.zig, `configureCheck`).
+fn iosWithoutSdk(b: *std.Build, oriel: *std.Build.Module) bool {
+    const t = oriel.resolved_target.?.result;
+    return t.os.tag == .ios and ios_build.sdk(b, t) == null;
+}
 
 /// A user error in the build options: a message, not a stack trace.
 fn buildFail(comptime fmt: []const u8, args: anytype) noreturn {
@@ -127,6 +138,7 @@ fn addMetalBackend(b: *std.Build, oriel: *std.Build.Module, ggml_root: std.Build
     if (std.Io.Dir.cwd().access(b.graph.io, fusion.getPath(b), .{})) |_| {
         oriel.addCSourceFile(.{ .file = fusion, .flags = cpp_flags });
     } else |_| {}
+    if (iosWithoutSdk(b, oriel)) return;
     // Objective-C with manual retain/release, like upstream (no ARC).
     const objc_flags = std.mem.concat(b.allocator, []const u8, &.{ &.{ "-fno-objc-arc", "-D_DARWIN_C_SOURCE", "-fno-sanitize=undefined" }, metal_defs }) catch @panic("OOM");
     oriel.addCSourceFiles(.{
@@ -478,7 +490,7 @@ pub fn addGgml(
             "-fno-sanitize=undefined", "-w",
         }, darwin }) catch @panic("OOM");
         oriel.addIncludePath(b.path("src/modules/miniaudio"));
-        oriel.addCSourceFile(.{ .file = impl_file, .flags = miniaudio_flags });
+        if (!iosWithoutSdk(b, oriel)) oriel.addCSourceFile(.{ .file = impl_file, .flags = miniaudio_flags });
 
         // libespeak-ng (GPL-3): phonemization only, so the optional audio
         // backends stay off (sources and config: build/espeak_data.zig).
