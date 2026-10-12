@@ -4,14 +4,14 @@ import android.app.Activity
 import android.content.Intent
 
 /** Generated registration only. Implementations belong to the app's sources. */
-internal object OrielAppExtensions {
-    val registered: List<OrielAndroidExtension> by lazy {
-        listOf<OrielAndroidExtension>(@@android_extensions@@).also { extensions ->
-            extensions.forEachIndexed { index, extension -> extension.onRegistered(OrielAndroidExtensionContext(index)) }
+internal object OrielHooksRegistry {
+    val registered: List<OrielAndroidHooks> by lazy {
+        listOf<OrielAndroidHooks>(@@android_hooks@@).also { hooks ->
+            hooks.forEachIndexed { index, hook -> hook.onRegistered(OrielAndroidHooksContext(index)) }
         }
     }
 
-    private fun owner(requestCode: Int): OrielAndroidExtension? =
+    private fun owner(requestCode: Int): OrielAndroidHooks? =
         registered.getOrNull((requestCode - 0x8000) / 256)
 
     fun activityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?): Boolean {

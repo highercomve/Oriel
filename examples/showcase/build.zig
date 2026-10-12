@@ -167,8 +167,10 @@ pub fn build(b: *std.Build) void {
         .android = .{
             .tile = "Dictate anywhere",
             .input_method = "Oriel dictation",
-            .sources = &.{b.path("hooks/android/ShowcaseHooks.kt")},
-            .hooks = &.{"dev.oriel.showcase.ShowcaseHooks"},
+            .hooks = &.{.{
+                .class = "dev.oriel.showcase.ShowcaseHooks",
+                .sources = &.{b.path("hooks/android/ShowcaseHooks.kt")},
+            }},
         },
     });
 }

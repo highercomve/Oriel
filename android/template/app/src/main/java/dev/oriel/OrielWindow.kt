@@ -128,7 +128,7 @@ internal class OrielWindow(
             cssHeight = ((b - t) / density).toInt()
         }
         installBridge(view)
-        OrielAppExtensions.registered.forEach { it.onWebViewCreated(view, label) }
+        OrielHooksRegistry.registered.forEach { it.onWebViewCreated(view, label) }
         return view
     }
 
@@ -208,12 +208,12 @@ internal class OrielWindow(
         host.setContent(content)
         host.applyTitle(title, themeColor)
         host.applyFullscreen(fullscreen)
-        webView?.let { view -> OrielAppExtensions.registered.forEach { it.onWebViewAttached(host, view, label) } }
+        webView?.let { view -> OrielHooksRegistry.registered.forEach { it.onWebViewAttached(host, view, label) } }
     }
 
     fun detachFrom(host: OrielActivity) {
         if (activity !== host) return
-        webView?.let { view -> OrielAppExtensions.registered.forEach { it.onWebViewDetached(host, view, label) } }
+        webView?.let { view -> OrielHooksRegistry.registered.forEach { it.onWebViewDetached(host, view, label) } }
         activity = null
         context.baseContext = OrielRuntime.app
         (content.parent as? ViewGroup)?.removeView(content)
@@ -228,7 +228,7 @@ internal class OrielWindow(
         (content.parent as? ViewGroup)?.removeView(content)
         if (nui != null) Nui.views.remove(id)
         webView?.stopLoading()
-        webView?.let { view -> OrielAppExtensions.registered.forEach { it.onWebViewDestroyed(view, label) } }
+        webView?.let { view -> OrielHooksRegistry.registered.forEach { it.onWebViewDestroyed(view, label) } }
         webView?.destroy()
         queued.clear()
         replyProxy = null
@@ -238,9 +238,9 @@ internal class OrielWindow(
     private fun recreate() {
         val host = activity
         val old = webView ?: return
-        host?.let { h -> OrielAppExtensions.registered.forEach { it.onWebViewDetached(h, old, label) } }
+        host?.let { h -> OrielHooksRegistry.registered.forEach { it.onWebViewDetached(h, old, label) } }
         (old.parent as? ViewGroup)?.removeView(old)
-        OrielAppExtensions.registered.forEach { it.onWebViewDestroyed(old, label) }
+        OrielHooksRegistry.registered.forEach { it.onWebViewDestroyed(old, label) }
         old.destroy()
         newLoad()
         webView = createWebView()
@@ -322,7 +322,7 @@ internal class OrielWindow(
 
         override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
             val host = activity ?: return false
-            if (OrielAppExtensions.registered.any { it.onShowFileChooser(host, view, callback, params) }) return true
+            if (OrielHooksRegistry.registered.any { it.onShowFileChooser(host, view, callback, params) }) return true
             // oriel.camera on: image inputs get the camera or the photo picker.
             if (OrielCamera.onShowFileChooser(host, callback, params)) return true
             return host.chooseFiles(params.createIntent(), params.mode == FileChooserParams.MODE_OPEN_MULTIPLE, callback)

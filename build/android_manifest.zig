@@ -1239,62 +1239,39 @@ pub const max_hook_classes = 64;
 
 pub const HookClassError = error{ TooManyHooks, DuplicateHook, InvalidHookClass, OutOfMemory };
 
-/// The Android platform hook classes to register, in order: `.android.hooks`,
-/// then the deprecated `.android.extensions` (a class both name is
-/// registered once, at its `hooks` position). A class twice in one list is
-/// an error (`bad` names it), as is an invalid name or more than 64 in all.
-pub fn hookClasses(gpa: Allocator, hooks: []const []const u8, extensions: []const []const u8, bad: *[]const u8) HookClassError![]const []const u8 {
-    if (hooks.len > max_hook_classes or extensions.len > max_hook_classes) return error.TooManyHooks;
-    var out: std.ArrayList([]const u8) = .empty;
-    errdefer out.deinit(gpa);
-    for ([_][]const []const u8{ hooks, extensions }, 0..) |list, which| {
-        for (list, 0..) |class_name, index| {
-            bad.* = class_name;
-            if (!extensionClassValid(class_name)) return error.InvalidHookClass;
-            for (list[0..index]) |previous| {
-                if (std.mem.eql(u8, previous, class_name)) return error.DuplicateHook;
-            }
-            // In `hooks` already: the alias names the same class.
-            const seen = which == 1 and for (hooks) |h| {
-                if (std.mem.eql(u8, h, class_name)) break true;
-            } else false;
-            if (seen) continue;
-            if (out.items.len >= max_hook_classes) return error.TooManyHooks;
-            try out.append(gpa, class_name);
+/// The Android platform hook classes to register, in declaration order. A
+/// class twice is an error (`bad` names it), as is an invalid name or more
+/// than 64 classes.
+pub fn hookClasses(gpa: Allocator, hooks: []const []const u8, bad: *[]const u8) HookClassError![]const []const u8 {
+    if (hooks.len > max_hook_classes) return error.TooManyHooks;
+    for (hooks, 0..) |class_name, index| {
+        bad.* = class_name;
+        if (!extensionClassValid(class_name)) return error.InvalidHookClass;
+        for (hooks[0..index]) |previous| {
+            if (std.mem.eql(u8, previous, class_name)) return error.DuplicateHook;
         }
     }
-    return out.toOwnedSlice(gpa);
+    return gpa.dupe([]const u8, hooks);
 }
 
 test hookClasses {
     const gpa = std.testing.allocator;
     var bad: []const u8 = "";
-    const merged = try hookClasses(gpa, &.{ "dev.a.New", "dev.a.Both" }, &.{ "dev.a.Old", "dev.a.Both" }, &bad);
-    defer gpa.free(merged);
-    try std.testing.expectEqual(@as(usize, 3), merged.len);
-    try std.testing.expectEqualStrings("dev.a.New", merged[0]);
-    try std.testing.expectEqualStrings("dev.a.Both", merged[1]);
-    try std.testing.expectEqualStrings("dev.a.Old", merged[2]);
+    const classes = try hookClasses(gpa, &.{ "dev.a.First", "dev.a.Second" }, &bad);
+    defer gpa.free(classes);
+    try std.testing.expectEqual(@as(usize, 2), classes.len);
+    try std.testing.expectEqualStrings("dev.a.First", classes[0]);
+    try std.testing.expectEqualStrings("dev.a.Second", classes[1]);
 
-    const only_old = try hookClasses(gpa, &.{}, &.{"dev.a.Old"}, &bad);
-    defer gpa.free(only_old);
-    try std.testing.expectEqual(@as(usize, 1), only_old.len);
-
-    try std.testing.expectError(error.DuplicateHook, hookClasses(gpa, &.{ "dev.a.X", "dev.a.X" }, &.{}, &bad));
+    try std.testing.expectError(error.DuplicateHook, hookClasses(gpa, &.{ "dev.a.X", "dev.a.X" }, &bad));
     try std.testing.expectEqualStrings("dev.a.X", bad);
-    try std.testing.expectError(error.DuplicateHook, hookClasses(gpa, &.{}, &.{ "dev.a.Y", "dev.a.Y" }, &bad));
-    try std.testing.expectError(error.InvalidHookClass, hookClasses(gpa, &.{"Evil()"}, &.{}, &bad));
+    try std.testing.expectError(error.InvalidHookClass, hookClasses(gpa, &.{"Evil()"}, &bad));
     try std.testing.expectEqualStrings("Evil()", bad);
 
-    var many: [40][]const u8 = undefined;
-    var names: [40][16]u8 = undefined;
-    var many2: [40][]const u8 = undefined;
-    var names2: [40][16]u8 = undefined;
-    for (&many, &names, &many2, &names2, 0..) |*m, *n, *m2, *n2, i| {
-        m.* = try std.fmt.bufPrint(n, "dev.a.H{d}", .{i});
-        m2.* = try std.fmt.bufPrint(n2, "dev.b.E{d}", .{i});
-    }
-    try std.testing.expectError(error.TooManyHooks, hookClasses(gpa, &many, &many2, &bad));
+    var many: [65][]const u8 = undefined;
+    var names: [65][16]u8 = undefined;
+    for (&many, &names, 0..) |*m, *n, i| m.* = try std.fmt.bufPrint(n, "dev.a.H{d}", .{i});
+    try std.testing.expectError(error.TooManyHooks, hookClasses(gpa, &many, &bad));
 }
 
 /// Bounded Maven coordinates safe to embed in a generated Kotlin string.

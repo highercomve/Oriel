@@ -206,6 +206,38 @@ fn withGeneratedBlock(gpa: std.mem.Allocator, current: []const u8, rules: []cons
     return out.toOwnedSlice(gpa);
 }
 
+/// Delete the files directly in the project's runtime directory that the
+/// template (`runtime`, project-relative paths) doesn't have: the runtime is
+/// Oriel's, and a file a newer Oriel renamed or dropped would otherwise stay
+/// and still compile. Subdirectories (the app's own `dev.oriel.*` packages)
+/// are left alone; app sources in `dev.oriel` itself are copied again after.
+fn pruneRuntime(gpa: std.mem.Allocator, io: Io, out: []const u8, runtime: []const []const u8) !usize {
+    const dir_path = try std.fs.path.join(gpa, &.{ out, runtime_prefix });
+    defer gpa.free(dir_path);
+    var dir = Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return 0,
+        else => return err,
+    };
+    defer dir.close(io);
+    var stale: std.ArrayList([]u8) = .empty;
+    defer {
+        for (stale.items) |f| gpa.free(f);
+        stale.deinit(gpa);
+    }
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        const rel = try std.fmt.allocPrint(gpa, runtime_prefix ++ "{s}", .{entry.name});
+        defer gpa.free(rel);
+        const known = for (runtime) |r| {
+            if (std.mem.eql(u8, r, rel)) break true;
+        } else false;
+        if (!known) try stale.append(gpa, try gpa.dupe(u8, entry.name));
+    }
+    for (stale.items) |name| try dir.deleteFile(io, name);
+    return stale.items.len;
+}
+
 /// Copy `sources` into the project `out`, remove the ones a previous run
 /// copied that are no longer listed, and set the R8 rules block. Returns
 /// the files written or removed, null after an error (printed).
@@ -551,12 +583,19 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
     defer walker.deinit();
     var written: usize = 0;
     var kept: usize = 0;
+    // The runtime's files, to remove the ones a newer Oriel no longer has.
+    var runtime_files: std.ArrayList([]u8) = .empty;
+    defer {
+        for (runtime_files.items) |f| gpa.free(f);
+        runtime_files.deinit(gpa);
+    }
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         const rel = try gpa.dupe(u8, entry.path);
         defer gpa.free(rel);
         std.mem.replaceScalar(u8, rel, '\\', '/');
         const is_runtime = std.mem.startsWith(u8, rel, runtime_prefix);
+        if (is_runtime) try runtime_files.append(gpa, try gpa.dupe(u8, destPath(rel)));
         const is_manifest = std.mem.eql(u8, rel, manifest_path);
         if (runtime_only and !is_runtime and !is_manifest) continue;
         const dest = try std.fs.path.join(gpa, &.{ out, destPath(rel) });
@@ -581,6 +620,8 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
         defer gpa.free(data);
         if (try writeIfChanged(gpa, io, dest, data)) written += 1;
     }
+
+    written += try pruneRuntime(gpa, io, out, runtime_files.items);
 
     // App dependencies survive both runtime sync and full project regeneration.
     for (vars.items) |v| if (std.mem.eql(u8, v.key, "android_dependencies")) {
@@ -693,24 +734,30 @@ test "Android runtime regeneration refreshes extension registration and preserve
     defer gpa.free(out);
     const source = try std.fmt.allocPrintSentinel(gpa, "{s}/Feature.kt", .{root}, 0);
     defer gpa.free(source);
-    const registry_rel = runtime_prefix ++ "OrielAppExtensions.kt";
+    const registry_rel = runtime_prefix ++ "OrielHooksRegistry.kt";
     try tmp.dir.createDirPath(io, "template/" ++ runtime_prefix);
     try tmp.dir.createDirPath(io, "project/app");
     try tmp.dir.writeFile(io, .{ .sub_path = "project/app/build.gradle.kts", .data = "// developer-owned settings\ndependencies { implementation(\"manual:library:1.0\") }\n" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "template/" ++ registry_rel, .data = "val extensions = listOf(@@android_extensions@@)\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "template/" ++ registry_rel, .data = "val hooks = listOf(@@android_hooks@@)\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "Feature.kt", .data = "package dev.example\nclass Feature // app-owned\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "project/app/oriel-dependencies.gradle.kts", .data = "// legacy generated script\n" });
+    // A runtime file an older Oriel had, and an app package under dev.oriel.
+    try tmp.dir.createDirPath(io, "project/" ++ runtime_prefix ++ "showcase");
+    try tmp.dir.writeFile(io, .{ .sub_path = "project/" ++ runtime_prefix ++ "OrielRemoved.kt", .data = "package dev.oriel\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "project/" ++ runtime_prefix ++ "showcase/App.kt", .data = "package dev.oriel.showcase\n" });
     const base_args = [_][:0]const u8{ "--template", template, "--out", out, "--runtime-only", "--source", source, "--var", "android_dependencies=    add(\"implementation\", \"example:feature:1.0\")\n", "--var" };
-    try std.testing.expectEqual(@as(u8, 0), try androidProjectCmd(gpa, io, &(base_args ++ .{"android_extensions=dev.example.Feature(),"})));
+    try std.testing.expectEqual(@as(u8, 0), try androidProjectCmd(gpa, io, &(base_args ++ .{"android_hooks=dev.example.Feature(),"})));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "project/" ++ runtime_prefix ++ "OrielRemoved.kt", .{}));
+    try tmp.dir.access(io, "project/" ++ runtime_prefix ++ "showcase/App.kt", .{});
     var legacy_path_buf: [4096]u8 = undefined;
     try std.testing.expect(!exists(io, try std.fmt.bufPrint(&legacy_path_buf, "{s}/app/oriel-dependencies.gradle.kts", .{out})));
     // A second build changes registration and copies updated app code, rather
     // than requiring edits to the generated runtime or leaving stale wiring.
     try tmp.dir.writeFile(io, .{ .sub_path = "Feature.kt", .data = "package dev.example\nclass Feature // developer's next edit\n" });
-    try std.testing.expectEqual(@as(u8, 0), try androidProjectCmd(gpa, io, &(base_args ++ .{"android_extensions="})));
+    try std.testing.expectEqual(@as(u8, 0), try androidProjectCmd(gpa, io, &(base_args ++ .{"android_hooks="})));
     const registry = try tmp.dir.readFileAlloc(io, "project/" ++ registry_rel, gpa, .limited(4096));
     defer gpa.free(registry);
-    try std.testing.expectEqualStrings("val extensions = listOf()\n", registry);
+    try std.testing.expectEqualStrings("val hooks = listOf()\n", registry);
     const app_source = try tmp.dir.readFileAlloc(io, "project/app/src/main/java/dev/example/Feature.kt", gpa, .limited(4096));
     defer gpa.free(app_source);
     try std.testing.expectEqualStrings("package dev.example\nclass Feature // developer's next edit\n", app_source);
@@ -720,7 +767,7 @@ test "Android runtime regeneration refreshes extension registration and preserve
     const deps = try tmp.dir.readFileAlloc(io, "project/app/oriel-dependencies.gradle", gpa, .limited(4096));
     defer gpa.free(deps);
     try std.testing.expect(std.mem.indexOf(u8, deps, "example:feature:1.0") != null);
-    try std.testing.expectEqual(@as(u8, 0), try androidProjectCmd(gpa, io, &.{ "--template", template, "--out", out, "--runtime-only", "--var", "android_extensions=", "--var", "android_dependencies=" }));
+    try std.testing.expectEqual(@as(u8, 0), try androidProjectCmd(gpa, io, &.{ "--template", template, "--out", out, "--runtime-only", "--var", "android_hooks=", "--var", "android_dependencies=" }));
     const removed = try tmp.dir.readFileAlloc(io, "project/app/oriel-dependencies.gradle", gpa, .limited(4096));
     defer gpa.free(removed);
     try std.testing.expect(std.mem.indexOf(u8, removed, "example:feature") == null);
@@ -729,7 +776,7 @@ test "Android runtime regeneration refreshes extension registration and preserve
     try std.testing.expect(std.mem.startsWith(u8, gradle, "// developer-owned settings\ndependencies { implementation(\"manual:library:1.0\") }\n"));
     try std.testing.expect(std.mem.indexOf(u8, gradle, "apply(from = \"oriel-dependencies.gradle\")") != null);
     try tmp.dir.writeFile(io, .{ .sub_path = "template/app/build.gradle.kts", .data = "// fresh project\n" });
-    try std.testing.expectEqual(@as(u8, 0), try androidProjectCmd(gpa, io, &.{ "--template", template, "--out", out, "--force", "--var", "android_extensions=", "--var", "android_dependencies=    add(\"implementation\", \"example:feature:2.0\")\n" }));
+    try std.testing.expectEqual(@as(u8, 0), try androidProjectCmd(gpa, io, &.{ "--template", template, "--out", out, "--force", "--var", "android_hooks=", "--var", "android_dependencies=    add(\"implementation\", \"example:feature:2.0\")\n" }));
     const regenerated = try tmp.dir.readFileAlloc(io, "project/app/oriel-dependencies.gradle", gpa, .limited(4096));
     defer gpa.free(regenerated);
     try std.testing.expect(std.mem.indexOf(u8, regenerated, "example:feature:2.0") != null);
