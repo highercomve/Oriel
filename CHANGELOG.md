@@ -16,8 +16,49 @@ Notable changes in Oriel releases.
   is false on Android and iOS, which hook natively. The showcase logs its
   windows and turns on a WebKitGTK setting through the handle. New page:
   [Platform hooks](docs/platform-hooks.md).
+- **iOS and macOS platform hooks: `.ios.hooks`, `.macos.hooks`.** Objective-C
+  or Swift classes conforming to `@protocol OrielPlatformHooks`
+  (`oriel_hooks.h`) take part in Oriel's app and scene delegates, windows and
+  WebKit delegates: `registered:` (with an `OrielHooksContext`:
+  `presentingViewController` on iOS, `keyWindow` on macOS),
+  `webViewConfiguration:window:`, `webViewCreated:window:` (before the first
+  navigation), `webViewDestroyed:window:`, the push token and its failure,
+  iOS scene events and `applicationDidFinishLaunching:options:`, macOS
+  `applicationDidFinishLaunching:`, `windowCreated:label:` and
+  `windowWillClose:label:`. Interceptions return `YES` to own the request
+  (first `YES` wins, declaration order): navigation policy, media capture,
+  `openURL:` (before `oriel.deep_link`), `continueUserActivity:` (universal
+  links, Handoff; Oriel now implements `scene:continueUserActivity:` and
+  `application:continueUserActivity:restorationHandler:`) and, on macOS,
+  `applicationShouldHandleReopen:hasVisibleWindows:`. Up to 16 hooks per
+  platform, constructed once at launch before the first scene or window; a
+  class that is also an app extension gets one instance for both. The
+  showcase's hooks log what they see and own example.com links (an in-app
+  Safari sheet on iOS). [Platform hooks](docs/platform-hooks.md#ios-and-macos)
+- **App extensions in Objective-C or Swift on macOS:**
+  `.extensions[].macos = .{ .objc = .{ .class, .sources, .swift_sources,
+  .frameworks, .weak_frameworks } }` runs the iOS protocol and runtime
+  (`OrielAppExtension`) on macOS; `.macos = .{ .zig = ... }` keeps the Zig
+  backend. Either overrides `.desktop`. Native macOS sources build against
+  the macOS SDK (`-Dmacos_sdk`, `$SDKROOT` or `xcrun`, so a Mac); Swift on
+  macOS raises the minimum to macOS 15 (an explicit lower target is a build
+  error), as Swift does to iOS 18. The showcase's `-Dobjc_echo` builds
+  `showcase.echo` in Objective-C on macOS. [App extensions](docs/extensions.md)
 
 ### Changed
+
+- **Swift sources link the Swift overlays and frameworks they import**
+  (iOS and macOS, extensions and hooks): Zig's linker ignores swiftc's
+  autolink entries, so `import CoreML`, `Metal`, `Accelerate`, `simd`,
+  `os`, … failed with undefined `__swift_FORCE_LOAD_$_swift...` symbols.
+  Oriel now links the frameworks a Swift source imports and every
+  `libswift*.tbd` of the SDK with `dead_strip_dylibs` (only what is used is
+  loaded); every framework and library linked otherwise is marked needed,
+  since Oriel looks classes up by name. The showcase's Swift hook imports
+  CoreML, CoreGraphics and Metal.
+- Swift sources (extensions' and hooks') use `oriel_swift.h` as their
+  bridging header: both `oriel_extension.h` and `oriel_hooks.h`, so one
+  Swift class can conform to both protocols.
 
 - **`.android.hooks`** is the name of Android's Kotlin/Java hook classes
   (formerly `.android.extensions`), and `OrielAndroidHooks` /

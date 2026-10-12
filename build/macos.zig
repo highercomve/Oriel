@@ -60,5 +60,5 @@ pub fn addPaths(module: *std.Build.Module, root: []const u8) void {
 /// Fail `compile` (its `what` needs an SDK and there is none).
 pub fn requireSdk(b: *std.Build, compile: *std.Build.Step.Compile, what: []const u8) void {
     compile.step.dependOn(&b.addFail(b.fmt("{s} need the macOS SDK and there is none: build on a Mac with Xcode or the Command Line Tools " ++
-        "(xcode-select --install), or pass -Dmacos_sdk=<path to MacOSX.sdk> (docs/platform-hooks-apple.md)", .{what})).step);
+        "(xcode-select --install), or pass -Dmacos_sdk=<path to MacOSX.sdk> (docs/platform-hooks.md)", .{what})).step);
 }

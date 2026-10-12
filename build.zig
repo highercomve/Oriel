@@ -1190,7 +1190,7 @@ pub const AppOptions = struct {
         /// (src/platform/apple/include/oriel_hooks.h) that take part in
         /// Oriel's app and scene delegates and WebKit delegates. Constructed
         /// once at launch, in this order (at most 16).
-        /// docs/platform-hooks-apple.md
+        /// docs/platform-hooks.md
         hooks: []const PlatformHook = &.{},
     };
 
@@ -1203,7 +1203,7 @@ pub const AppOptions = struct {
         /// Platform hooks, as `Ios.hooks`: the app delegate, windows and
         /// WebKit delegates. Objective-C and Swift sources need the macOS
         /// SDK (a Mac with Xcode or the Command Line Tools); Swift raises
-        /// the minimum to macOS 15. docs/platform-hooks-apple.md
+        /// the minimum to macOS 15. docs/platform-hooks.md
         hooks: []const PlatformHook = &.{},
     };
 
@@ -2681,7 +2681,7 @@ fn macosTarget(b: *std.Build, target: std.Build.ResolvedTarget, options: AppOpti
         else => null,
     } else null;
     if (explicit) |v| if (v.order(default_macos_min) != .eq)
-        fatal("macOS {d}.{d} is below what Swift supports here: with Swift sources in .macos.hooks or an extension's .macos.objc the minimum is macOS {d}.{d} (docs/platform-hooks-apple.md)", .{ min.major, min.minor, swift_build.min_macos.major, swift_build.min_macos.minor });
+        fatal("macOS {d}.{d} is below what Swift supports here: with Swift sources in .macos.hooks or an extension's .macos.objc the minimum is macOS {d}.{d} (docs/platform-hooks.md)", .{ min.major, min.minor, swift_build.min_macos.major, swift_build.min_macos.minor });
     var query = resolved.query;
     query.os_version_min = .{ .semver = swift_build.min_macos };
     return b.resolveTargetQuery(query);
